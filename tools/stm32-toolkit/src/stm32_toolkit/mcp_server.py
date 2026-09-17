@@ -317,6 +317,29 @@ class PhysicalSourceChangeIntentInput(BaseModel):
         Field(min_length=1, max_length=32),
     ]
 
+
+class ContinuationBindInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+    schema_: Literal["stm32-physical-continuation-request/1"] = Field(alias="schema")
+    kind: Literal["bind"]
+    predecessorAttemptId: AcceptanceUuid
+    predecessorCheckpointId: Digest
+    predecessorEvidenceId: Digest
+    fixedAfterTestRunId: AcceptanceRunId
+    fixedAfterEvidenceId: Digest
+    diagnosticRevision: DiagnosticRevision
+    diagnosticEventHead: Digest
+
+
+class ContinuationReuseInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+    schema_: Literal["stm32-physical-continuation-request/1"] = Field(alias="schema")
+    kind: Literal["reuse"]
+    continuationEvidenceId: Digest
+
+
+ContinuationInput = ContinuationBindInput | ContinuationReuseInput
+
 JsonArray = Annotated[list[object], BeforeValidator(_reject_json_tuple)]
 
 
@@ -374,6 +397,14 @@ class VerificationPlanInput(BaseModel):
     required_monitor_quality: Literal["VALID"]
     expected_changed: StrictBool
     plan_digest: Digest
+
+
+class VerificationPlanV2Input(VerificationPlanInput):
+    schema_: Literal["stm32-verification-plan/2"] = Field(alias="schema")
+    continuation_evidence_id: Digest
+
+
+VerificationPlanRequestInput = VerificationPlanInput | VerificationPlanV2Input
 
 
 class DiagnosticMarkerInput(BaseModel):
@@ -1327,7 +1358,7 @@ async def tool_diagnostic_add_verification_plan_for_request(
     operation_id: DiagnosticOperationId,
     diagnostic_session_id: DiagnosticSessionId,
     expected_revision: DiagnosticRevision,
-    verification_plan: VerificationPlanInput,
+    verification_plan: VerificationPlanRequestInput,
     actor: DiagnosticActor = "user",
 ) -> dict[str, object]:
     failure = await _client_roots_failure(runtime, context, "diagnostic.verification-plan.add")
@@ -1712,6 +1743,7 @@ async def tool_acceptance_attempt_begin_for_request(
     attempt_id: AcceptanceUuid,
     scenario_id: AcceptanceAttemptScenarioId,
     scenario_version: AcceptanceScenarioVersion,
+    continuation: ContinuationInput | None = None,
 ) -> dict[str, object]:
     operation = "acceptance.attempt.begin"
     failure = await _client_roots_failure(runtime, context, operation)
@@ -1722,6 +1754,7 @@ async def tool_acceptance_attempt_begin_for_request(
         attempt_id=attempt_id,
         scenario_id=scenario_id,
         scenario_version=scenario_version,
+        **({} if continuation is None else {"continuation": _nested_model_data(continuation)}),
     ).to_dict()
 
 
@@ -2336,7 +2369,7 @@ def create_server(
         operationId: DiagnosticOperationId,
         diagnosticSessionId: DiagnosticSessionId,
         expectedRevision: DiagnosticRevision,
-        verificationPlan: VerificationPlanInput,
+        verificationPlan: VerificationPlanRequestInput,
         actor: DiagnosticActor = "user",
     ) -> dict[str, object]:
         return await tool_diagnostic_add_verification_plan_for_request(
@@ -2503,9 +2536,10 @@ def create_server(
         attemptId: AcceptanceUuid,
         scenarioId: AcceptanceAttemptScenarioId,
         scenarioVersion: AcceptanceScenarioVersion,
+        continuation: ContinuationInput | None = None,
     ) -> dict[str, object]:
         return await tool_acceptance_attempt_begin_for_request(
-            runtime, ctx, attemptId, scenarioId, scenarioVersion
+            runtime, ctx, attemptId, scenarioId, scenarioVersion, continuation
         )
 
     @mcp.tool(name=MCP_TOOL_NAMES["acceptance_attempt_checkpoint"])

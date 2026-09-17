@@ -485,3 +485,64 @@ def reduce_event(session_or_none: DiagnosticSession | None, event: DiagnosticEve
 
 
 __all__ = ["create_event", "reduce_event"]
+
+
+def diagnostic_event_references(event: DiagnosticEvent) -> tuple[str, ...]:
+    payload = event.to_dict()["payload"]
+    assert isinstance(payload, dict)
+    result = payload["result"]
+    assert isinstance(result, dict)
+    references: list[str] = []
+    if event.event_type == "session.created":
+        references.append(cast(str, result["failed_evidence_id"]))
+    elif event.event_type == "observation.plan_executed":
+        values = result["observation_results"]
+        assert isinstance(values, list)
+        references.extend(cast(str, item["evidence_id"]) for item in values if isinstance(item, dict))
+    elif event.event_type == "hypothesis.assessed":
+        assessment = result["assessment"]
+        assert isinstance(assessment, dict)
+        references.append(cast(str, assessment["evidence_id"]))
+    elif event.event_type == "source_change.declared":
+        request = payload["request"]
+        assert isinstance(request, dict)
+        declaration = SourceChangeDeclaration.from_value(request["source_change_declaration"])
+        references.append(declaration.diff_evidence_id)
+    elif event.event_type == "verification.plan_added":
+        request = payload["request"]
+        assert isinstance(request, dict)
+        plan = VerificationPlan.from_value(request["verification_plan"])
+        references.extend(
+            (
+                plan.failed_before_evidence_id,
+                plan.fixed_after_evidence_id,
+                *plan.required_analysis_evidence_ids,
+            )
+        )
+        if plan.continuation_evidence_id is not None:
+            references.append(plan.continuation_evidence_id)
+    elif event.event_type == "analysis.marker_attached":
+        request = payload["request"]
+        assert isinstance(request, dict)
+        marker = DiagnosticMarkerRef.from_value(request["diagnostic_marker_ref"])
+        references.extend((marker.marker_evidence_id, marker.analysis_evidence_id))
+    elif event.event_type == "verification.completed":
+        request = payload["request"]
+        assert isinstance(request, dict)
+        verification = FixVerification.from_value(request["fix_verification"])
+        references.extend(
+            (
+                verification.failed_before_evidence_id,
+                verification.fixed_after_evidence_id,
+                *verification.analysis_evidence_ids,
+            )
+        )
+    if event.event_type in {
+        "source_change.declared",
+        "verification.plan_added",
+        "verification.started",
+        "analysis.marker_attached",
+        "verification.completed",
+    }:
+        return tuple(dict.fromkeys(references))
+    return tuple(sorted(set(references)))

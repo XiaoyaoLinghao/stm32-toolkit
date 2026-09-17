@@ -126,6 +126,7 @@ def _parser() -> argparse.ArgumentParser:
     compare.add_argument("--polarity", required=True)
     compare.add_argument("--rationale", required=True)
     compare.add_argument("--source-change-file")
+    compare.add_argument("--continuation-evidence-id")
     compare.add_argument("--json", action="store_true", required=True)
     compare.set_defaults(adapter_operation="monitor.analysis.compare")
 
@@ -136,6 +137,7 @@ def _parser() -> argparse.ArgumentParser:
     bundle.add_argument("--failed-before-test-run-id", required=True)
     bundle.add_argument("--fixed-after-test-run-id", required=True)
     bundle.add_argument("--source-change-file")
+    bundle.add_argument("--continuation-evidence-id")
     bundle.add_argument("--json", action="store_true", required=True)
     bundle.set_defaults(adapter_operation="monitor.analysis.bundle")
     return parser
@@ -435,6 +437,7 @@ def _run_adapter(arguments: argparse.Namespace) -> ProtocolResult[object]:
             arguments.polarity,
             arguments.rationale,
             source_change,
+            **({} if arguments.continuation_evidence_id is None else {"continuation_evidence_id": arguments.continuation_evidence_id}),
         )
         return success(
             arguments.adapter_operation,
@@ -450,6 +453,7 @@ def _run_adapter(arguments: argparse.Namespace) -> ProtocolResult[object]:
         arguments.failed_before_test_run_id,
         arguments.fixed_after_test_run_id,
         source_change,
+        **({} if arguments.continuation_evidence_id is None else {"continuation_evidence_id": arguments.continuation_evidence_id}),
     )
     bundle = _decode_json_bytes(payload)
     return success(

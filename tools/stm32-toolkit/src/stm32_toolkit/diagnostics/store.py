@@ -21,7 +21,7 @@ from stm32_toolkit.evidence import (
 from stm32_toolkit.evidence.gc import RootRecord, get_root, put_root
 from stm32_toolkit.evidence.store import EvidenceStore
 
-from .events import reduce_event
+from .events import reduce_event, diagnostic_event_references as _event_references
 from .model import (
     DIAGNOSTIC_CHAIN_CORRUPT,
     DIAGNOSTIC_EVIDENCE_MISSING,
@@ -96,63 +96,6 @@ def _intent(event: DiagnosticEvent) -> tuple[str, str, bytes]:
     return event.event_type, event.actor, canonical_diagnostic_json_bytes(request)
 
 
-def _event_references(event: DiagnosticEvent) -> tuple[str, ...]:
-    payload = event.to_dict()["payload"]
-    assert isinstance(payload, dict)
-    result = payload["result"]
-    assert isinstance(result, dict)
-    references: list[str] = []
-    if event.event_type == "session.created":
-        references.append(cast(str, result["failed_evidence_id"]))
-    elif event.event_type == "observation.plan_executed":
-        values = result["observation_results"]
-        assert isinstance(values, list)
-        references.extend(cast(str, item["evidence_id"]) for item in values if isinstance(item, dict))
-    elif event.event_type == "hypothesis.assessed":
-        assessment = result["assessment"]
-        assert isinstance(assessment, dict)
-        references.append(cast(str, assessment["evidence_id"]))
-    elif event.event_type == "source_change.declared":
-        request = payload["request"]
-        assert isinstance(request, dict)
-        declaration = SourceChangeDeclaration.from_value(request["source_change_declaration"])
-        references.append(declaration.diff_evidence_id)
-    elif event.event_type == "verification.plan_added":
-        request = payload["request"]
-        assert isinstance(request, dict)
-        plan = VerificationPlan.from_value(request["verification_plan"])
-        references.extend(
-            (
-                plan.failed_before_evidence_id,
-                plan.fixed_after_evidence_id,
-                *plan.required_analysis_evidence_ids,
-            )
-        )
-    elif event.event_type == "analysis.marker_attached":
-        request = payload["request"]
-        assert isinstance(request, dict)
-        marker = DiagnosticMarkerRef.from_value(request["diagnostic_marker_ref"])
-        references.extend((marker.marker_evidence_id, marker.analysis_evidence_id))
-    elif event.event_type == "verification.completed":
-        request = payload["request"]
-        assert isinstance(request, dict)
-        verification = FixVerification.from_value(request["fix_verification"])
-        references.extend(
-            (
-                verification.failed_before_evidence_id,
-                verification.fixed_after_evidence_id,
-                *verification.analysis_evidence_ids,
-            )
-        )
-    if event.event_type in {
-        "source_change.declared",
-        "verification.plan_added",
-        "verification.started",
-        "analysis.marker_attached",
-        "verification.completed",
-    }:
-        return tuple(dict.fromkeys(references))
-    return tuple(sorted(set(references)))
 
 
 @dataclass(frozen=True)
@@ -604,12 +547,30 @@ class DiagnosticStore:
         request = payload["request"]
         assert isinstance(request, dict)
 
+        association = None
+
+        def bind_continuation(plan):
+            nonlocal association
+            if plan.continuation_evidence_id is not None:
+                from stm32_toolkit.acceptance.continuation import authenticate_plan_continuation, ContinuationValidationError
+                try:
+                    association = authenticate_plan_continuation(self.evidence_store, self.diagnostics_root, plan, session)
+                except (ContinuationValidationError, EvidenceValidationError, OSError, TypeError, ValueError, KeyError):
+                    _raise(DIAGNOSTIC_IDENTITY_MISMATCH)
+
         def require_scope(envelope: EvidenceEnvelope) -> None:
             if not _same_scope(envelope.identity, session.identity):
                 _raise(DIAGNOSTIC_IDENTITY_MISMATCH)
 
         def require_after(envelope: EvidenceEnvelope, declaration: SourceChangeDeclaration) -> None:
-            require_scope(envelope)
+            if association is not None:
+                from stm32_toolkit.acceptance.continuation import validate_continuation_reference, ContinuationValidationError
+                try:
+                    validate_continuation_reference(self.evidence_store, association, envelope)
+                except (ContinuationValidationError, EvidenceValidationError, OSError, TypeError, ValueError, KeyError):
+                    _raise(DIAGNOSTIC_IDENTITY_MISMATCH)
+            else:
+                require_scope(envelope)
             if not _same_after_identity(envelope.identity, declaration):
                 _raise(DIAGNOSTIC_IDENTITY_MISMATCH)
 
@@ -627,6 +588,7 @@ class DiagnosticStore:
 
         if event.event_type == "verification.plan_added":
             plan = VerificationPlan.from_value(request["verification_plan"])
+            bind_continuation(plan)
             declaration = next(
                 (
                     item
@@ -644,6 +606,10 @@ class DiagnosticStore:
             return
 
         if event.event_type == "verification.started":
+            plan = next((p for p in session.verification_plans if p.verification_plan_id == request["verification_plan_id"]), None)
+            if plan is None:
+                _raise(DIAGNOSTIC_PLAN_INVALID)
+            bind_continuation(plan)
             return
 
         if event.event_type == "analysis.marker_attached":
@@ -671,6 +637,7 @@ class DiagnosticStore:
             )
             if declaration is None:
                 _raise(DIAGNOSTIC_CHAIN_CORRUPT)
+            bind_continuation(plan)
             require_after(envelopes[marker.marker_evidence_id], declaration)
             require_after(envelopes[marker.analysis_evidence_id], declaration)
             return
@@ -700,6 +667,7 @@ class DiagnosticStore:
             zip(plan.required_analysis_ids, plan.required_analysis_evidence_ids)
         ):
             _raise(DIAGNOSTIC_PLAN_INVALID)
+        bind_continuation(plan)
         require_failed(envelopes[verification.failed_before_evidence_id])
         require_after(envelopes[verification.fixed_after_evidence_id], declaration)
         for evidence_id in verification.analysis_evidence_ids:

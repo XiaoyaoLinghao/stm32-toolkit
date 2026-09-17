@@ -30,6 +30,7 @@ DIAGNOSTIC_OPERATION_CONFLICT = "DIAGNOSTIC_OPERATION_CONFLICT"
 
 SOURCE_CHANGE_DECLARATION_SCHEMA = "stm32-source-change-declaration/1"
 VERIFICATION_PLAN_SCHEMA = "stm32-verification-plan/1"
+VERIFICATION_PLAN_SCHEMA_V2 = "stm32-verification-plan/2"
 DIAGNOSTIC_MARKER_SCHEMA = "stm32-diagnostic-marker-ref/1"
 FIX_VERIFICATION_SCHEMA = "stm32-fix-verification/1"
 
@@ -1231,6 +1232,7 @@ _VERIFICATION_PLAN_FIELDS = {
     "fixed_after_evidence_id", "required_analysis_ids", "required_analysis_evidence_ids",
     "required_monitor_quality", "expected_changed", "plan_digest",
 }
+_VERIFICATION_PLAN_FIELDS_V2 = _VERIFICATION_PLAN_FIELDS | {"continuation_evidence_id"}
 _DIAGNOSTIC_MARKER_FIELDS = {
     "schema", "marker_id", "marker_evidence_id", "analysis_id", "analysis_evidence_id", "diagnostic_session_id",
     "hypothesis_id", "polarity", "label", "rationale",
@@ -1713,8 +1715,11 @@ def _verification_plan_payload(
     required_analysis_evidence_ids: object,
     required_monitor_quality: object,
     expected_changed: object,
+    continuation_evidence_id: object = None,
 ) -> dict[str, object]:
-    normalized_schema = _closed_schema(schema, VERIFICATION_PLAN_SCHEMA)
+    normalized_schema = _closed_text(schema, limit=128)
+    if normalized_schema not in {VERIFICATION_PLAN_SCHEMA, VERIFICATION_PLAN_SCHEMA_V2}:
+        _fail(DIAGNOSTIC_INVALID_EVENT)
     normalized_plan_id = _closed_hash(verification_plan_id)
     failed_run = _closed_run_id(failed_before_run_id)
     fixed_run = _closed_run_id(fixed_after_run_id)
@@ -1730,7 +1735,11 @@ def _verification_plan_payload(
         _fail(DIAGNOSTIC_INVALID_EVENT)
     if type(expected_changed) is not bool or expected_changed is not True:
         _fail(DIAGNOSTIC_INVALID_EVENT)
-    return {
+    if normalized_schema == VERIFICATION_PLAN_SCHEMA_V2:
+        continuation = _closed_hash(continuation_evidence_id)
+    elif continuation_evidence_id is not None:
+        _fail(DIAGNOSTIC_INVALID_EVENT)
+    result = {
         "schema": normalized_schema,
         "verification_plan_id": normalized_plan_id,
         "diagnostic_session_id": _closed_hex_id(diagnostic_session_id),
@@ -1744,6 +1753,9 @@ def _verification_plan_payload(
         "required_monitor_quality": "VALID",
         "expected_changed": True,
     }
+    if normalized_schema == VERIFICATION_PLAN_SCHEMA_V2:
+        result["continuation_evidence_id"] = continuation
+    return result
 
 
 def _verification_plan_payload_from_value(value: object) -> dict[str, object]:
@@ -1761,11 +1773,15 @@ def _verification_plan_payload_from_value(value: object) -> dict[str, object]:
             required_analysis_evidence_ids=value.required_analysis_evidence_ids,
             required_monitor_quality=value.required_monitor_quality,
             expected_changed=value.expected_changed,
+            continuation_evidence_id=value.continuation_evidence_id,
         )
     if isinstance(value, VerificationPlan):
         _fail(DIAGNOSTIC_INVALID_EVENT)
     _reject_tuples(value)
-    data = _closed_mapping(value, _VERIFICATION_PLAN_FIELDS)
+    if not isinstance(value, Mapping):
+        _fail(DIAGNOSTIC_INVALID_EVENT)
+    fields = _VERIFICATION_PLAN_FIELDS_V2 if value.get("schema") == VERIFICATION_PLAN_SCHEMA_V2 else _VERIFICATION_PLAN_FIELDS
+    data = _closed_mapping(value, fields)
     analysis_ids, evidence_ids = _wire_parallel_hash_tuples(
         data["required_analysis_ids"],
         data["required_analysis_evidence_ids"],
@@ -1783,6 +1799,7 @@ def _verification_plan_payload_from_value(value: object) -> dict[str, object]:
         required_analysis_evidence_ids=evidence_ids,
         required_monitor_quality=data["required_monitor_quality"],
         expected_changed=data["expected_changed"],
+        continuation_evidence_id=data.get("continuation_evidence_id"),
     )
 
 
@@ -1805,6 +1822,7 @@ class VerificationPlan:
     required_monitor_quality: str
     expected_changed: bool
     plan_digest: str
+    continuation_evidence_id: str | None = None
 
     def __post_init__(self) -> None:
         payload = _verification_plan_payload(
@@ -1820,6 +1838,7 @@ class VerificationPlan:
             required_analysis_evidence_ids=self.required_analysis_evidence_ids,
             required_monitor_quality=self.required_monitor_quality,
             expected_changed=self.expected_changed,
+            continuation_evidence_id=self.continuation_evidence_id,
         )
         digest = _closed_hash(self.plan_digest)
         calculated = _digest_payload(payload)
@@ -1840,6 +1859,11 @@ class VerificationPlan:
             tuple(cast(list[str], payload["required_analysis_evidence_ids"])),
         )
         object.__setattr__(self, "plan_digest", digest)
+        object.__setattr__(
+            self,
+            "continuation_evidence_id",
+            payload.get("continuation_evidence_id"),
+        )
 
     @classmethod
     def new(
@@ -1856,9 +1880,10 @@ class VerificationPlan:
         required_analysis_evidence_ids: tuple[str, ...],
         required_monitor_quality: str,
         expected_changed: bool,
+        continuation_evidence_id: str | None = None,
     ) -> "VerificationPlan":
         payload = _verification_plan_payload(
-            schema=VERIFICATION_PLAN_SCHEMA,
+            schema=VERIFICATION_PLAN_SCHEMA_V2 if continuation_evidence_id is not None else VERIFICATION_PLAN_SCHEMA,
             verification_plan_id=verification_plan_id,
             diagnostic_session_id=diagnostic_session_id,
             failed_before_run_id=failed_before_run_id,
@@ -1870,6 +1895,7 @@ class VerificationPlan:
             required_analysis_evidence_ids=required_analysis_evidence_ids,
             required_monitor_quality=required_monitor_quality,
             expected_changed=expected_changed,
+            continuation_evidence_id=continuation_evidence_id,
         )
         digest = _digest_payload(payload)
         return cls(
@@ -1886,6 +1912,7 @@ class VerificationPlan:
             payload["required_monitor_quality"],
             payload["expected_changed"],
             digest,
+            payload.get("continuation_evidence_id"),
         )
 
     @classmethod
@@ -1895,7 +1922,10 @@ class VerificationPlan:
         if isinstance(value, cls):
             _fail(DIAGNOSTIC_INVALID_EVENT)
         payload = _verification_plan_payload_from_value(value)
-        data = _closed_mapping(value, _VERIFICATION_PLAN_FIELDS)
+        if not isinstance(value, Mapping):
+            _fail(DIAGNOSTIC_INVALID_EVENT)
+        fields = _VERIFICATION_PLAN_FIELDS_V2 if value.get("schema") == VERIFICATION_PLAN_SCHEMA_V2 else _VERIFICATION_PLAN_FIELDS
+        data = _closed_mapping(value, fields)
         return cls(
             data["schema"],
             data["verification_plan_id"],
@@ -1910,12 +1940,13 @@ class VerificationPlan:
             payload["required_monitor_quality"],
             payload["expected_changed"],
             data["plan_digest"],
+            payload.get("continuation_evidence_id"),
         )
 
     def to_dict(self) -> dict[str, object]:
         payload = _verification_plan_payload_from_value(self)
         payload["plan_digest"] = self.plan_digest
-        return {
+        result = {
             "schema": payload["schema"],
             "verification_plan_id": payload["verification_plan_id"],
             "diagnostic_session_id": payload["diagnostic_session_id"],
@@ -1930,6 +1961,9 @@ class VerificationPlan:
             "expected_changed": payload["expected_changed"],
             "plan_digest": payload["plan_digest"],
         }
+        if self.schema == VERIFICATION_PLAN_SCHEMA_V2:
+            result["continuation_evidence_id"] = payload["continuation_evidence_id"]
+        return result
 
 
 def _marker_payload(

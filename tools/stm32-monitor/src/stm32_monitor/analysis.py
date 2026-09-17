@@ -24,6 +24,8 @@ from .replay import (
 ANALYSIS_REQUEST_SCHEMA = "stm32-monitor-analysis-request/1"
 ANALYSIS_COMPUTATION_SCHEMA = "stm32-monitor-analysis-computation/1"
 ANALYSIS_LINEAGE_SCHEMA = "stm32-monitor-analysis-lineage/1"
+ANALYSIS_LINEAGE_SCHEMA_V2 = "stm32-monitor-analysis-lineage/2"
+ANALYSIS_RESULT_SCHEMA_V2 = "stm32-monitor-analysis/2"
 ANALYSIS_RESULT_SCHEMA = "stm32-monitor-analysis/1"
 ANALYSIS_EVIDENCE_REF_SCHEMA = "stm32-monitor-analysis-evidence-ref/1"
 DIAGNOSTIC_MARKER_SCHEMA = "stm32-diagnostic-marker/1"
@@ -508,10 +510,21 @@ class AnalysisLineage:
     after_build_id: str
     after_elf_sha256: str
     source_change_declaration_id: str | None
+    before_session_id: str | None = None
+    after_session_id: str | None = None
+    continuation_evidence_id: str | None = None
 
     def __post_init__(self) -> None:
-        if type(self.schema) is not str or self.schema != ANALYSIS_LINEAGE_SCHEMA:
+        if type(self.schema) is not str or self.schema not in {ANALYSIS_LINEAGE_SCHEMA, ANALYSIS_LINEAGE_SCHEMA_V2}:
             _fail("analysis lineage schema is invalid")
+        if self.schema == ANALYSIS_LINEAGE_SCHEMA_V2:
+            _hash(self.continuation_evidence_id, "continuation evidence ID")
+            _text(self.before_session_id, "before session ID")
+            _text(self.after_session_id, "after session ID")
+            if self.before_session_id == self.after_session_id or self.source_change_declaration_id is None:
+                _fail("continuation lineage must bridge distinct sessions and firmware")
+        elif any(value is not None for value in (self.before_session_id, self.after_session_id, self.continuation_evidence_id)):
+            _fail("v1 lineage cannot carry continuation fields")
         _hash(self.origin_workspace_id, "origin workspace ID")
         _hash(self.import_workspace_id, "import workspace ID")
         _uuid_text(self.logical_project_id, "logical project ID")
@@ -550,6 +563,7 @@ class AnalysisLineage:
         before_run: MonitorRunReference,
         after_run: MonitorRunReference,
         source_change_declaration_id: str | None,
+        continuation_evidence_id: str | None = None,
     ) -> "AnalysisLineage":
         if not _is_monitor_run_reference(before_run) or not _is_monitor_run_reference(after_run):
             _fail("analysis lineage run references are invalid")
@@ -563,7 +577,7 @@ class AnalysisLineage:
         ):
             _fail("analysis lineage identities are incompatible")
         return cls(
-            schema=ANALYSIS_LINEAGE_SCHEMA,
+            schema=ANALYSIS_LINEAGE_SCHEMA if continuation_evidence_id is None else ANALYSIS_LINEAGE_SCHEMA_V2,
             origin_workspace_id=before_run.origin_workspace_id,
             import_workspace_id=before_run.import_workspace_id,
             logical_project_id=before_run.logical_project_id,
@@ -575,13 +589,19 @@ class AnalysisLineage:
             after_build_id=after_run.build_id,
             after_elf_sha256=after_run.elf_sha256,
             source_change_declaration_id=source_change_declaration_id,
+            before_session_id=None if continuation_evidence_id is None else before_run.origin_session_id,
+            after_session_id=None if continuation_evidence_id is None else after_run.origin_session_id,
+            continuation_evidence_id=continuation_evidence_id,
         )
 
     @classmethod
     def from_value(cls, value: object) -> "AnalysisLineage":
         if type(value) is cls:
             return value
-        if type(value) is not dict or set(value) != _LINEAGE_FIELDS:
+        fields = _LINEAGE_FIELDS
+        if type(value) is dict and value.get("schema") == ANALYSIS_LINEAGE_SCHEMA_V2:
+            fields = fields | {"before_session_id", "after_session_id", "continuation_evidence_id"}
+        if type(value) is not dict or set(value) != fields:
             _fail("analysis lineage fields are not closed")
         _reject_tuples(value)
         try:
@@ -592,7 +612,7 @@ class AnalysisLineage:
             raise AnalysisError(ANALYSIS_REQUEST_INVALID, "analysis lineage is invalid") from error
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        result = {
             "schema": self.schema,
             "origin_workspace_id": self.origin_workspace_id,
             "import_workspace_id": self.import_workspace_id,
@@ -606,6 +626,11 @@ class AnalysisLineage:
             "after_elf_sha256": self.after_elf_sha256,
             "source_change_declaration_id": self.source_change_declaration_id,
         }
+
+        if self.schema == ANALYSIS_LINEAGE_SCHEMA_V2:
+            result.update(before_session_id=self.before_session_id, after_session_id=self.after_session_id,
+                          continuation_evidence_id=self.continuation_evidence_id)
+        return result
 
 
 def _result_computation(value: "AnalysisResult") -> AnalysisComputation:
@@ -666,7 +691,7 @@ def _result_from_values(
     lineage: AnalysisLineage,
 ) -> "AnalysisResult":
     unsigned = {
-        "schema": ANALYSIS_RESULT_SCHEMA,
+        "schema": ANALYSIS_RESULT_SCHEMA if lineage.continuation_evidence_id is None else ANALYSIS_RESULT_SCHEMA_V2,
         "request_digest": request.request_digest,
         "before_run_id": request.before_run.run_ref_sha256,
         "after_run_id": request.after_run.run_ref_sha256,
@@ -691,7 +716,7 @@ def _result_from_values(
     }
     analysis_id = sha256(canonical_replay_json_bytes(unsigned)).hexdigest()
     return AnalysisResult(
-        schema=ANALYSIS_RESULT_SCHEMA,
+        schema=unsigned["schema"],
         analysis_id=analysis_id,
         request_digest=request.request_digest,
         before_run_id=request.before_run.run_ref_sha256,
@@ -744,7 +769,7 @@ class AnalysisResult:
     changed: bool | None
 
     def __post_init__(self) -> None:
-        if type(self.schema) is not str or self.schema != ANALYSIS_RESULT_SCHEMA:
+        if type(self.schema) is not str or self.schema not in {ANALYSIS_RESULT_SCHEMA, ANALYSIS_RESULT_SCHEMA_V2}:
             _fail("analysis result schema is invalid")
         _hash(self.analysis_id, "analysis ID")
         _hash(self.request_digest, "request digest")
@@ -752,6 +777,9 @@ class AnalysisResult:
         _hash(self.after_run_id, "after run ID")
         if type(self.identity) is not AnalysisLineage:
             _fail("analysis result lineage is invalid")
+        expected_schema = ANALYSIS_RESULT_SCHEMA if self.identity.continuation_evidence_id is None else ANALYSIS_RESULT_SCHEMA_V2
+        if self.schema != expected_schema:
+            _fail("analysis result schema does not match lineage")
         _result_computation(self)
         try:
             expected = sha256(canonical_replay_json_bytes(_result_unsigned(self))).hexdigest()
@@ -785,6 +813,7 @@ class AnalysisResult:
             before_run=request.before_run,
             after_run=request.after_run,
             source_change_declaration_id=lineage.source_change_declaration_id,
+            continuation_evidence_id=lineage.continuation_evidence_id,
         )
         if expected_lineage != lineage:
             _fail("analysis result lineage does not match request")
@@ -1082,6 +1111,7 @@ def _shared_compatibility(
     after: MonitorRunReference,
     before_batches: tuple[SampleBatch, ...],
     after_batches: tuple[SampleBatch, ...],
+    continuation=None,
 ) -> None:
     if (
         not _same_reference_family(before, after)
@@ -1094,8 +1124,8 @@ def _shared_compatibility(
         or before.physical_transport_evidence is not after.physical_transport_evidence
         or before.physical_target != after.physical_target
         or before.probe_id != after.probe_id
-        or before.origin_session_id != after.origin_session_id
-        or before.projected_session_id != after.projected_session_id
+        or (continuation is None and before.origin_session_id != after.origin_session_id)
+        or (continuation is None and before.projected_session_id != after.projected_session_id)
         or set(_vocabulary(before_batches)) != set(_vocabulary(after_batches))
     ):
         _fail("analysis run identities are incompatible")
@@ -1117,6 +1147,7 @@ def analyze_monitor_windows(
     request: AnalysisRequest,
     before_batches: tuple[SampleBatch, ...],
     after_batches: tuple[SampleBatch, ...],
+    *, continuation_evidence_id: str | None = None, evidence_store=None, diagnostics_root=None,
 ) -> AnalysisComputation:
     """Compare one exact scalar selector at equal run-relative scheduled times."""
 
@@ -1125,7 +1156,11 @@ def analyze_monitor_windows(
             _fail("analysis request is invalid")
         before = _validate_window(request.before_run, before_batches)
         after = _validate_window(request.after_run, after_batches)
-        _shared_compatibility(request.before_run, request.after_run, before, after)
+        continuation = None
+        if continuation_evidence_id is not None:
+            continuation = validate_continuation_runs(evidence_store, diagnostics_root,
+                continuation_evidence_id, request.before_run, request.after_run)
+        _shared_compatibility(request.before_run, request.after_run, before, after, continuation)
         requested = request.watch_item
 
         before_zero = before[0].scheduled_unix_ns
@@ -1236,3 +1271,30 @@ __all__ = [
     "MonitorRunReference",
     "analyze_monitor_windows",
 ]
+
+
+def validate_continuation_runs(evidence_store, diagnostics_root, evidence_id, before, after):
+    from stm32_toolkit.acceptance.continuation import authenticate_continuation, ContinuationValidationError
+    from stm32_toolkit.evidence.store import EvidenceStore
+    from pathlib import Path
+
+    if type(evidence_store) is not EvidenceStore or not isinstance(diagnostics_root, Path):
+        _fail("continuation requires its authoritative EvidenceStore")
+    try:
+        association = authenticate_continuation(evidence_store, diagnostics_root, evidence_id)
+    except ContinuationValidationError as error:
+        raise AnalysisError(ANALYSIS_REQUEST_INVALID, "continuation evidence is invalid") from error
+    for reference, loaded in ((before, association.before), (after, association.after)):
+        identity = loaded.manifest.identity
+        if (reference.execution_source != "physical" or reference.physical_transport_evidence is not True
+            or reference.origin_session_id != identity.session_id
+            or reference.projected_session_id != identity.session_id
+            or reference.origin_workspace_id != identity.workspace_id
+            or reference.import_workspace_id != identity.workspace_id
+            or reference.logical_project_id != identity.project_id
+            or reference.target_device != identity.target_device
+            or reference.build_id != identity.build_id or reference.elf_sha256 != identity.elf_sha256
+            or reference.input_snapshot_sha256 != identity.input_snapshot_sha256
+            or reference.probe_id != loaded.envelope.metadata["probe_id"]):
+            _fail("Monitor run does not match continuation physical identity")
+    return association

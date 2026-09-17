@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 import hashlib
@@ -821,6 +821,21 @@ def _load_completion_fixed_after(
     *,
     expected_identity: object,
 ) -> object:
+    if plan.continuation_evidence_id is not None:
+        from stm32_toolkit.acceptance.continuation import authenticate_continuation, ContinuationValidationError
+        try:
+            association = authenticate_continuation(state.evidence_store, state.workspace.diagnostics_root,
+                plan.continuation_evidence_id, expected_workspace_id=state.workspace.workspace_id,
+                expected_project_id=str(state.model.logical_project_id),
+                expected_session_id=state.workspace.session_id,
+                expected_diagnostic_session_id=plan.diagnostic_session_id,
+                expected_fixed_after_test_run_id=plan.fixed_after_run_id,
+                expected_fixed_after_evidence_id=plan.fixed_after_evidence_id)
+        except ContinuationValidationError as error:
+            raise _WorkflowFailure(_INCOMPATIBLE_IDENTITY) from error
+        if association.before.manifest.identity != expected_identity:
+            raise _WorkflowFailure(_INCOMPATIBLE_IDENTITY)
+        expected_identity = association.after.manifest.identity
     published = _load_failed_run(
         state,
         plan.fixed_after_run_id,
@@ -917,7 +932,7 @@ def _diagnostic_complete_verification(
         plan,
         expected_identity=session.identity,
     )
-    _validate_pair_execution_policy(before, after)
+    _validate_plan_pair(state, session, plan, before, after)
     if (
         str(getattr(before, "envelope").evidence_id) != plan.failed_before_evidence_id
         or str(getattr(after, "envelope").evidence_id) != plan.fixed_after_evidence_id
@@ -2203,6 +2218,15 @@ def _validate_analysis(
     allow_nonpassing: bool = False,
     allow_valid_unchanged: bool = False,
 ) -> EvidenceEnvelope:
+    association = None
+    after_state = state
+    if plan.continuation_evidence_id is not None:
+        association = _plan_continuation(state, session, plan)
+        if before.identity != association.before.manifest.identity or after.identity != association.after.manifest.identity:
+            raise _WorkflowFailure(_INCOMPATIBLE_IDENTITY)
+        after_paths = replace(state.workspace, session_id=after.identity.session_id,
+            session_root=state.workspace.workspace_root / "sessions" / after.identity.session_id)
+        after_state = replace(state, workspace=after_paths)
     _root, envelope, _artifact, _payload, analysis = _read_json_evidence(
         state,
         root_type=_ANALYSIS_ROOT,
@@ -2218,7 +2242,9 @@ def _validate_analysis(
         raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
     if not _same_replay_identity(envelope.identity, after_identity):
         raise _WorkflowFailure(_INCOMPATIBLE_IDENTITY)
-    if envelope.parents != tuple(envelope.parents) or len(envelope.parents) != 3:
+    if envelope.parents != tuple(envelope.parents) or len(envelope.parents) != (3 if association is None else 4):
+        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+    if association is not None and envelope.parents[3] != association.continuation_evidence_id:
         raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
     if envelope.parents[2] != declaration.diff_evidence_id:
         raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
@@ -2229,7 +2255,7 @@ def _validate_analysis(
         expected_role="failed-before",
     )
     after_transcript, after_reference = _read_transcript_parent(
-        state,
+        after_state,
         evidence_id=envelope.parents[1],
         run=after,
         expected_role="fixed-after",
@@ -2259,6 +2285,8 @@ def _validate_analysis(
         "execution_source": before_reference["execution_source"],
         "physical_transport_evidence": before_reference["physical_transport_evidence"],
     }
+    if association is not None:
+        expected_metadata["continuation_evidence_id"] = association.continuation_evidence_id
     if dict(envelope.metadata) != expected_metadata:
         raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
     if (
@@ -2266,13 +2294,14 @@ def _validate_analysis(
         or analysis.get("after_run_id") != after_reference["run_ref_sha256"]
     ):
         raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
-    if before_transcript.identity.session_id != after_transcript.identity.session_id:
+    if association is None and before_transcript.identity.session_id != after_transcript.identity.session_id:
         raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
     if envelope.identity != after_transcript.identity:
         raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
     if set(analysis) != _ANALYSIS_FIELDS:
         raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
-    if analysis["schema"] != _ANALYSIS_SCHEMA or analysis["analysis_id"] != analysis_id:
+    expected_schema = _ANALYSIS_SCHEMA if association is None else "stm32-monitor-analysis/2"
+    if analysis["schema"] != expected_schema or analysis["analysis_id"] != analysis_id:
         raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
     unsigned = {key: value for key, value in analysis.items() if key != "analysis_id"}
     try:
@@ -2285,9 +2314,17 @@ def _validate_analysis(
         raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
     for field in ("request_digest", "before_run_id", "after_run_id"):
         _hash_value(analysis[field])
-    identity = _require_exact_mapping(analysis["identity"], _ANALYSIS_IDENTITY_FIELDS)
+    identity_fields = _ANALYSIS_IDENTITY_FIELDS
+    if association is not None:
+        identity_fields = identity_fields | {"before_session_id", "after_session_id", "continuation_evidence_id"}
+    identity = _require_exact_mapping(analysis["identity"], identity_fields)
+    if association is not None and (
+        identity["before_session_id"] != before_identity.session_id
+        or identity["after_session_id"] != after_identity.session_id
+        or identity["continuation_evidence_id"] != association.continuation_evidence_id):
+        raise _WorkflowFailure(_INCOMPATIBLE_IDENTITY)
     if (
-        identity["schema"] != _ANALYSIS_LINEAGE_SCHEMA
+        identity["schema"] != (_ANALYSIS_LINEAGE_SCHEMA if association is None else "stm32-monitor-analysis-lineage/2")
         or identity["origin_workspace_id"] != after_identity.workspace_id
         or identity["import_workspace_id"] != state.workspace.workspace_id
         or identity["logical_project_id"] != str(state.model.logical_project_id)
@@ -2628,7 +2665,7 @@ def _diagnostic_add_verification_plan(
         plan,
         expected_identity=session.identity,
     )
-    _validate_pair_execution_policy(before, after)
+    _validate_plan_pair(state, session, plan, before, after)
     _validate_declaration_lineage(
         declaration,
         before_identity=getattr(before, "manifest").identity,
@@ -2818,13 +2855,12 @@ def _diagnostic_attach_marker(
         expected_state="failed",
         expected_identity=session.identity,
     )
-    after = _load_target_run(
-        state,
-        plan.fixed_after_run_id,
-        expected_state="passed",
-        expected_identity=session.identity,
-    )
-    _validate_pair_execution_policy(before, after)
+    if plan.continuation_evidence_id is None:
+        after = _load_target_run(state, plan.fixed_after_run_id, expected_state="passed",
+            expected_identity=session.identity)
+    else:
+        after = _load_completion_fixed_after(state, plan, expected_identity=session.identity)
+    _validate_plan_pair(state, session, plan, before, after)
     _validate_declaration_lineage(
         declaration,
         before_identity=getattr(before, "manifest").identity,
@@ -3343,3 +3379,20 @@ __all__ = [
     "diagnostic_complete_verification",
     "diagnostic_show_verification",
 ]
+
+
+def _plan_continuation(state, session, plan):
+    from stm32_toolkit.acceptance.continuation import authenticate_plan_continuation, ContinuationValidationError
+    try:
+        return authenticate_plan_continuation(state.evidence_store, state.workspace.diagnostics_root, plan, session)
+    except ContinuationValidationError as error:
+        raise _WorkflowFailure(_INCOMPATIBLE_IDENTITY) from error
+
+
+def _validate_plan_pair(state, session, plan, before, after):
+    if plan.continuation_evidence_id is None:
+        return _validate_pair_execution_policy(before, after)
+    association = _plan_continuation(state, session, plan)
+    if before.envelope != association.before.envelope or after.envelope != association.after.envelope:
+        raise _WorkflowFailure(_INCOMPATIBLE_IDENTITY)
+    return ("physical", True)

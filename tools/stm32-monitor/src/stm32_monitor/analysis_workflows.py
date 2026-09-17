@@ -33,6 +33,7 @@ from .analysis import (
     AnalysisResult,
     DiagnosticMarker,
     analyze_monitor_windows,
+    validate_continuation_runs,
 )
 from .history import (
     MAX_HISTORY_VALUES,
@@ -556,6 +557,7 @@ def _validate_inputs(
     polarity: str,
     rationale: str,
     source_change_declaration: SourceChangeDeclaration | None,
+    continuation_evidence_id: str | None = None,
 ) -> tuple[MonitorRunReference, MonitorRunReference, AnalysisLineage]:
     if (
         type(paths) is not WorkspacePaths
@@ -603,14 +605,23 @@ def _validate_inputs(
         or before.target_device != after.target_device
         or before.physical_target != after.physical_target
         or before.probe_id != after.probe_id
-        or before.origin_session_id != after.origin_session_id
-        or before.projected_session_id != after.projected_session_id
+        or (continuation_evidence_id is None and before.origin_session_id != after.origin_session_id)
+        or (continuation_evidence_id is None and before.projected_session_id != after.projected_session_id)
         or before.import_workspace_id != paths.workspace_id
         or after.import_workspace_id != paths.workspace_id
         or before.projected_session_id != paths.session_id
-        or after.projected_session_id != paths.session_id
+        or (continuation_evidence_id is None and after.projected_session_id != paths.session_id)
     ):
         _fail(INCOMPATIBLE_IDENTITY, "analysis run identities are incompatible")
+    if continuation_evidence_id is not None:
+        try:
+            association = validate_continuation_runs(evidence_store, paths.diagnostics_root,
+                continuation_evidence_id, before, after)
+        except AnalysisError as error:
+            raise AnalysisWorkflowError(INCOMPATIBLE_IDENTITY, "continuation does not match runs") from error
+        if (association.proof.diagnostic_session_id != diagnostic_session_id
+            or source_change_declaration != association.diagnostic.declaration):
+            _fail(INCOMPATIBLE_IDENTITY, "continuation does not match Diagnostic declaration")
     changed = (
         before.input_snapshot_sha256,
         before.build_id,
@@ -643,6 +654,7 @@ def _validate_inputs(
             before_run=before,
             after_run=after,
             source_change_declaration_id=declaration_id,
+            continuation_evidence_id=continuation_evidence_id,
         )
     except AnalysisError as error:
         _fail(INCOMPATIBLE_IDENTITY, "analysis lineage is incompatible")
@@ -875,7 +887,7 @@ def _analysis_metadata(
     after: MonitorRunReference,
     declaration: SourceChangeDeclaration | None,
 ) -> dict[str, object]:
-    return {
+    metadata = {
         "analysis_id": result.analysis_id,
         "before_run_id": before.run_ref_sha256,
         "after_run_id": after.run_ref_sha256,
@@ -886,6 +898,10 @@ def _analysis_metadata(
         "execution_source": after.execution_source,
         "physical_transport_evidence": after.physical_transport_evidence,
     }
+
+    if result.identity.continuation_evidence_id is not None:
+        metadata["continuation_evidence_id"] = result.identity.continuation_evidence_id
+    return metadata
 
 
 def _marker_metadata(
@@ -1046,6 +1062,7 @@ def compare_monitor_runs(
     polarity: str,
     rationale: str,
     source_change_declaration: SourceChangeDeclaration | None = None,
+    continuation_evidence_id: str | None = None,
 ) -> AnalysisPublication:
     """Compare two imported replay windows and publish immutable analysis Evidence."""
 
@@ -1058,15 +1075,22 @@ def compare_monitor_runs(
         polarity,
         rationale,
         source_change_declaration,
+        continuation_evidence_id,
     )
     declaration = source_change_declaration
     if declaration is not None:
         _validate_diff_evidence(evidence_store, declaration, after)
     if _is_physical_reference(before) and _is_physical_reference(after):
-        before_source = _load_physical_source(paths, evidence_store, before)
-        after_source = _load_physical_source(paths, evidence_store, after)
+        before_source = _load_physical_source(_paths_for_run(paths, before, continuation_evidence_id), evidence_store, before)
+        after_source = _load_physical_source(_paths_for_run(paths, after, continuation_evidence_id), evidence_store, after)
         before_transcript = before_source.transcript_envelope
         after_transcript = after_source.transcript_envelope
+        if continuation_evidence_id is not None:
+            association = validate_continuation_runs(evidence_store, paths.diagnostics_root,
+                continuation_evidence_id, before, after)
+            if (before_source.test_run_id != association.proof.failed_before_test_run_id
+                or after_source.test_run_id != association.proof.fixed_after_test_run_id):
+                _fail(INCOMPATIBLE_IDENTITY, "Monitor TestRuns differ from continuation")
         before_batches = before_source.batches
         after_batches = after_source.batches
     else:
@@ -1075,7 +1099,10 @@ def compare_monitor_runs(
         before_batches = _query_window(paths, before)
         after_batches = _query_window(paths, after)
     try:
-        computation = analyze_monitor_windows(request, before_batches, after_batches)
+        computation = analyze_monitor_windows(request, before_batches, after_batches,
+            **({} if continuation_evidence_id is None else {
+                "continuation_evidence_id": continuation_evidence_id,
+                "evidence_store": evidence_store, "diagnostics_root": paths.diagnostics_root}))
         result = AnalysisResult.new(request=request, computation=computation, lineage=lineage)
     except AnalysisError as error:
         _fail(INCOMPATIBLE_IDENTITY, "analysis windows are incompatible")
@@ -1093,6 +1120,7 @@ def compare_monitor_runs(
                 before_transcript.evidence_id,
                 after_transcript.evidence_id,
                 *(() if declaration is None else (declaration.diff_evidence_id,)),
+                *(() if continuation_evidence_id is None else (continuation_evidence_id,)),
             ),
             artifacts=(analysis_artifact,),
             metadata=analysis_metadata,
@@ -1184,6 +1212,7 @@ def export_analysis_bundle(
     failed_before_test_run_id: str,
     fixed_after_test_run_id: str,
     source_change_declaration: SourceChangeDeclaration | None = None,
+    continuation_evidence_id: str | None = None,
 ) -> tuple[bytes, AnalysisBundleRef]:
     """Export one deterministic, rooted projection of an accepted replay analysis."""
     if type(publication) is not AnalysisPublication:
@@ -1194,7 +1223,7 @@ def export_analysis_bundle(
     before, after, lineage = _validate_inputs(
         paths, evidence_store, request,
         marker.diagnostic_session_id, marker.hypothesis_id,
-        marker.polarity, marker.rationale, source_change_declaration,
+        marker.polarity, marker.rationale, source_change_declaration, continuation_evidence_id,
     )
     if before.scenario_role != "failed-before":
         _fail(INCOMPATIBLE_IDENTITY, "failed-before replay identity is invalid")
@@ -1213,10 +1242,16 @@ def export_analysis_bundle(
     before_source: _AuthenticatedPhysicalMonitorRun | None = None
     after_source: _AuthenticatedPhysicalMonitorRun | None = None
     if _is_physical_reference(before) and _is_physical_reference(after):
-        before_source = _load_physical_source(paths, evidence_store, before)
-        after_source = _load_physical_source(paths, evidence_store, after)
+        before_source = _load_physical_source(_paths_for_run(paths, before, continuation_evidence_id), evidence_store, before)
+        after_source = _load_physical_source(_paths_for_run(paths, after, continuation_evidence_id), evidence_store, after)
         before_transcript = before_source.transcript_envelope
         after_transcript = after_source.transcript_envelope
+        if continuation_evidence_id is not None:
+            association = validate_continuation_runs(evidence_store, paths.diagnostics_root,
+                continuation_evidence_id, before, after)
+            if (before_source.test_run_id != association.proof.failed_before_test_run_id
+                or after_source.test_run_id != association.proof.fixed_after_test_run_id):
+                _fail(INCOMPATIBLE_IDENTITY, "Monitor TestRuns differ from continuation")
     else:
         before_transcript = _validate_transcript(evidence_store, before)
         after_transcript = _validate_transcript(evidence_store, after)
@@ -1231,7 +1266,8 @@ def export_analysis_bundle(
             identity=_identity_for_ref(after), operation=_MONITOR_ANALYSIS_OPERATION,
             produced_at_utc=unix_ns_to_utc(after.end_captured_unix_ns_exclusive - 1),
             parents=(before_transcript.evidence_id, after_transcript.evidence_id,
-                     *(() if source_change_declaration is None else (source_change_declaration.diff_evidence_id,))),
+                     *(() if source_change_declaration is None else (source_change_declaration.diff_evidence_id,)),
+                     *(() if continuation_evidence_id is None else (continuation_evidence_id,))),
             artifacts=(analysis_artifact,), metadata=analysis_metadata,
         )
         marker_payload = canonical_replay_json_bytes(marker.to_dict())
@@ -1328,7 +1364,7 @@ def export_analysis_bundle(
             or after_inventory != after_expected_inventory
         ):
             _fail(INCOMPATIBLE_IDENTITY, "physical TestRuns do not share case or inventory scope")
-    if before_test.manifest.identity.session_id != after_test.manifest.identity.session_id:
+    if continuation_evidence_id is None and before_test.manifest.identity.session_id != after_test.manifest.identity.session_id:
         _fail(INCOMPATIBLE_IDENTITY, "Target TestRuns do not share a session")
 
     digest_table = [
@@ -1344,6 +1380,13 @@ def export_analysis_bundle(
     ]
     if source_change_declaration is not None:
         digest_table.append({"role": "source-change-declaration", "sha256": source_change_declaration.declaration_id})
+    if continuation_evidence_id is not None:
+        association = validate_continuation_runs(evidence_store, paths.diagnostics_root,
+            continuation_evidence_id, before, after)
+        if (failed_before_test_run_id != association.proof.failed_before_test_run_id
+            or fixed_after_test_run_id != association.proof.fixed_after_test_run_id):
+            _fail(INCOMPATIBLE_IDENTITY, "bundle TestRuns differ from continuation")
+        digest_table.append({"role": "physical-continuation-evidence", "sha256": continuation_evidence_id})
     payload_document = {
         "schema": _ANALYSIS_BUNDLE_SCHEMA,
         "before_run": before.to_dict(),
@@ -1377,7 +1420,8 @@ def export_analysis_bundle(
             parents=(before_transcript.evidence_id, after_transcript.evidence_id,
                      publication.analysis_evidence_ref.evidence_id,
                      publication.diagnostic_marker_ref.marker_evidence_id,
-                     *(() if source_change_declaration is None else (source_change_declaration.diff_evidence_id,))),
+                     *(() if source_change_declaration is None else (source_change_declaration.diff_evidence_id,)),
+                     *(() if continuation_evidence_id is None else (continuation_evidence_id,))),
             artifacts=(artifact,), metadata=metadata,
         )
         root = RootRecord(_ANALYSIS_BUNDLE_ROOT, bundle_id, str(envelope.evidence_id), metadata)
@@ -1402,3 +1446,12 @@ __all__ = [
     "compare_monitor_runs",
     "export_analysis_bundle",
 ]
+
+
+def _paths_for_run(paths, reference, continuation_evidence_id):
+    if continuation_evidence_id is None:
+        return paths
+    # The caller remains P3. Each physical loader retains its original session
+    # and applies all existing publication and HistoryStore provenance checks.
+    return replace(paths, session_id=reference.origin_session_id,
+        session_root=paths.workspace_root / "sessions" / reference.origin_session_id)

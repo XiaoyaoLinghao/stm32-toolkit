@@ -532,6 +532,7 @@ def _build_parser() -> argparse.ArgumentParser:
     attempt_begin.add_argument("--attempt-id", required=True, type=_acceptance_uuid)
     attempt_begin.add_argument("--scenario-id", required=True)
     attempt_begin.add_argument("--scenario-version", required=True)
+    attempt_begin.add_argument("--continuation-file", type=Path, action=_StepsFileAction, dest="continuation")
 
     attempt_checkpoint = attempt_commands.add_parser("checkpoint")
     attempt_checkpoint.set_defaults(operation="acceptance.attempt.checkpoint")
@@ -1436,6 +1437,7 @@ def _operation_result(
                     attempt_id=args.attempt_id,
                     scenario_id=args.scenario_id,
                     scenario_version=args.scenario_version,
+                    **({} if args.continuation is None else {"continuation": args.continuation}),
                 )
             if args.attempt_command == "checkpoint":
                 checkpoint_kwargs = {

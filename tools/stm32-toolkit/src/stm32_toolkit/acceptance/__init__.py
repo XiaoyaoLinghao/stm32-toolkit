@@ -49,6 +49,28 @@ from .recovery_workflows import (
     resume_acceptance_attempt,
     show_acceptance_attempt,
 )
+from .continuation import (
+    CONTINUATION_ANALYSIS_SCHEMA,
+    CONTINUATION_ATTEMPT_SCHEMA,
+    CONTINUATION_LINEAGE_SCHEMA,
+    CONTINUATION_OPERATION,
+    CONTINUATION_POLICY_DIGEST,
+    CONTINUATION_POLICY_SCHEMA,
+    CONTINUATION_REQUEST_SCHEMA,
+    CONTINUATION_ROOT_TYPE,
+    CONTINUATION_SCENARIO_DIGEST,
+    CONTINUATION_SCHEMA,
+    CONTINUATION_STAGES,
+    CONTINUATION_WINDOW_SECONDS,
+    AuthenticatedContinuation,
+    ContinuationRequest,
+    ContinuationValidationError,
+    PhysicalContinuationAttempt,
+    PhysicalContinuationProof,
+    authenticate_continuation,
+    prepare_continuation,
+    continuation_policy_document,
+)
 
 __all__ = [
     "AcceptanceRecord",
@@ -92,4 +114,11 @@ __all__ = [
     "checkpoint_acceptance_attempt",
     "resume_acceptance_attempt",
     "show_acceptance_attempt",
+    "CONTINUATION_ANALYSIS_SCHEMA", "CONTINUATION_ATTEMPT_SCHEMA", "CONTINUATION_LINEAGE_SCHEMA",
+    "CONTINUATION_OPERATION", "CONTINUATION_POLICY_DIGEST", "CONTINUATION_POLICY_SCHEMA",
+    "CONTINUATION_REQUEST_SCHEMA", "CONTINUATION_ROOT_TYPE", "CONTINUATION_SCENARIO_DIGEST",
+    "CONTINUATION_SCHEMA", "CONTINUATION_STAGES", "CONTINUATION_WINDOW_SECONDS",
+    "AuthenticatedContinuation", "ContinuationRequest", "ContinuationValidationError",
+    "PhysicalContinuationAttempt", "PhysicalContinuationProof", "authenticate_continuation", "prepare_continuation",
+    "continuation_policy_document",
 ]

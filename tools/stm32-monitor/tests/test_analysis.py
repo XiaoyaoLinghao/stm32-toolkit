@@ -668,7 +668,10 @@ def test_authoritative_dataclass_field_order_and_exact_payload_shapes(tmp_path: 
         "schema", "origin_workspace_id", "import_workspace_id", "logical_project_id", "target_device",
         "before_input_snapshot_sha256", "before_build_id", "before_elf_sha256",
         "after_input_snapshot_sha256", "after_build_id", "after_elf_sha256", "source_change_declaration_id",
+        "before_session_id", "after_session_id", "continuation_evidence_id",
     )
+    assert lineage.continuation_evidence_id is None
+    assert not ({"before_session_id", "after_session_id", "continuation_evidence_id"} & set(lineage.to_dict()))
     assert tuple(item.name for item in fields(AnalysisResult)) == (
         "schema", "analysis_id", "request_digest", "before_run_id", "after_run_id", "identity",
         "quality", "conclusion", "reason_code", "aligned_position_count", "aligned_pair_count",
