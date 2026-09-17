@@ -250,13 +250,15 @@ def _strict_monitor_fact_sample(
         _fail("physical monitor fact selected sample is missing or ambiguous")
 
     sample = matches[0]
+    if not isinstance(sample, Mapping):
+        _fail("physical monitor fact sample is not a JSON object")
     watch = _mapping_field(sample, "watch")
     expected_watch_fields = (
         _VARIABLE_WATCH_FIELDS if selector_kind == "variable" else _NATIVE_WATCH_FIELDS
     )
     if not isinstance(watch, Mapping) or set(watch) != expected_watch_fields:
         _fail("physical monitor fact selected watch fields are not closed")
-    if isinstance(sample, Mapping) and set(sample) != {"watch", "status", "typedValue", "code", "definition"}:
+    if set(sample) != {"watch", "status", "typedValue", "code", "definition"}:
         _fail("physical monitor fact sample fields are not closed")
     if _mapping_field(sample, "status") != "OK" or _mapping_field(sample, "code") is not None:
         _fail("physical monitor fact selected sample is not successful")
