@@ -1205,7 +1205,7 @@ def test_plan_tools_have_exact_closed_nested_selector_schemas(tmp_path: Path):
     selector = _resolve_schema(steps["properties"]["selector"], add)
     variants = selector.get("oneOf") or selector.get("anyOf")
     assert isinstance(variants, list)
-    assert len(variants) == 3
+    assert len(variants) == 4
     variant_schemas = [_resolve_schema(item, add) for item in variants]
     assert all(item["additionalProperties"] is False for item in variant_schemas)
     assert {
@@ -1214,6 +1214,17 @@ def test_plan_tools_have_exact_closed_nested_selector_schemas(tmp_path: Path):
         ("kind",),
         ("case_id", "kind"),
         ("kind", "state"),
+        (
+            "bit_index",
+            "continuation_evidence_id",
+            "fact",
+            "kind",
+            "minimum_valid_samples",
+            "monitor_ref_evidence_id",
+            "monitor_run_ref",
+            "selector",
+            "selector_kind",
+        ),
     }
     run_state = next(item for item in variant_schemas if set(item["properties"]) == {"kind"})
     case_state = next(
@@ -1221,6 +1232,11 @@ def test_plan_tools_have_exact_closed_nested_selector_schemas(tmp_path: Path):
     )
     case_count = next(
         item for item in variant_schemas if set(item["properties"]) == {"kind", "state"}
+    )
+    physical = next(
+        item
+        for item in variant_schemas
+        if "monitor_run_ref" in item["properties"]
     )
     assert run_state["properties"]["kind"]["const"] == "run-state"
     assert case_state["properties"]["kind"]["const"] == "case-state"
@@ -1234,6 +1250,33 @@ def test_plan_tools_have_exact_closed_nested_selector_schemas(tmp_path: Path):
         "error",
         "timeout",
     ]
+    assert physical["properties"]["kind"]["const"] == "physical-monitor-fact/1"
+    assert physical["properties"]["fact"]["enum"] == [
+        "value-varies",
+        "bit-values-mask",
+    ]
+    assert physical["properties"]["selector_kind"]["enum"] == [
+        "variable",
+        "register",
+    ]
+    assert physical["properties"]["minimum_valid_samples"]["minimum"] == 1
+    assert physical["properties"]["minimum_valid_samples"]["maximum"] == 1024
+    bit_index = physical["properties"]["bit_index"]
+    bit_index_variants = bit_index.get("anyOf") or bit_index.get("oneOf")
+    assert isinstance(bit_index_variants, list)
+    bit_index_integer = next(item for item in bit_index_variants if item.get("type") == "integer")
+    assert bit_index_integer["minimum"] == 0
+    assert bit_index_integer["maximum"] == 31
+    assert set(physical["required"]) == {
+        "kind",
+        "continuation_evidence_id",
+        "monitor_ref_evidence_id",
+        "monitor_run_ref",
+        "selector_kind",
+        "selector",
+        "fact",
+        "minimum_valid_samples",
+    }
 
     expected = steps["properties"]["expected_value"]
     expected_variants = expected.get("anyOf") or expected.get("oneOf")

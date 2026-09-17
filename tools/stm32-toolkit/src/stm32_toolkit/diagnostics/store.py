@@ -20,6 +20,7 @@ from stm32_toolkit.evidence import (
 )
 from stm32_toolkit.evidence.gc import RootRecord, get_root, put_root
 from stm32_toolkit.evidence.store import EvidenceStore
+from stm32_toolkit.paths import WorkspacePaths
 
 from .events import reduce_event, diagnostic_event_references as _event_references
 from .model import (
@@ -37,7 +38,12 @@ from .model import (
     DiagnosticEvent,
     DiagnosticSession,
     DiagnosticValidationError,
+    EvidenceAssessment,
     FixVerification,
+    ObservationPlan,
+    ObservationResult,
+    ObservationStep,
+    PHYSICAL_MONITOR_FACT_KIND,
     SourceChangeDeclaration,
     VerificationPlan,
     canonical_diagnostic_json_bytes,
@@ -620,8 +626,151 @@ class DiagnosticStore:
         except (EvidenceValidationError, OSError, TypeError, ValueError, KeyError, IndexError, AttributeError):
             _raise(DIAGNOSTIC_CHAIN_CORRUPT)
 
+    def _monitor_fact_state(self, session: DiagnosticSession) -> object:
+        """Build the dependency-neutral workflow state used by fresh reads."""
+
+        from types import SimpleNamespace
+        from stm32_toolkit.testing.publication import TestRunRepository
+
+        workspace_root = self.diagnostics_root.parent
+        data_root = workspace_root.parent.parent
+        workspace = WorkspacePaths(
+            project_root=workspace_root,
+            data_root=data_root,
+            workspace_id=session.identity.workspace_id,
+            workspace_storage_key=workspace_root.name,
+            session_id=session.identity.session_id,
+            workspace_root=workspace_root,
+            monitor_root=workspace_root / "monitor",
+            diagnostics_root=self.diagnostics_root,
+            logs_root=workspace_root / "logs",
+            cache_root=workspace_root / "cache",
+            session_root=workspace_root / "sessions" / session.identity.session_id,
+        )
+        return SimpleNamespace(
+            model=SimpleNamespace(logical_project_id=session.identity.project_id),
+            workspace=workspace,
+            evidence_store=self.evidence_store,
+            diagnostic_store=self,
+            repository=TestRunRepository(self.evidence_store),
+        )
+
+    @staticmethod
+    def _monitor_fact_reference_ids(event: DiagnosticEvent) -> set[str]:
+        """Return only the exact IDs named by physical-fact selectors."""
+
+        payload = event.to_dict()["payload"]
+        assert isinstance(payload, dict)
+        selectors: list[Mapping[str, object]] = []
+        if event.event_type == "observation.plan_added":
+            request = payload["request"]
+            assert isinstance(request, dict)
+            steps = request["steps"]
+            assert isinstance(steps, list)
+            selectors.extend(
+                ObservationStep.from_value(item).selector
+                for item in steps
+            )
+        elif event.event_type == "observation.plan_executed":
+            result = payload["result"]
+            assert isinstance(result, dict)
+            values = result["observation_results"]
+            assert isinstance(values, list)
+            selectors.extend(
+                ObservationResult.from_value(item).selector
+                for item in values
+            )
+        elif event.event_type == "hypothesis.assessed":
+            result = payload["result"]
+            assert isinstance(result, dict)
+            assessment = EvidenceAssessment.from_value(result["assessment"])
+            selectors.append(assessment.selector)
+        references: set[str] = set()
+        for selector in selectors:
+            if selector.get("kind") != PHYSICAL_MONITOR_FACT_KIND:
+                continue
+            reference = selector["monitor_run_ref"]
+            assert isinstance(reference, Mapping)
+            references.update(
+                {
+                    cast(str, selector["continuation_evidence_id"]),
+                    cast(str, selector["monitor_ref_evidence_id"]),
+                    cast(str, reference["transcript_evidence_id"]),
+                }
+            )
+        return references
+
+    def _validate_monitor_fact_event(self, event: DiagnosticEvent, session: DiagnosticSession) -> None:
+        """Authenticate and recompute every physical fact in one event."""
+
+        from stm32_toolkit.diagnostic_workflows import (
+            _WorkflowFailure,
+            _resolve_physical_monitor_fact,
+        )
+
+        state = self._monitor_fact_state(session)
+        payload = event.to_dict()["payload"]
+        assert isinstance(payload, dict)
+        steps_results: list[tuple[ObservationStep, ObservationResult | EvidenceAssessment | None]] = []
+        if event.event_type == "observation.plan_added":
+            request = payload["request"]
+            assert isinstance(request, dict)
+            steps = request["steps"]
+            assert isinstance(steps, list)
+            steps_results.extend((ObservationStep.from_value(item), None) for item in steps)
+        elif event.event_type == "observation.plan_executed":
+            request = payload["request"]
+            result = payload["result"]
+            assert isinstance(request, dict) and isinstance(result, dict)
+            plan = next((item for item in session.observation_plans if item.plan_id == request["plan_id"]), None)
+            values = result["observation_results"]
+            assert isinstance(values, list)
+            decoded = tuple(ObservationResult.from_value(item) for item in values)
+            if plan is None or len(decoded) != len(plan.steps):
+                _raise(DIAGNOSTIC_CHAIN_CORRUPT)
+            steps_results.extend((step, decoded[index]) for index, step in enumerate(plan.steps))
+        elif event.event_type == "hypothesis.assessed":
+            result = payload["result"]
+            assert isinstance(result, dict)
+            assessment = EvidenceAssessment.from_value(result["assessment"])
+            plan = next((item for item in session.observation_plans if item.plan_id == assessment.plan_id), None)
+            if plan is None:
+                _raise(DIAGNOSTIC_CHAIN_CORRUPT)
+            step = next((item for item in plan.steps if item.step_id == assessment.step_id), None)
+            if step is None:
+                _raise(DIAGNOSTIC_CHAIN_CORRUPT)
+            steps_results.append((step, assessment))
+        else:
+            return
+
+        for step, stored in steps_results:
+            if step.selector.get("kind") != PHYSICAL_MONITOR_FACT_KIND:
+                continue
+            try:
+                observed, transcript_evidence_id = _resolve_physical_monitor_fact(state, session, step)
+            except _WorkflowFailure as error:
+                if error.code == "INCOMPATIBLE_IDENTITY":
+                    _raise(DIAGNOSTIC_IDENTITY_MISMATCH)
+                if error.code == "ENVIRONMENT_FAILURE":
+                    _raise(DIAGNOSTIC_EVIDENCE_MISSING)
+                _raise(DIAGNOSTIC_CHAIN_CORRUPT)
+            if stored is None:
+                continue
+            if (
+                stored.evidence_id != transcript_evidence_id
+                or stored.observed_value != observed
+            ):
+                _raise(DIAGNOSTIC_CHAIN_CORRUPT)
+
     def _validate_referenced_evidence(self, event: DiagnosticEvent, session: DiagnosticSession) -> None:
         references = _event_references(event)
+        monitor_fact_ids = self._monitor_fact_reference_ids(event)
+        if event.event_type in {
+            "observation.plan_added",
+            "observation.plan_executed",
+            "hypothesis.assessed",
+        }:
+            self._validate_monitor_fact_event(event, session)
         new_event = event.event_type in {
             "source_change.declared",
             "verification.plan_added",
@@ -631,6 +780,8 @@ class DiagnosticStore:
         }
         if not new_event:
             for evidence_id in references:
+                if evidence_id in monitor_fact_ids:
+                    continue
                 try:
                     envelope = self.evidence_store.get_envelope(evidence_id)
                 except (EvidenceValidationError, OSError, ValueError) as error:

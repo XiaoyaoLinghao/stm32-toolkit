@@ -13,6 +13,8 @@ from unicodedata import normalize
 
 from stm32_toolkit.evidence import ArtifactRef, EvidenceIdentity, EvidenceValidationError
 from stm32_toolkit.evidence import canonical_json_bytes as _evidence_canonical_json_bytes
+from stm32_toolkit.monitor_analysis_contract import NATIVE_MAX_BATCHES
+from stm32_toolkit.monitor_replay_contract import ReplayContractError, validate_run_reference
 
 
 DIAGNOSTIC_SCHEMA = "stm32-diagnostic-event/1"
@@ -75,6 +77,9 @@ MAX_ASSESSMENTS = 1_024
 
 RUN_STATES = ("discovered", "running", "passed", "failed", "error", "cancelled")
 CASE_STATES = ("passed", "failed", "skipped", "error", "timeout")
+PHYSICAL_MONITOR_FACT_KIND = "physical-monitor-fact/1"
+PHYSICAL_MONITOR_FACTS = ("value-varies", "bit-values-mask")
+PHYSICAL_MONITOR_SELECTOR_KINDS = ("variable", "register")
 EVENT_TYPES = (
     "session.created",
     "investigation.started",
@@ -273,6 +278,61 @@ def _selector(value: object) -> Mapping[str, object]:
             _fail(DIAGNOSTIC_INVALID_EVENT)
         if selector.get("state") not in CASE_STATES:
             _fail(DIAGNOSTIC_PLAN_INVALID)
+    elif kind == PHYSICAL_MONITOR_FACT_KIND:
+        base_fields = {
+            "kind",
+            "continuation_evidence_id",
+            "monitor_ref_evidence_id",
+            "monitor_run_ref",
+            "selector_kind",
+            "selector",
+            "fact",
+            "minimum_valid_samples",
+        }
+        fact = selector.get("fact")
+        expected_fields = base_fields | ({"bit_index"} if fact == "bit-values-mask" else set())
+        if fact not in PHYSICAL_MONITOR_FACTS or set(selector) != expected_fields:
+            _fail(DIAGNOSTIC_PLAN_INVALID)
+        _hash(selector.get("continuation_evidence_id"))
+        _hash(selector.get("monitor_ref_evidence_id"))
+        if selector.get("selector_kind") not in PHYSICAL_MONITOR_SELECTOR_KINDS:
+            _fail(DIAGNOSTIC_PLAN_INVALID)
+        _string(selector.get("selector"))
+        minimum = selector.get("minimum_valid_samples")
+        if (
+            type(minimum) is not int
+            or isinstance(minimum, bool)
+            or not 1 <= minimum <= NATIVE_MAX_BATCHES
+        ):
+            _fail(DIAGNOSTIC_PLAN_INVALID)
+        if fact == "value-varies":
+            if "bit_index" in selector:
+                _fail(DIAGNOSTIC_PLAN_INVALID)
+        else:
+            if selector.get("selector_kind") != "register":
+                _fail(DIAGNOSTIC_PLAN_INVALID)
+            bit_index = selector.get("bit_index")
+            if (
+                type(bit_index) is not int
+                or isinstance(bit_index, bool)
+                or not 0 <= bit_index < 32
+            ):
+                _fail(DIAGNOSTIC_PLAN_INVALID)
+        # ObservationStep freezes nested JSON arrays into tuples.  Normalize
+        # that immutable representation before handing the complete reference
+        # back to the JSON-only replay validator.
+        monitor_ref = _thaw(selector.get("monitor_run_ref"))
+        try:
+            reference = validate_run_reference(monitor_ref)
+        except (ReplayContractError, TypeError, ValueError, OverflowError):
+            _fail(DIAGNOSTIC_PLAN_INVALID)
+        if (
+            reference.get("schema") != "stm32-monitor-run-ref/2"
+            or reference.get("execution_source") != "physical"
+            or reference.get("physical_transport_evidence") is not True
+        ):
+            _fail(DIAGNOSTIC_PLAN_INVALID)
+        selector["monitor_run_ref"] = reference
     else:
         _fail(DIAGNOSTIC_PLAN_INVALID)
     return cast(Mapping[str, object], MappingProxyType({key: _freeze(item) for key, item in selector.items()}))
@@ -286,6 +346,15 @@ def _value_for_selector(selector: Mapping[str, object], value: object) -> object
         return value
     if kind == "case-state":
         if value not in CASE_STATES or not isinstance(value, str):
+            _fail(DIAGNOSTIC_PLAN_INVALID)
+        return value
+    if kind == PHYSICAL_MONITOR_FACT_KIND:
+        if type(value) is not int or isinstance(value, bool):
+            _fail(DIAGNOSTIC_PLAN_INVALID)
+        fact = selector["fact"]
+        if fact == "value-varies" and value not in {0, 1}:
+            _fail(DIAGNOSTIC_PLAN_INVALID)
+        if fact == "bit-values-mask" and value not in {1, 2, 3}:
             _fail(DIAGNOSTIC_PLAN_INVALID)
         return value
     if type(value) is not int or value < 0 or value > 100_000:
@@ -725,8 +794,6 @@ class DiagnosticSession:
             _fail(DIAGNOSTIC_PLAN_INVALID)
         results: dict[tuple[str, str], ObservationResult] = {}
         for item in self.observation_results:
-            if item.evidence_id != evidence_id:
-                _fail(DIAGNOSTIC_PLAN_INVALID)
             plan = plans.get(item.plan_id)
             if plan is None or item.step_id not in {step.step_id for step in plan.steps}:
                 _fail(DIAGNOSTIC_PLAN_INVALID)
@@ -734,7 +801,16 @@ class DiagnosticSession:
                 _fail(DIAGNOSTIC_PLAN_INVALID)
             results[(item.plan_id, item.step_id)] = item
             step = next(step for step in plan.steps if step.step_id == item.step_id)
-            if item.selector != step.selector or item.expected_value != step.expected_value:
+            expected_evidence_id = evidence_id
+            if step.selector["kind"] == PHYSICAL_MONITOR_FACT_KIND:
+                reference = step.selector["monitor_run_ref"]
+                assert isinstance(reference, Mapping)
+                expected_evidence_id = cast(str, reference["transcript_evidence_id"])
+            if (
+                item.evidence_id != expected_evidence_id
+                or item.selector != step.selector
+                or item.expected_value != step.expected_value
+            ):
                 _fail(DIAGNOSTIC_PLAN_INVALID)
         for hypothesis in self.hypotheses:
             for assessment in hypothesis.supporting + hypothesis.refuting:

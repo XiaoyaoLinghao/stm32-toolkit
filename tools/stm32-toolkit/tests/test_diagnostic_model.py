@@ -6,6 +6,10 @@ from hashlib import sha256
 import pytest
 
 from stm32_toolkit.evidence import EvidenceIdentity
+from stm32_toolkit.monitor_analysis_contract import (
+    NativeAnalysisContractError,
+    evaluate_physical_monitor_fact,
+)
 from stm32_toolkit.diagnostics import (
     DIAGNOSTIC_INVALID_EVENT,
     DIAGNOSTIC_LIMIT_EXCEEDED,
@@ -59,6 +63,111 @@ def _plan() -> ObservationPlan:
         steps=(step,),
         digest=digest,
     )
+
+
+def _fact_sample(
+    *,
+    selector_kind: str = "register",
+    selector: str = "GPIOE.ODR",
+    value: int = 0,
+) -> dict[str, object]:
+    width = 8 if selector_kind == "register" else 32
+    watch = (
+        {"kind": "register", "registerPath": selector}
+        if selector_kind == "register"
+        else {"kind": "variable", "expression": selector}
+    )
+    type_name = f"uint{width}_register" if selector_kind == "register" else "long unsigned int"
+    return {
+        "watch": watch,
+        "status": "OK",
+        "typedValue": {
+            "bitWidth": width,
+            "expression": selector,
+            "rawHex": f"0x{value:0{width // 4}x}",
+            "typeName": type_name,
+            "value": value,
+        },
+        "code": None,
+        "definition": {"kind": selector_kind, "selector": selector},
+    }
+
+
+def _fact_batch(sample: dict[str, object]) -> dict[str, object]:
+    return {"values": [sample]}
+
+
+def test_physical_monitor_fact_evaluator_is_strict_and_recomputable() -> None:
+    variable_batches = [
+        _fact_batch(_fact_sample(selector_kind="variable", selector="testtime", value=0)),
+        _fact_batch(_fact_sample(selector_kind="variable", selector="testtime", value=1)),
+    ]
+    assert evaluate_physical_monitor_fact(
+        variable_batches,
+        selector_kind="variable",
+        selector="testtime",
+        fact="value-varies",
+        minimum_valid_samples=2,
+    ) == 1
+
+    register_batches = [
+        _fact_batch(_fact_sample(value=0)),
+        _fact_batch(_fact_sample(value=1)),
+    ]
+    assert evaluate_physical_monitor_fact(
+        register_batches,
+        selector_kind="register",
+        selector="GPIOE.ODR",
+        fact="bit-values-mask",
+        minimum_valid_samples=2,
+        bit_index=0,
+    ) == 3
+
+    malformed = [
+        {**_fact_sample(value=0), "typedValue": {**_fact_sample(value=0)["typedValue"], "value": True}},
+        {**_fact_sample(value=0), "typedValue": {**_fact_sample(value=0)["typedValue"], "value": 0.0}},
+        {**_fact_sample(value=0), "typedValue": {**_fact_sample(value=0)["typedValue"], "rawHex": "0X00"}},
+        {**_fact_sample(value=0), "watch": {"kind": "register", "registerPath": "GPIOE.ODR", "extra": 1}},
+    ]
+    for sample in malformed:
+        with pytest.raises(NativeAnalysisContractError):
+            evaluate_physical_monitor_fact(
+                [_fact_batch(sample)],
+                selector_kind="register",
+                selector="GPIOE.ODR",
+                fact="bit-values-mask",
+                minimum_valid_samples=1,
+                bit_index=0,
+            )
+
+    duplicate = _fact_sample(value=0)
+    with pytest.raises(NativeAnalysisContractError):
+        evaluate_physical_monitor_fact(
+            [{"values": [duplicate, _fact_sample(value=1)]}],
+            selector_kind="register",
+            selector="GPIOE.ODR",
+            fact="bit-values-mask",
+            minimum_valid_samples=1,
+            bit_index=0,
+        )
+    with pytest.raises(NativeAnalysisContractError):
+        evaluate_physical_monitor_fact(
+            [_fact_batch(_fact_sample(selector="GPIOE.IDR", value=0))],
+            selector_kind="register",
+            selector="GPIOE.ODR",
+            fact="bit-values-mask",
+            minimum_valid_samples=1,
+            bit_index=0,
+        )
+    with pytest.raises(NativeAnalysisContractError):
+        evaluate_physical_monitor_fact(
+            register_batches[:1],
+            selector_kind="register",
+            selector="GPIOE.ODR",
+            fact="bit-values-mask",
+            minimum_valid_samples=2,
+            bit_index=0,
+        )
 
 
 def test_failed_run_mode_is_omitted_for_host_and_round_trips_for_target() -> None:

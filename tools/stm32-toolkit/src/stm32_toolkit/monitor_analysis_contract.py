@@ -49,6 +49,8 @@ _NATIVE_TYPED_FIELDS = frozenset({
 })
 _NATIVE_WATCH_FIELDS = frozenset({"kind", "registerPath"})
 _HEX = re.compile(r"\A0x[0-9a-f]+\Z")
+_VARIABLE_WATCH_FIELDS = frozenset({"kind", "expression"})
+_FACT_KINDS = frozenset({"value-varies", "bit-values-mask"})
 
 _COMPUTATION_FIELDS = (
     "schema",
@@ -204,6 +206,169 @@ def _native_sample(batch: object, selector: str) -> tuple[int, int] | None:
     if int(raw_hex[2:], 16) != value:
         return None
     return width, value
+
+
+def _strict_monitor_fact_sample(
+    batch: object,
+    *,
+    selector_kind: str,
+    selector: str,
+) -> tuple[int, int]:
+    """Read one selected scalar without the permissive analysis exclusions.
+
+    ``_native_sample`` intentionally returns ``None`` for a malformed native
+    analysis position so that the historical before/after pairing contract can
+    report excluded positions.  Supplementary Monitor facts have a different
+    contract: every selected sample must be present, successful and exactly
+    typed.  Keep this parser separate so the two behaviours cannot silently
+    converge.
+    """
+
+    values = _mapping_field(batch, "values")
+    if not isinstance(values, Sequence) or isinstance(values, (str, bytes, bytearray)):
+        _fail("physical monitor fact batch values are invalid")
+    matches: list[object] = []
+    for sample in values:
+        watch = _mapping_field(sample, "watch")
+        if not isinstance(watch, Mapping):
+            continue
+        if selector_kind == "variable":
+            if (
+                watch.get("kind") == "variable"
+                and watch.get("expression") == selector
+            ):
+                matches.append(sample)
+        elif selector_kind == "register":
+            if (
+                watch.get("kind") == "register"
+                and watch.get("registerPath") == selector
+            ):
+                matches.append(sample)
+        else:
+            _fail("physical monitor fact selector kind is invalid")
+    if len(matches) != 1:
+        _fail("physical monitor fact selected sample is missing or ambiguous")
+
+    sample = matches[0]
+    watch = _mapping_field(sample, "watch")
+    expected_watch_fields = (
+        _VARIABLE_WATCH_FIELDS if selector_kind == "variable" else _NATIVE_WATCH_FIELDS
+    )
+    if not isinstance(watch, Mapping) or set(watch) != expected_watch_fields:
+        _fail("physical monitor fact selected watch fields are not closed")
+    if isinstance(sample, Mapping) and set(sample) != {"watch", "status", "typedValue", "code", "definition"}:
+        _fail("physical monitor fact sample fields are not closed")
+    if _mapping_field(sample, "status") != "OK" or _mapping_field(sample, "code") is not None:
+        _fail("physical monitor fact selected sample is not successful")
+
+    typed = _mapping_field(sample, "typedValue")
+    if not isinstance(typed, Mapping) or set(typed) != _NATIVE_TYPED_FIELDS:
+        _fail("physical monitor fact typed value fields are not closed")
+    if typed.get("expression") != selector:
+        _fail("physical monitor fact typed expression differs")
+    width = typed.get("bitWidth")
+    if type(width) is not int or isinstance(width, bool) or width not in NATIVE_REGISTER_WIDTHS:
+        _fail("physical monitor fact scalar width is invalid")
+    if selector_kind == "variable":
+        if width != 32 or typed.get("typeName") != "long unsigned int":
+            _fail("physical monitor fact variable type is invalid")
+    elif typed.get("typeName") != f"uint{width}_register":
+        _fail("physical monitor fact register type is invalid")
+
+    value = typed.get("value")
+    if type(value) is not int or isinstance(value, bool) or not 0 <= value <= (1 << width) - 1:
+        _fail("physical monitor fact scalar value is invalid")
+    raw_hex = typed.get("rawHex")
+    expected_hex = 2 + width // 4
+    if (
+        type(raw_hex) is not str
+        or len(raw_hex) != expected_hex
+        or re.fullmatch(rf"0x[0-9a-f]{{{width // 4}}}", raw_hex) is None
+        or int(raw_hex[2:], 16) != value
+    ):
+        _fail("physical monitor fact raw scalar does not match value")
+
+    definition = _mapping_field(sample, "definition")
+    if (
+        not isinstance(definition, Mapping)
+        or set(definition) != {"kind", "selector"}
+        or definition.get("kind") != selector_kind
+        or definition.get("selector") != selector
+    ):
+        _fail("physical monitor fact definition differs")
+    return width, value
+
+
+def evaluate_physical_monitor_fact(
+    batches: object,
+    *,
+    selector_kind: str,
+    selector: str,
+    fact: str,
+    minimum_valid_samples: int,
+    bit_index: int | None = None,
+) -> int:
+    """Recompute one strict physical Monitor fact from authenticated batches.
+
+    The result is an explicit integer suitable for the Diagnostic plan model:
+    ``value-varies`` yields 0/1 and ``bit-values-mask`` yields 1/2/3.
+    """
+
+    if selector_kind not in {"variable", "register"}:
+        _fail("physical monitor fact selector kind is invalid")
+    _text(selector, "physical monitor fact selector")
+    if fact not in _FACT_KINDS:
+        _fail("physical monitor fact kind is invalid")
+    if (
+        type(minimum_valid_samples) is not int
+        or isinstance(minimum_valid_samples, bool)
+        or not 1 <= minimum_valid_samples <= NATIVE_MAX_BATCHES
+    ):
+        _fail("physical monitor fact minimum sample count is invalid")
+    if fact == "value-varies":
+        if bit_index is not None:
+            _fail("value-varies does not accept a bit index")
+    else:
+        if selector_kind != "register":
+            _fail("bit-values-mask requires a register selector")
+        if (
+            type(bit_index) is not int
+            or isinstance(bit_index, bool)
+            or bit_index < 0
+            or bit_index >= 32
+        ):
+            _fail("physical monitor fact bit index is invalid")
+
+    if not isinstance(batches, Sequence) or isinstance(batches, (str, bytes, bytearray)):
+        _fail("physical monitor fact batches are invalid")
+    if not batches or len(batches) > NATIVE_MAX_BATCHES:
+        _fail("physical monitor fact batch window is invalid")
+    if len(batches) < minimum_valid_samples:
+        _fail("physical monitor fact has insufficient valid samples")
+
+    selected: list[int] = []
+    widths: list[int] = []
+    for batch in batches:
+        width, value = _strict_monitor_fact_sample(
+            batch,
+            selector_kind=selector_kind,
+            selector=selector,
+        )
+        widths.append(width)
+        selected.append(value)
+    if len(set(widths)) != 1:
+        _fail("physical monitor fact scalar widths conflict")
+
+    if fact == "value-varies":
+        return int(any(value != selected[0] for value in selected[1:]))
+    assert bit_index is not None
+    width = widths[0]
+    if bit_index >= width:
+        _fail("physical monitor fact bit index exceeds scalar width")
+    mask = 0
+    for value in selected:
+        mask |= 1 << ((value >> bit_index) & 1)
+    return mask
 
 
 def _timestamps(batches: object, label: str) -> tuple[tuple[object, int], ...]:
@@ -385,6 +550,7 @@ __all__ = [
     "NATIVE_SELECTOR_KIND",
     "NativeAnalysisContractError",
     "computation_fields",
+    "evaluate_physical_monitor_fact",
     "native_statistics",
     "validate_native_request",
 ]
