@@ -244,6 +244,20 @@ def _hash(value: object, label: str) -> str:
     return cast(str, value)
 
 
+def _continuation_for_runs(evidence_store, diagnostics_root, evidence_id, before, after):
+    """Map the pure reader's typed cause to this workflow's existing errors."""
+    from stm32_toolkit.acceptance.continuation import ContinuationValidationError, ContinuationIdentityError
+
+    _hash(evidence_id, "continuation evidence ID")
+    try:
+        return validate_continuation_runs(evidence_store, diagnostics_root, evidence_id, before, after)
+    except AnalysisError as error:
+        cause = error.__cause__
+        if isinstance(cause, ContinuationValidationError) and not isinstance(cause, ContinuationIdentityError):
+            raise AnalysisWorkflowError(EVIDENCE_INTEGRITY_FAILURE, "continuation evidence is corrupt") from error
+        raise AnalysisWorkflowError(INCOMPATIBLE_IDENTITY, "continuation does not match runs") from error
+
+
 def _diagnostic_hash(value: object, label: str) -> str:
     if type(value) is not str or _DIAGNOSTIC_HASH.fullmatch(value) is None:
         _fail(ANALYSIS_WORKFLOW_INVALID, f"{label} is invalid")
@@ -614,11 +628,8 @@ def _validate_inputs(
     ):
         _fail(INCOMPATIBLE_IDENTITY, "analysis run identities are incompatible")
     if continuation_evidence_id is not None:
-        try:
-            association = validate_continuation_runs(evidence_store, paths.diagnostics_root,
-                continuation_evidence_id, before, after)
-        except AnalysisError as error:
-            raise AnalysisWorkflowError(INCOMPATIBLE_IDENTITY, "continuation does not match runs") from error
+        association = _continuation_for_runs(evidence_store, paths.diagnostics_root,
+            continuation_evidence_id, before, after)
         if (association.proof.diagnostic_session_id != diagnostic_session_id
             or source_change_declaration != association.diagnostic.declaration):
             _fail(INCOMPATIBLE_IDENTITY, "continuation does not match Diagnostic declaration")
@@ -1086,7 +1097,7 @@ def compare_monitor_runs(
         before_transcript = before_source.transcript_envelope
         after_transcript = after_source.transcript_envelope
         if continuation_evidence_id is not None:
-            association = validate_continuation_runs(evidence_store, paths.diagnostics_root,
+            association = _continuation_for_runs(evidence_store, paths.diagnostics_root,
                 continuation_evidence_id, before, after)
             if (before_source.test_run_id != association.proof.failed_before_test_run_id
                 or after_source.test_run_id != association.proof.fixed_after_test_run_id):
@@ -1247,7 +1258,7 @@ def export_analysis_bundle(
         before_transcript = before_source.transcript_envelope
         after_transcript = after_source.transcript_envelope
         if continuation_evidence_id is not None:
-            association = validate_continuation_runs(evidence_store, paths.diagnostics_root,
+            association = _continuation_for_runs(evidence_store, paths.diagnostics_root,
                 continuation_evidence_id, before, after)
             if (before_source.test_run_id != association.proof.failed_before_test_run_id
                 or after_source.test_run_id != association.proof.fixed_after_test_run_id):
@@ -1381,7 +1392,7 @@ def export_analysis_bundle(
     if source_change_declaration is not None:
         digest_table.append({"role": "source-change-declaration", "sha256": source_change_declaration.declaration_id})
     if continuation_evidence_id is not None:
-        association = validate_continuation_runs(evidence_store, paths.diagnostics_root,
+        association = _continuation_for_runs(evidence_store, paths.diagnostics_root,
             continuation_evidence_id, before, after)
         if (failed_before_test_run_id != association.proof.failed_before_test_run_id
             or fixed_after_test_run_id != association.proof.fixed_after_test_run_id):
