@@ -65,6 +65,9 @@ CONTINUATION_EXPIRED_ID = "00000000-0000-4000-8000-000000000014"
 CONTINUATION_STALE_ID = "00000000-0000-4000-8000-000000000015"
 CONTINUATION_REV7_ID = "00000000-0000-4000-8000-000000000016"
 CONTINUATION_REPLAY_ID = "00000000-0000-4000-8000-000000000023"
+CONTINUATION_WRONG_SESSION_ID = "00000000-0000-4000-8000-000000000024"
+CONTINUATION_MALFORMED_ID = "00000000-0000-4000-8000-000000000025"
+CONTINUATION_TAMPERED_ID = "00000000-0000-4000-8000-000000000026"
 PROJECT_ID = physical_fixture.PROJECT_ID
 LEGACY_TIME = "2026-09-10T00:00:00.000000Z"
 CONTINUATION_TIME = "2026-09-11T00:00:00.000000Z"
@@ -1123,3 +1126,90 @@ def test_continuation_rejects_readable_replay_after_test_run(
     assert not _attempt_root_path(
         fixture.evidence, CONTINUATION_REPLAY_ID, 0
     ).exists()
+
+
+def test_public_begin_reuse_classifies_identity_malformed_and_tampered_proofs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fixture = prepare_pair(tmp_path, monkeypatch)
+    first = _ok(
+        begin_acceptance_attempt(
+            fixture.context,
+            attempt_id=CONTINUATION_ATTEMPT_ID,
+            scenario_id=PHYSICAL_SCENARIO_ID,
+            scenario_version=PHYSICAL_SCENARIO_VERSION,
+            continuation=fixture.bind_request,
+        )
+    )["attempt"]
+    continuation_id = str(first["continuationEvidenceId"])
+    association = authenticate_continuation(
+        fixture.evidence,
+        fixture.workspace.diagnostics_root,
+        continuation_id,
+        expected_workspace_id=fixture.workspace.workspace_id,
+        expected_project_id=PROJECT_ID,
+        expected_session_id=fixture.before_session_id,
+    )
+    reuse_request = {
+        "schema": CONTINUATION_REQUEST_SCHEMA,
+        "kind": "reuse",
+        "continuationEvidenceId": continuation_id,
+    }
+
+    # The proof is valid, but the caller session is not the predecessor
+    # session bound into the proof.  The public begin boundary must preserve
+    # the identity classification rather than treating this as corruption.
+    wrong_session = replace(fixture.context, session_id=fixture.after_session_id)
+    wrong_session_result = begin_acceptance_attempt(
+        wrong_session,
+        attempt_id=CONTINUATION_WRONG_SESSION_ID,
+        scenario_id=PHYSICAL_SCENARIO_ID,
+        scenario_version=PHYSICAL_SCENARIO_VERSION,
+        continuation=reuse_request,
+    )
+    assert wrong_session_result.ok is False
+    assert wrong_session_result.code == "ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH"
+    assert not _attempt_root_path(
+        fixture.evidence, CONTINUATION_WRONG_SESSION_ID, 0
+    ).exists()
+
+    malformed = dict(reuse_request)
+    malformed["unexpected"] = True
+    malformed_result = begin_acceptance_attempt(
+        fixture.context,
+        attempt_id=CONTINUATION_MALFORMED_ID,
+        scenario_id=PHYSICAL_SCENARIO_ID,
+        scenario_version=PHYSICAL_SCENARIO_VERSION,
+        continuation=malformed,
+    )
+    assert malformed_result.ok is False
+    assert malformed_result.code == "ACCEPTANCE_ATTEMPT_INPUT_INVALID"
+    assert not _attempt_root_path(
+        fixture.evidence, CONTINUATION_MALFORMED_ID, 0
+    ).exists()
+
+    # Keep the proof payload and envelope untouched while damaging only the
+    # authoritative root manifest link.  This is a tampered proof and must
+    # retain the integrity classification at the public boundary.
+    continuation_root_path = recovery_workflows._typed_root_path(
+        fixture.evidence, association.proof.continuation_id, "physical-continuation"
+    )
+    original_root_bytes = continuation_root_path.read_bytes()
+    tampered_root = json.loads(original_root_bytes.decode("utf-8"))
+    tampered_root["manifest_id"] = "0" * 64
+    continuation_root_path.write_bytes(canonical_json_bytes(tampered_root))
+    try:
+        tampered_result = begin_acceptance_attempt(
+            fixture.context,
+            attempt_id=CONTINUATION_TAMPERED_ID,
+            scenario_id=PHYSICAL_SCENARIO_ID,
+            scenario_version=PHYSICAL_SCENARIO_VERSION,
+            continuation=reuse_request,
+        )
+        assert tampered_result.ok is False
+        assert tampered_result.code == "ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED"
+        assert not _attempt_root_path(
+            fixture.evidence, CONTINUATION_TAMPERED_ID, 0
+        ).exists()
+    finally:
+        continuation_root_path.write_bytes(original_root_bytes)
