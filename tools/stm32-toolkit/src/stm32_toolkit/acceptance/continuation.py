@@ -88,6 +88,10 @@ class ContinuationValidationError(ValueError):
     """Raised when an immutable continuation input or graph is invalid."""
 
 
+class ContinuationEnvironmentError(ContinuationValidationError):
+    """The continuation provider could not be read reliably."""
+
+
 class ContinuationIdentityError(ContinuationValidationError):
     """A valid proof does not belong to the consumer's requested context."""
 
@@ -520,7 +524,11 @@ def _load_v2_attempt(
         envelope = evidence.get_envelope(root.manifest_id)
         raw = envelope.metadata["attempt"]
         attempt = PhysicalAcceptanceAttempt.from_value(json.loads(canonical_json_bytes(raw).decode("utf-8")))
-    except (EvidenceValidationError, OSError, KeyError, TypeError, ValueError, json.JSONDecodeError, UnicodeError, AcceptanceRecoveryValidationError) as error:
+    except FileNotFoundError as error:
+        raise ContinuationValidationError("predecessor attempt evidence is corrupt") from error
+    except OSError as error:
+        raise ContinuationEnvironmentError("continuation evidence provider is unavailable") from error
+    except (EvidenceValidationError, KeyError, TypeError, ValueError, json.JSONDecodeError, UnicodeError, AcceptanceRecoveryValidationError) as error:
         raise ContinuationValidationError("predecessor attempt evidence is corrupt") from error
     if (
         root.root_type != "acceptance-attempt" or root.root_id != root_id
@@ -812,8 +820,12 @@ def authenticate_continuation(evidence_store, diagnostics_root, continuation_evi
         return AuthenticatedContinuation(proof, envelope, root, predecessor, predecessor_envelope, before, after, diagnostic)
     except ContinuationValidationError:
         raise
+    except FileNotFoundError as error:
+        raise ContinuationValidationError("continuation evidence graph is corrupt") from error
+    except OSError as error:
+        raise ContinuationEnvironmentError("continuation evidence provider is unavailable") from error
     except (EvidenceValidationError, DiagnosticValidationError, AcceptanceRecoveryValidationError,
-            OSError, ValueError, TypeError, KeyError, IndexError, AttributeError) as error:
+            ValueError, TypeError, KeyError, IndexError, AttributeError) as error:
         raise ContinuationValidationError("continuation evidence graph is corrupt") from error
 
 

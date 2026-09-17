@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from copy import deepcopy
+import hashlib
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -9,6 +10,11 @@ import pytest
 
 import stm32_toolkit.mcp_server as mcp_mod
 from stm32_toolkit.mcp_server import ServerRuntime, create_server
+from stm32_toolkit.monitor_replay_contract import (
+    ReplayContractError,
+    canonical_replay_json_bytes,
+    validate_run_reference,
+)
 from stm32_toolkit.result import OperationResult
 
 
@@ -54,7 +60,7 @@ PHYSICAL_MONITOR_REF = {
     "origin_run_id": "11111111-1111-4111-8111-111111111111",
     "projected_run_id": "11111111-1111-4111-8111-111111111111",
     "target_device": "target",
-    "probe_id": "probe",
+    "probe_id": "4" * 64,
     "physical_target": "board:t10",
     "build_id": "b" * 64,
     "elf_sha256": "c" * 64,
@@ -76,6 +82,15 @@ PHYSICAL_MONITOR_REF = {
     "run_ref_sha256": "2" * 64,
     "source_record_sha256": "3" * 64,
 }
+PHYSICAL_MONITOR_REF["run_ref_sha256"] = hashlib.sha256(
+    canonical_replay_json_bytes(
+        {
+            key: value
+            for key, value in PHYSICAL_MONITOR_REF.items()
+            if key != "run_ref_sha256"
+        }
+    )
+).hexdigest()
 PHYSICAL_FACT_STEP = {
     "step_id": "physical-fact",
     "selector": {
@@ -1469,6 +1484,68 @@ def test_registered_plan_add_preserves_physical_reference_null_and_bit_shape(
             )
         )
     assert len(calls) == 2
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("probe_id", "probe-x"),
+        ("physical_target", "replay:fake"),
+        ("target_device", " target"),
+        ("target_device", "target\n"),
+        ("physical_transport_evidence", 1),
+    ],
+    ids=[
+        "probe",
+        "physical-target",
+        "target-leading-space",
+        "target-control",
+        "strict-physical-evidence",
+    ],
+)
+def test_mcp_physical_reference_matches_core_replay_contract(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    field: str,
+    value: object,
+) -> None:
+    runtime = _runtime(tmp_path)
+    server = create_server(runtime.project_root, runtime.data_root, runtime.session_id)
+    calls: list[tuple[object, ...]] = []
+
+    async def helper(*args: object) -> dict[str, object]:
+        calls.append(args)
+        return {"tool": "plan-add"}
+
+    monkeypatch.setattr(mcp_mod, "tool_diagnostic_add_plan_for_request", helper, raising=False)
+
+    reference = deepcopy(PHYSICAL_MONITOR_REF)
+    reference[field] = value
+    reference["run_ref_sha256"] = hashlib.sha256(
+        canonical_replay_json_bytes(
+            {key: item for key, item in reference.items() if key != "run_ref_sha256"}
+        )
+    ).hexdigest()
+    step = deepcopy(PHYSICAL_FACT_STEP)
+    selector = step["selector"]
+    assert isinstance(selector, dict)
+    selector["monitor_run_ref"] = reference
+
+    with pytest.raises(ReplayContractError):
+        validate_run_reference(reference)
+    with pytest.raises(Exception):
+        asyncio.run(
+            server.call_tool(
+                "stm32_diagnostic_plan_add",
+                {
+                    "operationId": OPERATION_ID,
+                    "diagnosticSessionId": DIAGNOSTIC_SESSION_ID,
+                    "expectedRevision": 4,
+                    "steps": [step],
+                },
+            )
+        )
+    assert calls == []
 
 
 @pytest.mark.parametrize(

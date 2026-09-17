@@ -3080,6 +3080,7 @@ def _authenticate_physical_monitor_fact(
         raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
 
     from stm32_toolkit.acceptance.continuation import (
+        ContinuationEnvironmentError,
         ContinuationIdentityError,
         ContinuationValidationError,
         _continuation_monitor_reference,
@@ -3101,6 +3102,8 @@ def _authenticate_physical_monitor_fact(
         )
     except ContinuationIdentityError as error:
         raise _WorkflowFailure(_INCOMPATIBLE_IDENTITY) from error
+    except ContinuationEnvironmentError as error:
+        raise _WorkflowFailure(_ENVIRONMENT_FAILURE) from error
     except FileNotFoundError as error:
         raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE) from error
     except OSError as error:

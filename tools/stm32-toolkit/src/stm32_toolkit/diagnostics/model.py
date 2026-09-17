@@ -338,6 +338,19 @@ def _selector(value: object) -> Mapping[str, object]:
     return cast(Mapping[str, object], MappingProxyType({key: _freeze(item) for key, item in selector.items()}))
 
 
+def _require_physical_transcript_evidence(
+    selector: Mapping[str, object], evidence_id: str
+) -> None:
+    if selector.get("kind") != PHYSICAL_MONITOR_FACT_KIND:
+        return
+    reference = selector.get("monitor_run_ref")
+    if (
+        not isinstance(reference, Mapping)
+        or reference.get("transcript_evidence_id") != evidence_id
+    ):
+        _fail(DIAGNOSTIC_PLAN_INVALID)
+
+
 def _value_for_selector(selector: Mapping[str, object], value: object) -> object:
     kind = selector["kind"]
     if kind == "run-state":
@@ -505,6 +518,7 @@ class ObservationResult:
         step_id = _safe_id(self.step_id)
         evidence_id = _hash(self.evidence_id)
         selector = _selector(self.selector)
+        _require_physical_transcript_evidence(selector, evidence_id)
         observed = _value_for_selector(selector, self.observed_value)
         expected = _value_for_selector(selector, self.expected_value)
         if type(self.matched) is not bool or self.matched != (observed == expected):
@@ -559,6 +573,8 @@ def _assessment_fields(value: object) -> dict[str, object]:
     if set(raw) != expected:
         _fail(DIAGNOSTIC_INVALID_EVENT)
     selector = _selector(raw["selector"])
+    evidence_id = _hash(raw["evidence_id"])
+    _require_physical_transcript_evidence(selector, evidence_id)
     observed = _value_for_selector(selector, raw["observed_value"])
     if raw["polarity"] not in {"supports", "refutes"}:
         _fail(DIAGNOSTIC_PLAN_INVALID)
@@ -566,7 +582,7 @@ def _assessment_fields(value: object) -> dict[str, object]:
         "hypothesis_id": _hex_id(raw["hypothesis_id"]),
         "plan_id": _hash(raw["plan_id"]),
         "step_id": _safe_id(raw["step_id"]),
-        "evidence_id": _hash(raw["evidence_id"]),
+        "evidence_id": evidence_id,
         "selector": cast(dict[str, object], _thaw(selector)),
         "observed_value": observed,
         "polarity": raw["polarity"],
