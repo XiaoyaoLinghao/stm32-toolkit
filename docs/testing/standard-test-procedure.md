@@ -169,7 +169,7 @@ T10 采样入口复用已接受的有限 Monitor 生命周期，在执行卡中�
 按已核实绝对路径清理本轮不再需要的临时输出；保留源码测试、可复用基线、用户数据、共享缓存、rollback、授权账本、有效 PASS 和最小失败证据。Windows 使用同一 PowerShell 原生命令，删除前确认在本轮目录内。自动策略拒绝 cleanup 时记录保留，不换工具/路径绕过。没有新测试不制造清理工作。
 
 ## 8. 当前验收断点（2026-09-17）
-最新受控 P4 恢复烧录 **PASS**：用户新授权后，现有 recovery 静态prepare绑定新action；一次execute在26431ms/exit0返回OK，回读54920字节，physical run `target-v2-d5b0e440822671ba2812a367bfedf2f6` 的 d3-heartbeat 1/1 passed。复用source7d22与原P4构建，无重复部署/编译/硬件重试；新session `p4-recovery-20260917-03`，action consumed、lease released、相关进程0。事后灯态待用户回复；尚无本轮Monitor/Diagnostic/FixVerification或正式验收闭环，T10/VS10-A未完成，此前失败根因也不因此自动确证。见 [本次恢复烧录结果](../codex/returns/2026-09-17-stm32tk-p4-recovery-result.md)。以下终态失败均为历史记录，不覆盖本轮成功结果。
+最新受控 P4 恢复烧录 **PASS**：用户新授权后，现有 recovery 静态prepare绑定新action；一次execute在26431ms/exit0返回OK，回读54920字节，physical run `target-v2-d5b0e440822671ba2812a367bfedf2f6` 的 d3-heartbeat 1/1 passed。复用source7d22与原P4构建，无重复部署/编译/硬件重试；新session `p4-recovery-20260917-03`，action consumed、lease released、相关进程0。用户随后确认D3/D4都闪烁、一亮一暗交替，与P4的相反初值及同步取反逻辑一致；这是目视证据。独立核对确认native case覆盖计时及PE3变化，不替代PE3/PE4双位Monitor。T10 G/H及VS10-A其余验收仍未完成，此前失败根因也不因此自动确证；保留本轮PASS，不重烧补账本。见 [本次恢复烧录结果](../codex/returns/2026-09-17-stm32tk-p4-recovery-result.md)。以下终态失败均为历史记录，不覆盖本轮成功结果。
 
 最新 diagnostic-02 已取得原始异常：用户新授权一次正常 prepare 后，4884ms 返回 `PROBE_ATTACH_FAILED`；primary 为 `resume-verify/postcondition-failed`，初始检查未达到预期 running；cleanup 再次恢复并复查为 faulted，初始具体状态已被共享槽位中的后者覆盖，不能回填。session关闭、probe关闭检查及worker-parent-abort成功；新lease released、相关进程0。未生成action，未烧录或重试；原始异常留证缺口已补齐，但异常运行态及此前烧录失败的根因仍未确证，未证实状态映射bug。可准备现有受控恢复烧录路线，须另获授权，不应再重复普通prepare或部署。T10/VS10-A仍未完成；见 [本次诊断证据](../codex/returns/2026-09-17-stm32tk-program-diagnostic-deployment.md#newly-authorized-diagnostic-02-running-postcondition-failed)。以下为此前断点。
 
