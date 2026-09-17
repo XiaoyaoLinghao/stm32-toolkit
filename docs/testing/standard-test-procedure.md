@@ -183,6 +183,8 @@ T10 采样入口复用已接受的有限 Monitor 生命周期，在执行卡中�
 按已核实绝对路径清理本轮不再需要的临时输出；保留源码测试、可复用基线、用户数据、共享缓存、rollback、授权账本、有效 PASS 和最小失败证据。Windows 使用同一 PowerShell 原生命令，删除前确认在本轮目录内。自动策略拒绝 cleanup 时记录保留，不换工具/路径绕过。没有新测试不制造清理工作。
 
 ## 8. 当前验收断点（2026-09-17）
+原T10 Steps1/2/4/5现已按既有证据独立核对并勾选，Step6保留生产G/H通过；唯一剩余T10条款为Step3。安装版本的ObservationStep只支持run-state、case-state、case-count，直接调用模型已确认无法表达Monitor事实；新建独立Diagnostic可行，但仍需有界能力修正。已提出[补充评估规格](../superpowers/specs/2026-09-17-stm32tk-t10-hypothesis-assessment-design.md)和[实现计划](../superpowers/plans/2026-09-17-stm32tk-t10-hypothesis-assessment.md)，包括明确的事后补充验收口径，当前待用户批准，尚无产品代码/新部署/硬件操作。详见[条款对账](../codex/returns/STM32TK-T10-NATIVE-ANALYSIS/t10-clause-reconciliation.md)。
+
 原T10 Step3仍有明确缺口：现有Diagnostic只有应用逻辑候选（open/unrated），无计时/中断、GPIO/板级通路、应用持续拉低PE3三类假设的正式评估。新change-observed marker不替代这些评估。已有真实采样可用于离线补齐方案，不能改写已RESOLVED历史或凭最终通过追认诊断过程。G/H与Step6完成状态保留；下一步先准备这项限定补齐，再做Task11/12。
 
 source `2c6aedc6f9e85e9db43d2895d26395387c127a6b` 已按本轮授权部署至 `D:\stm32tk-data\fault-controlled-20260911\candidates\native-20260917\runtime\0.9.0`。Check healthy/matching、147个安装文件及真实PyOCD入口通过。复用原实机窗口完成**生产 G/H**：300有效对/0排除、minimum297不变；Diagnostic revision10/RESOLVED，FixVerification `dfbe6d789c79d3379f0b608f1526096c436f941d7d5eb6e807a3f911bea420e7` PASSED；新v3 attempt `ee7b50a4-22f5-4547-99ed-344582bcb853` COMPLETED，新进程show/resume及Diagnostic读回通过、timedOut=false。原85文件和上一runtime-state哈希未变，旧INVALID/过期attempt保留。本轮零硬件操作、未推送；不重烧、不重采、不重复部署。下一步逐条核对原T10剩余条款及Task11证据链、Task12全量差异；不据G/H完成宣布整个T10/VS10-A完成。详见[本次部署及生产结果](../codex/returns/STM32TK-T10-NATIVE-ANALYSIS/production-delivery.md)。以下均为历史断点。
