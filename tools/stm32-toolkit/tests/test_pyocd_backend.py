@@ -387,9 +387,11 @@ def test_debug_handoff_metadata_is_unavailable_before_or_after_failed_attach():
     with pytest.raises(ProbeBackendError) as missing:
         backend.open_attach("probe-missing", "stm32f407vg")
     assert missing.value.code == "PROBE_NOT_FOUND"
-    with pytest.raises(ProbeBackendError) as after_selection_failure:
-        backend.debug_handoff_metadata()
-    assert after_selection_failure.value.code == "PROBE_NOT_ATTACHED"
+    assert backend.debug_handoff_metadata().to_dict() == {
+        "probeId": "probe-a",
+        "target": "stm32f407vg",
+        "boardId": "probe-a",
+    }
 
     driver.target = FakePyOCDTarget(part_number=None)
     with pytest.raises(ProbeBackendError):
@@ -397,6 +399,104 @@ def test_debug_handoff_metadata_is_unavailable_before_or_after_failed_attach():
     with pytest.raises(ProbeBackendError) as failed:
         backend.debug_handoff_metadata()
     assert failed.value.code == "PROBE_NOT_ATTACHED"
+
+
+@pytest.mark.parametrize("failure", ("input", "selection", "descriptor", "identity"))
+def test_preclose_replacement_validation_preserves_complete_attachment(
+    failure: str,
+):
+    first_probe = FakePyOCDProbe("probe-a")
+    driver = FakePyOCDDriver((first_probe,))
+    backend = PyOCDBackend(driver)
+    backend.open_attach("probe-a", "stm32f407vg")
+    before = (
+        backend._session,
+        backend._probe,
+        backend._target,
+        backend._probe_id,
+        backend._probe_serial_hash,
+        backend._hardware_probe_id,
+        backend._target_name,
+        backend._resolved_part_number,
+    )
+
+    if failure == "input":
+        arguments = ("", "stm32f407vg")
+    elif failure == "selection":
+        arguments = ("probe-missing", "stm32f407vg")
+    elif failure == "descriptor":
+        driver.probes = (FakePyOCDProbe("invalid\nprobe"),)
+        arguments = ("probe-a", "stm32f407vg")
+    else:
+        class ChangingProbe(FakePyOCDProbe):
+            def __init__(self) -> None:
+                super().__init__("probe-a")
+                self._reads = 0
+
+            @property
+            def unique_id(self) -> str:
+                self._reads += 1
+                return "probe-a" if self._reads <= 2 else "probe-b"
+
+            @unique_id.setter
+            def unique_id(self, value: object) -> None:
+                return None
+
+        driver.probes = (ChangingProbe(),)
+        arguments = ("probe-a", "stm32f407vg")
+
+    with pytest.raises(ProbeBackendError):
+        backend.open_attach(*arguments)
+
+    after = (
+        backend._session,
+        backend._probe,
+        backend._target,
+        backend._probe_id,
+        backend._probe_serial_hash,
+        backend._hardware_probe_id,
+        backend._target_name,
+        backend._resolved_part_number,
+    )
+    assert after == before
+    metadata = backend.debug_handoff_metadata()
+    assert metadata.to_dict() == {
+        "probeId": "probe-a",
+        "target": "stm32f407vg",
+        "boardId": "probe-a",
+    }
+    backend.close()
+
+
+def test_close_clears_complete_attachment_before_failed_subsequent_open():
+    driver = FakePyOCDDriver((FakePyOCDProbe("probe-a"),))
+    backend = PyOCDBackend(driver)
+    backend.open_attach("probe-a", "stm32f407vg")
+    backend.close()
+    assert (
+        backend._session,
+        backend._probe,
+        backend._target,
+        backend._probe_id,
+        backend._probe_serial_hash,
+        backend._hardware_probe_id,
+        backend._target_name,
+        backend._resolved_part_number,
+    ) == (None, None, None, None, None, None, None, None)
+
+    driver.create_error = RuntimeError("create failed")
+    with pytest.raises(ProbeBackendError):
+        backend.open_attach("probe-a", "stm32f407vg")
+    assert (
+        backend._session,
+        backend._probe,
+        backend._target,
+        backend._probe_id,
+        backend._probe_serial_hash,
+        backend._hardware_probe_id,
+        backend._target_name,
+        backend._resolved_part_number,
+    ) == (None, None, None, None, None, None, None, None)
 
 
 def test_open_attach_rejects_invalid_candidate_alongside_valid_without_session():

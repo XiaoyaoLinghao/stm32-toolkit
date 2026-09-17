@@ -418,6 +418,11 @@ class ProbeBackendWorker:
     def is_alive(self) -> bool:
         return self._process.is_alive()
 
+    @property
+    def is_terminal(self) -> bool:
+        """Whether this proxy can no longer service an owned backend call."""
+        return self._closed or not self._process.is_alive()
+
     def _receive(self, deadline: float) -> dict[str, object]:
         remaining = deadline - time.monotonic()
         if remaining <= 0 or not self._connection.poll(remaining):

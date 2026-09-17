@@ -33,6 +33,7 @@ from stm32_toolkit.probe.service import (
     ProbeServiceCleanupError,
     ProbeServiceError,
 )
+from stm32_toolkit.probe.worker import ProbeBackendWorker
 from stm32_toolkit.probe.attach_diagnostics import (
     make_attach_diagnostic,
     make_cleanup_entry,
@@ -75,6 +76,26 @@ class _SpawnedHangingControlBackend:
 
 def _spawned_hanging_control_factory(marker: str):
     return _SpawnedHangingControlBackend(marker)
+
+
+class _TerminalWorkerReadBackend:
+    def preflight_target_capabilities(self, probe_id: str, operation_level: object) -> None:
+        return None
+
+    def open_attach(
+        self, probe_id: str, target: str, *, halt_on_connect: bool = False
+    ) -> ProbeAttachmentEvidence:
+        return ProbeAttachmentEvidence(probe_id, target, target, 1)
+
+    def read_memory(self, address: int, length: int) -> bytes:
+        raise ProbeBackendError(
+            "PROBE_READ_UNAVAILABLE",
+            "Selected memory is unavailable",
+            {"address": address, "length": length},
+        )
+
+    def close(self) -> None:
+        return None
 
 
 def fake_backend() -> FakeProbeBackend:
@@ -1423,6 +1444,34 @@ def test_explicit_second_attach_after_first_failure_is_not_cached_unit_proof_not
             second = await client.attach("probe-a", "STM32F429ZITx")
             assert second.probe_id == "probe-a"
             assert attempts == 2
+        finally:
+            await client.close()
+            await service.stop()
+
+    run(scenario())
+
+
+def test_observe_cache_rejects_terminal_worker_after_backend_read_failure(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        backend = ProbeBackendWorker(_test_backend_factory=_TerminalWorkerReadBackend)
+        service = make_service(tmp_path, level=OperationLevel.OBSERVE, backend=backend)
+        endpoint = await service.start()
+        client = ProbeClient(endpoint)
+        try:
+            first = await client.attach("probe-a", "STM32F429ZITx")
+            assert first.probe_id == "probe-a"
+            with pytest.raises(ProbeClientError) as read_error:
+                await client.read_memory(0x20000000, 4)
+            assert read_error.value.code == "PROBE_READ_UNAVAILABLE"
+            assert backend.is_terminal is True
+            assert service._observation_attachment is not None
+
+            with pytest.raises(ProbeClientError) as attach_error:
+                await client.attach("probe-a", "STM32F429ZITx")
+            assert attach_error.value.code == "PROBE_BACKEND_ERROR"
+            assert service._observation_attachment is None
         finally:
             await client.close()
             await service.stop()
@@ -2814,6 +2863,7 @@ def test_slow_incomplete_body_is_rejected_on_service_deadline(tmp_path: Path):
 def test_partial_backend_error_is_structured_and_service_stays_healthy(tmp_path: Path):
     async def scenario():
         backend = fake_backend()
+        backend.is_terminal = False
         backend.fail_memory_read(
             0x20000000, "PROBE_READ_UNAVAILABLE", "Selected memory is unavailable"
         )
@@ -2825,6 +2875,10 @@ def test_partial_backend_error_is_structured_and_service_stays_healthy(tmp_path:
             with pytest.raises(ProbeClientError) as error:
                 await client.read_memory(0x20000000, 4)
             assert error.value.code == "PROBE_READ_UNAVAILABLE"
+            await client.attach("probe-a", "STM32F429ZITx")
+            assert [event for event in backend.events if event[0] == "open_attach"] == [
+                ("open_attach", "probe-a", "STM32F429ZITx", False),
+            ]
             assert await client.list_probes()
         finally:
             await client.close()

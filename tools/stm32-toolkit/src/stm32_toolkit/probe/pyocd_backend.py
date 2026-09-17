@@ -924,9 +924,6 @@ class PyOCDBackend:
     def open_attach(
         self, probe_id: str, target: str, *, halt_on_connect: bool = False
     ) -> ProbeAttachmentEvidence:
-        # A failed replacement attempt must never leave the previous raw
-        # identity available through the private handoff capability.
-        self._hardware_probe_id = None
         if not _valid_identifier(probe_id):
             raise ProbeBackendError(
                 "PROBE_SELECTION_REQUIRED", "An exact probe identifier is required"

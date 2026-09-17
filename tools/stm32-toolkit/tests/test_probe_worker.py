@@ -367,6 +367,27 @@ def test_worker_normal_call_and_close_leave_no_owned_process(tmp_path: Path) -> 
     assert pid > 0
 
 
+def test_worker_terminal_property_covers_closed_or_dead_owned_child(tmp_path: Path) -> None:
+    worker = ProbeBackendWorker(
+        _test_backend_factory=partial(_factory, "normal", str(tmp_path / "unused"))
+    )
+    try:
+        assert worker.is_alive is True
+        assert worker.is_terminal is False
+
+        worker._closed = True
+        assert worker.is_alive is True
+        assert worker.is_terminal is True
+        worker._closed = False
+
+        worker.abort_owned_execution()
+        assert worker.is_alive is False
+        assert worker.is_terminal is True
+    finally:
+        worker._closed = False
+        worker.abort_owned_execution()
+
+
 def test_worker_program_failure_preserves_closed_diagnostic(tmp_path: Path) -> None:
     worker = ProbeBackendWorker(
         _test_backend_factory=partial(_factory, "program-diagnostic", str(tmp_path / "unused"))

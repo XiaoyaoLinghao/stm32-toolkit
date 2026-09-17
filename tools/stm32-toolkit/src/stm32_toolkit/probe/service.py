@@ -553,6 +553,13 @@ class ProbeService:
         accepted = self._observation_attachment
         if self._operation_level is not OperationLevel.OBSERVE or accepted is None:
             return None
+        try:
+            terminal = getattr(self._backend, "is_terminal", False)
+        except BaseException:
+            terminal = False
+        if terminal is True:
+            self._observation_attachment = None
+            return None
         accepted_probe, accepted_target, evidence = accepted
         if probe_id != accepted_probe or _canonical_target(target) != accepted_target:
             raise ProbeBackendError(
