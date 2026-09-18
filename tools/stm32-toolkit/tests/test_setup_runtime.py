@@ -439,7 +439,7 @@ def test_existing_legacy_runtime_requires_repair_and_is_quarantined_before_1_0_p
     assert checked.returncode == 0, checked.stderr
     payload = json.loads(checked.stdout)
     assert payload["runtime"]["status"] == "broken"
-    assert payload["runtime"]["path"].endswith("/runtime/0.3.0")
+    assert payload["runtime"]["path"].endswith(f"/runtime/{legacy_version}")
     assert payload["recommendedMode"] == "Repair"
     assert not (plugin_data / "runtime" / "1.0.0").exists()
 
