@@ -2015,11 +2015,19 @@ def _coverage_windows_available() -> bool:
     return os.name == "nt"
 
 
-def _validate_coverage_attempt_location(repo: Path, evidence_root: Path) -> None:
+def _validate_coverage_attempt_location(
+    repo: Path,
+    evidence_root: Path,
+    temporary_root: Path = Path(r"C:\tmp"),
+) -> None:
     """Validate the frozen direct-child create-new location before claiming it."""
     if not _coverage_windows_available():
         raise ControllerError("development coverage requires Windows directory locking")
-    temporary_root = Path(r"C:\tmp")
+    if (
+        not temporary_root.is_absolute()
+        or str(temporary_root) != os.path.abspath(temporary_root)
+    ):
+        raise ControllerError("coverage temporary root must be canonical and absolute")
     if (
         not evidence_root.is_absolute()
         or str(evidence_root) != os.path.abspath(evidence_root)
@@ -2558,7 +2566,14 @@ def run_dev_coverage(
     pytest_tokens: Sequence[str],
     git_runner: Callable[[list[str]], list[str]] | None = None,
     runner: Callable[..., int] = _default_runner,
+    *,
+    _coverage_temporary_root: Path = Path(r"C:\tmp"),
 ) -> dict[str, object]:
+    if (
+        _coverage_temporary_root != Path(r"C:\tmp")
+        and "PYTEST_CURRENT_TEST" not in os.environ
+    ):
+        raise ControllerError("coverage temporary root override is test-only")
     scoped_task = COVERAGE_TASK_ID.fullmatch(task_id)
     if task_id not in KNOWN_MODULES and (
         scoped_task is None or scoped_task.group("module") not in KNOWN_MODULES
@@ -2572,12 +2587,12 @@ def run_dev_coverage(
     if _coverage_configured(os.environ):
         raise ControllerError("dev coverage rejects inherited coverage variables")
     basetemp_index = validated.index("--basetemp") if "--basetemp" in validated else None
-    _validate_coverage_attempt_location(repo, evidence_root)
-    with _open_locked_windows_directory(Path(r"C:\tmp")) as temporary_lock:
+    _validate_coverage_attempt_location(repo, evidence_root, _coverage_temporary_root)
+    with _open_locked_windows_directory(_coverage_temporary_root) as temporary_lock:
         with _create_coverage_lock_sentinel(temporary_lock.path) as temporary_sentinel:
             _validate_locked_coverage_file(temporary_sentinel)
             _validate_locked_coverage_directory(temporary_lock)
-            _validate_coverage_attempt_location(repo, evidence_root)
+            _validate_coverage_attempt_location(repo, evidence_root, _coverage_temporary_root)
             evidence = prepare_evidence_root(evidence_root)
             with _open_locked_windows_directory(evidence) as evidence_lock:
                 with _create_coverage_lock_sentinel(evidence) as evidence_sentinel:

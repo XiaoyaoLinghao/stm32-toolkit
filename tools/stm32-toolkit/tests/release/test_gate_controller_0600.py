@@ -1485,7 +1485,8 @@ def test_dev_coverage_accepts_every_frozen_plan_pytest_shape(
         return 0
 
     result = run_dev_coverage(
-        repo, task_id, evidence, tokens, _coverage_git(changed), runner
+        repo, task_id, evidence, tokens, _coverage_git(changed), runner,
+        _coverage_temporary_root=tmp_path.parent,
     )
 
     assert calls == 1
@@ -1520,7 +1521,10 @@ def test_dev_coverage_rejects_invalid_basetemp_before_evidence_creation(
     evidence = _coverage_evidence(tmp_path)
 
     with pytest.raises(ControllerError):
-        run_dev_coverage(repo, "STM32TK-0603-T12", evidence, tokens, _coverage_git([]))
+        run_dev_coverage(
+            repo, "STM32TK-0603-T12", evidence, tokens, _coverage_git([]),
+            _coverage_temporary_root=tmp_path.parent,
+        )
 
     assert not evidence.exists()
 
@@ -1546,6 +1550,7 @@ def test_dev_coverage_rejects_basetemp_for_other_tasks_and_existing_paths(
                 evidence,
                 [str(test_file), "--cov=stm32_toolkit.a", "--basetemp", str(existing)],
                 _coverage_git([product.relative_to(repo).as_posix()]),
+                _coverage_temporary_root=tmp_path.parent,
             )
         assert not evidence.exists()
 
@@ -1576,6 +1581,7 @@ def test_dev_coverage_rejects_unsafe_absent_basetemp_before_evidence_creation(
             evidence,
             [str(test_file), "--cov=stm32_toolkit.a", "--basetemp", values[case]],
             _coverage_git([product.relative_to(repo).as_posix()]),
+            _coverage_temporary_root=tmp_path.parent,
         )
 
     assert not evidence.exists()
@@ -1610,6 +1616,7 @@ def test_dev_coverage_rejects_evidence_parent_junction_before_claiming_root(
                 evidence,
                 [str(test_file), "--cov=stm32_monitor.package", *extra_tokens],
                 _coverage_git([product.relative_to(repo).as_posix()]),
+                _coverage_temporary_root=tmp_path.parent,
             )
         assert not evidence.exists()
     finally:
@@ -1641,10 +1648,67 @@ def test_dev_coverage_rejects_nested_evidence_root_before_claiming_it(tmp_path: 
             [str(test_file), "--cov=stm32_monitor.package"],
             _coverage_git([product.relative_to(repo).as_posix()]),
             runner,
+            _coverage_temporary_root=tmp_path.parent,
         )
 
     assert runner_calls == 0
     assert not evidence.exists()
+
+
+def test_dev_coverage_rejects_nonpytest_temporary_root_override_before_side_effects(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The private fixture root seam cannot become a production path override."""
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    repo = tmp_path / "repo"
+    evidence = _coverage_evidence(tmp_path)
+    temporary_root = tmp_path / "override-not-created"
+    runner_calls = 0
+
+    def runner(*_args: object, **_kwargs: object) -> int:
+        nonlocal runner_calls
+        runner_calls += 1
+        return 0
+
+    with pytest.raises(ControllerError, match="test-only"):
+        run_dev_coverage(
+            repo,
+            "STM32TK-0603-T01",
+            evidence,
+            ["tests/test_a.py"],
+            _coverage_git([]),
+            runner,
+            _coverage_temporary_root=temporary_root,
+        )
+
+    assert runner_calls == 0
+    assert not temporary_root.exists()
+    assert not evidence.exists()
+
+
+def test_dev_coverage_rejects_existing_evidence_root_with_fixture_root(tmp_path: Path) -> None:
+    """An override preserves create-new evidence semantics."""
+    repo = tmp_path / "repo"
+    test_file = repo / "tools/stm32-monitor/tests/test_a.py"
+    product = repo / "tools/stm32-monitor/src/stm32_monitor/a.py"
+    test_file.parent.mkdir(parents=True)
+    product.parent.mkdir(parents=True)
+    test_file.write_text("def test_a(): pass\n", encoding="utf-8")
+    product.write_text("VALUE = 1\n", encoding="utf-8")
+    evidence = _coverage_evidence(tmp_path)
+    evidence.mkdir()
+
+    with pytest.raises(ControllerError, match="new path"):
+        run_dev_coverage(
+            repo,
+            "STM32TK-0603-T01",
+            evidence,
+            [str(test_file)],
+            _coverage_git([product.relative_to(repo).as_posix()]),
+            _coverage_temporary_root=tmp_path.parent,
+        )
+
+    assert evidence.is_dir()
 
 
 def test_dev_coverage_win32_directory_identity_uses_volume_and_file_index(
@@ -1694,6 +1758,7 @@ def test_dev_coverage_rejects_prepositioned_root_junction(tmp_path: Path) -> Non
                 evidence,
                 [str(test_file), "--cov=stm32_monitor.package"],
                 _coverage_git([product.relative_to(repo).as_posix()]),
+                _coverage_temporary_root=tmp_path.parent,
             )
     finally:
         os.rmdir(evidence)
@@ -1733,6 +1798,7 @@ def test_dev_coverage_rejects_root_replaced_before_handle_open(
                 evidence,
                 [str(test_file), "--cov=stm32_monitor.package"],
                 _coverage_git([product.relative_to(repo).as_posix()]),
+                _coverage_temporary_root=tmp_path.parent,
             )
     finally:
         if evidence.exists():
@@ -1754,12 +1820,14 @@ def test_dev_coverage_rejects_target_created_before_root_creation(
     original_validate = gates._validate_coverage_attempt_location
     validations = 0
 
-    def create_target_before_second_validation(repo_path: Path, root: Path) -> None:
+    def create_target_before_second_validation(
+        repo_path: Path, root: Path, temporary_root: Path,
+    ) -> None:
         nonlocal validations
         validations += 1
         if validations == 2:
             root.mkdir()
-        original_validate(repo_path, root)
+        original_validate(repo_path, root, temporary_root)
 
     monkeypatch.setattr(gates, "_validate_coverage_attempt_location", create_target_before_second_validation)
     runner_calls = 0
@@ -1777,6 +1845,7 @@ def test_dev_coverage_rejects_target_created_before_root_creation(
             [str(test_file), "--cov=stm32_monitor.package"],
             _coverage_git([product.relative_to(repo).as_posix()]),
             runner,
+            _coverage_temporary_root=tmp_path.parent,
         )
     assert validations == 2
     assert runner_calls == 0
@@ -1832,6 +1901,7 @@ def test_dev_coverage_real_child_cannot_remove_rename_or_unlock_root(tmp_path: P
         [str(test_file), "--cov=stm32_monitor.package"],
         _coverage_git([changed]),
         runner,
+        _coverage_temporary_root=tmp_path.parent,
     )["task_id"] == "STM32TK-0603-T01"
     assert not list(evidence.glob(".stm32tk-coverage-lock-*"))
 
@@ -1861,6 +1931,7 @@ def test_dev_coverage_raw_is_published_only_after_pipe_is_read(tmp_path: Path) -
         [str(test_file), "--cov=stm32_monitor.package"],
         _coverage_git([changed]),
         runner,
+        _coverage_temporary_root=tmp_path.parent,
     )["task_id"] == "STM32TK-0603-T01"
     assert raw_path.is_file()
 
@@ -1911,6 +1982,7 @@ def test_dev_coverage_runner_has_no_final_raw_path_to_unlink_rename_or_swap(tmp_
         [str(test_file), "--cov=stm32_monitor.package"],
         _coverage_git([changed]),
         runner,
+        _coverage_temporary_root=tmp_path.parent,
     )["task_id"] == "STM32TK-0603-T01"
     assert not moved_raw.exists()
     assert outside.is_file()
@@ -1941,6 +2013,7 @@ def test_dev_coverage_runner_cannot_reverse_hardlink_raw_to_new_external_path(tm
             repo, "STM32TK-0603-T01", evidence,
             [str(test_file), "--cov=stm32_monitor.package"],
             _coverage_git([changed]), runner,
+            _coverage_temporary_root=tmp_path.parent,
         )
     except ControllerError:
         pass
@@ -1977,6 +2050,7 @@ def test_dev_coverage_real_pytest_cov_writes_preopened_raw(tmp_path: Path) -> No
         evidence,
         ["-q", "-p", "no:cacheprovider", str(test_file), "--cov=stm32_toolkit.preopened"],
         _coverage_git([changed]),
+        _coverage_temporary_root=tmp_path.parent,
     )
 
     assert result["files"] == [
@@ -2010,6 +2084,7 @@ def test_dev_coverage_result_preoccupation_is_not_overwritten(tmp_path: Path) ->
             [str(test_file), "--cov=stm32_monitor.package"],
             _coverage_git([changed]),
             runner,
+            _coverage_temporary_root=tmp_path.parent,
         )
     assert (evidence / "branch-coverage.json").read_bytes() == occupied
 
@@ -2059,6 +2134,7 @@ def test_dev_coverage_result_swap_is_blocked_until_success_boundary(
         [str(test_file), "--cov=stm32_monitor.package"],
         _coverage_git([changed]),
         runner,
+        _coverage_temporary_root=tmp_path.parent,
     )["task_id"] == "STM32TK-0603-T01"
     assert swap_codes == [32]
     assert not moved_result.exists()
@@ -2097,7 +2173,8 @@ def test_dev_coverage_t12_failed_attempt_retries_same_frozen_argv_with_new_root(
 
     with pytest.raises(ControllerError, match="subprocess failed"):
         run_dev_coverage(
-            repo, "STM32TK-0603-T12", first, tokens, _coverage_git([changed]), failing_runner
+            repo, "STM32TK-0603-T12", first, tokens, _coverage_git([changed]), failing_runner,
+            _coverage_temporary_root=tmp_path.parent,
         )
 
     def successful_runner(argv: list[str], **_kwargs: object) -> int:
@@ -2110,7 +2187,8 @@ def test_dev_coverage_t12_failed_attempt_retries_same_frozen_argv_with_new_root(
         return 0
 
     result = run_dev_coverage(
-        repo, "STM32TK-0603-T12", second, tokens, _coverage_git([changed]), successful_runner
+        repo, "STM32TK-0603-T12", second, tokens, _coverage_git([changed]), successful_runner,
+        _coverage_temporary_root=tmp_path.parent,
     )
 
     assert result["task_id"] == "STM32TK-0603-T12"
@@ -2133,6 +2211,7 @@ def test_dev_coverage_preflight_failure_does_not_claim_evidence_root(
             evidence,
             ["tools/stm32-monitor/tests/missing.py", "--cov=stm32_monitor.models"],
             _coverage_git([]),
+            _coverage_temporary_root=tmp_path.parent,
         )
 
     assert not evidence.exists()
@@ -2163,6 +2242,7 @@ def test_dev_coverage_failed_execution_preserves_evidence_and_requires_new_root(
             [str(test_file), "--cov=stm32_monitor.models"],
             _coverage_git([changed]),
             failing_runner,
+            _coverage_temporary_root=tmp_path.parent,
         )
     assert (evidence / "coverage-raw.json").read_text(encoding="utf-8") == "retained failure\n"
 
@@ -2173,6 +2253,7 @@ def test_dev_coverage_failed_execution_preserves_evidence_and_requires_new_root(
             evidence,
             [str(test_file), "--cov=stm32_monitor.models"],
             _coverage_git([changed]),
+            _coverage_temporary_root=tmp_path.parent,
         )
 
 
@@ -2241,6 +2322,7 @@ def test_dev_coverage_discovers_each_changed_product_file_and_requires_90_percen
         pytest_tokens=["-q", "-p", "no:cacheprovider", str(test_file), "--cov=stm32_toolkit.changed"],
         git_runner=_coverage_git([changed]),
         runner=runner,
+        _coverage_temporary_root=tmp_path.parent,
     )
 
     assert result["files"] == [
@@ -2279,6 +2361,7 @@ def test_dev_coverage_adds_exact_modules_for_changed_package_files(tmp_path: Pat
         [str(test_file), "--cov=stm32_toolkit.evidence.model", "--cov=stm32_toolkit.evidence.model", "-q", "-p", "no:cacheprovider"],
         _coverage_git(changed),
         runner,
+        _coverage_temporary_root=tmp_path.parent,
     )
 
     assert [row["path"] for row in result["files"]] == changed
@@ -2314,7 +2397,10 @@ def test_dev_coverage_rejects_noncanonical_duplicate_or_unpaired_pytest_flags(
         return 0
 
     with pytest.raises(ControllerError):
-        run_dev_coverage(repo, "STM32TK-0601-T03", evidence, tokens, _coverage_git([]), runner)
+        run_dev_coverage(
+            repo, "STM32TK-0601-T03", evidence, tokens, _coverage_git([]), runner,
+            _coverage_temporary_root=tmp_path.parent,
+        )
 
     assert runner_calls == 0
 
@@ -2341,7 +2427,10 @@ def test_dev_coverage_rejects_noncanonical_or_unknown_task_ids_before_side_effec
     evidence = _coverage_evidence(tmp_path)
 
     with pytest.raises(ControllerError, match="unknown coverage task"):
-        run_dev_coverage(repo, task_id, evidence, ["tests/test_changed.py"])
+        run_dev_coverage(
+            repo, task_id, evidence, ["tests/test_changed.py"],
+            _coverage_temporary_root=tmp_path.parent,
+        )
 
     assert not evidence.exists()
 
@@ -2375,7 +2464,10 @@ def test_dev_coverage_rejects_no_change_duplicates_missing_rows_low_file_and_she
         return 0
 
     with pytest.raises(ControllerError):
-        run_dev_coverage(repo, "STM32TK-0601", evidence, tokens, _coverage_git(paths), runner)
+        run_dev_coverage(
+            repo, "STM32TK-0601", evidence, tokens, _coverage_git(paths), runner,
+            _coverage_temporary_root=tmp_path.parent,
+        )
 
 
 def test_dev_coverage_rejects_duplicate_json_object_rows(tmp_path: Path) -> None:
@@ -2406,6 +2498,7 @@ def test_dev_coverage_rejects_duplicate_json_object_rows(tmp_path: Path) -> None
             [str(test_file), "--cov=stm32_toolkit.a"],
             _coverage_git([changed]),
             runner,
+            _coverage_temporary_root=tmp_path.parent,
         )
 
 
@@ -2482,6 +2575,7 @@ def test_dev_coverage_rejects_mutated_coverage_v7_contract(tmp_path: Path, mutat
             [str(test_file), "--cov=stm32_toolkit.a", "-q", "-p", "no:cacheprovider"],
             _coverage_git([changed]),
             runner,
+            _coverage_temporary_root=tmp_path.parent,
         )
 
 
