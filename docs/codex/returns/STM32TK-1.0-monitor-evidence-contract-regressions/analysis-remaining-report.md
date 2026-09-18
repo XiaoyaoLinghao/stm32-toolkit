@@ -1,16 +1,17 @@
 # STM32TK 1.0 remaining Monitor Analysis public-contract regressions
 
 Status: first review returned `REVISION_REQUIRED`; the first correction round
-is prepared and awaits the primary's release after the backend benchmark.
-This remains a test-only slice for the approved Analysis model, workflow and
-durable-publication contracts.
+has been implemented and its released verification evidence is recorded below.
+Independent review and primary acceptance remain pending. This remains a
+test-only slice for the approved Analysis model, workflow and durable-publication
+contracts.
 
 ## Fixed identities
 
 - Accepted integration base: `39bf982af688b7653735b0de02ce75a19804c2b4`.
 - Test worktree start: `47988d34725f97075d3ea69a43a65cb5b2144189`.
 - Frozen product CodeHead: `15b1a70e9bd684285da5557104deff529f537e49`.
-- Test CodeHead before this report commit: `bc160a8a` (`c23573c486ecba8c7509639c21142c8dcaf45b61` is the prior review-round test head).
+- Test CodeHead before this report commit: `575be6f8bd451e2dd70508ae4fe9a8ea914549a6` (`bc160a8a94e815c7d387fdb061e0e7006d9a919f` is the prior correction-round test head).
 - Branch: `codex/STM32TK-1.0-analysis-remaining`.
 - Worktree: `D:\codex-tmp\v10b-0918\r10\am`.
 - Implementation owner: Luna/max Analysis slice owner.
@@ -58,8 +59,10 @@ passing it to the public canonical replay parser. It does not alter product
 code or the scenario contract.
 
 The first independent review at `D:\\codex-tmp\\v10b-0918\\r10\\e\\analysis-remaining\\independent-review.md`
-returned `REVISION_REQUIRED`. Test commit `bc160a8a` prepares the bounded
-correction round:
+returned `REVISION_REQUIRED`. Test commit
+`bc160a8a94e815c7d387fdb061e0e7006d9a919f` prepared the bounded correction
+round, and test commit `575be6f8bd451e2dd70508ae4fe9a8ea914549a6` corrected the
+reopened-batch cursor construction after the first released correction run:
 
 - The repeated-cursor provider now returns a structurally valid second
   `HistoryPage` whose last ordinal matches the repeated cursor, records the
@@ -85,11 +88,12 @@ correction round:
   `INCOMPATIBLE_IDENTITY`, records provider calls, and checks that no derived
   analysis root is written.
 
-No test or build was run for this correction round. The retained `92 passed`
-full-module result and narrow corrected pass from the prior head remain valid
-historical evidence; after release, only the new and changed nodes will be
-run with a new isolated suffix under `D:\\codex-tmp\\v10b-0918\\r10\\t\\an2-rev1`
-and evidence files under `D:\\codex-tmp\\v10b-0918\\r10\\e\\analysis-remaining`.
+The reopened-batch scenario initially used the same legacy cursor batch ID for
+the first and second pages, so the public pagination loop correctly rejected it
+as a repeated cursor before the intended third-page closed-key check. The
+follow-up test commit changes only that second page's structurally valid public
+cursor to batch ID `2`; the narrow rerun then reaches the third page and the
+closed-key branch without forging a `HistoryPage`.
 
 The previously retained `valid88passed+1` correction-node evidence remains
 authoritative historical evidence and is not replaced by this slice.
@@ -100,12 +104,9 @@ No test, build, browser, coverage or large-copy command was run while the
 retention-diagnosis exclusive window was active. The primary released that
 window before the following verification. All run files are retained under
 `D:\codex-tmp\v10b-0918\r10\e\analysis-remaining` and the run-scoped
-cache, basetemp, coverage database and child temp directory are under
-`D:\codex-tmp\v10b-0918\r10\t\an2`.
-
-The correction round was prepared after the independent review and has not
-been executed. It remains blocked only by the upcoming exclusive backend
-benchmark release; no new PASS or failure count is attributed to `bc160a8a`.
+cache, basetemp, coverage database and child temp directories are under the
+historical `D:\codex-tmp\v10b-0918\r10\t\an2` root or the correction
+round's new `D:\codex-tmp\v10b-0918\r10\t\an2-rev1` suffix.
 
 The first post-release invocation was an infrastructure failure before test
 collection: exit code `4` because the command used the invalid
@@ -144,13 +145,44 @@ JUnit, coverage JSON and exit record are retained under the corresponding
 record confirms `tempfile.gettempdir()`, `TEMP`, `TMP` and `TMPDIR` all resolve
 to `D:\codex-tmp\v10b-0918\r10\t\an2\temp`.
 
+After the independent review and release of the backend benchmark, the
+correction nodes were run once with the exact nine explicit node arguments in
+`run-review-correction-command.txt`. The command used the frozen product
+sources through `PYTHONPATH`, `--cov=stm32_monitor`, `--cov=stm32_toolkit`,
+and the valid `--cov-report=json:<path>` form. It exited `1` after `8 passed,
+1 failed` in `17.33s`. The failed node was
+`test_history_multipage_reopened_batch_is_rejected_before_derived_publication`:
+the test supplied the same legacy cursor token on pages one and two, so the
+public pagination loop correctly reached the repeated-cursor error before the
+intended third-page closed-key check and the test observed two provider calls
+instead of three. This is a test construction failure, not a product failure;
+the complete stdout, stderr, JUnit, exit record and combined coverage JSON are
+retained as `run-review-correction.stdout.txt`,
+`run-review-correction.stderr.txt`, `review-correction.junit.xml`,
+`run-review-correction-exit.json` and `review-correction.coverage.json`.
+
+Test commit `575be6f8bd451e2dd70508ae4fe9a8ea914549a6` changed that second
+page's valid cursor batch ID from `1` to `2`. The changed node was then run
+once with the exact command in `run-reopened-fix-command.txt`, using new
+`cache-reopened-fix`, `basetemp-reopened-fix`, `temp-reopened-fix` and
+`review-reopened-fix.coverage` paths beneath the correction suffix. It exited
+`0` with `1 passed` in `12.41s`; the JUnit contains one passing testcase and
+stderr is empty. The retained stdout, stderr, JUnit, exit record, environment
+record and coverage JSON are `run-reopened-fix.stdout.txt`,
+`run-reopened-fix.stderr.txt`, `review-reopened-fix.junit.xml`,
+`run-reopened-fix-exit.json`, `review-reopened-fix-environment.json` and
+`review-reopened-fix.coverage.json`. The valid second cursor lets the public
+loop reach the third page, where the reopened closed batch key is rejected
+with the exact public `INCOMPATIBLE_IDENTITY` error before derived publication.
+
 The scoped `--cov-fail-under=0` results are informational and cannot be
 reported as the unchanged `>=90%` release PASS. Since the full two-module run
-predates the one-line test correction, this report records the exact `92 + 1`
-full-run result plus the corrected scenario result and makes no claim of a
-post-correction full-module PASS. Earlier accepted coverage and the retained
+predates this review correction round, this report retains the exact prior
+`92 + 1` full-run result, the correction-round `8 passed + 1 test-construction
+failure` result, and the final corrected scenario result. It makes no claim of
+a post-correction full-module PASS. Earlier accepted coverage and the retained
 `valid88passed+1` correction-node evidence remain available to the primary
-verification owner; this slice does not rerun the full suite.
+verification owner; this slice did not rerun either full module.
 
 No cleanup, remote operation, hardware access, deployment, package build or
 self-review was performed.
