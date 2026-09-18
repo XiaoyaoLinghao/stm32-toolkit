@@ -21,7 +21,7 @@
 |---|---|---|
 | 规格/计划/标准流程衔接/集成与判定 | 主对话框 | 本文、规格、接受报告；只有主对话框调度子任务和操作硬件 |
 | B 物理场景的最小产品适配 | 一名 Luna/max | 规格冻结的 AcceptanceAttempt policy/model/routing 与必要测试；共享 schema/公共入口仅此一人修改 |
-| CubeMX 原生工程和 HAL 用户区 | 另一名 Luna/max | `D:\codex-tmp\v10b-0918\p` 及其独立 no-remote 工程；不写 Toolkit 核心或另一执行者文件 |
+| CubeMX 原生工程和 HAL 用户区 | 另一名 Luna/max | `D:\codex-tmp\v10b-0918\p` 及其独立 no-remote 工程；另独占已确证阻塞的 `native-fix` 工作树 `creation_environment.py`/相关测试，不写 host 适配文件 |
 | 独立审查 | 未参与相应实现的主对话框/审查者 | clean review worktree、完整 accepted-base 到实现 head 的差异与证据；实现者不能接受自己的结果 |
 | 证据与清理 | 主对话框 | B 的 evidence/bundle/执行卡与一次性产物归属；A 归档和保留路径不可写 |
 
@@ -49,6 +49,8 @@
 测试替身证明软件契约，不能计为 B 实机 PASS。不要增加新的 controller、Evidence store、临时 CLI 子命令、诊断框架或另一套 JSON schema 家族。实现返回源码 head、完整 diff、实际 argv/stdout/exit、环境和已清理/保留项，不提供无原始记录支持的累计测试数。
 
 ### 3.2 Luna CubeMX 工程准备
+
+首次 prepare 已终态拒绝真实 CubeMX 的分组 descriptor，apply 未调用。先按规格新增的“索引映射到分组 MCU 描述文件”边界修复现有环境解析器：同一工程实现者独占 `native-fix` 工作树（accepted base 不变）中的 `creation_environment.py`、`test_creation_environment.py`，必要时仅扩现有 `test_cubemx_adapter.py` / `test_creation_workflows.py` 的 token 与授权环境漂移用例。独立完整 diff/受影响验证通过后，以此已冻结 source CLI 而非修改已部署文件再执行以下创建步骤。原失败、parent Git `13735e863f5680d8a5ff0665e6b1ad0f559008e3` 与空目的地保持；不得重用前次 action。
 
 1. 在 `p` 建立最小可恢复 Git HEAD/no remote；记录空目的地 `b`。复用现有 tool discovery，固定 CubeMX 文件/Java/MCU XML/HAL package 与 GCC/CMake/Ninja 的实际版本和哈希。IDE 工具发现已有 B `data/tool-path-overrides.json` 绑定 D 盘 VS Code；不能将 Python 发现函数的 profile/data root 参数直接视为 CLI 各命令均支持。不安装/升级缺失项，不改共享包或全局配置。
 2. 创建 CLI 三步统一使用默认发现，不传 `--support-profile`；实际 data root 为 `p` 的父目录下 `.stm32-toolkit-data`、session 固定 `cli`。重新调用 `project create-plan`，不得使用前期已过期或不同 tool-profile 的 plan/action；再使用其精确 `plan-id/action-digest` 调用 `create-prepare`，核对 environment digest，最后单次 `create-apply --authorization-digest ... --authorized`。VS Code 的默认发现错误不是 creation blocker；显式 IDE profile 留到独立 IDE 预检使用，不在缺少该参数的 apply 前混换 profile。所有命令保存 stdout/stderr/exit；无需手写 CubeMX 启动脚本，因为现有 adapter 已拥有这个责任。

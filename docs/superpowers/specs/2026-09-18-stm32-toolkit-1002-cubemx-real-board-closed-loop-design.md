@@ -37,6 +37,8 @@
 
 SVD 已核实：`C:\ST\STM32CubeCLT_1.22.0\STMicroelectronics_CMSIS_SVD\STM32F429.svd` 与 A 的工程副本一致，SHA256 为 `2b7de1e383ee415f45339b776942fe01f7b48215316629c3cc280e12661c2400`。DFP `Keil.STM32F4xx_DFP.2.17.1` 目前只有 A manifest 的声明，限定的当前安装/归档元数据中未找到可证明该版本的 `.pack/.pdsc` 路径/哈希。B 不照搬该声明；原生创建使用已定位的 HAL 包/MCU XML。实机前须由实际 support profile 证明 PyOCD target/backend 的可用映射；若确实需要 pack，先补齐确切文件事实。不得将这一未知项改写为全局缺失或直接下载安装。
 
+2026-09-18 实施期只读依赖核对已补齐当前事实：B 使用已安装的 `Keil.STM32F4xx_DFP.3.1.1`，pack 为 `C:\Users\ZhangYang\AppData\Local\cmsis-pack-manager\cmsis-pack-manager\Keil\STM32F4xx_DFP\3.1.1.pack`，SHA256 `345231106fe697df24bbe9133aeeec1b0383d7891c4adf4f47bbb8b478e9f2f0`。当前 index/PDSC 精确列出 `STM32F429ZGTx`、1 MiB Flash、192 KiB SRAM 加64 KiB CCM 及 `STM32F4xx_1024.FLM`；PyOCD内置表没有精确 `stm32f429zgtx`，该名字由pack注册。B明确记录3.1.1，不将其等同于A声明的2.17.1。项目观测SVD仍为上述CubeCLT文件；pack内SVD字节不同，两者分别记录来源和hash。证据为 `evidence/dependencies/vs10b-runtime-target-map-20260918T032434360Z`；没有启动PyOCD/IDE或访问硬件。操作前重新核对实际映射/文件，IDE显式选择该pack；若发现漂移先停止，不安装或静默换版本。
+
 - 板卡选择：现有 BSMR-MC04、STM32F429ZG；具体 MCU package、Probe 选择器、DFP/SVD、工具版本、安装路径与文件指纹在离线预检中固定。下一次物理操作前重新核对现场与板/探针身份。
 - 工程必须位于新的 B root，使用新的 workspace/session/data/evidence 名称，保留自己的 no-remote Git 历史、source snapshots、build ID、ELF SHA、CreationPlan 和 ownership manifest。A 的 runtime 可只读复用；A 的 workspace/session/flash receipt/lease/action 不可复用。
 - 只配置已证实用于 LED 与 SWD 的引脚。不得驱动电机、继电器、机械负载、电源控制或不明外设；时钟、内存、启动文件和 linker 由实际 `.ioc`/原生输出/ELF 证明。
@@ -130,9 +132,24 @@ SVD 已核实：`C:\ST\STM32CubeCLT_1.22.0\STMicroelectronics_CMSIS_SVD\STM32F42
 
 B 首个切片使用 fresh `/4` attempt，不扩展 A-only continuation。原草案的 attempt `/3` 编号在实施预检中发现已被 `continuation.py:71` 的 A 续接记录占用，且现有工作流按该 schema 分流；因此只纠正 B attempt 编号为未占用的 `/4`，B recovery policy 仍为 `/3`，不得重解释 A continuation `/3` 或修改其 policy `/1`、序列化和路由。测试必须同时覆盖 A `/2`、A continuation `/3`、B `/4` 与 replay `/1` 的读回/路由隔离，不能只测 B 自身 round-trip。
 
-CLI 使用现有 `acceptance attempt` 命令及新 scenario；MCP 只扩 `AcceptanceAttemptScenarioId`，不修改软件 AcceptanceScenarioId/AcceptanceRecord。创建授权、`.ioc`、native inventory 和 ownership provenance 仍由创建/工程 manifest 持有，并在 B bundle 引用；不向 attempt 添加 `creationAuthorizationDigest` 或自由字段。
+CLI 使用现有 `scenario attempt` 命令及新 scenario（operation 名为 `acceptance.attempt.*`）；MCP 只扩 `AcceptanceAttemptScenarioId`，不修改软件 AcceptanceScenarioId/AcceptanceRecord。创建授权、`.ioc`、native inventory 和 ownership provenance 仍由创建/工程 manifest 持有，并在 B bundle 引用；不向 attempt 添加 `creationAuthorizationDigest` 或自由字段。
 
 最小产品文件：`acceptance/recovery.py`、`acceptance/recovery_workflows.py`、必要的 `acceptance/__init__.py` 导出，以及 `mcp_server.py` 的 attempt enum。不修改 CubeMXAdapter/creation_apply、replay model、Diagnostic pair validator 或 Probe/Monitor 协议。若出现这些边界以外的真实阻塞，由主对话框先给出原因与新边界，不能让实现者自行扩张。
+
+### 实施中确认的创建阻塞：索引映射到分组 MCU 描述文件
+
+首次真实 `create-prepare` 在授权生成前以 `CUBEMX_MCU_DESCRIPTOR_INVALID` 终态停止；未运行 apply、CubeMX 或构建。源码 `creation_environment.py:186-234` 仅接受请求型号同名 XML 及相同 RefName。当前安装的 `families.xml` 第 14061 行却明确记录 `RefName=STM32F429ZGTx`、`Name=STM32F429Z(E-G)Tx`，后者对应存在的 descriptor，且 descriptor 自身 RefName 等于分组 Name。这是 PRODUCT：现有解析器缺少当前官方数据库的精确索引映射支持，不是更换 MCU、板卡或安装包的理由。原失败保留于本轮 `evidence/firmware`。
+
+冻结修正边界为 `creation_environment.py` 及现有相关测试，由工程准备的同一 Luna/max 在独立 `native-fix` 工作树负责，不与 host 适配重叠：
+
+1. 现有精确文件模式保持原行为、序列化和 digest；精确文件歧义、unsafe 或 RefName 不符时直接拒绝，不借索引回避错误。仅当没有精确文件候选时使用同数据库内固定 `families.xml`。
+2. 索引只接受安全普通文件、UTF-8 XML、有限大小（16 MiB）和无 DTD/entity 声明；匹配本次请求的 `Mcu.RefName` 必须唯一且 case-insensitive 完全相等，不做前缀、通配、正则扩展或推测 E/G 变体。其 `Name` 必须是最多128字符的 `STM32` 开头安全文件名 token，仅含 ASCII 字母数字、括号、连字符或下划线，不允许目录、扩展或命令字符。
+3. 以该 Name 加 `.xml` 在原受限数据库库存中定位唯一安全 descriptor；descriptor 的 RefName 必须与索引 Name 完全对应。原 inventory/reparse/descriptor 大小限制不放宽；缺失、歧义、越界、无效编码/结构/映射均复用 `CUBEMX_MCU_DESCRIPTOR_INVALID`。
+4. 返回给既有 CubeMXAdapter 的 `native_source_token` 是索引中的精确 `STM32F429ZGTx`，不是带括号的分组 Name；既有 `load` token 正则、脚本及执行边界保持不变。
+5. 分组路径须把索引相对路径与真实文件 SHA256 一并绑定到执行环境 digest，和 descriptor 路径/hash、精确 source token 共同重验。使用可选内部事实字段 `native_index_path/native_index_sha256`；仅索引模式在 native digest 中增加 `indexPath/indexSha256`，公开事实增加 `nativeIndexPath/nativeIndexSha256`。无索引的旧路径不新增空字段、不改旧 digest。prepare 与 apply 之间索引或 descriptor 漂移必须在 native 进程执行前拒绝。
+6. 复用现有环境、adapter 和 creation workflow 测试：既有精确匹配兼容；G 与 E 各自经真实格式索引映射得到自身 token；非索引成员拒绝；索引/descriptor 不符和重复映射拒绝；危险路径/重定向/oversize/DTD 拒绝；索引字节变化影响 digest；生成脚本仍发出精确 leaf MCU token。再对当前安装只读调用现有环境函数证明映射，不把它当作真实生成或实机 PASS。
+
+该修正是已批准真实创建场景的必要阻塞修复，保持已批准 MCU、原生 engine、权限和用户场景。独立审查通过后才使用修正后的公共源码 CLI 重新进行一次 fresh plan/prepare/apply，记录实际 code head/解释器/dependencies；这是候选源码执行，不冒充已安装部署。首个非预期错误继续停止，不能改输入型号或改共享数据库绕过。无需修改 Toolkit schema、CubeMXAdapter、creation_apply、全局注册表或原安装数据库。
 
 ## 5. 验证范围与停止条件
 
