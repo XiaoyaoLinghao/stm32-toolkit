@@ -47,6 +47,13 @@ in `tools/release/run_0600_gates.py`. Report in the existing release return tree
 No source package, launcher, schema, dependency lock, thresholds or physical
 authorization changes. No hardware, remote operation or repeated packaging.
 
+Independent clean-checkout review found Git's Windows line-ending conversion
+changes the two fixture files' raw hashes, although their Git blobs are correct.
+The same fixture owner additionally owns a directory-local `.gitattributes` in
+`tests/release/fixtures/0502/` with exactly the two launcher filenames marked
+`-text`. This preserves the authoritative historical bytes in a fresh checkout;
+do not change global Git configuration, active launchers or root attributes.
+
 Original full-suite failures remain evidence. Correct only their known causes,
 then run the exact 51 no-coverage, 2 Node, 16 support and 10 historical launcher
 nodes, plus the one GC and one CLI node. Add narrowly focused seam guard checks
