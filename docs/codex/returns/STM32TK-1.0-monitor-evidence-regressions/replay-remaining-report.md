@@ -1,14 +1,14 @@
 # STM32 Toolkit 1.0 remaining Monitor replay regressions
 
-This report records the bounded follow-up test preparation and the correction
-round for the public Replay and physical-publication contracts. Execution and
-release acceptance remain pending the primary's explicit execution release.
+This report records the bounded follow-up test preparation, correction round,
+and retained verification evidence for the public Replay and physical-
+publication contracts. Release acceptance remains pending.
 
 ## Ledger
 
 - Accepted integration base: `39bf982af688b7653735b0de02ce75a19804c2b4`
 - Frozen product/artifact CodeHead: `15b1a70e9bd684285da5557104deff529f537e49`
-- Test CodeHead before this report commit: `a800b96eeca7e4e5b54a360b9346f345a7547909`
+- Test CodeHead before this report commit: `eb5bae6b9853cb1087bc87d28c0c559f31c1916a`
 - Branch: `codex/STM32TK-1.0-replay-remaining`
 - Implementer: `/root/monitor_replay_regressions` (bounded Luna/max test owner)
 - Independent review round `review-r1`: `REVISION_REQUIRED`; corrections are
@@ -57,25 +57,36 @@ gates were changed.
 
 ## Verification status
 
-No test, coverage, Python execution, or release command has been run in this
-worktree. The primary has not yet released the narrow retention-diagnosis
-window. The later affected-module command must use the existing
-`r10\py\Scripts\python.exe`, final product imports from `r10\verify`, all
-temporary/cache variables and `COVERAGE_FILE` below `r10\t\re2`, and retain
-command, environment, actual argv, stdout, stderr, exit status, JUnit, text
-and binary coverage under `r10\e\replay-remaining`.
+The primary released execution after retention `r3` stopped. The planned
+two-module command ran once at test CodeHead `a800b96eeca7e4e5b54a360b9346f345a7547909`
+with `D:\codex-tmp\v10b-0918\r10\py\Scripts\python.exe` and product imports
+from the frozen `r10\verify` source paths. It exited `1` with `133 passed` and
+`2 failed`. Both failures were test setup defects, not product contradictions:
+the captured-time case constructed a `SampleBatch` that violated its own
+scheduled/captured precondition, and the transcript-byte case passed a valid
+physical float through the toolkit evidence canonicalizer, which rejects
+floats. The full-run stdout and empty stderr are retained.
 
-Expected execution roots:
+The two corrected failed cases then ran once in a narrow follow-up at test
+CodeHead `eb5bae6b9853cb1087bc87d28c0c559f31c1916a`; it exited `0` with `2
+passed` in `2.32s`. The complete two-module set was not rerun after the narrow
+correction, so this evidence is not a final module-level release pass.
 
-- Temporary and cache root: `D:\codex-tmp\v10b-0918\r10\t\re2`
-- Evidence root: `D:\codex-tmp\v10b-0918\r10\e\replay-remaining`
-- Affected modules only: `tools/stm32-monitor/tests/test_replay.py` and
-  `tools/stm32-monitor/tests/test_physical_publication.py`
-- Scoped coverage failure threshold: `0` and informational; it cannot be used
-  as a release pass.
+Retained execution evidence includes actual argv, command, environment,
+stdout, stderr, exit status, JUnit, text coverage JSON, and binary coverage:
 
-Actual post-change statement and branch metrics: `not run; execution release
-pending`.
+- Full affected-module run: `D:\codex-tmp\v10b-0918\r10\e\replay-remaining\run-a800b96-20260919`
+- Narrow corrected cases: `D:\codex-tmp\v10b-0918\r10\e\replay-remaining\run-eb5bae6-20260919-targeted`
+- Temporary, child tempfile, pytest basetemp, cache, and `COVERAGE_FILE`
+  roots are retained under the corresponding directories in
+  `D:\codex-tmp\v10b-0918\r10\t\re2`.
+
+The full affected-module coverage JSON reports `955/1196` covered statements
+(`79.8495%`) and `282/404` covered branches (`69.8020%`) for
+`stm32_monitor.replay`. The narrow corrected-case coverage JSON reports
+`632/1196` statements (`52.8428%`) and `145/404` branches (`35.8911%`). These
+are scoped informational metrics; `--cov-fail-under=0` was not treated as a
+release pass and no aggregate release gate was changed.
 
 ## Existing coverage and remaining boundaries
 
