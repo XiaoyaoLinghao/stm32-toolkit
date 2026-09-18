@@ -692,7 +692,7 @@ def test_public_window_reference_authority_rejects_count_order_and_boundary_cont
 
     short_reference = _ref_with(
         after_ref,
-        projected_batch_sha256s=(after_ref.projected_batch_sha256s[0],),
+        projected_batch_sha256s=[after_ref.projected_batch_sha256s[0]],
     )
     with pytest.raises(AnalysisError) as count_error:
         analyze_monitor_windows(_request(before_ref, short_reference), before, after)
