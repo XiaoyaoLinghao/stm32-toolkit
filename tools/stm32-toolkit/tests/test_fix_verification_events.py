@@ -351,7 +351,7 @@ def _session_contradiction(case: str) -> dict[str, object]:
         "investigating-with-active-plan",
         "open-with-lifecycle-data",
     }:
-        session, _source, _plan_value, _previous = _verifying()
+        session, _source_value, _plan_value, _previous = _verifying()
         payload = session.to_dict()
         if case == "verifying-without-active-plan":
             payload["active_verification_plan_id"] = None
