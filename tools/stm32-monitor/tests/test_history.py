@@ -2287,6 +2287,211 @@ def test_retention_deadline_aborts_before_mutation(tmp_path: Path, monkeypatch) 
         store.close()
 
 
+def test_retention_timeout_after_commit_refresh_keeps_public_state_consistent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import stm32_monitor.history as history_module
+
+    paths = _paths(tmp_path)
+    store = HistoryStore(paths)
+    entered = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+    caller_done = threading.Event()
+    results: list[object] = []
+    errors: list[BaseException] = []
+    database_path = paths.monitor_root / "monitor.sqlite3"
+
+    def read_state() -> dict[str, object]:
+        connection = sqlite3.connect(database_path.as_uri() + "?mode=ro", uri=True)
+        try:
+            row = connection.execute(
+                """
+                SELECT
+                    (SELECT logical_bytes FROM monitor_history_accounting WHERE singleton = 1),
+                    COALESCE((SELECT SUM(payload_bytes) FROM history_batches), 0)
+                        + COALESCE((SELECT SUM(value_bytes) FROM history_values), 0),
+                    (SELECT COUNT(*) FROM history_batches),
+                    COALESCE((SELECT SUM(value_count) FROM history_batches), 0),
+                    (SELECT COUNT(*) FROM history_values)
+                """
+            ).fetchone()
+            return {
+                "logicalBytes": row[0],
+                "summedBytes": row[1],
+                "batchCount": row[2],
+                "valueCount": row[3],
+                "valueRows": row[4],
+                "integrity": connection.execute("PRAGMA integrity_check").fetchone()[0],
+            }
+        finally:
+            connection.close()
+
+    original_refresh = store._database._refresh_owned_integrity
+
+    def held_refresh(connection: sqlite3.Connection) -> None:
+        entered.set()
+        try:
+            if not release.wait(timeout=5):
+                raise AssertionError("refresh barrier was not released")
+            original_refresh(connection)
+        finally:
+            finished.set()
+
+    def run_retention() -> None:
+        try:
+            results.append(
+                store.run_retention(now_ns=history_module.RETENTION_AGE_NS + 101)
+            )
+        except BaseException as error:
+            errors.append(error)
+        finally:
+            caller_done.set()
+
+    thread = threading.Thread(target=run_retention)
+    try:
+        assert store.append_batch(_batch(paths, 1, captured_ns=100)).ok
+        primed = store.query_history(HistoryQuery("monitor-1", 0, 2_000_000_000))
+        assert primed.ok and primed.data is not None
+        assert len(primed.data.values) == 1
+        monkeypatch.setattr(store._database, "_refresh_owned_integrity", held_refresh)
+
+        thread.start()
+        assert entered.wait(timeout=5)
+        assert caller_done.wait(timeout=5)
+        assert not errors
+        assert len(results) == 1
+        retained = results[0]
+        assert not retained.ok and retained.code == "MONITOR_STORAGE_BUSY"
+
+        committed = read_state()
+        assert committed["batchCount"] == 0
+        assert committed["valueCount"] == 0
+        assert committed["valueRows"] == 0
+        assert committed["logicalBytes"] == committed["summedBytes"]
+        assert committed["integrity"] == "ok"
+
+        release.set()
+        assert finished.wait(timeout=5)
+        thread.join(timeout=5)
+        assert not thread.is_alive()
+        assert store._database.try_write(
+            lambda connection: connection.execute("SELECT 1").fetchone()[0],
+            timeout_ms=200,
+        ) == 1
+        remaining = store.query_history(HistoryQuery("monitor-1", 0, 2_000_000_000))
+        assert remaining.ok and remaining.data is not None
+        assert len(remaining.data.values) == 0
+    finally:
+        release.set()
+        try:
+            if thread.is_alive():
+                thread.join(timeout=5)
+        finally:
+            store.close()
+
+
+def test_retention_timeout_at_commit_boundary_preserves_consistency_and_reuse(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import stm32_monitor.history as history_module
+
+    paths = _paths(tmp_path)
+    store = HistoryStore(paths)
+    entered = threading.Event()
+    release = threading.Event()
+    caller_done = threading.Event()
+    results: list[object] = []
+    errors: list[BaseException] = []
+    database_path = paths.monitor_root / "monitor.sqlite3"
+
+    def read_state() -> dict[str, object]:
+        connection = sqlite3.connect(database_path.as_uri() + "?mode=ro", uri=True)
+        try:
+            row = connection.execute(
+                """
+                SELECT
+                    (SELECT logical_bytes FROM monitor_history_accounting WHERE singleton = 1),
+                    COALESCE((SELECT SUM(payload_bytes) FROM history_batches), 0)
+                        + COALESCE((SELECT SUM(value_bytes) FROM history_values), 0),
+                    (SELECT COUNT(*) FROM history_batches),
+                    COALESCE((SELECT SUM(value_count) FROM history_batches), 0),
+                    (SELECT COUNT(*) FROM history_values)
+                """
+            ).fetchone()
+            return {
+                "logicalBytes": row[0],
+                "summedBytes": row[1],
+                "batchCount": row[2],
+                "valueCount": row[3],
+                "valueRows": row[4],
+                "integrity": connection.execute("PRAGMA integrity_check").fetchone()[0],
+            }
+        finally:
+            connection.close()
+
+    original_before_commit = store._database._before_commit
+
+    def held_before_commit(connection: sqlite3.Connection) -> None:
+        entered.set()
+        if not release.wait(timeout=5):
+            raise AssertionError("commit barrier was not released")
+        original_before_commit(connection)
+
+    def run_retention() -> None:
+        try:
+            results.append(
+                store.run_retention(now_ns=history_module.RETENTION_AGE_NS + 101)
+            )
+        except BaseException as error:
+            errors.append(error)
+        finally:
+            caller_done.set()
+
+    thread = threading.Thread(target=run_retention)
+    try:
+        assert store.append_batch(_batch(paths, 1, captured_ns=100)).ok
+        primed = store.query_history(HistoryQuery("monitor-1", 0, 2_000_000_000))
+        assert primed.ok and primed.data is not None
+        assert len(primed.data.values) == 1
+        monkeypatch.setattr(store._database, "_before_commit", held_before_commit)
+
+        thread.start()
+        assert entered.wait(timeout=5)
+        assert caller_done.wait(timeout=5)
+        assert not errors
+        assert len(results) == 1
+        retained = results[0]
+        assert not retained.ok and retained.code == "MONITOR_STORAGE_BUSY"
+
+        release.set()
+        thread.join(timeout=5)
+        assert not thread.is_alive()
+        assert store._database.try_write(
+            lambda connection: connection.execute("SELECT 1").fetchone()[0],
+            timeout_ms=200,
+        ) == 1
+        final_state = read_state()
+        assert final_state["batchCount"] in (0, 1)
+        assert final_state["valueCount"] in (0, 1)
+        assert final_state["batchCount"] == final_state["valueCount"]
+        assert final_state["valueRows"] == final_state["valueCount"]
+        assert final_state["logicalBytes"] == final_state["summedBytes"]
+        assert final_state["integrity"] == "ok"
+        remaining = store.query_history(HistoryQuery("monitor-1", 0, 2_000_000_000))
+        assert remaining.ok and remaining.data is not None
+        assert len(remaining.data.values) == final_state["valueCount"]
+    finally:
+        release.set()
+        try:
+            if thread.is_alive():
+                thread.join(timeout=5)
+        finally:
+            store.close()
+
+
 def test_history_integer_binding_failures_map_to_stable_protocol_results(tmp_path: Path) -> None:
     paths = _paths(tmp_path)
     store = HistoryStore(paths)
