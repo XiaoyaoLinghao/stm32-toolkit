@@ -22,15 +22,41 @@ description: Use when a Claude Code user asks to check, bootstrap, repair, or di
 
 ## Shell and path contract
 
-Claude substitutes `${CLAUDE_PLUGIN_ROOT}`, `${CLAUDE_PLUGIN_DATA}`, and `${CLAUDE_PROJECT_DIR}` inline. Never read them from ambient shell variables. These single-line commands work from PowerShell or Git Bash because they invoke `powershell.exe` and pass explicit quoted paths.
+Standalone users must pass three explicit absolute paths: the extracted `ToolkitRoot`, the
+long-lived `DataRoot`, and the existing `ProjectRoot`. The helper fails closed before mutation on
+empty, relative, unresolved, redirected, or reparse-point paths. Never guess a replacement path.
 
-The helper fails closed before mutation on empty, relative, unresolved, redirected, or reparse-point paths. Never guess a replacement path.
+Agent-host adapters may substitute their own resolved paths when they invoke the same helper, but
+the standalone examples below are complete ordinary PowerShell and do not require host placeholders.
 
-## CHECK
+## Standalone PowerShell sequence
+
+Set the paths once, run the read-only check, and then choose one authorized mutation mode. Do not
+run both mutation commands for one setup decision.
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File '${CLAUDE_PLUGIN_ROOT}/bin/setup-stm32-env.ps1' -Mode Check -ToolkitRoot '${CLAUDE_PLUGIN_ROOT}' -DataRoot '${CLAUDE_PLUGIN_DATA}' -ProjectRoot '${CLAUDE_PROJECT_DIR}'
+$ToolkitRoot = 'C:\tools\stm32-toolkit-1.0.0'
+$DataRoot = 'C:\data\stm32-toolkit'
+$ProjectRoot = 'C:\work\blinky'
+$SetupScript = Join-Path $ToolkitRoot 'bin\setup-stm32-env.ps1'
+
+# Always run the read-only check first.
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $SetupScript -Mode Check `
+  -ToolkitRoot $ToolkitRoot -DataRoot $DataRoot -ProjectRoot $ProjectRoot
+
+# After reviewing Check and explicitly authorizing an absent-runtime install, choose Bootstrap.
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $SetupScript -Mode Bootstrap `
+  -ToolkitRoot $ToolkitRoot -DataRoot $DataRoot -ProjectRoot $ProjectRoot
+
+# Choose Repair instead, after separate explicit authorization, only for a broken existing runtime.
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $SetupScript -Mode Repair `
+  -ToolkitRoot $ToolkitRoot -DataRoot $DataRoot -ProjectRoot $ProjectRoot
 ```
+
+`Check` is read-only. Select exactly one of `Bootstrap` or `Repair` only after its explicit
+authorization condition is met, then repeat `Check`.
+
+## CHECK
 
 CHECK always returns JSON. `bundle.status` is `missing` or verified, and `runtimeState.status` is
 `missing`, `matching`, `repairable`, `downgrade-refused`, `source-conflict`, `unsupported`, or
@@ -64,17 +90,9 @@ staging is removed; a staging tree containing redirects is preserved for manual 
 than followed. The state file is written atomically only after runtime promotion; failures restore
 the old runtime and state bytes. After promotion, the verified Toolkit, Monitor and PyOCD wheels regenerate their console launchers using the final runtime interpreter; launcher binding/version checks must pass before healthy state is published.
 
-For an absent runtime, after explicit authorization run:
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File '${CLAUDE_PLUGIN_ROOT}/bin/setup-stm32-env.ps1' -Mode Bootstrap -ToolkitRoot '${CLAUDE_PLUGIN_ROOT}' -DataRoot '${CLAUDE_PLUGIN_DATA}' -ProjectRoot '${CLAUDE_PROJECT_DIR}'
-```
-
-For a broken runtime, after separate explicit authorization run:
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File '${CLAUDE_PLUGIN_ROOT}/bin/setup-stm32-env.ps1' -Mode Repair -ToolkitRoot '${CLAUDE_PLUGIN_ROOT}' -DataRoot '${CLAUDE_PLUGIN_DATA}' -ProjectRoot '${CLAUDE_PROJECT_DIR}'
-```
+For an absent runtime, after explicit authorization, select the `Bootstrap` command in the
+standalone sequence above. For a broken runtime, after separate explicit authorization, select
+the `Repair` command instead.
 
 Repair moves the failed runtime to `${CLAUDE_PLUGIN_DATA}/runtime/.quarantine/` before promotion and rolls it back if promotion fails. Neither mode writes project files, installs external hardware tools, packs, extensions, drivers, or registers MCP.
 

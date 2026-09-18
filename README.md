@@ -73,12 +73,33 @@ not add a second server or a host-Python fallback.
 
 ## CLI, setup, and isolation
 
-Run `/stm32-toolkit:setup-stm32-env` first. CHECK reports `missing`, `healthy`, or `broken` and
-does not mutate the project. The generic invocation is:
+Run `/stm32-toolkit:setup-stm32-env` first when using Claude Code. For an ordinary Windows
+PowerShell session, set the three absolute paths for this checkout, its durable data, and the
+existing project. These examples use replaceable local paths and do not depend on an agent-host
+placeholder:
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File '${CLAUDE_PLUGIN_ROOT}/bin/setup-stm32-env.ps1' -Mode Check -ToolkitRoot '${CLAUDE_PLUGIN_ROOT}' -DataRoot '${CLAUDE_PLUGIN_DATA}' -ProjectRoot '${CLAUDE_PROJECT_DIR}'
+$ToolkitRoot = 'C:\tools\stm32-toolkit-1.0.0'
+$DataRoot = 'C:\data\stm32-toolkit'
+$ProjectRoot = 'C:\work\blinky'
+$SetupScript = Join-Path $ToolkitRoot 'bin\setup-stm32-env.ps1'
+
+# Always run the read-only check first.
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $SetupScript -Mode Check `
+  -ToolkitRoot $ToolkitRoot -DataRoot $DataRoot -ProjectRoot $ProjectRoot
+
+# After reviewing Check and explicitly authorizing an absent-runtime install, choose Bootstrap.
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $SetupScript -Mode Bootstrap `
+  -ToolkitRoot $ToolkitRoot -DataRoot $DataRoot -ProjectRoot $ProjectRoot
+
+# Choose Repair instead, after separate explicit authorization, only for a broken existing runtime.
+# Do not run both mutation commands for one setup decision.
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $SetupScript -Mode Repair `
+  -ToolkitRoot $ToolkitRoot -DataRoot $DataRoot -ProjectRoot $ProjectRoot
 ```
+
+`Check` is read-only. Select exactly one of `Bootstrap` or `Repair` only after its explicit
+authorization condition is met, then repeat `Check`.
 
 ### Offline candidate build and install
 
@@ -90,12 +111,13 @@ uses only executable-plus-argument subprocesses, and does not push or publish:
 py -3.12 tools/release/build_0900_artifacts.py build `
   --repo-root C:\src\stm32-toolkit `
   --code-head <40-lowercase-hex-commit> `
-  --wheelhouse D:\codex-tmp\v10b-0918\r10\wheelhouse `
-  --output-root D:\codex-tmp\v10b-0918\r10\artifacts\1.0.0
+  --wheelhouse C:\release-inputs\wheelhouse `
+  --output-root C:\release-output\stm32-toolkit-1.0.0
 ```
 
-Verify `CHECKSUMS.sha256` before extracting `stm32-toolkit-1.0.0-windows-x86_64.zip`. Point the
-generic setup command at the extracted `ToolkitRoot`, explicit `DataRoot`, and explicit
+Replace the release input and output paths with your own absolute directories. Verify
+`CHECKSUMS.sha256` before extracting `stm32-toolkit-1.0.0-windows-x86_64.zip`. Point the standalone
+setup commands above at the extracted `ToolkitRoot`, the long-lived `DataRoot`, and the existing
 `ProjectRoot`. CHECK reports bundle and `runtime-state.json` evidence; Bootstrap and Repair install
 only the manifest-listed wheels from the extracted `release/wheels/` directory with `--no-index`
 and `--no-deps`. Legacy 0.9.0/0.5.0/0.3.0 runtimes are quarantined during authorized Repair. A recorded

@@ -66,12 +66,32 @@ Claude `.mcp.json` 只是同一契约的映射。它内联替换 `${CLAUDE_PLUGI
 
 ## CLI、setup 与隔离
 
-先运行 `/stm32-toolkit:setup-stm32-env`。CHECK 返回 `missing`、`healthy` 或 `broken`，且不
-修改项目。通用调用方式为：
+在 Claude Code 中先运行 `/stm32-toolkit:setup-stm32-env`。在普通 Windows PowerShell 会话中，
+先为当前 checkout、持久化数据和已有工程设置三个绝对路径。下面的路径可以替换为用户自己的
+本地路径，不依赖 agent host 占位符：
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File '${CLAUDE_PLUGIN_ROOT}/bin/setup-stm32-env.ps1' -Mode Check -ToolkitRoot '${CLAUDE_PLUGIN_ROOT}' -DataRoot '${CLAUDE_PLUGIN_DATA}' -ProjectRoot '${CLAUDE_PROJECT_DIR}'
+$ToolkitRoot = 'C:\tools\stm32-toolkit-1.0.0'
+$DataRoot = 'C:\data\stm32-toolkit'
+$ProjectRoot = 'C:\work\blinky'
+$SetupScript = Join-Path $ToolkitRoot 'bin\setup-stm32-env.ps1'
+
+# 始终先运行只读 Check。
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $SetupScript -Mode Check `
+  -ToolkitRoot $ToolkitRoot -DataRoot $DataRoot -ProjectRoot $ProjectRoot
+
+# 查看 Check 结果并明确授权缺少 runtime 的安装后，选择 Bootstrap。
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $SetupScript -Mode Bootstrap `
+  -ToolkitRoot $ToolkitRoot -DataRoot $DataRoot -ProjectRoot $ProjectRoot
+
+# 对已有但损坏的 runtime，另行明确授权后改选 Repair。
+# 一次 setup 决策不要同时运行两个 mutation 命令。
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $SetupScript -Mode Repair `
+  -ToolkitRoot $ToolkitRoot -DataRoot $DataRoot -ProjectRoot $ProjectRoot
 ```
+
+`Check` 是只读的。只有满足对应的明确授权条件后，才能在 `Bootstrap` 和 `Repair` 中选择一个，
+完成后再次运行 `Check`。
 
 ### 离线 candidate 构建与安装
 
@@ -85,12 +105,13 @@ release：
 py -3.12 tools/release/build_0900_artifacts.py build `
   --repo-root D:\src\stm32-toolkit `
   --code-head <40-位小写十六进制 commit> `
-  --wheelhouse D:\codex-tmp\v10b-0918\r10\wheelhouse `
-  --output-root D:\codex-tmp\v10b-0918\r10\artifacts\1.0.0
+  --wheelhouse C:\release-inputs\wheelhouse `
+  --output-root C:\release-output\stm32-toolkit-1.0.0
 ```
 
-先验证外置的 `CHECKSUMS.sha256`，再解压 `stm32-toolkit-1.0.0-windows-x86_64.zip`。generic
-setup 使用解压后的 `ToolkitRoot`、明确的 `DataRoot` 与 `ProjectRoot`。CHECK 会报告 bundle 和
+请将 release 输入和输出路径替换为自己的绝对目录。先验证外置的 `CHECKSUMS.sha256`，再解压
+`stm32-toolkit-1.0.0-windows-x86_64.zip`。上面的 standalone setup 命令使用解压后的
+`ToolkitRoot`、持久化的 `DataRoot` 与已有的 `ProjectRoot`。CHECK 会报告 bundle 和
 `runtime-state.json` 证据；Bootstrap/Repair 只用 `release/wheels/` 中 manifest 列出的 wheel，
 并使用 `--no-index`、`--no-deps`。授权 Repair 会隔离 0.9.0/0.5.0/0.3.0 legacy runtime；记录过更高
 版本时返回 `downgrade-refused`，同版本但 manifest/source 不同时返回 `source-conflict`，未来

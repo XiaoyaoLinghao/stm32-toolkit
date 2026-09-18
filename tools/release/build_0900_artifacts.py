@@ -925,7 +925,7 @@ def _troubleshooting() -> bytes:
             "- Use an absolute project cwd, GDB/pack paths, startup-ready output, and resolved preLaunch task references; a missing task or F5 URI error stops the flow.\n"
             "- During Watch, stop the core through the named handoff and finish with the ordinary detach/cleanup path.\n"
             "- DiagnosticStore native lock-contention classification remains a known limitation; preserve its evidence and follow the shipped runbook.\n"
-            "- Full deployment and IDE checks: docs/testing/windows-deployment-and-ide-preflight.md.\n").encode("utf-8")
+            "- Full deployment and IDE checks: when reading the package-root troubleshooting.md, open the companion stm32-toolkit-1.0.0-source.zip beside it and then open stm32-toolkit-1.0.0/docs/testing/windows-deployment-and-ide-preflight.md inside that archive. In an extracted Windows bundle, the copy under stm32-toolkit-1.0.0/release/troubleshooting.md is under the extracted Toolkit root; open ../docs/testing/windows-deployment-and-ide-preflight.md from release/ (or stm32-toolkit-1.0.0/docs/testing/windows-deployment-and-ide-preflight.md from the root).\n").encode("utf-8")
 
 
 def _manifest_shape(manifest: Any) -> None:
