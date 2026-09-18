@@ -7,7 +7,6 @@ import hashlib
 import json
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -43,8 +42,8 @@ def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def _test_directory() -> Path:
-    return Path(tempfile.mkdtemp(prefix="stm32tk-0600-feasibility-test-", dir=r"C:\tmp"))
+def _test_directory(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    return tmp_path_factory.mktemp("feas")
 
 
 def _expected_chromium_argv(
@@ -305,7 +304,8 @@ def valid_manifest(valid_profile: dict[str, object]) -> dict[str, object]:
 
 @pytest.fixture
 def valid_result(
-    valid_profile: dict[str, object], valid_manifest: dict[str, object]
+    valid_profile: dict[str, object], valid_manifest: dict[str, object],
+    tmp_path_factory: pytest.TempPathFactory,
 ) -> dict[str, object]:
     profile = valid_profile
     manifest = valid_manifest
@@ -313,7 +313,7 @@ def valid_result(
     chromium = profile["chromium"]
     assert isinstance(tools, dict)
     assert isinstance(chromium, dict)
-    evidence_directory = _test_directory()
+    evidence_directory = _test_directory(tmp_path_factory)
     evidence_root = str(evidence_directory)
     support_root = r"C:\tmp\support"
     result = {
@@ -796,10 +796,11 @@ def test_result_rejects_boolean_rtt_channel_and_browser_exit(
 
 
 def test_collector_materializes_the_bound_seed_and_runs_a_controlled_browser_fixture(
-    valid_profile: dict[str, object], monkeypatch: pytest.MonkeyPatch
+    valid_profile: dict[str, object], monkeypatch: pytest.MonkeyPatch,
+    tmp_path_factory: pytest.TempPathFactory,
 ) -> None:
     """Collection must retain the seed in the actual profile before a controlled blank launch."""
-    root = _test_directory() / "support"
+    root = _test_directory(tmp_path_factory) / "support"
     profile_path = _write_controlled_support(root, valid_profile)
     evidence_root = root.parent / "evidence"
     host = copy.deepcopy(valid_profile["host"])
@@ -846,9 +847,11 @@ def test_collector_materializes_the_bound_seed_and_runs_a_controlled_browser_fix
     ).read_bytes() == (evidence_root / "chromium-profile-materialization.json").read_bytes()
 
 
-def test_verifier_must_match_the_repository_code_head_blob() -> None:
+def test_verifier_must_match_the_repository_code_head_blob(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
     """A copied or edited verifier cannot claim an unrelated repository CodeHead."""
-    repo = _test_directory() / "repo"
+    repo = _test_directory(tmp_path_factory) / "repo"
     script = repo / "tools" / "release" / "verify_0600_feasibility.py"
     script.parent.mkdir(parents=True)
     script.write_text("trusted\n", encoding="utf-8")

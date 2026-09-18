@@ -13,7 +13,6 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
-import tempfile
 from threading import Event
 import time
 import weakref
@@ -45,9 +44,8 @@ from stm32_toolkit.evidence.store import EvidenceStore
 
 
 @pytest.fixture
-def tmp_path():
-    """Use a fresh C:\\tmp direct child for the frozen Windows coverage contract."""
-    path = Path(tempfile.mkdtemp(prefix="stm32tk-0601-t05-gc-", dir=r"C:\tmp"))
+def tmp_path(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    path = tmp_path_factory.mktemp("gc")
     try:
         yield path
     finally:

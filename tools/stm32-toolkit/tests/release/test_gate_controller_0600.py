@@ -10,7 +10,6 @@ import re
 import shutil
 import subprocess
 import sys
-import tempfile
 import types
 import zipfile
 import xml.etree.ElementTree as ElementTree
@@ -67,14 +66,13 @@ NOW = datetime(2026, 8, 15, 2, 3, 4, 123456, tzinfo=timezone.utc)
 
 
 @pytest.fixture
-def tmp_path() -> Path:
-    """Use the approved external test root; the default user temp ACL is broken on this host."""
-    root = Path(tempfile.mkdtemp(prefix="stm32tk-0601-task2-", dir=r"C:\tmp"))
+def tmp_path(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    root = tmp_path_factory.mktemp("gate")
     try:
         yield root
     finally:
-        for sibling in Path(r"C:\tmp").glob(f"{root.name}-coverage-*"):
-            if sibling.parent.resolve() != Path(r"C:\tmp").resolve() or gates._is_reparse(sibling):
+        for sibling in root.parent.glob(f"{root.name}-coverage-*"):
+            if sibling.parent.resolve() != root.parent.resolve() or gates._is_reparse(sibling):
                 raise AssertionError(f"unsafe coverage test cleanup target: {sibling}")
             if sibling.is_dir():
                 shutil.rmtree(sibling)
@@ -1354,7 +1352,7 @@ def _coverage_git(paths: list[str]):
 
 
 def _coverage_evidence(tmp_path: Path, name: str = "evidence") -> Path:
-    return Path(r"C:\tmp") / f"{tmp_path.name}-coverage-{name}"
+    return tmp_path.parent / f"{tmp_path.name}-coverage-{name}"
 
 
 def _create_junction(path: Path, target: Path) -> None:
@@ -1649,10 +1647,12 @@ def test_dev_coverage_rejects_nested_evidence_root_before_claiming_it(tmp_path: 
     assert not evidence.exists()
 
 
-def test_dev_coverage_win32_directory_identity_uses_volume_and_file_index() -> None:
+def test_dev_coverage_win32_directory_identity_uses_volume_and_file_index(
+    tmp_path: Path,
+) -> None:
     """The retained identity comes from an open Win32 handle, not mutable timestamps."""
-    with gates._open_locked_windows_directory(Path(r"C:\tmp")) as locked:
-        assert locked.path == Path(r"C:\tmp")
+    with gates._open_locked_windows_directory(tmp_path) as locked:
+        assert locked.path == tmp_path
         assert isinstance(locked.volume_serial, int)
         assert isinstance(locked.file_index, int)
         assert locked.file_index >= 0
