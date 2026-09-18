@@ -1,6 +1,6 @@
 # VS10-B completed-evidence offline finalization
 
-Status: DRAFT / USER_APPROVAL_PENDING. This proposal follows the user's request to continue after card05. It changes the B-only acceptance continuation boundary explicitly excluded by the original B specification; it is not an implementation, deployment or acceptance claim.
+Status: DESIGN_REVIEW_ACCEPTED / USER_APPROVAL_PENDING. This proposal follows the user's request to continue after card05. It changes the B-only acceptance continuation boundary explicitly excluded by the original B specification; it is not an implementation, deployment or acceptance claim.
 
 ## Baseline, owner and scenarios
 
@@ -73,3 +73,5 @@ Required evidence is offline: one persisted B chain using real store structures 
 After software acceptance, perform one offline application first against an isolated copy of card05's real data, with original-file hash verification, then use the reviewed public candidate against the canonical B evidence store only within the approved application boundary. New completion is explicitly an offline finalization of earlier physical results. It is not a second physical test or proof the original 300-second checkpoint passed. Independently authenticate the existing Monitor analysis bundle with its existing reader: root/payload/parents, before/after Target references, source declaration, analysis refs and session/probe/target lineage must agree with this finalized graph. A missing, swapped or corrupt bundle blocks overall VS10-B ACCEPTED even when /5 is COMPLETED; do not imply that /5 proved that bundle. Creation/NORMAL/IDE and other original B criteria likewise remain separate final gates. No bundle regeneration or new Monitor mutation is required.
 
 All new worktrees, caches, tests and evidence remain under `D:\codex-tmp\v10b-0918`; no cleanup of preserved physical evidence. This draft authorizes nothing beyond offline design preparation until the user approves this contract and the companion plan.
+
+Independent design review: `/root/vs10b_host_review` reviewed draft `bd1677089096e783b2f764198ee4b72de8272a04` and the subsequent complete corrections through `bb2ba4cd8172384378e403d2cb6dc9429d009939`. Verdict: ACCEPTED, design only. Bundle scope, exact authorization ancestry and D→E publication-lock findings are closed. No implementation, tests, deployment, hardware or overall VS10-B acceptance is implied.

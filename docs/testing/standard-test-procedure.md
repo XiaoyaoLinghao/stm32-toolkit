@@ -194,6 +194,8 @@ T10 采样入口复用已接受的有限 Monitor 生命周期，在执行卡中�
 
 ## 8. 当前验收断点（2026-09-18）
 
+**当前离线推进：B 已完成证据的续验规格/计划已独立审查通过，待用户批准新增契约。** 复用现有 `scenario attempt`，新B-only记录只认证既有 Target/Diagnostic/FixVerification 图，旧超时记录保持不变；不重烧、不重采样、不重做诊断。Monitor bundle及创建/NORMAL/IDE仍是独立总体验收门槛。仅文档变化，未实现、测试、部署或改 canonical EvidenceStore；VS10-B尚未验收。见[规格](../superpowers/specs/2026-09-18-stm32tk-vs10b-offline-finalization-design.md)与[计划](../superpowers/plans/2026-09-18-stm32tk-vs10b-offline-finalization.md)。批准后由唯一Luna/max实现、主代理独立审查，再在证据副本验证并完成一次正式离线续验。
+
 **最新：card05 实机修复与 FixVerification 已 PASS，但最终验收检查点超时，VS10-B 尚未验收。** 故障/修复 Target 各一次、两侧30秒100ms采样均已完成；每侧300组有效批次且零丢样。单行 PE3 周期修复后 Target PASS，PE3/PE4 均变化，Diagnostic revision15/RESOLVED、FixVerification PASSED；新进程读取确认。最终 checkpoint 比300秒截止时间晚约23秒，被 `ACCEPTANCE_ATTEMPT_TIMED_OUT` 拒绝；这是主代理收尾调度问题，不能归因板子或撤销有效实机证据。执行已停止，存储 attempt 保持过期的 ACTIVE/revision6，未篡改终态。两侧 marker 已消费，probe/runtime released/stopped、相关进程0。后续先离线核对显式证据续验契约，不为补账本重新烧录/采样。见 [card05 结果与精确超时点](../codex/returns/2026-09-18-stm32tk-vs10b-card05-physical-pass-checkpoint-timeout.md)。以下 card04 等为历史断点。
 
 **最新：card04 已 TERMINAL_STOPPED_BEFORE_HARDWARE_ARGUMENT_ERROR。** 用户授权后，新 attempt 完成到 revision2，静态恢复 prepare 成功；主代理 execute argv 遗漏必填 `--probe-id`，CLI 解析 exit2，未进入 backend/烧录/读取。无新 Target TestRun、Monitor window 或物理 lease，prepared action 未消费，原 registry=released、相关进程0、monitor04 两侧 marker 均不存在。现有 parser 离线复现失败并验证完整修正 argv 通过，独立审查确认阶段与原因；未重试硬件或修改产品/固件。后续须以完整固化参数、新 attempt/action/log 和新确认的有限操作继续；现有部署、构建、SVD 与采样入口证据保留。见 [本轮参数失败与修正](../codex/returns/2026-09-18-stm32tk-vs10b-card04-argument-stop.md)。下段 OFFLINE_PLAN_ACCEPTED 为执行前状态。

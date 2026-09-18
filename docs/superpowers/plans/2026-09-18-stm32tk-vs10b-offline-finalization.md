@@ -1,6 +1,6 @@
 # VS10-B completed-evidence offline finalization plan
 
-Status: DRAFT / USER_APPROVAL_PENDING. Governing proposal: [offline finalization design](../specs/2026-09-18-stm32tk-vs10b-offline-finalization-design.md). Full accepted local base is `abdc2fb5dbde2b6643e26d42e29c7ad6db72f921`; deployed software remains `12df4fe0569104d6f0e7a827496341d999e1f3ea`. Neither draft approves implementation or claims VS10-B acceptance.
+Status: DESIGN_REVIEW_ACCEPTED / USER_APPROVAL_PENDING. Governing proposal: [offline finalization design](../specs/2026-09-18-stm32tk-vs10b-offline-finalization-design.md). Full accepted local base is `abdc2fb5dbde2b6643e26d42e29c7ad6db72f921`; deployed software remains `12df4fe0569104d6f0e7a827496341d999e1f3ea`. Independent review through `bb2ba4cd8172384378e403d2cb6dc9429d009939` accepted this design and plan only. Neither document approves implementation or claims VS10-B acceptance.
 
 ## Ownership and exact scope
 
