@@ -1,6 +1,6 @@
 # VS10-B：新 CubeMX 工程真实板卡闭环
 
-状态：DRAFT / DESIGN_REVIEW_PASSED / USER_APPROVAL_PENDING。本文不是已通过产品验收的声明，也不授予硬件、安装或远程权限。
+状态：APPROVED / IMPLEMENTATION_IN_PROGRESS。用户于 2026-09-18 在审阅规格与计划后指示“开始实施”；该批准覆盖本规格的 B 场景适配与工程级所有权迁移。本文不是已通过产品验收的声明，也不授予硬件、安装或远程权限。
 
 ## 1. 基线与责任
 

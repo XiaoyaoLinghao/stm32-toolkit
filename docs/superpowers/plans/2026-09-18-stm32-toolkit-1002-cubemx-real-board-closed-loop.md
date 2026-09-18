@@ -1,6 +1,6 @@
 # VS10-B 实施计划：真实 CubeMX 工程与物理修复闭环
 
-状态：DRAFT / 设计独立审查通过，待用户批准规格与计划；尚未派发产品实现。
+状态：APPROVED / IMPLEMENTATION_IN_PROGRESS。用户于 2026-09-18 指示“开始实施”，批准已审查的规格与计划；本轮派发两个互不重叠的 Luna/max 实现责任，硬件与远程边界不变。
 
 规格：[VS10-B 设计](../specs/2026-09-18-stm32-toolkit-1002-cubemx-real-board-closed-loop-design.md)。完整 accepted base：`16a6e59dff7fed2999fae611e3d936b0b04bbabd`。主对话框直接拥有集成、分工和验收；没有代理领导层。旧 VS10-A 的 `ACCEPTED`、历史失败及清理保留决定保持原样。
 
