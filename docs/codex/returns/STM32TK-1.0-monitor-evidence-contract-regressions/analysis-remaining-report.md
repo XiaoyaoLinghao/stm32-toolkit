@@ -1,16 +1,16 @@
 # STM32TK 1.0 remaining Monitor Analysis public-contract regressions
 
-Status: implementation and released-window verification complete with one
-narrow test-construction correction; independent review and primary acceptance
-remain pending. This is a test-only slice for the approved Analysis model,
-workflow and durable-publication contracts.
+Status: first review returned `REVISION_REQUIRED`; the first correction round
+is prepared and awaits the primary's release after the backend benchmark.
+This remains a test-only slice for the approved Analysis model, workflow and
+durable-publication contracts.
 
 ## Fixed identities
 
 - Accepted integration base: `39bf982af688b7653735b0de02ce75a19804c2b4`.
 - Test worktree start: `47988d34725f97075d3ea69a43a65cb5b2144189`.
 - Frozen product CodeHead: `15b1a70e9bd684285da5557104deff529f537e49`.
-- Test CodeHead before this report commit: `c23573c4` (`cb63c9cbd23fd3fc711d9878737b118be5afd5ef` is the pre-correction test head).
+- Test CodeHead before this report commit: `bc160a8a` (`c23573c486ecba8c7509639c21142c8dcaf45b61` is the prior review-round test head).
 - Branch: `codex/STM32TK-1.0-analysis-remaining`.
 - Worktree: `D:\codex-tmp\v10b-0918\r10\am`.
 - Implementation owner: Luna/max Analysis slice owner.
@@ -57,6 +57,40 @@ shortened replay digest sequence from a Python tuple to a JSON list before
 passing it to the public canonical replay parser. It does not alter product
 code or the scenario contract.
 
+The first independent review at `D:\\codex-tmp\\v10b-0918\\r10\\e\\analysis-remaining\\independent-review.md`
+returned `REVISION_REQUIRED`. Test commit `bc160a8a` prepares the bounded
+correction round:
+
+- The repeated-cursor provider now returns a structurally valid second
+  `HistoryPage` whose last ordinal matches the repeated cursor, records the
+  cursor supplied to the second public seam call, and uses a different valid
+  batch key so the cursor check is reached before a slice contradiction.
+- Cross-linked publication tests build each altered `DiagnosticMarker` with
+  public `DiagnosticMarker.new`, round-trip it through `from_value`, and then
+  assert the publication-level analysis and evidence relations. The marker
+  IDs are recomputed by the public constructor.
+- Persisted lineage/result cases now cover invalid lineage schema, native
+  result schema mismatch, native request schema mismatch, native request run
+  binding mismatch, and native result lineage mismatch. A v1 continuation
+  field is tested through the closed wire and the public constructor. A legacy
+  wire carrying `request` is recorded as a closed-field rejection: the public
+  parser selects the legacy field set before construction, while the result
+  constructor derives schema v3 whenever a request exists, so the legacy
+  `request is not None` branch cannot be reached without forging an impossible
+  typed state.
+- Public History provider scenarios now prepare valid multi-page responses for
+  reopening a closed batch key, changing a static slice tuple, exceeding the
+  aggregate 10,000-value limit across pages, leaving a declared batch
+  incomplete, and changing the authenticated binding. Each expects
+  `INCOMPATIBLE_IDENTITY`, records provider calls, and checks that no derived
+  analysis root is written.
+
+No test or build was run for this correction round. The retained `92 passed`
+full-module result and narrow corrected pass from the prior head remain valid
+historical evidence; after release, only the new and changed nodes will be
+run with a new isolated suffix under `D:\\codex-tmp\\v10b-0918\\r10\\t\\an2-rev1`
+and evidence files under `D:\\codex-tmp\\v10b-0918\\r10\\e\\analysis-remaining`.
+
 The previously retained `valid88passed+1` correction-node evidence remains
 authoritative historical evidence and is not replaced by this slice.
 
@@ -68,6 +102,10 @@ window before the following verification. All run files are retained under
 `D:\codex-tmp\v10b-0918\r10\e\analysis-remaining` and the run-scoped
 cache, basetemp, coverage database and child temp directory are under
 `D:\codex-tmp\v10b-0918\r10\t\an2`.
+
+The correction round was prepared after the independent review and has not
+been executed. It remains blocked only by the upcoming exclusive backend
+benchmark release; no new PASS or failure count is attributed to `bc160a8a`.
 
 The first post-release invocation was an infrastructure failure before test
 collection: exit code `4` because the command used the invalid
