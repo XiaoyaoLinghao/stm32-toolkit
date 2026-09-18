@@ -7,12 +7,16 @@ verification; no per-command approval is required.
 
 1. One Luna/max owner works in `D:\codex-tmp\v10b-0918\r10\fi` on
    `codex/STM32TK-1.0-test-root-portability`. Only the ten specified test modules
-   and a concise implementation report are writable. No version/package/runtime
+   and the specification's bounded coverage-root seam in `tools/release/run_0600_gates.py`,
+   plus a concise implementation report are writable. No version/package/runtime
    changes. The owner is not alone in the repository and must preserve others'
    edits. No recursive delegation or remote action.
 2. Replace the concrete allocation/coupled path accesses with existing tempfile
    or fixture facilities. Keep parser-only hostile-path literals and assertions
    semantically unchanged. Resolve the effective Python temp root before tests.
+   Reuse the controller's existing private pytest-only root-injection pattern for
+   development coverage. Preserve its legacy default and all path/lock guards;
+   verify non-test override refusal before any filesystem mutation or runner call.
 3. Run the smallest representative existing tests that exercise allocation,
    native Windows locking/coverage sibling cleanup and relevant fixture setup.
    Set TEMP/TMP/TMPDIR below `r10/t`, an explicit short basetemp, cache and retained
