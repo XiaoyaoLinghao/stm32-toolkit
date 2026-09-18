@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import argparse
 import os
-import re
 import stat
 import sys
 import unicodedata
