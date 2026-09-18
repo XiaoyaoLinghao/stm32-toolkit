@@ -102,6 +102,9 @@ _ENVELOPE_METADATA_FIELDS = frozenset({"attempt", "attempt_sha256"})
 _PHYSICAL_ATTEMPT_SCHEMAS = frozenset(
     {PHYSICAL_ATTEMPT_SCHEMA, CUBEMX_PHYSICAL_ATTEMPT_SCHEMA}
 )
+_KNOWN_ATTEMPT_SCHEMAS = frozenset(
+    {ATTEMPT_SCHEMA, CONTINUATION_ATTEMPT_SCHEMA, *_PHYSICAL_ATTEMPT_SCHEMAS}
+)
 
 _MESSAGES = {
     "ACCEPTANCE_ATTEMPT_INPUT_INVALID": "Acceptance attempt input is invalid.",
@@ -1118,13 +1121,15 @@ def begin_acceptance_attempt(
     scenario_version: object,
     continuation: object = None,
 ) -> OperationResult[dict[str, object]]:
+    if not isinstance(scenario_id, str) or not isinstance(scenario_version, str):
+        return _failure("acceptance.attempt.begin", "ACCEPTANCE_ATTEMPT_INPUT_INVALID")
     if continuation is not None:
         if scenario_id != PHYSICAL_SCENARIO_ID or scenario_version != PHYSICAL_SCENARIO_VERSION:
             return _failure("acceptance.attempt.begin", "ACCEPTANCE_ATTEMPT_STAGE_INVALID")
         return _result("acceptance.attempt.begin", lambda: _validate_continuation_result(context, _begin_continuation_attempt(
             context, attempt_id=attempt_id, scenario_id=scenario_id,
             scenario_version=scenario_version, continuation=continuation)))
-    if scenario_id in {PHYSICAL_SCENARIO_ID, CUBEMX_PHYSICAL_SCENARIO_ID}:
+    if scenario_id in (PHYSICAL_SCENARIO_ID, CUBEMX_PHYSICAL_SCENARIO_ID):
         return _result(
             "acceptance.attempt.begin",
             lambda: _begin_physical_attempt(
@@ -1269,9 +1274,16 @@ def checkpoint_acceptance_attempt(
                 test_run_id=test_run_id, diagnostic_session_id=diagnostic_session_id,
                 acceptance_record_id=acceptance_record_id, source_change_intent=source_change_intent,
                 fix_verification_id=fix_verification_id)))
+        if schema is not None and schema not in _KNOWN_ATTEMPT_SCHEMAS:
+            return _failure(
+                "acceptance.attempt.checkpoint",
+                "ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED",
+            )
         if schema is not None:
             physical = schema in _PHYSICAL_ATTEMPT_SCHEMAS
-    except (AcceptanceRecoveryValidationError, _RecoveryFailure):
+    except _RecoveryFailure as error:
+        return _failure("acceptance.attempt.checkpoint", error.code)
+    except AcceptanceRecoveryValidationError:
         physical = physical_hint
     if physical:
         return _result(
@@ -2536,7 +2548,9 @@ def _attempt_schema_for_context(
     if not isinstance(raw, Mapping):
         raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED")
     schema = raw.get("schema")
-    return schema if isinstance(schema, str) else None
+    if not isinstance(schema, str):
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED")
+    return schema
 
 
 def _checkpoint_physical_attempt(
@@ -2863,8 +2877,15 @@ def authorize_acceptance_source_change(
         schema = _attempt_schema_for_context(context, canonical_attempt_id)
         if schema == CONTINUATION_ATTEMPT_SCHEMA:
             return _failure("acceptance.attempt.authorize-source-change", "ACCEPTANCE_ATTEMPT_STAGE_INVALID")
+        if schema is not None and schema not in _KNOWN_ATTEMPT_SCHEMAS:
+            return _failure(
+                "acceptance.attempt.authorize-source-change",
+                "ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED",
+            )
         physical = schema in _PHYSICAL_ATTEMPT_SCHEMAS
-    except (AcceptanceRecoveryValidationError, _RecoveryFailure):
+    except _RecoveryFailure as error:
+        return _failure("acceptance.attempt.authorize-source-change", error.code)
+    except AcceptanceRecoveryValidationError:
         physical = False
     if physical:
         return _result(
@@ -2935,8 +2956,15 @@ def show_acceptance_attempt(
         if schema == CONTINUATION_ATTEMPT_SCHEMA:
             return _result("acceptance.attempt.show", lambda: _show_continuation_attempt(
                 context, attempt_id=canonical_attempt_id, resume=False))
+        if schema is not None and schema not in _KNOWN_ATTEMPT_SCHEMAS:
+            return _failure(
+                "acceptance.attempt.show",
+                "ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED",
+            )
         physical = schema in _PHYSICAL_ATTEMPT_SCHEMAS
-    except (AcceptanceRecoveryValidationError, _RecoveryFailure):
+    except _RecoveryFailure as error:
+        return _failure("acceptance.attempt.show", error.code)
+    except AcceptanceRecoveryValidationError:
         physical = False
     if physical:
         return _result(
@@ -2961,8 +2989,15 @@ def resume_acceptance_attempt(
         if schema == CONTINUATION_ATTEMPT_SCHEMA:
             return _result("acceptance.attempt.resume", lambda: _show_continuation_attempt(
                 context, attempt_id=canonical_attempt_id, resume=True))
+        if schema is not None and schema not in _KNOWN_ATTEMPT_SCHEMAS:
+            return _failure(
+                "acceptance.attempt.resume",
+                "ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED",
+            )
         physical = schema in _PHYSICAL_ATTEMPT_SCHEMAS
-    except (AcceptanceRecoveryValidationError, _RecoveryFailure):
+    except _RecoveryFailure as error:
+        return _failure("acceptance.attempt.resume", error.code)
+    except AcceptanceRecoveryValidationError:
         physical = False
     if physical:
         return _result(
