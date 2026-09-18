@@ -33,7 +33,7 @@
 
 ### 3.1 Luna 产品适配
 
-在 exact accepted base 的新 clean worktree 上，只实现 `new-cubemx-physical-repair/1`、`cubemx`、attempt/policy `/3` 的固定配对。保留 legacy Keil `/2` 各 profile/digest/旧记录字节和软件 `new-cubemx-project/1` replay 的行为。只复用已有六阶段物理链，不增加 B continuation。
+在 exact accepted base 的新 clean worktree 上，只实现 `new-cubemx-physical-repair/1`、`cubemx`、attempt `/4` / recovery policy `/3` 的固定配对。实施预检发现 A continuation 已占用 attempt `/3`，故 B 使用 `/4`；这是防止覆盖已有合同的编号纠正，不新增行为。保留 legacy Keil `/2`、A continuation `/3` 各 profile/digest/旧记录字节和软件 `new-cubemx-project/1` replay 的行为。只复用已有六阶段物理链，不增加 B continuation。
 
 允许修改的产品文件（前缀为 `tools/stm32-toolkit/src/stm32_toolkit/`）：`acceptance/recovery.py`、`acceptance/recovery_workflows.py`、必要的 `acceptance/__init__.py`、`mcp_server.py`。`cli.py` 的 scenario 参数没有封闭 allowlist，预计无需更改；若确需更改，先给出现有入口不足的最小证据。`acceptance/model.py`、`continuation.py`、CubeMX adapter/creation apply 和 Diagnostic pair validator 保持其现有边界。
 
@@ -41,7 +41,7 @@
 
 必要验证必须直接调用现有模型/工作流/CLI/MCP 测试入口：
 
-1. 新 B profile 的合法生成、序列化、存储重载和公共入口路由；非法 scenario/schema/origin 配对拒绝。
+1. 新 B profile 的合法生成、序列化、存储重载和公共入口路由；非法 scenario/schema/origin 配对拒绝。验证 A `/2`、A continuation `/3`、B `/4`、replay `/1` 共存且不会误分流，保留旧版有效 payload/digest 作为兼容性断言。
 2. 相同 source/build/firmware identity 下，正常、failed-before、Diagnostic/source-intent、fixed-after、FixVerification 的现有物理链可用于 B。
 3. A 与 B 跨项目/场景/构建/授权混用拒绝；expired/single-use/CAS/并发 winner 与 cleanup 契约不变。
 4. 现有 replay 场景仍是 software/replay，不获得 physical flags；A 的现有回归按触及文件补最小集合。
@@ -94,3 +94,5 @@ VS10-B `ACCEPTED` 后另行决定整合 A+B 的 1.0 发布级验证。VS09-B/VS1
 独立审查者 `/root/vs10a_target_review` 已审查 accepted base 至草案 `e13dd69a3cc87b0128d577cfcf7b143f888aa694`，以及该草案至修订稿 `c9d99e8ce4cb0114e0c4d3397a2de8d7a13f9b41` 的连续完整文档差异。首轮配置、native linker、用户源码接入、mailbox size 四项 finding 均已闭合，结论为 `ACCEPTED（仅针对本次 B 设计决策）`。未运行实现测试或硬件；这个结论不代替用户批准，不是 VS10-B 产品验收。
 
 实施仍须真实 create/apply 后保存原始生成库存，定制后执行公共 configure/build，并冻结定制工程不进行 regenerate。这三项是实施门槛，不能在报告中预先标为完成。
+
+实施预检发现首版 B attempt `/3` 与已发布 A continuation `/3` 冲突，已将 B attempt 唯一改为 `/4`，policy 仍 `/3`。同一独立审查者已核对占用和入口路由，结论为 `ACCEPTED（仅针对编号修订和路由设计）`；begin 按 scenario、checkpoint/authorize/show/resume 按精确 schema 分流，未知 schema 拒绝。此修订保持用户批准的 B 行为和旧契约，未扩张模块或权限。

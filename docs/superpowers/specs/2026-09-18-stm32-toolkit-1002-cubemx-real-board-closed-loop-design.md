@@ -117,7 +117,7 @@ SVD 已核实：`C:\ST\STM32CubeCLT_1.22.0\STMicroelectronics_CMSIS_SVD\STM32F42
 
 | 字段 | B 固定值 |
 |---|---|
-| attempt schema | `stm32-acceptance-attempt/3` |
+| attempt schema | `stm32-acceptance-attempt/4` |
 | recovery policy schema | `stm32-acceptance-recovery-policy/3` |
 | scenarioId / version | `new-cubemx-physical-repair` / `1` |
 | projectOrigin | `cubemx` |
@@ -128,7 +128,9 @@ SVD 已核实：`C:\ST\STM32CubeCLT_1.22.0\STMicroelectronics_CMSIS_SVD\STM32F42
 
 只通过 schema/scenario 的固定配对选择 A、B 两组封闭 profile；不增加配置驱动的注册器、插件或任意 origin。A `/2` 输出、digest、读取兼容和旧记录验证保持原样；v1 `new-cubemx-project` 继续 replay，不能得到 physical flags。错误复用现有 input-invalid、identity-mismatch、stage/expiry、authorization/consumed、CAS 语义，不为本次准备泛化新错误码。
 
-B 首个切片使用 fresh `/3` attempt，不扩展 A-only continuation。CLI 使用现有 `acceptance attempt` 命令及新 scenario；MCP 只扩 `AcceptanceAttemptScenarioId`，不修改软件 AcceptanceScenarioId/AcceptanceRecord。创建授权、`.ioc`、native inventory 和 ownership provenance 仍由创建/工程 manifest 持有，并在 B bundle 引用；不向 attempt 添加 `creationAuthorizationDigest` 或自由字段。
+B 首个切片使用 fresh `/4` attempt，不扩展 A-only continuation。原草案的 attempt `/3` 编号在实施预检中发现已被 `continuation.py:71` 的 A 续接记录占用，且现有工作流按该 schema 分流；因此只纠正 B attempt 编号为未占用的 `/4`，B recovery policy 仍为 `/3`，不得重解释 A continuation `/3` 或修改其 policy `/1`、序列化和路由。测试必须同时覆盖 A `/2`、A continuation `/3`、B `/4` 与 replay `/1` 的读回/路由隔离，不能只测 B 自身 round-trip。
+
+CLI 使用现有 `acceptance attempt` 命令及新 scenario；MCP 只扩 `AcceptanceAttemptScenarioId`，不修改软件 AcceptanceScenarioId/AcceptanceRecord。创建授权、`.ioc`、native inventory 和 ownership provenance 仍由创建/工程 manifest 持有，并在 B bundle 引用；不向 attempt 添加 `creationAuthorizationDigest` 或自由字段。
 
 最小产品文件：`acceptance/recovery.py`、`acceptance/recovery_workflows.py`、必要的 `acceptance/__init__.py` 导出，以及 `mcp_server.py` 的 attempt enum。不修改 CubeMXAdapter/creation_apply、replay model、Diagnostic pair validator 或 Probe/Monitor 协议。若出现这些边界以外的真实阻塞，由主对话框先给出原因与新边界，不能让实现者自行扩张。
 
