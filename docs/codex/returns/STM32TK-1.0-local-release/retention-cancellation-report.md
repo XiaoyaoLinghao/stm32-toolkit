@@ -1,8 +1,9 @@
 # STM32TK-1.0 retention cancellation contract implementation return
 
-Status: `IMPLEMENTED_PENDING_INDEPENDENT_REVIEW`. This is the return for the
-two bounded retention cancellation contract checks, not a product acceptance
-decision. The primary agent remains the independent reviewer and acceptor.
+Status: `REVISION_REQUIRED`. The original two-node run passed, but the bounded
+future-observation correction produced a new diagnostic failure. This report
+records both runs and is not a product acceptance decision. The primary agent
+remains the independent reviewer and acceptor.
 
 ## Ownership and source ledger
 
@@ -12,7 +13,7 @@ decision. The primary agent remains the independent reviewer and acceptor.
 - Branch/worktree: `codex/STM32TK-1.0-retention-cancellation-contract` /
   `D:\codex-tmp\v10b-0918\r10\rc`.
 - Test code head before this report commit:
-  `f37e9cd0d47a6a497a02e03327b30c7acc38f82b`.
+  `d0f4703301f6aae26cbe26ce9d0d4c19aedc23f2`.
 - Frozen product import source: `D:\codex-tmp\v10b-0918\r10\verify`,
   revision `15b1a70e9bd684285da5557104deff529f537e49`.
 - Interpreter: `D:\codex-tmp\v10b-0918\r10\py\Scripts\python.exe`.
@@ -85,6 +86,42 @@ fixture on the frozen product source. It does not reproduce the historical
 prove a no-mutation guarantee that the current specification does not make.
 Independent review must inspect the complete accepted-base-to-report diff and
 decide whether any product action is justified.
+
+## Revision run r2
+
+The review correction was committed at code head
+`d0f4703301f6aae26cbe26ce9d0d4c19aedc23f2`. It captures the actual retention
+future through the existing instance `_submit` passthrough, retains callback
+stage and exception evidence, accepts only normal completion or
+`StorageFailure(MONITOR_STORAGE_BUSY)` with a SQLite `OperationalError` whose
+message contains `interrupted`, and skips normal `store.close()` when caller or
+future settlement is not proven. The new launcher prepared a hidden child with
+a 60-second wall bound.
+
+The single r2 attempt used the two selected nodes with `-x` and stopped at the
+first unexpected result. Node A passed. Node B reached the callback release,
+then the observed retention future ended as
+`StorageFailure("MONITOR_STORAGE_BUSY")` with cause
+`sqlite3.OperationalError("interrupted")`, while the callback wrapper had
+captured the separate original
+`StorageFailure("MONITOR_STORAGE_INVALID", "monitor storage size cannot be inspected")`.
+The test assertion rejected that unexpected callback failure instead of
+swallowing it, so the result is `1 passed, 1 failed in 1.68s`, exit code `1`.
+This is a bounded diagnostic failure requiring primary design review; it is not
+a product root-cause claim.
+
+The r2 launcher itself also exposed a preparation defect: its `$pid` variable
+collided with PowerShell's read-only `$PID` automatic variable. The child
+completed and no r2 Python process remains, but the launcher did not produce a
+valid child-PID/wall-timeout manifest. The r2 command, argv, environment,
+heads, stdout, stderr, JUnit, process error, and exit evidence remain under
+`D:\codex-tmp\v10b-0918\r10\e\retention-cancellation\r2`; no official coverage
+artifact was claimed for this failed run. No retry was performed.
+
+The primary's separate read-only durable-outcome evidence is retained at
+`D:\codex-tmp\v10b-0918\r10\e\retention-cancellation\primary-durable-outcomes.json`:
+scenario A observed zero rows after deletion, and scenario B observed the
+rollback/one-row outcome. That offline evidence was not produced by a rerun.
 
 This report is committed separately from the test code head recorded above and
 does not record its own final commit SHA.
