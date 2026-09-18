@@ -30,9 +30,11 @@ or another blind benchmark repetition is approved by this status.
 
 Python package branch coverage remains below the approved 90% gate. The native
 aggregates currently record Toolkit 10817/13564 and Monitor 2488/2936 branches.
-A retained official Diagnostic JSON projection is under separate review because
-the implementer deleted its raw coverage database before primary aggregation.
-No raw database has been fabricated or restored. Future raw coverage and shards
+A separately accepted official Diagnostic JSON projection brings Toolkit to
+10830/13564 (79.8437%); Monitor stays 2488/2936 (84.7411%). It is supplementary
+JSON evidence, not a native coverage database: the implementer deleted the raw
+Diagnostic database before primary aggregation. No raw database has been
+fabricated or restored. Future raw coverage and shards
 are durable evidence subject to primary-only cleanup and a preservation hold.
 
 The original full Toolkit suite was not a clean pass. Scoped accepted corrections
