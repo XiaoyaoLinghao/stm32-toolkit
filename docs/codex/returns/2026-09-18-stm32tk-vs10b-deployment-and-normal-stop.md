@@ -1,6 +1,6 @@
 # VS10-B deployment and first physical stop
 
-Current status: **SOFTWARE_DEPLOYMENT_PASS; NORMAL_TARGET_PASS VIA AUTHORIZED RECOVERY; IDE/CLI/MCP PASS; VS10-B NOT ACCEPTED**. The first ordinary programming failure below remains a preserved terminal result. A fresh-Diagnostic input gap is being resolved offline before any fault selection or timed attempt.
+Historical deployment/NORMAL record. Current state is **DIAGNOSTIC_SOFTWARE_ACCEPTED_AND_DEPLOYED; FAULT_TARGET_EXPECTED_FAILURE_CONFIRMED; MONITOR_PRE_DEVICE_STOPPED; VS10-B NOT ACCEPTED**. See [latest SVD stop and exact offline cause](2026-09-18-stm32tk-vs10b-diagnostic-deployment-svd-stop.md). All pending/current wording below describes its earlier timestamp and does not supersede that report.
 
 ## Latest: authorized recovery and IDE/CLI/MCP passed
 

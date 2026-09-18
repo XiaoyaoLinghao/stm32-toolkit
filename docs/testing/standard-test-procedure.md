@@ -39,6 +39,8 @@ run-local entry 若做命令行 substring 进程预检，参数必须从已记�
 
 关键字段未知的步骤不是 READY。先用现有源码、日志、CLI help 或既有函数离线补齐。若公共响应吞掉原始异常，必须在首次获准实机前准备好现有异常边界的捕获方式；不能失败后无授权重连补日志。新增脚本前说明现有入口为什么不够，并先离线验证。
 
+使用 SVD 的 Monitor 场景，首次故障烧录前须直接复用已安装的 `select_svd`，用当前工程实际 target、svdDevice、完整 SVD 与 debug.readableRegions 做离线语义预检。现有契约要求整个 SVD 中每个寄存器都落入可信范围，仅校验文件哈希、Watch 中 GPIOE.ODR 的地址或部署健康不足以证明可连接。SVD、device 或 readableRegions 改变时重做此项；文档、命名或无关行为不触发。2026-09-18 B 全量 SVD 配单个 ODR 4字节范围，在外层探针枚举之后、观察 supervisor/lease/attach 之前触发 SVD_ADDRESS_OUT_OF_RANGE；应先修工程配置，不能归因板卡或扩大硬件重试。现有函数即可完成检查，不新增诊断框架。
+
 2026-09-17 编程异常修正候选使用现有响应的 `details.programDiagnostic`：记录实际 Python 调用阶段、脱敏异常及原因链、可用的 OS 错误号/Flash 地址/算法返回码。部署该候选前须用既有 fake/Windows worker 测试证明字段从 backend 经 IPC 到 Target 公共响应仍保留；外层捕获脚本无法还原 worker 已丢弃的异常。`program-call` 只表示进入编程调用，不能判定擦除或写入是否完成；无字段或 null 就记录证据缺失，不能再次自动连接补证。现有部署在该候选实际部署验证前仍按旧能力记录。
 
 该字段仅覆盖编程路径，不代表 prepare/attach 异常也已完整出现在公共响应中。当前 `_exception_result()` 仍把未识别的 typed 错误映射为 `TEST_EXECUTION_FAILED` 并省略 details；下一次诊断性 Target 调用继续使用已有、经离线验证的 `target-capture.py` 在映射前保存原始异常，不能因编程补丁部署而撤掉 prepare 的捕获。复用时核对脚本字节及新 runtime 上的既有 probe-exception / Windows spawn 自检；只代理既有 CLI，不改变参数、授权、次数、连接策略或返回结果。此要求只补留证入口，既有软件/部署 PASS 保留；2026-09-17 的已丢失异常无法追回，也不授权重试。
@@ -190,7 +192,7 @@ T10 采样入口复用已接受的有限 Monitor 生命周期，在执行卡中�
 
 ## 8. 当前验收断点（2026-09-18）
 
-**当前 VS10-B：正常 Target 与实际 IDE/CLI/MCP 路径已通过；故障/修复闭环尚未开始。** 用户在VS10-B窗口看到testtime=43063并正常停止，随后D3/D4交替闪烁；原ticket end成功，CLI=56150、真实MCP stdio=65781，固件/探针/会话身份匹配，最终lease released且相关进程0。保存 `evidence/ide-01/handoff-cli-mcp-summary.json`，不得重做已有效的正常/IDE检查。故障切换前发现新Diagnostic观测契约缺口：现有 `physical-monitor-fact/1` 强制A续接证明，B无该证明且修复前没有after pair；已由已安装解析函数离线复现。新鲜failed-before输入修正规格/计划已获用户批准，由Luna/max实现并独立审查；独立审查确认事件/存储/MCP也写死v1，文件估计纠正为五个现有模块以贯通已批准行为，不新增能力。用户同时批准通过后一次部署和剩余故障/修复各一次under-reset100kHz烧录及30秒/100ms采样，首个非预期失败停止。B采样入口离线审查发现connect的observationSessionId被误按历史binding的sessionId读取，已交原实现者作最小纠正；当前保持NORMAL、不创建计时attempt、不操作故障硬件。详见 [本轮记录](../codex/returns/2026-09-18-stm32tk-vs10b-deployment-and-normal-stop.md)。下方均为本轮较早或历史断点。
+**当前 VS10-B：Diagnostic 修正已独立接受并部署 source12df；故障 Target 得到预期失败；Monitor 在连接硬件前终态停止，B 尚未验收。** 一次 under-reset/100kHz 故障烧录及7812字节回读成功，d3-heartbeat为唯一failed，无error/timeout。随后唯一failed-before Monitor在select_svd拒绝完整SVD与ODR四字节范围的组合，底层SVD_ADDRESS_OUT_OF_RANGE被映射为MONITOR_PROVENANCE_CHANGED；外层探针枚举已完成，未启动后续观察服务、未采样。复用现有函数已离线确证首个越界RNG.CR，并验证同MCU已有12段可信范围可加载同一SVD；配置尚未应用。原修复源码意图未授权、fixed-after未修改或烧录；不重试、不复用已消费marker/digest。实际attempt停留revision3，其最后存储状态ACTIVE须与执行已停止分开记录。用户确认故障烧录后D3常亮、D4闪烁，不能替代Monitor证据。已通过NORMAL、IDE/CLI/MCP、A和attempt7保留。详见 [最新结论和最小纠正方案](../codex/returns/2026-09-18-stm32tk-vs10b-diagnostic-deployment-svd-stop.md)。下方均为历史断点。
 
 **最新 VS10-B 恢复结果：正常固件 physical Target 1/1 PASS，IDE 手动步骤待用户结果，B 尚未验收。** 用户在前一次终态失败后明确授权一次恢复烧录；未改源码/ELF或重部署，以新 digest `8f973292...40517` 走现有 under-reset/100kHz，回读验证7812字节，physical mailbox run `target-v2-8f97329220c7d71112d1f29548cecc6a` 为passed，新lease已释放，独立证据审查接受。两个已知Python进程属于Monitor离线validate-only，不计为硬件残留。随后本次B新handoff begin成功，探针处于externally-owned；已在VS10-B窗口准备 **VS10-B NORMAL - Attach** 并提示用户F5/Watch testtime/正常停止。用户确认detach前禁止Toolkit/Monitor访问，随后只用 `evidence/ide-01/handoff-begin.stdout.json` 的原ticket end。P3/P4、B attempt、30秒采样和最终验收均未开始。详见 [本轮部署、停止与恢复记录](../codex/returns/2026-09-18-stm32tk-vs10b-deployment-and-normal-stop.md)。下段首次普通策略失败继续保留，不被恢复PASS抹除。
 
