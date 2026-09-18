@@ -2,6 +2,8 @@
 
 Status: **DIAGNOSTIC_SOFTWARE_ACCEPTED_AND_DEPLOYED; FAULT_TARGET_EXPECTED_FAILURE_CONFIRMED; MONITOR_PRE_DEVICE_STOPPED; VS10-B NOT ACCEPTED**.
 
+Later update: CFG-001 has been corrected and independently accepted offline; see [configuration repair](2026-09-18-stm32tk-vs10b-svd-configuration-fix.md). The stopped hardware outcome and old identity below remain historical evidence; this update does not resume that card.
+
 ## Baseline, ownership and retained passes
 
 Accepted Diagnostic base: `907b17094d7d6192f68735c470ca0bb73c1c7e23`; implementation `df88a0ad7109353fee7a7bf6d42a67de0d45cb25`; integrated/deployed code head before this report: `12df4fe0569104d6f0e7a827496341d999e1f3ea`. Integration branch is `codex/STM32TK-1002-CUBEMX-REAL-BOARD-integration`. Primary owns design, independent full-diff review, integration and hardware; Luna/max owns implementation, deployment and firmware. No ownership exception or remote action.
