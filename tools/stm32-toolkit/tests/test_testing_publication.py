@@ -41,6 +41,16 @@ UTC_0 = "2026-08-20T00:00:00.000000Z"
 UTC_1 = "2026-08-20T00:00:01.000000Z"
 
 
+def _tree_bytes(root: Path) -> dict[str, bytes]:
+    if not root.exists():
+        return {}
+    return {
+        str(path.relative_to(root)): path.read_bytes()
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
+
+
 @pytest.fixture
 def task_tmp(tmp_path_factory: pytest.TempPathFactory) -> Path:
     path = tmp_path_factory.mktemp("publication")
@@ -370,6 +380,35 @@ def test_repository_maps_stored_malformed_nested_identity_or_artifact_to_corrupt
         Repository(store).load(manifest.run_id)
 
     assert failure.value.code == EVIDENCE_CORRUPT
+
+
+def test_repository_rejects_duplicate_json_keys_from_authoritative_manifest_provider(
+    task_tmp: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    """Authoritative reload treats duplicate manifest keys as stored corruption."""
+    store, manifest, inventory = _fixture(task_tmp)
+    published = _publisher(task_tmp, store).publish_host(
+        manifest, inventory_digest=inventory.inventory_digest
+    )
+    canonical = canonical_json_bytes(manifest.to_dict())
+    duplicate = canonical[:-1] + b',"run_id":"duplicate-run"}'
+    manifest_reads = []
+    original_read = store.read_artifact
+
+    def read_manifest(artifact, *, maximum_bytes):
+        if artifact == published.manifest_artifact:
+            manifest_reads.append(artifact)
+            return duplicate
+        return original_read(artifact, maximum_bytes=maximum_bytes)
+
+    before_store = _tree_bytes(store.root)
+    monkeypatch.setattr(store, "read_artifact", read_manifest)
+    with pytest.raises(EvidenceValidationError) as failure:
+        Repository(store).load(manifest.run_id)
+
+    assert failure.value.code == EVIDENCE_CORRUPT
+    assert manifest_reads == [published.manifest_artifact]
+    assert _tree_bytes(store.root) == before_store
 
 
 def test_decode_manifest_maps_typed_evidence_validation_to_corrupt(

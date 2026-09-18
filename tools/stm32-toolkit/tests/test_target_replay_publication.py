@@ -27,6 +27,16 @@ UTC_0 = "2026-08-21T00:00:00.000000Z"
 IMPORT_WORKSPACE_ID = sha256(b"local-import-workspace").hexdigest()
 
 
+def _tree_bytes(root: Path) -> dict[str, bytes]:
+    if not root.exists():
+        return {}
+    return {
+        str(path.relative_to(root)): path.read_bytes()
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
+
+
 def _fixture(name: str):
     return load_target_replay_fixture(FIXTURES / f"{name}.json", FIXTURES / f"{name}.hex")
 
@@ -325,3 +335,179 @@ def test_target_replay_publication_rejects_raw_events_mismatch_before_root(
     assert not (store.root / "roots" / "test-run").exists() or not any(
         (store.root / "roots" / "test-run").glob("*.json")
     )
+
+
+def test_target_replay_publication_rejects_valid_identity_contradiction_before_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    """A valid manifest identity must still agree with its replay descriptor."""
+    _fixture_value, store, project_root, results_root, descriptor, manifest = _bundle(
+        tmp_path, name="failed-before", operation_id="vs03-failed-before"
+    )
+    publisher = Publisher(store, project_root, results_root)
+    before_store = _tree_bytes(store.root)
+    before_results = _tree_bytes(results_root)
+    parent_reads = []
+    put_calls = []
+    collector_directories = []
+    collector_publications = []
+    original_read = store.read_artifact
+    original_put = store.put_envelope
+    original_new_directory = publisher._collector.new_directory
+    original_write_and_ingest = publisher._collector.write_and_ingest
+
+    def read_artifact(artifact, *, maximum_bytes):
+        parent_reads.append(artifact)
+        return original_read(artifact, maximum_bytes=maximum_bytes)
+
+    def put_envelope(envelope):
+        put_calls.append(envelope)
+        return original_put(envelope)
+
+    def new_directory(prefix):
+        collector_directories.append(prefix)
+        return original_new_directory(prefix)
+
+    def write_and_ingest(*args, **kwargs):
+        collector_publications.append((args, kwargs))
+        return original_write_and_ingest(*args, **kwargs)
+
+    monkeypatch.setattr(store, "read_artifact", read_artifact)
+    monkeypatch.setattr(store, "put_envelope", put_envelope)
+    monkeypatch.setattr(publisher._collector, "new_directory", new_directory)
+    monkeypatch.setattr(publisher._collector, "write_and_ingest", write_and_ingest)
+
+    mismatched = replace(
+        manifest,
+        identity=replace(manifest.identity, build_id="1" * 64),
+    )
+    with pytest.raises(EvidenceValidationError) as failure:
+        publisher.publish_target_replay(mismatched, descriptor, IMPORT_WORKSPACE_ID)
+
+    assert failure.value.code == "EVIDENCE_CORRUPT"
+    assert parent_reads == list(descriptor.artifacts)
+    assert put_calls == []
+    assert collector_directories == []
+    assert collector_publications == []
+    assert _tree_bytes(store.root) == before_store
+    assert _tree_bytes(results_root) == before_results
+
+
+def test_target_replay_publication_rejects_valid_state_contradiction_before_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    """A valid terminal state must still agree with the replay descriptor."""
+    _fixture_value, store, project_root, results_root, descriptor, manifest = _bundle(
+        tmp_path, name="failed-before", operation_id="vs03-failed-before"
+    )
+    publisher = Publisher(store, project_root, results_root)
+    before_store = _tree_bytes(store.root)
+    before_results = _tree_bytes(results_root)
+    parent_reads = []
+    put_calls = []
+    collector_directories = []
+    collector_publications = []
+    original_read = store.read_artifact
+    original_put = store.put_envelope
+    original_new_directory = publisher._collector.new_directory
+    original_write_and_ingest = publisher._collector.write_and_ingest
+
+    def read_artifact(artifact, *, maximum_bytes):
+        parent_reads.append(artifact)
+        return original_read(artifact, maximum_bytes=maximum_bytes)
+
+    def put_envelope(envelope):
+        put_calls.append(envelope)
+        return original_put(envelope)
+
+    def new_directory(prefix):
+        collector_directories.append(prefix)
+        return original_new_directory(prefix)
+
+    def write_and_ingest(*args, **kwargs):
+        collector_publications.append((args, kwargs))
+        return original_write_and_ingest(*args, **kwargs)
+
+    monkeypatch.setattr(store, "read_artifact", read_artifact)
+    monkeypatch.setattr(store, "put_envelope", put_envelope)
+    monkeypatch.setattr(publisher._collector, "new_directory", new_directory)
+    monkeypatch.setattr(publisher._collector, "write_and_ingest", write_and_ingest)
+
+    mismatched = replace(
+        manifest,
+        state="passed",
+        cases=tuple(replace(case, state="passed", message=None) for case in manifest.cases),
+    )
+    with pytest.raises(EvidenceValidationError) as failure:
+        publisher.publish_target_replay(mismatched, descriptor, IMPORT_WORKSPACE_ID)
+
+    assert failure.value.code == "EVIDENCE_CORRUPT"
+    assert parent_reads == list(descriptor.artifacts)
+    assert put_calls == []
+    assert collector_directories == []
+    assert collector_publications == []
+    assert _tree_bytes(store.root) == before_store
+    assert _tree_bytes(results_root) == before_results
+
+
+def test_target_replay_publication_rejects_contradictory_parent_binding_before_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    """A descriptor parent cannot bind to a different valid import workspace."""
+    _fixture_value, store, project_root, results_root, descriptor, manifest = _bundle(
+        tmp_path, name="failed-before", operation_id="vs03-failed-before"
+    )
+    publisher = Publisher(store, project_root, results_root)
+    before_store = _tree_bytes(store.root)
+    before_results = _tree_bytes(results_root)
+    parent_reads = []
+    put_calls = []
+    collector_directories = []
+    collector_publications = []
+    original_read = store.read_artifact
+    original_put = store.put_envelope
+    original_new_directory = publisher._collector.new_directory
+    original_write_and_ingest = publisher._collector.write_and_ingest
+
+    def read_artifact(artifact, *, maximum_bytes):
+        parent_reads.append(artifact)
+        return original_read(artifact, maximum_bytes=maximum_bytes)
+
+    def put_envelope(envelope):
+        put_calls.append(envelope)
+        return original_put(envelope)
+
+    def new_directory(prefix):
+        collector_directories.append(prefix)
+        return original_new_directory(prefix)
+
+    def write_and_ingest(*args, **kwargs):
+        collector_publications.append((args, kwargs))
+        return original_write_and_ingest(*args, **kwargs)
+
+    monkeypatch.setattr(store, "read_artifact", read_artifact)
+    monkeypatch.setattr(store, "put_envelope", put_envelope)
+    monkeypatch.setattr(publisher._collector, "new_directory", new_directory)
+    monkeypatch.setattr(publisher._collector, "write_and_ingest", write_and_ingest)
+
+    contradictory = EvidenceEnvelope(
+        identity=descriptor.identity,
+        operation=descriptor.operation,
+        produced_at_utc=descriptor.produced_at_utc,
+        parents=descriptor.parents,
+        artifacts=descriptor.artifacts,
+        metadata={
+            **descriptor.metadata,
+            "import_workspace_id": sha256(b"contradictory-import").hexdigest(),
+        },
+    )
+    with pytest.raises(EvidenceValidationError) as failure:
+        publisher.publish_target_replay(manifest, contradictory, IMPORT_WORKSPACE_ID)
+
+    assert failure.value.code == "EVIDENCE_CORRUPT"
+    assert parent_reads == []
+    assert put_calls == []
+    assert collector_directories == []
+    assert collector_publications == []
+    assert _tree_bytes(store.root) == before_store
+    assert _tree_bytes(results_root) == before_results
