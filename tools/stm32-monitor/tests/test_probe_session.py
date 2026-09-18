@@ -485,6 +485,37 @@ def test_nonblocking_operation_failure_is_isolated_and_exception_fails_closed(tm
     asyncio.run(scenario())
 
 
+def test_prepared_read_provider_failure_returns_empty_and_invalidates_admission(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        project = tmp_path / "project"
+        project.mkdir()
+        observation = FakeObservation(_binding(project))
+        session = ProbeSession(observation)
+        watches = (WatchItem.variable("counter"),)
+
+        assert (await session.revalidate()).ok
+        prepared = await session.prepare_read_plan(watches)
+        assert prepared.ok
+        assert session._read_plan is not None
+        assert session._admission_token is not None
+
+        observation.raise_read = True
+        blocked = await session.read(watches)
+
+        assert blocked.values == ()
+        assert blocked.blocked_code == "MONITOR_PROVENANCE_CHANGED"
+        assert blocked.message == "Monitor observation read failed"
+        assert "secret" not in blocked.message
+        assert session._read_plan is None
+        assert session._admission_token is None
+        assert observation._read_plan_admission() is None
+        assert observation.plan_invalidations == 1
+
+    asyncio.run(scenario())
+
+
 def test_revalidation_rejects_firmware_and_dwarf_or_svd_changes(tmp_path: Path) -> None:
     async def scenario() -> None:
         project = tmp_path / "project"

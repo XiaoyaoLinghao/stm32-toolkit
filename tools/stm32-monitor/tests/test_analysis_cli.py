@@ -127,6 +127,48 @@ def test_replay_ingest_binds_workspace_evidence_and_calls_workflow_once(
     assert document_file == document
 
 
+def test_replay_adapter_ctrl_c_returns_130_without_protocol_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "project"
+    data = tmp_path / "data"
+    _project_and_model(monkeypatch, project)
+    document = tmp_path / "document.json"
+    document.write_text("{}", encoding="utf-8")
+    calls = 0
+
+    def interrupted(*args: object, **kwargs: object) -> object:
+        nonlocal calls
+        calls += 1
+        del args, kwargs
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli, "ingest_monitor_replay", interrupted, raising=False)
+    output = io.StringIO()
+    code = cli.main(
+        [
+            "replay",
+            "ingest",
+            "--project",
+            str(project),
+            "--data-root",
+            str(data),
+            "--session-id",
+            "monitor-a",
+            "--operation-id",
+            "33333333-3333-4333-8333-333333333333",
+            "--document-file",
+            str(document),
+            "--json",
+        ],
+        _stdout=output,
+    )
+
+    assert code == 130
+    assert calls == 1
+    assert output.getvalue() == ""
+
+
 def test_analysis_compare_projects_closed_inputs_and_calls_once(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

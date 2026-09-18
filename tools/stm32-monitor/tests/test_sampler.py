@@ -1422,6 +1422,44 @@ def test_invalid_lifecycle_calls_and_close_terminate_full_subscriber(tmp_path: P
     asyncio.run(scenario())
 
 
+def test_close_full_delivery_queue_still_terminates_subscriber(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        project = tmp_path / "project"
+        project.mkdir()
+        sampler = MonitorSampler(
+            FakeObservation(_binding(project)), FakeGroups(_group()), FakeHistory()
+        )
+        stream = sampler.subscribe_deliveries()
+        first_pending = asyncio.create_task(_next(stream))
+        await asyncio.sleep(0)
+        await sampler.start(GROUP_ID, expected_revision=1)
+        first = await first_pending
+        assert first.batch.sequence == 0
+
+        deadline = time.monotonic() + 3
+        subscriber_queue = None
+        while time.monotonic() < deadline:
+            queues = tuple(sampler._subscribers)
+            if queues and queues[0].full():
+                subscriber_queue = queues[0]
+                break
+            await asyncio.sleep(0.01)
+        assert subscriber_queue is not None
+        assert subscriber_queue.qsize() == subscriber_queue.maxsize == 8
+
+        await sampler.close()
+
+        async def consume_until_closed() -> None:
+            with pytest.raises(StopAsyncIteration):
+                while True:
+                    await anext(stream)
+
+        await asyncio.wait_for(consume_until_closed(), 2)
+        assert sampler.state is SamplerState.CLOSED
+
+    asyncio.run(scenario())
+
+
 def test_repeated_cancellation_cannot_release_close_ownership_early(tmp_path: Path) -> None:
     async def scenario() -> None:
         project = tmp_path / "project"
