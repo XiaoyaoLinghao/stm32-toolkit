@@ -560,6 +560,195 @@ def test_malformed_fixture_digest_operation_mismatch_and_unknown_fields_fail_sta
     _assert_no_history(paths, RUN_IDS["failed-before"])
 
 
+@pytest.mark.parametrize(
+    ("name", "mutate"),
+    (
+        ("schema.json", lambda payload: payload.update({"schema": "stm32-monitor-replay/9"})),
+        ("source.json", lambda payload: payload.update({"source": "untrusted-import"})),
+        (
+            "physical.json",
+            lambda payload: payload.update({"physical_transport_evidence": True}),
+        ),
+        ("role.json", lambda payload: payload.update({"scenario_role": "other"})),
+        (
+            "labels.json",
+            lambda payload: payload["binding"].update({"probeId": "probe/serial/01"}),
+        ),
+        ("missing-sample.json", lambda payload: payload["batches"][0]["values"][0].pop("typedValue")),
+        ("batch-shape.json", lambda payload: payload.update({"batches": {}})),
+    ),
+)
+def test_public_replay_import_rejects_external_document_contract_drift(
+    tmp_path: Path,
+    name: str,
+    mutate,
+) -> None:
+    paths = _paths(tmp_path)
+    source = _rewrite_document(tmp_path, "failed-before", mutate, name)
+
+    with pytest.raises(MonitorReplayError) as error:
+        ingest_monitor_replay(paths, _evidence(paths), _operation("failed-before"), source)
+
+    assert error.value.code == "EVIDENCE_INTEGRITY_FAILURE"
+    _assert_no_history(paths, RUN_IDS["failed-before"])
+    assert not _evidence(paths).root.exists()
+
+
+@pytest.mark.parametrize(
+    ("document_file", "expected_code"),
+    [
+        (123, "MONITOR_REPLAY_INVALID"),
+        ("missing-replay.json", "EVIDENCE_INTEGRITY_FAILURE"),
+    ],
+)
+def test_public_replay_import_rejects_invalid_document_sources(
+    tmp_path: Path,
+    document_file: object,
+    expected_code: str,
+) -> None:
+    paths = _paths(tmp_path)
+    source = tmp_path / document_file if isinstance(document_file, str) else document_file
+
+    with pytest.raises(MonitorReplayError) as error:
+        ingest_monitor_replay(paths, _evidence(paths), _operation("failed-before"), source)
+
+    assert error.value.code == expected_code
+    _assert_no_history(paths, RUN_IDS["failed-before"])
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        {"unsupported": {1, 2}},
+        float("nan"),
+        {"non_normalized": "e\u0301"},
+    ],
+)
+def test_public_replay_canonicalizer_rejects_non_json_or_noncanonical_values(value: object) -> None:
+    with pytest.raises(MonitorReplayError) as error:
+        canonical_replay_json_bytes(value)
+    assert error.value.code == "MONITOR_REPLAY_INVALID"
+
+
+def test_public_replay_canonicalizer_accepts_closed_model_round_trips(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    reference = ingest_monitor_replay(
+        paths,
+        _evidence(paths),
+        _operation("failed-before"),
+        _fixture("failed-before"),
+    )
+    assert canonical_replay_json_bytes(_document("failed-before")) == _raw_fixture("failed-before")[:-1]
+    assert canonical_replay_json_bytes(reference) == canonical_replay_json_bytes(reference.to_dict())
+
+
+@pytest.mark.parametrize(
+    ("storage_code", "expected_code"),
+    [
+        ("MONITOR_STORAGE_BUSY", "ENVIRONMENT_FAILURE"),
+        ("MONITOR_STORAGE_INVALID", "ENVIRONMENT_FAILURE"),
+    ],
+)
+def test_replay_history_provider_failure_preserves_persisted_authority(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    storage_code: str,
+    expected_code: str,
+) -> None:
+    paths = _paths(tmp_path)
+    evidence = _evidence(paths)
+    operation = _operation("failed-before")
+    first = ingest_monitor_replay(paths, evidence, operation, _fixture("failed-before"))
+    before_batches = _history_batches(paths, RUN_IDS["failed-before"])
+    failure = ProtocolResult(
+        ok=False,
+        operation="history.query",
+        code=storage_code,
+        message="provider failure",
+        data=None,
+    )
+    monkeypatch.setattr(HistoryStore, "query_history", lambda self, query: failure)
+
+    with pytest.raises(MonitorReplayError) as error:
+        ingest_monitor_replay(paths, evidence, operation, _fixture("failed-before"))
+
+    assert error.value.code == expected_code
+    monkeypatch.undo()
+    assert _history_batches(paths, RUN_IDS["failed-before"]) == before_batches
+    assert first.run_ref_sha256 == get_root(evidence, "monitor-run-ref", operation).metadata["run_ref_sha256"]
+
+
+def test_replay_append_invalid_storage_is_an_operation_conflict_after_prefix_publication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = _paths(tmp_path)
+    evidence = _evidence(paths)
+    failure = ProtocolResult(
+        ok=False,
+        operation="history.appendbatches",
+        code="MONITOR_STORAGE_INVALID",
+        message="history changed before append",
+        data=None,
+    )
+    monkeypatch.setattr(HistoryStore, "append_batches", lambda self, batches: failure)
+
+    with pytest.raises(MonitorReplayError) as error:
+        ingest_monitor_replay(paths, evidence, _operation("failed-before"), _fixture("failed-before"))
+
+    assert error.value.code == "OPERATION_CONFLICT"
+    assert get_root(evidence, "monitor-run", _operation("failed-before"))
+    assert get_root(evidence, "monitor-run-ref", _operation("failed-before"))
+
+
+def test_replay_oversized_existing_history_is_a_conflict_before_republication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = _paths(tmp_path)
+    evidence = _evidence(paths)
+    operation = _operation("failed-before")
+    first = ingest_monitor_replay(paths, evidence, operation, _fixture("failed-before"))
+    before_batches = _history_batches(paths, RUN_IDS["failed-before"])
+    original_query = HistoryStore.query_history
+
+    def return_partial_page(history: HistoryStore, query: HistoryQuery):
+        return original_query(history, replace(query, limit=1))
+
+    monkeypatch.setattr(HistoryStore, "query_history", return_partial_page)
+    with pytest.raises(MonitorReplayError) as error:
+        ingest_monitor_replay(paths, evidence, operation, _fixture("failed-before"))
+
+    assert error.value.code == "OPERATION_CONFLICT"
+    monkeypatch.undo()
+    assert _history_batches(paths, RUN_IDS["failed-before"]) == before_batches
+    assert first == MonitorRunRef.from_value(first.to_dict())
+
+
+def test_replay_root_provider_failure_is_sanitized_and_does_not_mutate_history(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = _paths(tmp_path)
+    evidence = _evidence(paths)
+    operation = _operation("failed-before")
+    first = ingest_monitor_replay(paths, evidence, operation, _fixture("failed-before"))
+    before_batches = _history_batches(paths, RUN_IDS["failed-before"])
+
+    monkeypatch.setattr(
+        replay_module,
+        "get_root",
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("root unavailable")),
+    )
+    with pytest.raises(MonitorReplayError) as error:
+        ingest_monitor_replay(paths, evidence, operation, _fixture("failed-before"))
+
+    assert error.value.code == "ENVIRONMENT_FAILURE"
+    assert "root unavailable" not in error.value.message
+    assert _history_batches(paths, RUN_IDS["failed-before"]) == before_batches
+    assert first.run_ref_sha256
+
+
 def test_canonical_replay_document_without_final_lf_is_accepted(tmp_path: Path) -> None:
     paths = _paths(tmp_path)
     no_lf = tmp_path / "no-final-lf.json"
