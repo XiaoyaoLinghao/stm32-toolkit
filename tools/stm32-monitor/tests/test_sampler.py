@@ -565,6 +565,91 @@ def test_resume_admission_failure_enters_blocked_state_with_fixed_response(tmp_p
     asyncio.run(scenario())
 
 
+def test_start_and_resume_reject_read_plan_preparation_failure_without_sampling_work(
+    tmp_path: Path,
+) -> None:
+    async def fail_prepare(*_args, **_kwargs):
+        return OperationResult.failure(
+            "prepare", "MONITOR_PROVENANCE_CHANGED", "changed", {}
+        )
+
+    async def scenario() -> None:
+        project = tmp_path / "project"
+        project.mkdir()
+
+        start_observation = FakeObservation(_binding(project))
+        start_observation._prepare_read_plan = fail_prepare
+        start_sampler = MonitorSampler(
+            start_observation, FakeGroups(_group()), FakeHistory()
+        )
+        started = await start_sampler.start(GROUP_ID, expected_revision=1)
+        assert not started.ok
+        assert started.code == "MONITOR_PROVENANCE_CHANGED"
+        assert started.message == "sampling cannot be started"
+        assert start_sampler.state is SamplerState.IDLE
+        assert not start_sampler.tasks
+        await start_sampler.close()
+
+        resume_observation = FakeObservation(_binding(project))
+        resume_sampler = MonitorSampler(
+            resume_observation, FakeGroups(_group()), FakeHistory()
+        )
+        try:
+            assert (await resume_sampler.start(GROUP_ID, expected_revision=1)).ok
+            assert (await resume_sampler.pause()).ok
+            resume_observation._prepare_read_plan = fail_prepare
+
+            resumed = await resume_sampler.resume()
+            assert not resumed.ok
+            assert resumed.code == "MONITOR_PROVENANCE_CHANGED"
+            assert resumed.message == "sampling cannot be resumed"
+            assert dict(resumed.details) == {}
+            assert resume_sampler.state is SamplerState.PAUSED_BLOCKED
+        finally:
+            await resume_sampler.close()
+
+    asyncio.run(scenario())
+
+
+def test_start_rejects_more_than_256_active_watches_without_tasks(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        project = tmp_path / "project"
+        project.mkdir()
+        items = tuple(WatchItem.variable(f"counter_{index}") for index in range(257))
+        sampler = MonitorSampler(
+            FakeObservation(_binding(project)),
+            FakeGroups(_group(items=items)),
+            FakeHistory(),
+        )
+        try:
+            result = await sampler.start(GROUP_ID, expected_revision=1)
+            assert not result.ok
+            assert result.code == "MONITOR_GROUP_LIMIT_EXCEEDED"
+            assert sampler.state is SamplerState.IDLE
+            assert not sampler.tasks
+        finally:
+            await sampler.close()
+
+    asyncio.run(scenario())
+
+
+def test_delivery_subscription_created_after_close_terminates_promptly(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        project = tmp_path / "project"
+        project.mkdir()
+        sampler = MonitorSampler(
+            FakeObservation(_binding(project)), FakeGroups(_group()), FakeHistory()
+        )
+        await sampler.close()
+        deliveries = sampler.subscribe_deliveries()
+        with pytest.raises(StopAsyncIteration):
+            await anext(deliveries)
+
+    asyncio.run(scenario())
+
+
 def test_start_admission_cancellation_keeps_idle_without_run_tasks(tmp_path: Path) -> None:
     async def scenario() -> None:
         project = tmp_path / "project"

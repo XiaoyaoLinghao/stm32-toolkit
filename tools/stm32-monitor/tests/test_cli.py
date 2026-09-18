@@ -206,6 +206,39 @@ def test_cli_returns_sanitized_json_failure_without_traceback(tmp_path: Path) ->
     }
 
 
+def test_adapter_cli_rejects_invalid_project_context_before_workflow(tmp_path: Path) -> None:
+    from stm32_monitor.cli import main
+
+    project = tmp_path / "project"
+    project.mkdir()
+    output = io.StringIO()
+    code = main(
+        [
+            "replay",
+            "ingest",
+            "--project",
+            str(project),
+            "--data-root",
+            str(tmp_path / "data"),
+            "--session-id",
+            "session-a",
+            "--operation-id",
+            "operation-a",
+            "--document-file",
+            str(tmp_path / "missing-replay.json"),
+            "--json",
+        ],
+        _stdout=output,
+    )
+
+    assert code == 1
+    payload = json.loads(output.getvalue())
+    assert payload["ok"] is False
+    assert payload["operation"] == "monitor.replay.ingest"
+    assert payload["code"] == "ANALYSIS_WORKFLOW_INVALID"
+    assert payload["message"] == "Project configuration is invalid"
+
+
 def test_cli_maps_keyboard_interrupt_to_130(tmp_path: Path) -> None:
     from stm32_monitor.cli import main
 

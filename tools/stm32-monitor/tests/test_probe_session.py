@@ -256,6 +256,39 @@ def test_probe_session_catalog_proxy_accepts_only_typed_descriptor_pages(
     asyncio.run(scenario())
 
 
+def test_probe_session_catalog_distinguishes_invalid_query_from_provider_loss(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        project = tmp_path / "project"
+        project.mkdir()
+        observation = FakeObservation(_binding(project))
+        session = ProbeSession(observation)
+
+        async def invalid_query(*_args):
+            return OperationResult.failure(
+                "variables.list", "QUERY_INVALID", "query is invalid", {}
+            )
+
+        observation.list_variables = invalid_query
+        rejected = await session.list_variables("[", None, 100)
+        assert not rejected.ok
+        assert rejected.code == "MONITOR_REQUEST_INVALID"
+        assert rejected.message == "Monitor catalog request failed"
+
+        async def provider_failure(*_args):
+            raise RuntimeError(r"C:\secret\provider.log")
+
+        observation.list_variables = provider_failure
+        unavailable = await session.list_variables("counter", None, 100)
+        assert not unavailable.ok
+        assert unavailable.code == "MONITOR_PROVENANCE_CHANGED"
+        assert unavailable.message == "Monitor catalog changed"
+        assert "secret" not in unavailable.message
+
+    asyncio.run(scenario())
+
+
 def test_grouped_reads_use_only_named_public_methods_and_preserve_item_order(tmp_path: Path) -> None:
     async def scenario() -> None:
         project = tmp_path / "project"
@@ -345,6 +378,32 @@ def test_probe_session_requires_admission_and_discards_cancelled_plan(tmp_path: 
             await pending
         assert session._read_plan is None
         assert observation._read_plan_admission() is None
+
+    asyncio.run(scenario())
+
+
+def test_probe_session_rejects_invalid_prepare_and_changed_watch_plan(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        project = tmp_path / "project"
+        project.mkdir()
+        observation = FakeObservation(_binding(project))
+        session = ProbeSession(observation)
+
+        invalid = await session.prepare_read_plan(())
+        assert not invalid.ok
+        assert invalid.code == "MONITOR_REQUEST_INVALID"
+
+        assert (await session.revalidate()).ok
+        original = (WatchItem.variable("counter"),)
+        prepared = await session.prepare_read_plan(original)
+        assert prepared.ok
+
+        changed = await session.read((WatchItem.variable("other"),))
+        assert changed.values == ()
+        assert changed.blocked_code == "MONITOR_PROVENANCE_CHANGED"
+        assert observation.variable_calls == []
 
     asyncio.run(scenario())
 
