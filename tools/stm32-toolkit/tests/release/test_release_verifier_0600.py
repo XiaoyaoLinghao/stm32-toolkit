@@ -114,7 +114,9 @@ def tmp_path(tmp_path_factory: pytest.TempPathFactory) -> Path:
 
 
 @pytest.fixture
-def approved_support_profile(tmp_path: Path) -> Path:
+def approved_support_profile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Path:
     """Stage and revalidate the approved 17-file support fixture under this run root."""
     raw = os.environ.get(APPROVED_SUPPORT_ROOT_ENV)
     if not raw:
@@ -132,6 +134,7 @@ def approved_support_profile(tmp_path: Path) -> Path:
         gates.verify_support_root(profile)
     except ControllerError as exc:
         pytest.fail(f"staged support fixture is invalid: {exc}")
+    monkeypatch.setattr(verifier, "FROZEN_SUPPORT_PROFILE", profile)
     return profile
 
 
