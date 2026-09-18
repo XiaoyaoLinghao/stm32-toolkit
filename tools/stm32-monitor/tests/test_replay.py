@@ -323,7 +323,14 @@ def test_public_replay_document_constructor_rejects_chain_and_window_contradicti
             "replay document scheduled times are not increasing",
         ),
         (
-            (first, replace(second, captured_unix_ns=first.captured_unix_ns)),
+            (
+                first,
+                replace(
+                    second,
+                    scheduled_unix_ns=first.captured_unix_ns - 1,
+                    captured_unix_ns=first.captured_unix_ns,
+                ),
+            ),
             "replay document captured times are not increasing",
         ),
         (

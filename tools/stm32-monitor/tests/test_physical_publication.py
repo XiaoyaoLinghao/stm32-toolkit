@@ -19,6 +19,7 @@ from stm32_monitor.replay import (
     MonitorReplayError,
     MonitorRunRef,
     MonitorRunRefV2,
+    canonical_replay_json_bytes,
     publish_physical_monitor_run,
     load_monitor_run_reference,
 )
@@ -2081,7 +2082,7 @@ def test_physical_loader_rejects_provider_transcript_digest_mismatch(
     )
     mutated = json.loads(original_transcript.decode("utf-8"))
     mutated["batches"][0]["values"][0]["typedValue"]["value"] += 1
-    replacement = canonical_json_bytes(mutated)
+    replacement = canonical_replay_json_bytes(mutated)
     calls: list[object] = []
 
     def contradictory_artifact(artifact, *, maximum_bytes: int):
