@@ -11,7 +11,6 @@ import shutil
 import stat
 import subprocess
 import sys
-import tempfile
 import time
 from types import SimpleNamespace
 
@@ -32,9 +31,8 @@ from stm32_toolkit.evidence.store import EvidenceStore
 
 
 @pytest.fixture
-def tmp_path():
-    """Use a fresh C:\\tmp direct child; the host pytest temp root has an unreadable stale ACL."""
-    path = Path(tempfile.mkdtemp(prefix="stm32tk-0601-t04-store-", dir=r"C:\tmp"))
+def tmp_path(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    path = tmp_path_factory.mktemp("store")
     try:
         yield path
     finally:

@@ -6,7 +6,6 @@ import json
 from dataclasses import replace
 from pathlib import Path
 import shutil
-import tempfile
 from types import SimpleNamespace
 from uuid import UUID
 
@@ -52,8 +51,8 @@ UTC_1 = "2026-08-21T12:00:01.000000Z"
 
 
 @pytest.fixture
-def task_tmp() -> Path:
-    path = Path(tempfile.mkdtemp(prefix="stm32tk-0603-diagnostic-workflows-", dir=r"C:\tmp"))
+def task_tmp(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    path = tmp_path_factory.mktemp("dwork")
     try:
         yield path
     finally:

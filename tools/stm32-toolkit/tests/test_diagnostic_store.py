@@ -5,7 +5,6 @@ from concurrent.futures import ThreadPoolExecutor
 import os
 from pathlib import Path
 import shutil
-import tempfile
 import threading
 import time
 
@@ -50,8 +49,8 @@ UTC = "2026-08-21T12:00:00.000000Z"
 
 
 @pytest.fixture
-def tmp_path():
-    path = Path(tempfile.mkdtemp(prefix="stm32tk-0600-diagnostic-store-", dir=r"C:\tmp"))
+def tmp_path(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    path = tmp_path_factory.mktemp("dstore")
     try:
         yield path
     finally:

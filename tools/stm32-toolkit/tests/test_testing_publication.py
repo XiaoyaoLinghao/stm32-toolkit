@@ -8,7 +8,6 @@ from hashlib import sha256
 import gc
 from pathlib import Path
 import shutil
-import tempfile
 
 import pytest
 
@@ -43,8 +42,8 @@ UTC_1 = "2026-08-20T00:00:01.000000Z"
 
 
 @pytest.fixture
-def task_tmp() -> Path:
-    path = Path(tempfile.mkdtemp(prefix="stm32tk-0601-t03-", dir="C:/tmp"))
+def task_tmp(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    path = tmp_path_factory.mktemp("publication")
     try:
         yield path
     finally:

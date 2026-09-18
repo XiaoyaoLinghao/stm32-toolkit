@@ -10,7 +10,6 @@ import shutil
 import stat
 import subprocess
 import sys
-import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -101,8 +100,8 @@ def test_portable_package_validation_scans_every_native_xml_string(payload: byte
 
 
 @pytest.fixture
-def tmp_path() -> Path:
-    root = Path(tempfile.mkdtemp(prefix="stm32tk-0601-verifier-", dir=r"C:\tmp"))
+def tmp_path(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    root = tmp_path_factory.mktemp("verifier")
     try:
         yield root
     finally:

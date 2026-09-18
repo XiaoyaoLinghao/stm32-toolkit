@@ -7,7 +7,6 @@ import os
 from dataclasses import replace
 from pathlib import Path
 import sys
-import tempfile
 import threading
 import time
 from xml.etree import ElementTree
@@ -148,9 +147,8 @@ def _identity_context() -> EvidenceIdentityContext:
 
 
 @pytest.fixture
-def task_tmp() -> Path:
-    """Use a fresh C:\\tmp direct child; the default pytest root has a stale denied ACL."""
-    return Path(tempfile.mkdtemp(prefix="stm32tk-0601-t07-", dir="C:/tmp"))
+def task_tmp(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    return tmp_path_factory.mktemp("host")
 
 
 def _runner(tmp_path: Path, *, timeout: int = 5) -> tuple[HostTestRunner, HostTestConfig, Path, Path]:
