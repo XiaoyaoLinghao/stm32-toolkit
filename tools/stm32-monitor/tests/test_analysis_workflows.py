@@ -1255,7 +1255,7 @@ def test_history_multipage_reopened_batch_is_rejected_before_derived_publication
             next_cursor = f"1:{source.start_ordinal + len(source.values) - 1}"
         elif calls == 2:
             page_batch = replace(source, sequence=first_batch.sequence + 1)
-            next_cursor = f"1:{page_batch.start_ordinal + len(page_batch.values) - 1}"
+            next_cursor = f"2:{page_batch.start_ordinal + len(page_batch.values) - 1}"
         else:
             page_batch = replace(source, sequence=first_batch.sequence)
             next_cursor = None
