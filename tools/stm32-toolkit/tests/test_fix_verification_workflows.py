@@ -1937,6 +1937,71 @@ def test_task7b_completion_rejects_analysis_or_marker_identity_without_mutation(
     assert after == before
 
 
+@pytest.mark.parametrize("kind", ("analysis", "marker"))
+def test_task7b_completion_artifact_provider_oserror_is_environment_failure_without_mutation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, kind: str
+) -> None:
+    (
+        diagnostic_context,
+        session_id,
+        workspace,
+        _declaration,
+        _plan,
+        marker_ref,
+        _declared,
+        _planned,
+        _started,
+        _attached,
+    ) = _prepared_cross_state_operations(monkeypatch, tmp_path)
+    root_type = "monitor-analysis" if kind == "analysis" else "diagnostic-marker"
+    root_id = marker_ref.analysis_id if kind == "analysis" else marker_ref.marker_id
+    evidence = EvidenceStore(workspace.workspace_root / "evidence")
+    root = get_root(evidence, root_type, root_id)
+    artifact = evidence.get_envelope(root.manifest_id).artifacts[0]
+
+    completion_reader_entered = False
+    provider_calls: list[object] = []
+    original_completion_reader = diagnostic_workflows._read_completion_json_evidence
+    original_read_artifact = EvidenceStore.read_artifact
+
+    def completion_reader(*args: object, **kwargs: object) -> object:
+        nonlocal completion_reader_entered
+        completion_reader_entered = True
+        return original_completion_reader(*args, **kwargs)
+
+    def provider_failure(
+        store: EvidenceStore, requested_artifact: object, *, maximum_bytes: int
+    ) -> bytes:
+        if completion_reader_entered and requested_artifact == artifact:
+            provider_calls.append(requested_artifact)
+            raise OSError("completion evidence provider is unavailable")
+        return original_read_artifact(
+            store, requested_artifact, maximum_bytes=maximum_bytes
+        )
+
+    monkeypatch.setattr(
+        diagnostic_workflows, "_read_completion_json_evidence", completion_reader
+    )
+    monkeypatch.setattr(EvidenceStore, "read_artifact", provider_failure)
+
+    before = _authority_snapshot(workspace)
+    result = diagnostic_complete_verification(
+        _fresh_diagnostic_context(diagnostic_context),
+        operation_id=f"complete.provider.{kind}",
+        diagnostic_session_id=session_id,
+        expected_revision=7,
+        executed_operation_ids=["target-test.vs03"],
+    )
+    after = _authority_snapshot(workspace)
+
+    assert completion_reader_entered is True
+    assert provider_calls == [artifact]
+    assert result.ok is False
+    assert result.code == "ENVIRONMENT_FAILURE"
+    assert result.data is None
+    assert after == before
+
+
 def test_target_replay_diagnostic_session_reloads_with_origin_authority(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
