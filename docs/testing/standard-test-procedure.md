@@ -22,6 +22,8 @@ Windows 离线回归的生成工程 fixture 也须预检路径深度：configura
 
 若为原始异常留证增加 Python 启动包装，CLI 执行及进程创建必须放在 `if __name__ == "__main__":` 保护内。实机前使用实际 Windows spawn 进程入口和纯软件 child 验证子进程导入 `__mp_main__` 时不会再次执行 CLI；`--help` 或单函数留证自检不足以覆盖这一启动契约。优先直接使用已发布 CLI；确需包装时先说明缺少的证据及最小包装范围，不修改已部署产品文件。2026-09-11 首次受控 Fault 调用曾因测试包装缺少此保护，在 worker bootstrap 阶段失败，尚未进入枚举/attach/halt；应分类为测试入口 INFRASTRUCTURE，保留该次终态记录，不重新部署或自动重试硬件。
 
+run-local entry 若做命令行 substring 进程预检，参数必须从已记录 JSON 加载，避免父 PowerShell 命令因包含 backend selector 被误判；命中后只核对 PID、实际 `ExecutablePath`、直属父子关系及所处阶段，不 kill、不全局豁免 pwsh。pre-device 预检失败必须与已 dispatch 的 physical 结果分开记录；本轮依据见 `D:\codex-tmp\t10h-0917\task7\p4restore-preflight-stop-analysis.json`。
+
 使用 run 目录里的普通 Markdown/JSON 即可，不新增通用诊断框架或验证器。一次授权可以覆盖明确的连续步骤，无需逐命令重复确认；终态失败后的重试、范围变化或恢复策略必须重新核对并取得相应授权。
 
 | 必填项 | 执行前必须回答 |
@@ -155,6 +157,8 @@ Monitor analysis CLI 对 request、source-change 和 publication 文件要求规
 
 T10 采样入口复用已接受的有限 Monitor 生命周期，在执行卡中固定两侧独立 output root、当前源码/ELF/runtime pins 和真实 session；调用前读取配置，Windows spawn 导入时不得启动 runtime。当前 D3 修订的每个完整 batch 必须同时包含 testtime 与 GPIOE.ODR；两侧都要求 testtime 至少两个不同有效值且 PE4 同时出现 0/1，以验证 D4 主循环活性。P3 要求 PE3 仅为 0（D3 常亮），P4 要求 PE3 同时出现 0/1。固定 30 秒/100ms 窗口保留全部批次；发布边界使用实际选中 history 的首尾 sequence/captured 时间。历史 D4 回放只能验证原入口，不作为新 D3 物理证据。
 
+公共 `read sample` 的 `count` 表示 scheduled slots，不保证 delivered values；首读可耗秒级，不能把 `min100ms` 当作保证。生命周期/activity smoke 必须按有效样本数、identity、0 drops 和合理窗口判定；100ms 连续不停核资格继续由 Monitor 既有路径证明。依据：`D:\codex-tmp\t10h-0917\ship\physical-smoke\verification.json` 与 `D:\codex-tmp\t10h-0917\ship\physical-smoke-02\verification.json`。
+
 ## 6. 首错即停，先分类再改动
 
 非预期枚举/attach/状态/身份/烧录/读取/发布/清理错误发生后，停止后续硬件及动作消费。保存原响应/异常链、最后成功阶段、授权消费状态、flash/TestRun 是否产生、当前 lease/ticket。执行原入口约定 cleanup；同次调用内部清理与外部重新调用硬件必须分开报告。cleanup 未证实成功则状态未知/阻塞，不能把超时或发送进程终止信号写成释放成功。
@@ -186,15 +190,15 @@ T10 采样入口复用已接受的有限 Monitor 生命周期，在执行卡中�
 
 ## 8. 当前验收断点（2026-09-18）
 
-最新：T10 已完成获批的事后补充评估，见[生产交付记录](../codex/returns/STM32TK-T10-NATIVE-ANALYSIS/hypothesis-production-delivery.md)。已部署 source `227f8ea8b6895d4c2eaa14bd2483cfbce668b4b9`，runtime 为 `D:\stm32tk-data\fault-controlled-20260911\candidates\hypothesis-20260917\runtime\0.9.0`。原始 131 个证据文件未改变；以下 T10 未完成段落保留为历史断点。Task7 补证、Task11 正式交付、Task12 完整差异修正及验收仍未完成。
+最新（2026-09-18 最终技术校验断点）：最终部署 source `6e069660e4a5b62598f16637176caf086f82d3c8`，runtime 为 `D:\stm32tk-data\fault-controlled-20260911\candidates\vs10a-final-20260918\runtime\0.9.0`；软件包、安装身份及 release child `TEMP`/`TMP`/`TMPDIR` 传递修正均已审查通过。Task7 bounded flash/Monitor/Fault、P4restore、用户 D4 质性佐证及两次有限 activity smoke 均已有归档结果；P1c flash/Monitor/Fault 与 P4restore 仍明确归属于 retained hypothesis source `227f8ea8b6895d4c2eaa14bd2483cfbce668b4b9`，只有两次 final finite smoke 使用 source `6e069660`。Task12 完整软件校验是连续的 `291/291 + 37/37` 两段，Target/Keil/Probe/release-child 修正均已接受。Task11 技术归档现有 18/18 bundle roles，最终报告位于 bundle 外；primary checksum verification 已通过：直接重算 474-file `CHECKSUMS.sha256` 得到零 mismatch、零 set difference 和正确 Ordinal 顺序（SHA256 `509a7db2c51cc89704a6d35cf591f619223f01af7293b7aae0307364bb3e43f0`），证据为 `D:\codex-tmp\t10h-0917\evidence\final-checksum-primary-verification.json` 与 `D:\codex-tmp\t10h-0917\evidence\final-checksum-primary-command.ps1`；既有 independent content review 保持 ACCEPTED，本流程不新增 independent checksum verdict。当前技术校验完成，cleanup disposition 未决，正式 VS10-A 验收尚未宣布；本段之后保留的内容均为历史断点。
 
 Task7 本轮是未插桩 P1c 的事后补证，完整固定输入见 `D:\codex-tmp\t10h-0917\task7\execution-card.md`：在新的 P1c checkout/session 中使用与历史 P1c 相同的可编程镜像，保留原 P4 工程和 receipt。普通 flash 成功只证明编程及回读，不证明应用启动；有限入口必须在同一个 MODIFY supervisor/client/lease 中调用公共 `flash_firmware`，核对真实身份，再复用 `PhysicalTargetFlashAdapter.start_after_flash` 的新 reset 和条件 resume，最后验证 running。其 constructor 使用 `project_root`、`raw_probe_id`、`client`、`control_authorizations` 关键字；离线替身须遵循真实签名。P1c 没有 mailbox，不执行 Target 测试或制造 TestRun。烧录/启动主动预算 90 秒，拥有的 cleanup 正常完成。
 
 随后采集一次 5 秒/100ms 的 testtime 与 GPIOE.ODR 同批 Monitor history/snapshot，证明值变化及 PE4 两态；这不是重复 30 秒周期资格验证。一次公共受控 Fault 使用相同固件/探针身份，证明无活动 Cortex-M fault 并恢复 running。用户 D4 目视观察是独立佐证，不能由软件结果代填。最后从独立 p4restore checkout/session 恢复原 P4 相同镜像，通过公共入口取得 running 及 activity 证据，并保留该独立 session 的身份绑定和收尾证据。任一步首错停止并保留错误，诊断修正后依当前用户目标授权作有据重试；禁止盲目重试、绕过身份或复用旧 action。此段和两个有限入口须经审查后才执行依赖实机步骤。
 
-当前目标是完成 VS10-A；执行与所有权边界见[完成计划](../superpowers/plans/2026-09-17-stm32tk-vs10a-completion.md)。用户已明确授权验收所需实机烧录、测试、读取，以及首错停止、收集错误、修复并离线验证后的有据重试，无需逐次重新请示。执行前仍固定身份、单次预算、停止条件和唯一硬件所有者；不盲目重复失败动作，不复用已消费 action。此授权不包含远程 GitHub 变更。下方较早的“待新授权”均是历史记录，不能覆盖最新授权。
+当前技术校验已完成；执行与所有权边界见[完成计划](../superpowers/plans/2026-09-17-stm32tk-vs10a-completion.md)。cleanup disposition 仍待 primary 按用户决定处理，正式 VS10-A 验收在此之前不宣布。下方较早的“待新授权”“未完成”和旧 runtime 状态均是历史记录，不能覆盖本节顶部的最终技术校验状态；本文件不授予新的硬件、远程或清理权限。
 
-当前 T10 补充评估仍为离线工作。候选 17e67870750482916abc99f7a8cb0ea01f07df2d 的真实副本公共 CLI 链已完成，最终 revision14/INVESTIGATING、三假设、五观测、七评估，131 份原文件未变。独立审查要求修正 provider I/O 分类、MCP/core 原始引用验证一致性、叶模型 evidence-ID 绑定；同一 Luna/max 所有者正在修正。修正后只补定向回归和既有副本新进程读回，不重放已完成的写操作。候选未接受、未部署，生产补充操作 ID 尚未消费。T9、原 G/H、attempt7 保留；P1c 原始身份链及全量差异仍在核对，T10/Task11/Task12/VS10-A 尚未完成。
+T10 补充评估的生产副本链已按批准范围完成：revision14 保持 `INVESTIGATING` 的历史语义，三假设、五观测、七评估和 131 份原文件均已核对；不把该补充链改写为原始 T10 `RESOLVED`。以下旧候选、旧部署及旧 review 状态只作为历史断点保留。
 
 以下为按时间保留的历史断点；以本节顶部和对应实际执行记录判定当前状态。
 用户已批准[补充评估规格](../superpowers/specs/2026-09-17-stm32tk-t10-hypothesis-assessment-design.md)及计划的实现、独立审查、部署和一次生产离线补充；零硬件、零远程操作。实现候选未接受/部署前，不用旧runtime尝试新selector。新版就绪后，按现有公共入口：fresh `diagnose start <原P3> --failed-run-mode target --operation-id <新ID>` → begin → 三类hypothesis add → plan add/run → 七条明确polarity/rationale的assess → 新进程diagnose show。所有命令以实际help的`--session-id`为准，每步使用返回的新revision；计划输入一次准备五个真实窗口事实（P3 testtime变化、P3 PE3/PE4值集合、P4 PE3/PE4值集合），min297不变，完整引用及proof保持原样。先在131文件哈希核对的真实副本跑通，再执行一次生产链；原RESOLVED/G/H不得重开或重跑。新session仅记录事后补充评估，保留open/unrated/INVESTIGATING实际语义，不制造新的FixVerification终态。输入、执行卡及后续结果在`D:\codex-tmp\t10h-0917`。
