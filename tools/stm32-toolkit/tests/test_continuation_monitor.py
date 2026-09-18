@@ -1,9 +1,11 @@
 """Persisted software fixtures only: these tests never access physical hardware."""
 
 from concurrent.futures import ThreadPoolExecutor
+from copy import deepcopy
 from dataclasses import replace
 import hashlib
 import json
+import os
 import subprocess
 import sys
 from types import SimpleNamespace
@@ -23,6 +25,7 @@ from stm32_monitor.analysis_workflows import (
 )
 from stm32_monitor.replay import canonical_replay_json_bytes, publish_physical_monitor_run
 from stm32_toolkit.acceptance.continuation import authenticate_continuation
+from stm32_toolkit.build.identity import snapshot_project_inputs
 import stm32_toolkit.acceptance.recovery_workflows as recovery_workflows
 from stm32_toolkit.acceptance.recovery_workflows import (
     begin_acceptance_attempt, checkpoint_acceptance_attempt, resume_acceptance_attempt,
@@ -51,6 +54,7 @@ from stm32_toolkit.evidence import EvidenceEnvelope, canonical_json_bytes, get_r
 from stm32_toolkit.evidence.gc import RootRecord, put_root
 from stm32_toolkit.evidence.gc import plan_gc
 from stm32_toolkit.evidence.store import EvidenceStore
+from stm32_toolkit.project_model import load_project_model
 
 
 def _append_native_physical_monitor_history(
@@ -798,6 +802,177 @@ def test_physical_monitor_fact_persists_and_fresh_store_recomputes(
         refs[0].transcript_evidence_id,
         refs[1].transcript_evidence_id,
     ]
+
+
+def test_fresh_failed_physical_monitor_fact_v2_persists_and_replays(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A current failed-before physical fact needs no continuation proof."""
+
+    fixture = _supplementary_physical_fact_fixture(tmp_path, monkeypatch)
+    selector = dict(fixture.selectors[0])
+    selector["kind"] = "physical-monitor-fact/2"
+    selector.pop("continuation_evidence_id")
+    plan = _ok(
+        diagnostic_add_plan(
+            fixture.pair.diagnostic,
+            operation_id="fresh-v2-plan",
+            diagnostic_session_id=fixture.diagnostic_session_id,
+            expected_revision=3,
+            steps=[
+                {
+                    "step_id": "physical-register-fact-v2",
+                    "selector": selector,
+                    "expected_value": 3,
+                    "purpose": "verify the current failed-before physical register bit",
+                }
+            ],
+        )
+    )["observation_plan"]
+    plan_id = str(plan["plan_id"])
+    run = _ok(
+        diagnostic_run_plan(
+            fixture.pair.diagnostic,
+            operation_id="fresh-v2-run",
+            diagnostic_session_id=fixture.diagnostic_session_id,
+            expected_revision=4,
+            plan_id=plan_id,
+        )
+    )
+    assert run["observation_results"][0]["evidence_id"] == fixture.refs[0].transcript_evidence_id
+    _ok(
+        diagnostic_assess_hypothesis(
+            fixture.pair.diagnostic,
+            operation_id="fresh-v2-assess",
+            diagnostic_session_id=fixture.diagnostic_session_id,
+            expected_revision=5,
+            hypothesis_id=fixture.hypothesis_id,
+            plan_id=plan_id,
+            step_id="physical-register-fact-v2",
+            polarity="supports",
+            rationale="the current failed-before physical samples contain both bit values",
+        )
+    )
+
+    fresh_store = DiagnosticStore(
+        fixture.pair.workspace.diagnostics_root,
+        EvidenceStore(fixture.pair.evidence.root),
+    )
+    loaded = fresh_store.load(fixture.diagnostic_session_id)
+    assert loaded.revision == 6
+    assert loaded.observation_results[0].selector["kind"] == "physical-monitor-fact/2"
+    assert loaded.observation_results[0].evidence_id == fixture.refs[0].transcript_evidence_id
+
+    # Advance the active checkout's source snapshot after the before fact was
+    # committed. A separate interpreter must still replay the frozen Target /
+    # Monitor graph without inheriting this test process's monkeypatches.
+    source_path = fixture.pair.project_root / "App" / "main.c"
+    source_path.write_bytes(b"int main(void) { return 1; }\n")
+    active_snapshot = snapshot_project_inputs(
+        load_project_model(fixture.pair.project_root)
+    )
+    assert active_snapshot.sha256 != fixture.pair.before_identity.input_snapshot_sha256
+    source_root = Path(__file__).resolve().parents[1] / "src"
+    monitor_root = Path(__file__).resolve().parents[2] / "stm32-monitor" / "src"
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = os.pathsep.join(
+        [str(source_root), str(monitor_root), environment.get("PYTHONPATH", "")]
+    )
+    process = subprocess.run(
+        [
+            sys.executable,
+            "-B",
+            "-m",
+            "stm32_toolkit.cli",
+            "diagnose",
+            "show",
+            fixture.diagnostic_session_id,
+            "--project-root",
+            str(fixture.pair.project_root),
+            "--data-root",
+            str(fixture.pair.data_root),
+            "--session-id",
+            fixture.pair.before_session_id,
+            "--json",
+        ],
+        cwd=str(Path(__file__).resolve().parents[1]),
+        env=environment,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+        timeout=60,
+    )
+    assert process.returncode == 0, process.stdout + process.stderr
+    replayed = json.loads(process.stdout)
+    assert replayed["ok"] is True
+    assert replayed["data"]["session"]["revision"] == 6
+    assert replayed["data"]["session"]["observation_results"][0]["selector"]["kind"] == (
+        "physical-monitor-fact/2"
+    )
+
+    transcript = fixture.pair.evidence.get_envelope(fixture.refs[0].transcript_evidence_id)
+    artifact_path = fixture.pair.evidence.root.joinpath(
+        *transcript.artifacts[0].relative_path.split("/")
+    )
+    original = artifact_path.read_bytes()
+    artifact_path.write_bytes(original + b" ")
+    try:
+        with pytest.raises(DiagnosticValidationError) as raised:
+            fresh_store.load(fixture.diagnostic_session_id)
+        assert raised.value.code == DIAGNOSTIC_CHAIN_CORRUPT
+    finally:
+        artifact_path.write_bytes(original)
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [
+        "role",
+        "monitor_ref",
+        "probe_id",
+        "flash_session_id",
+        "target_device",
+        "physical_target",
+        "input_snapshot",
+    ],
+)
+def test_fresh_failed_physical_monitor_fact_v2_rejects_lineage_tampering(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, damage: str
+) -> None:
+    fixture = _supplementary_physical_fact_fixture(tmp_path, monkeypatch)
+    state = diagnostic_workflows._make_state(fixture.pair.diagnostic)
+    session = diagnostic_workflows._load_bound_session(
+        state, fixture.diagnostic_session_id
+    )
+    selector = deepcopy(fixture.selectors[0])
+    selector["kind"] = "physical-monitor-fact/2"
+    selector.pop("continuation_evidence_id")
+    if damage == "monitor_ref":
+        selector["monitor_ref_evidence_id"] = "f" * 64
+    reference = selector["monitor_run_ref"]
+    assert isinstance(reference, dict)
+    if damage == "role":
+        reference["scenario_role"] = "fixed-after"
+    elif damage != "monitor_ref":
+        field = {
+            "probe_id": "probe_id",
+            "flash_session_id": "flash_session_id",
+            "target_device": "target_device",
+            "physical_target": "physical_target",
+            "input_snapshot": "input_snapshot_sha256",
+        }[damage]
+        reference[field] = "0" * 64 if field.endswith("sha256") or field == "probe_id" else "tampered"
+    reference["run_ref_sha256"] = hashlib.sha256(
+        canonical_replay_json_bytes(
+            {key: value for key, value in reference.items() if key != "run_ref_sha256"}
+        )
+    ).hexdigest()
+    with pytest.raises(diagnostic_workflows._WorkflowFailure) as raised:
+        diagnostic_workflows._authenticate_physical_monitor_fact(
+            state, session, selector
+        )
+    assert raised.value.code in {"INCOMPATIBLE_IDENTITY", EVIDENCE_INTEGRITY_FAILURE}
 
 
 def _add_one_supplementary_fact_plan(

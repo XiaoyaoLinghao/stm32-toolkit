@@ -44,6 +44,7 @@ from .model import (
     ObservationResult,
     ObservationStep,
     PHYSICAL_MONITOR_FACT_KIND,
+    PHYSICAL_MONITOR_FACT_KINDS,
     SourceChangeDeclaration,
     VerificationPlan,
     canonical_diagnostic_json_bytes,
@@ -688,17 +689,18 @@ class DiagnosticStore:
             selectors.append(assessment.selector)
         references: set[str] = set()
         for selector in selectors:
-            if selector.get("kind") != PHYSICAL_MONITOR_FACT_KIND:
+            if selector.get("kind") not in PHYSICAL_MONITOR_FACT_KINDS:
                 continue
             reference = selector["monitor_run_ref"]
             assert isinstance(reference, Mapping)
             references.update(
                 {
-                    cast(str, selector["continuation_evidence_id"]),
                     cast(str, selector["monitor_ref_evidence_id"]),
                     cast(str, reference["transcript_evidence_id"]),
                 }
             )
+            if selector.get("kind") == PHYSICAL_MONITOR_FACT_KIND:
+                references.add(cast(str, selector["continuation_evidence_id"]))
         return references
 
     def _validate_monitor_fact_event(self, event: DiagnosticEvent, session: DiagnosticSession) -> None:
@@ -745,7 +747,7 @@ class DiagnosticStore:
             return
 
         for step, stored in steps_results:
-            if step.selector.get("kind") != PHYSICAL_MONITOR_FACT_KIND:
+            if step.selector.get("kind") not in PHYSICAL_MONITOR_FACT_KINDS:
                 continue
             try:
                 observed, transcript_evidence_id = _resolve_physical_monitor_fact(state, session, step)

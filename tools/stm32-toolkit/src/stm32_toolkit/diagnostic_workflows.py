@@ -72,7 +72,10 @@ from stm32_toolkit.monitor_analysis_contract import (
     native_statistics,
     validate_native_request,
 )
-from stm32_toolkit.diagnostics.model import PHYSICAL_MONITOR_FACT_KIND
+from stm32_toolkit.diagnostics.model import (
+    PHYSICAL_MONITOR_FACT_KIND_V2,
+    PHYSICAL_MONITOR_FACT_KINDS,
+)
 from stm32_toolkit.project_model import ProjectManifestError, load_project_model
 from stm32_toolkit.result import OperationResult
 from stm32_toolkit.testing.model import TestProtocolError
@@ -1184,7 +1187,7 @@ def _diagnostic_assess_hypothesis(
         raise DiagnosticValidationError(DIAGNOSTIC_PLAN_INVALID)
     step = steps[0]
     observation = results[0]
-    if step.selector["kind"] == PHYSICAL_MONITOR_FACT_KIND:
+    if step.selector["kind"] in PHYSICAL_MONITOR_FACT_KINDS:
         recomputed, evidence_id = _resolve_physical_monitor_fact(state, session, step)
     else:
         recomputed, evidence_id = _resolve_observation_selector(
@@ -3045,6 +3048,126 @@ def _json_plain(value: object) -> object:
     return value
 
 
+def _authenticate_physical_monitor_fact_v2(
+    state: _WorkflowState,
+    session: DiagnosticSession,
+    selector: Mapping[str, object],
+) -> tuple[str, list[object]]:
+    """Authenticate a fresh failed-before physical Monitor graph.
+
+    Version 2 deliberately binds the Monitor window directly to the current
+    Diagnostic's failed physical Target run. It does not consult continuation
+    evidence or project a historical run into this workspace.
+    """
+
+    reference = selector.get("monitor_run_ref")
+    if not isinstance(reference, Mapping) or reference.get("scenario_role") != "failed-before":
+        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+    transcript_evidence_id = reference.get("transcript_evidence_id")
+    monitor_ref_evidence_id = selector.get("monitor_ref_evidence_id")
+    operation_id = reference.get("operation_id")
+    if not all(
+        isinstance(item, str) and item
+        for item in (transcript_evidence_id, monitor_ref_evidence_id, operation_id)
+    ):
+        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+
+    # The current Diagnostic Target run is the sole before-run authority. The
+    # exact identity/evidence binding here also keeps archived before facts
+    # stable when a later build becomes active in the workspace.
+    if session.failed_run_mode != "target":
+        raise _WorkflowFailure(_INCOMPATIBLE_IDENTITY)
+    target_published = _load_authoritative_run(
+        state,
+        session.failed_test_run_id,
+        failed_run_mode="target",
+        expected_identity=session.identity,
+    )
+    target_envelope = getattr(target_published, "envelope", None)
+    target_manifest = getattr(target_published, "manifest", None)
+    target_identity = getattr(target_manifest, "identity", None)
+    if (
+        getattr(target_envelope, "evidence_id", None) != session.failed_evidence_id
+        or target_identity != session.identity
+        or _execution_policy(target_published) != ("physical", True)
+    ):
+        raise _WorkflowFailure(_INCOMPATIBLE_IDENTITY)
+
+    try:
+        transcript_envelope = state.evidence_store.get_envelope(transcript_evidence_id)
+        _envelope, validated_reference, batches = _read_physical_transcript_parent(
+            state,
+            evidence_id=transcript_evidence_id,
+            run_identity=target_identity,
+            expected_test_run_id=session.failed_test_run_id,
+            expected_role="failed-before",
+            envelope=transcript_envelope,
+            metadata=dict(transcript_envelope.metadata),
+        )
+
+        # The publisher stores the probe hash in both graphs. Compare the
+        # persisted hash and physical Target fields exactly; no raw probe value
+        # is available or accepted at this Diagnostic boundary.
+        target_metadata = dict(getattr(target_envelope, "metadata", {}) or {})
+        if any(
+            validated_reference.get(field) != target_metadata.get(field)
+            for field in ("probe_id", "flash_session_id")
+        ) or validated_reference.get("target_device") != target_metadata.get("target_id"):
+            raise _WorkflowFailure(_INCOMPATIBLE_IDENTITY)
+
+        # Preserve the existing project producer constraints for the Monitor
+        # target identifiers. The Monitor lease is intentionally independent
+        # from the Target flash lease; its internal transcript/reference
+        # equality was authenticated by the physical reader above.
+        project_spec = getattr(state.model, "target", None)
+        debug_spec = getattr(state.model, "debug", None)
+        # Fresh Diagnostic Store replay intentionally reconstructs only the
+        # immutable project ID. When the full project model is available at a
+        # workflow entry, retain the producer's device/debug-target checks.
+        if project_spec is not None or debug_spec is not None:
+            if (
+                validated_reference.get("target_device")
+                != getattr(project_spec, "device", None)
+                or validated_reference.get("physical_target")
+                != getattr(debug_spec, "target", None)
+            ):
+                raise _WorkflowFailure(_INCOMPATIBLE_IDENTITY)
+
+        reference_root = get_root(
+            state.evidence_store,
+            "monitor-run-ref",
+            operation_id,
+        )
+        reference_envelope = state.evidence_store.get_envelope(reference_root.manifest_id)
+        if (
+            reference_root.manifest_id != str(reference_envelope.evidence_id)
+            or str(reference_envelope.evidence_id) != monitor_ref_evidence_id
+            or reference_root.root_id != operation_id
+            or reference_envelope.operation != "monitor-run-ref"
+            or reference_envelope.parents != (transcript_evidence_id,)
+            or _json_plain(reference) != _json_plain(validated_reference)
+        ):
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+    except _WorkflowFailure:
+        raise
+    except FileNotFoundError as error:
+        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE) from error
+    except OSError as error:
+        raise _WorkflowFailure(_ENVIRONMENT_FAILURE) from error
+    except EvidenceValidationError as error:
+        code = _ENVIRONMENT_FAILURE if _has_provider_os_error(error) else _EVIDENCE_INTEGRITY_FAILURE
+        raise _WorkflowFailure(code) from error
+    except (
+        ReplayContractError,
+        TypeError,
+        ValueError,
+        KeyError,
+        IndexError,
+    ) as error:
+        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE) from error
+    return transcript_evidence_id, batches
+
+
 def _authenticate_physical_monitor_fact(
     state: _WorkflowState,
     session: DiagnosticSession,
@@ -3057,6 +3180,9 @@ def _authenticate_physical_monitor_fact(
     the caller-provided transcript and reference IDs are accepted only when
     they resolve to the exact roots and bytes produced for that member.
     """
+
+    if selector.get("kind") == PHYSICAL_MONITOR_FACT_KIND_V2:
+        return _authenticate_physical_monitor_fact_v2(state, session, selector)
 
     reference = selector.get("monitor_run_ref")
     if not isinstance(reference, Mapping):
@@ -3261,7 +3387,7 @@ def _diagnostic_add_plan(
     manifest = _load_bound_failed_run(state, session)
     plan = _observation_plan(session, steps)
     for step in plan.steps:
-        if step.selector["kind"] == PHYSICAL_MONITOR_FACT_KIND:
+        if step.selector["kind"] in PHYSICAL_MONITOR_FACT_KINDS:
             _resolve_physical_monitor_fact(state, session, step)
         else:
             _resolve_observation_selector(manifest, step)
@@ -3322,7 +3448,7 @@ def _diagnostic_run_plan(
     manifest = _load_bound_failed_run(state, session)
     observation_results_list: list[ObservationResult] = []
     for step in plan.steps:
-        if step.selector["kind"] == PHYSICAL_MONITOR_FACT_KIND:
+        if step.selector["kind"] in PHYSICAL_MONITOR_FACT_KINDS:
             observed, evidence_id = _resolve_physical_monitor_fact(state, session, step)
         else:
             observed = _resolve_observation_selector(manifest, step)

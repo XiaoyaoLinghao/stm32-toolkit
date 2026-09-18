@@ -562,6 +562,38 @@ class DiagnosticPhysicalMonitorFactSelector(BaseModel):
         return self
 
 
+class DiagnosticPhysicalMonitorFactV2Selector(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["physical-monitor-fact/2"]
+    monitor_ref_evidence_id: Digest
+    monitor_run_ref: DiagnosticMonitorRunRef
+    selector_kind: Literal["variable", "register"]
+    selector: DiagnosticText
+    fact: Literal["value-varies", "bit-values-mask"]
+    minimum_valid_samples: Annotated[StrictInt, Field(ge=1, le=1024)]
+    bit_index: Annotated[StrictInt, Field(ge=0, le=31)] | None = None
+
+    @model_validator(mode="after")
+    def _validate_fact(self) -> "DiagnosticPhysicalMonitorFactV2Selector":
+        if self.monitor_run_ref.scenario_role != "failed-before":
+            raise ValueError("v2 physical monitor facts require failed-before evidence")
+        if self.fact == "value-varies" and (
+            self.bit_index is not None or "bit_index" in self.model_fields_set
+        ):
+            raise ValueError("value-varies does not accept bit_index")
+        if (
+            self.fact == "bit-values-mask"
+            and (
+                self.selector_kind != "register"
+                or self.bit_index is None
+                or "bit_index" not in self.model_fields_set
+            )
+        ):
+            raise ValueError("bit-values-mask requires a register selector")
+        return self
+
+
 class DiagnosticRunStateSelector(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -586,7 +618,8 @@ DiagnosticSelector = Annotated[
     DiagnosticRunStateSelector
     | DiagnosticCaseStateSelector
     | DiagnosticCaseCountSelector
-    | DiagnosticPhysicalMonitorFactSelector,
+    | DiagnosticPhysicalMonitorFactSelector
+    | DiagnosticPhysicalMonitorFactV2Selector,
     Field(discriminator="kind"),
 ]
 DiagnosticExpectedValue = DiagnosticRunState | DiagnosticCaseState | DiagnosticCount
@@ -622,7 +655,7 @@ class DiagnosticObservationStep(BaseModel):
             raise ValueError("expected value is incompatible with selector")
         if kind == "case-count" and type(self.expected_value) is not int:
             raise ValueError("expected value is incompatible with selector")
-        if kind == "physical-monitor-fact/1":
+        if kind in {"physical-monitor-fact/1", "physical-monitor-fact/2"}:
             if type(self.expected_value) is not int:
                 raise ValueError("expected value is incompatible with selector")
             fact = self.selector.fact
@@ -1451,7 +1484,7 @@ def _diagnostic_step_data(step: DiagnosticObservationStep) -> dict[str, object]:
     selector = data.get("selector")
     if (
         isinstance(selector, dict)
-        and selector.get("kind") == "physical-monitor-fact/1"
+        and selector.get("kind") in {"physical-monitor-fact/1", "physical-monitor-fact/2"}
         and selector.get("bit_index") is None
     ):
         selector.pop("bit_index", None)

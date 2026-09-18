@@ -78,6 +78,10 @@ MAX_ASSESSMENTS = 1_024
 RUN_STATES = ("discovered", "running", "passed", "failed", "error", "cancelled")
 CASE_STATES = ("passed", "failed", "skipped", "error", "timeout")
 PHYSICAL_MONITOR_FACT_KIND = "physical-monitor-fact/1"
+PHYSICAL_MONITOR_FACT_KIND_V2 = "physical-monitor-fact/2"
+PHYSICAL_MONITOR_FACT_KINDS = frozenset(
+    {PHYSICAL_MONITOR_FACT_KIND, PHYSICAL_MONITOR_FACT_KIND_V2}
+)
 PHYSICAL_MONITOR_FACTS = ("value-varies", "bit-values-mask")
 PHYSICAL_MONITOR_SELECTOR_KINDS = ("variable", "register")
 EVENT_TYPES = (
@@ -278,10 +282,9 @@ def _selector(value: object) -> Mapping[str, object]:
             _fail(DIAGNOSTIC_INVALID_EVENT)
         if selector.get("state") not in CASE_STATES:
             _fail(DIAGNOSTIC_PLAN_INVALID)
-    elif kind == PHYSICAL_MONITOR_FACT_KIND:
+    elif kind == PHYSICAL_MONITOR_FACT_KIND or kind == PHYSICAL_MONITOR_FACT_KIND_V2:
         base_fields = {
             "kind",
-            "continuation_evidence_id",
             "monitor_ref_evidence_id",
             "monitor_run_ref",
             "selector_kind",
@@ -289,11 +292,14 @@ def _selector(value: object) -> Mapping[str, object]:
             "fact",
             "minimum_valid_samples",
         }
+        if kind == PHYSICAL_MONITOR_FACT_KIND:
+            base_fields.add("continuation_evidence_id")
         fact = selector.get("fact")
         expected_fields = base_fields | ({"bit_index"} if fact == "bit-values-mask" else set())
         if fact not in PHYSICAL_MONITOR_FACTS or set(selector) != expected_fields:
             _fail(DIAGNOSTIC_PLAN_INVALID)
-        _hash(selector.get("continuation_evidence_id"))
+        if kind == PHYSICAL_MONITOR_FACT_KIND:
+            _hash(selector.get("continuation_evidence_id"))
         _hash(selector.get("monitor_ref_evidence_id"))
         if selector.get("selector_kind") not in PHYSICAL_MONITOR_SELECTOR_KINDS:
             _fail(DIAGNOSTIC_PLAN_INVALID)
@@ -330,6 +336,10 @@ def _selector(value: object) -> Mapping[str, object]:
             reference.get("schema") != "stm32-monitor-run-ref/2"
             or reference.get("execution_source") != "physical"
             or reference.get("physical_transport_evidence") is not True
+            or (
+                kind == PHYSICAL_MONITOR_FACT_KIND_V2
+                and reference.get("scenario_role") != "failed-before"
+            )
         ):
             _fail(DIAGNOSTIC_PLAN_INVALID)
         selector["monitor_run_ref"] = reference
@@ -341,7 +351,7 @@ def _selector(value: object) -> Mapping[str, object]:
 def _require_physical_transcript_evidence(
     selector: Mapping[str, object], evidence_id: str
 ) -> None:
-    if selector.get("kind") != PHYSICAL_MONITOR_FACT_KIND:
+    if selector.get("kind") not in PHYSICAL_MONITOR_FACT_KINDS:
         return
     reference = selector.get("monitor_run_ref")
     if (
@@ -361,7 +371,7 @@ def _value_for_selector(selector: Mapping[str, object], value: object) -> object
         if value not in CASE_STATES or not isinstance(value, str):
             _fail(DIAGNOSTIC_PLAN_INVALID)
         return value
-    if kind == PHYSICAL_MONITOR_FACT_KIND:
+    if kind in PHYSICAL_MONITOR_FACT_KINDS:
         if type(value) is not int or isinstance(value, bool):
             _fail(DIAGNOSTIC_PLAN_INVALID)
         fact = selector["fact"]
@@ -824,7 +834,7 @@ class DiagnosticSession:
             results[(item.plan_id, item.step_id)] = item
             step = next(step for step in plan.steps if step.step_id == item.step_id)
             expected_evidence_id = evidence_id
-            if step.selector["kind"] == PHYSICAL_MONITOR_FACT_KIND:
+            if step.selector["kind"] in PHYSICAL_MONITOR_FACT_KINDS:
                 reference = step.selector["monitor_run_ref"]
                 assert isinstance(reference, Mapping)
                 expected_evidence_id = cast(str, reference["transcript_evidence_id"])

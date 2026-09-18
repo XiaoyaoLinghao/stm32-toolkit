@@ -1273,7 +1273,7 @@ def test_plan_tools_have_exact_closed_nested_selector_schemas(tmp_path: Path):
     selector = _resolve_schema(steps["properties"]["selector"], add)
     variants = selector.get("oneOf") or selector.get("anyOf")
     assert isinstance(variants, list)
-    assert len(variants) == 4
+    assert len(variants) == 5
     variant_schemas = [_resolve_schema(item, add) for item in variants]
     assert all(item["additionalProperties"] is False for item in variant_schemas)
     assert {
@@ -1293,6 +1293,16 @@ def test_plan_tools_have_exact_closed_nested_selector_schemas(tmp_path: Path):
             "selector",
             "selector_kind",
         ),
+        (
+            "bit_index",
+            "fact",
+            "kind",
+            "minimum_valid_samples",
+            "monitor_ref_evidence_id",
+            "monitor_run_ref",
+            "selector",
+            "selector_kind",
+        ),
     }
     run_state = next(item for item in variant_schemas if set(item["properties"]) == {"kind"})
     case_state = next(
@@ -1304,7 +1314,13 @@ def test_plan_tools_have_exact_closed_nested_selector_schemas(tmp_path: Path):
     physical = next(
         item
         for item in variant_schemas
+        if "continuation_evidence_id" in item["properties"]
+    )
+    physical_v2 = next(
+        item
+        for item in variant_schemas
         if "monitor_run_ref" in item["properties"]
+        and "continuation_evidence_id" not in item["properties"]
     )
     assert run_state["properties"]["kind"]["const"] == "run-state"
     assert case_state["properties"]["kind"]["const"] == "case-state"
@@ -1319,6 +1335,7 @@ def test_plan_tools_have_exact_closed_nested_selector_schemas(tmp_path: Path):
         "timeout",
     ]
     assert physical["properties"]["kind"]["const"] == "physical-monitor-fact/1"
+    assert physical_v2["properties"]["kind"]["const"] == "physical-monitor-fact/2"
     assert physical["properties"]["fact"]["enum"] == [
         "value-varies",
         "bit-values-mask",
@@ -1338,6 +1355,15 @@ def test_plan_tools_have_exact_closed_nested_selector_schemas(tmp_path: Path):
     assert set(physical["required"]) == {
         "kind",
         "continuation_evidence_id",
+        "monitor_ref_evidence_id",
+        "monitor_run_ref",
+        "selector_kind",
+        "selector",
+        "fact",
+        "minimum_valid_samples",
+    }
+    assert set(physical_v2["required"]) == {
+        "kind",
         "monitor_ref_evidence_id",
         "monitor_run_ref",
         "selector_kind",
@@ -1484,6 +1510,41 @@ def test_registered_plan_add_preserves_physical_reference_null_and_bit_shape(
             )
         )
     assert len(calls) == 2
+
+
+def test_registered_plan_add_accepts_v2_without_continuation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    runtime = _runtime(tmp_path)
+    server = create_server(runtime.project_root, runtime.data_root, runtime.session_id)
+    calls: list[tuple[object, ...]] = []
+
+    async def helper(*args: object) -> dict[str, object]:
+        calls.append(args)
+        return {"tool": "plan-add"}
+
+    monkeypatch.setattr(mcp_mod, "tool_diagnostic_add_plan_for_request", helper, raising=False)
+    step = deepcopy(PHYSICAL_FACT_STEP)
+    selector = step["selector"]
+    assert isinstance(selector, dict)
+    selector["kind"] = "physical-monitor-fact/2"
+    selector.pop("continuation_evidence_id")
+    _content, result = asyncio.run(
+        server.call_tool(
+            "stm32_diagnostic_plan_add",
+            {
+                "operationId": OPERATION_ID,
+                "diagnosticSessionId": DIAGNOSTIC_SESSION_ID,
+                "expectedRevision": 4,
+                "steps": [step],
+            },
+        )
+    )
+    assert result == {"tool": "plan-add"}
+    assert len(calls) == 1
+    forwarded = calls[0][5][0]
+    assert "continuation_evidence_id" not in forwarded["selector"]
+    assert forwarded["selector"]["kind"] == "physical-monitor-fact/2"
 
 
 @pytest.mark.parametrize(
