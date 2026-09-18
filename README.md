@@ -24,15 +24,15 @@ Repair changes only the runtime. For an existing Schema v2 or v3 project whose p
 and build sequence below:
 
 ```powershell
-stm32-toolkit project configure --project C:\work\blinky --dry-run --json
-stm32-toolkit project configure --project C:\work\blinky --apply --plan-id <plan-id> --authorized --json
-stm32-toolkit build --project C:\work\blinky --preset arm-debug --json
+stm32-toolkit --project-root C:\work\blinky project configure --dry-run --json
+stm32-toolkit --project-root C:\work\blinky project configure --apply --plan-id <plan-id> --authorized --json
+stm32-toolkit --project-root C:\work\blinky build --preset arm-debug --json
 ```
 
-The configure transaction keeps the project's `generatedBy.version` truthful at `0.9.0`, emits a
-current `1.0.0` managed manifest, and leaves a new build identity at `1.0.0`. User edits, malformed
-manifests, unknown/future producers, and stale plans retain their existing refusal and rollback
-rules.
+The configure transaction keeps the project's `generatedBy.version` truthful at `0.9.0` and emits a
+current `1.0.0` managed manifest. The following build publishes a new identity at `1.0.0`. User
+edits, malformed manifests, unknown/future producers, and stale plans retain their existing refusal
+and rollback rules.
 
 The current runtime is generic: an integration may choose any absolute `TOOLKIT_ROOT`,
 `DATA_ROOT`, and `PROJECT_ROOT`. The launcher reads only `STM32_TOOLKIT_DATA_ROOT`; the CLI requires
