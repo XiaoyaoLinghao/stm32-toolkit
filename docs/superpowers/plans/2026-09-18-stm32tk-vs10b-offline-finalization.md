@@ -1,6 +1,6 @@
 # VS10-B completed-evidence offline finalization plan
 
-Status: DESIGN_REVIEW_ACCEPTED / USER_APPROVAL_PENDING. Governing proposal: [offline finalization design](../specs/2026-09-18-stm32tk-vs10b-offline-finalization-design.md). Full accepted local base is `abdc2fb5dbde2b6643e26d42e29c7ad6db72f921`; deployed software remains `12df4fe0569104d6f0e7a827496341d999e1f3ea`. Independent review through `bb2ba4cd8172384378e403d2cb6dc9429d009939` accepted this design and plan only. Neither document approves implementation or claims VS10-B acceptance.
+Status: USER_APPROVED / IMPLEMENTATION_PENDING. Governing specification: [offline finalization design](../specs/2026-09-18-stm32tk-vs10b-offline-finalization-design.md). Full accepted local base is `abdc2fb5dbde2b6643e26d42e29c7ad6db72f921`; deployed software remains `12df4fe0569104d6f0e7a827496341d999e1f3ea`. Independent review through `bb2ba4cd8172384378e403d2cb6dc9429d009939` accepted the design and plan. The user's subsequent “开始进行” authorizes implementation and the bounded offline application below; VS10-B acceptance remains pending actual results.
 
 ## Ownership and exact scope
 
@@ -38,6 +38,6 @@ Tests: reuse `test_acceptance_continuation.py`, `test_continuation_adapters.py`,
 
 Retain exact commands, source head, stdout/stderr and exit codes for required checks. Use small targeted output projections; keep full authoritative JSON on disk so nanosecond integers and graph hashes cannot be rounded or truncated through JavaScript. Failures are classified before product edits; reporting mistakes do not revoke physical PASS.
 
-## Approval and current stop
+## Approval and execution boundary
 
-The original B specification explicitly excluded A-only continuation, so this is an additional product contract requiring approval under AGENTS.md delivery workflow. The user's latest “继续” is being used to prepare and review this concrete proposal, not treated as approval of schema fields they had not yet seen. Once approved, implement and complete the bounded offline application without requesting per-command confirmation. This plan requests no hardware or remote authorization.
+The original B specification explicitly excluded A-only continuation, so this additional product contract was reviewed and presented before approval. The user's subsequent “开始进行” approves implementation, independent review, isolated-copy validation, canonical offline application and final VS10-B review. Complete that scope without per-command confirmation. No hardware or remote action is authorized by this plan; the old timeout and existing physical evidence remain unchanged.

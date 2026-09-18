@@ -1,6 +1,6 @@
 # VS10-B completed-evidence offline finalization
 
-Status: DESIGN_REVIEW_ACCEPTED / USER_APPROVAL_PENDING. This proposal follows the user's request to continue after card05. It changes the B-only acceptance continuation boundary explicitly excluded by the original B specification; it is not an implementation, deployment or acceptance claim.
+Status: USER_APPROVED / IMPLEMENTATION_PENDING. The user's subsequent “开始进行” approves this independently reviewed B-only contract, Luna/max implementation, independent review, isolated real-evidence rehearsal, canonical offline finalization and VS10-B final review. This changes the boundary explicitly excluded by the original B specification; it does not authorize hardware or remote actions and is not an implementation, deployment or acceptance claim.
 
 ## Baseline, owner and scenarios
 
