@@ -24,6 +24,9 @@ _MAX_RELATIVE_BYTES = 4096
 _SAFE_REL = re.compile(r"^[A-Za-z0-9_./+@=-]+$")
 _SAFE_TOKEN = re.compile(r"^[A-Za-z0-9_+@=.-]+$")
 _IOC_RE = re.compile(r"(?im)^\s*Mcu\.Name\s*=\s*([^\r\n]+)")
+_IOC_NAME_VALUES_RE = re.compile(r"(?im)^\s*Mcu\.Name\s*=\s*([^\r\n]*)\r?$")
+_IOC_USER_NAME_VALUES_RE = re.compile(r"(?im)^\s*Mcu\.UserName\s*=\s*([^\r\n]*)\r?$")
+_IOC_DEVICE_ID_VALUES_RE = re.compile(r"(?im)^\s*ProjectManager\.DeviceId\s*=\s*([^\r\n]*)\r?$")
 _PKG_RE = re.compile(r"(?im)^\s*ProjectManager\.FirmwarePackage\s*=\s*([^\r\n]+)")
 _LANG_RE = re.compile(r"(?im)^\s*ProjectManager\.Language\s*=\s*([^\r\n]+)")
 _MEM_RE = re.compile(
@@ -256,6 +259,54 @@ def _check_unsafe(text: str) -> None:
         raise _invalid("native CMake contains an unsafe construct")
 
 
+def _indexed_native_device(
+    ioc: str,
+    *,
+    request: CreationRequest,
+    environment: CreationExecutionEnvironment | object,
+) -> str:
+    """Validate the native identity emitted for an indexed MCU descriptor."""
+    index_path = getattr(environment, "native_index_path", None)
+    index_sha256 = getattr(environment, "native_index_sha256", None)
+    if not isinstance(index_path, str) or not index_path or not isinstance(index_sha256, str) or re.fullmatch(r"[0-9a-f]{64}", index_sha256, re.IGNORECASE) is None:
+        raise _invalid("native MCU index binding is invalid")
+
+    descriptor_path = getattr(environment, "native_descriptor_path", None)
+    if not isinstance(descriptor_path, str) or not descriptor_path:
+        raise _invalid("native MCU descriptor binding is missing")
+    descriptor_name = Path(descriptor_path.replace("\\", "/")).name
+    descriptor_stem = Path(descriptor_name).stem
+    if not descriptor_name.casefold().endswith(".xml") or not descriptor_stem:
+        raise _invalid("native MCU descriptor binding is invalid")
+
+    name_values = [value.strip() for value in _IOC_NAME_VALUES_RE.findall(ioc)]
+    if len(name_values) != 1 or not name_values[0]:
+        raise _invalid("native MCU group identity is missing or ambiguous")
+    group_name = name_values[0]
+    if group_name.casefold() != descriptor_stem.casefold():
+        raise _invalid("native MCU group identity disagrees with the descriptor")
+
+    user_name_values = [value.strip() for value in _IOC_USER_NAME_VALUES_RE.findall(ioc)]
+    if len(user_name_values) != 1 or not user_name_values[0]:
+        raise _invalid("native MCU leaf identity is missing or ambiguous")
+    leaf = user_name_values[0]
+    if re.fullmatch(r"STM32[A-Za-z0-9]+", leaf, re.IGNORECASE) is None:
+        raise _invalid("native MCU leaf identity is invalid")
+
+    native_source_token = getattr(environment, "native_source_token", None)
+    if not isinstance(native_source_token, str) or re.fullmatch(r"STM32[A-Za-z0-9]+", native_source_token, re.IGNORECASE) is None:
+        raise _invalid("native MCU leaf binding is invalid")
+    if leaf.casefold() != request.source.value.casefold() or leaf.casefold() != native_source_token.casefold():
+        raise _invalid("native MCU leaf identity disagrees with the request or environment")
+
+    device_id_values = [value.strip() for value in _IOC_DEVICE_ID_VALUES_RE.findall(ioc)]
+    if len(device_id_values) > 1:
+        raise _invalid("native MCU DeviceId is ambiguous")
+    if device_id_values and device_id_values[0].casefold() != leaf.casefold():
+        raise _invalid("native MCU DeviceId disagrees with the leaf identity")
+    return leaf
+
+
 def _global_toolchain(staging_dir: Path, inventory: tuple[tuple[str, int, str], ...]) -> tuple[str, str]:
     preset_text = _read_text(staging_dir, "CMakePresets.json", inventory=inventory)
     assert preset_text is not None
@@ -428,12 +479,22 @@ def parse_native_project(
     if request.source.kind == "ioc" and ioc_path is None:
         raise _invalid("native IOC source is missing")
     ioc = _read_text(staging_dir, ioc_path, required=False, inventory=files) if ioc_path else None
-    native_device = _IOC_RE.search(ioc or "")
-    device = native_device.group(1).strip() if native_device else request.source.value
-    if not device or not re.fullmatch(r"STM32[A-Za-z0-9]+", device, re.IGNORECASE):
-        raise _invalid("native MCU identity is missing")
-    if request.source.kind == "mcu" and device.upper() != request.source.value.upper():
-        raise _invalid("native MCU identity disagrees with the request")
+    indexed_environment = (
+        request.source.kind == "mcu"
+        and (
+            getattr(environment, "native_index_path", None) is not None
+            or getattr(environment, "native_index_sha256", None) is not None
+        )
+    )
+    if indexed_environment:
+        device = _indexed_native_device(ioc or "", request=request, environment=environment)
+    else:
+        native_device = _IOC_RE.search(ioc or "")
+        device = native_device.group(1).strip() if native_device else request.source.value
+        if not device or not re.fullmatch(r"STM32[A-Za-z0-9]+", device, re.IGNORECASE):
+            raise _invalid("native MCU identity is missing")
+        if request.source.kind == "mcu" and device.upper() != request.source.value.upper():
+            raise _invalid("native MCU identity disagrees with the request")
     package = _PKG_RE.search(ioc or "")
     if package is None:
         raise _invalid("native IOC package fact is missing")

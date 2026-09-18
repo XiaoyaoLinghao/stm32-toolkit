@@ -73,6 +73,39 @@ def _real_native_environment(*, package_name: str = "STM32Cube_FW_F4", package_v
     )
 
 
+def _indexed_native_environment(leaf: str, *, group: str = "STM32F429Z(E-G)Tx") -> SimpleNamespace:
+    return SimpleNamespace(
+        cubemx_version="6.18.1-RC2",
+        cubemx_sha256="1" * 64,
+        package_name="STM32Cube_FW_F4",
+        package_version="1.28.3",
+        package_sha256="2" * 64,
+        digest="3" * 64,
+        native_source_token=leaf,
+        native_descriptor_path=f"db/mcu/{group}.xml",
+        native_descriptor_sha256="4" * 64,
+        native_index_path="db/mcu/families.xml",
+        native_index_sha256="5" * 64,
+    )
+
+
+def _indexed_native_tree(
+    tmp_path: Path,
+    *,
+    leaf: str = "STM32F429ZGTx",
+    group: str = "STM32F429Z(E-G)Tx",
+    device_id: str | None = "STM32F429ZGTx",
+) -> Path:
+    root = _real_native_tree(tmp_path)
+    ioc = root / "STM32F429ZITx.ioc"
+    text = ioc.read_text(encoding="utf-8").replace("Mcu.Name=STM32F429ZITx", f"Mcu.Name={group}")
+    fields = [f"Mcu.UserName={leaf}"]
+    if device_id is not None:
+        fields.append(f"ProjectManager.DeviceId={device_id}")
+    ioc.write_text(text.rstrip() + "\n" + "\n".join(fields) + "\n", encoding="utf-8")
+    return root
+
+
 def _seed_managed_manifest(root: Path) -> None:
     managed = root / ".stm32-toolkit" / "generated-files.json"
     managed.parent.mkdir(parents=True, exist_ok=True)
@@ -321,6 +354,109 @@ def test_native_parser_rejects_project_name_or_include_contract_drift(tmp_path: 
             environment=_fixture_environment("context-f4"),
         )
     assert include_error.value.code == "CUBEMX_NATIVE_OUTPUT_INVALID"
+
+
+@pytest.mark.parametrize("leaf", ["STM32F429ZETx", "STM32F429ZGTx"])
+def test_native_parser_accepts_indexed_group_identity_for_each_leaf(tmp_path: Path, leaf: str):
+    root = _indexed_native_tree(tmp_path, leaf=leaf, device_id=leaf)
+    model = parse_native_project(
+        root,
+        request=CreationRequest.from_mcu(leaf, "generated", framework="hal", language="c"),
+        plan_id="a" * 64,
+        action_digest="b" * 64,
+        environment=_indexed_native_environment(leaf),
+    )
+    assert model.target_device == leaf
+
+
+def test_native_parser_rejects_indexed_group_name_mismatch(tmp_path: Path):
+    root = _indexed_native_tree(tmp_path, group="STM32F429Z(E-H)Tx")
+    with pytest.raises(CubeMXNativeProjectError) as error:
+        parse_native_project(
+            root,
+            request=CreationRequest.from_mcu("STM32F429ZGTx", "generated", framework="hal", language="c"),
+            plan_id="a" * 64,
+            action_digest="b" * 64,
+            environment=_indexed_native_environment("STM32F429ZGTx"),
+        )
+    assert error.value.code == "CUBEMX_NATIVE_OUTPUT_INVALID"
+
+
+def test_native_parser_rejects_indexed_leaf_mismatch(tmp_path: Path):
+    root = _indexed_native_tree(tmp_path, leaf="STM32F429ZETx", device_id="STM32F429ZETx")
+    with pytest.raises(CubeMXNativeProjectError) as error:
+        parse_native_project(
+            root,
+            request=CreationRequest.from_mcu("STM32F429ZGTx", "generated", framework="hal", language="c"),
+            plan_id="a" * 64,
+            action_digest="b" * 64,
+            environment=_indexed_native_environment("STM32F429ZGTx"),
+        )
+    assert error.value.code == "CUBEMX_NATIVE_OUTPUT_INVALID"
+
+
+@pytest.mark.parametrize("field", ["Mcu.Name", "Mcu.UserName"])
+def test_native_parser_rejects_indexed_duplicate_identity_field(tmp_path: Path, field: str):
+    root = _indexed_native_tree(tmp_path)
+    ioc = root / "STM32F429ZITx.ioc"
+    with ioc.open("a", encoding="utf-8") as stream:
+        stream.write(f"{field}={('STM32F429Z(E-G)Tx' if field == 'Mcu.Name' else 'STM32F429ZGTx')}\n")
+    with pytest.raises(CubeMXNativeProjectError) as error:
+        parse_native_project(
+            root,
+            request=CreationRequest.from_mcu("STM32F429ZGTx", "generated", framework="hal", language="c"),
+            plan_id="a" * 64,
+            action_digest="b" * 64,
+            environment=_indexed_native_environment("STM32F429ZGTx"),
+        )
+    assert error.value.code == "CUBEMX_NATIVE_OUTPUT_INVALID"
+
+
+@pytest.mark.parametrize("field", ["Mcu.Name", "Mcu.UserName"])
+def test_native_parser_rejects_indexed_missing_identity_field(tmp_path: Path, field: str):
+    root = _indexed_native_tree(tmp_path)
+    ioc = root / "STM32F429ZITx.ioc"
+    lines = [line for line in ioc.read_text(encoding="utf-8").splitlines() if not line.startswith(field + "=")]
+    ioc.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    with pytest.raises(CubeMXNativeProjectError) as error:
+        parse_native_project(
+            root,
+            request=CreationRequest.from_mcu("STM32F429ZGTx", "generated", framework="hal", language="c"),
+            plan_id="a" * 64,
+            action_digest="b" * 64,
+            environment=_indexed_native_environment("STM32F429ZGTx"),
+        )
+    assert error.value.code == "CUBEMX_NATIVE_OUTPUT_INVALID"
+
+
+@pytest.mark.parametrize("device_id", ["STM32F429ZETx", "duplicate"])
+def test_native_parser_rejects_indexed_conflicting_or_duplicate_device_id(tmp_path: Path, device_id: str):
+    root = _indexed_native_tree(tmp_path, device_id="STM32F429ZETx" if device_id != "duplicate" else "STM32F429ZGTx")
+    if device_id == "duplicate":
+        with (root / "STM32F429ZITx.ioc").open("a", encoding="utf-8") as stream:
+            stream.write("ProjectManager.DeviceId=STM32F429ZGTx\n")
+    with pytest.raises(CubeMXNativeProjectError) as error:
+        parse_native_project(
+            root,
+            request=CreationRequest.from_mcu("STM32F429ZGTx", "generated", framework="hal", language="c"),
+            plan_id="a" * 64,
+            action_digest="b" * 64,
+            environment=_indexed_native_environment("STM32F429ZGTx"),
+        )
+    assert error.value.code == "CUBEMX_NATIVE_OUTPUT_INVALID"
+
+
+def test_native_parser_rejects_group_name_without_index_binding(tmp_path: Path):
+    root = _indexed_native_tree(tmp_path)
+    with pytest.raises(CubeMXNativeProjectError) as error:
+        parse_native_project(
+            root,
+            request=CreationRequest.from_mcu("STM32F429ZGTx", "generated", framework="hal", language="c"),
+            plan_id="a" * 64,
+            action_digest="b" * 64,
+            environment=_real_native_environment(),
+        )
+    assert error.value.code == "CUBEMX_NATIVE_OUTPUT_INVALID"
 
 
 def test_native_parser_accepts_sanitized_r8_f429_global_template(tmp_path: Path):
