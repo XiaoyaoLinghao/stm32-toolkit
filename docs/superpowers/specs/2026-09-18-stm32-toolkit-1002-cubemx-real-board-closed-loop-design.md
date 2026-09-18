@@ -1,6 +1,6 @@
 # VS10-B：新 CubeMX 工程真实板卡闭环
 
-状态：DRAFT / OFFLINE_PREFLIGHT。本文不是已通过验收的声明，也不授予硬件、安装或远程权限。
+状态：DRAFT / DESIGN_REVIEW_PASSED / USER_APPROVAL_PENDING。本文不是已通过产品验收的声明，也不授予硬件、安装或远程权限。
 
 ## 1. 基线与责任
 

@@ -1,6 +1,6 @@
 # VS10-B 实施计划：真实 CubeMX 工程与物理修复闭环
 
-状态：DRAFT / 规格与离线预检；尚未派发产品实现。
+状态：DRAFT / 设计独立审查通过，待用户批准规格与计划；尚未派发产品实现。
 
 规格：[VS10-B 设计](../specs/2026-09-18-stm32-toolkit-1002-cubemx-real-board-closed-loop-design.md)。完整 accepted base：`16a6e59dff7fed2999fae611e3d936b0b04bbabd`。主对话框直接拥有集成、分工和验收；没有代理领导层。旧 VS10-A 的 `ACCEPTED`、历史失败及清理保留决定保持原样。
 
@@ -88,3 +88,9 @@
 验收条件是三个用户场景通过、缺口闭合且完整差异审查无未解决问题；不是测试数量或文档数量。没有真实 CubeMX 生成/构建、物理链或必要恢复/退出证明，不得给 `ACCEPTED`。
 
 VS10-B `ACCEPTED` 后另行决定整合 A+B 的 1.0 发布级验证。VS09-B/VS10-A 未变证据按原 scope 复用；只对变化或明确风险运行 Python/UI/package/install/upgrade/security/license/SBOM/compatibility 对应检查。远程 push/PR/merge/tag/Release 逐项授权。
+
+## 7. 设计审查记录（2026-09-18）
+
+独立审查者 `/root/vs10a_target_review` 已审查 accepted base 至草案 `e13dd69a3cc87b0128d577cfcf7b143f888aa694`，以及该草案至修订稿 `c9d99e8ce4cb0114e0c4d3397a2de8d7a13f9b41` 的连续完整文档差异。首轮配置、native linker、用户源码接入、mailbox size 四项 finding 均已闭合，结论为 `ACCEPTED（仅针对本次 B 设计决策）`。未运行实现测试或硬件；这个结论不代替用户批准，不是 VS10-B 产品验收。
+
+实施仍须真实 create/apply 后保存原始生成库存，定制后执行公共 configure/build，并冻结定制工程不进行 regenerate。这三项是实施门槛，不能在报告中预先标为完成。
