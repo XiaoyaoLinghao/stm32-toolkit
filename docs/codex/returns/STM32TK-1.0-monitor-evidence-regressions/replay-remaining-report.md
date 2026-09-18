@@ -1,22 +1,30 @@
 # STM32 Toolkit 1.0 remaining Monitor replay regressions
 
-This report records the bounded follow-up test preparation for the public
-Replay and physical-publication contracts. Execution, independent review, and
+This report records the bounded follow-up test preparation and the correction
+round for the public Replay and physical-publication contracts. Execution and
 release acceptance remain pending the primary's explicit execution release.
 
 ## Ledger
 
 - Accepted integration base: `39bf982af688b7653735b0de02ce75a19804c2b4`
 - Frozen product/artifact CodeHead: `15b1a70e9bd684285da5557104deff529f537e49`
-- Test CodeHead before this report commit: `7afee37c`
+- Test CodeHead before this report commit: `a800b96eeca7e4e5b54a360b9346f345a7547909`
 - Branch: `codex/STM32TK-1.0-replay-remaining`
 - Implementer: `/root/monitor_replay_regressions` (bounded Luna/max test owner)
-- Independent reviewer: required and pending; the implementer has not approved
-  this diff.
+- Independent review round `review-r1`: `REVISION_REQUIRED`; corrections are
+  committed in `a800b96e`; follow-up review remains pending and the implementer
+  has not approved this diff.
 - Owned files: `tools/stm32-monitor/tests/test_replay.py`,
   `tools/stm32-monitor/tests/test_physical_publication.py`, and this report.
 - Product source remained read-only at the frozen CodeHead under
   `D:\codex-tmp\v10b-0918\r10\verify`.
+
+The retained pre-execution review `r10\e\replay-remaining\review-r1.md`
+required assertion-quality corrections. The chain/window cases now place each
+public mutation in its intended batch, recompute unrelated document/reference
+digests where possible, and assert the exact public refusal message. The
+physical transcript-root provider case now asserts that the intended root seam
+was reached. These corrections are committed in `a800b96e`; no tests were run.
 
 ## Prepared public scenarios
 
