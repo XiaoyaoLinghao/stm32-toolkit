@@ -2123,8 +2123,10 @@ def test_physical_loader_rejects_provider_transcript_root_metadata_drift(
     before_transcript = _monitor_root_files(evidence, "monitor-run")[0].read_bytes()
     before_reference = _monitor_root_files(evidence, "monitor-run-ref")[0].read_bytes()
     original_get_root = replay_module.get_root
+    calls: list[tuple[str, str]] = []
 
     def contradictory_root(store, root_type: str, root_id: str):
+        calls.append((root_type, root_id))
         root = original_get_root(store, root_type, root_id)
         if root_type == "monitor-run":
             metadata = dict(root.metadata)
@@ -2137,5 +2139,6 @@ def test_physical_loader_rejects_provider_transcript_root_metadata_drift(
         load_monitor_run_reference(paths, EvidenceStore(evidence.root), str(monitor_run_id))
 
     assert error.value.code == EVIDENCE_INTEGRITY_FAILURE
+    assert ("monitor-run", str(monitor_run_id)) in calls
     assert _monitor_root_files(evidence, "monitor-run")[0].read_bytes() == before_transcript
     assert _monitor_root_files(evidence, "monitor-run-ref")[0].read_bytes() == before_reference

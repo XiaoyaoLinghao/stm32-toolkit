@@ -302,17 +302,45 @@ def test_public_replay_document_constructor_rejects_chain_and_window_contradicti
     document = _document("failed-before")
     first, second = document.batches
     candidates = (
-        replace(second, binding=replace(second.binding, target_device="other-target")),
-        replace(second, group_id=UUID("55555555-5555-4555-8555-555555555555")),
-        replace(second, group_revision=2),
-        replace(second, sequence=2),
-        replace(second, scheduled_unix_ns=first.scheduled_unix_ns),
-        replace(second, captured_unix_ns=first.captured_unix_ns),
-        replace(first, values=(first.values[0], first.values[0])),
-        replace(first, values=()),
+        (
+            (first, replace(second, binding=replace(second.binding, target_device="other-target"))),
+            "replay document binding contradicts a batch",
+        ),
+        (
+            (first, replace(second, group_id=UUID("55555555-5555-4555-8555-555555555555"))),
+            "replay document batch identity is inconsistent",
+        ),
+        (
+            (first, replace(second, group_revision=2)),
+            "replay document batch identity is inconsistent",
+        ),
+        (
+            (first, replace(second, sequence=2)),
+            "replay document sequences are not contiguous",
+        ),
+        (
+            (first, replace(second, scheduled_unix_ns=first.scheduled_unix_ns)),
+            "replay document scheduled times are not increasing",
+        ),
+        (
+            (first, replace(second, captured_unix_ns=first.captured_unix_ns)),
+            "replay document captured times are not increasing",
+        ),
+        (
+            (replace(first, values=(first.values[0], first.values[0])), second),
+            "replay document selectors are not unique",
+        ),
+        (
+            (replace(first, values=()), second),
+            "replay document batch chain is invalid",
+        ),
     )
 
-    for candidate in candidates:
+    for batches, expected_message in candidates:
+        unsigned = document.to_dict()
+        unsigned["batches"] = [batch.to_dict() for batch in batches]
+        unsigned.pop("fixture_sha256")
+        fixture_sha256 = sha256(canonical_replay_json_bytes(unsigned)).hexdigest()
         with pytest.raises(MonitorReplayError) as error:
             MonitorReplayDocument(
                 document.schema,
@@ -320,10 +348,10 @@ def test_public_replay_document_constructor_rejects_chain_and_window_contradicti
                 document.physical_transport_evidence,
                 document.scenario_role,
                 document.binding,
-                (candidate, second) if candidate is not first else (first, second),
-                document.fixture_sha256,
+                batches,
+                fixture_sha256,
             )
-        assert error.value.code == "MONITOR_REPLAY_INVALID"
+        assert error.value.args == (expected_message,)
 
 
 def test_public_replay_document_parser_rejects_nested_closed_wire_values() -> None:
@@ -538,26 +566,35 @@ def test_fixed_after_survives_fresh_history_and_evidence_reload_and_ref_is_stabl
 
 
 @pytest.mark.parametrize(
-    ("field", "replacement"),
+    ("field", "replacement", "expected_message"),
     [
-        ("schema", "stm32-monitor-run-ref/9"),
-        ("scenario_role", "other"),
-        ("execution_source", "physical"),
-        ("physical_transport_evidence", True),
-        ("origin_run_id", str(RUN_IDS["fixed-after"])),
-        ("probe_id", "other-probe"),
-        ("svd_sha256", object()),
-        ("git_dirty", 1),
-        ("group_revision", 0),
-        ("end_sequence_exclusive", 0),
-        ("projected_batch_sha256s", ()),
-        ("run_ref_sha256", "0" * 64),
+        ("schema", "stm32-monitor-run-ref/9", "monitor run reference schema is invalid"),
+        ("scenario_role", "other", "monitor run reference scenario role is invalid"),
+        ("execution_source", "physical", "monitor run reference execution source is invalid"),
+        (
+            "physical_transport_evidence",
+            True,
+            "monitor run reference physical evidence must be false",
+        ),
+        (
+            "origin_run_id",
+            str(RUN_IDS["fixed-after"]),
+            "monitor run reference operation and run IDs contradict",
+        ),
+        ("probe_id", "other-probe", "monitor run reference labels are invalid"),
+        ("svd_sha256", object(), "svd_sha256 is invalid"),
+        ("git_dirty", 1, "git_dirty is invalid"),
+        ("group_revision", 0, "group_revision is invalid"),
+        ("end_sequence_exclusive", 0, "monitor run reference windows are invalid"),
+        ("projected_batch_sha256s", (), "projected batch digests are invalid"),
+        ("run_ref_sha256", "0" * 64, "run reference digest is invalid"),
     ],
 )
 def test_public_replay_reference_constructor_rejects_identity_and_window_fields(
     tmp_path: Path,
     field: str,
     replacement: object,
+    expected_message: str,
 ) -> None:
     paths = _paths(tmp_path)
     reference = ingest_monitor_replay(
@@ -568,11 +605,16 @@ def test_public_replay_reference_constructor_rejects_identity_and_window_fields(
     )
     values = {item.name: getattr(reference, item.name) for item in fields(reference)}
     values[field] = replacement
+    if field != "run_ref_sha256" and field != "svd_sha256":
+        unsigned = dict(values)
+        unsigned.pop("run_ref_sha256")
+        unsigned["projected_batch_sha256s"] = list(unsigned["projected_batch_sha256s"])
+        values["run_ref_sha256"] = sha256(canonical_replay_json_bytes(unsigned)).hexdigest()
 
     with pytest.raises(MonitorReplayError) as error:
         MonitorRunRef(**values)
 
-    assert error.value.code == "MONITOR_REPLAY_INVALID"
+    assert error.value.args == (expected_message,)
     assert _history_batches(paths, RUN_IDS["failed-before"])
 
 
