@@ -40,6 +40,9 @@ def test_recovery_tools_are_five_project_bound_closed_tools(tmp_path: Path):
     assert "legacy-keil-physical-repair" not in describe_scenario["properties"]["scenarioId"]["enum"]
     assert "legacy-keil-physical-repair" not in record_scenario["properties"]["scenarioId"]["enum"]
     assert "legacy-keil-physical-repair" in attempt_begin["properties"]["scenarioId"]["enum"]
+    assert "new-cubemx-physical-repair" not in describe_scenario["properties"]["scenarioId"]["enum"]
+    assert "new-cubemx-physical-repair" not in record_scenario["properties"]["scenarioId"]["enum"]
+    assert "new-cubemx-physical-repair" in attempt_begin["properties"]["scenarioId"]["enum"]
 
 
 def test_recovery_mcp_tools_translate_exact_values_once(monkeypatch, tmp_path: Path):

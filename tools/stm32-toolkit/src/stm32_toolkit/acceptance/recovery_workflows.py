@@ -59,20 +59,23 @@ from .recovery import (
     ATTEMPT_SCHEMA,
     AcceptanceAttempt,
     AcceptanceRecoveryValidationError,
+    CUBEMX_PHYSICAL_ATTEMPT_SCHEMA,
+    CUBEMX_PHYSICAL_SCENARIO_ID,
     PHYSICAL_ATTEMPT_SCHEMA,
-    PHYSICAL_RECOVERY_POLICY_DIGEST,
-    PHYSICAL_SCENARIO_DIGEST,
     PHYSICAL_SCENARIO_ID,
     PHYSICAL_SCENARIO_VERSION,
     PHYSICAL_TRANSPORT,
     PHYSICAL_STAGE_OUTPUT_KEYS,
     PHYSICAL_STAGES,
     PhysicalAcceptanceAttempt,
+    PhysicalAcceptanceProfile,
     SourceChangeIntent,
     RECOVERY_POLICY_DIGEST,
     STAGE_OUTPUT_KEYS,
     acceptance_recovery_policy,
-    physical_acceptance_recovery_policy,
+    physical_acceptance_profile_for_scenario,
+    physical_acceptance_profile_for_schema,
+    physical_acceptance_recovery_policy_for_schema,
 )
 from .continuation import (
     CONTINUATION_ATTEMPT_SCHEMA, CONTINUATION_SCHEMA, CONTINUATION_ROOT_TYPE,
@@ -96,6 +99,9 @@ _ROOT_METADATA_FIELDS = frozenset(
     {"attempt_sha256", "revision", "workspace_id", "logical_project_id"}
 )
 _ENVELOPE_METADATA_FIELDS = frozenset({"attempt", "attempt_sha256"})
+_PHYSICAL_ATTEMPT_SCHEMAS = frozenset(
+    {PHYSICAL_ATTEMPT_SCHEMA, CUBEMX_PHYSICAL_ATTEMPT_SCHEMA}
+)
 
 _MESSAGES = {
     "ACCEPTANCE_ATTEMPT_INPUT_INVALID": "Acceptance attempt input is invalid.",
@@ -219,10 +225,13 @@ def _deadline(updated: str, stage: str) -> str:
     return (_timestamp(updated) + timedelta(seconds=seconds)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
-def _physical_deadline(updated: str, stage: str) -> str:
-    from .recovery import physical_acceptance_recovery_policy
-
-    seconds = physical_acceptance_recovery_policy().stage_timeout_seconds[stage]
+def _physical_deadline(
+    updated: str,
+    stage: str,
+    *,
+    schema: object = PHYSICAL_ATTEMPT_SCHEMA,
+) -> str:
+    seconds = physical_acceptance_recovery_policy_for_schema(schema).stage_timeout_seconds[stage]
     return (_timestamp(updated) + timedelta(seconds=seconds)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
@@ -1110,10 +1119,12 @@ def begin_acceptance_attempt(
     continuation: object = None,
 ) -> OperationResult[dict[str, object]]:
     if continuation is not None:
+        if scenario_id != PHYSICAL_SCENARIO_ID or scenario_version != PHYSICAL_SCENARIO_VERSION:
+            return _failure("acceptance.attempt.begin", "ACCEPTANCE_ATTEMPT_STAGE_INVALID")
         return _result("acceptance.attempt.begin", lambda: _validate_continuation_result(context, _begin_continuation_attempt(
             context, attempt_id=attempt_id, scenario_id=scenario_id,
             scenario_version=scenario_version, continuation=continuation)))
-    if scenario_id == PHYSICAL_SCENARIO_ID:
+    if scenario_id in {PHYSICAL_SCENARIO_ID, CUBEMX_PHYSICAL_SCENARIO_ID}:
         return _result(
             "acceptance.attempt.begin",
             lambda: _begin_physical_attempt(
@@ -1259,7 +1270,7 @@ def checkpoint_acceptance_attempt(
                 acceptance_record_id=acceptance_record_id, source_change_intent=source_change_intent,
                 fix_verification_id=fix_verification_id)))
         if schema is not None:
-            physical = schema != ATTEMPT_SCHEMA
+            physical = schema in _PHYSICAL_ATTEMPT_SCHEMAS
     except (AcceptanceRecoveryValidationError, _RecoveryFailure):
         physical = physical_hint
     if physical:
@@ -1593,7 +1604,13 @@ def _validate_physical_chain_semantics(
         )
         expected_stage = PHYSICAL_STAGES[min(expected_stage_index, len(PHYSICAL_STAGES) - 1)]
         if attempt.deadline_at_utc != (
-            None if revision == 7 else _physical_deadline(attempt.updated_at_utc, expected_stage)
+            None
+            if revision == 7
+            else _physical_deadline(
+                attempt.updated_at_utc,
+                expected_stage,
+                schema=attempt.schema,
+            )
         ):
             raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED")
         if revision == 0 and attempt.opened_at_utc != attempt.updated_at_utc:
@@ -1802,22 +1819,25 @@ def _physical_base_snapshot(
     intent: SourceChangeIntent | None = None,
     status: str = "ACTIVE",
     deadline_at: str | None = None,
+    profile: PhysicalAcceptanceProfile | None = None,
 ) -> PhysicalAcceptanceAttempt:
+    if profile is None:
+        profile = physical_acceptance_profile_for_schema(PHYSICAL_ATTEMPT_SCHEMA)
     if outputs is None:
         outputs = {key: None for key in PHYSICAL_STAGE_OUTPUT_KEYS}
     payload: dict[str, object] = {
-        "schema": PHYSICAL_ATTEMPT_SCHEMA,
+        "schema": profile.attempt_schema,
         "attemptId": attempt_id,
         "revision": revision,
         "checkpointId": "0" * 64,
         "previousCheckpointId": previous_checkpoint_id,
-        "scenarioId": PHYSICAL_SCENARIO_ID,
-        "scenarioVersion": PHYSICAL_SCENARIO_VERSION,
-        "scenarioDigest": PHYSICAL_SCENARIO_DIGEST,
-        "recoveryPolicyDigest": PHYSICAL_RECOVERY_POLICY_DIGEST,
+        "scenarioId": profile.scenario_id,
+        "scenarioVersion": profile.scenario_version,
+        "scenarioDigest": profile.scenario_digest,
+        "recoveryPolicyDigest": profile.recovery_policy_digest,
         "workspaceId": workspace_id,
         "logicalProjectId": logical_project_id,
-        "projectOrigin": "keil",
+        "projectOrigin": profile.project_origin,
         "executionSource": "physical",
         "physicalTransportEvidence": revision >= 3,
         "status": status,
@@ -2382,7 +2402,7 @@ def _physical_build_transition(
 
 def _physical_action_digest(attempt: PhysicalAcceptanceAttempt) -> str:
     payload = {
-        "schema": PHYSICAL_ATTEMPT_SCHEMA,
+        "schema": attempt.schema,
         "action": "source-change",
         "attemptId": attempt.attempt_id,
         "revision": attempt.revision,
@@ -2411,10 +2431,14 @@ def _begin_physical_attempt(
     scenario_version: object,
 ) -> OperationResult[dict[str, object]]:
     attempt_id = _canonical_uuid("attemptId", attempt_id)
-    if scenario_id != PHYSICAL_SCENARIO_ID or scenario_version != PHYSICAL_SCENARIO_VERSION:
+    try:
+        profile = physical_acceptance_profile_for_scenario(scenario_id, scenario_version)
+    except AcceptanceRecoveryValidationError as error:
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_INPUT_INVALID") from error
+    if scenario_id != profile.scenario_id or scenario_version != profile.scenario_version:
         raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_INPUT_INVALID")
     model, workspace, evidence = _load_project_and_workspace(context)
-    if _project_origin(model) != "keil":
+    if _project_origin(model) != profile.project_origin:
         raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH")
     project_id = str(getattr(model, "logical_project_id"))
     root0 = _typed_root_path(evidence, _root_id(attempt_id, 0))
@@ -2434,7 +2458,11 @@ def _begin_physical_attempt(
             chain, model=model, workspace=workspace, session_id=context.session_id
         )
         latest = chain[-1][0]
-        if latest.scenario_id != PHYSICAL_SCENARIO_ID:
+        if (
+            latest.schema != profile.attempt_schema
+            or latest.scenario_id != profile.scenario_id
+            or latest.scenario_version != profile.scenario_version
+        ):
             raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_CONFLICT")
         return OperationResult.success("acceptance.attempt.begin", {"attempt": latest.to_dict()})
     opened = _now(context)
@@ -2444,7 +2472,10 @@ def _begin_physical_attempt(
         updated_at=opened,
         workspace_id=workspace.workspace_id,
         logical_project_id=project_id,
-        deadline_at=_physical_deadline(opened, PHYSICAL_STAGES[0]),
+        deadline_at=_physical_deadline(
+            opened, PHYSICAL_STAGES[0], schema=profile.attempt_schema
+        ),
+        profile=profile,
     )
     published = _publish_physical_snapshot(
         evidence, context, model, workspace, candidate, expected_revision=0, chain=[]
@@ -2467,7 +2498,10 @@ def _physical_attempt_for_context(
         raw = envelope.metadata.get("attempt")
     except (EvidenceValidationError, OSError, FileNotFoundError, ValueError, TypeError) as error:
         raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED") from error
-    if not isinstance(raw, Mapping) or raw.get("schema") != PHYSICAL_ATTEMPT_SCHEMA:
+    if not isinstance(raw, Mapping) or raw.get("schema") not in {
+        PHYSICAL_ATTEMPT_SCHEMA,
+        CUBEMX_PHYSICAL_ATTEMPT_SCHEMA,
+    }:
         if isinstance(raw, Mapping) and raw.get("schema") == ATTEMPT_SCHEMA:
             return None
         raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED")
@@ -2590,7 +2624,16 @@ def _checkpoint_physical_attempt(
         authorization=current.source_change_authorization,
         intent=expanded_intent if expanded_intent is not None else current.source_change_intent,
         status="COMPLETED" if revision == 7 else "ACTIVE",
-        deadline_at=None if revision == 7 else _physical_deadline(now, PHYSICAL_STAGES[revision if revision <= 4 else revision - 1]),
+        deadline_at=(
+            None
+            if revision == 7
+            else _physical_deadline(
+                now,
+                PHYSICAL_STAGES[revision if revision <= 4 else revision - 1],
+                schema=current.schema,
+            )
+        ),
+        profile=physical_acceptance_profile_for_schema(current.schema),
     )
     published = _publish_physical_snapshot(
         evidence,
@@ -2734,7 +2777,10 @@ def _authorize_physical_source_change(
                 authorization=authorization,
                 intent=current.source_change_intent,
                 status="ACTIVE",
-                deadline_at=_physical_deadline(now, "firmware-built-after"),
+                deadline_at=_physical_deadline(
+                    now, "firmware-built-after", schema=current.schema
+                ),
+                profile=physical_acceptance_profile_for_schema(current.schema),
             )
             identity = _current_identity(
                 context,
@@ -2794,7 +2840,9 @@ def _show_physical_attempt(
                 "authorizationRequired": attempt.revision == 4,
                 "actionDigest": _physical_action_digest(attempt) if attempt.revision == 4 else None,
                 "timedOut": attempt.deadline_at_utc is not None and _timestamp(now) > _timestamp(attempt.deadline_at_utc),
-                "recoveryPolicy": physical_acceptance_recovery_policy().to_dict(),
+                "recoveryPolicy": physical_acceptance_recovery_policy_for_schema(
+                    attempt.schema
+                ).to_dict(),
             }
         )
     return OperationResult.success("acceptance.attempt.resume" if resume else "acceptance.attempt.show", data)
@@ -2815,7 +2863,7 @@ def authorize_acceptance_source_change(
         schema = _attempt_schema_for_context(context, canonical_attempt_id)
         if schema == CONTINUATION_ATTEMPT_SCHEMA:
             return _failure("acceptance.attempt.authorize-source-change", "ACCEPTANCE_ATTEMPT_STAGE_INVALID")
-        physical = schema == PHYSICAL_ATTEMPT_SCHEMA
+        physical = schema in _PHYSICAL_ATTEMPT_SCHEMAS
     except (AcceptanceRecoveryValidationError, _RecoveryFailure):
         physical = False
     if physical:
@@ -2887,7 +2935,7 @@ def show_acceptance_attempt(
         if schema == CONTINUATION_ATTEMPT_SCHEMA:
             return _result("acceptance.attempt.show", lambda: _show_continuation_attempt(
                 context, attempt_id=canonical_attempt_id, resume=False))
-        physical = schema == PHYSICAL_ATTEMPT_SCHEMA
+        physical = schema in _PHYSICAL_ATTEMPT_SCHEMAS
     except (AcceptanceRecoveryValidationError, _RecoveryFailure):
         physical = False
     if physical:
@@ -2913,7 +2961,7 @@ def resume_acceptance_attempt(
         if schema == CONTINUATION_ATTEMPT_SCHEMA:
             return _result("acceptance.attempt.resume", lambda: _show_continuation_attempt(
                 context, attempt_id=canonical_attempt_id, resume=True))
-        physical = schema == PHYSICAL_ATTEMPT_SCHEMA
+        physical = schema in _PHYSICAL_ATTEMPT_SCHEMAS
     except (AcceptanceRecoveryValidationError, _RecoveryFailure):
         physical = False
     if physical:

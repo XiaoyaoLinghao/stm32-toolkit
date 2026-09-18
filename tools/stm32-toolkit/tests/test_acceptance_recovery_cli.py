@@ -42,6 +42,38 @@ def test_cli_attempt_begin_translates_exact_values_once(monkeypatch, capsys):
     assert json.loads(capsys.readouterr().out)["operation"] == "acceptance.attempt.begin"
 
 
+def test_cli_attempt_begin_accepts_the_b_physical_scenario_without_a_new_command(
+    monkeypatch, capsys
+):
+    calls = []
+    monkeypatch.setattr(
+        cli,
+        "begin_acceptance_attempt",
+        lambda context, **kwargs: calls.append((context, kwargs))
+        or OperationResult.success("acceptance.attempt.begin", {"attempt": {}}),
+    )
+    assert cli.main(
+        [
+            "scenario",
+            "attempt",
+            "begin",
+            *_common(),
+            "--attempt-id",
+            ATTEMPT_ID,
+            "--scenario-id",
+            "new-cubemx-physical-repair",
+            "--scenario-version",
+            "1",
+        ]
+    ) == 0
+    assert calls[0][1] == {
+        "attempt_id": ATTEMPT_ID,
+        "scenario_id": "new-cubemx-physical-repair",
+        "scenario_version": "1",
+    }
+    capsys.readouterr()
+
+
 def test_cli_checkpoint_and_authorize_translate_optional_references(monkeypatch, capsys):
     calls = []
     monkeypatch.setattr(

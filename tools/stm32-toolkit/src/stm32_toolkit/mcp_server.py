@@ -240,6 +240,7 @@ AcceptanceAttemptScenarioId = Literal[
     "legacy-keil-migration",
     "new-cubemx-project",
     "legacy-keil-physical-repair",
+    "new-cubemx-physical-repair",
 ]
 AcceptanceScenarioVersion = Literal["1"]
 AcceptanceUuid = Annotated[

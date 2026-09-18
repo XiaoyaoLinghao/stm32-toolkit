@@ -8,6 +8,12 @@ from stm32_toolkit.acceptance.model import REQUIRED_STAGES
 from stm32_toolkit.acceptance.recovery import (
     AcceptanceAttempt,
     AcceptanceRecoveryValidationError,
+    CUBEMX_PHYSICAL_ATTEMPT_SCHEMA,
+    CUBEMX_PHYSICAL_RECOVERY_POLICY_DIGEST,
+    CUBEMX_PHYSICAL_RECOVERY_POLICY_SCHEMA,
+    CUBEMX_PHYSICAL_SCENARIO_DIGEST,
+    CUBEMX_PHYSICAL_SCENARIO_ID,
+    CUBEMX_PHYSICAL_SCENARIO_VERSION,
     PHYSICAL_ATTEMPT_SCHEMA,
     PHYSICAL_RECOVERY_POLICY_DIGEST,
     PHYSICAL_SCENARIO_DIGEST,
@@ -18,6 +24,7 @@ from stm32_toolkit.acceptance.recovery import (
     PhysicalAcceptanceAttempt,
     SourceChangeIntent,
     acceptance_recovery_policy,
+    cubemx_physical_acceptance_recovery_policy,
     physical_acceptance_recovery_policy,
 )
 from stm32_toolkit.evidence import canonical_json_bytes
@@ -175,6 +182,8 @@ def test_physical_policy_and_source_intent_are_frozen_and_round_trip():
     assert policy.scenario_version == PHYSICAL_SCENARIO_VERSION
     assert policy.scenario_digest == PHYSICAL_SCENARIO_DIGEST
     assert policy.digest == PHYSICAL_RECOVERY_POLICY_DIGEST
+    assert PHYSICAL_SCENARIO_DIGEST == "a66a134d230814752fe006e68fd64c2e6a75ab7680b3e1001269465c30fc325a"
+    assert PHYSICAL_RECOVERY_POLICY_DIGEST == "46ffe12c4d0ccd3012b9861b68289a16853272c43557bf2cb0ae0e13ae20c6c7"
     assert policy.physical_transport_evidence is True
 
     input_value = {
@@ -201,6 +210,78 @@ def test_physical_policy_and_source_intent_are_frozen_and_round_trip():
         "schema", "changes", "beforeInputSnapshotSha256",
         "expectedAfterInputSnapshotSha256", "intentDigest",
     }
+
+
+def test_cubemx_physical_policy_and_revision_zero_round_trip_without_rewriting_a():
+    policy = cubemx_physical_acceptance_recovery_policy()
+    assert policy.to_dict() == {
+        "schema": CUBEMX_PHYSICAL_RECOVERY_POLICY_SCHEMA,
+        "attemptSchema": CUBEMX_PHYSICAL_ATTEMPT_SCHEMA,
+        "scenarioId": CUBEMX_PHYSICAL_SCENARIO_ID,
+        "scenarioVersion": CUBEMX_PHYSICAL_SCENARIO_VERSION,
+        "scenarioDigest": CUBEMX_PHYSICAL_SCENARIO_DIGEST,
+        "stageTimeoutSeconds": {
+            "project-materialized": 60,
+            "firmware-built-before": 900,
+            "target-failure-observed": 300,
+            "diagnosis-completed": 900,
+            "firmware-built-after": 900,
+            "target-fix-verified": 300,
+        },
+        "intrusiveActions": {
+            "source-change": {
+                "afterStage": "diagnosis-completed",
+                "applicable": True,
+                "authorization": "explicit-single-use",
+                "beforeStage": "firmware-built-after",
+            },
+            "flash": {
+                "applicable": False,
+                "authorization": "existing-probe-action-digest",
+                "reason": "recovery-adapter-no-hardware",
+            },
+        },
+        "physicalTransportEvidence": True,
+    }
+    assert policy.digest == CUBEMX_PHYSICAL_RECOVERY_POLICY_DIGEST
+
+    payload: dict[str, object] = {
+        "schema": CUBEMX_PHYSICAL_ATTEMPT_SCHEMA,
+        "attemptId": "00000000-0000-4000-8000-000000000011",
+        "revision": 0,
+        "checkpointId": "0" * 64,
+        "previousCheckpointId": None,
+        "scenarioId": CUBEMX_PHYSICAL_SCENARIO_ID,
+        "scenarioVersion": CUBEMX_PHYSICAL_SCENARIO_VERSION,
+        "scenarioDigest": CUBEMX_PHYSICAL_SCENARIO_DIGEST,
+        "recoveryPolicyDigest": CUBEMX_PHYSICAL_RECOVERY_POLICY_DIGEST,
+        "workspaceId": "d" * 64,
+        "logicalProjectId": "00000000-0000-4000-8000-000000000012",
+        "projectOrigin": "cubemx",
+        "executionSource": "physical",
+        "physicalTransportEvidence": False,
+        "status": "ACTIVE",
+        "completedStages": [],
+        "stageOutputs": {key: None for key in PHYSICAL_STAGE_OUTPUT_KEYS},
+        "sourceChangeAuthorization": None,
+        "sourceChangeIntent": None,
+        "openedAtUtc": "2026-08-24T00:00:00.000000Z",
+        "deadlineAtUtc": "2026-08-24T00:01:00.000000Z",
+        "updatedAtUtc": "2026-08-24T00:00:00.000000Z",
+    }
+    payload = _with_checkpoint(payload)
+    parsed = PhysicalAcceptanceAttempt.from_value(payload)
+    assert parsed.to_dict() == payload
+
+    for mutation in (
+        {"projectOrigin": "keil"},
+        {"scenarioId": PHYSICAL_SCENARIO_ID},
+        {"schema": "stm32-acceptance-attempt/2"},
+    ):
+        changed = dict(payload)
+        changed.update(mutation)
+        with pytest.raises(AcceptanceRecoveryValidationError):
+            PhysicalAcceptanceAttempt.from_value(_with_checkpoint(changed))
 
 
 @pytest.mark.parametrize("schema", [

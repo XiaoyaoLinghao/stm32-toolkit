@@ -22,6 +22,9 @@ from stm32_toolkit import __version__
 import stm32_toolkit.acceptance.recovery_workflows as recovery_workflows
 import stm32_toolkit.diagnostic_workflows as diagnostic_workflows
 from stm32_toolkit.acceptance.recovery import (
+    CUBEMX_PHYSICAL_ATTEMPT_SCHEMA,
+    CUBEMX_PHYSICAL_SCENARIO_ID,
+    CUBEMX_PHYSICAL_SCENARIO_VERSION,
     PHYSICAL_ATTEMPT_SCHEMA,
     PHYSICAL_STAGE_OUTPUT_KEYS,
     SourceChangeIntent,
@@ -32,6 +35,7 @@ from stm32_toolkit.acceptance.recovery_workflows import (
     begin_acceptance_attempt,
     checkpoint_acceptance_attempt,
     resume_acceptance_attempt,
+    show_acceptance_attempt,
 )
 from stm32_toolkit.build.identity import snapshot_project_inputs
 from stm32_toolkit.diagnostic_workflows import (
@@ -713,6 +717,97 @@ def test_existing_physical_attempt_dispatches_plain_build_checkpoint(
     )
     assert result.ok
     assert calls == ["physical"]
+
+
+def test_cubemx_begin_and_checkpoint_use_the_v4_profile_and_reject_continuation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    project = tmp_path / "project"
+    data = tmp_path / "data"
+    project.mkdir()
+    monkeypatch.setattr(
+        recovery_workflows,
+        "_load_project_model",
+        lambda _root: SimpleNamespace(
+            schema_version=3,
+            logical_project_id=UUID(PROJECT_ID),
+            memory=SimpleNamespace(source="cubemx"),
+            target_device=TARGET,
+        ),
+    )
+    context = AcceptanceRecoveryContext(project, data, "session-a")
+    started = begin_acceptance_attempt(
+        context,
+        attempt_id=ATTEMPT_ID,
+        scenario_id=CUBEMX_PHYSICAL_SCENARIO_ID,
+        scenario_version=CUBEMX_PHYSICAL_SCENARIO_VERSION,
+    )
+    assert started.ok
+    attempt = started.to_dict()["data"]["attempt"]
+    assert attempt["schema"] == CUBEMX_PHYSICAL_ATTEMPT_SCHEMA
+    assert attempt["projectOrigin"] == "cubemx"
+    assert attempt["executionSource"] == "physical"
+    assert attempt["physicalTransportEvidence"] is False
+
+    checkpoint = checkpoint_acceptance_attempt(
+        context,
+        attempt_id=ATTEMPT_ID,
+        expected_revision=0,
+        stage="project-materialized",
+    )
+    assert checkpoint.ok
+    assert checkpoint.to_dict()["data"]["attempt"]["schema"] == CUBEMX_PHYSICAL_ATTEMPT_SCHEMA
+    shown = show_acceptance_attempt(context, attempt_id=ATTEMPT_ID)
+    resumed = resume_acceptance_attempt(context, attempt_id=ATTEMPT_ID)
+    assert shown.ok and resumed.ok
+    assert shown.to_dict()["data"]["attempt"]["schema"] == CUBEMX_PHYSICAL_ATTEMPT_SCHEMA
+    assert resumed.to_dict()["data"]["recoveryPolicy"]["schema"] == (
+        "stm32-acceptance-recovery-policy/3"
+    )
+
+    continuation = begin_acceptance_attempt(
+        context,
+        attempt_id="00000000-0000-4000-8000-000000000009",
+        scenario_id=CUBEMX_PHYSICAL_SCENARIO_ID,
+        scenario_version=CUBEMX_PHYSICAL_SCENARIO_VERSION,
+        continuation={},
+    )
+    assert continuation.code == "ACCEPTANCE_ATTEMPT_STAGE_INVALID"
+
+
+def test_unknown_attempt_schema_does_not_fall_through_to_physical_dispatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    calls: list[str] = []
+    monkeypatch.setattr(
+        recovery_workflows,
+        "_attempt_schema_for_context",
+        lambda _context, _attempt_id: "stm32-acceptance-attempt/999",
+    )
+    monkeypatch.setattr(
+        recovery_workflows,
+        "_checkpoint_physical_attempt",
+        lambda *_args, **_kwargs: calls.append("physical")
+        or recovery_workflows.OperationResult.success(
+            "acceptance.attempt.checkpoint", {"attempt": {}}
+        ),
+    )
+    monkeypatch.setattr(
+        recovery_workflows,
+        "_checkpoint_attempt",
+        lambda *_args, **_kwargs: calls.append("v1")
+        or recovery_workflows.OperationResult.success(
+            "acceptance.attempt.checkpoint", {"attempt": {}}
+        ),
+    )
+    result = checkpoint_acceptance_attempt(
+        AcceptanceRecoveryContext(tmp_path, tmp_path / "data", "session-a"),
+        attempt_id=ATTEMPT_ID,
+        expected_revision=0,
+        stage="project-materialized",
+    )
+    assert result.ok
+    assert calls == ["v1"]
 
 
 def test_persisted_physical_recovery_chain_uses_real_authorities_and_is_cas_safe(
