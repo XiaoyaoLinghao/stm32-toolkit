@@ -8,6 +8,8 @@
 /LICENSE text eol=lf
 # Canonical SPDX authority preserves upstream trailing-space/blank-EOF bytes.
 /tools/release/licenses/spdx/** whitespace=-trailing-space
+/tools/release/build_0900_artifacts.py text eol=lf
+/tools/release/release_0900_policy.json text eol=lf
 /tools/stm32-toolkit/tests/release/fixtures/native-outcomes/** text eol=lf
 /tools/stm32-toolkit/tests/fixtures/component-admission/target-transports/** text eol=lf
 /tools/stm32-toolkit/tests/fixtures/target-streams/*.json text eol=lf
