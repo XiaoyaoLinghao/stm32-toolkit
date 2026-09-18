@@ -4,7 +4,7 @@
 - Product CodeHead: `15b1a70e9bd684285da5557104deff529f537e49`
 - Tested code head before this report commit: `06e45a095018ee04b1fcff229707d90099eb9570`
 - Branch: `codex/STM32TK-1.0-legacy-fixtures`
-- Review status: independent primary review pending; this report is not a self-acceptance.
+- Review status: primary independently accepted the bounded slice in a fresh clean final checkout; see `D:\codex-tmp\v10b-0918\r10\e\legacy-fixtures\independent-review-final.md`. Overall 1.0 acceptance remains pending.
 
 ## Implemented scope
 
@@ -12,11 +12,11 @@ The 0502 tests now use two tracked launcher fixtures extracted from local commit
 
 The 0600 private self-test seam accepts test-owned temporary-root and support-profile paths only for pytest callers, validates canonical absolute existing paths and all ancestors, and keeps the public `C:\tmp` defaults unchanged. The unit support fixture was generated through the existing `_write_support` helper under `D:\codex-tmp\v10b-0918\r10\t\lg\support-unit-fake`; offline `verify_support_root` validation is recorded in `D:\codex-tmp\v10b-0918\r10\e\legacy-fixtures\support-unit-preflight.json`. It contains 17 manifest members and the frozen profile versions, including PowerShell `5.1.26100.9168`. The original approved support root at `D:\codex-tmp\v10b-0918\r10\t\alloc\feas0\support` was retained as the source authority and was not edited.
 
-The stale test expectations were corrected for the approved 12-kind evidence GC registry and absolute regeneration CLI project-root arguments. No package source, product launcher, schema, dependency lock, threshold, or release controller public contract was changed.
+The stale test expectations were corrected for the approved 12-kind evidence GC registry and absolute regeneration CLI project-root arguments. Deployed runtime sources, product launchers, schemas, dependency locks, thresholds and the release controller public contract are unchanged. The private self-test seam in `tools/release/run_0600_gates.py` changed; that utility is included in source archives. Existing package artifacts remain frozen at product15b and were not rebuilt by this slice.
 
 ## Focused evidence
 
-All focused invocations used `D:\codex-tmp\v10b-0918\r10\py\Scripts\python.exe`, explicit `TEMP`/`TMP`/`TMPDIR` below `D:\codex-tmp\v10b-0918\r10\t\lg`, explicit basetemp/cache below that root, `PYTHONPATH` pointing at the verify checkout sources, cleared inherited pytest/coverage variables, `-p no:cov`, and per-group command/stdout/stderr/JUnit/result files under `D:\codex-tmp\v10b-0918\r10\e\legacy-fixtures`.
+All focused invocations used `D:\codex-tmp\v10b-0918\r10\py\Scripts\python.exe`, explicit `TEMP`/`TMP`/`TMPDIR` below `D:\codex-tmp\v10b-0918\r10\t\lg`, explicit basetemp/cache below that root, `PYTHONPATH` pointing at the `r10\lf` package sources, cleared inherited pytest/coverage variables, `-p no:cov`, and per-group command/stdout/stderr/JUnit/result files under `D:\codex-tmp\v10b-0918\r10\e\legacy-fixtures`. Primary verified that both package `src` trees are Git-identical to product15b; the command records retain their actual source paths.
 
 | Group | Tested head | Actual JUnit result | Evidence |
 | --- | --- | --- | --- |
