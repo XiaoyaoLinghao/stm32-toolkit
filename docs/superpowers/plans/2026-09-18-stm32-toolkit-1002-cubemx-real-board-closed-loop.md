@@ -27,7 +27,7 @@
 
 所有实现者被告知并非独占整个代码库，禁止回退他人修改。禁止递归委派。只读探索完成后不保留同一责任的重复执行者。核心适配与工程准备可并行，因为协议、case、origin、身份和用户区边界已冻结；任何共享契约变化先回主对话框，不能靠增加代理协调修补。
 
-目录均在 `D:\codex-tmp\v10b-0918` 下：`impl` / `review`（Toolkit 工作树），`p`（no-remote 父工作区），`p\b`（真实 CubeMX 工程），`evidence`，`data`，短 `t`/`c`（一次性测试/cache）。工具进程同时设置 `TEMP/TMP/TMPDIR`。任何路径不足改短子目录，不写驱动器根目录或旧 C temp/tmp。
+目录均在 `D:\codex-tmp\v10b-0918` 下：`impl` / `review`（Toolkit 工作树），`p`（no-remote 父工作区），`p\b`（真实 CubeMX 工程），`evidence`，`.stm32-toolkit-data`（创建 CLI 实际数据根），`data`（后续服务/验收），短 `t`/`c`（一次性测试/cache）。工具进程同时设置 `TEMP/TMP/TMPDIR`。任何路径不足改短子目录，不写驱动器根目录或旧 C temp/tmp。
 
 ## 3. 波次一：软件适配与真实工程准备并行
 
@@ -50,12 +50,12 @@
 
 ### 3.2 Luna CubeMX 工程准备
 
-1. 在 `p` 建立最小可恢复 Git HEAD/no remote；记录空目的地 `b`。复用现有 tool discovery，固定 CubeMX 文件/Java/MCU XML/HAL package 与 GCC/CMake/Ninja 的实际版本和哈希。不安装/升级缺失项，不改共享包或全局配置。
-2. 重新调用 `project create-plan`，不得使用前期已过期 plan/action；再使用其精确 `plan-id/action-digest` 调用 `create-prepare`，核对 environment digest，最后单次 `create-apply --authorization-digest ... --authorized`。所有命令保存 stdout/stderr/exit；无需手写 CubeMX 启动脚本，因为现有 adapter 已拥有这个责任。
+1. 在 `p` 建立最小可恢复 Git HEAD/no remote；记录空目的地 `b`。复用现有 tool discovery，固定 CubeMX 文件/Java/MCU XML/HAL package 与 GCC/CMake/Ninja 的实际版本和哈希。IDE 工具发现已有 B `data/tool-path-overrides.json` 绑定 D 盘 VS Code；不能将 Python 发现函数的 profile/data root 参数直接视为 CLI 各命令均支持。不安装/升级缺失项，不改共享包或全局配置。
+2. 创建 CLI 三步统一使用默认发现，不传 `--support-profile`；实际 data root 为 `p` 的父目录下 `.stm32-toolkit-data`、session 固定 `cli`。重新调用 `project create-plan`，不得使用前期已过期或不同 tool-profile 的 plan/action；再使用其精确 `plan-id/action-digest` 调用 `create-prepare`，核对 environment digest，最后单次 `create-apply --authorization-digest ... --authorized`。VS Code 的默认发现错误不是 creation blocker；显式 IDE profile 留到独立 IDE 预检使用，不在缺少该参数的 apply 前混换 profile。所有命令保存 stdout/stderr/exit；无需手写 CubeMX 启动脚本，因为现有 adapter 已拥有这个责任。
 3. apply 必须真实运行 CubeMX，native inspection、configure、Debug/Release build 和原子激活全部成功才算原生创建完成。失败先分类并保留 staging 最小证据，不复制 fixture 伪造成功，不自动改用导入 Keil 路线。
 4. 建立 B 的独立工程 Git 基线；保留 `.ioc`、CreationPlan、GenerationResult、ownership manifest、project origin=cubemx、logicalProjectId、工具/输入指纹及生成库存。apply 的 staging build 只证明创建门通过；激活与工程源码提交后重新构建，用实际最终 project root/Git/input snapshot 产生后续固件身份，不能将 staging 或提交前身份用于烧录。
-5. 在约定用户区加入 HAL LED/timebase 和既有 v2 emitter 的最小适配。保持 D4 正常运行，D3 为唯一受控故障。Core 入口仅使用明确 USER CODE hook；HAL/native 托管代码与 Toolkit 生成文件不私改。工程用户代码由该 Luna 执行者实现和测试。
-6. 用现有 linker override/configure 入口为 mailbox 保留唯一 4112-byte 区域，逐项核对 ELF/MAP/startup/vector/SP/reset/main、testtime、ODR 地址、mailbox 范围/对齐/大小、不重叠和内存余量。地址由 B 的实际内存图证明，不能只复制 A 的地址。
+5. 按规格“创建后工程定制”完成唯一配置提交：补全 debug/backend/target/SVD/只读区域、testing.target 的实际 ELF/60秒/v2/mailbox 字段；在 `build.sources/includePaths` 显式登记 `App/Tests`；在 USER CODE hook 接入 HAL LED/timebase/emitter，D3 为唯一故障。原始生成库存保留作来源，不伪改其哈希；定制 manifest、hook 和所有用户源码完整进入工程 Git。仅通过现有 configure plan/apply 更新 Toolkit 管理清单，实际构建证明用户源码已链接。
+6. 执行规格明确要求用户批准的 B 工程级 linker 所有权迁移：保留原 CubeMX linker，按其精确字节派生 `App/Linker/vs10b.ld`，仅作普通 RAM/stack 顶部到 `0x2002EFF0` 的保留区调整及 mailbox 段/ASSERT，同步完整 `memory.regions` 与 `generation.nativeLinkerScript`。transport 为 `address=0x2002EFF0`、`size=4096`，总对象为4112。经现有 configure/build，逐项核对 ELF/MAP/startup/vector/SP/reset/main、testtime、ODR、唯一段/对齐/大小/非重叠与内存余量。独立审查来源哈希和完整差异。当前没有 overlay 功能；定制后不运行 regenerate，不声明自动保留这些增量。
 7. 建立可恢复的正常/故障提交，预先审查唯一修复 diff；故障只改变周期 D3 toggle 为写低，修复只恢复该语句。此阶段只保存修复方案，不提前落地 actual fixed-after source/build。真实诊断与单次 source-change 授权消费后才写入修复、提交并构建，以保证 before/after 时间和身份链真实。保留各自实际产生的 input snapshots/build IDs/ELF hashes；固定后不再修改入口、时钟、case 或 mailbox。
 
 任何代码修复必须有最小可复现差异和对应验证。若真实 CubeMX 生成暴露另一个核心模块缺陷，先由主对话框冻结该独立问题的文件/行为/测试边界，仍使用 Luna/max 实现；不让两位执行者同时修改核心配置或公共类型。
@@ -65,6 +65,7 @@
 - 独立审查完整产品适配 diff 和完整 B 用户区 diff；源代码、项目 provenance、工具链和依赖与事实一致才进入下一阶段。
 - 如 Toolkit 产品字节变化，仅部署已审查新候选；使用 B 的 runtime/data 根，核对 package/manifest/sourceCommit/启动器。保持 A runtime、receipt、workspace 和 bundle 原样。产品字节未变则复用已核实部署，不为了报告重打包。
 - 先通过公共 B 物理入口的离线集成检查，再填一张执行卡：完整 toolkit/runtime/firmware/tool/probe identities、B session、target 前置、精确动作及次数、预算、成功/失败停止条件和 cleanup owner。
+- 将实际 `.stm32-project.json` SHA256/Git/InputSnapshot 列入身份核对；managed model hash 未包含 testing，不能独自充当 Target 配置完整证明。IDE 预检用现有显式 profile/doctor 入口；实际 handoff 使用当次 `cortexDebugLaunch` 与 companion/ticket，初始空 launch 不是 READY。
 - 此时才申请 B 的明确有限实机授权与现场状态确认。A 截止验收的授权不延用。旧 ticket/action/lease 不复活，prepare/execute 参数必须来自当次新事实。
 - 阶段 READY 只代表入口、资产、候选与授权准备完成；没有硬件结果就保持 HARDWARE_PENDING。
 
@@ -73,10 +74,10 @@
 在一张冻结执行卡内预先列明整条顺序及所有预算，避免临场逐条拼接测试：
 
 1. 新工程基本运行资格：公共 flash/readback/start、最终 running、D4 活性、testtime 与 PE4；确认真实 CubeMX 生成的程序能运行。
-2. 正常 B Target：新 inventory/prepare/execute，真实 mailbox `physical` PASS；声明物理资格只基于 B 的新身份。
+2. 正常 B Target：新 inventory/prepare/execute，真实 mailbox `physical` PASS；声明物理资格只基于 B 的新身份。同一正常固件上用 B 生成配置完成一次真实 IDE attach/Watch/detach/reacquire，确认能查看 testtime，并在退出后证明程序恢复活动；不在故障/修复版本重复交接。
 3. failed-before：部署唯一故障版本，预期仅 D3 heartbeat failed，D4 与时基持续活动；30 秒/100ms 同批 Monitor 留证，实际窗口/功能/速率分别判定。
 4. 现有 Diagnostic/AcceptanceAttempt：从真实失败创建/绑定诊断，评估证据，精确 source intent 单次授权修复；after build 与新动作贯通到 fixed-after Target PASS、30 秒/100ms Monitor 和 FixVerification。
-5. B 的 CLI/MCP 身份绑定采用最小有限只读检查；若本次声明 IDE 场景，通过生成的 B 配置完成一次真实 attach/Watch/detach/reacquire，不重用 A ticket。Probe 一次只有一个 owner，正常退出后证明 released/所属进程退出/应用活动。
+5. B 的 CLI/MCP 身份绑定采用最小有限只读检查。所有硬件入口使用 B 的当次新 ticket/action，Probe 一次只有一个 owner，正常退出后证明 released/所属进程退出/应用活动。IDE 原生操作由实际操作人留证，无法获得该操作时保持对应验收项 PENDING，不以旧 A 结果代替。
 
 所有非预期失败立即停止整张卡，保留原始错误/阶段/终态。只允许预先声明的 D3 应用失败继续诊断，禁止把 hardware timeout、identity drift、Fault、attach 或释放错误当作该预期失败。诊断修正后的下一次运行使用新卡/新授权事实，不能盲重试。
 

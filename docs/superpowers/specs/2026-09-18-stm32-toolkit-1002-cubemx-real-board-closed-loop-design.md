@@ -7,7 +7,7 @@
 - 模块：`STM32TK-1002-CUBEMX-REAL-BOARD-CLOSED-LOOP`，阶段：VS10-B 规格与离线预检。
 - 完整 accepted base：`16a6e59dff7fed2999fae611e3d936b0b04bbabd`；已核实为 GitHub `master`，包含 VS10-A 最终 `ACCEPTED` 附录。
 - 已接受产品源码：`6e069660e4a5b62598f16637176caf086f82d3c8`；之后至 accepted base 仅文档变化。现有部署能否用于 B，按 release manifest/文件身份及 B 的依赖核对，不因报告提交重部署。
-- 规格、计划、调度、集成及验收：主对话框；产品与工程实现、实现测试：一名 Luna/max；完整差异审查：未参与实现的主对话框/独立审查者。
+- 规格、计划、调度、集成及验收：主对话框；产品适配与独立工程准备各由唯一 Luna/max 负责，实现者拥有其实现测试；完整差异审查：未参与实现的主对话框/独立审查者。
 - 设计分支：`codex/STM32TK-1002-CUBEMX-REAL-BOARD-design`；工作树：`D:\codex-tmp\v10b-0918\design`。生成工程、执行证据、cache、build 和后续实现/审查工作树全部位于 `D:\codex-tmp\v10b-0918`。
 - 用户已同意推进 B，并确认沿用现有 BSMR-MC04 / STM32F429ZG 板和同一 CMSIS-DAP 探针，以 D4 闪烁验证运行。这是资产选择，不是新的现场状态证明。
 - 本阶段无产品所有权例外；无新的 push、PR、merge、tag、Release 授权。VS10-A 截止验收的持续实机授权不自动延伸到 B。
@@ -19,6 +19,8 @@
 3. **精确修复并复验。** Diagnostic 对真实证据评估，现有单次 source-change 授权绑定精确前后字节；重建、重新烧录后，在同一 B lineage 中得到 Target PASS、Monitor assertion 和 FixVerification，形成独立 bundle。
 
 不重开 VS10-A，不重新实现 Project/Probe/Build/Monitor/Test/Diagnostic/Evidence，不引入第二个 scheduler、backend、transport、协议、授权系统或通用诊断框架。不升级到 50ms，不要求 RTT/UART/semihosting 实体资格，不自动发布 1.0。不用复制 Keil 工程冒充 CubeMX 原生创建，不用 fixture/replay/旧 TestRun 冒充 B 实机证据。
+
+本切片不验收定制后的 CubeMX regenerate；既有安全重生成的独立软件证据保持其原范围。B 在原生创建完成后作下面明确的工程定制并冻结；不宣称这些增量能被当前 regenerate 合并保留。
 
 ## 3. 资产与工程约束
 
@@ -48,7 +50,11 @@ SVD 已核实：`C:\ST\STM32CubeCLT_1.22.0\STMicroelectronics_CMSIS_SVD\STM32F42
 
 现有 prepare 才要求 Git HEAD 并绑定 native environment；apply 消费单次授权，在 sibling staging 生成，验证 native CMake/MCU/内存/包/ownership，依次配置并构建 Debug 与 Release，最后原子激活。本次临时 plan 已有有效期，实施时必须重新 plan/prepare，不能消费此历史 actionDigest。
 
-由于 plan envelope 只保留 toolProfileDigest，主代理另直接调用现有 `discover_tool_support` 保存完整只读结果，未增加诊断脚本/框架。`evidence/tool-support.stdout.json` 确认上述工具版本/哈希，同时返回 `VSCODE_INVALID`、`vsCode=null`。此问题未阻断本次 create-plan；不能因此宣称 IDE 环境 READY。后续若执行 B 的真实 IDE 场景，必须先独立修复并核验此入口，不在本轮凭旧 A 的 VS Code 成功记录抹去它。
+由于 plan envelope 只保留 toolProfileDigest，主代理另直接调用现有 `discover_tool_support` 保存完整只读结果，未增加诊断脚本/框架。`evidence/tool-support.stdout.json` 的 `VSCODE_INVALID` 已定位为 ENVIRONMENT：HKCU App Paths 指向不存在的 C 盘安装，现有 resolver 在标准候选校验处拒绝该路径；实际程序是 `D:\Program Files\Microsoft VS Code\Code.exe`，PE 版本 `1.129.1`。未修改全局注册表或产品发现规则。
+
+采用现有显式配置入口，在 B 的 `data/tool-path-overrides.json` 中只指定 `vsCode.path`，不手填版本。再次调用同一发现函数，结果 `issues=[]`、`vsCode.source=explicit`，可执行文件 SHA256 为 `552dde73ea97674f00c81ccf3ac6fe369fc272bbcc3b23b67c8186ec9f8c56d9`；原始结果、调用与配置哈希保存于 `evidence/tool-support-override*`。这是工具路径就绪证据；扩展/生成调试配置与真实 IDE 交接仍须检查，未启动 IDE 或硬件。该证明使用公共 Python 发现函数；不能据此假定所有 CLI 子命令都接受 `--support-profile` 或环境变量 data root。
+
+冻结创建链为现有 CLI 三步均使用默认发现：其实际 creation data root 是 `D:\codex-tmp\v10b-0918\.stm32-toolkit-data`、session 为 `cli`，不受本轮设置的环境变量 data/session 控制。独立 B data root 仍用于后续服务/验收。默认发现中的 VS Code issue 被创建规则明确排除为 blocker，但仍进入整个 toolProfileDigest；故不能在 plan/prepare 传显式 profile 后让不支持该参数的 apply 回到默认发现。三步保持同一默认事实并重新校验，IDE 阶段通过现有 `discover_tool_support` / `run_doctor(..., support_profile=...)` 单独核验显式 D 盘配置。CLI 显式 profile 传递缺口记录为已知限制，本切片不修改它，也不修改全局注册表来规避。
 
 ### 固件用户场景
 
@@ -57,6 +63,22 @@ SVD 已核实：`C:\ST\STM32CubeCLT_1.22.0\STMicroelectronics_CMSIS_SVD\STM32F42
 用户区定义 `volatile uint32_t testtime`；10ms tick 为已有 emitter 提供真实单调时基，500ms LED 周期可产生可观察翻转。Target case 复用 `d3-heartbeat` 的语义和 v2 case-inventory digest 算法，判断真实时基活动及 PE3 变化；不把自身期待值或预先生成 JSON 当采样结果。HAL 用户代码使用 PE3/PE4 实际 ODR，不能照搬 A 的 SPL `GPO.h` 依赖。
 
 无 RTOS、联网外设或新调试 transport。原生 startup/clock/linker 必须通过构建产物检查，不能仅依据 `.ioc` 声称 MCU 已正确运行。正常与故障版本都不得以阻塞延时或 Target 终态结束而停止 D4 主循环。
+
+### 创建后工程定制与链接脚本所有权（本规格新增决策）
+
+独立审查确认，当前 native 创建结果的 `debug={}`、未声明 `testing`，且只登记 CubeMX 原生源码；它不自动具备 B 的实机配置。原生模式也不会渲染 Toolkit 的 `fixedSections`。本规格使用既有 schema-3 配置入口，明确以下一次性工程定制，不能把这些步骤说成创建器已自动完成的行为。
+
+1. 归档真实 create/apply 的原始 `.stm32-project.json`、原生 linker、CubeMX inventory/ownership、生成和构建结果，先提交无定制基线。后续原生库存继续表示该次生成来源，不伪改其哈希来冒充仍是原始字节。
+2. 用户源码位于 `App/`、`Tests/`；在 `build.sources` 显式追加每个 `.c`，在 `build.includePaths` 登记所需目录。`Core/Src/main.c` 仅修改明确的 USER CODE hook，其前后字节单独纳入工程 Git/diff；不以源目录存在推断它已编译。构建 MAP/ELF 必须证实 emitter、testtime 和唯一 mailbox 已链接。
+3. 补全 `debug.backend=pyocd`、`debug.target=stm32f429zgtx`，将已验证 SVD 复制到 B 的 `svd/STM32F429.svd` 并校验哈希，配置 `debug.svd`、`svdDevice=STM32F429` 和已有只读区域契约允许的 GPIOE ODR 范围。配置本身不授予访问硬件权限，也不证明实际 backend target/pack 映射已可用。
+4. 补全 `testing.target`：`executable` 取 B 激活后实际 Debug BuildResult 的相对 ELF 路径，`timeout_seconds=60`、`protocol=stm32-target-frame/2`、`transport.kind=memory-mailbox`、`options.address=537063408`（`0x2002EFF0`）、`options.size=4096`。先有原生 Debug ELF 再登记此字段，避免把不存在的路径交给模型验证。之后重新 configure/提交/构建，所有字段在正常、故障、修复三个固件间保持不变。
+5. 原始 CubeMX linker 及其 inventory/ownership 记录不删除、不改写。以该文件的精确字节派生项目自有 `App/Linker/vs10b.ld`，记录来源路径/哈希及完整差异。只允许把实际 `0x20000000..0x20030000` 普通 SRAM 顶部划出 `MAILBOX`，保留其他原生运行时段/符号；普通 RAM 结束和 `_estack` 必须降到 `0x2002EFF0`。加入一个 NOLOAD/KEEP/对齐16/大小4112的 mailbox 段，以及普通数据/heap/stack 与该区域不重叠的 ASSERT。实际原生内存不符合此边界则停止，不猜测或添加容量。
+6. `memory.regions` 必须与新 linker 的完整 MEMORY 表逐项同序一致，保持 `memory.source=cubemx` 并用新工程提交证明该容量内的保留区修改。将 `generation.nativeLinkerScript` 指向此项目自有副本，由既有 `load_project_model → plan_project_configuration → apply_project_configuration → build` 接入一个完整 linker 文件；不称为现有 overlay 功能，不添加第二个链接器或修改模板。
+7. 这是 B 特定的显式所有权决策：仅在完成真实原生创建之后，取代 0702 设计要求持续引用原 CubeMX linker 的限制，需随本规格批准；不是对旧 A 授权的复用。原生生成证明、修改后项目/固件证明分开归属。定制后的 B 不执行 regenerate；未来如需重生成，必须先定义并实现增量保留/链接所有权契约，不能靠更新库存哈希或跳过冲突检查实现。
+
+现有 managed model hash 未覆盖 `testing`，本切片不扩张为该独立机制的修复；B 的实际 manifest 原始 SHA256、Git commit 和 Build InputSnapshot 必须单独留证并在操作前核对，不能用 managed hash 独自证明 Target 配置未变。正常/故障/修复仅允许 D3 语句差异，若测试配置或链接/时钟/入口再变，停止并重新确认对应身份。
+
+初始 `.vscode/launch.json` 为空不算 IDE 就绪。实际 IDE 步骤使用既有 `debug handoff begin` 返回的 B `cortexDebugLaunch` 与当前 companion/一次性 ticket 按标准流程配置；不得猜测端口、复用 A launch 或把普通 configure 当作 handoff。
 
 ## 4. 唯一权威与冻结契约
 
@@ -76,7 +98,7 @@ SVD 已核实：`C:\ST\STM32CubeCLT_1.22.0\STMicroelectronics_CMSIS_SVD\STM32F42
 ### Target 与连续观察
 
 - 使用既有 `stm32-target-frame/2`，host-bound identity、frame/CRC/sequence/digest/monotonic 规则保持不变；v1 兼容不变。参考物理 transport 仅 `memory-mailbox`，禁止 host 写入 mailbox。
-- B 的 mailbox 固定候选布局为 `0x2002EFF0..0x20030000`：16-byte header 加 4096-byte ring，`NOLOAD`、16-byte aligned、KEEP 和 exact-size ASSERT。B 的实际 native 内存图、linker/MAP/ELF 必须证明该 SRAM 范围、普通 RAM/stack/heap 不重叠及唯一对象；不满足则停止并返回规格决策，不能静默改地址或只依据 A 的 MAP 宣称通过。
+- B 的 mailbox 固定候选布局为 `0x2002EFF0..0x20030000`：16-byte header 加 4096-byte ring。项目 transport 配置必须是 `address=0x2002EFF0`、`size=4096`；`size` 指 ring，不是总长 4112。linker 必须有 `NOLOAD`、16-byte aligned、KEEP 和 exact-size ASSERT。B 的实际 native 内存图、linker/MAP/ELF 必须证明该 SRAM 范围、普通 RAM/stack/heap 不重叠及唯一对象；不满足则停止并返回规格决策，不能静默改地址或只依据 A 的 MAP 宣称通过。
 - 正常 prepare 与显式 recovery 是不同产品路径。若选用现有 recovery，prepare 仅绑定静态事实；execute 单次消费授权、重新校验、创建唯一 MODIFY owner、attach/证实身份后至多烧录一次。失败终态，不退回另一策略盲试。
 - flash/readback 与应用运行是不同结论；有限操作必须通过已接受的公共启动/状态验证入口证明最终 running，并记录 lease/worker/进程退出。
 - 连接时短暂停核可接受；连续采样期间不得 halt/reset/resume。有限 activity smoke 与 100ms 周期资格分开，不以 standalone `read sample` 的 scheduled slots 代替 delivered batches。
@@ -118,10 +140,10 @@ B 首个切片使用 fresh `/3` attempt，不扩展 A-only continuation。CLI �
 | 实现 | 只测试新增/改变的场景映射、工程用户区与必要回归；不重跑未变全矩阵 | Luna/max，保留 exact command/stdout/exit/commit |
 | 原生生成与构建 | 真 CubeMX 输出、manifest ownership、可重复构建、ELF/MAP/向量/入口/符号/内存资格 | Luna/max 实现，主对话框独立核对 |
 | 实机 B | 新项目正常→故障→诊断→授权修复→fixed-after，Target/Monitor/退出状态全部关联 | 主对话框串行；独立证据审查 |
-| 入口绑定 | B 的 CLI/MCP project/firmware 行为；若声明 IDE 验证，使用 B 新生成配置执行真实 handoff | 实际执行者，不借用 A 的 UI 结果 |
+| 入口绑定 | B 的 CLI/MCP project/firmware 行为；正常 B 固件上用新生成配置完成一次真实 IDE attach/Watch/detach/reacquire | 实际执行者，不借用 A 的 UI 结果 |
 | 归档 | request/.ioc、CreationPlan、生成库存、ownership、build/firmware、Target/Monitor/Diagnostic/修复、完整身份与 sorted SHA256 manifest | 主对话框归档，独立审查 |
 
-A 的共享协议、Probe/handoff、0.9 安装/升级/安全/包、UI 和既有硬件证据按原身份与版本范围保留。只有相关源码、依赖、配置、环境或契约发生变化时前移受影响检查；B 的新工程生成与物理结果必须实际产生。完整 1.0 发布矩阵、tag/Release 是后续独立阶段。
+A 的共享协议、Probe/handoff、0.9 安装/升级/安全/包、UI 和既有硬件证据按原身份与版本范围保留。B 的原生生成调试配置与工程身份是新输入，因此一次 B IDE 交接是必需的集成检查；不重跑 T9 完整矩阵，也不在故障/修复版本重复该交接。其余只有相关源码、依赖、配置、环境或契约发生变化时前移受影响检查；B 的新工程生成与物理结果必须实际产生。完整 1.0 发布矩阵、tag/Release 是后续独立阶段。
 
 首个非预期错误停止当前执行卡，不继续烧录/连接/恢复；保存原始错误、阶段、身份、stdout/stderr 与清理终态，先分类 PRODUCT/ENVIRONMENT/INFRASTRUCTURE/HARDWARE/REPORT。预设应用 heartbeat 断言失败仅能继续预先规定的诊断链；超时、身份错误、transport 错误或目标不运行不是预期故障。
 

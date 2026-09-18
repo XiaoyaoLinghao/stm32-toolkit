@@ -14,7 +14,7 @@
 
 ## 2. 实机前必须填齐的一张执行卡
 
-Windows 每个验证或部署进程须同时把 `TEMP`、`TMP`、`TMPDIR` 固定到本轮获准的短目录，并显式固定 pytest basetemp、缓存和输出目录。CPython 优先读取 `TMPDIR`；只设置前两项无法阻止继承的外部目录被使用。子进程继承同一设置。运行前记录三项实际值；越界产物先做只读归属核对，不凭目录名删除。当前运行根为 `D:\codex-tmp\t10h-0917`，下方历史示例不是本轮新目录授权。
+Windows 每个验证或部署进程须同时把 `TEMP`、`TMP`、`TMPDIR` 固定到本轮获准的短目录，并显式固定 pytest basetemp、缓存和输出目录。CPython 优先读取 `TMPDIR`；只设置前两项无法阻止继承的外部目录被使用。子进程继承同一设置。运行前记录三项实际值；越界产物先做只读归属核对，不凭目录名删除。当前 VS10-B 运行根为 `D:\codex-tmp\v10b-0918`；`D:\codex-tmp\t10h-0917` 保留 VS10-A 既有工程和证据，下方历史示例不是本轮新目录授权。
 
 Windows 离线回归的生成工程 fixture 也须预检路径深度：configuration-staging 含 64 位 plan ID，长 basetemp 会使最终文件达到 260 字符并在 stage 阶段失败。使用独立短 D 盘 basetemp（例如 `D:\codex-tmp\fc-b1`），日志另放有描述性的证据目录；统一记录实际工作目录。2026-09-11 对照已在接受基线复现长路径失败，缩短路径通过；不能仅看到 GENERATION_APPLY_FAILED 就改本轮产品或归因 cwd。清理遭自动策略拒绝时保留，不换工具绕过。
 
