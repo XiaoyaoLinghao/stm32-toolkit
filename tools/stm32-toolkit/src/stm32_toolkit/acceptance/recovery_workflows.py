@@ -4413,6 +4413,17 @@ def _begin_finalization_attempt(
                 if not _finalization_request_matches_proof(request, association):
                     raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_CONFLICT")
                 return OperationResult.success("acceptance.attempt.begin", {"attempt": chain[-1][0].to_dict()})
+            # Complete every authority recheck while D and E are held before
+            # entering the commit phase.  The commit timestamp below is the
+            # immutable publication timestamp for both the attempt and its
+            # envelope; no graph walk or firmware read may follow it.
+            association = _finalization_recheck_before_attempt_publication_locked(
+                context,
+                model,
+                workspace,
+                evidence,
+                association,
+            )
             opened = _now(context)
             candidate = _finalization_snapshot(
                 {
@@ -4452,15 +4463,6 @@ def _begin_finalization_attempt(
                 metadata=_finalization_envelope_metadata(candidate),
             )
             evidence._put_envelope_locked(envelope)
-            # Recheck proof, predecessor CAS, current firmware facts and the
-            # predecessor deadline at the E-held root publication boundary.
-            association = _finalization_recheck_before_attempt_publication_locked(
-                context,
-                model,
-                workspace,
-                evidence,
-                association,
-            )
             if _timestamp(_now(context)) > _timestamp(candidate.deadline_at_utc):
                 raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_TIMED_OUT")
             _publish_root_locked(
@@ -4593,7 +4595,17 @@ def _checkpoint_finalization_attempt(
                 raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_REVISION_CONFLICT")
             if _timestamp(_now(context)) > _timestamp(latest.deadline_at_utc):
                 raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_TIMED_OUT")
-            _finalization_current_firmware_matches(context, model, association)
+            # Finish the proof, predecessor/CAS, firmware and deadline
+            # rechecks before sampling the commit-phase timestamp.  The
+            # timestamp is then reused for the immutable candidate and
+            # envelope without another lengthy authority read.
+            association = _finalization_recheck_before_attempt_publication_locked(
+                context,
+                model,
+                workspace,
+                evidence,
+                association,
+            )
             published_at = _now(context)
             if _timestamp(published_at) > _timestamp(latest.deadline_at_utc):
                 raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_TIMED_OUT")
@@ -4618,26 +4630,6 @@ def _checkpoint_finalization_attempt(
                 metadata=_finalization_envelope_metadata(candidate),
             )
             evidence._put_envelope_locked(envelope)
-            association = _finalization_recheck_before_attempt_publication_locked(
-                context,
-                model,
-                workspace,
-                evidence,
-                association,
-            )
-            published_chain = _load_finalization_chain(
-                evidence,
-                attempt_id=attempt_id,
-                workspace_id=workspace.workspace_id,
-                logical_project_id=str(model.logical_project_id),
-                proof=association,
-                expected_session_id=context.session_id,
-            )
-            if (
-                published_chain[-1][0].revision != 0
-                or published_chain[-1][0].checkpoint_id != latest.checkpoint_id
-            ):
-                raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_REVISION_CONFLICT")
             if _timestamp(_now(context)) > _timestamp(latest.deadline_at_utc):
                 raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_TIMED_OUT")
             _publish_root_locked(
