@@ -1516,6 +1516,7 @@ def test_task7b_completion_deterministic_outcome_priority_and_zero_mutation(
     ) = _prepared_cross_state_operations(monkeypatch, tmp_path / "corrupt")
     analysis_root = _evidence_root_path(workspace, "monitor-analysis", marker_ref.analysis_id)
     analysis_root.write_bytes(b"{}")
+    before = _authority_snapshot(workspace)
     corrupt_analysis = diagnostic_complete_verification(
         _fresh_diagnostic_context(diagnostic_context),
         operation_id="complete.corrupt-analysis",
@@ -1523,10 +1524,11 @@ def test_task7b_completion_deterministic_outcome_priority_and_zero_mutation(
         expected_revision=7,
         executed_operation_ids=["target-test.vs03"],
     )
-    assert corrupt_analysis.ok is True
-    assert corrupt_analysis.data["fix_verification"]["status"] == "INCONCLUSIVE"
-    assert corrupt_analysis.data["fix_verification"]["reason_code"] == "MANDATORY_EVIDENCE_CORRUPT"
-    assert corrupt_analysis.data["session"]["state"] == "INVESTIGATING"
+    after = _authority_snapshot(workspace)
+    assert corrupt_analysis.ok is False
+    assert corrupt_analysis.code == "DIAGNOSTIC_CHAIN_CORRUPT"
+    assert corrupt_analysis.data is None
+    assert after == before
 
     (
         diagnostic_context,
@@ -3141,7 +3143,7 @@ def test_target_replay_plan_rejects_impossible_valid_analysis_semantics_without_
         ("wrong-kind-media", "EVIDENCE_INTEGRITY_FAILURE"),
         ("corrupt-artifact", "EVIDENCE_INTEGRITY_FAILURE"),
         ("noncanonical-artifact", "EVIDENCE_INTEGRITY_FAILURE"),
-        ("absent-analysis-root", "EVIDENCE_INTEGRITY_FAILURE"),
+        ("absent-analysis-root", "DIAGNOSTIC_CHAIN_CORRUPT"),
         ("wrong-analysis-unsigned-id", "EVIDENCE_INTEGRITY_FAILURE"),
         ("foreign-analysis-identity", "INCOMPATIBLE_IDENTITY"),
     ),
