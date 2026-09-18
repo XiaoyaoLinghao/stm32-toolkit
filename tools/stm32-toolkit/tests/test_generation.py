@@ -2280,9 +2280,9 @@ def _valid_manifest_bytes(root: Path, extra_records=()) -> bytes:
         # Keep historical 0.5.0 producer records above as version-rejection
         # fixtures; these structural cases use the current identity so their
         # targeted hash/type validators remain observable.
-        (b'{"schemaVersion":1,"tool":"stm32-toolkit","toolVersion":"0.9.0","templateVersion":1,"projectManifestSha256":"zzz","files":[]}', "hash"),
-        (b'{"schemaVersion":1,"tool":"stm32-toolkit","toolVersion":"0.9.0","templateVersion":1,"projectManifestSha256":"' + b"a" * 64 + b'","files":{}}', "type"),
-        (b'{"schemaVersion":1,"tool":"stm32-toolkit","toolVersion":"0.9.0","templateVersion":1,"projectManifestSha256":"' + b"a" * 64 + b'","files":[1]}', "type"),
+        (b'{"schemaVersion":1,"tool":"stm32-toolkit","toolVersion":"1.0.0","templateVersion":1,"projectManifestSha256":"zzz","files":[]}', "hash"),
+        (b'{"schemaVersion":1,"tool":"stm32-toolkit","toolVersion":"1.0.0","templateVersion":1,"projectManifestSha256":"' + b"a" * 64 + b'","files":{}}', "type"),
+        (b'{"schemaVersion":1,"tool":"stm32-toolkit","toolVersion":"1.0.0","templateVersion":1,"projectManifestSha256":"' + b"a" * 64 + b'","files":[1]}', "type"),
     ],
 )
 def test_malformed_prior_manifests_are_rejected(tmp_path, content, rule):

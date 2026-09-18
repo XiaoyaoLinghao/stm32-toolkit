@@ -91,7 +91,7 @@ def test_release_python_and_static_package_versions_are_one_contract(tmp_path: P
     ui = json.loads(
         (REPO_ROOT / "tools/stm32-monitor/ui/package.json").read_text("utf-8")
     )
-    assert __version__ == "0.9.0"
+    assert __version__ == "1.0.0"
     assert REQUIRED_PYTHON == ">=3.12,<3.13"
     assert SUPPORTED_PYTHON == (3, 12)
     assert toolkit["project"]["version"] == __version__
@@ -114,7 +114,7 @@ def test_current_monitor_ui_lock_and_fixtures_match_the_release_identity() -> No
         REPO_ROOT / "tools/stm32-monitor/ui/tests/bootstrap.test.ts",
     ):
         content = path.read_text("utf-8")
-        assert "0.9.0" in content
+        assert "1.0.0" in content
         assert "0.5.0" not in content
 
 

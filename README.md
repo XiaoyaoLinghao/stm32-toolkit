@@ -1,4 +1,4 @@
-# STM32 Toolkit 0.9
+# STM32 Toolkit 1.0
 
 [简体中文](README_zh-CN.md) | English
 
@@ -6,17 +6,17 @@ STM32 Toolkit is a local, Agent-neutral STM32 development control plane. The CLI
 share one product contract for project identity, Keil-to-GCC migration, builds, probe workflows,
 Monitor, tests, and evidence-driven diagnosis. Claude Code is a thin adapter to that contract.
 
-## VS09-B local candidate and runtime boundary
+## 1.0.0 local release candidate and runtime boundary
 
-This repository contains an accepted 0.9.0 VS09-B candidate. It has not been tagged, published,
+This repository contains the accepted 1.0.0 local release candidate. It has not been tagged, published,
 or released. The official source is
 `https://github.com/XiaoyaoLinghao/stm32-toolkit.git`; candidate builds bind one full 40-hex Git
 CodeHead and a closed Windows CPython 3.12 wheelhouse. The release contract is CPython `>=3.12,<3.13`; the managed interpreter is selected only from
-`DATA_ROOT/runtime/0.9.0/Scripts/python.exe`. A system interpreter is never an MCP fallback. The
+`DATA_ROOT/runtime/1.0.0/Scripts/python.exe`. A system interpreter is never an MCP fallback. The
 setup helper's CHECK mode is read-only. Bootstrap and Repair require explicit authorization,
 verify the extracted offline bundle, stage locally, validate the Toolkit/Monitor packages, run
 `pip check`, and promote only after validation.
-The accepted local 0.9.0 VS09-A candidate is the runtime and inventory base for this VS09-B slice.
+The accepted 0.9.0 candidate remains the explicitly recognized legacy runtime for Repair.
 
 The current runtime is generic: an integration may choose any absolute `TOOLKIT_ROOT`,
 `DATA_ROOT`, and `PROJECT_ROOT`. The launcher reads only `STM32_TOOLKIT_DATA_ROOT`; the CLI requires
@@ -78,11 +78,11 @@ py -3.12 tools/release/build_0900_artifacts.py build `
   --output-root C:\tmp\p0902-candidate
 ```
 
-Verify `CHECKSUMS.sha256` before extracting `stm32-toolkit-0.9.0-windows-x86_64.zip`. Point the
+Verify `CHECKSUMS.sha256` before extracting `stm32-toolkit-1.0.0-windows-x86_64.zip`. Point the
 generic setup command at the extracted `ToolkitRoot`, explicit `DataRoot`, and explicit
 `ProjectRoot`. CHECK reports bundle and `runtime-state.json` evidence; Bootstrap and Repair install
 only the manifest-listed wheels from the extracted `release/wheels/` directory with `--no-index`
-and `--no-deps`. Legacy 0.3.0/0.5.0 runtimes are quarantined during authorized Repair. A recorded
+and `--no-deps`. Legacy 0.9.0/0.5.0/0.3.0 runtimes are quarantined during authorized Repair. A recorded
 higher installed version returns `downgrade-refused`; a same-version different manifest/source
 returns `source-conflict`; unsupported future state is never rewritten. Project and Monitor data
 remain owned by their existing explicit transactions.

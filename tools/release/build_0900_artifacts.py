@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build and verify the STM32 Toolkit 0.9.0 offline Windows bundle.
+"""Build and verify the STM32 Toolkit 1.0.0 offline Windows bundle.
 
 This module intentionally uses the Python standard library for the artifact
 boundary.  It does not resolve packages, contact an index, execute package
@@ -30,7 +30,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Mapping, Sequence
 
 
-VERSION = "0.9.0"
+VERSION = "1.0.0"
 REPOSITORY = "https://github.com/XiaoyaoLinghao/stm32-toolkit.git"
 REQUIRED_PYTHON = ">=3.12,<3.13"
 MANIFEST_SCHEMA = "stm32-toolkit-release/1"
@@ -672,7 +672,7 @@ def _build_wheel(repo_root: Path, package_path: str, wheelhouse: Path, output: P
 
 
 def _git_archive(repo: Path, code_head: str, epoch: int) -> bytes:
-    result = _process(["git", "archive", "--format=zip", "--prefix=stm32-toolkit-0.9.0/", code_head], cwd=repo, timeout=180, text=False)
+    result = _process(["git", "archive", "--format=zip", f"--prefix=stm32-toolkit-{VERSION}/", code_head], cwd=repo, timeout=180, text=False)
     if result.returncode != 0:
         raise ReleaseError("source archive could not be created")
     return _normalize_zip_bytes(result.stdout, timestamp=epoch)
@@ -746,7 +746,7 @@ def _spdx_legacy(selected: Mapping[str, WheelInfo], product_wheels: Mapping[str,
     relationships = [{"spdxElementId": "SPDXRef-Document", "relationshipType": "DESCRIBES", "relatedSpdxElement": item["SPDXID"]} for item in packages if item["SPDXID"].startswith("SPDXRef-Product-")]
     return {
         "spdxVersion": "SPDX-2.3", "dataLicense": "CC0-1.0", "SPDXID": "SPDXRef-DOCUMENT",
-        "name": "stm32-toolkit-0.9.0", "documentNamespace": f"https://github.com/XiaoyaoLinghao/stm32-toolkit/spdx/{code_head}",
+        "name": f"stm32-toolkit-{VERSION}", "documentNamespace": f"https://github.com/XiaoyaoLinghao/stm32-toolkit/spdx/{code_head}",
         "creationInfo": {"created": _datetime.datetime.fromtimestamp(epoch, _datetime.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"), "creators": ["Tool: stm32-toolkit-release", f"Commit: {code_head}"]},
         "packages": packages, "relationships": relationships,
     }
@@ -853,7 +853,7 @@ def _spdx(selected: Mapping[str, WheelInfo], product_wheels: Mapping[str, bytes]
     ]
     return {
         "spdxVersion": "SPDX-2.3", "dataLicense": "CC0-1.0", "SPDXID": "SPDXRef-DOCUMENT",
-        "name": "stm32-toolkit-0.9.0", "documentNamespace": f"https://github.com/xiaoyaolinghao/stm32-toolkit/spdx/{code_head}",
+        "name": f"stm32-toolkit-{VERSION}", "documentNamespace": f"https://github.com/xiaoyaolinghao/stm32-toolkit/spdx/{code_head}",
         "creationInfo": {"created": _datetime.datetime.fromtimestamp(epoch, _datetime.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"), "creators": ["Tool: stm32-toolkit-release", f"Commit: {code_head}"]},
         "packages": sorted(packages.values(), key=lambda item: item["SPDXID"]), "relationships": ordered_relationships,
     }
@@ -899,9 +899,16 @@ def _license_files(selected: Mapping[str, WheelInfo], policy: Mapping[str, Any],
 
 
 def _compatibility(selected: Mapping[str, WheelInfo]) -> bytes:
-    lines = ["# Compatibility", "", "- Windows x86_64.", "- CPython >=3.12,<3.13 (CPython 3.12 only).", "- STM32 Toolkit, Monitor, plugin, and UI 0.9.0.", "- One generic explicit-root CLI/MCP runtime and the retained Claude thin adapter.", "- Project schemas v2/v3 are readable; v1 requires an explicit upgrade. Runtime state schema 1 is supported.", "", "## Selected runtime wheels", ""]
+    lines = ["# Compatibility", "", "- Windows x86_64.", "- CPython >=3.12,<3.13 (CPython 3.12 only).", f"- STM32 Toolkit, Monitor, plugin, and UI {VERSION}.", "- One generic explicit-root CLI/MCP runtime and the retained Claude thin adapter.", "- Project schemas v2/v3 are readable; v1 requires an explicit upgrade. Runtime state schema 1 is supported.", "", "## Selected runtime wheels", ""]
     lines.extend(f"- {info.name}=={info.version}" for _, info in sorted(selected.items()))
-    lines.extend(["", "Hardware and other operating systems are not promised by this candidate.", "Remote publication is intentionally not performed.", ""])
+    lines.extend([
+        "",
+        "- Qualified reference route: Windows x86_64, CPython 3.12, STM32F429ZG, CMSIS-DAP, PyOCD 0.45.1, and the mailbox transport under the accepted A/B evidence contract.",
+        "- RTT, UART, semihosting, other MCU/probe/backend combinations, and other operating systems are not promised.",
+        "- Ordinary attach flash is not represented as a release PASS claim.",
+        "- Remote publication is intentionally not performed.",
+        "",
+    ])
     return "\n".join(lines).encode("utf-8")
 
 
@@ -913,7 +920,12 @@ def _troubleshooting() -> bytes:
             "- Missing CPython 3.12: install the supported interpreter; no system-Python fallback is used.\n"
             "- Missing or broken runtime: use Check, then authorize Bootstrap or Repair.\n"
             "- Unsupported state, downgrade refusal, or source conflict: preserve the state and use the matching pinned bundle.\n"
-            "- pip-check, Monitor asset, license, SBOM, or doctor mismatch: keep the evidence and obtain a matching candidate.\n").encode("utf-8")
+            "- pip-check, Monitor asset, license, SBOM, or doctor mismatch: keep the evidence and obtain a matching candidate.\n"
+            "- Keep DataRoot long-lived; verify the exact runtime/1.0.0/Scripts/pyocd.exe version after promotion.\n"
+            "- Use an absolute project cwd, GDB/pack paths, startup-ready output, and resolved preLaunch task references; a missing task or F5 URI error stops the flow.\n"
+            "- During Watch, stop the core through the named handoff and finish with the ordinary detach/cleanup path.\n"
+            "- DiagnosticStore native lock-contention classification remains a known limitation; preserve its evidence and follow the shipped runbook.\n"
+            "- Full deployment and IDE checks: docs/testing/windows-deployment-and-ide-preflight.md.\n").encode("utf-8")
 
 
 def _manifest_shape(manifest: Any) -> None:

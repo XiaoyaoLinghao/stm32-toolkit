@@ -71,7 +71,7 @@ def test_doctor_reports_missing_planned_tools_without_mutating(monkeypatch, tmp_
 
 def test_doctor_reports_closed_runtime_and_public_inventory(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(
-        "stm32_toolkit.doctor.importlib.metadata.version", lambda name: "0.9.0"
+        "stm32_toolkit.doctor.importlib.metadata.version", lambda name: "1.0.0"
     )
     result = run_doctor(tmp_path)
     runtime = result.data["runtime"]
@@ -79,8 +79,8 @@ def test_doctor_reports_closed_runtime_and_public_inventory(monkeypatch, tmp_pat
         "requiredPython": ">=3.12,<3.13",
         "pythonVersion": ".".join(str(part) for part in sys.version_info[:3]),
         "pythonSupported": sys.version_info[:2] == (3, 12),
-        "toolkitVersion": "0.9.0",
-        "monitorVersion": "0.9.0",
+        "toolkitVersion": "1.0.0",
+        "monitorVersion": "1.0.0",
         "versionsCompatible": True,
     }
     assert len(result.data["publicInventory"]["mcpTools"]) == 48
