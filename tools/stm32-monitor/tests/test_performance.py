@@ -164,8 +164,11 @@ def _seed_fixture(paths: WorkspacePaths) -> tuple[str, int, int]:
     finally:
         history.close()
     database = paths.monitor_root / "monitor.sqlite3"
-    with sqlite3.connect(database) as connection:
+    connection = sqlite3.connect(database)
+    try:
         connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    finally:
+        connection.close()
     return digest.hexdigest(), database.stat().st_size, sequence - 1
 
 
