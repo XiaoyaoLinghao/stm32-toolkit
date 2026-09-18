@@ -65,7 +65,7 @@ The commands below were executed by the sole implementation/test actor in PowerS
 - `TEMP`, `TMP`, and `TMPDIR`: run-specific directories below
   `D:\codex-tmp\v10b-0918\fin\t`.
 
-The deployed B runtime at `D:\codex-tmp\v10b-0918\B\dgdep\data\runtime\0.9.0\Scripts\python.exe`
+The deployed B runtime at `D:\codex-tmp\v10b-0918\dgdep\data\runtime\0.9.0\Scripts\python.exe`
 was inspected as required, but its environment did not provide pytest; it was not substituted for
 the system test interpreter.
 

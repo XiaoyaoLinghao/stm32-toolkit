@@ -1,6 +1,6 @@
 # VS10-B completed-evidence offline finalization plan
 
-Status: USER_APPROVED / IMPLEMENTATION_PENDING. Governing specification: [offline finalization design](../specs/2026-09-18-stm32tk-vs10b-offline-finalization-design.md). Full accepted local base is `abdc2fb5dbde2b6643e26d42e29c7ad6db72f921`; deployed software remains `12df4fe0569104d6f0e7a827496341d999e1f3ea`. Independent review through `bb2ba4cd8172384378e403d2cb6dc9429d009939` accepted the design and plan. The user's subsequent “开始进行” authorizes implementation and the bounded offline application below; VS10-B acceptance remains pending actual results.
+Status: ACCEPTED / VS10-B_ACCEPTED. Governing specification: [offline finalization design](../specs/2026-09-18-stm32tk-vs10b-offline-finalization-design.md). Full accepted local base is `abdc2fb5dbde2b6643e26d42e29c7ad6db72f921`; deployed software remains `12df4fe0569104d6f0e7a827496341d999e1f3ea`. Independent design review accepted the plan; product CodeHead `22ec7ba68967bcbcacea325848886dd953affb31` then passed full-diff review and required tests. The user-approved copy and canonical offline applications completed, each preserving all 175 original evidence files and adding exactly seven permitted records. Final independent review accepted the complete archive and original B gates; see [final acceptance](../../codex/returns/2026-09-19-stm32tk-vs10b-final-acceptance.md).
 
 ## Ownership and exact scope
 
@@ -37,6 +37,15 @@ Tests: reuse `test_acceptance_continuation.py`, `test_continuation_adapters.py`,
 - Final-review boundary: an absent/swapped bundle must remain a blocked overall VS10-B decision, never inferred as valid from /5 completion. Use existing bundle validation on preserved evidence; no new Toolkit-to-Monitor dependency or bundle writer.
 
 Retain exact commands, source head, stdout/stderr and exit codes for required checks. Use small targeted output projections; keep full authoritative JSON on disk so nanosecond integers and graph hashes cannot be rounded or truncated through JavaScript. Failures are classified before product edits; reporting mistakes do not revoke physical PASS.
+
+The accepted publication-order resolution samples the timestamp only after all
+rechecks under D→E, immediately before candidate/envelope construction, followed
+by the final live deadline check and root publication. It is a commit-phase time,
+not a claimed exact OS rename instant. The original empty-object input retains
+legacy `STAGE_INVALID`. The preserved Windows native-thread rejection occurred
+before CAS at the unchanged DiagnosticStore lock; it is a known error-classification
+limitation and is not a concurrency PASS or damaged-evidence finding. The actual
+application is serial. These boundaries preserve the approved B-only scope.
 
 ## Approval and execution boundary
 
