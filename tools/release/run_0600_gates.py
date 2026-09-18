@@ -4319,15 +4319,22 @@ def _contract_self_test_paths() -> tuple[Path, Path]:
         if (
             not path.is_absolute()
             or str(path) != os.path.abspath(path)
-            or _is_reparse(path)
         ):
             raise ControllerError(f"contract self-test {label} path is not canonical")
         try:
             resolved = path.resolve(strict=True)
         except (OSError, RuntimeError) as exc:
             raise ControllerError(f"contract self-test {label} path is unavailable") from exc
-        if _is_reparse(resolved):
-            raise ControllerError(f"contract self-test {label} path is a reparse point")
+        if path != resolved:
+            raise ControllerError(f"contract self-test {label} path is not canonical")
+        current = path
+        while True:
+            if _is_reparse(current):
+                raise ControllerError(f"contract self-test {label} path has a reparse ancestor")
+            parent = current.parent
+            if parent == current:
+                break
+            current = parent
         if directory:
             if not resolved.is_dir():
                 raise ControllerError("contract self-test temp root is not a directory")
