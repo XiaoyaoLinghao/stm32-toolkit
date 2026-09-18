@@ -16,6 +16,7 @@ from stm32_monitor.analysis_workflows import (
     AnalysisBundleRef,
     AnalysisPublication,
     AnalysisWorkflowError,
+    ENVIRONMENT_FAILURE,
     EVIDENCE_INTEGRITY_FAILURE,
     compare_monitor_runs,
     export_analysis_bundle,
@@ -112,6 +113,41 @@ def test_export_analysis_bundle_rejects_upstream_contradiction_without_bundle_mu
         workflows.export_analysis_bundle(paths, evidence, _request(before, after), publication,
                                          failed_id, fixed_id, declaration)
     assert error.value.code == expected
+    assert not any("monitor-analysis-bundle" in path for path in _evidence_tree(evidence))
+
+
+def test_export_analysis_bundle_maps_source_provider_failure_without_bundle_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _paths(tmp_path)
+    evidence, before, after = _ingest_pair(paths)
+    declaration = _declaration(tmp_path, evidence, before, after)
+    failed_id, fixed_id = _publish_target_pair(paths, evidence)
+    publication = _publish(paths, evidence, before, after, declaration)
+    before_tree = _evidence_tree(evidence)
+    original_read = EvidenceStore.read_artifact
+
+    def fail_source_diff(
+        store: EvidenceStore, artifact: ArtifactRef, *, maximum_bytes: int
+    ) -> bytes:
+        if artifact.kind == "source-diff":
+            raise OSError("private source provider")
+        return original_read(store, artifact, maximum_bytes=maximum_bytes)
+
+    monkeypatch.setattr(EvidenceStore, "read_artifact", fail_source_diff)
+    with pytest.raises(AnalysisWorkflowError) as error:
+        export_analysis_bundle(
+            paths,
+            evidence,
+            _request(before, after),
+            publication,
+            failed_id,
+            fixed_id,
+            declaration,
+        )
+    assert error.value.code == ENVIRONMENT_FAILURE
+    assert "private source provider" not in str(error.value)
+    assert _evidence_tree(evidence) == before_tree
     assert not any("monitor-analysis-bundle" in path for path in _evidence_tree(evidence))
 
 
@@ -846,6 +882,36 @@ def test_public_query_pages_are_coalesced_and_validated_against_frozen_digests(
     publication = _publish(paths, evidence, before, after, declaration)
     assert publication.analysis_result.quality == "VALID"
     assert publication.analysis_result.aligned_pair_count == 2
+
+
+@pytest.mark.parametrize(
+    ("provider_code", "expected_code"),
+    [
+        ("MONITOR_STORAGE_CORRUPT", EVIDENCE_INTEGRITY_FAILURE),
+        ("MONITOR_STORAGE_BUSY", ENVIRONMENT_FAILURE),
+    ],
+)
+def test_history_provider_failures_are_classified_before_derived_publication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    provider_code: str,
+    expected_code: str,
+) -> None:
+    paths = _paths(tmp_path)
+    evidence, before, after = _ingest_pair(paths)
+    declaration = _declaration(tmp_path, evidence, before, after)
+    before_tree = _evidence_tree(evidence)
+
+    def fail_query(self: HistoryStore, query: HistoryQuery) -> ProtocolResult[HistoryPage]:
+        del self, query
+        return ProtocolResult(False, "history.query", provider_code, "provider failed", None)
+
+    monkeypatch.setattr(HistoryStore, "query_history", fail_query)
+    with pytest.raises(AnalysisWorkflowError) as error:
+        _publish(paths, evidence, before, after, declaration)
+    assert error.value.code == expected_code
+    assert _evidence_tree(evidence) == before_tree
+    assert not any("monitor-analysis" in path for path in _evidence_tree(evidence))
 
 
 def test_history_digest_contradiction_is_rejected_without_derived_publication(

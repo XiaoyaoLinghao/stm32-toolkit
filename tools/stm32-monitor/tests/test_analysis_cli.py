@@ -305,6 +305,62 @@ def test_analysis_file_errors_are_stable_and_do_not_leak_paths(
     assert str(missing) not in output.getvalue()
 
 
+def test_analysis_provider_failure_is_sanitized_without_exception_or_path_leak(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "project"
+    data = tmp_path / "data"
+    _project_and_model(monkeypatch, project)
+    request_file = tmp_path / "request.json"
+    _write_json(request_file, {"request": "closed"})
+    request = object()
+    monkeypatch.setattr(
+        AnalysisRequest,
+        "from_value",
+        classmethod(lambda cls, value: request),
+        raising=False,
+    )
+    private_path = tmp_path / "private-provider-secret.json"
+
+    def fail(*args: object, **kwargs: object) -> object:
+        del args, kwargs
+        raise RuntimeError(f"private provider secret at {private_path}")
+
+    monkeypatch.setattr(cli, "compare_monitor_runs", fail, raising=False)
+    output = io.StringIO()
+    code = cli.main(
+        [
+            "analysis",
+            "compare",
+            "--project",
+            str(project),
+            "--data-root",
+            str(data),
+            "--session-id",
+            "monitor-a",
+            "--request-file",
+            str(request_file),
+            "--diagnostic-session-id",
+            "1" * 32,
+            "--hypothesis-id",
+            "2" * 32,
+            "--polarity",
+            "supports",
+            "--rationale",
+            "changed",
+            "--json",
+        ],
+        _stdout=output,
+    )
+
+    assert code == 1
+    payload = json.loads(output.getvalue())
+    assert payload["code"] == "ENVIRONMENT_FAILURE"
+    assert payload["message"] == "Monitor analysis provider failed"
+    assert "private provider secret" not in output.getvalue()
+    assert str(private_path) not in output.getvalue()
+
+
 def test_analysis_file_permission_failure_is_environment_error_without_leaks(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

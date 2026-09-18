@@ -222,6 +222,29 @@ def _native_physical_source(
     return reference, batches
 
 
+def _native_reference_with_batches(
+    reference: MonitorRunRefV2,
+    batches: tuple[SampleBatch, ...],
+    *,
+    end_captured_unix_ns_exclusive: int | None = None,
+) -> MonitorRunRefV2:
+    payload = reference.to_dict()
+    payload["projected_batch_sha256s"] = [
+        sha256(canonical_physical_json_bytes(batch.to_dict())).hexdigest()
+        for batch in batches
+    ]
+    if end_captured_unix_ns_exclusive is not None:
+        payload["end_captured_unix_ns_exclusive"] = end_captured_unix_ns_exclusive
+    unsigned = dict(payload)
+    unsigned.pop("run_ref_sha256")
+    payload["run_ref_sha256"] = sha256(
+        canonical_replay_json_bytes(unsigned)
+    ).hexdigest()
+    parsed = MonitorRunRef.from_value(payload)
+    assert type(parsed) is MonitorRunRefV2
+    return parsed
+
+
 def _physical_reference(*, role: str, operation_id: str, group_id: str) -> MonitorRunRefV2:
     payload = _physical_v2_candidate()
     payload.update(
@@ -305,6 +328,149 @@ def test_native_request_uses_bounded_register_alignment_and_embeds_in_result3() 
     assert payload["schema"] == "stm32-monitor-analysis/3"
     assert payload["request"] == request.to_dict()
     assert AnalysisResult.from_value(payload) == result
+
+
+def test_native_request_rejects_legacy_references_and_invalid_contract_fields(
+    tmp_path: Path,
+) -> None:
+    before_physical, _ = _native_physical_source(
+        role="failed-before",
+        operation_id="11111111-1111-4111-8111-111111111111",
+        group_id="22222222-2222-4222-8222-222222222222",
+        values=(10, 20),
+    )
+    after_physical, _ = _native_physical_source(
+        role="fixed-after",
+        operation_id="33333333-3333-4333-8333-333333333333",
+        group_id="44444444-4444-4444-8444-444444444444",
+        values=(11, 25),
+    )
+    valid = AnalysisRequest(
+        schema="stm32-monitor-analysis-request/2",
+        before_run=before_physical,
+        after_run=after_physical,
+        selector_kind="register",
+        selector="r0",
+        alignment="bounded-run-relative",
+        minimum_valid_pairs=2,
+        scalar_policy="native-uint-register/1",
+        max_pairing_skew_ns=1,
+    )
+
+    for field, value in (
+        ("selector_kind", "variable"),
+        ("scalar_policy", "legacy"),
+        ("max_pairing_skew_ns", 0),
+    ):
+        payload = valid.to_dict()
+        payload[field] = value
+        with pytest.raises(AnalysisError) as error:
+            AnalysisRequest.from_value(payload)
+        assert error.value.code == ANALYSIS_REQUEST_INVALID
+
+    _, _, _, _, _, replay_before, replay_after = _case(tmp_path)
+    payload = valid.to_dict()
+    payload["before_run"] = replay_before.to_dict()
+    payload["after_run"] = replay_after.to_dict()
+    with pytest.raises(AnalysisError) as error:
+        AnalysisRequest.from_value(payload)
+    assert error.value.code == ANALYSIS_REQUEST_INVALID
+
+
+def test_native_alignment_returns_inconclusive_when_pairing_skew_excludes_a_position() -> None:
+    before_ref, before = _native_physical_source(
+        role="failed-before",
+        operation_id="11111111-1111-4111-8111-111111111111",
+        group_id="22222222-2222-4222-8222-222222222222",
+        values=(10, 20),
+    )
+    after_ref, after = _native_physical_source(
+        role="fixed-after",
+        operation_id="33333333-3333-4333-8333-333333333333",
+        group_id="44444444-4444-4444-8444-444444444444",
+        values=(11, 25),
+    )
+    shifted_after = tuple(
+        replace(
+            batch,
+            scheduled_unix_ns=batch.scheduled_unix_ns + 100,
+            captured_unix_ns=batch.captured_unix_ns + 100,
+        )
+        if batch.sequence == 1
+        else batch
+        for batch in after
+    )
+    shifted_after_ref = _native_reference_with_batches(
+        after_ref,
+        shifted_after,
+        end_captured_unix_ns_exclusive=after_ref.end_captured_unix_ns_exclusive + 100,
+    )
+    request = AnalysisRequest(
+        schema="stm32-monitor-analysis-request/2",
+        before_run=before_ref,
+        after_run=shifted_after_ref,
+        selector_kind="register",
+        selector="r0",
+        alignment="bounded-run-relative",
+        minimum_valid_pairs=2,
+        scalar_policy="native-uint-register/1",
+        max_pairing_skew_ns=1,
+    )
+
+    result = analyze_monitor_windows(request, before, shifted_after)
+
+    assert result.quality == "INVALID"
+    assert result.conclusion == "INCONCLUSIVE"
+    assert result.reason_code == "INSUFFICIENT_VALID_PAIRS"
+    assert result.aligned_position_count == 3
+    assert result.aligned_pair_count == 1
+    assert result.excluded_position_count == 2
+    assert result.changed is None
+
+
+def test_continuation_lineage_requires_distinct_sessions_and_changed_firmware() -> None:
+    before = _physical_reference(
+        role="failed-before",
+        operation_id="11111111-1111-4111-8111-111111111111",
+        group_id="22222222-2222-4222-8222-222222222222",
+    )
+    after = _physical_reference(
+        role="fixed-after",
+        operation_id="33333333-3333-4333-8333-333333333333",
+        group_id="44444444-4444-4444-8444-444444444444",
+    )
+    changed_after = _ref_with(
+        after,
+        origin_session_id="physical-session-after",
+        projected_session_id="physical-session-after",
+        input_snapshot_sha256="9" * 64,
+    )
+    lineage = AnalysisLineage.new(
+        before_run=before,
+        after_run=changed_after,
+        source_change_declaration_id="d" * 64,
+        continuation_evidence_id="e" * 64,
+    )
+
+    assert lineage.schema == "stm32-monitor-analysis-lineage/2"
+    assert lineage.before_session_id == before.origin_session_id
+    assert lineage.after_session_id == "physical-session-after"
+    assert AnalysisLineage.from_value(lineage.to_dict()) == lineage
+
+    with pytest.raises(AnalysisError):
+        AnalysisLineage.new(
+            before_run=before,
+            after_run=changed_after,
+            source_change_declaration_id=None,
+            continuation_evidence_id="e" * 64,
+        )
+    with pytest.raises(AnalysisError):
+        AnalysisLineage.new(
+            before_run=before,
+            after_run=_ref_with(after, input_snapshot_sha256="9" * 64),
+            source_change_declaration_id="d" * 64,
+            continuation_evidence_id="e" * 64,
+        )
 
 
 def test_analysis_request_accepts_exact_physical_v2_pairs_and_rejects_mixed_or_subclass(
