@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from hashlib import sha256
 import json
 from pathlib import Path
@@ -9,6 +10,7 @@ import pytest
 
 from stm32_monitor.history import MAX_HISTORY_BATCHES, HistoryQuery, HistoryStore
 from stm32_monitor.models import ObservationBinding, SampleBatch, SampleValue, WatchItem
+from stm32_monitor.protocol import ProtocolResult
 from stm32_monitor.replay import (
     EVIDENCE_INTEGRITY_FAILURE,
     ENVIRONMENT_FAILURE,
@@ -1428,3 +1430,235 @@ def test_physical_corrupt_transcript_artifact_fails_closed(tmp_path: Path) -> No
     assert failure.value.code == EVIDENCE_INTEGRITY_FAILURE
     assert reference.schema == "stm32-monitor-run-ref/2"
     assert _monitor_root_files(evidence, "monitor-run-ref")
+
+
+@pytest.mark.parametrize(
+    ("storage_code", "expected_code"),
+    [
+        ("MONITOR_STORAGE_BUSY", ENVIRONMENT_FAILURE),
+        ("MONITOR_STORAGE_CORRUPT", EVIDENCE_INTEGRITY_FAILURE),
+    ],
+)
+def test_physical_history_provider_failure_is_mapped_before_publication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    storage_code: str,
+    expected_code: str,
+) -> None:
+    from stm32_monitor import replay as replay_module
+
+    paths, evidence, test_run_id, raw_probe, monitor_run_id, group_id = _physical_context(tmp_path)
+    _publish_physical_test_run(
+        paths,
+        evidence,
+        test_run_id=test_run_id,
+        raw_probe=raw_probe,
+        monitor_run_id=monitor_run_id,
+    )
+    request = _physical_request(
+        paths,
+        raw_probe,
+        monitor_run_id,
+        group_id,
+        test_run_id,
+    )
+    failure = ProtocolResult(
+        ok=False,
+        operation="history.query",
+        code=storage_code,
+        message="history provider failure",
+        data=None,
+    )
+    monkeypatch.setattr(replay_module.HistoryStore, "query_history", lambda self, query: failure)
+
+    with pytest.raises(MonitorReplayError) as error:
+        publish_physical_monitor_run(paths, evidence, **request)
+
+    assert error.value.code == expected_code
+    assert _monitor_root_files(evidence, "monitor-run") == ()
+    assert _monitor_root_files(evidence, "monitor-run-ref") == ()
+
+
+def test_physical_history_provider_repeated_cursor_is_integrity_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from stm32_monitor import replay as replay_module
+
+    paths, evidence, test_run_id, raw_probe, monitor_run_id, group_id = _physical_context(tmp_path)
+    _publish_physical_test_run(
+        paths,
+        evidence,
+        test_run_id=test_run_id,
+        raw_probe=raw_probe,
+        monitor_run_id=monitor_run_id,
+    )
+    request = _physical_request(
+        paths,
+        raw_probe,
+        monitor_run_id,
+        group_id,
+        test_run_id,
+    )
+    original_query = replay_module.HistoryStore.query_history
+    first_page = None
+
+    def repeated_page(history: HistoryStore, query: HistoryQuery):
+        nonlocal first_page
+        if first_page is None:
+            result = original_query(history, replace(query, limit=1))
+            assert result.ok and result.data is not None
+            first_page = result.data
+        return ProtocolResult(
+            ok=True,
+            operation="history.query",
+            code="OK",
+            message="",
+            data=first_page,
+        )
+
+    monkeypatch.setattr(replay_module.HistoryStore, "query_history", repeated_page)
+    with pytest.raises(MonitorReplayError) as error:
+        publish_physical_monitor_run(paths, evidence, **request)
+
+    assert error.value.code == EVIDENCE_INTEGRITY_FAILURE
+    assert _monitor_root_files(evidence, "monitor-run") == ()
+    assert _monitor_root_files(evidence, "monitor-run-ref") == ()
+
+
+def test_physical_history_provider_wrong_page_shape_is_integrity_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from stm32_monitor import replay as replay_module
+
+    paths, evidence, test_run_id, raw_probe, monitor_run_id, group_id = _physical_context(tmp_path)
+    _publish_physical_test_run(
+        paths,
+        evidence,
+        test_run_id=test_run_id,
+        raw_probe=raw_probe,
+        monitor_run_id=monitor_run_id,
+    )
+    request = _physical_request(
+        paths,
+        raw_probe,
+        monitor_run_id,
+        group_id,
+        test_run_id,
+    )
+    monkeypatch.setattr(
+        replay_module.HistoryStore,
+        "query_history",
+        lambda self, query: ProtocolResult(
+            ok=True,
+            operation="history.query",
+            code="OK",
+            message="",
+            data={"batches": (), "next_cursor": None},
+        ),
+    )
+
+    with pytest.raises(MonitorReplayError) as error:
+        publish_physical_monitor_run(paths, evidence, **request)
+
+    assert error.value.code == EVIDENCE_INTEGRITY_FAILURE
+    assert _monitor_root_files(evidence, "monitor-run") == ()
+    assert _monitor_root_files(evidence, "monitor-run-ref") == ()
+
+
+def test_physical_test_run_provider_failure_is_sanitized_before_history_publish(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from stm32_monitor import replay as replay_module
+
+    paths, evidence, test_run_id, raw_probe, monitor_run_id, group_id = _physical_context(tmp_path)
+    _publish_physical_test_run(
+        paths,
+        evidence,
+        test_run_id=test_run_id,
+        raw_probe=raw_probe,
+        monitor_run_id=monitor_run_id,
+    )
+    request = _physical_request(
+        paths,
+        raw_probe,
+        monitor_run_id,
+        group_id,
+        test_run_id,
+    )
+    monkeypatch.setattr(
+        replay_module.TestRunRepository,
+        "load",
+        lambda self, run_id: (_ for _ in ()).throw(OSError("provider path leaked")),
+    )
+
+    with pytest.raises(MonitorReplayError) as error:
+        publish_physical_monitor_run(paths, evidence, **request)
+
+    assert error.value.code == ENVIRONMENT_FAILURE
+    assert "provider path leaked" not in error.value.message
+    assert _monitor_root_files(evidence, "monitor-run") == ()
+    assert _monitor_root_files(evidence, "monitor-run-ref") == ()
+
+
+@pytest.mark.parametrize(
+    ("operation_id", "expected_code"),
+    [
+        ("not-a-uuid", MONITOR_PHYSICAL_INVALID),
+        ("11111111-1111-4111-8111-111111111111", EVIDENCE_INTEGRITY_FAILURE),
+    ],
+)
+def test_public_physical_loader_rejects_invalid_or_absent_authority(
+    tmp_path: Path,
+    operation_id: str,
+    expected_code: str,
+) -> None:
+    paths, evidence, _test_run_id, _raw_probe, _monitor_run_id, _group_id = _physical_context(tmp_path)
+
+    with pytest.raises(MonitorReplayError) as error:
+        load_monitor_run_reference(paths, evidence, operation_id)
+
+    assert error.value.code == expected_code
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    [
+        ("operation", "wrong-operation"),
+        ("parents", []),
+        ("artifacts", []),
+    ],
+)
+def test_physical_loader_rejects_persisted_reference_envelope_drift(
+    tmp_path: Path,
+    field: str,
+    replacement: object,
+) -> None:
+    paths, evidence, test_run_id, raw_probe, monitor_run_id, group_id = _physical_context(tmp_path)
+    _publish_physical_test_run(
+        paths,
+        evidence,
+        test_run_id=test_run_id,
+        raw_probe=raw_probe,
+        monitor_run_id=monitor_run_id,
+    )
+    request = _physical_request(
+        paths,
+        raw_probe,
+        monitor_run_id,
+        group_id,
+        test_run_id,
+    )
+    publish_physical_monitor_run(paths, evidence, **request)
+    reference_root = json.loads(_monitor_root_files(evidence, "monitor-run-ref")[0].read_bytes().decode("utf-8"))
+    manifest_path = evidence.root / "manifests" / f"{reference_root['manifest_id']}.json"
+    manifest = json.loads(manifest_path.read_bytes().decode("utf-8"))
+    manifest[field] = replacement
+    manifest_path.write_bytes(canonical_json_bytes(manifest))
+
+    with pytest.raises(MonitorReplayError) as error:
+        load_monitor_run_reference(paths, EvidenceStore(evidence.root), str(monitor_run_id))
+
+    assert error.value.code == EVIDENCE_INTEGRITY_FAILURE
