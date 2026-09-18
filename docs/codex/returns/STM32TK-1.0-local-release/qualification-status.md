@@ -29,13 +29,30 @@ unknown; the later passing run does not establish a repair. No timeout increase
 or another blind benchmark repetition is approved by this status.
 
 Python package branch coverage remains below the approved 90% gate. The native
-aggregates currently record Toolkit 10817/13564 and Monitor 2488/2936 branches.
+aggregates currently record Toolkit 10817/13564 and Monitor 2490/2936 branches.
 A separately accepted official Diagnostic JSON projection brings Toolkit to
-10830/13564 (79.8437%); Monitor stays 2488/2936 (84.7411%). It is supplementary
+10830/13564 (79.8437%); Monitor is 2490/2936 (84.8093%). It is supplementary
 JSON evidence, not a native coverage database: the implementer deleted the raw
 Diagnostic database before primary aggregation. No raw database has been
 fabricated or restored. Future raw coverage and shards
 are durable evidence subject to primary-only cleanup and a preservation hold.
+
+The three Monitor lifecycle cases were accepted and integrated, with their raw
+coverage included once in the current aggregates. The separate retention
+cancellation experiment is not accepted: its first two passing cases omitted
+the actual writer outcome; the corrected run reported one pass and one failure
+at an internal-exception identity assertion. That failure does not establish
+storage corruption. Its PowerShell launcher also assigned the read-only PID
+variable, so the recorded launcher exit and timestamps do not prove the pytest
+child's exit status. Preserve the JUnit/stdout and return to contract design;
+do not aggregate that run or repeat the performance benchmark.
+
+The release delivery audit found two portability omissions: standalone
+PowerShell installation examples and unambiguous archive-relative instructions
+for finding the IDE guide. A bounded documentation/trusted-utility-pin correction
+is in progress. After it is accepted, the final artifacts will need one refresh;
+the existing 15b artifacts and deployment checks remain retained evidence, not
+artifacts of the corrected candidate. No runtime or hardware change is implied.
 
 The original full Toolkit suite was not a clean pass. Scoped accepted corrections
 and their retained successful checks do not rewrite its historical output. In
