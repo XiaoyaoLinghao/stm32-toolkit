@@ -343,7 +343,33 @@ class ContinuationReuseInput(BaseModel):
     continuationEvidenceId: Digest
 
 
-ContinuationInput = ContinuationBindInput | ContinuationReuseInput
+class FinalizationBindInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+    schema_: Literal["stm32-physical-continuation-request/2"] = Field(alias="schema")
+    kind: Literal["bind"]
+    predecessorAttemptId: AcceptanceUuid
+    predecessorCheckpointId: Digest
+    predecessorEvidenceId: Digest
+    fixedAfterTestRunId: AcceptanceRunId
+    fixedAfterEvidenceId: Digest
+    diagnosticRevision: DiagnosticRevision
+    diagnosticEventHead: Digest
+    fixVerificationId: Digest
+
+
+class FinalizationReuseInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+    schema_: Literal["stm32-physical-continuation-request/2"] = Field(alias="schema")
+    kind: Literal["reuse"]
+    continuationEvidenceId: Digest
+
+
+ContinuationInput = (
+    ContinuationBindInput
+    | ContinuationReuseInput
+    | FinalizationBindInput
+    | FinalizationReuseInput
+)
 
 JsonArray = Annotated[list[object], BeforeValidator(_reject_json_tuple)]
 
