@@ -1,6 +1,6 @@
 # Windows 部署与 IDE 调试前置核对
 
-适用范围：Windows x86_64、CPython 3.12、Toolkit/Monitor 0.9.0、发行策略固定的 PyOCD 0.45.1。IDE 适配经验仅验证到 Cortex-Debug 1.12.1。本文件用于部署方案和执行卡，测试顺序、授权及停止规则以 [标准测试流程](standard-test-procedure.md) 为准。软件安装成功不等于 T9/T10/VS10-A 验收完成。
+适用范围：Windows x86_64、CPython 3.12、Toolkit/Monitor 1.0.0、发行策略固定的 PyOCD 0.45.1。IDE 适配经验仅验证到 Cortex-Debug 1.12.1。本文件用于部署方案和执行卡，测试顺序、授权及停止规则以 [标准测试流程](standard-test-procedure.md) 为准。软件安装成功不等于 T9/T10/VS10-A 验收完成。
 
 ## 部署者必须固定的输入
 
@@ -21,7 +21,7 @@ DataRoot 必须是长期保留的数据位置；runtime、项目身份、会话�
 下面是最终入口的人工离线核对示例。先把占位路径替换成已确认的本机路径；只查询版本，不枚举或连接板子：
 
 ```powershell
-$runtimeRoot = 'D:\STM32ToolkitData\runtime\0.9.0'
+$runtimeRoot = 'D:\STM32ToolkitData\runtime\1.0.0'
 & "$runtimeRoot\Scripts\python.exe" -I -m pyocd --version
 if ($LASTEXITCODE -ne 0) { throw 'PyOCD module failed' }
 & "$runtimeRoot\Scripts\pyocd.exe" --version

@@ -30,8 +30,8 @@ def _write_valid_runtime_manifest(path: Path) -> None:
     wheels = [
         {
             "name": name,
-            "version": "0.9.0" if name.startswith("stm32-") else resolved[name],
-            "file": f"release/wheels/{name.replace('-', '_')}-0.9.0-py3-none-any.whl",
+            "version": "1.0.0" if name.startswith("stm32-") else resolved[name],
+            "file": f"release/wheels/{name.replace('-', '_')}-1.0.0-py3-none-any.whl",
             "sha256": "b" * 64,
             "size": 1,
             "direct": name in direct or name.startswith("stm32-"),
@@ -52,7 +52,7 @@ def _write_valid_runtime_manifest(path: Path) -> None:
     ]
     manifest = {
         "schema": "stm32-toolkit-release/1",
-        "productVersion": "0.9.0",
+        "productVersion": "1.0.0",
         "requiredPython": ">=3.12,<3.13",
         "platform": {"os": "windows", "architecture": "x86_64", "python": "cp312"},
         "source": {"repository": "https://github.com/XiaoyaoLinghao/stm32-toolkit.git", "commit": "a" * 40, "archive": "source.zip", "sha256": "a" * 64},
@@ -108,7 +108,7 @@ def test_case_folded_manifest_paths_are_rejected_before_reads(release_module, tm
     wheels.mkdir(parents=True)
     manifest = {
         "schema": "stm32-toolkit-release/1",
-        "productVersion": "0.9.0",
+        "productVersion": "1.0.0",
         "requiredPython": ">=3.12,<3.13",
         "platform": {"os": "windows", "architecture": "x86_64", "python": "cp312"},
         "source": {"repository": "https://github.com/XiaoyaoLinghao/stm32-toolkit.git", "commit": "a" * 40, "archive": "SOURCE.ZIP", "sha256": "a" * 64},
@@ -153,8 +153,8 @@ def test_runtime_state_refuses_a_recorded_higher_version_before_mutation(release
         json.dumps(
             {
                 "schema": "stm32-toolkit-runtime-state/1",
-                "activeVersion": "1.0.0",
-                "highestInstalledVersion": "1.0.0",
+                "activeVersion": "2.0.0",
+                "highestInstalledVersion": "2.0.0",
                 "releaseManifestSha256": "a" * 64,
                 "sourceCommit": "a" * 40,
                 "installGeneration": 4,

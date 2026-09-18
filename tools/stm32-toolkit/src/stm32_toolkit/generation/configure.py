@@ -58,6 +58,7 @@ from stm32_toolkit.generation.managed_files import (
     build_managed_manifest_bytes,
     canonical_json_bytes,
     generation_error,
+    is_supported_generation_producer,
     model_sha256_for,
     parse_managed_manifest,
     plan_id_for,
@@ -250,13 +251,13 @@ def _validate_model(model: object) -> None:
 
 
 def _validate_generation_spec(model: ProjectModel) -> None:
-    if model.generation.tool != "stm32-toolkit":
+    if type(model.generation.tool) is not str or model.generation.tool != "stm32-toolkit":
         raise _raise_error(
             "GENERATION_MODEL_INVALID",
             "generation tool is not supported",
             {"field": "generation.tool", "rule": "value"},
         )
-    if model.generation.version != __version__:
+    if not is_supported_generation_producer(model.generation.tool, model.generation.version):
         raise _raise_error(
             "GENERATION_MODEL_INVALID",
             "generation version is not supported",

@@ -43,6 +43,7 @@ from stm32_toolkit.generation.managed_files import (
     plan_id_for,
     portable_path_error,
     sha256_error,
+    is_supported_generation_producer,
 )
 from stm32_toolkit.project_model import ProjectManifestError, load_project_model
 
@@ -770,6 +771,58 @@ def test_generation_spec_validation(tmp_path, field, rule):
         plan_for(root)
     assert error.value.code == "GENERATION_MODEL_INVALID"
     assert error.value.details == {"field": field, "rule": rule}
+
+
+@pytest.mark.parametrize("schema_version", [2, 3])
+def test_legacy_0_9_generation_producer_plans_and_emits_current_managed_manifest(
+    tmp_path: Path, schema_version: int
+):
+    payload = standard_payload()
+    payload["schemaVersion"] = schema_version
+    payload["generatedBy"] = {"tool": "stm32-toolkit", "version": "0.9.0"}
+    root = write_project(tmp_path / f"schema-{schema_version}", payload)
+
+    plan = plan_for(root)
+    assert plan.model.generation.version == "0.9.0"
+    applied = apply_project_configuration(plan)
+    assert applied.ok is True
+
+    project = json.loads((root / ".stm32-project.json").read_text(encoding="utf-8"))
+    manifest = json.loads(
+        (root / ".stm32-toolkit" / "generated-files.json").read_text(encoding="utf-8")
+    )
+    assert project["generatedBy"]["version"] == "0.9.0"
+    assert manifest["toolVersion"] == __version__
+
+    # A preserved 0.9 managed manifest remains readable while the next plan
+    # continues to emit the current 1.0 manifest bytes.
+    manifest["toolVersion"] = "0.9.0"
+    write_manifest_bytes(
+        root,
+        json.dumps(manifest, indent=2, ensure_ascii=False).encode("utf-8") + b"\n",
+    )
+    replanned = plan_for(root)
+    replanned_manifest = json.loads(replanned.managed_manifest_bytes.decode("utf-8"))
+    assert replanned_manifest["toolVersion"] == __version__
+
+
+def test_generation_producer_allowlist_is_exact_and_type_safe(tmp_path: Path):
+    assert is_supported_generation_producer("stm32-toolkit", __version__)
+    assert is_supported_generation_producer("stm32-toolkit", "0.9.0")
+    for value in ("0.5.0", "2.0.0", 1, None, [], {}):
+        assert not is_supported_generation_producer("stm32-toolkit", value)
+
+    root = write_project(tmp_path / "proj")
+    model = load_project_model(root)
+    for value in (1, None, [], {}):
+        malformed = replace(
+            model,
+            generation=replace(model.generation, version=value),  # type: ignore[arg-type]
+        )
+        with pytest.raises(GenerationError) as error:
+            configure_mod._validate_generation_spec(malformed)
+        assert error.value.code == "GENERATION_MODEL_INVALID"
+        assert error.value.details == {"field": "generation.version", "rule": "value"}
 
 
 @pytest.mark.parametrize(
@@ -2274,15 +2327,16 @@ def _valid_manifest_bytes(root: Path, extra_records=()) -> bytes:
         (b"{}", "version"),
         (b'{"extra": 1}', "key"),
         (b'{"schemaVersion":2,"tool":"stm32-toolkit","toolVersion":"0.5.0","templateVersion":1,"projectManifestSha256":"' + b"a" * 64 + b'","files":[]}', "version"),
+        (b'{"schemaVersion":1,"tool":"stm32-toolkit","toolVersion":1,"templateVersion":1,"projectManifestSha256":"' + b"a" * 64 + b'","files":[]}', "version"),
         (b'{"schemaVersion":1,"tool":"other","toolVersion":"0.5.0","templateVersion":1,"projectManifestSha256":"' + b"a" * 64 + b'","files":[]}', "tool"),
         (b'{"schemaVersion":1,"tool":"stm32-toolkit","toolVersion":"9.9.9","templateVersion":1,"projectManifestSha256":"' + b"a" * 64 + b'","files":[]}', "version"),
         (b'{"schemaVersion":1,"tool":"stm32-toolkit","toolVersion":"0.5.0","templateVersion":2,"projectManifestSha256":"' + b"a" * 64 + b'","files":[]}', "version"),
         # Keep historical 0.5.0 producer records above as version-rejection
         # fixtures; these structural cases use the current identity so their
         # targeted hash/type validators remain observable.
-        (b'{"schemaVersion":1,"tool":"stm32-toolkit","toolVersion":"0.9.0","templateVersion":1,"projectManifestSha256":"zzz","files":[]}', "hash"),
-        (b'{"schemaVersion":1,"tool":"stm32-toolkit","toolVersion":"0.9.0","templateVersion":1,"projectManifestSha256":"' + b"a" * 64 + b'","files":{}}', "type"),
-        (b'{"schemaVersion":1,"tool":"stm32-toolkit","toolVersion":"0.9.0","templateVersion":1,"projectManifestSha256":"' + b"a" * 64 + b'","files":[1]}', "type"),
+        (b'{"schemaVersion":1,"tool":"stm32-toolkit","toolVersion":"1.0.0","templateVersion":1,"projectManifestSha256":"zzz","files":[]}', "hash"),
+        (b'{"schemaVersion":1,"tool":"stm32-toolkit","toolVersion":"1.0.0","templateVersion":1,"projectManifestSha256":"' + b"a" * 64 + b'","files":{}}', "type"),
+        (b'{"schemaVersion":1,"tool":"stm32-toolkit","toolVersion":"1.0.0","templateVersion":1,"projectManifestSha256":"' + b"a" * 64 + b'","files":[1]}', "type"),
     ],
 )
 def test_malformed_prior_manifests_are_rejected(tmp_path, content, rule):
