@@ -5,6 +5,7 @@ import json
 from dataclasses import fields, replace
 from hashlib import sha256
 from pathlib import Path
+from typing import cast
 from uuid import UUID
 
 import pytest
@@ -377,6 +378,84 @@ def test_native_request_rejects_legacy_references_and_invalid_contract_fields(
     assert error.value.code == ANALYSIS_REQUEST_INVALID
 
 
+def test_legacy_request_and_changed_lineage_require_public_bindings(tmp_path: Path) -> None:
+    _, _, _, _, _, before_ref, after_ref = _case(tmp_path)
+
+    for changes in (
+        {"alignment": "bounded-run-relative"},
+        {"scalar_policy": "native-uint-register/1"},
+        {"max_pairing_skew_ns": 1},
+    ):
+        values: dict[str, object] = {
+            "schema": "stm32-monitor-analysis-request/1",
+            "before_run": before_ref,
+            "after_run": after_ref,
+            "selector_kind": "variable",
+            "selector": "counter",
+            "alignment": "run-relative",
+            "minimum_valid_pairs": 2,
+            "scalar_policy": None,
+            "max_pairing_skew_ns": None,
+        }
+        values.update(changes)
+        with pytest.raises(AnalysisError) as error:
+            AnalysisRequest(**values)
+        assert error.value.code == ANALYSIS_REQUEST_INVALID
+
+    changed_after = _ref_with(after_ref, build_id="f" * 64)
+    with pytest.raises(AnalysisError) as error:
+        AnalysisLineage.new(
+            before_run=before_ref,
+            after_run=changed_after,
+            source_change_declaration_id=None,
+        )
+    assert error.value.code == ANALYSIS_REQUEST_INVALID
+
+
+def test_native_result_rejects_an_embedded_request_binding_mismatch() -> None:
+    before_ref, before = _native_physical_source(
+        role="failed-before",
+        operation_id="11111111-1111-4111-8111-111111111111",
+        group_id="22222222-2222-4222-8222-222222222222",
+        values=(10, 20),
+    )
+    after_ref, after = _native_physical_source(
+        role="fixed-after",
+        operation_id="33333333-3333-4333-8333-333333333333",
+        group_id="44444444-4444-4444-8444-444444444444",
+        values=(11, 25),
+    )
+    request = AnalysisRequest(
+        schema="stm32-monitor-analysis-request/2",
+        before_run=before_ref,
+        after_run=after_ref,
+        selector_kind="register",
+        selector="r0",
+        alignment="bounded-run-relative",
+        minimum_valid_pairs=2,
+        scalar_policy="native-uint-register/1",
+        max_pairing_skew_ns=1,
+    )
+    computation = analyze_monitor_windows(request, before, after)
+    lineage = AnalysisLineage.new(
+        before_run=before_ref,
+        after_run=after_ref,
+        source_change_declaration_id=None,
+    )
+    result = AnalysisResult.new(request=request, computation=computation, lineage=lineage)
+
+    payload = result.to_dict()
+    request_payload = cast(dict[str, object], payload["request"])
+    request_payload["minimum_valid_pairs"] = 3
+    unsigned = dict(payload)
+    unsigned.pop("analysis_id")
+    payload["analysis_id"] = sha256(canonical_replay_json_bytes(unsigned)).hexdigest()
+
+    with pytest.raises(AnalysisError) as error:
+        AnalysisResult.from_value(payload)
+    assert error.value.code == ANALYSIS_REQUEST_INVALID
+
+
 def test_native_alignment_returns_inconclusive_when_pairing_skew_excludes_a_position() -> None:
     before_ref, before = _native_physical_source(
         role="failed-before",
@@ -606,6 +685,50 @@ def test_captured_timestamp_shift_does_not_change_scheduled_alignment(tmp_path: 
     assert result.excluded_position_count == 0
 
 
+def test_public_window_reference_authority_rejects_count_order_and_boundary_contradictions(
+    tmp_path: Path,
+) -> None:
+    paths, _, after_document, before, after, before_ref, after_ref = _case(tmp_path)
+
+    short_reference = _ref_with(
+        after_ref,
+        projected_batch_sha256s=(after_ref.projected_batch_sha256s[0],),
+    )
+    with pytest.raises(AnalysisError) as count_error:
+        analyze_monitor_windows(_request(before_ref, short_reference), before, after)
+    assert count_error.value.code == ANALYSIS_REQUEST_INVALID
+
+    noncontiguous = tuple(
+        replace(batch, sequence=batch.sequence + 1) if batch.sequence == 1 else batch
+        for batch in after
+    )
+    noncontiguous_reference = _with_reference(after_document, paths, noncontiguous)
+    with pytest.raises(AnalysisError) as order_error:
+        analyze_monitor_windows(
+            _request(before_ref, noncontiguous_reference), before, noncontiguous
+        )
+    assert order_error.value.code == ANALYSIS_REQUEST_INVALID
+
+    boundary_reference = _ref_with(
+        after_ref,
+        end_captured_unix_ns_exclusive=after_ref.end_captured_unix_ns_exclusive + 1,
+    )
+    with pytest.raises(AnalysisError) as boundary_error:
+        analyze_monitor_windows(_request(before_ref, boundary_reference), before, after)
+    assert boundary_error.value.code == ANALYSIS_REQUEST_INVALID
+
+    regrouped = tuple(
+        replace(batch, group_id=UUID("99999999-9999-4999-8999-999999999999"))
+        for batch in after
+    )
+    regrouped_reference = _with_reference(after_document, paths, regrouped)
+    with pytest.raises(AnalysisError) as group_error:
+        analyze_monitor_windows(
+            _request(before_ref, regrouped_reference), before, regrouped
+        )
+    assert group_error.value.code == ANALYSIS_REQUEST_INVALID
+
+
 def test_selector_vocabulary_mismatch_is_rejected_before_comparison(tmp_path: Path) -> None:
     paths, _, after_document, before, after, before_ref, _ = _case(tmp_path)
     no_register = tuple(
@@ -631,6 +754,40 @@ def test_same_selector_with_different_typed_type_is_excluded(tmp_path: Path) -> 
     assert result.aligned_position_count == 2
     assert result.aligned_pair_count == 0
     assert result.excluded_position_count == 2
+    assert result.quality == "INVALID"
+    assert result.reason_code == "INSUFFICIENT_VALID_PAIRS"
+
+
+@pytest.mark.parametrize(
+    "typed_value",
+    [
+        {"type": "uint32", "value": 15, "extra": False},
+        {"type": "bad\u0001", "value": 15},
+    ],
+)
+def test_public_scalar_policy_excludes_malformed_typed_values(
+    tmp_path: Path, typed_value: dict[str, object]
+) -> None:
+    paths, _, after_document, before, after, before_ref, _ = _case(tmp_path)
+    malformed = tuple(
+        replace(
+            batch,
+            values=tuple(
+                replace(sample, typed_value=typed_value)
+                if batch.sequence == 0 and sample.watch == COUNTER
+                else sample
+                for sample in batch.values
+            ),
+        )
+        for batch in after
+    )
+    after_ref = _with_reference(after_document, paths, malformed)
+
+    result = analyze_monitor_windows(_request(before_ref, after_ref), before, malformed)
+
+    assert result.aligned_position_count == 2
+    assert result.aligned_pair_count == 1
+    assert result.excluded_position_count == 1
     assert result.quality == "INVALID"
     assert result.reason_code == "INSUFFICIENT_VALID_PAIRS"
 

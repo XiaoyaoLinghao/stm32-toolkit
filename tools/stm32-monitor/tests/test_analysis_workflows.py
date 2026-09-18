@@ -62,6 +62,19 @@ def test_analysis_bundle_ref_is_closed_and_content_addressed():
     with pytest.raises(AnalysisWorkflowError):
         AnalysisBundleRef("stm32-monitor-analysis-bundle-ref/1", "A" * 64, "a" * 64, artifact)
 
+    malformed_artifact = artifact.to_dict()
+    malformed_artifact["kind"] = "other-evidence"
+    with pytest.raises(AnalysisWorkflowError) as error:
+        AnalysisBundleRef.from_value(
+            {
+                "schema": "stm32-monitor-analysis-bundle-ref/1",
+                "bundle_id": digest,
+                "evidence_id": "a" * 64,
+                "artifact": malformed_artifact,
+            }
+        )
+    assert error.value.code == "ANALYSIS_WORKFLOW_INVALID"
+
 
 def test_export_analysis_bundle_reloads_real_target_runs(tmp_path: Path) -> None:
     paths = _paths(tmp_path)
@@ -147,6 +160,41 @@ def test_export_analysis_bundle_maps_source_provider_failure_without_bundle_muta
         )
     assert error.value.code == ENVIRONMENT_FAILURE
     assert "private source provider" not in str(error.value)
+    assert _evidence_tree(evidence) == before_tree
+    assert not any("monitor-analysis-bundle" in path for path in _evidence_tree(evidence))
+
+
+def test_export_analysis_bundle_maps_target_provider_failure_without_bundle_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _paths(tmp_path)
+    evidence, before, after = _ingest_pair(paths)
+    declaration = _declaration(tmp_path, evidence, before, after)
+    failed_id, fixed_id = _publish_target_pair(paths, evidence)
+    publication = _publish(paths, evidence, before, after, declaration)
+    before_tree = _evidence_tree(evidence)
+    calls: list[str] = []
+
+    def fail_target_load(self: object, run_id: str) -> object:
+        del self
+        calls.append(run_id)
+        raise OSError("private target provider")
+
+    monkeypatch.setattr(workflows.TestRunRepository, "load", fail_target_load)
+    with pytest.raises(AnalysisWorkflowError) as error:
+        export_analysis_bundle(
+            paths,
+            evidence,
+            _request(before, after),
+            publication,
+            failed_id,
+            fixed_id,
+            declaration,
+        )
+
+    assert calls == [failed_id]
+    assert error.value.code == ENVIRONMENT_FAILURE
+    assert "private target provider" not in str(error.value)
     assert _evidence_tree(evidence) == before_tree
     assert not any("monitor-analysis-bundle" in path for path in _evidence_tree(evidence))
 
@@ -745,6 +793,43 @@ def test_analysis_publication_has_exact_closed_wire_round_trip(tmp_path: Path) -
     assert error.value.code == "ANALYSIS_WORKFLOW_INVALID"
 
 
+def test_analysis_publication_rejects_cross_linked_public_graph_references(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    evidence, before, after = _ingest_pair(paths)
+    declaration = _declaration(tmp_path, evidence, before, after)
+    publication = _publish(paths, evidence, before, after, declaration)
+    wire = publication.to_dict()
+
+    forged_evidence = dict(wire)
+    forged_evidence["analysis_evidence_ref"] = {
+        **cast(dict[str, object], wire["analysis_evidence_ref"]),
+        "analysis_id": "f" * 64,
+    }
+    with pytest.raises(AnalysisWorkflowError) as evidence_error:
+        AnalysisPublication.from_value(forged_evidence)
+    assert evidence_error.value.code == "ANALYSIS_WORKFLOW_INVALID"
+
+    forged_marker = dict(wire)
+    forged_marker["diagnostic_marker"] = {
+        **cast(dict[str, object], wire["diagnostic_marker"]),
+        "analysis_evidence_id": "e" * 64,
+    }
+    with pytest.raises(AnalysisWorkflowError) as marker_error:
+        AnalysisPublication.from_value(forged_marker)
+    assert marker_error.value.code == "ANALYSIS_WORKFLOW_INVALID"
+
+    forged_marker_ref = dict(wire)
+    forged_marker_ref["diagnostic_marker_ref"] = {
+        **cast(dict[str, object], wire["diagnostic_marker_ref"]),
+        "marker_id": "f" * 64,
+    }
+    with pytest.raises(AnalysisWorkflowError) as marker_ref_error:
+        AnalysisPublication.from_value(forged_marker_ref)
+    assert marker_ref_error.value.code == "ANALYSIS_WORKFLOW_INVALID"
+
+
 @pytest.mark.parametrize(
     "mutation",
     ("missing-root", "missing-manifest", "corrupt-artifact", "contradictory-root"),
@@ -867,6 +952,43 @@ def test_different_bytes_at_existing_analysis_root_are_an_operation_conflict(
     assert _evidence_tree(evidence) == before_retry
 
 
+def test_derived_publication_rejects_provider_artifact_identity_without_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _paths(tmp_path)
+    evidence, before, after = _ingest_pair(paths)
+    declaration = _declaration(tmp_path, evidence, before, after)
+    before_tree = _evidence_tree(evidence)
+    calls: list[str] = []
+
+    def return_wrong_artifact(
+        store: EvidenceStore,
+        source: Path,
+        *,
+        kind: str,
+        media_type: str,
+    ) -> ArtifactRef:
+        del store
+        calls.append(kind)
+        digest = "0" * 64
+        return ArtifactRef(
+            sha256=digest,
+            size_bytes=source.stat().st_size,
+            relative_path=f"objects/sha256/{digest[:2]}/{digest}",
+            kind=kind,
+            media_type=media_type,
+        )
+
+    monkeypatch.setattr(EvidenceStore, "ingest_file", return_wrong_artifact)
+    with pytest.raises(AnalysisWorkflowError) as error:
+        _publish(paths, evidence, before, after, declaration)
+
+    assert calls == ["monitor-analysis"]
+    assert error.value.code == EVIDENCE_INTEGRITY_FAILURE
+    assert _evidence_tree(evidence) == before_tree
+    assert not any("monitor-analysis" in path for path in _evidence_tree(evidence))
+
+
 def test_public_query_pages_are_coalesced_and_validated_against_frozen_digests(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -889,6 +1011,7 @@ def test_public_query_pages_are_coalesced_and_validated_against_frozen_digests(
     [
         ("MONITOR_STORAGE_CORRUPT", EVIDENCE_INTEGRITY_FAILURE),
         ("MONITOR_STORAGE_BUSY", ENVIRONMENT_FAILURE),
+        ("MONITOR_STORAGE_TIMEOUT", ENVIRONMENT_FAILURE),
     ],
 )
 def test_history_provider_failures_are_classified_before_derived_publication(
@@ -901,15 +1024,169 @@ def test_history_provider_failures_are_classified_before_derived_publication(
     evidence, before, after = _ingest_pair(paths)
     declaration = _declaration(tmp_path, evidence, before, after)
     before_tree = _evidence_tree(evidence)
+    calls: list[HistoryQuery] = []
 
     def fail_query(self: HistoryStore, query: HistoryQuery) -> ProtocolResult[HistoryPage]:
-        del self, query
+        del self
+        calls.append(query)
         return ProtocolResult(False, "history.query", provider_code, "provider failed", None)
 
     monkeypatch.setattr(HistoryStore, "query_history", fail_query)
     with pytest.raises(AnalysisWorkflowError) as error:
         _publish(paths, evidence, before, after, declaration)
     assert error.value.code == expected_code
+    assert calls
+    assert _evidence_tree(evidence) == before_tree
+    assert not any("monitor-analysis" in path for path in _evidence_tree(evidence))
+
+
+def test_history_oserror_is_environment_failure_before_derived_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _paths(tmp_path)
+    evidence, before, after = _ingest_pair(paths)
+    declaration = _declaration(tmp_path, evidence, before, after)
+    before_tree = _evidence_tree(evidence)
+    calls: list[HistoryQuery] = []
+
+    def fail_query(self: HistoryStore, query: HistoryQuery) -> ProtocolResult[HistoryPage]:
+        del self
+        calls.append(query)
+        raise OSError("private history provider")
+
+    monkeypatch.setattr(HistoryStore, "query_history", fail_query)
+    with pytest.raises(AnalysisWorkflowError) as error:
+        _publish(paths, evidence, before, after, declaration)
+
+    assert calls
+    assert error.value.code == ENVIRONMENT_FAILURE
+    assert "private history provider" not in str(error.value)
+    assert _evidence_tree(evidence) == before_tree
+    assert not any("monitor-analysis" in path for path in _evidence_tree(evidence))
+
+
+def test_history_partial_first_slice_is_rejected_before_derived_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _paths(tmp_path)
+    evidence, before, after = _ingest_pair(paths)
+    declaration = _declaration(tmp_path, evidence, before, after)
+    before_tree = _evidence_tree(evidence)
+    original = HistoryStore.query_history
+    calls = 0
+
+    def partial_first_slice(
+        self: HistoryStore, query: HistoryQuery
+    ) -> ProtocolResult[HistoryPage]:
+        nonlocal calls
+        calls += 1
+        result = original(self, query)
+        assert result.ok and result.data is not None
+        page = result.data
+        first = page.batches[0]
+        partial = replace(
+            first,
+            start_ordinal=1,
+            batch_value_count=first.batch_value_count + 1,
+        )
+        return ProtocolResult(
+            True,
+            result.operation,
+            "OK",
+            "",
+            HistoryPage.create((partial, *page.batches[1:]), next_cursor=page.next_cursor),
+            protocol=result.protocol,
+        )
+
+    monkeypatch.setattr(HistoryStore, "query_history", partial_first_slice)
+    with pytest.raises(AnalysisWorkflowError) as error:
+        _publish(paths, evidence, before, after, declaration)
+
+    assert calls == 1
+    assert error.value.code == "INCOMPATIBLE_IDENTITY"
+    assert _evidence_tree(evidence) == before_tree
+    assert not any("monitor-analysis" in path for path in _evidence_tree(evidence))
+
+
+def test_history_page_order_is_authoritative_before_derived_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _paths(tmp_path)
+    evidence, before, after = _ingest_pair(paths)
+    declaration = _declaration(tmp_path, evidence, before, after)
+    before_tree = _evidence_tree(evidence)
+    original = HistoryStore.query_history
+    calls = 0
+
+    def reversed_page(
+        self: HistoryStore, query: HistoryQuery
+    ) -> ProtocolResult[HistoryPage]:
+        nonlocal calls
+        calls += 1
+        result = original(self, query)
+        assert result.ok and result.data is not None
+        page = result.data
+        assert len(page.batches) >= 2
+        return ProtocolResult(
+            True,
+            result.operation,
+            "OK",
+            "",
+            HistoryPage.create(tuple(reversed(page.batches)), next_cursor=None),
+            protocol=result.protocol,
+        )
+
+    monkeypatch.setattr(HistoryStore, "query_history", reversed_page)
+    with pytest.raises(AnalysisWorkflowError) as error:
+        _publish(paths, evidence, before, after, declaration)
+
+    assert calls == 1
+    assert error.value.code == "INCOMPATIBLE_IDENTITY"
+    assert _evidence_tree(evidence) == before_tree
+    assert not any("monitor-analysis" in path for path in _evidence_tree(evidence))
+
+
+def test_history_repeated_cursor_is_rejected_before_derived_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _paths(tmp_path)
+    evidence, before, after = _ingest_pair(paths)
+    declaration = _declaration(tmp_path, evidence, before, after)
+    before_tree = _evidence_tree(evidence)
+    original = HistoryStore.query_history
+    first_page: HistoryPage | None = None
+    calls = 0
+
+    def repeated_cursor(
+        self: HistoryStore, query: HistoryQuery
+    ) -> ProtocolResult[HistoryPage]:
+        nonlocal calls, first_page
+        calls += 1
+        result = original(self, replace(query, limit=1))
+        assert result.ok and result.data is not None
+        if first_page is None:
+            first_page = result.data
+        else:
+            result = ProtocolResult(
+                True,
+                result.operation,
+                "OK",
+                "",
+                HistoryPage.create(
+                    result.data.batches,
+                    next_cursor=first_page.next_cursor,
+                ),
+                protocol=result.protocol,
+            )
+        return result
+
+    monkeypatch.setattr(HistoryStore, "query_history", repeated_cursor)
+    with pytest.raises(AnalysisWorkflowError) as error:
+        _publish(paths, evidence, before, after, declaration)
+
+    assert calls >= 2
+    assert first_page is not None and first_page.next_cursor is not None
+    assert error.value.code == "INCOMPATIBLE_IDENTITY"
     assert _evidence_tree(evidence) == before_tree
     assert not any("monitor-analysis" in path for path in _evidence_tree(evidence))
 
