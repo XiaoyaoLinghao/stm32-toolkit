@@ -555,12 +555,23 @@ def persisted_case(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Persisted
     source_data = _configured_path("VS10B_DATA_COPY")
     project = _configured_path("VS10B_PROJECT_ROOT")
     request_path = _configured_path("VS10B_BIND_REQUEST")
-    if source_data is None or project is None or request_path is None:
+    configured = (source_data, project, request_path)
+    if all(value is None for value in configured):
         # Portable default: synthetic replay evidence built through the same
         # real stores and validators as the existing B physical tests.
         return _build_synthetic_case(tmp_path, monkeypatch)
-    if not source_data.is_dir() or not project.is_dir() or not request_path.is_file():
-        return _build_synthetic_case(tmp_path, monkeypatch)
+    if (
+        source_data is None
+        or project is None
+        or request_path is None
+        or not source_data.is_dir()
+        or not project.is_dir()
+        or not request_path.is_file()
+    ):
+        pytest.fail(
+            "VS10-B persisted fixture paths were explicitly configured but are incomplete: "
+            "VS10B_DATA_COPY, VS10B_PROJECT_ROOT and VS10B_BIND_REQUEST must all exist"
+        )
     data = tmp_path / "data"
     shutil.copytree(source_data, data)
     model = load_project_model(project)
@@ -579,6 +590,20 @@ def persisted_case(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Persisted
         evidence=EvidenceStore(workspace.workspace_root / "evidence"),
         workspace=workspace,
     )
+
+
+def test_explicit_external_fixture_paths_fail_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("VS10B_DATA_COPY", str(tmp_path / "missing-data"))
+    monkeypatch.setenv("VS10B_PROJECT_ROOT", str(tmp_path / "missing-project"))
+    monkeypatch.setenv("VS10B_BIND_REQUEST", str(tmp_path / "missing-request.json"))
+    with pytest.raises(
+        pytest.fail.Exception,
+        match="explicitly configured but are incomplete",
+    ):
+        persisted_case.__wrapped__(tmp_path, monkeypatch)
 
 
 def _context(case: PersistedCase, clock=lambda: SAFE_TIME) -> AcceptanceRecoveryContext:
@@ -676,16 +701,49 @@ def _replace_attempt_root(
 
 def _publish_extra_revision(case: PersistedCase, attempt_id: str, attempt: Mapping[str, object]) -> None:
     root_id = recovery_workflows._root_id(attempt_id, 3)
+    # Use an existing valid attempt envelope as the manifest target.  The
+    # rejection under test is the closed revision range, rather than a
+    # missing or otherwise malformed evidence reference.
+    valid_manifest_id = get_root(
+        case.evidence,
+        "acceptance-attempt",
+        recovery_workflows._root_id(attempt_id, 0),
+    ).manifest_id
     with case.evidence._mutation_lock():
         recovery_workflows._publish_root_locked(
             case.evidence,
             RootRecord(
                 "acceptance-attempt",
                 root_id,
-                str(attempt["checkpointId"]),
+                valid_manifest_id,
                 {"attempt_sha256": str(attempt["checkpointId"])},
             ),
         )
+
+
+def _swap_proof_parents(case: PersistedCase, attempt: Mapping[str, object]) -> str:
+    """Publish a proof envelope with valid bytes but the wrong parent order."""
+    proof = _proof(case, attempt)
+    evidence_id = str(attempt["continuationEvidenceId"])
+    old_envelope = case.evidence.get_envelope(evidence_id)
+    assert len(old_envelope.parents) == 5
+    swapped = EvidenceEnvelope(
+        identity=old_envelope.identity,
+        operation=old_envelope.operation,
+        produced_at_utc=old_envelope.produced_at_utc,
+        parents=(old_envelope.parents[1], old_envelope.parents[0], *old_envelope.parents[2:]),
+        artifacts=old_envelope.artifacts,
+        metadata=old_envelope.metadata,
+    )
+    case.evidence.put_envelope(swapped)
+    root_path = recovery_workflows._typed_root_path(
+        case.evidence, proof.continuation_id, recovery_workflows.FINALIZATION_ROOT_TYPE
+    )
+    root = get_root(case.evidence, recovery_workflows.FINALIZATION_ROOT_TYPE, proof.continuation_id)
+    root_payload = root.to_dict()
+    root_payload["manifest_id"] = str(swapped.evidence_id)
+    root_path.write_bytes(canonical_json_bytes(root_payload))
+    return str(swapped.evidence_id)
 
 
 def _duplicate_physical_predecessor(
@@ -791,6 +849,121 @@ def test_finalization_persisted_round_trip_and_exact_explicit_retry(
     assert retry.data == completed.data
     fresh = _fresh_show(persisted_case, attempt_id)
     assert fresh == {"code": "OK", "ok": True}
+
+
+def test_expired_attempt_retry_and_fresh_uuid_proof_reuse_lifecycle(
+    persisted_case: PersistedCase,
+) -> None:
+    expired_id = "00000000-0000-4000-8000-000000000314"
+    started = _begin(persisted_case, expired_id, clock=lambda: SAFE_TIME)
+    assert started.ok
+    original = started.data["attempt"]
+    assert isinstance(original, Mapping)
+    original_deadline = original["deadlineAtUtc"]
+    proof = _proof(persisted_case, original)
+
+    late_first = _checkpoint(
+        persisted_case,
+        expired_id,
+        proof,
+        clock=lambda: LATE_TIME,
+    )
+    assert not late_first.ok
+    assert late_first.code == "ACCEPTANCE_ATTEMPT_TIMED_OUT"
+    assert not _root_path(persisted_case, expired_id, 1).exists()
+
+    exact_retry = _begin(
+        persisted_case,
+        expired_id,
+        clock=lambda: LATE_TIME,
+    )
+    assert exact_retry.ok
+    assert exact_retry.data == started.data
+    assert exact_retry.data["attempt"]["deadlineAtUtc"] == original_deadline
+
+    reuse_request = {
+        "schema": "stm32-physical-continuation-request/2",
+        "kind": "reuse",
+        "continuationEvidenceId": str(original["continuationEvidenceId"]),
+    }
+    fresh_id = "00000000-0000-4000-8000-000000000315"
+    fresh_started = _begin(
+        persisted_case,
+        fresh_id,
+        reuse_request,
+        clock=lambda: LATE_TIME,
+    )
+    assert fresh_started.ok
+    fresh_proof = _proof(persisted_case, fresh_started.data["attempt"])
+    fresh_completed = _checkpoint(
+        persisted_case,
+        fresh_id,
+        fresh_proof,
+        clock=lambda: LATE_TIME,
+    )
+    assert fresh_completed.ok
+    assert fresh_completed.data["attempt"]["revision"] == 1
+
+    late_completed_retry = _checkpoint(
+        persisted_case,
+        fresh_id,
+        fresh_proof,
+        clock=lambda: "2026-09-18T15:35:00.000000Z",
+    )
+    assert late_completed_retry.ok
+    assert late_completed_retry.data == fresh_completed.data
+
+
+def test_b_authority_graph_rejections_use_persisted_proof_and_context(
+    persisted_case: PersistedCase,
+) -> None:
+    wrong_head = dict(persisted_case.request)
+    wrong_head["diagnosticEventHead"] = "0" * 64
+    wrong_head_id = "00000000-0000-4000-8000-000000000316"
+    wrong_head_result = _begin(persisted_case, wrong_head_id, wrong_head)
+    assert not wrong_head_result.ok
+    assert wrong_head_result.code == "ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH"
+    assert not _root_path(persisted_case, wrong_head_id, 0).exists()
+
+    foreign_context = AcceptanceRecoveryContext(
+        persisted_case.project,
+        persisted_case.data,
+        "foreign-session-20260918",
+    )
+    foreign_id = "00000000-0000-4000-8000-000000000317"
+    foreign_result = begin_acceptance_attempt(
+        foreign_context,
+        attempt_id=foreign_id,
+        scenario_id=SCENARIO,
+        scenario_version=VERSION,
+        continuation=persisted_case.request,
+    )
+    assert not foreign_result.ok
+    assert foreign_result.code in {
+        "ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH",
+        "ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED",
+    }
+    assert not _root_path(persisted_case, foreign_id, 0).exists()
+
+    started = _begin(
+        persisted_case,
+        "00000000-0000-4000-8000-000000000318",
+    )
+    assert started.ok
+    swapped_evidence_id = _swap_proof_parents(
+        persisted_case,
+        started.data["attempt"],
+    )
+    tampered_reuse = {
+        "schema": "stm32-physical-continuation-request/2",
+        "kind": "reuse",
+        "continuationEvidenceId": swapped_evidence_id,
+    }
+    tampered_id = "00000000-0000-4000-8000-000000000319"
+    tampered_result = _begin(persisted_case, tampered_id, tampered_reuse)
+    assert not tampered_result.ok
+    assert tampered_result.code == "ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED"
+    assert not _root_path(persisted_case, tampered_id, 0).exists()
 
 
 def test_begin_rechecks_current_firmware_before_commit_phase(
@@ -1074,3 +1247,44 @@ def test_final_deadline_check_rejects_new_root_after_envelope_persist(
     assert not result.ok
     assert result.code == "ACCEPTANCE_ATTEMPT_TIMED_OUT"
     assert not _root_path(persisted_case, attempt_id, 0).exists()
+
+
+def test_final_deadline_check_rejects_rev1_root_after_envelope_persist(
+    persisted_case: PersistedCase,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attempt_id = "00000000-0000-4000-8000-000000000320"
+    started = _begin(persisted_case, attempt_id, clock=lambda: SAFE_TIME)
+    assert started.ok
+    proof = _proof(persisted_case, started.data["attempt"])
+    phase = {"rechecked": False, "commit_seen": False}
+    original = recovery_workflows._finalization_recheck_before_attempt_publication_locked
+
+    def recheck(*args: object, **kwargs: object):
+        result = original(*args, **kwargs)
+        phase["rechecked"] = True
+        return result
+
+    def clock() -> str:
+        if not phase["rechecked"]:
+            return SAFE_TIME
+        if not phase["commit_seen"]:
+            phase["commit_seen"] = True
+            return COMMIT_TIME
+        return LATE_TIME
+
+    monkeypatch.setattr(
+        recovery_workflows,
+        "_finalization_recheck_before_attempt_publication_locked",
+        recheck,
+    )
+    result = _checkpoint(
+        persisted_case,
+        attempt_id,
+        proof,
+        clock=clock,
+    )
+    assert not result.ok
+    assert result.code == "ACCEPTANCE_ATTEMPT_TIMED_OUT"
+    assert _root_path(persisted_case, attempt_id, 0).exists()
+    assert not _root_path(persisted_case, attempt_id, 1).exists()
