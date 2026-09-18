@@ -491,7 +491,7 @@ def test_readme_documents_the_1_0_contract_and_preserved_vs09b_boundary():
     readme = README.read_text(encoding="utf-8")
     readme_zh = (REPO_ROOT / "README_zh-CN.md").read_text(encoding="utf-8")
 
-    assert "accepted 1.0.0 local release candidate" in readme
+    assert "pending 1.0.0 local release candidate" in readme
     assert "CPython `>=3.12,<3.13`" in readme
     assert "DATA_ROOT/runtime/1.0.0" in readme
     assert '"STM32_TOOLKIT_DATA_ROOT"' in readme
