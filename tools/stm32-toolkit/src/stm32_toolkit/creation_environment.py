@@ -33,7 +33,7 @@ _MAX_REPOSITORY_DEPTH = 16
 _MAX_MCU_DESCRIPTORS = 10_000
 _MAX_MCU_DESCRIPTOR_BYTES = 2 * 1024 * 1024
 _MAX_MCU_INDEX_BYTES = 16 * 1024 * 1024
-_MCU_INDEX_NAME_RE = re.compile(r"^STM32[A-Za-z0-9()_.-]{0,123}$")
+_MCU_INDEX_NAME_RE = re.compile(r"^STM32[A-Za-z0-9()_-]{0,123}$")
 _XML_DECLARATION_RE = re.compile(rb"<!\s*(?:DOCTYPE|ENTITY)\b", re.IGNORECASE)
 
 
@@ -217,7 +217,7 @@ def _mcu_index_mapping(install: Path, request: CreationRequest) -> tuple[Path, s
         ref_name = node.attrib.get("RefName")
         if isinstance(ref_name, str) and ref_name.casefold() == request.source.value.casefold():
             name = node.attrib.get("Name")
-            if not isinstance(name, str) or _MCU_INDEX_NAME_RE.fullmatch(name) is None or name.casefold().endswith(".xml"):
+            if not isinstance(name, str) or _MCU_INDEX_NAME_RE.fullmatch(name) is None:
                 raise CreationEnvironmentError("CUBEMX_MCU_DESCRIPTOR_INVALID", "CubeMX MCU descriptor index name is invalid")
             matches.append((ref_name, name))
     if len(matches) != 1:

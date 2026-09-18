@@ -264,17 +264,22 @@ def test_fallback_index_bytes_are_bound_by_environment_digest(tmp_path: Path):
 
 
 @pytest.mark.parametrize(
-    "rows,descriptor_ref_name",
+    "rows,descriptor_name,descriptor_ref_name",
     [
-        ([('STM32F429ZQTx', 'STM32F429Z(E-G)Tx')], "STM32F429Z(E-G)Tx"),
-        ([('STM32F429ZGTx', 'STM32F429Z(E-G)Tx'), ('STM32F429ZGTx', 'STM32F429Z(E-G)Tx')], "STM32F429Z(E-G)Tx"),
-        ([('STM32F429ZGTx', 'STM32F429Z(E-G)Tx')], "STM32F429ZITx"),
-        ([('STM32F429ZGTx', 'STM32F429Z(E-G)Tx')], "stm32f429z(e-g)tx"),
-        ([('STM32F429ZGTx', '../STM32F429Z(E-G)Tx')], "STM32F429Z(E-G)Tx"),
+        ([('STM32F429ZQTx', 'STM32F429Z(E-G)Tx')], "STM32F429Z(E-G)Tx", "STM32F429Z(E-G)Tx"),
+        ([('STM32F429ZGTx', 'STM32F429Z(E-G)Tx'), ('STM32F429ZGTx', 'STM32F429Z(E-G)Tx')], "STM32F429Z(E-G)Tx", "STM32F429Z(E-G)Tx"),
+        ([('STM32F429ZGTx', 'STM32F429Z(E-G)Tx')], "STM32F429Z(E-G)Tx", "STM32F429ZITx"),
+        ([('STM32F429ZGTx', 'STM32F429Z(E-G)Tx')], "STM32F429Z(E-G)Tx", "stm32f429z(e-g)tx"),
+        ([('STM32F429ZGTx', '../STM32F429Z(E-G)Tx')], "STM32F429Z(E-G)Tx", "STM32F429Z(E-G)Tx"),
+        ([('STM32F429ZGTx', 'STM32F429Z.GTx')], "STM32F429Z.GTx", "STM32F429Z.GTx"),
+        ([('STM32F429ZGTx', 'STM32F429ZGTx.xml')], "STM32F429ZGTx.xml", "STM32F429ZGTx.xml"),
     ],
 )
 def test_index_mapping_rejects_missing_duplicate_mismatched_or_unsafe_names(
-    tmp_path: Path, rows: list[tuple[str, str]], descriptor_ref_name: str
+    tmp_path: Path,
+    rows: list[tuple[str, str]],
+    descriptor_name: str,
+    descriptor_ref_name: str,
 ):
     install = tmp_path / "CubeMX"
     (install / "jre" / "bin").mkdir(parents=True)
@@ -282,7 +287,7 @@ def test_index_mapping_rejects_missing_duplicate_mismatched_or_unsafe_names(
     cubemx.write_bytes(b"cube")
     (install / "jre" / "bin" / "java.exe").write_bytes(b"java")
     _mcu_index(install, rows)
-    _group_descriptor(install, ref_name=descriptor_ref_name)
+    _group_descriptor(install, name=descriptor_name, ref_name=descriptor_ref_name)
     repository = tmp_path / "repository"
     repository.mkdir()
     _package(repository)
