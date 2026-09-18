@@ -803,6 +803,33 @@ def test_run_build_accepts_schema_v3_managed_configuration(tmp_path: Path, monke
     assert run_build(BuildRequest(project_root=root, preset="arm-debug")).ok is True
 
 
+@pytest.mark.parametrize("schema_version", [2, 3])
+def test_run_build_accepts_legacy_0_9_producer_and_publishes_current_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, schema_version: int
+):
+    root = prepare_project(
+        tmp_path,
+        overrides={
+            "schemaVersion": schema_version,
+            "generatedBy": {"tool": "stm32-toolkit", "version": "0.9.0"},
+        },
+    )
+    manifest_path = root / ".stm32-toolkit" / "generated-files.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["toolVersion"] = "0.9.0"
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    install_fake_cmake(monkeypatch, tmp_path)
+
+    result = run_build(BuildRequest(project_root=root, preset="arm-debug"))
+
+    assert result.ok is True, result
+    identity = read_json(identity_path_for(root))
+    project = read_json(root / ".stm32-project.json")
+    assert identity["toolkitVersion"] == "1.0.0"
+    assert project["generatedBy"]["version"] == "0.9.0"
+    assert json.loads(manifest_path.read_text(encoding="utf-8"))["toolVersion"] == "0.9.0"
+
+
 def test_run_build_rejects_drifted_generated_file(tmp_path: Path):
     root = prepare_project(tmp_path, git_repo=False)
     (root / "CMakeLists.txt").write_text("# user edit\n", encoding="utf-8")

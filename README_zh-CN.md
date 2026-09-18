@@ -16,6 +16,19 @@ CodeHead 和封闭的 Windows CPython 3.12 wheelhouse。发布契约是 CPython 
 setup helper 的 CHECK 模式只读；Bootstrap 和 Repair 必须得到明确授权，先校验解压后的离线
 bundle，只安装 manifest 中的 wheel，运行 `pip check`，在本地 staging 后才可提升。
 
+Repair 只修改 runtime。对于 `generatedBy` 为 `stm32-toolkit` `0.9.0` 的 Schema v2 或 v3 工程，
+Repair 完成后先启动新的 Toolkit session，再按现有受保护的 configure/build 顺序执行：
+
+```powershell
+stm32-toolkit project configure --project C:\work\blinky --dry-run --json
+stm32-toolkit project configure --project C:\work\blinky --apply --plan-id <plan-id> --authorized --json
+stm32-toolkit build --project C:\work\blinky --preset arm-debug --json
+```
+
+configure 事务会保留工程真实的 `generatedBy.version` `0.9.0`，写出当前 `1.0.0` managed manifest，
+并让新发布的 build identity 使用 `1.0.0`。用户编辑、畸形 manifest、未知/未来 producer 与过期
+plan 继续沿用既有的拒绝和回滚规则。
+
 当前运行时是通用的：集成方可以选择任意绝对的 `TOOLKIT_ROOT`、`DATA_ROOT` 和
 `PROJECT_ROOT`。启动器只读取 `STM32_TOOLKIT_DATA_ROOT`；所有项目命令都必须显式提供
 `--project-root`。

@@ -22,6 +22,8 @@ from stm32_toolkit.project_model import ProjectModel
 #: Frozen generation contract values (work order sections 3 and 8.1).
 PLAN_VERSION = 1
 TEMPLATE_VERSION = 1
+LEGACY_GENERATION_PRODUCER_VERSIONS = ("0.9.0",)
+SUPPORTED_GENERATION_PRODUCER_VERSIONS = (__version__, *LEGACY_GENERATION_PRODUCER_VERSIONS)
 MANAGED_MANIFEST_PATH = ".stm32-toolkit/generated-files.json"
 STAGING_ROOT = ".stm32-toolkit/configuration-staging"
 
@@ -109,6 +111,21 @@ class GenerationError(Exception):
 
 def generation_error(code: str, message: str, details: dict[str, object]) -> GenerationError:
     return GenerationError(code, message, details)
+
+
+def is_supported_generation_producer(tool: object, version: object) -> bool:
+    """Return whether an existing producer is admitted by the 1.0 contract.
+
+    The allowlist is deliberately exact.  A strict type check keeps malformed
+    in-memory models on the structured refusal path instead of invoking
+    version methods or comparisons on arbitrary values.
+    """
+    return (
+        type(tool) is str
+        and tool == "stm32-toolkit"
+        and type(version) is str
+        and version in SUPPORTED_GENERATION_PRODUCER_VERSIONS
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -473,9 +490,9 @@ def parse_managed_manifest(data: bytes) -> list[ManagedFileRecord]:
         raise _manifest_error("key")
     if payload.get("schemaVersion") != 1:
         raise _manifest_error("version")
-    if payload.get("tool") != "stm32-toolkit":
+    if type(payload.get("tool")) is not str or payload.get("tool") != "stm32-toolkit":
         raise _manifest_error("tool")
-    if payload.get("toolVersion") != __version__:
+    if not is_supported_generation_producer(payload.get("tool"), payload.get("toolVersion")):
         raise _manifest_error("version")
     if payload.get("templateVersion") != TEMPLATE_VERSION:
         raise _manifest_error("version")
