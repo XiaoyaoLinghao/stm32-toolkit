@@ -5,6 +5,8 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import pytest
+
 
 @dataclass(frozen=True)
 class FakeEndpoint:
@@ -206,13 +208,29 @@ def test_cli_returns_sanitized_json_failure_without_traceback(tmp_path: Path) ->
     }
 
 
-def test_adapter_cli_rejects_invalid_project_context_before_workflow(tmp_path: Path) -> None:
-    from stm32_monitor.cli import main
+def test_adapter_cli_rejects_invalid_project_context_before_workflow(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import stm32_monitor.cli as cli
+
+    workflow_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    loader_calls: list[object] = []
+
+    def workflow_sentinel(*args: object, **kwargs: object) -> object:
+        workflow_calls.append((args, kwargs))
+        return object()
+
+    def loader_sentinel(path: object) -> dict[str, object]:
+        loader_calls.append(path)
+        return {}
+
+    monkeypatch.setattr(cli, "ingest_monitor_replay", workflow_sentinel)
+    monkeypatch.setattr(cli, "_load_json_file", loader_sentinel)
 
     project = tmp_path / "project"
     project.mkdir()
     output = io.StringIO()
-    code = main(
+    code = cli.main(
         [
             "replay",
             "ingest",
@@ -237,6 +255,8 @@ def test_adapter_cli_rejects_invalid_project_context_before_workflow(tmp_path: P
     assert payload["operation"] == "monitor.replay.ingest"
     assert payload["code"] == "ANALYSIS_WORKFLOW_INVALID"
     assert payload["message"] == "Project configuration is invalid"
+    assert workflow_calls == []
+    assert loader_calls == []
 
 
 def test_cli_maps_keyboard_interrupt_to_130(tmp_path: Path) -> None:

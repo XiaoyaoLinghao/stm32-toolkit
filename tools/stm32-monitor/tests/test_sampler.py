@@ -645,7 +645,7 @@ def test_delivery_subscription_created_after_close_terminates_promptly(
         await sampler.close()
         deliveries = sampler.subscribe_deliveries()
         with pytest.raises(StopAsyncIteration):
-            await anext(deliveries)
+            await _next(deliveries)
 
     asyncio.run(scenario())
 
