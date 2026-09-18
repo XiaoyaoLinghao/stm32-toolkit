@@ -1156,8 +1156,16 @@ def begin_acceptance_attempt(
         return _failure("acceptance.attempt.begin", "ACCEPTANCE_ATTEMPT_INPUT_INVALID")
     if continuation is not None:
         if scenario_id == FINALIZATION_SCENARIO_ID and scenario_version == FINALIZATION_SCENARIO_VERSION:
-            if not isinstance(continuation, Mapping) or continuation.get("schema") != FINALIZATION_REQUEST_SCHEMA:
+            if not isinstance(continuation, Mapping):
+                return _failure("acceptance.attempt.begin", "ACCEPTANCE_ATTEMPT_INPUT_INVALID")
+            request_schema = continuation.get("schema")
+            # The existing CubeMX /4 adapter historically classified an empty
+            # continuation object as a stage error.  Preserve that exact
+            # legacy edge while every shaped/unknown B request is typed input.
+            if request_schema is None and not continuation:
                 return _failure("acceptance.attempt.begin", "ACCEPTANCE_ATTEMPT_STAGE_INVALID")
+            if request_schema != FINALIZATION_REQUEST_SCHEMA:
+                return _failure("acceptance.attempt.begin", "ACCEPTANCE_ATTEMPT_INPUT_INVALID")
             return _result("acceptance.attempt.begin", lambda: _validate_finalization_result(
                 context,
                 _begin_finalization_attempt(
@@ -3456,6 +3464,74 @@ def _read_finalization_revision(
     )
 
 
+def _finalization_has_published_extra_revision(
+    evidence: EvidenceStore,
+    attempt_id: str,
+) -> bool:
+    """Detect any immutable /5 root beyond the closed 0 -> 1 sequence."""
+    # Keep the explicit legacy guard for the first invalid slot.  This also
+    # rejects a corrupt rev2 payload before the broader directory audit can
+    # mistake it for an unrelated root.
+    if _typed_root_path(evidence, _root_id(attempt_id, 2)).exists():
+        return True
+    try:
+        directory = evidence._existing_managed_path("roots", _ATTEMPT_ROOT_TYPE)
+        paths = tuple(directory.iterdir())
+    except FileNotFoundError:
+        return False
+    except (EvidenceValidationError, OSError) as error:
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED") from error
+    prefix = f"{attempt_id}."
+    marker = attempt_id.encode("ascii")
+    for path in paths:
+        if path.suffix != ".json":
+            continue
+        try:
+            payload = evidence._read_file_bytes(path, maximum_bytes=MAX_EVIDENCE_READ_BYTES)
+        except (EvidenceValidationError, OSError) as error:
+            raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED") from error
+        if marker not in payload:
+            continue
+        try:
+            record = RootRecord.from_value(json.loads(payload.decode("utf-8")))
+        except (EvidenceValidationError, UnicodeError, ValueError, json.JSONDecodeError) as error:
+            raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED") from error
+        if record.root_type != _ATTEMPT_ROOT_TYPE or not record.root_id.startswith(prefix):
+            continue
+        suffix = record.root_id[len(prefix):]
+        if not suffix.isdigit():
+            raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED")
+        if int(suffix) >= 2:
+            return True
+    return False
+
+
+def _finalization_attempt_matches_proof(
+    attempt: PhysicalFinalizationAttempt,
+    envelope: EvidenceEnvelope,
+    proof: AuthenticatedFinalization,
+) -> bool:
+    expected = proof.proof
+    return (
+        attempt.continuation_evidence_id == proof.continuation_evidence_id
+        and attempt.fixed_after_test_run_id == expected.fixed_after_test_run_id
+        and attempt.fixed_after_evidence_id == expected.fixed_after_evidence_id
+        and envelope.identity == proof.before.manifest.identity
+        and (
+            (attempt.revision == 0 and attempt.fix_verification_id is None)
+            or (attempt.revision == 1 and attempt.fix_verification_id == expected.fix_verification_id)
+        )
+    )
+
+
+def _finalization_chain_matches_proof(
+    chain: list[tuple[PhysicalFinalizationAttempt, EvidenceEnvelope]],
+    proof: AuthenticatedFinalization,
+) -> bool:
+    return all(_finalization_attempt_matches_proof(attempt, envelope, proof)
+               for attempt, envelope in chain)
+
+
 def _load_finalization_chain(
     evidence: EvidenceStore,
     *,
@@ -3500,16 +3576,14 @@ def _load_finalization_chain(
             raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED")
         if expected_session_id is not None and envelope.identity.session_id != expected_session_id:
             raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH")
-        if proof is not None:
-            if (
-                attempt.continuation_evidence_id != proof.continuation_evidence_id
-                or envelope.identity != proof.before.manifest.identity
-            ):
-                raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH")
+        if proof is not None and not _finalization_attempt_matches_proof(
+            attempt, envelope, proof
+        ):
+            raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH")
         chain.append(item)
     if not chain:
         raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_NOT_FOUND")
-    if _typed_root_path(evidence, _root_id(attempt_id, 2)).exists():
+    if _finalization_has_published_extra_revision(evidence, attempt_id):
         raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED")
     return chain
 
@@ -4027,6 +4101,38 @@ def _finalization_current_firmware_matches(
         raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH")
 
 
+def _finalization_recheck_before_attempt_publication_locked(
+    context: AcceptanceRecoveryContext,
+    model: object,
+    workspace: WorkspacePaths,
+    evidence: EvidenceStore,
+    association: AuthenticatedFinalization,
+) -> AuthenticatedFinalization:
+    """Recheck immutable proof, predecessor CAS and current facts under E.
+
+    The complete Diagnostic graph is intentionally not reloaded here.  It was
+    authenticated while D was held and the returned association is immutable;
+    E only closes the publication race against EvidenceStore, predecessor
+    revision and current firmware facts.
+    """
+    refreshed = _existing_finalization_association(evidence, association)
+    latest_chain = _load_physical_chain(
+        evidence,
+        attempt_id=refreshed.proof.predecessor_attempt_id,
+        workspace_id=workspace.workspace_id,
+        logical_project_id=str(model.logical_project_id),
+    )
+    if (
+        len(latest_chain) != 7
+        or latest_chain[-1][0].checkpoint_id != refreshed.proof.predecessor_checkpoint_id
+        or str(latest_chain[-1][1].evidence_id) != refreshed.proof.predecessor_evidence_id
+        or _timestamp(_now(context)) <= _timestamp(latest_chain[-1][0].deadline_at_utc)
+    ):
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_REVISION_CONFLICT")
+    _finalization_current_firmware_matches(context, model, refreshed)
+    return refreshed
+
+
 def _prepare_finalization_bind_locked(
     context: AcceptanceRecoveryContext,
     model: object,
@@ -4272,6 +4378,18 @@ def _begin_finalization_attempt(
     association = _publish_finalization_proof(context, model, workspace, evidence, request)
     diagnostic_store = _diagnostic_workflows._diagnostic_store_factory(workspace.diagnostics_root, evidence)
     with diagnostic_store._store_lock(create=False):
+        # Proof publication released D after its own D->E boundary.  Reopen D
+        # and reauthenticate the complete graph before beginning a new /5
+        # revision, then retain D while acquiring E below.
+        association = _authenticate_finalization_locked(
+            context,
+            model,
+            workspace,
+            evidence,
+            diagnostic_store,
+            association.continuation_evidence_id,
+            expected_proof=association.proof,
+        )
         _finalization_current_firmware_matches(context, model, association)
         with evidence._mutation_lock():
             if root0.exists():
@@ -4280,6 +4398,16 @@ def _begin_finalization_attempt(
                     attempt_id=attempt_id,
                     workspace_id=workspace.workspace_id,
                     logical_project_id=str(model.logical_project_id),
+                    expected_session_id=context.session_id,
+                )
+                if not _finalization_chain_matches_proof(chain, association):
+                    raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_CONFLICT")
+                chain = _load_finalization_chain(
+                    evidence,
+                    attempt_id=attempt_id,
+                    workspace_id=workspace.workspace_id,
+                    logical_project_id=str(model.logical_project_id),
+                    proof=association,
                     expected_session_id=context.session_id,
                 )
                 if not _finalization_request_matches_proof(request, association):
@@ -4324,6 +4452,15 @@ def _begin_finalization_attempt(
                 metadata=_finalization_envelope_metadata(candidate),
             )
             evidence._put_envelope_locked(envelope)
+            # Recheck proof, predecessor CAS, current firmware facts and the
+            # predecessor deadline at the E-held root publication boundary.
+            association = _finalization_recheck_before_attempt_publication_locked(
+                context,
+                model,
+                workspace,
+                evidence,
+                association,
+            )
             if _timestamp(_now(context)) > _timestamp(candidate.deadline_at_utc):
                 raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_TIMED_OUT")
             _publish_root_locked(
@@ -4343,6 +4480,7 @@ def _finalization_checkpoint_retry(
     *,
     test_run_id: str,
     diagnostic_session_id: str | None,
+    expected_diagnostic_session_id: str,
     fix_verification_id: str,
 ) -> bool:
     return (
@@ -4350,7 +4488,7 @@ def _finalization_checkpoint_retry(
         and current.stage == FINALIZATION_STAGES[1]
         and current.fixed_after_test_run_id == test_run_id
         and current.fix_verification_id == fix_verification_id
-        and diagnostic_session_id in (None, current.session_id)
+        and diagnostic_session_id in (None, expected_diagnostic_session_id)
     )
 
 
@@ -4420,6 +4558,7 @@ def _checkpoint_finalization_attempt(
                 current,
                 test_run_id=cast(str, test_run_id),
                 diagnostic_session_id=cast(str | None, diagnostic_session_id),
+                expected_diagnostic_session_id=association.proof.diagnostic_session_id,
                 fix_verification_id=cast(str, fix_verification_id),
             ):
                 raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_REVISION_CONFLICT")
@@ -4427,8 +4566,8 @@ def _checkpoint_finalization_attempt(
         if current.revision != 0 or current.next_stage != stage:
             raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_STAGE_INVALID")
         _finalization_current_firmware_matches(context, model, association)
-        now = _now(context)
-        if _timestamp(now) > _timestamp(current.deadline_at_utc):
+        checked_at = _now(context)
+        if _timestamp(checked_at) > _timestamp(current.deadline_at_utc):
             raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_TIMED_OUT")
         with evidence._mutation_lock():
             latest_chain = _load_finalization_chain(
@@ -4436,6 +4575,7 @@ def _checkpoint_finalization_attempt(
                 attempt_id=attempt_id,
                 workspace_id=workspace.workspace_id,
                 logical_project_id=str(model.logical_project_id),
+                proof=association,
                 expected_session_id=context.session_id,
             )
             latest = latest_chain[-1][0]
@@ -4444,6 +4584,7 @@ def _checkpoint_finalization_attempt(
                     latest,
                     test_run_id=cast(str, test_run_id),
                     diagnostic_session_id=cast(str | None, diagnostic_session_id),
+                    expected_diagnostic_session_id=association.proof.diagnostic_session_id,
                     fix_verification_id=cast(str, fix_verification_id),
                 ):
                     raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_REVISION_CONFLICT")
@@ -4453,6 +4594,9 @@ def _checkpoint_finalization_attempt(
             if _timestamp(_now(context)) > _timestamp(latest.deadline_at_utc):
                 raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_TIMED_OUT")
             _finalization_current_firmware_matches(context, model, association)
+            published_at = _now(context)
+            if _timestamp(published_at) > _timestamp(latest.deadline_at_utc):
+                raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_TIMED_OUT")
             candidate = _finalization_snapshot(
                 {
                     **latest.to_dict(),
@@ -4461,19 +4605,39 @@ def _checkpoint_finalization_attempt(
                     "status": "COMPLETED",
                     "stage": FINALIZATION_STAGES[1],
                     "fixVerificationId": cast(str, fix_verification_id),
-                    "updatedAtUtc": now,
+                    "updatedAtUtc": published_at,
                 }
             )
             previous_envelope = latest_chain[-1][1]
             envelope = EvidenceEnvelope(
                 identity=association.before.manifest.identity,
                 operation=_ATTEMPT_OPERATION,
-                produced_at_utc=now,
+                produced_at_utc=published_at,
                 parents=(str(previous_envelope.evidence_id), association.continuation_evidence_id),
                 artifacts=(),
                 metadata=_finalization_envelope_metadata(candidate),
             )
             evidence._put_envelope_locked(envelope)
+            association = _finalization_recheck_before_attempt_publication_locked(
+                context,
+                model,
+                workspace,
+                evidence,
+                association,
+            )
+            published_chain = _load_finalization_chain(
+                evidence,
+                attempt_id=attempt_id,
+                workspace_id=workspace.workspace_id,
+                logical_project_id=str(model.logical_project_id),
+                proof=association,
+                expected_session_id=context.session_id,
+            )
+            if (
+                published_chain[-1][0].revision != 0
+                or published_chain[-1][0].checkpoint_id != latest.checkpoint_id
+            ):
+                raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_REVISION_CONFLICT")
             if _timestamp(_now(context)) > _timestamp(latest.deadline_at_utc):
                 raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_TIMED_OUT")
             _publish_root_locked(
@@ -4566,5 +4730,19 @@ def _validate_finalization_result(
     continuation_id = attempt_data.get("continuationEvidenceId")
     if not isinstance(continuation_id, str):
         raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_OUTPUT_INVALID")
-    _authenticate_finalization(context, model, workspace, evidence, continuation_id)
+    association = _authenticate_finalization(context, model, workspace, evidence, continuation_id)
+    try:
+        attempt = PhysicalFinalizationAttempt.from_value(attempt_data)
+    except (FinalizationValidationError, TypeError, ValueError) as error:
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_OUTPUT_INVALID") from error
+    chain = _load_finalization_chain(
+        evidence,
+        attempt_id=attempt.attempt_id,
+        workspace_id=workspace.workspace_id,
+        logical_project_id=str(model.logical_project_id),
+        proof=association,
+        expected_session_id=context.session_id,
+    )
+    if chain[-1][0] != attempt:
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_REVISION_CONFLICT")
     return result

@@ -82,6 +82,26 @@ def test_v2_request_rejects_legacy_physical_scenario_before_v1_parser(tmp_path):
     assert result.code == "ACCEPTANCE_ATTEMPT_INPUT_INVALID"
 
 
+@pytest.mark.parametrize("continuation", [
+    [],
+    {"kind": "reuse"},
+    {"schema": "stm32-physical-continuation-request/1", "kind": "reuse", "continuationEvidenceId": "a" * 64},
+    {"schema": "stm32-physical-continuation-request/9"},
+])
+def test_finalization_rejects_malformed_or_unknown_request_as_input_invalid(
+    tmp_path, continuation
+):
+    result = begin_acceptance_attempt(
+        AcceptanceRecoveryContext(tmp_path / "project", tmp_path / "data", "before-session"),
+        attempt_id=ATTEMPT_ID,
+        scenario_id="new-cubemx-physical-repair",
+        scenario_version="1",
+        continuation=continuation,
+    )
+    assert result.ok is False
+    assert result.code == "ACCEPTANCE_ATTEMPT_INPUT_INVALID"
+
+
 def test_mcp_plan_v2_requires_proof_and_v1_rejects_it():
     from stm32_toolkit.diagnostics.model import VerificationPlan
 
