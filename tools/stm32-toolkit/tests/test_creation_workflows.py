@@ -11,6 +11,7 @@ from stm32_toolkit.creation_workflows import (
     CreationPlanWorkflowRequest,
     apply_creation_workflow,
     plan_creation_workflow,
+    prepare_creation_workflow,
 )
 from stm32_toolkit.creation_authorization import (
     CreationAuthorizationError,
@@ -241,6 +242,29 @@ def _init_local_head(root: Path, *, commit: bool) -> None:
         )
 
 
+def _fallback_environment_fixture(tmp_path: Path) -> tuple[ToolSupportProfile, Path, Path]:
+    install = tmp_path
+    (install / "jre" / "bin").mkdir(parents=True)
+    (install / "jre" / "bin" / "java.exe").write_bytes(b"java")
+    (install / "db" / "mcu").mkdir(parents=True)
+    index = install / "db" / "mcu" / "families.xml"
+    index.write_text(
+        '<Families><Mcu RefName="STM32F429ZGTx" Name="STM32F429Z(E-G)Tx"/></Families>\n',
+        encoding="utf-8",
+    )
+    descriptor = install / "db" / "mcu" / "STM32F429Z(E-G)Tx.xml"
+    descriptor.write_text('<Mcu RefName="STM32F429Z(E-G)Tx"/>', encoding="utf-8")
+    repository = tmp_path / "Repository"
+    repository.mkdir()
+    package = repository / "STM32Cube_FW_F4_V1.0.0"
+    package.mkdir()
+    (package / "package.xml").write_text(
+        '<package name="STM32Cube_FW_F4" version="1.0.0"/>',
+        encoding="utf-8",
+    )
+    return _complete_support(tmp_path), repository, descriptor
+
+
 def _prepare_with_support(tmp_path: Path, support: ToolSupportProfile):
     request = CreationPlanWorkflowRequest(
         tmp_path,
@@ -352,6 +376,67 @@ def test_prepare_accepts_valid_local_head_before_existing_environment_authorizat
     assert result.data["executionEnvironmentDigest"] == "c" * 64
     assert (tmp_path / "data").is_dir()
     assert not (tmp_path / "generated").exists()
+
+
+def test_public_workflow_rejects_fallback_descriptor_drift_before_native_generate(
+    tmp_path: Path, monkeypatch
+):
+    import stm32_toolkit.creation_workflows as workflows
+    from stm32_toolkit.cubemx_adapter import CubeMXAdapter
+
+    fixed = datetime(2026, 8, 23, 12, tzinfo=timezone.utc)
+    monkeypatch.setattr(workflows, "_now_factory", lambda: fixed)
+    support, repository, descriptor = _fallback_environment_fixture(tmp_path)
+    _init_local_head(tmp_path, commit=True)
+    request = CreationPlanWorkflowRequest(
+        tmp_path,
+        tmp_path / "data",
+        "session",
+        "mcu",
+        "STM32F429ZGTx",
+        "generated",
+        "hal",
+        "c",
+    )
+    planned = plan_creation_workflow(request, support_profile=support)
+    assert planned.ok is True
+    store = CreationAuthorizationStore(
+        tmp_path / "data",
+        now=lambda: fixed,
+        nonce_factory=lambda: "nonce",
+    )
+    prepared = prepare_creation_workflow(
+        request,
+        plan_id=planned.data["planId"],
+        action_digest=planned.data["actionDigest"],
+        support_profile=support,
+        repository=repository,
+        store=store,
+    )
+    assert prepared.ok is True
+    descriptor.write_text('<Mcu RefName="STM32F429Z(E-G)Tx" Changed="1"/>', encoding="utf-8")
+    calls: list[str] = []
+
+    def forbidden_native_generate(self, *args, **kwargs):
+        calls.append("generate")
+        raise AssertionError("native generation must not start after environment drift")
+
+    monkeypatch.setattr(CubeMXAdapter, "generate", forbidden_native_generate)
+    applied = workflows.apply_creation_workflow(
+        request,
+        authorization_digest=prepared.data["authorizationDigest"],
+        authorized=True,
+        store=store,
+        support_profile=support,
+        repository=repository,
+        validate_native=lambda *args, **kwargs: pytest.fail("native validation must not start"),
+        configure=lambda *args, **kwargs: pytest.fail("configure must not start"),
+        build=lambda *args, **kwargs: pytest.fail("build must not start"),
+    )
+
+    assert applied.ok is False
+    assert applied.code == "CREATION_EXECUTION_ENVIRONMENT_CHANGED"
+    assert calls == []
 
 
 def test_prepare_preserves_plan_blocker_priority_before_git_check(tmp_path: Path, monkeypatch):

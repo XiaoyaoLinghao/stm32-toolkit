@@ -23,11 +23,12 @@ def _capability(
     tmp_path: Path,
     *,
     source_kind: str = "mcu",
+    mcu_name: str = "STM32F429ZITx",
     framework: str = "hal",
     language: str = "c",
 ) -> ConsumedCreationAuthorization:
     if source_kind == "mcu":
-        request = CreationRequest.from_mcu("STM32F429ZITx", "generated", framework=framework, language=language)
+        request = CreationRequest.from_mcu(mcu_name, "generated", framework=framework, language=language)
     elif source_kind == "board":
         request = CreationRequest.from_board("NUCLEO-F429ZI", "generated", framework=framework, language=language)
     else:
@@ -185,6 +186,30 @@ def test_source_kind_script_uses_verified_commands_and_safe_deterministic_projec
         assert str(tmp_path / "board.ioc") not in script
     else:
         assert "config load" not in script
+
+
+def test_mcu_script_uses_exact_index_refname_leaf_token(tmp_path: Path):
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    observed: list[str] = []
+    environment = _environment(tmp_path)
+    environment.native_source_token = "STM32F429ZGTx"
+
+    def runner(request):
+        observed.append(Path(request.argv[-1]).read_text(encoding="utf-8"))
+        _native_project_root(staging)
+        output = _native_fixture("mcu", staging).replace("load STM32F429ZITx", "load STM32F429ZGTx")
+        return ProcessResult(0, output, "", False, 1, False, False)
+
+    adapter = CubeMXAdapter(environment, runner=runner)
+    result = adapter.generate(
+        _capability(tmp_path, mcu_name="STM32F429ZGTx"),
+        CubeMXStagingContext(staging),
+    )
+
+    assert result.invocations == 1
+    assert "load STM32F429ZGTx" in observed[0]
+    assert "load STM32F429Z(E-G)Tx" not in observed[0]
 
 
 def test_adapter_seeds_isolated_updater_repository_configuration_outside_staging(tmp_path: Path):
