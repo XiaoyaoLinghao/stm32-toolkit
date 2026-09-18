@@ -21,6 +21,7 @@ from stm32_monitor.replay import (
     MonitorReplayDocument,
     MonitorReplayError,
     MonitorRunRef,
+    MonitorRunRefV2,
     canonical_replay_json_bytes,
     ingest_monitor_replay,
 )
@@ -265,6 +266,84 @@ def test_monitor_run_ref_has_exact_closed_fields_and_round_trips_digest() -> Non
         "run_ref_sha256",
     ]
 
+
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    [
+        ("schema", "stm32-monitor-replay/9"),
+        ("source", "untrusted-import"),
+        ("physical_transport_evidence", True),
+        ("scenario_role", "other"),
+        ("binding", object()),
+        ("binding", "replay-label-drift"),
+        ("batches", ()),
+        ("fixture_sha256", "0" * 64),
+    ],
+)
+def test_public_replay_document_constructor_rejects_contract_fields(
+    field: str,
+    replacement: object,
+) -> None:
+    document = _document("failed-before")
+    values = {item.name: getattr(document, item.name) for item in fields(document)}
+    if field == "binding" and replacement == "replay-label-drift":
+        replacement = replace(document.binding, probe_id="replay:other")
+    values[field] = replacement
+
+    with pytest.raises(MonitorReplayError) as error:
+        MonitorReplayDocument(**values)
+
+    assert error.value.code == "MONITOR_REPLAY_INVALID"
+    assert document.binding.probe_id == "replay:probe-v2"
+    assert len(document.batches) == 2
+
+
+def test_public_replay_document_constructor_rejects_chain_and_window_contradictions() -> None:
+    document = _document("failed-before")
+    first, second = document.batches
+    candidates = (
+        replace(second, binding=replace(second.binding, target_device="other-target")),
+        replace(second, group_id=UUID("55555555-5555-4555-8555-555555555555")),
+        replace(second, group_revision=2),
+        replace(second, sequence=2),
+        replace(second, scheduled_unix_ns=first.scheduled_unix_ns),
+        replace(second, captured_unix_ns=first.captured_unix_ns),
+        replace(first, values=(first.values[0], first.values[0])),
+        replace(first, values=()),
+    )
+
+    for candidate in candidates:
+        with pytest.raises(MonitorReplayError) as error:
+            MonitorReplayDocument(
+                document.schema,
+                document.source,
+                document.physical_transport_evidence,
+                document.scenario_role,
+                document.binding,
+                (candidate, second) if candidate is not first else (first, second),
+                document.fixture_sha256,
+            )
+        assert error.value.code == "MONITOR_REPLAY_INVALID"
+
+
+def test_public_replay_document_parser_rejects_nested_closed_wire_values() -> None:
+    payload = json.loads(_raw_fixture("failed-before")[:-1].decode("utf-8"))
+    payload["binding"]["workspaceId"] = "invalid-workspace"
+    with pytest.raises(MonitorReplayError) as binding_error:
+        MonitorReplayDocument.from_value(payload)
+    assert binding_error.value.code == "MONITOR_REPLAY_INVALID"
+
+    payload = json.loads(_raw_fixture("failed-before")[:-1].decode("utf-8"))
+    payload["batches"][0]["groupRevision"] = 0
+    with pytest.raises(MonitorReplayError) as batch_error:
+        MonitorReplayDocument.from_value(payload)
+    assert batch_error.value.code == "MONITOR_REPLAY_INVALID"
+
+
+def test_public_replay_document_parser_preserves_typed_identity() -> None:
+    document = _document("failed-before")
+    assert MonitorReplayDocument.from_value(document) is document
+
 def test_ingest_preserves_origin_transcript_and_projects_only_workspace_session(tmp_path: Path) -> None:
     paths = _paths(tmp_path)
     evidence = _evidence(paths)
@@ -456,6 +535,125 @@ def test_fixed_after_survives_fresh_history_and_evidence_reload_and_ref_is_stabl
     )
     assert fresh_reference == reference
     assert _history_batches(fresh_paths, RUN_IDS["fixed-after"])
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    [
+        ("schema", "stm32-monitor-run-ref/9"),
+        ("scenario_role", "other"),
+        ("execution_source", "physical"),
+        ("physical_transport_evidence", True),
+        ("origin_run_id", str(RUN_IDS["fixed-after"])),
+        ("probe_id", "other-probe"),
+        ("svd_sha256", object()),
+        ("git_dirty", 1),
+        ("group_revision", 0),
+        ("end_sequence_exclusive", 0),
+        ("projected_batch_sha256s", ()),
+        ("run_ref_sha256", "0" * 64),
+    ],
+)
+def test_public_replay_reference_constructor_rejects_identity_and_window_fields(
+    tmp_path: Path,
+    field: str,
+    replacement: object,
+) -> None:
+    paths = _paths(tmp_path)
+    reference = ingest_monitor_replay(
+        paths,
+        _evidence(paths),
+        _operation("failed-before"),
+        _fixture("failed-before"),
+    )
+    values = {item.name: getattr(reference, item.name) for item in fields(reference)}
+    values[field] = replacement
+
+    with pytest.raises(MonitorReplayError) as error:
+        MonitorRunRef(**values)
+
+    assert error.value.code == "MONITOR_REPLAY_INVALID"
+    assert _history_batches(paths, RUN_IDS["failed-before"])
+
+
+def test_public_replay_reference_parser_preserves_typed_identity_and_v2_rejects_v1(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    reference = ingest_monitor_replay(
+        paths,
+        _evidence(paths),
+        _operation("failed-before"),
+        _fixture("failed-before"),
+    )
+    assert MonitorRunRef.from_value(reference) is reference
+
+    with pytest.raises(MonitorReplayError) as error:
+        MonitorRunRefV2.from_value(reference.to_dict())
+
+    assert error.value.code == "MONITOR_REPLAY_INVALID"
+
+
+def test_replay_reference_envelope_provider_mismatch_preserves_authority(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = _paths(tmp_path)
+    evidence = _evidence(paths)
+    operation = _operation("failed-before")
+    first = ingest_monitor_replay(paths, evidence, operation, _fixture("failed-before"))
+    before_batches = _history_batches(paths, RUN_IDS["failed-before"])
+    reference_root = get_root(evidence, "monitor-run-ref", operation)
+    original_get_envelope = evidence.get_envelope
+    calls: list[str] = []
+
+    def contradictory_envelope(evidence_id: str):
+        calls.append(evidence_id)
+        envelope = original_get_envelope(evidence_id)
+        if evidence_id == reference_root.manifest_id:
+            return replace(envelope, parents=())
+        return envelope
+
+    monkeypatch.setattr(evidence, "get_envelope", contradictory_envelope)
+    with pytest.raises(MonitorReplayError) as error:
+        ingest_monitor_replay(paths, evidence, operation, _fixture("failed-before"))
+
+    assert error.value.code == "EVIDENCE_INTEGRITY_FAILURE"
+    assert reference_root.manifest_id in calls
+    assert _history_batches(paths, RUN_IDS["failed-before"]) == before_batches
+    assert get_root(evidence, "monitor-run-ref", operation).to_dict() == reference_root.to_dict()
+    assert first.run_ref_sha256 == reference_root.metadata["run_ref_sha256"]
+
+
+def test_replay_reference_artifact_provider_mismatch_preserves_authority(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = _paths(tmp_path)
+    evidence = _evidence(paths)
+    operation = _operation("failed-before")
+    first = ingest_monitor_replay(paths, evidence, operation, _fixture("failed-before"))
+    before_batches = _history_batches(paths, RUN_IDS["failed-before"])
+    reference_root = get_root(evidence, "monitor-run-ref", operation)
+    reference_envelope = evidence.get_envelope(reference_root.manifest_id)
+    reference_artifact = reference_envelope.artifacts[0]
+    original_read_artifact = evidence.read_artifact
+    calls: list[object] = []
+
+    def contradictory_artifact(artifact, *, maximum_bytes: int):
+        if artifact == reference_artifact:
+            calls.append(artifact)
+            return b"not-canonical-reference"
+        return original_read_artifact(artifact, maximum_bytes=maximum_bytes)
+
+    monkeypatch.setattr(evidence, "read_artifact", contradictory_artifact)
+    with pytest.raises(MonitorReplayError) as error:
+        ingest_monitor_replay(paths, evidence, operation, _fixture("failed-before"))
+
+    assert error.value.code == "EVIDENCE_INTEGRITY_FAILURE"
+    assert calls == [reference_artifact]
+    assert _history_batches(paths, RUN_IDS["failed-before"]) == before_batches
+    assert first.run_ref_sha256 == reference_root.metadata["run_ref_sha256"]
 
 
 def test_exact_retry_is_idempotent_and_different_intent_conflicts_without_append(tmp_path: Path) -> None:
