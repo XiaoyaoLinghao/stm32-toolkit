@@ -8,8 +8,9 @@ Monitor, tests, and evidence-driven diagnosis. Claude Code is a thin adapter to 
 
 ## 1.0.0 local release candidate and runtime boundary
 
-This repository contains the accepted 1.0.0 local release candidate. It has not been tagged, published,
-or released. The official source is
+This repository contains the pending 1.0.0 local release candidate. Final release validation and
+acceptance are owned by the primary release workflow. It has not been tagged, published, or released.
+The official source is
 `https://github.com/XiaoyaoLinghao/stm32-toolkit.git`; candidate builds bind one full 40-hex Git
 CodeHead and a closed Windows CPython 3.12 wheelhouse. The release contract is CPython `>=3.12,<3.13`; the managed interpreter is selected only from
 `DATA_ROOT/runtime/1.0.0/Scripts/python.exe`. A system interpreter is never an MCP fallback. The
@@ -74,8 +75,8 @@ uses only executable-plus-argument subprocesses, and does not push or publish:
 py -3.12 tools/release/build_0900_artifacts.py build `
   --repo-root C:\src\stm32-toolkit `
   --code-head <40-lowercase-hex-commit> `
-  --wheelhouse C:\tmp\p0902-wheelhouse `
-  --output-root C:\tmp\p0902-candidate
+  --wheelhouse D:\codex-tmp\v10b-0918\r10\wheelhouse `
+  --output-root D:\codex-tmp\v10b-0918\r10\artifacts\1.0.0
 ```
 
 Verify `CHECKSUMS.sha256` before extracting `stm32-toolkit-1.0.0-windows-x86_64.zip`. Point the

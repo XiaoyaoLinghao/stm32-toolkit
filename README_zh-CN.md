@@ -8,7 +8,8 @@ Keil→GCC 迁移、构建、探针工作流、Monitor、测试和证据诊断�
 
 ## 1.0.0 本地 release candidate 与运行时边界
 
-本仓库包含已验收的 **1.0.0 本地 release candidate**，尚未打 tag、上传或 release。官方源码为
+本仓库包含待最终发布校验的 **1.0.0 本地 release candidate**；最终验收由 release 流程完成，
+目前尚未打 tag、上传或 release。官方源码为
 `https://github.com/XiaoyaoLinghao/stm32-toolkit.git`；candidate 构建绑定一个完整 40 位 Git
 CodeHead 和封闭的 Windows CPython 3.12 wheelhouse。发布契约是 CPython `>=3.12,<3.13`；托管
 解释器只能使用 `DATA_ROOT/runtime/1.0.0/Scripts/python.exe`。MCP 绝不回退到系统解释器。
@@ -71,8 +72,8 @@ release：
 py -3.12 tools/release/build_0900_artifacts.py build `
   --repo-root D:\src\stm32-toolkit `
   --code-head <40-位小写十六进制 commit> `
-  --wheelhouse D:\build-artifacts\p0902-wheelhouse `
-  --output-root D:\build-artifacts\p0902-candidate
+  --wheelhouse D:\codex-tmp\v10b-0918\r10\wheelhouse `
+  --output-root D:\codex-tmp\v10b-0918\r10\artifacts\1.0.0
 ```
 
 先验证外置的 `CHECKSUMS.sha256`，再解压 `stm32-toolkit-1.0.0-windows-x86_64.zip`。generic
