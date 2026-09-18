@@ -62,6 +62,8 @@
 
 任何代码修复必须有最小可复现差异和对应验证。若真实 CubeMX 生成暴露另一个核心模块缺陷，先由主对话框冻结该独立问题的文件/行为/测试边界，仍使用 Luna/max 实现；不让两位执行者同时修改核心配置或公共类型。
 
+2026-09-18 实际执行补充：descriptor 修复 `7a6dcfa97b7595a147cfc5a35cf725fa924ba39d` 已独立接受，首次真实 apply 到达 native validation 后报 `CUBEMX_NATIVE_OUTPUT_INVALID: native MCU identity is missing`，尚未 configure/build。现有失败清理删除生成目录，原 IOC 未保留，不能据预期格式修改 parser。工程实现者仅可增加本轮 `evidence/firmware/native-capture` 留证包装：仍调用原 `cli.main`，在 `creation_apply._default_validate` 前将实际受控生成目录及原 IOC 复制到 B 证据根，再原样调用原 validator 并传播结果。一次新 plan/prepare/apply 补齐原始字段后停止；不改环境注入、adapter、校验、生成文件或清理行为。这不是产品新入口。原始字段确证后再由主对话框冻结最小 parser 修正，复用保留原件作离线验证。
+
 ## 4. 波次二：集成审查与实机准备
 
 - 独立审查完整产品适配 diff 和完整 B 用户区 diff；源代码、项目 provenance、工具链和依赖与事实一致才进入下一阶段。
