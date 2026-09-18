@@ -106,3 +106,7 @@ VS10-B `ACCEPTED` 后另行决定整合 A+B 的 1.0 发布级验证。VS09-B/VS1
 完整 accepted base 仍为 `16a6e59dff7fed2999fae611e3d936b0b04bbabd`。原工程实现者在其干净 `native-fix` 分支 `7a6dcfa97b7595a147cfc5a35cf725fa924ba39d` 上，独占规格第 7 节的 `cubemx_project.py` 与既有 parser/apply 测试。主机适配已在 `8d4e6fd8da398ee553cb57bb9fae6a6451a9504d` 独立接受，不回退或重做。主对话框的共同候选为 B `integration` 工作树 `f5ef465e2b870c9bb86b6edbd941c673acf2bdca`，对应接受组件逐字节未变且十项针对性整合检查通过。
 
 先基于原始 IOC 字段完成 indexed-mode 交叉校验及有界回归，再对已留存真实 native root 调用现有 parser 验证；交付源代码 head、命令/结果和确切 model。新的产品修改必须经完整差异独立审查，之后才能用新 capability 恢复公开创建流程。不得修写证据中的 IOC、把留证副本激活为正式项目、绕过 parser 或预先实施 fixed-after。
+
+## 9. 本轮离线实施交付（2026-09-18）
+
+产品集成 code head 为 `f9c8ff7479f96ea799f6218f1c74efb90399424d`；host、descriptor 和 indexed IOC parser 的完整差异已独立接受。真实公开 create/apply 已完成原生校验、Debug/Release 与激活，项目无定制基线为 `2f4531550c56e4b1fd3c93e6de12aa542a35a66f`。正常 `3a34dfdaad97d29d47f1e5405b3dedfe52318d43` 和故障 `822d75758f5a705fd9ef1093f3bf9d8101191570` 均在正式根以干净 Git 完成 Debug/Release 构建；完整固件源码及最终产物独立核对均接受，ODR finding 闭合，状态为 SOFTWARE_READY / HARDWARE_PENDING。实际 fixed-after 未实施，项目停在故障版本。证据、原失败、源码/产物身份与未完成边界以[实施记录](../../codex/returns/2026-09-18-stm32tk-vs10b-offline-implementation.md)为准。波次二的部署及波次三实机仍待新 B 执行卡与授权；本轮零硬件、零远程操作。未变 A 证据继续保留。
