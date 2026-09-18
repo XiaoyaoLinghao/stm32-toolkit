@@ -39,6 +39,8 @@ run-local entry 若做命令行 substring 进程预检，参数必须从已记�
 
 关键字段未知的步骤不是 READY。先用现有源码、日志、CLI help 或既有函数离线补齐。若公共响应吞掉原始异常，必须在首次获准实机前准备好现有异常边界的捕获方式；不能失败后无授权重连补日志。新增脚本前说明现有入口为什么不够，并先离线验证。
 
+开始有限计时 attempt 前，冻结将实际调用的完整 argv，复用当前已验证命令结构，直接使用已安装 CLI 的 parser、mode 与 explicit-project-root 检查离线解析；不调用 main/backend。`test target execute` 自身必需 `--probe-id`，不能因 prepare 已指定而省略。动态 digest 等值只从本次返回写入已核对的位置，不在实机前重新手工拼接整条命令。2026-09-18 card04 因主代理遗漏 execute 的该参数而在解析阶段 exit2；这属于执行入口 INFRASTRUCTURE，未进入硬件，不能归因板态或重部署产品。原始记录和首错停止边界保留。
+
 使用 SVD 的 Monitor 场景，首次故障烧录前须直接复用已安装的 `select_svd`，用当前工程实际 target、svdDevice、完整 SVD 与 debug.readableRegions 做离线语义预检。现有契约要求整个 SVD 中每个寄存器都落入可信范围，仅校验文件哈希、Watch 中 GPIOE.ODR 的地址或部署健康不足以证明可连接。SVD、device 或 readableRegions 改变时重做此项；文档、命名或无关行为不触发。2026-09-18 B 全量 SVD 配单个 ODR 4字节范围，在外层探针枚举之后、观察 supervisor/lease/attach 之前触发 SVD_ADDRESS_OUT_OF_RANGE；应先修工程配置，不能归因板卡或扩大硬件重试。现有函数即可完成检查，不新增诊断框架。
 
 2026-09-17 编程异常修正候选使用现有响应的 `details.programDiagnostic`：记录实际 Python 调用阶段、脱敏异常及原因链、可用的 OS 错误号/Flash 地址/算法返回码。部署该候选前须用既有 fake/Windows worker 测试证明字段从 backend 经 IPC 到 Target 公共响应仍保留；外层捕获脚本无法还原 worker 已丢弃的异常。`program-call` 只表示进入编程调用，不能判定擦除或写入是否完成；无字段或 null 就记录证据缺失，不能再次自动连接补证。现有部署在该候选实际部署验证前仍按旧能力记录。
@@ -191,6 +193,8 @@ T10 采样入口复用已接受的有限 Monitor 生命周期，在执行卡中�
 按已核实绝对路径清理本轮不再需要的临时输出；保留源码测试、可复用基线、用户数据、共享缓存、rollback、授权账本、有效 PASS 和最小失败证据。Windows 使用同一 PowerShell 原生命令，删除前确认在本轮目录内。自动策略拒绝 cleanup 时记录保留，不换工具/路径绕过。没有新测试不制造清理工作。
 
 ## 8. 当前验收断点（2026-09-18）
+
+**最新：card04 已 TERMINAL_STOPPED_BEFORE_HARDWARE_ARGUMENT_ERROR。** 用户授权后，新 attempt 完成到 revision2，静态恢复 prepare 成功；主代理 execute argv 遗漏必填 `--probe-id`，CLI 解析 exit2，未进入 backend/烧录/读取。无新 Target TestRun、Monitor window 或物理 lease，prepared action 未消费，原 registry=released、相关进程0、monitor04 两侧 marker 均不存在。现有 parser 离线复现失败并验证完整修正 argv 通过，独立审查确认阶段与原因；未重试硬件或修改产品/固件。后续须以完整固化参数、新 attempt/action/log 和新确认的有限操作继续；现有部署、构建、SVD 与采样入口证据保留。见 [本轮参数失败与修正](../codex/returns/2026-09-18-stm32tk-vs10b-card04-argument-stop.md)。下段 OFFLINE_PLAN_ACCEPTED 为执行前状态。
 
 **最新继续断点：card04 已 OFFLINE_PLAN_ACCEPTED；尚无新实机操作。** 原 Luna/max 固件所有者已恢复并完成只读执行准备。新采样入口 `entries/monitor04/vs10b_monitor_entry.py` 仅将输出根改为 monitor04，SHA256 `5a5a8b678e49b2bdda28f51e2e859cbe5df344fd82c09b563fc894b67512441a`；配置 SHA256 `32bc2140d418428560c98d17b18b1cbd5ef256094ccd1ee5b7960f5cd3036a53`。现有 `--offline-preflight` exit0，六项实际 pins 一致；主代理独立核对完整原始字节差异仅 +2 bytes，旧入口/marker 保留。独立审查者已接受本轮身份、输出及有限次数执行卡；新 begin 的 origin/source/descriptor digests 和四个异常日志文件名已明确。卡片及限定结论在 `D:\codex-tmp\v10b-0918\evidence\closed-loop-04`。当前工程仍为 d29281d 故障固件，D3 修复仅为预测；source12df 部署及已接受构建不重复。下一步只在新卡硬件授权、当前现场确认和即时进程/租约检查成立后，执行故障/修复各一次 under-reset100kHz 烧录、各一次30秒100ms采样及串行 Diagnostic 闭环；首个非预期异常停止。新 attempt/action/硬件均未创建或调用，不宣称 VS10-B 验收通过。下段配置修复结论继续有效，额度不足仅是其当时记录。
 
