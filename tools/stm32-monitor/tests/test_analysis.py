@@ -1276,6 +1276,141 @@ def test_result_requires_request_digest_and_exact_lineage_binding(tmp_path: Path
         AnalysisResult.from_value(tampered)
 
 
+def test_persisted_lineage_rejects_schema_and_v1_continuation_bindings(
+    tmp_path: Path,
+) -> None:
+    _, _, lineage, _ = _authoritative_case(tmp_path)
+
+    invalid_schema = lineage.to_dict()
+    invalid_schema["schema"] = "stm32-monitor-analysis-lineage/9"
+    with pytest.raises(AnalysisError) as schema_error:
+        AnalysisLineage.from_value(invalid_schema)
+    assert schema_error.value.code == ANALYSIS_REQUEST_INVALID
+
+    closed_wire = lineage.to_dict()
+    closed_wire["before_session_id"] = "session-before"
+    with pytest.raises(AnalysisError) as closed_error:
+        AnalysisLineage.from_value(closed_wire)
+    assert closed_error.value.code == ANALYSIS_REQUEST_INVALID
+
+    with pytest.raises(AnalysisError) as constructor_error:
+        replace(lineage, before_session_id="session-before")
+    assert constructor_error.value.code == ANALYSIS_REQUEST_INVALID
+
+
+def test_persisted_result_rejects_schema_and_native_request_bindings(
+    tmp_path: Path,
+) -> None:
+    request, _, lineage, result = _authoritative_case(tmp_path)
+
+    schema_mismatch = result.to_dict()
+    schema_mismatch["schema"] = "stm32-monitor-analysis/2"
+    unsigned = dict(schema_mismatch)
+    unsigned.pop("analysis_id")
+    schema_mismatch["analysis_id"] = sha256(
+        canonical_replay_json_bytes(unsigned)
+    ).hexdigest()
+    with pytest.raises(AnalysisError) as schema_error:
+        AnalysisResult.from_value(schema_mismatch)
+    assert schema_error.value.code == ANALYSIS_REQUEST_INVALID
+
+    before_ref, before = _native_physical_source(
+        role="failed-before",
+        operation_id="11111111-1111-4111-8111-111111111111",
+        group_id="22222222-2222-4222-8222-222222222222",
+        values=(10, 20),
+    )
+    after_ref, after = _native_physical_source(
+        role="fixed-after",
+        operation_id="33333333-3333-4333-8333-333333333333",
+        group_id="44444444-4444-4444-8444-444444444444",
+        values=(11, 25),
+    )
+    native_request = AnalysisRequest(
+        schema="stm32-monitor-analysis-request/2",
+        before_run=before_ref,
+        after_run=after_ref,
+        selector_kind="register",
+        selector="r0",
+        alignment="bounded-run-relative",
+        minimum_valid_pairs=2,
+        scalar_policy="native-uint-register/1",
+        max_pairing_skew_ns=1,
+    )
+    native_computation = analyze_monitor_windows(native_request, before, after)
+    native_lineage = AnalysisLineage.new(
+        before_run=before_ref,
+        after_run=after_ref,
+        source_change_declaration_id=None,
+    )
+    native_result = AnalysisResult.new(
+        request=native_request,
+        computation=native_computation,
+        lineage=native_lineage,
+    )
+
+    request_payload = native_request.to_dict()
+    mismatched_before = _ref_with(
+        before_ref,
+        operation_id="55555555-5555-4555-8555-555555555555",
+        origin_run_id="55555555-5555-4555-8555-555555555555",
+        projected_run_id="55555555-5555-4555-8555-555555555555",
+    )
+    request_payload["before_run"] = mismatched_before.to_dict()
+    result_payload = native_result.to_dict()
+    result_payload["request"] = request_payload
+    result_payload["request_digest"] = sha256(
+        canonical_replay_json_bytes(request_payload)
+    ).hexdigest()
+    unsigned = dict(result_payload)
+    unsigned.pop("analysis_id")
+    result_payload["analysis_id"] = sha256(
+        canonical_replay_json_bytes(unsigned)
+    ).hexdigest()
+    with pytest.raises(AnalysisError) as run_error:
+        AnalysisResult.from_value(result_payload)
+    assert run_error.value.code == ANALYSIS_REQUEST_INVALID
+
+    legacy_request = AnalysisRequest(
+        schema="stm32-monitor-analysis-request/1",
+        before_run=before_ref,
+        after_run=after_ref,
+        selector_kind="variable",
+        selector="counter",
+        alignment="run-relative",
+        minimum_valid_pairs=2,
+    )
+    native_request_mismatch = native_result.to_dict()
+    native_request_mismatch["request"] = legacy_request.to_dict()
+    native_request_mismatch["request_digest"] = legacy_request.request_digest
+    unsigned = dict(native_request_mismatch)
+    unsigned.pop("analysis_id")
+    native_request_mismatch["analysis_id"] = sha256(
+        canonical_replay_json_bytes(unsigned)
+    ).hexdigest()
+    with pytest.raises(AnalysisError) as request_schema_error:
+        AnalysisResult.from_value(native_request_mismatch)
+    assert request_schema_error.value.code == ANALYSIS_REQUEST_INVALID
+
+    lineage_mismatch = native_result.to_dict()
+    mismatched_identity = cast(dict[str, object], lineage_mismatch["identity"])
+    mismatched_identity["target_device"] = "host:other"
+    unsigned = dict(lineage_mismatch)
+    unsigned.pop("analysis_id")
+    lineage_mismatch["analysis_id"] = sha256(
+        canonical_replay_json_bytes(unsigned)
+    ).hexdigest()
+    with pytest.raises(AnalysisError) as lineage_error:
+        AnalysisResult.from_value(lineage_mismatch)
+    assert lineage_error.value.code == ANALYSIS_REQUEST_INVALID
+
+    legacy_with_request = result.to_dict()
+    legacy_with_request["request"] = request.to_dict()
+    with pytest.raises(AnalysisError) as closed_result_error:
+        AnalysisResult.from_value(legacy_with_request)
+    assert closed_result_error.value.code == ANALYSIS_REQUEST_INVALID
+
+
 def test_result_rejects_completed_outcome_below_request_threshold(tmp_path: Path) -> None:
     request, computation, lineage, _ = _authoritative_case(tmp_path)
     higher_threshold = _request(request.before_run, request.after_run, minimum=3)

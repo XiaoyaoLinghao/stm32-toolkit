@@ -10,7 +10,7 @@ from uuid import UUID
 import pytest
 import stm32_monitor.analysis_workflows as workflows
 
-from stm32_monitor.analysis import AnalysisRequest
+from stm32_monitor.analysis import AnalysisRequest, DiagnosticMarker
 from stm32_monitor.analysis import analyze_monitor_windows
 from stm32_monitor.analysis_workflows import (
     AnalysisBundleRef,
@@ -801,6 +801,7 @@ def test_analysis_publication_rejects_cross_linked_public_graph_references(
     declaration = _declaration(tmp_path, evidence, before, after)
     publication = _publish(paths, evidence, before, after, declaration)
     wire = publication.to_dict()
+    before_tree = _evidence_tree(evidence)
 
     forged_evidence = dict(wire)
     forged_evidence["analysis_evidence_ref"] = {
@@ -811,14 +812,38 @@ def test_analysis_publication_rejects_cross_linked_public_graph_references(
         AnalysisPublication.from_value(forged_evidence)
     assert evidence_error.value.code == "ANALYSIS_WORKFLOW_INVALID"
 
+    marker = publication.diagnostic_marker
+    marker_with_wrong_analysis = DiagnosticMarker.new(
+        analysis_id="f" * 64,
+        analysis_evidence_id=publication.analysis_evidence_ref.evidence_id,
+        diagnostic_session_id=marker.diagnostic_session_id,
+        hypothesis_id=marker.hypothesis_id,
+        polarity=marker.polarity,
+        label=marker.label,
+        rationale=marker.rationale,
+    )
+    assert DiagnosticMarker.from_value(marker_with_wrong_analysis.to_dict()) == marker_with_wrong_analysis
     forged_marker = dict(wire)
-    forged_marker["diagnostic_marker"] = {
-        **cast(dict[str, object], wire["diagnostic_marker"]),
-        "analysis_evidence_id": "e" * 64,
-    }
+    forged_marker["diagnostic_marker"] = marker_with_wrong_analysis.to_dict()
     with pytest.raises(AnalysisWorkflowError) as marker_error:
         AnalysisPublication.from_value(forged_marker)
     assert marker_error.value.code == "ANALYSIS_WORKFLOW_INVALID"
+
+    marker_with_wrong_evidence = DiagnosticMarker.new(
+        analysis_id=publication.analysis_result.analysis_id,
+        analysis_evidence_id="e" * 64,
+        diagnostic_session_id=marker.diagnostic_session_id,
+        hypothesis_id=marker.hypothesis_id,
+        polarity=marker.polarity,
+        label=marker.label,
+        rationale=marker.rationale,
+    )
+    assert DiagnosticMarker.from_value(marker_with_wrong_evidence.to_dict()) == marker_with_wrong_evidence
+    forged_marker_evidence = dict(wire)
+    forged_marker_evidence["diagnostic_marker"] = marker_with_wrong_evidence.to_dict()
+    with pytest.raises(AnalysisWorkflowError) as marker_evidence_error:
+        AnalysisPublication.from_value(forged_marker_evidence)
+    assert marker_evidence_error.value.code == "ANALYSIS_WORKFLOW_INVALID"
 
     forged_marker_ref = dict(wire)
     forged_marker_ref["diagnostic_marker_ref"] = {
@@ -828,6 +853,7 @@ def test_analysis_publication_rejects_cross_linked_public_graph_references(
     with pytest.raises(AnalysisWorkflowError) as marker_ref_error:
         AnalysisPublication.from_value(forged_marker_ref)
     assert marker_ref_error.value.code == "ANALYSIS_WORKFLOW_INVALID"
+    assert _evidence_tree(evidence) == before_tree
 
 
 @pytest.mark.parametrize(
@@ -1155,27 +1181,37 @@ def test_history_repeated_cursor_is_rejected_before_derived_publication(
     before_tree = _evidence_tree(evidence)
     original = HistoryStore.query_history
     first_page: HistoryPage | None = None
+    second_page: HistoryPage | None = None
+    queries: list[HistoryQuery] = []
     calls = 0
 
     def repeated_cursor(
         self: HistoryStore, query: HistoryQuery
     ) -> ProtocolResult[HistoryPage]:
-        nonlocal calls, first_page
+        nonlocal calls, first_page, second_page
         calls += 1
+        queries.append(query)
         result = original(self, replace(query, limit=1))
         assert result.ok and result.data is not None
         if first_page is None:
             first_page = result.data
         else:
+            second = result.data.batches[0]
+            repeated_batch = replace(
+                second,
+                sequence=first_page.batches[0].sequence + 1,
+                start_ordinal=0,
+            )
+            second_page = HistoryPage.create(
+                (repeated_batch,),
+                next_cursor=first_page.next_cursor,
+            )
             result = ProtocolResult(
                 True,
                 result.operation,
                 "OK",
                 "",
-                HistoryPage.create(
-                    result.data.batches,
-                    next_cursor=first_page.next_cursor,
-                ),
+                second_page,
                 protocol=result.protocol,
             )
         return result
@@ -1184,8 +1220,263 @@ def test_history_repeated_cursor_is_rejected_before_derived_publication(
     with pytest.raises(AnalysisWorkflowError) as error:
         _publish(paths, evidence, before, after, declaration)
 
-    assert calls >= 2
+    assert calls == 2
     assert first_page is not None and first_page.next_cursor is not None
+    assert second_page is not None
+    assert queries[1].cursor == first_page.next_cursor
+    assert second_page.batches[0].start_ordinal + len(second_page.batches[0].values) - 1 == 0
+    assert error.value.code == "INCOMPATIBLE_IDENTITY"
+    assert _evidence_tree(evidence) == before_tree
+    assert not any("monitor-analysis" in path for path in _evidence_tree(evidence))
+
+
+def test_history_multipage_reopened_batch_is_rejected_before_derived_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _paths(tmp_path)
+    evidence, before, after = _ingest_pair(paths)
+    declaration = _declaration(tmp_path, evidence, before, after)
+    before_tree = _evidence_tree(evidence)
+    original = HistoryStore.query_history
+    first_batch: HistoryBatchSlice | None = None
+    calls = 0
+
+    def reopened_batch(
+        self: HistoryStore, query: HistoryQuery
+    ) -> ProtocolResult[HistoryPage]:
+        nonlocal calls, first_batch
+        calls += 1
+        result = original(self, replace(query, cursor=None))
+        assert result.ok and result.data is not None
+        source = result.data.batches[0]
+        if first_batch is None:
+            first_batch = source
+            page_batch = source
+            next_cursor = f"1:{source.start_ordinal + len(source.values) - 1}"
+        elif calls == 2:
+            page_batch = replace(source, sequence=first_batch.sequence + 1)
+            next_cursor = f"1:{page_batch.start_ordinal + len(page_batch.values) - 1}"
+        else:
+            page_batch = replace(source, sequence=first_batch.sequence)
+            next_cursor = None
+        return ProtocolResult(
+            True,
+            result.operation,
+            "OK",
+            "",
+            HistoryPage.create((page_batch,), next_cursor=next_cursor),
+            protocol=result.protocol,
+        )
+
+    monkeypatch.setattr(HistoryStore, "query_history", reopened_batch)
+    with pytest.raises(AnalysisWorkflowError) as error:
+        _publish(paths, evidence, before, after, declaration)
+
+    assert calls == 3
+    assert first_batch is not None
+    assert error.value.code == "INCOMPATIBLE_IDENTITY"
+    assert _evidence_tree(evidence) == before_tree
+    assert not any("monitor-analysis" in path for path in _evidence_tree(evidence))
+
+
+def test_history_multipage_static_contradiction_is_rejected_before_derived_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _paths(tmp_path)
+    evidence, before, after = _ingest_pair(paths)
+    declaration = _declaration(tmp_path, evidence, before, after)
+    before_tree = _evidence_tree(evidence)
+    original = HistoryStore.query_history
+    calls = 0
+
+    def static_contradiction(
+        self: HistoryStore, query: HistoryQuery
+    ) -> ProtocolResult[HistoryPage]:
+        nonlocal calls
+        calls += 1
+        result = original(self, replace(query, cursor=None))
+        assert result.ok and result.data is not None
+        source = result.data.batches[0]
+        declared_count = max(source.batch_value_count, 2)
+        if calls == 1:
+            first = replace(
+                source,
+                start_ordinal=0,
+                batch_value_count=declared_count,
+                values=(source.values[0],),
+            )
+            next_cursor = f"1:{len(first.values) - 1}"
+            page_batch = first
+        else:
+            page_batch = replace(
+                source,
+                start_ordinal=1,
+                batch_value_count=declared_count,
+                values=(source.values[0],),
+                group_revision=source.group_revision + 1,
+            )
+            next_cursor = None
+        return ProtocolResult(
+            True,
+            result.operation,
+            "OK",
+            "",
+            HistoryPage.create((page_batch,), next_cursor=next_cursor),
+            protocol=result.protocol,
+        )
+
+    monkeypatch.setattr(HistoryStore, "query_history", static_contradiction)
+    with pytest.raises(AnalysisWorkflowError) as error:
+        _publish(paths, evidence, before, after, declaration)
+
+    assert calls == 2
+    assert error.value.code == "INCOMPATIBLE_IDENTITY"
+    assert _evidence_tree(evidence) == before_tree
+    assert not any("monitor-analysis" in path for path in _evidence_tree(evidence))
+
+
+def test_history_multipage_value_limit_is_rejected_before_derived_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _paths(tmp_path)
+    evidence, before, after = _ingest_pair(paths)
+    declaration = _declaration(tmp_path, evidence, before, after)
+    before_tree = _evidence_tree(evidence)
+    original = HistoryStore.query_history
+    calls = 0
+
+    def oversized_window(
+        self: HistoryStore, query: HistoryQuery
+    ) -> ProtocolResult[HistoryPage]:
+        nonlocal calls
+        calls += 1
+        result = original(self, replace(query, cursor=None))
+        assert result.ok and result.data is not None
+        source = result.data.batches[0]
+        if calls == 1:
+            page_batches = tuple(
+                replace(
+                    source,
+                    sequence=source.sequence + index,
+                    scheduled_unix_ns=source.scheduled_unix_ns + index,
+                    captured_unix_ns=source.captured_unix_ns + index,
+                    start_ordinal=0,
+                    batch_value_count=250,
+                    values=(source.values[0],) * 250,
+                )
+                for index in range(40)
+            )
+            return ProtocolResult(
+                True,
+                result.operation,
+                "OK",
+                "",
+                HistoryPage.create(page_batches, next_cursor="1:249"),
+                protocol=result.protocol,
+            )
+        final_batch = replace(
+            source,
+            sequence=source.sequence + 40,
+            start_ordinal=0,
+            batch_value_count=1,
+            values=(source.values[0],),
+        )
+        return ProtocolResult(
+            True,
+            result.operation,
+            "OK",
+            "",
+            HistoryPage.create((final_batch,), next_cursor=None),
+            protocol=result.protocol,
+        )
+
+    monkeypatch.setattr(HistoryStore, "query_history", oversized_window)
+    with pytest.raises(AnalysisWorkflowError) as error:
+        _publish(paths, evidence, before, after, declaration)
+
+    assert calls == 2
+    assert error.value.code == "INCOMPATIBLE_IDENTITY"
+    assert _evidence_tree(evidence) == before_tree
+    assert not any("monitor-analysis" in path for path in _evidence_tree(evidence))
+
+
+def test_history_multipage_incomplete_batch_is_rejected_before_derived_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _paths(tmp_path)
+    evidence, before, after = _ingest_pair(paths)
+    declaration = _declaration(tmp_path, evidence, before, after)
+    before_tree = _evidence_tree(evidence)
+    original = HistoryStore.query_history
+    calls = 0
+
+    def incomplete_batch(
+        self: HistoryStore, query: HistoryQuery
+    ) -> ProtocolResult[HistoryPage]:
+        nonlocal calls
+        calls += 1
+        result = original(self, query)
+        assert result.ok and result.data is not None
+        source = result.data.batches[0]
+        incomplete = replace(
+            source,
+            start_ordinal=0,
+            batch_value_count=max(source.batch_value_count, 2),
+            values=(source.values[0],),
+        )
+        return ProtocolResult(
+            True,
+            result.operation,
+            "OK",
+            "",
+            HistoryPage.create((incomplete, *result.data.batches[1:]), next_cursor=None),
+            protocol=result.protocol,
+        )
+
+    monkeypatch.setattr(HistoryStore, "query_history", incomplete_batch)
+    with pytest.raises(AnalysisWorkflowError) as error:
+        _publish(paths, evidence, before, after, declaration)
+
+    assert calls == 1
+    assert error.value.code == "INCOMPATIBLE_IDENTITY"
+    assert _evidence_tree(evidence) == before_tree
+    assert not any("monitor-analysis" in path for path in _evidence_tree(evidence))
+
+
+def test_history_multipage_binding_identity_is_rejected_before_derived_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _paths(tmp_path)
+    evidence, before, after = _ingest_pair(paths)
+    declaration = _declaration(tmp_path, evidence, before, after)
+    before_tree = _evidence_tree(evidence)
+    original = HistoryStore.query_history
+    calls = 0
+
+    def mismatched_binding(
+        self: HistoryStore, query: HistoryQuery
+    ) -> ProtocolResult[HistoryPage]:
+        nonlocal calls
+        calls += 1
+        result = original(self, query)
+        assert result.ok and result.data is not None
+        source = result.data.batches[0]
+        wrong_build_id = "f" * 64 if source.binding.build_id != "f" * 64 else "0" * 64
+        wrong = replace(source, binding=replace(source.binding, build_id=wrong_build_id))
+        return ProtocolResult(
+            True,
+            result.operation,
+            "OK",
+            "",
+            HistoryPage.create((wrong, *result.data.batches[1:]), next_cursor=None),
+            protocol=result.protocol,
+        )
+
+    monkeypatch.setattr(HistoryStore, "query_history", mismatched_binding)
+    with pytest.raises(AnalysisWorkflowError) as error:
+        _publish(paths, evidence, before, after, declaration)
+
+    assert calls == 1
     assert error.value.code == "INCOMPATIBLE_IDENTITY"
     assert _evidence_tree(evidence) == before_tree
     assert not any("monitor-analysis" in path for path in _evidence_tree(evidence))
