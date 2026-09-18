@@ -26,8 +26,9 @@ Only the three owned existing test modules changed:
 
 - `tools/stm32-monitor/tests/test_analysis.py` covers native request closure
   and physical-reference admission, bounded native alignment with an excluded
-  position, and continuation lineage requiring distinct sessions, changed
-  firmware, and a declaration.
+  position, and continuation lineage requiring distinct sessions and a source
+  change declaration; the changed-firmware reference is the positive setup for
+  that lineage.
 - `tools/stm32-monitor/tests/test_analysis_workflows.py` covers source-diff
   provider failure without bundle mutation and distinct corrupt-history versus
   unavailable-history error mapping before derived publication.
@@ -52,6 +53,13 @@ variables, child `tempfile.gettempdir()`, stdout, stderr and exit record are
 retained as `selected-command.txt`, `selected-environment.json`,
 `selected.stdout.txt`, `selected.stderr.txt` and `selected-exit.json` under
 `D:\codex-tmp\v10b-0918\r10\e\analysis-regressions\`.
+
+After review, the provider-failure CLI case was rerun alone with a call
+sentinel to prove that the patched `compare_monitor_runs` seam was reached:
+`test_analysis_provider_failure_is_sanitized_without_exception_or_path_leak`
+passed, exit 0. The original focused seven-case result and the affected
+88-case result below remain the retained slice evidence; this correction did
+not change product source bytes or the retained coverage database.
 
 The required affected-module run used the final product source roots on
 `PYTHONPATH`, bound `TEMP`, `TMP` and `TMPDIR` to

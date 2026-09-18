@@ -321,8 +321,11 @@ def test_analysis_provider_failure_is_sanitized_without_exception_or_path_leak(
         raising=False,
     )
     private_path = tmp_path / "private-provider-secret.json"
+    calls = 0
 
     def fail(*args: object, **kwargs: object) -> object:
+        nonlocal calls
+        calls += 1
         del args, kwargs
         raise RuntimeError(f"private provider secret at {private_path}")
 
@@ -354,6 +357,7 @@ def test_analysis_provider_failure_is_sanitized_without_exception_or_path_leak(
     )
 
     assert code == 1
+    assert calls == 1
     payload = json.loads(output.getvalue())
     assert payload["code"] == "ENVIRONMENT_FAILURE"
     assert payload["message"] == "Monitor analysis provider failed"

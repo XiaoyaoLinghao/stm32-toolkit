@@ -428,7 +428,7 @@ def test_native_alignment_returns_inconclusive_when_pairing_skew_excludes_a_posi
     assert result.changed is None
 
 
-def test_continuation_lineage_requires_distinct_sessions_and_changed_firmware() -> None:
+def test_continuation_lineage_requires_distinct_sessions_and_declaration() -> None:
     before = _physical_reference(
         role="failed-before",
         operation_id="11111111-1111-4111-8111-111111111111",
