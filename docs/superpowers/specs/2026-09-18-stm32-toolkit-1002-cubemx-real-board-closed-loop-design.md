@@ -173,3 +173,13 @@ A 的共享协议、Probe/handoff、0.9 安装/升级/安全/包、UI 和既有�
 当前工作完成的条件是：资产和入口事实具名、最小产品缺口明确定义、自包含规格/计划及文件所有权写明并经独立审查。规格获批后才能交 Luna/max 开始实施；实机前另有具体操作卡和 B 的授权边界。`DRAFT/OFFLINE_PREFLIGHT`、`SOFTWARE_READY`、`HARDWARE_PENDING` 与 `ACCEPTED` 不混用。
 
 本规格采用的本地工程经验：GL-001（active-provisional，先冻结共享契约）；STM32TK-EL-004（active，recovery prepare 不访问硬件）；STM32TK-EL-007（active-provisional，三项临时目录变量同时绑定）；STM32TK-EL-008（active-provisional，测试结论必须有实际执行证据）。这些经验决定预检、实现和留证边界，不替代项目当前源码与本次实机证据。
+
+## 7. 已确证的 indexed MCU 原生身份修正（2026-09-18）
+
+证据为 `evidence/firmware/native-capture/run-20260918T041200Z/native-root/b.ioc`，SHA256 `c3d31d0dbe513e7ca2e6d92207e81e238f9f777b767b87ef1780391b82ac6a40`。真实输出为 `Mcu.Name=STM32F429Z(E-G)Tx`、`Mcu.UserName=STM32F429ZGTx`、`Mcu.CPN=STM32F429ZGT6`、`ProjectManager.DeviceId=STM32F429ZGTx`。现有 `cubemx_project.py:431-434` 只读取 Mcu.Name，随后仅接受字母数字而拒绝括号，触发 `CUBEMX_NATIVE_OUTPUT_INVALID: native MCU identity is missing`。执行到原生校验，尚未配置、构建或激活。这是 PRODUCT 身份解析错误，不是板卡或程序运行结论。
+
+最小产品范围仅 `cubemx_project.py`，工程实现者仍为原 Luna/max。仅对 `request.source.kind=mcu` 且已有环境绑定 native index path/hash 的新 indexed 模式：读取唯一 Mcu.Name 和 Mcu.UserName；前者必须匹配环境已校验的 `native_descriptor_path` 文件 stem，后者必须是字母数字组成的精确 STM32 leaf，且同时匹配请求值与 `native_source_token`。按既有型号比较语义忽略大小写，禁止分组展开、通配、前缀猜测或从 CPN 剪切推导。ProjectManager.DeviceId 若存在，须唯一且匹配相同 leaf；不靠缺省值掩盖冲突。缺失、重复、格式错误或与受授权环境不符，均使用既有 `CUBEMX_NATIVE_OUTPUT_INVALID` 拒绝。
+
+旧 exact MCU 模式和既有 board/ioc 路由保持原行为。没有已绑定索引环境时不能仅凭新字段放行分组名。目标 model.device 使用精确 leaf，原 IOC、库存 hash、环境绑定和 generation ownership 不改写。其余 CMake、source/linker/package/parser 校验和所有创建授权/原子激活契约保持原样。
+
+验证复用 `test_cubemx_project.py`，必要时使用既有 `test_creation_apply.py`：支持匹配的 G/E leaf；拒绝错误 group、错误 leaf、缺失/重复字段、冲突 DeviceId，以及无索引环境的分组名；保留既有 exact/parser 回归。使用已保留的真实 native root 调用现有 `parse_native_project` 作只读全解析，核对实际 model 及旧错误已消失；不改原件、不重新生成来诊断同一结论。完整 diff 经独立审查通过后，才允许继续下一次正常公开 create/apply 与正常/故障工程准备。此修正不新增部署、硬件或远程权限。

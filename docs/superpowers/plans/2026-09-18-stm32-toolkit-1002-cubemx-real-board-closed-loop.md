@@ -100,3 +100,9 @@ VS10-B `ACCEPTED` 后另行决定整合 A+B 的 1.0 发布级验证。VS09-B/VS1
 实施仍须真实 create/apply 后保存原始生成库存，定制后执行公共 configure/build，并冻结定制工程不进行 regenerate。这三项是实施门槛，不能在报告中预先标为完成。
 
 实施预检发现首版 B attempt `/3` 与已发布 A continuation `/3` 冲突，已将 B attempt 唯一改为 `/4`，policy 仍 `/3`。同一独立审查者已核对占用和入口路由，结论为 `ACCEPTED（仅针对编号修订和路由设计）`；begin 按 scenario、checkpoint/authorize/show/resume 按精确 schema 分流，未知 schema 拒绝。此修订保持用户批准的 B 行为和旧契约，未扩张模块或权限。
+
+## 8. 原生 MCU 身份解析的最小纠正
+
+完整 accepted base 仍为 `16a6e59dff7fed2999fae611e3d936b0b04bbabd`。原工程实现者在其干净 `native-fix` 分支 `7a6dcfa97b7595a147cfc5a35cf725fa924ba39d` 上，独占规格第 7 节的 `cubemx_project.py` 与既有 parser/apply 测试。主机适配已在 `8d4e6fd8da398ee553cb57bb9fae6a6451a9504d` 独立接受，不回退或重做。主对话框的共同候选为 B `integration` 工作树 `f5ef465e2b870c9bb86b6edbd941c673acf2bdca`，对应接受组件逐字节未变且十项针对性整合检查通过。
+
+先基于原始 IOC 字段完成 indexed-mode 交叉校验及有界回归，再对已留存真实 native root 调用现有 parser 验证；交付源代码 head、命令/结果和确切 model。新的产品修改必须经完整差异独立审查，之后才能用新 capability 恢复公开创建流程。不得修写证据中的 IOC、把留证副本激活为正式项目、绕过 parser 或预先实施 fixed-after。
