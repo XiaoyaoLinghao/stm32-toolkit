@@ -134,7 +134,8 @@ def frozen_node_ui(tmp_path: Path) -> Path:
     dependency_tree = support / "node_modules"
     if not dependency_tree.is_dir():
         pytest.fail(f"approved Node dependency tree is missing: {dependency_tree}")
-    staged = tmp_path / "ui"
+    staged = tmp_path / "native-evidence" / "ui"
+    staged.parent.mkdir()
     shutil.copytree(source, staged, ignore=shutil.ignore_patterns("node_modules"))
     shutil.copytree(dependency_tree, staged / "node_modules")
     return staged
@@ -838,8 +839,7 @@ def test_real_node_runners_produce_normalized_portable_native_artifacts(
     executable = ui / "node_modules" / ".bin" / tool
     if not executable.is_file():
         pytest.fail(f"frozen Node executable is missing: {executable}")
-    evidence = tmp_path / f"real-{tool}"
-    evidence.mkdir()
+    evidence = frozen_node_ui.parent
     gate = GateRequest(
         f"REAL-{tool[:-4].upper()}", (str(executable), *argv), ui, 60, expected,
     )
