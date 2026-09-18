@@ -58,6 +58,7 @@ HEADS = {
     "0603Product": "5" * 40,
 }
 REPOSITORY_URL = "https://github.com/XiaoyaoLinghao/stm32-toolkit.git"
+APPROVED_SUPPORT_ROOT_ENV = "STM32TK_RELEASE_SUPPORT_ROOT"
 
 
 @pytest.mark.parametrize(
@@ -110,6 +111,28 @@ def tmp_path(tmp_path_factory: pytest.TempPathFactory) -> Path:
             function(path)
 
         shutil.rmtree(root, onerror=clear_readonly)
+
+
+@pytest.fixture
+def approved_support_profile(tmp_path: Path) -> Path:
+    """Stage and revalidate the approved 17-file support fixture under this run root."""
+    raw = os.environ.get(APPROVED_SUPPORT_ROOT_ENV)
+    if not raw:
+        pytest.fail(f"{APPROVED_SUPPORT_ROOT_ENV} is required for the release fixture")
+    source = Path(raw)
+    source_profile = source / "feasibility" / "profile.json"
+    try:
+        gates.verify_support_root(source_profile)
+    except ControllerError as exc:
+        pytest.fail(f"approved support fixture is invalid: {exc}")
+    staged = tmp_path / "approved-support"
+    shutil.copytree(source, staged)
+    profile = staged / "feasibility" / "profile.json"
+    try:
+        gates.verify_support_root(profile)
+    except ControllerError as exc:
+        pytest.fail(f"staged support fixture is invalid: {exc}")
+    return profile
 
 
 @pytest.fixture(autouse=True)
@@ -929,7 +952,7 @@ def test_candidate_reconciliation_rederives_only_committed_paths_and_exact_workt
 
 
 def test_candidate_evidence_recursively_verifies_catalog_inventory_package_and_retained_files(
-    tmp_path: Path,
+    tmp_path: Path, approved_support_profile: Path,
 ) -> None:
     """Candidate PASS is impossible unless the checkpoint, inventory, external files, and ZIP all close."""
     candidate_root = tmp_path / "candidate-closed"
@@ -943,7 +966,7 @@ def test_candidate_evidence_recursively_verifies_catalog_inventory_package_and_r
         shard="release-contract", run_id=RUN_ID, evidence_root=evidence,
         expected_code_head=head, gate_catalog=RELEASE / "gates_0600.json",
         performance_catalog=RELEASE / "performance_0600.json",
-        support_profile=Path(r"C:\tmp\stm32tk-0600-support\feasibility\profile.json"),
+        support_profile=approved_support_profile,
         controller_path=RELEASE / "run_0600_candidate.ps1",
         verifier_blob_checker=lambda _repo, _head: RELEASE / "verify_0600_release.py",
         verifier_invoker=lambda _repo, _head, _argv: SimpleNamespace(returncode=0),
@@ -970,7 +993,9 @@ def test_candidate_evidence_recursively_verifies_catalog_inventory_package_and_r
         )
 
 
-def test_final_evidence_recursively_binds_checkpoint_and_shard_package(tmp_path: Path) -> None:
+def test_final_evidence_recursively_binds_checkpoint_and_shard_package(
+    tmp_path: Path, approved_support_profile: Path
+) -> None:
     """Final evidence must bind the final checkpoint to the complete catalog-derived shard."""
     evidence = tmp_path / "final-closed"
     head = subprocess.run(
@@ -982,7 +1007,7 @@ def test_final_evidence_recursively_binds_checkpoint_and_shard_package(tmp_path:
         run_id=RUN_ID, evidence_root=evidence, expected_code_head=head,
         gate_catalog=RELEASE / "gates_0600.json",
         performance_catalog=RELEASE / "performance_0600.json",
-        support_profile=Path(r"C:\tmp\stm32tk-0600-support\feasibility\profile.json"),
+        support_profile=approved_support_profile,
         controller_path=RELEASE / "run_0600_final.ps1",
         verifier_blob_checker=lambda _repo, _head: RELEASE / "verify_0600_release.py",
         verifier_invoker=lambda _repo, _head, _argv: SimpleNamespace(returncode=0),
@@ -1010,7 +1035,7 @@ def test_final_evidence_recursively_binds_checkpoint_and_shard_package(tmp_path:
     ],
 )
 def test_candidate_terminal_schema_rejects_every_nested_shape_and_order_mutation(
-    tmp_path: Path, mutation: str
+    tmp_path: Path, approved_support_profile: Path, mutation: str
 ) -> None:
     """Every nested terminal object, array order, duplicate, and exact scalar type fails closed."""
     candidate_root = tmp_path / "candidate-mutations"
@@ -1024,7 +1049,7 @@ def test_candidate_terminal_schema_rejects_every_nested_shape_and_order_mutation
         run_id=RUN_ID, evidence_root=evidence, expected_code_head=head,
         gate_catalog=RELEASE / "gates_0600.json",
         performance_catalog=RELEASE / "performance_0600.json",
-        support_profile=Path(r"C:\tmp\stm32tk-0600-support\feasibility\profile.json"),
+        support_profile=approved_support_profile,
         controller_path=RELEASE / "run_0600_candidate.ps1",
         verifier_blob_checker=lambda _repo, _head: RELEASE / "verify_0600_release.py",
         verifier_invoker=lambda _repo, _head, _argv: SimpleNamespace(returncode=0),
@@ -1328,7 +1353,9 @@ def test_caller_mutation_after_cached_check_is_rejected_before_interpreter_spawn
     assert spawned == []
 
 
-def test_real_wrapper_path_rechecks_verifier_mutation_before_any_evidence(tmp_path: Path) -> None:
+def test_real_wrapper_path_rechecks_verifier_mutation_before_any_evidence(
+    tmp_path: Path, approved_support_profile: Path
+) -> None:
     """The initial wrapper path must reject a whole-file swap before creating evidence or running gates."""
     repo, script, head = _git_repo_with_verifier(tmp_path)
     controller = repo / "tools/release/run_0600_quick.ps1"
@@ -1350,7 +1377,7 @@ def test_real_wrapper_path_rechecks_verifier_mutation_before_any_evidence(tmp_pa
             kind="quick", matrix="quick", module="STM32TK-0601", shard="fixture",
             run_id=RUN_ID, evidence_root=evidence, expected_code_head=head,
             gate_catalog=catalog, performance_catalog=performance,
-            support_profile=Path(r"C:\tmp\stm32tk-0600-support\feasibility\profile.json"),
+            support_profile=approved_support_profile,
             controller_path=controller,
             after_first_verifier_check=lambda: script.write_bytes(b"whole-file-swap\n"),
         )
@@ -1511,9 +1538,11 @@ def test_secure_io_loader_allows_unrelated_dirty_product_but_rejects_controller_
         verifier._secure_io()
 
 
-def test_planned_dependency_audit_runs_native_offline_then_blocks_on_missing_support_pins(tmp_path: Path) -> None:
+def test_planned_dependency_audit_runs_native_offline_then_blocks_on_missing_support_pins(
+    tmp_path: Path, approved_support_profile: Path
+) -> None:
     """The frozen argv reaches native npm output, not controller grammar, before the real support blocker."""
-    support = Path(r"C:\tmp\stm32tk-0600-support\feasibility\profile.json")
+    support = approved_support_profile
     assert support.is_file()
     evidence = tmp_path / "dependency-audit"
     parent_attack: list[int] = []

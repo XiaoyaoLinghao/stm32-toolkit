@@ -4296,9 +4296,55 @@ def run_final_resume(
     }
 
 
+_CONTRACT_SELF_TEST_TEMP_ROOT_ENV = "STM32TK_TEST_0600_TEMP_ROOT"
+_CONTRACT_SELF_TEST_SUPPORT_PROFILE_ENV = "STM32TK_TEST_0600_SUPPORT_PROFILE"
+
+
+def _contract_self_test_paths() -> tuple[Path, Path]:
+    """Return the historical defaults or the private pytest-only test paths."""
+    temp_override = os.environ.get(_CONTRACT_SELF_TEST_TEMP_ROOT_ENV)
+    support_override = os.environ.get(_CONTRACT_SELF_TEST_SUPPORT_PROFILE_ENV)
+    if temp_override is None and support_override is None:
+        return (
+            Path(r"C:\tmp"),
+            Path(r"C:\tmp\stm32tk-0600-support\feasibility\profile.json"),
+        )
+    if not os.environ.get("PYTEST_CURRENT_TEST"):
+        raise ControllerError("contract self-test path overrides require pytest")
+    if (temp_override is None) != (support_override is None):
+        raise ControllerError("contract self-test path overrides must be paired")
+
+    def existing_path(raw: str, label: str, *, directory: bool) -> Path:
+        path = Path(raw)
+        if (
+            not path.is_absolute()
+            or str(path) != os.path.abspath(path)
+            or _is_reparse(path)
+        ):
+            raise ControllerError(f"contract self-test {label} path is not canonical")
+        try:
+            resolved = path.resolve(strict=True)
+        except (OSError, RuntimeError) as exc:
+            raise ControllerError(f"contract self-test {label} path is unavailable") from exc
+        if _is_reparse(resolved):
+            raise ControllerError(f"contract self-test {label} path is a reparse point")
+        if directory:
+            if not resolved.is_dir():
+                raise ControllerError("contract self-test temp root is not a directory")
+        elif not resolved.is_file():
+            raise ControllerError("contract self-test support profile is not a file")
+        return resolved
+
+    return (
+        existing_path(temp_override, "temp root", directory=True),
+        existing_path(support_override, "support profile", directory=False),
+    )
+
+
 def _contract_self_test(kind: str) -> dict[str, object]:
     if kind not in {"quick", "candidate", "final", "hardware"}:
         raise ControllerError("unknown self-test kind")
+    temporary_root, support_profile = _contract_self_test_paths()
     if kind != "hardware":
         fake_calls: list[str] = []
 
@@ -4355,10 +4401,14 @@ def _contract_self_test(kind: str) -> dict[str, object]:
                 self.executed.append(action_id)
                 return {"status": "PASS", "artifacts": []}
 
-        root = Path(tempfile.mkdtemp(prefix="stm32tk-0600-hardware-selftest-", dir=r"C:\tmp"))
+        root = Path(
+            tempfile.mkdtemp(
+                prefix="stm32tk-0600-hardware-selftest-",
+                dir=temporary_root,
+            )
+        )
         try:
             catalog_path = Path(__file__).with_name("gates_0600.json")
-            support_profile = Path(r"C:\tmp\stm32tk-0600-support\feasibility\profile.json")
             if not support_profile.is_file():
                 raise ControllerError("hardware self-test support fixture is unavailable")
             class FakeGit:

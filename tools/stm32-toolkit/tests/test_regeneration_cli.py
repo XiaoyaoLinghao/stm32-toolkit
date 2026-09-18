@@ -6,17 +6,20 @@ from stm32_toolkit.cli import _build_parser, _validate_cli_modes
 from stm32_toolkit.cli import main
 
 
-def test_regeneration_cli_commands_have_closed_arguments():
+def test_regeneration_cli_commands_have_closed_arguments(tmp_path):
     parser = _build_parser()
-    plan = parser.parse_args(["project", "regenerate-plan", "--project-root", ".", "--destination", "generated", "--json"])
+    project = tmp_path / "project"
+    project.mkdir()
+    project_root = str(project.resolve())
+    plan = parser.parse_args(["project", "regenerate-plan", "--project-root", project_root, "--destination", "generated", "--json"])
     assert plan.project_command == "regenerate-plan"
     prepare = parser.parse_args([
-        "project", "regenerate-prepare", "--project-root", ".", "--destination", "generated",
+        "project", "regenerate-prepare", "--project-root", project_root, "--destination", "generated",
         "--plan-id", "a" * 64, "--action-digest", "b" * 64, "--authorized", "--json",
     ])
     assert prepare.authorized is True
     apply = parser.parse_args([
-        "project", "regenerate-apply", "--project-root", ".", "--authorization-digest", "c" * 64,
+        "project", "regenerate-apply", "--project-root", project_root, "--authorization-digest", "c" * 64,
         "--authorized", "--json",
     ])
     assert apply.project_command == "regenerate-apply"

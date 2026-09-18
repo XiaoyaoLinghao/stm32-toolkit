@@ -63,6 +63,8 @@ HARDWARE = RELEASE / "run_0600_hardware.ps1"
 RUNNER = RELEASE / "run_0600_gates.py"
 RUN_ID = "123e4567-e89b-42d3-a456-426614174000"
 NOW = datetime(2026, 8, 15, 2, 3, 4, 123456, tzinfo=timezone.utc)
+APPROVED_SUPPORT_ROOT_ENV = "STM32TK_RELEASE_SUPPORT_ROOT"
+APPROVED_UI_SUPPORT_ROOT_ENV = "STM32TK_RELEASE_UI_SUPPORT_ROOT"
 
 
 @pytest.fixture
@@ -77,6 +79,65 @@ def tmp_path(tmp_path_factory: pytest.TempPathFactory) -> Path:
             if sibling.is_dir():
                 shutil.rmtree(sibling)
         shutil.rmtree(root)
+
+
+def _approved_support_source() -> Path:
+    raw = os.environ.get(APPROVED_SUPPORT_ROOT_ENV)
+    if not raw:
+        pytest.fail(f"{APPROVED_SUPPORT_ROOT_ENV} is required for the release fixture")
+    source = Path(raw)
+    try:
+        verify_support_root(source / "feasibility" / "profile.json")
+    except ControllerError as exc:
+        pytest.fail(f"approved support fixture is invalid: {exc}")
+    return source
+
+
+def _stage_approved_support(destination: Path) -> Path:
+    shutil.copytree(_approved_support_source(), destination)
+    profile = destination / "feasibility" / "profile.json"
+    try:
+        verify_support_root(profile)
+    except ControllerError as exc:
+        pytest.fail(f"staged support fixture is invalid: {exc}")
+    return profile
+
+
+def _normalized_lock_graph(path: Path) -> tuple[str, int]:
+    value = json.loads(path.read_text(encoding="utf-8"))
+    value.pop("version", None)
+    packages = value.get("packages")
+    if not isinstance(packages, dict) or not isinstance(packages.get(""), dict):
+        pytest.fail(f"dependency lock graph is not npm-lockfile-shaped: {path}")
+    packages[""] = dict(packages[""])
+    packages[""].pop("version", None)
+    payload = json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest(), len(packages)
+
+
+@pytest.fixture
+def frozen_node_ui(tmp_path: Path) -> Path:
+    """Stage final UI sources with only the approved pinned Node dependency tree."""
+    raw = os.environ.get(APPROVED_UI_SUPPORT_ROOT_ENV)
+    if not raw:
+        pytest.fail(f"{APPROVED_UI_SUPPORT_ROOT_ENV} is required for the Node fixture")
+    support = Path(raw)
+    source = REPO / "tools" / "stm32-monitor" / "ui"
+    source_lock = source / "package-lock.json"
+    support_lock = support / "package-lock.json"
+    if not source_lock.is_file() or not support_lock.is_file():
+        pytest.fail("final and approved UI package locks are required")
+    source_graph, source_packages = _normalized_lock_graph(source_lock)
+    support_graph, support_packages = _normalized_lock_graph(support_lock)
+    assert source_graph == support_graph == "0636253fe3d4d48df368ce3ec940929f40dca4d77a47b1d473277600d32ab304"
+    assert source_packages == support_packages == 435
+    dependency_tree = support / "node_modules"
+    if not dependency_tree.is_dir():
+        pytest.fail(f"approved Node dependency tree is missing: {dependency_tree}")
+    staged = tmp_path / "ui"
+    shutil.copytree(source, staged, ignore=shutil.ignore_patterns("node_modules"))
+    shutil.copytree(dependency_tree, staged / "node_modules")
+    return staged
 
 
 def _sha(data: bytes) -> str:
@@ -770,10 +831,10 @@ def test_native_executor_rejects_prepositioned_and_create_race_junctions_without
     ],
 )
 def test_real_node_runners_produce_normalized_portable_native_artifacts(
-    tmp_path: Path, tool: str, argv: tuple[str, ...], expected: tuple[str, ...],
+    tmp_path: Path, frozen_node_ui: Path, tool: str, argv: tuple[str, ...], expected: tuple[str, ...],
 ) -> None:
     """The installed frozen Node tools, not a hand-shaped JSON double, cross the adapter."""
-    ui = REPO / "tools" / "stm32-monitor" / "ui"
+    ui = frozen_node_ui
     executable = ui / "node_modules" / ".bin" / tool
     if not executable.is_file():
         pytest.fail(f"frozen Node executable is missing: {executable}")
@@ -4344,8 +4405,53 @@ def test_runner_cli_rejects_unknown_switch_and_shell_command_string(tmp_path: Pa
     assert shell.returncode != 0
 
 
-def test_contract_self_tests_use_only_fakes_and_report_pass() -> None:
+@pytest.mark.parametrize("missing", ["temp", "support"])
+def test_contract_self_test_path_overrides_require_both_values_before_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, missing: str
+) -> None:
+    """A partial private seam must fail before the FakeBackend can create output."""
+    temporary_root = tmp_path / "contract-temp"
+    temporary_root.mkdir()
+    support_profile = tmp_path / "support-profile.json"
+    support_profile.write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "fixture-seam")
+    monkeypatch.setenv("STM32TK_TEST_0600_TEMP_ROOT", str(temporary_root))
+    monkeypatch.setenv("STM32TK_TEST_0600_SUPPORT_PROFILE", str(support_profile))
+    monkeypatch.delenv(
+        "STM32TK_TEST_0600_TEMP_ROOT" if missing == "temp" else "STM32TK_TEST_0600_SUPPORT_PROFILE"
+    )
+
+    with pytest.raises(ControllerError, match="paired"):
+        gates._contract_self_test("hardware")
+    assert list(temporary_root.iterdir()) == []
+
+
+def test_contract_self_test_path_overrides_require_pytest_before_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The private path seam cannot be activated by a non-pytest caller."""
+    temporary_root = tmp_path / "contract-temp"
+    temporary_root.mkdir()
+    support_profile = tmp_path / "support-profile.json"
+    support_profile.write_text("{}", encoding="utf-8")
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.setenv("STM32TK_TEST_0600_TEMP_ROOT", str(temporary_root))
+    monkeypatch.setenv("STM32TK_TEST_0600_SUPPORT_PROFILE", str(support_profile))
+
+    with pytest.raises(ControllerError, match="pytest"):
+        gates._contract_self_test("hardware")
+    assert list(temporary_root.iterdir()) == []
+
+
+def test_contract_self_tests_use_only_fakes_and_report_pass(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Acceptance self-tests must exercise pass/fail/blocked paths without product or hardware access."""
+    support_profile = _stage_approved_support(tmp_path / "support")
+    temporary_root = tmp_path / "contract-temp"
+    temporary_root.mkdir()
+    monkeypatch.setenv("STM32TK_TEST_0600_TEMP_ROOT", str(temporary_root.resolve()))
+    monkeypatch.setenv("STM32TK_TEST_0600_SUPPORT_PROFILE", str(support_profile.resolve()))
     for wrapper, expected_mode in (
         (QUICK, "quick"), (CANDIDATE, "candidate"), (FINAL, "final"), (HARDWARE, "hardware")
     ):
