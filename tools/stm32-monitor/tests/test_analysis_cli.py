@@ -14,8 +14,10 @@ from stm32_monitor.analysis import AnalysisRequest
 from stm32_monitor.analysis_workflows import AnalysisPublication, AnalysisWorkflowError
 from stm32_monitor.protocol import ProtocolResult
 from stm32_monitor.replay import (
+    INCOMPATIBLE_IDENTITY,
     MonitorReplayError,
     MonitorRunRef,
+    OPERATION_CONFLICT,
     canonical_replay_json_bytes,
 )
 from stm32_toolkit.diagnostics import SourceChangeDeclaration
@@ -741,3 +743,332 @@ def test_project_manifest_permission_failure_is_environment_error_without_leaks(
     payload = json.loads(output.getvalue())
     assert payload["code"] == "ENVIRONMENT_FAILURE"
     assert "private manifest provider secret" not in output.getvalue()
+
+
+def test_analysis_cli_rejects_schema_v2_context_before_workflow(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    fixture = (
+        Path(__file__).resolve().parents[2]
+        / "stm32-toolkit"
+        / "tests"
+        / "fixtures"
+        / "minimal-gcc"
+        / ".stm32-project.json"
+    )
+    (project / ".stm32-project.json").write_bytes(fixture.read_bytes())
+    request_file = tmp_path / "request.json"
+    _write_json(request_file, _valid_analysis_request_wire())
+    calls: list[object] = []
+    monkeypatch.setattr(
+        cli,
+        "compare_monitor_runs",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+        raising=False,
+    )
+    before = tuple(sorted(path.relative_to(tmp_path).as_posix() for path in tmp_path.rglob("*")))
+    output = io.StringIO()
+    code = cli.main(
+        [
+            "analysis",
+            "compare",
+            "--project",
+            str(project),
+            "--data-root",
+            str(tmp_path / "data"),
+            "--session-id",
+            "monitor-a",
+            "--request-file",
+            str(request_file),
+            "--diagnostic-session-id",
+            "1" * 32,
+            "--hypothesis-id",
+            "2" * 32,
+            "--polarity",
+            "supports",
+            "--rationale",
+            "changed",
+            "--json",
+        ],
+        _stdout=output,
+    )
+
+    assert code == 1
+    assert json.loads(output.getvalue()) == {
+        "code": "ANALYSIS_WORKFLOW_INVALID",
+        "data": None,
+        "message": "Project schema version is invalid",
+        "ok": False,
+        "operation": "monitor.analysis.compare",
+    }
+    assert calls == []
+    assert tuple(sorted(path.relative_to(tmp_path).as_posix() for path in tmp_path.rglob("*"))) == before
+
+
+def test_analysis_cli_rejects_noncanonical_request_before_workflow(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "project"
+    _real_project(project)
+    request_file = tmp_path / "request.json"
+    request_file.write_text(json.dumps(_valid_analysis_request_wire()), encoding="utf-8")
+    request_bytes = request_file.read_bytes()
+    calls: list[object] = []
+    monkeypatch.setattr(
+        cli,
+        "compare_monitor_runs",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+        raising=False,
+    )
+    before = tuple(sorted(path.relative_to(tmp_path).as_posix() for path in tmp_path.rglob("*")))
+    output = io.StringIO()
+    code = cli.main(
+        [
+            "analysis",
+            "compare",
+            "--project",
+            str(project),
+            "--data-root",
+            str(tmp_path / "data"),
+            "--session-id",
+            "monitor-a",
+            "--request-file",
+            str(request_file),
+            "--diagnostic-session-id",
+            "1" * 32,
+            "--hypothesis-id",
+            "2" * 32,
+            "--polarity",
+            "supports",
+            "--rationale",
+            "changed",
+            "--json",
+        ],
+        _stdout=output,
+    )
+
+    assert code == 1
+    assert json.loads(output.getvalue()) == {
+        "code": "ANALYSIS_WORKFLOW_INVALID",
+        "data": None,
+        "message": "JSON input is not canonical",
+        "ok": False,
+        "operation": "monitor.analysis.compare",
+    }
+    assert calls == []
+    assert request_file.read_bytes() == request_bytes
+    assert tuple(sorted(path.relative_to(tmp_path).as_posix() for path in tmp_path.rglob("*"))) == before
+
+
+def test_analysis_cli_rejects_invalid_request_model_before_workflow(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "project"
+    _real_project(project)
+    request_file = tmp_path / "request.json"
+    request_wire = _valid_analysis_request_wire()
+    request_wire["minimum_valid_pairs"] = 1
+    _write_json(request_file, request_wire)
+    request_bytes = request_file.read_bytes()
+    calls: list[object] = []
+    monkeypatch.setattr(
+        cli,
+        "compare_monitor_runs",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+        raising=False,
+    )
+    before = tuple(sorted(path.relative_to(tmp_path).as_posix() for path in tmp_path.rglob("*")))
+    output = io.StringIO()
+    code = cli.main(
+        [
+            "analysis",
+            "compare",
+            "--project",
+            str(project),
+            "--data-root",
+            str(tmp_path / "data"),
+            "--session-id",
+            "monitor-a",
+            "--request-file",
+            str(request_file),
+            "--diagnostic-session-id",
+            "1" * 32,
+            "--hypothesis-id",
+            "2" * 32,
+            "--polarity",
+            "supports",
+            "--rationale",
+            "changed",
+            "--json",
+        ],
+        _stdout=output,
+    )
+
+    assert code == 1
+    assert json.loads(output.getvalue()) == {
+        "code": "ANALYSIS_WORKFLOW_INVALID",
+        "data": None,
+        "message": "analysis request is invalid",
+        "ok": False,
+        "operation": "monitor.analysis.compare",
+    }
+    assert calls == []
+    assert request_file.read_bytes() == request_bytes
+    assert tuple(sorted(path.relative_to(tmp_path).as_posix() for path in tmp_path.rglob("*"))) == before
+
+
+def test_analysis_cli_rejects_invalid_source_change_before_workflow(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "project"
+    _real_project(project)
+    request_file = tmp_path / "request.json"
+    source_file = tmp_path / "source-change.json"
+    _write_json(request_file, _valid_analysis_request_wire())
+    source_wire = _valid_source_change_wire()
+    source_wire["changed_paths"] = []
+    _write_json(source_file, source_wire)
+    source_bytes = source_file.read_bytes()
+    calls: list[object] = []
+    monkeypatch.setattr(
+        cli,
+        "compare_monitor_runs",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+        raising=False,
+    )
+    before = tuple(sorted(path.relative_to(tmp_path).as_posix() for path in tmp_path.rglob("*")))
+    output = io.StringIO()
+    code = cli.main(
+        [
+            "analysis",
+            "compare",
+            "--project",
+            str(project),
+            "--data-root",
+            str(tmp_path / "data"),
+            "--session-id",
+            "monitor-a",
+            "--request-file",
+            str(request_file),
+            "--diagnostic-session-id",
+            "1" * 32,
+            "--hypothesis-id",
+            "2" * 32,
+            "--polarity",
+            "supports",
+            "--rationale",
+            "changed",
+            "--source-change-file",
+            str(source_file),
+            "--json",
+        ],
+        _stdout=output,
+    )
+
+    assert code == 1
+    assert json.loads(output.getvalue()) == {
+        "code": "ANALYSIS_WORKFLOW_INVALID",
+        "data": None,
+        "message": "source change declaration is invalid",
+        "ok": False,
+        "operation": "monitor.analysis.compare",
+    }
+    assert calls == []
+    assert source_file.read_bytes() == source_bytes
+    assert tuple(sorted(path.relative_to(tmp_path).as_posix() for path in tmp_path.rglob("*"))) == before
+
+
+def test_replay_adapter_maps_recognized_identity_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "project"
+    _real_project(project)
+    document = tmp_path / "document.json"
+    document.write_text("{}", encoding="utf-8")
+    calls: list[tuple[object, ...]] = []
+
+    def fail(*args: object) -> object:
+        calls.append(args)
+        raise MonitorReplayError(INCOMPATIBLE_IDENTITY, "identity mismatch")
+
+    monkeypatch.setattr(cli, "ingest_monitor_replay", fail, raising=False)
+    before = tuple(sorted(path.relative_to(tmp_path).as_posix() for path in tmp_path.rglob("*")))
+    output = io.StringIO()
+    code = cli.main(
+        [
+            "replay",
+            "ingest",
+            "--project",
+            str(project),
+            "--data-root",
+            str(tmp_path / "data"),
+            "--session-id",
+            "monitor-a",
+            "--operation-id",
+            "33333333-3333-4333-8333-333333333333",
+            "--document-file",
+            str(document),
+            "--json",
+        ],
+        _stdout=output,
+    )
+
+    assert code == 1
+    assert json.loads(output.getvalue()) == {
+        "code": "INCOMPATIBLE_IDENTITY",
+        "data": None,
+        "message": "identity mismatch",
+        "ok": False,
+        "operation": "monitor.replay.ingest",
+    }
+    assert len(calls) == 1
+    assert tuple(sorted(path.relative_to(tmp_path).as_posix() for path in tmp_path.rglob("*"))) == before
+
+
+def test_replay_adapter_maps_ingest_operation_conflict_to_integrity_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "project"
+    _real_project(project)
+    document = tmp_path / "document.json"
+    document.write_text("{}", encoding="utf-8")
+    calls: list[tuple[object, ...]] = []
+
+    def fail(*args: object) -> object:
+        calls.append(args)
+        raise MonitorReplayError(OPERATION_CONFLICT, "operation already has different intent")
+
+    monkeypatch.setattr(cli, "ingest_monitor_replay", fail, raising=False)
+    before = tuple(sorted(path.relative_to(tmp_path).as_posix() for path in tmp_path.rglob("*")))
+    output = io.StringIO()
+    code = cli.main(
+        [
+            "replay",
+            "ingest",
+            "--project",
+            str(project),
+            "--data-root",
+            str(tmp_path / "data"),
+            "--session-id",
+            "monitor-a",
+            "--operation-id",
+            "33333333-3333-4333-8333-333333333333",
+            "--document-file",
+            str(document),
+            "--json",
+        ],
+        _stdout=output,
+    )
+
+    assert code == 1
+    assert json.loads(output.getvalue()) == {
+        "code": "EVIDENCE_INTEGRITY_FAILURE",
+        "data": None,
+        "message": "operation already has different intent",
+        "ok": False,
+        "operation": "monitor.replay.ingest",
+    }
+    assert len(calls) == 1
+    assert tuple(sorted(path.relative_to(tmp_path).as_posix() for path in tmp_path.rglob("*"))) == before
