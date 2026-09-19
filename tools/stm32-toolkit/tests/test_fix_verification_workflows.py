@@ -2063,8 +2063,11 @@ def test_task7b_completion_artifact_failure_kind_is_classified_without_evidence_
     )
     monkeypatch.setattr(EvidenceStore, "read_artifact", selected_artifact_failure)
 
-    before_evidence = _tree_snapshot(workspace.workspace_root / "evidence")
-    before_diagnostics = _tree_snapshot(workspace.diagnostics_root)
+    before_evidence = dict(_tree_snapshot(workspace.workspace_root / "evidence"))
+    before_evidence_roots = {
+        path: payload for path, payload in before_evidence.items() if path.startswith("roots/")
+    }
+    before_diagnostics = dict(_tree_snapshot(workspace.diagnostics_root))
     result = diagnostic_complete_verification(
         _fresh_diagnostic_context(diagnostic_context),
         operation_id=f"complete.{kind}",
@@ -2073,6 +2076,9 @@ def test_task7b_completion_artifact_failure_kind_is_classified_without_evidence_
         executed_operation_ids=["target-test.vs03"],
     )
     after_evidence = dict(_tree_snapshot(workspace.workspace_root / "evidence"))
+    after_evidence_roots = {
+        path: payload for path, payload in after_evidence.items() if path.startswith("roots/")
+    }
     after_diagnostics = dict(_tree_snapshot(workspace.diagnostics_root))
 
     assert completion_reader_entered is True
@@ -2080,25 +2086,41 @@ def test_task7b_completion_artifact_failure_kind_is_classified_without_evidence_
     assert result.ok is True
     assert result.operation == "diagnostic.verification.complete"
     assert result.code == "OK"
+    assert result.message == ""
+    assert result.details == {}
+    assert result.data is not None
     assert result.data["fix_verification"]["status"] == "INCONCLUSIVE"
     assert result.data["fix_verification"]["reason_code"] == expected_reason
     assert result.data["session"]["revision"] == 8
     assert result.data["session"]["state"] == "INVESTIGATING"
 
-    assert all(after_evidence.get(path) == payload for path, payload in before_evidence)
-    before_evidence_paths = {path for path, _payload in before_evidence}
-    new_evidence_root_paths = {
-        path
-        for path in set(after_evidence) - before_evidence_paths
-        if path.startswith("roots/")
-    }
-    assert new_evidence_root_paths == {
+    assert set(before_evidence) <= set(after_evidence)
+    assert {path: after_evidence[path] for path in before_evidence} == before_evidence
+    assert set(before_diagnostics) <= set(after_diagnostics)
+    assert {
+        path: after_diagnostics[path] for path in before_diagnostics
+    } == before_diagnostics
+    assert set(after_evidence_roots) - set(before_evidence_roots) == {
         f"roots/diagnostic-session/{session_id}.00000008.json",
     }
-    new_diagnostic_paths = set(after_diagnostics) - {
-        path for path, _payload in before_diagnostics
+    checkpoint_root = get_root(
+        evidence, "diagnostic-session", f"{session_id}.00000008"
+    )
+    checkpoint_envelope = evidence.get_envelope(checkpoint_root.manifest_id)
+    checkpoint_paths = {
+        f"roots/diagnostic-session/{session_id}.00000008.json",
+        f"manifests/{checkpoint_root.manifest_id}.json",
+        checkpoint_envelope.artifacts[0].relative_path,
     }
-    assert new_diagnostic_paths == {
+    for checkpoint_path in tuple(checkpoint_paths):
+        parent = Path(checkpoint_path).parent
+        while parent != Path("."):
+            parent_path = parent.as_posix()
+            if parent_path not in before_evidence:
+                checkpoint_paths.add(parent_path)
+            parent = parent.parent
+    assert set(after_evidence) - set(before_evidence) == checkpoint_paths
+    assert set(after_diagnostics) - set(before_diagnostics) == {
         f"sessions/{session_id}/events/00000007.json",
     }
     event_path = workspace.diagnostics_root / "sessions" / session_id / "events" / "00000007.json"
@@ -2889,7 +2911,10 @@ def test_target_replay_plan_requires_complete_monitor_reference_authority(
     after = _authority_snapshot(workspace)
     assert result.ok is False
     assert result.code == "EVIDENCE_INTEGRITY_FAILURE"
+    assert result.message == "Target replay evidence failed integrity validation."
     assert after == before
+    assert result.data is None
+    assert result.details == {}
 
 
 @pytest.mark.parametrize("extra_kind", ("batch", "sample", "typed", "watch"))
