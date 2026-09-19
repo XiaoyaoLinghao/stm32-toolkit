@@ -11,7 +11,7 @@ primary agent remains the independent reviewer and acceptor.
 - Accepted base: `63602bf6dbd2ad5ff2b676678695767e000bbb2a`.
 - Branch/worktree: `codex/STM32TK-1.0-public-decode-qualification` /
   `D:\codex-tmp\v10b-0918\r10\dc`.
-- Test code head before this report commit:
+- Owned test code head:
   `c0884af2085b132db0b496e7f42695c0531a7051`.
 - Implementer: `/root/public_decode_impl`; independent review and acceptance
   remain with the primary agent.
