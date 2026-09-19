@@ -43,6 +43,7 @@ from stm32_toolkit.diagnostics import (
     DIAGNOSTIC_CHAIN_CORRUPT,
     DIAGNOSTIC_EVIDENCE_MISSING,
     DIAGNOSTIC_IDENTITY_MISMATCH,
+    DiagnosticStoreBusyError,
     DiagnosticValidationError,
     EvidenceAssessment,
     ObservationResult,
@@ -1549,6 +1550,121 @@ def test_persisted_continuation_monitor_diagnostic_and_expired_attempt_reuse(tmp
     gc = plan_gc(fresh_evidence)
     assert f"manifests/{continuation_id}.json" in gc.reachable_manifests
     assert all(f"manifests/{parent}.json" in gc.reachable_manifests for parent in loaded.envelope.parents)
+
+
+def _complete_continuation_verification(pair: SimpleNamespace, baseline: SimpleNamespace) -> Mapping[str, object]:
+    plan = _continuation_plan(pair, baseline)
+    revision = pair.diagnostic_revision
+    _ok(
+        diagnostic_add_verification_plan(
+            pair.diagnostic,
+            operation_id="continuation-busy-plan",
+            diagnostic_session_id=pair.diagnostic_session_id,
+            expected_revision=revision,
+            verification_plan=plan,
+        )
+    )
+    _ok(
+        diagnostic_start_verification(
+            pair.diagnostic,
+            operation_id="continuation-busy-start",
+            diagnostic_session_id=pair.diagnostic_session_id,
+            expected_revision=revision + 1,
+            verification_plan_id=plan.verification_plan_id,
+        )
+    )
+    _ok(
+        diagnostic_attach_marker(
+            pair.diagnostic,
+            operation_id="continuation-busy-marker",
+            diagnostic_session_id=pair.diagnostic_session_id,
+            expected_revision=revision + 2,
+            diagnostic_marker_ref=baseline.publication.diagnostic_marker_ref,
+        )
+    )
+    completed = _ok(
+        diagnostic_complete_verification(
+            pair.diagnostic,
+            operation_id="continuation-busy-complete",
+            diagnostic_session_id=pair.diagnostic_session_id,
+            expected_revision=revision + 3,
+            executed_operation_ids=(
+                "fixture-before",
+                "fixture-after",
+                "continuation-compare",
+                "continuation-bundle",
+            ),
+        )
+    )
+    verification = completed["fix_verification"]
+    assert isinstance(verification, Mapping)
+    assert verification["status"] == "PASSED"
+    return verification
+
+
+def test_postpublication_diagnostic_busy_preserves_revision_one_for_exact_retry_and_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pair = prepare_pair(tmp_path, monkeypatch)
+    baseline = _monitor_baseline(pair, tmp_path)
+    verification = _complete_continuation_verification(pair, baseline)
+    checkpoint = dict(
+        attempt_id=CONTINUATION_ATTEMPT_ID,
+        expected_revision=0,
+        stage="target-fix-verified",
+        test_run_id=pair.fixed_run_id,
+        fix_verification_id=verification["fix_verification_id"],
+    )
+
+    original_store_lock = DiagnosticStore._store_lock
+    lock_calls = {"count": 0}
+
+    class BusyLock:
+        def __enter__(self):
+            raise DiagnosticStoreBusyError()
+
+        def __exit__(self, _exc_type, _exc_value, _traceback):
+            return False
+
+    def lock_with_postpublication_busy(self, **kwargs):
+        lock_calls["count"] += 1
+        if lock_calls["count"] == 2:
+            return BusyLock()
+        return original_store_lock(self, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(DiagnosticStore, "_store_lock", lock_with_postpublication_busy)
+        busy = checkpoint_acceptance_attempt(pair.context, **checkpoint)
+
+    assert busy.ok is False
+    assert busy.code == "ACCEPTANCE_ATTEMPT_BUSY"
+    assert lock_calls["count"] == 2
+
+    revision_one_path = recovery_workflows._typed_root_path(
+        pair.evidence,
+        recovery_workflows._root_id(CONTINUATION_ATTEMPT_ID, 1),
+    )
+    revision_one_bytes = revision_one_path.read_bytes()
+    revision_one = get_root(
+        pair.evidence,
+        "acceptance-attempt",
+        recovery_workflows._root_id(CONTINUATION_ATTEMPT_ID, 1),
+    )
+    assert revision_one_path.exists()
+    assert revision_one.manifest_id
+    assert not recovery_workflows._typed_root_path(
+        pair.evidence,
+        recovery_workflows._root_id(CONTINUATION_ATTEMPT_ID, 2),
+    ).exists()
+
+    retried = _ok(checkpoint_acceptance_attempt(pair.context, **checkpoint))["attempt"]
+    shown = _ok(
+        recovery_workflows.show_acceptance_attempt(
+            pair.context, attempt_id=CONTINUATION_ATTEMPT_ID
+        )
+    )["attempt"]
+    assert retried == shown
+    assert revision_one_path.read_bytes() == revision_one_bytes
 
 
 def test_diagnostic_store_rejects_self_consistent_forged_continuation_analysis_references(

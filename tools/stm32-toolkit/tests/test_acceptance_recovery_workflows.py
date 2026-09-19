@@ -474,6 +474,7 @@ def _authorize_revision_four_with_diagnostic_failure(
     *,
     source_declaration: bool = False,
     stale: bool = False,
+    diagnostic_busy: bool = False,
 ):
     model = SimpleNamespace(
         logical_project_id=UUID("00000000-0000-4000-8000-000000000002"),
@@ -560,13 +561,19 @@ def _authorize_revision_four_with_diagnostic_failure(
         observation_results=(),
         source_change_declarations=(declaration,) if source_declaration else (),
     )
-    monkeypatch.setattr(
-        recovery_workflows,
-        "_diagnostic_show",
-        lambda *_args, **_kwargs: recovery_workflows.OperationResult.success(
+    def diagnostic_show(*_args, **_kwargs):
+        if diagnostic_busy:
+            return recovery_workflows.OperationResult.failure(
+                "diagnostic.show",
+                "DIAGNOSTIC_STORE_BUSY",
+                "Diagnostic store is busy.",
+                {},
+            )
+        return recovery_workflows.OperationResult.success(
             "diagnostic.show", {"session": diagnostic_session.to_dict()}
-        ),
-    )
+        )
+
+    monkeypatch.setattr(recovery_workflows, "_diagnostic_show", diagnostic_show)
     context = AcceptanceRecoveryContext(tmp_path, tmp_path / "data", "session-a", clock=lambda: "2026-08-24T00:00:00.000000Z")
     digest = recovery_workflows._action_digest(current)
     return authorize_acceptance_source_change(context, attempt_id=ATTEMPT_ID, expected_revision=4, action_digest=digest, authorized=True)
@@ -580,6 +587,19 @@ def test_source_declaration_before_authorization_fails_closed(tmp_path: Path, mo
 def test_stale_diagnostic_revision_or_head_fails_closed_before_authorization(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     result = _authorize_revision_four_with_diagnostic_failure(tmp_path, monkeypatch, stale=True)
     assert result.code == "ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH"
+
+
+def test_nested_diagnostic_store_busy_maps_to_acceptance_availability_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    result = _authorize_revision_four_with_diagnostic_failure(
+        tmp_path, monkeypatch, diagnostic_busy=True
+    )
+
+    assert result.ok is False
+    assert result.code == "ACCEPTANCE_ATTEMPT_BUSY"
+    assert result.message == "Acceptance attempt storage is busy."
+    assert result.details == {}
 
 
 @pytest.mark.parametrize(

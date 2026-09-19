@@ -834,7 +834,11 @@ def _check_deadline(attempt: AcceptanceAttempt, now: str) -> None:
 
 
 def _public_data(result: object) -> Mapping[str, object]:
-    if not isinstance(result, OperationResult) or result.ok is not True:
+    if not isinstance(result, OperationResult):
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_OUTPUT_INVALID")
+    if result.ok is not True:
+        if result.operation == "diagnostic.show" and result.code == "DIAGNOSTIC_STORE_BUSY":
+            raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_BUSY")
         raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_OUTPUT_INVALID")
     value = result.to_dict().get("data")
     if not isinstance(value, Mapping):
