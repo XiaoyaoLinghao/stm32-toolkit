@@ -330,6 +330,7 @@ def _replay_stream_variant(
     frames = decoder.feed(fixture.stream_bytes)
     decoder.finish()
     encoded_frames = []
+    encoded_nonterminal_frames = []
     for frame in frames:
         payload = dict(frame.payload)
         if frame.kind == 1:
@@ -340,14 +341,19 @@ def _replay_stream_variant(
         elif frame.kind == 5:
             payload["counts"] = dict(payload["counts"])
         mutate(frame.kind, payload)
-        encoded_frames.append(
-            encode_frame(
-                frame.kind,
-                frame.sequence,
-                payload,
-                version=frame.version,
-            )
+        if frame.kind == 5:
+            payload["event_stream_digest"] = sha256(
+                b"".join(encoded_nonterminal_frames)
+            ).hexdigest()
+        encoded = encode_frame(
+            frame.kind,
+            frame.sequence,
+            payload,
+            version=frame.version,
         )
+        encoded_frames.append(encoded)
+        if frame.kind != 5:
+            encoded_nonterminal_frames.append(encoded)
     stream_bytes = b"".join(encoded_frames)
     stream_artifact = _ingest_replay_bytes(
         store,
