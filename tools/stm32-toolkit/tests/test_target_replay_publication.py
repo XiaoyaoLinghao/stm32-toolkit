@@ -1561,9 +1561,13 @@ def test_replay_descriptor_invalid_wire_selector_rejects_without_write(
         kind="target-replay-descriptor",
         media_type="application/json",
     )
-    parent = replace(
-        descriptor,
+    parent = EvidenceEnvelope(
+        identity=descriptor.identity,
+        operation=descriptor.operation,
+        produced_at_utc=descriptor.produced_at_utc,
+        parents=descriptor.parents,
         artifacts=(invalid_descriptor, descriptor.artifacts[1]),
+        metadata=descriptor.metadata,
     )
 
     _assert_replay_publish_failure(
@@ -1593,9 +1597,13 @@ def test_replay_descriptor_noncanonical_wire_selector_rejects_without_write(
         kind="target-replay-descriptor",
         media_type="application/json",
     )
-    parent = replace(
-        descriptor,
+    parent = EvidenceEnvelope(
+        identity=descriptor.identity,
+        operation=descriptor.operation,
+        produced_at_utc=descriptor.produced_at_utc,
+        parents=descriptor.parents,
         artifacts=(noncanonical_descriptor, descriptor.artifacts[1]),
+        metadata=descriptor.metadata,
     )
 
     _assert_replay_publish_failure(
@@ -1675,7 +1683,14 @@ def test_replay_parent_operation_ancestry_selector_rejects_without_write(
     _fixture_value, store, project_root, results_root, descriptor, manifest = _bundle(
         tmp_path, name="failed-before", operation_id="vs03-parent-operation-ancestry"
     )
-    parent = replace(descriptor, operation="other-operation")
+    parent = EvidenceEnvelope(
+        identity=descriptor.identity,
+        operation="other-operation",
+        produced_at_utc=descriptor.produced_at_utc,
+        parents=descriptor.parents,
+        artifacts=descriptor.artifacts,
+        metadata=descriptor.metadata,
+    )
 
     _assert_replay_publish_failure(
         store,
@@ -1716,9 +1731,13 @@ def test_replay_parent_artifact_path_invalid_selector_rejects_without_write(
     invalid_descriptor = replace(
         descriptor.artifacts[0], relative_path="objects/not-content-addressed"
     )
-    parent = replace(
-        descriptor,
+    parent = EvidenceEnvelope(
+        identity=descriptor.identity,
+        operation=descriptor.operation,
+        produced_at_utc=descriptor.produced_at_utc,
+        parents=descriptor.parents,
         artifacts=(invalid_descriptor, descriptor.artifacts[1]),
+        metadata=descriptor.metadata,
     )
 
     _assert_replay_publish_failure(
@@ -1739,7 +1758,14 @@ def test_replay_parent_stream_size_selector_rejects_without_write(
     )
     metadata = dict(descriptor.metadata)
     metadata["stream_size_bytes"] = -1
-    parent = replace(descriptor, metadata=metadata)
+    parent = EvidenceEnvelope(
+        identity=descriptor.identity,
+        operation=descriptor.operation,
+        produced_at_utc=descriptor.produced_at_utc,
+        parents=descriptor.parents,
+        artifacts=descriptor.artifacts,
+        metadata=metadata,
+    )
 
     _assert_replay_publish_failure(
         store,
@@ -1765,9 +1791,13 @@ def test_replay_parent_stream_ref_selector_rejects_without_write(
         kind="target-replay-stream",
         media_type="application/octet-stream",
     )
-    parent = replace(
-        descriptor,
+    parent = EvidenceEnvelope(
+        identity=descriptor.identity,
+        operation=descriptor.operation,
+        produced_at_utc=descriptor.produced_at_utc,
+        parents=descriptor.parents,
         artifacts=(descriptor.artifacts[0], alternate_stream),
+        metadata=descriptor.metadata,
     )
 
     _assert_replay_publish_failure(

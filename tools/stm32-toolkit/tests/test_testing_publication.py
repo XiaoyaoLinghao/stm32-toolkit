@@ -1253,7 +1253,14 @@ def test_physical_provenance_cause_selector_rejects_without_write(
     )
     metadata = dict(envelope.metadata)
     metadata["import_workspace_id"] = "1" * 64
-    candidate = replace(envelope, metadata=metadata)
+    candidate = EvidenceEnvelope(
+        identity=envelope.identity,
+        operation=envelope.operation,
+        produced_at_utc=envelope.produced_at_utc,
+        parents=envelope.parents,
+        artifacts=envelope.artifacts,
+        metadata=metadata,
+    )
 
     _assert_physical_publish_failure(
         store,
@@ -1316,7 +1323,14 @@ def test_physical_run_evidence_shape_selector_rejects_without_write(task_tmp: Pa
     store, project_root, results_root, manifest, _manifest_artifact, envelope = _physical_seed(
         task_tmp, "run-evidence-shape"
     )
-    candidate = replace(envelope, operation="target-test-replay")
+    candidate = EvidenceEnvelope(
+        identity=envelope.identity,
+        operation="target-test-replay",
+        produced_at_utc=envelope.produced_at_utc,
+        parents=envelope.parents,
+        artifacts=envelope.artifacts,
+        metadata=envelope.metadata,
+    )
 
     _assert_physical_publish_failure(
         store,
@@ -1336,7 +1350,14 @@ def test_physical_provenance_postvalidator_selector_rejects_without_write(
     )
     metadata = dict(envelope.metadata)
     metadata["action_digest"] = "1" * 64
-    candidate = replace(envelope, metadata=metadata)
+    candidate = EvidenceEnvelope(
+        identity=envelope.identity,
+        operation=envelope.operation,
+        produced_at_utc=envelope.produced_at_utc,
+        parents=envelope.parents,
+        artifacts=envelope.artifacts,
+        metadata=metadata,
+    )
 
     _assert_physical_publish_failure(
         store,
@@ -1359,7 +1380,14 @@ def test_physical_raw_membership_selector_rejects_without_write(task_tmp: Path):
         kind="test-events",
         media_type="application/vnd.stm32.target-events",
     )
-    candidate = replace(envelope, artifacts=(manifest_artifact, alternate))
+    candidate = EvidenceEnvelope(
+        identity=envelope.identity,
+        operation=envelope.operation,
+        produced_at_utc=envelope.produced_at_utc,
+        parents=envelope.parents,
+        artifacts=(manifest_artifact, alternate),
+        metadata=envelope.metadata,
+    )
 
     _assert_physical_publish_failure(
         store,
@@ -1375,7 +1403,14 @@ def test_physical_manifest_evidence_selector_rejects_without_write(task_tmp: Pat
     store, project_root, results_root, manifest, _manifest_artifact, envelope = _physical_seed(
         task_tmp, "manifest-evidence"
     )
-    candidate = replace(envelope, produced_at_utc="2026-08-20T00:00:02.000000Z")
+    candidate = EvidenceEnvelope(
+        identity=envelope.identity,
+        operation=envelope.operation,
+        produced_at_utc="2026-08-20T00:00:02.000000Z",
+        parents=envelope.parents,
+        artifacts=envelope.artifacts,
+        metadata=envelope.metadata,
+    )
 
     _assert_physical_publish_failure(
         store,
@@ -1399,9 +1434,13 @@ def test_physical_retained_manifest_selector_rejects_without_write(task_tmp: Pat
         kind="test-manifest",
         media_type="application/json",
     )
-    candidate = replace(
-        envelope,
+    candidate = EvidenceEnvelope(
+        identity=envelope.identity,
+        operation=envelope.operation,
+        produced_at_utc=envelope.produced_at_utc,
+        parents=envelope.parents,
         artifacts=(retained_artifact, manifest.raw_events),
+        metadata=envelope.metadata,
     )
 
     _assert_physical_publish_failure(
@@ -1422,7 +1461,14 @@ def test_physical_load_metadata_closure_selector_rejects_without_write(
     )
     metadata = dict(envelope.metadata)
     metadata["unexpected"] = True
-    candidate = replace(envelope, metadata=metadata)
+    candidate = EvidenceEnvelope(
+        identity=envelope.identity,
+        operation=envelope.operation,
+        produced_at_utc=envelope.produced_at_utc,
+        parents=envelope.parents,
+        artifacts=envelope.artifacts,
+        metadata=metadata,
+    )
     _persist_physical_load_graph(store, results_root, manifest, candidate)
 
     _assert_physical_load_failure(
@@ -1441,7 +1487,14 @@ def test_physical_load_provenance_structural_selector_rejects_without_write(
     )
     metadata = dict(envelope.metadata)
     metadata["execution_source"] = "replay"
-    candidate = replace(envelope, metadata=metadata)
+    candidate = EvidenceEnvelope(
+        identity=envelope.identity,
+        operation=envelope.operation,
+        produced_at_utc=envelope.produced_at_utc,
+        parents=envelope.parents,
+        artifacts=envelope.artifacts,
+        metadata=metadata,
+    )
     _persist_physical_load_graph(store, results_root, manifest, candidate)
 
     _assert_physical_load_failure(
@@ -1460,7 +1513,14 @@ def test_physical_load_provenance_detail_selector_rejects_without_write(
     )
     metadata = dict(envelope.metadata)
     metadata["action_digest"] = "1" * 64
-    candidate = replace(envelope, metadata=metadata)
+    candidate = EvidenceEnvelope(
+        identity=envelope.identity,
+        operation=envelope.operation,
+        produced_at_utc=envelope.produced_at_utc,
+        parents=envelope.parents,
+        artifacts=envelope.artifacts,
+        metadata=metadata,
+    )
     _persist_physical_load_graph(store, results_root, manifest, candidate)
 
     _assert_physical_load_failure(
@@ -1475,7 +1535,14 @@ def test_physical_load_artifacts_selector_rejects_without_write(task_tmp: Path):
     store, _project_root, results_root, manifest, manifest_artifact, envelope = _physical_seed(
         task_tmp, "load-artifacts"
     )
-    candidate = replace(envelope, artifacts=(manifest_artifact,))
+    candidate = EvidenceEnvelope(
+        identity=envelope.identity,
+        operation=envelope.operation,
+        produced_at_utc=envelope.produced_at_utc,
+        parents=envelope.parents,
+        artifacts=(manifest_artifact,),
+        metadata=envelope.metadata,
+    )
     _persist_physical_load_graph(store, results_root, manifest, candidate)
 
     _assert_physical_load_failure(
@@ -1498,9 +1565,13 @@ def test_physical_load_manifest_selector_rejects_without_write(task_tmp: Path):
         kind="test-manifest",
         media_type="application/json",
     )
-    candidate = replace(
-        envelope,
+    candidate = EvidenceEnvelope(
+        identity=envelope.identity,
+        operation=envelope.operation,
+        produced_at_utc=envelope.produced_at_utc,
+        parents=envelope.parents,
         artifacts=(persisted_artifact, manifest.raw_events),
+        metadata=envelope.metadata,
     )
     _persist_physical_load_graph(store, results_root, manifest, candidate)
 
