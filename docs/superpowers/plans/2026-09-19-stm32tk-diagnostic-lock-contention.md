@@ -21,9 +21,13 @@ The implementation owner owns only:
   export that operational exception.
 - `tools/stm32-toolkit/src/stm32_toolkit/diagnostic_workflows.py` and
   `tools/stm32-toolkit/src/stm32_toolkit/acceptance/recovery_workflows.py`:
-  narrow result-adapter handling and sanitized availability messages only.
+  narrow result-adapter handling, forwarding the recognized nested Diagnostic
+  Busy failure in `_public_data`, and sanitized availability messages only.
 - Existing DiagnosticStore and workflow test modules for this behavior; reuse
-  their fixtures. The existing concurrent continuation test remains unchanged.
+  their fixtures. A new post-publication Busy case may be added to
+  `test_continuation_monitor.py`; the existing concurrent continuation test
+  function must remain byte-for-byte unchanged. No ownership of the four
+  public-decode qualification test modules is transferred to this owner.
 - One short implementation return under
   `docs/codex/returns/STM32TK-1.0-local-release/diagnostic-lock-contention-report.md`.
 
@@ -38,6 +42,10 @@ Reuse `_failed_evidence`, `_created`, the existing store concurrency fixtures an
 the public result fixtures. Deterministic native/clock fault injection must enter
 through an existing public store/workflow operation, preserve real validation,
 and prove timeout, non-contention refusal, no late protected entry and cleanup.
+Include direct and nested public Busy results and post-publication revision-1
+preservation/exact retry, as specified by the design. Use the existing durable
+fixture; no duplicate diagnostic framework or ten-second sleep is required.
+Source scopes remain the same except for the explicitly named nested adapter.
 A small standard-library native child/descriptor fixture is allowed only for
 the actual cross-process exclusion check; use an existing subprocess pattern,
 finite waits and owned-child cleanup, not a new runner or lock framework.

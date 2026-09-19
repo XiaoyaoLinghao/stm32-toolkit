@@ -69,6 +69,11 @@ The Diagnostic workflow result adapter converts it to `DIAGNOSTIC_STORE_BUSY`;
 the acceptance recovery result adapter converts it to `ACCEPTANCE_ATTEMPT_BUSY`.
 Neither message exposes paths or native error strings. Existing validation and
 identity errors keep their current codes. No CLI/MCP response shape changes.
+The same rule covers a nested Diagnostic public result: acceptance's
+`_public_data` must forward the recognized `DIAGNOSTIC_STORE_BUSY` failure as
+`ACCEPTANCE_ATTEMPT_BUSY`, rather than its generic output-invalid normalization.
+Other non-OK results keep their existing classification. Verify both direct
+exceptions and nested public-result propagation.
 
 Availability failure does not promise rollback of earlier publication: the
 observed failure occurred during a second, post-publication authentication lock.
@@ -76,6 +81,18 @@ Callers can read or retry the same immutable checkpoint after contention clears.
 Do not change the attempt deadline, authorization consumption, CAS, publication
 order, Diagnostic-before-EvidenceStore ordering, or the completed-result
 authentication that intentionally runs after publication locks are released.
+Retain one explicit regression at that second authentication boundary: revision
+1 is already durably published when acquisition expires, the caller receives
+`ACCEPTANCE_ATTEMPT_BUSY`, the root remains unchanged, and a later exact retry or
+read authenticates the same immutable revision-1 result. Deterministic deadline
+and narrowly scoped native contention injection may avoid a real ten-second
+wait; the real native exclusion/release test remains a separate obligation.
+
+Cleanup precedence is unchanged: native cleanup errors propagate from the
+store's finally block (Diagnostic currently lets raw OSError escape; acceptance
+normalizes it to integrity failure). The correction ensures close still runs
+after an unlock failure; it does not turn that cleanup error into Busy or
+silently suppress it. Retain a deterministic regression for this precedence.
 
 ## Non-goals and acceptance
 
