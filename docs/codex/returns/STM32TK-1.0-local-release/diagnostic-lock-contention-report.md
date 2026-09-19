@@ -31,7 +31,7 @@ implementation plan is primary commit
 `2063b27c414ba788cb0f8aeb3a31cff62b94323f`. The accepted base is
 `fa8502e6bf706fcaae26122cf996077678053cc5`. The implementation code head
 before this report commit is
-`37a3f628aa69877ab645b327cc70de2c45fcea16` (`37a3f628`); this report
+`3c125d57c9fd115c0e1fad3ee9c86b4997d07455` (`3c125d57`); this report
 intentionally records no report-commit SHA.
 
 ## Implementation and regression coverage
@@ -54,9 +54,9 @@ was left byte-for-byte unchanged. A separate new continuation case exercises
 the second-authentication BUSY boundary with deterministic public-context
 injection.
 
-The implementation owner ran the primary-authorized focused-r1 and
-focused-r2 entries recorded below. The primary agent owns entry review,
-execution, evidence cleanup, independent review, and acceptance.
+The implementation owner ran the primary-authorized focused-r1, focused-r2,
+focused-r3, and continuation entries recorded below. The primary agent owns
+entry review, execution, evidence cleanup, independent review, and acceptance.
 
 ## Focused-r1 execution record
 
@@ -170,11 +170,32 @@ Its evidence root is
 temporary root is `D:\codex-tmp\v10b-0918\r10\t\lk\f3` (basetemp
 `D:\codex-tmp\v10b-0918\r10\t\lk\f3\b`). The launcher records the actual
 `lk` source head at run time; it was generated after implementation head
-`37a3f628aa69877ab645b327cc70de2c45fcea16` and has not been run.
+`37a3f628aa69877ab645b327cc70de2c45fcea16` and executed at
+`3c125d57c9fd115c0e1fad3ee9c86b4997d07455`.
 
 ```text
 D:\codex-tmp\v10b-0918\r10\py\Scripts\python.exe -m pytest -x -o addopts= -o cache_dir=D:\codex-tmp\v10b-0918\r10\t\lk\f3\pytest-cache --basetemp D:\codex-tmp\v10b-0918\r10\t\lk\f3\b --junitxml D:\codex-tmp\v10b-0918\r10\e\diagnostic-lock-contention\focused-r3\junit.xml --cov=stm32_toolkit --cov=stm32_monitor --cov-branch --cov-fail-under=0 --cov-report=term-missing --cov-report=json:D:\codex-tmp\v10b-0918\r10\e\diagnostic-lock-contention\focused-r3\coverage.json tools/stm32-toolkit/tests/test_continuation_monitor.py::test_postpublication_diagnostic_busy_preserves_revision_one_for_exact_retry_and_read
 ```
+
+## Serial execution results
+
+At frozen code head
+`3c125d57c9fd115c0e1fad3ee9c86b4997d07455`, focused-r3 completed once with
+preflight passed, child and launcher exit code `0`, `timedOut=false`, and
+normal child settlement. JUnit recorded 1 test, 1 pass, 0 failures, 0
+errors, and 0 skips. The retained branch coverage JSON reports 2,584
+covered branches out of 16,512, and the raw `.coverage` database is present.
+
+The existing continuation entry then completed once under its 240-second
+bound with preflight passed, child and launcher exit code `0`,
+`timedOut=false`, and normal child settlement. JUnit recorded 1 test, 1
+pass, 0 failures, 0 errors, and 0 skips. Its retained branch coverage JSON
+reports 2,739 covered branches out of 16,512, and its raw `.coverage`
+database is present. Focused-r3 evidence is under
+`D:\codex-tmp\v10b-0918\r10\e\diagnostic-lock-contention\focused-r3`; continuation
+evidence is under
+`D:\codex-tmp\v10b-0918\r10\e\diagnostic-lock-contention\continuation`.
+No retries or cleanup were performed.
 
 Each launcher entry writes `command.txt`, `argv.json`, `environment.json`,
 `preflight.json`, `heads.json`, `stdout.txt`, `stderr.txt`, `process.json`,
@@ -196,10 +217,12 @@ The executable launchers prepared for these entries are:
   (SHA256 `827B29A6CB5CE8A96E275E1419EC23DDF771676EE4A71C550CBACAA641981732`)
 
 PowerShell 7 AST parsing reported zero errors for all four launchers. The
-focused-r3 launcher is prepared only; it has not been run.
+focused-r3 and continuation launchers were executed once after the focused-r3
+success conditions were satisfied.
 
 This report records implementation preparation plus the primary-authorized
-focused-r1 and focused-r2 results. The implementation agent does not accept
-its own diff; independent complete-diff review and the final verification
-verdict remain with the primary agent and its separately assigned reviewer.
+focused-r1, focused-r2, focused-r3, and continuation results. The
+implementation agent does not accept its own diff; independent complete-diff
+review and the final verification verdict remain with the primary agent and
+its separately assigned reviewer.
 No cleanup was performed by this agent.
