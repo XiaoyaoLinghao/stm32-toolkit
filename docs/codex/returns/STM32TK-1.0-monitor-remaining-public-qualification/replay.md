@@ -53,3 +53,31 @@ The specified Python performed AST parsing only for both owned test files and
 returned `AST_OK`. `git diff --check` also passed. Pytest, collect-only,
 package imports, builds, installers, hardware access, cleanup, and remote
 actions were not performed in this wave.
+
+## Primary integration disposition after execution
+
+The preparation and NOT_RUN sections above are historical. The primary accepted
+and integrated the subsequent bounded product correction after independent
+complete-diff review and actual execution; they are not the final slice status.
+
+- Accepted runtime base: `87699308535bd36431c2e44be8bf131e245d460d`.
+- Tested correction CodeHead: `a270d7332c3ad2d09cd0b9adfa96ca80042bcf9d`.
+- Product implementer and test executor: `/root/replay_publication_integrity_impl`
+  (`gpt-5.6-luna`, `max`); independent reviewer and integration owner: primary.
+- Complete base-to-CodeHead diff reviewed in clean detached `r10/q1r`;
+  `git diff --check` passed. Runtime scope is only `_publish_transcript`:
+  immutable validation failure maps to `EVIDENCE_INTEGRITY_FAILURE`, while
+  direct or nested non-missing provider I/O remains `ENVIRONMENT_FAILURE`.
+- Focused run2: 4 PASS, 0 failure/error/skip, JUnit 2.768 seconds, exit 0.
+- Affected replay, physical-publication and analysis-workflow files: 190 PASS,
+  0 failure/error/skip, JUnit 93.744 seconds, exit 0. Both processes terminated
+  without timeout; source remained unchanged. These are software tests.
+- Evidence: `r10/e/monitor-remaining/replay/run2` and
+  `r10/e/monitor-remaining/replay/affected-regression/run1`; primary review in
+  `r10/e/monitor-remaining/replay/integrity-fix-code-review.md`.
+- Historical run1 (7 PASS, 1 FAIL) remains preserved and excluded from the native
+  coverage union. Old coverage arcs for changed `replay.py` must also be excluded.
+
+Slice verdict: **ACCEPTED**. This does not accept the 1.0 release: package native
+coverage, seven Windows symlink checks, and final artifact/deployment refresh
+remain separate requirements. No hardware test or remote action was repeated.
