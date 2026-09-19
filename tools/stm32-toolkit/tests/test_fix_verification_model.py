@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import FrozenInstanceError
 from hashlib import sha256
 
@@ -54,6 +55,7 @@ def _source(validation_plan_id: str = PLAN_ID) -> SourceChangeDeclaration:
 def _plan(
     source: SourceChangeDeclaration | None = None,
     verification_plan_id: str = PLAN_ID,
+    continuation_evidence_id: str | None = None,
 ) -> VerificationPlan:
     declaration = _source(verification_plan_id) if source is None else source
     return VerificationPlan.new(
@@ -68,6 +70,7 @@ def _plan(
         required_analysis_evidence_ids=ANALYSIS_EVIDENCE_IDS,
         required_monitor_quality="VALID",
         expected_changed=True,
+        continuation_evidence_id=continuation_evidence_id,
     )
 
 
@@ -191,6 +194,28 @@ def test_source_plan_fix_bind_without_digest_fixed_point() -> None:
     changed_verification = verification.to_dict()
     changed_verification["verification_plan_digest"] = "c" * 64
     _expect_invalid(lambda: FixVerification.from_value(changed_verification))
+
+
+def test_v2_verification_plan_requires_and_binds_continuation_evidence() -> None:
+    plan = _plan(continuation_evidence_id="8" * 64)
+    wire = plan.to_dict()
+
+    assert wire["schema"] == "stm32-verification-plan/2"
+    assert wire["continuation_evidence_id"] == "8" * 64
+    assert VerificationPlan.from_value(wire) == plan
+
+    for mutation in ("missing", "legacy-schema", "changed-id"):
+        candidate = deepcopy(wire)
+        if mutation == "missing":
+            candidate.pop("continuation_evidence_id")
+        elif mutation == "legacy-schema":
+            candidate["schema"] = "stm32-verification-plan/1"
+        else:
+            candidate["continuation_evidence_id"] = "9" * 64
+        before = deepcopy(candidate)
+
+        _expect_invalid(lambda candidate=candidate: VerificationPlan.from_value(candidate))
+        assert candidate == before
 
 
 def test_derived_ids_are_canonical_and_bind_every_field() -> None:

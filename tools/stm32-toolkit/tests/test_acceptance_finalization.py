@@ -19,6 +19,9 @@ from stm32_monitor.analysis_workflows import compare_monitor_runs, export_analys
 from stm32_monitor.replay import publish_physical_monitor_run
 from stm32_toolkit.acceptance.finalization import (
     FINALIZATION_ATTEMPT_SCHEMA,
+    FINALIZATION_REQUEST_SCHEMA,
+    FinalizationRequest,
+    FinalizationValidationError,
     PhysicalFinalizationAttempt,
     PhysicalFinalizationProof,
 )
@@ -74,6 +77,35 @@ class PersistedCase:
     request: dict[str, object]
     evidence: EvidenceStore
     workspace: WorkspacePaths
+
+
+def test_finalization_request_wire_guards_preserve_input() -> None:
+    invalid_revision = {
+        "schema": FINALIZATION_REQUEST_SCHEMA,
+        "kind": "bind",
+        "predecessorAttemptId": "00000000-0000-4000-8000-000000000001",
+        "predecessorCheckpointId": "a" * 64,
+        "predecessorEvidenceId": "b" * 64,
+        "fixedAfterTestRunId": "target-v2-fixed-t10",
+        "fixedAfterEvidenceId": "c" * 64,
+        "diagnosticRevision": True,
+        "diagnosticEventHead": "d" * 64,
+        "fixVerificationId": "e" * 64,
+    }
+    before_invalid_revision = dict(invalid_revision)
+    with pytest.raises(FinalizationValidationError):
+        FinalizationRequest.from_value(invalid_revision)
+    assert invalid_revision == before_invalid_revision
+
+    invalid_reuse_kind = {
+        "schema": FINALIZATION_REQUEST_SCHEMA,
+        "kind": "bind",
+        "continuationEvidenceId": "f" * 64,
+    }
+    before_invalid_reuse_kind = dict(invalid_reuse_kind)
+    with pytest.raises(FinalizationValidationError):
+        FinalizationRequest.from_value(invalid_reuse_kind)
+    assert invalid_reuse_kind == before_invalid_reuse_kind
 
 
 def _configured_path(name: str) -> Path | None:

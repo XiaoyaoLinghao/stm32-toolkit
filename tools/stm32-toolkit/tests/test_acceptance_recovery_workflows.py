@@ -166,6 +166,124 @@ def _project_transition_context(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     return project, data, AcceptanceRecoveryContext(project, data, "session-a", clock=clock)
 
 
+@pytest.mark.parametrize(
+    ("begin_args", "expected_code"),
+    [
+        pytest.param(
+            {
+                "attempt_id": "not-a-uuid",
+                "scenario_id": "legacy-keil-migration",
+                "scenario_version": "1",
+            },
+            "ACCEPTANCE_ATTEMPT_INPUT_INVALID",
+            id="attempt-id",
+        ),
+        pytest.param(
+            {
+                "attempt_id": ATTEMPT_ID,
+                "scenario_id": "unsupported-scenario",
+                "scenario_version": "1",
+            },
+            "ACCEPTANCE_ATTEMPT_INPUT_INVALID",
+            id="scenario-id",
+        ),
+        pytest.param(
+            {
+                "attempt_id": ATTEMPT_ID,
+                "scenario_id": "legacy-keil-migration",
+                "scenario_version": "2",
+            },
+            "ACCEPTANCE_ATTEMPT_INPUT_INVALID",
+            id="scenario-version",
+        ),
+        pytest.param(
+            {
+                "attempt_id": ATTEMPT_ID,
+                "scenario_id": 1,
+                "scenario_version": "1",
+            },
+            "ACCEPTANCE_ATTEMPT_INPUT_INVALID",
+            id="scenario-type",
+        ),
+    ],
+)
+def test_begin_public_input_rejection_publishes_no_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    begin_args: dict[str, object],
+    expected_code: str,
+) -> None:
+    project, data, context = _project_transition_context(
+        tmp_path, monkeypatch, lambda: "2026-08-24T00:00:00.000000Z"
+    )
+
+    result = begin_acceptance_attempt(context, **begin_args)
+
+    assert result.ok is False
+    assert result.code == expected_code
+    assert not data.exists()
+    assert list(project.iterdir()) == []
+
+
+def test_checkpoint_public_input_rejection_preserves_revision_zero(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project, data, context = _project_transition_context(
+        tmp_path, monkeypatch, lambda: "2026-08-24T00:00:00.000000Z"
+    )
+    first = begin_acceptance_attempt(
+        context,
+        attempt_id=ATTEMPT_ID,
+        scenario_id="legacy-keil-migration",
+        scenario_version="1",
+    )
+    assert first.ok is True
+    original_attempt = first.data["attempt"]
+    original_files = {
+        str(path.relative_to(data)): path.read_bytes()
+        for path in data.rglob("*")
+        if path.is_file()
+    }
+
+    for expected_revision, stage, expected_code in (
+        (True, "project-materialized", "ACCEPTANCE_ATTEMPT_INPUT_INVALID"),
+        (8, "project-materialized", "ACCEPTANCE_ATTEMPT_INPUT_INVALID"),
+        (0, "unknown-stage", "ACCEPTANCE_ATTEMPT_STAGE_INVALID"),
+    ):
+        result = checkpoint_acceptance_attempt(
+            context,
+            attempt_id=ATTEMPT_ID,
+            expected_revision=expected_revision,
+            stage=stage,
+        )
+        assert result.ok is False
+        assert result.code == expected_code
+        resumed = resume_acceptance_attempt(context, attempt_id=ATTEMPT_ID)
+        assert resumed.ok is True
+        assert resumed.data["attempt"] == original_attempt
+        assert resumed.data["attempt"]["revision"] == 0
+        assert {
+            str(path.relative_to(data)): path.read_bytes()
+            for path in data.rglob("*")
+            if path.is_file()
+        } == original_files
+
+
+def test_resume_public_attempt_id_rejection_creates_no_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project, data, context = _project_transition_context(
+        tmp_path, monkeypatch, lambda: "2026-08-24T00:00:00.000000Z"
+    )
+
+    result = resume_acceptance_attempt(context, attempt_id="not-a-uuid")
+
+    assert result.ok is False
+    assert result.code == "ACCEPTANCE_ATTEMPT_INPUT_INVALID"
+    assert not data.exists()
+    assert list(project.iterdir()) == []
+
+
 def test_checkpoint_at_exact_deadline_is_not_expired(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     now = ["2026-08-24T00:00:00.000000Z"]
     project, data, context = _project_transition_context(tmp_path, monkeypatch, lambda: now[0])

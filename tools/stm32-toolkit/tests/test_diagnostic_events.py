@@ -58,6 +58,27 @@ def _event(
     )
 
 
+def test_create_event_rejects_invalid_public_actor_without_mutating_payload() -> None:
+    payload = {"request": {}, "result": {}}
+    before = deepcopy(payload)
+
+    with pytest.raises(DiagnosticValidationError) as error:
+        create_event(
+            diagnostic_session_id=SID,
+            operation_id="create-invalid-actor",
+            sequence=0,
+            revision_before=0,
+            event_type="investigation.started",
+            occurred_at_utc=UTC,
+            actor="robot",
+            previous_digest=None,
+            payload=payload,
+        )
+
+    assert error.value.code == DIAGNOSTIC_INVALID_EVENT
+    assert payload == before
+
+
 def _canonical_payloads() -> list[tuple[str, dict[str, object], dict[str, object]]]:
     step = {
         "step_id": "failed-state",

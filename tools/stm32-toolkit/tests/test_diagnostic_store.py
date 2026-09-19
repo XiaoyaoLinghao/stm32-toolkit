@@ -17,6 +17,7 @@ import pytest
 from stm32_toolkit.diagnostics import (
     DIAGNOSTIC_CHAIN_CORRUPT,
     DIAGNOSTIC_EVIDENCE_MISSING,
+    DIAGNOSTIC_INVALID_EVENT,
     DIAGNOSTIC_LIMIT_EXCEEDED,
     DIAGNOSTIC_REVISION_CONFLICT,
     DIAGNOSTIC_OPERATION_CONFLICT,
@@ -452,6 +453,23 @@ def test_resolve_operation_returns_current_session_for_exact_intent_and_conflict
                 request=request,
             )
         assert error.value.code == DIAGNOSTIC_OPERATION_CONFLICT
+
+    for event_type, actor, request in (
+        ("", started.actor, {}),
+        (started.event_type, "", {}),
+        (started.event_type, started.actor, []),
+    ):
+        with pytest.raises(DiagnosticValidationError) as error:
+            store.resolve_operation(
+                SID,
+                started.operation_id,
+                event_type=event_type,
+                actor=actor,
+                request=request,  # type: ignore[arg-type]
+            )
+        assert error.value.code == DIAGNOSTIC_INVALID_EVENT
+
+    assert store.load(SID).revision == 2
 
 
 def test_resolve_accepted_operation_reloads_without_evidence_authority(

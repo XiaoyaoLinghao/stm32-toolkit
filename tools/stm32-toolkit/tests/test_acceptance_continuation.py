@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
+from copy import deepcopy
 from dataclasses import replace
 import hashlib
 import json
@@ -628,6 +629,32 @@ def test_continuation_request_accepts_mapping_and_is_closed() -> None:
         )
     with pytest.raises(ContinuationValidationError):
         ContinuationRequest.from_value(tuple({"kind": "bind"}.items()))
+
+    invalid_revision = {
+        "schema": CONTINUATION_REQUEST_SCHEMA,
+        "kind": "bind",
+        "predecessorAttemptId": LEGACY_ATTEMPT_ID,
+        "predecessorCheckpointId": "a" * 64,
+        "predecessorEvidenceId": "b" * 64,
+        "fixedAfterTestRunId": "target-v2-fixed-t10",
+        "fixedAfterEvidenceId": "c" * 64,
+        "diagnosticRevision": True,
+        "diagnosticEventHead": "d" * 64,
+    }
+    before_invalid_revision = deepcopy(invalid_revision)
+    with pytest.raises(ContinuationValidationError):
+        ContinuationRequest.from_value(invalid_revision)
+    assert invalid_revision == before_invalid_revision
+
+    invalid_reuse_kind = {
+        "schema": CONTINUATION_REQUEST_SCHEMA,
+        "kind": "bind",
+        "continuationEvidenceId": "e" * 64,
+    }
+    before_invalid_reuse_kind = deepcopy(invalid_reuse_kind)
+    with pytest.raises(ContinuationValidationError):
+        ContinuationRequest.from_value(invalid_reuse_kind)
+    assert invalid_reuse_kind == before_invalid_reuse_kind
 
 
 def test_continuation_bind_reuse_show_resume_preserves_v2_authorization(

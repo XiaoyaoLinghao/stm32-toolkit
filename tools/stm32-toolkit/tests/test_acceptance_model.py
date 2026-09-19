@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from copy import deepcopy
 from datetime import datetime, timezone
 from uuid import UUID
 
@@ -67,11 +68,34 @@ def test_scenario_model_rejects_tuple_json_and_digest_mutation():
     payload["requiredStages"] = tuple(payload["requiredStages"])
     with pytest.raises(AcceptanceValidationError):
         AcceptanceScenario.from_value(payload)
-
     payload = acceptance_scenario("legacy-keil-migration", "1").to_dict()
     payload["scenarioDigest"] = "0" * 64
     with pytest.raises(AcceptanceValidationError):
         AcceptanceScenario.from_value(payload)
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_code"),
+    [
+        pytest.param({"scenarioId": "unsupported-scenario"}, "ACCEPTANCE_SCENARIO_UNKNOWN", id="unknown-scenario"),
+        pytest.param({"scenarioVersion": "2"}, "ACCEPTANCE_SCENARIO_VERSION_UNSUPPORTED", id="unsupported-version"),
+        pytest.param({"requiredStages": list(REQUIRED_STAGES[:-1])}, "ACCEPTANCE_INPUT_INVALID", id="short-stages"),
+        pytest.param({"requiredStages": [*REQUIRED_STAGES, 1]}, "ACCEPTANCE_INPUT_INVALID", id="non-string-stage"),
+        pytest.param({"physicalTransportEvidence": 1}, "ACCEPTANCE_INPUT_INVALID", id="non-boolean-transport"),
+    ],
+)
+def test_scenario_wire_guards_preserve_input_and_exact_error_codes(
+    mutation: dict[str, object], expected_code: str
+) -> None:
+    candidate = acceptance_scenario("legacy-keil-migration", "1").to_dict()
+    candidate.update(mutation)
+    before = deepcopy(candidate)
+
+    with pytest.raises(AcceptanceValidationError) as error:
+        AcceptanceScenario.from_value(candidate)
+
+    assert error.value.code == expected_code
+    assert candidate == before
 
 
 def _record_payload(**overrides: object) -> dict[str, object]:
@@ -129,6 +153,25 @@ def test_record_model_requires_exact_closed_fields_and_canonical_digest():
         AcceptanceRecord.from_value({**payload, "recordId": UUID(payload["recordId"])})
     with pytest.raises(AcceptanceValidationError):
         AcceptanceRecord.from_value({**payload, "producedAtUtc": datetime.now(timezone.utc)})
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    [
+        pytest.param("completedStages", {"project-materialized": True}, id="object-stages"),
+    ],
+)
+def test_record_wire_container_guards_preserve_input(
+    field: str, replacement: object
+) -> None:
+    candidate = _record_payload(**{field: replacement})
+    before = deepcopy(candidate)
+
+    with pytest.raises(AcceptanceValidationError) as error:
+        AcceptanceRecord.from_value(candidate)
+
+    assert error.value.code == "ACCEPTANCE_INPUT_INVALID"
+    assert candidate == before
 
 
 def test_digest_is_over_object_without_digest_field():
