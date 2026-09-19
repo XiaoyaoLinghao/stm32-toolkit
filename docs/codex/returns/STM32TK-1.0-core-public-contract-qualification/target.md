@@ -124,16 +124,28 @@ Only static checks were performed in this implementation/revision wave:
 
     python -c "import ast,pathlib; ..."  # AST parse of all seven changed test files
     git diff --check
+    PowerShell AST parse of the prepared launcher
 
-All seven changed test files parsed successfully and the diff was clean. Pytest,
-pytest collection, product imports, coverage, build, install, hardware, and
-runtime execution were intentionally not performed. The tests remain NOT_RUN
-until the primary releases the serial execution batch.
+All seven changed test files and the prepared launcher parsed successfully and
+the diff was clean. Pytest, pytest collection, product imports, coverage,
+build, install, hardware, and runtime execution were intentionally not
+performed. The tests remain NOT_RUN until the primary releases the serial
+execution batch.
 
-Reserved runtime evidence roots, not populated by this implementation turn:
+Prepared serial launcher, not executed:
 
-- D:\codex-tmp\v10b-0918\r10\e\core95\target
-- D:\codex-tmp\v10b-0918\r10\t\c95\t
+- Path: D:\codex-tmp\v10b-0918\r10\e\core95\target\run1\launch.ps1.
+- SHA256: 9E4BC79530B6B2D014C48D3BB56E7703D306C1132C5960C87B133F851A11FB58.
+- Candidate guard: 620d5bd0c5b6c3d7d8236519799c4ee8ad90f567; runtime source guard: a270d7332c3ad2d09cd0b9adfa96ca80042bcf9d.
+- Invocation properties: `-x`, `--cov=stm32_toolkit`, 16 function selectors expanding to 31 bounded pytest items, and a 300-second wall budget.
+- Evidence root: D:\codex-tmp\v10b-0918\r10\e\core95\target\run1.
+- Temporary/cache/basetemp root: D:\codex-tmp\v10b-0918\r10\t\c95t\run1.
+- All launcher-owned result paths were absent when prepared; the launcher file itself is the only file under the evidence root.
+
+Reserved runtime evidence paths, not populated by this implementation turn:
+
+- D:\codex-tmp\v10b-0918\r10\e\core95\target\run1
+- D:\codex-tmp\v10b-0918\r10\t\c95t\run1
 
 ## Remaining barriers
 
