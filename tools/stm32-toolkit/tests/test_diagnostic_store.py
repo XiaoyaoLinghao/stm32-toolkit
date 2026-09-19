@@ -813,6 +813,7 @@ finally:
         stderr=subprocess.PIPE,
         text=True,
     )
+    child_output: tuple[str | None, str | None] | None = None
     try:
         ready_deadline = time.monotonic() + 5.0
         while not ready_path.exists():
@@ -820,6 +821,7 @@ finally:
                 pytest.fail(f"native lock child failed: {error_path.read_text(encoding='utf-8')}")
             if child.poll() is not None:
                 stdout, stderr = child.communicate()
+                child_output = (stdout, stderr)
                 pytest.fail(f"native lock child exited before locking: {stdout}{stderr}")
             if time.monotonic() >= ready_deadline:
                 pytest.fail("native lock child did not publish its ready marker")
@@ -841,6 +843,7 @@ finally:
 
         child.wait(timeout=5)
         stdout, stderr = child.communicate(timeout=5)
+        child_output = (stdout, stderr)
         assert child.returncode == 0, f"native lock child failed: {stdout}{stderr}"
         assert not error_path.exists()
         assert store.load(SID).revision == 1
@@ -852,7 +855,7 @@ finally:
         except subprocess.TimeoutExpired:
             child.kill()
             child.wait(timeout=5)
-        if child.stdout is not None or child.stderr is not None:
+        if child_output is None and (child.stdout is not None or child.stderr is not None):
             child.communicate(timeout=5)
 
 
