@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import replace
+from datetime import datetime, timedelta
 import hashlib
 import json
 import os
@@ -1638,6 +1639,297 @@ def _complete_continuation_verification(pair: SimpleNamespace, baseline: SimpleN
     assert isinstance(verification, Mapping)
     assert verification["status"] == "PASSED"
     return verification
+
+
+def test_public_continuation_checkpoint_rejects_wrong_stage_before_chain_load(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pair = prepare_pair(tmp_path, monkeypatch)
+    initial = _ok(
+        begin_acceptance_attempt(
+            pair.context,
+            attempt_id=CONTINUATION_ATTEMPT_ID,
+            scenario_id="legacy-keil-physical-repair",
+            scenario_version="1",
+            continuation=pair.bind_request,
+        )
+    )["attempt"]
+    assert initial["revision"] == 0
+    assert initial["stage"] == "verification-pending"
+
+    shown_before = _ok(
+        recovery_workflows.show_acceptance_attempt(
+            pair.context, attempt_id=CONTINUATION_ATTEMPT_ID
+        )
+    )["attempt"]
+    diagnostic_before = _ok(
+        diagnostic_show(
+            pair.diagnostic, diagnostic_session_id=pair.diagnostic_session_id
+        )
+    )["session"]
+    root0_path = recovery_workflows._typed_root_path(
+        pair.evidence,
+        recovery_workflows._root_id(CONTINUATION_ATTEMPT_ID, 0),
+    )
+    root1_path = recovery_workflows._typed_root_path(
+        pair.evidence,
+        recovery_workflows._root_id(CONTINUATION_ATTEMPT_ID, 1),
+    )
+    root0_bytes = root0_path.read_bytes()
+
+    rejected = checkpoint_acceptance_attempt(
+        pair.context,
+        attempt_id=CONTINUATION_ATTEMPT_ID,
+        expected_revision=0,
+        stage="verification-pending",
+    )
+    assert rejected.ok is False
+    assert rejected.code == "ACCEPTANCE_ATTEMPT_STAGE_INVALID"
+    assert rejected.message == "Acceptance attempt stage is invalid."
+    assert rejected.data is None
+    assert root0_path.read_bytes() == root0_bytes
+    assert not root1_path.exists()
+
+    shown_after = _ok(
+        recovery_workflows.show_acceptance_attempt(
+            pair.context, attempt_id=CONTINUATION_ATTEMPT_ID
+        )
+    )["attempt"]
+    resumed = _ok(
+        resume_acceptance_attempt(pair.context, attempt_id=CONTINUATION_ATTEMPT_ID)
+    )
+    diagnostic_after = _ok(
+        diagnostic_show(
+            pair.diagnostic, diagnostic_session_id=pair.diagnostic_session_id
+        )
+    )["session"]
+    assert shown_before == initial
+    assert shown_after == initial
+    assert resumed["attempt"] == initial
+    assert resumed["nextStage"] == "target-fix-verified"
+    assert resumed["timedOut"] is False
+    assert diagnostic_after == diagnostic_before
+
+
+def test_public_continuation_checkpoint_rejects_wrong_fixed_after_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pair = prepare_pair(tmp_path, monkeypatch)
+    baseline = _monitor_baseline(pair, tmp_path)
+    verification = _complete_continuation_verification(pair, baseline)
+
+    shown_before = _ok(
+        recovery_workflows.show_acceptance_attempt(
+            pair.context, attempt_id=CONTINUATION_ATTEMPT_ID
+        )
+    )["attempt"]
+    diagnostic_before = _ok(
+        diagnostic_show(
+            pair.diagnostic, diagnostic_session_id=pair.diagnostic_session_id
+        )
+    )["session"]
+    root0_path = recovery_workflows._typed_root_path(
+        pair.evidence,
+        recovery_workflows._root_id(CONTINUATION_ATTEMPT_ID, 0),
+    )
+    root1_path = recovery_workflows._typed_root_path(
+        pair.evidence,
+        recovery_workflows._root_id(CONTINUATION_ATTEMPT_ID, 1),
+    )
+    root0_bytes = root0_path.read_bytes()
+
+    rejected = checkpoint_acceptance_attempt(
+        pair.context,
+        attempt_id=CONTINUATION_ATTEMPT_ID,
+        expected_revision=0,
+        stage="target-fix-verified",
+        test_run_id=pair.failed_run_id,
+        diagnostic_session_id=pair.diagnostic_session_id,
+        fix_verification_id=verification["fix_verification_id"],
+    )
+    assert rejected.ok is False
+    assert rejected.code == "ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH"
+    assert rejected.message == "Acceptance attempt identity does not match."
+    assert rejected.data is None
+    assert root0_path.read_bytes() == root0_bytes
+    assert not root1_path.exists()
+
+    shown_after = _ok(
+        recovery_workflows.show_acceptance_attempt(
+            pair.context, attempt_id=CONTINUATION_ATTEMPT_ID
+        )
+    )["attempt"]
+    resumed = _ok(
+        resume_acceptance_attempt(pair.context, attempt_id=CONTINUATION_ATTEMPT_ID)
+    )
+    diagnostic_after = _ok(
+        diagnostic_show(
+            pair.diagnostic, diagnostic_session_id=pair.diagnostic_session_id
+        )
+    )["session"]
+    assert shown_after == shown_before
+    assert resumed["attempt"] == shown_before
+    assert resumed["nextStage"] == "target-fix-verified"
+    assert resumed["timedOut"] is False
+    assert diagnostic_after == diagnostic_before
+
+
+def test_public_continuation_terminal_checkpoint_and_wrong_fix_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pair = prepare_pair(tmp_path, monkeypatch)
+    baseline = _monitor_baseline(pair, tmp_path)
+    verification = _complete_continuation_verification(pair, baseline)
+    checkpoint = dict(
+        attempt_id=CONTINUATION_ATTEMPT_ID,
+        expected_revision=0,
+        stage="target-fix-verified",
+        test_run_id=pair.fixed_run_id,
+        diagnostic_session_id=pair.diagnostic_session_id,
+        fix_verification_id=verification["fix_verification_id"],
+    )
+
+    completed = _ok(checkpoint_acceptance_attempt(pair.context, **checkpoint))["attempt"]
+    assert completed["revision"] == 1
+    assert completed["status"] == "COMPLETED"
+    assert completed["stage"] == "target-fix-verified"
+    assert completed["fixVerificationId"] == verification["fix_verification_id"]
+
+    shown = _ok(
+        recovery_workflows.show_acceptance_attempt(
+            pair.context, attempt_id=CONTINUATION_ATTEMPT_ID
+        )
+    )["attempt"]
+    resumed = _ok(
+        resume_acceptance_attempt(pair.context, attempt_id=CONTINUATION_ATTEMPT_ID)
+    )
+    diagnostic_after_completion = _ok(
+        diagnostic_show(
+            pair.diagnostic, diagnostic_session_id=pair.diagnostic_session_id
+        )
+    )["session"]
+    root1_path = recovery_workflows._typed_root_path(
+        pair.evidence,
+        recovery_workflows._root_id(CONTINUATION_ATTEMPT_ID, 1),
+    )
+    root2_path = recovery_workflows._typed_root_path(
+        pair.evidence,
+        recovery_workflows._root_id(CONTINUATION_ATTEMPT_ID, 2),
+    )
+    root1_bytes = root1_path.read_bytes()
+    assert shown == completed
+    assert resumed["attempt"] == completed
+    assert resumed["nextStage"] is None
+    assert resumed["timedOut"] is False
+    assert diagnostic_after_completion["state"] == "RESOLVED"
+    assert not root2_path.exists()
+
+    wrong_fix = "0" * 64
+    if wrong_fix == verification["fix_verification_id"]:
+        wrong_fix = "1" * 64
+    rejected = checkpoint_acceptance_attempt(
+        pair.context,
+        attempt_id=CONTINUATION_ATTEMPT_ID,
+        expected_revision=0,
+        stage="target-fix-verified",
+        test_run_id=pair.fixed_run_id,
+        diagnostic_session_id=pair.diagnostic_session_id,
+        fix_verification_id=wrong_fix,
+    )
+    assert rejected.ok is False
+    assert rejected.code == "ACCEPTANCE_ATTEMPT_REVISION_CONFLICT"
+    assert rejected.message == "Acceptance attempt revision conflicts with the current chain."
+    assert rejected.data is None
+    assert root1_path.read_bytes() == root1_bytes
+    assert not root2_path.exists()
+
+    shown_after_retry = _ok(
+        recovery_workflows.show_acceptance_attempt(
+            pair.context, attempt_id=CONTINUATION_ATTEMPT_ID
+        )
+    )["attempt"]
+    resumed_after_retry = _ok(
+        resume_acceptance_attempt(pair.context, attempt_id=CONTINUATION_ATTEMPT_ID)
+    )
+    diagnostic_after_retry = _ok(
+        diagnostic_show(
+            pair.diagnostic, diagnostic_session_id=pair.diagnostic_session_id
+        )
+    )["session"]
+    assert shown_after_retry == completed
+    assert resumed_after_retry["attempt"] == completed
+    assert resumed_after_retry["nextStage"] is None
+    assert resumed_after_retry["timedOut"] is False
+    assert diagnostic_after_retry == diagnostic_after_completion
+
+
+def test_public_continuation_checkpoint_times_out_before_terminal_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pair = prepare_pair(tmp_path, monkeypatch)
+    baseline = _monitor_baseline(pair, tmp_path)
+    verification = _complete_continuation_verification(pair, baseline)
+    initial = _ok(
+        recovery_workflows.show_acceptance_attempt(
+            pair.context, attempt_id=CONTINUATION_ATTEMPT_ID
+        )
+    )["attempt"]
+    diagnostic_before = _ok(
+        diagnostic_show(
+            pair.diagnostic, diagnostic_session_id=pair.diagnostic_session_id
+        )
+    )["session"]
+    root0_path = recovery_workflows._typed_root_path(
+        pair.evidence,
+        recovery_workflows._root_id(CONTINUATION_ATTEMPT_ID, 0),
+    )
+    root1_path = recovery_workflows._typed_root_path(
+        pair.evidence,
+        recovery_workflows._root_id(CONTINUATION_ATTEMPT_ID, 1),
+    )
+    root0_bytes = root0_path.read_bytes()
+    deadline = datetime.strptime(
+        str(initial["deadlineAtUtc"]), "%Y-%m-%dT%H:%M:%S.%fZ"
+    )
+    after_deadline = (deadline + timedelta(microseconds=1)).strftime(
+        "%Y-%m-%dT%H:%M:%S.%fZ"
+    )
+    timed_context = replace(pair.context, clock=lambda: after_deadline)
+
+    rejected = checkpoint_acceptance_attempt(
+        timed_context,
+        attempt_id=CONTINUATION_ATTEMPT_ID,
+        expected_revision=0,
+        stage="target-fix-verified",
+        test_run_id=pair.fixed_run_id,
+        diagnostic_session_id=pair.diagnostic_session_id,
+        fix_verification_id=verification["fix_verification_id"],
+    )
+    assert rejected.ok is False
+    assert rejected.code == "ACCEPTANCE_ATTEMPT_TIMED_OUT"
+    assert rejected.message == "Acceptance attempt stage deadline has elapsed."
+    assert rejected.data is None
+    assert root0_path.read_bytes() == root0_bytes
+    assert not root1_path.exists()
+
+    shown_after = _ok(
+        recovery_workflows.show_acceptance_attempt(
+            timed_context, attempt_id=CONTINUATION_ATTEMPT_ID
+        )
+    )["attempt"]
+    resumed = _ok(
+        resume_acceptance_attempt(timed_context, attempt_id=CONTINUATION_ATTEMPT_ID)
+    )
+    diagnostic_after = _ok(
+        diagnostic_show(
+            pair.diagnostic, diagnostic_session_id=pair.diagnostic_session_id
+        )
+    )["session"]
+    assert shown_after == initial
+    assert resumed["attempt"] == initial
+    assert resumed["nextStage"] == "target-fix-verified"
+    assert resumed["timedOut"] is True
+    assert diagnostic_after == diagnostic_before
 
 
 def test_postpublication_diagnostic_busy_preserves_revision_one_for_exact_retry_and_read(
