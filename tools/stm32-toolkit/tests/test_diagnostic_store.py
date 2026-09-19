@@ -738,43 +738,48 @@ def test_windows_acquisition_after_deadline_unlocks_without_entering_body(
     assert calls == [2, 3]
 
 
+@pytest.mark.skipif(os.name != "nt", reason="requires Windows native msvcrt locking")
 def test_windows_unlock_failure_still_closes_descriptor(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    import msvcrt
+
     evidence = EvidenceStore(tmp_path / "evidence")
     failed_evidence_id = _failed_evidence(evidence, tmp_path)
     store = DiagnosticStore(tmp_path / "diagnostics", evidence)
     store.create(_created(failed_evidence_id))
 
-    calls: list[int] = []
-    diagnostic_descriptor: list[int] = []
-    closed: list[int] = []
+    owned_modes: list[int] = []
+    diagnostic_descriptor: int | None = None
+    owned_closes: list[int] = []
+    original_locking = msvcrt.locking
     original_close = store_module.os.close
 
-    def locking(descriptor: int, mode: int, _size: int) -> None:
-        calls.append(mode)
-        if mode == 2:  # LK_NBLCK
-            diagnostic_descriptor.append(descriptor)
-        elif mode == 3 and diagnostic_descriptor and descriptor == diagnostic_descriptor[0]:  # LK_UNLCK
+    def locking(descriptor: int, mode: int, size: int) -> object:
+        nonlocal diagnostic_descriptor
+        if diagnostic_descriptor is None and mode == msvcrt.LK_NBLCK:
+            diagnostic_descriptor = descriptor
+        if descriptor == diagnostic_descriptor:
+            owned_modes.append(mode)
+        if descriptor == diagnostic_descriptor and mode == msvcrt.LK_UNLCK:
             raise OSError(errno.EIO, "unlock failed")
+        return original_locking(descriptor, mode, size)
 
-    fake_msvcrt = SimpleNamespace(LK_LOCK=1, LK_NBLCK=2, LK_UNLCK=3, locking=locking)
-    monkeypatch.setitem(sys.modules, "msvcrt", fake_msvcrt)
-    monkeypatch.setattr(store_module.os, "name", "nt")
+    monkeypatch.setattr(msvcrt, "locking", locking)
 
     def close(descriptor: int) -> None:
-        if diagnostic_descriptor and descriptor == diagnostic_descriptor[0]:
-            closed.append(descriptor)
-        original_close(descriptor)
+        if descriptor == diagnostic_descriptor:
+            owned_closes.append(descriptor)
+        return original_close(descriptor)
 
     monkeypatch.setattr(store_module.os, "close", close)
 
     with pytest.raises(OSError, match="unlock failed"):
         store.load(SID)
 
-    assert calls == [2, 3]
-    assert diagnostic_descriptor
-    assert closed.count(diagnostic_descriptor[0]) == 1
+    assert diagnostic_descriptor is not None
+    assert owned_modes == [msvcrt.LK_NBLCK, msvcrt.LK_UNLCK]
+    assert owned_closes == [diagnostic_descriptor]
 
 
 @pytest.mark.skipif(os.name != "nt", reason="requires Windows native msvcrt locking")
