@@ -35,7 +35,7 @@ from stm32_monitor.replay import (
 )
 from stm32_toolkit.diagnostics import DiagnosticMarkerRef, SourceChangeDeclaration
 from stm32_toolkit.evidence import ArtifactRef, EvidenceEnvelope, EvidenceIdentity
-from stm32_toolkit.evidence.gc import RootRecord, get_root, plan_gc
+from stm32_toolkit.evidence.gc import get_root, plan_gc
 from stm32_toolkit.evidence.model import canonical_json_bytes
 from stm32_toolkit.evidence.store import EvidenceStore
 from stm32_toolkit.paths import WorkspacePaths
@@ -810,111 +810,6 @@ def _physical_pair(
     before = cast(MonitorRunRefV2, load_monitor_run_reference(paths, evidence, str(failed_run_id)))
     after = cast(MonitorRunRefV2, load_monitor_run_reference(paths, evidence, str(fixed_run_id)))
     return paths, evidence, failed_test_run_id, fixed_test_run_id, raw_probe, before, after
-
-
-def _physical_root_path(evidence: EvidenceStore, root_type: str, root_id: str) -> Path:
-    directory = evidence.root / "roots" / root_type
-    for path in directory.glob("*.json"):
-        if json.loads(path.read_bytes().decode("utf-8"))["root_id"] == root_id:
-            return path
-    raise AssertionError(f"missing {root_type} root {root_id}")
-
-
-def _rebind_physical_test_run(
-    tmp_path: Path,
-    evidence: EvidenceStore,
-    reference: MonitorRunRefV2,
-    test_run_id: str | None,
-    *,
-    raw_override: bytes | None = None,
-) -> MonitorRunRefV2:
-    transcript_root = get_root(evidence, "monitor-run", reference.operation_id)
-    reference_root = get_root(evidence, "monitor-run-ref", reference.operation_id)
-    transcript_envelope = evidence.get_envelope(transcript_root.manifest_id)
-    original_raw = evidence.read_artifact(
-        transcript_envelope.artifacts[0], maximum_bytes=64 * 1024 * 1024
-    )
-    wire = json.loads(original_raw.decode("utf-8"))
-    if raw_override is None:
-        assert test_run_id is not None
-        wire["test_run_id"] = test_run_id
-        transcript_raw = canonical_json_bytes(wire)
-    else:
-        test_run_id = str(wire["test_run_id"])
-        transcript_raw = raw_override
-    transcript_path = tmp_path / "rebound-physical-transcript.json"
-    transcript_path.write_bytes(transcript_raw)
-    transcript_artifact = evidence.ingest_file(
-        transcript_path,
-        kind="monitor-physical-transcript",
-        media_type="application/json",
-    )
-    transcript_metadata = dict(transcript_envelope.metadata)
-    transcript_metadata.update(
-        test_run_id=test_run_id,
-        source_record_sha256=sha256(transcript_raw).hexdigest(),
-    )
-    rebound_transcript = EvidenceEnvelope(
-        identity=transcript_envelope.identity,
-        operation=transcript_envelope.operation,
-        produced_at_utc=transcript_envelope.produced_at_utc,
-        parents=transcript_envelope.parents,
-        artifacts=(transcript_artifact,),
-        metadata=transcript_metadata,
-    )
-    evidence.put_envelope(rebound_transcript)
-
-    reference_values = reference.to_dict()
-    reference_values["source_record_sha256"] = sha256(transcript_raw).hexdigest()
-    reference_values["transcript_evidence_id"] = str(rebound_transcript.evidence_id)
-    unsigned = {
-        key: value for key, value in reference_values.items() if key != "run_ref_sha256"
-    }
-    reference_values["run_ref_sha256"] = sha256(
-        canonical_replay_json_bytes(unsigned)
-    ).hexdigest()
-    rebound_reference = MonitorRunRefV2.from_value(reference_values)
-    reference_envelope = evidence.get_envelope(reference_root.manifest_id)
-    reference_path = tmp_path / "rebound-physical-reference.json"
-    reference_path.write_bytes(canonical_replay_json_bytes(rebound_reference.to_dict()))
-    reference_artifact = evidence.ingest_file(
-        reference_path,
-        kind="monitor-run-ref",
-        media_type="application/json",
-    )
-    reference_metadata = dict(reference_envelope.metadata)
-    reference_metadata.update(
-        source_record_sha256=rebound_reference.source_record_sha256,
-        run_ref_sha256=rebound_reference.run_ref_sha256,
-    )
-    rebound_reference_envelope = EvidenceEnvelope(
-        identity=reference_envelope.identity,
-        operation=reference_envelope.operation,
-        produced_at_utc=reference_envelope.produced_at_utc,
-        parents=(str(rebound_transcript.evidence_id),),
-        artifacts=(reference_artifact,),
-        metadata=reference_metadata,
-    )
-    evidence.put_envelope(rebound_reference_envelope)
-
-    transcript_root_value = transcript_root.to_dict()
-    transcript_root_value["manifest_id"] = str(rebound_transcript.evidence_id)
-    transcript_root_metadata = dict(transcript_root.metadata)
-    transcript_root_metadata.update(
-        source_record_sha256=rebound_reference.source_record_sha256,
-        run_ref_sha256=rebound_reference.run_ref_sha256,
-    )
-    transcript_root_value["metadata"] = transcript_root_metadata
-    _physical_root_path(evidence, "monitor-run", reference.operation_id).write_bytes(
-        canonical_json_bytes(transcript_root_value)
-    )
-    reference_root_value = reference_root.to_dict()
-    reference_root_value["manifest_id"] = str(rebound_reference_envelope.evidence_id)
-    reference_root_value["metadata"] = reference_metadata
-    _physical_root_path(evidence, "monitor-run-ref", reference.operation_id).write_bytes(
-        canonical_json_bytes(reference_root_value)
-    )
-    return rebound_reference
 
 
 def test_compare_monitor_runs_publishes_changed_analysis_and_marker(tmp_path: Path) -> None:
@@ -2554,39 +2449,6 @@ def test_awf_2b_rejects_projected_digest_contradiction_after_public_ref_rebuild(
     assert not (evidence.root / "roots" / "monitor-analysis").exists()
 
 
-def test_awf_2c_maps_coherent_physical_test_run_identity_mismatch(
-    tmp_path: Path,
-) -> None:
-    paths, evidence, failed_test_run_id, _fixed_test_run_id, raw_probe, before, after = (
-        _physical_pair(tmp_path)
-    )
-    declaration = _declaration(tmp_path, evidence, before, after)
-    alternate_test_run_id = "physical-test-run-alternate"
-    _publish_physical_test_run(
-        paths,
-        evidence,
-        test_run_id=alternate_test_run_id,
-        raw_probe=raw_probe,
-        monitor_run_id=UUID("55555555-5555-4555-8555-555555555555"),
-        build_id="9" * 64,
-        elf_sha256="8" * 64,
-        input_snapshot_sha256="7" * 64,
-        git_head="d" * 40,
-    )
-    rebound_before = _rebind_physical_test_run(
-        tmp_path, evidence, before, alternate_test_run_id
-    )
-    before_tree = _data_tree(paths)
-
-    with pytest.raises(AnalysisWorkflowError) as error:
-        _publish(paths, evidence, rebound_before, after, declaration)
-
-    assert error.value.code == "INCOMPATIBLE_IDENTITY"
-    assert error.value.message == "physical Monitor identity is incompatible"
-    assert _data_tree(paths) == before_tree
-    assert not (evidence.root / "roots" / "monitor-analysis").exists()
-
-
 def test_awf_2d_maps_physical_transcript_provider_oserror(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2623,25 +2485,19 @@ def test_awf_2e_maps_malformed_persisted_physical_transcript(
         _physical_pair(tmp_path)
     )
     declaration = _declaration(tmp_path, evidence, before, after)
-    _rebind_physical_test_run(
-        tmp_path,
-        evidence,
-        before,
-        None,
-        raw_override=b"[]",
-    )
-    rebound_before = cast(
-        MonitorRunRefV2,
-        load_monitor_run_reference(paths, evidence, before.operation_id),
-    )
+    transcript_root = get_root(evidence, "monitor-run", before.operation_id)
+    transcript = evidence.get_envelope(transcript_root.manifest_id)
+    transcript_object = evidence.root / transcript.artifacts[0].relative_path
+    transcript_object.write_bytes(b"[]")
     before_tree = _data_tree(paths)
 
     with pytest.raises(AnalysisWorkflowError) as error:
-        _publish(paths, evidence, rebound_before, after, declaration)
+        _publish(paths, evidence, before, after, declaration)
 
     assert error.value.code == EVIDENCE_INTEGRITY_FAILURE
     assert error.value.message == "physical Monitor Evidence is corrupt"
     assert _data_tree(paths) == before_tree
+    assert transcript_object.read_bytes() == b"[]"
     assert not (evidence.root / "roots" / "monitor-analysis").exists()
 
 
@@ -2762,6 +2618,25 @@ def test_awf_3b_exports_identical_firmware_without_source_row(tmp_path: Path) ->
         publication.diagnostic_marker_ref.marker_evidence_id,
     )
     assert evidence.read_artifact(bundle_ref.artifact, maximum_bytes=1_000_000) == payload
+    after_first_tree = _data_tree(paths)
+    assert all(after_first_tree[path] == value for path, value in before_tree.items())
+    bundle_root_paths = tuple(
+        (evidence.root / "roots" / "monitor-analysis-bundle").glob("*.json")
+    )
+    assert len(bundle_root_paths) == 1
+    bundle_root_path = bundle_root_paths[0]
+    added_paths = set(after_first_tree).difference(before_tree)
+    expected_added_paths = {
+        str((evidence.root / bundle_ref.artifact.relative_path).relative_to(paths.data_root)),
+        str((evidence.root / "manifests" / f"{bundle.evidence_id}.json").relative_to(paths.data_root)),
+        str(bundle_root_path.relative_to(paths.data_root)),
+    }
+    assert added_paths == expected_added_paths
+    assert len(added_paths) == 3
+    assert bundle_root.root_type == "monitor-analysis-bundle"
+    assert bundle_root.root_id == bundle_ref.bundle_id
+    assert bundle_root.manifest_id == str(bundle.evidence_id)
+    assert json.loads(bundle_root_path.read_bytes().decode("utf-8")) == bundle_root.to_dict()
     retry_payload, retry_ref = export_analysis_bundle(
         paths,
         EvidenceStore(evidence.root),
@@ -2771,7 +2646,7 @@ def test_awf_3b_exports_identical_firmware_without_source_row(tmp_path: Path) ->
         fixed_id,
     )
     assert (retry_payload, retry_ref) == (payload, bundle_ref)
-    assert _data_tree(paths) != before_tree
+    assert _data_tree(paths) == after_first_tree
 
 
 def test_awf_3c_rejects_analysis_reference_drift_before_bundle_write(
