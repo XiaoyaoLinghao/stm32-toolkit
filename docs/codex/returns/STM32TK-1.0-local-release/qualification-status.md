@@ -37,12 +37,12 @@ limitations must disclose the historical uncertainty and post-start BUSY
 semantics. See `r10/e/retention-cancellation/release-disposition-final-review.md`.
 
 Python package branch coverage remains below the approved 90% gate. The native
-aggregates currently record Toolkit 10824/13564 (79.7995%) and Monitor 2491/2936
+aggregates currently record Toolkit 10825/13564 (79.8068%) and Monitor 2491/2936
 branches. The accepted TestRun publication and regeneration raw coverage was
 combined once in toolkit-aggregate-r4, without rerunning tests. A separately
 accepted earlier official Diagnostic JSON projection retains a Toolkit lower
-bound of 10830/13564 (79.8437%); it has not been recomputed with r4, and its
-increment must not be added without checking overlap. Monitor r7 is 2491/2936
+bound of 10830/13564 (79.8437%); it has not been recomputed with the latest native union, and its
+increment must not be added without checking overlap. Monitor r9 is 2491/2936
 (84.8433%). The Diagnostic projection is supplementary
 JSON evidence, not a native coverage database: the implementer deleted the raw
 Diagnostic database before primary aggregation. No raw database has been
@@ -123,3 +123,20 @@ the mandatory release coverage requirement is the reason for this qualification
 work, not a reason to invent tests for impossible private states.
 
 No push, PR mutation, merge, tag or release is authorized by this status.
+
+The public evidence decoder qualification is independently accepted at test head
+1b0c3ccd5c40d6e41800d06bbe99624a079cffd5 and final report head
+7fb8003784298fbe866c583ab0b7a38c083cc34b, integrated at
+37b84b9e22d2b57d2d82b4670dbb8509435e7425. Its first run passed 45 cases
+before a Windows pytest-generated parameter-name environment limit prevented
+one case from entering the decoder; six later cases had not run. The short-ID
+correction changed no payload or assertion, and the seven-case remainder passed.
+This is 52 functional outcomes across two runs, not one clean 52-case execution.
+The first run has no retained raw coverage and contributes no native arcs.
+
+The accepted seven-case raw data was combined through coverage's native paths
+mapping after verifying all 126 Python source files matched the frozen 15b
+checkout. Toolkit aggregate-r6 is 10825/13564; Monitor aggregate-r9 remains
+2491/2936. Both source input databases are unchanged. The preceding unmapped
+aggregate-r5/r8 doubled the source denominator and is explicitly rejected as a
+report-path defect. No tests were repeated for this correction.
