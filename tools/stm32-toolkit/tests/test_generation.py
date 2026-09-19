@@ -3007,6 +3007,49 @@ def test_project_mutation_lock_failure_maps_to_stable_generation_result(tmp_path
     json.dumps(result.to_dict())
 
 
+@pytest.mark.parametrize("root_kind", ("missing", "file"))
+def test_apply_rejects_plan_root_that_is_not_a_project_directory(
+    tmp_path, root_kind, monkeypatch
+):
+    from contextlib import nullcontext
+
+    import stm32_toolkit.project_upgrade as project_upgrade_mod
+
+    root = write_project(tmp_path / "proj")
+    plan = plan_for(root)
+    if root_kind == "missing":
+        forged_root = tmp_path / "missing-project"
+        forged_before = None
+    else:
+        forged_root = tmp_path / "project-file"
+        forged_root.write_bytes(b"caller supplied a file")
+        forged_before = forged_root.read_bytes()
+    forged = replace(plan, project_root=forged_root)
+    forged = replace(forged, plan_id=plan_id_for(forged))
+    before = tree_snapshot(root)
+    original_fixture = root / "Src" / "main.c"
+    original_fixture_bytes = original_fixture.read_bytes()
+    lock_entries = []
+
+    def track_lock(lock_root):
+        lock_entries.append(lock_root)
+        return nullcontext()
+
+    monkeypatch.setattr(project_upgrade_mod, "project_mutation_lock", track_lock)
+    result = apply_project_configuration(forged)
+    assert result.code == "GENERATION_PLAN_INVALID"
+    assert result.details == {"rule": "projectRoot"}
+    assert lock_entries == []
+    assert tree_snapshot(root) == before
+    if forged_before is None:
+        assert not forged_root.exists()
+    else:
+        assert forged_root.read_bytes() == forged_before
+    assert not (forged_root / ".stm32-toolkit").exists()
+    assert not staging_dir(forged_root, forged.plan_id).exists()
+    assert original_fixture.read_bytes() == original_fixture_bytes
+
+
 def test_generation_planner_rejects_unsupported_model_version(tmp_path):
     root = write_project(tmp_path / "proj")
     model = replace(load_project_model(root), schema_version=1)

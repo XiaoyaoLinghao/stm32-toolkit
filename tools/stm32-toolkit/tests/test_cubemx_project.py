@@ -582,6 +582,33 @@ def test_native_parser_rejects_missing_firmware_version(tmp_path: Path):
     assert error.value.code == "CUBEMX_NATIVE_OUTPUT_INVALID"
 
 
+@pytest.mark.parametrize(
+    ("language", "framework", "message"),
+    [
+        ("cpp", "hal", "native language does not satisfy the C++ request"),
+        ("c", "ll", "native IOC does not explicitly select LL"),
+    ],
+)
+def test_native_parser_rejects_request_language_or_framework_drift(
+    tmp_path: Path, language: str, framework: str, message: str
+):
+    root = _real_native_tree(tmp_path)
+    request = CreationRequest.from_mcu(
+        "STM32F429ZITx", "generated", framework=framework, language=language
+    )
+    with pytest.raises(CubeMXNativeProjectError) as error:
+        parse_native_project(
+            root,
+            request=request,
+            plan_id="a" * 64,
+            action_digest="b" * 64,
+            environment=_real_native_environment(),
+        )
+    assert error.value.code == "CUBEMX_NATIVE_OUTPUT_INVALID"
+    assert error.value.message == message
+    assert not (root / ".stm32-project.json").exists()
+
+
 def test_native_parser_rejects_incomplete_r6_absolute_or_missing_source_tree(tmp_path: Path):
     root = _real_native_tree(tmp_path)
     nested = root / "cmake" / "stm32cubemx" / "CMakeLists.txt"

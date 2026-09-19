@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -106,6 +107,67 @@ def test_expired_capability_is_rejected(tmp_path: Path):
     with pytest.raises(CreationAuthorizationError) as error:
         store_with_later_clock.consume(result.authorization_digest, authorized=True)
     assert error.value.code == "CREATION_AUTHORIZATION_EXPIRED"
+
+
+def test_peek_is_non_consuming_before_the_single_use_claim(tmp_path: Path):
+    store = CreationAuthorizationStore(tmp_path, now=lambda: NOW, nonce_factory=lambda: "nonce")
+    result = _prepare(store)
+
+    peeked = store.peek(result.authorization_digest)
+    assert peeked.authorization_digest == result.authorization_digest
+    assert peeked.plan_id == "a" * 64
+    assert peeked.project_root == Path("C:/workspace")
+    record = store.authorization_root / f"{result.authorization_digest}.json"
+    assert json.loads(record.read_text(encoding="utf-8"))["state"] == "prepared"
+
+    consumed = store.consume(result.authorization_digest, authorized=True)
+    assert consumed.request == _request()
+    assert json.loads(record.read_text(encoding="utf-8"))["state"] == "consumed"
+
+
+@pytest.mark.parametrize(
+    "request_value",
+    [
+        None,
+        {"source": {"kind": "mcu", "value": "STM32F429ZITx", "extra": "x"}, "destination": "generated", "framework": "hal", "language": "c"},
+        {"source": {"kind": "mcu", "value": "STM32F429ZITx", "sha256": "d" * 64}, "destination": "generated", "framework": "hal", "language": "c"},
+        {"source": {"kind": "board", "value": "NUCLEO-F429ZI", "sha256": "d" * 64}, "destination": "generated", "framework": "hal", "language": "c"},
+        {"source": {"kind": "ioc", "value": "input.ioc", "sha256": "invalid"}, "destination": "generated", "framework": "hal", "language": "c"},
+        {"source": {"kind": "unsupported", "value": "STM32F429ZITx"}, "destination": "generated", "framework": "hal", "language": "c"},
+    ],
+)
+def test_persisted_request_shapes_are_rejected_before_authorization(
+    tmp_path: Path, request_value: object
+):
+    """A caller cannot turn a valid record into a different public request."""
+    store = CreationAuthorizationStore(tmp_path, now=lambda: NOW, nonce_factory=lambda: "nonce")
+    prepared = _prepare(store)
+    original = store.authorization_root / f"{prepared.authorization_digest}.json"
+    payload = json.loads(original.read_text(encoding="utf-8"))
+    original_snapshot = (original.read_bytes(), payload["state"])
+    payload["request"] = request_value
+    canonical = {key: value for key, value in payload.items() if key != "authorizationDigest"}
+    canonical["state"] = "prepared"
+    forged_digest = hashlib.sha256(
+        json.dumps(canonical, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    ).hexdigest()
+    payload["authorizationDigest"] = forged_digest
+    forged = store.authorization_root / f"{forged_digest}.json"
+    forged.write_text(json.dumps(payload, sort_keys=True, separators=(",", ":")), encoding="utf-8")
+    forged_snapshot = (forged.read_bytes(), json.loads(forged.read_text(encoding="utf-8"))["state"])
+
+    def assert_records_unchanged() -> None:
+        assert (original.read_bytes(), json.loads(original.read_text(encoding="utf-8"))["state"]) == original_snapshot
+        assert (forged.read_bytes(), json.loads(forged.read_text(encoding="utf-8"))["state"]) == forged_snapshot
+
+    with pytest.raises(CreationAuthorizationError) as peek_error:
+        store.peek(forged_digest)
+    assert peek_error.value.code == "CREATION_AUTHORIZATION_INVALID"
+    assert_records_unchanged()
+    with pytest.raises(CreationAuthorizationError) as consume_error:
+        store.consume(forged_digest, authorized=True)
+    assert consume_error.value.code == "CREATION_AUTHORIZATION_INVALID"
+    assert_records_unchanged()
 
 
 def test_malformed_record_is_closed_without_raw_record_data(tmp_path: Path):

@@ -1286,6 +1286,7 @@ def apply_project_configuration(plan: GenerationPlan) -> OperationResult[dict[st
     """Apply the accepted plan atomically, or fail without partial writes."""
     try:
         _validate_plan(plan)
+        _canonical_root(plan.project_root)
         from stm32_toolkit.project_upgrade import project_mutation_lock
         with project_mutation_lock(plan.project_root):
             data = _apply(plan)

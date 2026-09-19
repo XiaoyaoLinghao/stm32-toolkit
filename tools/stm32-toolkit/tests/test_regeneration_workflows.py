@@ -310,6 +310,54 @@ def test_prepare_rejects_candidate_ownership_collision_before_authorization(tmp_
         assert not list(auth_root.glob("*.json"))
 
 
+@pytest.mark.parametrize("mutation", ("unsafe-path", "duplicate"))
+def test_prepare_rejects_invalid_candidate_ownership_manifest_before_authorization(
+    tmp_path: Path, mutation: str
+):
+    workspace, destination, environment = _project(tmp_path)
+    request = RegenerationWorkflowRequest(workspace, tmp_path / "data", "session", "generated")
+    planned = plan_regeneration(request, environment=environment)
+    before = _tree_bytes(destination)
+
+    def invalid_validator(candidate, *, request, plan_id, action_digest, environment):
+        parsed = parse_native_project(
+            candidate,
+            request=request,
+            plan_id=plan_id,
+            action_digest=action_digest,
+            environment=environment,
+        )
+        write_native_project_manifests(candidate, parsed)
+        manifest = candidate / ".stm32-toolkit" / "cubemx-ownership.json"
+        payload = json.loads(manifest.read_text(encoding="utf-8"))
+        if mutation == "unsafe-path":
+            payload["files"][0]["path"] = "../escape"
+        else:
+            payload["files"].append(dict(payload["files"][0]))
+        manifest.write_text(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")),
+            encoding="utf-8",
+        )
+        return SimpleNamespace(model=SimpleNamespace())
+
+    result = prepare_regeneration_workflow(
+        request,
+        plan_id=planned.data["planId"],
+        action_digest=planned.data["actionDigest"],
+        authorized=True,
+        environment=environment,
+        adapter=_Adapter(FIXTURE),
+        validate_native=invalid_validator,
+    )
+
+    assert result.code == "REGENERATION_OWNERSHIP_INVALID"
+    assert _tree_bytes(destination) == before
+    assert not list(workspace.glob(".stm32tk-regeneration-preview-*"))
+    auth_root = tmp_path / "data" / "regeneration" / "authorizations"
+    if auth_root.exists():
+        assert not list(auth_root.glob("*.json"))
+
+
 def test_authorization_record_tamper_is_rejected_by_peek_and_consume(tmp_path: Path):
     workspace, _, environment = _project(tmp_path)
     request = RegenerationWorkflowRequest(workspace, tmp_path / "data", "session", "generated")
@@ -488,6 +536,74 @@ def test_apply_rejects_ioc_drift_after_prepare_without_cube_mx_call(tmp_path: Pa
     assert consumed.value.code == "REGENERATION_AUTHORIZATION_CONSUMED"
 
 
+def test_apply_rejects_execution_environment_drift_before_generation(tmp_path: Path):
+    workspace, destination, environment = _project(tmp_path)
+    request = RegenerationWorkflowRequest(workspace, tmp_path / "data", "session", "generated")
+    planned = plan_regeneration(request, environment=environment)
+    prepared = prepare_regeneration_workflow(
+        request,
+        plan_id=planned.data["planId"],
+        action_digest=planned.data["actionDigest"],
+        authorized=True,
+        environment=environment,
+        adapter=_Adapter(FIXTURE),
+        validate_native=_validator,
+    )
+    assert prepared.ok is True
+    before_apply = _tree_bytes(destination)
+    drifted = SimpleNamespace(**{**vars(environment), "digest": "d" * 64})
+    replay_adapter = _Adapter(FIXTURE)
+    result = apply_regeneration_workflow(
+        request,
+        authorization_digest=prepared.data["authorizationDigest"],
+        authorized=True,
+        environment=drifted,
+        adapter=replay_adapter,
+        validate_native=_validator,
+    )
+    assert result.code == "REGENERATION_GENERATOR_DRIFT"
+    assert replay_adapter.calls == 0
+    assert _tree_bytes(destination) == before_apply
+    assert not list(workspace.glob(".stm32tk-regeneration-*"))
+    with pytest.raises(RegenerationAuthorizationError) as consumed:
+        RegenerationAuthorizationStore(tmp_path / "data").peek(prepared.data["authorizationDigest"])
+    assert consumed.value.code == "REGENERATION_AUTHORIZATION_CONSUMED"
+
+
+def test_apply_rejects_authorization_bound_destination_before_generation(tmp_path: Path):
+    workspace, destination, environment = _project(tmp_path)
+    request = RegenerationWorkflowRequest(workspace, tmp_path / "data", "session", "generated")
+    planned = plan_regeneration(request, environment=environment)
+    prepared = prepare_regeneration_workflow(
+        request,
+        plan_id=planned.data["planId"],
+        action_digest=planned.data["actionDigest"],
+        authorized=True,
+        environment=environment,
+        adapter=_Adapter(FIXTURE),
+        validate_native=_validator,
+    )
+    assert prepared.ok is True
+    before_apply = _tree_bytes(destination)
+    mismatched_request = RegenerationWorkflowRequest(workspace, tmp_path / "data", "session", "other")
+    replay_adapter = _Adapter(FIXTURE)
+    result = apply_regeneration_workflow(
+        mismatched_request,
+        authorization_digest=prepared.data["authorizationDigest"],
+        authorized=True,
+        environment=environment,
+        adapter=replay_adapter,
+        validate_native=_validator,
+    )
+    assert result.code == "REGENERATION_AUTHORIZATION_INVALID"
+    assert replay_adapter.calls == 0
+    assert _tree_bytes(destination) == before_apply
+    assert not list(workspace.glob(".stm32tk-regeneration-*"))
+    with pytest.raises(RegenerationAuthorizationError) as consumed:
+        RegenerationAuthorizationStore(tmp_path / "data").peek(prepared.data["authorizationDigest"])
+    assert consumed.value.code == "REGENERATION_AUTHORIZATION_CONSUMED"
+
+
 def test_prepare_rejects_candidate_target_drift_before_authorization(tmp_path: Path):
     workspace, destination, environment = _project(tmp_path)
     candidate_source = tmp_path / "candidate-source"
@@ -563,6 +679,62 @@ def test_apply_configuration_failure_preserves_destination(tmp_path: Path):
     assert build_calls == []
     assert _tree_bytes(destination) == before_apply
     assert not list(workspace.glob(".stm32tk-regeneration-*"))
+    with pytest.raises(RegenerationAuthorizationError) as consumed:
+        RegenerationAuthorizationStore(tmp_path / "data").peek(prepared.data["authorizationDigest"])
+    assert consumed.value.code == "REGENERATION_AUTHORIZATION_CONSUMED"
+
+
+@pytest.mark.parametrize(
+    ("failed_preset", "expected_code"),
+    [
+        ("arm-debug", "REGENERATION_DEBUG_BUILD_FAILED"),
+        ("arm-release", "REGENERATION_RELEASE_BUILD_FAILED"),
+    ],
+)
+def test_apply_supported_build_failure_preserves_destination_and_settles_roots(
+    tmp_path: Path, failed_preset: str, expected_code: str
+):
+    workspace, destination, environment = _project(tmp_path)
+    request = RegenerationWorkflowRequest(workspace, tmp_path / "data", "session", "generated")
+    planned = plan_regeneration(request, environment=environment)
+    prepared = prepare_regeneration_workflow(
+        request,
+        plan_id=planned.data["planId"],
+        action_digest=planned.data["actionDigest"],
+        authorized=True,
+        environment=environment,
+        adapter=_Adapter(FIXTURE),
+        validate_native=_validator,
+    )
+    assert prepared.ok is True
+    before_apply = _tree_bytes(destination)
+    build_calls: list[str] = []
+
+    def configure(root: Path) -> OperationResult[dict[str, object]]:
+        return OperationResult.success("configure", {})
+
+    def build(root: Path, preset: str) -> OperationResult[dict[str, object]]:
+        build_calls.append(preset)
+        if preset == failed_preset:
+            return OperationResult.failure("build", "BUILD_FAILED", "injected provider failure", {"preset": preset})
+        return OperationResult.success("build", {"preset": preset})
+
+    result = apply_regeneration_workflow(
+        request,
+        authorization_digest=prepared.data["authorizationDigest"],
+        authorized=True,
+        environment=environment,
+        adapter=_Adapter(FIXTURE),
+        validate_native=_validator,
+        configure=configure,
+        build=build,
+    )
+
+    assert result.code == expected_code
+    assert build_calls == (["arm-debug"] if failed_preset == "arm-debug" else ["arm-debug", "arm-release"])
+    assert _tree_bytes(destination) == before_apply
+    assert not list(workspace.glob(".stm32tk-regeneration-*"))
+    assert not list(workspace.glob(".generated.regen-backup-*"))
     with pytest.raises(RegenerationAuthorizationError) as consumed:
         RegenerationAuthorizationStore(tmp_path / "data").peek(prepared.data["authorizationDigest"])
     assert consumed.value.code == "REGENERATION_AUTHORIZATION_CONSUMED"
