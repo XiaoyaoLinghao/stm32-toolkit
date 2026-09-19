@@ -1033,3 +1033,391 @@ def test_event_redirect_is_rejected_without_root_mutation(tmp_path: Path) -> Non
     assert error.value.code == DIAGNOSTIC_CHAIN_CORRUPT
     assert event_path.is_symlink()
     assert {path.name: path.read_bytes() for path in roots_directory.glob("*.json")} == root_bytes
+
+
+def _store_file_snapshot(root: Path) -> dict[str, bytes]:
+    if root.is_file():
+        return {root.name: root.read_bytes()}
+    if not root.exists():
+        return {}
+    return {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
+
+
+def _authority_snapshot(diagnostics_root: Path, evidence_root: Path) -> dict[str, dict[str, bytes]]:
+    return {
+        "diagnostics": _store_file_snapshot(diagnostics_root),
+        "evidence": _store_file_snapshot(evidence_root),
+    }
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "extra-root-entry",
+        "sessions-not-directory",
+        "invalid-session-name",
+        "extra-session-child",
+        "intent-extra-session-child",
+        "oversized-event",
+        "bom-event",
+        "duplicate-json-key",
+        "sequence-gap",
+        "event-session-binding",
+        "duplicate-operation-id",
+        "root-not-directory",
+    ],
+)
+def test_public_store_read_integrity_refusals_preserve_persisted_authority(
+    tmp_path: Path, case: str
+) -> None:
+    evidence = EvidenceStore(tmp_path / "evidence")
+    failed_evidence_id = _failed_evidence(evidence, tmp_path / "source")
+    store = DiagnosticStore(tmp_path / "diagnostics", evidence)
+    created = (
+        _created_target(failed_evidence_id)
+        if case == "intent-extra-session-child"
+        else _created(failed_evidence_id)
+    )
+    store.create(created)
+    diagnostics_root = tmp_path / "diagnostics"
+    sessions_root = diagnostics_root / "sessions"
+    events_root = sessions_root / SID / "events"
+    event_path = events_root / "00000000.json"
+
+    if case in {
+        "sequence-gap",
+        "event-session-binding",
+        "duplicate-operation-id",
+    }:
+        store.append(
+            SID,
+            _started(created, operation_id=f"read-{case}"),
+            expected_revision=1,
+        )
+
+    if case == "extra-root-entry":
+        (diagnostics_root / "unexpected").write_bytes(b"unexpected")
+    elif case == "sessions-not-directory":
+        backup = tmp_path / "sessions-backup"
+        sessions_root.rename(backup)
+        sessions_root.write_bytes(b"not a directory")
+        try:
+            before = _authority_snapshot(diagnostics_root, evidence.root)
+            with pytest.raises(DiagnosticValidationError) as error:
+                store.load(SID)
+            assert error.value.code == DIAGNOSTIC_CHAIN_CORRUPT
+            assert str(error.value) == "event/checkpoint/root chain is missing or contradictory"
+            assert _authority_snapshot(diagnostics_root, evidence.root) == before
+        finally:
+            sessions_root.unlink()
+            backup.rename(sessions_root)
+        return
+    elif case == "invalid-session-name":
+        (sessions_root / "not-a-session").mkdir()
+    elif case == "extra-session-child":
+        (sessions_root / SID / "unexpected").write_bytes(b"unexpected")
+    elif case == "intent-extra-session-child":
+        (sessions_root / SID / "unexpected").write_bytes(b"unexpected")
+    elif case == "oversized-event":
+        raw = event_path.read_bytes()
+        event_path.write_bytes(raw + b"x" * (store_module.MAX_EVENT_BYTES - len(raw) + 1))
+    elif case == "bom-event":
+        event_path.write_bytes(b"\xef\xbb\xbf" + event_path.read_bytes())
+    elif case == "duplicate-json-key":
+        raw = event_path.read_bytes()
+        assert raw.endswith(b"}")
+        event_path.write_bytes(raw[:-1] + b',"schema":"stm32-diagnostic-event/1"}')
+    elif case == "sequence-gap":
+        (events_root / "00000000.json").unlink()
+    elif case == "event-session-binding":
+        replacement = create_event(
+            diagnostic_session_id="a" * 32,
+            operation_id="read-foreign-session",
+            sequence=1,
+            revision_before=1,
+            event_type="investigation.started",
+            occurred_at_utc=UTC,
+            actor="user",
+            previous_digest=created.digest,
+            payload={"request": {}, "result": {}},
+        )
+        event_path = events_root / "00000001.json"
+        event_path.write_bytes(canonical_diagnostic_json_bytes(replacement.to_dict()))
+    elif case == "duplicate-operation-id":
+        replacement = create_event(
+            diagnostic_session_id=SID,
+            operation_id=created.operation_id,
+            sequence=1,
+            revision_before=1,
+            event_type="investigation.started",
+            occurred_at_utc=UTC,
+            actor="user",
+            previous_digest=created.digest,
+            payload={"request": {}, "result": {}},
+        )
+        event_path = events_root / "00000001.json"
+        event_path.write_bytes(canonical_diagnostic_json_bytes(replacement.to_dict()))
+    elif case == "root-not-directory":
+        backup = tmp_path / "diagnostics-backup"
+        diagnostics_root.rename(backup)
+        diagnostics_root.write_bytes(b"not a directory")
+        try:
+            before = _authority_snapshot(diagnostics_root, evidence.root)
+            with pytest.raises(DiagnosticValidationError) as error:
+                store.load(SID)
+            assert error.value.code == DIAGNOSTIC_CHAIN_CORRUPT
+            assert str(error.value) == "event/checkpoint/root chain is missing or contradictory"
+            assert _authority_snapshot(diagnostics_root, evidence.root) == before
+        finally:
+            diagnostics_root.unlink()
+            backup.rename(diagnostics_root)
+        return
+
+    before = _authority_snapshot(diagnostics_root, evidence.root)
+    with pytest.raises(DiagnosticValidationError) as error:
+        if case == "intent-extra-session-child":
+            store.load_creation_intent(SID)
+        else:
+            store.load(SID)
+    assert error.value.code == DIAGNOSTIC_CHAIN_CORRUPT
+    assert str(error.value) == "event/checkpoint/root chain is missing or contradictory"
+    assert _authority_snapshot(diagnostics_root, evidence.root) == before
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "invalid-session-id",
+        "create-non-event",
+        "create-non-creation-event",
+        "create-duplicate-session",
+        "append-wrong-session",
+        "append-session-created",
+        "append-negative-revision",
+        "append-bad-chain-fields",
+        "resolve-empty-operation",
+        "resolve-accepted-empty-operation",
+        "resolve-accepted-empty-event-type",
+        "resolve-accepted-empty-actor",
+        "create-root-not-directory",
+        "create-invalid-lock-size",
+    ],
+)
+def test_public_store_write_refusals_preserve_authority(tmp_path: Path, case: str) -> None:
+    evidence = EvidenceStore(tmp_path / "evidence")
+    failed_evidence_id = _failed_evidence(evidence, tmp_path / "source")
+
+    if case == "create-root-not-directory":
+        diagnostics_root = tmp_path / "diagnostics-file"
+        diagnostics_root.write_bytes(b"not a directory")
+        store = DiagnosticStore(diagnostics_root, evidence)
+        before = _authority_snapshot(diagnostics_root, evidence.root)
+        with pytest.raises(DiagnosticValidationError) as error:
+            store.create(_created_for("a" * 32, "bad-root", failed_evidence_id))
+        assert error.value.code == DIAGNOSTIC_CHAIN_CORRUPT
+        assert str(error.value) == "event/checkpoint/root chain is missing or contradictory"
+        assert _authority_snapshot(diagnostics_root, evidence.root) == before
+        return
+
+    store = DiagnosticStore(tmp_path / "diagnostics", evidence)
+    created = _created(failed_evidence_id)
+    store.create(created)
+    diagnostics_root = tmp_path / "diagnostics"
+
+    if case == "create-invalid-lock-size":
+        (diagnostics_root / ".diagnostic.lock").write_bytes(b"xx")
+
+    before = _authority_snapshot(diagnostics_root, evidence.root)
+    with pytest.raises(DiagnosticValidationError) as error:
+        if case == "invalid-session-id":
+            store.load("bad-session")
+        elif case == "create-non-event":
+            store.create(object())
+        elif case == "create-non-creation-event":
+            store.create(_started(created, operation_id="not-creation"))
+        elif case == "create-duplicate-session":
+            store.create(_created_for(SID, "duplicate-create", failed_evidence_id))
+        elif case == "append-wrong-session":
+            store.append(
+                SID,
+                _created_for("a" * 32, "wrong-session", failed_evidence_id),
+                expected_revision=1,
+            )
+        elif case == "append-session-created":
+            store.append(
+                SID,
+                _created_for(SID, "append-created", failed_evidence_id),
+                expected_revision=1,
+            )
+        elif case == "append-negative-revision":
+            store.append(
+                SID,
+                _started(created, operation_id="negative-revision"),
+                expected_revision=-1,
+            )
+        elif case == "append-bad-chain-fields":
+            store.append(
+                SID,
+                _event(
+                    sequence=1,
+                    revision_before=1,
+                    event_type="investigation.started",
+                    request={},
+                    result={},
+                    previous_digest="0" * 64,
+                    operation_id="bad-chain",
+                ),
+                expected_revision=1,
+            )
+        elif case == "resolve-empty-operation":
+            store.resolve_operation(
+                SID,
+                "",
+                event_type="investigation.started",
+                actor="user",
+                request={},
+            )
+        elif case == "resolve-accepted-empty-operation":
+            store.resolve_accepted_operation(
+                SID,
+                "",
+                event_type="investigation.started",
+                actor="user",
+            )
+        elif case == "resolve-accepted-empty-event-type":
+            store.resolve_accepted_operation(
+                SID,
+                "accepted-op",
+                event_type="",
+                actor="user",
+            )
+        elif case == "resolve-accepted-empty-actor":
+            store.resolve_accepted_operation(
+                SID,
+                "accepted-op",
+                event_type="investigation.started",
+                actor="",
+            )
+        elif case == "create-invalid-lock-size":
+            store.create(_created_for("a" * 32, "bad-lock", failed_evidence_id))
+
+    expected = {
+        "invalid-session-id": (
+            "DIAGNOSTIC_INVALID_EVENT",
+            "event/model/operation intent is invalid",
+        ),
+        "create-non-event": (
+            "DIAGNOSTIC_INVALID_EVENT",
+            "event/model/operation intent is invalid",
+        ),
+        "create-non-creation-event": (
+            "DIAGNOSTIC_INVALID_EVENT",
+            "event/model/operation intent is invalid",
+        ),
+        "create-duplicate-session": (
+            "DIAGNOSTIC_CHAIN_CORRUPT",
+            "event/checkpoint/root chain is missing or contradictory",
+        ),
+        "append-wrong-session": (
+            "DIAGNOSTIC_INVALID_EVENT",
+            "event/model/operation intent is invalid",
+        ),
+        "append-session-created": (
+            "DIAGNOSTIC_INVALID_EVENT",
+            "event/model/operation intent is invalid",
+        ),
+        "append-negative-revision": (
+            "DIAGNOSTIC_REVISION_CONFLICT",
+            "expected revision is stale or future",
+        ),
+        "append-bad-chain-fields": (
+            "DIAGNOSTIC_INVALID_EVENT",
+            "event/model/operation intent is invalid",
+        ),
+        "resolve-empty-operation": (
+            "DIAGNOSTIC_INVALID_EVENT",
+            "event/model/operation intent is invalid",
+        ),
+        "resolve-accepted-empty-operation": (
+            "DIAGNOSTIC_INVALID_EVENT",
+            "event/model/operation intent is invalid",
+        ),
+        "resolve-accepted-empty-event-type": (
+            "DIAGNOSTIC_INVALID_EVENT",
+            "event/model/operation intent is invalid",
+        ),
+        "resolve-accepted-empty-actor": (
+            "DIAGNOSTIC_INVALID_EVENT",
+            "event/model/operation intent is invalid",
+        ),
+        "create-root-not-directory": (
+            "DIAGNOSTIC_CHAIN_CORRUPT",
+            "event/checkpoint/root chain is missing or contradictory",
+        ),
+        "create-invalid-lock-size": (
+            "DIAGNOSTIC_CHAIN_CORRUPT",
+            "event/checkpoint/root chain is missing or contradictory",
+        ),
+    }[case]
+    assert error.value.code == expected[0]
+    assert str(error.value) == expected[1]
+    assert _authority_snapshot(diagnostics_root, evidence.root) == before
+
+
+@pytest.mark.parametrize(
+    "phase",
+    ["event.after_flush", "event.after_fsync", "event.after_directory_fsync"],
+)
+def test_public_store_recovers_after_event_durability_interruption(
+    tmp_path: Path, phase: str
+) -> None:
+    evidence = EvidenceStore(tmp_path / "evidence")
+    failed_evidence_id = _failed_evidence(evidence, tmp_path / "source")
+    diagnostics_root = tmp_path / "diagnostics"
+    fired = False
+
+    def inject(point: str) -> None:
+        nonlocal fired
+        if point == phase and not fired:
+            fired = True
+            raise RuntimeError("interrupted")
+
+    store = DiagnosticStore(diagnostics_root, evidence, fault_injector=inject)
+    created = _created(failed_evidence_id)
+    with pytest.raises(RuntimeError, match="^interrupted$"):
+        store.create(created)
+    assert fired
+
+    events_root = diagnostics_root / "sessions" / SID / "events"
+    event_path = events_root / "00000000.json"
+    assert sorted(path.name for path in events_root.iterdir()) == ["00000000.json"]
+
+    recovered = DiagnosticStore(diagnostics_root, EvidenceStore(evidence.root))
+    session = recovered.load(SID)
+    assert session.revision == 1
+    assert session.event_head == created.digest
+    assert event_path.read_bytes() == canonical_diagnostic_json_bytes(created.to_dict())
+
+    root = get_root(evidence, "diagnostic-session", f"{SID}.00000001")
+    assert root.metadata == {
+        "diagnostic_session_id": SID,
+        "revision": 1,
+        "state": "OPEN",
+        "event_digest": created.digest,
+    }
+    envelope = evidence.get_envelope(root.manifest_id)
+    assert envelope.identity == IDENTITY
+    assert envelope.parents == (failed_evidence_id,)
+    assert envelope.operation == "diagnostic-event"
+    assert envelope.metadata == {
+        "diagnostic_session_id": SID,
+        "revision": 1,
+        "event_digest": created.digest,
+    }
+    assert evidence.read_artifact(
+        envelope.artifacts[0], maximum_bytes=store_module.MAX_EVENT_BYTES
+    ) == event_path.read_bytes()
