@@ -7,6 +7,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from mcp.server.fastmcp.exceptions import ToolError
+from pydantic import ValidationError as PydanticValidationError
 
 import stm32_toolkit.mcp_server as mcp_mod
 from stm32_toolkit.mcp_server import ServerRuntime, create_server
@@ -653,6 +655,8 @@ def test_diagnostic_start_direct_adapter_preserves_target_mode(
 ) -> None:
     runtime = _runtime(tmp_path)
     session = _RootSession([[runtime.project_root]])
+    project_before = _tree_snapshot(runtime.project_root)
+    data_before = _tree_snapshot(runtime.data_root)
     calls: list[tuple[object, dict[str, object]]] = []
 
     def recorder(context: object, **kwargs: object) -> OperationResult[object]:
@@ -689,6 +693,8 @@ def test_diagnostic_start_direct_adapter_preserves_target_mode(
         "actor": "user",
         "failed_run_mode": "target",
     }
+    assert _tree_snapshot(runtime.project_root) == project_before
+    assert _tree_snapshot(runtime.data_root) == data_before
 
 
 def test_diagnostic_start_registered_target_mode_maps_once(
@@ -696,6 +702,8 @@ def test_diagnostic_start_registered_target_mode_maps_once(
 ) -> None:
     runtime = _runtime(tmp_path)
     server = create_server(runtime.project_root, runtime.data_root, runtime.session_id)
+    project_before = _tree_snapshot(runtime.project_root)
+    data_before = _tree_snapshot(runtime.data_root)
     calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
 
     async def recorder(*args: object, **kwargs: object) -> dict[str, object]:
@@ -724,6 +732,8 @@ def test_diagnostic_start_registered_target_mode_maps_once(
     assert args[0].session_id == runtime.session_id
     assert args[2:] == (OPERATION_ID, RUN_ID, "user")
     assert kwargs == {"failed_run_mode": "target"}
+    assert _tree_snapshot(runtime.project_root) == project_before
+    assert _tree_snapshot(runtime.data_root) == data_before
 
 
 @pytest.mark.parametrize(
@@ -1871,9 +1881,8 @@ def test_registered_plan_add_rejects_remaining_public_selector_guards_before_dis
         calls.append(args)
         return {"tool": "plan-add"}
 
-    monkeypatch.setattr(
-        mcp_mod, "tool_diagnostic_add_plan_for_request", helper, raising=False
-    )
+    monkeypatch.setattr(mcp_mod, "tool_diagnostic_add_plan_for_request", helper)
+    assert mcp_mod.tool_diagnostic_add_plan_for_request is helper
     project_before = _tree_snapshot(runtime.project_root)
     data_before = _tree_snapshot(runtime.data_root)
 
@@ -1908,8 +1917,58 @@ def test_registered_plan_add_rejects_remaining_public_selector_guards_before_dis
         "steps": [invalid_step],
     }
     invalid_before = deepcopy(invalid_wire)
-    with pytest.raises(Exception):
+    expected_messages = {
+        "v2-fixed-after-rejection": "v2 physical monitor facts require failed-before evidence",
+        "v2-value-varies-bit-index-rejection": "value-varies does not accept bit_index",
+        "v2-bit-mask-non-register-rejection": "bit-values-mask requires a register selector",
+        "case-count-string-expected-value": "expected value is incompatible with selector",
+        "physical-selector-string-expected-value": "expected value is incompatible with selector",
+        "value-varies-out-of-domain": "expected value is incompatible with selector",
+        "bit-mask-out-of-domain": "expected value is incompatible with selector",
+    }
+    expected_locations = {
+        "v2-fixed-after-rejection": (
+            "steps",
+            0,
+            "selector",
+            "physical-monitor-fact/2",
+        ),
+        "v2-value-varies-bit-index-rejection": (
+            "steps",
+            0,
+            "selector",
+            "physical-monitor-fact/2",
+        ),
+        "v2-bit-mask-non-register-rejection": (
+            "steps",
+            0,
+            "selector",
+            "physical-monitor-fact/2",
+        ),
+        "case-count-string-expected-value": ("steps", 0),
+        "physical-selector-string-expected-value": ("steps", 0),
+        "value-varies-out-of-domain": ("steps", 0),
+        "bit-mask-out-of-domain": ("steps", 0),
+    }
+    with pytest.raises(
+        ToolError, match=r"^Error executing tool stm32_diagnostic_plan_add:"
+    ) as error:
         asyncio.run(server.call_tool("stm32_diagnostic_plan_add", invalid_wire))
+    assert str(error.value).startswith(
+        "Error executing tool stm32_diagnostic_plan_add:"
+    )
+    cause = error.value.__cause__
+    assert isinstance(cause, PydanticValidationError)
+    validation_errors = cause.errors()
+    assert len(validation_errors) == 1
+    validation_error = validation_errors[0]
+    assert validation_error["type"] == "value_error"
+    assert validation_error["msg"] == f"Value error, {expected_messages[case_id]}"
+    location = tuple(validation_error["loc"])
+    if case_id.startswith("v2-"):
+        assert location[:3] == ("steps", 0, "selector")
+    else:
+        assert location == expected_locations[case_id]
     assert len(calls) == 1
     assert invalid_wire == invalid_before
     assert _tree_snapshot(runtime.project_root) == project_before

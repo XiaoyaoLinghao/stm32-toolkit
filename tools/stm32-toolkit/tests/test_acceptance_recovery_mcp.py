@@ -5,6 +5,8 @@ from copy import deepcopy
 from pathlib import Path
 
 import pytest
+from mcp.server.fastmcp.exceptions import ToolError
+from pydantic import ValidationError as PydanticValidationError
 
 import stm32_toolkit.mcp_server as server_module
 from stm32_toolkit.mcp_server import create_server
@@ -243,10 +245,32 @@ def test_checkpoint_rejects_utf8_path_before_service_dispatch(
     assert isinstance(changes, list)
     changes[0]["path"] = "é" * 4096
     invalid_before = deepcopy(invalid)
-    with pytest.raises(Exception):
+    with pytest.raises(
+        ToolError,
+        match=r"^Error executing tool stm32_acceptance_attempt_checkpoint:",
+    ) as error:
         asyncio.run(
             server.call_tool("stm32_acceptance_attempt_checkpoint", invalid)
         )
+
+    assert str(error.value).startswith(
+        "Error executing tool stm32_acceptance_attempt_checkpoint:"
+    )
+    cause = error.value.__cause__
+    assert isinstance(cause, PydanticValidationError)
+    validation_errors = cause.errors()
+    assert len(validation_errors) == 1
+    validation_error = validation_errors[0]
+    assert validation_error["type"] == "value_error"
+    assert validation_error["msg"] == (
+        "Value error, path must be a portable project-relative path"
+    )
+    assert tuple(validation_error["loc"]) == (
+        "sourceChangeIntent",
+        "changes",
+        0,
+        "path",
+    )
 
     assert len(calls) == 1
     assert invalid == invalid_before

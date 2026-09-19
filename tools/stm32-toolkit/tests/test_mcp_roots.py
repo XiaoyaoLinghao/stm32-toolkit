@@ -737,7 +737,7 @@ def test_remaining_mcp_public_adapters_reject_mismatched_root(
     recorder = _remaining_recorder(
         case_id, provider_name, operation, dispatches, returned_values
     )
-    monkeypatch.setattr(mcp_server, provider_name, recorder, raising=False)
+    monkeypatch.setattr(mcp_server, provider_name, recorder)
     assert getattr(mcp_server, provider_name) is recorder
 
     result = asyncio.run(
@@ -793,7 +793,7 @@ def test_remaining_mcp_public_adapters_forward_matching_root(
     recorder = _remaining_recorder(
         case_id, provider_name, operation, dispatches, returned_values
     )
-    monkeypatch.setattr(mcp_server, provider_name, recorder, raising=False)
+    monkeypatch.setattr(mcp_server, provider_name, recorder)
     assert getattr(mcp_server, provider_name) is recorder
 
     result = asyncio.run(
