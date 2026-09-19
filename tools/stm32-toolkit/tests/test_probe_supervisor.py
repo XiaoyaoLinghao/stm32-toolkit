@@ -12,7 +12,7 @@ import pytest
 from aiohttp import web
 
 from fakes.fake_probe import FakeProbeBackend
-from stm32_toolkit.probe.backend import ProbeDescriptor
+from stm32_toolkit.probe.backend import ProbeBackendError, ProbeDescriptor
 from stm32_toolkit.probe.authorization import ControlAuthorizationStore
 from stm32_toolkit.probe.client import ProbeClient, ProbeClientError
 from stm32_toolkit.probe.lease import ProbeBusyError, ProbeLeaseManager
