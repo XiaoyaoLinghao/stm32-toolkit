@@ -17,14 +17,18 @@ the validated nested `diagnostic.show` BUSY result; other non-OK Diagnostic
 results retain `ACCEPTANCE_ATTEMPT_OUTPUT_INVALID`. The added continuation case
 proves that BUSY during the second, postpublication authentication leaves the
 revision-1 root and immutable payload available for an exact retry and read.
-No model schemas, `DIAGNOSTIC_CODES`, lock users, release configuration,
-hardware code, package, deployment, or remote state changed.
+That case injects the public Busy boundary deterministically; it does not claim
+a real native ten-second wait. The store module also contains a separate real
+Windows child-process check that holds the native lock, proves exclusion and
+no protected entry, waits for the finite owned child to release it, and proves
+lock reuse. No model schemas, `DIAGNOSTIC_CODES`, lock users, release
+configuration, hardware code, package, deployment, or remote state changed.
 
 The amended governing design and plan are recorded by primary commit
 `a6e3888c35af853ce571c58036b063a69be409fd`. The accepted base is
 `fa8502e6bf706fcaae26122cf996077678053cc5`. The implementation code head
-before this report commit is `d7e8b0011bd6522edb5ec7dde5ff48947b3d6355`
-(`d7e8b001`); this report intentionally records no report-commit SHA.
+before this report commit is `d3c83607b2a60b126ab67cf21ac0720a8e7a0afd`
+(`d3c83607`); this report intentionally records no report-commit SHA.
 
 ## Implementation and regression coverage
 
@@ -36,13 +40,15 @@ The implementation owns these product files:
 - `tools/stm32-toolkit/src/stm32_toolkit/acceptance/recovery_workflows.py`
 
 The focused regressions cover deterministic native contention and deadline
-expiry, non-contention refusal, no late protected entry, descriptor cleanup
-after unlock failure, direct Diagnostic and acceptance mappings, nested public
-Diagnostic BUSY forwarding, and postpublication revision-1 preservation. The
-existing concurrent continuation test function
+expiry through the public `DiagnosticStore.load` entry, non-contention refusal,
+no late protected entry, descriptor cleanup after unlock failure, direct
+Diagnostic and acceptance mappings, nested public Diagnostic BUSY forwarding,
+postpublication revision-1 preservation, and the real native cross-process
+exclusion/release/reuse check. The existing concurrent continuation test function
 `test_persisted_continuation_monitor_diagnostic_and_expired_attempt_reuse`
 was left byte-for-byte unchanged. A separate new continuation case exercises
-the second-authentication BUSY boundary.
+the second-authentication BUSY boundary with deterministic public-context
+injection.
 
 No tests have been run by the implementation owner. The primary agent owns
 entry review, execution, evidence cleanup, independent review, and acceptance.
@@ -91,8 +97,18 @@ Each launcher entry writes `command.txt`, `argv.json`, `environment.json`,
 raw coverage database at `raw-coverage\.coverage`; a single
 `shards\shard-001.json` records the selected nodes, serial setting, wall
 bound, and coverage paths. The source head in both entries must be
-`d7e8b0011bd6522edb5ec7dde5ff48947b3d6355`, and `PYTHONPATH` must resolve to
+`d3c83607b2a60b126ab67cf21ac0720a8e7a0afd`, and `PYTHONPATH` must resolve to
 the `lk` paths above, never `verify15b`.
+
+The executable launchers prepared for these entries are:
+
+- `D:\codex-tmp\v10b-0918\r10\e\diagnostic-lock-contention\focused\launch.ps1`
+  (SHA256 `89AADC115D517A2734C44BD31163363C1C1EDE1E5E9B8EA07260900C86A3D19E`)
+- `D:\codex-tmp\v10b-0918\r10\e\diagnostic-lock-contention\continuation\launch.ps1`
+  (SHA256 `69DD1C89706EDBE426273F2ABBCE8BABE338E25E2C3E89D0CAC907666F93228D`)
+
+PowerShell 7 AST parsing reported zero errors for both launchers; this was
+preparation only and no test process was run.
 
 This report records implementation preparation only. The implementation agent
 does not accept its own diff; independent complete-diff review and the final
