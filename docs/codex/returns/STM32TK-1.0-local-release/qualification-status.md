@@ -28,15 +28,22 @@ The earlier retention failure remains unresolved: the caller timed out after
 BUSY does not promise rollback after a write starts. The failed stage is still
 unknown; the later passing run does not establish a repair. No timeout increase
 or another blind benchmark repetition is approved by this status.
+After the controlled cancellation checks and independent disposition review,
+primary specification commit 02fdee1ee4881abb69bd31b9c8d323d943f8a4b9 retains
+this as `KNOWN_TIMING_LIMITATION_ROOT_CAUSE_UNKNOWN`, replacing only the
+historical administrative blocker. The current named 3+20 performance gate
+passed without changing its per-call assertions or thresholds. Final release
+limitations must disclose the historical uncertainty and post-start BUSY
+semantics. See `r10/e/retention-cancellation/release-disposition-final-review.md`.
 
 Python package branch coverage remains below the approved 90% gate. The native
-aggregates currently record Toolkit 10824/13564 (79.7995%) and Monitor 2490/2936
+aggregates currently record Toolkit 10824/13564 (79.7995%) and Monitor 2491/2936
 branches. The accepted TestRun publication and regeneration raw coverage was
 combined once in toolkit-aggregate-r4, without rerunning tests. A separately
 accepted earlier official Diagnostic JSON projection retains a Toolkit lower
 bound of 10830/13564 (79.8437%); it has not been recomputed with r4, and its
-increment must not be added without checking overlap. Monitor is 2490/2936
-(84.8093%). The Diagnostic projection is supplementary
+increment must not be added without checking overlap. Monitor r7 is 2491/2936
+(84.8433%). The Diagnostic projection is supplementary
 JSON evidence, not a native coverage database: the implementer deleted the raw
 Diagnostic database before primary aggregation. No raw database has been
 fabricated or restored. Future raw coverage and shards
@@ -61,8 +68,9 @@ SQLite cases with actual child exit 0, complete cancellation/exception graphs,
 consistent durable accounting and public queries, writer reuse and settled
 cleanup. The post-commit case preserved its deletion; the pre-commit case
 rolled back. This confirms the bounded cancellation contract, not the cause of
-the historical large-run timeout. Its raw coverage awaits the next accepted
-batch aggregation.
+the historical large-run timeout. Its accepted r3 raw coverage was combined
+with Monitor r6 into r7 without rerunning tests; both source inputs remain
+unchanged. Failed earlier retention runs are excluded.
 
 The earlier retention runs remain separately attributed. The first omitted
 the actual writer outcome; r2 reported one pass and one failure at an
@@ -102,6 +110,10 @@ product correction, diagnostic rerun or hardware operation is claimed. Next
 product scope is the same-workspace DiagnosticStore lock coordination and the
 existing concurrent checkpoint contract; preserve lock identity validation,
 cross-process exclusion, publication order and completed-result authentication.
+The bounded correction is now specified at a6e3888c35af853ce571c58036b063a69be409fd
+and assigned to one Luna/max owner. It adds narrow native contention retries,
+explicit Busy propagation including nested Diagnostic results, and a regression
+for Busy after revision-1 publication. Implementation is not yet accepted.
 
 Valid UI, browser, deterministic packaging, isolated fresh/upgrade deployment,
 state-preservation, workspace-composition and A/B hardware evidence are retained.
