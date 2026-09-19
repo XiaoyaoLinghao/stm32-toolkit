@@ -1369,6 +1369,34 @@ def test_debug_handoff_metadata_queue_expiry_does_not_dispatch_backend_call(
     run(scenario())
 
 
+def test_debug_handoff_metadata_reads_the_committed_attachment_identity(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        backend = fake_backend()
+        service = make_service(tmp_path, level=OperationLevel.OBSERVE, backend=backend)
+        endpoint = await service.start()
+        client = ProbeClient(endpoint)
+        try:
+            await client.attach("probe-a", "STM32F429ZITx")
+            metadata = await service.debug_handoff_metadata(
+                "probe-a", "STM32F429ZITx"
+            )
+            assert metadata.to_dict() == {
+                "probeId": "probe-a",
+                "target": "STM32F429ZITx",
+                "boardId": "probe-a",
+            }
+            assert [event[0] for event in backend.events].count(
+                "debug_handoff_metadata"
+            ) == 1
+        finally:
+            await client.close()
+            await service.stop()
+
+    run(scenario())
+
+
 @pytest.mark.parametrize(
     ("changed_probe", "changed_target"),
     (
