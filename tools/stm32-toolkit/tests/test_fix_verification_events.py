@@ -1443,7 +1443,7 @@ def test_public_reducer_rejects_duplicate_verification_plan_without_mutation() -
         event_type="verification.plan_added",
         request={"verification_plan": plan.to_dict()},
         result={"verification_plan_id": plan.verification_plan_id, "plan_digest": plan.plan_digest},
-        previous_digest=previous.event_head,
+        previous_digest=previous.digest,
     )
     before = copy.deepcopy(session.to_dict())
 
@@ -1462,7 +1462,7 @@ def test_public_reducer_rejects_verification_start_for_missing_plan_without_muta
         event_type="verification.started",
         request={"verification_plan_id": missing_plan_id},
         result={"verification_plan_id": missing_plan_id},
-        previous_digest=previous.event_head,
+        previous_digest=previous.digest,
     )
     before = copy.deepcopy(session.to_dict())
 
