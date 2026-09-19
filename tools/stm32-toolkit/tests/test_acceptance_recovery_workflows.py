@@ -556,6 +556,254 @@ def test_current_project_origin_drift_fails_closed_on_public_resume_and_show(
     assert recovery_workflows.show_acceptance_attempt(context, attempt_id=ATTEMPT_ID).code == "ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH"
 
 
+@pytest.mark.parametrize(
+    ("provider_data", "case_id"),
+    [
+        pytest.param({}, "missing-build", id="missing-build"),
+        pytest.param({"build": []}, "non-mapping-build", id="non-mapping-build"),
+        pytest.param(
+            {
+                "build": {
+                    "elfFresh": False,
+                    "preset": "arm-debug",
+                    "buildId": "b" * 64,
+                    "elfSha256": "e" * 64,
+                }
+            },
+            "stale-elf",
+            id="stale-elf",
+        ),
+        pytest.param(
+            {
+                "build": {
+                    "elfFresh": True,
+                    "preset": "arm-release",
+                    "buildId": "b" * 64,
+                    "elfSha256": "e" * 64,
+                }
+            },
+            "wrong-preset",
+            id="wrong-preset",
+        ),
+        pytest.param(
+            {
+                "build": {
+                    "elfFresh": True,
+                    "preset": "arm-debug",
+                    "buildId": "bad",
+                    "elfSha256": "e" * 64,
+                }
+            },
+            "invalid-build-id",
+            id="invalid-build-id",
+        ),
+        pytest.param(
+            {
+                "build": {
+                    "elfFresh": True,
+                    "preset": "arm-debug",
+                    "buildId": "b" * 64,
+                    "elfSha256": "bad",
+                }
+            },
+            "invalid-elf-sha",
+            id="invalid-elf-sha",
+        ),
+    ],
+)
+def test_public_build_output_refusals_preserve_revision_one(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    provider_data: dict[str, object],
+    case_id: str,
+) -> None:
+    _project, data, context = _project_transition_context(
+        tmp_path, monkeypatch, lambda: "2026-08-24T00:00:00.000000Z"
+    )
+    assert begin_acceptance_attempt(
+        context,
+        attempt_id=ATTEMPT_ID,
+        scenario_id="legacy-keil-migration",
+        scenario_version="1",
+    ).ok
+    materialized = checkpoint_acceptance_attempt(
+        context,
+        attempt_id=ATTEMPT_ID,
+        expected_revision=0,
+        stage="project-materialized",
+    )
+    assert materialized.ok is True, case_id
+    before_files = {
+        str(path.relative_to(data)): path.read_bytes()
+        for path in data.rglob("*")
+        if path.is_file()
+    }
+
+    def malformed_build(*_args: object) -> recovery_workflows.OperationResult[object]:
+        return recovery_workflows.OperationResult.success("project.context", provider_data)
+
+    monkeypatch.setattr(recovery_workflows, "_build_project_context", malformed_build)
+    result = checkpoint_acceptance_attempt(
+        context,
+        attempt_id=ATTEMPT_ID,
+        expected_revision=1,
+        stage="firmware-built-before",
+    )
+
+    assert result.ok is False
+    assert result.code == "ACCEPTANCE_ATTEMPT_OUTPUT_INVALID"
+    resumed = resume_acceptance_attempt(context, attempt_id=ATTEMPT_ID)
+    assert resumed.ok is True
+    assert resumed.data["attempt"] == materialized.data["attempt"]
+    assert resumed.data["nextStage"] == "firmware-built-before"
+    assert {
+        str(path.relative_to(data)): path.read_bytes()
+        for path in data.rglob("*")
+        if path.is_file()
+    } == before_files
+
+
+TARGET_REPLAY_RUN_ID = "00000000-0000-4000-8000-000000000003"
+
+
+@pytest.mark.parametrize(
+    ("case_id", "expected_code"),
+    [
+        pytest.param("reader-failure", "ACCEPTANCE_ATTEMPT_OUTPUT_INVALID"),
+        pytest.param("reader-shape", "ACCEPTANCE_ATTEMPT_OUTPUT_INVALID"),
+        pytest.param("run-state", "ACCEPTANCE_ATTEMPT_OUTPUT_INVALID"),
+        pytest.param("execution-policy", "ACCEPTANCE_ATTEMPT_OUTPUT_INVALID"),
+        pytest.param("workspace-identity", "ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH"),
+        pytest.param(
+            "repository-load",
+            "ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED",
+        ),
+    ],
+)
+def test_public_target_replay_refusals_preserve_revision_two(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    case_id: str,
+    expected_code: str,
+) -> None:
+    project, data, context = _project_transition_context(
+        tmp_path, monkeypatch, lambda: "2026-08-24T00:00:00.000000Z"
+    )
+    assert begin_acceptance_attempt(
+        context,
+        attempt_id=ATTEMPT_ID,
+        scenario_id="legacy-keil-migration",
+        scenario_version="1",
+    ).ok
+    assert checkpoint_acceptance_attempt(
+        context,
+        attempt_id=ATTEMPT_ID,
+        expected_revision=0,
+        stage="project-materialized",
+    ).ok
+    built = checkpoint_acceptance_attempt(
+        context,
+        attempt_id=ATTEMPT_ID,
+        expected_revision=1,
+        stage="firmware-built-before",
+    )
+    assert built.ok is True, case_id
+    workspace = recovery_workflows._workspace_paths_factory(
+        data,
+        project,
+        "00000000-0000-4000-8000-000000000002",
+        "session-a",
+    )
+    valid_public_data = {
+        "run": {
+            "run_id": TARGET_REPLAY_RUN_ID,
+            "mode": "target",
+            "state": "failed",
+        },
+        "execution_source": "replay",
+        "physical_transport_evidence": False,
+        "import_workspace_id": workspace.workspace_id,
+        "evidence_id": "f" * 64,
+    }
+
+    if case_id == "reader-failure":
+        def show_failure(*_args: object, **_kwargs: object) -> object:
+            return recovery_workflows.OperationResult.failure(
+                "test.show", "TEST_RUN_UNAVAILABLE", "provider rejected the run", {}
+            )
+
+        monkeypatch.setattr(recovery_workflows, "_test_show", show_failure)
+    elif case_id == "reader-shape":
+        monkeypatch.setattr(
+            recovery_workflows,
+            "_test_show",
+            lambda *_args, **_kwargs: recovery_workflows.OperationResult.success(
+                "test.show", []
+            ),
+        )
+    else:
+        public_data = dict(valid_public_data)
+        public_data["run"] = dict(valid_public_data["run"])
+        if case_id == "run-state":
+            public_data["run"]["state"] = "passed"
+        elif case_id == "execution-policy":
+            public_data["execution_source"] = "physical"
+            public_data["physical_transport_evidence"] = True
+        elif case_id == "workspace-identity":
+            public_data["import_workspace_id"] = "c" * 64
+        monkeypatch.setattr(
+            recovery_workflows,
+            "_test_show",
+            lambda *_args, _public_data=public_data, **_kwargs: recovery_workflows.OperationResult.success(
+                "test.show", _public_data
+            ),
+        )
+
+    if case_id == "repository-load":
+        evidence = recovery_workflows._evidence_store_factory(
+            workspace.workspace_root / "evidence"
+        )
+        root_path = recovery_workflows._typed_root_path(
+            evidence, TARGET_REPLAY_RUN_ID, "test-run"
+        )
+        root_path.parent.mkdir(parents=True, exist_ok=True)
+        root_path.write_bytes(b"{}")
+
+        class Repository:
+            def __init__(self, _store: object) -> None:
+                pass
+
+            def load(self, _run_id: str) -> object:
+                raise OSError("test-run evidence provider unavailable")
+
+        monkeypatch.setattr(recovery_workflows, "TestRunRepository", Repository)
+
+    before_files = {
+        str(path.relative_to(data)): path.read_bytes()
+        for path in data.rglob("*")
+        if path.is_file()
+    }
+    result = checkpoint_acceptance_attempt(
+        context,
+        attempt_id=ATTEMPT_ID,
+        expected_revision=2,
+        stage="target-failure-replayed",
+        test_run_id=TARGET_REPLAY_RUN_ID,
+    )
+
+    assert result.ok is False
+    assert result.code == expected_code
+    resumed = resume_acceptance_attempt(context, attempt_id=ATTEMPT_ID)
+    assert resumed.ok is True
+    assert resumed.data["attempt"] == built.data["attempt"]
+    assert resumed.data["nextStage"] == "target-failure-replayed"
+    assert {
+        str(path.relative_to(data)): path.read_bytes()
+        for path in data.rglob("*")
+        if path.is_file()
+    } == before_files
+
+
 def test_failed_replay_target_only_mismatch_fails_closed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     model = SimpleNamespace(logical_project_id=UUID("00000000-0000-4000-8000-000000000002"), target_device="STM32F429ZITx")
     workspace = SimpleNamespace(workspace_id="a" * 64, workspace_root=tmp_path)
