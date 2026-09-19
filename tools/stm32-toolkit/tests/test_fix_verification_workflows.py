@@ -2100,18 +2100,39 @@ def test_task7b_completion_artifact_failure_kind_is_classified_without_evidence_
     assert {
         path: after_diagnostics[path] for path in before_diagnostics
     } == before_diagnostics
-    assert set(after_evidence_roots) - set(before_evidence_roots) == {
-        f"roots/diagnostic-session/{session_id}.00000008.json",
-    }
-    checkpoint_root = get_root(
-        evidence, "diagnostic-session", f"{session_id}.00000008"
-    )
+    new_evidence_root_paths = set(after_evidence_roots) - set(before_evidence_roots)
+    assert len(new_evidence_root_paths) == 1
+    new_evidence_root_path = next(iter(new_evidence_root_paths))
+    checkpoint_root = get_root(evidence, "diagnostic-session", f"{session_id}.00000008")
+    checkpoint_root_path = workspace.workspace_root / "evidence" / new_evidence_root_path
+    checkpoint_root_bytes = checkpoint_root_path.read_bytes()
+    checkpoint_root_payload = json.loads(checkpoint_root_bytes.decode("utf-8"))
+    assert canonical_json_bytes(checkpoint_root_payload) == checkpoint_root_bytes
+    assert RootRecord.from_value(checkpoint_root_payload).to_dict() == checkpoint_root.to_dict()
     checkpoint_envelope = evidence.get_envelope(checkpoint_root.manifest_id)
     checkpoint_paths = {
-        f"roots/diagnostic-session/{session_id}.00000008.json",
+        new_evidence_root_path,
         f"manifests/{checkpoint_root.manifest_id}.json",
         checkpoint_envelope.artifacts[0].relative_path,
     }
+    pending_parents = list(checkpoint_envelope.parents)
+    while pending_parents:
+        parent_manifest_id = pending_parents.pop()
+        parent_manifest_path = f"manifests/{parent_manifest_id}.json"
+        if parent_manifest_path in before_evidence or parent_manifest_path in checkpoint_paths:
+            continue
+        parent_envelope = evidence.get_envelope(parent_manifest_id)
+        checkpoint_paths.add(parent_manifest_path)
+        checkpoint_paths.update(
+            artifact.relative_path
+            for artifact in parent_envelope.artifacts
+            if artifact.relative_path not in before_evidence
+        )
+        pending_parents.extend(
+            parent_id
+            for parent_id in parent_envelope.parents
+            if f"manifests/{parent_id}.json" not in before_evidence
+        )
     for checkpoint_path in tuple(checkpoint_paths):
         parent = Path(checkpoint_path).parent
         while parent != Path("."):
