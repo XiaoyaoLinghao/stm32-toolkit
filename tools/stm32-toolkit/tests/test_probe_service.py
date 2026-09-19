@@ -1369,6 +1369,119 @@ def test_debug_handoff_metadata_queue_expiry_does_not_dispatch_backend_call(
     run(scenario())
 
 
+def test_debug_handoff_metadata_provider_timeout_settles_owned_resources(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        metadata_entered = threading.Event()
+        metadata_release = threading.Event()
+        abort_entered = threading.Event()
+        abort_release = threading.Event()
+        backend = BlockingMetadataCleanupBackend(
+            metadata_entered=metadata_entered,
+            metadata_release=metadata_release,
+            abort_entered=abort_entered,
+            abort_release=abort_release,
+        )
+        service = make_service(tmp_path, backend=backend)
+        endpoint = await service.start()
+        client = ProbeClient(endpoint)
+        try:
+            await client.attach("probe-a", "STM32F429ZITx")
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + 0.15
+            request = asyncio.create_task(
+                service.debug_handoff_metadata(
+                    "probe-a", "STM32F429ZITx", deadline=deadline
+                )
+            )
+            assert await asyncio.to_thread(metadata_entered.wait, 1)
+            while loop.time() < deadline:
+                await asyncio.sleep(0.01)
+
+            metadata_release.set()
+            assert await asyncio.to_thread(abort_entered.wait, 1)
+            abort_release.set()
+            with pytest.raises(ProbeServiceError) as failure:
+                await request
+            assert failure.value.code == "PROBE_TIMEOUT"
+            assert service._metadata_cleanup_unresolved is False
+            with pytest.raises(ProbeServiceError) as detached:
+                await service.debug_handoff_metadata(
+                    "probe-a", "STM32F429ZITx", deadline=loop.time() + 1.0
+                )
+            assert detached.value.code == "PROBE_IDENTITY_MISMATCH"
+            assert await client.list_probes()
+            record = json.loads(
+                service._lease_manager.record_path("probe-a").read_text(
+                    encoding="utf-8"
+                )
+            )
+            assert record["state"] == "active"
+            assert record["leaseId"] == endpoint.lease_id
+        finally:
+            metadata_release.set()
+            abort_release.set()
+            await client.close()
+            if service._lease is not None:
+                await service.stop()
+
+    run(scenario())
+
+
+def test_cancelled_debug_handoff_metadata_settles_provider_and_abort(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        metadata_entered = threading.Event()
+        metadata_release = threading.Event()
+        abort_entered = threading.Event()
+        abort_release = threading.Event()
+        backend = BlockingMetadataCleanupBackend(
+            metadata_entered=metadata_entered,
+            metadata_release=metadata_release,
+            abort_entered=abort_entered,
+            abort_release=abort_release,
+        )
+        service = make_service(tmp_path, backend=backend)
+        endpoint = await service.start()
+        client = ProbeClient(endpoint)
+        try:
+            await client.attach("probe-a", "STM32F429ZITx")
+            request = asyncio.create_task(
+                service.debug_handoff_metadata("probe-a", "STM32F429ZITx")
+            )
+            assert await asyncio.to_thread(metadata_entered.wait, 1)
+            request.cancel()
+            assert await asyncio.to_thread(abort_entered.wait, 1)
+            metadata_release.set()
+            abort_release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await request
+            assert service._metadata_cleanup_unresolved is False
+            with pytest.raises(ProbeServiceError) as detached:
+                await service.debug_handoff_metadata(
+                    "probe-a",
+                    "STM32F429ZITx",
+                    deadline=asyncio.get_running_loop().time() + 1.0,
+                )
+            assert detached.value.code == "PROBE_IDENTITY_MISMATCH"
+            assert await client.list_probes()
+            record = json.loads(
+                service._lease_manager.record_path("probe-a").read_text(
+                    encoding="utf-8"
+                )
+            )
+            assert record["state"] == "active"
+            assert record["leaseId"] == endpoint.lease_id
+        finally:
+            metadata_release.set()
+            abort_release.set()
+            await client.close()
+            if service._lease is not None:
+                await service.stop()
+
+
 def test_debug_handoff_metadata_reads_the_committed_attachment_identity(
     tmp_path: Path,
 ) -> None:
@@ -3437,6 +3550,88 @@ def test_metadata_cleanup_timeout_is_bounded_and_retains_lease_until_stopped(
             await client.close()
             if service._lease is not None:
                 await service.stop()
+
+    run(scenario())
+
+
+def test_metadata_cleanup_failure_retains_ownership_until_abort_settles(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(service_module, "_DEBUG_HANDOFF_METADATA_CLEANUP_SECONDS", 0.05)
+
+    class DelayedAbortFailureBackend(FakeProbeBackend):
+        def __init__(
+            self, *, abort_entered: threading.Event, abort_release: threading.Event
+        ):
+            source = fake_backend()
+            super().__init__(
+                probes=source.list_probes(),
+                memory={0x20000000: b"\x01\x02\x03\x04"},
+                registers={"r0": 7, "pc": 0x08000101},
+            )
+            self.abort_entered = abort_entered
+            self.abort_release = abort_release
+
+        def debug_handoff_metadata(self, *, deadline: float | None = None):
+            raise ProbeBackendError(
+                "PROBE_BACKEND_ERROR", "provider failed during handoff metadata"
+            )
+
+        def abort_owned_execution(self) -> None:
+            self.abort_entered.set()
+            self.abort_release.wait()
+
+    async def scenario() -> None:
+        abort_entered = threading.Event()
+        abort_release = threading.Event()
+        backend = DelayedAbortFailureBackend(
+            abort_entered=abort_entered,
+            abort_release=abort_release,
+        )
+        service = make_service(tmp_path, backend=backend)
+        endpoint = await service.start()
+        client = ProbeClient(endpoint)
+        try:
+            await client.attach("probe-a", "STM32F429ZITx")
+            started = asyncio.get_running_loop().time()
+            with pytest.raises(ProbeServiceCleanupError) as failure:
+                await service.debug_handoff_metadata("probe-a", "STM32F429ZITx")
+            assert failure.value.code == "PROBE_CLOSE_FAILED"
+            assert asyncio.get_running_loop().time() - started < 0.5
+            assert await asyncio.to_thread(abort_entered.wait, 1)
+            assert service._metadata_cleanup_unresolved is True
+            with pytest.raises(ProbeServiceError) as unavailable:
+                await service.start()
+            assert unavailable.value.code == "PROBE_SERVICE_UNAVAILABLE"
+            assert service.endpoint is endpoint
+            assert endpoint.record_path.exists()
+            record = json.loads(
+                service._lease_manager.record_path("probe-a").read_text(
+                    encoding="utf-8"
+                )
+            )
+            assert record["state"] == "active"
+            assert record["leaseId"] == endpoint.lease_id
+
+            abort_release.set()
+            await service.stop()
+            assert service.endpoint is None
+            assert not endpoint.record_path.exists()
+            record = json.loads(
+                service._lease_manager.record_path("probe-a").read_text(
+                    encoding="utf-8"
+                )
+            )
+            assert record["state"] == "released"
+            assert backend.closed is True
+        finally:
+            abort_release.set()
+            await client.close()
+            if service._lease is not None:
+                try:
+                    await service.stop()
+                except ProbeServiceCleanupError:
+                    pass
 
     run(scenario())
 

@@ -776,6 +776,53 @@ def test_heartbeat_updates_only_the_current_lease(tmp_path: Path):
     lease.release()
 
 
+def test_released_handoff_owner_cannot_heartbeat_after_settlement(tmp_path: Path):
+    data_root = tmp_path / "data"
+    ticket = "bc" * 32
+    owner = acquire(manager(data_root, OWNER))
+    owner.heartbeat(utc_now=lambda: NOW + timedelta(seconds=1))
+    owner.reserve_external_handoff(ticket)
+    owner.release()
+    reservation = owner.record_path.read_bytes()
+    assert json.loads(reservation.decode("utf-8"))["state"] == "externally-owned"
+
+    with pytest.raises(ProbeLeaseError) as stale_heartbeat:
+        owner.heartbeat(utc_now=lambda: NOW + timedelta(seconds=2))
+    assert stale_heartbeat.value.code == "PROBE_LEASE_LOST"
+    assert owner.record_path.read_bytes() == reservation
+
+    successor_manager = manager(
+        data_root,
+        SUCCESSOR,
+        inspected={OWNER.pid: None, SUCCESSOR.pid: SUCCESSOR},
+    )
+    successor = successor_manager.acquire(
+        probe_id="probe-123",
+        workspace_id="workspace-a",
+        session_id="session-a",
+        operation_level=OperationLevel.OBSERVE,
+        health_url="http://127.0.0.1:43124/health",
+        handoff_ticket=ticket,
+    )
+    successor.consume_external_handoff(ticket)
+    successor.release()
+    assert successor_manager.finalize_consumed_handoff(
+        probe_id="probe-123",
+        workspace_id="workspace-a",
+        session_id="session-a",
+        ticket=ticket,
+    )
+    assert successor_manager.acknowledge_consumed_handoff(
+        probe_id="probe-123",
+        workspace_id="workspace-a",
+        session_id="session-a",
+        ticket=ticket,
+    )
+    assert json.loads(owner.record_path.read_text(encoding="utf-8"))["state"] == (
+        "released"
+    )
+
+
 def test_heartbeat_replace_failure_preserves_record_and_cleans_temporary_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
