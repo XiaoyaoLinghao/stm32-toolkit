@@ -1419,6 +1419,17 @@ def test_debug_handoff_metadata_provider_timeout_settles_owned_resources(
             )
             assert record["state"] == "active"
             assert record["leaseId"] == endpoint.lease_id
+            await client.close()
+            await service.stop()
+            assert service.endpoint is None
+            assert not endpoint.record_path.exists()
+            released = json.loads(
+                service._lease_manager.record_path("probe-a").read_text(
+                    encoding="utf-8"
+                )
+            )
+            assert released["state"] == "released"
+            assert backend.closed is True
         finally:
             metadata_release.set()
             abort_release.set()
@@ -1474,12 +1485,25 @@ def test_cancelled_debug_handoff_metadata_settles_provider_and_abort(
             )
             assert record["state"] == "active"
             assert record["leaseId"] == endpoint.lease_id
+            await client.close()
+            await service.stop()
+            assert service.endpoint is None
+            assert not endpoint.record_path.exists()
+            released = json.loads(
+                service._lease_manager.record_path("probe-a").read_text(
+                    encoding="utf-8"
+                )
+            )
+            assert released["state"] == "released"
+            assert backend.closed is True
         finally:
             metadata_release.set()
             abort_release.set()
             await client.close()
             if service._lease is not None:
                 await service.stop()
+
+    run(scenario())
 
 
 def test_debug_handoff_metadata_reads_the_committed_attachment_identity(
