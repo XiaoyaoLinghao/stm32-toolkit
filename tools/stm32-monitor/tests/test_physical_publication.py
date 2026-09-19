@@ -2113,14 +2113,24 @@ def test_physical_loader_rejects_provider_transcript_envelope_structure(
     before_transcript = _monitor_root_files(evidence, "monitor-run")[0].read_bytes()
     before_reference = _monitor_root_files(evidence, "monitor-run-ref")[0].read_bytes()
     original_get_envelope = evidence.get_envelope
+    stored_transcript_envelope = original_get_envelope(transcript_root["manifest_id"])
+    contradictory_transcript_envelope = EvidenceEnvelope(
+        identity=stored_transcript_envelope.identity,
+        operation=stored_transcript_envelope.operation,
+        produced_at_utc=stored_transcript_envelope.produced_at_utc,
+        parents=(transcript_root["manifest_id"],),
+        artifacts=stored_transcript_envelope.artifacts,
+        metadata=stored_transcript_envelope.metadata,
+    )
     calls: list[str] = []
+    returned: list[EvidenceEnvelope] = []
 
     def contradictory_envelope(evidence_id: str):
         calls.append(evidence_id)
-        envelope = original_get_envelope(evidence_id)
         if evidence_id == transcript_root["manifest_id"]:
-            return replace(envelope, parents=(transcript_root["manifest_id"],))
-        return envelope
+            returned.append(contradictory_transcript_envelope)
+            return contradictory_transcript_envelope
+        return original_get_envelope(evidence_id)
 
     monkeypatch.setattr(evidence, "get_envelope", contradictory_envelope)
     with pytest.raises(MonitorReplayError) as error:
@@ -2128,6 +2138,9 @@ def test_physical_loader_rejects_provider_transcript_envelope_structure(
 
     assert error.value.code == EVIDENCE_INTEGRITY_FAILURE
     assert transcript_root["manifest_id"] in calls
+    assert returned == [contradictory_transcript_envelope]
+    assert contradictory_transcript_envelope.evidence_id != stored_transcript_envelope.evidence_id
+    assert str(error.value.__cause__) == "physical transcript envelope is invalid"
     assert _monitor_root_files(evidence, "monitor-run")[0].read_bytes() == before_transcript
     assert _monitor_root_files(evidence, "monitor-run-ref")[0].read_bytes() == before_reference
     assert reference.schema == "stm32-monitor-run-ref/2"
