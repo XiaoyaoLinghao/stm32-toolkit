@@ -15,6 +15,11 @@ from stm32_toolkit.monitor_replay_contract import (
     canonical_replay_json_bytes,
     validate_run_reference,
 )
+from stm32_toolkit.diagnostics import (
+    DIAGNOSTIC_PLAN_INVALID,
+    DiagnosticValidationError,
+    ObservationStep,
+)
 from stm32_toolkit.result import OperationResult
 
 
@@ -107,6 +112,65 @@ PHYSICAL_FACT_STEP = {
     "expected_value": 3,
     "purpose": "verify the physical register bit",
 }
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "v1-missing-continuation",
+        "value-varies-bit-index",
+        "bit-mask-variable-selector",
+        "sample-count-zero",
+        "sample-count-over-cap",
+        "bit-index-over-cap",
+        "v2-requires-failed-before",
+        "monitor-reference-must-be-physical",
+        "bit-mask-value-domain",
+        "malformed-monitor-reference",
+    ],
+)
+def test_physical_observation_step_wire_guards_fail_closed_without_mutation(
+    mutation: str,
+) -> None:
+    candidate = deepcopy(PHYSICAL_FACT_STEP)
+    selector = candidate["selector"]
+    assert isinstance(selector, dict)
+
+    if mutation == "v1-missing-continuation":
+        selector.pop("continuation_evidence_id")
+    elif mutation == "value-varies-bit-index":
+        selector["fact"] = "value-varies"
+    elif mutation == "bit-mask-variable-selector":
+        selector["selector_kind"] = "variable"
+    elif mutation == "sample-count-zero":
+        selector["minimum_valid_samples"] = 0
+    elif mutation == "sample-count-over-cap":
+        selector["minimum_valid_samples"] = 1025
+    elif mutation == "bit-index-over-cap":
+        selector["bit_index"] = 32
+    elif mutation == "v2-requires-failed-before":
+        selector["kind"] = "physical-monitor-fact/2"
+        selector.pop("continuation_evidence_id")
+        reference = selector["monitor_run_ref"]
+        assert isinstance(reference, dict)
+        reference["scenario_role"] = "fixed-after"
+    elif mutation == "monitor-reference-must-be-physical":
+        reference = selector["monitor_run_ref"]
+        assert isinstance(reference, dict)
+        reference["execution_source"] = "replay"
+    elif mutation == "bit-mask-value-domain":
+        candidate["expected_value"] = 4
+    else:
+        selector["monitor_run_ref"] = {}
+
+    before = deepcopy(candidate)
+    with pytest.raises(DiagnosticValidationError) as error:
+        ObservationStep.from_value(candidate)
+
+    assert error.value.code == DIAGNOSTIC_PLAN_INVALID
+    assert candidate == before
+
+
 LIFECYCLE_TOOLS = {
     "stm32_diagnostic_start",
     "stm32_diagnostic_show",
