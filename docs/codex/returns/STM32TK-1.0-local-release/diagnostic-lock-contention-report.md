@@ -25,11 +25,14 @@ the finite owned child to release it, and proves lock reuse. No model schemas,
 `DIAGNOSTIC_CODES`, lock users, release configuration, hardware code, package,
 deployment, or remote state changed.
 
-The amended governing design and plan are recorded by primary commit
-`a6e3888c35af853ce571c58036b063a69be409fd`. The accepted base is
+The amended governing design review is recorded by primary commit
+`a6e3888c35af853ce571c58036b063a69be409fd`; the current frozen
+implementation plan is primary commit
+`2063b27c414ba788cb0f8aeb3a31cff62b94323f`. The accepted base is
 `fa8502e6bf706fcaae26122cf996077678053cc5`. The implementation code head
-before this report commit is `863603f0a4c8d0ed68f6fb19b8fd27c59cb59f19`
-(`863603f0`); this report intentionally records no report-commit SHA.
+before this report commit is
+`37a3f628aa69877ab645b327cc70de2c45fcea16` (`37a3f628`); this report
+intentionally records no report-commit SHA.
 
 ## Implementation and regression coverage
 
@@ -51,9 +54,9 @@ was left byte-for-byte unchanged. A separate new continuation case exercises
 the second-authentication BUSY boundary with deterministic public-context
 injection.
 
-The implementation owner ran only the primary-authorized focused-r1 entry
-recorded below. The primary agent owns entry review, execution, evidence
-cleanup, independent review, and acceptance.
+The implementation owner ran the primary-authorized focused-r1 and
+focused-r2 entries recorded below. The primary agent owns entry review,
+execution, evidence cleanup, independent review, and acceptance.
 
 ## Focused-r1 execution record
 
@@ -79,6 +82,32 @@ The preserved run evidence is under
 `launch-result.json`, `preflight.json`, `heads.json`, `argv.json`,
 `environment.json`, `command.txt`, and `exit-code.txt`. No retry, cleanup, or
 continuation execution was performed for this result.
+
+## Focused-r2 execution record
+
+The primary-authorized focused-r2 remainder launcher was run once at source
+head `70190ef436dd0f0221712cb5415803cadb9c7129` with the reviewed
+180-second PowerShell 7 entry. Preflight passed, the owned child exited
+normally with exit code `1`, and the launcher did not time out. Pytest
+collected 11 selected cases: 9 passed, 1 Windows symlink case was skipped
+because the environment lacked the `SeCreateSymbolicLinkPrivilege`
+(`WinError 1314`), and
+`test_postpublication_diagnostic_busy_preserves_revision_one_for_exact_retry_and_read`
+failed before the intended BUSY injection. Its helper passed a tuple to the
+public `diagnostic_complete_verification` API, whose validator requires a
+`list[str]`, so the result was `DIAGNOSTIC_INVALID_EVENT`; the postpublication
+BUSY path was not reached. The helper now passes the same four operation IDs
+as a list in implementation head `37a3f628aa69877ab645b327cc70de2c45fcea16`.
+This is a test-fixture contract
+failure, not a product behavior classification.
+
+The preserved run evidence is under
+`D:\codex-tmp\v10b-0918\r10\e\diagnostic-lock-contention\focused-r2`, including
+`stdout.txt`, `stderr.txt`, `junit.xml`, `process.json`,
+`launch-result.json`, `preflight.json`, `heads.json`, `argv.json`,
+`environment.json`, `command.txt`, `exit-code.txt`, and raw coverage
+fragments. No retry, continuation execution, or cleanup was performed for
+this result.
 
 ## Prepared serialized verification entries
 
@@ -120,7 +149,7 @@ only the original existing node with Toolkit branch coverage:
 D:\codex-tmp\v10b-0918\r10\py\Scripts\python.exe -m pytest -x -o addopts= -o cache_dir=D:\codex-tmp\v10b-0918\r10\t\lk\c\pytest-cache --basetemp D:\codex-tmp\v10b-0918\r10\t\lk\c\b --junitxml D:\codex-tmp\v10b-0918\r10\e\diagnostic-lock-contention\continuation\junit.xml --cov=stm32_toolkit --cov=stm32_monitor --cov-branch --cov-fail-under=0 --cov-report=term-missing --cov-report=json:D:\codex-tmp\v10b-0918\r10\e\diagnostic-lock-contention\continuation\coverage.json tools/stm32-toolkit/tests/test_continuation_monitor.py::test_persisted_continuation_monitor_diagnostic_and_expired_attempt_reuse
 ```
 
-The fresh focused-r2 remainder entry is
+The focused-r2 remainder entry was
 `diagnostic-lock-contention-focused-r2`, with a 180 second child wall bound.
 Its evidence root is
 `D:\codex-tmp\v10b-0918\r10\e\diagnostic-lock-contention\focused-r2` and its
@@ -133,14 +162,27 @@ four direct/nested adapter and postpublication cases:
 D:\codex-tmp\v10b-0918\r10\py\Scripts\python.exe -m pytest -x -o addopts= -o cache_dir=D:\codex-tmp\v10b-0918\r10\t\lk\f2\pytest-cache --basetemp D:\codex-tmp\v10b-0918\r10\t\lk\f2\b --junitxml D:\codex-tmp\v10b-0918\r10\e\diagnostic-lock-contention\focused-r2\junit.xml --cov=stm32_toolkit --cov=stm32_monitor --cov-branch --cov-fail-under=0 --cov-report=term-missing --cov-report=json:D:\codex-tmp\v10b-0918\r10\e\diagnostic-lock-contention\focused-r2\coverage.json tools/stm32-toolkit/tests/test_diagnostic_store.py::test_windows_unlock_failure_still_closes_descriptor tools/stm32-toolkit/tests/test_diagnostic_store.py::test_windows_native_lock_excludes_child_then_reuses_after_release tools/stm32-toolkit/tests/test_diagnostic_store.py::test_create_retry_validates_every_workspace_session_before_returning tools/stm32-toolkit/tests/test_diagnostic_store.py::test_create_operation_scope_ignores_later_event_operation_ids tools/stm32-toolkit/tests/test_diagnostic_store.py::test_session_limit_is_checked_without_creating_a_new_session tools/stm32-toolkit/tests/test_diagnostic_store.py::test_event_limit_is_checked_without_creating_a_new_event tools/stm32-toolkit/tests/test_diagnostic_store.py::test_event_redirect_is_rejected_without_root_mutation tools/stm32-toolkit/tests/test_diagnostic_workflows.py::test_diagnostic_store_busy_is_a_sanitized_public_result tools/stm32-toolkit/tests/test_acceptance_recovery_workflows.py::test_diagnostic_store_busy_maps_to_acceptance_availability_result tools/stm32-toolkit/tests/test_acceptance_recovery_workflows.py::test_nested_diagnostic_store_busy_maps_to_acceptance_availability_result tools/stm32-toolkit/tests/test_continuation_monitor.py::test_postpublication_diagnostic_busy_preserves_revision_one_for_exact_retry_and_read
 ```
 
+The focused-r2 result is recorded above. The fresh focused-r3 entry is
+`diagnostic-lock-contention-focused-r3`, with the same 180 second child wall
+bound. It selects only the postpublication case after the helper correction.
+Its evidence root is
+`D:\codex-tmp\v10b-0918\r10\e\diagnostic-lock-contention\focused-r3` and its
+temporary root is `D:\codex-tmp\v10b-0918\r10\t\lk\f3` (basetemp
+`D:\codex-tmp\v10b-0918\r10\t\lk\f3\b`). The launcher records the actual
+`lk` source head at run time; it was generated after implementation head
+`37a3f628aa69877ab645b327cc70de2c45fcea16` and has not been run.
+
+```text
+D:\codex-tmp\v10b-0918\r10\py\Scripts\python.exe -m pytest -x -o addopts= -o cache_dir=D:\codex-tmp\v10b-0918\r10\t\lk\f3\pytest-cache --basetemp D:\codex-tmp\v10b-0918\r10\t\lk\f3\b --junitxml D:\codex-tmp\v10b-0918\r10\e\diagnostic-lock-contention\focused-r3\junit.xml --cov=stm32_toolkit --cov=stm32_monitor --cov-branch --cov-fail-under=0 --cov-report=term-missing --cov-report=json:D:\codex-tmp\v10b-0918\r10\e\diagnostic-lock-contention\focused-r3\coverage.json tools/stm32-toolkit/tests/test_continuation_monitor.py::test_postpublication_diagnostic_busy_preserves_revision_one_for_exact_retry_and_read
+```
+
 Each launcher entry writes `command.txt`, `argv.json`, `environment.json`,
 `preflight.json`, `heads.json`, `stdout.txt`, `stderr.txt`, `process.json`,
 `launch-result.json`, `exit-code.txt`, `junit.xml`, `coverage.json`, and the
 raw coverage database at `raw-coverage\.coverage`; a single
 `shards\shard-001.json` records the selected nodes, serial setting, wall
-bound, and coverage paths. The source head in every new entry must be
-`863603f0a4c8d0ed68f6fb19b8fd27c59cb59f19`, and `PYTHONPATH` must resolve to
-the `lk` paths above, never `verify15b`.
+bound, and coverage paths. Each launcher records its actual source head at
+runtime, and `PYTHONPATH` resolves to the `lk` paths above, never `verify15b`.
 
 The executable launchers prepared for these entries are:
 
@@ -150,12 +192,14 @@ The executable launchers prepared for these entries are:
   (SHA256 `C745DCF0E87A4675AEF9CB454772AF90CA690D68589F232F77D51042342F4201`)
 - `D:\codex-tmp\v10b-0918\r10\e\diagnostic-lock-contention\focused-r2\launch.ps1`
   (SHA256 `4C12C832150A934CCE33970746D1641FA8E05A2DFF2555DFFF29AFC657A502A7`)
+- `D:\codex-tmp\v10b-0918\r10\e\diagnostic-lock-contention\focused-r3\launch.ps1`
+  (SHA256 `827B29A6CB5CE8A96E275E1419EC23DDF771676EE4A71C550CBACAA641981732`)
 
-PowerShell 7 AST parsing reported zero errors for all three launchers. The
-focused-r2 launcher is prepared only; it has not been run.
+PowerShell 7 AST parsing reported zero errors for all four launchers. The
+focused-r3 launcher is prepared only; it has not been run.
 
-This report records implementation preparation and the primary-authorized
-focused-r1 result. The implementation agent does not accept its own diff;
-independent complete-diff review and the final verification verdict remain
-with the primary agent and its separately assigned reviewer. No cleanup was
-performed by this agent.
+This report records implementation preparation plus the primary-authorized
+focused-r1 and focused-r2 results. The implementation agent does not accept
+its own diff; independent complete-diff review and the final verification
+verdict remain with the primary agent and its separately assigned reviewer.
+No cleanup was performed by this agent.
