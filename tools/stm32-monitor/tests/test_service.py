@@ -925,6 +925,64 @@ def test_verified_export_download_streams_fixed_public_headers_and_rejects_overr
     asyncio.run(_with_service(scenario))
 
 
+def test_download_rejects_success_protocol_result_shape_without_stream() -> None:
+    from stm32_monitor.exports import ExportDownload
+    from stm32_monitor.protocol import success
+
+    export_id = UUID("12345678-1234-5678-9234-567812345678")
+    body = b'{"value":1}\n'
+    incompatible = success(
+        "monitor.exports.download", {"unexpected": "download"}
+    )
+
+    async def scenario(runtime, service, endpoint) -> None:
+        auth = {"Authorization": f"Bearer {TOKEN_BYTES.hex()}", "Origin": endpoint.url}
+        runtime.result = ExportDownload(
+            BytesIO(body),
+            export_id=export_id,
+            format_name="jsonl",
+            byte_count=len(body),
+        )
+        async with aiohttp.ClientSession() as client:
+            control = await client.get(
+                endpoint.url + f"/api/v1/exports/{export_id}/download",
+                headers=auth,
+            )
+            assert control.status == 200
+            assert await control.read() == body
+            calls_before_mutation = len(runtime.calls)
+
+            runtime.result = incompatible
+            rejected = await client.get(
+                endpoint.url + f"/api/v1/exports/{export_id}/download",
+                headers=auth,
+            )
+            payload = await rejected.json()
+
+        assert service.endpoint == endpoint
+        assert rejected.status == 500
+        assert payload == {
+            "protocol": endpoint.protocol,
+            "toolkitVersion": endpoint.toolkit_version,
+            "monitorVersion": endpoint.monitor_version,
+            "ok": False,
+            "operation": "monitor.exports.download",
+            "code": "MONITOR_INTERNAL_ERROR",
+            "message": "Monitor Service request failed",
+            "data": None,
+            "details": {},
+        }
+        assert len(runtime.calls) == calls_before_mutation + 1
+        assert runtime.calls[-1] == (
+            "monitor.exports.download",
+            {},
+            str(export_id),
+            {},
+        )
+
+    asyncio.run(_with_service(scenario))
+
+
 def test_protocol_results_and_arbitrary_runtime_exceptions_are_bounded() -> None:
     from stm32_monitor.protocol import failure, success
 
@@ -1032,6 +1090,55 @@ def test_websocket_rejects_client_messages() -> None:
             await ws.send_json({"unexpected": True})
             message = await asyncio.wait_for(ws.receive(), 1)
             assert message.type in {aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSED}
+
+    asyncio.run(_with_service(scenario))
+
+
+def test_live_rejects_authenticated_body_before_websocket_prepare() -> None:
+    async def scenario(runtime, service, endpoint) -> None:
+        auth = {
+            "Authorization": f"Bearer {TOKEN_BYTES.hex()}",
+            "Origin": endpoint.url,
+        }
+        async with aiohttp.ClientSession() as client:
+            control = await client.ws_connect(endpoint.url + "/api/v1/live", headers=auth)
+            await asyncio.wait_for(runtime.subscribed.wait(), 1)
+            await control.close()
+            await asyncio.wait_for(runtime.unsubscribed.wait(), 1)
+            runtime.subscribed.clear()
+            runtime.unsubscribed.clear()
+
+            request_headers = {
+                **auth,
+                "Upgrade": "websocket",
+                "Connection": "Upgrade",
+                "Sec-WebSocket-Version": "13",
+                "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ==",
+                "Content-Type": "application/octet-stream",
+            }
+            rejected = await client.request(
+                "GET",
+                endpoint.url + "/api/v1/live",
+                headers=request_headers,
+                data=b"{}",
+            )
+            payload = await rejected.json()
+
+        assert service.endpoint == endpoint
+        assert rejected.status == 400
+        assert payload == {
+            "protocol": endpoint.protocol,
+            "toolkitVersion": endpoint.toolkit_version,
+            "monitorVersion": endpoint.monitor_version,
+            "ok": False,
+            "operation": "monitor.live",
+            "code": "MONITOR_REQUEST_INVALID",
+            "message": "Monitor request is invalid",
+            "data": None,
+            "details": {},
+        }
+        assert runtime.calls == []
+        assert not runtime.subscribed.is_set()
 
     asyncio.run(_with_service(scenario))
 

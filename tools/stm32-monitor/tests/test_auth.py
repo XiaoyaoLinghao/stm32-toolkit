@@ -274,3 +274,28 @@ def test_exact_origin_bearer_and_bootstrap_still_work() -> None:
         )
         == "bearer"
     )
+
+
+def test_create_rejects_non_loopback_endpoint_before_token_allocation() -> None:
+    from stm32_monitor.auth import MonitorAuth
+
+    calls = 0
+
+    def token_factory(size: int) -> bytes:
+        nonlocal calls
+        calls += 1
+        return b"s" * size
+
+    valid = MonitorAuth.create(
+        host="127.0.0.1", port=43125, token_factory=token_factory
+    )
+    assert valid.host == "127.0.0.1"
+    assert valid.port == 43125
+    calls_before_rejected_endpoint = calls
+
+    with pytest.raises(ValueError, match="Monitor authentication endpoint is invalid"):
+        MonitorAuth.create(
+            host="localhost", port=43125, token_factory=token_factory
+        )
+
+    assert calls == calls_before_rejected_endpoint
