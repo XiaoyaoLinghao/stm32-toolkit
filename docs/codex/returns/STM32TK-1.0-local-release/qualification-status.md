@@ -82,8 +82,26 @@ artifacts of the corrected candidate. No runtime or hardware change is implied.
 
 The original full Toolkit suite was not a clean pass. Scoped accepted corrections
 and their retained successful checks do not rewrite its historical output. In
-particular, the continuation integrity failure remains nonreproduced/indeterminate
-despite its successful isolated follow-up. It requires separate disposition.
+particular, the original continuation failure's native cause remains unknown.
+The later covered isolated run in r10/e/continuation-covered/r3 now directly
+captures a current Windows lock defect: the existing concurrent checkpoint
+test failed at line 1540, with one OK result and one integrity error. The first
+caller reached post-publication result authentication at
+acceptance/recovery_workflows.py:3364. Its msvcrt.locking(LK_LOCK, 1) call at
+diagnostics/store.py:384 failed after 9.110 seconds with OSError errno 36,
+Resource deadlock avoided. The other same-process caller released and reacquired
+the same lock during that interval. The catch at store.py:396-397 maps the
+lock error to DIAGNOSTIC_CHAIN_CORRUPT, and recovery_workflows.py:204-205 maps
+it to ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED. The observed native error
+does not establish evidence corruption or a cyclic deadlock.
+
+That run exited 1 normally (105.351 seconds in pytest); its complete lock
+timeline and exception chain are retained. The two earlier launcher attempts
+failed before creating a test child and remain infrastructure evidence. No
+product correction, diagnostic rerun or hardware operation is claimed. Next
+product scope is the same-workspace DiagnosticStore lock coordination and the
+existing concurrent checkpoint contract; preserve lock identity validation,
+cross-process exclusion, publication order and completed-result authentication.
 
 Valid UI, browser, deterministic packaging, isolated fresh/upgrade deployment,
 state-preservation, workspace-composition and A/B hardware evidence are retained.
