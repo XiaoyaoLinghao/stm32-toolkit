@@ -568,6 +568,168 @@ def test_physical_large_history_reassembles_cursor_fragments_and_allows_over_one
     ) == reference
 
 
+@pytest.mark.parametrize(
+    ("mutation", "expected_message"),
+    (
+        (
+            "reordered",
+            "physical Monitor history fragments are reordered or incomplete",
+        ),
+        (
+            "metadata",
+            "physical Monitor history fragment metadata changed",
+        ),
+        (
+            "gap",
+            "physical Monitor history fragments have a gap or overlap",
+        ),
+        (
+            "chain",
+            "physical Monitor history sample chain is invalid",
+        ),
+    ),
+    ids=("reordered", "metadata", "gap", "chain"),
+)
+def test_physical_history_fragment_discontinuities_reject_before_roots(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+    expected_message: str,
+) -> None:
+    from stm32_monitor import replay as replay_module
+
+    def prepare(root: Path):
+        root.mkdir()
+        paths, evidence, test_run_id, raw_probe, monitor_run_id, group_id = _physical_context(root)
+        _publish_physical_test_run(
+            paths,
+            evidence,
+            test_run_id=test_run_id,
+            raw_probe=raw_probe,
+            monitor_run_id=monitor_run_id,
+        )
+        batches = _append_large_physical_history(
+            paths,
+            raw_probe,
+            monitor_run_id,
+            group_id,
+            batch_count=1 if mutation in {"metadata", "gap"} else 2,
+            values_per_batch=2,
+        )
+        request = {
+            "scenario_role": "failed-before",
+            "test_run_id": test_run_id,
+            "run_id": str(monitor_run_id),
+            "group_id": str(group_id),
+            "start_sequence": batches[0].sequence,
+            "end_sequence_exclusive": batches[-1].sequence + 1,
+            "start_captured_unix_ns": batches[0].captured_unix_ns,
+            "end_captured_unix_ns_exclusive": batches[-1].captured_unix_ns + 1,
+            "probe_id": raw_probe,
+        }
+        return paths, evidence, monitor_run_id, request
+
+    def evidence_snapshot(evidence: EvidenceStore) -> tuple[tuple[str, bytes], ...]:
+        return tuple(
+            sorted(
+                (
+                    path.relative_to(evidence.root).as_posix(),
+                    path.read_bytes(),
+                )
+                for path in evidence.root.rglob("*")
+                if path.is_file()
+            )
+        )
+
+    baseline_paths, baseline_evidence, baseline_run_id, baseline_request = prepare(
+        tmp_path / "baseline"
+    )
+    baseline_reference = publish_physical_monitor_run(
+        baseline_paths,
+        baseline_evidence,
+        **baseline_request,
+    )
+    assert len(_monitor_root_files(baseline_evidence, "monitor-run")) == 1
+    assert len(_monitor_root_files(baseline_evidence, "monitor-run-ref")) == 1
+    assert load_monitor_run_reference(
+        baseline_paths,
+        EvidenceStore(baseline_evidence.root),
+        str(baseline_run_id),
+    ) == baseline_reference
+
+    paths, evidence, monitor_run_id, request = prepare(tmp_path / "mutation")
+    before_tree = evidence_snapshot(evidence)
+    original_query = replay_module.HistoryStore.query_history
+    query_calls = 0
+
+    def mutated_query(history: HistoryStore, query: HistoryQuery):
+        nonlocal query_calls
+        query_calls += 1
+        effective_query = (
+            replace(query, limit=1)
+            if mutation in {"reordered", "metadata", "gap"}
+            else query
+        )
+        result = original_query(history, effective_query)
+        assert result.ok and result.data is not None
+        page = result.data
+        changed_page = page
+        if mutation == "reordered" and query_calls == 3:
+            assert len(page.batches) == 1
+            changed_page = HistoryPage.create(
+                (replace(page.batches[0], sequence=0),),
+                next_cursor=page.next_cursor,
+            )
+        elif mutation == "metadata" and query_calls == 2:
+            assert len(page.batches) == 1
+            changed_page = HistoryPage.create(
+                (replace(page.batches[0], latency_ns=page.batches[0].latency_ns + 1),),
+                next_cursor=page.next_cursor,
+            )
+        elif mutation == "gap" and query_calls == 2:
+            assert len(page.batches) == 1
+            changed_page = HistoryPage.create(
+                (replace(page.batches[0], start_ordinal=0),),
+                next_cursor=page.next_cursor,
+            )
+        elif mutation == "chain":
+            assert query_calls == 1
+            assert len(page.batches) == 2
+            second = page.batches[1]
+            changed_values = (
+                replace(second.values[0], watch=WatchItem.variable("other")),
+                *second.values[1:],
+            )
+            changed_page = HistoryPage.create(
+                (page.batches[0], replace(second, values=changed_values)),
+                next_cursor=page.next_cursor,
+            )
+        return ProtocolResult(
+            ok=True,
+            operation=result.operation,
+            code=result.code,
+            message=result.message,
+            data=changed_page,
+            details=result.details,
+        )
+
+    monkeypatch.setattr(
+        replay_module.HistoryStore,
+        "query_history",
+        mutated_query,
+    )
+    with pytest.raises(MonitorReplayError) as error:
+        publish_physical_monitor_run(paths, evidence, **request)
+
+    assert error.value.code == "INCOMPATIBLE_IDENTITY"
+    assert error.value.message == expected_message
+    assert query_calls >= 1
+    assert _monitor_root_files(evidence, "monitor-run") == ()
+    assert _monitor_root_files(evidence, "monitor-run-ref") == ()
+    assert _monitor_manifest_operations(evidence) == ()
+    assert evidence_snapshot(evidence) == before_tree
+
+
 def test_physical_history_allows_more_fragments_than_reconstructed_batch_limit(
     tmp_path: Path,
 ) -> None:
