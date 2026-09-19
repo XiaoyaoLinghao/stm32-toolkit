@@ -85,3 +85,32 @@ findings stay with this owner/branch. Do not repackage/deploy, benchmark, run a
 full suite, access hardware, clean preserved evidence or mutate GitHub in this
 slice. Final packaging will need the accepted new runtime bytes; unchanged
 hardware behavior is not automatically retested for this offline lock fix.
+
+## Native seam correction after the first focused run
+
+The first focused execution stopped with 29 passing cases and one fixture
+assertion failure: its public load recorded native modes [2, 1, 3, 3], not
+[2, 3]. This disproves the static assumption that the public body invokes only
+the Diagnostic lock. The product/test code before the unlock case is unchanged;
+retain those 29 passing outcomes. Do not expand the expected whole-process mode
+list or patch the same global fake again.
+
+Reconsider the test boundary as one owned native descriptor. In the unlock
+failure case, use the real Windows msvcrt module and constants, capture the
+Diagnostic descriptor at its LK_NBLCK acquisition, and wrap the real native
+locking function. Forward acquisition and every nonowned native operation;
+inject EIO only for LK_UNLCK on that Diagnostic descriptor. Record only owned
+modes and owned descriptor closes for the corresponding assertions. Other
+EvidenceStore locks remain real. This one native failure-injection case may be
+Windows-only; the release owner is this Windows/CPython 3.12 environment. Keep
+the public load and real body validation. No product source correction is
+justified by this test failure.
+
+Prepare a fresh focused-r2 entry under e/diagnostic-lock-contention/focused-r2
+and short t/lk/f2/b paths. Select only the corrected failed case and the ten
+cases not reached in the first execution; retain exact case names in the entry.
+Keep the 180-second bound, -x, explicit branch instrumentation and existing
+owned-child launcher. Preserve all first-run evidence and exclude its failed
+raw data from native release coverage. Primary reviews the corrected test and
+entry before this one remainder run. The original concurrent continuation node
+remains queued until the focused functional outcomes are complete.
