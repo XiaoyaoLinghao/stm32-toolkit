@@ -682,7 +682,7 @@ def test_public_source_verification_boundaries(case_id: str) -> None:
         return
     if case_id == "parallel-analysis-length":
         plan = _plan()
-        before = deepcopy(plan)
+        before = plan.to_dict()
         _expect_source_failure(
             lambda: replace(
                 plan,
@@ -691,11 +691,11 @@ def test_public_source_verification_boundaries(case_id: str) -> None:
             DIAGNOSTIC_INVALID_EVENT,
             _SOURCE_INVALID_MESSAGE,
         )
-        assert plan == before
+        assert plan.to_dict() == before
         return
     if case_id == "legacy-plan-continuation":
         plan = _plan()
-        before = deepcopy(plan)
+        before = plan.to_dict()
         _expect_source_failure(
             lambda: VerificationPlan(
                 plan.schema,
@@ -716,6 +716,6 @@ def test_public_source_verification_boundaries(case_id: str) -> None:
             DIAGNOSTIC_INVALID_EVENT,
             _SOURCE_INVALID_MESSAGE,
         )
-        assert plan == before
+        assert plan.to_dict() == before
         return
     raise AssertionError(f"unhandled case: {case_id}")

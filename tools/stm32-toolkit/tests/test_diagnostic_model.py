@@ -719,9 +719,9 @@ def test_public_observation_model_boundaries(case_id: str) -> None:
         return
     if case_id == "plan-fields-object-control":
         plan = _plan()
-        before = deepcopy(plan)
+        before = plan.to_dict()
         assert calculate_plan_digest(plan) == plan.digest
-        assert plan == before
+        assert plan.to_dict() == before
         return
     if case_id == "plan-fields-nonmapping":
         candidate = "not-a-plan"
@@ -757,13 +757,23 @@ def test_public_observation_model_boundaries(case_id: str) -> None:
         )
         return
     if case_id == "plan-fields-tuple-steps-control":
-        candidate = _plan().to_dict()
-        candidate.pop("plan_id")
-        candidate.pop("digest")
-        candidate["steps"] = (_step(),)
-        before = deepcopy(candidate)
+        steps = (_step(),)
+        candidate = {
+            "diagnostic_session_id": "f" * 32,
+            "created_revision": 3,
+            "steps": steps,
+        }
+        before = {
+            "diagnostic_session_id": candidate["diagnostic_session_id"],
+            "created_revision": candidate["created_revision"],
+            "steps": tuple(step.to_dict() for step in steps),
+        }
         assert calculate_plan_digest(candidate) == _plan().digest
-        assert candidate == before
+        assert candidate["steps"] is steps
+        assert candidate["steps"][0] is steps[0]
+        assert candidate["diagnostic_session_id"] == before["diagnostic_session_id"]
+        assert candidate["created_revision"] == before["created_revision"]
+        assert tuple(step.to_dict() for step in candidate["steps"]) == before["steps"]
         return
     if case_id == "plan-wire-steps-type":
         candidate = _plan().to_dict()
