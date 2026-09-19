@@ -188,9 +188,16 @@ def _replace_monitor_reference_authority(
     workspace: WorkspacePaths,
     operation_id: str,
     mutate,
+    *,
+    sync_transcript_root: bool = False,
 ) -> None:
     evidence = EvidenceStore(workspace.workspace_root / "evidence")
     root = get_root(evidence, "monitor-run-ref", operation_id)
+    transcript_root = (
+        get_root(evidence, "monitor-run", operation_id)
+        if sync_transcript_root
+        else None
+    )
     envelope = evidence.get_envelope(root.manifest_id)
     payload = json.loads(
         evidence.read_artifact(envelope.artifacts[0], maximum_bytes=1_000_000).decode("utf-8")
@@ -244,6 +251,19 @@ def _replace_monitor_reference_authority(
             metadata=metadata,
         ),
     )
+    if transcript_root is not None:
+        transcript_metadata = dict(transcript_root.metadata)
+        transcript_metadata["run_ref_sha256"] = payload["run_ref_sha256"]
+        _evidence_root_path(workspace, "monitor-run", operation_id).unlink()
+        put_root(
+            evidence,
+            RootRecord(
+                root_type="monitor-run",
+                root_id=operation_id,
+                manifest_id=transcript_root.manifest_id,
+                metadata=transcript_metadata,
+            ),
+        )
 
 
 def _swap_monitor_reference_authority(
@@ -2913,6 +2933,7 @@ def test_target_replay_plan_requires_complete_monitor_reference_authority(
             workspace,
             before_operation_id,
             lambda payload: payload["projected_batch_sha256s"].pop(),
+            sync_transcript_root=True,
         )
     else:
         _replace_monitor_reference_authority(
@@ -2920,6 +2941,7 @@ def test_target_replay_plan_requires_complete_monitor_reference_authority(
             workspace,
             before_operation_id,
             lambda payload: payload["projected_batch_sha256s"].__setitem__(0, "0" * 64),
+            sync_transcript_root=True,
         )
     before = _authority_snapshot(workspace)
     result = diagnostic_add_verification_plan(
