@@ -2079,7 +2079,10 @@ def test_apply_rejects_persisted_plan_binding_after_consuming_authorization(tmp_
     assert consumed.value.code == "REGENERATION_AUTHORIZATION_CONSUMED"
 
 
-def test_apply_uses_default_configure_and_successful_build_seams(tmp_path: Path):
+def test_apply_uses_default_configure_and_successful_build_seams(
+    tmp_path_factory: pytest.TempPathFactory,
+):
+    tmp_path = tmp_path_factory.mktemp("r")
     workspace, destination, environment = _project(tmp_path)
     request = RegenerationWorkflowRequest(workspace, tmp_path / "data", "session", "generated")
     planned = plan_regeneration(request, environment=environment)
@@ -2095,6 +2098,20 @@ def test_apply_uses_default_configure_and_successful_build_seams(tmp_path: Path)
         validate_native=_validator,
     )
     assert prepared.ok is True
+    activation_attempt = "a" * 24
+    configuration_plan_id = "a" * 64
+    deepest_generation_directory = (
+        workspace
+        / f".stm32tk-regeneration-activation-{activation_attempt}"
+        / ".stm32-toolkit"
+        / "configuration-staging"
+        / configuration_plan_id
+        / "new"
+        / ".stm32-toolkit"
+    )
+    deepest_generation_file = deepest_generation_directory / "generated-files.json"
+    assert len(str(deepest_generation_directory)) < 248
+    assert len(str(deepest_generation_file)) < 260
     build_calls: list[str] = []
 
     def build(root: Path, preset: str) -> OperationResult[dict[str, object]]:
