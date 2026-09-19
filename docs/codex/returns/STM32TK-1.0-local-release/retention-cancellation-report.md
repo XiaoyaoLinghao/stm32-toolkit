@@ -240,9 +240,10 @@ allowed-cancellation graph. Its callback root was native
 `sqlite3.OperationalError: interrupted` at frozen `storage.py:1327` while
 `_refresh_owned_integrity` executed `PRAGMA wal_checkpoint(TRUNCATE)` at
 `storage.py:1262`; the Future root was `StorageFailure(MONITOR_STORAGE_BUSY)`
-from that interrupt. The durable state after release had zero batches and
-zero values, logical and summed bytes both zero, integrity `ok`, writer
-sentinel `1`, and public value count zero.
+from that interrupt. The durable snapshot while the post-commit refresh
+barrier was held had zero batches and zero values, logical and summed bytes
+both zero, and integrity `ok`. After release and writer settlement, the
+writer sentinel was `1` and the public value count was zero.
 
 The commit-boundary observation also recorded public BUSY,
 `cancelEventSet=true`, a settled Future, and an allowed-cancellation graph.
