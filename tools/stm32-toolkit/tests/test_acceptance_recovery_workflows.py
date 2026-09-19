@@ -167,7 +167,7 @@ def _project_transition_context(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 
 
 @pytest.mark.parametrize(
-    ("request", "expected_code"),
+    ("begin_args", "expected_code"),
     [
         pytest.param(
             {
@@ -210,14 +210,14 @@ def _project_transition_context(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 def test_begin_public_input_rejection_publishes_no_state(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    request: dict[str, object],
+    begin_args: dict[str, object],
     expected_code: str,
 ) -> None:
     project, data, context = _project_transition_context(
         tmp_path, monkeypatch, lambda: "2026-08-24T00:00:00.000000Z"
     )
 
-    result = begin_acceptance_attempt(context, **request)
+    result = begin_acceptance_attempt(context, **begin_args)
 
     assert result.ok is False
     assert result.code == expected_code
@@ -239,11 +239,11 @@ def test_checkpoint_public_input_rejection_preserves_revision_zero(
     )
     assert first.ok is True
     original_attempt = first.data["attempt"]
-    original_files = sorted(
-        str(path.relative_to(data))
+    original_files = {
+        str(path.relative_to(data)): path.read_bytes()
         for path in data.rglob("*")
         if path.is_file()
-    )
+    }
 
     for expected_revision, stage, expected_code in (
         (True, "project-materialized", "ACCEPTANCE_ATTEMPT_INPUT_INVALID"),
@@ -261,11 +261,12 @@ def test_checkpoint_public_input_rejection_preserves_revision_zero(
         resumed = resume_acceptance_attempt(context, attempt_id=ATTEMPT_ID)
         assert resumed.ok is True
         assert resumed.data["attempt"] == original_attempt
-        assert sorted(
-            str(path.relative_to(data))
+        assert resumed.data["attempt"]["revision"] == 0
+        assert {
+            str(path.relative_to(data)): path.read_bytes()
             for path in data.rglob("*")
             if path.is_file()
-        ) == original_files
+        } == original_files
 
 
 def test_resume_public_attempt_id_rejection_creates_no_state(

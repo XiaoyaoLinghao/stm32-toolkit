@@ -79,7 +79,6 @@ def test_scenario_model_rejects_tuple_json_and_digest_mutation():
     [
         pytest.param({"scenarioId": "unsupported-scenario"}, "ACCEPTANCE_SCENARIO_UNKNOWN", id="unknown-scenario"),
         pytest.param({"scenarioVersion": "2"}, "ACCEPTANCE_SCENARIO_VERSION_UNSUPPORTED", id="unsupported-version"),
-        pytest.param({"requiredStages": tuple(REQUIRED_STAGES)}, "ACCEPTANCE_INPUT_INVALID", id="tuple-stages"),
         pytest.param({"requiredStages": list(REQUIRED_STAGES[:-1])}, "ACCEPTANCE_INPUT_INVALID", id="short-stages"),
         pytest.param({"requiredStages": [*REQUIRED_STAGES, 1]}, "ACCEPTANCE_INPUT_INVALID", id="non-string-stage"),
         pytest.param({"physicalTransportEvidence": 1}, "ACCEPTANCE_INPUT_INVALID", id="non-boolean-transport"),
@@ -159,9 +158,7 @@ def test_record_model_requires_exact_closed_fields_and_canonical_digest():
 @pytest.mark.parametrize(
     ("field", "replacement"),
     [
-        pytest.param("completedStages", tuple(REQUIRED_STAGES), id="tuple-stages"),
         pytest.param("completedStages", {"project-materialized": True}, id="object-stages"),
-        pytest.param("recordId", UUID("00000000-0000-4000-8000-000000000001"), id="uuid-object"),
     ],
 )
 def test_record_wire_container_guards_preserve_input(

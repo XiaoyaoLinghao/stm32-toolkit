@@ -96,6 +96,35 @@ PHYSICAL_MONITOR_REF["run_ref_sha256"] = hashlib.sha256(
         }
     )
 ).hexdigest()
+
+
+def _redigest_monitor_reference(reference: dict[str, object]) -> None:
+    reference["run_ref_sha256"] = hashlib.sha256(
+        canonical_replay_json_bytes(
+            {key: value for key, value in reference.items() if key != "run_ref_sha256"}
+        )
+    ).hexdigest()
+
+
+def _valid_replay_monitor_reference() -> dict[str, object]:
+    reference = deepcopy(PHYSICAL_MONITOR_REF)
+    reference.update(
+        {
+            "schema": "stm32-monitor-run-ref/1",
+            "execution_source": "replay",
+            "physical_transport_evidence": False,
+            "probe_id": "replay:probe-v2",
+            "physical_target": "replay:non-physical",
+            "flash_session_id": "replay:no-flash",
+            "lease_id": "replay:no-lease",
+            "fixture_sha256": "6" * 64,
+        }
+    )
+    reference.pop("source_record_sha256", None)
+    _redigest_monitor_reference(reference)
+    return reference
+
+
 PHYSICAL_FACT_STEP = {
     "step_id": "physical-fact",
     "selector": {
@@ -154,10 +183,12 @@ def test_physical_observation_step_wire_guards_fail_closed_without_mutation(
         reference = selector["monitor_run_ref"]
         assert isinstance(reference, dict)
         reference["scenario_role"] = "fixed-after"
+        _redigest_monitor_reference(reference)
+        assert validate_run_reference(reference)["scenario_role"] == "fixed-after"
     elif mutation == "monitor-reference-must-be-physical":
-        reference = selector["monitor_run_ref"]
-        assert isinstance(reference, dict)
-        reference["execution_source"] = "replay"
+        reference = _valid_replay_monitor_reference()
+        selector["monitor_run_ref"] = reference
+        assert validate_run_reference(reference)["schema"] == "stm32-monitor-run-ref/1"
     elif mutation == "bit-mask-value-domain":
         candidate["expected_value"] = 4
     else:
