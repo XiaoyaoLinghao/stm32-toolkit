@@ -613,7 +613,13 @@ def test_physical_history_fragment_discontinuities_reject_before_roots(
             raw_probe,
             monitor_run_id,
             group_id,
-            batch_count=1 if mutation in {"metadata", "gap"} else 2,
+            batch_count=(
+                1
+                if mutation in {"metadata", "gap"}
+                else 3
+                if mutation == "reordered"
+                else 2
+            ),
             values_per_batch=2,
         )
         request = {
@@ -674,7 +680,7 @@ def test_physical_history_fragment_discontinuities_reject_before_roots(
         assert result.ok and result.data is not None
         page = result.data
         changed_page = page
-        if mutation == "reordered" and query_calls == 3:
+        if mutation == "reordered" and query_calls == 5:
             assert len(page.batches) == 1
             changed_page = HistoryPage.create(
                 (replace(page.batches[0], sequence=0),),
