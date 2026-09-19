@@ -26,7 +26,11 @@ from stm32_monitor.analysis_workflows import (
     AnalysisPublication, AnalysisWorkflowError, compare_monitor_runs, export_analysis_bundle,
 )
 from stm32_monitor.replay import canonical_replay_json_bytes, publish_physical_monitor_run
-from stm32_toolkit.acceptance.continuation import authenticate_continuation
+from stm32_toolkit.acceptance.continuation import (
+    ContinuationValidationError,
+    authenticate_continuation,
+    validate_continuation_reference,
+)
 from stm32_toolkit.build.identity import snapshot_project_inputs
 import stm32_toolkit.acceptance.recovery_workflows as recovery_workflows
 from stm32_toolkit.acceptance.recovery_workflows import (
@@ -2305,3 +2309,322 @@ def test_diagnostic_store_maps_typed_continuation_provider_failure_on_append_and
     assert raised.value.code == DIAGNOSTIC_EVIDENCE_MISSING
     assert provider_calls == [baseline.continuation_id, baseline.continuation_id]
     assert fresh_store.load_durable(pair.diagnostic_session_id).revision == pair.diagnostic_revision + 1
+
+
+def test_public_continuation_reference_variants_preserve_schema2_authority(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pair = prepare_pair(tmp_path, monkeypatch)
+    baseline = _monitor_baseline(pair, tmp_path)
+    assert baseline.publication.analysis_result.schema == "stm32-monitor-analysis/2"
+    association = authenticate_continuation(
+        pair.evidence, pair.workspace.diagnostics_root, baseline.continuation_id
+    )
+
+    def authority_snapshot() -> tuple[object, ...]:
+        files: dict[str, bytes] = {}
+        for label, root in (("project", pair.project_root), ("data", pair.data_root)):
+            for path in root.rglob("*"):
+                if path.is_file():
+                    files[f"{label}/{path.relative_to(root)}"] = path.read_bytes()
+        store_files: dict[str, bytes] = {}
+        for label in ("manifests", "roots"):
+            root = pair.evidence.root / label
+            for path in root.rglob("*"):
+                if path.is_file():
+                    store_files[f"{label}/{path.relative_to(root)}"] = path.read_bytes()
+        run_bytes = tuple(
+            (
+                run_id,
+                pair.repository.load(run_id).envelope.to_json_bytes(),
+            )
+            for run_id in (pair.failed_run_id, pair.fixed_run_id)
+        )
+        session = DiagnosticStore(
+            pair.workspace.diagnostics_root, pair.evidence
+        ).load_durable(pair.diagnostic_session_id)
+        analysis_bytes = pair.evidence.read_artifact(
+            baseline.analysis_envelope.artifacts[0], maximum_bytes=1024 * 1024
+        )
+        return (
+            tuple(sorted(files.items())),
+            tuple(sorted(store_files.items())),
+            canonical_json_bytes(association.root.to_dict()),
+            association.envelope.to_json_bytes(),
+            canonical_json_bytes(baseline.analysis_root.to_dict()),
+            baseline.analysis_envelope.to_json_bytes(),
+            run_bytes,
+            analysis_bytes,
+            session.revision,
+            session.event_head,
+        )
+
+    def reject(candidate: EvidenceEnvelope, message: str) -> None:
+        before = authority_snapshot()
+        with pytest.raises(ContinuationValidationError) as raised:
+            validate_continuation_reference(pair.evidence, association, candidate)
+        assert str(raised.value) == message
+        assert authority_snapshot() == before
+
+    def analysis_envelope(artifact, analysis_id: str) -> EvidenceEnvelope:
+        metadata = dict(baseline.analysis_envelope.metadata)
+        metadata["analysis_id"] = analysis_id
+        return EvidenceEnvelope(
+            identity=baseline.analysis_envelope.identity,
+            operation=baseline.analysis_envelope.operation,
+            produced_at_utc=baseline.analysis_envelope.produced_at_utc,
+            parents=tuple(baseline.analysis_envelope.parents),
+            artifacts=(artifact,),
+            metadata=metadata,
+        )
+
+    def ingest_raw(label: str, raw: bytes):
+        path = tmp_path / f"{label}-analysis.json"
+        path.write_bytes(raw)
+        return pair.evidence.ingest_file(
+            path, kind="monitor-analysis", media_type="application/json"
+        )
+
+    before_identity = association.before.manifest.identity
+    after_identity = association.after.manifest.identity
+    baseline_analysis_id = str(baseline.publication.analysis_result.analysis_id)
+
+    reject(
+        EvidenceEnvelope(
+            identity=before_identity,
+            operation=baseline.analysis_envelope.operation,
+            produced_at_utc=baseline.analysis_envelope.produced_at_utc,
+            parents=tuple(baseline.analysis_envelope.parents),
+            artifacts=tuple(baseline.analysis_envelope.artifacts),
+            metadata=dict(baseline.analysis_envelope.metadata),
+        ),
+        "continuation reference after identity differs",
+    )
+
+    target_produced_at = (
+        datetime.strptime(
+            association.after.envelope.produced_at_utc, "%Y-%m-%dT%H:%M:%S.%fZ"
+        )
+        + timedelta(microseconds=1)
+    ).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    reject(
+        EvidenceEnvelope(
+            identity=association.after.envelope.identity,
+            operation=association.after.envelope.operation,
+            produced_at_utc=target_produced_at,
+            parents=tuple(association.after.envelope.parents),
+            artifacts=tuple(association.after.envelope.artifacts),
+            metadata=dict(association.after.envelope.metadata),
+        ),
+        "continuation reference names another TestRun",
+    )
+
+    reject(
+        EvidenceEnvelope(
+            identity=after_identity,
+            operation="diagnostic-marker",
+            produced_at_utc=baseline.analysis_envelope.produced_at_utc,
+            parents=(),
+            artifacts=(),
+            metadata={},
+        ),
+        "continuation marker parent differs",
+    )
+
+    reject(
+        EvidenceEnvelope(
+            identity=after_identity,
+            operation="diagnostic-marker",
+            produced_at_utc=baseline.analysis_envelope.produced_at_utc,
+            parents=(str(association.after.envelope.evidence_id),),
+            artifacts=(),
+            metadata={},
+        ),
+        "continuation marker must reference an analysis",
+    )
+
+    reject(
+        EvidenceEnvelope(
+            identity=after_identity,
+            operation=baseline.analysis_envelope.operation,
+            produced_at_utc=baseline.analysis_envelope.produced_at_utc,
+            parents=(baseline.analysis_envelope.parents[0],),
+            artifacts=tuple(baseline.analysis_envelope.artifacts),
+            metadata=dict(baseline.analysis_envelope.metadata),
+        ),
+        "continuation analysis parents differ",
+    )
+
+    payload_shape_artifact = ingest_raw(
+        "continuation-schema2-payload-shape", canonical_json_bytes({})
+    )
+    reject(
+        analysis_envelope(payload_shape_artifact, baseline_analysis_id),
+        "continuation analysis payload differs",
+    )
+
+    digest_payload = json.loads(
+        pair.evidence.read_artifact(
+            baseline.analysis_envelope.artifacts[0], maximum_bytes=1024 * 1024
+        ).decode("utf-8")
+    )
+    assert isinstance(digest_payload, dict)
+    digest_id = "f" * 64
+    if digest_id == baseline_analysis_id:
+        digest_id = "e" * 64
+    digest_payload["analysis_id"] = digest_id
+    digest_artifact = ingest_raw(
+        "continuation-schema2-analysis-digest",
+        canonical_replay_json_bytes(digest_payload),
+    )
+    reject(
+        analysis_envelope(digest_artifact, digest_id),
+        "continuation analysis digest differs",
+    )
+
+
+def test_public_continuation_reference_native_variants_preserve_schema3_authority(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pair = prepare_pair(tmp_path, monkeypatch)
+    attempt = _ok(
+        begin_acceptance_attempt(
+            pair.context,
+            attempt_id=CONTINUATION_ATTEMPT_ID,
+            scenario_id="legacy-keil-physical-repair",
+            scenario_version="1",
+            continuation=pair.bind_request,
+        )
+    )["attempt"]
+    continuation_id = str(attempt["continuationEvidenceId"])
+    baseline = _same_session_native_baseline(
+        pair, tmp_path, continuation_id=continuation_id
+    )
+    association = authenticate_continuation(
+        pair.evidence, pair.workspace.diagnostics_root, continuation_id
+    )
+
+    def authority_snapshot() -> tuple[object, ...]:
+        files: dict[str, bytes] = {}
+        for label, root in (("project", pair.project_root), ("data", pair.data_root)):
+            for path in root.rglob("*"):
+                if path.is_file():
+                    files[f"{label}/{path.relative_to(root)}"] = path.read_bytes()
+        store_files: dict[str, bytes] = {}
+        for label in ("manifests", "roots"):
+            root = pair.evidence.root / label
+            for path in root.rglob("*"):
+                if path.is_file():
+                    store_files[f"{label}/{path.relative_to(root)}"] = path.read_bytes()
+        run_bytes = tuple(
+            (
+                run_id,
+                pair.repository.load(run_id).envelope.to_json_bytes(),
+            )
+            for run_id in (pair.failed_run_id, pair.fixed_run_id)
+        )
+        session = DiagnosticStore(
+            pair.workspace.diagnostics_root, pair.evidence
+        ).load_durable(pair.diagnostic_session_id)
+        analysis_bytes = pair.evidence.read_artifact(
+            baseline.analysis_envelope.artifacts[0], maximum_bytes=1024 * 1024
+        )
+        return (
+            tuple(sorted(files.items())),
+            tuple(sorted(store_files.items())),
+            canonical_json_bytes(association.root.to_dict()),
+            association.envelope.to_json_bytes(),
+            canonical_json_bytes(baseline.analysis_root.to_dict()),
+            baseline.analysis_envelope.to_json_bytes(),
+            run_bytes,
+            analysis_bytes,
+            session.revision,
+            session.event_head,
+        )
+
+    def accept(candidate: EvidenceEnvelope) -> None:
+        before = authority_snapshot()
+        assert validate_continuation_reference(
+            pair.evidence, association, candidate
+        ) is None
+        assert authority_snapshot() == before
+
+    def reject(candidate: EvidenceEnvelope, message: str) -> None:
+        before = authority_snapshot()
+        with pytest.raises(ContinuationValidationError) as raised:
+            validate_continuation_reference(pair.evidence, association, candidate)
+        assert str(raised.value) == message
+        assert authority_snapshot() == before
+
+    def analysis_envelope(artifact, analysis_id: str) -> EvidenceEnvelope:
+        metadata = dict(baseline.analysis_envelope.metadata)
+        metadata["analysis_id"] = analysis_id
+        return EvidenceEnvelope(
+            identity=baseline.analysis_envelope.identity,
+            operation=baseline.analysis_envelope.operation,
+            produced_at_utc=baseline.analysis_envelope.produced_at_utc,
+            parents=tuple(baseline.analysis_envelope.parents),
+            artifacts=(artifact,),
+            metadata=metadata,
+        )
+
+    def ingest_raw(label: str, raw: bytes):
+        path = tmp_path / f"{label}-analysis.json"
+        path.write_bytes(raw)
+        return pair.evidence.ingest_file(
+            path, kind="monitor-analysis", media_type="application/json"
+        )
+
+    baseline_raw = pair.evidence.read_artifact(
+        baseline.analysis_envelope.artifacts[0], maximum_bytes=1024 * 1024
+    )
+    baseline_payload = json.loads(baseline_raw.decode("utf-8"))
+    assert isinstance(baseline_payload, dict)
+    baseline_analysis_id = str(baseline_payload["analysis_id"])
+
+    accept(baseline.analysis_envelope)
+
+    request_digest_payload = json.loads(baseline_raw.decode("utf-8"))
+    assert isinstance(request_digest_payload, dict)
+    request_digest = "0" * 64
+    if request_digest == request_digest_payload["request_digest"]:
+        request_digest = "1" * 64
+    request_digest_payload["request_digest"] = request_digest
+    request_digest_unsigned = {
+        key: value
+        for key, value in request_digest_payload.items()
+        if key != "analysis_id"
+    }
+    request_digest_id = hashlib.sha256(
+        canonical_replay_json_bytes(request_digest_unsigned)
+    ).hexdigest()
+    request_digest_payload["analysis_id"] = request_digest_id
+    request_digest_artifact = ingest_raw(
+        "continuation-schema3-request-digest",
+        canonical_replay_json_bytes(request_digest_payload),
+    )
+    reject(
+        analysis_envelope(request_digest_artifact, request_digest_id),
+        "continuation native request digest differs",
+    )
+
+    statistics_payload = json.loads(baseline_raw.decode("utf-8"))
+    assert isinstance(statistics_payload, dict)
+    statistics_payload["before_first"] = statistics_payload["before_first"] + 1
+    statistics_payload["delta_first"] = statistics_payload["delta_first"] + 1
+    statistics_unsigned = {
+        key: value for key, value in statistics_payload.items() if key != "analysis_id"
+    }
+    statistics_id = hashlib.sha256(
+        canonical_replay_json_bytes(statistics_unsigned)
+    ).hexdigest()
+    assert statistics_id != baseline_analysis_id
+    statistics_payload["analysis_id"] = statistics_id
+    statistics_artifact = ingest_raw(
+        "continuation-schema3-statistics",
+        canonical_replay_json_bytes(statistics_payload),
+    )
+    reject(
+        analysis_envelope(statistics_artifact, statistics_id),
+        "continuation native analysis statistics differ",
+    )
