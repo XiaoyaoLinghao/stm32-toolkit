@@ -190,6 +190,51 @@ def test_package_json_metadata_is_an_accepted_environment_identity_source(tmp_pa
     assert environment.package_version == "1.2.3"
 
 
+def test_package_without_metadata_is_invalid_even_when_directory_name_has_version(tmp_path: Path):
+    install = tmp_path / "CubeMX"
+    (install / "jre" / "bin").mkdir(parents=True)
+    cubemx = install / "STM32CubeMX.exe"
+    cubemx.write_bytes(b"cube")
+    (install / "jre" / "bin" / "java.exe").write_bytes(b"java")
+    repository = tmp_path / "repository"
+    package = repository / "STM32Cube_FW_F4_V1.2.3"
+    package.mkdir(parents=True)
+
+    with pytest.raises(CreationEnvironmentError) as error:
+        discover_creation_environment(
+            _support(tmp_path, cubemx),
+            CreationRequest.from_mcu("STM32F429ZITx", "generated", framework="hal", language="c"),
+            repository=repository,
+        )
+
+    assert error.value.code == "CUBEMX_PACKAGE_INVALID"
+
+
+def test_malformed_priority_metadata_does_not_fall_through_to_json(tmp_path: Path):
+    install = tmp_path / "CubeMX"
+    (install / "jre" / "bin").mkdir(parents=True)
+    cubemx = install / "STM32CubeMX.exe"
+    cubemx.write_bytes(b"cube")
+    (install / "jre" / "bin" / "java.exe").write_bytes(b"java")
+    repository = tmp_path / "repository"
+    package = repository / "STM32Cube_FW_F4_V1.2.3"
+    package.mkdir(parents=True)
+    (package / "package.xml").write_text("<package", encoding="utf-8")
+    (package / "package.json").write_text(
+        '{"name":"STM32Cube_FW_F4","version":"1.2.3"}',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(CreationEnvironmentError) as error:
+        discover_creation_environment(
+            _support(tmp_path, cubemx),
+            CreationRequest.from_mcu("STM32F429ZITx", "generated", framework="hal", language="c"),
+            repository=repository,
+        )
+
+    assert error.value.code == "CUBEMX_PACKAGE_INVALID"
+
+
 def test_missing_repository_is_typed_and_does_not_fallback(tmp_path: Path):
     install = tmp_path / "CubeMX"
     (install / "jre" / "bin").mkdir(parents=True)
