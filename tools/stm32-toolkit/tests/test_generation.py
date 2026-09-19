@@ -374,7 +374,6 @@ def _redirect_path(monkeypatch, link: Path, target: Path, is_dir: bool) -> None:
             ["cmd", "/c", "mklink", "/J", str(link), str(target)],
             check=True,
             capture_output=True,
-            text=True,
         )
         return
     original_resolve = Path.resolve
