@@ -1,0 +1,100 @@
+# STM32TK 1.0 local release: DiagnosticStore lock contention correction
+
+## Scope
+
+This bounded implementation corrects the demonstrated Windows DiagnosticStore
+lock contention path. Windows acquisition now uses repeated `LK_NBLCK`
+attempts under one absolute monotonic 10-second budget, retries only native
+`EACCES`, sleeps at most 25 ms and at most the remaining budget, checks the
+deadline before protected entry, and always closes the descriptor after
+cleanup. POSIX locking, descriptor identity and layout validation, protected
+work ordering, publication semantics, and cleanup-error precedence remain
+unchanged.
+
+The public adapters expose the distinct operational results
+`DIAGNOSTIC_STORE_BUSY` and `ACCEPTANCE_ATTEMPT_BUSY`. Acceptance forwards only
+the validated nested `diagnostic.show` BUSY result; other non-OK Diagnostic
+results retain `ACCEPTANCE_ATTEMPT_OUTPUT_INVALID`. The added continuation case
+proves that BUSY during the second, postpublication authentication leaves the
+revision-1 root and immutable payload available for an exact retry and read.
+No model schemas, `DIAGNOSTIC_CODES`, lock users, release configuration,
+hardware code, package, deployment, or remote state changed.
+
+The amended governing design and plan are recorded by primary commit
+`a6e3888c35af853ce571c58036b063a69be409fd`. The accepted base is
+`fa8502e6bf706fcaae26122cf996077678053cc5`. The implementation code head
+before this report commit is `d7e8b0011bd6522edb5ec7dde5ff48947b3d6355`
+(`d7e8b001`); this report intentionally records no report-commit SHA.
+
+## Implementation and regression coverage
+
+The implementation owns these product files:
+
+- `tools/stm32-toolkit/src/stm32_toolkit/diagnostics/store.py`
+- `tools/stm32-toolkit/src/stm32_toolkit/diagnostics/__init__.py`
+- `tools/stm32-toolkit/src/stm32_toolkit/diagnostic_workflows.py`
+- `tools/stm32-toolkit/src/stm32_toolkit/acceptance/recovery_workflows.py`
+
+The focused regressions cover deterministic native contention and deadline
+expiry, non-contention refusal, no late protected entry, descriptor cleanup
+after unlock failure, direct Diagnostic and acceptance mappings, nested public
+Diagnostic BUSY forwarding, and postpublication revision-1 preservation. The
+existing concurrent continuation test function
+`test_persisted_continuation_monitor_diagnostic_and_expired_attempt_reuse`
+was left byte-for-byte unchanged. A separate new continuation case exercises
+the second-authentication BUSY boundary.
+
+No tests have been run by the implementation owner. The primary agent owns
+entry review, execution, evidence cleanup, independent review, and acceptance.
+
+## Prepared serialized verification entries
+
+Both entries reuse the finite-child PowerShell 7 launcher pattern in
+`D:\codex-tmp\v10b-0918\r10\e\retention-cancellation\r3\launch.ps1`:
+hidden `Start-Process`, an owned process handle, bounded `WaitForExit`,
+bounded termination of that exact child, and separate launcher and child exit
+records. The primary must run the entries serially. The launcher must clear
+inherited `PYTEST_ADDOPTS`, `COVERAGE_*`, and `COV_CORE_*`, set `TEMP`, `TMP`,
+and `TMPDIR` below the entry's `D:\codex-tmp\v10b-0918\r10\t\lk` root, and
+record the actual `tempfile.gettempdir()` check before creating the child.
+
+The pinned interpreter and import roots are:
+
+```text
+D:\codex-tmp\v10b-0918\r10\py\Scripts\python.exe
+D:\codex-tmp\v10b-0918\r10\lk\tools\stm32-toolkit\src
+D:\codex-tmp\v10b-0918\r10\lk\tools\stm32-monitor\src
+```
+
+The focused entry is `diagnostic-lock-contention-focused-r1`, with a 180
+second child wall bound. Its evidence root is
+`D:\codex-tmp\v10b-0918\r10\e\diagnostic-lock-contention\focused` and its
+temporary root is `D:\codex-tmp\v10b-0918\r10\t\lk\focused`.
+
+```text
+D:\codex-tmp\v10b-0918\r10\py\Scripts\python.exe -m pytest -x -o addopts= -o cache_dir=D:\codex-tmp\v10b-0918\r10\t\lk\focused\pytest-cache --basetemp D:\codex-tmp\v10b-0918\r10\t\lk\focused\basetemp --junitxml D:\codex-tmp\v10b-0918\r10\e\diagnostic-lock-contention\focused\junit.xml --cov=stm32_toolkit --cov=stm32_monitor --cov-fail-under=0 --cov-report=term-missing --cov-report=json:D:\codex-tmp\v10b-0918\r10\e\diagnostic-lock-contention\focused\coverage.json tools/stm32-toolkit/tests/test_diagnostic_store.py tools/stm32-toolkit/tests/test_diagnostic_workflows.py::test_diagnostic_store_busy_is_a_sanitized_public_result tools/stm32-toolkit/tests/test_acceptance_recovery_workflows.py::test_diagnostic_store_busy_maps_to_acceptance_availability_result tools/stm32-toolkit/tests/test_acceptance_recovery_workflows.py::test_nested_diagnostic_store_busy_maps_to_acceptance_availability_result tools/stm32-toolkit/tests/test_continuation_monitor.py::test_postpublication_diagnostic_busy_preserves_revision_one_for_exact_retry_and_read
+```
+
+The continuation entry is `diagnostic-lock-contention-continuation-r1`, with
+a 240 second child wall bound. Its evidence root is
+`D:\codex-tmp\v10b-0918\r10\e\diagnostic-lock-contention\continuation` and its
+temporary root is `D:\codex-tmp\v10b-0918\r10\t\lk\continuation`. It runs
+only the original existing node with Toolkit branch coverage:
+
+```text
+D:\codex-tmp\v10b-0918\r10\py\Scripts\python.exe -m pytest -x -o addopts= -o cache_dir=D:\codex-tmp\v10b-0918\r10\t\lk\continuation\pytest-cache --basetemp D:\codex-tmp\v10b-0918\r10\t\lk\continuation\basetemp --junitxml D:\codex-tmp\v10b-0918\r10\e\diagnostic-lock-contention\continuation\junit.xml --cov=stm32_toolkit --cov=stm32_monitor --cov-branch --cov-fail-under=0 --cov-report=term-missing --cov-report=json:D:\codex-tmp\v10b-0918\r10\e\diagnostic-lock-contention\continuation\coverage.json tools/stm32-toolkit/tests/test_continuation_monitor.py::test_persisted_continuation_monitor_diagnostic_and_expired_attempt_reuse
+```
+
+Each launcher entry writes `command.txt`, `argv.json`, `environment.json`,
+`preflight.json`, `heads.json`, `stdout.txt`, `stderr.txt`, `process.json`,
+`launch-result.json`, `exit-code.txt`, `junit.xml`, `coverage.json`, and the
+raw coverage database at `raw-coverage\.coverage`; a single
+`shards\shard-001.json` records the selected nodes, serial setting, wall
+bound, and coverage paths. The source head in both entries must be
+`d7e8b0011bd6522edb5ec7dde5ff48947b3d6355`, and `PYTHONPATH` must resolve to
+the `lk` paths above, never `verify15b`.
+
+This report records implementation preparation only. The implementation agent
+does not accept its own diff; independent complete-diff review and the final
+verification verdict remain with the primary agent and its separately assigned
+reviewer. No cleanup was performed by this agent.
