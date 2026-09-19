@@ -19,16 +19,17 @@ proves that BUSY during the second, postpublication authentication leaves the
 revision-1 root and immutable payload available for an exact retry and read.
 That case injects the public Busy boundary deterministically; it does not claim
 a real native ten-second wait. The store module also contains a separate real
-Windows child-process check that holds the native lock, proves exclusion and
-no protected entry, waits for the finite owned child to release it, and proves
-lock reuse. No model schemas, `DIAGNOSTIC_CODES`, lock users, release
-configuration, hardware code, package, deployment, or remote state changed.
+Windows child-process check that holds the native lock through an explicit
+ready/release handshake, proves exclusion and no protected entry, waits for
+the finite owned child to release it, and proves lock reuse. No model schemas,
+`DIAGNOSTIC_CODES`, lock users, release configuration, hardware code, package,
+deployment, or remote state changed.
 
 The amended governing design and plan are recorded by primary commit
 `a6e3888c35af853ce571c58036b063a69be409fd`. The accepted base is
 `fa8502e6bf706fcaae26122cf996077678053cc5`. The implementation code head
-before this report commit is `2a8f7936cdec9fde7129e22050bd5f36fb3dc224`
-(`2a8f7936`); this report intentionally records no report-commit SHA.
+before this report commit is `55b0049228300b3e01a5cddca10a65acc7785252`
+(`55b00492`); this report intentionally records no report-commit SHA.
 
 ## Implementation and regression coverage
 
@@ -75,20 +76,22 @@ D:\codex-tmp\v10b-0918\r10\lk\tools\stm32-monitor\src
 The focused entry is `diagnostic-lock-contention-focused-r1`, with a 180
 second child wall bound. Its evidence root is
 `D:\codex-tmp\v10b-0918\r10\e\diagnostic-lock-contention\focused` and its
-temporary root is `D:\codex-tmp\v10b-0918\r10\t\lk\focused`.
+temporary root is `D:\codex-tmp\v10b-0918\r10\t\lk\f` (basetemp
+`D:\codex-tmp\v10b-0918\r10\t\lk\f\b`).
 
 ```text
-D:\codex-tmp\v10b-0918\r10\py\Scripts\python.exe -m pytest -x -o addopts= -o cache_dir=D:\codex-tmp\v10b-0918\r10\t\lk\focused\pytest-cache --basetemp D:\codex-tmp\v10b-0918\r10\t\lk\focused\basetemp --junitxml D:\codex-tmp\v10b-0918\r10\e\diagnostic-lock-contention\focused\junit.xml --cov=stm32_toolkit --cov=stm32_monitor --cov-fail-under=0 --cov-report=term-missing --cov-report=json:D:\codex-tmp\v10b-0918\r10\e\diagnostic-lock-contention\focused\coverage.json tools/stm32-toolkit/tests/test_diagnostic_store.py tools/stm32-toolkit/tests/test_diagnostic_workflows.py::test_diagnostic_store_busy_is_a_sanitized_public_result tools/stm32-toolkit/tests/test_acceptance_recovery_workflows.py::test_diagnostic_store_busy_maps_to_acceptance_availability_result tools/stm32-toolkit/tests/test_acceptance_recovery_workflows.py::test_nested_diagnostic_store_busy_maps_to_acceptance_availability_result tools/stm32-toolkit/tests/test_continuation_monitor.py::test_postpublication_diagnostic_busy_preserves_revision_one_for_exact_retry_and_read
+D:\codex-tmp\v10b-0918\r10\py\Scripts\python.exe -m pytest -x -o addopts= -o cache_dir=D:\codex-tmp\v10b-0918\r10\t\lk\f\pytest-cache --basetemp D:\codex-tmp\v10b-0918\r10\t\lk\f\b --junitxml D:\codex-tmp\v10b-0918\r10\e\diagnostic-lock-contention\focused\junit.xml --cov=stm32_toolkit --cov=stm32_monitor --cov-fail-under=0 --cov-report=term-missing --cov-report=json:D:\codex-tmp\v10b-0918\r10\e\diagnostic-lock-contention\focused\coverage.json tools/stm32-toolkit/tests/test_diagnostic_store.py tools/stm32-toolkit/tests/test_diagnostic_workflows.py::test_diagnostic_store_busy_is_a_sanitized_public_result tools/stm32-toolkit/tests/test_acceptance_recovery_workflows.py::test_diagnostic_store_busy_maps_to_acceptance_availability_result tools/stm32-toolkit/tests/test_acceptance_recovery_workflows.py::test_nested_diagnostic_store_busy_maps_to_acceptance_availability_result tools/stm32-toolkit/tests/test_continuation_monitor.py::test_postpublication_diagnostic_busy_preserves_revision_one_for_exact_retry_and_read
 ```
 
 The continuation entry is `diagnostic-lock-contention-continuation-r1`, with
 a 240 second child wall bound. Its evidence root is
 `D:\codex-tmp\v10b-0918\r10\e\diagnostic-lock-contention\continuation` and its
-temporary root is `D:\codex-tmp\v10b-0918\r10\t\lk\continuation`. It runs
+temporary root is `D:\codex-tmp\v10b-0918\r10\t\lk\c` (basetemp
+`D:\codex-tmp\v10b-0918\r10\t\lk\c\b`). It runs
 only the original existing node with Toolkit branch coverage:
 
 ```text
-D:\codex-tmp\v10b-0918\r10\py\Scripts\python.exe -m pytest -x -o addopts= -o cache_dir=D:\codex-tmp\v10b-0918\r10\t\lk\continuation\pytest-cache --basetemp D:\codex-tmp\v10b-0918\r10\t\lk\continuation\basetemp --junitxml D:\codex-tmp\v10b-0918\r10\e\diagnostic-lock-contention\continuation\junit.xml --cov=stm32_toolkit --cov=stm32_monitor --cov-branch --cov-fail-under=0 --cov-report=term-missing --cov-report=json:D:\codex-tmp\v10b-0918\r10\e\diagnostic-lock-contention\continuation\coverage.json tools/stm32-toolkit/tests/test_continuation_monitor.py::test_persisted_continuation_monitor_diagnostic_and_expired_attempt_reuse
+D:\codex-tmp\v10b-0918\r10\py\Scripts\python.exe -m pytest -x -o addopts= -o cache_dir=D:\codex-tmp\v10b-0918\r10\t\lk\c\pytest-cache --basetemp D:\codex-tmp\v10b-0918\r10\t\lk\c\b --junitxml D:\codex-tmp\v10b-0918\r10\e\diagnostic-lock-contention\continuation\junit.xml --cov=stm32_toolkit --cov=stm32_monitor --cov-branch --cov-fail-under=0 --cov-report=term-missing --cov-report=json:D:\codex-tmp\v10b-0918\r10\e\diagnostic-lock-contention\continuation\coverage.json tools/stm32-toolkit/tests/test_continuation_monitor.py::test_persisted_continuation_monitor_diagnostic_and_expired_attempt_reuse
 ```
 
 Each launcher entry writes `command.txt`, `argv.json`, `environment.json`,
@@ -97,15 +100,15 @@ Each launcher entry writes `command.txt`, `argv.json`, `environment.json`,
 raw coverage database at `raw-coverage\.coverage`; a single
 `shards\shard-001.json` records the selected nodes, serial setting, wall
 bound, and coverage paths. The source head in both entries must be
-`2a8f7936cdec9fde7129e22050bd5f36fb3dc224`, and `PYTHONPATH` must resolve to
+`55b0049228300b3e01a5cddca10a65acc7785252`, and `PYTHONPATH` must resolve to
 the `lk` paths above, never `verify15b`.
 
 The executable launchers prepared for these entries are:
 
 - `D:\codex-tmp\v10b-0918\r10\e\diagnostic-lock-contention\focused\launch.ps1`
-  (SHA256 `89AADC115D517A2734C44BD31163363C1C1EDE1E5E9B8EA07260900C86A3D19E`)
+  (SHA256 `ADF702AD4E66B81B4F2FB1BF9C8AB220D890AA87729C8A6ECAF7B3F2EF3D7B26`)
 - `D:\codex-tmp\v10b-0918\r10\e\diagnostic-lock-contention\continuation\launch.ps1`
-  (SHA256 `69DD1C89706EDBE426273F2ABBCE8BABE338E25E2C3E89D0CAC907666F93228D`)
+  (SHA256 `BF503CCE6EF139F12874C2C49EBADF160137AF9D3F657CB15E4816413E7EE6EB`)
 
 PowerShell 7 AST parsing reported zero errors for both launchers; this was
 preparation only and no test process was run.
