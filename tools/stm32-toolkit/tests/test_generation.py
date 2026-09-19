@@ -2408,6 +2408,26 @@ def test_manifest_non_regular_file_is_rejected(tmp_path):
     assert error.value.details == {"path": MANAGED_MANIFEST_PATH, "rule": "regularFile"}
 
 
+def test_oversized_prior_manifest_is_rejected(tmp_path):
+    root = write_project(tmp_path / "proj")
+    oversized = b"x" * (configure_mod.FILE_LIMIT_BYTES + 1)
+    write_manifest_bytes(root, oversized)
+    manifest_path = root.joinpath(*MANAGED_MANIFEST_PATH.split("/"))
+    after_mutation = tree_snapshot(root)
+
+    with pytest.raises(GenerationError) as error:
+        plan_for(root)
+
+    assert error.value.code == "GENERATION_MANIFEST_INVALID"
+    assert error.value.message == "managed manifest exceeds the limit"
+    assert error.value.details == {"path": MANAGED_MANIFEST_PATH, "rule": "size"}
+    assert tree_snapshot(root) == after_mutation
+    assert manifest_path.is_file()
+    assert manifest_path.stat().st_size == configure_mod.FILE_LIMIT_BYTES + 1
+    assert not any(root.joinpath(*path.split("/")).exists() for path in TARGETS)
+    assert not (root / STAGING_ROOT).exists()
+
+
 # ---------------------------------------------------------------------------
 # ownership classification: drift, collisions, orphans, upgrades
 # ---------------------------------------------------------------------------
@@ -2723,6 +2743,28 @@ def test_apply_changed_input_is_rejected_before_writes(tmp_path):
     assert result.details == {"path": "Src/main.c"}
     assert not (root / "CMakeLists.txt").exists()
     assert not (root / ".stm32-toolkit").exists()
+
+
+def test_apply_recorded_input_directory_is_rejected_before_writes(tmp_path):
+    root = write_project(tmp_path / "proj")
+    plan = plan_for(root)
+    recorded_input = root / "Src/app.c"
+    recorded_input.unlink()
+    recorded_input.mkdir()
+    after_mutation = tree_snapshot(root)
+
+    result = apply_project_configuration(plan)
+
+    assert not result.ok
+    assert result.operation == "project-configuration-apply"
+    assert result.code == "GENERATION_INPUT_CHANGED"
+    assert result.message == "recorded input is not a regular file"
+    assert result.details == {"path": "Src/app.c"}
+    assert tree_snapshot(root) == after_mutation
+    assert recorded_input.is_dir()
+    assert not any(root.joinpath(*path.split("/")).exists() for path in TARGETS)
+    assert not (root / ".stm32-toolkit").exists()
+    assert not staging_dir(root, plan.plan_id).exists()
 
 
 def test_apply_changed_target_after_plan_is_rejected(tmp_path):
