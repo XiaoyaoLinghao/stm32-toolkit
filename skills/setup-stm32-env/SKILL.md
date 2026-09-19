@@ -22,17 +22,25 @@ description: Use when a Claude Code user asks to check, bootstrap, repair, or di
 
 ## Shell and path contract
 
+The helper fails closed before mutation on empty, relative, unresolved, redirected, or reparse-point
+paths. Never guess a replacement path.
+
+### Agent-host adapter
+
+Claude substitutes `${CLAUDE_PLUGIN_ROOT}`, `${CLAUDE_PLUGIN_DATA}`, and `${CLAUDE_PROJECT_DIR}`
+inline. Never read them from ambient shell variables. This host command invokes `powershell.exe`
+with explicit quoted paths:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File '${CLAUDE_PLUGIN_ROOT}/bin/setup-stm32-env.ps1' -Mode Check -ToolkitRoot '${CLAUDE_PLUGIN_ROOT}' -DataRoot '${CLAUDE_PLUGIN_DATA}' -ProjectRoot '${CLAUDE_PROJECT_DIR}'
+```
+
+### Standalone PowerShell sequence
+
 Standalone users must pass three explicit absolute paths: the extracted `ToolkitRoot`, the
-long-lived `DataRoot`, and the existing `ProjectRoot`. The helper fails closed before mutation on
-empty, relative, unresolved, redirected, or reparse-point paths. Never guess a replacement path.
-
-Agent-host adapters may substitute their own resolved paths when they invoke the same helper, but
-the standalone examples below are complete ordinary PowerShell and do not require host placeholders.
-
-## Standalone PowerShell sequence
-
-Set the paths once, run the read-only check, and then choose one authorized mutation mode. Do not
-run both mutation commands for one setup decision.
+long-lived `DataRoot`, and the existing `ProjectRoot`. The examples below are complete ordinary
+PowerShell and do not require host placeholders. Set the paths once and always run the read-only
+check first.
 
 ```powershell
 $ToolkitRoot = 'C:\tools\stm32-toolkit-1.0.0'
@@ -43,18 +51,26 @@ $SetupScript = Join-Path $ToolkitRoot 'bin\setup-stm32-env.ps1'
 # Always run the read-only check first.
 & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $SetupScript -Mode Check `
   -ToolkitRoot $ToolkitRoot -DataRoot $DataRoot -ProjectRoot $ProjectRoot
+```
 
-# After reviewing Check and explicitly authorizing an absent-runtime install, choose Bootstrap.
+If `Check` reports `missing`, review its evidence and explicitly authorize the absent-runtime
+install before running this separate Bootstrap command:
+
+```powershell
 & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $SetupScript -Mode Bootstrap `
   -ToolkitRoot $ToolkitRoot -DataRoot $DataRoot -ProjectRoot $ProjectRoot
+```
 
-# Choose Repair instead, after separate explicit authorization, only for a broken existing runtime.
+If `Check` reports `repairable` for an approved 0.9.0/0.5.0/0.3.0 legacy upgrade, or `broken` for
+an existing runtime, review its source and downgrade guards and explicitly authorize Repair before
+running this separate command:
+
+```powershell
 & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $SetupScript -Mode Repair `
   -ToolkitRoot $ToolkitRoot -DataRoot $DataRoot -ProjectRoot $ProjectRoot
 ```
 
-`Check` is read-only. Select exactly one of `Bootstrap` or `Repair` only after its explicit
-authorization condition is met, then repeat `Check`.
+`Check` is read-only. Run at most one mutation command for the decision, then repeat `Check`.
 
 ## CHECK
 
@@ -77,7 +93,9 @@ The doctor `vscodeExtensions` evidence checks exactly three recommended extensio
 
 CHECK never installs, removes, or modifies extensions, settings, or the extensions directory. When an extension is `missing` or the probe is unavailable, tell the operator to install or remove the recommended extensions manually in VS Code and re-run CHECK afterwards. Do not run any other VS Code command.
 
-For `missing`, ask authorization for Bootstrap. For `broken`, ask authorization for Repair. Stop until the user explicitly approves the exact mode and paths.
+For `missing`, ask authorization for Bootstrap. For `repairable` legacy-upgrade state or `broken`
+runtime, ask authorization for Repair. Stop until the user explicitly approves the exact mode and
+paths.
 
 ## MUTATE
 
@@ -90,9 +108,9 @@ staging is removed; a staging tree containing redirects is preserved for manual 
 than followed. The state file is written atomically only after runtime promotion; failures restore
 the old runtime and state bytes. After promotion, the verified Toolkit, Monitor and PyOCD wheels regenerate their console launchers using the final runtime interpreter; launcher binding/version checks must pass before healthy state is published.
 
-For an absent runtime, after explicit authorization, select the `Bootstrap` command in the
-standalone sequence above. For a broken runtime, after separate explicit authorization, select
-the `Repair` command instead.
+For an absent runtime, after explicit authorization, select the separate `Bootstrap` command above.
+For a `repairable` legacy-upgrade state or a broken runtime, after separate explicit authorization,
+select the separate `Repair` command instead.
 
 Repair moves the failed runtime to `${CLAUDE_PLUGIN_DATA}/runtime/.quarantine/` before promotion and rolls it back if promotion fails. Neither mode writes project files, installs external hardware tools, packs, extensions, drivers, or registers MCP.
 

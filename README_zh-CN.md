@@ -79,19 +79,25 @@ $SetupScript = Join-Path $ToolkitRoot 'bin\setup-stm32-env.ps1'
 # 始终先运行只读 Check。
 & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $SetupScript -Mode Check `
   -ToolkitRoot $ToolkitRoot -DataRoot $DataRoot -ProjectRoot $ProjectRoot
+```
 
-# 查看 Check 结果并明确授权缺少 runtime 的安装后，选择 Bootstrap。
+如果 `Check` 报告 `missing`，请先查看证据并明确授权缺少 runtime 的安装，再运行下面独立的
+Bootstrap 命令：
+
+```powershell
 & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $SetupScript -Mode Bootstrap `
   -ToolkitRoot $ToolkitRoot -DataRoot $DataRoot -ProjectRoot $ProjectRoot
+```
 
-# 对已有但损坏的 runtime，另行明确授权后改选 Repair。
-# 一次 setup 决策不要同时运行两个 mutation 命令。
+如果 `Check` 对获准的 0.9.0/0.5.0/0.3.0 legacy upgrade 报告 `repairable`，或对已有 runtime
+报告 `broken`，请查看 source 和 downgrade guard 并另行明确授权 Repair，再运行下面独立的命令：
+
+```powershell
 & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $SetupScript -Mode Repair `
   -ToolkitRoot $ToolkitRoot -DataRoot $DataRoot -ProjectRoot $ProjectRoot
 ```
 
-`Check` 是只读的。只有满足对应的明确授权条件后，才能在 `Bootstrap` 和 `Repair` 中选择一个，
-完成后再次运行 `Check`。
+`Check` 是只读的。一次 setup 决策最多运行一个 mutation 命令，完成后再次运行 `Check`。
 
 ### 离线 candidate 构建与安装
 

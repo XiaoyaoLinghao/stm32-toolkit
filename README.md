@@ -87,19 +87,26 @@ $SetupScript = Join-Path $ToolkitRoot 'bin\setup-stm32-env.ps1'
 # Always run the read-only check first.
 & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $SetupScript -Mode Check `
   -ToolkitRoot $ToolkitRoot -DataRoot $DataRoot -ProjectRoot $ProjectRoot
+```
 
-# After reviewing Check and explicitly authorizing an absent-runtime install, choose Bootstrap.
+If `Check` reports `missing`, review its evidence and explicitly authorize the absent-runtime
+install before running this separate Bootstrap command:
+
+```powershell
 & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $SetupScript -Mode Bootstrap `
   -ToolkitRoot $ToolkitRoot -DataRoot $DataRoot -ProjectRoot $ProjectRoot
+```
 
-# Choose Repair instead, after separate explicit authorization, only for a broken existing runtime.
-# Do not run both mutation commands for one setup decision.
+If `Check` reports `repairable` for an approved 0.9.0/0.5.0/0.3.0 legacy upgrade, or `broken` for
+an existing runtime, review its source and downgrade guards and explicitly authorize Repair before
+running this separate command:
+
+```powershell
 & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $SetupScript -Mode Repair `
   -ToolkitRoot $ToolkitRoot -DataRoot $DataRoot -ProjectRoot $ProjectRoot
 ```
 
-`Check` is read-only. Select exactly one of `Bootstrap` or `Repair` only after its explicit
-authorization condition is met, then repeat `Check`.
+`Check` is read-only. Run at most one mutation command for the decision, then repeat `Check`.
 
 ### Offline candidate build and install
 
