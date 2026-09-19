@@ -16,6 +16,7 @@ from stm32_toolkit.generation.managed_files import model_sha256_for, sha256_hex
 from stm32_toolkit.project_model import load_project_model
 from stm32_toolkit.regeneration import (
     MAX_DIFF_BYTES,
+    MAX_RECORD_BYTES,
     MAX_PREVIEW_BYTES,
     InventoryEntry,
     RegenerationError,
@@ -407,6 +408,133 @@ def test_plan_rejects_malformed_schema_v2_manifest_without_upgrade(tmp_path: Pat
 
     assert result.code == "REGENERATION_NOT_CUBEMX_PROJECT"
     assert result.message == "the destination is not a CubeMX project"
+    assert _tree_state(destination) == before_project
+    assert _tree_state(tmp_path / "data") == before_data
+
+
+@pytest.mark.parametrize(
+    "case_id",
+    [
+        pytest.param("S2-B", id="S2-B"),
+        pytest.param("S2-C", id="S2-C"),
+        pytest.param("S2-F", id="S2-F"),
+    ],
+)
+def test_scan_limits(tmp_path: Path, case_id: str):
+    workspace, destination, environment = _persisted_project(tmp_path)
+    request = RegenerationWorkflowRequest(workspace, tmp_path / "data", "session", "generated")
+    managed = destination / ".stm32-toolkit" / "generated-files.json"
+
+    if case_id == "S2-B":
+        managed.unlink()
+        managed.mkdir()
+        expected_code = "REGENERATION_OWNERSHIP_INVALID"
+        expected_message = "Toolkit managed manifest is unavailable"
+        expected_details = {}
+    elif case_id == "S2-C":
+        oversized = b"x" * (MAX_RECORD_BYTES + 1)
+        managed.write_bytes(oversized)
+        expected_code = "REGENERATION_OWNERSHIP_INVALID"
+        expected_message = "Toolkit managed manifest is unavailable"
+        expected_details = {}
+    elif case_id == "S2-F":
+        nested = destination / "App"
+        for index in range(32):
+            nested = nested / f"d{index:02d}"
+            nested.mkdir()
+        expected_code = "REGENERATION_PATH_UNSAFE"
+        expected_message = "project path exceeds its bound"
+        expected_details = {}
+    else:
+        raise AssertionError(f"unknown scan case: {case_id}")
+
+    before_project = _tree_state(destination)
+    before_data = _tree_state(tmp_path / "data")
+    result = plan_regeneration(request, environment=environment)
+
+    assert result.ok is False
+    assert result.operation == "project-regenerate-plan"
+    assert result.code == expected_code
+    assert result.message == expected_message
+    assert result.details == expected_details
+    assert _tree_state(destination) == before_project
+    assert _tree_state(tmp_path / "data") == before_data
+    if case_id == "S2-B":
+        assert managed.is_dir()
+    elif case_id == "S2-C":
+        assert managed.read_bytes() == oversized
+    else:
+        assert nested.is_dir()
+
+
+@pytest.mark.parametrize(
+    "case_id",
+    [
+        pytest.param("S3-A", id="S3-A"),
+        pytest.param("S3-B", id="S3-B"),
+        pytest.param("S3-C", id="S3-C"),
+        pytest.param("S3-G", id="S3-G"),
+    ],
+)
+def test_inventory_bounds(tmp_path: Path, case_id: str):
+    workspace, destination, environment = _persisted_project(tmp_path)
+    request = RegenerationWorkflowRequest(workspace, tmp_path / "data", "session", "generated")
+
+    if case_id == "S3-A":
+        artifact = destination / "build" / "artifacts.bin"
+        artifact.parent.mkdir()
+        artifact.write_bytes(b"derived bytes")
+    elif case_id == "S3-B":
+        unknown_file = destination / "README.local"
+        unknown_file.write_bytes(b"unknown bytes")
+    elif case_id == "S3-C":
+        unknown_directory = destination / "unknown-dir"
+        unknown_directory.mkdir()
+    elif case_id == "S3-G":
+        sharp_s = destination / "App" / "ß.txt"
+        double_s = destination / "App" / "ss.txt"
+        try:
+            sharp_s.write_bytes(b"sharp s")
+            double_s.write_bytes(b"double s")
+        except OSError as error:
+            pytest.skip(f"filesystem cannot create distinct Unicode names: {error}")
+        names = {path.name for path in (destination / "App").iterdir()}
+        if not {"ß.txt", "ss.txt"}.issubset(names):
+            pytest.skip("filesystem did not retain two distinct Unicode directory entries")
+    else:
+        raise AssertionError(f"unknown inventory case: {case_id}")
+
+    before_project = _tree_state(destination)
+    before_data = _tree_state(tmp_path / "data")
+    if case_id == "S3-A":
+        snapshot = classify_regeneration_project(request)
+        inventory = {entry.path: entry.ownership for entry in snapshot.inventory}
+        assert inventory["build"] == "derived"
+        assert inventory["build/artifacts.bin"] == "derived"
+        result = plan_regeneration(request, environment=environment)
+        assert result.ok is True
+        assert result.operation == "project-regenerate-plan"
+        assert result.code == "OK"
+        assert result.message == ""
+        assert result.data["blockers"] == ()
+        assert artifact.read_bytes() == b"derived bytes"
+    else:
+        result = plan_regeneration(request, environment=environment)
+        assert result.ok is False
+        assert result.operation == "project-regenerate-plan"
+        assert result.code == (
+            "REGENERATION_PATH_UNSAFE" if case_id == "S3-G" else "REGENERATION_UNKNOWN_PATH"
+        )
+        assert result.message == (
+            "project contains a case-fold path collision"
+            if case_id == "S3-G"
+            else "project contains an unknown path"
+        )
+        expected_path = "App/ß.txt" if case_id == "S3-G" else (
+            "README.local" if case_id == "S3-B" else "unknown-dir"
+        )
+        assert result.details == {"path": expected_path}
+
     assert _tree_state(destination) == before_project
     assert _tree_state(tmp_path / "data") == before_data
 
