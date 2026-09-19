@@ -1,4 +1,4 @@
-# Python core coverage quality target
+# Core branch coverage quality target
 
 The user's 2026-09-19 direction adds a preferred core branch-coverage target of
 at least 95%, while preserving the mandatory package release floor of 90%.
@@ -55,10 +55,32 @@ Python files; these counts identify scope, not completion. A run-owned inventory
 records resolved paths and source hashes alongside the coverage evidence. It is
 measurement data, not an additional product manifest, validator or test runner.
 
-UI JavaScript, schemas, templates, binaries, launchers and external engines are
-not Python source; their existing UI, contract, packaging, setup, security and
-physical gates remain unchanged. No new product feature, hardware scenario,
-coverage exclusion, generic test framework or function-level scope is added.
+UI TypeScript/TSX has the separate full-source scope below. Schemas, templates,
+binaries, launchers and external engines are not Python source; their existing
+contract, packaging, setup, security and physical gates remain unchanged. No new
+product feature, hardware scenario, coverage exclusion, generic test framework
+or function-level scope is added.
+
+### Companion UI scope
+
+Apply the preferred 95% branch target to the complete existing UI executable
+source selection, `src/**/*.{ts,tsx}`, excluding only the declaration-only
+`src/env.d.ts`. This reuses the established full-source coverage configuration;
+it does not select a smaller subset based on the achieved percentage. Keep the
+existing mandatory per-file 90% UI gate. CSS and declaration-only files have no
+executable branch denominator.
+
+Report the UI's native Vitest/V8 branch counts separately from both Python
+packages; do not combine their denominators. The retained UI result at source
+15b1a70e9bd684285da5557104deff529f537e49 covers all 29 executable source files,
+with no missing or extra records. Its 784/810 branches (96.79%), 260 passing
+tests and successful per-file gate are reusable at the frozen runtime baseline:
+UI source, configuration and dependencies are unchanged. Retained evidence is
+`r10/e/ui-static`, including `coverage-final.json` and terminal command results.
+This proves the UI source target only; final bundle dist/manifest verification
+remains part of the artifact refresh. Report statement, function and line
+coverage separately; a branch-target result does not imply those metrics are
+also at 95%.
 
 ## Metrics and evidence
 
