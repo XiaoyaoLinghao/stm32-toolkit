@@ -3027,6 +3027,8 @@ def test_apply_rejects_plan_root_that_is_not_a_project_directory(
     forged = replace(plan, project_root=forged_root)
     forged = replace(forged, plan_id=plan_id_for(forged))
     before = tree_snapshot(root)
+    original_fixture = root / "Src" / "main.c"
+    original_fixture_bytes = original_fixture.read_bytes()
     lock_entries = []
 
     def track_lock(lock_root):
@@ -3045,7 +3047,7 @@ def test_apply_rejects_plan_root_that_is_not_a_project_directory(
         assert forged_root.read_bytes() == forged_before
     assert not (forged_root / ".stm32-toolkit").exists()
     assert not staging_dir(forged_root, forged.plan_id).exists()
-    assert (root / "CMakeLists.txt").is_file()
+    assert original_fixture.read_bytes() == original_fixture_bytes
 
 
 def test_generation_planner_rejects_unsupported_model_version(tmp_path):
