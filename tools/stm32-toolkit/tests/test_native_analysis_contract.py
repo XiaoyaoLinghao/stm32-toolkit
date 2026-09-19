@@ -190,6 +190,21 @@ def test_native_statistics_excludes_malformed_nested_public_samples(
 ) -> None:
     before: object = _batch(100, 10)
     after: object = _batch(200, 11)
+
+    valid_result = native_statistics(
+        [before],
+        [after],
+        selector="r0",
+        max_pairing_skew_ns=1,
+        minimum_valid_pairs=1,
+        request_digest="a" * 64,
+    )
+    assert valid_result["quality"] == "VALID"
+    assert valid_result["conclusion"] == "COMPLETED"
+    assert valid_result["aligned_position_count"] == 1
+    assert valid_result["aligned_pair_count"] == 1
+    assert valid_result["excluded_position_count"] == 0
+
     if mutation == "mapping-missing-watch":
         assert isinstance(after, dict)
         after["values"] = [{"status": "OK"}]
@@ -216,15 +231,15 @@ def test_native_statistics_excludes_malformed_nested_public_samples(
         [after],
         selector="r0",
         max_pairing_skew_ns=1,
-        minimum_valid_pairs=2,
+        minimum_valid_pairs=1,
         request_digest="a" * 64,
     )
 
     assert result["quality"] == "INVALID"
     assert result["conclusion"] == "INCONCLUSIVE"
-    assert result["aligned_position_count"] == 2
+    assert result["aligned_position_count"] == 1
     assert result["aligned_pair_count"] == 0
-    assert result["excluded_position_count"] == 2
+    assert result["excluded_position_count"] == 1
     assert before == before_snapshot
     assert after == after_snapshot
 
