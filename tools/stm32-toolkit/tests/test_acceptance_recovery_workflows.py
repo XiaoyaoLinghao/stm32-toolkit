@@ -760,6 +760,13 @@ def test_public_target_replay_refusals_preserve_revision_two(
         )
 
     if case_id == "repository-load":
+        monkeypatch.setattr(
+            recovery_workflows,
+            "_test_show",
+            lambda *_args, _public_data=public_data, **_kwargs: recovery_workflows.OperationResult.success(
+                "test.show", _public_data
+            ),
+        )
         evidence = recovery_workflows._evidence_store_factory(
             workspace.workspace_root / "evidence"
         )
