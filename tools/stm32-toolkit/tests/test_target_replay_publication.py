@@ -228,39 +228,49 @@ def test_target_replay_publishes_origin_manifest_and_import_metadata(tmp_path: P
     }
 
 
-@pytest.mark.parametrize("field", ["stream_size_bytes", "scenario_role"])
-def test_target_replay_repository_rejects_tampered_descriptor_parent_on_reload(
-    tmp_path: Path, field: str
+@pytest.mark.parametrize(
+    ("field", "value", "expected_message"),
+    [
+        (
+            "stream_size_bytes",
+            lambda metadata: int(metadata["stream_size_bytes"]) + 1,
+            "Target replay descriptor stream contradicts its parent metadata",
+        ),
+        (
+            "scenario_role",
+            lambda metadata: "other-role",
+            "Target replay descriptor role contradicts its parent metadata",
+        ),
+    ],
+)
+def test_target_replay_publication_rejects_rehashed_descriptor_parent_before_write(
+    tmp_path: Path, field: str, value, expected_message: str
 ):
     _fixture_value, store, project_root, results_root, descriptor, manifest = _bundle(
         tmp_path, name="failed-before", operation_id="vs03-failed-before"
     )
-    Publisher(store, project_root, results_root).publish_target_replay(
-        manifest, descriptor, IMPORT_WORKSPACE_ID
+    metadata = dict(descriptor.metadata)
+    metadata[field] = value(metadata)
+    rehashed_parent = EvidenceEnvelope(
+        identity=descriptor.identity,
+        operation=descriptor.operation,
+        produced_at_utc=descriptor.produced_at_utc,
+        parents=descriptor.parents,
+        artifacts=descriptor.artifacts,
+        metadata=metadata,
     )
-
-    parent_path = store.root / "manifests" / f"{descriptor.evidence_id}.json"
-    parent = store.get_envelope(str(descriptor.evidence_id))
-    metadata = dict(parent.metadata)
-    if field == "stream_size_bytes":
-        metadata[field] = int(metadata[field]) + 1
-    else:
-        metadata[field] = "other-role"
-    parent_path.write_bytes(
-        EvidenceEnvelope(
-            identity=parent.identity,
-            operation=parent.operation,
-            produced_at_utc=parent.produced_at_utc,
-            parents=parent.parents,
-            artifacts=parent.artifacts,
-            metadata=metadata,
-        ).to_json_bytes()
-    )
+    before_store = _tree_bytes(store.root)
+    before_results = _tree_bytes(results_root)
 
     with pytest.raises(EvidenceValidationError) as failure:
-        Repository(store).load(manifest.run_id)
+        Publisher(store, project_root, results_root).publish_target_replay(
+            manifest, rehashed_parent, IMPORT_WORKSPACE_ID
+        )
 
     assert failure.value.code == "EVIDENCE_CORRUPT"
+    assert failure.value.message == expected_message
+    assert _tree_bytes(store.root) == before_store
+    assert _tree_bytes(results_root) == before_results
 
 
 def test_target_replay_retry_is_idempotent_and_conflict_is_stable(tmp_path: Path):
