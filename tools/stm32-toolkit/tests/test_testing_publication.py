@@ -21,7 +21,7 @@ from stm32_toolkit.evidence import (
     EvidenceValidationError,
     canonical_json_bytes,
 )
-from stm32_toolkit.evidence.gc import RootRecord
+from stm32_toolkit.evidence.gc import RootRecord, put_root
 from stm32_toolkit.evidence.store import MAX_EVIDENCE_READ_BYTES, EvidenceStore
 from stm32_toolkit.testing.model import (
     TestCaseResult as CaseResult,
@@ -126,6 +126,44 @@ def _summary(manifest: RunManifest) -> dict[str, object]:
         "ended_at_utc": manifest.ended_at_utc,
         "duration_ms": manifest.duration_ms,
     }
+
+
+def _host_graph_seed(
+    task_tmp: Path,
+    selector: str,
+    *,
+    manifest: RunManifest | None = None,
+    manifest_payload: bytes | None = None,
+    manifest_payload_suffix: bytes = b"",
+) -> tuple[EvidenceStore, RunManifest, object, RunManifest, object]:
+    """Create one fresh public Host graph before its first root publication.
+
+    The negative reload cases intentionally do not publish a valid graph first.
+    Each case gets a new store, ingests the intended manifest bytes, and lets
+    its caller construct the final envelope and root exactly once.
+    """
+    case_root = task_tmp / f"host-load-{selector}"
+    case_root.mkdir()
+    store, original, inventory = _fixture(case_root)
+    persisted = original if manifest is None else manifest
+    payload = (
+        canonical_json_bytes(persisted.to_dict()) + manifest_payload_suffix
+        if manifest_payload is None
+        else manifest_payload
+    )
+    manifest_source = case_root / "project" / f"{selector}-manifest.json"
+    manifest_source.write_bytes(payload)
+    manifest_artifact = store.ingest_file(
+        manifest_source, kind="test-manifest", media_type="application/json"
+    )
+    return store, original, inventory, persisted, manifest_artifact
+
+
+def _assert_no_store_write(
+    store: EvidenceStore,
+    before: dict[str, bytes],
+) -> None:
+    assert _tree_bytes(store.root) == before
 
 
 def test_failed_host_run_publishes_four_artifacts_and_reloads_by_run_id(task_tmp: Path):
@@ -453,3 +491,612 @@ def test_repository_preserves_explicit_manifest_read_limit(
 
     assert failure.value.code == EVIDENCE_LIMIT_EXCEEDED
     assert published.manifest_artifact.size_bytes < MAX_EVIDENCE_READ_BYTES
+
+
+def test_host_artifact_shape_selector_rejects_wrong_public_ref_without_write(
+    task_tmp: Path,
+):
+    store, manifest, inventory = _fixture(task_tmp)
+    candidate = replace(
+        manifest,
+        raw_events=replace(manifest.raw_events, kind="test-stdout"),
+    )
+    before = _tree_bytes(store.root)
+
+    with pytest.raises(ProtocolError) as failure:
+        _publisher(task_tmp, store).publish_host(
+            candidate, inventory_digest=inventory.inventory_digest
+        )
+
+    assert failure.value.code == "TEST_PROTOCOL_INVALID"
+    assert failure.value.message == "raw_events has an invalid Host artifact type"
+    _assert_no_store_write(store, before)
+
+
+def test_host_manifest_type_selector_rejects_non_manifest_without_write(
+    task_tmp: Path,
+):
+    store, manifest, inventory = _fixture(task_tmp)
+    before = _tree_bytes(store.root)
+
+    with pytest.raises(ProtocolError) as failure:
+        _publisher(task_tmp, store).publish_host(
+            None, inventory_digest=inventory.inventory_digest
+        )
+
+    assert failure.value.code == "TEST_PROTOCOL_INVALID"
+    assert failure.value.message == "manifest must be a TestRunManifest"
+    _assert_no_store_write(store, before)
+
+
+def test_publisher_store_type_selector_rejects_untyped_store_without_write(
+    task_tmp: Path,
+):
+    store, _manifest, _inventory = _fixture(task_tmp)
+    project_root = task_tmp / "project"
+    before = _tree_bytes(store.root)
+
+    with pytest.raises(TypeError, match="^evidence_store must be an EvidenceStore$"):
+        Publisher(object(), project_root, task_tmp / "external-results")
+    _assert_no_store_write(store, before)
+
+
+def test_publisher_path_type_selector_rejects_untyped_root_without_write(
+    task_tmp: Path,
+):
+    store, _manifest, _inventory = _fixture(task_tmp)
+    before = _tree_bytes(store.root)
+
+    with pytest.raises(TypeError, match="^project_root and results_root must be Paths$"):
+        Publisher(store, str(task_tmp / "project"), task_tmp / "external-results")
+    _assert_no_store_write(store, before)
+
+
+def test_public_data_selector_rejects_non_boolean_authority_without_write(
+    task_tmp: Path,
+):
+    store, manifest, inventory = _fixture(task_tmp)
+    published = _publisher(task_tmp, store).publish_host(
+        manifest, inventory_digest=inventory.inventory_digest
+    )
+    before = _tree_bytes(store.root)
+
+    with pytest.raises(ProtocolError) as failure:
+        published.public_data(authoritative=1)
+
+    assert failure.value.code == "TEST_PROTOCOL_INVALID"
+    assert failure.value.message == "authoritative must be a boolean"
+    _assert_no_store_write(store, before)
+
+
+def test_repository_store_type_selector_rejects_untyped_store_without_write(
+    task_tmp: Path,
+):
+    store, _manifest, _inventory = _fixture(task_tmp)
+    before = _tree_bytes(store.root)
+
+    with pytest.raises(TypeError, match="^evidence_store must be an EvidenceStore$"):
+        Repository(object())
+    _assert_no_store_write(store, before)
+
+
+def test_host_manifest_noncanonical_wire_selector_rejects_without_write(
+    task_tmp: Path,
+):
+    store, original, inventory, _persisted, manifest_artifact = _host_graph_seed(
+        task_tmp,
+        "host-manifest-noncanonical-wire",
+        manifest_payload_suffix=b"\n",
+    )
+    envelope = EvidenceEnvelope(
+        identity=original.identity,
+        operation="host-test-run",
+        produced_at_utc=original.ended_at_utc,
+        parents=(),
+        artifacts=(manifest_artifact, original.raw_events, original.stdout, original.stderr),
+        metadata={
+            "test_run_id": original.run_id,
+            "test_manifest_sha256": manifest_artifact.sha256,
+            "inventory_digest": inventory.inventory_digest,
+        },
+    )
+    store.put_envelope(envelope)
+    put_root(
+        store,
+        RootRecord(
+            "test-run", original.run_id, str(envelope.evidence_id),
+            {"mode": "host", "state": original.state},
+        ),
+    )
+    before = _tree_bytes(store.root)
+
+    with pytest.raises(EvidenceValidationError) as failure:
+        Repository(store).load(original.run_id)
+
+    assert failure.value.code == EVIDENCE_CORRUPT
+    assert failure.value.message == "stored test manifest is corrupt"
+    _assert_no_store_write(store, before)
+
+
+def test_host_load_operation_selector_rejects_changed_operation_without_write(
+    task_tmp: Path,
+):
+    store, original, inventory, _persisted, manifest_artifact = _host_graph_seed(
+        task_tmp, "host-load-operation"
+    )
+    envelope = EvidenceEnvelope(
+        identity=original.identity,
+        operation="other-operation",
+        produced_at_utc=original.ended_at_utc,
+        parents=(),
+        artifacts=(manifest_artifact, original.raw_events, original.stdout, original.stderr),
+        metadata={
+            "test_run_id": original.run_id,
+            "test_manifest_sha256": manifest_artifact.sha256,
+            "inventory_digest": inventory.inventory_digest,
+        },
+    )
+    store.put_envelope(envelope)
+    put_root(
+        store,
+        RootRecord(
+            "test-run", original.run_id, str(envelope.evidence_id),
+            {"mode": "host", "state": original.state},
+        ),
+    )
+    before = _tree_bytes(store.root)
+
+    with pytest.raises(EvidenceValidationError) as failure:
+        Repository(store).load(original.run_id)
+
+    assert failure.value.code == EVIDENCE_CORRUPT
+    assert failure.value.message == "stored envelope operation contradicts Host TestRun"
+    _assert_no_store_write(store, before)
+
+
+def test_host_load_parents_selector_rejects_nonempty_ancestry_without_write(
+    task_tmp: Path,
+):
+    store, original, inventory, _persisted, manifest_artifact = _host_graph_seed(
+        task_tmp, "host-load-parents"
+    )
+    envelope = EvidenceEnvelope(
+        identity=original.identity,
+        operation="host-test-run",
+        produced_at_utc=original.ended_at_utc,
+        parents=("a" * 64,),
+        artifacts=(manifest_artifact, original.raw_events, original.stdout, original.stderr),
+        metadata={
+            "test_run_id": original.run_id,
+            "test_manifest_sha256": manifest_artifact.sha256,
+            "inventory_digest": inventory.inventory_digest,
+        },
+    )
+    store.put_envelope(envelope)
+    put_root(
+        store,
+        RootRecord(
+            "test-run", original.run_id, str(envelope.evidence_id),
+            {"mode": "host", "state": original.state},
+        ),
+    )
+    before = _tree_bytes(store.root)
+
+    with pytest.raises(EvidenceValidationError) as failure:
+        Repository(store).load(original.run_id)
+
+    assert failure.value.code == EVIDENCE_CORRUPT
+    assert failure.value.message == "stored Host envelope has parents"
+    _assert_no_store_write(store, before)
+
+
+def test_host_load_metadata_closure_selector_rejects_extra_key_without_write(
+    task_tmp: Path,
+):
+    store, original, inventory, _persisted, manifest_artifact = _host_graph_seed(
+        task_tmp, "host-load-metadata-closure"
+    )
+    envelope = EvidenceEnvelope(
+        identity=original.identity,
+        operation="host-test-run",
+        produced_at_utc=original.ended_at_utc,
+        parents=(),
+        artifacts=(manifest_artifact, original.raw_events, original.stdout, original.stderr),
+        metadata={
+            "test_run_id": original.run_id,
+            "test_manifest_sha256": manifest_artifact.sha256,
+            "inventory_digest": inventory.inventory_digest,
+            "unexpected": "value",
+        },
+    )
+    store.put_envelope(envelope)
+    put_root(
+        store,
+        RootRecord(
+            "test-run", original.run_id, str(envelope.evidence_id),
+            {"mode": "host", "state": original.state},
+        ),
+    )
+    before = _tree_bytes(store.root)
+
+    with pytest.raises(EvidenceValidationError) as failure:
+        Repository(store).load(original.run_id)
+
+    assert failure.value.code == EVIDENCE_CORRUPT
+    assert failure.value.message == "stored Host envelope metadata is not closed"
+    _assert_no_store_write(store, before)
+
+
+def test_host_load_run_id_selector_rejects_metadata_run_id_without_write(
+    task_tmp: Path,
+):
+    store, original, inventory, _persisted, manifest_artifact = _host_graph_seed(
+        task_tmp, "host-load-run-id"
+    )
+    envelope = EvidenceEnvelope(
+        identity=original.identity,
+        operation="host-test-run",
+        produced_at_utc=original.ended_at_utc,
+        parents=(),
+        artifacts=(manifest_artifact, original.raw_events, original.stdout, original.stderr),
+        metadata={
+            "test_run_id": "run-0601-t04",
+            "test_manifest_sha256": manifest_artifact.sha256,
+            "inventory_digest": inventory.inventory_digest,
+        },
+    )
+    store.put_envelope(envelope)
+    put_root(
+        store,
+        RootRecord(
+            "test-run", original.run_id, str(envelope.evidence_id),
+            {"mode": "host", "state": original.state},
+        ),
+    )
+    before = _tree_bytes(store.root)
+
+    with pytest.raises(EvidenceValidationError) as failure:
+        Repository(store).load(original.run_id)
+
+    assert failure.value.code == EVIDENCE_CORRUPT
+    assert failure.value.message == "stored envelope run ID contradicts the root"
+    _assert_no_store_write(store, before)
+
+
+def test_host_load_manifest_artifact_selector_rejects_duplicate_manifest_ref_without_write(
+    task_tmp: Path,
+):
+    store, original, inventory, _persisted, manifest_artifact = _host_graph_seed(
+        task_tmp, "host-load-manifest-artifact"
+    )
+    envelope = EvidenceEnvelope(
+        identity=original.identity,
+        operation="host-test-run",
+        produced_at_utc=original.ended_at_utc,
+        parents=(),
+        artifacts=(
+            manifest_artifact, manifest_artifact,
+            original.raw_events, original.stdout, original.stderr,
+        ),
+        metadata={
+            "test_run_id": original.run_id,
+            "test_manifest_sha256": manifest_artifact.sha256,
+            "inventory_digest": inventory.inventory_digest,
+        },
+    )
+    store.put_envelope(envelope)
+    put_root(
+        store,
+        RootRecord(
+            "test-run", original.run_id, str(envelope.evidence_id),
+            {"mode": "host", "state": original.state},
+        ),
+    )
+    before = _tree_bytes(store.root)
+
+    with pytest.raises(EvidenceValidationError) as failure:
+        Repository(store).load(original.run_id)
+
+    assert failure.value.code == EVIDENCE_CORRUPT
+    assert failure.value.message == "stored Host envelope has an invalid test manifest artifact"
+    _assert_no_store_write(store, before)
+
+
+def test_host_load_manifest_run_id_selector_rejects_manifest_run_id_without_write(
+    task_tmp: Path,
+):
+    seed_root = task_tmp / "seed"
+    seed_root.mkdir()
+    persisted = replace(_fixture(seed_root)[1], run_id="run-0601-t04")
+    store, original, inventory, _persisted, manifest_artifact = _host_graph_seed(
+        task_tmp, "host-load-manifest-run-id", manifest=persisted
+    )
+    envelope = EvidenceEnvelope(
+        identity=original.identity,
+        operation="host-test-run",
+        produced_at_utc=original.ended_at_utc,
+        parents=(),
+        artifacts=(manifest_artifact, original.raw_events, original.stdout, original.stderr),
+        metadata={
+            "test_run_id": original.run_id,
+            "test_manifest_sha256": manifest_artifact.sha256,
+            "inventory_digest": inventory.inventory_digest,
+        },
+    )
+    store.put_envelope(envelope)
+    put_root(
+        store,
+        RootRecord(
+            "test-run", original.run_id, str(envelope.evidence_id),
+            {"mode": "host", "state": original.state},
+        ),
+    )
+    before = _tree_bytes(store.root)
+
+    with pytest.raises(EvidenceValidationError) as failure:
+        Repository(store).load(original.run_id)
+
+    assert failure.value.code == EVIDENCE_CORRUPT
+    assert failure.value.message == "stored test manifest run ID contradicts the root"
+    _assert_no_store_write(store, before)
+
+
+def test_host_load_mode_selector_rejects_target_manifest_without_write(
+    task_tmp: Path,
+):
+    seed_root = task_tmp / "seed"
+    seed_root.mkdir()
+    persisted = replace(_fixture(seed_root)[1], mode="target", transport="replay")
+    store, original, inventory, _persisted, manifest_artifact = _host_graph_seed(
+        task_tmp, "host-load-mode", manifest=persisted
+    )
+    envelope = EvidenceEnvelope(
+        identity=original.identity,
+        operation="host-test-run",
+        produced_at_utc=original.ended_at_utc,
+        parents=(),
+        artifacts=(manifest_artifact, original.raw_events, original.stdout, original.stderr),
+        metadata={
+            "test_run_id": original.run_id,
+            "test_manifest_sha256": manifest_artifact.sha256,
+            "inventory_digest": inventory.inventory_digest,
+        },
+    )
+    store.put_envelope(envelope)
+    put_root(
+        store,
+        RootRecord(
+            "test-run", original.run_id, str(envelope.evidence_id),
+            {"mode": "host", "state": original.state},
+        ),
+    )
+    before = _tree_bytes(store.root)
+
+    with pytest.raises(EvidenceValidationError) as failure:
+        Repository(store).load(original.run_id)
+
+    assert failure.value.code == EVIDENCE_CORRUPT
+    assert failure.value.message == "stored test manifest is not a Host record"
+    _assert_no_store_write(store, before)
+
+
+def test_host_load_nonterminal_selector_rejects_running_manifest_without_write(
+    task_tmp: Path,
+):
+    seed_root = task_tmp / "seed"
+    seed_root.mkdir()
+    persisted = replace(_fixture(seed_root)[1], state="running")
+    store, original, inventory, _persisted, manifest_artifact = _host_graph_seed(
+        task_tmp, "host-load-nonterminal", manifest=persisted
+    )
+    envelope = EvidenceEnvelope(
+        identity=original.identity,
+        operation="host-test-run",
+        produced_at_utc=original.ended_at_utc,
+        parents=(),
+        artifacts=(manifest_artifact, original.raw_events, original.stdout, original.stderr),
+        metadata={
+            "test_run_id": original.run_id,
+            "test_manifest_sha256": manifest_artifact.sha256,
+            "inventory_digest": inventory.inventory_digest,
+        },
+    )
+    store.put_envelope(envelope)
+    put_root(
+        store,
+        RootRecord(
+            "test-run", original.run_id, str(envelope.evidence_id),
+            {"mode": "host", "state": original.state},
+        ),
+    )
+    before = _tree_bytes(store.root)
+
+    with pytest.raises(EvidenceValidationError) as failure:
+        Repository(store).load(original.run_id)
+
+    assert failure.value.code == EVIDENCE_CORRUPT
+    assert failure.value.message == "stored test manifest is not terminal"
+    _assert_no_store_write(store, before)
+
+
+def test_host_load_output_missing_selector_rejects_missing_stdout_without_write(
+    task_tmp: Path,
+):
+    seed_root = task_tmp / "seed"
+    seed_root.mkdir()
+    persisted = replace(_fixture(seed_root)[1], stdout=None)
+    store, original, inventory, _persisted, manifest_artifact = _host_graph_seed(
+        task_tmp, "host-load-output-missing", manifest=persisted
+    )
+    envelope = EvidenceEnvelope(
+        identity=original.identity,
+        operation="host-test-run",
+        produced_at_utc=original.ended_at_utc,
+        parents=(),
+        artifacts=(manifest_artifact, original.raw_events, original.stdout, original.stderr),
+        metadata={
+            "test_run_id": original.run_id,
+            "test_manifest_sha256": manifest_artifact.sha256,
+            "inventory_digest": inventory.inventory_digest,
+        },
+    )
+    store.put_envelope(envelope)
+    put_root(
+        store,
+        RootRecord(
+            "test-run", original.run_id, str(envelope.evidence_id),
+            {"mode": "host", "state": original.state},
+        ),
+    )
+    before = _tree_bytes(store.root)
+
+    with pytest.raises(EvidenceValidationError) as failure:
+        Repository(store).load(original.run_id)
+
+    assert failure.value.code == EVIDENCE_CORRUPT
+    assert failure.value.message == "stored Host manifest lacks stdout or stderr"
+    _assert_no_store_write(store, before)
+
+
+def test_host_load_envelope_identity_selector_rejects_identity_mismatch_without_write(
+    task_tmp: Path,
+):
+    store, original, inventory, _persisted, manifest_artifact = _host_graph_seed(
+        task_tmp, "host-load-envelope-identity"
+    )
+    envelope = EvidenceEnvelope(
+        identity=replace(original.identity, session_id="session-0601-t04"),
+        operation="host-test-run",
+        produced_at_utc=original.ended_at_utc,
+        parents=(),
+        artifacts=(manifest_artifact, original.raw_events, original.stdout, original.stderr),
+        metadata={
+            "test_run_id": original.run_id,
+            "test_manifest_sha256": manifest_artifact.sha256,
+            "inventory_digest": inventory.inventory_digest,
+        },
+    )
+    store.put_envelope(envelope)
+    put_root(
+        store,
+        RootRecord(
+            "test-run", original.run_id, str(envelope.evidence_id),
+            {"mode": "host", "state": original.state},
+        ),
+    )
+    before = _tree_bytes(store.root)
+
+    with pytest.raises(EvidenceValidationError) as failure:
+        Repository(store).load(original.run_id)
+
+    assert failure.value.code == EVIDENCE_CORRUPT
+    assert failure.value.message == "stored envelope identity contradicts the test manifest"
+    _assert_no_store_write(store, before)
+
+
+def test_host_load_time_selector_rejects_envelope_time_without_write(
+    task_tmp: Path,
+):
+    store, original, inventory, _persisted, manifest_artifact = _host_graph_seed(
+        task_tmp, "host-load-time"
+    )
+    envelope = EvidenceEnvelope(
+        identity=original.identity,
+        operation="host-test-run",
+        produced_at_utc=UTC_0,
+        parents=(),
+        artifacts=(manifest_artifact, original.raw_events, original.stdout, original.stderr),
+        metadata={
+            "test_run_id": original.run_id,
+            "test_manifest_sha256": manifest_artifact.sha256,
+            "inventory_digest": inventory.inventory_digest,
+        },
+    )
+    store.put_envelope(envelope)
+    put_root(
+        store,
+        RootRecord(
+            "test-run", original.run_id, str(envelope.evidence_id),
+            {"mode": "host", "state": original.state},
+        ),
+    )
+    before = _tree_bytes(store.root)
+
+    with pytest.raises(EvidenceValidationError) as failure:
+        Repository(store).load(original.run_id)
+
+    assert failure.value.code == EVIDENCE_CORRUPT
+    assert failure.value.message == "stored envelope time contradicts the test manifest"
+    _assert_no_store_write(store, before)
+
+
+def test_host_load_membership_selector_rejects_reordered_artifacts_without_write(
+    task_tmp: Path,
+):
+    store, original, inventory, _persisted, manifest_artifact = _host_graph_seed(
+        task_tmp, "host-load-membership"
+    )
+    envelope = EvidenceEnvelope(
+        identity=original.identity,
+        operation="host-test-run",
+        produced_at_utc=original.ended_at_utc,
+        parents=(),
+        artifacts=(manifest_artifact, original.stdout, original.raw_events, original.stderr),
+        metadata={
+            "test_run_id": original.run_id,
+            "test_manifest_sha256": manifest_artifact.sha256,
+            "inventory_digest": inventory.inventory_digest,
+        },
+    )
+    store.put_envelope(envelope)
+    put_root(
+        store,
+        RootRecord(
+            "test-run", original.run_id, str(envelope.evidence_id),
+            {"mode": "host", "state": original.state},
+        ),
+    )
+    before = _tree_bytes(store.root)
+
+    with pytest.raises(EvidenceValidationError) as failure:
+        Repository(store).load(original.run_id)
+
+    assert failure.value.code == EVIDENCE_CORRUPT
+    assert failure.value.message == "stored Host envelope artifact membership is invalid"
+    _assert_no_store_write(store, before)
+
+
+def test_host_load_root_metadata_selector_rejects_root_metadata_without_write(
+    task_tmp: Path,
+):
+    store, original, inventory, _persisted, manifest_artifact = _host_graph_seed(
+        task_tmp, "host-load-root-metadata"
+    )
+    envelope = EvidenceEnvelope(
+        identity=original.identity,
+        operation="host-test-run",
+        produced_at_utc=original.ended_at_utc,
+        parents=(),
+        artifacts=(manifest_artifact, original.raw_events, original.stdout, original.stderr),
+        metadata={
+            "test_run_id": original.run_id,
+            "test_manifest_sha256": manifest_artifact.sha256,
+            "inventory_digest": inventory.inventory_digest,
+        },
+    )
+    store.put_envelope(envelope)
+    put_root(
+        store,
+        RootRecord(
+            "test-run", original.run_id, str(envelope.evidence_id),
+            {"mode": "host", "state": "passed"},
+        ),
+    )
+    before = _tree_bytes(store.root)
+
+    with pytest.raises(EvidenceValidationError) as failure:
+        Repository(store).load(original.run_id)
+
+    assert failure.value.code == EVIDENCE_CORRUPT
+    assert failure.value.message == "stored root metadata contradicts the Host manifest"
+    _assert_no_store_write(store, before)
