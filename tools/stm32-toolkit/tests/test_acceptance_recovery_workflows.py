@@ -269,6 +269,58 @@ def test_checkpoint_public_input_rejection_preserves_revision_zero(
         } == original_files
 
 
+def test_public_checkpoint_build_provider_failure_preserves_revision_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project, data, context = _project_transition_context(
+        tmp_path, monkeypatch, lambda: "2026-08-24T00:00:00.000000Z"
+    )
+    assert begin_acceptance_attempt(
+        context,
+        attempt_id=ATTEMPT_ID,
+        scenario_id="legacy-keil-migration",
+        scenario_version="1",
+    ).ok
+    first = checkpoint_acceptance_attempt(
+        context,
+        attempt_id=ATTEMPT_ID,
+        expected_revision=0,
+        stage="project-materialized",
+    )
+    assert first.ok is True
+    original_files = {
+        str(path.relative_to(data)): path.read_bytes()
+        for path in data.rglob("*")
+        if path.is_file()
+    }
+
+    monkeypatch.setattr(
+        recovery_workflows,
+        "_build_project_context",
+        lambda *_args: recovery_workflows.OperationResult.failure(
+            "project.context", "BUILD_FAILED", "provider rejected the build", {}
+        ),
+    )
+    result = checkpoint_acceptance_attempt(
+        context,
+        attempt_id=ATTEMPT_ID,
+        expected_revision=1,
+        stage="firmware-built-before",
+    )
+
+    assert result.ok is False
+    assert result.code == "ACCEPTANCE_ATTEMPT_OUTPUT_INVALID"
+    resumed = resume_acceptance_attempt(context, attempt_id=ATTEMPT_ID)
+    assert resumed.ok is True
+    assert resumed.data["attempt"] == first.data["attempt"]
+    assert resumed.data["nextStage"] == "firmware-built-before"
+    assert {
+        str(path.relative_to(data)): path.read_bytes()
+        for path in data.rglob("*")
+        if path.is_file()
+    } == original_files
+
+
 def test_resume_public_attempt_id_rejection_creates_no_state(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

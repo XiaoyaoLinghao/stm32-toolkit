@@ -317,6 +317,85 @@ def test_closed_wire_fields_tuples_subclasses_and_types_are_rejected() -> None:
     _expect_invalid(lambda: SourceChangeDeclaration.from_value(subclass))
 
 
+def test_public_wire_collection_and_identity_guards_preserve_input() -> None:
+    source_paths_empty = _source().to_dict()
+    source_paths_empty["changed_paths"] = []
+    source_hypotheses_duplicate = _source().to_dict()
+    source_hypotheses_duplicate["claimed_hypothesis_ids"] = [HYPOTHESIS_IDS[0], HYPOTHESIS_IDS[0]]
+    source_hypotheses_unsorted = _source().to_dict()
+    source_hypotheses_unsorted["claimed_hypothesis_ids"] = list(reversed(HYPOTHESIS_IDS))
+    source_same_hash = _source().to_dict()
+    source_same_hash["after_source_sha256"] = source_same_hash["before_source_sha256"]
+    source_paths_too_many = _source().to_dict()
+    source_paths_too_many["changed_paths"] = [f"src/{index}.c" for index in range(129)]
+
+    plan_quality = _plan().to_dict()
+    plan_quality["required_monitor_quality"] = "INVALID"
+    plan_expected_unchanged = _plan().to_dict()
+    plan_expected_unchanged["expected_changed"] = False
+    plan_analysis_mismatch = _plan().to_dict()
+    plan_analysis_mismatch["required_analysis_evidence_ids"] = [ANALYSIS_EVIDENCE_IDS[0]]
+    plan_analysis_scalar = _plan().to_dict()
+    plan_analysis_scalar["required_analysis_ids"] = ANALYSIS_IDS[0]
+    plan_analysis_too_many = _plan().to_dict()
+    plan_analysis_too_many["required_analysis_ids"] = [f"{index:064x}" for index in range(17)]
+    plan_analysis_too_many["required_analysis_evidence_ids"] = [f"{index + 17:064x}" for index in range(17)]
+
+    marker_polarity = _marker().to_dict()
+    marker_polarity["polarity"] = "neutral"
+    marker_label = _marker().to_dict()
+    marker_label["label"] = "unknown-label"
+
+    fix_operations_duplicate = _fix().to_dict()
+    fix_operations_duplicate["executed_operation_ids"] = ["verification.complete", "verification.complete"]
+    fix_operations_scalar = _fix().to_dict()
+    fix_operations_scalar["executed_operation_ids"] = "verification.complete"
+    fix_status = _fix().to_dict()
+    fix_status["status"] = "UNKNOWN"
+
+    cases = (
+        (SourceChangeDeclaration.from_value, source_paths_empty, DIAGNOSTIC_INVALID_EVENT),
+        (SourceChangeDeclaration.from_value, source_hypotheses_duplicate, DIAGNOSTIC_INVALID_EVENT),
+        (SourceChangeDeclaration.from_value, source_hypotheses_unsorted, DIAGNOSTIC_INVALID_EVENT),
+        (SourceChangeDeclaration.from_value, source_same_hash, DIAGNOSTIC_INVALID_EVENT),
+        (SourceChangeDeclaration.from_value, source_paths_too_many, DIAGNOSTIC_LIMIT_EXCEEDED),
+        (VerificationPlan.from_value, plan_quality, DIAGNOSTIC_INVALID_EVENT),
+        (VerificationPlan.from_value, plan_expected_unchanged, DIAGNOSTIC_INVALID_EVENT),
+        (VerificationPlan.from_value, plan_analysis_mismatch, DIAGNOSTIC_INVALID_EVENT),
+        (VerificationPlan.from_value, plan_analysis_scalar, DIAGNOSTIC_INVALID_EVENT),
+        (VerificationPlan.from_value, plan_analysis_too_many, DIAGNOSTIC_LIMIT_EXCEEDED),
+        (DiagnosticMarkerRef.from_value, marker_polarity, DIAGNOSTIC_INVALID_EVENT),
+        (DiagnosticMarkerRef.from_value, marker_label, DIAGNOSTIC_INVALID_EVENT),
+        (VerificationPlan.from_value, None, DIAGNOSTIC_INVALID_EVENT),
+        (DiagnosticMarkerRef.from_value, None, DIAGNOSTIC_INVALID_EVENT),
+        (FixVerification.from_value, fix_operations_duplicate, DIAGNOSTIC_INVALID_EVENT),
+        (FixVerification.from_value, fix_operations_scalar, DIAGNOSTIC_INVALID_EVENT),
+        (FixVerification.from_value, fix_status, DIAGNOSTIC_INVALID_EVENT),
+        (FixVerification.from_value, None, DIAGNOSTIC_INVALID_EVENT),
+    )
+
+    for factory, candidate, expected_code in cases:
+        before = deepcopy(candidate)
+        _expect_invalid(lambda factory=factory, candidate=candidate: factory(candidate), expected_code)
+        assert candidate == before
+
+
+def test_public_constructor_requires_tuple_collections() -> None:
+    _expect_invalid(lambda: SourceChangeDeclaration.new(
+        before_source_sha256="8" * 64,
+        after_source_sha256="9" * 64,
+        before_build_id="a" * 64,
+        before_elf_sha256="b" * 64,
+        after_build_id="c" * 64,
+        after_elf_sha256="d" * 64,
+        changed_paths=["src/main.c"],  # type: ignore[arg-type]
+        diff_evidence_id="e" * 64,
+        diff_artifact=ARTIFACT,
+        claimed_hypothesis_ids=HYPOTHESIS_IDS,
+        validation_plan_id=PLAN_ID,
+    ))
+
+
 @pytest.mark.parametrize(
     "changed_paths,expected_code",
     [
