@@ -8,7 +8,11 @@ from pathlib import Path
 
 import pytest
 
-from stm32_toolkit.evidence import EvidenceEnvelope, EvidenceValidationError
+from stm32_toolkit.evidence import (
+    EvidenceEnvelope,
+    EvidenceValidationError,
+    canonical_json_bytes,
+)
 from stm32_toolkit.evidence.store import EvidenceStore
 from stm32_toolkit.testing.model import (
     TestCaseResult as CaseResult,
@@ -271,6 +275,164 @@ def test_target_replay_publication_rejects_rehashed_descriptor_parent_before_wri
     assert failure.value.message == expected_message
     assert _tree_bytes(store.root) == before_store
     assert _tree_bytes(results_root) == before_results
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "source-labels",
+        "origin-workspace",
+        "import-workspace",
+        "replay-id",
+        "stream-digest",
+        "artifact-membership",
+        "descriptor-identity",
+        "metadata-closure",
+    ],
+)
+def test_target_replay_publication_rejects_each_public_parent_binding_contract(
+    tmp_path: Path, case: str
+):
+    """Every malformed parent shape is refused before publication side effects."""
+    _fixture_value, store, project_root, results_root, descriptor, manifest = _bundle(
+        tmp_path, name="failed-before", operation_id="vs03-failed-before"
+    )
+    metadata = dict(descriptor.metadata)
+    identity = descriptor.identity
+    artifacts = descriptor.artifacts
+    expected_messages = {
+        "source-labels": "Target replay descriptor parent physical/source labels are invalid",
+        "origin-workspace": "Target replay descriptor parent origin workspace contradicts its identity",
+        "import-workspace": "Target replay descriptor parent import workspace contradicts the import",
+        "replay-id": "Target replay descriptor ID contradicts its parent metadata",
+        "stream-digest": "Target replay descriptor stream contradicts its parent metadata",
+        "artifact-membership": "Target replay descriptor parent artifacts are invalid",
+        "descriptor-identity": "Target replay descriptor identity contradicts its parent envelope",
+        "metadata-closure": "Target replay descriptor parent metadata is not closed",
+    }
+    if case == "source-labels":
+        metadata["execution_source"] = "physical"
+    elif case == "origin-workspace":
+        metadata["origin_workspace_id"] = sha256(b"other-origin").hexdigest()
+    elif case == "import-workspace":
+        metadata["import_workspace_id"] = sha256(b"other-import").hexdigest()
+    elif case == "replay-id":
+        metadata["replay_id"] = "other-replay"
+    elif case == "stream-digest":
+        metadata["stream_sha256"] = sha256(b"other-stream").hexdigest()
+    elif case == "artifact-membership":
+        artifacts = (*descriptor.artifacts, descriptor.artifacts[0])
+    elif case == "descriptor-identity":
+        identity = replace(identity, build_id="1" * 64)
+    elif case == "metadata-closure":
+        metadata.pop("replay_id")
+    else:  # pragma: no cover - the parameter list is the contract
+        raise AssertionError(case)
+
+    malformed_parent = EvidenceEnvelope(
+        identity=identity,
+        operation=descriptor.operation,
+        produced_at_utc=descriptor.produced_at_utc,
+        parents=descriptor.parents,
+        artifacts=artifacts,
+        metadata=metadata,
+    )
+    before_store = _tree_bytes(store.root)
+    before_results = _tree_bytes(results_root)
+
+    with pytest.raises(EvidenceValidationError) as failure:
+        Publisher(store, project_root, results_root).publish_target_replay(
+            manifest, malformed_parent, IMPORT_WORKSPACE_ID
+        )
+
+    assert failure.value.code == "EVIDENCE_CORRUPT"
+    assert failure.value.message == expected_messages[case]
+    assert _tree_bytes(store.root) == before_store
+    assert _tree_bytes(results_root) == before_results
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "expected_message"),
+    [
+        (
+            "execution_source",
+            "physical",
+            "stored Target replay source labels are invalid",
+        ),
+        (
+            "origin_workspace_id",
+            sha256(b"persisted-other-origin").hexdigest(),
+            "stored Target replay origin workspace contradicts its identity",
+        ),
+        (
+            "descriptor_evidence_id",
+            sha256(b"persisted-other-parent").hexdigest(),
+            "stored Target replay parent does not match metadata",
+        ),
+        (
+            "import_workspace_id",
+            sha256(b"persisted-other-import").hexdigest(),
+            "Target replay descriptor parent import workspace contradicts the import",
+        ),
+    ],
+)
+def test_target_replay_repository_rejects_persisted_parent_binding_corruption(
+    tmp_path: Path,
+    field: str,
+    value: str,
+    expected_message: str,
+):
+    """Reload validates persisted envelope identity before exposing a run."""
+    _fixture_value, store, project_root, results_root, descriptor, manifest = _bundle(
+        tmp_path, name="failed-before", operation_id="vs03-failed-before"
+    )
+    published = Publisher(store, project_root, results_root).publish_target_replay(
+        manifest, descriptor, IMPORT_WORKSPACE_ID
+    )
+    metadata = dict(published.envelope.metadata)
+    metadata[field] = value
+    corrupted = EvidenceEnvelope(
+        identity=published.envelope.identity,
+        operation=published.envelope.operation,
+        produced_at_utc=published.envelope.produced_at_utc,
+        parents=published.envelope.parents,
+        artifacts=published.envelope.artifacts,
+        metadata=metadata,
+    )
+    store.put_envelope(corrupted)
+    root_path = next((store.root / "roots" / "test-run").glob("*.json"))
+    root = published.root.to_dict()
+    root["manifest_id"] = str(corrupted.evidence_id)
+    root_path.write_bytes(canonical_json_bytes(root))
+
+    with pytest.raises(EvidenceValidationError) as failure:
+        Repository(store).load(manifest.run_id)
+
+    assert failure.value.code == "EVIDENCE_CORRUPT"
+    assert failure.value.message == expected_message
+
+
+def test_target_replay_repository_rejects_persisted_root_binding_without_mutating_store(
+    tmp_path: Path,
+):
+    _fixture_value, store, project_root, results_root, descriptor, manifest = _bundle(
+        tmp_path, name="failed-before", operation_id="vs03-failed-before"
+    )
+    published = Publisher(store, project_root, results_root).publish_target_replay(
+        manifest, descriptor, IMPORT_WORKSPACE_ID
+    )
+    root_path = next((store.root / "roots" / "test-run").glob("*.json"))
+    root = published.root.to_dict()
+    root["metadata"] = {**root["metadata"], "state": "passed"}
+    root_path.write_bytes(canonical_json_bytes(root))
+    before_store = _tree_bytes(store.root)
+
+    with pytest.raises(EvidenceValidationError) as failure:
+        Repository(store).load(manifest.run_id)
+
+    assert failure.value.code == "EVIDENCE_CORRUPT"
+    assert failure.value.message == "stored root metadata contradicts the Target replay record"
+    assert _tree_bytes(store.root) == before_store
 
 
 def test_target_replay_retry_is_idempotent_and_conflict_is_stable(tmp_path: Path):

@@ -708,6 +708,59 @@ def test_truncated_owner_record_is_never_reclaimed_or_overwritten(tmp_path: Path
     assert path.read_bytes() == b'{"schemaVersion":1'
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("consumedTicketSha256", "not-a-ticket-digest"),
+        ("consumedProbeId", "probe/unsafe"),
+        ("consumedWorkspaceId", "workspace unsafe"),
+        ("consumedSessionId", "session unsafe"),
+    ],
+)
+def test_invalid_persisted_handoff_tombstone_is_refused_without_reclaim(
+    tmp_path: Path, field: str, value: str
+):
+    """A nested recovery record cannot be used to mint a new lease."""
+    successor = manager(
+        tmp_path / "data",
+        SUCCESSOR,
+        inspected={OWNER.pid: None},
+        health=False,
+    )
+    record = stale_record()
+    record["consumedTicketSha256"] = "ab" * 32
+    record[field] = value
+    path = write_stale_record(successor, record)
+    before = path.read_bytes()
+
+    with pytest.raises(ProbeLeaseError) as failure:
+        acquire(successor, workspace="workspace-b")
+
+    assert failure.value.code == "PROBE_REGISTRY_UNAVAILABLE"
+    assert failure.value.message == "Consumed probe handoff recovery evidence is invalid"
+    assert path.read_bytes() == before
+
+
+def test_oversized_persisted_owner_record_is_refused_without_reclaim(tmp_path: Path):
+    successor = manager(
+        tmp_path / "data",
+        SUCCESSOR,
+        inspected={OWNER.pid: None},
+        health=False,
+    )
+    path = successor.record_path("probe-123")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    raw = b'{"state":"active","padding":"' + (b"x" * 16_384) + b'"}'
+    path.write_bytes(raw)
+
+    with pytest.raises(ProbeLeaseError) as failure:
+        acquire(successor, workspace="workspace-b")
+
+    assert failure.value.code == "PROBE_REGISTRY_UNAVAILABLE"
+    assert failure.value.message == "Probe registry record is invalid"
+    assert path.read_bytes() == raw
+
+
 def test_heartbeat_updates_only_the_current_lease(tmp_path: Path):
     first_manager = manager(tmp_path / "data", OWNER, now=NOW)
     lease = acquire(first_manager)

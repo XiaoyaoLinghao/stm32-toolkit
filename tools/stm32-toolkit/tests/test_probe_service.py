@@ -1397,6 +1397,44 @@ def test_debug_handoff_metadata_reads_the_committed_attachment_identity(
     run(scenario())
 
 
+def test_debug_handoff_metadata_rejects_provider_identity_and_keeps_service_usable(
+    tmp_path: Path,
+) -> None:
+    """A provider cannot relabel the committed attachment during handoff."""
+    async def scenario() -> None:
+        backend = fake_backend()
+        service = make_service(tmp_path, level=OperationLevel.OBSERVE, backend=backend)
+        endpoint = await service.start()
+        client = ProbeClient(endpoint)
+
+        def mismatched_metadata(*, deadline: float | None = None) -> dict[str, str]:
+            original = FakeProbeBackend.debug_handoff_metadata(
+                backend, deadline=deadline
+            )
+            return {
+                "probeId": original.probe_id,
+                "target": "STM32F407VGTx",
+                "boardId": original.board_id,
+            }
+
+        backend.debug_handoff_metadata = mismatched_metadata  # type: ignore[method-assign]
+        try:
+            await client.attach("probe-a", "STM32F429ZITx")
+            with pytest.raises(ProbeBackendError) as failure:
+                await service.debug_handoff_metadata("probe-a", "STM32F429ZITx")
+
+            assert failure.value.code == "PROBE_IDENTITY_MISMATCH"
+            assert failure.value.message == "Connected target identity does not match"
+            assert service._observation_attachment is None
+            assert service._metadata_cleanup_unresolved is False
+            assert await client.list_probes()
+        finally:
+            await client.close()
+            await service.stop()
+
+    run(scenario())
+
+
 @pytest.mark.parametrize(
     ("changed_probe", "changed_target"),
     (
