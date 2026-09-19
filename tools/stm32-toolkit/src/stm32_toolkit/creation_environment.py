@@ -127,10 +127,16 @@ def _default_repository() -> Path:
 def _package_metadata(package: Path) -> tuple[str, str]:
     name = package.name
     version = ""
+    metadata_parsed = False
     metadata_candidates = (package / "package.xml", package / ".pack", package / "package.json")
     for metadata in metadata_candidates:
         try:
             info = os.lstat(metadata)
+        except FileNotFoundError:
+            continue
+        except OSError:
+            raise CreationEnvironmentError("CUBEMX_PACKAGE_INVALID", "firmware package metadata is invalid") from None
+        try:
             if not stat.S_ISREG(info.st_mode) or bool(getattr(info, "st_file_attributes", 0) & _REPARSE):
                 continue
             if info.st_size > _MAX_PACKAGE_METADATA_BYTES:
@@ -145,11 +151,14 @@ def _package_metadata(package: Path) -> tuple[str, str]:
                 root = ET.fromstring(data.decode("utf-8"))
                 name = str(root.attrib.get("name", name))
                 version = str(root.attrib.get("version", ""))
+            metadata_parsed = True
             break
         except CreationEnvironmentError:
             raise
         except (OSError, UnicodeError, ET.ParseError, ValueError, TypeError):
             raise CreationEnvironmentError("CUBEMX_PACKAGE_INVALID", "firmware package metadata is invalid") from None
+    if not metadata_parsed:
+        raise CreationEnvironmentError("CUBEMX_PACKAGE_INVALID", "firmware package metadata is unavailable")
     match = _PACKAGE_RE.match(package.name)
     if match and not version:
         version = match.group(2)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -95,6 +96,143 @@ def test_sibling_java_is_bound_to_cube_mx_install(tmp_path: Path):
     )
     assert env.java_executable == java.resolve()
     assert env.cubemx_executable == cubemx.resolve()
+
+
+def test_missing_cube_mx_is_typed_before_repository_fallback(tmp_path: Path):
+    install = tmp_path / "CubeMX"
+    install.mkdir()
+    cubemx = install / "STM32CubeMX.exe"
+    cubemx.write_bytes(b"cube")
+    support = replace(_support(tmp_path, cubemx), cubemx=None)
+
+    with pytest.raises(CreationEnvironmentError) as error:
+        discover_creation_environment(
+            support,
+            CreationRequest.from_mcu("STM32F429ZITx", "generated", framework="hal", language="c"),
+            repository=tmp_path / "missing-repository",
+        )
+
+    assert error.value.code == "CUBEMX_MISSING"
+
+
+def test_missing_sibling_java_is_typed_before_repository_inspection(tmp_path: Path):
+    install = tmp_path / "CubeMX"
+    install.mkdir()
+    cubemx = install / "STM32CubeMX.exe"
+    cubemx.write_bytes(b"cube")
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    _package(repository)
+    support = _support(tmp_path, cubemx, seed_descriptor=False)
+    (install / "jre" / "bin" / "java.exe").unlink()
+
+    with pytest.raises(CreationEnvironmentError) as error:
+        discover_creation_environment(
+            support,
+            CreationRequest.from_mcu("STM32F429ZITx", "generated", framework="hal", language="c"),
+            repository=repository,
+        )
+
+    assert error.value.code == "CUBEMX_JAVA_MISSING"
+
+
+def test_ioc_family_selection_is_bound_to_project_source_bytes(tmp_path: Path):
+    install = tmp_path / "CubeMX"
+    (install / "jre" / "bin").mkdir(parents=True)
+    cubemx = install / "STM32CubeMX.exe"
+    cubemx.write_bytes(b"cube")
+    (install / "jre" / "bin" / "java.exe").write_bytes(b"java")
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    _package(repository)
+    g4_package = repository / "STM32Cube_FW_G4_V1.0.0"
+    g4_package.mkdir()
+    (g4_package / "package.xml").write_text(
+        '<package name="STM32Cube_FW_G4" version="1.0.0"/>',
+        encoding="utf-8",
+    )
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    (project_root / "input.ioc").write_text("Mcu.Name=STM32F429ZITx\n", encoding="utf-8")
+
+    environment = discover_creation_environment(
+        _support(tmp_path, cubemx, seed_descriptor=False),
+        CreationRequest.from_ioc("input.ioc", "generated", framework="hal", language="c"),
+        repository=repository,
+        project_root=project_root,
+    )
+
+    assert environment.package.name == "STM32Cube_FW_F4_V1.0.0"
+    assert environment.package_name == "STM32Cube_FW_F4"
+
+
+def test_package_json_metadata_is_an_accepted_environment_identity_source(tmp_path: Path):
+    install = tmp_path / "CubeMX"
+    (install / "jre" / "bin").mkdir(parents=True)
+    cubemx = install / "STM32CubeMX.exe"
+    cubemx.write_bytes(b"cube")
+    (install / "jre" / "bin" / "java.exe").write_bytes(b"java")
+    repository = tmp_path / "repository"
+    package = repository / "STM32Cube_FW_F4_V1.2.3"
+    package.mkdir(parents=True)
+    (package / "package.json").write_text(
+        '{"name":"STM32Cube_FW_F4","version":"1.2.3"}',
+        encoding="utf-8",
+    )
+
+    environment = discover_creation_environment(
+        _support(tmp_path, cubemx),
+        CreationRequest.from_mcu("STM32F429ZITx", "generated", framework="hal", language="c"),
+        repository=repository,
+    )
+
+    assert environment.package_name == "STM32Cube_FW_F4"
+    assert environment.package_version == "1.2.3"
+
+
+def test_package_without_metadata_is_invalid_even_when_directory_name_has_version(tmp_path: Path):
+    install = tmp_path / "CubeMX"
+    (install / "jre" / "bin").mkdir(parents=True)
+    cubemx = install / "STM32CubeMX.exe"
+    cubemx.write_bytes(b"cube")
+    (install / "jre" / "bin" / "java.exe").write_bytes(b"java")
+    repository = tmp_path / "repository"
+    package = repository / "STM32Cube_FW_F4_V1.2.3"
+    package.mkdir(parents=True)
+
+    with pytest.raises(CreationEnvironmentError) as error:
+        discover_creation_environment(
+            _support(tmp_path, cubemx),
+            CreationRequest.from_mcu("STM32F429ZITx", "generated", framework="hal", language="c"),
+            repository=repository,
+        )
+
+    assert error.value.code == "CUBEMX_PACKAGE_INVALID"
+
+
+def test_malformed_priority_metadata_does_not_fall_through_to_json(tmp_path: Path):
+    install = tmp_path / "CubeMX"
+    (install / "jre" / "bin").mkdir(parents=True)
+    cubemx = install / "STM32CubeMX.exe"
+    cubemx.write_bytes(b"cube")
+    (install / "jre" / "bin" / "java.exe").write_bytes(b"java")
+    repository = tmp_path / "repository"
+    package = repository / "STM32Cube_FW_F4_V1.2.3"
+    package.mkdir(parents=True)
+    (package / "package.xml").write_text("<package", encoding="utf-8")
+    (package / "package.json").write_text(
+        '{"name":"STM32Cube_FW_F4","version":"1.2.3"}',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(CreationEnvironmentError) as error:
+        discover_creation_environment(
+            _support(tmp_path, cubemx),
+            CreationRequest.from_mcu("STM32F429ZITx", "generated", framework="hal", language="c"),
+            repository=repository,
+        )
+
+    assert error.value.code == "CUBEMX_PACKAGE_INVALID"
 
 
 def test_missing_repository_is_typed_and_does_not_fallback(tmp_path: Path):

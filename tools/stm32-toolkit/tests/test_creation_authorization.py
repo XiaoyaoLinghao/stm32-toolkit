@@ -90,6 +90,36 @@ def test_ioc_source_digest_survives_authorization_round_trip(tmp_path: Path):
     assert consumed.request.source.sha256 == "d" * 64
 
 
+@pytest.mark.parametrize(
+    "creation_request",
+    [
+        CreationRequest.from_board("NUCLEO-F429ZI", "generated", framework="hal", language="c"),
+        CreationRequest.from_ioc("input.ioc", "generated", framework="hal", language="c"),
+    ],
+)
+def test_public_request_variants_round_trip_without_identity_loss(
+    tmp_path: Path, creation_request: CreationRequest
+):
+    store = CreationAuthorizationStore(tmp_path, now=lambda: NOW, nonce_factory=lambda: "nonce")
+    prepared = store.prepare(
+        CreationPrepareRequest(
+            creation_request,
+            tmp_path,
+            "a" * 64,
+            "b" * 64,
+            "c" * 64,
+            "2026-08-23T13:00:00Z",
+        )
+    )
+
+    consumed = store.consume(prepared.authorization_digest, authorized=True)
+
+    assert consumed.request == creation_request
+    assert consumed.request.source.kind == creation_request.source.kind
+    assert consumed.request.source.value == creation_request.source.value
+    assert consumed.request.source.sha256 == creation_request.source.sha256
+
+
 def test_replay_is_rejected_after_consumption(tmp_path: Path):
     store = CreationAuthorizationStore(tmp_path, now=lambda: NOW, nonce_factory=lambda: "nonce")
     result = _prepare(store)
