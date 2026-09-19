@@ -1976,10 +1976,17 @@ def test_invalid_query_and_workspace_mismatch_fail_closed(tmp_path: Path) -> Non
         store.close()
 
 
-@pytest.mark.parametrize("corruption", ["accounting", "candidate"])
+@pytest.mark.parametrize(
+    ("corruption", "expected_message"),
+    [
+        ("accounting", "monitor storage accounting is invalid"),
+        ("candidate", "monitor history is corrupt"),
+    ],
+)
 def test_public_retention_rejects_persisted_accounting_corruption_without_deletion(
     tmp_path: Path,
     corruption: str,
+    expected_message: str,
 ) -> None:
     paths = _paths(tmp_path)
     store = HistoryStore(paths)
@@ -2003,7 +2010,7 @@ def test_public_retention_rejects_persisted_accounting_corruption_without_deleti
         )
         assert not result.ok
         assert result.code == "MONITOR_STORAGE_CORRUPT"
-        assert result.message == "monitor history is corrupt"
+        assert result.message == expected_message
 
         if corruption == "candidate":
             page = store.query_history(HistoryQuery("monitor-1", 0, 2_000))
