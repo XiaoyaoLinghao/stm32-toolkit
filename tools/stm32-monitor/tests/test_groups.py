@@ -37,6 +37,62 @@ def _create(store: GroupStore, name: str = "Core"):
     )
 
 
+def _storage_snapshot(paths: WorkspacePaths) -> tuple[object, ...]:
+    database = paths.monitor_root / "monitor.sqlite3"
+    files: list[tuple[object, ...]] = []
+    for suffix in ("", "-wal", "-shm"):
+        path = database.with_name(database.name + suffix)
+        try:
+            stat = path.stat()
+        except FileNotFoundError:
+            files.append((suffix, False))
+        else:
+            files.append(
+                (
+                    suffix,
+                    True,
+                    stat.st_dev,
+                    stat.st_ino,
+                    stat.st_size,
+                    path.read_bytes() if suffix == "" else None,
+                )
+            )
+
+    with sqlite3.connect(database.as_uri() + "?mode=ro", uri=True) as connection:
+        schema = tuple(
+            tuple(row)
+            for row in connection.execute(
+                "SELECT type, name, tbl_name, sql FROM sqlite_master "
+                "WHERE sql IS NOT NULL ORDER BY type, name"
+            ).fetchall()
+        )
+        metadata = tuple(
+            tuple(row)
+            for row in connection.execute(
+                "SELECT singleton, workspace_id, schema_version "
+                "FROM monitor_metadata ORDER BY singleton"
+            ).fetchall()
+        )
+        groups = tuple(
+            tuple(row)
+            for row in connection.execute(
+                "SELECT group_id, name, name_key, description, interval_ms, "
+                "revision, created_at_utc, updated_at_utc FROM watch_groups "
+                "ORDER BY group_id"
+            ).fetchall()
+        )
+        items = tuple(
+            tuple(row)
+            for row in connection.execute(
+                "SELECT group_id, ordinal, kind, selector FROM group_items "
+                "ORDER BY group_id, ordinal"
+            ).fetchall()
+        )
+        user_version = connection.execute("PRAGMA user_version").fetchone()[0]
+        journal_mode = connection.execute("PRAGMA journal_mode").fetchone()[0]
+    return tuple(files), schema, metadata, groups, items, user_version, journal_mode
+
+
 def test_fresh_workspace_lists_zero_groups_without_creating_storage(tmp_path: Path) -> None:
     paths = _paths(tmp_path)
     store = GroupStore(paths)
@@ -607,3 +663,173 @@ def test_semantically_invalid_group_rows_map_to_storage_corrupt(tmp_path: Path) 
         assert not listed.ok and listed.code == "MONITOR_STORAGE_CORRUPT"
     finally:
         corrupt.close()
+
+
+def test_groups_empty_cursor_is_rejected_without_storage_mutation(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    store = GroupStore(paths)
+    try:
+        assert _create(store).ok
+        before = _storage_snapshot(paths)
+
+        rejected = store.list_group_page(cursor="", limit=2)
+        assert not rejected.ok
+        assert rejected.code == "MONITOR_REQUEST_INVALID"
+        assert rejected.message == "group query is invalid"
+        assert _storage_snapshot(paths) == before
+    finally:
+        store.close()
+
+
+def test_groups_first_oversized_persisted_group_is_rejected_read_only(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    initial = GroupStore(paths)
+    try:
+        created = _create(initial)
+        assert created.ok
+        group_id = created.data.group_id
+    finally:
+        initial.close()
+
+    database = paths.monitor_root / "monitor.sqlite3"
+    with sqlite3.connect(database) as connection:
+        connection.executemany(
+            "INSERT INTO group_items(group_id, ordinal, kind, selector) VALUES (?, ?, ?, ?)",
+            (
+                (str(group_id), ordinal, "variable", f"v{ordinal:04d}" + "x" * 507)
+                for ordinal in range(2, 2_048)
+            ),
+        )
+        connection.commit()
+
+    reopened = GroupStore(paths)
+    try:
+        before = _storage_snapshot(paths)
+        rejected = reopened.list_group_page(limit=1)
+        assert not rejected.ok
+        assert rejected.code == "MONITOR_GROUP_LIMIT_EXCEEDED"
+        assert rejected.message == "watch group exceeds the response limit"
+        assert _storage_snapshot(paths) == before
+    finally:
+        reopened.close()
+
+
+def test_groups_total_item_limit_rolls_back_after_legal_full_graph(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    store = GroupStore(paths)
+    selectors = tuple(
+        WatchItem.variable(f"v{index:04d}" + "x" * 507)
+        for index in range(256)
+    )
+    try:
+        for index in range(16):
+            created = store.create_group(
+                f"G{index:02d}",
+                "d" * 1024,
+                250,
+                selectors,
+                authorized=True,
+            )
+            assert created.ok
+
+        before = _storage_snapshot(paths)
+        rejected = store.create_group(
+            "overflow",
+            "",
+            250,
+            (WatchItem.variable("overflow"),),
+            authorized=True,
+        )
+        assert not rejected.ok
+        assert rejected.code == "MONITOR_GROUP_LIMIT_EXCEEDED"
+        assert rejected.message == "workspace watch item limit was exceeded"
+        assert _storage_snapshot(paths) == before
+    finally:
+        store.close()
+
+
+def test_groups_import_limit_dispatch_rolls_back_without_rows(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    store = GroupStore(paths)
+    try:
+        seeded = _create(store, "Seed")
+        assert seeded.ok
+        deleted = store.delete_group(
+            seeded.data.group_id,
+            expected_revision=1,
+            authorized=True,
+        )
+        assert deleted.ok
+        assert store.list_groups().ok and store.list_groups().data == ()
+
+        document = json.dumps(
+            {
+                "schemaVersion": 1,
+                "groups": [
+                    {
+                        "name": f"Import-{index:03d}",
+                        "description": "",
+                        "intervalMs": 250,
+                        "items": [],
+                    }
+                    for index in range(129)
+                ],
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        before = _storage_snapshot(paths)
+
+        rejected = store.import_groups(document, authorized=True)
+        assert not rejected.ok
+        assert rejected.code == "MONITOR_GROUP_LIMIT_EXCEEDED"
+        assert rejected.message == "watch group limit was exceeded"
+        assert _storage_snapshot(paths) == before
+    finally:
+        store.close()
+
+
+def test_groups_import_workspace_mismatch_preserves_persisted_state(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    store = GroupStore(paths)
+    try:
+        assert _create(store).ok
+    finally:
+        store.close()
+
+    foreign_workspace = "d" * 64
+    if foreign_workspace == paths.workspace_id:
+        foreign_workspace = "e" * 64
+    database = paths.monitor_root / "monitor.sqlite3"
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "UPDATE monitor_metadata SET workspace_id = ? WHERE singleton = 1",
+            (foreign_workspace,),
+        )
+        connection.commit()
+
+    document = json.dumps(
+        {
+            "schemaVersion": 1,
+            "groups": [
+                {
+                    "name": "Imported",
+                    "description": "",
+                    "intervalMs": 250,
+                    "items": [],
+                }
+            ],
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    reopened = GroupStore(paths)
+    try:
+        before = _storage_snapshot(paths)
+        rejected = reopened.import_groups(document, authorized=True)
+        assert not rejected.ok
+        assert rejected.code == "MONITOR_WORKSPACE_MISMATCH"
+        assert rejected.message == "monitor storage belongs to another workspace"
+        assert _storage_snapshot(paths) == before
+    finally:
+        reopened.close()
