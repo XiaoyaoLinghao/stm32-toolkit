@@ -2246,7 +2246,7 @@ def test_apply_recursively_serializes_public_configuration_failure_payload(tmp_p
     assert result.operation == "project-regenerate-apply"
     assert result.code == "REGENERATION_CONFIGURATION_FAILED"
     assert result.message == "project configuration failed"
-    assert result.details == {
+    assert result.to_dict()["details"] == {
         "result": {
             "items": [["tuple", 7], {"leaf": None}],
             "scalar": "value",
