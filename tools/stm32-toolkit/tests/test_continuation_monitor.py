@@ -1589,12 +1589,12 @@ def _complete_continuation_verification(pair: SimpleNamespace, baseline: SimpleN
             operation_id="continuation-busy-complete",
             diagnostic_session_id=pair.diagnostic_session_id,
             expected_revision=revision + 3,
-            executed_operation_ids=(
+            executed_operation_ids=[
                 "fixture-before",
                 "fixture-after",
                 "continuation-compare",
                 "continuation-bundle",
-            ),
+            ],
         )
     )
     verification = completed["fix_verification"]
