@@ -378,6 +378,59 @@ def test_native_request_rejects_legacy_references_and_invalid_contract_fields(
     assert error.value.code == ANALYSIS_REQUEST_INVALID
 
 
+def test_request_public_parser_and_constructor_refuse_invalid_schema_reference_and_skew(
+    tmp_path: Path,
+) -> None:
+    _, _, _, _, _, before_ref, after_ref = _case(tmp_path)
+    request = _request(before_ref, after_ref)
+    assert AnalysisRequest.from_value(request) is request
+
+    invalid_schema = request.to_dict()
+    invalid_schema["schema"] = "stm32-monitor-analysis-request/9"
+    with pytest.raises(AnalysisError) as schema_error:
+        AnalysisRequest.from_value(invalid_schema)
+    assert schema_error.value.code == ANALYSIS_REQUEST_INVALID
+
+    malformed_reference = request.to_dict()
+    malformed_reference["before_run"] = {}
+    with pytest.raises(AnalysisError) as reference_error:
+        AnalysisRequest.from_value(malformed_reference)
+    assert reference_error.value.code == ANALYSIS_REQUEST_INVALID
+
+    native_before, _ = _native_physical_source(
+        role="failed-before",
+        operation_id="11111111-1111-4111-8111-111111111111",
+        group_id="22222222-2222-4222-8222-222222222222",
+        values=(10, 20),
+    )
+    native_after, _ = _native_physical_source(
+        role="fixed-after",
+        operation_id="33333333-3333-4333-8333-333333333333",
+        group_id="44444444-4444-4444-8444-444444444444",
+        values=(11, 25),
+    )
+    native = AnalysisRequest(
+        schema="stm32-monitor-analysis-request/2",
+        before_run=native_before,
+        after_run=native_after,
+        selector_kind="register",
+        selector="r0",
+        alignment="bounded-run-relative",
+        minimum_valid_pairs=2,
+        scalar_policy="native-uint-register/1",
+        max_pairing_skew_ns=1,
+    )
+    with pytest.raises(AnalysisError) as constructor_error:
+        replace(native, max_pairing_skew_ns=True)
+    assert constructor_error.value.code == ANALYSIS_REQUEST_INVALID
+
+    invalid_skew = native.to_dict()
+    invalid_skew["max_pairing_skew_ns"] = True
+    with pytest.raises(AnalysisError) as parser_error:
+        AnalysisRequest.from_value(invalid_skew)
+    assert parser_error.value.code == ANALYSIS_REQUEST_INVALID
+
+
 def test_legacy_request_and_changed_lineage_require_public_bindings(tmp_path: Path) -> None:
     _, _, _, _, _, before_ref, after_ref = _case(tmp_path)
 
@@ -975,6 +1028,79 @@ def test_computation_rejects_impossible_counts_statistics_and_deltas(tmp_path: P
     _assert_invalid_computation(bad_unchanged)
 
 
+def _assert_invalid_computation_with_stable_error(payload: dict[str, object]) -> None:
+    with pytest.raises(AnalysisError) as constructor_error:
+        AnalysisComputation(**payload)
+    assert constructor_error.value.code == ANALYSIS_REQUEST_INVALID
+    with pytest.raises(AnalysisError) as parser_error:
+        AnalysisComputation.from_value(payload)
+    assert parser_error.value.code == ANALYSIS_REQUEST_INVALID
+
+
+def test_computation_public_state_and_scalar_boundaries_fail_closed(tmp_path: Path) -> None:
+    _, _, _, before, after, before_ref, after_ref = _case(tmp_path)
+    changed = analyze_monitor_windows(_request(before_ref, after_ref), before, after)
+    assert AnalysisComputation.from_value(changed) is changed
+
+    invalid_cases: tuple[tuple[str, dict[str, object]], ...] = (
+        ("schema", {"schema": "stm32-monitor-analysis-computation/9"}),
+        ("state", {"quality": "VALID", "conclusion": "INCONCLUSIVE"}),
+        ("reason", {"reason_code": "UNKNOWN"}),
+        (
+            "pair-count",
+            {"aligned_position_count": 1, "aligned_pair_count": 2, "excluded_position_count": 0},
+        ),
+        ("exclusion-count", {"excluded_position_count": 1}),
+        ("changed-type", {"changed": 1}),
+        (
+            "invalid-state",
+            {"quality": "INVALID", "conclusion": "COMPLETED", "reason_code": "INSUFFICIENT_VALID_PAIRS"},
+        ),
+        (
+            "inconclusive-statistics",
+            {"quality": "INVALID", "conclusion": "INCONCLUSIVE", "reason_code": "INSUFFICIENT_VALID_PAIRS"},
+        ),
+        ("completed-reason", {"reason_code": "VALUES_UNCHANGED"}),
+        ("missing-statistic", {"before_min": None}),
+        ("nonfinite-statistic", {"before_min": float("inf")}),
+        ("non-numeric-statistic", {"before_min": "not numeric"}),
+        (
+            "finite-overflow",
+            {
+                "before_first": -1.7976931348623157e308,
+                "before_last": -1.7976931348623157e308,
+                "before_min": -1.7976931348623157e308,
+                "before_max": -1.7976931348623157e308,
+                "after_first": 1.7976931348623157e308,
+                "after_last": 1.7976931348623157e308,
+                "after_min": 1.7976931348623157e308,
+                "after_max": 1.7976931348623157e308,
+                "delta_first": 0.0,
+                "delta_last": 0.0,
+                "changed": True,
+            },
+        ),
+        (
+            "valid-with-exclusions",
+            {
+                "aligned_position_count": 3,
+                "aligned_pair_count": 2,
+                "excluded_position_count": 1,
+                "quality": "VALID",
+                "reason_code": "VALUES_CHANGED_WITH_EXCLUSIONS",
+            },
+        ),
+        ("degraded-without-exclusions", {"quality": "DEGRADED", "reason_code": "VALUES_CHANGED"}),
+    )
+    for label, updates in invalid_cases:
+        payload = changed.to_dict()
+        payload.update(updates)
+        try:
+            _assert_invalid_computation_with_stable_error(payload)
+        except AssertionError as error:
+            raise AssertionError(f"unexpectedly accepted computation case: {label}") from error
+
+
 def test_invalid_request_ref_batch_digest_identity_and_limits_fail_closed(tmp_path: Path) -> None:
     paths, _, after_document, before, after, before_ref, after_ref = _case(tmp_path)
     request = _request(before_ref, after_ref)
@@ -1274,6 +1400,109 @@ def test_result_requires_request_digest_and_exact_lineage_binding(tmp_path: Path
     tampered["analysis_id"] = "0" * 64
     with pytest.raises(AnalysisError):
         AnalysisResult.from_value(tampered)
+
+
+@pytest.mark.parametrize("field", ["request", "computation", "lineage"])
+def test_result_new_rejects_non_analysis_model_arguments(tmp_path: Path, field: str) -> None:
+    request, computation, lineage, _ = _authoritative_case(tmp_path)
+    values: dict[str, object] = {
+        "request": request,
+        "computation": computation,
+        "lineage": lineage,
+    }
+    values[field] = object()
+    with pytest.raises(AnalysisError) as error:
+        AnalysisResult.new(**values)
+    assert error.value.code == ANALYSIS_REQUEST_INVALID
+
+
+def test_result_constructor_rejects_invalid_schema_and_lineage_type(tmp_path: Path) -> None:
+    request, _, _, result = _authoritative_case(tmp_path)
+    with pytest.raises(AnalysisError) as schema_error:
+        replace(result, schema="stm32-monitor-analysis/9")
+    assert schema_error.value.code == ANALYSIS_REQUEST_INVALID
+
+    with pytest.raises(AnalysisError) as lineage_error:
+        replace(result, identity=object())
+    assert lineage_error.value.code == ANALYSIS_REQUEST_INVALID
+    assert result.schema == "stm32-monitor-analysis/1"
+    assert result.request_digest == request.request_digest
+
+
+def test_native_persisted_result_rejects_completed_and_inconclusive_threshold_bindings() -> None:
+    before_ref, before = _native_physical_source(
+        role="failed-before",
+        operation_id="11111111-1111-4111-8111-111111111111",
+        group_id="22222222-2222-4222-8222-222222222222",
+        values=(10, 20),
+    )
+    after_ref, after = _native_physical_source(
+        role="fixed-after",
+        operation_id="33333333-3333-4333-8333-333333333333",
+        group_id="44444444-4444-4444-8444-444444444444",
+        values=(11, 25),
+    )
+    request = AnalysisRequest(
+        schema="stm32-monitor-analysis-request/2",
+        before_run=before_ref,
+        after_run=after_ref,
+        selector_kind="register",
+        selector="r0",
+        alignment="bounded-run-relative",
+        minimum_valid_pairs=2,
+        scalar_policy="native-uint-register/1",
+        max_pairing_skew_ns=1,
+    )
+    computation = analyze_monitor_windows(request, before, after)
+    lineage = AnalysisLineage.new(
+        before_run=before_ref,
+        after_run=after_ref,
+        source_change_declaration_id=None,
+    )
+    result = AnalysisResult.new(request=request, computation=computation, lineage=lineage)
+    assert AnalysisResult.from_value(result) is result
+
+    below_threshold = result.to_dict()
+    below_request = cast(dict[str, object], below_threshold["request"])
+    below_request["minimum_valid_pairs"] = 3
+    below_threshold["request_digest"] = sha256(
+        canonical_replay_json_bytes(below_request)
+    ).hexdigest()
+    unsigned = dict(below_threshold)
+    unsigned.pop("analysis_id")
+    below_threshold["analysis_id"] = sha256(
+        canonical_replay_json_bytes(unsigned)
+    ).hexdigest()
+    with pytest.raises(AnalysisError) as completed_error:
+        AnalysisResult.from_value(below_threshold)
+    assert completed_error.value.code == ANALYSIS_REQUEST_INVALID
+
+    inconclusive = result.to_dict()
+    inconclusive.update(
+        quality="INVALID",
+        conclusion="INCONCLUSIVE",
+        reason_code="INSUFFICIENT_VALID_PAIRS",
+        before_first=None,
+        before_last=None,
+        before_min=None,
+        before_max=None,
+        after_first=None,
+        after_last=None,
+        after_min=None,
+        after_max=None,
+        delta_first=None,
+        delta_last=None,
+        changed=None,
+    )
+    unsigned = dict(inconclusive)
+    unsigned.pop("analysis_id")
+    inconclusive["analysis_id"] = sha256(
+        canonical_replay_json_bytes(unsigned)
+    ).hexdigest()
+    with pytest.raises(AnalysisError) as inconclusive_error:
+        AnalysisResult.from_value(inconclusive)
+    assert inconclusive_error.value.code == ANALYSIS_REQUEST_INVALID
+    assert result.conclusion == "COMPLETED"
 
 
 def test_persisted_lineage_rejects_schema_and_v1_continuation_bindings(
