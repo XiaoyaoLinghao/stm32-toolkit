@@ -146,9 +146,8 @@ unchanged.
 Run1 evidence references:
 
 - `e\core95\target\run1\junit.xml`
-- `e\core95\target\run1\coverage.json`
-- `e\core95\target\run1\raw-coverage\.coverage`
-- `e\core95\target\run1\stdout.txt`, `stderr.txt`, `exit-code.txt`, and `process.json`
+- `e\core95\target\run1\stdout.txt`, `stderr.txt`, `exit-code.txt`, `process.json`, and `primary-result-review.json`
+- The launcher recorded `coverage.json` and `raw-coverage\.coverage` as intended output paths, but neither was produced before the first failure; no coverage claim is made for run1.
 
 Prepared serial run2 launcher, not executed:
 
