@@ -12,7 +12,11 @@ from uuid import UUID
 import pytest
 
 import stm32_toolkit.testing_workflows as workflows
-from stm32_toolkit.testing.replay import canonical_replay_json_bytes, calculate_replay_id
+from stm32_toolkit.testing.replay import (
+    canonical_replay_json_bytes,
+    calculate_replay_id,
+    load_target_replay_fixture,
+)
 from stm32_toolkit.testing.target import TargetFrameDecoder, encode_frame
 from test_build_runner import prepare_project
 
@@ -74,7 +78,7 @@ def _json_containers(value: object) -> object:
     return value
 
 
-def _contradictory_inventory_fixture(tmp_path: Path) -> tuple[Path, Path]:
+def _contradictory_inventory_fixture(tmp_path: Path) -> tuple[Path, Path, bytes]:
     descriptor = json.loads(
         (FIXTURES / "failed-before.json").read_text(encoding="utf-8")
     )
@@ -91,12 +95,26 @@ def _contradictory_inventory_fixture(tmp_path: Path) -> tuple[Path, Path]:
     assert isinstance(identity, dict)
     identity["git_commit"] = "c" * 40
     inventory["identity"] = identity
-    changed_stream = encode_frame(
+    changed_first = encode_frame(
         first.kind,
         first.sequence,
         inventory,
         version=first.version,
-    ) + b"".join(frame.raw_bytes for frame in frames[1:])
+    )
+    changed_nonterminal = changed_first + b"".join(
+        frame.raw_bytes for frame in frames[1:-1]
+    )
+    terminal = frames[-1]
+    terminal_payload = _json_containers(terminal.payload)
+    assert isinstance(terminal_payload, dict)
+    terminal_payload["event_stream_digest"] = sha256(changed_nonterminal).hexdigest()
+    changed_terminal = encode_frame(
+        terminal.kind,
+        terminal.sequence,
+        terminal_payload,
+        version=terminal.version,
+    )
+    changed_stream = changed_nonterminal + changed_terminal
     descriptor["stream"]["size_bytes"] = len(changed_stream)
     descriptor["stream"]["sha256"] = sha256(changed_stream).hexdigest()
     descriptor["replay_id"] = calculate_replay_id(descriptor)
@@ -104,7 +122,7 @@ def _contradictory_inventory_fixture(tmp_path: Path) -> tuple[Path, Path]:
     descriptor_path.write_bytes(canonical_replay_json_bytes(descriptor))
     stream_path = tmp_path / "contradictory.hex"
     stream_path.write_text(changed_stream.hex(), encoding="ascii")
-    return descriptor_path, stream_path
+    return descriptor_path, stream_path, changed_stream
 
 
 def test_target_replay_workflow_exposes_the_public_entrypoint():
@@ -222,7 +240,9 @@ def test_target_replay_rejects_public_inventory_identity_contradiction(
 ) -> None:
     root = tmp_path_factory.mktemp("r")
     context = _real_context(root, session_id="replay-identity")
-    descriptor_path, stream_path = _contradictory_inventory_fixture(root)
+    descriptor_path, stream_path, changed_stream = _contradictory_inventory_fixture(root)
+    loaded = load_target_replay_fixture(descriptor_path, stream_path)
+    assert loaded.stream_bytes == changed_stream
     result = workflows.target_replay_run(
         context,
         "vs03-failed-before",

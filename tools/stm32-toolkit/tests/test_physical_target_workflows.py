@@ -473,24 +473,29 @@ def test_target_prepare_maps_public_transport_profiles_without_provider(
     binding = runner.load_prepared(
         prepared.data["authorized_action_digest"]
     ).binding
-    assert set(prepared.data) == {
+    prepared_wire = prepared.to_dict()["data"]
+    assert set(prepared_wire) == {
         "authorized_action_digest",
         "expires_at_utc",
         "inventory_digest",
         "case_ids",
         "probe_serial_hash",
     }
-    assert prepared.data["inventory_digest"] == binding["inventory_digest"]
-    assert prepared.data["case_ids"] == list(CASES)
-    assert prepared.data["probe_serial_hash"] == sha256(
+    assert prepared_wire["authorized_action_digest"] == prepared.data["authorized_action_digest"]
+    assert prepared_wire["inventory_digest"] == binding["inventory_digest"]
+    assert prepared_wire["case_ids"] == list(CASES)
+    assert prepared_wire["probe_serial_hash"] == sha256(
         RAW_PROBE.encode("utf-8")
     ).hexdigest()
-    assert prepared.data["expires_at_utc"] == binding["expires_at_utc"]
+    assert prepared_wire["expires_at_utc"] == binding["expires_at_utc"]
     assert binding["transport"] == support_key
     assert binding["transport_config"] == transport
     assert binding["support_profile"] == expected_profile
     assert binding["recovery_under_reset"] is True
     assert backend_calls == []
+    assert not (workspace.session_root / "test-results").exists()
+    assert not (workspace.session_root / "target-replay-input").exists()
+    assert not (workspace.workspace_root / "evidence").exists()
 
 
 def test_target_execute_rejects_expired_public_authorization_before_provider(
@@ -554,6 +559,9 @@ def test_target_execute_rejects_expired_public_authorization_before_provider(
     records = workspace.session_root / "target-authorizations" / "records"
     assert (records / f"{prepared.data['authorized_action_digest']}.consumed.json").is_file()
     assert (records / f"{expired.action_digest}.consumed.json").is_file()
+    assert not (workspace.session_root / "test-results").exists()
+    assert not (workspace.session_root / "target-replay-input").exists()
+    assert not (workspace.workspace_root / "evidence").exists()
 
 
 def test_target_execute_rejects_valid_probe_identity_change_before_provider(
@@ -596,6 +604,9 @@ def test_target_execute_rejects_valid_probe_identity_change_before_provider(
     assert backend_calls == []
     records = workspace.session_root / "target-authorizations" / "records"
     assert (records / f"{prepared.data['authorized_action_digest']}.consumed.json").is_file()
+    assert not (workspace.session_root / "test-results").exists()
+    assert not (workspace.session_root / "target-replay-input").exists()
+    assert not (workspace.workspace_root / "evidence").exists()
 
 
 def test_target_prepare_propagates_missing_build_evidence_before_provider(
@@ -644,7 +655,13 @@ def test_target_prepare_propagates_missing_build_evidence_before_provider(
         "rule": "missing",
     }
     assert backend_calls == []
-    assert not list(data_root.rglob("*.json"))
+    model = load_project_model(project)
+    workspace = WorkspacePaths.from_roots(
+        data_root, project, model.logical_project_id, "missing-build"
+    )
+    assert not (workspace.session_root / "target-authorizations").exists()
+    assert not (workspace.session_root / "test-results").exists()
+    assert not (workspace.workspace_root / "evidence").exists()
 
 
 def test_target_support_profile_orders_task8_ram_before_capability_preflight() -> None:
