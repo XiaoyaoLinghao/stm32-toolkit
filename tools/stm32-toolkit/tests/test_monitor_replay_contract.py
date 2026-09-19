@@ -122,6 +122,49 @@ def _physical_transcript(source: dict[str, object]) -> dict[str, object]:
     }
 
 
+def _physical_v2_reference() -> dict[str, object]:
+    run_id = "11111111-1111-4111-8111-111111111111"
+    reference: dict[str, object] = {
+        "schema": "stm32-monitor-run-ref/2",
+        "operation_id": run_id,
+        "scenario_role": "failed-before",
+        "execution_source": "physical",
+        "physical_transport_evidence": True,
+        "origin_workspace_id": "a" * 64,
+        "import_workspace_id": "a" * 64,
+        "logical_project_id": "123e4567-e89b-42d3-a456-426614174000",
+        "origin_session_id": "session",
+        "projected_session_id": "session",
+        "origin_run_id": run_id,
+        "projected_run_id": run_id,
+        "target_device": "stm32f429zi",
+        "probe_id": "b" * 64,
+        "physical_target": "stm32f429zi",
+        "build_id": "c" * 64,
+        "elf_sha256": "d" * 64,
+        "input_snapshot_sha256": "e" * 64,
+        "git_head": "f" * 40,
+        "git_dirty": False,
+        "flash_session_id": "flash",
+        "lease_id": "lease",
+        "dwarf_sha256": "1" * 64,
+        "svd_sha256": None,
+        "group_id": "123e4567-e89b-42d3-a456-426614174001",
+        "group_revision": 1,
+        "start_sequence": 0,
+        "end_sequence_exclusive": 2,
+        "start_captured_unix_ns": 1,
+        "end_captured_unix_ns_exclusive": 3,
+        "source_record_sha256": "2" * 64,
+        "projected_batch_sha256s": ["3" * 64, "4" * 64],
+        "transcript_evidence_id": "5" * 64,
+        "run_ref_sha256": "0" * 64,
+    }
+    unsigned = {key: value for key, value in reference.items() if key != "run_ref_sha256"}
+    reference["run_ref_sha256"] = hashlib.sha256(_raw_canonical_json_bytes(unsigned)).hexdigest()
+    return reference
+
+
 def _document_bindings(document: dict[str, object]) -> list[dict[str, object]]:
     return [
         document["binding"],
@@ -448,6 +491,97 @@ def test_shared_contract_accepts_the_two_real_replay_documents_without_mutation(
     assert shared["binding"] is not payload["binding"]
     assert payload == before
     assert contract.canonical_replay_json_bytes(payload) == canonical_replay_json_bytes(payload)
+
+
+@pytest.mark.parametrize("role", ("failed-before", "fixed-after"))
+def test_shared_byte_decoder_reloads_canonical_replay_fixture_and_optional_final_lf(
+    role: str,
+) -> None:
+    contract = _contract()
+    with_final_lf = (MONITOR_FIXTURES / f"{role}.json").read_bytes()
+    assert with_final_lf.endswith(b"\n")
+    raw = with_final_lf[:-1]
+    before = bytes(raw)
+
+    decoded = contract.decode_canonical_json_bytes(raw)
+    assert decoded == _document(role)
+    assert raw == before
+
+    with pytest.raises(contract.ReplayContractError):
+        contract.decode_canonical_json_bytes(with_final_lf)
+    assert contract.decode_canonical_json_bytes(with_final_lf, allow_final_lf=True) == decoded
+    assert with_final_lf == before + b"\n"
+
+
+def test_shared_physical_byte_decoder_reloads_canonical_transcript_without_mutation() -> None:
+    contract = _contract()
+    payload = _physical_transcript(_document("failed-before"))
+    raw = contract.canonical_physical_json_bytes(payload)
+    before = bytes(raw)
+
+    decoded = contract.decode_physical_transcript_bytes(raw)
+
+    assert decoded == payload
+    assert contract.validate_physical_transcript(decoded) == payload
+    assert raw == before
+
+
+@pytest.mark.parametrize(
+    ("case_name", "raw"),
+    [
+        ("duplicate-key", b'{"a":1,"a":2}'),
+        ("bom", b"\xef\xbb\xbf{}"),
+        ("noncanonical-whitespace", b'{ "a": 1}'),
+        ("invalid-utf8", b"\xff"),
+        ("scalar-root", b"1"),
+        (
+            "depth-limit",
+            json.dumps(_deep_json(33), sort_keys=True, separators=(",", ":")).encode("utf-8"),
+        ),
+        ("node-limit", json.dumps([0] * 10_000, separators=(",", ":")).encode("utf-8")),
+        ("input-size-limit", b"0" * (1024 * 1024 + 1)),
+    ],
+)
+def test_shared_byte_decoder_rejects_caller_meaningful_raw_wire_failures(
+    case_name: str, raw: bytes,
+) -> None:
+    contract = _contract()
+    before = bytes(raw)
+
+    with pytest.raises(contract.ReplayContractError):
+        contract.decode_canonical_json_bytes(raw)
+
+    assert case_name
+    assert raw == before
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "recompute_digest"),
+    [
+        ("physical_transport_evidence", False, False),
+        ("end_sequence_exclusive", 0, True),
+    ],
+)
+def test_shared_v2_reference_rejects_provenance_and_window_contradictions(
+    field: str, value: object, recompute_digest: bool,
+) -> None:
+    contract = _contract()
+    source = _physical_v2_reference()
+    validated = contract.validate_run_reference(source)
+    assert validated == source
+    assert source == _physical_v2_reference()
+
+    candidate = deepcopy(source)
+    candidate[field] = value
+    if recompute_digest:
+        unsigned = {key: item for key, item in candidate.items() if key != "run_ref_sha256"}
+        candidate["run_ref_sha256"] = hashlib.sha256(_raw_canonical_json_bytes(unsigned)).hexdigest()
+    before = deepcopy(candidate)
+
+    with pytest.raises(contract.ReplayContractError):
+        contract.validate_run_reference(candidate)
+
+    assert candidate == before
 
 
 @pytest.mark.parametrize("role", ("failed-before", "fixed-after"))

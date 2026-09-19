@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import FrozenInstanceError, replace
 from hashlib import sha256
 
@@ -205,6 +206,100 @@ def test_failed_run_mode_is_omitted_for_host_and_round_trips_for_target() -> Non
     target = replace(host, failed_run_mode="target")
     assert target.to_dict() == {**host_wire, "failed_run_mode": "target"}
     assert DiagnosticSession.from_value(target.to_dict()) == target
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    [
+        ("hypotheses", {}),
+        ("observation_plans", "not-an-array"),
+        ("observation_results", {}),
+    ],
+)
+def test_session_decode_rejects_non_json_lifecycle_collections_without_materializing(
+    field: str, replacement: object,
+) -> None:
+    session = DiagnosticSession(
+        diagnostic_session_id="f" * 32,
+        revision=1,
+        state="OPEN",
+        identity=IDENTITY,
+        failed_test_run_id="run-1",
+        failed_evidence_id="0" * 64,
+        event_head="3" * 64,
+        hypotheses=(),
+        observation_plans=(),
+        observation_results=(),
+    )
+    candidate = session.to_dict()
+    candidate[field] = replacement
+    before = deepcopy(candidate)
+
+    with pytest.raises(DiagnosticValidationError) as error:
+        DiagnosticSession.from_value(candidate)
+
+    assert error.value.code == DIAGNOSTIC_INVALID_EVENT
+    assert candidate == before
+
+
+def test_extended_open_session_requires_lifecycle_data_before_materializing() -> None:
+    session = DiagnosticSession(
+        diagnostic_session_id="f" * 32,
+        revision=1,
+        state="OPEN",
+        identity=IDENTITY,
+        failed_test_run_id="run-1",
+        failed_evidence_id="0" * 64,
+        event_head="3" * 64,
+        hypotheses=(),
+        observation_plans=(),
+        observation_results=(),
+    )
+    candidate = {
+        **session.to_dict(),
+        "source_change_declarations": [],
+        "verification_plans": [],
+        "diagnostic_marker_refs": [],
+        "fix_verifications": [],
+        "active_verification_plan_id": None,
+    }
+    before = deepcopy(candidate)
+
+    with pytest.raises(DiagnosticValidationError) as error:
+        DiagnosticSession.from_value(candidate)
+
+    assert error.value.code == DIAGNOSTIC_INVALID_EVENT
+    assert candidate == before
+
+
+def test_extended_session_decode_rejects_non_array_lifecycle_collection() -> None:
+    session = DiagnosticSession(
+        diagnostic_session_id="f" * 32,
+        revision=1,
+        state="ABANDONED",
+        identity=IDENTITY,
+        failed_test_run_id="run-1",
+        failed_evidence_id="0" * 64,
+        event_head="3" * 64,
+        hypotheses=(),
+        observation_plans=(),
+        observation_results=(),
+    )
+    candidate = {
+        **session.to_dict(),
+        "source_change_declarations": {},
+        "verification_plans": [],
+        "diagnostic_marker_refs": [],
+        "fix_verifications": [],
+        "active_verification_plan_id": None,
+    }
+    before = deepcopy(candidate)
+
+    with pytest.raises(DiagnosticValidationError) as error:
+        DiagnosticSession.from_value(candidate)
+
+    assert error.value.code == DIAGNOSTIC_INVALID_EVENT
+    assert candidate == before
 
 
 @pytest.mark.parametrize("value", ["host", "unknown", 1, None])

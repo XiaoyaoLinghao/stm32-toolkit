@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 import hashlib
 
 import pytest
@@ -78,6 +79,34 @@ def _with_checkpoint(payload: dict[str, object]) -> dict[str, object]:
     unsigned.pop("checkpointId")
     unsigned["checkpointId"] = hashlib.sha256(canonical_json_bytes(unsigned)).hexdigest()
     return unsigned
+
+
+def _v1_revision(revision: int) -> dict[str, object]:
+    payload = _revision_zero(
+        revision=revision,
+        previousCheckpointId="f" * 64,
+        completedStages=list(REQUIRED_STAGES[:revision]),
+    )
+    outputs = dict(payload["stageOutputs"])
+    if revision >= 1:
+        outputs["projectModelDigest"] = "1" * 64
+    if revision >= 2:
+        outputs.update(
+            {
+                "beforeBuildId": "2" * 64,
+                "beforeElfSha256": "3" * 64,
+                "beforeInputSnapshotSha256": "4" * 64,
+            }
+        )
+    if revision >= 3:
+        outputs.update(
+            {
+                "failedBeforeTestRunId": "00000000-0000-4000-8000-000000000003",
+                "failedBeforeEvidenceId": "5" * 64,
+            }
+        )
+    payload["stageOutputs"] = outputs
+    return _with_checkpoint(payload)
 
 
 def test_recovery_policy_is_frozen_software_only_and_flash_inapplicable():
@@ -172,6 +201,47 @@ def test_revision_zero_has_exact_stage_output_nulls_and_fixed_prefix():
         "acceptanceRecordId",
     }
     assert all(value is None for value in attempt.stage_outputs.values())
+
+
+@pytest.mark.parametrize("mutation", ["stages-object", "stages-string", "missing-output"])
+def test_v1_attempt_decode_rejects_non_json_stage_shapes_without_mutation(mutation: str):
+    payload = _revision_zero()
+    if mutation == "stages-object":
+        payload["completedStages"] = {"project-materialized": True}
+    elif mutation == "stages-string":
+        payload["completedStages"] = "project-materialized"
+    else:
+        payload["stageOutputs"].pop("projectModelDigest")
+    payload = _with_checkpoint(payload)
+    before = deepcopy(payload)
+
+    with pytest.raises(AcceptanceRecoveryValidationError) as error:
+        AcceptanceAttempt.from_value(payload)
+
+    assert error.value.code == "ACCEPTANCE_ATTEMPT_INPUT_INVALID"
+    assert payload == before
+
+
+@pytest.mark.parametrize(
+    ("revision", "field", "value"),
+    [
+        (2, "failedBeforeTestRunId", "00000000-0000-4000-8000-000000000003"),
+        (3, "beforeBuildId", None),
+    ],
+)
+def test_v1_attempt_decode_rejects_stage_outputs_outside_exact_prefix(
+    revision: int, field: str, value: object,
+):
+    payload = _v1_revision(revision)
+    payload["stageOutputs"][field] = value
+    payload = _with_checkpoint(payload)
+    before = deepcopy(payload)
+
+    with pytest.raises(AcceptanceRecoveryValidationError) as error:
+        AcceptanceAttempt.from_value(payload)
+
+    assert error.value.code == "ACCEPTANCE_ATTEMPT_INPUT_INVALID"
+    assert payload == before
 
 
 def test_physical_policy_and_source_intent_are_frozen_and_round_trip():
@@ -447,6 +517,67 @@ def test_physical_attempt_rejects_unexpanded_or_misbound_before_intent(mutation)
     payload.update(mutation)
     with pytest.raises(AcceptanceRecoveryValidationError):
         PhysicalAcceptanceAttempt.from_value(_with_checkpoint(payload))
+
+
+@pytest.mark.parametrize("mutation", ["partial-intent", "missing-after-output"])
+def test_physical_attempt_decode_rejects_partial_intent_and_unavailable_outputs(
+    mutation: str,
+):
+    payload = _physical_attempt_payload(revision=6)
+    if mutation == "partial-intent":
+        intent = dict(payload["sourceChangeIntent"])
+        intent.pop("intentDigest")
+        payload["sourceChangeIntent"] = intent
+    else:
+        payload["stageOutputs"]["afterInputSnapshotSha256"] = None
+    payload = _with_checkpoint(payload)
+    before = deepcopy(payload)
+
+    with pytest.raises(AcceptanceRecoveryValidationError) as error:
+        PhysicalAcceptanceAttempt.from_value(payload)
+
+    assert error.value.code == "ACCEPTANCE_ATTEMPT_INPUT_INVALID"
+    assert payload == before
+
+
+@pytest.mark.parametrize("case_name", ["duplicate-paths", "non-lexical-paths", "size-limit", "tampered-digest"])
+def test_source_change_intent_decode_rejects_unpublished_wire_conditions(case_name: str):
+    change = {
+        "path": "src/main.c",
+        "beforeSha256": "a" * 64,
+        "afterSha256": "b" * 64,
+        "afterSize": 12,
+    }
+    if case_name == "duplicate-paths":
+        value: dict[str, object] = {
+            "schema": "stm32-source-change-intent/1",
+            "changes": [change, {**change, "beforeSha256": "c" * 64, "afterSha256": "d" * 64}],
+        }
+    elif case_name == "non-lexical-paths":
+        value = {
+            "schema": "stm32-source-change-intent/1",
+            "changes": [change, {**change, "path": "src/z.c", "beforeSha256": "c" * 64, "afterSha256": "d" * 64}],
+        }
+        value["changes"] = [{**value["changes"][1]}, {**value["changes"][0]}]
+    elif case_name == "size-limit":
+        value = {
+            "schema": "stm32-source-change-intent/1",
+            "changes": [{**change, "afterSize": 8 * 1024 * 1024 + 1}],
+        }
+    else:
+        value = SourceChangeIntent.expanded(
+            changes=[change],
+            before_input_snapshot_sha256="c" * 64,
+            expected_after_input_snapshot_sha256="d" * 64,
+        ).to_dict()
+        value["intentDigest"] = "0" * 64
+    before = deepcopy(value)
+
+    with pytest.raises(AcceptanceRecoveryValidationError) as error:
+        SourceChangeIntent.from_value(value)
+
+    assert error.value.code == "ACCEPTANCE_ATTEMPT_INPUT_INVALID"
+    assert value == before
 
 
 def test_physical_attempt_rejects_intent_misbound_to_after_snapshot():
