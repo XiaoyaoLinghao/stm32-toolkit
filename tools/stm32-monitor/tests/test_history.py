@@ -3469,6 +3469,50 @@ def test_public_query_rejects_persisted_negative_value_count_without_deletion(
         store.close()
 
 
+def test_public_query_rejects_extra_persisted_index_row_without_deletion(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    store = HistoryStore(paths)
+    try:
+        assert store.append_batch(_batch(paths, 1, captured_ns=1_001)).ok
+        database_path = paths.monitor_root / "monitor.sqlite3"
+        with sqlite3.connect(database_path) as connection:
+            value = connection.execute(
+                "SELECT batch_id,ordinal,selector_kind,selector,value_json,value_bytes,value_sha256 "
+                "FROM history_values WHERE batch_id = 1 AND ordinal = 0"
+            ).fetchone()
+            assert value is not None
+            connection.execute(
+                "INSERT INTO history_values "
+                "(batch_id,ordinal,selector_kind,selector,value_json,value_bytes,value_sha256) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (1, 1, *value[2:]),
+            )
+            connection.commit()
+
+        def snapshot() -> tuple[object, ...]:
+            with sqlite3.connect(database_path.as_uri() + "?mode=ro", uri=True) as connection:
+                return (
+                    connection.execute(
+                        "SELECT singleton,logical_bytes FROM monitor_history_accounting"
+                    ).fetchall(),
+                    connection.execute(
+                        "SELECT batch_id,ordinal,selector_kind,selector,value_json,value_bytes,value_sha256 "
+                        "FROM history_values ORDER BY batch_id,ordinal"
+                    ).fetchall(),
+                )
+
+        before = snapshot()
+        result = store.query_history(HistoryQuery("monitor-1", 0, 2_000_000_000))
+        assert not result.ok
+        assert result.code == "MONITOR_STORAGE_CORRUPT"
+        assert result.message == "monitor history is corrupt"
+        assert snapshot() == before
+    finally:
+        store.close()
+
+
 def test_retention_rejects_missing_accounting_row(tmp_path: Path) -> None:
     paths = _paths(tmp_path)
     store = HistoryStore(paths)

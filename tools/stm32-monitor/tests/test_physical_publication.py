@@ -2081,6 +2081,136 @@ def test_physical_loader_rejects_provider_reference_metadata_drift(
     assert _monitor_root_files(evidence, "monitor-run")[0].read_bytes() == transcript_root
 
 
+@pytest.mark.parametrize(
+    ("mutation", "cause"),
+    (
+        ("identity", "physical transcript identity is invalid"),
+        ("metadata", "physical transcript metadata is invalid"),
+    ),
+    ids=("identity", "metadata"),
+)
+def test_physical_loader_rejects_provider_transcript_identity_or_metadata_drift(
+    tmp_path: Path,
+    mutation: str,
+    cause: str,
+) -> None:
+    paths, evidence, test_run_id, raw_probe, monitor_run_id, group_id = _physical_context(tmp_path)
+    _publish_physical_test_run(
+        paths,
+        evidence,
+        test_run_id=test_run_id,
+        raw_probe=raw_probe,
+        monitor_run_id=monitor_run_id,
+    )
+    request = _physical_request(
+        paths,
+        raw_probe,
+        monitor_run_id,
+        group_id,
+        test_run_id,
+    )
+    original_reference = publish_physical_monitor_run(paths, evidence, **request)
+    reference_root_path = _monitor_root_files(evidence, "monitor-run-ref")[0]
+    transcript_root_path = _monitor_root_files(evidence, "monitor-run")[0]
+    reference_root = json.loads(reference_root_path.read_bytes().decode("utf-8"))
+    transcript_root = json.loads(transcript_root_path.read_bytes().decode("utf-8"))
+    original_loaded = load_monitor_run_reference(
+        paths,
+        EvidenceStore(evidence.root),
+        str(monitor_run_id),
+    )
+    assert original_loaded.to_dict() == original_reference.to_dict()
+
+    stored_transcript = evidence.get_envelope(transcript_root["manifest_id"])
+    if mutation == "identity":
+        contradictory_transcript = EvidenceEnvelope(
+            identity=replace(stored_transcript.identity, workspace_id="f" * 64),
+            operation=stored_transcript.operation,
+            produced_at_utc=stored_transcript.produced_at_utc,
+            parents=stored_transcript.parents,
+            artifacts=stored_transcript.artifacts,
+            metadata=stored_transcript.metadata,
+        )
+    else:
+        contradictory_metadata = dict(stored_transcript.metadata)
+        contradictory_metadata["scenario_role"] = "fixed-after"
+        contradictory_transcript = EvidenceEnvelope(
+            identity=stored_transcript.identity,
+            operation=stored_transcript.operation,
+            produced_at_utc=stored_transcript.produced_at_utc,
+            parents=stored_transcript.parents,
+            artifacts=stored_transcript.artifacts,
+            metadata=contradictory_metadata,
+        )
+    evidence.put_envelope(contradictory_transcript)
+
+    stored_reference = evidence.get_envelope(reference_root["manifest_id"])
+    reference_payload = original_reference.to_dict()
+    reference_payload["transcript_evidence_id"] = str(contradictory_transcript.evidence_id)
+    reference_payload["run_ref_sha256"] = sha256(
+        canonical_replay_json_bytes(
+            {
+                key: value
+                for key, value in reference_payload.items()
+                if key != "run_ref_sha256"
+            }
+        )
+    ).hexdigest()
+    updated_reference = MonitorRunRefV2.from_value(reference_payload)
+
+    reference_source = tmp_path / f"provider-drift-{mutation}.json"
+    reference_source.write_bytes(canonical_replay_json_bytes(updated_reference.to_dict()))
+    reference_artifact = evidence.ingest_file(
+        reference_source,
+        kind="monitor-run-ref",
+        media_type="application/json",
+    )
+    reference_metadata = dict(stored_reference.metadata)
+    reference_metadata["run_ref_sha256"] = updated_reference.run_ref_sha256
+    replacement_reference = EvidenceEnvelope(
+        identity=contradictory_transcript.identity,
+        operation=stored_reference.operation,
+        produced_at_utc=stored_reference.produced_at_utc,
+        parents=(str(contradictory_transcript.evidence_id),),
+        artifacts=(reference_artifact,),
+        metadata=reference_metadata,
+    )
+    evidence.put_envelope(replacement_reference)
+
+    transcript_root["manifest_id"] = str(contradictory_transcript.evidence_id)
+    transcript_root_metadata = dict(transcript_root["metadata"])
+    transcript_root_metadata["run_ref_sha256"] = updated_reference.run_ref_sha256
+    transcript_root["metadata"] = transcript_root_metadata
+    transcript_root_path.write_bytes(canonical_json_bytes(transcript_root))
+
+    reference_root["manifest_id"] = str(replacement_reference.evidence_id)
+    reference_root_metadata = dict(reference_root["metadata"])
+    reference_root_metadata["run_ref_sha256"] = updated_reference.run_ref_sha256
+    reference_root["metadata"] = reference_root_metadata
+    reference_root_path.write_bytes(canonical_json_bytes(reference_root))
+
+    before = {
+        str(path.relative_to(evidence.root)): path.read_bytes()
+        for path in evidence.root.rglob("*")
+        if path.is_file()
+    }
+
+    with pytest.raises(MonitorReplayError) as error:
+        load_monitor_run_reference(
+            paths,
+            EvidenceStore(evidence.root),
+            str(monitor_run_id),
+        )
+
+    assert error.value.code == EVIDENCE_INTEGRITY_FAILURE
+    assert str(error.value.__cause__) == cause
+    assert {
+        str(path.relative_to(evidence.root)): path.read_bytes()
+        for path in evidence.root.rglob("*")
+        if path.is_file()
+    } == before
+
+
 def test_physical_loader_rejects_persisted_reference_root_metadata_drift(tmp_path: Path) -> None:
     paths, evidence, test_run_id, raw_probe, monitor_run_id, group_id = _physical_context(tmp_path)
     _publish_physical_test_run(

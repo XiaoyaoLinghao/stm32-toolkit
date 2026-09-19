@@ -461,6 +461,81 @@ def test_same_workspace_runtime_lock_is_busy_until_owner_stops(tmp_path: Path) -
     asyncio.run(scenario())
 
 
+def test_start_cleanup_failure_after_invalid_endpoint_releases_workspace_lock(
+    tmp_path: Path,
+) -> None:
+    from stm32_monitor.models import MonitorConfig
+    from stm32_monitor.runtime import MonitorRuntime, MonitorRuntimeError
+
+    class FailingStore:
+        def __init__(self, _paths) -> None:
+            self.close_calls = 0
+
+        def close(self) -> None:
+            self.close_calls += 1
+            raise RuntimeError("store cleanup detail")
+
+    class InvalidEndpointService:
+        def __init__(self, *args, **kwargs) -> None:
+            del args
+            self.endpoint = FakeEndpoint(
+                host="0.0.0.0",
+                workspace_id=kwargs["workspace_id"],
+                session_id=kwargs["session_id"],
+            )
+            self.stop_calls = 0
+
+        async def start(self):
+            return self.endpoint
+
+        async def stop(self) -> None:
+            self.stop_calls += 1
+
+    async def scenario() -> None:
+        project = _project(tmp_path)
+        config = MonitorConfig(project, (tmp_path / "data").resolve(), "session-a")
+        stores: list[FailingStore] = []
+        services: list[InvalidEndpointService] = []
+
+        def group_factory(paths):
+            store = FailingStore(paths)
+            stores.append(store)
+            return store
+
+        def service_factory(*args, **kwargs):
+            service = InvalidEndpointService(*args, **kwargs)
+            services.append(service)
+            return service
+
+        runtime = MonitorRuntime(
+            group_store_factory=group_factory,
+            history_store_factory=FakeStore,
+            exporter_factory=FakeExporter,
+            sampler_factory=lambda *_args, **_kwargs: object(),
+            observation_factory=lambda *_args, **_kwargs: None,
+            service_factory=service_factory,
+        )
+        with pytest.raises(MonitorRuntimeError) as error:
+            await runtime.start(config)
+        assert error.value.code == "MONITOR_CLEANUP_FAILED"
+        assert error.value.message == "Monitor runtime cleanup failed"
+        assert stores[0].close_calls == 1
+        assert services[0].stop_calls == 1
+
+        replacement = MonitorRuntime(
+            group_store_factory=FakeStore,
+            history_store_factory=FakeStore,
+            exporter_factory=FakeExporter,
+            sampler_factory=lambda *_args, **_kwargs: object(),
+            observation_factory=lambda *_args, **_kwargs: None,
+            service_factory=lambda *args, **kwargs: _ready_service(*args, **kwargs),
+        )
+        await replacement.start(config)
+        await replacement.stop()
+
+    asyncio.run(scenario())
+
+
 def _ready_service(*args, **kwargs) -> FakeService:
     service = FakeService(*args, **kwargs)
     service.allow_stop.set()
