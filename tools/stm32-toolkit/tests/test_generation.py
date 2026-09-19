@@ -1553,6 +1553,21 @@ def test_sanitized_project_name_is_used(tmp_path):
     assert b"project(My_App LANGUAGES C CXX ASM)" in cmake.after_bytes
 
 
+@pytest.mark.parametrize(
+    ("project_name", "expected"),
+    [("123abc", "stm32_123abc"), ("!!!", "stm32_firmware")],
+)
+def test_sanitized_project_name_edge_cases_are_rendered(
+    tmp_path: Path, project_name: str, expected: str
+):
+    payload = standard_payload()
+    payload["project"] = {"name": project_name, "origin": "manual"}
+    root = write_project(tmp_path / "proj", payload)
+    plan = plan_for(root)
+    cmake = next(entry for entry in plan.files if entry.path == "CMakeLists.txt")
+    assert f"project({expected} LANGUAGES C CXX ASM)".encode() in cmake.after_bytes
+
+
 def test_sanitize_identifier_fallbacks():
     assert configure_mod.sanitize_cmake_identifier("123abc") == "stm32_123abc"
     assert configure_mod.sanitize_cmake_identifier("!!!") == "stm32_firmware"
