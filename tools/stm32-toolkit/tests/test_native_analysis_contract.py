@@ -188,34 +188,39 @@ def test_native_request_rejects_public_wire_shape_and_schema(
 def test_native_statistics_excludes_malformed_nested_public_samples(
     mutation: str,
 ) -> None:
-    before: object = _batch(100, 10)
-    after: object = _batch(200, 11)
+    before: object = [_batch(100, 10), _batch(110, 20)]
+    after: object = [_batch(200, 11), _batch(210, 21)]
 
     valid_result = native_statistics(
-        [before],
-        [after],
+        before,
+        after,
         selector="r0",
         max_pairing_skew_ns=1,
-        minimum_valid_pairs=1,
+        minimum_valid_pairs=2,
         request_digest="a" * 64,
     )
     assert valid_result["quality"] == "VALID"
     assert valid_result["conclusion"] == "COMPLETED"
-    assert valid_result["aligned_position_count"] == 1
-    assert valid_result["aligned_pair_count"] == 1
+    assert valid_result["aligned_position_count"] == 2
+    assert valid_result["aligned_pair_count"] == 2
     assert valid_result["excluded_position_count"] == 0
+    assert valid_result["reason_code"] == "VALUES_CHANGED"
 
     if mutation == "mapping-missing-watch":
-        assert isinstance(after, dict)
-        after["values"] = [{"status": "OK"}]
+        assert isinstance(after, list)
+        first_after = after[0]
+        assert isinstance(first_after, dict)
+        first_after["values"] = [{"status": "OK"}]
     elif mutation == "object-missing-watch":
-        after = SimpleNamespace(
-            scheduledUnixNs=200,
-            values=[SimpleNamespace(status="OK")],
-        )
+        assert isinstance(after, list)
+        first_after = after[0]
+        assert isinstance(first_after, dict)
+        first_after["values"] = [SimpleNamespace(status="OK")]
     else:
-        assert isinstance(after, dict)
-        sample = after["values"][0]
+        assert isinstance(after, list)
+        first_after = after[0]
+        assert isinstance(first_after, dict)
+        sample = first_after["values"][0]
         assert isinstance(sample, dict)
         if mutation == "watch-extra":
             sample["watch"]["unexpected"] = True
@@ -227,18 +232,19 @@ def test_native_statistics_excludes_malformed_nested_public_samples(
     before_snapshot = deepcopy(before)
     after_snapshot = deepcopy(after)
     result = native_statistics(
-        [before],
-        [after],
+        before,
+        after,
         selector="r0",
         max_pairing_skew_ns=1,
-        minimum_valid_pairs=1,
+        minimum_valid_pairs=2,
         request_digest="a" * 64,
     )
 
     assert result["quality"] == "INVALID"
     assert result["conclusion"] == "INCONCLUSIVE"
-    assert result["aligned_position_count"] == 1
-    assert result["aligned_pair_count"] == 0
+    assert result["reason_code"] == "INSUFFICIENT_VALID_PAIRS"
+    assert result["aligned_position_count"] == 2
+    assert result["aligned_pair_count"] == 1
     assert result["excluded_position_count"] == 1
     assert before == before_snapshot
     assert after == after_snapshot
