@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 import subprocess
@@ -17,6 +18,8 @@ from stm32_toolkit.generation.creation import CreationRequest
 from stm32_toolkit.generation.managed_files import canonical_json_bytes, model_sha256_for, sha256_hex
 from stm32_toolkit.project_model import load_project_model
 from stm32_toolkit.regeneration import (
+    MAX_FILE_BYTES,
+    MAX_TOTAL_BYTES,
     RegenerationWorkflowRequest,
     build_regeneration_plan,
     build_regeneration_preview,
@@ -134,6 +137,33 @@ def _root_state(root: Path) -> tuple[bool, dict[str, bytes]]:
     return (root.exists(), _tree_bytes(root) if root.exists() else {})
 
 
+def _synchronize_managed_model_hash(destination: Path) -> None:
+    model = load_project_model(destination)
+    manifest = destination / ".stm32-toolkit" / "generated-files.json"
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    payload["projectManifestSha256"] = model_sha256_for(model)
+    manifest.write_bytes(canonical_json_bytes(payload))
+
+
+def _write_streamed_bytes(path: Path, size: int, byte: bytes = b"x") -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    block = byte * min(1024 * 1024, size)
+    remaining = size
+    with path.open("wb") as handle:
+        while remaining:
+            count = min(len(block), remaining)
+            handle.write(block[:count])
+            remaining -= count
+
+
+def _streamed_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while block := handle.read(1024 * 1024):
+            digest.update(block)
+    return digest.hexdigest()
+
+
 def _public_authorization_digest(payload: dict[str, object]) -> str:
     canonical = {key: value for key, value in payload.items() if key not in {"authorizationDigest", "state"}}
     canonical["state"] = "prepared"
@@ -164,6 +194,50 @@ def _valid_plan_and_preview(tmp_path: Path, *, now: datetime | None = None):
     assert plan.blockers == ()
     snapshot = classify_regeneration_project(request)
     return plan, build_regeneration_preview(snapshot, snapshot)
+
+
+@pytest.mark.parametrize(
+    ("root_field", "root_value", "expected_message"),
+    [
+        pytest.param(
+            "generatedDirectories",
+            ["Core"],
+            "generated ownership roots are not the closed Core/Drivers set",
+            id="S5-F",
+        ),
+        pytest.param(
+            "userDirectories",
+            ["App"],
+            "user ownership roots are not the closed App/Tests set",
+            id="S5-G",
+        ),
+    ],
+)
+def test_plan_rejects_non_closed_ownership_roots(
+    tmp_path: Path,
+    root_field: str,
+    root_value: list[str],
+    expected_message: str,
+):
+    workspace, destination, environment = _project(tmp_path)
+    project_manifest = destination / ".stm32-project.json"
+    payload = json.loads(project_manifest.read_text(encoding="utf-8"))
+    payload["generation"][root_field] = root_value
+    project_manifest.write_bytes(canonical_json_bytes(payload))
+    _synchronize_managed_model_hash(destination)
+    request = RegenerationWorkflowRequest(workspace, tmp_path / "data", "session", "generated")
+    before_project = _root_state(destination)
+    before_data = _root_state(tmp_path / "data")
+
+    result = plan_regeneration(request, environment=environment)
+
+    assert result.ok is False
+    assert result.operation == "project-regenerate-plan"
+    assert result.code == "REGENERATION_PROJECT_INVALID"
+    assert result.message == expected_message
+    assert result.details == {}
+    assert _root_state(destination) == before_project
+    assert _root_state(tmp_path / "data") == before_data
 
 
 def test_prepare_stops_on_missing_cubemx_file_before_adapter(tmp_path: Path):
@@ -1172,4 +1246,987 @@ def test_apply_activation_failure_restores_old_tree(tmp_path: Path, monkeypatch:
     assert not list(workspace.glob(".generated.regen-backup-*"))
     with pytest.raises(RegenerationAuthorizationError) as consumed:
         RegenerationAuthorizationStore(tmp_path / "data").peek(prepared.data["authorizationDigest"])
+    assert consumed.value.code == "REGENERATION_AUTHORIZATION_CONSUMED"
+
+
+def test_prepare_rejects_non_path_candidate_root_before_authorization(tmp_path: Path):
+    workspace, destination, environment = _project(tmp_path)
+    request = RegenerationWorkflowRequest(workspace, tmp_path / "data", "session", "generated")
+    planned = plan_regeneration(request, environment=environment)
+    before_project = _root_state(destination)
+    before_data = _root_state(tmp_path / "data")
+
+    class BadRootAdapter:
+        calls = 0
+
+        def generate(self, capability, context):
+            self.calls += 1
+            return SimpleNamespace(project_root="not-a-path")
+
+    adapter = BadRootAdapter()
+    result = prepare_regeneration_workflow(
+        request,
+        plan_id=planned.data["planId"],
+        action_digest=planned.data["actionDigest"],
+        authorized=True,
+        environment=environment,
+        adapter=adapter,
+        validate_native=_validator,
+    )
+
+    assert result.ok is False
+    assert result.operation == "project-regenerate-prepare"
+    assert result.code == "REGENERATION_PREVIEW_FAILED"
+    assert result.message == "CubeMX did not return a project root"
+    assert result.details == {}
+    assert adapter.calls == 1
+    assert _root_state(destination) == before_project
+    assert _root_state(tmp_path / "data") == before_data
+    assert not list(workspace.glob(".stm32tk-regeneration-preview-*"))
+    auth_root = tmp_path / "data" / "regeneration" / "authorizations"
+    if auth_root.exists():
+        assert not list(auth_root.glob("*.json"))
+
+
+def test_prepare_rejects_regular_file_candidate_root_before_authorization(tmp_path: Path):
+    workspace, destination, environment = _project(tmp_path)
+    request = RegenerationWorkflowRequest(workspace, tmp_path / "data", "session", "generated")
+    planned = plan_regeneration(request, environment=environment)
+    before_project = _root_state(destination)
+
+    class FileRootAdapter:
+        calls = 0
+
+        def generate(self, capability, context):
+            self.calls += 1
+            candidate = context.staging_dir / capability.request.destination
+            candidate.write_bytes(b"candidate is not a directory")
+            return SimpleNamespace(project_root=candidate)
+
+    adapter = FileRootAdapter()
+    result = prepare_regeneration_workflow(
+        request,
+        plan_id=planned.data["planId"],
+        action_digest=planned.data["actionDigest"],
+        authorized=True,
+        environment=environment,
+        adapter=adapter,
+        validate_native=_validator,
+    )
+
+    assert result.ok is False
+    assert result.code == "REGENERATION_PREVIEW_FAILED"
+    assert result.message == "CubeMX output root is invalid"
+    assert result.details == {}
+    assert adapter.calls == 1
+    assert _root_state(destination) == before_project
+    assert not list(workspace.glob(".stm32tk-regeneration-preview-*"))
+    auth_root = tmp_path / "data" / "regeneration" / "authorizations"
+    if auth_root.exists():
+        assert not list(auth_root.glob("*.json"))
+
+
+@pytest.mark.parametrize(
+    "variant",
+    [
+        pytest.param("wrong-name", id="S8-C-wrong-name"),
+        pytest.param("extra-sibling", id="S8-C-extra-sibling"),
+    ],
+)
+def test_prepare_rejects_ambiguous_candidate_root_before_authorization(
+    tmp_path: Path, variant: str
+):
+    workspace, destination, environment = _project(tmp_path)
+    request = RegenerationWorkflowRequest(workspace, tmp_path / "data", "session", "generated")
+    planned = plan_regeneration(request, environment=environment)
+    before_project = _root_state(destination)
+
+    class AmbiguousAdapter(_Adapter):
+        def generate(self, capability, context):
+            self.calls += 1
+            name = "other" if variant == "wrong-name" else capability.request.destination
+            child = context.staging_dir / name
+            shutil.copytree(self.source, child)
+            if variant == "extra-sibling":
+                shutil.copytree(self.source, context.staging_dir / "sibling")
+            return SimpleNamespace(project_root=child)
+
+    adapter = AmbiguousAdapter(FIXTURE)
+    result = prepare_regeneration_workflow(
+        request,
+        plan_id=planned.data["planId"],
+        action_digest=planned.data["actionDigest"],
+        authorized=True,
+        environment=environment,
+        adapter=adapter,
+        validate_native=_validator,
+    )
+
+    assert result.ok is False
+    assert result.code == "REGENERATION_PREVIEW_FAILED"
+    assert result.message == "CubeMX output root is invalid"
+    assert result.details == {}
+    assert adapter.calls == 1
+    assert _root_state(destination) == before_project
+    assert not list(workspace.glob(".stm32tk-regeneration-preview-*"))
+    auth_root = tmp_path / "data" / "regeneration" / "authorizations"
+    if auth_root.exists():
+        assert not list(auth_root.glob("*.json"))
+
+
+def test_prepare_apply_missing_user_root_is_skipped_and_activated(tmp_path: Path):
+    workspace, destination, environment = _project(tmp_path)
+    shutil.rmtree(destination / "App")
+    request = RegenerationWorkflowRequest(workspace, tmp_path / "data", "session", "generated")
+    planned = plan_regeneration(request, environment=environment)
+    assert planned.data["blockers"] == ()
+    prepared = prepare_regeneration_workflow(
+        request,
+        plan_id=planned.data["planId"],
+        action_digest=planned.data["actionDigest"],
+        authorized=True,
+        environment=environment,
+        adapter=_Adapter(FIXTURE),
+        validate_native=_validator,
+    )
+    assert prepared.ok is True
+
+    def configure(root: Path) -> OperationResult[dict[str, object]]:
+        return OperationResult.success("configure", {})
+
+    def build(root: Path, preset: str) -> OperationResult[dict[str, object]]:
+        return OperationResult.success("build", {"preset": preset})
+
+    result = apply_regeneration_workflow(
+        request,
+        authorization_digest=prepared.data["authorizationDigest"],
+        authorized=True,
+        environment=environment,
+        adapter=_Adapter(FIXTURE),
+        validate_native=_validator,
+        configure=configure,
+        build=build,
+    )
+
+    assert result.ok is True
+    assert result.data["mutated"] is True
+    assert not (destination / "App").exists()
+    assert (destination / "Tests" / "keep.txt").read_bytes() == b"test bytes"
+    assert not list(workspace.glob(".stm32tk-regeneration-*"))
+    assert not list(workspace.glob(".generated.regen-backup-*"))
+    with pytest.raises(RegenerationAuthorizationError) as consumed:
+        RegenerationAuthorizationStore(tmp_path / "data").peek(prepared.data["authorizationDigest"])
+    assert consumed.value.code == "REGENERATION_AUTHORIZATION_CONSUMED"
+
+
+def test_apply_rejects_staged_user_root_file_before_activation(tmp_path: Path):
+    workspace, destination, environment = _project(tmp_path)
+    request = RegenerationWorkflowRequest(workspace, tmp_path / "data", "session", "generated")
+    planned = plan_regeneration(request, environment=environment)
+    prepared = prepare_regeneration_workflow(
+        request,
+        plan_id=planned.data["planId"],
+        action_digest=planned.data["actionDigest"],
+        authorized=True,
+        environment=environment,
+        adapter=_Adapter(FIXTURE),
+        validate_native=_validator,
+    )
+    assert prepared.ok is True
+    before_apply = _root_state(destination)
+
+    def configure(root: Path) -> OperationResult[dict[str, object]]:
+        shutil.rmtree(root / "App")
+        (root / "App").write_bytes(b"staged user root file")
+        return OperationResult.success("configure", {})
+
+    build_calls: list[str] = []
+
+    def build(root: Path, preset: str) -> OperationResult[dict[str, object]]:
+        build_calls.append(preset)
+        return OperationResult.success("build", {"preset": preset})
+
+    result = apply_regeneration_workflow(
+        request,
+        authorization_digest=prepared.data["authorizationDigest"],
+        authorized=True,
+        environment=environment,
+        adapter=_Adapter(FIXTURE),
+        validate_native=_validator,
+        configure=configure,
+        build=build,
+    )
+
+    assert result.ok is False
+    assert result.operation == "project-regenerate-apply"
+    assert result.code == "REGENERATION_USER_DRIFT"
+    assert result.message == "user ownership root is not a directory"
+    assert result.details == {"root": "App"}
+    assert build_calls == ["arm-debug", "arm-release"]
+    assert _root_state(destination) == before_apply
+    assert not list(workspace.glob(".stm32tk-regeneration-*"))
+    with pytest.raises(RegenerationAuthorizationError) as consumed:
+        RegenerationAuthorizationStore(tmp_path / "data").peek(prepared.data["authorizationDigest"])
+    assert consumed.value.code == "REGENERATION_AUTHORIZATION_CONSUMED"
+
+
+def test_prepare_apply_preserves_nested_user_directory_and_bytes(tmp_path: Path):
+    workspace, destination, environment = _project(tmp_path)
+    nested = destination / "App" / "sub" / "keep.txt"
+    nested.parent.mkdir(parents=True)
+    nested.write_bytes(b"nested user bytes")
+    request = RegenerationWorkflowRequest(workspace, tmp_path / "data", "session", "generated")
+    planned = plan_regeneration(request, environment=environment)
+    prepared = prepare_regeneration_workflow(
+        request,
+        plan_id=planned.data["planId"],
+        action_digest=planned.data["actionDigest"],
+        authorized=True,
+        environment=environment,
+        adapter=_Adapter(FIXTURE),
+        validate_native=_validator,
+    )
+    assert prepared.ok is True
+
+    def configure(root: Path) -> OperationResult[dict[str, object]]:
+        return OperationResult.success("configure", {})
+
+    def build(root: Path, preset: str) -> OperationResult[dict[str, object]]:
+        return OperationResult.success("build", {"preset": preset})
+
+    result = apply_regeneration_workflow(
+        request,
+        authorization_digest=prepared.data["authorizationDigest"],
+        authorized=True,
+        environment=environment,
+        adapter=_Adapter(FIXTURE),
+        validate_native=_validator,
+        configure=configure,
+        build=build,
+    )
+
+    assert result.ok is True
+    assert (destination / "App" / "keep.txt").read_bytes() == b"user bytes"
+    assert (destination / "App" / "sub" / "keep.txt").read_bytes() == b"nested user bytes"
+    assert (destination / "Tests" / "keep.txt").read_bytes() == b"test bytes"
+    assert not list(workspace.glob(".stm32tk-regeneration-*"))
+    assert not list(workspace.glob(".generated.regen-backup-*"))
+
+
+def test_apply_rejects_staged_user_aggregate_size_limit_with_real_streamed_files(tmp_path: Path):
+    workspace, destination, environment = _project(tmp_path)
+    request = RegenerationWorkflowRequest(workspace, tmp_path / "data", "session", "generated")
+    planned = plan_regeneration(request, environment=environment)
+    prepared = prepare_regeneration_workflow(
+        request,
+        plan_id=planned.data["planId"],
+        action_digest=planned.data["actionDigest"],
+        authorized=True,
+        environment=environment,
+        adapter=_Adapter(FIXTURE),
+        validate_native=_validator,
+    )
+    assert prepared.ok is True
+    before_apply = _root_state(destination)
+    build_calls: list[str] = []
+    adapter = _Adapter(FIXTURE)
+
+    def configure(root: Path) -> OperationResult[dict[str, object]]:
+        baseline_total = sum(path.stat().st_size for path in root.rglob("*") if path.is_file())
+        baseline_files = sum(1 for path in root.rglob("*") if path.is_file())
+        payload_bytes = 8 * MAX_FILE_BYTES + 1
+        assert baseline_total + payload_bytes <= 300 * 1024 * 1024
+        assert baseline_total + payload_bytes > MAX_TOTAL_BYTES
+        assert baseline_files + 9 < 200_000
+        paths = [root / "App" / f"aggregate-{index:02d}.bin" for index in range(8)]
+        paths.append(root / "App" / "aggregate-overflow.bin")
+        for path in paths[:-1]:
+            _write_streamed_bytes(path, MAX_FILE_BYTES)
+        _write_streamed_bytes(paths[-1], 1)
+        block = b"x" * (1024 * 1024)
+        full_digest = hashlib.sha256()
+        for _ in range(MAX_FILE_BYTES // len(block)):
+            full_digest.update(block)
+        expected_full_digest = full_digest.hexdigest()
+        streamed_facts = {
+            path.name: (path.stat().st_size, _streamed_sha256(path)) for path in paths
+        }
+        assert all(
+            streamed_facts[path.name] == (MAX_FILE_BYTES, expected_full_digest)
+            for path in paths[:-1]
+        )
+        assert streamed_facts[paths[-1].name] == (1, hashlib.sha256(b"x").hexdigest())
+        return OperationResult.success("configure", {})
+
+    def build(root: Path, preset: str) -> OperationResult[dict[str, object]]:
+        build_calls.append(preset)
+        return OperationResult.success("build", {"preset": preset})
+
+    result = apply_regeneration_workflow(
+        request,
+        authorization_digest=prepared.data["authorizationDigest"],
+        authorized=True,
+        environment=environment,
+        adapter=adapter,
+        validate_native=_validator,
+        configure=configure,
+        build=build,
+    )
+
+    assert result.ok is False
+    assert result.code == "REGENERATION_PATH_UNSAFE"
+    assert result.message == "user-owned aggregate size exceeds its bound"
+    assert result.details == {}
+    assert build_calls == ["arm-debug", "arm-release"]
+    assert _root_state(destination) == before_apply
+    assert not list(workspace.glob(".stm32tk-regeneration-*"))
+    with pytest.raises(RegenerationAuthorizationError) as consumed:
+        RegenerationAuthorizationStore(tmp_path / "data").peek(prepared.data["authorizationDigest"])
+    assert consumed.value.code == "REGENERATION_AUTHORIZATION_CONSUMED"
+
+
+def test_prepare_rejects_regular_derived_root_before_authorization(tmp_path: Path):
+    workspace, destination, environment = _project(tmp_path)
+    request = RegenerationWorkflowRequest(workspace, tmp_path / "data", "session", "generated")
+    planned = plan_regeneration(request, environment=environment)
+    before_project = _root_state(destination)
+
+    class DerivedFileAdapter(_Adapter):
+        def generate(self, capability, context):
+            result = super().generate(capability, context)
+            (result.project_root / "build").write_bytes(b"derived file")
+            return result
+
+    adapter = DerivedFileAdapter(FIXTURE)
+    result = prepare_regeneration_workflow(
+        request,
+        plan_id=planned.data["planId"],
+        action_digest=planned.data["actionDigest"],
+        authorized=True,
+        environment=environment,
+        adapter=adapter,
+        validate_native=_validator,
+    )
+
+    assert result.ok is False
+    assert result.code == "REGENERATION_PATH_UNSAFE"
+    assert result.message == "derived output root is unsafe"
+    assert result.details == {}
+    assert adapter.calls == 1
+    assert _root_state(destination) == before_project
+    assert not list(workspace.glob(".stm32tk-regeneration-preview-*"))
+    auth_root = tmp_path / "data" / "regeneration" / "authorizations"
+    if auth_root.exists():
+        assert not list(auth_root.glob("*.json"))
+
+
+def test_prepare_removes_candidate_lock_without_touching_destination_lock(tmp_path: Path):
+    workspace, destination, environment = _project(tmp_path)
+    destination_lock = destination / ".stm32-toolkit" / "build.lock"
+    destination_lock.write_bytes(b"destination lock")
+    before_project = _root_state(destination)
+    request = RegenerationWorkflowRequest(workspace, tmp_path / "data", "session", "generated")
+    planned = plan_regeneration(request, environment=environment)
+
+    class LockAdapter(_Adapter):
+        def generate(self, capability, context):
+            result = super().generate(capability, context)
+            lock = result.project_root / ".stm32-toolkit" / "build.lock"
+            lock.parent.mkdir(parents=True, exist_ok=True)
+            lock.write_bytes(b"candidate lock")
+            return result
+
+    prepared = prepare_regeneration_workflow(
+        request,
+        plan_id=planned.data["planId"],
+        action_digest=planned.data["actionDigest"],
+        authorized=True,
+        environment=environment,
+        adapter=LockAdapter(FIXTURE),
+        validate_native=_validator,
+    )
+
+    assert prepared.ok is True
+    assert destination_lock.read_bytes() == b"destination lock"
+    assert _root_state(destination) == before_project
+    assert not list(workspace.glob(".stm32tk-regeneration-preview-*"))
+
+
+def test_prepare_rejects_missing_candidate_metadata_before_authorization(tmp_path: Path):
+    workspace, destination, environment = _project(tmp_path)
+    request = RegenerationWorkflowRequest(workspace, tmp_path / "data", "session", "generated")
+    planned = plan_regeneration(request, environment=environment)
+    before_project = _root_state(destination)
+    adapter = _Adapter(FIXTURE)
+
+    result = prepare_regeneration_workflow(
+        request,
+        plan_id=planned.data["planId"],
+        action_digest=planned.data["actionDigest"],
+        authorized=True,
+        environment=environment,
+        adapter=adapter,
+        validate_native=lambda **kwargs: SimpleNamespace(),
+    )
+
+    assert result.ok is False
+    assert result.code == "REGENERATION_PREVIEW_FAILED"
+    assert result.message == "CubeMX candidate metadata is unavailable"
+    assert result.details == {}
+    assert adapter.calls == 1
+    assert _root_state(destination) == before_project
+    assert not list(workspace.glob(".stm32tk-regeneration-preview-*"))
+    auth_root = tmp_path / "data" / "regeneration" / "authorizations"
+    if auth_root.exists():
+        assert not list(auth_root.glob("*.json"))
+
+
+@pytest.mark.parametrize(
+    ("identity", "expected_message"),
+    [
+        pytest.param("framework", "CubeMX candidate framework differs from the project", id="S8-L"),
+        pytest.param("language", "CubeMX candidate language differs from the project", id="S8-M"),
+    ],
+)
+def test_prepare_rejects_candidate_framework_or_language_drift(
+    tmp_path: Path, identity: str, expected_message: str
+):
+    workspace, destination, environment = _project(tmp_path)
+    request = RegenerationWorkflowRequest(workspace, tmp_path / "data", "session", "generated")
+    planned = plan_regeneration(request, environment=environment)
+    before_project = _root_state(destination)
+    adapter = _Adapter(FIXTURE)
+
+    def alternate_validator(candidate, *, request, plan_id, action_digest, environment):
+        ioc = candidate / request.source.value
+        ioc_text = ioc.read_text(encoding="utf-8")
+        if identity == "framework":
+            ioc_text += "\nProjectManager.FrameworkMarker=LL_USART\n"
+        else:
+            ioc_text = ioc_text.replace("ProjectManager.Language=C", "ProjectManager.Language=C++")
+        ioc.write_text(ioc_text, encoding="utf-8")
+        alternate = CreationRequest.from_ioc(
+            request.source.value,
+            request.destination,
+            framework="ll" if identity == "framework" else request.framework,
+            language="cpp" if identity == "language" else request.language,
+        )
+        return parse_native_project(
+            candidate,
+            request=alternate,
+            plan_id=plan_id,
+            action_digest=action_digest,
+            environment=environment,
+        )
+
+    result = prepare_regeneration_workflow(
+        request,
+        plan_id=planned.data["planId"],
+        action_digest=planned.data["actionDigest"],
+        authorized=True,
+        environment=environment,
+        adapter=adapter,
+        validate_native=alternate_validator,
+    )
+
+    assert result.ok is False
+    assert result.code == "REGENERATION_PREVIEW_FAILED"
+    assert result.message == expected_message
+    assert result.details == {}
+    assert adapter.calls == 1
+    assert _root_state(destination) == before_project
+    assert not list(workspace.glob(".stm32tk-regeneration-preview-*"))
+    auth_root = tmp_path / "data" / "regeneration" / "authorizations"
+    if auth_root.exists():
+        assert not list(auth_root.glob("*.json"))
+
+
+def test_prepare_uses_built_in_parser_and_copies_user_roots(tmp_path: Path):
+    workspace, destination, environment = _project(tmp_path)
+    request = RegenerationWorkflowRequest(workspace, tmp_path / "data", "session", "generated")
+    planned = plan_regeneration(request, environment=environment)
+    before_project = _root_state(destination)
+    adapter = _Adapter(FIXTURE)
+
+    prepared = prepare_regeneration_workflow(
+        request,
+        plan_id=planned.data["planId"],
+        action_digest=planned.data["actionDigest"],
+        authorized=True,
+        environment=environment,
+        adapter=adapter,
+    )
+
+    assert prepared.ok is True
+    assert adapter.calls == 1
+    assert _root_state(destination) == before_project
+    assert not list(workspace.glob(".stm32tk-regeneration-preview-*"))
+    assert prepared.data["authorizationDigest"]
+    auth_root = tmp_path / "data" / "regeneration" / "authorizations"
+    assert len(list(auth_root.glob("*.json"))) == 1
+
+
+def test_prepare_maps_generic_adapter_exception_and_cleans_roots(tmp_path: Path):
+    workspace, destination, environment = _project(tmp_path)
+    request = RegenerationWorkflowRequest(workspace, tmp_path / "data", "session", "generated")
+    planned = plan_regeneration(request, environment=environment)
+    before_project = _root_state(destination)
+
+    class RaisingAdapter:
+        calls = 0
+
+        def generate(self, capability, context):
+            self.calls += 1
+            raise RuntimeError("adapter failure")
+
+    adapter = RaisingAdapter()
+    result = prepare_regeneration_workflow(
+        request,
+        plan_id=planned.data["planId"],
+        action_digest=planned.data["actionDigest"],
+        authorized=True,
+        environment=environment,
+        adapter=adapter,
+        validate_native=_validator,
+    )
+
+    assert result.ok is False
+    assert result.code == "REGENERATION_PREVIEW_FAILED"
+    assert result.message == "CubeMX preview failed"
+    assert result.details == {}
+    assert adapter.calls == 1
+    assert _root_state(destination) == before_project
+    assert not list(workspace.glob(".stm32tk-regeneration-preview-*"))
+    auth_root = tmp_path / "data" / "regeneration" / "authorizations"
+    if auth_root.exists():
+        assert not list(auth_root.glob("*.json"))
+
+
+@pytest.mark.parametrize(
+    "binding",
+    [
+        pytest.param("planId", id="S9-A-plan"),
+        pytest.param("actionDigest", id="S9-A-action"),
+    ],
+)
+def test_prepare_rejects_mismatched_plan_binding_before_adapter(tmp_path: Path, binding: str):
+    workspace, destination, environment = _project(tmp_path)
+    request = RegenerationWorkflowRequest(workspace, tmp_path / "data", "session", "generated")
+    planned = plan_regeneration(request, environment=environment)
+    before_project = _root_state(destination)
+    before_data = _root_state(tmp_path / "data")
+    adapter = _Adapter(FIXTURE)
+    supplied_plan_id = "f" * 64 if binding == "planId" else planned.data["planId"]
+    supplied_action_digest = "f" * 64 if binding == "actionDigest" else planned.data["actionDigest"]
+
+    result = prepare_regeneration_workflow(
+        request,
+        plan_id=supplied_plan_id,
+        action_digest=supplied_action_digest,
+        authorized=True,
+        environment=environment,
+        adapter=adapter,
+        validate_native=_validator,
+    )
+
+    assert result.ok is False
+    assert result.operation == "project-regenerate-prepare"
+    assert result.code == "REGENERATION_PLAN_CHANGED"
+    assert result.message == "the regeneration plan changed since planning"
+    assert result.details == {
+        "currentPlanId": planned.data["planId"],
+        "currentActionDigest": planned.data["actionDigest"],
+    }
+    assert adapter.calls == 0
+    assert _root_state(destination) == before_project
+    assert _root_state(tmp_path / "data") == before_data
+    assert not list(workspace.glob(".stm32tk-regeneration-preview-*"))
+
+
+def test_prepare_maps_oversized_public_authorization_record_and_cleans_roots(tmp_path: Path):
+    workspace, destination, environment = _project(tmp_path)
+    request = RegenerationWorkflowRequest(workspace, tmp_path / "data", "session", "generated")
+    planned = plan_regeneration(request, environment=environment)
+    before_project = _root_state(destination)
+    before_data = _root_state(tmp_path / "data")
+    store = RegenerationAuthorizationStore(
+        tmp_path / "data", nonce_factory=lambda: "n" * (64 * 1024 + 1)
+    )
+    adapter = _Adapter(FIXTURE)
+
+    result = prepare_regeneration_workflow(
+        request,
+        plan_id=planned.data["planId"],
+        action_digest=planned.data["actionDigest"],
+        authorized=True,
+        environment=environment,
+        store=store,
+        adapter=adapter,
+        validate_native=_validator,
+    )
+
+    assert result.ok is False
+    assert result.operation == "project-regenerate-prepare"
+    assert result.code == "REGENERATION_AUTHORIZATION_INVALID"
+    assert result.message == "authorization record is oversized"
+    assert result.details == {}
+    assert adapter.calls == 1
+    assert _root_state(destination) == before_project
+    assert _root_state(tmp_path / "data") == before_data
+    assert not list(workspace.glob(".stm32tk-regeneration-preview-*"))
+    if store.authorization_root.exists():
+        assert not list(store.authorization_root.glob("*.json"))
+
+
+@pytest.mark.parametrize("authorized", [False, 1], ids=["S10-A-false", "S10-A-integer"])
+def test_apply_requires_json_true_before_consuming_authorization(
+    tmp_path: Path, authorized: object
+):
+    workspace, destination, environment = _project(tmp_path)
+    request = RegenerationWorkflowRequest(workspace, tmp_path / "data", "session", "generated")
+    planned = plan_regeneration(request, environment=environment)
+    store = RegenerationAuthorizationStore(tmp_path / "data")
+    prepared = prepare_regeneration_workflow(
+        request,
+        plan_id=planned.data["planId"],
+        action_digest=planned.data["actionDigest"],
+        authorized=True,
+        environment=environment,
+        store=store,
+        adapter=_Adapter(FIXTURE),
+        validate_native=_validator,
+    )
+    assert prepared.ok is True
+    before_project = _root_state(destination)
+    before_auth = _tree_bytes(store.authorization_root)
+    adapter = _Adapter(FIXTURE)
+
+    result = apply_regeneration_workflow(
+        request,
+        authorization_digest=prepared.data["authorizationDigest"],
+        authorized=authorized,
+        environment=environment,
+        store=store,
+        adapter=adapter,
+        validate_native=_validator,
+    )
+
+    assert result.ok is False
+    assert result.operation == "project-regenerate-apply"
+    assert result.code == "REGENERATION_AUTHORIZATION_REQUIRED"
+    assert result.message == "authorization must be the JSON boolean true"
+    assert result.details == {}
+    assert adapter.calls == 0
+    assert _root_state(destination) == before_project
+    assert _tree_bytes(store.authorization_root) == before_auth
+    assert not list(workspace.glob(".stm32tk-regeneration-*"))
+    assert store.peek(prepared.data["authorizationDigest"]).authorization_digest == prepared.data["authorizationDigest"]
+
+
+def test_apply_rejects_persisted_ownership_binding_after_consuming_authorization(tmp_path: Path):
+    workspace, destination, environment = _project(tmp_path)
+    request = RegenerationWorkflowRequest(workspace, tmp_path / "data", "session", "generated")
+    planned = plan_regeneration(request, environment=environment)
+    store = RegenerationAuthorizationStore(tmp_path / "data")
+    prepared = prepare_regeneration_workflow(
+        request,
+        plan_id=planned.data["planId"],
+        action_digest=planned.data["actionDigest"],
+        authorized=True,
+        environment=environment,
+        store=store,
+        adapter=_Adapter(FIXTURE),
+        validate_native=_validator,
+    )
+    assert prepared.ok is True
+    digest, _, _ = _rewrite_authorization_record(
+        store,
+        prepared.data["authorizationDigest"],
+        lambda payload: payload.update(ownershipManifestDigest="f" * 64),
+    )
+    before_apply = _root_state(destination)
+    adapter = _Adapter(FIXTURE)
+
+    result = apply_regeneration_workflow(
+        request,
+        authorization_digest=digest,
+        authorized=True,
+        environment=environment,
+        store=store,
+        adapter=adapter,
+        validate_native=_validator,
+    )
+
+    assert result.ok is False
+    assert result.operation == "project-regenerate-apply"
+    assert result.code == "REGENERATION_STATE_CHANGED"
+    assert result.message == "the authorized ownership manifest changed"
+    assert result.details == {}
+    assert adapter.calls == 0
+    assert _root_state(destination) == before_apply
+    assert not list(workspace.glob(".stm32tk-regeneration-*"))
+    with pytest.raises(RegenerationAuthorizationError) as consumed:
+        store.peek(digest)
+    assert consumed.value.code == "REGENERATION_AUTHORIZATION_CONSUMED"
+
+
+def test_apply_rejects_persisted_managed_manifest_drift_after_consuming_authorization(
+    tmp_path: Path,
+):
+    workspace, destination, environment = _project(tmp_path)
+    request = RegenerationWorkflowRequest(workspace, tmp_path / "data", "session", "generated")
+    planned = plan_regeneration(request, environment=environment)
+    store = RegenerationAuthorizationStore(tmp_path / "data")
+    prepared = prepare_regeneration_workflow(
+        request,
+        plan_id=planned.data["planId"],
+        action_digest=planned.data["actionDigest"],
+        authorized=True,
+        environment=environment,
+        store=store,
+        adapter=_Adapter(FIXTURE),
+        validate_native=_validator,
+    )
+    assert prepared.ok is True
+    managed = destination / ".stm32-toolkit" / "generated-files.json"
+    payload = json.loads(managed.read_text(encoding="utf-8"))
+    assert payload["files"]
+    payload["files"][0]["sha256"] = "f" * 64
+    managed.write_bytes(canonical_json_bytes(payload))
+    before_apply = _root_state(destination)
+    adapter = _Adapter(FIXTURE)
+
+    result = apply_regeneration_workflow(
+        request,
+        authorization_digest=prepared.data["authorizationDigest"],
+        authorized=True,
+        environment=environment,
+        store=store,
+        adapter=adapter,
+        validate_native=_validator,
+    )
+
+    assert result.ok is False
+    assert result.operation == "project-regenerate-apply"
+    assert result.code == "REGENERATION_TOOLKIT_DRIFT"
+    assert result.message == "the authorized Toolkit manifest changed"
+    assert result.details == {}
+    assert adapter.calls == 0
+    assert _root_state(destination) == before_apply
+    assert not list(workspace.glob(".stm32tk-regeneration-*"))
+    with pytest.raises(RegenerationAuthorizationError) as consumed:
+        store.peek(prepared.data["authorizationDigest"])
+    assert consumed.value.code == "REGENERATION_AUTHORIZATION_CONSUMED"
+
+
+def test_apply_rejects_persisted_plan_binding_after_consuming_authorization(tmp_path: Path):
+    workspace, destination, environment = _project(tmp_path)
+    request = RegenerationWorkflowRequest(workspace, tmp_path / "data", "session", "generated")
+    planned = plan_regeneration(request, environment=environment)
+    store = RegenerationAuthorizationStore(tmp_path / "data")
+    prepared = prepare_regeneration_workflow(
+        request,
+        plan_id=planned.data["planId"],
+        action_digest=planned.data["actionDigest"],
+        authorized=True,
+        environment=environment,
+        store=store,
+        adapter=_Adapter(FIXTURE),
+        validate_native=_validator,
+    )
+    assert prepared.ok is True
+    digest, _, _ = _rewrite_authorization_record(
+        store,
+        prepared.data["authorizationDigest"],
+        lambda payload: payload.update(planId="f" * 64, actionDigest="e" * 64),
+    )
+    before_apply = _root_state(destination)
+    adapter = _Adapter(FIXTURE)
+
+    result = apply_regeneration_workflow(
+        request,
+        authorization_digest=digest,
+        authorized=True,
+        environment=environment,
+        store=store,
+        adapter=adapter,
+        validate_native=_validator,
+    )
+
+    assert result.ok is False
+    assert result.operation == "project-regenerate-apply"
+    assert result.code == "REGENERATION_PLAN_CHANGED"
+    assert result.message == "the authorized regeneration plan changed"
+    assert result.details == {}
+    assert adapter.calls == 0
+    assert _root_state(destination) == before_apply
+    assert not list(workspace.glob(".stm32tk-regeneration-*"))
+    with pytest.raises(RegenerationAuthorizationError) as consumed:
+        store.peek(digest)
+    assert consumed.value.code == "REGENERATION_AUTHORIZATION_CONSUMED"
+
+
+def test_apply_uses_default_configure_and_successful_build_seams(tmp_path: Path):
+    workspace, destination, environment = _project(tmp_path)
+    request = RegenerationWorkflowRequest(workspace, tmp_path / "data", "session", "generated")
+    planned = plan_regeneration(request, environment=environment)
+    store = RegenerationAuthorizationStore(tmp_path / "data")
+    prepared = prepare_regeneration_workflow(
+        request,
+        plan_id=planned.data["planId"],
+        action_digest=planned.data["actionDigest"],
+        authorized=True,
+        environment=environment,
+        store=store,
+        adapter=_Adapter(FIXTURE),
+        validate_native=_validator,
+    )
+    assert prepared.ok is True
+    build_calls: list[str] = []
+
+    def build(root: Path, preset: str) -> OperationResult[dict[str, object]]:
+        build_calls.append(preset)
+        return OperationResult.success("build", {"preset": preset})
+
+    result = apply_regeneration_workflow(
+        request,
+        authorization_digest=prepared.data["authorizationDigest"],
+        authorized=True,
+        environment=environment,
+        store=store,
+        adapter=_Adapter(FIXTURE),
+        validate_native=_validator,
+        build=build,
+    )
+
+    assert result.ok is True
+    assert result.operation == "project-regenerate-apply"
+    assert result.code == "OK"
+    assert result.data["mutated"] is True
+    assert build_calls == ["arm-debug", "arm-release"]
+    assert (destination / "App" / "keep.txt").read_bytes() == b"user bytes"
+    assert (destination / "Tests" / "keep.txt").read_bytes() == b"test bytes"
+    assert not list(workspace.glob(".stm32tk-regeneration-*"))
+    assert not list(workspace.glob(".generated.regen-backup-*"))
+    with pytest.raises(RegenerationAuthorizationError) as consumed:
+        store.peek(prepared.data["authorizationDigest"])
+    assert consumed.value.code == "REGENERATION_AUTHORIZATION_CONSUMED"
+
+
+def test_apply_serializes_public_to_dict_configuration_failure_without_build(tmp_path: Path):
+    workspace, destination, environment = _project(tmp_path)
+    request = RegenerationWorkflowRequest(workspace, tmp_path / "data", "session", "generated")
+    planned = plan_regeneration(request, environment=environment)
+    store = RegenerationAuthorizationStore(tmp_path / "data")
+    prepared = prepare_regeneration_workflow(
+        request,
+        plan_id=planned.data["planId"],
+        action_digest=planned.data["actionDigest"],
+        authorized=True,
+        environment=environment,
+        store=store,
+        adapter=_Adapter(FIXTURE),
+        validate_native=_validator,
+    )
+    assert prepared.ok is True
+    before_apply = _root_state(destination)
+    build_calls: list[str] = []
+    adapter = _Adapter(FIXTURE)
+
+    class ConfigureReport:
+        def to_dict(self) -> dict[str, object]:
+            return {"status": "ok", "attempt": 1}
+
+    def build(root: Path, preset: str) -> OperationResult[dict[str, object]]:
+        build_calls.append(preset)
+        return OperationResult.success("build", {"preset": preset})
+
+    result = apply_regeneration_workflow(
+        request,
+        authorization_digest=prepared.data["authorizationDigest"],
+        authorized=True,
+        environment=environment,
+        store=store,
+        adapter=adapter,
+        validate_native=_validator,
+        configure=lambda root: ConfigureReport(),
+        build=build,
+    )
+
+    assert result.ok is False
+    assert result.operation == "project-regenerate-apply"
+    assert result.code == "REGENERATION_CONFIGURATION_FAILED"
+    assert result.message == "project configuration failed"
+    assert result.details == {"result": {"status": "ok", "attempt": 1}}
+    assert build_calls == []
+    assert adapter.calls == 1
+    assert _root_state(destination) == before_apply
+    assert not list(workspace.glob(".stm32tk-regeneration-*"))
+    with pytest.raises(RegenerationAuthorizationError) as consumed:
+        store.peek(prepared.data["authorizationDigest"])
+    assert consumed.value.code == "REGENERATION_AUTHORIZATION_CONSUMED"
+
+
+def test_apply_recursively_serializes_public_configuration_failure_payload(tmp_path: Path):
+    workspace, destination, environment = _project(tmp_path)
+    request = RegenerationWorkflowRequest(workspace, tmp_path / "data", "session", "generated")
+    planned = plan_regeneration(request, environment=environment)
+    store = RegenerationAuthorizationStore(tmp_path / "data")
+    prepared = prepare_regeneration_workflow(
+        request,
+        plan_id=planned.data["planId"],
+        action_digest=planned.data["actionDigest"],
+        authorized=True,
+        environment=environment,
+        store=store,
+        adapter=_Adapter(FIXTURE),
+        validate_native=_validator,
+    )
+    assert prepared.ok is True
+    before_apply = _root_state(destination)
+    build_calls: list[str] = []
+    adapter = _Adapter(FIXTURE)
+
+    class Unsupported:
+        pass
+
+    configuration = {
+        "items": [("tuple", 7), {"leaf": Unsupported()}],
+        "scalar": "value",
+        "unsupported": Unsupported(),
+    }
+
+    def build(root: Path, preset: str) -> OperationResult[dict[str, object]]:
+        build_calls.append(preset)
+        return OperationResult.success("build", {"preset": preset})
+
+    result = apply_regeneration_workflow(
+        request,
+        authorization_digest=prepared.data["authorizationDigest"],
+        authorized=True,
+        environment=environment,
+        store=store,
+        adapter=adapter,
+        validate_native=_validator,
+        configure=lambda root: configuration,
+        build=build,
+    )
+
+    assert result.ok is False
+    assert result.operation == "project-regenerate-apply"
+    assert result.code == "REGENERATION_CONFIGURATION_FAILED"
+    assert result.message == "project configuration failed"
+    assert result.details == {
+        "result": {
+            "items": [["tuple", 7], {"leaf": None}],
+            "scalar": "value",
+            "unsupported": None,
+        }
+    }
+    assert build_calls == []
+    assert adapter.calls == 1
+    assert _root_state(destination) == before_apply
+    assert not list(workspace.glob(".stm32tk-regeneration-*"))
+    with pytest.raises(RegenerationAuthorizationError) as consumed:
+        store.peek(prepared.data["authorizationDigest"])
     assert consumed.value.code == "REGENERATION_AUTHORIZATION_CONSUMED"

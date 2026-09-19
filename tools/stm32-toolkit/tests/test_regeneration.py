@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 import subprocess
@@ -16,8 +17,10 @@ from stm32_toolkit.generation.managed_files import model_sha256_for, sha256_hex
 from stm32_toolkit.project_model import load_project_model
 from stm32_toolkit.regeneration import (
     MAX_DIFF_BYTES,
+    MAX_FILE_BYTES,
     MAX_RECORD_BYTES,
     MAX_PREVIEW_BYTES,
+    MAX_TOTAL_BYTES,
     InventoryEntry,
     RegenerationError,
     RegenerationInputError,
@@ -358,6 +361,33 @@ def _tree_state(root: Path) -> tuple[bool, dict[str, bytes]]:
     }
 
 
+def _write_streamed_bytes(path: Path, size: int, byte: bytes = b"x") -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    block = byte * min(1024 * 1024, size)
+    remaining = size
+    with path.open("wb") as handle:
+        while remaining:
+            count = min(len(block), remaining)
+            handle.write(block[:count])
+            remaining -= count
+
+
+def _streamed_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while block := handle.read(1024 * 1024):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _streamed_file_facts(root: Path) -> dict[str, tuple[int, str]]:
+    return {
+        path.relative_to(root).as_posix(): (path.stat().st_size, _streamed_sha256(path))
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
+
+
 def test_plan_reports_invalid_supplied_environment_facts_without_write(tmp_path: Path):
     workspace, destination, environment = _persisted_project(tmp_path)
     environment.digest = "g" * 64
@@ -408,6 +438,90 @@ def test_plan_rejects_malformed_schema_v2_manifest_without_upgrade(tmp_path: Pat
 
     assert result.code == "REGENERATION_NOT_CUBEMX_PROJECT"
     assert result.message == "the destination is not a CubeMX project"
+    assert _tree_state(destination) == before_project
+    assert _tree_state(tmp_path / "data") == before_data
+
+
+def test_plan_rejects_project_aggregate_size_limit_with_real_streamed_files(tmp_path: Path):
+    workspace, destination, environment = _persisted_project(tmp_path)
+    request = RegenerationWorkflowRequest(workspace, tmp_path / "data", "session", "generated")
+    baseline_total = sum(
+        path.stat().st_size for path in destination.rglob("*") if path.is_file()
+    )
+    baseline_files = sum(1 for path in destination.rglob("*") if path.is_file())
+    payload_bytes = 8 * MAX_FILE_BYTES + 1
+    assert baseline_total + payload_bytes <= 300 * 1024 * 1024
+    assert baseline_files + 9 < 200_000
+    aggregate_paths = [destination / "App" / f"aggregate-{index:02d}.bin" for index in range(8)]
+    aggregate_paths.append(destination / "App" / "aggregate-overflow.bin")
+    for path in aggregate_paths[:-1]:
+        _write_streamed_bytes(path, MAX_FILE_BYTES)
+    _write_streamed_bytes(aggregate_paths[-1], 1)
+    before_files = {
+        path.relative_to(destination).as_posix(): (path.stat().st_size, _streamed_sha256(path))
+        for path in aggregate_paths
+    }
+    before_project = _streamed_file_facts(destination)
+    before_data = _tree_state(tmp_path / "data")
+
+    result = plan_regeneration(request, environment=environment)
+
+    assert result.ok is False
+    assert result.operation == "project-regenerate-plan"
+    assert result.code == "REGENERATION_PATH_UNSAFE"
+    assert result.message == "project aggregate size exceeds its bound"
+    assert result.details == {}
+    assert {
+        path.relative_to(destination).as_posix(): (path.stat().st_size, _streamed_sha256(path))
+        for path in aggregate_paths
+    } == before_files
+    assert _streamed_file_facts(destination) == before_project
+    assert _tree_state(tmp_path / "data") == before_data
+
+
+@pytest.mark.parametrize(
+    ("case_id", "mutate", "expected_code", "expected_message"),
+    [
+        pytest.param(
+            "S5-J",
+            lambda payload: payload["project"].__setitem__("origin", "manual"),
+            "REGENERATION_NOT_CUBEMX_PROJECT",
+            "the destination is not a CubeMX project",
+            id="S5-J",
+        ),
+        pytest.param(
+            "S5-K",
+            lambda payload: payload["generatedBy"].__setitem__("tool", "other"),
+            "REGENERATION_PROJECT_INVALID",
+            "the CubeMX project generation contract is invalid",
+            id="S5-K",
+        ),
+    ],
+)
+def test_plan_rejects_closed_project_contract_variants(
+    tmp_path: Path,
+    case_id: str,
+    mutate,
+    expected_code: str,
+    expected_message: str,
+):
+    del case_id
+    workspace, destination, environment = _persisted_project(tmp_path)
+    manifest = destination / ".stm32-project.json"
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    mutate(payload)
+    manifest.write_text(json.dumps(payload, sort_keys=True, separators=(",", ":")), encoding="utf-8")
+    request = RegenerationWorkflowRequest(workspace, tmp_path / "data", "session", "generated")
+    before_project = _tree_state(destination)
+    before_data = _tree_state(tmp_path / "data")
+
+    result = plan_regeneration(request, environment=environment)
+
+    assert result.ok is False
+    assert result.operation == "project-regenerate-plan"
+    assert result.code == expected_code
+    assert result.message == expected_message
+    assert result.details == {}
     assert _tree_state(destination) == before_project
     assert _tree_state(tmp_path / "data") == before_data
 
