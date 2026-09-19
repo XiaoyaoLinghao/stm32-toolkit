@@ -228,6 +228,41 @@ def test_target_replay_publishes_origin_manifest_and_import_metadata(tmp_path: P
     }
 
 
+@pytest.mark.parametrize("field", ["stream_size_bytes", "scenario_role"])
+def test_target_replay_repository_rejects_tampered_descriptor_parent_on_reload(
+    tmp_path: Path, field: str
+):
+    _fixture_value, store, project_root, results_root, descriptor, manifest = _bundle(
+        tmp_path, name="failed-before", operation_id="vs03-failed-before"
+    )
+    Publisher(store, project_root, results_root).publish_target_replay(
+        manifest, descriptor, IMPORT_WORKSPACE_ID
+    )
+
+    parent_path = store.root / "manifests" / f"{descriptor.evidence_id}.json"
+    parent = store.get_envelope(str(descriptor.evidence_id))
+    metadata = dict(parent.metadata)
+    if field == "stream_size_bytes":
+        metadata[field] = int(metadata[field]) + 1
+    else:
+        metadata[field] = "other-role"
+    parent_path.write_bytes(
+        EvidenceEnvelope(
+            identity=parent.identity,
+            operation=parent.operation,
+            produced_at_utc=parent.produced_at_utc,
+            parents=parent.parents,
+            artifacts=parent.artifacts,
+            metadata=metadata,
+        ).to_json_bytes()
+    )
+
+    with pytest.raises(EvidenceValidationError) as failure:
+        Repository(store).load(manifest.run_id)
+
+    assert failure.value.code == "EVIDENCE_CORRUPT"
+
+
 def test_target_replay_retry_is_idempotent_and_conflict_is_stable(tmp_path: Path):
     fixture, store, project_root, results_root, descriptor, manifest = _bundle(
         tmp_path, name="failed-before", operation_id="vs03-failed-before"

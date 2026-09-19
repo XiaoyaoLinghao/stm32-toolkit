@@ -2224,6 +2224,124 @@ def test_controlled_fault_halts_analyzes_restores_and_keeps_observation_config(
     assert recorder.events.index("analyze-end") < recorder.events.index("target.resume")
 
 
+@pytest.mark.parametrize("invalid_binding", [
+    OperationResult.failure(
+        "stm32_debug_bind",
+        "DEBUG_BINDING_LOST",
+        "Debug binding is unavailable",
+        {},
+    ),
+    object(),
+])
+def test_controlled_fault_rejects_invalid_binding_before_target_control(
+    tmp_path: Path, invalid_binding: object
+) -> None:
+    project = _project(tmp_path / "project")
+    recorder = _Recorder()
+
+    async def bind(
+        _request: object,
+        _client: object,
+        *,
+        expected_operation_level: OperationLevel,
+    ) -> object:
+        assert expected_operation_level is OperationLevel.CONTROL
+        return invalid_binding
+
+    seams = replace(_controlled_seams(project, recorder), bind=bind)
+    result = _run(
+        fault_workflow(
+            FaultWorkflowRequest(
+                project,
+                tmp_path / "data",
+                "session-a",
+                "probe-a",
+                BUILD_ID,
+                ELF_SHA,
+                True,
+            ),
+            _seams=seams,
+        )
+    )
+
+    assert result.ok is False
+    assert recorder.control_client.control_calls == []
+    assert "target.halt" not in recorder.events
+    assert result.to_dict()["details"]["controlledSnapshot"]["halt"] == {
+        "dispatched": False,
+        "outcome": "not-started",
+    }
+
+
+def test_controlled_fault_requires_running_target_before_authorizing_halt(
+    tmp_path: Path,
+) -> None:
+    project = _project(tmp_path / "project")
+    recorder = _Recorder()
+    result = _run(
+        fault_workflow(
+            FaultWorkflowRequest(
+                project,
+                tmp_path / "data",
+                "session-a",
+                "probe-a",
+                BUILD_ID,
+                ELF_SHA,
+                True,
+            ),
+            _seams=_controlled_seams(project, recorder, initial_state="halted"),
+        )
+    )
+
+    assert result.ok is False
+    assert result.code == "FAULT_TARGET_NOT_RUNNING"
+    assert recorder.control_client.control_calls == []
+    assert result.to_dict()["details"]["controlledSnapshot"]["halt"] == {
+        "dispatched": False,
+        "outcome": "not-started",
+    }
+
+
+@pytest.mark.parametrize(
+    "halt_response",
+    [{"state": "running", "reason": "requested"}, {"state": "halted"}],
+)
+def test_controlled_fault_rejects_invalid_halt_response_and_restores_target(
+    tmp_path: Path, halt_response: dict[str, object]
+) -> None:
+    project = _project(tmp_path / "project")
+    recorder = _Recorder()
+    result = _run(
+        fault_workflow(
+            FaultWorkflowRequest(
+                project,
+                tmp_path / "data",
+                "session-a",
+                "probe-a",
+                BUILD_ID,
+                ELF_SHA,
+                True,
+            ),
+            _seams=_controlled_seams(
+                project,
+                recorder,
+                halt_response=halt_response,
+            ),
+        )
+    )
+
+    assert result.ok is False
+    assert result.code == "PROBE_RESPONSE_INVALID"
+    assert [call[0] for call in recorder.control_client.control_calls] == [
+        "target.halt",
+        "target.resume",
+    ]
+    snapshot = result.to_dict()["details"]["controlledSnapshot"]
+    assert snapshot["halt"] == {"dispatched": True, "outcome": "unknown"}
+    assert snapshot["resume"]["outcome"] == "succeeded"
+    assert snapshot["afterState"]["state"] == "running"
+
+
 @pytest.mark.parametrize("value", ["true", 1, None, []])
 def test_controlled_fault_requires_exact_boolean_before_service(
     tmp_path: Path, value: object

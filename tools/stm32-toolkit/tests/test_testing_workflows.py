@@ -788,7 +788,7 @@ def test_target_prepare_binds_fixed_facts_and_settles_provider(
     session_root = (tmp_path / "session").absolute()
     session_root.mkdir()
     workspace = SimpleNamespace(
-        workspace_id="w" * 64,
+        workspace_id="1" * 64,
         session_id=context.session_id,
         session_root=session_root,
         project_root=project_root,
@@ -806,14 +806,15 @@ def test_target_prepare_binds_fixed_facts_and_settles_provider(
         ),
     )
     facts = SimpleNamespace(
-        build_id="b" * 64,
-        elf_sha256="e" * 64,
+        build_id="3" * 64,
+        elf_sha256="4" * 64,
         target_device="board-a",
-        input_snapshot_sha256="i" * 64,
-        git_commit="g" * 40,
+        input_snapshot_sha256="2" * 64,
+        git_commit="5" * 40,
         git_dirty=False,
         elf_path="build/app.elf",
     )
+    fresh_facts = SimpleNamespace(**vars(facts))
     project_config = {
         "kind": "memory-mailbox",
         "options": {"address": 0x20000000, "size": 4096},
@@ -838,6 +839,11 @@ def test_target_prepare_binds_fixed_facts_and_settles_provider(
             project_config,
             support,
         ),
+    )
+    monkeypatch.setattr(
+        workflows,
+        "load_fresh_firmware_facts",
+        lambda _root: fresh_facts,
     )
 
     class Supervisor:
@@ -917,6 +923,20 @@ def test_target_prepare_binds_fixed_facts_and_settles_provider(
     assert len(Runner.instances) == 1
     binding = Runner.instances[0].binding
     assert binding is not None
+    assert binding["workspace_id"] == "1" * 64
+    assert binding["project_id"] == str(PROJECT_ID)
+    assert binding["session_id"] == context.session_id
+    assert binding["revision"] == "5" * 40
+    assert binding["input_snapshot_sha256"] == "2" * 64
+    assert binding["build_id"] == "3" * 64
+    assert binding["elf_sha256"] == "4" * 64
+    assert binding["target"] == {
+        "board_id": "board-a",
+        "mcu": "stm32f407vg",
+        "target_id": "board-a",
+        "probe_serial_hash": sha256(b"probe-a").hexdigest(),
+    }
+    assert binding["inventory_digest"] == data["inventory_digest"]
     assert binding["cases"] == ("suite.case",)
     assert binding["recovery_under_reset"] is recovery_under_reset
     if recovery_under_reset:

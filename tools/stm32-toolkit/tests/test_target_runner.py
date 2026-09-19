@@ -5256,6 +5256,62 @@ def test_target_runner_borrowed_probe_success_reloads_published_evidence(
   run(scenario())
 
 
+def test_physical_target_publication_and_reload_bind_retained_run_evidence(
+    tmp_path: Path,
+) -> None:
+  async def scenario() -> None:
+    from stm32_toolkit.testing.publication import (
+        TestRunPublisher,
+        TestRunRepository,
+    )
+
+    stream = valid_target_stream()
+    transport = FakeTransport([stream, b""])
+    runner, prepared, instant, probe, evidence_store, _workflow_calls = (
+        await _r5_prepared_runner(tmp_path, transport, owns_probe=False)
+    )
+    consumed = target_module.ConsumedTargetRun(
+        prepared.action_digest,
+        prepared.binding,
+        target_module.PhysicalRunProvenance(
+            WORKSPACE_ID,
+            SESSION_ID,
+            PROBE_HASH,
+            SESSION_ID,
+            "lease-a",
+        ),
+    )
+
+    result = await runner.run(
+        None,
+        prepared.action_digest,
+        current_revision=REVISION,
+        current_inventory_digest=TARGET_RUN_INVENTORY_DIGEST,
+        now=instant,
+        consumed=consumed,
+    )
+    publisher = TestRunPublisher(
+        evidence_store,
+        tmp_path / "project",
+        tmp_path / "published-results",
+    )
+    published = publisher.publish_target_physical(
+        result["test_manifest"], result["evidence"]
+    )
+    loaded = TestRunRepository(evidence_store).load(
+        result["test_manifest"].run_id
+    )
+
+    assert published.envelope.operation == "target-test-physical"
+    assert published.root.metadata["physical_transport_evidence"] is True
+    assert loaded.manifest == result["test_manifest"]
+    assert loaded.envelope == result["evidence"]
+    assert loaded.root == published.root
+    assert probe.closed is False
+
+  run(scenario())
+
+
 @pytest.mark.parametrize("mutation", ["backend", "target", "mailbox", "extra"])
 def test_target_prepare_rejects_cross_bound_support_before_authority_write(
     tmp_path: Path, mutation: str,

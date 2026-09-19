@@ -723,6 +723,30 @@ def test_heartbeat_updates_only_the_current_lease(tmp_path: Path):
     lease.release()
 
 
+def test_heartbeat_replace_failure_preserves_record_and_cleans_temporary_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    import stm32_toolkit.probe.lease as lease_module
+
+    lease = acquire(manager(tmp_path / "data", OWNER, now=NOW))
+    record_path = lease.record_path
+    before = record_path.read_bytes()
+
+    def fail_replace(*_args: object, **_kwargs: object) -> None:
+        raise OSError("registry replace failed")
+
+    monkeypatch.setattr(lease_module.os, "replace", fail_replace)
+    with pytest.raises(ProbeLeaseError) as failure:
+        lease.heartbeat(utc_now=lambda: NOW + timedelta(seconds=1))
+
+    assert failure.value.code == "PROBE_REGISTRY_UNAVAILABLE"
+    assert record_path.read_bytes() == before
+    assert not list(record_path.parent.glob(f".{record_path.name}.*.tmp"))
+
+    monkeypatch.undo()
+    lease.release()
+
+
 def test_tampered_record_is_not_released_or_overwritten_by_old_owner(tmp_path: Path):
     lease = acquire(manager(tmp_path / "data", OWNER))
     record = json.loads(lease.record_path.read_text(encoding="utf-8"))

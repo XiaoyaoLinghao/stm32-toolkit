@@ -356,6 +356,41 @@ def test_registered_target_prepare_rejects_non_strict_recovery_values(
         )
 
 
+@pytest.mark.parametrize(
+    "case_ids",
+    [
+        [],
+        ["case-a", "case-a"],
+        [""],
+        ["e\u0301"],
+        ["é" * 32_769],
+        ["case-a", 1],
+    ],
+)
+def test_registered_target_prepare_rejects_invalid_case_ids_before_workflow(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, case_ids: list[object]
+):
+    runtime = _runtime(tmp_path)
+    server = create_server(runtime.project_root, runtime.data_root, runtime.session_id)
+    calls: list[object] = []
+
+    async def forbidden(*_args: object, **_kwargs: object) -> dict[str, object]:
+        calls.append("delegate")
+        raise AssertionError("invalid target case IDs must fail schema validation first")
+
+    monkeypatch.setattr(mcp_mod, "tool_test_target_prepare_for_request", forbidden)
+
+    with pytest.raises(Exception):
+        asyncio.run(
+            server.call_tool(
+                "stm32_test_target_prepare",
+                {"probeId": "probe-a", "caseIds": case_ids},
+            )
+        )
+
+    assert calls == []
+
+
 def test_registered_host_run_rejects_repeated_case_ids_before_workflow(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
