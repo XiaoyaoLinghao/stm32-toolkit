@@ -123,3 +123,14 @@ package imports, builds, installers, hardware, remote operations, and cleanup
 were not performed in this implementation wave. The tests remain NOT_RUN
 pending the primary's independent complete-diff review and serial selected-node
 execution. Native coverage aggregation remains primary-owned.
+
+## Primary integration disposition
+
+The primary independently reviewed the complete accepted-base-to-test-head diff
+and executed the bounded selected functions. Run1 at5819 recorded12PASS and a
+test-only missing deepcopy import failure. Test headf74a91cba9adc1c274f24f8e7a310d9300ad17e5 corrects two missing imports; run2 executed only the failed and unrun functions:15PASS,exit0,zero skips,14.379secondsJUnit,no timeout,and childreaped. The twelve unchanged passing items are retained, for27distinct selected passes. Historical failure evidence remains in r10/e/core95/authority/run1; current reconciliation is in run2/primary-result-review.json.
+
+Verdict: ACCEPTED for this bounded test change. Runtime source remains equal to
+a270d7332c3ad2d09cd0b9adfa96ca80042bcf9d. No coverage threshold, remaining
+source-family barrier exemption, physical result, or1.0 release acceptance is
+implied. Native coverage aggregation remains pending the four-owner wave.
