@@ -1668,3 +1668,248 @@ def test_transcript_artifact_io_failure_is_environment_error_without_derived_mut
     assert "provider-private-secret" not in str(error.value)
     assert _evidence_tree(evidence) == before_tree
     assert not (evidence.root / "roots" / "monitor-analysis").exists()
+
+
+def test_derived_preflight_rejects_corrupt_root_without_mutation(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    evidence, before, after = _ingest_pair(paths)
+    declaration = _declaration(tmp_path, evidence, before, after)
+    first = _publish(paths, evidence, before, after, declaration)
+    root_path = next((evidence.root / "roots" / "monitor-analysis").glob("*.json"))
+    root_path.write_bytes(b"corrupt-derived-root")
+    before_tree = _evidence_tree(evidence)
+
+    with pytest.raises(AnalysisWorkflowError) as error:
+        _publish(paths, evidence, before, after, declaration)
+
+    assert first.analysis_result.analysis_id
+    assert error.value.code == EVIDENCE_INTEGRITY_FAILURE
+    assert _evidence_tree(evidence) == before_tree
+
+
+def test_derived_preflight_maps_root_provider_io_without_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _paths(tmp_path)
+    evidence, before, after = _ingest_pair(paths)
+    declaration = _declaration(tmp_path, evidence, before, after)
+    first = _publish(paths, evidence, before, after, declaration)
+    original_get_root = workflows.get_root
+
+    def fail_derived_root(store: EvidenceStore, root_type: str, root_id: str) -> object:
+        if root_type == "monitor-analysis" and root_id == first.analysis_result.analysis_id:
+            raise OSError("derived-root-provider-secret")
+        return original_get_root(store, root_type, root_id)
+
+    monkeypatch.setattr(workflows, "get_root", fail_derived_root)
+    before_tree = _evidence_tree(evidence)
+
+    with pytest.raises(AnalysisWorkflowError) as error:
+        _publish(paths, evidence, before, after, declaration)
+
+    assert error.value.code == ENVIRONMENT_FAILURE
+    assert "derived-root-provider-secret" not in str(error.value)
+    assert _evidence_tree(evidence) == before_tree
+
+
+def test_derived_preflight_rejects_existing_envelope_intent_conflict(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _paths(tmp_path)
+    evidence, before, after = _ingest_pair(paths)
+    declaration = _declaration(tmp_path, evidence, before, after)
+    first = _publish(paths, evidence, before, after, declaration)
+    alternate = evidence.get_envelope(before.transcript_evidence_id)
+    original_get_envelope = EvidenceStore.get_envelope
+
+    def return_different_envelope(store: EvidenceStore, evidence_id: str) -> object:
+        if evidence_id == first.analysis_evidence_ref.evidence_id:
+            return alternate
+        return original_get_envelope(store, evidence_id)
+
+    monkeypatch.setattr(EvidenceStore, "get_envelope", return_different_envelope)
+    before_tree = _evidence_tree(evidence)
+
+    with pytest.raises(AnalysisWorkflowError) as error:
+        _publish(paths, evidence, before, after, declaration)
+
+    assert error.value.code == "OPERATION_CONFLICT"
+    assert _evidence_tree(evidence) == before_tree
+
+
+def test_derived_publication_reload_rejects_published_root_mismatch_without_rollback(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    evidence, before, after = _ingest_pair(paths)
+    declaration = _declaration(tmp_path, evidence, before, after)
+    state: dict[str, object] = {"root_mutated": False, "root_path": None}
+
+    def mutate_after_root_publish(point: str) -> None:
+        if point != "gc-root.after_publish" or state["root_mutated"]:
+            return
+        root_path = next((evidence.root / "roots" / "monitor-analysis").glob("*.json"))
+        payload = json.loads(root_path.read_bytes().decode("utf-8"))
+        metadata = dict(cast(dict[str, object], payload["metadata"]))
+        metadata["origin_workspace_id"] = "9" * 64
+        payload["metadata"] = metadata
+        root_path.write_bytes(canonical_json_bytes(payload))
+        state["root_mutated"] = True
+        state["root_path"] = root_path
+
+    faulty = EvidenceStore(evidence.root, fault_injector=mutate_after_root_publish)
+    before_tree = _evidence_tree(evidence)
+
+    with pytest.raises(AnalysisWorkflowError) as error:
+        _publish(paths, faulty, before, after, declaration)
+
+    assert state["root_mutated"] is True
+    assert error.value.code == EVIDENCE_INTEGRITY_FAILURE
+    assert state["root_path"] is not None
+    assert _evidence_tree(evidence) != before_tree
+    assert not any((evidence.root / "roots" / "diagnostic-marker").glob("*.json"))
+
+
+def test_derived_publication_reload_rejects_provider_envelope_mismatch_without_rollback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _paths(tmp_path)
+    evidence, before, after = _ingest_pair(paths)
+    declaration = _declaration(tmp_path, evidence, before, after)
+    alternate = evidence.get_envelope(before.transcript_evidence_id)
+    state: dict[str, object] = {"analysis_manifest_id": None}
+
+    def record_analysis_root_publish(point: str) -> None:
+        if point != "gc-root.after_publish" or state["analysis_manifest_id"] is not None:
+            return
+        root_path = next((evidence.root / "roots" / "monitor-analysis").glob("*.json"))
+        state["analysis_manifest_id"] = json.loads(root_path.read_bytes().decode("utf-8"))["manifest_id"]
+
+    original_get_envelope = EvidenceStore.get_envelope
+
+    def return_alternate_after_publish(store: EvidenceStore, evidence_id: str) -> object:
+        if state["analysis_manifest_id"] == evidence_id:
+            return alternate
+        return original_get_envelope(store, evidence_id)
+
+    monkeypatch.setattr(EvidenceStore, "get_envelope", return_alternate_after_publish)
+    faulty = EvidenceStore(evidence.root, fault_injector=record_analysis_root_publish)
+    before_tree = _evidence_tree(evidence)
+
+    with pytest.raises(AnalysisWorkflowError) as error:
+        _publish(paths, faulty, before, after, declaration)
+
+    assert state["analysis_manifest_id"] is not None
+    assert error.value.code == EVIDENCE_INTEGRITY_FAILURE
+    assert _evidence_tree(evidence) != before_tree
+    assert not any((evidence.root / "roots" / "diagnostic-marker").glob("*.json"))
+
+
+def test_derived_publication_reload_rejects_provider_artifact_bytes_without_rollback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _paths(tmp_path)
+    evidence, before, after = _ingest_pair(paths)
+    declaration = _declaration(tmp_path, evidence, before, after)
+    state = {"analysis_root_published": False}
+
+    def record_analysis_root_publish(point: str) -> None:
+        if point == "gc-root.after_publish" and not state["analysis_root_published"]:
+            state["analysis_root_published"] = True
+
+    original_read_artifact = EvidenceStore.read_artifact
+
+    def return_wrong_reload_bytes(
+        store: EvidenceStore, artifact: ArtifactRef, *, maximum_bytes: int
+    ) -> bytes:
+        if state["analysis_root_published"] and artifact.kind == "monitor-analysis":
+            return b"derived-reload-mismatch"
+        return original_read_artifact(store, artifact, maximum_bytes=maximum_bytes)
+
+    monkeypatch.setattr(EvidenceStore, "read_artifact", return_wrong_reload_bytes)
+    faulty = EvidenceStore(evidence.root, fault_injector=record_analysis_root_publish)
+    before_tree = _evidence_tree(evidence)
+
+    with pytest.raises(AnalysisWorkflowError) as error:
+        _publish(paths, faulty, before, after, declaration)
+
+    assert state["analysis_root_published"] is True
+    assert error.value.code == EVIDENCE_INTEGRITY_FAILURE
+    assert _evidence_tree(evidence) != before_tree
+    assert not any((evidence.root / "roots" / "diagnostic-marker").glob("*.json"))
+
+
+@pytest.mark.parametrize(
+    ("authority", "expected_code"),
+    [
+        ("root", EVIDENCE_INTEGRITY_FAILURE),
+        ("manifest", EVIDENCE_INTEGRITY_FAILURE),
+        ("envelope", EVIDENCE_INTEGRITY_FAILURE),
+        ("bytes", EVIDENCE_INTEGRITY_FAILURE),
+        ("provider", ENVIRONMENT_FAILURE),
+    ],
+)
+def test_export_rejects_upstream_derived_authority_without_bundle_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    authority: str,
+    expected_code: str,
+) -> None:
+    paths = _paths(tmp_path)
+    evidence, before, after = _ingest_pair(paths)
+    declaration = _declaration(tmp_path, evidence, before, after)
+    failed_id, fixed_id = _publish_target_pair(paths, evidence)
+    publication = _publish(paths, evidence, before, after, declaration)
+    analysis_root = get_root(evidence, "monitor-analysis", publication.analysis_result.analysis_id)
+    analysis_envelope = evidence.get_envelope(analysis_root.manifest_id)
+
+    if authority == "root":
+        root_path = next((evidence.root / "roots" / "monitor-analysis").glob("*.json"))
+        payload = json.loads(root_path.read_bytes().decode("utf-8"))
+        metadata = dict(cast(dict[str, object], payload["metadata"]))
+        metadata["origin_workspace_id"] = "8" * 64
+        payload["metadata"] = metadata
+        root_path.write_bytes(canonical_json_bytes(payload))
+    elif authority == "manifest":
+        (evidence.root / "manifests" / f"{analysis_root.manifest_id}.json").unlink()
+    elif authority == "envelope":
+        alternate = evidence.get_envelope(before.transcript_evidence_id)
+        original_get_envelope = EvidenceStore.get_envelope
+
+        def return_alternate(store: EvidenceStore, evidence_id: str) -> object:
+            if evidence_id == analysis_envelope.evidence_id:
+                return alternate
+            return original_get_envelope(store, evidence_id)
+
+        monkeypatch.setattr(EvidenceStore, "get_envelope", return_alternate)
+    elif authority in {"bytes", "provider"}:
+        original_read_artifact = EvidenceStore.read_artifact
+
+        def read_upstream_variant(
+            store: EvidenceStore, artifact: ArtifactRef, *, maximum_bytes: int
+        ) -> bytes:
+            if artifact.kind == "monitor-analysis":
+                if authority == "bytes":
+                    return b"upstream-derived-bytes-differ"
+                raise OSError("upstream-derived-provider-secret")
+            return original_read_artifact(store, artifact, maximum_bytes=maximum_bytes)
+
+        monkeypatch.setattr(EvidenceStore, "read_artifact", read_upstream_variant)
+
+    before_tree = _evidence_tree(evidence)
+    with pytest.raises(AnalysisWorkflowError) as error:
+        export_analysis_bundle(
+            paths,
+            evidence,
+            _request(before, after),
+            publication,
+            failed_id,
+            fixed_id,
+            declaration,
+        )
+
+    assert error.value.code == expected_code
+    if authority == "provider":
+        assert "upstream-derived-provider-secret" not in str(error.value)
+    assert _evidence_tree(evidence) == before_tree
+    assert not any("monitor-analysis-bundle" in path for path in _evidence_tree(evidence))
