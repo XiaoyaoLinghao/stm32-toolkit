@@ -53,6 +53,10 @@ after acquisition. If acquisition returns after expiry, release the acquired
 lock and close the descriptor without entering the protected body, then report
 busy. Never reset the deadline on contention. OS scheduling and synchronous
 open/validation latency are not promised to have a hard real-time bound.
+The post-acquisition deadline check runs immediately after native success. Do
+not add another expiry refusal after held-layout validation: that would turn
+validation latency into an unrelated availability failure after timely lock
+acquisition. The critical section has no newly introduced execution deadline.
 
 Lifecycle: descriptor validated -> acquisition pending -> acquired -> held
 identity/layout validated -> protected body -> unlock -> close. Timeout before
