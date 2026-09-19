@@ -76,16 +76,31 @@ def _write_json(path: Path, value: object) -> None:
 
 
 def _real_project(project: Path) -> None:
-    fixture = (
-        Path(__file__).parents[2]
-        / "stm32-toolkit"
-        / "tests"
-        / "fixtures"
-        / "minimal-gcc"
-        / ".stm32-project.json"
-    )
-    payload = json.loads(fixture.read_text(encoding="utf-8"))
-    payload["logicalProjectId"] = str(PROJECT_ID)
+    payload = {
+        "schemaVersion": 3,
+        "logicalProjectId": str(PROJECT_ID),
+        "generatedBy": {"tool": "stm32-toolkit", "version": "0.6"},
+        "project": {"name": "analysis-cli", "origin": "manual"},
+        "target": {"device": "stm32:stm32f429zi", "core": "cortex-m4"},
+        "framework": {"type": "bare-metal", "version": None},
+        "build": {
+            "sources": [],
+            "includePaths": [],
+            "defines": [],
+            "compileOptions": [],
+            "assemblySources": [],
+            "presets": [],
+            "elf": None,
+        },
+        "memory": {"source": "manual", "regions": []},
+        "debug": {"backend": "pyocd", "target": "board:fixture-01", "svd": None},
+        "generation": {
+            "cubeMxIoc": None,
+            "managedManifest": ".stm32-toolkit/generated-files.json",
+            "generatedDirectories": [],
+            "userDirectories": [],
+        },
+    }
     project.mkdir()
     _write_json(project / ".stm32-project.json", payload)
 
@@ -533,8 +548,11 @@ def test_public_analysis_cli_maps_each_adapter_failure_class(
     _real_project(project)
     request_file = tmp_path / "request.json"
     _write_json(request_file, _valid_analysis_request_wire())
+    calls = 0
 
     def fail(*args: object, **kwargs: object) -> object:
+        nonlocal calls
+        calls += 1
         del args, kwargs
         raise error
 
@@ -566,6 +584,7 @@ def test_public_analysis_cli_maps_each_adapter_failure_class(
     )
 
     assert code == 1
+    assert calls == 1
     payload = json.loads(output.getvalue())
     assert payload["code"] == expected_code
     assert payload["message"] == expected_message
