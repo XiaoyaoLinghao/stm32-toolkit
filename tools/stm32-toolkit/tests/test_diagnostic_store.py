@@ -1422,6 +1422,7 @@ def test_public_store_recovers_after_event_durability_interruption(
     assert event_path.read_bytes() == canonical_diagnostic_json_bytes(created.to_dict())
 
     root = get_root(evidence, "diagnostic-session", f"{SID}.00000001")
+    assert f"roots/diagnostic-session/{root_paths[0].name}" in added_evidence_files
     assert root.metadata == {
         "diagnostic_session_id": SID,
         "revision": 1,
