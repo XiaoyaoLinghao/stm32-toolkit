@@ -1060,13 +1060,13 @@ def test_setup_contract_uses_namespaced_skill_and_ignores_coverage_data():
     assert "CLAUDE_PLUGIN_DATA" not in launcher
     assert "`/setup-stm32-env`" not in readme
     assert "Run /setup-stm32-env" not in readme
-    for path_assignment in (
-        "$ToolkitRoot = 'C:\\tools\\stm32-toolkit-1.0.0'",
-        "$DataRoot = 'C:\\data\\stm32-toolkit'",
-        "$ProjectRoot = 'C:\\work\\blinky'",
-        "$SetupScript = Join-Path $ToolkitRoot 'bin\\setup-stm32-env.ps1'",
-    ):
-        assert path_assignment in readme
+    for variable in ("ToolkitRoot", "DataRoot", "ProjectRoot"):
+        assert re.search(
+            rf"^\${variable}\s*=\s*'[A-Za-z]:[\\/][^'\r\n]+'[ \t]*$",
+            readme,
+            flags=re.MULTILINE,
+        )
+    assert "$SetupScript = Join-Path $ToolkitRoot 'bin\\setup-stm32-env.ps1'" in readme
     for argument in (
         "-ToolkitRoot $ToolkitRoot",
         "-DataRoot $DataRoot",

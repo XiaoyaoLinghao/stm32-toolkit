@@ -656,6 +656,7 @@ def test_unified_1_0_0_runtime_version_across_launcher_setup_and_skill():
     monitor_launcher = MONITOR_LAUNCHER.read_text(encoding="utf-8")
     helper = SETUP_HELPER.read_text(encoding="utf-8")
     skill = SETUP_SKILL.read_text(encoding="utf-8")
+    command_blocks = "\n".join(_fenced_blocks(skill)).replace("\\", "/")
     manifest = json.loads(PLUGIN_MANIFEST.read_text(encoding="utf-8"))
 
     assert manifest["version"] == __version__ == "1.0.0"
@@ -682,3 +683,5 @@ def test_unified_1_0_0_runtime_version_across_launcher_setup_and_skill():
     assert ">=0.45.1,<0.46" in skill
     assert "existing 0.9.0, 0.5.0 or 0.3.0 runtime reports broken" in skill
     assert "${CLAUDE_PLUGIN_DATA}/runtime/1.0.0/Scripts/python.exe" in skill
+    for legacy_version in ("0.9.0", "0.5.0", "0.3.0"):
+        assert f"runtime/{legacy_version}" not in command_blocks
