@@ -1269,7 +1269,6 @@ def test_public_store_write_refusals_preserve_authority(tmp_path: Path, case: st
                 SID,
                 _event(
                     sequence=1,
-                    revision_before=1,
                     event_type="investigation.started",
                     request={},
                     result={},
