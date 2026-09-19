@@ -53,14 +53,23 @@ failure is retained as a path-boundary environment result; its native exception
 was not captured and is not inferred from a different run.
 
 The three Monitor lifecycle cases were accepted and integrated, with their raw
-coverage included once in the current aggregates. The separate retention
-cancellation experiment is not accepted: its first two passing cases omitted
-the actual writer outcome; the corrected run reported one pass and one failure
-at an internal-exception identity assertion. That failure does not establish
-storage corruption. Its PowerShell launcher also assigned the read-only PID
-variable, so the recorded launcher exit and timestamps do not prove the pytest
-child's exit status. Preserve the JUnit/stdout and return to contract design;
-do not aggregate that run or repeat the performance benchmark.
+coverage included once in the current aggregates. The retention cancellation
+qualification is now independently accepted at final report head
+53f47b2b0236aacbd0a0d2c0806d9f4cdd78cfcb and integrated at
+163d3446e4f663eeb6326026f126ea502df026d1. Its r3 run passed both controlled
+SQLite cases with actual child exit 0, complete cancellation/exception graphs,
+consistent durable accounting and public queries, writer reuse and settled
+cleanup. The post-commit case preserved its deletion; the pre-commit case
+rolled back. This confirms the bounded cancellation contract, not the cause of
+the historical large-run timeout. Its raw coverage awaits the next accepted
+batch aggregation.
+
+The earlier retention runs remain separately attributed. The first omitted
+the actual writer outcome; r2 reported one pass and one failure at an
+internal-exception identity assertion. Its callback native leaf was not
+captured, and its PowerShell PID variable error invalidates the child-exit
+manifest. Neither r2 corruption nor its native cause is established; retain
+the JUnit/stdout without aggregating that run or repeating the benchmark.
 
 The release delivery audit found two portability omissions: standalone
 PowerShell installation examples and unambiguous archive-relative instructions
