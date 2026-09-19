@@ -98,6 +98,66 @@ def test_scenario_wire_guards_preserve_input_and_exact_error_codes(
     assert candidate == before
 
 
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    [
+        pytest.param("scenarioId", "legacy-keil-migratio\u0301n", id="non-nfc"),
+        pytest.param("scenarioId", "x" * (64 * 1024 + 1), id="oversized"),
+        pytest.param("scenarioId", "legacy-keil-migration\n", id="control"),
+    ],
+)
+def test_scenario_scalar_guards_preserve_wire_and_reject_noncanonical_text(
+    field: str, replacement: str
+) -> None:
+    candidate = acceptance_scenario("legacy-keil-migration", "1").to_dict()
+    candidate[field] = replacement
+    before = deepcopy(candidate)
+
+    with pytest.raises(AcceptanceValidationError) as error:
+        AcceptanceScenario.from_value(candidate)
+
+    assert error.value.code == "ACCEPTANCE_INPUT_INVALID"
+    assert candidate == before
+
+
+def test_scenario_depth_guard_preserves_wire() -> None:
+    nested: object = "leaf"
+    for _ in range(33):
+        nested = {"nested": nested}
+    candidate = acceptance_scenario("legacy-keil-migration", "1").to_dict()
+    candidate["extra"] = nested
+    before = deepcopy(candidate)
+
+    with pytest.raises(AcceptanceValidationError) as error:
+        AcceptanceScenario.from_value(candidate)
+
+    assert error.value.code == "ACCEPTANCE_INPUT_INVALID"
+    assert candidate == before
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    [
+        pytest.param("schema", "stm32-acceptance-scenario/2", id="schema"),
+        pytest.param("projectOrigin", "cubemx", id="origin"),
+        pytest.param("executionProfile", "physical", id="profile"),
+        pytest.param("requiredStages", list(reversed(REQUIRED_STAGES)), id="stage-order"),
+    ],
+)
+def test_scenario_definition_guards_preserve_wire(
+    field: str, replacement: object
+) -> None:
+    candidate = acceptance_scenario("legacy-keil-migration", "1").to_dict()
+    candidate[field] = replacement
+    before = deepcopy(candidate)
+
+    with pytest.raises(AcceptanceValidationError) as error:
+        AcceptanceScenario.from_value(candidate)
+
+    assert error.value.code == "ACCEPTANCE_INPUT_INVALID"
+    assert candidate == before
+
+
 def _record_payload(**overrides: object) -> dict[str, object]:
     payload: dict[str, object] = {
         "schema": "stm32-acceptance-record/1",
@@ -140,6 +200,27 @@ def test_record_model_rejects_physical_source_wrong_stage_and_noncanonical_scala
     ):
         with pytest.raises(AcceptanceValidationError):
             AcceptanceRecord.from_value(_record_payload(**mutation))
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    [
+        pytest.param("schema", "stm32-acceptance-record/2", id="schema"),
+        pytest.param("scenarioDigest", "0" * 64, id="scenario-digest"),
+        pytest.param("projectOrigin", "cubemx", id="origin"),
+    ],
+)
+def test_record_definition_guards_preserve_wire(
+    field: str, replacement: object
+) -> None:
+    candidate = _record_payload(**{field: replacement})
+    before = deepcopy(candidate)
+
+    with pytest.raises(AcceptanceValidationError) as error:
+        AcceptanceRecord.from_value(candidate)
+
+    assert error.value.code == "ACCEPTANCE_INPUT_INVALID"
+    assert candidate == before
 
 
 def test_record_model_requires_exact_closed_fields_and_canonical_digest():
