@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import hashlib
 import json
 import os
@@ -731,6 +731,76 @@ def _replace_attempt_root(
     return candidate
 
 
+def _replace_attempt_envelope_identity(
+    case: PersistedCase,
+    attempt_id: str,
+    revision: int,
+    *,
+    session_id: str,
+) -> None:
+    root = get_root(
+        case.evidence,
+        "acceptance-attempt",
+        recovery_workflows._root_id(attempt_id, revision),
+    )
+    old_envelope = case.evidence.get_envelope(root.manifest_id)
+    replacement = EvidenceEnvelope(
+        identity=replace(old_envelope.identity, session_id=session_id),
+        operation=old_envelope.operation,
+        produced_at_utc=old_envelope.produced_at_utc,
+        parents=old_envelope.parents,
+        artifacts=old_envelope.artifacts,
+        metadata=old_envelope.metadata,
+    )
+    case.evidence.put_envelope(replacement)
+    root_payload = root.to_dict()
+    root_payload["manifest_id"] = str(replacement.evidence_id)
+    _root_path(case, attempt_id, revision).write_bytes(
+        canonical_json_bytes(root_payload)
+    )
+
+
+def _replace_finalization_root_metadata(
+    case: PersistedCase,
+    proof: PhysicalFinalizationProof,
+) -> None:
+    root = get_root(
+        case.evidence,
+        recovery_workflows.FINALIZATION_ROOT_TYPE,
+        proof.continuation_id,
+    )
+    root_payload = root.to_dict()
+    root_payload["metadata"] = {"continuation_id": "0" * 64}
+    recovery_workflows._typed_root_path(
+        case.evidence,
+        proof.continuation_id,
+        recovery_workflows.FINALIZATION_ROOT_TYPE,
+    ).write_bytes(canonical_json_bytes(root_payload))
+
+
+def _persisted_snapshot(case: PersistedCase) -> dict[str, bytes]:
+    return {
+        path.relative_to(case.data).as_posix(): path.read_bytes()
+        for path in case.data.rglob("*")
+        if path.is_file()
+    }
+
+
+def _run_finalization_route(
+    case: PersistedCase,
+    attempt_id: str,
+    proof: PhysicalFinalizationProof,
+    route: str,
+):
+    if route == "show":
+        return show_acceptance_attempt(_context(case), attempt_id=attempt_id)
+    if route == "begin":
+        return _begin(case, attempt_id)
+    if route == "checkpoint":
+        return _checkpoint(case, attempt_id, proof)
+    raise AssertionError(f"unsupported finalization route: {route}")
+
+
 def _publish_extra_revision(case: PersistedCase, attempt_id: str, attempt: Mapping[str, object]) -> None:
     root_id = recovery_workflows._root_id(attempt_id, 3)
     # Use an existing valid attempt envelope as the manifest target.  The
@@ -1136,6 +1206,91 @@ def test_persisted_attempt_binding_mutations_are_rejected(
             "ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH",
             "ACCEPTANCE_ATTEMPT_CONFLICT",
         }
+
+
+@pytest.mark.parametrize(
+    ("mutation", "route", "expected_code"),
+    (
+        ("rev1-previous-checkpoint", "show", "ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED"),
+        ("rev1-previous-checkpoint", "begin", "ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED"),
+        ("rev1-previous-checkpoint", "checkpoint", "ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED"),
+        ("rev1-immutable-session", "show", "ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED"),
+        ("rev1-immutable-session", "begin", "ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED"),
+        ("rev1-immutable-session", "checkpoint", "ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED"),
+        ("rev1-envelope-session", "show", "ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH"),
+        ("rev1-envelope-session", "begin", "ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH"),
+        ("rev1-envelope-session", "checkpoint", "ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH"),
+        ("proof-root-metadata", "show", "ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED"),
+        ("proof-root-metadata", "begin", "ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED"),
+        ("proof-root-metadata", "checkpoint", "ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED"),
+    ),
+    ids=(
+        "rev1-previous-checkpoint-show",
+        "rev1-previous-checkpoint-begin",
+        "rev1-previous-checkpoint-checkpoint",
+        "rev1-immutable-session-show",
+        "rev1-immutable-session-begin",
+        "rev1-immutable-session-checkpoint",
+        "rev1-envelope-session-show",
+        "rev1-envelope-session-begin",
+        "rev1-envelope-session-checkpoint",
+        "proof-root-metadata-show",
+        "proof-root-metadata-begin",
+        "proof-root-metadata-checkpoint",
+    ),
+)
+def test_finalization_persisted_authority_mutations_refuse_without_new_revision(
+    persisted_case: PersistedCase,
+    mutation: str,
+    route: str,
+    expected_code: str,
+) -> None:
+    attempt_id = "00000000-0000-4000-8000-000000000330"
+    started = _begin(persisted_case, attempt_id)
+    assert started.ok
+    proof = _proof(persisted_case, started.data["attempt"])
+    completed = _checkpoint(
+        persisted_case,
+        attempt_id,
+        proof,
+        clock=lambda: COMMIT_TIME,
+    )
+    assert completed.ok
+
+    if mutation == "rev1-previous-checkpoint":
+        _replace_attempt_root(
+            persisted_case,
+            attempt_id,
+            1,
+            {"previousCheckpointId": "d" * 64},
+        )
+    elif mutation == "rev1-immutable-session":
+        _replace_attempt_root(
+            persisted_case,
+            attempt_id,
+            1,
+            {"sessionId": "foreign-session-20260918"},
+        )
+    elif mutation == "rev1-envelope-session":
+        _replace_attempt_envelope_identity(
+            persisted_case,
+            attempt_id,
+            1,
+            session_id="foreign-session-20260918",
+        )
+    elif mutation == "proof-root-metadata":
+        _replace_finalization_root_metadata(persisted_case, proof)
+    else:
+        raise AssertionError(f"unsupported finalization mutation: {mutation}")
+
+    before = _persisted_snapshot(persisted_case)
+    result = _run_finalization_route(persisted_case, attempt_id, proof, route)
+    assert not result.ok
+    assert result.code == expected_code
+    assert _persisted_snapshot(persisted_case) == before
+    assert _root_path(persisted_case, attempt_id, 0).exists()
+    assert _root_path(persisted_case, attempt_id, 1).exists()
+    assert not _root_path(persisted_case, attempt_id, 2).exists()
 
 
 def test_unexpected_revision_rejected_by_read_mutation_and_fresh_process(
