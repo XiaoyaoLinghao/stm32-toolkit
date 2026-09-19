@@ -82,6 +82,28 @@ class ChildRootAdapter(RecordingAdapter):
         return SimpleNamespace(invocations=1, project_root=child)
 
 
+class InvalidChildRootAdapter(RecordingAdapter):
+    def __init__(self, events: list[str], shape: str):
+        super().__init__(events)
+        self.shape = shape
+
+    def generate(self, capability, staging):
+        self.calls += 1
+        self.events.append("cubeMx")
+        if self.shape == "missing-project-root":
+            return SimpleNamespace(invocations=1, project_root=None)
+        if self.shape == "unexpected-project-name":
+            child = staging.staging_dir / "unexpected"
+            child.mkdir()
+            (child / "native.txt").write_text("generated", encoding="utf-8")
+            return SimpleNamespace(invocations=1, project_root=child)
+        child = staging.staging_dir / "generated"
+        child.mkdir()
+        (child / "native.txt").write_text("generated", encoding="utf-8")
+        (staging.staging_dir / "unexpected-sibling").mkdir()
+        return SimpleNamespace(invocations=1, project_root=child)
+
+
 class ControlArtifactAdapter(RecordingAdapter):
     def generate(self, capability, staging):
         self.calls += 1
@@ -340,6 +362,38 @@ def test_release_build_failure_leaves_destination_absent_and_cleans_staging(tmp_
     assert not list(tmp_path.glob(".stm32tk-activation-*"))
 
 
+def test_apply_rejects_destination_drift_after_staging_before_activation(tmp_path: Path):
+    data, store, prepared = _authorization(tmp_path)
+    destination = tmp_path / "generated"
+    events: list[str] = []
+
+    def build(root: Path, preset: str):
+        events.append(preset)
+        if preset == "arm-release":
+            destination.mkdir()
+            (destination / "user.txt").write_text("keep", encoding="utf-8")
+        return OperationResult.success("build", {"preset": preset})
+
+    result = apply_creation(
+        CreationApplyRequest(tmp_path, data, prepared.authorization_digest, True),
+        store=store,
+        adapter=RecordingAdapter([]),
+        validate_native=_validator([]),
+        configure=lambda root: OperationResult.success("configure", {}),
+        build=build,
+    )
+
+    assert result.ok is False
+    assert result.code == "CREATION_DESTINATION_CHANGED"
+    assert events == ["arm-debug", "arm-release"]
+    assert (destination / "user.txt").read_text(encoding="utf-8") == "keep"
+    assert not list(tmp_path.glob(".stm32tk-creation-*"))
+    assert not list(tmp_path.glob(".stm32tk-activation-*"))
+    assert not list(tmp_path.glob(".generated.backup-*"))
+    record = store.authorization_root / f"{prepared.authorization_digest}.json"
+    assert __import__("json").loads(record.read_text(encoding="utf-8"))["state"] == "consumed"
+
+
 def test_populated_destination_is_rejected_without_consuming_generation_call(tmp_path: Path):
     (tmp_path / "generated").mkdir()
     (tmp_path / "generated" / "existing.txt").write_text("keep", encoding="utf-8")
@@ -364,6 +418,42 @@ def test_apply_requires_exact_boolean_true(tmp_path: Path):
     with pytest.raises(CreationAuthorizationError) as error:
         apply_creation(CreationApplyRequest(tmp_path, data, prepared.authorization_digest, False), store=store)
     assert error.value.code == "CREATION_AUTHORIZATION_REQUIRED"
+
+
+@pytest.mark.parametrize("drift_kind", ["root", "plan", "action"])
+def test_apply_rejects_authorization_root_and_expected_digest_drift_before_provider(
+    tmp_path: Path, drift_kind: str
+):
+    data, store, prepared = _authorization(tmp_path)
+    alternate_root = tmp_path / "alternate-root"
+    alternate_root.mkdir()
+    adapter = RecordingAdapter([])
+    project_root = alternate_root if drift_kind == "root" else tmp_path
+    expected_plan_id = "d" * 64 if drift_kind == "plan" else None
+    expected_action_digest = "e" * 64 if drift_kind == "action" else None
+
+    result = apply_creation(
+        CreationApplyRequest(
+            project_root,
+            data,
+            prepared.authorization_digest,
+            True,
+            expected_plan_id=expected_plan_id,
+            expected_action_digest=expected_action_digest,
+        ),
+        store=store,
+        adapter=adapter,
+    )
+
+    assert result.ok is False
+    assert result.code == "CREATION_PLAN_CHANGED"
+    assert adapter.calls == 0
+    assert not (tmp_path / "generated").exists()
+    assert not list(tmp_path.glob(".stm32tk-creation-*"))
+    assert not list(tmp_path.glob(".stm32tk-activation-*"))
+    record = store.authorization_root / f"{prepared.authorization_digest}.json"
+    assert __import__("json").loads(record.read_text(encoding="utf-8"))["state"] == "consumed"
+    assert list(alternate_root.iterdir()) == []
 
 
 def test_adapter_factory_failure_is_typed_without_dispatch_or_owned_roots(tmp_path: Path):
@@ -864,6 +954,37 @@ def test_apply_validates_and_activates_only_adapter_project_child_root(tmp_path:
     assert seen and seen[0].name == "generated"
     assert (tmp_path / "generated" / "native.txt").read_text(encoding="utf-8") == "generated"
     assert not list(tmp_path.glob(".stm32tk-creation-*"))
+
+
+@pytest.mark.parametrize(
+    "provider_shape",
+    ["missing-project-root", "unexpected-project-name", "unexpected-sibling"],
+)
+def test_apply_rejects_provider_output_outside_one_authorized_project_child(
+    tmp_path: Path, provider_shape: str
+):
+    data, store, prepared = _authorization(tmp_path)
+    events: list[str] = []
+    adapter = InvalidChildRootAdapter(events, provider_shape)
+
+    result = apply_creation(
+        CreationApplyRequest(tmp_path, data, prepared.authorization_digest, True),
+        store=store,
+        adapter=adapter,
+        validate_native=_validator(events),
+        configure=lambda root: OperationResult.success("configure", {}),
+        build=lambda root, preset: OperationResult.success("build", {"preset": preset}),
+    )
+
+    assert result.ok is False
+    assert result.code == "CUBEMX_NATIVE_OUTPUT_INVALID"
+    assert adapter.calls == 1
+    assert events == ["cubeMx"]
+    assert not (tmp_path / "generated").exists()
+    assert not list(tmp_path.glob(".stm32tk-creation-*"))
+    assert not list(tmp_path.glob(".stm32tk-activation-*"))
+    record = store.authorization_root / f"{prepared.authorization_digest}.json"
+    assert __import__("json").loads(record.read_text(encoding="utf-8"))["state"] == "consumed"
 
 
 def assert_path(path: Path, seen: list[Path]) -> None:
