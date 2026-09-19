@@ -5270,6 +5270,7 @@ def test_physical_target_publication_and_reload_bind_retained_run_evidence(
     runner, prepared, instant, probe, evidence_store, _workflow_calls = (
         await _r5_prepared_runner(tmp_path, transport, owns_probe=False)
     )
+    probe.endpoint = SimpleNamespace(lease_id="lease")
     consumed = target_module.ConsumedTargetRun(
         prepared.action_digest,
         prepared.binding,
@@ -5278,7 +5279,7 @@ def test_physical_target_publication_and_reload_bind_retained_run_evidence(
             SESSION_ID,
             PROBE_HASH,
             SESSION_ID,
-            "lease-a",
+            "lease",
         ),
     )
 
