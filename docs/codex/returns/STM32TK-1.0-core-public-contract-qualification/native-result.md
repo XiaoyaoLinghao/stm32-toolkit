@@ -1,34 +1,33 @@
 # Current native coverage result
 
 Accepted wave base: `ab2fd448a73a319b026a5a6da700b31c2535975f`.
-Integrated code/test head before this report: `44b0ee58f5efca269513d6e1c3dae0e0673be9c5`.
+Integrated code/test head before this report: `a3d9cee5f3b4986a7ab22bbf520bf9118a85e3da`.
 Current runtime: `465249dba5560f7c08b1172794fec8fedd9b8d96`.
 Native data verdict: **ACCEPTED**. Coverage targets: **NOT MET**.
 
 | Package | Covered / total branches | Overall and frozen core | More for 90% | More for 95% |
 | --- | ---: | ---: | ---: | ---: |
-| Toolkit | 11,046 / 13,578 | 81.3522% | 1,175 | 1,854 |
+| Toolkit | 11,079 / 13,578 | 81.5952% | 1,142 | 1,821 |
 | Monitor | 2,571 / 2,940 | 87.4490% | 75 | 222 |
 | UI (retained) | 784 / 810 | 96.7901% | 0 | 0 |
 
-The independent native union review verified exact file/arc sets for nine
-inputs per package: its own accepted baseline and eight additional execution
-databases. Original hashes are unchanged. Seven Toolkit copies contain zero
-arcs for old `creation_environment.py`; the current-source baseline and Project
-batch supply its valid measurements. The retained post-state proves that no old
-arcs contribute, without claiming a separate purge invocation trace. Its accepted
-optional-metadata correction adds two branch opportunities. No Monitor data was
-purged. `generation/configure.py` source identity was
-verified by equal Git blobs and LF-normalized text despite CRLF byte differences.
-The 108/18 overall file scopes and 97/16 core file scopes remain unchanged;
-the forwarding files outside the Python core have zero branch opportunities.
+The native union contains four inputs per package: its own previously accepted
+baseline and three additional execution databases (Authority model 15 PASS,
+Backend 20 PASS, and one new iterator-budget PASS). Original hashes are unchanged.
+Only the three copied old-source Toolkit inputs had `creation_environment.py`
+arcs purged; the accepted current-source baseline supplies its valid data. The
+purge record checks all unaffected arcs for equality. No Monitor data was purged.
+Source identity was verified for 148 files and 592 comparisons; all differences
+outside the accepted `creation_environment.py` correction are only line endings.
+The 108/18 overall scopes and 97/16 core scopes remain unchanged; forwarding files
+outside the Python core have zero branch opportunities.
 
 Native raw SHA-256: Toolkit
-`A58BC0BDB4FF56156A402FBEA733FF988B53AABADF8BE505FCC8E82248AAF5E0`;
-Monitor `4BFCF0275FDC8B98B5FD0DE284DB70B02176993E840411192326AE3665EF88A5`.
-Evidence and independent review: `r10/e/n95/union-next/` under the approved
-`D:/codex-tmp/v10b-0918` run root. `primary-result-review.json` supersedes the
-historical prepared-entry state without rewriting executed data.
+`3B1F26FA7CCAAE527F6358DFDB6BB12ABC672839F870F6A596983A1875ED8276`;
+Monitor `2C5426B9B83B3BB48DFA3D6F18910E1904F53300834D3113AE0CA24ACB9C00EE`.
+Evidence and independent data review: `r10/e/n95/union3/` under the approved
+`D:/codex-tmp/v10b-0918` run root. Its baseline retains the earlier nine-input
+qualification history in `r10/e/n95/union-next/`.
 
 The Monitor continuation has twelve final functional PASS cases. Its first and
 third runs remain historical exit-1 events with classified test defects; the
@@ -59,7 +58,15 @@ in the denominator. Only the intended lease arc was observed. No test was rerun
 to repair that report mapping. The current continuation changes tests only;
 runtime and retained physical evidence are unchanged.
 
-The remaining-native-qualification plan is active for four non-overlapping
-Luna/max test owners. Source scope and denominators remain frozen. Seven native
-Windows security checks, final artifact builds and final deployment remain
-pending; no new physical or release acceptance is claimed.
+The current Authority model batch passed all 15 cases and reached all 15 intended
+arcs after two invalid test references were corrected before execution. Backend
+passed 20 cases and initially reached 17 of 18 intended arcs. The remaining arc
+requires exhausting eight iterable elements, not an empty iterable; one additional
+public iterator-budget case passed and reached it. The previous 20 items were not
+rerun. Together these batches add 33 Toolkit branches without changing runtime.
+
+The remaining-native-qualification plan is active. Monitor replay boundaries,
+Authority recovery wire boundaries, and Project regeneration preparation have
+separate owners. Seven native Windows security checks, final artifact builds,
+and final deployment remain pending. The 90% overall gate and 95% core target
+remain unmet; no new physical or release acceptance is claimed.
