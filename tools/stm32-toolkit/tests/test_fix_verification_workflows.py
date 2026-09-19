@@ -2002,6 +2002,114 @@ def test_task7b_completion_artifact_provider_oserror_is_environment_failure_with
     assert after == before
 
 
+@pytest.mark.parametrize("kind", ("analysis-missing", "marker-corrupt"))
+def test_task7b_completion_artifact_failure_kind_is_classified_without_evidence_mutation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, kind: str
+) -> None:
+    (
+        diagnostic_context,
+        session_id,
+        workspace,
+        _declaration,
+        _plan,
+        marker_ref,
+        _declared,
+        _planned,
+        _started,
+        _attached,
+    ) = _prepared_cross_state_operations(monkeypatch, tmp_path)
+    if kind == "analysis-missing":
+        root_type = "monitor-analysis"
+        root_id = marker_ref.analysis_id
+        expected_reason = "MANDATORY_EVIDENCE_MISSING"
+    else:
+        assert kind == "marker-corrupt"
+        root_type = "diagnostic-marker"
+        root_id = marker_ref.marker_id
+        expected_reason = "MANDATORY_EVIDENCE_CORRUPT"
+    evidence = EvidenceStore(workspace.workspace_root / "evidence")
+    root = get_root(evidence, root_type, root_id)
+    artifact = evidence.get_envelope(root.manifest_id).artifacts[0]
+
+    completion_reader_entered = False
+    completion_reader_active = False
+    provider_calls: list[object] = []
+    original_completion_reader = diagnostic_workflows._read_completion_json_evidence
+    original_read_artifact = EvidenceStore.read_artifact
+
+    def completion_reader(*args: object, **kwargs: object) -> object:
+        nonlocal completion_reader_active, completion_reader_entered
+        completion_reader_entered = True
+        completion_reader_active = True
+        try:
+            return original_completion_reader(*args, **kwargs)
+        finally:
+            completion_reader_active = False
+
+    def selected_artifact_failure(
+        store: EvidenceStore, requested_artifact: object, *, maximum_bytes: int
+    ) -> bytes:
+        if completion_reader_active and requested_artifact == artifact:
+            provider_calls.append(requested_artifact)
+            if kind == "analysis-missing":
+                raise FileNotFoundError("completion analysis evidence is missing")
+            return b"not-json"
+        return original_read_artifact(
+            store, requested_artifact, maximum_bytes=maximum_bytes
+        )
+
+    monkeypatch.setattr(
+        diagnostic_workflows, "_read_completion_json_evidence", completion_reader
+    )
+    monkeypatch.setattr(EvidenceStore, "read_artifact", selected_artifact_failure)
+
+    before_evidence = _tree_snapshot(workspace.workspace_root / "evidence")
+    before_diagnostics = _tree_snapshot(workspace.diagnostics_root)
+    result = diagnostic_complete_verification(
+        _fresh_diagnostic_context(diagnostic_context),
+        operation_id=f"complete.{kind}",
+        diagnostic_session_id=session_id,
+        expected_revision=7,
+        executed_operation_ids=["target-test.vs03"],
+    )
+    after_evidence = dict(_tree_snapshot(workspace.workspace_root / "evidence"))
+    after_diagnostics = dict(_tree_snapshot(workspace.diagnostics_root))
+
+    assert completion_reader_entered is True
+    assert provider_calls == [artifact]
+    assert result.ok is True
+    assert result.operation == "diagnostic.verification.complete"
+    assert result.code == "OK"
+    assert result.data["fix_verification"]["status"] == "INCONCLUSIVE"
+    assert result.data["fix_verification"]["reason_code"] == expected_reason
+    assert result.data["session"]["revision"] == 8
+    assert result.data["session"]["state"] == "INVESTIGATING"
+
+    assert all(after_evidence.get(path) == payload for path, payload in before_evidence)
+    before_evidence_paths = {path for path, _payload in before_evidence}
+    new_evidence_root_paths = {
+        path
+        for path in set(after_evidence) - before_evidence_paths
+        if path.startswith("roots/")
+    }
+    assert new_evidence_root_paths == {
+        f"roots/diagnostic-session/{session_id}.00000008.json",
+    }
+    new_diagnostic_paths = set(after_diagnostics) - {
+        path for path, _payload in before_diagnostics
+    }
+    assert new_diagnostic_paths == {
+        f"sessions/{session_id}/events/00000007.json",
+    }
+    event_path = workspace.diagnostics_root / "sessions" / session_id / "events" / "00000007.json"
+    event = json.loads(event_path.read_text(encoding="utf-8"))
+    assert event["event_type"] == "verification.completed"
+    assert event["sequence"] == 7
+    assert event["revision_before"] == 7
+    assert event["payload"]["result"]["status"] == "INCONCLUSIVE"
+    assert event["payload"]["result"]["reason_code"] == expected_reason
+
+
 def test_target_replay_diagnostic_session_reloads_with_origin_authority(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -2710,7 +2818,15 @@ def test_target_replay_prepares_and_reloads_fix_verification_checkpoint(
 
 @pytest.mark.parametrize(
     "mutation",
-    ("digest-only", "swapped", "binding", "window", "group", "batch-digest"),
+    (
+        "digest-only",
+        "swapped",
+        "binding",
+        "window",
+        "group",
+        "batch-digest",
+        "projected-digest-count",
+    ),
 )
 def test_target_replay_plan_requires_complete_monitor_reference_authority(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, mutation: str
@@ -2747,6 +2863,13 @@ def test_target_replay_plan_requires_complete_monitor_reference_authority(
             workspace,
             before_operation_id,
             lambda payload: payload.update(group_id="22222222-2222-4222-8222-222222222222"),
+        )
+    elif mutation == "projected-digest-count":
+        _replace_monitor_reference_authority(
+            tmp_path,
+            workspace,
+            before_operation_id,
+            lambda payload: payload["projected_batch_sha256s"].pop(),
         )
     else:
         _replace_monitor_reference_authority(
