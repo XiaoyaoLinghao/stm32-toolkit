@@ -1751,7 +1751,9 @@ def _prepare_public_physical_attempt(
             )
         )["attempt"]
         assert diagnosis["revision"] == 4
-        assert diagnosis["nextStage"] == "firmware-built-after"
+        resumed = _ok(resume_acceptance_attempt(context, attempt_id=ATTEMPT_ID))
+        assert resumed["attempt"]["revision"] == 4
+        assert resumed["nextStage"] == "firmware-built-after"
 
     return context, diagnostic_context, diagnostic_id
 
