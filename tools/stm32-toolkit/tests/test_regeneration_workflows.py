@@ -17,10 +17,10 @@ from stm32_toolkit.generation.creation import CreationRequest
 from stm32_toolkit.generation.managed_files import canonical_json_bytes, model_sha256_for, sha256_hex
 from stm32_toolkit.project_model import load_project_model
 from stm32_toolkit.regeneration import (
-    InventoryEntry,
     RegenerationWorkflowRequest,
     build_regeneration_plan,
     build_regeneration_preview,
+    classify_regeneration_project,
     plan_regeneration,
 )
 from stm32_toolkit.result import OperationResult
@@ -130,22 +130,6 @@ def _tree_bytes(root: Path) -> dict[str, bytes]:
     }
 
 
-def _valid_preview():
-    before = SimpleNamespace(
-        inventory=(InventoryEntry("App/keep.txt", "file", 1, "a" * 64, "user"),),
-        file_bytes={"App/keep.txt": b"a"},
-        ownership_manifest_digest="1" * 64,
-        managed_manifest_digest="2" * 64,
-    )
-    after = SimpleNamespace(
-        inventory=(InventoryEntry("App/keep.txt", "file", 1, "b" * 64, "user"),),
-        file_bytes={"App/keep.txt": b"b"},
-        ownership_manifest_digest="3" * 64,
-        managed_manifest_digest="4" * 64,
-    )
-    return build_regeneration_preview(before, after)
-
-
 def _public_authorization_digest(payload: dict[str, object]) -> str:
     canonical = {key: value for key, value in payload.items() if key not in {"authorizationDigest", "state"}}
     canonical["state"] = "prepared"
@@ -169,15 +153,17 @@ def _rewrite_authorization_record(
     return new_digest, new_path, serialized
 
 
-def _valid_plan(tmp_path: Path, *, now: datetime | None = None):
+def _valid_plan_and_preview(tmp_path: Path, *, now: datetime | None = None):
     workspace, _, environment = _project(tmp_path)
     request = RegenerationWorkflowRequest(workspace, tmp_path / "data", "session", "generated")
     plan = build_regeneration_plan(request, environment=environment, now=now)
     assert plan.blockers == ()
-    return plan
+    snapshot = classify_regeneration_project(request)
+    return plan, build_regeneration_preview(snapshot, snapshot)
 
 
-def test_authorization_store_rejects_relative_data_root(tmp_path: Path):
+def test_authorization_store_rejects_relative_data_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.chdir(tmp_path)
     with pytest.raises(RegenerationAuthorizationError) as caught:
         RegenerationAuthorizationStore(Path("relative-data-root"))
 
@@ -187,10 +173,11 @@ def test_authorization_store_rejects_relative_data_root(tmp_path: Path):
 
 
 def test_authorization_store_rejects_non_plan_with_valid_preview(tmp_path: Path):
+    _, preview = _valid_plan_and_preview(tmp_path)
     store = RegenerationAuthorizationStore(tmp_path / "data")
 
     with pytest.raises(RegenerationAuthorizationError) as caught:
-        store.prepare(plan=object(), preview=_valid_preview())
+        store.prepare(plan=object(), preview=preview)
 
     assert caught.value.code == "REGENERATION_AUTHORIZATION_INVALID"
     assert caught.value.message == "authorization payload is invalid"
@@ -198,12 +185,12 @@ def test_authorization_store_rejects_non_plan_with_valid_preview(tmp_path: Path)
 
 
 def test_authorization_store_rejects_publicly_replaced_plan_id(tmp_path: Path):
-    plan = _valid_plan(tmp_path)
+    plan, preview = _valid_plan_and_preview(tmp_path)
     bad_plan = replace(plan, plan_id="bad")
     store = RegenerationAuthorizationStore(plan.request.data_root)
 
     with pytest.raises(RegenerationAuthorizationError) as caught:
-        store.prepare(plan=bad_plan, preview=_valid_preview())
+        store.prepare(plan=bad_plan, preview=preview)
 
     assert caught.value.code == "REGENERATION_AUTHORIZATION_INVALID"
     assert caught.value.message == "authorization digest is invalid"
@@ -212,12 +199,12 @@ def test_authorization_store_rejects_publicly_replaced_plan_id(tmp_path: Path):
 
 def test_authorization_store_rejects_plan_expiring_at_injected_now(tmp_path: Path):
     fixed_now = datetime(2026, 1, 1, tzinfo=timezone.utc)
-    plan = _valid_plan(tmp_path, now=fixed_now)
+    plan, preview = _valid_plan_and_preview(tmp_path, now=fixed_now)
     expiry = datetime.strptime(plan.expires_at, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
     store = RegenerationAuthorizationStore(plan.request.data_root, now=lambda: expiry)
 
     with pytest.raises(RegenerationAuthorizationError) as caught:
-        store.prepare(plan=plan, preview=_valid_preview())
+        store.prepare(plan=plan, preview=preview)
 
     assert caught.value.code == "REGENERATION_AUTHORIZATION_EXPIRED"
     assert caught.value.message == "authorization has expired"
@@ -225,11 +212,11 @@ def test_authorization_store_rejects_plan_expiring_at_injected_now(tmp_path: Pat
 
 
 def test_authorization_store_rejects_oversized_nonce_before_record_write(tmp_path: Path):
-    plan = _valid_plan(tmp_path)
+    plan, preview = _valid_plan_and_preview(tmp_path)
     store = RegenerationAuthorizationStore(plan.request.data_root, nonce_factory=lambda: "n" * (64 * 1024))
 
     with pytest.raises(RegenerationAuthorizationError) as caught:
-        store.prepare(plan=plan, preview=_valid_preview())
+        store.prepare(plan=plan, preview=preview)
 
     assert caught.value.code == "REGENERATION_AUTHORIZATION_INVALID"
     assert caught.value.message == "authorization record is oversized"
@@ -252,9 +239,9 @@ def test_authorization_store_rejects_invalid_digest_in_peek_and_consume(tmp_path
 
 
 def test_authorization_store_preserves_raw_duplicate_record_on_peek_and_consume(tmp_path: Path):
-    plan = _valid_plan(tmp_path)
+    plan, preview = _valid_plan_and_preview(tmp_path)
     store = RegenerationAuthorizationStore(plan.request.data_root)
-    authorization = store.prepare(plan=plan, preview=_valid_preview())
+    authorization = store.prepare(plan=plan, preview=preview)
     record_path = authorization.record_path
     original = record_path.read_bytes().rstrip()
     malformed = original[:-1] + b',"nonce":"duplicate"}'
@@ -285,9 +272,9 @@ def test_authorization_store_preserves_raw_duplicate_record_on_peek_and_consume(
     ],
 )
 def test_authorization_store_rejects_rebound_public_record_fields(tmp_path: Path, case_id: str):
-    plan = _valid_plan(tmp_path)
+    plan, preview = _valid_plan_and_preview(tmp_path)
     store = RegenerationAuthorizationStore(plan.request.data_root)
-    authorization = store.prepare(plan=plan, preview=_valid_preview())
+    authorization = store.prepare(plan=plan, preview=preview)
     other_root: Path | None = None
     if case_id == "S7-H":
         new_digest, _, _ = _rewrite_authorization_record(
@@ -336,9 +323,9 @@ def test_authorization_store_rejects_rebound_public_record_fields(tmp_path: Path
 
 
 def test_authorization_store_rejects_non_boolean_consume_without_state_change(tmp_path: Path):
-    plan = _valid_plan(tmp_path)
+    plan, preview = _valid_plan_and_preview(tmp_path)
     store = RegenerationAuthorizationStore(plan.request.data_root)
-    authorization = store.prepare(plan=plan, preview=_valid_preview())
+    authorization = store.prepare(plan=plan, preview=preview)
     before = _tree_bytes(store.authorization_root)
 
     with pytest.raises(RegenerationAuthorizationError) as integer_error:
