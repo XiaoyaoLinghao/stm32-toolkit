@@ -1396,11 +1396,8 @@ def test_debug_handoff_metadata_provider_timeout_settles_owned_resources(
                 )
             )
             assert await asyncio.to_thread(metadata_entered.wait, 1)
-            while loop.time() < deadline:
-                await asyncio.sleep(0.01)
-
-            metadata_release.set()
             assert await asyncio.to_thread(abort_entered.wait, 1)
+            metadata_release.set()
             abort_release.set()
             with pytest.raises(ProbeServiceError) as failure:
                 await request
