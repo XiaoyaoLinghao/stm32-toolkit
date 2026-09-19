@@ -81,11 +81,7 @@ tools/stm32-toolkit/tests/test_monitor_replay_contract.py::test_shared_contract_
 
 Do not launch this entry while the covered continuation lock owns exclusive
 execution. The primary schedules the one run through the retained finite-child
-launcher pattern, with the launcher path reserved as
-`D:\codex-tmp\v10b-0918\r10\e\public-decode-qualification\launch.ps1` and
-this exact outer invocation:
-
-The launcher is materialized at
+launcher pattern. The launcher is materialized at
 `D:\codex-tmp\v10b-0918\r10\e\public-decode-qualification\launch.ps1`.
 Its SHA-256 is
 `91CD8156686B929A8DF0BAA079D1F0B722199C0F147A703E8380028D51753969`.
