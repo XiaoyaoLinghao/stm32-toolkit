@@ -25,6 +25,7 @@ from stm32_monitor.replay import (
     canonical_replay_json_bytes,
     ingest_monitor_replay,
 )
+from stm32_toolkit.evidence import EvidenceEnvelope
 from stm32_toolkit.evidence.store import EvidenceStore
 from stm32_toolkit.evidence.gc import get_root, plan_gc
 from stm32_toolkit.evidence.model import canonical_json_bytes
@@ -703,6 +704,220 @@ def test_replay_reference_artifact_provider_mismatch_preserves_authority(
     assert calls == [reference_artifact]
     assert _history_batches(paths, RUN_IDS["failed-before"]) == before_batches
     assert first.run_ref_sha256 == reference_root.metadata["run_ref_sha256"]
+
+
+def test_replay_transcript_envelope_provider_mismatch_preserves_authority(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = _paths(tmp_path)
+    evidence = _evidence(paths)
+    operation = _operation("failed-before")
+    first = ingest_monitor_replay(paths, evidence, operation, _fixture("failed-before"))
+    before_batches = _history_batches(paths, RUN_IDS["failed-before"])
+    before_transcript_root = _root_path(evidence, "monitor-run").read_bytes()
+    before_reference_root = _root_path(evidence, "monitor-run-ref").read_bytes()
+    original_get_envelope = evidence.get_envelope
+    stored_transcript_envelope = original_get_envelope(first.transcript_evidence_id)
+    contradictory_transcript_envelope = EvidenceEnvelope(
+        identity=stored_transcript_envelope.identity,
+        operation=stored_transcript_envelope.operation,
+        produced_at_utc=stored_transcript_envelope.produced_at_utc,
+        parents=(first.transcript_evidence_id,),
+        artifacts=stored_transcript_envelope.artifacts,
+        metadata=stored_transcript_envelope.metadata,
+    )
+    calls: list[str] = []
+    returned: list[EvidenceEnvelope] = []
+
+    def contradictory_envelope(evidence_id: str):
+        calls.append(evidence_id)
+        if evidence_id == first.transcript_evidence_id:
+            returned.append(contradictory_transcript_envelope)
+            return contradictory_transcript_envelope
+        return original_get_envelope(evidence_id)
+
+    monkeypatch.setattr(evidence, "get_envelope", contradictory_envelope)
+    with pytest.raises(MonitorReplayError) as error:
+        ingest_monitor_replay(paths, evidence, operation, _fixture("failed-before"))
+
+    assert error.value.code == "EVIDENCE_INTEGRITY_FAILURE"
+    assert calls == [first.transcript_evidence_id]
+    assert returned == [contradictory_transcript_envelope]
+    assert contradictory_transcript_envelope.evidence_id != stored_transcript_envelope.evidence_id
+    assert str(error.value.__cause__) == "transcript envelope differs from the operation root"
+    assert _history_batches(paths, RUN_IDS["failed-before"]) == before_batches
+    assert _root_path(evidence, "monitor-run").read_bytes() == before_transcript_root
+    assert _root_path(evidence, "monitor-run-ref").read_bytes() == before_reference_root
+
+
+def test_replay_transcript_artifact_provider_mismatch_preserves_authority(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = _paths(tmp_path)
+    evidence = _evidence(paths)
+    operation = _operation("failed-before")
+    first = ingest_monitor_replay(paths, evidence, operation, _fixture("failed-before"))
+    before_batches = _history_batches(paths, RUN_IDS["failed-before"])
+    before_transcript_root = _root_path(evidence, "monitor-run").read_bytes()
+    before_reference_root = _root_path(evidence, "monitor-run-ref").read_bytes()
+    transcript_artifact = evidence.get_envelope(first.transcript_evidence_id).artifacts[0]
+    original_read_artifact = evidence.read_artifact
+    calls: list[object] = []
+
+    def contradictory_artifact(artifact, *, maximum_bytes: int):
+        if artifact == transcript_artifact:
+            calls.append(artifact)
+            return _raw_fixture("failed-before")[:-1]
+        return original_read_artifact(artifact, maximum_bytes=maximum_bytes)
+
+    monkeypatch.setattr(evidence, "read_artifact", contradictory_artifact)
+    with pytest.raises(MonitorReplayError) as error:
+        ingest_monitor_replay(paths, evidence, operation, _fixture("failed-before"))
+
+    assert error.value.code == "EVIDENCE_INTEGRITY_FAILURE"
+    assert calls == [transcript_artifact]
+    assert _history_batches(paths, RUN_IDS["failed-before"]) == before_batches
+    assert _root_path(evidence, "monitor-run").read_bytes() == before_transcript_root
+    assert _root_path(evidence, "monitor-run-ref").read_bytes() == before_reference_root
+
+
+def test_replay_malformed_reference_root_fails_before_history_mutation(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    evidence = _evidence(paths)
+    operation = _operation("failed-before")
+    first = ingest_monitor_replay(paths, evidence, operation, _fixture("failed-before"))
+    before_batches = _history_batches(paths, RUN_IDS["failed-before"])
+    transcript_root_path = _root_path(evidence, "monitor-run")
+    reference_root_path = _root_path(evidence, "monitor-run-ref")
+    before_transcript_root = transcript_root_path.read_bytes()
+    reference_root_path.write_bytes(b"{}")
+
+    with pytest.raises(MonitorReplayError) as error:
+        ingest_monitor_replay(paths, evidence, operation, _fixture("failed-before"))
+
+    assert error.value.code == "EVIDENCE_INTEGRITY_FAILURE"
+    assert _history_batches(paths, RUN_IDS["failed-before"]) == before_batches
+    assert transcript_root_path.read_bytes() == before_transcript_root
+    assert reference_root_path.read_bytes() == b"{}"
+    assert first.transcript_evidence_id == get_root(
+        evidence, "monitor-run", operation
+    ).manifest_id
+
+
+@pytest.mark.parametrize(
+    ("artifact_kind", "transcript_root", "reference_root"),
+    [
+        ("monitor-replay-transcript", False, False),
+        ("monitor-run-ref", True, False),
+    ],
+)
+def test_replay_publication_rejects_provider_artifact_identity_mismatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    artifact_kind: str,
+    transcript_root: bool,
+    reference_root: bool,
+) -> None:
+    paths = _paths(tmp_path)
+    evidence = _evidence(paths)
+    calls: list[str] = []
+    original_ingest_file = evidence.ingest_file
+
+    def contradictory_artifact(source: Path, *, kind: str, media_type: str):
+        artifact = original_ingest_file(source, kind=kind, media_type=media_type)
+        if kind == artifact_kind:
+            calls.append(kind)
+            return replace(artifact, sha256="0" * 64)
+        return artifact
+
+    monkeypatch.setattr(evidence, "ingest_file", contradictory_artifact)
+    with pytest.raises(MonitorReplayError) as error:
+        ingest_monitor_replay(
+            paths,
+            evidence,
+            _operation("failed-before"),
+            _fixture("failed-before"),
+        )
+
+    assert error.value.code == "EVIDENCE_INTEGRITY_FAILURE"
+    assert calls == [artifact_kind]
+    assert isinstance(error.value.__cause__, EvidenceValidationError)
+    assert error.value.__cause__.message == (
+        "transcript artifact identity differs from the expected source"
+        if artifact_kind == "monitor-replay-transcript"
+        else "reference artifact identity differs from the expected reference"
+    )
+    _assert_no_history(paths, RUN_IDS["failed-before"])
+    assert bool(tuple((evidence.root / "roots" / "monitor-run").glob("*.json"))) is transcript_root
+    assert bool(tuple((evidence.root / "roots" / "monitor-run-ref").glob("*.json"))) is reference_root
+
+
+def test_replay_transcript_publication_direct_provider_io_is_environment_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _paths(tmp_path)
+    evidence = _evidence(paths)
+    calls: list[tuple[str, str]] = []
+
+    def fail_transcript_provider(source: Path, *, kind: str, media_type: str):
+        calls.append((kind, media_type))
+        raise OSError("transcript provider unavailable")
+
+    monkeypatch.setattr(evidence, "ingest_file", fail_transcript_provider)
+    with pytest.raises(MonitorReplayError) as error:
+        ingest_monitor_replay(
+            paths,
+            evidence,
+            _operation("failed-before"),
+            _fixture("failed-before"),
+        )
+
+    assert error.value.code == "ENVIRONMENT_FAILURE"
+    assert isinstance(error.value.__cause__, OSError)
+    assert str(error.value.__cause__) == "transcript provider unavailable"
+    assert calls == [("monitor-replay-transcript", "application/json")]
+    _assert_no_history(paths, RUN_IDS["failed-before"])
+    assert not tuple((evidence.root / "roots" / "monitor-run").glob("*.json"))
+    assert not tuple((evidence.root / "roots" / "monitor-run-ref").glob("*.json"))
+
+
+def test_replay_transcript_publication_wrapped_provider_io_is_environment_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _paths(tmp_path)
+    evidence = _evidence(paths)
+    calls: list[tuple[str, str]] = []
+
+    def fail_transcript_provider(source: Path, *, kind: str, media_type: str):
+        calls.append((kind, media_type))
+        try:
+            raise OSError("transcript provider unavailable")
+        except OSError as cause:
+            raise EvidenceValidationError(
+                "EVIDENCE_CORRUPT", "transcript provider rejected publication"
+            ) from cause
+
+    monkeypatch.setattr(evidence, "ingest_file", fail_transcript_provider)
+    with pytest.raises(MonitorReplayError) as error:
+        ingest_monitor_replay(
+            paths,
+            evidence,
+            _operation("failed-before"),
+            _fixture("failed-before"),
+        )
+
+    assert error.value.code == "ENVIRONMENT_FAILURE"
+    assert isinstance(error.value.__cause__, EvidenceValidationError)
+    assert error.value.__cause__.code == "EVIDENCE_CORRUPT"
+    assert error.value.__cause__.message == "transcript provider rejected publication"
+    assert isinstance(error.value.__cause__.__cause__, OSError)
+    assert str(error.value.__cause__.__cause__) == "transcript provider unavailable"
+    assert calls == [("monitor-replay-transcript", "application/json")]
+    _assert_no_history(paths, RUN_IDS["failed-before"])
+    assert not tuple((evidence.root / "roots" / "monitor-run").glob("*.json"))
+    assert not tuple((evidence.root / "roots" / "monitor-run-ref").glob("*.json"))
 
 
 def test_exact_retry_is_idempotent_and_different_intent_conflicts_without_append(tmp_path: Path) -> None:
