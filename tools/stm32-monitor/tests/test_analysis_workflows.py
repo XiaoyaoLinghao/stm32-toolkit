@@ -2506,11 +2506,19 @@ def test_awf_2f_maps_unrecognized_history_provider_code(
     evidence, before, after = _ingest_pair(paths)
     declaration = _declaration(tmp_path, evidence, before, after)
     calls: list[HistoryQuery] = []
+    provider_result = ProtocolResult(
+        False,
+        "history.query",
+        "MONITOR_QUERY_UNAVAILABLE",
+        "provider failed",
+        None,
+    )
+    assert provider_result.code == "MONITOR_QUERY_UNAVAILABLE"
 
     def fail_query(self: HistoryStore, query: HistoryQuery) -> ProtocolResult[HistoryPage]:
         del self
         calls.append(query)
-        return ProtocolResult(False, "history.query", "UNRECOGNIZED_PROVIDER", "provider failed", None)
+        return provider_result
 
     monkeypatch.setattr(HistoryStore, "query_history", fail_query)
     before_tree = _data_tree(paths)
