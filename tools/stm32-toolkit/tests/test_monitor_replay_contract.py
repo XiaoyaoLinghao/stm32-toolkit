@@ -95,6 +95,24 @@ def _reference_digest(reference: dict[str, object]) -> str:
     return hashlib.sha256(_raw_canonical_json_bytes(unsigned)).hexdigest()
 
 
+def _redigest_public_document(
+    contract: ModuleType, document: dict[str, object]
+) -> None:
+    unsigned = {key: value for key, value in document.items() if key != "fixture_sha256"}
+    document["fixture_sha256"] = hashlib.sha256(
+        contract.canonical_replay_json_bytes(unsigned)
+    ).hexdigest()
+
+
+def _redigest_public_reference(
+    contract: ModuleType, reference: dict[str, object]
+) -> None:
+    unsigned = {key: value for key, value in reference.items() if key != "run_ref_sha256"}
+    reference["run_ref_sha256"] = hashlib.sha256(
+        contract.canonical_replay_json_bytes(unsigned)
+    ).hexdigest()
+
+
 def _physical_transcript(source: dict[str, object]) -> dict[str, object]:
     binding = deepcopy(source["binding"])
     binding.update(
@@ -1157,3 +1175,272 @@ def test_physical_typed_json_signed_int64_boundary_matches_monitor() -> None:
         SampleValue(rejected_watch, "OK", typed_value=rejected_sample["typedValue"])
     with pytest.raises(contract.ReplayContractError):
         contract.validate_physical_transcript(rejected)
+
+
+@pytest.mark.parametrize(
+    ("case_id", "entry", "expected_message"),
+    (
+        pytest.param(
+            "M-CANONICAL-NONFINITE",
+            "canonical_replay_json_bytes",
+            "replay JSON number is not finite",
+            id="M-CANONICAL-NONFINITE",
+        ),
+        pytest.param(
+            "M-CANONICAL-STRING-BUDGET",
+            "canonical_replay_json_bytes",
+            "replay JSON string data exceeds its limit",
+            id="M-CANONICAL-STRING-BUDGET",
+        ),
+        pytest.param(
+            "M-CANONICAL-TUPLE",
+            "canonical_replay_json_bytes",
+            "replay JSON must not contain tuple containers",
+            id="M-CANONICAL-TUPLE",
+        ),
+        pytest.param(
+            "M-CANONICAL-MAPPING-CYCLE",
+            "canonical_replay_json_bytes",
+            "replay JSON contains a cycle",
+            id="M-CANONICAL-MAPPING-CYCLE",
+        ),
+        pytest.param(
+            "M-CANONICAL-NONSTRING-KEY",
+            "canonical_replay_json_bytes",
+            "replay JSON object keys must be strings",
+            id="M-CANONICAL-NONSTRING-KEY",
+        ),
+        pytest.param(
+            "M-CANONICAL-NFC-KEY",
+            "canonical_replay_json_bytes",
+            "replay JSON object keys must use NFC",
+            id="M-CANONICAL-NFC-KEY",
+        ),
+        pytest.param(
+            "M-CANONICAL-LIST-CYCLE",
+            "canonical_replay_json_bytes",
+            "replay JSON contains a cycle",
+            id="M-CANONICAL-LIST-CYCLE",
+        ),
+        pytest.param(
+            "M-CANONICAL-UNSUPPORTED",
+            "canonical_replay_json_bytes",
+            "replay JSON contains an unsupported value",
+            id="M-CANONICAL-UNSUPPORTED",
+        ),
+        pytest.param(
+            "M-REPLAY-BINDING-LABEL",
+            "validate_replay_document",
+            "replay binding labels are invalid",
+            id="M-REPLAY-BINDING-LABEL",
+        ),
+        pytest.param(
+            "M-REPLAY-WATCH-TYPE",
+            "validate_replay_document",
+            "replay watch is invalid",
+            id="M-REPLAY-WATCH-TYPE",
+        ),
+        pytest.param(
+            "M-REPLAY-FAILED-SAMPLE-SHAPE",
+            "validate_replay_document",
+            "replay failed sample is invalid",
+            id="M-REPLAY-FAILED-SAMPLE-SHAPE",
+        ),
+        pytest.param(
+            "M-REPLAY-SCHEMA",
+            "validate_replay_document",
+            "replay document schema is invalid",
+            id="M-REPLAY-SCHEMA",
+        ),
+        pytest.param(
+            "M-REPLAY-SOURCE",
+            "validate_replay_document",
+            "replay document source is invalid",
+            id="M-REPLAY-SOURCE",
+        ),
+        pytest.param(
+            "M-REPLAY-PHYSICAL-EVIDENCE",
+            "validate_replay_document",
+            "replay document physical evidence must be false",
+            id="M-REPLAY-PHYSICAL-EVIDENCE",
+        ),
+        pytest.param(
+            "M-REPLAY-ROLE",
+            "validate_replay_document",
+            "replay document scenario role is invalid",
+            id="M-REPLAY-ROLE",
+        ),
+        pytest.param(
+            "M-REPLAY-DUPLICATE-SELECTOR",
+            "validate_replay_document",
+            "replay document selectors are not unique",
+            id="M-REPLAY-DUPLICATE-SELECTOR",
+        ),
+        pytest.param(
+            "M-REFERENCE-GIT-HEAD",
+            "validate_run_reference",
+            "git_head is invalid",
+            id="M-REFERENCE-GIT-HEAD",
+        ),
+        pytest.param(
+            "M-REFERENCE-GIT-DIRTY-TYPE",
+            "validate_run_reference",
+            "git_dirty is invalid",
+            id="M-REFERENCE-GIT-DIRTY-TYPE",
+        ),
+        pytest.param(
+            "M-REFERENCE-EMPTY-DIGEST-LIST",
+            "validate_run_reference",
+            "projected batch digests are invalid",
+            id="M-REFERENCE-EMPTY-DIGEST-LIST",
+        ),
+    ),
+)
+def test_public_replay_wire_remaining(
+    case_id: str,
+    entry: str,
+    expected_message: str,
+    tmp_path: Path,
+) -> None:
+    contract = _contract()
+
+    if entry == "canonical_replay_json_bytes":
+        source = _document("failed-before")
+        source_before = deepcopy(source)
+        assert contract.canonical_replay_json_bytes(source) == canonical_replay_json_bytes(
+            source
+        )
+        candidate = deepcopy(source)
+
+        if case_id == "M-CANONICAL-NONFINITE":
+            nonfinite = float("nan")
+            candidate["batches"][0]["actualRateHz"] = nonfinite
+            with pytest.raises(contract.ReplayContractError) as error:
+                contract.canonical_replay_json_bytes(candidate)
+            assert candidate["batches"][0]["actualRateHz"] is nonfinite
+            candidate["batches"][0]["actualRateHz"] = source["batches"][0]["actualRateHz"]
+            assert candidate == source
+        elif case_id == "M-CANONICAL-STRING-BUDGET":
+            candidate["binding"]["targetDevice"] = "x" * (
+                contract.MAX_REPLAY_JSON_STRING_CHARS + 1
+            )
+            candidate_before = deepcopy(candidate)
+            with pytest.raises(contract.ReplayContractError) as error:
+                contract.canonical_replay_json_bytes(candidate)
+            assert candidate == candidate_before
+        elif case_id == "M-CANONICAL-TUPLE":
+            candidate["batches"][0]["values"] = tuple(candidate["batches"][0]["values"])
+            candidate_before = deepcopy(candidate)
+            with pytest.raises(contract.ReplayContractError) as error:
+                contract.canonical_replay_json_bytes(candidate)
+            assert candidate == candidate_before
+        elif case_id == "M-CANONICAL-MAPPING-CYCLE":
+            binding = candidate["binding"]
+            binding["self"] = binding
+            with pytest.raises(contract.ReplayContractError) as error:
+                contract.canonical_replay_json_bytes(candidate)
+            assert binding["self"] is binding
+            del binding["self"]
+            assert candidate == source
+        elif case_id == "M-CANONICAL-NONSTRING-KEY":
+            binding = candidate["binding"]
+            binding[1] = "non-string-key"
+            candidate_before = deepcopy(candidate)
+            with pytest.raises(contract.ReplayContractError) as error:
+                contract.canonical_replay_json_bytes(candidate)
+            assert candidate == candidate_before
+            del binding[1]
+            assert candidate == source
+        elif case_id == "M-CANONICAL-NFC-KEY":
+            binding = candidate["binding"]
+            nfc_key = "e\u0301"
+            binding[nfc_key] = "decomposed-key"
+            candidate_before = deepcopy(candidate)
+            with pytest.raises(contract.ReplayContractError) as error:
+                contract.canonical_replay_json_bytes(candidate)
+            assert candidate == candidate_before
+            del binding[nfc_key]
+            assert candidate == source
+        elif case_id == "M-CANONICAL-LIST-CYCLE":
+            batches = candidate["batches"]
+            batches.append(batches)
+            with pytest.raises(contract.ReplayContractError) as error:
+                contract.canonical_replay_json_bytes(candidate)
+            assert batches[-1] is batches
+            batches.pop()
+            assert candidate == source
+        elif case_id == "M-CANONICAL-UNSUPPORTED":
+            unsupported = object()
+            candidate["batches"][0]["actualRateHz"] = unsupported
+            with pytest.raises(contract.ReplayContractError) as error:
+                contract.canonical_replay_json_bytes(candidate)
+            assert candidate["batches"][0]["actualRateHz"] is unsupported
+            candidate["batches"][0]["actualRateHz"] = source["batches"][0]["actualRateHz"]
+            assert candidate == source
+        else:
+            pytest.fail(f"unknown canonical replay wire case: {case_id}")
+
+        assert type(error.value) is contract.ReplayContractError
+        assert str(error.value) == expected_message
+        assert source == source_before
+        return
+
+    if entry == "validate_replay_document":
+        source = _document("failed-before")
+        source_before = deepcopy(source)
+        assert contract.validate_replay_document(source) == source
+        candidate = deepcopy(source)
+
+        if case_id == "M-REPLAY-BINDING-LABEL":
+            _set_binding_field(candidate, "probeId", "replay:probe-v3")
+        elif case_id == "M-REPLAY-WATCH-TYPE":
+            candidate["batches"][0]["values"][0]["watch"] = None
+        elif case_id == "M-REPLAY-FAILED-SAMPLE-SHAPE":
+            candidate["batches"][0]["values"][0]["status"] = "ERROR"
+        elif case_id == "M-REPLAY-SCHEMA":
+            candidate["schema"] = "stm32-monitor-replay/other"
+        elif case_id == "M-REPLAY-SOURCE":
+            candidate["source"] = "other-replay-source"
+        elif case_id == "M-REPLAY-PHYSICAL-EVIDENCE":
+            candidate["physical_transport_evidence"] = True
+        elif case_id == "M-REPLAY-ROLE":
+            candidate["scenario_role"] = "other"
+        elif case_id == "M-REPLAY-DUPLICATE-SELECTOR":
+            for batch in candidate["batches"]:
+                batch["values"][1]["watch"] = deepcopy(batch["values"][0]["watch"])
+        else:
+            pytest.fail(f"unknown replay document wire case: {case_id}")
+
+        _redigest_public_document(contract, candidate)
+        candidate_before = deepcopy(candidate)
+        with pytest.raises(contract.ReplayContractError) as error:
+            contract.validate_replay_document(candidate)
+        assert type(error.value) is contract.ReplayContractError
+        assert str(error.value) == expected_message
+        assert candidate == candidate_before
+        assert source == source_before
+        return
+
+    assert entry == "validate_run_reference"
+    reference = _reference(tmp_path, "failed-before")
+    reference_before = deepcopy(reference)
+    assert contract.validate_run_reference(reference) == reference
+    candidate = deepcopy(reference)
+
+    if case_id == "M-REFERENCE-GIT-HEAD":
+        candidate["git_head"] = "g" * 40
+    elif case_id == "M-REFERENCE-GIT-DIRTY-TYPE":
+        candidate["git_dirty"] = 1
+    elif case_id == "M-REFERENCE-EMPTY-DIGEST-LIST":
+        candidate["projected_batch_sha256s"] = []
+    else:
+        pytest.fail(f"unknown run reference wire case: {case_id}")
+
+    _redigest_public_reference(contract, candidate)
+    candidate_before = deepcopy(candidate)
+    with pytest.raises(contract.ReplayContractError) as error:
+        contract.validate_run_reference(candidate)
+    assert type(error.value) is contract.ReplayContractError
+    assert str(error.value) == expected_message
+    assert candidate == candidate_before
+    assert reference == reference_before
