@@ -22,6 +22,7 @@ from stm32_toolkit import __version__
 import stm32_toolkit.acceptance.recovery_workflows as recovery_workflows
 import stm32_toolkit.diagnostic_workflows as diagnostic_workflows
 from stm32_toolkit.acceptance.recovery import (
+    ATTEMPT_SCHEMA,
     CUBEMX_PHYSICAL_ATTEMPT_SCHEMA,
     CUBEMX_PHYSICAL_RECOVERY_POLICY_SCHEMA,
     CUBEMX_PHYSICAL_SCENARIO_ID,
@@ -29,6 +30,8 @@ from stm32_toolkit.acceptance.recovery import (
     PHYSICAL_ATTEMPT_SCHEMA,
     PHYSICAL_RECOVERY_POLICY_SCHEMA,
     PHYSICAL_STAGE_OUTPUT_KEYS,
+    PHYSICAL_SCENARIO_ID,
+    PHYSICAL_SCENARIO_VERSION,
     SourceChangeIntent,
     physical_acceptance_profile_for_schema,
 )
@@ -1859,3 +1862,301 @@ def test_public_physical_authorization_retry_rejects_wrong_digest_after_revision
     )["session"]
     assert diagnostic_after_retry == diagnostic_before_retry
     assert _ok(resume_acceptance_attempt(context, attempt_id=ATTEMPT_ID))["attempt"] == authorized
+
+
+def test_public_physical_identity_and_namespace_refusals_use_real_schema3_project(
+    tmp_path: Path,
+):
+    def tree_snapshot(root: Path):
+        if not root.exists():
+            return False, ()
+        return True, tuple(
+            (
+                path.relative_to(root).as_posix(),
+                path.is_file(),
+                path.read_bytes() if path.is_file() else None,
+            )
+            for path in sorted(root.rglob("*"), key=lambda item: item.relative_to(root).as_posix())
+        )
+
+    project_root = tmp_path / "project"
+    data_root = tmp_path / "data"
+    _write_physical_project(project_root, origin="keil")
+    context = AcceptanceRecoveryContext(
+        project_root, data_root, "physical-identity-boundary"
+    )
+
+    before_origin_refusal = (tree_snapshot(project_root), tree_snapshot(data_root))
+    origin_refusal = begin_acceptance_attempt(
+        context,
+        attempt_id="00000000-0000-4000-8000-000000000010",
+        scenario_id=CUBEMX_PHYSICAL_SCENARIO_ID,
+        scenario_version=CUBEMX_PHYSICAL_SCENARIO_VERSION,
+    )
+    assert origin_refusal.to_dict() == {
+        "protocol": "stm32-toolkit/1",
+        "ok": False,
+        "operation": "acceptance.attempt.begin",
+        "code": "ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH",
+        "message": "Acceptance attempt identity does not match.",
+        "data": None,
+        "details": {},
+    }
+    assert (tree_snapshot(project_root), tree_snapshot(data_root)) == before_origin_refusal
+
+    legacy_id = "00000000-0000-4000-8000-000000000011"
+    physical_id = "00000000-0000-4000-8000-000000000012"
+    legacy_started = begin_acceptance_attempt(
+        context,
+        attempt_id=legacy_id,
+        scenario_id="legacy-keil-migration",
+        scenario_version="1",
+    )
+    legacy_data = _ok(legacy_started)
+    legacy_attempt = legacy_data["attempt"]
+    assert legacy_attempt["schema"] == ATTEMPT_SCHEMA
+    assert legacy_attempt["projectOrigin"] == "keil"
+    assert legacy_attempt["physicalTransportEvidence"] is False
+
+    physical_started = begin_acceptance_attempt(
+        context,
+        attempt_id=physical_id,
+        scenario_id=PHYSICAL_SCENARIO_ID,
+        scenario_version=PHYSICAL_SCENARIO_VERSION,
+    )
+    physical_attempt = _ok(physical_started)["attempt"]
+    assert physical_attempt["schema"] == PHYSICAL_ATTEMPT_SCHEMA
+    assert physical_attempt["attemptId"] == physical_id
+    assert physical_attempt["revision"] == 0
+    assert physical_attempt["projectOrigin"] == "keil"
+    assert physical_attempt["executionSource"] == "physical"
+    assert physical_attempt["physicalTransportEvidence"] is False
+
+    before_namespace_refusal = (tree_snapshot(project_root), tree_snapshot(data_root))
+    namespace_refusal = begin_acceptance_attempt(
+        context,
+        attempt_id=legacy_id,
+        scenario_id=PHYSICAL_SCENARIO_ID,
+        scenario_version=PHYSICAL_SCENARIO_VERSION,
+    )
+    assert namespace_refusal.to_dict() == {
+        "protocol": "stm32-toolkit/1",
+        "ok": False,
+        "operation": "acceptance.attempt.begin",
+        "code": "ACCEPTANCE_ATTEMPT_CONFLICT",
+        "message": "Acceptance attempt content conflicts with an immutable revision.",
+        "data": None,
+        "details": {},
+    }
+    assert (tree_snapshot(project_root), tree_snapshot(data_root)) == before_namespace_refusal
+    assert _ok(show_acceptance_attempt(context, attempt_id=legacy_id))["attempt"] == legacy_attempt
+    assert _ok(resume_acceptance_attempt(context, attempt_id=legacy_id))["attempt"] == legacy_attempt
+
+
+def test_public_physical_rev0_request_refusals_preserve_authorities(
+    tmp_path: Path,
+):
+    def tree_snapshot(root: Path):
+        if not root.exists():
+            return False, ()
+        return True, tuple(
+            (
+                path.relative_to(root).as_posix(),
+                path.is_file(),
+                path.read_bytes() if path.is_file() else None,
+            )
+            for path in sorted(root.rglob("*"), key=lambda item: item.relative_to(root).as_posix())
+        )
+
+    def assert_failure(
+        result: OperationResult[object], operation: str, code: str, message: str
+    ) -> None:
+        assert result.to_dict() == {
+            "protocol": "stm32-toolkit/1",
+            "ok": False,
+            "operation": operation,
+            "code": code,
+            "message": message,
+            "data": None,
+            "details": {},
+        }
+
+    project_root = tmp_path / "project"
+    data_root = tmp_path / "data"
+    _write_physical_project(project_root, origin="keil")
+    context = AcceptanceRecoveryContext(
+        project_root,
+        data_root,
+        "physical-rev0-requests",
+        clock=lambda: "2026-09-10T00:00:00.000000Z",
+    )
+    physical_id = "00000000-0000-4000-8000-000000000013"
+    started = begin_acceptance_attempt(
+        context,
+        attempt_id=physical_id,
+        scenario_id=PHYSICAL_SCENARIO_ID,
+        scenario_version=PHYSICAL_SCENARIO_VERSION,
+    )
+    baseline_attempt = _ok(show_acceptance_attempt(context, attempt_id=physical_id))["attempt"]
+    assert started.ok is True
+    assert baseline_attempt["schema"] == PHYSICAL_ATTEMPT_SCHEMA
+    assert baseline_attempt["revision"] == 0
+    assert _ok(resume_acceptance_attempt(context, attempt_id=physical_id))["attempt"] == baseline_attempt
+
+    source_path = project_root / "App" / "main.c"
+    before_source = source_path.read_bytes()
+    source_change = {
+        "path": "App/main.c",
+        "beforeSha256": hashlib.sha256(before_source).hexdigest(),
+        "afterSha256": hashlib.sha256(b"int main(void) { return 1; }\n").hexdigest(),
+        "afterSize": len(b"int main(void) { return 1; }\n"),
+    }
+    unexpanded_intent = SourceChangeIntent.new(changes=[source_change]).to_dict()
+    expanded_intent = SourceChangeIntent.expanded(
+        changes=[source_change],
+        before_input_snapshot_sha256=snapshot_project_inputs(
+            load_project_model(project_root)
+        ).sha256,
+        expected_after_input_snapshot_sha256="b" * 64,
+    ).to_dict()
+    unknown_id = "00000000-0000-4000-8000-000000000099"
+    cases = [
+        (
+            "unknown-physical-id",
+            lambda: checkpoint_acceptance_attempt(
+                context,
+                attempt_id=unknown_id,
+                expected_revision=0,
+                stage="target-failure-observed",
+                test_run_id="target-v2-failed-rev0",
+            ),
+            "acceptance.attempt.checkpoint",
+            "ACCEPTANCE_ATTEMPT_NOT_FOUND",
+            "Acceptance attempt was not found.",
+            unknown_id,
+        ),
+        (
+            "checkpoint-revision-wire",
+            lambda: checkpoint_acceptance_attempt(
+                context,
+                attempt_id=physical_id,
+                expected_revision=8,
+                stage="project-materialized",
+            ),
+            "acceptance.attempt.checkpoint",
+            "ACCEPTANCE_ATTEMPT_INPUT_INVALID",
+            "Acceptance attempt input is invalid.",
+            physical_id,
+        ),
+        (
+            "checkpoint-stage-wire",
+            lambda: checkpoint_acceptance_attempt(
+                context,
+                attempt_id=physical_id,
+                expected_revision=0,
+                stage="stage-not-in-physical-profile",
+            ),
+            "acceptance.attempt.checkpoint",
+            "ACCEPTANCE_ATTEMPT_STAGE_INVALID",
+            "Acceptance attempt stage is invalid.",
+            physical_id,
+        ),
+        (
+            "expanded-intent-on-non-diagnosis-stage",
+            lambda: checkpoint_acceptance_attempt(
+                context,
+                attempt_id=physical_id,
+                expected_revision=0,
+                stage="project-materialized",
+                source_change_intent=expanded_intent,
+            ),
+            "acceptance.attempt.checkpoint",
+            "ACCEPTANCE_ATTEMPT_INPUT_INVALID",
+            "Acceptance attempt input is invalid.",
+            physical_id,
+        ),
+        (
+            "input-intent-on-non-diagnosis-stage",
+            lambda: checkpoint_acceptance_attempt(
+                context,
+                attempt_id=physical_id,
+                expected_revision=0,
+                stage="project-materialized",
+                source_change_intent=unexpanded_intent,
+            ),
+            "acceptance.attempt.checkpoint",
+            "ACCEPTANCE_ATTEMPT_STAGE_INVALID",
+            "Acceptance attempt stage is invalid.",
+            physical_id,
+        ),
+        (
+            "diagnosis-without-intent",
+            lambda: checkpoint_acceptance_attempt(
+                context,
+                attempt_id=physical_id,
+                expected_revision=0,
+                stage="diagnosis-completed",
+                diagnostic_session_id="a" * 32,
+            ),
+            "acceptance.attempt.checkpoint",
+            "ACCEPTANCE_ATTEMPT_STAGE_INVALID",
+            "Acceptance attempt stage is invalid.",
+            physical_id,
+        ),
+        (
+            "rev0-wrong-next-stage",
+            lambda: checkpoint_acceptance_attempt(
+                context,
+                attempt_id=physical_id,
+                expected_revision=0,
+                stage="firmware-built-after",
+            ),
+            "acceptance.attempt.checkpoint",
+            "ACCEPTANCE_ATTEMPT_STAGE_INVALID",
+            "Acceptance attempt stage is invalid.",
+            physical_id,
+        ),
+        (
+            "authorization-before-revision-four",
+            lambda: authorize_acceptance_source_change(
+                context,
+                attempt_id=physical_id,
+                expected_revision=0,
+                action_digest="a" * 64,
+                authorized=True,
+            ),
+            "acceptance.attempt.authorize-source-change",
+            "ACCEPTANCE_ATTEMPT_STAGE_INVALID",
+            "Acceptance attempt stage is invalid.",
+            physical_id,
+        ),
+    ]
+
+    for case_id, invoke, operation, code, message, peek_id in cases:
+        before_refusal = (tree_snapshot(project_root), tree_snapshot(data_root))
+        result = invoke()
+        assert_failure(result, operation, code, message)
+        assert (tree_snapshot(project_root), tree_snapshot(data_root)) == before_refusal
+
+        if peek_id == physical_id:
+            shown = show_acceptance_attempt(context, attempt_id=peek_id)
+            resumed = resume_acceptance_attempt(context, attempt_id=peek_id)
+            assert shown.ok is True and resumed.ok is True, case_id
+            assert _ok(shown)["attempt"] == baseline_attempt
+            assert _ok(resumed)["attempt"] == baseline_attempt
+        else:
+            shown = show_acceptance_attempt(context, attempt_id=peek_id)
+            resumed = resume_acceptance_attempt(context, attempt_id=peek_id)
+            assert_failure(
+                shown,
+                "acceptance.attempt.show",
+                "ACCEPTANCE_ATTEMPT_NOT_FOUND",
+                "Acceptance attempt was not found.",
+            )
+            assert_failure(
+                resumed,
+                "acceptance.attempt.resume",
+                "ACCEPTANCE_ATTEMPT_NOT_FOUND",
+                "Acceptance attempt was not found.",
+            )
+        assert (tree_snapshot(project_root), tree_snapshot(data_root)) == before_refusal
