@@ -148,6 +148,16 @@ class _MalformedMetadataBackend:
         return None
 
 
+class _MetadataFailureBackend:
+    def debug_handoff_metadata(self, *, deadline=None):
+        raise ProbeBackendError(
+            "PROBE_BACKEND_ERROR", "provider failed"
+        )
+
+    def close(self):
+        return None
+
+
 class _AttachRecoveryWorkerBackend:
     """Picklable worker seam that exposes attach terminal recovery ordering."""
 
@@ -1633,6 +1643,18 @@ def test_worker_rejects_malformed_debug_handoff_metadata(tmp_path: Path) -> None
             worker.debug_handoff_metadata()
         assert caught.value.code == "PROBE_BACKEND_ERROR"
         assert "board" not in caught.value.message.casefold()
+    finally:
+        worker.abort_owned_execution()
+
+
+def test_worker_provider_failure_aborts_owned_child_and_preserves_public_error() -> None:
+    worker = ProbeBackendWorker(_test_backend_factory=_MetadataFailureBackend)
+    try:
+        with pytest.raises(ProbeWorkerError) as caught:
+            worker.debug_handoff_metadata()
+        assert caught.value.code == "PROBE_BACKEND_ERROR"
+        assert caught.value.message == "Probe worker operation failed"
+        assert worker.is_alive is False
     finally:
         worker.abort_owned_execution()
 
