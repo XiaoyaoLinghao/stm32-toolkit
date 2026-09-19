@@ -30,13 +30,27 @@ unknown; the later passing run does not establish a repair. No timeout increase
 or another blind benchmark repetition is approved by this status.
 
 Python package branch coverage remains below the approved 90% gate. The native
-aggregates currently record Toolkit 10817/13564 and Monitor 2490/2936 branches.
-A separately accepted official Diagnostic JSON projection brings Toolkit to
-10830/13564 (79.8437%); Monitor is 2490/2936 (84.8093%). It is supplementary
+aggregates currently record Toolkit 10824/13564 (79.7995%) and Monitor 2490/2936
+branches. The accepted TestRun publication and regeneration raw coverage was
+combined once in toolkit-aggregate-r4, without rerunning tests. A separately
+accepted earlier official Diagnostic JSON projection retains a Toolkit lower
+bound of 10830/13564 (79.8437%); it has not been recomputed with r4, and its
+increment must not be added without checking overlap. Monitor is 2490/2936
+(84.8093%). The Diagnostic projection is supplementary
 JSON evidence, not a native coverage database: the implementer deleted the raw
 Diagnostic database before primary aggregation. No raw database has been
 fabricated or restored. Future raw coverage and shards
 are durable evidence subject to primary-only cleanup and a preservation hold.
+
+The four regeneration public cases are independently accepted at code
+ab3e3fef43af7146a743319e477e7a4d352384e5 and report
+b79f8dcd1bd2a9fbc83937dc4ae3c43aa64396b1, integrated at
+af7e54ce9dc53f5ae609983ba35a85c2aa81a18e. They prove IOC drift refusal,
+valid candidate target mismatch refusal, configuration failure preserving the
+destination, and real rollback after forward activation failure. Their r2
+evidence is 4 passed with actual exit 0. The earlier pre-body authorization
+failure is retained as a path-boundary environment result; its native exception
+was not captured and is not inferred from a different run.
 
 The three Monitor lifecycle cases were accepted and integrated, with their raw
 coverage included once in the current aggregates. The separate retention
