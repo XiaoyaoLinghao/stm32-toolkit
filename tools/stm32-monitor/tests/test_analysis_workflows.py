@@ -47,8 +47,6 @@ from stm32_toolkit.testing.replay import (
     load_target_replay_fixture,
 )
 from stm32_toolkit.testing.target import TargetFrameDecoder, encode_frame
-from test_acceptance_continuation import prepare_pair
-from test_continuation_monitor import _monitor_baseline
 from test_physical_publication import (
     _append_physical_history,
     _physical_context,
@@ -2525,34 +2523,6 @@ def test_awf_2f_maps_unrecognized_history_provider_code(
     assert error.value.message == "monitor history query failed"
     assert _data_tree(paths) == before_tree
     assert not (evidence.root / "roots" / "monitor-analysis").exists()
-
-
-def test_awf_3a_rejects_continuation_with_different_diagnostic_session(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    pair = prepare_pair(tmp_path, monkeypatch)
-    baseline = _monitor_baseline(pair, tmp_path)
-    paths, evidence, request, _old_session, hypothesis, polarity, rationale, declaration = (
-        baseline.compare_args
-    )
-    before_tree = _data_tree(paths)
-
-    with pytest.raises(AnalysisWorkflowError) as error:
-        compare_monitor_runs(
-            paths,
-            evidence,
-            request,
-            "e" * 32,
-            hypothesis,
-            polarity,
-            rationale,
-            declaration,
-            continuation_evidence_id=baseline.continuation_id,
-        )
-
-    assert error.value.code == "INCOMPATIBLE_IDENTITY"
-    assert error.value.message == "continuation does not match Diagnostic declaration"
-    assert _data_tree(paths) == before_tree
 
 
 def test_awf_3b_exports_identical_firmware_without_source_row(tmp_path: Path) -> None:

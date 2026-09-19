@@ -1414,6 +1414,43 @@ def test_diagnostic_continuation_validation_rejects_native_result3_tamper(
     ).load_durable(pair.diagnostic_session_id).revision == pair.diagnostic_revision
 
 
+def test_awf_3a_rejects_continuation_with_different_diagnostic_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pair = prepare_pair(tmp_path, monkeypatch)
+    baseline = _monitor_baseline(pair, tmp_path)
+    paths, evidence, request, _old_session, hypothesis, polarity, rationale, declaration = (
+        baseline.compare_args
+    )
+    before_tree = {
+        str(path.relative_to(paths.data_root)): path.read_bytes()
+        for path in paths.data_root.rglob("*")
+        if path.is_file()
+    }
+
+    with pytest.raises(AnalysisWorkflowError) as error:
+        compare_monitor_runs(
+            paths,
+            evidence,
+            request,
+            "e" * 32,
+            hypothesis,
+            polarity,
+            rationale,
+            declaration,
+            continuation_evidence_id=baseline.continuation_id,
+        )
+
+    assert error.value.code == "INCOMPATIBLE_IDENTITY"
+    assert error.value.message == "continuation does not match Diagnostic declaration"
+    after_tree = {
+        str(path.relative_to(paths.data_root)): path.read_bytes()
+        for path in paths.data_root.rglob("*")
+        if path.is_file()
+    }
+    assert after_tree == before_tree
+
+
 def test_persisted_continuation_monitor_diagnostic_and_expired_attempt_reuse(tmp_path, monkeypatch):
     pair = prepare_pair(tmp_path, monkeypatch)
     original_roots = {p: p.read_bytes() for p in (pair.evidence.root / "roots" / "acceptance-attempt").glob("*.json")}
