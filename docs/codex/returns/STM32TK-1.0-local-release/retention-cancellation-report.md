@@ -15,7 +15,7 @@ reviewer and acceptor.
 - Branch/worktree: `codex/STM32TK-1.0-retention-cancellation-contract` /
   `D:\codex-tmp\v10b-0918\r10\rc`.
 - Test code head before this report commit:
-  `3266399c04ef45ad73819db3c77b5ce809276332`.
+  `f6ca9ceb4e4bcecfe44351fa809758d088746c1d`.
 - Frozen product import source: `D:\codex-tmp\v10b-0918\r10\verify`,
   revision `15b1a70e9bd684285da5557104deff529f537e49`.
 - Interpreter: `D:\codex-tmp\v10b-0918\r10\py\Scripts\python.exe`.
@@ -163,16 +163,23 @@ entry was returned for primary review and was not executed.
 ## r3 revised entry after independent review
 
 The revised test-only correction is committed at code head
-`3266399c04ef45ad73819db3c77b5ce809276332`. The observer now walks both `__cause__` and `__context__` edges
+`f6ca9ceb4e4bcecfe44351fa809758d088746c1d`. The observer now walks both
+`__cause__` and `__context__` edges
 with cycle-safe identity deduplication, retains per-edge relations and
 suppressed-context metadata, and records a standard traceback for every
 encountered exception without locals. Each callback or writer-Future root is
-classified independently: it must contain a terminal native
-`SQLITE_INTERRUPT`, and every node must be either that native interrupt or a
+classified independently: it must have at least one terminal leaf, every
+terminal leaf must be native `SQLITE_INTERRUPT`, and every node must be either
+that native interrupt or a
 `StorageFailure` whose code is exactly `MONITOR_STORAGE_BUSY` or
 `MONITOR_STORAGE_INVALID`. The allowance also requires the captured
 `_submit` cancellation event to be set; a public BUSY result alone is not
 used as cancellation proof.
+
+The final pre-execution review found that an earlier existential terminal-leaf
+check could admit a second non-interrupt leaf. The one-line test-only
+correction now requires all terminal leaves for each root to be native
+`SQLITE_INTERRUPT`; no launcher or product behavior changed.
 
 Each selected node now emits exactly one nullable `retention_observation` from
 its unconditional `finally`, after bounded caller and Future settlement
