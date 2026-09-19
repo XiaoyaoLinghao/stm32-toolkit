@@ -16,6 +16,7 @@ from stm32_monitor.analysis_workflows import (
     AnalysisBundleRef,
     AnalysisPublication,
     AnalysisWorkflowError,
+    ANALYSIS_WORKFLOW_INVALID,
     ENVIRONMENT_FAILURE,
     EVIDENCE_INTEGRITY_FAILURE,
     compare_monitor_runs,
@@ -195,6 +196,80 @@ def test_export_analysis_bundle_maps_target_provider_failure_without_bundle_muta
     assert calls == [failed_id]
     assert error.value.code == ENVIRONMENT_FAILURE
     assert "private target provider" not in str(error.value)
+    assert _evidence_tree(evidence) == before_tree
+    assert not any("monitor-analysis-bundle" in path for path in _evidence_tree(evidence))
+
+
+@pytest.mark.parametrize(
+    "case",
+    ("publication-type", "run-id-type", "request", "lineage", "replay-test-run"),
+)
+def test_export_analysis_bundle_rejects_public_mismatches_before_bundle_write(
+    tmp_path: Path, case: str
+) -> None:
+    paths = _paths(tmp_path)
+    evidence, before, after = _ingest_pair(paths)
+    declaration = _declaration(tmp_path, evidence, before, after)
+    failed_id, fixed_id = _publish_target_pair(paths, evidence)
+    publication = _publish(paths, evidence, before, after, declaration)
+    request = _request(before, after)
+    export_declaration = declaration
+    if case == "request":
+        request = _request(before, after, minimum=3)
+    elif case == "lineage":
+        export_declaration = _declaration(
+            tmp_path,
+            evidence,
+            before,
+            after,
+            mutate={"validation_plan_id": "3" * 64},
+        )
+
+    before_tree = _evidence_tree(evidence)
+    with pytest.raises(AnalysisWorkflowError) as error:
+        if case == "publication-type":
+            export_analysis_bundle(
+                paths,
+                evidence,
+                _request(before, after),
+                object(),
+                failed_id,
+                fixed_id,
+                declaration,
+            )
+        elif case == "run-id-type":
+            export_analysis_bundle(
+                paths,
+                evidence,
+                request,
+                publication,
+                1,
+                fixed_id,
+                export_declaration,
+            )
+        else:
+            export_analysis_bundle(
+                paths,
+                evidence,
+                request,
+                publication,
+                fixed_id if case == "replay-test-run" else failed_id,
+                fixed_id,
+                export_declaration,
+            )
+
+    assert error.value.code == (
+        ANALYSIS_WORKFLOW_INVALID
+        if case in {"publication-type", "run-id-type"}
+        else "INCOMPATIBLE_IDENTITY"
+    )
+    assert error.value.message == {
+        "publication-type": "analysis publication is invalid",
+        "run-id-type": "test run IDs are invalid",
+        "request": "analysis request does not match publication",
+        "lineage": "analysis lineage does not match publication",
+        "replay-test-run": "TestRun does not match replay reference",
+    }[case]
     assert _evidence_tree(evidence) == before_tree
     assert not any("monitor-analysis-bundle" in path for path in _evidence_tree(evidence))
 

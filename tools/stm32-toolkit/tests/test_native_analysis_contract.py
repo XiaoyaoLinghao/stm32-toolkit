@@ -519,6 +519,64 @@ def test_native_statistics_rejects_malformed_timestamp_windows_and_digest(
         )
 
 
+@pytest.mark.parametrize(
+    ("before", "after", "max_pairing_skew_ns", "minimum_valid_pairs", "request_digest", "message"),
+    (
+        (
+            object(),
+            [_batch(100, 1)],
+            1,
+            2,
+            "a" * 64,
+            "before batches are invalid",
+        ),
+        (
+            [_batch(100, 1)],
+            [_batch(100, 1)],
+            True,
+            2,
+            "a" * 64,
+            "native analysis pairing skew is invalid",
+        ),
+        (
+            [_batch(100, 1)],
+            [_batch(100, 1)],
+            1,
+            True,
+            "a" * 64,
+            "native analysis minimum pair count is invalid",
+        ),
+        (
+            [_batch(100, 1)],
+            [_batch(100, 1)],
+            1,
+            2,
+            True,
+            "native analysis request digest is invalid",
+        ),
+    ),
+    ids=("batches", "pairing-skew", "minimum-pairs", "request-digest"),
+)
+def test_native_statistics_rejects_public_argument_domain_errors(
+    before: object,
+    after: object,
+    max_pairing_skew_ns: object,
+    minimum_valid_pairs: object,
+    request_digest: object,
+    message: str,
+) -> None:
+    with pytest.raises(NativeAnalysisContractError) as error:
+        native_statistics(
+            before,
+            after,
+            selector="r0",
+            max_pairing_skew_ns=max_pairing_skew_ns,  # type: ignore[arg-type]
+            minimum_valid_pairs=minimum_valid_pairs,  # type: ignore[arg-type]
+            request_digest=request_digest,  # type: ignore[arg-type]
+        )
+    assert str(error.value) == message
+
+
 def test_native_request_expected_reference_guards_reject_drift() -> None:
     request = _request()
     expected_before = dict(request["before_run"])

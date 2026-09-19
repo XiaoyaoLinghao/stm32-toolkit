@@ -2559,6 +2559,45 @@ def test_stop_reports_first_close_error_after_visiting_all_owned_dependencies(
     asyncio.run(scenario())
 
 
+def test_stop_surfaces_runtime_record_unlink_failure_and_releases_workspace_lock(
+    tmp_path: Path,
+) -> None:
+    from stm32_monitor.models import MonitorConfig
+    from stm32_monitor.runtime import MonitorRuntime, MonitorRuntimeError
+
+    async def scenario() -> None:
+        runtime, config, groups, histories, *_ = _protocol_runtime(tmp_path)
+        await runtime.start(config)
+        record = runtime.runtime_record
+        record.unlink()
+        record.mkdir()
+        try:
+            with pytest.raises(MonitorRuntimeError) as caught:
+                await runtime.stop()
+            assert caught.value.code == "MONITOR_CLEANUP_FAILED"
+            await runtime.wait_closed()
+            assert groups[0].closed == 1
+            assert histories[0].closed == 1
+        finally:
+            if record.is_dir():
+                record.rmdir()
+
+        replacement = MonitorRuntime(
+            group_store_factory=FakeStore,
+            history_store_factory=FakeStore,
+            exporter_factory=FakeExporter,
+            sampler_factory=lambda *_args, **_kwargs: object(),
+            observation_factory=lambda *_args, **_kwargs: None,
+            service_factory=lambda *args, **kwargs: _ready_service(*args, **kwargs),
+        )
+        await replacement.start(
+            MonitorConfig(config.project_root, config.data_root, config.session_id)
+        )
+        await replacement.stop()
+
+    asyncio.run(scenario())
+
+
 def test_close_independent_collects_first_error_and_continues(tmp_path: Path) -> None:
     from stm32_monitor.runtime import _close_independent
 

@@ -2118,6 +2118,70 @@ def test_physical_loader_rejects_persisted_reference_root_metadata_drift(tmp_pat
     assert reference.schema == "stm32-monitor-run-ref/2"
 
 
+def test_physical_loader_rejects_persisted_noncanonical_reference_bytes_before_authentication(
+    tmp_path: Path,
+) -> None:
+    paths, evidence, test_run_id, raw_probe, monitor_run_id, group_id = _physical_context(tmp_path)
+    _publish_physical_test_run(
+        paths,
+        evidence,
+        test_run_id=test_run_id,
+        raw_probe=raw_probe,
+        monitor_run_id=monitor_run_id,
+    )
+    request = _physical_request(
+        paths,
+        raw_probe,
+        monitor_run_id,
+        group_id,
+        test_run_id,
+    )
+    publish_physical_monitor_run(paths, evidence, **request)
+
+    reference_root_path = _monitor_root_files(evidence, "monitor-run-ref")[0]
+    reference_root = json.loads(reference_root_path.read_bytes().decode("utf-8"))
+    stored = evidence.get_envelope(reference_root["manifest_id"])
+    source = tmp_path / "reference-with-final-lf.json"
+    source.write_bytes(
+        evidence.read_artifact(stored.artifacts[0], maximum_bytes=64 * 1024 * 1024) + b"\n"
+    )
+    replacement_artifact = evidence.ingest_file(
+        source,
+        kind="monitor-run-ref",
+        media_type="application/json",
+    )
+    replacement = EvidenceEnvelope(
+        identity=stored.identity,
+        operation=stored.operation,
+        produced_at_utc=stored.produced_at_utc,
+        parents=stored.parents,
+        artifacts=(replacement_artifact,),
+        metadata=stored.metadata,
+    )
+    evidence.put_envelope(replacement)
+    reference_root["manifest_id"] = str(replacement.evidence_id)
+    reference_root_path.write_bytes(canonical_json_bytes(reference_root))
+
+    def persisted_state() -> dict[str, bytes]:
+        return {
+            str(path.relative_to(evidence.root)): path.read_bytes()
+            for path in evidence.root.rglob("*")
+            if path.is_file()
+        }
+
+    before = persisted_state()
+    with pytest.raises(MonitorReplayError) as error:
+        load_monitor_run_reference(
+            paths,
+            EvidenceStore(evidence.root),
+            str(monitor_run_id),
+        )
+
+    assert error.value.code == EVIDENCE_INTEGRITY_FAILURE
+    assert str(error.value.__cause__) == "replay JSON is not canonical"
+    assert persisted_state() == before
+
+
 def test_physical_loader_rejects_provider_transcript_envelope_structure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

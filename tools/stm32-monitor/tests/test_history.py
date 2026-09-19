@@ -3418,6 +3418,57 @@ def test_stream_rejects_corrupt_batch_identity(tmp_path: Path) -> None:
         store.close()
 
 
+def test_public_query_rejects_persisted_negative_value_count_without_deletion(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    store = HistoryStore(paths)
+    try:
+        assert store.append_batch(_batch(paths, 1, captured_ns=1_001)).ok
+
+        def corrupt(connection: sqlite3.Connection) -> None:
+            connection.execute("PRAGMA ignore_check_constraints = ON")
+            connection.execute(
+                "UPDATE history_batches SET value_count = -1 WHERE batch_id = 1"
+            )
+
+        store._database.write(corrupt)
+        database_path = paths.monitor_root / "monitor.sqlite3"
+
+        def snapshot() -> tuple[object, ...]:
+            connection = sqlite3.connect(
+                database_path.as_uri() + "?mode=ro", uri=True
+            )
+            try:
+                return (
+                    connection.execute(
+                        "SELECT singleton, logical_bytes "
+                        "FROM monitor_history_accounting"
+                    ).fetchall(),
+                    connection.execute(
+                        "SELECT batch_id,session_id,run_id,sequence,captured_ns,"
+                        "payload_json,payload_bytes,payload_sha256,value_count "
+                        "FROM history_batches ORDER BY batch_id"
+                    ).fetchall(),
+                    connection.execute(
+                        "SELECT batch_id,ordinal,selector_kind,selector,value_json,"
+                        "value_bytes,value_sha256 FROM history_values "
+                        "ORDER BY batch_id,ordinal"
+                    ).fetchall(),
+                )
+            finally:
+                connection.close()
+
+        before = snapshot()
+        result = store.query_history(HistoryQuery("monitor-1", 0, 2_000_000_000))
+        assert not result.ok
+        assert result.code == "MONITOR_STORAGE_CORRUPT"
+        assert result.message == "monitor history is corrupt"
+        assert snapshot() == before
+    finally:
+        store.close()
+
+
 def test_retention_rejects_missing_accounting_row(tmp_path: Path) -> None:
     paths = _paths(tmp_path)
     store = HistoryStore(paths)

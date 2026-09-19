@@ -18,8 +18,8 @@ from stm32_monitor.replay import (
     MonitorRunRef,
     canonical_replay_json_bytes,
 )
-from stm32_toolkit.evidence import EVIDENCE_INVALID, EvidenceValidationError
 from stm32_toolkit.diagnostics import SourceChangeDeclaration
+from stm32_toolkit.evidence import ArtifactRef, EVIDENCE_INVALID, EvidenceValidationError
 from stm32_toolkit.paths import WorkspacePaths
 from stm32_toolkit.project_model import ProjectManifestError
 
@@ -162,6 +162,28 @@ def _valid_analysis_request_wire() -> dict[str, object]:
     ).to_dict()
 
 
+def _valid_source_change_wire() -> dict[str, object]:
+    return SourceChangeDeclaration.new(
+        before_source_sha256="8" * 64,
+        after_source_sha256="9" * 64,
+        before_build_id="a" * 64,
+        before_elf_sha256="b" * 64,
+        after_build_id="c" * 64,
+        after_elf_sha256="d" * 64,
+        changed_paths=("src/main.c", "src/monitor.c"),
+        diff_evidence_id="e" * 64,
+        diff_artifact=ArtifactRef(
+            sha256="7" * 64,
+            size_bytes=17,
+            relative_path="changes.diff",
+            kind="source-diff",
+            media_type="text/x-diff",
+        ),
+        claimed_hypothesis_ids=("2" * 32,),
+        validation_plan_id="0" * 64,
+    ).to_dict()
+
+
 def test_protocol_accepts_only_the_four_analysis_boundary_codes() -> None:
     for code in (
         "ANALYSIS_WORKFLOW_INVALID",
@@ -268,25 +290,67 @@ def test_analysis_compare_projects_closed_inputs_and_calls_once(
 ) -> None:
     project = tmp_path / "project"
     data = tmp_path / "data"
-    _project_and_model(monkeypatch, project)
+    _real_project(project)
     request_file = tmp_path / "request.json"
-    _write_json(request_file, {"request": "closed"})
-    source_file = tmp_path / "source.json"
-    _write_json(source_file, {"declaration": "closed"})
-    request = object()
-    declaration = object()
-    monkeypatch.setattr(
-        AnalysisRequest,
-        "from_value",
-        classmethod(lambda cls, value: request),
-        raising=False,
+    request_wire = _valid_analysis_request_wire()
+    _write_json(request_file, request_wire)
+    request = AnalysisRequest.from_value(request_wire)
+    calls: list[tuple[object, ...]] = []
+
+    def compare(*args: object):
+        calls.append(args)
+        return _Publication()
+
+    monkeypatch.setattr(cli, "compare_monitor_runs", compare, raising=False)
+    output = io.StringIO()
+    code = cli.main(
+        [
+            "analysis",
+            "compare",
+            "--project",
+            str(project),
+            "--data-root",
+            str(data),
+            "--session-id",
+            "monitor-a",
+            "--request-file",
+            str(request_file),
+            "--diagnostic-session-id",
+            "1" * 32,
+            "--hypothesis-id",
+            "2" * 32,
+            "--polarity",
+            "supports",
+            "--rationale",
+            "changed",
+            "--json",
+        ],
+        _stdout=output,
     )
-    monkeypatch.setattr(
-        SourceChangeDeclaration,
-        "from_value",
-        classmethod(lambda cls, value: declaration),
-        raising=False,
-    )
+
+    assert code == 0
+    payload = json.loads(output.getvalue())
+    assert payload["operation"] == "monitor.analysis.compare"
+    assert payload["data"] == {"analysis_publication": _Publication().to_dict()}
+    assert len(calls) == 1
+    args = calls[0]
+    assert args[2:7] == (request, "1" * 32, "2" * 32, "supports", "changed")
+    assert args[7] is None
+    assert args[0].workspace_root / "evidence" == args[1].root
+
+
+def test_analysis_compare_loads_valid_source_change_and_calls_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "project"
+    data = tmp_path / "data"
+    _real_project(project)
+    request_file = tmp_path / "request.json"
+    source_file = tmp_path / "source-change.json"
+    _write_json(request_file, _valid_analysis_request_wire())
+    source_wire = _valid_source_change_wire()
+    _write_json(source_file, source_wire)
+    source_change = SourceChangeDeclaration.from_value(source_wire)
     calls: list[tuple[object, ...]] = []
 
     def compare(*args: object):
@@ -323,14 +387,11 @@ def test_analysis_compare_projects_closed_inputs_and_calls_once(
     )
 
     assert code == 0
-    payload = json.loads(output.getvalue())
-    assert payload["operation"] == "monitor.analysis.compare"
-    assert payload["data"] == {"analysis_publication": _Publication().to_dict()}
+    assert json.loads(output.getvalue())["data"] == {
+        "analysis_publication": _Publication().to_dict()
+    }
     assert len(calls) == 1
-    args = calls[0]
-    assert args[2:7] == (request, "1" * 32, "2" * 32, "supports", "changed")
-    assert args[7] is declaration
-    assert args[0].workspace_root / "evidence" == args[1].root
+    assert calls[0][7] == source_change
 
 
 def test_analysis_bundle_consumes_publication_without_comparing_again(
