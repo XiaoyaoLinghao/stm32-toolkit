@@ -194,6 +194,94 @@ def test_probe_list_mcp_preserves_all_probe_listing_confirmation_fields(
     assert result["data"] == listing
 
 
+def test_target_replay_mcp_wrapper_binds_project_files_and_rejects_unsafe_paths(
+    monkeypatch, tmp_path: Path
+) -> None:
+    runtime = _runtime(tmp_path)
+    descriptor = runtime.project_root / "input.json"
+    stream = runtime.project_root / "input.hex"
+    descriptor.write_text("{}", encoding="utf-8")
+    stream.write_text(":00000001FF\n", encoding="ascii")
+    calls: list[dict[str, object]] = []
+
+    async def roots_ok(*_args: object) -> None:
+        return None
+
+    def replay(context: object, *, operation_id: str, descriptor_file: Path,
+               stream_file: Path) -> OperationResult[object]:
+        calls.append({
+            "context": context,
+            "operation_id": operation_id,
+            "descriptor_file": descriptor_file,
+            "stream_file": stream_file,
+        })
+        return OperationResult.success("test.target.replay", {"accepted": True})
+
+    monkeypatch.setattr(mcp_mod, "_client_roots_failure", roots_ok)
+    monkeypatch.setattr(mcp_mod, "target_replay_run", replay)
+
+    result = asyncio.run(
+        mcp_mod.tool_test_target_replay_for_request(
+            runtime, None, "operation-a", "input.json", "input.hex"
+        )
+    )
+
+    assert result == OperationResult.success(
+        "test.target.replay", {"accepted": True}
+    ).to_dict()
+    assert len(calls) == 1
+    assert calls[0]["operation_id"] == "operation-a"
+    assert calls[0]["descriptor_file"] == descriptor
+    assert calls[0]["stream_file"] == stream
+    context = calls[0]["context"]
+    assert context.project_root == runtime.project_root
+    assert context.data_root == runtime.data_root
+    assert context.session_id == runtime.session_id
+
+    for unsafe in ("../outside.json", str(tmp_path / "outside.json"), "missing.json"):
+        rejected = asyncio.run(
+            mcp_mod.tool_test_target_replay_for_request(
+                runtime, None, "operation-a", unsafe, "input.hex"
+            )
+        )
+        assert rejected == OperationResult.failure(
+            "test.target.replay", "EVIDENCE_PATH_UNSAFE", "Evidence path is unsafe.", {}
+        ).to_dict()
+    assert len(calls) == 1
+
+
+def test_target_replay_mcp_wrapper_refuses_before_file_resolution_when_roots_fail(
+    monkeypatch, tmp_path: Path
+) -> None:
+    runtime = _runtime(tmp_path)
+    failure = OperationResult.failure(
+        "test.target.replay",
+        "MCP_ROOTS_UNAVAILABLE",
+        "MCP client roots are unavailable",
+        {},
+    ).to_dict()
+    calls: list[str] = []
+
+    async def roots_unavailable(*_args: object) -> dict[str, object]:
+        calls.append("roots")
+        return failure
+
+    def forbidden(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("target replay must not resolve files after root refusal")
+
+    monkeypatch.setattr(mcp_mod, "_client_roots_failure", roots_unavailable)
+    monkeypatch.setattr(mcp_mod, "target_replay_run", forbidden)
+
+    result = asyncio.run(
+        mcp_mod.tool_test_target_replay_for_request(
+            runtime, None, "operation-a", "input.json", "input.hex"
+        )
+    )
+
+    assert result == failure
+    assert calls == ["roots"]
+
+
 @pytest.mark.parametrize(
     ("wrapper_name", "workflow_name", "request_type", "arguments"),
     [
