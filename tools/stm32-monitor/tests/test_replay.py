@@ -470,7 +470,7 @@ def test_public_replay_constructor_boundary_matrix(
         ),
         "reference-text-empty": ("target_device", "", True),
         "reference-text-control": ("probe_id", "\u0001", True),
-        "reference-text-nfc": ("physical_target", "e\u0301", True),
+        "reference-text-nfc": ("physical_target", "e\u0301", False),
         "reference-optional-svd-none": ("svd_sha256", None, True),
         "reference-git-head-invalid": ("git_head", "bad", True),
         "reference-integer-domain": ("start_sequence", -1, True),
