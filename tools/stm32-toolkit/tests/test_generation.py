@@ -374,7 +374,6 @@ def _redirect_path(monkeypatch, link: Path, target: Path, is_dir: bool) -> None:
             ["cmd", "/c", "mklink", "/J", str(link), str(target)],
             check=True,
             capture_output=True,
-            text=True,
         )
         return
     original_resolve = Path.resolve
@@ -1551,6 +1550,21 @@ def test_sanitized_project_name_is_used(tmp_path):
     plan = plan_for(root)
     cmake = next(entry for entry in plan.files if entry.path == "CMakeLists.txt")
     assert b"project(My_App LANGUAGES C CXX ASM)" in cmake.after_bytes
+
+
+@pytest.mark.parametrize(
+    ("project_name", "expected"),
+    [("123abc", "stm32_123abc"), ("!!!", "stm32_firmware")],
+)
+def test_sanitized_project_name_edge_cases_are_rendered(
+    tmp_path: Path, project_name: str, expected: str
+):
+    payload = standard_payload()
+    payload["project"] = {"name": project_name, "origin": "manual"}
+    root = write_project(tmp_path / "proj", payload)
+    plan = plan_for(root)
+    cmake = next(entry for entry in plan.files if entry.path == "CMakeLists.txt")
+    assert f"project({expected} LANGUAGES C CXX ASM)".encode() in cmake.after_bytes
 
 
 def test_sanitize_identifier_fallbacks():
