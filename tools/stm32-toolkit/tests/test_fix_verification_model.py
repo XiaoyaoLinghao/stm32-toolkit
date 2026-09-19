@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 from hashlib import sha256
 
 import pytest
@@ -569,3 +569,153 @@ def test_fix_verification_paired_analysis_evidence_ids_sort_together() -> None:
         ("f" * 64, "1" * 64),
     )
     assert FixVerification.from_value(verification.to_dict()) == verification
+
+
+_SOURCE_INVALID_MESSAGE = "event/model/operation intent is invalid"
+_SOURCE_LIMIT_MESSAGE = "a diagnostic collection or byte limit is exceeded"
+
+
+def _expect_source_failure(factory, expected_code: str, expected_message: str) -> None:
+    with pytest.raises(DiagnosticValidationError) as error:
+        factory()
+    assert error.value.code == expected_code
+    assert error.value.message == expected_message
+    assert str(error.value) == expected_message
+
+
+@pytest.mark.parametrize(
+    "case_id",
+    [
+        "closed-hash-type",
+        "closed-hex-id-type",
+        "closed-safe-id-type",
+        "closed-run-id-type",
+        "closed-utc-type",
+        "artifact-limit",
+        "artifact-invalid",
+        "parallel-analysis-length",
+        "legacy-plan-continuation",
+    ],
+    ids=lambda case_id: case_id,
+)
+def test_public_source_verification_boundaries(case_id: str) -> None:
+    if case_id == "closed-hash-type":
+        candidate = _source().to_dict()
+        candidate["before_source_sha256"] = 1
+        before = deepcopy(candidate)
+        _expect_source_failure(
+            lambda: SourceChangeDeclaration.from_value(candidate),
+            DIAGNOSTIC_INVALID_EVENT,
+            _SOURCE_INVALID_MESSAGE,
+        )
+        assert candidate == before
+        return
+    if case_id == "closed-hex-id-type":
+        candidate = _plan().to_dict()
+        candidate["diagnostic_session_id"] = 1
+        before = deepcopy(candidate)
+        _expect_source_failure(
+            lambda: VerificationPlan.from_value(candidate),
+            DIAGNOSTIC_INVALID_EVENT,
+            _SOURCE_INVALID_MESSAGE,
+        )
+        assert candidate == before
+        return
+    if case_id == "closed-safe-id-type":
+        candidate = _fix().to_dict()
+        candidate["executed_operation_ids"] = [1]
+        before = deepcopy(candidate)
+        _expect_source_failure(
+            lambda: FixVerification.from_value(candidate),
+            DIAGNOSTIC_INVALID_EVENT,
+            _SOURCE_INVALID_MESSAGE,
+        )
+        assert candidate == before
+        return
+    if case_id == "closed-run-id-type":
+        candidate = _plan().to_dict()
+        candidate["failed_before_run_id"] = 1
+        before = deepcopy(candidate)
+        _expect_source_failure(
+            lambda: VerificationPlan.from_value(candidate),
+            DIAGNOSTIC_INVALID_EVENT,
+            _SOURCE_INVALID_MESSAGE,
+        )
+        assert candidate == before
+        return
+    if case_id == "closed-utc-type":
+        candidate = _fix().to_dict()
+        candidate["completed_at_utc"] = 1
+        before = deepcopy(candidate)
+        _expect_source_failure(
+            lambda: FixVerification.from_value(candidate),
+            DIAGNOSTIC_INVALID_EVENT,
+            _SOURCE_INVALID_MESSAGE,
+        )
+        assert candidate == before
+        return
+    if case_id == "artifact-limit":
+        candidate = _source().to_dict()
+        artifact = candidate["diff_artifact"]
+        assert isinstance(artifact, dict)
+        artifact["relative_path"] = "x" * 513
+        before = deepcopy(candidate)
+        _expect_source_failure(
+            lambda: SourceChangeDeclaration.from_value(candidate),
+            DIAGNOSTIC_LIMIT_EXCEEDED,
+            _SOURCE_LIMIT_MESSAGE,
+        )
+        assert candidate == before
+        return
+    if case_id == "artifact-invalid":
+        candidate = _source().to_dict()
+        artifact = candidate["diff_artifact"]
+        assert isinstance(artifact, dict)
+        artifact["relative_path"] = "/absolute.diff"
+        before = deepcopy(candidate)
+        _expect_source_failure(
+            lambda: SourceChangeDeclaration.from_value(candidate),
+            DIAGNOSTIC_INVALID_EVENT,
+            _SOURCE_INVALID_MESSAGE,
+        )
+        assert candidate == before
+        return
+    if case_id == "parallel-analysis-length":
+        plan = _plan()
+        before = deepcopy(plan)
+        _expect_source_failure(
+            lambda: replace(
+                plan,
+                required_analysis_evidence_ids=(ANALYSIS_EVIDENCE_IDS[0],),
+            ),
+            DIAGNOSTIC_INVALID_EVENT,
+            _SOURCE_INVALID_MESSAGE,
+        )
+        assert plan == before
+        return
+    if case_id == "legacy-plan-continuation":
+        plan = _plan()
+        before = deepcopy(plan)
+        _expect_source_failure(
+            lambda: VerificationPlan(
+                plan.schema,
+                plan.verification_plan_id,
+                plan.diagnostic_session_id,
+                plan.failed_before_run_id,
+                plan.failed_before_evidence_id,
+                plan.source_change_declaration_id,
+                plan.fixed_after_run_id,
+                plan.fixed_after_evidence_id,
+                plan.required_analysis_ids,
+                plan.required_analysis_evidence_ids,
+                plan.required_monitor_quality,
+                plan.expected_changed,
+                plan.plan_digest,
+                "a" * 64,
+            ),
+            DIAGNOSTIC_INVALID_EVENT,
+            _SOURCE_INVALID_MESSAGE,
+        )
+        assert plan == before
+        return
+    raise AssertionError(f"unhandled case: {case_id}")

@@ -202,6 +202,67 @@ def test_physical_observation_step_wire_guards_fail_closed_without_mutation(
     assert candidate == before
 
 
+@pytest.mark.parametrize(
+    "case_id",
+    [
+        "physical-selector-kind",
+        "physical-value-varies-accepted-control",
+        "physical-value-type",
+        "physical-value-domain",
+    ],
+    ids=lambda case_id: case_id,
+)
+def test_public_physical_observation_model_boundaries(case_id: str) -> None:
+    plan_message = "selector, expected value, plan, or step reference is invalid"
+    if case_id == "physical-selector-kind":
+        candidate = deepcopy(PHYSICAL_FACT_STEP)
+        selector = candidate["selector"]
+        assert isinstance(selector, dict)
+        selector["selector_kind"] = "unsupported-kind"
+        before = deepcopy(candidate)
+        with pytest.raises(DiagnosticValidationError) as error:
+            ObservationStep.from_value(candidate)
+        assert error.value.code == DIAGNOSTIC_PLAN_INVALID
+        assert error.value.message == plan_message
+        assert str(error.value) == plan_message
+        assert candidate == before
+        return
+    if case_id in {"physical-value-varies-accepted-control", "physical-value-domain"}:
+        candidate = deepcopy(PHYSICAL_FACT_STEP)
+        selector = candidate["selector"]
+        assert isinstance(selector, dict)
+        selector["fact"] = "value-varies"
+        selector.pop("bit_index")
+        candidate["expected_value"] = 1 if case_id == "physical-value-varies-accepted-control" else 2
+        if case_id == "physical-value-varies-accepted-control":
+            before = deepcopy(candidate)
+            decoded = ObservationStep.from_value(candidate)
+            assert decoded.expected_value == 1
+            assert decoded.selector["fact"] == "value-varies"
+            assert candidate == before
+            return
+        before = deepcopy(candidate)
+        with pytest.raises(DiagnosticValidationError) as error:
+            ObservationStep.from_value(candidate)
+        assert error.value.code == DIAGNOSTIC_PLAN_INVALID
+        assert error.value.message == plan_message
+        assert str(error.value) == plan_message
+        assert candidate == before
+        return
+    if case_id == "physical-value-type":
+        candidate = deepcopy(PHYSICAL_FACT_STEP)
+        candidate["expected_value"] = "3"
+        before = deepcopy(candidate)
+        with pytest.raises(DiagnosticValidationError) as error:
+            ObservationStep.from_value(candidate)
+        assert error.value.code == DIAGNOSTIC_PLAN_INVALID
+        assert error.value.message == plan_message
+        assert str(error.value) == plan_message
+        assert candidate == before
+        return
+    raise AssertionError(f"unhandled case: {case_id}")
+
+
 LIFECYCLE_TOOLS = {
     "stm32_diagnostic_start",
     "stm32_diagnostic_show",
