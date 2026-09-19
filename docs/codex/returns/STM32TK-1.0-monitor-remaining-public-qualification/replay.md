@@ -10,7 +10,7 @@ hardware evidence.
 
 - Accepted design/plan base: `a3609e92acce1d8efdedef68b1a26af950426ebd`
 - Full implementation baseline: `87699308535bd36431c2e44be8bf131e245d460d`
-- Test CodeHead before this report commit: `98ce299e67d1e41ca650d69faf973658a1d61f27`
+- Test CodeHead before this correction report commit: `ba3d09a8d50d340cb2354932d9f4522bac05f929`
 - Branch: `codex/STM32TK-1.0-replay-authority-qualification`
 - Implementer: `/root/monitor_replay_authority_impl` (bounded Luna/max test owner)
 - Owned paths: `tools/stm32-monitor/tests/test_replay.py`,
@@ -32,6 +32,18 @@ hardware evidence.
 The additions deliberately do not repeat accepted retry, cursor, History
 window, race, or direct provider-I/O failure variants. No coverage gain or
 release acceptance is claimed before the primary-owned selected-node run.
+
+## Independent review correction
+
+The independent static review identified one fixture issue in the transcript
+envelope variants: `dataclasses.replace` retained the derived `evidence_id`,
+so construction could fail before the intended comparison guard. The replay
+and physical-publication fixtures now construct a valid public
+`EvidenceEnvelope` without supplying `evidence_id`, return that exact object
+from the provider callback, and assert its changed derived identity plus the
+targeted guard cause. The correction changes only the two owned test files;
+the result remains ready for independent re-review and test execution remains
+`NOT_RUN`.
 
 ## Verification
 
