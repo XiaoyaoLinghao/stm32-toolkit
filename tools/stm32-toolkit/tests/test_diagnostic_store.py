@@ -1040,11 +1040,14 @@ def _store_file_snapshot(root: Path) -> dict[str, bytes]:
         return {root.name: root.read_bytes()}
     if not root.exists():
         return {}
-    return {
-        path.relative_to(root).as_posix(): path.read_bytes()
-        for path in sorted(root.rglob("*"))
-        if path.is_file()
-    }
+    snapshot: dict[str, bytes] = {}
+    for path in sorted(root.rglob("*")):
+        relative = path.relative_to(root).as_posix()
+        if path.is_dir():
+            snapshot[f"{relative}/"] = b""
+        elif path.is_file():
+            snapshot[relative] = path.read_bytes()
+    return snapshot
 
 
 def _authority_snapshot(diagnostics_root: Path, evidence_root: Path) -> dict[str, dict[str, bytes]]:
