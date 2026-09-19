@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import asyncio
+from datetime import datetime, timezone
+from hashlib import sha256
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -731,3 +734,228 @@ raise SystemExit(1)
         if path.is_file()
     )
     assert after_project == before_project
+
+
+@pytest.mark.parametrize(
+    ("probe_id", "case_ids", "recovery_under_reset"),
+    [
+        ("", ("suite.case",), False),
+        ("probe-a", (), False),
+        ("probe-a", ("suite.case",), "true"),
+        ("probe/escape", ("suite.case",), True),
+    ],
+)
+def test_target_prepare_rejects_malformed_public_request_before_provider(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    probe_id: object,
+    case_ids: object,
+    recovery_under_reset: object,
+) -> None:
+    context = _context(tmp_path)
+    calls: list[str] = []
+
+    def forbidden(_context: object) -> object:
+        calls.append("state")
+        raise AssertionError("invalid public Target request must stop before project state")
+
+    monkeypatch.setattr(workflows, "_target_state", forbidden)
+
+    result = asyncio.run(
+        workflows.target_test_prepare(
+            context,
+            probe_id=probe_id,
+            case_ids=case_ids,
+            recovery_under_reset=recovery_under_reset,
+        )
+    )
+
+    assert result.ok is False
+    assert result.code == "TEST_PROTOCOL_INVALID"
+    assert result.message == "Test protocol is invalid."
+    assert result.details == {}
+    assert calls == []
+
+
+@pytest.mark.parametrize("recovery_under_reset", [False, True])
+def test_target_prepare_binds_fixed_facts_and_settles_provider(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    recovery_under_reset: bool,
+) -> None:
+    context = _context(tmp_path)
+    project_root = context.project_root
+    session_root = (tmp_path / "session").absolute()
+    session_root.mkdir()
+    workspace = SimpleNamespace(
+        workspace_id="w" * 64,
+        session_id=context.session_id,
+        session_root=session_root,
+        project_root=project_root,
+    )
+    state = SimpleNamespace(
+        workspace=workspace,
+        results_root=tmp_path / "results",
+        evidence_store=SimpleNamespace(),
+    )
+    model = SimpleNamespace(
+        logical_project_id=PROJECT_ID,
+        debug=SimpleNamespace(target="stm32f407vg"),
+        testing=SimpleNamespace(
+            target=SimpleNamespace(timeout_seconds=3),
+        ),
+    )
+    facts = SimpleNamespace(
+        build_id="b" * 64,
+        elf_sha256="e" * 64,
+        target_device="board-a",
+        input_snapshot_sha256="i" * 64,
+        git_commit="g" * 40,
+        git_dirty=False,
+        elf_path="build/app.elf",
+    )
+    project_config = {
+        "kind": "memory-mailbox",
+        "options": {"address": 0x20000000, "size": 4096},
+    }
+    support = {
+        "backend": "pyocd",
+        "board_id": "board-a",
+        "mcu": "stm32f407vg",
+        "target_id": "board-a",
+        "ram": [{"start": 0x20000000, "size": 0x10000}],
+        "mailbox": {"address": 0x20000000, "size": 4096},
+    }
+    monkeypatch.setattr(
+        workflows,
+        "_target_state",
+        lambda _context: (
+            state,
+            model,
+            facts,
+            "mailbox",
+            "stm32-target-frame/1",
+            project_config,
+            support,
+        ),
+    )
+
+    class Supervisor:
+        def __init__(self) -> None:
+            self.starts = 0
+            self.stops = 0
+            self.endpoint = SimpleNamespace(lease_id="lease-a")
+
+        async def start(self) -> object:
+            self.starts += 1
+            return self.endpoint
+
+        async def stop(self) -> None:
+            self.stops += 1
+
+    class Client:
+        instances: list["Client"] = []
+
+        def __init__(self, endpoint: object) -> None:
+            self.endpoint = endpoint
+            self.calls: list[tuple[object, ...]] = []
+            self.closed = False
+            self.__class__.instances.append(self)
+
+        async def attach(self, received_probe: str, target: str) -> None:
+            self.calls.append(("attach", received_probe, target))
+
+        async def target_identity(self) -> dict[str, str]:
+            return {
+                "board_id": "board-a",
+                "mcu": "stm32f407vg",
+                "target_id": "board-a",
+                "probe_serial_hash": sha256(b"probe-a").hexdigest(),
+            }
+
+        async def close(self) -> None:
+            self.closed = True
+
+    class Runner:
+        instances: list["Runner"] = []
+
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            self.binding: dict[str, object] | None = None
+            self.__class__.instances.append(self)
+
+        async def prepare(self, **binding: object) -> object:
+            self.binding = binding
+            return SimpleNamespace(
+                action_digest="a" * 64,
+                expires_at_utc=datetime(2026, 9, 19, 1, 2, 3, tzinfo=timezone.utc),
+            )
+
+    supervisor = Supervisor()
+    monkeypatch.setattr(workflows, "TargetTestRunner", Runner)
+    monkeypatch.setattr(workflows, "ProbeClient", Client)
+    monkeypatch.setattr(
+        workflows,
+        "_target_supervisor",
+        lambda *_args, **_kwargs: supervisor,
+    )
+
+    result = asyncio.run(
+        workflows.target_test_prepare(
+            context,
+            probe_id="probe-a",
+            case_ids=("suite.case",),
+            recovery_under_reset=recovery_under_reset,
+        )
+    )
+
+    assert result.ok is True
+    assert result.operation == "test.target.prepare"
+    data = result.to_dict()["data"]
+    assert data["authorized_action_digest"] == "a" * 64
+    assert data["case_ids"] == ["suite.case"]
+    assert data["probe_serial_hash"] == sha256(b"probe-a").hexdigest()
+    assert len(Runner.instances) == 1
+    binding = Runner.instances[0].binding
+    assert binding is not None
+    assert binding["cases"] == ("suite.case",)
+    assert binding["recovery_under_reset"] is recovery_under_reset
+    if recovery_under_reset:
+        assert supervisor.starts == 0
+        assert supervisor.stops == 0
+        assert Client.instances == []
+    else:
+        assert supervisor.starts == 1
+        assert supervisor.stops == 1
+        assert len(Client.instances) == 1
+        assert Client.instances[0].calls == [
+            ("attach", "probe-a", "stm32f407vg")
+        ]
+        assert Client.instances[0].closed is True
+
+
+def test_target_execute_rejects_invalid_authority_before_loading_state(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    context = _context(tmp_path)
+    calls: list[str] = []
+
+    def forbidden(_context: object) -> object:
+        calls.append("state")
+        raise AssertionError("invalid authority must stop before state loading")
+
+    monkeypatch.setattr(workflows, "_make_state", forbidden)
+
+    result = asyncio.run(
+        workflows.target_test_execute(
+            context,
+            probe_id="probe-a",
+            authorized_action_digest="not-a-digest",
+        )
+    )
+
+    assert result.ok is False
+    assert result.code == "TEST_AUTHORIZATION_INVALID"
+    assert result.message == "Target test authorization is invalid."
+    assert result.details == {}
+    assert calls == []

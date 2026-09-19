@@ -2149,6 +2149,7 @@ async def _r5_prepared_runner(
     inventory_digest: str = TARGET_RUN_INVENTORY_DIGEST,
     flash_workflow: object | None = None,
     transport_factory: object | None = None,
+    owns_probe: bool = True,
 ):
   from stm32_toolkit.evidence.store import EvidenceStore
   from stm32_toolkit.testing.artifacts import TestArtifactCollector
@@ -2180,6 +2181,7 @@ async def _r5_prepared_runner(
       flash,
       transport_factory or (lambda name: transport),
       artifact_collector=collector,
+      owns_probe=owns_probe,
   )
   instant = datetime.now(timezone.utc)
   prepared = await runner.prepare(
@@ -5126,5 +5128,209 @@ def test_target_runner_prefers_timeout_for_a_late_synchronous_transport_identity
     assert transport.calls[-1] == ("close",)
     assert probe.closed
     assert not (evidence_store.root / "manifests").exists()
+
+  run(scenario())
+
+
+def test_target_runner_cancellation_closes_transport_but_preserves_borrowed_probe(
+    tmp_path: Path,
+) -> None:
+  class BlockingTransport(FakeTransport):
+    def __init__(self) -> None:
+      super().__init__([valid_target_stream()])
+      self.entered = asyncio.Event()
+
+    async def open(self, config, deadline):
+      self.config = dict(config)
+      self.calls.append(("open", dict(config), deadline))
+
+    async def read_async(self, maximum, deadline):
+      self.calls.append(("read", maximum, deadline))
+      self.entered.set()
+      await asyncio.Future()
+
+    async def close_async(self):
+      self.close()
+
+  async def scenario() -> None:
+    transport = BlockingTransport()
+    runner, prepared, instant, probe, evidence_store, workflow_calls = (
+        await _r5_prepared_runner(
+            tmp_path, transport, owns_probe=False,
+        )
+    )
+    task = asyncio.create_task(
+        runner.run(
+            prepared,
+            prepared.action_digest,
+            current_revision=REVISION,
+            current_inventory_digest=TARGET_RUN_INVENTORY_DIGEST,
+            now=instant,
+        )
+    )
+    await asyncio.wait_for(transport.entered.wait(), timeout=1.0)
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+      await task
+
+    assert len(workflow_calls) == 1
+    assert transport.calls[-1] == ("close",)
+    assert probe.closed is False
+    assert (
+        runner._root / "records" / f"{prepared.action_digest}.consumed.json"
+    ).is_file()
+    assert not (evidence_store.root / "manifests").exists()
+
+  run(scenario())
+
+
+def test_target_runner_failed_stream_settles_authority_and_borrowed_probe(
+    tmp_path: Path,
+) -> None:
+  async def scenario() -> None:
+    transport = FakeTransport([b"invalid-target-stream"])
+    runner, prepared, instant, probe, evidence_store, workflow_calls = (
+        await _r5_prepared_runner(
+            tmp_path, transport, owns_probe=False,
+        )
+    )
+
+    with pytest.raises(target_module.TargetRunError) as caught:
+      await runner.run(
+          prepared,
+          prepared.action_digest,
+          current_revision=REVISION,
+          current_inventory_digest=TARGET_RUN_INVENTORY_DIGEST,
+          now=instant,
+      )
+
+    assert caught.value.code == "TEST_STREAM_INCOMPLETE"
+    assert len(workflow_calls) == 1
+    assert transport.calls[-1] == ("close",)
+    assert probe.closed is False
+    assert (
+        runner._root / "records" / f"{prepared.action_digest}.consumed.json"
+    ).is_file()
+    assert not (evidence_store.root / "manifests").exists()
+
+  run(scenario())
+
+
+def test_target_runner_borrowed_probe_success_reloads_published_evidence(
+    tmp_path: Path,
+) -> None:
+  async def scenario() -> None:
+    from stm32_toolkit.evidence.store import EvidenceStore
+
+    stream = valid_target_stream()
+    transport = FakeTransport([stream, b""])
+    runner, prepared, instant, probe, evidence_store, workflow_calls = (
+        await _r5_prepared_runner(
+            tmp_path, transport, owns_probe=False,
+        )
+    )
+
+    result = await runner.run(
+        prepared,
+        prepared.action_digest,
+        current_revision=REVISION,
+        current_inventory_digest=TARGET_RUN_INVENTORY_DIGEST,
+        now=instant,
+    )
+
+    evidence = result["evidence"]
+    reloaded_store = EvidenceStore(evidence_store.root)
+    assert reloaded_store.get_envelope(str(evidence.evidence_id)) == evidence
+    raw_artifact = next(
+        artifact for artifact in evidence.artifacts if artifact.kind == "test-events"
+    )
+    assert reloaded_store.read_artifact(raw_artifact, maximum_bytes=65_536) == stream
+    assert len(workflow_calls) == 1
+    assert transport.calls[-1] == ("close",)
+    assert probe.closed is False
+    assert (
+        runner._root / "records" / f"{prepared.action_digest}.consumed.json"
+    ).is_file()
+
+  run(scenario())
+
+
+@pytest.mark.parametrize("mutation", ["backend", "target", "mailbox", "extra"])
+def test_target_prepare_rejects_cross_bound_support_before_authority_write(
+    tmp_path: Path, mutation: str,
+) -> None:
+  async def scenario() -> None:
+    support = dict(TARGET_SUPPORT)
+    if mutation == "backend":
+      support["backend"] = "other"
+    elif mutation == "target":
+      support["board_id"] = "board-other"
+    elif mutation == "mailbox":
+      support["mailbox"] = {"address": 0x20001000, "size": 4096}
+    else:
+      support["unexpected"] = True
+
+    root = (tmp_path / mutation).absolute()
+    runner = target_module.TargetTestRunner(
+        root,
+        FakeProbeClient(),
+        FakeFlashWorkflow(),
+        lambda _name: FakeTransport([]),
+    )
+    with pytest.raises(target_module.TargetRunError) as caught:
+      await runner.prepare(
+          workspace_id=WORKSPACE_ID,
+          project_id=PROJECT_ID,
+          session_id=SESSION_ID,
+          revision=REVISION,
+          target=IDENTITY,
+          probe_serial_hash=PROBE_HASH,
+          elf_path="build/app.elf",
+          elf_sha256="e" * 64,
+          build_id="b" * 64,
+          inventory_digest=TARGET_RUN_INVENTORY_DIGEST,
+          transport="mailbox",
+          transport_config=MAILBOX_PROJECT_CONFIG,
+          support_profile=support,
+          cases=("suite.case",),
+          timeout_ms=1000,
+          now=datetime(2026, 8, 25, tzinfo=timezone.utc),
+      )
+
+    assert caught.value.code == "TEST_PROTOCOL_INVALID"
+    assert not (root / "records").exists()
+
+  run(scenario())
+
+
+def test_target_runner_rejects_malformed_consumed_value_before_dispatch(
+    tmp_path: Path,
+) -> None:
+  async def scenario() -> None:
+    probe = FakeProbeClient()
+    flash = FakeFlashWorkflow()
+    factory_calls: list[str] = []
+    runner = target_module.TargetTestRunner(
+        (tmp_path / "runs").absolute(),
+        probe,
+        flash,
+        lambda name: factory_calls.append(name),
+    )
+
+    with pytest.raises(target_module.TargetRunError) as caught:
+      await runner.run(
+          None,
+          "a" * 64,
+          current_revision=REVISION,
+          current_inventory_digest=TARGET_RUN_INVENTORY_DIGEST,
+          consumed=object(),
+          now=datetime(2026, 8, 25, tzinfo=timezone.utc),
+      )
+
+    assert caught.value.code == "TEST_AUTHORIZATION_INVALID"
+    assert flash.calls == []
+    assert factory_calls == []
+    assert probe.closed
 
   run(scenario())
