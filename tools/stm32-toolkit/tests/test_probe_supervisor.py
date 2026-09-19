@@ -12,7 +12,7 @@ import pytest
 from aiohttp import web
 
 from fakes.fake_probe import FakeProbeBackend
-from stm32_toolkit.probe.backend import ProbeDescriptor
+from stm32_toolkit.probe.backend import ProbeBackendError, ProbeDescriptor
 from stm32_toolkit.probe.authorization import ControlAuthorizationStore
 from stm32_toolkit.probe.client import ProbeClient, ProbeClientError
 from stm32_toolkit.probe.lease import ProbeBusyError, ProbeLeaseManager
@@ -247,6 +247,76 @@ def test_metadata_worker_error_after_worker_stopped_allows_normal_stop(
                 await supervisor.stop()
 
     run(scenario())
+
+
+@pytest.mark.parametrize(
+    ("provider_mode", "expected_message"),
+    [
+        ("error", "provider failed"),
+        ("malformed", "Debug handoff identity is invalid"),
+    ],
+)
+def test_metadata_provider_failure_aborts_owned_call_and_releases_lease(
+    tmp_path: Path, provider_mode: str, expected_message: str
+) -> None:
+    class ProviderFailureBackend(RecordingBackend):
+        def __init__(self) -> None:
+            super().__init__()
+            self.abort_calls = 0
+
+        def debug_handoff_metadata(self, *, deadline=None):
+            self.events.append(("debug_handoff_metadata",))
+            if provider_mode == "error":
+                raise ProbeBackendError("PROBE_BACKEND_ERROR", "provider failed")
+            return {"probeId": "probe-a", "target": "stm32"}
+
+        def abort_owned_execution(self) -> None:
+            self.abort_calls += 1
+
+    async def scenario():
+        data_root = tmp_path / "plugin-data"
+        backend = ProviderFailureBackend()
+        supervisor = make_supervisor(data_root, lambda: backend)
+        endpoint = await supervisor.start()
+        client = ProbeClient(endpoint)
+        try:
+            await client.attach("probe-a", "stm32")
+            with pytest.raises(ProbeBackendError) as caught:
+                await supervisor.debug_handoff_metadata("probe-a", "stm32")
+            assert caught.value.code == "PROBE_BACKEND_ERROR"
+            assert caught.value.message == expected_message
+            assert backend.abort_calls == 1
+            assert supervisor.endpoint is endpoint
+            service = supervisor._service
+            assert service is not None
+            assert service._observation_attachment is None
+            assert service._metadata_cleanup_unresolved is False
+            assert await client.list_probes()
+            record = json.loads(
+                ProbeLeaseManager(data_root)
+                .record_path("probe-a")
+                .read_text(encoding="utf-8")
+            )
+            assert record["state"] == "active"
+        finally:
+            await client.close()
+            await supervisor.stop()
+        with pytest.raises(ProbeServiceError) as unavailable:
+            await supervisor.debug_handoff_metadata("probe-a", "stm32")
+        assert unavailable.value.code == "PROBE_SERVICE_UNAVAILABLE"
+        return endpoint, backend, ProbeLeaseManager(data_root)
+
+    endpoint, backend, manager = run(scenario())
+    assert backend.abort_calls == 1
+    assert backend.closed is True
+    record = json.loads(
+        manager.record_path("probe-a").read_text(encoding="utf-8")
+    )
+    assert record == {
+        "leaseId": endpoint.lease_id,
+        "schemaVersion": 1,
+        "state": "released",
+    }
 
 
 def test_supervisor_constructor_injects_one_lazy_authorization_store_without_io_or_backend(
