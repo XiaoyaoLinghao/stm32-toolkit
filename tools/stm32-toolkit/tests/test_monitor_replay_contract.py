@@ -1444,3 +1444,25 @@ def test_public_replay_wire_remaining(
     assert str(error.value) == expected_message
     assert candidate == candidate_before
     assert reference == reference_before
+
+
+def test_public_replay_wire_accepts_legal_failed_sample() -> None:
+    contract = _contract()
+    source = _document("failed-before")
+    source_before = deepcopy(source)
+    assert contract.validate_replay_document(source) == source
+
+    candidate = deepcopy(source)
+    sample = candidate["batches"][0]["values"][0]
+    sample["status"] = "ERROR"
+    sample["typedValue"] = None
+    sample["code"] = "MONITOR_READ_FAILED"
+    _redigest_public_document(contract, candidate)
+    candidate_before = deepcopy(candidate)
+
+    validated = contract.validate_replay_document(candidate)
+
+    assert validated == candidate
+    assert validated is not candidate
+    assert candidate == candidate_before
+    assert source == source_before
