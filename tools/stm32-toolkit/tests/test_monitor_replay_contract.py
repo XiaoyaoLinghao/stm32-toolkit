@@ -504,7 +504,9 @@ def test_shared_byte_decoder_reloads_canonical_replay_fixture_and_optional_final
     before = bytes(raw)
 
     decoded = contract.decode_canonical_json_bytes(raw)
+    validated = contract.validate_replay_document(decoded)
     assert decoded == _document(role)
+    assert validated == decoded
     assert raw == before
 
     with pytest.raises(contract.ReplayContractError):

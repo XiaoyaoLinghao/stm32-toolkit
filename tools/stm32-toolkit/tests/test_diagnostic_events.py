@@ -389,18 +389,10 @@ def test_event_decode_rejects_nested_public_wire_contracts_without_mutation(
         first_step = request_wire["steps"][0]
         assert isinstance(first_step, dict)
         steps = [{**first_step, "step_id": f"step-{index}"} for index in range(65)]
-        plan_fields = {
-            "diagnostic_session_id": SID,
-            "created_revision": 3,
-            "steps": steps,
-        }
-        plan_id = calculate_plan_digest(plan_fields)
         request_wire["steps"] = steps
-        result_wire["observation_plan"] = {
-            **plan_fields,
-            "plan_id": plan_id,
-            "digest": plan_id,
-        }
+        original_plan = result_wire["observation_plan"]
+        assert isinstance(original_plan, dict)
+        result_wire["observation_plan"] = {**original_plan, "steps": steps}
     elif case_name == "plan-result-object":
         result_wire["observation_results"] = {}
     elif case_name == "hypothesis-supporting-object":
