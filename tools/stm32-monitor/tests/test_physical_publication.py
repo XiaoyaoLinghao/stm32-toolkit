@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import fields, replace
 from hashlib import sha256
 import json
 from pathlib import Path
@@ -14,6 +14,7 @@ from stm32_monitor.protocol import ProtocolResult
 from stm32_monitor.replay import (
     EVIDENCE_INTEGRITY_FAILURE,
     ENVIRONMENT_FAILURE,
+    MONITOR_REPLAY_INVALID,
     MONITOR_PHYSICAL_INVALID,
     OPERATION_CONFLICT,
     MonitorReplayError,
@@ -201,6 +202,31 @@ def test_public_run_reference_union_rejects_replay_v2_discriminator() -> None:
 
     with pytest.raises(MonitorReplayError):
         MonitorRunRef.from_value(payload)
+
+
+@pytest.mark.parametrize(
+    "case",
+    ["v2-direct-schema", "v2-parser-existing-instance"],
+    ids=("v2-direct-schema", "v2-parser-existing-instance"),
+)
+def test_public_physical_v2_constructor_parser_boundary_matrix(case: str) -> None:
+    payload = _physical_v2_candidate()
+    reference = MonitorRunRefV2.from_value(payload)
+    before = reference.to_dict()
+
+    if case == "v2-direct-schema":
+        values = {item.name: getattr(reference, item.name) for item in fields(reference)}
+        values["schema"] = "stm32-monitor-run-ref/1"
+        with pytest.raises(MonitorReplayError) as error:
+            MonitorRunRefV2(**values)
+        assert error.value.code == MONITOR_REPLAY_INVALID
+        assert error.value.args == ("monitor run reference schema is invalid",)
+    else:
+        returned = MonitorRunRefV2.from_value(reference)
+        assert returned is reference
+        assert returned.to_dict() == before == payload
+
+    assert reference.to_dict() == before
 
 
 @pytest.mark.parametrize(
@@ -1297,6 +1323,112 @@ def test_physical_loader_rejects_coherent_reference_field_drift(
 def _monitor_root_files(evidence: EvidenceStore, root_type: str) -> tuple[Path, ...]:
     directory = evidence.root / "roots" / root_type
     return tuple(directory.glob("*.json")) if directory.exists() else ()
+
+
+def _physical_evidence_state(evidence: EvidenceStore) -> dict[str, bytes]:
+    return {
+        str(path.relative_to(evidence.root)): path.read_bytes()
+        for path in evidence.root.rglob("*")
+        if path.is_file()
+    }
+
+
+def _replace_persisted_physical_transcript(
+    tmp_path: Path,
+    evidence: EvidenceStore,
+    reference: MonitorRunRefV2,
+    mutation: str,
+) -> None:
+    transcript_root_path = _monitor_root_files(evidence, "monitor-run")[0]
+    reference_root_path = _monitor_root_files(evidence, "monitor-run-ref")[0]
+    transcript_root = json.loads(transcript_root_path.read_bytes().decode("utf-8"))
+    reference_root = json.loads(reference_root_path.read_bytes().decode("utf-8"))
+    stored_transcript = evidence.get_envelope(transcript_root["manifest_id"])
+    original_raw = evidence.read_artifact(
+        stored_transcript.artifacts[0],
+        maximum_bytes=64 * 1024 * 1024,
+    )
+    if mutation == "bom":
+        mutated_raw = b"\xef\xbb\xbf" + original_raw
+    elif mutation == "duplicate-key":
+        canonical_raw = original_raw[:-1] if original_raw.endswith(b"\n") else original_raw
+        assert canonical_raw.endswith(b"}")
+        mutated_raw = (
+            canonical_raw[:-1]
+            + b',"schema":"stm32-monitor-physical-transcript/1",'
+            b'"schema":"stm32-monitor-physical-transcript/1"}'
+        )
+    elif mutation == "noncanonical":
+        mutated_raw = original_raw + b"\n"
+    elif mutation == "scalar-root":
+        mutated_raw = b"[]"
+    else:
+        raise AssertionError(f"unknown physical transcript mutation: {mutation}")
+
+    source_digest = sha256(mutated_raw).hexdigest()
+    transcript_source = tmp_path / f"physical-transcript-{mutation}.json"
+    transcript_source.write_bytes(mutated_raw)
+    transcript_artifact = evidence.ingest_file(
+        transcript_source,
+        kind="monitor-physical-transcript",
+        media_type="application/json",
+    )
+    transcript_metadata = dict(stored_transcript.metadata)
+    transcript_metadata["source_record_sha256"] = source_digest
+    replacement_transcript = EvidenceEnvelope(
+        identity=stored_transcript.identity,
+        operation=stored_transcript.operation,
+        produced_at_utc=stored_transcript.produced_at_utc,
+        parents=stored_transcript.parents,
+        artifacts=(transcript_artifact,),
+        metadata=transcript_metadata,
+    )
+    evidence.put_envelope(replacement_transcript)
+
+    reference_payload = reference.to_dict()
+    reference_payload["source_record_sha256"] = source_digest
+    reference_payload["transcript_evidence_id"] = str(replacement_transcript.evidence_id)
+    unsigned_reference = {
+        key: value
+        for key, value in reference_payload.items()
+        if key != "run_ref_sha256"
+    }
+    reference_payload["run_ref_sha256"] = sha256(
+        canonical_replay_json_bytes(unsigned_reference)
+    ).hexdigest()
+    updated_reference = MonitorRunRefV2.from_value(reference_payload)
+
+    stored_reference = evidence.get_envelope(reference_root["manifest_id"])
+    reference_source = tmp_path / f"physical-reference-{mutation}.json"
+    reference_source.write_bytes(canonical_replay_json_bytes(updated_reference.to_dict()))
+    reference_artifact = evidence.ingest_file(
+        reference_source,
+        kind="monitor-run-ref",
+        media_type="application/json",
+    )
+    reference_metadata = dict(stored_reference.metadata)
+    reference_metadata["source_record_sha256"] = updated_reference.source_record_sha256
+    reference_metadata["run_ref_sha256"] = updated_reference.run_ref_sha256
+    replacement_reference = EvidenceEnvelope(
+        identity=stored_reference.identity,
+        operation=stored_reference.operation,
+        produced_at_utc=stored_reference.produced_at_utc,
+        parents=(str(replacement_transcript.evidence_id),),
+        artifacts=(reference_artifact,),
+        metadata=reference_metadata,
+    )
+    evidence.put_envelope(replacement_reference)
+
+    transcript_root["manifest_id"] = str(replacement_transcript.evidence_id)
+    transcript_root_metadata = dict(transcript_root["metadata"])
+    transcript_root_metadata["source_record_sha256"] = updated_reference.source_record_sha256
+    transcript_root_metadata["run_ref_sha256"] = updated_reference.run_ref_sha256
+    transcript_root["metadata"] = transcript_root_metadata
+    transcript_root_path.write_bytes(canonical_json_bytes(transcript_root))
+
+    reference_root["manifest_id"] = str(replacement_reference.evidence_id)
+    reference_root["metadata"] = reference_metadata
+    reference_root_path.write_bytes(canonical_json_bytes(reference_root))
 
 
 def _monitor_manifest_operations(evidence: EvidenceStore) -> tuple[str, ...]:
@@ -2478,6 +2610,59 @@ def test_physical_loader_rejects_persisted_noncanonical_reference_bytes_before_a
     assert error.value.code == EVIDENCE_INTEGRITY_FAILURE
     assert str(error.value.__cause__) == "replay JSON is not canonical"
     assert persisted_state() == before
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_cause"),
+    [
+        ("bom", "physical transcript must not include a BOM"),
+        ("duplicate-key", "physical transcript has duplicate keys"),
+        ("noncanonical", "physical transcript JSON is not canonical"),
+        ("scalar-root", "physical transcript must be a JSON object"),
+    ],
+    ids=("bom", "duplicate-key", "noncanonical", "scalar-root"),
+)
+def test_physical_loader_rejects_persisted_transcript_decoder_variants(
+    tmp_path: Path,
+    mutation: str,
+    expected_cause: str,
+) -> None:
+    paths, evidence, test_run_id, raw_probe, monitor_run_id, group_id = _physical_context(tmp_path)
+    _publish_physical_test_run(
+        paths,
+        evidence,
+        test_run_id=test_run_id,
+        raw_probe=raw_probe,
+        monitor_run_id=monitor_run_id,
+    )
+    request = _physical_request(
+        paths,
+        raw_probe,
+        monitor_run_id,
+        group_id,
+        test_run_id,
+    )
+    reference = publish_physical_monitor_run(paths, evidence, **request)
+    assert load_monitor_run_reference(
+        paths,
+        EvidenceStore(evidence.root),
+        str(monitor_run_id),
+    ).to_dict() == reference.to_dict()
+
+    _replace_persisted_physical_transcript(tmp_path, evidence, reference, mutation)
+    before = _physical_evidence_state(evidence)
+
+    with pytest.raises(MonitorReplayError) as error:
+        load_monitor_run_reference(
+            paths,
+            EvidenceStore(evidence.root),
+            str(monitor_run_id),
+        )
+
+    assert error.value.code == EVIDENCE_INTEGRITY_FAILURE
+    assert error.value.message == "physical Monitor transcript is corrupt"
+    assert str(error.value.__cause__) == expected_cause
+    assert _physical_evidence_state(evidence) == before
 
 
 def test_physical_loader_rejects_provider_transcript_envelope_structure(

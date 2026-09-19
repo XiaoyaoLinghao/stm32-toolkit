@@ -14,7 +14,7 @@ import pytest
 
 from stm32_monitor import replay as replay_module
 from stm32_monitor.history import HistoryQuery, HistoryStore
-from stm32_monitor.models import MAX_SIGNED_INT64, ObservationBinding, SampleBatch
+from stm32_monitor.models import MAX_SIGNED_INT64, ObservationBinding, SampleBatch, WatchItem
 from stm32_monitor.protocol import ProtocolResult
 from stm32_monitor.replay import (
     MONITOR_REPLAY_SCHEMA,
@@ -71,6 +71,17 @@ def _document(role: str) -> MonitorReplayDocument:
 
 def _operation(role: str) -> str:
     return str(RUN_IDS[role])
+
+
+@pytest.fixture(scope="module")
+def canonical_replay_reference(tmp_path_factory: pytest.TempPathFactory) -> MonitorRunRef:
+    paths = _paths(tmp_path_factory.mktemp("replay-reference"))
+    return ingest_monitor_replay(
+        paths,
+        _evidence(paths),
+        _operation("failed-before"),
+        _fixture("failed-before"),
+    )
 
 
 def _history_batches(paths: WorkspacePaths, run_id: UUID):
@@ -361,6 +372,132 @@ def test_public_replay_document_constructor_rejects_chain_and_window_contradicti
                 fixture_sha256,
             )
         assert error.value.args == (expected_message,)
+
+
+@pytest.mark.parametrize(
+    ("case", "expected_message"),
+    [
+        (
+            "document-fixture-digest-type",
+            "replay document fixture digest is invalid",
+        ),
+        (
+            "document-selector-vocabulary",
+            "replay document selector vocabulary is inconsistent",
+        ),
+        ("reference-required-hash-type", "build_id is invalid"),
+        ("reference-uuid-type", "group_id is invalid"),
+        ("reference-uuid-canonical-form", "logical_project_id is invalid"),
+        ("reference-text-empty", "target_device is invalid"),
+        ("reference-text-control", "probe_id is invalid"),
+        ("reference-text-nfc", "physical_target is invalid"),
+        ("reference-optional-svd-none", None),
+        ("reference-git-head-invalid", "git_head is invalid"),
+        ("reference-integer-domain", "start_sequence is invalid"),
+        ("reference-digest-type", "run reference digest is invalid"),
+    ],
+    ids=(
+        "document-fixture-digest-type",
+        "document-selector-vocabulary",
+        "reference-required-hash-type",
+        "reference-uuid-type",
+        "reference-uuid-canonical-form",
+        "reference-text-empty",
+        "reference-text-control",
+        "reference-text-nfc",
+        "reference-optional-svd-none",
+        "reference-git-head-invalid",
+        "reference-integer-domain",
+        "reference-digest-type",
+    ),
+)
+def test_public_replay_constructor_boundary_matrix(
+    case: str,
+    expected_message: str | None,
+    canonical_replay_reference: MonitorRunRef,
+) -> None:
+    if case == "document-fixture-digest-type":
+        document = _document("failed-before")
+        before = document.to_dict()
+        values = {item.name: getattr(document, item.name) for item in fields(document)}
+        values["fixture_sha256"] = None
+        with pytest.raises(MonitorReplayError) as error:
+            MonitorReplayDocument(**values)
+        assert error.value.code == MONITOR_REPLAY_INVALID
+        assert error.value.args == (expected_message,)
+        assert document.to_dict() == before
+        return
+
+    if case == "document-selector-vocabulary":
+        document = _document("failed-before")
+        before = document.to_dict()
+        first, second = document.batches
+        altered_first_value = replace(
+            second.values[0],
+            watch=WatchItem.variable("counter-alternate"),
+        )
+        altered_batches = (
+            first,
+            replace(
+                second,
+                values=(altered_first_value, *second.values[1:]),
+            ),
+        )
+        unsigned = document.to_dict()
+        unsigned["batches"] = [batch.to_dict() for batch in altered_batches]
+        unsigned.pop("fixture_sha256")
+        values = {item.name: getattr(document, item.name) for item in fields(document)}
+        values["batches"] = altered_batches
+        values["fixture_sha256"] = sha256(
+            canonical_replay_json_bytes(unsigned)
+        ).hexdigest()
+        with pytest.raises(MonitorReplayError) as error:
+            MonitorReplayDocument(**values)
+        assert error.value.code == MONITOR_REPLAY_INVALID
+        assert error.value.args == (expected_message,)
+        assert document.to_dict() == before
+        return
+
+    reference = canonical_replay_reference
+    before = reference.to_dict()
+    mutations: dict[str, tuple[str, object, bool]] = {
+        "reference-required-hash-type": ("build_id", None, True),
+        "reference-uuid-type": ("group_id", None, True),
+        "reference-uuid-canonical-form": (
+            "logical_project_id",
+            reference.logical_project_id.upper(),
+            True,
+        ),
+        "reference-text-empty": ("target_device", "", True),
+        "reference-text-control": ("probe_id", "\u0001", True),
+        "reference-text-nfc": ("physical_target", "e\u0301", True),
+        "reference-optional-svd-none": ("svd_sha256", None, True),
+        "reference-git-head-invalid": ("git_head", "bad", True),
+        "reference-integer-domain": ("start_sequence", -1, True),
+        "reference-digest-type": ("run_ref_sha256", None, False),
+    }
+    field, replacement, recompute_digest = mutations[case]
+    values = {item.name: getattr(reference, item.name) for item in fields(reference)}
+    values[field] = replacement
+    if recompute_digest:
+        unsigned = dict(values)
+        unsigned.pop("run_ref_sha256")
+        unsigned["projected_batch_sha256s"] = list(
+            unsigned["projected_batch_sha256s"]
+        )
+        values["run_ref_sha256"] = sha256(
+            canonical_replay_json_bytes(unsigned)
+        ).hexdigest()
+
+    if expected_message is None:
+        candidate = MonitorRunRef(**values)
+        assert candidate.svd_sha256 is None
+    else:
+        with pytest.raises(MonitorReplayError) as error:
+            MonitorRunRef(**values)
+        assert error.value.code == MONITOR_REPLAY_INVALID
+        assert error.value.args == (expected_message,)
+    assert reference.to_dict() == before
 
 
 def test_public_replay_document_parser_rejects_nested_closed_wire_values() -> None:
