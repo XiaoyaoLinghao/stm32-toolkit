@@ -166,3 +166,14 @@ a270d7332c3ad2d09cd0b9adfa96ca80042bcf9d, retain command/exit/JUnit/stdout/
 stderr/raw coverage evidence under the approved roots, stop on the first new
 nonzero result, and own cleanup after evidence retention. This correction
 contains no new runtime result and no physical acceptance claim.
+
+## Primary integration disposition
+
+Primary reviewed the complete accepted-base-to-returned-head diff and the exact
+fixture correction95074a143b541d18950f72b43a1471d1557f19c4. At72a1fe26cb9205f2039912a6ea32576051ddeb82,run2 executed the failed and unrun selectors:28PASS,exit0,zero skips,25.255secondsJUnit,no timeout,and childreaped. Three unchanged run1 passes remain valid, for31distinct selected passes. The first fixture failure is preserved. One Pydantic-settings lifespan forward-reference warning occurred; the selected public MCP assertions passed. No dependency or runtime change is made for that warning.
+
+Verdict: ACCEPTED for the bounded software-test change. Run2 native coverage is
+retained. Run1 produced neither raw coverage nor a JSON coverage report; its
+three passing tests are functional evidence only and cannot contribute inferred
+coverage. No hardware was used and no physical PASS is created. All residual
+branches stay in the frozen denominator;1.0 acceptance remains pending.
