@@ -7,14 +7,14 @@ accepted-base-to-head diff before assigning any test verdict.
 ## Ledger and boundary
 
 - Accepted base: `0a6bf2a6c591e5e89c6451050de3087168b77eb4`.
-- Code head before this report commit: `fdd5425e68dedc7a25261c0bebf60c7da2d00b19`.
+- Code head before this report commit: `5972ebd82fe7c7a6f48ac463fae56f7d861e95b1`.
 - Runtime baseline: `a270d7332c3ad2d09cd0b9adfa96ca80042bcf9d`, unchanged.
 - Branch: `codex/STM32TK-1.0-core-monitor`.
 - Scope: public monitor observe/ingest/load/analyze/query/stream contracts and the shared
   evidence/replay wire boundary.  Test-only changes are confined to the owned files.
 - No physical connection, real probe, installer, product import, pytest run, collection run,
   build, install, coverage run, or cleanup was performed by this owner.  Python was used only
-  to parse the five modified test files with `ast`; the command used the approved temporary
+  to parse the seven modified test files with `ast`; the command used the approved temporary
   root `D:\codex-tmp\v10b-0918\r10\t\c95\m`.
 
 The reviewed residual inventory is the existing
@@ -54,9 +54,10 @@ they are not physical evidence.
   unreachable through this public caller and is recorded as an earlier-invariant barrier.
 - `tools/stm32-toolkit/tests/test_monitor_replay_contract.py:682`
   `test_shared_physical_contract_rejects_nested_wire_mutations` — 26 valid-transcript
-  mutations each assert the exact public rejection message.  The captured-time mutation
-  updates both `capturedUnixNs` and `capturedAtUtc`, so the intended monotonic guard is reached
-  after the scheduled/captured UTC guards.
+  mutations each assert the exact public rejection message.  The captured-time mutation moves
+  the first row onto the second row's valid capture, then recomputes its latency, so both rows
+  independently satisfy captured-after-scheduled and UTC consistency before only the
+  cross-batch increasing-capture guard is violated.
 - `:769` `test_shared_physical_canonicalizer_rejects_unsafe_json_values` and `:777`
   `test_shared_physical_canonicalizer_rejects_cycles_without_mutating_input` — unsafe values
   and cycles are rejected without changing the input mapping.
@@ -81,8 +82,8 @@ they are not physical evidence.
   `test_public_retention_rejects_persisted_accounting_corruption_without_deletion` — public
   retention rejects negative persisted accounting with `MONITOR_STORAGE_CORRUPT` /
   `monitor storage accounting is invalid`, and rejects a negative selected `value_count` with
-  `MONITOR_STORAGE_CORRUPT` / `monitor history is corrupt`; the candidate row remains after
-  the rejected pass.
+  `MONITOR_STORAGE_CORRUPT` / `monitor history is corrupt`; a read-only SQL snapshot of
+  accounting, batch bytes/counts, and value rows is unchanged across each rejected pass.
 - `tools/stm32-monitor/tests/test_analysis_cli.py:524`
   `test_public_analysis_cli_maps_each_adapter_failure_class` — the request file is a real
   `AnalysisRequest` built from two valid public `MonitorRunRef` values and a real project
@@ -97,8 +98,9 @@ complete start/end arc pairs remain in the owner inventory cited above.  `PUBLIC
 named public selector is the caller seam for the guard.  `EARLIER` means the public contract
 rejects the malformed state before the later guard.  `PLATFORM` names a concrete OS/native
 capability.  `RACE` names a filesystem identity race that must be exercised only through an
-existing public provider seam.  `PHYSICAL` is deferred because this owner has no hardware
-authority.
+existing public provider seam.  `PHYSICAL` marks a software-reader obligation whose canonical
+fixture is eligible for code coverage; any separate hardware acceptance remains external
+evidence.
 
 ### Toolkit residuals: 238 arcs
 
@@ -215,9 +217,10 @@ authority.
   `test_export_analysis_bundle_reloads_real_target_runs`, the source/target provider failure
   selectors, public query-page contradiction selectors, and the derived publication reload,
   root, artifact, and upstream-authority selectors in `test_analysis_workflows.py`.  The
-  remaining physical-source branches require a physical reference with authenticated
-  transcript/TestRun evidence and are `PHYSICAL`; replay bundle branches remain software
-  testable through the named reload/provider selectors.
+  remaining physical-source branches are eligible for canonical software-produced physical
+  transcript/TestRun fixtures without asserting a hardware PASS; they remain explicit reader
+  obligations for a later selector run.  Replay bundle branches remain software-testable
+  through the named reload/provider selectors.
 - `tools/stm32-monitor/src/stm32_monitor/auth.py` (1): `MonitorAuth.create [1:43]` is the
   exact token factory boundary.  **PUBLIC:** `test_token_is_exactly_32_random_bytes_and_never_appears_in_repr`,
   `test_token_factory_must_return_exactly_32_bytes`, and the bearer/cookie matrix.  Invalid
@@ -297,8 +300,9 @@ authority.
   reference/transcript/artifact provider-mismatch tests, malformed-root/no-history-mutation
   tests, exact retry/idempotency tests, and the new constructor matrix.  Replay loading is
   software-testable through those fixtures.  Authenticated physical loading and physical
-  TestRun branches require real physical transcript evidence and are `PHYSICAL`; they cannot
-  be relabeled from replay fixtures.
+  TestRun branches are explicit fixture-eligible reader obligations; they must be exercised
+  with canonical physical documents when the relevant selector batch is run, while hardware
+  acceptance remains a separate evidence decision.
 - `tools/stm32-monitor/src/stm32_monitor/runtime.py` (23): `_ensure_owned_directory [1:139]`,
   `_WorkspaceLock.acquire [6:196,212,219,223,225,225]`, `_atomic_json [2:273,276]`,
   `MonitorRuntime.start.cleanup_partial [1:539]`, `start [4:556,557,557,564]`,
@@ -339,7 +343,7 @@ authority.
 
 ## Release handoff
 
-The code selectors are committed at `fdd5425e68dedc7a25261c0bebf60c7da2d00b19`; this report
+The code selectors are committed at `5972ebd82fe7c7a6f48ac463fae56f7d861e95b1`; this report
 must be committed separately so the code head above remains the pre-report reference.  The
 primary owner must inspect the complete `0a6bf2a6c591e5e89c6451050de3087168b77eb4..HEAD` diff,
 then run the applicable selectors with `TEMP`, `TMP`, and `TMPDIR` bound under the approved run
