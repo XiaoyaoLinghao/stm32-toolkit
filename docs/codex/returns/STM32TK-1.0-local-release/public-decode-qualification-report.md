@@ -1,6 +1,6 @@
 # STM32TK-1.0 public evidence decoding qualification return
 
-Status: `PREPARED_FOR_PRIMARY_ENTRY_REVIEW`. The four assigned test files are
+Status: `PREPARED_FOR_PRIMARY_ENTRY_REVIEW_AFTER_REVIEW_FIXES`. The four assigned test files are
 committed before execution. This report records the bounded entry and the
 pre-execution checks only; it makes no test-result or acceptance claim. The
 primary agent remains the independent reviewer and acceptor.
@@ -12,7 +12,7 @@ primary agent remains the independent reviewer and acceptor.
 - Branch/worktree: `codex/STM32TK-1.0-public-decode-qualification` /
   `D:\codex-tmp\v10b-0918\r10\dc`.
 - Test code head before this report commit:
-  `b89ef23467ad6395eac83968b4a082ceb4f259d8`.
+  `c0884af2085b132db0b496e7f42695c0531a7051`.
 - Implementer: `/root/public_decode_impl`; independent review and acceptance
   remain with the primary agent.
 - Owned product import roots for the run:
@@ -42,6 +42,12 @@ The test commit adds four focused public-wire qualification groups:
 The tests reuse the current public fixtures/helpers and assert decoder refusal
 without materializing or mutating the caller's wire values. They do not create
 hardware evidence or exercise private unreachable states.
+
+The first review correction is committed at `c0884af2085b132db0b496e7f42695c0531a7051`.
+The malformed 65-step event retains the original valid plan digest so the
+public event decoder owns the expected limit refusal. The replay byte test
+passes the decoded mapping through `validate_replay_document` before asserting
+the raw input remains unchanged.
 
 ## Exact selected node list
 
@@ -79,6 +85,12 @@ launcher pattern, with the launcher path reserved as
 `D:\codex-tmp\v10b-0918\r10\e\public-decode-qualification\launch.ps1` and
 this exact outer invocation:
 
+The launcher is materialized at
+`D:\codex-tmp\v10b-0918\r10\e\public-decode-qualification\launch.ps1`.
+Its SHA-256 is
+`91CD8156686B929A8DF0BAA079D1F0B722199C0F147A703E8380028D51753969`.
+Invoke it through explicit PowerShell 7:
+
 ```text
 C:\Program Files\PowerShell\7\pwsh.exe -NoProfile -File D:\codex-tmp\v10b-0918\r10\e\public-decode-qualification\launch.ps1
 ```
@@ -105,8 +117,8 @@ single child exits, derive these package-filtered JSON reports from that same
 raw database without another pytest run:
 
 ```text
-D:\codex-tmp\v10b-0918\r10\py\Scripts\python.exe -m coverage json --data-file D:\codex-tmp\v10b-0918\r10\e\public-decode-qualification\raw-coverage\.coverage --include "D:\codex-tmp\v10b-0918\r10\dc\tools\stm32-toolkit\src\stm32_toolkit\**" --pretty-print -o D:\codex-tmp\v10b-0918\r10\e\public-decode-qualification\stm32_toolkit.coverage.json
-D:\codex-tmp\v10b-0918\r10\py\Scripts\python.exe -m coverage json --data-file D:\codex-tmp\v10b-0918\r10\e\public-decode-qualification\raw-coverage\.coverage --include "D:\codex-tmp\v10b-0918\r10\dc\tools\stm32-monitor\src\stm32_monitor\**" --pretty-print -o D:\codex-tmp\v10b-0918\r10\e\public-decode-qualification\stm32_monitor.coverage.json
+D:\codex-tmp\v10b-0918\r10\py\Scripts\python.exe -m coverage json --data-file D:\codex-tmp\v10b-0918\r10\e\public-decode-qualification\raw-coverage\.coverage --include "*/stm32_toolkit/*" --pretty-print --fail-under=0 -o D:\codex-tmp\v10b-0918\r10\e\public-decode-qualification\stm32_toolkit.coverage.json
+D:\codex-tmp\v10b-0918\r10\py\Scripts\python.exe -m coverage json --data-file D:\codex-tmp\v10b-0918\r10\e\public-decode-qualification\raw-coverage\.coverage --include "*/stm32_monitor/*" --pretty-print --fail-under=0 -o D:\codex-tmp\v10b-0918\r10\e\public-decode-qualification\stm32_monitor.coverage.json
 ```
 
 The two JSON commands are report generation from the retained single raw
