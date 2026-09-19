@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 import os
 from pathlib import Path
 import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -651,9 +652,15 @@ def test_windows_lock_contention_expires_as_busy_and_closes_descriptor(
     monkeypatch.setattr(store_module.time, "sleep", sleep)
     monkeypatch.setattr(store_module.os, "close", lambda descriptor: (closed.append(descriptor), original_close(descriptor))[1])
 
+    entered: list[bool] = []
+
+    def protected_body(*_args: object, **_kwargs: object) -> None:
+        entered.append(True)
+        raise AssertionError("busy acquisition must not enter the protected body")
+
+    monkeypatch.setattr(store, "_load_chain_locked", protected_body)
     with pytest.raises(DiagnosticStoreBusyError) as error:
-        with store._store_lock(create=False):
-            raise AssertionError("busy acquisition must not enter the protected body")
+        store.load(SID)
 
     assert error.value.code == "DIAGNOSTIC_STORE_BUSY"
     assert error.value.message == "Diagnostic store is busy."
@@ -682,11 +689,18 @@ def test_windows_lock_noncontention_error_remains_chain_corrupt(
     monkeypatch.setattr(store_module.os, "name", "nt")
     monkeypatch.setattr(store_module.os, "close", lambda descriptor: (closed.append(descriptor), original_close(descriptor))[1])
 
+    entered: list[bool] = []
+
+    def protected_body(*_args: object, **_kwargs: object) -> None:
+        entered.append(True)
+        raise AssertionError("non-contention failure must not enter the protected body")
+
+    monkeypatch.setattr(store, "_load_chain_locked", protected_body)
     with pytest.raises(DiagnosticValidationError) as error:
-        with store._store_lock(create=False):
-            raise AssertionError("non-contention failure must not enter the protected body")
+        store.load(SID)
 
     assert error.value.code == DIAGNOSTIC_CHAIN_CORRUPT
+    assert entered == []
     assert len(closed) == 1
 
 
@@ -710,12 +724,17 @@ def test_windows_acquisition_after_deadline_unlocks_without_entering_body(
     monkeypatch.setattr(store_module, "_WINDOWS_LOCK_TIMEOUT_SECONDS", 0.01)
     monkeypatch.setattr(store_module.time, "monotonic", lambda: next(clock))
 
-    entered = False
-    with pytest.raises(DiagnosticStoreBusyError):
-        with store._store_lock(create=False):
-            entered = True
+    entered: list[bool] = []
 
-    assert entered is False
+    def protected_body(*_args: object, **_kwargs: object) -> None:
+        entered.append(True)
+        raise AssertionError("late acquisition must not enter the protected body")
+
+    monkeypatch.setattr(store, "_load_chain_locked", protected_body)
+    with pytest.raises(DiagnosticStoreBusyError):
+        store.load(SID)
+
+    assert entered == []
     assert calls == [2, 3]
 
 
@@ -742,11 +761,99 @@ def test_windows_unlock_failure_still_closes_descriptor(
     monkeypatch.setattr(store_module.os, "close", lambda descriptor: (closed.append(descriptor), original_close(descriptor))[1])
 
     with pytest.raises(OSError, match="unlock failed"):
-        with store._store_lock(create=False):
-            pass
+        store.load(SID)
 
     assert calls == [2, 3]
     assert len(closed) == 1
+
+
+@pytest.mark.skipif(os.name != "nt", reason="requires Windows native msvcrt locking")
+def test_windows_native_lock_excludes_child_then_reuses_after_release(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    evidence = EvidenceStore(tmp_path / "evidence")
+    failed_evidence_id = _failed_evidence(evidence, tmp_path)
+    store = DiagnosticStore(tmp_path / "diagnostics", evidence)
+    store.create(_created(failed_evidence_id))
+
+    lock_path = store.diagnostics_root / ".diagnostic.lock"
+    ready_path = tmp_path / "child-ready"
+    error_path = tmp_path / "child-error"
+    child_code = """
+import msvcrt
+import os
+from pathlib import Path
+import sys
+import time
+
+lock_path = Path(sys.argv[1])
+ready_path = Path(sys.argv[2])
+error_path = Path(sys.argv[3])
+hold_seconds = float(sys.argv[4])
+descriptor = -1
+try:
+    descriptor = os.open(lock_path, os.O_RDWR | getattr(os, "O_BINARY", 0))
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+    ready_path.write_text("locked", encoding="ascii")
+    time.sleep(hold_seconds)
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+except BaseException as error:
+    error_path.write_text(repr(error), encoding="utf-8")
+    raise
+finally:
+    if descriptor >= 0:
+        os.close(descriptor)
+"""
+    child = subprocess.Popen(
+        [sys.executable, "-c", child_code, str(lock_path), str(ready_path), str(error_path), "0.4"],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        ready_deadline = time.monotonic() + 5.0
+        while not ready_path.exists():
+            if error_path.exists():
+                pytest.fail(f"native lock child failed: {error_path.read_text(encoding='utf-8')}")
+            if child.poll() is not None:
+                stdout, stderr = child.communicate()
+                pytest.fail(f"native lock child exited before locking: {stdout}{stderr}")
+            if time.monotonic() >= ready_deadline:
+                pytest.fail("native lock child did not publish its ready marker")
+            time.sleep(0.01)
+
+        with monkeypatch.context() as lock_patch:
+            lock_patch.setattr(store_module, "_WINDOWS_LOCK_TIMEOUT_SECONDS", 0.15)
+            entered: list[bool] = []
+
+            def protected_body(*_args: object, **_kwargs: object) -> None:
+                entered.append(True)
+                raise AssertionError("native busy acquisition must not enter the protected body")
+
+            lock_patch.setattr(store, "_load_chain_locked", protected_body)
+            with pytest.raises(DiagnosticStoreBusyError) as error:
+                store.load(SID)
+            assert error.value.code == "DIAGNOSTIC_STORE_BUSY"
+            assert entered == []
+
+        child.wait(timeout=5)
+        stdout, stderr = child.communicate(timeout=5)
+        assert child.returncode == 0, f"native lock child failed: {stdout}{stderr}"
+        assert not error_path.exists()
+        assert store.load(SID).revision == 1
+    finally:
+        if child.poll() is None:
+            child.terminate()
+        try:
+            child.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            child.kill()
+            child.wait(timeout=5)
+        if child.stdout is not None or child.stderr is not None:
+            child.communicate(timeout=5)
 
 
 def test_create_retry_validates_every_workspace_session_before_returning(tmp_path: Path) -> None:

@@ -1,6 +1,7 @@
 """Persisted software fixtures only: these tests never access physical hardware."""
 
 from concurrent.futures import ThreadPoolExecutor
+from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import replace
 import hashlib
