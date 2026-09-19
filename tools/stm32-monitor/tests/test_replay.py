@@ -843,9 +843,81 @@ def test_replay_publication_rejects_provider_artifact_identity_mismatch(
 
     assert error.value.code == "EVIDENCE_INTEGRITY_FAILURE"
     assert calls == [artifact_kind]
+    assert isinstance(error.value.__cause__, EvidenceValidationError)
+    assert error.value.__cause__.message == (
+        "transcript artifact identity differs from the expected source"
+        if artifact_kind == "monitor-replay-transcript"
+        else "reference artifact identity differs from the expected reference"
+    )
     _assert_no_history(paths, RUN_IDS["failed-before"])
     assert bool(tuple((evidence.root / "roots" / "monitor-run").glob("*.json"))) is transcript_root
     assert bool(tuple((evidence.root / "roots" / "monitor-run-ref").glob("*.json"))) is reference_root
+
+
+def test_replay_transcript_publication_direct_provider_io_is_environment_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _paths(tmp_path)
+    evidence = _evidence(paths)
+    calls: list[tuple[str, str]] = []
+
+    def fail_transcript_provider(source: Path, *, kind: str, media_type: str):
+        calls.append((kind, media_type))
+        raise OSError("transcript provider unavailable")
+
+    monkeypatch.setattr(evidence, "ingest_file", fail_transcript_provider)
+    with pytest.raises(MonitorReplayError) as error:
+        ingest_monitor_replay(
+            paths,
+            evidence,
+            _operation("failed-before"),
+            _fixture("failed-before"),
+        )
+
+    assert error.value.code == "ENVIRONMENT_FAILURE"
+    assert isinstance(error.value.__cause__, OSError)
+    assert str(error.value.__cause__) == "transcript provider unavailable"
+    assert calls == [("monitor-replay-transcript", "application/json")]
+    _assert_no_history(paths, RUN_IDS["failed-before"])
+    assert not tuple((evidence.root / "roots" / "monitor-run").glob("*.json"))
+    assert not tuple((evidence.root / "roots" / "monitor-run-ref").glob("*.json"))
+
+
+def test_replay_transcript_publication_wrapped_provider_io_is_environment_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _paths(tmp_path)
+    evidence = _evidence(paths)
+    calls: list[tuple[str, str]] = []
+
+    def fail_transcript_provider(source: Path, *, kind: str, media_type: str):
+        calls.append((kind, media_type))
+        try:
+            raise OSError("transcript provider unavailable")
+        except OSError as cause:
+            raise EvidenceValidationError(
+                "EVIDENCE_CORRUPT", "transcript provider rejected publication"
+            ) from cause
+
+    monkeypatch.setattr(evidence, "ingest_file", fail_transcript_provider)
+    with pytest.raises(MonitorReplayError) as error:
+        ingest_monitor_replay(
+            paths,
+            evidence,
+            _operation("failed-before"),
+            _fixture("failed-before"),
+        )
+
+    assert error.value.code == "ENVIRONMENT_FAILURE"
+    assert isinstance(error.value.__cause__, EvidenceValidationError)
+    assert error.value.__cause__.code == "EVIDENCE_CORRUPT"
+    assert error.value.__cause__.message == "transcript provider rejected publication"
+    assert isinstance(error.value.__cause__.__cause__, OSError)
+    assert str(error.value.__cause__.__cause__) == "transcript provider unavailable"
+    assert calls == [("monitor-replay-transcript", "application/json")]
+    _assert_no_history(paths, RUN_IDS["failed-before"])
+    assert not tuple((evidence.root / "roots" / "monitor-run").glob("*.json"))
+    assert not tuple((evidence.root / "roots" / "monitor-run-ref").glob("*.json"))
 
 
 def test_exact_retry_is_idempotent_and_different_intent_conflicts_without_append(tmp_path: Path) -> None:

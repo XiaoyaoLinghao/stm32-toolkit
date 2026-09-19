@@ -1215,7 +1215,27 @@ def _publish_transcript(
         return str(expected_envelope.evidence_id)
     except MonitorReplayError:
         raise
+    except OSError as error:
+        raise MonitorReplayError(
+            ENVIRONMENT_FAILURE,
+            "replay Evidence provider failed",
+        ) from error
+    except EvidenceValidationError as error:
+        if _has_non_missing_os_error(error):
+            raise MonitorReplayError(
+                ENVIRONMENT_FAILURE,
+                "replay Evidence provider failed",
+            ) from error
+        raise MonitorReplayError(
+            EVIDENCE_INTEGRITY_FAILURE,
+            "replay Evidence publication is corrupt",
+        ) from error
     except Exception as error:
+        if _has_non_missing_os_error(error):
+            raise MonitorReplayError(
+                ENVIRONMENT_FAILURE,
+                "replay Evidence provider failed",
+            ) from error
         raise MonitorReplayError(ENVIRONMENT_FAILURE, "replay Evidence publication failed") from error
 
 
