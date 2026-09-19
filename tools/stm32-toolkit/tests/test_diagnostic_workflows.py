@@ -3326,3 +3326,145 @@ def test_public_completion_roundtrip_reloads_valid_persisted_evidence(
     assert reloaded.data["fix_verifications"] == (
         completed.data["fix_verification"],
     )
+
+
+def _prepare_public_analysis_plan_refusal(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    analysis_mutation: str,
+) -> tuple[
+    DiagnosticWorkflowContext,
+    str,
+    WorkspacePaths,
+    verification_fixture.VerificationPlan,
+]:
+    diagnostic_context, session_id, _failed_replay, workspace = (
+        verification_fixture._replay_and_open_session(monkeypatch, tmp_path)
+    )
+    testing_context = verification_fixture.testing_workflows.TestingWorkflowContext(
+        diagnostic_context.project_root,
+        diagnostic_context.data_root,
+        diagnostic_context.session_id,
+    )
+    fixed_replay = verification_fixture.testing_workflows.target_replay_run(
+        testing_context,
+        "vs03-fixed-after",
+        verification_fixture.FIXTURES / "fixed-after.json",
+        verification_fixture.FIXTURES / "fixed-after.hex",
+    )
+    assert fixed_replay.ok is True
+    shown = workflow_module.diagnostic_show(
+        verification_fixture._fresh_diagnostic_context(diagnostic_context),
+        diagnostic_session_id=session_id,
+    )
+    assert shown.ok is True
+    hypothesis_id = shown.data["session"]["hypotheses"][0]["hypothesis_id"]
+    declaration, plan, _marker_ref = verification_fixture._verification_checkpoint_inputs(
+        tmp_path,
+        workspace,
+        session_id,
+        hypothesis_id,
+        analysis_mutation=analysis_mutation,
+    )
+    assert workflow_module.diagnostic_declare_source_change(
+        verification_fixture._fresh_diagnostic_context(diagnostic_context),
+        operation_id=f"diagnostic.source-change.declare.analysis-guard.{analysis_mutation}",
+        diagnostic_session_id=session_id,
+        expected_revision=3,
+        source_change_declaration=declaration,
+    ).ok is True
+    return diagnostic_context, session_id, workspace, plan
+
+
+@pytest.mark.parametrize(
+    ("analysis_mutation", "expected_code"),
+    [
+        pytest.param("reason", "EVIDENCE_INTEGRITY_FAILURE", id="reason"),
+        pytest.param("ordering", "EVIDENCE_INTEGRITY_FAILURE", id="ordering"),
+        pytest.param(
+            "oversized-count",
+            "EVIDENCE_INTEGRITY_FAILURE",
+            id="oversized-count",
+        ),
+        pytest.param("overflow", "EVIDENCE_INTEGRITY_FAILURE", id="overflow"),
+        pytest.param(
+            "signed-int64",
+            "EVIDENCE_INTEGRITY_FAILURE",
+            id="signed-int64",
+        ),
+        pytest.param("nfc", "INCOMPATIBLE_IDENTITY", id="identity-target"),
+    ],
+)
+def test_public_analysis_semantic_refusals_preserve_authority(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    analysis_mutation: str,
+    expected_code: str,
+) -> None:
+    diagnostic_context, session_id, workspace, plan = (
+        _prepare_public_analysis_plan_refusal(
+            monkeypatch, tmp_path, analysis_mutation
+        )
+    )
+    before = verification_fixture._authority_snapshot(workspace)
+    result = workflow_module.diagnostic_add_verification_plan(
+        verification_fixture._fresh_diagnostic_context(diagnostic_context),
+        operation_id=f"diagnostic.verification-plan.add.analysis-guard.{analysis_mutation}",
+        diagnostic_session_id=session_id,
+        expected_revision=4,
+        verification_plan=plan,
+    )
+    after = verification_fixture._authority_snapshot(workspace)
+    assert result.ok is False
+    assert result.code == expected_code
+    assert result.data is None
+    assert after == before
+    shown = workflow_module.diagnostic_show(
+        verification_fixture._fresh_diagnostic_context(diagnostic_context),
+        diagnostic_session_id=session_id,
+    )
+    assert shown.ok is True
+    assert shown.data["session"]["revision"] == 4
+    assert shown.data["session"]["state"] == "FIX_PROPOSED"
+
+
+def test_public_completion_foreign_analysis_identity_refuses_without_append(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    (
+        diagnostic_context,
+        session_id,
+        workspace,
+        _declaration,
+        _plan,
+        marker_ref,
+        _declared,
+        _planned,
+        _started,
+        attached,
+    ) = verification_fixture._prepared_cross_state_operations(monkeypatch, tmp_path)
+    assert attached.data["session"]["revision"] == 7
+    verification_fixture._install_completion_identity_view(
+        monkeypatch, workspace, marker_ref, "analysis"
+    )
+    before = verification_fixture._authority_snapshot(workspace)
+    result = workflow_module.diagnostic_complete_verification(
+        verification_fixture._fresh_diagnostic_context(diagnostic_context),
+        operation_id="diagnostic.verification.complete.analysis-identity-guard",
+        diagnostic_session_id=session_id,
+        expected_revision=7,
+        executed_operation_ids=["target-test.vs03"],
+    )
+    after = verification_fixture._authority_snapshot(workspace)
+    assert result.ok is False
+    assert result.code == "INCOMPATIBLE_IDENTITY"
+    assert result.data is None
+    assert after == before
+    shown = workflow_module.diagnostic_show_verification(
+        verification_fixture._fresh_diagnostic_context(diagnostic_context),
+        diagnostic_session_id=session_id,
+    )
+    assert shown.ok is True
+    assert shown.data["session"]["revision"] == 7
+    assert shown.data["session"]["state"] == "VERIFYING"
+    assert shown.data["fix_verifications"] == ()
