@@ -1096,11 +1096,13 @@ def test_public_store_read_integrity_refusals_preserve_persisted_authority(
         "event-session-binding",
         "duplicate-operation-id",
     }:
+        started = _started(created, operation_id=f"read-{case}")
         store.append(
             SID,
-            _started(created, operation_id=f"read-{case}"),
+            started,
             expected_revision=1,
         )
+        assert store.load(SID).revision == 2
 
     if case == "extra-root-entry":
         (diagnostics_root / "unexpected").write_bytes(b"unexpected")
@@ -1322,8 +1324,8 @@ def test_public_store_write_refusals_preserve_authority(tmp_path: Path, case: st
             "event/model/operation intent is invalid",
         ),
         "create-duplicate-session": (
-            "DIAGNOSTIC_CHAIN_CORRUPT",
-            "event/checkpoint/root chain is missing or contradictory",
+            "DIAGNOSTIC_INVALID_EVENT",
+            "event/model/operation intent is invalid",
         ),
         "append-wrong-session": (
             "DIAGNOSTIC_INVALID_EVENT",
@@ -1398,9 +1400,23 @@ def test_public_store_recovers_after_event_durability_interruption(
     events_root = diagnostics_root / "sessions" / SID / "events"
     event_path = events_root / "00000000.json"
     assert sorted(path.name for path in events_root.iterdir()) == ["00000000.json"]
+    snapshot_before_load = _authority_snapshot(diagnostics_root, evidence.root)
 
     recovered = DiagnosticStore(diagnostics_root, EvidenceStore(evidence.root))
     session = recovered.load(SID)
+    snapshot_after_first_load = _authority_snapshot(diagnostics_root, evidence.root)
+    before_evidence_files = {
+        path for path in snapshot_before_load["evidence"] if not path.endswith("/")
+    }
+    after_evidence_files = {
+        path for path in snapshot_after_first_load["evidence"] if not path.endswith("/")
+    }
+    added_evidence_files = sorted(after_evidence_files - before_evidence_files)
+    assert len(added_evidence_files) == 3
+    assert len([path for path in added_evidence_files if path.startswith("roots/diagnostic-session/")]) == 1
+    assert snapshot_after_first_load["diagnostics"] == snapshot_before_load["diagnostics"]
+    root_paths = sorted((evidence.root / "roots" / "diagnostic-session").glob("*.json"))
+    assert len(root_paths) == 1
     assert session.revision == 1
     assert session.event_head == created.digest
     assert event_path.read_bytes() == canonical_diagnostic_json_bytes(created.to_dict())
@@ -1416,6 +1432,10 @@ def test_public_store_recovers_after_event_durability_interruption(
     assert envelope.identity == IDENTITY
     assert envelope.parents == (failed_evidence_id,)
     assert envelope.operation == "diagnostic-event"
+    manifest_path = f"manifests/{envelope.evidence_id}.json"
+    artifact_path = envelope.artifacts[0].relative_path
+    assert manifest_path in added_evidence_files
+    assert artifact_path in added_evidence_files
     assert envelope.metadata == {
         "diagnostic_session_id": SID,
         "sequence": 0,
@@ -1425,3 +1445,7 @@ def test_public_store_recovers_after_event_durability_interruption(
     assert evidence.read_artifact(
         envelope.artifacts[0], maximum_bytes=store_module.MAX_EVENT_BYTES
     ) == event_path.read_bytes()
+
+    second_session = recovered.load(SID)
+    assert second_session.to_dict() == session.to_dict()
+    assert _authority_snapshot(diagnostics_root, evidence.root) == snapshot_after_first_load
