@@ -1,10 +1,11 @@
 # STM32TK-1.0 retention cancellation contract implementation return
 
 Status: `ENTRY_REVIEW_PENDING`. The original two-node run passed, while the
-r2 bounded-future correction exposed a diagnostic failure. The r3 correction
-and launcher are prepared for primary entry review; no r3 test has run. This
-report records all prior runs and is not a product acceptance decision. The
-primary agent remains the independent reviewer and acceptor.
+r2 bounded-future correction exposed a diagnostic failure. The reviewed r3
+entry was corrected once more after independent pre-execution review; no r3
+test, import, or launcher has run. This report records all prior runs and is
+not a product acceptance decision. The primary agent remains the independent
+reviewer and acceptor.
 
 ## Ownership and source ledger
 
@@ -14,7 +15,7 @@ primary agent remains the independent reviewer and acceptor.
 - Branch/worktree: `codex/STM32TK-1.0-retention-cancellation-contract` /
   `D:\codex-tmp\v10b-0918\r10\rc`.
 - Test code head before this report commit:
-  `60996089024eaa62c6c91eeadf8c3aca6002bab0`.
+  `3266399c04ef45ad73819db3c77b5ce809276332`.
 - Frozen product import source: `D:\codex-tmp\v10b-0918\r10\verify`,
   revision `15b1a70e9bd684285da5557104deff529f537e49`.
 - Interpreter: `D:\codex-tmp\v10b-0918\r10\py\Scripts\python.exe`.
@@ -126,9 +127,9 @@ The primary's separate read-only durable-outcome evidence is retained at
 scenario A observed zero rows after deletion, and scenario B observed the
 rollback/one-row outcome. That offline evidence was not produced by a rerun.
 
-## r3 prepared correction
+## r3 prepared correction before independent review
 
-The test-only correction is committed at code head
+The earlier test-only correction was committed at code head
 `60996089024eaa62c6c91eeadf8c3aca6002bab0`. It removes the r2 exception-object
 identity assertion. Callback and writer-Future exceptions are recorded
 independently with stable type, StorageFailure code, message, native SQLite
@@ -143,9 +144,9 @@ public query count. Durable/accounting/integrity/cache/writer-reuse assertions
 remain unchanged. Cleanup still releases barriers and calls `store.close()`
 only after both caller and writer Future settlement is proven.
 
-The corrected launcher is prepared at
-`D:\codex-tmp\v10b-0918\r10\e\retention-cancellation\r3\launch.ps1` with
-SHA-256
+The earlier unexecuted launcher is preserved at
+`D:\codex-tmp\v10b-0918\r10\e\retention-cancellation\r3\launch-pre-revision.ps1`
+with SHA-256
 `2059ED74FC7D036A87255487ED74FA9E32526D76D13BD1BA5887BCB7F96BAC5B`.
 It uses a non-reserved `$childPid`, captures child start/end and child exit
 separately from launcher exit, waits at most 60 seconds, and on timeout or a
@@ -157,8 +158,51 @@ owned child before writing the manifest. The fresh temporary roots are under
 The launcher passed PowerShell AST parsing with zero errors and static checks
 found no reserved `$PID` assignment, r2 root, or `--cache-dir` switch. No r3
 test, import, benchmark, build, or performance execution has occurred. The
-entry awaits primary review and explicit execution approval; the two selected
-nodes may run once only after that approval.
+entry was returned for primary review and was not executed.
+
+## r3 revised entry after independent review
+
+The revised test-only correction is committed at code head
+`3266399c04ef45ad73819db3c77b5ce809276332`. The observer now walks both `__cause__` and `__context__` edges
+with cycle-safe identity deduplication, retains per-edge relations and
+suppressed-context metadata, and records a standard traceback for every
+encountered exception without locals. Each callback or writer-Future root is
+classified independently: it must contain a terminal native
+`SQLITE_INTERRUPT`, and every node must be either that native interrupt or a
+`StorageFailure` whose code is exactly `MONITOR_STORAGE_BUSY` or
+`MONITOR_STORAGE_INVALID`. The allowance also requires the captured
+`_submit` cancellation event to be set; a public BUSY result alone is not
+used as cancellation proof.
+
+Each selected node now emits exactly one nullable `retention_observation` from
+its unconditional `finally`, after bounded caller and Future settlement
+attempts. The observation records missing caller/Future/results safely,
+callback and Future graphs, cancellation-event state, final durable state,
+writer sentinel, public value count, and whether cleanup settled or remains
+launcher-owned. The barrier is always released; `store.close()` is called only
+when the caller and submitted Futures are settled. The existing durable,
+accounting, integrity, public-cache, and writer-reuse assertions are unchanged.
+
+The replacement launcher is prepared at
+`D:\codex-tmp\v10b-0918\r10\e\retention-cancellation\r3\launch.ps1` with
+SHA-256
+`D1364EB336067E42AED7B761103AB8CDD2FE275BD3DDE6D0710FA11EA84A702C`.
+It keeps the selected two-node `-x` command, the 60-second child wall bound,
+the three isolated temporary roots, and the frozen product/import revisions.
+It writes launcher errors to `launcher-error.txt` while preserving child
+stderr, retains the owned `Process` handle for bounded kill/wait, removes the
+raw-PID termination fallback, and records actual child termination state.
+The prior unexecuted launcher remains preserved at
+`D:\codex-tmp\v10b-0918\r10\e\retention-cancellation\r3\launch-pre-revision.ps1`
+with SHA-256
+`2059ED74FC7D036A87255487ED74FA9E32526D76D13BD1BA5887BCB7F96BAC5B`.
+
+The replacement launcher passed PowerShell AST parsing with zero errors. No
+r3 test, import, benchmark, build, or performance execution has occurred;
+the entry awaits primary review and explicit execution approval. If approved,
+the two selected nodes may run once only. Any result remains diagnostic
+evidence for the current fixture and does not claim that the historical
+100000-value timeout is fixed.
 
 This report is committed separately from the test code head recorded above and
 does not record its own final commit SHA.
