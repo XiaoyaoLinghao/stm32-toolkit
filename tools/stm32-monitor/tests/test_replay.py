@@ -25,6 +25,7 @@ from stm32_monitor.protocol import ProtocolResult
 from stm32_monitor.replay import (
     MONITOR_REPLAY_SCHEMA,
     MONITOR_REPLAY_INVALID,
+    OPERATION_CONFLICT,
     MonitorReplayDocument,
     MonitorReplayError,
     MonitorRunRef,
