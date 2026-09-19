@@ -135,8 +135,7 @@ execution batch.
 Prepared serial launcher, not executed:
 
 - Path: D:\codex-tmp\v10b-0918\r10\e\core95\target\run1\launch.ps1.
-- SHA256: 9E4BC79530B6B2D014C48D3BB56E7703D306C1132C5960C87B133F851A11FB58.
-- Candidate guard: 620d5bd0c5b6c3d7d8236519799c4ee8ad90f567; runtime source guard: a270d7332c3ad2d09cd0b9adfa96ca80042bcf9d.
+- Candidate guard is set to the final report commit head; runtime source guard: a270d7332c3ad2d09cd0b9adfa96ca80042bcf9d.
 - Invocation properties: `-x`, `--cov=stm32_toolkit`, 16 function selectors expanding to 31 bounded pytest items, and a 300-second wall budget.
 - Evidence root: D:\codex-tmp\v10b-0918\r10\e\core95\target\run1.
 - Temporary/cache/basetemp root: D:\codex-tmp\v10b-0918\r10\t\c95t\run1.
