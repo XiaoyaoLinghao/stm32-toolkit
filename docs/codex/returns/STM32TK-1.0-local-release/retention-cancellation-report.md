@@ -3,7 +3,7 @@
 Status: `ENTRY_REVIEW_PENDING`. The original two-node run passed, while the
 r2 bounded-future correction exposed a diagnostic failure. The reviewed r3
 entry was corrected once more after independent pre-execution review; no r3
-test, import, or launcher has run. This report records all prior runs and is
+test, product import, or launcher has run. This report records all prior runs and is
 not a product acceptance decision. The primary agent remains the independent
 reviewer and acceptor.
 
@@ -157,7 +157,7 @@ owned child before writing the manifest. The fresh temporary roots are under
 
 The launcher passed PowerShell AST parsing with zero errors and static checks
 found no reserved `$PID` assignment, r2 root, or `--cache-dir` switch. No r3
-test, import, benchmark, build, or performance execution has occurred. The
+test, product import, benchmark, build, or performance execution has occurred. The
 entry was returned for primary review and was not executed.
 
 ## r3 revised entry after independent review
@@ -198,7 +198,7 @@ with SHA-256
 `2059ED74FC7D036A87255487ED74FA9E32526D76D13BD1BA5887BCB7F96BAC5B`.
 
 The replacement launcher passed PowerShell AST parsing with zero errors. No
-r3 test, import, benchmark, build, or performance execution has occurred;
+r3 test, product import, benchmark, build, or performance execution has occurred;
 the entry awaits primary review and explicit execution approval. If approved,
 the two selected nodes may run once only. Any result remains diagnostic
 evidence for the current fixture and does not claim that the historical
