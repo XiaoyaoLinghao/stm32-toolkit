@@ -12,7 +12,7 @@ from stm32_toolkit import regeneration
 from stm32_toolkit.creation_apply import _seed_native_managed_manifest
 from stm32_toolkit.cubemx_project import parse_native_project, write_native_project_manifests
 from stm32_toolkit.generation.creation import CreationRequest
-from stm32_toolkit.generation.managed_files import model_sha256_for
+from stm32_toolkit.generation.managed_files import model_sha256_for, sha256_hex
 from stm32_toolkit.project_model import load_project_model
 from stm32_toolkit.regeneration import (
     MAX_DIFF_BYTES,
@@ -22,6 +22,7 @@ from stm32_toolkit.regeneration import (
     RegenerationInputError,
     RegenerationWorkflowRequest,
     build_regeneration_preview,
+    classify_regeneration_project,
     plan_regeneration,
 )
 
@@ -41,6 +42,36 @@ def test_regeneration_request_normalizes_absolute_roots(tmp_path: Path):
     assert request.project_root == tmp_path / "generated"
 
 
+@pytest.mark.parametrize(
+    ("workspace_root", "data_root", "session_id", "destination", "field"),
+    [
+        pytest.param("valid", "valid", "session", "", "destination", id="S1-A"),
+        pytest.param("relative", "valid", "session", "generated", "workspaceRoot", id="S1-C"),
+        pytest.param("valid", "valid", "", "generated", "sessionId", id="S1-E"),
+    ],
+)
+def test_regeneration_request_rejects_selected_public_inputs(
+    tmp_path: Path,
+    workspace_root: str,
+    data_root: str,
+    session_id: str,
+    destination: str,
+    field: str,
+):
+    workspace = tmp_path / "workspace"
+    data = tmp_path / "data"
+    requested_workspace = Path("relative-workspace") if workspace_root == "relative" else workspace
+    requested_data = Path("relative-data") if data_root == "relative" else data
+
+    with pytest.raises(RegenerationInputError) as caught:
+        RegenerationWorkflowRequest(requested_workspace, requested_data, session_id, destination)
+
+    assert caught.value.code == "REGENERATION_INPUT_INVALID"
+    assert caught.value.field == field
+    assert not workspace.exists()
+    assert not data.exists()
+
+
 def test_plan_regeneration_is_read_only_for_non_project(tmp_path: Path):
     request = RegenerationWorkflowRequest(
         tmp_path.resolve(), (tmp_path / "data").resolve(), "session", "generated"
@@ -48,6 +79,18 @@ def test_plan_regeneration_is_read_only_for_non_project(tmp_path: Path):
     result = plan_regeneration(request)
     assert result.code in {"REGENERATION_PROJECT_INVALID", "REGENERATION_NOT_CUBEMX_PROJECT"}
     assert not (tmp_path / "generated").exists()
+
+
+def test_plan_regeneration_rejects_non_request_public_input(tmp_path: Path):
+    result = plan_regeneration("not-a-RegenerationWorkflowRequest")
+
+    assert result.ok is False
+    assert result.operation == "project-regenerate-plan"
+    assert result.code == "REGENERATION_INPUT_INVALID"
+    assert result.message == "request"
+    assert result.details["field"] == "request"
+    assert not (tmp_path / "workspace").exists()
+    assert not (tmp_path / "data").exists()
 
 
 def test_regeneration_preview_omits_text_diff_over_record_bound_but_keeps_hashes():
@@ -312,6 +355,100 @@ def _tree_state(root: Path) -> tuple[bool, dict[str, bytes]]:
         for path in sorted(root.rglob("*"))
         if path.is_file()
     }
+
+
+def test_plan_reports_invalid_supplied_environment_facts_without_write(tmp_path: Path):
+    workspace, destination, environment = _persisted_project(tmp_path)
+    environment.digest = "g" * 64
+    request = RegenerationWorkflowRequest(workspace, tmp_path / "data", "session", "generated")
+    before_project = _tree_state(destination)
+    before_data = _tree_state(tmp_path / "data")
+
+    result = plan_regeneration(request, environment=environment)
+
+    assert result.ok is True
+    assert result.code == "OK"
+    assert any(
+        item["code"] == "REGENERATION_GENERATOR_DRIFT"
+        and item["message"] == "CubeMX execution facts are invalid"
+        for item in result.data["blockers"]
+    )
+    assert _tree_state(destination) == before_project
+    assert _tree_state(tmp_path / "data") == before_data
+
+
+def test_plan_rejects_missing_declared_ioc_without_write(tmp_path: Path):
+    workspace, destination, environment = _persisted_project(tmp_path)
+    (destination / "STM32F429ZITx.ioc").unlink()
+    request = RegenerationWorkflowRequest(workspace, tmp_path / "data", "session", "generated")
+    before_project = _tree_state(destination)
+    before_data = _tree_state(tmp_path / "data")
+
+    result = plan_regeneration(request, environment=environment)
+
+    assert result.code == "REGENERATION_PROJECT_INVALID"
+    assert result.message == "CubeMX IOC is unavailable"
+    assert _tree_state(destination) == before_project
+    assert _tree_state(tmp_path / "data") == before_data
+
+
+def test_plan_rejects_malformed_schema_v2_manifest_without_upgrade(tmp_path: Path):
+    workspace, destination, environment = _persisted_project(tmp_path)
+    manifest = destination / ".stm32-project.json"
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    payload["schemaVersion"] = 2
+    payload.pop("target")
+    manifest.write_text(json.dumps(payload, sort_keys=True, separators=(",", ":")), encoding="utf-8")
+    request = RegenerationWorkflowRequest(workspace, tmp_path / "data", "session", "generated")
+    before_project = _tree_state(destination)
+    before_data = _tree_state(tmp_path / "data")
+
+    result = plan_regeneration(request, environment=environment)
+
+    assert result.code == "REGENERATION_NOT_CUBEMX_PROJECT"
+    assert result.message == "the destination is not a CubeMX project"
+    assert _tree_state(destination) == before_project
+    assert _tree_state(tmp_path / "data") == before_data
+
+
+def test_public_preview_omits_oversized_unified_diff_with_real_file_hashes(tmp_path: Path):
+    before_root = tmp_path / "before"
+    after_root = tmp_path / "after"
+    before_root.mkdir()
+    after_root.mkdir()
+    before_workspace, before_destination, _ = _persisted_project(before_root)
+    after_workspace, after_destination, _ = _persisted_project(after_root)
+    before_bytes = b"a\n" * 20_000
+    after_bytes = b"b\n" * 20_000
+    (before_destination / "App" / "diff.txt").write_bytes(before_bytes)
+    (after_destination / "App" / "diff.txt").write_bytes(after_bytes)
+    before_request = RegenerationWorkflowRequest(
+        before_workspace, tmp_path / "before-data", "session", "generated"
+    )
+    after_request = RegenerationWorkflowRequest(
+        after_workspace, tmp_path / "after-data", "session", "generated"
+    )
+    before_project = _tree_state(before_destination)
+    after_project = _tree_state(after_destination)
+    before_data = _tree_state(tmp_path / "before-data")
+    after_data = _tree_state(tmp_path / "after-data")
+
+    before_snapshot = classify_regeneration_project(before_request)
+    after_snapshot = classify_regeneration_project(after_request)
+    preview = build_regeneration_preview(before_snapshot, after_snapshot)
+
+    change = next(item for item in preview.changes if item.path == "App/diff.txt")
+    assert len(before_bytes) <= MAX_DIFF_BYTES
+    assert len(after_bytes) <= MAX_DIFF_BYTES
+    assert change.unified_diff is None
+    assert change.before_size == len(before_bytes)
+    assert change.after_size == len(after_bytes)
+    assert change.before_sha256 == sha256_hex(before_bytes)
+    assert change.after_sha256 == sha256_hex(after_bytes)
+    assert _tree_state(before_destination) == before_project
+    assert _tree_state(after_destination) == after_project
+    assert _tree_state(tmp_path / "before-data") == before_data
+    assert _tree_state(tmp_path / "after-data") == after_data
 
 
 @pytest.mark.parametrize(

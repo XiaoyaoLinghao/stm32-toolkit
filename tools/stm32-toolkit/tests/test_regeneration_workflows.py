@@ -130,6 +130,10 @@ def _tree_bytes(root: Path) -> dict[str, bytes]:
     }
 
 
+def _root_state(root: Path) -> tuple[bool, dict[str, bytes]]:
+    return (root.exists(), _tree_bytes(root) if root.exists() else {})
+
+
 def _public_authorization_digest(payload: dict[str, object]) -> str:
     canonical = {key: value for key, value in payload.items() if key not in {"authorizationDigest", "state"}}
     canonical["state"] = "prepared"
@@ -160,6 +164,71 @@ def _valid_plan_and_preview(tmp_path: Path, *, now: datetime | None = None):
     assert plan.blockers == ()
     snapshot = classify_regeneration_project(request)
     return plan, build_regeneration_preview(snapshot, snapshot)
+
+
+def test_prepare_stops_on_missing_cubemx_file_before_adapter(tmp_path: Path):
+    workspace, destination, environment = _project(tmp_path)
+    (destination / "Core" / "Src" / "main.c").unlink()
+    request = RegenerationWorkflowRequest(workspace, tmp_path / "data", "session", "generated")
+    before_project = _root_state(destination)
+    before_data = _root_state(tmp_path / "data")
+    planned = plan_regeneration(request, environment=environment)
+    assert planned.code == "OK"
+    assert any(
+        item["code"] == "REGENERATION_STATE_CHANGED" and item["path"] == "Core/Src/main.c"
+        for item in planned.data["blockers"]
+    )
+    adapter = _Adapter(FIXTURE)
+
+    result = prepare_regeneration_workflow(
+        request,
+        plan_id=planned.data["planId"],
+        action_digest=planned.data["actionDigest"],
+        authorized=True,
+        environment=environment,
+        adapter=adapter,
+        validate_native=_validator,
+    )
+
+    assert result.code == "REGENERATION_STATE_CHANGED"
+    assert result.message == "regeneration prerequisites are unavailable"
+    assert adapter.calls == 0
+    assert _root_state(destination) == before_project
+    assert _root_state(tmp_path / "data") == before_data
+    assert not list(workspace.glob(".stm32tk-regeneration-preview-*"))
+
+
+def test_prepare_stops_on_user_root_regular_file_before_adapter(tmp_path: Path):
+    workspace, destination, environment = _project(tmp_path)
+    shutil.rmtree(destination / "App")
+    (destination / "App").write_bytes(b"user root file")
+    request = RegenerationWorkflowRequest(workspace, tmp_path / "data", "session", "generated")
+    before_project = _root_state(destination)
+    before_data = _root_state(tmp_path / "data")
+    planned = plan_regeneration(request, environment=environment)
+    assert planned.code == "OK"
+    assert any(
+        item["code"] == "REGENERATION_PATH_UNSAFE" and item["path"] == "App"
+        for item in planned.data["blockers"]
+    )
+    adapter = _Adapter(FIXTURE)
+
+    result = prepare_regeneration_workflow(
+        request,
+        plan_id=planned.data["planId"],
+        action_digest=planned.data["actionDigest"],
+        authorized=True,
+        environment=environment,
+        adapter=adapter,
+        validate_native=_validator,
+    )
+
+    assert result.code == "REGENERATION_PATH_UNSAFE"
+    assert result.message == "regeneration prerequisites are unavailable"
+    assert adapter.calls == 0
+    assert _root_state(destination) == before_project
+    assert _root_state(tmp_path / "data") == before_data
+    assert not list(workspace.glob(".stm32tk-regeneration-preview-*"))
 
 
 def test_authorization_store_rejects_relative_data_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
