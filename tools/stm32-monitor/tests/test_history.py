@@ -147,10 +147,11 @@ def _retention_exception_branch_is_allowed(error: BaseException) -> bool:
     nodes = _retention_exception_chain(error)
     if not nodes:
         return False
-    if not any(
-        _retention_is_sqlite_interrupt(node)
-        and not _retention_exception_children(node)
-        for node in nodes
+    terminal_leaves = [
+        node for node in nodes if not _retention_exception_children(node)
+    ]
+    if not terminal_leaves or not all(
+        _retention_is_sqlite_interrupt(leaf) for leaf in terminal_leaves
     ):
         return False
     return all(
