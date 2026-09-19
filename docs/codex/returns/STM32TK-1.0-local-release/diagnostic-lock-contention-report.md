@@ -27,8 +27,8 @@ configuration, hardware code, package, deployment, or remote state changed.
 The amended governing design and plan are recorded by primary commit
 `a6e3888c35af853ce571c58036b063a69be409fd`. The accepted base is
 `fa8502e6bf706fcaae26122cf996077678053cc5`. The implementation code head
-before this report commit is `d3c83607b2a60b126ab67cf21ac0720a8e7a0afd`
-(`d3c83607`); this report intentionally records no report-commit SHA.
+before this report commit is `2a8f7936cdec9fde7129e22050bd5f36fb3dc224`
+(`2a8f7936`); this report intentionally records no report-commit SHA.
 
 ## Implementation and regression coverage
 
@@ -97,7 +97,7 @@ Each launcher entry writes `command.txt`, `argv.json`, `environment.json`,
 raw coverage database at `raw-coverage\.coverage`; a single
 `shards\shard-001.json` records the selected nodes, serial setting, wall
 bound, and coverage paths. The source head in both entries must be
-`d3c83607b2a60b126ab67cf21ac0720a8e7a0afd`, and `PYTHONPATH` must resolve to
+`2a8f7936cdec9fde7129e22050bd5f36fb3dc224`, and `PYTHONPATH` must resolve to
 the `lk` paths above, never `verify15b`.
 
 The executable launchers prepared for these entries are:
