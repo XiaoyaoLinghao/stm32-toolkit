@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 import json
 from dataclasses import fields, replace
 from hashlib import sha256
@@ -10,7 +11,7 @@ from uuid import UUID
 import pytest
 import stm32_monitor.analysis_workflows as workflows
 
-from stm32_monitor.analysis import AnalysisRequest, DiagnosticMarker
+from stm32_monitor.analysis import AnalysisEvidenceRef, AnalysisRequest, DiagnosticMarker
 from stm32_monitor.analysis import analyze_monitor_windows
 from stm32_monitor.analysis_workflows import (
     AnalysisBundleRef,
@@ -28,19 +29,26 @@ from stm32_monitor.protocol import ProtocolResult
 from stm32_monitor.replay import (
     MonitorReplayDocument,
     MonitorRunRef,
+    MonitorRunRefV2,
     canonical_replay_json_bytes,
     ingest_monitor_replay,
 )
 from stm32_toolkit.diagnostics import DiagnosticMarkerRef, SourceChangeDeclaration
 from stm32_toolkit.evidence import ArtifactRef, EvidenceEnvelope, EvidenceIdentity
-from stm32_toolkit.evidence.gc import get_root, plan_gc
+from stm32_toolkit.evidence.gc import RootRecord, get_root, plan_gc
 from stm32_toolkit.evidence.model import canonical_json_bytes
 from stm32_toolkit.evidence.store import EvidenceStore
 from stm32_toolkit.paths import WorkspacePaths
-from stm32_toolkit.testing.model import TestCaseResult, TestRunManifest
+from stm32_toolkit.testing.model import TestCaseResult, TestRunManifest, calculate_inventory_digest
 from stm32_toolkit.testing.publication import TestRunPublisher
-from stm32_toolkit.testing.replay import load_target_replay_fixture
-from stm32_toolkit.testing.target import TargetFrameDecoder
+from stm32_toolkit.testing.replay import (
+    TargetReplayDescriptor,
+    calculate_replay_id,
+    load_target_replay_fixture,
+)
+from stm32_toolkit.testing.target import TargetFrameDecoder, encode_frame
+from test_acceptance_continuation import prepare_pair
+from test_continuation_monitor import _monitor_baseline
 from test_physical_publication import (
     _append_physical_history,
     _physical_context,
@@ -373,11 +381,12 @@ def _declaration(
     *,
     hypothesis_id: str = HYPOTHESIS_ID,
     mutate: dict[str, object] | None = None,
+    identity_override: EvidenceIdentity | None = None,
 ) -> SourceChangeDeclaration:
     diff_path = tmp_path / "source-change.diff"
     diff_path.write_bytes(b"--- a/src/main.c\n+++ b/src/main.c\n")
     artifact = evidence.ingest_file(diff_path, kind="source-diff", media_type="text/x-diff")
-    identity = EvidenceIdentity(
+    identity = identity_override or EvidenceIdentity(
         workspace_id=after.origin_workspace_id,
         project_id=after.logical_project_id,
         session_id=after.origin_session_id,
@@ -492,6 +501,14 @@ def _monitor_ref_root_path(evidence: EvidenceStore, operation_id: str) -> Path:
     raise AssertionError("monitor reference root was not found")
 
 
+def _monitor_run_root_path(evidence: EvidenceStore, operation_id: str) -> Path:
+    directory = evidence.root / "roots" / "monitor-run"
+    for path in directory.glob("*.json"):
+        if json.loads(path.read_bytes().decode("utf-8"))["root_id"] == operation_id:
+            return path
+    raise AssertionError("monitor run root was not found")
+
+
 def _publish(
     paths: WorkspacePaths,
     evidence: EvidenceStore,
@@ -515,6 +532,389 @@ def _publish(
         rationale,
         declaration,
     )
+
+
+def _synthetic_changed_after(before: MonitorRunRef) -> MonitorRunRef:
+    """Create a valid changed-firmware reference for declaration setup only."""
+
+    document = _document("fixed-after")
+    values = before.to_dict()
+    operation_id = str(UUID("55555555-5555-4555-8555-555555555555"))
+    values.update(
+        operation_id=operation_id,
+        scenario_role="fixed-after",
+        origin_run_id=operation_id,
+        projected_run_id=operation_id,
+        build_id=document.binding.build_id,
+        elf_sha256=document.binding.elf_sha256,
+        input_snapshot_sha256=document.binding.input_snapshot_sha256,
+        git_head=document.binding.git_head,
+        fixture_sha256=document.fixture_sha256,
+        transcript_evidence_id="b" * 64,
+        projected_batch_sha256s=list(before.projected_batch_sha256s),
+    )
+    unsigned = {key: value for key, value in values.items() if key != "run_ref_sha256"}
+    values["run_ref_sha256"] = sha256(canonical_replay_json_bytes(unsigned)).hexdigest()
+    return MonitorRunRef.from_value(values)
+
+
+def _data_tree(paths: WorkspacePaths) -> dict[str, bytes]:
+    if not paths.data_root.exists():
+        return {}
+    return {
+        str(path.relative_to(paths.data_root)): path.read_bytes()
+        for path in paths.data_root.rglob("*")
+        if path.is_file()
+    }
+
+
+def _thaw_target_value(value: object) -> object:
+    if isinstance(value, Mapping):
+        return {key: _thaw_target_value(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return [_thaw_target_value(item) for item in value]
+    return value
+
+
+def _target_stream_for_identity(
+    fixture: object, identity: EvidenceIdentity
+) -> tuple[TargetReplayDescriptor, bytes]:
+    descriptor = cast(TargetReplayDescriptor, getattr(fixture, "descriptor"))
+    stream_bytes = cast(bytes, getattr(fixture, "stream_bytes"))
+    if descriptor.identity == identity:
+        return descriptor, stream_bytes
+
+    decoder = TargetFrameDecoder()
+    frames = decoder.feed(stream_bytes)
+    decoder.finish()
+    inventory = cast(dict[str, object], _thaw_target_value(frames[0].payload))
+    case_ids = cast(list[str], inventory["case_ids"])
+    inventory_digest = calculate_inventory_digest("target", identity, case_ids)
+    rebuilt: list[bytes] = []
+    for frame in frames[:-1]:
+        payload = cast(dict[str, object], _thaw_target_value(frame.payload))
+        if frame.kind == 1:
+            payload["identity"] = identity.to_dict()
+            payload["inventory_digest"] = inventory_digest
+        elif frame.kind == 2:
+            payload["inventory_digest"] = inventory_digest
+        rebuilt.append(
+            encode_frame(frame.kind, frame.sequence, payload, version=frame.version)
+        )
+    stream_digest = sha256(b"".join(rebuilt)).hexdigest()
+    terminal = cast(dict[str, object], _thaw_target_value(frames[-1].payload))
+    terminal.update(
+        inventory_digest=inventory_digest,
+        build_id=identity.build_id,
+        elf_sha256=identity.elf_sha256,
+        target_device=identity.target_device,
+        event_stream_digest=stream_digest,
+    )
+    rebuilt.append(
+        encode_frame(
+            frames[-1].kind,
+            frames[-1].sequence,
+            terminal,
+            version=frames[-1].version,
+        )
+    )
+    rebuilt_stream = b"".join(rebuilt)
+    descriptor_payload = descriptor.to_dict()
+    descriptor_payload["identity"] = identity.to_dict()
+    descriptor_payload["inventory_digest"] = inventory_digest
+    stream_payload = cast(dict[str, object], descriptor_payload["stream"])
+    stream_payload.update(
+        sha256=sha256(rebuilt_stream).hexdigest(),
+        size_bytes=len(rebuilt_stream),
+    )
+    descriptor_payload["replay_id"] = "0" * 64
+    descriptor_payload["replay_id"] = calculate_replay_id(descriptor_payload)
+    return TargetReplayDescriptor.from_value(descriptor_payload), rebuilt_stream
+
+
+def _publish_target_pair_variant(
+    paths: WorkspacePaths,
+    evidence: EvidenceStore,
+    *,
+    identity_overrides: Mapping[str, EvidenceIdentity] | None = None,
+    import_workspace_overrides: Mapping[str, str] | None = None,
+) -> tuple[str, str]:
+    target_dir = Path(__file__).parents[2] / "stm32-toolkit" / "tests" / "fixtures" / "vs03" / "target"
+    publisher = TestRunPublisher(
+        evidence, paths.project_root, paths.data_root.parent / "target-results"
+    )
+    run_ids = ("vs03-failed-before", "vs03-fixed-after")
+    identity_overrides = {} if identity_overrides is None else dict(identity_overrides)
+    import_workspace_overrides = (
+        {} if import_workspace_overrides is None else dict(import_workspace_overrides)
+    )
+    for role, run_id in zip(("failed-before", "fixed-after"), run_ids):
+        fixture = load_target_replay_fixture(
+            target_dir / f"{role}.json", target_dir / f"{role}.hex"
+        )
+        identity = identity_overrides.get(role, fixture.descriptor.identity)
+        descriptor_value, stream_bytes = _target_stream_for_identity(fixture, identity)
+        descriptor_path = paths.project_root / f"{role}-variant.json"
+        descriptor_path.write_bytes(canonical_replay_json_bytes(descriptor_value.to_dict()))
+        descriptor_artifact = evidence.ingest_file(
+            descriptor_path,
+            kind="target-replay-descriptor",
+            media_type="application/json",
+        )
+        stream_path = paths.project_root / f"{role}-variant.bin"
+        stream_path.write_bytes(stream_bytes)
+        stream_artifact = evidence.ingest_file(
+            stream_path,
+            kind="target-replay-stream",
+            media_type="application/octet-stream",
+        )
+        import_workspace_id = import_workspace_overrides.get(role, paths.workspace_id)
+        descriptor_envelope = EvidenceEnvelope(
+            identity=descriptor_value.identity,
+            operation="target-replay-input",
+            produced_at_utc="2026-08-21T00:00:00.000000Z",
+            parents=(),
+            artifacts=(descriptor_artifact, stream_artifact),
+            metadata={
+                "replay_id": descriptor_value.replay_id,
+                "scenario_role": role,
+                "stream_sha256": descriptor_value.stream.sha256,
+                "stream_size_bytes": descriptor_value.stream.size_bytes,
+                "execution_source": "replay",
+                "physical_transport_evidence": False,
+                "origin_workspace_id": descriptor_value.identity.workspace_id,
+                "import_workspace_id": import_workspace_id,
+            },
+        )
+        decoder = TargetFrameDecoder()
+        frames = decoder.feed(stream_bytes)
+        decoder.finish()
+        starts = {
+            str(frame.payload["case_id"]): frame.payload
+            for frame in frames
+            if frame.kind == 3
+        }
+        cases = tuple(
+            TestCaseResult(
+                str(frame.payload["case_id"]),
+                str(frame.payload["state"]),
+                str(starts[str(frame.payload["case_id"])] ["started_at_utc"]),
+                str(frame.payload["ended_at_utc"]),
+                int(frame.payload["duration_ms"]),
+                frame.payload["message"],
+                None,
+                None,
+            )
+            for frame in frames
+            if frame.kind == 4
+        )
+        raw_path = paths.project_root / f"{role}-variant.events"
+        raw_path.write_bytes(stream_bytes)
+        raw = evidence.ingest_file(
+            raw_path,
+            kind="test-events",
+            media_type="application/vnd.stm32.target-events",
+        )
+        manifest = TestRunManifest(
+            "stm32-test/1",
+            run_id,
+            "target",
+            str(frames[-1].payload["state"]),
+            descriptor_value.identity,
+            "replay",
+            cases,
+            str(frames[1].payload["started_at_utc"]),
+            str(frames[-1].payload["ended_at_utc"]),
+            int(frames[-1].payload["duration_ms"]),
+            None,
+            None,
+            raw,
+        )
+        publisher.publish_target_replay(manifest, descriptor_envelope, import_workspace_id)
+    return run_ids
+
+
+def _physical_pair(
+    tmp_path: Path,
+) -> tuple[WorkspacePaths, EvidenceStore, str, str, str, MonitorRunRefV2, MonitorRunRefV2]:
+    paths, evidence, failed_test_run_id, raw_probe, failed_run_id, failed_group_id = (
+        _physical_context(tmp_path)
+    )
+    _publish_physical_test_run(
+        paths,
+        evidence,
+        test_run_id=failed_test_run_id,
+        raw_probe=raw_probe,
+        monitor_run_id=failed_run_id,
+    )
+    failed_batches = _append_physical_history(
+        paths,
+        raw_probe,
+        failed_run_id,
+        failed_group_id,
+        scenario_role="failed-before",
+    )
+    publish_physical_monitor_run(
+        paths,
+        evidence,
+        scenario_role="failed-before",
+        test_run_id=failed_test_run_id,
+        run_id=str(failed_run_id),
+        group_id=str(failed_group_id),
+        start_sequence=failed_batches[0].sequence,
+        end_sequence_exclusive=failed_batches[-1].sequence + 1,
+        start_captured_unix_ns=failed_batches[0].captured_unix_ns,
+        end_captured_unix_ns_exclusive=failed_batches[-1].captured_unix_ns + 1,
+        probe_id=raw_probe,
+    )
+    fixed_test_run_id = "physical-test-run-02"
+    fixed_run_id = UUID("33333333-3333-4333-8333-333333333333")
+    fixed_group_id = UUID("44444444-4444-4444-8444-444444444444")
+    _publish_physical_test_run(
+        paths,
+        evidence,
+        test_run_id=fixed_test_run_id,
+        raw_probe=raw_probe,
+        monitor_run_id=fixed_run_id,
+        state="passed",
+        build_id="0" * 64,
+        elf_sha256="1" * 64,
+        input_snapshot_sha256="2" * 64,
+        git_head="f" * 40,
+    )
+    fixed_batches = _append_physical_history(
+        paths,
+        raw_probe,
+        fixed_run_id,
+        fixed_group_id,
+        scenario_role="fixed-after",
+        value_offset=10,
+        build_id="0" * 64,
+        elf_sha256="1" * 64,
+        input_snapshot_sha256="2" * 64,
+        git_head="f" * 40,
+    )
+    publish_physical_monitor_run(
+        paths,
+        evidence,
+        scenario_role="fixed-after",
+        test_run_id=fixed_test_run_id,
+        run_id=str(fixed_run_id),
+        group_id=str(fixed_group_id),
+        start_sequence=fixed_batches[0].sequence,
+        end_sequence_exclusive=fixed_batches[-1].sequence + 1,
+        start_captured_unix_ns=fixed_batches[0].captured_unix_ns,
+        end_captured_unix_ns_exclusive=fixed_batches[-1].captured_unix_ns + 1,
+        probe_id=raw_probe,
+    )
+    before = cast(MonitorRunRefV2, load_monitor_run_reference(paths, evidence, str(failed_run_id)))
+    after = cast(MonitorRunRefV2, load_monitor_run_reference(paths, evidence, str(fixed_run_id)))
+    return paths, evidence, failed_test_run_id, fixed_test_run_id, raw_probe, before, after
+
+
+def _physical_root_path(evidence: EvidenceStore, root_type: str, root_id: str) -> Path:
+    directory = evidence.root / "roots" / root_type
+    for path in directory.glob("*.json"):
+        if json.loads(path.read_bytes().decode("utf-8"))["root_id"] == root_id:
+            return path
+    raise AssertionError(f"missing {root_type} root {root_id}")
+
+
+def _rebind_physical_test_run(
+    tmp_path: Path,
+    evidence: EvidenceStore,
+    reference: MonitorRunRefV2,
+    test_run_id: str | None,
+    *,
+    raw_override: bytes | None = None,
+) -> MonitorRunRefV2:
+    transcript_root = get_root(evidence, "monitor-run", reference.operation_id)
+    reference_root = get_root(evidence, "monitor-run-ref", reference.operation_id)
+    transcript_envelope = evidence.get_envelope(transcript_root.manifest_id)
+    original_raw = evidence.read_artifact(
+        transcript_envelope.artifacts[0], maximum_bytes=64 * 1024 * 1024
+    )
+    wire = json.loads(original_raw.decode("utf-8"))
+    if raw_override is None:
+        assert test_run_id is not None
+        wire["test_run_id"] = test_run_id
+        transcript_raw = canonical_json_bytes(wire)
+    else:
+        test_run_id = str(wire["test_run_id"])
+        transcript_raw = raw_override
+    transcript_path = tmp_path / "rebound-physical-transcript.json"
+    transcript_path.write_bytes(transcript_raw)
+    transcript_artifact = evidence.ingest_file(
+        transcript_path,
+        kind="monitor-physical-transcript",
+        media_type="application/json",
+    )
+    transcript_metadata = dict(transcript_envelope.metadata)
+    transcript_metadata.update(
+        test_run_id=test_run_id,
+        source_record_sha256=sha256(transcript_raw).hexdigest(),
+    )
+    rebound_transcript = EvidenceEnvelope(
+        identity=transcript_envelope.identity,
+        operation=transcript_envelope.operation,
+        produced_at_utc=transcript_envelope.produced_at_utc,
+        parents=transcript_envelope.parents,
+        artifacts=(transcript_artifact,),
+        metadata=transcript_metadata,
+    )
+    evidence.put_envelope(rebound_transcript)
+
+    reference_values = reference.to_dict()
+    reference_values["source_record_sha256"] = sha256(transcript_raw).hexdigest()
+    reference_values["transcript_evidence_id"] = str(rebound_transcript.evidence_id)
+    unsigned = {
+        key: value for key, value in reference_values.items() if key != "run_ref_sha256"
+    }
+    reference_values["run_ref_sha256"] = sha256(
+        canonical_replay_json_bytes(unsigned)
+    ).hexdigest()
+    rebound_reference = MonitorRunRefV2.from_value(reference_values)
+    reference_envelope = evidence.get_envelope(reference_root.manifest_id)
+    reference_path = tmp_path / "rebound-physical-reference.json"
+    reference_path.write_bytes(canonical_replay_json_bytes(rebound_reference.to_dict()))
+    reference_artifact = evidence.ingest_file(
+        reference_path,
+        kind="monitor-run-ref",
+        media_type="application/json",
+    )
+    reference_metadata = dict(reference_envelope.metadata)
+    reference_metadata.update(
+        source_record_sha256=rebound_reference.source_record_sha256,
+        run_ref_sha256=rebound_reference.run_ref_sha256,
+    )
+    rebound_reference_envelope = EvidenceEnvelope(
+        identity=reference_envelope.identity,
+        operation=reference_envelope.operation,
+        produced_at_utc=reference_envelope.produced_at_utc,
+        parents=(str(rebound_transcript.evidence_id),),
+        artifacts=(reference_artifact,),
+        metadata=reference_metadata,
+    )
+    evidence.put_envelope(rebound_reference_envelope)
+
+    transcript_root_value = transcript_root.to_dict()
+    transcript_root_value["manifest_id"] = str(rebound_transcript.evidence_id)
+    transcript_root_metadata = dict(transcript_root.metadata)
+    transcript_root_metadata.update(
+        source_record_sha256=rebound_reference.source_record_sha256,
+        run_ref_sha256=rebound_reference.run_ref_sha256,
+    )
+    transcript_root_value["metadata"] = transcript_root_metadata
+    _physical_root_path(evidence, "monitor-run", reference.operation_id).write_bytes(
+        canonical_json_bytes(transcript_root_value)
+    )
+    reference_root_value = reference_root.to_dict()
+    reference_root_value["manifest_id"] = str(rebound_reference_envelope.evidence_id)
+    reference_root_value["metadata"] = reference_metadata
+    _physical_root_path(evidence, "monitor-run-ref", reference.operation_id).write_bytes(
+        canonical_json_bytes(reference_root_value)
+    )
+    return rebound_reference
 
 
 def test_compare_monitor_runs_publishes_changed_analysis_and_marker(tmp_path: Path) -> None:
@@ -1988,3 +2388,517 @@ def test_export_rejects_upstream_derived_authority_without_bundle_mutation(
         assert "upstream-derived-provider-secret" not in str(error.value)
     assert _evidence_tree(evidence) == before_tree
     assert not any("monitor-analysis-bundle" in path for path in _evidence_tree(evidence))
+
+
+def test_awf_1a_rejects_invalid_diagnostic_session_before_write(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    evidence, before, after = _ingest_pair(paths)
+    declaration = _declaration(tmp_path, evidence, before, after)
+    before_tree = _data_tree(paths)
+
+    with pytest.raises(AnalysisWorkflowError) as error:
+        _publish(
+            paths,
+            evidence,
+            before,
+            after,
+            declaration,
+            diagnostic_session_id="invalid-diagnostic-session",
+        )
+
+    assert error.value.code == ANALYSIS_WORKFLOW_INVALID
+    assert error.value.message == "diagnostic session ID is invalid"
+    assert _data_tree(paths) == before_tree
+    assert not (evidence.root / "roots" / "monitor-analysis").exists()
+
+
+def test_awf_1b_rejects_empty_rationale_before_write(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    evidence, before, after = _ingest_pair(paths)
+    declaration = _declaration(tmp_path, evidence, before, after)
+    before_tree = _data_tree(paths)
+
+    with pytest.raises(AnalysisWorkflowError) as error:
+        _publish(paths, evidence, before, after, declaration, rationale="")
+
+    assert error.value.code == ANALYSIS_WORKFLOW_INVALID
+    assert error.value.message == "rationale is invalid"
+    assert _data_tree(paths) == before_tree
+    assert not (evidence.root / "roots" / "monitor-analysis").exists()
+
+
+def test_awf_1c_rejects_non_declaration_argument_before_provider_access(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    evidence, before, after = _ingest_pair(paths)
+    before_tree = _data_tree(paths)
+
+    with pytest.raises(AnalysisWorkflowError) as error:
+        _publish(paths, evidence, before, after, object())
+
+    assert error.value.code == ANALYSIS_WORKFLOW_INVALID
+    assert error.value.message == "analysis workflow arguments are invalid"
+    assert _data_tree(paths) == before_tree
+    assert not (evidence.root / "roots" / "monitor-analysis").exists()
+
+
+def test_awf_1d_rejects_declaration_for_identical_firmware(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    evidence = _evidence(paths)
+    before = ingest_monitor_replay(
+        paths, evidence, _operation("failed-before"), _fixture("failed-before")
+    )
+    declaration = _declaration(
+        tmp_path, evidence, before, _synthetic_changed_after(before)
+    )
+    identical_after_path = _write_same_firmware_after(tmp_path)
+    after = ingest_monitor_replay(
+        paths, evidence, _operation("fixed-after"), identical_after_path
+    )
+    before_tree = _data_tree(paths)
+
+    with pytest.raises(AnalysisWorkflowError) as error:
+        _publish(paths, evidence, before, after, declaration)
+
+    assert error.value.code == "INCOMPATIBLE_IDENTITY"
+    assert error.value.message == "identical firmware cannot carry a source declaration"
+    assert _data_tree(paths) == before_tree
+    assert not (evidence.root / "roots" / "monitor-analysis").exists()
+
+
+def test_awf_1e_rejects_source_diff_identity_mismatch_before_publication(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    evidence, before, after = _ingest_pair(paths)
+    foreign_identity = EvidenceIdentity(
+        workspace_id="9" * 64,
+        project_id=after.logical_project_id,
+        session_id=after.origin_session_id,
+        build_id=before.build_id,
+        elf_sha256=before.elf_sha256,
+        target_device=after.target_device,
+        input_snapshot_sha256=before.input_snapshot_sha256,
+        git_commit=before.git_head,
+        git_dirty=before.git_dirty,
+    )
+    declaration = _declaration(
+        tmp_path,
+        evidence,
+        before,
+        after,
+        identity_override=foreign_identity,
+    )
+    before_tree = _data_tree(paths)
+
+    with pytest.raises(AnalysisWorkflowError) as error:
+        _publish(paths, evidence, before, after, declaration)
+
+    assert error.value.code == "INCOMPATIBLE_IDENTITY"
+    assert error.value.message == "source-change diff Evidence identity is incompatible"
+    assert _data_tree(paths) == before_tree
+    assert not (evidence.root / "roots" / "monitor-analysis").exists()
+
+
+def test_awf_2a_rejects_monitor_root_intent_mismatch_before_history(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    evidence, before, after = _ingest_pair(paths)
+    declaration = _declaration(tmp_path, evidence, before, after)
+    root_path = _monitor_run_root_path(evidence, before.operation_id)
+    root_payload = json.loads(root_path.read_bytes().decode("utf-8"))
+    root_payload["metadata"]["fixture_sha256"] = "0" * 64
+    root_path.write_bytes(canonical_json_bytes(root_payload))
+    before_tree = _data_tree(paths)
+
+    with pytest.raises(AnalysisWorkflowError) as error:
+        _publish(paths, evidence, before, after, declaration)
+
+    assert error.value.code == "OPERATION_CONFLICT"
+    assert error.value.message == "replay run root has a different intent"
+    assert _data_tree(paths) == before_tree
+    assert not (evidence.root / "roots" / "monitor-analysis").exists()
+
+
+def test_awf_2b_rejects_projected_digest_contradiction_after_public_ref_rebuild(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    evidence, original_before, after = _ingest_pair(paths)
+    reference_values = original_before.to_dict()
+    projected_digests = list(original_before.projected_batch_sha256s)
+    projected_digests[0] = "0" * 64
+    reference_values["projected_batch_sha256s"] = projected_digests
+    unsigned = {
+        key: value for key, value in reference_values.items() if key != "run_ref_sha256"
+    }
+    reference_values["run_ref_sha256"] = sha256(
+        canonical_replay_json_bytes(unsigned)
+    ).hexdigest()
+    before = MonitorRunRef.from_value(reference_values)
+    declaration = _declaration(tmp_path, evidence, before, after)
+    root_path = _monitor_run_root_path(evidence, before.operation_id)
+    root_payload = json.loads(root_path.read_bytes().decode("utf-8"))
+    root_payload["metadata"]["run_ref_sha256"] = before.run_ref_sha256
+    root_path.write_bytes(canonical_json_bytes(root_payload))
+    before_tree = _data_tree(paths)
+
+    with pytest.raises(AnalysisWorkflowError) as error:
+        _publish(paths, evidence, before, after, declaration)
+
+    assert error.value.code == EVIDENCE_INTEGRITY_FAILURE
+    assert error.value.message == "replay projected batch digests contradict the run reference"
+    assert _data_tree(paths) == before_tree
+    assert not (evidence.root / "roots" / "monitor-analysis").exists()
+
+
+def test_awf_2c_maps_coherent_physical_test_run_identity_mismatch(
+    tmp_path: Path,
+) -> None:
+    paths, evidence, failed_test_run_id, _fixed_test_run_id, raw_probe, before, after = (
+        _physical_pair(tmp_path)
+    )
+    declaration = _declaration(tmp_path, evidence, before, after)
+    alternate_test_run_id = "physical-test-run-alternate"
+    _publish_physical_test_run(
+        paths,
+        evidence,
+        test_run_id=alternate_test_run_id,
+        raw_probe=raw_probe,
+        monitor_run_id=UUID("55555555-5555-4555-8555-555555555555"),
+        build_id="9" * 64,
+        elf_sha256="8" * 64,
+        input_snapshot_sha256="7" * 64,
+        git_head="d" * 40,
+    )
+    rebound_before = _rebind_physical_test_run(
+        tmp_path, evidence, before, alternate_test_run_id
+    )
+    before_tree = _data_tree(paths)
+
+    with pytest.raises(AnalysisWorkflowError) as error:
+        _publish(paths, evidence, rebound_before, after, declaration)
+
+    assert error.value.code == "INCOMPATIBLE_IDENTITY"
+    assert error.value.message == "physical Monitor identity is incompatible"
+    assert _data_tree(paths) == before_tree
+    assert not (evidence.root / "roots" / "monitor-analysis").exists()
+
+
+def test_awf_2d_maps_physical_transcript_provider_oserror(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths, evidence, _failed_test_run_id, _fixed_test_run_id, _raw_probe, before, after = (
+        _physical_pair(tmp_path)
+    )
+    declaration = _declaration(tmp_path, evidence, before, after)
+    original_read = EvidenceStore.read_artifact
+
+    def fail_physical_transcript(
+        store: EvidenceStore, artifact: ArtifactRef, *, maximum_bytes: int
+    ) -> bytes:
+        if artifact.kind == "monitor-physical-transcript":
+            raise OSError("physical transcript provider secret")
+        return original_read(store, artifact, maximum_bytes=maximum_bytes)
+
+    monkeypatch.setattr(EvidenceStore, "read_artifact", fail_physical_transcript)
+    before_tree = _data_tree(paths)
+
+    with pytest.raises(AnalysisWorkflowError) as error:
+        _publish(paths, evidence, before, after, declaration)
+
+    assert error.value.code == ENVIRONMENT_FAILURE
+    assert error.value.message == "physical Monitor Evidence provider failed"
+    assert "physical transcript provider secret" not in str(error.value)
+    assert _data_tree(paths) == before_tree
+    assert not (evidence.root / "roots" / "monitor-analysis").exists()
+
+
+def test_awf_2e_maps_malformed_persisted_physical_transcript(
+    tmp_path: Path,
+) -> None:
+    paths, evidence, _failed_test_run_id, _fixed_test_run_id, _raw_probe, before, after = (
+        _physical_pair(tmp_path)
+    )
+    declaration = _declaration(tmp_path, evidence, before, after)
+    _rebind_physical_test_run(
+        tmp_path,
+        evidence,
+        before,
+        None,
+        raw_override=b"[]",
+    )
+    rebound_before = cast(
+        MonitorRunRefV2,
+        load_monitor_run_reference(paths, evidence, before.operation_id),
+    )
+    before_tree = _data_tree(paths)
+
+    with pytest.raises(AnalysisWorkflowError) as error:
+        _publish(paths, evidence, rebound_before, after, declaration)
+
+    assert error.value.code == EVIDENCE_INTEGRITY_FAILURE
+    assert error.value.message == "physical Monitor Evidence is corrupt"
+    assert _data_tree(paths) == before_tree
+    assert not (evidence.root / "roots" / "monitor-analysis").exists()
+
+
+def test_awf_2f_maps_unrecognized_history_provider_code(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _paths(tmp_path)
+    evidence, before, after = _ingest_pair(paths)
+    declaration = _declaration(tmp_path, evidence, before, after)
+    calls: list[HistoryQuery] = []
+
+    def fail_query(self: HistoryStore, query: HistoryQuery) -> ProtocolResult[HistoryPage]:
+        del self
+        calls.append(query)
+        return ProtocolResult(False, "history.query", "UNRECOGNIZED_PROVIDER", "provider failed", None)
+
+    monkeypatch.setattr(HistoryStore, "query_history", fail_query)
+    before_tree = _data_tree(paths)
+
+    with pytest.raises(AnalysisWorkflowError) as error:
+        _publish(paths, evidence, before, after, declaration)
+
+    assert calls
+    assert error.value.code == ANALYSIS_WORKFLOW_INVALID
+    assert error.value.message == "monitor history query failed"
+    assert _data_tree(paths) == before_tree
+    assert not (evidence.root / "roots" / "monitor-analysis").exists()
+
+
+def test_awf_3a_rejects_continuation_with_different_diagnostic_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pair = prepare_pair(tmp_path, monkeypatch)
+    baseline = _monitor_baseline(pair, tmp_path)
+    paths, evidence, request, _old_session, hypothesis, polarity, rationale, declaration = (
+        baseline.compare_args
+    )
+    before_tree = _data_tree(paths)
+
+    with pytest.raises(AnalysisWorkflowError) as error:
+        compare_monitor_runs(
+            paths,
+            evidence,
+            request,
+            "e" * 32,
+            hypothesis,
+            polarity,
+            rationale,
+            declaration,
+            continuation_evidence_id=baseline.continuation_id,
+        )
+
+    assert error.value.code == "INCOMPATIBLE_IDENTITY"
+    assert error.value.message == "continuation does not match Diagnostic declaration"
+    assert _data_tree(paths) == before_tree
+
+
+def test_awf_3b_exports_identical_firmware_without_source_row(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    evidence = _evidence(paths)
+    before = ingest_monitor_replay(
+        paths, evidence, _operation("failed-before"), _fixture("failed-before")
+    )
+    identical_after_path = _write_same_firmware_after(tmp_path)
+    after = ingest_monitor_replay(
+        paths, evidence, _operation("fixed-after"), identical_after_path
+    )
+    failed_id, fixed_id = _publish_target_pair_variant(
+        paths,
+        evidence,
+        identity_overrides={
+            "failed-before": EvidenceIdentity(
+                workspace_id=before.origin_workspace_id,
+                project_id=before.logical_project_id,
+                session_id=before.origin_session_id,
+                build_id=before.build_id,
+                elf_sha256=before.elf_sha256,
+                target_device=before.target_device,
+                input_snapshot_sha256=before.input_snapshot_sha256,
+                git_commit=before.git_head,
+                git_dirty=before.git_dirty,
+            ),
+            "fixed-after": EvidenceIdentity(
+                workspace_id=after.origin_workspace_id,
+                project_id=after.logical_project_id,
+                session_id=after.origin_session_id,
+                build_id=after.build_id,
+                elf_sha256=after.elf_sha256,
+                target_device=after.target_device,
+                input_snapshot_sha256=after.input_snapshot_sha256,
+                git_commit=after.git_head,
+                git_dirty=after.git_dirty,
+            ),
+        },
+    )
+    publication = _publish(paths, evidence, before, after, None)
+    before_tree = _data_tree(paths)
+
+    payload, bundle_ref = export_analysis_bundle(
+        paths,
+        evidence,
+        _request(before, after),
+        publication,
+        failed_id,
+        fixed_id,
+    )
+    body = json.loads(payload.decode("utf-8"))
+    assert body["source_change_declaration_id"] is None
+    assert not any(
+        row["role"] == "source-change-declaration" for row in body["digest_table"]
+    )
+    bundle_root = get_root(evidence, "monitor-analysis-bundle", bundle_ref.bundle_id)
+    bundle = evidence.get_envelope(bundle_root.manifest_id)
+    assert bundle.parents == (
+        before.transcript_evidence_id,
+        after.transcript_evidence_id,
+        publication.analysis_evidence_ref.evidence_id,
+        publication.diagnostic_marker_ref.marker_evidence_id,
+    )
+    assert evidence.read_artifact(bundle_ref.artifact, maximum_bytes=1_000_000) == payload
+    retry_payload, retry_ref = export_analysis_bundle(
+        paths,
+        EvidenceStore(evidence.root),
+        _request(before, after),
+        publication,
+        failed_id,
+        fixed_id,
+    )
+    assert (retry_payload, retry_ref) == (payload, bundle_ref)
+    assert _data_tree(paths) != before_tree
+
+
+def test_awf_3c_rejects_analysis_reference_drift_before_bundle_write(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    evidence, before, after = _ingest_pair(paths)
+    declaration = _declaration(tmp_path, evidence, before, after)
+    failed_id, fixed_id = _publish_target_pair(paths, evidence)
+    publication = _publish(paths, evidence, before, after, declaration)
+    analysis_ref = AnalysisEvidenceRef.new(
+        analysis_id=publication.analysis_result.analysis_id,
+        evidence_id="e" * 64,
+    )
+    marker = DiagnosticMarker.new(
+        analysis_id=publication.analysis_result.analysis_id,
+        analysis_evidence_id=analysis_ref.evidence_id,
+        diagnostic_session_id=publication.diagnostic_marker.diagnostic_session_id,
+        hypothesis_id=publication.diagnostic_marker.hypothesis_id,
+        polarity=publication.diagnostic_marker.polarity,
+        label=publication.diagnostic_marker.label,
+        rationale=publication.diagnostic_marker.rationale,
+    )
+    marker_ref = DiagnosticMarkerRef.new(
+        marker_id=marker.marker_id,
+        marker_evidence_id=publication.diagnostic_marker_ref.marker_evidence_id,
+        analysis_id=marker.analysis_id,
+        analysis_evidence_id=marker.analysis_evidence_id,
+        diagnostic_session_id=marker.diagnostic_session_id,
+        hypothesis_id=marker.hypothesis_id,
+        polarity=marker.polarity,
+        label=marker.label,
+        rationale=marker.rationale,
+    )
+    publication = AnalysisPublication(
+        publication.analysis_result, analysis_ref, marker, marker_ref
+    )
+    before_tree = _data_tree(paths)
+
+    with pytest.raises(AnalysisWorkflowError) as error:
+        export_analysis_bundle(
+            paths,
+            evidence,
+            _request(before, after),
+            publication,
+            failed_id,
+            fixed_id,
+            declaration,
+        )
+
+    assert error.value.code == EVIDENCE_INTEGRITY_FAILURE
+    assert error.value.message == "analysis evidence reference does not match stored envelope"
+    assert _data_tree(paths) == before_tree
+    assert not (evidence.root / "roots" / "monitor-analysis-bundle").exists()
+
+
+def test_awf_3d_rejects_coherent_target_root_workspace_mismatch(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    evidence, before, after = _ingest_pair(paths)
+    declaration = _declaration(tmp_path, evidence, before, after)
+    failed_id, fixed_id = _publish_target_pair_variant(
+        paths,
+        evidence,
+        import_workspace_overrides={
+            "failed-before": "9" * 64,
+            "fixed-after": "9" * 64,
+        },
+    )
+    publication = _publish(paths, evidence, before, after, declaration)
+    before_tree = _data_tree(paths)
+
+    with pytest.raises(AnalysisWorkflowError) as error:
+        export_analysis_bundle(
+            paths,
+            evidence,
+            _request(before, after),
+            publication,
+            failed_id,
+            fixed_id,
+            declaration,
+        )
+
+    assert error.value.code == "INCOMPATIBLE_IDENTITY"
+    assert error.value.message == "TestRun root metadata does not match replay reference"
+    assert _data_tree(paths) == before_tree
+    assert not (evidence.root / "roots" / "monitor-analysis-bundle").exists()
+
+
+def test_awf_3e_rejects_target_test_runs_with_distinct_sessions(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    evidence, before, after = _ingest_pair(paths)
+    declaration = _declaration(tmp_path, evidence, before, after)
+    alternate_after_identity = EvidenceIdentity(
+        workspace_id=after.origin_workspace_id,
+        project_id=after.logical_project_id,
+        session_id="target-session-other",
+        build_id=after.build_id,
+        elf_sha256=after.elf_sha256,
+        target_device=after.target_device,
+        input_snapshot_sha256=after.input_snapshot_sha256,
+        git_commit=after.git_head,
+        git_dirty=after.git_dirty,
+    )
+    failed_id, fixed_id = _publish_target_pair_variant(
+        paths,
+        evidence,
+        identity_overrides={"fixed-after": alternate_after_identity},
+    )
+    publication = _publish(paths, evidence, before, after, declaration)
+    before_tree = _data_tree(paths)
+
+    with pytest.raises(AnalysisWorkflowError) as error:
+        export_analysis_bundle(
+            paths,
+            evidence,
+            _request(before, after),
+            publication,
+            failed_id,
+            fixed_id,
+            declaration,
+        )
+
+    assert error.value.code == "INCOMPATIBLE_IDENTITY"
+    assert error.value.message == "Target TestRuns do not share a session"
+    assert _data_tree(paths) == before_tree
+    assert not (evidence.root / "roots" / "monitor-analysis-bundle").exists()
