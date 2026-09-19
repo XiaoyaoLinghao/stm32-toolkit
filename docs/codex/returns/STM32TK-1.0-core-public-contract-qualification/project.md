@@ -208,3 +208,33 @@ coverage gain before the primary-owned run.
 Independent review of the complete accepted-base-to-code-head diff and final
 qualification remain with the primary agent. This implementation agent does
 not accept its own changes.
+
+## Primary execution and acceptance
+
+Primary independently reviewed the complete qualification diff, the one-line
+pre-lock root correction, and the subsequent test-oracle correction in a clean
+detached review worktree. The corrected runtime is
+`547af36ca3d2cbc74729c1958e8dcdfe7cea261c`; only generation/configure.py differs
+from the prior runtime. Primary executed and retained these separate results:
+
+- Run1 at `e22d858494cdc8135052f8ac066d8ee370f8c0a4`: 10 PASS, then the
+  product error-classification failure. Parent raw coverage was not generated.
+- Run2 at `72e6ac246c2d9b8f7e2a6df409de558c4f5e87db`: 228 PASS, then a
+  test-only CMakeLists existence assertion failed. The corrected product error,
+  no-lock and no-write assertions passed first. Parent raw coverage was not
+  generated; six subprocess native data files are preserved for attribution.
+- Run3 at `482f5947b104b1f533b38e161e9b8eda1db26fae`: 72 PASS, no errors
+  or skips, exit 0, no timeout, JUnit 24.980 seconds, child process terminated.
+  This ran only the failed function and previously unrun functions, including
+  the four regeneration functions. Native raw coverage and JSON are retained.
+
+The combined 310 distinct functional passes cover the affected generation file
+and this Project wave; this is not one clean 310-case execution. Three existing
+Windows junction-fixture output decoding warnings occurred across run2/run3;
+the relevant path-refusal assertions passed. Those diagnostics remain in the
+original logs, classified as test-support output decoding, not product faults.
+
+Primary accepts the scoped correction and tests. No hardware or deployment was
+performed. Coverage acceptance remains pending native source-correct union:
+old configure.py arcs must be purged from input copies; no parent execution arcs
+may be inferred from functional PASS or the presence of subprocess shards.
