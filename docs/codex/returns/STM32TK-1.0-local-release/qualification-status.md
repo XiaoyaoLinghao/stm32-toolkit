@@ -5,9 +5,11 @@ hardware acceptance, publication approval, or a replacement for historical logs.
 
 VS10-A and VS10-B remain locally accepted. The B acceptance base is
 `1df30a0f4070805488687a67f907dbaa1867d681`. Retained artifacts were built from
-`15b1a70e9bd684285da5557104deff529f537e49`. Runtime package source remains
-byte-identical to that revision. Later qualification tests and the accepted
-deployment-guide/trusted-utility-pin correction are not in that source ZIP.
+`15b1a70e9bd684285da5557104deff529f537e49`. The current integrated runtime at
+`1068d71c558cca039949db4ce3ea9aa3afb7bb2f` includes the accepted Diagnostic lock
+correction in four runtime files and is no longer byte-identical to that revision.
+Later qualification tests, the deployment-guide/trusted-utility-pin correction,
+and the lock correction are not in that retained source ZIP.
 No replacement artifact or deployment is claimed by this document.
 
 The Diagnostic public-refusal slice was independently accepted from
@@ -36,8 +38,8 @@ passed without changing its per-call assertions or thresholds. Final release
 limitations must disclose the historical uncertainty and post-start BUSY
 semantics. See `r10/e/retention-cancellation/release-disposition-final-review.md`.
 
-Python package branch coverage remains below the approved 90% gate. The native
-aggregates currently record Toolkit 10825/13564 (79.8068%) and Monitor 2491/2936
+Python package branch coverage has not met the approved 90% gate. The historical
+15b native aggregates record Toolkit 10825/13564 (79.8068%) and Monitor 2491/2936
 branches. The accepted TestRun publication and regeneration raw coverage was
 combined once in toolkit-aggregate-r4, without rerunning tests. A separately
 accepted earlier official Diagnostic JSON projection retains a Toolkit lower
@@ -48,6 +50,10 @@ JSON evidence, not a native coverage database: the implementer deleted the raw
 Diagnostic database before primary aggregation. No raw database has been
 fabricated or restored. Future raw coverage and shards
 are durable evidence subject to primary-only cleanup and a preservation hold.
+These historical aggregates do not qualify the changed runtime. Coverage of the
+four changed files must come from matching final source; worktree path aliases
+alone cannot make old line and branch arcs valid. A separate final-candidate
+Python verification wave is pending, with both package gates still unmet.
 
 The four regeneration public cases are independently accepted at code
 ab3e3fef43af7146a743319e477e7a4d352384e5 and report
@@ -106,14 +112,27 @@ does not establish evidence corruption or a cyclic deadlock.
 That run exited 1 normally (105.351 seconds in pytest); its complete lock
 timeline and exception chain are retained. The two earlier launcher attempts
 failed before creating a test child and remain infrastructure evidence. No
-product correction, diagnostic rerun or hardware operation is claimed. Next
-product scope is the same-workspace DiagnosticStore lock coordination and the
-existing concurrent checkpoint contract; preserve lock identity validation,
-cross-process exclusion, publication order and completed-result authentication.
-The bounded correction is now specified at a6e3888c35af853ce571c58036b063a69be409fd
-and assigned to one Luna/max owner. It adds narrow native contention retries,
-explicit Busy propagation including nested Diagnostic results, and a regression
-for Busy after revision-1 publication. Implementation is not yet accepted.
+hardware operation was needed to diagnose this software/platform defect.
+The bounded correction is independently ACCEPTED at final return
+1e389e15deffc19ac9b38edfd431a28ad25742ab and integrated at
+1068d71c558cca039949db4ce3ea9aa3afb7bb2f. It uses nonblocking Windows acquisition
+with a 10-second monotonic deadline, retries only native acquisition EACCES,
+and preserves lock identity, cross-process exclusion, publication order and
+completed-result authentication. Operational contention has explicit Busy
+propagation, including nested Diagnostic results and Busy after publication.
+Busy does not promise rollback of an already published immutable revision.
+
+Functional evidence is 29 + 9 + 1 = 39 focused passes across three runs, one
+retained WinError 1314 symlink-privilege skip, and one separate original concurrent
+continuation PASS. It is not one clean 40-case execution. The first two focused
+runs retain fixture failures: global native-mode accounting and a tuple where
+the public helper requires a list. The final two runs used source
+3c125d57c9fd115c0e1fad3ee9c86b4997d07455, with product/test code frozen at
+37a3f628aa69877ab645b327cc70de2c45fcea16. Both actual children exited 0 within
+their bounds; raw branch coverage is retained. The original concurrency node
+was unchanged. See r10/e/diagnostic-lock-contention/independent-review-final.md.
+This closes the reproduced lock defect, without inventing the native cause of
+the older full-suite failure or declaring the final release matrix complete.
 
 Valid UI, browser, deterministic packaging, isolated fresh/upgrade deployment,
 state-preservation, workspace-composition and A/B hardware evidence are retained.
