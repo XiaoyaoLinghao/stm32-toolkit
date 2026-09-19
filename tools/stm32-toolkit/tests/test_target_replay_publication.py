@@ -363,6 +363,14 @@ def _replay_stream_variant(
         kind="target-replay-stream",
         media_type="application/octet-stream",
     )
+    raw_artifact = _ingest_replay_bytes(
+        store,
+        project_root,
+        f"{selector}-raw",
+        stream_bytes,
+        kind="test-events",
+        media_type="application/vnd.stm32.target-events",
+    )
     updated_descriptor = _descriptor_with_stream(fixture.descriptor, stream_artifact)
     descriptor_artifact = _ingest_replay_bytes(
         store,
@@ -389,7 +397,7 @@ def _replay_stream_variant(
         metadata=metadata,
     )
     return store, project_root, results_root, parent, replace(
-        manifest, raw_events=stream_artifact
+        manifest, raw_events=raw_artifact
     )
 
 
@@ -1619,6 +1627,23 @@ def test_replay_descriptor_noncanonical_wire_selector_rejects_without_write(
 def test_replay_stream_inventory_identity_selector_rejects_without_write(
     tmp_path: Path,
 ):
+    control_store, control_project, control_results, control_parent, control_manifest = (
+        _replay_stream_variant(
+            tmp_path / "control",
+            "stream-inventory-identity-control",
+            lambda _kind, _payload: None,
+        )
+    )
+    control_published = Publisher(
+        control_store, control_project, control_results
+    ).publish_target_replay(
+        control_manifest, control_parent, IMPORT_WORKSPACE_ID
+    )
+    control_loaded = Repository(control_store).load(control_manifest.run_id)
+    assert control_loaded.manifest == control_manifest
+    assert control_loaded.envelope == control_published.envelope
+    assert control_loaded.envelope.identity == control_manifest.identity
+
     def mutate(kind: int, payload: dict[str, object]) -> None:
         if kind == 1:
             identity = dict(payload["identity"])
@@ -1626,7 +1651,7 @@ def test_replay_stream_inventory_identity_selector_rejects_without_write(
             payload["identity"] = identity
 
     store, project_root, results_root, parent, manifest = _replay_stream_variant(
-        tmp_path, "stream-inventory-identity", mutate
+        tmp_path / "negative", "stream-inventory-identity", mutate
     )
     _assert_replay_publish_failure(
         store,
@@ -1641,12 +1666,29 @@ def test_replay_stream_inventory_identity_selector_rejects_without_write(
 def test_replay_stream_terminal_state_selector_rejects_without_write(
     tmp_path: Path,
 ):
+    control_store, control_project, control_results, control_parent, control_manifest = (
+        _replay_stream_variant(
+            tmp_path / "control",
+            "stream-terminal-state-control",
+            lambda _kind, _payload: None,
+        )
+    )
+    control_published = Publisher(
+        control_store, control_project, control_results
+    ).publish_target_replay(
+        control_manifest, control_parent, IMPORT_WORKSPACE_ID
+    )
+    control_loaded = Repository(control_store).load(control_manifest.run_id)
+    assert control_loaded.manifest == control_manifest
+    assert control_loaded.envelope == control_published.envelope
+    assert control_loaded.envelope.identity == control_manifest.identity
+
     def mutate(kind: int, payload: dict[str, object]) -> None:
         if kind == 5:
             payload["state"] = "passed"
 
     store, project_root, results_root, parent, manifest = _replay_stream_variant(
-        tmp_path, "stream-terminal-state", mutate
+        tmp_path / "negative", "stream-terminal-state", mutate
     )
     _assert_replay_publish_failure(
         store,
