@@ -241,6 +241,7 @@ def test_close_is_idempotent_and_clears_target_state():
         "suppressed-chain-and-empty-redactions",
         "scalar-redaction",
         "non-string-redaction-token",
+        "iterator-budget-eight-of-nine",
         "invalid-stage",
         "invalid-error",
         "validator-top-shape",
@@ -298,6 +299,43 @@ def test_program_diagnostic_factory_and_validation_boundaries(case):
         )
         message = details["programDiagnostic"]["exceptions"][0]["message"]
         assert "token-value" not in message
+        assert "[redacted]" in message
+        return
+
+    if case == "iterator-budget-eight-of-nine":
+        class RedactionBudget:
+            def __init__(self, values):
+                self._values = iter(values)
+                self.next_calls = 0
+
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                self.next_calls += 1
+                return next(self._values)
+
+        budget = RedactionBudget(
+            (
+                "budget-secret",
+                "second",
+                "third",
+                "fourth",
+                "fifth",
+                "sixth",
+                "seventh",
+                "eighth",
+                "ninth",
+            )
+        )
+        details = program_diagnostic_details(
+            "program-call",
+            RuntimeError("budget-secret leaked"),
+            redactions=budget,
+        )
+        message = details["programDiagnostic"]["exceptions"][0]["message"]
+        assert budget.next_calls == 8
+        assert "budget-secret" not in message
         assert "[redacted]" in message
         return
 
