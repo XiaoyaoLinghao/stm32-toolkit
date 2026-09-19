@@ -1,31 +1,29 @@
 # Current native coverage result
 
 Qualification accepted base: `ab2fd448a73a319b026a5a6da700b31c2535975f`.
-Integrated code/test head before this report: `248c0a49a6c121331aff3a495b744fa953aba5e0`.
+Integrated code/test head before this report: `64e9f6640f151a810c572b5e0ccf5f1a23cb7209`.
 Current runtime: `465249dba5560f7c08b1172794fec8fedd9b8d96`.
 Native data verdict: **ACCEPTED**. Monitor overall 90%: **MET**.
 Toolkit overall 90% and both preferred core 95% targets: **NOT MET**.
 
 | Package | Covered / total branches | Overall and frozen core | More for 90% | More for 95% |
 | --- | ---: | ---: | ---: | ---: |
-| Toolkit | 11,474 / 13,578 | 84.5043% | 747 | 1,426 |
-| Monitor | 2,646 / 2,940 | 90.0000% | 0 | 147 |
+| Toolkit | 11,478 / 13,578 | 84.5338% | 743 | 1,422 |
+| Monitor | 2,652 / 2,940 | 90.2041% | 0 | 141 |
 | UI (retained separately) | 784 / 810 | 96.7901% | 0 | 0 |
 
-Union11 combines each package's accepted union10 baseline with Target publication
-run2, Target publication run4, and ProbeService5. Target is a composite of two
-retained PASS and 24 later PASS; it is not a clean 26-item run. Run2's failure
-reached an ArtifactRef role guard already covered in union10 and adds no
-otherwise-unqualified coverage. Its only unique contribution beyond union10 plus
-run4 is the two passing descriptor guards. Target run1 and run3 remain excluded.
-Their fixture-construction failures are preserved, not product or hardware failures.
+Union12 combines each package's accepted union11 baseline, Monitor replay run2,
+and physical recovery runs1/2. The six Monitor cases passed. Physical recovery
+is a composite of one retained PASS and two later PASS, not a clean three-item
+run. The original second case failed on a nonexistent test response key; its
+execution adds no otherwise-unqualified branches or lines. The first PASS alone
+accounts for run1's two unique arcs. Monitor run1 had zero PASS and is excluded.
+Original failures and all earlier accepted inputs remain retained.
 
-ProbeService5 passed all five metadata refusal cases, including missing optional
-provider capability and public resource release. The aggregate adds 34 Toolkit
-branches: 26 in publication, five in ProbeService, and three supporting branches
-reached by the passing Target paths. Monitor remains unchanged. Product source
-did not change. Multiline conditions use the native JSON branch identity while
-retaining the verified raw tracing edges; literal line-pair equality is not assumed.
+This aggregate adds four Toolkit and six Monitor branches. Product source did
+not change. Multiline conditions retain verified native raw-to-JSON mappings;
+literal line-pair equality is not assumed. Overall 90% remains mandatory and
+core 95% remains the user's preferred target.
 
 Independent review confirmed each complete 126-file raw arc union, 108/18 report
 scopes, frozen 97/16 core scopes, input hashes and unchanged 13578/2940 branch
@@ -34,15 +32,15 @@ and overall ratios coincide. UI is never pooled with Python. Only older
 creation_environment.py measurements are purged from copied Toolkit inputs;
 originals remain immutable. Native combination reruns no tests.
 
-Native raw SHA-256: Toolkit `89A401B1AEF334FD0526F20A2689F45E4C8E231222AE513D0F108CE43EA9F25F`;
-Monitor `1B21BF9C441DC09D1A39CBB8AC3D93080ACB223410AB98B1FF451679F3183C2C`.
-Evidence and independent review: `r10/e/n95/union11/` under
+Native raw SHA-256: Toolkit `392554160B4EAF1B4E3F9A30CC939F4E7FAE2CA1D9A8E173A120C633ADC9B211`;
+Monitor `483C5DFD3AF3F11B077697E155891BC39965D6DDFD3022373E048BF1C1928291`.
+Evidence and independent review: `r10/e/n95/union12/` under
 `D:/codex-tmp/v10b-0918`. Prior accepted unions and failure evidence remain retained.
 
-The next Monitor replay batch is excluded: its first run stopped on an undefined
-test assertion constant, with zero PASS and five unrun cases. Correction and
-qualification remain pending. Recovery authorization and continuation terminal
-scenarios are also pending; contradictory typed-state branches remain uncovered.
+Continuation's first four-case run reached the 300-second wall budget and its
+owned process was terminated. Three progress PASS markers survive, but no final
+JUnit or coverage raw was produced. This batch contributes no aggregate coverage;
+timeout diagnosis remains pending. Contradictory typed-state branches remain uncovered.
 
 Earlier physical acceptance and attempt 7 remain unchanged. Seven Windows native
 security checks, remaining coverage qualification, final artifacts and final deployment
