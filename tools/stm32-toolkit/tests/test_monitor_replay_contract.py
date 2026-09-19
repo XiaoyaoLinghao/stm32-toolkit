@@ -718,8 +718,13 @@ def test_shared_physical_contract_rejects_nested_wire_mutations(
     elif mutation == "batch-sequence":
         candidate["batches"][1]["sequence"] = 2
     elif mutation == "batch-captured":
-        candidate["batches"][1]["capturedUnixNs"] = candidate["batches"][0]["capturedUnixNs"]
-        candidate["batches"][1]["capturedAtUtc"] = candidate["batches"][0]["capturedAtUtc"]
+        first = candidate["batches"][0]
+        second = candidate["batches"][1]
+        # Keep both rows valid against their own scheduled time and UTC/latency
+        # fields, then violate only the cross-batch increasing-capture rule.
+        first["capturedUnixNs"] = second["capturedUnixNs"]
+        first["capturedAtUtc"] = second["capturedAtUtc"]
+        first["latencyNs"] = first["capturedUnixNs"] - first["scheduledUnixNs"]
     elif mutation == "batch-selector":
         watch = candidate["batches"][1]["values"][0]["watch"]
         watch[_selector_key(watch)] = "different.selector"

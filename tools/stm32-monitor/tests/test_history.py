@@ -1992,6 +1992,7 @@ def test_public_retention_rejects_persisted_accounting_corruption_without_deleti
     store = HistoryStore(paths)
     try:
         assert store.append_batch(_batch(paths, 1, captured_ns=1)).ok
+        database_path = paths.monitor_root / "monitor.sqlite3"
 
         def corrupt(connection: sqlite3.Connection) -> None:
             if corruption == "accounting":
@@ -2005,17 +2006,39 @@ def test_public_retention_rejects_persisted_accounting_corruption_without_deleti
                 )
 
         store._database.write(corrupt)
+
+        def snapshot() -> tuple[object, ...]:
+            connection = sqlite3.connect(
+                database_path.as_uri() + "?mode=ro", uri=True
+            )
+            try:
+                return (
+                    connection.execute(
+                        "SELECT singleton, logical_bytes "
+                        "FROM monitor_history_accounting"
+                    ).fetchall(),
+                    connection.execute(
+                        "SELECT batch_id,session_id,run_id,sequence,captured_ns,"
+                        "payload_json,payload_bytes,payload_sha256,value_count "
+                        "FROM history_batches ORDER BY batch_id"
+                    ).fetchall(),
+                    connection.execute(
+                        "SELECT batch_id,ordinal,selector_kind,selector,value_json,"
+                        "value_bytes,value_sha256 FROM history_values "
+                        "ORDER BY batch_id,ordinal"
+                    ).fetchall(),
+                )
+            finally:
+                connection.close()
+
+        before = snapshot()
         result = store.run_retention(
             now_ns=7 * 24 * 60 * 60 * 1_000_000_000 + 2
         )
         assert not result.ok
         assert result.code == "MONITOR_STORAGE_CORRUPT"
         assert result.message == expected_message
-
-        if corruption == "candidate":
-            page = store.query_history(HistoryQuery("monitor-1", 0, 2_000))
-            assert page.ok
-            assert [row["sequence"] for row in page.data.values] == [1]
+        assert snapshot() == before
     finally:
         store.close()
 
