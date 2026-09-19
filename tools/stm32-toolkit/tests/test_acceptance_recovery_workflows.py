@@ -22,10 +22,27 @@ from stm32_toolkit.acceptance.recovery_workflows import (
 )
 from stm32_toolkit.evidence import ArtifactRef, EvidenceEnvelope, EvidenceIdentity
 from stm32_toolkit.evidence.gc import RootRecord, get_root
-from stm32_toolkit.diagnostics import DiagnosticSession, Hypothesis, SourceChangeDeclaration
+from stm32_toolkit.diagnostics import (
+    DiagnosticSession,
+    DiagnosticStoreBusyError,
+    Hypothesis,
+    SourceChangeDeclaration,
+)
 
 
 ATTEMPT_ID = "00000000-0000-4000-8000-000000000001"
+
+
+def test_diagnostic_store_busy_maps_to_acceptance_availability_result() -> None:
+    def busy() -> object:
+        raise DiagnosticStoreBusyError()
+
+    result = recovery_workflows._result("acceptance.attempt.show", busy)
+
+    assert result.ok is False
+    assert result.code == "ACCEPTANCE_ATTEMPT_BUSY"
+    assert result.message == "Acceptance attempt storage is busy."
+    assert result.details == {}
 
 
 def test_begin_publishes_revision_zero_and_retry_returns_the_same_snapshot(tmp_path: Path, monkeypatch):

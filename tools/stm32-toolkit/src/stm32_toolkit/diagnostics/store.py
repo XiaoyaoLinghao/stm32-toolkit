@@ -5,11 +5,13 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
+import errno
 import json
 import os
 from pathlib import Path
 import re
 import stat
+import time
 from typing import Literal, NoReturn, cast
 
 from stm32_toolkit.evidence import (
@@ -61,6 +63,8 @@ _EVENT_KIND = "diagnostic-event"
 _EVENT_MEDIA_TYPE = "application/json"
 _ROOT_TYPE = "diagnostic-session"
 _MAX_SESSIONS = 64
+_WINDOWS_LOCK_TIMEOUT_SECONDS = 10.0
+_WINDOWS_LOCK_RETRY_SECONDS = 0.025
 
 
 def _raise(code: str) -> NoReturn:
@@ -101,6 +105,16 @@ def _intent(event: DiagnosticEvent) -> tuple[str, str, bytes]:
     request = payload["request"]
     assert isinstance(request, dict)
     return event.event_type, event.actor, canonical_diagnostic_json_bytes(request)
+
+
+class DiagnosticStoreBusyError(RuntimeError):
+    """The DiagnosticStore lock remained held through its bounded wait."""
+
+    code = "DIAGNOSTIC_STORE_BUSY"
+    message = "Diagnostic store is busy."
+
+    def __init__(self) -> None:
+        super().__init__(self.message)
 
 
 
@@ -381,33 +395,54 @@ class DiagnosticStore:
             if os.name == "nt":
                 import msvcrt
 
-                msvcrt.locking(descriptor, msvcrt.LK_LOCK, 1)
+                deadline = time.monotonic() + _WINDOWS_LOCK_TIMEOUT_SECONDS
+                while True:
+                    if time.monotonic() >= deadline:
+                        raise DiagnosticStoreBusyError()
+                    os.lseek(descriptor, 0, os.SEEK_SET)
+                    try:
+                        msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+                    except OSError as error:
+                        if error.errno != errno.EACCES:
+                            raise
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            raise DiagnosticStoreBusyError() from None
+                        time.sleep(min(_WINDOWS_LOCK_RETRY_SECONDS, remaining))
+                        continue
+                    break
             else:  # pragma: no cover - the acceptance owner exercises this on Windows
                 import fcntl
 
                 fcntl.flock(descriptor, fcntl.LOCK_EX)
             locked = True
+            if os.name == "nt" and time.monotonic() >= deadline:
+                raise DiagnosticStoreBusyError()
             held = self._regular_single(lock_path)
             if (held.st_dev, held.st_ino) != (opened.st_dev, opened.st_ino):
                 _raise(DIAGNOSTIC_CHAIN_CORRUPT)
             if validate_layout:
                 self._validate_root_layout(create=False)
+            if os.name == "nt" and time.monotonic() >= deadline:
+                raise DiagnosticStoreBusyError()
             yield
         except OSError:
             _raise(DIAGNOSTIC_CHAIN_CORRUPT)
         finally:
-            if locked:
-                os.lseek(descriptor, 0, os.SEEK_SET)
-                if os.name == "nt":
-                    import msvcrt
+            try:
+                if locked:
+                    os.lseek(descriptor, 0, os.SEEK_SET)
+                    if os.name == "nt":
+                        import msvcrt
 
-                    msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
-                else:  # pragma: no cover - the acceptance owner exercises this on Windows
-                    import fcntl
+                        msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+                    else:  # pragma: no cover - the acceptance owner exercises this on Windows
+                        import fcntl
 
-                    fcntl.flock(descriptor, fcntl.LOCK_UN)
-            if descriptor >= 0:
-                os.close(descriptor)
+                        fcntl.flock(descriptor, fcntl.LOCK_UN)
+            finally:
+                if descriptor >= 0:
+                    os.close(descriptor)
 
     @classmethod
     def _read_event_file(cls, path: Path) -> DiagnosticEvent:
@@ -1322,4 +1357,4 @@ class DiagnosticStore:
             return cast(Literal["host", "target"], mode)
 
 
-__all__ = ["DiagnosticMutationRecord", "DiagnosticStore"]
+__all__ = ["DiagnosticMutationRecord", "DiagnosticStore", "DiagnosticStoreBusyError"]

@@ -15,6 +15,7 @@ import stm32_toolkit.diagnostic_workflows as workflow_module
 from stm32_toolkit.diagnostics import (
     DiagnosticSession,
     DiagnosticStore,
+    DiagnosticStoreBusyError,
     EvidenceAssessment,
     Hypothesis,
     ObservationPlan,
@@ -985,6 +986,31 @@ def test_unexpected_assessment_store_failure_propagates(
             polarity="supports",
             rationale="the store error must remain visible to programmers",
         )
+
+
+def test_diagnostic_store_busy_is_a_sanitized_public_result(
+    task_tmp: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    context, _published, _workspace = _make_run(task_tmp)
+
+    class BusyStore:
+        def load_creation_intent(self, _session_id: str) -> str:
+            raise DiagnosticStoreBusyError()
+
+    monkeypatch.setattr(
+        workflow_module,
+        "_diagnostic_store_factory",
+        lambda _root, _evidence: BusyStore(),
+    )
+
+    result = workflow_module.diagnostic_show(
+        _fresh_context(context), diagnostic_session_id="f" * 32
+    )
+
+    assert result.ok is False
+    assert result.code == "DIAGNOSTIC_STORE_BUSY"
+    assert result.message == "Diagnostic store is busy."
+    assert result.details == {}
 
 
 def test_investigating_session_freezes_failed_run_observation_plan(

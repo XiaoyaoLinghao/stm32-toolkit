@@ -33,6 +33,7 @@ from stm32_toolkit.diagnostic_workflows import (
 )
 from stm32_toolkit.diagnostics import (
     DiagnosticSession,
+    DiagnosticStoreBusyError,
     DiagnosticValidationError,
     SourceChangeDeclaration,
 )
@@ -147,6 +148,7 @@ _MESSAGES = {
     "ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH": "Acceptance attempt identity does not match.",
     "ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED": "Acceptance attempt evidence failed integrity validation.",
     "ACCEPTANCE_ATTEMPT_CONFLICT": "Acceptance attempt content conflicts with an immutable revision.",
+    "ACCEPTANCE_ATTEMPT_BUSY": "Acceptance attempt storage is busy.",
 }
 
 
@@ -191,6 +193,8 @@ def _failure(operation: str, code: str) -> OperationResult[None]:
 def _result(operation: str, action: Callable[[], OperationResult[dict[str, object]]]) -> OperationResult[dict[str, object]]:
     try:
         return action()
+    except DiagnosticStoreBusyError:
+        return _failure(operation, "ACCEPTANCE_ATTEMPT_BUSY")
     except _RecoveryFailure as error:
         return _failure(operation, error.code)
     except AcceptanceRecoveryValidationError as error:

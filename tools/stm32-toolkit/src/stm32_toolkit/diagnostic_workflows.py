@@ -27,6 +27,7 @@ from stm32_toolkit.diagnostics import (
     DiagnosticSession,
     DiagnosticMarkerRef,
     DiagnosticStore,
+    DiagnosticStoreBusyError,
     DiagnosticValidationError,
     EvidenceAssessment,
     FixVerification,
@@ -232,6 +233,8 @@ def _failure(operation: str, code: str) -> OperationResult[None]:
 def _result(operation: str, action: Callable[[], OperationResult[object]]) -> OperationResult[object]:
     try:
         return action()
+    except DiagnosticStoreBusyError as error:
+        return OperationResult.failure(operation, error.code, error.message, {})
     except DiagnosticValidationError as error:
         return OperationResult.failure(operation, error.code, error.message, {})
     except _WorkflowFailure as error:

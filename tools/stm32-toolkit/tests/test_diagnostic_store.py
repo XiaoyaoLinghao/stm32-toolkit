@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import errno
 import json
 from concurrent.futures import ThreadPoolExecutor
 import os
 from pathlib import Path
 import shutil
+import sys
 import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -17,6 +20,7 @@ from stm32_toolkit.diagnostics import (
     DIAGNOSTIC_REVISION_CONFLICT,
     DIAGNOSTIC_OPERATION_CONFLICT,
     DiagnosticEvent,
+    DiagnosticStoreBusyError,
     DiagnosticValidationError,
     canonical_diagnostic_json_bytes,
     create_event,
@@ -611,6 +615,138 @@ def test_store_waits_for_lock_before_inspecting_prepublication_session_layout(tm
         release.set()
         assert first.result(timeout=10).session.revision == 1
         assert second.result(timeout=10).revision == 1
+
+
+def test_windows_lock_contention_expires_as_busy_and_closes_descriptor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    evidence = EvidenceStore(tmp_path / "evidence")
+    failed_evidence_id = _failed_evidence(evidence, tmp_path)
+    store = DiagnosticStore(tmp_path / "diagnostics", evidence)
+    store.create(_created(failed_evidence_id))
+
+    lock_calls: list[tuple[int, int, int]] = []
+    sleeps: list[float] = []
+    clock = [0.0]
+
+    def locking(descriptor: int, mode: int, size: int) -> None:
+        lock_calls.append((descriptor, mode, size))
+        if mode == 2:  # LK_NBLCK
+            raise OSError(errno.EACCES, "permission denied")
+
+    def monotonic() -> float:
+        return clock[0]
+
+    def sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        clock[0] += seconds
+
+    closed: list[int] = []
+    original_close = store_module.os.close
+    fake_msvcrt = SimpleNamespace(LK_NBLCK=2, LK_UNLCK=3, locking=locking)
+    monkeypatch.setitem(sys.modules, "msvcrt", fake_msvcrt)
+    monkeypatch.setattr(store_module.os, "name", "nt")
+    monkeypatch.setattr(store_module, "_WINDOWS_LOCK_TIMEOUT_SECONDS", 0.06)
+    monkeypatch.setattr(store_module.time, "monotonic", monotonic)
+    monkeypatch.setattr(store_module.time, "sleep", sleep)
+    monkeypatch.setattr(store_module.os, "close", lambda descriptor: (closed.append(descriptor), original_close(descriptor))[1])
+
+    with pytest.raises(DiagnosticStoreBusyError) as error:
+        with store._store_lock(create=False):
+            raise AssertionError("busy acquisition must not enter the protected body")
+
+    assert error.value.code == "DIAGNOSTIC_STORE_BUSY"
+    assert error.value.message == "Diagnostic store is busy."
+    assert lock_calls and all(mode == 2 and size == 1 for _, mode, size in lock_calls)
+    assert sleeps and all(0 < seconds <= 0.025 for seconds in sleeps)
+    assert sum(sleeps) == pytest.approx(0.06)
+    assert len(closed) == 1
+
+
+def test_windows_lock_noncontention_error_remains_chain_corrupt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    evidence = EvidenceStore(tmp_path / "evidence")
+    failed_evidence_id = _failed_evidence(evidence, tmp_path)
+    store = DiagnosticStore(tmp_path / "diagnostics", evidence)
+    store.create(_created(failed_evidence_id))
+
+    closed: list[int] = []
+    original_close = store_module.os.close
+
+    def locking(_descriptor: int, _mode: int, _size: int) -> None:
+        raise OSError(errno.ENOSPC, "disk full")
+
+    fake_msvcrt = SimpleNamespace(LK_NBLCK=2, LK_UNLCK=3, locking=locking)
+    monkeypatch.setitem(sys.modules, "msvcrt", fake_msvcrt)
+    monkeypatch.setattr(store_module.os, "name", "nt")
+    monkeypatch.setattr(store_module.os, "close", lambda descriptor: (closed.append(descriptor), original_close(descriptor))[1])
+
+    with pytest.raises(DiagnosticValidationError) as error:
+        with store._store_lock(create=False):
+            raise AssertionError("non-contention failure must not enter the protected body")
+
+    assert error.value.code == DIAGNOSTIC_CHAIN_CORRUPT
+    assert len(closed) == 1
+
+
+def test_windows_acquisition_after_deadline_unlocks_without_entering_body(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    evidence = EvidenceStore(tmp_path / "evidence")
+    failed_evidence_id = _failed_evidence(evidence, tmp_path)
+    store = DiagnosticStore(tmp_path / "diagnostics", evidence)
+    store.create(_created(failed_evidence_id))
+
+    calls: list[int] = []
+    clock = iter((0.0, 0.0, 0.02))
+
+    def locking(_descriptor: int, mode: int, _size: int) -> None:
+        calls.append(mode)
+
+    fake_msvcrt = SimpleNamespace(LK_NBLCK=2, LK_UNLCK=3, locking=locking)
+    monkeypatch.setitem(sys.modules, "msvcrt", fake_msvcrt)
+    monkeypatch.setattr(store_module.os, "name", "nt")
+    monkeypatch.setattr(store_module, "_WINDOWS_LOCK_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(store_module.time, "monotonic", lambda: next(clock))
+
+    entered = False
+    with pytest.raises(DiagnosticStoreBusyError):
+        with store._store_lock(create=False):
+            entered = True
+
+    assert entered is False
+    assert calls == [2, 3]
+
+
+def test_windows_unlock_failure_still_closes_descriptor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    evidence = EvidenceStore(tmp_path / "evidence")
+    failed_evidence_id = _failed_evidence(evidence, tmp_path)
+    store = DiagnosticStore(tmp_path / "diagnostics", evidence)
+    store.create(_created(failed_evidence_id))
+
+    calls: list[int] = []
+    closed: list[int] = []
+    original_close = store_module.os.close
+
+    def locking(_descriptor: int, mode: int, _size: int) -> None:
+        calls.append(mode)
+        if mode == 3:  # LK_UNLCK
+            raise OSError(errno.EIO, "unlock failed")
+
+    fake_msvcrt = SimpleNamespace(LK_NBLCK=2, LK_UNLCK=3, locking=locking)
+    monkeypatch.setitem(sys.modules, "msvcrt", fake_msvcrt)
+    monkeypatch.setattr(store_module.os, "name", "nt")
+    monkeypatch.setattr(store_module.os, "close", lambda descriptor: (closed.append(descriptor), original_close(descriptor))[1])
+
+    with pytest.raises(OSError, match="unlock failed"):
+        with store._store_lock(create=False):
+            pass
+
+    assert calls == [2, 3]
+    assert len(closed) == 1
 
 
 def test_create_retry_validates_every_workspace_session_before_returning(tmp_path: Path) -> None:
