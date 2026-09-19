@@ -1,12 +1,19 @@
 from __future__ import annotations
 
 import json
+import shutil
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from stm32_toolkit import regeneration
+from stm32_toolkit.creation_apply import _seed_native_managed_manifest
+from stm32_toolkit.cubemx_project import parse_native_project, write_native_project_manifests
+from stm32_toolkit.generation.creation import CreationRequest
+from stm32_toolkit.generation.managed_files import model_sha256_for
+from stm32_toolkit.project_model import load_project_model
 from stm32_toolkit.regeneration import (
     MAX_DIFF_BYTES,
     MAX_PREVIEW_BYTES,
@@ -17,6 +24,8 @@ from stm32_toolkit.regeneration import (
     build_regeneration_preview,
     plan_regeneration,
 )
+
+FIXTURE = Path(__file__).parent / "fixtures" / "cubemx-6.18" / "native-f429"
 
 
 def test_regeneration_request_requires_portable_non_root_destination(tmp_path: Path):
@@ -174,3 +183,173 @@ def test_destination_symlink_is_rejected_before_resolution(tmp_path: Path):
     request = RegenerationWorkflowRequest(tmp_path, tmp_path / "data", "session", "generated")
     result = plan_regeneration(request)
     assert result.code == "REGENERATION_PATH_UNSAFE"
+
+
+def _persisted_project(tmp_path: Path) -> tuple[Path, Path, SimpleNamespace]:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    destination = workspace / "generated"
+    shutil.copytree(FIXTURE, destination)
+    environment = SimpleNamespace(
+        digest="a" * 64,
+        cubemx_version="6.18.1-RC2",
+        cubemx_sha256="b" * 64,
+        package_name="STM32Cube_FW_F4",
+        package_version="1.28.3",
+        package_sha256="c" * 64,
+    )
+    creation = CreationRequest.from_ioc("STM32F429ZITx.ioc", "generated", framework="hal", language="c")
+    model = parse_native_project(
+        destination,
+        request=creation,
+        plan_id="d" * 64,
+        action_digest="e" * 64,
+        environment=environment,
+    )
+    write_native_project_manifests(destination, model)
+    loaded = load_project_model(destination)
+    _seed_native_managed_manifest(destination, model_sha256=model_sha256_for(loaded), inventory=model.files)
+    (destination / "App").mkdir()
+    (destination / "App" / "keep.txt").write_bytes(b"user bytes")
+    subprocess.run(["git", "init", "-q"], cwd=workspace, check=True)
+    subprocess.run(["git", "add", "-A"], cwd=workspace, check=True)
+    subprocess.run(
+        ["git", "-c", "user.name=regen", "-c", "user.email=regen@example.com", "commit", "-q", "-m", "fixture"],
+        cwd=workspace,
+        check=True,
+    )
+    return workspace, destination, environment
+
+
+def _manifest_bytes(root: Path, relative: str) -> bytes:
+    return (root / relative).read_bytes()
+
+
+def _write_manifest_payload(root: Path, relative: str, payload: object) -> None:
+    (root / relative).write_text(
+        json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+
+def _mutate_s4_manifest(destination: Path, case_id: str) -> tuple[Path, bytes, str, str]:
+    ownership_relative = ".stm32-toolkit/cubemx-ownership.json"
+    managed_relative = ".stm32-toolkit/generated-files.json"
+    ownership = destination / ownership_relative
+    managed = destination / managed_relative
+    if case_id == "S4-A":
+        original = ownership.read_bytes().rstrip()
+        mutated = original[:-1] + b',"schemaVersion":1}'
+        ownership.write_bytes(mutated)
+        return ownership, mutated, "REGENERATION_OWNERSHIP_INVALID", "ownership manifest is invalid"
+    if case_id == "S4-B":
+        ownership.write_text("[]", encoding="utf-8")
+        return ownership, b"[]", "REGENERATION_OWNERSHIP_INVALID", "CubeMX ownership manifest is invalid"
+
+    payload = json.loads(ownership.read_text(encoding="utf-8"))
+    if case_id == "S4-C":
+        payload.pop("tool")
+        expected_message = "CubeMX ownership manifest is invalid"
+    elif case_id == "S4-D":
+        payload["generator"]["extra"] = "unexpected"
+        expected_message = "CubeMX generator facts are invalid"
+    elif case_id == "S4-E":
+        payload["generator"]["tool"] = "wrong-tool"
+        expected_message = "CubeMX generator facts are invalid"
+    elif case_id == "S4-F":
+        payload["source"]["packageName"] = 7
+        expected_message = "CubeMX package facts are invalid"
+    elif case_id == "S4-G":
+        payload["source"]["packageSha256"] = "g" * 64
+        expected_message = "CubeMX package facts are invalid"
+    elif case_id == "S4-H":
+        payload["planId"] = "bad"
+        expected_message = "CubeMX ownership binding is invalid"
+    elif case_id == "S4-I":
+        payload["files"] = {}
+        expected_message = "CubeMX ownership file list is invalid"
+    elif case_id == "S4-J":
+        payload["files"][0]["extra"] = True
+        expected_message = "CubeMX ownership file list is invalid"
+    elif case_id == "S4-K":
+        payload["files"][0]["size"] = True
+        expected_message = "CubeMX ownership file facts are invalid"
+    elif case_id == "S4-L":
+        payload = json.loads(managed.read_text(encoding="utf-8"))
+        payload["projectManifestSha256"] = "d" * 64
+        expected_message = "Toolkit managed model hash does not match the project"
+        _write_manifest_payload(destination, managed_relative, payload)
+        return managed, _manifest_bytes(destination, managed_relative), "REGENERATION_TOOLKIT_DRIFT", expected_message
+    elif case_id == "S4-M":
+        payload = json.loads(managed.read_text(encoding="utf-8"))
+        rows = list(payload["files"])
+        rows[0] = {**rows[0], "path": "App/generated.txt"}
+        payload["files"] = sorted(rows, key=lambda row: row["path"])
+        expected_message = "Toolkit managed path is outside the closed target set"
+        _write_manifest_payload(destination, managed_relative, payload)
+        return (
+            managed,
+            _manifest_bytes(destination, managed_relative),
+            "REGENERATION_OWNERSHIP_INVALID",
+            expected_message,
+        )
+    else:
+        raise AssertionError(f"unknown S4 case: {case_id}")
+    _write_manifest_payload(destination, ownership_relative, payload)
+    return (
+        ownership,
+        _manifest_bytes(destination, ownership_relative),
+        "REGENERATION_OWNERSHIP_INVALID",
+        expected_message,
+    )
+
+
+def _tree_state(root: Path) -> tuple[bool, dict[str, bytes]]:
+    if not root.exists():
+        return False, {}
+    return True, {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
+
+
+@pytest.mark.parametrize(
+    "case_id",
+    [
+        pytest.param("S4-A", id="S4-A"),
+        pytest.param("S4-B", id="S4-B"),
+        pytest.param("S4-C", id="S4-C"),
+        pytest.param("S4-D", id="S4-D"),
+        pytest.param("S4-E", id="S4-E"),
+        pytest.param("S4-F", id="S4-F"),
+        pytest.param("S4-G", id="S4-G"),
+        pytest.param("S4-H", id="S4-H"),
+        pytest.param("S4-I", id="S4-I"),
+        pytest.param("S4-J", id="S4-J"),
+        pytest.param("S4-K", id="S4-K"),
+        pytest.param("S4-L", id="S4-L"),
+        pytest.param("S4-M", id="S4-M"),
+    ],
+)
+
+
+def test_regeneration_plan_rejects_selected_persisted_manifest_mutations(tmp_path: Path, case_id: str):
+    workspace, destination, environment = _persisted_project(tmp_path)
+    request = RegenerationWorkflowRequest(workspace, tmp_path / "data", "session", "generated")
+    baseline = plan_regeneration(request, environment=environment)
+    assert baseline.ok is True
+    assert baseline.data["blockers"] == ()
+    before_data = _tree_state(tmp_path / "data")
+    manifest_path, mutated_bytes, expected_code, expected_message = _mutate_s4_manifest(destination, case_id)
+    assert manifest_path.read_bytes() == mutated_bytes
+    after_mutation_project = _tree_state(destination)
+    after_mutation_data = _tree_state(tmp_path / "data")
+
+    result = plan_regeneration(request, environment=environment)
+
+    assert result.code == expected_code
+    assert result.message == expected_message
+    assert manifest_path.read_bytes() == mutated_bytes
+    assert _tree_state(destination) == after_mutation_project
+    assert _tree_state(tmp_path / "data") == after_mutation_data == before_data
