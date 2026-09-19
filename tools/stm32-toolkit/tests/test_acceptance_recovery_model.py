@@ -1128,6 +1128,7 @@ def test_public_physical_attempt_semantic_boundaries(case_name: str, expected: s
     elif case_name == "pre-authorization":
         payload = _valid_physical_wire(4)
         payload["sourceChangeAuthorization"] = deepcopy(_valid_physical_wire(5)["sourceChangeAuthorization"])
+        candidate = payload
     elif case_name == "missing-authorization":
         payload["sourceChangeAuthorization"] = None
     elif case_name == "authorization-binding":

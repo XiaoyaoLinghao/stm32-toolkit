@@ -799,217 +799,6 @@ def test_authenticated_continuation_rejects_tampered_parent_run_and_context(
             )
     finally:
         continuation_root_path.write_bytes(original_root_bytes)
-
-
-def _continuation_change_input() -> list[dict[str, object]]:
-    return [
-        {
-            "path": "src/main.c",
-            "beforeSha256": "a" * 64,
-            "afterSha256": "b" * 64,
-            "afterSize": 12,
-        }
-    ]
-
-
-def _continuation_proof_wire() -> dict[str, object]:
-    intent = SourceChangeIntent.expanded(
-        changes=_continuation_change_input(),
-        before_input_snapshot_sha256="c" * 64,
-        expected_after_input_snapshot_sha256="d" * 64,
-    )
-    return PhysicalContinuationProof(
-        schema=CONTINUATION_SCHEMA,
-        predecessor_attempt_id="00000000-0000-4000-8000-000000000001",
-        predecessor_checkpoint_id="1" * 64,
-        predecessor_evidence_id="2" * 64,
-        diagnostic_session_id="3" * 32,
-        diagnostic_revision=7,
-        diagnostic_event_head="4" * 64,
-        diagnostic_evidence_id="5" * 64,
-        source_change_declaration_id="6" * 64,
-        source_change_intent=intent,
-        failed_before_test_run_id="target-v2-failed",
-        failed_before_evidence_id="7" * 64,
-        fixed_after_test_run_id="target-v2-fixed",
-        fixed_after_evidence_id="8" * 64,
-    ).to_dict()
-
-
-def _continuation_attempt_wire(revision: int) -> dict[str, object]:
-    opened = "2026-08-24T00:00:00.000000Z"
-    payload: dict[str, object] = {
-        "schema": CONTINUATION_ATTEMPT_SCHEMA,
-        "attemptId": "00000000-0000-4000-8000-000000000010",
-        "revision": revision,
-        "checkpointId": "0" * 64,
-        "previousCheckpointId": None if revision == 0 else "f" * 64,
-        "scenarioId": PHYSICAL_SCENARIO_ID,
-        "scenarioVersion": PHYSICAL_SCENARIO_VERSION,
-        "scenarioDigest": CONTINUATION_SCENARIO_DIGEST,
-        "recoveryPolicyDigest": CONTINUATION_POLICY_DIGEST,
-        "workspaceId": "9" * 64,
-        "logicalProjectId": "00000000-0000-4000-8000-000000000002",
-        "sessionId": "diagnostic-session-1",
-        "projectOrigin": "keil",
-        "executionSource": "physical",
-        "physicalTransportEvidence": True,
-        "status": "IN_PROGRESS" if revision == 0 else "COMPLETED",
-        "stage": CONTINUATION_STAGES[0] if revision == 0 else CONTINUATION_STAGES[1],
-        "continuationEvidenceId": "a" * 64,
-        "fixedAfterTestRunId": "target-v2-fixed",
-        "fixedAfterEvidenceId": "b" * 64,
-        "fixVerificationId": None if revision == 0 else "c" * 64,
-        "openedAtUtc": opened,
-        "updatedAtUtc": opened,
-        "deadlineAtUtc": "2026-08-24T00:15:00.000000Z",
-    }
-    unsigned = dict(payload)
-    unsigned.pop("checkpointId")
-    payload["checkpointId"] = hashlib.sha256(canonical_json_bytes(unsigned)).hexdigest()
-    return payload
-
-
-def _assert_continuation_refusal(callable_input, value: object, expected: str) -> None:
-    before = deepcopy(value)
-    with pytest.raises(ContinuationValidationError) as error:
-        callable_input()
-    assert str(error.value) == expected
-    assert value == before
-
-
-@pytest.mark.parametrize(
-    ("case_name", "expected"),
-    [
-        pytest.param("proof-object", "continuation object fields are not closed", id="proof-object"),
-        pytest.param("proof-empty-text", "schema is invalid", id="proof-empty-text"),
-        pytest.param("proof-hash", "predecessorCheckpointId is invalid", id="proof-hash"),
-        pytest.param("proof-intent", "continuation intent must be expanded", id="proof-unexpanded-intent"),
-        pytest.param("proof-schema", "continuation schema is unsupported", id="proof-schema"),
-        pytest.param("proof-revision", "diagnosticRevision is invalid", id="proof-diagnostic-revision"),
-        pytest.param("proof-runs", "before and after TestRuns must differ", id="proof-equal-runs"),
-        pytest.param("proof-evidence", "before and after evidence must differ", id="proof-equal-evidence"),
-        pytest.param("request-object", "continuation request must be an object", id="request-object"),
-        pytest.param("request-bind", "bind request schema or kind is invalid", id="request-bind-identity"),
-    ],
-)
-def test_public_continuation_proof_and_request_boundaries(case_name: str, expected: str) -> None:
-    proof = _continuation_proof_wire()
-    assert PhysicalContinuationProof.from_value(deepcopy(proof)).to_dict() == proof
-    request = _continuation_request(
-        predecessor_attempt_id="00000000-0000-4000-8000-000000000001",
-        predecessor_checkpoint_id="1" * 64,
-        predecessor_evidence_id="2" * 64,
-        fixed_after_test_run_id="target-v2-fixed",
-        fixed_after_evidence_id="3" * 64,
-        diagnostic_revision=7,
-        diagnostic_event_head="4" * 64,
-    )
-    parsed_request = ContinuationRequest.from_value(deepcopy(request))
-    assert parsed_request.kind == "bind"
-    if case_name == "proof-object":
-        candidate: object = None
-        callable_input = lambda: PhysicalContinuationProof.from_value(candidate)
-    elif case_name == "proof-empty-text":
-        candidate = deepcopy(proof)
-        candidate["schema"] = ""
-        callable_input = lambda: PhysicalContinuationProof.from_value(candidate)
-    elif case_name == "proof-hash":
-        candidate = deepcopy(proof)
-        candidate["predecessorCheckpointId"] = "G" * 64
-        callable_input = lambda: PhysicalContinuationProof.from_value(candidate)
-    elif case_name == "proof-intent":
-        candidate = deepcopy(proof)
-        candidate["sourceChangeIntent"] = SourceChangeIntent.new(
-            changes=_continuation_change_input(),
-        ).to_dict()
-        callable_input = lambda: PhysicalContinuationProof.from_value(candidate)
-    elif case_name == "proof-schema":
-        candidate = deepcopy(proof)
-        candidate["schema"] = "stm32-physical-continuation/999"
-        callable_input = lambda: PhysicalContinuationProof.from_value(candidate)
-    elif case_name == "proof-revision":
-        candidate = deepcopy(proof)
-        candidate["diagnosticRevision"] = False
-        callable_input = lambda: PhysicalContinuationProof.from_value(candidate)
-    elif case_name == "proof-runs":
-        candidate = deepcopy(proof)
-        candidate["fixedAfterTestRunId"] = candidate["failedBeforeTestRunId"]
-        callable_input = lambda: PhysicalContinuationProof.from_value(candidate)
-    elif case_name == "proof-evidence":
-        candidate = deepcopy(proof)
-        candidate["fixedAfterEvidenceId"] = candidate["failedBeforeEvidenceId"]
-        callable_input = lambda: PhysicalContinuationProof.from_value(candidate)
-    elif case_name == "request-object":
-        candidate = None
-        callable_input = lambda: ContinuationRequest.from_value(candidate)
-    else:
-        candidate = deepcopy(request)
-        candidate["schema"] = "stm32-physical-continuation-request/999"
-        callable_input = lambda: ContinuationRequest.from_value(candidate)
-    _assert_continuation_refusal(callable_input, candidate, expected)
-
-
-def test_public_continuation_proof_constructor_rejects_untyped_intent() -> None:
-    proof = PhysicalContinuationProof.from_value(_continuation_proof_wire())
-    before = proof.to_dict()
-    with pytest.raises(ContinuationValidationError) as error:
-        replace(proof, source_change_intent=None)
-    assert str(error.value) == "sourceChangeIntent is invalid"
-    assert proof.to_dict() == before
-
-
-@pytest.mark.parametrize(
-    ("case_name", "expected"),
-    [
-        pytest.param("schema", "attempt schema is unsupported", id="attempt-schema"),
-        pytest.param("revision", "attempt revision is invalid", id="attempt-revision"),
-        pytest.param("rev0-predecessor", "rev0 cannot have a predecessor", id="rev0-predecessor"),
-        pytest.param("rev1-predecessor", "rev1 needs a predecessor", id="rev1-predecessor"),
-        pytest.param("scenario", "scenario identity is not frozen", id="scenario-identity"),
-        pytest.param("policy", "continuation policy identity is not frozen", id="policy-identity"),
-        pytest.param("provenance", "physical continuation provenance is invalid", id="provenance"),
-        pytest.param("rev0-state", "rev0 state is invalid", id="rev0-state"),
-        pytest.param("rev1-state", "rev1 state is invalid", id="rev1-state"),
-        pytest.param("window", "attempt time window is invalid", id="time-window"),
-        pytest.param("rev0-time", "rev0 opened and updated times differ", id="rev0-time-update"),
-        pytest.param("deadline", "attempt update follows its deadline", id="update-after-deadline"),
-        pytest.param("checkpoint", "checkpointId does not match the snapshot", id="checkpoint-mismatch"),
-    ],
-)
-def test_public_continuation_attempt_semantic_boundaries(case_name: str, expected: str) -> None:
-    revision = 0
-    if case_name in {"rev1-predecessor", "rev1-state", "deadline"}:
-        revision = 1
-    payload = _continuation_attempt_wire(revision)
-    assert PhysicalContinuationAttempt.from_value(deepcopy(payload)).to_dict() == payload
-    if case_name == "schema":
-        payload["schema"] = "stm32-acceptance-attempt/999"
-    elif case_name == "revision":
-        payload["revision"] = 2
-    elif case_name == "rev0-predecessor":
-        payload["previousCheckpointId"] = "1" * 64
-    elif case_name == "rev1-predecessor":
-        payload["previousCheckpointId"] = None
-    elif case_name == "scenario":
-        payload["scenarioId"] = "other-scenario"
-    elif case_name == "policy":
-        payload["scenarioDigest"] = "0" * 64
-    elif case_name == "provenance":
-        payload["projectOrigin"] = "cubemx"
-    elif case_name == "rev0-state":
-        payload["status"] = "COMPLETED"
-    elif case_name == "rev1-state":
-        payload["status"] = "IN_PROGRESS"
-    elif case_name == "window":
-        payload["deadlineAtUtc"] = "2026-08-24T00:16:00.000000Z"
-    elif case_name == "rev0-time":
-        payload["updatedAtUtc"] = "2026-08-24T00:00:01.000000Z"
-    elif case_name == "deadline":
-        payload["updatedAtUtc"] = "2026-08-24T00:15:00.000001Z"
-    else:
-        payload["checkpointId"] = "0" * 64
-    _assert_continuation_refusal(lambda: PhysicalContinuationAttempt.from_value(payload), payload, expected)
     assert continuation_root.root_id == continuation_root_id
 
     fixed_root = get_root(fixture.evidence, "test-run", fixture.fixed_run_id)
@@ -1456,3 +1245,214 @@ def test_public_begin_reuse_classifies_identity_malformed_and_tampered_proofs(
         ).exists()
     finally:
         continuation_root_path.write_bytes(original_root_bytes)
+
+
+def _continuation_change_input() -> list[dict[str, object]]:
+    return [
+        {
+            "path": "src/main.c",
+            "beforeSha256": "a" * 64,
+            "afterSha256": "b" * 64,
+            "afterSize": 12,
+        }
+    ]
+
+
+def _continuation_proof_wire() -> dict[str, object]:
+    intent = SourceChangeIntent.expanded(
+        changes=_continuation_change_input(),
+        before_input_snapshot_sha256="c" * 64,
+        expected_after_input_snapshot_sha256="d" * 64,
+    )
+    return PhysicalContinuationProof(
+        schema=CONTINUATION_SCHEMA,
+        predecessor_attempt_id="00000000-0000-4000-8000-000000000001",
+        predecessor_checkpoint_id="1" * 64,
+        predecessor_evidence_id="2" * 64,
+        diagnostic_session_id="3" * 32,
+        diagnostic_revision=7,
+        diagnostic_event_head="4" * 64,
+        diagnostic_evidence_id="5" * 64,
+        source_change_declaration_id="6" * 64,
+        source_change_intent=intent,
+        failed_before_test_run_id="target-v2-failed",
+        failed_before_evidence_id="7" * 64,
+        fixed_after_test_run_id="target-v2-fixed",
+        fixed_after_evidence_id="8" * 64,
+    ).to_dict()
+
+
+def _continuation_attempt_wire(revision: int) -> dict[str, object]:
+    opened = "2026-08-24T00:00:00.000000Z"
+    payload: dict[str, object] = {
+        "schema": CONTINUATION_ATTEMPT_SCHEMA,
+        "attemptId": "00000000-0000-4000-8000-000000000010",
+        "revision": revision,
+        "checkpointId": "0" * 64,
+        "previousCheckpointId": None if revision == 0 else "f" * 64,
+        "scenarioId": PHYSICAL_SCENARIO_ID,
+        "scenarioVersion": PHYSICAL_SCENARIO_VERSION,
+        "scenarioDigest": CONTINUATION_SCENARIO_DIGEST,
+        "recoveryPolicyDigest": CONTINUATION_POLICY_DIGEST,
+        "workspaceId": "9" * 64,
+        "logicalProjectId": "00000000-0000-4000-8000-000000000002",
+        "sessionId": "diagnostic-session-1",
+        "projectOrigin": "keil",
+        "executionSource": "physical",
+        "physicalTransportEvidence": True,
+        "status": "IN_PROGRESS" if revision == 0 else "COMPLETED",
+        "stage": CONTINUATION_STAGES[0] if revision == 0 else CONTINUATION_STAGES[1],
+        "continuationEvidenceId": "a" * 64,
+        "fixedAfterTestRunId": "target-v2-fixed",
+        "fixedAfterEvidenceId": "b" * 64,
+        "fixVerificationId": None if revision == 0 else "c" * 64,
+        "openedAtUtc": opened,
+        "updatedAtUtc": opened,
+        "deadlineAtUtc": "2026-08-24T00:15:00.000000Z",
+    }
+    unsigned = dict(payload)
+    unsigned.pop("checkpointId")
+    payload["checkpointId"] = hashlib.sha256(canonical_json_bytes(unsigned)).hexdigest()
+    return payload
+
+
+def _assert_continuation_refusal(callable_input, value: object, expected: str) -> None:
+    before = deepcopy(value)
+    with pytest.raises(ContinuationValidationError) as error:
+        callable_input()
+    assert str(error.value) == expected
+    assert value == before
+
+
+@pytest.mark.parametrize(
+    ("case_name", "expected"),
+    [
+        pytest.param("proof-object", "continuation object fields are not closed", id="proof-object"),
+        pytest.param("proof-empty-text", "schema is invalid", id="proof-empty-text"),
+        pytest.param("proof-hash", "predecessorCheckpointId is invalid", id="proof-hash"),
+        pytest.param("proof-intent", "continuation intent must be expanded", id="proof-unexpanded-intent"),
+        pytest.param("proof-schema", "continuation schema is unsupported", id="proof-schema"),
+        pytest.param("proof-revision", "diagnosticRevision is invalid", id="proof-diagnostic-revision"),
+        pytest.param("proof-runs", "before and after TestRuns must differ", id="proof-equal-runs"),
+        pytest.param("proof-evidence", "before and after evidence must differ", id="proof-equal-evidence"),
+        pytest.param("request-object", "continuation request must be an object", id="request-object"),
+        pytest.param("request-bind", "bind request schema or kind is invalid", id="request-bind-identity"),
+    ],
+)
+def test_public_continuation_proof_and_request_boundaries(case_name: str, expected: str) -> None:
+    proof = _continuation_proof_wire()
+    assert PhysicalContinuationProof.from_value(deepcopy(proof)).to_dict() == proof
+    request = _continuation_request(
+        predecessor_attempt_id="00000000-0000-4000-8000-000000000001",
+        predecessor_checkpoint_id="1" * 64,
+        predecessor_evidence_id="2" * 64,
+        fixed_after_test_run_id="target-v2-fixed",
+        fixed_after_evidence_id="3" * 64,
+        diagnostic_revision=7,
+        diagnostic_event_head="4" * 64,
+    )
+    parsed_request = ContinuationRequest.from_value(deepcopy(request))
+    assert parsed_request.kind == "bind"
+    if case_name == "proof-object":
+        candidate: object = None
+        callable_input = lambda: PhysicalContinuationProof.from_value(candidate)
+    elif case_name == "proof-empty-text":
+        candidate = deepcopy(proof)
+        candidate["schema"] = ""
+        callable_input = lambda: PhysicalContinuationProof.from_value(candidate)
+    elif case_name == "proof-hash":
+        candidate = deepcopy(proof)
+        candidate["predecessorCheckpointId"] = "G" * 64
+        callable_input = lambda: PhysicalContinuationProof.from_value(candidate)
+    elif case_name == "proof-intent":
+        candidate = deepcopy(proof)
+        candidate["sourceChangeIntent"] = SourceChangeIntent.new(
+            changes=_continuation_change_input(),
+        ).to_dict()
+        callable_input = lambda: PhysicalContinuationProof.from_value(candidate)
+    elif case_name == "proof-schema":
+        candidate = deepcopy(proof)
+        candidate["schema"] = "stm32-physical-continuation/999"
+        callable_input = lambda: PhysicalContinuationProof.from_value(candidate)
+    elif case_name == "proof-revision":
+        candidate = deepcopy(proof)
+        candidate["diagnosticRevision"] = False
+        callable_input = lambda: PhysicalContinuationProof.from_value(candidate)
+    elif case_name == "proof-runs":
+        candidate = deepcopy(proof)
+        candidate["fixedAfterTestRunId"] = candidate["failedBeforeTestRunId"]
+        callable_input = lambda: PhysicalContinuationProof.from_value(candidate)
+    elif case_name == "proof-evidence":
+        candidate = deepcopy(proof)
+        candidate["fixedAfterEvidenceId"] = candidate["failedBeforeEvidenceId"]
+        callable_input = lambda: PhysicalContinuationProof.from_value(candidate)
+    elif case_name == "request-object":
+        candidate = None
+        callable_input = lambda: ContinuationRequest.from_value(candidate)
+    else:
+        candidate = deepcopy(request)
+        candidate["schema"] = "stm32-physical-continuation-request/999"
+        callable_input = lambda: ContinuationRequest.from_value(candidate)
+    _assert_continuation_refusal(callable_input, candidate, expected)
+
+
+def test_public_continuation_proof_constructor_rejects_untyped_intent() -> None:
+    proof = PhysicalContinuationProof.from_value(_continuation_proof_wire())
+    before = proof.to_dict()
+    with pytest.raises(ContinuationValidationError) as error:
+        replace(proof, source_change_intent=None)
+    assert str(error.value) == "sourceChangeIntent is invalid"
+    assert proof.to_dict() == before
+
+
+@pytest.mark.parametrize(
+    ("case_name", "expected"),
+    [
+        pytest.param("schema", "attempt schema is unsupported", id="attempt-schema"),
+        pytest.param("revision", "attempt revision is invalid", id="attempt-revision"),
+        pytest.param("rev0-predecessor", "rev0 cannot have a predecessor", id="rev0-predecessor"),
+        pytest.param("rev1-predecessor", "rev1 needs a predecessor", id="rev1-predecessor"),
+        pytest.param("scenario", "scenario identity is not frozen", id="scenario-identity"),
+        pytest.param("policy", "continuation policy identity is not frozen", id="policy-identity"),
+        pytest.param("provenance", "physical continuation provenance is invalid", id="provenance"),
+        pytest.param("rev0-state", "rev0 state is invalid", id="rev0-state"),
+        pytest.param("rev1-state", "rev1 state is invalid", id="rev1-state"),
+        pytest.param("window", "attempt time window is invalid", id="time-window"),
+        pytest.param("rev0-time", "rev0 opened and updated times differ", id="rev0-time-update"),
+        pytest.param("deadline", "attempt update follows its deadline", id="update-after-deadline"),
+        pytest.param("checkpoint", "checkpointId does not match the snapshot", id="checkpoint-mismatch"),
+    ],
+)
+def test_public_continuation_attempt_semantic_boundaries(case_name: str, expected: str) -> None:
+    revision = 0
+    if case_name in {"rev1-predecessor", "rev1-state", "deadline"}:
+        revision = 1
+    payload = _continuation_attempt_wire(revision)
+    assert PhysicalContinuationAttempt.from_value(deepcopy(payload)).to_dict() == payload
+    if case_name == "schema":
+        payload["schema"] = "stm32-acceptance-attempt/999"
+    elif case_name == "revision":
+        payload["revision"] = 2
+    elif case_name == "rev0-predecessor":
+        payload["previousCheckpointId"] = "1" * 64
+    elif case_name == "rev1-predecessor":
+        payload["previousCheckpointId"] = None
+    elif case_name == "scenario":
+        payload["scenarioId"] = "other-scenario"
+    elif case_name == "policy":
+        payload["scenarioDigest"] = "0" * 64
+    elif case_name == "provenance":
+        payload["projectOrigin"] = "cubemx"
+    elif case_name == "rev0-state":
+        payload["status"] = "COMPLETED"
+    elif case_name == "rev1-state":
+        payload["status"] = "IN_PROGRESS"
+    elif case_name == "window":
+        payload["deadlineAtUtc"] = "2026-08-24T00:16:00.000000Z"
+    elif case_name == "rev0-time":
+        payload["updatedAtUtc"] = "2026-08-24T00:00:01.000000Z"
+    elif case_name == "deadline":
+        payload["updatedAtUtc"] = "2026-08-24T00:15:00.000001Z"
+    else:
+        payload["checkpointId"] = "0" * 64
+    _assert_continuation_refusal(lambda: PhysicalContinuationAttempt.from_value(payload), payload, expected)
