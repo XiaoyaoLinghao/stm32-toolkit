@@ -423,8 +423,6 @@ class DiagnosticStore:
                 _raise(DIAGNOSTIC_CHAIN_CORRUPT)
             if validate_layout:
                 self._validate_root_layout(create=False)
-            if os.name == "nt" and time.monotonic() >= deadline:
-                raise DiagnosticStoreBusyError()
             yield
         except OSError:
             _raise(DIAGNOSTIC_CHAIN_CORRUPT)
