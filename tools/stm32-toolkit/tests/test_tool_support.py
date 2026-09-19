@@ -814,11 +814,12 @@ def test_public_profile_accepts_nested_tools_entries_and_returns_wire(tmp_path: 
         probe_versions=False,
     )
     wire = discovered.to_dict()
+    typed_names = {"cubeMx": "cubemx", "vsCode": "vscode", "gcc": "gcc", "cmake": "cmake", "ninja": "ninja"}
     assert discovered.cubeclt_root == root.resolve()
-    assert {name: getattr(discovered, name).source for name in paths} == {
+    assert {name: getattr(discovered, typed_names[name]).source for name in paths} == {
         name: "explicit" for name in paths
     }
-    assert {name: getattr(discovered, name).version for name in paths} == {
+    assert {name: getattr(discovered, typed_names[name]).version for name in paths} == {
         "cubeMx": "6.18.1",
         "vsCode": "1.133.0",
         "gcc": "14.3.1",
