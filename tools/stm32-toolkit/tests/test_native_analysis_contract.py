@@ -149,6 +149,86 @@ def test_native_request_is_closed_and_requires_physical_v2_refs() -> None:
         validate_native_request(replay)
 
 
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    (
+        ("missing-field", "native analysis request fields are not closed"),
+        ("extra-field", "native analysis request fields are not closed"),
+        ("schema", "native analysis request schema is invalid"),
+    ),
+    ids=("missing-field", "extra-field", "schema"),
+)
+def test_native_request_rejects_public_wire_shape_and_schema(
+    mutation: str, message: str
+) -> None:
+    malformed = _request()
+    if mutation == "missing-field":
+        del malformed["max_pairing_skew_ns"]
+    elif mutation == "extra-field":
+        malformed["unexpected"] = True
+    else:
+        malformed["schema"] = "stm32-monitor-analysis-request/9"
+
+    with pytest.raises(NativeAnalysisContractError) as error:
+        validate_native_request(malformed)
+
+    assert str(error.value) == message
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "mapping-missing-watch",
+        "object-missing-watch",
+        "watch-extra",
+        "typed-extra",
+        "typed-raw-mismatch",
+    ),
+)
+def test_native_statistics_excludes_malformed_nested_public_samples(
+    mutation: str,
+) -> None:
+    before: object = _batch(100, 10)
+    after: object = _batch(200, 11)
+    if mutation == "mapping-missing-watch":
+        assert isinstance(after, dict)
+        after["values"] = [{"status": "OK"}]
+    elif mutation == "object-missing-watch":
+        after = SimpleNamespace(
+            scheduledUnixNs=200,
+            values=[SimpleNamespace(status="OK")],
+        )
+    else:
+        assert isinstance(after, dict)
+        sample = after["values"][0]
+        assert isinstance(sample, dict)
+        if mutation == "watch-extra":
+            sample["watch"]["unexpected"] = True
+        elif mutation == "typed-extra":
+            sample["typedValue"]["unexpected"] = True
+        else:
+            sample["typedValue"]["rawHex"] = "0x0a"
+
+    before_snapshot = deepcopy(before)
+    after_snapshot = deepcopy(after)
+    result = native_statistics(
+        [before],
+        [after],
+        selector="r0",
+        max_pairing_skew_ns=1,
+        minimum_valid_pairs=2,
+        request_digest="a" * 64,
+    )
+
+    assert result["quality"] == "INVALID"
+    assert result["conclusion"] == "INCONCLUSIVE"
+    assert result["aligned_position_count"] == 2
+    assert result["aligned_pair_count"] == 0
+    assert result["excluded_position_count"] == 2
+    assert before == before_snapshot
+    assert after == after_snapshot
+
+
 def test_native_alignment_is_inclusive_and_preserves_before_time_order() -> None:
     result = native_statistics(
         [_batch(100, 10), _batch(110, 20)],

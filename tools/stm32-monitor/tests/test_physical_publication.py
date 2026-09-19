@@ -2081,6 +2081,76 @@ def test_physical_loader_rejects_provider_reference_metadata_drift(
     assert _monitor_root_files(evidence, "monitor-run")[0].read_bytes() == transcript_root
 
 
+@pytest.mark.parametrize(
+    ("mutation", "cause"),
+    (
+        ("identity", "physical transcript identity is invalid"),
+        ("metadata", "physical transcript metadata is invalid"),
+    ),
+    ids=("identity", "metadata"),
+)
+def test_physical_loader_rejects_provider_transcript_identity_or_metadata_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+    cause: str,
+) -> None:
+    paths, evidence, test_run_id, raw_probe, monitor_run_id, group_id = _physical_context(tmp_path)
+    _publish_physical_test_run(
+        paths,
+        evidence,
+        test_run_id=test_run_id,
+        raw_probe=raw_probe,
+        monitor_run_id=monitor_run_id,
+    )
+    request = _physical_request(
+        paths,
+        raw_probe,
+        monitor_run_id,
+        group_id,
+        test_run_id,
+    )
+    publish_physical_monitor_run(paths, evidence, **request)
+    transcript_root = json.loads(
+        _monitor_root_files(evidence, "monitor-run")[0].read_bytes().decode("utf-8")
+    )
+    original_get_envelope = evidence.get_envelope
+    transcript_id = transcript_root["manifest_id"]
+    stored = original_get_envelope(transcript_id)
+    if mutation == "identity":
+        contradictory = replace(
+            stored,
+            identity=replace(stored.identity, workspace_id="f" * 64),
+        )
+    else:
+        metadata = dict(stored.metadata)
+        metadata["scenario_role"] = "fixed-after"
+        contradictory = replace(stored, metadata=metadata)
+
+    def contradictory_envelope(evidence_id: str):
+        if evidence_id == transcript_id:
+            return contradictory
+        return original_get_envelope(evidence_id)
+
+    monkeypatch.setattr(evidence, "get_envelope", contradictory_envelope)
+    before = {
+        str(path.relative_to(evidence.root)): path.read_bytes()
+        for path in evidence.root.rglob("*")
+        if path.is_file()
+    }
+
+    with pytest.raises(MonitorReplayError) as error:
+        load_monitor_run_reference(paths, evidence, str(monitor_run_id))
+
+    assert error.value.code == EVIDENCE_INTEGRITY_FAILURE
+    assert str(error.value.__cause__) == cause
+    assert {
+        str(path.relative_to(evidence.root)): path.read_bytes()
+        for path in evidence.root.rglob("*")
+        if path.is_file()
+    } == before
+
+
 def test_physical_loader_rejects_persisted_reference_root_metadata_drift(tmp_path: Path) -> None:
     paths, evidence, test_run_id, raw_probe, monitor_run_id, group_id = _physical_context(tmp_path)
     _publish_physical_test_run(
