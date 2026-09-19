@@ -13,9 +13,11 @@ from stm32_toolkit.evidence import (
     EvidenceValidationError,
     canonical_json_bytes,
 )
+from stm32_toolkit.evidence.gc import RootRecord, put_root
 from stm32_toolkit.evidence.store import EvidenceStore
 from stm32_toolkit.testing.model import (
     TestCaseResult as CaseResult,
+    TestProtocolError as ProtocolError,
     TestRunManifest as RunManifest,
 )
 from stm32_toolkit.testing.publication import (
@@ -137,6 +139,145 @@ def _bundle(
         raw_artifact,
     )
     return fixture, store, project_root, results_root, descriptor_envelope, manifest
+
+
+def _public_intent_digest(
+    manifest: RunManifest,
+    descriptor_evidence_id: str,
+    import_workspace_id: str,
+) -> str:
+    """Derive the closed public intent payload without calling a product helper."""
+    payload = {
+        "operation_id": manifest.run_id,
+        "descriptor_evidence_id": descriptor_evidence_id,
+        "manifest": manifest.to_dict(),
+        "import_workspace_id": import_workspace_id,
+    }
+    return sha256(canonical_json_bytes(payload)).hexdigest()
+
+
+def _fresh_replay_graph(tmp_path: Path, selector: str):
+    """Prepare a fresh public descriptor graph before its first run root."""
+    fixture, store, project_root, results_root, descriptor, manifest = _bundle(
+        tmp_path, name="failed-before", operation_id="vs03-failed-before"
+    )
+    store.put_envelope(descriptor)
+    results_root.mkdir(parents=True, exist_ok=True)
+    return fixture, store, project_root, results_root, descriptor, manifest
+
+
+def _ingest_replay_manifest(
+    store: EvidenceStore,
+    project_root: Path,
+    selector: str,
+    manifest: RunManifest,
+):
+    source = project_root / f"{selector}-manifest.json"
+    source.write_bytes(canonical_json_bytes(manifest.to_dict()))
+    return store.ingest_file(
+        source, kind="test-manifest", media_type="application/json"
+    )
+
+
+def _replay_metadata(
+    descriptor: EvidenceEnvelope,
+    original_manifest: RunManifest,
+    persisted_manifest: RunManifest,
+    manifest_artifact,
+) -> dict[str, object]:
+    descriptor_evidence_id = str(descriptor.evidence_id)
+    return {
+        "descriptor_evidence_id": descriptor_evidence_id,
+        "execution_source": "replay",
+        "import_workspace_id": IMPORT_WORKSPACE_ID,
+        "origin_workspace_id": descriptor.identity.workspace_id,
+        "operation_id": original_manifest.run_id,
+        "operation_intent_sha256": _public_intent_digest(
+            persisted_manifest, descriptor_evidence_id, IMPORT_WORKSPACE_ID
+        ),
+        "physical_transport_evidence": False,
+        "test_manifest_sha256": manifest_artifact.sha256,
+        "test_run_id": original_manifest.run_id,
+    }
+
+
+def _put_replay_graph(
+    store: EvidenceStore,
+    descriptor: EvidenceEnvelope,
+    original_manifest: RunManifest,
+    persisted_manifest: RunManifest,
+    manifest_artifact,
+    *,
+    identity=None,
+    parents=None,
+    artifacts=None,
+    produced_at_utc=None,
+    metadata=None,
+):
+    """Commit one explicit public target replay envelope and its first root."""
+    descriptor_evidence_id = str(descriptor.evidence_id)
+    identity = descriptor.identity if identity is None else identity
+    parents = (descriptor_evidence_id,) if parents is None else parents
+    artifacts = (
+        (manifest_artifact, persisted_manifest.raw_events)
+        if artifacts is None
+        else artifacts
+    )
+    produced_at_utc = (
+        persisted_manifest.ended_at_utc
+        if produced_at_utc is None
+        else produced_at_utc
+    )
+    if metadata is None:
+        metadata = _replay_metadata(
+            descriptor, original_manifest, persisted_manifest, manifest_artifact
+        )
+    envelope = EvidenceEnvelope(
+        identity=identity,
+        operation="target-test-replay",
+        produced_at_utc=produced_at_utc,
+        parents=parents,
+        artifacts=artifacts,
+        metadata=metadata,
+    )
+    store.put_envelope(envelope)
+    put_root(
+        store,
+        RootRecord(
+            "test-run",
+            original_manifest.run_id,
+            str(envelope.evidence_id),
+            {
+                "mode": "target",
+                "state": persisted_manifest.state,
+                "execution_source": "replay",
+                "physical_transport_evidence": False,
+                "origin_workspace_id": descriptor.identity.workspace_id,
+                "import_workspace_id": IMPORT_WORKSPACE_ID,
+            },
+        ),
+    )
+    return envelope
+
+
+def _replay_store_snapshot(store: EvidenceStore, results_root: Path):
+    return _tree_bytes(store.root), _tree_bytes(results_root)
+
+
+def _assert_replay_load_failure(
+    store: EvidenceStore,
+    results_root: Path,
+    run_id: str,
+    message: str,
+    before_store: dict[str, bytes],
+    before_results: dict[str, bytes],
+):
+    with pytest.raises(EvidenceValidationError) as failure:
+        Repository(store).load(run_id)
+    assert failure.value.code == "EVIDENCE_CORRUPT"
+    assert failure.value.message == message
+    assert _tree_bytes(store.root) == before_store
+    assert _tree_bytes(results_root) == before_results
 
 
 def test_target_replay_publisher_exposes_the_public_publication_entrypoint():
@@ -718,3 +859,558 @@ def test_target_replay_publication_rejects_contradictory_parent_binding_before_p
     assert collector_publications == []
     assert _tree_bytes(store.root) == before_store
     assert _tree_bytes(results_root) == before_results
+
+
+def test_target_artifact_shape_selector_rejects_wrong_public_ref_without_write(
+    tmp_path: Path,
+):
+    _fixture_value, store, project_root, results_root, descriptor, manifest = _bundle(
+        tmp_path, name="failed-before", operation_id="vs03-failed-before"
+    )
+    publisher = Publisher(store, project_root, results_root)
+    before_store, before_results = _replay_store_snapshot(store, results_root)
+    candidate = replace(
+        manifest,
+        raw_events=replace(manifest.raw_events, kind="test-stdout"),
+    )
+
+    with pytest.raises(ProtocolError) as failure:
+        publisher.publish_target_replay(candidate, descriptor, IMPORT_WORKSPACE_ID)
+
+    assert failure.value.code == "TEST_PROTOCOL_INVALID"
+    assert failure.value.message == "raw_events has an invalid Target replay artifact type"
+    assert _tree_bytes(store.root) == before_store
+    assert _tree_bytes(results_root) == before_results
+
+
+def test_target_manifest_type_selector_rejects_non_manifest_without_write(
+    tmp_path: Path,
+):
+    _fixture_value, store, project_root, results_root, descriptor, _manifest = _bundle(
+        tmp_path, name="failed-before", operation_id="vs03-failed-before"
+    )
+    publisher = Publisher(store, project_root, results_root)
+    before_store, before_results = _replay_store_snapshot(store, results_root)
+
+    with pytest.raises(ProtocolError) as failure:
+        publisher.publish_target_replay(None, descriptor, IMPORT_WORKSPACE_ID)
+
+    assert failure.value.code == "TEST_PROTOCOL_INVALID"
+    assert failure.value.message == "manifest must be a TestRunManifest"
+    assert _tree_bytes(store.root) == before_store
+    assert _tree_bytes(results_root) == before_results
+
+
+def test_target_manifest_execution_mode_selector_rejects_host_mode_without_write(
+    tmp_path: Path,
+):
+    _fixture_value, store, project_root, results_root, descriptor, manifest = _bundle(
+        tmp_path, name="failed-before", operation_id="vs03-failed-before"
+    )
+    publisher = Publisher(store, project_root, results_root)
+    before_store, before_results = _replay_store_snapshot(store, results_root)
+    candidate = replace(manifest, mode="host")
+
+    with pytest.raises(ProtocolError) as failure:
+        publisher.publish_target_replay(candidate, descriptor, IMPORT_WORKSPACE_ID)
+
+    assert failure.value.code == "TEST_PROTOCOL_INVALID"
+    assert failure.value.message == "publication requires a Target replay manifest"
+    assert _tree_bytes(store.root) == before_store
+    assert _tree_bytes(results_root) == before_results
+
+
+def test_target_manifest_nonterminal_selector_rejects_running_state_without_write(
+    tmp_path: Path,
+):
+    _fixture_value, store, project_root, results_root, descriptor, manifest = _bundle(
+        tmp_path, name="failed-before", operation_id="vs03-failed-before"
+    )
+    publisher = Publisher(store, project_root, results_root)
+    before_store, before_results = _replay_store_snapshot(store, results_root)
+    candidate = replace(manifest, state="running")
+
+    with pytest.raises(ProtocolError) as failure:
+        publisher.publish_target_replay(candidate, descriptor, IMPORT_WORKSPACE_ID)
+
+    assert failure.value.code == "TEST_PROTOCOL_INVALID"
+    assert failure.value.message == "publication requires a completed Target replay manifest"
+    assert _tree_bytes(store.root) == before_store
+    assert _tree_bytes(results_root) == before_results
+
+
+def test_target_manifest_host_output_selector_rejects_stdout_without_write(
+    tmp_path: Path,
+):
+    _fixture_value, store, project_root, results_root, descriptor, manifest = _bundle(
+        tmp_path, name="failed-before", operation_id="vs03-failed-before"
+    )
+    publisher = Publisher(store, project_root, results_root)
+    before_store, before_results = _replay_store_snapshot(store, results_root)
+    candidate = replace(manifest, stdout=manifest.raw_events)
+
+    with pytest.raises(ProtocolError) as failure:
+        publisher.publish_target_replay(candidate, descriptor, IMPORT_WORKSPACE_ID)
+
+    assert failure.value.code == "TEST_PROTOCOL_INVALID"
+    assert failure.value.message == "Target replay manifests must not contain Host output artifacts"
+    assert _tree_bytes(store.root) == before_store
+    assert _tree_bytes(results_root) == before_results
+
+
+def test_target_parent_type_selector_rejects_non_envelope_without_write(
+    tmp_path: Path,
+):
+    _fixture_value, store, project_root, results_root, _descriptor, manifest = _bundle(
+        tmp_path, name="failed-before", operation_id="vs03-failed-before"
+    )
+    publisher = Publisher(store, project_root, results_root)
+    before_store, before_results = _replay_store_snapshot(store, results_root)
+
+    with pytest.raises(EvidenceValidationError) as failure:
+        publisher.publish_target_replay(manifest, None, IMPORT_WORKSPACE_ID)
+
+    assert failure.value.code == "EVIDENCE_CORRUPT"
+    assert failure.value.message == "Target replay descriptor parent is invalid"
+    assert _tree_bytes(store.root) == before_store
+    assert _tree_bytes(results_root) == before_results
+
+
+def test_target_replay_parent_count_selector_rejects_two_parents_without_write(
+    tmp_path: Path,
+):
+    _fixture_value, store, project_root, results_root, descriptor, original = _fresh_replay_graph(
+        tmp_path, "target-replay-parent-count"
+    )
+    manifest_artifact = _ingest_replay_manifest(
+        store, project_root, "target-replay-parent-count", original
+    )
+    second_parent = EvidenceEnvelope(
+        identity=descriptor.identity,
+        operation="target-replay-input-secondary",
+        produced_at_utc=descriptor.produced_at_utc,
+        parents=(),
+        artifacts=descriptor.artifacts,
+        metadata=dict(descriptor.metadata),
+    )
+    store.put_envelope(second_parent)
+    _put_replay_graph(
+        store,
+        descriptor,
+        original,
+        original,
+        manifest_artifact,
+        parents=(str(descriptor.evidence_id), str(second_parent.evidence_id)),
+    )
+    before_store, before_results = _replay_store_snapshot(store, results_root)
+
+    _assert_replay_load_failure(
+        store,
+        results_root,
+        original.run_id,
+        "stored Target replay envelope must have one descriptor parent",
+        before_store,
+        before_results,
+    )
+
+
+def test_target_replay_envelope_closure_selector_rejects_extra_key_without_write(
+    tmp_path: Path,
+):
+    _fixture_value, store, project_root, results_root, descriptor, original = _fresh_replay_graph(
+        tmp_path, "target-replay-envelope-closure"
+    )
+    manifest_artifact = _ingest_replay_manifest(
+        store, project_root, "target-replay-envelope-closure", original
+    )
+    metadata = _replay_metadata(descriptor, original, original, manifest_artifact)
+    metadata["unexpected"] = "value"
+    _put_replay_graph(
+        store, descriptor, original, original, manifest_artifact, metadata=metadata
+    )
+    before_store, before_results = _replay_store_snapshot(store, results_root)
+
+    _assert_replay_load_failure(
+        store,
+        results_root,
+        original.run_id,
+        "stored Target replay envelope metadata is not closed",
+        before_store,
+        before_results,
+    )
+
+
+def test_target_replay_operation_id_selector_rejects_metadata_run_id_without_write(
+    tmp_path: Path,
+):
+    _fixture_value, store, project_root, results_root, descriptor, original = _fresh_replay_graph(
+        tmp_path, "target-replay-operation-id"
+    )
+    manifest_artifact = _ingest_replay_manifest(
+        store, project_root, "target-replay-operation-id", original
+    )
+    metadata = _replay_metadata(descriptor, original, original, manifest_artifact)
+    metadata["test_run_id"] = "vs03-other-run"
+    _put_replay_graph(
+        store, descriptor, original, original, manifest_artifact, metadata=metadata
+    )
+    before_store, before_results = _replay_store_snapshot(store, results_root)
+
+    _assert_replay_load_failure(
+        store,
+        results_root,
+        original.run_id,
+        "stored Target replay operation ID contradicts the root",
+        before_store,
+        before_results,
+    )
+
+
+def test_target_replay_descriptor_id_format_selector_rejects_bad_id_without_write(
+    tmp_path: Path,
+):
+    _fixture_value, store, project_root, results_root, descriptor, original = _fresh_replay_graph(
+        tmp_path, "target-replay-descriptor-id-format"
+    )
+    manifest_artifact = _ingest_replay_manifest(
+        store, project_root, "target-replay-descriptor-id-format", original
+    )
+    metadata = _replay_metadata(descriptor, original, original, manifest_artifact)
+    metadata["descriptor_evidence_id"] = "bad"
+    _put_replay_graph(
+        store, descriptor, original, original, manifest_artifact, metadata=metadata
+    )
+    before_store, before_results = _replay_store_snapshot(store, results_root)
+
+    _assert_replay_load_failure(
+        store,
+        results_root,
+        original.run_id,
+        "stored Target replay descriptor evidence ID is invalid",
+        before_store,
+        before_results,
+    )
+
+
+def test_target_replay_descriptor_envelope_identity_selector_rejects_build_id_without_write(
+    tmp_path: Path,
+):
+    _fixture_value, store, project_root, results_root, descriptor, original = _fresh_replay_graph(
+        tmp_path, "target-replay-descriptor-envelope-identity"
+    )
+    manifest_artifact = _ingest_replay_manifest(
+        store, project_root, "target-replay-descriptor-envelope-identity", original
+    )
+    _put_replay_graph(
+        store,
+        descriptor,
+        original,
+        original,
+        manifest_artifact,
+        identity=replace(descriptor.identity, build_id="1" * 64),
+    )
+    before_store, before_results = _replay_store_snapshot(store, results_root)
+
+    _assert_replay_load_failure(
+        store,
+        results_root,
+        original.run_id,
+        "stored Target replay descriptor identity contradicts the envelope",
+        before_store,
+        before_results,
+    )
+
+
+def test_target_replay_manifest_membership_selector_rejects_missing_manifest_without_write(
+    tmp_path: Path,
+):
+    _fixture_value, store, project_root, results_root, descriptor, original = _fresh_replay_graph(
+        tmp_path, "target-replay-manifest-membership"
+    )
+    manifest_artifact = _ingest_replay_manifest(
+        store, project_root, "target-replay-manifest-membership", original
+    )
+    _put_replay_graph(
+        store,
+        descriptor,
+        original,
+        original,
+        manifest_artifact,
+        artifacts=(original.raw_events,),
+    )
+    before_store, before_results = _replay_store_snapshot(store, results_root)
+
+    _assert_replay_load_failure(
+        store,
+        results_root,
+        original.run_id,
+        "stored Target replay envelope has an invalid test manifest artifact",
+        before_store,
+        before_results,
+    )
+
+
+def test_target_replay_manifest_digest_selector_rejects_metadata_digest_without_write(
+    tmp_path: Path,
+):
+    _fixture_value, store, project_root, results_root, descriptor, original = _fresh_replay_graph(
+        tmp_path, "target-replay-manifest-digest"
+    )
+    manifest_artifact = _ingest_replay_manifest(
+        store, project_root, "target-replay-manifest-digest", original
+    )
+    metadata = _replay_metadata(descriptor, original, original, manifest_artifact)
+    metadata["test_manifest_sha256"] = sha256(b"wrong-manifest").hexdigest()
+    _put_replay_graph(
+        store, descriptor, original, original, manifest_artifact, metadata=metadata
+    )
+    before_store, before_results = _replay_store_snapshot(store, results_root)
+
+    _assert_replay_load_failure(
+        store,
+        results_root,
+        original.run_id,
+        "stored Target replay manifest digest contradicts metadata",
+        before_store,
+        before_results,
+    )
+
+
+def test_target_replay_manifest_run_id_selector_rejects_changed_manifest_without_write(
+    tmp_path: Path,
+):
+    _fixture_value, store, project_root, results_root, descriptor, original = _fresh_replay_graph(
+        tmp_path, "target-replay-manifest-run-id"
+    )
+    persisted = replace(original, run_id="vs03-other-run")
+    manifest_artifact = _ingest_replay_manifest(
+        store, project_root, "target-replay-manifest-run-id", persisted
+    )
+    _put_replay_graph(
+        store, descriptor, original, persisted, manifest_artifact
+    )
+    before_store, before_results = _replay_store_snapshot(store, results_root)
+
+    _assert_replay_load_failure(
+        store,
+        results_root,
+        original.run_id,
+        "stored Target replay manifest run ID contradicts the root",
+        before_store,
+        before_results,
+    )
+
+
+def test_target_replay_manifest_mode_selector_rejects_mailbox_transport_without_write(
+    tmp_path: Path,
+):
+    _fixture_value, store, project_root, results_root, descriptor, original = _fresh_replay_graph(
+        tmp_path, "target-replay-manifest-mode"
+    )
+    persisted = replace(original, transport="mailbox")
+    manifest_artifact = _ingest_replay_manifest(
+        store, project_root, "target-replay-manifest-mode", persisted
+    )
+    _put_replay_graph(
+        store, descriptor, original, persisted, manifest_artifact
+    )
+    before_store, before_results = _replay_store_snapshot(store, results_root)
+
+    _assert_replay_load_failure(
+        store,
+        results_root,
+        original.run_id,
+        "stored Target replay manifest has the wrong execution mode",
+        before_store,
+        before_results,
+    )
+
+
+def test_target_replay_manifest_nonterminal_selector_rejects_running_without_write(
+    tmp_path: Path,
+):
+    _fixture_value, store, project_root, results_root, descriptor, original = _fresh_replay_graph(
+        tmp_path, "target-replay-manifest-nonterminal"
+    )
+    persisted = replace(original, state="running")
+    manifest_artifact = _ingest_replay_manifest(
+        store, project_root, "target-replay-manifest-nonterminal", persisted
+    )
+    _put_replay_graph(
+        store, descriptor, original, persisted, manifest_artifact
+    )
+    before_store, before_results = _replay_store_snapshot(store, results_root)
+
+    _assert_replay_load_failure(
+        store,
+        results_root,
+        original.run_id,
+        "stored Target replay manifest is not terminal",
+        before_store,
+        before_results,
+    )
+
+
+def test_target_replay_manifest_host_output_selector_rejects_stdout_without_write(
+    tmp_path: Path,
+):
+    _fixture_value, store, project_root, results_root, descriptor, original = _fresh_replay_graph(
+        tmp_path, "target-replay-manifest-host-output"
+    )
+    persisted = replace(original, stdout=original.raw_events)
+    manifest_artifact = _ingest_replay_manifest(
+        store, project_root, "target-replay-manifest-host-output", persisted
+    )
+    _put_replay_graph(
+        store, descriptor, original, persisted, manifest_artifact
+    )
+    before_store, before_results = _replay_store_snapshot(store, results_root)
+
+    _assert_replay_load_failure(
+        store,
+        results_root,
+        original.run_id,
+        "stored Target replay manifest contains Host output artifacts",
+        before_store,
+        before_results,
+    )
+
+
+def test_target_replay_manifest_identity_selector_rejects_build_id_without_write(
+    tmp_path: Path,
+):
+    _fixture_value, store, project_root, results_root, descriptor, original = _fresh_replay_graph(
+        tmp_path, "target-replay-manifest-identity"
+    )
+    persisted = replace(
+        original,
+        identity=replace(original.identity, build_id="1" * 64),
+    )
+    manifest_artifact = _ingest_replay_manifest(
+        store, project_root, "target-replay-manifest-identity", persisted
+    )
+    _put_replay_graph(
+        store, descriptor, original, persisted, manifest_artifact
+    )
+    before_store, before_results = _replay_store_snapshot(store, results_root)
+
+    _assert_replay_load_failure(
+        store,
+        results_root,
+        original.run_id,
+        "stored Target replay manifest identity contradicts its inputs",
+        before_store,
+        before_results,
+    )
+
+
+def test_target_replay_manifest_state_selector_rejects_public_passed_projection_without_write(
+    tmp_path: Path,
+):
+    _fixture_value, store, project_root, results_root, descriptor, original = _fresh_replay_graph(
+        tmp_path, "target-replay-manifest-state"
+    )
+    passed_cases = tuple(
+        replace(case, state="passed", message=None) for case in original.cases
+    )
+    persisted = replace(original, state="passed", cases=passed_cases)
+    manifest_artifact = _ingest_replay_manifest(
+        store, project_root, "target-replay-manifest-state", persisted
+    )
+    _put_replay_graph(
+        store, descriptor, original, persisted, manifest_artifact
+    )
+    before_store, before_results = _replay_store_snapshot(store, results_root)
+
+    _assert_replay_load_failure(
+        store,
+        results_root,
+        original.run_id,
+        "stored Target replay manifest state contradicts its descriptor",
+        before_store,
+        before_results,
+    )
+
+
+def test_target_replay_envelope_membership_selector_rejects_reordered_refs_without_write(
+    tmp_path: Path,
+):
+    _fixture_value, store, project_root, results_root, descriptor, original = _fresh_replay_graph(
+        tmp_path, "target-replay-envelope-membership"
+    )
+    manifest_artifact = _ingest_replay_manifest(
+        store, project_root, "target-replay-envelope-membership", original
+    )
+    _put_replay_graph(
+        store,
+        descriptor,
+        original,
+        original,
+        manifest_artifact,
+        artifacts=(original.raw_events, manifest_artifact),
+    )
+    before_store, before_results = _replay_store_snapshot(store, results_root)
+
+    _assert_replay_load_failure(
+        store,
+        results_root,
+        original.run_id,
+        "stored Target replay envelope artifact membership is invalid",
+        before_store,
+        before_results,
+    )
+
+
+def test_target_replay_envelope_time_selector_rejects_changed_time_without_write(
+    tmp_path: Path,
+):
+    _fixture_value, store, project_root, results_root, descriptor, original = _fresh_replay_graph(
+        tmp_path, "target-replay-envelope-time"
+    )
+    manifest_artifact = _ingest_replay_manifest(
+        store, project_root, "target-replay-envelope-time", original
+    )
+    _put_replay_graph(
+        store,
+        descriptor,
+        original,
+        original,
+        manifest_artifact,
+        produced_at_utc=UTC_0,
+    )
+    before_store, before_results = _replay_store_snapshot(store, results_root)
+
+    _assert_replay_load_failure(
+        store,
+        results_root,
+        original.run_id,
+        "stored Target replay envelope time contradicts the manifest",
+        before_store,
+        before_results,
+    )
+
+
+def test_target_replay_intent_digest_selector_rejects_wrong_digest_without_write(
+    tmp_path: Path,
+):
+    _fixture_value, store, project_root, results_root, descriptor, original = _fresh_replay_graph(
+        tmp_path, "target-replay-intent-digest"
+    )
+    manifest_artifact = _ingest_replay_manifest(
+        store, project_root, "target-replay-intent-digest", original
+    )
+    metadata = _replay_metadata(descriptor, original, original, manifest_artifact)
+    metadata["operation_intent_sha256"] = sha256(b"wrong-intent").hexdigest()
+    _put_replay_graph(
+        store, descriptor, original, original, manifest_artifact, metadata=metadata
+    )
+    before_store, before_results = _replay_store_snapshot(store, results_root)
+
+    _assert_replay_load_failure(
+        store,
+        results_root,
+        original.run_id,
+        "stored Target replay operation intent digest is invalid",
+        before_store,
+        before_results,
+    )
