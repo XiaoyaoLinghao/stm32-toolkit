@@ -80,7 +80,7 @@ temporary root is `D:\codex-tmp\v10b-0918\r10\t\lk\f` (basetemp
 `D:\codex-tmp\v10b-0918\r10\t\lk\f\b`).
 
 ```text
-D:\codex-tmp\v10b-0918\r10\py\Scripts\python.exe -m pytest -x -o addopts= -o cache_dir=D:\codex-tmp\v10b-0918\r10\t\lk\f\pytest-cache --basetemp D:\codex-tmp\v10b-0918\r10\t\lk\f\b --junitxml D:\codex-tmp\v10b-0918\r10\e\diagnostic-lock-contention\focused\junit.xml --cov=stm32_toolkit --cov=stm32_monitor --cov-fail-under=0 --cov-report=term-missing --cov-report=json:D:\codex-tmp\v10b-0918\r10\e\diagnostic-lock-contention\focused\coverage.json tools/stm32-toolkit/tests/test_diagnostic_store.py tools/stm32-toolkit/tests/test_diagnostic_workflows.py::test_diagnostic_store_busy_is_a_sanitized_public_result tools/stm32-toolkit/tests/test_acceptance_recovery_workflows.py::test_diagnostic_store_busy_maps_to_acceptance_availability_result tools/stm32-toolkit/tests/test_acceptance_recovery_workflows.py::test_nested_diagnostic_store_busy_maps_to_acceptance_availability_result tools/stm32-toolkit/tests/test_continuation_monitor.py::test_postpublication_diagnostic_busy_preserves_revision_one_for_exact_retry_and_read
+D:\codex-tmp\v10b-0918\r10\py\Scripts\python.exe -m pytest -x -o addopts= -o cache_dir=D:\codex-tmp\v10b-0918\r10\t\lk\f\pytest-cache --basetemp D:\codex-tmp\v10b-0918\r10\t\lk\f\b --junitxml D:\codex-tmp\v10b-0918\r10\e\diagnostic-lock-contention\focused\junit.xml --cov=stm32_toolkit --cov=stm32_monitor --cov-branch --cov-fail-under=0 --cov-report=term-missing --cov-report=json:D:\codex-tmp\v10b-0918\r10\e\diagnostic-lock-contention\focused\coverage.json tools/stm32-toolkit/tests/test_diagnostic_store.py tools/stm32-toolkit/tests/test_diagnostic_workflows.py::test_diagnostic_store_busy_is_a_sanitized_public_result tools/stm32-toolkit/tests/test_acceptance_recovery_workflows.py::test_diagnostic_store_busy_maps_to_acceptance_availability_result tools/stm32-toolkit/tests/test_acceptance_recovery_workflows.py::test_nested_diagnostic_store_busy_maps_to_acceptance_availability_result tools/stm32-toolkit/tests/test_continuation_monitor.py::test_postpublication_diagnostic_busy_preserves_revision_one_for_exact_retry_and_read
 ```
 
 The continuation entry is `diagnostic-lock-contention-continuation-r1`, with
@@ -106,9 +106,9 @@ the `lk` paths above, never `verify15b`.
 The executable launchers prepared for these entries are:
 
 - `D:\codex-tmp\v10b-0918\r10\e\diagnostic-lock-contention\focused\launch.ps1`
-  (SHA256 `ADF702AD4E66B81B4F2FB1BF9C8AB220D890AA87729C8A6ECAF7B3F2EF3D7B26`)
+  (SHA256 `5510AEC99EBA7EFBD988F1F39314F833BB8418A99E9383D5CE14C01F996838A8`)
 - `D:\codex-tmp\v10b-0918\r10\e\diagnostic-lock-contention\continuation\launch.ps1`
-  (SHA256 `BF503CCE6EF139F12874C2C49EBADF160137AF9D3F657CB15E4816413E7EE6EB`)
+  (SHA256 `C745DCF0E87A4675AEF9CB454772AF90CA690D68589F232F77D51042342F4201`)
 
 PowerShell 7 AST parsing reported zero errors for both launchers; this was
 preparation only and no test process was run.
