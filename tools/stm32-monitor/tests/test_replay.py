@@ -13,8 +13,14 @@ from uuid import UUID
 import pytest
 
 from stm32_monitor import replay as replay_module
-from stm32_monitor.history import HistoryQuery, HistoryStore
-from stm32_monitor.models import MAX_SIGNED_INT64, ObservationBinding, SampleBatch, WatchItem
+from stm32_monitor.history import HistoryPage, HistoryQuery, HistoryStore
+from stm32_monitor.models import (
+    MAX_SIGNED_INT64,
+    HistoryBatchSlice,
+    ObservationBinding,
+    SampleBatch,
+    WatchItem,
+)
 from stm32_monitor.protocol import ProtocolResult
 from stm32_monitor.replay import (
     MONITOR_REPLAY_SCHEMA,
@@ -1341,6 +1347,160 @@ def test_replay_oversized_existing_history_is_a_conflict_before_republication(
     assert error.value.code == "OPERATION_CONFLICT"
     monkeypatch.undo()
     assert _history_batches(paths, RUN_IDS["failed-before"]) == before_batches
+    assert first == MonitorRunRef.from_value(first.to_dict())
+
+
+def test_replay_retry_rejects_extra_persisted_history(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    evidence = _evidence(paths)
+    operation = _operation("failed-before")
+    first = ingest_monitor_replay(paths, evidence, operation, _fixture("failed-before"))
+    original_batches = _history_batches(paths, RUN_IDS["failed-before"])
+    last = original_batches[-1]
+    extra = replace(
+        last,
+        sequence=last.sequence + 1,
+        scheduled_unix_ns=last.scheduled_unix_ns + 1_000,
+        captured_unix_ns=last.captured_unix_ns + 1_000,
+    )
+    history = HistoryStore(paths)
+    try:
+        appended = history.append_batch(extra)
+        assert appended.ok, appended.to_dict()
+    finally:
+        history.close()
+
+    before_batches = _history_batches(paths, RUN_IDS["failed-before"])
+    assert before_batches == original_batches + (extra,)
+    before_evidence = {
+        str(path.relative_to(evidence.root)): path.read_bytes()
+        for path in evidence.root.rglob("*")
+        if path.is_file()
+    }
+
+    with pytest.raises(MonitorReplayError) as error:
+        ingest_monitor_replay(
+            paths,
+            EvidenceStore(evidence.root),
+            operation,
+            _fixture("failed-before"),
+        )
+
+    assert error.value.code == OPERATION_CONFLICT
+    assert error.value.message == "operation history does not match its authoritative root"
+    assert _history_batches(paths, RUN_IDS["failed-before"]) == before_batches
+    assert {
+        str(path.relative_to(evidence.root)): path.read_bytes()
+        for path in evidence.root.rglob("*")
+        if path.is_file()
+    } == before_evidence
+    assert first == MonitorRunRef.from_value(first.to_dict())
+
+
+def test_replay_retry_rejects_public_partial_history_slice(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = _paths(tmp_path)
+    evidence = _evidence(paths)
+    operation = _operation("failed-before")
+    first = ingest_monitor_replay(paths, evidence, operation, _fixture("failed-before"))
+    before_batches = _history_batches(paths, RUN_IDS["failed-before"])
+    before_evidence = {
+        str(path.relative_to(evidence.root)): path.read_bytes()
+        for path in evidence.root.rglob("*")
+        if path.is_file()
+    }
+    baseline_history = HistoryStore(paths)
+    try:
+        baseline_result = baseline_history.query_history(
+            HistoryQuery(
+                session_id=paths.session_id,
+                start_ns=0,
+                end_ns=MAX_SIGNED_INT64,
+                run_id=RUN_IDS["failed-before"],
+                limit=10_000,
+            )
+        )
+    finally:
+        baseline_history.close()
+    assert baseline_result.ok and baseline_result.data is not None
+    baseline_page = baseline_result.data
+    source = baseline_page.batches[0]
+    partial = HistoryBatchSlice(
+        binding=source.binding,
+        group_id=source.group_id,
+        group_revision=source.group_revision,
+        run_id=source.run_id,
+        sequence=source.sequence,
+        scheduled_unix_ns=source.scheduled_unix_ns,
+        captured_unix_ns=source.captured_unix_ns,
+        latency_ns=source.latency_ns,
+        actual_rate_hz=source.actual_rate_hz,
+        subscriber_drops=source.subscriber_drops,
+        history_drops=source.history_drops,
+        deadline_drops=source.deadline_drops,
+        start_ordinal=source.start_ordinal,
+        batch_value_count=source.batch_value_count + 1,
+        values=source.values,
+    )
+    unchanged = tuple(
+        HistoryBatchSlice(
+            binding=batch.binding,
+            group_id=batch.group_id,
+            group_revision=batch.group_revision,
+            run_id=batch.run_id,
+            sequence=batch.sequence,
+            scheduled_unix_ns=batch.scheduled_unix_ns,
+            captured_unix_ns=batch.captured_unix_ns,
+            latency_ns=batch.latency_ns,
+            actual_rate_hz=batch.actual_rate_hz,
+            subscriber_drops=batch.subscriber_drops,
+            history_drops=batch.history_drops,
+            deadline_drops=batch.deadline_drops,
+            start_ordinal=batch.start_ordinal,
+            batch_value_count=batch.batch_value_count,
+            values=batch.values,
+        )
+        for batch in baseline_page.batches[1:]
+    )
+    partial_result = ProtocolResult(
+        True,
+        baseline_result.operation,
+        "OK",
+        "",
+        HistoryPage.create(
+            (partial, *unchanged),
+            next_cursor=baseline_page.next_cursor,
+        ),
+        protocol=baseline_result.protocol,
+    )
+
+    def return_public_partial_page(
+        _history: HistoryStore, _query: HistoryQuery
+    ) -> ProtocolResult[HistoryPage]:
+        return partial_result
+
+    with monkeypatch.context() as patch:
+        patch.setattr(HistoryStore, "query_history", return_public_partial_page)
+        with pytest.raises(MonitorReplayError) as error:
+            ingest_monitor_replay(
+                paths,
+                EvidenceStore(evidence.root),
+                operation,
+                _fixture("failed-before"),
+            )
+
+    assert error.value.code == OPERATION_CONFLICT
+    assert error.value.message == "operation has a partial history window"
+    assert _history_batches(paths, RUN_IDS["failed-before"]) == before_batches
+    assert {
+        str(path.relative_to(evidence.root)): path.read_bytes()
+        for path in evidence.root.rglob("*")
+        if path.is_file()
+    } == before_evidence
     assert first == MonitorRunRef.from_value(first.to_dict())
 
 

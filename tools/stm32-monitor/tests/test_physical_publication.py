@@ -4,6 +4,7 @@ from dataclasses import fields, replace
 from hashlib import sha256
 import json
 from pathlib import Path
+import unicodedata
 from uuid import UUID
 
 import pytest
@@ -1362,6 +1363,28 @@ def _replace_persisted_physical_transcript(
         mutated_raw = original_raw + b"\n"
     elif mutation == "scalar-root":
         mutated_raw = b"[]"
+    elif mutation in {"nested-depth", "out-of-range-integer", "nfc-string", "nfc-key"}:
+        payload = json.loads(original_raw.decode("utf-8"))
+        if mutation == "nested-depth":
+            nested: object = 0
+            for _ in range(34):
+                nested = {"nested": nested}
+            payload["persistedCorruption"] = nested
+        elif mutation == "out-of-range-integer":
+            payload["binding"]["groupRevision"] = 9_223_372_036_854_775_808
+        elif mutation == "nfc-string":
+            payload["binding"]["targetDevice"] = "stm32:vs03-fixture\u0301"
+        else:
+            nfc_key = "e\u0301"
+            assert unicodedata.normalize("NFC", nfc_key) != nfc_key
+            payload["binding"][nfc_key] = "invalid"
+        mutated_raw = json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
     else:
         raise AssertionError(f"unknown physical transcript mutation: {mutation}")
 
@@ -2613,19 +2636,49 @@ def test_physical_loader_rejects_persisted_noncanonical_reference_bytes_before_a
 
 
 @pytest.mark.parametrize(
-    ("mutation", "expected_cause"),
+    ("mutation", "expected_cause", "expected_nested_cause"),
     [
-        ("bom", "physical transcript must not include a BOM"),
-        ("duplicate-key", "physical transcript has duplicate keys"),
-        ("noncanonical", "physical transcript JSON is not canonical"),
-        ("scalar-root", "physical transcript must be a JSON object"),
+        ("bom", "physical transcript must not include a BOM", None),
+        ("duplicate-key", "physical transcript has duplicate keys", None),
+        ("noncanonical", "physical transcript JSON is not canonical", None),
+        ("scalar-root", "physical transcript must be a JSON object", None),
+        (
+            "nested-depth",
+            "physical transcript canonical JSON is invalid",
+            "physical transcript JSON exceeds its depth limit",
+        ),
+        (
+            "out-of-range-integer",
+            "physical transcript canonical JSON is invalid",
+            "physical transcript integer is out of range",
+        ),
+        (
+            "nfc-string",
+            "physical transcript canonical JSON is invalid",
+            "physical transcript string is invalid",
+        ),
+        (
+            "nfc-key",
+            "physical transcript canonical JSON is invalid",
+            "physical transcript JSON key is invalid",
+        ),
     ],
-    ids=("bom", "duplicate-key", "noncanonical", "scalar-root"),
+    ids=(
+        "bom",
+        "duplicate-key",
+        "noncanonical",
+        "scalar-root",
+        "nested-depth",
+        "out-of-range-integer",
+        "nfc-string",
+        "nfc-key",
+    ),
 )
 def test_physical_loader_rejects_persisted_transcript_decoder_variants(
     tmp_path: Path,
     mutation: str,
     expected_cause: str,
+    expected_nested_cause: str | None,
 ) -> None:
     paths, evidence, test_run_id, raw_probe, monitor_run_id, group_id = _physical_context(tmp_path)
     _publish_physical_test_run(
@@ -2662,6 +2715,9 @@ def test_physical_loader_rejects_persisted_transcript_decoder_variants(
     assert error.value.code == EVIDENCE_INTEGRITY_FAILURE
     assert error.value.message == "physical Monitor transcript is corrupt"
     assert str(error.value.__cause__) == expected_cause
+    if expected_nested_cause is not None:
+        assert error.value.__cause__.__cause__ is not None
+        assert str(error.value.__cause__.__cause__) == expected_nested_cause
     assert _physical_evidence_state(evidence) == before
 
 
