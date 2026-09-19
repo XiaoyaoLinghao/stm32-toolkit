@@ -1976,6 +1976,73 @@ def test_invalid_query_and_workspace_mismatch_fail_closed(tmp_path: Path) -> Non
         store.close()
 
 
+@pytest.mark.parametrize(
+    ("corruption", "expected_message"),
+    [
+        ("accounting", "monitor storage accounting is invalid"),
+        ("candidate", "monitor history is corrupt"),
+    ],
+)
+def test_public_retention_rejects_persisted_accounting_corruption_without_deletion(
+    tmp_path: Path,
+    corruption: str,
+    expected_message: str,
+) -> None:
+    paths = _paths(tmp_path)
+    store = HistoryStore(paths)
+    try:
+        assert store.append_batch(_batch(paths, 1, captured_ns=1_001)).ok
+        database_path = paths.monitor_root / "monitor.sqlite3"
+
+        def corrupt(connection: sqlite3.Connection) -> None:
+            if corruption == "accounting":
+                connection.execute("PRAGMA ignore_check_constraints = ON")
+                connection.execute(
+                    "UPDATE monitor_history_accounting SET logical_bytes = -1"
+                )
+            else:
+                connection.execute(
+                    "UPDATE history_batches SET value_count = -1 WHERE batch_id = 1"
+                )
+
+        store._database.write(corrupt)
+
+        def snapshot() -> tuple[object, ...]:
+            connection = sqlite3.connect(
+                database_path.as_uri() + "?mode=ro", uri=True
+            )
+            try:
+                return (
+                    connection.execute(
+                        "SELECT singleton, logical_bytes "
+                        "FROM monitor_history_accounting"
+                    ).fetchall(),
+                    connection.execute(
+                        "SELECT batch_id,session_id,run_id,sequence,captured_ns,"
+                        "payload_json,payload_bytes,payload_sha256,value_count "
+                        "FROM history_batches ORDER BY batch_id"
+                    ).fetchall(),
+                    connection.execute(
+                        "SELECT batch_id,ordinal,selector_kind,selector,value_json,"
+                        "value_bytes,value_sha256 FROM history_values "
+                        "ORDER BY batch_id,ordinal"
+                    ).fetchall(),
+                )
+            finally:
+                connection.close()
+
+        before = snapshot()
+        result = store.run_retention(
+            now_ns=7 * 24 * 60 * 60 * 1_000_000_000 + 1_002
+        )
+        assert not result.ok
+        assert result.code == "MONITOR_STORAGE_CORRUPT"
+        assert result.message == expected_message
+        assert snapshot() == before
+    finally:
+        store.close()
+
+
 def test_duplicate_batch_is_rejected_without_duplicate_values(tmp_path: Path) -> None:
     paths = _paths(tmp_path)
     store = HistoryStore(paths)

@@ -648,6 +648,146 @@ def test_shared_contract_accepts_closed_physical_transcript_without_raw_selector
         contract.validate_physical_transcript(extra)
 
 
+@pytest.mark.parametrize(
+    ("mutation", "expected_message"),
+    (
+        ("schema", "physical transcript schema is invalid"),
+        ("source", "physical transcript source is invalid"),
+        ("execution-source", "physical transcript execution source is invalid"),
+        ("physical-evidence", "physical transcript physical evidence must be true"),
+        ("scenario-role", "physical transcript scenario role is invalid"),
+        ("test-run-id", "test_run_id is invalid"),
+        ("binding-probe", "physical binding labels are invalid"),
+        ("binding-git", "gitHead is invalid"),
+        ("binding-svd", "svdSha256 is invalid"),
+        ("empty-batches", "physical transcript batches are invalid"),
+        ("batch-shape", "physical transcript batches are invalid"),
+        ("batch-binding", "replay batch binding contradicts the document binding"),
+        ("batch-group", "physical transcript batch identity is invalid"),
+        ("batch-revision", "physical transcript batch identity is invalid"),
+        ("batch-run", "physical transcript batch identity is invalid"),
+        ("batch-sequence", "physical transcript sequences are not contiguous"),
+        ("batch-captured", "physical transcript captured times are not increasing"),
+        ("batch-selector", "physical transcript batch identity is invalid"),
+        ("duplicate-selector", "physical transcript selectors are not unique"),
+        ("empty-values", "replay batch values are invalid"),
+        ("sample-status", "replay sample status is invalid"),
+        ("sample-code", "replay successful sample is invalid"),
+        ("sample-definition", "sample definition is invalid"),
+        ("integer-rate", "actualRateHz is invalid"),
+        ("captured-before-scheduled", "replay batch captured time precedes scheduled time"),
+        ("value-budget", "physical transcript values exceed their limit"),
+    ),
+)
+def test_shared_physical_contract_rejects_nested_wire_mutations(
+    mutation: str, expected_message: str
+) -> None:
+    contract = _contract()
+    candidate = _physical_transcript(_document("failed-before"))
+    if mutation == "schema":
+        candidate["schema"] = "stm32-monitor-physical-transcript/9"
+    elif mutation == "source":
+        candidate["source"] = "untrusted-source"
+    elif mutation == "execution-source":
+        candidate["execution_source"] = "replay"
+    elif mutation == "physical-evidence":
+        candidate["physical_transport_evidence"] = False
+    elif mutation == "scenario-role":
+        candidate["scenario_role"] = "other"
+    elif mutation == "test-run-id":
+        candidate["test_run_id"] = ""
+    elif mutation == "binding-probe":
+        candidate["binding"]["probeId"] = "replay:probe-v2"
+    elif mutation == "binding-git":
+        candidate["binding"]["gitHead"] = "g" * 40
+    elif mutation == "binding-svd":
+        candidate["binding"]["svdSha256"] = "invalid"
+    elif mutation == "empty-batches":
+        candidate["batches"] = []
+    elif mutation == "batch-shape":
+        candidate["batches"] = {}
+    elif mutation == "batch-binding":
+        candidate["batches"][1]["binding"] = deepcopy(candidate["binding"])
+        candidate["batches"][1]["binding"]["workspaceId"] = "b" * 64
+    elif mutation == "batch-group":
+        candidate["batches"][1]["groupId"] = "55555555-5555-4555-8555-555555555555"
+    elif mutation == "batch-revision":
+        candidate["batches"][1]["groupRevision"] = 2
+    elif mutation == "batch-run":
+        candidate["batches"][1]["runId"] = "55555555-5555-4555-8555-555555555555"
+    elif mutation == "batch-sequence":
+        candidate["batches"][1]["sequence"] = 2
+    elif mutation == "batch-captured":
+        first = candidate["batches"][0]
+        second = candidate["batches"][1]
+        # Keep both rows valid against their own scheduled time and UTC/latency
+        # fields, then violate only the cross-batch increasing-capture rule.
+        first["capturedUnixNs"] = second["capturedUnixNs"]
+        first["capturedAtUtc"] = second["capturedAtUtc"]
+        first["latencyNs"] = first["capturedUnixNs"] - first["scheduledUnixNs"]
+    elif mutation == "batch-selector":
+        watch = candidate["batches"][1]["values"][0]["watch"]
+        watch[_selector_key(watch)] = "different.selector"
+    elif mutation == "duplicate-selector":
+        first_values = candidate["batches"][0]["values"]
+        first_values.append(deepcopy(first_values[0]))
+    elif mutation == "empty-values":
+        candidate["batches"][0]["values"] = []
+    elif mutation == "sample-status":
+        candidate["batches"][0]["values"][0]["status"] = "UNKNOWN"
+    elif mutation == "sample-code":
+        candidate["batches"][0]["values"][0]["code"] = "NATIVE_ERROR"
+    elif mutation == "sample-definition":
+        candidate["batches"][0]["values"][0]["definition"] = []
+    elif mutation == "integer-rate":
+        candidate["batches"][0]["actualRateHz"] = 1
+    elif mutation == "captured-before-scheduled":
+        candidate["batches"][0]["capturedUnixNs"] = candidate["batches"][0]["scheduledUnixNs"] - 1
+    elif mutation == "value-budget":
+        first = candidate["batches"][0]
+        source_sample = first["values"][0]
+        first["values"] = []
+        for index in range(256):
+            sample = deepcopy(source_sample)
+            watch = sample["watch"]
+            watch[_selector_key(watch)] = f"r{index}"
+            sample["typedValue"]["expression"] = f"r{index}"
+            first["values"].append(sample)
+        candidate["batches"] = [deepcopy(first) for _ in range(40)]
+    before = deepcopy(candidate)
+
+    with pytest.raises(contract.ReplayContractError) as error:
+        contract.validate_physical_transcript(candidate)
+    assert str(error.value) == expected_message
+    assert candidate == before
+
+
+@pytest.mark.parametrize(
+    "value",
+    (
+        ("tuple",),
+        {1: "non-string-key"},
+        {"value": float("nan")},
+        {"value": "e\u0301"},
+    ),
+)
+def test_shared_physical_canonicalizer_rejects_unsafe_json_values(value: object) -> None:
+    contract = _contract()
+    before = value
+    with pytest.raises(contract.ReplayContractError):
+        contract.canonical_physical_json_bytes(value)
+    assert value is before
+
+
+def test_shared_physical_canonicalizer_rejects_cycles_without_mutating_input() -> None:
+    contract = _contract()
+    value: list[object] = []
+    value.append(value)
+    with pytest.raises(contract.ReplayContractError):
+        contract.canonical_physical_json_bytes(value)
+    assert value[0] is value
+
+
 @pytest.mark.parametrize("case_name", tuple(_document_mutations(_document("failed-before"))))
 def test_shared_and_monitor_reject_the_same_document_wire_mutations(
     case_name: str,

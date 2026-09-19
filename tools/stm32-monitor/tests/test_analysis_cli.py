@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+from hashlib import sha256
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import UUID
@@ -10,8 +11,14 @@ import pytest
 
 import stm32_monitor.cli as cli
 from stm32_monitor.analysis import AnalysisRequest
-from stm32_monitor.analysis_workflows import AnalysisPublication
+from stm32_monitor.analysis_workflows import AnalysisPublication, AnalysisWorkflowError
 from stm32_monitor.protocol import ProtocolResult
+from stm32_monitor.replay import (
+    MonitorReplayError,
+    MonitorRunRef,
+    canonical_replay_json_bytes,
+)
+from stm32_toolkit.evidence import EVIDENCE_INVALID, EvidenceValidationError
 from stm32_toolkit.diagnostics import SourceChangeDeclaration
 from stm32_toolkit.paths import WorkspacePaths
 from stm32_toolkit.project_model import ProjectManifestError
@@ -66,6 +73,93 @@ def _project_and_model(monkeypatch: pytest.MonkeyPatch, project: Path) -> None:
 
 def _write_json(path: Path, value: object) -> None:
     path.write_text(json.dumps(value, sort_keys=True, separators=(",", ":")), encoding="utf-8")
+
+
+def _real_project(project: Path) -> None:
+    payload = {
+        "schemaVersion": 3,
+        "logicalProjectId": str(PROJECT_ID),
+        "generatedBy": {"tool": "stm32-toolkit", "version": "0.6"},
+        "project": {"name": "analysis-cli", "origin": "manual"},
+        "target": {"device": "stm32:stm32f429zi", "core": "cortex-m4"},
+        "framework": {"type": "bare-metal", "version": None},
+        "build": {
+            "sources": [],
+            "includePaths": [],
+            "defines": [],
+            "compileOptions": [],
+            "assemblySources": [],
+            "presets": [],
+            "elf": None,
+        },
+        "memory": {"source": "manual", "regions": []},
+        "debug": {"backend": "pyocd", "target": "board:fixture-01", "svd": None},
+        "generation": {
+            "cubeMxIoc": None,
+            "managedManifest": ".stm32-toolkit/generated-files.json",
+            "generatedDirectories": [],
+            "userDirectories": [],
+        },
+    }
+    project.mkdir()
+    _write_json(project / ".stm32-project.json", payload)
+
+
+def _valid_analysis_request_wire() -> dict[str, object]:
+    def reference(role: str, run_id: str) -> MonitorRunRef:
+        payload: dict[str, object] = {
+            "schema": "stm32-monitor-run-ref/1",
+            "operation_id": run_id,
+            "scenario_role": role,
+            "execution_source": "replay",
+            "physical_transport_evidence": False,
+            "origin_workspace_id": "a" * 64,
+            "import_workspace_id": "a" * 64,
+            "logical_project_id": str(PROJECT_ID),
+            "origin_session_id": "session-a",
+            "projected_session_id": "session-a",
+            "origin_run_id": run_id,
+            "projected_run_id": run_id,
+            "target_device": "target",
+            "probe_id": "replay:probe-v2",
+            "physical_target": "replay:non-physical",
+            "build_id": "b" * 64,
+            "elf_sha256": "c" * 64,
+            "input_snapshot_sha256": "d" * 64,
+            "git_head": "e" * 40,
+            "git_dirty": False,
+            "flash_session_id": "replay:no-flash",
+            "lease_id": "replay:no-lease",
+            "dwarf_sha256": "f" * 64,
+            "svd_sha256": "0" * 64,
+            "group_id": "11111111-1111-4111-8111-111111111111",
+            "group_revision": 1,
+            "start_sequence": 0,
+            "end_sequence_exclusive": 1,
+            "start_captured_unix_ns": 100,
+            "end_captured_unix_ns_exclusive": 101,
+            "fixture_sha256": "1" * 64,
+            "projected_batch_sha256s": ["2" * 64],
+            "transcript_evidence_id": "3" * 64,
+        }
+        payload["run_ref_sha256"] = sha256(
+            canonical_replay_json_bytes(payload)
+        ).hexdigest()
+        return MonitorRunRef.from_value(payload)
+
+    before = reference(
+        "failed-before", "33333333-3333-4333-8333-333333333333"
+    )
+    after = reference("fixed-after", "44444444-4444-4444-8444-444444444444")
+    return AnalysisRequest(
+        schema="stm32-monitor-analysis-request/1",
+        before_run=before,
+        after_run=after,
+        selector_kind="variable",
+        selector="counter",
+        alignment="run-relative",
+        minimum_valid_pairs=2,
+    ).to_dict()
 
 
 def test_protocol_accepts_only_the_four_analysis_boundary_codes() -> None:
@@ -405,6 +499,96 @@ def test_analysis_provider_failure_is_sanitized_without_exception_or_path_leak(
     assert payload["message"] == "Monitor analysis provider failed"
     assert "private provider secret" not in output.getvalue()
     assert str(private_path) not in output.getvalue()
+
+
+@pytest.mark.parametrize(
+    ("error", "expected_code", "expected_message"),
+    (
+        (
+            AnalysisWorkflowError("OPERATION_CONFLICT", "same operation"),
+            "EVIDENCE_INTEGRITY_FAILURE",
+            "same operation",
+        ),
+        (
+            AnalysisWorkflowError("ENVIRONMENT_FAILURE", "provider unavailable"),
+            "ENVIRONMENT_FAILURE",
+            "provider unavailable",
+        ),
+        (
+            MonitorReplayError("MONITOR_REPLAY_INVALID", "replay is invalid"),
+            "ANALYSIS_WORKFLOW_INVALID",
+            "replay is invalid",
+        ),
+        (
+            EvidenceValidationError(EVIDENCE_INVALID, "evidence is invalid"),
+            "EVIDENCE_INTEGRITY_FAILURE",
+            "Evidence is invalid",
+        ),
+        (
+            TypeError("bad analysis input"),
+            "ANALYSIS_WORKFLOW_INVALID",
+            "Monitor analysis input is invalid",
+        ),
+        (
+            OSError("provider unavailable"),
+            "ENVIRONMENT_FAILURE",
+            "Monitor analysis provider failed",
+        ),
+    ),
+)
+def test_public_analysis_cli_maps_each_adapter_failure_class(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    error: BaseException,
+    expected_code: str,
+    expected_message: str,
+) -> None:
+    project = tmp_path / "project"
+    data = tmp_path / "data"
+    _real_project(project)
+    request_file = tmp_path / "request.json"
+    _write_json(request_file, _valid_analysis_request_wire())
+    calls = 0
+
+    def fail(*args: object, **kwargs: object) -> object:
+        nonlocal calls
+        calls += 1
+        del args, kwargs
+        raise error
+
+    monkeypatch.setattr(cli, "compare_monitor_runs", fail, raising=False)
+    output = io.StringIO()
+    code = cli.main(
+        [
+            "analysis",
+            "compare",
+            "--project",
+            str(project),
+            "--data-root",
+            str(data),
+            "--session-id",
+            "monitor-a",
+            "--request-file",
+            str(request_file),
+            "--diagnostic-session-id",
+            "1" * 32,
+            "--hypothesis-id",
+            "2" * 32,
+            "--polarity",
+            "supports",
+            "--rationale",
+            "changed",
+            "--json",
+        ],
+        _stdout=output,
+    )
+
+    assert code == 1
+    assert calls == 1
+    payload = json.loads(output.getvalue())
+    assert payload["code"] == expected_code
+    assert payload["message"] == expected_message
+    assert "bad analysis input" not in output.getvalue()
 
 
 def test_analysis_file_permission_failure_is_environment_error_without_leaks(
