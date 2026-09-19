@@ -626,3 +626,174 @@ def test_native_parser_rejects_incomplete_r6_absolute_or_missing_source_tree(tmp
             environment=_real_native_environment(),
         )
     assert error.value.code == "CUBEMX_NATIVE_OUTPUT_INVALID"
+
+
+def test_native_parser_rejects_missing_cmake_dialect_without_writes(tmp_path: Path):
+    root = _fixture_tree(tmp_path, "context-f4")
+    request = _fixture_request("context-f4")
+    environment = _fixture_environment("context-f4")
+    control = parse_native_project(
+        root,
+        request=request,
+        plan_id="a" * 64,
+        action_digest="b" * 64,
+        environment=environment,
+    )
+    assert isinstance(control, NativeProjectModel)
+
+    cmake_path = root / "CMakeLists.txt"
+    text = cmake_path.read_text(encoding="utf-8")
+    marker = 'include("mx-generated.cmake")'
+    assert text.count(marker) == 1
+    cmake_path.write_text(text.replace(marker, ""), encoding="utf-8")
+    before_paths = {
+        path.relative_to(root).as_posix()
+        for path in root.rglob("*")
+    }
+    before_bytes = {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in root.rglob("*")
+        if path.is_file()
+    }
+
+    with pytest.raises(CubeMXNativeProjectError) as error:
+        parse_native_project(
+            root,
+            request=request,
+            plan_id="a" * 64,
+            action_digest="b" * 64,
+            environment=environment,
+        )
+
+    assert error.value.code == "CUBEMX_NATIVE_OUTPUT_INVALID"
+    assert error.value.message == "native CubeMX CMake dialect is missing"
+    assert error.value.details == {}
+    after_paths = {
+        path.relative_to(root).as_posix()
+        for path in root.rglob("*")
+    }
+    after_bytes = {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in root.rglob("*")
+        if path.is_file()
+    }
+    assert after_paths == before_paths
+    assert after_bytes == before_bytes
+    assert not (root / ".stm32-project.json").exists()
+    assert not (root / ".stm32-toolkit" / "cubemx-ownership.json").exists()
+
+
+def test_native_parser_rejects_non_source_rooted_toolchain_without_writes(tmp_path: Path):
+    root = _fixture_tree(tmp_path, "global-f4")
+    request = _fixture_request("global-f4")
+    environment = _fixture_environment("global-f4")
+    control = parse_native_project(
+        root,
+        request=request,
+        plan_id="a" * 64,
+        action_digest="b" * 64,
+        environment=environment,
+    )
+    assert isinstance(control, NativeProjectModel)
+    assert control.project_root == root
+    assert "Core/Src/main.c" in control.sources
+    assert "cmake/gcc-arm-none-eabi.cmake" in {path for path, _, _ in control.files}
+
+    presets_path = root / "CMakePresets.json"
+    text = presets_path.read_text(encoding="utf-8")
+    canonical = "${sourceDir}/cmake/gcc-arm-none-eabi.cmake"
+    replacement = "${otherRoot}/cmake/gcc-arm-none-eabi.cmake"
+    assert text.count(canonical) == 1
+    presets_path.write_text(text.replace(canonical, replacement), encoding="utf-8")
+    before_paths = {
+        path.relative_to(root).as_posix()
+        for path in root.rglob("*")
+    }
+    before_bytes = {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in root.rglob("*")
+        if path.is_file()
+    }
+
+    with pytest.raises(CubeMXNativeProjectError) as error:
+        parse_native_project(
+            root,
+            request=request,
+            plan_id="a" * 64,
+            action_digest="b" * 64,
+            environment=environment,
+        )
+
+    assert error.value.code == "CUBEMX_NATIVE_OUTPUT_INVALID"
+    assert error.value.message == "native CMake toolchain path is not source-rooted"
+    assert error.value.details == {}
+    after_paths = {
+        path.relative_to(root).as_posix()
+        for path in root.rglob("*")
+    }
+    after_bytes = {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in root.rglob("*")
+        if path.is_file()
+    }
+    assert after_paths == before_paths
+    assert after_bytes == before_bytes
+    assert not (root / ".stm32-project.json").exists()
+    assert not (root / ".stm32-toolkit" / "cubemx-ownership.json").exists()
+
+
+def test_native_parser_rejects_missing_declared_source_without_writes(tmp_path: Path):
+    root = _real_native_tree(tmp_path)
+    request = CreationRequest.from_mcu("STM32F429ZITx", "generated", framework="hal", language="c")
+    environment = _real_native_environment()
+    control = parse_native_project(
+        root,
+        request=request,
+        plan_id="a" * 64,
+        action_digest="b" * 64,
+        environment=environment,
+    )
+    assert isinstance(control, NativeProjectModel)
+    assert "Core/Src/syscalls.c" in control.sources
+
+    nested = root / "cmake" / "stm32cubemx" / "CMakeLists.txt"
+    text = nested.read_text(encoding="utf-8")
+    canonical = "${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/syscalls.c"
+    replacement = "${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/missing.c"
+    assert text.count(canonical) == 1
+    nested.write_text(text.replace(canonical, replacement), encoding="utf-8")
+    before_paths = {
+        path.relative_to(root).as_posix()
+        for path in root.rglob("*")
+    }
+    before_bytes = {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in root.rglob("*")
+        if path.is_file()
+    }
+
+    with pytest.raises(CubeMXNativeProjectError) as error:
+        parse_native_project(
+            root,
+            request=request,
+            plan_id="a" * 64,
+            action_digest="b" * 64,
+            environment=environment,
+        )
+
+    assert error.value.code == "CUBEMX_NATIVE_OUTPUT_INVALID"
+    assert error.value.message == "native source inventory references a missing file"
+    assert error.value.details == {}
+    after_paths = {
+        path.relative_to(root).as_posix()
+        for path in root.rglob("*")
+    }
+    after_bytes = {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in root.rglob("*")
+        if path.is_file()
+    }
+    assert after_paths == before_paths
+    assert after_bytes == before_bytes
+    assert not (root / ".stm32-project.json").exists()
+    assert not (root / ".stm32-toolkit" / "cubemx-ownership.json").exists()
