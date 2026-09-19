@@ -1075,7 +1075,7 @@ def test_public_store_read_integrity_refusals_preserve_persisted_authority(
     tmp_path: Path, case: str
 ) -> None:
     evidence = EvidenceStore(tmp_path / "evidence")
-    failed_evidence_id = _failed_evidence(evidence, tmp_path / "source")
+    failed_evidence_id = _failed_evidence(evidence, tmp_path)
     store = DiagnosticStore(tmp_path / "diagnostics", evidence)
     created = (
         _created_target(failed_evidence_id)
@@ -1209,7 +1209,7 @@ def test_public_store_read_integrity_refusals_preserve_persisted_authority(
 )
 def test_public_store_write_refusals_preserve_authority(tmp_path: Path, case: str) -> None:
     evidence = EvidenceStore(tmp_path / "evidence")
-    failed_evidence_id = _failed_evidence(evidence, tmp_path / "source")
+    failed_evidence_id = _failed_evidence(evidence, tmp_path)
 
     if case == "create-root-not-directory":
         diagnostics_root = tmp_path / "diagnostics-file"
@@ -1376,7 +1376,7 @@ def test_public_store_recovers_after_event_durability_interruption(
     tmp_path: Path, phase: str
 ) -> None:
     evidence = EvidenceStore(tmp_path / "evidence")
-    failed_evidence_id = _failed_evidence(evidence, tmp_path / "source")
+    failed_evidence_id = _failed_evidence(evidence, tmp_path)
     diagnostics_root = tmp_path / "diagnostics"
     fired = False
 
