@@ -52,6 +52,7 @@ from stm32_toolkit.diagnostic_workflows import (
     diagnostic_complete_verification,
     diagnostic_declare_source_change,
     diagnostic_run_plan,
+    diagnostic_show,
     diagnostic_start,
     diagnostic_start_verification,
 )
@@ -1575,3 +1576,284 @@ def test_persisted_physical_recovery_chain_uses_real_authorities_and_is_cas_safe
         )
     )["attempt"]
     assert retried_final == final
+
+
+def _prepare_public_physical_attempt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    through_revision: int,
+) -> tuple[
+    AcceptanceRecoveryContext,
+    DiagnosticWorkflowContext | None,
+    str | None,
+]:
+    """Build a legal public physical chain through revision 1 or revision 4."""
+    if through_revision not in {1, 4}:
+        raise ValueError("the focused physical fixtures stop at revision 1 or 4")
+
+    project_root = tmp_path / "project"
+    _write_physical_project(project_root)
+    data_root = tmp_path / "data"
+    session_id = "t10-physical-boundary"
+    testing = TestingWorkflowContext(project_root, data_root, session_id)
+    diagnostic = DiagnosticWorkflowContext(project_root, data_root, session_id)
+    model = load_project_model(project_root)
+    source_path = project_root / "App" / "main.c"
+    before_source = source_path.read_bytes()
+    before_snapshot = snapshot_project_inputs(model)
+    after_source = b"int main(void) { return 1; }\n"
+    source_path.write_bytes(after_source)
+    after_snapshot = snapshot_project_inputs(load_project_model(project_root))
+    source_path.write_bytes(before_source)
+    assert after_snapshot.sha256 != before_snapshot.sha256
+
+    workspace = WorkspacePaths.from_roots(
+        data_root, project_root, UUID(PROJECT_ID), session_id
+    )
+    before_identity = EvidenceIdentity(
+        workspace_id=workspace.workspace_id,
+        project_id=PROJECT_ID,
+        session_id=session_id,
+        build_id=PHYSICAL_BEFORE_BUILD,
+        elf_sha256=PHYSICAL_BEFORE_ELF,
+        target_device=model.target.device,
+        input_snapshot_sha256=before_snapshot.sha256,
+        git_commit="b" * 40,
+        git_dirty=False,
+    )
+    if through_revision >= 3:
+        failed_descriptor, failed_stream = vs08a_fixtures._canonical_replay_inputs(
+            tmp_path, "failed-before", "seed-physical-boundary"
+        )
+        _ok(
+            target_replay_run(
+                testing,
+                "seed-physical-boundary",
+                failed_descriptor,
+                failed_stream,
+            )
+        )
+        _publish_physical_from_seed(
+            tmp_path,
+            project_root,
+            data_root,
+            session_id,
+            "seed-physical-boundary",
+            PHYSICAL_FAILED_RUN,
+            before_identity,
+        )
+
+    def fresh_firmware_facts(_project: Path):
+        current_model = load_project_model(project_root)
+        current_snapshot = snapshot_project_inputs(current_model)
+        return SimpleNamespace(
+            model=current_model,
+            elf_path="build/arm-debug/firmware.elf",
+            elf_sha256=PHYSICAL_BEFORE_ELF,
+            build_id=PHYSICAL_BEFORE_BUILD,
+            input_snapshot_sha256=current_snapshot.sha256,
+            git_commit="b" * 40,
+            git_dirty=False,
+            target_device=current_model.target.device,
+        )
+
+    monkeypatch.setattr(
+        recovery_workflows, "_load_fresh_firmware_facts", fresh_firmware_facts
+    )
+
+    diagnostic_id: str | None = None
+    diagnostic_context: DiagnosticWorkflowContext | None = None
+    if through_revision >= 4:
+        monkeypatch.setattr(
+            diagnostic_workflows,
+            "_session_id_factory",
+            lambda: "9" * 32,
+        )
+        diagnostic_context = diagnostic
+        started_diagnostic = _ok(
+            diagnostic_start(
+                diagnostic,
+                operation_id="physical-boundary-diagnostic-start",
+                failed_test_run_id=PHYSICAL_FAILED_RUN,
+                failed_run_mode="target",
+            )
+        )
+        diagnostic_id = str(started_diagnostic["session"]["diagnostic_session_id"])
+        _ok(
+            diagnostic_begin(
+                diagnostic,
+                operation_id="physical-boundary-diagnostic-begin",
+                diagnostic_session_id=diagnostic_id,
+                expected_revision=1,
+            )
+        )
+
+    context = AcceptanceRecoveryContext(
+        project_root,
+        data_root,
+        session_id,
+        clock=lambda: "2026-09-10T00:00:00.000000Z",
+    )
+    _ok(
+        begin_acceptance_attempt(
+            context,
+            attempt_id=ATTEMPT_ID,
+            scenario_id="legacy-keil-physical-repair",
+            scenario_version="1",
+        )
+    )
+    _ok(
+        checkpoint_acceptance_attempt(
+            context,
+            attempt_id=ATTEMPT_ID,
+            expected_revision=0,
+            stage="project-materialized",
+        )
+    )
+    if through_revision >= 4:
+        _ok(
+            checkpoint_acceptance_attempt(
+                context,
+                attempt_id=ATTEMPT_ID,
+                expected_revision=1,
+                stage="firmware-built-before",
+            )
+        )
+        _ok(
+            checkpoint_acceptance_attempt(
+                context,
+                attempt_id=ATTEMPT_ID,
+                expected_revision=2,
+                stage="target-failure-observed",
+                test_run_id=PHYSICAL_FAILED_RUN,
+            )
+        )
+        intent_input = {
+            "schema": "stm32-source-change-intent/1",
+            "changes": [
+                {
+                    "path": "App/main.c",
+                    "beforeSha256": hashlib.sha256(before_source).hexdigest(),
+                    "afterSha256": hashlib.sha256(after_source).hexdigest(),
+                    "afterSize": len(after_source),
+                }
+            ],
+        }
+        diagnosis = _ok(
+            checkpoint_acceptance_attempt(
+                context,
+                attempt_id=ATTEMPT_ID,
+                expected_revision=3,
+                stage="diagnosis-completed",
+                diagnostic_session_id=diagnostic_id,
+                source_change_intent=intent_input,
+            )
+        )["attempt"]
+        assert diagnosis["revision"] == 4
+        assert diagnosis["nextStage"] == "firmware-built-after"
+
+    return context, diagnostic_context, diagnostic_id
+
+
+def test_public_physical_checkpoint_rejects_nonmatching_stale_revision(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    context, _diagnostic, _diagnostic_id = _prepare_public_physical_attempt(
+        tmp_path, monkeypatch, through_revision=1
+    )
+    before = _ok(show_acceptance_attempt(context, attempt_id=ATTEMPT_ID))["attempt"]
+    result = checkpoint_acceptance_attempt(
+        context,
+        attempt_id=ATTEMPT_ID,
+        expected_revision=0,
+        stage="firmware-built-before",
+    )
+    assert result.ok is False
+    assert result.data is None
+    assert result.code == "ACCEPTANCE_ATTEMPT_REVISION_CONFLICT"
+    assert result.message == "Acceptance attempt revision conflicts with the current chain."
+    after = _ok(show_acceptance_attempt(context, attempt_id=ATTEMPT_ID))["attempt"]
+    assert after == before
+    assert _ok(resume_acceptance_attempt(context, attempt_id=ATTEMPT_ID))["attempt"] == before
+
+
+def test_public_physical_authorization_requires_true_consent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    context, diagnostic, diagnostic_id = _prepare_public_physical_attempt(
+        tmp_path, monkeypatch, through_revision=4
+    )
+    assert diagnostic is not None and diagnostic_id is not None
+    before = _ok(show_acceptance_attempt(context, attempt_id=ATTEMPT_ID))["attempt"]
+    diagnostic_before = _ok(
+        diagnostic_show(diagnostic, diagnostic_session_id=diagnostic_id)
+    )["session"]
+    resumed = _ok(resume_acceptance_attempt(context, attempt_id=ATTEMPT_ID))
+    action_digest = resumed["actionDigest"]
+    assert isinstance(action_digest, str)
+    result = authorize_acceptance_source_change(
+        context,
+        attempt_id=ATTEMPT_ID,
+        expected_revision=4,
+        action_digest=action_digest,
+        authorized=False,
+    )
+    assert result.ok is False
+    assert result.data is None
+    assert result.code == "ACCEPTANCE_ATTEMPT_INPUT_INVALID"
+    assert result.message == "Acceptance attempt input is invalid."
+    after = _ok(show_acceptance_attempt(context, attempt_id=ATTEMPT_ID))["attempt"]
+    assert after == before
+    diagnostic_after = _ok(
+        diagnostic_show(diagnostic, diagnostic_session_id=diagnostic_id)
+    )["session"]
+    assert diagnostic_after == diagnostic_before
+    assert _ok(resume_acceptance_attempt(context, attempt_id=ATTEMPT_ID))["attempt"] == before
+
+
+def test_public_physical_authorization_retry_rejects_wrong_digest_after_revision_five(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    context, diagnostic, diagnostic_id = _prepare_public_physical_attempt(
+        tmp_path, monkeypatch, through_revision=4
+    )
+    assert diagnostic is not None and diagnostic_id is not None
+    resumed = _ok(resume_acceptance_attempt(context, attempt_id=ATTEMPT_ID))
+    action_digest = resumed["actionDigest"]
+    assert isinstance(action_digest, str)
+    authorized = _ok(
+        authorize_acceptance_source_change(
+            context,
+            attempt_id=ATTEMPT_ID,
+            expected_revision=4,
+            action_digest=action_digest,
+            authorized=True,
+        )
+    )["attempt"]
+    assert authorized["revision"] == 5
+    diagnostic_before_retry = _ok(
+        diagnostic_show(diagnostic, diagnostic_session_id=diagnostic_id)
+    )["session"]
+    wrong_digest = hashlib.sha256(
+        b"physical-boundary-wrong-authorization-digest"
+    ).hexdigest()
+    assert wrong_digest != action_digest
+    result = authorize_acceptance_source_change(
+        context,
+        attempt_id=ATTEMPT_ID,
+        expected_revision=4,
+        action_digest=wrong_digest,
+        authorized=True,
+    )
+    assert result.ok is False
+    assert result.data is None
+    assert result.code == "ACCEPTANCE_ATTEMPT_REVISION_CONFLICT"
+    assert result.message == "Acceptance attempt revision conflicts with the current chain."
+    after = _ok(show_acceptance_attempt(context, attempt_id=ATTEMPT_ID))["attempt"]
+    assert after == authorized
+    diagnostic_after_retry = _ok(
+        diagnostic_show(diagnostic, diagnostic_session_id=diagnostic_id)
+    )["session"]
+    assert diagnostic_after_retry == diagnostic_before_retry
+    assert _ok(resume_acceptance_attempt(context, attempt_id=ATTEMPT_ID))["attempt"] == authorized
