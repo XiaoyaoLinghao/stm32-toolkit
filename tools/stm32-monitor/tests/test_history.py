@@ -44,38 +44,68 @@ GROUP_ID = UUID("11111111-1111-4111-8111-111111111111")
 RUN_ID = UUID("22222222-2222-4222-8222-222222222222")
 
 
+def _retention_exception_graph(
+    error: BaseException,
+) -> tuple[tuple[BaseException, ...], tuple[dict[str, object], ...]]:
+    nodes: list[BaseException] = []
+    indexes: dict[int, int] = {}
+    edges: list[dict[str, object]] = []
+    edge_keys: set[tuple[int, int, str]] = set()
+    pending: list[tuple[BaseException, int | None, str | None]] = [(error, None, None)]
+
+    while pending:
+        current, parent_index, relation = pending.pop()
+        current_id = id(current)
+        index = indexes.get(current_id)
+        is_new = index is None
+        if is_new:
+            index = len(nodes)
+            indexes[current_id] = index
+            nodes.append(current)
+        assert index is not None
+        if parent_index is not None and relation is not None:
+            edge_key = (parent_index, index, relation)
+            if edge_key not in edge_keys:
+                edge_keys.add(edge_key)
+                edges.append(
+                    {
+                        "from": parent_index,
+                        "to": index,
+                        "relation": relation,
+                    }
+                )
+        if not is_new:
+            continue
+        for child_relation, child in (
+            ("context", current.__context__),
+            ("cause", current.__cause__),
+        ):
+            if child is not None:
+                pending.append((child, index, child_relation))
+    return tuple(nodes), tuple(edges)
+
+
 def _retention_exception_chain(error: BaseException) -> tuple[BaseException, ...]:
-    chain: list[BaseException] = []
-    current: BaseException | None = error
-    seen: set[int] = set()
-    while current is not None and id(current) not in seen:
-        seen.add(id(current))
-        chain.append(current)
-        if current.__cause__ is not None:
-            current = current.__cause__
-        elif not current.__suppress_context__:
-            current = current.__context__
-        else:
-            current = None
-    return tuple(chain)
+    return _retention_exception_graph(error)[0]
 
 
 def _retention_exception_record(error: BaseException | None) -> dict[str, object] | None:
     if error is None:
         return None
+    nodes, edges = _retention_exception_graph(error)
     records: list[dict[str, object]] = []
-    relation = "root"
-    for current in _retention_exception_chain(error):
+    for index, current in enumerate(nodes):
         native_code = getattr(current, "sqlite_errorcode", None)
         native_name = getattr(current, "sqlite_errorname", None)
         records.append(
             {
+                "index": index,
                 "type": f"{type(current).__module__}.{type(current).__qualname__}",
                 "code": getattr(current, "code", None),
                 "message": str(current),
                 "nativeErrorCode": native_code if type(native_code) is int else None,
                 "nativeErrorName": native_name if type(native_name) is str else None,
-                "relation": relation,
+                "suppressedContext": bool(getattr(current, "__suppress_context__", False)),
                 "traceback": "".join(
                     traceback.TracebackException.from_exception(
                         current,
@@ -84,13 +114,7 @@ def _retention_exception_record(error: BaseException | None) -> dict[str, object
                 ),
             }
         )
-        if current.__cause__ is not None:
-            relation = "cause"
-        elif not current.__suppress_context__ and current.__context__ is not None:
-            relation = "context"
-        else:
-            relation = "chain"
-    return {"chain": records}
+    return {"chain": records, "edges": list(edges)}
 
 
 def _retention_is_sqlite_interrupt(error: BaseException) -> bool:
@@ -104,6 +128,41 @@ def _retention_is_sqlite_interrupt(error: BaseException) -> bool:
     )
 
 
+_RETENTION_ALLOWED_STORAGE_CODES = frozenset(
+    {"MONITOR_STORAGE_BUSY", "MONITOR_STORAGE_INVALID"}
+)
+
+
+def _retention_exception_children(error: BaseException) -> tuple[BaseException, ...]:
+    children: list[BaseException] = []
+    seen: set[int] = set()
+    for child in (error.__cause__, error.__context__):
+        if child is not None and id(child) not in seen:
+            seen.add(id(child))
+            children.append(child)
+    return tuple(children)
+
+
+def _retention_exception_branch_is_allowed(error: BaseException) -> bool:
+    nodes = _retention_exception_chain(error)
+    if not nodes:
+        return False
+    if not any(
+        _retention_is_sqlite_interrupt(node)
+        and not _retention_exception_children(node)
+        for node in nodes
+    ):
+        return False
+    return all(
+        _retention_is_sqlite_interrupt(node)
+        or (
+            isinstance(node, StorageFailure)
+            and getattr(node, "code", None) in _RETENTION_ALLOWED_STORAGE_CODES
+        )
+        for node in nodes
+    )
+
+
 def _retention_internal_cancellation_is_allowed(
     callback_errors: list[BaseException],
     future_error: BaseException | None,
@@ -112,17 +171,10 @@ def _retention_internal_cancellation_is_allowed(
 ) -> bool:
     if not caller_cancelled:
         return False
-    observed: list[BaseException] = []
-    for error in callback_errors:
-        observed.extend(_retention_exception_chain(error))
+    roots = [*callback_errors]
     if future_error is not None:
-        observed.extend(_retention_exception_chain(future_error))
-    return bool(observed) and any(
-        _retention_is_sqlite_interrupt(error) for error in observed
-    ) and all(
-        isinstance(error, StorageFailure) or _retention_is_sqlite_interrupt(error)
-        for error in observed
-    )
+        roots.append(future_error)
+    return bool(roots) and all(_retention_exception_branch_is_allowed(root) for root in roots)
 
 
 def _record_retention_observation(
@@ -132,15 +184,24 @@ def _record_retention_observation(
     callback_stages: list[str],
     stage_times: dict[str, int],
     caller_times: dict[str, int],
-    caller_result,
-    retention_future: Future[object],
+    caller_result: object | None,
+    caller_settled: bool,
+    retention_future: Future[object] | None,
+    cancel_event_set: bool | None,
     callback_errors: list[BaseException],
     future_error: BaseException | None,
     future_outcome: str,
     final_state: dict[str, object] | None,
     writer_sentinel: object | None,
     public_value_count: int | None,
+    cleanup_status: str,
 ) -> None:
+    caller = None
+    if caller_result is not None:
+        caller = {
+            "ok": getattr(caller_result, "ok", None),
+            "code": getattr(caller_result, "code", None),
+        }
     record_property(
         "retention_observation",
         json.dumps(
@@ -151,15 +212,16 @@ def _record_retention_observation(
                     "monotonicNs": stage_times,
                 },
                 "caller": {
-                    "done": True,
+                    "done": caller_settled,
                     "monotonicNs": caller_times,
-                    "result": {
-                        "ok": caller_result.ok,
-                        "code": caller_result.code,
-                    },
+                    "result": caller,
+                    "cancelEventSet": cancel_event_set,
                 },
                 "future": {
-                    "done": retention_future.done(),
+                    "done": (
+                        None if retention_future is None else retention_future.done()
+                    ),
+                    "observed": future_outcome != "unobserved",
                     "outcome": future_outcome,
                     "exception": _retention_exception_record(future_error),
                 },
@@ -169,6 +231,7 @@ def _record_retention_observation(
                 "finalState": final_state,
                 "writerSentinel": writer_sentinel,
                 "publicValueCount": public_value_count,
+                "cleanupStatus": cleanup_status,
             },
             ensure_ascii=False,
             sort_keys=True,
@@ -2443,7 +2506,15 @@ def test_retention_timeout_after_commit_refresh_keeps_public_state_consistent(
     caller_times: dict[str, int] = {}
     submitted: list[tuple[Future[object], threading.Event]] = []
     retention_future: Future[object] | None = None
+    retention_cancel_event: threading.Event | None = None
     future_observed = False
+    retained: object | None = None
+    worker_error: BaseException | None = None
+    worker_outcome = "unobserved"
+    final_state: dict[str, object] | None = None
+    writer_sentinel: object | None = None
+    public_value_count: int | None = None
+    caller_cancel_event_set: bool | None = None
     database_path = paths.monitor_root / "monitor.sqlite3"
 
     def read_state() -> dict[str, object]:
@@ -2530,14 +2601,16 @@ def test_retention_timeout_after_commit_refresh_keeps_public_state_consistent(
         retained = results[0]
         assert not retained.ok and retained.code == "MONITOR_STORAGE_BUSY"
         assert len(submitted) == 1
-        retention_future = submitted[0][0]
+        retention_future, retention_cancel_event = submitted[0]
+        caller_cancel_event_set = retention_cancel_event.is_set()
+        assert caller_cancel_event_set
 
-        committed = read_state()
-        assert committed["batchCount"] == 0
-        assert committed["valueCount"] == 0
-        assert committed["valueRows"] == 0
-        assert committed["logicalBytes"] == committed["summedBytes"]
-        assert committed["integrity"] == "ok"
+        final_state = read_state()
+        assert final_state["batchCount"] == 0
+        assert final_state["valueCount"] == 0
+        assert final_state["valueRows"] == 0
+        assert final_state["logicalBytes"] == final_state["summedBytes"]
+        assert final_state["integrity"] == "ok"
 
         release.set()
         assert finished.wait(timeout=5)
@@ -2545,81 +2618,36 @@ def test_retention_timeout_after_commit_refresh_keeps_public_state_consistent(
         thread.join(timeout=5)
         assert not thread.is_alive()
         worker_result: object | None = None
-        worker_error: BaseException | None = None
         try:
             worker_result = retention_future.result(timeout=5)
         except BaseException as error:
             worker_error = error
         future_observed = True
-        caller_cancelled = not retained.ok and retained.code == "MONITOR_STORAGE_BUSY"
         assert retention_future.done()
         if worker_error is None:
             assert type(worker_result) is dict
             if callback_errors:
-                _record_retention_observation(
-                    record_property,
-                    scenario="after-commit-refresh",
-                    callback_stages=callback_stages,
-                    stage_times=stage_times,
-                    caller_times=caller_times,
-                    caller_result=retained,
-                    retention_future=retention_future,
-                    callback_errors=callback_errors,
-                    future_error=None,
-                    future_outcome="unexpected-callback-error",
-                    final_state=None,
-                    writer_sentinel=None,
-                    public_value_count=None,
-                )
                 raise callback_errors[0]
             worker_outcome = "normal"
         else:
-            worker_outcome = "allowed-cancellation"
             if not _retention_internal_cancellation_is_allowed(
                 callback_errors,
                 worker_error,
-                caller_cancelled=caller_cancelled,
+                caller_cancelled=caller_cancel_event_set is True,
             ):
-                _record_retention_observation(
-                    record_property,
-                    scenario="after-commit-refresh",
-                    callback_stages=callback_stages,
-                    stage_times=stage_times,
-                    caller_times=caller_times,
-                    caller_result=retained,
-                    retention_future=retention_future,
-                    callback_errors=callback_errors,
-                    future_error=worker_error,
-                    future_outcome="unexpected-error",
-                    final_state=None,
-                    writer_sentinel=None,
-                    public_value_count=None,
-                )
                 if callback_errors:
                     raise callback_errors[0]
                 raise worker_error
-        assert store._database.try_write(
+            worker_outcome = "allowed-cancellation"
+        writer_sentinel = store._database.try_write(
             lambda connection: connection.execute("SELECT 1").fetchone()[0],
             timeout_ms=200,
-        ) == 1
+        )
+        assert writer_sentinel == 1
         remaining = store.query_history(HistoryQuery("monitor-1", 0, 2_000_000_000))
         assert remaining.ok and remaining.data is not None
-        assert len(remaining.data.values) == 0
-        _record_retention_observation(
-            record_property,
-            scenario="after-commit-refresh",
-            callback_stages=callback_stages,
-            stage_times=stage_times,
-            caller_times=caller_times,
-            caller_result=retained,
-            retention_future=retention_future,
-            callback_errors=callback_errors,
-            future_error=worker_error,
-            future_outcome=worker_outcome,
-            final_state=committed,
-            writer_sentinel=1,
-            public_value_count=len(remaining.data.values),
-        )
+        public_value_count = len(remaining.data.values)
+        assert public_value_count == 0
     finally:
         active_error = sys.exc_info()[1]
         release.set()
@@ -2629,22 +2657,71 @@ def test_retention_timeout_after_commit_refresh_keeps_public_state_consistent(
         submitted_futures = [future for future, _ in submitted]
         if retention_future is None and len(submitted_futures) == 1:
             retention_future = submitted_futures[0]
+        if retention_cancel_event is None and len(submitted) == 1:
+            retention_cancel_event = submitted[0][1]
+        if retention_cancel_event is not None:
+            caller_cancel_event_set = retention_cancel_event.is_set()
         cleanup_worker_error: BaseException | None = None
+        attempted_futures: set[int] = set()
         if retention_future is not None and not future_observed:
+            attempted_futures.add(id(retention_future))
             try:
                 retention_future.result(timeout=5)
+                if worker_outcome == "unobserved":
+                    worker_outcome = "normal"
             except BaseException as error:
                 cleanup_worker_error = error
+                if worker_error is None:
+                    worker_error = error
             future_observed = True
+        elif retention_future is not None:
+            attempted_futures.add(id(retention_future))
         for future in submitted_futures:
-            if future.done():
+            if id(future) in attempted_futures:
                 continue
+            attempted_futures.add(id(future))
             try:
                 future.result(timeout=5)
+                if worker_outcome == "unobserved":
+                    worker_outcome = "normal"
             except BaseException as error:
                 if cleanup_worker_error is None:
                     cleanup_worker_error = error
+                if worker_error is None:
+                    worker_error = error
         future_settled = all(future.done() for future in submitted_futures)
+        if worker_error is not None and worker_outcome == "unobserved":
+            if _retention_internal_cancellation_is_allowed(
+                callback_errors,
+                worker_error,
+                caller_cancelled=caller_cancel_event_set is True,
+            ):
+                worker_outcome = "allowed-cancellation"
+            else:
+                worker_outcome = "unexpected-error"
+        cleanup_status = (
+            "settled"
+            if caller_settled and future_settled
+            else "unsettled-launcher-owned"
+        )
+        _record_retention_observation(
+            record_property,
+            scenario="after-commit-refresh",
+            callback_stages=callback_stages,
+            stage_times=stage_times,
+            caller_times=caller_times,
+            caller_result=retained,
+            caller_settled=caller_settled,
+            retention_future=retention_future,
+            cancel_event_set=caller_cancel_event_set,
+            callback_errors=callback_errors,
+            future_error=worker_error,
+            future_outcome=worker_outcome,
+            final_state=final_state,
+            writer_sentinel=writer_sentinel,
+            public_value_count=public_value_count,
+            cleanup_status=cleanup_status,
+        )
         if caller_settled and future_settled:
             if (
                 active_error is None
@@ -2652,11 +2729,7 @@ def test_retention_timeout_after_commit_refresh_keeps_public_state_consistent(
                 and not _retention_internal_cancellation_is_allowed(
                     callback_errors,
                     cleanup_worker_error,
-                    caller_cancelled=(
-                        bool(results)
-                        and not results[0].ok
-                        and results[0].code == "MONITOR_STORAGE_BUSY"
-                    ),
+                    caller_cancelled=caller_cancel_event_set is True,
                 )
             ):
                 raise cleanup_worker_error
@@ -2699,7 +2772,15 @@ def test_retention_timeout_at_commit_boundary_preserves_consistency_and_reuse(
     caller_times: dict[str, int] = {}
     submitted: list[tuple[Future[object], threading.Event]] = []
     retention_future: Future[object] | None = None
+    retention_cancel_event: threading.Event | None = None
     future_observed = False
+    retained: object | None = None
+    worker_error: BaseException | None = None
+    worker_outcome = "unobserved"
+    final_state: dict[str, object] | None = None
+    writer_sentinel: object | None = None
+    public_value_count: int | None = None
+    caller_cancel_event_set: bool | None = None
     database_path = paths.monitor_root / "monitor.sqlite3"
 
     def read_state() -> dict[str, object]:
@@ -2786,7 +2867,9 @@ def test_retention_timeout_at_commit_boundary_preserves_consistency_and_reuse(
         retained = results[0]
         assert not retained.ok and retained.code == "MONITOR_STORAGE_BUSY"
         assert len(submitted) == 1
-        retention_future = submitted[0][0]
+        retention_future, retention_cancel_event = submitted[0]
+        caller_cancel_event_set = retention_cancel_event.is_set()
+        assert caller_cancel_event_set
 
         release.set()
         assert finished.wait(timeout=5)
@@ -2794,63 +2877,32 @@ def test_retention_timeout_at_commit_boundary_preserves_consistency_and_reuse(
         thread.join(timeout=5)
         assert not thread.is_alive()
         worker_result: object | None = None
-        worker_error: BaseException | None = None
         try:
             worker_result = retention_future.result(timeout=5)
         except BaseException as error:
             worker_error = error
         future_observed = True
-        caller_cancelled = not retained.ok and retained.code == "MONITOR_STORAGE_BUSY"
         assert retention_future.done()
         if worker_error is None:
             assert type(worker_result) is dict
             if callback_errors:
-                _record_retention_observation(
-                    record_property,
-                    scenario="at-commit-boundary",
-                    callback_stages=callback_stages,
-                    stage_times=stage_times,
-                    caller_times=caller_times,
-                    caller_result=retained,
-                    retention_future=retention_future,
-                    callback_errors=callback_errors,
-                    future_error=None,
-                    future_outcome="unexpected-callback-error",
-                    final_state=None,
-                    writer_sentinel=None,
-                    public_value_count=None,
-                )
                 raise callback_errors[0]
             worker_outcome = "normal"
         else:
-            worker_outcome = "allowed-cancellation"
             if not _retention_internal_cancellation_is_allowed(
                 callback_errors,
                 worker_error,
-                caller_cancelled=caller_cancelled,
+                caller_cancelled=caller_cancel_event_set is True,
             ):
-                _record_retention_observation(
-                    record_property,
-                    scenario="at-commit-boundary",
-                    callback_stages=callback_stages,
-                    stage_times=stage_times,
-                    caller_times=caller_times,
-                    caller_result=retained,
-                    retention_future=retention_future,
-                    callback_errors=callback_errors,
-                    future_error=worker_error,
-                    future_outcome="unexpected-error",
-                    final_state=None,
-                    writer_sentinel=None,
-                    public_value_count=None,
-                )
                 if callback_errors:
                     raise callback_errors[0]
                 raise worker_error
-        assert store._database.try_write(
+            worker_outcome = "allowed-cancellation"
+        writer_sentinel = store._database.try_write(
             lambda connection: connection.execute("SELECT 1").fetchone()[0],
             timeout_ms=200,
-        ) == 1
+        )
+        assert writer_sentinel == 1
         final_state = read_state()
         assert final_state["batchCount"] in (0, 1)
         assert final_state["valueCount"] in (0, 1)
@@ -2860,22 +2912,8 @@ def test_retention_timeout_at_commit_boundary_preserves_consistency_and_reuse(
         assert final_state["integrity"] == "ok"
         remaining = store.query_history(HistoryQuery("monitor-1", 0, 2_000_000_000))
         assert remaining.ok and remaining.data is not None
-        assert len(remaining.data.values) == final_state["valueCount"]
-        _record_retention_observation(
-            record_property,
-            scenario="at-commit-boundary",
-            callback_stages=callback_stages,
-            stage_times=stage_times,
-            caller_times=caller_times,
-            caller_result=retained,
-            retention_future=retention_future,
-            callback_errors=callback_errors,
-            future_error=worker_error,
-            future_outcome=worker_outcome,
-            final_state=final_state,
-            writer_sentinel=1,
-            public_value_count=len(remaining.data.values),
-        )
+        public_value_count = len(remaining.data.values)
+        assert public_value_count == final_state["valueCount"]
     finally:
         active_error = sys.exc_info()[1]
         release.set()
@@ -2885,22 +2923,71 @@ def test_retention_timeout_at_commit_boundary_preserves_consistency_and_reuse(
         submitted_futures = [future for future, _ in submitted]
         if retention_future is None and len(submitted_futures) == 1:
             retention_future = submitted_futures[0]
+        if retention_cancel_event is None and len(submitted) == 1:
+            retention_cancel_event = submitted[0][1]
+        if retention_cancel_event is not None:
+            caller_cancel_event_set = retention_cancel_event.is_set()
         cleanup_worker_error: BaseException | None = None
+        attempted_futures: set[int] = set()
         if retention_future is not None and not future_observed:
+            attempted_futures.add(id(retention_future))
             try:
                 retention_future.result(timeout=5)
+                if worker_outcome == "unobserved":
+                    worker_outcome = "normal"
             except BaseException as error:
                 cleanup_worker_error = error
+                if worker_error is None:
+                    worker_error = error
             future_observed = True
+        elif retention_future is not None:
+            attempted_futures.add(id(retention_future))
         for future in submitted_futures:
-            if future.done():
+            if id(future) in attempted_futures:
                 continue
+            attempted_futures.add(id(future))
             try:
                 future.result(timeout=5)
+                if worker_outcome == "unobserved":
+                    worker_outcome = "normal"
             except BaseException as error:
                 if cleanup_worker_error is None:
                     cleanup_worker_error = error
+                if worker_error is None:
+                    worker_error = error
         future_settled = all(future.done() for future in submitted_futures)
+        if worker_error is not None and worker_outcome == "unobserved":
+            if _retention_internal_cancellation_is_allowed(
+                callback_errors,
+                worker_error,
+                caller_cancelled=caller_cancel_event_set is True,
+            ):
+                worker_outcome = "allowed-cancellation"
+            else:
+                worker_outcome = "unexpected-error"
+        cleanup_status = (
+            "settled"
+            if caller_settled and future_settled
+            else "unsettled-launcher-owned"
+        )
+        _record_retention_observation(
+            record_property,
+            scenario="at-commit-boundary",
+            callback_stages=callback_stages,
+            stage_times=stage_times,
+            caller_times=caller_times,
+            caller_result=retained,
+            caller_settled=caller_settled,
+            retention_future=retention_future,
+            cancel_event_set=caller_cancel_event_set,
+            callback_errors=callback_errors,
+            future_error=worker_error,
+            future_outcome=worker_outcome,
+            final_state=final_state,
+            writer_sentinel=writer_sentinel,
+            public_value_count=public_value_count,
+            cleanup_status=cleanup_status,
+        )
         if caller_settled and future_settled:
             if (
                 active_error is None
@@ -2908,11 +2995,7 @@ def test_retention_timeout_at_commit_boundary_preserves_consistency_and_reuse(
                 and not _retention_internal_cancellation_is_allowed(
                     callback_errors,
                     cleanup_worker_error,
-                    caller_cancelled=(
-                        bool(results)
-                        and not results[0].ok
-                        and results[0].code == "MONITOR_STORAGE_BUSY"
-                    ),
+                    caller_cancelled=caller_cancel_event_set is True,
                 )
             ):
                 raise cleanup_worker_error
