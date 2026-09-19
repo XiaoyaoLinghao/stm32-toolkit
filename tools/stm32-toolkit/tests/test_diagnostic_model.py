@@ -769,6 +769,7 @@ def test_public_observation_model_boundaries(case_id: str) -> None:
             "steps": tuple(step.to_dict() for step in steps),
         }
         assert calculate_plan_digest(candidate) == _plan().digest
+        assert candidate.keys() == before.keys()
         assert candidate["steps"] is steps
         assert candidate["steps"][0] is steps[0]
         assert candidate["diagnostic_session_id"] == before["diagnostic_session_id"]
