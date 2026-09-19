@@ -7,7 +7,7 @@ accepted-base-to-head diff before assigning any test verdict.
 ## Ledger and boundary
 
 - Accepted base: `0a6bf2a6c591e5e89c6451050de3087168b77eb4`.
-- Code head before this report commit: `812fa170650217199f12a64de829eec117c0e8f6`.
+- Code head before this report commit: `fdd5425e68dedc7a25261c0bebf60c7da2d00b19`.
 - Runtime baseline: `a270d7332c3ad2d09cd0b9adfa96ca80042bcf9d`, unchanged.
 - Branch: `codex/STM32TK-1.0-core-monitor`.
 - Scope: public monitor observe/ingest/load/analyze/query/stream contracts and the shared
@@ -79,9 +79,10 @@ they are not physical evidence.
   is reached from a valid batch and the input remains unchanged.
 - `tools/stm32-monitor/tests/test_history.py:1980`
   `test_public_retention_rejects_persisted_accounting_corruption_without_deletion` — public
-  retention rejects negative persisted accounting and a negative selected `value_count` with
-  `MONITOR_STORAGE_CORRUPT` / `monitor history is corrupt`; the candidate row remains after the
-  rejected pass.
+  retention rejects negative persisted accounting with `MONITOR_STORAGE_CORRUPT` /
+  `monitor storage accounting is invalid`, and rejects a negative selected `value_count` with
+  `MONITOR_STORAGE_CORRUPT` / `monitor history is corrupt`; the candidate row remains after
+  the rejected pass.
 - `tools/stm32-monitor/tests/test_analysis_cli.py:524`
   `test_public_analysis_cli_maps_each_adapter_failure_class` — the request file is a real
   `AnalysisRequest` built from two valid public `MonitorRunRef` values and a real project
@@ -254,9 +255,9 @@ authority.
   [7:1915,1918,1934,1956,1959,1965,1973]` are public history seams.  **PUBLIC:** the
   existing v1 migration, canonical row/digest/index corruption, cursor/page, cache, stream,
   append-batch, and analysis workflow query selectors, plus the new retention accounting and
-  candidate corruption selector.  The new selector reaches `logical_before`, candidate row,
-  rollback, and unchanged-row behavior using persisted SQL corruption setup, while assertions
-  remain on `run_retention` and `query_history`.
+  candidate corruption selector.  The new selector reaches the storage preflight accounting
+  guard and the retention `logical_before`/candidate-row/rollback guards using persisted SQL
+  corruption setup, while assertions remain on `run_retention` and `query_history`.
 - `tools/stm32-monitor/src/stm32_monitor/models.py` (24): `_freeze_json [1:48]` and nested
   `freeze [4:119,125,129,131]`, `_utc_text [1:155]`, model `__post_init__
   [4:200,240,243,812]`, `_validate_live_status [8:641,666,671,683,685,690,706,708]`,
@@ -338,7 +339,7 @@ authority.
 
 ## Release handoff
 
-The code selectors are committed at `812fa170650217199f12a64de829eec117c0e8f6`; this report
+The code selectors are committed at `fdd5425e68dedc7a25261c0bebf60c7da2d00b19`; this report
 must be committed separately so the code head above remains the pre-report reference.  The
 primary owner must inspect the complete `0a6bf2a6c591e5e89c6451050de3087168b77eb4..HEAD` diff,
 then run the applicable selectors with `TEMP`, `TMP`, and `TMPDIR` bound under the approved run
