@@ -820,6 +820,48 @@ def test_state_listener_observes_every_transition_and_block_never_auto_resumes(
     asyncio.run(scenario())
 
 
+def test_state_listener_rejects_non_callable_without_starting_or_touching_providers(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        project = tmp_path / "project"
+        project.mkdir()
+        observation = FakeObservation(_binding(project))
+        groups = FakeGroups(_group())
+        history = FakeHistory()
+        sampler = MonitorSampler(observation, groups, history)
+        seen: list[SamplerState] = []
+        sampler.set_state_listener(lambda state: seen.append(state))
+        calls_before_rejected_listener = (
+            observation.calls,
+            observation.batch_calls,
+            observation.revalidate_calls,
+            observation.full_revalidate_calls,
+            observation.lightweight_revalidate_calls,
+            observation.prepare_calls,
+        )
+        try:
+            with pytest.raises(TypeError, match="^state listener is invalid$"):
+                sampler.set_state_listener(None)
+
+            assert sampler.state is SamplerState.IDLE
+            assert sampler.tasks == ()
+            assert (
+                observation.calls,
+                observation.batch_calls,
+                observation.revalidate_calls,
+                observation.full_revalidate_calls,
+                observation.lightweight_revalidate_calls,
+                observation.prepare_calls,
+            ) == calls_before_rejected_listener
+            assert history.batches == []
+            assert seen == []
+        finally:
+            await sampler.close()
+
+    asyncio.run(scenario())
+
+
 def test_start_rejects_stale_revision_missing_group_and_non_integer_revision(tmp_path: Path) -> None:
     async def scenario() -> None:
         project = tmp_path / "project"
