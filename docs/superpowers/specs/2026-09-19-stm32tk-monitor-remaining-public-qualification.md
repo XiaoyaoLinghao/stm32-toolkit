@@ -83,3 +83,18 @@ the unchanged runtime's existing valid evidence or trigger another complete
 suite. Aggregate matching-source raw coverage once after the selected checks;
 the 1.0 gate remains unmet until both required package ratios actually pass.
 There is no hardware, packaging, deployment, cleanup or remote action here.
+
+## Bounded transcript publication error correction
+
+Accepted runtime base: `87699308535bd36431c2e44be8bf131e245d460d`.
+Regression/implementation starting head: `e4ce6d7d5e0737a9dc05cd7dd924e67a7b28ca4c` (q1).
+The terminal replay run1 has seven PASS and one genuine product failure: a valid but contradictory ArtifactRef is detected by `_publish_transcript`, then its EvidenceValidationError is incorrectly wrapped as ENVIRONMENT_FAILURE. The approved 2026-08-22 Task7a authority amendment requires corrupt immutable evidence to map to EVIDENCE_INTEGRITY_FAILURE, while provider I/O maps to ENVIRONMENT_FAILURE.
+
+The primary owns this bounded design and independent acceptance; a Luna/max owner implements only `tools/stm32-monitor/src/stm32_monitor/replay.py` and relevant public regression cases in `tools/stm32-monitor/tests/test_replay.py`. One existing slice return report may record actual results. The prior test-only boundary is overridden only for this proven error-mapping defect under the user's active local-release goal.
+
+Runnable scenarios:
+1. Ingesting a replay whose provider returns a valid ArtifactRef with a contradictory digest raises EVIDENCE_INTEGRITY_FAILURE, preserving EvidenceValidationError as its cause; neither transcript/reference root nor History is published.
+2. Real direct or nested non-missing provider OSError failures remain ENVIRONMENT_FAILURE and publish no root/History. Reuse the existing `_has_non_missing_os_error` rule and reference-publication classification; do not invent new codes or a new exception framework.
+3. Valid replay and physical transcript publication retain their current behavior and authority checks.
+
+Only the transcript-publication exception classification may change. Do not alter ArtifactRef construction, storage schemas, sampling, probe/hardware logic, publication order, root rollback, reference publication, or any public success shape. The failed immutable-identity expectation must remain unchanged. The actual first run did not reach its post-error invariant assertions; subsequent genuine PASS is required.
