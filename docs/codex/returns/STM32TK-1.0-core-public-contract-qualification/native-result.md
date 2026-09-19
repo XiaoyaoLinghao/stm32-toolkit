@@ -32,8 +32,13 @@ third runs remain historical exit-1 events with classified test defects; the
 invalid-minimum second run is excluded. Project configuration has 135 unique
 PASS cases; two affected cases passed again after the test helper captured
 localized `mklink` output as bytes. Those reruns are not additional unique cases.
-The later Authority analysis-guards batch is excluded from this native union;
-five cases passed and one fixture/reachability claim remains under review.
+The later Authority analysis-guards batch is excluded from this native union.
+Its five semantic cases passed and their intended refusal arcs were observed;
+the unchanged tests are integrated at `cb36fd3ce6153423fa89706f1504e73e6a3d2368`.
+The sixth, duplicate identity case was removed after proving that diagnostic
+chain loading rejects its foreign workspace before the claimed analysis guard.
+Its original exit-1 record remains in `r10/e/n95/a/analysis-guards/run1/`;
+the missing `2269 -> 2270` arc remains unqualified, and no rerun was needed.
 
 The remaining-native-qualification plan is active for four non-overlapping
 Luna/max test owners. Source scope and denominators remain frozen. Seven native
