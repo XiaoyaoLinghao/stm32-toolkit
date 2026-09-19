@@ -12,6 +12,7 @@ from uuid import UUID
 import pytest
 
 import stm32_toolkit.diagnostic_workflows as workflow_module
+import test_fix_verification_workflows as verification_fixture
 from stm32_toolkit.diagnostics import (
     DiagnosticSession,
     DiagnosticStore,
@@ -3110,3 +3111,218 @@ def test_project_manifest_failure_projects_to_identity_mismatch(
     assert result.ok is False
     assert result.code == "DIAGNOSTIC_IDENTITY_MISMATCH"
     assert result.details == {}
+
+
+def _prepare_public_completion_with_analysis_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    analysis_mutation: str,
+) -> tuple[DiagnosticWorkflowContext, str, WorkspacePaths]:
+    diagnostic_context, session_id, _failed_replay, workspace = (
+        verification_fixture._replay_and_open_session(monkeypatch, tmp_path)
+    )
+    testing_context = verification_fixture.testing_workflows.TestingWorkflowContext(
+        diagnostic_context.project_root,
+        diagnostic_context.data_root,
+        diagnostic_context.session_id,
+    )
+    fixed_replay = verification_fixture.testing_workflows.target_replay_run(
+        testing_context,
+        "vs03-fixed-after",
+        verification_fixture.FIXTURES / "fixed-after.json",
+        verification_fixture.FIXTURES / "fixed-after.hex",
+    )
+    assert fixed_replay.ok is True
+    shown = workflow_module.diagnostic_show(
+        verification_fixture._fresh_diagnostic_context(diagnostic_context),
+        diagnostic_session_id=session_id,
+    )
+    assert shown.ok is True
+    hypothesis_id = shown.data["session"]["hypotheses"][0]["hypothesis_id"]
+    declaration, plan, marker_ref = verification_fixture._verification_checkpoint_inputs(
+        tmp_path,
+        workspace,
+        session_id,
+        hypothesis_id,
+        analysis_mutation=analysis_mutation,
+    )
+    assert workflow_module.diagnostic_declare_source_change(
+        verification_fixture._fresh_diagnostic_context(diagnostic_context),
+        operation_id="diagnostic.source-change.declare",
+        diagnostic_session_id=session_id,
+        expected_revision=3,
+        source_change_declaration=declaration,
+    ).ok is True
+    assert workflow_module.diagnostic_add_verification_plan(
+        verification_fixture._fresh_diagnostic_context(diagnostic_context),
+        operation_id="diagnostic.verification-plan.add",
+        diagnostic_session_id=session_id,
+        expected_revision=4,
+        verification_plan=plan,
+    ).ok is True
+    assert workflow_module.diagnostic_start_verification(
+        verification_fixture._fresh_diagnostic_context(diagnostic_context),
+        operation_id="diagnostic.verification.start",
+        diagnostic_session_id=session_id,
+        expected_revision=5,
+        verification_plan_id=plan.verification_plan_id,
+    ).ok is True
+    assert workflow_module.diagnostic_attach_marker(
+        verification_fixture._fresh_diagnostic_context(diagnostic_context),
+        operation_id="diagnostic.marker.attach",
+        diagnostic_session_id=session_id,
+        expected_revision=6,
+        diagnostic_marker_ref=marker_ref,
+    ).ok is True
+    return diagnostic_context, session_id, workspace
+
+
+@pytest.mark.parametrize(
+    ("analysis_mutation", "expected_status", "expected_reason"),
+    [
+        pytest.param(
+            "invalid",
+            "INCONCLUSIVE",
+            "ANALYSIS_NOT_VALID",
+            id="invalid-analysis",
+        ),
+        pytest.param(
+            "unchanged",
+            "FAILED",
+            "ANALYSIS_CONTRADICTED",
+            id="unchanged-analysis",
+        ),
+    ],
+)
+def test_public_completion_classifies_persisted_analysis_outcomes(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    analysis_mutation: str,
+    expected_status: str,
+    expected_reason: str,
+) -> None:
+    diagnostic_context, session_id, _workspace = (
+        _prepare_public_completion_with_analysis_mutation(
+            monkeypatch, tmp_path, analysis_mutation
+        )
+    )
+    completed = workflow_module.diagnostic_complete_verification(
+        verification_fixture._fresh_diagnostic_context(diagnostic_context),
+        operation_id=f"diagnostic.verification.complete.{analysis_mutation}",
+        diagnostic_session_id=session_id,
+        expected_revision=7,
+        executed_operation_ids=["target-test.vs03"],
+    )
+    assert completed.ok is True
+    assert completed.data["fix_verification"]["status"] == expected_status
+    assert completed.data["fix_verification"]["reason_code"] == expected_reason
+    assert completed.data["session"]["state"] == "INVESTIGATING"
+    reloaded = workflow_module.diagnostic_show_verification(
+        verification_fixture._fresh_diagnostic_context(diagnostic_context),
+        diagnostic_session_id=session_id,
+    )
+    assert reloaded.ok is True
+    assert reloaded.data["authoritative"] is True
+    assert reloaded.data["fix_verifications"] == (
+        completed.data["fix_verification"],
+    )
+
+
+def test_public_completion_missing_marker_persists_inconclusive_result(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    diagnostic_context, session_id, _workspace, _declaration, _plan, _marker_ref = (
+        verification_fixture._prepared_checkpoint_for_attach(monkeypatch, tmp_path)
+    )
+    completed = workflow_module.diagnostic_complete_verification(
+        verification_fixture._fresh_diagnostic_context(diagnostic_context),
+        operation_id="diagnostic.verification.complete.missing-marker",
+        diagnostic_session_id=session_id,
+        expected_revision=6,
+        executed_operation_ids=["target-test.vs03"],
+    )
+    assert completed.ok is True
+    assert completed.data["fix_verification"]["status"] == "INCONCLUSIVE"
+    assert completed.data["fix_verification"]["reason_code"] == "MANDATORY_EVIDENCE_MISSING"
+    assert completed.data["session"]["state"] == "INVESTIGATING"
+    reloaded = workflow_module.diagnostic_show_verification(
+        verification_fixture._fresh_diagnostic_context(diagnostic_context),
+        diagnostic_session_id=session_id,
+    )
+    assert reloaded.ok is True
+    assert reloaded.data["session"] == completed.data["session"]
+    assert reloaded.data["fix_verifications"] == (
+        completed.data["fix_verification"],
+    )
+
+
+def test_public_completion_corrupt_analysis_preserves_authority(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    (
+        diagnostic_context,
+        session_id,
+        workspace,
+        _declaration,
+        _plan,
+        marker_ref,
+        _declared,
+        _planned,
+        _started,
+        _attached,
+    ) = verification_fixture._prepared_cross_state_operations(monkeypatch, tmp_path)
+    analysis_root = verification_fixture._evidence_root_path(
+        workspace, "monitor-analysis", marker_ref.analysis_id
+    )
+    analysis_root.write_bytes(b"{}")
+    before = verification_fixture._authority_snapshot(workspace)
+    result = workflow_module.diagnostic_complete_verification(
+        verification_fixture._fresh_diagnostic_context(diagnostic_context),
+        operation_id="diagnostic.verification.complete.corrupt-analysis",
+        diagnostic_session_id=session_id,
+        expected_revision=7,
+        executed_operation_ids=["target-test.vs03"],
+    )
+    assert result.ok is False
+    assert result.code == "DIAGNOSTIC_CHAIN_CORRUPT"
+    assert result.data is None
+    assert verification_fixture._authority_snapshot(workspace) == before
+
+
+def test_public_completion_roundtrip_reloads_valid_persisted_evidence(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    (
+        diagnostic_context,
+        session_id,
+        _workspace,
+        _declaration,
+        _plan,
+        _marker_ref,
+        _declared,
+        _planned,
+        _started,
+        attached,
+    ) = verification_fixture._prepared_cross_state_operations(monkeypatch, tmp_path)
+    assert attached.data["session"]["revision"] == 7
+    completed = workflow_module.diagnostic_complete_verification(
+        verification_fixture._fresh_diagnostic_context(diagnostic_context),
+        operation_id="diagnostic.verification.complete.roundtrip",
+        diagnostic_session_id=session_id,
+        expected_revision=7,
+        executed_operation_ids=["target-test.vs03"],
+    )
+    assert completed.ok is True
+    assert completed.data["fix_verification"]["status"] == "PASSED"
+    assert completed.data["fix_verification"]["reason_code"] == "VERIFICATION_PASSED"
+    assert completed.data["session"]["state"] == "RESOLVED"
+    reloaded = workflow_module.diagnostic_show_verification(
+        verification_fixture._fresh_diagnostic_context(diagnostic_context),
+        diagnostic_session_id=session_id,
+    )
+    assert reloaded.ok is True
+    assert reloaded.data["authoritative"] is True
+    assert reloaded.data["session"] == completed.data["session"]
+    assert reloaded.data["fix_verifications"] == (
+        completed.data["fix_verification"],
+    )
