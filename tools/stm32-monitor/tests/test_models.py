@@ -244,6 +244,15 @@ def test_live_state_public_validation_rejects_each_inconsistent_status_guard(
 ) -> None:
     payload = {"stateRevision": 0, "gap": False, "status": _live_status()}
     status = copy.deepcopy(payload["status"])
+    if path[0] == "firmware":
+        status["firmware"] = {
+            "buildId": "b" * 64,
+            "elfSha256": "e" * 64,
+            "inputSnapshotSha256": "f" * 64,
+            "gitHead": "a" * 40,
+            "gitDirty": False,
+            "targetDevice": "STM32F407VGTx",
+        }
     current: object = status
     for key in path[:-1]:
         current = current[key]  # type: ignore[index]

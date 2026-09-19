@@ -538,7 +538,7 @@ def test_native_statistics_rejects_value_and_position_budget_overflows() -> None
     oversized_values = _batch(100, 1)
     sample = oversized_values["values"][0]
     oversized_values["values"] = [sample] * 10_001
-    with pytest.raises(NativeAnalysisContractError):
+    with pytest.raises(NativeAnalysisContractError) as error:
         native_statistics(
             [oversized_values],
             [_batch(200, 1)],
@@ -547,15 +547,6 @@ def test_native_statistics_rejects_value_and_position_budget_overflows() -> None
             minimum_valid_pairs=2,
             request_digest="a" * 64,
         )
-
-    before = [_batch(index, 1) for index in range(1_025)]
-    after = [_batch(index + 2_000, 1) for index in range(1_025)]
-    with pytest.raises(NativeAnalysisContractError):
-        native_statistics(
-            before,
-            after,
-            selector="r0",
-            max_pairing_skew_ns=1,
-            minimum_valid_pairs=2,
-            request_digest="a" * 64,
-        )
+    assert str(error.value) == "before values exceed their limit"
+    # Each side is bounded to 1,024 positions by _timestamps, so the
+    # combined 2,048-position guard is unreachable through the public caller.

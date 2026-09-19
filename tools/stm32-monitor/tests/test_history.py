@@ -1976,6 +1976,43 @@ def test_invalid_query_and_workspace_mismatch_fail_closed(tmp_path: Path) -> Non
         store.close()
 
 
+@pytest.mark.parametrize("corruption", ["accounting", "candidate"])
+def test_public_retention_rejects_persisted_accounting_corruption_without_deletion(
+    tmp_path: Path,
+    corruption: str,
+) -> None:
+    paths = _paths(tmp_path)
+    store = HistoryStore(paths)
+    try:
+        assert store.append_batch(_batch(paths, 1, captured_ns=1)).ok
+
+        def corrupt(connection: sqlite3.Connection) -> None:
+            if corruption == "accounting":
+                connection.execute("PRAGMA ignore_check_constraints = ON")
+                connection.execute(
+                    "UPDATE monitor_history_accounting SET logical_bytes = -1"
+                )
+            else:
+                connection.execute(
+                    "UPDATE history_batches SET value_count = -1 WHERE batch_id = 1"
+                )
+
+        store._database.write(corrupt)
+        result = store.run_retention(
+            now_ns=7 * 24 * 60 * 60 * 1_000_000_000 + 2
+        )
+        assert not result.ok
+        assert result.code == "MONITOR_STORAGE_CORRUPT"
+        assert result.message == "monitor history is corrupt"
+
+        if corruption == "candidate":
+            page = store.query_history(HistoryQuery("monitor-1", 0, 2_000))
+            assert page.ok
+            assert [row["sequence"] for row in page.data.values] == [1]
+    finally:
+        store.close()
+
+
 def test_duplicate_batch_is_rejected_without_duplicate_values(tmp_path: Path) -> None:
     paths = _paths(tmp_path)
     store = HistoryStore(paths)

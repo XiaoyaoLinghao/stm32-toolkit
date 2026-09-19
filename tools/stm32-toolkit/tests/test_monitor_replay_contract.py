@@ -649,37 +649,39 @@ def test_shared_contract_accepts_closed_physical_transcript_without_raw_selector
 
 
 @pytest.mark.parametrize(
-    "mutation",
+    ("mutation", "expected_message"),
     (
-        "schema",
-        "source",
-        "execution-source",
-        "physical-evidence",
-        "scenario-role",
-        "test-run-id",
-        "binding-probe",
-        "binding-git",
-        "binding-svd",
-        "empty-batches",
-        "batch-shape",
-        "batch-binding",
-        "batch-group",
-        "batch-revision",
-        "batch-run",
-        "batch-sequence",
-        "batch-captured",
-        "batch-selector",
-        "duplicate-selector",
-        "empty-values",
-        "sample-status",
-        "sample-code",
-        "sample-definition",
-        "integer-rate",
-        "captured-before-scheduled",
-        "value-budget",
+        ("schema", "physical transcript schema is invalid"),
+        ("source", "physical transcript source is invalid"),
+        ("execution-source", "physical transcript execution source is invalid"),
+        ("physical-evidence", "physical transcript physical evidence must be true"),
+        ("scenario-role", "physical transcript scenario role is invalid"),
+        ("test-run-id", "test_run_id is invalid"),
+        ("binding-probe", "physical binding labels are invalid"),
+        ("binding-git", "gitHead is invalid"),
+        ("binding-svd", "svdSha256 is invalid"),
+        ("empty-batches", "physical transcript batches are invalid"),
+        ("batch-shape", "physical transcript batches are invalid"),
+        ("batch-binding", "replay batch binding contradicts the document binding"),
+        ("batch-group", "physical transcript batch identity is invalid"),
+        ("batch-revision", "physical transcript batch identity is invalid"),
+        ("batch-run", "physical transcript batch identity is invalid"),
+        ("batch-sequence", "physical transcript sequences are not contiguous"),
+        ("batch-captured", "physical transcript captured times are not increasing"),
+        ("batch-selector", "physical transcript batch identity is invalid"),
+        ("duplicate-selector", "physical transcript selectors are not unique"),
+        ("empty-values", "replay batch values are invalid"),
+        ("sample-status", "replay sample status is invalid"),
+        ("sample-code", "replay successful sample is invalid"),
+        ("sample-definition", "sample definition is invalid"),
+        ("integer-rate", "actualRateHz is invalid"),
+        ("captured-before-scheduled", "replay batch captured time precedes scheduled time"),
+        ("value-budget", "physical transcript values exceed their limit"),
     ),
 )
-def test_shared_physical_contract_rejects_nested_wire_mutations(mutation: str) -> None:
+def test_shared_physical_contract_rejects_nested_wire_mutations(
+    mutation: str, expected_message: str
+) -> None:
     contract = _contract()
     candidate = _physical_transcript(_document("failed-before"))
     if mutation == "schema":
@@ -717,6 +719,7 @@ def test_shared_physical_contract_rejects_nested_wire_mutations(mutation: str) -
         candidate["batches"][1]["sequence"] = 2
     elif mutation == "batch-captured":
         candidate["batches"][1]["capturedUnixNs"] = candidate["batches"][0]["capturedUnixNs"]
+        candidate["batches"][1]["capturedAtUtc"] = candidate["batches"][0]["capturedAtUtc"]
     elif mutation == "batch-selector":
         watch = candidate["batches"][1]["values"][0]["watch"]
         watch[_selector_key(watch)] = "different.selector"
@@ -748,8 +751,9 @@ def test_shared_physical_contract_rejects_nested_wire_mutations(mutation: str) -
         candidate["batches"] = [deepcopy(first) for _ in range(40)]
     before = deepcopy(candidate)
 
-    with pytest.raises(contract.ReplayContractError):
+    with pytest.raises(contract.ReplayContractError) as error:
         contract.validate_physical_transcript(candidate)
+    assert str(error.value) == expected_message
     assert candidate == before
 
 
