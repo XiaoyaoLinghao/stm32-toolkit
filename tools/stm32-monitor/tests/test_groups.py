@@ -5,6 +5,7 @@ import os
 import sqlite3
 import subprocess
 import threading
+from contextlib import contextmanager
 from dataclasses import replace
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -37,7 +38,21 @@ def _create(store: GroupStore, name: str = "Core"):
     )
 
 
-def _storage_snapshot(paths: WorkspacePaths) -> tuple[object, ...]:
+@contextmanager
+def _storage_observer(paths: WorkspacePaths):
+    database = paths.monitor_root / "monitor.sqlite3"
+    connection = sqlite3.connect(database.as_uri() + "?mode=ro", uri=True)
+    try:
+        connection.execute("SELECT singleton FROM monitor_metadata LIMIT 1").fetchall()
+        connection.execute("SELECT group_id FROM watch_groups LIMIT 1").fetchall()
+        yield connection
+    finally:
+        connection.close()
+
+
+def _storage_snapshot(
+    paths: WorkspacePaths, connection: sqlite3.Connection
+) -> tuple[object, ...]:
     database = paths.monitor_root / "monitor.sqlite3"
     files: list[tuple[object, ...]] = []
     for suffix in ("", "-wal", "-shm"):
@@ -58,38 +73,37 @@ def _storage_snapshot(paths: WorkspacePaths) -> tuple[object, ...]:
                 )
             )
 
-    with sqlite3.connect(database.as_uri() + "?mode=ro", uri=True) as connection:
-        schema = tuple(
-            tuple(row)
-            for row in connection.execute(
-                "SELECT type, name, tbl_name, sql FROM sqlite_master "
-                "WHERE sql IS NOT NULL ORDER BY type, name"
-            ).fetchall()
-        )
-        metadata = tuple(
-            tuple(row)
-            for row in connection.execute(
-                "SELECT singleton, workspace_id, schema_version "
-                "FROM monitor_metadata ORDER BY singleton"
-            ).fetchall()
-        )
-        groups = tuple(
-            tuple(row)
-            for row in connection.execute(
-                "SELECT group_id, name, name_key, description, interval_ms, "
-                "revision, created_at_utc, updated_at_utc FROM watch_groups "
-                "ORDER BY group_id"
-            ).fetchall()
-        )
-        items = tuple(
-            tuple(row)
-            for row in connection.execute(
-                "SELECT group_id, ordinal, kind, selector FROM group_items "
-                "ORDER BY group_id, ordinal"
-            ).fetchall()
-        )
-        user_version = connection.execute("PRAGMA user_version").fetchone()[0]
-        journal_mode = connection.execute("PRAGMA journal_mode").fetchone()[0]
+    schema = tuple(
+        tuple(row)
+        for row in connection.execute(
+            "SELECT type, name, tbl_name, sql FROM sqlite_master "
+            "WHERE sql IS NOT NULL ORDER BY type, name"
+        ).fetchall()
+    )
+    metadata = tuple(
+        tuple(row)
+        for row in connection.execute(
+            "SELECT singleton, workspace_id, schema_version "
+            "FROM monitor_metadata ORDER BY singleton"
+        ).fetchall()
+    )
+    groups = tuple(
+        tuple(row)
+        for row in connection.execute(
+            "SELECT group_id, name, name_key, description, interval_ms, "
+            "revision, created_at_utc, updated_at_utc FROM watch_groups "
+            "ORDER BY group_id"
+        ).fetchall()
+    )
+    items = tuple(
+        tuple(row)
+        for row in connection.execute(
+            "SELECT group_id, ordinal, kind, selector FROM group_items "
+            "ORDER BY group_id, ordinal"
+        ).fetchall()
+    )
+    user_version = connection.execute("PRAGMA user_version").fetchone()[0]
+    journal_mode = connection.execute("PRAGMA journal_mode").fetchone()[0]
     return tuple(files), schema, metadata, groups, items, user_version, journal_mode
 
 
@@ -670,13 +684,14 @@ def test_groups_empty_cursor_is_rejected_without_storage_mutation(tmp_path: Path
     store = GroupStore(paths)
     try:
         assert _create(store).ok
-        before = _storage_snapshot(paths)
+        with _storage_observer(paths) as observer:
+            before = _storage_snapshot(paths, observer)
 
-        rejected = store.list_group_page(cursor="", limit=2)
-        assert not rejected.ok
-        assert rejected.code == "MONITOR_REQUEST_INVALID"
-        assert rejected.message == "group query is invalid"
-        assert _storage_snapshot(paths) == before
+            rejected = store.list_group_page(cursor="", limit=2)
+            assert not rejected.ok
+            assert rejected.code == "MONITOR_REQUEST_INVALID"
+            assert rejected.message == "group query is invalid"
+            assert _storage_snapshot(paths, observer) == before
     finally:
         store.close()
 
@@ -692,7 +707,8 @@ def test_groups_first_oversized_persisted_group_is_rejected_read_only(tmp_path: 
         initial.close()
 
     database = paths.monitor_root / "monitor.sqlite3"
-    with sqlite3.connect(database) as connection:
+    connection = sqlite3.connect(database)
+    try:
         connection.executemany(
             "INSERT INTO group_items(group_id, ordinal, kind, selector) VALUES (?, ?, ?, ?)",
             (
@@ -701,15 +717,18 @@ def test_groups_first_oversized_persisted_group_is_rejected_read_only(tmp_path: 
             ),
         )
         connection.commit()
+    finally:
+        connection.close()
 
     reopened = GroupStore(paths)
     try:
-        before = _storage_snapshot(paths)
-        rejected = reopened.list_group_page(limit=1)
-        assert not rejected.ok
-        assert rejected.code == "MONITOR_GROUP_LIMIT_EXCEEDED"
-        assert rejected.message == "watch group exceeds the response limit"
-        assert _storage_snapshot(paths) == before
+        with _storage_observer(paths) as observer:
+            before = _storage_snapshot(paths, observer)
+            rejected = reopened.list_group_page(limit=1)
+            assert not rejected.ok
+            assert rejected.code == "MONITOR_GROUP_LIMIT_EXCEEDED"
+            assert rejected.message == "watch group exceeds the response limit"
+            assert _storage_snapshot(paths, observer) == before
     finally:
         reopened.close()
 
@@ -732,18 +751,19 @@ def test_groups_total_item_limit_rolls_back_after_legal_full_graph(tmp_path: Pat
             )
             assert created.ok
 
-        before = _storage_snapshot(paths)
-        rejected = store.create_group(
-            "overflow",
-            "",
-            250,
-            (WatchItem.variable("overflow"),),
-            authorized=True,
-        )
-        assert not rejected.ok
-        assert rejected.code == "MONITOR_GROUP_LIMIT_EXCEEDED"
-        assert rejected.message == "workspace watch item limit was exceeded"
-        assert _storage_snapshot(paths) == before
+        with _storage_observer(paths) as observer:
+            before = _storage_snapshot(paths, observer)
+            rejected = store.create_group(
+                "overflow",
+                "",
+                250,
+                (WatchItem.variable("overflow"),),
+                authorized=True,
+            )
+            assert not rejected.ok
+            assert rejected.code == "MONITOR_GROUP_LIMIT_EXCEEDED"
+            assert rejected.message == "workspace watch item limit was exceeded"
+            assert _storage_snapshot(paths, observer) == before
     finally:
         store.close()
 
@@ -778,13 +798,14 @@ def test_groups_import_limit_dispatch_rolls_back_without_rows(tmp_path: Path) ->
             ensure_ascii=False,
             separators=(",", ":"),
         ).encode("utf-8")
-        before = _storage_snapshot(paths)
+        with _storage_observer(paths) as observer:
+            before = _storage_snapshot(paths, observer)
 
-        rejected = store.import_groups(document, authorized=True)
-        assert not rejected.ok
-        assert rejected.code == "MONITOR_GROUP_LIMIT_EXCEEDED"
-        assert rejected.message == "watch group limit was exceeded"
-        assert _storage_snapshot(paths) == before
+            rejected = store.import_groups(document, authorized=True)
+            assert not rejected.ok
+            assert rejected.code == "MONITOR_GROUP_LIMIT_EXCEEDED"
+            assert rejected.message == "watch group limit was exceeded"
+            assert _storage_snapshot(paths, observer) == before
     finally:
         store.close()
 
@@ -801,12 +822,15 @@ def test_groups_import_workspace_mismatch_preserves_persisted_state(tmp_path: Pa
     if foreign_workspace == paths.workspace_id:
         foreign_workspace = "e" * 64
     database = paths.monitor_root / "monitor.sqlite3"
-    with sqlite3.connect(database) as connection:
+    connection = sqlite3.connect(database)
+    try:
         connection.execute(
             "UPDATE monitor_metadata SET workspace_id = ? WHERE singleton = 1",
             (foreign_workspace,),
         )
         connection.commit()
+    finally:
+        connection.close()
 
     document = json.dumps(
         {
@@ -825,11 +849,12 @@ def test_groups_import_workspace_mismatch_preserves_persisted_state(tmp_path: Pa
     ).encode("utf-8")
     reopened = GroupStore(paths)
     try:
-        before = _storage_snapshot(paths)
-        rejected = reopened.import_groups(document, authorized=True)
-        assert not rejected.ok
-        assert rejected.code == "MONITOR_WORKSPACE_MISMATCH"
-        assert rejected.message == "monitor storage belongs to another workspace"
-        assert _storage_snapshot(paths) == before
+        with _storage_observer(paths) as observer:
+            before = _storage_snapshot(paths, observer)
+            rejected = reopened.import_groups(document, authorized=True)
+            assert not rejected.ok
+            assert rejected.code == "MONITOR_WORKSPACE_MISMATCH"
+            assert rejected.message == "monitor storage belongs to another workspace"
+            assert _storage_snapshot(paths, observer) == before
     finally:
         reopened.close()
