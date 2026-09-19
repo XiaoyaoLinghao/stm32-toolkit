@@ -766,3 +766,78 @@ def test_plan_result_digest_and_opposite_polarity_are_checked_by_reducer() -> No
     with pytest.raises(DiagnosticValidationError) as error:
         reduce_event(session, opposite_event)
     assert error.value.code == DIAGNOSTIC_PLAN_INVALID
+
+
+def test_public_event_decode_rejects_plan_result_step_binding_without_mutation() -> None:
+    event_type, request, result = _canonical_payloads()[3]
+    event = _event(sequence=0, event_type=event_type, request=request, result=result)
+    candidate = event.to_dict()
+    payload = candidate["payload"]
+    assert isinstance(payload, dict)
+    result_wire = payload["result"]
+    assert isinstance(result_wire, dict)
+    plan_wire = result_wire["observation_plan"]
+    assert isinstance(plan_wire, dict)
+    steps = plan_wire["steps"]
+    assert isinstance(steps, list) and len(steps) == 1
+    changed_step = {**steps[0], "purpose": "changed purpose"}
+    plan_fields = {
+        "diagnostic_session_id": plan_wire["diagnostic_session_id"],
+        "created_revision": plan_wire["created_revision"],
+        "steps": [changed_step],
+    }
+    changed_digest = calculate_plan_digest(plan_fields)
+    result_wire["observation_plan"] = {
+        **plan_wire,
+        "steps": [changed_step],
+        "plan_id": changed_digest,
+        "digest": changed_digest,
+    }
+    # The public decoder validates nested payload bindings before its enclosing
+    # event digest, so preserving the old outer digest reaches that binding guard.
+    before = deepcopy(candidate)
+
+    with pytest.raises(DiagnosticValidationError) as error:
+        DiagnosticEvent.from_value(candidate)
+
+    assert error.value.code == DIAGNOSTIC_PLAN_INVALID
+    assert candidate == before
+
+
+def test_public_event_decode_rejects_sequence_zero_previous_link_without_mutation() -> None:
+    event_type, request, result = _canonical_payloads()[0]
+    event = _event(sequence=0, event_type=event_type, request=request, result=result)
+    candidate = event.to_dict()
+    candidate["previous_digest"] = "a" * 64
+    before = deepcopy(candidate)
+
+    with pytest.raises(DiagnosticValidationError) as error:
+        DiagnosticEvent.from_value(candidate)
+
+    assert error.value.code == DIAGNOSTIC_INVALID_EVENT
+    assert candidate == before
+
+
+def test_public_reducer_rejects_first_event_without_a_session() -> None:
+    created = _event(
+        sequence=0,
+        event_type="session.created",
+        request={"failed_test_run_id": "run-1"},
+        result={"failed_evidence_id": "0" * 64, "identity": IDENTITY.to_dict()},
+    )
+    session = reduce_event(None, created)
+    started = _event(
+        sequence=session.revision,
+        event_type="investigation.started",
+        request={},
+        result={},
+        previous_digest=created.digest,
+    )
+    assert reduce_event(session, started).state == "INVESTIGATING"
+    before = started.to_dict()
+
+    with pytest.raises(DiagnosticValidationError) as error:
+        reduce_event(None, started)
+
+    assert error.value.code == DIAGNOSTIC_INVALID_EVENT
+    assert started.to_dict() == before
