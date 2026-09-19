@@ -637,6 +637,89 @@ def test_prepare_rejects_candidate_target_drift_before_authorization(tmp_path: P
         assert not list(auth_root.glob("*.json"))
 
 
+def test_prepare_rejects_candidate_linker_identity_drift_before_authorization(tmp_path: Path):
+    workspace, destination, environment = _project(tmp_path)
+    candidate_source = tmp_path / "candidate-source"
+    shutil.copytree(FIXTURE, candidate_source)
+
+    class LinkerChangingAdapter(_Adapter):
+        def generate(self, capability, context):
+            result = super().generate(capability, context)
+            child = result.project_root
+            original = child / "STM32F429xx_FLASH.ld"
+            alternate = child / "alternate.ld"
+            shutil.copy2(original, alternate)
+            toolchain = child / "cmake" / "gcc-arm-none-eabi.cmake"
+            toolchain.write_bytes(
+                toolchain.read_bytes().replace(
+                    b"STM32F429xx_FLASH.ld", b"alternate.ld"
+                )
+            )
+            return result
+
+    request = RegenerationWorkflowRequest(workspace, tmp_path / "data", "session", "generated")
+    planned = plan_regeneration(request, environment=environment)
+    before_prepare = _tree_bytes(destination)
+    result = prepare_regeneration_workflow(
+        request,
+        plan_id=planned.data["planId"],
+        action_digest=planned.data["actionDigest"],
+        authorized=True,
+        environment=environment,
+        adapter=LinkerChangingAdapter(candidate_source),
+        validate_native=_validator,
+    )
+
+    assert result.code == "REGENERATION_PREVIEW_FAILED"
+    assert _tree_bytes(destination) == before_prepare
+    assert not list(workspace.glob(".stm32tk-regeneration-preview-*"))
+    auth_root = tmp_path / "data" / "regeneration" / "authorizations"
+    if auth_root.exists():
+        assert not list(auth_root.glob("*.json"))
+
+
+def test_prepare_rejects_candidate_without_declared_ioc_identity(tmp_path: Path):
+    workspace, destination, environment = _project(tmp_path)
+    request = RegenerationWorkflowRequest(workspace, tmp_path / "data", "session", "generated")
+    planned = plan_regeneration(request, environment=environment)
+    before_prepare = _tree_bytes(destination)
+
+    def invalid_validator(candidate, *, request, plan_id, action_digest, environment):
+        parsed = parse_native_project(
+            candidate,
+            request=request,
+            plan_id=plan_id,
+            action_digest=action_digest,
+            environment=environment,
+        )
+        write_native_project_manifests(candidate, parsed)
+        manifest = candidate / ".stm32-toolkit" / "cubemx-ownership.json"
+        payload = json.loads(manifest.read_text(encoding="utf-8"))
+        payload["files"] = [row for row in payload["files"] if not str(row["path"]).casefold().endswith(".ioc")]
+        manifest.write_text(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")),
+            encoding="utf-8",
+        )
+        return SimpleNamespace(model=SimpleNamespace())
+
+    result = prepare_regeneration_workflow(
+        request,
+        plan_id=planned.data["planId"],
+        action_digest=planned.data["actionDigest"],
+        authorized=True,
+        environment=environment,
+        adapter=_Adapter(FIXTURE),
+        validate_native=invalid_validator,
+    )
+
+    assert result.code == "REGENERATION_OWNERSHIP_INVALID"
+    assert _tree_bytes(destination) == before_prepare
+    assert not list(workspace.glob(".stm32tk-regeneration-preview-*"))
+    auth_root = tmp_path / "data" / "regeneration" / "authorizations"
+    if auth_root.exists():
+        assert not list(auth_root.glob("*.json"))
+
+
 def test_apply_configuration_failure_preserves_destination(tmp_path: Path):
     workspace, destination, environment = _project(tmp_path)
     request = RegenerationWorkflowRequest(workspace, tmp_path / "data", "session", "generated")
