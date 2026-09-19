@@ -4,10 +4,11 @@ Status: **NOT ACCEPTED**. This is a release qualification status, not a new
 hardware acceptance, publication approval, or a replacement for historical logs.
 
 VS10-A and VS10-B remain locally accepted. The B acceptance base is
-`1df30a0f4070805488687a67f907dbaa1867d681`. Product/artifact source remains
-`15b1a70e9bd684285da5557104deff529f537e49`; subsequent accepted test/helper/docs
-commits are qualification supplements and are not included in that source ZIP.
-No product change, repackaging or deployment is implied by this document.
+`1df30a0f4070805488687a67f907dbaa1867d681`. Retained artifacts were built from
+`15b1a70e9bd684285da5557104deff529f537e49`. Runtime package source remains
+byte-identical to that revision. Later qualification tests and the accepted
+deployment-guide/trusted-utility-pin correction are not in that source ZIP.
+No replacement artifact or deployment is claimed by this document.
 
 The Diagnostic public-refusal slice was independently accepted from
 `04bdd539597ec8dcb38bca34eb2256e970ecaa25` to
@@ -49,8 +50,10 @@ do not aggregate that run or repeat the performance benchmark.
 
 The release delivery audit found two portability omissions: standalone
 PowerShell installation examples and unambiguous archive-relative instructions
-for finding the IDE guide. A bounded documentation/trusted-utility-pin correction
-is in progress. After it is accepted, the final artifacts will need one refresh;
+for finding the IDE guide. The bounded correction was independently accepted and
+integrated at 45b09455f469a423a45ee933d575364a8b5bf040. Separate Check, Bootstrap
+and Repair examples preserve host-adapter paths and legacy upgrade semantics.
+The final artifacts will need one refresh;
 the existing 15b artifacts and deployment checks remain retained evidence, not
 artifacts of the corrected candidate. No runtime or hardware change is implied.
 
