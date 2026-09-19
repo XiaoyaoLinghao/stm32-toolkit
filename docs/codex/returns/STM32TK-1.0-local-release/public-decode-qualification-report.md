@@ -1,8 +1,10 @@
 # STM32TK-1.0 public evidence decoding qualification return
 
-Status: `PREPARED_FOR_PRIMARY_ENTRY_REVIEW_AFTER_REVIEW_FIXES`. The four assigned test files are
-committed before execution. This report records the bounded entry and the
-pre-execution checks only; it makes no test-result or acceptance claim. The
+Status: `FIRST_EXECUTION_STOPPED_FOR_CLASSIFICATION`. The four assigned test
+files were committed before execution. One primary-approved bounded run was
+launched and stopped at the first unexpected monitor replay setup failure:
+45 selected cases passed and two errors were reported before the affected
+test body ran. This result is not a qualification or acceptance claim. The
 primary agent remains the independent reviewer and acceptor.
 
 ## Ownership and source ledger
@@ -121,11 +123,53 @@ The two JSON commands are report generation from the retained single raw
 measurement; they do not constitute another test run. Preserve any first
 unexpected failure for classification and leave cleanup to the primary.
 
+## Single authorized execution result
+
+The approved launcher was invoked exactly once through explicit PowerShell 7
+from the `dc` worktree:
+
+```text
+C:\Program Files\PowerShell\7\pwsh.exe -NoProfile -File D:\codex-tmp\v10b-0918\r10\e\public-decode-qualification\launch.ps1
+```
+
+The child started at `2026-09-19T01:41:10.0158331Z` and ended at
+`2026-09-19T01:41:15.2784161Z` (5.263 seconds wall time). Pytest collected
+52 items, reported 45 passed and two errors in 3.40 seconds, and exited with
+code `1`; the launcher also exited with code `1`, without a timeout. The
+owned child PID was `24796`, and the launcher released its process handle.
+The source worktree was at code head
+`e059fdc90dcf7695512ddfa55043262802b0af95`; the owned test bytes were at
+`c0884af2085b132db0b496e7f42695c0531a7051`. The exact child command and
+source/environment bindings are retained in `command.txt`, `argv.json`,
+`heads.json`, and `environment.json`.
+
+The first unexpected failure was the `input-size-limit` row of
+`test_shared_byte_decoder_rejects_caller_meaningful_raw_wire_failures`.
+Pytest included the 1 MiB-plus-one-byte `raw` parameter representation in
+`PYTEST_CURRENT_TEST` while entering setup/teardown. Windows rejected that
+environment value with `ValueError: the environment variable is longer than
+32767 characters`, before the test body could call the public byte decoder.
+Classification: `INFRASTRUCTURE` (bounded test-entry/fixture setup). This
+requires primary review; it is not evidence of a product decoder result for
+that row.
+
+The complete failure and process evidence is retained at
+`D:\codex-tmp\v10b-0918\r10\e\public-decode-qualification`, including
+`child-stdout.txt`, `child-stderr.txt`,
+`public-decode-qualification.junit.xml`, `command.txt`, `argv.json`,
+`environment.json`, `heads.json`, `tempfile-preflight.json`, `process.json`,
+`launch-result.json`, `exit-code.txt`, and `coverage-process.json`.
+The real tempfile preflight passed and the child stderr was empty. No raw
+coverage database was created because pytest stopped during setup, so both
+package JSON reports were correctly recorded as skipped. No retry or cleanup
+was performed; the primary owns disposition of this retained evidence.
+
 ## Pre-execution checks
 
 The test commit passed AST parsing for all four owned files and
-`git diff --check` is clean. No pytest, hardware, build, package, deployment,
-remote, or cleanup action has been performed for this slice.
+`git diff --check` was clean before the authorized run. No hardware, build,
+package, deployment, remote, or cleanup action has been performed for this
+slice.
 
 This report is committed separately from the test code head recorded above and
 does not record its own final commit SHA.
