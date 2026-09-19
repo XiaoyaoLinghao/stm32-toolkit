@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from stm32_toolkit.evidence import (
+    ArtifactRef,
     EvidenceEnvelope,
     EvidenceValidationError,
     canonical_json_bytes,
@@ -304,7 +305,14 @@ def _ingest_replay_bytes(
 
 def _descriptor_with_stream(descriptor, stream_artifact):
     value = descriptor.to_dict()
-    value["stream"] = stream_artifact.to_dict()
+    descriptor_stream_artifact = ArtifactRef(
+        sha256=stream_artifact.sha256,
+        size_bytes=stream_artifact.size_bytes,
+        relative_path=f"target-replay/{stream_artifact.sha256}.bin",
+        kind=stream_artifact.kind,
+        media_type=stream_artifact.media_type,
+    )
+    value["stream"] = descriptor_stream_artifact.to_dict()
     value.pop("replay_id")
     value["replay_id"] = sha256(canonical_replay_json_bytes(value)).hexdigest()
     return TargetReplayDescriptor.from_value(value)
@@ -324,6 +332,13 @@ def _replay_stream_variant(
     encoded_frames = []
     for frame in frames:
         payload = dict(frame.payload)
+        if frame.kind == 1:
+            payload["identity"] = dict(payload["identity"])
+            payload["case_ids"] = list(payload["case_ids"])
+        elif frame.kind == 2:
+            payload["case_ids"] = list(payload["case_ids"])
+        elif frame.kind == 5:
+            payload["counts"] = dict(payload["counts"])
         mutate(frame.kind, payload)
         encoded_frames.append(
             encode_frame(
