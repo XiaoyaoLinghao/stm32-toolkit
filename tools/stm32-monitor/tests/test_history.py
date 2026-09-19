@@ -1991,7 +1991,7 @@ def test_public_retention_rejects_persisted_accounting_corruption_without_deleti
     paths = _paths(tmp_path)
     store = HistoryStore(paths)
     try:
-        assert store.append_batch(_batch(paths, 1, captured_ns=1)).ok
+        assert store.append_batch(_batch(paths, 1, captured_ns=1_001)).ok
         database_path = paths.monitor_root / "monitor.sqlite3"
 
         def corrupt(connection: sqlite3.Connection) -> None:
@@ -2033,7 +2033,7 @@ def test_public_retention_rejects_persisted_accounting_corruption_without_deleti
 
         before = snapshot()
         result = store.run_retention(
-            now_ns=7 * 24 * 60 * 60 * 1_000_000_000 + 2
+            now_ns=7 * 24 * 60 * 60 * 1_000_000_000 + 1_002
         )
         assert not result.ok
         assert result.code == "MONITOR_STORAGE_CORRUPT"
