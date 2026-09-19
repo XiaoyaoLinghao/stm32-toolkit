@@ -5,6 +5,8 @@ from types import SimpleNamespace
 import pytest
 
 from mcp.types import FileUrl, ListRootsResult, Root
+import stm32_toolkit.mcp_server as mcp_server
+from stm32_toolkit.result import OperationResult
 
 from stm32_toolkit.mcp_server import (
     ServerRuntime,
@@ -44,6 +46,212 @@ def _runtime(tmp_path: Path) -> ServerRuntime:
 
 def _context(session: object) -> SimpleNamespace:
     return SimpleNamespace(session=session)
+
+
+def _tree_snapshot(root: Path) -> tuple[tuple[str, bool, bytes | None], ...]:
+    return tuple(
+        (
+            str(path.relative_to(root)),
+            path.is_dir(),
+            path.read_bytes() if path.is_file() else None,
+        )
+        for path in sorted(root.rglob("*"))
+    )
+
+
+_MCP_MISMATCHED_ROOT_CASES = (
+    (
+        "create-prepare-mismatched-root",
+        "tool_project_create_prepare_for_request",
+        "tool_project_create_prepare",
+        "project-create-prepare",
+        ("mcu", "STM32F429ZGTx", "generated", "hal", "c", "a" * 64, "b" * 64),
+    ),
+    (
+        "create-apply-mismatched-root",
+        "tool_project_create_apply_for_request",
+        "tool_project_create_apply",
+        "project-create-apply",
+        ("c" * 64, False),
+    ),
+    (
+        "regenerate-plan-mismatched-root",
+        "tool_project_regenerate_plan_for_request",
+        "tool_project_regenerate_plan",
+        "project-regenerate-plan",
+        ("generated",),
+    ),
+    (
+        "regenerate-prepare-mismatched-root",
+        "tool_project_regenerate_prepare_for_request",
+        "tool_project_regenerate_prepare",
+        "project-regenerate-prepare",
+        ("generated", "d" * 64, "e" * 64, False),
+    ),
+    (
+        "regenerate-apply-mismatched-root",
+        "tool_project_regenerate_apply_for_request",
+        "tool_project_regenerate_apply",
+        "project-regenerate-apply",
+        ("f" * 64, False),
+    ),
+)
+
+
+_MCP_MATCHING_ROOT_CASES = (
+    (
+        "create-prepare-matching-root",
+        "tool_project_create_prepare_for_request",
+        "tool_project_create_prepare",
+        "project-create-prepare",
+        ("mcu", "STM32F429ZGTx", "generated", "hal", "c", "a" * 64, "b" * 64),
+    ),
+    (
+        "create-apply-matching-root",
+        "tool_project_create_apply_for_request",
+        "tool_project_create_apply",
+        "project-create-apply",
+        ("c" * 64, False),
+    ),
+    (
+        "regenerate-plan-matching-root",
+        "tool_project_regenerate_plan_for_request",
+        "tool_project_regenerate_plan",
+        "project-regenerate-plan",
+        ("generated",),
+    ),
+    (
+        "regenerate-prepare-matching-root",
+        "tool_project_regenerate_prepare_for_request",
+        "tool_project_regenerate_prepare",
+        "project-regenerate-prepare",
+        ("generated", "d" * 64, "e" * 64, False),
+    ),
+    (
+        "regenerate-apply-matching-root",
+        "tool_project_regenerate_apply_for_request",
+        "tool_project_regenerate_apply",
+        "project-regenerate-apply",
+        ("f" * 64, False),
+    ),
+)
+
+
+@pytest.mark.parametrize(
+    ("case_id", "request_name", "delegate_name", "operation", "arguments"),
+    _MCP_MISMATCHED_ROOT_CASES,
+    ids=[case[0] for case in _MCP_MISMATCHED_ROOT_CASES],
+)
+def test_mcp_public_adapters_reject_mismatched_root(
+    monkeypatch,
+    tmp_path: Path,
+    case_id: str,
+    request_name: str,
+    delegate_name: str,
+    operation: str,
+    arguments: tuple[object, ...],
+):
+    runtime = _runtime(tmp_path)
+    other = tmp_path / "other"
+    other.mkdir()
+    session = _RootSession([[other]])
+    context = _context(session)
+    project_root = runtime.project_root
+    data_root = runtime.data_root
+    project_before = _tree_snapshot(project_root)
+    data_before = _tree_snapshot(data_root)
+    dispatches = []
+
+    def recorder(*received):
+        dispatches.append(received)
+        return OperationResult.success(operation, {"unexpected": case_id}).to_dict()
+
+    monkeypatch.setattr(mcp_server, delegate_name, recorder)
+    original_arguments = tuple(arguments)
+    result = asyncio.run(
+        getattr(mcp_server, request_name)(runtime, context, *arguments)
+    )
+
+    assert result == {
+        "protocol": "stm32-toolkit/1",
+        "ok": False,
+        "operation": operation,
+        "code": "UNSUPPORTED_MULTIROOT",
+        "message": "MCP client roots must contain only the bound project root",
+        "data": None,
+        "details": {
+            "boundProjectRoot": str(project_root),
+            "roots": [str(other.resolve())],
+        },
+    }
+    assert dispatches == []
+    assert session.list_roots_calls == 1
+    assert arguments == original_arguments
+    assert context.session is session
+    assert runtime.project_root is project_root
+    assert runtime.data_root is data_root
+    assert _tree_snapshot(project_root) == project_before
+    assert _tree_snapshot(data_root) == data_before
+
+
+@pytest.mark.parametrize(
+    ("case_id", "request_name", "delegate_name", "operation", "arguments"),
+    _MCP_MATCHING_ROOT_CASES,
+    ids=[case[0] for case in _MCP_MATCHING_ROOT_CASES],
+)
+def test_mcp_public_adapters_forward_matching_root(
+    monkeypatch,
+    tmp_path: Path,
+    case_id: str,
+    request_name: str,
+    delegate_name: str,
+    operation: str,
+    arguments: tuple[object, ...],
+):
+    runtime = _runtime(tmp_path)
+    session = _RootSession([[runtime.project_root]])
+    context = _context(session)
+    project_root = runtime.project_root
+    data_root = runtime.data_root
+    project_before = _tree_snapshot(project_root)
+    data_before = _tree_snapshot(data_root)
+    dispatches = []
+    returned_results = []
+
+    def recorder(*received):
+        dispatches.append(received)
+        returned = OperationResult.success(
+            operation,
+            {"case": case_id, "preserved": list(arguments)},
+        ).to_dict()
+        returned_results.append(returned)
+        return returned
+
+    monkeypatch.setattr(mcp_server, delegate_name, recorder)
+    original_arguments = tuple(arguments)
+    result = asyncio.run(
+        getattr(mcp_server, request_name)(runtime, context, *arguments)
+    )
+
+    assert session.list_roots_calls == 1
+    assert len(dispatches) == 1
+    forwarded = dispatches[0]
+    assert forwarded[0] is runtime
+    assert forwarded[1:] == original_arguments
+    assert tuple(type(value) for value in forwarded[1:]) == tuple(
+        type(value) for value in original_arguments
+    )
+    assert result is returned_results[0]
+    assert result == OperationResult.success(
+        operation,
+        {"case": case_id, "preserved": list(original_arguments)},
+    ).to_dict()
+    assert arguments == original_arguments
+    assert context.session is session
+    assert runtime.project_root is project_root
+    assert runtime.data_root is data_root
+    assert _tree_snapshot(project_root) == project_before
+    assert _tree_snapshot(data_root) == data_before
 
 
 def test_direct_and_no_roots_capability_calls_remain_bound_to_the_runtime(tmp_path: Path):
