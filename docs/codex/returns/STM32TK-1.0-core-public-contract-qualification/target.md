@@ -5,7 +5,7 @@
 - Owner: Target qualification test implementation.
 - Accepted base: 0a6bf2a6c591e5e89c6451050de3087168b77eb4.
 - Runtime source identity required by the plan: a270d7332c3ad2d09cd0b9adfa96ca80042bcf9d.
-- Test head before this report commit: 7f1eaba05c6b7378cea6b1466a9c1195479560d0 (test: validate replay parent before publication writes).
+- Test head before this report commit: 95074a143b541d18950f72b43a1471d1557f19c4 (test: bind physical runner fixture to lease identity).
 - Product/runtime source files changed: none.
 - Test-only files changed by this wave:
   - tools/stm32-toolkit/tests/test_target_runner.py
@@ -118,39 +118,52 @@ coverage. Only prohibited real pyOCD, device, and OS-specific paths may later
 be marked deferred external evidence. No coverage or pass claim is made by
 this implementation return.
 
-## Static verification
+## Static verification and bounded run evidence
 
-Only static checks were performed in this implementation/revision wave:
+The correction turn performed only static checks:
 
-    python -c "import ast,pathlib; ..."  # AST parse of all seven changed test files
+    python -c "import ast,pathlib; ..."  # AST parse of the changed test file
     git diff --check
-    PowerShell AST parse of the prepared launcher
 
-All seven changed test files and the prepared launcher parsed successfully and
-the diff was clean. Pytest, pytest collection, product imports, coverage,
-build, install, hardware, and runtime execution were intentionally not
-performed. The tests remain NOT_RUN until the primary releases the serial
-execution batch.
+The corrected test file parsed successfully and the diff was clean. This
+correction did not execute pytest, collection, product imports, coverage,
+build, install, hardware, or runtime commands.
 
-Prepared serial launcher, not executed:
+The primary's preserved run1 evidence is under
+`D:\codex-tmp\v10b-0918\r10\e\core95\target\run1` and was executed against
+the preceding source/report head `d719ecdf7fe7261a09848c472b239b8cbe976cef`.
+The selected run stopped at the physical publication selector after three
+passing selectors: 3 PASS, 1 FAIL, child exit 1, no timeout, and the child
+was reaped. The failure was a test-fixture identity mismatch, not a product
+guard failure: `_r5_prepared_runner` left the fake endpoint without a lease
+identity while the test supplied physical provenance with `lease-a`, so the
+production guard correctly raised `TEST_IDENTITY_MISMATCH` before publication.
+The correction binds the fake endpoint to `lease` and supplies matching
+physical provenance, following the existing physical fake-provider fixtures.
+The three passed borrowed-probe selectors and their run1 evidence remain
+unchanged.
 
-- Path: D:\codex-tmp\v10b-0918\r10\e\core95\target\run1\launch.ps1.
-- Candidate guard is set to the final report commit head; runtime source guard: a270d7332c3ad2d09cd0b9adfa96ca80042bcf9d.
-- Invocation properties: `-x`, `--cov=stm32_toolkit`, 16 function selectors expanding to 31 bounded pytest items, and a 300-second wall budget.
-- Evidence root: D:\codex-tmp\v10b-0918\r10\e\core95\target\run1.
-- Temporary/cache/basetemp root: D:\codex-tmp\v10b-0918\r10\t\c95t\run1.
-- All launcher-owned result paths were absent when prepared; the launcher file itself is the only file under the evidence root.
+Run1 evidence references:
 
-Reserved runtime evidence paths, not populated by this implementation turn:
+- `e\core95\target\run1\junit.xml`
+- `e\core95\target\run1\coverage.json`
+- `e\core95\target\run1\raw-coverage\.coverage`
+- `e\core95\target\run1\stdout.txt`, `stderr.txt`, `exit-code.txt`, and `process.json`
 
-- D:\codex-tmp\v10b-0918\r10\e\core95\target\run1
-- D:\codex-tmp\v10b-0918\r10\t\c95t\run1
+Prepared serial run2 launcher, not executed:
+
+- Path: D:\codex-tmp\v10b-0918\r10\e\core95\target\run2\launch.ps1.
+- It will guard the final correction report head and runtime source `a270d7332c3ad2d09cd0b9adfa96ca80042bcf9d`.
+- Invocation properties: `-x`, `--cov=stm32_toolkit`, the failed physical selector plus the remaining 12 selectors after the three recorded passes (13 selectors, 28 bounded pytest items), and a 300-second wall budget.
+- Evidence root: D:\codex-tmp\v10b-0918\r10\e\core95\target\run2.
+- Temporary/cache/basetemp root: D:\codex-tmp\v10b-0918\r10\t\c95t\run2.
+- Run1 is preserved; run2 has no result files before release.
 
 ## Remaining barriers
 
-The code head and report are ready for primary independent complete-diff review.
-The primary must release the bounded serial batch against source identity
+The corrected code and report are ready for primary independent review. The
+primary must release run2 against source identity
 a270d7332c3ad2d09cd0b9adfa96ca80042bcf9d, retain command/exit/JUnit/stdout/
-stderr/raw coverage evidence under the approved roots, classify any failure
-before changing tests, and own cleanup after evidence retention. This return
-contains no execution result and no physical acceptance claim.
+stderr/raw coverage evidence under the approved roots, stop on the first new
+nonzero result, and own cleanup after evidence retention. This correction
+contains no new runtime result and no physical acceptance claim.
