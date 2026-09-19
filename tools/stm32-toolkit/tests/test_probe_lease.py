@@ -1105,3 +1105,340 @@ os._exit(0)
         assert successor.owner.workspace_id == "workspace-successor"
     finally:
         successor.release()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        pytest.param("probe_id", "probe/unsafe", id="probe-id"),
+        pytest.param("workspace_id", "workspace unsafe", id="workspace-id"),
+        pytest.param("session_id", "session unsafe", id="session-id"),
+    ],
+)
+def test_public_acquire_rejects_invalid_identifiers_before_registry(
+    tmp_path: Path, field: str, value: str
+) -> None:
+    data_root = tmp_path / "data"
+    manager_ = manager(data_root, OWNER)
+    arguments: dict[str, object] = {
+        "probe_id": "probe-123",
+        "workspace_id": "workspace-a",
+        "session_id": "session-a",
+        "operation_level": OperationLevel.OBSERVE,
+        "health_url": "http://127.0.0.1:43123/health",
+    }
+    arguments[field] = value
+
+    with pytest.raises(ProbeLeaseError) as error:
+        manager_.acquire(**arguments)
+
+    assert error.value.code == "PROBE_LEASE_INVALID"
+    assert error.value.message == f"{field} is not a portable identifier"
+    assert not data_root.exists()
+
+
+def test_public_acquire_treats_empty_persisted_record_as_missing(tmp_path: Path):
+    data_root = tmp_path / "data"
+    successor_manager = manager(
+        data_root,
+        SUCCESSOR,
+        inspected={OWNER.pid: None, SUCCESSOR.pid: SUCCESSOR},
+        health=False,
+    )
+    path = successor_manager.record_path("probe-123")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"")
+    unrelated = path.parent / "unrelated.bin"
+    unrelated.write_bytes(b"preserve")
+    unrelated_before = unrelated.read_bytes()
+
+    lease = acquire(successor_manager, workspace="workspace-b")
+    try:
+        assert isinstance(lease, ProbeLease)
+        active = json.loads(path.read_text(encoding="utf-8"))
+        assert active["state"] == "active"
+        assert active["pid"] == SUCCESSOR.pid
+        assert active["workspaceId"] == "workspace-b"
+    finally:
+        lease.release()
+
+    released = json.loads(path.read_text(encoding="utf-8"))
+    assert released["state"] == "released"
+    assert released["leaseId"] == lease.lease_id
+    assert unrelated.read_bytes() == unrelated_before
+
+
+def test_public_acquire_rejects_non_dict_persisted_record_without_rewrite(
+    tmp_path: Path,
+):
+    successor_manager = manager(
+        tmp_path / "data",
+        SUCCESSOR,
+        inspected={OWNER.pid: None, SUCCESSOR.pid: SUCCESSOR},
+        health=False,
+    )
+    path = successor_manager.record_path("probe-123")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    raw = b"[]"
+    path.write_bytes(raw)
+
+    with pytest.raises(ProbeLeaseError) as error:
+        acquire(successor_manager, workspace="workspace-b")
+
+    assert error.value.code == "PROBE_REGISTRY_UNAVAILABLE"
+    assert error.value.message == "Probe registry record is invalid"
+    assert path.read_bytes() == raw
+
+
+def test_public_acquire_rejects_handoff_ticket_on_stale_active_record(
+    tmp_path: Path,
+):
+    successor_manager = manager(
+        tmp_path / "data",
+        SUCCESSOR,
+        inspected={OWNER.pid: None, SUCCESSOR.pid: SUCCESSOR},
+        health=False,
+    )
+    path = write_stale_record(successor_manager, stale_record())
+    before = path.read_bytes()
+
+    with pytest.raises(ProbeBusyError) as error:
+        successor_manager.acquire(
+            probe_id="probe-123",
+            workspace_id="workspace-b",
+            session_id="session-a",
+            operation_level=OperationLevel.OBSERVE,
+            health_url="http://127.0.0.1:43123/health",
+            handoff_ticket="ab" * 32,
+        )
+
+    assert error.value.code == "PROBE_BUSY"
+    assert error.value.message == "The selected probe is owned by another session"
+    assert error.value.owner.workspace_id == "workspace-a"
+    assert path.read_bytes() == before
+
+
+def test_public_acquire_lock_held_invalid_state_preserves_bytes_before_release(
+    tmp_path: Path,
+):
+    data_root = tmp_path / "data"
+    owner = acquire(manager(data_root, OWNER))
+    path = owner.record_path
+    active_before = path.read_bytes()
+    invalid_record = json.loads(active_before.decode("utf-8"))
+    invalid_record["state"] = "invalid-state"
+    invalid_bytes = json.dumps(
+        invalid_record, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    contender = manager(
+        data_root,
+        SUCCESSOR,
+        inspected={OWNER.pid: None, SUCCESSOR.pid: SUCCESSOR},
+        health=False,
+    )
+
+    try:
+        path.write_bytes(invalid_bytes)
+        before = path.read_bytes()
+        with pytest.raises(ProbeLeaseError) as error:
+            acquire(contender, workspace="workspace-b")
+
+        assert error.value.code == "PROBE_REGISTRY_UNAVAILABLE"
+        assert error.value.message == "Probe owner record is unavailable"
+        assert path.read_bytes() == before
+    finally:
+        path.write_bytes(active_before)
+        owner.release()
+
+    assert json.loads(path.read_text(encoding="utf-8"))["state"] == "released"
+
+
+def test_public_heartbeat_rejects_identity_tamper_without_rewrite(tmp_path: Path):
+    lease = acquire(manager(tmp_path / "data", OWNER))
+    path = lease.record_path
+
+    try:
+        tampered_record = json.loads(path.read_text(encoding="utf-8"))
+        tampered_record["pid"] = SUCCESSOR.pid
+        tampered_record["processStartId"] = SUCCESSOR.process_start_id
+        tampered_record["bootId"] = SUCCESSOR.boot_id
+        tampered_bytes = json.dumps(
+            tampered_record, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+        path.write_bytes(tampered_bytes)
+        before = path.read_bytes()
+
+        with pytest.raises(ProbeLeaseError) as error:
+            lease.heartbeat(utc_now=lambda: NOW + timedelta(seconds=1))
+
+        assert error.value.code == "PROBE_LEASE_LOST"
+        assert error.value.message == "Probe lease ownership no longer matches"
+        assert path.read_bytes() == before
+    finally:
+        lease.release()
+
+
+@pytest.mark.parametrize(
+    ("action", "workspace_id", "ticket"),
+    [
+        pytest.param(
+            "consume",
+            "workspace-a",
+            "short",
+            id="consume-short-ticket",
+        ),
+        pytest.param(
+            "finalize",
+            "workspace unsafe",
+            "cd" * 32,
+            id="finalize-unsafe-workspace",
+        ),
+        pytest.param(
+            "finalize",
+            "workspace-a",
+            "short",
+            id="finalize-short-ticket",
+        ),
+    ],
+)
+def test_public_handoff_rejects_invalid_transition_inputs_without_write(
+    tmp_path: Path, action: str, workspace_id: str, ticket: str
+) -> None:
+    data_root = tmp_path / "data"
+    owner_manager = manager(data_root, OWNER)
+    lease = acquire(owner_manager)
+    before = lease.record_path.read_bytes()
+
+    try:
+        with pytest.raises(ProbeLeaseError) as error:
+            if action == "consume":
+                lease.consume_external_handoff(ticket)
+            else:
+                owner_manager.finalize_consumed_handoff(
+                    probe_id="probe-123",
+                    workspace_id=workspace_id,
+                    session_id="session-a",
+                    ticket=ticket,
+                )
+
+        assert error.value.code == "PROBE_LEASE_INVALID"
+        if action == "consume":
+            assert error.value.message == "External handoff ticket is invalid"
+        else:
+            assert error.value.message == "External handoff identity is invalid"
+        assert lease.record_path.read_bytes() == before
+    finally:
+        lease.release()
+
+
+def test_public_handoff_settlement_rejects_wrong_order_and_finishes_once(
+    tmp_path: Path,
+):
+    data_root = tmp_path / "data"
+    ticket = "ef" * 32
+    owner = acquire(manager(data_root, OWNER))
+    try:
+        owner.reserve_external_handoff(ticket)
+    finally:
+        owner.release()
+
+    claimant_manager = manager(
+        data_root,
+        SUCCESSOR,
+        inspected={OWNER.pid: None, SUCCESSOR.pid: SUCCESSOR},
+        health=False,
+    )
+    claimant = claimant_manager.acquire(
+        probe_id="probe-123",
+        workspace_id="workspace-a",
+        session_id="session-a",
+        operation_level=OperationLevel.OBSERVE,
+        health_url="http://127.0.0.1:43124/health",
+        handoff_ticket=ticket,
+    )
+    try:
+        claimant.consume_external_handoff(ticket)
+    finally:
+        claimant.release()
+
+    path = claimant.record_path
+    consumed_before = path.read_bytes()
+    third_identity = ProcessIdentity(4300, "start-4300", "boot-a")
+    third_manager = manager(
+        data_root,
+        third_identity,
+        inspected={SUCCESSOR.pid: None, third_identity.pid: third_identity},
+        health=False,
+    )
+    with pytest.raises(ProbeBusyError) as busy:
+        acquire(third_manager, workspace="workspace-b")
+    assert busy.value.code == "PROBE_BUSY"
+    assert busy.value.message == "The selected probe is owned by another session"
+    assert path.read_bytes() == consumed_before
+
+    assert (
+        claimant_manager.acknowledge_consumed_handoff(
+            probe_id="probe-123",
+            workspace_id="workspace-a",
+            session_id="session-a",
+            ticket=ticket,
+        )
+        is False
+    )
+    assert path.read_bytes() == consumed_before
+
+    assert (
+        claimant_manager.finalize_consumed_handoff(
+            probe_id="probe-123",
+            workspace_id="workspace-b",
+            session_id="session-a",
+            ticket=ticket,
+        )
+        is False
+    )
+    assert path.read_bytes() == consumed_before
+
+    assert claimant_manager.finalize_consumed_handoff(
+        probe_id="probe-123",
+        workspace_id="workspace-a",
+        session_id="session-a",
+        ticket=ticket,
+    )
+    finalized = path.read_bytes()
+    assert json.loads(finalized.decode("utf-8"))["state"] == "handoff-finalized"
+    assert claimant_manager.finalize_consumed_handoff(
+        probe_id="probe-123",
+        workspace_id="workspace-a",
+        session_id="session-a",
+        ticket=ticket,
+    )
+    assert path.read_bytes() == finalized
+
+    assert claimant_manager.acknowledge_consumed_handoff(
+        probe_id="probe-123",
+        workspace_id="workspace-a",
+        session_id="session-a",
+        ticket=ticket,
+    )
+    released = json.loads(path.read_text(encoding="utf-8"))
+    assert released["state"] == "released"
+    assert released["consumedTicketSha256"]
+
+    successor = acquire(claimant_manager, workspace="workspace-b")
+    try:
+        assert successor.owner.workspace_id == "workspace-b"
+    finally:
+        successor.release()
+
+    path.unlink()
+    assert not path.exists()
+    assert (
+        claimant_manager.finalize_consumed_handoff(
+            probe_id="probe-123",
+            workspace_id="workspace-a",
+            session_id="session-a",
+            ticket=ticket,
+        )
+        is False
+    )
+    assert not path.exists()
