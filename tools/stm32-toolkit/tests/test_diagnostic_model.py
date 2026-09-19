@@ -1121,7 +1121,7 @@ def test_public_session_lifecycle_boundaries(case_id: str) -> None:
     if case_id == "session-result-limit":
         kwargs = _session_kwargs()
         result = kwargs["observation_results"][0]
-        kwargs["observation_results"] = (result,) * 65
+        kwargs["observation_results"] = (result,) * 4097
         _expect_model_failure(
             lambda: DiagnosticSession(**kwargs),
             DIAGNOSTIC_LIMIT_EXCEEDED,
