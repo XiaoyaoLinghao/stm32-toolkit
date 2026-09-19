@@ -2500,6 +2500,12 @@ def test_public_continuation_reference_native_variants_preserve_schema3_authorit
     baseline = _same_session_native_baseline(
         pair, tmp_path, continuation_id=continuation_id
     )
+    baseline_analysis_root = get_root(
+        pair.evidence,
+        "monitor-analysis",
+        str(baseline.publication.analysis_result.analysis_id),
+    )
+    assert baseline_analysis_root.manifest_id == str(baseline.analysis_envelope.evidence_id)
     association = authenticate_continuation(
         pair.evidence, pair.workspace.diagnostics_root, continuation_id
     )
@@ -2534,7 +2540,7 @@ def test_public_continuation_reference_native_variants_preserve_schema3_authorit
             tuple(sorted(store_files.items())),
             canonical_json_bytes(association.root.to_dict()),
             association.envelope.to_json_bytes(),
-            canonical_json_bytes(baseline.analysis_root.to_dict()),
+            canonical_json_bytes(baseline_analysis_root.to_dict()),
             baseline.analysis_envelope.to_json_bytes(),
             run_bytes,
             analysis_bytes,
