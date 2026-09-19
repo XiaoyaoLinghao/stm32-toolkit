@@ -364,6 +364,24 @@ def test_apply_requires_exact_boolean_true(tmp_path: Path):
     assert error.value.code == "CREATION_AUTHORIZATION_REQUIRED"
 
 
+def test_adapter_factory_failure_is_typed_without_dispatch_or_owned_roots(tmp_path: Path):
+    data, store, prepared = _authorization(tmp_path)
+    result = apply_creation(
+        CreationApplyRequest(tmp_path, data, prepared.authorization_digest, True),
+        store=store,
+        environment=SimpleNamespace(digest="c" * 64),
+        adapter_factory=lambda capability, environment: (_ for _ in ()).throw(
+            RuntimeError("injected adapter setup failure")
+        ),
+    )
+
+    assert result.ok is False
+    assert result.code == "CUBEMX_EXECUTION_ENVIRONMENT_CHANGED"
+    assert not (tmp_path / "generated").exists()
+    assert not list(tmp_path.glob(".stm32tk-creation-*"))
+    assert not list(tmp_path.glob(".stm32tk-activation-*"))
+
+
 def test_empty_activation_backup_cleanup_failure_restores_exact_empty_state(tmp_path: Path, monkeypatch):
     staging = tmp_path / "staging"
     staging.mkdir()

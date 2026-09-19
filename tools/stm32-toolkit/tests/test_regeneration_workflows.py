@@ -310,6 +310,54 @@ def test_prepare_rejects_candidate_ownership_collision_before_authorization(tmp_
         assert not list(auth_root.glob("*.json"))
 
 
+@pytest.mark.parametrize("mutation", ("unsafe-path", "duplicate"))
+def test_prepare_rejects_invalid_candidate_ownership_manifest_before_authorization(
+    tmp_path: Path, mutation: str
+):
+    workspace, destination, environment = _project(tmp_path)
+    request = RegenerationWorkflowRequest(workspace, tmp_path / "data", "session", "generated")
+    planned = plan_regeneration(request, environment=environment)
+    before = _tree_bytes(destination)
+
+    def invalid_validator(candidate, *, request, plan_id, action_digest, environment):
+        parsed = parse_native_project(
+            candidate,
+            request=request,
+            plan_id=plan_id,
+            action_digest=action_digest,
+            environment=environment,
+        )
+        write_native_project_manifests(candidate, parsed)
+        manifest = candidate / ".stm32-toolkit" / "cubemx-ownership.json"
+        payload = json.loads(manifest.read_text(encoding="utf-8"))
+        if mutation == "unsafe-path":
+            payload["files"][0]["path"] = "../escape"
+        else:
+            payload["files"].append(dict(payload["files"][0]))
+        manifest.write_text(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")),
+            encoding="utf-8",
+        )
+        return SimpleNamespace(model=SimpleNamespace())
+
+    result = prepare_regeneration_workflow(
+        request,
+        plan_id=planned.data["planId"],
+        action_digest=planned.data["actionDigest"],
+        authorized=True,
+        environment=environment,
+        adapter=_Adapter(FIXTURE),
+        validate_native=invalid_validator,
+    )
+
+    assert result.code == "REGENERATION_OWNERSHIP_INVALID"
+    assert _tree_bytes(destination) == before
+    assert not list(workspace.glob(".stm32tk-regeneration-preview-*"))
+    auth_root = tmp_path / "data" / "regeneration" / "authorizations"
+    if auth_root.exists():
+        assert not list(auth_root.glob("*.json"))
+
+
 def test_authorization_record_tamper_is_rejected_by_peek_and_consume(tmp_path: Path):
     workspace, _, environment = _project(tmp_path)
     request = RegenerationWorkflowRequest(workspace, tmp_path / "data", "session", "generated")
@@ -517,6 +565,9 @@ def test_apply_rejects_execution_environment_drift_before_generation(tmp_path: P
     assert replay_adapter.calls == 0
     assert _tree_bytes(destination) == before_apply
     assert not list(workspace.glob(".stm32tk-regeneration-*"))
+    with pytest.raises(RegenerationAuthorizationError) as consumed:
+        RegenerationAuthorizationStore(tmp_path / "data").peek(prepared.data["authorizationDigest"])
+    assert consumed.value.code == "REGENERATION_AUTHORIZATION_CONSUMED"
 
 
 def test_apply_rejects_authorization_bound_destination_before_generation(tmp_path: Path):
@@ -548,6 +599,9 @@ def test_apply_rejects_authorization_bound_destination_before_generation(tmp_pat
     assert replay_adapter.calls == 0
     assert _tree_bytes(destination) == before_apply
     assert not list(workspace.glob(".stm32tk-regeneration-*"))
+    with pytest.raises(RegenerationAuthorizationError) as consumed:
+        RegenerationAuthorizationStore(tmp_path / "data").peek(prepared.data["authorizationDigest"])
+    assert consumed.value.code == "REGENERATION_AUTHORIZATION_CONSUMED"
 
 
 def test_prepare_rejects_candidate_target_drift_before_authorization(tmp_path: Path):
@@ -681,6 +735,9 @@ def test_apply_supported_build_failure_preserves_destination_and_settles_roots(
     assert _tree_bytes(destination) == before_apply
     assert not list(workspace.glob(".stm32tk-regeneration-*"))
     assert not list(workspace.glob(".generated.regen-backup-*"))
+    with pytest.raises(RegenerationAuthorizationError) as consumed:
+        RegenerationAuthorizationStore(tmp_path / "data").peek(prepared.data["authorizationDigest"])
+    assert consumed.value.code == "REGENERATION_AUTHORIZATION_CONSUMED"
 
 
 def test_apply_activation_failure_restores_old_tree(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

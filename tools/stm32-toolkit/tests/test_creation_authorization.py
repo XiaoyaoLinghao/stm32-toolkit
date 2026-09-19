@@ -144,6 +144,7 @@ def test_persisted_request_shapes_are_rejected_before_authorization(
     prepared = _prepare(store)
     original = store.authorization_root / f"{prepared.authorization_digest}.json"
     payload = json.loads(original.read_text(encoding="utf-8"))
+    original_snapshot = (original.read_bytes(), payload["state"])
     payload["request"] = request_value
     canonical = {key: value for key, value in payload.items() if key != "authorizationDigest"}
     canonical["state"] = "prepared"
@@ -153,13 +154,20 @@ def test_persisted_request_shapes_are_rejected_before_authorization(
     payload["authorizationDigest"] = forged_digest
     forged = store.authorization_root / f"{forged_digest}.json"
     forged.write_text(json.dumps(payload, sort_keys=True, separators=(",", ":")), encoding="utf-8")
+    forged_snapshot = (forged.read_bytes(), json.loads(forged.read_text(encoding="utf-8"))["state"])
+
+    def assert_records_unchanged() -> None:
+        assert (original.read_bytes(), json.loads(original.read_text(encoding="utf-8"))["state"]) == original_snapshot
+        assert (forged.read_bytes(), json.loads(forged.read_text(encoding="utf-8"))["state"]) == forged_snapshot
 
     with pytest.raises(CreationAuthorizationError) as peek_error:
         store.peek(forged_digest)
     assert peek_error.value.code == "CREATION_AUTHORIZATION_INVALID"
+    assert_records_unchanged()
     with pytest.raises(CreationAuthorizationError) as consume_error:
         store.consume(forged_digest, authorized=True)
     assert consume_error.value.code == "CREATION_AUTHORIZATION_INVALID"
+    assert_records_unchanged()
 
 
 def test_malformed_record_is_closed_without_raw_record_data(tmp_path: Path):
