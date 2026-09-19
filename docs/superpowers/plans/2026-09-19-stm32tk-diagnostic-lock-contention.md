@@ -49,6 +49,15 @@ Source scopes remain the same except for the explicitly named nested adapter.
 A small standard-library native child/descriptor fixture is allowed only for
 the actual cross-process exclusion check; use an existing subprocess pattern,
 finite waits and owned-child cleanup, not a new runner or lock framework.
+The native child fixture uses an explicit ready/release handshake: after ready,
+it continues holding the lock until the parent has observed its public Busy
+result and sends release. A fixed sleep is not proof of continued ownership.
+Both readiness and child release have finite deadlines; unconditional parent
+cleanup releases the signal and settles or terminates only its owned child.
+Fault injection and close assertions concern the Diagnostic lock descriptor;
+public load may also open and close evidence descriptors or acquire other native
+locks. Preserve their constants and behavior instead of counting all process
+closes as if they belonged to one lock.
 
 First run the affected store module and new adapter cases once with `-x`. Then
 run exactly the existing node
@@ -60,6 +69,10 @@ the latter remains the immutable failure baseline.
 
 Use `r10/py`, explicit PowerShell 7, and short temp roots under `r10/t/lk` with
 all TEMP/TMP/TMPDIR, basetemp and caches bound and actual tempfile checked.
+Use short children `t/lk/f/b` and `t/lk/c/b` for focused and continuation basetemp,
+respectively; retain the descriptive evidence directory names. Existing Windows
+publication fixtures have demonstrated native path-limit failures with longer
+derived temporary paths.
 Reuse the working bounded child-launch pattern from retention r3; do not add
 another generic runner. Set finite child bounds of 180 seconds for focused
 store/adapter tests and 240 seconds for the continuation node. Primary reviews
