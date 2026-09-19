@@ -1,69 +1,59 @@
 # Current native coverage result
 
 Qualification accepted base: `ab2fd448a73a319b026a5a6da700b31c2535975f`.
-Integrated code/test head before this report: `c2e906bb0221eadfb7c5b8f1d2f2a7f07caa0a19`.
+Integrated code/test head before this report: `5c34842afba3973007c85c6defae6ed55f977e8d`.
 Current runtime: `465249dba5560f7c08b1172794fec8fedd9b8d96`.
 Native data verdict: **ACCEPTED**. Coverage targets: **NOT MET**.
 
 | Package | Covered / total branches | Overall and frozen core | More for 90% | More for 95% |
 | --- | ---: | ---: | ---: | ---: |
-| Toolkit | 11,224 / 13,578 | 82.6631% | 997 | 1,676 |
-| Monitor | 2,609 / 2,940 | 88.7415% | 37 | 184 |
+| Toolkit | 11,237 / 13,578 | 82.7589% | 984 | 1,663 |
+| Monitor | 2,625 / 2,940 | 89.2857% | 21 | 168 |
 | UI (retained) | 784 / 810 | 96.7901% | 0 | 0 |
 
-Union5 contains four inputs per package: its own accepted union4 baseline,
-Project regeneration 26 PASS, Monitor CLI/export 10 new PASS plus 6 retained
-functional PASS cases with newly captured missing native evidence, and Host
-publication/repository 20 PASS. It adds 47 Toolkit and 20 Monitor branches.
-Project reached all 27 intended arc entries; Monitor reached all 13 new and
-9 recaptured entries (overlaps are not additional unique branches); Host reached
-all 20 intended guards. All three runs exited 0 with no timeout or live child.
-The Monitor six-case acquisition repairs a documented absence of raw coverage
-from the original functional run; it is not six new cases or a full-suite replay.
+Union6 contains five native inputs per package: its own accepted union5
+baseline, two Project NEXT10 runs, and two Monitor model/group runs. It adds
+13 Toolkit and 16 Monitor branches. Project's ten cases reached all twelve
+intended branches; Monitor's sixteen cases reached all sixteen intended branches.
+The eight Project and eleven Monitor passes from the original partial runs were
+retained. Only each failed/unrun remainder executed after its test-only correction:
+Project two PASS and Monitor five PASS. Both corrective runs exited 0 without
+timeout and with their child processes terminated.
+
+The Project failure was an incorrect test expectation for a public adapter error
+message. The Monitor failure was a snapshot helper that captured file topology
+before its own read-only SQLite query created WAL/SHM sidecars. A warmed persistent
+read-only observer and explicit connection close fixed the test while retaining
+all error, logical-state, main-byte, and sidecar-identity assertions. Neither
+correction changed product code. The original exit-1 records remain preserved.
+Each failed-run exclusive audit found zero otherwise-unqualified branches or
+statements: remaining Project arcs belong to the eight retained passes, and
+remaining Monitor arcs are exactly the eleven retained model guards and bodies.
 
 Original raw databases and hashes remain unchanged. Only copied old-source
-Toolkit `creation_environment.py` data is purged from the Monitor/Host inputs;
-the current-source Project input is retained intact. No Monitor data is purged.
-The exact native arc union is checked separately for both packages. Source
-identity covers 148 files and 592 comparisons; outside the accepted creation
-environment correction, source differences are only line endings. Overall scopes
-remain 108/18 files, core scopes 97/16; excluded Python forwarding files have zero
-branch opportunities. UI branch coverage is retained separately; other UI metrics
-are not relabeled as 95% or pooled with Python coverage.
+Toolkit `creation_environment.py` data is purged from the two Monitor inputs;
+both current-source Project inputs are retained intact. No Monitor data is purged.
+All 126 measured raw files match the exact native arc-set union for each package.
+Source identity covers 148 files and 592 comparisons. Overall scopes remain
+108/18 files, core scopes 97/16; excluded Python forwarding files have zero branch
+opportunities. UI branch coverage is separate and other UI metrics are not
+relabeled as 95% or pooled with Python coverage. Multiline Python conditionals
+can normalize raw trace arcs to different native JSON branch headers; coverage
+JSON's native summaries remain authoritative for percentages.
 
 Native raw SHA-256: Toolkit
-`3D028DE84D375B753621CAD9397EFA1F51651D8783AACD07DE843D04998858D6`;
-Monitor `3BB72543D93C2F1FFDDD66E3FAA58275F14B72FBD75B8BCE7876F02E6812EF86`.
-Evidence and independent data review: `r10/e/n95/union5/` under approved
-`D:/codex-tmp/v10b-0918`. Accepted historical native baselines remain in
-`union4/`, `union3/`, and `union-next/`. Native combination reruns no tests.
+`7804E3ACD500BC48929AC73E466B96D6216C0AC4A1052E0523DCF1720C14523A`;
+Monitor `3FD064E584896B09A8EE1C859C5ABE93A49F0431F993640953CC8C87CE421356`.
+Evidence and independent data review: `r10/e/n95/union6/` under approved
+`D:/codex-tmp/v10b-0918`. Accepted historical baselines remain in `union5/`,
+`union4/`, `union3/`, and `union-next/`; their valid passes, failure history,
+withdrawn unsupported arc claims, and physical scope limits are preserved.
+Native combination reruns no tests.
 
-Historical failures and evidence boundaries remain preserved in those baselines:
-Monitor replay's first NFC setup failure adds no otherwise-unqualified branch
-or statement; only its remaining 11 cases ran after correction. Authority
-recovery's structural/setup errors were corrected before execution and its
-94 PASS/94 guard results remain included. Project's valid preview/path-oracle
-corrections preceded the current 26-case run. Monitor's protocol-envelope and
-no-write snapshot corrections preceded the current 16-case run. The older
-six-class CLI result was missing raw coverage, while its separate PermissionError
-case already reached the correct true branch and was not rerun.
-
-Earlier accepted functional evidence remains valid, including Project configuration
-135 unique PASS (two environmental reruns are not new cases), Monitor continuation
-12 final functional PASS with its historical exit-1 records preserved, Authority
-analysis guards five PASS with the sixth upstream-masked claim withdrawn, History
-four cases, Project transactions seven, finalization twelve, public wire eighteen,
-provider settlement four, Authority model fifteen, and backend twenty plus one
-bounded iterator-budget case. Provider settlement's six incorrect service-arc
-claims remain withdrawn. Original interrupted/failed runs and their exclusive-
-coverage audits remain in the retained evidence roots; none is presented as a
-clean full-suite PASS. Product runtime bytes and accepted physical evidence are
-unchanged by this test-only continuation.
-
-The remaining-native-qualification plan is active. The next Project selection
-contains ten reviewed public request/plan/preview cases; it excludes the IOC-row
-case masked by the earlier unknown-path guard. Monitor model/group and Authority
-diagnostic-model boundaries remain unaccepted work. Seven native Windows security
-checks, final artifact builds, and final deployment remain pending. The 90%
-overall gate and 95% core target remain unmet; no new physical or release
-acceptance is claimed.
+Target replay's next 22 cases are independently reviewed, executed PASS, and
+integrated, but are deliberately outside this finite union6 and not included in
+the table. Authority diagnostic-model qualification remains pending. Seven native
+Windows security checks, final artifact builds, and final deployment remain pending.
+Product runtime bytes and retained physical evidence are unchanged. The 90%
+overall gate and 95% core target remain unmet; no new physical or release acceptance
+is claimed.
