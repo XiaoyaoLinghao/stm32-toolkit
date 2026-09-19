@@ -709,3 +709,341 @@ def test_cubemx_version_requires_dotted_618_prefix(
 
     assert (profile.cubemx is not None) is True
     assert ("CUBEMX_UNSUPPORTED" in {issue.code for issue in profile.issues}) is (not supported)
+
+
+def _support_tree_snapshot(root: Path) -> tuple[tuple[str, str, bytes | None], ...]:
+    entries: list[tuple[str, str, bytes | None]] = []
+    for path in sorted(root.rglob("*"), key=lambda item: item.as_posix()):
+        relative = path.relative_to(root).as_posix()
+        if path.is_dir():
+            entries.append((relative, "directory", None))
+        else:
+            entries.append((relative, "file", path.read_bytes()))
+    return tuple(entries)
+
+
+def _nested_public_profile_fixture(tmp_path: Path) -> tuple[Path, Path, dict[str, object], dict[str, Path]]:
+    root = tmp_path / "cubeclt"
+    root.mkdir()
+    specifications = {
+        "cubeMx": ("CubeMX/STM32CubeMX.exe", "6.18.1"),
+        "vsCode": ("VSCode/Code.exe", "1.133.0"),
+        "gcc": ("GNU-tools-for-STM32/bin/arm-none-eabi-gcc.exe", "14.3.1"),
+        "cmake": ("CMake/bin/cmake.exe", "4.3.1"),
+        "ninja": ("Ninja/bin/ninja.exe", "1.13.2"),
+    }
+    paths: dict[str, Path] = {}
+    entries: dict[str, dict[str, str]] = {}
+    for name, (relative, version) in specifications.items():
+        path = _write_executable(root / relative, name.encode("ascii"))
+        paths[name] = path
+        entries[name] = {"path": str(path), "version": version}
+    payload: dict[str, object] = {"cubeCltRoot": str(root), "tools": entries}
+    profile = tmp_path / "profile.json"
+    profile.write_text(json.dumps(payload), encoding="utf-8")
+    return root, profile, payload, paths
+
+
+def _metadata_public_fixture(tmp_path: Path) -> tuple[Path, Path, Path, dict[str, Path]]:
+    root = tmp_path / "cubeclt"
+    root.mkdir()
+    static_paths = {
+        "cubeMx": _write_executable(root / "CubeMX" / "STM32CubeMX.exe", b"cube-mx"),
+        "vsCode": _write_executable(root / "VSCode" / "Code.exe", b"vs-code"),
+    }
+    build_paths = {
+        "gcc": _write_executable(root / "GNU-tools-for-STM32" / "bin" / "arm-none-eabi-gcc.exe", b"gcc"),
+        "cmake": _write_executable(root / "CMake" / "bin" / "cmake.exe", b"cmake"),
+        "ninja": _write_executable(root / "Ninja" / "bin" / "ninja.exe", b"ninja"),
+    }
+    metadata = _write_executable(root / "STM32CubeCLT_metadata.bat", b"metadata")
+    payload: dict[str, object] = {
+        "cubeCltRoot": str(root),
+        "cubeMx": {"path": str(static_paths["cubeMx"]), "version": "6.18.1"},
+        "vsCode": {"path": str(static_paths["vsCode"]), "version": "1.133.0"},
+    }
+    request = _write_profile(tmp_path, payload)
+    return root, metadata, request.profile_path, {**static_paths, **build_paths}
+
+
+def test_public_profile_rejects_valid_json_nonobject_without_dispatch(tmp_path: Path, monkeypatch):
+    _root, profile, _payload, _paths = _nested_public_profile_fixture(tmp_path)
+    profile.write_text("[]", encoding="utf-8")
+    calls: list[tuple[str, ...]] = []
+
+    def runner(argv, **kwargs):
+        calls.append(tuple(argv))
+        raise AssertionError("schema refusal must precede bounded provider dispatch")
+
+    monkeypatch.setattr(support, "_run_bounded", runner)
+    before = _support_tree_snapshot(tmp_path)
+    with pytest.raises(SupportProfileError, match="^support profile schema is invalid$"):
+        discover_tool_support(SupportProfileRequest(profile_path=profile, data_root=tmp_path), probe_versions=False)
+    assert calls == []
+    assert _support_tree_snapshot(tmp_path) == before
+
+
+def test_public_profile_requires_trusted_data_root_without_dispatch(tmp_path: Path, monkeypatch):
+    _root, profile, _payload, _paths = _nested_public_profile_fixture(tmp_path)
+    calls: list[tuple[str, ...]] = []
+
+    def runner(argv, **kwargs):
+        calls.append(tuple(argv))
+        raise AssertionError("trust refusal must precede bounded provider dispatch")
+
+    monkeypatch.setattr(support, "_run_bounded", runner)
+    before = _support_tree_snapshot(tmp_path)
+    with pytest.raises(SupportProfileError, match="^support profile is outside trusted data root$"):
+        discover_tool_support(SupportProfileRequest(profile_path=profile, data_root=None), probe_versions=False)
+    assert calls == []
+    assert _support_tree_snapshot(tmp_path) == before
+
+
+def test_public_profile_accepts_nested_tools_entries_and_returns_wire(tmp_path: Path, monkeypatch):
+    root, profile, _payload, paths = _nested_public_profile_fixture(tmp_path)
+    calls: list[tuple[str, ...]] = []
+
+    def runner(argv, **kwargs):
+        calls.append(tuple(argv))
+        raise AssertionError("explicit profile versions must avoid process probes")
+
+    monkeypatch.setattr(support, "_run_bounded", runner)
+    before = _support_tree_snapshot(tmp_path)
+    discovered = discover_tool_support(
+        SupportProfileRequest(profile_path=profile, data_root=tmp_path),
+        probe_versions=False,
+    )
+    wire = discovered.to_dict()
+    assert discovered.cubeclt_root == root.resolve()
+    assert {name: getattr(discovered, name).source for name in paths} == {
+        name: "explicit" for name in paths
+    }
+    assert {name: getattr(discovered, name).version for name in paths} == {
+        "cubeMx": "6.18.1",
+        "vsCode": "1.133.0",
+        "gcc": "14.3.1",
+        "cmake": "4.3.1",
+        "ninja": "1.13.2",
+    }
+    assert discovered.issues == ()
+    assert wire["cubeCltRoot"] == root.resolve().as_posix()
+    assert all(wire[name]["source"] == "explicit" for name in paths)
+    assert all(wire[name]["executableSha256"] == hashlib.sha256(paths[name].read_bytes()).hexdigest() for name in paths)
+    assert calls == []
+    assert _support_tree_snapshot(tmp_path) == before
+
+
+def test_public_profile_rejects_duplicate_cubeclt_root_keys_without_dispatch(tmp_path: Path, monkeypatch):
+    _root, profile, payload, _paths = _nested_public_profile_fixture(tmp_path)
+    payload["cubeclt_root"] = payload["cubeCltRoot"]
+    profile.write_text(json.dumps(payload), encoding="utf-8")
+    calls: list[tuple[str, ...]] = []
+
+    def runner(argv, **kwargs):
+        calls.append(tuple(argv))
+        raise AssertionError("schema refusal must precede bounded provider dispatch")
+
+    monkeypatch.setattr(support, "_run_bounded", runner)
+    before = _support_tree_snapshot(tmp_path)
+    with pytest.raises(SupportProfileError, match="^support profile schema is invalid$"):
+        discover_tool_support(SupportProfileRequest(profile_path=profile, data_root=tmp_path), probe_versions=False)
+    assert calls == []
+    assert _support_tree_snapshot(tmp_path) == before
+
+
+def test_public_profile_rejects_missing_cubeclt_root_without_dispatch(tmp_path: Path, monkeypatch):
+    _root, profile, payload, _paths = _nested_public_profile_fixture(tmp_path)
+    payload["cubeCltRoot"] = str(tmp_path / "missing-cubeclt-root")
+    profile.write_text(json.dumps(payload), encoding="utf-8")
+    calls: list[tuple[str, ...]] = []
+
+    def runner(argv, **kwargs):
+        calls.append(tuple(argv))
+        raise AssertionError("root validation must precede bounded provider dispatch")
+
+    monkeypatch.setattr(support, "_run_bounded", runner)
+    before = _support_tree_snapshot(tmp_path)
+    with pytest.raises(SupportProfileError, match="^support profile cubeclt root is invalid$"):
+        discover_tool_support(SupportProfileRequest(profile_path=profile, data_root=tmp_path), probe_versions=False)
+    assert calls == []
+    assert _support_tree_snapshot(tmp_path) == before
+
+
+def test_public_profile_rejects_unknown_nested_entry_key_without_dispatch(tmp_path: Path, monkeypatch):
+    _root, profile, payload, _paths = _nested_public_profile_fixture(tmp_path)
+    payload["tools"]["gcc"]["unexpected"] = True  # type: ignore[index]
+    profile.write_text(json.dumps(payload), encoding="utf-8")
+    calls: list[tuple[str, ...]] = []
+
+    def runner(argv, **kwargs):
+        calls.append(tuple(argv))
+        raise AssertionError("entry schema refusal must precede bounded provider dispatch")
+
+    monkeypatch.setattr(support, "_run_bounded", runner)
+    before = _support_tree_snapshot(tmp_path)
+    with pytest.raises(SupportProfileError, match="^support profile schema is invalid$"):
+        discover_tool_support(SupportProfileRequest(profile_path=profile, data_root=tmp_path), probe_versions=False)
+    assert calls == []
+    assert _support_tree_snapshot(tmp_path) == before
+
+
+def test_public_profile_rejects_nonregular_nested_candidate_without_dispatch(tmp_path: Path, monkeypatch):
+    root, profile, payload, _paths = _nested_public_profile_fixture(tmp_path)
+    invalid = root / "bad-gcc.exe"
+    invalid.mkdir()
+    payload["tools"]["gcc"]["path"] = str(invalid)  # type: ignore[index]
+    profile.write_text(json.dumps(payload), encoding="utf-8")
+    calls: list[tuple[str, ...]] = []
+
+    def runner(argv, **kwargs):
+        calls.append(tuple(argv))
+        raise AssertionError("candidate validation must precede bounded provider dispatch")
+
+    monkeypatch.setattr(support, "_run_bounded", runner)
+    before = _support_tree_snapshot(tmp_path)
+    with pytest.raises(SupportProfileError, match="^support profile candidate is invalid$"):
+        discover_tool_support(SupportProfileRequest(profile_path=profile, data_root=tmp_path), probe_versions=False)
+    assert calls == []
+    assert _support_tree_snapshot(tmp_path) == before
+
+
+def test_public_metadata_resolves_relative_paths_and_dispatches_expected_probes(tmp_path: Path, monkeypatch):
+    root, metadata_path, profile, paths = _metadata_public_fixture(tmp_path)
+    metadata = json.dumps(
+        {
+            "gcc": "GNU-tools-for-STM32/bin/arm-none-eabi-gcc.exe",
+            "cmake": "CMake/bin/cmake.exe",
+            "ninja": "Ninja/bin/ninja.exe",
+        }
+    ).encode()
+    versions = {"arm-none-eabi-gcc.exe": b"arm-none-eabi-gcc 14.3.1\n", "cmake.exe": b"cmake version 4.3.1\n", "ninja.exe": b"1.13.2\n"}
+    calls: list[tuple[str, ...]] = []
+
+    def runner(argv, **kwargs):
+        call = tuple(argv)
+        calls.append(call)
+        if Path(argv[0]).name == metadata_path.name:
+            assert call == (str(metadata_path), "-j")
+            return ProcessObservation(0, metadata, b"")
+        assert call[1:] == ("--version",)
+        return ProcessObservation(0, versions[Path(argv[0]).name], b"")
+
+    monkeypatch.setattr(support, "_run_bounded", runner)
+    before = _support_tree_snapshot(tmp_path)
+    discovered = discover_tool_support(
+        SupportProfileRequest(profile_path=profile, data_root=tmp_path),
+        probe_versions=True,
+    )
+    assert {name: getattr(discovered, name).source for name in ("gcc", "cmake", "ninja")} == {
+        "gcc": "cubeclt-metadata",
+        "cmake": "cubeclt-metadata",
+        "ninja": "cubeclt-metadata",
+    }
+    assert {name: getattr(discovered, name).version for name in ("gcc", "cmake", "ninja")} == {
+        "gcc": "14.3.1",
+        "cmake": "4.3.1",
+        "ninja": "1.13.2",
+    }
+    assert {name: getattr(discovered, name).path for name in ("gcc", "cmake", "ninja")} == {
+        "gcc": paths["gcc"].resolve(),
+        "cmake": paths["cmake"].resolve(),
+        "ninja": paths["ninja"].resolve(),
+    }
+    assert discovered.issues == ()
+    assert calls == [
+        (str(metadata_path), "-j"),
+        (str(paths["gcc"].resolve()), "--version"),
+        (str(paths["cmake"].resolve()), "--version"),
+        (str(paths["ninja"].resolve()), "--version"),
+    ]
+    assert _support_tree_snapshot(tmp_path) == before
+    assert root.is_dir()
+
+
+def test_public_metadata_directory_marker_is_invalid_without_fallback(tmp_path: Path, monkeypatch):
+    root, metadata_path, profile, _paths = _metadata_public_fixture(tmp_path)
+    metadata_path.unlink()
+    metadata_path.mkdir()
+    monkeypatch.setenv("PATH", "")
+    calls: list[tuple[str, ...]] = []
+
+    def runner(argv, **kwargs):
+        calls.append(tuple(argv))
+        raise AssertionError("unsafe metadata marker must not be dispatched")
+
+    monkeypatch.setattr(support, "_run_bounded", runner)
+    before = _support_tree_snapshot(tmp_path)
+    discovered = discover_tool_support(
+        SupportProfileRequest(profile_path=profile, data_root=tmp_path),
+        probe_versions=False,
+    )
+    assert discovered.gcc is None and discovered.cmake is None and discovered.ninja is None
+    assert {issue.code for issue in discovered.issues} == {"CMAKE_INVALID", "GCC_INVALID", "NINJA_INVALID"}
+    assert {issue.remediation for issue in discovered.issues} == {"Provide a safe supported executable."}
+    assert calls == []
+    assert _support_tree_snapshot(tmp_path) == before
+    assert root.is_dir()
+
+
+@pytest.mark.parametrize(
+    ("label", "payload"),
+    [
+        ("nonobject", b"[]"),
+        ("known-nonstring", b'{"gcc": 123}'),
+        ("no-component-alias", b'{"other": "value"}'),
+    ],
+)
+def test_public_metadata_wire_invalidations_refuse_fallback(
+    tmp_path: Path, monkeypatch, label: str, payload: bytes
+):
+    _root, metadata_path, profile, _paths = _metadata_public_fixture(tmp_path)
+    monkeypatch.setenv("PATH", "")
+    calls: list[tuple[str, ...]] = []
+
+    def runner(argv, **kwargs):
+        call = tuple(argv)
+        calls.append(call)
+        assert call == (str(metadata_path), "-j"), label
+        return ProcessObservation(0, payload, b"")
+
+    monkeypatch.setattr(support, "_run_bounded", runner)
+    before = _support_tree_snapshot(tmp_path)
+    discovered = discover_tool_support(
+        SupportProfileRequest(profile_path=profile, data_root=tmp_path),
+        probe_versions=False,
+    )
+    assert discovered.gcc is None and discovered.cmake is None and discovered.ninja is None
+    assert {issue.code for issue in discovered.issues} == {"CMAKE_INVALID", "GCC_INVALID", "NINJA_INVALID"}, label
+    assert calls == [(str(metadata_path), "-j")], label
+    assert _support_tree_snapshot(tmp_path) == before
+
+
+def test_public_metadata_candidate_directory_is_invalid_without_path_fallback(tmp_path: Path, monkeypatch):
+    root, metadata_path, profile, _paths = _metadata_public_fixture(tmp_path)
+    candidate = root / "GNU-tools-for-STM32" / "bin" / "arm-none-eabi-gcc.exe"
+    candidate.unlink()
+    candidate.mkdir(parents=True)
+    payload = json.dumps({"gcc": "GNU-tools-for-STM32/bin/arm-none-eabi-gcc.exe"}).encode()
+    monkeypatch.setenv("PATH", "")
+    calls: list[tuple[str, ...]] = []
+
+    def runner(argv, **kwargs):
+        call = tuple(argv)
+        calls.append(call)
+        assert call == (str(metadata_path), "-j")
+        return ProcessObservation(0, payload, b"")
+
+    monkeypatch.setattr(support, "_run_bounded", runner)
+    before = _support_tree_snapshot(tmp_path)
+    discovered = discover_tool_support(
+        SupportProfileRequest(profile_path=profile, data_root=tmp_path),
+        probe_versions=False,
+    )
+    assert discovered.gcc is None
+    gcc_issue = next(issue for issue in discovered.issues if issue.component == "gcc")
+    assert gcc_issue.code == "GCC_INVALID"
+    assert gcc_issue.remediation == "Provide a safe supported executable."
+    assert discovered.cmake is None and discovered.ninja is None
+    assert {issue.code for issue in discovered.issues} == {"CMAKE_INVALID", "GCC_INVALID", "NINJA_INVALID"}
+    assert calls == [(str(metadata_path), "-j")]
+    assert _support_tree_snapshot(tmp_path) == before
