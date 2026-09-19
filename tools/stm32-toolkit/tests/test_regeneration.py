@@ -534,6 +534,8 @@ def test_inventory_bounds(tmp_path: Path, case_id: str):
             "README.local" if case_id == "S3-B" else "unknown-dir"
         )
         assert result.details == {"path": expected_path}
+        if case_id == "S3-C":
+            assert unknown_directory.is_dir()
 
     assert _tree_state(destination) == before_project
     assert _tree_state(tmp_path / "data") == before_data
