@@ -25,8 +25,14 @@ from stm32_toolkit.diagnostics import (
     calculate_plan_digest,
     reduce_event,
 )
-from stm32_toolkit.evidence import EVIDENCE_CORRUPT, EvidenceIdentity, EvidenceValidationError
-from stm32_toolkit.evidence.gc import get_root
+from stm32_toolkit.evidence import (
+    EVIDENCE_CORRUPT,
+    EvidenceEnvelope,
+    EvidenceIdentity,
+    EvidenceValidationError,
+)
+from stm32_toolkit.evidence.gc import RootRecord, get_root, put_root
+from stm32_toolkit.monitor_replay_contract import canonical_replay_json_bytes
 from stm32_toolkit.evidence.store import EvidenceStore
 from stm32_toolkit.paths import WorkspacePaths
 from stm32_toolkit.project_model import ProjectManifestError
@@ -3326,3 +3332,175 @@ def test_public_completion_roundtrip_reloads_valid_persisted_evidence(
     assert reloaded.data["fix_verifications"] == (
         completed.data["fix_verification"],
     )
+
+
+def _install_persisted_analysis_mutation(
+    tmp_path: Path,
+    workspace: WorkspacePaths,
+    marker_ref: object,
+    plan: verification_fixture.VerificationPlan,
+    analysis_mutation: str,
+) -> verification_fixture.VerificationPlan:
+    """Replace only the persisted analysis while retaining the ingested graph."""
+    evidence = EvidenceStore(workspace.workspace_root / "evidence")
+    analysis_id = str(marker_ref.analysis_id)
+    analysis_root = get_root(evidence, "monitor-analysis", analysis_id)
+    analysis_envelope = evidence.get_envelope(analysis_root.manifest_id)
+    analysis = json.loads(
+        evidence.read_artifact(
+            analysis_envelope.artifacts[0], maximum_bytes=1_000_000
+        ).decode("utf-8")
+    )
+    assert isinstance(analysis, dict)
+    if analysis_mutation == "reason":
+        analysis["reason_code"] = "VALUES_CHANGED_WITH_EXCLUSIONS"
+    elif analysis_mutation == "ordering":
+        analysis.update(before_min=5, before_max=5)
+    elif analysis_mutation == "oversized-count":
+        analysis.update(
+            aligned_position_count=2049,
+            aligned_pair_count=2,
+            excluded_position_count=2047,
+            reason_code="VALUES_CHANGED_WITH_EXCLUSIONS",
+        )
+    elif analysis_mutation == "overflow":
+        analysis.update(
+            before_first=1e308,
+            before_last=1,
+            before_min=1,
+            before_max=1e308,
+            after_first=-1e308,
+            after_last=2,
+            after_min=-1e308,
+            after_max=2,
+            delta_first=0,
+            delta_last=1,
+        )
+    elif analysis_mutation == "identity-target":
+        identity = analysis.get("identity")
+        assert isinstance(identity, dict)
+        identity["target_device"] = "STM32F429ZGTx-alt"
+    else:
+        raise AssertionError(f"unsupported analysis mutation: {analysis_mutation}")
+
+    unsigned = {key: value for key, value in analysis.items() if key != "analysis_id"}
+    analysis["analysis_id"] = hashlib.sha256(
+        canonical_replay_json_bytes(unsigned)
+    ).hexdigest()
+    analysis_bytes = canonical_replay_json_bytes(analysis)
+    analysis_path = tmp_path / f"analysis-{analysis_mutation}.json"
+    analysis_path.write_bytes(analysis_bytes)
+    analysis_artifact = evidence.ingest_file(
+        analysis_path, kind="monitor-analysis", media_type="application/json"
+    )
+    metadata = dict(analysis_envelope.metadata)
+    metadata["analysis_id"] = analysis["analysis_id"]
+    replacement = EvidenceEnvelope(
+        identity=analysis_envelope.identity,
+        operation=analysis_envelope.operation,
+        produced_at_utc=analysis_envelope.produced_at_utc,
+        parents=analysis_envelope.parents,
+        artifacts=(analysis_artifact,),
+        metadata=metadata,
+    )
+    evidence.put_envelope(replacement)
+    replacement_root = RootRecord(
+        root_type="monitor-analysis",
+        root_id=str(analysis["analysis_id"]),
+        manifest_id=str(replacement.evidence_id),
+        metadata=metadata,
+    )
+    _old_root = verification_fixture._evidence_root_path(
+        workspace, "monitor-analysis", analysis_id
+    )
+    _old_root.unlink()
+    put_root(evidence, replacement_root)
+    return verification_fixture.VerificationPlan.new(
+        verification_plan_id=plan.verification_plan_id,
+        diagnostic_session_id=plan.diagnostic_session_id,
+        failed_before_run_id=plan.failed_before_run_id,
+        failed_before_evidence_id=plan.failed_before_evidence_id,
+        source_change_declaration_id=plan.source_change_declaration_id,
+        fixed_after_run_id=plan.fixed_after_run_id,
+        fixed_after_evidence_id=plan.fixed_after_evidence_id,
+        required_analysis_ids=(str(analysis["analysis_id"]),),
+        required_analysis_evidence_ids=(str(replacement.evidence_id),),
+        required_monitor_quality=plan.required_monitor_quality,
+        expected_changed=plan.expected_changed,
+        continuation_evidence_id=plan.continuation_evidence_id,
+    )
+
+
+def _prepare_public_analysis_plan_refusal(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    analysis_mutation: str,
+) -> tuple[
+    DiagnosticWorkflowContext,
+    str,
+    WorkspacePaths,
+    verification_fixture.VerificationPlan,
+]:
+    (
+        diagnostic_context,
+        session_id,
+        workspace,
+        _declaration,
+        plan,
+        marker_ref,
+    ) = verification_fixture._prepared_checkpoint_for_plan(monkeypatch, tmp_path)
+    mutated_plan = _install_persisted_analysis_mutation(
+        tmp_path, workspace, marker_ref, plan, analysis_mutation
+    )
+    return diagnostic_context, session_id, workspace, mutated_plan
+
+
+@pytest.mark.parametrize(
+    ("analysis_mutation", "expected_code"),
+    [
+        pytest.param("reason", "EVIDENCE_INTEGRITY_FAILURE", id="reason"),
+        pytest.param("ordering", "EVIDENCE_INTEGRITY_FAILURE", id="ordering"),
+        pytest.param(
+            "oversized-count",
+            "EVIDENCE_INTEGRITY_FAILURE",
+            id="oversized-count",
+        ),
+        pytest.param("overflow", "EVIDENCE_INTEGRITY_FAILURE", id="overflow"),
+        pytest.param(
+            "identity-target",
+            "INCOMPATIBLE_IDENTITY",
+            id="identity-target",
+        ),
+    ],
+)
+def test_public_analysis_semantic_refusals_preserve_authority(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    analysis_mutation: str,
+    expected_code: str,
+) -> None:
+    diagnostic_context, session_id, workspace, plan = (
+        _prepare_public_analysis_plan_refusal(
+            monkeypatch, tmp_path, analysis_mutation
+        )
+    )
+    before = verification_fixture._authority_snapshot(workspace)
+    result = workflow_module.diagnostic_add_verification_plan(
+        verification_fixture._fresh_diagnostic_context(diagnostic_context),
+        operation_id=f"diagnostic.verification-plan.add.analysis-guard.{analysis_mutation}",
+        diagnostic_session_id=session_id,
+        expected_revision=4,
+        verification_plan=plan,
+    )
+    after = verification_fixture._authority_snapshot(workspace)
+    assert result.ok is False
+    assert result.code == expected_code
+    assert result.data is None
+    assert after == before
+    shown = workflow_module.diagnostic_show(
+        verification_fixture._fresh_diagnostic_context(diagnostic_context),
+        diagnostic_session_id=session_id,
+    )
+    assert shown.ok is True
+    assert shown.data["session"]["revision"] == 4
+    assert shown.data["session"]["state"] == "FIX_PROPOSED"
