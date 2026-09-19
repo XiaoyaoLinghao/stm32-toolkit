@@ -531,17 +531,22 @@ def test_shared_physical_byte_decoder_reloads_canonical_transcript_without_mutat
 @pytest.mark.parametrize(
     ("case_name", "raw"),
     [
-        ("duplicate-key", b'{"a":1,"a":2}'),
-        ("bom", b"\xef\xbb\xbf{}"),
-        ("noncanonical-whitespace", b'{ "a": 1}'),
-        ("invalid-utf8", b"\xff"),
-        ("scalar-root", b"1"),
-        (
+        pytest.param("duplicate-key", b'{"a":1,"a":2}', id="duplicate-key"),
+        pytest.param("bom", b"\xef\xbb\xbf{}", id="bom"),
+        pytest.param("noncanonical-whitespace", b'{ "a": 1}', id="noncanonical-whitespace"),
+        pytest.param("invalid-utf8", b"\xff", id="invalid-utf8"),
+        pytest.param("scalar-root", b"1", id="scalar-root"),
+        pytest.param(
             "depth-limit",
             json.dumps(_deep_json(33), sort_keys=True, separators=(",", ":")).encode("utf-8"),
+            id="depth-limit",
         ),
-        ("node-limit", json.dumps([0] * 10_000, separators=(",", ":")).encode("utf-8")),
-        ("input-size-limit", b"0" * (1024 * 1024 + 1)),
+        pytest.param(
+            "node-limit",
+            json.dumps([0] * 10_000, separators=(",", ":")).encode("utf-8"),
+            id="node-limit",
+        ),
+        pytest.param("input-size-limit", b"0" * (1024 * 1024 + 1), id="input-size-limit"),
     ],
 )
 def test_shared_byte_decoder_rejects_caller_meaningful_raw_wire_failures(
