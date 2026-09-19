@@ -7,7 +7,7 @@ accepted-base-to-head diff before assigning any test verdict.
 ## Ledger and boundary
 
 - Accepted base: `0a6bf2a6c591e5e89c6451050de3087168b77eb4`.
-- Code head before this report commit: `5972ebd82fe7c7a6f48ac463fae56f7d861e95b1`.
+- Code head before this report commit: `c0f6ce45f445b052b49d10854f3f53d4e4ee1105`.
 - Runtime baseline: `a270d7332c3ad2d09cd0b9adfa96ca80042bcf9d`, unchanged.
 - Branch: `codex/STM32TK-1.0-core-monitor`.
 - Scope: public monitor observe/ingest/load/analyze/query/stream contracts and the shared
@@ -78,13 +78,13 @@ they are not physical evidence.
   status guard is similarly mutated from a valid status.
 - `:281` `test_live_sample_public_validation_rejects_each_batch_guard` — each public batch guard
   is reached from a valid batch and the input remains unchanged.
-- `tools/stm32-monitor/tests/test_history.py:1980`
+- `tools/stm32-monitor/tests/test_history.py:1986`
   `test_public_retention_rejects_persisted_accounting_corruption_without_deletion` — public
   retention rejects negative persisted accounting with `MONITOR_STORAGE_CORRUPT` /
   `monitor storage accounting is invalid`, and rejects a negative selected `value_count` with
   `MONITOR_STORAGE_CORRUPT` / `monitor history is corrupt`; a read-only SQL snapshot of
-  accounting, batch bytes/counts, and value rows is unchanged across each rejected pass.
-- `tools/stm32-monitor/tests/test_analysis_cli.py:524`
+  accounting, batch bytes/counts, and value rows is unchanged across each rejected pass.  The valid seed uses captured `1_001` ns and scheduled `901` ns; `now_ns` makes the retention cutoff `1_002` ns, so the persisted guard is reached.
+- `tools/stm32-monitor/tests/test_analysis_cli.py:539`
   `test_public_analysis_cli_maps_each_adapter_failure_class` — the request file is a real
   `AnalysisRequest` built from two valid public `MonitorRunRef` values and a real project
   descriptor.  Only `compare_monitor_runs` is replaced, and six provider/error classes assert
@@ -343,7 +343,7 @@ evidence.
 
 ## Release handoff
 
-The code selectors are committed at `5972ebd82fe7c7a6f48ac463fae56f7d861e95b1`; this report
+The code selectors are committed at `c0f6ce45f445b052b49d10854f3f53d4e4ee1105`; this report
 must be committed separately so the code head above remains the pre-report reference.  The
 primary owner must inspect the complete `0a6bf2a6c591e5e89c6451050de3087168b77eb4..HEAD` diff,
 then run the applicable selectors with `TEMP`, `TMP`, and `TMPDIR` bound under the approved run
