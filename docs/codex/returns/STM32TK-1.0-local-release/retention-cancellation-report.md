@@ -1,10 +1,11 @@
 # STM32TK-1.0 retention cancellation contract implementation return
 
-Status: `ENTRY_REVIEW_PENDING`. The original two-node run passed, while the
-r2 bounded-future correction exposed a diagnostic failure. The reviewed r3
-entry was corrected once more after independent pre-execution review; no r3
-test, product import, or launcher has run. This report records all prior runs and is
-not a product acceptance decision. The primary agent remains the independent
+Status: `DIAGNOSTIC_RUN_RECORDED; PRIMARY_REVIEW_PENDING`. The original
+two-node run passed, while the r2 bounded-future correction exposed a
+diagnostic failure. The reviewed r3 entry was corrected once more after
+independent pre-execution review and then ran once under the approved launcher.
+This report records all prior and current diagnostic evidence and is not a
+product acceptance decision. The primary agent remains the independent
 reviewer and acceptor.
 
 ## Ownership and source ledger
@@ -14,8 +15,9 @@ reviewer and acceptor.
 - Accepted base: `8070832fed4b25141a915d38e7c02055e8b32938`.
 - Branch/worktree: `codex/STM32TK-1.0-retention-cancellation-contract` /
   `D:\codex-tmp\v10b-0918\r10\rc`.
-- Test code head before this report commit:
-  `f6ca9ceb4e4bcecfe44351fa809758d088746c1d`.
+- Code head before this report commit:
+  `b27d2fde5ef3bbd492be03dc133d08f80240aad0` (the executed test bytes are
+  from the test correction `f6ca9ceb4e4bcecfe44351fa809758d088746c1d`).
 - Frozen product import source: `D:\codex-tmp\v10b-0918\r10\verify`,
   revision `15b1a70e9bd684285da5557104deff529f537e49`.
 - Interpreter: `D:\codex-tmp\v10b-0918\r10\py\Scripts\python.exe`.
@@ -156,9 +158,8 @@ owned child before writing the manifest. The fresh temporary roots are under
 `D:\codex-tmp\v10b-0918\r10\e\retention-cancellation\r3`.
 
 The launcher passed PowerShell AST parsing with zero errors and static checks
-found no reserved `$PID` assignment, r2 root, or `--cache-dir` switch. No r3
-test, product import, benchmark, build, or performance execution has occurred. The
-entry was returned for primary review and was not executed.
+found no reserved `$PID` assignment, r2 root, or `--cache-dir` switch. Those
+were preparation checks; execution is recorded below.
 
 ## r3 revised entry after independent review
 
@@ -204,12 +205,61 @@ The prior unexecuted launcher remains preserved at
 with SHA-256
 `2059ED74FC7D036A87255487ED74FA9E32526D76D13BD1BA5887BCB7F96BAC5B`.
 
-The replacement launcher passed PowerShell AST parsing with zero errors. No
-r3 test, product import, benchmark, build, or performance execution has occurred;
-the entry awaits primary review and explicit execution approval. If approved,
-the two selected nodes may run once only. Any result remains diagnostic
-evidence for the current fixture and does not claim that the historical
-100000-value timeout is fixed.
+The replacement launcher passed PowerShell AST parsing with zero errors. The
+one approved run and its limits are recorded below. Any result remains
+diagnostic evidence for the current fixture and does not claim that the
+historical 100000-value timeout is fixed.
+
+## r3 authorized diagnostic run
+
+The approved entry ran once through
+`C:\Program Files\PowerShell\7\pwsh.exe -NoProfile -File` with the two
+selected nodes, `-x`, the frozen product source at
+`15b1a70e9bd684285da5557104deff529f537e49`, and code head
+`b27d2fde5ef3bbd492be03dc133d08f80240aad0`. The launch manifest records UTC
+start `2026-09-19T00:39:37.2985520Z`, end
+`2026-09-19T00:39:49.7586657Z`, child PID `30372`, child exit `0`, launcher
+exit `0`, `terminated=true`, and no launcher error. A subsequent process check
+found child PID `30372` absent. Effective Python TEMP matched the approved
+`D:\codex-tmp\v10b-0918\r10\t\rc\r3\tmpdir` path.
+
+Pytest recorded `2 passed, 0 failed, 0 errors in 11.27s`. Both JUnit
+`retention_observation` properties are present. Pytest emitted two warnings
+that `record_property` is incompatible with the configured `xunit2` family;
+the properties were retained in the XML and no result was retried. The raw
+coverage database is 307200 bytes and the JSON report is 3618394 bytes; the
+selected projection totals 6% with `--cov-fail-under=0`, so this is not a
+release coverage claim. Child stderr is empty and stdout, JUnit, coverage,
+command, argv, environment, heads, preflight, process, launch, and exit files
+remain under
+`D:\codex-tmp\v10b-0918\r10\e\retention-cancellation\r3`.
+
+The after-commit-refresh observation recorded the caller public
+`MONITOR_STORAGE_BUSY`, `cancelEventSet=true`, a settled writer Future, and an
+allowed-cancellation graph. Its callback root was native
+`sqlite3.OperationalError: interrupted` at frozen `storage.py:1327` while
+`_refresh_owned_integrity` executed `PRAGMA wal_checkpoint(TRUNCATE)` at
+`storage.py:1262`; the Future root was `StorageFailure(MONITOR_STORAGE_BUSY)`
+from that interrupt. The durable state after release had zero batches and
+zero values, logical and summed bytes both zero, integrity `ok`, writer
+sentinel `1`, and public value count zero.
+
+The commit-boundary observation also recorded public BUSY,
+`cancelEventSet=true`, a settled Future, and an allowed-cancellation graph.
+Its callback root was `StorageFailure(MONITOR_STORAGE_INVALID)` from the
+existing size check, with a native interrupt at `storage.py:606` during
+`PRAGMA page_size`. The Future graph retained native interrupts at the
+existing rollback path `history.py:1984` and commit path `history.py:1975`,
+plus the callback branch; every terminal leaf was native
+`SQLITE_INTERRUPT`. The final state retained one batch and one value with
+logical and summed bytes `1417`, integrity `ok`, writer sentinel `1`, and
+public value count one.
+
+This run demonstrates the two controlled one-value SQLite seam outcomes and
+the actual internal exception graphs. It does not reproduce or explain the
+historical 100000-value performance failure, establish a product defect, or
+justify a product change. No cleanup was performed; the run evidence remains
+preserved for primary review.
 
 This report is committed separately from the test code head recorded above and
 does not record its own final commit SHA.
