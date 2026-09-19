@@ -10,8 +10,10 @@ import pytest
 
 import stm32_monitor.cli as cli
 from stm32_monitor.analysis import AnalysisRequest
-from stm32_monitor.analysis_workflows import AnalysisPublication
+from stm32_monitor.analysis_workflows import AnalysisPublication, AnalysisWorkflowError
 from stm32_monitor.protocol import ProtocolResult
+from stm32_monitor.replay import MonitorReplayError
+from stm32_toolkit.evidence import EVIDENCE_INVALID, EvidenceValidationError
 from stm32_toolkit.diagnostics import SourceChangeDeclaration
 from stm32_toolkit.paths import WorkspacePaths
 from stm32_toolkit.project_model import ProjectManifestError
@@ -405,6 +407,85 @@ def test_analysis_provider_failure_is_sanitized_without_exception_or_path_leak(
     assert payload["message"] == "Monitor analysis provider failed"
     assert "private provider secret" not in output.getvalue()
     assert str(private_path) not in output.getvalue()
+
+
+@pytest.mark.parametrize(
+    ("error", "expected_code"),
+    (
+        (
+            AnalysisWorkflowError("OPERATION_CONFLICT", "same operation"),
+            "EVIDENCE_INTEGRITY_FAILURE",
+        ),
+        (
+            AnalysisWorkflowError("ENVIRONMENT_FAILURE", "provider unavailable"),
+            "ENVIRONMENT_FAILURE",
+        ),
+        (
+            MonitorReplayError("MONITOR_REPLAY_INVALID", "replay is invalid"),
+            "ANALYSIS_WORKFLOW_INVALID",
+        ),
+        (
+            EvidenceValidationError(EVIDENCE_INVALID, "evidence is invalid"),
+            "EVIDENCE_INTEGRITY_FAILURE",
+        ),
+        (TypeError("bad analysis input"), "ANALYSIS_WORKFLOW_INVALID"),
+        (OSError("provider unavailable"), "ENVIRONMENT_FAILURE"),
+    ),
+)
+def test_public_analysis_cli_maps_each_adapter_failure_class(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    error: BaseException,
+    expected_code: str,
+) -> None:
+    project = tmp_path / "project"
+    data = tmp_path / "data"
+    _project_and_model(monkeypatch, project)
+    request_file = tmp_path / "request.json"
+    _write_json(request_file, {"request": "closed"})
+    request = object()
+    monkeypatch.setattr(
+        AnalysisRequest,
+        "from_value",
+        classmethod(lambda cls, value: request),
+        raising=False,
+    )
+
+    def fail(*args: object, **kwargs: object) -> object:
+        del args, kwargs
+        raise error
+
+    monkeypatch.setattr(cli, "compare_monitor_runs", fail, raising=False)
+    output = io.StringIO()
+    code = cli.main(
+        [
+            "analysis",
+            "compare",
+            "--project",
+            str(project),
+            "--data-root",
+            str(data),
+            "--session-id",
+            "monitor-a",
+            "--request-file",
+            str(request_file),
+            "--diagnostic-session-id",
+            "1" * 32,
+            "--hypothesis-id",
+            "2" * 32,
+            "--polarity",
+            "supports",
+            "--rationale",
+            "changed",
+            "--json",
+        ],
+        _stdout=output,
+    )
+
+    assert code == 1
+    payload = json.loads(output.getvalue())
+    assert payload["code"] == expected_code
+    assert "bad analysis input" not in output.getvalue()
 
 
 def test_analysis_file_permission_failure_is_environment_error_without_leaks(

@@ -203,6 +203,35 @@ def test_public_run_reference_union_rejects_replay_v2_discriminator() -> None:
         MonitorRunRef.from_value(payload)
 
 
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    [
+        ("source_record_sha256", "invalid"),
+        ("git_head", "g" * 40),
+        ("git_dirty", 1),
+        ("group_revision", 0),
+        ("start_sequence", True),
+        ("end_captured_unix_ns_exclusive", 0),
+        ("projected_batch_sha256s", ["invalid"]),
+        ("transcript_evidence_id", "invalid"),
+    ],
+)
+def test_public_physical_v2_reference_rejects_invalid_identity_and_windows(
+    field: str,
+    replacement: object,
+) -> None:
+    payload = _physical_v2_candidate()
+    payload[field] = replacement
+    payload["run_ref_sha256"] = sha256(
+        canonical_json_bytes(
+            {key: value for key, value in payload.items() if key != "run_ref_sha256"}
+        )
+    ).hexdigest()
+
+    with pytest.raises(MonitorReplayError):
+        MonitorRunRefV2.from_value(payload)
+
+
 def _physical_context(tmp_path: Path) -> tuple[WorkspacePaths, EvidenceStore, str, str, UUID, UUID]:
     project = tmp_path / "project"
     project.mkdir()

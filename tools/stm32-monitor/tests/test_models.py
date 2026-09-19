@@ -219,6 +219,66 @@ def test_live_event_rejects_inexact_payloads_for_every_discriminator() -> None:
         LiveEvent(1, "sample", capability)
 
 
+@pytest.mark.parametrize(
+    ("path", "value"),
+    (
+        (("firmware",), {}),
+        (("firmware", "buildId"), ""),
+        (("probe", "connected"), 1),
+        (("probe", "probeId"), ""),
+        (("probe", "connected"), True),
+        (("sampling", "state"), "UNKNOWN"),
+        (("sampling", "state"), "RUNNING"),
+        (("sampling", "active"), True),
+        (("sampling", "blockedCode"), 1),
+        (("sampling", "groupId"), "not-a-uuid"),
+        (("sampling", "groupRevision"), 0),
+        (("sampling", "lastSequence"), True),
+        (("sampling", "subscriberDrops"), True),
+        (("probeConnected",), True),
+        (("samplingActive",), True),
+    ),
+)
+def test_live_state_public_validation_rejects_each_inconsistent_status_guard(
+    path: tuple[str, ...], value: object
+) -> None:
+    payload = {"stateRevision": 0, "gap": False, "status": _live_status()}
+    status = copy.deepcopy(payload["status"])
+    current: object = status
+    for key in path[:-1]:
+        current = current[key]  # type: ignore[index]
+    current[path[-1]] = value  # type: ignore[index]
+    payload["status"] = status
+    with pytest.raises((TypeError, ValueError)):
+        LiveEvent(1, "state", payload)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("groupRevision", 0),
+        ("sequence", True),
+        ("scheduledUnixNs", -1),
+        ("capturedUnixNs", 999),
+        ("scheduledAtUtc", "bad"),
+        ("capturedAtUtc", "bad"),
+        ("actualRateHz", float("nan")),
+        ("actualRateHz", -1.0),
+        ("values", {}),
+        ("values", [object()]),
+        ("values", [{"watch": {}}]),
+    ),
+)
+def test_live_sample_public_validation_rejects_each_batch_guard(
+    field: str, value: object
+) -> None:
+    payload = {"stateRevision": 0, "gap": False, "status": _live_status()}
+    sample = {"batch": _live_batch(), "serviceSubscriberDrops": 0}
+    sample["batch"][field] = value  # type: ignore[index]
+    with pytest.raises((TypeError, ValueError)):
+        LiveEvent(1, "sample", sample)
+
+
 def _history_slice(
     values: list[SampleValue],
     *,

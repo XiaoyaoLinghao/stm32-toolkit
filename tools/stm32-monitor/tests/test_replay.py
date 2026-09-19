@@ -18,6 +18,7 @@ from stm32_monitor.models import MAX_SIGNED_INT64, ObservationBinding, SampleBat
 from stm32_monitor.protocol import ProtocolResult
 from stm32_monitor.replay import (
     MONITOR_REPLAY_SCHEMA,
+    MONITOR_REPLAY_INVALID,
     MonitorReplayDocument,
     MonitorReplayError,
     MonitorRunRef,
@@ -574,6 +575,22 @@ def test_fixed_after_survives_fresh_history_and_evidence_reload_and_ref_is_stabl
 
 
 @pytest.mark.parametrize(
+    ("code", "message"),
+    [
+        ("UNKNOWN_CODE", "bounded"),
+        (MONITOR_REPLAY_INVALID, ""),
+        (MONITOR_REPLAY_INVALID, "x" * 257),
+    ],
+)
+def test_public_replay_error_constructor_rejects_unknown_or_unbounded_values(
+    code: str,
+    message: str,
+) -> None:
+    with pytest.raises(ValueError):
+        MonitorReplayError(code, message)
+
+
+@pytest.mark.parametrize(
     ("field", "replacement", "expected_message"),
     [
         ("schema", "stm32-monitor-run-ref/9", "monitor run reference schema is invalid"),
@@ -591,10 +608,13 @@ def test_fixed_after_survives_fresh_history_and_evidence_reload_and_ref_is_stabl
         ),
         ("probe_id", "other-probe", "monitor run reference labels are invalid"),
         ("svd_sha256", object(), "svd_sha256 is invalid"),
+        ("git_head", "g" * 40, "git_head is invalid"),
         ("git_dirty", 1, "git_dirty is invalid"),
+        ("start_sequence", True, "start_sequence is invalid"),
         ("group_revision", 0, "group_revision is invalid"),
         ("end_sequence_exclusive", 0, "monitor run reference windows are invalid"),
         ("projected_batch_sha256s", (), "projected batch digests are invalid"),
+        ("projected_batch_sha256s", ("bad",), "projected batch digest is invalid"),
         ("run_ref_sha256", "0" * 64, "run reference digest is invalid"),
     ],
 )
