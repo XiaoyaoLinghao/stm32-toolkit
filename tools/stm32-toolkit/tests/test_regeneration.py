@@ -87,7 +87,7 @@ def test_plan_regeneration_rejects_non_request_public_input(tmp_path: Path):
     assert result.ok is False
     assert result.operation == "project-regenerate-plan"
     assert result.code == "REGENERATION_INPUT_INVALID"
-    assert result.message == "request"
+    assert result.message == "regeneration input is invalid"
     assert result.details["field"] == "request"
     assert not (tmp_path / "workspace").exists()
     assert not (tmp_path / "data").exists()
