@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from copy import deepcopy
 from dataclasses import dataclass, replace
 import hashlib
 import json
@@ -19,12 +20,20 @@ from stm32_monitor.analysis_workflows import compare_monitor_runs, export_analys
 from stm32_monitor.replay import publish_physical_monitor_run
 from stm32_toolkit.acceptance.finalization import (
     FINALIZATION_ATTEMPT_SCHEMA,
+    FINALIZATION_EXECUTION_SOURCE,
+    FINALIZATION_POLICY_DIGEST,
     FINALIZATION_REQUEST_SCHEMA,
+    FINALIZATION_PROJECT_ORIGIN,
+    FINALIZATION_SCHEMA,
+    FINALIZATION_SCENARIO_DIGEST,
+    FINALIZATION_SCENARIO_ID,
+    FINALIZATION_SCENARIO_VERSION,
     FinalizationRequest,
     FinalizationValidationError,
     PhysicalFinalizationAttempt,
     PhysicalFinalizationProof,
 )
+from stm32_toolkit.acceptance.recovery import SourceChangeIntent
 import stm32_toolkit.acceptance.recovery_workflows as recovery_workflows
 import stm32_toolkit.diagnostic_workflows as diagnostic_workflows
 from stm32_toolkit.diagnostic_workflows import (
@@ -1475,3 +1484,379 @@ def test_final_deadline_check_rejects_rev1_root_after_envelope_persist(
     assert result.code == "ACCEPTANCE_ATTEMPT_TIMED_OUT"
     assert _root_path(persisted_case, attempt_id, 0).exists()
     assert not _root_path(persisted_case, attempt_id, 1).exists()
+
+
+def _assert_finalization_wire_rejection(callable_input, value: object, expected: str) -> None:
+    before = deepcopy(value)
+    with pytest.raises(FinalizationValidationError) as error:
+        callable_input()
+    assert str(error.value) == expected
+    assert value == before
+
+
+def _finalization_bind_wire() -> dict[str, object]:
+    return {
+        "schema": FINALIZATION_REQUEST_SCHEMA,
+        "kind": "bind",
+        "predecessorAttemptId": "00000000-0000-4000-8000-000000000401",
+        "predecessorCheckpointId": "a" * 64,
+        "predecessorEvidenceId": "b" * 64,
+        "fixedAfterTestRunId": "fixed-after-401",
+        "fixedAfterEvidenceId": "c" * 64,
+        "diagnosticRevision": 7,
+        "diagnosticEventHead": "d" * 64,
+        "fixVerificationId": "e" * 64,
+    }
+
+
+def _finalization_reuse_wire() -> dict[str, object]:
+    return {
+        "schema": FINALIZATION_REQUEST_SCHEMA,
+        "kind": "reuse",
+        "continuationEvidenceId": "f" * 64,
+    }
+
+
+@pytest.mark.parametrize(
+    ("case_name", "expected"),
+    [
+        pytest.param(
+            "non-object",
+            "finalization request must be an object",
+            id="request-274-275-non-object",
+        ),
+        pytest.param(
+            "nested-tuple",
+            "tuples are not accepted on the JSON boundary",
+            id="request-63-64-nested-tuple",
+        ),
+        pytest.param(
+            "invalid-bind-schema",
+            "bind request schema or kind is invalid",
+            id="request-279-280-invalid-bind-schema",
+        ),
+        pytest.param(
+            "reuse-extra-field",
+            "finalization request fields are not closed",
+            id="request-297-306-reuse-extra-field",
+        ),
+    ],
+)
+def test_finalization_request_public_json_boundaries(case_name: str, expected: str) -> None:
+    bind = _finalization_bind_wire()
+    reuse = _finalization_reuse_wire()
+    parsed_bind = FinalizationRequest.from_value(deepcopy(bind))
+    assert {
+        "schema": parsed_bind.schema,
+        "kind": parsed_bind.kind,
+        "predecessorAttemptId": parsed_bind.predecessor_attempt_id,
+        "predecessorCheckpointId": parsed_bind.predecessor_checkpoint_id,
+        "predecessorEvidenceId": parsed_bind.predecessor_evidence_id,
+        "fixedAfterTestRunId": parsed_bind.fixed_after_test_run_id,
+        "fixedAfterEvidenceId": parsed_bind.fixed_after_evidence_id,
+        "diagnosticRevision": parsed_bind.diagnostic_revision,
+        "diagnosticEventHead": parsed_bind.diagnostic_event_head,
+        "fixVerificationId": parsed_bind.fix_verification_id,
+    } == bind
+    parsed_reuse = FinalizationRequest.from_value(deepcopy(reuse))
+    assert {
+        "schema": parsed_reuse.schema,
+        "kind": parsed_reuse.kind,
+        "continuationEvidenceId": parsed_reuse.continuation_evidence_id,
+    } == reuse
+
+    if case_name == "non-object":
+        candidate: object = None
+        callable_input = lambda: FinalizationRequest.from_value(candidate)
+    elif case_name == "nested-tuple":
+        candidate = deepcopy(bind)
+        candidate["diagnosticEventHead"] = ("d" * 64,)
+        callable_input = lambda: FinalizationRequest.from_value(candidate)
+    elif case_name == "invalid-bind-schema":
+        candidate = deepcopy(bind)
+        candidate["schema"] = "stm32-physical-continuation-request/9"
+        callable_input = lambda: FinalizationRequest.from_value(candidate)
+    else:
+        candidate = deepcopy(reuse)
+        candidate["unexpected"] = True
+        callable_input = lambda: FinalizationRequest.from_value(candidate)
+    _assert_finalization_wire_rejection(callable_input, candidate, expected)
+
+
+def _finalization_source_changes() -> list[dict[str, object]]:
+    return [
+        {
+            "path": "src/main.c",
+            "beforeSha256": "1" * 64,
+            "afterSha256": "2" * 64,
+            "afterSize": 12,
+        }
+    ]
+
+
+def _finalization_expanded_intent() -> SourceChangeIntent:
+    return SourceChangeIntent.expanded(
+        changes=_finalization_source_changes(),
+        before_input_snapshot_sha256="3" * 64,
+        expected_after_input_snapshot_sha256="4" * 64,
+    )
+
+
+def _finalization_proof_wire() -> dict[str, object]:
+    return {
+        "schema": FINALIZATION_SCHEMA,
+        "predecessorAttemptId": "00000000-0000-4000-8000-000000000402",
+        "predecessorCheckpointId": "5" * 64,
+        "predecessorEvidenceId": "6" * 64,
+        "diagnosticSessionId": "7" * 32,
+        "diagnosticRevision": 9,
+        "diagnosticEventHead": "8" * 64,
+        "diagnosticEvidenceId": "9" * 64,
+        "sourceChangeDeclarationId": "a" * 64,
+        "sourceChangeIntent": _finalization_expanded_intent().to_dict(),
+        "failedBeforeTestRunId": "failed-before-402",
+        "failedBeforeEvidenceId": "b" * 64,
+        "fixedAfterTestRunId": "fixed-after-402",
+        "fixedAfterEvidenceId": "c" * 64,
+        "fixVerificationId": "d" * 64,
+    }
+
+
+@pytest.mark.parametrize(
+    ("case_name", "expected"),
+    [
+        pytest.param(
+            "extra-field",
+            "finalization object fields are not closed",
+            id="proof-76-77-extra-field",
+        ),
+        pytest.param("empty-schema", "schema is invalid", id="proof-82-83-empty-schema"),
+        pytest.param(
+            "malformed-predecessor",
+            "predecessorAttemptId is invalid",
+            id="proof-84-85-malformed-predecessor",
+        ),
+        pytest.param(
+            "unsupported-schema",
+            "finalization proof schema is unsupported",
+            id="proof-170-171-unsupported-schema",
+        ),
+        pytest.param(
+            "diagnostic-revision",
+            "diagnosticRevision is invalid",
+            id="proof-226-227-diagnostic-revision",
+        ),
+        pytest.param(
+            "unexpanded-intent",
+            "finalization intent must be expanded",
+            id="proof-129-134-unexpanded-intent",
+        ),
+        pytest.param(
+            "equal-runs",
+            "before and after TestRuns must differ",
+            id="proof-194-195-equal-runs",
+        ),
+        pytest.param(
+            "equal-evidence",
+            "before and after evidence must differ",
+            id="proof-196-197-equal-evidence",
+        ),
+    ],
+)
+def test_physical_finalization_proof_public_json_boundaries(case_name: str, expected: str) -> None:
+    proof = _finalization_proof_wire()
+    assert PhysicalFinalizationProof.from_value(deepcopy(proof)).to_dict() == proof
+    if case_name == "extra-field":
+        candidate = deepcopy(proof)
+        candidate["unexpected"] = True
+    elif case_name == "empty-schema":
+        candidate = deepcopy(proof)
+        candidate["schema"] = ""
+    elif case_name == "malformed-predecessor":
+        candidate = deepcopy(proof)
+        candidate["predecessorAttemptId"] = "malformed"
+    elif case_name == "unsupported-schema":
+        candidate = deepcopy(proof)
+        candidate["schema"] = "stm32-physical-continuation/9"
+    elif case_name == "diagnostic-revision":
+        candidate = deepcopy(proof)
+        candidate["diagnosticRevision"] = True
+    elif case_name == "unexpanded-intent":
+        candidate = deepcopy(proof)
+        candidate["sourceChangeIntent"] = SourceChangeIntent.new(
+            changes=_finalization_source_changes(),
+        ).to_dict()
+    elif case_name == "equal-runs":
+        candidate = deepcopy(proof)
+        candidate["fixedAfterTestRunId"] = candidate["failedBeforeTestRunId"]
+    else:
+        candidate = deepcopy(proof)
+        candidate["fixedAfterEvidenceId"] = candidate["failedBeforeEvidenceId"]
+    _assert_finalization_wire_rejection(
+        lambda: PhysicalFinalizationProof.from_value(candidate),
+        candidate,
+        expected,
+    )
+
+
+def _finalization_attempt_wire(
+    revision: int,
+    *,
+    previous_checkpoint_id: str | None = None,
+) -> dict[str, object]:
+    opened = "2026-09-18T14:50:00.000000Z"
+    payload: dict[str, object] = {
+        "schema": FINALIZATION_ATTEMPT_SCHEMA,
+        "attemptId": "00000000-0000-4000-8000-000000000403",
+        "revision": revision,
+        "checkpointId": "0" * 64,
+        "previousCheckpointId": previous_checkpoint_id if revision == 1 else None,
+        "scenarioId": FINALIZATION_SCENARIO_ID,
+        "scenarioVersion": FINALIZATION_SCENARIO_VERSION,
+        "scenarioDigest": FINALIZATION_SCENARIO_DIGEST,
+        "recoveryPolicyDigest": FINALIZATION_POLICY_DIGEST,
+        "workspaceId": "1" * 64,
+        "logicalProjectId": "00000000-0000-4000-8000-000000000404",
+        "sessionId": "finalization-wire-session",
+        "projectOrigin": FINALIZATION_PROJECT_ORIGIN,
+        "executionSource": FINALIZATION_EXECUTION_SOURCE,
+        "physicalTransportEvidence": True,
+        "status": "IN_PROGRESS" if revision == 0 else "COMPLETED",
+        "stage": "verification-pending" if revision == 0 else "target-fix-verified",
+        "continuationEvidenceId": "2" * 64,
+        "fixedAfterTestRunId": "fixed-after-403",
+        "fixedAfterEvidenceId": "3" * 64,
+        "fixVerificationId": None if revision == 0 else "4" * 64,
+        "openedAtUtc": opened,
+        "updatedAtUtc": opened if revision == 0 else "2026-09-18T14:55:00.000000Z",
+        "deadlineAtUtc": "2026-09-18T15:05:00.000000Z",
+    }
+    unsigned = dict(payload)
+    unsigned.pop("checkpointId")
+    payload["checkpointId"] = hashlib.sha256(canonical_json_bytes(unsigned)).hexdigest()
+    return payload
+
+
+@pytest.mark.parametrize(
+    ("case_name", "expected"),
+    [
+        pytest.param(
+            "unsupported-schema",
+            "attempt schema is unsupported",
+            id="attempt-383-384-unsupported-schema",
+        ),
+        pytest.param(
+            "revision-bool",
+            "attempt revision is invalid",
+            id="attempt-386-387-revision-bool",
+        ),
+        pytest.param(
+            "rev0-predecessor",
+            "rev0 cannot have a predecessor",
+            id="attempt-388-389-rev0-predecessor",
+        ),
+        pytest.param(
+            "rev1-predecessor",
+            "rev1 needs a predecessor",
+            id="attempt-390-391-rev1-predecessor",
+        ),
+        pytest.param(
+            "scenario-identity",
+            "finalization scenario or policy identity is not frozen",
+            id="attempt-394-400-scenario-identity",
+        ),
+        pytest.param(
+            "provenance",
+            "finalization provenance is invalid",
+            id="attempt-406-411-provenance",
+        ),
+        pytest.param(
+            "status",
+            "finalization status is invalid",
+            id="attempt-412-413-status",
+        ),
+        pytest.param(
+            "stage",
+            "finalization stage is invalid",
+            id="attempt-414-415-stage",
+        ),
+        pytest.param(
+            "rev0-fix-verification",
+            "rev0 cannot carry fixVerificationId",
+            id="attempt-420-421-rev0-fix-verification",
+        ),
+        pytest.param(
+            "outside-window",
+            "attempt update is outside its offline window",
+            id="attempt-427-428-outside-window",
+        ),
+        pytest.param(
+            "wrong-deadline",
+            "attempt deadline differs from rev0 publication window",
+            id="attempt-432-433-wrong-deadline",
+        ),
+        pytest.param(
+            "rev0-time",
+            "rev0 opened and updated times differ",
+            id="attempt-434-435-rev0-time",
+        ),
+        pytest.param(
+            "checkpoint",
+            "checkpointId does not match the snapshot",
+            id="attempt-436-437-checkpoint",
+        ),
+    ],
+)
+def test_physical_finalization_attempt_public_json_boundaries(case_name: str, expected: str) -> None:
+    rev0 = _finalization_attempt_wire(0)
+    rev1 = _finalization_attempt_wire(1, previous_checkpoint_id=rev0["checkpointId"])
+    parsed_rev0 = PhysicalFinalizationAttempt.from_value(deepcopy(rev0))
+    assert parsed_rev0.to_dict() == rev0
+    assert parsed_rev0.next_stage == "target-fix-verified"
+    parsed_rev1 = PhysicalFinalizationAttempt.from_value(deepcopy(rev1))
+    assert parsed_rev1.to_dict() == rev1
+    assert parsed_rev1.previous_checkpoint_id == rev0["checkpointId"]
+    assert parsed_rev1.next_stage is None
+
+    if case_name == "rev1-predecessor":
+        candidate = deepcopy(rev1)
+        candidate["previousCheckpointId"] = None
+    elif case_name in {"scenario-identity", "provenance", "status", "stage"}:
+        candidate = deepcopy(rev0)
+        if case_name == "scenario-identity":
+            candidate["scenarioId"] = "other-scenario"
+        elif case_name == "provenance":
+            candidate["executionSource"] = "replay"
+        elif case_name == "status":
+            candidate["status"] = "COMPLETED"
+        else:
+            candidate["stage"] = "target-fix-verified"
+    elif case_name == "unsupported-schema":
+        candidate = deepcopy(rev0)
+        candidate["schema"] = "stm32-acceptance-attempt/9"
+    elif case_name == "revision-bool":
+        candidate = deepcopy(rev0)
+        candidate["revision"] = True
+    elif case_name == "rev0-predecessor":
+        candidate = deepcopy(rev0)
+        candidate["previousCheckpointId"] = "5" * 64
+    elif case_name == "rev0-fix-verification":
+        candidate = deepcopy(rev0)
+        candidate["fixVerificationId"] = "6" * 64
+    elif case_name == "outside-window":
+        candidate = deepcopy(rev0)
+        candidate["updatedAtUtc"] = "2026-09-18T15:06:00.000000Z"
+    elif case_name == "wrong-deadline":
+        candidate = deepcopy(rev0)
+        candidate["deadlineAtUtc"] = "2026-09-18T15:10:00.000000Z"
+    elif case_name == "rev0-time":
+        candidate = deepcopy(rev0)
+        candidate["updatedAtUtc"] = "2026-09-18T14:51:00.000000Z"
+    else:
+        candidate = deepcopy(rev0)
+        candidate["checkpointId"] = "0" * 64
+    _assert_finalization_wire_rejection(
+        lambda: PhysicalFinalizationAttempt.from_value(candidate),
+        candidate,
+        expected,
+    )
