@@ -1060,7 +1060,22 @@ def test_setup_contract_uses_namespaced_skill_and_ignores_coverage_data():
     assert "CLAUDE_PLUGIN_DATA" not in launcher
     assert "`/setup-stm32-env`" not in readme
     assert "Run /setup-stm32-env" not in readme
-    assert "${CLAUDE_PLUGIN_ROOT}/bin/setup-stm32-env.ps1" in readme
+    for path_assignment in (
+        "$ToolkitRoot = 'C:\\tools\\stm32-toolkit-1.0.0'",
+        "$DataRoot = 'C:\\data\\stm32-toolkit'",
+        "$ProjectRoot = 'C:\\work\\blinky'",
+        "$SetupScript = Join-Path $ToolkitRoot 'bin\\setup-stm32-env.ps1'",
+    ):
+        assert path_assignment in readme
+    for argument in (
+        "-ToolkitRoot $ToolkitRoot",
+        "-DataRoot $DataRoot",
+        "-ProjectRoot $ProjectRoot",
+    ):
+        assert argument in readme
+    check_position = readme.index("-Mode Check")
+    assert check_position < readme.index("-Mode Bootstrap")
+    assert check_position < readme.index("-Mode Repair")
     assert "skills/setup-stm32-env/SKILL.md" in plan
     assert "stm32-toolkit:setup-stm32-env.ps1" not in readme
     assert "skills/stm32-toolkit:setup-stm32-env" not in plan

@@ -485,7 +485,7 @@ def test_setup_skill_passes_inline_claude_paths_explicitly_without_ambient_varia
     ):
         assert argument in command_blocks
     assert "PowerShell" in skill
-    assert "Git Bash" in skill
+    assert "### Agent-host adapter" in skill
 
 def test_readme_documents_the_1_0_contract_and_preserved_vs09b_boundary():
     readme = README.read_text(encoding="utf-8")
@@ -681,4 +681,4 @@ def test_unified_1_0_0_runtime_version_across_launcher_setup_and_skill():
     assert "isolated PEP 440 `pyocd` distribution check" in skill
     assert ">=0.45.1,<0.46" in skill
     assert "existing 0.9.0, 0.5.0 or 0.3.0 runtime reports broken" in skill
-    assert skill.count("0.3.0") == 1
+    assert "${CLAUDE_PLUGIN_DATA}/runtime/1.0.0/Scripts/python.exe" in skill
