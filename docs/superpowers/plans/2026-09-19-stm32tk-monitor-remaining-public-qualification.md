@@ -64,3 +64,14 @@ The scope may span three parallel implementation owners, but verification is
 serial and each stateful run has one owner. No count of added tests or written
 reports is a release acceptance claim; only measured public behavior, valid
 native branch data and the unchanged mandatory gates decide completion.
+
+## Proven transcript publication mapping defect
+
+Accepted runtime base is `87699308535bd36431c2e44be8bf131e245d460d`; the implementation owner starts at q1 `e4ce6d7d5e0737a9dc05cd7dd924e67a7b28ca4c`, whose first selected run is retained as 7 PASS / 1 FAIL. Primary accepts the independent PRODUCT classification: contradictory ArtifactRef is validly constructed, detected at replay.py:1209-1213, and incorrectly caught by the generic exception wrapper at :1216-1219.
+
+1. The sole Luna/max implementation owner audits q1 tracked/untracked state, takes the appended specification, and changes only replay.py transcript exception mapping plus focused test_replay.py cases. Preserve the original failed assertion. Include a valid-model contradictory provider return, a real direct OSError, and a wrapped EvidenceValidationError with a non-missing OSError cause. Assert exact error/cause and absence of newly published roots/History, not merely that an exception occurs. No bypass of dataclass invariants.
+2. Primary independently reviews the complete accepted-runtime-base-to-final-head diff in isolated q1r, including retained test-only changes. No self-acceptance by the owner.
+3. First execute only the original failing parameter and newly added I/O regression parameters once. After PASS, run the affected existing test files `test_replay.py`, `test_physical_transcript.py` and `test_analysis_workflows.py` against the same returned source, with native branch coverage and bounded existing launcher. Reuse those fixtures; do not add a framework or rerun the full Python/UI matrix. Exact file availability and selectors must be checked before dispatch; launcher selectors should name parametrized functions rather than guessing generated IDs.
+4. Because replay.py bytes change, old replay.py coverage arcs are excluded from the final native merge; other source-equal files retain their measured evidence. Primary reconciles the actual denominator and refreshes candidate identity. Packaging remains pending qualification. No hardware or remote action is necessary or authorized by this correction.
+
+Keep failure evidence, unchanged prior seven successes, and the separate Analysis batch PASS. Publication's zero-test bad-selector result is an entry defect and has its own command-only correction; it is not this product defect.
