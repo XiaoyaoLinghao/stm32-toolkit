@@ -529,6 +529,67 @@ def test_shared_physical_byte_decoder_reloads_canonical_transcript_without_mutat
 
 
 @pytest.mark.parametrize(
+    ("case_name", "expected_message"),
+    (
+        pytest.param(
+            "empty",
+            "physical transcript bytes exceed their bounded input limit",
+            id="empty",
+        ),
+        pytest.param(
+            "bom",
+            "physical transcript JSON must not contain a BOM",
+            id="bom",
+        ),
+        pytest.param(
+            "duplicate-key",
+            "physical transcript JSON has duplicate object keys",
+            id="duplicate-key",
+        ),
+        pytest.param(
+            "scalar-root",
+            "physical transcript JSON must be an object",
+            id="scalar-root",
+        ),
+        pytest.param(
+            "noncanonical",
+            "physical transcript JSON is not canonical",
+            id="noncanonical",
+        ),
+    ),
+)
+def test_shared_physical_byte_decoder_rejects_public_encoding_and_size_variants(
+    case_name: str, expected_message: str
+) -> None:
+    contract = _contract()
+    payload = _physical_transcript(_document("failed-before"))
+    source_before = deepcopy(payload)
+    canonical = contract.canonical_physical_json_bytes(payload)
+    assert contract.decode_physical_transcript_bytes(canonical) == payload
+    assert payload == source_before
+
+    if case_name == "empty":
+        raw = canonical[:0]
+    elif case_name == "bom":
+        raw = b"\xef\xbb\xbf" + canonical
+    elif case_name == "duplicate-key":
+        schema = b'"schema":"stm32-monitor-physical-transcript/1"'
+        assert schema in canonical
+        raw = canonical.replace(schema, schema + b"," + schema, 1)
+    elif case_name == "scalar-root":
+        raw = b"[]"
+    else:
+        raw = b" " + canonical
+
+    before = bytes(raw)
+    with pytest.raises(contract.ReplayContractError) as error:
+        contract.decode_physical_transcript_bytes(raw)
+
+    assert str(error.value) == expected_message
+    assert raw == before
+
+
+@pytest.mark.parametrize(
     ("case_name", "raw"),
     [
         pytest.param("duplicate-key", b'{"a":1,"a":2}', id="duplicate-key"),
@@ -763,6 +824,72 @@ def test_shared_physical_contract_rejects_nested_wire_mutations(
 
 
 @pytest.mark.parametrize(
+    ("mutation", "expected_message"),
+    (
+        pytest.param(
+            "root-collection",
+            "physical transcript must be an object",
+            id="root-collection",
+        ),
+        pytest.param("group-id-type", "groupId is invalid", id="group-id-type"),
+        pytest.param(
+            "session-device-name",
+            "sessionId is invalid",
+            id="session-device-name",
+        ),
+        pytest.param(
+            "watch-kind",
+            "replay watch kind is invalid",
+            id="watch-kind",
+        ),
+        pytest.param(
+            "captured-utc",
+            "capturedAtUtc is invalid",
+            id="captured-utc",
+        ),
+        pytest.param(
+            "binding-git-dirty-type",
+            "gitDirty is invalid",
+            id="binding-git-dirty-type",
+        ),
+        pytest.param(
+            "failed-status-shape",
+            "replay failed sample is invalid",
+            id="failed-status-shape",
+        ),
+    ),
+)
+def test_shared_physical_validator_rejects_additional_public_nested_variants(
+    mutation: str, expected_message: str
+) -> None:
+    contract = _contract()
+    candidate = _physical_transcript(_document("failed-before"))
+    assert contract.validate_physical_transcript(candidate) == candidate
+
+    if mutation == "root-collection":
+        candidate = [candidate]
+    elif mutation == "group-id-type":
+        candidate["batches"][0]["groupId"] = None
+    elif mutation == "session-device-name":
+        candidate["binding"]["sessionId"] = "con"
+    elif mutation == "watch-kind":
+        candidate["batches"][0]["values"][0]["watch"]["kind"] = "other"
+    elif mutation == "captured-utc":
+        candidate["batches"][0]["capturedAtUtc"] = "1970-01-01T00:00:00.000000Z"
+    elif mutation == "binding-git-dirty-type":
+        candidate["binding"]["gitDirty"] = 1
+    else:
+        candidate["batches"][0]["values"][0]["status"] = "ERROR"
+
+    before = deepcopy(candidate)
+    with pytest.raises(contract.ReplayContractError) as error:
+        contract.validate_physical_transcript(candidate)
+
+    assert str(error.value) == expected_message
+    assert candidate == before
+
+
+@pytest.mark.parametrize(
     "value",
     (
         ("tuple",),
@@ -853,6 +980,86 @@ def test_shared_and_monitor_reject_the_same_reference_wire_mutations(
         with pytest.raises(contract.ReplayContractError):
             contract.validate_run_reference(candidate)
         assert candidate == before, case_name
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_message"),
+    (
+        pytest.param(
+            "replay-empty-batches",
+            "replay document batches are invalid",
+            id="replay-empty-batches",
+        ),
+        pytest.param(
+            "replay-scheduled-order",
+            "replay document scheduled times are not increasing",
+            id="replay-scheduled-order",
+        ),
+        pytest.param(
+            "replay-captured-order",
+            "replay document captured times are not increasing",
+            id="replay-captured-order",
+        ),
+        pytest.param(
+            "reference-scenario-role",
+            "monitor run reference scenario role is invalid",
+            id="reference-scenario-role",
+        ),
+        pytest.param(
+            "reference-execution-source",
+            "monitor run reference execution source is invalid",
+            id="reference-execution-source",
+        ),
+        pytest.param(
+            "reference-run-identity",
+            "monitor run reference operation and run IDs contradict",
+            id="reference-run-identity",
+        ),
+    ),
+)
+def test_shared_public_replay_reference_rejects_recomputed_wire_semantics(
+    mutation: str, expected_message: str
+) -> None:
+    contract = _contract()
+    if mutation.startswith("replay-"):
+        source = _document("failed-before")
+        assert contract.validate_replay_document(source) == source
+        candidate = deepcopy(source)
+        if mutation == "replay-empty-batches":
+            candidate["batches"] = []
+        elif mutation == "replay-scheduled-order":
+            first = candidate["batches"][0]
+            second = candidate["batches"][1]
+            second["scheduledUnixNs"] = first["scheduledUnixNs"]
+            second["scheduledAtUtc"] = first["scheduledAtUtc"]
+        else:
+            first = candidate["batches"][0]
+            second = candidate["batches"][1]
+            first["capturedUnixNs"] = second["capturedUnixNs"]
+            first["capturedAtUtc"] = second["capturedAtUtc"]
+            first["latencyNs"] = first["capturedUnixNs"] - first["scheduledUnixNs"]
+        _redigest_document(candidate)
+    else:
+        source = _physical_v2_reference()
+        assert contract.validate_run_reference(source) == source
+        candidate = deepcopy(source)
+        if mutation == "reference-scenario-role":
+            candidate["scenario_role"] = "other"
+        elif mutation == "reference-execution-source":
+            candidate["execution_source"] = "other"
+        else:
+            candidate["projected_run_id"] = "22222222-2222-4222-8222-222222222222"
+        _redigest_reference(candidate)
+
+    before = deepcopy(candidate)
+    with pytest.raises(contract.ReplayContractError) as error:
+        if mutation.startswith("replay-"):
+            contract.validate_replay_document(candidate)
+        else:
+            contract.validate_run_reference(candidate)
+
+    assert str(error.value) == expected_message
+    assert candidate == before
 
 
 @pytest.mark.parametrize("field", ("typedValue", "definition"))
