@@ -1,9 +1,10 @@
 # STM32TK-1.0 retention cancellation contract implementation return
 
-Status: `REVISION_REQUIRED`. The original two-node run passed, but the bounded
-future-observation correction produced a new diagnostic failure. This report
-records both runs and is not a product acceptance decision. The primary agent
-remains the independent reviewer and acceptor.
+Status: `ENTRY_REVIEW_PENDING`. The original two-node run passed, while the
+r2 bounded-future correction exposed a diagnostic failure. The r3 correction
+and launcher are prepared for primary entry review; no r3 test has run. This
+report records all prior runs and is not a product acceptance decision. The
+primary agent remains the independent reviewer and acceptor.
 
 ## Ownership and source ledger
 
@@ -13,7 +14,7 @@ remains the independent reviewer and acceptor.
 - Branch/worktree: `codex/STM32TK-1.0-retention-cancellation-contract` /
   `D:\codex-tmp\v10b-0918\r10\rc`.
 - Test code head before this report commit:
-  `d0f4703301f6aae26cbe26ce9d0d4c19aedc23f2`.
+  `60996089024eaa62c6c91eeadf8c3aca6002bab0`.
 - Frozen product import source: `D:\codex-tmp\v10b-0918\r10\verify`,
   revision `15b1a70e9bd684285da5557104deff529f537e49`.
 - Interpreter: `D:\codex-tmp\v10b-0918\r10\py\Scripts\python.exe`.
@@ -108,7 +109,9 @@ captured the separate original
 The test assertion rejected that unexpected callback failure instead of
 swallowing it, so the result is `1 passed, 1 failed in 1.68s`, exit code `1`.
 This is a bounded diagnostic failure requiring primary design review; it is not
-a product root-cause claim.
+a product root-cause claim. The recorded `exit-code.txt` value `1` is the r2
+launcher exit code; the pytest child exit code was not verified because the
+launcher failed before its wait/manifest path.
 
 The r2 launcher itself also exposed a preparation defect: its `$pid` variable
 collided with PowerShell's read-only `$PID` automatic variable. The child
@@ -122,6 +125,40 @@ The primary's separate read-only durable-outcome evidence is retained at
 `D:\codex-tmp\v10b-0918\r10\e\retention-cancellation\primary-durable-outcomes.json`:
 scenario A observed zero rows after deletion, and scenario B observed the
 rollback/one-row outcome. That offline evidence was not produced by a rerun.
+
+## r3 prepared correction
+
+The test-only correction is committed at code head
+`60996089024eaa62c6c91eeadf8c3aca6002bab0`. It removes the r2 exception-object
+identity assertion. Callback and writer-Future exceptions are recorded
+independently with stable type, StorageFailure code, message, native SQLite
+error code/name, cause/context chain, and standard traceback formatting without
+locals. A narrow allowance accepts an internal outcome only when the complete
+observed callback/Future chains contain existing `StorageFailure` wrappers and
+native `SQLITE_INTERRUPT` errors after the recorded caller `BUSY`; unrelated
+filesystem, assertion, guard, integrity, or unknown errors still fail. JUnit's
+existing `record_property` mechanism receives stage timestamps, caller result,
+Future settlement/outcome, exception records, final state, writer sentinel, and
+public query count. Durable/accounting/integrity/cache/writer-reuse assertions
+remain unchanged. Cleanup still releases barriers and calls `store.close()`
+only after both caller and writer Future settlement is proven.
+
+The corrected launcher is prepared at
+`D:\codex-tmp\v10b-0918\r10\e\retention-cancellation\r3\launch.ps1` with
+SHA-256
+`2059ED74FC7D036A87255487ED74FA9E32526D76D13BD1BA5887BCB7F96BAC5B`.
+It uses a non-reserved `$childPid`, captures child start/end and child exit
+separately from launcher exit, waits at most 60 seconds, and on timeout or a
+post-creation launcher exception attempts bounded termination of that exact
+owned child before writing the manifest. The fresh temporary roots are under
+`D:\codex-tmp\v10b-0918\r10\t\rc\r3`; durable r3 evidence will be under
+`D:\codex-tmp\v10b-0918\r10\e\retention-cancellation\r3`.
+
+The launcher passed PowerShell AST parsing with zero errors and static checks
+found no reserved `$PID` assignment, r2 root, or `--cache-dir` switch. No r3
+test, import, benchmark, build, or performance execution has occurred. The
+entry awaits primary review and explicit execution approval; the two selected
+nodes may run once only after that approval.
 
 This report is committed separately from the test code head recorded above and
 does not record its own final commit SHA.
