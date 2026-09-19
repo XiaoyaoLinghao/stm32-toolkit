@@ -18,6 +18,7 @@ from stm32_toolkit.evidence import EvidenceValidationError
 from stm32_toolkit.project_model import ProjectManifestError
 from stm32_toolkit.testing.host import HostTestRunner
 from stm32_toolkit.testing.model import TestProtocolError as ProtocolError
+from test_build_runner import prepare_project
 
 
 PROJECT_ID = UUID("12345678-1234-5678-1234-567812345678")
@@ -106,6 +107,112 @@ def _context(tmp_path: Path) -> workflows.TestingWorkflowContext:
         data_root=tmp_path / "data",
         session_id="session-1",
     )
+
+
+_TARGET_ONLY_OVERRIDES = {
+    "schemaVersion": 3,
+    "testing": {
+        "target": {
+            "executable": "build/arm-debug/firmware.elf",
+            "timeout_seconds": 10,
+            "transport": {
+                "kind": "memory-mailbox",
+                "options": {"address": 0x20000000, "size": 4096},
+            },
+        }
+    },
+}
+
+
+def _failure_wire(operation: str, code: str, message: str) -> dict[str, object]:
+    return {
+        "protocol": "stm32-toolkit/1",
+        "ok": False,
+        "operation": operation,
+        "code": code,
+        "message": message,
+        "data": None,
+        "details": {},
+    }
+
+
+@pytest.mark.parametrize(
+    "case_id",
+    [
+        pytest.param("discover-context-type", id="discover-context-type"),
+        pytest.param("discover-without-host", id="discover-without-host"),
+        pytest.param("run-invalid-inventory-digest", id="run-invalid-inventory-digest"),
+        pytest.param("run-invalid-case-selector", id="run-invalid-case-selector"),
+    ],
+)
+def test_host_public_early_refusals_before_provider(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path_factory: pytest.TempPathFactory,
+    case_id: str,
+) -> None:
+    root = tmp_path_factory.mktemp("h")
+    provider_calls: list[object] = []
+
+    def forbidden_runner(**kwargs: object) -> object:
+        provider_calls.append(kwargs)
+        raise AssertionError("host provider must not be constructed")
+
+    monkeypatch.setattr(workflows, "_host_runner_factory", forbidden_runner)
+    if case_id == "discover-context-type":
+        result = workflows.host_test_discover(object())  # type: ignore[arg-type]
+        assert result.to_dict() == _failure_wire(
+            "test.host.discover",
+            "PROJECT_NOT_CONFIGURED",
+            "Project is not configured.",
+        )
+        assert provider_calls == []
+        assert list(root.iterdir()) == []
+        return
+
+    if case_id == "discover-without-host":
+        project = prepare_project(
+            root,
+            overrides=_TARGET_ONLY_OVERRIDES,
+            git_repo=False,
+        )
+        data_root = root / "data"
+        context = workflows.TestingWorkflowContext(project, data_root, "host-no-host")
+        result = workflows.host_test_discover(context)
+        assert result.to_dict() == _failure_wire(
+            "test.host.discover",
+            "PROJECT_TESTING_NOT_CONFIGURED",
+            "Project testing is not configured.",
+        )
+        assert provider_calls == []
+        assert not data_root.exists()
+        return
+
+    context = workflows.TestingWorkflowContext(
+        root / "project", root / "data", "host-invalid-input"
+    )
+    if case_id == "run-invalid-inventory-digest":
+        result = workflows.host_test_run(
+            context,
+            inventory_digest="not-a-lowercase-sha256",
+            case_ids=(),
+        )
+        expected = _failure_wire(
+            "test.host.run", "TEST_PROTOCOL_INVALID", "Test protocol is invalid."
+        )
+    else:
+        result = workflows.host_test_run(
+            context,
+            inventory_digest="a" * 64,
+            case_ids=("case-a", "case-a"),
+        )
+        expected = _failure_wire(
+            "test.host.run",
+            "TEST_CASE_NOT_FOUND",
+            "A requested test case was not discovered.",
+        )
+    assert result.to_dict() == expected
+    assert provider_calls == []
+    assert not (root / "data").exists()
 
 
 def test_host_discover_run_and_show_compose_the_frozen_public_shapes(

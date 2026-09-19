@@ -4,6 +4,7 @@ import asyncio
 import json
 import pytest
 from dataclasses import dataclass, replace
+from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 from pathlib import Path
 from types import SimpleNamespace
@@ -31,6 +32,8 @@ from stm32_toolkit.probe.worker import (
     UNDER_RESET_RECOVERY_CONNECTION_POLICY,
     ProbeWorkerConfig,
 )
+from stm32_toolkit.probe.flash import load_fresh_firmware_facts
+from stm32_toolkit.project_model import load_project_model
 import stm32_toolkit.testing_workflows as workflows
 from test_build_runner import prepare_project
 from test_flash import _publish_current_debug_build
@@ -340,6 +343,308 @@ def _fixed_project(
         manifest["testing"]["target"]["protocol"] = protocol
         manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     return project, _publish_current_debug_build(project)
+
+
+def _transport_project(
+    tmp_path: Path, transport: Mapping[str, object]
+) -> tuple[Path, Mapping[str, object]]:
+    target = {
+        "executable": "build/arm-debug/firmware.elf",
+        "timeout_seconds": 10,
+        "transport": dict(transport),
+    }
+    project = prepare_project(
+        tmp_path,
+        overrides={"schemaVersion": 3, "testing": {"target": target}},
+    )
+    return project, _publish_current_debug_build(project)
+
+
+def _target_failure_wire(code: str, message: str) -> dict[str, object]:
+    return {
+        "protocol": "stm32-toolkit/1",
+        "ok": False,
+        "operation": "test.target.execute",
+        "code": code,
+        "message": message,
+        "data": None,
+        "details": {},
+    }
+
+
+@pytest.mark.parametrize(
+    ("case_id", "transport", "support_key", "support_options"),
+    [
+        pytest.param(
+            "rtt-without-control-block",
+            {"kind": "rtt", "options": {"channel": 0}},
+            "rtt",
+            {"channel": 0},
+            id="rtt-without-control-block",
+        ),
+        pytest.param(
+            "rtt-with-control-block",
+            {
+                "kind": "rtt",
+                "options": {"channel": 0, "controlBlockAddress": 0x20000100},
+            },
+            "rtt",
+            {"channel": 0, "control_block_address": 0x20000100},
+            id="rtt-with-control-block",
+        ),
+        pytest.param(
+            "uart",
+            {"kind": "uart", "options": {"port": "COM1", "baud": 115200}},
+            "uart",
+            {"port": "COM1", "baud": 115200},
+            id="uart",
+        ),
+        pytest.param(
+            "semihosting",
+            {"kind": "semihosting", "options": {}},
+            "semihosting",
+            {"declared": True},
+            id="semihosting",
+        ),
+    ],
+)
+def test_target_prepare_maps_public_transport_profiles_without_provider(
+    tmp_path_factory: pytest.TempPathFactory,
+    case_id: str,
+    transport: Mapping[str, object],
+    support_key: str,
+    support_options: Mapping[str, object],
+) -> None:
+    root = tmp_path_factory.mktemp("p")
+    project, build = _transport_project(root, transport)
+    data_root = root / "data"
+    context = workflows.TestingWorkflowContext(
+        project, data_root, f"transport-{case_id}"
+    )
+    backend_calls: list[object] = []
+
+    def forbidden_backend() -> object:
+        backend_calls.append(object())
+        raise AssertionError("recovery prepare must not construct a backend")
+
+    prepared = asyncio.run(
+        workflows.target_test_prepare(
+            context,
+            probe_id=RAW_PROBE,
+            case_ids=CASES,
+            recovery_under_reset=True,
+            _seams=workflows.TargetWorkflowSeams(forbidden_backend),
+        )
+    )
+    assert prepared.ok is True, prepared.to_dict()
+
+    model = load_project_model(project)
+    facts = load_fresh_firmware_facts(project)
+    expected_profile: dict[str, object] = {
+        "backend": "pyocd",
+        "board_id": facts.target_device,
+        "mcu": model.debug.target,
+        "target_id": facts.target_device,
+        "ram": sorted(
+            (
+                {"start": region.origin, "size": region.length}
+                for region in model.memory.regions
+                if "w" in region.attributes.casefold()
+            ),
+            key=lambda region: (region["start"], region["size"]),
+        ),
+        support_key: dict(support_options),
+    }
+    if support_key == "semihosting":
+        expected_profile["semihosting_runtime"] = {
+            "elf_path": facts.elf_path,
+            "elf_sha256": facts.elf_sha256,
+        }
+    workspace = WorkspacePaths.from_roots(
+        data_root, project, build["logicalProjectId"], f"transport-{case_id}"
+    )
+    runner = workflows.TargetTestRunner(
+        workspace.session_root / "target-authorizations",
+        object(),
+        object(),
+        lambda _: object(),
+        owns_probe=False,
+    )
+    binding = runner.load_prepared(
+        prepared.data["authorized_action_digest"]
+    ).binding
+    assert set(prepared.data) == {
+        "authorized_action_digest",
+        "expires_at_utc",
+        "inventory_digest",
+        "case_ids",
+        "probe_serial_hash",
+    }
+    assert prepared.data["inventory_digest"] == binding["inventory_digest"]
+    assert prepared.data["case_ids"] == list(CASES)
+    assert prepared.data["probe_serial_hash"] == sha256(
+        RAW_PROBE.encode("utf-8")
+    ).hexdigest()
+    assert prepared.data["expires_at_utc"] == binding["expires_at_utc"]
+    assert binding["transport"] == support_key
+    assert binding["transport_config"] == transport
+    assert binding["support_profile"] == expected_profile
+    assert binding["recovery_under_reset"] is True
+    assert backend_calls == []
+
+
+def test_target_execute_rejects_expired_public_authorization_before_provider(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    root = tmp_path_factory.mktemp("a")
+    project, build = _fixed_project(root)
+    data_root = root / "data"
+    context = workflows.TestingWorkflowContext(project, data_root, "expired-auth")
+    backend_calls: list[object] = []
+
+    def forbidden_backend() -> object:
+        backend_calls.append(object())
+        raise AssertionError("expired authorization must fail before backend construction")
+
+    prepared = asyncio.run(
+        workflows.target_test_prepare(
+            context,
+            probe_id=RAW_PROBE,
+            case_ids=CASES,
+            recovery_under_reset=True,
+            _seams=workflows.TargetWorkflowSeams(forbidden_backend),
+        )
+    )
+    assert prepared.ok is True, prepared.to_dict()
+    workspace = WorkspacePaths.from_roots(
+        data_root, project, build["logicalProjectId"], "expired-auth"
+    )
+    runner = workflows.TargetTestRunner(
+        workspace.session_root / "target-authorizations",
+        object(),
+        object(),
+        lambda _: object(),
+        owns_probe=False,
+    )
+    binding = dict(
+        runner.load_prepared(prepared.data["authorized_action_digest"]).binding
+    )
+    for field in ("nonce", "prepared_at_utc", "expires_at_utc"):
+        binding.pop(field)
+    runner.consume_prepared(prepared.data["authorized_action_digest"])
+    expired = asyncio.run(
+        runner.prepare(
+            now=datetime.now(timezone.utc) - timedelta(minutes=6),
+            **binding,
+        )
+    )
+
+    result = asyncio.run(
+        workflows.target_test_execute(
+            context,
+            probe_id=RAW_PROBE,
+            authorized_action_digest=expired.action_digest,
+            _seams=workflows.TargetWorkflowSeams(forbidden_backend),
+        )
+    )
+    assert result.to_dict() == _target_failure_wire(
+        "TEST_AUTHORIZATION_INVALID", "Target test authorization is invalid."
+    )
+    assert backend_calls == []
+    records = workspace.session_root / "target-authorizations" / "records"
+    assert (records / f"{prepared.data['authorized_action_digest']}.consumed.json").is_file()
+    assert (records / f"{expired.action_digest}.consumed.json").is_file()
+
+
+def test_target_execute_rejects_valid_probe_identity_change_before_provider(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    root = tmp_path_factory.mktemp("a")
+    project, build = _fixed_project(root)
+    data_root = root / "data"
+    context = workflows.TestingWorkflowContext(project, data_root, "probe-drift")
+    backend_calls: list[object] = []
+
+    def forbidden_backend() -> object:
+        backend_calls.append(object())
+        raise AssertionError("probe identity mismatch must fail before backend construction")
+
+    prepared = asyncio.run(
+        workflows.target_test_prepare(
+            context,
+            probe_id=RAW_PROBE,
+            case_ids=CASES,
+            recovery_under_reset=True,
+            _seams=workflows.TargetWorkflowSeams(forbidden_backend),
+        )
+    )
+    assert prepared.ok is True, prepared.to_dict()
+    workspace = WorkspacePaths.from_roots(
+        data_root, project, build["logicalProjectId"], "probe-drift"
+    )
+    result = asyncio.run(
+        workflows.target_test_execute(
+            context,
+            probe_id="probe-r3-b",
+            authorized_action_digest=prepared.data["authorized_action_digest"],
+            _seams=workflows.TargetWorkflowSeams(forbidden_backend),
+        )
+    )
+    assert result.to_dict() == _target_failure_wire(
+        "TEST_IDENTITY_MISMATCH", "Test identity does not match."
+    )
+    assert backend_calls == []
+    records = workspace.session_root / "target-authorizations" / "records"
+    assert (records / f"{prepared.data['authorized_action_digest']}.consumed.json").is_file()
+
+
+def test_target_prepare_propagates_missing_build_evidence_before_provider(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    root = tmp_path_factory.mktemp("m")
+    project = prepare_project(
+        root,
+        overrides={
+            "schemaVersion": 3,
+            "testing": {
+                "target": {
+                    "executable": "build/arm-debug/firmware.elf",
+                    "timeout_seconds": 10,
+                    "transport": {
+                        "kind": "memory-mailbox",
+                        "options": {"address": 0x20000000, "size": 4096},
+                    },
+                }
+            },
+        },
+    )
+    data_root = root / "data"
+    context = workflows.TestingWorkflowContext(project, data_root, "missing-build")
+    backend_calls: list[object] = []
+
+    def forbidden_backend() -> object:
+        backend_calls.append(object())
+        raise AssertionError("missing build must fail before backend construction")
+
+    with pytest.raises(Exception) as raised:
+        asyncio.run(
+            workflows.target_test_prepare(
+                context,
+                probe_id=RAW_PROBE,
+                case_ids=CASES,
+                recovery_under_reset=True,
+                _seams=workflows.TargetWorkflowSeams(forbidden_backend),
+            )
+        )
+    error = raised.value
+    assert getattr(error, "code", None) == "FIRMWARE_EVIDENCE_INVALID"
+    assert getattr(error, "message", None) == "Firmware evidence is invalid"
+    assert getattr(error, "details", None) == {
+        "path": "build/arm-debug/firmware-identity.json",
+        "rule": "missing",
+    }
+    assert backend_calls == []
+    assert not list(data_root.rglob("*.json"))
 
 
 def test_target_support_profile_orders_task8_ram_before_capability_preflight() -> None:
