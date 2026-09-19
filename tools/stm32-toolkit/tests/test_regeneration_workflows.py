@@ -1251,10 +1251,14 @@ def test_apply_activation_failure_restores_old_tree(tmp_path: Path, monkeypatch:
 
 def test_prepare_rejects_non_path_candidate_root_before_authorization(tmp_path: Path):
     workspace, destination, environment = _project(tmp_path)
-    request = RegenerationWorkflowRequest(workspace, tmp_path / "data", "session", "generated")
+    data_root = tmp_path / "data"
+    regeneration_root = data_root / "regeneration"
+    regeneration_root.mkdir(parents=True)
+    (regeneration_root / "sentinel.txt").write_bytes(b"sentinel")
+    request = RegenerationWorkflowRequest(workspace, data_root, "session", "generated")
     planned = plan_regeneration(request, environment=environment)
     before_project = _root_state(destination)
-    before_data = _root_state(tmp_path / "data")
+    before_data = _tree_bytes(data_root)
 
     class BadRootAdapter:
         calls = 0
@@ -1281,9 +1285,10 @@ def test_prepare_rejects_non_path_candidate_root_before_authorization(tmp_path: 
     assert result.details == {}
     assert adapter.calls == 1
     assert _root_state(destination) == before_project
-    assert _root_state(tmp_path / "data") == before_data
+    assert _tree_bytes(data_root) == before_data
     assert not list(workspace.glob(".stm32tk-regeneration-preview-*"))
-    auth_root = tmp_path / "data" / "regeneration" / "authorizations"
+    assert not list(regeneration_root.glob(".ephemeral-*"))
+    auth_root = data_root / "regeneration" / "authorizations"
     if auth_root.exists():
         assert not list(auth_root.glob("*.json"))
 
@@ -1659,6 +1664,9 @@ def test_prepare_rejects_missing_candidate_metadata_before_authorization(tmp_pat
     before_project = _root_state(destination)
     adapter = _Adapter(FIXTURE)
 
+    def missing_metadata_validator(candidate, *, request, plan_id, action_digest, environment):
+        return SimpleNamespace()
+
     result = prepare_regeneration_workflow(
         request,
         plan_id=planned.data["planId"],
@@ -1666,7 +1674,7 @@ def test_prepare_rejects_missing_candidate_metadata_before_authorization(tmp_pat
         authorized=True,
         environment=environment,
         adapter=adapter,
-        validate_native=lambda **kwargs: SimpleNamespace(),
+        validate_native=missing_metadata_validator,
     )
 
     assert result.ok is False
@@ -1845,12 +1853,16 @@ def test_prepare_rejects_mismatched_plan_binding_before_adapter(tmp_path: Path, 
 
 def test_prepare_maps_oversized_public_authorization_record_and_cleans_roots(tmp_path: Path):
     workspace, destination, environment = _project(tmp_path)
-    request = RegenerationWorkflowRequest(workspace, tmp_path / "data", "session", "generated")
+    data_root = tmp_path / "data"
+    regeneration_root = data_root / "regeneration"
+    regeneration_root.mkdir(parents=True)
+    (regeneration_root / "sentinel.txt").write_bytes(b"sentinel")
+    request = RegenerationWorkflowRequest(workspace, data_root, "session", "generated")
     planned = plan_regeneration(request, environment=environment)
     before_project = _root_state(destination)
-    before_data = _root_state(tmp_path / "data")
+    before_data = _tree_bytes(data_root)
     store = RegenerationAuthorizationStore(
-        tmp_path / "data", nonce_factory=lambda: "n" * (64 * 1024 + 1)
+        data_root, nonce_factory=lambda: "n" * (64 * 1024 + 1)
     )
     adapter = _Adapter(FIXTURE)
 
@@ -1872,8 +1884,9 @@ def test_prepare_maps_oversized_public_authorization_record_and_cleans_roots(tmp
     assert result.details == {}
     assert adapter.calls == 1
     assert _root_state(destination) == before_project
-    assert _root_state(tmp_path / "data") == before_data
+    assert _tree_bytes(data_root) == before_data
     assert not list(workspace.glob(".stm32tk-regeneration-preview-*"))
+    assert not list(regeneration_root.glob(".ephemeral-*"))
     if store.authorization_root.exists():
         assert not list(store.authorization_root.glob("*.json"))
 
