@@ -5,7 +5,7 @@
 - Owner: Target qualification test implementation.
 - Accepted base: 0a6bf2a6c591e5e89c6451050de3087168b77eb4.
 - Runtime source identity required by the plan: a270d7332c3ad2d09cd0b9adfa96ca80042bcf9d.
-- Test head before this report commit: a72f3d3b4398d06db6c3c4ef34c70bfef4e3eda3 (test: extend target public contract qualification wave).
+- Test head before this report commit: 7f1eaba05c6b7378cea6b1466a9c1195479560d0 (test: validate replay parent before publication writes).
 - Product/runtime source files changed: none.
 - Test-only files changed by this wave:
   - tools/stm32-toolkit/tests/test_target_runner.py
@@ -60,14 +60,17 @@ and the absence of delegate calls.
 
 ### Publication, lease, and handoff boundaries
 
-- tools/stm32-toolkit/tests/test_target_replay_publication.py::test_target_replay_repository_rejects_tampered_descriptor_parent_on_reload (two persisted-parent mutations)
+- tools/stm32-toolkit/tests/test_target_replay_publication.py::test_target_replay_publication_rejects_rehashed_descriptor_parent_before_write (two rehashed-parent mutations)
 - tools/stm32-toolkit/tests/test_probe_lease.py::test_heartbeat_replace_failure_preserves_record_and_cleans_temporary_file
 - tools/stm32-toolkit/tests/test_probe_service.py::test_debug_handoff_metadata_reads_the_committed_attachment_identity
 
-The replay selector tampers only with an already persisted descriptor parent and
-requires authoritative reload to reject it. The lease selector injects a
-record replacement failure through the public heartbeat path and requires the
-old record to remain intact with no temporary file left behind. The handoff
+The replay selector constructs a valid rehashed parent that retains the
+existing descriptor and stream artifact identities, then enters the public
+Publisher.publish_target_replay path. It requires the exact stream or role
+contradiction message, EVIDENCE_CORRUPT, and byte-identical evidence and
+results roots before any write. The lease selector injects a record
+replacement failure through the public heartbeat path and requires the old
+record to remain intact with no temporary file left behind. The handoff
 selector reads metadata through a committed Observe attachment and checks the
 provider dispatch and returned identity.
 
@@ -85,7 +88,7 @@ provider dispatch and returned identity.
 | target_test_execute with a malformed action digest | Public authorization gate | TEST_AUTHORIZATION_INVALID before state loading or provider access. |
 | fault_workflow with invalid binding, halted initial target, or malformed halt response | Controlled binding, running-state precondition, halt response validation, and recovery | No control for invalid binding/initial state; malformed halt response is classified; resume is authorized once and returns the target to running. |
 | Registered stm32_test_target_prepare with empty, duplicate, noncanonical, oversized, or non-string case IDs | MCP Pydantic model boundary | Schema refusal occurs before the request delegate is called. |
-| Repository.load after descriptor-parent metadata tampering | _target_parent and _load_target_replay persisted provenance checks | EVIDENCE_CORRUPT; no replay is reinterpreted or repaired. |
+| publish_target_replay with a valid rehashed descriptor parent whose role or stream metadata contradicts its descriptor | _target_parent public publication provenance checks | Exact role or stream contradiction message and EVIDENCE_CORRUPT; evidence and results bytes remain unchanged before publication. |
 | publish_target_physical followed by Repository.load | Physical manifest/raw artifact membership, provenance, root binding, and reload | Physical envelope/root is accepted only with exact retained artifacts and reload returns the same immutable objects. |
 | ProbeLease.heartbeat with replacement failure | Atomic record write and temporary-file cleanup | PROBE_REGISTRY_UNAVAILABLE; prior record is unchanged and temporary write is removed. |
 | ProbeService.debug_handoff_metadata through an attached fake backend | Attachment identity, backend invocation, metadata model validation | One provider call returns the committed probe/target/board identity. |
@@ -94,23 +97,26 @@ provider dispatch and returned identity.
 
 The accepted native residual map is source-file ownership based. Its target
 group contains 44 files and 937 missing arcs; that value is an upper bound and
-is not a test quota. Every file in that group is accounted for below. Existing
-public matrices are named as caller evidence; hardware, real pyOCD, native
+is not a test quota. Every file in that group is accounted for below. The
+table records public trigger families and their boundaries; it does not claim
+that the named matrices cover every listed arc. Hardware, real pyOCD, native
 process, and OS-only paths remain in the denominator because this wave is
 forbidden from claiming those environments.
 
 | Residual source files and native upper bound | Existing public trigger or this wave | Disposition for this wave |
 | --- | --- | --- |
-| cli.py (16), context.py (5), doctor.py (4), mcp_server.py (73), testing_workflows.py (38): 136 | test_mcp_server.py, test_mcp_roots.py, test_testing_mcp.py schema/root/delegate matrices; new target case-ID matrix; new fixed-facts workflow matrix; test_context.py, test_doctor.py, and test_cli.py when present | Public root binding, strict MCP models, workflow refusal, and context/doctor construction are represented by existing callers and the new target routes. CLI startup, platform process discovery, and unexecuted native/error arcs remain denominator-held for the released batch; no private helper padding is added. |
-| hardware_workflows.py (61), debug/dwarf.py (36), debug/fault.py (12), debug/firmware.py (4), debug/model.py (6), debug/read.py (2), debug/sampling.py (2), debug/svd.py (40), debug/types.py (10), execution_provenance.py (5): 178 | Existing test_hardware_workflows.py, test_fault.py, test_debug_firmware.py, test_debug_read.py, test_svd.py, and test_debug_handoff.py; new fault_workflow controlled binding/state/response matrix | _controlled_fault_action now has public software-provider triggers for invalid binding, non-running target, malformed halt response, and restoration. Existing debug/SVD/fault matrices cover malformed public models and provenance. DWARF/SVD toolchain, real symbol files, and physical target state branches remain deferred native/toolchain evidence, not relabeled as fake PASS. |
-| testing/target.py (71), testing/protocol.py (33), testing/transports/mailbox.py (3), testing/transports/rtt.py (3), testing/transports/semihosting.py (2), testing/transports/uart.py (1): 113 | test_target_protocol.py golden/fragmentation/CRC/sequence/identity/replay matrices; test_target_protocol_v2.py version/monotonic/assembly matrices; test_target_transports.py bounded adapter/failure/cleanup matrices; new runner lifecycle and physical publication selectors | Public decoder, validator, transport, flash, cancellation, and publication paths have concrete fake triggers. Real pyOCD API, device memory, transport driver, and platform-specific adapter branches remain denominator-held under the no-hardware/no-pyOCD boundary. |
-| probe/attach_diagnostics.py (36), probe/authorization.py (12), probe/backend.py (20), probe/client.py (14), probe/flash.py (9), probe/handoff.py (45), probe/lease.py (64), probe/model.py (1), probe/protocol.py (2), probe/pyocd_backend.py (32), probe/selector.py (1), probe/service.py (75), probe/supervisor.py (4), probe/worker.py (24), probe/worker_windows.py (12), process.py (4): 355 | test_probe_service.py, test_probe_lease.py, test_probe_backend.py, test_probe_client.py, test_probe_flash.py, test_probe_worker.py, test_probe_supervisor.py, test_debug_handoff.py, and related probe protocol/selector tests; new atomic lease-write and handoff-metadata selectors | Existing fake service/lease/worker matrices reach ownership, cancellation, timeout, cleanup, handoff, and authorization seams. The new lease test reaches _write_record_path through heartbeat; the new service test reaches debug_handoff_metadata.invoke through an attached provider. Windows child-process, real pyOCD, USB/discovery, and OS identity branches remain native/platform evidence and stay in the denominator. |
-| testing/_ctest_junit_bridge.py (3), testing/artifacts.py (2), testing/host.py (17), testing/model.py (8), testing/native_output.py (1), testing/publication.py (98), testing/replay.py (26): 155 | test_testing_publication.py Host publication/reload and stored-corruption matrices; test_target_replay_publication.py public replay publication, provenance, conflict, parent, and reload matrices; test_target_replay_workflows.py; new persisted-parent reload and physical publication/reload selectors | _target_parent, _load_target_replay, physical publication, and public repository reload now have explicit persisted-record triggers. CTest/JUnit/native-output and external process conversion remain native/reporting boundaries; they are retained rather than padded with direct private calls or claimed from replay. |
+| cli.py (16), context.py (5), doctor.py (4), mcp_server.py (73), testing_workflows.py (38): 136 | test_mcp_server.py, test_mcp_roots.py, test_testing_mcp.py schema/root/delegate matrices; new target case-ID matrix; new fixed-facts workflow matrix; test_context.py, test_doctor.py, and test_cli.py when present | Public root binding, strict MCP models, workflow refusal, and context/doctor construction are represented by existing callers and the new target routes. CLI startup, platform process discovery, and other unexecuted arcs remain visible unresolved for the released batch; no private helper padding is added. |
+| hardware_workflows.py (61), debug/dwarf.py (36), debug/fault.py (12), debug/firmware.py (4), debug/model.py (6), debug/read.py (2), debug/sampling.py (2), debug/svd.py (40), debug/types.py (10), execution_provenance.py (5): 178 | Existing test_hardware_workflows.py, test_fault.py, test_debug_firmware.py, test_debug_read.py, test_svd.py, and test_debug_handoff.py; new fault_workflow controlled binding/state/response matrix | _controlled_fault_action now has public software-provider triggers for invalid binding, non-running target, malformed halt response, and restoration. Existing debug/SVD/fault matrices cover malformed public models and provenance. DWARF/SVD toolchain, real symbol files, and physical target state branches are the native/toolchain subset eligible for later external deferral; all other residual arcs remain unresolved pending runtime evidence. |
+| testing/target.py (71), testing/protocol.py (33), testing/transports/mailbox.py (3), testing/transports/rtt.py (3), testing/transports/semihosting.py (2), testing/transports/uart.py (1): 113 | test_target_protocol.py golden/fragmentation/CRC/sequence/identity/replay matrices; test_target_protocol_v2.py version/monotonic/assembly matrices; test_target_transports.py bounded adapter/failure/cleanup matrices; new runner lifecycle and physical publication selectors | Public decoder, validator, transport, flash, cancellation, and publication paths have concrete fake triggers. Real pyOCD API, device memory, transport driver, and platform-specific adapter branches are the prohibited native subset; the remaining arcs stay visible unresolved under the no-hardware/no-pyOCD boundary. |
+| probe/attach_diagnostics.py (36), probe/authorization.py (12), probe/backend.py (20), probe/client.py (14), probe/flash.py (9), probe/handoff.py (45), probe/lease.py (64), probe/model.py (1), probe/protocol.py (2), probe/pyocd_backend.py (32), probe/selector.py (1), probe/service.py (75), probe/supervisor.py (4), probe/worker.py (24), probe/worker_windows.py (12), process.py (4): 355 | test_probe_service.py, test_probe_lease.py, test_probe_backend.py, test_probe_client.py, test_probe_flash.py, test_probe_worker.py, test_probe_supervisor.py, test_debug_handoff.py, and related probe protocol/selector tests; new atomic lease-write and handoff-metadata selectors | Existing fake service/lease/worker matrices reach ownership, cancellation, timeout, cleanup, handoff, and authorization seams. The new lease test reaches _write_record_path through heartbeat; the new service test reaches debug_handoff_metadata.invoke through an attached provider. Windows child-process, real pyOCD, USB/discovery, and OS identity branches are the native/platform subset eligible for external deferral; other residual arcs stay visible unresolved in this wave. |
+| testing/_ctest_junit_bridge.py (3), testing/artifacts.py (2), testing/host.py (17), testing/model.py (8), testing/native_output.py (1), testing/publication.py (98), testing/replay.py (26): 155 | test_testing_publication.py Host publication/reload and stored-corruption matrices; test_target_replay_publication.py public replay publication, provenance, conflict, parent, and reload matrices; test_target_replay_workflows.py; new public parent-guard and physical publication/reload selectors | _target_parent, _load_target_replay, physical publication, and public repository reload have explicit caller triggers. CTest/JUnit/native-output and external process conversion are reporting/process subsets; the remaining arcs stay visible unresolved rather than being claimed from replay or padded with direct private calls. |
 
-The five row totals sum to the accepted target upper bound of 937. The
-remaining barriers are execution evidence against the verified runtime source
-identity, native/platform branches named above, and the primary's independent
-review. No coverage or pass claim is made by this implementation return.
+The five row totals sum to the accepted target upper bound of 937. This table
+is a source-based accounting, not a blanket deferral: all 937 missing arcs
+remain visible and unresolved until the released run supplies source-matched
+coverage. Only prohibited real pyOCD, device, and OS-specific paths may later
+be marked deferred external evidence. No coverage or pass claim is made by
+this implementation return.
 
 ## Static verification
 
