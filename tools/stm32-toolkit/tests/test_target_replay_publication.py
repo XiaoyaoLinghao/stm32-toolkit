@@ -324,11 +324,38 @@ def _replay_stream_variant(
     mutate,
 ):
     fixture, store, project_root, results_root, descriptor, manifest = _bundle(
-        tmp_path, name="failed-before", operation_id=f"vs03-{selector}"
+        tmp_path, name="failed-before", operation_id="vs03-failed-before"
     )
     decoder = TargetFrameDecoder()
     frames = decoder.feed(fixture.stream_bytes)
     decoder.finish()
+    run_start = next(frame for frame in frames if frame.kind == 2)
+    terminal = frames[-1]
+    case_starts = {
+        str(frame.payload["case_id"]): frame.payload
+        for frame in frames
+        if frame.kind == 3
+    }
+    baseline_cases = tuple(
+        CaseResult(
+            str(frame.payload["case_id"]),
+            str(frame.payload["state"]),
+            str(case_starts[str(frame.payload["case_id"])].get("started_at_utc")),
+            str(frame.payload["ended_at_utc"]),
+            int(frame.payload["duration_ms"]),
+            frame.payload["message"],
+            None,
+            None,
+        )
+        for frame in frames
+        if frame.kind == 4
+    )
+    assert run_start.payload["run_id"] == manifest.run_id == "vs03-failed-before"
+    assert manifest.cases == baseline_cases
+    assert manifest.state == terminal.payload["state"] == fixture.descriptor.expected_terminal_state
+    assert manifest.started_at_utc == run_start.payload["started_at_utc"]
+    assert manifest.ended_at_utc == terminal.payload["ended_at_utc"]
+    assert manifest.duration_ms == terminal.payload["duration_ms"]
     encoded_frames = []
     encoded_nonterminal_frames = []
     for frame in frames:
@@ -1704,7 +1731,7 @@ def test_replay_raw_ref_provider_invalid_selector_rejects_without_write(
     tmp_path: Path,
 ):
     _fixture_value, store, project_root, results_root, descriptor, manifest = _bundle(
-        tmp_path, name="failed-before", operation_id="vs03-raw-ref-provider-invalid"
+        tmp_path, name="failed-before", operation_id="vs03-failed-before"
     )
     invalid_raw = replace(manifest.raw_events, relative_path="objects/not-content-addressed")
     candidate = replace(manifest, raw_events=invalid_raw)
@@ -1723,7 +1750,7 @@ def test_replay_parent_operation_ancestry_selector_rejects_without_write(
     tmp_path: Path,
 ):
     _fixture_value, store, project_root, results_root, descriptor, manifest = _bundle(
-        tmp_path, name="failed-before", operation_id="vs03-parent-operation-ancestry"
+        tmp_path, name="failed-before", operation_id="vs03-failed-before"
     )
     parent = EvidenceEnvelope(
         identity=descriptor.identity,
@@ -1748,7 +1775,7 @@ def test_replay_parent_artifact_absent_selector_rejects_without_write(
     tmp_path: Path,
 ):
     _fixture_value, store, project_root, results_root, descriptor, manifest = _bundle(
-        tmp_path, name="failed-before", operation_id="vs03-parent-artifact-absent"
+        tmp_path, name="failed-before", operation_id="vs03-failed-before"
     )
     descriptor_path = _artifact_path(store, descriptor.artifacts[0])
     descriptor_path.unlink()
@@ -1768,7 +1795,7 @@ def test_replay_parent_artifact_path_invalid_selector_rejects_without_write(
     tmp_path: Path,
 ):
     _fixture_value, store, project_root, results_root, descriptor, manifest = _bundle(
-        tmp_path, name="failed-before", operation_id="vs03-parent-artifact-path-invalid"
+        tmp_path, name="failed-before", operation_id="vs03-failed-before"
     )
     invalid_descriptor = replace(
         descriptor.artifacts[0], relative_path="objects/not-content-addressed"
@@ -1796,7 +1823,7 @@ def test_replay_parent_stream_size_selector_rejects_without_write(
     tmp_path: Path,
 ):
     _fixture_value, store, project_root, results_root, descriptor, manifest = _bundle(
-        tmp_path, name="failed-before", operation_id="vs03-parent-stream-size"
+        tmp_path, name="failed-before", operation_id="vs03-failed-before"
     )
     metadata = dict(descriptor.metadata)
     metadata["stream_size_bytes"] = -1
@@ -1823,7 +1850,7 @@ def test_replay_parent_stream_ref_selector_rejects_without_write(
     tmp_path: Path,
 ):
     _fixture_value, store, project_root, results_root, descriptor, manifest = _bundle(
-        tmp_path, name="failed-before", operation_id="vs03-parent-stream-ref"
+        tmp_path, name="failed-before", operation_id="vs03-failed-before"
     )
     alternate_stream = _ingest_replay_bytes(
         store,
