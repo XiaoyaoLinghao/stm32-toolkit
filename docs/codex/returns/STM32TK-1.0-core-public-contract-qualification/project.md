@@ -23,10 +23,15 @@ existing canonical-root guard before entering the shared mutation lock,
 retains the under-lock validation for drift, and strengthens the public root
 test to prove no lock entry or writes.
 
+The follow-up run exposed only a test-fixture assertion issue after the public
+contract correction passed: `write_project` does not create `CMakeLists.txt`,
+so the root-refusal test now snapshots the genuine `Src/main.c` fixture bytes
+and asserts those bytes remain unchanged.
+
 The accepted qualification source base is `0a6bf2a6c591e5e89c6451050de3087168b77eb4`.
 The worktree is `D:\codex-tmp\v10b-0918\r10\c95p` on
 `codex/STM32TK-1.0-core-project`. The corrected product/test code head before
-this report commit is `547af36ca3d2cbc74729c1958e8dcdfe7cea261c`. The prior
+this report commit is `5096ff8a1be00ec06cc41dd89dc125e1dc7b304c`. The prior
 release runtime identity was `a270d7332c3ad2d09cd0b9adfa96ca80042bcf9d`; this
 correction changes only `generation/configure.py` from that identity.
 
@@ -80,7 +85,8 @@ retained Toolkit coverage JSON at
 `D:\codex-tmp\v10b-0918\r10\e\python-final\toolkit-reconciled-r1\coverage.json`,
 not a new run. Because `generation/configure.py` changed in the bounded root
 correction, old arcs for that file must be purged from copied inputs before
-the primary-owned native union; run2 supplies its current arcs.
+the primary-owned native union; run3 supplies its current arcs because run2
+stopped before producing coverage data.
 
 | Project source file | Missing | Covered | Total |
 | --- | ---: | ---: | ---: |
@@ -140,14 +146,31 @@ the correction. Its retained evidence is under
 `D:\codex-tmp\v10b-0918\r10\e\core95\project\run1`, including the JUnit,
 stdout, process metadata, and failure classification.
 
+Run2 at `72e6ac246c2d9b8f7e2a6df409de558c4f5e87db` retained 228 passes and one
+test assertion failure, with two warnings, child/launcher exit 1, and no
+timeout. The public root correction returned the exact expected code/details,
+entered no lock, and left the fixture tree and owned state unchanged. The
+failure was the test's assertion that the untouched fixture contained
+`CMakeLists.txt`; that file is created only by a successful apply and is not
+written by `write_project`. Run2 evidence is retained under
+`D:\codex-tmp\v10b-0918\r10\e\core95\project\run2`.
+
+Run2 produced no raw `.coverage` file or `coverage.json` because `-x` stopped
+at that first assertion; no coverage result or percentage is inferred. The
+two retained `PytestUnhandledThreadExceptionWarning` diagnostics came from
+the existing staging-root and staging-intermediate escape tests: Windows
+subprocess reader threads attempted UTF-8 decoding of non-UTF-8 diagnostic
+bytes. The affected tests passed; this is retained as an environment/
+diagnostic encoding warning with no product or scope change.
+
 The correction head was checked with AST parsing only. No product import,
-pytest, collect-only run, build, install, hardware action, package, deployment,
-remote action, or cleanup was performed after the correction. Primary owns the
-bounded run2 selected-node pytest execution, complete accepted-base-to-head
-review, raw coverage, JUnit, failure classification, and cleanup. Run2 must
-select the complete changed `test_generation.py` file plus the four
-regeneration functions that remained unrun after run1 stopped at its first
-failure.
+collect-only run, build, install, hardware action, package, deployment, remote
+action, or cleanup was performed after the run2 result. Primary owns the
+bounded run3 selected-node pytest execution, complete accepted-base-to-head
+review, raw coverage, JUnit, failure classification, and cleanup. Run3 must
+select the failed generation function, every remaining module-level generation
+test function after it in AST order, and the same four regeneration functions;
+the 228 run2 passes are not rerun.
 
 AST syntax inspection completed without importing Toolkit product modules:
 
