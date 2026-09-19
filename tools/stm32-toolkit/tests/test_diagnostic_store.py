@@ -1415,6 +1415,7 @@ def test_public_store_recovers_after_event_durability_interruption(
     assert envelope.operation == "diagnostic-event"
     assert envelope.metadata == {
         "diagnostic_session_id": SID,
+        "sequence": 0,
         "revision": 1,
         "event_digest": created.digest,
     }
