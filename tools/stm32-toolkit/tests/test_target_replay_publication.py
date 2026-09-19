@@ -24,8 +24,12 @@ from stm32_toolkit.testing.publication import (
     TestRunPublisher as Publisher,
     TestRunRepository as Repository,
 )
-from stm32_toolkit.testing.replay import load_target_replay_fixture
-from stm32_toolkit.testing.target import TargetFrameDecoder
+from stm32_toolkit.testing.replay import (
+    TargetReplayDescriptor,
+    canonical_replay_json_bytes,
+    load_target_replay_fixture,
+)
+from stm32_toolkit.testing.target import TargetFrameDecoder, encode_frame
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "vs03" / "target"
@@ -276,6 +280,112 @@ def _assert_replay_load_failure(
         Repository(store).load(run_id)
     assert failure.value.code == "EVIDENCE_CORRUPT"
     assert failure.value.message == message
+    assert _tree_bytes(store.root) == before_store
+    assert _tree_bytes(results_root) == before_results
+
+
+def _artifact_path(store: EvidenceStore, artifact) -> Path:
+    return store.root.joinpath(*artifact.relative_path.split("/"))
+
+
+def _ingest_replay_bytes(
+    store: EvidenceStore,
+    project_root: Path,
+    selector: str,
+    payload: bytes,
+    *,
+    kind: str,
+    media_type: str,
+):
+    source = project_root / f"{selector}-{kind}.bin"
+    source.write_bytes(payload)
+    return store.ingest_file(source, kind=kind, media_type=media_type)
+
+
+def _descriptor_with_stream(descriptor, stream_artifact):
+    value = descriptor.to_dict()
+    value["stream"] = stream_artifact.to_dict()
+    value.pop("replay_id")
+    value["replay_id"] = sha256(canonical_replay_json_bytes(value)).hexdigest()
+    return TargetReplayDescriptor.from_value(value)
+
+
+def _replay_stream_variant(
+    tmp_path: Path,
+    selector: str,
+    mutate,
+):
+    fixture, store, project_root, results_root, descriptor, manifest = _bundle(
+        tmp_path, name="failed-before", operation_id=f"vs03-{selector}"
+    )
+    decoder = TargetFrameDecoder()
+    frames = decoder.feed(fixture.stream_bytes)
+    decoder.finish()
+    encoded_frames = []
+    for frame in frames:
+        payload = dict(frame.payload)
+        mutate(frame.kind, payload)
+        encoded_frames.append(
+            encode_frame(
+                frame.kind,
+                frame.sequence,
+                payload,
+                version=frame.version,
+            )
+        )
+    stream_bytes = b"".join(encoded_frames)
+    stream_artifact = _ingest_replay_bytes(
+        store,
+        project_root,
+        selector,
+        stream_bytes,
+        kind="target-replay-stream",
+        media_type="application/octet-stream",
+    )
+    updated_descriptor = _descriptor_with_stream(fixture.descriptor, stream_artifact)
+    descriptor_artifact = _ingest_replay_bytes(
+        store,
+        project_root,
+        f"{selector}-descriptor",
+        canonical_replay_json_bytes(updated_descriptor),
+        kind="target-replay-descriptor",
+        media_type="application/json",
+    )
+    metadata = dict(descriptor.metadata)
+    metadata.update(
+        {
+            "replay_id": updated_descriptor.replay_id,
+            "stream_sha256": updated_descriptor.stream.sha256,
+            "stream_size_bytes": updated_descriptor.stream.size_bytes,
+        }
+    )
+    parent = EvidenceEnvelope(
+        identity=descriptor.identity,
+        operation=descriptor.operation,
+        produced_at_utc=descriptor.produced_at_utc,
+        parents=descriptor.parents,
+        artifacts=(descriptor_artifact, stream_artifact),
+        metadata=metadata,
+    )
+    return store, project_root, results_root, parent, replace(
+        manifest, raw_events=stream_artifact
+    )
+
+
+def _assert_replay_publish_failure(
+    store: EvidenceStore,
+    project_root: Path,
+    results_root: Path,
+    manifest: RunManifest,
+    parent: EvidenceEnvelope,
+    expected_message: str,
+):
+    publisher = Publisher(store, project_root, results_root)
+    before_store, before_results = _replay_store_snapshot(store, results_root)
+    with pytest.raises(EvidenceValidationError) as failure:
+        publisher.publish_target_replay(manifest, parent, IMPORT_WORKSPACE_ID)
+    assert failure.value.code == "EVIDENCE_CORRUPT"
+    assert failure.value.message == expected_message
     assert _tree_bytes(store.root) == before_store
     assert _tree_bytes(results_root) == before_results
 
@@ -1413,4 +1523,237 @@ def test_target_replay_intent_digest_selector_rejects_wrong_digest_without_write
         "stored Target replay operation intent digest is invalid",
         before_store,
         before_results,
+    )
+
+
+def test_replay_descriptor_invalid_wire_selector_rejects_without_write(
+    tmp_path: Path,
+):
+    _fixture_value, store, project_root, results_root, descriptor, manifest = _bundle(
+        tmp_path, name="failed-before", operation_id="vs03-descriptor-invalid-wire"
+    )
+    invalid_descriptor = _ingest_replay_bytes(
+        store,
+        project_root,
+        "descriptor-invalid-wire",
+        b"\xff",
+        kind="target-replay-descriptor",
+        media_type="application/json",
+    )
+    parent = replace(
+        descriptor,
+        artifacts=(invalid_descriptor, descriptor.artifacts[1]),
+    )
+
+    _assert_replay_publish_failure(
+        store,
+        project_root,
+        results_root,
+        manifest,
+        parent,
+        "stored Target replay descriptor is invalid",
+    )
+
+
+def test_replay_descriptor_noncanonical_wire_selector_rejects_without_write(
+    tmp_path: Path,
+):
+    fixture, store, project_root, results_root, descriptor, manifest = _bundle(
+        tmp_path, name="failed-before", operation_id="vs03-descriptor-noncanonical-wire"
+    )
+    canonical_payload = canonical_replay_json_bytes(
+        fixture.descriptor.to_dict()
+    )
+    noncanonical_descriptor = _ingest_replay_bytes(
+        store,
+        project_root,
+        "descriptor-noncanonical-wire-valid",
+        canonical_payload + b" ",
+        kind="target-replay-descriptor",
+        media_type="application/json",
+    )
+    parent = replace(
+        descriptor,
+        artifacts=(noncanonical_descriptor, descriptor.artifacts[1]),
+    )
+
+    _assert_replay_publish_failure(
+        store,
+        project_root,
+        results_root,
+        manifest,
+        parent,
+        "stored Target replay descriptor is not canonical JSON",
+    )
+
+
+def test_replay_stream_inventory_identity_selector_rejects_without_write(
+    tmp_path: Path,
+):
+    def mutate(kind: int, payload: dict[str, object]) -> None:
+        if kind == 1:
+            identity = dict(payload["identity"])
+            identity["workspace_id"] = "1" * 64
+            payload["identity"] = identity
+
+    store, project_root, results_root, parent, manifest = _replay_stream_variant(
+        tmp_path, "stream-inventory-identity", mutate
+    )
+    _assert_replay_publish_failure(
+        store,
+        project_root,
+        results_root,
+        manifest,
+        parent,
+        "stored Target replay stream identity contradicts its descriptor",
+    )
+
+
+def test_replay_stream_terminal_state_selector_rejects_without_write(
+    tmp_path: Path,
+):
+    def mutate(kind: int, payload: dict[str, object]) -> None:
+        if kind == 5:
+            payload["state"] = "passed"
+
+    store, project_root, results_root, parent, manifest = _replay_stream_variant(
+        tmp_path, "stream-terminal-state", mutate
+    )
+    _assert_replay_publish_failure(
+        store,
+        project_root,
+        results_root,
+        manifest,
+        parent,
+        "stored Target replay stream terminal state contradicts its descriptor",
+    )
+
+
+def test_replay_raw_ref_provider_invalid_selector_rejects_without_write(
+    tmp_path: Path,
+):
+    _fixture_value, store, project_root, results_root, descriptor, manifest = _bundle(
+        tmp_path, name="failed-before", operation_id="vs03-raw-ref-provider-invalid"
+    )
+    invalid_raw = replace(manifest.raw_events, relative_path="objects/not-content-addressed")
+    candidate = replace(manifest, raw_events=invalid_raw)
+
+    _assert_replay_publish_failure(
+        store,
+        project_root,
+        results_root,
+        candidate,
+        descriptor,
+        "Target replay raw event artifact is invalid",
+    )
+
+
+def test_replay_parent_operation_ancestry_selector_rejects_without_write(
+    tmp_path: Path,
+):
+    _fixture_value, store, project_root, results_root, descriptor, manifest = _bundle(
+        tmp_path, name="failed-before", operation_id="vs03-parent-operation-ancestry"
+    )
+    parent = replace(descriptor, operation="other-operation")
+
+    _assert_replay_publish_failure(
+        store,
+        project_root,
+        results_root,
+        manifest,
+        parent,
+        "Target replay descriptor parent operation or ancestry is invalid",
+    )
+
+
+def test_replay_parent_artifact_absent_selector_rejects_without_write(
+    tmp_path: Path,
+):
+    _fixture_value, store, project_root, results_root, descriptor, manifest = _bundle(
+        tmp_path, name="failed-before", operation_id="vs03-parent-artifact-absent"
+    )
+    descriptor_path = _artifact_path(store, descriptor.artifacts[0])
+    descriptor_path.unlink()
+    publisher = Publisher(store, project_root, results_root)
+    before_store, before_results = _replay_store_snapshot(store, results_root)
+
+    with pytest.raises(EvidenceValidationError) as failure:
+        publisher.publish_target_replay(manifest, descriptor, IMPORT_WORKSPACE_ID)
+
+    assert failure.value.code == "EVIDENCE_CORRUPT"
+    assert failure.value.message == "evidence artifact object is absent"
+    assert _tree_bytes(store.root) == before_store
+    assert _tree_bytes(results_root) == before_results
+
+
+def test_replay_parent_artifact_path_invalid_selector_rejects_without_write(
+    tmp_path: Path,
+):
+    _fixture_value, store, project_root, results_root, descriptor, manifest = _bundle(
+        tmp_path, name="failed-before", operation_id="vs03-parent-artifact-path-invalid"
+    )
+    invalid_descriptor = replace(
+        descriptor.artifacts[0], relative_path="objects/not-content-addressed"
+    )
+    parent = replace(
+        descriptor,
+        artifacts=(invalid_descriptor, descriptor.artifacts[1]),
+    )
+
+    _assert_replay_publish_failure(
+        store,
+        project_root,
+        results_root,
+        manifest,
+        parent,
+        "Target replay descriptor parent artifact is invalid",
+    )
+
+
+def test_replay_parent_stream_size_selector_rejects_without_write(
+    tmp_path: Path,
+):
+    _fixture_value, store, project_root, results_root, descriptor, manifest = _bundle(
+        tmp_path, name="failed-before", operation_id="vs03-parent-stream-size"
+    )
+    metadata = dict(descriptor.metadata)
+    metadata["stream_size_bytes"] = -1
+    parent = replace(descriptor, metadata=metadata)
+
+    _assert_replay_publish_failure(
+        store,
+        project_root,
+        results_root,
+        manifest,
+        parent,
+        "Target replay parent stream size metadata is invalid",
+    )
+
+
+def test_replay_parent_stream_ref_selector_rejects_without_write(
+    tmp_path: Path,
+):
+    _fixture_value, store, project_root, results_root, descriptor, manifest = _bundle(
+        tmp_path, name="failed-before", operation_id="vs03-parent-stream-ref"
+    )
+    alternate_stream = _ingest_replay_bytes(
+        store,
+        project_root,
+        "parent-stream-ref-alternate",
+        b"alternate target replay stream",
+        kind="target-replay-stream",
+        media_type="application/octet-stream",
+    )
+    parent = replace(
+        descriptor,
+        artifacts=(descriptor.artifacts[0], alternate_stream),
+    )
+
+    _assert_replay_publish_failure(
+        store,
+        project_root,
+        results_root,
+        manifest,
+        parent,
+        "Target replay binary stream artifact contradicts its descriptor",
     )

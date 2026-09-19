@@ -1100,3 +1100,463 @@ def test_host_load_root_metadata_selector_rejects_root_metadata_without_write(
     assert failure.value.code == EVIDENCE_CORRUPT
     assert failure.value.message == "stored root metadata contradicts the Host manifest"
     _assert_no_store_write(store, before)
+
+
+def _physical_metadata(manifest: RunManifest) -> dict[str, object]:
+    digest = lambda value: sha256(value.encode("utf-8")).hexdigest()
+    workspace_id = manifest.identity.workspace_id
+    action_digest = digest(f"physical-action-{manifest.run_id}")
+    return {
+        "action_digest": action_digest,
+        "execution_source": "physical",
+        "flash_session_id": f"flash-{manifest.run_id}",
+        "import_session_id": manifest.identity.session_id,
+        "import_workspace_id": workspace_id,
+        "intent_digest": action_digest,
+        "inventory_digest": digest(f"physical-inventory-{manifest.run_id}"),
+        "lease_id": f"lease-{manifest.run_id}",
+        "origin_session_id": manifest.identity.session_id,
+        "origin_workspace_id": workspace_id,
+        "physical_transport_evidence": True,
+        "probe_id": digest(f"physical-probe-{manifest.run_id}"),
+        "target_id": manifest.identity.target_device,
+        "transport_config_digest": digest(f"physical-transport-{manifest.run_id}"),
+    }
+
+
+def _physical_seed(task_tmp: Path, selector: str):
+    store, host_manifest, _inventory = _fixture(task_tmp)
+    project_root = task_tmp / "project"
+    results_root = task_tmp / "physical-results"
+    identity = replace(host_manifest.identity, target_device="target-a")
+    raw_source = project_root / f"{selector}-target-events.bin"
+    raw_source.write_bytes(b"software-produced-target-events")
+    raw_artifact = store.ingest_file(
+        raw_source,
+        kind="test-events",
+        media_type="application/vnd.stm32.target-events",
+    )
+    case = CaseResult(
+        "case-1", "failed", UTC_0, UTC_1, 1000, "failed", None, None
+    )
+    manifest = RunManifest(
+        "stm32-test/1",
+        f"physical-{selector}",
+        "target",
+        "failed",
+        identity,
+        "mailbox",
+        (case,),
+        UTC_0,
+        UTC_1,
+        1000,
+        None,
+        None,
+        raw_artifact,
+    )
+    manifest_source = project_root / f"{selector}-manifest.json"
+    manifest_source.write_bytes(canonical_json_bytes(manifest.to_dict()))
+    manifest_artifact = store.ingest_file(
+        manifest_source,
+        kind="test-manifest",
+        media_type="application/json",
+    )
+    metadata = _physical_metadata(manifest)
+    envelope = EvidenceEnvelope(
+        identity=manifest.identity,
+        operation="target-test-physical",
+        produced_at_utc=manifest.ended_at_utc,
+        parents=(),
+        artifacts=(manifest_artifact, manifest.raw_events),
+        metadata=metadata,
+    )
+    return (
+        store,
+        project_root,
+        results_root,
+        manifest,
+        manifest_artifact,
+        envelope,
+    )
+
+
+def _assert_physical_publish_failure(
+    store: EvidenceStore,
+    project_root: Path,
+    results_root: Path,
+    manifest: RunManifest,
+    envelope: object,
+    expected_message: str,
+):
+    publisher = Publisher(store, project_root, results_root)
+    before_store = _tree_bytes(store.root)
+    before_results = _tree_bytes(results_root)
+    with pytest.raises(ProtocolError) as failure:
+        publisher.publish_target_physical(manifest, envelope)
+    assert failure.value.code == "TEST_PROTOCOL_INVALID"
+    assert failure.value.message == expected_message
+    assert _tree_bytes(store.root) == before_store
+    assert _tree_bytes(results_root) == before_results
+
+
+def _persist_physical_load_graph(
+    store: EvidenceStore,
+    results_root: Path,
+    manifest: RunManifest,
+    envelope: EvidenceEnvelope,
+    *,
+    root_metadata: dict[str, object] | None = None,
+):
+    store.put_envelope(envelope)
+    root_metadata = (
+        {
+            "mode": "target",
+            "state": manifest.state,
+            **dict(envelope.metadata),
+        }
+        if root_metadata is None
+        else root_metadata
+    )
+    put_root(
+        store,
+        RootRecord(
+            "test-run",
+            manifest.run_id,
+            str(envelope.evidence_id),
+            root_metadata,
+        ),
+    )
+    results_root.mkdir(parents=True, exist_ok=True)
+
+
+def _assert_physical_load_failure(
+    store: EvidenceStore,
+    results_root: Path,
+    run_id: str,
+    expected_message: str,
+):
+    before_store = _tree_bytes(store.root)
+    before_results = _tree_bytes(results_root)
+    with pytest.raises(EvidenceValidationError) as failure:
+        Repository(store).load(run_id)
+    assert failure.value.code == EVIDENCE_CORRUPT
+    assert failure.value.message == expected_message
+    assert _tree_bytes(store.root) == before_store
+    assert _tree_bytes(results_root) == before_results
+
+
+def test_physical_provenance_cause_selector_rejects_without_write(
+    task_tmp: Path,
+):
+    store, project_root, results_root, manifest, _manifest_artifact, envelope = _physical_seed(
+        task_tmp, "provenance-cause"
+    )
+    metadata = dict(envelope.metadata)
+    metadata["import_workspace_id"] = "1" * 64
+    candidate = replace(envelope, metadata=metadata)
+
+    _assert_physical_publish_failure(
+        store,
+        project_root,
+        results_root,
+        manifest,
+        candidate,
+        "physical Target provenance is incompatible",
+    )
+
+
+def test_physical_manifest_kind_selector_rejects_without_write(task_tmp: Path):
+    store, project_root, results_root, manifest, _manifest_artifact, envelope = _physical_seed(
+        task_tmp, "manifest-kind"
+    )
+    candidate = replace(manifest, transport="replay")
+
+    _assert_physical_publish_failure(
+        store,
+        project_root,
+        results_root,
+        candidate,
+        envelope,
+        "publication requires a physical Target manifest",
+    )
+
+
+def test_physical_manifest_terminal_selector_rejects_without_write(task_tmp: Path):
+    store, project_root, results_root, manifest, _manifest_artifact, envelope = _physical_seed(
+        task_tmp, "manifest-terminal"
+    )
+    candidate = replace(manifest, state="running")
+
+    _assert_physical_publish_failure(
+        store,
+        project_root,
+        results_root,
+        candidate,
+        envelope,
+        "physical Target manifest is not terminal",
+    )
+
+
+def test_physical_run_evidence_type_selector_rejects_without_write(task_tmp: Path):
+    store, project_root, results_root, manifest, _manifest_artifact, _envelope = _physical_seed(
+        task_tmp, "run-evidence-type"
+    )
+
+    _assert_physical_publish_failure(
+        store,
+        project_root,
+        results_root,
+        manifest,
+        None,
+        "physical Target run Evidence is invalid",
+    )
+
+
+def test_physical_run_evidence_shape_selector_rejects_without_write(task_tmp: Path):
+    store, project_root, results_root, manifest, _manifest_artifact, envelope = _physical_seed(
+        task_tmp, "run-evidence-shape"
+    )
+    candidate = replace(envelope, operation="target-test-replay")
+
+    _assert_physical_publish_failure(
+        store,
+        project_root,
+        results_root,
+        manifest,
+        candidate,
+        "physical Target run Evidence is invalid",
+    )
+
+
+def test_physical_provenance_postvalidator_selector_rejects_without_write(
+    task_tmp: Path,
+):
+    store, project_root, results_root, manifest, _manifest_artifact, envelope = _physical_seed(
+        task_tmp, "provenance-postvalidator"
+    )
+    metadata = dict(envelope.metadata)
+    metadata["action_digest"] = "1" * 64
+    candidate = replace(envelope, metadata=metadata)
+
+    _assert_physical_publish_failure(
+        store,
+        project_root,
+        results_root,
+        manifest,
+        candidate,
+        "physical Target provenance is incompatible",
+    )
+
+
+def test_physical_raw_membership_selector_rejects_without_write(task_tmp: Path):
+    store, project_root, results_root, manifest, manifest_artifact, envelope = _physical_seed(
+        task_tmp, "raw-membership"
+    )
+    alternate_source = project_root / "raw-membership-alternate.bin"
+    alternate_source.write_bytes(b"alternate-target-events")
+    alternate = store.ingest_file(
+        alternate_source,
+        kind="test-events",
+        media_type="application/vnd.stm32.target-events",
+    )
+    candidate = replace(envelope, artifacts=(manifest_artifact, alternate))
+
+    _assert_physical_publish_failure(
+        store,
+        project_root,
+        results_root,
+        manifest,
+        candidate,
+        "physical Target raw Evidence is invalid",
+    )
+
+
+def test_physical_manifest_evidence_selector_rejects_without_write(task_tmp: Path):
+    store, project_root, results_root, manifest, _manifest_artifact, envelope = _physical_seed(
+        task_tmp, "manifest-evidence"
+    )
+    candidate = replace(envelope, produced_at_utc="2026-08-20T00:00:02.000000Z")
+
+    _assert_physical_publish_failure(
+        store,
+        project_root,
+        results_root,
+        manifest,
+        candidate,
+        "physical Target manifest Evidence is invalid",
+    )
+
+
+def test_physical_retained_manifest_selector_rejects_without_write(task_tmp: Path):
+    store, project_root, results_root, manifest, _manifest_artifact, envelope = _physical_seed(
+        task_tmp, "retained-manifest"
+    )
+    retained = replace(manifest, run_id="physical-retained-manifest-other")
+    retained_source = project_root / "retained-manifest-other.json"
+    retained_source.write_bytes(canonical_json_bytes(retained.to_dict()))
+    retained_artifact = store.ingest_file(
+        retained_source,
+        kind="test-manifest",
+        media_type="application/json",
+    )
+    candidate = replace(
+        envelope,
+        artifacts=(retained_artifact, manifest.raw_events),
+    )
+
+    _assert_physical_publish_failure(
+        store,
+        project_root,
+        results_root,
+        manifest,
+        candidate,
+        "physical Target manifest Evidence is incompatible",
+    )
+
+
+def test_physical_load_metadata_closure_selector_rejects_without_write(
+    task_tmp: Path,
+):
+    store, _project_root, results_root, manifest, _manifest_artifact, envelope = _physical_seed(
+        task_tmp, "load-metadata-closure"
+    )
+    metadata = dict(envelope.metadata)
+    metadata["unexpected"] = True
+    candidate = replace(envelope, metadata=metadata)
+    _persist_physical_load_graph(store, results_root, manifest, candidate)
+
+    _assert_physical_load_failure(
+        store,
+        results_root,
+        manifest.run_id,
+        "stored physical Target metadata is not closed",
+    )
+
+
+def test_physical_load_provenance_structural_selector_rejects_without_write(
+    task_tmp: Path,
+):
+    store, _project_root, results_root, manifest, _manifest_artifact, envelope = _physical_seed(
+        task_tmp, "load-provenance-structural"
+    )
+    metadata = dict(envelope.metadata)
+    metadata["execution_source"] = "replay"
+    candidate = replace(envelope, metadata=metadata)
+    _persist_physical_load_graph(store, results_root, manifest, candidate)
+
+    _assert_physical_load_failure(
+        store,
+        results_root,
+        manifest.run_id,
+        "stored physical Target provenance is invalid",
+    )
+
+
+def test_physical_load_provenance_detail_selector_rejects_without_write(
+    task_tmp: Path,
+):
+    store, _project_root, results_root, manifest, _manifest_artifact, envelope = _physical_seed(
+        task_tmp, "load-provenance-detail"
+    )
+    metadata = dict(envelope.metadata)
+    metadata["action_digest"] = "1" * 64
+    candidate = replace(envelope, metadata=metadata)
+    _persist_physical_load_graph(store, results_root, manifest, candidate)
+
+    _assert_physical_load_failure(
+        store,
+        results_root,
+        manifest.run_id,
+        "stored physical Target provenance is invalid",
+    )
+
+
+def test_physical_load_artifacts_selector_rejects_without_write(task_tmp: Path):
+    store, _project_root, results_root, manifest, manifest_artifact, envelope = _physical_seed(
+        task_tmp, "load-artifacts"
+    )
+    candidate = replace(envelope, artifacts=(manifest_artifact,))
+    _persist_physical_load_graph(store, results_root, manifest, candidate)
+
+    _assert_physical_load_failure(
+        store,
+        results_root,
+        manifest.run_id,
+        "stored physical Target artifacts are invalid",
+    )
+
+
+def test_physical_load_manifest_selector_rejects_without_write(task_tmp: Path):
+    store, project_root, results_root, manifest, _manifest_artifact, envelope = _physical_seed(
+        task_tmp, "load-manifest"
+    )
+    persisted = replace(manifest, run_id="physical-load-manifest-other")
+    persisted_source = project_root / "load-manifest-other.json"
+    persisted_source.write_bytes(canonical_json_bytes(persisted.to_dict()))
+    persisted_artifact = store.ingest_file(
+        persisted_source,
+        kind="test-manifest",
+        media_type="application/json",
+    )
+    candidate = replace(
+        envelope,
+        artifacts=(persisted_artifact, manifest.raw_events),
+    )
+    _persist_physical_load_graph(store, results_root, manifest, candidate)
+
+    _assert_physical_load_failure(
+        store,
+        results_root,
+        manifest.run_id,
+        "stored physical Target manifest is invalid",
+    )
+
+
+def test_physical_load_root_metadata_selector_rejects_without_write(
+    task_tmp: Path,
+):
+    store, _project_root, results_root, manifest, _manifest_artifact, envelope = _physical_seed(
+        task_tmp, "load-root-metadata"
+    )
+    root_metadata = {"mode": "target", "state": manifest.state, **dict(envelope.metadata)}
+    root_metadata["target_id"] = "other-target"
+    _persist_physical_load_graph(
+        store,
+        results_root,
+        manifest,
+        envelope,
+        root_metadata=root_metadata,
+    )
+
+    _assert_physical_load_failure(
+        store,
+        results_root,
+        manifest.run_id,
+        "stored physical Target root is invalid",
+    )
+
+
+def test_host_load_invalid_envelope_wire_wrapper_selector_rejects_without_write(
+    task_tmp: Path,
+):
+    store, manifest, inventory = _fixture(task_tmp)
+    published = _publisher(task_tmp, store).publish_host(
+        manifest, inventory_digest=inventory.inventory_digest
+    )
+    envelope_path = store.root / "manifests" / f"{published.envelope.evidence_id}.json"
+    tampered = published.envelope.to_dict()
+    tampered["artifacts"][0]["relative_path"] = "objects/not-content-addressed"
+    envelope_path.write_bytes(canonical_json_bytes(tampered))
+    before_store = _tree_bytes(store.root)
+    before_results = _tree_bytes(task_tmp / "external-results")
+
+    with pytest.raises(EvidenceValidationError) as failure:
+        Repository(store).load(manifest.run_id)
+
+    assert failure.value.code == EVIDENCE_CORRUPT
+    assert failure.value.message == "stored Host TestRun is corrupt"
+    assert failure.value.__cause__ is not None
+    assert failure.value.__cause__.code == EVIDENCE_INVALID
+    assert failure.value.__cause__.message == "evidence_id does not match canonical envelope content"
+    assert _tree_bytes(store.root) == before_store
+    assert _tree_bytes(task_tmp / "external-results") == before_results
