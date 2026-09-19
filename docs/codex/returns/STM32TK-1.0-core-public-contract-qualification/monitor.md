@@ -348,3 +348,23 @@ must be committed separately so the code head above remains the pre-report refer
 primary owner must inspect the complete `0a6bf2a6c591e5e89c6451050de3087168b77eb4..HEAD` diff,
 then run the applicable selectors with `TEMP`, `TMP`, and `TMPDIR` bound under the approved run
 root.  Any result remains `NOT_RUN` until that serial execution and independent review occur.
+
+## Primary execution and acceptance
+
+Primary independently reviewed the complete qualification diff and subsequent
+fixture corrections. The independent static review is retained at
+`r10/e/core95/monitor/independent-static-review-final.md`. Primary executed:
+
+- Toolkit selectors at `4a545de7c3db1360bb7978e158ab22dc322c18d2`: 75 PASS,
+  exit 0, no errors/skips/timeout, JUnit 10.295 seconds; raw coverage retained.
+- Monitor first run at the same head: 6 CLI PASS then one fixture failure
+  (negative scheduled time before retention). First failure remains preserved;
+  no raw coverage was generated, so the six passes are functional evidence only.
+- Monitor remaining selectors after test-only correction at
+  `e2d60b95236e6c70e401357ba5d787aad8edf1e7`: 39 PASS, exit 0,
+  no errors/skips/timeout, JUnit 3.618 seconds; raw coverage retained.
+
+The 120 distinct selected software cases across these runs are accepted within
+this scope. They are not a single clean 120-case run or physical hardware PASS.
+Product runtime bytes are unchanged by this owner. Coverage threshold acceptance
+remains pending source-correct native union; the full release remains unaccepted.
