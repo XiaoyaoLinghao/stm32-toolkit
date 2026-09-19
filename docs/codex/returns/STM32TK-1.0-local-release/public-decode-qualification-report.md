@@ -1,11 +1,13 @@
 # STM32TK-1.0 public evidence decoding qualification return
 
-Status: `FIRST_EXECUTION_STOPPED_FOR_CLASSIFICATION`. The four assigned test
-files were committed before execution. One primary-approved bounded run was
-launched and stopped at the first unexpected monitor replay setup failure:
-45 selected cases passed and two errors were reported before the affected
-test body ran. This result is not a qualification or acceptance claim. The
-primary agent remains the independent reviewer and acceptor.
+Status: `R2_REMAINDER_PASSED_FUNCTIONAL_52_ACROSS_TWO_RUNS_PENDING_PRIMARY_ACCEPTANCE`.
+The four assigned test files were committed before execution. The first
+primary-approved run retained 45 passed cases and stopped on the bounded
+monitor replay setup failure. After the authorized short-ID fixture correction,
+the seven-case remainder run passed all seven cases. Together these runs cover
+the 52 selected test cases functionally across two bounded executions. This is
+not a single 52-case run, and the result is not a qualification or acceptance
+claim. The primary agent remains the independent reviewer and acceptor.
 
 ## Ownership and source ledger
 
@@ -13,8 +15,11 @@ primary agent remains the independent reviewer and acceptor.
 - Accepted base: `63602bf6dbd2ad5ff2b676678695767e000bbb2a`.
 - Branch/worktree: `codex/STM32TK-1.0-public-decode-qualification` /
   `D:\codex-tmp\v10b-0918\r10\dc`.
-- Owned test code head:
-  `c0884af2085b132db0b496e7f42695c0531a7051`.
+- Owned test code head before this report update:
+  `1b0c3ccd5c40d6e41800d06bbe99624a079cffd5`.
+- The r1 execution used test code head
+  `c0884af2085b132db0b496e7f42695c0531a7051`; the r2 correction is the
+  explicit short pytest IDs only.
 - Implementer: `/root/public_decode_impl`; independent review and acceptance
   remain with the primary agent.
 - Owned product import roots for the run:
@@ -50,6 +55,12 @@ The malformed 65-step event retains the original valid plan digest so the
 public event decoder owns the expected limit refusal. The replay byte test
 passes the decoded mapping through `validate_replay_document` before asserting
 the raw input remains unchanged.
+
+The r2 fixture correction is committed at
+`1b0c3ccd5c40d6e41800d06bbe99624a079cffd5`. It adds explicit short pytest
+IDs to the eight existing raw-wire parameter rows while preserving every
+payload, parameter value, and assertion. It does not change product code,
+schema, or expected behavior.
 
 ## Exact selected node list
 
@@ -162,14 +173,62 @@ The complete failure and process evidence is retained at
 The real tempfile preflight passed and the child stderr was empty. No raw
 coverage database was created because pytest stopped during setup, so both
 package JSON reports were correctly recorded as skipped. No retry or cleanup
-was performed; the primary owns disposition of this retained evidence.
+was performed against the unchanged r1 entry; the primary owns disposition of
+this retained evidence.
+
+## Second authorized execution result
+
+The authorized IDs-only correction was executed through a fresh r2 launcher
+after primary entry review. The exact launcher and invocation were:
+
+```text
+D:\codex-tmp\v10b-0918\r10\e\public-decode-qualification\r2\launch.ps1
+SHA-256: 10B722E938027E1AA9E2FBAF5198B547E4838CEB767F43F5325ADA365B7C5C60
+C:\Program Files\PowerShell\7\pwsh.exe -NoProfile -File D:\codex-tmp\v10b-0918\r10\e\public-decode-qualification\r2\launch.ps1
+```
+
+The r2 entry selected only the failed r1 `input-size-limit` row and the six
+nodes that followed it in the original selected order:
+
+```text
+tools/stm32-toolkit/tests/test_monitor_replay_contract.py::test_shared_byte_decoder_rejects_caller_meaningful_raw_wire_failures[input-size-limit]
+tools/stm32-toolkit/tests/test_monitor_replay_contract.py::test_shared_v2_reference_rejects_provenance_and_window_contradictions[physical_transport_evidence-False-False]
+tools/stm32-toolkit/tests/test_monitor_replay_contract.py::test_shared_v2_reference_rejects_provenance_and_window_contradictions[end_sequence_exclusive-0-True]
+tools/stm32-toolkit/tests/test_monitor_replay_contract.py::test_shared_contract_accepts_the_two_real_run_references_without_mutation[failed-before]
+tools/stm32-toolkit/tests/test_monitor_replay_contract.py::test_shared_contract_accepts_the_two_real_run_references_without_mutation[fixed-after]
+tools/stm32-toolkit/tests/test_monitor_replay_contract.py::test_shared_contract_accepts_closed_physical_transcript_without_raw_selector[failed-before]
+tools/stm32-toolkit/tests/test_monitor_replay_contract.py::test_shared_contract_accepts_closed_physical_transcript_without_raw_selector[fixed-after]
+```
+
+The r2 child started at `2026-09-19T01:49:31.2484096Z` and ended at
+`2026-09-19T01:49:45.1986883Z` (13.950 seconds wall time). It collected and
+passed all seven nodes in 6.03 seconds, with child and launcher exit code `0`,
+no timeout, child PID `20456`, and a released process handle. The source and
+test code head used was
+`1b0c3ccd5c40d6e41800d06bbe99624a079cffd5`. The tempfile preflight passed and
+child stderr was empty.
+
+The r2 raw coverage database was retained at
+`D:\codex-tmp\v10b-0918\r10\e\public-decode-qualification\r2\raw-coverage\.coverage`.
+Both package-filtered JSON reports were generated from that same r2 database,
+with exit code `0`, at `stm32_toolkit.coverage.json` and
+`stm32_monitor.coverage.json` under the r2 evidence root. These coverage
+artifacts describe the seven-case r2 execution only. The r1 45-pass execution
+has no raw coverage database and contributes no coverage data.
+
+The r1 45 passed cases and r2 seven passed cases provide functional evidence
+for all 52 selected cases across two bounded runs. The retained r1
+infrastructure failure remains part of the record and is not relabeled as a
+single-run 52-case pass. No cleanup was performed; the primary owns evidence
+disposition.
 
 ## Pre-execution checks
 
-The test commit passed AST parsing for all four owned files and
-`git diff --check` was clean before the authorized run. No hardware, build,
+The four-file test baseline passed AST parsing; the r2 IDs-only correction also
+passed AST parsing and `git diff --check` before execution. No hardware, build,
 package, deployment, remote, or cleanup action has been performed for this
 slice.
 
-This report is committed separately from the test code head recorded above and
-does not record its own final commit SHA.
+This report records code head
+`1b0c3ccd5c40d6e41800d06bbe99624a079cffd5` before this report commit and does
+not record its own final commit SHA.
