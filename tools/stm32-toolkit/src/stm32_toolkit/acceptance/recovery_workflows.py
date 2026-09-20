@@ -4039,9 +4039,20 @@ def _existing_finalization_association(
     evidence: EvidenceStore,
     association: AuthenticatedFinalization,
 ) -> AuthenticatedFinalization:
+    if association.envelope is None:
+        # A bind that has not published its proof yet has no envelope from
+        # which to obtain the consumer evidence ID.  Resolve the immutable
+        # proof root from its deterministic payload key, then let the normal
+        # reader validate the actual manifest, artifact, proof and root.
+        _root, persisted_envelope = _proof_root_for_graph(evidence, association.proof)
+        evidence_id = str(persisted_envelope.evidence_id)
+    else:
+        # An already authenticated association stays pinned to the evidence
+        # ID it authenticated; do not silently rebind it through the root.
+        evidence_id = association.continuation_evidence_id
     proof, root, envelope = _read_finalization_proof_record(
         evidence,
-        association.continuation_evidence_id,
+        evidence_id,
     )
     if proof != association.proof:
         raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_CONFLICT")

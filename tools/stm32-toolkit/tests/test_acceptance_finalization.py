@@ -2020,8 +2020,9 @@ def test_public_finalization_workflow_journey(
     started_before = _persisted_snapshot(case)
     started_authority_before = _journey_authority_snapshot(case.evidence)
     started_wire = _journey_wire(_begin(case, attempt_id))
-    started_data = started_wire["data"]
-    assert isinstance(started_data, Mapping)
+    assert started_wire.get("ok") is True, started_wire
+    started_data = started_wire.get("data")
+    assert isinstance(started_data, Mapping), started_wire
     started_attempt = started_data["attempt"]
     assert isinstance(started_attempt, Mapping)
     _journey_success(started_wire, operation, started_data)
@@ -2166,8 +2167,9 @@ def test_public_finalization_workflow_journey(
         before = _persisted_snapshot(case)
         authority_before = _journey_authority_snapshot(case.evidence)
         wire = _journey_wire(_begin(case, fresh_id))
-        data = wire["data"]
-        assert isinstance(data, Mapping)
+        assert wire.get("ok") is True, wire
+        data = wire.get("data")
+        assert isinstance(data, Mapping), wire
         attempt = data["attempt"]
         assert isinstance(attempt, Mapping)
         _journey_success(wire, operation, data)
@@ -2241,8 +2243,9 @@ def test_public_finalization_workflow_journey(
     valid_before = _persisted_snapshot(case)
     valid_authority_before = _journey_authority_snapshot(case.evidence)
     valid_wire = _journey_wire(_checkpoint(case, valid_id, proof))
-    valid_data = valid_wire["data"]
-    assert isinstance(valid_data, Mapping)
+    assert valid_wire.get("ok") is True, valid_wire
+    valid_data = valid_wire.get("data")
+    assert isinstance(valid_data, Mapping), valid_wire
     completed_attempt = valid_data["attempt"]
     assert isinstance(completed_attempt, Mapping)
     _journey_success(valid_wire, checkpoint_operation, valid_data)
@@ -2304,8 +2307,9 @@ def test_public_finalization_workflow_journey(
     retry_before = _persisted_snapshot(case)
     retry_authority_before = _journey_authority_snapshot(case.evidence)
     retry_wire = _journey_wire(_checkpoint(case, valid_id, proof))
-    retry_data = retry_wire["data"]
-    assert isinstance(retry_data, Mapping)
+    assert retry_wire.get("ok") is True, retry_wire
+    retry_data = retry_wire.get("data")
+    assert isinstance(retry_data, Mapping), retry_wire
     _journey_success(retry_wire, checkpoint_operation, retry_data)
     assert retry_data == {"attempt": dict(completed_attempt)}
     assert _persisted_snapshot(case) == retry_before
@@ -2318,8 +2322,9 @@ def test_public_finalization_workflow_journey(
 
     begin_retry_authority_before = _journey_authority_snapshot(case.evidence)
     begin_retry_wire = _journey_wire(_begin(case, valid_id))
-    begin_retry_data = begin_retry_wire["data"]
-    assert isinstance(begin_retry_data, Mapping)
+    assert begin_retry_wire.get("ok") is True, begin_retry_wire
+    begin_retry_data = begin_retry_wire.get("data")
+    assert isinstance(begin_retry_data, Mapping), begin_retry_wire
     _journey_success(begin_retry_wire, operation, begin_retry_data)
     assert begin_retry_data == {"attempt": dict(completed_attempt)}
     assert _persisted_snapshot(case) == retry_before
