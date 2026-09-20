@@ -552,8 +552,9 @@ and captured times, and exactly one legal SampleValue. Use public HistoryStore
 append, never forged HistoryPage/HistoryBatchSlice or a patched query/guard.
 
 Request publish_physical_monitor_run for the full 41-batch time/sequence window.
-The first public History page contains10000 values, then the extra value arrives
-on a later page; replay.py1785->1786 must reject before publication with
+The public History pages expose10001 values cumulatively, respecting both the
+value and serialized-byte page limits. Do not assume an exact first-page count.
+When the cumulative value count exceeds10000, replay.py1785->1786 must reject with
 INCOMPATIBLE_IDENTITY / physical Monitor history window is too large. Snapshot
 all evidence relative-file names and bytes before the request and compare them
 after refusal: no monitor-run/ref root, manifest or artifact may appear. Compare
