@@ -29,9 +29,12 @@ review and acceptance; Luna/max owns implementation. No remote authority.
    remains. A persistent .guard file or registry created by acquire is allowed.
 
 The scenarios protect resource ownership and recovery after supported software
-provider failures; they are not hardware evidence. They address five candidate
+provider failures; they are not hardware evidence. They address four candidate
 native pairs in handoff.py and lease.py, not the remaining 452-branch gate.
-The measured union alone determines any coverage gain.
+The measured union alone determines any coverage gain. The claimed-false edge
+at handoff.py:1549->1559 is not reached by the readback/cleanup failure case;
+its actual cleanup error is mapped at lines 1554-1558. Do not manufacture a
+different internal state to reach the excluded edge.
 
 ## Frozen boundaries
 
