@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-from dataclasses import replace
 import shutil
 from pathlib import Path
 from uuid import UUID
@@ -26,7 +25,7 @@ from stm32_toolkit.diagnostics import (
     DiagnosticStore,
     DiagnosticValidationError,
 )
-from stm32_toolkit.evidence import canonical_json_bytes
+from stm32_toolkit.evidence import EvidenceEnvelope, canonical_json_bytes
 from stm32_toolkit.evidence.gc import RootRecord, get_root, put_root
 from stm32_toolkit.evidence.store import EvidenceStore
 from stm32_toolkit.paths import WorkspacePaths
@@ -188,7 +187,14 @@ def test_acceptance_recovery_unknown_schema_dispatch_is_read_only(
     attempt = dict(metadata["attempt"])
     attempt["schema"] = "stm32-acceptance-attempt/unknown"
     metadata["attempt"] = attempt
-    replacement = replace(envelope, metadata=metadata)
+    replacement = EvidenceEnvelope(
+        identity=envelope.identity,
+        operation=envelope.operation,
+        produced_at_utc=envelope.produced_at_utc,
+        parents=envelope.parents,
+        artifacts=envelope.artifacts,
+        metadata=metadata,
+    )
     clone_evidence.put_envelope(replacement)
     root_path = _root_file(clone_evidence, root.root_type, root.root_id)
     root_path.unlink()
