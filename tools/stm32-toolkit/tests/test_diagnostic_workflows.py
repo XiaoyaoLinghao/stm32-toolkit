@@ -3691,14 +3691,14 @@ def test_public_legacy_analysis_plan_input_qualification_matrix(
     assert positive_result.ok is True
     assert positive_result.data["session"]["revision"] == 5
     assert positive_result.data["session"]["state"] == "FIX_PROPOSED"
-    assert positive_result.data["verification_plan"] == plan.to_dict()
+    assert positive_result.to_dict()["data"]["verification_plan"] == plan.to_dict()
     positive_reload = workflow_module.diagnostic_show(
         verification_fixture._fresh_diagnostic_context(positive_context),
         diagnostic_session_id=session_id,
     )
     assert positive_reload.ok is True
     assert positive_reload.data["session"]["revision"] == 5
-    assert positive_reload.data["session"]["verification_plans"] == [plan.to_dict()]
+    assert positive_reload.to_dict()["data"]["session"]["verification_plans"] == [plan.to_dict()]
     assert positive_evidence.get_envelope(analysis_root.manifest_id) == analysis_envelope
     assert verification_fixture._tree_snapshot(baseline_workspace.workspace_root) == baseline_tree
     assert verification_fixture._authority_snapshot(baseline_workspace) == baseline_authority
@@ -3753,6 +3753,6 @@ def test_public_legacy_analysis_plan_input_qualification_matrix(
         assert reloaded.ok is True
         assert reloaded.data["session"]["revision"] == 4
         assert reloaded.data["session"]["state"] == "FIX_PROPOSED"
-        assert reloaded.data["session"]["verification_plans"] == []
+        assert reloaded.to_dict()["data"]["session"]["verification_plans"] == []
         assert verification_fixture._tree_snapshot(baseline_workspace.workspace_root) == baseline_tree
         assert verification_fixture._authority_snapshot(baseline_workspace) == baseline_authority
