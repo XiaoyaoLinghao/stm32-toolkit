@@ -873,3 +873,34 @@ e/risk-v2/wave5/recovery-existing/run1. Pin actual argv, source148, HEAD, JUnit 
 process outcome. First failure stops for classification, without modification or
 retry. Primary owns evidence review/aggregation/cleanup. No hardware, dependency
 installation, packaging, deployment, remote changes or new framework.
+
+### Analysis run1: keep Monitor and Target ID domains distinct
+
+Run1 at65574d786959dd147ea6f2cb1ee770cb95c66aa4 terminated normally with one
+TEST_EXPECTATION failure before compare. Continuation bind/authentication and
+the original before-Monitor publication/fresh load succeeded. The test and
+primary preflight wrongly interpreted origin_run_id as the linked TestRun ID.
+replay.py1637-1682 defines operation_id, origin_run_id and projected_run_id as
+the Monitor UUID; transcript metadata and payload carry test_run_id separately.
+The retained run1 transcript manifest24b22802 and artifact679a5387 show this
+exact distinction. Its raw coverage is excluded and failure evidence retained.
+
+The same Luna owner changes only the owned analysis test. In each publication
+control, compare all three Monitor IDs to the requested monitor_run_id. After
+load_monitor_run_reference authenticates the reference/transcript/TestRun graph,
+load its transcript_evidence_id with the public EvidenceStore.get_envelope and
+require metadata.test_run_id to equal the explicit requested Target TestRun ID.
+Freshly load that expected TestRun and require manifest.run_id equality. Keep
+the original/before-alias/after-alias expected IDs explicit in the three
+combinations; never feed a Monitor UUID to TestRunRepository.load. The rest of
+the complete public refusal/no-mutation/original-result recovery journey stays
+unchanged. Alias the imported TestRunPublisher name to avoid pytest attempting
+to collect that product class. No product or shared helper changes.
+
+This corrects the relationship model as a whole instead of removing the failed
+assertion. A read-only independent reviewer checks the remaining unexecuted
+alias/publication/compare assertions concurrently. The worker returns a separate
+static correction commit. Primary integrates any substantiated findings and
+checks the full correction before releasing at most one new300s -x run2, using
+r10/t/w5a/run2 and e/risk-v2/wave5/analysis/run2. No execution is authorized merely
+by producing the correction; the existing first-error stop remains in force.
