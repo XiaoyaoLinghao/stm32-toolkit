@@ -5,7 +5,6 @@ import json
 from pathlib import Path
 
 import pytest
-
 from fakes.fake_probe import FakeProbeBackend
 from stm32_toolkit.generation import configure as configure_module
 from stm32_toolkit.generation.configure import apply_project_configuration
@@ -16,7 +15,6 @@ from stm32_toolkit.probe.service import (
     ProbeServiceCleanupError,
     ProbeServiceError,
 )
-
 from test_generation import plan_for, staging_dir, tree_snapshot, write_project
 from test_probe_service import fake_backend, lease_manager, make_service
 
@@ -58,6 +56,7 @@ def test_risk_project_directory_fsync_failure_rolls_back_after_destination_write
     monkeypatch.setattr(configure_module, "_fsync_dir", fail_directory_fsync)
     result = apply_project_configuration(plan)
 
+    assert result.ok is False
     assert result.operation == "project-configuration-apply"
     assert result.code == "GENERATION_APPLY_FAILED"
     assert result.message == "apply failed"
@@ -90,7 +89,9 @@ def test_risk_preflight_untyped_provider_failure_does_not_bind_lease(
 
             assert caught.value.code == "PROBE_BACKEND_ERROR"
             assert caught.value.message == "Probe capability preflight failed"
-            assert calls and calls[0][0] == "probe-a"
+            assert len(calls) == 1
+            assert calls[0][0] == "probe-a"
+            assert not any(event[0] == "open_attach" for event in backend.events)
             assert service._lease is None
             assert service.endpoint is None
             assert backend.attached_probe_id is None
