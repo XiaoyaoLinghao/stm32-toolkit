@@ -2359,3 +2359,63 @@ def test_public_finalization_workflow_journey(
         set(),
         context="completed-begin-conflicting-event-head",
     )
+
+
+def test_public_finalization_repeat_bind_rejects_corrupt_existing_proof_root(
+    persisted_case: PersistedCase,
+    tmp_path: Path,
+) -> None:
+    """A repeated bind fails closed when the existing proof root is damaged."""
+
+    case = persisted_case
+    original_wire = _journey_wire(
+        _begin(case, "00000000-0000-4000-8000-000000000350")
+    )
+    assert original_wire.get("ok") is True, original_wire
+    original_data = original_wire.get("data")
+    assert isinstance(original_data, Mapping), original_wire
+    original_attempt = original_data["attempt"]
+    assert isinstance(original_attempt, Mapping), original_wire
+    proof = _proof(case, original_attempt)
+    original_after_bind = _persisted_snapshot(case)
+
+    clone_data = tmp_path / "repeat-bind-corrupt-existing-proof" / "data"
+    shutil.copytree(case.data, clone_data)
+    model = load_project_model(case.project)
+    clone_workspace = WorkspacePaths.from_roots(
+        clone_data,
+        case.project,
+        UUID(str(model.logical_project_id)),
+        case.workspace.session_id,
+    )
+    clone = PersistedCase(
+        project=case.project,
+        data=clone_data,
+        request=deepcopy(case.request),
+        evidence=EvidenceStore(clone_workspace.workspace_root / "evidence"),
+        workspace=clone_workspace,
+    )
+    assert clone.workspace.project_root == case.workspace.project_root
+    assert clone.workspace.workspace_id == case.workspace.workspace_id
+    assert clone.workspace.session_id == case.workspace.session_id
+    assert _persisted_snapshot(clone) == original_after_bind
+
+    _replace_finalization_root_metadata(clone, proof)
+    before_corrupt_bind = _persisted_snapshot(clone)
+    repeated_bind_id = "00000000-0000-4000-8000-000000000351"
+    repeated_bind_wire = _journey_wire(
+        _begin(clone, repeated_bind_id, deepcopy(clone.request))
+    )
+    _journey_failure(
+        repeated_bind_wire,
+        "acceptance.attempt.begin",
+        "ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED",
+        context="repeat-bind-corrupt-existing-proof-root",
+    )
+    assert _persisted_snapshot(clone) == before_corrupt_bind
+    assert not _journey_public_root_path(
+        clone.evidence,
+        "acceptance-attempt",
+        _journey_root_id(repeated_bind_id, 0),
+    ).exists()
+    assert _persisted_snapshot(case) == original_after_bind
