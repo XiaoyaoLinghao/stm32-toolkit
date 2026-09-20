@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,6 +12,7 @@ import pytest
 import test_vs08a_scenarios as vs08a
 import test_vs08b_scenarios as vs08b
 from stm32_toolkit.acceptance import recovery_workflows
+from stm32_toolkit.acceptance.model import REQUIRED_STAGES
 from stm32_toolkit.acceptance.recovery_workflows import (
     AcceptanceRecoveryContext,
     authorize_acceptance_source_change,
@@ -21,6 +23,7 @@ from stm32_toolkit.acceptance.recovery_workflows import (
 from stm32_toolkit.diagnostic_workflows import (
     DiagnosticWorkflowContext,
     diagnostic_declare_source_change,
+    diagnostic_show,
 )
 from stm32_toolkit.evidence import EvidenceIdentity
 from stm32_toolkit.evidence.store import EvidenceStore
@@ -85,9 +88,50 @@ class _Prefix:
     fixed_descriptor: Path
     fixed_stream: Path
     context: AcceptanceRecoveryContext
-    revision_four_attempt: dict[str, object]
+    current_attempt: dict[str, object]
     build_calls: list[dict[str, str]]
     snapshot_calls: list[str]
+
+
+_ATTEMPT_FIELDS = {
+    "schema",
+    "attemptId",
+    "revision",
+    "checkpointId",
+    "previousCheckpointId",
+    "scenarioId",
+    "scenarioVersion",
+    "scenarioDigest",
+    "recoveryPolicyDigest",
+    "workspaceId",
+    "logicalProjectId",
+    "projectOrigin",
+    "executionSource",
+    "physicalTransportEvidence",
+    "status",
+    "completedStages",
+    "stageOutputs",
+    "sourceChangeAuthorization",
+    "openedAtUtc",
+    "deadlineAtUtc",
+    "updatedAtUtc",
+}
+_STAGE_OUTPUT_FIELDS = {
+    "projectModelDigest",
+    "beforeBuildId",
+    "beforeElfSha256",
+    "beforeInputSnapshotSha256",
+    "failedBeforeTestRunId",
+    "failedBeforeEvidenceId",
+    "diagnosticSessionId",
+    "diagnosticRevision",
+    "diagnosticEventHead",
+    "afterBuildId",
+    "afterElfSha256",
+    "afterInputSnapshotSha256",
+    "sourceChangeDeclarationId",
+    "acceptanceRecordId",
+}
 
 
 def _file_snapshot(root: Path) -> dict[str, bytes]:
@@ -120,6 +164,9 @@ def _install_build_seam(
 ) -> tuple[list[dict[str, str]], list[str]]:
     build_calls: list[dict[str, str]] = []
     snapshot_calls: list[str] = []
+    build_snapshots = tuple(snapshot_values)
+    if len(build_snapshots) < len(build_values):
+        raise AssertionError("each build result needs an input snapshot")
 
     def build_context(*_args: object) -> OperationResult[dict[str, object]]:
         index = len(build_calls)
@@ -140,10 +187,8 @@ def _install_build_seam(
         )
 
     def snapshot_provider(_model: object) -> object:
-        index = len(snapshot_calls)
-        if index >= len(snapshot_values):
-            raise AssertionError("unexpected input snapshot provider call")
-        value = snapshot_values[index]
+        index = max(0, len(build_calls) - 1)
+        value = build_snapshots[index]
         snapshot_calls.append(value)
         return SimpleNamespace(sha256=value)
 
@@ -152,13 +197,60 @@ def _install_build_seam(
     return build_calls, snapshot_calls
 
 
+def _assert_attempt_result(
+    result: object,
+    *,
+    operation: str,
+    revision: int,
+    expected_outputs: Mapping[str, object] | None = None,
+) -> dict[str, object]:
+    payload = result.to_dict()
+    assert set(payload) == {
+        "protocol",
+        "ok",
+        "operation",
+        "code",
+        "message",
+        "data",
+        "details",
+    }
+    assert payload["protocol"] == "stm32-toolkit/1"
+    assert payload["ok"] is True
+    assert payload["operation"] == operation
+    assert payload["code"] == "OK"
+    assert payload["message"] == ""
+    assert payload["details"] == {}
+    data = payload["data"]
+    assert isinstance(data, dict) and set(data) == {"attempt"}
+    attempt = data["attempt"]
+    assert isinstance(attempt, dict)
+    assert set(attempt) == _ATTEMPT_FIELDS
+    assert attempt["revision"] == revision
+    expected_count = revision if revision <= 4 else revision - 1
+    assert attempt["completedStages"] == list(REQUIRED_STAGES[:expected_count])
+    stage_outputs = attempt["stageOutputs"]
+    assert isinstance(stage_outputs, dict)
+    assert set(stage_outputs) == _STAGE_OUTPUT_FIELDS
+    assert attempt["executionSource"] == "replay"
+    assert attempt["physicalTransportEvidence"] is False
+    if revision < 5:
+        assert attempt["sourceChangeAuthorization"] is None
+    else:
+        assert isinstance(attempt["sourceChangeAuthorization"], dict)
+    for key, value in (expected_outputs or {}).items():
+        assert stage_outputs[key] == value
+    return attempt
+
+
 def _prepare_prefix(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     *,
     build_values: Sequence[Mapping[str, str]],
     snapshot_values: Sequence[str],
+    through_revision: int = 4,
 ) -> _Prefix:
+    assert through_revision in {2, 4}
     runtime_session_id = "w4r-recovery-keil"
     (
         project_root,
@@ -189,21 +281,31 @@ def _prepare_prefix(
         scenario_id="legacy-keil-migration",
         scenario_version="1",
     )
-    assert started.ok is True, started.to_dict()
-    for expected_revision, stage, kwargs in (
-        (0, "project-materialized", {}),
-        (1, "firmware-built-before", {}),
+    _assert_attempt_result(
+        started,
+        operation="acceptance.attempt.begin",
+        revision=0,
+    )
+    current_attempt: dict[str, object] = started.to_dict()["data"]["attempt"]
+    steps = (
+        (0, "project-materialized", {}, 1),
+        (1, "firmware-built-before", {}, 2),
         (
             2,
             "target-failure-replayed",
             {"test_run_id": vs08a.FAILED_RUN_ID},
+            3,
         ),
         (
             3,
             "diagnosis-completed",
             {"diagnostic_session_id": diagnostic_id},
+            4,
         ),
-    ):
+    )
+    for expected_revision, stage, kwargs, published_revision in steps:
+        if published_revision > through_revision:
+            break
         result = checkpoint_acceptance_attempt(
             context,
             attempt_id=vs08b.ATTEMPT_ID,
@@ -211,15 +313,88 @@ def _prepare_prefix(
             stage=stage,
             **kwargs,
         )
-        assert result.ok is True, result.to_dict()
+        expected_outputs: dict[str, object] = {}
+        if stage == "firmware-built-before":
+            expected_outputs = {
+                "beforeBuildId": BEFORE_BUILD_ID,
+                "beforeElfSha256": BEFORE_ELF_SHA256,
+                "beforeInputSnapshotSha256": BEFORE_INPUT_SNAPSHOT_SHA256,
+            }
+        elif stage == "target-failure-replayed":
+            testing = TestingWorkflowContext(
+                project_root, data_root, runtime_session_id
+            )
+            failed_show = _assert_target_show(
+                public_test_show(testing, run_id=vs08a.FAILED_RUN_ID),
+                run_id=vs08a.FAILED_RUN_ID,
+                build_id=BEFORE_BUILD_ID,
+                elf_sha256=BEFORE_ELF_SHA256,
+            )
+            expected_outputs = {
+                "failedBeforeTestRunId": vs08a.FAILED_RUN_ID,
+                "failedBeforeEvidenceId": failed_show["evidence_id"],
+            }
+        elif stage == "diagnosis-completed":
+            diagnostic = diagnostic_show(
+                DiagnosticWorkflowContext(
+                    project_root, data_root, runtime_session_id
+                ),
+                diagnostic_session_id=diagnostic_id.replace("-", ""),
+            )
+            diagnostic_payload = diagnostic.to_dict()
+            assert set(diagnostic_payload) == {
+                "protocol",
+                "ok",
+                "operation",
+                "code",
+                "message",
+                "data",
+                "details",
+            }
+            assert diagnostic_payload["protocol"] == "stm32-toolkit/1"
+            assert diagnostic_payload["ok"] is True
+            assert diagnostic_payload["operation"] == "diagnostic.show"
+            assert diagnostic_payload["code"] == "OK"
+            assert diagnostic_payload["message"] == ""
+            assert diagnostic_payload["details"] == {}
+            diagnostic_data = diagnostic_payload["data"]
+            assert isinstance(diagnostic_data, dict)
+            assert set(diagnostic_data) == {"session", "authoritative"}
+            assert diagnostic_data["authoritative"] is True
+            session = diagnostic_data["session"]
+            assert isinstance(session, dict)
+            expected_outputs = {
+                "diagnosticSessionId": diagnostic_id,
+                "diagnosticRevision": session["revision"],
+                "diagnosticEventHead": session["event_head"],
+            }
+        current_attempt = _assert_attempt_result(
+            result,
+            operation="acceptance.attempt.checkpoint",
+            revision=published_revision,
+            expected_outputs=expected_outputs,
+        )
     resumed = resume_acceptance_attempt(context, attempt_id=vs08b.ATTEMPT_ID)
-    assert resumed.ok is True, resumed.to_dict()
-    attempt = resumed.to_dict()["data"]["attempt"]
-    assert isinstance(attempt, dict)
-    assert attempt["revision"] == 4
-    assert resumed.to_dict()["data"]["nextStage"] == "firmware-built-after"
+    resume_data = resumed.to_dict()["data"]
+    assert isinstance(resume_data, dict)
+    action_digest = resume_data["actionDigest"]
+    if through_revision == 4:
+        assert isinstance(action_digest, str)
+        assert re.fullmatch(r"[0-9a-f]{64}", action_digest)
+    else:
+        assert action_digest is None
+    _assert_resume(
+        resumed,
+        expected_attempt=current_attempt,
+        next_stage=(
+            "firmware-built-after"
+            if through_revision == 4
+            else "target-failure-replayed"
+        ),
+        authorization_required=through_revision == 4,
+        action_digest=action_digest,
+    )
     assert len(build_calls) == 1
-    assert len(snapshot_calls) == 1
     return _Prefix(
         project_root=project_root,
         data_root=data_root,
@@ -229,7 +404,7 @@ def _prepare_prefix(
         fixed_descriptor=fixed_descriptor,
         fixed_stream=fixed_stream,
         context=context,
-        revision_four_attempt=attempt,
+        current_attempt=current_attempt,
         build_calls=build_calls,
         snapshot_calls=snapshot_calls,
     )
@@ -290,8 +465,19 @@ def _assert_resume(
     assert data["nextStage"] == next_stage
     assert data["authorizationRequired"] is authorization_required
     assert data["actionDigest"] == action_digest
+    if action_digest is not None:
+        assert re.fullmatch(r"[0-9a-f]{64}", action_digest)
     assert data["timedOut"] is False
-    assert isinstance(data["recoveryPolicy"], dict)
+    recovery_policy = data["recoveryPolicy"]
+    assert isinstance(recovery_policy, dict)
+    assert set(recovery_policy) == {
+        "schema",
+        "attemptSchema",
+        "stageTimeoutSeconds",
+        "intrusiveActions",
+        "physicalTransportEvidence",
+    }
+    assert recovery_policy["physicalTransportEvidence"] is False
     return data
 
 
@@ -324,14 +510,129 @@ def _assert_target_show(
     assert data["authoritative"] is True
     run = data["run"]
     assert isinstance(run, dict)
+    assert set(run) == {
+        "run_id",
+        "mode",
+        "state",
+        "identity",
+        "transport",
+        "case_counts",
+        "started_at_utc",
+        "ended_at_utc",
+        "duration_ms",
+    }
     assert run["run_id"] == run_id
     identity = run["identity"]
     assert isinstance(identity, dict)
+    assert set(identity) == {
+        "workspace_id",
+        "project_id",
+        "session_id",
+        "build_id",
+        "elf_sha256",
+        "target_device",
+        "input_snapshot_sha256",
+        "git_commit",
+        "git_dirty",
+    }
     assert identity["build_id"] == build_id
     assert identity["elf_sha256"] == elf_sha256
     assert data["execution_source"] == "replay"
     assert data["physical_transport_evidence"] is False
     return data
+
+
+def _assert_target_replay(result: object, *, run_id: str) -> dict[str, object]:
+    payload = result.to_dict()
+    assert set(payload) == {
+        "protocol",
+        "ok",
+        "operation",
+        "code",
+        "message",
+        "data",
+        "details",
+    }
+    assert payload["protocol"] == "stm32-toolkit/1"
+    assert payload["ok"] is True
+    assert payload["operation"] == "test.target.replay"
+    assert payload["code"] == "OK"
+    assert payload["message"] == ""
+    assert payload["details"] == {}
+    data = payload["data"]
+    assert isinstance(data, dict)
+    assert set(data) == {
+        "run",
+        "test_manifest",
+        "evidence_id",
+        "execution_source",
+        "physical_transport_evidence",
+        "origin_workspace_id",
+        "import_workspace_id",
+    }
+    run = data["run"]
+    assert isinstance(run, dict)
+    assert set(run) == {
+        "run_id",
+        "mode",
+        "state",
+        "identity",
+        "transport",
+        "case_counts",
+        "started_at_utc",
+        "ended_at_utc",
+        "duration_ms",
+    }
+    assert run["run_id"] == run_id
+    identity = run["identity"]
+    assert isinstance(identity, dict)
+    assert set(identity) == {
+        "workspace_id",
+        "project_id",
+        "session_id",
+        "build_id",
+        "elf_sha256",
+        "target_device",
+        "input_snapshot_sha256",
+        "git_commit",
+        "git_dirty",
+    }
+    assert data["execution_source"] == "replay"
+    assert data["physical_transport_evidence"] is False
+    return data
+
+
+def _assert_source_change_declaration(
+    result: object,
+    *,
+    diagnostic_session_id: str,
+    declaration: object,
+) -> dict[str, object]:
+    payload = result.to_dict()
+    assert set(payload) == {
+        "protocol",
+        "ok",
+        "operation",
+        "code",
+        "message",
+        "data",
+        "details",
+    }
+    assert payload["protocol"] == "stm32-toolkit/1"
+    assert payload["ok"] is True
+    assert payload["operation"] == "diagnostic.source-change.declare"
+    assert payload["code"] == "OK"
+    assert payload["message"] == ""
+    assert payload["details"] == {}
+    data = payload["data"]
+    assert isinstance(data, dict)
+    assert set(data) == {"session", "source_change_declaration"}
+    session = data["session"]
+    assert isinstance(session, dict)
+    assert session["diagnostic_session_id"] == diagnostic_session_id
+    assert session["revision"] == 7
+    assert data["source_change_declaration"] == declaration.to_dict()
+    return session
 
 
 def _alternate_replay_inputs(tmp_path: Path, workspace_id: str) -> tuple[Path, Path]:
@@ -379,15 +680,19 @@ def _alternate_replay_inputs(tmp_path: Path, workspace_id: str) -> tuple[Path, P
 
 def _authorize_revision_four(prefix: _Prefix) -> dict[str, object]:
     resumed = resume_acceptance_attempt(prefix.context, attempt_id=vs08b.ATTEMPT_ID)
+    resumed_data = resumed.to_dict()["data"]
+    assert isinstance(resumed_data, dict)
+    digest = resumed_data["actionDigest"]
+    assert isinstance(digest, str)
+    assert re.fullmatch(r"[0-9a-f]{64}", digest)
     data = _assert_resume(
         resumed,
-        expected_attempt=prefix.revision_four_attempt,
+        expected_attempt=prefix.current_attempt,
         next_stage="firmware-built-after",
         authorization_required=True,
-        action_digest=None,
+        action_digest=digest,
     )
-    digest = data["actionDigest"]
-    assert isinstance(digest, str) and len(digest) == 64
+    assert data["actionDigest"] == digest
     authorized = authorize_acceptance_source_change(
         prefix.context,
         attempt_id=vs08b.ATTEMPT_ID,
@@ -395,20 +700,23 @@ def _authorize_revision_four(prefix: _Prefix) -> dict[str, object]:
         action_digest=digest,
         authorized=True,
     )
-    payload = authorized.to_dict()
-    assert payload["protocol"] == "stm32-toolkit/1"
-    assert payload["ok"] is True
-    assert payload["operation"] == "acceptance.attempt.authorize-source-change"
-    assert payload["code"] == "OK"
-    assert payload["message"] == ""
-    assert payload["details"] == {}
-    data = payload["data"]
-    assert isinstance(data, dict) and set(data) == {"attempt"}
-    attempt = data["attempt"]
-    assert isinstance(attempt, dict)
-    assert attempt["revision"] == 5
+    attempt = _assert_attempt_result(
+        authorized,
+        operation="acceptance.attempt.authorize-source-change",
+        revision=5,
+    )
     authorization = attempt["sourceChangeAuthorization"]
     assert isinstance(authorization, dict)
+    assert set(authorization) == {
+        "action",
+        "actionDigest",
+        "authorized",
+        "authorizedAtUtc",
+        "diagnosticSessionId",
+        "diagnosticRevision",
+        "diagnosticEventHead",
+    }
+    assert authorization["action"] == "source-change"
     assert authorization["actionDigest"] == digest
     assert authorization["authorized"] is True
     return attempt
@@ -422,7 +730,9 @@ def test_recovery_rejects_different_build_replay_without_mutation(
         monkeypatch,
         build_values=(BEFORE_IDENTITY,),
         snapshot_values=(BEFORE_INPUT_SNAPSHOT_SHA256,),
+        through_revision=2,
     )
+    assert prefix.current_attempt["revision"] == 2
     workspace = WorkspacePaths.from_roots(
         prefix.data_root,
         prefix.project_root,
@@ -441,7 +751,7 @@ def test_recovery_rejects_different_build_replay_without_mutation(
         alternate_descriptor,
         alternate_stream,
     )
-    assert imported.ok is True, imported.to_dict()
+    _assert_target_replay(imported, run_id=ALTERNATE_RUN_ID)
     _assert_target_show(
         public_test_show(testing, run_id=ALTERNATE_RUN_ID),
         run_id=ALTERNATE_RUN_ID,
@@ -463,17 +773,40 @@ def test_recovery_rejects_different_build_replay_without_mutation(
     )
     _assert_resume(
         resume_acceptance_attempt(prefix.context, attempt_id=vs08b.ATTEMPT_ID),
-        expected_attempt=prefix.revision_four_attempt,
-        next_stage="firmware-built-after",
-        authorization_required=True,
+        expected_attempt=prefix.current_attempt,
+        next_stage="target-failure-replayed",
+        authorization_required=False,
         action_digest=None,
     )
     assert _persistence_snapshot(prefix) == before_files
-    _assert_target_show(
+    original_show = _assert_target_show(
         public_test_show(testing, run_id=vs08a.FAILED_RUN_ID),
         run_id=vs08a.FAILED_RUN_ID,
         build_id=BEFORE_BUILD_ID,
         elf_sha256=BEFORE_ELF_SHA256,
+    )
+    original_replay = checkpoint_acceptance_attempt(
+        prefix.context,
+        attempt_id=vs08b.ATTEMPT_ID,
+        expected_revision=2,
+        stage="target-failure-replayed",
+        test_run_id=vs08a.FAILED_RUN_ID,
+    )
+    original_attempt = _assert_attempt_result(
+        original_replay,
+        operation="acceptance.attempt.checkpoint",
+        revision=3,
+        expected_outputs={
+            "failedBeforeTestRunId": vs08a.FAILED_RUN_ID,
+            "failedBeforeEvidenceId": original_show["evidence_id"],
+        },
+    )
+    _assert_resume(
+        resume_acceptance_attempt(prefix.context, attempt_id=vs08b.ATTEMPT_ID),
+        expected_attempt=original_attempt,
+        next_stage="diagnosis-completed",
+        authorization_required=False,
+        action_digest=None,
     )
     _assert_target_show(
         public_test_show(testing, run_id=ALTERNATE_RUN_ID),
@@ -532,6 +865,7 @@ def test_recovery_rejects_unchanged_after_build_and_preserves_authorization(
     )
     authorized = _authorize_revision_four(prefix)
     before_files = _persistence_snapshot(prefix)
+    snapshot_call_count = len(prefix.snapshot_calls)
     refused = checkpoint_acceptance_attempt(
         prefix.context,
         attempt_id=vs08b.ATTEMPT_ID,
@@ -544,7 +878,8 @@ def test_recovery_rejects_unchanged_after_build_and_preserves_authorization(
         code="ACCEPTANCE_ATTEMPT_OUTPUT_INVALID",
     )
     assert len(prefix.build_calls) == 2
-    assert len(prefix.snapshot_calls) == 2
+    assert len(prefix.snapshot_calls) > snapshot_call_count
+    assert prefix.snapshot_calls[-1] == BEFORE_INPUT_SNAPSHOT_SHA256
     _assert_resume(
         resume_acceptance_attempt(prefix.context, attempt_id=vs08b.ATTEMPT_ID),
         expected_attempt=authorized,
@@ -579,7 +914,7 @@ def test_recovery_requires_exact_declared_after_identity_then_publishes_revision
         prefix.fixed_descriptor,
         prefix.fixed_stream,
     )
-    assert fixed.ok is True, fixed.to_dict()
+    _assert_target_replay(fixed, run_id=vs08a.FIXED_RUN_ID)
     workspace = WorkspacePaths.from_roots(
         prefix.data_root,
         prefix.project_root,
@@ -604,7 +939,11 @@ def test_recovery_requires_exact_declared_after_identity_then_publishes_revision
         expected_revision=6,
         source_change_declaration=declaration,
     )
-    assert declared.ok is True, declared.to_dict()
+    _assert_source_change_declaration(
+        declared,
+        diagnostic_session_id=prefix.diagnostic_id.replace("-", ""),
+        declaration=declaration,
+    )
     before_files = _persistence_snapshot(prefix)
     refused = checkpoint_acceptance_attempt(
         prefix.context,
@@ -631,14 +970,17 @@ def test_recovery_requires_exact_declared_after_identity_then_publishes_revision
         expected_revision=5,
         stage="firmware-built-after",
     )
-    assert recovered.ok is True, recovered.to_dict()
-    recovered_attempt = recovered.to_dict()["data"]["attempt"]
-    assert isinstance(recovered_attempt, dict)
-    assert recovered_attempt["revision"] == 6
-    assert recovered_attempt["stageOutputs"]["afterBuildId"] == AFTER_BUILD_ID
-    assert recovered_attempt["stageOutputs"]["afterElfSha256"] == AFTER_ELF_SHA256
-    assert recovered_attempt["stageOutputs"]["afterInputSnapshotSha256"] == AFTER_INPUT_SNAPSHOT_SHA256
-    assert recovered_attempt["stageOutputs"]["sourceChangeDeclarationId"] == declaration.declaration_id
+    recovered_attempt = _assert_attempt_result(
+        recovered,
+        operation="acceptance.attempt.checkpoint",
+        revision=6,
+        expected_outputs={
+            "afterBuildId": AFTER_BUILD_ID,
+            "afterElfSha256": AFTER_ELF_SHA256,
+            "afterInputSnapshotSha256": AFTER_INPUT_SNAPSHOT_SHA256,
+            "sourceChangeDeclarationId": declaration.declaration_id,
+        },
+    )
     _assert_resume(
         resume_acceptance_attempt(prefix.context, attempt_id=vs08b.ATTEMPT_ID),
         expected_attempt=recovered_attempt,
