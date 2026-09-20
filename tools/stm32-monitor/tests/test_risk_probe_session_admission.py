@@ -4,10 +4,11 @@ import asyncio
 from pathlib import Path
 
 import pytest
-from stm32_monitor.models import WatchItem
+from stm32_monitor.models import SampleValue, WatchItem
 from stm32_monitor.probe_session import ProbeReadOutcome, ProbeSession
 from stm32_monitor.protocol import MONITOR_PROTOCOL_VERSION, MONITOR_VERSION
 from stm32_toolkit import __version__ as TOOLKIT_VERSION
+from stm32_toolkit.debug import TypedValue
 from stm32_toolkit.result import OperationResult
 from test_probe_session import FakeObservation, _binding
 
@@ -79,6 +80,15 @@ def _assert_read_success(outcome: ProbeReadOutcome) -> None:
     assert outcome.message == ""
     assert tuple(value.watch for value in outcome.values) == _WATCHES
     assert tuple(value.status for value in outcome.values) == ("OK",)
+    expected = SampleValue(
+        WatchItem.variable("counter"),
+        "OK",
+        typed_value=TypedValue(
+            "counter", "uint32_t", 1, "0x00000001", 32
+        ).to_dict(),
+        definition={"kind": "variable", "selector": "counter"},
+    )
+    assert tuple(value.to_dict() for value in outcome.values) == (expected.to_dict(),)
 
 
 async def _assert_public_recovery(
@@ -169,14 +179,14 @@ def test_unprepared_failure_with_empty_code_is_isolated_and_recovers(
             outcome = await session.read(_WATCHES)
             assert outcome.blocked_code is None
             assert outcome.message == ""
+            expected = SampleValue(
+                WatchItem.variable("counter"),
+                "ERROR",
+                code="MONITOR_PROVENANCE_CHANGED",
+                definition={"kind": "variable", "selector": "counter"},
+            )
             assert tuple(value.to_dict() for value in outcome.values) == (
-                {
-                    "watch": {"kind": "variable", "selector": "counter"},
-                    "status": "ERROR",
-                    "typedValue": None,
-                    "code": "MONITOR_PROVENANCE_CHANGED",
-                    "definition": {"kind": "variable", "selector": "counter"},
-                },
+                expected.to_dict(),
             )
         finally:
             observation._read_batch = original_read_batch
