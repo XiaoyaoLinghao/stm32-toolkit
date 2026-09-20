@@ -118,6 +118,7 @@ def test_native_parser_failure_settles_owned_generation_root(
             "phase": "validation",
         }
     assert events == ["cubeMx"]
+    assert not list(tmp_path.glob(".stm32tk-activation-*"))
     assert not destination.exists()
     assert (tmp_path / "user-sentinel.txt").read_bytes() == sentinel
     _assert_consumed(store, prepared.authorization_digest)
@@ -213,6 +214,7 @@ def test_configure_oserror_after_relocation_settles_activation_root(
     events: list[str] = []
     generation_roots: list[Path] = []
     configured_roots: list[Path] = []
+    configure_observations: list[tuple[Path, bytes, bool, bool]] = []
 
     class RootRecordingAdapter(RecordingAdapter):
         def generate(self, capability, staging):
@@ -221,6 +223,14 @@ def test_configure_oserror_after_relocation_settles_activation_root(
 
     def configure(root: Path):
         configured_roots.append(root)
+        configure_observations.append(
+            (
+                root,
+                (root / "native.txt").read_bytes(),
+                (root / "generated" / "native.txt").exists(),
+                generation_roots[0].exists(),
+            )
+        )
         events.append("configure")
         raise OSError("injected configure provider failure")
 
@@ -249,15 +259,19 @@ def test_configure_oserror_after_relocation_settles_activation_root(
     )
     _assert_failure_wire(result, expected_code, expected_message, attempt_id)
     assert generation_roots
-    assert configured_roots == [activation_root]
-    assert configured_roots[0].name.startswith(".stm32tk-activation-")
-    assert (configured_roots[0] / "generated" / "native.txt").exists() is False
-    assert (configured_roots[0] / "native.txt").is_file()
+    assert len(configured_roots) == 1
+    assert len(configure_observations) == 1
+    observed_root, native_bytes, nested_native, generation_exists = configure_observations[0]
+    assert observed_root == activation_root
+    assert observed_root.name.startswith(".stm32tk-activation-")
+    assert native_bytes == b"generated"
+    assert nested_native is False
+    assert generation_exists is False
     assert not generation_roots[0].exists()
     if cleanup_failure:
         assert cleanup_calls == [activation_root]
         assert activation_root.is_dir()
-        assert (activation_root / "native.txt").is_file()
+        assert (activation_root / "native.txt").read_bytes() == b"generated"
     else:
         assert not activation_root.exists()
     assert not list(tmp_path.glob(".stm32tk-creation-*"))
