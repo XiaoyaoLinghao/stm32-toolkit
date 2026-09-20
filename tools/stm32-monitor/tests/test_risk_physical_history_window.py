@@ -6,7 +6,7 @@ from uuid import UUID
 
 import pytest
 from stm32_monitor.history import HistoryPage, HistoryQuery, HistoryStore
-from stm32_monitor.models import HistoryBatchSlice, SampleValue, WatchItem
+from stm32_monitor.models import HistoryBatchSlice, SampleBatch, SampleValue, WatchItem
 from stm32_monitor.replay import (
     INCOMPATIBLE_IDENTITY,
     MonitorReplayError,
@@ -15,7 +15,7 @@ from stm32_monitor.replay import (
 )
 from stm32_toolkit.evidence.store import EvidenceStore
 from stm32_toolkit.paths import WorkspacePaths
-from stm32_toolkit.testing.publication import TestRunRepository
+from stm32_toolkit.testing.publication import TestRunRepository as _TestRunRepository
 from test_physical_publication import (
     _append_large_physical_history,
     _monitor_root_files,
@@ -76,7 +76,69 @@ def _public_history_pages(
 
 
 def _page_wire(pages: tuple[HistoryPage, ...]) -> tuple[dict[str, object], ...]:
-    return tuple(page.to_dict() for page in pages)
+    wire: list[dict[str, object]] = []
+    for page in pages:
+        payload = page.to_dict()
+        payload["nextCursor"] = page.next_cursor is not None
+        wire.append(payload)
+    return tuple(wire)
+
+
+def _assert_history_matches_batches(
+    fragments: tuple[HistoryBatchSlice, ...],
+    expected_batches: tuple[SampleBatch, ...],
+) -> None:
+    expected_by_sequence = {
+        batch.sequence: batch.to_dict() for batch in expected_batches
+    }
+    assert tuple(expected_by_sequence) == tuple(range(len(expected_batches)))
+    assert fragments
+
+    last_sequence = -1
+    next_ordinal = 0
+    for fragment in fragments:
+        assert fragment.sequence in expected_by_sequence
+        if fragment.sequence != last_sequence:
+            if last_sequence >= 0:
+                assert next_ordinal == len(
+                    expected_by_sequence[last_sequence]["values"]
+                )
+            assert fragment.sequence == last_sequence + 1
+            last_sequence = fragment.sequence
+            next_ordinal = 0
+
+        expected = expected_by_sequence[fragment.sequence]
+        actual = fragment.to_dict()
+        for key in (
+            "binding",
+            "groupId",
+            "groupRevision",
+            "runId",
+            "sequence",
+            "scheduledUnixNs",
+            "scheduledAtUtc",
+            "capturedUnixNs",
+            "capturedAtUtc",
+            "latencyNs",
+            "actualRateHz",
+            "subscriberDrops",
+            "historyDrops",
+            "deadlineDrops",
+            "batchValueCount",
+        ):
+            assert actual[key] == expected[key]
+        assert actual["startOrdinal"] == next_ordinal
+        expected_values = expected["values"]
+        actual_values = actual["values"]
+        assert type(expected_values) is list
+        assert type(actual_values) is list and actual_values
+        stop = next_ordinal + len(actual_values)
+        assert stop <= len(expected_values)
+        assert actual_values == expected_values[next_ordinal:stop]
+        next_ordinal = stop
+
+    assert last_sequence == len(expected_batches) - 1
+    assert next_ordinal == len(expected_by_sequence[last_sequence]["values"])
 
 
 def test_physical_history_window_rejects_10001_values_then_recovers_40_batches(
@@ -136,8 +198,9 @@ def test_physical_history_window_rejects_10001_values_then_recovers_40_batches(
     assert sum(
         len(fragment.values) for fragment in fragments if fragment.sequence == 40
     ) == 1
+    _assert_history_matches_batches(fragments, (*batches, extra))
     pages_before_wire = _page_wire(pages_before)
-    test_run_before = TestRunRepository(evidence).load(test_run_id)
+    test_run_before = _TestRunRepository(evidence).load(test_run_id)
     evidence_before = _physical_evidence_state(evidence)
 
     with pytest.raises(MonitorReplayError) as error:
@@ -156,7 +219,7 @@ def test_physical_history_window_rejects_10001_values_then_recovers_40_batches(
             end_ns=extra.captured_unix_ns + 1,
         )
     ) == pages_before_wire
-    assert TestRunRepository(evidence).load(test_run_id) == test_run_before
+    assert _TestRunRepository(evidence).load(test_run_id) == test_run_before
 
     legal_request = {
         **full_request,
@@ -186,4 +249,4 @@ def test_physical_history_window_rejects_10001_values_then_recovers_40_batches(
             end_ns=extra.captured_unix_ns + 1,
         )
     ) == pages_before_wire
-    assert TestRunRepository(evidence).load(test_run_id) == test_run_before
+    assert _TestRunRepository(evidence).load(test_run_id) == test_run_before
