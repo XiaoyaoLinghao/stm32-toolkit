@@ -231,6 +231,33 @@ actual base/HEAD/source/argv/process outcome. Inspect constructor and first-guar
 ordering before runtime; a failed group stops for classification and cannot be
 included in the native union. No hardware, install, packaging or remote action.
 
+#### Monitor review disposition and bounded correction
+
+Independent complete-diff review of a0b20a265e172343633193e3035b1a347e109be6
+returned REVISION_REQUIRED. Its six tests passed on unchanged product source;
+four planned scenarios are valid. The oversized replay is rejected by the 1 MiB
+safe-read guard before decoding, and also contains duplicate selectors and a
+stale fixture digest. Retain that observed safe-read refusal, rename its claim,
+and leave the planned value-count guard unproven. This single fixture does not
+prove the guard universally unreachable. Do not alter limits or bypass decoding.
+The reachable persisted-corruption case changes history_values.batch_id to zero;
+history_batches.batch_id zero is filtered by the query and remains unproven.
+
+The WAL test must retain the SAME HistoryStore instance from its successful first
+append through the injected-sidecar rejection. Recreating the instance resets the
+trusted fingerprint and only tests cold-start refusal. Preserve the cold-start
+result as its actual evidence, then correct this lifecycle test, retain exact
+sentinel/SQLite invariants, and prove subsequent recovery. No private trust-field
+mutation or removal of a pre-existing real WAL is permitted.
+
+The existing Luna owner keeps the same file and branch. Full-file static checks
+precede a correction commit; run only the changed WAL selector once with native
+coverage, first-failure stop and a 180-second budget. Use r10/t/w2m/run2 and
+r10/e/risk-v2/wave2/m/run2. The replay rename changes no inputs/assertions and
+does not trigger a rerun; the other four unchanged cases retain their evidence.
+Primary independently reviews the complete final diff and both evidence scopes.
+Neither a renamed test nor six PASS cases imply the two original guards passed.
+
 ### Second-wave existing recovery qualification
 
 Primary executes one current-source seven-case group using existing, previously
