@@ -711,3 +711,49 @@ diff checks precede a candidate commit. Run the one new file with -x,180s and
 native coverage of both packages via the existing guarded launcher, using only
 r10/t/w4l/run1 and e/risk-v2/wave4/runtime/run1. First failure stops for diagnosis.
 No packaging, deployment, hardware, remote change, or worker cleanup.
+
+## ProbeSession backend admission and superseded-operation qualification
+
+Accepted base: `d868c50daac16695b9891885c9c1d66578d33996`.
+One Luna/max owner owns only the new
+`tools/stm32-monitor/tests/test_risk_probe_session_admission.py` in r10/w5p.
+Main owns design, complete-diff review and acceptance. Existing FakeObservation,
+_binding and WatchItem helpers in test_probe_session stay read-only. Two caller
+scenarios contain eleven independent cases; no hardware access or physical PASS.
+
+1. Unprepared public read (two cases). A valid adapter returns an ordinary
+   OperationResult.failure with empty code, or success with data=None, at its
+   _read_batch boundary. The first produces an isolated ERROR SampleValue with
+   MONITOR_PROVENANCE_CHANGED and no whole-read block; the second yields an empty
+   blocked result and fixed 'Monitor observation report is invalid'. Restore the
+   backend and prove the same public session reads its original watch normally.
+   Targets are probe_session.py161-162 and175-176; no private mapping call.
+2. Public revalidate/prepare/read lifecycle (nine cases). Three prepare-result
+   variants return an unknown failure code, success without a plan, or a valid
+   plan after the backend's admission token changes. Expect the exact current
+   public code/message and invalidation behavior (267-280). Four supersession
+   cases hold an older prepare failure, prepared-read cancellation, prepared-read
+   exception, or revalidation failure behind Events; a newer public operation
+   revalidates and installs its own plan before the older operation settles.
+   Assert the old outcome and that the newer plan remains usable, including no
+   stale backend invalidation (242,303,307,337). Two adapter capability cases omit
+   the optional invalidation hook on pre-admission prepare, or supply no admission
+   token after otherwise successful binding revalidation (218,376). Restore a
+   complete adapter and prove public revalidate/prepare/read succeeds afterward.
+
+The named underscored methods are external Observation adapter seams, not
+permission to edit ProbeSession private plan/admission fields or guards. Use valid
+constructors and public session operations throughout. For the optional-hook case,
+the constructor still requires valid binding/catalog/_read_batch/revalidate.
+Use bounded Event waits and explicit finally cleanup for all pending tasks; do
+not use timing sleeps or count an unstarted async operation as pending work.
+Preflight all response shapes and fallback semantics against their public
+serializers before execution. Keep the complete meaningful values, code/message,
+backend calls and recovery assertions; no generic diagnostic framework. Private
+uncalled _read_group and _revalidate_lightweight gaps remain unqualified here.
+
+After Ruff --no-cache, AST and diff checks, commit and run the complete eleven-case
+file once, -x,180s, with the existing guarded launcher/native coverage of both
+packages. Generated files stay r10/t/w5p/run1; durable evidence/raw coverage stays
+e/risk-v2/wave5/probe-session/run1. First failure stops for diagnosis. Main owns
+cleanup and integration; no product, shared helper, deployment or remote changes.
