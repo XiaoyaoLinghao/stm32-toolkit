@@ -1,66 +1,60 @@
 # Current native coverage result
 
-Qualification accepted base: `ab2fd448a73a319b026a5a6da700b31c2535975f`.
-Integrated code/test head before this report: `c2e92ac3439d83d2693768c9bb3b80b1f1b46045`.
-Qualified runtime source: `465249dba5560f7c08b1172794fec8fedd9b8d96`.
-Native data verdict: **ACCEPTED**. Monitor overall 90%: **MET**.
-Toolkit overall 90% and both preferred core 95% targets: **NOT MET**.
+Accepted integration before this report: `2520ac61b56d521a8df88ad8a268cff1a4bfbd32`.
+Tested candidate: `a695f397260ebb815059d3df598dadf4c884924c`.
+Qualified product source: `8a11caef14df16c5e56c0be2363d4ef5530110eb`.
+Union23 native data verdict: **ACCEPTED_NATIVE_DATA**. Release 1.0: **NOT_ACCEPTED**.
 
 | Package | Covered / total branches | Overall and frozen core | More for 90% | More for 95% |
 | --- | ---: | ---: | ---: | ---: |
-| Toolkit | 11,795 / 13,578 | 86.8685% | 426 | 1,105 |
+| Toolkit | 11,616 / 13,580 | 85.5376% | 606 | 1,285 |
 | Monitor | 2,653 / 2,940 | 90.2381% | 0 | 140 |
 | UI (retained separately) | 784 / 810 | 96.7901% | 0 | 0 |
 
-Union20 combines each package's accepted union19 raw baseline with three complete
-passing batches: probe ownership retry (4 tests, 7.43 seconds), lifecycle-event
-and predecessor-chain qualification (2 tests, 17.72 seconds), and legacy analysis
-plan input qualification (1 test, 25.94 seconds). The matrices verify valid
-public prefixes, exact failures, persisted revision/event/root preservation and
-resource ownership. Toolkit gains 26 native branches; Monitor is unchanged.
+The repeat-bind product correction remains accepted with its seven current-source
+PASS. Source changes invalidate old coverage for recovery_workflows.py, so union21
+removed that file's old-source arcs and incorporated only accepted current-source
+evidence. The historical union20 result, 11,795/13,578 on source 465249d, remains
+archived and must not be presented as the current product's coverage.
 
-Five additional event decoder tests passed in the first event batch. Their test
-bytes are unchanged, so the functional results remain valid without rerunning.
-That batch stopped on a missing `copy.` qualifier in a new test. The first legacy
-matrix stopped on an incorrect comparison of frozen result containers to JSON
-lists, after the positive public operation succeeded. Luna/max corrected only
-these test defects; the primary reviewed the complete diffs and ran only the
-failed or unexecuted tests. Both initial failures are INFRASTRUCTURE, preserved,
-and excluded wholesale from the native union. No product failure, physical PASS,
-filtered raw data, or clean full-suite PASS is inferred.
+The two complete Diagnostic caller journeys passed in 90.370 seconds: lifecycle
+through resolution/retry, and twelve authority-refusal variants with exact graph
+preservation. Union22 incorporated the complete run and added 23 native branches.
+Its three failed construction batches remain excluded, with diagnostic evidence
+retained. See diagnostic-public-journeys.md for the accepted implementation scope.
 
-The six executed test-file blobs match integration. All 148 product source files
-across the three candidate roots and integration match the registry-pinned c96p
-source after CRLF-to-LF normalization. Product bytes and dependencies did not
-change. Independent review verified raw input/output hashes and exact normalized
-native unions. Package scopes remain 108/18 files, core scopes 97/16, and branch
-denominators 13578/2940. Non-core forwarding files have no branch opportunities,
-so overall/core ratios coincide. Monitor's 2,652 literal JSON branch pairs and
-2,653 native summary count retain their documented distinction. UI stays separate.
-Residual branch counts are Toolkit 1,783 and Monitor 287.
+An explicit primary source-qualification decision then reused three existing
+generic recovery selectors: build-provider failure, six build-output refusals and
+six target-replay refusals. All **13 PASS in 8.541 seconds**, exit 0, no timeout or
+forced termination. No tests or product code changed. Union23 adds 87 Toolkit
+branches; recovery_workflows.py now has 399/860 current-source branches. The run
+did not import Monitor, so its accepted union22 object and UI are retained unchanged.
 
-Evidence: `r10/e/n95/union20/` under `D:/codex-tmp/v10b-0918`.
-Independent review SHA-256: `CF3C390D405BFCADE2B2D275C7E40B31B5EA8F8795B340F9A8C51FEA5970E2B8`.
-Primary review SHA-256: `70404C72507F93A01EC17E2AB82A221DCAA1960A299F551AB66F39D4DCA6CC84`.
-Canonical coverage SHA-256: `502C20BE1EE4AF142CBAEF47A72B449032CD5A2409B9B8BD8523B9306D961452`.
-The original union19 artifacts and all failed-run evidence remain preserved.
+Native scope remains 108/18 Python files overall and 97/16 core files. The excluded
+forwarders have zero branches, so overall/core ratios coincide. Per-package native
+summaries are authoritative; Monitor's 2,652 explicit JSON branch pairs versus
+2,653 native summary count retain their documented distinction. No raw splicing,
+denominator change, cross-package pooling or failed-batch reuse is used.
 
-Overall 90% is mandatory; core95 is the user's preferred target. VS10-A/B
-acceptance and attempt 7 remain valid. Seven Windows native security checks,
-remaining coverage qualification, final artifacts and final deployment remain
-pending. 1.0 is not accepted. This wave used no hardware, packaging, deployment
-or remote action.
+Evidence root: `D:/codex-tmp/v10b-0918/r10/e/n95/union23`.
+Generic run raw SHA256: `C565BD64F56D1F25FF7DF3F2073D476D8D289FA6C05C9B8A5C7C823F4DCE9780`.
+Union23 Toolkit raw SHA256: `3B4FEC0818FA7F176A5E936EB627E2AB5AE115666529D620956634B88110A51B`.
+Native JSON SHA256: `8A04CDF8C0AF1833BC0A76F0362518F117C6B48185296537AFB258DE710C7852`.
+Independent review SHA256: `604D2971C58B08BAC9E851E2C9D78B57BCDE57E5287E0160D0610D30D743BB73`.
+Canonical snapshot SHA256: `1A1161097F4C2EA960C9E3C8B3005EF82050089853B51CD4C188DB42B5A450E6`.
 
-The small-batch verification/report overhead has become disproportionate. The
-next primary design decision must cover complete public caller workflows, with
-deduplicated reachable variants, first-guard/state/resource oracles and bounded
-execution cost. Static residual counts do not prove reachability or future gains.
-No automatic branch-sized implementation follows this report; no denominator
-change or product edit solely for coverage is authorized.
+Overall 90% is mandatory; core 95% remains the user's preferred target. VS10-A/B
+acceptance and attempt 7 are retained. Coverage qualification, seven pending native
+Windows checks, final artifact creation and final deployment remain incomplete.
+No hardware, packaging, deployment or remote action occurred in these two offline
+qualification batches. No clean full-suite PASS or physical PASS is inferred.
 
-One cleanup attempt for the six verified run-owned roots t/pr1, t/ec1, t/ec2,
-t/la1, t/la2 and t/u20 was rejected by automatic approval before process start:
-blocked by policy. Read-only verification confirms all remain present; zero
-files were deleted and no retry or alternative deletion was used. Evidence and
-the exact disposition are retained in union20/cleanup.json. Earlier rejected
-cleanup roots remain untouched.
+Further implementation requires one finite public-workflow scope and a reachability/
+cost decision. This report does not authorize another branch-by-branch test sequence,
+product changes solely for coverage, or another run of valid hardware evidence.
+
+One cleanup attempt for the five verified success-run/copy roots t/dj4, t/u21,
+t/u22, t/gq1 and t/u23 was rejected by automatic approval before process start
+with `blocked by policy`. Zero files were deleted; all five remain present. No
+retry or alternate deletion mechanism was used. Failure roots and authoritative
+evidence remain preserved; disposition is recorded in union23/cleanup.json.
