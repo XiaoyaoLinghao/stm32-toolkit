@@ -3380,6 +3380,86 @@ def _install_persisted_analysis_mutation(
         identity = analysis.get("identity")
         assert isinstance(identity, dict)
         identity["target_device"] = "STM32F429ZGTx-alt"
+    elif analysis_mutation == "invalid-conclusion":
+        analysis.update(
+            quality="INVALID",
+            conclusion="COMPLETED",
+            reason_code="INSUFFICIENT_VALID_PAIRS",
+            aligned_position_count=1,
+            aligned_pair_count=0,
+            excluded_position_count=1,
+            before_first=None,
+            before_last=None,
+            before_min=None,
+            before_max=None,
+            after_first=None,
+            after_last=None,
+            after_min=None,
+            after_max=None,
+            delta_first=None,
+            delta_last=None,
+            changed=None,
+        )
+    elif analysis_mutation == "invalid-count":
+        analysis.update(
+            quality="INVALID",
+            conclusion="INCONCLUSIVE",
+            reason_code="INSUFFICIENT_VALID_PAIRS",
+            aligned_position_count=2049,
+            aligned_pair_count=0,
+            excluded_position_count=1,
+            before_first=None,
+            before_last=None,
+            before_min=None,
+            before_max=None,
+            after_first=None,
+            after_last=None,
+            after_min=None,
+            after_max=None,
+            delta_first=None,
+            delta_last=None,
+            changed=None,
+        )
+    elif analysis_mutation == "invalid-counts":
+        analysis.update(
+            quality="INVALID",
+            conclusion="INCONCLUSIVE",
+            reason_code="INSUFFICIENT_VALID_PAIRS",
+            aligned_position_count=1,
+            aligned_pair_count=1,
+            excluded_position_count=1,
+            before_first=None,
+            before_last=None,
+            before_min=None,
+            before_max=None,
+            after_first=None,
+            after_last=None,
+            after_min=None,
+            after_max=None,
+            delta_first=None,
+            delta_last=None,
+            changed=None,
+        )
+    elif analysis_mutation == "unknown-quality":
+        analysis["quality"] = "UNKNOWN"
+    elif analysis_mutation == "nonboolean-changed":
+        analysis["changed"] = None
+    elif analysis_mutation == "too-few-pairs":
+        analysis.update(
+            aligned_position_count=1,
+            aligned_pair_count=1,
+            excluded_position_count=0,
+            reason_code="VALUES_CHANGED",
+        )
+    elif analysis_mutation == "exclusions-mismatch":
+        analysis.update(
+            aligned_position_count=2,
+            aligned_pair_count=2,
+            excluded_position_count=1,
+            reason_code="VALUES_CHANGED_WITH_EXCLUSIONS",
+        )
+    elif analysis_mutation == "nonnumeric-scalar":
+        analysis["before_first"] = None
     else:
         raise AssertionError(f"unsupported analysis mutation: {analysis_mutation}")
 
@@ -3504,3 +3584,175 @@ def test_public_analysis_semantic_refusals_preserve_authority(
     assert shown.ok is True
     assert shown.data["session"]["revision"] == 4
     assert shown.data["session"]["state"] == "FIX_PROPOSED"
+
+
+def _clone_legacy_analysis_workspace(
+    tmp_path: Path, baseline_workspace: WorkspacePaths, case_name: str
+) -> tuple[DiagnosticWorkflowContext, WorkspacePaths, EvidenceStore]:
+    clone_data_root = tmp_path / "legacy-analysis-cases" / case_name / "data"
+    clone_workspace = WorkspacePaths.from_roots(
+        clone_data_root,
+        baseline_workspace.project_root,
+        verification_fixture.PROJECT_ID,
+        baseline_workspace.session_id,
+    )
+    clone_workspace.workspace_root.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(baseline_workspace.workspace_root, clone_workspace.workspace_root)
+    assert clone_workspace.workspace_id == baseline_workspace.workspace_id
+    assert clone_workspace.workspace_storage_key == baseline_workspace.workspace_storage_key
+    assert clone_workspace.session_id == baseline_workspace.session_id
+    clone_context = DiagnosticWorkflowContext(
+        baseline_workspace.project_root,
+        clone_data_root,
+        baseline_workspace.session_id,
+    )
+    clone_evidence = EvidenceStore(clone_workspace.workspace_root / "evidence")
+    return clone_context, clone_workspace, clone_evidence
+
+
+def test_public_legacy_analysis_plan_input_qualification_matrix(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    (
+        diagnostic_context,
+        session_id,
+        baseline_workspace,
+        declaration,
+        plan,
+        marker_ref,
+    ) = verification_fixture._prepared_checkpoint_for_plan(monkeypatch, tmp_path)
+    baseline_authority = verification_fixture._authority_snapshot(baseline_workspace)
+    baseline_tree = verification_fixture._tree_snapshot(baseline_workspace.workspace_root)
+    baseline_evidence = EvidenceStore(baseline_workspace.workspace_root / "evidence")
+    analysis_root = get_root(
+        baseline_evidence, "monitor-analysis", str(marker_ref.analysis_id)
+    )
+    analysis_envelope = baseline_evidence.get_envelope(analysis_root.manifest_id)
+    analysis = json.loads(
+        baseline_evidence.read_artifact(
+            analysis_envelope.artifacts[0], maximum_bytes=1_000_000
+        ).decode("utf-8")
+    )
+    assert isinstance(analysis, dict)
+    assert analysis["schema"] == "stm32-monitor-analysis/1"
+    assert analysis["quality"] == "VALID"
+    assert analysis["changed"] is True
+    assert marker_ref.analysis_id == analysis["analysis_id"]
+    assert marker_ref.analysis_evidence_id == str(analysis_envelope.evidence_id)
+    assert plan.source_change_declaration_id == declaration.declaration_id
+    assert declaration.validation_plan_id == plan.verification_plan_id
+    assert plan.required_monitor_quality == "VALID"
+    assert plan.expected_changed is True
+    assert plan.required_analysis_ids == (str(analysis["analysis_id"]),)
+    assert plan.required_analysis_evidence_ids == (str(analysis_envelope.evidence_id),)
+    unsigned_analysis = {
+        key: value for key, value in analysis.items() if key != "analysis_id"
+    }
+    assert analysis["analysis_id"] == hashlib.sha256(
+        canonical_replay_json_bytes(unsigned_analysis)
+    ).hexdigest()
+    analysis_bytes = baseline_evidence.read_artifact(
+        analysis_envelope.artifacts[0], maximum_bytes=1_000_000
+    )
+    assert analysis_bytes in (
+        canonical_replay_json_bytes(analysis),
+        canonical_replay_json_bytes(analysis) + b"\n",
+    )
+    assert analysis_root.root_id == str(analysis["analysis_id"])
+    assert analysis_root.manifest_id == str(analysis_envelope.evidence_id)
+    assert analysis_root.metadata == analysis_envelope.metadata
+    for role, field in (
+        ("failed-before", "before_run_id"),
+        ("fixed-after", "after_run_id"),
+    ):
+        operation_id = verification_fixture.MONITOR_OPERATION_IDS[role]
+        reference_root = get_root(
+            baseline_evidence, "monitor-run-ref", operation_id
+        )
+        reference_envelope = baseline_evidence.get_envelope(reference_root.manifest_id)
+        reference = json.loads(
+            baseline_evidence.read_artifact(
+                reference_envelope.artifacts[0], maximum_bytes=1_000_000
+            ).decode("utf-8")
+        )
+        assert analysis[field] == reference["run_ref_sha256"]
+        assert reference_root.metadata["run_ref_sha256"] == analysis[field]
+
+    positive_context, positive_workspace, positive_evidence = (
+        _clone_legacy_analysis_workspace(tmp_path, baseline_workspace, "positive")
+    )
+    positive_result = workflow_module.diagnostic_add_verification_plan(
+        verification_fixture._fresh_diagnostic_context(positive_context),
+        operation_id="diagnostic.verification-plan.add.legacy-positive",
+        diagnostic_session_id=session_id,
+        expected_revision=4,
+        verification_plan=plan,
+    )
+    assert positive_result.ok is True
+    assert positive_result.data["session"]["revision"] == 5
+    assert positive_result.data["session"]["state"] == "FIX_PROPOSED"
+    assert positive_result.data["verification_plan"] == plan.to_dict()
+    positive_reload = workflow_module.diagnostic_show(
+        verification_fixture._fresh_diagnostic_context(positive_context),
+        diagnostic_session_id=session_id,
+    )
+    assert positive_reload.ok is True
+    assert positive_reload.data["session"]["revision"] == 5
+    assert positive_reload.data["session"]["verification_plans"] == [plan.to_dict()]
+    assert positive_evidence.get_envelope(analysis_root.manifest_id) == analysis_envelope
+    assert verification_fixture._tree_snapshot(baseline_workspace.workspace_root) == baseline_tree
+    assert verification_fixture._authority_snapshot(baseline_workspace) == baseline_authority
+    assert verification_fixture._tree_snapshot(positive_workspace.workspace_root) != baseline_tree
+
+    mutation_cases = (
+        "invalid-conclusion",
+        "invalid-count",
+        "invalid-counts",
+        "unknown-quality",
+        "nonboolean-changed",
+        "too-few-pairs",
+        "exclusions-mismatch",
+        "nonnumeric-scalar",
+    )
+    for analysis_mutation in mutation_cases:
+        (
+            mutation_context,
+            mutation_workspace,
+            _mutation_evidence,
+        ) = _clone_legacy_analysis_workspace(
+            tmp_path, baseline_workspace, analysis_mutation
+        )
+        mutated_plan = _install_persisted_analysis_mutation(
+            tmp_path / "legacy-analysis-cases" / analysis_mutation,
+            mutation_workspace,
+            marker_ref,
+            plan,
+            analysis_mutation,
+        )
+        before = verification_fixture._authority_snapshot(mutation_workspace)
+        result = workflow_module.diagnostic_add_verification_plan(
+            verification_fixture._fresh_diagnostic_context(mutation_context),
+            operation_id=(
+                "diagnostic.verification-plan.add.legacy-guard."
+                f"{analysis_mutation}"
+            ),
+            diagnostic_session_id=session_id,
+            expected_revision=4,
+            verification_plan=mutated_plan,
+        )
+        after = verification_fixture._authority_snapshot(mutation_workspace)
+        assert result.ok is False
+        assert result.code == "EVIDENCE_INTEGRITY_FAILURE"
+        assert result.message == "Target replay evidence failed integrity validation."
+        assert result.data is None
+        assert after == before
+        reloaded = workflow_module.diagnostic_show(
+            verification_fixture._fresh_diagnostic_context(mutation_context),
+            diagnostic_session_id=session_id,
+        )
+        assert reloaded.ok is True
+        assert reloaded.data["session"]["revision"] == 4
+        assert reloaded.data["session"]["state"] == "FIX_PROPOSED"
+        assert reloaded.data["session"]["verification_plans"] == []
+        assert verification_fixture._tree_snapshot(baseline_workspace.workspace_root) == baseline_tree
+        assert verification_fixture._authority_snapshot(baseline_workspace) == baseline_authority
