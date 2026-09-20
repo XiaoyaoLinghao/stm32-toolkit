@@ -2495,6 +2495,15 @@ def _assert_public_failure(
 
 def _assert_public_success(result: object, operation: str) -> dict[str, object]:
     wire = result.to_dict()  # type: ignore[union-attr]
+    assert set(wire) == {
+        "protocol",
+        "ok",
+        "operation",
+        "code",
+        "message",
+        "data",
+        "details",
+    }
     assert wire["protocol"] == "stm32-toolkit/1"
     assert wire["ok"] is True
     assert wire["operation"] == operation
@@ -2503,6 +2512,193 @@ def _assert_public_success(result: object, operation: str) -> dict[str, object]:
     assert wire["details"] == {}
     assert wire["data"] is not None
     return wire
+
+
+def _assert_public_diagnostic_checkpoint(
+    workspace: WorkspacePaths,
+    before: tuple[tuple[str, bytes | None], ...],
+    after: tuple[tuple[str, bytes | None], ...],
+    *,
+    diagnostic_session_id: str,
+    revision: int,
+    operation_id: str,
+    actor: str,
+    event_type: str,
+    expected_state: str,
+    expected_payload: dict[str, object],
+) -> None:
+    evidence = EvidenceStore(workspace.workspace_root / "evidence")
+    root_id = f"{diagnostic_session_id}.{revision:08d}"
+    root = get_root(evidence, "diagnostic-session", root_id)
+    envelope = evidence.get_envelope(root.manifest_id)
+    assert len(envelope.artifacts) == 1
+    artifact = envelope.artifacts[0]
+
+    previous_root = get_root(
+        evidence,
+        "diagnostic-session",
+        f"{diagnostic_session_id}.{revision - 1:08d}",
+    )
+    event_path = (
+        workspace.diagnostics_root
+        / "sessions"
+        / diagnostic_session_id
+        / "events"
+        / f"{revision - 1:08d}.json"
+    )
+    event_bytes = event_path.read_bytes()
+    event = json.loads(event_bytes.decode("utf-8"))
+    assert isinstance(event, dict)
+    assert canonical_json_bytes(event) == event_bytes
+    assert set(event) == {
+        "schema",
+        "diagnostic_session_id",
+        "operation_id",
+        "sequence",
+        "revision_before",
+        "event_type",
+        "occurred_at_utc",
+        "actor",
+        "previous_digest",
+        "payload",
+        "digest",
+    }
+    assert event["schema"] == "stm32-diagnostic-event/1"
+    assert event["diagnostic_session_id"] == diagnostic_session_id
+    assert event["operation_id"] == operation_id
+    assert event["sequence"] == revision - 1
+    assert event["revision_before"] == revision - 1
+    assert event["event_type"] == event_type
+    assert isinstance(event["occurred_at_utc"], str)
+    assert event["actor"] == actor
+    assert event["previous_digest"] == previous_root.metadata["event_digest"]
+    assert event["payload"] == expected_payload
+    event_digest = event["digest"]
+    assert isinstance(event_digest, str)
+    without_digest = {
+        key: value for key, value in event.items() if key != "digest"
+    }
+    assert event_digest == hashlib.sha256(
+        canonical_json_bytes(without_digest)
+    ).hexdigest()
+
+    request = expected_payload["request"]
+    assert isinstance(request, dict)
+    references: list[str] = []
+    if event_type == "source_change.declared":
+        declaration = request["source_change_declaration"]
+        assert isinstance(declaration, dict)
+        references.append(str(declaration["diff_evidence_id"]))
+    elif event_type == "verification.plan_added":
+        plan = request["verification_plan"]
+        assert isinstance(plan, dict)
+        references.extend(
+            (
+                str(plan["failed_before_evidence_id"]),
+                str(plan["fixed_after_evidence_id"]),
+                *(str(item) for item in plan["required_analysis_evidence_ids"]),
+            )
+        )
+        continuation = plan.get("continuation_evidence_id")
+        if continuation is not None:
+            references.append(str(continuation))
+    elif event_type == "analysis.marker_attached":
+        marker = request["diagnostic_marker_ref"]
+        assert isinstance(marker, dict)
+        references.extend(
+            (str(marker["marker_evidence_id"]), str(marker["analysis_evidence_id"]))
+        )
+    elif event_type == "verification.completed":
+        verification = request["fix_verification"]
+        assert isinstance(verification, dict)
+        references.extend(
+            (
+                str(verification["failed_before_evidence_id"]),
+                str(verification["fixed_after_evidence_id"]),
+                *(str(item) for item in verification["analysis_evidence_ids"]),
+            )
+        )
+    expected_parents = [previous_root.manifest_id]
+    for reference in references:
+        if reference not in expected_parents:
+            expected_parents.append(reference)
+
+    artifact_sha256 = hashlib.sha256(event_bytes).hexdigest()
+    artifact_relative_path = (
+        f"objects/sha256/{artifact_sha256[:2]}/{artifact_sha256}"
+    )
+    expected_artifact = {
+        "sha256": artifact_sha256,
+        "size_bytes": len(event_bytes),
+        "relative_path": artifact_relative_path,
+        "kind": "diagnostic-event",
+        "media_type": "application/json",
+    }
+    assert artifact.to_dict() == expected_artifact
+    assert evidence.read_artifact(artifact, maximum_bytes=1_000_000) == event_bytes
+    object_path = evidence.root / artifact_relative_path
+    assert object_path.read_bytes() == event_bytes
+
+    expected_metadata = {
+        "diagnostic_session_id": diagnostic_session_id,
+        "sequence": revision - 1,
+        "revision": revision,
+        "event_digest": event_digest,
+    }
+    assert envelope.to_dict() == {
+        "schema": "stm32-evidence/1",
+        "evidence_id": str(envelope.evidence_id),
+        "identity": envelope.identity.to_dict(),
+        "operation": "diagnostic-event",
+        "produced_at_utc": event["occurred_at_utc"],
+        "parents": expected_parents,
+        "artifacts": [expected_artifact],
+        "metadata": expected_metadata,
+    }
+    assert envelope.to_json_bytes() == (
+        evidence.root / "manifests" / f"{envelope.evidence_id}.json"
+    ).read_bytes()
+    expected_root_metadata = {
+        "diagnostic_session_id": diagnostic_session_id,
+        "revision": revision,
+        "state": expected_state,
+        "event_digest": event_digest,
+    }
+    assert root.to_dict() == {
+        "root_type": "diagnostic-session",
+        "root_id": root_id,
+        "manifest_id": str(envelope.evidence_id),
+        "metadata": expected_root_metadata,
+    }
+    root_path = _public_diagnostic_root_file(
+        evidence, "diagnostic-session", root_id
+    )
+    assert root_path.read_bytes() == canonical_json_bytes(root.to_dict())
+
+    data_root = workspace.data_root
+    before_paths = {path for path, _payload in before}
+    after_paths = {path for path, _payload in after}
+    expected_files = {
+        event_path,
+        root_path,
+        evidence.root / "manifests" / f"{envelope.evidence_id}.json",
+        object_path,
+    }
+    expected_file_paths = {
+        path.relative_to(data_root).as_posix() for path in expected_files
+    }
+    assert expected_file_paths.isdisjoint(before_paths)
+    assert expected_file_paths <= after_paths
+    expected_new_directories: set[str] = set()
+    for file_path in expected_files:
+        parent = file_path.parent
+        while parent != data_root:
+            relative = parent.relative_to(data_root).as_posix()
+            if relative not in before_paths:
+                expected_new_directories.add(relative)
+            parent = parent.parent
+    assert after_paths - before_paths == expected_file_paths | expected_new_directories
+    assert all(entry in after for entry in before)
 
 
 def _copy_public_diagnostic_prefix(
@@ -2727,7 +2923,7 @@ def test_public_diagnostic_caller_journey_replay_to_resolution(
         project_root=project_root,
         session_id="dj1-session",
     )
-    prefix6_original_bytes = dict(_tree_snapshot(data_root))
+    prefix6_original_bytes = _tree_snapshot(data_root)
     invalid_hypothesis_context = DiagnosticWorkflowContext(
         project_root,
         journey_root / "invalid-hypothesis",
@@ -2830,7 +3026,7 @@ def test_public_diagnostic_caller_journey_replay_to_resolution(
         fixed_fixture.descriptor.identity,
         hypothesis_id,
     )
-    declaration_before_bytes = dict(_tree_snapshot(data_root))
+    declaration_before_bytes = _tree_snapshot(data_root)
     declared = diagnostic_declare_source_change(
         diagnostic,
         operation_id="dj1.source-change.declare",
@@ -2855,12 +3051,22 @@ def test_public_diagnostic_caller_journey_replay_to_resolution(
     assert declared_session["source_change_declarations"] == [declaration.to_dict()]
     assert declared_session["event_head"] != shown_session["event_head"]
     assert len(declared_session["event_head"]) == 64
-    declaration_after_bytes = dict(_tree_snapshot(data_root))
-    assert all(
-        declaration_after_bytes.get(path) == payload
-        for path, payload in declaration_before_bytes.items()
+    declaration_after_bytes = _tree_snapshot(data_root)
+    _assert_public_diagnostic_checkpoint(
+        baseline_workspace,
+        declaration_before_bytes,
+        declaration_after_bytes,
+        diagnostic_session_id=diagnostic_storage_id,
+        revision=7,
+        operation_id="dj1.source-change.declare",
+        actor="user",
+        event_type="source_change.declared",
+        expected_state="FIX_PROPOSED",
+        expected_payload={
+            "request": {"source_change_declaration": declaration.to_dict()},
+            "result": {"declaration_id": declaration.declaration_id},
+        },
     )
-    assert set(declaration_after_bytes) > set(declaration_before_bytes)
 
     workspace, verification_plan, publication, after_run = _prepare_public_diagnostic_authorities(
         journey_root,
@@ -2881,7 +3087,7 @@ def test_public_diagnostic_caller_journey_replay_to_resolution(
         project_root=project_root,
         session_id="dj1-session",
     )
-    prefix7_original_bytes = dict(_tree_snapshot(data_root))
+    prefix7_original_bytes = _tree_snapshot(data_root)
 
     extra_declaration = SourceChangeDeclaration.new(
         before_source_sha256=declaration.before_source_sha256,
@@ -3034,7 +3240,7 @@ def test_public_diagnostic_caller_journey_replay_to_resolution(
     assert _tree_snapshot(absent_plan_context.data_root) == before
     assert _tree_snapshot(data_root) == prefix7_original_bytes
 
-    plan_before_bytes = dict(_tree_snapshot(data_root))
+    plan_before_bytes = _tree_snapshot(data_root)
     added = diagnostic_add_verification_plan(
         diagnostic,
         operation_id="dj1.verification-plan.add",
@@ -3058,12 +3264,25 @@ def test_public_diagnostic_caller_journey_replay_to_resolution(
     assert added_session["state"] == "FIX_PROPOSED"
     assert added_session["event_head"] != declared_session["event_head"]
     assert len(added_session["event_head"]) == 64
-    plan_after_bytes = dict(_tree_snapshot(data_root))
-    assert all(
-        plan_after_bytes.get(path) == payload
-        for path, payload in plan_before_bytes.items()
+    plan_after_bytes = _tree_snapshot(data_root)
+    _assert_public_diagnostic_checkpoint(
+        baseline_workspace,
+        plan_before_bytes,
+        plan_after_bytes,
+        diagnostic_session_id=diagnostic_storage_id,
+        revision=8,
+        operation_id="dj1.verification-plan.add",
+        actor="user",
+        event_type="verification.plan_added",
+        expected_state="FIX_PROPOSED",
+        expected_payload={
+            "request": {"verification_plan": verification_plan.to_dict()},
+            "result": {
+                "verification_plan_id": verification_plan.verification_plan_id,
+                "plan_digest": verification_plan.plan_digest,
+            },
+        },
     )
-    assert set(plan_after_bytes) > set(plan_before_bytes)
 
     prefix8 = journey_root / "prefix8"
     _copy_public_diagnostic_prefix(
@@ -3072,7 +3291,7 @@ def test_public_diagnostic_caller_journey_replay_to_resolution(
         project_root=project_root,
         session_id="dj1-session",
     )
-    prefix8_original_bytes = dict(_tree_snapshot(data_root))
+    prefix8_original_bytes = _tree_snapshot(data_root)
     attach_before_start_context = DiagnosticWorkflowContext(
         project_root,
         journey_root / "attach-before-start",
@@ -3101,7 +3320,7 @@ def test_public_diagnostic_caller_journey_replay_to_resolution(
     assert _tree_snapshot(attach_before_start_context.data_root) == before
     assert _tree_snapshot(data_root) == prefix8_original_bytes
 
-    start_before_bytes = dict(_tree_snapshot(data_root))
+    start_before_bytes = _tree_snapshot(data_root)
     started = diagnostic_start_verification(
         diagnostic,
         operation_id="dj1.verification.start",
@@ -3125,12 +3344,26 @@ def test_public_diagnostic_caller_journey_replay_to_resolution(
     assert started_session["state"] == "VERIFYING"
     assert started_session["event_head"] != added_session["event_head"]
     assert len(started_session["event_head"]) == 64
-    start_after_bytes = dict(_tree_snapshot(data_root))
-    assert all(
-        start_after_bytes.get(path) == payload
-        for path, payload in start_before_bytes.items()
+    start_after_bytes = _tree_snapshot(data_root)
+    _assert_public_diagnostic_checkpoint(
+        baseline_workspace,
+        start_before_bytes,
+        start_after_bytes,
+        diagnostic_session_id=diagnostic_storage_id,
+        revision=9,
+        operation_id="dj1.verification.start",
+        actor="tool",
+        event_type="verification.started",
+        expected_state="VERIFYING",
+        expected_payload={
+            "request": {
+                "verification_plan_id": verification_plan.verification_plan_id,
+            },
+            "result": {
+                "verification_plan_id": verification_plan.verification_plan_id,
+            },
+        },
     )
-    assert set(start_after_bytes) > set(start_before_bytes)
 
     prefix9 = journey_root / "prefix9"
     _copy_public_diagnostic_prefix(
@@ -3139,7 +3372,7 @@ def test_public_diagnostic_caller_journey_replay_to_resolution(
         project_root=project_root,
         session_id="dj1-session",
     )
-    prefix9_original_bytes = dict(_tree_snapshot(data_root))
+    prefix9_original_bytes = _tree_snapshot(data_root)
     marker_ref = publication.diagnostic_marker_ref
     unpaired_marker = DiagnosticMarkerRef.new(
         marker_id="c" * 64,
@@ -3180,7 +3413,7 @@ def test_public_diagnostic_caller_journey_replay_to_resolution(
     assert _tree_snapshot(unpaired_marker_context.data_root) == before
     assert _tree_snapshot(data_root) == prefix9_original_bytes
 
-    attach_before_bytes = dict(_tree_snapshot(data_root))
+    attach_before_bytes = _tree_snapshot(data_root)
     attached = diagnostic_attach_marker(
         diagnostic,
         operation_id="dj1.marker.attach",
@@ -3204,12 +3437,22 @@ def test_public_diagnostic_caller_journey_replay_to_resolution(
     assert attached_session["state"] == "VERIFYING"
     assert attached_session["event_head"] != started_session["event_head"]
     assert len(attached_session["event_head"]) == 64
-    attach_after_bytes = dict(_tree_snapshot(data_root))
-    assert all(
-        attach_after_bytes.get(path) == payload
-        for path, payload in attach_before_bytes.items()
+    attach_after_bytes = _tree_snapshot(data_root)
+    _assert_public_diagnostic_checkpoint(
+        baseline_workspace,
+        attach_before_bytes,
+        attach_after_bytes,
+        diagnostic_session_id=diagnostic_storage_id,
+        revision=10,
+        operation_id="dj1.marker.attach",
+        actor="tool",
+        event_type="analysis.marker_attached",
+        expected_state="VERIFYING",
+        expected_payload={
+            "request": {"diagnostic_marker_ref": marker_ref.to_dict()},
+            "result": {"marker_id": marker_ref.marker_id},
+        },
     )
-    assert set(attach_after_bytes) > set(attach_before_bytes)
 
     prefix10 = journey_root / "prefix10"
     _copy_public_diagnostic_prefix(
@@ -3218,7 +3461,7 @@ def test_public_diagnostic_caller_journey_replay_to_resolution(
         project_root=project_root,
         session_id="dj1-session",
     )
-    prefix10_original_bytes = dict(_tree_snapshot(data_root))
+    prefix10_original_bytes = _tree_snapshot(data_root)
     invalid_completion_cases = (
         ("empty-executed", [], False),
         (
@@ -3317,13 +3560,27 @@ def test_public_diagnostic_caller_journey_replay_to_resolution(
     assert completed_session["event_head"] != prefix10_event_head
     assert len(completed_session["event_head"]) == 64
     assert completed_session["fix_verifications"] == [expected_verification]
-    prefix10_bytes = dict(_tree_snapshot(prefix10))
-    after_completion_bytes = dict(_tree_snapshot(data_root))
-    assert all(
-        after_completion_bytes.get(path) == payload
-        for path, payload in prefix10_bytes.items()
+    prefix10_bytes = _tree_snapshot(prefix10)
+    after_completion_bytes = _tree_snapshot(data_root)
+    _assert_public_diagnostic_checkpoint(
+        baseline_workspace,
+        prefix10_bytes,
+        after_completion_bytes,
+        diagnostic_session_id=diagnostic_storage_id,
+        revision=11,
+        operation_id="dj1.completion",
+        actor="tool",
+        event_type="verification.completed",
+        expected_state="RESOLVED",
+        expected_payload={
+            "request": {"fix_verification": expected_verification},
+            "result": {
+                "fix_verification_id": expected_verification["fix_verification_id"],
+                "status": "PASSED",
+                "reason_code": "VERIFICATION_PASSED",
+            },
+        },
     )
-    assert set(after_completion_bytes) > set(prefix10_bytes)
     prefix11 = journey_root / "prefix11"
     _copy_public_diagnostic_prefix(
         data_root,
@@ -3331,7 +3588,7 @@ def test_public_diagnostic_caller_journey_replay_to_resolution(
         project_root=project_root,
         session_id="dj1-session",
     )
-    prefix11_bytes = dict(_tree_snapshot(prefix11))
+    prefix11_bytes = _tree_snapshot(prefix11)
     assert prefix11_bytes == after_completion_bytes
 
     shown_after = diagnostic_show_verification(
@@ -3349,7 +3606,7 @@ def test_public_diagnostic_caller_journey_replay_to_resolution(
     }
 
     before_retry = _tree_snapshot(data_root)
-    assert dict(before_retry) == prefix11_bytes
+    assert before_retry == prefix11_bytes
     retry = diagnostic_complete_verification(
         diagnostic,
         operation_id="dj1.completion",
@@ -3443,7 +3700,7 @@ def test_public_diagnostic_caller_journey_authority_refusals_preserve_graph(
         project_root=project_root,
         session_id="dj2-session",
     )
-    prefix6_bytes = dict(_tree_snapshot(data_root))
+    prefix6_bytes = _tree_snapshot(data_root)
     diff_cases = (
         "operation",
         "artifact-kind",
@@ -3527,7 +3784,7 @@ def test_public_diagnostic_caller_journey_authority_refusals_preserve_graph(
         assert _tree_snapshot(case_data) == before
         assert _tree_snapshot(data_root) == prefix6_bytes
 
-    declaration_before_bytes = dict(_tree_snapshot(data_root))
+    declaration_before_bytes = _tree_snapshot(data_root)
     before_declaration_wire = _assert_public_success(
         diagnostic_show(
             _fresh_diagnostic_context(diagnostic),
@@ -3566,12 +3823,22 @@ def test_public_diagnostic_caller_journey_authority_refusals_preserve_graph(
     assert declared_session["state"] == "FIX_PROPOSED"
     assert declared_session["event_head"] != before_declaration_session["event_head"]
     assert len(declared_session["event_head"]) == 64
-    declaration_after_bytes = dict(_tree_snapshot(data_root))
-    assert all(
-        declaration_after_bytes.get(path) == payload
-        for path, payload in declaration_before_bytes.items()
+    declaration_after_bytes = _tree_snapshot(data_root)
+    _assert_public_diagnostic_checkpoint(
+        baseline_workspace,
+        declaration_before_bytes,
+        declaration_after_bytes,
+        diagnostic_session_id=diagnostic_storage_id,
+        revision=7,
+        operation_id="dj2.source-change.declare",
+        actor="user",
+        event_type="source_change.declared",
+        expected_state="FIX_PROPOSED",
+        expected_payload={
+            "request": {"source_change_declaration": declaration.to_dict()},
+            "result": {"declaration_id": declaration.declaration_id},
+        },
     )
-    assert set(declaration_after_bytes) > set(declaration_before_bytes)
 
     workspace, verification_plan, publication, _after_run = _prepare_public_diagnostic_authorities(
         journey_root,
@@ -3592,7 +3859,7 @@ def test_public_diagnostic_caller_journey_authority_refusals_preserve_graph(
         project_root=project_root,
         session_id="dj2-session",
     )
-    prefix7_bytes = dict(_tree_snapshot(data_root))
+    prefix7_bytes = _tree_snapshot(data_root)
     analysis_id = publication.analysis_result.analysis_id
     analysis_root = get_root(baseline_evidence, "monitor-analysis", analysis_id)
     analysis_envelope = baseline_evidence.get_envelope(analysis_root.manifest_id)
@@ -3719,7 +3986,11 @@ def test_public_diagnostic_caller_journey_authority_refusals_preserve_graph(
         import_metadata_workspace.workspace_root / "evidence"
     )
     changed_metadata = dict(analysis_envelope.metadata)
-    changed_metadata["import_workspace_id"] = "f" * 32
+    different_import_workspace_id = hashlib.sha256(
+        b"dj2-different-import-workspace"
+    ).hexdigest()
+    assert different_import_workspace_id != analysis_envelope.metadata["import_workspace_id"]
+    changed_metadata["import_workspace_id"] = different_import_workspace_id
     import_variant = EvidenceEnvelope(
         identity=analysis_envelope.identity,
         operation=analysis_envelope.operation,
@@ -3915,9 +4186,25 @@ def test_public_diagnostic_caller_journey_authority_refusals_preserve_graph(
     }
     assert valid_plan_session["event_head"] != declared_session["event_head"]
     assert len(valid_plan_session["event_head"]) == 64
-    valid_plan_after = dict(_tree_snapshot(data_root))
-    assert all(valid_plan_after.get(path) == payload for path, payload in valid_plan_before)
-    assert set(valid_plan_after) > set(valid_plan_before)
+    valid_plan_after = _tree_snapshot(data_root)
+    _assert_public_diagnostic_checkpoint(
+        baseline_workspace,
+        valid_plan_before,
+        valid_plan_after,
+        diagnostic_session_id=diagnostic_storage_id,
+        revision=8,
+        operation_id="dj2.valid-plan-after-authority-refusals",
+        actor="user",
+        event_type="verification.plan_added",
+        expected_state="FIX_PROPOSED",
+        expected_payload={
+            "request": {"verification_plan": verification_plan.to_dict()},
+            "result": {
+                "verification_plan_id": verification_plan.verification_plan_id,
+                "plan_digest": verification_plan.plan_digest,
+            },
+        },
+    )
 
 
 def test_default_host_repository_corruption_keeps_legacy_failure_projection(
