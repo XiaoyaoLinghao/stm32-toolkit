@@ -141,3 +141,23 @@ Clone-only fixture corruption is an explicit test input, not authorization for a
 production caller to overwrite authority. Each row compares the post-corruption,
 pre-call clone snapshot to its post-call snapshot, and separately preserves the
 unmodified source graph. No private production reader or mocked decision is used.
+
+## First execution wave
+
+The existing current-source recovery groups completed 36 and 10 PASS. The new
+M/P/A files completed 5/4/5 PASS at 7744cf83, d8b7a328 and 79323b98 respectively.
+M's later 2d4ea2c changes only an import blank line and a descriptive docstring;
+its valid runtime evidence is retained without a repeated test run. Primary
+reviewed the full accepted-base diffs in separate clean review worktrees and
+integrated the three files at code head
+`6355a6ba324f60e4af2e22bec90155b1de799c75`. Product source remains 8a11caef.
+The initial P/A fixture-construction failures were corrected without product
+changes; their raw coverage is excluded. The result report records the final
+independent native-data decision and remaining numeric gaps.
+
+Further supplementation stays in coherent scenario groups: recovery and
+Diagnostic authority transitions, project/probe failure settlement, and Monitor
+replay/history/analysis boundaries. Reuse accepted assertions before selecting
+additional valid cases. Preserve constructor-inaccessible residual branches as
+visible gaps; do not manufacture impossible objects to reach them. Overall 90%
+and frozen risk-core 95% are evaluated independently after each complete wave.
