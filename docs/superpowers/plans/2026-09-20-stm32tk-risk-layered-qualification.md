@@ -307,3 +307,55 @@ under `r10/t/w3s/run1`, evidence under `r10/e/risk-v2/wave3/sampler/run1`.
 Reuse the established guarded launch pattern with current exact identities.
 First failure stops for classification, no automatic retry. Primary accepts the
 full diff independently and owns cleanup. No remote action is authorized.
+
+## Target preparation identity qualification
+
+Accepted base: `df259d69261ff629be978fe8bbfe04f943b9cb2a`.
+Primary owns this plan and independent review. One Luna/max owner owns only
+`tools/stm32-toolkit/tests/test_risk_target_prepare_identity.py` in `r10/w3t`.
+The source remains 8a11caef. Existing target-runner factories are read-only;
+no product, shared fixture, runtime configuration or hardware change is needed.
+
+Two caller scenarios extend existing mailbox refusal coverage without repeating
+its four accepted variants or any real flash/test operation:
+
+1. A caller prepares protocol v2 with inconsistent inventory identity: malformed
+   case-inventory digest, a well-formed digest for a different valid inventory,
+   non-boolean git_dirty, or malformed optional input_snapshot_sha256. Invoke
+   public TargetTestRunner.prepare, never private record validation. The first
+   two guards are target.py:1254 and :1261, the git_dirty guard is :1265, and
+   optional input identity is validated at :1465 through :1286. The changed
+   valid inventory must return TEST_INVENTORY_CHANGED / Target case inventory
+   changed; malformed digest and git_dirty return TEST_PROTOCOL_INVALID with
+   their exact public messages; malformed optional input returns
+   TEST_PROTOCOL_INVALID / Target run binding is invalid.
+2. A caller prepares a supported transport whose declared support disagrees with
+   the frozen project configuration: RTT channel mismatch, UART baud mismatch,
+   or semihosting runtime ELF digest mismatch. Reuse valid support/config shapes
+   from test_target_runner and change one semantic field only. These are reached
+   through public prepare and _validate_prepared_record, then target.py:160,
+   :167 and :172 respectively. Each must return TEST_PROTOCOL_INVALID /
+   Target run binding is invalid before authorization publication.
+
+Use seven parameter cases across the two scenarios. Every case first prepares
+and reloads a valid control with the same transport/protocol, proving the prefix
+is reachable through public constructors. Snapshot the complete persisted
+relative-file inventory and bytes after that control. The invalid prepare must
+leave it exactly unchanged, must not invoke probe identity/control, flash or
+transport factory, and must not create a new authorization. Existing valid
+control remains publicly reloadable; a following valid prepare must succeed
+with its own nonce/action digest and reload to the original input identities.
+Use ordinary observer providers or existing fakes at supported seams; do not
+patch product guards, record validators, hashing, randomness or private state.
+The malformed values are caller inputs, not fabricated persisted signed state.
+No ELF file needs to be opened and no transport may connect.
+
+Preflight actual constructor and first-guard ordering; if an earlier guard stops
+a case, report its actual proof instead of manufacturing a bypass. Reuse the
+existing guarded native launcher, Python r10/py, full new-file Ruff --no-cache,
+AST and diff checks, then commit before one complete seven-case run, -x,
+180-second budget. TEMP/TMP/TMPDIR/cache/basetemp stay under r10/t/w3t/run1;
+raw coverage, JUnit, argv, environment and process outcomes stay under
+r10/e/risk-v2/wave3/target/run1. Only complete accepted raw is eligible for
+aggregation. First failure stops for classification; no automatic retry.
+Primary owns cleanup. There is no packaging, install or remote authorization.
