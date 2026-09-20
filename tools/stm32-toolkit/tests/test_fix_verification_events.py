@@ -328,7 +328,7 @@ def test_public_lifecycle_event_result_bindings_reject_without_mutation() -> Non
             result["verification_plan_id"] = "0" * 64
         else:
             result["marker_id"] = "0" * 64
-        before = deepcopy(candidate)
+        before = copy.deepcopy(candidate)
 
         with pytest.raises(DiagnosticValidationError) as error:
             DiagnosticEvent.from_value(candidate)
