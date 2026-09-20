@@ -386,3 +386,63 @@ raw coverage, JUnit, argv, environment and process outcomes stay under
 r10/e/risk-v2/wave3/target/run1. Only complete accepted raw is eligible for
 aggregation. First failure stops for classification; no automatic retry.
 Primary owns cleanup. There is no packaging, install or remote authorization.
+
+## Fresh Diagnostic Monitor-authority corruption qualification
+
+Accepted base: `11fe9a0d06b0a5c1e7eb750a83f166de474ff0ec`.
+Primary owns the contract and complete-diff acceptance. One Luna/max owner owns
+only `tools/stm32-toolkit/tests/test_risk_monitor_authority_load.py` in r10/w3d.
+Product source remains 8a11caef. Existing factories and all product files are
+read-only; no new hardware, publication framework or production behavior change.
+
+Scenario: a persisted Diagnostic session references a valid failed-before V2
+physical Monitor fact. A local root metadata field is then corrupted. Fresh
+load/show must reject that authority without changing the event graph, and
+restoring the exact original root bytes must recover the same accepted session.
+These are offline software fixtures; no new physical PASS is claimed.
+
+Use _supplementary_physical_fact_fixture and the public prefix in
+`test_fresh_failed_physical_monitor_fact_v2_persists_and_replays`: convert the
+failed-before selector to physical-monitor-fact/2 and remove continuation proof,
+add_plan at revision3, run_plan at revision4, assess_hypothesis at revision5,
+then verify revision6, observed value3 and the failed-before transcript evidence
+ID through a fresh DiagnosticStore load and public show. The continuation-backed
+V1 route rejects earlier and is excluded from this group.
+
+Parameterize six root-metadata-only mutations on an independently valid graph:
+
+| Root type | Field/value | First reader boundary on current source |
+| --- | --- | --- |
+| monitor-run-ref | scenario_role = fixed-after | diagnostic_workflows.py:1818-1834 |
+| monitor-run-ref | source_record_sha256 = 64 zeroes | diagnostic_workflows.py:1818-1834 |
+| monitor-run-ref | origin_workspace_id = tampered-workspace | diagnostic_workflows.py:1818-1834 |
+| monitor-run-ref | run_ref_sha256 = a different valid 64-character digest | diagnostic_workflows.py:1836-1844, root/envelope disagreement |
+| monitor-run | source_record_sha256 = 64 zeroes | diagnostic_workflows.py:1734-1752 |
+| monitor-run | run_ref_sha256 = a different valid 64-character digest | diagnostic_workflows.py:1914-1925, transcript/reference disagreement |
+
+Locate the existing typed root with the established _typed_root_path fixture
+pattern. This metadata is not the root's content address, so do not recompute or
+rewrite artifacts, envelope metadata, reference digests, selector or events.
+Assert the selected replacement differs from the original. Save original bytes
+and restore exactly those bytes in finally, even if a refusal assertion fails.
+Do not patch readers/validators or forge a newly signed graph.
+
+After injecting the one mutation, snapshot all diagnostic/evidence relative-file
+names and bytes. Fresh DiagnosticStore.load must raise DiagnosticValidationError
+with DIAGNOSTIC_CHAIN_CORRUPT; diagnostic_show must return ok=False and that code.
+Public load_durable must remain at revision6. Both readers leave the post-injection
+snapshot exactly unchanged. Restoring the root bytes must restore a fresh valid
+load at revision6 with observed value3 and the original transcript evidence ID.
+The complete mutation/control journey is one parameter case, not a private
+branch assertion. Native coverage may confirm the stated internal boundaries;
+if an earlier guard fires, record the actual proof rather than bypass it.
+
+Do not repeat artifact-tamper cases already refused by EvidenceStore size/hash
+validation or repeat unchanged successful physical/Diagnostic acceptance tests.
+Full-file Ruff --no-cache, AST and diff checks precede a committed candidate.
+Then one complete six-case batch with -x, native coverage, 600-second budget,
+Python r10/py, and TEMP/TMP/TMPDIR/cache/basetemp under r10/t/w3d/run1. Keep
+raw/JUnit/argv/source/process evidence in r10/e/risk-v2/wave3/diagnostic/run1.
+Validate the exact Toolkit selector path before execution. First failure stops
+for classification, no automatic retry; main owns cleanup and final acceptance.
+No hardware, packaging, deployment or remote action is included.
