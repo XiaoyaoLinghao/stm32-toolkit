@@ -139,6 +139,7 @@ def test_pause_resume_discards_held_group_lookup_by_epoch(
         history = RecordingHistory(record)
         sampler = MonitorSampler(observation, groups, history)
         stream = sampler.subscribe()
+        pending = asyncio.create_task(_next(stream, timeout=10))
         try:
             started = await sampler.start(GROUP_ID, expected_revision=1)
             assert started.to_dict()["ok"] is True
@@ -181,7 +182,7 @@ def test_pause_resume_discards_held_group_lookup_by_epoch(
             assert observation.read_count == 1
             assert groups.calls == 3
 
-            batch = await _next(stream)
+            batch = await pending
             assert batch.sequence == 0
             assert batch.group_id == GROUP_ID
             assert batch.group_revision == 1
@@ -205,6 +206,9 @@ def test_pause_resume_discards_held_group_lookup_by_epoch(
             assert sampler.tasks == ()
         finally:
             groups.release_old_lookup.set()
+            if not pending.done():
+                pending.cancel()
+            await asyncio.gather(pending, return_exceptions=True)
             await stream.aclose()
             await sampler.close()
 
