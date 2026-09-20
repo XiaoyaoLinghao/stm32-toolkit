@@ -253,3 +253,57 @@ exact selectors and Python3.12.10. Budget600 seconds, first failure stops, no
 automatic retry. All temp/cache/basetemp under `r10/t/w2r`; raw/JUnit/argv/process
 and source evidence under `r10/e/risk-v2/wave2/recovery/run1`. Primary owns result
 reconciliation and cleanup. Only complete PASS raw is eligible for native union.
+
+## Sampler in-flight group lookup qualification
+
+Accepted base: `bf4b070f29dec6a25a3e30ba3fad29ce268c6492`.
+Primary owns this bounded plan and independent complete-diff review. One
+Luna/max owner owns only the new
+`tools/stm32-monitor/tests/test_risk_sampler_group_epoch.py` in `r10/w3s`.
+Product source remains8a11caef. The concurrent History/replay owner has a
+different new test file and worktree; existing helpers are read-only.
+
+Scenario: a caller pauses and resumes while a supported group-store lookup is
+pending. The lookup belongs to the preceding sampling epoch. Its late result
+must neither block the resumed sampler nor supply the resumed tick's authority.
+This is distinct from retained in-flight memory-read cancellation coverage.
+
+Reuse `test_sampler` public WatchGroup/_group, FakeObservation/_binding and
+FakeHistory factories. Use a provider implementing the existing synchronous
+`get_group` seam; let the initial start lookup succeed, and hold the first
+producer lookup with bounded threading Events. Call public start, pause and
+resume; release the old lookup only after resume succeeds. Later provider
+lookups return the original valid group. Parameterize the held provider outcome:
+
+1. Raise an ordinary provider RuntimeError.
+2. Return a valid failed `ProtocolResult` for groups.get.
+3. Return a public WatchGroup with a changed revision.
+4. Return the unchanged valid WatchGroup.
+
+These exercise `_current_group`'s epoch-sensitive failure/revision guards and
+`_produce`'s successful-but-obsolete epoch guard through real public lifecycle
+operations. Do not set sampler state, epoch, gates, queues or private tasks;
+do not patch `_current_group`, `_produce`, `_block` or any decision predicate.
+An Event-held external lookup is the legal overlap under test; no fabricated
+filesystem race or invalid model is needed. Use supported observation-provider
+instrumentation only to record when the first read occurs.
+
+Assert exact successful start/pause/resume results and the same run identity,
+no PAUSED_BLOCKED transition or blocked code, and a fresh successful group lookup
+AFTER the held result and BEFORE the first probe read. Require a real canonical
+subscriber batch with sequence0 and matching run/group identity, then public
+stop/close with no owned tasks. Check persisted history contains the same valid
+batch once and no stale/failed publication. This positive continuation and event
+order must make removal of either epoch guard observably fail; absence of an
+exception alone is insufficient. Always release the provider Event in finally
+before close, so failed assertions cannot strand worker threads.
+
+Use bounded Events and existing `_next` helpers, not arbitrary timing sleeps.
+No product change, hardware, sampling-period upgrade or shared fixture mutation.
+Full new-file Ruff --no-cache, AST and diff check precede a candidate commit.
+Then run one complete four-case file with native coverage, -x, budget180seconds.
+Python is `r10/py/Scripts/python.exe`; all TEMP/TMP/TMPDIR/basetemp/cache stay
+under `r10/t/w3s/run1`, evidence under `r10/e/risk-v2/wave3/sampler/run1`.
+Reuse the established guarded launch pattern with current exact identities.
+First failure stops for classification, no automatic retry. Primary accepts the
+full diff independently and owns cleanup. No remote action is authorized.
