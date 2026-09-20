@@ -3096,7 +3096,7 @@ def test_public_diagnostic_caller_journey_replay_to_resolution(
         before_elf_sha256=declaration.before_elf_sha256,
         after_build_id=declaration.after_build_id,
         after_elf_sha256=declaration.after_elf_sha256,
-        changed_paths=("App/main.c", "App/extra.c"),
+        changed_paths=("App/extra.c", "App/main.c"),
         diff_evidence_id=declaration.diff_evidence_id,
         diff_artifact=declaration.diff_artifact,
         claimed_hypothesis_ids=declaration.claimed_hypothesis_ids,
