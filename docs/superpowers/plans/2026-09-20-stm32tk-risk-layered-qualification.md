@@ -535,3 +535,42 @@ and full diff, commit, then one complete four-case native batch, -x, budget600s,
 using the existing guarded launcher and both src paths. All generated files
 stay under r10/t/w4r/run1 and e/risk-v2/wave4/recovery/run1. First failure stops
 for classification; no automatic retry. Primary owns integration and cleanup.
+
+## Physical-history publication window and recovery qualification
+
+Accepted base: `3abb5faf296c6c7424d9ce43559967c3175a5672`.
+Primary owns design/review; one Luna/max owner owns only the new
+`tools/stm32-monitor/tests/test_risk_physical_history_window.py` in r10/w4m.
+Existing test_physical_publication helpers and product source are read-only.
+All data are offline software fixtures; no physical PASS or board access.
+
+One complete caller journey covers rejection followed by usable recovery. Reuse
+_physical_context, _publish_physical_test_run and _append_large_physical_history
+to persist the existing legal 40 batches x250 values. Append one additional legal
+SampleBatch with sequence40, matching binding/group/run/revision, later scheduled
+and captured times, and exactly one legal SampleValue. Use public HistoryStore
+append, never forged HistoryPage/HistoryBatchSlice or a patched query/guard.
+
+Request publish_physical_monitor_run for the full 41-batch time/sequence window.
+The first public History page contains10000 values, then the extra value arrives
+on a later page; replay.py1785->1786 must reject before publication with
+INCOMPATIBLE_IDENTITY / physical Monitor history window is too large. Snapshot
+all evidence relative-file names and bytes before the request and compare them
+after refusal: no monitor-run/ref root, manifest or artifact may appear. Compare
+the complete public History pages and the publicly loaded TestRun before/after
+to prove they were preserved. Bound all cursor loops and close every HistoryStore
+in finally. Do not infer storage corruption from SQLite housekeeping file times.
+
+As this new case's recovery control, request the original legal 40-batch window
+through the same public publisher, then reload its reference from a fresh
+EvidenceStore and assert exact identity/window equality. The extra History value
+remains unchanged. Retain the existing 10000-value/>1MiB success result; do not
+rerun that old test separately. This does not claim reachability of the ingest
+document's later value limit, whose size guard is a separate contract.
+
+Preflight public model fields, exact serialized result shape, and first guard;
+Ruff --no-cache, AST and diff checks precede the candidate commit. Run the complete
+new file once with native coverage, -x,180s via the existing guarded launcher and
+both src paths. All output stays under r10/t/w4m/run1 and
+e/risk-v2/wave4/monitor/run1. Stop on first failure; do not auto-retry or alter
+constants/private state. Main owns independent acceptance, integration and cleanup.
