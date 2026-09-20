@@ -830,3 +830,46 @@ run, -x,300s, through the existing guarded launcher with both src and required
 Toolkit test-helper import path. Generated files stay r10/t/w5a/run1 and durable
 evidence/raw coverage e/risk-v2/wave5/analysis/run1. First error stops. No existing
 full journey suite rerun, product/shared-helper edits, cleanup, hardware or remote.
+
+### Wave5 independent entry review and existing Recovery qualification
+
+ProbeSession candidate22404e9 passed all11 cases in1.794s after complete-diff
+review; it is accepted and integrated at6468af64, outside native union28 until
+the next combined review. Its initial failed raw remains excluded. Analysis
+candidate813227fb had the same WatchItem wire expectation mistake caught before
+pytest; correction65574d78 uses the public model. Primary reviewed the complete
+322-line journey, its original/alias publication constructors, continuation
+identity checks and first refusal guard in clean r10/w5ar. Source148 matches;
+one300s execution is released, without any earlier failed analysis run.
+
+Accepted base for existing Recovery qualification:
+`6468af64d73e5228c9d756fbb854fdf5cb1327ba`. The read-only selector/evidence audit
+found five existing public tests lacking current8a11 source evidence after the
+old recovery_workflows.py coverage was invalidated. Reuse these exact selectors;
+do not create or change tests or product code:
+
+- test_acceptance_physical_recovery.py::test_public_physical_checkpoint_rejects_nonmatching_stale_revision
+- test_acceptance_finalization.py::test_malformed_b_requests_are_input_invalid_without_persisted_mutation
+- test_acceptance_finalization.py::test_unexpected_revision_rejected_by_read_mutation_and_fresh_process
+- test_acceptance_finalization.py::test_final_deadline_check_rejects_new_root_after_envelope_persist
+- test_acceptance_finalization.py::test_final_deadline_check_rejects_rev1_root_after_envelope_persist
+
+All files are under tools/stm32-toolkit/tests. Two complete caller scenarios are
+qualified together: stale physical-stage revision refusal with unchanged
+show/resume, and finalization request/revision/deadline refusal with no accepted
+new root. The deadline tests wrap an existing recheck only to observe completion,
+call its real implementation, and inject the public clock; they do not bypass
+authorization or substitute guard results. Real file-backed stores/fresh process
+readers are used on software evidence fixtures, not hardware. Primary inspected
+the existing assertions; historical individual PASS is not current-source raw
+qualification. Already qualified generic13/36, continuation10, finalization7 and
+Recovery groups remain reused.
+
+One Luna/max execution owner uses clean r10/w5r, with no repository write
+ownership. Run exactly the five selectors as one -x batch with a600s process
+budget, existing guarded launcher and double-package native coverage. All temp
+roots stay r10/t/w5r/run1; durable evidence/raw stays
+e/risk-v2/wave5/recovery-existing/run1. Pin actual argv, source148, HEAD, JUnit and
+process outcome. First failure stops for classification, without modification or
+retry. Primary owns evidence review/aggregation/cleanup. No hardware, dependency
+installation, packaging, deployment, remote changes or new framework.
