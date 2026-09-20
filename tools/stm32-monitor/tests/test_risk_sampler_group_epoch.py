@@ -7,7 +7,13 @@ from pathlib import Path
 
 import pytest
 from stm32_monitor.models import WatchGroup
-from stm32_monitor.protocol import failure, success
+from stm32_monitor.protocol import (
+    MONITOR_PROTOCOL_VERSION,
+    MONITOR_VERSION,
+    TOOLKIT_VERSION,
+    failure,
+    success,
+)
 from stm32_monitor.sampler import MonitorSampler, SamplerState
 from test_sampler import (
     GROUP_ID,
@@ -86,7 +92,9 @@ class RecordingHistory(FakeHistory):
 
 def _response(operation: str, data: dict[str, object]) -> dict[str, object]:
     return {
-        "protocol": "stm32-toolkit-monitor/1",
+        "protocol": MONITOR_PROTOCOL_VERSION,
+        "toolkitVersion": TOOLKIT_VERSION,
+        "monitorVersion": MONITOR_VERSION,
         "ok": True,
         "operation": operation,
         "code": "OK",
