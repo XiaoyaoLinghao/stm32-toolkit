@@ -757,3 +757,52 @@ file once, -x,180s, with the existing guarded launcher/native coverage of both
 packages. Generated files stay r10/t/w5p/run1; durable evidence/raw coverage stays
 e/risk-v2/wave5/probe-session/run1. First failure stops for diagnosis. Main owns
 cleanup and integration; no product, shared helper, deployment or remote changes.
+
+## Continuation association is bound to actual TestRun records
+
+Accepted base: `a649025d930c770b0e395c38ef8b529ade8046a6`.
+One Luna/max owner owns only
+`tools/stm32-monitor/tests/test_risk_analysis_continuation_association.py` in
+r10/w5a. Main owns design and independent review. One complete offline caller
+journey covers before-only, after-only and both-side alternate TestRun links,
+with the original association remaining usable. These are software evidence
+fixtures and must not be presented as physical execution.
+
+Reuse Toolkit test_acceptance_continuation.prepare_pair and its real public
+begin_acceptance_attempt continuation bind. Obtain the proof ID from the public
+response and authenticate it normally. Reuse the existing
+test_acceptance_physical_recovery._append_physical_monitor_history helper with
+the fixture's actual identity/workspace/flash/lease and PHYSICAL_RAW_PROBE; do
+not use the unrelated Monitor _physical_context helper's fixed project/target.
+
+Publish the original Monitor pair through publish_physical_monitor_run. Build
+alternate TestRun records through public constructors/publishers only: replace
+the original manifest's run_id, ingest its new canonical manifest file, retain
+its exact identity/cases/state/transport/raw_events, then publish a fresh
+EvidenceEnvelope with the original physical provenance and new manifest artifact.
+Use EvidenceStore.put_envelope and TestRunPublisher.publish_target_physical;
+TestRunRepository must freshly load the new records. This physical publication
+contract authenticates the raw artifact reference, not embedded replay run IDs;
+no published root/file is rewritten or removed. Generate distinct Monitor UUIDs
+and matching public History for the alternate records, then fresh-load references.
+
+Use the existing public AnalysisRequest helper/constructor with the actual
+Diagnostic hypothesis, source declaration and continuation evidence. First prove
+the original pair compares successfully. For each of the three alternate-link
+combinations, snapshot all Evidence/Diagnostic file names and bytes after its
+valid inputs exist; compare_monitor_runs must first refuse with exact
+INCOMPATIBLE_IDENTITY / Monitor TestRuns differ from continuation
+(analysis_workflows.py1100-1104). No derived evidence may appear and original and
+alternate TestRuns/references must remain loadable. The original request must
+still return the same published result after all refusals. Keep stable record
+identity separate from opaque cursor/lease tokens; close all owned History stores.
+
+Do not implement the proposed export final-ID check: it is dominated by earlier
+source/publication association guards. No fabricated AnalysisPublication, patched
+reader, authorization bypass, model corruption or new generic framework. Preflight
+every constructor and earlier guard, fixture identity and complete public result
+shape before execution. Static checks and commit precede one complete new-file
+run, -x,300s, through the existing guarded launcher with both src and required
+Toolkit test-helper import path. Generated files stay r10/t/w5a/run1 and durable
+evidence/raw coverage e/risk-v2/wave5/analysis/run1. First error stops. No existing
+full journey suite rerun, product/shared-helper edits, cleanup, hardware or remote.
