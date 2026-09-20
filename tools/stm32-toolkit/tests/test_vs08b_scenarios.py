@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -36,13 +37,14 @@ from stm32_toolkit.diagnostic_workflows import (
     diagnostic_begin,
     diagnostic_complete_verification,
     diagnostic_declare_source_change,
+    diagnostic_show_verification,
     diagnostic_run_plan,
     diagnostic_start,
     diagnostic_start_verification,
 )
-from stm32_toolkit.diagnostics import VerificationPlan
-from stm32_toolkit.evidence import EvidenceEnvelope
-from stm32_toolkit.evidence.gc import RootRecord
+from stm32_toolkit.diagnostics import FIX_VERIFICATION_SCHEMA, FixVerification, VerificationPlan
+from stm32_toolkit.evidence import EvidenceEnvelope, canonical_json_bytes
+from stm32_toolkit.evidence.gc import RootRecord, get_root
 from stm32_toolkit.evidence.store import EvidenceStore
 from stm32_toolkit.result import OperationResult
 from stm32_toolkit.paths import WorkspacePaths
@@ -569,3 +571,407 @@ def test_real_replay_diagnostic_acceptance_chain_reaches_revision_seven(
     # revision-5 authorization invariant rather than a broken rev6->rev7 link.
     recovery_workflows._typed_root_path(evidence, recovery_workflows._root_id(attempt_id, 7)).unlink()
     assert recovery_workflows.show_acceptance_attempt(context, attempt_id=attempt_id).code == "ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED"
+
+
+def _prepare_completion_graph(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[Path, Path, str, str, VerificationPlan, object, object]:
+    """Build one real replay/diagnostic graph through the revision-10 marker."""
+
+    runtime_session_id = "vs08b-completion-session"
+    project_root, data_root, diagnostic_id, hypothesis_id, failed_descriptor, fixed_descriptor, fixed_stream = (
+        _prepare_real_diagnostic_before_source(
+            tmp_path,
+            "cubemx",
+            monkeypatch,
+            runtime_session_id,
+        )
+    )
+    workspace = WorkspacePaths.from_roots(data_root, project_root, PROJECT_ID, runtime_session_id)
+    evidence = EvidenceStore(workspace.workspace_root / "evidence")
+    before_run = TestRunRepository(evidence).load(FAILED_RUN_ID)
+    fixed_fixture = load_target_replay_fixture(fixed_descriptor, fixed_stream)
+    declaration = _source_change(
+        tmp_path,
+        evidence,
+        before_run,
+        fixed_fixture.descriptor.identity,
+        hypothesis_id,
+    )
+    diagnostic = DiagnosticWorkflowContext(project_root, data_root, runtime_session_id)
+    diagnostic_storage_id = diagnostic_id.replace("-", "")
+    assert diagnostic_declare_source_change(
+        diagnostic,
+        operation_id="vs08b-completion-source-change",
+        diagnostic_session_id=diagnostic_storage_id,
+        expected_revision=6,
+        source_change_declaration=declaration,
+    ).ok
+    testing = TestingWorkflowContext(project_root, data_root, runtime_session_id)
+    assert target_replay_run(testing, FIXED_RUN_ID, fixed_descriptor, fixed_stream).ok
+    after_run = TestRunRepository(evidence).load(FIXED_RUN_ID)
+
+    monitor_paths: dict[str, Path] = {}
+    for role in ("failed-before", "fixed-after"):
+        source = MONITOR_FIXTURES / f"{role}.json"
+        descriptor = json.loads(source.read_text(encoding="utf-8"))
+        descriptor["binding"]["workspaceId"] = workspace.workspace_id
+        for batch in descriptor["batches"]:
+            batch["binding"]["workspaceId"] = workspace.workspace_id
+        unsigned = {key: value for key, value in descriptor.items() if key != "fixture_sha256"}
+        descriptor["fixture_sha256"] = hashlib.sha256(
+            json.dumps(
+                unsigned,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            ).encode("utf-8")
+        ).hexdigest()
+        target = tmp_path / f"completion-monitor-{role}.json"
+        target.write_text(
+            json.dumps(descriptor, sort_keys=True, separators=(",", ":")),
+            encoding="utf-8",
+        )
+        monitor_paths[role] = target
+    monitor_before = ingest_monitor_replay(
+        workspace,
+        evidence,
+        MONITOR_OPERATION_IDS["failed-before"],
+        monitor_paths["failed-before"],
+    )
+    monitor_after = ingest_monitor_replay(
+        workspace,
+        evidence,
+        MONITOR_OPERATION_IDS["fixed-after"],
+        monitor_paths["fixed-after"],
+    )
+    analysis_request = AnalysisRequest(
+        schema="stm32-monitor-analysis-request/1",
+        before_run=monitor_before,
+        after_run=monitor_after,
+        selector_kind="variable",
+        selector="counter",
+        alignment="run-relative",
+        minimum_valid_pairs=2,
+    )
+    publication = compare_monitor_runs(
+        workspace,
+        evidence,
+        analysis_request,
+        diagnostic_storage_id,
+        hypothesis_id,
+        "supports",
+        "the fixed replay changed the observed counter",
+        declaration,
+    )
+    export_analysis_bundle(
+        workspace,
+        evidence,
+        analysis_request,
+        publication,
+        FAILED_RUN_ID,
+        FIXED_RUN_ID,
+        declaration,
+    )
+    verification_plan = VerificationPlan.new(
+        verification_plan_id="b" * 64,
+        diagnostic_session_id=diagnostic_storage_id,
+        failed_before_run_id=FAILED_RUN_ID,
+        failed_before_evidence_id=str(before_run.envelope.evidence_id),
+        source_change_declaration_id=declaration.declaration_id,
+        fixed_after_run_id=FIXED_RUN_ID,
+        fixed_after_evidence_id=str(after_run.envelope.evidence_id),
+        required_analysis_ids=(publication.analysis_result.analysis_id,),
+        required_analysis_evidence_ids=(publication.analysis_evidence_ref.evidence_id,),
+        required_monitor_quality="VALID",
+        expected_changed=True,
+    )
+    assert diagnostic_add_verification_plan(
+        diagnostic,
+        operation_id="vs08b-completion-verification-plan",
+        diagnostic_session_id=diagnostic_storage_id,
+        expected_revision=7,
+        verification_plan=verification_plan,
+    ).ok
+    assert diagnostic_start_verification(
+        diagnostic,
+        operation_id="vs08b-completion-verification-start",
+        diagnostic_session_id=diagnostic_storage_id,
+        expected_revision=8,
+        verification_plan_id=verification_plan.verification_plan_id,
+    ).ok
+    assert diagnostic_attach_marker(
+        diagnostic,
+        operation_id="vs08b-completion-marker-attach",
+        diagnostic_session_id=diagnostic_storage_id,
+        expected_revision=9,
+        diagnostic_marker_ref=publication.diagnostic_marker_ref,
+    ).ok
+    return (
+        project_root,
+        data_root,
+        runtime_session_id,
+        diagnostic_storage_id,
+        verification_plan,
+        publication,
+        after_run,
+    )
+
+
+def test_completion_artifact_public_wire_and_persistence_matrix(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    (
+        project_root,
+        data_root,
+        runtime_session_id,
+        diagnostic_storage_id,
+        verification_plan,
+        publication,
+        after_run,
+    ) = _prepare_completion_graph(tmp_path, monkeypatch)
+    baseline_workspace = WorkspacePaths.from_roots(
+        data_root,
+        project_root,
+        PROJECT_ID,
+        runtime_session_id,
+    )
+    marker_ref = publication.diagnostic_marker_ref
+    marker_id = marker_ref.marker_id
+    executed_operation_ids = (
+        FAILED_RUN_ID,
+        FIXED_RUN_ID,
+        "monitor.analysis.compare",
+        "monitor.analysis.bundle",
+    )
+    variants = [
+        {"name": "positive-valid", "mutation": "valid", "status": "PASSED", "reason": "VERIFICATION_PASSED"},
+        {"name": "root-metadata-mismatch", "mutation": "root-metadata", "status": "INCONCLUSIVE", "reason": "MANDATORY_EVIDENCE_CORRUPT"},
+        {"name": "envelope-operation-mismatch", "mutation": "envelope-operation", "status": "INCONCLUSIVE", "reason": "MANDATORY_EVIDENCE_CORRUPT"},
+        {"name": "zero-artifacts", "mutation": "zero-artifacts", "status": "INCONCLUSIVE", "reason": "MANDATORY_EVIDENCE_CORRUPT"},
+        {"name": "root-empty-object", "mutation": "root-empty", "status": "INCONCLUSIVE", "reason": "MANDATORY_EVIDENCE_CORRUPT"},
+        {"name": "root-noncanonical-json", "mutation": "root-noncanonical", "status": "INCONCLUSIVE", "reason": "MANDATORY_EVIDENCE_CORRUPT"},
+        {"name": "artifact-kind-mismatch", "mutation": "artifact-kind", "status": "INCONCLUSIVE", "reason": "MANDATORY_EVIDENCE_CORRUPT"},
+        {"name": "artifact-media-mismatch", "mutation": "artifact-media", "status": "INCONCLUSIVE", "reason": "MANDATORY_EVIDENCE_CORRUPT"},
+        {"name": "artifact-array-json", "mutation": "artifact-array", "status": "INCONCLUSIVE", "reason": "MANDATORY_EVIDENCE_CORRUPT"},
+        {"name": "artifact-noncanonical-object", "mutation": "artifact-noncanonical", "status": "INCONCLUSIVE", "reason": "MANDATORY_EVIDENCE_CORRUPT"},
+    ]
+    variants_root = tmp_path / "completion-variants"
+    variants_root.mkdir()
+    for variant in variants:
+        case_name = variant["name"]
+        clone_data = variants_root / case_name
+        shutil.copytree(data_root, clone_data)
+        clone_workspace = WorkspacePaths.from_roots(
+            clone_data,
+            project_root,
+            PROJECT_ID,
+            runtime_session_id,
+        )
+        assert clone_workspace.workspace_id == baseline_workspace.workspace_id
+        clone_diagnostic = DiagnosticWorkflowContext(
+            project_root,
+            clone_data,
+            runtime_session_id,
+        )
+        shown_before = diagnostic_show_verification(
+            clone_diagnostic,
+            diagnostic_session_id=diagnostic_storage_id,
+        )
+        shown_before_wire = shown_before.to_dict()
+        assert shown_before_wire["protocol"] == "stm32-toolkit/1"
+        assert shown_before_wire["ok"] is True
+        assert shown_before_wire["operation"] == "diagnostic.verification.show"
+        assert shown_before_wire["code"] == "OK"
+        assert shown_before_wire["message"] == ""
+        assert shown_before_wire["details"] == {}
+        shown_before_data = shown_before_wire["data"]
+        assert isinstance(shown_before_data, dict)
+        assert shown_before_data["authoritative"] is True
+        before_session = shown_before_data["session"]
+        assert isinstance(before_session, dict)
+        assert before_session["revision"] == 10
+        assert before_session["state"] == "VERIFYING"
+        assert before_session["active_verification_plan_id"] == verification_plan.verification_plan_id
+
+        clone_evidence = EvidenceStore(clone_workspace.workspace_root / "evidence")
+        marker_root = get_root(clone_evidence, "diagnostic-marker", marker_id)
+        marker_envelope = clone_evidence.get_envelope(marker_root.manifest_id)
+        marker_payload = clone_evidence.read_artifact(
+            marker_envelope.artifacts[0],
+            maximum_bytes=64 * 1024 * 1024,
+        )
+
+        def root_file(root_type: str, root_id: str) -> Path:
+            key_digest = hashlib.sha256(
+                canonical_json_bytes({"root_type": root_type, "root_id": root_id})
+            ).hexdigest()
+            return clone_evidence.root / "roots" / root_type / f"{key_digest}.json"
+
+        marker_root_path = root_file("diagnostic-marker", marker_id)
+        prior_session_root_id = f"{diagnostic_storage_id}.00000010"
+        prior_session_root_path = root_file("diagnostic-session", prior_session_root_id)
+        prior_session_root_bytes = prior_session_root_path.read_bytes()
+        prior_session_roots = {
+            path.name
+            for path in (clone_evidence.root / "roots" / "diagnostic-session").glob("*.json")
+        }
+        original_marker_manifest_bytes = (
+            clone_evidence.root / "manifests" / f"{marker_ref.marker_evidence_id}.json"
+        ).read_bytes()
+
+        mutation = variant["mutation"]
+        if mutation == "valid":
+            pass
+        elif mutation == "root-empty":
+            marker_root_path.write_bytes(b"{}")
+        elif mutation == "root-noncanonical":
+            marker_root_path.write_bytes(
+                json.dumps(marker_root.to_dict(), indent=1, ensure_ascii=False).encode("utf-8")
+            )
+        else:
+            envelope_operation = marker_envelope.operation
+            root_metadata = dict(marker_envelope.metadata)
+            artifacts = ()
+            if mutation != "zero-artifacts":
+                if mutation in {"artifact-array", "artifact-noncanonical"}:
+                    artifact_payload = b"[]" if mutation == "artifact-array" else b'{"b":2,"a":1}'
+                else:
+                    artifact_payload = marker_payload
+                artifact_source = tmp_path / "completion-artifacts" / f"{case_name}.json"
+                artifact_source.parent.mkdir(exist_ok=True)
+                artifact_source.write_bytes(artifact_payload)
+                artifact = clone_evidence.ingest_file(
+                    artifact_source,
+                    kind="diagnostic-marker",
+                    media_type="application/json",
+                )
+                if mutation == "artifact-kind":
+                    artifact = replace(artifact, kind="wrong-diagnostic-kind")
+                elif mutation == "artifact-media":
+                    artifact = replace(artifact, media_type="text/plain")
+                artifacts = (artifact,)
+            if mutation == "envelope-operation":
+                envelope_operation = "diagnostic-marker-corrupt"
+            envelope = EvidenceEnvelope(
+                identity=marker_envelope.identity,
+                operation=envelope_operation,
+                produced_at_utc=marker_envelope.produced_at_utc,
+                parents=marker_envelope.parents,
+                artifacts=artifacts,
+                metadata=marker_envelope.metadata,
+            )
+            clone_evidence.put_envelope(envelope)
+            if mutation == "root-metadata":
+                root_metadata["fixture_mutation"] = "root-metadata-mismatch"
+            replacement_root = RootRecord(
+                "diagnostic-marker",
+                marker_id,
+                str(envelope.evidence_id),
+                root_metadata,
+            )
+            marker_root_path.write_bytes(canonical_json_bytes(replacement_root.to_dict()))
+
+        mutation_snapshot = vs08a._evidence_snapshot(clone_data)
+        completed = diagnostic_complete_verification(
+            clone_diagnostic,
+            operation_id=f"vs08b-completion-{case_name}",
+            diagnostic_session_id=diagnostic_storage_id,
+            expected_revision=10,
+            executed_operation_ids=list(executed_operation_ids),
+            cancelled=False,
+        )
+        wire = completed.to_dict()
+        assert wire["protocol"] == "stm32-toolkit/1"
+        assert wire["ok"] is True
+        assert wire["operation"] == "diagnostic.verification.complete"
+        assert wire["code"] == "OK"
+        assert wire["message"] == ""
+        assert wire["details"] == {}
+        data = wire["data"]
+        assert isinstance(data, dict)
+        assert set(data) == {"session", "fix_verification"}
+        expected_state = "RESOLVED" if variant["status"] == "PASSED" else "INVESTIGATING"
+        expected_verification = FixVerification.new(
+            diagnostic_session_id=diagnostic_storage_id,
+            failed_before_run_id=verification_plan.failed_before_run_id,
+            failed_before_evidence_id=verification_plan.failed_before_evidence_id,
+            source_change_declaration_id=verification_plan.source_change_declaration_id,
+            fixed_after_run_id=verification_plan.fixed_after_run_id,
+            fixed_after_evidence_id=verification_plan.fixed_after_evidence_id,
+            verification_plan_id=verification_plan.verification_plan_id,
+            verification_plan_digest=verification_plan.plan_digest,
+            analysis_ids=verification_plan.required_analysis_ids,
+            analysis_evidence_ids=verification_plan.required_analysis_evidence_ids,
+            executed_operation_ids=executed_operation_ids,
+            status=variant["status"],
+            reason_code=variant["reason"],
+            completed_at_utc=after_run.manifest.ended_at_utc,
+        ).to_dict()
+        verification = data["fix_verification"]
+        assert verification == expected_verification
+        assert verification["schema"] == FIX_VERIFICATION_SCHEMA
+        session = data["session"]
+        assert isinstance(session, dict)
+        assert session["revision"] == 11
+        assert session["state"] == expected_state
+        assert session["active_verification_plan_id"] is None
+        assert session["fix_verifications"] == [expected_verification]
+
+        shown_after = diagnostic_show_verification(
+            clone_diagnostic,
+            diagnostic_session_id=diagnostic_storage_id,
+        )
+        shown_after_data = shown_after.to_dict()["data"]
+        assert isinstance(shown_after_data, dict)
+        assert shown_after_data["authoritative"] is True
+        assert shown_after_data["session"] == session
+        assert shown_after_data["fix_verifications"] == [expected_verification]
+
+        latest_session_root_id = f"{diagnostic_storage_id}.00000011"
+        latest_session_root = get_root(
+            clone_evidence,
+            "diagnostic-session",
+            latest_session_root_id,
+        )
+        latest_session_root_path = root_file("diagnostic-session", latest_session_root_id)
+        after_session_roots = {
+            path.name
+            for path in (clone_evidence.root / "roots" / "diagnostic-session").glob("*.json")
+        }
+        assert after_session_roots == prior_session_roots | {latest_session_root_path.name}
+        assert prior_session_root_path.read_bytes() == prior_session_root_bytes
+        assert latest_session_root.metadata["diagnostic_session_id"] == diagnostic_storage_id
+        assert latest_session_root.metadata["revision"] == 11
+        assert latest_session_root.metadata["state"] == expected_state
+        completion_envelope = clone_evidence.get_envelope(latest_session_root.manifest_id)
+        assert completion_envelope.operation == "diagnostic-event"
+        assert len(completion_envelope.artifacts) == 1
+        completion_event = json.loads(
+            clone_evidence.read_artifact(
+                completion_envelope.artifacts[0],
+                maximum_bytes=64 * 1024 * 1024,
+            ).decode("utf-8")
+        )
+        assert completion_event["event_type"] == "verification.completed"
+        assert completion_event["sequence"] == 10
+        assert completion_event["revision_before"] == 10
+        assert completion_event["payload"]["request"]["fix_verification"] == expected_verification
+        assert completion_event["payload"]["result"] == {
+            "fix_verification_id": expected_verification["fix_verification_id"],
+            "status": variant["status"],
+            "reason_code": variant["reason"],
+        }
+        assert latest_session_root.metadata["event_digest"] == completion_event["digest"]
+        assert (
+            clone_evidence.root / "manifests" / f"{marker_ref.marker_evidence_id}.json"
+        ).read_bytes() == original_marker_manifest_bytes
+        assert clone_evidence.get_envelope(marker_ref.marker_evidence_id).to_dict() == marker_envelope.to_dict()
+        after_mutation_snapshot = vs08a._evidence_snapshot(clone_data)
+        assert {
+            relative: after_mutation_snapshot[relative]
+            for relative in mutation_snapshot
+        } == mutation_snapshot
