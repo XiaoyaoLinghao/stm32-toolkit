@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -123,6 +124,22 @@ def _persisted_snapshot(root: Path) -> dict[str, tuple[str, bytes | None]]:
     return snapshot
 
 
+def _assert_persisted_binding_matches_caller(
+    persisted: Mapping[str, object], caller: Mapping[str, object]
+) -> None:
+    assert set(persisted) == set(caller) | {
+        "nonce",
+        "prepared_at_utc",
+        "expires_at_utc",
+    }
+    for key, expected in caller.items():
+        actual = persisted[key]
+        if key == "cases":
+            assert actual == list(expected)
+        else:
+            assert actual == expected
+
+
 @pytest.mark.parametrize(
     "case_id",
     [
@@ -156,6 +173,10 @@ def test_public_target_prepare_rejects_identity_without_authority_mutation(
         control = await runner.prepare(now=PREPARE_AT, **valid_binding)
         loaded_control = runner.load_prepared(control.action_digest)
         assert dict(loaded_control.binding) == dict(control.binding)
+        _assert_persisted_binding_matches_caller(control.binding, valid_binding)
+        assert control.expires_at_utc == PREPARE_AT + timedelta(minutes=5)
+        assert control.binding["prepared_at_utc"] == "2026-09-20T12:00:00.000000Z"
+        assert control.binding["expires_at_utc"] == "2026-09-20T12:05:00.000000Z"
         before_invalid = _persisted_snapshot(root)
 
         with pytest.raises(target_module.TargetRunError) as caught:
@@ -169,14 +190,27 @@ def test_public_target_prepare_rejects_identity_without_authority_mutation(
         assert transport_factory_calls == []
 
         reloaded_control = runner.load_prepared(control.action_digest)
-        assert dict(reloaded_control.binding) == dict(valid_binding)
+        assert dict(reloaded_control.binding) == dict(control.binding)
+        _assert_persisted_binding_matches_caller(
+            reloaded_control.binding, valid_binding
+        )
         follow_up = await runner.prepare(
             now=PREPARE_AT + timedelta(seconds=1), **valid_binding
         )
         assert follow_up.nonce != control.nonce
         assert follow_up.action_digest != control.action_digest
+        assert follow_up.expires_at_utc == PREPARE_AT + timedelta(seconds=1, minutes=5)
         reloaded_follow_up = runner.load_prepared(follow_up.action_digest)
-        assert dict(reloaded_follow_up.binding) == dict(valid_binding)
+        assert dict(reloaded_follow_up.binding) == dict(follow_up.binding)
+        _assert_persisted_binding_matches_caller(
+            reloaded_follow_up.binding, valid_binding
+        )
+        assert reloaded_follow_up.binding["prepared_at_utc"] == (
+            "2026-09-20T12:00:01.000000Z"
+        )
+        assert reloaded_follow_up.binding["expires_at_utc"] == (
+            "2026-09-20T12:05:01.000000Z"
+        )
         assert reloaded_follow_up.binding["input_snapshot_sha256"] == INPUT_SNAPSHOT_SHA256
         assert reloaded_follow_up.binding["case_inventory_digest"] == V2_CASE_INVENTORY_DIGEST
         assert reloaded_follow_up.binding["protocol"] == "stm32-target-frame/2"
