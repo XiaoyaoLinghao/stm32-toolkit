@@ -472,3 +472,66 @@ raw/JUnit/argv/source/process evidence in r10/e/risk-v2/wave3/diagnostic/run1.
 Validate the exact Toolkit selector path before execution. First failure stops
 for classification, no automatic retry; main owns cleanup and final acceptance.
 No hardware, packaging, deployment or remote action is included.
+
+## Recovery authorization and output-identity qualification
+
+Accepted base: `2cba63f2808d27cb4c2ec1dbba041e9633d830e5`.
+Primary owns the contract and complete-diff review; one Luna/max owner owns only
+`tools/stm32-toolkit/tests/test_risk_recovery_authority_outputs.py` in r10/w4r.
+Product source, all shared fixtures and the frozen coverage scope stay unchanged.
+This is an offline authority contract journey, not new build/hardware evidence.
+
+Reuse test_vs08b_scenarios._prepare_real_diagnostic_before_source with one Keil
+schema3 fixture and real public replay/Diagnostic/Evidence stores. Reuse the
+existing _build_project_context external build-result seam and documented
+snapshot provider from that same scenario. These stand in for the compiler and
+input scanner only; explicit before/after mappings must be taken from the legal
+fixture identities and satisfy all arm-debug, freshness and digest requirements.
+They may not replace public readers, repository loads, recovery decisions or
+validators. No actual compiler success or physical acceptance is claimed.
+
+Use the public begin/checkpoint prefix: revisions0,1,2,3,4 correspond to begin,
+project-materialized, firmware-built-before, target-failure-replayed and
+diagnosis-completed. Use four independent cases across two caller scenarios:
+
+1. A caller supplies a valid failed replay from a different build at revision2.
+   Publish a separate caller input with a new run ID using the existing decoder,
+   frame encoder, canonical descriptor and public target_replay_run. Change only
+   its build identity and all corresponding stream identity fields consistently;
+   recompute stream size/hash, terminal event digest and replay ID normally.
+   Never edit a published root/envelope or original reference. The alternate
+   public TestRun must first load successfully. Checkpoint must refuse with
+   ACCEPTANCE_ATTEMPT_OUTPUT_INVALID at the cross-output identity comparison
+   (891->902), preserving revision2. The original valid reference remains usable.
+2. At revision4 request firmware-built-after without consuming the public resume
+   actionDigest through authorize_acceptance_source_change. Expect
+   ACCEPTANCE_ATTEMPT_AUTHORIZATION_REQUIRED (939->940), no build-provider call
+   and no new authority. Then authorize with the real current actionDigest and
+   verify revision5; never fabricate an unauthorized revision5 model.
+3. After real public authorization at revision5, the build-result provider still
+   reports the unchanged legal before identity. Expect
+   ACCEPTANCE_ATTEMPT_OUTPUT_INVALID (942->943), with revision5 preserved. The
+   unchanged result models a caller rebuilding without the declared source fix;
+   no product guard is patched to reach it.
+4. At revision5 use public diagnostic_declare_source_change with the existing
+   real diff artifact and fixed-after identities. Return a different valid build
+   identity from the build-result seam while preserving well-formed output. The
+   declaration must load normally and first pass the one-declaration/revision
+   checks. Expect ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH (969->977). Restore the
+   provider's exact declared after mapping and use the same public checkpoint to
+   publish revision6 as the positive control.
+
+For each refusal, snapshot all persisted evidence and Diagnostic file names and
+bytes after preparing its valid inputs; compare unchanged bytes, public show /
+resume revision and next-stage, and the still-loadable input reference. Assert
+complete response fields against the producing API's actual serialized shape;
+do not equate raw caller input with enriched persisted models. Reuse prior passed
+full success journeys rather than rerunning them wholesale. New negative cases
+must retain their described local positive controls.
+
+Preflight constructor order and legal prefix before runtime; an earlier refusal
+is a finding, not authorization to inject around it. Check Ruff --no-cache, AST
+and full diff, commit, then one complete four-case native batch, -x, budget600s,
+using the existing guarded launcher and both src paths. All generated files
+stay under r10/t/w4r/run1 and e/risk-v2/wave4/recovery/run1. First failure stops
+for classification; no automatic retry. Primary owns integration and cleanup.
