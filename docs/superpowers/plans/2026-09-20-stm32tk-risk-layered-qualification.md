@@ -576,6 +576,22 @@ both src paths. All output stays under r10/t/w4m/run1 and
 e/risk-v2/wave4/monitor/run1. Stop on first failure; do not auto-retry or alter
 constants/private state. Main owns independent acceptance, integration and cleanup.
 
+Run1 correction decision: the exact refusal and unchanged Evidence files passed,
+but the preservation assertion compared opaque nextCursor strings from different
+HistoryStore instances. Each instance owns a newly generated HMAC key, so those
+tokens are not a persistent record identity (history.py973-980,580-641). The
+failed run remains excluded; complete History preservation is not yet accepted.
+The same owner may correct only this test: use each returned token unchanged
+within its originating query loop, while comparing complete batch/value wire
+data, valueCount, serializedBytes and presence/absence of a next page across
+fresh stores. Verify every fragment's ordinal span and values against the
+original forty SampleBatch objects plus the extra batch, with contiguous,
+nonduplicated coverage. Do not reduce preservation to counts alone. Alias the
+imported TestRunRepository to avoid pytest collection of that production class.
+After static checks and a correction commit, run the complete one-case file once
+under the same180s limit in r10/t/w4m/run2 and e/risk-v2/wave4/monitor/run2.
+First failure stops again; no product change or wider test run is authorized.
+
 ## Tool-support admission and adapter-failure qualification
 
 Accepted base: `e9e40c9fe69eac471a756056a4d341b20b357757`.
