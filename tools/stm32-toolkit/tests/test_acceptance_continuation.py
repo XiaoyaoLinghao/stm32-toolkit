@@ -4,9 +4,11 @@ from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from dataclasses import replace
+from datetime import datetime, timedelta
 import hashlib
 import json
 from pathlib import Path
+import shutil
 from types import MappingProxyType, SimpleNamespace
 from uuid import UUID
 
@@ -30,8 +32,10 @@ from stm32_toolkit.acceptance.continuation import (
 from stm32_toolkit.acceptance.recovery import (
     PHYSICAL_SCENARIO_ID,
     PHYSICAL_SCENARIO_VERSION,
+    PHYSICAL_STAGES,
     PhysicalAcceptanceAttempt,
     SourceChangeIntent,
+    physical_acceptance_recovery_policy,
 )
 import stm32_toolkit.acceptance.recovery_workflows as recovery_workflows
 from stm32_toolkit.acceptance.recovery_workflows import (
@@ -55,6 +59,7 @@ from stm32_toolkit.diagnostic_workflows import (
 )
 from stm32_toolkit.diagnostics import DiagnosticSession, SourceChangeDeclaration
 from stm32_toolkit.evidence import EvidenceEnvelope, EvidenceIdentity, canonical_json_bytes, get_root
+from stm32_toolkit.evidence.gc import RootRecord
 from stm32_toolkit.evidence.store import EvidenceStore
 from stm32_toolkit.paths import WorkspacePaths
 from stm32_toolkit.project_model import load_project_model
@@ -91,6 +96,222 @@ def _attempt_root_path(evidence: EvidenceStore, attempt_id: str, revision: int) 
     return recovery_workflows._typed_root_path(
         evidence, recovery_workflows._root_id(attempt_id, revision)
     )
+
+
+def _public_root_path(evidence: EvidenceStore, root_type: str, root_id: str) -> Path:
+    key_bytes = canonical_json_bytes({"root_type": root_type, "root_id": root_id})
+    name = hashlib.sha256(key_bytes).hexdigest() + ".json"
+    return evidence.root / "roots" / root_type / name
+
+
+def _fixture_tree_bytes(root: Path) -> dict[str, bytes]:
+    if not root.exists():
+        return {}
+    return {
+        str(path.relative_to(root)): path.read_bytes()
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
+
+
+def _clone_continuation_data(
+    fixture: SimpleNamespace, clone_data_root: Path
+) -> tuple[WorkspacePaths, EvidenceStore]:
+    shutil.copytree(fixture.data_root, clone_data_root)
+    workspace = WorkspacePaths.from_roots(
+        clone_data_root,
+        fixture.project_root,
+        UUID(PROJECT_ID),
+        fixture.before_session_id,
+    )
+    return workspace, EvidenceStore(workspace.workspace_root / "evidence")
+
+
+def _predecessor_root_id(revision: int) -> str:
+    return f"{LEGACY_ATTEMPT_ID}.{revision:08d}"
+
+
+def _attempt_wire(
+    evidence: EvidenceStore, revision: int
+) -> tuple[RootRecord, EvidenceEnvelope, dict[str, object]]:
+    root = get_root(evidence, "acceptance-attempt", _predecessor_root_id(revision))
+    envelope = evidence.get_envelope(root.manifest_id)
+    raw = json.loads(canonical_json_bytes(envelope.metadata["attempt"]).decode("utf-8"))
+    assert isinstance(raw, dict)
+    return root, envelope, raw
+
+
+def _different_hash(value: object) -> str:
+    candidate = "0" * 64
+    return "1" * 64 if value == candidate else candidate
+
+
+def _recheckpoint_attempt(value: Mapping[str, object]) -> dict[str, object]:
+    candidate = dict(value)
+    candidate.pop("checkpointId", None)
+    candidate["checkpointId"] = hashlib.sha256(canonical_json_bytes(candidate)).hexdigest()
+    return candidate
+
+
+def _replace_attempt_root(
+    evidence: EvidenceStore, revision: int, attempt_wire: Mapping[str, object]
+) -> None:
+    root, envelope, _ = _attempt_wire(evidence, revision)
+    attempt = PhysicalAcceptanceAttempt.from_value(dict(attempt_wire))
+    changed_envelope = EvidenceEnvelope(
+        identity=envelope.identity,
+        operation=envelope.operation,
+        produced_at_utc=attempt.updated_at_utc,
+        parents=envelope.parents,
+        artifacts=envelope.artifacts,
+        metadata={
+            "attempt": attempt.to_dict(),
+            "attempt_sha256": attempt.checkpoint_id,
+        },
+    )
+    evidence.put_envelope(changed_envelope)
+    root_value = root.to_dict()
+    metadata = root_value["metadata"]
+    assert isinstance(metadata, dict)
+    metadata["attempt_sha256"] = attempt.checkpoint_id
+    replacement = RootRecord(
+        root_type=root.root_type,
+        root_id=root.root_id,
+        manifest_id=str(changed_envelope.evidence_id),
+        metadata=metadata,
+    )
+    _public_root_path(evidence, replacement.root_type, replacement.root_id).write_bytes(
+        canonical_json_bytes(replacement.to_dict())
+    )
+
+
+def _replace_attempt_envelope(
+    evidence: EvidenceStore,
+    revision: int,
+    *,
+    identity: EvidenceIdentity | None = None,
+    produced_at_utc: str | None = None,
+    parents: tuple[str, ...] | None = None,
+    metadata: Mapping[str, object] | None = None,
+) -> None:
+    root, envelope, _ = _attempt_wire(evidence, revision)
+    changed_envelope = EvidenceEnvelope(
+        identity=envelope.identity if identity is None else identity,
+        operation=envelope.operation,
+        produced_at_utc=envelope.produced_at_utc if produced_at_utc is None else produced_at_utc,
+        parents=envelope.parents if parents is None else parents,
+        artifacts=envelope.artifacts,
+        metadata=(
+            json.loads(canonical_json_bytes(envelope.metadata).decode("utf-8"))
+            if metadata is None
+            else dict(metadata)
+        ),
+    )
+    evidence.put_envelope(changed_envelope)
+    root_value = root.to_dict()
+    replacement = RootRecord(
+        root_type=root.root_type,
+        root_id=root.root_id,
+        manifest_id=str(changed_envelope.evidence_id),
+        metadata=root_value["metadata"],
+    )
+    _public_root_path(evidence, replacement.root_type, replacement.root_id).write_bytes(
+        canonical_json_bytes(replacement.to_dict())
+    )
+
+
+def _format_utc(value: datetime) -> str:
+    return value.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+
+def _plus_microsecond(value: str) -> str:
+    return _format_utc(
+        datetime.strptime(value, "%Y-%m-%dT%H:%M:%S.%fZ")
+        + timedelta(microseconds=1)
+    )
+
+
+def _policy_deadline(updated_at_utc: str, stage: str) -> str:
+    updated = datetime.strptime(updated_at_utc, "%Y-%m-%dT%H:%M:%S.%fZ")
+    seconds = physical_acceptance_recovery_policy().stage_timeout_seconds[stage]
+    return _format_utc(updated + timedelta(seconds=seconds))
+
+
+def _mutate_predecessor_clone(evidence: EvidenceStore, case_name: str) -> None:
+    if case_name == "rev6-envelope-attempt-sha":
+        _root, envelope, _ = _attempt_wire(evidence, 6)
+        metadata = json.loads(canonical_json_bytes(envelope.metadata).decode("utf-8"))
+        assert isinstance(metadata, dict)
+        metadata["attempt_sha256"] = _different_hash(metadata["attempt_sha256"])
+        _replace_attempt_envelope(evidence, 6, metadata=metadata)
+        return
+
+    if case_name in {"rev1-parent", "rev1-produced-at", "rev1-session"}:
+        _root, envelope, _ = _attempt_wire(evidence, 1)
+        if case_name == "rev1-parent":
+            assert len(envelope.parents) == 1
+            _replace_attempt_envelope(
+                evidence,
+                1,
+                parents=(_different_hash(envelope.parents[0]),),
+            )
+        elif case_name == "rev1-produced-at":
+            _replace_attempt_envelope(
+                evidence,
+                1,
+                produced_at_utc=_plus_microsecond(envelope.produced_at_utc),
+            )
+        else:
+            _replace_attempt_envelope(
+                evidence,
+                1,
+                identity=replace(envelope.identity, session_id="t10-cont-other"),
+            )
+        return
+
+    revision = {
+        "rev1-previous-checkpoint": 1,
+        "rev1-logical-project": 1,
+        "rev2-after-deadline": 2,
+        "rev2-output": 2,
+        "rev5-source-intent": 5,
+        "rev6-policy-deadline": 6,
+    }[case_name]
+    _root, _envelope, attempt_wire = _attempt_wire(evidence, revision)
+    if case_name == "rev1-previous-checkpoint":
+        attempt_wire["previousCheckpointId"] = _different_hash(attempt_wire["previousCheckpointId"])
+    elif case_name == "rev1-logical-project":
+        current = attempt_wire["logicalProjectId"]
+        attempt_wire["logicalProjectId"] = (
+            "00000000-0000-4000-8000-000000000099"
+            if current != "00000000-0000-4000-8000-000000000099"
+            else "00000000-0000-4000-8000-000000000098"
+        )
+    elif case_name == "rev2-after-deadline":
+        _previous_root, _previous_envelope, previous_wire = _attempt_wire(evidence, 1)
+        previous = PhysicalAcceptanceAttempt.from_value(previous_wire)
+        assert previous.deadline_at_utc is not None
+        updated = _plus_microsecond(previous.deadline_at_utc)
+        attempt_wire["updatedAtUtc"] = updated
+        attempt_wire["deadlineAtUtc"] = _policy_deadline(updated, PHYSICAL_STAGES[2])
+    elif case_name == "rev2-output":
+        outputs = attempt_wire["stageOutputs"]
+        assert isinstance(outputs, dict)
+        outputs["projectModelDigest"] = _different_hash(outputs["projectModelDigest"])
+    elif case_name == "rev5-source-intent":
+        intent = SourceChangeIntent.from_value(attempt_wire["sourceChangeIntent"])
+        assert intent.before_input_snapshot_sha256 is not None
+        assert intent.expected_after_input_snapshot_sha256 is not None
+        attempt_wire["sourceChangeIntent"] = SourceChangeIntent.expanded(
+            changes=[dict(item) for item in intent.changes],
+            before_input_snapshot_sha256=intent.before_input_snapshot_sha256,
+            expected_after_input_snapshot_sha256=_different_hash(
+                intent.expected_after_input_snapshot_sha256
+            ),
+        ).to_dict()
+    else:
+        attempt_wire["deadlineAtUtc"] = _plus_microsecond(str(attempt_wire["deadlineAtUtc"]))
+    _replace_attempt_root(evidence, revision, _recheckpoint_attempt(attempt_wire))
 
 
 def _continuation_request(
@@ -660,6 +881,85 @@ def test_continuation_request_accepts_mapping_and_is_closed() -> None:
     with pytest.raises(ContinuationValidationError):
         ContinuationRequest.from_value(invalid_reuse_kind)
     assert invalid_reuse_kind == before_invalid_reuse_kind
+
+
+def test_public_prepare_continuation_reuses_clone_and_rejects_predecessor_variants(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fixture = prepare_pair(tmp_path, monkeypatch)
+    original_data_bytes = _fixture_tree_bytes(fixture.data_root)
+    original_project_bytes = _fixture_tree_bytes(fixture.project_root)
+
+    positive_workspace, positive_evidence = _clone_continuation_data(
+        fixture, tmp_path / "event-chain-clones" / "positive" / "data"
+    )
+    assert positive_workspace.project_root == fixture.project_root
+    assert positive_workspace.session_id == fixture.before_session_id
+    assert positive_workspace.workspace_id == fixture.workspace.workspace_id
+    positive_before = _fixture_tree_bytes(positive_workspace.data_root)
+    positive_request = deepcopy(fixture.bind_request)
+    positive_request_before = deepcopy(positive_request)
+    positive_request_model = ContinuationRequest.from_value(positive_request)
+    positive_result = prepare_continuation(
+        positive_evidence,
+        positive_workspace.diagnostics_root,
+        positive_request_model,
+        workspace_id=fixture.workspace.workspace_id,
+        project_id=PROJECT_ID,
+        expected_session_id=fixture.before_session_id,
+    )
+    positive_proof = positive_result[0]
+    assert positive_proof.predecessor_attempt_id == LEGACY_ATTEMPT_ID
+    assert positive_proof.predecessor_checkpoint_id == fixture.predecessor_checkpoint_id
+    assert positive_proof.predecessor_evidence_id == fixture.predecessor_evidence_id
+    assert positive_proof.fixed_after_test_run_id == fixture.fixed_run_id
+    assert positive_proof.fixed_after_evidence_id == str(
+        fixture.fixed_physical.envelope.evidence_id
+    )
+    assert positive_request == positive_request_before
+    assert _fixture_tree_bytes(positive_workspace.data_root) == positive_before
+
+    variants = (
+        ("rev6-envelope-attempt-sha", "predecessor attempt evidence is incompatible"),
+        ("rev1-parent", "predecessor attempt chain is corrupt"),
+        ("rev1-previous-checkpoint", "predecessor attempt chain is corrupt"),
+        ("rev1-produced-at", "predecessor attempt envelope is corrupt"),
+        ("rev1-logical-project", "predecessor immutable fields changed"),
+        ("rev2-after-deadline", "predecessor transition was outside its deadline"),
+        ("rev2-output", "predecessor outputs changed"),
+        ("rev5-source-intent", "predecessor source authority changed"),
+        ("rev1-session", "predecessor session changed"),
+        ("rev6-policy-deadline", "predecessor policy deadline differs"),
+    )
+    for case_name, expected_message in variants:
+        clone_workspace, clone_evidence = _clone_continuation_data(
+            fixture, tmp_path / "event-chain-clones" / case_name / "data"
+        )
+        _mutate_predecessor_clone(clone_evidence, case_name)
+        mutated_before = _fixture_tree_bytes(clone_workspace.data_root)
+        request = deepcopy(fixture.bind_request)
+        request_before = deepcopy(request)
+        parsed_request = ContinuationRequest.from_value(request)
+
+        with pytest.raises(ContinuationValidationError) as error:
+            prepare_continuation(
+                clone_evidence,
+                clone_workspace.diagnostics_root,
+                parsed_request,
+                workspace_id=fixture.workspace.workspace_id,
+                project_id=PROJECT_ID,
+                expected_session_id=fixture.before_session_id,
+            )
+
+        assert str(error.value) == expected_message
+        assert request == request_before
+        assert _fixture_tree_bytes(clone_workspace.data_root) == mutated_before
+        assert clone_workspace.project_root == fixture.project_root
+        assert clone_workspace.session_id == fixture.before_session_id
+        assert clone_workspace.workspace_id == fixture.workspace.workspace_id
+
+    assert _fixture_tree_bytes(fixture.data_root) == original_data_bytes
+    assert _fixture_tree_bytes(fixture.project_root) == original_project_bytes
 
 
 def test_continuation_bind_reuse_show_resume_preserves_v2_authorization(

@@ -437,6 +437,90 @@ def test_event_decode_rejects_nested_public_wire_contracts_without_mutation(
     assert candidate == before
 
 
+@pytest.mark.parametrize(
+    "case_name",
+    [
+        "negative-sequence",
+        "payload-array",
+        "schema",
+        "assessed-neutral-polarity",
+        "assessed-result-rationale",
+    ],
+)
+def test_public_event_decode_rejects_outer_and_assessment_variants_without_mutation(
+    case_name: str,
+) -> None:
+    expected_code = (
+        DIAGNOSTIC_PLAN_INVALID
+        if case_name == "assessed-neutral-polarity"
+        else DIAGNOSTIC_INVALID_EVENT
+    )
+    expected_message = (
+        "selector, expected value, plan, or step reference is invalid"
+        if expected_code == DIAGNOSTIC_PLAN_INVALID
+        else "event/model/operation intent is invalid"
+    )
+
+    if case_name in {"negative-sequence", "schema", "payload-array"}:
+        event_type, request, result = _canonical_payloads()[0]
+        event = _event(
+            sequence=0,
+            event_type=event_type,
+            request=request,
+            result=result,
+        )
+    else:
+        event_type, request, result = _canonical_payloads()[5]
+        event = _event(
+            sequence=0,
+            event_type=event_type,
+            request=request,
+            result=result,
+        )
+
+    candidates: list[dict[str, object]] = []
+    if case_name == "negative-sequence":
+        candidate = event.to_dict()
+        candidate["sequence"] = -1
+        candidates.append(candidate)
+    elif case_name == "schema":
+        candidate = event.to_dict()
+        candidate["schema"] = "stm32-diagnostic-event/999"
+        candidates.append(candidate)
+    elif case_name == "payload-array":
+        for side in ("request", "result"):
+            candidate = event.to_dict()
+            payload = candidate["payload"]
+            assert isinstance(payload, dict)
+            payload[side] = []
+            candidates.append(candidate)
+    else:
+        candidate = event.to_dict()
+        payload = candidate["payload"]
+        assert isinstance(payload, dict)
+        request_wire = payload["request"]
+        result_wire = payload["result"]
+        assert isinstance(request_wire, dict) and isinstance(result_wire, dict)
+        if case_name == "assessed-neutral-polarity":
+            request_wire["polarity"] = "neutral"
+        else:
+            assessment = result_wire["assessment"]
+            assert isinstance(assessment, dict)
+            changed_assessment = {**assessment, "rationale": "changed rationale"}
+            changed_assessment["assessment_id"] = calculate_assessment_id(changed_assessment)
+            result_wire["assessment"] = changed_assessment
+        candidates.append(candidate)
+
+    for candidate in candidates:
+        before = deepcopy(candidate)
+        with pytest.raises(DiagnosticValidationError) as error:
+            DiagnosticEvent.from_value(candidate)
+
+        assert error.value.code == expected_code
+        assert error.value.message == expected_message
+        assert candidate == before
+
+
 def test_changed_digest_and_previous_link_fail_with_invalid_event() -> None:
     created = _event(
         sequence=0,

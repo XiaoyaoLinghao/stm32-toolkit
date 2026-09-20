@@ -269,6 +269,75 @@ def _resolved() -> DiagnosticSession:
     return reduce_event(verifying, completed)
 
 
+def _lifecycle_event_variants() -> tuple[tuple[str, DiagnosticEvent], ...]:
+    session, previous = _investigating_with_hypothesis()
+    source = _source()
+    declared = _event(
+        sequence=session.revision,
+        event_type="source_change.declared",
+        request={"source_change_declaration": source.to_dict()},
+        result={"declaration_id": source.declaration_id},
+        previous_digest=previous.digest,
+    )
+    proposed = reduce_event(session, declared)
+    plan = _plan(source)
+    added = _event(
+        sequence=proposed.revision,
+        event_type="verification.plan_added",
+        request={"verification_plan": plan.to_dict()},
+        result={"verification_plan_id": plan.verification_plan_id, "plan_digest": plan.plan_digest},
+        previous_digest=declared.digest,
+    )
+    verifying = reduce_event(proposed, added)
+    started = _event(
+        sequence=verifying.revision,
+        event_type="verification.started",
+        request={"verification_plan_id": plan.verification_plan_id},
+        result={"verification_plan_id": plan.verification_plan_id},
+        previous_digest=added.digest,
+    )
+    marker = _marker(plan)
+    attached = _event(
+        sequence=started.sequence + 1,
+        event_type="analysis.marker_attached",
+        request={"diagnostic_marker_ref": marker.to_dict()},
+        result={"marker_id": marker.marker_id},
+        previous_digest=started.digest,
+    )
+    return (
+        ("declared", declared),
+        ("plan_added", added),
+        ("started", started),
+        ("marker_attached", attached),
+    )
+
+
+def test_public_lifecycle_event_result_bindings_reject_without_mutation() -> None:
+    for case_name, event in _lifecycle_event_variants():
+        candidate = event.to_dict()
+        payload = candidate["payload"]
+        assert isinstance(payload, dict)
+        result = payload["result"]
+        assert isinstance(result, dict)
+        if case_name == "declared":
+            result["declaration_id"] = "0" * 64
+        elif case_name == "plan_added":
+            result["verification_plan_id"] = "0" * 64
+            result["plan_digest"] = "1" * 64
+        elif case_name == "started":
+            result["verification_plan_id"] = "0" * 64
+        else:
+            result["marker_id"] = "0" * 64
+        before = deepcopy(candidate)
+
+        with pytest.raises(DiagnosticValidationError) as error:
+            DiagnosticEvent.from_value(candidate)
+
+        assert error.value.code == DIAGNOSTIC_INVALID_EVENT
+        assert error.value.message == "event/model/operation intent is invalid"
+        assert candidate == before
+
+
 def _plan_variant(
     plan: VerificationPlan,
     *,
