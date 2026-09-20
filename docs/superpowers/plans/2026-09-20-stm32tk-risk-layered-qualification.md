@@ -575,3 +575,62 @@ new file once with native coverage, -x,180s via the existing guarded launcher an
 both src paths. All output stays under r10/t/w4m/run1 and
 e/risk-v2/wave4/monitor/run1. Stop on first failure; do not auto-retry or alter
 constants/private state. Main owns independent acceptance, integration and cleanup.
+
+## Tool-support admission and adapter-failure qualification
+
+Accepted base: `e9e40c9fe69eac471a756056a4d341b20b357757`.
+Primary owns the contract and review. One Luna/max owner owns only
+`tools/stm32-toolkit/tests/test_risk_tool_support_adapters.py` in r10/w4s.
+Use the existing test_tool_support helpers, _RunnerStream and public
+SupportProfileRequest/discover_tool_support. Product and shared helpers are
+read-only. Three caller scenarios comprise one bounded eleven-case group:
+
+1. Profile/runtime admission (three cases). Reuse _nested_public_profile_fixture.
+   A tools.gcc list instead of an entry, or duplicate top-level gcc plus tools.gcc,
+   must raise exact SupportProfileError / support profile schema is invalid before
+   any process dispatch. A valid profile with a scoped runtime-version provider
+   representing3.11 must retain tool facts and add exactly PYTHON_UNSUPPORTED /
+   python / Use CPython >=3.12,<3.13. The injected version supports both slicing
+   and major/minor/micro attributes like the real sys.version_info. Replace only
+   this module's runtime-version provider, not global interpreter state. This
+   proves the rejection contract, not an actual3.11 execution qualification.
+2. Selected GCC version-provider failures (four cases). Use the complete nested
+   fixture with only GCC's version hint removed, so the public resolver reaches
+   its explicit executable and preserves other declared tool facts. At the real
+   _REAL_POPEN external process seam model: spawn OSError; stdout/stderr read
+   OSError with no captured version; invalid UTF8 bytes; and timeout followed by
+   terminate OSError, another timeout, successful kill and final wait returning
+   a terminal code. Use actual _run_bounded and _version_probe; do not replace
+   them. Assert GCC_PROBE_FAILED, no successful GCC fact or lower-tier executable
+   dispatch, other facts unchanged, shell=False/stdin=DEVNULL, and exact bounded
+   wait/terminate/kill order for the timeout case. Readers actually finish before
+   return. A fake process's terminal response is adapter evidence only, not a
+   real process-exit claim. Do not claim unknown children are gone if kill/wait
+   fail; such unconfirmed-termination variants are excluded from this group.
+3. GUI executable metadata failures (four cases). Remove only CubeMX/VS Code
+   version hints from the complete valid fixture. At ctypes.windll.version,
+   model size=0, GetFileVersionInfoW failure, translation-query failure, and an
+   OSError. Keep actual _windows_file_version and public resolver. These paths
+   never dereference a failed/uninitialized pointer; do not invent a successful
+   translation pointer or test ProductVersion query without a valid owned buffer.
+   Assert CUBEMX_PROBE_FAILED and VSCODE_PROBE_FAILED, no GUI fact, no process
+   launch at all, and unchanged GCC/CMake/Ninja declared facts. This is Win32
+   adapter contract evidence, not one of the seven native symlink checks.
+
+All cases snapshot fixture file names/bytes after arranging caller inputs and
+assert no persistent mutation. For valid-profile failure cases, preserve the
+unchanged fact fields from a public control result with declared versions, then
+assert the exact changed fields and sorted issue codes/remediation. Do not copy
+the failing actual result to manufacture its expected result. Restore the exact
+profile inputs or version provider and prove public discovery works afterward;
+do not rerun the old successful test suite wholesale. Do not override resolver,
+fact, schema-validation or path-safety decisions. No fabricated reparse metadata,
+private-model corruption, real external tool installation or hardware is needed.
+
+Preflight actual constructors, optional-version schema, adapter call order and
+serialized profile shape; missing helper capability is a finding. Check Ruff
+--no-cache, AST and full diff, commit, then one complete eleven-case native batch
+with -x,180s, the existing guarded launcher and both src paths. All generated
+output remains r10/t/w4s/run1 and e/risk-v2/wave4/support/run1. First failure stops
+for diagnosis; no automatic retry. Primary owns independent acceptance/cleanup;
+no shared config, packaging, deployment or remote change is authorized.
