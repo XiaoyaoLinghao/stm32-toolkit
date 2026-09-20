@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass, replace
+from datetime import datetime, timedelta
 import hashlib
 import json
 import os
@@ -24,14 +25,17 @@ from stm32_toolkit.acceptance.finalization import (
     FINALIZATION_POLICY_DIGEST,
     FINALIZATION_REQUEST_SCHEMA,
     FINALIZATION_PROJECT_ORIGIN,
+    FINALIZATION_ROOT_TYPE,
     FINALIZATION_SCHEMA,
     FINALIZATION_SCENARIO_DIGEST,
     FINALIZATION_SCENARIO_ID,
     FINALIZATION_SCENARIO_VERSION,
+    FINALIZATION_WINDOW_SECONDS,
     FinalizationRequest,
     FinalizationValidationError,
     PhysicalFinalizationAttempt,
     PhysicalFinalizationProof,
+    finalization_policy_document,
 )
 from stm32_toolkit.acceptance.recovery import SourceChangeIntent
 import stm32_toolkit.acceptance.recovery_workflows as recovery_workflows
@@ -60,7 +64,12 @@ from stm32_toolkit.acceptance.recovery_workflows import (
 )
 from stm32_toolkit.build.identity import snapshot_project_inputs
 from stm32_toolkit.diagnostics import SourceChangeDeclaration, VerificationPlan
-from stm32_toolkit.evidence import EvidenceEnvelope, EvidenceIdentity, canonical_json_bytes
+from stm32_toolkit.evidence import (
+    EvidenceEnvelope,
+    EvidenceIdentity,
+    EvidenceValidationError,
+    canonical_json_bytes,
+)
 from stm32_toolkit.evidence.gc import RootRecord, get_root
 from stm32_toolkit.evidence.store import EvidenceStore, MAX_EVIDENCE_READ_BYTES
 from stm32_toolkit.paths import WorkspacePaths
@@ -1860,3 +1869,332 @@ def test_physical_finalization_attempt_public_json_boundaries(case_name: str, ex
         candidate,
         expected,
     )
+
+
+def _journey_wire(result: object) -> dict[str, object]:
+    to_dict = getattr(result, "to_dict", None)
+    assert callable(to_dict)
+    wire = to_dict()
+    assert isinstance(wire, dict)
+    return wire
+
+
+def _journey_success(wire: Mapping[str, object], operation: str, data: object) -> None:
+    assert wire == {
+        "protocol": "stm32-toolkit/1",
+        "ok": True,
+        "operation": operation,
+        "code": "OK",
+        "message": "",
+        "data": data,
+        "details": {},
+    }
+
+
+def _journey_failure(
+    wire: Mapping[str, object], operation: str, code: str
+) -> None:
+    messages = {
+        "ACCEPTANCE_ATTEMPT_CONFLICT": (
+            "Acceptance attempt content conflicts with an immutable revision."
+        ),
+        "ACCEPTANCE_ATTEMPT_REVISION_CONFLICT": (
+            "Acceptance attempt revision conflicts with the current chain."
+        ),
+        "ACCEPTANCE_ATTEMPT_STAGE_INVALID": "Acceptance attempt stage is invalid.",
+        "ACCEPTANCE_ATTEMPT_INPUT_INVALID": "Acceptance attempt input is invalid.",
+        "ACCEPTANCE_ATTEMPT_TIMED_OUT": "Acceptance attempt stage deadline has elapsed.",
+        "ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH": (
+            "Acceptance attempt identity does not match."
+        ),
+    }
+    assert wire == {
+        "protocol": "stm32-toolkit/1",
+        "ok": False,
+        "operation": operation,
+        "code": code,
+        "message": messages[code],
+        "data": None,
+        "details": {},
+    }
+
+
+def _journey_root_id(attempt_id: str, revision: int) -> str:
+    return f"{attempt_id}.{revision:08d}"
+
+
+def _journey_resource_snapshot(
+    evidence: EvidenceStore, root_type: str, root_id: str
+) -> tuple[dict[str, object], dict[str, object], tuple[tuple[dict[str, object], bytes], ...]]:
+    root = get_root(evidence, root_type, root_id)
+    envelope = evidence.get_envelope(root.manifest_id)
+    artifacts = tuple(
+        (
+            artifact.to_dict(),
+            evidence.read_artifact(
+                artifact, maximum_bytes=MAX_EVIDENCE_READ_BYTES
+            ),
+        )
+        for artifact in envelope.artifacts
+    )
+    return root.to_dict(), envelope.to_dict(), artifacts
+
+
+def test_public_finalization_workflow_journey(
+    persisted_case: PersistedCase,
+) -> None:
+    """Exercise finalization refusals, deadline paths, and the terminal retry."""
+
+    case = persisted_case
+    operation = "acceptance.attempt.begin"
+    checkpoint_operation = "acceptance.attempt.checkpoint"
+    attempt_id = "00000000-0000-4000-8000-000000000340"
+    request_before = deepcopy(case.request)
+
+    predecessor_id = str(case.request["predecessorAttemptId"])
+    predecessor_root = get_root(
+        case.evidence,
+        "acceptance-attempt",
+        _journey_root_id(predecessor_id, 6),
+    )
+    predecessor_envelope = case.evidence.get_envelope(predecessor_root.manifest_id)
+    predecessor_attempt = predecessor_envelope.metadata["attempt"]
+    assert isinstance(predecessor_attempt, Mapping)
+    predecessor_deadline = str(predecessor_attempt["deadlineAtUtc"])
+
+    started_wire = _journey_wire(_begin(case, attempt_id))
+    started_data = started_wire["data"]
+    assert isinstance(started_data, Mapping)
+    started_attempt = started_data["attempt"]
+    assert isinstance(started_attempt, Mapping)
+    _journey_success(started_wire, operation, started_data)
+    assert case.request == request_before
+    assert started_attempt["schema"] == FINALIZATION_ATTEMPT_SCHEMA
+    assert started_attempt["attemptId"] == attempt_id
+    assert started_attempt["revision"] == 0
+    assert started_attempt["status"] == "IN_PROGRESS"
+    assert started_attempt["stage"] == "verification-pending"
+    assert started_attempt["scenarioId"] == FINALIZATION_SCENARIO_ID
+    assert started_attempt["scenarioVersion"] == FINALIZATION_SCENARIO_VERSION
+    assert started_attempt["projectOrigin"] == FINALIZATION_PROJECT_ORIGIN
+    assert started_attempt["executionSource"] == FINALIZATION_EXECUTION_SOURCE
+    assert started_attempt["physicalTransportEvidence"] is True
+    assert started_attempt["openedAtUtc"] == SAFE_TIME
+    assert started_attempt["updatedAtUtc"] == SAFE_TIME
+    assert started_attempt["deadlineAtUtc"] == (
+        datetime.strptime(SAFE_TIME, "%Y-%m-%dT%H:%M:%S.%fZ")
+        + timedelta(seconds=FINALIZATION_WINDOW_SECONDS)
+    ).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    assert predecessor_deadline < SAFE_TIME < str(started_attempt["deadlineAtUtc"])
+
+    proof = _proof(case, started_attempt)
+    assert proof.fixed_after_test_run_id == case.request["fixedAfterTestRunId"]
+    assert proof.fixed_after_evidence_id == case.request["fixedAfterEvidenceId"]
+    proof_resource = _journey_resource_snapshot(
+        case.evidence, FINALIZATION_ROOT_TYPE, proof.continuation_id
+    )
+    checkpoint_base: dict[str, object] = {
+        "context": _context(case),
+        "attempt_id": attempt_id,
+        "expected_revision": 0,
+        "stage": "target-fix-verified",
+        "test_run_id": proof.fixed_after_test_run_id,
+        "diagnostic_session_id": proof.diagnostic_session_id,
+        "acceptance_record_id": None,
+        "source_change_intent": None,
+        "fix_verification_id": proof.fix_verification_id,
+    }
+    different_fix_id = "0" * 64
+    if different_fix_id == proof.fix_verification_id:
+        different_fix_id = "1" * 64
+    checkpoint_variants = (
+        ("revision-one", {"expected_revision": 1}, "ACCEPTANCE_ATTEMPT_REVISION_CONFLICT"),
+        ("revision-bool", {"expected_revision": True}, "ACCEPTANCE_ATTEMPT_REVISION_CONFLICT"),
+        ("stage", {"stage": "verification-pending"}, "ACCEPTANCE_ATTEMPT_STAGE_INVALID"),
+        (
+            "acceptance-record",
+            {"acceptance_record_id": "a" * 64},
+            "ACCEPTANCE_ATTEMPT_STAGE_INVALID",
+        ),
+        (
+            "source-intent",
+            {"source_change_intent": "b" * 64},
+            "ACCEPTANCE_ATTEMPT_STAGE_INVALID",
+        ),
+        (
+            "invalid-diagnostic",
+            {"diagnostic_session_id": "not-a-diagnostic-id"},
+            "ACCEPTANCE_ATTEMPT_INPUT_INVALID",
+        ),
+        (
+            "wrong-run",
+            {"test_run_id": physical_fixture.PHYSICAL_FAILED_RUN},
+            "ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH",
+        ),
+        (
+            "wrong-diagnostic",
+            {"diagnostic_session_id": "8" * 32},
+            "ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH",
+        ),
+        ("wrong-fix", {"fix_verification_id": different_fix_id}, "ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH"),
+    )
+    for _name, changes, expected_code in checkpoint_variants:
+        call = dict(checkpoint_base)
+        call.update(changes)
+        before = _persisted_snapshot(case)
+        checkpoint_wire = _journey_wire(
+            checkpoint_acceptance_attempt(**call)
+        )
+        _journey_failure(checkpoint_wire, checkpoint_operation, expected_code)
+        assert _persisted_snapshot(case) == before
+
+    conflict_request = deepcopy(case.request)
+    conflict_request["diagnosticEventHead"] = "0" * 64
+    if conflict_request["diagnosticEventHead"] == case.request["diagnosticEventHead"]:
+        conflict_request["diagnosticEventHead"] = "1" * 64
+    conflict_before = _persisted_snapshot(case)
+    conflict_wire = _journey_wire(
+        begin_acceptance_attempt(
+            _context(case),
+            attempt_id=attempt_id,
+            scenario_id=SCENARIO,
+            scenario_version=VERSION,
+            continuation=conflict_request,
+        )
+    )
+    _journey_failure(conflict_wire, operation, "ACCEPTANCE_ATTEMPT_CONFLICT")
+    assert conflict_request != case.request
+    assert _persisted_snapshot(case) == conflict_before
+
+    def begin_fresh(fresh_id: str) -> Mapping[str, object]:
+        wire = _journey_wire(_begin(case, fresh_id))
+        data = wire["data"]
+        assert isinstance(data, Mapping)
+        attempt = data["attempt"]
+        assert isinstance(attempt, Mapping)
+        _journey_success(wire, operation, data)
+        return attempt
+
+    def run_timed_out_variant(
+        fresh_id: str, clock_values: tuple[str, ...]
+    ) -> None:
+        fresh_attempt = begin_fresh(fresh_id)
+        fresh_deadline = str(fresh_attempt["deadlineAtUtc"])
+        assert predecessor_deadline < SAFE_TIME < fresh_deadline < LATE_TIME
+        before = _persisted_snapshot(case)
+        calls: list[str] = []
+        values = iter(clock_values)
+
+        def clock() -> str:
+            value = next(values)
+            calls.append(value)
+            return value
+
+        call = dict(checkpoint_base)
+        call["context"] = _context(case, clock=clock)
+        call["attempt_id"] = fresh_id
+        timed_out_wire = _journey_wire(checkpoint_acceptance_attempt(**call))
+        _journey_failure(
+            timed_out_wire,
+            checkpoint_operation,
+            "ACCEPTANCE_ATTEMPT_TIMED_OUT",
+        )
+        assert tuple(calls) == clock_values
+        assert _persisted_snapshot(case) == before
+        with pytest.raises(EvidenceValidationError):
+            get_root(
+                case.evidence,
+                "acceptance-attempt",
+                _journey_root_id(fresh_id, 1),
+            )
+
+    run_timed_out_variant(
+        "00000000-0000-4000-8000-000000000341",
+        (SAFE_TIME, SAFE_TIME, LATE_TIME),
+    )
+    run_timed_out_variant(
+        "00000000-0000-4000-8000-000000000342",
+        (SAFE_TIME, SAFE_TIME, SAFE_TIME, SAFE_TIME, LATE_TIME),
+    )
+
+    valid_id = "00000000-0000-4000-8000-000000000343"
+    begin_fresh(valid_id)
+    valid_root0_resource = _journey_resource_snapshot(
+        case.evidence, "acceptance-attempt", _journey_root_id(valid_id, 0)
+    )
+    valid_before = _persisted_snapshot(case)
+    valid_wire = _journey_wire(_checkpoint(case, valid_id, proof))
+    valid_data = valid_wire["data"]
+    assert isinstance(valid_data, Mapping)
+    completed_attempt = valid_data["attempt"]
+    assert isinstance(completed_attempt, Mapping)
+    _journey_success(valid_wire, checkpoint_operation, valid_data)
+    assert completed_attempt["attemptId"] == valid_id
+    assert completed_attempt["revision"] == 1
+    assert completed_attempt["status"] == "COMPLETED"
+    assert completed_attempt["stage"] == "target-fix-verified"
+    assert completed_attempt["fixVerificationId"] == proof.fix_verification_id
+    assert _persisted_snapshot(case) != valid_before
+    assert _journey_resource_snapshot(
+        case.evidence, FINALIZATION_ROOT_TYPE, proof.continuation_id
+    ) == proof_resource
+    assert _journey_resource_snapshot(
+        case.evidence, "acceptance-attempt", _journey_root_id(valid_id, 0)
+    ) == valid_root0_resource
+    valid_root1_resource = _journey_resource_snapshot(
+        case.evidence, "acceptance-attempt", _journey_root_id(valid_id, 1)
+    )
+    assert valid_root1_resource[0]["root_id"] == _journey_root_id(valid_id, 1)
+
+    show_wire = _journey_wire(
+        show_acceptance_attempt(_context(case), attempt_id=valid_id)
+    )
+    _journey_success(
+        show_wire,
+        "acceptance.attempt.show",
+        {"authoritative": True, "attempt": dict(completed_attempt)},
+    )
+    resume_wire = _journey_wire(
+        resume_acceptance_attempt(_context(case), attempt_id=valid_id)
+    )
+    _journey_success(
+        resume_wire,
+        "acceptance.attempt.resume",
+        {
+            "authoritative": True,
+            "attempt": dict(completed_attempt),
+            "nextStage": None,
+            "authorizationRequired": False,
+            "actionDigest": None,
+            "timedOut": False,
+            "recoveryPolicy": finalization_policy_document(),
+        },
+    )
+
+    retry_before = _persisted_snapshot(case)
+    retry_wire = _journey_wire(_checkpoint(case, valid_id, proof))
+    retry_data = retry_wire["data"]
+    assert isinstance(retry_data, Mapping)
+    _journey_success(retry_wire, checkpoint_operation, retry_data)
+    assert retry_data == {"attempt": dict(completed_attempt)}
+    assert _persisted_snapshot(case) == retry_before
+
+    begin_retry_wire = _journey_wire(_begin(case, valid_id))
+    begin_retry_data = begin_retry_wire["data"]
+    assert isinstance(begin_retry_data, Mapping)
+    _journey_success(begin_retry_wire, operation, begin_retry_data)
+    assert begin_retry_data == {"attempt": dict(completed_attempt)}
+    assert _persisted_snapshot(case) == retry_before
+
+    late_begin_before = _persisted_snapshot(case)
+    late_begin_wire = _journey_wire(
+        begin_acceptance_attempt(
+            _context(case),
+            attempt_id=valid_id,
+            scenario_id=SCENARIO,
+            scenario_version=VERSION,
+            continuation=conflict_request,
+        )
+    )
+    _journey_failure(late_begin_wire, operation, "ACCEPTANCE_ATTEMPT_CONFLICT")
+    assert _persisted_snapshot(case) == late_begin_before

@@ -19,17 +19,21 @@ from stm32_toolkit.acceptance.continuation import (
     CONTINUATION_ATTEMPT_SCHEMA,
     CONTINUATION_POLICY_DIGEST,
     CONTINUATION_REQUEST_SCHEMA,
+    CONTINUATION_ROOT_TYPE,
     CONTINUATION_SCENARIO_DIGEST,
     CONTINUATION_SCHEMA,
     CONTINUATION_STAGES,
+    CONTINUATION_WINDOW_SECONDS,
     ContinuationRequest,
     ContinuationValidationError,
     PhysicalContinuationAttempt,
     PhysicalContinuationProof,
     authenticate_continuation,
+    continuation_policy_document,
     prepare_continuation,
 )
 from stm32_toolkit.acceptance.recovery import (
+    PHYSICAL_ATTEMPT_SCHEMA,
     PHYSICAL_SCENARIO_ID,
     PHYSICAL_SCENARIO_VERSION,
     PHYSICAL_STAGES,
@@ -60,7 +64,7 @@ from stm32_toolkit.diagnostic_workflows import (
 from stm32_toolkit.diagnostics import DiagnosticSession, SourceChangeDeclaration
 from stm32_toolkit.evidence import EvidenceEnvelope, EvidenceIdentity, canonical_json_bytes, get_root
 from stm32_toolkit.evidence.gc import RootRecord
-from stm32_toolkit.evidence.store import EvidenceStore
+from stm32_toolkit.evidence.store import MAX_EVIDENCE_READ_BYTES, EvidenceStore
 from stm32_toolkit.paths import WorkspacePaths
 from stm32_toolkit.project_model import load_project_model
 from stm32_toolkit.testing.model import calculate_inventory_digest
@@ -1756,3 +1760,366 @@ def test_public_continuation_attempt_semantic_boundaries(case_name: str, expecte
     else:
         payload["checkpointId"] = "0" * 64
     _assert_continuation_refusal(lambda: PhysicalContinuationAttempt.from_value(payload), payload, expected)
+
+
+def _journey_wire(result: object) -> dict[str, object]:
+    to_dict = getattr(result, "to_dict", None)
+    assert callable(to_dict)
+    wire = to_dict()
+    assert isinstance(wire, dict)
+    return wire
+
+
+def _journey_success(wire: Mapping[str, object], operation: str, data: object) -> None:
+    assert wire == {
+        "protocol": "stm32-toolkit/1",
+        "ok": True,
+        "operation": operation,
+        "code": "OK",
+        "message": "",
+        "data": data,
+        "details": {},
+    }
+
+
+def _journey_failure(
+    wire: Mapping[str, object], operation: str, code: str
+) -> None:
+    messages = {
+        "ACCEPTANCE_ATTEMPT_CONFLICT": (
+            "Acceptance attempt content conflicts with an immutable revision."
+        ),
+        "ACCEPTANCE_ATTEMPT_REVISION_CONFLICT": (
+            "Acceptance attempt revision conflicts with the current chain."
+        ),
+        "ACCEPTANCE_ATTEMPT_STAGE_INVALID": "Acceptance attempt stage is invalid.",
+        "ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH": (
+            "Acceptance attempt identity does not match."
+        ),
+        "ACCEPTANCE_ATTEMPT_OUTPUT_INVALID": (
+            "Acceptance attempt public output is invalid."
+        ),
+    }
+    assert wire == {
+        "protocol": "stm32-toolkit/1",
+        "ok": False,
+        "operation": operation,
+        "code": code,
+        "message": messages[code],
+        "data": None,
+        "details": {},
+    }
+
+
+def _journey_root_id(attempt_id: str, revision: int) -> str:
+    return f"{attempt_id}.{revision:08d}"
+
+
+def _journey_resource_snapshot(
+    evidence: EvidenceStore, root_type: str, root_id: str
+) -> tuple[dict[str, object], dict[str, object], tuple[tuple[dict[str, object], bytes], ...]]:
+    root = get_root(evidence, root_type, root_id)
+    envelope = evidence.get_envelope(root.manifest_id)
+    artifacts = tuple(
+        (
+            artifact.to_dict(),
+            evidence.read_artifact(
+                artifact, maximum_bytes=MAX_EVIDENCE_READ_BYTES
+            ),
+        )
+        for artifact in envelope.artifacts
+    )
+    return root.to_dict(), envelope.to_dict(), artifacts
+
+
+def test_public_continuation_workflow_journey(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Exercise the pending continuation caller graph through public workflows."""
+
+    fixture = prepare_pair(tmp_path, monkeypatch)
+    operation = "acceptance.attempt.begin"
+    checkpoint_operation = "acceptance.attempt.checkpoint"
+    request = deepcopy(fixture.bind_request)
+
+    predecessor_resource = _journey_resource_snapshot(
+        fixture.evidence, "acceptance-attempt", fixture.predecessor_root_id
+    )
+
+    own_uuid_before = _fixture_tree_bytes(fixture.data_root)
+    own_uuid_request = deepcopy(request)
+    own_uuid_wire = _journey_wire(
+        begin_acceptance_attempt(
+            fixture.context,
+            attempt_id=LEGACY_ATTEMPT_ID,
+            scenario_id=PHYSICAL_SCENARIO_ID,
+            scenario_version=PHYSICAL_SCENARIO_VERSION,
+            continuation=own_uuid_request,
+        )
+    )
+    _journey_failure(own_uuid_wire, operation, "ACCEPTANCE_ATTEMPT_CONFLICT")
+    assert own_uuid_request == request
+    assert _fixture_tree_bytes(fixture.data_root) == own_uuid_before
+
+    normal_id = "00000000-0000-4000-8000-000000000027"
+    normal_wire = _journey_wire(
+        begin_acceptance_attempt(
+            fixture.context,
+            attempt_id=normal_id,
+            scenario_id=PHYSICAL_SCENARIO_ID,
+            scenario_version=PHYSICAL_SCENARIO_VERSION,
+        )
+    )
+    normal_data = normal_wire["data"]
+    assert isinstance(normal_data, Mapping)
+    normal_attempt = normal_data["attempt"]
+    assert isinstance(normal_attempt, Mapping)
+    _journey_success(normal_wire, operation, normal_data)
+    assert normal_attempt["schema"] == PHYSICAL_ATTEMPT_SCHEMA
+    assert normal_attempt["attemptId"] == normal_id
+    assert normal_attempt["revision"] == 0
+    assert normal_attempt["executionSource"] == "physical"
+    assert normal_attempt["physicalTransportEvidence"] is False
+
+    normal_bind_before = _fixture_tree_bytes(fixture.data_root)
+    normal_bind_request = deepcopy(request)
+    normal_bind_wire = _journey_wire(
+        begin_acceptance_attempt(
+            fixture.context,
+            attempt_id=normal_id,
+            scenario_id=PHYSICAL_SCENARIO_ID,
+            scenario_version=PHYSICAL_SCENARIO_VERSION,
+            continuation=normal_bind_request,
+        )
+    )
+    _journey_failure(normal_bind_wire, operation, "ACCEPTANCE_ATTEMPT_CONFLICT")
+    assert normal_bind_request == request
+    assert _fixture_tree_bytes(fixture.data_root) == normal_bind_before
+
+    first_before = _fixture_tree_bytes(fixture.data_root)
+    first_request = deepcopy(request)
+    first_wire = _journey_wire(
+        begin_acceptance_attempt(
+            fixture.context,
+            attempt_id=CONTINUATION_ATTEMPT_ID,
+            scenario_id=PHYSICAL_SCENARIO_ID,
+            scenario_version=PHYSICAL_SCENARIO_VERSION,
+            continuation=first_request,
+        )
+    )
+    first_data = first_wire["data"]
+    assert isinstance(first_data, Mapping)
+    first_attempt = first_data["attempt"]
+    assert isinstance(first_attempt, Mapping)
+    _journey_success(first_wire, operation, first_data)
+    assert first_request == request
+    assert first_attempt["schema"] == CONTINUATION_ATTEMPT_SCHEMA
+    assert first_attempt["attemptId"] == CONTINUATION_ATTEMPT_ID
+    assert first_attempt["revision"] == 0
+    assert first_attempt["status"] == "IN_PROGRESS"
+    assert first_attempt["stage"] == "verification-pending"
+    assert first_attempt["workspaceId"] == fixture.workspace.workspace_id
+    assert first_attempt["logicalProjectId"] == str(fixture.model.logical_project_id)
+    assert first_attempt["sessionId"] == fixture.before_session_id
+    assert first_attempt["projectOrigin"] == "keil"
+    assert first_attempt["executionSource"] == "physical"
+    assert first_attempt["physicalTransportEvidence"] is True
+    assert first_attempt["openedAtUtc"] == CONTINUATION_TIME
+    assert first_attempt["updatedAtUtc"] == CONTINUATION_TIME
+    assert first_attempt["deadlineAtUtc"] == _format_utc(
+        datetime.strptime(CONTINUATION_TIME, "%Y-%m-%dT%H:%M:%S.%fZ")
+        + timedelta(seconds=CONTINUATION_WINDOW_SECONDS)
+    )
+    continuation_id = str(first_attempt["continuationEvidenceId"])
+    assert len(continuation_id) == 64
+    assert first_attempt["fixedAfterTestRunId"] == fixture.fixed_run_id
+    assert first_attempt["fixedAfterEvidenceId"] == str(
+        fixture.fixed_physical.envelope.evidence_id
+    )
+    assert first_attempt["fixVerificationId"] is None
+    assert _fixture_tree_bytes(fixture.data_root) != first_before
+
+    proof_resource = _journey_resource_snapshot(
+        fixture.evidence, CONTINUATION_ROOT_TYPE, continuation_id
+    )
+    first_attempt_resource = _journey_resource_snapshot(
+        fixture.evidence,
+        "acceptance-attempt",
+        _journey_root_id(CONTINUATION_ATTEMPT_ID, 0),
+    )
+    assert proof_resource[0]["root_type"] == CONTINUATION_ROOT_TYPE
+    assert proof_resource[0]["root_id"] == continuation_id
+    assert first_attempt_resource[0]["root_id"] == _journey_root_id(
+        CONTINUATION_ATTEMPT_ID, 0
+    )
+    assert _journey_resource_snapshot(
+        fixture.evidence, "acceptance-attempt", fixture.predecessor_root_id
+    ) == predecessor_resource
+
+    second_before = _fixture_tree_bytes(fixture.data_root)
+    second_request = deepcopy(request)
+    second_wire = _journey_wire(
+        begin_acceptance_attempt(
+            fixture.context,
+            attempt_id=CONTINUATION_REUSE_ID,
+            scenario_id=PHYSICAL_SCENARIO_ID,
+            scenario_version=PHYSICAL_SCENARIO_VERSION,
+            continuation=second_request,
+        )
+    )
+    second_data = second_wire["data"]
+    assert isinstance(second_data, Mapping)
+    second_attempt = second_data["attempt"]
+    assert isinstance(second_attempt, Mapping)
+    _journey_success(second_wire, operation, second_data)
+    assert second_request == request
+    assert second_attempt["attemptId"] == CONTINUATION_REUSE_ID
+    assert second_attempt["continuationEvidenceId"] == continuation_id
+    assert _fixture_tree_bytes(fixture.data_root) != second_before
+    assert _journey_resource_snapshot(
+        fixture.evidence, CONTINUATION_ROOT_TYPE, continuation_id
+    ) == proof_resource
+    assert _journey_resource_snapshot(
+        fixture.evidence, "acceptance-attempt", fixture.predecessor_root_id
+    ) == predecessor_resource
+
+    show_wire = _journey_wire(
+        show_acceptance_attempt(fixture.context, attempt_id=CONTINUATION_ATTEMPT_ID)
+    )
+    show_data = {"authoritative": True, "attempt": dict(first_attempt)}
+    _journey_success(show_wire, "acceptance.attempt.show", show_data)
+
+    resume_wire = _journey_wire(
+        resume_acceptance_attempt(fixture.context, attempt_id=CONTINUATION_ATTEMPT_ID)
+    )
+    resume_data = {
+        "authoritative": True,
+        "attempt": dict(first_attempt),
+        "nextStage": "target-fix-verified",
+        "authorizationRequired": False,
+        "actionDigest": None,
+        "timedOut": False,
+        "recoveryPolicy": continuation_policy_document(),
+    }
+    _journey_success(resume_wire, "acceptance.attempt.resume", resume_data)
+
+    retry_before = _fixture_tree_bytes(fixture.data_root)
+    retry_wire = _journey_wire(
+        begin_acceptance_attempt(
+            fixture.context,
+            attempt_id=CONTINUATION_ATTEMPT_ID,
+            scenario_id=PHYSICAL_SCENARIO_ID,
+            scenario_version=PHYSICAL_SCENARIO_VERSION,
+            continuation=deepcopy(request),
+        )
+    )
+    retry_data = retry_wire["data"]
+    assert isinstance(retry_data, Mapping)
+    _journey_success(retry_wire, operation, retry_data)
+    assert retry_data == {"attempt": dict(first_attempt)}
+    assert _fixture_tree_bytes(fixture.data_root) == retry_before
+    assert _journey_resource_snapshot(
+        fixture.evidence, CONTINUATION_ROOT_TYPE, continuation_id
+    ) == proof_resource
+    assert _journey_resource_snapshot(
+        fixture.evidence,
+        "acceptance-attempt",
+        _journey_root_id(CONTINUATION_ATTEMPT_ID, 0),
+    ) == first_attempt_resource
+
+    reuse_request = {
+        "schema": CONTINUATION_REQUEST_SCHEMA,
+        "kind": "reuse",
+        "continuationEvidenceId": continuation_id,
+    }
+    reuse_request_before = deepcopy(reuse_request)
+    reuse_before = _fixture_tree_bytes(fixture.data_root)
+    reuse_wire = _journey_wire(
+        begin_acceptance_attempt(
+            fixture.context,
+            attempt_id=CONTINUATION_REPLAY_ID,
+            scenario_id=PHYSICAL_SCENARIO_ID,
+            scenario_version=PHYSICAL_SCENARIO_VERSION,
+            continuation=reuse_request,
+        )
+    )
+    reuse_data = reuse_wire["data"]
+    assert isinstance(reuse_data, Mapping)
+    reuse_attempt = reuse_data["attempt"]
+    assert isinstance(reuse_attempt, Mapping)
+    _journey_success(reuse_wire, operation, reuse_data)
+    assert reuse_request == reuse_request_before
+    assert reuse_attempt["attemptId"] == CONTINUATION_REPLAY_ID
+    assert reuse_attempt["continuationEvidenceId"] == continuation_id
+    assert _fixture_tree_bytes(fixture.data_root) != reuse_before
+    assert _journey_resource_snapshot(
+        fixture.evidence, CONTINUATION_ROOT_TYPE, continuation_id
+    ) == proof_resource
+
+    checkpoint_base: dict[str, object] = {
+        "context": fixture.context,
+        "attempt_id": CONTINUATION_ATTEMPT_ID,
+        "expected_revision": 0,
+        "stage": "target-fix-verified",
+        "test_run_id": fixture.fixed_run_id,
+        "diagnostic_session_id": fixture.diagnostic_session_id,
+        "acceptance_record_id": None,
+        "source_change_intent": None,
+        "fix_verification_id": "f" * 64,
+    }
+    checkpoint_variants = (
+        ("revision-one", {"expected_revision": 1}, "ACCEPTANCE_ATTEMPT_REVISION_CONFLICT"),
+        ("revision-bool", {"expected_revision": True}, "ACCEPTANCE_ATTEMPT_REVISION_CONFLICT"),
+        ("stage", {"stage": "verification-pending"}, "ACCEPTANCE_ATTEMPT_STAGE_INVALID"),
+        (
+            "acceptance-record",
+            {"acceptance_record_id": "a" * 64},
+            "ACCEPTANCE_ATTEMPT_STAGE_INVALID",
+        ),
+        (
+            "source-intent",
+            {"source_change_intent": "b" * 64},
+            "ACCEPTANCE_ATTEMPT_STAGE_INVALID",
+        ),
+        (
+            "wrong-run",
+            {"test_run_id": fixture.failed_run_id},
+            "ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH",
+        ),
+        (
+            "wrong-diagnostic",
+            {"diagnostic_session_id": "8" * 32},
+            "ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH",
+        ),
+        (
+            "absent-fix-verification",
+            {},
+            "ACCEPTANCE_ATTEMPT_OUTPUT_INVALID",
+        ),
+    )
+    for _name, changes, expected_code in checkpoint_variants:
+        call = dict(checkpoint_base)
+        call.update(changes)
+        before = _fixture_tree_bytes(fixture.data_root)
+        checkpoint_wire = _journey_wire(
+            checkpoint_acceptance_attempt(**call)
+        )
+        _journey_failure(checkpoint_wire, checkpoint_operation, expected_code)
+        assert _fixture_tree_bytes(fixture.data_root) == before
+
+    pending_show_wire = _journey_wire(
+        show_acceptance_attempt(fixture.context, attempt_id=CONTINUATION_ATTEMPT_ID)
+    )
+    _journey_success(
+        pending_show_wire,
+        "acceptance.attempt.show",
+        {"authoritative": True, "attempt": dict(first_attempt)},
+    )
+    pending_resume_wire = _journey_wire(
+        resume_acceptance_attempt(fixture.context, attempt_id=CONTINUATION_ATTEMPT_ID)
+    )
+    _journey_success(
+        pending_resume_wire,
+        "acceptance.attempt.resume",
+        resume_data,
+    )
