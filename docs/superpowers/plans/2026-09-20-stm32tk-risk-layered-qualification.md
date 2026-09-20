@@ -492,7 +492,8 @@ validators. No actual compiler success or physical acceptance is claimed.
 
 Use the public begin/checkpoint prefix: revisions0,1,2,3,4 correspond to begin,
 project-materialized, firmware-built-before, target-failure-replayed and
-diagnosis-completed. Use four independent cases across two caller scenarios:
+diagnosis-completed as required by the selected case. Use four independent cases
+on this single Keil fixture, covering caller authorization and output identity:
 
 1. A caller supplies a valid failed replay from a different build at revision2.
    Publish a separate caller input with a new run ID using the existing decoder,
@@ -535,6 +536,21 @@ and full diff, commit, then one complete four-case native batch, -x, budget600s,
 using the existing guarded launcher and both src paths. All generated files
 stay under r10/t/w4r/run1 and e/risk-v2/wave4/recovery/run1. First failure stops
 for classification; no automatic retry. Primary owns integration and cleanup.
+
+Run1 contract correction: _current_identity also calls the snapshot provider on
+begin and each published checkpoint. The consumed-on-read fixture queue exhausted
+before the first build; run1 raw is excluded. Keep the existing build wire shape.
+Make the snapshot adapter stable for the current completed build (before identity
+until the first build, then the snapshot associated with the latest build call).
+Count reads for refusal/no-dispatch assertions without equating them to build
+calls. Case1 must stop its legal prefix at revision2, preserve that state on the
+alternate replay refusal, then checkpoint the original failed replay to revision3.
+Cases2-4 retain revision4. Resume at revision4 yields a real64-hex actionDigest;
+authorize with that returned digest, then expect null at revision5/6. Assert the
+actual complete public success wire shape and revision outputs at these prefixes,
+including the source-change declaration response. No new CubeMX fixture is needed.
+The same owner may return a corrected, static-checked commit for independent
+review before any second runtime batch. No new test execution is yet authorized.
 
 ## Physical-history publication window and recovery qualification
 
