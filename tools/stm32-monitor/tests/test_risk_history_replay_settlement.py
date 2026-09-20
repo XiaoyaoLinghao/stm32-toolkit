@@ -360,13 +360,16 @@ def test_history_trusted_write_rejects_injected_wal_hardlink_and_recovers(
     store = HistoryStore(paths)
     sentinel = tmp_path / "external-wal-sentinel"
     sidecar = database.with_name(database.name + "-wal")
+    injection_completed = False
+    sentinel_after_injection: tuple[bytes, int] | None = None
     try:
         assert store.append_batch(_batch(paths, 1)).ok
         before = _database_snapshot(database, immutable=True)
         sentinel.write_bytes(b"external-wal-sentinel")
         assert not sidecar.exists(), "initial append left a sidecar that blocks the injection"
         os.link(sentinel, sidecar)
-        sentinel_before = (sentinel.read_bytes(), os.lstat(sentinel).st_nlink)
+        injection_completed = True
+        sentinel_after_injection = (sentinel.read_bytes(), os.lstat(sentinel).st_nlink)
 
         rejected = store.append_batch(_batch(paths, 2))
         assert not rejected.ok
@@ -374,12 +377,15 @@ def test_history_trusted_write_rejects_injected_wal_hardlink_and_recovers(
         assert rejected.code == "MONITOR_STORAGE_INVALID"
         assert rejected.message == "monitor storage is not a private regular file"
         assert _database_snapshot(database, immutable=True) == before
-        assert (sentinel.read_bytes(), os.lstat(sentinel).st_nlink) == sentinel_before
+        assert sentinel_after_injection is not None
+        assert (sentinel.read_bytes(), os.lstat(sentinel).st_nlink) == sentinel_after_injection
         assert os.path.samefile(sentinel, sidecar)
     finally:
         store.close()
-        if sidecar.exists():
+        if injection_completed:
+            assert sentinel_after_injection is not None
             assert os.path.samefile(sentinel, sidecar)
+            assert (sentinel.read_bytes(), os.lstat(sentinel).st_nlink) == sentinel_after_injection
             sidecar.unlink()
 
     recovered = HistoryStore(paths)
