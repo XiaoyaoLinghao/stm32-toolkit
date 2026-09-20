@@ -335,6 +335,32 @@ Reuse the established guarded launch pattern with current exact identities.
 First failure stops for classification, no automatic retry. Primary accepts the
 full diff independently and owns cleanup. No remote action is authorized.
 
+### Sampler public subscription lifecycle clarification
+
+The sampler run2 wire-shape failure and run3 late-subscription timeout require
+correcting the scenario contract before another execution. Creating the async
+generator does not subscribe; its first anext registers the queue. The initial
+plan omitted this precondition. Run3 proves the late lookup was discarded and
+a fresh lookup preceded the first read; it does not prove a sampler publication
+failure, because consumption began only after that read. Its raw is excluded.
+
+Reuse the established test_sampler pattern: create the pending public _next
+consumer before awaiting start. Start's normal async provider boundary lets the
+consumer register before the held producer lookup is released. Retain the pending
+result and await it after the unchanged event-order assertions; never request a
+second first batch. Bound that consumer at 10 seconds because it now spans the
+entire controlled pause/resume setup, not just the final receive. This changes no
+sampling interval, delivery contract or product timeout. In finally, release the
+provider, cancel and await an unfinished consumer, then close stream and sampler.
+Do not inspect/modify subscriber queues or add arbitrary sleeps/private hooks.
+
+The same Luna owner changes only test_risk_sampler_group_epoch.py. Primary will
+review the complete corrected diff and cleanup ordering. After static checks and
+a new commit, one complete four-case run4 uses the existing Monitor selector,
+-x and 180-second budget; evidence and temporary roots are wave3/sampler/run4
+and r10/t/w3s/run4. Any failure stops again for evidence-based diagnosis. There
+is no authorized product change or automatic retry.
+
 ## Target preparation identity qualification
 
 Accepted base: `df259d69261ff629be978fe8bbfe04f943b9cb2a`.
