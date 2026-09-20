@@ -650,3 +650,36 @@ with -x,180s, the existing guarded launcher and both src paths. All generated
 output remains r10/t/w4s/run1 and e/risk-v2/wave4/support/run1. First failure stops
 for diagnosis; no automatic retry. Primary owns independent acceptance/cleanup;
 no shared config, packaging, deployment or remote change is authorized.
+
+## Failed startup cancellation and cleanup ownership
+
+Accepted base: `e1870c442d35f08e7e59d059bcde2cfc48377bc9`.
+One Luna/max owner owns only the new
+`tools/stm32-monitor/tests/test_risk_runtime_failed_start_cancellation.py` in
+r10/w4l. Main owns design and independent complete-diff acceptance. Reuse
+test_runtime FakeStore, FakeEndpoint, _project and _protocol_runtime; product
+and shared tests stay read-only. This is an offline lifecycle contract check.
+
+One bounded caller journey exercises a real start failure followed by caller
+cancellation during owned cleanup. A public service factory returns an invalid
+endpoint, causing the real runtime endpoint guard to raise ValueError. Its close
+method signals an asyncio.Event and waits on a second event. Only after cleanup
+has begun does the caller cancel the task awaiting runtime.start. No original
+start cancellation, patched cleanup guard, private runtime state or sleeps used
+as synchronization are allowed. Assert that the start task has not finished while
+cleanup remains blocked, and that another runtime cannot start in the same
+workspace during that interval. Release the event, then require the original
+caller to receive CancelledError (runtime.py564-565) after service/exporter/
+history/groups each close exactly once. Start and normally stop a fresh runtime
+on the exact same project/data/session to prove the workspace lock is released.
+Use bounded event waits and a finally block that always releases barriers and
+awaits/cancels owned tasks; all replacement runtimes must also be stopped. Record
+close order/count and terminal task state through injected provider interfaces,
+not private state. Keep the existing double-cancel-at-original-start and endpoint
+cleanup-failure successes; they need not be rerun.
+
+Preflight constructor and cleanup call order. Ruff --no-cache, AST and complete
+diff checks precede a candidate commit. Run the one new file with -x,180s and
+native coverage of both packages via the existing guarded launcher, using only
+r10/t/w4l/run1 and e/risk-v2/wave4/runtime/run1. First failure stops for diagnosis.
+No packaging, deployment, hardware, remote change, or worker cleanup.
