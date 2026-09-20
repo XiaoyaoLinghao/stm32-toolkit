@@ -27,7 +27,7 @@ from stm32_toolkit.acceptance.recovery import (
 )
 from stm32_toolkit.acceptance.recovery_workflows import begin_acceptance_attempt
 from stm32_toolkit.evidence import EvidenceEnvelope, canonical_json_bytes
-from stm32_toolkit.testing.publication import TestRunPublisher
+from stm32_toolkit.testing.publication import TestRunPublisher as _TestRunPublisher
 
 ORIGINAL_BEFORE_MONITOR_ID = "11111111-1111-4111-8111-111111111101"
 ORIGINAL_AFTER_MONITOR_ID = "11111111-1111-4111-8111-111111111102"
@@ -91,7 +91,18 @@ def _publish_monitor_reference(
         workspace, fixture.evidence, monitor_run_id  # type: ignore[attr-defined]
     )
     assert fresh == reference
-    assert fresh.origin_run_id == test_run_id
+    assert fresh.operation_id == monitor_run_id
+    assert fresh.origin_run_id == monitor_run_id
+    assert fresh.projected_run_id == monitor_run_id
+    transcript = fixture.evidence.get_envelope(  # type: ignore[attr-defined]
+        fresh.transcript_evidence_id
+    )
+    expected_test_run_id = str(transcript.metadata["test_run_id"])
+    assert expected_test_run_id == test_run_id
+    assert (
+        fixture.repository.load(expected_test_run_id).manifest.run_id  # type: ignore[attr-defined]
+        == expected_test_run_id
+    )
     return fresh
 
 
@@ -120,7 +131,7 @@ def _publish_test_run_alias(
         metadata=dict(original.envelope.metadata),
     )
     fixture.evidence.put_envelope(envelope)  # type: ignore[attr-defined]
-    TestRunPublisher(
+    _TestRunPublisher(
         fixture.evidence,  # type: ignore[attr-defined]
         fixture.project_root,  # type: ignore[attr-defined]
         tmp_path / f"{alias_run_id}-results",
@@ -136,6 +147,25 @@ def _publish_test_run_alias(
     assert fresh.envelope.artifacts[1] == original.manifest.raw_events
     assert fixture.repository.load(source_run_id) == original  # type: ignore[attr-defined]
     return fresh
+
+
+def _assert_monitor_test_run_link(
+    fixture: object,
+    reference: object,
+    expected_monitor_run_id: str,
+    expected_test_run_id: str,
+) -> None:
+    assert reference.operation_id == expected_monitor_run_id  # type: ignore[attr-defined]
+    assert reference.origin_run_id == expected_monitor_run_id  # type: ignore[attr-defined]
+    assert reference.projected_run_id == expected_monitor_run_id  # type: ignore[attr-defined]
+    transcript = fixture.evidence.get_envelope(  # type: ignore[attr-defined]
+        reference.transcript_evidence_id  # type: ignore[attr-defined]
+    )
+    assert transcript.metadata["test_run_id"] == expected_test_run_id
+    assert (
+        fixture.repository.load(expected_test_run_id).manifest.run_id  # type: ignore[attr-defined]
+        == expected_test_run_id
+    )
 
 
 def _analysis_request(before: object, after: object) -> AnalysisRequest:
@@ -272,11 +302,35 @@ def test_continuation_analysis_requires_the_original_published_testruns(
     )
 
     combinations = (
-        ("before-only", alias_before, original_after),
-        ("after-only", original_before, alias_after),
-        ("both", alias_before, alias_after),
+        (
+            "before-only",
+            alias_before,
+            original_after,
+            ALIAS_BEFORE_TEST_RUN_ID,
+            fixture.fixed_run_id,
+        ),
+        (
+            "after-only",
+            original_before,
+            alias_after,
+            fixture.failed_run_id,
+            ALIAS_AFTER_TEST_RUN_ID,
+        ),
+        (
+            "both",
+            alias_before,
+            alias_after,
+            ALIAS_BEFORE_TEST_RUN_ID,
+            ALIAS_AFTER_TEST_RUN_ID,
+        ),
     )
-    for label, before, after in combinations:
+    for (
+        label,
+        before,
+        after,
+        before_test_run_id,
+        after_test_run_id,
+    ) in combinations:
         refusal_request = _analysis_request(before, after)
         authority_before = _tree_bytes(fixture.workspace.workspace_root)
         with pytest.raises(AnalysisWorkflowError) as error:
@@ -295,14 +349,20 @@ def test_continuation_analysis_requires_the_original_published_testruns(
         assert error.value.message == "Monitor TestRuns differ from continuation", label
         assert _tree_bytes(fixture.workspace.workspace_root) == authority_before, label
 
-        assert load_monitor_run_reference(
+        fresh_before = load_monitor_run_reference(
             fixture.before_workspace, fixture.evidence, before.operation_id
-        ) == before
-        assert load_monitor_run_reference(
+        )
+        assert fresh_before == before
+        fresh_after = load_monitor_run_reference(
             fixture.after_workspace, fixture.evidence, after.operation_id
-        ) == after
-        assert fixture.repository.load(before.origin_run_id).manifest.run_id == before.origin_run_id
-        assert fixture.repository.load(after.origin_run_id).manifest.run_id == after.origin_run_id
+        )
+        assert fresh_after == after
+        _assert_monitor_test_run_link(
+            fixture, fresh_before, before.operation_id, before_test_run_id
+        )
+        _assert_monitor_test_run_link(
+            fixture, fresh_after, after.operation_id, after_test_run_id
+        )
         for run_id, expected in original_test_runs.items():
             assert fixture.repository.load(run_id) == expected
 
