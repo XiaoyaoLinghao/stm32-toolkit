@@ -118,6 +118,49 @@ def _fixture_tree_bytes(root: Path) -> dict[str, bytes]:
     }
 
 
+def _journey_authority_snapshot(evidence: EvidenceStore) -> dict[str, bytes]:
+    """Capture immutable roots, manifests, and objects through known store paths."""
+
+    snapshot: dict[str, bytes] = {}
+    for path in sorted(evidence.root.rglob("*")):
+        if not path.is_file():
+            continue
+        relative = path.relative_to(evidence.root)
+        if not relative.parts or relative.parts[0] not in {"roots", "manifests", "objects"}:
+            continue
+        snapshot[relative.as_posix()] = path.read_bytes()
+    return snapshot
+
+
+def _journey_authority_paths(
+    evidence: EvidenceStore, roots: tuple[tuple[str, str], ...]
+) -> set[str]:
+    paths: set[str] = set()
+    for root_type, root_id in roots:
+        root = get_root(evidence, root_type, root_id)
+        paths.add(_public_root_path(evidence, root_type, root_id).relative_to(evidence.root).as_posix())
+        paths.add(f"manifests/{root.manifest_id}.json")
+        envelope = evidence.get_envelope(root.manifest_id)
+        paths.update(artifact.relative_path for artifact in envelope.artifacts)
+    return paths
+
+
+def _journey_assert_authority_delta(
+    before: Mapping[str, bytes],
+    after: Mapping[str, bytes],
+    expected_new: set[str],
+    *,
+    context: str,
+) -> None:
+    assert set(before).issubset(after), f"{context}: an existing authority path disappeared"
+    assert all(
+        after[path] == payload for path, payload in before.items()
+    ), f"{context}: an existing authority byte sequence changed"
+    assert set(after) - set(before) == expected_new, (
+        f"{context}: unexpected authority paths were added"
+    )
+
+
 def _clone_continuation_data(
     fixture: SimpleNamespace, clone_data_root: Path
 ) -> tuple[WorkspacePaths, EvidenceStore]:
@@ -1783,7 +1826,7 @@ def _journey_success(wire: Mapping[str, object], operation: str, data: object) -
 
 
 def _journey_failure(
-    wire: Mapping[str, object], operation: str, code: str
+    wire: Mapping[str, object], operation: str, code: str, *, context: str = ""
 ) -> None:
     messages = {
         "ACCEPTANCE_ATTEMPT_CONFLICT": (
@@ -1808,7 +1851,7 @@ def _journey_failure(
         "message": messages[code],
         "data": None,
         "details": {},
-    }
+    }, context
 
 
 def _journey_root_id(attempt_id: str, revision: int) -> str:
@@ -1847,6 +1890,7 @@ def test_public_continuation_workflow_journey(
     )
 
     own_uuid_before = _fixture_tree_bytes(fixture.data_root)
+    own_uuid_authority_before = _journey_authority_snapshot(fixture.evidence)
     own_uuid_request = deepcopy(request)
     own_uuid_wire = _journey_wire(
         begin_acceptance_attempt(
@@ -1857,11 +1901,24 @@ def test_public_continuation_workflow_journey(
             continuation=own_uuid_request,
         )
     )
-    _journey_failure(own_uuid_wire, operation, "ACCEPTANCE_ATTEMPT_CONFLICT")
+    _journey_failure(
+        own_uuid_wire,
+        operation,
+        "ACCEPTANCE_ATTEMPT_CONFLICT",
+        context="own-uuid-bind",
+    )
     assert own_uuid_request == request
     assert _fixture_tree_bytes(fixture.data_root) == own_uuid_before
+    _journey_assert_authority_delta(
+        own_uuid_authority_before,
+        _journey_authority_snapshot(fixture.evidence),
+        set(),
+        context="own-uuid-bind",
+    )
 
     normal_id = "00000000-0000-4000-8000-000000000027"
+    normal_before = _fixture_tree_bytes(fixture.data_root)
+    normal_authority_before = _journey_authority_snapshot(fixture.evidence)
     normal_wire = _journey_wire(
         begin_acceptance_attempt(
             fixture.context,
@@ -1880,8 +1937,19 @@ def test_public_continuation_workflow_journey(
     assert normal_attempt["revision"] == 0
     assert normal_attempt["executionSource"] == "physical"
     assert normal_attempt["physicalTransportEvidence"] is False
+    _journey_assert_authority_delta(
+        normal_authority_before,
+        _journey_authority_snapshot(fixture.evidence),
+        _journey_authority_paths(
+            fixture.evidence,
+            (("acceptance-attempt", _journey_root_id(normal_id, 0)),),
+        ),
+        context="plain-physical-begin",
+    )
+    assert _fixture_tree_bytes(fixture.data_root) != normal_before
 
     normal_bind_before = _fixture_tree_bytes(fixture.data_root)
+    normal_bind_authority_before = _journey_authority_snapshot(fixture.evidence)
     normal_bind_request = deepcopy(request)
     normal_bind_wire = _journey_wire(
         begin_acceptance_attempt(
@@ -1892,11 +1960,23 @@ def test_public_continuation_workflow_journey(
             continuation=normal_bind_request,
         )
     )
-    _journey_failure(normal_bind_wire, operation, "ACCEPTANCE_ATTEMPT_CONFLICT")
+    _journey_failure(
+        normal_bind_wire,
+        operation,
+        "ACCEPTANCE_ATTEMPT_CONFLICT",
+        context="plain-physical-bind-conflict",
+    )
     assert normal_bind_request == request
     assert _fixture_tree_bytes(fixture.data_root) == normal_bind_before
+    _journey_assert_authority_delta(
+        normal_bind_authority_before,
+        _journey_authority_snapshot(fixture.evidence),
+        set(),
+        context="plain-physical-bind-conflict",
+    )
 
     first_before = _fixture_tree_bytes(fixture.data_root)
+    first_authority_before = _journey_authority_snapshot(fixture.evidence)
     first_request = deepcopy(request)
     first_wire = _journey_wire(
         begin_acceptance_attempt(
@@ -1930,7 +2010,18 @@ def test_public_continuation_workflow_journey(
         datetime.strptime(CONTINUATION_TIME, "%Y-%m-%dT%H:%M:%S.%fZ")
         + timedelta(seconds=CONTINUATION_WINDOW_SECONDS)
     )
-    continuation_id = str(first_attempt["continuationEvidenceId"])
+    continuation_evidence_id = str(first_attempt["continuationEvidenceId"])
+    assert len(continuation_evidence_id) == 64
+    continuation_envelope = fixture.evidence.get_envelope(continuation_evidence_id)
+    assert str(continuation_envelope.evidence_id) == continuation_evidence_id
+    assert len(continuation_envelope.artifacts) == 1
+    continuation_payload = fixture.evidence.read_artifact(
+        continuation_envelope.artifacts[0], maximum_bytes=MAX_EVIDENCE_READ_BYTES
+    )
+    continuation_proof = PhysicalContinuationProof.from_value(
+        json.loads(continuation_payload.decode("utf-8"))
+    )
+    continuation_id = continuation_proof.continuation_id
     assert len(continuation_id) == 64
     assert first_attempt["fixedAfterTestRunId"] == fixture.fixed_run_id
     assert first_attempt["fixedAfterEvidenceId"] == str(
@@ -1955,8 +2046,21 @@ def test_public_continuation_workflow_journey(
     assert _journey_resource_snapshot(
         fixture.evidence, "acceptance-attempt", fixture.predecessor_root_id
     ) == predecessor_resource
+    _journey_assert_authority_delta(
+        first_authority_before,
+        _journey_authority_snapshot(fixture.evidence),
+        _journey_authority_paths(
+            fixture.evidence,
+            (
+                (CONTINUATION_ROOT_TYPE, continuation_id),
+                ("acceptance-attempt", _journey_root_id(CONTINUATION_ATTEMPT_ID, 0)),
+            ),
+        ),
+        context="first-bind",
+    )
 
     second_before = _fixture_tree_bytes(fixture.data_root)
+    second_authority_before = _journey_authority_snapshot(fixture.evidence)
     second_request = deepcopy(request)
     second_wire = _journey_wire(
         begin_acceptance_attempt(
@@ -1974,7 +2078,7 @@ def test_public_continuation_workflow_journey(
     _journey_success(second_wire, operation, second_data)
     assert second_request == request
     assert second_attempt["attemptId"] == CONTINUATION_REUSE_ID
-    assert second_attempt["continuationEvidenceId"] == continuation_id
+    assert second_attempt["continuationEvidenceId"] == continuation_evidence_id
     assert _fixture_tree_bytes(fixture.data_root) != second_before
     assert _journey_resource_snapshot(
         fixture.evidence, CONTINUATION_ROOT_TYPE, continuation_id
@@ -1982,13 +2086,25 @@ def test_public_continuation_workflow_journey(
     assert _journey_resource_snapshot(
         fixture.evidence, "acceptance-attempt", fixture.predecessor_root_id
     ) == predecessor_resource
+    _journey_assert_authority_delta(
+        second_authority_before,
+        _journey_authority_snapshot(fixture.evidence),
+        _journey_authority_paths(
+            fixture.evidence,
+            (("acceptance-attempt", _journey_root_id(CONTINUATION_REUSE_ID, 0)),),
+        ),
+        context="reuse-bind",
+    )
 
+    first_show_before = _fixture_tree_bytes(fixture.data_root)
     show_wire = _journey_wire(
         show_acceptance_attempt(fixture.context, attempt_id=CONTINUATION_ATTEMPT_ID)
     )
     show_data = {"authoritative": True, "attempt": dict(first_attempt)}
     _journey_success(show_wire, "acceptance.attempt.show", show_data)
+    assert _fixture_tree_bytes(fixture.data_root) == first_show_before
 
+    first_resume_before = _fixture_tree_bytes(fixture.data_root)
     resume_wire = _journey_wire(
         resume_acceptance_attempt(fixture.context, attempt_id=CONTINUATION_ATTEMPT_ID)
     )
@@ -2002,8 +2118,10 @@ def test_public_continuation_workflow_journey(
         "recoveryPolicy": continuation_policy_document(),
     }
     _journey_success(resume_wire, "acceptance.attempt.resume", resume_data)
+    assert _fixture_tree_bytes(fixture.data_root) == first_resume_before
 
     retry_before = _fixture_tree_bytes(fixture.data_root)
+    retry_authority_before = _journey_authority_snapshot(fixture.evidence)
     retry_wire = _journey_wire(
         begin_acceptance_attempt(
             fixture.context,
@@ -2026,14 +2144,21 @@ def test_public_continuation_workflow_journey(
         "acceptance-attempt",
         _journey_root_id(CONTINUATION_ATTEMPT_ID, 0),
     ) == first_attempt_resource
+    _journey_assert_authority_delta(
+        retry_authority_before,
+        _journey_authority_snapshot(fixture.evidence),
+        set(),
+        context="bind-retry",
+    )
 
     reuse_request = {
         "schema": CONTINUATION_REQUEST_SCHEMA,
         "kind": "reuse",
-        "continuationEvidenceId": continuation_id,
+        "continuationEvidenceId": continuation_evidence_id,
     }
     reuse_request_before = deepcopy(reuse_request)
     reuse_before = _fixture_tree_bytes(fixture.data_root)
+    reuse_authority_before = _journey_authority_snapshot(fixture.evidence)
     reuse_wire = _journey_wire(
         begin_acceptance_attempt(
             fixture.context,
@@ -2050,11 +2175,20 @@ def test_public_continuation_workflow_journey(
     _journey_success(reuse_wire, operation, reuse_data)
     assert reuse_request == reuse_request_before
     assert reuse_attempt["attemptId"] == CONTINUATION_REPLAY_ID
-    assert reuse_attempt["continuationEvidenceId"] == continuation_id
+    assert reuse_attempt["continuationEvidenceId"] == continuation_evidence_id
     assert _fixture_tree_bytes(fixture.data_root) != reuse_before
     assert _journey_resource_snapshot(
         fixture.evidence, CONTINUATION_ROOT_TYPE, continuation_id
     ) == proof_resource
+    _journey_assert_authority_delta(
+        reuse_authority_before,
+        _journey_authority_snapshot(fixture.evidence),
+        _journey_authority_paths(
+            fixture.evidence,
+            (("acceptance-attempt", _journey_root_id(CONTINUATION_REPLAY_ID, 0)),),
+        ),
+        context="explicit-proof-reuse",
+    )
 
     checkpoint_base: dict[str, object] = {
         "context": fixture.context,
@@ -2101,12 +2235,27 @@ def test_public_continuation_workflow_journey(
         call = dict(checkpoint_base)
         call.update(changes)
         before = _fixture_tree_bytes(fixture.data_root)
+        authority_before = _journey_authority_snapshot(fixture.evidence)
         checkpoint_wire = _journey_wire(
             checkpoint_acceptance_attempt(**call)
         )
-        _journey_failure(checkpoint_wire, checkpoint_operation, expected_code)
-        assert _fixture_tree_bytes(fixture.data_root) == before
+        _journey_failure(
+            checkpoint_wire,
+            checkpoint_operation,
+            expected_code,
+            context=f"checkpoint-{_name}",
+        )
+        assert _fixture_tree_bytes(fixture.data_root) == before, (
+            f"checkpoint-{_name}: storage changed"
+        )
+        _journey_assert_authority_delta(
+            authority_before,
+            _journey_authority_snapshot(fixture.evidence),
+            set(),
+            context=f"checkpoint-{_name}",
+        )
 
+    pending_show_before = _fixture_tree_bytes(fixture.data_root)
     pending_show_wire = _journey_wire(
         show_acceptance_attempt(fixture.context, attempt_id=CONTINUATION_ATTEMPT_ID)
     )
@@ -2115,6 +2264,8 @@ def test_public_continuation_workflow_journey(
         "acceptance.attempt.show",
         {"authoritative": True, "attempt": dict(first_attempt)},
     )
+    assert _fixture_tree_bytes(fixture.data_root) == pending_show_before
+    pending_resume_before = _fixture_tree_bytes(fixture.data_root)
     pending_resume_wire = _journey_wire(
         resume_acceptance_attempt(fixture.context, attempt_id=CONTINUATION_ATTEMPT_ID)
     )
@@ -2123,3 +2274,4 @@ def test_public_continuation_workflow_journey(
         "acceptance.attempt.resume",
         resume_data,
     )
+    assert _fixture_tree_bytes(fixture.data_root) == pending_resume_before

@@ -804,6 +804,61 @@ def _persisted_snapshot(case: PersistedCase) -> dict[str, bytes]:
     }
 
 
+def _journey_public_root_path(
+    evidence: EvidenceStore, root_type: str, root_id: str
+) -> Path:
+    key_bytes = canonical_json_bytes({"root_type": root_type, "root_id": root_id})
+    name = hashlib.sha256(key_bytes).hexdigest() + ".json"
+    return evidence.root / "roots" / root_type / name
+
+
+def _journey_authority_snapshot(evidence: EvidenceStore) -> dict[str, bytes]:
+    """Capture immutable roots, manifests, and objects through known store paths."""
+
+    snapshot: dict[str, bytes] = {}
+    for path in sorted(evidence.root.rglob("*")):
+        if not path.is_file():
+            continue
+        relative = path.relative_to(evidence.root)
+        if not relative.parts or relative.parts[0] not in {"roots", "manifests", "objects"}:
+            continue
+        snapshot[relative.as_posix()] = path.read_bytes()
+    return snapshot
+
+
+def _journey_authority_paths(
+    evidence: EvidenceStore, roots: tuple[tuple[str, str], ...]
+) -> set[str]:
+    paths: set[str] = set()
+    for root_type, root_id in roots:
+        root = get_root(evidence, root_type, root_id)
+        paths.add(
+            _journey_public_root_path(evidence, root_type, root_id)
+            .relative_to(evidence.root)
+            .as_posix()
+        )
+        paths.add(f"manifests/{root.manifest_id}.json")
+        envelope = evidence.get_envelope(root.manifest_id)
+        paths.update(artifact.relative_path for artifact in envelope.artifacts)
+    return paths
+
+
+def _journey_assert_authority_delta(
+    before: Mapping[str, bytes],
+    after: Mapping[str, bytes],
+    expected_new: set[str],
+    *,
+    context: str,
+) -> None:
+    assert set(before).issubset(after), f"{context}: an existing authority path disappeared"
+    assert all(
+        after[path] == payload for path, payload in before.items()
+    ), f"{context}: an existing authority byte sequence changed"
+    assert set(after) - set(before) == expected_new, (
+        f"{context}: unexpected authority paths were added"
+    )
+
+
 def _run_finalization_route(
     case: PersistedCase,
     attempt_id: str,
@@ -1892,7 +1947,7 @@ def _journey_success(wire: Mapping[str, object], operation: str, data: object) -
 
 
 def _journey_failure(
-    wire: Mapping[str, object], operation: str, code: str
+    wire: Mapping[str, object], operation: str, code: str, *, context: str = ""
 ) -> None:
     messages = {
         "ACCEPTANCE_ATTEMPT_CONFLICT": (
@@ -1916,7 +1971,7 @@ def _journey_failure(
         "message": messages[code],
         "data": None,
         "details": {},
-    }
+    }, context
 
 
 def _journey_root_id(attempt_id: str, revision: int) -> str:
@@ -1962,6 +2017,8 @@ def test_public_finalization_workflow_journey(
     assert isinstance(predecessor_attempt, Mapping)
     predecessor_deadline = str(predecessor_attempt["deadlineAtUtc"])
 
+    started_before = _persisted_snapshot(case)
+    started_authority_before = _journey_authority_snapshot(case.evidence)
     started_wire = _journey_wire(_begin(case, attempt_id))
     started_data = started_wire["data"]
     assert isinstance(started_data, Mapping)
@@ -1992,6 +2049,19 @@ def test_public_finalization_workflow_journey(
     assert proof.fixed_after_evidence_id == case.request["fixedAfterEvidenceId"]
     proof_resource = _journey_resource_snapshot(
         case.evidence, FINALIZATION_ROOT_TYPE, proof.continuation_id
+    )
+    assert _persisted_snapshot(case) != started_before
+    _journey_assert_authority_delta(
+        started_authority_before,
+        _journey_authority_snapshot(case.evidence),
+        _journey_authority_paths(
+            case.evidence,
+            (
+                (FINALIZATION_ROOT_TYPE, proof.continuation_id),
+                ("acceptance-attempt", _journey_root_id(attempt_id, 0)),
+            ),
+        ),
+        context="initial-finalization-bind",
     )
     checkpoint_base: dict[str, object] = {
         "context": _context(case),
@@ -2042,17 +2112,32 @@ def test_public_finalization_workflow_journey(
         call = dict(checkpoint_base)
         call.update(changes)
         before = _persisted_snapshot(case)
+        authority_before = _journey_authority_snapshot(case.evidence)
         checkpoint_wire = _journey_wire(
             checkpoint_acceptance_attempt(**call)
         )
-        _journey_failure(checkpoint_wire, checkpoint_operation, expected_code)
-        assert _persisted_snapshot(case) == before
+        _journey_failure(
+            checkpoint_wire,
+            checkpoint_operation,
+            expected_code,
+            context=f"checkpoint-{_name}",
+        )
+        assert _persisted_snapshot(case) == before, (
+            f"checkpoint-{_name}: storage changed"
+        )
+        _journey_assert_authority_delta(
+            authority_before,
+            _journey_authority_snapshot(case.evidence),
+            set(),
+            context=f"checkpoint-{_name}",
+        )
 
     conflict_request = deepcopy(case.request)
     conflict_request["diagnosticEventHead"] = "0" * 64
     if conflict_request["diagnosticEventHead"] == case.request["diagnosticEventHead"]:
         conflict_request["diagnosticEventHead"] = "1" * 64
     conflict_before = _persisted_snapshot(case)
+    conflict_authority_before = _journey_authority_snapshot(case.evidence)
     conflict_wire = _journey_wire(
         begin_acceptance_attempt(
             _context(case),
@@ -2062,17 +2147,40 @@ def test_public_finalization_workflow_journey(
             continuation=conflict_request,
         )
     )
-    _journey_failure(conflict_wire, operation, "ACCEPTANCE_ATTEMPT_CONFLICT")
+    _journey_failure(
+        conflict_wire,
+        operation,
+        "ACCEPTANCE_ATTEMPT_CONFLICT",
+        context="begin-conflicting-event-head",
+    )
     assert conflict_request != case.request
     assert _persisted_snapshot(case) == conflict_before
+    _journey_assert_authority_delta(
+        conflict_authority_before,
+        _journey_authority_snapshot(case.evidence),
+        set(),
+        context="begin-conflicting-event-head",
+    )
 
     def begin_fresh(fresh_id: str) -> Mapping[str, object]:
+        before = _persisted_snapshot(case)
+        authority_before = _journey_authority_snapshot(case.evidence)
         wire = _journey_wire(_begin(case, fresh_id))
         data = wire["data"]
         assert isinstance(data, Mapping)
         attempt = data["attempt"]
         assert isinstance(attempt, Mapping)
         _journey_success(wire, operation, data)
+        assert _persisted_snapshot(case) != before
+        _journey_assert_authority_delta(
+            authority_before,
+            _journey_authority_snapshot(case.evidence),
+            _journey_authority_paths(
+                case.evidence,
+                (("acceptance-attempt", _journey_root_id(fresh_id, 0)),),
+            ),
+            context=f"begin-fresh-{fresh_id}",
+        )
         return attempt
 
     def run_timed_out_variant(
@@ -2082,6 +2190,7 @@ def test_public_finalization_workflow_journey(
         fresh_deadline = str(fresh_attempt["deadlineAtUtc"])
         assert predecessor_deadline < SAFE_TIME < fresh_deadline < LATE_TIME
         before = _persisted_snapshot(case)
+        authority_before = _journey_authority_snapshot(case.evidence)
         calls: list[str] = []
         values = iter(clock_values)
 
@@ -2098,9 +2207,16 @@ def test_public_finalization_workflow_journey(
             timed_out_wire,
             checkpoint_operation,
             "ACCEPTANCE_ATTEMPT_TIMED_OUT",
+            context=f"timed-out-{fresh_id}-clock-{len(clock_values)}",
         )
         assert tuple(calls) == clock_values
         assert _persisted_snapshot(case) == before
+        _journey_assert_authority_delta(
+            authority_before,
+            _journey_authority_snapshot(case.evidence),
+            set(),
+            context=f"timed-out-{fresh_id}-clock-{len(clock_values)}",
+        )
         with pytest.raises(EvidenceValidationError):
             get_root(
                 case.evidence,
@@ -2123,6 +2239,7 @@ def test_public_finalization_workflow_journey(
         case.evidence, "acceptance-attempt", _journey_root_id(valid_id, 0)
     )
     valid_before = _persisted_snapshot(case)
+    valid_authority_before = _journey_authority_snapshot(case.evidence)
     valid_wire = _journey_wire(_checkpoint(case, valid_id, proof))
     valid_data = valid_wire["data"]
     assert isinstance(valid_data, Mapping)
@@ -2145,7 +2262,17 @@ def test_public_finalization_workflow_journey(
         case.evidence, "acceptance-attempt", _journey_root_id(valid_id, 1)
     )
     assert valid_root1_resource[0]["root_id"] == _journey_root_id(valid_id, 1)
+    _journey_assert_authority_delta(
+        valid_authority_before,
+        _journey_authority_snapshot(case.evidence),
+        _journey_authority_paths(
+            case.evidence,
+            (("acceptance-attempt", _journey_root_id(valid_id, 1)),),
+        ),
+        context="finalization-complete",
+    )
 
+    completed_show_before = _persisted_snapshot(case)
     show_wire = _journey_wire(
         show_acceptance_attempt(_context(case), attempt_id=valid_id)
     )
@@ -2154,6 +2281,8 @@ def test_public_finalization_workflow_journey(
         "acceptance.attempt.show",
         {"authoritative": True, "attempt": dict(completed_attempt)},
     )
+    assert _persisted_snapshot(case) == completed_show_before
+    completed_resume_before = _persisted_snapshot(case)
     resume_wire = _journey_wire(
         resume_acceptance_attempt(_context(case), attempt_id=valid_id)
     )
@@ -2170,23 +2299,39 @@ def test_public_finalization_workflow_journey(
             "recoveryPolicy": finalization_policy_document(),
         },
     )
+    assert _persisted_snapshot(case) == completed_resume_before
 
     retry_before = _persisted_snapshot(case)
+    retry_authority_before = _journey_authority_snapshot(case.evidence)
     retry_wire = _journey_wire(_checkpoint(case, valid_id, proof))
     retry_data = retry_wire["data"]
     assert isinstance(retry_data, Mapping)
     _journey_success(retry_wire, checkpoint_operation, retry_data)
     assert retry_data == {"attempt": dict(completed_attempt)}
     assert _persisted_snapshot(case) == retry_before
+    _journey_assert_authority_delta(
+        retry_authority_before,
+        _journey_authority_snapshot(case.evidence),
+        set(),
+        context="completed-checkpoint-retry",
+    )
 
+    begin_retry_authority_before = _journey_authority_snapshot(case.evidence)
     begin_retry_wire = _journey_wire(_begin(case, valid_id))
     begin_retry_data = begin_retry_wire["data"]
     assert isinstance(begin_retry_data, Mapping)
     _journey_success(begin_retry_wire, operation, begin_retry_data)
     assert begin_retry_data == {"attempt": dict(completed_attempt)}
     assert _persisted_snapshot(case) == retry_before
+    _journey_assert_authority_delta(
+        begin_retry_authority_before,
+        _journey_authority_snapshot(case.evidence),
+        set(),
+        context="completed-begin-retry",
+    )
 
     late_begin_before = _persisted_snapshot(case)
+    late_begin_authority_before = _journey_authority_snapshot(case.evidence)
     late_begin_wire = _journey_wire(
         begin_acceptance_attempt(
             _context(case),
@@ -2196,5 +2341,16 @@ def test_public_finalization_workflow_journey(
             continuation=conflict_request,
         )
     )
-    _journey_failure(late_begin_wire, operation, "ACCEPTANCE_ATTEMPT_CONFLICT")
+    _journey_failure(
+        late_begin_wire,
+        operation,
+        "ACCEPTANCE_ATTEMPT_CONFLICT",
+        context="completed-begin-conflicting-event-head",
+    )
     assert _persisted_snapshot(case) == late_begin_before
+    _journey_assert_authority_delta(
+        late_begin_authority_before,
+        _journey_authority_snapshot(case.evidence),
+        set(),
+        context="completed-begin-conflicting-event-head",
+    )
