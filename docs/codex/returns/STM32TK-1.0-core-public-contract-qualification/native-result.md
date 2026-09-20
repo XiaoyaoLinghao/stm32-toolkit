@@ -1,15 +1,15 @@
 # Current native coverage result
 
-Accepted base for this wave: `40608fdbf4746db80d2f93a2c43347586af2ebbc`.
-Integrated test code head: `bf4b070f29dec6a25a3e30ba3fad29ce268c6492`.
+Accepted base for this wave: `bf4b070f29dec6a25a3e30ba3fad29ce268c6492`.
+Integrated test code head: `2cba63f2808d27cb4c2ec1dbba041e9633d830e5`.
 Existing recovery candidate: `a695f397260ebb815059d3df598dadf4c884924c`.
 Qualified product source: `8a11caef14df16c5e56c0be2363d4ef5530110eb`.
-Union26 native data verdict: **ACCEPTED_NATIVE_DATA**. Release 1.0: **NOT_ACCEPTED**.
+Union27 native data verdict: **ACCEPTED_NATIVE_DATA**. Release 1.0: **NOT_ACCEPTED**.
 
 | Package | Covered / total branches | Overall and broad core v1 | More for 90% | More for v1 95% |
 | --- | ---: | ---: | ---: | ---: |
-| Toolkit | 11,820 / 13,580 | 87.0398% | 402 | 1,081 |
-| Monitor | 2,656 / 2,940 | 90.3401% | 0 | 137 |
+| Toolkit | 11,831 / 13,580 | 87.1208% | 391 | 1,070 |
+| Monitor | 2,666 / 2,940 | 90.6803% | 0 | 127 |
 | UI (retained separately) | 784 / 810 | 96.7901% | 0 | 0 |
 
 The repeat-bind product correction remains accepted with its seven current-source
@@ -61,7 +61,18 @@ The independent native review verified all 148 product source identities,
 eight native inputs, per-file totals and frozen scope arithmetic. Toolkit gains
 62 branches with no denominator change or coverage regression; Monitor is
 unchanged. The immutable candidate and prior accepted union25 are preserved.
-Monitor's next six cases and the sampler overlap group are outside this union.
+The following Monitor/sampler results were outside union26.
+
+Union27 adds accepted M6 plus the corrected same-store WAL case, Target prepare7,
+Diagnostic authority6 and sampler overlap4: 24 complete PASS across five inputs.
+Primary reviewed each full diff in clean exact-head worktrees; independent native
+review verified all input/copy hashes, source148 and frozen scope arithmetic.
+Toolkit gains11 and Monitor gains10 branches, with no denominator or coverage
+regression. Earlier failed construction/timing batches remain excluded. M's
+oversized input proves the earlier safe-read refusal, not the later value limit;
+its original WAL case proves cold start and the corrected case proves trusted
+same-store refusal. Sampler's public consumer is armed before start; its earlier
+late-subscription timeout was a test error. All product bytes remain unchanged.
 
 Risk-core v2 was selected by whole-file responsibility and independently frozen
 at scope commit 9fff3f43 before scoring. Its 90 Toolkit and 16 Monitor files are
@@ -69,8 +80,8 @@ reported separately; the 108/18 overall files and old v1 statistics remain.
 
 | Risk-core v2 | Covered / total branches | Coverage | More for 95% |
 | --- | ---: | ---: | ---: |
-| Toolkit | 11,202 / 12,906 | 86.7968% | 1,059 |
-| Monitor | 2,656 / 2,940 | 90.3401% | 137 |
+| Toolkit | 11,213 / 12,906 | 86.8821% | 1,048 |
+| Monitor | 2,666 / 2,940 | 90.6803% | 127 |
 
 Native v1 scope remains 108/18 Python files overall and 97/16 core files. The excluded
 forwarders have zero branches, so overall/core ratios coincide. Per-package native
@@ -85,15 +96,15 @@ Native JSON SHA256: `8A04CDF8C0AF1833BC0A76F0362518F117C6B48185296537AFB258DE710
 Independent review SHA256: `604D2971C58B08BAC9E851E2C9D78B57BCDE57E5287E0160D0610D30D743BB73`.
 Historical snapshot SHA256: `1A1161097F4C2EA960C9E3C8B3005EF82050089853B51CD4C188DB42B5A450E6`.
 
-Current evidence: `D:/codex-tmp/v10b-0918/r10/e/risk-v2/union26`.
-Toolkit native raw: `FE4E9A1A246BA7643E210FFB73FB3C26FDD76ED2575C618D9F61F454CC0D0BAB`.
-Toolkit native JSON: `F294B22EAFE3BCE0B25F80CF53993C92C8B49F47FC0D8BC081C2BB44EF599BFC`.
-Monitor native raw: `A76726F591423F2487B00DAFE79C4F793BEAD2152FC459B298C2084BCDB41BE0`.
-Monitor native JSON: `31C4464848CDAF869DF8DC0F819EBAC203AA43A51E5BD38F97CEBEE7ABEAE735`.
-Immutable candidate: `90A9F12197E989D2A03A7E5E0C8D6C72ED23615489DC5FC8198C6312337DC9F6`.
-Independent review: `0B6C0CFE8DC0637EEEEC749C0D1D364E02CB1299A05C68CCE942741BA4C63E67`.
-Accepted canonical snapshot: `074C9FBEEDF64A96C4CF0B412D75A83E61056CCAE90817D9AB910474576C1789`.
-The accepted prior union25 snapshot is retained in this evidence directory.
+Current evidence: `D:/codex-tmp/v10b-0918/r10/e/risk-v2/union27`.
+Toolkit native raw: `E821F87FA2FE268DC1A4F4B1626A1E07D4B100B78AA4876E4867703FCFF157C8`.
+Toolkit native JSON: `369D67199B5F95A363E3650C05DDA68E6CE4DC2069D945F2B979E16E3B513115`.
+Monitor native raw: `5F4DDC3EDB73F6EC823E8BAF33EE16149345C153F956EC6BEF996A517758DC27`.
+Monitor native JSON: `17C74D02E946040919C1916A2B7C8F34F73517649F9332D945998CDBDB2B1239`.
+Immutable candidate: `4BE1C1D7FC929A78EC7BB1C3BD93F9E5F282F808B68F7A73BA791CF9A22DA738`.
+Independent review: `C1EDB4A7406A0216500C8E24DE3429385D6A0F0C966B3298E885EC4AB9E3EF9A`.
+Accepted canonical snapshot: `A2406BCD1C8EF73C59C53F793E6DD27D9943B863EEC309CF560861668AFDE143`.
+The accepted prior union26 snapshot is retained in this evidence directory.
 
 Overall 90% remains mandatory. The approved risk-layered redesign keeps broad-core
 v1 statistics and introduces separately reviewed risk-core v2; its scope and
@@ -125,3 +136,7 @@ process start with only `blocked by policy`; zero files were removed and there
 was no retry. Later P-run2 and u25 roots remain pending cleanup, not relabeled as
 explicitly rejected. Raw evidence and source/review worktrees remain retained.
 See `risk-v2/cleanup-success.json` for the precise attempted targets.
+
+Union27 cleanup of six new accepted-run/copy roots was rejected before process
+start with blocked by policy. All roots remain, zero files were deleted, and no
+retry or alternative deletion was attempted. See union27/cleanup.json.
