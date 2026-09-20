@@ -32,6 +32,12 @@ if ($LASTEXITCODE -ne 0) { throw 'PyOCD executable failed' }
 
 Bootstrap/Repair 的最终化要求精确发行 pin。对已有 runtime，Check 保留既有 `>=0.45.1,<0.46` 模块版本范围，并要求启动器报告与已验证模块相同的版本；它不是把所有已安装环境强制改为 0.45.1，也不会自动改装依赖。
 
+## Monitor 历史清理的已知时序限制
+
+历史保留策略清理已经开始写入后，`MONITOR_STORAGE_BUSY` 不保证事务回滚，也不证明清理已经完成。调用方应等待后台写入任务结束，再通过正常历史查询核对实际保留的数据；不能仅凭超时响应认定数据未变，或把同一清理动作立即重复执行。
+
+已保留的一次 Windows 失败记录中，调用方在 180ms 超时，随后后台任务出现 `SQLITE_INTERRUPT`，仍有 512 个值被持久删除。具体失败阶段尚未确定。后续既定性能测试及受控取消检查通过，证明各自检查范围内的行为，但没有证明这个历史时序问题已修复。该限制按 `KNOWN_TIMING_LIMITATION_ROOT_CAUSE_UNKNOWN` 保留；没有因此增大产品超时或放宽性能要求。记录及处置依据见 [1.0 资格记录](../codex/returns/STM32TK-1.0-local-release/qualification-status.md) 的 retention 段落；其中历史覆盖率快照不是当前发行结论，当前资格以 [有效覆盖率与剩余门槛](../codex/returns/STM32TK-1.0-core-public-contract-qualification/native-result.md) 为准。
+
 ## IDE 就绪后，才交出探针
 
 先在不按 F5 的情况下打开实际 workspace，核对当前窗口所属 Code.exe、版本、用户 profile 和已激活的 Cortex-Debug。Start-Process 返回、exe 文件存在或另一安装的扩展清单均不证明目标 IDE 已就绪；更新锁或启动退出必须先解决。
