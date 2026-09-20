@@ -3182,6 +3182,9 @@ def test_public_diagnostic_caller_journey_replay_to_resolution(
         project_root=project_root,
         session_id="dj1-session",
     )
+    different_fixed_evidence_id = str(publication.analysis_evidence_ref.evidence_id)
+    assert different_fixed_evidence_id != verification_plan.failed_before_evidence_id
+    assert different_fixed_evidence_id != verification_plan.fixed_after_evidence_id
     different_fixed_evidence_plan = VerificationPlan.new(
         verification_plan_id=verification_plan.verification_plan_id,
         diagnostic_session_id=verification_plan.diagnostic_session_id,
@@ -3189,7 +3192,7 @@ def test_public_diagnostic_caller_journey_replay_to_resolution(
         failed_before_evidence_id=verification_plan.failed_before_evidence_id,
         source_change_declaration_id=verification_plan.source_change_declaration_id,
         fixed_after_run_id=verification_plan.fixed_after_run_id,
-        fixed_after_evidence_id=verification_plan.failed_before_evidence_id,
+        fixed_after_evidence_id=different_fixed_evidence_id,
         required_analysis_ids=verification_plan.required_analysis_ids,
         required_analysis_evidence_ids=verification_plan.required_analysis_evidence_ids,
         required_monitor_quality=verification_plan.required_monitor_quality,
