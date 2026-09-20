@@ -124,13 +124,13 @@ def _assert_history_matches_batches(
             "subscriberDrops",
             "historyDrops",
             "deadlineDrops",
-            "batchValueCount",
         ):
             assert actual[key] == expected[key]
         assert actual["startOrdinal"] == next_ordinal
         expected_values = expected["values"]
         actual_values = actual["values"]
         assert type(expected_values) is list
+        assert actual["batchValueCount"] == len(expected_values)
         assert type(actual_values) is list and actual_values
         stop = next_ordinal + len(actual_values)
         assert stop <= len(expected_values)
