@@ -230,3 +230,26 @@ variables/cache/basetemp beneath `r10/t/w2m/run1`, and durable evidence beneath
 actual base/HEAD/source/argv/process outcome. Inspect constructor and first-guard
 ordering before runtime; a failed group stops for classification and cannot be
 included in the native union. No hardware, install, packaging or remote action.
+
+### Second-wave existing recovery qualification
+
+Primary executes one current-source seven-case group using existing, previously
+reviewed tests; no test or product implementation changes. Candidate is the clean
+plan commit derived from `90d68d25f3d112452d722074a013ab9f8bd04602`.
+The native raw in these older groups predates recovery source 8a11caef and is not
+qualified for that file. Preserve historical functional conclusions independently.
+
+- The two `test_vs08b_scenarios.py::test_real_replay_diagnostic_acceptance_chain_reaches_revision_seven` parameters cover legacy-keil and new-cubemx replay through public begin/checkpoint/authorize/Diagnostic/fixed replay to revision7/show.
+- `test_continuation_monitor.py::test_public_continuation_terminal_checkpoint_and_wrong_fix_retry` and `test_public_continuation_checkpoint_times_out_before_terminal_root` cover real continuation completion, wrong-fix retry and the terminal deadline, with no unauthorized root advancement.
+- `test_acceptance_finalization.py::test_finalization_persisted_authority_mutations_refuse_without_new_revision` parameters `rev1-previous-checkpoint-show`, `rev1-immutable-session-show`, and `rev1-envelope-session-show` cover persisted previous-checkpoint, immutable-session and envelope-session refusals before any new revision.
+
+Do not repeat generic13, current risk-existing/risk-chain, finalization7 or
+Diagnostic2. Exclude the known-indeterminate persisted-continuation lock-contention
+case, monkeypatched handler-only routing, constructor-impossible timestamp
+regression and SimpleNamespace profile fixtures. This is software evidence only.
+
+Reuse the existing guarded native launcher; pin actual clean HEAD, product source,
+exact selectors and Python3.12.10. Budget600 seconds, first failure stops, no
+automatic retry. All temp/cache/basetemp under `r10/t/w2r`; raw/JUnit/argv/process
+and source evidence under `r10/e/risk-v2/wave2/recovery/run1`. Primary owns result
+reconciliation and cleanup. Only complete PASS raw is eligible for native union.
