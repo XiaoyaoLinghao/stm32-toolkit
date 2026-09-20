@@ -1122,6 +1122,7 @@ def test_end_acknowledge_false_preserves_pending_release_until_public_retry(
         end_debug_handoff(ticket.ticket_id, supervisor, lambda _: client)
     )
     assert first.code == "HANDOFF_REACQUIRE_FAILED"
+    assert first.message == "Consumed handoff ownership could not be released"
     pending = _state(session_root)
     assert pending["state"] == "observing-pending-release"
     assert pending["ticketId"] == ticket.ticket_id
@@ -1154,6 +1155,7 @@ def test_end_acknowledge_false_preserves_pending_release_until_public_retry(
     )
     assert acknowledge_calls == 2
     assert supervisor.endpoint is None
+    assert not (session_root / "probe-endpoint.json").exists()
     assert _state(session_root)["state"] == "observing"
     assert _state(session_root)["ticketId"] is None
     assert _state(session_root)["previousWatchSelection"] == []
@@ -1244,6 +1246,7 @@ def test_end_readback_failure_and_cleanup_failure_retain_external_reservation(
     supervisor.stop_error_after_cleanup = RuntimeError("private stop provider")
     first = asyncio.run(end_debug_handoff(ticket.ticket_id, supervisor, factory))
     assert first.code == "HANDOFF_REACQUIRE_FAILED"
+    assert first.message == "Probe Service cleanup failed after reacquisition"
     assert _state(session_root)["state"] == "reacquiring"
     assert supervisor.endpoint is None
     reservation = json.loads(
@@ -1262,6 +1265,8 @@ def test_end_readback_failure_and_cleanup_failure_retain_external_reservation(
     second = asyncio.run(end_debug_handoff(ticket.ticket_id, supervisor, factory))
     assert second.ok is True
     assert len(returned_clients) == 2
+    assert supervisor.endpoint is None
+    assert not (session_root / "probe-endpoint.json").exists()
     assert _state(session_root)["state"] == "observing"
     assert _state(session_root)["ticketId"] is None
     assert json.loads(
