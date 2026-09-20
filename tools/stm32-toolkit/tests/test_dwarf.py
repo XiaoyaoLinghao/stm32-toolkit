@@ -971,7 +971,7 @@ def test_public_dwarf_catalog_rejects_invalid_query_cursor_and_scalar_member() -
 
     with pytest.raises(DwarfError) as noncanonical_error:
         catalog.variable_descriptors(
-            binding, cursor=first.next_cursor + "=", limit=1
+            binding, query="mode", cursor=first.next_cursor + "=", limit=1
         )
     assert noncanonical_error.value.code == "DWARF_CURSOR_INVALID"
     assert noncanonical_error.value.message == "DWARF catalog cursor is invalid"

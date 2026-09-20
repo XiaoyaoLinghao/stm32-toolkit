@@ -1158,7 +1158,11 @@ def test_public_svd_catalog_rejects_invalid_query_and_cursor_wire(
 
     with pytest.raises(SvdError) as noncanonical_error:
         selection.register_descriptors(
-            binding, project, cursor=first.next_cursor + "=", limit=1
+            binding,
+            project,
+            query="gpioa.idr",
+            cursor=first.next_cursor + "=",
+            limit=1,
         )
     assert noncanonical_error.value.code == "SVD_CURSOR_INVALID"
     assert noncanonical_error.value.message == "SVD catalog cursor is invalid"
