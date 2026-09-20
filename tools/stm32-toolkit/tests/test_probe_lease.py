@@ -776,6 +776,65 @@ def test_heartbeat_updates_only_the_current_lease(tmp_path: Path):
     lease.release()
 
 
+def test_public_acquire_naive_utc_clock_fails_before_record_write(tmp_path: Path):
+    data_root = tmp_path / "data"
+    naive_manager = manager(
+        data_root,
+        OWNER,
+        now=datetime(2026, 8, 7, 12, 0, 0),
+    )
+    record_path = naive_manager.record_path("probe-123")
+
+    with pytest.raises(
+        ValueError,
+        match="^UTC clock must return a timezone-aware datetime$",
+    ):
+        acquire(naive_manager)
+
+    assert not record_path.exists()
+    assert not list(record_path.parent.glob(f".{record_path.name}.*.tmp"))
+
+    lease = acquire(manager(data_root, OWNER, now=NOW))
+    lease.heartbeat(utc_now=lambda: NOW + timedelta(seconds=1))
+    lease.release()
+    assert json.loads(record_path.read_text(encoding="utf-8"))["state"] == (
+        "released"
+    )
+    assert not list(record_path.parent.glob(f".{record_path.name}.*.tmp"))
+
+
+def test_public_heartbeat_naive_utc_clock_preserves_active_record(tmp_path: Path):
+    lease = acquire(manager(tmp_path / "data", OWNER, now=NOW))
+    record_path = lease.record_path
+    before = record_path.read_bytes()
+    temporary_before = sorted(
+        path.name for path in record_path.parent.glob(f".{record_path.name}.*.tmp")
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="^UTC clock must return a timezone-aware datetime$",
+    ):
+        lease.heartbeat(utc_now=lambda: datetime(2026, 8, 7, 12, 0, 0))
+
+    assert record_path.read_bytes() == before
+    assert json.loads(before.decode("utf-8"))["state"] == "active"
+    assert sorted(
+        path.name for path in record_path.parent.glob(f".{record_path.name}.*.tmp")
+    ) == temporary_before
+
+    lease.heartbeat(utc_now=lambda: NOW + timedelta(seconds=1))
+    updated = json.loads(record_path.read_text(encoding="utf-8"))
+    assert updated["state"] == "active"
+    assert updated["leaseId"] == lease.lease_id
+    assert updated["heartbeatAtUtc"] == "2026-08-07T12:00:01.000000Z"
+    lease.release()
+    assert json.loads(record_path.read_text(encoding="utf-8"))["state"] == (
+        "released"
+    )
+    assert not list(record_path.parent.glob(f".{record_path.name}.*.tmp"))
+
+
 def test_released_handoff_owner_cannot_heartbeat_after_settlement(tmp_path: Path):
     data_root = tmp_path / "data"
     ticket = "bc" * 32
