@@ -3047,7 +3047,7 @@ def test_probe_list_public_close_failure_matrix(tmp_path: Path) -> None:
                     ProbeListWorkflowRequest(
                         project,
                         tmp_path / f"fatal-data-{list_fatal}",
-                        f"fatal-{list_fatal}",
+                        f"fatal-{str(list_fatal).lower()}",
                     ),
                     _seams=HardwareWorkflowSeams(
                         _test_backend_factory=lambda backend=backend: backend,
