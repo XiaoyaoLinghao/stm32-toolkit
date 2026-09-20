@@ -6,7 +6,6 @@ from pathlib import Path
 from uuid import UUID
 
 import pytest
-
 import test_acceptance_physical_recovery as physical_fixtures
 import test_diagnostic_store as diagnostic_fixtures
 import test_vs08b_scenarios as completion_fixtures
@@ -195,6 +194,7 @@ def test_acceptance_recovery_unknown_schema_dispatch_is_read_only(
         artifacts=envelope.artifacts,
         metadata=metadata,
     )
+    assert str(replacement.evidence_id) != str(envelope.evidence_id)
     clone_evidence.put_envelope(replacement)
     root_path = _root_file(clone_evidence, root.root_type, root.root_id)
     root_path.unlink()
