@@ -1082,3 +1082,123 @@ def test_register_descriptor_snapshots_mutable_fields_and_rejects_path_names() -
     assert descriptor.fields == (("PIN0", 0, 1),)
     with pytest.raises(ValueError):
         replace(descriptor, fields=((r"C:\\secret", 0, 1),))
+
+
+def test_public_svd_catalog_rejects_invalid_query_and_cursor_wire(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    path = project / "device.svd"
+    path.write_bytes(FIXTURE.read_bytes())
+    original = path.read_bytes()
+    binding = _binding(project)
+    selection = select_svd(project, "STM32F429ZITx", (Path("device.svd"),))
+
+    first = selection.register_descriptors(
+        binding, project, query="gpioa.idr", limit=1
+    )
+    assert type(first) is CatalogPage
+    assert binding.svd_readable_regions == READABLE
+    assert first.to_dict() == {
+        "items": [
+            {
+                "selector": "GPIOA.IDR",
+                "sizeBits": 32,
+                "access": "read-only",
+                "readAction": None,
+                "resetValue": 0,
+                "resetMask": 0xFFFF_FFFF,
+                "fields": [
+                    {"name": "PIN0", "bitOffset": 0, "bitWidth": 1},
+                    {"name": "PIN1", "bitOffset": 1, "bitWidth": 1},
+                ],
+                "sampleable": True,
+                "requiresAccessAcknowledgement": False,
+            }
+        ],
+        "nextCursor": first.next_cursor,
+    }
+    assert first.next_cursor is not None
+    second = selection.register_descriptors(
+        binding, project, query="gpioa.idr", cursor=first.next_cursor, limit=1
+    )
+    assert type(second) is CatalogPage
+    assert second.to_dict() == {
+        "items": [
+            {
+                "selector": "GPIOA.IDR_COPY",
+                "sizeBits": 32,
+                "access": "read-only",
+                "readAction": None,
+                "resetValue": 0,
+                "resetMask": 0xFFFF_FFFF,
+                "fields": [
+                    {"name": "PIN0", "bitOffset": 0, "bitWidth": 1},
+                    {"name": "PIN1", "bitOffset": 1, "bitWidth": 1},
+                ],
+                "sampleable": True,
+                "requiresAccessAcknowledgement": False,
+            }
+        ],
+        "nextCursor": None,
+    }
+
+    with pytest.raises(SvdError) as query_error:
+        selection.register_descriptors(binding, project, query=123)  # type: ignore[arg-type]
+    assert query_error.value.code == "SVD_QUERY_INVALID"
+    assert query_error.value.message == "SVD catalog query is invalid"
+    assert str(query_error.value) == "SVD catalog query is invalid"
+
+    with pytest.raises(SvdError) as empty_cursor_error:
+        selection.register_descriptors(binding, project, cursor="")
+    assert empty_cursor_error.value.code == "SVD_CURSOR_INVALID"
+    assert empty_cursor_error.value.message == "SVD catalog cursor is invalid"
+    assert str(empty_cursor_error.value) == "SVD catalog cursor is invalid"
+
+    with pytest.raises(SvdError) as noncanonical_error:
+        selection.register_descriptors(
+            binding, project, cursor=first.next_cursor + "=", limit=1
+        )
+    assert noncanonical_error.value.code == "SVD_CURSOR_INVALID"
+    assert noncanonical_error.value.message == "SVD catalog cursor is invalid"
+    assert str(noncanonical_error.value) == "SVD catalog cursor is invalid"
+
+    assert path.read_bytes() == original
+
+
+def test_public_svd_parser_rejects_derived_register_depth_without_expansion(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    declarations = [
+        '<register><name>RBASE</name><addressOffset>0</addressOffset>'
+        "<size>32</size></register>",
+        '<register derivedFrom="RBASE"><name>RCOPY</name>'
+        '<addressOffset>4</addressOffset></register>',
+    ]
+    for index in range(257):
+        derived_from = f' derivedFrom="R{index + 1}"' if index < 256 else ""
+        declarations.append(
+            f"<register{derived_from}><name>R{index}</name>"
+            f"<addressOffset>{8 + index * 4}</addressOffset>"
+            "<size>32</size></register>"
+        )
+    payload = (
+        '<device schemaVersion="1.3"><name>STM32F429ZITx</name><size>32</size>'
+        '<peripherals><peripheral><name>GPIOA</name>'
+        '<baseAddress>0x40020000</baseAddress><registers>'
+        + "".join(declarations)
+        + "</registers></peripheral></peripherals></device>"
+    ).encode("utf-8")
+    path = project / "chain.svd"
+    path.write_bytes(payload)
+    original = path.read_bytes()
+
+    with pytest.raises(SvdError) as error:
+        select_svd(project, "STM32F429ZITx", (Path("chain.svd"),))
+    assert error.value.code == "SVD_SIZE_LIMIT"
+    assert error.value.message == "SVD derived chain exceeds the limit"
+    assert str(error.value) == "SVD derived chain exceeds the limit"
+    assert path.read_bytes() == original
