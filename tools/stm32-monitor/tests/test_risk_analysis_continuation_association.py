@@ -15,6 +15,7 @@ from stm32_monitor.analysis_workflows import (
     AnalysisWorkflowError,
     compare_monitor_runs,
 )
+from stm32_monitor.models import WatchItem
 from stm32_monitor.replay import (
     load_monitor_run_reference,
     publish_physical_monitor_run,
@@ -148,10 +149,7 @@ def _analysis_request(before: object, after: object) -> AnalysisRequest:
         minimum_valid_pairs=2,
     )
     assert AnalysisRequest.from_value(request.to_dict()) == request
-    assert request.watch_item.to_dict() == {
-        "kind": "variable",
-        "selector": "counter",
-    }
+    assert request.watch_item.to_dict() == WatchItem.variable("counter").to_dict()
     return request
 
 
