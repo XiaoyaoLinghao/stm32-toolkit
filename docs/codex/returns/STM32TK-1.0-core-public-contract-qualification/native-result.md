@@ -45,4 +45,7 @@ Overall 90% remains mandatory; core 95% remains the user's preferred target.
 Earlier physical acceptance and attempt 7 remain unchanged. Seven Windows native
 security checks, remaining coverage qualification, final artifacts and final
 deployment remain pending. No remote delivery or 1.0 release acceptance is claimed.
-Earlier rejected cleanup paths remain untouched; new run roots are pending cleanup.
+Earlier rejected cleanup paths remain untouched. A single attempt to remove the
+three verified union17 disposable roots (t/w1, t/f1, t/u17) was rejected before
+process start by automatic approval review: blocked by policy. Nothing was
+deleted and no retry occurred; original evidence remains preserved.
