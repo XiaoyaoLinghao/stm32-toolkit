@@ -2877,7 +2877,7 @@ def test_public_diagnostic_caller_journey_replay_to_resolution(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    journey_root = tmp_path / "diagnostic-public-journey"
+    journey_root = tmp_path / "j1"
     journey_root.mkdir()
     (
         project_root,
@@ -3656,7 +3656,7 @@ def test_public_diagnostic_caller_journey_authority_refusals_preserve_graph(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    journey_root = tmp_path / "diagnostic-public-authority-journey"
+    journey_root = tmp_path / "j2"
     journey_root.mkdir()
     (
         project_root,
