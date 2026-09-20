@@ -192,12 +192,13 @@ T10 采样入口复用已接受的有限 Monitor 生命周期，在执行卡中�
 
 按已核实绝对路径清理本轮不再需要的临时输出；保留源码测试、可复用基线、用户数据、共享缓存、rollback、授权账本、有效 PASS 和最小失败证据。Windows 使用同一 PowerShell 原生命令，删除前确认在本轮目录内。自动策略拒绝 cleanup 时记录保留，不换工具/路径绕过。没有新测试不制造清理工作。
 
-## 8. 当前验收断点（2026-09-19）
+## 8. 当前验收断点（2026-09-20）
 
 **当前 B：VS10-B 已 ACCEPTED，开始1.0本地发布收敛。** 最终代码 `22ec7ba68967bcbcacea325848886dd953affb31` 已接受；正式 `/5` attempt `17af06e8-a940-45df-8ccb-e1f250314fc6` 为 `COMPLETED/revision1`，新进程读回通过。原175份证据不变，仅新增7份允许记录；旧 `/4` 超时不改写。`D:\codex-tmp\v10b-0918\fin\archive` 的3,000文件统一归档已逐项通过独立核验，原B各阶段和独立Monitor bundle门槛闭合。当前部署仍为 `12df4fe`，此次只运行审查后的源码离线入口，未部署或操作硬件。见[最终验收记录](../codex/returns/2026-09-19-stm32tk-vs10b-final-acceptance.md)。
 
 用户随后授权持续推进至1.0本地发布就绪，包括必要本地修复、审查、测试、打包、部署及既定板卡/探针验证；允许保留失败证据并在明确诊断/修正依据后自动重试，无需逐步再询问。该授权不包含新板卡、新功能、采样频率升级或未具名远程操作。主代理统一调度，Luna/max仍唯一产品实现者；本轮发布运行根为 `D:\codex-tmp\v10b-0918\r10`。原单次硬件 action 不可重放；新的必要执行仍使用新身份和已固定的生命周期。
 
+**1.0 当前离线资格断点：尚未验收。** 集成代码/测试 head 为 `c2e92ac3439d83d2693768c9bb3b80b1f1b46045`，产品 source 仍为 `465249dba5560f7c08b1172794fec8fedd9b8d96`。union20 已独立接受，Toolkit 分支覆盖率 11795/13578（86.8685%），距强制90%差426条；Monitor 2653/2940（90.2381%）；两者核心95%偏好目标分别差1105/140条，UI 784/810 单独保留。原始失败完整保留，仅合并完整通过的 raw 批次。三包不混算、分母不变；七项 Windows 原生安全检查、最终发行物和最终部署仍未闭合。后续按完整公共调用流程评估剩余资格验证，不自动继续零散补分支；不得因本次报告更新重跑既有有效测试或实机步骤。见[当前资格结果](../codex/returns/STM32TK-1.0-core-public-contract-qualification/native-result.md)。本轮未部署、未访问硬件、未执行远程操作。
 以下为历史断点，保留发生时的失败和状态；不覆盖上方当前结论。
 
 **最新：card05 实机修复与 FixVerification 已 PASS，但最终验收检查点超时，VS10-B 尚未验收。** 故障/修复 Target 各一次、两侧30秒100ms采样均已完成；每侧300组有效批次且零丢样。单行 PE3 周期修复后 Target PASS，PE3/PE4 均变化，Diagnostic revision15/RESOLVED、FixVerification PASSED；新进程读取确认。最终 checkpoint 比300秒截止时间晚约23秒，被 `ACCEPTANCE_ATTEMPT_TIMED_OUT` 拒绝；这是主代理收尾调度问题，不能归因板子或撤销有效实机证据。执行已停止，存储 attempt 保持过期的 ACTIVE/revision6，未篡改终态。两侧 marker 已消费，probe/runtime released/stopped、相关进程0。后续先离线核对显式证据续验契约，不为补账本重新烧录/采样。见 [card05 结果与精确超时点](../codex/returns/2026-09-18-stm32tk-vs10b-card05-physical-pass-checkpoint-timeout.md)。以下 card04 等为历史断点。
