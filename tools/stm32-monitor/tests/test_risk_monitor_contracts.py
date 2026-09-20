@@ -6,7 +6,6 @@ from hashlib import sha256
 from pathlib import Path
 
 import pytest
-
 from stm32_monitor.analysis import (
     ANALYSIS_REQUEST_INVALID,
     AnalysisError,
@@ -122,7 +121,7 @@ def test_risk_analysis_bundle_from_value_maps_nested_artifact_type_failure(
 def test_risk_probe_session_cancellation_invalidates_prepared_admission(
     tmp_path: Path,
 ) -> None:
-    """Cancellation from a prepared provider clears the real session lease."""
+    """Cancellation from a prepared provider clears the read plan and admission."""
 
     async def scenario() -> None:
         project = tmp_path / "project"
