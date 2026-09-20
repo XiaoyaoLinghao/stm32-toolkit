@@ -196,3 +196,37 @@ variables/basetemp/cache under `r10/t/w2p/run1`, and durable raw/JUnit/argv/sour
 evidence under `r10/e/risk-v2/wave2/p/run1`. Do not rerun the earlier M/P/A groups.
 Primary accepts only complete source-pinned results after independent full-diff
 review. A failure stops this group for classification before a bounded correction.
+
+## Second wave: Monitor history and replay failure settlement
+
+Accepted base: `ee1031922f421498b34428e4da29747f773f8758`; product source
+remains 8a11caef and the independently accepted union25 scope is unchanged.
+One Luna/max owner in `r10/w2m` owns only the new file
+`tools/stm32-monitor/tests/test_risk_history_replay_settlement.py`.
+Primary owns integration and independent complete-diff acceptance. Existing
+fixtures remain read-only; do not change shared schemas or product modules.
+
+Use the public factories and supported provider seams in the existing replay,
+physical-publication, History and continuation tests. The grouped scenarios are:
+
+| Scenario | Public contract and required assertion |
+| --- | --- |
+| Incoming replay exceeds the value window | `ingest_monitor_replay` receives a valid document within MAX_REPLAY_BATCHES but with total values above MAX_HISTORY_VALUES. It refuses with EVIDENCE_INTEGRITY_FAILURE before transcript/reference roots, History rows or evidence mutations. This differs from the retained oversized-existing-history case. |
+| Physical History ends with a partial batch | `publish_physical_monitor_run` receives a valid TestRun binding and a publicly constructed HistoryPage/HistoryBatchSlice with a final incomplete fragment. Assert the exact incompatible-identity error/message, no publication roots or manifests, and store closure. Never forge an impossible fragment or bypass earlier binding guards. |
+| Atomic append window contains an oversized encoding | `HistoryStore.append_batches` receives a valid public SampleBatch exceeding MAX_HISTORY_BATCH_BYTES through existing payload construction. Assert history.appendbatches/MONITOR_REQUEST_INVALID, unchanged SQLite rows/accounting, then successful ordinary append/query. |
+| Persisted batch identity is corrupt | Publicly append a valid batch, then change the persisted batch identity and corresponding value rows to zero using the existing corruption-fixture pattern. Public `query_history` must return MONITOR_STORAGE_CORRUPT without deleting/mutating rows or accounting; reopen confirms the same refusal. Snapshot after injecting corruption and before calling the reader. |
+| Trusted append meets a hardlinked WAL sidecar | A successful ordinary append establishes the supported write path. Inject a hardlink from an unrelated sentinel to the WAL sidecar using the existing native fixture pattern. The next public append must return MONITOR_STORAGE_INVALID, preserve sentinel bytes/link count and prior history/accounting, and release its writer slot. Remove only the newly injected run-owned sidecar before proving a later normal write can proceed. |
+| Continuation disagrees with both run bindings | Reuse a valid public continuation graph and physical MonitorRunRefV2 pair; rebuild both refs with the same changed valid probe identity using public decoders/digest rules. After normal pair validation, compare_monitor_runs must return the exact INCOMPATIBLE_IDENTITY / continuation does not match runs error with no analysis/diagnostic/history/evidence mutation. If public construction or an earlier real authority check prevents this boundary, record that limit rather than mocking the decision. |
+
+A malformed public input may be legal test input; an object that cannot exist
+through supported constructors is not. Do not target XML/parser private branches,
+forged HMAC state, manufactured races or impossible model internals. Reuse valid
+historical assertions, but assert newly introduced failure paths explicitly.
+
+Run full Ruff, AST and diff checks before one complete new-file batch, native
+coverage, first-failure stop, maximum 300 seconds. Use Python `r10/py`, all temp
+variables/cache/basetemp beneath `r10/t/w2m/run1`, and durable evidence beneath
+`r10/e/risk-v2/wave2/m/run1`. Commit the candidate before executing and record
+actual base/HEAD/source/argv/process outcome. Inspect constructor and first-guard
+ordering before runtime; a failed group stops for classification and cannot be
+included in the native union. No hardware, install, packaging or remote action.
