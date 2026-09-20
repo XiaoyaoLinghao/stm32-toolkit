@@ -758,6 +758,30 @@ packages. Generated files stay r10/t/w5p/run1; durable evidence/raw coverage sta
 e/risk-v2/wave5/probe-session/run1. First failure stops for diagnosis. Main owns
 cleanup and integration; no product, shared helper, deployment or remote changes.
 
+### ProbeSession run1 contract correction
+
+Candidate `6811122f243f4a1f7d46fdf7cd6942c398be6f97` stopped at its first
+case with a TEST_EXPECTATION failure. WatchItem stores `selector` internally but
+serializes a variable watch as `expression` (models.py286-288); the independent
+SampleValue definition intentionally still uses `selector` (probe_session.py167).
+Only the watch wire expectation changes. Preserve the exact error code, typed
+value null, definition, no-block outcome and recovery assertions. Strengthen the
+shared successful-read assertion to compare the complete expected SampleValue:
+the existing FakeObservation returns TypedValue("counter", "uint32_t", 1,
+"0x00000001", 32), code null and the variable selector definition. Construct this
+expected value through the public models rather than inventing another wire
+schema. This adds no scenario, product change or instrumentation.
+
+The primary reviewed all eleven cases, OperationResult/ProtocolResult,
+WatchItem/SampleValue serialization, FakeObservation and all relevant public
+ProbeSession branches in clean exact-head r10/w5pr. The same Luna/max owner returns
+a separate correction commit with Ruff/AST/diff checks before any execution.
+Primary checks that diff first, then releases one complete run2 with the existing
+180-second first-error stop. Preserve run1 evidence and exclude its raw coverage.
+Use r10/t/w5p/run2 and e/risk-v2/wave5/probe-session/run2 only. This static review
+before first execution also applies to the concurrently prepared analysis group
+because repeated public-return-shape errors are a verified test-entry risk.
+
 ## Continuation association is bound to actual TestRun records
 
 Accepted base: `a649025d930c770b0e395c38ef8b529ade8046a6`.
