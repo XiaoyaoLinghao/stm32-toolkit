@@ -3195,12 +3195,14 @@ def _remaining_cleanup_seams(
 
     async def read_variables(request: object, client: object) -> OperationResult[object]:
         del request, client
+        recorder.events.append("read_variables")
         return variable_result or OperationResult.success(
             "stm32_variable_read", {"status": "accepted"}
         )
 
     async def flash(request: object, client: object) -> OperationResult[object]:
         del request, client
+        recorder.events.append("flash")
         return flash_result or OperationResult.success("stm32_flash", {"status": "accepted"})
 
     return HardwareWorkflowSeams(
@@ -3313,6 +3315,8 @@ def test_public_workflow_cleanup_and_handoff_end_matrix(tmp_path: Path) -> None:
     }
     assert "client.close" not in recorder.events
     assert recorder.events[-1] == "supervisor.stop"
+    assert "read_variables" in recorder.events
+    _remaining_assert_binding(recorder, project, session_id="missing")
 
     ordinary_project = _project(tmp_path / "ordinary-project")
     recorder = _Recorder()
@@ -3358,6 +3362,8 @@ def test_public_workflow_cleanup_and_handoff_end_matrix(tmp_path: Path) -> None:
             "details": {},
         }
         assert recorder.events[-2:] == ["client.close", "supervisor.stop"]
+        assert "read_variables" in recorder.events
+        _remaining_assert_binding(recorder, project, session_id=f"service-{index}")
 
     project = _project(tmp_path / "diagnostic-project")
     recorder = _Recorder()
@@ -3394,10 +3400,27 @@ def test_public_workflow_cleanup_and_handoff_end_matrix(tmp_path: Path) -> None:
     payload = result.to_dict()
     assert payload["operation"] == "stm32_flash"
     assert payload["code"] == "HARDWARE_CLEANUP_FAILED"
+    assert payload["message"] == "Hardware workflow cleanup failed"
     merged = payload["details"]["attachDiagnostic"]
-    stages = [entry["stage"] for entry in merged["cleanup"]]
-    assert stages.index("workflow-client-close") < stages.index("workflow-service-stop")
-    assert "service-lease-release" in stages
+    assert merged == {
+        "version": 1,
+        "primary": diagnostic["primary"],
+        "lateAttach": None,
+        "cleanup": [
+            {
+                "stage": "workflow-client-close",
+                "outcome": "failed",
+                "reason": "unknown",
+                "sourceCode": "UNTYPED",
+            },
+            {"stage": "service-lease-release", "outcome": "succeeded"},
+            {"stage": "workflow-service-stop", "outcome": "succeeded"},
+        ],
+        "lastVerifiedTargetState": None,
+    }
+    assert merged["primary"] == diagnostic["primary"]
+    assert "flash" in recorder.events
+    _remaining_assert_binding(recorder, project, session_id="diagnostic")
     assert "C:\\" not in json.dumps(payload)
     assert "token" not in json.dumps(payload).lower()
 
@@ -3416,6 +3439,8 @@ def test_public_workflow_cleanup_and_handoff_end_matrix(tmp_path: Path) -> None:
         )
     assert caught.value.code == 101
     assert recorder.events[-2:] == ["client.close", "supervisor.stop"]
+    assert "read_variables" in recorder.events
+    _remaining_assert_binding(recorder, project, session_id="fatal-client")
 
     for index, (action_mode, stop_mode) in enumerate(
         (("fatal", "ok"), ("ok", "fatal"), ("cancel", "ok"))
@@ -3603,6 +3628,12 @@ def _remaining_assert_binding(
         probe_id=probe_id,
     )
     assert type(recorder.binding) is DebugFirmwareBinding
+
+
+def _remaining_assert_cancel_cleanup(recorder: _Recorder) -> None:
+    assert recorder.events.count("client.close") == 1
+    assert recorder.events.count("supervisor.stop") == 1
+    assert recorder.events[-2:] == ["client.close", "supervisor.stop"]
 
 
 def _remaining_fault_request(
@@ -3802,6 +3833,7 @@ def test_public_controlled_fault_timeout_and_recovery_state_matrix(
         )
     _remaining_assert_binding_request(recorder, project, session_id="session-a")
     _remaining_assert_auth(recorder, prepared=0, consumed=0)
+    _remaining_assert_cancel_cleanup(recorder)
 
     project = _project(tmp_path / "bind-cancel-error-project")
     recorder = _Recorder()
@@ -3840,6 +3872,7 @@ def test_public_controlled_fault_timeout_and_recovery_state_matrix(
     asyncio.run(bind_cancel_error_scenario())
     _remaining_assert_binding_request(recorder, project, session_id="session-a")
     _remaining_assert_auth(recorder, prepared=0, consumed=0)
+    _remaining_assert_cancel_cleanup(recorder)
 
     identity_cases = (
         (
@@ -3942,6 +3975,7 @@ def test_public_controlled_fault_timeout_and_recovery_state_matrix(
     _remaining_assert_binding(recorder, project, session_id="session-a")
     assert recorder.control_client.control_calls == []
     _remaining_assert_auth(recorder, prepared=0, consumed=0)
+    _remaining_assert_cancel_cleanup(recorder)
 
     project = _project(tmp_path / "halt-authorization-cancel-project")
     recorder = _Recorder()
@@ -3973,6 +4007,7 @@ def test_public_controlled_fault_timeout_and_recovery_state_matrix(
     _remaining_assert_binding(recorder, project, session_id="session-a")
     assert recorder.control_client.control_calls == []
     _remaining_assert_auth(recorder, prepared=1, consumed=0)
+    _remaining_assert_cancel_cleanup(recorder)
 
     project = _project(tmp_path / "analysis-state-error-project")
     recorder = _Recorder()
@@ -4093,6 +4128,7 @@ def test_public_controlled_fault_timeout_and_recovery_state_matrix(
         "target.resume",
     ]
     _remaining_assert_auth(recorder, prepared=2, consumed=2)
+    _remaining_assert_cancel_cleanup(recorder)
 
     recovery_cases = (
         (
