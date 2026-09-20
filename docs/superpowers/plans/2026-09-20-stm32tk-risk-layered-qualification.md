@@ -592,6 +592,18 @@ After static checks and a correction commit, run the complete one-case file once
 under the same180s limit in r10/t/w4m/run2 and e/risk-v2/wave4/monitor/run2.
 First failure stops again; no product change or wider test run is authorized.
 
+Run2 stopped before publication because the new comparator incorrectly treated
+SampleBatch and HistoryBatchSlice as the same wire schema. After two failed test
+rounds, pause execution and recheck the whole observation contract. Source
+models.py580-598 and889-909 establish exactly fourteen shared metadata fields
+plus values; only HistoryBatchSlice adds startOrdinal and batchValueCount.
+Compare shared metadata directly, batchValueCount against len(expected.values),
+and each slice's values against the contiguous original ordinal range. The full
+before/after stable-page comparison remains required. Primary has re-read both
+complete serializers and the complete test. The same owner may implement this
+bounded comparator correction and return a static-checked commit; no third run
+until primary independently reviews that correction against this schema mapping.
+
 ## Tool-support admission and adapter-failure qualification
 
 Accepted base: `e9e40c9fe69eac471a756056a4d341b20b357757`.
