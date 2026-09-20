@@ -161,3 +161,38 @@ replay/history/analysis boundaries. Reuse accepted assertions before selecting
 additional valid cases. Preserve constructor-inaccessible residual branches as
 visible gaps; do not manufacture impossible objects to reach them. Overall 90%
 and frozen risk-core 95% are evaluated independently after each complete wave.
+
+## Second wave: owned creation-transaction failure settlement
+
+Accepted base: `40608fdbf4746db80d2f93a2c43347586af2ebbc`. Product source stays
+8a11caef; union25 remains authoritative until the next independent native review.
+One Luna/max owner in `r10/w2p` owns only the new
+`tools/stm32-toolkit/tests/test_risk_creation_settlement.py`. Primary owns this
+plan and full-diff acceptance in a separate clean checkout. No shared helper,
+product, dependency, schema or coverage-scope changes belong to this group.
+
+Reuse `test_creation_apply` authorization/provider factories and public
+`apply_creation`/`CreationApplyRequest`. The three legal caller scenarios each
+have successful-cleanup and targeted-filesystem-cleanup-failure variants:
+
+| Scenario | Entry, first guard and required observation |
+| --- | --- |
+| Adapter produces a child with missing required native files | Use the actual default native parser, not a mocked validation decision. It raises `CubeMXNativeProjectError`, mapped by apply to `CUBEMX_NATIVE_OUTPUT_INVALID`; normal cleanup leaves no owned roots and records validation-phase failure. If deletion of that exact owned generation root fails, return `CREATION_ACTIVATION_ROLLBACK_FAILED` and preserve the actual failed-cleanup root. |
+| Generation provider raises OSError after creating owned output | Exercise the existing public provider seam and real generation-root lifecycle. Normal cleanup returns `CREATION_ACTIVATION_FAILED` and leaves no staging; failed deletion returns `CREATION_ACTIVATION_ROLLBACK_FAILED` with the actual retained owned root. No configure/build/activation call occurs. |
+| Configuration provider raises OSError after relocation | Use the existing successful validation fixture to reach the supported configure delegate. Prove generation output was relocated before the delegate fails. Normal cleanup removes owned activation staging; failed deletion returns `CREATION_ACTIVATION_ROLLBACK_FAILED` and retains that exact staging root. No build or destination activation occurs. |
+
+All six variants must assert the exact public result wire, consumed authorization
+state, unchanged absent/empty destination and unrelated user sentinel, bounded
+provider call order, and the actual retained/removed owned roots. Inject only the
+filesystem/provider failure; never replace cleanup decisions, authorization,
+parser or result predicates. Persistent deletion failure is a deterministic
+test input, not an attempt to bypass a previously denied cleanup command.
+No real CubeMX, hardware or external application is invoked.
+
+After full Ruff and constructor/first-guard inspection, execute one complete
+six-case native-coverage group with first-failure stop and a 300-second bound.
+Use existing launch patterns, Python `r10/py/Scripts/python.exe`, all temporary
+variables/basetemp/cache under `r10/t/w2p/run1`, and durable raw/JUnit/argv/source
+evidence under `r10/e/risk-v2/wave2/p/run1`. Do not rerun the earlier M/P/A groups.
+Primary accepts only complete source-pinned results after independent full-diff
+review. A failure stops this group for classification before a bounded correction.
