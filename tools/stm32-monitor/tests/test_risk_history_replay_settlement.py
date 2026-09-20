@@ -186,10 +186,10 @@ def _oversized_replay_file(tmp_path: Path) -> tuple[Path, bytes, int]:
     return path, raw, total_values
 
 
-def test_replay_value_window_over_limit_records_the_first_public_guard(
+def test_replay_oversized_document_records_the_first_public_guard(
     tmp_path: Path,
 ) -> None:
-    """The current public replay contract rejects this legal shape before history limits."""
+    """An oversized document is rejected by the reader; the value-count guard is unproven."""
 
     paths = _paths(tmp_path)
     evidence = EvidenceStore(paths.workspace_root / "evidence")
@@ -357,32 +357,30 @@ def test_history_trusted_write_rejects_injected_wal_hardlink_and_recovers(
 ) -> None:
     paths = _paths(tmp_path)
     database = paths.monitor_root / "monitor.sqlite3"
-    initial = HistoryStore(paths)
-    try:
-        assert initial.append_batch(_batch(paths, 1)).ok
-    finally:
-        initial.close()
-
-    before = _database_snapshot(database, immutable=True)
-    sentinel = tmp_path / "external-wal-sentinel"
-    sentinel.write_bytes(b"external-wal-sentinel")
-    sidecar = database.with_name(database.name + "-wal")
-    os.link(sentinel, sidecar)
-    sentinel_before = (sentinel.read_bytes(), os.lstat(sentinel).st_nlink)
-
     store = HistoryStore(paths)
+    sentinel = tmp_path / "external-wal-sentinel"
+    sidecar = database.with_name(database.name + "-wal")
     try:
+        assert store.append_batch(_batch(paths, 1)).ok
+        before = _database_snapshot(database, immutable=True)
+        sentinel.write_bytes(b"external-wal-sentinel")
+        assert not sidecar.exists(), "initial append left a sidecar that blocks the injection"
+        os.link(sentinel, sidecar)
+        sentinel_before = (sentinel.read_bytes(), os.lstat(sentinel).st_nlink)
+
         rejected = store.append_batch(_batch(paths, 2))
         assert not rejected.ok
         assert rejected.operation == "history.append"
         assert rejected.code == "MONITOR_STORAGE_INVALID"
+        assert rejected.message == "monitor storage is not a private regular file"
         assert _database_snapshot(database, immutable=True) == before
         assert (sentinel.read_bytes(), os.lstat(sentinel).st_nlink) == sentinel_before
         assert os.path.samefile(sentinel, sidecar)
     finally:
         store.close()
-        assert os.path.samefile(sentinel, sidecar)
-        sidecar.unlink()
+        if sidecar.exists():
+            assert os.path.samefile(sentinel, sidecar)
+            sidecar.unlink()
 
     recovered = HistoryStore(paths)
     try:
