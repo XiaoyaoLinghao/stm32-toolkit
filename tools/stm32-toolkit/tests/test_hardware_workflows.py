@@ -3201,6 +3201,7 @@ def _remaining_cleanup_seams(
         )
 
     async def flash(request: object, client: object) -> OperationResult[object]:
+        recorder.flash_request = request
         del request, client
         recorder.events.append("flash")
         return flash_result or OperationResult.success("stm32_flash", {"status": "accepted"})
@@ -3420,7 +3421,13 @@ def test_public_workflow_cleanup_and_handoff_end_matrix(tmp_path: Path) -> None:
     }
     assert merged["primary"] == diagnostic["primary"]
     assert "flash" in recorder.events
-    _remaining_assert_binding(recorder, project, session_id="diagnostic")
+    flash_request = recorder.flash_request
+    assert flash_request.project_root == project
+    assert flash_request.probe_id == "probe-a"
+    assert flash_request.target == "stm32f407vg"
+    assert flash_request.expected_build_id == BUILD_ID
+    assert flash_request.expected_elf_sha256 == ELF_SHA
+    assert flash_request.authorized is True
     assert "C:\\" not in json.dumps(payload)
     assert "token" not in json.dumps(payload).lower()
 
