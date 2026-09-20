@@ -1962,6 +1962,9 @@ def _journey_failure(
         "ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH": (
             "Acceptance attempt identity does not match."
         ),
+        "ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED": (
+            "Acceptance attempt evidence failed integrity validation."
+        ),
     }
     assert wire == {
         "protocol": "stm32-toolkit/1",
@@ -2400,7 +2403,18 @@ def test_public_finalization_repeat_bind_rejects_corrupt_existing_proof_root(
     assert clone.workspace.session_id == case.workspace.session_id
     assert _persisted_snapshot(clone) == original_after_bind
 
-    _replace_finalization_root_metadata(clone, proof)
+    proof_root = get_root(
+        clone.evidence,
+        recovery_workflows.FINALIZATION_ROOT_TYPE,
+        proof.continuation_id,
+    )
+    proof_root_payload = proof_root.to_dict()
+    proof_root_payload["metadata"] = {"continuation_id": "0" * 64}
+    _journey_public_root_path(
+        clone.evidence,
+        recovery_workflows.FINALIZATION_ROOT_TYPE,
+        proof.continuation_id,
+    ).write_bytes(canonical_json_bytes(proof_root_payload))
     before_corrupt_bind = _persisted_snapshot(clone)
     repeated_bind_id = "00000000-0000-4000-8000-000000000351"
     repeated_bind_wire = _journey_wire(
