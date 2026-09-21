@@ -88,9 +88,8 @@ def _v1_events(name: str, inventory):
         return (start, case_start, (2, "case_start", {**case_start[2]}))
     if name == "premature-run-end":
         return (
-            start,
             (
-                1,
+                0,
                 "run_end",
                 _v1_run_end(inventory, counts=_v1_counts(error=1), state="error"),
             ),
