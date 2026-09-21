@@ -3,7 +3,7 @@
 ## Current U39 and frozen RC2 result
 
 Integrated test/code head before this report:
-`1751c546d1f78b6b4b97d6a1f3aa62892a34a210`.
+`3bfbebcbedf7c7854c80a492d04d30352d891d39`.
 Frozen RC2 source (unchanged by the subsequent test-only work):
 `c71b13f2562985d27b3865e367f6d33334f3a16a`.
 Product source remains `55d91a23a5a2f16fc47d324a9077dfcebf130be9`.
@@ -84,10 +84,24 @@ runtime dependencies use the accepted shared-runtime bridge, not a newly
 captured immutable pre-run snapshot. No extra product regression or RC rebuild
 is triggered by these assertion/report corrections.
 
-The eight-case physical-schema reader family is released on a separate LF
-worktree whose148 product files exactly match RC2. It proves software evidence
-identity and restoration only; no physical device PASS is inferred. Actual
-result and formal aggregation remain pending. A dedicated real healthy RC2
+The eight-case physical-schema reader family is now independently accepted and
+integrated as test-only commits. Candidate
+`a5969a9b76a01f40558b122e953292f0b1ace911` passed in9.3445s, with all148 product
+source files exactly matching RC2. Its eight persisted-wire refusal guards,
+per-call no-write snapshots, exact restoration and public reuse are proved.
+The original shard and combined native data have exactly the same126 files and
+14,569 arcs; ten recovery-workflow branches are new against U39 (eight targeted
+guards and two journey branches). These remain **pending formal aggregation**.
+Independent review SHA:
+`4F73B7FF4BAD3D1837917E7A5C391FE9A3DD0E22D91E90AD0AC9E8F22F292CB1`.
+Run1 and run2 remain excluded fixture failures, not product defects. The run3
+pre-run dependency snapshot and independent64-wheel verification bind the actual
+runtime. Its copied run2 reconciliation is reference evidence only; stale launcher
+fields in environment.json/heads.json cannot replace the actual run3 pre-execution,
+wrapper and process records. P6 proves immutable openedAt identity despite an
+inaccurate generated label. These report corrections need no behavior rerun.
+This proves software evidence identity only, never a physical device PASS.
+A dedicated real healthy RC2
 installation for package refusals was created once at r10/t/rc2rf/fixture-state;
 it does not replace or repeat the accepted fresh-install or0.9 Repair results.
 The deployment-document audit passed for the five documented files and packaged
@@ -97,9 +111,12 @@ guide identity (e/rc2/deployment-docs-audit.json, SHA
 Remaining: actual Monitor service auth/Ctrl+C130/resource release, applicable
 package refusal/failed-publication rollback/security and use checks,
 seven Windows-native checks and all outstanding coverage thresholds. The
-single-purpose Monitor console adapter's third revision is under independent
-complete review after a lifecycle design decision; no actual service run has
-been released. Existing helpers provide Ctrl+Break/Kill instead of real Ctrl+C. Builds,
+single-purpose Monitor console adapter's third revision failed independent
+review of process/output ownership. The primary returned that whole facility
+to design; the same owner is replacing manual pipe/process handling with a
+gated worker and standard subprocess transports. All three failed rounds remain
+recorded as test infrastructure, without a Monitor product change or actual
+service start. Existing helpers provide Ctrl+Break/Kill instead of real Ctrl+C. Builds,
 deployment and formal ledger updates remain serialized. VS10-A/B and attempt7
 physical PASS are retained; no hardware, remote mutation or denied cleanup was
 performed. Details remain in the existing work ledger and release matrix.
