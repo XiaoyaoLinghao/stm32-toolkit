@@ -2,7 +2,7 @@
 
 Accepted aggregation baseline: union36, canonical SHA256
 `566401658A8EE59BCE92FABD536B77264B2C925951E1495695B5E66B7608460B`.
-Integrated code head before this report: `c7d3d73bb2e352f9f1f8d9c7393448fcc64ee472`.
+Integrated code head before this report: `07d7e70efd1b777c10d630d97b218f8bfaf822b1`.
 U37 measured code head: `e0c8f3ffe0bc283901c7805d3865202e32505405`.
 U37-qualified product source: `78341213b8e5604d5f6a0436c4324d6d9f9e3ead`.
 Integrated Diagnostic source: `55d91a23a5a2f16fc47d324a9077dfcebf130be9`,
@@ -49,8 +49,10 @@ regression1 reacquires its measurement. No repeated behavior acceptance is claim
 Candidate60a39d44 is integrated at c7d3d73b after behavior and complete-diff
 acceptance; six-source native requalification remains pending. Merge checkout
 changed the six files' raw representation relative to measured w11r. The other142
-source files match. Exact byte/line-ending equivalence is under separate review;
-neither matching Git history nor accepted behavior establishes raw source equality.
+source files match. Exact-pair reviewDFCFBB17 confirms that all six differences
+are newline-only; all148 qualification/worktree/Git source representations have
+matching normalized bytes, line boundaries and Python code/line tables. Their
+raw identities remain separate. This does not waive release source-wheel binding.
 Independent measurement review61AF9EC7 rejects regression1's entire raw: private
 fact/reader/validator/model substitutions and an unrecorded synthetic fixture
 switch are inseparable in its one context-free shard. The64 behavior results
@@ -67,8 +69,31 @@ calls, so the primary accepts their data without a repeat. Valid run3 plus this
 model input currently qualify76/80 model and291/296 recovery-model branches;
 the remaining four-file qualification is incomplete. Alias behavior stays at
 run2. Its isolated measurement now passes1 in44.3021s with one retained shard;
-independent native admission remains pending. This reacquisition is not a new
+independent native reviewB99DDAF9 accepts this bounded input. This is not a new
 behavior claim. Neither coverage counters nor behavior are invented.
+
+The CLI group on isolated sourcew11r passes177 in46.1725s with one planned native
+symlink deselection. Independent reviewB7C686BB accepts its native input: eight
+retained shards have an exact combined union. The empty shard is authenticated
+as pyocd.EXE --version; the seven product-bearing shards resolve to qualified
+w11r source. Public parser/delegate translation evidence is not producer or
+physical acceptance. This is source remeasurement, not177 new product behaviors.
+
+The independent w13mcp group passes259 in306.4550s, but its measurement is
+INCOMPLETE. The actual test marker records spawned ProbeBackendWorker PID28820;
+the eight retained shards contain no such PID. The reported PID30524 is the
+FastMCP stdio server. The original incorrect audit is preserved beside its
+correction. Retain all behavior and raw evidence, but do not admit this input
+as complete or rerun the whole group. Existing child-save collection is under
+independent review for a bounded correction; no product change is justified.
+
+CLI and MCP actual execution intervals did not overlap. Their worktrees, temp
+roots, logs and native outputs are independent. The two-suite ceiling remains;
+launcher CPU and unavailable peak memory do not justify expansion. Source-input
+and raw-input review/preparation proceeded independently; those are not suites.
+The exact real-input finalization journey is separately admitted at plan07d7e70e,
+using preserved VS10-B data with explicit environment guards and no synthetic
+fallback. No new finalization result or physical PASS is claimed yet.
 
 Engineering candidate8dde6cab is independently accepted and integratedca700646.
 Its two complete public discovery/generation risk families add13 unique native
