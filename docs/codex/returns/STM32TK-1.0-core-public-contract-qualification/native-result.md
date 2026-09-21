@@ -1,17 +1,39 @@
 # Current native coverage result
 
-Accepted aggregation baseline: union34, canonical SHA256
-`3FD740FF19EBD3D3B612F8F2A5208DD71D6E78DFFCC245515D2634BA68682A1E`.
-Integrated code head before this report: `7b3dba9db07b2c6a593ef89adf3f2585c0b3a2f8`.
+Accepted aggregation baseline: union35, canonical SHA256
+`8141C5C62C0C3630BB1CBE8718AFEAEEEF1C98F6BF38F51656ABC58F884AD87E`.
+Integrated code head before this report: `b026822ec1ad10468945f5949f5181ae978986e0`.
 Qualified product source: `78341213b8e5604d5f6a0436c4324d6d9f9e3ead` plus the
 148-file source registry identified below.
-Union35 native data verdict: **ACCEPTED_NATIVE_DATA**. Release 1.0: **NOT_ACCEPTED**.
+Union36 native data verdict: **ACCEPTED_NATIVE_DATA**. Release 1.0: **NOT_ACCEPTED**.
 
 | Package | Covered / total branches | Overall and broad core v1 | More for 90% | More for v1 95% |
 | --- | ---: | ---: | ---: | ---: |
-| Toolkit | 11,944 / 13,580 | 87.9529% | 278 | 957 |
-| Monitor | 2,703 / 2,944 | 91.8139% | 0 | 94 |
+| Toolkit | 11,949 / 13,580 | 87.9897% | 273 | 952 |
+| Monitor | 2,707 / 2,944 | 91.9497% | 0 | 90 |
 | UI (retained separately) | 784 / 810 | 96.7901% | 0 | 0 |
+
+Union36 adds five Toolkit branches (authorization drift, invalid control results
+and worker handling) and four Monitor history branches (invalid input, corrupt
+payload/export and authenticated cursor recovery). Independent complete-diff
+reviews accept the Probe and Monitor tests; native review confirms all148 current
+source bytes, actual parent/thread/worker capture, original shard hashes, exact
+native raw unions, unchanged108/18 file sets and frozen scopes. Probe run4's
+raw996->999 becomes995->999 through coverage7.15.4's multiline-if normalization;
+no raw data was rewritten. No product source changed or tests ran for aggregation.
+
+Monitor's accepted run1 and corrected single-node run3 take3.512/2.644 seconds;
+Probe's complete run4 takes20.587 seconds. These actual runs did not overlap;
+redirector-only CPU data and unavailable peak memory do not justify increasing
+the two-suite limit. Earlier incomplete or failed inputs are excluded. Recovery's
+new producer fixture remains unaccepted after two contract-construction failures
+and has returned to design review, with originals preserved.
+
+Local RC1 source inputs are frozen at the code head above in two clean worktrees,
+with all64 offline dependencies verified. A new genuine0.9 runtime is healthy at
+generation1 for later Repair. No current1.0 artifacts, installation or upgrade
+PASS is claimed. All numeric, Windows, reproducible-build and real-bundle gates
+remain mandatory; see the existing release matrix and union36 evidence.
 
 The repeat-bind product correction remains accepted with its seven current-source
 PASS. Source changes invalidate old coverage for recovery_workflows.py, so union21
@@ -231,8 +253,8 @@ reported separately; the 108/18 overall files and old v1 statistics remain.
 
 | Risk-core v2 | Covered / total branches | Coverage | More for 95% |
 | --- | ---: | ---: | ---: |
-| Toolkit | 11,326 / 12,906 | 87.7576% | 935 |
-| Monitor | 2,703 / 2,944 | 91.8139% | 94 |
+| Toolkit | 11,331 / 12,906 | 87.7964% | 930 |
+| Monitor | 2,707 / 2,944 | 91.9497% | 90 |
 
 Native v1 scope remains 108/18 Python files overall and 97/16 core files. The excluded
 forwarders have zero branches, so overall/core ratios coincide. Per-package native
