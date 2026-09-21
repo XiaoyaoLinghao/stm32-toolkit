@@ -142,6 +142,25 @@ their exact bytes, digests, authorization bindings, and idempotency results.
 Diagnostic storage lookup removes only hyphens; identity equality remains exact.
 No migration, alias index, rewritten evidence, or new schema is introduced.
 
+This is an explicit 1.0 field-domain correction for `/1` replay attempt and
+record schemas: `diagnosticSessionId` is a DiagnosticSessionRef, not an RFC UUID.
+All supported 1.0 readers and writers change together: checkpoint input,
+immutable stage outputs, source-change authorization, show/resume, after-build
+revalidation, record create/show/retry, and final checkpoint equality. CLI and
+MCP record inputs as well as checkpoint inputs use the dedicated domain; their
+other UUID parameters do not change. This amendment takes precedence over older
+wording that calls this specific field a UUID.
+
+Compatibility is backward reading, not forward reading: 1.0 reads existing 0.9
+records without rewriting them. A 0.9 consumer may reject a new 1.0 reference
+whose version/variant nibbles are not RFC UUID nibbles; an unchanged schema label
+does not promise otherwise. Such readers are not supported consumers of newly
+created 1.0 replay evidence. Repair preserves the original 0.9 runtime and data;
+rollback/recovery retains the appropriate original state and must not translate
+new identities, rewrite evidence, or bypass the existing downgrade refusal.
+Deployment compatibility notes must state this boundary. Final package validation
+must distinguish old-data preservation from unsupported old-reader/new-data use.
+
 Only `diagnosticSessionId` in replay Acceptance uses this domain. Other UUIDs,
 Diagnostic's compact producer/storage contract, physical/continuation/finalization
 schemas, source-change authorization, stage ordering, and error codes remain
