@@ -967,3 +967,15 @@ native raw hashes and process termination. First unexpected error stops for
 classification. Main owns integration, aggregation and any permitted cleanup;
 no worker cleanup, hardware, dependency changes, packaging, deployment or remote
 actions. This test-only group does not invalidate existing VS10/attempt7 PASS.
+
+### Wave6 handoff static entry review
+
+The initial358-line draft was inspected before any pytest execution. Two findings
+must be closed in the same owned test file: the first begin call legitimately
+creates `.debug-handoff.guard` containing one NUL byte (handoff.py363-410), so
+assert every original session file byte-identical plus exactly that new guard,
+not an impossible unchanged directory. Handoff state/companion, reservation and
+stop remain forbidden on the identity refusal. The draft also covered only the
+begin identity race; the already-frozen end race after reacquisition/attach must
+still be implemented, with exact external reservation/ticket preservation and
+same-ticket recovery. No runtime test failure or product defect is claimed.
