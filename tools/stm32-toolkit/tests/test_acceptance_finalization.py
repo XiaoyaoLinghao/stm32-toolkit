@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import difflib
 import hashlib
 import json
 import os
@@ -176,6 +177,123 @@ def _write_fixture_metadata(path: Path, metadata: Mapping[str, object]) -> None:
     path.write_bytes(canonical_json_bytes(dict(metadata)))
 
 
+def _source_change_diff(
+    before_source: bytes,
+    after_source: bytes,
+    changed_path: str,
+) -> bytes:
+    """Generate the source-diff artifact from the exact captured bytes."""
+
+    assert before_source != after_source
+    fromfile = f"a/{changed_path}".encode()
+    tofile = f"b/{changed_path}".encode()
+    diff = b"".join(
+        difflib.diff_bytes(
+            difflib.unified_diff,
+            before_source.splitlines(keepends=True),
+            after_source.splitlines(keepends=True),
+            fromfile=fromfile,
+            tofile=tofile,
+            lineterm=b"\n",
+        )
+    )
+    assert diff.startswith(fromfile.replace(b"a/", b"--- a/") + b"\n")
+    assert tofile in diff
+    return diff
+
+
+def _public_build_evidence(
+    project: Path,
+    build_result: Mapping[str, object],
+    facts: object,
+) -> dict[str, object]:
+    """Retain and cross-check the public build report and fresh loader facts."""
+
+    identity = build_result.get("identity")
+    assert isinstance(identity, Mapping)
+    identity_path = build_result.get("identityPath")
+    result_path = build_result.get("buildResultPath")
+    log_path = build_result.get("buildLogPath")
+    assert isinstance(identity_path, str)
+    assert isinstance(result_path, str)
+    assert isinstance(log_path, str)
+
+    def artifact_path(relative: str) -> Path:
+        relative_path = Path(relative)
+        assert not relative_path.is_absolute()
+        assert ".." not in relative_path.parts
+        return project.joinpath(*relative.replace("/", "\\").split("\\"))
+
+    identity_document = json.loads(
+        artifact_path(identity_path).read_text(encoding="utf-8")
+    )
+    result_document = json.loads(
+        artifact_path(result_path).read_text(encoding="utf-8")
+    )
+    assert identity_document == dict(identity)
+    assert result_document.get("status") == "success"
+    assert result_document.get("code") == "OK"
+    assert result_document.get("preset") == identity_document.get("preset") == "arm-debug"
+    for field in (
+        "buildId",
+        "gitHead",
+        "gitDirty",
+        "inputSnapshotSha256",
+        "targetDevice",
+        "preset",
+    ):
+        assert result_document.get(field) == identity_document.get(field)
+
+    facts_model = getattr(facts, "model", None)
+    assert facts_model is not None
+    loader_identity = {
+        "buildId": str(facts.build_id),
+        "elfPath": str(facts.elf_path),
+        "elfSha256": str(facts.elf_sha256),
+        "inputSnapshotSha256": str(facts.input_snapshot_sha256),
+        "gitHead": str(facts.git_commit),
+        "gitDirty": bool(facts.git_dirty),
+        "targetDevice": str(facts.target_device),
+        "logicalProjectId": str(facts_model.logical_project_id),
+    }
+    for field, expected in loader_identity.items():
+        assert identity_document.get(field) == expected
+    assert identity_document.get("targetDevice") == str(facts_model.target.device)
+    assert build_result.get("identityPath") == identity_path
+    assert build_result.get("buildResultPath") == result_path
+
+    artifact_records: list[dict[str, object]] = []
+    artifacts = result_document.get("artifacts")
+    assert isinstance(artifacts, list) and artifacts
+    for item in artifacts:
+        assert isinstance(item, Mapping)
+        relative = item.get("path")
+        assert isinstance(relative, str)
+        path = artifact_path(relative)
+        payload = path.read_bytes()
+        artifact_records.append(
+            {
+                "path": relative,
+                "sha256": hashlib.sha256(payload).hexdigest(),
+                "size": len(payload),
+            }
+        )
+    artifact_by_path = {str(item["path"]): item for item in artifact_records}
+    elf_path = str(identity_document["elfPath"])
+    map_path = str(identity_document["mapPath"])
+    assert artifact_by_path[elf_path]["sha256"] == identity_document["elfSha256"]
+    assert artifact_by_path[elf_path]["size"] == identity_document["elfSize"]
+    assert artifact_by_path[map_path]["sha256"] == identity_document["mapSha256"]
+
+    return {
+        "publicBuildReport": dict(build_result),
+        "buildResultDocument": result_document,
+        "identityDocument": identity_document,
+        "artifactRecords": artifact_records,
+        "loaderFacts": loader_identity,
+    }
+
+
 def _build_current_firmware_fixture(
     tmp_path: Path,
     seed: Path,
@@ -225,6 +343,7 @@ def _build_current_firmware_fixture(
         "current fixture before build",
     )
     before_facts = load_fresh_firmware_facts(project)
+    before_build_evidence = _public_build_evidence(project, before_build, before_facts)
     build_identity = before_build.get("identity")
     assert isinstance(build_identity, Mapping)
     assert build_identity.get("buildId") == before_facts.build_id
@@ -256,6 +375,7 @@ def _build_current_firmware_fixture(
             "gitCommit": before_facts.git_commit,
             "gitDirty": before_facts.git_dirty,
         },
+        "beforeBuild": before_build_evidence,
     }
     _write_fixture_metadata(metadata_path, metadata)
 
@@ -269,6 +389,7 @@ def _build_current_firmware_fixture(
         )
         after_build = _public_data(result, "current fixture after build")
         after_facts = load_fresh_firmware_facts(project)
+        after_build_evidence = _public_build_evidence(project, after_build, after_facts)
         after_identity_data = after_build.get("identity")
         assert isinstance(after_identity_data, Mapping)
         assert after_identity_data.get("buildId") == after_facts.build_id
@@ -280,6 +401,7 @@ def _build_current_firmware_fixture(
             "gitCommit": after_facts.git_commit,
             "gitDirty": after_facts.git_dirty,
         }
+        metadata["afterBuild"] = after_build_evidence
         _write_fixture_metadata(metadata_path, metadata)
         return after_facts
 
@@ -614,13 +736,15 @@ def _build_synthetic_case(
     changed_path = source_path.relative_to(project).as_posix()
     evidence = EvidenceStore(workspace.workspace_root / "evidence")
     diff_path = tmp_path / "source-change.diff"
-    diff_path.write_bytes(
-        f"--- a/{changed_path}\n+++ b/{changed_path}\n".encode()
-        + b"@@ source fixture change @@\n-before\n+after\n"
-    )
+    diff_payload = _source_change_diff(before_source, after_source, changed_path)
+    assert hashlib.sha256(before_source).hexdigest() == before_source_sha256
+    assert hashlib.sha256(after_source).hexdigest() == after_source_sha256
+    diff_path.write_bytes(diff_payload)
     diff_artifact = evidence.ingest_file(
         diff_path, kind="source-diff", media_type="text/x-diff"
     )
+    assert diff_artifact.size_bytes == len(diff_payload)
+    assert diff_artifact.sha256 == hashlib.sha256(diff_payload).hexdigest()
     diff_envelope = EvidenceEnvelope(
         identity=before_identity,
         operation="diagnostic-source-change",
