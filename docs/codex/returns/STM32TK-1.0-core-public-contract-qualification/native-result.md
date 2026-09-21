@@ -1,51 +1,65 @@
 # Current native coverage result
 
-Accepted aggregation baseline: union35, canonical SHA256
-`8141C5C62C0C3630BB1CBE8718AFEAEEEF1C98F6BF38F51656ABC58F884AD87E`.
-Integrated code head before this report: `b026822ec1ad10468945f5949f5181ae978986e0`.
-Qualified product source: `78341213b8e5604d5f6a0436c4324d6d9f9e3ead` plus the
-148-file source registry identified below.
-Union36 native data verdict: **ACCEPTED_NATIVE_DATA**. Release 1.0: **NOT_ACCEPTED**.
+Accepted aggregation baseline: union36, canonical SHA256
+`566401658A8EE59BCE92FABD536B77264B2C925951E1495695B5E66B7608460B`.
+Integrated code head before this report: `c55a19671061e1dda83fe538d114409a96a6581f`.
+U37 measured code head: `e0c8f3ffe0bc283901c7805d3865202e32505405`.
+Qualified product source: `78341213b8e5604d5f6a0436c4324d6d9f9e3ead`.
+Union37 native data verdict: **ACCEPTED_NATIVE_DATA**. Release 1.0: **NOT_ACCEPTED**.
+Canonical SHA256: `E41F381604588F3092F3F3A7E6A6A0332C59F65A66947BF07F79AA3620913961`.
+Independent review: `24F5C1C7919A8E1FEDE603124C6BF673479F6690963C298BC1D0E097C67FB1B4`.
 
 | Package | Covered / total branches | Overall and broad core v1 | More for 90% | More for v1 95% |
 | --- | ---: | ---: | ---: | ---: |
-| Toolkit | 11,949 / 13,580 | 87.9897% | 273 | 952 |
-| Monitor | 2,707 / 2,944 | 91.9497% | 0 | 90 |
+| Toolkit | 11,952 / 13,580 | 88.0118% | 270 | 949 |
+| Monitor | 2,718 / 2,944 | 92.3234% | 0 | 79 |
 | UI (retained separately) | 784 / 810 | 96.7901% | 0 | 0 |
 
-Union36 adds five Toolkit branches (authorization drift, invalid control results
-and worker handling) and four Monitor history branches (invalid input, corrupt
-payload/export and authenticated cursor recovery). Independent complete-diff
-reviews accept the Probe and Monitor tests; native review confirms all148 current
-source bytes, actual parent/thread/worker capture, original shard hashes, exact
-native raw unions, unchanged108/18 file sets and frozen scopes. Probe run4's
-raw996->999 becomes995->999 through coverage7.15.4's multiline-if normalization;
-no raw data was rewritten. No product source changed or tests ran for aggregation.
+Frozen risk-core-v2 is Toolkit 11,334/12,906 (87.8196%, 927 more for95%)
+and Monitor 2,718/2,944 (92.3234%,79 more). Inventories remain unchanged.
+U37 adds three existing public configure refusal/reconstruction branches and
+11 public Analysis input/refusal/restoration branches. Source148 hashes, native
+raw/shard preservation, exact raw union, no removed arcs, denominators and UI
+retention were independently verified. The statistics specification's original
+7,181-byte prefix remains exact; only its previously approved Diagnostic appendix
+changed the whole-document hash. The first metadata preflight refusal is kept.
+Aggregation ran no tests and changed no product bytes. See e/risk-v2/union37.
 
-Monitor's accepted run1 and corrected single-node run3 take3.512/2.644 seconds;
-Probe's complete run4 takes20.587 seconds. These actual runs did not overlap;
-redirector-only CPU data and unavailable peak memory do not justify increasing
-the two-suite limit. Earlier incomplete or failed inputs are excluded. Recovery
-run2 exposed a fixture digest error; run3 then proved a product contract violation:
-public Diagnostic IDs are arbitrary32hex, while replay Acceptance requires RFC
-UUID nibbles. Its complete field-specific correction and backward-only reader
-compatibility design at1ea29f91 received independent DESIGN_DELTA_ACCEPTED.
-The original Luna/max owner is implementing the bounded six-file correction;
-neither its runtime behavior nor its product diff is accepted yet. Originals stay
-preserved and run3's failed raw data remains excluded.
+Wave12 engineering took3.3819 seconds and Monitor4.1078 seconds; these actual
+suites did not overlap. Launcher-only PIDs and missing descendant peak data do
+not justify raising the two-suite cap. Earlier failed/pre-pytest inputs remain
+excluded. After U36's nine and U37's fourteen total new branches, the primary
+reassessed yield and froze a grouped public creation/generation batch, necessary
+Diagnostic current-source measurement, and a read-only Monitor residual audit.
+The plan c55a1967 forbids further percentage-driven product modifications.
 
-RC1 build-A stopped at its source/wheel binding guard, exit2 after67.605 seconds.
-Its sampler.py checkout has590CRLF+48LF, while git archive has638CRLF. Independent
-input review confirms newline-normalized equality, not raw-byte equality or a
-successful package. Diagnostic wheels were rebuilt after the failure; original
-temporary wheels were not retained. Keep that provenance distinction. The guard
-is correct; next-candidate input preparation must match archive and wheel bytes.
-RC1 will not advance to build-B or installation. A genuine0.9 runtime remains
-healthy at generation1 for later Repair. This convergence batch adds zero accepted
-coverage branches; U36's prior nine remain valid. All numeric, Windows, two-build
-13-output and real-bundle gates remain mandatory. See the existing release matrix,
-union36, rc1/build-a/input-review.md and Recovery design-review-final.md.
+Diagnostic reference correction55d91a23 changes six product files to honor the
+public arbitrary32hex identifier contract while preserving backward evidence
+reading and the separate UUID domains. Complete base79cf6733-to55d91a23 product
+review and c1f6-to60a39d44 final test-delta review accept current-source behavior:
+run2's full alias-to-final-record journey, run3's two remaining refusal/corruption
+journeys (26.5095s), and64 affected regression nodes (187.8666s). Failed run1 and
+mixed run2 raw remain excluded. A report field incorrectly attributing the alias
+behavior to run3 is a report-only correction; the behavior source is run2 and
+regression1 reacquires its measurement. No repeated behavior acceptance is claimed.
 
+Candidate60a39d44 is still isolated pending six-source native requalification.
+Fresh run3/regression1 cover896/1760 branches in those six files, whereas U37
+contains1417/1748 from their old semantic version. These sets cannot be spliced.
+The current candidate denominator would be13,592, not13,580; frozen file scope
+is unchanged. Passing behavior does not complete the native coverage gate.
+Review: e/risk-v2/diagnostic-reference/independent-review.md, SHA256
+`D107393A43BE9E929AC9E9403F3F70DEB6A49A14A2927E3331A4D0F1240E2C0B`.
+
+RC1 remains stopped after build-A's source/wheel binding refusal; no build-B or
+installation retry. The Sampler raw12FF/mixed-newline and archiveD198/CRLF pair
+has independent Python3.12.10 normalized-byte/AST/code-object/line-table equality
+proof, bounded to that exact pair. Raw identities remain different and the
+release source/wheel byte guard remains mandatory. This does not accept a release
+package or authorize reuse of the six semantic Diagnostic changes. A genuine0.9
+runtime remains healthy at generation1 for later Repair. All Windows-native,
+coverage, closed-dependency two-build/all13-output and actual-bundle installation,
+Repair/rollback/security/documentation gates remain mandatory and incomplete.
 The repeat-bind product correction remains accepted with its seven current-source
 PASS. Source changes invalidate old coverage for recovery_workflows.py, so union21
 removed that file's old-source arcs and incorporated only accepted current-source
