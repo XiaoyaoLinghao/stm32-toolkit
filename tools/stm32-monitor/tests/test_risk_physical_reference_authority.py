@@ -17,6 +17,7 @@ from stm32_monitor.replay import (
 from stm32_toolkit.evidence import EvidenceEnvelope
 from stm32_toolkit.evidence.gc import RootRecord, get_root, put_root
 from stm32_toolkit.evidence.store import EvidenceStore
+from stm32_toolkit.monitor_replay_contract import ReplayContractError
 from stm32_toolkit.paths import WorkspacePaths
 from stm32_toolkit.testing.publication import TestRunRepository as _TestRunRepository
 from test_physical_publication import (
@@ -33,6 +34,12 @@ _CORRUPTION_CASES = (
     "reference-group-revision",
     "reference-manifest-missing",
 )
+_EXPECTED_CAUSES = {
+    "reference-operation": "physical reference envelope is invalid",
+    "reference-metadata-role": "physical reference envelope metadata is invalid",
+    "reference-transcript-evidence-id": "physical transcript evidence ID differs from reference",
+    "reference-group-revision": "physical transcript and reference windows differ",
+}
 
 
 def _full_tree_state(root: Path) -> dict[str, bytes]:
@@ -327,6 +334,12 @@ def test_persisted_physical_reference_refuses_corruption_without_writes_then_res
         _fresh_reference(paths, evidence, monitor_run_id)
     assert error.value.code == EVIDENCE_INTEGRITY_FAILURE
     assert error.value.message == "physical Monitor Evidence is corrupt"
+    cause = error.value.__cause__
+    if corruption == "reference-manifest-missing":
+        assert isinstance(cause, FileNotFoundError)
+    else:
+        assert type(cause) is ReplayContractError
+        assert str(cause) == _EXPECTED_CAUSES[corruption]
     assert _full_tree_state(tmp_path) == corrupted_state
 
     if corruption in {
