@@ -2634,3 +2634,81 @@ plus a bounded60-second attributed cleanup reserve; all temporary files are
 under `r10/t/rc2rf`, evidence under `r10/e/rc2/rollback`. Review concrete argv,
 path identities and timeout/cleanup before release. No general test framework,
 hardware action, source test matrix, accepted-runtime mutation or remote action.
+
+### Monitor console adapter: lifecycle design decision after two review rounds
+
+Revision1 and revision2 have not converged on the same process-ownership and
+credential-evidence contract. The second independent review is
+`r10/e/rc2/monitor-console/independent-static-review-revision2.md`, SHA256
+`F28F8729D6328703A9D87946343237EE71F54293BA2AF4E91C7412DA694CFE19`.
+This is a TEST_INFRASTRUCTURE failure; no Monitor product defect is established.
+Stop branch-specific patches. The primary design decision replaces the
+adapter's process ownership as one unit, retaining the same Luna/max owner,
+fixed two public lifecycle starts, one Ctrl+C event, input identity and
+120-second budget. Both earlier rounds remain recorded against this contract.
+
+The existing subprocess helpers cannot supply this scenario's isolated native
+CTRL_C_EVENT and full descendant containment. The bounded run-local adapter
+therefore uses one native Windows Job and retained process handles. The
+controller stays outside the Job. Every scenario child (shipped cmd launcher,
+event helper, and public start/stop control) must enter that Job before its code
+runs: create suspended, assign, then resume. Use the already installed pywin32
+API or equivalent native handle calls, without new dependencies or product
+changes. Disallow breakaway. Failure to establish containment fails before
+resume; terminate only through its retained handle. Never fall back to a
+numeric-PID kill or snapshot-derived tree ownership. Observed PIDs are evidence,
+not mutation authority. Normal completion requires the owned Job to be empty;
+emergency Job termination is failure, followed by bounded emptiness verification.
+Close every process/thread/pipe/Job handle on all exits. Kill-on-close provides
+the final containment fallback, not a substitute for a verified cleanup result.
+
+One controller scope owns the deadline, all child handles and terminal evidence.
+Reserve/check time before each spawn and blocking action; retain the cleanup
+reserve. Do not start the public lock control until the first lifecycle and
+event helper are gone, its record is removed and listener is exactly refused.
+The second control uses only installed public MonitorRuntime.start/stop and
+must verify its own record presence/identity/removal. The persistent workspace
+lock file is allowed by the product's release contract: file existence alone
+does not mean the lock is held. A successful public reacquisition proves release.
+After any failure preserve record/lock residue as evidence, do not delete it or
+claim recovery, and do not start another service to conceal the failure.
+
+Use one bounded in-memory output authority for both stdout and stderr of both
+lifecycles. Hold at most256KiB per lifecycle, fail on overflow, and scan retained
+in-memory output after its exact token becomes known so pre-ready races cannot
+escape. Exempt only the one intentional ready/control token field required for
+private controller IPC; do not exempt other occurrences of its value. The
+second public control must supply its own token to the in-memory validator,
+never a report. No token, cookie, raw output or raw exception goes to disk or
+the conversation. An unknown token or incomplete output capture cannot be
+reported as a successful no-leak check. Emit only fixed-schema redacted facts.
+
+Preserve revision2 bytes/preflight. Replace the lifecycle unit in the same
+run-local adapter, with focused offline checks for pre-start failure, timeout,
+helper cleanup and pre-ready/stderr token handling. Do not build a reusable
+framework. No actual Monitor launch is released by this design; independent
+complete-script review and primary admission precede the one real run.
+
+### Recovery next-family preparation after acceptance-reader run2
+
+The current five-variant acceptance-reader run2 passed on
+`f7cf32b5a40daf2e1fa70ed8d57560e53daf89e1` in91.302seconds. Its observed13
+new arcs are pending independent admission, not yet canonical. The preceding
+generic-v1 re-execution yielded zero new arcs. Do not extend these into endless
+small cases. Use the retained U39 dominant-residual audit to evaluate one
+different complete family: physical-schema persisted-chain readers, with a
+public rev0/rev1 prefix that requires no hardware interaction or physical PASS.
+
+The same Recovery owner may prepare only, under
+`r10/e/risk-v2/finalization-current/physical-reader-preparation`. Keep the
+reviewed candidate worktree clean. Reuse existing public begin/checkpoint and
+show/resume entrypoints and existing fixture construction. Group chain linkage,
+ordering, context identity and restoration risks into at most eight meaningful
+variants with one prefix and at most two data clones. For each prove the concrete
+constructor-valid mutation, canonical envelope/root links, first failing guard,
+exact still-missing U39 arc and cost; distinguish an earlier-guard rejection
+from reaching the requested branch. The retained thirty-arc inventory is not
+a gain promise. No private loader patches, fabricated hardware success,
+firmware rebuild, new tests, suite execution or product changes in preparation.
+Return one finite proposal or a concrete reachability/cost blocker before any
+implementation. All current accepted behavior and the frozen scopes remain.
