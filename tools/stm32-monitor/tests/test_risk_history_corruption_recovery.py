@@ -8,7 +8,7 @@ from pathlib import Path
 
 from stm32_monitor.exports import ExportRequest, HistoryExporter
 from stm32_monitor.history import HistoryQuery, HistoryStore, flatten_history_page
-from test_history import _batch, _compact, _paths
+from test_history import _batch, _compact, _paths, _wide_batch
 
 
 def _history_state(database: Path) -> tuple[object, ...]:
@@ -119,14 +119,15 @@ def test_shortened_cursor_batch_refuses_and_resumes_after_restore(
     paths = _paths(tmp_path)
     store = HistoryStore(paths)
     database = paths.monitor_root / "monitor.sqlite3"
-    query = HistoryQuery("monitor-1", 0, 1_000, limit=1)
+    query = HistoryQuery("monitor-1", 0, 1_000, limit=2)
     try:
-        assert store.append_batch(_batch(paths, 1, captured_ns=100)).ok
+        assert store.append_batch(_wide_batch(paths, 1, captured_ns=100, count=2)).ok
         assert store.append_batch(_batch(paths, 2, captured_ns=200)).ok
         first = store.query_history(query)
         assert (
             first.ok and first.data is not None and first.data.next_cursor is not None
         )
+        assert first.data.value_count == 2
         cursor = first.data.next_cursor
 
         with sqlite3.connect(database) as connection:
@@ -134,20 +135,24 @@ def test_shortened_cursor_batch_refuses_and_resumes_after_restore(
                 "SELECT payload_json,payload_bytes,payload_sha256,value_count "
                 "FROM history_batches WHERE batch_id = 1"
             ).fetchone()
-            original_value = connection.execute(
-                "SELECT batch_id,ordinal,selector_kind,selector,value_json,"
-                "value_bytes,value_sha256 FROM history_values "
-                "WHERE batch_id = 1 ORDER BY ordinal"
-            ).fetchone()
-            assert original_batch is not None and original_value is not None
+            original_values = tuple(
+                connection.execute(
+                    "SELECT batch_id,ordinal,selector_kind,selector,value_json,"
+                    "value_bytes,value_sha256 FROM history_values "
+                    "WHERE batch_id = 1 ORDER BY ordinal"
+                )
+            )
+            assert original_batch is not None and len(original_values) == 2
             original_payload = json.loads(original_batch[0])
-            original_payload["values"] = []
+            original_payload["values"] = original_payload["values"][:1]
             shortened = _compact(original_payload)
             connection.execute("PRAGMA foreign_keys = OFF")
-            connection.execute("DELETE FROM history_values WHERE batch_id = 1")
+            connection.execute(
+                "DELETE FROM history_values WHERE batch_id = 1 AND ordinal = 1"
+            )
             connection.execute(
                 "UPDATE history_batches SET payload_json = ?, payload_bytes = ?, "
-                "payload_sha256 = ?, value_count = 0 WHERE batch_id = 1",
+                "payload_sha256 = ?, value_count = 1 WHERE batch_id = 1",
                 (shortened, len(shortened), sha256(shortened).hexdigest()),
             )
             connection.commit()
@@ -165,10 +170,10 @@ def test_shortened_cursor_batch_refuses_and_resumes_after_restore(
                 "payload_sha256 = ?, value_count = ? WHERE batch_id = 1",
                 original_batch,
             )
-            connection.execute(
+            connection.executemany(
                 "INSERT INTO history_values(batch_id,ordinal,selector_kind,selector,"
                 "value_json,value_bytes,value_sha256) VALUES (?,?,?,?,?,?,?)",
-                original_value,
+                original_values,
             )
             connection.commit()
         restored = store.query_history(replace(query, cursor=cursor))
