@@ -2096,3 +2096,28 @@ overlap or descendant peak memory from a launcher-only PID. Stop at the first
 unexpected result; classify before any correction. Independent full-diff review
 and distinct behavior/measurement acceptance precede serial aggregation. Eleven
 arcs are prospective, not earned; all frozen coverage thresholds remain unchanged.
+
+### Existing generation tests: measurement-only reuse
+
+After the admitted Monitor slot2 run stops, the existing engineering owner may
+run only test_generation.py::test_stale_model_is_rejected,
+::test_fixed_section_entry_non_dict_is_rejected, and
+::test_missing_managed_target_is_recreated, unchanged. Their exact existing
+oracles cover the public error code/details and managed-file reconstruction;
+do not claim additional snapshot/restoration assertions absent from those tests.
+The U36 targets are configure.py:158->159,596->597,1169->1170. Exclude the already
+covered target-directory case and Windows-unproven NotADirectoryError branches.
+No test or product edits are needed. Use an isolated existing worktree and fresh
+`r10/t/w12p/run1`, `e/risk-v2/wave12/probe/run1`; 180 seconds, memory>=15%,
+first unexpected result stops. Retain the native thread,multiprocessing/subprocess
+capture configuration for consistency, but report no actual child evidence if
+none is spawned. Only Toolkit source is measured by this run; frozen formal
+package/core scopes remain unchanged. Preserve native raw shards and exact delta.
+
+Diagnostic run1 is excluded from acceptance: its tail Monitor identity fixture
+failed, and it loaded installed Monitor replay/sampler bytes older than U36.
+Run2 binds both source roots explicitly and checks actual imported paths/hashes.
+The same owner corrects the complete test-tail identity mapping from public
+producer results; the six product files remain at55d91a23. One bounded run2 in
+the already assigned slot1 follows. Another related fixture failure returns to
+fixture design; it does not justify changing product behavior.
