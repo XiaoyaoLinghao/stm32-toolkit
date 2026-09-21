@@ -2252,3 +2252,42 @@ neutral copies of every old raw input (including cross-package raw files), retai
 originals unchanged, and recompute current denominators from the same frozen file
 inventory. Only independently admitted fresh measurements may replace those arcs.
 No line-number overlap or unchanged file name establishes semantic equivalence.
+
+### Current-source measurement admission after fixture-authority review
+
+Independent review61AF9EC7 of regression1 rejects its whole single-shard native
+input: private fact/reader/validator/model replacements and unrecorded synthetic
+fixture switches cannot be separated without per-test contexts. Preserve64PASS
+as bounded behavior evidence and preserve the rejected raw unchanged. Do not rerun
+those patched workflows for coverage. This is measurement qualification, not a
+new product defect. Product/source candidate remains60a39d44/55d91a23.
+
+Model-gap is separately accepted by the primary after exact JUnit/source/raw audit:
+140 public cases equal112 intended cases plus28 repeated cases. The execution
+owner's34-repeat count was incorrect. Deselect IDs did not match pytest root IDs;
+that scope deviation does not corrupt valid public source measurements or justify
+another run. The three modules are26 model,106 recovery-model and8 direct workflow
+cases, with no unexpected module/function and a preserved exact native shard union.
+The five repeated functions now have valid fresh coverage and must not run again.
+All previous source148 annotations mean142 predecessor bytes plus6 candidate bytes;
+legacy runtime headers must not be interpreted as148 predecessor-byte equality.
+
+The same Recovery owner may prepare and execute one isolated producer-reacquire
+run of only test_risk_recovery_public_producers.py::
+test_wave11_public_alias_reaches_record_and_final_checkpoint. The valid run3 two
+other journeys are retained. The alias behavior already passed in run2/regression1;
+this run is necessary solely because each prior alias shard is mixed with a failed
+or inadmissible test. Use e/risk-v2/diagnostic-reference/producer-reacquire and
+r10/t/diagref/producer-reacquire, slot1,600 seconds, current source and original
+shard-preservation guards. The public producer fixture is unchanged; no test or
+product edits, hardware, cleanup or remote action are admitted. Stop on first
+unexpected result. Collect-only must compare actual collected function identity,
+not merely the count. The rest of regression1 is not repeated.
+
+CLI/MCP remains a separate necessary measurement group. Before release of its
+entry, retain a concrete offline selector list, exclude the seven known native
+Windows checks only from this run (not from mandatory acceptance), and verify
+actual subprocess source/coverage propagation. Include legitimate acceptance
+adapters whose only prior native data was regression1, but exclude any private
+producer/authority substitution. No suite starts on a claimed measurement failure
+alone without this bounded public-entry/actual-evidence analysis.
