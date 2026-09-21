@@ -3,7 +3,7 @@
 ## Current U41 and frozen RC2 result
 
 Integrated test/code head before this report:
-`51120ae6799b9939ed33450c69042ad0ecc8f360`.
+`cb13aed97c3e43386b5e31bff95eb3f73e8c1c73`.
 Frozen RC2 source (unchanged by the subsequent test-only work):
 `c71b13f2562985d27b3865e367f6d33334f3a16a`.
 Product source remains `55d91a23a5a2f16fc47d324a9077dfcebf130be9`.
@@ -36,9 +36,17 @@ source-binding document already uses productSourceRevision. Original failure
 153EAF55DE6E054BED77B1333DE2901921A0A745B7BDAF37670AA8DC88C74489 is preserved.
 The same owner corrected the launcher field contract; source binding and test
 bytes are unchanged. Correction15BB14D042EEB01ED23D085206B6508482E63F0E03DDF646E78C61EB484CEAE8
-records the static checks. The complete candidate and actual collector boundary
-are under independent review. No pytest process, child shard or native increment
-exists for this attempt; the eleven target branches remain a static estimate.
+records the static checks. Complete independent review0AF6B79972A7BFC3769FCB265928B436AC00FC938014CCF76F63F6EAD13BF8AA
+returns REVISION_REQUIRED: the manual fixture does not match the Keil scenario,
+its declared Src/main.c does not match the test's App/main.c, the intent uses
+an aggregate hash instead of the per-file hash, and post-processing lies outside
+the stated overall600s budget. These are fixture/collector failures, not product
+defects. Plan cb13aed9 consolidates all four plus the stale coverage-policy
+comment into one correction with the same owner and permits one first actual
+offline suite after static validation. The approved backend seam creates no
+ProbeBackendWorker; actual thread/subprocess collection remains mandatory,
+without fabricating a worker shard. No pytest process, child shard or native
+increment exists for the rejected candidate; eleven remains a static estimate.
 
 Plan51120ae consolidates the actual shipped Monitor adapter around one native
 suspended package launch. Independent inspection identified duplicate data-root
