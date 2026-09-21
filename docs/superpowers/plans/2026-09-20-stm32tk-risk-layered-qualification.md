@@ -1873,3 +1873,31 @@ new valid arcs and remaining gates, elapsed run intervals/observed overlap, and
 the next fixed scope/exit condition. Task/test/document counts and waiting are
 not progress. All temporary artifacts remain under D:/codex-tmp; preserve needed
 failures and never retry or bypass previously rejected cleanup.
+
+### Wave11 Probe measurement correction
+
+Candidate32eb3b7c run1 passed its four public behavior cases in19.2165334 seconds,
+but retained only parent PID13796's native coverage shard. Treat behavior as
+preserved pending complete-diff review and measurement as incomplete. This is
+MEASUREMENT_REPORT, not a reason to change product behavior. The run-local ini
+enabled patch=subprocess without concurrency=multiprocessing, although the real
+worker uses spawn at worker.py:366. Installed coverage/control.py:573-576 only
+enables its multiprocessing bootstrap with that concurrency option. In addition,
+worker.py:624-630 calls abort immediately after the close reply; bootstrap-only
+save can lose the race. The same cause and native correction already appear in
+wave6/pyocd/run1/primary-measurement-diagnosis.json and run3/coverage.ini.
+
+The same Luna owner may modify only its new control-result test to record each
+real worker PID using public owned_pid and test-owned backend markers, and flush
+the active native collector in the external test backend close before its reply.
+Reuse the existing Wave6 pattern; do not change production shutdown, process
+state or coverage data. Enable the existing native multiprocessing setting in
+the run-local configuration. After commit/static/source148 checks, slot1 admits
+one180-second measurement reconciliation run of these same four nodes at
+r10/t/w11p/run2 and e/risk-v2/wave11/probe/run2, with fresh memory>=15%.
+No other behavior suite is repeated. Keep run1 unchanged, match each actual
+worker PID to a nonempty source-bearing raw shard, retain all shards through
+combine --keep, and inspect required worker.py executed arcs separately from
+the parent. A missing child shard, unexpected behavior, timeout or process
+failure stops without an automatic retry. Independent review covers the full
+accepted-base-to-final-head diff and both behavior and measurement decisions.
