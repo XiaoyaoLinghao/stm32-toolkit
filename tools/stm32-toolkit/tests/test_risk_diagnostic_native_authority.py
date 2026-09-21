@@ -69,11 +69,20 @@ def _tree_bytes(root: Path) -> dict[str, bytes]:
     }
 
 
-def _assert_tree_unchanged(root: Path, original: Mapping[str, bytes]) -> None:
+def _assert_diagnostics_unchanged(root: Path, original: Mapping[str, bytes]) -> None:
     current = _tree_bytes(root)
+    assert current == dict(original)
+
+
+def _assert_evidence_unchanged(
+    root: Path,
+    before_call: Mapping[str, bytes],
+    original: Mapping[str, bytes],
+) -> None:
+    current = _tree_bytes(root)
+    assert current == dict(before_call)
     for relative, raw in original.items():
         assert current.get(relative) == raw
-    assert set(original).issubset(current)
 
 
 def _root_path(evidence: EvidenceStore, root_type: str, root_id: str) -> Path:
@@ -357,7 +366,15 @@ def _publish_analysis_variant(
             pair.declaration.diff_evidence_id,
             baseline.continuation_id,
         )
-    payload = monitor_fixture._rehash_analysis_payload(payload)
+    if physical is None:
+        unsigned = {
+            key: value for key, value in payload.items() if key != "analysis_id"
+        }
+        payload["analysis_id"] = sha256(
+            canonical_replay_json_bytes(unsigned)
+        ).hexdigest()
+    else:
+        payload = monitor_fixture._rehash_analysis_payload(payload)
     analysis_variant_envelope = monitor_fixture._publish_analysis_variant(
         pair,
         tmp_path,
@@ -502,6 +519,7 @@ def test_public_native_diagnostic_evidence_refusals_restore_and_show(
             analysis_id=analysis.analysis_id,
             analysis_evidence_id=analysis.analysis_evidence_id,
         )
+        evidence_before_call = _tree_bytes(pair.evidence.root)
         result = diagnostic_add_verification_plan(
             pair.diagnostic,
             operation_id=f"wave10-{variant}",
@@ -519,8 +537,12 @@ def test_public_native_diagnostic_evidence_refusals_restore_and_show(
             if expected == _IDENTITY_FAILURE
             else _EVIDENCE_MESSAGE,
         )
-        _assert_tree_unchanged(pair.workspace.diagnostics_root, original_diagnostics)
-        _assert_tree_unchanged(pair.evidence.root, original_evidence)
+        _assert_diagnostics_unchanged(
+            pair.workspace.diagnostics_root, original_diagnostics
+        )
+        _assert_evidence_unchanged(
+            pair.evidence.root, evidence_before_call, original_evidence
+        )
 
     invalid_request_analysis = _publish_analysis_variant(
         pair,
@@ -535,6 +557,7 @@ def test_public_native_diagnostic_evidence_refusals_restore_and_show(
         analysis_id=invalid_request_analysis.analysis_id,
         analysis_evidence_id=invalid_request_analysis.analysis_evidence_id,
     )
+    evidence_before_call = _tree_bytes(pair.evidence.root)
     invalid_result = diagnostic_add_verification_plan(
         pair.diagnostic,
         operation_id="wave10-2361-request-digest",
@@ -548,8 +571,10 @@ def test_public_native_diagnostic_evidence_refusals_restore_and_show(
         code=_EVIDENCE_FAILURE,
         message=_EVIDENCE_MESSAGE,
     )
-    _assert_tree_unchanged(pair.workspace.diagnostics_root, original_diagnostics)
-    _assert_tree_unchanged(pair.evidence.root, original_evidence)
+    _assert_diagnostics_unchanged(pair.workspace.diagnostics_root, original_diagnostics)
+    _assert_evidence_unchanged(
+        pair.evidence.root, evidence_before_call, original_evidence
+    )
 
     valid_plan = monitor_fixture._continuation_plan(pair, baseline)
     _ok(
@@ -572,6 +597,7 @@ def test_public_native_diagnostic_evidence_refusals_restore_and_show(
     )
     after_start = _tree_bytes(pair.workspace.diagnostics_root)
     alternate_marker = _publish_marker_variant(pair, baseline, tmp_path)
+    evidence_before_call = _tree_bytes(pair.evidence.root)
     marker_result = diagnostic_attach_marker(
         pair.diagnostic,
         operation_id="wave10-alternate-marker",
@@ -585,8 +611,10 @@ def test_public_native_diagnostic_evidence_refusals_restore_and_show(
         code=_IDENTITY_FAILURE,
         message=_IDENTITY_MESSAGE,
     )
-    _assert_tree_unchanged(pair.workspace.diagnostics_root, after_start)
-    _assert_tree_unchanged(pair.evidence.root, original_evidence)
+    _assert_diagnostics_unchanged(pair.workspace.diagnostics_root, after_start)
+    _assert_evidence_unchanged(
+        pair.evidence.root, evidence_before_call, original_evidence
+    )
 
     _ok(
         diagnostic_attach_marker(
