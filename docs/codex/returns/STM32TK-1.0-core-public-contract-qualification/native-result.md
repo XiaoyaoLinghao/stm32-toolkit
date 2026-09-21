@@ -1,14 +1,16 @@
 # Current native coverage result
 
-Accepted aggregation baseline: `7e534897ce755766bb5dd0737ac952ef20bcc0b6` (union33).
-Integrated test code head before this report: `07dbf1f5b1825b1b7c1f67e318fb3bd57c0459ed`.
-Qualified product source: `8a11caef14df16c5e56c0be2363d4ef5530110eb`.
-Union34 native data verdict: **ACCEPTED_NATIVE_DATA**. Release 1.0: **NOT_ACCEPTED**.
+Accepted aggregation baseline: union34, canonical SHA256
+`3FD740FF19EBD3D3B612F8F2A5208DD71D6E78DFFCC245515D2634BA68682A1E`.
+Integrated code head before this report: `7b3dba9db07b2c6a593ef89adf3f2585c0b3a2f8`.
+Qualified product source: `78341213b8e5604d5f6a0436c4324d6d9f9e3ead` plus the
+148-file source registry identified below.
+Union35 native data verdict: **ACCEPTED_NATIVE_DATA**. Release 1.0: **NOT_ACCEPTED**.
 
 | Package | Covered / total branches | Overall and broad core v1 | More for 90% | More for v1 95% |
 | --- | ---: | ---: | ---: | ---: |
-| Toolkit | 11,932 / 13,580 | 87.8645% | 290 | 969 |
-| Monitor | 2,696 / 2,940 | 91.7007% | 0 | 97 |
+| Toolkit | 11,944 / 13,580 | 87.9529% | 278 | 957 |
+| Monitor | 2,703 / 2,944 | 91.8139% | 0 | 94 |
 | UI (retained separately) | 784 / 810 | 96.7901% | 0 | 0 |
 
 The repeat-bind product correction remains accepted with its seven current-source
@@ -185,9 +187,35 @@ Independent review:55FF7EDB1EA6C37F8190A9BACE1B93D8C44BA40D3640768A578151B198E96
 See r10/e/risk-v2/union34. No tests were rerun by aggregation.
 
 A separate public task-factory reproduction confirmed failed sampler start leaves
-RUNNING after task allocation fails. Its cleanup completed, but the RED input is
-excluded. The bounded sampler-start correction is specified separately and remains
-unaccepted; it must replace only changed-source coverage after review.
+RUNNING after task allocation fails. Its cleanup completed; the original RED input
+remains excluded. The correction is now independently ACCEPTED through final
+candidate419e908eb5173eec7fdf00614136d96623b19fa1. It retains STOPPING and resource
+ownership until rollback settles, closes rejected coroutines, waits through caller
+cancellation, and preserves a public stop/restart path if cleanup allocation fails.
+Run3's55 passing checks and run4's one new double-refusal check share the exact
+current Sampler bytes; the55 were not repeated for the appended scenario.
+
+Union35 incorporates that accepted source correction and the Diagnostic authority
+journey's explicit oracle reconciliation. Diagnostic run2 remains FAILED at its
+final JSON-versus-frozen-container comparison; an independently reviewed public
+idempotent completion/fresh-show reconciliation passed with no input mutations.
+Its12 measured authority/refusal arcs are accepted, while the uninstrumented
+terminal reconciliation contributes no inferred coverage. This is software
+protocol evidence, not physical acceptance or an all-pass original pytest run.
+
+The148-file registry changes only sampler.py;147 files remain byte-identical.
+Old Sampler arcs were purged only from neutral copies of every old-source raw,
+including Toolkit and Diagnostic inputs. Original raw files and child shards are
+preserved. Native Sampler coverage is150/168, replacing143/164 on different source;
+that is source requalification, not a comparable seven-arc gain. The actual new
+denominator increases Monitor by4. Frozen108/18 overall files,97/16 broad-core
+files,90/16 risk-core files and UI are retained. Every unaffected prior arc remains.
+Aggregation ran no tests and imported no product modules.
+
+U35 canonical SHA256:8141C5C62C0C3630BB1CBE8718AFEAEEEF1C98F6BF38F51656ABC58F884AD87E.
+Source registry SHA256:69D2A724BE181F715FF82E776FFA16F86F2410ADD16780B0C8F17AC9B01BB28A.
+Independent native review:0E70AA8A32C63284F5B92414886176A7672F3E2706EA5965A3D4F31BBE002B60.
+See r10/e/risk-v2/union35. No source denominator or file selection was reduced.
 
 Wave10 keeps the three original owners and independent reviewer. A frozen bounded
 implementation dispatch may allocate one of two execution slots, avoiding another
@@ -203,14 +231,16 @@ reported separately; the 108/18 overall files and old v1 statistics remain.
 
 | Risk-core v2 | Covered / total branches | Coverage | More for 95% |
 | --- | ---: | ---: | ---: |
-| Toolkit | 11,314 / 12,906 | 87.6647% | 947 |
-| Monitor | 2,696 / 2,940 | 91.7007% | 97 |
+| Toolkit | 11,326 / 12,906 | 87.7576% | 935 |
+| Monitor | 2,703 / 2,944 | 91.8139% | 94 |
 
 Native v1 scope remains 108/18 Python files overall and 97/16 core files. The excluded
 forwarders have zero branches, so overall/core ratios coincide. Per-package native
 summaries are authoritative; the previously recorded distinction between literal
 JSON branch pairs and native summaries remains applicable. No raw splicing,
-denominator change, cross-package pooling or failed-batch reuse is used.
+scope reduction, cross-package pooling or unreviewed failed-batch reuse is used.
+The changed-source Sampler denominator and reviewed Diagnostic reconciliation
+are explicitly qualified above.
 
 Historical union23 evidence: `D:/codex-tmp/v10b-0918/r10/e/n95/union23`.
 Generic run raw SHA256: `C565BD64F56D1F25FF7DF3F2073D476D8D289FA6C05C9B8A5C7C823F4DCE9780`.
