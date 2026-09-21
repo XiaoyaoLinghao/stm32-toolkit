@@ -2503,3 +2503,35 @@ actual package run, remaining deployment actions and shared ledger updates are
 serialized by primary. No source test matrix or physical acceptance rerun is
 triggered by this adapter. RC2 artifact identity stays frozen; all coverage,
 Windows-native, rollback/security and final documentation gates remain mandatory.
+
+### RC2 bounded refusal preparation
+
+The existing Luna/max engineering owner may prepare, without running, the
+already required RC2 package refusal scenarios under `r10/e/rc2/refusals`,
+with any later disposable inputs under `r10/t/rc2rf`. Reuse the existing
+runtime-state-refusals records, public setup Check/Repair and verify-bundle
+entries, security fixtures and their exact oracles. No product/source test
+change, generic runner, installation, sampling or hardware operation is part
+of this preparation. The clean RC2 distribution and both accepted installed
+roots are read-only references; the prior prepared0.9 fixture is now upgraded
+and must not be treated as an active0.9 installation.
+
+Freeze two public scenarios for this package identity. First, use an owned
+copy of valid installed state/runtime to test source-conflict and
+downgrade-refused before staging/promotion. Specify one concrete field mutation
+per case, the verifier's first failing guard and exact classification/exit2.
+Restore exact original bytes and require a read-only healthy Check as the
+control; a second successful Repair/install is unnecessary. Second, use an
+owned copy of the distribution for bounded trust-anchor/policy, manifest or
+wheel tampering, choosing only existing distinct trust-boundary scenarios.
+Public refusal must occur before runtime/state/project writes. Restore the
+exact candidate bytes and reuse the already validated verifier for the final
+control. Never alter the accepted package, original runtime or user project.
+
+The owner returns a finite case/input/argv manifest and source guard evidence,
+not a new test framework. Enumerate exact unchanged-source checks reusable from
+retained security evidence separately from actual changed-package checks.
+Primary reviews scope and entry reachability before serial execution; all
+success/failure snapshots and original evidence stay under the approved roots.
+This prepares remaining mandatory safety gates and does not imply either gate
+has passed or that a percentage gain is expected.
