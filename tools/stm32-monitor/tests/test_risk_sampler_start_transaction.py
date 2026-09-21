@@ -123,8 +123,9 @@ def test_public_start_rollback_survives_parent_cancellation(tmp_path: Path) -> N
         def task_factory(loop: asyncio.AbstractEventLoop, coro, **kwargs):
             nonlocal factory_calls, rejected_coro
             factory_calls += 1
-            name = kwargs.get("name")
-            if name == "stm32-monitor-history-writer":
+            # Python 3.12 invokes the loop factory without the create_task name;
+            # start() allocates history, producer, then rollback in this order.
+            if factory_calls == 1:
 
                 async def held_history():
                     history_started.set()
@@ -135,10 +136,10 @@ def test_public_start_rollback_survives_parent_cancellation(tmp_path: Path) -> N
                 if previous_factory is not None:
                     return previous_factory(loop, held_coro, **kwargs)
                 return asyncio.Task(held_coro, loop=loop, **kwargs)
-            if name == "stm32-monitor-sampler":
+            if factory_calls == 2:
                 rejected_coro = coro
                 raise injected
-            if name == "stm32-monitor-sampler-start-rollback":
+            if factory_calls == 3:
                 cleanup_created.set()
             if previous_factory is not None:
                 return previous_factory(loop, coro, **kwargs)
@@ -150,8 +151,8 @@ def test_public_start_rollback_survives_parent_cancellation(tmp_path: Path) -> N
         )
         try:
             loop.set_task_factory(task_factory)
-            await history_started.wait()
-            await cleanup_created.wait()
+            await asyncio.wait_for(history_started.wait(), timeout=5)
+            await asyncio.wait_for(cleanup_created.wait(), timeout=5)
             assert not start_task.done()
             assert sampler.state is SamplerState.STOPPING
             assert sampler.tasks
