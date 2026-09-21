@@ -2039,3 +2039,14 @@ label U36 raw data as current coverage for changed source files. RC1 build-A
 failed its source/wheel identity gate; no build-B or real installation is admitted
 for that failed candidate. Freeze a new candidate only after accepted fixes and
 build-input convergence, then perform the unchanged real-bundle release matrix.
+
+Independent design review `run3/design-review.md` (92708ADE) requested explicit
+field-domain/version compatibility and complete front-door/validator coverage.
+The specification now names the complete paths, both CLI/MCP record inputs, and
+the 1.0 backward-read/0.9 forward-read boundary. Keep the initial review unchanged;
+request one delta review of these decisions. Existing 0.9 UUID evidence must
+round-trip unchanged under 1.0. New non-RFC Diagnostic references may be refused
+by 0.9 without mutation; final real-package compatibility and deployment notes
+must not advertise them as usable after downgrade. This adds no downgrade route,
+identity conversion, or installer change. No additional implementation file is
+authorized beyond the six-file Diagnostic reference scope and affected tests.
