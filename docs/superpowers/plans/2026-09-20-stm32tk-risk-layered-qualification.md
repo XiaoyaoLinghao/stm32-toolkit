@@ -1239,8 +1239,10 @@ design, dispatch, integration, acceptance and shared-ledger writes. This uses
 the five-agent capacity without splitting trivial tasks or introducing a lead
 intermediary. Silence alone never transfers ownership or starts a duplicate run.
 
-The first concurrent execution batch is the independently reviewed Recovery
-three-case journey and Monitor five-case journey. Each reuses its own guarded
+The first concurrent execution batch selects two ready, independently reviewed
+suites among the Recovery three-case journey, Monitor five-case journey and a
+diagnosed Probe measurement correction. Readiness rather than model silence
+determines which two start. Each reuses its own guarded
 launcher, clean exact candidate checkout,300-second ceiling, TEMP/TMP/TMPDIR,
 pytest cache/basetemp, durable log/JUnit and raw coverage directory. No unreviewed
 test may start just to create overlap. Record actual child PIDs and UTC interval
@@ -1276,3 +1278,46 @@ review. No frozen denominator,90/95 gate, remote authority or denied-cleanup
 boundary changes. Report completed public behaviors and native new-branch deltas,
 remaining thresholds and specific blockers; after consecutive low-yield groups,
 reassess remaining whole-scenario reachability before assigning further tests.
+
+### PyOCD run2 measurement diagnosis and bounded native-input correction
+
+Run2 a05476a798b75e0b149e5a28cc658700c8cd9719 has4PASS22.520s, exit0,
+no timeout. Raw SHA7617359952680106634769B387B6B42AE34C8C079572F54141BC5FC754A20C84.
+Attach failure arcs1051->1057 and1065->1075 are captured; program-diagnostic
+516/519/524 and1543 are absent. This is partial native qualification, not a
+behavior failure. Preserve all old results and the original 9-shard hash manifest.
+
+The installed Coverage7.15.4 source establishes a distinct aggregation fault:
+sqldata.py897-913 writes a filename H hash only on its first save and sets
+_wrote_hash. Later save calls may append trace data without changing that hash.
+data.py99-129 uses a filename hash in preference to real file bytes when deciding
+which files to skip. The run2 manifest contains six different raw SHA256 values
+with the same filename H hash, and combine reports4combined/5skipped. Finally,
+cmdline.py886-887 automatically combines during JSON reporting and defaults to
+deleting input shards unless --keep-combined is supplied. Current raw directory
+has only the combined database; the9 manifest records are pre-combine evidence,
+not nine retained originals. Per-skipped-shard program arcs are no longer provable.
+
+Reconsider the measurement boundary, not worker scheduling or product code.
+Same Luna owner may prepare only a run-local launcher correction; test source
+a054 stays unchanged. Test collection writes into run3/raw-child-shards. Before
+any combination, hash/inventory and preserve every actual shard, copy each
+byte-identically to run3/merge-inputs with neutral .coverage.shard-NNNN names
+that do not match the special filename-hash pattern. Verify original/copy hashes.
+Use existing native coverage combine --keep with explicit --data-file pointing
+to run3/raw-coverage/.coverage and only those copies as input. Native JSON uses
+the combined data path and --keep-combined, with no raw originals in its automatic
+combine directory. Do not modify database contents, library globals, dependencies
+or original filenames. Native CoverageData read-only inspection must show the
+target program arcs in child shards and the final combined/JSON results, with
+original shard hashes unchanged after reporting. This reuses the existing
+launcher/native engine, not a new diagnostic framework.
+
+Static launcher review precedes one necessary run3 of only the existing
+three-case program-failure test (exclude the already qualified attach-only case),
+-x300s, own temp r10/t/w6p/run3 and durable e/risk-v2/wave6/pyocd/run3. It may
+overlap one other independently released suite under the two-suite ceiling.
+Require3PASS and exact child/combined native arcs516->517,519->520,524->525 and
+524->526 with reached error line1543. Retain run1/run2 behavior and actual native
+contributions separately; no automatic retry, product change, hardware, cleanup,
+deployment or remote action. Primary and dedicated reviewer decide qualification.
