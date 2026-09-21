@@ -1,28 +1,43 @@
 # Current native coverage result
 
-## Current U39 and frozen RC2 result
+## Current U40 and frozen RC2 result
 
 Integrated test/code head before this report:
-`3bfbebcbedf7c7854c80a492d04d30352d891d39`.
+`3de0e841fc9705373248ff390efc2b3d7a65f028`.
 Frozen RC2 source (unchanged by the subsequent test-only work):
 `c71b13f2562985d27b3865e367f6d33334f3a16a`.
 Product source remains `55d91a23a5a2f16fc47d324a9077dfcebf130be9`.
-U39 is **ACCEPTED_NATIVE_DATA**; release1.0 remains **NOT_ACCEPTED**.
+U40 is **ACCEPTED_NATIVE_DATA**; release1.0 remains **NOT_ACCEPTED**.
 Canonical SHA256:
-`BFBF57ADE10E76A6E7002E0BC696DBE0209F100E29F2604A972245D5452C8577`.
+`B63D949B04CF675BD14CF35FA70F5CF1C6499A6857561F56D7253381C7F37830`.
 Independent review:
-`7A32373E5B2445D1B1F4362C41AE16993BD1E039CA68C703133D91D9E6E39997`.
+`EB85778999683F8F51B6ACA3F52F11F8E2AFFEE7EA7E6B8E7EAC2A48DCDE84D4`.
 Primary admission:
-`F68BD32FE3536C5D23369D94CD9E82E73E749DA093A5DCEAB0EA5BD9A25935BB`.
+`B25542FACC6D84CED186E41E25A73348DDACFD2C0D3149C8E372BC6A436D1652`.
 
 | Package / frozen scope | Covered / total branches | Branch ratio | Remaining gate |
 | --- | ---: | ---: | ---: |
-| Toolkit overall / broad-core-v1 | 11,791 / 13,592 | 86.7496% | 442 for overall90%; broad-v1 retains1,122 for95% |
-| Toolkit risk-core-v2 | 11,173 / 12,918 | 86.4917% | 1,100 for95% |
+| Toolkit overall / broad-core-v1 | 11,814 / 13,592 | 86.9188% | 419 for overall90%; broad-v1 retains1,099 for95% |
+| Toolkit risk-core-v2 | 11,196 / 12,918 | 86.6698% | 1,077 for95% |
 | Monitor overall / broad-v1 / risk-v2 | 2,725 / 2,944 | 92.5611% | overall90% met;72 for95% |
 | UI, retained separately | 784 / 810 | 96.7901% | retained gate met |
 
-The incremental union adds267 Toolkit branches (262 recovery_workflows,1
+U40 adds23 Toolkit branches:12 recovery_workflows and11 workflows. The accepted
+acceptance-reader/run3 and physical-reader/run3 contribute13 and10 respectively,
+with no overlap and no Monitor increment. The complete raw union is87,200 arcs
+for Toolkit and61,062 for Monitor, with no loss. One native aggregation took
+8.5102s and reran no tests. Four original inputs, neutral copies, all148 source
+bindings and frozen scope denominators were independently checked. Native raw
+arcs are not interchangeable with the23 decision-branch increment. U39 and the
+reviewed pending candidate remain preserved alongside the promoted canonical.
+
+The original U40 candidate-stats report incorrectly labeled overall108/18 files
+as broad-v1. The existing U39 updater corrected the candidate to broad97/16,
+risk90/16 and overall108/18 without repeating aggregation. Toolkit38,047 broad
+statements and38,105 overall statements are valid distinct scopes. The original
+incorrect report remains evidence; neither denominator nor product changed.
+
+The predecessor U39 union added267 Toolkit branches (262 recovery_workflows,1
 recovery,4 build runner) and7 Monitor analysis_workflows branches. It uses the
 two U38 baseline databases and three separately accepted inputs: finalization
 run3, its distinct fresh-show scenario, and Monitor run2. Exact native raw
@@ -73,8 +88,8 @@ checks, exact restoration and successful public reuse. Candidate
 `9f003c718ba61350a258dfe4ab76f61b72eb927a` was integrated as test-only commits;
 the integrated Git test blob is identical. Run3 took97.1258s (pytest94.979s),
 exit0, without timeout or retry. Its13 new native branches against U39 are
-accepted but **not yet in the canonical aggregate**. Run2 and run3 have the
-same combined raw SHA and will contribute only once:
+accepted and **included once in U40**. Run2 and run3 have the
+same combined raw SHA and contribute only once:
 `639B6AC1755B4B5CDF488B5A61764247568C525948C5898D527173DAC217EAF8`.
 Run3 independent review SHA:
 `453342C5B567BDF8F4BBCFDD4D8B8D5E935AB58E2364254DC94CD422C9B64E3B`.
@@ -91,7 +106,7 @@ source files exactly matching RC2. Its eight persisted-wire refusal guards,
 per-call no-write snapshots, exact restoration and public reuse are proved.
 The original shard and combined native data have exactly the same126 files and
 14,569 arcs; ten recovery-workflow branches are new against U39 (eight targeted
-guards and two journey branches). These remain **pending formal aggregation**.
+guards and two journey branches). These are **included once in U40**.
 Independent review SHA:
 `4F73B7FF4BAD3D1837917E7A5C391FE9A3DD0E22D91E90AD0AC9E8F22F292CB1`.
 Run1 and run2 remain excluded fixture failures, not product defects. The run3
@@ -108,15 +123,28 @@ The deployment-document audit passed for the five documented files and packaged
 guide identity (e/rc2/deployment-docs-audit.json, SHA
 `9B5F4C226A365AC00FE16AC859790CBF2F4C66C4C612728BCB9FA0C1C9D4F074`).
 
+One real failed-publication Repair on that disposable installation is now
+independently accepted. A read-only state handle allowed earlier reads and
+caused the actual File.Replace sharing violation after promotion. Repair exited2
+in77.3501s; all5778 runtime files, state generation1 and project bytes were
+restored/preserved exactly. After releasing the handle, one Check exited0 in
+20.3210s with healthy runtime, matching state, bundle status ok and mutated=false.
+No staging/quarantine contents, temporary state residue or owned process remained.
+Review SHA `A71ADFEC7074783543C0A262B5325E37207790DDB3E9D2158571B4C1AFE559A0`.
+This proves the selected failed Replace recovery contract; it does not claim
+successful fallback WriteAllBytes under lock or recovery after a partial state
+write. Source-conflict, downgrade and package trust refusals remain unexecuted.
+
 Remaining: actual Monitor service auth/Ctrl+C130/resource release, applicable
-package refusal/failed-publication rollback/security and use checks,
-seven Windows-native checks and all outstanding coverage thresholds. The
-single-purpose Monitor console adapter's third revision failed independent
-review of process/output ownership. The primary returned that whole facility
-to design; the same owner is replacing manual pipe/process handling with a
-gated worker and standard subprocess transports. All three failed rounds remain
-recorded as test infrastructure, without a Monitor product change or actual
-service start. Existing helpers provide Ctrl+Break/Kill instead of real Ctrl+C. Builds,
+package refusal/security and use checks, seven Windows-native checks and all
+outstanding coverage thresholds. The Monitor console facility's fourth revision
+failed independent review: duplicate data-root creation, wrong workspace identity
+oracle, incomplete shared-deadline and cleanup ownership, and late output-failure
+handling. All four rounds remain test-infrastructure failures, with zero real
+Monitor service starts and no product change. The whole facility is held at design;
+no fifth local patch or real service run is released. A harmless tool-managed
+console probe proved SIGINT delivery but not the child's exit130 or complete
+owned cleanup, so it does not satisfy the package gate. Builds,
 deployment and formal ledger updates remain serialized. VS10-A/B and attempt7
 physical PASS are retained; no hardware, remote mutation or denied cleanup was
 performed. Details remain in the existing work ledger and release matrix.
