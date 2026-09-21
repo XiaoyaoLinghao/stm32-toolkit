@@ -2993,3 +2993,55 @@ coverage. Do not rename or reassign these candidates to generate another
 round of near-identical preparation; first close the current package and
 console-facility boundaries, then select the next complete public scenario
 against the current native residuals.
+
+The corrected refusal runner must enforce one180s absolute clock per case,
+including30s reserved for settlement/restoration. Each public command receives
+at most90s and never more than the remaining business budget. No unbounded
+communicate/wait may remain. Retain the created process identity until a
+confirmed terminal state, include bootstrap probes and treat query failures
+as unknown. If termination is unconfirmed, stop and preserve the owned copy
+without racing a byte restoration against a live reader. Do not add a generic
+process framework or claim unobserved descendants closed. Record the fixed
+setup guard's synchronous child-call scope separately from observed process
+facts. This corrects the next execution facility without invalidating the
+already reviewed run1 behavior.
+
+### Monitor facility: return to a fixed linear capability design
+
+The primary full review of capability-v1 rejects execution. Default-buffered
+read(4096) prevents the short READY line from being observed before SIGINT;
+the cleanup function can skip independent releases after native exceptions,
+and inherited TMPDIR is outside the approved root. The original four failed
+rounds and this rejected preparation remain one lifecycle problem, not fresh
+round counters. No incremental patch to that controller is released.
+
+The replacement design is a fixed linear experiment, not a reusable controller:
+reuse the immutable GO gate, mature Popen/pywin32 Job primitives and the fixed
+stdlib marker. Replace threaded pipe capture with two run-owned binary output
+files: this harmless marker emits no credentials and at most a short READY
+line. Read at most4KiB for readiness, fail on excess output, and verify the
+retained child handle and actual Python image identity. Bind both the venv
+launcher and its declared base Python image before launch; do not assume the
+venv redirector is the actual Windows image of the PID printed by the marker.
+The marker must itself stop after8s if SIGINT never arrives, returning a
+distinct failure code. It returns130 only after its actual handler executes.
+
+Keep one60s absolute clock with15s cleanup reserve. Assign/verify the native
+kill-on-close/no-breakaway Job before the sole trusted GO write. Explicitly
+route TEMP/TMP/TMPDIR and cache variables into the owned run root. Retain gate,
+marker and signal-helper process handles; send the one existing native Ctrl+C
+event only after readiness and identity checks. Require independently observed
+marker130, CMD130 and an empty Job. File output removes reader-thread/pipe-EOF
+ownership entirely; no OutputCapture class, secret scanner or second result
+protocol is needed for the harmless marker.
+
+Cleanup considers Job activity regardless of whether CMD has already exited.
+It must independently attempt every owned process wait, Job settlement, output
+file closure and handle release even after an earlier failure, using the same
+clock. Unconfirmed settlement is a terminal failed experiment, never a PASS.
+Do not answer CMD prompts, normalize exit codes, change Ctrl+C to another
+event, retry the experiment or start the product. Preserve the rejected
+preparation. The same implementation owner prepares this fixed flow for
+complete independent review and primary admission before one real capability
+attempt. A successful capability still does not admit the actual package
+service scenario; that unchanged release requirement remains separate.

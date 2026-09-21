@@ -3,7 +3,7 @@
 ## Current U40 and frozen RC2 result
 
 Integrated test/code head before this report:
-`3de0e841fc9705373248ff390efc2b3d7a65f028`.
+`fe0169e32d0c883d56ea15837671ae563d11942d`.
 Frozen RC2 source (unchanged by the subsequent test-only work):
 `c71b13f2562985d27b3865e367f6d33334f3a16a`.
 Product source remains `55d91a23a5a2f16fc47d324a9077dfcebf130be9`.
@@ -81,6 +81,47 @@ build/Repair: normalized ZIP metadata differs from raw Git archive metadata
 while all988 source member bytes match; Repair preserves the old runtime under
 its returned quarantine path rather than its former path. Original failure
 records and corrections are retained under e/rc2.
+
+The first real RC2 refusal batch ran for144.1520s, serially, and stopped at a
+test oracle error after two complete state cases and the utility refusal.
+Independent review
+`DC3418C4FEF1B6A3F66BFB78DDD4956E42FAF6D363144C87E4F4FEC6B4FB4FC6`
+accepts source-conflict and downgrade-refused for exact public classifier and
+Repair refusals, unchanged data/project snapshots, exact restoration and
+healthy matching generation1 Check with mutated=false. It also accepts the
+utility refusal and restored public control by offline reconciliation: all70
+manifest-derived basename/size entries and64 complete wheelEntries match.
+The original failure remains preserved; the public wire has `files`, not an
+`artifacts` array. No successful case was repeated. Recorded direct commands
+exited without timeout and their PIDs are absent; complete descendant
+ownership was not recorded and is not inferred from direct-PID absence.
+
+Policy, manifest-identity and Toolkit-wheel tamper remain unexecuted. The
+prepared run2 corrects both the output oracle and the false runtime detection
+caused by searching Python cache mirrors by basename. Primary review holds
+execution until its180s case budget, bounded process settlement and restoration
+after confirmed termination are implemented coherently. This is test-facility
+work; no product or RC2 artifact changed, and the combined refusal/security
+gate is still incomplete. The batch contributes zero native coverage branches.
+
+Monitor capability-v1 was statically rejected before execution. Primary full
+review SHA
+`682180DCD31DB1E44F88D19A568DFEDA6A61C9E0F1B057C86D08163F610F5A1B`
+identifies buffered short-READY deadlock, cleanup exceptions/descendant
+settlement gaps and inherited out-of-root TMPDIR. These continue the same
+previously rejected lifecycle contract; round counts are not reset by naming
+the script differently. No capability or actual Monitor service run occurred.
+The primary returns to a smaller fixed-flow design before implementation.
+
+The latest host Diagnostic audit stops at the public target-authority guard;
+a host failed-run publication cannot legitimately reach verification start,
+cancel and retry. Existing target cancellation/retry branches are covered.
+The external-holder candidate adds at most one native branch plus missing
+lines, and the Monitor node-limit candidate at most one branch. Neither is
+released in this batch; no private-state fabrication or denominator change is
+accepted. U40 and all preserved physical, build and installation evidence remain
+unchanged. Preparation and review overlapped; no new suites ran concurrently,
+so the two-suite ceiling remains.
 
 The later acceptance-reader family now has independent and primary acceptance
 for five persisted-authority refusals, per-call evidence/project/data no-write
