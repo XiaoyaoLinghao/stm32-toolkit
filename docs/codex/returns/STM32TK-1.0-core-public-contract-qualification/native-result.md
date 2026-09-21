@@ -2,7 +2,7 @@
 
 Accepted aggregation baseline: union36, canonical SHA256
 `566401658A8EE59BCE92FABD536B77264B2C925951E1495695B5E66B7608460B`.
-Integrated code head before this report: `07d7e70efd1b777c10d630d97b218f8bfaf822b1`.
+Integrated code head before this report: `22ee8efbb37b79f6fbe39601a3011e805ae7b67b`.
 U37 measured code head: `e0c8f3ffe0bc283901c7805d3865202e32505405`.
 U37-qualified product source: `78341213b8e5604d5f6a0436c4324d6d9f9e3ead`.
 Integrated Diagnostic source: `55d91a23a5a2f16fc47d324a9077dfcebf130be9`,
@@ -44,7 +44,7 @@ run2's full alias-to-final-record journey, run3's two remaining refusal/corrupti
 journeys (26.5095s), and64 affected regression nodes (187.8666s). Failed run1 and
 mixed run2 raw remain excluded. A report field incorrectly attributing the alias
 behavior to run3 is a report-only correction; the behavior source is run2 and
-regression1 reacquires its measurement. No repeated behavior acceptance is claimed.
+producer-reacquire later acquires its admissible measurement. No repeated behavior acceptance is claimed.
 
 Candidate60a39d44 is integrated at c7d3d73b after behavior and complete-diff
 acceptance; six-source native requalification remains pending. Merge checkout
@@ -91,9 +91,19 @@ CLI and MCP actual execution intervals did not overlap. Their worktrees, temp
 roots, logs and native outputs are independent. The two-suite ceiling remains;
 launcher CPU and unavailable peak memory do not justify expansion. Source-input
 and raw-input review/preparation proceeded independently; those are not suites.
-The exact real-input finalization journey is separately admitted at plan07d7e70e,
-using preserved VS10-B data with explicit environment guards and no synthetic
-fallback. No new finalization result or physical PASS is claimed yet.
+The real-input finalization journey stops at its first begin in24.9875s. Native
+execution records identify recovery_workflows.py:382 wrapping the firmware-version
+refusal in probe/flash.py:383-384. Historical build identity toolkitVersion0.9.0
+does not equal current runtime1.0.0. A direct call to the existing read-only
+load_fresh_firmware_facts reproduces FIRMWARE_IDENTITY_MISMATCH, field toolkitVersion,
+rule current (firmware-version-diagnosis.json SHA70E08823ADA477E5ED19C0D214334160303A3A657EA153A6217BB04C22961B77).
+The initial static input admission missed this runtime requirement. This is
+TEST_INPUT_COMPATIBILITY, not an established product defect. Original project,
+data and bind request remain unchanged; checkpoint/show and its child were not
+reached. Exclude this failed run from native aggregation. Do not rerun the same
+input, rewrite historical evidence, or relax the product version check. A bounded
+read-only audit of existing current-version public build fixtures is pending;
+it is not a new physical PASS or an authorization to implement a new fixture.
 
 Engineering candidate8dde6cab is independently accepted and integratedca700646.
 Its two complete public discovery/generation risk families add13 unique native
