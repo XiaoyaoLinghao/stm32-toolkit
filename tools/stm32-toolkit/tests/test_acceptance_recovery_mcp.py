@@ -5,12 +5,10 @@ from copy import deepcopy
 from pathlib import Path
 
 import pytest
+import stm32_toolkit.mcp_server as server_module
 from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import ValidationError as PydanticValidationError
-
-import stm32_toolkit.mcp_server as server_module
 from stm32_toolkit.mcp_server import create_server
-
 
 ATTEMPT_ID = "00000000-0000-4000-8000-000000000001"
 
@@ -65,36 +63,56 @@ def test_recovery_mcp_tools_translate_exact_values_once(monkeypatch, tmp_path: P
         lambda context, **kwargs: calls.append(("checkpoint", context, kwargs))
         or server_module.OperationResult.success("acceptance.attempt.checkpoint", {"attempt": {}}),
     )
-    values = {
+    begin_values = {
         "attemptId": ATTEMPT_ID,
         "scenarioId": "legacy-keil-migration",
         "scenarioVersion": "1",
     }
     (tmp_path / "project2").mkdir()
     server = create_server(tmp_path / "project2", tmp_path / "data2", "session-a")
-    _, result = asyncio.run(server.call_tool("stm32_acceptance_attempt_begin", values))
+    _, result = asyncio.run(
+        server.call_tool("stm32_acceptance_attempt_begin", begin_values)
+    )
     assert result["operation"] == "acceptance.attempt.begin"
-    values = {
+    compact_values = {
         "attemptId": ATTEMPT_ID,
         "expectedRevision": 2,
         "stage": "target-failure-replayed",
         "testRunId": "00000000-0000-4000-8000-000000000002",
-        "diagnosticSessionId": None,
+        "diagnosticSessionId": "b9e8a8ae0a2fa22d66d7d85946bf9eaf",
         "acceptanceRecordId": None,
     }
-    _, result = asyncio.run(server.call_tool("stm32_acceptance_attempt_checkpoint", values))
+    _, result = asyncio.run(
+        server.call_tool("stm32_acceptance_attempt_checkpoint", compact_values)
+    )
+    assert result["operation"] == "acceptance.attempt.checkpoint"
+    grouped_values = dict(compact_values)
+    grouped_values["diagnosticSessionId"] = (
+        "b9e8a8ae-0a2f-a22d-66d7-d85946bf9eaf"
+    )
+    _, result = asyncio.run(
+        server.call_tool("stm32_acceptance_attempt_checkpoint", grouped_values)
+    )
     assert result["operation"] == "acceptance.attempt.checkpoint"
     assert calls[0][2] == {
         "attempt_id": ATTEMPT_ID,
-        "scenario_id": "legacy-keil-migration",
-        "scenario_version": "1",
+        "scenario_id": begin_values["scenarioId"],
+        "scenario_version": begin_values["scenarioVersion"],
     }
     assert calls[1][2] == {
         "attempt_id": ATTEMPT_ID,
         "expected_revision": 2,
         "stage": "target-failure-replayed",
-        "test_run_id": values["testRunId"],
-        "diagnostic_session_id": None,
+        "test_run_id": compact_values["testRunId"],
+        "diagnostic_session_id": compact_values["diagnosticSessionId"],
+        "acceptance_record_id": None,
+    }
+    assert calls[2][2] == {
+        "attempt_id": ATTEMPT_ID,
+        "expected_revision": 2,
+        "stage": "target-failure-replayed",
+        "test_run_id": grouped_values["testRunId"],
+        "diagnostic_session_id": grouped_values["diagnosticSessionId"],
         "acceptance_record_id": None,
     }
 

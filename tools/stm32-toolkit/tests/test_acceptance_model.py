@@ -236,6 +236,16 @@ def test_record_model_requires_exact_closed_fields_and_canonical_digest():
         AcceptanceRecord.from_value({**payload, "producedAtUtc": datetime.now(timezone.utc)})
 
 
+def test_record_model_keeps_arbitrary_diagnostic_bits_in_grouped_wire_form():
+    grouped = "b9e8a8ae-0a2f-a22d-66d7-d85946bf9eaf"
+    payload = _record_payload(diagnosticSessionId=grouped)
+    assert AcceptanceRecord.from_value(payload).to_dict() == payload
+    with pytest.raises(AcceptanceValidationError):
+        AcceptanceRecord.from_value(
+            {**payload, "diagnosticSessionId": grouped.replace("-", "")}
+        )
+
+
 @pytest.mark.parametrize(
     ("field", "replacement"),
     [

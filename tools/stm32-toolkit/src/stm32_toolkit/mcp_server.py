@@ -148,6 +148,9 @@ _PROBE_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
 _RUN_ID_PATTERN = r"^[a-z0-9][a-z0-9._-]*$"
 _DIAGNOSTIC_OPERATION_PATTERN = r"^[a-z0-9][a-z0-9._-]{0,127}$"
 _DIAGNOSTIC_SESSION_PATTERN = r"^[0-9a-f]{32}$"
+_DIAGNOSTIC_REFERENCE_PATTERN = (
+    r"^(?:[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$"
+)
 _DIAGNOSTIC_PLAN_PATTERN = r"^[0-9a-f]{64}$"
 _ACCEPTANCE_UUID_PATTERN = r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
 _PORTABLE_PATH_MAX_BYTES = 4096
@@ -259,11 +262,7 @@ AcceptanceAttemptStage = Literal[
 AcceptanceRunId = RunId
 AcceptanceDiagnosticRef = Annotated[
     StrictStr,
-    Field(
-        pattern=rf"^(?:{_ACCEPTANCE_UUID_PATTERN[1:-1]}|{_DIAGNOSTIC_SESSION_PATTERN[1:-1]})$",
-        min_length=32,
-        max_length=36,
-    ),
+    Field(pattern=_DIAGNOSTIC_REFERENCE_PATTERN, min_length=32, max_length=36),
 ]
 
 
@@ -1916,7 +1915,7 @@ async def tool_acceptance_scenario_record_for_request(
     scenario_version: AcceptanceScenarioVersion,
     failed_before_test_run_id: AcceptanceUuid,
     fixed_after_test_run_id: AcceptanceUuid,
-    diagnostic_session_id: AcceptanceUuid,
+    diagnostic_session_id: AcceptanceDiagnosticRef,
 ) -> dict[str, object]:
     operation = "acceptance.scenario.record"
     failure = await _client_roots_failure(runtime, context, operation)
@@ -2720,7 +2719,7 @@ def create_server(
         scenarioVersion: AcceptanceScenarioVersion,
         failedBeforeTestRunId: AcceptanceUuid,
         fixedAfterTestRunId: AcceptanceUuid,
-        diagnosticSessionId: AcceptanceUuid,
+        diagnosticSessionId: AcceptanceDiagnosticRef,
     ) -> dict[str, object]:
         return await tool_acceptance_scenario_record_for_request(
             runtime,

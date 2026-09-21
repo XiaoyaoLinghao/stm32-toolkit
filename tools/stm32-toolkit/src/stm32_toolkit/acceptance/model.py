@@ -62,6 +62,10 @@ _RECORD_FIELDS = {
 }
 _HASH = re.compile(r"^[0-9a-f]{64}$")
 _UTC = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$")
+_DIAGNOSTIC_REFERENCE_COMPACT = re.compile(r"^[0-9a-f]{32}$")
+_DIAGNOSTIC_REFERENCE_GROUPED = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+)
 _SCENARIO_IDS = frozenset({"legacy-keil-migration", "new-cubemx-project"})
 _SCENARIO_VERSIONS = frozenset({"1"})
 _SCENARIO_DEFINITIONS = {
@@ -121,6 +125,28 @@ def _uuid(field: str, value: object) -> str:
     if str(parsed) != value:
         raise AcceptanceValidationError(f"{field} must be a canonical lowercase UUID")
     return value
+
+
+def canonical_diagnostic_reference(field: str, value: object) -> str:
+    """Normalize the replay Diagnostic reference without imposing UUID bits."""
+    value = _string(field, value)
+    if _DIAGNOSTIC_REFERENCE_COMPACT.fullmatch(value) is not None:
+        return "-".join((value[:8], value[8:12], value[12:16], value[16:20], value[20:]))
+    if _DIAGNOSTIC_REFERENCE_GROUPED.fullmatch(value) is not None:
+        return value
+    raise AcceptanceValidationError(
+        f"{field} must be lowercase 32-hex or grouped Diagnostic reference"
+    )
+
+
+def require_grouped_diagnostic_reference(field: str, value: object) -> str:
+    """Validate the persisted grouped spelling of a replay Diagnostic reference."""
+    normalized = canonical_diagnostic_reference(field, value)
+    if normalized != value:
+        raise AcceptanceValidationError(
+            f"{field} must use grouped Diagnostic reference spelling"
+        )
+    return normalized
 
 
 def _utc(field: str, value: object) -> str:
@@ -301,7 +327,10 @@ class AcceptanceRecord:
             raise AcceptanceValidationError("completed stages are not the exact ordered definition")
         _uuid("failedBeforeTestRunId", self.failed_before_test_run_id)
         _uuid("fixedAfterTestRunId", self.fixed_after_test_run_id)
-        _uuid("diagnosticSessionId", self.diagnostic_session_id)
+        diagnostic_session_id = canonical_diagnostic_reference(
+            "diagnosticSessionId", self.diagnostic_session_id
+        )
+        object.__setattr__(self, "diagnostic_session_id", diagnostic_session_id)
         for field, value in (
             ("fixVerificationId", self.fix_verification_id),
             ("failedBeforeEvidenceId", self.failed_before_evidence_id),
@@ -326,6 +355,9 @@ class AcceptanceRecord:
             raise AcceptanceValidationError("completedStages must be a JSON array")
         if any(type(item) is not str for item in stages):
             raise AcceptanceValidationError("completedStages must contain strings")
+        require_grouped_diagnostic_reference(
+            "diagnosticSessionId", value["diagnosticSessionId"]
+        )
         return cls(
             schema=cast(str, value["schema"]),
             record_id=cast(str, value["recordId"]),
@@ -388,4 +420,6 @@ __all__ = [
     "REQUIRED_STAGES",
     "SCENARIO_SCHEMA",
     "describe_scenario",
+    "canonical_diagnostic_reference",
+    "require_grouped_diagnostic_reference",
 ]
