@@ -66,6 +66,7 @@ class _PublicMailboxTransport:
         self.reader = reader
         self._transport = MailboxTransport(reader, TARGET_SUPPORT)
         self.events: list[str] = []
+        self.raw_identities: list[dict[str, str]] = []
         self.identities: list[dict[str, str]] = []
 
     def open(self, config, deadline):
@@ -79,6 +80,7 @@ class _PublicMailboxTransport:
     def identity(self):
         self.events.append("identity")
         value = dict(self._transport.identity())
+        self.raw_identities.append(value)
         self.identities.append(value)
         return value
 
@@ -88,6 +90,14 @@ class _PublicMailboxTransport:
     async def close_async(self):
         self.events.append("close")
         return await self._transport.close_async()
+
+
+class _SyncCloseProbe(FakeProbeClient):
+    """Keep the inherited public identity call, but close synchronously."""
+
+    def close(self) -> None:
+        self.calls.append(("close",))
+        self.closed = True
 
 
 class _ForbiddenFlash:
@@ -141,7 +151,7 @@ def _run_start_frame() -> bytes:
 
 def _fixture_for_variant(
     variant: str, host_identity: EvidenceIdentity
-) -> tuple[bytes, dict[str, object], str, str, str | None, str | None]:
+) -> tuple[bytes, dict[str, object], str, str, str | None]:
     inventory_frame, _ = _v2_target_stream()
     expected = _expected_firmware(host_identity)
     if variant == "first-run-start":
@@ -151,7 +161,6 @@ def _fixture_for_variant(
             "Target discovery is unavailable",
             "TEST_EVENT_SEQUENCE_INVALID",
             "Target discovery must begin with an inventory frame",
-            "TEST_EVENT_SEQUENCE_INVALID",
         )
     if variant == "truncated-inventory":
         return (
@@ -160,7 +169,6 @@ def _fixture_for_variant(
             "Target discovery is unavailable",
             "TEST_EVENT_SEQUENCE_INVALID",
             "Target discovery must return one complete v2 inventory frame",
-            "TEST_EVENT_SEQUENCE_INVALID",
         )
     if variant == "case-ids-mismatch":
         expected["case_ids"] = ["suite.other"]
@@ -170,7 +178,6 @@ def _fixture_for_variant(
             "Target discovery is unavailable",
             "TEST_INVENTORY_CHANGED",
             "Configured target inventory is unavailable",
-            "TEST_INVENTORY_CHANGED",
         )
     if variant == "inventory-digest-mismatch":
         expected["inventory_digest"] = "f" * 64
@@ -180,7 +187,6 @@ def _fixture_for_variant(
             "Target discovery is unavailable",
             "TEST_INVENTORY_CHANGED",
             "Configured target inventory is unavailable",
-            "TEST_INVENTORY_CHANGED",
         )
     if variant == "build-id-mismatch":
         expected["build_id"] = "d" * 64
@@ -189,7 +195,6 @@ def _fixture_for_variant(
             expected,
             "Configured target firmware is unavailable",
             "TEST_TRANSPORT_UNAVAILABLE",
-            None,
             None,
         )
     raise AssertionError(f"unknown discovery variant: {variant}")
@@ -209,7 +214,7 @@ def _make_runner(
 ]:
     reader = _ImmutableMailboxReader(payload)
     transport = _PublicMailboxTransport(reader)
-    probe = FakeProbeClient()
+    probe = _SyncCloseProbe()
     flash = _ForbiddenFlash()
     root = tmp_path / "target-discovery-root"
     root.mkdir()
@@ -321,14 +326,21 @@ def test_public_v2_discover_accepts_mapping_with_real_mailbox_and_sync_probe_clo
         }
         assert discovered["identity"] == transport.identities[0]
         assert set(discovered["identity"]) == {
+            "address",
+            "ring_size",
+            "ram_bounds",
             "probe_id",
             "target_id",
             "transport",
             "config_digest",
         }
+        assert transport.identities == transport.raw_identities
         assert discovered["identity"]["probe_id"] == PROBE_HASH
         assert discovered["identity"]["target_id"] == IDENTITY["target_id"]
         assert discovered["identity"]["transport"] == "mailbox"
+        assert discovered["identity"]["address"] == "0x20000000"
+        assert discovered["identity"]["ring_size"] == "4096"
+        assert discovered["identity"]["ram_bounds"] == "0x20000000+0x00010000"
         assert re.fullmatch(r"[0-9a-f]{64}", discovered["identity"]["config_digest"])
         assert transport.identities == [
             transport.identities[0],
@@ -363,7 +375,7 @@ def test_public_v2_discover_rejects_invalid_handshake_without_authority_or_evide
 ) -> None:
     async def scenario() -> None:
         host_identity = _target_evidence_identity()
-        payload, expected, public_message, cause_code, cause_message, _ = (
+        payload, expected, public_message, cause_code, cause_message = (
             _fixture_for_variant(variant, host_identity)
         )
         (
