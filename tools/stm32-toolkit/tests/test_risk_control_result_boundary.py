@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from functools import partial
 from pathlib import Path
 
 import pytest
+from coverage import Coverage
 from fakes.fake_probe import FakeProbeBackend
 from stm32_toolkit.probe.authorization import ControlAuthorizationStore
 from stm32_toolkit.probe.backend import ProbeAttachmentEvidence, ProbeDescriptor
@@ -34,6 +36,43 @@ def _events(path: Path) -> list[str]:
     if not path.exists():
         return []
     return path.read_text(encoding="utf-8").splitlines()
+
+
+def _flush_active_coverage() -> None:
+    collector = Coverage.current()
+    if collector is not None:
+        collector.save()
+
+
+def _record_worker_proxy(path: Path, worker: ProbeBackendWorker) -> int:
+    pid = worker.owned_pid
+    assert pid > 0
+    assert worker.is_alive is True
+    _record(str(path), f"worker-proxy-pid:{pid}")
+    return pid
+
+
+def _assert_worker_settled(path: Path, pid: int) -> None:
+    events = _events(path)
+    child_pids = [
+        int(event.split(":", 1)[1])
+        for event in events
+        if event.startswith("worker-child-pid:")
+    ]
+    proxy_pids = [
+        int(event.split(":", 1)[1])
+        for event in events
+        if event.startswith("worker-proxy-pid:")
+    ]
+    close_pids = [
+        int(event.split(":", 1)[1])
+        for event in events
+        if event.startswith("worker-close-pid:")
+    ]
+    assert child_pids == [pid]
+    assert proxy_pids == [pid]
+    assert close_pids == [pid]
+    assert events.count("close") == 1
 
 
 def _prepare(
@@ -68,6 +107,7 @@ class _SnapshotDriftBackend(FakeProbeBackend):
         )
         self.marker = marker
         self.identity_reads = 0
+        _record(self.marker, f"worker-child-pid:{os.getpid()}")
 
     def open_attach(
         self, probe_id: str, target: str, *, halt_on_connect: bool = False
@@ -93,8 +133,12 @@ class _SnapshotDriftBackend(FakeProbeBackend):
         super().resume()
 
     def close(self) -> None:
-        _record(self.marker, "close")
-        super().close()
+        try:
+            _record(self.marker, "close")
+            _record(self.marker, f"worker-close-pid:{os.getpid()}")
+            super().close()
+        finally:
+            _flush_active_coverage()
 
 
 def _snapshot_drift_factory(marker: str) -> _SnapshotDriftBackend:
@@ -112,6 +156,7 @@ class _StepResultBackend(FakeProbeBackend):
         self.marker = marker
         self.register_reads = 0
         self.stepped = False
+        _record(self.marker, f"worker-child-pid:{os.getpid()}")
 
     def open_attach(
         self, probe_id: str, target: str, *, halt_on_connect: bool = False
@@ -161,8 +206,12 @@ class _StepResultBackend(FakeProbeBackend):
         self.stepped = True
 
     def close(self) -> None:
-        _record(self.marker, "close")
-        super().close()
+        try:
+            _record(self.marker, "close")
+            _record(self.marker, f"worker-close-pid:{os.getpid()}")
+            super().close()
+        finally:
+            _flush_active_coverage()
 
 
 def _step_backend_factory(variant: str | None, marker: str) -> _StepResultBackend:
@@ -177,6 +226,7 @@ def test_control_authorization_snapshot_drift_consumes_digest_and_recovers(
         backend = ProbeBackendWorker(
             _test_backend_factory=partial(_snapshot_drift_factory, str(marker))
         )
+        worker_pid = _record_worker_proxy(marker, backend)
         store = ControlAuthorizationStore((tmp_path / "control").absolute())
         service = make_service(
             tmp_path,
@@ -227,7 +277,7 @@ def test_control_authorization_snapshot_drift_consumes_digest_and_recovers(
             await client.close()
             await service.stop()
         assert backend.is_alive is False
-        assert _events(marker).count("close") == 1
+        _assert_worker_settled(marker, worker_pid)
 
     asyncio.run(scenario())
 
@@ -243,6 +293,7 @@ def test_target_step_rejects_invalid_post_step_result_and_recovers(
                 _step_backend_factory, variant, str(failed_marker)
             )
         )
+        failed_pid = _record_worker_proxy(failed_marker, failed_backend)
         failed_store = ControlAuthorizationStore(
             (tmp_path / f"control-{variant}-failed").absolute()
         )
@@ -285,7 +336,7 @@ def test_target_step_rejects_invalid_post_step_result_and_recovers(
         assert failed_backend.is_alive is False
         failed_events = _events(failed_marker)
         assert failed_events.count("step") == 1
-        assert failed_events.count("close") == 1
+        _assert_worker_settled(failed_marker, failed_pid)
 
         recovered_marker = tmp_path / f"step-{variant}-recovered.txt"
         recovered_backend = ProbeBackendWorker(
@@ -293,6 +344,7 @@ def test_target_step_rejects_invalid_post_step_result_and_recovers(
                 _step_backend_factory, None, str(recovered_marker)
             )
         )
+        recovered_pid = _record_worker_proxy(recovered_marker, recovered_backend)
         recovered_store = ControlAuthorizationStore(
             (tmp_path / f"control-{variant}-recovered").absolute()
         )
@@ -337,6 +389,6 @@ def test_target_step_rejects_invalid_post_step_result_and_recovers(
         assert recovered_backend.is_alive is False
         recovered_events = _events(recovered_marker)
         assert recovered_events.count("step") == 1
-        assert recovered_events.count("close") == 1
+        _assert_worker_settled(recovered_marker, recovered_pid)
 
     asyncio.run(scenario())
