@@ -1496,3 +1496,46 @@ stops; no automatic retry. Two ready independent suites may overlap only with a
 fresh resource check above the existing15 percent criterion; there is no reason
 to rerun valid results to manufacture overlap. Native union/shared ledger and
 cleanup stay with primary; no denied-root retry or remote action.
+
+## Wave10 proportionate execution admission — 2026-09-21
+
+The user's current request authorizes improving offline parallelism while
+preserving the release goal, frozen scopes and existing owners. The primary
+still freezes each concrete public scenario, first-guard proof, accepted base,
+owned file, worktree, temp/evidence roots and exact suite before implementation.
+Read-only preflight proposals alone do not authorize implementation or execution.
+
+For subsequent test-only slices, that dispatch may also allocate one of two
+exclusive logical execution slots to its existing Luna/max owner. The owner
+may commit the bounded candidate, pass Ruff/format/AST/diff and source148 checks,
+pin its exact candidate in the existing guarded launcher, then run the specified
+suite once without a second primary execution-release round trip. The dispatch
+must explicitly grant this admission; absent that grant, keep the existing hold.
+The primary allocates each slot to one owner only and does not transfer it until
+the previous owner's process and descendant settlement are proved. No new slot
+manager, shared-lock framework, product tool or dispatch automation is introduced.
+
+Each admitted owner checks fresh host memory at launch (at least the existing
+15 percent free criterion), keeps its own absolute D:/codex-tmp paths and native
+coverage files, records the actual runtime/test identities, and retains original
+subprocess shards through combine and report. If the resource check fails or any
+unexpected test failure/timeout occurs, stop and return evidence; admission does
+not permit another attempt. Reuse the accepted launcher rather than rebuilding
+it. The normal wall ceiling remains300s unless the frozen scenario explicitly
+requires a different bounded budget.
+
+Independent complete-diff review may overlap this first implementation run, but
+acceptance and integration require both the independent review and primary
+runtime/measurement checks. A substantive test-oracle correction requires only
+its affected suite; a report correction requires no test rerun. Old valid
+behavior/raw evidence remains retained. At most two suites may execute; a third
+or fourth slot remains withheld until real overlap and resource/stability data
+justify it. Formal aggregation, shared-ledger writes, exclusive performance,
+final builds, deployment and any same-probe operations remain primary-serialized.
+
+Public exported constructors and from_value/new methods are valid caller
+boundaries: they may be tested with invalid inputs that their production checks
+reject. This does not authorize bypassing constructors, mutating private/frozen
+state, forging successful impossible models, or relabeling software as hardware.
+Prefer complete roundtrip/refusal caller scenarios and prove each first guard;
+do not infer reachability merely from a public root or a missing coverage arc.
