@@ -78,6 +78,7 @@ _MESSAGES = {
     "ACCEPTANCE_ATTEMPT_STAGE_INVALID": "Acceptance attempt stage is invalid.",
     "ACCEPTANCE_ATTEMPT_AUTHORIZATION_REQUIRED": "Acceptance attempt requires explicit source-change authorization.",
     "ACCEPTANCE_ATTEMPT_INPUT_INVALID": "Acceptance attempt input is invalid.",
+    "ACCEPTANCE_ATTEMPT_OUTPUT_INVALID": "Acceptance attempt public output is invalid.",
     "ACCEPTANCE_ATTEMPT_ACTION_DIGEST_MISMATCH": "Acceptance attempt action digest does not match.",
     "ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED": "Acceptance attempt evidence failed integrity validation.",
 }
@@ -1125,22 +1126,34 @@ def test_wave11_public_persisted_evidence_refusal_restores_wire(tmp_path: Path) 
     put_root(evidence, mutated_root)
     corrupted_snapshot = _file_snapshot(evidence.root)
 
-    for refused in (
-        show_acceptance_attempt(context, attempt_id=ATTEMPT_ID),
-        resume_acceptance_attempt(context, attempt_id=ATTEMPT_ID),
-        checkpoint_acceptance_attempt(
-            context,
-            attempt_id=ATTEMPT_ID,
-            expected_revision=1,
-            stage="firmware-built-before",
-        ),
-    ):
-        _assert_failure(
-            refused,
-            "ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED",
-            operation=refused.operation,
-        )
-        assert _file_snapshot(evidence.root) == corrupted_snapshot
+    refused_show = show_acceptance_attempt(context, attempt_id=ATTEMPT_ID)
+    _assert_failure(
+        refused_show,
+        "ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED",
+        operation="acceptance.attempt.show",
+    )
+    assert _file_snapshot(evidence.root) == corrupted_snapshot
+
+    refused_resume = resume_acceptance_attempt(context, attempt_id=ATTEMPT_ID)
+    _assert_failure(
+        refused_resume,
+        "ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED",
+        operation="acceptance.attempt.resume",
+    )
+    assert _file_snapshot(evidence.root) == corrupted_snapshot
+
+    refused_checkpoint = checkpoint_acceptance_attempt(
+        context,
+        attempt_id=ATTEMPT_ID,
+        expected_revision=1,
+        stage="firmware-built-before",
+    )
+    _assert_failure(
+        refused_checkpoint,
+        "ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED",
+        operation="acceptance.attempt.checkpoint",
+    )
+    assert _file_snapshot(evidence.root) == corrupted_snapshot
 
     root_path.unlink()
     root_path.write_bytes(old_root_bytes)
