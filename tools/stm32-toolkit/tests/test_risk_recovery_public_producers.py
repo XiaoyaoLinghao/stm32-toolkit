@@ -556,9 +556,28 @@ def _complete_public_tail(tmp_path: Path, prefix: _Prefix, attempt_id: str) -> t
         descriptor = json.loads(
             (MONITOR_FIXTURES / f"{role}.json").read_text(encoding="utf-8")
         )
-        descriptor["binding"]["workspaceId"] = workspace.workspace_id
+        monitor_identity = (
+            before.manifest.identity
+            if role == "failed-before"
+            else after.manifest.identity
+        )
+        assert monitor_identity.workspace_id == workspace.workspace_id
+        assert str(monitor_identity.project_id) == str(PROJECT_ID)
+        assert monitor_identity.session_id == SESSION_ID
+        monitor_fields = {
+            "workspaceId": monitor_identity.workspace_id,
+            "logicalProjectId": str(monitor_identity.project_id),
+            "sessionId": monitor_identity.session_id,
+            "targetDevice": monitor_identity.target_device,
+            "buildId": monitor_identity.build_id,
+            "elfSha256": monitor_identity.elf_sha256,
+            "inputSnapshotSha256": monitor_identity.input_snapshot_sha256,
+            "gitHead": monitor_identity.git_commit,
+            "gitDirty": monitor_identity.git_dirty,
+        }
+        descriptor["binding"].update(monitor_fields)
         for batch in descriptor["batches"]:
-            batch["binding"]["workspaceId"] = workspace.workspace_id
+            batch["binding"].update(monitor_fields)
         unsigned = {key: value for key, value in descriptor.items() if key != "fixture_sha256"}
         descriptor["fixture_sha256"] = hashlib.sha256(
             json.dumps(
