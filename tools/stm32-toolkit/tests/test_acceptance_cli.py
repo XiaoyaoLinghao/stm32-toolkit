@@ -14,7 +14,7 @@ def test_cli_record_dispatches_exact_values_once(monkeypatch, capsys):
     record_id = "00000000-0000-4000-8000-000000000001"
     failed_id = "00000000-0000-4000-8000-000000000002"
     fixed_id = "00000000-0000-4000-8000-000000000003"
-    session_id = "00000000-0000-4000-8000-000000000004"
+    session_id = "b9e8a8ae-0a2f-a22d-66d7-d85946bf9eaf"
     ok = OperationResult.success(
         "acceptance.scenario.record", {"record": {"recordId": record_id}}
     )

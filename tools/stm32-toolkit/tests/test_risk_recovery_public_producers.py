@@ -8,6 +8,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from uuid import UUID
 
+from stm32_monitor.analysis import AnalysisRequest
+from stm32_monitor.analysis_workflows import (
+    compare_monitor_runs,
+    export_analysis_bundle,
+)
+from stm32_monitor.replay import ingest_monitor_replay
 from stm32_toolkit import __version__
 from stm32_toolkit.acceptance.recovery import AcceptanceAttempt
 from stm32_toolkit.acceptance.recovery_workflows import (
@@ -18,17 +24,28 @@ from stm32_toolkit.acceptance.recovery_workflows import (
     resume_acceptance_attempt,
     show_acceptance_attempt,
 )
+from stm32_toolkit.acceptance.workflows import (
+    AcceptanceWorkflowContext,
+    record_acceptance_scenario,
+    show_acceptance_scenario,
+)
 from stm32_toolkit.build.identity import snapshot_project_inputs
 from stm32_toolkit.context import build_project_context
 from stm32_toolkit.diagnostic_workflows import (
     DiagnosticWorkflowContext,
     diagnostic_add_hypothesis,
     diagnostic_add_plan,
+    diagnostic_add_verification_plan,
     diagnostic_assess_hypothesis,
+    diagnostic_attach_marker,
     diagnostic_begin,
+    diagnostic_complete_verification,
+    diagnostic_declare_source_change,
     diagnostic_run_plan,
     diagnostic_start,
+    diagnostic_start_verification,
 )
+from stm32_toolkit.diagnostics import SourceChangeDeclaration, VerificationPlan
 from stm32_toolkit.evidence import (
     EvidenceEnvelope,
     EvidenceIdentity,
@@ -39,13 +56,16 @@ from stm32_toolkit.evidence.store import EvidenceStore
 from stm32_toolkit.paths import WorkspacePaths
 from stm32_toolkit.project_model import load_project_model
 from stm32_toolkit.testing.model import calculate_inventory_digest
+from stm32_toolkit.testing.publication import TestRunRepository
 from stm32_toolkit.testing.replay import (
     calculate_replay_id,
     canonical_replay_json_bytes,
+    load_target_replay_fixture,
 )
 from stm32_toolkit.testing.target import TargetFrameDecoder, encode_frame
 from stm32_toolkit.testing_workflows import TestingWorkflowContext, target_replay_run
 from test_flash import _publish_current_debug_build
+from test_vs08a_scenarios import MONITOR_FIXTURES, MONITOR_OPERATION_IDS
 
 PROJECT_ID = UUID("123e4567-e89b-42d3-a456-426614174000")
 ATTEMPT_ID = "00000000-0000-4000-8000-000000000001"
@@ -69,6 +89,8 @@ class _Prefix:
     data_root: Path
     context: AcceptanceRecoveryContext
     diagnostic_session_id: str
+    diagnostic_compact_id: str
+    hypothesis_id: str
 
 
 def _json_thaw(value: object) -> object:
@@ -387,13 +409,18 @@ def _prepare_prefix(tmp_path: Path, *, with_build: bool) -> _Prefix:
             rationale="the failed replay supports the hypothesis",
         )
         diagnostic_id = _wire_diagnostic_id(compact_id)
+        diagnostic_hypothesis_id = hypothesis_id
     else:
         diagnostic_id = ""
+        compact_id = ""
+        diagnostic_hypothesis_id = ""
     return _Prefix(
         project_root=project_root,
         data_root=data_root,
         context=AcceptanceRecoveryContext(project_root, data_root, SESSION_ID),
         diagnostic_session_id=diagnostic_id,
+        diagnostic_compact_id=compact_id,
+        hypothesis_id=diagnostic_hypothesis_id,
     )
 
 
@@ -411,6 +438,341 @@ def _revision_root(evidence: EvidenceStore, revision: int) -> tuple[Path, RootRe
         ):
             return path, get_root(evidence, "acceptance-attempt", root_id)
     raise AssertionError(f"missing acceptance root revision {revision}")
+
+
+def _public_source_change(
+    tmp_path: Path,
+    evidence: EvidenceStore,
+    before: object,
+    after_identity: EvidenceIdentity,
+    hypothesis_id: str,
+) -> SourceChangeDeclaration:
+    diff_path = tmp_path / "source-change.diff"
+    diff_path.write_bytes(
+        b"--- a/App/main.c\n+++ b/App/main.c\n@@ -1 +1 @@\n-old\n+new\n"
+    )
+    diff_artifact = evidence.ingest_file(
+        diff_path, kind="source-diff", media_type="text/x-diff"
+    )
+    before_identity = before.manifest.identity
+    diff_envelope = EvidenceEnvelope(
+        identity=before_identity,
+        operation="diagnostic-source-change",
+        produced_at_utc="2026-08-24T00:00:00.000000Z",
+        parents=(),
+        artifacts=(diff_artifact,),
+        metadata={"kind": "source-change-diff"},
+    )
+    evidence.put_envelope(diff_envelope)
+    return SourceChangeDeclaration.new(
+        before_source_sha256=before_identity.input_snapshot_sha256,
+        after_source_sha256=after_identity.input_snapshot_sha256,
+        before_build_id=before_identity.build_id,
+        before_elf_sha256=before_identity.elf_sha256,
+        after_build_id=after_identity.build_id,
+        after_elf_sha256=after_identity.elf_sha256,
+        changed_paths=("App/main.c",),
+        diff_evidence_id=str(diff_envelope.evidence_id),
+        diff_artifact=diff_artifact,
+        claimed_hypothesis_ids=(hypothesis_id,),
+        validation_plan_id="b" * 64,
+    )
+
+
+def _complete_public_tail(tmp_path: Path, prefix: _Prefix, attempt_id: str) -> tuple[Mapping[str, object], Mapping[str, object]]:
+    project_root = prefix.project_root
+    data_root = prefix.data_root
+    context = prefix.context
+    workspace = WorkspacePaths.from_roots(
+        data_root, project_root, PROJECT_ID, SESSION_ID
+    )
+    evidence = EvidenceStore(workspace.workspace_root / "evidence")
+    before = TestRunRepository(evidence).load(FAILED_RUN_ID)
+
+    source_path = project_root / "App" / "main.c"
+    source_path.write_text("int main(void) { return 1; }\r\n", encoding="utf-8")
+    subprocess.run(
+        ("git", "add", "App/main.c"),
+        cwd=project_root,
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    subprocess.run(
+        ("git", "commit", "-q", "-m", "wave11 source change"),
+        cwd=project_root,
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    after_identity_document = _publish_current_debug_build(project_root, text_size=320)
+    build_context = _data(build_project_context(project_root, data_root, SESSION_ID))
+    build = build_context["build"]
+    assert isinstance(build, Mapping)
+    after_identity = EvidenceIdentity(
+        workspace_id=workspace.workspace_id,
+        project_id=str(PROJECT_ID),
+        session_id=SESSION_ID,
+        build_id=str(after_identity_document["buildId"]),
+        elf_sha256=str(after_identity_document["elfSha256"]),
+        target_device=str(build_context["project"]["target"]),
+        input_snapshot_sha256=snapshot_project_inputs(load_project_model(project_root)).sha256,
+        git_commit=str(after_identity_document["gitHead"]),
+        git_dirty=False,
+    )
+    assert build["buildId"] == after_identity.build_id
+    assert build["elfSha256"] == after_identity.elf_sha256
+    assert build["elfFresh"] is True
+
+    fixed_run_id = "00000000-0000-4000-8000-000000000003"
+    fixed_descriptor, fixed_stream = _replay_inputs(
+        tmp_path, "fixed-after", fixed_run_id, after_identity
+    )
+    fixed_fixture = load_target_replay_fixture(fixed_descriptor, fixed_stream)
+    declaration = _public_source_change(
+        tmp_path, evidence, before, fixed_fixture.descriptor.identity, prefix.hypothesis_id
+    )
+    diagnostic = DiagnosticWorkflowContext(project_root, data_root, SESSION_ID)
+    compact_id = prefix.diagnostic_compact_id
+    declared = diagnostic_declare_source_change(
+        diagnostic,
+        operation_id="wave11-source-change-declare",
+        diagnostic_session_id=compact_id,
+        expected_revision=6,
+        source_change_declaration=declaration,
+    )
+    assert declared.ok is True, declared.to_dict()
+    fixed = target_replay_run(
+        TestingWorkflowContext(project_root, data_root, SESSION_ID),
+        fixed_run_id,
+        fixed_descriptor,
+        fixed_stream,
+    )
+    assert fixed.ok is True, fixed.to_dict()
+    after = TestRunRepository(evidence).load(fixed_run_id)
+
+    monitor_paths: dict[str, Path] = {}
+    for role in ("failed-before", "fixed-after"):
+        descriptor = json.loads(
+            (MONITOR_FIXTURES / f"{role}.json").read_text(encoding="utf-8")
+        )
+        descriptor["binding"]["workspaceId"] = workspace.workspace_id
+        for batch in descriptor["batches"]:
+            batch["binding"]["workspaceId"] = workspace.workspace_id
+        unsigned = {key: value for key, value in descriptor.items() if key != "fixture_sha256"}
+        descriptor["fixture_sha256"] = hashlib.sha256(
+            json.dumps(
+                unsigned,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            ).encode("utf-8")
+        ).hexdigest()
+        monitor_path = tmp_path / f"monitor-{role}.json"
+        monitor_path.write_text(
+            json.dumps(descriptor, sort_keys=True, separators=(",", ":")),
+            encoding="utf-8",
+        )
+        monitor_paths[role] = monitor_path
+    monitor_before = ingest_monitor_replay(
+        workspace, evidence, MONITOR_OPERATION_IDS["failed-before"], monitor_paths["failed-before"]
+    )
+    monitor_after = ingest_monitor_replay(
+        workspace, evidence, MONITOR_OPERATION_IDS["fixed-after"], monitor_paths["fixed-after"]
+    )
+    analysis_request = AnalysisRequest(
+        schema="stm32-monitor-analysis-request/1",
+        before_run=monitor_before,
+        after_run=monitor_after,
+        selector_kind="variable",
+        selector="counter",
+        alignment="run-relative",
+        minimum_valid_pairs=2,
+    )
+    publication = compare_monitor_runs(
+        workspace,
+        evidence,
+        analysis_request,
+        compact_id,
+        prefix.hypothesis_id,
+        "supports",
+        "the fixed replay changed the observed counter",
+        declaration,
+    )
+    export_analysis_bundle(
+        workspace,
+        evidence,
+        analysis_request,
+        publication,
+        FAILED_RUN_ID,
+        fixed_run_id,
+        declaration,
+    )
+    verification_plan = VerificationPlan.new(
+        verification_plan_id="b" * 64,
+        diagnostic_session_id=compact_id,
+        failed_before_run_id=FAILED_RUN_ID,
+        failed_before_evidence_id=str(before.envelope.evidence_id),
+        source_change_declaration_id=declaration.declaration_id,
+        fixed_after_run_id=fixed_run_id,
+        fixed_after_evidence_id=str(after.envelope.evidence_id),
+        required_analysis_ids=(publication.analysis_result.analysis_id,),
+        required_analysis_evidence_ids=(publication.analysis_evidence_ref.evidence_id,),
+        required_monitor_quality="VALID",
+        expected_changed=True,
+    )
+    assert diagnostic_add_verification_plan(
+        diagnostic,
+        operation_id="wave11-verification-plan-add",
+        diagnostic_session_id=compact_id,
+        expected_revision=7,
+        verification_plan=verification_plan,
+    ).ok
+    assert diagnostic_start_verification(
+        diagnostic,
+        operation_id="wave11-verification-start",
+        diagnostic_session_id=compact_id,
+        expected_revision=8,
+        verification_plan_id=verification_plan.verification_plan_id,
+    ).ok
+    marker = diagnostic_attach_marker(
+        diagnostic,
+        operation_id="wave11-marker-attach",
+        diagnostic_session_id=compact_id,
+        expected_revision=9,
+        diagnostic_marker_ref=publication.diagnostic_marker_ref,
+    )
+    assert marker.ok is True, marker.to_dict()
+    completed = diagnostic_complete_verification(
+        diagnostic,
+        operation_id="wave11-verification-complete",
+        diagnostic_session_id=compact_id,
+        expected_revision=10,
+        executed_operation_ids=[
+            FAILED_RUN_ID,
+            fixed_run_id,
+            "monitor.analysis.compare",
+            "monitor.analysis.bundle",
+        ],
+        cancelled=False,
+    )
+    assert completed.ok is True, completed.to_dict()
+
+    after_build = checkpoint_acceptance_attempt(
+        context, attempt_id=attempt_id, expected_revision=5, stage="firmware-built-after"
+    )
+    assert after_build.ok is True, after_build.to_dict()
+    after_build_retry = checkpoint_acceptance_attempt(
+        context, attempt_id=attempt_id, expected_revision=5, stage="firmware-built-after"
+    )
+    assert _wire(after_build_retry) == _wire(after_build)
+    record = record_acceptance_scenario(
+        AcceptanceWorkflowContext(project_root, data_root, SESSION_ID),
+        record_id=attempt_id,
+        scenario_id="legacy-keil-migration",
+        scenario_version="1",
+        failed_before_test_run_id=FAILED_RUN_ID,
+        fixed_after_test_run_id=fixed_run_id,
+        diagnostic_session_id=prefix.diagnostic_compact_id,
+    )
+    assert record.ok is True, record.to_dict()
+    record_data = _data(record)["record"]
+    assert isinstance(record_data, Mapping)
+    assert record_data["diagnosticSessionId"] == prefix.diagnostic_session_id
+    record_retry = record_acceptance_scenario(
+        AcceptanceWorkflowContext(project_root, data_root, SESSION_ID),
+        record_id=attempt_id,
+        scenario_id="legacy-keil-migration",
+        scenario_version="1",
+        failed_before_test_run_id=FAILED_RUN_ID,
+        fixed_after_test_run_id=fixed_run_id,
+        diagnostic_session_id=prefix.diagnostic_session_id,
+    )
+    assert _wire(record_retry) == _wire(record)
+    final = checkpoint_acceptance_attempt(
+        context,
+        attempt_id=attempt_id,
+        expected_revision=6,
+        stage="target-fix-verified",
+        acceptance_record_id=attempt_id,
+    )
+    assert final.ok is True, final.to_dict()
+    assert _data(final)["attempt"]["revision"] == 7
+    return record_data, _data(final)["attempt"]
+
+
+def test_wave11_public_alias_reaches_record_and_final_checkpoint(tmp_path: Path) -> None:
+    prefix = _prepare_prefix(tmp_path, with_build=True)
+    context = prefix.context
+    started = begin_acceptance_attempt(
+        context,
+        attempt_id=ATTEMPT_ID,
+        scenario_id="legacy-keil-migration",
+        scenario_version="1",
+    )
+    assert _data(started)["attempt"]["revision"] == 0
+    for revision, stage, kwargs in (
+        (0, "project-materialized", {}),
+        (1, "firmware-built-before", {}),
+        (2, "target-failure-replayed", {"test_run_id": FAILED_RUN_ID}),
+    ):
+        result = checkpoint_acceptance_attempt(
+            context,
+            attempt_id=ATTEMPT_ID,
+            expected_revision=revision,
+            stage=stage,
+            **kwargs,
+        )
+        assert result.ok is True, result.to_dict()
+    compact_id = prefix.diagnostic_compact_id
+    diagnosed = checkpoint_acceptance_attempt(
+        context,
+        attempt_id=ATTEMPT_ID,
+        expected_revision=3,
+        stage="diagnosis-completed",
+        diagnostic_session_id=compact_id,
+    )
+    assert diagnosed.ok is True, diagnosed.to_dict()
+    diagnosed_retry = checkpoint_acceptance_attempt(
+        context,
+        attempt_id=ATTEMPT_ID,
+        expected_revision=3,
+        stage="diagnosis-completed",
+        diagnostic_session_id=prefix.diagnostic_session_id,
+    )
+    assert _wire(diagnosed_retry) == _wire(diagnosed)
+    action_digest = _data(resume_acceptance_attempt(context, attempt_id=ATTEMPT_ID))["actionDigest"]
+    assert isinstance(action_digest, str)
+    authorized = authorize_acceptance_source_change(
+        context,
+        attempt_id=ATTEMPT_ID,
+        expected_revision=4,
+        action_digest=action_digest,
+        authorized=True,
+    )
+    assert authorized.ok is True, authorized.to_dict()
+    authorized_retry = authorize_acceptance_source_change(
+        context,
+        attempt_id=ATTEMPT_ID,
+        expected_revision=4,
+        action_digest=action_digest,
+        authorized=True,
+    )
+    assert _wire(authorized_retry) == _wire(authorized)
+    record, final = _complete_public_tail(tmp_path, prefix, ATTEMPT_ID)
+    assert final["status"] == "COMPLETED"
+    shown_record = show_acceptance_scenario(
+        AcceptanceWorkflowContext(prefix.project_root, prefix.data_root, SESSION_ID),
+        record_id=ATTEMPT_ID,
+    )
+    assert shown_record.ok is True, shown_record.to_dict()
+    assert _data(shown_record)["record"] == record
+    shown_attempt = show_acceptance_attempt(context, attempt_id=ATTEMPT_ID)
+    resumed_attempt = resume_acceptance_attempt(context, attempt_id=ATTEMPT_ID)
+    assert shown_attempt.ok is True and resumed_attempt.ok is True
+    assert _data(shown_attempt)["attempt"] == final
+    assert _data(resumed_attempt)["attempt"] == final
 
 
 def test_wave11_public_v1_recovery_retries_and_refusals(tmp_path: Path) -> None:
@@ -514,14 +876,48 @@ def test_wave11_public_v1_recovery_retries_and_refusals(tmp_path: Path) -> None:
     )
     assert _wire(replayed_retry) == _wire(replayed)
 
+    before = _persistence_snapshot(prefix.project_root, prefix.data_root)
+    malformed_diagnostic = checkpoint_acceptance_attempt(
+        context,
+        attempt_id=ATTEMPT_ID,
+        expected_revision=3,
+        stage="diagnosis-completed",
+        diagnostic_session_id="G" * 32,
+    )
+    _assert_failure(
+        malformed_diagnostic,
+        "ACCEPTANCE_ATTEMPT_INPUT_INVALID",
+        operation="acceptance.attempt.checkpoint",
+    )
+    assert _persistence_snapshot(prefix.project_root, prefix.data_root) == before
+
+    before = _persistence_snapshot(prefix.project_root, prefix.data_root)
+    wrong_diagnostic = checkpoint_acceptance_attempt(
+        context,
+        attempt_id=ATTEMPT_ID,
+        expected_revision=3,
+        stage="diagnosis-completed",
+        diagnostic_session_id="0" * 32,
+    )
+    _assert_failure(
+        wrong_diagnostic,
+        "ACCEPTANCE_ATTEMPT_OUTPUT_INVALID",
+        operation="acceptance.attempt.checkpoint",
+    )
+    assert _persistence_snapshot(prefix.project_root, prefix.data_root) == before
+
+    compact_diagnostic_id = prefix.diagnostic_compact_id
     diagnosed = checkpoint_acceptance_attempt(
         context,
         attempt_id=ATTEMPT_ID,
         expected_revision=3,
         stage="diagnosis-completed",
-        diagnostic_session_id=prefix.diagnostic_session_id,
+        diagnostic_session_id=compact_diagnostic_id,
     )
     assert _data(diagnosed)["attempt"]["revision"] == 4
+    diagnosed_attempt = _data(diagnosed)["attempt"]
+    assert isinstance(diagnosed_attempt, Mapping)
+    assert diagnosed_attempt["stageOutputs"]["diagnosticSessionId"] == prefix.diagnostic_session_id
     diagnosed_retry = checkpoint_acceptance_attempt(
         context,
         attempt_id=ATTEMPT_ID,

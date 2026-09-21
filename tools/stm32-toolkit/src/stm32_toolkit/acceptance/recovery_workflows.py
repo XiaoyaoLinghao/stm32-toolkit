@@ -107,6 +107,7 @@ from .finalization import (
     PhysicalFinalizationProof,
     finalization_policy_document,
 )
+from .model import canonical_diagnostic_reference
 from .workflows import AcceptanceWorkflowContext, show_acceptance_scenario
 
 
@@ -229,6 +230,13 @@ def _canonical_uuid(field: str, value: object) -> str:
     except (TypeError, ValueError) as error:
         raise AcceptanceRecoveryValidationError(f"{field} must be a canonical lowercase UUID") from error
     return value
+
+
+def _canonical_diagnostic_reference(field: str, value: object) -> str:
+    try:
+        return canonical_diagnostic_reference(field, value)
+    except AcceptanceValidationError as error:
+        raise AcceptanceRecoveryValidationError(str(error)) from error
 
 
 def _canonical_hash(field: str, value: object) -> str:
@@ -769,7 +777,11 @@ def _stage_reference_shape(
     acceptance_record_id: object,
 ) -> tuple[str | None, str | None, str | None]:
     test_value = _canonical_uuid("testRunId", test_run_id) if test_run_id is not None else None
-    diagnostic_value = _canonical_uuid("diagnosticSessionId", diagnostic_session_id) if diagnostic_session_id is not None else None
+    diagnostic_value = (
+        _canonical_diagnostic_reference("diagnosticSessionId", diagnostic_session_id)
+        if diagnostic_session_id is not None
+        else None
+    )
     acceptance_value = _canonical_uuid("acceptanceRecordId", acceptance_record_id) if acceptance_record_id is not None else None
     if stage == "target-failure-replayed":
         if test_value is None or diagnostic_value is not None or acceptance_value is not None:
@@ -915,7 +927,9 @@ def _build_transition(
                 raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED")
     elif stage == "diagnosis-completed":
         assert diagnostic_session_id is not None
-        storage_id = diagnostic_session_id.replace("-", "")
+        storage_id = _canonical_diagnostic_reference(
+            "diagnosticSessionId", diagnostic_session_id
+        ).replace("-", "")
         data = _public_data(_diagnostic_show(DiagnosticWorkflowContext(context.project_root, context.data_root, context.session_id), diagnostic_session_id=storage_id))
         session_data = data.get("session")
         if not isinstance(session_data, Mapping):
@@ -945,7 +959,9 @@ def _build_transition(
         if authorization is None:
             raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_AUTHORIZATION_REQUIRED")
         session_id = cast(str, attempt.stage_outputs.get("diagnosticSessionId"))
-        storage_id = session_id.replace("-", "")
+        storage_id = _canonical_diagnostic_reference(
+            "diagnosticSessionId", session_id
+        ).replace("-", "")
         data = _public_data(_diagnostic_show(DiagnosticWorkflowContext(context.project_root, context.data_root, context.session_id), diagnostic_session_id=storage_id))
         session_data = data.get("session")
         if not isinstance(session_data, Mapping):
@@ -1053,7 +1069,8 @@ def _validate_diagnostic_session(
     if target is None:
         target = getattr(getattr(model, "target", None), "device", None)
     if (
-        session.diagnostic_session_id != expected_session_id.replace("-", "")
+        session.diagnostic_session_id
+        != _canonical_diagnostic_reference("diagnosticSessionId", expected_session_id).replace("-", "")
         or session.failed_test_run_id != attempt.stage_outputs.get("failedBeforeTestRunId")
         or session.failed_evidence_id != attempt.stage_outputs.get("failedBeforeEvidenceId")
         or session.identity.project_id != str(getattr(model, "logical_project_id"))
@@ -1445,7 +1462,9 @@ def _authorize_source_change(
     diagnostic_data = _public_data(
         _diagnostic_show(
             DiagnosticWorkflowContext(context.project_root, context.data_root, context.session_id),
-            diagnostic_session_id=diagnostic_id.replace("-", ""),
+            diagnostic_session_id=_canonical_diagnostic_reference(
+                "diagnosticSessionId", diagnostic_id
+            ).replace("-", ""),
         )
     )
     session_data = diagnostic_data.get("session")

@@ -50,7 +50,7 @@ def test_acceptance_mcp_tools_translate_exact_values_once(monkeypatch, tmp_path:
         "scenarioVersion": "1",
         "failedBeforeTestRunId": "00000000-0000-4000-8000-000000000002",
         "fixedAfterTestRunId": "00000000-0000-4000-8000-000000000003",
-        "diagnosticSessionId": "00000000-0000-4000-8000-000000000004",
+        "diagnosticSessionId": "b9e8a8ae-0a2f-a22d-66d7-d85946bf9eaf",
     }
     _, structured = asyncio.run(
         server_module.create_server(tmp_path / "project2", tmp_path / "data2", "session-a").call_tool(

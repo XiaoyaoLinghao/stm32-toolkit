@@ -247,6 +247,20 @@ def test_v1_attempt_decode_rejects_stage_outputs_outside_exact_prefix(
     assert payload == before
 
 
+def test_v1_attempt_accepts_arbitrary_diagnostic_bits_only_in_grouped_wire_form():
+    grouped = "b9e8a8ae-0a2f-a22d-66d7-d85946bf9eaf"
+    payload = _software_revision_wire(4)
+    payload["stageOutputs"]["diagnosticSessionId"] = grouped
+    payload = _with_checkpoint(payload)
+    assert AcceptanceAttempt.from_value(payload).to_dict() == payload
+
+    compact = deepcopy(payload)
+    compact["stageOutputs"]["diagnosticSessionId"] = grouped.replace("-", "")
+    compact = _with_checkpoint(compact)
+    with pytest.raises(AcceptanceRecoveryValidationError):
+        AcceptanceAttempt.from_value(compact)
+
+
 def test_physical_policy_and_source_intent_are_frozen_and_round_trip():
     policy = physical_acceptance_recovery_policy()
     assert policy.schema == "stm32-acceptance-recovery-policy/2"

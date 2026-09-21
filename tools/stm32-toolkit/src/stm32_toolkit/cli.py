@@ -36,6 +36,7 @@ class _RejectDuplicateTrue(argparse.Action):
         setattr(namespace, self.dest, True)
 
 from stm32_toolkit.context import build_project_context
+from stm32_toolkit.acceptance.model import canonical_diagnostic_reference
 from stm32_toolkit.acceptance.workflows import (
     AcceptanceWorkflowContext,
     describe_acceptance_scenario,
@@ -515,7 +516,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--fixed-after-test-run-id", required=True, type=_acceptance_uuid
     )
     scenario_record.add_argument(
-        "--diagnostic-session-id", required=True, type=_acceptance_uuid
+        "--diagnostic-session-id", required=True, type=_acceptance_diagnostic_ref
     )
 
     scenario_show = scenario_commands.add_parser("show")
@@ -949,9 +950,11 @@ def _diagnostic_session_id(value: str) -> str:
 
 
 def _acceptance_diagnostic_ref(value: str) -> str:
-    if _DIAGNOSTIC_SESSION_ID.fullmatch(value) is not None or _ACCEPTANCE_UUID.fullmatch(value) is not None:
-        return value
-    raise argparse.ArgumentTypeError("invalid diagnostic session id")
+    try:
+        canonical_diagnostic_reference("diagnosticSessionId", value)
+    except (TypeError, ValueError) as error:
+        raise argparse.ArgumentTypeError("invalid diagnostic session id") from error
+    return value
 
 
 def _diagnostic_run_id(value: str) -> str:

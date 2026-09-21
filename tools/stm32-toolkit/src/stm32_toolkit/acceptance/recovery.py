@@ -19,7 +19,13 @@ from uuid import UUID
 
 from stm32_toolkit.evidence import canonical_json_bytes
 
-from .model import AcceptanceValidationError, REQUIRED_STAGES, describe_scenario
+from .model import (
+    AcceptanceValidationError,
+    REQUIRED_STAGES,
+    canonical_diagnostic_reference,
+    describe_scenario,
+    require_grouped_diagnostic_reference,
+)
 
 
 ATTEMPT_SCHEMA = "stm32-acceptance-attempt/1"
@@ -369,6 +375,20 @@ def _uuid(field: str, value: object) -> str:
     return string
 
 
+def _diagnostic_reference(field: str, value: object) -> str:
+    try:
+        return canonical_diagnostic_reference(field, value)
+    except AcceptanceValidationError as error:
+        raise AcceptanceRecoveryValidationError(str(error)) from error
+
+
+def _stored_diagnostic_reference(field: str, value: object) -> str:
+    try:
+        return require_grouped_diagnostic_reference(field, value)
+    except AcceptanceValidationError as error:
+        raise AcceptanceRecoveryValidationError(str(error)) from error
+
+
 def _utc(field: str, value: object) -> str:
     string = _string(field, value)
     if _UTC.fullmatch(string) is None:
@@ -503,7 +523,10 @@ def _validate_stage_outputs(value: object, revision: int) -> dict[str, object]:
             if item is not None and (type(item) is not int or item < 0):
                 raise AcceptanceRecoveryValidationError(f"{key} must be a non-negative integer or null")
             continue
-        if key in {"failedBeforeTestRunId", "diagnosticSessionId", "acceptanceRecordId"}:
+        if key == "diagnosticSessionId":
+            if item is not None:
+                outputs[key] = _diagnostic_reference(key, item)
+        elif key in {"failedBeforeTestRunId", "acceptanceRecordId"}:
             if item is not None:
                 _uuid(key, item)
         elif item is not None:
@@ -527,7 +550,9 @@ def _validate_authorization(value: object) -> dict[str, object] | None:
     if type(value["authorized"]) is not bool or value["authorized"] is not True:
         raise AcceptanceRecoveryValidationError("source change authorization must be true")
     authorized_at = _utc("authorizedAtUtc", value["authorizedAtUtc"])
-    diagnostic_session_id = _uuid("diagnosticSessionId", value["diagnosticSessionId"])
+    diagnostic_session_id = _diagnostic_reference(
+        "diagnosticSessionId", value["diagnosticSessionId"]
+    )
     revision = value["diagnosticRevision"]
     if type(revision) is not int or revision < 0:
         raise AcceptanceRecoveryValidationError("diagnosticRevision must be a non-negative integer")
@@ -693,6 +718,14 @@ class AcceptanceAttempt:
             raise AcceptanceRecoveryValidationError("completedStages must be a JSON array of strings")
         outputs = value["stageOutputs"]
         authorization = value["sourceChangeAuthorization"]
+        if isinstance(outputs, Mapping) and outputs.get("diagnosticSessionId") is not None:
+            _stored_diagnostic_reference(
+                "diagnosticSessionId", outputs["diagnosticSessionId"]
+            )
+        if isinstance(authorization, Mapping) and authorization.get("diagnosticSessionId") is not None:
+            _stored_diagnostic_reference(
+                "diagnosticSessionId", authorization["diagnosticSessionId"]
+            )
         return cls(
             schema=cast(str, value["schema"]),
             attempt_id=cast(str, value["attemptId"]),

@@ -48,6 +48,7 @@ from .model import (
     AcceptanceValidationError,
     RECORD_SCHEMA,
     REQUIRED_STAGES,
+    canonical_diagnostic_reference,
     describe_scenario,
 )
 
@@ -197,8 +198,8 @@ def _root_failure_code(
 
 
 def _diagnostic_storage_id(value: str) -> str:
-    """Map the canonical UUID wire spelling to Diagnostic's compact ID storage."""
-    return value.replace("-", "")
+    """Map a replay Diagnostic reference to Diagnostic's compact storage ID."""
+    return canonical_diagnostic_reference("diagnosticSessionId", value).replace("-", "")
 
 
 def _hash_value(field: str, value: object) -> str:
@@ -602,7 +603,9 @@ def _record_acceptance(
     record_id = _canonical_uuid("recordId", record_id)
     failed_before_test_run_id = _canonical_uuid("failedBeforeTestRunId", failed_before_test_run_id)
     fixed_after_test_run_id = _canonical_uuid("fixedAfterTestRunId", fixed_after_test_run_id)
-    diagnostic_session_id = _canonical_uuid("diagnosticSessionId", diagnostic_session_id)
+    diagnostic_session_id = canonical_diagnostic_reference(
+        "diagnosticSessionId", diagnostic_session_id
+    )
     scenario = describe_scenario(cast(str, scenario_id), cast(str, scenario_version))
     if failed_before_test_run_id == fixed_after_test_run_id:
         raise AcceptanceValidationError("failed and fixed run IDs must differ")
