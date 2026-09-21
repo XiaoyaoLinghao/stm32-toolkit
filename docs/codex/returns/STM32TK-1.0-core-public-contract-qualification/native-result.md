@@ -35,11 +35,14 @@ with unchanged inputs and successful reuse after exact restoration.
 
 Run2 completed in3.717459s, exit0, with all five observations passing. Its
 retained raw hash is245FFFC2D0DE640B2313E5D0A5952EE15714AFCEE58EBA1961E86A20BC451E6D.
-The observed delta versus U40 is seven SVD native branches. Independent raw,
-source and environment review is pending: copied candidate/timestamp labels
-in source-binding metadata are not admitted as fresh provenance. This is not
-a reason to repeat valid behavior by itself. U40 remains canonical; the seven
-branches are not yet included in the table above. No new union is fabricated.
+Independent raw/source/environment review8E60B8D39F6621EC71D2801C4081EEBB510B4A473E7F5AAB49D861BB76A10027
+accepts seven unique SVD native branches, with zero loss against U40. Copied
+candidate/timestamp labels are report-only: original9B443 source-binding bytes
+remain preserved, while source-binding-reconciliation.json identifies the actual
+candidate/run and excludes the unverifiable copied generation time. All148
+source rows and actual runtime/raw bindings were independently checked. No test
+or combine was rerun. The seven accepted branches await the next serial native
+aggregation; U40 and the table above remain unchanged.
 
 The first4.915989s run failed the fixture's missing singleton-tuple comma
 before the target branches. The subsequent launch-only attempt stopped before
