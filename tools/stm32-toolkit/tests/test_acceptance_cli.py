@@ -1,20 +1,27 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import pytest
-
 from stm32_toolkit import cli
 from stm32_toolkit.result import OperationResult
 
 
-def test_cli_record_dispatches_exact_values_once(monkeypatch, capsys):
+@pytest.mark.parametrize(
+    ("reference_kind", "session_id"),
+    [
+        ("compact", "b9e8a8ae0a2fa22d66d7d85946bf9eaf"),
+        ("grouped", "b9e8a8ae-0a2f-a22d-66d7-d85946bf9eaf"),
+        ("rfc", "00000000-0000-4000-8000-000000000004"),
+    ],
+)
+def test_cli_record_dispatches_exact_values_once(
+    reference_kind, session_id, monkeypatch, capsys
+):
     seen = []
     record_id = "00000000-0000-4000-8000-000000000001"
     failed_id = "00000000-0000-4000-8000-000000000002"
     fixed_id = "00000000-0000-4000-8000-000000000003"
-    session_id = "b9e8a8ae-0a2f-a22d-66d7-d85946bf9eaf"
     ok = OperationResult.success(
         "acceptance.scenario.record", {"record": {"recordId": record_id}}
     )
