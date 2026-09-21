@@ -438,6 +438,11 @@ def _build_synthetic_case(
     testing = TestingWorkflowContext(project, data, SESSION)
     diagnostic = DiagnosticWorkflowContext(project, data, SESSION)
     model = load_project_model(project)
+    assert model.debug.backend == "pyocd"
+    assert model.debug.target
+    assert model.testing is not None
+    assert model.testing.target is not None
+    assert model.testing.target.transport.kind == "memory-mailbox"
     if current_fixture is None:
         source_path = project / "App" / "main.c"
         before_source = source_path.read_bytes()
@@ -449,7 +454,8 @@ def _build_synthetic_case(
         assert source_path.read_bytes() == before_source
     before_snapshot = snapshot_project_inputs(model)
     source_path.write_bytes(after_source)
-    after_snapshot = snapshot_project_inputs(load_project_model(project))
+    after_model = load_project_model(project)
+    after_snapshot = snapshot_project_inputs(after_model)
     source_path.write_bytes(before_source)
     before_source_sha256 = hashlib.sha256(before_source).hexdigest()
     after_source_sha256 = hashlib.sha256(after_source).hexdigest()
@@ -713,7 +719,8 @@ def _build_synthetic_case(
         build_after["value"] = True
     else:
         after_facts = current_fixture.rebuild_after()
-        after_snapshot = snapshot_project_inputs(load_project_model(project))
+        after_model = load_project_model(project)
+        after_snapshot = snapshot_project_inputs(after_model)
         assert after_facts.input_snapshot_sha256 == after_snapshot.sha256
         after_identity = _current_identity(workspace, after_facts)
         fixed_descriptor, fixed_stream = vs08a_fixtures._canonical_replay_inputs(
@@ -733,6 +740,44 @@ def _build_synthetic_case(
         )
     assert after_identity is not None
     assert fixed_physical is not None
+    assert before_identity.target_device == str(model.target.device)
+    assert after_identity.target_device == str(after_model.target.device)
+    before_physical_target = str(model.debug.target)
+    after_physical_target = str(after_model.debug.target)
+    assert before_physical_target
+    assert after_physical_target
+    assert (
+        hashlib.sha256(raw_probe.encode("utf-8")).hexdigest()
+        == physical_fixture.PHYSICAL_PROBE
+    )
+
+    def assert_physical_links(
+        published: object,
+        identity: EvidenceIdentity,
+        run_id: str,
+    ) -> None:
+        manifest = published.manifest
+        envelope = published.envelope
+        root = published.root
+        assert manifest.identity == identity
+        assert manifest.transport == "mailbox"
+        metadata = dict(envelope.metadata)
+        assert metadata["target_id"] == identity.target_device
+        assert metadata["probe_id"] == physical_fixture.PHYSICAL_PROBE
+        assert metadata["flash_session_id"] == f"flash-{run_id}"
+        assert metadata["lease_id"] == f"lease-{run_id}"
+        assert metadata["origin_workspace_id"] == identity.workspace_id
+        assert metadata["import_workspace_id"] == identity.workspace_id
+        assert metadata["origin_session_id"] == identity.session_id
+        assert metadata["import_session_id"] == identity.session_id
+        assert root.metadata == {
+            "mode": "target",
+            "state": manifest.state,
+            **metadata,
+        }
+
+    assert_physical_links(failed_physical, before_identity, failed_run_id)
+    assert_physical_links(fixed_physical, after_identity, fixed_run_id)
     changed_path = source_path.relative_to(project).as_posix()
     evidence = EvidenceStore(workspace.workspace_root / "evidence")
     diff_path = tmp_path / "source-change.diff"
@@ -793,6 +838,7 @@ def _build_synthetic_case(
         f"lease-{failed_run_id}",
         vs08a_fixtures.MONITOR_OPERATION_IDS["failed-before"],
         value_offset=0,
+        physical_target=before_physical_target,
     )
     fixed_batches = physical_fixture._append_physical_monitor_history(
         workspace,
@@ -802,7 +848,12 @@ def _build_synthetic_case(
         f"lease-{fixed_run_id}",
         vs08a_fixtures.MONITOR_OPERATION_IDS["fixed-after"],
         value_offset=10,
+        physical_target=after_physical_target,
     )
+    assert failed_batches[0].binding.physical_target == before_physical_target
+    assert fixed_batches[0].binding.physical_target == after_physical_target
+    assert failed_batches[0].binding.target_device == before_identity.target_device
+    assert fixed_batches[0].binding.target_device == after_identity.target_device
     monitor_before = publish_physical_monitor_run(
         workspace,
         evidence,
