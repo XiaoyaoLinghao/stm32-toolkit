@@ -1,13 +1,13 @@
 # Current native coverage result
 
-Accepted aggregation baseline: `9865c88a7f8b9e1ee297957657e623556f8642ae` (union29).
-Integrated test code head before this report: `c4d7b9f2abc6fa2cbca86d2df3069e292775242f`.
+Accepted aggregation baseline: `c4d7b9f2abc6fa2cbca86d2df3069e292775242f` (union31).
+Integrated test code head before this report: `1b7a763d2be33a4789f3023a161d5b53a4034112`.
 Qualified product source: `8a11caef14df16c5e56c0be2363d4ef5530110eb`.
-Union31 native data verdict: **ACCEPTED_NATIVE_DATA**. Release 1.0: **NOT_ACCEPTED**.
+Union32 native data verdict: **ACCEPTED_NATIVE_DATA**. Release 1.0: **NOT_ACCEPTED**.
 
 | Package | Covered / total branches | Overall and broad core v1 | More for 90% | More for v1 95% |
 | --- | ---: | ---: | ---: | ---: |
-| Toolkit | 11,867 / 13,580 | 87.3859% | 355 | 1,034 |
+| Toolkit | 11,882 / 13,580 | 87.4963% | 340 | 1,019 |
 | Monitor | 2,685 / 2,940 | 91.3265% | 0 | 108 |
 | UI (retained separately) | 784 / 810 | 96.7901% | 0 | 0 |
 
@@ -128,11 +128,29 @@ Three original Luna/max owners continue Recovery/evidence, Monitor and Probe
 lines with one dedicated independent reviewer. Two actual suites may run at once;
 three have not been released because overlapping-run and complete descendant
 resource evidence is still missing. All known batch execution PIDs have exited.
-Following limited branch yield, the next protocol slice was first audited for
-public reachability: two complete scenarios may reach15 missing arcs. That is a
-static estimate, not observed progress; dominated/out-of-scenario branches remain
-in the unchanged denominator. Monitor/Probe next scenarios require the same
-first-guard and existing-evidence check before implementation.
+The two public protocol assembly scenarios have since completed15PASS in3.446s
+JUnit and6.930s process time, exit0 without timeout. Exact code/message refusals
+and the successful manifest are verified; original native child shard is retained.
+Primary and independent review accepted the complete test diff at08e2b8c,
+locally integrated as1b7a763d. Union32 adds exactly15 Toolkit branches, all in
+protocol.py, with no denominator change. Monitor and UI reuse their accepted
+union31 bytes without a test or native recombination. Runtime source remains
+8a11; candidate-head labels in the original run metadata were corrected in the
+primary review using source148, without rewriting originals or rerunning behavior.
+
+Union32 canonical SHA256 is
+E335DFC50A8CBC8E41409297B22D34195AA3447A1577B08EB38280928C11FA78;
+independent review SHA256 is
+C02F74AAF18B77CEFAEDC0294797881FB509BA2B5DE86CD61248E50D7A6DAFEA.
+Toolkit native raw SHA256 is
+900E3279543A1BF4402A4FC47B12D61F59B54536B99D0E3FDBF3A3246E683136;
+JSON SHA256 is
+432C1922B1C6AA10547D13BBF71A154065375A8F9A7249906E3585D2B472E093.
+Current immutable candidate/input history/review are under r10/e/risk-v2/union32.
+Wave9 protocol producer tests and Target discovery first-guard candidates are
+separate pending work, not covered-branch or release acceptance claims. Monitor's
+current residual audit is being checked for grouped reachable scenarios and
+possible precondition dominance; a low-yield result is not proof of impossibility.
 
 Risk-core v2 was selected by whole-file responsibility and independently frozen
 at scope commit 9fff3f43 before scoring. Its 90 Toolkit and 16 Monitor files are
@@ -140,7 +158,7 @@ reported separately; the 108/18 overall files and old v1 statistics remain.
 
 | Risk-core v2 | Covered / total branches | Coverage | More for 95% |
 | --- | ---: | ---: | ---: |
-| Toolkit | 11,249 / 12,906 | 87.1610% | 1,012 |
+| Toolkit | 11,264 / 12,906 | 87.2772% | 997 |
 | Monitor | 2,685 / 2,940 | 91.3265% | 108 |
 
 Native v1 scope remains 108/18 Python files overall and 97/16 core files. The excluded
@@ -156,7 +174,7 @@ Native JSON SHA256: `8A04CDF8C0AF1833BC0A76F0362518F117C6B48185296537AFB258DE710
 Independent review SHA256: `604D2971C58B08BAC9E851E2C9D78B57BCDE57E5287E0160D0610D30D743BB73`.
 Historical snapshot SHA256: `1A1161097F4C2EA960C9E3C8B3005EF82050089853B51CD4C188DB42B5A450E6`.
 
-Current evidence: `D:/codex-tmp/v10b-0918/r10/e/risk-v2/union29`.
+Historical union29 evidence: `D:/codex-tmp/v10b-0918/r10/e/risk-v2/union29`.
 Toolkit native raw: `730E59EC30CAA4E2C44694240CC85E755E60EC005EF7E13971D619E82F9A97AF`.
 Toolkit native JSON: `F05B652753981E27683A81202D1D1B9D159D5B5C69AB658C0ACEFB3BAEA33337`.
 Monitor native raw: `6AD87712E72AC43E6887B259B8FC89F09BFC47FBEDB06EAC43F429ACE6C63FD2`.

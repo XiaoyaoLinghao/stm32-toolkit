@@ -1442,3 +1442,57 @@ report-label error. Measure actual subprocesses if any, and distinguish absence
 of product subprocesses from missing measurement. Current resource restriction
 permits only one suite until the two-suite capacity criterion is revalidated.
 Primary alone owns native aggregation/shared ledger/cleanup; no denied-root retry.
+
+## Wave9 Target discovery and settlement — 2026-09-21
+
+Accepted base: 4700cabd8f798afbd65e240f9c9dfc0160dc8ff7. Product source remains
+8a11caef14df16c5e56c0be2363d4ef5530110eb/source148. Primary owns design/review/
+acceptance; preserved target_prepare_identity_impl Luna/max owns only the new
+file tools/stm32-toolkit/tests/test_risk_target_discovery_authority.py. Worktree
+r10/w9p; temp r10/t/w9p/run1; durable e/risk-v2/wave9/target/run1. User's current
+authorization covers offline supplementation; no product or hardware change.
+
+Six variants cover two runnable public TargetTestRunner.discover caller scenarios:
+1. Complete valid v2 inventory handshake with host_identity passed as its public
+   to_dict mapping (2240->2241). Assert returned inventory, raw frame, case digest
+   and all identity fields. Use a synchronous successful test-owned probe close
+   naturally in this positive flow (1167->-1161), with exactly one close of each
+   dependency and no flash, control, authorization, manifest or Evidence writes.
+2. Five refused handshakes: a valid sequence0 v2 run_start instead of inventory
+   (2213->2214); a truncated valid inventory frame ending with EOF (2228->2229);
+   valid inventory frame but expected_firmware.case_ids differs (2249->2257);
+   valid-format expected inventory_digest differs from the real host/cases digest
+   (2268->2271); expected_firmware.build_id differs while host/case inventory
+   digest stays correct (2283->2289). All earlier bindings stay valid. Assert
+   exact public TEST_TRANSPORT_UNAVAILABLE and message plus the precise cause
+   code/message where wrapping occurs, so no earlier refusal is mistaken for the
+   named check. Both dependencies close once; flash/control stays unused and
+   owned evidence-root bytes/directories remain at their post-construction snapshot.
+
+Use the actual MailboxTransport public open/read_async/identity/close_async over
+an in-memory test-owned bounded reader; optional public EOF may be provided by a
+small adapter over that reader's served-byte state. The reader's image contains
+real producer/consumer header and immutable encoded frame bytes, not hardware.
+Reuse existing public identity/frame fixture builders in test_target_runner.py.
+Do not reuse FakeTransport.identity: it calls the private _task8_identity_digest.
+A test adapter may compose/delegate actual public MailboxTransport methods; it
+must not mutate its internal cursor/config or invoke private product functions.
+A test-owned forbidden flash dependency may expose run solely to fail on dispatch.
+No new generic framework is needed. All fixture/output roots remain under the
+owned basetemp; do not create .test-data in the source checkout.
+
+Static target is7 missing arcs, not measured progress. Do not implement2264->2265
+(decoder plus2249 dominate it), nor unproven2293/2332 identity-snapshot mutation
+paths. The r2 feasibility report supersedes the original wrong first-guard claims;
+all those branches stay in the frozen denominator. No private state, validator
+patch, false physical PASS, timer/scheduler patch or product behavior change.
+
+Return a clean committed candidate and full diff, source148 and Ruff/AST/diff
+checks before pytest. Primary full static review may release one exact-file
+-x300s run; independent review precedes integration. Reuse the accepted guarded
+launcher/native capture with correct8a11 runtime source distinct from test HEAD;
+retain actual raw child shards through combine/report. First unexpected failure
+stops; no automatic retry. Two ready independent suites may overlap only with a
+fresh resource check above the existing15 percent criterion; there is no reason
+to rerun valid results to manufacture overlap. Native union/shared ledger and
+cleanup stay with primary; no denied-root retry or remote action.
