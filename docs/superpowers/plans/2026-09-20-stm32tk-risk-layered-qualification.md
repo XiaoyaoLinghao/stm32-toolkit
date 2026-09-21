@@ -1321,3 +1321,67 @@ Require3PASS and exact child/combined native arcs516->517,519->520,524->525 and
 524->526 with reached error line1543. Retain run1/run2 behavior and actual native
 contributions separately; no automatic retry, product change, hardware, cleanup,
 deployment or remote action. Primary and dedicated reviewer decide qualification.
+
+## Wave8 bounded protocol assembly scenarios — 2026-09-21
+
+Accepted base: 018392f579b2dc76f4e17e4fe5d7639868739155. Product identity
+remains 8a11caef14df16c5e56c0be2363d4ef5530110eb with all148 source hashes
+unchanged. Primary owns design, integration and acceptance; the existing
+finalization_binding_impl Luna/max owner implements this evidence-integrity
+slice. Independent review is required for acceptance. User authorization is the
+current instruction to execute independent offline supplementation without
+changing the 1.0 gates; no hardware, packaging, deployment or remote permission.
+
+Two runnable scenarios use exported public assembly APIs and existing test
+fixtures, in one new owned file:
+tools/stm32-toolkit/tests/test_risk_protocol_assembly_authority.py.
+No existing test, source, schema, scope, dependency, launcher framework or shared
+ledger is in the implementation scope. Worktree r10/w8r; run-owned temp
+r10/t/w8r/run1; durable evidence e/risk-v2/wave8/protocol/run1. Primary is cleanup
+owner; preserve current failure/native evidence and all denied roots.
+
+1. v1 caller supplies a frozen inventory and sequence-numbered event stream.
+   Cover eight meaningful outcomes: invalid record shape; second run_start with
+   correct sequence1; run_start selecting an undiscovered case; changed start
+   inventory digest; duplicate case_start with correct next sequence; premature
+   run_end; a complete valid stream containing a log; terminal count mismatch.
+   Reuse valid inventory/artifact/terminal builders. Assert exact public
+   TestProtocolError code AND message for each refusal, distinguishing sequence
+   validation from state checks. For the log outcome assert successful manifest
+   identity, case results and terminal state, not merely absence of an exception.
+   Expected missing arcs:300->301,312->313,315->316,317->318,324->325,
+   342->343,347->299,363->364. Payload validity and renumbering must be proven
+   before the target state guard; unknown kinds cannot reach346->299.
+2. v2 caller encodes real bytes, obtains frames from a fresh public
+   TargetFrameDecoder(expected_version=2), then invokes assemble_target_v2_run
+   with an ArtifactRef for the exact bytes. Seven outcomes: invalid host timeout;
+   inventory not first; run_start not second; terminal inventory mismatch;
+   consecutive case starts; result without an active case; invalid middle kind.
+   All sequences/monotonic counters and payload schemas remain valid. Recompute
+   the terminal digest over actual preceding bytes after mutations. Assert exact
+   public code/message, and demonstrate decoder feed/finish succeeds before the
+   assembler refusal. Expected arcs:411->420,445->446,449->450,480->481,
+   491->492,499->500,515->518. Do not mutate TargetFrame cached metadata or
+   private product state.502->503 is dominated by raw-decoder monotonic checking.
+
+The 428->429 non-TargetFrame guard is outside this decoder-derived scenario,
+not globally unreachable: a caller could pass an invalid public argument.
+Leave it untested here without removing it from any denominator. Likewise all
+precheck-dominated branches remain in the frozen native coverage scope.
+
+This groups15 currently missing arcs into two complete public boundary scenarios;
+15 is a static upper bound, not measured progress. Do not duplicate existing
+covered timeout, start-inventory, terminal-state or raw-artifact checks. No
+private production helper calls, predicate patches, clock/scheduler changes or
+invented physical facts. Test helpers may be reused as fixture builders.
+
+Return one clean committed candidate with complete diff, first-guard mapping,
+Ruff no-cache/format/AST/diff checks. Primary may release one exact-file -x run,
+300s ceiling, after complete static review; independent review is a condition
+of acceptance, not a duplicate execution-release wait. Reuse an accepted guarded
+launcher with only run identity/path/selector/configuration substitutions; do
+not create another diagnostic framework. Record branch coverage of actual
+Python subprocesses, source148, argv/head/JUnit/process, and keep original
+shards through combine and JSON. Stop on first unexpected failure; classify
+before any correction. Do not repeat valid runs solely to demonstrate overlap.
+The two-suite limit and serial formal aggregation/shared ledger remain in force.
