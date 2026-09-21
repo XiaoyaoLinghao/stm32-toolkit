@@ -665,20 +665,24 @@ def test_public_native_diagnostic_evidence_refusals_restore_and_show(
             diagnostic_marker_ref=baseline.publication.diagnostic_marker_ref,
         )
     )
-    completed = _ok(
-        diagnostic_complete_verification(
-            pair.diagnostic,
-            operation_id="wave10-valid-complete",
-            diagnostic_session_id=pair.diagnostic_session_id,
-            expected_revision=pair.diagnostic_revision + 3,
-            executed_operation_ids=[
-                "wave10-before",
-                "wave10-after",
-                "wave10-analysis",
-            ],
-        )
+    completion_result = diagnostic_complete_verification(
+        pair.diagnostic,
+        operation_id="wave10-valid-complete",
+        diagnostic_session_id=pair.diagnostic_session_id,
+        expected_revision=pair.diagnostic_revision + 3,
+        executed_operation_ids=[
+            "wave10-before",
+            "wave10-after",
+            "wave10-analysis",
+        ],
     )
-    verification = completed["fix_verification"]
+    _ok(completion_result)
+    completion_wire = completion_result.to_dict()
+    assert completion_wire["ok"] is True
+    completion_data = completion_wire["data"]
+    assert isinstance(completion_data, Mapping)
+    verification = completion_data["fix_verification"]
+    assert isinstance(completion_data["session"], Mapping)
     assert isinstance(verification, Mapping)
     assert verification["status"] == "PASSED"
     assert verification["reason_code"] == "VERIFICATION_PASSED"
@@ -699,7 +703,7 @@ def test_public_native_diagnostic_evidence_refusals_restore_and_show(
         "code": "OK",
         "message": "",
         "data": {
-            "session": completed["session"],
+            "session": completion_data["session"],
             "fix_verifications": [verification],
             "authoritative": True,
         },
