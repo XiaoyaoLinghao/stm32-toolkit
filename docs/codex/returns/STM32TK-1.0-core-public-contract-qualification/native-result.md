@@ -1,14 +1,14 @@
 # Current native coverage result
 
-Accepted aggregation baseline: `1b7a763d2be33a4789f3023a161d5b53a4034112` (union32).
-Integrated test code head before this report: `7e534897ce755766bb5dd0737ac952ef20bcc0b6`.
+Accepted aggregation baseline: `7e534897ce755766bb5dd0737ac952ef20bcc0b6` (union33).
+Integrated test code head before this report: `07dbf1f5b1825b1b7c1f67e318fb3bd57c0459ed`.
 Qualified product source: `8a11caef14df16c5e56c0be2363d4ef5530110eb`.
-Union33 native data verdict: **ACCEPTED_NATIVE_DATA**. Release 1.0: **NOT_ACCEPTED**.
+Union34 native data verdict: **ACCEPTED_NATIVE_DATA**. Release 1.0: **NOT_ACCEPTED**.
 
 | Package | Covered / total branches | Overall and broad core v1 | More for 90% | More for v1 95% |
 | --- | ---: | ---: | ---: | ---: |
-| Toolkit | 11,904 / 13,580 | 87.6583% | 318 | 997 |
-| Monitor | 2,685 / 2,940 | 91.3265% | 0 | 108 |
+| Toolkit | 11,932 / 13,580 | 87.8645% | 290 | 969 |
+| Monitor | 2,696 / 2,940 | 91.7007% | 0 | 97 |
 | UI (retained separately) | 784 / 810 | 96.7901% | 0 | 0 |
 
 The repeat-bind product correction remains accepted with its seven current-source
@@ -161,8 +161,8 @@ Independent full-diff review and native review accepted all three Toolkit inputs
 (prior union32 plus these two runs), their neutral copies, all148 source hashes,
 and frozen scope arithmetic. Native aggregation ran zero tests and added exactly
 22 Toolkit branches: protocol14, target7 and mailbox1. No prior arc regressed;
-Monitor/UI bytes remain unchanged. Current candidate/input history/review are
-under r10/e/risk-v2/union33. Canonical SHA256 is
+Monitor/UI bytes remained unchanged. Historical union33 candidate/input/review are
+under r10/e/risk-v2/union33. Its accepted canonical SHA256 was
 2319CDF1B2A2592D424D997079BFD8CD6EF20D1DCB74C2FC0D66385CAE39DDFC;
 independent review SHA256 is
 B13E46EDC772F03CAAA9A765DAB24D8C2CDC8AA2CA3E72246BDF4EC0582F7EB1.
@@ -172,6 +172,22 @@ JSON SHA256 is
 8560B44329F43E29C805C5D939A39F67D4BF753C48EBC14BF416223EFFAD5ADF.
 The review's truncated wrapper-hash literal is corrected additively in promotion
 metadata against the actual64-character hash; native data and tests are unchanged.
+
+Union34 adds public attach-diagnostic validation/merge/detachment/refusal scenarios
+and Monitor analysis model/native-threshold/roundtrip/refusal scenarios. Both complete
+diffs passed independent review; Probe2 PASS(1.725s) and Monitor3 PASS(1.392s)
+retained their actual interpreter shards. The Probe first launch stopped before
+pytest on a wrong full SHA; only corrected run2 executed. Native aggregation added
+28 Toolkit and11 Monitor arcs, removed none, preserved five input/copy hashes,
+source148, frozen v1/v2/UI and native history summary/array representation.
+Canonical SHA256:3FD740FF19EBD3D3B612F8F2A5208DD71D6E78DFFCC245515D2634BA68682A1E.
+Independent review:55FF7EDB1EA6C37F8190A9BACE1B93D8C44BA40D3640768A578151B198E96974.
+See r10/e/risk-v2/union34. No tests were rerun by aggregation.
+
+A separate public task-factory reproduction confirmed failed sampler start leaves
+RUNNING after task allocation fails. Its cleanup completed, but the RED input is
+excluded. The bounded sampler-start correction is specified separately and remains
+unaccepted; it must replace only changed-source coverage after review.
 
 Wave10 keeps the three original owners and independent reviewer. A frozen bounded
 implementation dispatch may allocate one of two execution slots, avoiding another
@@ -187,8 +203,8 @@ reported separately; the 108/18 overall files and old v1 statistics remain.
 
 | Risk-core v2 | Covered / total branches | Coverage | More for 95% |
 | --- | ---: | ---: | ---: |
-| Toolkit | 11,286 / 12,906 | 87.4477% | 975 |
-| Monitor | 2,685 / 2,940 | 91.3265% | 108 |
+| Toolkit | 11,314 / 12,906 | 87.6647% | 947 |
+| Monitor | 2,696 / 2,940 | 91.7007% | 97 |
 
 Native v1 scope remains 108/18 Python files overall and 97/16 core files. The excluded
 forwarders have zero branches, so overall/core ratios coincide. Per-package native

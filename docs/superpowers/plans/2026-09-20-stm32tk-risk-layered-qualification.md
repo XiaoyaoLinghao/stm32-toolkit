@@ -1733,3 +1733,27 @@ Prepare candidate, static checks, source148 and existing guarded launcher with
 60s ceiling; r10/t/w10s/run1 and e/risk-v2/wave10/sampler/run1. No execution slot
 is currently allocated: Probe/Recovery own the two slots. No deployment, hardware,
 remote operation, new framework, threshold change, or repeated prior valid suite.
+
+## Wave10 sampler failed-start correction
+
+The first-case run completed with the exact original injected error and observed
+RUNNING instead of IDLE; public cleanup completed and both PIDs exited. Preserve
+run1 as PRODUCT RED and exclude its coverage. The removed post-IDLE-stop extra
+invalidation assertion was already corrected before that run.
+
+Apply specs/2026-09-21-stm32tk-sampler-start-transaction.md on the same branch/tree
+r10/w10s, accepted base9cd33a04b2d6cb79a3a4e8ab05f648abadd0cedb, by the existing
+Monitor Luna/max owner. Only sampler.py and test_risk_sampler_start_transaction.py
+are owned. Do not change the existing regression files. Correct rollback for first
+and second owned task allocation failures, preserve the original exception and
+settle the acquired task/coroutine/read plan without re-entering the action lock.
+
+Slot1 remains assigned to this owner. After committing and Ruff/AST/diff checks,
+validate147 unchanged source hashes and record sampler.py's intentional new hash
+against the frozen148-file registry; do not disable the source guard globally.
+Use fresh r10/t/w10s/run2 and e/risk-v2/wave10/sampler/run2, existing guarded launcher,
+full candidate SHA, fresh memory>=15%,300s ceiling. Once run the two reproducer
+parameters plus test_sampler.py and test_risk_sampler_group_epoch.py, retaining
+all raw shards and subprocess capture. First unexpected failure stops; no automatic
+retry. Independent review covers the whole base-to-final diff. Primary integrates
+and qualifies changed-source coverage serially, retaining unaffected U34 evidence.
