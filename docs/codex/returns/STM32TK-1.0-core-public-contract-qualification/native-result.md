@@ -1,13 +1,13 @@
 # Current native coverage result
 
-Accepted aggregation baseline: `c4d7b9f2abc6fa2cbca86d2df3069e292775242f` (union31).
-Integrated test code head before this report: `1b7a763d2be33a4789f3023a161d5b53a4034112`.
+Accepted aggregation baseline: `1b7a763d2be33a4789f3023a161d5b53a4034112` (union32).
+Integrated test code head before this report: `7e534897ce755766bb5dd0737ac952ef20bcc0b6`.
 Qualified product source: `8a11caef14df16c5e56c0be2363d4ef5530110eb`.
-Union32 native data verdict: **ACCEPTED_NATIVE_DATA**. Release 1.0: **NOT_ACCEPTED**.
+Union33 native data verdict: **ACCEPTED_NATIVE_DATA**. Release 1.0: **NOT_ACCEPTED**.
 
 | Package | Covered / total branches | Overall and broad core v1 | More for 90% | More for v1 95% |
 | --- | ---: | ---: | ---: | ---: |
-| Toolkit | 11,882 / 13,580 | 87.4963% | 340 | 1,019 |
+| Toolkit | 11,904 / 13,580 | 87.6583% | 318 | 997 |
 | Monitor | 2,685 / 2,940 | 91.3265% | 0 | 108 |
 | UI (retained separately) | 784 / 810 | 96.7901% | 0 | 0 |
 
@@ -146,11 +146,40 @@ Toolkit native raw SHA256 is
 900E3279543A1BF4402A4FC47B12D61F59B54536B99D0E3FDBF3A3246E683136;
 JSON SHA256 is
 432C1922B1C6AA10547D13BBF71A154065375A8F9A7249906E3585D2B472E093.
-Current immutable candidate/input history/review are under r10/e/risk-v2/union32.
-Wave9 protocol producer tests and Target discovery first-guard candidates are
-separate pending work, not covered-branch or release acceptance claims. Monitor's
-current residual audit is being checked for grouped reachable scenarios and
-possible precondition dominance; a low-yield result is not proof of impossibility.
+Prior immutable candidate/input history/review are under r10/e/risk-v2/union32.
+
+Union33 adds public protocol producer/declaration refusal and round-trip scenarios
+(14 PASS, 3.171s JUnit), plus Target discovery over the real MailboxTransport
+(6 PASS, 2.011s). Target checks a valid seven-field identity and five first-guard
+refusals, unchanged evidence, no flash/control calls, and exact transport/probe
+settlement. Its common negative no-control oracle was strengthened and only those
+six cases rerun. Metadata-only template corrections did not trigger a rerun.
+Both original actual-interpreter shards remain retained. These suites do not
+spawn product subprocesses and do not claim hardware behavior.
+
+Independent full-diff review and native review accepted all three Toolkit inputs
+(prior union32 plus these two runs), their neutral copies, all148 source hashes,
+and frozen scope arithmetic. Native aggregation ran zero tests and added exactly
+22 Toolkit branches: protocol14, target7 and mailbox1. No prior arc regressed;
+Monitor/UI bytes remain unchanged. Current candidate/input history/review are
+under r10/e/risk-v2/union33. Canonical SHA256 is
+2319CDF1B2A2592D424D997079BFD8CD6EF20D1DCB74C2FC0D66385CAE39DDFC;
+independent review SHA256 is
+B13E46EDC772F03CAAA9A765DAB24D8C2CDC8AA2CA3E72246BDF4EC0582F7EB1.
+Toolkit raw SHA256 is
+DE90709231272DC7E2B2817685660F5F4DE3EEA29244AD72575D1637F773CC52;
+JSON SHA256 is
+8560B44329F43E29C805C5D939A39F67D4BF753C48EBC14BF416223EFFAD5ADF.
+The review's truncated wrapper-hash literal is corrected additively in promotion
+metadata against the actual64-character hash; native data and tests are unchanged.
+
+Wave10 keeps the three original owners and independent reviewer. A frozen bounded
+implementation dispatch may allocate one of two execution slots, avoiding another
+release round trip; full independent review remains required before acceptance.
+No three-suite expansion is released without actual overlap/resource evidence.
+New low-yield preflights are not coverage claims. Public exported constructors
+may be tested for genuine input refusals; manufacturing invalid successful
+objects or bypassing production guards remains prohibited.
 
 Risk-core v2 was selected by whole-file responsibility and independently frozen
 at scope commit 9fff3f43 before scoring. Its 90 Toolkit and 16 Monitor files are
@@ -158,7 +187,7 @@ reported separately; the 108/18 overall files and old v1 statistics remain.
 
 | Risk-core v2 | Covered / total branches | Coverage | More for 95% |
 | --- | ---: | ---: | ---: |
-| Toolkit | 11,264 / 12,906 | 87.2772% | 997 |
+| Toolkit | 11,286 / 12,906 | 87.4477% | 975 |
 | Monitor | 2,685 / 2,940 | 91.3265% | 108 |
 
 Native v1 scope remains 108/18 Python files overall and 97/16 core files. The excluded
@@ -233,3 +262,8 @@ process start with blocked by policy. Zero files were deleted; all five roots
 remain present. No retry or alternate deletion was attempted, and older denied
 roots were not included. Durable raw evidence and review/source worktrees remain
 preserved. See union31/cleanup-plan.json and union31/cleanup.json.
+
+Union33 cleanup of eight newly verified success-run/copy roots was rejected before
+process start with only `blocked by policy`. Zero files were deleted; all eight
+remain present. No retry or alternate deletion was attempted. Earlier rejected
+roots were untouched; see union33/cleanup-plan.json and union33/cleanup.json.
