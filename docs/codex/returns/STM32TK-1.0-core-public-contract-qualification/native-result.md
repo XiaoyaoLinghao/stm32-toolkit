@@ -2,9 +2,12 @@
 
 Accepted aggregation baseline: union36, canonical SHA256
 `566401658A8EE59BCE92FABD536B77264B2C925951E1495695B5E66B7608460B`.
-Integrated code head before this report: `54b28100db348320fffdc573df0a57e8eff99f12`.
+Integrated code head before this report: `c7d3d73bb2e352f9f1f8d9c7393448fcc64ee472`.
 U37 measured code head: `e0c8f3ffe0bc283901c7805d3865202e32505405`.
-Qualified product source: `78341213b8e5604d5f6a0436c4324d6d9f9e3ead`.
+U37-qualified product source: `78341213b8e5604d5f6a0436c4324d6d9f9e3ead`.
+Integrated Diagnostic source: `55d91a23a5a2f16fc47d324a9077dfcebf130be9`,
+reviewed final candidate `60a39d44f2416e3417d9c36a4076ca35945c366c`.
+The U37 Toolkit counters below describe the predecessor, not the changed candidate.
 Union37 native data verdict: **ACCEPTED_NATIVE_DATA**. Release 1.0: **NOT_ACCEPTED**.
 Canonical SHA256: `E41F381604588F3092F3F3A7E6A6A0332C59F65A66947BF07F79AA3620913961`.
 Independent review: `24F5C1C7919A8E1FEDE603124C6BF673479F6690963C298BC1D0E097C67FB1B4`.
@@ -43,7 +46,11 @@ mixed run2 raw remain excluded. A report field incorrectly attributing the alias
 behavior to run3 is a report-only correction; the behavior source is run2 and
 regression1 reacquires its measurement. No repeated behavior acceptance is claimed.
 
-Candidate60a39d44 remains isolated pending six-source native requalification.
+Candidate60a39d44 is integrated at c7d3d73b after behavior and complete-diff
+acceptance; six-source native requalification remains pending. Merge checkout
+changed the six files' raw representation relative to measured w11r. The other142
+source files match. Exact byte/line-ending equivalence is under separate review;
+neither matching Git history nor accepted behavior establishes raw source equality.
 Independent measurement review61AF9EC7 rejects regression1's entire raw: private
 fact/reader/validator/model substitutions and an unrecorded synthetic fixture
 switch are inseparable in its one context-free shard. The64 behavior results
@@ -59,8 +66,9 @@ selection deviation; all actual cases are legitimate public model/front-door
 calls, so the primary accepts their data without a repeat. Valid run3 plus this
 model input currently qualify76/80 model and291/296 recovery-model branches;
 the remaining four-file qualification is incomplete. Alias behavior stays at
-run2; its necessary isolated measurement is admitted because both prior alias
-raw inputs are unusable. Neither coverage counters nor behavior are invented.
+run2. Its isolated measurement now passes1 in44.3021s with one retained shard;
+independent native admission remains pending. This reacquisition is not a new
+behavior claim. Neither coverage counters nor behavior are invented.
 
 Engineering candidate8dde6cab is independently accepted and integratedca700646.
 Its two complete public discovery/generation risk families add13 unique native

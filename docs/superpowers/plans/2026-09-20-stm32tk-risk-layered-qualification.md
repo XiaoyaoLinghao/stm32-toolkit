@@ -2291,3 +2291,38 @@ actual subprocess source/coverage propagation. Include legitimate acceptance
 adapters whose only prior native data was regression1, but exclude any private
 producer/authority substitution. No suite starts on a claimed measurement failure
 alone without this bounded public-entry/actual-evidence analysis.
+
+### Diagnostic adapter measurement execution
+
+Product candidate60a39d44 is integrated at
+c7d3d73bb2e352f9f1f8d9c7393448fcc64ee472 after complete-diff and behavioral
+acceptance. The measurement source remains the unchanged w11r candidate60a tree;
+the six merge-checkout byte differences are independently checked as release
+input preparation, not assumed equal. No product/test change is authorized here.
+
+Independent review B99DDAF9 admits the isolated producer-reacquire raw as bounded
+current-source data. It covers four changed files and cannot qualify CLI/MCP.
+Review120FA8A2 admits the exact adapter preflight3B5FD3DF for execution: seven CLI
+modules and seven named public selectors, followed by ten MCP modules. The seven
+Windows-native checks remain mandatory outside this offline scope. Exclude the
+private-authority recovery-CLI fixture explicitly named in that preflight.
+
+The same Recovery Luna/max owner now owns both batches through first validation,
+without additional per-step approval. Run CLI then MCP serially on w11r so the
+groups never share a concurrently active worktree. Use separate cli-gap/mcp-gap
+evidence, temp/cache/log/coverage roots already frozen in the preflight. Each
+batch is capped at600 seconds, requires free memory>=15%, and stops at the first
+unexpected result; no automatic retry. A CLI infrastructure/product failure stops
+this dispatch before MCP pending classification. Existing source148/142+6 guards,
+explicit Toolkit+Monitor import paths and retained original shards remain required.
+
+Before each run compare collected function identities against the frozen selector
+inventory, asserting excluded functions are absent; counts alone are insufficient.
+Keep delegate translation evidence separate from producer/persistence evidence.
+MCP's actual stdio/worker children require identifiable original shards, actual
+source paths and matching source hashes. Missing child coverage means incomplete
+measurement even when behavior passes; classify it before considering any rerun.
+
+Independent raw/source review and formal serial aggregation are the exit gates.
+Unchanged model and producer measurements are not repeated. No hardware, build,
+installation, shared-ledger write, cleanup or remote action is delegated.
