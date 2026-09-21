@@ -11,7 +11,7 @@ eight candidate native arcs in unchanged Monitor source. U38 still measures the
 same Monitor coverage. A previous test of a neighboring outcome does not cover
 these exact missing branches. Conversely, an arc estimate is not execution PASS.
 
-## Three runnable scenarios
+## Public scenarios and the corrected reachability boundary
 
 1. Reject malformed public AnalysisPublication component types and malformed
    AnalysisBundleRef construction/wire shape. Reuse valid published objects and
@@ -19,14 +19,17 @@ these exact missing branches. Conversely, an arc estimate is not execution PASS.
    objects/store bytes and successful public parsing/reuse of the valid input.
    Candidate arcs in analysis_workflows.py:171->172,173->174,175->176,177->178,
    211->213,224->225. No private object fields or authority substitution.
-2. A publicly constructible sample with a non-NFC typed-value type reaches the
-   existing analysis exclusion at analysis.py:1208->1209. Require the existing
-   documented insufficient-valid-pairs/inconclusive result and exact exclusion
-   accounting, then analyze the unchanged valid input successfully. Derive all
-   earlier pairing/window/model requirements from the existing fixture. Do not
-   canonicalize the deliberately invalid field during fixture construction or
-   replace the production sample validator. This is input exclusion, not an
-   exception/refusal contract and not hardware evidence.
+2. **Withdrawn from this executable batch after the complete guard review.**
+   A SampleValue can retain a non-NFC typed-value string, but this does not prove
+   that public analysis can reach analysis.py:1208->1209. The public
+   analyze_monitor_windows entry first calls _validate_window: each batch is
+   canonicalized at analysis.py:1157-1168. Shared monitor_replay_contract.py:193-198
+   rejects non-NFC string values, not only keys; the physical canonicalizer does
+   the same at332-336. Thus the real code points U+0065,U+0301 in the type value
+   are rejected before _trusted_sample. Neighboring control-character/extra-key
+   tests do not establish this path. This corrects the main's proposed scenario,
+   not product behavior. Do not bypass this guard or claim this branch covered.
+   Keep the branch in the frozen denominator and the unfulfilled 95% target.
 3. Export an accepted physical-shaped analysis using a different, independently
    valid publicly published TestRun ID. Prove the positive export first; the
    mismatch must reach analysis_workflows.py:1336->1347 with the exact TestRun

@@ -6,7 +6,7 @@ fixture preparation, implementation and first verification without stepwise user
 confirmation. The independent reviewer does not implement or self-accept the diff.
 
 Worktree: D:\codex-tmp\v10b-0918\r10\w15m, branch
-codex/STM32TK-1.0-monitor-public-residuals. Scratch r10/t/mr1; retained evidence
+codex/STM32TK-1.0-monitor-public-residuals. Scratch r10/t/w15m; retained evidence
 r10/e/risk-v2/wave14/monitor. Python r10/py. All generated files remain under
 D:\codex-tmp. Main owns cleanup; retain raw shards and all useful failure evidence.
 
@@ -14,7 +14,10 @@ D:\codex-tmp. Main owns cleanup; retain raw shards and all useful failure eviden
    Reuse the bounded audits and existing positive fixture rather than redoing the
    entire residual search. Trace first public guards and expected result shape,
    including the true/false direction of each candidate arc, before writing tests.
-2. Implement the three scenarios in the owned new test file. No framework or
+2. Implement the two admitted scenarios (specification items1 and3) in the owned
+   new test file. Item2's non-NFC exclusion is dominated by the earlier public
+   canonical string-value check and remains unmeasured in the frozen scope.
+   The original eight-arc estimate is now at most seven for this batch. No framework or
    helper expansion without a concrete dependency and main decision. Run static
    syntax/diff checks and commit the bounded test file before recording source
    and test identities for the actual run.
@@ -35,3 +38,11 @@ D:\codex-tmp. Main owns cleanup; retain raw shards and all useful failure eviden
    separate decisions. Main alone updates shared ledgers and runs the next native
    aggregate after all active suites are terminal. No release build, hardware,
    remote action or whole-package rerun is authorized by this test-only batch.
+
+The first run stopped on a test fixture tuple-unpack error: the existing
+_physical_pair returns seven values, while both new callers originally expected
+four. Candidate aa6ceeaa fixes both callers. After independent static acceptance
+of the corrected two-scenario scope, the same owner may run that focused file
+once more. Preserve run1 as failed test-input evidence; do not admit its raw data
+or rerun unrelated suites. No product change is justified by either this fixture
+error or the withdrawn reachability estimate.
