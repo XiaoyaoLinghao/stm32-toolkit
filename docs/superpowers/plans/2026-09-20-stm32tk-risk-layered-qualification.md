@@ -1385,3 +1385,60 @@ Python subprocesses, source148, argv/head/JUnit/process, and keep original
 shards through combine and JSON. Stop on first unexpected failure; classify
 before any correction. Do not repeat valid runs solely to demonstrate overlap.
 The two-suite limit and serial formal aggregation/shared ledger remain in force.
+
+## Wave9 bounded protocol producer contract — 2026-09-21
+
+Accepted code base: 1b7a763d2be33a4789f3023a161d5b53a4034112. Source148 remains
+8a11caef14df16c5e56c0be2363d4ef5530110eb. Current user approval covers these
+offline supplements with unchanged release gates. Primary owns specification,
+review and acceptance; existing finalization_binding_impl Luna/max owns the
+sole new test file tools/stm32-toolkit/tests/test_risk_protocol_payload_authority.py.
+Worktree r10/w9r, temp r10/t/w9r/run1, evidence e/risk-v2/wave9/protocol/run1.
+No existing tests, product bytes, shared fixtures, dependencies or scope change.
+
+The prior15-case assembly journey is accepted; do not repeat it. Two complementary
+public producer scenarios group14 currently missing protocol branches. This is
+static expected reachability, not measured coverage. Source inspection and
+union32 native candidate identify these same residuals from accepted union31
+minus the15 executed assembly branches; no pending aggregate claim is required
+to establish that these14 have not been exercised.
+
+1. A caller supplies a v2 payload to public encode_frame(version=2). Reuse the
+   valid _v2_payloads fixture in test_target_protocol_v2.py; change only the named
+   public payload field. Ten refusal variants cover case_ids empty (170->171),
+   duplicate (173->174), or not UTF-8 sorted (175->176); inventory mode host
+   (187->188); valid-format incorrect inventory digest (191->192) or run_start
+   digest (197->198); invalid case_result state (205->206); invalid terminal
+   state (211->212); wrong counts keys (216->217); unsupported log stream
+   (222->223). The closed schema, other fields, frame kind and sequence remain
+   valid so the named guard is first. Assert exact TestProtocolError code AND
+   message. These are producer refusals before bytes exist, not malformed-wire
+   decoder acceptance. One successful real encode/decode/assemble journey uses
+   a non-None case_result message (208->209), recomputes the terminal digest over
+   actual bytes, and asserts preserved message, manifest identity, cases,
+   terminal state and raw artifact digest. Existing _v2_stream and _assemble_v2
+   test fixtures already call the real public APIs and may be reused.
+2. A caller declares a target inventory through the exported public
+   calculate_case_inventory_digest. Three invalid declarations are a string
+   instead of sequence (152->153), empty sequence (154->155), duplicate case IDs
+   (159->160). Assert exact public code/message. Retain existing successful
+   canonical digest and size-limit evidence; do not repeat it. This public
+   declaration boundary intentionally rejects before encoding and does not
+   fabricate an impossible TestInventory or mutate internal state.
+
+No private product calls, monkeypatched validators, altered cached frames,
+forged coverage, hardware, remote actions or general diagnostic framework.
+The remaining unsupported-version public argument and precheck-dominated
+assembly branches are outside this slice and remain in the denominator.
+
+Return one clean committed candidate with complete diff, first-guard map,
+Ruff no-cache/format, AST and diff checks. Do not pytest until primary complete
+static review releases one bounded exact-file run; independent review is needed
+before integration. Reuse an existing accepted guarded launcher with only batch
+inputs changed, -x and300s ceiling, original native shards retained through
+combine --keep and JSON --keep-combined. Set runtimeSourceHead from the pinned
+source148 runtimeHead, separately from tested codeHead; do not copy the earlier
+report-label error. Measure actual subprocesses if any, and distinguish absence
+of product subprocesses from missing measurement. Current resource restriction
+permits only one suite until the two-suite capacity criterion is revalidated.
+Primary alone owns native aggregation/shared ledger/cleanup; no denied-root retry.
