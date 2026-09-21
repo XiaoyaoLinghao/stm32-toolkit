@@ -2,7 +2,7 @@
 
 Accepted aggregation baseline: union36, canonical SHA256
 `566401658A8EE59BCE92FABD536B77264B2C925951E1495695B5E66B7608460B`.
-Integrated code head before this report: `c55a19671061e1dda83fe538d114409a96a6581f`.
+Integrated code head before this report: `54b28100db348320fffdc573df0a57e8eff99f12`.
 U37 measured code head: `e0c8f3ffe0bc283901c7805d3865202e32505405`.
 Qualified product source: `78341213b8e5604d5f6a0436c4324d6d9f9e3ead`.
 Union37 native data verdict: **ACCEPTED_NATIVE_DATA**. Release 1.0: **NOT_ACCEPTED**.
@@ -43,14 +43,33 @@ mixed run2 raw remain excluded. A report field incorrectly attributing the alias
 behavior to run3 is a report-only correction; the behavior source is run2 and
 regression1 reacquires its measurement. No repeated behavior acceptance is claimed.
 
-Candidate60a39d44 is still isolated pending six-source native requalification.
-Fresh run3/regression1 cover896/1760 branches in those six files, whereas U37
-contains1417/1748 from their old semantic version. These sets cannot be spliced.
-The current candidate denominator would be13,592, not13,580; frozen file scope
-is unchanged. Passing behavior does not complete the native coverage gate.
-Review: e/risk-v2/diagnostic-reference/independent-review.md, SHA256
-`D107393A43BE9E929AC9E9403F3F70DEB6A49A14A2927E3331A4D0F1240E2C0B`.
+Candidate60a39d44 remains isolated pending six-source native requalification.
+Independent measurement review61AF9EC7 rejects regression1's entire raw: private
+fact/reader/validator/model substitutions and an unrecorded synthetic fixture
+switch are inseparable in its one context-free shard. The64 behavior results
+remain bounded to what each test actually proved. Its896/1760 read-only union
+with run3 was diagnostic arithmetic and is not admissible native qualification.
+The old U37 six-file1417/1748 arcs also cannot transfer to the new semantic source.
+The candidate's total denominator is13,592, not13,580; file scope is unchanged.
 
+A separate model-gap run passes140 in3.7871s and has valid source/shard evidence.
+JUnit proves112 planned cases plus28 unintended repeated public cases, not the
+execution owner's initial34 estimate. Wrong pytest-root deselect IDs caused the
+selection deviation; all actual cases are legitimate public model/front-door
+calls, so the primary accepts their data without a repeat. Valid run3 plus this
+model input currently qualify76/80 model and291/296 recovery-model branches;
+the remaining four-file qualification is incomplete. Alias behavior stays at
+run2; its necessary isolated measurement is admitted because both prior alias
+raw inputs are unusable. Neither coverage counters nor behavior are invented.
+
+Engineering candidate8dde6cab is independently accepted and integratedca700646.
+Its two complete public discovery/generation risk families add13 unique native
+arcs, pending the next serial aggregate. Run1 takes3.1361s;13 strengthened-oracle
+nodes take3.2485s in run3. The unchanged three runner-output cases retain run1.
+The plan-to-integration interval is25m24s; suites did not overlap. Run2 executed
+zero tests because whitespace parameter IDs were split by the launcher; stable
+IDs resolved selection without a new framework or product change. No duplicated
+arc credit is taken. U37 remains the canonical source-compatible aggregate.
 RC1 remains stopped after build-A's source/wheel binding refusal; no build-B or
 installation retry. The Sampler raw12FF/mixed-newline and archiveD198/CRLF pair
 has independent Python3.12.10 normalized-byte/AST/code-object/line-table equality
