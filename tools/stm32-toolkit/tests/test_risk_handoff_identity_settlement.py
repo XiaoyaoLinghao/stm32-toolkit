@@ -181,24 +181,32 @@ def test_handoff_identity_race_refuses_without_overreach_and_recovers(
     end_changed = False
 
     def factory(endpoint_value: object) -> handoff_fixture.FakeClient:
-        nonlocal end_changed
-        returned = handoff_fixture.FakeClient(
-            endpoint_value,
-            handoff_fixture._elf_with_flash_segment(text_size=ORIGINAL_TEXT_SIZE)[
-                84 : 84 + 320
-            ],
-        )
         if not returned_clients:
 
-            def publish_changed_after_read() -> None:
-                nonlocal end_changed
-                if not end_changed:
-                    end_changed = True
-                    changed_end_identities.append(
-                        _publish_identity(project, text_size=CHANGED_TEXT_SIZE)
-                    )
+            class PublishChangedOnAttach(handoff_fixture.FakeClient):
+                async def attach(self, probe_id: str, target: str) -> object:
+                    attachment = await super().attach(probe_id, target)
+                    nonlocal end_changed
+                    if not end_changed:
+                        end_changed = True
+                        changed_end_identities.append(
+                            _publish_identity(project, text_size=CHANGED_TEXT_SIZE)
+                        )
+                    return attachment
 
-            returned.after_read = publish_changed_after_read
+            returned: handoff_fixture.FakeClient = PublishChangedOnAttach(
+                endpoint_value,
+                handoff_fixture._elf_with_flash_segment(text_size=ORIGINAL_TEXT_SIZE)[
+                    84 : 84 + 320
+                ],
+            )
+        else:
+            returned = handoff_fixture.FakeClient(
+                endpoint_value,
+                handoff_fixture._elf_with_flash_segment(text_size=ORIGINAL_TEXT_SIZE)[
+                    84 : 84 + 320
+                ],
+            )
         returned_clients.append(returned)
         return returned
 
@@ -235,7 +243,6 @@ def test_handoff_identity_race_refuses_without_overreach_and_recovers(
     assert "acknowledge" not in supervisor.lifecycle_events
     assert [event[0] for event in returned_clients[0].events] == [
         "attach",
-        "read",
         "close",
     ]
     assert request.expected_build_id == str(original_identity["buildId"])
