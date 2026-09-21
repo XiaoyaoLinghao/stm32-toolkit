@@ -44,3 +44,31 @@ Primary owns cleanup; no retries of previously refused cleanup operations.
 Current integration remains pinned during union38 review. This worktree carries
 the design/plan commit separately until the bounded test diff is accepted. No
 Toolkit release build, deployment or hardware operation is part of this batch.
+
+## Identity correction batch and exit conditions
+
+Continue with the same Recovery owner from clean candidate
+`d6079bb839265c835af13447b36c984ffa32f363`. Main owns the matching identity-design
+amendment; the user has authorized this bounded offline correction work. M1/M2
+source-diff and public-build retention findings are statically closed by review
+`286D7616FA83585BA85F581049C6C1390E288E6C785E2286556DDFF1E73FE2D8`.
+This batch fixes the identified fixture input contract as one complete graph,
+not another product branch patch. Ownership additionally covers only the named
+history helper in `test_acceptance_physical_recovery.py`; retain its default.
+
+Implement both before/after public-model target bindings and meaningful graph
+assertions, then commit the two test files after static checks. Independently
+review the full accepted-base-to-candidate diff before one corrected current-mode
+`test_public_finalization_workflow_journey` run. Do not repeat the two unaffected
+selection-refusal PASS from run1 or whole-package suites. The helper's unchanged
+default and untouched callers receive static compatibility review; expand actual
+regression only for a concrete changed behavior or finding.
+
+Retain the 600-second first-failure-stop budget, independent run2 paths, original
+seed immutability, current 148-file source binding and fresh-show child raw-data
+requirements. Do not reuse run1's failed mixed coverage. Immediately record the
+actual terminal path, result and reached phase before further diagnosis. Behavior
+acceptance requires the complete journey; measurement acceptance additionally
+requires original parent/child shards, exact union and source proof. No further
+retry follows an unexpected result without classification and main review. The
+same identity-contract round count continues across this design return.

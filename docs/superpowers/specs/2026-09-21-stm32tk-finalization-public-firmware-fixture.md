@@ -44,3 +44,31 @@ cannot accept actual build identities without changes elsewhere, return the
 concrete dependency to primary before expanding ownership. Current product bytes
 must remain unchanged. All copies, build outputs and raw evidence stay in the
 assigned D:\codex-tmp roots; original retained projects/evidence are read-only.
+
+## Main-owned identity design return after run1
+
+This is a test-fixture contract correction, not a product change. The complete
+identity audit is `r10/e/risk-v2/finalization-current/identity-design-input.md`,
+SHA256 `A3B6FE56EF16B3764AE7CB628218B029D22785FD1AE3A816735C16943C32A73E`.
+Run1 reached the public `firmware-built-after` checkpoint at revision 6 before
+Monitor publication refused a binding whose debug target was `board:t10` instead
+of the public project's `stm32f429zgtx`. Preserve that failed run and its phase
+correction. Diagnostic's public 32-hex identity is valid; do not convert it.
+
+Freeze two target domains across the whole graph: fresh firmware facts and
+`model.target.device` supply the semantic target device in EvidenceIdentity,
+TargetRun and Recovery; `model.debug.target` supplies Monitor physical_target.
+Both before and after Monitor bindings use the copied project's public debug
+target. Probe raw-label/digest, flash/lease, run/case and signal fixture identities
+retain their existing separate roles and published cross-references. The current
+memory-mailbox project uses the existing mailbox physical-publication mapping.
+Do not rewrite the project, substitute private authority or relax any reader.
+
+Extend ownership only to the `_append_physical_monitor_history` helper in
+`tools/stm32-toolkit/tests/test_acceptance_physical_recovery.py`, in addition to
+the already owned finalization test. Add a keyword physical_target argument with
+the existing `board:t10` default so untouched callers keep their behavior. The
+finalization graph explicitly supplies its own public model's debug target in
+both current and portable branches. Assert the current graph's separate target
+domains and provenance relationships using existing public objects. No other
+helper contract, production file or test framework is in scope.
