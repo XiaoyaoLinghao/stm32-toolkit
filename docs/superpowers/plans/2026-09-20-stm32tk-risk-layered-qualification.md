@@ -1597,3 +1597,46 @@ logs/data/temp, no forced retry, and process/descendant settlement. Primary disp
 must explicitly allocate one of the two execution slots; this plan alone does not
 allocate a slot. Independent full-diff review may overlap the first run, but full
 review and primary runtime reconciliation are mandatory before integration.
+
+## Wave10 public Monitor analysis model slice
+
+Accepted base: `b6677f8dbafa0bd70bfdeffb85ead623f4da05e5`; product8a11/source148,
+whole-file scopes and previous behavior evidence remain unchanged. Primary owns
+design/acceptance, existing Monitor owner `/root/physical_reference_impl` implements,
+and `/root/union30_native_review` reviews the complete diff independently.
+The bounded preflight is `r10/e/risk-v2/wave10/analysis-public-boundary-preflight.md`,
+SHA256 `8B85A40CC981652852F4AE5561FB6D2C371AC041E410D93F669109A2904A674A`.
+
+Primary correction before implementation: its proposed881->882 is dominated by
+expected_schema=V3 whenever request is non-None at853-865. A legacy schema fails
+the earlier schema guard, while V3 takes the other arm. Exclude this input and arc;
+retain the original report plus an additive correction, never bypass the guard.
+No denominator changes follow. The admitted estimate is11 new arcs, not12.
+
+Scenario A constructs the legal request/computation/lineage/result/reference/marker
+graph, verifies exact-instance parsers and canonical wire roundtrips, then uses
+valid two-pair native input with minimum_valid_pairs=3 to create and roundtrip the
+accepted INVALID/INCONCLUSIVE/INSUFFICIENT_VALID_PAIRS result. Prefer the existing
+public analyze_monitor_windows computation over reconstructing algorithm output;
+AnalysisResult.new owns the result digest. Intended missing arcs are653->654,
+987->988,1082->1083 and889->891. These are software model contracts, not physical
+sampling evidence.
+
+Scenario B submits copied public wire input or direct invalid caller arguments to
+exported constructors/parsers: unknown computation quality430->436, nonclosed
+computation payload520->521, wrong lineage input type622->623, mixed valid reference
+families624->625, evidence-reference schema976->977, marker polarity1040->1041 and
+marker label1042->1043. Check the preflight's exact ANALYSIS_REQUEST_INVALID code
+and message, unchanged valid input graph, and successful reuse of that graph.
+No private-state mutation, invalid successful object, helper patch or new framework.
+
+Only owned file: `tools/stm32-monitor/tests/test_risk_analysis_public_boundaries.py`.
+Tree `r10/w10m`, branch `codex/STM32TK-1.0-analysis-public-boundaries`; temporary
+`r10/t/w10m/run1`, evidence `r10/e/risk-v2/wave10/monitor/run1`, all under approved
+D:/codex-tmp/v10b-0918. Reuse existing guarded launcher and both package source paths
+needed by Monitor fixtures; capture actual interpreter/native shards, --keep originals,
+record behavior and measurement separately, and count only gains against accepted U33
+(unchanged Monitor U31). No product subprocess is expected; prove capture if one appears.
+Primary must explicitly allocate execution slot2; first run after candidate commit,
+Ruff/format/AST/diff/source148 checks, fresh memory>=15%, ceiling300s, first anomaly
+stop/no retry. Independent review can overlap execution; acceptance requires both.
