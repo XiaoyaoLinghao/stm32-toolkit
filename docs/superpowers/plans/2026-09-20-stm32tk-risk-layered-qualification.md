@@ -2140,3 +2140,29 @@ e/risk-v2/diagnostic-reference/regression1, both source roots and loaded hashes,
 the same resource/capture guards, and first-error stop. Passing run2 journeys
 are not rerun merely because adapter tests change. Independent delta review,
 runtime acceptance and six-source native requalification remain required.
+
+### Recovery test-oracle design return after run2
+
+Run2 at c1f6d02a passes the complete alias-to-record/final-checkpoint journey.
+Preserve that per-node behavioral result. The second node returned the expected
+OUTPUT_INVALID public envelope; test _MESSAGES omitted its expected message and
+raised KeyError before the no-write assertion. The third node was not executed.
+The primary reviewed all twelve failure assertions: seven distinct expected
+codes, six correctly defined messages, and this one missing literal. The same
+failure helper serves both remaining journeys. This is a test-oracle correction,
+not a new product issue or permission to change the six product files.
+
+Before another execution, the original owner completes the whole oracle check:
+all seven code/message/operation/full-envelope expectations, each call's no-write
+snapshot, and the complete corrupt-root restoration. Add the missing literal
+"Acceptance attempt public output is invalid." in the owned producer test;
+evaluate corruption refusal calls sequentially so each no-write check observes
+its own action, not an eagerly evaluated tuple of all three calls. No generic
+framework, relaxed expected result, or private product seam is allowed. Record
+the closed assertion inventory in existing run-local evidence and commit.
+One run3 in t/diagref/run3 and e/risk-v2/diagnostic-reference/run3 is admitted for
+only the two unfinished nodes (slot1,600 seconds, unchanged source/import/capture
+guards). Do not rerun the first PASS. Any unexpected result stops this run.
+The previously frozen adapter/model/boundary regression follows only if the
+remaining two nodes pass. Failed-run raw data stays unaccepted unless independent
+review explicitly reconciles its observed scope; never invent per-test shards.
