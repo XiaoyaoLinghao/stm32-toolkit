@@ -2756,3 +2756,78 @@ report the actual unique delta and no lost baseline evidence, and do not infer
 gain from the static proposal. Independent full-diff/native review precedes
 integration or aggregation. A changed earlier guard returns to this fixed design;
 do not add fakes, weaken assertions or extend the family to compensate.
+
+### Monitor verification-facility redesign after revision3
+
+Independent review `e/rc2/monitor-console/independent-review-revision3.md`
+SHA256 `CE001066D37DB9BEA2768376F04D5BEE0994EA7DF470D8A12D7377204B54B142`
+still finds the same process/output ownership contract unconverged. Preserve
+all three rounds under this contract. This is TEST_INFRASTRUCTURE; do not
+change Monitor, its launcher, dependencies or RC2. Stop adding branch-specific
+repairs to the1625-line adapter. The primary has reconsidered the integration
+boundary: manual CreateProcess/pipe/thread ownership is replaced as one unit
+with the supported runtime's subprocess transport and one gated worker.
+
+Existing repository helpers have no real CTRL_C_EVENT entry. The desktop
+terminal can provide an actual console, but terminal allocation alone supplies
+neither private ready-token capture nor the required owned-descendant closure
+proof. Reuse subprocess/asyncio/installed pywin32 for their existing roles;
+the one run-local file remains specific to this fixed RC2 scenario and must
+not become a reusable runner. Keep the same Luna/max owner and preserve the
+revision3 script, preparation and preflight before replacement.
+
+The controller owns one native kill-on-close, no-breakaway Job and one ordinary
+subprocess.Popen worker. The trusted worker bootstrap uses only the standard
+library, starts no child and imports no product before reading one exact GO
+line from its private stdin. The controller retains the Popen process handle,
+assigns that worker to the Job, verifies containment, and only then sends GO.
+This deliberately replaces the earlier suspended-thread transfer requirement:
+ordinary bootstrap code may run while waiting, but no product or scenario
+child may execute outside established Job ownership. Failure before GO uses
+the still-owned Popen terminate/wait path; no PID lookup or kill is allowed.
+All later launcher, event-helper and public-control children inherit the Job
+automatically. There is no manual child-side pipe inheritance, suspended thread,
+custom JobChild constructor or per-child assignment path.
+
+The worker uses asyncio's standard subprocess transport and bounded binary
+reads for the existing launcher/helper/public-control commands. A single
+event-loop owner accounts for both output streams; read at most4KiB per chunk
+and enforce the256KiB lifecycle cap before retaining bytes, including partial
+lines. Drain both streams to EOF before final parsing, propagate every reader
+failure, and treat overflow/incomplete capture as failure. No daemon thread may
+silently die. Ready/control records use their exact current public key sets;
+the sole intentional credential field is removed before scanning all other
+fields and all prior/following bytes. Tokens, cookies, raw child output and raw
+exceptions remain memory-only. Worker stdout/stderr are not evidence sinks;
+only closed-schema redacted terminal facts may reach the parent/result files.
+
+Use a sanitized environment for every child: remove inherited Python import
+and runtime overrides, explicitly set no-user-site/safe-path/no-bytecode, use
+the frozen absolute runtime interpreter, fixed shipped launcher, approved
+project and owned D-drive temp roots. Verify installed module origins and
+hashes through the existing public interpreter entry before the scenario;
+do not claim package evidence from a source-first PYTHONPATH. Native consoles
+must be hidden. The acceptance actions remain exactly one shipped serve,
+one native CTRL_C_EVENT, and one later public start/stop lock-reuse control.
+
+The controller's outer deadline remains120seconds including15seconds reserved
+for cleanup. No operation starts after the working deadline. On every exit,
+independently attempt bounded worker/Job termination when needed, wait, close
+stdin/transport/process/Job handles, and record each failure without skipping
+later cleanup. Close attempts are distinct from confirmed closure. PASS needs
+normal worker completion, empty Job, successful required handle closure and
+all original service/auth/exit130/listener/record/project/reuse assertions.
+Emergency Job termination or kill-on-close fallback is a failed run, never
+successful product shutdown. Failures preserve evidence/residue and prohibit
+another application start. Retained handles remain owned until termination
+or completed transfer; no early identity query may discard cleanup authority.
+
+The owner may implement and verify this complete facility revision with finite
+offline transport checks using harmless stdlib children only: assignment/GO
+failure, normal child drain, no-newline overflow, reader failure, timeout,
+redaction and terminal cleanup. Reuse current checks where applicable; no
+Monitor service or pytest/coverage matrix is released. Complete independent
+review then primary admission still precede the one real package run. Do not
+reset the accumulated review count or call this a product fix. If this unit
+still cannot satisfy the contract, return a concrete design/capability blocker
+instead of another local patch series. Other independent release work proceeds.
