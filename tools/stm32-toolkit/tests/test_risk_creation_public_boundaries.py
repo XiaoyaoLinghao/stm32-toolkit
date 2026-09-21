@@ -306,6 +306,16 @@ def _generation_case(root: Path, variant: str):
             0,
         ),
     ],
+    ids=[
+        "ioc-changed",
+        "ioc-type",
+        "ioc-oversized",
+        "descriptor-invalid",
+        "protocol-invalid",
+        "result-invalid",
+        "output-invalid",
+        "container-nonempty",
+    ],
 )
 def test_public_generation_refusal_preserves_user_files_and_fresh_recovery(
     tmp_path: Path,
