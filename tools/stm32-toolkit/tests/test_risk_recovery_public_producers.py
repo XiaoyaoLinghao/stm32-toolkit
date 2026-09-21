@@ -15,6 +15,7 @@ from stm32_monitor.analysis_workflows import (
 )
 from stm32_monitor.replay import ingest_monitor_replay
 from stm32_toolkit import __version__
+from stm32_toolkit.acceptance.model import AcceptanceRecord
 from stm32_toolkit.acceptance.recovery import AcceptanceAttempt
 from stm32_toolkit.acceptance.recovery_workflows import (
     AcceptanceRecoveryContext,
@@ -83,6 +84,13 @@ _MESSAGES = {
     "ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED": "Acceptance attempt evidence failed integrity validation.",
 }
 
+_ACCEPTANCE_MESSAGES = {
+    "ACCEPTANCE_REFERENCE_INVALID": "Acceptance scenario reference is invalid.",
+    "ACCEPTANCE_EVIDENCE_INTEGRITY_FAILED": "Acceptance evidence failed integrity validation.",
+    "ACCEPTANCE_IDENTITY_MISMATCH": "Acceptance scenario identity does not match.",
+    "ACCEPTANCE_RECORD_CONFLICT": "Acceptance record ID is already bound to different content.",
+}
+
 
 @dataclass(frozen=True)
 class _Prefix:
@@ -130,6 +138,18 @@ def _assert_failure(result: object, code: str, *, operation: str) -> None:
     }
 
 
+def _assert_acceptance_failure(result: object, code: str, *, operation: str) -> None:
+    assert _wire(result) == {
+        "protocol": "stm32-toolkit/1",
+        "ok": False,
+        "operation": operation,
+        "code": code,
+        "message": _ACCEPTANCE_MESSAGES[code],
+        "data": None,
+        "details": {},
+    }
+
+
 def _file_snapshot(root: Path) -> dict[str, bytes]:
     if not root.exists():
         return {}
@@ -138,6 +158,16 @@ def _file_snapshot(root: Path) -> dict[str, bytes]:
         for path in root.rglob("*")
         if path.is_file()
     }
+
+
+def _restore_file_snapshot(root: Path, snapshot: Mapping[str, bytes]) -> None:
+    current = _file_snapshot(root)
+    for relative in sorted(set(current) - set(snapshot), reverse=True):
+        (root / relative).unlink()
+    for relative, payload in snapshot.items():
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(payload)
 
 
 def _persistence_snapshot(
@@ -480,7 +510,13 @@ def _public_source_change(
     )
 
 
-def _complete_public_tail(tmp_path: Path, prefix: _Prefix, attempt_id: str) -> tuple[Mapping[str, object], Mapping[str, object]]:
+def _complete_public_tail(
+    tmp_path: Path,
+    prefix: _Prefix,
+    attempt_id: str,
+    *,
+    finalize: bool = True,
+) -> tuple[Mapping[str, object], Mapping[str, object]]:
     project_root = prefix.project_root
     data_root = prefix.data_root
     context = prefix.context
@@ -710,6 +746,11 @@ def _complete_public_tail(tmp_path: Path, prefix: _Prefix, attempt_id: str) -> t
         diagnostic_session_id=prefix.diagnostic_session_id,
     )
     assert _wire(record_retry) == _wire(record)
+    if not finalize:
+        current = _data(show_acceptance_attempt(context, attempt_id=attempt_id))["attempt"]
+        assert isinstance(current, Mapping)
+        assert current["revision"] == 6
+        return record_data, current
     final = checkpoint_acceptance_attempt(
         context,
         attempt_id=attempt_id,
@@ -720,6 +761,370 @@ def _complete_public_tail(tmp_path: Path, prefix: _Prefix, attempt_id: str) -> t
     assert final.ok is True, final.to_dict()
     assert _data(final)["attempt"]["revision"] == 7
     return record_data, _data(final)["attempt"]
+
+
+def _prepare_acceptance_reader_prefix(
+    tmp_path: Path,
+) -> tuple[_Prefix, Mapping[str, object]]:
+    prefix = _prepare_prefix(tmp_path, with_build=True)
+    context = prefix.context
+    started = begin_acceptance_attempt(
+        context,
+        attempt_id=ATTEMPT_ID,
+        scenario_id="legacy-keil-migration",
+        scenario_version="1",
+    )
+    assert _data(started)["attempt"]["revision"] == 0
+    for revision, stage, kwargs in (
+        (0, "project-materialized", {}),
+        (1, "firmware-built-before", {}),
+        (2, "target-failure-replayed", {"test_run_id": FAILED_RUN_ID}),
+    ):
+        result = checkpoint_acceptance_attempt(
+            context,
+            attempt_id=ATTEMPT_ID,
+            expected_revision=revision,
+            stage=stage,
+            **kwargs,
+        )
+        assert result.ok is True, result.to_dict()
+    diagnosed = checkpoint_acceptance_attempt(
+        context,
+        attempt_id=ATTEMPT_ID,
+        expected_revision=3,
+        stage="diagnosis-completed",
+        diagnostic_session_id=prefix.diagnostic_compact_id,
+    )
+    assert diagnosed.ok is True, diagnosed.to_dict()
+    action_digest = _data(resume_acceptance_attempt(context, attempt_id=ATTEMPT_ID))[
+        "actionDigest"
+    ]
+    authorized = authorize_acceptance_source_change(
+        context,
+        attempt_id=ATTEMPT_ID,
+        expected_revision=4,
+        action_digest=action_digest,
+        authorized=True,
+    )
+    assert authorized.ok is True, authorized.to_dict()
+    record, current_attempt = _complete_public_tail(
+        tmp_path, prefix, ATTEMPT_ID, finalize=False
+    )
+    assert current_attempt["revision"] == 6
+    return prefix, record
+
+
+def _acceptance_root_path(evidence: EvidenceStore, record_id: str) -> Path:
+    name = hashlib.sha256(
+        canonical_json_bytes({"root_type": "acceptance-scenario", "root_id": record_id})
+    ).hexdigest()
+    path = evidence.root / "roots" / "acceptance-scenario" / f"{name}.json"
+    assert path.is_file()
+    return path
+
+
+def _acceptance_storage(
+    evidence: EvidenceStore, record_id: str
+) -> tuple[Path, RootRecord, EvidenceEnvelope]:
+    root_path = _acceptance_root_path(evidence, record_id)
+    root = get_root(evidence, "acceptance-scenario", record_id)
+    envelope = evidence.get_envelope(root.manifest_id)
+    return root_path, root, envelope
+
+
+def _acceptance_root_metadata(record: AcceptanceRecord) -> dict[str, object]:
+    return {
+        "record_sha256": hashlib.sha256(
+            canonical_json_bytes(record.to_dict())
+        ).hexdigest(),
+        "scenario_digest": record.scenario_digest,
+        "workspace_id": record.workspace_id,
+        "logical_project_id": record.logical_project_id,
+    }
+
+
+def _install_acceptance_envelope(
+    evidence: EvidenceStore,
+    root_path: Path,
+    root: RootRecord,
+    envelope: EvidenceEnvelope,
+    *,
+    metadata: Mapping[str, object],
+) -> None:
+    evidence.put_envelope(envelope)
+    root_path.unlink()
+    put_root(
+        evidence,
+        RootRecord(
+            root_type=root.root_type,
+            root_id=root.root_id,
+            manifest_id=str(envelope.evidence_id),
+            metadata=metadata,
+        ),
+    )
+
+
+def _record_acceptance_again(prefix: _Prefix, record: Mapping[str, object]) -> object:
+    return record_acceptance_scenario(
+        AcceptanceWorkflowContext(prefix.project_root, prefix.data_root, SESSION_ID),
+        record_id=ATTEMPT_ID,
+        scenario_id="legacy-keil-migration",
+        scenario_version="1",
+        failed_before_test_run_id=str(record["failedBeforeTestRunId"]),
+        fixed_after_test_run_id=str(record["fixedAfterTestRunId"]),
+        diagnostic_session_id=str(record["diagnosticSessionId"]),
+    )
+
+
+def _run_acceptance_reader_variant(
+    prefix: _Prefix,
+    record: Mapping[str, object],
+    evidence: EvidenceStore,
+    install,
+    *,
+    show_code: str,
+    record_code: str,
+    baseline_show_wire: dict[str, object],
+    baseline_record_wire: dict[str, object],
+    expected_checkpoint_wire: dict[str, object] | None,
+) -> dict[str, object]:
+    baseline_evidence = _file_snapshot(evidence.root)
+    baseline_persistence = _persistence_snapshot(prefix.project_root, prefix.data_root)
+    try:
+        install()
+        corrupted_persistence = _persistence_snapshot(
+            prefix.project_root, prefix.data_root
+        )
+        shown = show_acceptance_scenario(
+            AcceptanceWorkflowContext(
+                prefix.project_root, prefix.data_root, SESSION_ID
+            ),
+            record_id=ATTEMPT_ID,
+        )
+        _assert_acceptance_failure(
+            shown, show_code, operation="acceptance.scenario.show"
+        )
+        rerecorded = _record_acceptance_again(prefix, record)
+        _assert_acceptance_failure(
+            rerecorded, record_code, operation="acceptance.scenario.record"
+        )
+        refused_checkpoint = checkpoint_acceptance_attempt(
+            prefix.context,
+            attempt_id=ATTEMPT_ID,
+            expected_revision=6,
+            stage="target-fix-verified",
+            acceptance_record_id=ATTEMPT_ID,
+        )
+        _assert_failure(
+            refused_checkpoint,
+            "ACCEPTANCE_ATTEMPT_OUTPUT_INVALID",
+            operation="acceptance.attempt.checkpoint",
+        )
+        assert (
+            _persistence_snapshot(prefix.project_root, prefix.data_root)
+            == corrupted_persistence
+        )
+    finally:
+        _restore_file_snapshot(evidence.root, baseline_evidence)
+    assert (
+        _persistence_snapshot(prefix.project_root, prefix.data_root)
+        == baseline_persistence
+    )
+
+    restored_show = show_acceptance_scenario(
+        AcceptanceWorkflowContext(prefix.project_root, prefix.data_root, SESSION_ID),
+        record_id=ATTEMPT_ID,
+    )
+    assert _wire(restored_show) == baseline_show_wire
+    restored_record = _record_acceptance_again(prefix, record)
+    assert _wire(restored_record) == baseline_record_wire
+    restored_checkpoint = checkpoint_acceptance_attempt(
+        prefix.context,
+        attempt_id=ATTEMPT_ID,
+        expected_revision=6,
+        stage="target-fix-verified",
+        acceptance_record_id=ATTEMPT_ID,
+    )
+    assert restored_checkpoint.ok is True, restored_checkpoint.to_dict()
+    checkpoint_wire = _wire(restored_checkpoint)
+    if expected_checkpoint_wire is not None:
+        assert checkpoint_wire == expected_checkpoint_wire
+    _restore_file_snapshot(evidence.root, baseline_evidence)
+    assert (
+        _persistence_snapshot(prefix.project_root, prefix.data_root)
+        == baseline_persistence
+    )
+    return checkpoint_wire
+
+
+def test_wave11_public_acceptance_reader_corruption_restores_and_reuses(
+    tmp_path: Path,
+) -> None:
+    prefix, record = _prepare_acceptance_reader_prefix(tmp_path)
+    context = AcceptanceWorkflowContext(
+        prefix.project_root, prefix.data_root, SESSION_ID
+    )
+    evidence = EvidenceStore(
+        WorkspacePaths.from_roots(
+            prefix.data_root, prefix.project_root, PROJECT_ID, SESSION_ID
+        ).workspace_root
+        / "evidence"
+    )
+    baseline_show = show_acceptance_scenario(context, record_id=ATTEMPT_ID)
+    assert baseline_show.ok is True, baseline_show.to_dict()
+    baseline_record = _record_acceptance_again(prefix, record)
+    assert baseline_record.ok is True, baseline_record.to_dict()
+    baseline_show_wire = _wire(baseline_show)
+    baseline_record_wire = _wire(baseline_record)
+    expected_checkpoint_wire: dict[str, object] | None = None
+
+    def install_root_shape() -> None:
+        root_path, root, _ = _acceptance_storage(evidence, ATTEMPT_ID)
+        metadata = dict(root.metadata)
+        del metadata["scenario_digest"]
+        replacement = RootRecord(
+            root_type=root.root_type,
+            root_id=root.root_id,
+            manifest_id=root.manifest_id,
+            metadata=metadata,
+        )
+        root_path.unlink()
+        put_root(evidence, replacement)
+
+    expected_checkpoint_wire = _run_acceptance_reader_variant(
+        prefix,
+        record,
+        evidence,
+        install_root_shape,
+        show_code="ACCEPTANCE_EVIDENCE_INTEGRITY_FAILED",
+        record_code="ACCEPTANCE_EVIDENCE_INTEGRITY_FAILED",
+        baseline_show_wire=baseline_show_wire,
+        baseline_record_wire=baseline_record_wire,
+        expected_checkpoint_wire=expected_checkpoint_wire,
+    )
+
+    def install_root_manifest_missing() -> None:
+        _, root, _ = _acceptance_storage(evidence, ATTEMPT_ID)
+        manifest = evidence.root / "manifests" / f"{root.manifest_id}.json"
+        assert manifest.is_file()
+        manifest.unlink()
+
+    _run_acceptance_reader_variant(
+        prefix,
+        record,
+        evidence,
+        install_root_manifest_missing,
+        show_code="ACCEPTANCE_EVIDENCE_INTEGRITY_FAILED",
+        record_code="ACCEPTANCE_EVIDENCE_INTEGRITY_FAILED",
+        baseline_show_wire=baseline_show_wire,
+        baseline_record_wire=baseline_record_wire,
+        expected_checkpoint_wire=expected_checkpoint_wire,
+    )
+
+    def install_root_key_mismatch() -> None:
+        root_path, root, _ = _acceptance_storage(evidence, ATTEMPT_ID)
+        replacement = RootRecord(
+            root_type=root.root_type,
+            root_id="00000000-0000-4000-8000-000000000099",
+            manifest_id=root.manifest_id,
+            metadata=dict(root.metadata),
+        )
+        root_path.write_bytes(canonical_json_bytes(replacement.to_dict()))
+
+    _run_acceptance_reader_variant(
+        prefix,
+        record,
+        evidence,
+        install_root_key_mismatch,
+        show_code="ACCEPTANCE_REFERENCE_INVALID",
+        record_code="ACCEPTANCE_REFERENCE_INVALID",
+        baseline_show_wire=baseline_show_wire,
+        baseline_record_wire=baseline_record_wire,
+        expected_checkpoint_wire=expected_checkpoint_wire,
+    )
+
+    def install_envelope_digest() -> None:
+        root_path, root, old = _acceptance_storage(evidence, ATTEMPT_ID)
+        metadata = dict(_json_thaw(old.metadata))
+        old_digest = str(metadata["record_sha256"])
+        metadata["record_sha256"] = "0" * 64 if old_digest != "0" * 64 else "1" * 64
+        mutated = EvidenceEnvelope(
+            identity=old.identity,
+            operation=old.operation,
+            produced_at_utc=old.produced_at_utc,
+            parents=old.parents,
+            artifacts=old.artifacts,
+            metadata=metadata,
+        )
+        _install_acceptance_envelope(
+            evidence,
+            root_path,
+            root,
+            mutated,
+            metadata=dict(root.metadata),
+        )
+
+    _run_acceptance_reader_variant(
+        prefix,
+        record,
+        evidence,
+        install_envelope_digest,
+        show_code="ACCEPTANCE_EVIDENCE_INTEGRITY_FAILED",
+        record_code="ACCEPTANCE_EVIDENCE_INTEGRITY_FAILED",
+        baseline_show_wire=baseline_show_wire,
+        baseline_record_wire=baseline_record_wire,
+        expected_checkpoint_wire=expected_checkpoint_wire,
+    )
+
+    def install_workspace_binding() -> None:
+        root_path, root, old = _acceptance_storage(evidence, ATTEMPT_ID)
+        raw_record = _json_thaw(old.metadata["record"])
+        assert isinstance(raw_record, Mapping)
+        mutated_payload = dict(raw_record)
+        mutated_payload["workspaceId"] = "e" * 64
+        mutated_record = AcceptanceRecord.from_value(mutated_payload)
+        old_identity = old.identity
+        mutated_identity = EvidenceIdentity(
+            workspace_id=mutated_record.workspace_id,
+            project_id=old_identity.project_id,
+            session_id=old_identity.session_id,
+            build_id=old_identity.build_id,
+            elf_sha256=old_identity.elf_sha256,
+            target_device=old_identity.target_device,
+            input_snapshot_sha256=old_identity.input_snapshot_sha256,
+            git_commit=old_identity.git_commit,
+            git_dirty=old_identity.git_dirty,
+        )
+        mutated = EvidenceEnvelope(
+            identity=mutated_identity,
+            operation=old.operation,
+            produced_at_utc=old.produced_at_utc,
+            parents=old.parents,
+            artifacts=old.artifacts,
+            metadata={
+                "record": mutated_record.to_dict(),
+                **_acceptance_root_metadata(mutated_record),
+            },
+        )
+        _install_acceptance_envelope(
+            evidence,
+            root_path,
+            root,
+            mutated,
+            metadata=_acceptance_root_metadata(mutated_record),
+        )
+
+    _run_acceptance_reader_variant(
+        prefix,
+        record,
+        evidence,
+        install_workspace_binding,
+        show_code="ACCEPTANCE_IDENTITY_MISMATCH",
+        record_code="ACCEPTANCE_RECORD_CONFLICT",
+        baseline_show_wire=baseline_show_wire,
+        baseline_record_wire=baseline_record_wire,
+        expected_checkpoint_wire=expected_checkpoint_wire,
+    )
 
 
 def test_wave11_public_alias_reaches_record_and_final_checkpoint(tmp_path: Path) -> None:
