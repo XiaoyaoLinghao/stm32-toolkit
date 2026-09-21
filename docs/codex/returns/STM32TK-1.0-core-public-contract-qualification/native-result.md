@@ -1,15 +1,14 @@
 # Current native coverage result
 
-Accepted aggregation baseline: `a649025d930c770b0e395c38ef8b529ade8046a6` (union28).
-Integrated test code head: `9865c88a7f8b9e1ee297957657e623556f8642ae`.
-Existing Recovery5 measurement head: `6468af64d73e5228c9d756fbb854fdf5cb1327ba`.
+Accepted aggregation baseline: `9865c88a7f8b9e1ee297957657e623556f8642ae` (union29).
+Integrated test code head before this report: `c4d7b9f2abc6fa2cbca86d2df3069e292775242f`.
 Qualified product source: `8a11caef14df16c5e56c0be2363d4ef5530110eb`.
-Union29 native data verdict: **ACCEPTED_NATIVE_DATA**. Release 1.0: **NOT_ACCEPTED**.
+Union31 native data verdict: **ACCEPTED_NATIVE_DATA**. Release 1.0: **NOT_ACCEPTED**.
 
 | Package | Covered / total branches | Overall and broad core v1 | More for 90% | More for v1 95% |
 | --- | ---: | ---: | ---: | ---: |
-| Toolkit | 11,850 / 13,580 | 87.2607% | 372 | 1,051 |
-| Monitor | 2,680 / 2,940 | 91.1565% | 0 | 113 |
+| Toolkit | 11,867 / 13,580 | 87.3859% | 355 | 1,034 |
+| Monitor | 2,685 / 2,940 | 91.3265% | 0 | 108 |
 | UI (retained separately) | 784 / 810 | 96.7901% | 0 | 0 |
 
 The repeat-bind product correction remains accepted with its seven current-source
@@ -99,14 +98,50 @@ candidate and prior accepted union28 are retained. A stale representation note
 was corrected at promotion to history.py summary324/352 versus arrays323/351;
 native totals and original arrays were not altered. Product source is unchanged.
 
+Union31 adds the accepted Handoff and Observation journeys, persisted Recovery
+binding and Monitor-reference integrity/refusal/restoration journeys, and corrected
+PyOCD child measurement. The complete test diffs were reviewed before integration;
+no product bytes changed. Native totals gain17 Toolkit and5 Monitor branches over
+union29. Nine Toolkit branches had already appeared in the immutable partial
+union30 candidate; the latest Recovery/Probe work adds8 Toolkit and Monitor adds5.
+
+The three new authority/measurement suites completed independently: Recovery3
+(164.308s JUnit), Monitor5 (7.860s), and the three program-failure outcomes
+(18.827s). Their process intervals did not overlap. Existing PyOCD4 behavior and
+attach measurements remain valid; program-only rerun3 addressed missing child
+capture. Seven actual native shards and seven neutral byte-identical copies are
+retained. Both child and combined data contain program diagnostic arcs516->517,
+519->520,524->525/526 and error-line1543 through1540->1543. Run2's lost original
+shards and partial status remain explicit; it is not retroactively relabeled
+complete. No hardware, deployment, packaging or remote operation occurred.
+
+Independent union31 review verified all12 native inputs/copies, source148, frozen
+v1/v2 scopes, per-file arithmetic, failure exclusions and retained UI. Primary
+rechecked source148 at promotion. Canonical SHA256 is
+21D1CF7DE3E64164BCBBCAA35FAFEE2672ED9782241A35EC1BD6B45F27177B86;
+independent review SHA256 is
+615B4D2DA87CE1EF31C703C842A7336A61CBA94233426ACB02F0B41532D4F235.
+Immutable candidate, input history and review are under r10/e/risk-v2/union31.
+The accepted aggregate does not satisfy the remaining90/95 gates.
+
+Three original Luna/max owners continue Recovery/evidence, Monitor and Probe
+lines with one dedicated independent reviewer. Two actual suites may run at once;
+three have not been released because overlapping-run and complete descendant
+resource evidence is still missing. All known batch execution PIDs have exited.
+Following limited branch yield, the next protocol slice was first audited for
+public reachability: two complete scenarios may reach15 missing arcs. That is a
+static estimate, not observed progress; dominated/out-of-scenario branches remain
+in the unchanged denominator. Monitor/Probe next scenarios require the same
+first-guard and existing-evidence check before implementation.
+
 Risk-core v2 was selected by whole-file responsibility and independently frozen
 at scope commit 9fff3f43 before scoring. Its 90 Toolkit and 16 Monitor files are
 reported separately; the 108/18 overall files and old v1 statistics remain.
 
 | Risk-core v2 | Covered / total branches | Coverage | More for 95% |
 | --- | ---: | ---: | ---: |
-| Toolkit | 11,232 / 12,906 | 87.0293% | 1,029 |
-| Monitor | 2,680 / 2,940 | 91.1565% | 113 |
+| Toolkit | 11,249 / 12,906 | 87.1610% | 1,012 |
+| Monitor | 2,685 / 2,940 | 91.3265% | 108 |
 
 Native v1 scope remains 108/18 Python files overall and 97/16 core files. The excluded
 forwarders have zero branches, so overall/core ratios coincide. Per-package native
@@ -174,3 +209,9 @@ evidence and all source/review worktrees remain preserved.
 Union29 cleanup of five newly qualified run/copy roots was rejected before
 process start with blocked by policy. All remain present, zero files were
 deleted, and no retry or alternative mechanism was used. See union29/cleanup.json.
+
+Union31 cleanup of five new verified success-run/copy roots was rejected before
+process start with blocked by policy. Zero files were deleted; all five roots
+remain present. No retry or alternate deletion was attempted, and older denied
+roots were not included. Durable raw evidence and review/source worktrees remain
+preserved. See union31/cleanup-plan.json and union31/cleanup.json.
