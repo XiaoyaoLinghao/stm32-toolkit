@@ -121,6 +121,20 @@ def _read_artifact(evidence: EvidenceStore, envelope: EvidenceEnvelope) -> bytes
     )
 
 
+def _captured_batch_positions(
+    evidence: EvidenceStore, reference: MonitorRunRefV2
+) -> list[tuple[int, int]]:
+    envelope = evidence.get_envelope(reference.transcript_evidence_id)
+    payload = decode_physical_transcript_bytes(_read_artifact(evidence, envelope))
+    batches = payload["batches"]
+    assert isinstance(batches, list)
+    positions: list[tuple[int, int]] = []
+    for batch in batches:
+        assert isinstance(batch, dict)
+        positions.append((int(batch["sequence"]), int(batch["capturedUnixNs"])))
+    return positions
+
+
 def _publish_physical_variant(
     pair: SimpleNamespace,
     baseline: SimpleNamespace,
@@ -360,6 +374,25 @@ def _publish_analysis_variant(
                 canonical_replay_json_bytes(request)
             ).hexdigest()
             payload["before_run_id"] = before_reference.run_ref_sha256
+        else:
+            request = deepcopy(payload["request"])
+            assert isinstance(request, dict)
+            assert request["max_pairing_skew_ns"] == 1
+            before_positions = _captured_batch_positions(
+                evidence, baseline.request.before_run
+            )
+            after_positions = _captured_batch_positions(
+                evidence, baseline.request.after_run
+            )
+            # _append_native_physical_monitor_history uses identical sequence
+            # and capturedUnixNs formulas for both baseline windows.  A legal
+            # skew change from 1 to 2 therefore preserves the native pairing.
+            assert before_positions == after_positions
+            request["max_pairing_skew_ns"] = 2
+            payload["request"] = request
+            payload["request_digest"] = sha256(
+                canonical_replay_json_bytes(request)
+            ).hexdigest()
         parents = (
             physical.transcript_evidence_id,
             baseline.request.after_run.transcript_evidence_id,
@@ -375,6 +408,13 @@ def _publish_analysis_variant(
         ).hexdigest()
     else:
         payload = monitor_fixture._rehash_analysis_payload(payload)
+    if variant == "1906-reference-target":
+        assert (
+            payload["analysis_id"] != baseline.publication.analysis_result.analysis_id
+        )
+        assert not _root_path(
+            pair.evidence, "monitor-analysis", str(payload["analysis_id"])
+        ).exists()
     analysis_variant_envelope = monitor_fixture._publish_analysis_variant(
         pair,
         tmp_path,
