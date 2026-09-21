@@ -1791,3 +1791,80 @@ The same Probe owner instead assesses target testing and Monitor observation
 public lifecycle gaps read-only. No test execution is released from that report.
 Suite concurrency remains2: the two completed run2 intervals did not overlap and
 their redirector-only resource records do not justify increasing concurrency.
+
+## User-directed release flow: converge, freeze, qualify the real bundle
+
+The 2026-09-21 user instruction changes execution method only. The full1.0 goal,
+90% native overall/95% frozen risk-core-v2 targets for each Python package,
+broad-core-v1/UI views, seven native Windows checks, two reproducible builds and
+all13 outputs, real install/Check,0.9-to1.0 Repair, rollback/security and delivery
+documentation remain mandatory. Existing VS10-A/B, attempt7 and applicable
+evidence remain accepted within their original boundaries. No remote authority
+is granted and no RC is declared by this addendum.
+
+### 1. Defect convergence and pre-RC qualification
+
+Current accepted integration before this addendum is
+7450fa53a2b5ceef0e1d263df7849f20bc9d7838. Product source is
+78341213b8e5604d5f6a0436c4324d6d9f9e3ead, with148-file registry69D2A724.
+U35 canonical8141C5C6 is ACCEPTED_NATIVE_DATA, not release acceptance.
+Diagnostic's final-oracle reconciliation and Sampler's startup/rollback ownership
+correction are closed; do not restart either. The Sampler correction closed its
+second complete implementation/review round. Its original failed runs remain
+historical evidence and are not turned into passed tests.
+
+This batch admits no additional product changes. Probe w11p has the frozen
+authorization/post-step-result scenarios and one180-second selected run. Recovery
+w11r has two public software-producer scenarios, admitted only after proving at
+least six genuinely reachable missing arcs, and one300-second selected run.
+Monitor's existing storage/history preflight remains bounded to two complete
+public candidate families. Existing owners continue preparation, implementation
+and the admitted first run without new stepwise approvals. Actual suites remain
+at most two, with disjoint worktrees, temp roots, logs and coverage files.
+
+Classify the first failure before action: PRODUCT_CONTRACT, TEST_DATA_SCRIPT_ORACLE,
+ENVIRONMENT_INFRASTRUCTURE_PLATFORM, MEASUREMENT_REPORT, or NEW_SCOPE_OPTIMIZATION.
+Only a reproducible PRODUCT_CONTRACT finding can trigger a bounded product fix.
+Primary first consolidates all known related normal/partial-start/cancellation/
+cleanup/recovery paths, ownership, public state transitions and error semantics.
+The same root cause/public contract owns one round counter across branch names.
+After two implementation/review rounds without convergence, stop local patching
+for that module and return to design; independent work can continue.
+
+Fix verification consists of the original-defect oracle, impact-selected
+regression and affected critical smoke paths. Public API, shared state, storage
+format, dependency or installer changes require a written affected-regression
+reason. Coverage gaps, faulty fixtures and report errors do not authorize product
+behavior changes. Preserve behavior evidence when only measurement/reporting
+changes; rerun only the required measurement scope. Two successive low-yield
+batches trigger one grouped reachability/risk/cost reassessment before expansion.
+
+### 2. Candidate freeze
+
+Freeze only after critical defects and pre-RC gates converge. Bind one clean
+source commit, source bytes, closed dependency inventory, toolchain/build
+configuration and candidate artifact identity. The remaining coverage and seven
+Windows-native gates currently prevent this phase. Test/report-only changes do
+not silently invalidate source-equal evidence; every reuse decision names source,
+dependencies, environment, contract and verification scope. Product or artifact
+changes create a new candidate identity and invalidate only affected evidence.
+
+### 3. Real bundle acceptance
+
+Use the existing builder and the same closed dependency set for both builds;
+compare all13 outputs, checksums, licenses, SBOM, assets and compatibility. Test
+the actual candidate bundle in the supported clean Windows/Python environment:
+fresh install/Check, a genuine0.9 baseline Repair, intended use, failure recovery,
+required rollback and refusals/security. Source tests cannot replace these
+artifact checks. Prior15b artifact/install evidence remains historical until the
+new bundle is qualified. No mandatory requirement can be moved to a backlog or
+waived as risk acceptance to complete the goal.
+
+Primary serializes canonical aggregation, shared-ledger writes, exclusive
+performance checks, final builds/deployment and same-probe operations. Keep the
+existing work-ledger/release-matrix/native-result records; no new report system.
+Each batch records actual closed behaviors, accepted/open product findings,
+new valid arcs and remaining gates, elapsed run intervals/observed overlap, and
+the next fixed scope/exit condition. Task/test/document counts and waiting are
+not progress. All temporary artifacts remain under D:/codex-tmp; preserve needed
+failures and never retry or bypass previously rejected cleanup.
