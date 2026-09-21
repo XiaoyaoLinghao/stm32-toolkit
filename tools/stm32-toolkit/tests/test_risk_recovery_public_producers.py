@@ -886,7 +886,6 @@ def _run_acceptance_reader_variant(
     record_code: str,
     baseline_show_wire: dict[str, object],
     baseline_record_wire: dict[str, object],
-    expected_checkpoint_wire: dict[str, object] | None,
 ) -> dict[str, object]:
     baseline_evidence = _file_snapshot(evidence.root)
     baseline_persistence = _persistence_snapshot(prefix.project_root, prefix.data_root)
@@ -946,9 +945,27 @@ def _run_acceptance_reader_variant(
         acceptance_record_id=ATTEMPT_ID,
     )
     assert restored_checkpoint.ok is True, restored_checkpoint.to_dict()
+    checkpoint_data = _data(restored_checkpoint)
+    attempt = checkpoint_data.get("attempt")
+    assert isinstance(attempt, Mapping)
+    assert attempt["revision"] == 7
+    assert attempt["status"] == "COMPLETED"
+    completed_stages = attempt["completedStages"]
+    assert isinstance(completed_stages, (tuple, list))
+    assert completed_stages[-1] == "target-fix-verified"
+    stage_outputs = attempt["stageOutputs"]
+    assert isinstance(stage_outputs, Mapping)
+    assert stage_outputs["acceptanceRecordId"] == record["recordId"] == ATTEMPT_ID
     checkpoint_wire = _wire(restored_checkpoint)
-    if expected_checkpoint_wire is not None:
-        assert checkpoint_wire == expected_checkpoint_wire
+    retried_checkpoint = checkpoint_acceptance_attempt(
+        prefix.context,
+        attempt_id=ATTEMPT_ID,
+        expected_revision=6,
+        stage="target-fix-verified",
+        acceptance_record_id=ATTEMPT_ID,
+    )
+    assert retried_checkpoint.ok is True, retried_checkpoint.to_dict()
+    assert _wire(retried_checkpoint) == checkpoint_wire
     _restore_file_snapshot(evidence.root, baseline_evidence)
     assert (
         _persistence_snapshot(prefix.project_root, prefix.data_root)
@@ -976,7 +993,6 @@ def test_wave11_public_acceptance_reader_corruption_restores_and_reuses(
     assert baseline_record.ok is True, baseline_record.to_dict()
     baseline_show_wire = _wire(baseline_show)
     baseline_record_wire = _wire(baseline_record)
-    expected_checkpoint_wire: dict[str, object] | None = None
 
     def install_root_shape() -> None:
         root_path, root, _ = _acceptance_storage(evidence, ATTEMPT_ID)
@@ -991,7 +1007,7 @@ def test_wave11_public_acceptance_reader_corruption_restores_and_reuses(
         root_path.unlink()
         put_root(evidence, replacement)
 
-    expected_checkpoint_wire = _run_acceptance_reader_variant(
+    _run_acceptance_reader_variant(
         prefix,
         record,
         evidence,
@@ -1000,7 +1016,6 @@ def test_wave11_public_acceptance_reader_corruption_restores_and_reuses(
         record_code="ACCEPTANCE_EVIDENCE_INTEGRITY_FAILED",
         baseline_show_wire=baseline_show_wire,
         baseline_record_wire=baseline_record_wire,
-        expected_checkpoint_wire=expected_checkpoint_wire,
     )
 
     def install_root_manifest_missing() -> None:
@@ -1018,7 +1033,6 @@ def test_wave11_public_acceptance_reader_corruption_restores_and_reuses(
         record_code="ACCEPTANCE_EVIDENCE_INTEGRITY_FAILED",
         baseline_show_wire=baseline_show_wire,
         baseline_record_wire=baseline_record_wire,
-        expected_checkpoint_wire=expected_checkpoint_wire,
     )
 
     def install_root_key_mismatch() -> None:
@@ -1040,7 +1054,6 @@ def test_wave11_public_acceptance_reader_corruption_restores_and_reuses(
         record_code="ACCEPTANCE_REFERENCE_INVALID",
         baseline_show_wire=baseline_show_wire,
         baseline_record_wire=baseline_record_wire,
-        expected_checkpoint_wire=expected_checkpoint_wire,
     )
 
     def install_envelope_digest() -> None:
@@ -1073,7 +1086,6 @@ def test_wave11_public_acceptance_reader_corruption_restores_and_reuses(
         record_code="ACCEPTANCE_EVIDENCE_INTEGRITY_FAILED",
         baseline_show_wire=baseline_show_wire,
         baseline_record_wire=baseline_record_wire,
-        expected_checkpoint_wire=expected_checkpoint_wire,
     )
 
     def install_workspace_binding() -> None:
@@ -1123,7 +1135,6 @@ def test_wave11_public_acceptance_reader_corruption_restores_and_reuses(
         record_code="ACCEPTANCE_RECORD_CONFLICT",
         baseline_show_wire=baseline_show_wire,
         baseline_record_wire=baseline_record_wire,
-        expected_checkpoint_wire=expected_checkpoint_wire,
     )
 
 
