@@ -2953,3 +2953,13 @@ accept the package scenario. Real shipped serve/auth/Ctrl+C130, record/listener
 removal, project preservation and a later public start/stop reuse remain held
 and unchanged. Runtime record identity must come from public WorkspacePaths,
 MonitorConfig and MonitorEndpoint, never a guessed parent-directory name.
+
+Design review13F4B08C991D3BA3FC65255C67B49FF328E49769F30EF151E232D8B1C21A0A11
+accepts the fixed-input capability boundary conditionally. For this private
+transport, the sole trusted sender writes exactly b"GO\n", verifies3bytes,
+flushes and closes stdin. CMD provides literal-GO/EOF line semantics, not a
+general byte-exact or hostile-input parser; no external input is accepted.
+If a sender error occurs after GO was delivered, record the observed startup
+state and terminate through retained ownership. Do not claim that a later
+flush/close failure proves the child never started. Such a run fails and does
+not authorize a service run. The capability child itself never imports product.
