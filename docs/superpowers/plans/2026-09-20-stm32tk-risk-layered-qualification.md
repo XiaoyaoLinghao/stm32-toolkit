@@ -1922,3 +1922,39 @@ test_shortened_cursor_batch_refuses_and_resumes_after_restore, under
 r10/t/w11m/run2 and e/risk-v2/wave11/monitor/run2, memory>=15%. Do not repeat the
 other three passed cases. First unexpected outcome stops without retry. Final
 review reconciles source-equal run1 evidence and the corrected single-node run.
+
+### Probe measurement design consolidation after two incomplete captures
+
+Independent review AE28F9AC accepts the unchanged public behavior and run2's
+seven actual worker shards, but finds the service target arcs absent from its
+parent raw shard as well as the combined JSON. Do not credit those arcs or
+silently combine complementary incomplete runs. This returns the single capture
+contract to design before any further run; it does not authorize product changes.
+
+The complete execution topology is pytest's main process, ProbeService's
+asyncio.to_thread invoke (service.py:1340), and spawned backend workers. Installed
+coverage/collector.py:143-160 enables thread tracing only with explicit thread
+concurrency or an empty concurrency list. Specifying multiprocessing alone
+disables that thread capture. Therefore the run-local native configuration must
+declare concurrency=thread,multiprocessing, retain patch=subprocess, branch=true
+and parallel=true, and retain the test-owned pre-reply collector save for the
+worker-close termination race. No production call or state is replaced.
+
+The existing Probe owner may use unchanged final test head
+ffba4a4a163a0a6f9797e4f66b03cd151cf2a844 and correct only run-local capture/report
+configuration. Explicit dictionary-key duplicate grouping closes the already
+proven report defect. Verify the effective configuration and source148 before one
+180-second run of the same four nodes, with fresh memory>=15%, at
+r10/t/w11p/run3 and e/risk-v2/wave11/probe/run3. This remains slot1 and must follow
+Monitor's admitted cursor run2 slot; primary hands over the execution slot.
+The owner may prepare continuously without an extra approval gate.
+
+Exit requires all four original behavior oracles, actual worker PID-to-raw-shard
+binding, all raw hashes retained, and the four exact service arcs
+995->999,1178->1179,1181->1182,1184->1185 present in the parent raw data and final
+native JSON. Check raw-to-combined retention, not merely file counts or JUnit.
+Record actual close/termination facts without asserting unobserved OS exit codes.
+Any remaining mismatch stops this capture without another local patch/rerun.
+Keep run1/run2 originals and their independent partial verdicts. Other admitted
+suites should use both thread and multiprocessing tracking before first execution;
+an already started suite is preserved and assessed from its actual raw evidence.
