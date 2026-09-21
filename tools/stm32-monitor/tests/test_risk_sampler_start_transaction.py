@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 from pathlib import Path
 
 import pytest
@@ -43,12 +44,13 @@ def test_public_start_task_allocation_failure_is_transactional(
             f"owned sampler task allocation {failed_task_index}"
         )
         factory_calls = 0
+        rejected_coro = None
 
         def failing_factory(loop: asyncio.AbstractEventLoop, coro, **kwargs):
-            nonlocal factory_calls
+            nonlocal factory_calls, rejected_coro
             factory_calls += 1
             if factory_calls == failed_task_index:
-                coro.close()
+                rejected_coro = coro
                 raise injected
             if previous_factory is not None:
                 return previous_factory(loop, coro, **kwargs)
@@ -67,6 +69,8 @@ def test_public_start_task_allocation_failure_is_transactional(
                 observed_state = sampler.state
                 observed_tasks = sampler.tasks
                 observed_plan_invalidations = observation.plan_invalidations
+                assert rejected_coro is not None
+                assert inspect.getcoroutinestate(rejected_coro) is inspect.CORO_CLOSED
             finally:
                 loop.set_task_factory(previous_factory)
                 stopped = await sampler.stop()
@@ -87,6 +91,11 @@ def test_public_start_task_allocation_failure_is_transactional(
             assert sampler.state is SamplerState.IDLE
         finally:
             loop.set_task_factory(previous_factory)
+            if (
+                rejected_coro is not None
+                and inspect.getcoroutinestate(rejected_coro) is not inspect.CORO_CLOSED
+            ):
+                rejected_coro.close()
             await sampler.close()
 
     asyncio.run(scenario())
