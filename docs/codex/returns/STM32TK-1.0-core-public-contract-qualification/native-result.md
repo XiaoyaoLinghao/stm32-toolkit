@@ -25,15 +25,26 @@ no raw data was rewritten. No product source changed or tests ran for aggregatio
 Monitor's accepted run1 and corrected single-node run3 take3.512/2.644 seconds;
 Probe's complete run4 takes20.587 seconds. These actual runs did not overlap;
 redirector-only CPU data and unavailable peak memory do not justify increasing
-the two-suite limit. Earlier incomplete or failed inputs are excluded. Recovery's
-new producer fixture remains unaccepted after two contract-construction failures
-and has returned to design review, with originals preserved.
+the two-suite limit. Earlier incomplete or failed inputs are excluded. Recovery
+run2 exposed a fixture digest error; run3 then proved a product contract violation:
+public Diagnostic IDs are arbitrary32hex, while replay Acceptance requires RFC
+UUID nibbles. Its complete field-specific correction and backward-only reader
+compatibility design at1ea29f91 received independent DESIGN_DELTA_ACCEPTED.
+The original Luna/max owner is implementing the bounded six-file correction;
+neither its runtime behavior nor its product diff is accepted yet. Originals stay
+preserved and run3's failed raw data remains excluded.
 
-Local RC1 source inputs are frozen at the code head above in two clean worktrees,
-with all64 offline dependencies verified. A new genuine0.9 runtime is healthy at
-generation1 for later Repair. No current1.0 artifacts, installation or upgrade
-PASS is claimed. All numeric, Windows, reproducible-build and real-bundle gates
-remain mandatory; see the existing release matrix and union36 evidence.
+RC1 build-A stopped at its source/wheel binding guard, exit2 after67.605 seconds.
+Its sampler.py checkout has590CRLF+48LF, while git archive has638CRLF. Independent
+input review confirms newline-normalized equality, not raw-byte equality or a
+successful package. Diagnostic wheels were rebuilt after the failure; original
+temporary wheels were not retained. Keep that provenance distinction. The guard
+is correct; next-candidate input preparation must match archive and wheel bytes.
+RC1 will not advance to build-B or installation. A genuine0.9 runtime remains
+healthy at generation1 for later Repair. This convergence batch adds zero accepted
+coverage branches; U36's prior nine remain valid. All numeric, Windows, two-build
+13-output and real-bundle gates remain mandatory. See the existing release matrix,
+union36, rc1/build-a/input-review.md and Recovery design-review-final.md.
 
 The repeat-bind product correction remains accepted with its seven current-source
 PASS. Source changes invalidate old coverage for recovery_workflows.py, so union21
