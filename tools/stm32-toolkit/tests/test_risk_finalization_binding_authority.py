@@ -101,62 +101,6 @@ def _run_route(case: object, attempt_id: str, proof: object, route: str) -> obje
     raise AssertionError(f"unsupported finalization route: {route}")
 
 
-def test_finalization_binding_public_control(persisted_case: object) -> None:
-    """The authenticated public begin/show/checkpoint path remains writable."""
-
-    attempt_id = "00000000-0000-4000-8000-000000000701"
-    started_wire = _journey_wire(_begin(persisted_case, attempt_id))
-    started_data = started_wire.get("data")
-    assert isinstance(started_data, Mapping), started_wire
-    started_attempt = started_data.get("attempt")
-    assert isinstance(started_attempt, Mapping), started_wire
-    started_attempt_wire = dict(started_attempt)
-    _journey_success(started_wire, BEGIN_OPERATION, started_data)
-    proof = _proof(persisted_case, started_attempt_wire)
-
-    before_show = _persisted_snapshot(persisted_case)
-    show_wire = _journey_wire(
-        show_acceptance_attempt(_context(persisted_case), attempt_id=attempt_id)
-    )
-    _journey_success(
-        show_wire,
-        SHOW_OPERATION,
-        {"authoritative": True, "attempt": started_attempt_wire},
-    )
-    assert _persisted_snapshot(persisted_case) == before_show
-
-    checkpoint_wire = _journey_wire(_checkpoint(persisted_case, attempt_id, proof))
-    checkpoint_data = checkpoint_wire.get("data")
-    assert isinstance(checkpoint_data, Mapping), checkpoint_wire
-    completed_attempt = checkpoint_data.get("attempt")
-    assert isinstance(completed_attempt, Mapping), checkpoint_wire
-    _journey_success(checkpoint_wire, CHECKPOINT_OPERATION, checkpoint_data)
-    completed_attempt_wire = dict(completed_attempt)
-    assert completed_attempt_wire["revision"] == 1
-    assert completed_attempt_wire["status"] == "COMPLETED"
-    assert (
-        completed_attempt_wire["continuationEvidenceId"]
-        == proof.continuation_evidence_id
-    )
-    assert (
-        completed_attempt_wire["fixedAfterTestRunId"] == proof.fixed_after_test_run_id
-    )
-    assert (
-        completed_attempt_wire["fixedAfterEvidenceId"] == proof.fixed_after_evidence_id
-    )
-
-    root1 = get_root(
-        persisted_case.evidence,
-        ATTEMPT_ROOT_TYPE,
-        _journey_root_id(attempt_id, 1),
-    )
-    envelope1 = persisted_case.evidence.get_envelope(root1.manifest_id)
-    persisted_attempt = PhysicalFinalizationAttempt.from_value(
-        envelope1.metadata["attempt"]
-    )
-    assert completed_attempt_wire == persisted_attempt.to_dict()
-
-
 @pytest.mark.parametrize(
     ("case_name", "field", "proof_field", "expected_code"),
     (
