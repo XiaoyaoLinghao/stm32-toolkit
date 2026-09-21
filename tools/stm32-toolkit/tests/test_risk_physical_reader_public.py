@@ -35,7 +35,9 @@ from stm32_toolkit.paths import WorkspacePaths
 from test_acceptance_physical_recovery import _write_physical_project
 
 ATTEMPT_ID = "00000000-0000-4000-8000-000000000101"
-PROJECT_ID = "00000000-0000-4000-8000-000000000102"
+# `_write_physical_project` is the established fixture writer and binds the
+# schema-3 logical project to this existing public fixture identity.
+PROJECT_ID = "00000000-0000-4000-8000-000000000002"
 ROOT_TYPE = "acceptance-attempt"
 ATTEMPT_OPERATION = "acceptance-attempt"
 INTEGRITY_CODE = "ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED"
