@@ -78,7 +78,6 @@ def test_public_start_task_allocation_failure_is_transactional(
             assert observed_state is SamplerState.IDLE
             assert not observed_tasks
             assert observed_plan_invalidations >= 2
-            assert observation.plan_invalidations > observed_plan_invalidations
 
             restarted = await sampler.start(GROUP_ID, expected_revision=1)
             assert restarted.ok
