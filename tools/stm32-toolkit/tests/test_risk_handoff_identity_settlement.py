@@ -120,6 +120,8 @@ def test_handoff_identity_race_refuses_without_overreach_and_recovers(
         request,
     ) = _make_handoff_env(tmp_path, handoff_fixture.FakeSupervisor)
     session_before = _file_bytes(session_root)
+    guard_name = ".debug-handoff.guard"
+    assert guard_name not in session_before
     lease_before = _lease_bytes(supervisor)
     flash_path = project / "artifacts" / "migration" / "flash-result.json"
     flash_before = flash_path.read_bytes()
@@ -146,7 +148,9 @@ def test_handoff_identity_race_refuses_without_overreach_and_recovers(
     assert metadata_calls == 1
     assert len(changed_identities) == 1
     assert changed_identities[0]["buildId"] != original_identity["buildId"]
-    assert _file_bytes(session_root) == session_before
+    expected_session_after_refusal = dict(session_before)
+    expected_session_after_refusal[guard_name] = b"\0"
+    assert _file_bytes(session_root) == expected_session_after_refusal
     assert _lease_bytes(supervisor) == lease_before
     assert supervisor.endpoint is endpoint
     assert (session_root / "probe-endpoint.json").is_file()
@@ -173,16 +177,74 @@ def test_handoff_identity_race_refuses_without_overreach_and_recovers(
     assert _lease(supervisor)["state"] == "externally-owned"
 
     returned_clients: list[handoff_fixture.FakeClient] = []
+    changed_end_identities: list[dict[str, object]] = []
+    end_changed = False
 
     def factory(endpoint_value: object) -> handoff_fixture.FakeClient:
+        nonlocal end_changed
         returned = handoff_fixture.FakeClient(
             endpoint_value,
             handoff_fixture._elf_with_flash_segment(text_size=ORIGINAL_TEXT_SIZE)[
                 84 : 84 + 320
             ],
         )
+        if not returned_clients:
+
+            def publish_changed_after_read() -> None:
+                nonlocal end_changed
+                if not end_changed:
+                    end_changed = True
+                    changed_end_identities.append(
+                        _publish_identity(project, text_size=CHANGED_TEXT_SIZE)
+                    )
+
+            returned.after_read = publish_changed_after_read
         returned_clients.append(returned)
         return returned
+
+    refused_end = asyncio.run(end_debug_handoff(ticket.ticket_id, supervisor, factory))
+    assert refused_end.ok is False
+    assert refused_end.code == "HANDOFF_IDENTITY_MISMATCH"
+    assert refused_end.message == "Firmware identity changed during debug handoff"
+    assert len(changed_end_identities) == 1
+    assert changed_end_identities[0]["buildId"] != original_identity["buildId"]
+    expected_reacquiring = dict(external_state)
+    expected_reacquiring["state"] = "reacquiring"
+    assert _state(session_root) == expected_reacquiring
+    expected_external_lease = {
+        "schemaVersion": 1,
+        "state": "externally-owned",
+        "leaseId": "lease-a",
+        "ticketSha256": hashlib.sha256(ticket.ticket_id.encode("ascii")).hexdigest(),
+    }
+    assert _lease(supervisor) == expected_external_lease
+    assert supervisor.endpoint is None
+    assert not (session_root / "probe-endpoint.json").exists()
+    assert supervisor.start_calls == 1
+    assert supervisor.stop_calls == 2
+    assert supervisor.lifecycle_events == [
+        "metadata",
+        "metadata",
+        "reserve",
+        "stop",
+        "start",
+        "stop",
+    ]
+    assert "consume" not in supervisor.lifecycle_events
+    assert "finalize" not in supervisor.lifecycle_events
+    assert "acknowledge" not in supervisor.lifecycle_events
+    assert [event[0] for event in returned_clients[0].events] == [
+        "attach",
+        "read",
+        "close",
+    ]
+    assert request.expected_build_id == str(original_identity["buildId"])
+    assert request.expected_elf_sha256 == str(original_identity["elfSha256"])
+    assert flash_path.read_bytes() == flash_before
+
+    restored_identity = _publish_identity(project, text_size=ORIGINAL_TEXT_SIZE)
+    assert restored_identity["buildId"] == original_identity["buildId"]
+    assert restored_identity["elfSha256"] == original_identity["elfSha256"]
 
     ended = asyncio.run(end_debug_handoff(ticket.ticket_id, supervisor, factory))
     assert ended.ok is True
@@ -194,13 +256,14 @@ def test_handoff_identity_race_refuses_without_overreach_and_recovers(
     assert _lease(supervisor)["state"] == "released"
     assert supervisor.endpoint is None
     assert not (session_root / "probe-endpoint.json").exists()
-    assert supervisor.start_calls == 1
-    assert supervisor.stop_calls == 2
-    assert supervisor.drain_calls == 2
+    assert supervisor.start_calls == 2
+    assert supervisor.stop_calls == 3
     assert supervisor.lifecycle_events == [
         "metadata",
         "metadata",
         "reserve",
+        "stop",
+        "start",
         "stop",
         "start",
         "consume",
@@ -208,7 +271,13 @@ def test_handoff_identity_race_refuses_without_overreach_and_recovers(
         "finalize",
         "acknowledge",
     ]
+    assert len(returned_clients) == 2
     assert [event[0] for event in returned_clients[0].events] == [
+        "attach",
+        "read",
+        "close",
+    ]
+    assert [event[0] for event in returned_clients[1].events] == [
         "attach",
         "read",
         "close",
