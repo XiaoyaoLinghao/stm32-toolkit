@@ -1,29 +1,29 @@
 # Current native coverage result
 
-## Current U40 and frozen RC2 result
+## Current U41 and frozen RC2 result
 
 Integrated test/code head before this report:
-`065361b237cac294a7f87cd5358b31dd5a99188d`.
+`a6921d8d479b89962465a76b054e3233e4eb29ab`.
 Frozen RC2 source (unchanged by the subsequent test-only work):
 `c71b13f2562985d27b3865e367f6d33334f3a16a`.
 Product source remains `55d91a23a5a2f16fc47d324a9077dfcebf130be9`.
-U40 is **ACCEPTED_NATIVE_DATA**; release1.0 remains **NOT_ACCEPTED**.
+U41 is **ACCEPTED_NATIVE_DATA**; release1.0 remains **NOT_ACCEPTED**.
 Canonical SHA256:
-`B63D949B04CF675BD14CF35FA70F5CF1C6499A6857561F56D7253381C7F37830`.
+`DFF61BC35FE8461958FED752249E3ECE4F2D6424C8CBAB20935B56D8886F0685`.
 Independent review:
-`EB85778999683F8F51B6ACA3F52F11F8E2AFFEE7EA7E6B8E7EAC2A48DCDE84D4`.
+`0DDBFDAFB363563CE8DBDB971E7375084A106374E4660471B9A6296408C1D4A6`.
 Primary admission:
-`B25542FACC6D84CED186E41E25A73348DDACFD2C0D3149C8E372BC6A436D1652`.
+`510552A5BE563CE333ED0EB5E6C2765BF0F05F8DE2DB9C30BE4B0398A8B13E1B`.
 
 | Package / frozen scope | Covered / total branches | Branch ratio | Remaining gate |
 | --- | ---: | ---: | ---: |
-| Toolkit overall / broad-core-v1 | 11,814 / 13,592 | 86.9188% | 419 for overall90%; broad-v1 retains1,099 for95% |
-| Toolkit risk-core-v2 | 11,196 / 12,918 | 86.6698% | 1,077 for95% |
+| Toolkit overall / broad-core-v1 | 11,821 / 13,592 | 86.9703% | 412 for overall90%; broad-v1 retains1,092 for95% |
+| Toolkit risk-core-v2 | 11,203 / 12,918 | 86.7240% | 1,070 for95% |
 | Monitor overall / broad-v1 / risk-v2 | 2,725 / 2,944 | 92.5611% | overall90% met;72 for95% |
 | UI, retained separately | 784 / 810 | 96.7901% | retained gate met |
 
 
-### Current convergence batch: SVD behavior integrated; facility gates still held
+### Retained SVD and initial facility convergence evidence
 
 The SVD supplement candidate6df8334b2196fa75f4ad6970353f5fb1797dade9 has
 been independently inspected by primary in clean w17svdr and integrated as
@@ -41,8 +41,8 @@ candidate/timestamp labels are report-only: original9B443 source-binding bytes
 remain preserved, while source-binding-reconciliation.json identifies the actual
 candidate/run and excludes the unverifiable copied generation time. All148
 source rows and actual runtime/raw bindings were independently checked. No test
-or combine was rerun. The seven accepted branches await the next serial native
-aggregation; U40 and the table above remain unchanged.
+was rerun. The seven accepted branches have now been included by the independently
+reviewed U41 serial aggregation reported above; U40 is preserved.
 
 The first4.915989s run failed the fixture's missing singleton-tuple comma
 before the target branches. The subsequent launch-only attempt stopped before
@@ -724,3 +724,74 @@ Union33 cleanup of eight newly verified success-run/copy roots was rejected befo
 process start with only `blocked by policy`. Zero files were deleted; all eight
 remain present. No retry or alternate deletion was attempted. Earlier rejected
 roots were untouched; see union33/cleanup-plan.json and union33/cleanup.json.
+
+## Current batch: remaining package refusals accepted
+
+RC2 policy-tamper, manifest-identity-tamper and Toolkit-wheel-integrity-tamper
+ran once, serially, from2026-09-21T22:23:18.007912Z to22:24:12.514032Z
+(54.506120s including discovery/copy preparation). Each public Bootstrap
+returned2 with the exact refusal wire before data/project/runtime writes.
+After forward restoration each public verify-bundle returned0 and matched
+64wheels plus6artifacts. Primary independently rehashed every one of1,147
+restored files in each of the three copied packages and compared full
+before/mutated/after inventories; only the declared mutation changed.
+Six direct command processes returned terminal/drained without timeout;
+the bounded synchronous guard scope does not claim arbitrary descendant census.
+
+Run-resultDB6703CA1B7066E3626F8233A25CEF9F8A09F455BA6CFE8089843D85D4866516
+and independent primary-result-reviewD64ACD9E895CA255ABD5904255D0A6C765F30F1B59DE9DC9DE0F0D1BB51E9D02
+are retained under e/rc2/refusals/run2. The original result's inherited3D6
+entry-review label remains preserved; the result review binds actual full
+entry-review67E8 and primary admission2DEC without rerunning commands.
+Together with the three accepted run1 cases and earlier real rollback,
+these close the six-case refusal/restoration scope. They add no source
+coverage and do not constitute complete1.0 release acceptance.
+
+U41 reused existing native aggregation/report functions in7.313s. It adds
+exactly the seven already accepted SVD branch tuples, loses none, preserves
+148source bindings and leaves Monitor/UI data unchanged. A first adapter
+preflight stopped before combine because the reused normalizer had not yet
+received its exact root/registry configuration; both originals are retained.
+The corrected aggregation has no purge and reruns no test. Candidate127E689
+passed independent review0DDBFDAF and primary serial promotion510552A5.
+U41 is now canonical; U40 and the unmodified reviewed candidate are preserved.
+
+The corrected native console capability ran once at22:20:29.706363Z through
+22:20:30.6443767Z,0.93825s. One Ctrl+C produced actual130, exact17-byte READY,
+empty marker stderr and empty Job; owned processes settled. Controller stderr,
+however, recorded CPython Handle.Close WinError6. Primary traced this to closing
+subprocess.Handle through raw win32api.CloseHandle before its owning object
+finalized. Preserve the valid signal facts but reject complete cleanup acceptance.
+Classification457AF356D7F0798EF6855CE772198E042624FA54B2F5BAB66668BC2207629FD2
+freezes native-PyHANDLE versus CPython-Handle ownership before a bounded
+facility correction. The summary noPrompt discrepancy is REPORT only.
+No Monitor product service or new hardware operation ran.
+
+The harmless capability and package runs did not actually overlap. Their
+roots/logs/process ownership were isolated, but the two-slot permission alone
+is not concurrency evidence. Peak working set0 remained unavailable. No third
+slot or performance claim is admitted. Product source, RC2 inputs, prior
+build/install/Repair/security/physical evidence and frozen denominators remain
+unchanged. Next exits are clean native capability settlement and real shipped
+Monitor service/auth/Ctrl+C/resource reuse; independent U41 qualification;
+and one concrete producer-to-continuation reachability proof under the frozen
+external-provider substitution rule before any new coverage tests.
+
+The bounded B4AE helper-handle correction has passed primary full-predecessor
+and complete-diff review. Its first outer launcher lost tool session35417 before
+returning a shell status; read-only checks found no new outer/candidate roots or
+matching process. Preserve launch-failure43A9A903 as TEST_INFRASTRUCTURE; do not
+invent an exit code or call this an approval rejection. Primary7D8B59C8 admits
+one direct invocation of the unchanged corrected candidate with retained output,
+removing the unnecessary outer background/session wrapper. A clean actual result
+is still required; no product service acceptance follows from preparation.
+
+The next recovery slice is fixed by plana6921d8d: one public failed-target to
+Diagnostic/authorized after-build journey, repeating exactly five completed
+checkpoints with their original public arguments and prior revision. Eleven
+physical checkpoint idempotence edges are static targets, not measured gain.
+External backend substitution is allowed by the frozen specification; private
+facts/readers/validators/state and direct authority fabrication are not. The same
+Luna/max Recovery owner implements and runs the first bounded targeted validation
+in isolated w18r/evidence/temporary roots. No new continuation600->607 success
+edge is claimed; that prior mapping was explicitly withdrawn.
