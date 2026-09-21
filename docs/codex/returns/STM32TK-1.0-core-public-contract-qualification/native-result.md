@@ -3,7 +3,7 @@
 ## Current U40 and frozen RC2 result
 
 Integrated test/code head before this report:
-`fe0169e32d0c883d56ea15837671ae563d11942d`.
+`065361b237cac294a7f87cd5358b31dd5a99188d`.
 Frozen RC2 source (unchanged by the subsequent test-only work):
 `c71b13f2562985d27b3865e367f6d33334f3a16a`.
 Product source remains `55d91a23a5a2f16fc47d324a9077dfcebf130be9`.
@@ -21,6 +21,60 @@ Primary admission:
 | Toolkit risk-core-v2 | 11,196 / 12,918 | 86.6698% | 1,077 for95% |
 | Monitor overall / broad-v1 / risk-v2 | 2,725 / 2,944 | 92.5611% | overall90% met;72 for95% |
 | UI, retained separately | 784 / 810 | 96.7901% | retained gate met |
+
+
+### Current convergence batch: SVD behavior integrated; facility gates still held
+
+The SVD supplement candidate6df8334b2196fa75f4ad6970353f5fb1797dade9 has
+been independently inspected by primary in clean w17svdr and integrated as
+065361b237cac294a7f87cd5358b31dd5a99188d. Only one198-line test file was
+added. Both product trees remain byte-identical to frozen RC2. The public
+selection scenario proves inherited register address/metadata. Four public
+refusals cover depth, undeclared ancestor, missing base and address overflow,
+with unchanged inputs and successful reuse after exact restoration.
+
+Run2 completed in3.717459s, exit0, with all five observations passing. Its
+retained raw hash is245FFFC2D0DE640B2313E5D0A5952EE15714AFCEE58EBA1961E86A20BC451E6D.
+The observed delta versus U40 is seven SVD native branches. Independent raw,
+source and environment review is pending: copied candidate/timestamp labels
+in source-binding metadata are not admitted as fresh provenance. This is not
+a reason to repeat valid behavior by itself. U40 remains canonical; the seven
+branches are not yet included in the table above. No new union is fabricated.
+
+The first4.915989s run failed the fixture's missing singleton-tuple comma
+before the target branches. The subsequent launch-only attempt stopped before
+pytest because its baseline guard incorrectly required the immediate parent.
+The corrected guard binds the exact candidate and checks accepted-base ancestry.
+Both failures are preserved and excluded. From scope-freeze commit d06fa95c
+at05:24:07+08 to local integration at05:57:57+08, the SVD slice took33m50s;
+fixture/launcher correction and review dominated its actual runtime. Do not
+repeat the existing successful suite or add isolated low-yield variants.
+
+One harmless Monitor console experiment took0.955628s. Native marker130,
+CMD130, helper0, empty Job and clean settlement were observed, but the batch
+termination prompt violated that capability contract. The original FAIL is
+retained under settlement27DF9DF19BD024942DC3F4B6AFC19D81FCB01DDB21CFFC577EA245CC4E8B8107;
+no prompt was answered and no Monitor service ran. Primary and independent
+review distinguish the test-only CMD barrier from the actual product contract.
+Plan083f63f3 replaces that barrier with native suspended startup; preparation
+only is released to the same owner. The actual shipped command/service,
+authentication, Ctrl+C130, cleanup and reuse gate remains mandatory and held.
+
+The remaining three package refusal cases have not run. Runner9184 was
+independently rejected; successor76E111 removes exception-path restoration
+but still does not implement immediate process ownership or the final deadline
+check. It is rejected as DESIGN_NOT_IMPLEMENTED, not a product defect. The
+same owner must fulfill the complete fail-closed transition design50ecfe06;
+no additional case execution or accepted-case rerun is allowed before review.
+The original two failure rounds and this incomplete design implementation are
+retained as one lifecycle problem. Run1's three accepted refusals remain valid.
+
+The actual capability and SVD suites did not overlap; max concurrency stays2,
+and zero-valued process peak-working-set readings remain unavailable evidence.
+No build, deployment, hardware or remote action occurred in this batch. Next
+scope is fixed: close the two execution facilities, independently admit the
+SVD raw contribution, and establish a complete public continuation producer
+path before selecting another coverage family. No mandatory gate is waived.
 
 U40 adds23 Toolkit branches:12 recovery_workflows and11 workflows. The accepted
 acceptance-reader/run3 and physical-reader/run3 contribute13 and10 respectively,
