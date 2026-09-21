@@ -1090,3 +1090,66 @@ Classify this as INFRASTRUCTURE measurement omission, not product failure. Union
 Same Luna/max owner may change ONLY test_risk_pyocd_worker_settlement.py to add a test-only subclass of actual PyOCDBackend wrapping its public open_attach and flash_elf calls. Each wrapper calls super unchanged, and in finally saves Coverage.current() when an active native collector exists. This flush occurs before a result/exception reaches the real worker's reply and parent termination, preserving actual measured arcs without patching guards, success/failure semantics, IPC, scheduling or cleanup. Use the existing coverage test dependency; no new engine/framework. Ordinary no-coverage test execution remains valid. A coverage save failure must not be silently counted as measurement success. Factory returns this subclass around the same external fake driver. Exact existing public result/resource assertions remain unchanged.
 
 Run2 coverage config adds concurrency=multiprocessing to the existing branch/parallel/subprocess settings. No global environment or dependency change. Because original child trace was never captured and cannot be recovered, one repeat of these4 cases is required solely for native child measurement; unrelated tests and prior behavior evidence are reused. Return committed static candidate plus config delta first; primary complete-diff review precedes execution. Use original w6p ownership, source148-qualified checkout, temp r10/t/w6p/run2 and durable e/risk-v2/wave6/pyocd/run2, -x300s, first failure stops. Acceptance requires4PASS, owned processes settled, native child shard evidence and actual expected PyOCD branch arcs; no synthesized imports/data. Preserve run1 and union30 output unchanged, no cleanup/hardware/deployment/remote.
+
+## Wave7: persisted finalization binding refusal and restoration
+
+Accepted base: `23804c43a6f8b4b523f5fd5aaa4da2d6dbcd1d87`; product source148
+remains8a11. Primary owns specification, integration and independent review.
+One Luna/max implementation owner writes only
+`tools/stm32-toolkit/tests/test_risk_finalization_binding_authority.py` in
+`r10/w7r`, branch `codex/STM32TK-1.0-finalization-binding-authority`.
+No overlapping writers, shared-helper or product changes.
+
+Two caller scenarios share the existing synthetic persisted finalization fixture:
+authenticated begin/show/checkpoint control; external stored-authority corruption
+followed by read-only refusal and restoration. This is software evidence only.
+The existing mutation selector uses private writers and rewrites parents, so it
+cannot establish the missing parent-binding check or full no-write oracle.
+Reuse its public setup, `_context`, `_begin`, `_proof`, `_checkpoint`,
+`_journey_public_root_path` and `_persisted_snapshot`; do not reuse
+`_replace_attempt_root`, private snapshots, or production root/envelope writers.
+
+Create revision0 through public begin. Save the original root bytes and public
+proof before corrupting an isolated test-owned store. Read its root and envelope
+through get_root/get_envelope. For each of three independent parameterized cases,
+change one attempt payload field, recompute checkpointId from canonical payload
+without that key, validate with PhysicalFinalizationAttempt.from_value, construct
+a new public EvidenceEnvelope retaining identity/operation/time/parents/artifacts,
+and put_envelope. Replace only the test-owned root bytes using public RootRecord
+serialization with the same root ID, authentic new manifest ID and matching
+attempt_sha256/revision/workspace_id/logical_project_id metadata. All earlier
+digest/decoder/constructor/root checks must remain valid.
+
+- continuationEvidenceId becomes the real failed-physical envelope ID, keeping
+  the original parent tuple. recovery_workflows.py3583 rejects the chain before
+  looking up a continuation proof: ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED.
+- fixedAfterTestRunId becomes the existing failed_run_id; original continuation
+  and parents remain valid. Proof-bound reload3587-3590 returns
+  ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH.
+- fixedAfterEvidenceId becomes the existing failed-physical envelope ID; the
+  same proof-bound reload returns ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH.
+
+For each variant, public show, explicit begin retry and checkpoint must return
+the exact expected public code, with full data-root bytes identical before and
+after each call. Revision1/2 must stay absent; no new envelope, Diagnostic event
+or authority root may be created. Reuse the original valid proof for checkpoint,
+not a fabricated proof derived from corrupted fields. Restore the saved root
+bytes, require public show to return the original revision0 wire values, then
+public checkpoint must publish revision1 with the original valid binding.
+Unreachable old manifests may remain; compare full snapshots after deliberate
+corruption so that intentional setup writes are not mistaken for product writes.
+
+Independent source audit confirmed constructor-valid identities and first-guard
+ordering. Implementation must still return exact construction and serializer
+pointers with its static candidate; never assert guessed wire container types.
+No private predicate/provider replacement, clock manipulation, hardware, global
+configuration, dependencies, cleanup or remote operation. Existing valid results
+remain applicable; the12 previously dominated arcs do not shrink any denominator.
+
+Return committed static candidate, Ruff/format/AST/diff results first. After
+primary complete-diff release only, run the new three-case file once with -x,
+300s child budget, existing guarded launcher and native double-package coverage.
+Temp `r10/t/w7r/run1`, durable `e/risk-v2/wave7/recovery/run1`. Pin actual HEAD,
+source148, argv/environment/JUnit/raw/process outcome. First unexpected failure
+stops for classification without automatic edits or retry. Primary owns cleanup
+disposition, native aggregation and final acceptance.
