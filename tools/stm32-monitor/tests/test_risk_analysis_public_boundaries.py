@@ -106,6 +106,10 @@ def test_public_analysis_boundaries_reject_invalid_inputs_without_mutating_graph
     tmp_path: Path,
 ) -> None:
     request, computation, lineage, result = _authoritative_case(tmp_path)
+    request_wire = request.to_dict()
+    computation_wire = computation.to_dict()
+    lineage_wire = lineage.to_dict()
+    result_wire = result.to_dict()
 
     invalid_quality = computation.to_dict()
     invalid_quality["quality"] = "NOT_A_QUALITY"
@@ -188,3 +192,11 @@ def test_public_analysis_boundaries_reject_invalid_inputs_without_mutating_graph
     assert computation.request_digest == request.request_digest
     assert lineage == result.identity
     assert result.request_digest == request.request_digest
+    assert request.to_dict() == request_wire
+    assert computation.to_dict() == computation_wire
+    assert lineage.to_dict() == lineage_wire
+    assert result.to_dict() == result_wire
+    assert AnalysisRequest.from_value(request_wire) == request
+    assert AnalysisComputation.from_value(computation_wire) == computation
+    assert AnalysisLineage.from_value(lineage_wire) == lineage
+    assert AnalysisResult.from_value(result_wire) == result
