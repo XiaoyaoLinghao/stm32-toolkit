@@ -2914,3 +2914,42 @@ coverage. Do not execute the known zero-yield SQLite contention family or
 unproven generic-v1 variations. Public continuation and Replay graph candidates
 must first supply concrete legal producer inputs and first-guard reachability;
 unknown branches remain unknown and never leave the frozen denominator.
+
+### Monitor console: capability boundary before a replacement facility
+
+The four failed rounds remain one unresolved TEST_INFRASTRUCTURE contract.
+Do not amend revision4 locally. Its nested controller/worker/result protocols
+duplicate root ownership, identity and deadlines. The primary's replacement
+boundary has one coordinator owning processes, bounded output, one absolute
+deadline and terminal evidence. A minimal trusted command bootstrap waits for
+the exact GO line and exits without launching on EOF or any other input. The
+coordinator retains the stdlib Popen handle, establishes and verifies native
+kill-on-close/no-breakaway Job ownership, then sends GO. There is no Python
+worker that duplicates lifecycle decisions or writes a second result protocol.
+
+Before implementing any service/authentication logic, the same Monitor owner
+may prepare one harmless capability experiment using that exact transport:
+one hidden console, one gated command wrapper, one standard-library child
+which reports readiness, handles native SIGINT and exits130, and the existing
+AttachConsole/GenerateConsoleCtrlEvent(CTRL_C_EVENT,0) mechanism. Preserve all
+previous files. A dedicated fixed-input capability entry is necessary because
+the existing tool-terminal result proves only outer-shell exit1, while the
+held revision4 --run would start the product before this capability is proved.
+This entry is not a generic runner and must not accept arbitrary commands.
+
+The experiment must independently observe the command and Python process
+exit status, complete output drain and an empty owned Job. CMD batch prompts,
+blocked stdin or a different wrapper exit are capability failures; do not
+answer prompts, normalize exit codes or silently change to CTRL_BREAK/Kill.
+Retain process handles through confirmed termination. Standard-library bounded
+pipe readers must report failure/overflow, remain joined and never leak raw
+exceptions. One60second budget includes15seconds of cleanup. No product import,
+token, service, network, probe, hardware, dependency change or general test
+matrix is included. Preserve failure evidence and do not retry automatically.
+
+Independent design review and primary admission precede the one experiment.
+Its result decides whether the replacement transport is viable; it does not
+accept the package scenario. Real shipped serve/auth/Ctrl+C130, record/listener
+removal, project preservation and a later public start/stop reuse remain held
+and unchanged. Runtime record identity must come from public WorkspacePaths,
+MonitorConfig and MonitorEndpoint, never a guessed parent-directory name.
