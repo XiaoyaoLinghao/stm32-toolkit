@@ -2831,3 +2831,37 @@ review then primary admission still precede the one real package run. Do not
 reset the accumulated review count or call this a product fix. If this unit
 still cannot satisfy the contract, return a concrete design/capability blocker
 instead of another local patch series. Other independent release work proceeds.
+
+### Physical-reader fixture boundary after two failed prefixes
+
+Run1 failed before the variants because the reused writer's logical project ID
+and the test's duplicate constant differed. Run2 reached public begin/checkpoint/
+show/resume but failed before the variants because it passed an immutable
+EvidenceEnvelope metadata mapping containing tuples into a JSON-wire parser.
+Both are TEST_FIXTURE failures of this family's producer/reader boundary; retain
+both rounds together, zero accepted gain, and do not change product behavior.
+
+The primary design decision is to remove duplicated authorities from that
+boundary. Derive logical_project_id through public load_project_model(project_root)
+after the existing writer has run; use that model in WorkspacePaths.from_roots.
+Read the public EvidenceEnvelope.to_dict()["metadata"]["attempt"] wire for
+PhysicalAcceptanceAttempt.from_value. EvidenceEnvelope.to_dict thaws frozen
+containers by contract; no private thaw helper, private loader or direct tuple
+coercion is needed. Physical model modifications likewise start with its public
+to_dict wire, rebuild the checkpoint digest with public canonical_json_bytes,
+and use the public constructor before publication. Root and envelope identity,
+exact failure wires (data is null, details is {}), every mutation's earlier
+guards, and restoration are reviewed as one boundary, not individually patched
+after repeated suite starts.
+
+The same owner changes only the existing new test file, adds no framework or
+new variants, and may perform one corrected selected run3 with a120second
+ceiling at e/risk-v2/physical-reader-public/run3 and t/pr3. Before that run,
+check all eight constructor/wire paths against these public contracts and
+retain the actual pre-run dependency/source/test snapshot. Use RC2's frozen
+64 non-product dependency inventory, with the explicitly verified identical
+setuptools/wheel origins, rather than package-a's62-dependency-plus2-product
+manifest. First unexpected failure stops. No further local correction/run is
+released by this decision; return any remaining boundary blocker to primary.
+Independent complete-diff/native review still precedes admission. Earlier
+failed coverage stays excluded; no extra product regression or RC build.
