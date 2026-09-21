@@ -1701,3 +1701,35 @@ memory>=15%, first failure/timeout stops. Implementation may proceed in parallel
 pytest waits for an explicit freed slot because the other two owners already hold
 both slots. Independent full-diff review and primary result reconciliation precede
 integration; formal aggregation and shared-ledger writes remain serial.
+
+## Wave10 sampler partial-start reproducer
+
+The independent sampler review7EC9D3D1A2147DB1929E8580355EBB854EB080B28F776F3FD4063DB8D8AFD745
+identifies public task-creation failure after RUNNING is published (sampler.py:243-245).
+Treat this as a source-backed candidate defect, not a proven runtime failure or
+an excuse to narrow the supported surface/coverage denominator. MonitorSampler is
+explicitly exported at596; an asyncio event loop's set_task_factory is a public
+host facility. Primary accepts a bounded host allocation-failure reproduction.
+
+Base9cd33a04b2d6cb79a3a4e8ab05f648abadd0cedb; same Monitor Luna/max owner.
+Only new test file tools/stm32-monitor/tests/test_risk_sampler_start_transaction.py
+in r10/w10s (branch codex/STM32TK-1.0-sampler-start-transaction). Reuse existing
+public sampler/ProbeSession/History/group fixtures. Prepare two parameter variants
+(first or second owned-task allocation fails), but initially execute only first.
+After valid admission, the scoped public task factory raises a unique test-owned
+allocation exception; no production predicate/private field patch is allowed.
+Restore the caller's previous factory in finally. The factory may close the rejected
+coroutine it owns to avoid a fixture-created unawaited-coroutine warning.
+
+Record exception identity, public state/tasks and observable probe plan invalidation
+before cleanup. Expected contract: failed start leaves IDLE with no live owned task
+and no usable stale read plan; then normal public start/stop/close remains possible.
+Use public stop/close in finally to settle the current-source failure before the
+assertion reports RED. Do not set private fields to force cleanup. RED evidence
+must be retained and excluded from accepted coverage. No product fix is released
+until primary reconciles the reproduction and freezes the correction behavior.
+
+Prepare candidate, static checks, source148 and existing guarded launcher with
+60s ceiling; r10/t/w10s/run1 and e/risk-v2/wave10/sampler/run1. No execution slot
+is currently allocated: Probe/Recovery own the two slots. No deployment, hardware,
+remote operation, new framework, threshold change, or repeated prior valid suite.
