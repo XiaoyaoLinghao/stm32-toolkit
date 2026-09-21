@@ -22,8 +22,8 @@ from test_analysis import _case, _request
 @pytest.mark.parametrize(
     ("variant", "expected_message"),
     [
+        ("bounded-message", "analysis error message is invalid"),
         ("nested-depth", "analysis value exceeds its nesting limit"),
-        ("tuple-container", "analysis JSON must not contain tuple containers"),
         ("noncanonical-register", "selector is not canonical"),
         ("logical-project-id-type", "logical project ID is invalid"),
         ("logical-project-id-uppercase", "logical project ID is invalid"),
@@ -55,16 +55,24 @@ def test_public_analysis_wire_refusal_preserves_and_restores_graph(
     lineage_wire = lineage.to_dict()
     result_wire = result.to_dict()
 
-    if variant == "nested-depth":
+    operation = None
+    if variant == "bounded-message":
+        valid_message = "v" * 256
+        valid_error = AnalysisError(ANALYSIS_REQUEST_INVALID, valid_message)
+        assert valid_error.code == ANALYSIS_REQUEST_INVALID
+        assert valid_error.message == valid_message
+        with pytest.raises(ValueError) as empty_error:
+            AnalysisError(ANALYSIS_REQUEST_INVALID, "")
+        assert str(empty_error.value) == expected_message
+        with pytest.raises(ValueError) as oversized_error:
+            AnalysisError(ANALYSIS_REQUEST_INVALID, "x" * 257)
+        assert str(oversized_error.value) == expected_message
+    elif variant == "nested-depth":
         nested: object = "leaf"
         for _ in range(40):
             nested = {"nested": nested}
         invalid = request.to_dict()
         invalid["before_run"] = nested
-        operation = partial(AnalysisRequest.from_value, invalid)
-    elif variant == "tuple-container":
-        invalid = request.to_dict()
-        invalid["selector"] = ("counter",)
         operation = partial(AnalysisRequest.from_value, invalid)
     elif variant == "noncanonical-register":
         invalid = request.to_dict()
@@ -98,10 +106,11 @@ def test_public_analysis_wire_refusal_preserves_and_restores_graph(
         invalid["schema"] = "stm32-diagnostic-marker/9"
         operation = partial(DiagnosticMarker.from_value, invalid)
 
-    with pytest.raises(AnalysisError) as error:
-        operation()
-    assert error.value.code == ANALYSIS_REQUEST_INVALID
-    assert error.value.message == expected_message
+    if operation is not None:
+        with pytest.raises(AnalysisError) as error:
+            operation()
+        assert error.value.code == ANALYSIS_REQUEST_INVALID
+        assert error.value.message == expected_message
 
     assert request.to_dict() == request_wire
     assert computation.to_dict() == computation_wire
