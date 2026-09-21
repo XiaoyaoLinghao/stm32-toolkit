@@ -1539,3 +1539,61 @@ reject. This does not authorize bypassing constructors, mutating private/frozen
 state, forging successful impossible models, or relabeling software as hardware.
 Prefer complete roundtrip/refusal caller scenarios and prove each first guard;
 do not infer reachability merely from a public root or a missing coverage arc.
+## Wave10 public attach-diagnostic boundary slice
+
+Accepted base for this bounded slice: `7b497ad38e16a51cafcfb7c746a03b71a9a8a06e`.
+Product remains `8a11caef14df16c5e56c0be2363d4ef5530110eb`; source148 and frozen
+coverage scopes must remain identical. Primary owns design/integration; existing
+Probe line owner `/root/target_prepare_identity_impl` owns implementation/tests;
+`/root/union30_native_review` independently reviews the complete diff. No product,
+hardware, deployment, remote, schema or dependency changes are part of this slice.
+
+Two complete public contract scenarios are admitted for design:
+
+1. Decode a valid detached attach diagnostic, reject malformed external cleanup
+   payloads and late-attach payloads at their first guards, then decode the intact
+   original again. Use exported validate/extract/make APIs and ordinary caller-owned
+   wire dictionaries. Check exact refusal, original identity/state preservation and
+   detached output. Cover malformed entry keys/stage/outcome, late scope/duplicates,
+   a valid late payload on a non-deadline primary, and recursive input lists.
+2. Produce a primary and cleanup fragment, append valid and invalid fragments,
+   update verified target state, and project legacy compatibility/envelope output.
+   Check exact ValueError text for invalid public constructor inputs, atomic
+   rejection without partial cleanup or primary replacement, correct accepted
+   state/projection, and empty/refused envelopes for invalid prior diagnostics.
+   Exported invalid-input refusals are permitted; forged successful frozen
+   instances, private helpers, state mutation and predicate patches are not.
+
+Static first-guard proof: `probe/attach_diagnostics.py` exports these APIs in
+`__all__` at652-675. External wire entries first enter validation at267/269/271;
+valid primary/type prefixes permit late entry scope/duplicate checks305/307 and
+non-deadline rejection338. Direct exported producer inputs reach394,408,411,413,
+473 and CleanupFragment544/550; exported merge/extract/state/projection APIs
+reach508,523,528,582,594,613,627,644 and419/421/427/431/444/447/485. No earlier
+check requires an invalid successfully constructed model for these inputs.
+Each parameterized input must document its first relevant guard before execution.
+
+Union33 has114/150 covered branches in this file. Its36 missing pairs contain up
+to30 candidates above; no gain is claimed until native data is compared. Six
+remaining pairs235->236,251->253,360->361,371->372,379->380,381->382 are excluded
+from this slice because earlier validated scope/order/uniqueness checks dominate
+them. These exclusions do not change the denominator or claim a global bound.
+Existing worker/backend/service successes and worker IPC rejection suites are
+retained, not repeated. This slice adds only the missing public boundary families.
+
+Only new test file owned by this slice:
+`tools/stm32-toolkit/tests/test_risk_attach_diagnostic_boundary.py`.
+Implementation tree `r10/w10p`, branch `codex/STM32TK-1.0-attach-diagnostic-boundary`;
+temporary root `r10/t/w10p/run1`, evidence `r10/e/risk-v2/wave10/probe/run1`.
+All are below `D:/codex-tmp/v10b-0918`. Primary owns integration/cleanup and must
+not retry denied cleanup roots. Reuse the existing Wave9 Target run2 guarded
+launcher, preserving actual-interpreter raw shards and combine --keep. No product
+subprocess is expected; if execution introduces one, prove capture/save/merge for
+it before measurement acceptance. Behavior and measurement verdicts stay separate.
+
+Run only this file, once after candidate commit, Ruff/format/AST/diff and source148
+checks. Runtime ceiling300s; require a fresh available-memory gate >=15%, isolated
+logs/data/temp, no forced retry, and process/descendant settlement. Primary dispatch
+must explicitly allocate one of the two execution slots; this plan alone does not
+allocate a slot. Independent full-diff review may overlap the first run, but full
+review and primary runtime reconciliation are mandatory before integration.
