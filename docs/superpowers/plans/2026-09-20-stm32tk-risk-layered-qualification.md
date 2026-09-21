@@ -2215,3 +2215,40 @@ resource observations; do not infer descendant memory or overlap from a launcher
 Slot1 may run the Diagnostic measurement separately; no third suite is admitted.
 Independent complete-diff review and separate behavior/native acceptance are the
 exit conditions. Formal aggregation and shared ledgers remain primary-only.
+
+### Diagnostic current-source model gap collection
+
+Candidate60a39d44f2416e3417d9c36a4076ca35945c366c has independently accepted
+product behavior. Coverage admission of mixed regression1 is separately under
+fixture-authority review; this does not revoke its correctly observed behavior.
+Do not repeat already valid measurements without that review's concrete reason.
+The same Recovery Luna/max owner may now collect only the existing public model
+and direct acceptance-boundary gap group in requalification-measurement-checklist.md
+(SHA8BA9FA41, before any later append). No product or test change is admitted.
+The main inspected the public model selectors for absence of monkeypatch/private
+state replacement and the direct workflow preflight's no-write public oracle.
+
+Run test_acceptance_model.py except the two already executed record-model nodes,
+and test_acceptance_recovery_model.py except the three already executed revision0,
+arbitrary-Diagnostic-ID and public-recovery-attempt nodes. Add only the checklist's
+five direct describe/record/show/preflight functions from test_acceptance_workflows.py;
+exclude its direct private _reader_failure_code test. Record exact node selections
+and use argument-safe public function names, not unquoted parameter IDs with spaces.
+Collect-only first if selectors differ from the previously successful entry.
+
+One run in e/risk-v2/diagnostic-reference/model-gap and r10/t/diagref/model-gap is
+admitted in slot1, at most600 seconds, free memory>=15%, first unexpected failure
+stops. Retain source148 with142 unchanged plus the exact six changed hashes,
+both actual source imports, current raw/shards, process result and separate
+behavior/measurement verdicts. No hardware, remote action or cleanup is included.
+Existing guarded launcher and coverage entry are reused. Slot2 may independently
+complete the Engineering oracle correction; the two-suite cap is unchanged.
+CLI/MCP and conditional reacquisition groups are not yet released. Their final
+selectors must explicitly exclude the known unprivileged symlink gate and show
+actual child instrumentation/source binding before execution.
+
+The next formal aggregation must remove all six old semantic-source paths from
+neutral copies of every old raw input (including cross-package raw files), retain
+originals unchanged, and recompute current denominators from the same frozen file
+inventory. Only independently admitted fresh measurements may replace those arcs.
+No line-number overlap or unchanged file name establishes semantic equivalence.
