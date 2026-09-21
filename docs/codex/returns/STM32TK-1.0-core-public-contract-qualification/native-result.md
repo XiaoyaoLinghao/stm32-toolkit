@@ -3,7 +3,7 @@
 ## Current U41 and frozen RC2 result
 
 Integrated test/code head before this report:
-`6c93ca218284dba1a9606ea0e90e11c0c6dc91eb`.
+`51120ae6799b9939ed33450c69042ad0ecc8f360`.
 Frozen RC2 source (unchanged by the subsequent test-only work):
 `c71b13f2562985d27b3865e367f6d33334f3a16a`.
 Product source remains `55d91a23a5a2f16fc47d324a9077dfcebf130be9`.
@@ -26,6 +26,47 @@ Current batch closes all six scoped RC2 refusal/restoration cases and the
 harmless native Ctrl+C facility. The real shipped Monitor service/authentication/
 Ctrl+C/resource-reuse package gate, coverage thresholds and seven Windows checks
 remain incomplete. No product source or frozen RC2 artifact changed.
+
+### Current finite batch: entry preparation, no new measurement
+
+The S18 physical checkpoint retry candidate44388c9a2487d1626e5486e6c5afb8c004386453
+adds one test file in its isolated worktree. Its first launcher stopped before
+pytest because it read an absent sourceCommitAuthority property; the existing
+source-binding document already uses productSourceRevision. Original failure
+153EAF55DE6E054BED77B1333DE2901921A0A745B7BDAF37670AA8DC88C74489 is preserved.
+The same owner corrected the launcher field contract; source binding and test
+bytes are unchanged. Correction15BB14D042EEB01ED23D085206B6508482E63F0E03DDF646E78C61EB484CEAE8
+records the static checks. The complete candidate and actual collector boundary
+are under independent review. No pytest process, child shard or native increment
+exists for this attempt; the eleven target branches remain a static estimate.
+
+Plan51120ae consolidates the actual shipped Monitor adapter around one native
+suspended package launch. Independent inspection identified duplicate data-root
+creation, a sessions-directory/workspace-ID comparison error, and incomplete
+deadline/process/output ownership in the prior adapter. These are test-facility
+defects, not evidence of product failure. The same implementation owner prepares
+the fixed entry while the real service attempt remains held for complete review.
+Preserve the accepted harmless capabilityA32B9859; do not rerun it or relabel it
+as package-service acceptance. Product ready output contains a bearer URL and
+must remain in bounded memory. Package/authentication/Ctrl+C130/resource reuse
+requirements and the120s/15s lifecycle budget remain mandatory.
+
+Windows capability was checked read-only again. Evidence66FA034F2C98C5C101A3291BA25D7446F7FB5E809E5C3CBB695FC57337F8EF00
+still records a medium token, no enabled Developer Mode and no
+SeCreateSymbolicLinkPrivilege. No setting changed, symlink was created or native
+test run; the same seven exact selectors remain pending. Probe residual audit
+1ADCE39F29C2F62651FE0CA4E4417D28AD75755D355C41F84DF6A26B1B446D09
+establishes one public transport identity refusal/reuse family with three static
+targets. Primary withholds a separate low-yield run while the current two bounded
+deliverables converge. This neither excludes those branches nor declares the
+other residuals unreachable.
+
+This preparation batch adds zero accepted branches and has no actual suite
+overlap. Keep the limit at two; do not claim resource or stability evidence from
+parallel preparation alone. U41, all13 RC2 build comparisons, installation,
+genuine0.9 Repair, rollback, all six refusal cases and historical physical PASS
+remain applicable. Next exit is independently qualified S18 behavior/measurement
+and one reviewed actual Monitor package attempt; neither is complete yet.
 
 
 ### Retained SVD and initial facility convergence evidence
