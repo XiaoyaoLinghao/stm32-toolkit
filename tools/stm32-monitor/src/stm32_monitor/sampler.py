@@ -261,14 +261,29 @@ class MonitorSampler:
                     producer_coro.close()
                     raise
             except (Exception, asyncio.CancelledError) as error:
+                self._set_state(SamplerState.STOPPING)
+                cleanup_error: BaseException | None = None
+                cleanup_cancellation: asyncio.CancelledError | None = None
+                cleanup_coro = self._stop_run()
                 try:
-                    await self._stop_run()
-                except (Exception, asyncio.CancelledError) as rollback_error:
-                    self._set_state(SamplerState.IDLE)
-                    self.blocked_code = None
-                    raise error.with_traceback(error.__traceback__) from rollback_error
+                    cleanup_task = asyncio.create_task(
+                        cleanup_coro,
+                        name="stm32-monitor-sampler-start-rollback",
+                    )
+                except (Exception, asyncio.CancelledError) as task_error:
+                    cleanup_coro.close()
+                    cleanup_error = task_error
+                else:
+                    try:
+                        _, cleanup_cancellation = await _await_owned(cleanup_task)
+                    except (Exception, asyncio.CancelledError) as task_error:
+                        cleanup_error = task_error
+                if cleanup_error is not None:
+                    raise error.with_traceback(error.__traceback__) from cleanup_error
                 self._set_state(SamplerState.IDLE)
                 self.blocked_code = None
+                if cleanup_cancellation is not None:
+                    raise cleanup_cancellation from error
                 raise
             return success(
                 operation,
