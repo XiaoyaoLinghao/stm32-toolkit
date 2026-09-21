@@ -2361,3 +2361,48 @@ execute serially without a fresh approval step. Record actual start/end interval
 PIDs and available resource measurements. Missing peak/descendant data remains
 unknown and never justifies raising the cap. The separate input-adapter preparation
 is not formal aggregation. Main owns the later serial aggregate and acceptance.
+
+### MCP spawned-worker measurement: reuse durable pre-reply capture
+
+Independent reviewB9CB145F retains259 behavior PASS and the exact eight-shard
+parent/server union, but rejects complete measurement: marker worker28820 has
+no shard; server30524 is not that worker. No production defect is established.
+The existing thread/multiprocessing/subprocess configuration is already present.
+Repeating that configuration or the259-case group cannot address the omission.
+
+The same Recovery Luna/max owner owns one correction under
+e/risk-v2/diagnostic-reference/mcp-worker-capture and short temp r10/t/dgw, using
+the existing independent w13mcp tree. No repository product/test edits are admitted.
+Reuse the accepted Wave6 Coverage.current().save() before-reply approach. The
+existing _CoverageFlushingPyOCDBackend only saves around attach/flash and cannot
+cover production config constructor/close, so a bounded run-local startup hook is
+needed for this entry; the old Monitor StorageFailure observer is unrelated.
+
+The hook may wrap only the existing Windows pipe send_bytes method in test-owned
+processes. Resolve the actual Windows pipe class; do not assume Unix Connection
+and Windows PipeConnection are identical. Save the active coverage collector
+immediately before delegating an unchanged send only when the current process
+name is the production stm32-toolkit-probe-backend. Preserve method arguments,
+payload, return and exception behavior; no producer/authority/config/backend
+substitution, no IPC reply synthesis, no private factory, no product close/join
+change and no hardware operation. Save/import errors must fail measurement
+visibly. Record the hook hash and explicit run-local activation; do not install
+a persistent site hook, change shared runtime files or create a collector framework.
+
+Independent static review of this bounded hook/launcher precedes execution. Then
+run only test_mcp_server.py::
+test_real_stdio_mcp_starts_and_closes_an_offline_worker_without_protocol_pollution
+once with120-second budget, first-error stop and no automatic retry. Keep the
+production config constructor, public close and existing behavior assertions.
+Actual source148/test bytes must remain unchanged; both worktree source paths and
+the run-local hook identity must be recorded for this measurement configuration.
+
+Success requires marker workerPid to match an original nonempty child shard,
+actual worker source/line records, exact raw union after combine, preserved
+original hashes, aliveAfterClose=false and no hardware operations. Record server
+and worker PIDs separately. The previous259 behavior results remain valid; their
+eight partial raw inputs may complement the corrected capture only after explicit
+source/configuration compatibility review. Do not claim that the old run captured
+worker28820 retroactively. The exact reason its exit-time save did not persist
+remains uncertain; the correction closes the observed capture boundary without
+changing product behavior. Original finalization work continues independently.
