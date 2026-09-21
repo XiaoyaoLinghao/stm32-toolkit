@@ -3045,3 +3045,52 @@ preparation. The same implementation owner prepares this fixed flow for
 complete independent review and primary admission before one real capability
 attempt. A successful capability still does not admit the actual package
 service scenario; that unchanged release requirement remains separate.
+
+### Public SVD inheritance supplement: one bounded offline family
+
+Accepted base: `567573b9d44aebc6b2deae0b7154330cdaf630ad`; product source
+remains55d91a23a5a2f16fc47d324a9077dfcebf130be9 and frozen RC2 remains
+c71b13f2562985d27b3865e367f6d33334f3a16a. Primary owns design/integration;
+the existing Luna/max finalization owner implements this independent public
+metadata-validation supplement. Independent review precedes native admission.
+
+The latest audit corrects the primary's initial line attribution: the existing
+peripheral A/B cycle reaches965->966 and is already covered. U40 source
+identity and line mapping are consistent. Do not rerun the old cycle as a
+claimed gap. The seven concrete missing tuples are964->979,967->968,
+970->971,986->987,987->988,987->989 and1007->1008 in debug/svd.py.
+
+Three public scenarios define the entire supplement:
+
+1. Select a valid local SVD through select_svd, with BASE declared before COPY
+   so the cached ancestor is reused and COPY inherits its omitted base address.
+   Inspect the returned public register address/metadata; do not access hardware.
+2. On independently owned XML inputs, reject an acyclic257-peripheral derived
+   chain, an undeclared parent, a root peripheral without a base address, and
+   a peripheral-array address overflow. Assert the exact public SvdError code
+   and message and prove input/project bytes unchanged by every invocation.
+   The depth input stays below the real1024-peripheral limit; do not patch
+   budgets. Select inputs according to the first reachable guard, not merely
+   the desired final error code.
+3. Restore the original valid bytes after each refusal and perform public
+   selection/register lookup again, proving the file remains reusable and
+   neither a stale cached result nor a fabricated address was accepted.
+
+Reuse existing SVD fixture structure and test-local helpers where appropriate.
+The implementation owns only a new test_risk_svd_peripheral_public.py under
+tools/stm32-toolkit/tests in a clean worktree at r10/w17svd. No product,
+private-state patch, decoder replacement, schema, dependency, hardware,
+DWARF, XML-parser-internal or remote change is authorized. A reproducible
+product defect returns to primary classification rather than an automatic fix.
+
+The same owner may complete preparation, implementation and the first focused
+native suite without intermediate step approvals. Reserve one actual suite
+slot, with at most one other suite. Keep environment, basetemp, logs and raw
+coverage under r10/t/s17 and r10/e/risk-v2/svd-public-inheritance. Reuse the
+qualified runtime and collector, record fresh source/dependency identity and
+actual process boundaries, and capture any actually executed child coverage.
+Never count a missing child shard as no child. Compare exact native arcs with
+U40; seven is a static target set, not an advance coverage claim. Preserve
+the raw data and failed-run evidence. Primary alone updates canonical union
+and ledgers after full-diff/measurement review. No package rebuild or hardware
+regression is triggered by this test-only supplement.
