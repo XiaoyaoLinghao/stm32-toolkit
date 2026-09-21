@@ -356,4 +356,3 @@ def test_public_generation_refusal_preserves_user_files_and_fresh_recovery(
     assert recovery.project_root == recovery_staging / "generated"
     assert sorted(path.name for path in recovery_staging.iterdir()) == ["generated"]
     assert not list(recovery_root.glob(".stm32tk-cubemx-control-*"))
-
