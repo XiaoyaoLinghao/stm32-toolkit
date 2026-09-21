@@ -2328,3 +2328,36 @@ measurement even when behavior passes; classify it before considering any rerun.
 Independent raw/source review and formal serial aggregation are the exit gates.
 Unchanged model and producer measurements are not repeated. No hardware, build,
 installation, shared-ledger write, cleanup or remote action is delegated.
+
+### Real retained finalization input: bounded current-source measurement
+
+Independent read-only review44FF8509 confirms that existing fin/data-copy,
+fin/e/bind-request.json and p/b retain the accepted VS10-B identities and graph.
+The existing test_acceptance_finalization.py::test_public_finalization_workflow_journey
+can use these public persisted inputs without the rejected synthetic factory.
+This is offline software compatibility/native measurement, not new physical PASS.
+
+The same Recovery owner may run exactly this existing node using a separate
+detached r10/w13fin tree at60a with all148 qualified source hashes. Explicitly set
+and record VS10B_DATA_COPY=D:/codex-tmp/v10b-0918/fin/data-copy,
+VS10B_PROJECT_ROOT=D:/codex-tmp/v10b-0918/p/b,
+VS10B_BIND_REQUEST=D:/codex-tmp/v10b-0918/fin/e/bind-request.json and
+VS10B_SESSION_ID=vs10b-closed-loop-20260918-01. Check all three actual paths before
+pytest; absent configuration must stop, never select the synthetic fallback.
+Keep original data/project/request read-only; the existing fixture copies data
+to the owned pytest directory. Compare original evidence/project bytes before
+and after. Preserve actual public clock injection as this test specifies it.
+
+Use e/risk-v2/diagnostic-reference/finalization-real and short temp r10/t/dgf.
+Reuse the existing guarded launcher,600-second budget, source/capture checks,
+first-unexpected-stop and no automatic retry. Capture the fresh-show subprocess's
+actual source and original coverage shard; parent PASS does not prove child
+measurement. No private authority substitution or new test/product edits.
+
+CLI has completed. This finalization group may overlap the independent MCP
+group only after both worktrees, source/selector checks and run directories are
+ready and available memory remains>=15%. Maximum two actual suites total; otherwise
+execute serially without a fresh approval step. Record actual start/end intervals,
+PIDs and available resource measurements. Missing peak/descendant data remains
+unknown and never justifies raising the cap. The separate input-adapter preparation
+is not formal aggregation. Main owns the later serial aggregate and acceptance.
