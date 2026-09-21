@@ -1640,3 +1640,64 @@ record behavior and measurement separately, and count only gains against accepte
 Primary must explicitly allocate execution slot2; first run after candidate commit,
 Ruff/format/AST/diff/source148 checks, fresh memory>=15%, ceiling300s, first anomaly
 stop/no retry. Independent review can overlap execution; acceptance requires both.
+
+## Wave10 Diagnostic native evidence authority journey
+
+Accepted base `2b856214ff1d483cbc1cf2f27ef7afa8df0708b6`; product8a11/source148 and
+frozen scopes remain unchanged. Existing Recovery owner `/root/finalization_binding_impl`
+implements; primary owns graph design/integration/acceptance and independent reviewer
+`/root/union30_native_review` reviews the complete test diff. The bounded preflight is
+`r10/e/risk-v2/wave10/diagnostic-graph-preflight.md`, SHA256
+`4B66BFBA88BEA64EF348EAD4E35D238B16B618A66ADC7DB038B92935E826EC8E`.
+Its twelve static candidates are estimates, not measured coverage. The U32 coverage
+for these modules remains equal to accepted U33; compare final arcs to U33.
+
+Two joined public scenarios share one software-only baseline graph:
+1. Publish the native before/after Monitor, analysis and continuation graph. Submit
+   the eleven pre-plan persisted-input refusal variants through
+   diagnostic_add_verification_plan; each leaves the exact Diagnostic event tree,
+   revision and state unchanged. Then successfully add/start the original valid plan.
+2. Submit the alternate-identity marker through diagnostic_attach_marker and prove
+   its exact refusal plus unchanged Diagnostic state; attach the original marker,
+   complete verification once, and read from a fresh public context with
+   diagnostic_show_verification. Require PASSED/VERIFICATION_PASSED and the exact
+   public session/fix_verifications/authoritative serialization.
+
+Primary graph correction: put_root at evidence/gc.py:752-770 refuses a different
+payload under an existing key. A clone retaining that key does not solve this.
+Never overwrite/remove an accepted root. For each transcript/reference variant
+derive a fresh operation UUID, remap operation/origin/projected IDs consistently
+except the one deliberately tested relation, and publish new envelope/root identities
+using existing public APIs. Recompute all content IDs needed by preceding guards;
+read the actual producer-returned workspace/session/build IDs rather than copying
+the preflight's illustrative IDs. _same_session_native_baseline actually uses
+aaaaaaaa/bbbbbbbb operation UUIDs; the report's3333/4444 values are not authoritative.
+For the empty operation metadata variant, a separate valid root key may be unused:
+the nonempty-operation guard must reject before any lookup.
+
+Evidence envelopes are immutable inputs; valid prior objects/roots must remain
+byte-identical. A new analysis envelope may point at the new transcript graph;
+its root and analysis/plan IDs must be consistent through the target first guard.
+Original accepted roots stay available, so recovery selects the original request
+without rewriting storage. Refusal oracles distinguish intentional caller publication
+from forbidden Diagnostic event writes. Reuse the accepted prepare_pair and native
+construction helpers only as fixtures; no new private-production helper/state patch,
+validator replacement, hardware, product-source edit or generic graph framework.
+The existing deterministic fixture providers do not count as new coverage evidence.
+
+Target missing arcs in diagnostic_workflows.py:1691->1706,1709->1710,1717->1722,
+1757->1758,1787->1788,1794->1807,1846->1847,1865->1877,1906->1907,1912->1913,
+2361->2362 and2563->2564. Use the preflight's exact code/message, not a set of
+possible errors. If a preceding guard wins, stop/classify; do not weaken the oracle.
+
+Only owned file `tools/stm32-toolkit/tests/test_risk_diagnostic_native_authority.py`;
+tree `r10/w10r`, branch `codex/STM32TK-1.0-diagnostic-native-authority`, temporary
+`r10/t/w10r/run1`, evidence `r10/e/risk-v2/wave10/recovery/run1`, all below approved
+D:/codex-tmp/v10b-0918. Reuse the existing two-package guarded launcher; preserve
+actual child shards and --keep combine, and separate behavior/measurement verdicts.
+Ruff/format/AST/diff/source148 plus one exact new-file run are necessary, without
+rerunning accepted physical or full regression suites. Runtime ceiling300s, fresh
+memory>=15%, first failure/timeout stops. Implementation may proceed in parallel;
+pytest waits for an explicit freed slot because the other two owners already hold
+both slots. Independent full-diff review and primary result reconciliation precede
+integration; formal aggregation and shared-ledger writes remain serial.
