@@ -2308,8 +2308,10 @@ Windows-native checks remain mandatory outside this offline scope. Exclude the
 private-authority recovery-CLI fixture explicitly named in that preflight.
 
 The same Recovery Luna/max owner now owns both batches through first validation,
-without additional per-step approval. Run CLI then MCP serially on w11r so the
-groups never share a concurrently active worktree. Use separate cli-gap/mcp-gap
+without additional per-step approval. Run CLI on w11r then MCP on a separate
+detached w13mcp tree at the same60a candidate. Match all148 qualified source bytes
+in that testing-only tree and record its actual child import paths. Do not use
+this qualification tree as a release-build input. Use separate cli-gap/mcp-gap
 evidence, temp/cache/log/coverage roots already frozen in the preflight. Each
 batch is capped at600 seconds, requires free memory>=15%, and stops at the first
 unexpected result; no automatic retry. A CLI infrastructure/product failure stops
