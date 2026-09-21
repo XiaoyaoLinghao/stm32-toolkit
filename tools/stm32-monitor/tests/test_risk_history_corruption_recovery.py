@@ -170,6 +170,7 @@ def test_shortened_cursor_batch_refuses_and_resumes_after_restore(
                 "payload_sha256 = ?, value_count = ? WHERE batch_id = 1",
                 original_batch,
             )
+            connection.execute("DELETE FROM history_values WHERE batch_id = 1")
             connection.executemany(
                 "INSERT INTO history_values(batch_id,ordinal,selector_kind,selector,"
                 "value_json,value_bytes,value_sha256) VALUES (?,?,?,?,?,?,?)",
