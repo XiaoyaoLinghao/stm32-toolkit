@@ -240,8 +240,10 @@ def _append_physical_monitor_history(
     run_id: str,
     *,
     value_offset: int,
+    physical_target: str = "board:t10",
 ) -> tuple[SampleBatch, ...]:
     """Create monitor history bound to the corresponding physical TestRun."""
+    assert hashlib.sha256(raw_probe.encode("utf-8")).hexdigest() == PHYSICAL_PROBE
     monitor_run_id = UUID(run_id)
     group_id = UUID("11111111-1111-4111-8111-111111111111")
     binding = ObservationBinding(
@@ -250,7 +252,7 @@ def _append_physical_monitor_history(
         session_id=identity.session_id,
         probe_id=raw_probe,
         target_device=identity.target_device,
-        physical_target="board:t10",
+        physical_target=physical_target,
         build_id=identity.build_id,
         elf_sha256=identity.elf_sha256,
         input_snapshot_sha256=identity.input_snapshot_sha256,

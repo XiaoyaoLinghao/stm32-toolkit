@@ -1,35 +1,42 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
-from copy import deepcopy
-from dataclasses import dataclass, replace
-from datetime import datetime, timedelta
+import difflib
 import hashlib
 import json
 import os
-from pathlib import Path
 import shutil
 import subprocess
 import sys
+from collections.abc import Callable, Mapping
+from copy import deepcopy
+from dataclasses import dataclass, replace
+from datetime import datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
-
+import stm32_toolkit.acceptance.recovery_workflows as recovery_workflows
+import stm32_toolkit.diagnostic_workflows as diagnostic_workflows
+import test_acceptance_physical_recovery as physical_fixture
+import test_vs08a_scenarios as vs08a_fixtures
 from stm32_monitor.analysis import AnalysisRequest
-from stm32_monitor.analysis_workflows import compare_monitor_runs, export_analysis_bundle
+from stm32_monitor.analysis_workflows import (
+    compare_monitor_runs,
+    export_analysis_bundle,
+)
 from stm32_monitor.replay import publish_physical_monitor_run
 from stm32_toolkit.acceptance.finalization import (
     FINALIZATION_ATTEMPT_SCHEMA,
     FINALIZATION_EXECUTION_SOURCE,
     FINALIZATION_POLICY_DIGEST,
-    FINALIZATION_REQUEST_SCHEMA,
     FINALIZATION_PROJECT_ORIGIN,
+    FINALIZATION_REQUEST_SCHEMA,
     FINALIZATION_ROOT_TYPE,
-    FINALIZATION_SCHEMA,
     FINALIZATION_SCENARIO_DIGEST,
     FINALIZATION_SCENARIO_ID,
     FINALIZATION_SCENARIO_VERSION,
+    FINALIZATION_SCHEMA,
     FINALIZATION_WINDOW_SECONDS,
     FinalizationRequest,
     FinalizationValidationError,
@@ -38,8 +45,15 @@ from stm32_toolkit.acceptance.finalization import (
     finalization_policy_document,
 )
 from stm32_toolkit.acceptance.recovery import SourceChangeIntent
-import stm32_toolkit.acceptance.recovery_workflows as recovery_workflows
-import stm32_toolkit.diagnostic_workflows as diagnostic_workflows
+from stm32_toolkit.acceptance.recovery_workflows import (
+    AcceptanceRecoveryContext,
+    authorize_acceptance_source_change,
+    begin_acceptance_attempt,
+    checkpoint_acceptance_attempt,
+    resume_acceptance_attempt,
+    show_acceptance_attempt,
+)
+from stm32_toolkit.build.identity import snapshot_project_inputs
 from stm32_toolkit.diagnostic_workflows import (
     DiagnosticWorkflowContext,
     diagnostic_add_hypothesis,
@@ -54,15 +68,6 @@ from stm32_toolkit.diagnostic_workflows import (
     diagnostic_start,
     diagnostic_start_verification,
 )
-from stm32_toolkit.acceptance.recovery_workflows import (
-    AcceptanceRecoveryContext,
-    authorize_acceptance_source_change,
-    begin_acceptance_attempt,
-    checkpoint_acceptance_attempt,
-    resume_acceptance_attempt,
-    show_acceptance_attempt,
-)
-from stm32_toolkit.build.identity import snapshot_project_inputs
 from stm32_toolkit.diagnostics import SourceChangeDeclaration, VerificationPlan
 from stm32_toolkit.evidence import (
     EvidenceEnvelope,
@@ -71,14 +76,12 @@ from stm32_toolkit.evidence import (
     canonical_json_bytes,
 )
 from stm32_toolkit.evidence.gc import RootRecord, get_root
-from stm32_toolkit.evidence.store import EvidenceStore, MAX_EVIDENCE_READ_BYTES
+from stm32_toolkit.evidence.store import MAX_EVIDENCE_READ_BYTES, EvidenceStore
 from stm32_toolkit.paths import WorkspacePaths
+from stm32_toolkit.probe.flash import load_fresh_firmware_facts
 from stm32_toolkit.project_model import load_project_model
 from stm32_toolkit.testing_workflows import TestingWorkflowContext, target_replay_run
-
-import test_acceptance_physical_recovery as physical_fixture
-import test_vs08a_scenarios as vs08a_fixtures
-
+from stm32_toolkit.workflows import build_firmware_workflow, configure_project_workflow
 
 SCENARIO = "new-cubemx-physical-repair"
 VERSION = "1"
@@ -86,6 +89,7 @@ SESSION = os.environ.get("VS10B_SESSION_ID", "vs10b-closed-loop-20260918-01")
 SAFE_TIME = "2026-09-18T14:50:00.000000Z"
 COMMIT_TIME = "2026-09-18T14:55:00.000000Z"
 LATE_TIME = "2026-09-18T15:16:00.000000Z"
+CURRENT_SEED_ENV = "VS10B_CURRENT_PROJECT_SEED"
 
 
 @dataclass
@@ -95,6 +99,20 @@ class PersistedCase:
     request: dict[str, object]
     evidence: EvidenceStore
     workspace: WorkspacePaths
+    fixture_mode: str = "portable-synthetic"
+    fixture_metadata: Mapping[str, object] | None = None
+
+
+@dataclass
+class CurrentFirmwareFixture:
+    project: Path
+    source_path: Path
+    before_source: bytes
+    after_source: bytes
+    before_facts: object
+    rebuild_after: Callable[[], object]
+    metadata_path: Path
+    metadata: dict[str, object]
 
 
 def test_finalization_request_wire_guards_preserve_input() -> None:
@@ -131,69 +149,365 @@ def _configured_path(name: str) -> Path | None:
     return Path(value) if value else None
 
 
-def _build_synthetic_case(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> PersistedCase:
+def _public_data(result: object, operation: str) -> Mapping[str, object]:
+    wire = result.to_dict()
+    assert wire.get("ok") is True, f"{operation} failed: {wire}"
+    data = wire.get("data")
+    assert isinstance(data, Mapping), f"{operation} returned no data: {wire}"
+    return data
+
+
+def _current_identity(workspace: WorkspacePaths, facts: object) -> EvidenceIdentity:
+    model = getattr(facts, "model", None)
+    assert model is not None
+    return EvidenceIdentity(
+        workspace_id=workspace.workspace_id,
+        project_id=str(model.logical_project_id),
+        session_id=workspace.session_id,
+        build_id=str(facts.build_id),
+        elf_sha256=str(facts.elf_sha256),
+        target_device=str(facts.target_device),
+        input_snapshot_sha256=str(facts.input_snapshot_sha256),
+        git_commit=str(facts.git_commit),
+        git_dirty=bool(facts.git_dirty),
+    )
+
+
+def _write_fixture_metadata(path: Path, metadata: Mapping[str, object]) -> None:
+    path.write_bytes(canonical_json_bytes(dict(metadata)))
+
+
+def _source_change_diff(
+    before_source: bytes,
+    after_source: bytes,
+    changed_path: str,
+) -> bytes:
+    """Generate the source-diff artifact from the exact captured bytes."""
+
+    assert before_source != after_source
+    fromfile = f"a/{changed_path}".encode()
+    tofile = f"b/{changed_path}".encode()
+    diff = b"".join(
+        difflib.diff_bytes(
+            difflib.unified_diff,
+            before_source.splitlines(keepends=True),
+            after_source.splitlines(keepends=True),
+            fromfile=fromfile,
+            tofile=tofile,
+            lineterm=b"\n",
+        )
+    )
+    assert diff.startswith(fromfile.replace(b"a/", b"--- a/") + b"\n")
+    assert tofile in diff
+    return diff
+
+
+def _public_build_evidence(
+    project: Path,
+    build_result: Mapping[str, object],
+    facts: object,
+) -> dict[str, object]:
+    """Retain and cross-check the public build report and fresh loader facts."""
+
+    identity = build_result.get("identity")
+    assert isinstance(identity, Mapping)
+    identity_path = build_result.get("identityPath")
+    result_path = build_result.get("buildResultPath")
+    log_path = build_result.get("buildLogPath")
+    assert isinstance(identity_path, str)
+    assert isinstance(result_path, str)
+    assert isinstance(log_path, str)
+
+    def artifact_path(relative: str) -> Path:
+        relative_path = Path(relative)
+        assert not relative_path.is_absolute()
+        assert ".." not in relative_path.parts
+        return project.joinpath(*relative.replace("/", "\\").split("\\"))
+
+    identity_document = json.loads(
+        artifact_path(identity_path).read_text(encoding="utf-8")
+    )
+    result_document = json.loads(
+        artifact_path(result_path).read_text(encoding="utf-8")
+    )
+    assert identity_document == dict(identity)
+    assert result_document.get("status") == "success"
+    assert result_document.get("code") == "OK"
+    assert result_document.get("preset") == identity_document.get("preset") == "arm-debug"
+    for field in (
+        "buildId",
+        "gitHead",
+        "gitDirty",
+        "inputSnapshotSha256",
+        "targetDevice",
+        "preset",
+    ):
+        assert result_document.get(field) == identity_document.get(field)
+
+    facts_model = getattr(facts, "model", None)
+    assert facts_model is not None
+    loader_identity = {
+        "buildId": str(facts.build_id),
+        "elfPath": str(facts.elf_path),
+        "elfSha256": str(facts.elf_sha256),
+        "inputSnapshotSha256": str(facts.input_snapshot_sha256),
+        "gitHead": str(facts.git_commit),
+        "gitDirty": bool(facts.git_dirty),
+        "targetDevice": str(facts.target_device),
+        "logicalProjectId": str(facts_model.logical_project_id),
+    }
+    for field, expected in loader_identity.items():
+        assert identity_document.get(field) == expected
+    assert identity_document.get("targetDevice") == str(facts_model.target.device)
+    assert build_result.get("identityPath") == identity_path
+    assert build_result.get("buildResultPath") == result_path
+
+    artifact_records: list[dict[str, object]] = []
+    artifacts = result_document.get("artifacts")
+    assert isinstance(artifacts, list) and artifacts
+    for item in artifacts:
+        assert isinstance(item, Mapping)
+        relative = item.get("path")
+        assert isinstance(relative, str)
+        path = artifact_path(relative)
+        payload = path.read_bytes()
+        artifact_records.append(
+            {
+                "path": relative,
+                "sha256": hashlib.sha256(payload).hexdigest(),
+                "size": len(payload),
+            }
+        )
+    artifact_by_path = {str(item["path"]): item for item in artifact_records}
+    elf_path = str(identity_document["elfPath"])
+    map_path = str(identity_document["mapPath"])
+    assert artifact_by_path[elf_path]["sha256"] == identity_document["elfSha256"]
+    assert artifact_by_path[elf_path]["size"] == identity_document["elfSize"]
+    assert artifact_by_path[map_path]["sha256"] == identity_document["mapSha256"]
+
+    return {
+        "publicBuildReport": dict(build_result),
+        "buildResultDocument": result_document,
+        "identityDocument": identity_document,
+        "artifactRecords": artifact_records,
+        "loaderFacts": loader_identity,
+    }
+
+
+def _build_current_firmware_fixture(
+    tmp_path: Path,
+    seed: Path,
+) -> CurrentFirmwareFixture:
+    if not seed.is_dir():
+        pytest.fail(
+            f"{CURRENT_SEED_ENV} is explicitly configured but is not a directory: {seed}"
+        )
+    project = tmp_path / "current-project"
+    shutil.copytree(seed, project)
+    for generated in (project / "build", project / "artifacts"):
+        if generated.exists():
+            shutil.rmtree(generated)
+
+    configure_plan = _public_data(
+        configure_project_workflow(project), "current fixture configuration plan"
+    )
+    plan_id = configure_plan.get("plan_id")
+    assert isinstance(plan_id, str) and plan_id
+    _public_data(
+        configure_project_workflow(project, plan_id=plan_id, authorized=True),
+        "current fixture configuration apply",
+    )
+    model = load_project_model(project)
+    candidates = tuple(
+        project.joinpath(*str(relative).replace("/", "\\").split("\\"))
+        for relative in model.build.sources
+    )
+    source_path = next(
+        (candidate for candidate in candidates if candidate.is_file() and candidate.name == "main.c"),
+        None,
+    )
+    if source_path is None:
+        pytest.fail("current fixture has no public build source named main.c")
+    source_relative = source_path.relative_to(project).as_posix()
+    before_source = source_path.read_bytes()
+    after_source = before_source + b"\n/* VS10B current firmware fixture source revision. */\n"
+
+    before_build = _public_data(
+        build_firmware_workflow(
+            project,
+            preset="arm-debug",
+            clean=True,
+            timeout_seconds=300,
+            authorized=True,
+        ),
+        "current fixture before build",
+    )
+    before_facts = load_fresh_firmware_facts(project)
+    before_build_evidence = _public_build_evidence(project, before_build, before_facts)
+    build_identity = before_build.get("identity")
+    assert isinstance(build_identity, Mapping)
+    assert build_identity.get("buildId") == before_facts.build_id
+    assert build_identity.get("elfSha256") == before_facts.elf_sha256
+
+    seed_head = subprocess.run(
+        ("git", "rev-parse", "HEAD"),
+        cwd=seed,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    metadata_path = tmp_path / "current-fixture-selection.json"
+    metadata: dict[str, object] = {
+        "mode": "current-project-public-build",
+        "seedPath": str(seed),
+        "seedIdentity": {
+            "gitHead": seed_head,
+            "projectManifestSha256": hashlib.sha256(
+                (seed / ".stm32-project.json").read_bytes()
+            ).hexdigest(),
+        },
+        "projectCopy": str(project),
+        "sourcePath": source_relative,
+        "before": {
+            "buildId": before_facts.build_id,
+            "elfSha256": before_facts.elf_sha256,
+            "inputSnapshotSha256": before_facts.input_snapshot_sha256,
+            "gitCommit": before_facts.git_commit,
+            "gitDirty": before_facts.git_dirty,
+        },
+        "beforeBuild": before_build_evidence,
+    }
+    _write_fixture_metadata(metadata_path, metadata)
+
+    def rebuild_after() -> object:
+        result = build_firmware_workflow(
+            project,
+            preset="arm-debug",
+            clean=True,
+            timeout_seconds=300,
+            authorized=True,
+        )
+        after_build = _public_data(result, "current fixture after build")
+        after_facts = load_fresh_firmware_facts(project)
+        after_build_evidence = _public_build_evidence(project, after_build, after_facts)
+        after_identity_data = after_build.get("identity")
+        assert isinstance(after_identity_data, Mapping)
+        assert after_identity_data.get("buildId") == after_facts.build_id
+        assert after_identity_data.get("elfSha256") == after_facts.elf_sha256
+        metadata["after"] = {
+            "buildId": after_facts.build_id,
+            "elfSha256": after_facts.elf_sha256,
+            "inputSnapshotSha256": after_facts.input_snapshot_sha256,
+            "gitCommit": after_facts.git_commit,
+            "gitDirty": after_facts.git_dirty,
+        }
+        metadata["afterBuild"] = after_build_evidence
+        _write_fixture_metadata(metadata_path, metadata)
+        return after_facts
+
+    return CurrentFirmwareFixture(
+        project=project,
+        source_path=source_path,
+        before_source=before_source,
+        after_source=after_source,
+        before_facts=before_facts,
+        rebuild_after=rebuild_after,
+        metadata_path=metadata_path,
+        metadata=metadata,
+    )
+
+
+def _build_synthetic_case(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    current_fixture: CurrentFirmwareFixture | None = None,
+) -> PersistedCase:
     """Build a portable persisted B graph from the existing physical fixtures.
 
     The fixture is synthetic replay evidence and is deliberately kept separate
     from the optional card-copy integration path.  It exercises the real
     EvidenceStore, Diagnostic, Monitor, TestRun and acceptance readers.
     """
-    project = tmp_path / "project"
-    physical_fixture._write_physical_project(project, "cubemx")
+    if current_fixture is None:
+        project = tmp_path / "project"
+        physical_fixture._write_physical_project(project, "cubemx")
+    else:
+        project = current_fixture.project
     data = tmp_path / "data"
     testing = TestingWorkflowContext(project, data, SESSION)
     diagnostic = DiagnosticWorkflowContext(project, data, SESSION)
     model = load_project_model(project)
-    source_path = project / "App" / "main.c"
-    before_source = source_path.read_bytes()
+    assert model.debug.backend == "pyocd"
+    assert model.debug.target
+    assert model.testing is not None
+    assert model.testing.target is not None
+    assert model.testing.target.transport.kind == "memory-mailbox"
+    if current_fixture is None:
+        source_path = project / "App" / "main.c"
+        before_source = source_path.read_bytes()
+        after_source = b"int main(void) { return 1; }\n"
+    else:
+        source_path = current_fixture.source_path
+        before_source = current_fixture.before_source
+        after_source = current_fixture.after_source
+        assert source_path.read_bytes() == before_source
     before_snapshot = snapshot_project_inputs(model)
-    after_source = b"int main(void) { return 1; }\n"
     source_path.write_bytes(after_source)
-    after_snapshot = snapshot_project_inputs(load_project_model(project))
+    after_model = load_project_model(project)
+    after_snapshot = snapshot_project_inputs(after_model)
     source_path.write_bytes(before_source)
     before_source_sha256 = hashlib.sha256(before_source).hexdigest()
     after_source_sha256 = hashlib.sha256(after_source).hexdigest()
 
+    project_id = str(model.logical_project_id)
+    failed_run_id = physical_fixture.PHYSICAL_FAILED_RUN
+    fixed_run_id = physical_fixture.PHYSICAL_FIXED_RUN
+    failed_test_run_id = failed_run_id
+    fixed_test_run_id = fixed_run_id
+    raw_probe = physical_fixture.PHYSICAL_RAW_PROBE
+
     workspace = WorkspacePaths.from_roots(
         data,
         project,
-        UUID(physical_fixture.PROJECT_ID),
+        UUID(project_id),
         SESSION,
     )
-    before_identity = EvidenceIdentity(
-        workspace_id=workspace.workspace_id,
-        project_id=physical_fixture.PROJECT_ID,
-        session_id=SESSION,
-        build_id=physical_fixture.PHYSICAL_BEFORE_BUILD,
-        elf_sha256=physical_fixture.PHYSICAL_BEFORE_ELF,
-        target_device=model.target.device,
-        input_snapshot_sha256=before_snapshot.sha256,
-        git_commit="b" * 40,
-        git_dirty=False,
-    )
-    after_identity = EvidenceIdentity(
-        workspace_id=workspace.workspace_id,
-        project_id=physical_fixture.PROJECT_ID,
-        session_id=SESSION,
-        build_id=physical_fixture.PHYSICAL_AFTER_BUILD,
-        elf_sha256=physical_fixture.PHYSICAL_AFTER_ELF,
-        target_device=model.target.device,
-        input_snapshot_sha256=after_snapshot.sha256,
-        git_commit="c" * 40,
-        git_dirty=False,
-    )
+    if current_fixture is None:
+        before_identity = EvidenceIdentity(
+            workspace_id=workspace.workspace_id,
+            project_id=physical_fixture.PROJECT_ID,
+            session_id=SESSION,
+            build_id=physical_fixture.PHYSICAL_BEFORE_BUILD,
+            elf_sha256=physical_fixture.PHYSICAL_BEFORE_ELF,
+            target_device=model.target.device,
+            input_snapshot_sha256=before_snapshot.sha256,
+            git_commit="b" * 40,
+            git_dirty=False,
+        )
+        after_identity = EvidenceIdentity(
+            workspace_id=workspace.workspace_id,
+            project_id=physical_fixture.PROJECT_ID,
+            session_id=SESSION,
+            build_id=physical_fixture.PHYSICAL_AFTER_BUILD,
+            elf_sha256=physical_fixture.PHYSICAL_AFTER_ELF,
+            target_device=model.target.device,
+            input_snapshot_sha256=after_snapshot.sha256,
+            git_commit="c" * 40,
+            git_dirty=False,
+        )
+    else:
+        before_facts = current_fixture.before_facts
+        assert before_facts.input_snapshot_sha256 == before_snapshot.sha256
+        assert recovery_workflows._load_fresh_firmware_facts is load_fresh_firmware_facts
+        before_identity = _current_identity(workspace, before_facts)
+        after_identity = None
 
     failed_descriptor, failed_stream = vs08a_fixtures._canonical_replay_inputs(
         tmp_path, "failed-before", "seed-failed-t10"
     )
-    fixed_descriptor, fixed_stream = vs08a_fixtures._canonical_replay_inputs(
-        tmp_path, "fixed-after", "seed-fixed-t10"
-    )
     physical_fixture._ok(
         target_replay_run(testing, "seed-failed-t10", failed_descriptor, failed_stream)
-    )
-    physical_fixture._ok(
-        target_replay_run(testing, "seed-fixed-t10", fixed_descriptor, fixed_stream)
     )
     failed_physical = physical_fixture._publish_physical_from_seed(
         tmp_path,
@@ -201,49 +515,58 @@ def _build_synthetic_case(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Pe
         data,
         SESSION,
         "seed-failed-t10",
-        physical_fixture.PHYSICAL_FAILED_RUN,
+        failed_run_id,
         before_identity,
     )
-    fixed_physical = physical_fixture._publish_physical_from_seed(
-        tmp_path,
-        project,
-        data,
-        SESSION,
-        "seed-fixed-t10",
-        physical_fixture.PHYSICAL_FIXED_RUN,
-        after_identity,
-    )
+    fixed_physical = None
+    if current_fixture is None:
+        fixed_descriptor, fixed_stream = vs08a_fixtures._canonical_replay_inputs(
+            tmp_path, "fixed-after", "seed-fixed-t10"
+        )
+        physical_fixture._ok(
+            target_replay_run(testing, "seed-fixed-t10", fixed_descriptor, fixed_stream)
+        )
+        fixed_physical = physical_fixture._publish_physical_from_seed(
+            tmp_path,
+            project,
+            data,
+            SESSION,
+            "seed-fixed-t10",
+            fixed_run_id,
+            after_identity,
+        )
 
     build_after = {"value": False}
 
-    def fresh_firmware_facts(_project: Path):
-        current_model = load_project_model(project)
-        current_snapshot = snapshot_project_inputs(current_model)
-        if build_after["value"]:
-            build_id, elf_sha = (
-                physical_fixture.PHYSICAL_AFTER_BUILD,
-                physical_fixture.PHYSICAL_AFTER_ELF,
+    if current_fixture is None:
+        def fresh_firmware_facts(_project: Path):
+            current_model = load_project_model(project)
+            current_snapshot = snapshot_project_inputs(current_model)
+            if build_after["value"]:
+                build_id, elf_sha = (
+                    physical_fixture.PHYSICAL_AFTER_BUILD,
+                    physical_fixture.PHYSICAL_AFTER_ELF,
+                )
+            else:
+                build_id, elf_sha = (
+                    physical_fixture.PHYSICAL_BEFORE_BUILD,
+                    physical_fixture.PHYSICAL_BEFORE_ELF,
+                )
+            return SimpleNamespace(
+                model=current_model,
+                elf_path="build/arm-debug/firmware.elf",
+                elf_sha256=elf_sha,
+                build_id=build_id,
+                input_snapshot_sha256=current_snapshot.sha256,
+                git_commit="b" * 40,
+                git_dirty=False,
+                target_device=current_model.target.device,
             )
-        else:
-            build_id, elf_sha = (
-                physical_fixture.PHYSICAL_BEFORE_BUILD,
-                physical_fixture.PHYSICAL_BEFORE_ELF,
-            )
-        return SimpleNamespace(
-            model=current_model,
-            elf_path="build/arm-debug/firmware.elf",
-            elf_sha256=elf_sha,
-            build_id=build_id,
-            input_snapshot_sha256=current_snapshot.sha256,
-            git_commit="b" * 40,
-            git_dirty=False,
-            target_device=current_model.target.device,
-        )
 
-    monkeypatch.setattr(
-        recovery_workflows, "_load_fresh_firmware_facts", fresh_firmware_facts
-    )
-    monkeypatch.setattr(diagnostic_workflows, "_session_id_factory", lambda: "9" * 32)
+        monkeypatch.setattr(
+            recovery_workflows, "_load_fresh_firmware_facts", fresh_firmware_facts
+        )
+        monkeypatch.setattr(diagnostic_workflows, "_session_id_factory", lambda: "9" * 32)
 
     def ok(result: object) -> Mapping[str, object]:
         assert getattr(result, "ok", False), getattr(result, "to_dict", lambda: result)()
@@ -255,7 +578,7 @@ def _build_synthetic_case(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Pe
         diagnostic_start(
             diagnostic,
             operation_id="vs10b-synthetic-diagnostic-start",
-            failed_test_run_id=physical_fixture.PHYSICAL_FAILED_RUN,
+            failed_test_run_id=failed_test_run_id,
             failed_run_mode="target",
         )
     )
@@ -355,14 +678,14 @@ def _build_synthetic_case(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Pe
             attempt_id=physical_attempt_id,
             expected_revision=2,
             stage="target-failure-observed",
-            test_run_id=physical_fixture.PHYSICAL_FAILED_RUN,
+            test_run_id=failed_test_run_id,
         )
     )
     intent_input = {
         "schema": "stm32-source-change-intent/1",
         "changes": [
             {
-                "path": "App/main.c",
+                "path": source_path.relative_to(project).as_posix(),
                 "beforeSha256": before_source_sha256,
                 "afterSha256": after_source_sha256,
                 "afterSize": len(after_source),
@@ -392,16 +715,81 @@ def _build_synthetic_case(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Pe
     )
 
     source_path.write_bytes(after_source)
-    build_after["value"] = True
+    if current_fixture is None:
+        build_after["value"] = True
+    else:
+        after_facts = current_fixture.rebuild_after()
+        after_model = load_project_model(project)
+        after_snapshot = snapshot_project_inputs(after_model)
+        assert after_facts.input_snapshot_sha256 == after_snapshot.sha256
+        after_identity = _current_identity(workspace, after_facts)
+        fixed_descriptor, fixed_stream = vs08a_fixtures._canonical_replay_inputs(
+            tmp_path, "fixed-after", "seed-fixed-t10"
+        )
+        physical_fixture._ok(
+            target_replay_run(testing, "seed-fixed-t10", fixed_descriptor, fixed_stream)
+        )
+        fixed_physical = physical_fixture._publish_physical_from_seed(
+            tmp_path,
+            project,
+            data,
+            SESSION,
+            "seed-fixed-t10",
+            fixed_run_id,
+            after_identity,
+        )
+    assert after_identity is not None
+    assert fixed_physical is not None
+    assert before_identity.target_device == str(model.target.device)
+    assert after_identity.target_device == str(after_model.target.device)
+    before_physical_target = str(model.debug.target)
+    after_physical_target = str(after_model.debug.target)
+    assert before_physical_target
+    assert after_physical_target
+    assert (
+        hashlib.sha256(raw_probe.encode("utf-8")).hexdigest()
+        == physical_fixture.PHYSICAL_PROBE
+    )
+
+    def assert_physical_links(
+        published: object,
+        identity: EvidenceIdentity,
+        run_id: str,
+    ) -> None:
+        manifest = published.manifest
+        envelope = published.envelope
+        root = published.root
+        assert manifest.identity == identity
+        assert manifest.transport == "mailbox"
+        metadata = dict(envelope.metadata)
+        assert metadata["target_id"] == identity.target_device
+        assert metadata["probe_id"] == physical_fixture.PHYSICAL_PROBE
+        assert metadata["flash_session_id"] == f"flash-{run_id}"
+        assert metadata["lease_id"] == f"lease-{run_id}"
+        assert metadata["origin_workspace_id"] == identity.workspace_id
+        assert metadata["import_workspace_id"] == identity.workspace_id
+        assert metadata["origin_session_id"] == identity.session_id
+        assert metadata["import_session_id"] == identity.session_id
+        assert root.metadata == {
+            "mode": "target",
+            "state": manifest.state,
+            **metadata,
+        }
+
+    assert_physical_links(failed_physical, before_identity, failed_run_id)
+    assert_physical_links(fixed_physical, after_identity, fixed_run_id)
+    changed_path = source_path.relative_to(project).as_posix()
     evidence = EvidenceStore(workspace.workspace_root / "evidence")
     diff_path = tmp_path / "source-change.diff"
-    diff_path.write_bytes(
-        b"--- a/App/main.c\n+++ b/App/main.c\n@@ -1 +1 @@\n"
-        b"-int main(void) { return 0; }\n+int main(void) { return 1; }\n"
-    )
+    diff_payload = _source_change_diff(before_source, after_source, changed_path)
+    assert hashlib.sha256(before_source).hexdigest() == before_source_sha256
+    assert hashlib.sha256(after_source).hexdigest() == after_source_sha256
+    diff_path.write_bytes(diff_payload)
     diff_artifact = evidence.ingest_file(
         diff_path, kind="source-diff", media_type="text/x-diff"
     )
+    assert diff_artifact.size_bytes == len(diff_payload)
+    assert diff_artifact.sha256 == hashlib.sha256(diff_payload).hexdigest()
     diff_envelope = EvidenceEnvelope(
         identity=before_identity,
         operation="diagnostic-source-change",
@@ -414,11 +802,11 @@ def _build_synthetic_case(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Pe
     declaration = SourceChangeDeclaration.new(
         before_source_sha256=before_snapshot.sha256,
         after_source_sha256=after_snapshot.sha256,
-        before_build_id=physical_fixture.PHYSICAL_BEFORE_BUILD,
-        before_elf_sha256=physical_fixture.PHYSICAL_BEFORE_ELF,
-        after_build_id=physical_fixture.PHYSICAL_AFTER_BUILD,
-        after_elf_sha256=physical_fixture.PHYSICAL_AFTER_ELF,
-        changed_paths=("App/main.c",),
+        before_build_id=before_identity.build_id,
+        before_elf_sha256=before_identity.elf_sha256,
+        after_build_id=after_identity.build_id,
+        after_elf_sha256=after_identity.elf_sha256,
+        changed_paths=(changed_path,),
         diff_evidence_id=str(diff_envelope.evidence_id),
         diff_artifact=diff_artifact,
         claimed_hypothesis_ids=(hypothesis_id,),
@@ -445,46 +833,52 @@ def _build_synthetic_case(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Pe
     failed_batches = physical_fixture._append_physical_monitor_history(
         workspace,
         before_identity,
-        physical_fixture.PHYSICAL_RAW_PROBE,
-        f"flash-{physical_fixture.PHYSICAL_FAILED_RUN}",
-        f"lease-{physical_fixture.PHYSICAL_FAILED_RUN}",
+        raw_probe,
+        f"flash-{failed_run_id}",
+        f"lease-{failed_run_id}",
         vs08a_fixtures.MONITOR_OPERATION_IDS["failed-before"],
         value_offset=0,
+        physical_target=before_physical_target,
     )
     fixed_batches = physical_fixture._append_physical_monitor_history(
         workspace,
         after_identity,
-        physical_fixture.PHYSICAL_RAW_PROBE,
-        f"flash-{physical_fixture.PHYSICAL_FIXED_RUN}",
-        f"lease-{physical_fixture.PHYSICAL_FIXED_RUN}",
+        raw_probe,
+        f"flash-{fixed_run_id}",
+        f"lease-{fixed_run_id}",
         vs08a_fixtures.MONITOR_OPERATION_IDS["fixed-after"],
         value_offset=10,
+        physical_target=after_physical_target,
     )
+    assert failed_batches[0].binding.physical_target == before_physical_target
+    assert fixed_batches[0].binding.physical_target == after_physical_target
+    assert failed_batches[0].binding.target_device == before_identity.target_device
+    assert fixed_batches[0].binding.target_device == after_identity.target_device
     monitor_before = publish_physical_monitor_run(
         workspace,
         evidence,
         scenario_role="failed-before",
-        test_run_id=physical_fixture.PHYSICAL_FAILED_RUN,
+        test_run_id=failed_test_run_id,
         run_id=vs08a_fixtures.MONITOR_OPERATION_IDS["failed-before"],
         group_id=str(failed_batches[0].group_id),
         start_sequence=failed_batches[0].sequence,
         end_sequence_exclusive=failed_batches[-1].sequence + 1,
         start_captured_unix_ns=failed_batches[0].captured_unix_ns,
         end_captured_unix_ns_exclusive=failed_batches[-1].captured_unix_ns + 1,
-        probe_id=physical_fixture.PHYSICAL_RAW_PROBE,
+        probe_id=raw_probe,
     )
     monitor_after = publish_physical_monitor_run(
         workspace,
         evidence,
         scenario_role="fixed-after",
-        test_run_id=physical_fixture.PHYSICAL_FIXED_RUN,
+        test_run_id=fixed_test_run_id,
         run_id=vs08a_fixtures.MONITOR_OPERATION_IDS["fixed-after"],
         group_id=str(fixed_batches[0].group_id),
         start_sequence=fixed_batches[0].sequence,
         end_sequence_exclusive=fixed_batches[-1].sequence + 1,
         start_captured_unix_ns=fixed_batches[0].captured_unix_ns,
         end_captured_unix_ns_exclusive=fixed_batches[-1].captured_unix_ns + 1,
-        probe_id=physical_fixture.PHYSICAL_RAW_PROBE,
+        probe_id=raw_probe,
     )
     analysis_request = AnalysisRequest(
         schema="stm32-monitor-analysis-request/1",
@@ -510,17 +904,17 @@ def _build_synthetic_case(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Pe
         evidence,
         analysis_request,
         publication,
-        physical_fixture.PHYSICAL_FAILED_RUN,
-        physical_fixture.PHYSICAL_FIXED_RUN,
+        failed_run_id,
+        fixed_run_id,
         declaration,
     )
     verification_plan = VerificationPlan.new(
         verification_plan_id="b" * 64,
         diagnostic_session_id=diagnostic_id,
-        failed_before_run_id=physical_fixture.PHYSICAL_FAILED_RUN,
+        failed_before_run_id=failed_run_id,
         failed_before_evidence_id=str(failed_physical.envelope.evidence_id),
         source_change_declaration_id=declaration.declaration_id,
-        fixed_after_run_id=physical_fixture.PHYSICAL_FIXED_RUN,
+        fixed_after_run_id=fixed_run_id,
         fixed_after_evidence_id=str(fixed_physical.envelope.evidence_id),
         required_analysis_ids=(publication.analysis_result.analysis_id,),
         required_analysis_evidence_ids=(publication.analysis_evidence_ref.evidence_id,),
@@ -561,8 +955,8 @@ def _build_synthetic_case(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Pe
             diagnostic_session_id=diagnostic_id,
             expected_revision=10,
             executed_operation_ids=[
-                physical_fixture.PHYSICAL_FAILED_RUN,
-                physical_fixture.PHYSICAL_FIXED_RUN,
+                failed_run_id,
+                fixed_run_id,
                 "monitor.analysis.compare",
                 "monitor.analysis.bundle",
             ],
@@ -585,7 +979,7 @@ def _build_synthetic_case(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Pe
         "predecessorAttemptId": physical_attempt_id,
         "predecessorCheckpointId": predecessor["checkpointId"],
         "predecessorEvidenceId": predecessor_root.manifest_id,
-        "fixedAfterTestRunId": physical_fixture.PHYSICAL_FIXED_RUN,
+        "fixedAfterTestRunId": fixed_run_id,
         "fixedAfterEvidenceId": str(fixed_physical.envelope.evidence_id),
         "diagnosticRevision": completed["session"]["revision"],
         "diagnosticEventHead": completed["session"]["event_head"],
@@ -597,15 +991,33 @@ def _build_synthetic_case(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Pe
         request=request,
         evidence=evidence,
         workspace=workspace,
+        fixture_mode=(
+            "current-project-public-build"
+            if current_fixture is not None
+            else "portable-synthetic"
+        ),
+        fixture_metadata=(current_fixture.metadata if current_fixture is not None else None),
     )
 
 
 @pytest.fixture
 def persisted_case(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> PersistedCase:
+    current_seed = _configured_path(CURRENT_SEED_ENV)
     source_data = _configured_path("VS10B_DATA_COPY")
     project = _configured_path("VS10B_PROJECT_ROOT")
     request_path = _configured_path("VS10B_BIND_REQUEST")
     configured = (source_data, project, request_path)
+    if current_seed is not None and any(value is not None for value in configured):
+        pytest.fail(
+            f"{CURRENT_SEED_ENV} cannot be combined with the historical VS10B fixture paths"
+        )
+    if current_seed is not None:
+        current_fixture = _build_current_firmware_fixture(tmp_path, current_seed)
+        return _build_synthetic_case(
+            tmp_path,
+            monkeypatch,
+            current_fixture=current_fixture,
+        )
     if all(value is None for value in configured):
         # Portable default: synthetic replay evidence built through the same
         # real stores and validators as the existing B physical tests.
@@ -646,12 +1058,26 @@ def test_explicit_external_fixture_paths_fail_closed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.delenv(CURRENT_SEED_ENV, raising=False)
     monkeypatch.setenv("VS10B_DATA_COPY", str(tmp_path / "missing-data"))
     monkeypatch.setenv("VS10B_PROJECT_ROOT", str(tmp_path / "missing-project"))
     monkeypatch.setenv("VS10B_BIND_REQUEST", str(tmp_path / "missing-request.json"))
     with pytest.raises(
         pytest.fail.Exception,
         match="explicitly configured but are incomplete",
+    ):
+        persisted_case.__wrapped__(tmp_path, monkeypatch)
+
+
+def test_current_and_historical_fixture_selection_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(CURRENT_SEED_ENV, str(tmp_path))
+    monkeypatch.setenv("VS10B_DATA_COPY", str(tmp_path / "data"))
+    with pytest.raises(
+        pytest.fail.Exception,
+        match="cannot be combined with the historical",
     ):
         persisted_case.__wrapped__(tmp_path, monkeypatch)
 
