@@ -3,7 +3,7 @@
 ## Current U41 and frozen RC2 result
 
 Integrated test/code head before this report:
-`a6921d8d479b89962465a76b054e3233e4eb29ab`.
+`6c93ca218284dba1a9606ea0e90e11c0c6dc91eb`.
 Frozen RC2 source (unchanged by the subsequent test-only work):
 `c71b13f2562985d27b3865e367f6d33334f3a16a`.
 Product source remains `55d91a23a5a2f16fc47d324a9077dfcebf130be9`.
@@ -21,6 +21,11 @@ Primary admission:
 | Toolkit risk-core-v2 | 11,203 / 12,918 | 86.7240% | 1,070 for95% |
 | Monitor overall / broad-v1 / risk-v2 | 2,725 / 2,944 | 92.5611% | overall90% met;72 for95% |
 | UI, retained separately | 784 / 810 | 96.7901% | retained gate met |
+
+Current batch closes all six scoped RC2 refusal/restoration cases and the
+harmless native Ctrl+C facility. The real shipped Monitor service/authentication/
+Ctrl+C/resource-reuse package gate, coverage thresholds and seven Windows checks
+remain incomplete. No product source or frozen RC2 artifact changed.
 
 
 ### Retained SVD and initial facility convergence evidence
@@ -795,3 +800,29 @@ facts/readers/validators/state and direct authority fabrication are not. The sam
 Luna/max Recovery owner implements and runs the first bounded targeted validation
 in isolated w18r/evidence/temporary roots. No new continuation600->607 success
 edge is claimed; that prior mapping was explicitly withdrawn.
+
+### Native facility result accepted after direct primary verification
+
+After the lost-session wrapper, the replacement inline launcher failed before
+candidate invocation on an unquoted PowerShell false token. Preserve43A9 and740E
+as pre-invocation infrastructure failures, with no invented candidate exit or
+approval rejection. Stop adding outer-launcher scaffolding. Primary independently
+invoked the unchanged, already reviewed B4AE controller directly with D-root
+environment and retained stdout/stderr; the implementation owner did not self-accept.
+
+The actual run completed in0.8757483s with controller0, marker27432 exit130,
+helper18852 exit0, one Ctrl+C, Job containment/empty, exact17-byte READY,
+empty marker AND controller stderr, matching top-level noPrompt and no cleanup
+failure. Marker and launch exit labels explicitly describe the same native
+handle. Actual controller12100 and both owned child PIDs were absent afterward.
+VerificationA32B98595956761002ECFB0B9575E5195ED0FC51FF85BD4F117BEBF7562AF2B3
+is retained under t/rc2mc-native/primary-direct-acceptance. CPU and peak working
+set were not measured. The earlier warning failure remains unchanged.
+
+This accepts only the harmless signal/ownership facility. The real shipped
+stm32-monitor.cmd service remains unexecuted. Its next design reuses existing
+public authentication, runtime-record, listener and lock-reuse assertions and
+the verified native startup boundary; secrets must remain in bounded memory.
+Independent reviewer is checking the exact reusable boundary before the same
+Monitor owner implements the smallest package-acceptance entry. No product
+change, packaging repeat, hardware, remote action or third suite slot is released.
