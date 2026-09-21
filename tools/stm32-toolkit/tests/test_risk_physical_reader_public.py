@@ -28,6 +28,7 @@ from stm32_toolkit.evidence import (
 from stm32_toolkit.evidence.gc import RootRecord, get_root, put_root
 from stm32_toolkit.evidence.store import EvidenceStore
 from stm32_toolkit.paths import WorkspacePaths
+from stm32_toolkit.project_model import load_project_model
 
 # Reuse the established schema-3 Keil project writer.  The physical reader
 # journey below uses only the public begin/checkpoint/show/resume APIs; the
@@ -35,9 +36,6 @@ from stm32_toolkit.paths import WorkspacePaths
 from test_acceptance_physical_recovery import _write_physical_project
 
 ATTEMPT_ID = "00000000-0000-4000-8000-000000000101"
-# `_write_physical_project` is the established fixture writer and binds the
-# schema-3 logical project to this existing public fixture identity.
-PROJECT_ID = "00000000-0000-4000-8000-000000000002"
 ROOT_TYPE = "acceptance-attempt"
 ATTEMPT_OPERATION = "acceptance-attempt"
 INTEGRITY_CODE = "ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED"
@@ -153,7 +151,7 @@ def _load_chain_records(
     for revision in (0, 1):
         root = get_root(evidence, ROOT_TYPE, _root_id(revision))
         envelope = evidence.get_envelope(root.manifest_id)
-        raw_attempt = envelope.metadata.get("attempt")
+        raw_attempt = envelope.to_dict()["metadata"]["attempt"]
         attempts[revision] = PhysicalAcceptanceAttempt.from_value(raw_attempt)
         roots[revision] = root
         envelopes[revision] = envelope
@@ -358,6 +356,7 @@ def _build_public_prefix(
 ) -> tuple[AcceptanceRecoveryContext, Path, Path, EvidenceStore]:
     project_root = tmp_path / "project"
     _write_physical_project(project_root)
+    model = load_project_model(project_root)
     data_root = tmp_path / "data"
     session_id = "t10-physical-reader-public"
     context = AcceptanceRecoveryContext(
@@ -383,7 +382,7 @@ def _build_public_prefix(
     workspace = WorkspacePaths.from_roots(
         data_root,
         project_root,
-        UUID(PROJECT_ID),
+        UUID(str(model.logical_project_id)),
         session_id,
     )
     evidence = EvidenceStore(workspace.workspace_root / "evidence")
