@@ -2535,3 +2535,48 @@ Primary reviews scope and entry reachability before serial execution; all
 success/failure snapshots and original evidence stay under the approved roots.
 This prepares remaining mandatory safety gates and does not imply either gate
 has passed or that a percentage gain is expected.
+
+### U39 persisted acceptance-reader qualification boundary
+
+The existing Recovery Luna/max owner retains the clean qualification tree
+`r10/w14f` at accepted base `4378b38da37a57a89e685905a72bce86dcb07efa`.
+Current integration is `16d6b4e96f2436b5f8e33078d74f73a725ae7c2a`; product
+source remains `55d91a23a5a2f16fc47d324a9077dfcebf130be9`, frozen RC2 remains
+c71. Main owns design/admission; the independent reviewer owns complete-diff
+review. The U39 dominant-residual audit is design input, not a reachable-gain
+claim: 409 Recovery and 62 Acceptance-reader arcs remain, with no scope change.
+
+Freeze one complete public scenario family: the existing valid generic-v1
+Acceptance producer and reader, externally corrupted persisted authority,
+refusal without publication, exact byte restoration and successful public
+reuse. Reuse the accepted public prefix in
+`test_risk_recovery_public_producers.py`; do not repeat its already-covered
+retry/stage cases, rebuild firmware, or enter physical/finalization scenarios.
+The only implementation file is that existing test module. No product,
+private state, shared fixture, schema, dependency, registry or runner change.
+
+Before adding a case, the same owner must record the concrete external field
+mutation, constructor/canonical-link validity, exact public call and first
+failing guard, and a still-missing native U39 [from,to] tuple. Function totals
+do not establish gain. Consider at most eight nonduplicate variants across
+root/envelope identity and parent/Diagnostic-chain integrity, with one public
+prefix and at most two isolated data clones. Earlier guards remain intact;
+if no coherent group beyond the already-qualified cases survives them, stop
+with the concrete reachability result rather than adding isolated fakes.
+
+Once that bounded proof exists, the owner may implement and run one focused
+suite without another stepwise handoff. Reuse the existing native coverage
+entry and child-capture configuration, bind all actual inputs and retained
+raw shards, and separate behavior from measurement. The suite has a 180-second
+wall budget and stops at the first unexpected failure. Evidence and temp roots
+are `r10/e/risk-v2/finalization-current/acceptance-reader` and `r10/t/fc/ar1`.
+It may use one of the maximum two suite slots; package execution and formal
+aggregation must wait for its completion. No remote, hardware or cleanup action.
+Report actual unique U39 branch delta, elapsed time, child/raw completeness,
+restoration and no-write assertions. Independent complete-diff and main native
+admission remain mandatory before integration or aggregation.
+
+The shipped Monitor lifecycle control also explicitly includes one second
+public `MonitorRuntime.start/stop` after the first launcher has stopped, only
+to prove workspace-lock reacquisition. It is not a second launcher attempt;
+there is still exactly one Ctrl+C event and no sampling/probe operation.
