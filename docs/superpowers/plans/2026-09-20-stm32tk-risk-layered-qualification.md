@@ -2865,3 +2865,52 @@ manifest. First unexpected failure stops. No further local correction/run is
 released by this decision; return any remaining boundary blocker to primary.
 Independent complete-diff/native review still precedes admission. Earlier
 failed coverage stays excluded; no extra product regression or RC build.
+
+### U40 admission and finite RC2 refusal execution
+
+At integration head70f819eb2225b97087f105c993d9962baeaf502a, U40 is admitted
+after independent reviewEB85778999683F8F51B6ACA3F52F11F8E2AFFEE7EA7E6B8E7EAC2A48DCDE84D4.
+The gain is23 Toolkit decision branches and zero Monitor branches, with no
+lost native arcs. CanonicalB63D949B04CF675BD14CF35FA70F5CF1C6499A6857561F56D7253381C7F37830
+retains all frozen scopes. Remaining gaps are419 Toolkit overall branches,
+1,077 Toolkit risk branches and72 Monitor risk branches. Product/RC2 bytes
+are unchanged. This is coverage evidence admission, not release acceptance.
+
+The next serial package batch contains exactly six negative cases: two
+runtime-state refusals and four package-trust refusals. The original Luna/max
+Engineering owner retains execution; primary owns admission and shared ledgers.
+Entry review47CB013013771BC60AE04E850E3DAD784DFBBAAABA33C6989B3C7FCB67F5710B
+requires four preparation corrections before any negative call. Record actual
+bootstrap Python identity; materialize the four named package/project roots
+under r10/t/rc2rf and hash their complete package trees; add the public state
+classifier before each state Repair; enforce complete package/project/data,
+staging and quarantine no-write checks. The review's four-case wording refers
+to the trust subset and does not remove the two state cases.
+
+Only after those preconditions pass may the same owner execute the fixed batch.
+Each state case gets one read-only verify-runtime-state classification, one
+expected-refusal Repair, exact original-state restoration and one healthy,
+matching, generation1, bundle-ok, mutated=false Check. Each trust case gets
+one declared byte mutation, one expected-refusal Bootstrap, exact package
+restoration and one verify-bundle control bound to manifest/utility/source,
+64 wheels and six artifacts. Compare every public call to its immediate
+pre-call mutated snapshot. The existing healthy5778-file fixture is reused;
+no successful Repair, runtime relocation or Bootstrap repeat is needed.
+
+Use existing public entrypoints and the retained runtime-state-refusals method.
+No general runner or diagnostic framework is authorized. Bound each command to
+90seconds and each case to180seconds including30seconds of cleanup; keep hidden
+owned processes and temporary artifacts under the assigned D-drive root. An
+unexpected result stops all later cases. Terminate/wait owned processes before
+restoring bytes, retain minimum failure evidence and never retry automatically.
+Independent terminal review still precedes acceptance. This batch occupies one
+actual execution slot; the two-suite ceiling is unchanged.
+
+The Monitor console facility remains in design hold after four rounds, with
+no fifth local patch and no real service run released. The harmless managed
+terminal experiment proves SIGINT delivery only, not a child exit130 oracle
+or closure. Recovery/Monitor residual audits are decision inputs, not test
+coverage. Do not execute the known zero-yield SQLite contention family or
+unproven generic-v1 variations. Public continuation and Replay graph candidates
+must first supply concrete legal producer inputs and first-guard reachability;
+unknown branches remain unknown and never leave the frozen denominator.
