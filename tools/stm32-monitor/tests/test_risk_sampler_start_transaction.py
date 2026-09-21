@@ -20,6 +20,10 @@ class OwnedTaskAllocationFailure(RuntimeError):
     """Test-owned host allocation failure for one sampler child task."""
 
 
+class CleanupTaskAllocationFailure(RuntimeError):
+    """Test-owned host allocation failure for rollback cleanup ownership."""
+
+
 @pytest.mark.parametrize(
     "failed_task_index",
     (1, 2),
@@ -193,6 +197,117 @@ def test_public_start_rollback_survives_parent_cancellation(tmp_path: Path) -> N
                 and inspect.getcoroutinestate(rejected_coro) is not inspect.CORO_CLOSED
             ):
                 rejected_coro.close()
+            await sampler.close()
+
+    asyncio.run(scenario())
+
+
+def test_public_start_cleanup_allocation_refusal_preserves_recovery(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        project = tmp_path / "cleanup-refusal-project"
+        project.mkdir()
+        observation = FakeObservation(_binding(project))
+        sampler = MonitorSampler(
+            observation,
+            FakeGroups(_group()),
+            FakeHistory(),
+        )
+        loop = asyncio.get_running_loop()
+        previous_factory = loop.get_task_factory()
+        producer_error = OwnedTaskAllocationFailure(
+            "owned sampler producer allocation refused"
+        )
+        cleanup_error = CleanupTaskAllocationFailure(
+            "owned sampler rollback allocation refused"
+        )
+        factory_calls = 0
+        rejected_producer_coro = None
+        rejected_cleanup_coro = None
+        start_task = asyncio.create_task(
+            sampler.start(GROUP_ID, expected_revision=1),
+            name="sampler-start-cleanup-refusal-caller",
+        )
+
+        def task_factory(loop: asyncio.AbstractEventLoop, coro, **kwargs):
+            nonlocal factory_calls, rejected_cleanup_coro, rejected_producer_coro
+            factory_calls += 1
+            # Python 3.12 invokes the loop factory without the create_task name;
+            # start() allocates history, producer, then rollback in this order.
+            if factory_calls == 2:
+                rejected_producer_coro = coro
+                raise producer_error
+            if factory_calls == 3:
+                rejected_cleanup_coro = coro
+                raise cleanup_error
+            if previous_factory is not None:
+                return previous_factory(loop, coro, **kwargs)
+            return asyncio.Task(coro, loop=loop, **kwargs)
+
+        try:
+            loop.set_task_factory(task_factory)
+            with pytest.raises(OwnedTaskAllocationFailure) as error:
+                await asyncio.wait_for(start_task, timeout=5)
+
+            assert error.value is producer_error
+            assert error.value.__cause__ is cleanup_error
+            assert factory_calls == 3
+            assert rejected_producer_coro is not None
+            assert rejected_cleanup_coro is not None
+            assert (
+                inspect.getcoroutinestate(rejected_producer_coro) is inspect.CORO_CLOSED
+            )
+            assert (
+                inspect.getcoroutinestate(rejected_cleanup_coro) is inspect.CORO_CLOSED
+            )
+            assert sampler.state is SamplerState.STOPPING
+            observed_tasks = sampler.tasks
+            assert len(observed_tasks) == 1
+            history_task = observed_tasks[0]
+            assert history_task.get_name() == "stm32-monitor-history-writer"
+            assert not history_task.done()
+
+            loop.set_task_factory(previous_factory)
+            stopped = await asyncio.wait_for(sampler.stop(), timeout=5)
+            assert stopped.ok
+            assert sampler.state is SamplerState.IDLE
+            assert not sampler.tasks
+            assert history_task.done()
+
+            restarted = await asyncio.wait_for(
+                sampler.start(GROUP_ID, expected_revision=1),
+                timeout=5,
+            )
+            assert restarted.ok
+            assert sampler.state is SamplerState.RUNNING
+            restarted_stop = await asyncio.wait_for(sampler.stop(), timeout=5)
+            assert restarted_stop.ok
+            assert sampler.state is SamplerState.IDLE
+        finally:
+            loop.set_task_factory(previous_factory)
+            if (
+                rejected_producer_coro is not None
+                and inspect.getcoroutinestate(rejected_producer_coro)
+                is not inspect.CORO_CLOSED
+            ):
+                rejected_producer_coro.close()
+            if (
+                rejected_cleanup_coro is not None
+                and inspect.getcoroutinestate(rejected_cleanup_coro)
+                is not inspect.CORO_CLOSED
+            ):
+                rejected_cleanup_coro.close()
+            if not start_task.done():
+                start_task.cancel()
+            try:
+                await start_task
+            except (
+                asyncio.CancelledError,
+                CleanupTaskAllocationFailure,
+                OwnedTaskAllocationFailure,
+            ) as cleanup_error_value:
+                del cleanup_error_value
             await sampler.close()
 
     asyncio.run(scenario())
