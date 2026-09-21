@@ -2963,3 +2963,33 @@ If a sender error occurs after GO was delivered, record the observed startup
 state and terminate through retained ownership. Do not claim that a later
 flush/close failure proves the child never started. Such a run fails and does
 not authorize a service run. The capability child itself never imports product.
+
+### RC2 refusal oracle correction and residual-cost decision
+
+The first serial six-case attempt stopped at the restored utility-package
+control because the run-local assertion expected an `artifacts` array. The
+public `verify-bundle` output instead exposes `files`, `wheels` and
+`wheelEntries`. This is TEST_HARNESS_ORACLE, with no observed product contract
+failure. Preserve the original result and raw output. Independently assess
+the completed source-conflict and downgrade cases and the utility refusal,
+restoration and successful public control without repeating them.
+
+The same implementation owner may correct only the output oracle and apply it
+offline to retained raw evidence. Derive the exact file basename/size set from
+the frozen manifest's 64 wheels and six artifacts and compare `wheelEntries`
+and all frozen identity fields; a count subtraction is insufficient. After
+complete-diff review, a fresh run identity may execute only the three
+unexecuted policy, manifest-identity and Toolkit-wheel integrity cases under
+the existing limits and restoration contract. No product, dependency,
+accepted runtime or frozen release identity changes are included.
+
+The latest Diagnostic external-holder audit is a concrete public refusal and
+recovery scenario, but its sharing denial covers only missing lines and its
+range-lock timeout adds at most one native branch (409->410). The primary
+holds that implementation on cost grounds for this batch, as with the
+one-branch Monitor Replay node-limit candidate. Their paths are not declared
+unreachable and remain in the frozen denominators. Neither audit adds valid
+coverage. Do not rename or reassign these candidates to generate another
+round of near-identical preparation; first close the current package and
+console-facility boundaries, then select the next complete public scenario
+against the current native residuals.
