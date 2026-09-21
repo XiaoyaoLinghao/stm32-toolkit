@@ -875,3 +875,34 @@ the verified native startup boundary; secrets must remain in bounded memory.
 Independent reviewer is checking the exact reusable boundary before the same
 Monitor owner implements the smallest package-acceptance entry. No product
 change, packaging repeat, hardware, remote action or third suite slot is released.
+
+### Verification-entry failures returned to primary design
+
+S18 corrected test candidate572b328f1938b921da422ac8455e040c6ccdd3bc
+has not executed pytest. The first corrected launcher stopped in1.338s on an
+existing empty stderr stream; its stream-consumer correction then passed the
+bounded output probes, but run2 stopped in1.487s because Start-Process flattened
+the Python -c argument. Preserve failure40CBB90A and76C21664 and both run roots.
+These are TEST_INFRASTRUCTURE, with no behavior result, native shards or new
+branches. Following the repeated-contract rule, primary stopped further suite
+invocations and returned the complete argument/stream/deadline boundary to
+design, with the original Recovery owner and independent corrected-test review.
+
+Complete independent review6F11CACF rejects Monitor entry8BBC before any service
+run. The blockers are the credential scanner rejecting a legitimate workspace
+digest, venv-versus-base process identity confusion, missing real service130,
+incomplete identity-module binding, helper reader/handle ownership gaps, and
+blocking operations outside the shared deadline. Primary pland18cf5d9 freezes
+one consolidated correction of this same contract; earlier review rounds remain
+counted. The shipped launcher and installed product stay unchanged. The public
+lock-control fixture uses the pinned base interpreter and exact installed API
+origins so its retained native handle identifies the actual executing process.
+No real Monitor invocation is released before complete independent review.
+
+Canonical U41 is unchanged: Toolkit11821/13592 overall, risk-v2
+11203/12918; Monitor2725/2944; UI784/810. Remaining branch gates are412 Toolkit
+overall,1070 Toolkit risk-v2 and72 Monitor risk-v2. No actual suites overlapped.
+Prior physical, RC2 reproducibility, installation, Repair, refusal, rollback and
+security evidence remains valid within its recorded scope. The seven Windows
+native checks still lack the required host capability. The1.0 goal is unmet;
+entry preparation and review are not product acceptance.
