@@ -241,8 +241,35 @@ class MonitorSampler:
             self._history_queue_bytes = 0
             self.blocked_code = None
             self._set_state(SamplerState.RUNNING)
-            self._history_task = asyncio.create_task(self._history_writer(), name="stm32-monitor-history-writer")
-            self._producer_task = asyncio.create_task(self._produce(), name="stm32-monitor-sampler")
+            try:
+                history_coro = self._history_writer()
+                try:
+                    self._history_task = asyncio.create_task(
+                        history_coro,
+                        name="stm32-monitor-history-writer",
+                    )
+                except (Exception, asyncio.CancelledError):
+                    history_coro.close()
+                    raise
+                producer_coro = self._produce()
+                try:
+                    self._producer_task = asyncio.create_task(
+                        producer_coro,
+                        name="stm32-monitor-sampler",
+                    )
+                except (Exception, asyncio.CancelledError):
+                    producer_coro.close()
+                    raise
+            except (Exception, asyncio.CancelledError) as error:
+                try:
+                    await self._stop_run()
+                except (Exception, asyncio.CancelledError) as rollback_error:
+                    self._set_state(SamplerState.IDLE)
+                    self.blocked_code = None
+                    raise error.with_traceback(error.__traceback__) from rollback_error
+                self._set_state(SamplerState.IDLE)
+                self.blocked_code = None
+                raise
             return success(
                 operation,
                 {
