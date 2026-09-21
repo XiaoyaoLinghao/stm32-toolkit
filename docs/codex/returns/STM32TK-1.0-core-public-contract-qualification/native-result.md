@@ -2,7 +2,9 @@
 
 ## Current U39 and frozen RC2 result
 
-Integrated code head before this report and frozen RC2 source:
+Integrated test/code head before this report:
+`1751c546d1f78b6b4b97d6a1f3aa62892a34a210`.
+Frozen RC2 source (unchanged by the subsequent test-only work):
 `c71b13f2562985d27b3865e367f6d33334f3a16a`.
 Product source remains `55d91a23a5a2f16fc47d324a9077dfcebf130be9`.
 U39 is **ACCEPTED_NATIVE_DATA**; release1.0 remains **NOT_ACCEPTED**.
@@ -65,11 +67,39 @@ while all988 source member bytes match; Repair preserves the old runtime under
 its returned quarantine path rather than its former path. Original failure
 records and corrections are retained under e/rc2.
 
+The later acceptance-reader family now has independent and primary acceptance
+for five persisted-authority refusals, per-call evidence/project/data no-write
+checks, exact restoration and successful public reuse. Candidate
+`9f003c718ba61350a258dfe4ab76f61b72eb927a` was integrated as test-only commits;
+the integrated Git test blob is identical. Run3 took97.1258s (pytest94.979s),
+exit0, without timeout or retry. Its13 new native branches against U39 are
+accepted but **not yet in the canonical aggregate**. Run2 and run3 have the
+same combined raw SHA and will contribute only once:
+`639B6AC1755B4B5CDF488B5A61764247568C525948C5898D527173DAC217EAF8`.
+Run3 independent review SHA:
+`453342C5B567BDF8F4BBCFDD4D8B8D5E935AB58E2364254DC94CD422C9B64E3B`.
+The initial failure was a test-oracle error, not a product defect. The recorded
+wrapper variable error and incomplete descendant peak measurement remain;
+runtime dependencies use the accepted shared-runtime bridge, not a newly
+captured immutable pre-run snapshot. No extra product regression or RC rebuild
+is triggered by these assertion/report corrections.
+
+The eight-case physical-schema reader family is released on a separate LF
+worktree whose148 product files exactly match RC2. It proves software evidence
+identity and restoration only; no physical device PASS is inferred. Actual
+result and formal aggregation remain pending. A dedicated real healthy RC2
+installation for package refusals was created once at r10/t/rc2rf/fixture-state;
+it does not replace or repeat the accepted fresh-install or0.9 Repair results.
+The deployment-document audit passed for the five documented files and packaged
+guide identity (e/rc2/deployment-docs-audit.json, SHA
+`9B5F4C226A365AC00FE16AC859790CBF2F4C66C4C612728BCB9FA0C1C9D4F074`).
+
 Remaining: actual Monitor service auth/Ctrl+C130/resource release, applicable
-package refusal/rollback/security and use checks, final deployment-doc audit,
+package refusal/failed-publication rollback/security and use checks,
 seven Windows-native checks and all outstanding coverage thresholds. The
-single-purpose Monitor console adapter is in bounded preparation because
-existing helpers provide Ctrl+Break/Kill instead of real Ctrl+C. Builds,
+single-purpose Monitor console adapter's third revision is under independent
+complete review after a lifecycle design decision; no actual service run has
+been released. Existing helpers provide Ctrl+Break/Kill instead of real Ctrl+C. Builds,
 deployment and formal ledger updates remain serialized. VS10-A/B and attempt7
 physical PASS are retained; no hardware, remote mutation or denied cleanup was
 performed. Details remain in the existing work ledger and release matrix.
