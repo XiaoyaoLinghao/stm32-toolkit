@@ -42,7 +42,9 @@ def _diagnostic(
 def _late_diagnostic() -> dict[str, object]:
     return {
         "primary": make_primary(
-            "target-identity", "identity-mismatch", "PROBE_IDENTITY_MISMATCH"
+            "service-target-identity",
+            "identity-mismatch",
+            "PROBE_IDENTITY_MISMATCH",
         ),
         "cleanup": [make_cleanup_entry("service-identity-close", "succeeded")],
         "lastVerifiedTargetState": "running",
@@ -143,30 +145,32 @@ def test_public_wire_rejection_is_detached_and_non_mutating() -> None:
 
 
 def test_public_producers_merge_and_project_atomically() -> None:
-    with pytest.raises(ValueError, match="attach diagnostic primary is invalid"):
+    with pytest.raises(ValueError, match="^attach diagnostic primary is invalid$"):
         make_primary("not-a-primary-stage", "unknown", "UNTYPED")
-    with pytest.raises(ValueError, match="attach diagnostic is invalid"):
+    with pytest.raises(ValueError, match="^attach diagnostic is invalid$"):
         make_attach_diagnostic({"stage": "session-open"})
     with pytest.raises(
-        ValueError, match="failed cleanup requires reason and sourceCode"
+        ValueError, match="^failed cleanup requires reason and sourceCode$"
     ):
         make_cleanup_entry("probe-close", "failed")
     with pytest.raises(
-        ValueError, match="successful cleanup cannot contain failure fields"
+        ValueError, match="^successful cleanup cannot contain failure fields$"
     ):
         make_cleanup_entry(
             "probe-close", "succeeded", reason="unknown", source_code="UNTYPED"
         )
-    with pytest.raises(ValueError, match="attach diagnostic cleanup entry is invalid"):
+    with pytest.raises(
+        ValueError, match="^attach diagnostic cleanup entry is invalid$"
+    ):
         make_cleanup_entry("not-a-cleanup-stage", "succeeded")
 
-    with pytest.raises(ValueError, match="cleanup fragment is invalid"):
+    with pytest.raises(ValueError, match="^cleanup fragment is invalid$"):
         CleanupFragment.from_entries("invalid")
-    with pytest.raises(ValueError, match="cleanup fragment is invalid"):
+    with pytest.raises(ValueError, match="^cleanup fragment is invalid$"):
         CleanupFragment.from_entries(
             ({"stage": "session-close", "outcome": "succeeded"}, "invalid")
         )
-    with pytest.raises(ValueError, match="cleanup fragment is invalid"):
+    with pytest.raises(ValueError, match="^cleanup fragment is invalid$"):
         CleanupFragment.from_entries(
             (
                 {"stage": "session-close", "outcome": "succeeded"},
@@ -175,6 +179,7 @@ def test_public_producers_merge_and_project_atomically() -> None:
         )
 
     diagnostic = _diagnostic()
+    diagnostic_before = deepcopy(diagnostic)
     valid_fragment = CleanupFragment.from_entries(
         (make_cleanup_entry("probe-close", "succeeded"),)
     )
@@ -210,12 +215,14 @@ def test_public_producers_merge_and_project_atomically() -> None:
     updated = update_last_verified_target_state(diagnostic, "halted")
     assert updated is not None
     assert updated["lastVerifiedTargetState"] == "halted"
+    updated_before = deepcopy(updated)
     assert update_last_verified_target_state(updated, "not-a-target-state") == updated
+    assert updated == updated_before
     assert update_last_verified_target_state({"invalid": True}, "halted") is None
 
     assert legacy_stage_for_primary("target-resolve-before-open") == "target-resolve"
     assert legacy_stage_for_primary("target-resolve-after-open") == "target-resolve"
-    assert legacy_stage_for_primary("resume") is None
+    assert legacy_stage_for_primary("resume") == "resume"
     assert primary_stage_from_legacy("target-resolve") == "target-resolve-after-open"
     assert primary_stage_from_legacy("cleanup-resume") == "resume"
     assert primary_stage_from_legacy("not-a-legacy-stage") is None
@@ -257,3 +264,4 @@ def test_public_producers_merge_and_project_atomically() -> None:
         "attachDiagnostic": diagnostic
     }
     assert attach_details({"invalid": True}) == {}
+    assert diagnostic == diagnostic_before
