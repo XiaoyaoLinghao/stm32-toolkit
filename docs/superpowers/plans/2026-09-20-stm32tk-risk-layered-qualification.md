@@ -1791,3 +1791,251 @@ The same Probe owner instead assesses target testing and Monitor observation
 public lifecycle gaps read-only. No test execution is released from that report.
 Suite concurrency remains2: the two completed run2 intervals did not overlap and
 their redirector-only resource records do not justify increasing concurrency.
+
+## User-directed release flow: converge, freeze, qualify the real bundle
+
+The 2026-09-21 user instruction changes execution method only. The full1.0 goal,
+90% native overall/95% frozen risk-core-v2 targets for each Python package,
+broad-core-v1/UI views, seven native Windows checks, two reproducible builds and
+all13 outputs, real install/Check,0.9-to1.0 Repair, rollback/security and delivery
+documentation remain mandatory. Existing VS10-A/B, attempt7 and applicable
+evidence remain accepted within their original boundaries. No remote authority
+is granted and no RC is declared by this addendum.
+
+### 1. Defect convergence and pre-RC qualification
+
+Current accepted integration before this addendum is
+7450fa53a2b5ceef0e1d263df7849f20bc9d7838. Product source is
+78341213b8e5604d5f6a0436c4324d6d9f9e3ead, with148-file registry69D2A724.
+U35 canonical8141C5C6 is ACCEPTED_NATIVE_DATA, not release acceptance.
+Diagnostic's final-oracle reconciliation and Sampler's startup/rollback ownership
+correction are closed; do not restart either. The Sampler correction closed its
+second complete implementation/review round. Its original failed runs remain
+historical evidence and are not turned into passed tests.
+
+This batch admits no additional product changes. Probe w11p has the frozen
+authorization/post-step-result scenarios and one180-second selected run. Recovery
+w11r has two public software-producer scenarios, admitted only after proving at
+least six genuinely reachable missing arcs, and one300-second selected run.
+Monitor's existing storage/history preflight remains bounded to two complete
+public candidate families. Existing owners continue preparation, implementation
+and the admitted first run without new stepwise approvals. Actual suites remain
+at most two, with disjoint worktrees, temp roots, logs and coverage files.
+
+Classify the first failure before action: PRODUCT_CONTRACT, TEST_DATA_SCRIPT_ORACLE,
+ENVIRONMENT_INFRASTRUCTURE_PLATFORM, MEASUREMENT_REPORT, or NEW_SCOPE_OPTIMIZATION.
+Only a reproducible PRODUCT_CONTRACT finding can trigger a bounded product fix.
+Primary first consolidates all known related normal/partial-start/cancellation/
+cleanup/recovery paths, ownership, public state transitions and error semantics.
+The same root cause/public contract owns one round counter across branch names.
+After two implementation/review rounds without convergence, stop local patching
+for that module and return to design; independent work can continue.
+
+Fix verification consists of the original-defect oracle, impact-selected
+regression and affected critical smoke paths. Public API, shared state, storage
+format, dependency or installer changes require a written affected-regression
+reason. Coverage gaps, faulty fixtures and report errors do not authorize product
+behavior changes. Preserve behavior evidence when only measurement/reporting
+changes; rerun only the required measurement scope. Two successive low-yield
+batches trigger one grouped reachability/risk/cost reassessment before expansion.
+
+### 2. Candidate freeze
+
+Freeze candidate inputs after critical product defects converge and the intended
+source and build inputs are qualified. Bind one clean source commit, source
+bytes, closed dependency inventory and toolchain/build configuration; bind the
+artifact identity to the actual outputs when the serialized builds finish.
+Test-only qualification can continue against these fixed product bytes. The
+remaining coverage and seven Windows-native checks are mandatory final release
+gates, not an extra prohibition on preparing or freezing candidate inputs. This
+addendum itself does not establish a candidate identity. Test/report-only changes
+do not silently invalidate source-equal evidence; every reuse decision names
+source, dependencies, environment, contract and verification scope. Product or
+artifact changes create a new candidate identity and invalidate only affected
+evidence.
+
+### 3. Real bundle acceptance
+
+Use the existing builder and the same closed dependency set for both builds;
+compare all13 outputs, checksums, licenses, SBOM, assets and compatibility. Test
+the actual candidate bundle in the supported clean Windows/Python environment:
+fresh install/Check, a genuine0.9 baseline Repair, intended use, failure recovery,
+required rollback and refusals/security. Source tests cannot replace these
+artifact checks. Prior15b artifact/install evidence remains historical until the
+new bundle is qualified. No mandatory requirement can be moved to a backlog or
+waived as risk acceptance to complete the goal.
+
+Primary serializes canonical aggregation, shared-ledger writes, exclusive
+performance checks, final builds/deployment and same-probe operations. Keep the
+existing work-ledger/release-matrix/native-result records; no new report system.
+Each batch records actual closed behaviors, accepted/open product findings,
+new valid arcs and remaining gates, elapsed run intervals/observed overlap, and
+the next fixed scope/exit condition. Task/test/document counts and waiting are
+not progress. All temporary artifacts remain under D:/codex-tmp; preserve needed
+failures and never retry or bypass previously rejected cleanup.
+
+### Wave11 Probe measurement correction
+
+Candidate32eb3b7c run1 passed its four public behavior cases in19.2165334 seconds,
+but retained only parent PID13796's native coverage shard. Treat behavior as
+preserved pending complete-diff review and measurement as incomplete. This is
+MEASUREMENT_REPORT, not a reason to change product behavior. The run-local ini
+enabled patch=subprocess without concurrency=multiprocessing, although the real
+worker uses spawn at worker.py:366. Installed coverage/control.py:573-576 only
+enables its multiprocessing bootstrap with that concurrency option. In addition,
+worker.py:624-630 calls abort immediately after the close reply; bootstrap-only
+save can lose the race. The same cause and native correction already appear in
+wave6/pyocd/run1/primary-measurement-diagnosis.json and run3/coverage.ini.
+
+The same Luna owner may modify only its new control-result test to record each
+real worker PID using public owned_pid and test-owned backend markers, and flush
+the active native collector in the external test backend close before its reply.
+Reuse the existing Wave6 pattern; do not change production shutdown, process
+state or coverage data. Enable the existing native multiprocessing setting in
+the run-local configuration. After commit/static/source148 checks, slot1 admits
+one180-second measurement reconciliation run of these same four nodes at
+r10/t/w11p/run2 and e/risk-v2/wave11/probe/run2, with fresh memory>=15%.
+No other behavior suite is repeated. Keep run1 unchanged, match each actual
+worker PID to a nonempty source-bearing raw shard, retain all shards through
+combine --keep, and inspect required worker.py executed arcs separately from
+the parent. A missing child shard, unexpected behavior, timeout or process
+failure stops without an automatic retry. Independent review covers the full
+accepted-base-to-final-head diff and both behavior and measurement decisions.
+
+### Wave11 history cursor input correction
+
+Monitor d93103aa run1 passed all four public cases in3.5122182 seconds. Its native
+data reaches three new history arcs (755->758,1068->1069,1406->1407). Preserve
+that behavior and raw evidence. The cursor case does not reach1484->1485: its
+empty shortened batch is rejected earlier by _encoded_slice_base_bytes at451-452,
+called at1457. Classify this as TEST_DATA_SCRIPT_ORACLE reachability, not PRODUCT.
+
+The same Monitor owner may correct only the admitted cursor scenario's input
+and restoration. Create a valid first batch with at least two values and obtain
+an ordinal1 cursor through a public limit2 query; shorten the persisted batch
+to one coherent nonempty value, including its index/digest/count, so the earlier
+slice-size guard passes and start2 exceeds length1 at1484. Restore all original
+payload/index rows and reuse the authenticated cursor successfully. No private
+state, product mutation or additional scenario belongs in this correction.
+After static/source checks and commit, slot1 admits one180-second run of only
+test_shortened_cursor_batch_refuses_and_resumes_after_restore, under
+r10/t/w11m/run2 and e/risk-v2/wave11/monitor/run2, memory>=15%. Do not repeat the
+other three passed cases. First unexpected outcome stops without retry. Final
+review reconciles source-equal run1 evidence and the corrected single-node run.
+
+### Probe measurement design consolidation after two incomplete captures
+
+Independent review AE28F9AC accepts the unchanged public behavior and run2's
+seven actual worker shards, but finds the service target arcs absent from its
+parent raw shard as well as the combined JSON. Do not credit those arcs or
+silently combine complementary incomplete runs. This returns the single capture
+contract to design before any further run; it does not authorize product changes.
+
+The complete execution topology is pytest's main process, ProbeService's
+asyncio.to_thread invoke (service.py:1340), and spawned backend workers. Installed
+coverage/collector.py:143-160 enables thread tracing only with explicit thread
+concurrency or an empty concurrency list. Specifying multiprocessing alone
+disables that thread capture. Therefore the run-local native configuration must
+declare concurrency=thread,multiprocessing, retain patch=subprocess, branch=true
+and parallel=true, and retain the test-owned pre-reply collector save for the
+worker-close termination race. No production call or state is replaced.
+
+The existing Probe owner may use unchanged final test head
+ffba4a4a163a0a6f9797e4f66b03cd151cf2a844 and correct only run-local capture/report
+configuration. Explicit dictionary-key duplicate grouping closes the already
+proven report defect. Verify the effective configuration and source148 before one
+180-second run of the same four nodes, with fresh memory>=15%, at
+r10/t/w11p/run3 and e/risk-v2/wave11/probe/run3. This remains slot1 and must follow
+Monitor's admitted cursor run2 slot; primary hands over the execution slot.
+The owner may prepare continuously without an extra approval gate.
+
+Exit requires all four original behavior oracles, actual worker PID-to-raw-shard
+binding, all raw hashes retained, and the four exact service arcs
+995->999,1178->1179,1181->1182,1184->1185 present in the parent raw data and final
+native JSON. Check raw-to-combined retention, not merely file counts or JUnit.
+Record actual close/termination facts without asserting unobserved OS exit codes.
+Any remaining mismatch stops this capture without another local patch/rerun.
+Keep run1/run2 originals and their independent partial verdicts. Other admitted
+suites should use both thread and multiprocessing tracking before first execution;
+an already started suite is preserved and assessed from its actual raw evidence.
+
+### Wave11 bounded fixture and launcher convergence
+
+Monitor run2 reached the intended cursor guard, then failed in fixture restoration:
+the shortened batch retained ordinal0, while restoration inserted both original
+rows. This UNIQUE-key failure is TEST_DATA_SCRIPT_ORACLE, not a product defect.
+After the input and restoration rounds, reconsider the whole fixture transaction
+before further execution: save the exact batch and complete index; mutate both
+coherently to one nonempty value; obtain public refusal with no write; replace the
+entire affected index with the exact saved rows in the same restoration transaction;
+reuse the original authenticated cursor successfully; close the public store.
+Final test bf58c846 implements this bounded restoration. Independent complete-diff
+review checks this whole sequence. Preserve run1's three valid arcs and run2's
+original failure. Once an actual suite slot is free, run only the corrected B3 node
+once under monitor/run3 and t/w11m/run3 (180 seconds, memory>=15%). Another failure
+returns to this fixture design; it does not authorize product changes or an
+unbounded rerun. The other three passing nodes are unchanged and are not repeated.
+
+Probe run3 and Recovery run1 never started pytest. Probe's launcher required a
+source148-check.json that had not been produced; Recovery's launcher interpreted
+an unquoted SHA256 literal as a command. These are ENVIRONMENT_INFRASTRUCTURE_PLATFORM
+launcher failures. Preserve both originals. The existing owners correct only
+their run-local inputs and launchers, verify all required inputs together, and
+continue the already admitted execution in fresh roots: Probe run4/t/w11p/run4
+(slot1,180 seconds, unchanged ffba4a4a) and Recovery run2/t/w11r/run2 (slot2,300
+seconds, unchanged14ea39b2). Source148 is actually rehashed against current
+registry69D2; no fabricated or merely renamed match report. Check literal hash
+values, required input paths, effective thread,multiprocessing/subprocess capture,
+dictionary-key grouping and current source metadata before launching. No new
+general framework or per-step approval gate is introduced. A pytest behavior or
+capture failure stops; these pre-pytest attempts add no behavior or coverage credit.
+
+### Whole replay Diagnostic reference correction after design return
+
+Accepted integration base: `79cf67334e2b78463dc4a3f70d809d35557b250f`.
+The Recovery owner retains `f421a4d086ee563adf770c96388cb9f61f98e26f` and all three
+run roots. This is the whole-contract design return triggered by the two failed
+producer scenarios, not a new name for another local patch. The primary owns
+the appended specification and freezes its canonical representation and legacy
+compatibility rules. The same owner may implement and first-verify continuously;
+independent review checks the design and full returned diff before acceptance.
+
+Expected bounded product scope is replay reference validation/normalization in
+`acceptance/model.py`, `acceptance/recovery.py`, `acceptance/workflows.py`,
+`acceptance/recovery_workflows.py`, and Diagnostic-reference fields only in
+`cli.py`/`mcp_server.py`. A shared representation must have one authority in the
+existing Acceptance layer; do not add a generic identity framework. Do not
+modify unrelated UUID validation or Diagnostic storage/generation. Existing
+owned public-producer tests and corresponding Acceptance model/workflow/CLI/MCP
+tests are the test scope. Any additional product file requires a concrete
+contract reason assessed by the primary before inclusion.
+
+After design freeze, retain the old candidate ref and bring the existing clean
+Recovery worktree forward to this accepted base without discarding its tests.
+The owner continuously prepares, implements, commits, and performs the first
+bounded verification; no per-step confirmation loop is introduced. Tests must
+use public producers or existing valid external-input fixtures. Preserve exact
+old persisted bytes and hashes as compatibility oracles. No private factory or
+state replacement may manufacture a convenient Diagnostic identity.
+
+Verification first covers the original public-producer failure and complete
+reference lifecycle, alias/legacy compatibility, exact refusal/no-write, and
+corruption/restoration. Expand affected regression to existing replay Acceptance
+models/workflows and CLI/MCP tests because their public field changes; include
+physical/continuation/finalization boundary smoke because dispatch shares the
+entrypoint. Keep unrelated UI, performance, hardware, and installer evidence.
+The owner records exact existing nodes before execution in the same plan; one
+bounded suite may run in slot1 with independent D-drive run roots under
+`r10/t/diagref/run1` and `e/risk-v2/diagnostic-reference/run1` (600 seconds,
+memory available >=15%, first unexpected outcome stops, no automatic retry).
+Capture actual child processes using native thread,multiprocessing/subprocess
+coverage, preserve raw shards, and separate behavior from measurement verdicts.
+
+First unexpected failure stops and is classified. Do not automatically widen
+scope or keep patching a newly exposed related guard; compare it against this
+whole-contract decision. Independent review covers the full accepted-base to
+final candidate diff. Formal source/coverage migration stays serial and cannot
+label U36 raw data as current coverage for changed source files. RC1 build-A
+failed its source/wheel identity gate; no build-B or real installation is admitted
+for that failed candidate. Freeze a new candidate only after accepted fixes and
+build-input convergence, then perform the unchanged real-bundle release matrix.

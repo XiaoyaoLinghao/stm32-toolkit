@@ -113,3 +113,55 @@ Report overall90, broad-core-v1, risk-core-v2, UI and critical-scenario status
 separately using sums of native covered/total branches. Missing source mappings
 or source-hash mismatch mean INCOMPLETE. Zero branches mean N/A. Preserve source,
 test candidate, raw data, exact argv, terminal status and original attribution.
+
+## Replay Diagnostic reference convergence, 2026-09-21
+
+Accepted integration base: `79cf67334e2b78463dc4a3f70d809d35557b250f`.
+Design owner: primary conversation; implementation and affected tests: existing
+Luna/max Recovery owner; independent design and complete-diff review: existing
+native reviewer. This is a bounded public-contract correction, not a coverage
+exception. The primary freezes the following complete contract for implementation;
+independent review may return a concrete finding and must accept the final diff
+before integration. The two failed fixture rounds remain one convergence history.
+
+The public Diagnostic producer emits any 32 lowercase hexadecimal characters.
+Wave11 run3 produced `b9e8a8ae0a2fa22d66d7d85946bf9eaf`. Acceptance checkpoint
+CLI/MCP advertise that domain, but the replay adapter and immutable attempt
+model require RFC UUID version/variant nibbles. Inserting hyphens preserves the
+ID and still fails. The final replay record workflow has the related restriction.
+The same split exists in the genuine 0.9 baseline. Treat this as PRODUCT_CONTRACT;
+do not patch a private ID factory or change ID bits to make a fixture pass.
+
+The single representation for replay Acceptance Diagnostic references
+is lowercase `8-4-4-4-12` grouping of the exact 128 identity bits, without UUID
+version/variant semantics. Public replay inputs accept that representation and
+the Diagnostic producer's compact 32-hex spelling, and normalize before any
+retry, comparison, digest, or publication. Persisted replay models require the
+grouped canonical spelling. Existing canonical UUID references therefore retain
+their exact bytes, digests, authorization bindings, and idempotency results.
+Diagnostic storage lookup removes only hyphens; identity equality remains exact.
+No migration, alias index, rewritten evidence, or new schema is introduced.
+
+Only `diagnosticSessionId` in replay Acceptance uses this domain. Other UUIDs,
+Diagnostic's compact producer/storage contract, physical/continuation/finalization
+schemas, source-change authorization, stage ordering, and error codes remain
+unchanged. Physical dispatch still enforces its compact-only contract. Invalid
+shape/type/case is rejected at the existing boundary with no evidence writes;
+a different valid ID must still fail authoritative reference/identity checks.
+
+Four runnable scenarios define completion:
+
+1. A public Diagnostic producer's compact ID crosses replay checkpoint,
+   show/resume, source-change authorization, final record, and final checkpoint.
+2. Compact/grouped aliases address one identity and retry without extra roots;
+   old canonical UUID records and checkpoints reload byte-for-byte unchanged.
+3. Malformed or wrong valid IDs fail with existing errors and no publication;
+   unrelated UUID and physical ID domains retain their existing restrictions.
+4. Corrupt persisted ancestry is refused without writes; exact restoration makes
+   the same public show/resume/checkpoint path usable again.
+
+Non-goals: new recovery features, new hardware operations, general identity or
+test frameworks, new dependencies, changing Diagnostic ID generation, weakening
+evidence validation, or lowering any release/coverage threshold. Any accepted
+product correction supersedes RC1 product identity; its failed build and prior
+source qualification remain historical evidence within their original scope.
