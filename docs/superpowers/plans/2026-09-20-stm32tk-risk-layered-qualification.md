@@ -2442,3 +2442,64 @@ admission. Main serially freezes its final manifest. No hardware or remote actio
 The six-selector persisted-finalization group in the design input is preparation
 only: its repeated build cost, parameter expansion and first-guard assertions
 need a separate bounded decision. It is not authorized to run with this group.
+
+### U39 convergence and RC2 shipped Monitor lifecycle boundary
+
+U39 is independently accepted on clean integration
+`c71b13f2562985d27b3865e367f6d33334f3a16a`, product source
+`55d91a23a5a2f16fc47d324a9077dfcebf130be9`. It adds267 Toolkit and7 Monitor
+branches without changing frozen scopes. The two public v1 Recovery selectors
+above passed but added zero branches; they are excluded from U39 and must not
+be repeated for percentage gain. Their92-function-cluster estimate was not a
+reachable-gain proof. Further retained-graph integrity scenarios remain held
+until their public binding input and exact first guards are established.
+
+RC2 retains code head c71 and its clean LF checkout, exact64 closed dependencies,
+process-only Git LF settings and manifest
+`55C296C198C9898D9C29E347E031CC21097E58D9D4DCBD0B165557E6A0FF631C`.
+Both real builds and all13 byte-identical outputs are independently accepted.
+Fresh Bootstrap/Check and genuine0.9 Repair/Check succeeded in isolated roots;
+package refusal/security, shipped-use checks and the final gates remain open.
+The historical0.9 baseline was prepared specifically for this Repair. Its5775
+files remain unchanged in the returned quarantine directory; no extra baseline
+copy or repeated upgrade is required by this plan.
+
+One remaining package scenario is actual Monitor launcher authentication,
+real Windows Ctrl+C returning130, and owned resource release. Existing
+process.py uses CTRL_BREAK_EVENT/taskkill; setup's bounded process helper uses
+Kill. Neither can supply this evidence. Authorize one bounded run-local adapter
+under `r10/e/rc2/monitor-console`, owned by the existing Luna/max Monitor agent,
+with all temporary inputs under `r10/t/rc2mc`. No product, tests, dependencies,
+installed runtime, reusable seed, shared collector or general framework change.
+The primary owns this scenario and integration; the independent reviewer must
+review the entire adapter and native API domain before its one real execution.
+
+Freeze the scenario and ownership as follows:
+
+1. Invoke only the shipped `rc2p/stm32-toolkit-1.0.0/bin/stm32-monitor.cmd`
+   through cmd with installed `rc2fresh/runtime/1.0.0`. Use the existing schema3
+   project `D:/codex-tmp/v10b-0918/p/b` read-only, its manifest SHA
+   `6CBA36B1AF42B12D05F2FD5CE83FC90851A4CEC976B8FBC116DBE3405CFF4A50`,
+   a separate owned Monitor data root, and a fresh session identity. Do not
+   start sampling, replay, build, configure, or any probe/hardware operation.
+2. Use an isolated owned Windows console whose event cannot reach other tasks.
+   The controller must remain alive without disabling Ctrl+C inheritance for
+   the tested launcher. Use actual documented native CTRL_C_EVENT semantics;
+   a nonzero process-group argument must not be assumed to target Ctrl+C.
+   Keep any helper console hidden. Read the ready credential only in memory;
+   do not persist or print the fragment URL, bearer token or cookie. Use exact
+   loopback Origin+Bearer and a bodyless bootstrap POST, then cookie-backed
+   status GET. Retain redacted public response facts and exact child identities.
+3. Deliver one native Ctrl+C to that owned console. Require launcher exit130,
+   all owned descendants gone, no listener/new connection on the dynamic port,
+   runtime record removed, and workspace lock actually reacquirable through
+   the existing public lock entry. Preserve project bytes. Bound total work to
+   120 seconds and readiness/stop waits explicitly. First unexpected result
+   ends the scenario; emergency cleanup may terminate only attributed owned
+   processes and must be reported as failure, never Ctrl+C PASS. Do not retry.
+
+Preparation/static syntax checks may proceed beside read-only review. The
+actual package run, remaining deployment actions and shared ledger updates are
+serialized by primary. No source test matrix or physical acceptance rerun is
+triggered by this adapter. RC2 artifact identity stays frozen; all coverage,
+Windows-native, rollback/security and final documentation gates remain mandatory.

@@ -1,6 +1,80 @@
 # Current native coverage result
 
-## Current U38 source-qualified result
+## Current U39 and frozen RC2 result
+
+Integrated code head before this report and frozen RC2 source:
+`c71b13f2562985d27b3865e367f6d33334f3a16a`.
+Product source remains `55d91a23a5a2f16fc47d324a9077dfcebf130be9`.
+U39 is **ACCEPTED_NATIVE_DATA**; release1.0 remains **NOT_ACCEPTED**.
+Canonical SHA256:
+`BFBF57ADE10E76A6E7002E0BC696DBE0209F100E29F2604A972245D5452C8577`.
+Independent review:
+`7A32373E5B2445D1B1F4362C41AE16993BD1E039CA68C703133D91D9E6E39997`.
+Primary admission:
+`F68BD32FE3536C5D23369D94CD9E82E73E749DA093A5DCEAB0EA5BD9A25935BB`.
+
+| Package / frozen scope | Covered / total branches | Branch ratio | Remaining gate |
+| --- | ---: | ---: | ---: |
+| Toolkit overall / broad-core-v1 | 11,791 / 13,592 | 86.7496% | 442 for overall90%; broad-v1 retains1,122 for95% |
+| Toolkit risk-core-v2 | 11,173 / 12,918 | 86.4917% | 1,100 for95% |
+| Monitor overall / broad-v1 / risk-v2 | 2,725 / 2,944 | 92.5611% | overall90% met;72 for95% |
+| UI, retained separately | 784 / 810 | 96.7901% | retained gate met |
+
+The incremental union adds267 Toolkit branches (262 recovery_workflows,1
+recovery,4 build runner) and7 Monitor analysis_workflows branches. It uses the
+two U38 baseline databases and three separately accepted inputs: finalization
+run3, its distinct fresh-show scenario, and Monitor run2. Exact native raw
+unions, original shards, all148 source bindings, frozen scopes and zero lost
+prior arcs were independently verified. Aggregation took9.1569 seconds, ran no
+tests and performed no purge. U38 and earlier physical evidence remain intact.
+
+The current public-firmware journey took131.1827 seconds; separate fresh-show
+took11.3621 seconds; Monitor DTO/export refusal and recovery took9.4582 seconds.
+The additional v1 Recovery run passed in25.2596 seconds but yielded zero new
+arcs and is excluded. Its92-arc function-cluster estimate was not a reachable
+yield proof. The non-NFC Monitor scenario was withdrawn because an earlier
+public canonical-input guard dominates it; its frozen denominator remains.
+These actual suites did not overlap. Read-only preparation/review did overlap;
+the two-suite ceiling remains unchanged because complete resource/descendant
+peak measurements do not justify increasing it. No product source changed.
+
+RC2 source/build inputs are frozen independently of remaining final coverage
+and Windows gates. With one closed64-file dependency inventory and process-local
+Git LF settings, two real builds took71.4094 and215.1972 seconds. All13 outputs
+are byte-identical. The extracted Windows bundle passed verify-bundle; source,
+wheel, manifest, licenses, SBOM and assets received independent artifact verdict
+`ACCEPTED_ARTIFACT_EVIDENCE` (review SHA
+`6D300296300A1DD06CFAD0C0772C958A41E8E6B8E6560DF8633FFFD4990B6008`).
+Manifest SHA:
+`55C296C198C9898D9C29E347E031CC21097E58D9D4DCBD0B165557E6A0FF631C`.
+
+Real isolated Bootstrap101.4748s and Check20.6728s passed. Genuine0.9 Repair
+94.3065s and subsequent Check21.0508s passed, with generation1 to2, healthy
+runtime and all5775 old files byte-preserved at the returned quarantine path.
+Independent installation review SHA
+`BDC55AFF75CF0F1DE374ACA79FBAF09D6FDA71F43FB150F8A38A8839E210719C`
+accepts that scoped evidence. A separate missing-runtime Check16.7381s returned
+Bootstrap guidance without creating the data root. Installed console doctor,
+shipped MCP initialize/list48tools and Monitor version1.0.0 also passed; no
+matching unique MCP-session process remained after client close. These last
+small public-entry checks were executed and admitted by primary.
+
+Two post-check assertions were corrected without product changes or repeated
+build/Repair: normalized ZIP metadata differs from raw Git archive metadata
+while all988 source member bytes match; Repair preserves the old runtime under
+its returned quarantine path rather than its former path. Original failure
+records and corrections are retained under e/rc2.
+
+Remaining: actual Monitor service auth/Ctrl+C130/resource release, applicable
+package refusal/rollback/security and use checks, final deployment-doc audit,
+seven Windows-native checks and all outstanding coverage thresholds. The
+single-purpose Monitor console adapter is in bounded preparation because
+existing helpers provide Ctrl+Break/Kill instead of real Ctrl+C. Builds,
+deployment and formal ledger updates remain serialized. VS10-A/B and attempt7
+physical PASS are retained; no hardware, remote mutation or denied cleanup was
+performed. Details remain in the existing work ledger and release matrix.
+
+## Preserved predecessor U38 source-qualified result
 
 Integrated code head before this report:
 `d8e134ce803c8b6f70fd8960ee7c117c903f51d1`.
