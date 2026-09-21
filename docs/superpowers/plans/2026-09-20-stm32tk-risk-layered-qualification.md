@@ -2580,3 +2580,19 @@ The shipped Monitor lifecycle control also explicitly includes one second
 public `MonitorRuntime.start/stop` after the first launcher has stopped, only
 to prove workspace-lock reacquisition. It is not a second launcher attempt;
 there is still exactly one Ctrl+C event and no sampling/probe operation.
+
+### RC2 negative-installation fixture identity correction
+
+Copying an installed runtime to a new DataRoot does not preserve its public
+console-launcher interpreter binding. The refusal preparation must therefore
+use one real disposable RC2 installation under `r10/t/rc2rf` when a relocated
+copy cannot supply the required healthy control. Freeze explicit paths and
+input hashes in the finite case manifest, run missing Check then one Bootstrap
+as fixture preparation, and reuse that installed prefix for the bounded
+negative cases and later necessary rollback case. This is not a rerun of the
+already accepted fresh-install gate. Do not privately rebind launchers, create
+redirects, copy runtime-state into an unrelated runtime, or modify either
+accepted installed root. All normal setup validation and offline dependencies
+remain in force. Concrete fixture/case argv and budget still require primary
+review before execution; rollback failure injection requires its separate
+public first-guard proof. No new successful Repair is part of fixture setup.
