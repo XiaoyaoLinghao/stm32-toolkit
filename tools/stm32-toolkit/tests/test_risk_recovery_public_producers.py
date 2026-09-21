@@ -255,6 +255,7 @@ def _replay_inputs(
             payload["inventory_digest"] = inventory_digest
         elif frame.kind == 2:
             payload["run_id"] = run_id
+            payload["inventory_digest"] = inventory_digest
         encoded.append(encode_frame(frame.kind, frame.sequence, payload))
     terminal = _json_thaw(frames[-1].payload)
     assert isinstance(terminal, dict)
