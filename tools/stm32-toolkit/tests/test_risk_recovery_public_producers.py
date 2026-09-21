@@ -891,6 +891,7 @@ def _run_acceptance_reader_variant(
     baseline_persistence = _persistence_snapshot(prefix.project_root, prefix.data_root)
     try:
         install()
+        corrupted_evidence = _file_snapshot(evidence.root)
         corrupted_persistence = _persistence_snapshot(
             prefix.project_root, prefix.data_root
         )
@@ -903,9 +904,19 @@ def _run_acceptance_reader_variant(
         _assert_acceptance_failure(
             shown, show_code, operation="acceptance.scenario.show"
         )
+        assert _file_snapshot(evidence.root) == corrupted_evidence
+        assert (
+            _persistence_snapshot(prefix.project_root, prefix.data_root)
+            == corrupted_persistence
+        )
         rerecorded = _record_acceptance_again(prefix, record)
         _assert_acceptance_failure(
             rerecorded, record_code, operation="acceptance.scenario.record"
+        )
+        assert _file_snapshot(evidence.root) == corrupted_evidence
+        assert (
+            _persistence_snapshot(prefix.project_root, prefix.data_root)
+            == corrupted_persistence
         )
         refused_checkpoint = checkpoint_acceptance_attempt(
             prefix.context,
@@ -919,12 +930,14 @@ def _run_acceptance_reader_variant(
             "ACCEPTANCE_ATTEMPT_OUTPUT_INVALID",
             operation="acceptance.attempt.checkpoint",
         )
+        assert _file_snapshot(evidence.root) == corrupted_evidence
         assert (
             _persistence_snapshot(prefix.project_root, prefix.data_root)
             == corrupted_persistence
         )
     finally:
         _restore_file_snapshot(evidence.root, baseline_evidence)
+    assert _file_snapshot(evidence.root) == baseline_evidence
     assert (
         _persistence_snapshot(prefix.project_root, prefix.data_root)
         == baseline_persistence
