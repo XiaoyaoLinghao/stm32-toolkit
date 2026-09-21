@@ -2406,3 +2406,39 @@ source/configuration compatibility review. Do not claim that the old run capture
 worker28820 retroactively. The exact reason its exit-time save did not persist
 remains uncertain; the correction closes the observed capture boundary without
 changing product behavior. Original finalization work continues independently.
+
+### Current-source public recovery remeasurement after U38
+
+Main accepts the bounded selector decision in finalization-current/
+existing-entrypoint-selection-design-input.md (SHA256
+0A55B9FB3ECC9D446DFDE4DB60A5CFC3C101FD2FCB5F8E1DA5EF5FEA83304E8E).
+U38 changed-source qualification plus accepted finalization run3/fresh-show data
+leaves 409 recovery_workflows branch candidates after exact-arc subtraction.
+The next executable group is only the following two existing public tests:
+
+- test_risk_recovery_public_producers.py::test_wave11_public_v1_recovery_retries_and_refusals
+- test_risk_recovery_public_producers.py::test_wave11_public_persisted_evidence_refusal_restores_wire
+
+Use the existing Recovery owner and unchanged w14f candidate4378b38d/source55d,
+test fixture, public producers and already qualified launcher. No test or product
+edit is included. Public begin/checkpoint/authorize/show/resume and external
+persisted corruption with exact restoration form the two complete scenarios.
+The function-cluster estimate92 is an upper bound, not a claimed yield. This is
+necessary current-source measurement after the six-file Diagnostic correction;
+prior compatible behavior evidence is retained, and the accepted finalization
+journey, fresh child, model, CLI and MCP groups are not selected again.
+
+One run,600-second wall budget, first unexpected failure stops. Evidence lives
+under r10/e/risk-v2/finalization-current/recovery-public-run1, temporary files
+under r10/t/fc/rp1. Pin source148, test/selector/environment identities and all
+actual inputs before launch. Retain raw shards and real subprocess data, compare
+exact arc sets after combine, report behavior separately from measurement, and
+obtain independent admission. At most two actual suites may overlap, with the
+independent Monitor run2 occupying the other possible slot; free memory must
+remain at least15 percent. No formal aggregation may overlap either suite.
+Source-equal raw inputs enter the next union only after independent and main
+admission. Main serially freezes its final manifest. No hardware or remote action.
+
+The six-selector persisted-finalization group in the design input is preparation
+only: its repeated build cost, parameter expansion and first-guard assertions
+need a separate bounded decision. It is not authorized to run with this group.
