@@ -1,15 +1,15 @@
 # Current native coverage result
 
-Accepted base for this wave: `bf4b070f29dec6a25a3e30ba3fad29ce268c6492`.
-Integrated test code head: `a649025d930c770b0e395c38ef8b529ade8046a6`.
-Existing recovery candidate: `a695f397260ebb815059d3df598dadf4c884924c`.
+Accepted aggregation baseline: `a649025d930c770b0e395c38ef8b529ade8046a6` (union28).
+Integrated test code head: `9865c88a7f8b9e1ee297957657e623556f8642ae`.
+Existing Recovery5 measurement head: `6468af64d73e5228c9d756fbb854fdf5cb1327ba`.
 Qualified product source: `8a11caef14df16c5e56c0be2363d4ef5530110eb`.
-Union28 native data verdict: **ACCEPTED_NATIVE_DATA**. Release 1.0: **NOT_ACCEPTED**.
+Union29 native data verdict: **ACCEPTED_NATIVE_DATA**. Release 1.0: **NOT_ACCEPTED**.
 
 | Package | Covered / total branches | Overall and broad core v1 | More for 90% | More for v1 95% |
 | --- | ---: | ---: | ---: | ---: |
-| Toolkit | 11,841 / 13,580 | 87.1944% | 381 | 1,060 |
-| Monitor | 2,668 / 2,940 | 90.7483% | 0 | 125 |
+| Toolkit | 11,850 / 13,580 | 87.2607% | 372 | 1,051 |
+| Monitor | 2,680 / 2,940 | 91.1565% | 0 | 113 |
 | UI (retained separately) | 784 / 810 | 96.7901% | 0 | 0 |
 
 The repeat-bind product correction remains accepted with its seven current-source
@@ -83,7 +83,21 @@ source identities, frozen scopes and arithmetic. Toolkit gains10 and Monitor
 gains2 branches with unchanged denominators. History's cursor/model expectation
 failures and Recovery's snapshot fixture failure remain excluded; runtime's
 initial insufficient cancellation-window case is also excluded. No product
-source changed. Wave5 results are outside this union until separately accepted.
+source changed. Wave5 results were outside union28 until their separate review.
+
+Union29 adds complete ProbeSession11, Analysis1 and existing Recovery5 batches:
+17 PASS, each exit0 without timeout. The Analysis journey covers the original
+continuation association and all three alternate TestRun refusals, immutable
+evidence and successful reuse of the original request. Recovery reuses five
+existing tests on the qualified source. Complete test diffs, source148, all eight
+raw inputs/copies and unchanged frozen scopes were independently checked.
+Toolkit gains9 and Monitor gains12 branches. Failed ProbeSession/Analysis run1
+databases remain excluded. The first aggregation attempt failed because new
+aliases were in the wrong INI section; correcting the map and parsing it with
+coverage.py allowed native-only aggregation, with no pytest rerun. The immutable
+candidate and prior accepted union28 are retained. A stale representation note
+was corrected at promotion to history.py summary324/352 versus arrays323/351;
+native totals and original arrays were not altered. Product source is unchanged.
 
 Risk-core v2 was selected by whole-file responsibility and independently frozen
 at scope commit 9fff3f43 before scoring. Its 90 Toolkit and 16 Monitor files are
@@ -91,8 +105,8 @@ reported separately; the 108/18 overall files and old v1 statistics remain.
 
 | Risk-core v2 | Covered / total branches | Coverage | More for 95% |
 | --- | ---: | ---: | ---: |
-| Toolkit | 11,223 / 12,906 | 86.9596% | 1,038 |
-| Monitor | 2,668 / 2,940 | 90.7483% | 125 |
+| Toolkit | 11,232 / 12,906 | 87.0293% | 1,029 |
+| Monitor | 2,680 / 2,940 | 91.1565% | 113 |
 
 Native v1 scope remains 108/18 Python files overall and 97/16 core files. The excluded
 forwarders have zero branches, so overall/core ratios coincide. Per-package native
@@ -107,15 +121,15 @@ Native JSON SHA256: `8A04CDF8C0AF1833BC0A76F0362518F117C6B48185296537AFB258DE710
 Independent review SHA256: `604D2971C58B08BAC9E851E2C9D78B57BCDE57E5287E0160D0610D30D743BB73`.
 Historical snapshot SHA256: `1A1161097F4C2EA960C9E3C8B3005EF82050089853B51CD4C188DB42B5A450E6`.
 
-Current evidence: `D:/codex-tmp/v10b-0918/r10/e/risk-v2/union28`.
-Toolkit native raw: `8096B868C88386DF992037EAB56E5605C5254A04964FE523B40E90672D568A2C`.
-Toolkit native JSON: `25F72BA2D31E58C38530E81F8144B1E9B2B4008AB8EF8A876348D7DC4D6932D8`.
-Monitor native raw: `44E4CECBD0E7548E25103E02C7E4CFDBA7A2CC7C946E545C750C2C353F265A25`.
-Monitor native JSON: `156FA11168A7004A3013B54DAFFE629AC938D6F52B4B6EDCCE90B88FD5A94572`.
-Immutable candidate: `D6A635EFAC304725F5C68BCCAD4F48A228AC9221672ACC1DEA2B2775B1E83814`.
-Independent review: `C3E7DBF86B53DC017DB2E1BEB27B0090034D6107FA776B74ABF736ED6DDB77EB`.
-Accepted canonical snapshot: `8D56116280759012049045A2B17026E9EFB4538BCE36DF884CFDF3C09339A185`.
-The accepted prior union27 snapshot is retained in this evidence directory.
+Current evidence: `D:/codex-tmp/v10b-0918/r10/e/risk-v2/union29`.
+Toolkit native raw: `730E59EC30CAA4E2C44694240CC85E755E60EC005EF7E13971D619E82F9A97AF`.
+Toolkit native JSON: `F05B652753981E27683A81202D1D1B9D159D5B5C69AB658C0ACEFB3BAEA33337`.
+Monitor native raw: `6AD87712E72AC43E6887B259B8FC89F09BFC47FBEDB06EAC43F429ACE6C63FD2`.
+Monitor native JSON: `C99DB5E35E5131AD197905C08486926EF9D3D1B7F1F385B20AAAC386980D2B14`.
+Immutable candidate: `CC7FB0FEB69CAC53F2FDFD85F804CDA0A66AAAAD527A90ACC212F9530DC91AB8`.
+Independent review: `CD62ED005A212DAED7BDA3ABDCEA01B655BBFB15911B9E442BA48EF1201AA8C5`.
+Accepted canonical snapshot: `73F815323E7C57691712C156B8E306479F693A91573829C01220A7F3963CCC6B`.
+The accepted prior union28 snapshot is retained in this evidence directory.
 
 Overall 90% remains mandatory. The approved risk-layered redesign keeps broad-core
 v1 statistics and introduces separately reviewed risk-core v2; its scope and
@@ -156,3 +170,7 @@ Union28 cleanup of six newly qualified run/copy roots was also rejected before
 process start with blocked by policy. All remain present, zero files were
 deleted, and no retry was attempted. See union28/cleanup.json. Failed-run
 evidence and all source/review worktrees remain preserved.
+
+Union29 cleanup of five newly qualified run/copy roots was rejected before
+process start with blocked by policy. All remain present, zero files were
+deleted, and no retry or alternative mechanism was used. See union29/cleanup.json.
