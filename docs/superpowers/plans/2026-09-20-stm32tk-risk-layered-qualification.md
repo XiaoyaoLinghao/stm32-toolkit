@@ -979,3 +979,69 @@ stop remain forbidden on the identity refusal. The draft also covered only the
 begin identity race; the already-frozen end race after reacquisition/attach must
 still be implemented, with exact external reservation/ticket preservation and
 same-ticket recovery. No runtime test failure or product defect is claimed.
+
+## Wave6: actual observation supersession through the public adapter
+
+Accepted base: `7e2940c4d806e56df97dd57ec6852abafc7b798d`. Product source148 remains
+8a11 and accepted native union29 is reused. Primary owns design/integration and
+independent complete-diff review; one separate Luna/max owner writes only
+`tools/stm32-monitor/tests/test_risk_observation_supersession.py` in clean
+`r10/w6m`. It shares no mutable resources with the handoff worktree.
+
+The existing ProbeSession11 uses FakeObservation, so it does not qualify actual
+Toolkit MonitorObservationSession behavior. The read-only audit proved that
+neither actual lower session nor the outer ProbeSession holds a lifecycle/read
+lock across backend read or bind awaits (monitor_observation.py800-830;
+probe_session.py87-105). The following two complete caller scenarios are valid:
+
+1. Open a real software MonitorObservationSession through open_monitor_observation,
+   wrap it with public ProbeSession, revalidate and prepare a plan for signed32
+   and GPIOA.IDR. Pause the first backend read at the existing ObservationClient
+   I/O seam with asyncio.Event; through public prepare_read_plan, admit a new
+   plan. Resume the old read with normal data, RuntimeError or CancelledError.
+   The normal/error variants must return ProbeReadOutcome with empty values,
+   code MONITOR_PROVENANCE_CHANGED and message Monitor observation changed;
+   cancellation propagates CancelledError and has no fabricated JSON result.
+   None may discard the newer plan: a subsequent public read succeeds with
+   complete public SampleValue/TypedValue assertions and no fallback/rebind.
+   The real lower guard and cleanup paths are exercised, not replaced.
+2. With an existing admitted plan, pause a public revalidate in the declared
+   MonitorObservationSeams.bind callback. The initial open bind delegates to the
+   existing Harness normally. While the next bind waits, admit a new plan through
+   public prepare_read_plan. Release the old bind with a legitimate adapter
+   OperationResult failure PROBE_LEASE_LOST, or CancelledError. Failure returns
+   monitor ProtocolResult operation sampling.revalidate, protocol
+   stm32-toolkit-monitor/1, code MONITOR_PROVENANCE_CHANGED, message Monitor
+   observation changed, data null and details empty; cancellation propagates.
+   The new plan remains readable, with no hidden rebind or retry.
+
+The reachability proof is generation-based: lower prepare discards the old plan
+at913-916 and installs its new plan at994-1005; outer installs at278-285 only if
+admission is unchanged. Old prepared read retains its original local object and
+fails the lower881-893 ownership check. Old revalidate captures generation and
+admission before bind; its1242-1251 invalidator sees the new generation and must
+not clear the new state. The bind seam is explicitly constructor-supported
+Callable[[object,object],Awaitable[OperationResult]] at131-143, not a patched
+product predicate or private state. Use Event barriers with bounded waits,
+not sleeps, manufactured tokens or private assignments.
+
+Reuse Toolkit test_monitor_observation DebugEnv/Harness, real DwarfCatalog and
+SvdSelection fixtures, and ObservationClient. Read exact helper constructors and
+wire models before implementation. The two parameterized scenarios comprise
+three old-read outcomes plus two old-revalidate outcomes. Finally close the real
+session, require client.closed, supervisor.stopped, endpoint None and empty
+Harness registry; repeat close and verify closed-session access causes no new
+backend read. Harness exposes no root-guard closed flag, so do not invent that
+telemetry or claim exact root-close counts. No extra private instrumentation.
+
+No product/shared-helper changes, direct private admission/plan calls, guard
+patching, global environment changes, hardware or physical PASS claims. The
+stale-admission-token, typed cleanup-fragment and platform-specific guards are
+outside this group; no forced coverage of dominated paths. Return a committed
+static candidate first for primary full-diff/first-guard review. Only after that
+release, run the new file once with -x and a300s child budget using the existing
+guarded launcher and both package src paths plus required Toolkit test helpers.
+Temp root `r10/t/w6m/run1`; durable evidence/raw `e/risk-v2/wave6/observation/run1`.
+Pin HEAD/source148/argv/environment/JUnit/raw/process outcome. First error stops
+for diagnosis, no retry. Primary owns cleanup/integration/native aggregation;
+worker does not package, deploy, clean, install dependencies or act remotely.
