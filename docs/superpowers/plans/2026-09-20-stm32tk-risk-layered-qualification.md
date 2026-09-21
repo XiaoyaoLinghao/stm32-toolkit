@@ -1901,3 +1901,24 @@ combine --keep, and inspect required worker.py executed arcs separately from
 the parent. A missing child shard, unexpected behavior, timeout or process
 failure stops without an automatic retry. Independent review covers the full
 accepted-base-to-final-head diff and both behavior and measurement decisions.
+
+### Wave11 history cursor input correction
+
+Monitor d93103aa run1 passed all four public cases in3.5122182 seconds. Its native
+data reaches three new history arcs (755->758,1068->1069,1406->1407). Preserve
+that behavior and raw evidence. The cursor case does not reach1484->1485: its
+empty shortened batch is rejected earlier by _encoded_slice_base_bytes at451-452,
+called at1457. Classify this as TEST_DATA_SCRIPT_ORACLE reachability, not PRODUCT.
+
+The same Monitor owner may correct only the admitted cursor scenario's input
+and restoration. Create a valid first batch with at least two values and obtain
+an ordinal1 cursor through a public limit2 query; shorten the persisted batch
+to one coherent nonempty value, including its index/digest/count, so the earlier
+slice-size guard passes and start2 exceeds length1 at1484. Restore all original
+payload/index rows and reuse the authenticated cursor successfully. No private
+state, product mutation or additional scenario belongs in this correction.
+After static/source checks and commit, slot1 admits one180-second run of only
+test_shortened_cursor_batch_refuses_and_resumes_after_restore, under
+r10/t/w11m/run2 and e/risk-v2/wave11/monitor/run2, memory>=15%. Do not repeat the
+other three passed cases. First unexpected outcome stops without retry. Final
+review reconciles source-equal run1 evidence and the corrected single-node run.
