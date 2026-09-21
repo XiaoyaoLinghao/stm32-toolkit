@@ -1989,3 +1989,53 @@ values, required input paths, effective thread,multiprocessing/subprocess captur
 dictionary-key grouping and current source metadata before launching. No new
 general framework or per-step approval gate is introduced. A pytest behavior or
 capture failure stops; these pre-pytest attempts add no behavior or coverage credit.
+
+### Whole replay Diagnostic reference correction after design return
+
+Accepted integration base: `79cf67334e2b78463dc4a3f70d809d35557b250f`.
+The Recovery owner retains `f421a4d086ee563adf770c96388cb9f61f98e26f` and all three
+run roots. This is the whole-contract design return triggered by the two failed
+producer scenarios, not a new name for another local patch. The primary owns
+the appended specification and freezes its canonical representation and legacy
+compatibility rules. The same owner may implement and first-verify continuously;
+independent review checks the design and full returned diff before acceptance.
+
+Expected bounded product scope is replay reference validation/normalization in
+`acceptance/model.py`, `acceptance/recovery.py`, `acceptance/workflows.py`,
+`acceptance/recovery_workflows.py`, and Diagnostic-reference fields only in
+`cli.py`/`mcp_server.py`. A shared representation must have one authority in the
+existing Acceptance layer; do not add a generic identity framework. Do not
+modify unrelated UUID validation or Diagnostic storage/generation. Existing
+owned public-producer tests and corresponding Acceptance model/workflow/CLI/MCP
+tests are the test scope. Any additional product file requires a concrete
+contract reason assessed by the primary before inclusion.
+
+After design freeze, retain the old candidate ref and bring the existing clean
+Recovery worktree forward to this accepted base without discarding its tests.
+The owner continuously prepares, implements, commits, and performs the first
+bounded verification; no per-step confirmation loop is introduced. Tests must
+use public producers or existing valid external-input fixtures. Preserve exact
+old persisted bytes and hashes as compatibility oracles. No private factory or
+state replacement may manufacture a convenient Diagnostic identity.
+
+Verification first covers the original public-producer failure and complete
+reference lifecycle, alias/legacy compatibility, exact refusal/no-write, and
+corruption/restoration. Expand affected regression to existing replay Acceptance
+models/workflows and CLI/MCP tests because their public field changes; include
+physical/continuation/finalization boundary smoke because dispatch shares the
+entrypoint. Keep unrelated UI, performance, hardware, and installer evidence.
+The owner records exact existing nodes before execution in the same plan; one
+bounded suite may run in slot1 with independent D-drive run roots under
+`r10/t/diagref/run1` and `e/risk-v2/diagnostic-reference/run1` (600 seconds,
+memory available >=15%, first unexpected outcome stops, no automatic retry).
+Capture actual child processes using native thread,multiprocessing/subprocess
+coverage, preserve raw shards, and separate behavior from measurement verdicts.
+
+First unexpected failure stops and is classified. Do not automatically widen
+scope or keep patching a newly exposed related guard; compare it against this
+whole-contract decision. Independent review covers the full accepted-base to
+final candidate diff. Formal source/coverage migration stays serial and cannot
+label U36 raw data as current coverage for changed source files. RC1 build-A
+failed its source/wheel identity gate; no build-B or real installation is admitted
+for that failed candidate. Freeze a new candidate only after accepted fixes and
+build-input convergence, then perform the unchanged real-bundle release matrix.
