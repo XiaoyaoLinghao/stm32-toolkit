@@ -281,7 +281,6 @@ def test_handoff_identity_race_refuses_without_overreach_and_recovers(
     assert len(returned_clients) == 2
     assert [event[0] for event in returned_clients[0].events] == [
         "attach",
-        "read",
         "close",
     ]
     assert [event[0] for event in returned_clients[1].events] == [
