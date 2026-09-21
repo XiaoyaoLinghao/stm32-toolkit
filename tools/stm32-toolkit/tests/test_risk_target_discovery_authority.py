@@ -266,7 +266,7 @@ def _assert_cleanup_and_no_write(
 ) -> None:
     assert reader.close_calls == 1
     assert transport.events.count("close") == 1
-    assert probe.calls.count(("close",)) == 1
+    assert probe.calls == [("identity",), ("close",)]
     assert probe.closed
     assert flash.calls == []
     assert factory_calls == ["mailbox"]
