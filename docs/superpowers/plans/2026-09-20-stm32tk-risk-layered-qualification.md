@@ -1153,3 +1153,78 @@ Temp `r10/t/w7r/run1`, durable `e/risk-v2/wave7/recovery/run1`. Pin actual HEAD,
 source148, argv/environment/JUnit/raw/process outcome. First unexpected failure
 stops for classification without automatic edits or retry. Primary owns cleanup
 disposition, native aggregation and final acceptance.
+
+## Wave7: stored physical Monitor reference authority and restoration
+
+Accepted base: `ad4fe8a1230f0767b4a7e32f0148b1e2b34457d8`; product source148
+remains8a11. Primary owns design, integration and independent review. One separate
+Luna/max owner writes only
+`tools/stm32-monitor/tests/test_risk_physical_reference_authority.py` in
+`r10/w7m`, branch `codex/STM32TK-1.0-physical-reference-authority`.
+Recovery's w7r owner and files remain independent.
+
+Caller scenarios are valid publication/fresh reload and externally damaged
+persisted authority/refusal/restoration. Reuse the synthetic public physical
+publication setup from test_physical_publication.py: _physical_context,
+_publish_physical_test_run, _append_physical_history and _physical_request, then
+publish_physical_monitor_run and load_monitor_run_reference. These are software
+fixtures and confer no physical PASS. Keep both Monitor batches and original
+Target TestRun, binding, hashes, schema and lease identities coherent.
+
+Independent construction audit confirmed five first-failure paths. Root records
+have a create-or-reuse public API, so corruption setup may unlink only the
+disposable test-owned old root and use a public RootRecord plus put_root for its
+replacement. Read authority with get_root/get_envelope; rebuild EvidenceEnvelope
+without supplying its old ID, and publish via put_envelope. New reference JSON
+uses MonitorRunRefV2.to_dict, recomputed run_ref_sha256 over the canonical payload
+without that key, from_value, ingest_file and an authentic new envelope.
+Do not call private production envelope/root writers or substitute provider
+results. Existing helper _replace_persisted_physical_transcript is a construction
+reference only; do not reuse its direct root-byte writer.
+
+Five independent parameterized cases in this one persisted-authority journey:
+
+1. Reference envelope operation becomes the valid but wrong
+   monitor-physical-window value; preserve original identity/time/parent/artifact/
+   metadata and repoint reference root. replay.py2243-2248 must reject envelope
+   structure before reading its payload.
+2. Keep original operation, parent and artifact; change only the envelope's
+   scenario_role metadata to the other valid role while root metadata/reference
+   bytes remain original. Assert the setup value actually differs.2265-2266
+   must reject envelope metadata.
+3. Reference transcript_evidence_id becomes a distinct existing Target TestRun
+   manifest ID. Recompute the reference digest, artifact and envelope; retain
+   the envelope parent as the ORIGINAL transcript-root manifest ID (the private
+   reference-envelope helper would incorrectly follow the changed field).
+   Reference root/envelope metadata match the changed reference; update the
+   transcript root run_ref_sha256 coherently. Original transcript bytes/envelope
+   stay unchanged.2287-2288 must reject the evidence-ID relation.
+4. Change only reference group_revision from valid baseline1 to2, recompute
+   digest/artifact/envelope and reference metadata, and update transcript-root
+   run_ref_sha256. Transcript bytes/envelope and all earlier identities remain
+   unchanged.2307-2350 must reject the window relation.
+5. Keep both roots intact; unlink only the reference manifest file. Actual
+   get_envelope FileNotFoundError must reach2400-2401. A missing root instead
+   fails as incomplete before this handler and is not this case.
+
+Each public reload must raise MonitorReplayError with exact
+EVIDENCE_INTEGRITY_FAILURE / physical Monitor Evidence is corrupt. Verify first
+cause respectively: physical reference envelope is invalid; physical reference
+envelope metadata is invalid; physical transcript evidence ID differs from
+reference; physical transcript and reference windows differ; FileNotFoundError.
+Snapshot the full disposable data root after deliberate corruption and require
+byte-for-byte equality after refusal. Save all originals before setup; restore
+replaced roots using unlink plus put_root, or missing manifest using put_envelope.
+Fresh reload must equal the original MonitorRunRefV2 wire data, including schema,
+physical_transport_evidence, hashed probe, window, source digest and lease.
+Unused new content-addressed objects may remain; no physical evidence claim.
+
+Return one committed static candidate with exact serializer/first-guard pointers
+and Ruff no-cache/format/AST/diff results before execution. No shared helpers,
+product changes, artificial guard patches, filesystem races, clock changes,
+dependencies or global configuration. Only after primary complete-diff release:
+one new-file five-case -x run,300s child ceiling, existing guarded launcher and
+both source packages. Temp r10/t/w7m/run1; durable e/risk-v2/wave7/monitor/run1.
+Source148/head/argv/environment/JUnit/raw/process records are required. Stop at
+the first unexpected failure, no automatic edits/retry. Main owns cleanup and
+aggregation. No hardware, deployment, packaging or remote operation.
