@@ -980,6 +980,20 @@ begin identity race; the already-frozen end race after reacquisition/attach must
 still be implemented, with exact external reservation/ticket preservation and
 same-ticket recovery. No runtime test failure or product defect is claimed.
 
+Candidatef9738f89 fixed the guard artifact but placed the end mutation in
+FakeClient.after_read. A second static review rejected this before execution:
+end_debug_handoff attaches at1521, loads/checks current identity at1523-1533,
+and only then reads segments at1543. That convenience callback cannot reach
+the claimed guard. Stop patching the callback locally and use this explicit
+phase contract: a test-owned FakeClient subclass overrides public async attach,
+awaits super().attach, publishes the changed valid build, then returns the same
+ProbeAttachmentEvidence. Only the first end factory uses it; the recovery
+factory uses ordinary FakeClient. The rejected client's exact trace is attach,
+close with no read; the recovered client's trace is attach, read, close. This
+reconsiders the external test adapter boundary after two review rounds, without
+changing production interfaces, guard results or the approved caller scenario.
+Return a separate static correction commit before any run is released.
+
 ## Wave6: actual observation supersession through the public adapter
 
 Accepted base: `7e2940c4d806e56df97dd57ec6852abafc7b798d`. Product source148 remains
