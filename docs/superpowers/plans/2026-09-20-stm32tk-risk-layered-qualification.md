@@ -1757,3 +1757,37 @@ parameters plus test_sampler.py and test_risk_sampler_group_epoch.py, retaining
 all raw shards and subprocess capture. First unexpected failure stops; no automatic
 retry. Independent review covers the whole base-to-final diff. Primary integrates
 and qualifies changed-source coverage serially, retaining unaffected U34 evidence.
+
+## Wave10 sampler review correction and Diagnostic terminal reconciliation
+
+Sampler candidate bc86127b1d92ca06f830ea3e1bf9f292f3cb82a4 run2 passed54 checks.
+Review F338FB624147810C3085A6CCB11CE50E4BD402DD7985E2BA86890AE129450116 nevertheless
+requires truthful ownership when caller cancellation interrupts failed-start
+rollback. Apply the revised sampler specification with the same owner, branch,
+accepted base and two files. No passing result is relabeled as covering this path.
+Slot1 authorizes one corrected run3 after commit/static/source qualification,
+fresh memory>=15%,300s ceiling, using r10/t/w10s/run3 and
+e/risk-v2/wave10/sampler/run3. Select the new test file and the same two affected
+regression files. Preserve raw subprocess shards; first unexpected failure stops.
+Review the complete accepted-base-to-final-head diff before integration.
+
+Diagnostic candidate d3f6cb7d41b720eccb0b0d98adf902e9ca101311 run2 reached all12
+target arcs and completion PASSED, then failed its final test oracle because it
+compared JSON containers with frozen result containers. The original pytest
+result remains FAILED and its raw data remains unaccepted pending reconciliation.
+The same owner may change only that test's final expected value to use the
+completion result's public to_dict. Existing pytest rebuilds the entire persisted
+graph and has no terminal-only replay entry. Therefore a bounded one-use evidence
+script is permitted under e/risk-v2/wave10/recovery/oracle-reconciliation: publicly
+re-read the accepted completion with its identical operation ID, re-query show
+through a fresh context, and check exact normalized equality and immutable input
+trees. This uses the existing idempotency path at diagnostic_workflows.py:891;
+it must not publish or construct new graph data. Slot2 permits this single120s
+operation after identity/source verification, not a full run3. Independent review
+must decide the applicability of the preserved prior behavior and raw evidence.
+
+Probe Wave11's two or three transport-binding arcs are deferred as low yield.
+The same Probe owner instead assesses target testing and Monitor observation
+public lifecycle gaps read-only. No test execution is released from that report.
+Suite concurrency remains2: the two completed run2 intervals did not overlap and
+their redirector-only resource records do not justify increasing concurrency.

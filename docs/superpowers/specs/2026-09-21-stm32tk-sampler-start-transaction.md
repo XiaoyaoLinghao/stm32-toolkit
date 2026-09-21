@@ -51,3 +51,33 @@ source-qualified evidence, retains unaffected files and frozen file selection,
 and uses the actual new denominator. U34 remains the accepted pre-correction
 baseline. Independent full-diff review and primary evidence reconciliation precede
 integration. No self-acceptance; 1.0 release gates remain unchanged.
+
+## Review correction: cancellation during rollback
+
+Candidate bc86127b1d92ca06f830ea3e1bf9f292f3cb82a4 passed the selected run2
+checks, but independent review found that its rollback-error handler publishes
+IDLE even when cleanup is incomplete. Caller cancellation while awaiting the
+already-acquired history task is a public path to this error. The passing run2
+remains valid for its observed cases; it does not establish this missing behavior.
+
+Add one fourth scenario: second task allocation fails, then the caller cancels
+the start operation during rollback. Cleanup remains owned until settled; after
+settlement, caller cancellation propagates, there is no live sampler-owned task,
+and public restart/stop/close work. Inject through the public task factory and
+caller task cancellation only. Use deterministic synchronization, not sleeps or
+private field edits.
+
+During rollback, STOPPING is the truthful state. Reuse the existing _await_owned
+mechanism for a separately owned cleanup task without re-entering _action_lock.
+Publish IDLE and clear blocked state only after cleanup actually succeeds.
+Preserve the original allocation exception when no caller cancellation intervenes;
+after successful cleanup, propagate caller cancellation if it did intervene.
+If cleanup itself fails or its task cannot be created, retain STOPPING and the
+existing resource references so public stop can retry; report the original
+allocation failure with the cleanup failure chained. Close any rejected cleanup
+coroutine. Never erase ownership or advertise successful cleanup on that path.
+
+This is the first independent review correction on the same two-file slice.
+No global shutdown rewrite, new public state, or direct child-cancellation feature
+is authorized. Remaining cleanup failure is visible and may require public stop;
+the contract does not claim every environment failure can be recovered.
