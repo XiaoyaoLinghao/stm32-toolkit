@@ -34,6 +34,13 @@ current `1.0.0` managed manifest. The following build publishes a new identity a
 edits, malformed manifests, unknown/future producers, and stale plans retain their existing refusal
 and rollback rules.
 
+Replay evidence compatibility is backward only: 1.0 reads existing 0.9 Acceptance
+records without rewriting them. New 1.0 records can contain Diagnostic references
+that 0.9 readers reject, even when the evidence schema label is unchanged. Keep
+using 1.0 to read those records. Repair preserves the legacy runtime; that does
+not make newly created evidence readable by it. Recovery must retain the original
+state and evidence, without editing identity values or bypassing downgrade guards.
+
 The current runtime is generic: an integration may choose any absolute `TOOLKIT_ROOT`,
 `DATA_ROOT`, and `PROJECT_ROOT`. The launcher reads only `STM32_TOOLKIT_DATA_ROOT`; the CLI requires
 an explicit `--project-root` for every project-bound command.

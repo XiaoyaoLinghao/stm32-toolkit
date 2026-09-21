@@ -29,6 +29,11 @@ configure 事务会保留工程真实的 `generatedBy.version` `0.9.0`，写出�
 随后 build 才会发布使用 `1.0.0` 的新 build identity。用户编辑、畸形 manifest、未知/未来 producer
 与过期 plan 继续沿用既有的拒绝和回滚规则。
 
+回放证据只保证向后读取兼容：1.0 可以读取已有的 0.9 Acceptance 记录，并保留其原始字节。
+新建的 1.0 记录可能包含 0.9 读取器不支持的诊断引用，即使证据 schema 标签没有变化，
+这些新记录也应继续使用 1.0 读取。Repair 保留旧 runtime，不代表旧 runtime 能读取新证据。
+恢复时应保留原状态和证据，不要修改身份字段或绕过降级检查。
+
 当前运行时是通用的：集成方可以选择任意绝对的 `TOOLKIT_ROOT`、`DATA_ROOT` 和
 `PROJECT_ROOT`。启动器只读取 `STM32_TOOLKIT_DATA_ROOT`；所有项目命令都必须显式提供
 `--project-root`。
