@@ -2050,3 +2050,49 @@ by 0.9 without mutation; final real-package compatibility and deployment notes
 must not advertise them as usable after downgrade. This adds no downgrade route,
 identity conversion, or installer change. No additional implementation file is
 authorized beyond the six-file Diagnostic reference scope and affected tests.
+
+### Next Monitor batch: complete public Analysis refusal and restoration
+
+Accepted integration base: `35a183ded7987d33616ff123e83ecc04a64098be`.
+The existing Monitor Luna/max owner retains `r10/w11m` and its accepted history
+tests. Bring that tree forward with this plan without discarding any work.
+This is test-only scope: `tools/stm32-monitor/tests/test_risk_analysis_public_refusals.py`,
+using the existing `test_analysis` valid public fixtures and serialized inputs.
+No product, service, export, CLI, dependency, or statistics-scope change is admitted.
+
+Two public scenarios are frozen against U36 and unchanged Analysis source bytes:
+
+1. Public wire/constructor rejection and valid restoration. Exercise bounded
+   AnalysisError messages, nested request JSON depth, noncanonical register
+   selectors, lineage logical-project-ID type and uppercase identity, inconsistent
+   unchanged computation statistics, and a wrong marker schema. The seven target
+   arcs in analysis.py are 191->192, 211->212, 253->254, 267->268, 273->274,
+   505->509, and 1033->1034. Obtain valid inputs from existing public fixtures,
+   vary external input only, assert the precise refusal and unchanged caller data,
+   then verify the saved valid input still succeeds.
+2. Public analyze_monitor_windows window and continuation rejection. Exercise a
+   correctly sized tuple containing an ordinary object, valid SampleBatch objects
+   carrying a wrong run or group identity, and a nonempty continuation identity
+   without authoritative EvidenceStore support. The four target arcs are
+   1141->1145, 1149->1150, 1151->1152, and 1411->1412. Preserve other bindings so
+   the stated guard is first; use public constructors or dataclasses.replace,
+   exact error/no-write assertions, and the unchanged valid restoration control.
+
+No invalid SampleBatch may be smuggled past its constructor, private state changed,
+or production check replaced. Ordinary WebSocket client close is explicitly
+excluded: installed aiohttp __anext__ consumes CLOSE/CLOSING/CLOSED and raises
+StopAsyncIteration before the proposed service.py:730->731 branch. A protocol
+ERROR path would require a separately proven public input; this batch does not
+authorize it. Correct the existing feasibility report rather than test the wrong
+branch or count ordinary close as new coverage.
+
+The same owner continuously prepares, implements, commits, and first-verifies.
+Slot2 permits one 300-second suite at `r10/t/w12m/run1` and
+`e/risk-v2/wave12/monitor/run1`, memory available >=15%. Reuse the existing guarded
+launcher and native thread,multiprocessing/subprocess capture; retain raw shards
+and verify combine --keep, source identity, and per-arc U36 delta. Another suite
+may occupy slot1. Record actual times and descendant resources without claiming
+overlap or descendant peak memory from a launcher-only PID. Stop at the first
+unexpected result; classify before any correction. Independent full-diff review
+and distinct behavior/measurement acceptance precede serial aggregation. Eleven
+arcs are prospective, not earned; all frozen coverage thresholds remain unchanged.
