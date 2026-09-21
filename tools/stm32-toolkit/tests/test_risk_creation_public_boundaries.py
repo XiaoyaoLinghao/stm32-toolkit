@@ -33,6 +33,16 @@ def _tree_snapshot(root: Path) -> dict[str, tuple[str, bytes | None]]:
     return snapshot
 
 
+def _path_snapshot(path: Path) -> tuple[str, bytes | None]:
+    if path.is_dir():
+        return ("directory", None)
+    if path.is_file():
+        return ("file", path.read_bytes())
+    if path.exists():
+        return ("other", None)
+    return ("missing", None)
+
+
 def _discovery_fixture(root: Path, *, indexed: bool = False):
     install = root / "CubeMX"
     (install / "jre" / "bin").mkdir(parents=True)
@@ -174,12 +184,14 @@ def test_public_discovery_refusal_restores_and_reuses_environment(
     valid_digest = valid.digest
     before = _tree_snapshot(tmp_path)
     restore = _discovery_mutation(variant, install, repository)
+    mutated = _tree_snapshot(tmp_path)
     try:
         with pytest.raises(CreationEnvironmentError) as error:
             discover_creation_environment(support, request, repository=repository)
         assert error.value.code == expected_code
         assert error.value.message == expected_message
         assert str(error.value) == expected_message
+        assert _tree_snapshot(tmp_path) == mutated
     finally:
         restore()
 
@@ -315,6 +327,8 @@ def test_public_generation_refusal_preserves_user_files_and_fresh_recovery(
     ) = _generation_case(tmp_path, variant)
     user_snapshot = user_file.read_bytes()
     staging_snapshot = _tree_snapshot(staging)
+    mutated_snapshot = _tree_snapshot(tmp_path)
+    mutated_source_snapshot = _path_snapshot(source)
 
     with pytest.raises(CubeMXAdapterError) as error:
         adapter.generate(capability, CubeMXStagingContext(staging))
@@ -325,6 +339,10 @@ def test_public_generation_refusal_preserves_user_files_and_fresh_recovery(
     assert len(calls) == runner_calls
     assert user_file.read_bytes() == user_snapshot
     assert not list(tmp_path.glob(".stm32tk-cubemx-control-*"))
+    if runner_calls == 0:
+        assert _tree_snapshot(tmp_path) == mutated_snapshot
+    if variant in {"ioc-changed", "ioc-type", "ioc-oversized"}:
+        assert _path_snapshot(source) == mutated_source_snapshot
     if variant == "container-nonempty":
         assert _tree_snapshot(staging) == staging_snapshot
     if variant in {"ioc-changed", "ioc-type", "ioc-oversized"}:
