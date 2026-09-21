@@ -40,7 +40,15 @@ def _assert_publication_unchanged(
 def test_public_analysis_models_reject_malformed_components_without_mutation(
     tmp_path,
 ) -> None:
-    paths, evidence, before, after = _physical_pair(tmp_path)
+    (
+        paths,
+        evidence,
+        _failed_test_run_id,
+        _fixed_test_run_id,
+        _raw_probe,
+        before,
+        after,
+    ) = _physical_pair(tmp_path)
     declaration = _declaration(tmp_path, evidence, before, after)
     publication = _publish(paths, evidence, before, after, declaration)
     publication_wire = publication.to_dict()
