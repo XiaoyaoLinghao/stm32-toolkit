@@ -1841,13 +1841,18 @@ batches trigger one grouped reachability/risk/cost reassessment before expansion
 
 ### 2. Candidate freeze
 
-Freeze only after critical defects and pre-RC gates converge. Bind one clean
-source commit, source bytes, closed dependency inventory, toolchain/build
-configuration and candidate artifact identity. The remaining coverage and seven
-Windows-native gates currently prevent this phase. Test/report-only changes do
-not silently invalidate source-equal evidence; every reuse decision names source,
-dependencies, environment, contract and verification scope. Product or artifact
-changes create a new candidate identity and invalidate only affected evidence.
+Freeze candidate inputs after critical product defects converge and the intended
+source and build inputs are qualified. Bind one clean source commit, source
+bytes, closed dependency inventory and toolchain/build configuration; bind the
+artifact identity to the actual outputs when the serialized builds finish.
+Test-only qualification can continue against these fixed product bytes. The
+remaining coverage and seven Windows-native checks are mandatory final release
+gates, not an extra prohibition on preparing or freezing candidate inputs. This
+addendum itself does not establish a candidate identity. Test/report-only changes
+do not silently invalidate source-equal evidence; every reuse decision names
+source, dependencies, environment, contract and verification scope. Product or
+artifact changes create a new candidate identity and invalidate only affected
+evidence.
 
 ### 3. Real bundle acceptance
 
