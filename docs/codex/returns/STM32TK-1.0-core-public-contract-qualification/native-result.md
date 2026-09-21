@@ -1,5 +1,60 @@
 # Current native coverage result
 
+## Current U38 source-qualified result
+
+Integrated code head before this report:
+`d8e134ce803c8b6f70fd8960ee7c117c903f51d1`.
+Product source remains `55d91a23a5a2f16fc47d324a9077dfcebf130be9`;
+source registry is `84F2A89603F776D7A27ADF968073E6A2685A1C227095B8CC9EDFDC710E852ECD`.
+U38 verdict: **ACCEPTED_NATIVE_DATA**. Release 1.0 remains **NOT_ACCEPTED**.
+Canonical SHA256:
+`EBAFCFB4B09443DE10DF60982890669768D9FE249F39FAE8BB7AAAC80777C4BE`.
+Independent native review:
+`77F8AEBF133F9C793BFE953BA93A3FA0DF596F0937FD21CD4569DE4B2991085B`.
+Primary admission/report correction:
+`86CEAF963B7F10B28EBA52B544DF3E22650B45365AEB234A54BD39C813CF1553`.
+
+| Package / frozen scope | Covered / total branches | Branch ratio | Remaining gate |
+| --- | ---: | ---: | ---: |
+| Toolkit overall / broad-core-v1 | 11,524 / 13,592 | 84.7852% | 709 for overall90%; broad-v1 retains 1,389 for95% |
+| Toolkit risk-core-v2 | 10,906 / 12,918 | 84.4248% | 1,367 for95% |
+| Monitor overall / broad-v1 / risk-v2 | 2,718 / 2,944 | 92.3234% | overall90% met; 79 for95% |
+| UI, retained separately | 784 / 810 | 96.7901% | retained gate met |
+
+This single aggregate took19.6391 seconds and ran no tests or product imports.
+Independent review proved exact native unions (Toolkit85,112 arcs; Monitor55,865),
+all ten inputs, source148, frozen scopes and six-path purge. All original raws and
+ten prepared copies remained byte-identical. One stale History annotation was
+corrected from324/352 to328/352 using the actual native summary; raw coverage and
+union were not rerun. The review prose's eight current inputs is a count typo:
+there are four legacy and six current inputs; eight qualified rows include two
+legacy Wave13 rows. The primary admission records that correction.
+
+Unchanged product paths gained13 unique branches. The six changed source files
+now have976/1,760 measured branches, replacing the predecessor's1,417/1,748.
+Those different-source counters are not a product regression delta and may not
+be spliced together. The U37 artifact and its valid historical behavior remain
+preserved. Current source qualification and all original 1.0 gates stay mandatory.
+
+The separate public-firmware finalization candidate4378b38d passed its complete
+journey in129.35 seconds pytest time (131.1827 seconds launcher child interval).
+Its fixture target-domain repair changed two test files and no product source.
+Run2 stopped before pytest because coverage.ini was missing; run3 passed after
+that setup omission was corrected. The selected journey does not call fresh-show;
+zero fresh-show shards are a missing selected scenario, not a proven collector
+failure. Reuse the persisted completed record for one separate fresh-show read;
+do not repeat the valid journey or its firmware builds. Its raw data is not yet
+admitted into U38. All these records are offline fixtures, not physical PASS.
+
+Next bounded Monitor work contains public DTO refusal/reuse, non-NFC sample
+exclusion and physical-shaped export identity refusal/recovery. Eight potential
+arcs remain estimates until native verification. At most two actual suites may
+overlap; no evidence here justifies increasing that cap. RC/build/install/Repair
+and the seven Windows checks remain incomplete. Hardware and remote state were
+not changed, and denied cleanup was not retried.
+
+## Preserved predecessor U37 result
+
 Accepted aggregation baseline: union36, canonical SHA256
 `566401658A8EE59BCE92FABD536B77264B2C925951E1495695B5E66B7608460B`.
 Integrated code head before this report: `22ee8efbb37b79f6fbe39601a3011e805ae7b67b`.
