@@ -2712,3 +2712,47 @@ a gain promise. No private loader patches, fabricated hardware success,
 firmware rebuild, new tests, suite execution or product changes in preparation.
 Return one finite proposal or a concrete reachability/cost blocker before any
 implementation. All current accepted behavior and the frozen scopes remain.
+
+### Bounded physical-reader implementation decision
+
+Independent design review `physical-reader-preparation/independent-design-review.md`
+SHA256 `477B7699B861B94F4621FDB578ACFB10CE1D611D2A3C9EEEB72FAC41B7218EE4`
+confirms P1-P6 and P8, and identifies P7's earlier-model restriction. Main
+adopts the complete corrected eight-variant family: replace inherited-output
+P7 with a revision1 deadline exactly one second later than the public baseline
+deadline, still after updatedAtUtc, recomputing the public attempt checkpoint
+and canonical envelope/root links. This targets1717->1726 without calling the
+private deadline helper. All other variant mutations and first guards remain
+as reviewed. Do not install or import the private firmware-loader monkeypatch;
+reuse only the existing project writer and public begin/checkpoint calls.
+
+Use the new clean `r10/w16f` worktree, branch
+`codex/STM32TK-1.0-physical-reader-public`, accepted base
+`e7494d1d1c996a638c5b833a82a0f154615cae3c`. The source checkout was created
+with process-local LF configuration; all148 product source files are byte-for-byte
+equal to frozen RC2 `r10/rc2s`, with no registry/scope change. Main owns the design
+and admission; the same Recovery Luna/max owner implements after returning the
+current acceptance-reader run3 evidence. Ownership is only the new
+`tools/stm32-toolkit/tests/test_risk_physical_reader_public.py`; existing fixture
+and product modules are read-only. Keep `r10/w14f` at its reviewed candidate.
+
+Implement one public rev0/rev1 prefix, at most two data clones, and exactly the
+eight grouped corruption variants. Every show and resume refusal must be followed
+immediately by full evidence/project/data byte equality against the corrupted
+snapshot; restore exact bytes and require exact baseline public wires. Use the
+public context clock where needed for stable resume observations. This is
+physical-schema software evidence, never a physical device PASS. No firmware
+compilation, Diagnostic/TargetRun producer, hardware or private production seam.
+
+The owner may continuously complete implementation, focused static checks and
+one selected native suite without a further preparation handoff. Maximum wall
+budget120seconds, first unexpected result stops, no automatic retry. Run-owned
+evidence is `r10/e/risk-v2/physical-reader-public/run1`, temporary output
+`r10/t/pr1`. Actual suites remain at most two and package execution remains
+serial. Bind the actual source, interpreter, test and closed dependency identity
+before execution; retain actual child coverage, original shards and exact combine
+checks. Compare the eight required native tuples against the result and U39,
+report the actual unique delta and no lost baseline evidence, and do not infer
+gain from the static proposal. Independent full-diff/native review precedes
+integration or aggregation. A changed earlier guard returns to this fixed design;
+do not add fakes, weaken assertions or extend the family to compensate.
