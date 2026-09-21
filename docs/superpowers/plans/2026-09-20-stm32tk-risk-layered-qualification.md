@@ -2166,3 +2166,52 @@ guards). Do not rerun the first PASS. Any unexpected result stops this run.
 The previously frozen adapter/model/boundary regression follows only if the
 remaining two nodes pass. Failed-run raw data stays unaccepted unless independent
 review explicitly reconciles its observed scope; never invent per-test shards.
+
+### Wave13 scope after two low-yield native batches
+
+The primary has reassessed U36 (+5 Toolkit/+4 Monitor) and the U37 candidate
+(+3 Toolkit/+11 Monitor). These increments do not justify indefinitely adding
+individual branch cases. Keep all thresholds and inventories frozen. Prioritize
+(1) necessary current-source measurement for the six Diagnostic changes, and
+(2) one complete, independently reachable creation/generation refusal and
+restoration scenario. The Monitor owner separately audits grouped remaining
+public risks before proposing another executable batch. No new product behavior
+is authorized by any coverage gap.
+
+Engineering accepted integration base is e0c8f3ffe0bc283901c7805d3865202e32505405.
+The existing Luna/max engineering owner retains the isolated r10/w12p worktree
+and owns only tools/stm32-toolkit/tests/test_risk_creation_public_boundaries.py.
+Reuse existing test_creation_environment and test_cubemx_adapter fixtures and
+public discover_creation_environment / CubeMXAdapter.generate calls. Existing
+helper fixtures may construct valid facts/capabilities; no private product state,
+predicate, cleanup method, or authorization check may be replaced. Existing
+public runner injection may return ProcessResult and test-owned generated output;
+this is offline adapter behavior, never a real CubeMX or hardware claim.
+
+Two scenarios form one bounded batch. First, discover a valid MCU environment,
+exercise independent malformed package/database/tool/repository inputs, verify
+exact typed refusal and no unexpected writes, restore the original input, and
+rediscover the same facts/digest. Second, consume a valid generation capability,
+exercise source identity/type/size, descriptor/protocol/result/output/container
+violations, verify the public error and per-action resource/user-file invariants,
+then perform valid generation with a fresh capability. Freeze all target guards
+and exact error expectations before running. The reachability rationale and the
+nineteen prospective arcs are in e/risk-v2/wave11/probe-preflight.md section
+'U36 creation/CubeMX residual public scenario audit'; gain remains unearned until
+native data is reviewed. A mutation intercepted by an earlier valid guard must be
+reported as such, not forced through production checks.
+
+Exclude symlink/reparse/special-file and large-inventory branches, cleanup races,
+and the existing private _seed_updater replacement. Keep the existing bound-size
+mutation modest; do not create oversized trees or a general test framework.
+Source scope, production APIs, dependencies, installer, and release artifacts are
+unchanged. One run under e/risk-v2/wave13/probe/run1 and r10/t/w13p/run1 is allowed
+in slot2, at most 600 seconds, free memory >=15%, first unexpected result stops.
+The same owner prepares, implements, commits and first-verifies without per-step
+confirmation. Use both explicit source roots when imported, retain all actual
+child coverage via existing collection, check source identity and native delta,
+and preserve raw shards with combine --keep. Capture real start/end/PIDs and
+resource observations; do not infer descendant memory or overlap from a launcher.
+Slot1 may run the Diagnostic measurement separately; no third suite is admitted.
+Independent complete-diff review and separate behavior/native acceptance are the
+exit conditions. Formal aggregation and shared ledgers remain primary-only.
