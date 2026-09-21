@@ -6,9 +6,11 @@ from functools import partial
 from pathlib import Path
 
 import pytest
+from coverage import Coverage
 from fakes.fake_pyocd import FakePyOCDDriver, FakePyOCDProbe, FakePyOCDTarget
 from stm32_toolkit.probe.backend import (
     FlashBackendReport,
+    ProbeAttachmentEvidence,
     ProbeBackendError,
 )
 from stm32_toolkit.probe.client import ProbeClient, ProbeClientError
@@ -77,8 +79,34 @@ class _ConfiguredFakePyOCDDriver(FakePyOCDDriver):
         super().program_file(session, image, options=options)
 
 
+class _CoverageFlushingPyOCDBackend(PyOCDBackend):
+    """Flush the active child collector before the worker reports an outcome."""
+
+    @staticmethod
+    def _flush_active_coverage() -> None:
+        collector = Coverage.current()
+        if collector is not None:
+            collector.save()
+
+    def open_attach(
+        self, probe_id: str, target: str, *, halt_on_connect: bool = False
+    ) -> ProbeAttachmentEvidence:
+        try:
+            return super().open_attach(
+                probe_id, target, halt_on_connect=halt_on_connect
+            )
+        finally:
+            self._flush_active_coverage()
+
+    def flash_elf(self, image: bytes) -> FlashBackendReport:
+        try:
+            return super().flash_elf(image)
+        finally:
+            self._flush_active_coverage()
+
+
 def _make_pyocd_backend(mode: str) -> PyOCDBackend:
-    return PyOCDBackend(
+    return _CoverageFlushingPyOCDBackend(
         _ConfiguredFakePyOCDDriver(mode),
         target_profile={},
     )
