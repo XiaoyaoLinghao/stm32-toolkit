@@ -904,3 +904,66 @@ static correction commit. Primary integrates any substantiated findings and
 checks the full correction before releasing at most one new300s -x run2, using
 r10/t/w5a/run2 and e/risk-v2/wave5/analysis/run2. No execution is authorized merely
 by producing the correction; the existing first-error stop remains in force.
+
+## Wave6: debug handoff identity race and settlement recovery
+
+Accepted implementation base: `9865c88a7f8b9e1ee297957657e623556f8642ae`.
+The primary conversation owns this design, orchestration and independent review;
+one Luna/max worker owns only the new
+`tools/stm32-toolkit/tests/test_risk_handoff_identity_settlement.py`.
+No product behavior or public contract changes are planned. All 148 qualified
+source files remain pinned to runtime source8a11; union29 is still under its
+separate independent native-data review. Existing valid tests are not rerun.
+
+The read-only lease/handoff audit found that default-health malformed response
+paths could add two branches, but adding a loopback server/process harness for
+those alone is disproportionate. Existing ticket binding, consumed tombstones,
+acknowledgement refusal/retry, corrupt records and cleanup tests are retained.
+Directory-descriptor/Linux branches require their real platform and are not
+simulated as Windows native acceptance. The next bounded group instead covers
+two whole caller scenarios using existing handoff fixtures:
+
+1. Firmware identity changes during an admitted handoff operation. Cover both
+   begin (after initial readback, before the final fresh identity check) and end
+   (after endpoint reacquisition/attach, before its fresh identity check). Use
+   the existing public build-document fixture publisher with a different valid
+   ELF `text_size`, not a patched firmware reader, model or identity predicate.
+   The original request, original flash receipt and ticket remain unchanged.
+   The first refusal must be `HANDOFF_IDENTITY_MISMATCH` / `Firmware identity
+   changed during debug handoff`. Begin must publish no handoff state/companion,
+   reservation or stop. End must close transport and release the temporary
+   claim, retain the exact reservation and ticket in `reacquiring`, and perform
+   no consume/finalize/acknowledge. Re-publishing the original valid build bytes
+   through the same fixture publisher restores the original deterministic
+   buildId (builtAtUtc is excluded by identity.py719-764). The same caller path
+   must then complete normally and restore the exact watch selection once.
+2. The external supervisor reports finalization unavailable after transport and
+   temporary ownership have been released. Use a subclass of the existing
+   FakeSupervisor external adapter, whose public finalize method returns false
+   once at the post-consume boundary, then delegates normally. Do not patch
+   handoff's `_finish_consumed_handoff`, guards, state reader or lease logic.
+   The first end returns `HANDOFF_REACQUIRE_FAILED` / `Consumed handoff ownership
+   could not be finalized`, with no live endpoint/transport, exact consumed
+   ticket evidence preserved, and handoff state still `reacquiring`. A subsequent
+   public end completes settlement without another start, attach, readback or
+   consume; it restores the watch selection once, clears the ticket and releases
+   the lease. A replay must return `HANDOFF_TICKET_INVALID` without mutation.
+
+Reuse `test_debug_handoff` FakeSupervisor/FakeClient, build/flash fixtures and
+real file-backed handoff state. Test-owned adapter hooks are allowed only at
+public external supervisor/client methods. Snapshot persisted state/lease and
+event counts at each refusal, and assert complete success payloads and cleanup.
+No private production-state assignment, fabricated Analysis/Target records,
+coverage-driven unreachable states, new generic framework or shared-fixture
+edits. These are software tests, not physical device evidence.
+
+Worker uses a clean isolated `r10/w6h` worktree and the existing guarded launcher.
+Before pytest, return a committed static candidate for primary complete-diff
+review, with exact constructor/return-shape and first-guard source pointers.
+After release, run only the new file once, `-x`, with a300s process budget and
+double-package native coverage. Run roots: `r10/t/w6h/run1` and durable evidence
+`e/risk-v2/wave6/handoff/run1`. Pin HEAD, argv, environment, source148, JUnit,
+native raw hashes and process termination. First unexpected error stops for
+classification. Main owns integration, aggregation and any permitted cleanup;
+no worker cleanup, hardware, dependency changes, packaging, deployment or remote
+actions. This test-only group does not invalidate existing VS10/attempt7 PASS.
