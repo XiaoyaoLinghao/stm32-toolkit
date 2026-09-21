@@ -1228,3 +1228,51 @@ both source packages. Temp r10/t/w7m/run1; durable e/risk-v2/wave7/monitor/run1.
 Source148/head/argv/environment/JUnit/raw/process records are required. Stop at
 the first unexpected failure, no automatic edits/retry. Main owns cleanup and
 aggregation. No hardware, deployment, packaging or remote operation.
+
+## User-directed offline concurrency policy — 2026-09-21
+
+Preserve existing owners: finalization_binding_impl owns Recovery/diagnostic/
+evidence integrity in w7r; physical_reference_impl owns Monitor in w7m;
+target_prepare_identity_impl owns Probe/worker settlement in w6p. Keep
+union30_native_review as the dedicated independent reviewer. Primary owns all
+design, dispatch, integration, acceptance and shared-ledger writes. This uses
+the five-agent capacity without splitting trivial tasks or introducing a lead
+intermediary. Silence alone never transfers ownership or starts a duplicate run.
+
+The first concurrent execution batch is the independently reviewed Recovery
+three-case journey and Monitor five-case journey. Each reuses its own guarded
+launcher, clean exact candidate checkout,300-second ceiling, TEMP/TMP/TMPDIR,
+pytest cache/basetemp, durable log/JUnit and raw coverage directory. No unreviewed
+test may start just to create overlap. Record actual child PIDs and UTC interval
+overlap; if one completes before the other is ready, retain that result and
+validate concurrency on the next necessary independent batch without rerunning
+an already valid test solely to demonstrate overlap.
+
+Each launcher records elapsed time, exit/timeout/termination status and, when
+available from its owned process, total CPU time and peak working set. Primary
+records host physical memory availability before and after the pair; missing
+telemetry remains unavailable, never zero. Parent-process figures do not include
+unmeasured descendants. Existing subprocess-native coverage must be checked for
+actual collection, persistence and combine completeness; behavior PASS and
+coverage completeness remain separate. Preserve child raw shards using native
+combine --keep. No fabricated coverage or new diagnostic framework.
+
+Expand only after two independent suites complete without infrastructure error,
+timeout or resource-pressure evidence, within their fixed budgets, and host
+available memory stays at least15 percent with combined measured peak working
+sets below25 percent of physical RAM. Inspect any missing descendant telemetry
+before treating parent totals as a bound. These are execution-capacity criteria,
+not product acceptance gates; no claim of speedup without a comparable baseline.
+At most three implementation lines can execute simultaneously while retaining
+the reviewer and primary under the current agent limit. Four suites require a
+separately justified batching arrangement and are not enabled by this first pair.
+
+Formal native aggregation, shared-ledger updates, exclusive performance tests,
+final builds/deployment and same-probe hardware remain serial under primary.
+An unexpected suite failure stops that suite; other demonstrably independent
+work may continue. PyOCD run2 retains4PASS but is native-measurement partial;
+parallelism does not authorize another measurement retry before diagnosis and
+review. No frozen denominator,90/95 gate, remote authority or denied-cleanup
+boundary changes. Report completed public behaviors and native new-branch deltas,
+remaining thresholds and specific blockers; after consecutive low-yield groups,
+reassess remaining whole-scenario reachability before assigning further tests.
