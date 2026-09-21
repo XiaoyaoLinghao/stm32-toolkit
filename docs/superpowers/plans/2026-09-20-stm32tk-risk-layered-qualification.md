@@ -2596,3 +2596,41 @@ accepted installed root. All normal setup validation and offline dependencies
 remain in force. Concrete fixture/case argv and budget still require primary
 review before execution; rollback failure injection requires its separate
 public first-guard proof. No new successful Repair is part of fixture setup.
+
+### RC2 one failed-publication rollback scenario
+
+Independent entry review `r10/e/rc2/rollback-entry-review.md` (SHA256
+`EEC62DCF901FCD7C9E5048F7E1DE4EABADA5FC88E65792CC16B3804DCD74E6AC`)
+and primary source review identify one public failure boundary. Successful
+genuine0.9 Repair is retained as preservation evidence, not failure rollback.
+After the dedicated RC2 negative-test installation is healthy/matching and
+all earlier state/package mutations are exactly restored, snapshot its runtime,
+state and project bytes. Hold only its existing `runtime/runtime-state.json`
+with native `FileAccess.Read` and `FileShare.Read`. The handle must permit the
+public state verifier and prior-state read; deny-read locking is inadmissible.
+
+Invoke the unmodified shipped setup `-Mode Repair` exactly once against this
+owned fixture, with the exact RC2 source/manifest/setup hashes already frozen.
+Keep the handle until setup exits. Expected first failure is
+`Write-RuntimeStateAtomic`'s `[IO.File]::Replace` at setup line460, after
+staging promotion, launcher finalization and healthy final-runtime validation
+at lines871-877. Preserve the actual localized stderr and exit2; another or
+earlier failure is not rollback evidence and stops the scenario. No product
+patch, private hook, ACL change, second trigger or second Repair is allowed.
+
+Release the handle, then require exact restoration of the pre-run active
+runtime and state bytes/generation, unchanged project, no candidate residue,
+empty/absent staging and quarantine, and no state tmp/bak residue. The original
+state stays unchanged when atomic replacement is refused; the catch's attempted
+state rewrite may also be blocked and must not be mistaken for successful
+write-back. Inspect the actual final identities rather than exit2 alone.
+Finish with one read-only healthy/matching Check on the same fixture. Preserve
+all failure evidence and never repair a failed oracle by deleting residue.
+
+The existing engineering Luna/max owner prepares the finite native-lock and
+public-command invocation after returning its refusal manifest. Main owns the
+serial release execution and admission. Setup has a 300-second wall budget
+plus a bounded60-second attributed cleanup reserve; all temporary files are
+under `r10/t/rc2rf`, evidence under `r10/e/rc2/rollback`. Review concrete argv,
+path identities and timeout/cleanup before release. No general test framework,
+hardware action, source test matrix, accepted-runtime mutation or remote action.
