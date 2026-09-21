@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import difflib
 import hashlib
+import json
 import subprocess
 from collections.abc import Mapping
 from pathlib import Path
@@ -27,7 +29,7 @@ from stm32_toolkit.diagnostic_workflows import (
     diagnostic_start,
 )
 from stm32_toolkit.diagnostics import SourceChangeDeclaration
-from stm32_toolkit.evidence import EvidenceEnvelope
+from stm32_toolkit.evidence import EvidenceEnvelope, canonical_json_bytes
 from stm32_toolkit.evidence.store import EvidenceStore
 from stm32_toolkit.paths import WorkspacePaths
 from stm32_toolkit.project_model import load_project_model
@@ -43,10 +45,10 @@ from test_physical_target_workflows import (
     CASES,
     RAW_PROBE,
     _Board,
-    _fixed_project,
     _fixed_v2_stream,
     _SourceChangeBackend,
 )
+from test_risk_recovery_public_producers import _initialize_git, _write_project
 
 ATTEMPT_ID = "00000000-0000-4000-8000-000000000101"
 SESSION_ID = "s18-physical-checkpoint-retry"
@@ -118,6 +120,12 @@ def _public_failed_target_run(
 ) -> tuple[Mapping[str, object], list[tuple[object, ...]]]:
     events: list[tuple[object, ...]] = []
     board = _Board()
+    model = load_project_model(project_root)
+    assert model.memory.source == "keil"
+    assert model.testing.target.protocol == TARGET_PROTOCOL
+    declared_sources = tuple(model.build.sources)
+    assert declared_sources
+    assert all((project_root / source).is_file() for source in declared_sources)
     elf_path = project_root / "build" / "arm-debug" / "firmware.elf"
     flash_segment = elf_path.read_bytes()[84:404]
 
@@ -126,7 +134,7 @@ def _public_failed_target_run(
             board=board,
             physical_identity={
                 "board_id": str(build["targetDevice"]),
-                "mcu": "stm32f407vg",
+                "mcu": str(model.debug.target),
                 "target_id": str(build["targetDevice"]),
                 "probe_serial_hash": hashlib.sha256(
                     RAW_PROBE.encode("utf-8")
@@ -260,6 +268,9 @@ def _public_source_declaration(
     after_build: Mapping[str, object],
     before_snapshot_sha256: str,
     after_snapshot_sha256: str,
+    changed_path: str,
+    before_source: bytes,
+    after_source: bytes,
     hypothesis_id: str,
 ) -> SourceChangeDeclaration:
     assert after_build["inputSnapshotSha256"] == after_snapshot_sha256
@@ -271,10 +282,15 @@ def _public_source_declaration(
     )
     evidence = EvidenceStore(workspace.workspace_root / "evidence")
     diff_path = project_root.parent / "s18-source-change.diff"
-    diff_path.write_bytes(
-        b"--- a/App/main.c\n+++ b/App/main.c\n@@ -1 +1 @@\n"
-        b"-int main(void) { return 0; }\n+int main(void) { return 1; }\n"
+    diff_text = "".join(
+        difflib.unified_diff(
+            before_source.decode("utf-8").splitlines(keepends=True),
+            after_source.decode("utf-8").splitlines(keepends=True),
+            fromfile=f"a/{changed_path}",
+            tofile=f"b/{changed_path}",
+        )
     )
+    diff_path.write_bytes(diff_text.encode("utf-8"))
     diff_artifact = evidence.ingest_file(
         diff_path,
         kind="source-diff",
@@ -296,7 +312,7 @@ def _public_source_declaration(
         before_elf_sha256=str(before_identity.elf_sha256),
         after_build_id=str(after_build["buildId"]),
         after_elf_sha256=str(after_build["elfSha256"]),
-        changed_paths=("App/main.c",),
+        changed_paths=(changed_path,),
         diff_evidence_id=str(diff_envelope.evidence_id),
         diff_artifact=diff_artifact,
         claimed_hypothesis_ids=(hypothesis_id,),
@@ -307,10 +323,15 @@ def _public_source_declaration(
 def test_public_physical_checkpoint_retries_preserve_authority_and_wire(
     tmp_path: Path,
 ) -> None:
-    project_root, before_build = _fixed_project(
-        tmp_path,
-        protocol=TARGET_PROTOCOL,
-    )
+    project_root = tmp_path / "project"
+    _write_project(project_root)
+    manifest_path = project_root / ".stm32-project.json"
+    manifest = json.loads(manifest_path.read_bytes())
+    manifest["testing"]["target"]["executable"] = "build/arm-debug/firmware.elf"
+    manifest["testing"]["target"]["protocol"] = TARGET_PROTOCOL
+    manifest_path.write_bytes(canonical_json_bytes(manifest))
+    _initialize_git(project_root)
+    before_build = _publish_current_debug_build(project_root)
     data_root = tmp_path / "data"
     executed, _events = _public_failed_target_run(project_root, data_root, before_build)
     run = executed["run"]
@@ -429,15 +450,23 @@ def test_public_physical_checkpoint_retries_preserve_authority_and_wire(
         ),
     )
 
-    source_path = project_root / "App" / "main.c"
+    model_before_source_edit = load_project_model(project_root)
+    declared_sources = tuple(model_before_source_edit.build.sources)
+    assert declared_sources
+    changed_path = declared_sources[0]
+    source_path = project_root / changed_path
+    assert source_path.is_file()
     before_source = source_path.read_bytes()
+    before_entries = {str(entry.path): entry for entry in before_snapshot.entries}
+    before_entry = before_entries[changed_path]
+    before_entry_sha256 = str(before_entry.sha256)
     after_source = b"int main(void) { return 1; }\r\n"
     intent_input = {
         "schema": "stm32-source-change-intent/1",
         "changes": [
             {
-                "path": "App/main.c",
-                "beforeSha256": before_snapshot.sha256,
+                "path": changed_path,
+                "beforeSha256": before_entry_sha256,
                 "afterSha256": hashlib.sha256(after_source).hexdigest(),
                 "afterSize": len(after_source),
             }
@@ -486,7 +515,7 @@ def test_public_physical_checkpoint_retries_preserve_authority_and_wire(
 
     source_path.write_bytes(after_source)
     subprocess.run(
-        ["git", "add", "App/main.c"],
+        ["git", "add", changed_path],
         cwd=project_root,
         check=True,
         stdout=subprocess.DEVNULL,
@@ -519,6 +548,9 @@ def test_public_physical_checkpoint_retries_preserve_authority_and_wire(
         after_build=after_build,
         before_snapshot_sha256=before_snapshot.sha256,
         after_snapshot_sha256=after_snapshot.sha256,
+        changed_path=changed_path,
+        before_source=before_source,
+        after_source=after_source,
         hypothesis_id=hypothesis_id,
     )
     declared = _ok(
