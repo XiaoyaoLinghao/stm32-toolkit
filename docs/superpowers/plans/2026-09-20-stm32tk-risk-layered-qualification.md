@@ -1958,3 +1958,34 @@ Any remaining mismatch stops this capture without another local patch/rerun.
 Keep run1/run2 originals and their independent partial verdicts. Other admitted
 suites should use both thread and multiprocessing tracking before first execution;
 an already started suite is preserved and assessed from its actual raw evidence.
+
+### Wave11 bounded fixture and launcher convergence
+
+Monitor run2 reached the intended cursor guard, then failed in fixture restoration:
+the shortened batch retained ordinal0, while restoration inserted both original
+rows. This UNIQUE-key failure is TEST_DATA_SCRIPT_ORACLE, not a product defect.
+After the input and restoration rounds, reconsider the whole fixture transaction
+before further execution: save the exact batch and complete index; mutate both
+coherently to one nonempty value; obtain public refusal with no write; replace the
+entire affected index with the exact saved rows in the same restoration transaction;
+reuse the original authenticated cursor successfully; close the public store.
+Final test bf58c846 implements this bounded restoration. Independent complete-diff
+review checks this whole sequence. Preserve run1's three valid arcs and run2's
+original failure. Once an actual suite slot is free, run only the corrected B3 node
+once under monitor/run3 and t/w11m/run3 (180 seconds, memory>=15%). Another failure
+returns to this fixture design; it does not authorize product changes or an
+unbounded rerun. The other three passing nodes are unchanged and are not repeated.
+
+Probe run3 and Recovery run1 never started pytest. Probe's launcher required a
+source148-check.json that had not been produced; Recovery's launcher interpreted
+an unquoted SHA256 literal as a command. These are ENVIRONMENT_INFRASTRUCTURE_PLATFORM
+launcher failures. Preserve both originals. The existing owners correct only
+their run-local inputs and launchers, verify all required inputs together, and
+continue the already admitted execution in fresh roots: Probe run4/t/w11p/run4
+(slot1,180 seconds, unchanged ffba4a4a) and Recovery run2/t/w11r/run2 (slot2,300
+seconds, unchanged14ea39b2). Source148 is actually rehashed against current
+registry69D2; no fabricated or merely renamed match report. Check literal hash
+values, required input paths, effective thread,multiprocessing/subprocess capture,
+dictionary-key grouping and current source metadata before launching. No new
+general framework or per-step approval gate is introduced. A pytest behavior or
+capture failure stops; these pre-pytest attempts add no behavior or coverage credit.
