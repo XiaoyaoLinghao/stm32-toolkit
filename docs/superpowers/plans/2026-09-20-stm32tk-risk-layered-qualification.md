@@ -2121,3 +2121,22 @@ The same owner corrects the complete test-tail identity mapping from public
 producer results; the six product files remain at55d91a23. One bounded run2 in
 the already assigned slot1 follows. Another related fixture failure returns to
 fixture design; it does not justify changing product behavior.
+
+If Diagnostic run2 completes the three journeys, continue the already required
+affected regression in the same ownership line. Add only compact/grouped/RFC
+reference variants to the existing public CLI record and MCP record dispatch
+tests, plus non-null compact/grouped diagnosis-checkpoint calls to the existing
+MCP recovery adapter tests. Their public workflow stub verifies adapter argument
+translation only; it is not end-to-end retry or persistence evidence. No private
+validator/state substitution or product edit is admitted. Files are limited to
+test_acceptance_cli.py, test_acceptance_mcp.py, and test_acceptance_recovery_mcp.py.
+Reuse the independent review's exact persisted-model, existing replay refusal,
+and physical/continuation/finalization public boundary selectors. Where an old
+fixture patches an authoritative private check, use the already admitted real
+public-producer journey as the oracle; do not manufacture native coverage from
+that patch. Record the final selector list and reason before execution. One
+600-second slot1 regression run uses t/diagref/regression1 and
+e/risk-v2/diagnostic-reference/regression1, both source roots and loaded hashes,
+the same resource/capture guards, and first-error stop. Passing run2 journeys
+are not rerun merely because adapter tests change. Independent delta review,
+runtime acceptance and six-source native requalification remain required.
