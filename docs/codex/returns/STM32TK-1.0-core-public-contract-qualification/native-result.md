@@ -1184,3 +1184,38 @@ file-preservation scenarios were already covered, so no duplicate suite is
 added. Only a coherent, reachable and previously unverified risk group can
 release another supplement. No final release acceptance or95 optimization is
 claimed.
+
+
+### U49 native admission and remaining scoped work
+
+Code head before this report is668daf9a1c12b3c926c0e8133ab02836590ad5bb.
+U49 closes the previously pending Windows native input with exactly one
+Toolkit branch, lease932->934; cumulative increment since the approved policy
+amendment is12Toolkit/0Monitor. Independent reviewDE1A0FCD accepts manifest
+A4FA400B and aggregation43E42476. Primary admission87FAC0156B287203F202B5A784EC781A2231CC1F440DC053C4604697C742F5D8
+binds accepted reportEBF51C12242BDC8B4BCED3125BC5E77D5F13B9D0316E1F042D1115793D33D70B.
+Whole original inputs and copies are unchanged; exact union126files/87591arcs
+has9 additional raw arcs but only1 additional native branch. Monitor/UI objects
+remain equal to U48; no Monitor import or credit is fabricated.
+
+Toolkit11928/13592=87.7575% needs305 to overall90; frozenrisk11310/12918=
+87.5523% needs317 to90. The gaps overlap. Monitor2734/2944 still needs63 to95.
+Original Toolkit95 unmet975 remains historical; current nonblocking95gap963.
+The native combine and JSON each ran once and returned0. Initial read-only
+reconciliation stopped because the old adapter source registry was not
+initialized; binding the reviewed148-file registry and two source roots
+completed exact reconciliation of already produced outputs. The stop evidence
+is retained, no helper/product changed and no native command/test was rerun.
+
+The bounded Recovery376 and Diagnostic104/store53 reviews did not establish
+another complete public group; earlier guards, missing legal predecessor
+identity, known held paths and already-covered semantics remain individually
+classified, not removed from scope. Replay's preferred eight-branch estimate
+was not treated as a new minimum: a coherent five-arc real-success/provider-
+failure/idempotent-retry group is released to the existing owner under the
+plan's25-minute preparation/600-second first-run bounds. No result is yet
+claimed. Debug SVD/DWARF residuals have a separate15-minute read-only assessment.
+All five mandatory risk families retain scoped accepted evidence, including
+the newly closed Windows public-authority conjunction; held optional variants
+remain unaccepted. Seven Windows-native checks still lack an authorized
+capable environment. Full release acceptance remains incomplete.
