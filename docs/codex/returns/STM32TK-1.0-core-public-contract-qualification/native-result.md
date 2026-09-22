@@ -1142,3 +1142,45 @@ and all unaffected physical/package/build/install/Repair/rollback/security/use
 results remain accepted within scope. The Goal backend is now active; its old
 objective text does not supersede the explicit Toolkit90 policy amendment.
 Final acceptance remains incomplete.
+
+
+### Windows public authority refusal and reuse accepted
+
+Code head before this report is3cb3b748fb9d29ad40841c1c364c7223034acb09.
+It integrates the complete test-only diff27dd55e..875a4ff9 after independent
+review53038FC0F480435C413ABB2862047BE609503A903B0E1C0F7D63DE5E4F572F16.
+The two actual Windows refusal/reuse cases passed in4.32seconds: registry-file
+and guard-directory obstructions fail before firmware binding, preserve the
+project/refusal artifacts, close the external backend and clear the real
+supervisor endpoint. The awaited production rollback precedes asyncio.run
+shutdown. Removal of each owned obstruction permits two public default-manager
+acquire/release cycles. No direct TCP close probe or stale-owner health reclaim
+is claimed, and no hardware was accessed.
+
+Primary admission5C8EEE4CDDB425FE69F854991F61F5C8D6C4426EE5766E191420622B58425808
+binds the reviewed test and runtime evidence. The executed and integrated test
+have the same Git blob, normalized bytes and AST; checkout raw hashes differ
+only by LF/CRLF. All148 production files are normalized-equal,147 raw-equal.
+Original shard848CCA3D and corrected combined1C3568BC contain equal108-file,
+11106-arc sets. Monitor was configured but never imported and supplies no data
+or credit. Original run1 launcher failure and stale default-path report are
+retained; corrected measurement/shard sidecars govern without a test rerun.
+The additional Toolkit lease932->934 arc is held for the next serial union,
+so formal totals remain U48:11 new Toolkit,0Monitor, gaps306/318/63.
+
+The U48 canonical/ledger promotion preserves every accepted package, physical,
+UI/performance and recovery result. One stale final-matrix pending-requirement
+string was corrected from Toolkit core95 to the user-approved90; the before
+snapshot and original95 unmet history remain. Resource-release evidence now
+includes this Windows public scenario. Named baseline Monitor publication,
+repair and retry evidence remains applicable; held U47 fault variants do not
+become PASS. The seven separate Windows-native checks still require a capable
+authorized environment. Product55d and RC2c71b remain frozen.
+
+No new product defect is demonstrated. The next bounded work is a20-minute
+public-reachability assessment of each Recovery and Replay group by existing
+owners, using existing gap maps and fixtures. Creation/import rollback and
+file-preservation scenarios were already covered, so no duplicate suite is
+added. Only a coherent, reachable and previously unverified risk group can
+release another supplement. No final release acceptance or95 optimization is
+claimed.
