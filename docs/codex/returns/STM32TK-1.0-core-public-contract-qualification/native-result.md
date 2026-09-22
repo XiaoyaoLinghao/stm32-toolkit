@@ -1,6 +1,75 @@
 # Current native coverage result
 
-## Current U56 result — 2026-09-23
+## Current U57 result — 2026-09-23
+
+U57 is ACCEPTED_NATIVE_DATA after independent behavior and native-data review.
+Accepted integration base9d9f647d, plan ce3481af, executed test
+`c8c02c3f44df02e68aad651122c07468d245d88d` and exact-blob integration
+`52959d747ab80f69baf4b083249582dcd3025310` are distinct from unchanged product
+97027818 and frozen RC3 daa465df. No product or dependency changed.
+
+Three public archived Acceptance scenarios close: completed show/resume validates
+the genuine revision chain and linked completion evidence; in-progress show/resume
+reports its actual expired deadline without advancing state; a copied root's
+integrity corruption is refused without writes, then exact byte restoration
+allows successful reading again. Original174files/2512425bytes and the original
+project manifest remain unchanged. This is offline reader qualification, not a
+new physical execution or acceptance of the held from-scratch producer.
+
+| Frozen scope | Covered / total | Ratio | Remaining release branches |
+| --- | ---: | ---: | ---: |
+| Toolkit overall |11976/13592|88.1107%|257 to90%|
+| Toolkit risk-core-v2 |11358/12918|87.9238%|269 to90%|
+| Monitor overall/risk |2744/2944|93.2065%|overall90 met;53 to95%risk|
+
+The Toolkit gaps overlap. Formal gain is23Toolkit/0Monitor, all in
+recovery_workflows.py; since the U47 user amendment it is60Toolkit/10Monitor.
+Original Toolkit risk95 deficit975 remains historical UNMET, with current
+later-quality gap915 and broad-v1 gap937, neither a new1.0 gate. No scope or
+denominator was reduced, and UI/subprocess requirements remain unchanged.
+
+One invocation passed all three scenarios, exit0, in40.5542seconds; no suite
+overlap occurred. Preparation, independent read-only Monitor assessment and
+review overlapped. Serial native composition took7.171seconds. Plan commit to
+primary admission took30minutes23.484seconds; this is wall time, not exclusive
+labor. It closes this reader group, not23separate scenarios. Compared with the
+preceding7-branch/52-minute group, yield improved; remaining public reachability
+and the Windows environment still prevent a reliable total completion estimate.
+
+Two report/preparation issues are retained without test reruns: command.json's
+standalone selector list is wrong while actual argv/preflight/JUnit agree; the
+first source-count guard incorrectly reused U56's147/1raw/newline split and
+stopped before combining. Fresh148-row verification proves this tree has7raw
+equal and141newline-only pairs, all normalized-identical. Both126-file raw unions
+are complete and unfiltered (88331Toolkit-side/63332Monitor-side arcs). Native
+JSON retains108/18package,97/18broad and90/16risk membership. Native branch
+normalization yields22planned pairs plus3151->3159; the earlier run-local raw
+edge counts are preserved but are not native branch totals. The inherited
+riskCoreV2.status was rebound toU57 on promotion without recombination.
+
+Canonical SHA2565E4D1A071B0C287AC69D2DC9D71025C1874F59C8C75E97D5D1163E438B5C5BA9;
+native reviewE88897D3A44BDD0D59EB1EAA83D7C1F5AFD8FCF701EF695812A7C05A5141E41A;
+primary admission8120880C626F767A950976EDAC4FBDCDADCD9AC03E09700E78CD32C5617D2F00.
+Evidence remains under r10/e/risk-v2/union57 and archived-acceptance-readers/run1.
+
+Monitor's bounded remaining-module assessment closed NO-GO for that proposed
+group: earlier public guards or missing lawful environment/provider inputs
+prevent the selected grouped route. This is not proof that every remaining
+Monitor branch is unreachable; no exclusions or low-yield suite were released.
+The same Recovery owner has one10-minute read-only assessment of legitimate
+public begin/reuse/checkpoint/idempotency against the real archived proof and
+original project. No new suite, clock change, re-signed identity, hardware or
+held from-scratch producer retry is authorized by that preparation.
+
+All five accepted critical-risk families and applicable RC3/RC2-scoped package,
+installation, Repair, rollback, Monitor-use, VS10-A/B and attempt7 evidence remain.
+Coverage, seven authorized Windows-native checks and final matrix reconciliation
+still block release. Four newly attributed successful-run temporary roots were
+verified under D:/codex-tmp with no reparse points; their single cleanup request
+was rejected before process start as blocked by policy. They join17prior held
+roots; none were deleted, retried or removed by a workaround. Raw evidence remains.
+
+## Historical U56 result — 2026-09-23
 
 U56 is ACCEPTED_NATIVE_DATA after an independent data review and a report-only
 provenance correction. Accepted test base667bbb1c515ee9f5c5fa1b15cd3a952244f569da,
