@@ -84,17 +84,26 @@ def test_public_start_lock_fdopen_failure_leaves_zero_byte_lock_for_retry(
         observation_factory=lambda *_args, **_kwargs: None,
         service_factory=lambda *args, **kwargs: _ready_service(*args, **kwargs),
     )
-    with pytest.raises(MonitorRuntimeError) as retry_error:
+    try:
         asyncio.run(replacement.start(config))
-    assert retry_error.value.code == "MONITOR_RUNTIME_PATH_UNSAFE"
-    assert retry_error.value.message == "Monitor runtime lock is unsafe"
-    assert lock_path.read_bytes() == b""
-    assert lock_path.stat().st_size == 0
-    assert {
-        path.relative_to(paths.workspace_root).as_posix(): path.read_bytes()
-        for path in paths.workspace_root.rglob("*")
-        if path.is_file()
-    } == {".monitor-runtime.lock": b""}
+    except MonitorRuntimeError as retry_error:
+        assert retry_error.code == "MONITOR_RUNTIME_PATH_UNSAFE"
+        assert retry_error.message == "Monitor runtime lock is unsafe"
+        assert lock_path.read_bytes() == b""
+        assert lock_path.stat().st_size == 0
+        assert {
+            path.relative_to(paths.workspace_root).as_posix(): path.read_bytes()
+            for path in paths.workspace_root.rglob("*")
+            if path.is_file()
+        } == {".monitor-runtime.lock": b""}
+        pytest.fail(
+            "same-workspace retry must succeed after the transient lock "
+            f"allocation failure; observed {retry_error.code}: {retry_error.message}"
+        )
+    else:
+        asyncio.run(replacement.stop())
+        assert lock_path.read_bytes() == b"\0"
+        assert lock_path.stat().st_size == 1
     assert {
         path.relative_to(config.project_root).as_posix(): path.read_bytes()
         for path in config.project_root.rglob("*")
