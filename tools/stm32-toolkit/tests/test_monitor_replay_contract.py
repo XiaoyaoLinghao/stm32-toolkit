@@ -1466,3 +1466,179 @@ def test_public_replay_wire_accepts_legal_failed_sample() -> None:
     assert validated is not candidate
     assert candidate == candidate_before
     assert source == source_before
+
+
+def test_public_physical_wire_integrity_refuses_and_restores_baseline() -> None:
+    contract = _contract()
+    source = _physical_transcript(_document("failed-before"))
+    source_before = deepcopy(source)
+    assert contract.validate_physical_transcript(source) == source
+
+    physical_cases = (
+        (
+            "string-limit",
+            lambda candidate: candidate["binding"].update(
+                {"oversized": "x" * (contract.MAX_REPLAY_JSON_STRING_CHARS + 1)}
+            ),
+            "physical transcript JSON string exceeds its limit",
+        ),
+        (
+            "mapping-cycle",
+            lambda candidate: candidate["binding"].update(
+                {"cycle": candidate["binding"]}
+            ),
+            "physical transcript JSON contains a cycle",
+        ),
+        (
+            "nfc-key",
+            lambda candidate: candidate["binding"].update(
+                {"e\u0301": "decomposed-key"}
+            ),
+            "physical transcript JSON object keys must use NFC",
+        ),
+    )
+    for case_id, mutate, expected_message in physical_cases:
+        candidate = deepcopy(source)
+        mutate(candidate)
+        if case_id == "mapping-cycle":
+            binding = candidate["binding"]
+            with pytest.raises(contract.ReplayContractError) as error:
+                contract.canonical_physical_json_bytes(candidate)
+            assert binding["cycle"] is binding
+            del binding["cycle"]
+            assert candidate == source
+        else:
+            candidate_before = deepcopy(candidate)
+            with pytest.raises(contract.ReplayContractError) as error:
+                contract.canonical_physical_json_bytes(candidate)
+            assert candidate == candidate_before
+        assert type(error.value) is contract.ReplayContractError
+        assert str(error.value) == expected_message
+        assert source == source_before
+        assert contract.validate_physical_transcript(source) == source
+
+    candidate = deepcopy(source)
+    unsupported = object()
+    candidate["binding"]["unsupported"] = unsupported
+    with pytest.raises(contract.ReplayContractError) as error:
+        contract.canonical_physical_json_bytes(candidate)
+    assert type(error.value) is contract.ReplayContractError
+    assert str(error.value) == "physical transcript JSON contains an unsupported value"
+    assert candidate["binding"]["unsupported"] is unsupported
+    del candidate["binding"]["unsupported"]
+    assert candidate == source
+    assert source == source_before
+    assert contract.validate_physical_transcript(source) == source
+
+    finite = deepcopy(source)
+    finite["batches"][0]["values"][0]["typedValue"] = 1.5
+    finite_before = deepcopy(finite)
+    validated = contract.validate_physical_transcript(finite)
+    assert validated == finite
+    assert validated is not finite
+    assert finite == finite_before
+    assert contract.validate_physical_transcript(source) == source
+
+    typed_cases = (
+        (
+            "cumulative-string-budget",
+            {"left": "a" * 700_000, "right": "b" * 700_000},
+            "physical Monitor JSON string data exceeds its limit",
+        ),
+        (
+            "cumulative-key-budget",
+            {"a" * 700_000: 0, "b" * 700_000: 1},
+            "physical Monitor JSON string data exceeds its limit",
+        ),
+        (
+            "shallow-node-budget",
+            {f"key-{index}": index for index in range(10_001)},
+            "physical Monitor JSON exceeds its node limit",
+        ),
+    )
+    for _, typed_value, expected_message in typed_cases:
+        candidate = deepcopy(source)
+        candidate["batches"][0]["values"][0]["typedValue"] = typed_value
+        candidate_before = deepcopy(candidate)
+        with pytest.raises(contract.ReplayContractError) as error:
+            contract.validate_physical_transcript(candidate)
+        assert type(error.value) is contract.ReplayContractError
+        assert str(error.value) == expected_message
+        assert candidate == candidate_before
+        assert source == source_before
+        assert contract.validate_physical_transcript(source) == source
+
+
+def test_public_replay_reference_wire_integrity_refuses_and_restores_baseline(
+    tmp_path: Path,
+) -> None:
+    contract = _contract()
+    source = _document("failed-before")
+    source_before = deepcopy(source)
+    assert MonitorReplayDocument.from_value(source).to_dict() == source
+    assert contract.validate_replay_document(source) == source
+
+    candidate = deepcopy(source)
+    _set_binding_field(candidate, "svdSha256", "f" * 64)
+    _redigest_public_document(contract, candidate)
+    candidate_before = deepcopy(candidate)
+    assert MonitorReplayDocument.from_value(candidate).to_dict() == candidate
+    assert contract.validate_replay_document(candidate) == candidate
+    assert candidate == candidate_before
+    assert source == source_before
+    assert contract.validate_replay_document(source) == source
+
+    for field, value, expected_message in (
+        ("gitDirty", 1, "gitDirty is invalid"),
+        ("gitHead", "g" * 40, "gitHead is invalid"),
+    ):
+        candidate = deepcopy(source)
+        _set_binding_field(candidate, field, value)
+        _redigest_public_document(contract, candidate)
+        candidate_before = deepcopy(candidate)
+        with pytest.raises(contract.ReplayContractError) as error:
+            contract.validate_replay_document(candidate)
+        assert type(error.value) is contract.ReplayContractError
+        assert str(error.value) == expected_message
+        assert candidate == candidate_before
+        assert source == source_before
+        assert contract.validate_replay_document(source) == source
+
+    document_root: object = []
+    with pytest.raises(contract.ReplayContractError) as error:
+        contract.validate_replay_document(document_root)
+    assert type(error.value) is contract.ReplayContractError
+    assert str(error.value) == "replay document must be an object"
+    assert document_root == []
+    assert contract.validate_replay_document(source) == source
+
+    reference = _reference(tmp_path, "failed-before")
+    reference_before = deepcopy(reference)
+    assert MonitorRunRef.from_value(reference).to_dict() == reference
+    assert contract.validate_run_reference(reference) == reference
+    reference_root: object = []
+    with pytest.raises(contract.ReplayContractError) as error:
+        contract.validate_run_reference(reference_root)
+    assert type(error.value) is contract.ReplayContractError
+    assert str(error.value) == "monitor run reference must be an object"
+    assert reference_root == []
+    assert reference == reference_before
+    assert contract.validate_run_reference(reference) == reference
+
+    physical_reference = _physical_v2_reference()
+    physical_reference_before = deepcopy(physical_reference)
+    assert MonitorRunRef.from_value(physical_reference).to_dict() == physical_reference
+    assert contract.validate_run_reference(physical_reference) == physical_reference
+
+    v1_physical = deepcopy(physical_reference)
+    v1_physical["schema"] = "stm32-monitor-run-ref/1"
+    v1_physical["fixture_sha256"] = v1_physical.pop("source_record_sha256")
+    _redigest_public_reference(contract, v1_physical)
+    v1_before = deepcopy(v1_physical)
+    with pytest.raises(contract.ReplayContractError) as error:
+        contract.validate_run_reference(v1_physical)
+    assert type(error.value) is contract.ReplayContractError
+    assert str(error.value) == "monitor run reference execution source is invalid"
+    assert v1_physical == v1_before
+    assert physical_reference == physical_reference_before
+    assert contract.validate_run_reference(physical_reference) == physical_reference

@@ -34,8 +34,12 @@ from stm32_monitor.replay import (
     ingest_monitor_replay,
 )
 from stm32_toolkit.diagnostics import DiagnosticMarkerRef, SourceChangeDeclaration
-from stm32_toolkit.evidence import ArtifactRef, EvidenceEnvelope, EvidenceIdentity
-from stm32_toolkit.evidence.gc import get_root, plan_gc
+from stm32_toolkit.evidence import (
+    ArtifactRef,
+    EvidenceEnvelope,
+    EvidenceIdentity,
+)
+from stm32_toolkit.evidence.gc import RootRecord, get_root, plan_gc, put_root
 from stm32_toolkit.evidence.model import canonical_json_bytes
 from stm32_toolkit.evidence.store import EvidenceStore
 from stm32_toolkit.paths import WorkspacePaths
@@ -2755,3 +2759,106 @@ def test_awf_3e_rejects_target_test_runs_with_distinct_sessions(
     assert error.value.message == "Target TestRuns do not share a session"
     assert _data_tree(paths) == before_tree
     assert not (evidence.root / "roots" / "monitor-analysis-bundle").exists()
+
+
+@pytest.mark.parametrize(
+    ("variant", "expected_message"),
+    [
+        ("envelope", "replay reference envelope is inconsistent"),
+        ("artifact", "replay reference artifact is inconsistent"),
+        ("bytes", "replay reference artifact differs from its reference"),
+    ],
+)
+def test_public_reference_authority_refusal_restores_and_reuses_authentic_root(
+    tmp_path: Path, variant: str, expected_message: str
+) -> None:
+    paths = _paths(tmp_path)
+    evidence, before, after = _ingest_pair(paths)
+    declaration = _declaration(tmp_path, evidence, before, after)
+    initial_tree = _evidence_tree(evidence)
+    root = get_root(evidence, "monitor-run-ref", before.operation_id)
+    envelope = evidence.get_envelope(root.manifest_id)
+    artifact = envelope.artifacts[0]
+    root_path = next(
+        path
+        for path in (evidence.root / "roots" / "monitor-run-ref").glob("*.json")
+        if json.loads(path.read_bytes().decode("utf-8"))["root_id"]
+        == before.operation_id
+    )
+    original_root_bytes = root_path.read_bytes()
+    extra_object: Path | None = None
+
+    if variant == "envelope":
+        replacement = EvidenceEnvelope(
+            identity=envelope.identity,
+            operation="monitor-replay-reference-corrupted",
+            produced_at_utc=envelope.produced_at_utc,
+            parents=envelope.parents,
+            artifacts=envelope.artifacts,
+            metadata=dict(envelope.metadata),
+        )
+    elif variant == "artifact":
+        replacement_artifact = replace(
+            artifact, kind="wrong-reference-kind", media_type="text/plain"
+        )
+        replacement = EvidenceEnvelope(
+            identity=envelope.identity,
+            operation=envelope.operation,
+            produced_at_utc=envelope.produced_at_utc,
+            parents=envelope.parents,
+            artifacts=(replacement_artifact,),
+            metadata=dict(envelope.metadata),
+        )
+    else:
+        wrong_payload = tmp_path / "wrong-reference.json"
+        wrong_payload.write_bytes(b'{"schema":"wrong-reference"}\n')
+        replacement_artifact = evidence.ingest_file(
+            wrong_payload,
+            kind=artifact.kind,
+            media_type=artifact.media_type,
+        )
+        extra_object = evidence.root / replacement_artifact.relative_path
+        replacement = EvidenceEnvelope(
+            identity=envelope.identity,
+            operation=envelope.operation,
+            produced_at_utc=envelope.produced_at_utc,
+            parents=envelope.parents,
+            artifacts=(replacement_artifact,),
+            metadata=dict(envelope.metadata),
+        )
+
+    replacement_manifest = evidence.put_envelope(replacement)
+    replacement_root = RootRecord(
+        root.root_type,
+        root.root_id,
+        str(replacement.evidence_id),
+        dict(root.metadata),
+    )
+    root_path.unlink()
+    put_root(evidence, replacement_root)
+    before_refusal_tree = _evidence_tree(evidence)
+
+    with pytest.raises(AnalysisWorkflowError) as error:
+        _publish(paths, evidence, before, after, declaration)
+
+    assert error.value.code == EVIDENCE_INTEGRITY_FAILURE
+    assert error.value.message == expected_message
+    assert _evidence_tree(evidence) == before_refusal_tree
+    for root_type in ("monitor-analysis", "diagnostic-marker"):
+        directory = evidence.root / "roots" / root_type
+        assert not directory.exists() or not any(directory.glob("*.json"))
+
+    root_path.unlink()
+    root_path.write_bytes(original_root_bytes)
+    replacement_manifest.unlink()
+    if extra_object is not None:
+        extra_object.unlink()
+    assert _evidence_tree(evidence) == initial_tree
+
+    repaired = _publish(paths, EvidenceStore(evidence.root), before, after, declaration)
+    repeat_tree = _evidence_tree(evidence)
+    repeated = _publish(paths, EvidenceStore(evidence.root), before, after, declaration)
+    assert repaired.analysis_result.analysis_id
+    assert repaired.diagnostic_marker.marker_id
+    assert repeated == repaired
+    assert _evidence_tree(evidence) == repeat_tree
