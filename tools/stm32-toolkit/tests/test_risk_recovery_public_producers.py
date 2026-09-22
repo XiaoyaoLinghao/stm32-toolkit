@@ -3,8 +3,9 @@ from __future__ import annotations
 import hashlib
 import json
 import subprocess
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import UUID
 
@@ -469,6 +470,212 @@ def _revision_root(evidence: EvidenceStore, revision: int) -> tuple[Path, RootRe
         ):
             return path, get_root(evidence, "acceptance-attempt", root_id)
     raise AssertionError(f"missing acceptance root revision {revision}")
+
+
+def _shift_utc(value: str, seconds: int) -> str:
+    return (_parse_utc(value) + timedelta(seconds=seconds)).strftime(
+        "%Y-%m-%dT%H:%M:%S.%fZ"
+    )
+
+
+def _parse_utc(value: str) -> datetime:
+    return datetime.strptime(value, "%Y-%m-%dT%H:%M:%S.%fZ").replace(
+        tzinfo=timezone.utc
+    )
+
+
+def _install_attempt_variant(
+    evidence: EvidenceStore,
+    revision: int,
+    mutate: Callable[[dict[str, object], AcceptanceAttempt], None],
+) -> None:
+    root_path, root = _revision_root(evidence, revision)
+    original_envelope = evidence.get_envelope(root.manifest_id)
+    raw_attempt = _json_thaw(original_envelope.metadata["attempt"])
+    assert isinstance(raw_attempt, dict)
+    original_attempt = AcceptanceAttempt.from_value(raw_attempt)
+    payload = original_attempt.to_dict()
+    mutate(payload, original_attempt)
+    without_checkpoint = {
+        key: value for key, value in payload.items() if key != "checkpointId"
+    }
+    payload["checkpointId"] = hashlib.sha256(
+        canonical_json_bytes(without_checkpoint)
+    ).hexdigest()
+    mutated_attempt = AcceptanceAttempt.from_value(payload)
+    mutated_envelope = EvidenceEnvelope(
+        identity=original_envelope.identity,
+        operation=original_envelope.operation,
+        produced_at_utc=mutated_attempt.updated_at_utc,
+        parents=original_envelope.parents,
+        artifacts=original_envelope.artifacts,
+        metadata={
+            "attempt": mutated_attempt.to_dict(),
+            "attempt_sha256": mutated_attempt.checkpoint_id,
+        },
+    )
+    evidence.put_envelope(mutated_envelope)
+    root_path.unlink()
+    put_root(
+        evidence,
+        RootRecord(
+            root_type=root.root_type,
+            root_id=root.root_id,
+            manifest_id=str(mutated_envelope.evidence_id),
+            metadata={
+                **dict(root.metadata),
+                "attempt_sha256": mutated_attempt.checkpoint_id,
+            },
+        ),
+    )
+
+
+def _install_envelope_variant(
+    evidence: EvidenceStore,
+    revision: int,
+    mutate: Callable[[EvidenceEnvelope], EvidenceEnvelope],
+) -> None:
+    root_path, root = _revision_root(evidence, revision)
+    original_envelope = evidence.get_envelope(root.manifest_id)
+    mutated_envelope = mutate(original_envelope)
+    evidence.put_envelope(mutated_envelope)
+    root_path.unlink()
+    put_root(
+        evidence,
+        RootRecord(
+            root_type=root.root_type,
+            root_id=root.root_id,
+            manifest_id=str(mutated_envelope.evidence_id),
+            metadata=dict(root.metadata),
+        ),
+    )
+
+
+def _prepare_chain_prefix(
+    tmp_path: Path, *, latest_revision: int
+) -> tuple[_Prefix, EvidenceStore]:
+    prefix = _prepare_prefix(tmp_path, with_build=True)
+    context = prefix.context
+    started = begin_acceptance_attempt(
+        context,
+        attempt_id=ATTEMPT_ID,
+        scenario_id="legacy-keil-migration",
+        scenario_version="1",
+    )
+    assert _data(started)["attempt"]["revision"] == 0
+    stages = (
+        ("project-materialized", {}),
+        ("firmware-built-before", {}),
+        ("target-failure-replayed", {"test_run_id": FAILED_RUN_ID}),
+    )
+    for revision, (stage, kwargs) in enumerate(stages):
+        if revision >= latest_revision:
+            break
+        result = checkpoint_acceptance_attempt(
+            context,
+            attempt_id=ATTEMPT_ID,
+            expected_revision=revision,
+            stage=stage,
+            **kwargs,
+        )
+        assert result.ok is True, result.to_dict()
+    workspace = WorkspacePaths.from_roots(
+        prefix.data_root, prefix.project_root, PROJECT_ID, SESSION_ID
+    )
+    return prefix, EvidenceStore(workspace.workspace_root / "evidence")
+
+
+def _run_chain_integrity_variant(
+    prefix: _Prefix,
+    evidence: EvidenceStore,
+    install: Callable[[], None],
+    *,
+    expected_revision: int,
+    checkpoint_stage: str,
+    checkpoint_kwargs: Mapping[str, object],
+) -> None:
+    context = prefix.context
+    baseline_evidence = _file_snapshot(evidence.root)
+    baseline_persistence = _persistence_snapshot(
+        prefix.project_root, prefix.data_root
+    )
+    baseline_show = show_acceptance_attempt(context, attempt_id=ATTEMPT_ID)
+    baseline_resume = resume_acceptance_attempt(context, attempt_id=ATTEMPT_ID)
+    assert baseline_show.ok is True, baseline_show.to_dict()
+    assert baseline_resume.ok is True, baseline_resume.to_dict()
+    baseline_show_wire = _wire(baseline_show)
+    baseline_resume_wire = _wire(baseline_resume)
+    try:
+        install()
+        corrupted_evidence = _file_snapshot(evidence.root)
+        corrupted_persistence = _persistence_snapshot(
+            prefix.project_root, prefix.data_root
+        )
+        refused_begin = begin_acceptance_attempt(
+            context,
+            attempt_id=ATTEMPT_ID,
+            scenario_id="legacy-keil-migration",
+            scenario_version="1",
+        )
+        _assert_failure(
+            refused_begin,
+            "ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED",
+            operation="acceptance.attempt.begin",
+        )
+        assert _file_snapshot(evidence.root) == corrupted_evidence
+        assert _persistence_snapshot(prefix.project_root, prefix.data_root) == corrupted_persistence
+
+        refused_show = show_acceptance_attempt(context, attempt_id=ATTEMPT_ID)
+        _assert_failure(
+            refused_show,
+            "ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED",
+            operation="acceptance.attempt.show",
+        )
+        assert _file_snapshot(evidence.root) == corrupted_evidence
+        assert _persistence_snapshot(prefix.project_root, prefix.data_root) == corrupted_persistence
+
+        refused_resume = resume_acceptance_attempt(context, attempt_id=ATTEMPT_ID)
+        _assert_failure(
+            refused_resume,
+            "ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED",
+            operation="acceptance.attempt.resume",
+        )
+        assert _file_snapshot(evidence.root) == corrupted_evidence
+        assert _persistence_snapshot(prefix.project_root, prefix.data_root) == corrupted_persistence
+
+        refused_checkpoint = checkpoint_acceptance_attempt(
+            context,
+            attempt_id=ATTEMPT_ID,
+            expected_revision=expected_revision,
+            stage=checkpoint_stage,
+            **dict(checkpoint_kwargs),
+        )
+        _assert_failure(
+            refused_checkpoint,
+            "ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED",
+            operation="acceptance.attempt.checkpoint",
+        )
+        assert _file_snapshot(evidence.root) == corrupted_evidence
+        assert _persistence_snapshot(prefix.project_root, prefix.data_root) == corrupted_persistence
+    finally:
+        _restore_file_snapshot(evidence.root, baseline_evidence)
+    assert _file_snapshot(evidence.root) == baseline_evidence
+    assert _persistence_snapshot(prefix.project_root, prefix.data_root) == baseline_persistence
+
+    restored_checkpoint = checkpoint_acceptance_attempt(
+        context,
+        attempt_id=ATTEMPT_ID,
+        expected_revision=expected_revision,
+        stage=checkpoint_stage,
+        **dict(checkpoint_kwargs),
+    )
+    assert restored_checkpoint.ok is True, restored_checkpoint.to_dict()
+    restored_data = _data(restored_checkpoint)["attempt"]
+    assert isinstance(restored_data, Mapping)
+    assert restored_data["revision"] == expected_revision + 1
+    _restore_file_snapshot(evidence.root, baseline_evidence)
+    assert _wire(show_acceptance_attempt(context, attempt_id=ATTEMPT_ID)) == baseline_show_wire
+    assert _wire(resume_acceptance_attempt(context, attempt_id=ATTEMPT_ID)) == baseline_resume_wire
 
 
 def _public_source_change(
@@ -1596,3 +1803,221 @@ def test_wave11_public_persisted_evidence_refusal_restores_wire(tmp_path: Path) 
     restored_resume = resume_acceptance_attempt(context, attempt_id=ATTEMPT_ID)
     assert _wire(restored_show) == _wire(original_show)
     assert _wire(restored_resume) == _wire(original_resume)
+
+
+def test_wave11_public_chain_continuity_refusal_restores_wire(
+    tmp_path: Path,
+) -> None:
+    gap_prefix, gap_evidence = _prepare_chain_prefix(
+        tmp_path / "revision-gap", latest_revision=2
+    )
+
+    def install_revision_gap() -> None:
+        root_path, _ = _revision_root(gap_evidence, 1)
+        root_path.unlink()
+
+    _run_chain_integrity_variant(
+        gap_prefix,
+        gap_evidence,
+        install_revision_gap,
+        expected_revision=2,
+        checkpoint_stage="target-failure-replayed",
+        checkpoint_kwargs={"test_run_id": FAILED_RUN_ID},
+    )
+
+    prefix, evidence = _prepare_chain_prefix(
+        tmp_path / "revision-one-variants", latest_revision=1
+    )
+
+    def install_wrong_parents() -> None:
+        _install_envelope_variant(
+            evidence,
+            1,
+            lambda old: EvidenceEnvelope(
+                identity=old.identity,
+                operation=old.operation,
+                produced_at_utc=old.produced_at_utc,
+                parents=("f" * 64,),
+                artifacts=old.artifacts,
+                metadata=old.metadata,
+            ),
+        )
+
+    _run_chain_integrity_variant(
+        prefix,
+        evidence,
+        install_wrong_parents,
+        expected_revision=1,
+        checkpoint_stage="firmware-built-before",
+        checkpoint_kwargs={},
+    )
+
+    def install_wrong_produced_at() -> None:
+        _install_envelope_variant(
+            evidence,
+            1,
+            lambda old: EvidenceEnvelope(
+                identity=old.identity,
+                operation=old.operation,
+                produced_at_utc=_shift_utc(old.produced_at_utc, 1),
+                parents=old.parents,
+                artifacts=old.artifacts,
+                metadata=old.metadata,
+            ),
+        )
+
+    _run_chain_integrity_variant(
+        prefix,
+        evidence,
+        install_wrong_produced_at,
+        expected_revision=1,
+        checkpoint_stage="firmware-built-before",
+        checkpoint_kwargs={},
+    )
+
+    def install_wrong_deadline() -> None:
+        _install_attempt_variant(
+            evidence,
+            1,
+            lambda payload, attempt: payload.__setitem__(
+                "deadlineAtUtc", _shift_utc(str(attempt.deadline_at_utc), 1)
+            ),
+        )
+
+    _run_chain_integrity_variant(
+        prefix,
+        evidence,
+        install_wrong_deadline,
+        expected_revision=1,
+        checkpoint_stage="firmware-built-before",
+        checkpoint_kwargs={},
+    )
+
+    rev0_prefix, rev0_evidence = _prepare_chain_prefix(
+        tmp_path / "revision-zero-variant", latest_revision=0
+    )
+
+    def install_rev0_opened_at() -> None:
+        _install_attempt_variant(
+            rev0_evidence,
+            0,
+            lambda payload, attempt: payload.__setitem__(
+                "openedAtUtc", _shift_utc(attempt.opened_at_utc, -1)
+            ),
+        )
+
+    _run_chain_integrity_variant(
+        rev0_prefix,
+        rev0_evidence,
+        install_rev0_opened_at,
+        expected_revision=0,
+        checkpoint_stage="project-materialized",
+        checkpoint_kwargs={},
+    )
+
+    def install_rev1_opened_at() -> None:
+        _install_attempt_variant(
+            evidence,
+            1,
+            lambda payload, attempt: payload.__setitem__(
+                "openedAtUtc", _shift_utc(attempt.opened_at_utc, -1)
+            ),
+        )
+
+    _run_chain_integrity_variant(
+        prefix,
+        evidence,
+        install_rev1_opened_at,
+        expected_revision=1,
+        checkpoint_stage="firmware-built-before",
+        checkpoint_kwargs={},
+    )
+
+    def install_late_update() -> None:
+        _, previous_root = _revision_root(evidence, 0)
+        previous_envelope = evidence.get_envelope(previous_root.manifest_id)
+        previous_raw = _json_thaw(previous_envelope.metadata["attempt"])
+        assert isinstance(previous_raw, dict)
+        previous = AcceptanceAttempt.from_value(previous_raw)
+        assert previous.deadline_at_utc is not None
+
+        def mutate(payload: dict[str, object], attempt: AcceptanceAttempt) -> None:
+            assert attempt.deadline_at_utc is not None
+            previous_deadline = _parse_utc(previous.deadline_at_utc)
+            updated = previous_deadline + timedelta(seconds=1)
+            old_updated = _parse_utc(attempt.updated_at_utc)
+            old_deadline = _parse_utc(attempt.deadline_at_utc)
+            stage_timeout = old_deadline - old_updated
+            payload["updatedAtUtc"] = updated.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+            payload["deadlineAtUtc"] = (updated + stage_timeout).strftime(
+                "%Y-%m-%dT%H:%M:%S.%fZ"
+            )
+
+        _install_attempt_variant(evidence, 1, mutate)
+
+    _run_chain_integrity_variant(
+        prefix,
+        evidence,
+        install_late_update,
+        expected_revision=1,
+        checkpoint_stage="firmware-built-before",
+        checkpoint_kwargs={},
+    )
+
+
+def test_wave11_public_project_digest_continuity_refusal_restores_wire(
+    tmp_path: Path,
+) -> None:
+    digest_prefix, digest_evidence = _prepare_chain_prefix(
+        tmp_path / "revision-two-digest", latest_revision=2
+    )
+
+    def install_changed_project_digest() -> None:
+        def mutate(payload: dict[str, object], _: AcceptanceAttempt) -> None:
+            outputs = payload["stageOutputs"]
+            assert isinstance(outputs, dict)
+            current = outputs["projectModelDigest"]
+            outputs["projectModelDigest"] = (
+                "0" * 64 if current != "0" * 64 else "1" * 64
+            )
+
+        _install_attempt_variant(digest_evidence, 2, mutate)
+
+    _run_chain_integrity_variant(
+        digest_prefix,
+        digest_evidence,
+        install_changed_project_digest,
+        expected_revision=2,
+        checkpoint_stage="target-failure-replayed",
+        checkpoint_kwargs={"test_run_id": FAILED_RUN_ID},
+    )
+
+
+def test_wave11_public_source_change_intent_continuity_refusal_restores_wire(
+    tmp_path: Path,
+) -> None:
+    prefix, _ = _prepare_acceptance_reader_prefix(tmp_path / "full-tail")
+    workspace = WorkspacePaths.from_roots(
+        prefix.data_root, prefix.project_root, PROJECT_ID, SESSION_ID
+    )
+    evidence = EvidenceStore(workspace.workspace_root / "evidence")
+
+    def install_changed_authorization() -> None:
+        def mutate(payload: dict[str, object], _: AcceptanceAttempt) -> None:
+            authorization = payload["sourceChangeAuthorization"]
+            assert isinstance(authorization, dict)
+            current = authorization["actionDigest"]
+            authorization["actionDigest"] = (
+                "0" * 64 if current != "0" * 64 else "1" * 64
+            )
+
+        _install_attempt_variant(evidence, 6, mutate)
+
+    _run_chain_integrity_variant(
+        prefix,
+        evidence,
+        install_changed_authorization,
+        expected_revision=6,
+        checkpoint_stage="target-fix-verified",
+        checkpoint_kwargs={"acceptance_record_id": ATTEMPT_ID},
+    )
