@@ -340,7 +340,11 @@ def _open_verified_regular(path: Path, *, limit: int) -> tuple[BinaryIO, int, st
         raise ValueError("export artifact exceeds its limit")
     flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
     descriptor = os.open(path, flags)
-    snapshot = tempfile.TemporaryFile(mode="w+b")
+    try:
+        snapshot = tempfile.TemporaryFile(mode="w+b")
+    except BaseException:
+        os.close(descriptor)
+        raise
     try:
         opened = os.fstat(descriptor)
         if (

@@ -923,6 +923,7 @@ def test_open_download_allocation_failure_closes_input_and_recovers(
         original_open = exports_module.os.open
         original_temporary_file = exports_module.tempfile.TemporaryFile
         allocation_errors: list[OSError] = []
+        allocation_boundary_checks = 0
 
         def observing_open(path, flags, *args, **kwargs):
             nonlocal observed_descriptor
@@ -936,6 +937,19 @@ def test_open_download_allocation_failure_closes_input_and_recovers(
             return descriptor
 
         def failing_temporary_file(*args, **kwargs):
+            nonlocal allocation_boundary_checks
+            assert observed_descriptor is not None, (
+                "the artifact descriptor was not observed before allocation"
+            )
+            try:
+                os.fstat(observed_descriptor)
+            except OSError as error:
+                pytest.fail(
+                    "artifact descriptor was not live at the allocation boundary; "
+                    f"fstat={type(error).__name__}(errno={error.errno}, "
+                    f"winerror={getattr(error, 'winerror', None)})"
+                )
+            allocation_boundary_checks += 1
             options = dict(kwargs)
             options["dir"] = str(regular_file)
             try:
@@ -955,6 +969,7 @@ def test_open_download_allocation_failure_closes_input_and_recovers(
         assert failed.data is None
         assert allocation_errors, "the real TemporaryFile allocation did not fail"
         assert observed_descriptor is not None, "the artifact descriptor was not observed"
+        assert allocation_boundary_checks == 1
 
         try:
             try:
