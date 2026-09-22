@@ -1219,3 +1219,48 @@ All five mandatory risk families retain scoped accepted evidence, including
 the newly closed Windows public-authority conjunction; held optional variants
 remain unaccepted. Seven Windows-native checks still lack an authorized
 capable environment. Full release acceptance remains incomplete.
+
+
+### U50/U51: Replay retry recovery and public debug metadata
+
+Code head before this report isf32d16ca646ccc5a6f373d74b002e9829b2674fd.
+Replay implementation1961a50b integrates asb84cc1f2; debug5088b608 integrates
+asf32d16ca. Both complete diffs and actual results were independently accepted.
+Product55d and RC2c71b are unchanged, so accepted physical/build/install/Repair/
+rollback/security/Monitor-use results retain their previous scoped validity.
+
+Replay's five public valid-prefix provider exception/refusal/no-write/recovery
+cases pass in4.327seconds. U50 adds exactly5 replay.py branches, noToolkit.
+First run1 failed before pytest and receives no credit. Its reconstructed argv
+cannot establish the actual child argv explaining the observed ini-as-script
+operand; that historical uncertainty remains. Three run2 records copied a
+63-character test hash. CorrectionB0CA2E1F binds the actual64-character hash,
+clean1961Gitblob and source files; original records remain and no test reruns.
+Source/behavior reviewA04B3124 and native reviewC310B4CA accept this qualification.
+U50 accepted report5A27623B and admission092B9DA6 are retained as the explicit
+intermediate baseline; a separate canonical promotion was unnecessary.
+
+Debug's three public SVD/DWARF negative-file/refusal/restoration/item-isolation
+scenarios pass in3.668seconds. Actual coverage adds4Toolkit branches: dwarf
+700->701,896->897,906->907 and svd1025->1033. Five proposed SVD cluster targets
+remain unexecuted: count_expansions refuses the negative input first. Do not
+claim the deeper resolver paths or a direct no-file-read observation. Evidence
+DB4DE50A accepts the public behavior and original/combined7797-arc equality;
+Monitor was not imported and receives no new credit from this batch.
+
+U51 native reviewE5ECBB8D accepts exact126-file87654-arc Toolkit union, unchanged
+inputs/copies and U50 Monitor/UI. U51 admissionF7100AF875E1C69A0734D369F29C5CA31773B0A44CA50CF70541F7337AEBB582
+binds accepted report502A9444D89A591CCFEB0F7737C3F5D6AF32805A8775F4687BA9142100EE85EC.
+Frozen source membership/denominators and actual subprocess collection remain;
+148 source files are normalized-equal, with7 raw-equal/141 LF-CRLF variants.
+No source byte equality is inferred from normalized equality.
+
+Cumulative formal increment since U47 is16Toolkit/5Monitor. Toolkit overall
+11932/13592=87.7869% needs301 to90; risk11314/12918=87.5832% needs313 to90.
+These Toolkit gaps overlap. Monitor2739/2944=93.0367% needs58 to95. Original
+Toolkit95 deficit975 remains historical/unmet/nonblocking; currentlater95gap959.
+The suites did not overlap and provide no basis for raising the two-suite cap.
+Two low-yield groups now trigger the bounded existing-map reachability/cost
+reassessment; no further suite is released by this report. Seven Windows-native
+checks remain blocked by the absent authorized capability. Release acceptance
+and the goal are not complete, and no automatic95 optimization is initiated.
