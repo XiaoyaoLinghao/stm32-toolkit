@@ -1293,3 +1293,54 @@ Toolkit301 overall/313 core branches to90 (overlapping), Monitor58 core branches
 to95. These mandatory gaps leave releaseAccepted=false. A further coverage batch
 needs a distinct complete current-source scenario and a bounded design decision;
 the rejected authorizer chain is closed, not renamed into another attempt.
+
+### U52/U53: evidence identity and public Monitor cleanup recovery
+
+Code head before this report is b4a471cdcfd5a22ad7d6003f6a8cbdc511a51251.
+Evidence tests executed at d38d27c6 and integrate at1010b542; Monitor tests
+executed at5c7132ec and integrate atb4a471cd. Complete diffs and actual final
+behavior were independently accepted. Product55d/RC2c71b bytes and accepted
+physical/build/install/Repair/rollback/security/Monitor-use evidence remain.
+
+Evidence run2 closes three real post-open hard-link refusal/recovery scenarios:
+mutation lock, stored object and manifest. Each checks the exact refusal,
+immediate fd closure, unchanged managed bytes and same-operation recovery after
+alias removal. Independent reviewD8D388AC accepts the original1237-arc shard,
+148-source identity and actual execution. Run1 wrong-cwd collection failure
+remains excluded. U52 independently admitted4Toolkit branches. Its post-combine
+97-broad-versus108-overall assertion was REPORT-only: native data was retained
+and no native command/test reran to reconcile the report.
+
+Monitor run3 closes partial-start cleanup failure, repeated cancellation,
+first-cancellation precedence, sanitized error, same-start recovery and later
+authenticated start/stop. Real loopback sockets produced nine exact
+ConnectionRefusedError observations; Windows errno22/winerror1225 are diagnostic
+values, not the test contract. Run1 broad-OSError and stop-assisted-recovery
+limits remain; run2 stopped on an incorrect numeric assertion. The original
+review's older runtime targets were withdrawn in correction39205708: all five
+actual service targets were present. Final behavior reviewBD9A00F1 accepts
+run3 only. Its stale preparatory command status is qualified by actual launch,
+result, JUnit, PID and raw evidence. No new installed-package or physical PASS.
+
+U53 reviewC733E302 accepts exact native unions: Toolkit126files/87736arcs and
+Monitor126files/63277arcs, no missing/extra arcs or altered original inputs.
+The148 source rows include147 raw-equal files and one qualified sampler newline
+pair. Old nested source binding is retained as history and current binding
+points to the reviewed U53 manifest. Admission2449F3A8 binds canonical
+428CD7918C55AB5EFDEC6810BB8544E9FF63C407AF5F4706583F8C9CA969B3A4.
+
+Formal gain since U51 is4Toolkit/5Monitor; since U47 it is20Toolkit/10Monitor.
+Toolkit11936/13592=87.8164% needs297 to90; risk11318/12918=87.6142% needs309 to90,
+with overlapping gaps. Monitor2744/2944=93.2065% needs53 to95. Original Toolkit95
+gap975 remains historical/unmet/nonblocking; current later95 gap955 and broad-v1
+gap977 remain visible. No statistical scope or product behavior changed.
+
+The five actual invocations total41.0973585seconds with no actual suite overlap;
+final accepted runs take1.925seconds and21.375seconds. The first-to-last attempt
+window is28minutes20.015seconds, excluding earlier preparation and later review.
+Preparation/review dominates and both groups yield few branches. Close this
+batch and consolidate existing risk/reachability maps before another suite.
+Seven Windows-native checks still lack authorized capability. Release/goal
+remain incomplete. Cleanup of only new33e2/34m3 temporary directories was denied
+before process start:0deleted, no retry; the earlier eight denied roots and
+all original raw/failure evidence remain untouched.
