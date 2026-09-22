@@ -51,6 +51,13 @@ def _assert_protocol_error(code: str, message: str, function) -> None:
     assert caught.value.message == message
 
 
+def _assert_target_error(code: str, message: str, function) -> None:
+    with pytest.raises(target_module.TargetRunError) as caught:
+        function()
+    assert caught.value.code == code
+    assert caught.value.message == message
+
+
 def test_public_decoder_and_validator_reject_external_frames_without_mutation() -> None:
     payload = frozen_schema_payloads()[1]
     _assert_protocol_error(
@@ -144,7 +151,7 @@ def test_public_transport_facade_preserves_call_order_and_identity_boundary(
     transport = target_module.ProbeClientTargetTransport(
         client, MAILBOX_PROJECT_CONFIG, "mailbox"
     )
-    _assert_protocol_error(
+    _assert_target_error(
         "TEST_TRANSPORT_UNAVAILABLE",
         "Target transport is not open",
         transport.identity,
@@ -192,6 +199,10 @@ async def _make_v2_runner(
     workflow_calls: list[object] = []
 
     async def workflow(request: object) -> OperationResult[object]:
+        # GuardedTargetFlashAdapter is the public dependency seam.  The real
+        # runner still validates session/probe identity and post-flash identity;
+        # this callback records the public request and does not claim hardware
+        # or firmware validation.
         workflow_calls.append(request)
         return OperationResult.success("stm32_flash", {"status": "success"})
 
