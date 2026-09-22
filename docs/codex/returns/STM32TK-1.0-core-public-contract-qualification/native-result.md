@@ -1,6 +1,76 @@
 # Current native coverage result
 
-## Current RC3 package closure and U54 measurement
+## Current U55 result — 2026-09-23
+
+U55 is ACCEPTED_NATIVE_DATA. Test-only integration before this report is
+a72272f1509a8573cb09fca1f70156ec478191df; product97027818 and frozen RC3
+archive daa465df remain unchanged. Toolkit adds10 native branches, Monitor0.
+
+| Frozen scope | Covered / total | Ratio | Remaining release branches |
+| --- | ---: | ---: | ---: |
+| Toolkit overall |11946/13592|87.8899%|287 to90%|
+| Toolkit risk-core-v2 |11328/12918|87.6916%|299 to90%|
+| Monitor overall/risk |2744/2944|93.2065%|overall90 met;53 to95%risk|
+
+Toolkit gaps overlap. Original risk95 gap975 remains unmet historical and
+non-blocking; current later-quality95 gap945 and broad-v1 gap967 are retained.
+UI and frozen file membership/denominators/subprocess collection are unchanged.
+Since the user-approved U47 amendment, formal additions are30Toolkit/10Monitor.
+
+Recovery run4 passed only the two unfinished public scenarios in43.53seconds
+(45.1654seconds actual), using test head d06675a4 and exact test SHA
+FD8A222070CC85791C7FF1F4F704386EE2A47353A77C5C4D17C659E40DDE15A5.
+Digest/authorization corruption refused at begin/show/resume/checkpoint without
+durable writes; original evidence restoration recovered successful checkpoint
+progress and original public wires. Python21928, launcher27792 and parent26392
+terminated. The 126file/26624arc original raw is preserved as82C8C4222267E2C75140C894A772A7FC45AE77FD3CBB0B1AF6E872E7DD34E511.
+The earlier incorrectly reported test hash was corrected from actual Git blob
+and clean candidate bytes; no product/test change or rerun was made for it.
+
+Independent complete-diff/result review accepts the composition of seven
+completed run3 variants and two run4 variants. Run3's FAIL/JUnit/nativeCredit0
+remain unchanged. Its complete unfiltered raw receives explicitly limited
+measurement admission through the source/test semantic bridge in
+recovery-chain-continuity/primary-admission.json,
+4E37F7598F191B3B96F1AF058109E428D1E6EB4D82C0736CC7F991F478F481A8.
+No per-variant arcs were selected or manufactured. This is composed nine-variant
+behavior, never a single-run nine-variant PASS. The tenth measured arc787->788
+is the real parameter-shape rejection from run3's malformed request; it is not
+a tenth complete scenario or a product defect.
+
+The primary directly reused existing copy/combine/native-report functions;
+no adapter or test framework was added. Exclusive composition took8.594seconds.
+All four original raw inputs and neutral copies match; each126file raw union
+equals exactly its U54 baseline plus both complete new input shards. Toolkit
+has88199 raw arcs and Monitor63311; package reports preserve108/18files and
+frozen97/18broad and90/16risk membership. Product148source and64dependency
+bindings are unchanged;7raw-equal/141LF-CRLF equivalence remains explicit.
+
+Canonical SHA256:
+530C025623C16A1E25BF529744F37BF99AC05C169D9D17EF9F233C0183053293.
+Independent native review:
+B6F86412AB0771B739B6CD7428D445067A7485F3AF2E7386A43E73921B4A431A.
+Primary admission:
+30C42E2020CEBAAF283D915E3C6EF46D7B26C47D2BBF9AB2D3B06FA8A651CF24.
+The reviewed pre-admission candidate7A7BE7ED5ACDB6528CF5AD3D8C876BF574808E8D05BE91E1112EDD270E7EF830
+is retained separately. No actual suite overlapped release/native aggregation.
+
+RC3 package checks below and scoped historical RC2/physical evidence remain
+accepted. All five named critical-risk families retain their accepted evidence;
+U55 adds continuity protection without replacing those records. The separate
+Analysis publication supplement is still held. DiagnosticsStore's examined
+fixture relies on prohibited private identity seams and many inner guards are
+dominated by earlier reducer checks; no new Store suite is justified. Storage's
+conditional one-arc quick_check route lacks a deterministic existing fixture;
+it is not declared unreachable or excluded. The next bounded preparation is
+the existing Continuation public-entry/producer map, not more branch patches.
+
+Mandatory coverage deficits, seven Windows-native checks and final matrix
+reconciliation keep release1.0 NOT_ACCEPTED. Preparation/review time is separate
+from the53.7594seconds of this run plus native composition; no completion date
+is justified by this batch. No remote, hardware or system-permission action.
+
+## Retained RC3 package closure and U54 measurement
 
 Product97027818fcdfbadab902feba6ca30a3c1da2aa85 and frozen RC3 source archive
 daa465dff396e7d3cc63d20f630a03b633f795b4 are unchanged. The report/plan base
