@@ -63,16 +63,6 @@ def test_generic_v1_public_source_evidence_refusal_recovery(
     assert isinstance(started_attempt, Mapping)
     assert started_attempt["revision"] == 0
 
-    before = _persistence_snapshot(prefix.project_root, prefix.data_root)
-    idempotent = begin_acceptance_attempt(
-        context,
-        attempt_id=ATTEMPT_ID,
-        scenario_id="legacy-keil-migration",
-        scenario_version="1",
-    )
-    assert _wire(idempotent) == started_wire
-    assert _persistence_snapshot(prefix.project_root, prefix.data_root) == before
-
     source_path = prefix.project_root / "App" / "main.c"
     original_source = source_path.read_bytes()
     intent_source = b"int main(void) { return 2; }\r\n"
@@ -137,6 +127,27 @@ def test_generic_v1_public_source_evidence_refusal_recovery(
     diagnosed_attempt = _data(diagnosed)["attempt"]
     assert isinstance(diagnosed_attempt, Mapping)
     assert diagnosed_attempt["revision"] == 4
+
+    diagnosed_wire = _wire(diagnosed)
+    started_wire_data = started_wire["data"]
+    diagnosed_wire_data = diagnosed_wire["data"]
+    assert isinstance(started_wire_data, Mapping)
+    assert isinstance(diagnosed_wire_data, Mapping)
+    diagnosed_attempt_wire = diagnosed_wire_data["attempt"]
+    assert isinstance(diagnosed_attempt_wire, Mapping)
+    expected_idempotent_wire = dict(started_wire)
+    expected_idempotent_data = dict(started_wire_data)
+    expected_idempotent_data["attempt"] = diagnosed_attempt_wire
+    expected_idempotent_wire["data"] = expected_idempotent_data
+    before = _persistence_snapshot(prefix.project_root, prefix.data_root)
+    idempotent = begin_acceptance_attempt(
+        context,
+        attempt_id=ATTEMPT_ID,
+        scenario_id="legacy-keil-migration",
+        scenario_version="1",
+    )
+    assert _wire(idempotent) == expected_idempotent_wire
+    assert _persistence_snapshot(prefix.project_root, prefix.data_root) == before
 
     resumed = resume_acceptance_attempt(context, attempt_id=ATTEMPT_ID)
     action_digest = _data(resumed)["actionDigest"]
