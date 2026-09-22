@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import errno
 import hashlib
 import json
 import os
@@ -14,6 +15,7 @@ from uuid import UUID
 
 import pytest
 
+import stm32_monitor.exports as exports_module
 from stm32_monitor.exports import ExportRequest, HistoryExporter
 from stm32_monitor.history import HistoryPage, HistoryQuery, HistoryStore
 from stm32_monitor.models import (
@@ -895,6 +897,107 @@ def test_open_download_returns_verified_stream_without_path_or_token_leakage(
     finally:
         if download is not None:
             download.close()
+        exporter.close()
+        history.close()
+
+
+def test_open_download_allocation_failure_closes_input_and_recovers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = _paths(tmp_path)
+    history = HistoryStore(paths)
+    exporter = HistoryExporter(paths, history)
+    observed_descriptor: int | None = None
+    try:
+        _append(paths, history)
+        artifact = exporter.create_export(
+            ExportRequest("monitor-1", 0, 1_000, "jsonl"), authorized=True
+        ).data
+        assert artifact is not None
+        before_data = artifact.data_path.read_bytes()
+        before_manifest = artifact.manifest_path.read_bytes()
+
+        regular_file = tmp_path / "temporary-file-parent"
+        regular_file.write_bytes(b"not a directory")
+        original_open = exports_module.os.open
+        original_temporary_file = exports_module.tempfile.TemporaryFile
+        allocation_errors: list[OSError] = []
+
+        def observing_open(path, flags, *args, **kwargs):
+            nonlocal observed_descriptor
+            descriptor = original_open(path, flags, *args, **kwargs)
+            try:
+                observed_path = Path(path).resolve()
+            except (TypeError, ValueError, OSError):
+                observed_path = None
+            if observed_path == artifact.data_path.resolve():
+                observed_descriptor = descriptor
+            return descriptor
+
+        def failing_temporary_file(*args, **kwargs):
+            options = dict(kwargs)
+            options["dir"] = str(regular_file)
+            try:
+                return original_temporary_file(*args, **options)
+            except OSError as error:
+                allocation_errors.append(error)
+                raise
+
+        monkeypatch.setattr(exports_module.os, "open", observing_open)
+        monkeypatch.setattr(
+            exports_module.tempfile, "TemporaryFile", failing_temporary_file
+        )
+        failed = exporter.open_download(artifact.export_id)
+        assert not failed.ok
+        assert failed.code == "MONITOR_EXPORT_FAILED"
+        assert failed.message == "history export is unavailable"
+        assert failed.data is None
+        assert allocation_errors, "the real TemporaryFile allocation did not fail"
+        assert observed_descriptor is not None, "the artifact descriptor was not observed"
+
+        try:
+            try:
+                os.fstat(observed_descriptor)
+            except OSError as error:
+                fstat_error = error
+            else:
+                fstat_error = None
+            allocation = allocation_errors[0]
+            if fstat_error is None:
+                pytest.fail(
+                    "artifact descriptor remains open after TemporaryFile failure; "
+                    f"allocation={type(allocation).__name__}(errno={allocation.errno}, "
+                    f"winerror={getattr(allocation, 'winerror', None)})"
+                )
+            assert fstat_error.errno == errno.EBADF, (
+                "artifact descriptor returned an unexpected fstat error; "
+                f"fstat={type(fstat_error).__name__}(errno={fstat_error.errno}, "
+                f"winerror={getattr(fstat_error, 'winerror', None)}), "
+                f"allocation={type(allocation).__name__}(errno={allocation.errno}, "
+                f"winerror={getattr(allocation, 'winerror', None)})"
+            )
+        finally:
+            monkeypatch.undo()
+            recovered = exporter.open_download(artifact.export_id)
+            assert recovered.ok
+            assert recovered.data is not None
+            try:
+                body = b"".join(recovered.data.iter_chunks())
+                assert hashlib.sha256(body).hexdigest() == artifact.sha256
+                assert len(body) == artifact.byte_count
+            finally:
+                recovered.data.close()
+            assert artifact.data_path.read_bytes() == before_data
+            assert artifact.manifest_path.read_bytes() == before_manifest
+    finally:
+        if observed_descriptor is not None:
+            try:
+                os.fstat(observed_descriptor)
+            except OSError:
+                pass
+            else:
+                os.close(observed_descriptor)
         exporter.close()
         history.close()
 
