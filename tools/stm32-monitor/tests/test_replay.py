@@ -1728,6 +1728,123 @@ def test_reference_provider_failure_is_environment_error_without_history_mutatio
     assert first.run_ref_sha256 == get_root(evidence, "monitor-run-ref", operation).metadata["run_ref_sha256"]
 
 
+@pytest.mark.parametrize(
+    ("target", "failure", "expected_code", "expected_message"),
+    (
+        (
+            "reference",
+            "evidence-os",
+            "ENVIRONMENT_FAILURE",
+            "monitor run reference Evidence provider failed",
+        ),
+        (
+            "reference",
+            "generic-os",
+            "ENVIRONMENT_FAILURE",
+            "monitor run reference Evidence provider failed",
+        ),
+        (
+            "transcript",
+            "evidence-os",
+            "ENVIRONMENT_FAILURE",
+            "monitor run transcript Evidence provider failed",
+        ),
+        (
+            "transcript",
+            "evidence-no-os",
+            "EVIDENCE_INTEGRITY_FAILURE",
+            "monitor run transcript evidence is corrupt",
+        ),
+    ),
+    ids=(
+        "reference-wrapped-os",
+        "reference-generic-os",
+        "transcript-wrapped-os",
+        "transcript-integrity",
+    ),
+)
+def test_replay_retry_maps_wrapped_provider_failures_without_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    target: str,
+    failure: str,
+    expected_code: str,
+    expected_message: str,
+) -> None:
+    paths = _paths(tmp_path)
+    evidence = _evidence(paths)
+    operation = _operation("failed-before")
+    first = ingest_monitor_replay(paths, evidence, operation, _fixture("failed-before"))
+    before_batches = _history_batches(paths, RUN_IDS["failed-before"])
+    transcript_root_before = _root_path(evidence, "monitor-run").read_bytes()
+    reference_root_before = _root_path(evidence, "monitor-run-ref").read_bytes()
+    reference_root = get_root(evidence, "monitor-run-ref", operation)
+    original_get_envelope = evidence.get_envelope
+    target_id = (
+        reference_root.manifest_id
+        if target == "reference"
+        else first.transcript_evidence_id
+    )
+    calls: list[str] = []
+
+    def failing_get_envelope(evidence_id: str):
+        calls.append(evidence_id)
+        if evidence_id != target_id:
+            return original_get_envelope(evidence_id)
+        message = f"{target} provider unavailable"
+        if failure == "evidence-os":
+            try:
+                raise OSError(message)
+            except OSError as cause:
+                raise EvidenceValidationError(
+                    "EVIDENCE_CORRUPT", f"{target} provider rejected the read"
+                ) from cause
+        if failure == "generic-os":
+            try:
+                raise OSError(message)
+            except OSError as cause:
+                raise RuntimeError(f"{target} provider failed") from cause
+        raise EvidenceValidationError(
+            "EVIDENCE_CORRUPT", f"{target} provider rejected the read"
+        )
+
+    monkeypatch.setattr(evidence, "get_envelope", failing_get_envelope)
+    with pytest.raises(MonitorReplayError) as error:
+        ingest_monitor_replay(paths, evidence, operation, _fixture("failed-before"))
+
+    assert error.value.code == expected_code
+    assert error.value.message == expected_message
+    assert calls == (
+        [first.transcript_evidence_id, reference_root.manifest_id]
+        if target == "reference"
+        else [first.transcript_evidence_id]
+    )
+    cause = error.value.__cause__
+    if failure == "generic-os":
+        assert isinstance(cause, RuntimeError)
+        assert isinstance(cause.__cause__, OSError)
+        assert str(cause.__cause__) == "reference provider unavailable"
+    else:
+        assert isinstance(cause, EvidenceValidationError)
+        assert cause.code == "EVIDENCE_CORRUPT"
+        if failure == "evidence-os":
+            assert isinstance(cause.__cause__, OSError)
+            assert str(cause.__cause__) == f"{target} provider unavailable"
+        else:
+            assert cause.__cause__ is None
+    assert _history_batches(paths, RUN_IDS["failed-before"]) == before_batches
+    assert _root_path(evidence, "monitor-run").read_bytes() == transcript_root_before
+    assert _root_path(evidence, "monitor-run-ref").read_bytes() == reference_root_before
+
+    monkeypatch.setattr(evidence, "get_envelope", original_get_envelope)
+    assert ingest_monitor_replay(
+        paths, evidence, operation, _fixture("failed-before")
+    ) == first
+    assert _history_batches(paths, RUN_IDS["failed-before"]) == before_batches
+    assert _root_path(evidence, "monitor-run").read_bytes() == transcript_root_before
+    assert _root_path(evidence, "monitor-run-ref").read_bytes() == reference_root_before
+
+
 def test_missing_reference_manifest_is_integrity_failure_without_history_mutation(tmp_path: Path) -> None:
     paths = _paths(tmp_path)
     evidence = _evidence(paths)
@@ -1742,6 +1859,59 @@ def test_missing_reference_manifest_is_integrity_failure_without_history_mutatio
     assert error.value.code == "EVIDENCE_INTEGRITY_FAILURE"
     assert _history_batches(paths, RUN_IDS["failed-before"]) == before_batches
     assert first.run_ref_sha256 == ref_root.metadata["run_ref_sha256"]
+
+
+def test_replay_retry_missing_reference_root_maps_wrapped_ingest_failure_and_repairs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = _paths(tmp_path)
+    evidence = _evidence(paths)
+    operation = _operation("failed-before")
+    first = ingest_monitor_replay(paths, evidence, operation, _fixture("failed-before"))
+    before_batches = _history_batches(paths, RUN_IDS["failed-before"])
+    transcript_root_before = _root_path(evidence, "monitor-run").read_bytes()
+    reference_root_path = _root_path(evidence, "monitor-run-ref")
+    reference_root_before = reference_root_path.read_bytes()
+    reference_root_path.unlink()
+    original_ingest_file = evidence.ingest_file
+    calls: list[tuple[str, str, str]] = []
+
+    def failing_ingest_file(source: Path, *, kind: str, media_type: str):
+        calls.append((source.name, kind, media_type))
+        if kind == "monitor-run-ref":
+            try:
+                raise OSError("reference publication unavailable")
+            except OSError as cause:
+                raise EvidenceValidationError(
+                    "EVIDENCE_CORRUPT", "reference provider rejected publication"
+                ) from cause
+        return original_ingest_file(source, kind=kind, media_type=media_type)
+
+    monkeypatch.setattr(evidence, "ingest_file", failing_ingest_file)
+    with pytest.raises(MonitorReplayError) as error:
+        ingest_monitor_replay(paths, evidence, operation, _fixture("failed-before"))
+
+    assert error.value.code == "ENVIRONMENT_FAILURE"
+    assert error.value.message == "monitor run reference Evidence provider failed"
+    assert calls == [("run-ref.json", "monitor-run-ref", "application/json")]
+    cause = error.value.__cause__
+    assert isinstance(cause, EvidenceValidationError)
+    assert cause.code == "EVIDENCE_CORRUPT"
+    assert cause.message == "reference provider rejected publication"
+    assert isinstance(cause.__cause__, OSError)
+    assert str(cause.__cause__) == "reference publication unavailable"
+    assert _history_batches(paths, RUN_IDS["failed-before"]) == before_batches
+    assert _root_path(evidence, "monitor-run").read_bytes() == transcript_root_before
+    assert not tuple((evidence.root / "roots" / "monitor-run-ref").glob("*.json"))
+
+    monkeypatch.setattr(evidence, "ingest_file", original_ingest_file)
+    assert ingest_monitor_replay(
+        paths, evidence, operation, _fixture("failed-before")
+    ) == first
+    assert _history_batches(paths, RUN_IDS["failed-before"]) == before_batches
+    assert _root_path(evidence, "monitor-run").read_bytes() == transcript_root_before
+    assert _root_path(evidence, "monitor-run-ref").read_bytes() == reference_root_before
 
 
 @pytest.mark.parametrize("failure_point", ("envelope", "artifact"))
