@@ -1,6 +1,73 @@
 # Current native coverage result
 
-## Current Continuation batch disposition — 2026-09-23
+## Current U56 result — 2026-09-23
+
+U56 is ACCEPTED_NATIVE_DATA after an independent data review and a report-only
+provenance correction. Accepted test base667bbb1c515ee9f5c5fa1b15cd3a952244f569da,
+executed head5a5a17f9686219a81cb6f3fffb7eed6fccbe860b, and exact test integration
+3a7d57d9e977f2dbc25750cd46796f9f6210586a are distinct from unchanged product
+97027818fcdfbadab902feba6ca30a3c1da2aa85 and frozen RC3 daa465df.
+
+Current readers authenticate the genuine archived VS10-A public graph, refuse
+wrong caller/plan/evidence identities and copied Diagnostic/Monitor root
+corruption without writes, and recover successful reads after exact byte
+restoration. Original174files/2512425bytes remain unchanged. This qualifies
+public reader behavior on historical data, not a new physical execution or the
+held from-scratch Continuation producer/bind/checkpoint family.
+
+| Frozen scope | Covered / total | Ratio | Remaining release branches |
+| --- | ---: | ---: | ---: |
+| Toolkit overall |11953/13592|87.9414%|280 to90%|
+| Toolkit risk-core-v2 |11335/12918|87.7458%|292 to90%|
+| Monitor overall/risk |2744/2944|93.2065%|overall90 met;53 to95%risk|
+
+Toolkit adds7 native branches, all in continuation.py; Monitor adds0. Toolkit
+release gaps overlap. Original risk95 deficit975 remains historical UNMET;
+current later-quality95 gap938 and broad-v1 gap960 remain nonblocking. Since
+the user-approved U47 amendment the formal gain is37Toolkit/10Monitor. All
+frozen scope, UI, dependency and relevant-subprocess requirements remain.
+
+Run1's TEST_ORACLE failure and missing JUnit are retained and excluded from
+U56. Product prepare returned successfully; the test used the wrong tuple
+member. Same-owner explicit six-value unpack and actual JUnit argv were
+independently reviewed before run2 passed both selected scenarios. Actual
+native time was7.7931+16.8812seconds, with no suite overlap. Serial native
+composition took7.406seconds. The plan667 commit to primary admission window
+was51minutes59.630seconds, including preparation/review/integration, not
+exclusive labor. This low yield does not justify a completion date or a finite
+remaining batch count; public reachability and Windows capability are still
+unresolved costs.
+
+U56 uses only U55 plus the complete passing run2 shard, without purge/filtering.
+Both126-file raw unions are exact (88214 Toolkit-side and63332 Monitor-side
+arcs); package JSON retains108/18files and90/16risk membership. The148 source
+rows are normalized-identical;147 are raw-identical and sampler.py has the
+known newline-only pair. No product or package changed. Four stale report
+identity fields were moved to explicit history and current fields bound toU56;
+raw data, metrics and scope did not change or rerun.
+
+Canonical SHA256 C5B7332AAEF1D88FDD0C4C30C56F5C41854037BB13D7DBA97BE119970856DD49;
+independent review77313D5DDD9DDD918AC230ED177F01C077D12D0A067763F143B0CA4BC7B601CF;
+primary admission12FC42A247B1430C866F8C4462709029E09DA39FB4460EDB3844D2C6E8E70EFC.
+Evidence is r10/e/risk-v2/union56; the original pre-correction candidate,
+review, run1 failure and run2 raw remain retained.
+
+Monitor's original project/context does still exist and naturally reproduces
+its historical workspace identity. That removes a context uncertainty, but
+its completed consumer assessment proves only one new ref-mismatch branch;
+no low-yield standalone suite or old publication-fault retry is released.
+The next fixed boundary is one15-minute existing-owner read-only assessment
+of grouped public Recovery show/resume readers using that real context and
+archive, with no copy, product execution, authority rewrite or new framework.
+Return exact guards/inputs/net candidates or NO-GO before any new test.
+
+All five critical-risk families and accepted RC3/RC2-scoped installation,
+Repair, rollback, Monitor-use, VS10-A/B and attempt7 evidence are retained.
+Coverage deficits, seven Windows-native checks in an authorized capable
+environment and final matrix reconciliation still prevent1.0 acceptance.
+
+
+## Retained preceding Continuation producer failure — 2026-09-23
 
 This batch adds no accepted behavior or native branches. Product97027818,
 frozen RC3 daa465df and accepted U55 remain unchanged. Unaccepted test candidate
@@ -46,7 +113,7 @@ Monitor route also requires an existing DWARF-bearing fixture; minimal-gcc has
 none, while SVD may remain absent for a variable-only observation. These are
 unresolved test-input dependencies, not accepted flows or product defects.
 
-## Retained current U55 result — 2026-09-23
+## Retained U55 result — 2026-09-23
 
 U55 is ACCEPTED_NATIVE_DATA. Test-only integration before this report is
 a72272f1509a8573cb09fca1f70156ec478191df; product97027818 and frozen RC3
