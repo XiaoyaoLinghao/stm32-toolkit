@@ -1,5 +1,17 @@
 # Risk-layered qualification implementation plan
 
+Current2026-09-22 user-approved policy supersedes conflicting historical gate
+wording below: Toolkit overall90 and unchanged risk-core-v2 90 are release
+floors; Toolkit95 is later quality work, not part of this acceptance continuation.
+Monitor overall90/core95, UI, seven Windows checks and every package/physical
+gate remain unchanged. Preserve all accepted results and former95% deficits.
+Prioritize the existing specification's five critical behavior families, then
+grouped remaining coverage; a percentage cannot waive a missing required
+assertion. Stop this effort after all amended release gates pass, without
+automatically starting95 optimization. Use the current local-release plan and
+ledger for source/data identity and active owners; the original waves below are
+retained history, not authorization to rerun them.
+
 Accepted base: `4bb612beabfdaf1ab4c845b966061832add38482`.
 Specification: [risk-layered qualification v2](../../superpowers/specs/2026-09-20-stm32tk-risk-layered-qualification.md).
 Primary owns dispatch/integration, shared test configuration, evidence aggregation
@@ -160,7 +172,9 @@ Diagnostic authority transitions, project/probe failure settlement, and Monitor
 replay/history/analysis boundaries. Reuse accepted assertions before selecting
 additional valid cases. Preserve constructor-inaccessible residual branches as
 visible gaps; do not manufacture impossible objects to reach them. Overall 90%
-and frozen risk-core 95% are evaluated independently after each complete wave.
+and frozen risk-core 95% were evaluated independently under this wave's original
+policy. That Toolkit 95% release floor is superseded by the user-approved
+2026-09-22 amendment above; retain the original unmet results as history.
 
 ## Second wave: owned creation-transaction failure settlement
 
@@ -1794,6 +1808,10 @@ their redirector-only resource records do not justify increasing concurrency.
 
 ## User-directed release flow: converge, freeze, qualify the real bundle
 
+Historical 2026-09-21 policy: the subsequent 2026-09-22 amendment above changes
+only Toolkit's risk-core-v2 release floor to 90%; all other requirements below
+remain applicable.
+
 The 2026-09-21 user instruction changes execution method only. The full1.0 goal,
 90% native overall/95% frozen risk-core-v2 targets for each Python package,
 broad-core-v1/UI views, seven native Windows checks, two reproducible builds and
@@ -3257,7 +3275,7 @@ The Monitor coverage owner next gets one20-minute read-only window on the existi
 
 The third line retains the prepared seven current-RC2 Windows native selectors. This host has no enabled Developer Mode, no SeCreateSymbolicLinkPrivilege and only a Medium token. Execution needs an already authorized supported Windows environment with the required capability; no elevation or persistent system change is authorized. Its exit is7 PASS,0 skipped,0 failed, with bound source/environment evidence. Fixture substitutes cannot close this native gate.
 
-Keep the same owners and max2 actual suites. The current S18/Target intervals did not overlap; preparation/review parallelism is not relabelled as concurrent execution or evidence for a larger suite limit. Formal aggregation, ledgers, exclusive performance, build/deploy and one probe remain serial. The release still needs both overall90 and frozen risk-v2 95, seven native checks and final matrix reconciliation. Broad-v1/UI and all still-applicable accepted physical/package/install/Repair/rollback/security evidence remain visible. No remote operation or denied cleanup retry is authorized.
+Keep the same owners and max2 actual suites. The current S18/Target intervals did not overlap; preparation/review parallelism is not relabelled as concurrent execution or evidence for a larger suite limit. Formal aggregation, ledgers, exclusive performance, build/deploy and one probe remain serial. This historical checkpoint required both overall90 and frozen risk-v2 95; the subsequent 2026-09-22 amendment supersedes only Toolkit's core release floor with90. Seven native checks and final matrix reconciliation remain required. Broad-v1/UI and all still-applicable accepted physical/package/install/Repair/rollback/security evidence remain visible. No remote operation or denied cleanup retry is authorized.
 ### Next bounded batch after U42 input acceptance
 
 Accepted test base5ef06370d2895bd4d8d2bafc6cc922d59c8ba98c; product55d and RC2c71b remain frozen. The same Monitor Luna/max owner owns only tools/stm32-monitor/tests/test_risk_runtime_service_cleanup_public.py in the clean r10/w20m worktree, branch codex/STM32TK-1.0-monitor-runtime-release-boundaries. Reuse the existing public lock-contention test and public constructors/factories. Fixed scenarios are same-workspace lock contention until owner stop, independent dependency close failure plus a real owned runtime_record directory obstruction followed by external repair/fresh-instance reuse, and invalid-length public token factory partial-start failure followed by real resource cleanup/fresh valid service reuse. Preserve actual error semantics and establish the actual listener phase rather than assuming it. Expected at most5 tuples: runtime223->225,225->226,1297->1299; service371->376,390->392. Existing zero-gain cancellation evidence is retained without rerun. Do not change product code, private state, guards, identity semantics, shared fixtures or another owner's files.

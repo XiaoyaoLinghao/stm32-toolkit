@@ -1,5 +1,15 @@
 # Core branch coverage quality target
 
+Current release-policy amendment, explicitly approved by the user on2026-09-22:
+Toolkit overall and the existing frozen risk-core-v2 both require90%; Toolkit
+risk-core-v2 95 is a later non-blocking quality goal. Monitor overall90/core95,
+UI and all other release requirements are unchanged. The authoritative v2 scope
+and mandatory behavior assertions remain in
+`2026-09-20-stm32tk-risk-layered-qualification.md`. Preserve this document's
+original broad-core-v1 statistics/95-target history and every original unmet
+record; do not reinterpret them as PASS or change file membership. The dated
+original direction below remains history where it differs from this amendment.
+
 The user's 2026-09-19 direction adds a preferred core branch-coverage target of
 at least 95%, while preserving the mandatory package release floor of 90%.
 This is a measurement and prioritization change, not a product behavior change.
@@ -85,7 +95,10 @@ also at 95%.
 ## Metrics and evidence
 
 - Evaluate each Python package separately. The overall native branch ratio
-  must be at least 0.90; the same package's frozen core subset targets 0.95.
+  must be at least0.90. The current1.0 risk-core-v2 floor is0.90 for Toolkit and
+  0.95 for Monitor. Toolkit's former0.95 floor remains an unmet or reached
+  historical/later-quality measure, never a current release blocker. The
+  broad-core-v1 view remains separate and unchanged.
 - Compute each ratio as sum(covered_branches) / sum(num_branches), using native
   coverage data. Do not average file percentages or substitute the combined
   line-and-branch percent. Report statement coverage as a separate statistic.

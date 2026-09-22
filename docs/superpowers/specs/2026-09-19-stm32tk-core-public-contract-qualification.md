@@ -53,7 +53,11 @@ introduced mutable state across owners.
 
 The core scope and native branch metric remain exactly those in
 `2026-09-19-stm32tk-core-coverage-quality-target.md`. Overall Python package
-coverage must reach 90%; core coverage targets 95%. UI retains its independent
+coverage must reach90%. Under the explicit2026-09-22 user amendment, Toolkit's
+existing risk-core-v2 release floor is90%, while Monitor's remains95%; Toolkit95
+is a later non-blocking quality target. Scope, subprocess collection and critical
+behavior assertions are unchanged; old95% deficits remain historical unmet
+records. UI retains its independent
 784/810 branch result. Never pool Python/UI denominators or narrow core after
 seeing the score.
 

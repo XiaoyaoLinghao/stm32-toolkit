@@ -1011,3 +1011,82 @@ Formal increments are12 Toolkit branches in monitor_replay_contract.py and4 Moni
 The read-only Recovery audit's initial blanket exclusion of run-owned negative persisted inputs was incorrect: public models, exact refusal/no-write and authentic restoration are allowed; no private guard replacement was found. Existing recoveryPublicRun1 remains BEHAVIOR_RETAINED_MEASUREMENT_VERIFIED_NO_NEW_BRANCH_YIELD. A historical Git label or stale expected registry hash alone does not invalidate the already-qualified actual current source. No recovery rerun follows this audit correction.
 
 After two low-yield batches, the next action is a bounded existing-inventory reachability/cost decision, not another isolated branch patch. Recent observed Toolkit rates mechanically suggest27-82hours for the current deficit if reachable supply and rates persisted; this conditional illustration excludes Monitor and Windows and establishes no release deadline or finite upper bound. The seven Windows checks remain capability-blocked; all unaffected real-package/physical evidence is retained. No remote mutation, hardware operation or denied cleanup occurred. The active1.0 goal and final acceptance remain unfinished.
+
+### 2026-09-22 user-approved Toolkit core threshold amendment
+
+The user explicitly changed only the Toolkit risk-core-v2 release floor from
+95% to 90%. Toolkit overall remains 90%; Monitor remains overall 90% and core
+95%. Toolkit core 95% is later, non-blocking quality work. It remains unmet,
+and this amendment is not a PASS against the former standard. Once all amended
+release requirements pass, stop this acceptance effort without starting that
+later optimization. UI, Windows seven, all package/physical requirements,
+scope membership, denominators, native method and subprocess collection remain
+unchanged. No product or test change, test execution or aggregation is caused
+by this policy/report update; formally added branches: Toolkit 0, Monitor 0.
+
+The unchanged accepted U47 measurement is
+`e/risk-v2/union47/core-coverage-accepted.json`, SHA256
+B9B22F4E060E62FC7C7A3DAE146A4E0C603532C969193C06C99EE0C938003253.
+Its policy-only derived current report has SHA256
+B39E3ADC2E23F27CD657B21E3DC5EA4F3E5C2E9727455C59A35DC7584C80C382.
+The amendment and original snapshot are retained under
+`e/risk-v2/union47/user-toolkit-core90-20260922/`. All original raw/native,
+immutable U47 admission and broad-core-v1 history remain intact.
+
+| Current measure | Accepted branches | Current release gap |
+| --- | ---: | ---: |
+| Toolkit overall | 11916/13592 = 87.6692% | 317 to 90% |
+| Toolkit frozen risk-core-v2 | 11298/12918 = 87.4594% | 329 to 90% |
+| Monitor overall/risk-core-v2 | 2734/2944 = 92.8668% | overall met; 63 to core 95% |
+
+The Toolkit gaps overlap and must not be added. Its original risk-core-v2
+95% deficit of 975 remains historical and non-blocking. No current release
+deadline is inferred from earlier cost illustrations for that larger deficit.
+
+Critical behavior evidence is reconciled separately from percentages:
+
+- Execution refusal: retain accepted Target/Recovery authorization, expiry,
+  identity and dispatch-refusal evidence plus RC2 security refusals. An
+  additional RC2-specific expiry combination is not a frozen requirement and
+  is not added as a new blocker.
+- Recovery integrity: retain accepted repeated-request, revision-conflict,
+  corrupt-evidence refusal and no-new-root evidence. The pending Acceptance
+  public-root group strengthens refusal/restoration across upstream records;
+  preparation alone supplies no additional behavioral or coverage credit.
+- Resource release: retain existing timeout/cancellation/Observation lifecycle
+  and actual installed Monitor stop/reuse evidence. The Windows path-based
+  probe lease refusal/cleanup/reacquire evidence mapping is still to be
+  reconciled; a historical POSIX-descriptor deferral alone does not prove a
+  current Windows behavioral gap. Do not automatically add a new test from
+  that label. The seven frozen Windows-native checks remain environment-blocked.
+- Rollback and user files: retain the actual RC2 post-promotion state-publication
+  failure and restoration PASS. The independent rollback review confirms all
+  5778 baseline files, generation 1, project bytes, residue and public Check.
+  State replacement itself was refused; post-success state corruption is not
+  claimed or newly required by this amendment.
+- Evidence identity and complete publication: retain U47 reference-integrity,
+  accepted Replay publication and real-package identity results. U47 Monitor
+  publication-fault recovery remains unaccepted: its assertions stopped at a
+  WAL/SHM file-count oracle, before later root/recovery/idempotence assertions.
+  Preserve both failures and the hold after two fixture/oracle failures; no
+  third local patch/run is authorized by this amendment.
+
+The next existing batch retains `/root/finalization_binding_impl` and
+`/root/union30_native_review`, isolated `r10/w29a`, temp
+`D:\codex-tmp\29a1` and `risk-v2/acceptance-existing-public/run1`. It uses the
+six unchanged public Acceptance selectors already specified in the release
+plan: exact root/upstream refusal, no unintended publication, and the existing
+matrix's authentic byte restoration plus identical reread. Preparation budget
+10 minutes, one first-error-stopping run capped at 600 seconds; expected 3-11
+new branches is a reachability estimate, not credit. Preserve actual child raw
+data and assess behavior separately from measurement. Missing source binding,
+unexpected first failure, missing raw or timeout stops for classification; the
+alternative is a bounded review of that exact public guard, not another held
+Reader/publication-fault retry. No run is claimed here.
+
+All accepted RC2 and physical results remain valid within their original scope.
+Final acceptance remains pending. The effective goal in the plan and ledger
+uses these amended floors. The current Goal backend still exposes the old
+paused objective; available tools cannot edit its text or resume it. This
+synchronization limitation does not change the user's instruction to continue
+local work, and no false completion or replacement goal is recorded.

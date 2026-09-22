@@ -26,10 +26,23 @@ or reopening unchanged accepted hardware and UI checks.
 ## Gates and scope
 
 Each Python package retains its complete native branch denominator and mandatory
-90% floor. Risk-core v2 has a separate 95% floor per package. The v1 broad-core
+90% floor. By the user's explicit 2026-09-22 amendment, Toolkit's existing
+risk-core-v2 release floor is 90%; Monitor's remains 95%. Toolkit core95 is a
+later quality-improvement target and does not block this1.0 release. This is an
+approved acceptance-standard change, not evidence that the former95% gate passed.
+Keep the original unmet95% records, all v2 file membership/denominators, native
+measurement and relevant subprocess collection unchanged. The v1 broad-core
 statistics remain visible under their original name and disposition; a new v2
 score does not turn an old unmet v1 target into a PASS. No invented per-file
 minimum is added. Critical behavior assertions below are independently required.
+
+This amendment changes no Monitor, UI, native Windows, package, physical,
+authorization or permission requirement. Preserve accepted RC2 build/install/
+Repair/rollback/Monitor-use/physical evidence within its recorded scope. Once
+both Toolkit90 floors, Monitor's unchanged floors, these critical assertions and
+every remaining release gate pass, end this acceptance effort. Do not
+automatically continue into Toolkit95 optimization. Recalculate existing accepted
+data only; a threshold/report change does not trigger tests or product edits.
 
 Select whole files by risk ownership, before calculating the v2 percentage.
 Mixed files stay whole. Do not select individual favorable branches, remove
