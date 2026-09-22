@@ -93,12 +93,26 @@ def _install_real_open_alias(
 
     def open_with_alias(*args, **kwargs):
         descriptor = real_open(*args, **kwargs)
-        opened_path = Path(args[0]).resolve()
-        if not state["injected"] and opened_path == resolved_target:
-            os.link(target, alias)
-            state["descriptor"] = descriptor
-            state["injected"] = True
-            state["opened_links"] = target.stat().st_nlink
+        alias_created = False
+        try:
+            opened_path = Path(args[0]).resolve()
+            if not state["injected"] and opened_path == resolved_target:
+                os.link(target, alias)
+                alias_created = True
+                state["descriptor"] = descriptor
+                state["injected"] = True
+                state["opened_links"] = target.stat().st_nlink
+        except BaseException:
+            if alias_created:
+                try:
+                    alias.unlink()
+                except OSError:
+                    pass
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+            raise
         return descriptor
 
     monkeypatch.setattr(store_module.os, "open", open_with_alias)
