@@ -1090,3 +1090,55 @@ uses these amended floors. The current Goal backend still exposes the old
 paused objective; available tools cannot edit its text or resume it. This
 synchronization limitation does not change the user's instruction to continue
 local work, and no false completion or replacement goal is recorded.
+
+### U48: public Acceptance evidence refusal and restoration
+
+Code head before this report is b852ed2fd66c6d3fb5e5117f4ef9b2ca127db9d2.
+The unchanged public Acceptance selectors ran once at ae40d0f5: corrupt,
+missing, misbound, unresolved and nonpassing upstream evidence is refused with
+the specified result and no unintended writes. The corruption matrix restores
+authentic bytes and obtains the same public reread. All seven cases passed;
+elapsed native invocation was 156.266 seconds. This is offline behavior, not
+new hardware evidence. No product or existing test file changed.
+
+Actual coverage Python PID11632 is bound to the retained original shard
+894D5BA93A8B8FFB6EC97DE15134151AC27F31041A4BBE05022AF7AE71DADDEC.
+The venv redirector PID9436 was later reused and is not a surviving test child.
+All 148 source files match the accepted-base Git bytes, and match current
+integration after LF/CRLF normalization; 141 pairs differ in raw bytes. The
+original raw and combined data have equal 24565-arc sets. Existing mature
+native functions combined the unchanged U47 inputs and whole original shard
+in 8.375 seconds, with no test rerun or raw filtering.
+
+Independent review ED982357AF469CB78C89C47C7C4917F6A061FEE8AC5147FC39AA73AB51E4E887
+accepts manifest CDEF247A5C18008B33081094AE2F805219766BBF11CDAD87FFEE7345F449AA01
+and aggregation D051CA83EF496063942B7CA08174A2EDCCCEA967000134A7BE4D28C2C873AE99.
+Primary admission 2DFA7F9646390F757347CE69AD290CB3886E99F6DE3F11EAC403F275CCAB8B3E
+binds the exact 126-file unions (87582/63230 arcs), unchanged inputs/copies,
+source representation and user-approved policy. Accepted report SHA256 is
+7C0186CD156934ADE17010CD3C9D65C68C72F023909FCCA5275515983D873862.
+
+Formal increment is Toolkit 11, Monitor 0. All new branches are in
+acceptance/workflows.py: 190->191,195->197,226->227,226->234,227->228,228->230,
+248->249,249->250,423->424,451->458,527->529. Toolkit overall11927/13592
+(87.7501%) needs306 to90; risk-v2 11309/12918 (87.5445%) needs318 to90.
+Monitor2734/2944 still needs63 to95. Original Toolkit95 unmet history975,
+current later-quality gap964, broad-v1, UI and all denominators are retained.
+
+Independent scoped review also permits reuse of the named accepted baseline
+analysis assertions in analysis-evidence-integrity/accepted-baseline-reuse.json
+(97B9F88D): artifact-failure refusal and retry, partial marker repair/reload/
+idempotence, and conflicting-root no-write refusal. Relevant production bytes
+and exercised helper behavior remain applicable. This adds zero coverage and
+does not close the separate held U47 root.after_publish fault variants.
+
+The Windows public-authority supplement remains independently pending at this
+checkpoint. Its first generated-launcher attempt failed before pytest; the
+same owner switched to the proven direct entry, preserving that failure.
+The separate seven Windows-native checks remain capability-blocked. A bounded
+creation/import failure audit found the proposed rollback/user-file scenarios
+already covered, so no duplicate supplement is released. Product55d, RC2c71b
+and all unaffected physical/package/build/install/Repair/rollback/security/use
+results remain accepted within scope. The Goal backend is now active; its old
+objective text does not supersede the explicit Toolkit90 policy amendment.
+Final acceptance remains incomplete.
