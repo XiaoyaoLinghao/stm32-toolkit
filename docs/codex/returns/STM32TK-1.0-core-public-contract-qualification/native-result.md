@@ -1344,3 +1344,71 @@ Seven Windows-native checks still lack authorized capability. Release/goal
 remain incomplete. Cleanup of only new33e2/34m3 temporary directories was denied
 before process start:0deleted, no retry; the earlier eight denied roots and
 all original raw/failure evidence remain untouched.
+# U54: export allocation resource defect closed; source-matched replacement
+
+Accepted slice base: `bc7ce44c43a23430bc01bd2068416a61bc2b3cc0`.
+Executed product/test head: `66392f60c5aa8dd61dd6fb5155ce9c1aa853b185`.
+Integrated product head before this report:
+`97027818fcdfbadab902feba6ca30a3c1da2aa85`.
+The same Luna/max Monitor owner implemented the correction; the retained
+independent reviewer accepted the complete base-to-head diff and actual run.
+Primary owns integration, native composition and admission. No remote action.
+
+The real `os.open` input descriptor used to remain live when the following
+`TemporaryFile` allocation failed before the existing cleanup region. The
+public API already returned `MONITOR_EXPORT_FAILED`, so the error code alone
+did not reveal the leak. The retained RED proves the live descriptor through
+real `fstat`; its explicit test cleanup is not production settlement.
+The bounded product correction now closes that descriptor before re-raising
+allocation failures. Existing identity/digest/size checks, allocated-snapshot
+cleanup, public error and successful caller ownership remain unchanged.
+
+The strengthened regression binds the live descriptor at the allocation
+boundary, asserts immediate `EBADF` before recovery opens, then proves the
+same artifact downloads with unchanged data/manifest bytes and digest. Complete
+export and selected public HTTP/runtime regressions passed without skips:
+green1 PID416, exit0,58.141462seconds. Source binding retains148 rows and
+separate LF/CRLF hashes; no extra product Python worker was exercised or claimed.
+The RED's2.7743752seconds and green1 total60.9158372seconds of actual test
+execution, with no suite overlap. Review and report preparation are additional.
+
+Evidence root: `r10/e/risk-v2/export-snapshot-allocation/green1`.
+Behavior review SHA256:
+`1286D50FFF6CBD83C9E29816EFCB3D92978CBA19564CBF7D391CB3E72EFC1B5B`.
+The source-matched replacement at `r10/e/risk-v2/union54` preserves all original
+raw inputs. Only old `exports.py` records are removed from disposable copies;
+fresh green1 data supplies that file. Other source and scope remain unchanged.
+Each package has an independently verified126-file exact native raw union;
+reports retain108Toolkit/18Monitor files and frozen broad/risk membership.
+
+Formal branch increment is **0Toolkit,0Monitor**. Toolkit remains11936/13592,
+risk11318/12918; Monitor2744/2944. Fresh exports.py remains150/160branches;
+four additional executed statements are not additional covered branches.
+Remaining mandatory gaps are297Toolkit overall,309Toolkit risk (overlapping),
+and53Monitor risk. Toolkit risk target90 is user-approved; original95 unmet
+history and broad-core-v1 remain separate, nonblocking historical indicators.
+
+U54 canonical SHA256:
+`85DDA5DC95B1E9B2ADCC64EEEB584E851A9D062F1C0EAB0321CD615EFBFF0329`.
+Independent native review:
+`AD159EE553C1E3001307FC37BE4C44FFAB1C4B3542F8C711E03DB9AA830A3AC6`.
+Primary admission:
+`EA2E3BDE3C7261ADFD2026D67D7B9FB3791B1755E3AE6BC390777666E6A37AB5`.
+
+The initial prepared formal adapter was stopped before execution because its
+package-domain handling and report output were incomplete. A direct invocation
+then failed the handoff manifest digest guard before any copy/combine; retain
+`pre-execution-report-correction.json`. The inspected actual hashes, not the
+incorrect handoff values, are recorded in the separate execution manifest.
+One actual mature-function composition then completed in8.781seconds. No
+test was repeated and no original raw or mature helper was modified. This
+report-tool preparation exceeded its15-minute budget; do not expand that
+adapter into another framework or treat the waiting/reporting as product gain.
+
+The product fix is accepted locally; full1.0release remains **NOT_ACCEPTED**.
+RC2 build/install/Repair/rollback/Monitor-use and VS10A/B/attempt7 evidence are
+retained for original identities and unaffected paths. Future changed release
+artifacts need their own identity and affected package qualification. Seven
+Windows-native checks remain open under the recorded capability limitation.
+No hardware, package rebuild/deployment, permission change, remote mutation or
+denied cleanup retry occurred in this batch. Existing failures remain retained.
