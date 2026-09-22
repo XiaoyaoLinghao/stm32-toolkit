@@ -1,6 +1,69 @@
 # Current native coverage result
 
-## Current U41 and frozen RC2 result
+## Current RC3 package closure and U54 measurement
+
+Product97027818fcdfbadab902feba6ca30a3c1da2aa85 and frozen RC3 source archive
+daa465dff396e7d3cc63d20f630a03b633f795b4 are unchanged. The report/plan base
+before this update is d318f57bd8786673a0cd89f8c159bd1c759c0bcc. No product
+code, dependency or statistical scope changed during this package batch.
+
+RC3 artifact and affected-package evidence are accepted. The two captured
+builds took63.810/63.189seconds, returned0 and produced13 byte-identical outputs;
+real extracted verification returned0 in2.479seconds. Fresh missing Check,
+Bootstrap and installed Check returned0 in8.0189964/74.8362455/17.9460475seconds.
+The runtime is healthy/matching1.0 generation1; Check preserved5778 files,
+runtime state and project bytes. The installed runtime passed the two existing
+public export selectors: verified download and real allocation failure with
+immediate fd release and recovery. All148 installed product member bytes bind
+to RC3 and imports resolve inside the installed runtime.
+
+Four current-package utility/policy/manifest/Toolkit-wheel tamper cases took
+29.6623531seconds together. Each actual Bootstrap refused with exit2 before a
+data root was created, preserved the project, restored1158 package files and
+then passed real bundle verification. No Monitor service or hardware rerun is
+claimed. RC2 genuine09 Repair, rollback, runtime guards and Monitor lifecycle
+retain their actual execution identity and are reused only for unchanged
+source/member/dependency/environment/contract scopes. The export change has
+fresh installed-package evidence above. The uncaptured build-a and the owner's
+missing-evidence-directory preflight failure remain excluded and retained.
+Primary executed the affected-package integration checks; Luna/max retains
+implementation ownership and the independent reviewer made the acceptance review.
+
+Affected-package independent review SHA256:
+71741535F2727E5F53DCA5AE8EE9DED177721772732A3356E938DC5542E132C4.
+Primary admission at e/rc3/affected-package-primary-admission.json:
+2BC48B606781FFC3849441A4B8364EB3B51E1D32EF358B6C53451DC7AAD24BA9.
+The corrected artifact review1A2BC2702361DCF297BAA415CF10805518DC5F0E89A425C2722890A6242B95EF
+is reconciled without repeating builds or changing their evidence.
+
+Formal coverage increment is0Toolkit/0Monitor; U54 remains canonical at
+85DDA5DC95B1E9B2ADCC64EEEB584E851A9D062F1C0EAB0321CD615EFBFF0329.
+Toolkit11936/13592 overall needs297 and11318/12918 risk-v2 needs309 branches
+to the user-approved90 floors; these gaps overlap. Monitor2744/2944 meets90
+overall and needs53 for95risk. Toolkit original95 remains unmet historical,
+later non-blocking quality work. Broad-v1/UI and all seven real Windows-native
+requirements are unchanged; no capable authorized Windows environment is yet
+available. Release1.0 remains NOT_ACCEPTED.
+
+Recovery run2/3 are test-fixture/input failures, not demonstrated product bugs.
+Run3 completed seven corruption/refusal/no-write/restoration variants, then
+the eighth supplied no test_run_id for target-failure-replayed and stopped at
+STAGE_INVALID; ninth was unexecuted. The whole original shard (126files,
+18867arcs,2772A90951B8F4C131E9103B010A805A4F7941D6A1F04ABD85DA0539DE37A688)
+and partial behavior are retained, formally unqualified with0credit. Root has
+returned this same family to stage-reference/persistence contract design,
+without resetting its failure count. Only the two unfinished scenarios may
+run after bounded extraction and full-diff review; first seven bodies/helpers
+remain unchanged and are not repeated for the request correction. Analysis
+publication stays held. No suite overlapped the exclusive release operations.
+
+The completed actual package operations total approximately261seconds including
+the installed-selector process; preparation/review time is additional. This
+closes real release risk but provides no coverage yield from which to infer a
+completion date. Remaining coverage-group reachability and Windows capability
+are concrete uncertainties, not permission to lower mandatory gates.
+
+## Historical U41 and frozen RC2 result
 
 Integrated test/code head before this report:
 `cb13aed97c3e43386b5e31bff95eb3f73e8c1c73`.
