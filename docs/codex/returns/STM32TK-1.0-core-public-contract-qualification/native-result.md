@@ -1264,3 +1264,32 @@ Two low-yield groups now trigger the bounded existing-map reachability/cost
 reassessment; no further suite is released by this report. Seven Windows-native
 checks remain blocked by the absent authorized capability. Release acceptance
 and the goal are not complete, and no automatic95 optimization is initiated.
+
+### U51 residual decision: stop the low-yield method chain
+
+The bounded existing-map assessment of storage25/history24/runtime17/analysis21
+found no execution-ready new complete family. This is a test-construction and
+method-readiness limitation, not a product failure, a coverage exclusion or
+proof of unreachability. The two completed suites and accepted U51 data remain
+unchanged; this assessment adds zero branches and runs no tests.
+
+Primary corrected the returned SQLite assessment against current frozen source
+and the accepted U51 native map. Wrapping the real external sqlite3.connect
+factory can configure an authorizer on production connections; rejecting that
+boundary merely because a separate connection would not affect them was too
+broad. But denying CREATE TABLE during v1 migration occurs after BEGIN EXCLUSIVE:
+connection.in_transaction is true, so storage.py856->857 performs rollback. The
+missing856->858 is the false edge. The proposed one-branch gain is not supported,
+and no test is released. Current connect sites931/1057/1156 and write1381 replace
+stale returned line references; product bytes remain unchanged. Existing scoped
+migration/transaction rollback evidence is retained, without claiming the new
+provider-fault variant ran or that every residual path is unreachable.
+
+No actual suite is running or queued, and the original owners remain available.
+The seven prepared Windows checks still need a supported, already-authorized
+symlink-capable environment. No permission change, repeat capability probe,
+fixture substitution, cleanup retry or remote action occurred. Coverage remains
+Toolkit301 overall/313 core branches to90 (overlapping), Monitor58 core branches
+to95. These mandatory gaps leave releaseAccepted=false. A further coverage batch
+needs a distinct complete current-source scenario and a bounded design decision;
+the rejected authorizer chain is closed, not renamed into another attempt.
