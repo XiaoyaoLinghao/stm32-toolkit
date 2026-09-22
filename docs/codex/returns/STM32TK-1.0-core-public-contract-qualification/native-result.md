@@ -62,8 +62,21 @@ Analysis publication supplement is still held. DiagnosticsStore's examined
 fixture relies on prohibited private identity seams and many inner guards are
 dominated by earlier reducer checks; no new Store suite is justified. Storage's
 conditional one-arc quick_check route lacks a deterministic existing fixture;
-it is not declared unreachable or excluded. The next bounded preparation is
-the existing Continuation public-entry/producer map, not more branch patches.
+it is not declared unreachable or excluded. The Continuation producer audit is
+complete: the old positive fixture substitutes identity/freshness and cannot be
+reused for new native evidence. Plan542eaceb releases one bounded composition of
+existing public workflows and the existing external backend seam, using real
+returned identities and build files. Its two nonterminal scenarios cover
+bind/read/reuse/retry and invalid-request refusal/recovery. Terminal verification
+is outside this first batch; predicted15–30 branches have no measurement credit.
+
+The RC3 deployment-document binding is now accepted from independent audit
+181FF04BA288B458E8498472C3845D96DD46CA8881107001FF8BCDA9C0D455C5:
+all five scoped documents are byte-identical to the accepted RC2 documents,
+the designated companion Windows guide matches, and14 relative references
+exist. Troubleshooting is verified in the package, outside the source companion
+scope. No rebuild or test rerun was needed; formal new coverage remains0 for
+this document closure. Current native measurement remains U55 above.
 
 Mandatory coverage deficits, seven Windows-native checks and final matrix
 reconciliation keep release1.0 NOT_ACCEPTED. Preparation/review time is separate
