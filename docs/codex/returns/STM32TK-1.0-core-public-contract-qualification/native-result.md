@@ -1,6 +1,66 @@
 # Current native coverage result
 
-## Current U57 result — 2026-09-23
+## Current U58 result — 2026-09-23
+
+U58 is ACCEPTED_NATIVE_DATA after independent behavior and native review.
+Accepted test base is8c533208b509811562cec9ec313dd3000a928573; design return
+plan756c1af05085628fd85b26c81736f74fe7a2c7ba; executed test is
+771857fe1b30294fcccfb97ca5d34daff26fcb03 and exact-blob integration is
+3fecf3d9179ef9e1cf1fc844a412187819ee1695. Product97027818 and RC3daa465df are
+unchanged. This report contains no claim of new hardware or package execution.
+
+The archived-proof lifecycle now closes public begin and checkpoint with exact
+revision publication, idempotent begin/checkpoint and equivalent bind retry,
+conflicting requests and wrong verification/revision/stage/run refusals without
+writes, correct completion after refusals, and authenticated completed resume.
+All positive references come from the genuine archive; original project/archive
+snapshots are preserved. U57 show was not rerun. The earlier infrastructure
+failure and decoded-model-versus-public-Mapping failure remain excluded.
+
+| Frozen scope | Covered / total | Ratio | Remaining release branches |
+| --- | ---: | ---: | ---: |
+| Toolkit overall |12005/13592|88.3240%|228 to90%|
+| Toolkit risk-core-v2 |11387/12918|88.1483%|240 to90%|
+| Monitor overall/risk |2744/2944|93.2065%|overall90 met;53 to95%risk|
+
+Toolkit gaps overlap. Formal gain is29Toolkit/0Monitor, all in
+recovery_workflows.py; since the user-approved U47 amendment it is89Toolkit/
+10Monitor. Original Toolkit risk95 deficit975 remains historical UNMET; its
+current later-quality deficit886 and broad-v1 deficit908 are nonblocking.
+No scope, denominator, subprocess requirement, UI or other gate was reduced.
+
+Actual behavior execution took80.0703081seconds, exit0, without retries.
+Serial native composition took7.016seconds; plan commit to primary admission
+took20minutes45.016seconds. Only one actual suite ran; independent source/risk
+assessment and review overlapped. One complete native shard from Python13108
+is retained, source-bound and unfiltered. Both126-file raw set unions are exact;
+all148source rows match after explicit newline qualification(7raw/141newline).
+No Monitor code ran and no Monitor coverage is credited. The source-order
+preflight reporting correction caused no test rerun.
+
+Canonical SHA256B7888AA5A3F9D1667043CBD9B78D6310B358F2D2081CB6AD2C341EA10470AF87;
+native review4E7122A4647FFF5DFF954817ED928929FD948FA037029DE3D0F848D484752156;
+primary admission11D3FC1B6E273134C063859B3DB084CC95A150E1488EA086E629D63C8AE2679C.
+Evidence: r10/e/risk-v2/union58 and archived-acceptance-lifecycle/run3.
+
+Remaining critical blocker: independently confirmed Monitor fdopen failure
+leaves an empty lock and prevents same-workspace restart. Earlier accepted
+timeout/cancel/release/rollback/identity evidence remains valid within scope;
+it does not close this new recovery failure. The bounded product proposal is
+pending the separate requested decision. Seven Windows checks lack the recorded
+native capability. Applicable RC3 and scoped RC2 build/install/Repair/rollback/
+Monitor-use, VS10-A/B and attempt7 evidence remain retained; release is UNMET.
+
+The recent accepted groups added7,23,29Toolkit branches. At those observed
+yields alone,240remaining core branches would require9-35 comparable groups;
+this is a conditional workload range, not an authorization to append that many
+small tests or a promised schedule. Reachability and diminishing returns,
+Monitor's53branches/product correction and Windows capability can materially
+change the cost. The reviewed probe alternatives offer at most2branches each
+for20-60minutes of preparation and remain unlaunched. A next group needs a
+clear public-risk purpose and feasible aggregate gain before implementation.
+
+## Retained accepted U57 result — 2026-09-23
 
 U57 is ACCEPTED_NATIVE_DATA after independent behavior and native-data review.
 Accepted integration base9d9f647d, plan ce3481af, executed test
