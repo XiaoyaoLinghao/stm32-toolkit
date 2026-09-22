@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 from pathlib import Path
 
 import aiohttp
@@ -164,8 +165,10 @@ async def _assert_listener_open(host: str, port: int) -> None:
 
 
 async def _assert_listener_closed(host: str, port: int) -> None:
-    with pytest.raises(OSError):
+    with pytest.raises(ConnectionRefusedError) as caught:
         await asyncio.wait_for(asyncio.open_connection(host, port), timeout=5)
+    assert type(caught.value) is ConnectionRefusedError
+    assert caught.value.errno == errno.ECONNREFUSED
 
 
 async def _assert_authenticated(endpoint) -> None:
@@ -177,9 +180,16 @@ async def _assert_authenticated(endpoint) -> None:
         response = await asyncio.wait_for(
             client.get(endpoint.url + "/api/v1/status", headers=headers), timeout=5
         )
-        payload = await response.json()
+        payload = await asyncio.wait_for(response.json(), timeout=5)
     assert response.status == 200
     assert payload["data"]["operation"] == "monitor.status"
+
+
+async def _stop_and_assert_listener_closed(service, endpoint) -> None:
+    host, port = endpoint.host, endpoint.port
+    await asyncio.wait_for(service.stop(), timeout=5)
+    await _assert_listener_closed(host, port)
+    assert service.endpoint is None
 
 
 async def _cancel_twice(task: asyncio.Task[object]) -> None:
@@ -242,15 +252,14 @@ def test_public_partial_start_cancel_precedes_start_error_and_reuses_listener(
             await _assert_listener_closed(host, port)
             assert service.endpoint is None
             with pytest.raises(asyncio.CancelledError) as cancelled:
-                await starting
+                await asyncio.wait_for(starting, timeout=5)
             assert str(cancelled.value) == "first cancellation"
 
             token_valid = True
             monkeypatch.setattr(web.AppRunner, "cleanup", original_cleanup)
-            endpoint = await service.start()
+            endpoint = await asyncio.wait_for(service.start(), timeout=5)
             await _assert_authenticated(endpoint)
-            await service.stop()
-            assert service.endpoint is None
+            await _stop_and_assert_listener_closed(service, endpoint)
         finally:
             cleanup_release.set()
             if starting is not None and not starting.done():
@@ -258,7 +267,7 @@ def test_public_partial_start_cancel_precedes_start_error_and_reuses_listener(
                     asyncio.gather(starting, return_exceptions=True), timeout=5
                 )
             monkeypatch.setattr(web.AppRunner, "cleanup", original_cleanup)
-            await service.stop()
+            await asyncio.wait_for(service.stop(), timeout=5)
 
     asyncio.run(scenario())
 
@@ -280,6 +289,7 @@ def test_public_partial_start_cleanup_retry_is_sanitized_or_cancelled(
         retry_entered = asyncio.Event()
         retry_release = asyncio.Event()
         retry_finished = asyncio.Event()
+        cleanup_verified_closed: list[tuple[str, int]] = []
         original_cleanup = web.AppRunner.cleanup
 
         def token_factory(size: int) -> bytes:
@@ -298,8 +308,12 @@ def test_public_partial_start_cleanup_retry_is_sanitized_or_cancelled(
             if cleanup_calls == 2:
                 retry_entered.set()
                 await retry_release.wait()
+            old_address = (str(addresses[0][0]), int(addresses[0][1]))
             try:
                 await original_cleanup(runner)
+                if cleanup_calls == 3:
+                    await _assert_listener_closed(*old_address)
+                    cleanup_verified_closed.append(old_address)
             finally:
                 if cleanup_calls == 2:
                     retry_finished.set()
@@ -314,7 +328,7 @@ def test_public_partial_start_cleanup_retry_is_sanitized_or_cancelled(
         retrying: asyncio.Task[object] | None = None
         try:
             with pytest.raises(RuntimeError) as first_error:
-                await service.start()
+                await asyncio.wait_for(service.start(), timeout=5)
             assert str(first_error.value) == "Monitor Service cleanup failed"
             assert "SECRET" not in str(first_error.value)
             assert service.endpoint is None
@@ -325,14 +339,11 @@ def test_public_partial_start_cleanup_retry_is_sanitized_or_cancelled(
 
             if retry_mode == "failure":
                 with pytest.raises(RuntimeError) as retry_error:
-                    await service.start()
+                    await asyncio.wait_for(service.start(), timeout=5)
                 assert str(retry_error.value) == "Monitor Service cleanup failed"
                 assert "SECRET" not in str(retry_error.value)
                 assert cleanup_calls == 2
                 await _assert_listener_open(host, port)
-                monkeypatch.setattr(web.AppRunner, "cleanup", original_cleanup)
-                await service.stop()
-                await _assert_listener_closed(host, port)
             else:
                 retrying = asyncio.create_task(service.start())
                 await _wait_for_event(retry_entered)
@@ -344,15 +355,21 @@ def test_public_partial_start_cleanup_retry_is_sanitized_or_cancelled(
                 await _assert_listener_closed(host, port)
                 assert service.endpoint is None
                 with pytest.raises(asyncio.CancelledError) as cancelled:
-                    await retrying
+                    await asyncio.wait_for(retrying, timeout=5)
                 assert str(cancelled.value) == "first cancellation"
-                monkeypatch.setattr(web.AppRunner, "cleanup", original_cleanup)
 
             token_valid = True
-            endpoint = await service.start()
+            endpoint = await asyncio.wait_for(service.start(), timeout=5)
+            if retry_mode == "failure":
+                assert cleanup_calls == 3
+                assert cleanup_verified_closed == [(host, port)]
+            else:
+                assert cleanup_calls == 2
+                assert not cleanup_verified_closed
             await _assert_authenticated(endpoint)
-            await service.stop()
-            assert service.endpoint is None
+            await _stop_and_assert_listener_closed(service, endpoint)
+            if retry_mode == "cancelled":
+                assert cleanup_verified_closed == [(endpoint.host, endpoint.port)]
         finally:
             retry_release.set()
             if retrying is not None and not retrying.done():
@@ -360,7 +377,7 @@ def test_public_partial_start_cleanup_retry_is_sanitized_or_cancelled(
                     asyncio.gather(retrying, return_exceptions=True), timeout=5
                 )
             monkeypatch.setattr(web.AppRunner, "cleanup", original_cleanup)
-            await service.stop()
+            await asyncio.wait_for(service.stop(), timeout=5)
 
     asyncio.run(scenario())
 
@@ -390,7 +407,7 @@ def test_public_stop_cancel_waits_for_listener_cleanup_then_restarts(
         )
         stopping: asyncio.Task[object] | None = None
         try:
-            endpoint = await service.start()
+            endpoint = await asyncio.wait_for(service.start(), timeout=5)
             await _assert_authenticated(endpoint)
 
             async def gated_cleanup(runner: web.AppRunner) -> None:
@@ -419,14 +436,13 @@ def test_public_stop_cancel_waits_for_listener_cleanup_then_restarts(
             await _assert_listener_closed(host, port)
             assert service.endpoint is None
             with pytest.raises(asyncio.CancelledError) as cancelled:
-                await stopping
+                await asyncio.wait_for(stopping, timeout=5)
             assert str(cancelled.value) == "first cancellation"
 
             monkeypatch.setattr(web.AppRunner, "cleanup", original_cleanup)
-            endpoint = await service.start()
+            endpoint = await asyncio.wait_for(service.start(), timeout=5)
             await _assert_authenticated(endpoint)
-            await service.stop()
-            assert service.endpoint is None
+            await _stop_and_assert_listener_closed(service, endpoint)
         finally:
             cleanup_release.set()
             if stopping is not None and not stopping.done():
@@ -434,6 +450,6 @@ def test_public_stop_cancel_waits_for_listener_cleanup_then_restarts(
                     asyncio.gather(stopping, return_exceptions=True), timeout=5
                 )
             monkeypatch.setattr(web.AppRunner, "cleanup", original_cleanup)
-            await service.stop()
+            await asyncio.wait_for(service.stop(), timeout=5)
 
     asyncio.run(scenario())
