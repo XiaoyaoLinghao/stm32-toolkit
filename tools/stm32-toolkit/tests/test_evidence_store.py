@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 import hashlib
@@ -66,6 +67,145 @@ def _envelope(artifact: ArtifactRef, *, operation: str = "test.host") -> Evidenc
 
 def _object_path(root: Path, artifact: ArtifactRef) -> Path:
     return root.joinpath(*artifact.relative_path.split("/"))
+
+
+def _store_bytes(root: Path) -> dict[str, bytes]:
+    return {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in root.rglob("*")
+        if path.is_file()
+    }
+
+
+def _install_real_open_alias(
+    monkeypatch: pytest.MonkeyPatch,
+    target: Path,
+    alias: Path,
+) -> dict[str, object]:
+    """Create one real hard link after the target fd opens, without faking metadata."""
+    real_open = store_module.os.open
+    state: dict[str, object] = {
+        "descriptor": None,
+        "injected": False,
+        "opened_links": None,
+    }
+    resolved_target = target.resolve()
+
+    def open_with_alias(*args, **kwargs):
+        descriptor = real_open(*args, **kwargs)
+        opened_path = Path(args[0]).resolve()
+        if not state["injected"] and opened_path == resolved_target:
+            os.link(target, alias)
+            state["descriptor"] = descriptor
+            state["injected"] = True
+            state["opened_links"] = target.stat().st_nlink
+        return descriptor
+
+    monkeypatch.setattr(store_module.os, "open", open_with_alias)
+    return state
+
+
+def test_public_ingest_rejects_post_open_lock_alias_and_recovers(tmp_path, monkeypatch):
+    """A lock that acquires a real alias after validation must fail closed and release its fd."""
+    baseline_source = tmp_path / "baseline.bin"
+    retry_source = tmp_path / "retry.bin"
+    baseline_source.write_bytes(b"baseline evidence")
+    retry_payload = b"retry evidence"
+    retry_source.write_bytes(retry_payload)
+    store = EvidenceStore(tmp_path / "evidence")
+    store.ingest_file(baseline_source, kind="log", media_type="text/plain")
+    before = _store_bytes(store.root)
+
+    lock = store.root / ".gc-mutation.lock"
+    alias = tmp_path / "lock-open-alias"
+    with monkeypatch.context() as patch:
+        state = _install_real_open_alias(patch, lock, alias)
+        with pytest.raises(EvidenceValidationError) as failure:
+            store.ingest_file(retry_source, kind="log", media_type="text/plain")
+
+    assert failure.value.code == EVIDENCE_PATH_UNSAFE
+    assert failure.value.message == "store mutation lock is not a singular regular file"
+    assert state["injected"] is True
+    assert state["opened_links"] == 2
+    descriptor = state["descriptor"]
+    assert isinstance(descriptor, int)
+    with pytest.raises(OSError) as closed:
+        os.fstat(descriptor)
+    assert closed.value.errno == errno.EBADF
+    assert _store_bytes(store.root) == before
+
+    alias.unlink()
+    assert lock.stat().st_nlink == 1
+    retry = store.ingest_file(retry_source, kind="log", media_type="text/plain")
+    assert store.read_artifact(retry, maximum_bytes=1024) == retry_payload
+
+
+def test_public_read_rejects_post_open_object_alias_and_recovers(tmp_path, monkeypatch):
+    """A managed object linked after path validation must not be read through the opened fd."""
+    payload = b"post-open object identity"
+    source = tmp_path / "source.bin"
+    source.write_bytes(payload)
+    store = EvidenceStore(tmp_path / "evidence")
+    artifact = store.ingest_file(source, kind="log", media_type="text/plain")
+    object_path = _object_path(store.root, artifact)
+    before = _store_bytes(store.root)
+    alias = tmp_path / "object-open-alias.bin"
+
+    with monkeypatch.context() as patch:
+        state = _install_real_open_alias(patch, object_path, alias)
+        with pytest.raises(EvidenceValidationError) as failure:
+            store.read_artifact(artifact, maximum_bytes=1024)
+
+    assert failure.value.code == EVIDENCE_PATH_UNSAFE
+    assert failure.value.message == f"managed file has a hard link: {object_path}"
+    assert state["injected"] is True
+    assert state["opened_links"] == 2
+    descriptor = state["descriptor"]
+    assert isinstance(descriptor, int)
+    with pytest.raises(OSError) as closed:
+        os.fstat(descriptor)
+    assert closed.value.errno == errno.EBADF
+    assert _store_bytes(store.root) == before
+
+    alias.unlink()
+    assert object_path.stat().st_nlink == 1
+    assert store.read_artifact(artifact, maximum_bytes=1024) == payload
+
+
+def test_public_get_envelope_rejects_post_open_manifest_alias_and_recovers(
+    tmp_path,
+    monkeypatch,
+):
+    """A manifest linked after validation must fail before fd ownership transfers to fdopen."""
+    source = tmp_path / "source.bin"
+    source.write_bytes(b"post-open manifest identity")
+    store = EvidenceStore(tmp_path / "evidence")
+    artifact = store.ingest_file(source, kind="log", media_type="text/plain")
+    envelope = _envelope(artifact)
+    manifest = store.put_envelope(envelope)
+    before = _store_bytes(store.root)
+    alias = tmp_path / "manifest-open-alias.json"
+
+    with monkeypatch.context() as patch:
+        state = _install_real_open_alias(patch, manifest, alias)
+        with pytest.raises(EvidenceValidationError) as failure:
+            store.get_envelope(str(envelope.evidence_id))
+
+    assert failure.value.code == EVIDENCE_PATH_UNSAFE
+    assert failure.value.message == f"managed file has a hard link: {manifest}"
+    assert state["injected"] is True
+    assert state["opened_links"] == 2
+    descriptor = state["descriptor"]
+    assert isinstance(descriptor, int)
+    with pytest.raises(OSError) as closed:
+        os.fstat(descriptor)
+    assert closed.value.errno == errno.EBADF
+    assert _store_bytes(store.root) == before
+
+    alias.unlink()
+    assert manifest.stat().st_nlink == 1
+    assert store.get_envelope(str(envelope.evidence_id)) == envelope
+    assert manifest.read_bytes() == envelope.to_json_bytes()
 
 
 def test_store_mutation_lock_rejects_alias_and_releases_after_exception(tmp_path):
