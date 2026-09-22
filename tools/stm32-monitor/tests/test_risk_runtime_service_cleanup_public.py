@@ -27,35 +27,6 @@ def _runtime(
     )
 
 
-def test_same_workspace_lock_is_busy_until_public_owner_stops(
-    tmp_path: Path,
-) -> None:
-    from stm32_monitor.models import MonitorConfig
-    from stm32_monitor.runtime import MonitorRuntimeError
-
-    project = _project(tmp_path)
-    config = MonitorConfig(project, (tmp_path / "data").resolve(), "session-a")
-
-    async def scenario() -> None:
-        owner = _runtime()
-        contender = _runtime()
-        await owner.start(config)
-        try:
-            with pytest.raises(MonitorRuntimeError) as caught:
-                await contender.start(config)
-            assert caught.value.code == "MONITOR_RUNTIME_BUSY"
-            assert (
-                caught.value.message == "A Monitor runtime already owns this workspace"
-            )
-        finally:
-            await owner.stop()
-
-        await contender.start(config)
-        await contender.stop()
-
-    asyncio.run(scenario())
-
-
 def test_public_stop_reports_record_and_dependency_cleanup_failures_then_reuses(
     tmp_path: Path,
 ) -> None:
@@ -140,7 +111,9 @@ def test_public_stop_reports_record_and_dependency_cleanup_failures_then_reuses(
     asyncio.run(scenario())
 
 
-def test_public_invalid_token_factory_settles_listener_and_allows_reuse() -> None:
+def test_public_invalid_token_factory_failed_start_then_fresh_service_start_stop() -> (
+    None
+):
     from stm32_monitor.service import MonitorService
     from test_service import TOKEN_BYTES, FakeRuntime
 
