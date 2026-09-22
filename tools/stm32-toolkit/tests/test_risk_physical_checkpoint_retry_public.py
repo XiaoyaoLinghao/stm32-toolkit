@@ -58,8 +58,10 @@ TARGET_PROTOCOL = "stm32-target-frame/2"
 
 
 def _ok(result: object) -> Mapping[str, object]:
-    assert getattr(result, "ok", False), getattr(result, "to_dict", lambda: result)()
-    data = getattr(result, "data", None)
+    wire = _wire(result)
+    assert wire["protocol"] == "stm32-toolkit/1"
+    assert wire["ok"] is True, wire
+    data = wire["data"]
     assert isinstance(data, Mapping)
     return data
 
