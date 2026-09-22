@@ -1,6 +1,52 @@
 # Current native coverage result
 
-## Current U55 result — 2026-09-23
+## Current Continuation batch disposition — 2026-09-23
+
+This batch adds no accepted behavior or native branches. Product97027818,
+frozen RC3 daa465df and accepted U55 remain unchanged. Unaccepted test candidate
+52cac8ef is retained on its owner branch and is not integrated. Keep three
+actual test failures and one preparation failure as distinct original records.
+
+Run4 executed once at52cac8ef and stopped after10.0107seconds (pytest8.45seconds),
+exit1, first selector failed, second unrun. The public failed Target reload and
+Diagnostic prefix were reached, but Acceptance begin rejected the inherited
+minimal-gcc logicalProjectId12345678-1234-5678-1234-567812345678. Its fourth UUID
+group begins with1; recovery.py:61 requires[89ab], enforced at:1134 before
+revision-zero publication. The fixture came from test_build_runner.py:631-658
+and fixtures/minimal-gcc/.stm32-project.json. This is independently confirmed
+TEST_FIXTURE_ORACLE, not a product contract defect. No Acceptance root, source
+authorization/change, fixed Target run or Continuation binding/retry was reached.
+
+The method-level static READY verdict remains static history. Run3 never
+started Python because New-Item has no LiteralPath parameter; its failure is
+preserved separately. Primary then explicitly reassessed the infrastructure
+failure, precreated verified owned directories and released the unchanged
+candidate through the direct native command. This was not an unrecorded retry
+or a reset of earlier failures. Run4 now ends this family: no further local
+fixture patch, run5, native union or test integration is released.
+
+Independent result review is public-continuation/run4/result-review.md,
+SHA256C9D4EAFDB46FEE8C44E48DA29FBD9764BC7DCB92A06D8B886D318D8D1EF51AE9.
+The original108file/19909arc shard remains8A2CA9E8811267F1507A169A8135E92851997B944CF4E2A5AB391D466D1B0B6D,
+unmerged and uncredited. Python9852, parent4604 and launcher20156 exited.
+No actual suites overlapped. The family window from first execution to final
+stop was48minutes54.779seconds; actual native execution summed21.9038seconds.
+Preparation/review dominated; preparation before the first run and review after
+the last run are outside that measured window. This is cost evidence, not
+product progress or a basis for a release date.
+
+Remaining gates are still Toolkit overall287 and risk299 branches to90, Monitor
+risk53 to95, the seven capable-environment Windows checks and final matrix
+reconciliation. Toolkit gaps overlap. Existing critical-risk, package,
+installation, Repair, rollback, Monitor-use and physical evidence is preserved.
+The next decision is a bounded full public-project/identity producer design
+review, using the existing entry points rather than another single-field patch.
+No additional test execution is authorized by this disposition. The downstream
+Monitor route also requires an existing DWARF-bearing fixture; minimal-gcc has
+none, while SVD may remain absent for a variable-only observation. These are
+unresolved test-input dependencies, not accepted flows or product defects.
+
+## Retained current U55 result — 2026-09-23
 
 U55 is ACCEPTED_NATIVE_DATA. Test-only integration before this report is
 a72272f1509a8573cb09fca1f70156ec478191df; product97027818 and frozen RC3
