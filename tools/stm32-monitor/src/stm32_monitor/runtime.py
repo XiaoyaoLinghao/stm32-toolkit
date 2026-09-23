@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import hashlib
 import inspect
 import json
@@ -153,14 +154,13 @@ class _WorkspaceLock:
     def acquire(self) -> None:
         handle: BinaryIO | None = None
         descriptor = -1
-        created = False
+        locked = False
         try:
             flags = os.O_RDWR | getattr(os, "O_BINARY", 0)
             try:
                 descriptor = os.open(
                     self._path, flags | os.O_CREAT | os.O_EXCL, 0o600
                 )
-                created = True
                 before = os.fstat(descriptor)
             except FileExistsError:
                 before = os.lstat(self._path)
@@ -168,64 +168,124 @@ class _WorkspaceLock:
                 descriptor = os.open(
                     self._path, flags | getattr(os, "O_NOFOLLOW", 0)
                 )
+            expected = self._validate_metadata(before)
+            self._validate_descriptor(expected, descriptor)
+            self._validate_shape(descriptor)
+            self._lock_descriptor(descriptor)
+            locked = True
+            self._validate_descriptor(expected, descriptor)
+            self._validate_shape(descriptor)
+
             handle = os.fdopen(descriptor, "r+b", closefd=True)
             descriptor = -1
-            opened = os.fstat(handle.fileno())
-            after = os.lstat(self._path)
-            expected = self._validate_metadata(before)
-            if self._validate_metadata(opened) != expected or self._validate_metadata(after) != expected:
-                raise _fail(
-                    "MONITOR_RUNTIME_PATH_UNSAFE", "Monitor runtime lock is unsafe"
-                )
-            handle.seek(0, os.SEEK_END)
-            size = handle.tell()
-            if created and size == 0:
+            self._validate_descriptor(expected, handle.fileno())
+            size = self._validate_shape(handle.fileno())
+            if size == 0:
+                handle.seek(0)
                 handle.write(b"\0")
                 handle.flush()
                 os.fsync(handle.fileno())
-            elif not created and size == 1:
-                handle.seek(0)
-                if handle.read(1) != b"\0":
-                    raise _fail(
-                        "MONITOR_RUNTIME_PATH_UNSAFE", "Monitor runtime lock is unsafe"
-                    )
-            else:
+            self._validate_descriptor(expected, handle.fileno())
+            if self._validate_shape(handle.fileno()) != 1:
                 raise _fail(
                     "MONITOR_RUNTIME_PATH_UNSAFE", "Monitor runtime lock is unsafe"
                 )
-            if (
-                self._validate_metadata(os.fstat(handle.fileno())) != expected
-                or self._validate_metadata(os.lstat(self._path)) != expected
-            ):
+        except BaseException as error:
+            cleanup_error = self._close_acquire_resources(handle, descriptor, locked)
+            if cleanup_error is not None:
                 raise _fail(
-                    "MONITOR_RUNTIME_PATH_UNSAFE", "Monitor runtime lock is unsafe"
-                )
-            handle.seek(0)
-            if os.name == "nt":
-                import msvcrt
-
-                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-            else:  # pragma: no cover - exercised by Linux owner
-                import fcntl
-
-                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            if self._validate_metadata(os.lstat(self._path)) != expected:
+                    "MONITOR_CLEANUP_FAILED", "Monitor runtime cleanup failed"
+                ) from None
+            if isinstance(error, MonitorRuntimeError):
+                raise
+            if isinstance(error, (OSError, BlockingIOError)):
                 raise _fail(
-                    "MONITOR_RUNTIME_PATH_UNSAFE", "Monitor runtime lock is unsafe"
-                )
-        except MonitorRuntimeError:
-            if handle is not None:
-                handle.close()
-            elif descriptor >= 0:
-                os.close(descriptor)
+                    "MONITOR_RUNTIME_BUSY",
+                    "A Monitor runtime already owns this workspace",
+                ) from None
             raise
-        except (OSError, BlockingIOError):
-            if handle is not None:
-                handle.close()
-            elif descriptor >= 0:
-                os.close(descriptor)
-            raise _fail("MONITOR_RUNTIME_BUSY", "A Monitor runtime already owns this workspace") from None
         self._handle = handle
+
+    def _validate_descriptor(self, expected: tuple[int, int], descriptor: int) -> None:
+        opened = os.fstat(descriptor)
+        after = os.lstat(self._path)
+        if (
+            self._validate_metadata(opened) != expected
+            or self._validate_metadata(after) != expected
+        ):
+            raise _fail("MONITOR_RUNTIME_PATH_UNSAFE", "Monitor runtime lock is unsafe")
+
+    def _validate_shape(self, descriptor: int) -> int:
+        size = os.fstat(descriptor).st_size
+        if size not in (0, 1):
+            raise _fail("MONITOR_RUNTIME_PATH_UNSAFE", "Monitor runtime lock is unsafe")
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        if size == 1 and os.read(descriptor, 1) != b"\0":
+            raise _fail("MONITOR_RUNTIME_PATH_UNSAFE", "Monitor runtime lock is unsafe")
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        return size
+
+    @staticmethod
+    def _lock_descriptor(descriptor: int) -> None:
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        if os.name == "nt":
+            import msvcrt
+
+            msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+        else:  # pragma: no cover - exercised by Linux owner
+            import fcntl
+
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    @staticmethod
+    def _unlock_descriptor(descriptor: int) -> None:
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        if os.name == "nt":
+            import msvcrt
+
+            msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+        else:  # pragma: no cover - exercised by Linux owner
+            import fcntl
+
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+
+    def _close_acquire_resources(
+        self, handle: BinaryIO | None, descriptor: int, locked: bool
+    ) -> BaseException | None:
+        first_error: BaseException | None = None
+        if handle is not None:
+            if locked:
+                try:
+                    self._unlock_descriptor(handle.fileno())
+                except BaseException as error:
+                    if not (
+                        isinstance(error, OSError) and error.errno == errno.EBADF
+                    ):
+                        first_error = error
+            try:
+                handle.close()
+            except BaseException as error:
+                if first_error is None:
+                    first_error = error
+            return first_error
+        if descriptor < 0:
+            return None
+        if locked:
+            try:
+                self._unlock_descriptor(descriptor)
+            except BaseException as error:
+                if not (
+                    isinstance(error, OSError) and error.errno == errno.EBADF
+                ):
+                    first_error = error
+        try:
+            os.close(descriptor)
+        except BaseException as error:
+            if not (
+                isinstance(error, OSError) and error.errno == errno.EBADF
+            ) and first_error is None:
+                first_error = error
+        return first_error
 
     def _validate_metadata(self, metadata: os.stat_result) -> tuple[int, int]:
         if (
@@ -244,15 +304,7 @@ class _WorkspaceLock:
         if handle is None:
             return
         try:
-            handle.seek(0)
-            if os.name == "nt":
-                import msvcrt
-
-                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-            else:  # pragma: no cover - exercised by Linux owner
-                import fcntl
-
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            self._unlock_descriptor(handle.fileno())
         finally:
             handle.close()
             self._handle = None
