@@ -115,6 +115,49 @@ def _discovery_mutation(
             encoding="utf-8",
         )
         return lambda: shutil.rmtree(duplicate)
+    if variant == "package-metadata-nonregular":
+        metadata = package / "package.xml"
+        original = metadata.read_bytes()
+        metadata.unlink()
+        metadata.mkdir()
+
+        def restore_metadata_directory() -> None:
+            shutil.rmtree(metadata)
+            metadata.write_bytes(original)
+
+        return restore_metadata_directory
+    if variant == "package-metadata-oversized":
+        metadata = package / "package.xml"
+        original = metadata.read_bytes()
+        metadata.write_bytes(b"x" * (256 * 1024 + 1))
+        return lambda: metadata.write_bytes(original)
+    if variant == "package-depth":
+        nested = package / "nested"
+        for index in range(17):
+            nested /= f"level{index}"
+        nested.mkdir(parents=True)
+        root = package / "nested"
+        return lambda: shutil.rmtree(root)
+    if variant == "mcu-index-missing":
+        index = install / "db" / "mcu" / "families.xml"
+        original = index.read_bytes()
+        index.unlink()
+        return lambda: index.write_bytes(original)
+    if variant == "indexed-descriptor-oversized":
+        descriptor = install / "db" / "mcu" / "STM32F429Z(E-G)Tx.xml"
+        original = descriptor.read_bytes()
+        descriptor.write_bytes(b"<Mcu RefName=\"STM32F429Z(E-G)Tx\"/>" + b"x" * (2 * 1024 * 1024))
+        return lambda: descriptor.write_bytes(original)
+    if variant == "mcu-database-missing":
+        database = install / "db" / "mcu"
+        hidden = install / "db" / "mcu-hidden"
+        database.rename(hidden)
+        return lambda: hidden.rename(database)
+    if variant == "direct-descriptor-oversized":
+        descriptor = install / "db" / "mcu" / "STM32F429ZITx.xml"
+        original = descriptor.read_bytes()
+        descriptor.write_bytes(b"<Mcu RefName=\"STM32F429ZITx\"/>" + b"x" * (2 * 1024 * 1024))
+        return lambda: descriptor.write_bytes(original)
     raise AssertionError(f"unknown discovery variant: {variant}")
 
 
@@ -172,6 +215,92 @@ def _discovery_mutation(
     ],
 )
 def test_public_discovery_refusal_restores_and_reuses_environment(
+    tmp_path: Path,
+    variant: str,
+    expected_code: str,
+    expected_message: str,
+    indexed: bool,
+) -> None:
+    install, repository, support, request = _discovery_fixture(tmp_path, indexed=indexed)
+    valid = discover_creation_environment(support, request, repository=repository)
+    valid_wire = valid.to_dict()
+    valid_digest = valid.digest
+    before = _tree_snapshot(tmp_path)
+    restore = _discovery_mutation(variant, install, repository)
+    mutated = _tree_snapshot(tmp_path)
+    try:
+        with pytest.raises(CreationEnvironmentError) as error:
+            discover_creation_environment(support, request, repository=repository)
+        assert error.value.code == expected_code
+        assert error.value.message == expected_message
+        assert str(error.value) == expected_message
+        assert _tree_snapshot(tmp_path) == mutated
+    finally:
+        restore()
+
+    assert _tree_snapshot(tmp_path) == before
+    recovered = discover_creation_environment(support, request, repository=repository)
+    assert recovered.to_dict() == valid_wire
+    assert recovered.digest == valid_digest
+
+
+@pytest.mark.parametrize(
+    ("variant", "expected_code", "expected_message", "indexed"),
+    [
+        (
+            "package-metadata-nonregular",
+            "CUBEMX_PACKAGE_INVALID",
+            "firmware package metadata is unavailable",
+            False,
+        ),
+        (
+            "package-metadata-oversized",
+            "CUBEMX_PACKAGE_INVALID",
+            "firmware package metadata is oversized",
+            False,
+        ),
+        (
+            "package-depth",
+            "CUBEMX_PACKAGE_INVALID",
+            "firmware package path is too deep",
+            False,
+        ),
+        (
+            "mcu-index-missing",
+            "CUBEMX_MCU_DESCRIPTOR_INVALID",
+            "CubeMX MCU descriptor index is unavailable",
+            True,
+        ),
+        (
+            "indexed-descriptor-oversized",
+            "CUBEMX_MCU_DESCRIPTOR_INVALID",
+            "CubeMX MCU descriptor is oversized",
+            True,
+        ),
+        (
+            "mcu-database-missing",
+            "CUBEMX_MCU_DESCRIPTOR_INVALID",
+            "CubeMX MCU descriptor database is unavailable",
+            False,
+        ),
+        (
+            "direct-descriptor-oversized",
+            "CUBEMX_MCU_DESCRIPTOR_INVALID",
+            "CubeMX MCU descriptor is oversized",
+            False,
+        ),
+    ],
+    ids=[
+        "package-metadata-nonregular",
+        "package-metadata-oversized",
+        "package-depth",
+        "mcu-index-missing",
+        "indexed-descriptor-oversized",
+        "mcu-database-missing",
+        "direct-descriptor-oversized",
+    ],
+)
+def test_creation_environment_residual_refusal_restores_and_reuses_environment(
     tmp_path: Path,
     variant: str,
     expected_code: str,
