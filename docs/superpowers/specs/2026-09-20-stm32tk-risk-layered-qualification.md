@@ -9,6 +9,49 @@ diffs. No remote action is authorized by this amendment.
 
 ## Three runnable scenarios
 
+### User-approved internal unit boundary — 2026-09-23
+
+The user approved the primary's proposal to admit a bounded internal pure-unit
+layer to formal native coverage, with at most four hours for method validation.
+This changes test-entry eligibility, not the coverage algorithm, denominator,
+frozen file membership, release percentages or mandatory workflow assertions.
+Baseline integration is 85e6abfb91061b8dffc2f48dbb454ff226f9aff1; product RC4 is
+968cbb69b1f54b95a8fdc18a550481f6ff7c1268; U60 remains canonical until a reviewed
+union of accepted, matching-source raw data replaces it.
+
+Each admitted internal entry must be named in the existing execution plan and
+bound to its Git source blob. Review its transitive calls before implementation.
+It may parse or compare ordinary wire values and publicly constructed models,
+including revision, timestamp and identity fields. It must have no filesystem,
+network, process, hardware, wall-clock, mutable-global, authorization-issuance,
+evidence-publication or lifecycle-transition side effect. Merely comparing an
+identity field is not issuing authority. Existing model construction and digest
+functions remain real and unchanged; no validation/identity/hash monkeypatch,
+private-state mutation, object-construction bypass or fake successful authority.
+
+An internal test may exercise a defensive guard that an earlier public guard
+normally dominates. It proves that internal validation contract only. Label it
+creditClass=internal-pure-unit, publicReachability=false, authorityEvidence=false,
+physicalEvidence=false. Real measured native branches may enter the formal
+numerator after independent review; do not call them public-flow or physical
+PASS. Existing critical public-flow and actual-resource evidence remains required.
+
+Two bounded unit scenarios apply: (1) constructor-valid recovery/diagnostic models
+with inconsistent cross-record relationships are rejected accurately; (2)
+Monitor wire/model parsing rejects malformed values and preserves valid control
+results. A separate measurement/integration control retains, admits and merges
+accepted matching-source parent/child raw data without manufactured arcs; it is
+not itself internal-pure-unit behavior evidence. Reuse existing tests, fixtures
+and launchers.
+Product changes, new generic frameworks, new platforms, hardware and remote
+operations are outside this amendment. Real resource faults still use public
+module/external-boundary tests with actual release and recovery proofs.
+
+Prior two-round STOP families and their history are retained. This amendment
+does not release runtime-cleanup-precedence or permit renaming an old failed
+attempt. A proposed entry intersecting a held family requires a specific primary
+design decision before implementation. Unknown reachability remains in scope.
+
 1. Begin, checkpoint, resume and complete recovery using authenticated diagnostic
    and build/test evidence. An invalid identity, stale revision, corrupt chain or
    duplicate request must not create unauthorized evidence or advance state.
