@@ -1,6 +1,6 @@
 # Current native coverage result
 
-## Current U59 and Windows native supplement — 2026-09-23
+## Current U60 and retained Windows native supplement — 2026-09-23
 
 Frozen product/RC4 source is 968cbb69b1f54b95a8fdc18a550481f6ff7c1268.
 The Monitor lock-allocation recovery correction and its affected source/native
@@ -12,24 +12,40 @@ implied by this report update.
 
 | Frozen scope | Covered / total | Ratio | Remaining release branches |
 | --- | ---: | ---: | ---: |
-| Toolkit overall |12005/13592|88.3240%|228 to90%|
-| Toolkit risk-core-v2 |11387/12918|88.1483%|240 to90%|
+| Toolkit overall |12012/13592|88.3755%|221 to90%|
+| Toolkit risk-core-v2 |11394/12918|88.2025%|233 to90%|
 | Monitor overall/risk |2752/2956|93.0988%|overall90 met;57 to95%risk|
 
-Toolkit gaps overlap. U59 replaces changed runtime source and adds8covered/
-12total branches; it does not close old gaps in unchanged sources. Canonical
-SHA256:01A3DBC0A1BAA9400A82F5744B4FF50D6B2F288B7CF352B9B66A0E9051D87A32.
-Parent and both actual Python child shards are retained. The five named critical
+Toolkit gaps overlap. U60 adds7actual Toolkit core branches, with no product or
+denominator change; Monitor adds0. Canonical
+SHA256:C2534F2A90C90E69DF1299878DDED4FA6B6E74E71E958DD14DF761DE895961FC.
+U59's parent and both actual Python child shards are retained. The five named critical
 behavior families retain their scoped acceptance. Release remains UNMET for
 coverage and the final requirement-by-requirement applicability audit; neither
 the corrected Monitor defect nor Windows native capability remains a blocker.
 Original Toolkit95 deficits remain historical and nonblocking, with unchanged
 file scopes, branch method and subprocess collection requirements.
 
-Evidence: r10/e/risk-v2/union59, r10/e/rc4/primary-admission.json, and
+Evidence: r10/e/risk-v2/union60, r10/e/rc4/primary-admission.json, and
 r10/e/python-final/windows-symlinks-rc4-current/primary-admission.json.
 The existing local-release plan and shared ledger own current execution scopes.
 The following U58 findings and estimates are historical, not current blockers.
+
+The Creation supplement verifies real metadata type/size and path-depth refusal,
+missing MCU index/database and oversized direct/indexed descriptors. Every
+refusal leaves the fixture unchanged; restoring original bytes recovers the
+same public discovery result and digest. All seven variants passed once in
+3.3949133seconds. Native composition took8.937seconds; plan-to-admission was
+1266.798seconds, with one actual suite and overlapping independent review.
+Complete148source binding is147raw-equal/1qualified newline-only; the fresh
+108Toolkit-file raw and both126-file exact unions preserve every old arc.
+The original wrong-basename postprocess failure is retained. Effective run
+environment produced valid raw; established explicit-file aggregation fixed
+measurement without rerunning behavior. Independent data review accepted it;
+current-provenance and historical95 labels were corrected before promotion.
+No reliable total completion range follows from this small group's yield:
+233Toolkit and57Monitor core branches remain with mixed/unknown reachability.
+Next scope is grouped reachability assessment, not an unbounded test patch loop.
 
 The subsequent public cleanup-precedence supplement stopped after two review
 rounds. Its corrected run2 passed four concrete paths in3.7954967seconds, but
