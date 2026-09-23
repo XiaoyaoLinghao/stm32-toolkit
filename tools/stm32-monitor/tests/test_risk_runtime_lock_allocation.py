@@ -101,11 +101,9 @@ def test_public_start_lock_fdopen_failure_releases_descriptor_and_allows_retry(
         service_factory=lambda *args, **kwargs: _ready_service(*args, **kwargs),
     )
     asyncio.run(replacement.start(config))
-    try:
-        assert lock_path.read_bytes() == b"\0"
-        assert lock_path.stat().st_size == 1
-    finally:
-        asyncio.run(replacement.stop())
+    asyncio.run(replacement.stop())
+    assert lock_path.read_bytes() == b"\0"
+    assert lock_path.stat().st_size == 1
     assert {
         path.relative_to(config.project_root).as_posix(): path.read_bytes()
         for path in config.project_root.rglob("*")
