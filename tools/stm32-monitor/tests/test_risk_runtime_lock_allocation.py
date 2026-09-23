@@ -206,10 +206,8 @@ def test_public_start_initialization_failure_releases_lock_and_allows_retry(
         service_factory=lambda *args, **kwargs: _ready_service(*args, **kwargs),
     )
     asyncio.run(replacement.start(config))
-    try:
-        assert lock_path.read_bytes() == b"\0"
-    finally:
-        asyncio.run(replacement.stop())
+    asyncio.run(replacement.stop())
+    assert lock_path.read_bytes() == b"\0"
 
 
 def _hold_public_runtime(
