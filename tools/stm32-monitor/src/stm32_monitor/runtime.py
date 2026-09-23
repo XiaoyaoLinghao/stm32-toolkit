@@ -176,7 +176,7 @@ class _WorkspaceLock:
             self._validate_descriptor(expected, descriptor)
             self._validate_shape(descriptor)
 
-            handle = os.fdopen(descriptor, "r+b", closefd=True)
+            handle = os.fdopen(descriptor, "r+b", buffering=0, closefd=True)
             descriptor = -1
             self._validate_descriptor(expected, handle.fileno())
             size = self._validate_shape(handle.fileno())

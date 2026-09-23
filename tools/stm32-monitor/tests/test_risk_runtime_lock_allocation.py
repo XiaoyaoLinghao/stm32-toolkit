@@ -350,3 +350,185 @@ def test_public_runtime_lock_competing_process_is_busy_then_reusable(tmp_path: P
             replacement, config, paths.workspace_root / ".monitor-runtime.lock"
         )
     )
+
+
+def test_public_flush_failure_settles_before_contending_start_and_retries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import stm32_monitor.runtime as runtime_module
+    from stm32_monitor.runtime import MonitorRuntimeError
+    from stm32_toolkit.paths import WorkspacePaths
+    from stm32_toolkit.project_model import load_project_model
+
+    runtime, config, groups, histories, exporters, samplers, observations, requests = (
+        _protocol_runtime(tmp_path)
+    )
+    project = config.project_root
+    data = config.data_root
+    model = load_project_model(project)
+    paths = WorkspacePaths.from_roots(data, project, model.logical_project_id, "session-a")
+    lock_path = paths.workspace_root / ".monitor-runtime.lock"
+
+    context = multiprocessing.get_context("spawn")
+    release = context.Event()
+    events = context.Queue()
+    child_holder: dict[str, object] = {}
+    coordination: dict[str, object] = {}
+    original_fdopen = runtime_module.os.fdopen
+
+    class FailingFlushHandle:
+        def __init__(self, wrapped) -> None:
+            self._wrapped = wrapped
+
+        def __getattr__(self, name):
+            return getattr(self._wrapped, name)
+
+        def flush(self):
+            if not coordination.get("flush_failed"):
+                coordination["flush_failed"] = True
+                raise OSError(errno.EIO, "injected lock flush failure")
+            return self._wrapped.flush()
+
+        def close(self):
+            child = context.Process(
+                target=_hold_public_runtime,
+                args=(str(project), str(data), release, events),
+            )
+            child_holder["process"] = child
+            child.start()
+            try:
+                started_event = events.get(timeout=15)
+            except queue.Empty as error:
+                coordination["child_start_error"] = type(error).__name__
+                raise
+            coordination["child_started"] = started_event
+            return self._wrapped.close()
+
+    def instrumented_fdopen(fd: int, *args: object, **kwargs: object):
+        coordination["descriptor"] = fd
+        return FailingFlushHandle(original_fdopen(fd, *args, **kwargs))
+
+    monkeypatch.setattr(runtime_module.os, "fdopen", instrumented_fdopen)
+    child = None
+    final_event = None
+    try:
+        with pytest.raises(MonitorRuntimeError) as caught:
+            asyncio.run(runtime.start(config))
+        assert caught.value.code == "MONITOR_RUNTIME_BUSY"
+        assert caught.value.message == "A Monitor runtime already owns this workspace"
+        assert coordination["flush_failed"] is True
+        started_event = coordination["child_started"]
+        assert isinstance(started_event, dict)
+        assert started_event["event"] == "started"
+        assert type(started_event["pid"]) is int
+        child = child_holder["process"]
+        assert child.is_alive()
+        assert not groups
+        assert not histories
+        assert not exporters
+        assert not samplers
+        assert not observations
+        assert not requests
+    finally:
+        monkeypatch.setattr(runtime_module.os, "fdopen", original_fdopen)
+        release.set()
+        child = child_holder.get("process")
+        if child is not None:
+            child.join(15)
+            if child.is_alive():
+                child.terminate()
+                child.join(5)
+            if child.exitcode == 0:
+                try:
+                    final_event = events.get(timeout=5)
+                except queue.Empty:
+                    final_event = None
+        events.close()
+        events.join_thread()
+
+    assert child is not None
+    assert child.exitcode == 0
+    assert isinstance(final_event, dict)
+    assert final_event["event"] == "stopped"
+    assert type(final_event["pid"]) is int
+    assert final_event["started"] is True
+    assert final_event["stopped"] is True
+    assert final_event["errorType"] is None
+    assert final_event["errorCode"] is None
+    print(json.dumps({"childRuntime": final_event}, sort_keys=True))
+
+    asyncio.run(_start_stop_and_assert_released(runtime, config, lock_path))
+
+
+def test_public_cleanup_failure_closes_real_lock_descriptor_and_retries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import stm32_monitor.runtime as runtime_module
+    from stm32_monitor.runtime import MonitorRuntimeError
+    from stm32_toolkit.paths import WorkspacePaths
+    from stm32_toolkit.project_model import load_project_model
+
+    runtime, config, groups, histories, exporters, samplers, observations, requests = (
+        _protocol_runtime(tmp_path)
+    )
+    project = config.project_root
+    data = config.data_root
+    model = load_project_model(project)
+    paths = WorkspacePaths.from_roots(data, project, model.logical_project_id, "session-a")
+    lock_path = paths.workspace_root / ".monitor-runtime.lock"
+
+    original_fdopen = runtime_module.os.fdopen
+    original_fsync = runtime_module.os.fsync
+    captured_fds: list[int] = []
+    close_calls = 0
+    fsync_calls = 0
+
+    class CloseThenRaiseHandle:
+        def __init__(self, wrapped) -> None:
+            self._wrapped = wrapped
+
+        def __getattr__(self, name):
+            return getattr(self._wrapped, name)
+
+        def close(self):
+            nonlocal close_calls
+            close_calls += 1
+            self._wrapped.close()
+            raise OSError(errno.EIO, "injected lock close failure")
+
+    def instrumented_fdopen(fd: int, *args: object, **kwargs: object):
+        handle = original_fdopen(fd, *args, **kwargs)
+        captured_fds.append(handle.fileno())
+        return CloseThenRaiseHandle(handle)
+
+    def failing_fsync(fd: int) -> None:
+        nonlocal fsync_calls
+        fsync_calls += 1
+        if fsync_calls == 1:
+            raise OSError(errno.EIO, "injected lock fsync failure")
+        original_fsync(fd)
+
+    monkeypatch.setattr(runtime_module.os, "fdopen", instrumented_fdopen)
+    monkeypatch.setattr(runtime_module.os, "fsync", failing_fsync)
+    with pytest.raises(MonitorRuntimeError) as caught:
+        asyncio.run(runtime.start(config))
+    assert caught.value.code == "MONITOR_CLEANUP_FAILED"
+    assert caught.value.message == "Monitor runtime cleanup failed"
+    assert close_calls == 1
+    assert fsync_calls == 1
+    assert len(captured_fds) == 1
+    with pytest.raises(OSError) as closed_descriptor:
+        os.fstat(captured_fds[0])
+    assert closed_descriptor.value.errno == errno.EBADF
+    assert lock_path.read_bytes() == b"\0"
+    assert not (paths.session_root / "monitor-runtime.json").exists()
+    assert not groups
+    assert not histories
+    assert not exporters
+    assert not samplers
+    assert not observations
+    assert not requests
+
+    monkeypatch.setattr(runtime_module.os, "fdopen", original_fdopen)
+    monkeypatch.setattr(runtime_module.os, "fsync", original_fsync)
+    asyncio.run(_start_stop_and_assert_released(runtime, config, lock_path))
