@@ -31,6 +31,18 @@ r10/e/python-final/windows-symlinks-rc4-current/primary-admission.json.
 The existing local-release plan and shared ledger own current execution scopes.
 The following U58 findings and estimates are historical, not current blockers.
 
+The subsequent public cleanup-precedence supplement stopped after two review
+rounds. Its corrected run2 passed four concrete paths in3.7954967seconds, but
+fdopen fault wrappers still lack the required pre-injection target check and
+non-target delegation. The observed single descriptor's true lock identity,
+cleanup calls, project preservation and retry support limited behavior evidence;
+they do not grant candidate acceptance or formal native credit. Candidate
+fe1ea53ff7f1f8f9588b41f8e7ce1cd13302a9ce is not integrated. Run1's oracle failure
+and run2's raw data are retained in r10/e/risk-v2/runtime-cleanup-precedence;
+neither is merged into U59. Product and all148 resources remain unchanged.
+Formal increment0, no third local patch/run, no threshold or scope reduction.
+Remaining coverage cost has no reliable finite range from this batch's yield.
+
 ## Retained accepted U58 result — 2026-09-23
 
 U58 is ACCEPTED_NATIVE_DATA after independent behavior and native review.
