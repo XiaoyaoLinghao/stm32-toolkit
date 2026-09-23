@@ -1,6 +1,37 @@
 # Current native coverage result
 
-## Current U58 result — 2026-09-23
+## Current U59 and Windows native supplement — 2026-09-23
+
+Frozen product/RC4 source is 968cbb69b1f54b95a8fdc18a550481f6ff7c1268.
+The Monitor lock-allocation recovery correction and its affected source/native
+and installed-package checks are accepted. Seven actual Windows symlink checks
+are separately accepted, with seven PASS, zero skips/failures/errors and exit0.
+They add zero native coverage. Earlier accepted package and physical evidence
+remains under its actual identity and applicable scope; no acceptance rerun is
+implied by this report update.
+
+| Frozen scope | Covered / total | Ratio | Remaining release branches |
+| --- | ---: | ---: | ---: |
+| Toolkit overall |12005/13592|88.3240%|228 to90%|
+| Toolkit risk-core-v2 |11387/12918|88.1483%|240 to90%|
+| Monitor overall/risk |2752/2956|93.0988%|overall90 met;57 to95%risk|
+
+Toolkit gaps overlap. U59 replaces changed runtime source and adds8covered/
+12total branches; it does not close old gaps in unchanged sources. Canonical
+SHA256:01A3DBC0A1BAA9400A82F5744B4FF50D6B2F288B7CF352B9B66A0E9051D87A32.
+Parent and both actual Python child shards are retained. The five named critical
+behavior families retain their scoped acceptance. Release remains UNMET for
+coverage and the final requirement-by-requirement applicability audit; neither
+the corrected Monitor defect nor Windows native capability remains a blocker.
+Original Toolkit95 deficits remain historical and nonblocking, with unchanged
+file scopes, branch method and subprocess collection requirements.
+
+Evidence: r10/e/risk-v2/union59, r10/e/rc4/primary-admission.json, and
+r10/e/python-final/windows-symlinks-rc4-current/primary-admission.json.
+The existing local-release plan and shared ledger own current execution scopes.
+The following U58 findings and estimates are historical, not current blockers.
+
+## Retained accepted U58 result — 2026-09-23
 
 U58 is ACCEPTED_NATIVE_DATA after independent behavior and native review.
 Accepted test base is8c533208b509811562cec9ec313dd3000a928573; design return
@@ -60,7 +91,7 @@ change the cost. The reviewed probe alternatives offer at most2branches each
 for20-60minutes of preparation and remain unlaunched. A next group needs a
 clear public-risk purpose and feasible aggregate gain before implementation.
 
-## Subsequent bounded assessment — no coverage change
+## Historical post-U58 bounded assessment — no coverage change
 
 The engineering/configuration and tool-support assessment released no new
 suite and adds0formal branches. It preserves U58 and every denominator. A
