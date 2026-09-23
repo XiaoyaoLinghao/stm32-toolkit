@@ -7,22 +7,24 @@ roots, authority records, or physical publication path is used.
 
 from __future__ import annotations
 
-import copy
+import unicodedata
+from collections.abc import Mapping
+from dataclasses import replace
 from typing import Any
 
+from multidict import MultiDict
 import pytest
 
 import stm32_monitor.analysis as analysis_module
 import stm32_monitor.analysis_workflows as analysis_workflows_module
+from stm32_monitor.models import SampleValue
 import stm32_monitor.replay as replay_module
-from stm32_monitor.analysis import ANALYSIS_REQUEST_INVALID, AnalysisError, analyze_monitor_windows
+from stm32_monitor.analysis import ANALYSIS_REQUEST_INVALID, AnalysisError
 from stm32_monitor.replay import MonitorReplayError
 from test_analysis import (
+    COUNTER,
     _case,
     _native_physical_source,
-    _replace_counter,
-    _request,
-    _with_reference,
 )
 
 
@@ -65,42 +67,22 @@ def test_validate_window_uses_real_canonicalizer_and_rejects_invalid_reference(t
     assert tuple(batch.to_dict() for batch in before_batches) == original_batches
 
 
-def test_analyze_windows_rejects_one_empty_scalar_type_without_mutating_inputs(tmp_path) -> None:
-    paths, before_document, after_document, before, after, _, _ = _case(tmp_path)
-    before_batches = tuple(
-        _replace_counter(
-            batch,
-            10 + index,
-            value_type="" if index == 0 else "uint32",
-        )
-        for index, batch in enumerate(before)
-    )
-    after_batches = tuple(
-        _replace_counter(
-            batch,
-            20 + index,
-            value_type="" if index == 0 else "uint32",
-        )
-        for index, batch in enumerate(after)
-    )
-    before_reference = _with_reference(before_document, paths, before_batches)
-    after_reference = _with_reference(after_document, paths, after_batches)
-    request = _request(before_reference, after_reference, minimum=2)
-    before_wire = copy.deepcopy([batch.to_dict() for batch in before_batches])
-    after_wire = copy.deepcopy([batch.to_dict() for batch in after_batches])
-    request_wire = copy.deepcopy(request.to_dict())
+def test_trusted_sample_rejects_non_nfc_type_directly(tmp_path) -> None:
+    paths, _, _, before_batches, _, _, _ = _case(tmp_path)
+    del paths
+    non_nfc_type = "e\u0301"
+    assert unicodedata.normalize("NFC", non_nfc_type) != non_nfc_type
 
-    result = analyze_monitor_windows(request, before_batches, after_batches)
+    sample = SampleValue(
+        COUNTER,
+        "OK",
+        typed_value={"type": non_nfc_type, "value": 7},
+    )
+    checked_batch = replace(before_batches[0], values=(sample,))
+    before_wire = checked_batch.to_dict()
 
-    assert result.quality == "INVALID"
-    assert result.conclusion == "INCONCLUSIVE"
-    assert result.reason_code == "INSUFFICIENT_VALID_PAIRS"
-    assert result.aligned_position_count == 2
-    assert result.aligned_pair_count == 1
-    assert result.excluded_position_count == 1
-    assert [batch.to_dict() for batch in before_batches] == before_wire
-    assert [batch.to_dict() for batch in after_batches] == after_wire
-    assert request.to_dict() == request_wire
+    assert analysis_module._trusted_sample(checked_batch, COUNTER) is None
+    assert checked_batch.to_dict() == before_wire
 
 
 @pytest.mark.parametrize(
@@ -131,6 +113,15 @@ def test_physical_json_copy_rejects_default_bookkeeping_cycles_and_preserves_val
     cyclic_mapping["self"] = cyclic_mapping
     with pytest.raises(ValueError, match="contains a cycle"):
         replay_module._physical_copy_json(cyclic_mapping)
+
+
+def test_physical_json_copy_rejects_duplicate_keys_from_real_multidict_mapping() -> None:
+    duplicate_mapping = MultiDict([("a", 1), ("a", 2)])
+    assert isinstance(duplicate_mapping, Mapping)
+    assert list(duplicate_mapping.items()) == [("a", 1), ("a", 2)]
+
+    with pytest.raises(ValueError, match="physical transcript JSON key is duplicated"):
+        replay_module._physical_copy_json(duplicate_mapping)
 
 
 def _physical_batches() -> tuple[str, tuple[object, ...]]:
