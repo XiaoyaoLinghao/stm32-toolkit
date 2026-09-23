@@ -1,5 +1,58 @@
 # Current native coverage result
 
+## Current closeout assessment — 2026-09-23
+
+U60 remains unchanged; this assessment adds0formal branches and runs0tests.
+The30-minute assessment concluded in17m46s. Existing owners were retained,
+none were interrupted, and no product/test implementation was released.
+The current known candidates do not establish a credible route to233Toolkit
+and57Monitor core branches. The prior0/7increment batches do not justify
+continuing serial isolated cases. No threshold, scope, denominator or required
+subprocess collection rule changes.
+
+| Current missing core branches | Toolkit | Monitor |
+| --- | ---: | ---: |
+| Legal isolated candidates; executable grouped gains0 |4|0|
+| Specific non-Windows prerequisite; gain not yet proved |8|1|
+| Held repeated-failure families |21|30|
+| Remaining reachability/trigger design unknown |1491|173|
+| Total missing (not the smaller release deficit) |1524|204|
+
+The engineering line's15static candidate edges and Monitor's41public-prefix/
+held edges are unproven potential, not promised credit. Unknown paths remain
+in scope. Many external-dependency failures lack a lawful deterministic
+trigger; that is a test-design gap, not proof of an unavailable environment or
+a product defect. Missing authenticated producer graphs, exact target fault
+scope, and distinct POSIX prerequisites are stated in the existing plan.
+
+The primary design decision closes runtime-cleanup-precedence as
+STOP_THIS_ROUTE_FOR_1_0, retaining its name, two rounds, unaccepted candidate
+and four limited actual behavior observations. No third local patch is
+released. Existing native-report analysis shows only5candidate new edges;
+even a qualified replacement would still leave52Monitor branches. The precise
+descriptor/handle ownership and narrowly attributed external-fault contract
+are recorded in the plan for any future separately justified design.
+
+Read-only final applicability reconciliation preserves every accepted package,
+Windows, critical-risk, UI/performance and physical evidence limit. Gate10 is
+retained and already satisfied by the subsequent six-surface composition
+mapping, current4Toolkit/3Monitor nodes and8unchanged browser nodes. The
+independent reviewer withdrew the obsolete early-matrix gap. The current
+release matrix binds the exact mapping; no successful check is repeated and
+no historical invocation is relabelled as current RC4 execution.
+
+The applicability batch took 61m44s (06:26:53Z to 07:28:36.517280Z),
+exceeding its 60m budget by 1m44s. This is a recorded execution deviation;
+no further suite or implementation is released. The independent review's
+ledger/matrix synchronization condition is fulfilled. Subsequent work only
+records the result; no formal coverage increment or new measurement is claimed.
+
+Release remains UNACCEPTED for its coverage requirements. Keep RC4 frozen;
+the next viable path needs a bounded legal-input/producer design proving
+sufficient distinct gains, or a concrete named missing environment. Any
+acceptance-policy alternative requires a separate user decision. None is
+approved or applied, and no Toolkit95 optimization is released.
+
 ## Current U60 and retained Windows native supplement — 2026-09-23
 
 Frozen product/RC4 source is 968cbb69b1f54b95a8fdc18a550481f6ff7c1268.
@@ -21,7 +74,8 @@ denominator change; Monitor adds0. Canonical
 SHA256:C2534F2A90C90E69DF1299878DDED4FA6B6E74E71E958DD14DF761DE895961FC.
 U59's parent and both actual Python child shards are retained. The five named critical
 behavior families retain their scoped acceptance. Release remains UNMET for
-coverage and the final requirement-by-requirement applicability audit; neither
+coverage; the later read-only applicability reconciliation above retains all
+non-coverage gates and their limits. Neither
 the corrected Monitor defect nor Windows native capability remains a blocker.
 Original Toolkit95 deficits remain historical and nonblocking, with unchanged
 file scopes, branch method and subprocess collection requirements.
