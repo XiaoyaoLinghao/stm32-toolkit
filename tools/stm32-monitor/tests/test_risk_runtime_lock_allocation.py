@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import errno
+import json
 import multiprocessing
 import os
+import queue
 from pathlib import Path
 
 import pytest
@@ -14,6 +16,17 @@ from test_runtime import (
     _protocol_runtime,
     _ready_service,
 )
+
+
+async def _start_stop_and_assert_released(runtime, config, lock_path: Path) -> None:
+    await runtime.start(config)
+    try:
+        record = runtime.runtime_record
+    finally:
+        await runtime.stop()
+    assert not record.exists()
+    assert lock_path.read_bytes() == b"\0"
+    assert lock_path.stat().st_size == 1
 
 
 @pytest.mark.parametrize(
@@ -100,10 +113,7 @@ def test_public_start_lock_fdopen_failure_releases_descriptor_and_allows_retry(
         observation_factory=lambda *_args, **_kwargs: None,
         service_factory=lambda *args, **kwargs: _ready_service(*args, **kwargs),
     )
-    asyncio.run(replacement.start(config))
-    asyncio.run(replacement.stop())
-    assert lock_path.read_bytes() == b"\0"
-    assert lock_path.stat().st_size == 1
+    asyncio.run(_start_stop_and_assert_released(replacement, config, lock_path))
     assert {
         path.relative_to(config.project_root).as_posix(): path.read_bytes()
         for path in config.project_root.rglob("*")
@@ -205,17 +215,14 @@ def test_public_start_initialization_failure_releases_lock_and_allows_retry(
         observation_factory=lambda *_args, **_kwargs: None,
         service_factory=lambda *args, **kwargs: _ready_service(*args, **kwargs),
     )
-    asyncio.run(replacement.start(config))
-    asyncio.run(replacement.stop())
-    assert lock_path.read_bytes() == b"\0"
+    asyncio.run(_start_stop_and_assert_released(replacement, config, lock_path))
 
 
 def _hold_public_runtime(
     project_root: str,
     data_root: str,
-    ready: object,
     release: object,
-    errors,
+    events,
 ) -> None:
     from stm32_monitor.models import MonitorConfig
     from stm32_monitor.runtime import MonitorRuntime
@@ -229,23 +236,39 @@ def _hold_public_runtime(
             observation_factory=lambda *_args, **_kwargs: None,
             service_factory=lambda *args, **kwargs: _ready_service(*args, **kwargs),
         )
+        started = False
+        stopped = False
+        error_type = None
+        error_code = None
         try:
             await runtime.start(
                 MonitorConfig(Path(project_root), Path(data_root), "session-a")
             )
-            ready.set()
+            started = True
+            events.put({"event": "started", "pid": os.getpid()})
             while not release.is_set():
                 await asyncio.sleep(0.01)
-            await runtime.stop()
         except BaseException as error:
-            errors.put(
-                (
-                    type(error).__name__,
-                    getattr(error, "code", None),
-                    getattr(error, "message", str(error)),
-                )
+            error_type = type(error).__name__
+            error_code = getattr(error, "code", None)
+        finally:
+            if started:
+                try:
+                    await runtime.stop()
+                    stopped = True
+                except BaseException as error:
+                    error_type = type(error).__name__
+                    error_code = getattr(error, "code", None)
+            events.put(
+                {
+                    "event": "stopped" if stopped else "error",
+                    "pid": os.getpid(),
+                    "started": started,
+                    "stopped": stopped,
+                    "errorType": error_type,
+                    "errorCode": error_code,
+                }
             )
-            ready.set()
 
     asyncio.run(scenario())
 
@@ -253,22 +276,32 @@ def _hold_public_runtime(
 def test_public_runtime_lock_competing_process_is_busy_then_reusable(tmp_path: Path) -> None:
     from stm32_monitor.models import MonitorConfig
     from stm32_monitor.runtime import MonitorRuntime, MonitorRuntimeError
+    from stm32_toolkit.paths import WorkspacePaths
+    from stm32_toolkit.project_model import load_project_model
 
     project = _project(tmp_path)
     data = (tmp_path / "data").resolve()
     config = MonitorConfig(project, data, "session-a")
+    model = load_project_model(project)
+    paths = WorkspacePaths.from_roots(data, project, model.logical_project_id, "session-a")
     context = multiprocessing.get_context("spawn")
-    ready = context.Event()
     release = context.Event()
-    errors = context.Queue()
+    events = context.Queue()
     owner = context.Process(
         target=_hold_public_runtime,
-        args=(str(project), str(data), ready, release, errors),
+        args=(str(project), str(data), release, events),
     )
     owner.start()
+    final_event = None
     try:
-        assert ready.wait(15), "public child runtime did not reach start"
-        assert errors.empty()
+        try:
+            started_event = events.get(timeout=15)
+        except queue.Empty:
+            pytest.fail("public child runtime did not report start")
+        assert started_event["event"] == "started"
+        assert type(started_event["pid"]) is int
+        assert owner.is_alive(), "public child runtime exited before contention"
+        print(json.dumps({"childRuntime": started_event}, sort_keys=True))
         contender = MonitorRuntime(
             group_store_factory=FakeStore,
             history_store_factory=FakeStore,
@@ -287,8 +320,22 @@ def test_public_runtime_lock_competing_process_is_busy_then_reusable(tmp_path: P
         if owner.is_alive():
             owner.terminate()
             owner.join(5)
+        if owner.exitcode == 0:
+            try:
+                final_event = events.get(timeout=5)
+            except queue.Empty:
+                final_event = None
+        events.close()
+        events.join_thread()
     assert owner.exitcode == 0
-    assert errors.empty()
+    assert final_event is not None
+    assert final_event["event"] == "stopped"
+    assert type(final_event["pid"]) is int
+    assert final_event["started"] is True
+    assert final_event["stopped"] is True
+    assert final_event["errorType"] is None
+    assert final_event["errorCode"] is None
+    print(json.dumps({"childRuntime": final_event}, sort_keys=True))
 
     replacement = MonitorRuntime(
         group_store_factory=FakeStore,
@@ -298,5 +345,8 @@ def test_public_runtime_lock_competing_process_is_busy_then_reusable(tmp_path: P
         observation_factory=lambda *_args, **_kwargs: None,
         service_factory=lambda *args, **kwargs: _ready_service(*args, **kwargs),
     )
-    asyncio.run(replacement.start(config))
-    asyncio.run(replacement.stop())
+    asyncio.run(
+        _start_stop_and_assert_released(
+            replacement, config, paths.workspace_root / ".monitor-runtime.lock"
+        )
+    )
