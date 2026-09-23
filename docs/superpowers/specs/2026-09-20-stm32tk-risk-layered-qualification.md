@@ -9,6 +9,47 @@ diffs. No remote action is authorized by this amendment.
 
 ## Three runnable scenarios
 
+### User-approved named internal I/O boundary — 2026-09-24
+
+The user accepted the preceding concrete proposal with "continue" after the
+primary explicitly asked approval for this boundary. Integration base is
+3de5e2a0010d96300d33dd3d41edddb672fd40f3; product/RC4 remains968cbb69 and
+canonical coverage remains U63 until qualified data is admitted.
+
+The sole additional tested entry is
+`diagnostic_workflows._read_transcript_parent`, source blob
+066716900211b530e2d673618dedc1af50120eea. Its state may be initialized by the real
+`_make_state(context)` from a real project manifest; that setup is not permission
+to test arbitrary other internal I/O entries. Real EvidenceStore objects, files,
+normal constructors, canonical serialization, content hashes, identity checks
+and transitive production validators remain unchanged. No private-state writes,
+reader/store/identity/validator replacement, fake successful authority or new
+generic fixture framework is allowed.
+
+Two component scenarios are in scope: a normally produced replay transcript
+loads successfully; constructor-valid, correctly content-addressed negative
+records with inconsistent semantic relationships are rejected without mutating
+the supplied evidence. Recheck a valid control after rejection. Each negative
+record uses its own real ID and is never represented as accepted Diagnostic
+analysis, a plan, authorization, or physical evidence. Run-owned negative copies
+must preserve the original positive evidence; ordinary store checks may reject
+inputs before a deeper reader guard, which earns no credit for that deeper guard.
+
+Classify admitted evidence as `internal-component-io`, publicReachability=false,
+authorityEvidence=false, physicalEvidence=false. This is a bounded extension to
+the earlier pure-unit layer, not a release-threshold or denominator change.
+Native parent/actual relevant subprocess data retention, matching-source
+admission and independent full-diff review remain mandatory. Existing public
+workflow, actual-resource, Windows, package and physical evidence stays required
+and is reused where applicable. Old two-round STOP families stay held.
+
+The primary fixes the exact semantic group and yield justification before
+implementation. Only the existing Luna-owned internal validation test file is
+eligible; the plan specifies the selected cases and budgets. This approval is
+not a promise that nine reader guards, or the remaining release thresholds,
+become reachable. No product changes, new system/remote/hardware authority,
+coverage exclusions or automatic follow-on branch hunting are authorized.
+
 ### User-approved internal unit boundary — 2026-09-23
 
 The user approved the primary's proposal to admit a bounded internal pure-unit
