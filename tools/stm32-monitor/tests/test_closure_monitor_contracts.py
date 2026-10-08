@@ -16,7 +16,7 @@ import stm32_monitor.analysis_workflows as analysis_workflows
 import stm32_monitor.cli as cli
 import stm32_monitor.replay as replay
 from stm32_toolkit.result import OperationResult
-from stm32_toolkit.testing.publication import TestRunRepository
+from stm32_toolkit.testing.publication import TestRunRepository as PublishedTestRunRepository
 from test_analysis_workflows import (
     _evidence_tree,
     _ingest_pair,
@@ -56,7 +56,7 @@ def test_public_probe_list_handles_empty_and_nonmapping_provider_tuples(
             listed["probes"] = ()
             empty = await runtime.dispatch("monitor.probes.list", {})
             assert empty.ok
-            assert empty.data == {"probes": []}
+            assert empty.to_dict()["data"] == {"probes": []}
 
             listed["probes"] = (object(),)
             malformed = await runtime.dispatch("monitor.probes.list", {})
@@ -104,7 +104,7 @@ def test_named_pure_model_and_identity_guards_preserve_published_replay(
     paths = _paths(tmp_path)
     evidence, before, _after = _ingest_pair(paths)
     failed_id, _fixed_id = _publish_target_pair(paths, evidence)
-    manifest = TestRunRepository(evidence).load(failed_id).manifest
+    manifest = PublishedTestRunRepository(evidence).load(failed_id).manifest
     evidence_before = _evidence_tree(evidence)
 
     assert analysis_workflows._test_identity_matches_reference(manifest, before)
