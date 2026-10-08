@@ -59,13 +59,25 @@ IDE 使用前确认最终 runtime 中真实 `pyocd.exe`、目标工作区和版�
 | 实机历史验收 | `physical-release-reconciliation.json` 及 `python-final/physical-scope-reuse-a270.json`；按原场景复用，不宣称本次有 RC4 实机运行 |
 | 部署文档适用性 | `rc4/deployment-docs-binding.json`，五份文档字节一致与引用目标复用，不等于新部署执行 |
 
-历史 Monitor retention 操作曾出现 180 ms 超时，精确阶段和根因仍未知。
-当前规定配置的性能检查已通过；该历史限制不能删除，也不能概括为所有
-取消和存储操作已无风险。细节保留在矩阵的 `historical-retention-timeout`
+历史 Monitor retention 操作曾出现 180 ms 超时，随后出现 `SQLITE_INTERRUPT`，
+且512个值已实际删除；精确中断阶段和根因仍未知。操作开始后的
+`MONITOR_STORAGE_BUSY` 不保证回滚或完成，应沿已有公开查询/恢复流程核对
+实际结果。当前规定配置的性能检查已通过，但未解释该历史故障；不能概括为
+所有取消和存储操作已无风险。细节保留在矩阵的 `historical-retention-timeout`
 及 `retention-cancellation/release-disposition-final-review.md`。
 
-U63 冻结结果：Toolkit 整体 `12029/13592`（88.5006%），risk-core-v2
-`11411/12918`（88.3341%）；Monitor 整体及核心 `2763/2956`（93.4709%）。
+U64 已接纳结果：Toolkit 整体 `12047/13592`（88.6330%），risk-core-v2
+`11429/12918`（88.4734%）；Monitor 整体及核心 `2770/2956`（93.7077%）。
+当前覆盖记录 SHA-256 为
+`E232E8C2CE82F73109D05E3B6F3E811B56949CEC50553CECFD2C4B2112E6C5D2`。
 Toolkit 两项 90% 与 Monitor 核心 95% 仍未满足，Monitor 整体 90% 已满足。
+尚缺186、198（Toolkit缺口重叠）和39个分支；未执行的异常组合仍有不确定性。
+现有资源释放证据不涵盖直接取消运行中的子进程/硬件会话及 stale-owner health
+reclaim；历史回滚仅证明已记录的锁拒绝场景，不扩展为所有部分写入都可恢复。
 本地候选交付不修改这些要求，也不代表批准发布例外。正式取舍见
 [发行计划中的待审批方案](../superpowers/plans/2026-09-19-stm32tk-1.0-local-release.md)。
+
+若用户明确批准方案中的三项一次性数值例外，并完成其余条款核对，最终说明
+将记为“按用户批准的覆盖率例外验收”，而不是“原覆盖门槛全部通过”。例外仅
+适用于本页固定RC4身份，不自动适用于后续产品、依赖或支持范围变更，也不授予
+远程发布权限。当前仍为未批准、未完成1.0验收。
