@@ -1,5 +1,38 @@
 # Current native coverage result
 
+## Current bounded closure — 2026-10-08
+
+U64 is independently reviewed and accepted as canonical native data. It composes
+accepted
+U63 with the original passing Recovery run1 PID31204 and Monitor run2 PID23188
+shards, using unchanged pinned native-union helpers. Failed Monitor run1 is
+retained and excluded. Product/RC4 remains
+`968cbb69b1f54b95a8fdc18a550481f6ff7c1268`; integrated test head is
+`a1ad90f2d9e0aa0333c8a916e4c80bf494269797`.
+
+Toolkit gains18: overall12047/13592, remaining186 to90%; frozen risk-core-v2
+11429/12918, remaining198 to90%. Monitor gains7: overall/core2770/2956,
+overall90% met and core95% remaining39. Toolkit deficits overlap. No original
+executed branches were lost;126 package-source records,108/18 report files,
+90/16 risk-core files and both native denominators are preserved.
+
+New behavior covers recovery refusal/preservation and named pure grammar;
+Monitor injected probe-list refusal/recovery, decoding/conversion and identity
+contracts. It does not claim additional physical or package execution. The
+Monitor first-run failure was a test oracle mismatch, corrected once; no product
+change. Actual suites were sequential; formal aggregation reran no tests.
+
+Evidence: `r10/e/risk-v2/union64/{execution-manifest,aggregation-result,
+integration-source-binding,core-coverage-candidate}.json`, with original runs
+under `D:\codex-tmp\cv1008\e`. The primary archived the independent reviewer's
+read-only verdict in `union64/independent-native-review.md`; admission is recorded
+in `union64/primary-admission.json`. Source/data acceptance remains separate from
+release acceptance. The finite effort closes early because no qualified material
+extension was established within the
+selection window. Release remains NOT_ACCEPTED; thresholds and prior STOPs
+remain. The following U60 assessment and all historical results are preserved
+as history, not current coverage.
+
 ## Current closeout assessment — 2026-09-23
 
 U60 remains unchanged; this assessment adds0formal branches and runs0tests.
