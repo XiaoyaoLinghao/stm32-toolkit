@@ -1,4 +1,4 @@
-# STM32 Toolkit 0.9
+# STM32 Toolkit 1.0
 
 [简体中文](README_zh-CN.md) | English
 
@@ -6,17 +6,40 @@ STM32 Toolkit is a local, Agent-neutral STM32 development control plane. The CLI
 share one product contract for project identity, Keil-to-GCC migration, builds, probe workflows,
 Monitor, tests, and evidence-driven diagnosis. Claude Code is a thin adapter to that contract.
 
-## VS09-B local candidate and runtime boundary
+## 1.0.0 local release candidate and runtime boundary
 
-This repository contains an accepted 0.9.0 VS09-B candidate. It has not been tagged, published,
-or released. The official source is
+This repository contains the pending 1.0.0 local release candidate. Final release validation and
+acceptance are owned by the primary release workflow. It has not been tagged, published, or released.
+The official source is
 `https://github.com/XiaoyaoLinghao/stm32-toolkit.git`; candidate builds bind one full 40-hex Git
 CodeHead and a closed Windows CPython 3.12 wheelhouse. The release contract is CPython `>=3.12,<3.13`; the managed interpreter is selected only from
-`DATA_ROOT/runtime/0.9.0/Scripts/python.exe`. A system interpreter is never an MCP fallback. The
+`DATA_ROOT/runtime/1.0.0/Scripts/python.exe`. A system interpreter is never an MCP fallback. The
 setup helper's CHECK mode is read-only. Bootstrap and Repair require explicit authorization,
 verify the extracted offline bundle, stage locally, validate the Toolkit/Monitor packages, run
 `pip check`, and promote only after validation.
-The accepted local 0.9.0 VS09-A candidate is the runtime and inventory base for this VS09-B slice.
+The accepted 0.9.0 candidate remains the explicitly recognized legacy runtime for Repair.
+
+Repair changes only the runtime. For an existing Schema v2 or v3 project whose producer is
+`stm32-toolkit` `0.9.0`, start a new Toolkit session after Repair, then use the guarded configure
+and build sequence below:
+
+```powershell
+stm32-toolkit --project-root C:\work\blinky project configure --dry-run --json
+stm32-toolkit --project-root C:\work\blinky project configure --apply --plan-id <plan-id> --authorized --json
+stm32-toolkit --project-root C:\work\blinky build --preset arm-debug --json
+```
+
+The configure transaction keeps the project's `generatedBy.version` truthful at `0.9.0` and emits a
+current `1.0.0` managed manifest. The following build publishes a new identity at `1.0.0`. User
+edits, malformed manifests, unknown/future producers, and stale plans retain their existing refusal
+and rollback rules.
+
+Replay evidence compatibility is backward only: 1.0 reads existing 0.9 Acceptance
+records without rewriting them. New 1.0 records can contain Diagnostic references
+that 0.9 readers reject, even when the evidence schema label is unchanged. Keep
+using 1.0 to read those records. Repair preserves the legacy runtime; that does
+not make newly created evidence readable by it. Recovery must retain the original
+state and evidence, without editing identity values or bypassing downgrade guards.
 
 The current runtime is generic: an integration may choose any absolute `TOOLKIT_ROOT`,
 `DATA_ROOT`, and `PROJECT_ROOT`. The launcher reads only `STM32_TOOLKIT_DATA_ROOT`; the CLI requires
@@ -57,12 +80,40 @@ not add a second server or a host-Python fallback.
 
 ## CLI, setup, and isolation
 
-Run `/stm32-toolkit:setup-stm32-env` first. CHECK reports `missing`, `healthy`, or `broken` and
-does not mutate the project. The generic invocation is:
+Run `/stm32-toolkit:setup-stm32-env` first when using Claude Code. For an ordinary Windows
+PowerShell session, set the three absolute paths for this checkout, its durable data, and the
+existing project. These examples use replaceable local paths and do not depend on an agent-host
+placeholder:
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File '${CLAUDE_PLUGIN_ROOT}/bin/setup-stm32-env.ps1' -Mode Check -ToolkitRoot '${CLAUDE_PLUGIN_ROOT}' -DataRoot '${CLAUDE_PLUGIN_DATA}' -ProjectRoot '${CLAUDE_PROJECT_DIR}'
+$ToolkitRoot = 'C:\tools\stm32-toolkit-1.0.0'
+$DataRoot = 'C:\data\stm32-toolkit'
+$ProjectRoot = 'C:\work\blinky'
+$SetupScript = Join-Path $ToolkitRoot 'bin\setup-stm32-env.ps1'
+
+# Always run the read-only check first.
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $SetupScript -Mode Check `
+  -ToolkitRoot $ToolkitRoot -DataRoot $DataRoot -ProjectRoot $ProjectRoot
 ```
+
+If `Check` reports `missing`, review its evidence and explicitly authorize the absent-runtime
+install before running this separate Bootstrap command:
+
+```powershell
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $SetupScript -Mode Bootstrap `
+  -ToolkitRoot $ToolkitRoot -DataRoot $DataRoot -ProjectRoot $ProjectRoot
+```
+
+If `Check` reports `repairable` for an approved 0.9.0/0.5.0/0.3.0 legacy upgrade, or `broken` for
+an existing runtime, review its source and downgrade guards and explicitly authorize Repair before
+running this separate command:
+
+```powershell
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $SetupScript -Mode Repair `
+  -ToolkitRoot $ToolkitRoot -DataRoot $DataRoot -ProjectRoot $ProjectRoot
+```
+
+`Check` is read-only. Run at most one mutation command for the decision, then repeat `Check`.
 
 ### Offline candidate build and install
 
@@ -74,15 +125,16 @@ uses only executable-plus-argument subprocesses, and does not push or publish:
 py -3.12 tools/release/build_0900_artifacts.py build `
   --repo-root C:\src\stm32-toolkit `
   --code-head <40-lowercase-hex-commit> `
-  --wheelhouse C:\tmp\p0902-wheelhouse `
-  --output-root C:\tmp\p0902-candidate
+  --wheelhouse C:\release-inputs\wheelhouse `
+  --output-root C:\release-output\stm32-toolkit-1.0.0
 ```
 
-Verify `CHECKSUMS.sha256` before extracting `stm32-toolkit-0.9.0-windows-x86_64.zip`. Point the
-generic setup command at the extracted `ToolkitRoot`, explicit `DataRoot`, and explicit
+Replace the release input and output paths with your own absolute directories. Verify
+`CHECKSUMS.sha256` before extracting `stm32-toolkit-1.0.0-windows-x86_64.zip`. Point the standalone
+setup commands above at the extracted `ToolkitRoot`, the long-lived `DataRoot`, and the existing
 `ProjectRoot`. CHECK reports bundle and `runtime-state.json` evidence; Bootstrap and Repair install
 only the manifest-listed wheels from the extracted `release/wheels/` directory with `--no-index`
-and `--no-deps`. Legacy 0.3.0/0.5.0 runtimes are quarantined during authorized Repair. A recorded
+and `--no-deps`. Legacy 0.9.0/0.5.0/0.3.0 runtimes are quarantined during authorized Repair. A recorded
 higher installed version returns `downgrade-refused`; a same-version different manifest/source
 returns `source-conflict`; unsupported future state is never rewritten. Project and Monitor data
 remain owned by their existing explicit transactions.

@@ -7,6 +7,10 @@ import pytest
 from pydantic import TypeAdapter, ValidationError
 
 from stm32_toolkit import cli, mcp_server
+from stm32_toolkit.acceptance.recovery_workflows import (
+    AcceptanceRecoveryContext,
+    begin_acceptance_attempt,
+)
 from stm32_toolkit.result import OperationResult
 
 
@@ -54,11 +58,48 @@ def test_begin_cli_and_mcp_preserve_closed_continuation(tmp_path, monkeypatch, c
 
 @pytest.mark.parametrize("change", [
     {"authorized": True}, {"kind": "bind"}, {"continuationEvidenceId": "not-a-digest"},
-    {"schema": "stm32-physical-continuation-request/2"},
+    {"schema": "stm32-physical-continuation-request/9"},
 ])
 def test_mcp_continuation_rejects_unknown_mixed_and_invalid_fields(change):
     with pytest.raises(ValidationError):
         TypeAdapter(mcp_server.ContinuationInput).validate_python({**REQUEST, **change})
+
+
+def test_v2_request_rejects_legacy_physical_scenario_before_v1_parser(tmp_path):
+    request = {
+        "schema": "stm32-physical-continuation-request/2",
+        "kind": "reuse",
+        "continuationEvidenceId": "a" * 64,
+    }
+    result = begin_acceptance_attempt(
+        AcceptanceRecoveryContext(tmp_path / "project", tmp_path / "data", "before-session"),
+        attempt_id=ATTEMPT_ID,
+        scenario_id="legacy-keil-physical-repair",
+        scenario_version="1",
+        continuation=request,
+    )
+    assert result.ok is False
+    assert result.code == "ACCEPTANCE_ATTEMPT_INPUT_INVALID"
+
+
+@pytest.mark.parametrize("continuation", [
+    [],
+    {"kind": "reuse"},
+    {"schema": "stm32-physical-continuation-request/1", "kind": "reuse", "continuationEvidenceId": "a" * 64},
+    {"schema": "stm32-physical-continuation-request/9"},
+])
+def test_finalization_rejects_malformed_or_unknown_request_as_input_invalid(
+    tmp_path, continuation
+):
+    result = begin_acceptance_attempt(
+        AcceptanceRecoveryContext(tmp_path / "project", tmp_path / "data", "before-session"),
+        attempt_id=ATTEMPT_ID,
+        scenario_id="new-cubemx-physical-repair",
+        scenario_version="1",
+        continuation=continuation,
+    )
+    assert result.ok is False
+    assert result.code == "ACCEPTANCE_ATTEMPT_INPUT_INVALID"
 
 
 def test_mcp_plan_v2_requires_proof_and_v1_rejects_it():

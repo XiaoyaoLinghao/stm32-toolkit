@@ -886,3 +886,160 @@ def test_real_dwarf_fixture_is_a_valid_cortex_m_firmware_elf(tmp_path: Path) -> 
     assert int.from_bytes(vector_bytes[4:8], "little") & ~1 == (
         evidence.reset_handler_address & ~1
     )
+
+
+def test_public_dwarf_catalog_rejects_invalid_query_cursor_and_scalar_member() -> None:
+    root = TOOL_ROOT.resolve(strict=True)
+    binding = _firmware_binding(project_root=root)
+    catalog = DwarfCatalog.from_binding(binding, root)
+    original = FIXTURE.read_bytes()
+    assert binding.project_root == root
+    assert binding.elf_path == FIXTURE_RELATIVE
+    assert binding.elf_size == len(original)
+    assert binding.elf_sha256 == hashlib.sha256(original).hexdigest()
+    assert tuple(
+        (region.origin, region.origin + region.length)
+        for region in binding.memory_regions
+        if "r" in region.attributes
+    ) == READABLE
+
+    first = catalog.variable_descriptors(binding, query="mode", limit=1)
+    assert type(first) is CatalogPage
+    assert first.to_dict() == {
+        "items": [
+            {
+                "selector": "mode_known",
+                "typeName": "RunMode",
+                "kind": "enum",
+                "byteSize": 1,
+                "signed": False,
+                "encoding": None,
+                "qualifiers": [],
+                "aliases": [],
+                "enumValues": [
+                    {"value": 0, "name": "MODE_IDLE"},
+                    {"value": 7, "name": "MODE_RUN"},
+                ],
+                "elementCount": None,
+                "elementKind": None,
+                "memberNames": [],
+            }
+        ],
+        "nextCursor": first.next_cursor,
+    }
+    assert first.next_cursor is not None
+    second = catalog.variable_descriptors(
+        binding, query="mode", cursor=first.next_cursor, limit=1
+    )
+    assert type(second) is CatalogPage
+    assert second.to_dict() == {
+        "items": [
+            {
+                "selector": "mode_unknown",
+                "typeName": "RunMode",
+                "kind": "enum",
+                "byteSize": 1,
+                "signed": False,
+                "encoding": None,
+                "qualifiers": [],
+                "aliases": [],
+                "enumValues": [
+                    {"value": 0, "name": "MODE_IDLE"},
+                    {"value": 7, "name": "MODE_RUN"},
+                ],
+                "elementCount": None,
+                "elementKind": None,
+                "memberNames": [],
+            }
+        ],
+        "nextCursor": None,
+    }
+
+    with pytest.raises(DwarfError) as query_error:
+        catalog.variable_descriptors(binding, query=123)  # type: ignore[arg-type]
+    assert query_error.value.code == "DWARF_QUERY_INVALID"
+    assert query_error.value.message == "DWARF catalog query is invalid"
+    assert str(query_error.value) == "DWARF catalog query is invalid"
+    assert dict(query_error.value.details) == {}
+
+    with pytest.raises(DwarfError) as empty_cursor_error:
+        catalog.variable_descriptors(binding, cursor="")
+    assert empty_cursor_error.value.code == "DWARF_CURSOR_INVALID"
+    assert empty_cursor_error.value.message == "DWARF catalog cursor is invalid"
+    assert str(empty_cursor_error.value) == "DWARF catalog cursor is invalid"
+    assert dict(empty_cursor_error.value.details) == {}
+
+    with pytest.raises(DwarfError) as noncanonical_error:
+        catalog.variable_descriptors(
+            binding, query="mode", cursor=first.next_cursor + "=", limit=1
+        )
+    assert noncanonical_error.value.code == "DWARF_CURSOR_INVALID"
+    assert noncanonical_error.value.message == "DWARF catalog cursor is invalid"
+    assert str(noncanonical_error.value) == "DWARF catalog cursor is invalid"
+    assert dict(noncanonical_error.value.details) == {}
+
+    with pytest.raises(DwarfError) as scalar_member_error:
+        catalog.lookup("signed32.member")
+    assert scalar_member_error.value.code == "DWARF_EXPRESSION_UNSUPPORTED"
+    assert scalar_member_error.value.message == "Member access requires a structure"
+    assert str(scalar_member_error.value) == "Member access requires a structure"
+    assert dict(scalar_member_error.value.details) == {}
+    assert FIXTURE.read_bytes() == original
+
+
+def test_public_dwarf_parser_accepts_in_root_absolute_elf_and_rejects_root_region_envelopes() -> None:
+    root = TOOL_ROOT.resolve(strict=True)
+    path = FIXTURE.resolve(strict=True)
+    original = path.read_bytes()
+    expected_size = len(original)
+    expected_sha256 = hashlib.sha256(original).hexdigest()
+
+    catalog = DwarfCatalog.from_elf(
+        path,
+        project_root=root,
+        readable_regions=READABLE,
+        expected_elf_size=expected_size,
+        expected_elf_sha256=expected_sha256,
+    )
+    assert catalog.path == FIXTURE_RELATIVE
+    assert catalog.elf_size == expected_size
+    assert catalog.elf_sha256 == expected_sha256
+    assert catalog.readable_regions == READABLE
+    assert catalog.lookup("signed32").type.kind == "integer"
+
+    with pytest.raises(DwarfError) as root_error:
+        DwarfCatalog.from_elf(
+            path,
+            project_root=object(),  # type: ignore[arg-type]
+            readable_regions=READABLE,
+            expected_elf_size=expected_size,
+            expected_elf_sha256=expected_sha256,
+        )
+    assert root_error.value.code == "DWARF_PATH_INVALID"
+    assert root_error.value.message == "Project root is invalid"
+    assert str(root_error.value) == "Project root is invalid"
+    assert dict(root_error.value.details) == {}
+
+    too_many_regions = tuple(
+        (index * 2, index * 2 + 1) for index in range(65)
+    )
+    with pytest.raises(DwarfError) as region_error:
+        DwarfCatalog.from_elf(
+            path,
+            project_root=root,
+            readable_regions=too_many_regions,
+            expected_elf_size=expected_size,
+            expected_elf_sha256=expected_sha256,
+        )
+    assert region_error.value.code == "DWARF_READABLE_REGION_INVALID"
+    assert region_error.value.message == "Too many readable memory regions"
+    assert str(region_error.value) == "Too many readable memory regions"
+    assert dict(region_error.value.details) == {}
+
+    with pytest.raises(DwarfError) as binding_error:
+        DwarfCatalog.from_binding(object())  # type: ignore[arg-type]
+    assert binding_error.value.code == "DWARF_PROVENANCE_MISMATCH"
+    assert binding_error.value.message == "Firmware binding provenance is invalid"
+    assert str(binding_error.value) == "Firmware binding provenance is invalid"
+    assert dict(binding_error.value.details) == {}
+    assert path.read_bytes() == original

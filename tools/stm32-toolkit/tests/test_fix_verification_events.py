@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from dataclasses import replace
 from pathlib import Path
 
@@ -242,6 +243,273 @@ def _verifying() -> tuple[DiagnosticSession, SourceChangeDeclaration, Verificati
     return reduce_event(session, started), source, plan, started
 
 
+def _resolved() -> DiagnosticSession:
+    session, _source, plan, previous = _verifying()
+    marker = _marker(plan)
+    attached = _event(
+        sequence=session.revision,
+        event_type="analysis.marker_attached",
+        request={"diagnostic_marker_ref": marker.to_dict()},
+        result={"marker_id": marker.marker_id},
+        previous_digest=previous.digest,
+    )
+    verifying = reduce_event(session, attached)
+    verification = _fix(plan)
+    completed = _event(
+        sequence=verifying.revision,
+        event_type="verification.completed",
+        request={"fix_verification": verification.to_dict()},
+        result={
+            "fix_verification_id": verification.fix_verification_id,
+            "status": verification.status,
+            "reason_code": verification.reason_code,
+        },
+        previous_digest=attached.digest,
+    )
+    return reduce_event(verifying, completed)
+
+
+def _lifecycle_event_variants() -> tuple[tuple[str, DiagnosticEvent], ...]:
+    session, previous = _investigating_with_hypothesis()
+    source = _source()
+    declared = _event(
+        sequence=session.revision,
+        event_type="source_change.declared",
+        request={"source_change_declaration": source.to_dict()},
+        result={"declaration_id": source.declaration_id},
+        previous_digest=previous.digest,
+    )
+    proposed = reduce_event(session, declared)
+    plan = _plan(source)
+    added = _event(
+        sequence=proposed.revision,
+        event_type="verification.plan_added",
+        request={"verification_plan": plan.to_dict()},
+        result={"verification_plan_id": plan.verification_plan_id, "plan_digest": plan.plan_digest},
+        previous_digest=declared.digest,
+    )
+    verifying = reduce_event(proposed, added)
+    started = _event(
+        sequence=verifying.revision,
+        event_type="verification.started",
+        request={"verification_plan_id": plan.verification_plan_id},
+        result={"verification_plan_id": plan.verification_plan_id},
+        previous_digest=added.digest,
+    )
+    marker = _marker(plan)
+    attached = _event(
+        sequence=started.sequence + 1,
+        event_type="analysis.marker_attached",
+        request={"diagnostic_marker_ref": marker.to_dict()},
+        result={"marker_id": marker.marker_id},
+        previous_digest=started.digest,
+    )
+    return (
+        ("declared", declared),
+        ("plan_added", added),
+        ("started", started),
+        ("marker_attached", attached),
+    )
+
+
+def test_public_lifecycle_event_result_bindings_reject_without_mutation() -> None:
+    for case_name, event in _lifecycle_event_variants():
+        candidate = event.to_dict()
+        payload = candidate["payload"]
+        assert isinstance(payload, dict)
+        result = payload["result"]
+        assert isinstance(result, dict)
+        if case_name == "declared":
+            result["declaration_id"] = "0" * 64
+        elif case_name == "plan_added":
+            result["verification_plan_id"] = "0" * 64
+            result["plan_digest"] = "1" * 64
+        elif case_name == "started":
+            result["verification_plan_id"] = "0" * 64
+        else:
+            result["marker_id"] = "0" * 64
+        before = copy.deepcopy(candidate)
+
+        with pytest.raises(DiagnosticValidationError) as error:
+            DiagnosticEvent.from_value(candidate)
+
+        assert error.value.code == DIAGNOSTIC_INVALID_EVENT
+        assert error.value.message == "event/model/operation intent is invalid"
+        assert candidate == before
+
+
+def _plan_variant(
+    plan: VerificationPlan,
+    *,
+    verification_plan_id: str | None = None,
+    diagnostic_session_id: str | None = None,
+    source_change_declaration_id: str | None = None,
+) -> VerificationPlan:
+    return VerificationPlan.new(
+        verification_plan_id=(
+            plan.verification_plan_id
+            if verification_plan_id is None
+            else verification_plan_id
+        ),
+        diagnostic_session_id=(
+            plan.diagnostic_session_id
+            if diagnostic_session_id is None
+            else diagnostic_session_id
+        ),
+        failed_before_run_id=plan.failed_before_run_id,
+        failed_before_evidence_id=plan.failed_before_evidence_id,
+        source_change_declaration_id=(
+            plan.source_change_declaration_id
+            if source_change_declaration_id is None
+            else source_change_declaration_id
+        ),
+        fixed_after_run_id=plan.fixed_after_run_id,
+        fixed_after_evidence_id=plan.fixed_after_evidence_id,
+        required_analysis_ids=plan.required_analysis_ids,
+        required_analysis_evidence_ids=plan.required_analysis_evidence_ids,
+        required_monitor_quality=plan.required_monitor_quality,
+        expected_changed=plan.expected_changed,
+    )
+
+
+def _fix_variant(
+    verification: FixVerification,
+    *,
+    source_change_declaration_id: str | None = None,
+    fixed_after_run_id: str | None = None,
+    fixed_after_evidence_id: str | None = None,
+    verification_plan_id: str | None = None,
+) -> FixVerification:
+    return FixVerification.new(
+        diagnostic_session_id=verification.diagnostic_session_id,
+        failed_before_run_id=verification.failed_before_run_id,
+        failed_before_evidence_id=verification.failed_before_evidence_id,
+        source_change_declaration_id=(
+            verification.source_change_declaration_id
+            if source_change_declaration_id is None
+            else source_change_declaration_id
+        ),
+        fixed_after_run_id=(
+            verification.fixed_after_run_id
+            if fixed_after_run_id is None
+            else fixed_after_run_id
+        ),
+        fixed_after_evidence_id=(
+            verification.fixed_after_evidence_id
+            if fixed_after_evidence_id is None
+            else fixed_after_evidence_id
+        ),
+        verification_plan_id=(
+            verification.verification_plan_id
+            if verification_plan_id is None
+            else verification_plan_id
+        ),
+        verification_plan_digest=verification.verification_plan_digest,
+        analysis_ids=verification.analysis_ids,
+        analysis_evidence_ids=verification.analysis_evidence_ids,
+        executed_operation_ids=verification.executed_operation_ids,
+        status=verification.status,
+        reason_code=verification.reason_code,
+        completed_at_utc=verification.completed_at_utc,
+    )
+
+
+def _session_contradiction(case: str) -> dict[str, object]:
+    if case in {
+        "verifying-without-active-plan",
+        "investigating-with-active-plan",
+        "open-with-lifecycle-data",
+    }:
+        session, _source_value, _plan_value, _previous = _verifying()
+        payload = session.to_dict()
+        if case == "verifying-without-active-plan":
+            payload["active_verification_plan_id"] = None
+        elif case == "investigating-with-active-plan":
+            payload["state"] = "INVESTIGATING"
+        else:
+            payload["state"] = "OPEN"
+            payload["active_verification_plan_id"] = None
+        return payload
+
+    if case in {"plan-session-mismatch", "plan-declaration-mismatch", "plan-id-mismatch"}:
+        session, source, plan, _previous = _verifying()
+        payload = session.to_dict()
+        alternate_plan_id = "a" * 64
+        if case == "plan-session-mismatch":
+            variant = _plan_variant(plan, diagnostic_session_id="0" * 32)
+            active_plan_id = plan.verification_plan_id
+        elif case == "plan-declaration-mismatch":
+            alternate_source = _source(plan_id=alternate_plan_id)
+            payload["source_change_declarations"].append(alternate_source.to_dict())
+            variant = _plan_variant(
+                plan,
+                source_change_declaration_id=alternate_source.declaration_id,
+            )
+            active_plan_id = plan.verification_plan_id
+        else:
+            variant = _plan_variant(plan, verification_plan_id=alternate_plan_id)
+            active_plan_id = alternate_plan_id
+        payload["verification_plans"] = [variant.to_dict()]
+        payload["active_verification_plan_id"] = active_plan_id
+        return payload
+
+    if case == "unclaimed-marker":
+        session = _resolved()
+        payload = session.to_dict()
+        payload["diagnostic_marker_refs"].append(
+            _marker(
+                marker_id="c" * 64,
+                marker_evidence_id="d" * 64,
+                analysis_id="a" * 64,
+                analysis_evidence_id="b" * 64,
+            ).to_dict()
+        )
+        return payload
+
+    if case in {
+        "fix-plan-mismatch",
+        "fix-declaration-mismatch",
+        "fix-run-mismatch",
+        "fix-evidence-mismatch",
+    }:
+        session = _resolved()
+        payload = session.to_dict()
+        verification = session.fix_verifications[0]
+        if case == "fix-plan-mismatch":
+            variant = _fix_variant(verification, verification_plan_id="a" * 64)
+        elif case == "fix-declaration-mismatch":
+            variant = _fix_variant(verification, source_change_declaration_id="a" * 64)
+        elif case == "fix-run-mismatch":
+            variant = _fix_variant(verification, fixed_after_run_id="run-3")
+        else:
+            variant = _fix_variant(verification, fixed_after_evidence_id="2" * 64)
+        payload["fix_verifications"] = [variant.to_dict()]
+        return payload
+
+    if case == "fix-proposed-without-declaration":
+        payload = _resolved().to_dict()
+        payload["state"] = "FIX_PROPOSED"
+        payload["source_change_declarations"] = []
+        payload["verification_plans"] = []
+        payload["diagnostic_marker_refs"] = []
+        payload["fix_verifications"] = []
+        payload["active_verification_plan_id"] = None
+        return payload
+
+    if case == "resolved-without-passed-fix":
+        session = _resolved()
+        payload = session.to_dict()
+        failed = _fix(
+            session.verification_plans[0],
+            status="FAILED",
+            reason="FIXED_TEST_FAILED",
+        )
+        payload["fix_verifications"] = [failed.to_dict()]
+        return payload
+
+    raise AssertionError(f"unknown contradiction case: {case}")
+
+
 def _publish_fixture_envelope(
     store: EvidenceStore,
     root: Path,
@@ -481,6 +749,37 @@ def test_new_lifecycle_reduces_and_extended_session_round_trips() -> None:
         "fix_verifications", "active_verification_plan_id",
     }
     assert DiagnosticSession.from_value(encoded) == session
+
+
+@pytest.mark.parametrize(
+    ("case", "expected_code"),
+    (
+        ("verifying-without-active-plan", DIAGNOSTIC_PLAN_INVALID),
+        ("investigating-with-active-plan", DIAGNOSTIC_PLAN_INVALID),
+        ("plan-session-mismatch", DIAGNOSTIC_PLAN_INVALID),
+        ("plan-declaration-mismatch", DIAGNOSTIC_PLAN_INVALID),
+        ("plan-id-mismatch", DIAGNOSTIC_PLAN_INVALID),
+        ("unclaimed-marker", DIAGNOSTIC_PLAN_INVALID),
+        ("fix-plan-mismatch", DIAGNOSTIC_PLAN_INVALID),
+        ("fix-declaration-mismatch", DIAGNOSTIC_PLAN_INVALID),
+        ("fix-run-mismatch", DIAGNOSTIC_PLAN_INVALID),
+        ("fix-evidence-mismatch", DIAGNOSTIC_PLAN_INVALID),
+        ("open-with-lifecycle-data", DIAGNOSTIC_INVALID_EVENT),
+        ("fix-proposed-without-declaration", DIAGNOSTIC_INVALID_EVENT),
+        ("resolved-without-passed-fix", DIAGNOSTIC_INVALID_EVENT),
+    ),
+)
+def test_diagnostic_session_from_value_rejects_public_lifecycle_and_crossbinding_contradictions(
+    case: str, expected_code: str
+) -> None:
+    payload = _session_contradiction(case)
+    original = copy.deepcopy(payload)
+
+    with pytest.raises(DiagnosticValidationError) as error:
+        DiagnosticSession.from_value(payload)
+
+    assert error.value.code == expected_code
+    assert payload == original
 
 
 def test_legacy_session_shape_and_constructor_remain_unchanged() -> None:
@@ -1117,3 +1416,298 @@ def test_store_deduplicates_duplicate_new_parent_ids_in_first_seen_order(tmp_pat
     assert _append_new_lifecycle(fixture).state == "RESOLVED"
     previous = get_root(evidence, "diagnostic-session", f"{SID}.00000006").manifest_id
     assert _checkpoint_parents(evidence, 7) == (previous, analysis_ids[0])
+
+
+def test_model_boundary_rejects_unlisted_active_verification_plan_without_mutation() -> None:
+    session, _source, plan, _previous = _verifying()
+    payload = session.to_dict()
+    payload["active_verification_plan_id"] = "d" * 64
+    before = copy.deepcopy(payload)
+
+    with pytest.raises(DiagnosticValidationError) as error:
+        DiagnosticSession.from_value(payload)
+
+    assert error.value.code == DIAGNOSTIC_PLAN_INVALID
+    assert payload == before
+    assert payload["active_verification_plan_id"] != plan.verification_plan_id
+
+
+def test_model_boundary_rejects_unknown_extended_session_key_without_mutation() -> None:
+    session = _resolved()
+    payload = session.to_dict()
+    payload["unexpected"] = True
+    before = copy.deepcopy(payload)
+
+    with pytest.raises(DiagnosticValidationError) as error:
+        DiagnosticSession.from_value(payload)
+
+    assert error.value.code == DIAGNOSTIC_INVALID_EVENT
+    assert payload == before
+
+
+def test_model_boundary_rejects_unknown_verification_plan_schema_without_mutation() -> None:
+    payload = _plan().to_dict()
+    payload["schema"] = "stm32-verification-plan/unknown"
+    before = copy.deepcopy(payload)
+
+    with pytest.raises(DiagnosticValidationError) as error:
+        VerificationPlan.from_value(payload)
+
+    assert error.value.code == DIAGNOSTIC_INVALID_EVENT
+    assert payload == before
+
+
+def test_model_boundary_rejects_fix_verification_same_run_without_mutation() -> None:
+    payload = _fix().to_dict()
+    payload["fixed_after_run_id"] = payload["failed_before_run_id"]
+    before = copy.deepcopy(payload)
+
+    with pytest.raises(DiagnosticValidationError) as error:
+        FixVerification.from_value(payload)
+
+    assert error.value.code == DIAGNOSTIC_INVALID_EVENT
+    assert payload == before
+
+
+def test_public_reducer_rejects_second_session_created_event() -> None:
+    session, created = _created()
+    duplicate = _event(
+        sequence=created.sequence,
+        event_type="session.created",
+        request={"failed_test_run_id": "run-1"},
+        result={"failed_evidence_id": "0" * 64, "identity": IDENTITY.to_dict()},
+    )
+    before = copy.deepcopy(session.to_dict())
+
+    with pytest.raises(DiagnosticValidationError) as error:
+        reduce_event(session, duplicate)
+
+    assert error.value.code == DIAGNOSTIC_INVALID_TRANSITION
+    assert session.to_dict() == before
+
+
+def test_public_reducer_rejects_verification_plan_while_session_is_open() -> None:
+    session, created = _created()
+    plan = _plan()
+    event = _event(
+        sequence=session.revision,
+        event_type="verification.plan_added",
+        request={"verification_plan": plan.to_dict()},
+        result={"verification_plan_id": plan.verification_plan_id, "plan_digest": plan.plan_digest},
+        previous_digest=created.digest,
+    )
+    before = copy.deepcopy(session.to_dict())
+
+    with pytest.raises(DiagnosticValidationError) as error:
+        reduce_event(session, event)
+
+    assert error.value.code == DIAGNOSTIC_INVALID_TRANSITION
+    assert session.to_dict() == before
+
+
+def test_public_reducer_rejects_duplicate_verification_plan_without_mutation() -> None:
+    session, _source, plan, previous = _proposed()
+    duplicate = _event(
+        sequence=session.revision,
+        event_type="verification.plan_added",
+        request={"verification_plan": plan.to_dict()},
+        result={"verification_plan_id": plan.verification_plan_id, "plan_digest": plan.plan_digest},
+        previous_digest=previous.digest,
+    )
+    before = copy.deepcopy(session.to_dict())
+
+    with pytest.raises(DiagnosticValidationError) as error:
+        reduce_event(session, duplicate)
+
+    assert error.value.code == DIAGNOSTIC_PLAN_INVALID
+    assert session.to_dict() == before
+
+
+def test_public_reducer_rejects_verification_start_for_missing_plan_without_mutation() -> None:
+    session, _source, _plan_value, previous = _proposed()
+    missing_plan_id = "d" * 64
+    event = _event(
+        sequence=session.revision,
+        event_type="verification.started",
+        request={"verification_plan_id": missing_plan_id},
+        result={"verification_plan_id": missing_plan_id},
+        previous_digest=previous.digest,
+    )
+    before = copy.deepcopy(session.to_dict())
+
+    with pytest.raises(DiagnosticValidationError) as error:
+        reduce_event(session, event)
+
+    assert error.value.code == DIAGNOSTIC_PLAN_INVALID
+    assert session.to_dict() == before
+
+
+def test_public_reducer_rejects_duplicate_marker_without_mutation() -> None:
+    session, _source, plan, previous = _verifying()
+    marker = _marker(plan)
+    attached = _event(
+        sequence=session.revision,
+        event_type="analysis.marker_attached",
+        request={"diagnostic_marker_ref": marker.to_dict()},
+        result={"marker_id": marker.marker_id},
+        previous_digest=previous.digest,
+    )
+    after_first = reduce_event(session, attached)
+    duplicate = _event(
+        sequence=after_first.revision,
+        event_type="analysis.marker_attached",
+        request={"diagnostic_marker_ref": marker.to_dict()},
+        result={"marker_id": marker.marker_id},
+        previous_digest=attached.digest,
+    )
+    before = copy.deepcopy(after_first.to_dict())
+
+    with pytest.raises(DiagnosticValidationError) as error:
+        reduce_event(after_first, duplicate)
+
+    assert error.value.code == DIAGNOSTIC_PLAN_INVALID
+    assert after_first.to_dict() == before
+
+
+def test_public_reducer_rejects_marker_for_foreign_hypothesis_without_mutation() -> None:
+    session, _source, plan, previous = _verifying()
+    marker = DiagnosticMarkerRef.new(
+        marker_id="8" * 64,
+        marker_evidence_id="7" * 64,
+        analysis_id=plan.required_analysis_ids[0],
+        analysis_evidence_id=plan.required_analysis_evidence_ids[0],
+        diagnostic_session_id=SID,
+        hypothesis_id="9" * 32,
+        polarity="supports",
+        label="change-observed",
+        rationale="foreign hypothesis binding",
+    )
+    event = _event(
+        sequence=session.revision,
+        event_type="analysis.marker_attached",
+        request={"diagnostic_marker_ref": marker.to_dict()},
+        result={"marker_id": marker.marker_id},
+        previous_digest=previous.digest,
+    )
+    before = copy.deepcopy(session.to_dict())
+
+    with pytest.raises(DiagnosticValidationError) as error:
+        reduce_event(session, event)
+
+    assert error.value.code == DIAGNOSTIC_PLAN_INVALID
+    assert session.to_dict() == before
+
+
+def test_public_reducer_rejects_duplicate_fix_verification_on_retry_without_mutation() -> None:
+    session, source, plan, previous = _verifying()
+    marker = _marker(plan)
+    attached = _event(
+        sequence=session.revision,
+        event_type="analysis.marker_attached",
+        request={"diagnostic_marker_ref": marker.to_dict()},
+        result={"marker_id": marker.marker_id},
+        previous_digest=previous.digest,
+    )
+    verifying = reduce_event(session, attached)
+    failed = _fix(plan, status="FAILED", reason="FIXED_TEST_FAILED")
+    completed = _event(
+        sequence=verifying.revision,
+        event_type="verification.completed",
+        request={"fix_verification": failed.to_dict()},
+        result={
+            "fix_verification_id": failed.fix_verification_id,
+            "status": failed.status,
+            "reason_code": failed.reason_code,
+        },
+        previous_digest=attached.digest,
+    )
+    investigating = reduce_event(verifying, completed)
+    retry_source = _source(RETRY_PLAN_ID)
+    declared = _event(
+        sequence=investigating.revision,
+        event_type="source_change.declared",
+        request={"source_change_declaration": retry_source.to_dict()},
+        result={"declaration_id": retry_source.declaration_id},
+        previous_digest=completed.digest,
+    )
+    proposed = reduce_event(investigating, declared)
+    retry_plan = VerificationPlan.new(
+        verification_plan_id=RETRY_PLAN_ID,
+        diagnostic_session_id=SID,
+        failed_before_run_id="run-1",
+        failed_before_evidence_id="0" * 64,
+        source_change_declaration_id=retry_source.declaration_id,
+        fixed_after_run_id="run-2",
+        fixed_after_evidence_id="1" * 64,
+        required_analysis_ids=RETRY_ANALYSIS_IDS,
+        required_analysis_evidence_ids=RETRY_ANALYSIS_EVIDENCE_IDS,
+        required_monitor_quality="VALID",
+        expected_changed=True,
+    )
+    added = _event(
+        sequence=proposed.revision,
+        event_type="verification.plan_added",
+        request={"verification_plan": retry_plan.to_dict()},
+        result={"verification_plan_id": retry_plan.verification_plan_id, "plan_digest": retry_plan.plan_digest},
+        previous_digest=declared.digest,
+    )
+    proposed = reduce_event(proposed, added)
+    started = _event(
+        sequence=proposed.revision,
+        event_type="verification.started",
+        request={"verification_plan_id": retry_plan.verification_plan_id},
+        result={"verification_plan_id": retry_plan.verification_plan_id},
+        previous_digest=added.digest,
+    )
+    retrying = reduce_event(proposed, started)
+    duplicate = _event(
+        sequence=retrying.revision,
+        event_type="verification.completed",
+        request={"fix_verification": failed.to_dict()},
+        result={
+            "fix_verification_id": failed.fix_verification_id,
+            "status": failed.status,
+            "reason_code": failed.reason_code,
+        },
+        previous_digest=started.digest,
+    )
+    before = copy.deepcopy(retrying.to_dict())
+
+    with pytest.raises(DiagnosticValidationError) as error:
+        reduce_event(retrying, duplicate)
+
+    assert error.value.code == DIAGNOSTIC_PLAN_INVALID
+    assert retrying.to_dict() == before
+    assert retrying.source_change_declarations == (source, retry_source)
+
+
+def test_public_reducer_rejects_declaration_for_foreign_hypothesis_without_mutation() -> None:
+    session, previous = _investigating_with_hypothesis()
+    source = _source()
+    foreign = SourceChangeDeclaration.new(
+        before_source_sha256=source.before_source_sha256,
+        after_source_sha256=source.after_source_sha256,
+        before_build_id=source.before_build_id,
+        before_elf_sha256=source.before_elf_sha256,
+        after_build_id=source.after_build_id,
+        after_elf_sha256=source.after_elf_sha256,
+        changed_paths=source.changed_paths,
+        diff_evidence_id=source.diff_evidence_id,
+        diff_artifact=source.diff_artifact,
+        claimed_hypothesis_ids=("2" * 32,),
+        validation_plan_id=source.validation_plan_id,
+    )
+    event = _event(
+        sequence=session.revision,
+        event_type="source_change.declared",
+        request={"source_change_declaration": foreign.to_dict()},
+        result={"declaration_id": foreign.declaration_id},
+        previous_digest=previous.digest,
+    )
+    before = copy.deepcopy(session.to_dict())
+
+    with pytest.raises(DiagnosticValidationError) as error:
+        reduce_event(session, event)
+
+    assert error.value.code == DIAGNOSTIC_PLAN_INVALID
+    assert session.to_dict() == before

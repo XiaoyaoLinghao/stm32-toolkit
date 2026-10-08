@@ -1,15 +1,19 @@
 from __future__ import annotations
 
+from copy import deepcopy
+
 import pytest
 
-from stm32_toolkit.evidence import EvidenceIdentity
+from stm32_toolkit.evidence import ArtifactRef, EvidenceIdentity
 from stm32_toolkit.diagnostics import (
     DIAGNOSTIC_INVALID_EVENT,
     DIAGNOSTIC_INVALID_TRANSITION,
+    DIAGNOSTIC_LIMIT_EXCEEDED,
     DIAGNOSTIC_PLAN_INVALID,
     DiagnosticEvent,
     DiagnosticSession,
     DiagnosticValidationError,
+    SourceChangeDeclaration,
     calculate_event_digest,
     calculate_assessment_id,
     calculate_plan_digest,
@@ -52,6 +56,27 @@ def _event(
         previous_digest=previous_digest,
         payload={"request": request, "result": result},
     )
+
+
+def test_create_event_rejects_invalid_public_actor_without_mutating_payload() -> None:
+    payload = {"request": {}, "result": {}}
+    before = deepcopy(payload)
+
+    with pytest.raises(DiagnosticValidationError) as error:
+        create_event(
+            diagnostic_session_id=SID,
+            operation_id="create-invalid-actor",
+            sequence=0,
+            revision_before=0,
+            event_type="investigation.started",
+            occurred_at_utc=UTC,
+            actor="robot",
+            previous_digest=None,
+            payload=payload,
+        )
+
+    assert error.value.code == DIAGNOSTIC_INVALID_EVENT
+    assert payload == before
 
 
 def _canonical_payloads() -> list[tuple[str, dict[str, object], dict[str, object]]]:
@@ -129,6 +154,28 @@ def _canonical_payloads() -> list[tuple[str, dict[str, object], dict[str, object
             {"assessment": {"assessment_id": calculate_assessment_id(assessment_content), **assessment_content}},
         ),
     ]
+
+
+def _source_declaration() -> SourceChangeDeclaration:
+    return SourceChangeDeclaration.new(
+        before_source_sha256="8" * 64,
+        after_source_sha256="9" * 64,
+        before_build_id="a" * 64,
+        before_elf_sha256="b" * 64,
+        after_build_id="c" * 64,
+        after_elf_sha256="d" * 64,
+        changed_paths=("src/main.c", "src/monitor.c"),
+        diff_evidence_id="e" * 64,
+        diff_artifact=ArtifactRef(
+            sha256="7" * 64,
+            size_bytes=17,
+            relative_path="changes.diff",
+            kind="source-diff",
+            media_type="text/x-diff",
+        ),
+        claimed_hypothesis_ids=("2" * 32,),
+        validation_plan_id="0" * 64,
+    )
 
 
 def _session_with_plan() -> tuple[DiagnosticSession, str, dict[str, object], DiagnosticEvent]:
@@ -291,6 +338,187 @@ def test_all_event_payloads_are_closed_and_event_round_trip_is_canonical(
         with pytest.raises(DiagnosticValidationError) as error:
             DiagnosticEvent.from_value(changed)
         assert error.value.code == DIAGNOSTIC_INVALID_EVENT
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    [("sequence", 1), ("event_type", "unknown.event"), ("actor", "operator")],
+)
+def test_event_decode_rejects_contradictory_envelope_fields_without_mutation(
+    field: str, replacement: object,
+) -> None:
+    event_type, request, result = _canonical_payloads()[0]
+    event = _event(
+        sequence=0,
+        event_type=event_type,
+        request=request,
+        result=result,
+    )
+    candidate = event.to_dict()
+    candidate[field] = replacement
+    before = deepcopy(candidate)
+
+    with pytest.raises(DiagnosticValidationError) as error:
+        DiagnosticEvent.from_value(candidate)
+
+    assert error.value.code == DIAGNOSTIC_INVALID_EVENT
+    assert candidate == before
+
+
+@pytest.mark.parametrize(
+    "case_name",
+    [
+        "plan-request-object",
+        "plan-result-step-limit",
+        "plan-result-object",
+        "hypothesis-supporting-object",
+        "hypothesis-statement-mismatch",
+        "extended-child-extra",
+    ],
+)
+def test_event_decode_rejects_nested_public_wire_contracts_without_mutation(
+    case_name: str,
+) -> None:
+    expected_code = DIAGNOSTIC_LIMIT_EXCEEDED if case_name == "plan-result-step-limit" else DIAGNOSTIC_INVALID_EVENT
+    if case_name == "extended-child-extra":
+        declaration = _source_declaration()
+        event = _event(
+            sequence=0,
+            event_type="source_change.declared",
+            request={"source_change_declaration": declaration.to_dict()},
+            result={"declaration_id": declaration.declaration_id},
+        )
+    else:
+        event_type, request, result = {
+            "plan-request-object": _canonical_payloads()[3],
+            "plan-result-step-limit": _canonical_payloads()[3],
+            "plan-result-object": _canonical_payloads()[4],
+            "hypothesis-supporting-object": _canonical_payloads()[2],
+            "hypothesis-statement-mismatch": _canonical_payloads()[2],
+        }[case_name]
+        event = _event(sequence=0, event_type=event_type, request=request, result=result)
+
+    candidate = event.to_dict()
+    payload = candidate["payload"]
+    assert isinstance(payload, dict)
+    request_wire = payload["request"]
+    result_wire = payload["result"]
+    assert isinstance(request_wire, dict) and isinstance(result_wire, dict)
+    if case_name == "plan-request-object":
+        request_wire["steps"] = {}
+    elif case_name == "plan-result-step-limit":
+        first_step = request_wire["steps"][0]
+        assert isinstance(first_step, dict)
+        steps = [{**first_step, "step_id": f"step-{index}"} for index in range(65)]
+        request_wire["steps"] = steps
+        original_plan = result_wire["observation_plan"]
+        assert isinstance(original_plan, dict)
+        result_wire["observation_plan"] = {**original_plan, "steps": steps}
+    elif case_name == "plan-result-object":
+        result_wire["observation_results"] = {}
+    elif case_name == "hypothesis-supporting-object":
+        hypothesis = result_wire["hypothesis"]
+        assert isinstance(hypothesis, dict)
+        hypothesis["supporting"] = {}
+    elif case_name == "hypothesis-statement-mismatch":
+        hypothesis = result_wire["hypothesis"]
+        assert isinstance(hypothesis, dict)
+        hypothesis["statement"] = "different statement"
+    else:
+        declaration_wire = request_wire["source_change_declaration"]
+        assert isinstance(declaration_wire, dict)
+        declaration_wire["unexpected"] = True
+    before = deepcopy(candidate)
+
+    with pytest.raises(DiagnosticValidationError) as error:
+        DiagnosticEvent.from_value(candidate)
+
+    assert error.value.code == expected_code
+    assert candidate == before
+
+
+@pytest.mark.parametrize(
+    "case_name",
+    [
+        "negative-sequence",
+        "payload-array",
+        "schema",
+        "assessed-neutral-polarity",
+        "assessed-result-rationale",
+    ],
+)
+def test_public_event_decode_rejects_outer_and_assessment_variants_without_mutation(
+    case_name: str,
+) -> None:
+    expected_code = (
+        DIAGNOSTIC_PLAN_INVALID
+        if case_name == "assessed-neutral-polarity"
+        else DIAGNOSTIC_INVALID_EVENT
+    )
+    expected_message = (
+        "selector, expected value, plan, or step reference is invalid"
+        if expected_code == DIAGNOSTIC_PLAN_INVALID
+        else "event/model/operation intent is invalid"
+    )
+
+    if case_name in {"negative-sequence", "schema", "payload-array"}:
+        event_type, request, result = _canonical_payloads()[0]
+        event = _event(
+            sequence=0,
+            event_type=event_type,
+            request=request,
+            result=result,
+        )
+    else:
+        event_type, request, result = _canonical_payloads()[5]
+        event = _event(
+            sequence=0,
+            event_type=event_type,
+            request=request,
+            result=result,
+        )
+
+    candidates: list[dict[str, object]] = []
+    if case_name == "negative-sequence":
+        candidate = event.to_dict()
+        candidate["sequence"] = -1
+        candidates.append(candidate)
+    elif case_name == "schema":
+        candidate = event.to_dict()
+        candidate["schema"] = "stm32-diagnostic-event/999"
+        candidates.append(candidate)
+    elif case_name == "payload-array":
+        for side in ("request", "result"):
+            candidate = event.to_dict()
+            payload = candidate["payload"]
+            assert isinstance(payload, dict)
+            payload[side] = []
+            candidates.append(candidate)
+    else:
+        candidate = event.to_dict()
+        payload = candidate["payload"]
+        assert isinstance(payload, dict)
+        request_wire = payload["request"]
+        result_wire = payload["result"]
+        assert isinstance(request_wire, dict) and isinstance(result_wire, dict)
+        if case_name == "assessed-neutral-polarity":
+            request_wire["polarity"] = "neutral"
+        else:
+            assessment = result_wire["assessment"]
+            assert isinstance(assessment, dict)
+            changed_assessment = {**assessment, "rationale": "changed rationale"}
+            changed_assessment["assessment_id"] = calculate_assessment_id(changed_assessment)
+            result_wire["assessment"] = changed_assessment
+        candidates.append(candidate)
+
+    for candidate in candidates:
+        before = deepcopy(candidate)
+        with pytest.raises(DiagnosticValidationError) as error:
+            DiagnosticEvent.from_value(candidate)
+
+        assert error.value.code == expected_code
+        assert error.value.message == expected_message
+        assert candidate == before
 
 
 def test_changed_digest_and_previous_link_fail_with_invalid_event() -> None:
@@ -622,3 +850,78 @@ def test_plan_result_digest_and_opposite_polarity_are_checked_by_reducer() -> No
     with pytest.raises(DiagnosticValidationError) as error:
         reduce_event(session, opposite_event)
     assert error.value.code == DIAGNOSTIC_PLAN_INVALID
+
+
+def test_public_event_decode_rejects_plan_result_step_binding_without_mutation() -> None:
+    event_type, request, result = _canonical_payloads()[3]
+    event = _event(sequence=0, event_type=event_type, request=request, result=result)
+    candidate = event.to_dict()
+    payload = candidate["payload"]
+    assert isinstance(payload, dict)
+    result_wire = payload["result"]
+    assert isinstance(result_wire, dict)
+    plan_wire = result_wire["observation_plan"]
+    assert isinstance(plan_wire, dict)
+    steps = plan_wire["steps"]
+    assert isinstance(steps, list) and len(steps) == 1
+    changed_step = {**steps[0], "purpose": "changed purpose"}
+    plan_fields = {
+        "diagnostic_session_id": plan_wire["diagnostic_session_id"],
+        "created_revision": plan_wire["created_revision"],
+        "steps": [changed_step],
+    }
+    changed_digest = calculate_plan_digest(plan_fields)
+    result_wire["observation_plan"] = {
+        **plan_wire,
+        "steps": [changed_step],
+        "plan_id": changed_digest,
+        "digest": changed_digest,
+    }
+    # The public decoder validates nested payload bindings before its enclosing
+    # event digest, so preserving the old outer digest reaches that binding guard.
+    before = deepcopy(candidate)
+
+    with pytest.raises(DiagnosticValidationError) as error:
+        DiagnosticEvent.from_value(candidate)
+
+    assert error.value.code == DIAGNOSTIC_PLAN_INVALID
+    assert candidate == before
+
+
+def test_public_event_decode_rejects_sequence_zero_previous_link_without_mutation() -> None:
+    event_type, request, result = _canonical_payloads()[0]
+    event = _event(sequence=0, event_type=event_type, request=request, result=result)
+    candidate = event.to_dict()
+    candidate["previous_digest"] = "a" * 64
+    before = deepcopy(candidate)
+
+    with pytest.raises(DiagnosticValidationError) as error:
+        DiagnosticEvent.from_value(candidate)
+
+    assert error.value.code == DIAGNOSTIC_INVALID_EVENT
+    assert candidate == before
+
+
+def test_public_reducer_rejects_first_event_without_a_session() -> None:
+    created = _event(
+        sequence=0,
+        event_type="session.created",
+        request={"failed_test_run_id": "run-1"},
+        result={"failed_evidence_id": "0" * 64, "identity": IDENTITY.to_dict()},
+    )
+    session = reduce_event(None, created)
+    started = _event(
+        sequence=session.revision,
+        event_type="investigation.started",
+        request={},
+        result={},
+        previous_digest=created.digest,
+    )
+    assert reduce_event(session, started).state == "INVESTIGATING"
+    before = started.to_dict()
+
+    with pytest.raises(DiagnosticValidationError) as error:
+        reduce_event(None, started)
+
+    assert error.value.code == DIAGNOSTIC_INVALID_EVENT
+    assert started.to_dict() == before

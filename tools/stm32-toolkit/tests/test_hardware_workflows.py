@@ -38,10 +38,18 @@ from stm32_toolkit.identity import compute_workspace_id
 from stm32_toolkit.debug.model import DebugFirmwareBinding, MemoryRegionBinding
 from stm32_toolkit.debug.svd import SvdError, select_svd
 from stm32_toolkit.probe.backend import ProbeDescriptor
-from stm32_toolkit.probe.attach_diagnostics import make_attach_diagnostic, make_cleanup_entry, make_primary
+from stm32_toolkit.probe.attach_diagnostics import (
+    CleanupFragment,
+    make_attach_diagnostic,
+    make_cleanup_entry,
+    make_primary,
+)
 from stm32_toolkit.probe.authorization import ControlAuthorizationStore
 from stm32_toolkit.probe.client import ProbeClientError
+from stm32_toolkit.probe.lease import ProbeLeaseManager
 from stm32_toolkit.probe.model import OperationLevel
+from stm32_toolkit.probe.service import ProbeServiceCleanupError
+from stm32_toolkit.probe.worker import ProbeWorkerConfig
 from stm32_toolkit.result import OperationResult
 from fakes.fake_probe import FakeProbeBackend
 
@@ -59,7 +67,7 @@ def _project(root: Path, *, svd: str | None = "device.svd", schema_version: int 
     manifest = {
         "schemaVersion": schema_version,
         "logicalProjectId": "12345678-1234-5678-1234-567812345678",
-        "generatedBy": {"tool": "stm32-toolkit", "version": "0.9.0"},
+        "generatedBy": {"tool": "stm32-toolkit", "version": "1.0.0"},
         "project": {"name": "hardware", "origin": "manual"},
         "target": {"device": "STM32F407VGTx", "core": "cortex-m4"},
         "framework": {"type": "spl", "version": None},
@@ -2224,6 +2232,124 @@ def test_controlled_fault_halts_analyzes_restores_and_keeps_observation_config(
     assert recorder.events.index("analyze-end") < recorder.events.index("target.resume")
 
 
+@pytest.mark.parametrize("invalid_binding", [
+    OperationResult.failure(
+        "stm32_debug_bind",
+        "DEBUG_BINDING_LOST",
+        "Debug binding is unavailable",
+        {},
+    ),
+    object(),
+])
+def test_controlled_fault_rejects_invalid_binding_before_target_control(
+    tmp_path: Path, invalid_binding: object
+) -> None:
+    project = _project(tmp_path / "project")
+    recorder = _Recorder()
+
+    async def bind(
+        _request: object,
+        _client: object,
+        *,
+        expected_operation_level: OperationLevel,
+    ) -> object:
+        assert expected_operation_level is OperationLevel.CONTROL
+        return invalid_binding
+
+    seams = replace(_controlled_seams(project, recorder), bind=bind)
+    result = _run(
+        fault_workflow(
+            FaultWorkflowRequest(
+                project,
+                tmp_path / "data",
+                "session-a",
+                "probe-a",
+                BUILD_ID,
+                ELF_SHA,
+                True,
+            ),
+            _seams=seams,
+        )
+    )
+
+    assert result.ok is False
+    assert recorder.control_client.control_calls == []
+    assert "target.halt" not in recorder.events
+    assert result.to_dict()["details"]["controlledSnapshot"]["halt"] == {
+        "dispatched": False,
+        "outcome": "not-started",
+    }
+
+
+def test_controlled_fault_requires_running_target_before_authorizing_halt(
+    tmp_path: Path,
+) -> None:
+    project = _project(tmp_path / "project")
+    recorder = _Recorder()
+    result = _run(
+        fault_workflow(
+            FaultWorkflowRequest(
+                project,
+                tmp_path / "data",
+                "session-a",
+                "probe-a",
+                BUILD_ID,
+                ELF_SHA,
+                True,
+            ),
+            _seams=_controlled_seams(project, recorder, initial_state="halted"),
+        )
+    )
+
+    assert result.ok is False
+    assert result.code == "FAULT_TARGET_NOT_RUNNING"
+    assert recorder.control_client.control_calls == []
+    assert result.to_dict()["details"]["controlledSnapshot"]["halt"] == {
+        "dispatched": False,
+        "outcome": "not-started",
+    }
+
+
+@pytest.mark.parametrize(
+    "halt_response",
+    [{"state": "running", "reason": "requested"}, {"state": "halted"}],
+)
+def test_controlled_fault_rejects_invalid_halt_response_and_restores_target(
+    tmp_path: Path, halt_response: dict[str, object]
+) -> None:
+    project = _project(tmp_path / "project")
+    recorder = _Recorder()
+    result = _run(
+        fault_workflow(
+            FaultWorkflowRequest(
+                project,
+                tmp_path / "data",
+                "session-a",
+                "probe-a",
+                BUILD_ID,
+                ELF_SHA,
+                True,
+            ),
+            _seams=_controlled_seams(
+                project,
+                recorder,
+                halt_response=halt_response,
+            ),
+        )
+    )
+
+    assert result.ok is False
+    assert result.code == "PROBE_RESPONSE_INVALID"
+    assert [call[0] for call in recorder.control_client.control_calls] == [
+        "target.halt",
+        "target.resume",
+    ]
+    snapshot = result.to_dict()["details"]["controlledSnapshot"]
+    assert snapshot["halt"] == {"dispatched": True, "outcome": "unknown"}
+    assert snapshot["resume"]["outcome"] == "succeeded"
+    assert snapshot["afterState"]["state"] == "running"
+
+
 @pytest.mark.parametrize("value", ["true", 1, None, []])
 def test_controlled_fault_requires_exact_boolean_before_service(
     tmp_path: Path, value: object
@@ -2802,3 +2928,1335 @@ def test_fatal_enumeration_exit_closes_backend_then_propagates(tmp_path: Path) -
             )
         )
     assert recorder.events == ["backend.list", "backend.close"]
+
+
+class _RemainingProbeBackend:
+    def __init__(
+        self,
+        events: list[str],
+        *,
+        list_fatal: bool = False,
+        close_fatal: bool = False,
+        close_error: bool = False,
+    ) -> None:
+        self._events = events
+        self._list_fatal = list_fatal
+        self._close_fatal = close_fatal
+        self._close_error = close_error
+
+    def list_probes(self) -> tuple[ProbeDescriptor, ...]:
+        self._events.append("backend.list")
+        if self._list_fatal:
+            raise SystemExit(73)
+        return (
+            ProbeDescriptor("probe-a", "Arm", "CMSIS-DAP", None),
+            ProbeDescriptor("probe-b", "ST", "ST-Link", "Board"),
+        )
+
+    def close(self) -> None:
+        self._events.append("backend.close")
+        if self._close_fatal:
+            raise SystemExit(97)
+        if self._close_error:
+            raise RuntimeError("provider close failed")
+
+
+def test_public_workflow_preflight_and_runtime_guard_matrix(tmp_path: Path) -> None:
+    project = _project(tmp_path / "project")
+    data_root = tmp_path / "data"
+    data_root.mkdir()
+    manifest_path = project / ".stm32-project.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["debug"]["backend"] = "openocd"
+    manifest_path.write_bytes((json.dumps(manifest, indent=2) + "\n").encode("utf-8"))
+    project_before = _exact_tree_snapshot(project)
+    data_before = _exact_tree_snapshot(data_root)
+    recorder = _Recorder()
+
+    result = _run(
+        flash_workflow(
+            FlashWorkflowRequest(
+                project,
+                data_root,
+                "session-a",
+                "probe-a",
+                BUILD_ID,
+                ELF_SHA,
+                True,
+                False,
+            ),
+            _seams=replace(
+                _seams(recorder),
+                lease_manager_factory=lambda root: ProbeLeaseManager(root),
+            ),
+        )
+    )
+
+    assert result.to_dict() == {
+        "protocol": "stm32-toolkit/1",
+        "ok": False,
+        "operation": "stm32_flash",
+        "code": "HARDWARE_INPUT_INVALID",
+        "message": "A Schema-v2 PyOCD target is required",
+        "data": None,
+        "details": {},
+    }
+    assert recorder.events == []
+    assert recorder.configs == []
+    assert _exact_tree_snapshot(project) == project_before
+    assert _exact_tree_snapshot(data_root) == data_before
+    assert not (data_root / "projects").exists()
+
+
+def test_probe_list_public_close_failure_matrix(tmp_path: Path) -> None:
+    project = _project(tmp_path / "project")
+    data_root = tmp_path / "data"
+    data_root.mkdir()
+
+    events: list[str] = []
+    ordinary_backend = _RemainingProbeBackend(events, close_error=True)
+    ordinary = _run(
+        probe_list_workflow(
+            ProbeListWorkflowRequest(project, data_root, "session-a"),
+            _seams=HardwareWorkflowSeams(
+                _test_backend_factory=lambda: ordinary_backend,
+            ),
+        )
+    )
+    assert ordinary.to_dict() == {
+        "protocol": "stm32-toolkit/1",
+        "ok": False,
+        "operation": "stm32_probe_list",
+        "code": "HARDWARE_CLEANUP_FAILED",
+        "message": "Hardware workflow cleanup failed",
+        "data": None,
+        "details": {},
+    }
+    assert events == ["backend.list", "backend.close"]
+
+    for list_fatal in (False, True):
+        events = []
+        backend = _RemainingProbeBackend(
+            events,
+            list_fatal=list_fatal,
+            close_fatal=True,
+        )
+        with pytest.raises(SystemExit) as caught:
+            _run(
+                probe_list_workflow(
+                    ProbeListWorkflowRequest(
+                        project,
+                        tmp_path / f"fatal-data-{list_fatal}",
+                        f"fatal-{str(list_fatal).lower()}",
+                    ),
+                    _seams=HardwareWorkflowSeams(
+                        _test_backend_factory=lambda backend=backend: backend,
+                    ),
+                )
+            )
+        assert caught.value.code == 97
+        assert events == ["backend.list", "backend.close"]
+
+
+class _RemainingClient:
+    def __init__(self, endpoint: object, events: list[str], mode: str = "ok") -> None:
+        self.endpoint = endpoint
+        self._events = events
+        self._mode = mode
+
+    def close(self) -> object:
+        self._events.append("client.close")
+        if self._mode == "sync-error":
+            raise RuntimeError("client close failed")
+        if self._mode == "fatal":
+            raise SystemExit(101)
+
+        async def complete() -> None:
+            return None
+
+        return complete()
+
+
+class _RemainingSupervisor:
+    def __init__(
+        self,
+        config: object,
+        events: list[str],
+        *,
+        stop_mode: str = "ok",
+        stop_fragment: CleanupFragment | None = None,
+        control_root: Path | None = None,
+    ) -> None:
+        self._config = config
+        self._events = events
+        self._stop_mode = stop_mode
+        self._stop_fragment = stop_fragment or CleanupFragment()
+        self.endpoint: object | None = None
+        self.control_authorizations = (
+            ControlAuthorizationStore(control_root)
+            if control_root is not None
+            else None
+        )
+
+    async def start(self, **kwargs: object) -> object:
+        del kwargs
+        self._events.append("supervisor.start")
+        self.endpoint = SimpleNamespace(
+            workspace_id=self._config.workspace_id,
+            session_id=self._config.session_id,
+            lease_id="lease-secret",
+            probe_id=self._config.probe_id,
+            operation_level=self._config.operation_level,
+            token="token-secret",
+            record_path=self._config.session_root / "probe-endpoint.json",
+        )
+        return self.endpoint
+
+    def stop(self) -> object:
+        self._events.append("supervisor.stop")
+        if self._stop_mode == "sync-modeled":
+            raise ProbeServiceCleanupError(self._stop_fragment)
+        if self._stop_mode == "sync-ordinary":
+            raise RuntimeError("service cleanup failed")
+        if self._stop_mode == "fatal":
+            raise SystemExit(103)
+
+        async def complete() -> CleanupFragment | None:
+            self.endpoint = None
+            if self._stop_mode == "async-modeled":
+                raise ProbeServiceCleanupError(self._stop_fragment)
+            if self._stop_mode == "return-fragment":
+                return self._stop_fragment
+            return None
+
+        return complete()
+
+
+def _remaining_binding(project: Path, request: object, endpoint: object) -> DebugFirmwareBinding:
+    template = _typed_svd_binding(
+        project,
+        target_device="STM32F407VGTx",
+        regions=(MemoryRegionBinding("FLASH", 0x08000000, 0x1000, "r-x"),),
+    )
+    return replace(
+        template,
+        workspace_id=request.workspace_id,
+        observation_session_id=request.observation_session_id,
+        lease_id=endpoint.lease_id,
+        probe_id=request.probe_id,
+        target_device="STM32F407VGTx",
+        debug_target="stm32f407vg",
+    )
+
+
+def _remaining_cleanup_seams(
+    project: Path,
+    recorder: _Recorder,
+    *,
+    close_modes: tuple[str, ...] = ("ok",),
+    stop_mode: str = "ok",
+    stop_fragment: CleanupFragment | None = None,
+    variable_result: OperationResult[object] | None = None,
+    flash_result: OperationResult[object] | None = None,
+) -> HardwareWorkflowSeams:
+    supervisor_holder: dict[str, _RemainingSupervisor] = {}
+    client_index = 0
+
+    def make_supervisor(config: object, manager: object, contract: object) -> object:
+        del contract
+        supervisor = _RemainingSupervisor(
+            config,
+            recorder.events,
+            stop_mode=stop_mode,
+            stop_fragment=stop_fragment,
+        )
+        supervisor_holder["value"] = supervisor
+        recorder.supervisor = supervisor
+        return supervisor
+
+    def make_client(endpoint: object) -> object:
+        nonlocal client_index
+        mode = close_modes[min(client_index, len(close_modes) - 1)]
+        client_index += 1
+        if mode == "missing":
+            client = SimpleNamespace(endpoint=endpoint)
+        else:
+            client = _RemainingClient(endpoint, recorder.events, mode)
+        recorder.clients = getattr(recorder, "clients", []) + [client]
+        return client
+
+    async def bind(request: object, client: object) -> OperationResult[object]:
+        recorder.events.append("bind")
+        recorder.binding_request = request
+        binding = _remaining_binding(project, request, client.endpoint)
+        assert type(binding) is DebugFirmwareBinding
+        recorder.binding = binding
+        return OperationResult.success("stm32_debug_bind", binding)
+
+    async def read_variables(request: object, client: object) -> OperationResult[object]:
+        del request, client
+        recorder.events.append("read_variables")
+        return variable_result or OperationResult.success(
+            "stm32_variable_read", {"status": "accepted"}
+        )
+
+    async def flash(request: object, client: object) -> OperationResult[object]:
+        recorder.flash_request = request
+        del request, client
+        recorder.events.append("flash")
+        return flash_result or OperationResult.success("stm32_flash", {"status": "accepted"})
+
+    return HardwareWorkflowSeams(
+        worker_config=ProbeWorkerConfig(),
+        _test_backend_factory=None,
+        lease_manager_factory=lambda root: ProbeLeaseManager(root),
+        supervisor_factory=make_supervisor,
+        client_factory=make_client,
+        flash=flash,
+        bind=bind,
+        read_variables=read_variables,
+        catalog_from_binding=lambda binding: "catalog",
+    )
+
+
+def _remaining_handoff_seams(
+    recorder: _Recorder,
+    *,
+    close_modes: tuple[str, ...] = ("ok",),
+    action_mode: str = "ok",
+    stop_mode: str = "ok",
+    stop_fragment: CleanupFragment | None = None,
+) -> HardwareWorkflowSeams:
+    client_index = 0
+
+    def make_supervisor(config: object, manager: object, contract: object) -> object:
+        del manager, contract
+        supervisor = _RemainingSupervisor(
+            config,
+            recorder.events,
+            stop_mode=stop_mode,
+            stop_fragment=stop_fragment,
+        )
+        recorder.supervisor = supervisor
+        return supervisor
+
+    def make_client(endpoint: object) -> object:
+        nonlocal client_index
+        mode = close_modes[min(client_index, len(close_modes) - 1)]
+        client_index += 1
+        if mode == "missing":
+            client = SimpleNamespace(endpoint=endpoint)
+        else:
+            client = _RemainingClient(endpoint, recorder.events, mode)
+        recorder.clients = getattr(recorder, "clients", []) + [client]
+        return client
+
+    async def handoff_end(
+        ticket: object, supervisor: object, client_factory: object
+    ) -> OperationResult[object]:
+        assert isinstance(ticket, str)
+        endpoint = await supervisor.start()
+        assert callable(client_factory)
+        for _ in close_modes:
+            client_factory(endpoint)
+        recorder.events.append("handoff.action")
+        if action_mode == "fatal":
+            raise SystemExit(107)
+        if action_mode == "cancel":
+            raise asyncio.CancelledError()
+        return OperationResult.success("stm32_debug_handoff_end", {"status": "ended"})
+
+    return HardwareWorkflowSeams(
+        worker_config=ProbeWorkerConfig(),
+        _test_backend_factory=None,
+        lease_manager_factory=lambda root: ProbeLeaseManager(root),
+        supervisor_factory=make_supervisor,
+        client_factory=make_client,
+        handoff_end=handoff_end,
+    )
+
+
+def _remaining_variable_request(project: Path, data_root: Path, session_id: str) -> VariableReadWorkflowRequest:
+    return VariableReadWorkflowRequest(
+        project,
+        data_root,
+        session_id,
+        "probe-a",
+        BUILD_ID,
+        ELF_SHA,
+        ("testtime",),
+    )
+
+
+def _remaining_handoff_request(project: Path, data_root: Path, session_id: str) -> HandoffEndWorkflowRequest:
+    return HandoffEndWorkflowRequest(project, data_root, session_id, "probe-a", TICKET)
+
+
+def test_public_workflow_cleanup_and_handoff_end_matrix(tmp_path: Path) -> None:
+    project = _project(tmp_path / "missing-project")
+    recorder = _Recorder()
+    missing = _run(
+        variable_read_workflow(
+            _remaining_variable_request(project, tmp_path / "missing-data", "missing"),
+            _seams=_remaining_cleanup_seams(
+                project,
+                recorder,
+                close_modes=("missing",),
+            ),
+        )
+    )
+    assert missing.to_dict() == {
+        "protocol": "stm32-toolkit/1",
+        "ok": False,
+        "operation": "stm32_variable_read",
+        "code": "HARDWARE_CLEANUP_FAILED",
+        "message": "Hardware workflow cleanup failed",
+        "data": None,
+        "details": {},
+    }
+    assert "client.close" not in recorder.events
+    assert recorder.events[-1] == "supervisor.stop"
+    assert "read_variables" in recorder.events
+    _remaining_assert_binding(recorder, project, session_id="missing")
+
+    ordinary_project = _project(tmp_path / "ordinary-project")
+    recorder = _Recorder()
+    ordinary = _run(
+        handoff_end_workflow(
+            _remaining_handoff_request(ordinary_project, tmp_path / "ordinary-data", "ordinary"),
+            _seams=_remaining_handoff_seams(
+                recorder,
+                close_modes=("sync-error", "sync-error"),
+            ),
+        )
+    )
+    ordinary_payload = ordinary.to_dict()
+    assert ordinary_payload["code"] == "HARDWARE_CLEANUP_FAILED"
+    assert ordinary_payload["message"] == "Hardware workflow cleanup failed"
+    assert recorder.events.count("client.close") == 2
+    assert recorder.events[-1] == "supervisor.stop"
+
+    fragment = CleanupFragment(
+        (make_cleanup_entry("service-lease-release", "succeeded"),)
+    )
+    for index, stop_mode in enumerate(("sync-modeled", "sync-ordinary", "async-modeled")):
+        project = _project(tmp_path / f"service-project-{index}")
+        recorder = _Recorder()
+        result = _run(
+            variable_read_workflow(
+                _remaining_variable_request(project, tmp_path / f"service-data-{index}", f"service-{index}"),
+                _seams=_remaining_cleanup_seams(
+                    project,
+                    recorder,
+                    stop_mode=stop_mode,
+                    stop_fragment=fragment,
+                ),
+            )
+        )
+        assert result.to_dict() == {
+            "protocol": "stm32-toolkit/1",
+            "ok": False,
+            "operation": "stm32_variable_read",
+            "code": "HARDWARE_CLEANUP_FAILED",
+            "message": "Hardware workflow cleanup failed",
+            "data": None,
+            "details": {},
+        }
+        assert recorder.events[-2:] == ["client.close", "supervisor.stop"]
+        assert "read_variables" in recorder.events
+        _remaining_assert_binding(recorder, project, session_id=f"service-{index}")
+
+    project = _project(tmp_path / "diagnostic-project")
+    recorder = _Recorder()
+    diagnostic = make_attach_diagnostic(
+        make_primary("service-target-identity", "backend-code", "PROBE_ATTACH_FAILED")
+    )
+    failed_flash = OperationResult.failure(
+        "stm32_flash",
+        "PROBE_ATTACH_FAILED",
+        "Probe attach failed",
+        {"attachDiagnostic": diagnostic},
+    )
+    result = _run(
+        flash_workflow(
+            FlashWorkflowRequest(
+                project,
+                tmp_path / "diagnostic-data",
+                "diagnostic",
+                "probe-a",
+                BUILD_ID,
+                ELF_SHA,
+                True,
+            ),
+            _seams=_remaining_cleanup_seams(
+                project,
+                recorder,
+                close_modes=("sync-error",),
+                stop_mode="return-fragment",
+                stop_fragment=fragment,
+                flash_result=failed_flash,
+            ),
+        )
+    )
+    payload = result.to_dict()
+    assert payload["operation"] == "stm32_flash"
+    assert payload["code"] == "HARDWARE_CLEANUP_FAILED"
+    assert payload["message"] == "Hardware workflow cleanup failed"
+    merged = payload["details"]["attachDiagnostic"]
+    assert merged == {
+        "version": 1,
+        "primary": diagnostic["primary"],
+        "lateAttach": None,
+        "cleanup": [
+            {
+                "stage": "workflow-client-close",
+                "outcome": "failed",
+                "reason": "unknown",
+                "sourceCode": "UNTYPED",
+            },
+            {"stage": "service-lease-release", "outcome": "succeeded"},
+            {"stage": "workflow-service-stop", "outcome": "succeeded"},
+        ],
+        "lastVerifiedTargetState": None,
+    }
+    assert merged["primary"] == diagnostic["primary"]
+    assert "flash" in recorder.events
+    flash_request = recorder.flash_request
+    assert flash_request.project_root == project
+    assert flash_request.probe_id == "probe-a"
+    assert flash_request.target == "stm32f407vg"
+    assert flash_request.expected_build_id == BUILD_ID
+    assert flash_request.expected_elf_sha256 == ELF_SHA
+    assert flash_request.authorized is True
+    assert "C:\\" not in json.dumps(payload)
+    assert "token" not in json.dumps(payload).lower()
+
+    project = _project(tmp_path / "fatal-client-project")
+    recorder = _Recorder()
+    with pytest.raises(SystemExit) as caught:
+        _run(
+            variable_read_workflow(
+                _remaining_variable_request(project, tmp_path / "fatal-client-data", "fatal-client"),
+                _seams=_remaining_cleanup_seams(
+                    project,
+                    recorder,
+                    close_modes=("fatal",),
+                ),
+            )
+        )
+    assert caught.value.code == 101
+    assert recorder.events[-2:] == ["client.close", "supervisor.stop"]
+    assert "read_variables" in recorder.events
+    _remaining_assert_binding(recorder, project, session_id="fatal-client")
+
+    for index, (action_mode, stop_mode) in enumerate(
+        (("fatal", "ok"), ("ok", "fatal"), ("cancel", "ok"))
+    ):
+        project = _project(tmp_path / f"handoff-project-{index}")
+        recorder = _Recorder()
+        with pytest.raises(
+            SystemExit if action_mode == "fatal" or stop_mode == "fatal" else asyncio.CancelledError
+        ):
+            _run(
+                handoff_end_workflow(
+                    _remaining_handoff_request(
+                        project,
+                        tmp_path / f"handoff-data-{index}",
+                        f"handoff-{index}",
+                    ),
+                    _seams=_remaining_handoff_seams(
+                        recorder,
+                        action_mode=action_mode,
+                        stop_mode=stop_mode,
+                    ),
+                )
+            )
+        assert recorder.events[-2:] == ["client.close", "supervisor.stop"]
+
+
+class _RemainingFaultClient:
+    def __init__(
+        self,
+        endpoint: object,
+        recorder: _Recorder,
+        store: ControlAuthorizationStore,
+        identity: dict[str, object],
+        *,
+        identity_gates: dict[int, tuple[asyncio.Event, asyncio.Event]],
+        state_gates: dict[int, tuple[asyncio.Event, asyncio.Event]],
+        identity_errors: dict[int, BaseException],
+        state_errors: dict[int, BaseException],
+        identity_values: dict[int, dict[str, object]],
+        state_values: dict[int, dict[str, object]],
+        halt_state: str = "halted",
+        halt_response: dict[str, object] | None = None,
+        resume_error: BaseException | None = None,
+    ) -> None:
+        self.endpoint = endpoint
+        self._recorder = recorder
+        self._store = store
+        self.identity = dict(identity)
+        self.identity_gates = identity_gates
+        self.state_gates = state_gates
+        self.identity_errors = identity_errors
+        self.state_errors = state_errors
+        self.identity_values = identity_values
+        self.state_values = state_values
+        self.halt_state = halt_state
+        self.halt_response = halt_response
+        self.resume_error = resume_error
+        self.identity_calls = 0
+        self.state_calls = 0
+        self.control_calls: list[tuple[str, str]] = []
+        self.state = "running"
+
+    def _state(self) -> dict[str, object]:
+        return {"state": self.state, "reason": "requested"}
+
+    async def target_identity(self) -> dict[str, object]:
+        self.identity_calls += 1
+        index = self.identity_calls
+        self._recorder.events.append(f"target_identity:{index}")
+        gate = self.identity_gates.get(index)
+        if gate is not None:
+            started, release = gate
+            started.set()
+            await release.wait()
+        error = self.identity_errors.get(index)
+        if error is not None:
+            raise error
+        return dict(self.identity_values.get(index, self.identity))
+
+    async def target_state(self) -> dict[str, object]:
+        self.state_calls += 1
+        index = self.state_calls
+        self._recorder.events.append(f"target_state:{index}")
+        gate = self.state_gates.get(index)
+        if gate is not None:
+            started, release = gate
+            started.set()
+            await release.wait()
+        error = self.state_errors.get(index)
+        if error is not None:
+            raise error
+        return dict(self.state_values.get(index, self._state()))
+
+    async def target_control(
+        self, operation: str, arguments: dict[str, object], authorization: str
+    ) -> dict[str, object]:
+        self._recorder.events.append(operation)
+        self._store.consume(
+            authorization,
+            operation=operation,
+            arguments=arguments,
+            workspace_id=self.endpoint.workspace_id,
+            session_id=self.endpoint.session_id,
+            identity=self.identity,
+            state=self._state(),
+        )
+        self.control_calls.append((operation, authorization))
+        if operation == "target.halt":
+            self.state = self.halt_state
+            return self.halt_response or {"state": "halted", "reason": "requested"}
+        if operation == "target.resume":
+            if self.resume_error is not None:
+                raise self.resume_error
+            self.state = "running"
+            return {"state": "running"}
+        raise AssertionError(operation)
+
+    def close(self) -> object:
+        self._recorder.events.append("client.close")
+
+        async def complete() -> None:
+            return None
+
+        return complete()
+
+
+def _remaining_auth_sets(
+    recorder: _Recorder,
+) -> tuple[set[str], set[str]]:
+    store = recorder.control_store
+    records = store.root / "records"
+    if not records.is_dir():
+        return set(), set()
+    prepared = {
+        path.name[: -len(".prepared.json")]
+        for path in records.glob("*.prepared.json")
+    }
+    consumed = {
+        path.name[: -len(".consumed.json")]
+        for path in records.glob("*.consumed.json")
+    }
+    return prepared, consumed
+
+
+def _remaining_assert_auth(
+    recorder: _Recorder, *, prepared: int, consumed: int
+) -> None:
+    prepared_set, consumed_set = _remaining_auth_sets(recorder)
+    assert len(prepared_set) == prepared
+    assert len(consumed_set) == consumed
+    assert consumed_set <= prepared_set
+
+
+def _remaining_assert_binding_request(
+    recorder: _Recorder,
+    project: Path,
+    *,
+    session_id: str,
+    probe_id: str = "probe-a",
+) -> None:
+    request = recorder.binding_request
+    assert request.project_root == project
+    assert request.probe_id == probe_id
+    assert request.target == "stm32f407vg"
+    assert request.workspace_id == compute_workspace_id(
+        UUID("12345678-1234-5678-1234-567812345678"), project
+    )
+    assert request.observation_session_id == session_id
+    assert request.lease_id == "lease-secret"
+    assert request.expected_build_id == BUILD_ID
+    assert request.expected_elf_sha256 == ELF_SHA
+
+
+def _remaining_assert_binding(
+    recorder: _Recorder,
+    project: Path,
+    *,
+    session_id: str,
+    probe_id: str = "probe-a",
+) -> None:
+    _remaining_assert_binding_request(
+        recorder,
+        project,
+        session_id=session_id,
+        probe_id=probe_id,
+    )
+    assert type(recorder.binding) is DebugFirmwareBinding
+
+
+def _remaining_assert_cancel_cleanup(recorder: _Recorder) -> None:
+    assert recorder.events.count("client.close") == 1
+    assert recorder.events.count("supervisor.stop") == 1
+    assert recorder.events[-2:] == ["client.close", "supervisor.stop"]
+
+
+def _remaining_fault_request(
+    project: Path, data_root: Path, session_id: str = "session-a"
+) -> FaultWorkflowRequest:
+    return FaultWorkflowRequest(
+        project,
+        data_root,
+        session_id,
+        "probe-a",
+        BUILD_ID,
+        ELF_SHA,
+        True,
+    )
+
+
+def _remaining_controlled_seams(
+    project: Path,
+    recorder: _Recorder,
+    *,
+    bind_behavior: object | None = None,
+    analyze_behavior: object | None = None,
+    identity_gates: dict[int, tuple[asyncio.Event, asyncio.Event]] | None = None,
+    state_gates: dict[int, tuple[asyncio.Event, asyncio.Event]] | None = None,
+    identity_errors: dict[int, BaseException] | None = None,
+    state_errors: dict[int, BaseException] | None = None,
+    identity_values: dict[int, dict[str, object]] | None = None,
+    state_values: dict[int, dict[str, object]] | None = None,
+    halt_state: str = "halted",
+    halt_response: dict[str, object] | None = None,
+    resume_error: BaseException | None = None,
+) -> HardwareWorkflowSeams:
+    identity_gates = {} if identity_gates is None else identity_gates
+    state_gates = {} if state_gates is None else state_gates
+    identity_errors = {} if identity_errors is None else identity_errors
+    state_errors = {} if state_errors is None else state_errors
+    identity_values = {} if identity_values is None else identity_values
+    state_values = {} if state_values is None else state_values
+    supervisor_holder: dict[str, _RemainingSupervisor] = {}
+    client_holder: dict[str, _RemainingFaultClient] = {}
+    profile = {
+        "board_id": "stm32f407vg",
+        "mcu": "STM32F407VGTx",
+        "target_id": "stm32f407vg",
+    }
+
+    def make_supervisor(config: object, manager: object, contract: object) -> object:
+        del contract
+        supervisor = _RemainingSupervisor(
+            config,
+            recorder.events,
+            control_root=manager.data_root / "control-authorizations",
+        )
+        supervisor_holder["value"] = supervisor
+        recorder.supervisor = supervisor
+        assert supervisor.control_authorizations is not None
+        recorder.control_store = supervisor.control_authorizations
+        return supervisor
+
+    def make_client(endpoint: object) -> object:
+        identity = {
+            "board_id": profile["board_id"],
+            "mcu": profile["mcu"],
+            "target_id": profile["target_id"],
+            "probe_serial_hash": hashlib.sha256(b"probe-a").hexdigest(),
+        }
+        client = _RemainingFaultClient(
+            endpoint,
+            recorder,
+            supervisor_holder["value"].control_authorizations,
+            identity,
+            identity_gates=identity_gates,
+            state_gates=state_gates,
+            identity_errors=identity_errors,
+            state_errors=state_errors,
+            identity_values=identity_values,
+            state_values=state_values,
+            halt_state=halt_state,
+            halt_response=halt_response,
+            resume_error=resume_error,
+        )
+        client_holder["value"] = client
+        recorder.control_client = client
+        return client
+
+    async def bind(
+        request: object,
+        client: object,
+        *,
+        expected_operation_level: OperationLevel,
+    ) -> OperationResult[object]:
+        assert expected_operation_level is OperationLevel.CONTROL
+        recorder.events.append("bind")
+        recorder.binding_request = request
+        if bind_behavior is not None:
+            return await bind_behavior(request, client)
+        binding = _remaining_binding(project, request, client.endpoint)
+        assert type(binding) is DebugFirmwareBinding
+        recorder.binding = binding
+        return OperationResult.success("stm32_debug_bind", binding)
+
+    async def analyze(
+        request: object,
+        client: object,
+        *,
+        expected_operation_level: OperationLevel,
+        target_identity_snapshot: dict[str, object],
+    ) -> OperationResult[object]:
+        del request
+        assert expected_operation_level is OperationLevel.CONTROL
+        assert target_identity_snapshot == client.identity
+        recorder.events.append("analyze")
+        if analyze_behavior is not None:
+            return await analyze_behavior(client)
+        return OperationResult.success("stm32_fault_analyze", {"report": "captured"})
+
+    return HardwareWorkflowSeams(
+        worker_config=ProbeWorkerConfig(target_profile=profile),
+        _test_backend_factory=None,
+        lease_manager_factory=lambda root: ProbeLeaseManager(root),
+        supervisor_factory=make_supervisor,
+        client_factory=make_client,
+        bind=bind,
+        analyze_fault=analyze,
+        catalog_from_binding=lambda binding: "catalog",
+    )
+
+
+def _remaining_result_snapshot(result: OperationResult[object]) -> dict[str, object]:
+    payload = result.to_dict()
+    assert payload["operation"] == "stm32_fault_analyze"
+    details = payload["details"]
+    assert isinstance(details, dict)
+    snapshot = details["controlledSnapshot"]
+    assert isinstance(snapshot, dict)
+    assert snapshot["cleanup"] == {
+        "outcome": "succeeded",
+        "stages": [
+            {"stage": "workflow-client-close", "outcome": "succeeded"},
+            {"stage": "workflow-service-stop", "outcome": "succeeded"},
+        ],
+    }
+    return payload
+
+
+def test_public_controlled_fault_timeout_and_recovery_state_matrix(
+    tmp_path: Path,
+) -> None:
+    project = _project(tmp_path / "bind-timeout-project")
+    recorder = _Recorder()
+
+    async def bind_timeout(request: object, client: object) -> OperationResult[object]:
+        del request, client
+        raise asyncio.TimeoutError()
+
+    result = _run(
+        fault_workflow(
+            _remaining_fault_request(project, tmp_path / "bind-timeout-data"),
+            _seams=_remaining_controlled_seams(
+                project,
+                recorder,
+                bind_behavior=bind_timeout,
+            ),
+        )
+    )
+    payload = _remaining_result_snapshot(result)
+    assert payload["ok"] is False
+    assert payload["code"] == "PROBE_TIMEOUT"
+    assert payload["message"] == "Probe control operation timed out"
+    assert payload["details"]["controlledSnapshot"]["halt"] == {
+        "dispatched": False,
+        "outcome": "not-started",
+    }
+    _remaining_assert_binding_request(recorder, project, session_id="session-a")
+    _remaining_assert_auth(recorder, prepared=0, consumed=0)
+
+    project = _project(tmp_path / "bind-provider-cancel-project")
+    recorder = _Recorder()
+
+    async def bind_provider_cancel(request: object, client: object) -> OperationResult[object]:
+        del request, client
+        raise asyncio.CancelledError()
+
+    with pytest.raises(asyncio.CancelledError):
+        _run(
+            fault_workflow(
+                _remaining_fault_request(
+                    project,
+                    tmp_path / "bind-provider-cancel-data",
+                ),
+                _seams=_remaining_controlled_seams(
+                    project,
+                    recorder,
+                    bind_behavior=bind_provider_cancel,
+                ),
+            )
+        )
+    _remaining_assert_binding_request(recorder, project, session_id="session-a")
+    _remaining_assert_auth(recorder, prepared=0, consumed=0)
+    _remaining_assert_cancel_cleanup(recorder)
+
+    project = _project(tmp_path / "bind-cancel-error-project")
+    recorder = _Recorder()
+
+    async def bind_cancellable_error(
+        request: object, client: object
+    ) -> OperationResult[object]:
+        del request, client
+        recorder.bind_started.set()
+        await recorder.bind_release.wait()
+        raise ProbeClientError("PROBE_BIND_FAILED", "Binding failed")
+
+    async def bind_cancel_error_scenario() -> None:
+        recorder.bind_started = asyncio.Event()
+        recorder.bind_release = asyncio.Event()
+        seams = _remaining_controlled_seams(
+            project,
+            recorder,
+            bind_behavior=bind_cancellable_error,
+        )
+        task = asyncio.create_task(
+            fault_workflow(
+                _remaining_fault_request(
+                    project,
+                    tmp_path / "bind-cancel-error-data",
+                ),
+                _seams=seams,
+            )
+        )
+        await recorder.bind_started.wait()
+        task.cancel()
+        recorder.bind_release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(bind_cancel_error_scenario())
+    _remaining_assert_binding_request(recorder, project, session_id="session-a")
+    _remaining_assert_auth(recorder, prepared=0, consumed=0)
+    _remaining_assert_cancel_cleanup(recorder)
+
+    identity_cases = (
+        (
+            "identity-provider-error",
+            ProbeClientError("PROBE_IDENTITY_UNAVAILABLE", "Target identity is unavailable"),
+            "PROBE_IDENTITY_UNAVAILABLE",
+            "Target identity is unavailable",
+        ),
+        (
+            "identity-timeout",
+            asyncio.TimeoutError(),
+            "PROBE_TIMEOUT",
+            "Probe control operation timed out",
+        ),
+    )
+    for name, error, expected_code, expected_message in identity_cases:
+        project = _project(tmp_path / f"{name}-project")
+        recorder = _Recorder()
+        result = _run(
+            fault_workflow(
+                _remaining_fault_request(project, tmp_path / f"{name}-data"),
+                _seams=_remaining_controlled_seams(
+                    project,
+                    recorder,
+                    identity_errors={1: error},
+                ),
+            )
+        )
+        payload = _remaining_result_snapshot(result)
+        assert payload["code"] == expected_code
+        assert payload["message"] == expected_message
+        assert payload["details"]["controlledSnapshot"]["halt"] == {
+            "dispatched": False,
+            "outcome": "not-started",
+        }
+        _remaining_assert_binding(recorder, project, session_id="session-a")
+        _remaining_assert_auth(recorder, prepared=0, consumed=0)
+
+    state_cases = (
+        (
+            "state-provider-error",
+            ProbeClientError("PROBE_STATE_UNAVAILABLE", "Target state is unavailable"),
+            "PROBE_STATE_UNAVAILABLE",
+            "Target state is unavailable",
+        ),
+        (
+            "state-timeout",
+            asyncio.TimeoutError(),
+            "PROBE_TIMEOUT",
+            "Probe control operation timed out",
+        ),
+    )
+    for name, error, expected_code, expected_message in state_cases:
+        project = _project(tmp_path / f"{name}-project")
+        recorder = _Recorder()
+        result = _run(
+            fault_workflow(
+                _remaining_fault_request(project, tmp_path / f"{name}-data"),
+                _seams=_remaining_controlled_seams(
+                    project,
+                    recorder,
+                    state_errors={1: error},
+                ),
+            )
+        )
+        payload = _remaining_result_snapshot(result)
+        assert payload["code"] == expected_code
+        assert payload["message"] == expected_message
+        assert payload["details"]["controlledSnapshot"]["beforeState"] is None
+        _remaining_assert_binding(recorder, project, session_id="session-a")
+        _remaining_assert_auth(recorder, prepared=0, consumed=0)
+
+    project = _project(tmp_path / "initial-state-cancel-project")
+    recorder = _Recorder()
+
+    async def initial_state_cancel_scenario() -> None:
+        started = asyncio.Event()
+        release = asyncio.Event()
+        seams = _remaining_controlled_seams(
+            project,
+            recorder,
+            state_gates={1: (started, release)},
+        )
+        task = asyncio.create_task(
+            fault_workflow(
+                _remaining_fault_request(
+                    project,
+                    tmp_path / "initial-state-cancel-data",
+                ),
+                _seams=seams,
+            )
+        )
+        await started.wait()
+        task.cancel()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(initial_state_cancel_scenario())
+    _remaining_assert_binding(recorder, project, session_id="session-a")
+    assert recorder.control_client.control_calls == []
+    _remaining_assert_auth(recorder, prepared=0, consumed=0)
+    _remaining_assert_cancel_cleanup(recorder)
+
+    project = _project(tmp_path / "halt-authorization-cancel-project")
+    recorder = _Recorder()
+
+    async def halt_authorization_cancel_scenario() -> None:
+        started = asyncio.Event()
+        release = asyncio.Event()
+        seams = _remaining_controlled_seams(
+            project,
+            recorder,
+            identity_gates={2: (started, release)},
+        )
+        task = asyncio.create_task(
+            fault_workflow(
+                _remaining_fault_request(
+                    project,
+                    tmp_path / "halt-authorization-cancel-data",
+                ),
+                _seams=seams,
+            )
+        )
+        await started.wait()
+        task.cancel()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(halt_authorization_cancel_scenario())
+    _remaining_assert_binding(recorder, project, session_id="session-a")
+    assert recorder.control_client.control_calls == []
+    _remaining_assert_auth(recorder, prepared=1, consumed=0)
+    _remaining_assert_cancel_cleanup(recorder)
+
+    project = _project(tmp_path / "analysis-state-error-project")
+    recorder = _Recorder()
+    result = _run(
+        fault_workflow(
+            _remaining_fault_request(project, tmp_path / "analysis-state-error-data"),
+            _seams=_remaining_controlled_seams(
+                project,
+                recorder,
+                state_errors={
+                    3: ProbeClientError(
+                        "PROBE_STATE_UNAVAILABLE", "Analysis state is unavailable"
+                    )
+                },
+            ),
+        )
+    )
+    payload = _remaining_result_snapshot(result)
+    assert payload["code"] == "PROBE_STATE_UNAVAILABLE"
+    assert payload["message"] == "Analysis state is unavailable"
+    assert payload["details"]["controlledSnapshot"]["resume"] == {
+        "dispatched": True,
+        "outcome": "succeeded",
+    }
+    _remaining_assert_binding(recorder, project, session_id="session-a")
+    assert [operation for operation, _ in recorder.control_client.control_calls] == [
+        "target.halt",
+        "target.resume",
+    ]
+    _remaining_assert_auth(recorder, prepared=2, consumed=2)
+
+    project = _project(tmp_path / "running-analysis-state-project")
+    recorder = _Recorder()
+    result = _run(
+        fault_workflow(
+            _remaining_fault_request(project, tmp_path / "running-analysis-state-data"),
+            _seams=_remaining_controlled_seams(
+                project,
+                recorder,
+                halt_state="running",
+                halt_response={"state": "halted", "reason": "requested"},
+            ),
+        )
+    )
+    payload = _remaining_result_snapshot(result)
+    assert payload["code"] == "FAULT_TARGET_NOT_HALTED"
+    assert payload["message"] == "Target must remain halted before Fault analysis"
+    assert payload["details"]["controlledSnapshot"]["resume"] == {
+        "dispatched": False,
+        "outcome": "already-satisfied",
+    }
+    assert [operation for operation, _ in recorder.control_client.control_calls] == [
+        "target.halt"
+    ]
+    _remaining_assert_auth(recorder, prepared=1, consumed=1)
+
+    project = _project(tmp_path / "analyzer-error-project")
+    recorder = _Recorder()
+
+    async def analyzer_error(client: object) -> OperationResult[object]:
+        del client
+        raise ProbeClientError("FAULT_STATUS_UNAVAILABLE", "Fault status is unavailable")
+
+    result = _run(
+        fault_workflow(
+            _remaining_fault_request(project, tmp_path / "analyzer-error-data"),
+            _seams=_remaining_controlled_seams(
+                project,
+                recorder,
+                analyze_behavior=analyzer_error,
+            ),
+        )
+    )
+    payload = _remaining_result_snapshot(result)
+    assert payload["code"] == "FAULT_STATUS_UNAVAILABLE"
+    assert payload["message"] == "Fault status is unavailable"
+    assert payload["details"]["controlledSnapshot"]["resume"] == {
+        "dispatched": True,
+        "outcome": "succeeded",
+    }
+    assert [operation for operation, _ in recorder.control_client.control_calls] == [
+        "target.halt",
+        "target.resume",
+    ]
+    _remaining_assert_auth(recorder, prepared=2, consumed=2)
+
+    project = _project(tmp_path / "analysis-state-cancel-project")
+    recorder = _Recorder()
+
+    async def analysis_state_cancel_scenario() -> None:
+        started = asyncio.Event()
+        release = asyncio.Event()
+        seams = _remaining_controlled_seams(
+            project,
+            recorder,
+            state_gates={3: (started, release)},
+        )
+        task = asyncio.create_task(
+            fault_workflow(
+                _remaining_fault_request(
+                    project,
+                    tmp_path / "analysis-state-cancel-data",
+                ),
+                _seams=seams,
+            )
+        )
+        await started.wait()
+        task.cancel()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(analysis_state_cancel_scenario())
+    _remaining_assert_binding(recorder, project, session_id="session-a")
+    assert "analyze" not in recorder.events
+    assert [operation for operation, _ in recorder.control_client.control_calls] == [
+        "target.halt",
+        "target.resume",
+    ]
+    _remaining_assert_auth(recorder, prepared=2, consumed=2)
+    _remaining_assert_cancel_cleanup(recorder)
+
+    recovery_cases = (
+        (
+            "recovery-identity-error",
+            {3: ProbeClientError("PROBE_IDENTITY_UNAVAILABLE", "Recovery identity unavailable")},
+            {},
+            {},
+            None,
+            "unknown",
+            None,
+            1,
+            1,
+        ),
+        (
+            "recovery-identity-changed",
+            {},
+            {},
+            {
+                3: {
+                    "board_id": "stm32f407vg",
+                    "mcu": "STM32F407VGTx",
+                    "target_id": "changed-target",
+                    "probe_serial_hash": hashlib.sha256(b"probe-a").hexdigest(),
+                }
+            },
+            None,
+            "unknown",
+            None,
+            1,
+            1,
+        ),
+        (
+            "recovery-reset-state",
+            {},
+            {},
+            {},
+            {4: {"state": "reset", "reason": "reset"}},
+            "unknown",
+            None,
+            1,
+            1,
+        ),
+        (
+            "resume-state-error",
+            {},
+            {6: ProbeClientError("PROBE_STATE_UNAVAILABLE", "Resume state unavailable")},
+            {},
+            {},
+            "failed",
+            None,
+            2,
+            2,
+        ),
+        (
+            "resume-state-reset",
+            {},
+            {},
+            {},
+            {6: {"state": "reset", "reason": "reset"}},
+            "failed",
+            "reset",
+            2,
+            2,
+        ),
+    )
+    for (
+        name,
+        identity_errors,
+        state_errors,
+        identity_values,
+        state_values,
+        expected_resume,
+        expected_after_state,
+        prepared,
+        consumed,
+    ) in recovery_cases:
+        project = _project(tmp_path / f"{name}-project")
+        recorder = _Recorder()
+        result = _run(
+            fault_workflow(
+                _remaining_fault_request(project, tmp_path / f"{name}-data"),
+                _seams=_remaining_controlled_seams(
+                    project,
+                    recorder,
+                    identity_errors=identity_errors,
+                    state_errors=state_errors,
+                    identity_values=identity_values,
+                    state_values=state_values,
+                ),
+            )
+        )
+        payload = _remaining_result_snapshot(result)
+        assert payload["code"] == "HARDWARE_CLEANUP_FAILED"
+        assert payload["message"] == "Hardware workflow cleanup failed"
+        assert payload["details"]["initiatingCode"] == "OK"
+        snapshot = payload["details"]["controlledSnapshot"]
+        assert snapshot["resume"]["outcome"] == expected_resume
+        if expected_after_state is not None:
+            assert snapshot["afterState"]["state"] == expected_after_state
+        _remaining_assert_binding(recorder, project, session_id="session-a")
+        _remaining_assert_auth(recorder, prepared=prepared, consumed=consumed)
+
+    project = _project(tmp_path / "resume-decoder-error-project")
+    recorder = _Recorder()
+    result = _run(
+        fault_workflow(
+            _remaining_fault_request(project, tmp_path / "resume-decoder-error-data"),
+            _seams=_remaining_controlled_seams(
+                project,
+                recorder,
+                resume_error=ProbeClientError(
+                    "PROBE_RESPONSE_INVALID", "Probe Service response is invalid"
+                ),
+            ),
+        )
+    )
+    payload = _remaining_result_snapshot(result)
+    assert payload["code"] == "HARDWARE_CLEANUP_FAILED"
+    assert payload["details"]["initiatingCode"] == "OK"
+    assert payload["details"]["controlledSnapshot"]["resume"] == {
+        "dispatched": True,
+        "outcome": "failed",
+    }
+    _remaining_assert_auth(recorder, prepared=2, consumed=2)

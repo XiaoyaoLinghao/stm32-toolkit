@@ -23,6 +23,7 @@ from .model import (
     ObservationResult,
     ObservationStep,
     PHYSICAL_MONITOR_FACT_KIND,
+    PHYSICAL_MONITOR_FACT_KINDS,
     SourceChangeDeclaration,
     VerificationPlan,
     calculate_event_digest,
@@ -232,7 +233,7 @@ def _reduce_plan_executed(session: DiagnosticSession, event: DiagnosticEvent) ->
         item.evidence_id
         != (
             cast(str, plan.steps[index].selector["monitor_run_ref"]["transcript_evidence_id"])
-            if plan.steps[index].selector["kind"] == PHYSICAL_MONITOR_FACT_KIND
+            if plan.steps[index].selector["kind"] in PHYSICAL_MONITOR_FACT_KINDS
             else session.failed_evidence_id
         )
         or item.plan_id != plan.plan_id or item.step_id != plan.steps[index].step_id
@@ -571,12 +572,17 @@ def diagnostic_event_references(event: DiagnosticEvent) -> tuple[str, ...]:
 def _selector_evidence_references(selector: Mapping[str, object]) -> tuple[str, ...]:
     """Return the immutable evidence IDs named by one observation selector."""
 
-    if selector.get("kind") != PHYSICAL_MONITOR_FACT_KIND:
+    if selector.get("kind") not in PHYSICAL_MONITOR_FACT_KINDS:
         return ()
     reference = selector.get("monitor_run_ref")
     assert isinstance(reference, Mapping)
+    if selector.get("kind") == PHYSICAL_MONITOR_FACT_KIND:
+        return (
+            cast(str, selector["continuation_evidence_id"]),
+            cast(str, selector["monitor_ref_evidence_id"]),
+            cast(str, reference["transcript_evidence_id"]),
+        )
     return (
-        cast(str, selector["continuation_evidence_id"]),
         cast(str, selector["monitor_ref_evidence_id"]),
         cast(str, reference["transcript_evidence_id"]),
     )

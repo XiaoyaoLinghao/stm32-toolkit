@@ -7,6 +7,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from mcp.server.fastmcp.exceptions import ToolError
+from pydantic import ValidationError as PydanticValidationError
 
 import stm32_toolkit.mcp_server as mcp_mod
 from stm32_toolkit.mcp_server import ServerRuntime, create_server
@@ -15,7 +17,13 @@ from stm32_toolkit.monitor_replay_contract import (
     canonical_replay_json_bytes,
     validate_run_reference,
 )
+from stm32_toolkit.diagnostics import (
+    DIAGNOSTIC_PLAN_INVALID,
+    DiagnosticValidationError,
+    ObservationStep,
+)
 from stm32_toolkit.result import OperationResult
+from test_mcp_roots import _RootSession, _context
 
 
 DIAGNOSTIC_SESSION_ID = "a" * 32
@@ -91,6 +99,35 @@ PHYSICAL_MONITOR_REF["run_ref_sha256"] = hashlib.sha256(
         }
     )
 ).hexdigest()
+
+
+def _redigest_monitor_reference(reference: dict[str, object]) -> None:
+    reference["run_ref_sha256"] = hashlib.sha256(
+        canonical_replay_json_bytes(
+            {key: value for key, value in reference.items() if key != "run_ref_sha256"}
+        )
+    ).hexdigest()
+
+
+def _valid_replay_monitor_reference() -> dict[str, object]:
+    reference = deepcopy(PHYSICAL_MONITOR_REF)
+    reference.update(
+        {
+            "schema": "stm32-monitor-run-ref/1",
+            "execution_source": "replay",
+            "physical_transport_evidence": False,
+            "probe_id": "replay:probe-v2",
+            "physical_target": "replay:non-physical",
+            "flash_session_id": "replay:no-flash",
+            "lease_id": "replay:no-lease",
+            "fixture_sha256": "6" * 64,
+        }
+    )
+    reference.pop("source_record_sha256", None)
+    _redigest_monitor_reference(reference)
+    return reference
+
+
 PHYSICAL_FACT_STEP = {
     "step_id": "physical-fact",
     "selector": {
@@ -107,6 +144,141 @@ PHYSICAL_FACT_STEP = {
     "expected_value": 3,
     "purpose": "verify the physical register bit",
 }
+
+
+def _v2_failed_before_step() -> dict[str, object]:
+    step = deepcopy(PHYSICAL_FACT_STEP)
+    selector = step["selector"]
+    assert isinstance(selector, dict)
+    selector["kind"] = "physical-monitor-fact/2"
+    selector.pop("continuation_evidence_id")
+    reference = selector["monitor_run_ref"]
+    assert isinstance(reference, dict)
+    reference["scenario_role"] = "failed-before"
+    _redigest_monitor_reference(reference)
+    return step
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "v1-missing-continuation",
+        "value-varies-bit-index",
+        "bit-mask-variable-selector",
+        "sample-count-zero",
+        "sample-count-over-cap",
+        "bit-index-over-cap",
+        "v2-requires-failed-before",
+        "monitor-reference-must-be-physical",
+        "bit-mask-value-domain",
+        "malformed-monitor-reference",
+    ],
+)
+def test_physical_observation_step_wire_guards_fail_closed_without_mutation(
+    mutation: str,
+) -> None:
+    candidate = deepcopy(PHYSICAL_FACT_STEP)
+    selector = candidate["selector"]
+    assert isinstance(selector, dict)
+
+    if mutation == "v1-missing-continuation":
+        selector.pop("continuation_evidence_id")
+    elif mutation == "value-varies-bit-index":
+        selector["fact"] = "value-varies"
+    elif mutation == "bit-mask-variable-selector":
+        selector["selector_kind"] = "variable"
+    elif mutation == "sample-count-zero":
+        selector["minimum_valid_samples"] = 0
+    elif mutation == "sample-count-over-cap":
+        selector["minimum_valid_samples"] = 1025
+    elif mutation == "bit-index-over-cap":
+        selector["bit_index"] = 32
+    elif mutation == "v2-requires-failed-before":
+        selector["kind"] = "physical-monitor-fact/2"
+        selector.pop("continuation_evidence_id")
+        reference = selector["monitor_run_ref"]
+        assert isinstance(reference, dict)
+        reference["scenario_role"] = "fixed-after"
+        _redigest_monitor_reference(reference)
+        assert validate_run_reference(reference)["scenario_role"] == "fixed-after"
+    elif mutation == "monitor-reference-must-be-physical":
+        reference = _valid_replay_monitor_reference()
+        selector["monitor_run_ref"] = reference
+        assert validate_run_reference(reference)["schema"] == "stm32-monitor-run-ref/1"
+    elif mutation == "bit-mask-value-domain":
+        candidate["expected_value"] = 4
+    else:
+        selector["monitor_run_ref"] = {}
+
+    before = deepcopy(candidate)
+    with pytest.raises(DiagnosticValidationError) as error:
+        ObservationStep.from_value(candidate)
+
+    assert error.value.code == DIAGNOSTIC_PLAN_INVALID
+    assert candidate == before
+
+
+@pytest.mark.parametrize(
+    "case_id",
+    [
+        "physical-selector-kind",
+        "physical-value-varies-accepted-control",
+        "physical-value-type",
+        "physical-value-domain",
+    ],
+    ids=lambda case_id: case_id,
+)
+def test_public_physical_observation_model_boundaries(case_id: str) -> None:
+    plan_message = "selector, expected value, plan, or step reference is invalid"
+    if case_id == "physical-selector-kind":
+        candidate = deepcopy(PHYSICAL_FACT_STEP)
+        selector = candidate["selector"]
+        assert isinstance(selector, dict)
+        selector["selector_kind"] = "unsupported-kind"
+        before = deepcopy(candidate)
+        with pytest.raises(DiagnosticValidationError) as error:
+            ObservationStep.from_value(candidate)
+        assert error.value.code == DIAGNOSTIC_PLAN_INVALID
+        assert error.value.message == plan_message
+        assert str(error.value) == plan_message
+        assert candidate == before
+        return
+    if case_id in {"physical-value-varies-accepted-control", "physical-value-domain"}:
+        candidate = deepcopy(PHYSICAL_FACT_STEP)
+        selector = candidate["selector"]
+        assert isinstance(selector, dict)
+        selector["fact"] = "value-varies"
+        selector.pop("bit_index")
+        candidate["expected_value"] = 1 if case_id == "physical-value-varies-accepted-control" else 2
+        if case_id == "physical-value-varies-accepted-control":
+            before = deepcopy(candidate)
+            decoded = ObservationStep.from_value(candidate)
+            assert decoded.expected_value == 1
+            assert decoded.selector["fact"] == "value-varies"
+            assert candidate == before
+            return
+        before = deepcopy(candidate)
+        with pytest.raises(DiagnosticValidationError) as error:
+            ObservationStep.from_value(candidate)
+        assert error.value.code == DIAGNOSTIC_PLAN_INVALID
+        assert error.value.message == plan_message
+        assert str(error.value) == plan_message
+        assert candidate == before
+        return
+    if case_id == "physical-value-type":
+        candidate = deepcopy(PHYSICAL_FACT_STEP)
+        candidate["expected_value"] = "3"
+        before = deepcopy(candidate)
+        with pytest.raises(DiagnosticValidationError) as error:
+            ObservationStep.from_value(candidate)
+        assert error.value.code == DIAGNOSTIC_PLAN_INVALID
+        assert error.value.message == plan_message
+        assert str(error.value) == plan_message
+        assert candidate == before
+        return
+    raise AssertionError(f"unhandled case: {case_id}")
+
+
 LIFECYCLE_TOOLS = {
     "stm32_diagnostic_start",
     "stm32_diagnostic_show",
@@ -130,6 +302,17 @@ def _runtime(tmp_path: Path) -> ServerRuntime:
     project = tmp_path / "project"
     project.mkdir()
     return ServerRuntime.create(project, tmp_path / "plugin-data", "session-a")
+
+
+def _tree_snapshot(root: Path) -> tuple[tuple[str, bool, bytes | None], ...]:
+    return tuple(
+        (
+            str(path.relative_to(root)),
+            path.is_dir(),
+            path.read_bytes() if path.is_file() else None,
+        )
+        for path in sorted(root.rglob("*"))
+    )
 
 
 def _schemas(tmp_path: Path) -> dict[str, dict[str, object]]:
@@ -465,6 +648,92 @@ def test_registered_lifecycle_tools_are_thin_delegates_with_actor_defaults(
         4,
         "ai-client",
     )
+
+
+def test_diagnostic_start_direct_adapter_preserves_target_mode(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    runtime = _runtime(tmp_path)
+    session = _RootSession([[runtime.project_root]])
+    project_before = _tree_snapshot(runtime.project_root)
+    data_before = _tree_snapshot(runtime.data_root)
+    calls: list[tuple[object, dict[str, object]]] = []
+
+    def recorder(context: object, **kwargs: object) -> OperationResult[object]:
+        calls.append((context, kwargs))
+        return OperationResult.success("diagnostic.start", {"case": "target"})
+
+    monkeypatch.setattr(mcp_mod, "diagnostic_start", recorder)
+    assert mcp_mod.diagnostic_start is recorder
+
+    result = asyncio.run(
+        mcp_mod.tool_diagnostic_start_for_request(
+            runtime,
+            _context(session),
+            OPERATION_ID,
+            RUN_ID,
+            "user",
+            failed_run_mode="target",
+        )
+    )
+
+    assert result == OperationResult.success(
+        "diagnostic.start", {"case": "target"}
+    ).to_dict()
+    assert session.list_roots_calls == 1
+    assert len(calls) == 1
+    context, kwargs = calls[0]
+    assert isinstance(context, mcp_mod.DiagnosticWorkflowContext)
+    assert context.project_root == runtime.project_root
+    assert context.data_root == runtime.data_root
+    assert context.session_id == runtime.session_id
+    assert kwargs == {
+        "operation_id": OPERATION_ID,
+        "failed_test_run_id": RUN_ID,
+        "actor": "user",
+        "failed_run_mode": "target",
+    }
+    assert _tree_snapshot(runtime.project_root) == project_before
+    assert _tree_snapshot(runtime.data_root) == data_before
+
+
+def test_diagnostic_start_registered_target_mode_maps_once(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    runtime = _runtime(tmp_path)
+    server = create_server(runtime.project_root, runtime.data_root, runtime.session_id)
+    project_before = _tree_snapshot(runtime.project_root)
+    data_before = _tree_snapshot(runtime.data_root)
+    calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+    async def recorder(*args: object, **kwargs: object) -> dict[str, object]:
+        calls.append((args, kwargs))
+        return {"tool": "diagnostic-start-target"}
+
+    monkeypatch.setattr(mcp_mod, "tool_diagnostic_start_for_request", recorder)
+    assert mcp_mod.tool_diagnostic_start_for_request is recorder
+
+    _content, result = asyncio.run(
+        server.call_tool(
+            "stm32_diagnostic_start",
+            {
+                "operationId": OPERATION_ID,
+                "failedTestRunId": RUN_ID,
+                "failedRunMode": "target",
+            },
+        )
+    )
+
+    assert result == {"tool": "diagnostic-start-target"}
+    assert len(calls) == 1
+    args, kwargs = calls[0]
+    assert args[0].project_root == runtime.project_root
+    assert args[0].data_root == runtime.data_root
+    assert args[0].session_id == runtime.session_id
+    assert args[2:] == (OPERATION_ID, RUN_ID, "user")
+    assert kwargs == {"failed_run_mode": "target"}
+    assert _tree_snapshot(runtime.project_root) == project_before
+    assert _tree_snapshot(runtime.data_root) == data_before
 
 
 @pytest.mark.parametrize(
@@ -1273,7 +1542,7 @@ def test_plan_tools_have_exact_closed_nested_selector_schemas(tmp_path: Path):
     selector = _resolve_schema(steps["properties"]["selector"], add)
     variants = selector.get("oneOf") or selector.get("anyOf")
     assert isinstance(variants, list)
-    assert len(variants) == 4
+    assert len(variants) == 5
     variant_schemas = [_resolve_schema(item, add) for item in variants]
     assert all(item["additionalProperties"] is False for item in variant_schemas)
     assert {
@@ -1293,6 +1562,16 @@ def test_plan_tools_have_exact_closed_nested_selector_schemas(tmp_path: Path):
             "selector",
             "selector_kind",
         ),
+        (
+            "bit_index",
+            "fact",
+            "kind",
+            "minimum_valid_samples",
+            "monitor_ref_evidence_id",
+            "monitor_run_ref",
+            "selector",
+            "selector_kind",
+        ),
     }
     run_state = next(item for item in variant_schemas if set(item["properties"]) == {"kind"})
     case_state = next(
@@ -1304,7 +1583,13 @@ def test_plan_tools_have_exact_closed_nested_selector_schemas(tmp_path: Path):
     physical = next(
         item
         for item in variant_schemas
+        if "continuation_evidence_id" in item["properties"]
+    )
+    physical_v2 = next(
+        item
+        for item in variant_schemas
         if "monitor_run_ref" in item["properties"]
+        and "continuation_evidence_id" not in item["properties"]
     )
     assert run_state["properties"]["kind"]["const"] == "run-state"
     assert case_state["properties"]["kind"]["const"] == "case-state"
@@ -1319,6 +1604,7 @@ def test_plan_tools_have_exact_closed_nested_selector_schemas(tmp_path: Path):
         "timeout",
     ]
     assert physical["properties"]["kind"]["const"] == "physical-monitor-fact/1"
+    assert physical_v2["properties"]["kind"]["const"] == "physical-monitor-fact/2"
     assert physical["properties"]["fact"]["enum"] == [
         "value-varies",
         "bit-values-mask",
@@ -1338,6 +1624,15 @@ def test_plan_tools_have_exact_closed_nested_selector_schemas(tmp_path: Path):
     assert set(physical["required"]) == {
         "kind",
         "continuation_evidence_id",
+        "monitor_ref_evidence_id",
+        "monitor_run_ref",
+        "selector_kind",
+        "selector",
+        "fact",
+        "minimum_valid_samples",
+    }
+    assert set(physical_v2["required"]) == {
+        "kind",
         "monitor_ref_evidence_id",
         "monitor_run_ref",
         "selector_kind",
@@ -1484,6 +1779,200 @@ def test_registered_plan_add_preserves_physical_reference_null_and_bit_shape(
             )
         )
     assert len(calls) == 2
+
+
+def test_registered_plan_add_accepts_v2_without_continuation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    runtime = _runtime(tmp_path)
+    server = create_server(runtime.project_root, runtime.data_root, runtime.session_id)
+    calls: list[tuple[object, ...]] = []
+
+    async def helper(*args: object) -> dict[str, object]:
+        calls.append(args)
+        return {"tool": "plan-add"}
+
+    monkeypatch.setattr(mcp_mod, "tool_diagnostic_add_plan_for_request", helper, raising=False)
+    step = deepcopy(PHYSICAL_FACT_STEP)
+    selector = step["selector"]
+    assert isinstance(selector, dict)
+    selector["kind"] = "physical-monitor-fact/2"
+    selector.pop("continuation_evidence_id")
+    _content, result = asyncio.run(
+        server.call_tool(
+            "stm32_diagnostic_plan_add",
+            {
+                "operationId": OPERATION_ID,
+                "diagnosticSessionId": DIAGNOSTIC_SESSION_ID,
+                "expectedRevision": 4,
+                "steps": [step],
+            },
+        )
+    )
+    assert result == {"tool": "plan-add"}
+    assert len(calls) == 1
+    forwarded = calls[0][5][0]
+    assert "continuation_evidence_id" not in forwarded["selector"]
+    assert forwarded["selector"]["kind"] == "physical-monitor-fact/2"
+
+
+def _remaining_plan_baseline(case_id: str) -> dict[str, object]:
+    if case_id == "case-count-string-expected-value":
+        return deepcopy(CASE_COUNT_STEP)
+    if case_id == "physical-selector-string-expected-value":
+        return deepcopy(PHYSICAL_FACT_STEP)
+    return _v2_failed_before_step()
+
+
+def _remaining_plan_variant(case_id: str) -> dict[str, object]:
+    step = _remaining_plan_baseline(case_id)
+    selector = step["selector"]
+    assert isinstance(selector, dict)
+    if case_id == "v2-fixed-after-rejection":
+        reference = selector["monitor_run_ref"]
+        assert isinstance(reference, dict)
+        reference["scenario_role"] = "fixed-after"
+        _redigest_monitor_reference(reference)
+    elif case_id == "v2-value-varies-bit-index-rejection":
+        selector["fact"] = "value-varies"
+    elif case_id == "v2-bit-mask-non-register-rejection":
+        selector["fact"] = "bit-values-mask"
+        selector["selector_kind"] = "variable"
+    elif case_id == "case-count-string-expected-value":
+        step["expected_value"] = "failed"
+    elif case_id == "physical-selector-string-expected-value":
+        step["expected_value"] = "failed"
+    elif case_id == "value-varies-out-of-domain":
+        selector["fact"] = "value-varies"
+        selector.pop("bit_index")
+        step["expected_value"] = 2
+    elif case_id == "bit-mask-out-of-domain":
+        selector["fact"] = "bit-values-mask"
+        selector["selector_kind"] = "register"
+        selector["bit_index"] = 0
+        step["expected_value"] = 4
+    else:
+        raise AssertionError(f"unhandled remaining plan case: {case_id}")
+    return step
+
+
+@pytest.mark.parametrize(
+    "case_id",
+    [
+        "v2-fixed-after-rejection",
+        "v2-value-varies-bit-index-rejection",
+        "v2-bit-mask-non-register-rejection",
+        "case-count-string-expected-value",
+        "physical-selector-string-expected-value",
+        "value-varies-out-of-domain",
+        "bit-mask-out-of-domain",
+    ],
+)
+def test_registered_plan_add_rejects_remaining_public_selector_guards_before_dispatch(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    case_id: str,
+) -> None:
+    runtime = _runtime(tmp_path)
+    server = create_server(runtime.project_root, runtime.data_root, runtime.session_id)
+    calls: list[tuple[object, ...]] = []
+
+    async def helper(*args: object) -> dict[str, object]:
+        calls.append(args)
+        return {"tool": "plan-add"}
+
+    monkeypatch.setattr(mcp_mod, "tool_diagnostic_add_plan_for_request", helper)
+    assert mcp_mod.tool_diagnostic_add_plan_for_request is helper
+    project_before = _tree_snapshot(runtime.project_root)
+    data_before = _tree_snapshot(runtime.data_root)
+
+    baseline_step = _remaining_plan_baseline(case_id)
+    baseline_wire = {
+        "operationId": OPERATION_ID,
+        "diagnosticSessionId": DIAGNOSTIC_SESSION_ID,
+        "expectedRevision": 4,
+        "steps": [baseline_step],
+    }
+    baseline_before = deepcopy(baseline_wire)
+    _content, result = asyncio.run(
+        server.call_tool("stm32_diagnostic_plan_add", baseline_wire)
+    )
+    assert result == {"tool": "plan-add"}
+    assert len(calls) == 1
+    assert calls[0][0].project_root == runtime.project_root
+    assert calls[0][2:] == (
+        OPERATION_ID,
+        DIAGNOSTIC_SESSION_ID,
+        4,
+        [baseline_step],
+        "user",
+    )
+    assert baseline_wire == baseline_before
+
+    invalid_step = _remaining_plan_variant(case_id)
+    invalid_wire = {
+        "operationId": OPERATION_ID,
+        "diagnosticSessionId": DIAGNOSTIC_SESSION_ID,
+        "expectedRevision": 4,
+        "steps": [invalid_step],
+    }
+    invalid_before = deepcopy(invalid_wire)
+    expected_messages = {
+        "v2-fixed-after-rejection": "v2 physical monitor facts require failed-before evidence",
+        "v2-value-varies-bit-index-rejection": "value-varies does not accept bit_index",
+        "v2-bit-mask-non-register-rejection": "bit-values-mask requires a register selector",
+        "case-count-string-expected-value": "expected value is incompatible with selector",
+        "physical-selector-string-expected-value": "expected value is incompatible with selector",
+        "value-varies-out-of-domain": "expected value is incompatible with selector",
+        "bit-mask-out-of-domain": "expected value is incompatible with selector",
+    }
+    expected_locations = {
+        "v2-fixed-after-rejection": (
+            "steps",
+            0,
+            "selector",
+            "physical-monitor-fact/2",
+        ),
+        "v2-value-varies-bit-index-rejection": (
+            "steps",
+            0,
+            "selector",
+            "physical-monitor-fact/2",
+        ),
+        "v2-bit-mask-non-register-rejection": (
+            "steps",
+            0,
+            "selector",
+            "physical-monitor-fact/2",
+        ),
+        "case-count-string-expected-value": ("steps", 0),
+        "physical-selector-string-expected-value": ("steps", 0),
+        "value-varies-out-of-domain": ("steps", 0),
+        "bit-mask-out-of-domain": ("steps", 0),
+    }
+    with pytest.raises(
+        ToolError, match=r"^Error executing tool stm32_diagnostic_plan_add:"
+    ) as error:
+        asyncio.run(server.call_tool("stm32_diagnostic_plan_add", invalid_wire))
+    assert str(error.value).startswith(
+        "Error executing tool stm32_diagnostic_plan_add:"
+    )
+    cause = error.value.__cause__
+    assert isinstance(cause, PydanticValidationError)
+    validation_errors = cause.errors()
+    assert len(validation_errors) == 1
+    validation_error = validation_errors[0]
+    assert validation_error["type"] == "value_error"
+    assert validation_error["msg"] == f"Value error, {expected_messages[case_id]}"
+    location = tuple(validation_error["loc"])
+    if case_id.startswith("v2-"):
+        assert location[:3] == ("steps", 0, "selector")
+    else:
+        assert location == expected_locations[case_id]
+    assert len(calls) == 1
+    assert invalid_wire == invalid_before
+    assert _tree_snapshot(runtime.project_root) == project_before
+    assert _tree_snapshot(runtime.data_root) == data_before
 
 
 @pytest.mark.parametrize(

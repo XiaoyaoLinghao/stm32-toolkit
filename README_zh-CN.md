@@ -1,4 +1,4 @@
-# STM32 Toolkit 0.9
+# STM32 Toolkit 1.0
 
 [English](README.md) | 简体中文
 
@@ -6,14 +6,33 @@ STM32 Toolkit 是本地、与 Agent 无关的 STM32 开发控制面。CLI 与 MC
 Keil→GCC 迁移、构建、探针工作流、Monitor、测试和证据诊断契约。Claude Code 只是该契约的
 薄适配器。
 
-## VS09-B 本地 candidate 与运行时边界
+## 1.0.0 本地 release candidate 与运行时边界
 
-本仓库包含已验收的 **0.9.0 VS09-B candidate**，尚未打 tag、上传或 release。官方源码为
+本仓库包含待最终发布校验的 **1.0.0 本地 release candidate**；最终验收由 release 流程完成，
+目前尚未打 tag、上传或 release。官方源码为
 `https://github.com/XiaoyaoLinghao/stm32-toolkit.git`；candidate 构建绑定一个完整 40 位 Git
 CodeHead 和封闭的 Windows CPython 3.12 wheelhouse。发布契约是 CPython `>=3.12,<3.13`；托管
-解释器只能使用 `DATA_ROOT/runtime/0.9.0/Scripts/python.exe`。MCP 绝不回退到系统解释器。
+解释器只能使用 `DATA_ROOT/runtime/1.0.0/Scripts/python.exe`。MCP 绝不回退到系统解释器。
 setup helper 的 CHECK 模式只读；Bootstrap 和 Repair 必须得到明确授权，先校验解压后的离线
 bundle，只安装 manifest 中的 wheel，运行 `pip check`，在本地 staging 后才可提升。
+
+Repair 只修改 runtime。对于 `generatedBy` 为 `stm32-toolkit` `0.9.0` 的 Schema v2 或 v3 工程，
+Repair 完成后先启动新的 Toolkit session，再按现有受保护的 configure/build 顺序执行：
+
+```powershell
+stm32-toolkit --project-root C:\work\blinky project configure --dry-run --json
+stm32-toolkit --project-root C:\work\blinky project configure --apply --plan-id <plan-id> --authorized --json
+stm32-toolkit --project-root C:\work\blinky build --preset arm-debug --json
+```
+
+configure 事务会保留工程真实的 `generatedBy.version` `0.9.0`，写出当前 `1.0.0` managed manifest。
+随后 build 才会发布使用 `1.0.0` 的新 build identity。用户编辑、畸形 manifest、未知/未来 producer
+与过期 plan 继续沿用既有的拒绝和回滚规则。
+
+回放证据只保证向后读取兼容：1.0 可以读取已有的 0.9 Acceptance 记录，并保留其原始字节。
+新建的 1.0 记录可能包含 0.9 读取器不支持的诊断引用，即使证据 schema 标签没有变化，
+这些新记录也应继续使用 1.0 读取。Repair 保留旧 runtime，不代表旧 runtime 能读取新证据。
+恢复时应保留原状态和证据，不要修改身份字段或绕过降级检查。
 
 当前运行时是通用的：集成方可以选择任意绝对的 `TOOLKIT_ROOT`、`DATA_ROOT` 和
 `PROJECT_ROOT`。启动器只读取 `STM32_TOOLKIT_DATA_ROOT`；所有项目命令都必须显式提供
@@ -52,12 +71,38 @@ Claude `.mcp.json` 只是同一契约的映射。它内联替换 `${CLAUDE_PLUGI
 
 ## CLI、setup 与隔离
 
-先运行 `/stm32-toolkit:setup-stm32-env`。CHECK 返回 `missing`、`healthy` 或 `broken`，且不
-修改项目。通用调用方式为：
+在 Claude Code 中先运行 `/stm32-toolkit:setup-stm32-env`。在普通 Windows PowerShell 会话中，
+先为当前 checkout、持久化数据和已有工程设置三个绝对路径。下面的路径可以替换为用户自己的
+本地路径，不依赖 agent host 占位符：
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File '${CLAUDE_PLUGIN_ROOT}/bin/setup-stm32-env.ps1' -Mode Check -ToolkitRoot '${CLAUDE_PLUGIN_ROOT}' -DataRoot '${CLAUDE_PLUGIN_DATA}' -ProjectRoot '${CLAUDE_PROJECT_DIR}'
+$ToolkitRoot = 'C:\tools\stm32-toolkit-1.0.0'
+$DataRoot = 'C:\data\stm32-toolkit'
+$ProjectRoot = 'C:\work\blinky'
+$SetupScript = Join-Path $ToolkitRoot 'bin\setup-stm32-env.ps1'
+
+# 始终先运行只读 Check。
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $SetupScript -Mode Check `
+  -ToolkitRoot $ToolkitRoot -DataRoot $DataRoot -ProjectRoot $ProjectRoot
 ```
+
+如果 `Check` 报告 `missing`，请先查看证据并明确授权缺少 runtime 的安装，再运行下面独立的
+Bootstrap 命令：
+
+```powershell
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $SetupScript -Mode Bootstrap `
+  -ToolkitRoot $ToolkitRoot -DataRoot $DataRoot -ProjectRoot $ProjectRoot
+```
+
+如果 `Check` 对获准的 0.9.0/0.5.0/0.3.0 legacy upgrade 报告 `repairable`，或对已有 runtime
+报告 `broken`，请查看 source 和 downgrade guard 并另行明确授权 Repair，再运行下面独立的命令：
+
+```powershell
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $SetupScript -Mode Repair `
+  -ToolkitRoot $ToolkitRoot -DataRoot $DataRoot -ProjectRoot $ProjectRoot
+```
+
+`Check` 是只读的。一次 setup 决策最多运行一个 mutation 命令，完成后再次运行 `Check`。
 
 ### 离线 candidate 构建与安装
 
@@ -71,14 +116,15 @@ release：
 py -3.12 tools/release/build_0900_artifacts.py build `
   --repo-root D:\src\stm32-toolkit `
   --code-head <40-位小写十六进制 commit> `
-  --wheelhouse D:\build-artifacts\p0902-wheelhouse `
-  --output-root D:\build-artifacts\p0902-candidate
+  --wheelhouse C:\release-inputs\wheelhouse `
+  --output-root C:\release-output\stm32-toolkit-1.0.0
 ```
 
-先验证外置的 `CHECKSUMS.sha256`，再解压 `stm32-toolkit-0.9.0-windows-x86_64.zip`。generic
-setup 使用解压后的 `ToolkitRoot`、明确的 `DataRoot` 与 `ProjectRoot`。CHECK 会报告 bundle 和
+请将 release 输入和输出路径替换为自己的绝对目录。先验证外置的 `CHECKSUMS.sha256`，再解压
+`stm32-toolkit-1.0.0-windows-x86_64.zip`。上面的 standalone setup 命令使用解压后的
+`ToolkitRoot`、持久化的 `DataRoot` 与已有的 `ProjectRoot`。CHECK 会报告 bundle 和
 `runtime-state.json` 证据；Bootstrap/Repair 只用 `release/wheels/` 中 manifest 列出的 wheel，
-并使用 `--no-index`、`--no-deps`。授权 Repair 会隔离 0.3.0/0.5.0 legacy runtime；记录过更高
+并使用 `--no-index`、`--no-deps`。授权 Repair 会隔离 0.9.0/0.5.0/0.3.0 legacy runtime；记录过更高
 版本时返回 `downgrade-refused`，同版本但 manifest/source 不同时返回 `source-conflict`，未来
 state 永不被猜测或重写。Project 与 Monitor 数据仍由既有的显式事务负责。
 

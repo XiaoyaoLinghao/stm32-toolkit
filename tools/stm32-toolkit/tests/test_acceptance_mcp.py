@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
+import pytest
 from stm32_toolkit.mcp_server import create_server
 
 
@@ -31,7 +32,17 @@ def test_acceptance_tools_are_project_bound_and_closed(tmp_path: Path):
     assert not ({"projectRoot", "dataRoot", "command", "environment"} & set(schema["properties"]))
 
 
-def test_acceptance_mcp_tools_translate_exact_values_once(monkeypatch, tmp_path: Path):
+@pytest.mark.parametrize(
+    ("reference_kind", "diagnostic_reference"),
+    [
+        ("compact", "b9e8a8ae0a2fa22d66d7d85946bf9eaf"),
+        ("grouped", "b9e8a8ae-0a2f-a22d-66d7-d85946bf9eaf"),
+        ("rfc", "00000000-0000-4000-8000-000000000004"),
+    ],
+)
+def test_acceptance_mcp_tools_translate_exact_values_once(
+    monkeypatch, tmp_path: Path, reference_kind, diagnostic_reference
+):
     import stm32_toolkit.mcp_server as server_module
 
     calls = []
@@ -50,7 +61,7 @@ def test_acceptance_mcp_tools_translate_exact_values_once(monkeypatch, tmp_path:
         "scenarioVersion": "1",
         "failedBeforeTestRunId": "00000000-0000-4000-8000-000000000002",
         "fixedAfterTestRunId": "00000000-0000-4000-8000-000000000003",
-        "diagnosticSessionId": "00000000-0000-4000-8000-000000000004",
+        "diagnosticSessionId": diagnostic_reference,
     }
     _, structured = asyncio.run(
         server_module.create_server(tmp_path / "project2", tmp_path / "data2", "session-a").call_tool(

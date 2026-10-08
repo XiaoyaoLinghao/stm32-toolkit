@@ -241,8 +241,50 @@ class MonitorSampler:
             self._history_queue_bytes = 0
             self.blocked_code = None
             self._set_state(SamplerState.RUNNING)
-            self._history_task = asyncio.create_task(self._history_writer(), name="stm32-monitor-history-writer")
-            self._producer_task = asyncio.create_task(self._produce(), name="stm32-monitor-sampler")
+            try:
+                history_coro = self._history_writer()
+                try:
+                    self._history_task = asyncio.create_task(
+                        history_coro,
+                        name="stm32-monitor-history-writer",
+                    )
+                except (Exception, asyncio.CancelledError):
+                    history_coro.close()
+                    raise
+                producer_coro = self._produce()
+                try:
+                    self._producer_task = asyncio.create_task(
+                        producer_coro,
+                        name="stm32-monitor-sampler",
+                    )
+                except (Exception, asyncio.CancelledError):
+                    producer_coro.close()
+                    raise
+            except (Exception, asyncio.CancelledError) as error:
+                self._set_state(SamplerState.STOPPING)
+                cleanup_error: BaseException | None = None
+                cleanup_cancellation: asyncio.CancelledError | None = None
+                cleanup_coro = self._stop_run()
+                try:
+                    cleanup_task = asyncio.create_task(
+                        cleanup_coro,
+                        name="stm32-monitor-sampler-start-rollback",
+                    )
+                except (Exception, asyncio.CancelledError) as task_error:
+                    cleanup_coro.close()
+                    cleanup_error = task_error
+                else:
+                    try:
+                        _, cleanup_cancellation = await _await_owned(cleanup_task)
+                    except (Exception, asyncio.CancelledError) as task_error:
+                        cleanup_error = task_error
+                if cleanup_error is not None:
+                    raise error.with_traceback(error.__traceback__) from cleanup_error
+                self._set_state(SamplerState.IDLE)
+                self.blocked_code = None
+                if cleanup_cancellation is not None:
+                    raise cleanup_cancellation from error
+                raise
             return success(
                 operation,
                 {

@@ -73,6 +73,39 @@ def _real_native_environment(*, package_name: str = "STM32Cube_FW_F4", package_v
     )
 
 
+def _indexed_native_environment(leaf: str, *, group: str = "STM32F429Z(E-G)Tx") -> SimpleNamespace:
+    return SimpleNamespace(
+        cubemx_version="6.18.1-RC2",
+        cubemx_sha256="1" * 64,
+        package_name="STM32Cube_FW_F4",
+        package_version="1.28.3",
+        package_sha256="2" * 64,
+        digest="3" * 64,
+        native_source_token=leaf,
+        native_descriptor_path=f"db/mcu/{group}.xml",
+        native_descriptor_sha256="4" * 64,
+        native_index_path="db/mcu/families.xml",
+        native_index_sha256="5" * 64,
+    )
+
+
+def _indexed_native_tree(
+    tmp_path: Path,
+    *,
+    leaf: str = "STM32F429ZGTx",
+    group: str = "STM32F429Z(E-G)Tx",
+    device_id: str | None = "STM32F429ZGTx",
+) -> Path:
+    root = _real_native_tree(tmp_path)
+    ioc = root / "STM32F429ZITx.ioc"
+    text = ioc.read_text(encoding="utf-8").replace("Mcu.Name=STM32F429ZITx", f"Mcu.Name={group}")
+    fields = [f"Mcu.UserName={leaf}"]
+    if device_id is not None:
+        fields.append(f"ProjectManager.DeviceId={device_id}")
+    ioc.write_text(text.rstrip() + "\n" + "\n".join(fields) + "\n", encoding="utf-8")
+    return root
+
+
 def _seed_managed_manifest(root: Path) -> None:
     managed = root / ".stm32-toolkit" / "generated-files.json"
     managed.parent.mkdir(parents=True, exist_ok=True)
@@ -81,7 +114,7 @@ def _seed_managed_manifest(root: Path) -> None:
             {
                 "schemaVersion": 1,
                 "tool": "stm32-toolkit",
-                "toolVersion": "0.9.0",
+                "toolVersion": "1.0.0",
                 "templateVersion": 1,
                 "projectManifestSha256": "0" * 64,
                 "files": [
@@ -103,6 +136,16 @@ def _nested_native_tree(tmp_path: Path, *, core: str, fpu: str, float_abi: str, 
     )
     (root / "CMakeLists.txt").write_text(text, encoding="utf-8")
     return root
+
+
+def _snapshot_tree(root: Path) -> tuple[set[str], dict[str, bytes]]:
+    paths = {path.relative_to(root).as_posix() for path in root.rglob("*")}
+    files = {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in root.rglob("*")
+        if path.is_file()
+    }
+    return paths, files
 
 
 def test_native_parser_extracts_closed_cmake_facts_and_deterministic_uuid(tmp_path: Path):
@@ -189,7 +232,7 @@ def test_native_parser_extracts_literal_nested_cubemx_cmake_and_toolchain_facts(
             {
                 "schemaVersion": 1,
                 "tool": "stm32-toolkit",
-                "toolVersion": "0.9.0",
+                "toolVersion": "1.0.0",
                 "templateVersion": 1,
                 "projectManifestSha256": "0" * 64,
                 "files": [
@@ -323,6 +366,109 @@ def test_native_parser_rejects_project_name_or_include_contract_drift(tmp_path: 
     assert include_error.value.code == "CUBEMX_NATIVE_OUTPUT_INVALID"
 
 
+@pytest.mark.parametrize("leaf", ["STM32F429ZETx", "STM32F429ZGTx"])
+def test_native_parser_accepts_indexed_group_identity_for_each_leaf(tmp_path: Path, leaf: str):
+    root = _indexed_native_tree(tmp_path, leaf=leaf, device_id=leaf)
+    model = parse_native_project(
+        root,
+        request=CreationRequest.from_mcu(leaf, "generated", framework="hal", language="c"),
+        plan_id="a" * 64,
+        action_digest="b" * 64,
+        environment=_indexed_native_environment(leaf),
+    )
+    assert model.target_device == leaf
+
+
+def test_native_parser_rejects_indexed_group_name_mismatch(tmp_path: Path):
+    root = _indexed_native_tree(tmp_path, group="STM32F429Z(E-H)Tx")
+    with pytest.raises(CubeMXNativeProjectError) as error:
+        parse_native_project(
+            root,
+            request=CreationRequest.from_mcu("STM32F429ZGTx", "generated", framework="hal", language="c"),
+            plan_id="a" * 64,
+            action_digest="b" * 64,
+            environment=_indexed_native_environment("STM32F429ZGTx"),
+        )
+    assert error.value.code == "CUBEMX_NATIVE_OUTPUT_INVALID"
+
+
+def test_native_parser_rejects_indexed_leaf_mismatch(tmp_path: Path):
+    root = _indexed_native_tree(tmp_path, leaf="STM32F429ZETx", device_id="STM32F429ZETx")
+    with pytest.raises(CubeMXNativeProjectError) as error:
+        parse_native_project(
+            root,
+            request=CreationRequest.from_mcu("STM32F429ZGTx", "generated", framework="hal", language="c"),
+            plan_id="a" * 64,
+            action_digest="b" * 64,
+            environment=_indexed_native_environment("STM32F429ZGTx"),
+        )
+    assert error.value.code == "CUBEMX_NATIVE_OUTPUT_INVALID"
+
+
+@pytest.mark.parametrize("field", ["Mcu.Name", "Mcu.UserName"])
+def test_native_parser_rejects_indexed_duplicate_identity_field(tmp_path: Path, field: str):
+    root = _indexed_native_tree(tmp_path)
+    ioc = root / "STM32F429ZITx.ioc"
+    with ioc.open("a", encoding="utf-8") as stream:
+        stream.write(f"{field}={('STM32F429Z(E-G)Tx' if field == 'Mcu.Name' else 'STM32F429ZGTx')}\n")
+    with pytest.raises(CubeMXNativeProjectError) as error:
+        parse_native_project(
+            root,
+            request=CreationRequest.from_mcu("STM32F429ZGTx", "generated", framework="hal", language="c"),
+            plan_id="a" * 64,
+            action_digest="b" * 64,
+            environment=_indexed_native_environment("STM32F429ZGTx"),
+        )
+    assert error.value.code == "CUBEMX_NATIVE_OUTPUT_INVALID"
+
+
+@pytest.mark.parametrize("field", ["Mcu.Name", "Mcu.UserName"])
+def test_native_parser_rejects_indexed_missing_identity_field(tmp_path: Path, field: str):
+    root = _indexed_native_tree(tmp_path)
+    ioc = root / "STM32F429ZITx.ioc"
+    lines = [line for line in ioc.read_text(encoding="utf-8").splitlines() if not line.startswith(field + "=")]
+    ioc.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    with pytest.raises(CubeMXNativeProjectError) as error:
+        parse_native_project(
+            root,
+            request=CreationRequest.from_mcu("STM32F429ZGTx", "generated", framework="hal", language="c"),
+            plan_id="a" * 64,
+            action_digest="b" * 64,
+            environment=_indexed_native_environment("STM32F429ZGTx"),
+        )
+    assert error.value.code == "CUBEMX_NATIVE_OUTPUT_INVALID"
+
+
+@pytest.mark.parametrize("device_id", ["STM32F429ZETx", "duplicate"])
+def test_native_parser_rejects_indexed_conflicting_or_duplicate_device_id(tmp_path: Path, device_id: str):
+    root = _indexed_native_tree(tmp_path, device_id="STM32F429ZETx" if device_id != "duplicate" else "STM32F429ZGTx")
+    if device_id == "duplicate":
+        with (root / "STM32F429ZITx.ioc").open("a", encoding="utf-8") as stream:
+            stream.write("ProjectManager.DeviceId=STM32F429ZGTx\n")
+    with pytest.raises(CubeMXNativeProjectError) as error:
+        parse_native_project(
+            root,
+            request=CreationRequest.from_mcu("STM32F429ZGTx", "generated", framework="hal", language="c"),
+            plan_id="a" * 64,
+            action_digest="b" * 64,
+            environment=_indexed_native_environment("STM32F429ZGTx"),
+        )
+    assert error.value.code == "CUBEMX_NATIVE_OUTPUT_INVALID"
+
+
+def test_native_parser_rejects_group_name_without_index_binding(tmp_path: Path):
+    root = _indexed_native_tree(tmp_path)
+    with pytest.raises(CubeMXNativeProjectError) as error:
+        parse_native_project(
+            root,
+            request=CreationRequest.from_mcu("STM32F429ZGTx", "generated", framework="hal", language="c"),
+            plan_id="a" * 64,
+            action_digest="b" * 64,
+            environment=_real_native_environment(),
+        )
+    assert error.value.code == "CUBEMX_NATIVE_OUTPUT_INVALID"
+
+
 def test_native_parser_accepts_sanitized_r8_f429_global_template(tmp_path: Path):
     root = _real_native_tree(tmp_path)
     model = parse_native_project(
@@ -446,6 +592,39 @@ def test_native_parser_rejects_missing_firmware_version(tmp_path: Path):
     assert error.value.code == "CUBEMX_NATIVE_OUTPUT_INVALID"
 
 
+@pytest.mark.parametrize(
+    ("language", "framework", "message"),
+    [
+        ("cpp", "hal", "native language does not satisfy the C++ request"),
+        ("c", "ll", "native IOC does not explicitly select LL"),
+    ],
+)
+def test_native_parser_rejects_request_language_or_framework_drift(
+    tmp_path: Path, language: str, framework: str, message: str
+):
+    root = _real_native_tree(tmp_path)
+    request = CreationRequest.from_mcu(
+        "STM32F429ZITx", "generated", framework=framework, language=language
+    )
+    before_paths, before_bytes = _snapshot_tree(root)
+    with pytest.raises(CubeMXNativeProjectError) as error:
+        parse_native_project(
+            root,
+            request=request,
+            plan_id="a" * 64,
+            action_digest="b" * 64,
+            environment=_real_native_environment(),
+        )
+    assert error.value.code == "CUBEMX_NATIVE_OUTPUT_INVALID"
+    assert error.value.message == message
+    assert error.value.details == {}
+    after_paths, after_bytes = _snapshot_tree(root)
+    assert after_paths == before_paths
+    assert after_bytes == before_bytes
+    assert not (root / ".stm32-project.json").exists()
+    assert not (root / ".stm32-toolkit" / "cubemx-ownership.json").exists()
+
+
 def test_native_parser_rejects_incomplete_r6_absolute_or_missing_source_tree(tmp_path: Path):
     root = _real_native_tree(tmp_path)
     nested = root / "cmake" / "stm32cubemx" / "CMakeLists.txt"
@@ -463,3 +642,1400 @@ def test_native_parser_rejects_incomplete_r6_absolute_or_missing_source_tree(tmp
             environment=_real_native_environment(),
         )
     assert error.value.code == "CUBEMX_NATIVE_OUTPUT_INVALID"
+
+
+def test_native_parser_rejects_missing_cmake_dialect_without_writes(tmp_path: Path):
+    root = _fixture_tree(tmp_path, "context-f4")
+    request = _fixture_request("context-f4")
+    environment = _fixture_environment("context-f4")
+    control = parse_native_project(
+        root,
+        request=request,
+        plan_id="a" * 64,
+        action_digest="b" * 64,
+        environment=environment,
+    )
+    assert isinstance(control, NativeProjectModel)
+
+    cmake_path = root / "CMakeLists.txt"
+    text = cmake_path.read_text(encoding="utf-8")
+    marker = 'include("mx-generated.cmake")'
+    assert text.count(marker) == 1
+    cmake_path.write_text(text.replace(marker, ""), encoding="utf-8")
+    before_paths = {
+        path.relative_to(root).as_posix()
+        for path in root.rglob("*")
+    }
+    before_bytes = {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in root.rglob("*")
+        if path.is_file()
+    }
+
+    with pytest.raises(CubeMXNativeProjectError) as error:
+        parse_native_project(
+            root,
+            request=request,
+            plan_id="a" * 64,
+            action_digest="b" * 64,
+            environment=environment,
+        )
+
+    assert error.value.code == "CUBEMX_NATIVE_OUTPUT_INVALID"
+    assert error.value.message == "native CubeMX CMake dialect is missing"
+    assert error.value.details == {}
+    after_paths = {
+        path.relative_to(root).as_posix()
+        for path in root.rglob("*")
+    }
+    after_bytes = {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in root.rglob("*")
+        if path.is_file()
+    }
+    assert after_paths == before_paths
+    assert after_bytes == before_bytes
+    assert not (root / ".stm32-project.json").exists()
+    assert not (root / ".stm32-toolkit" / "cubemx-ownership.json").exists()
+
+
+def test_native_parser_rejects_non_source_rooted_toolchain_without_writes(tmp_path: Path):
+    root = _fixture_tree(tmp_path, "global-f4")
+    request = _fixture_request("global-f4")
+    environment = _fixture_environment("global-f4")
+    control = parse_native_project(
+        root,
+        request=request,
+        plan_id="a" * 64,
+        action_digest="b" * 64,
+        environment=environment,
+    )
+    assert isinstance(control, NativeProjectModel)
+    assert control.project_root == root
+    assert "Core/Src/main.c" in control.sources
+    assert "cmake/gcc-arm-none-eabi.cmake" in {path for path, _, _ in control.files}
+
+    presets_path = root / "CMakePresets.json"
+    text = presets_path.read_text(encoding="utf-8")
+    canonical = "${sourceDir}/cmake/gcc-arm-none-eabi.cmake"
+    replacement = "${otherRoot}/cmake/gcc-arm-none-eabi.cmake"
+    assert text.count(canonical) == 1
+    presets_path.write_text(text.replace(canonical, replacement), encoding="utf-8")
+    before_paths = {
+        path.relative_to(root).as_posix()
+        for path in root.rglob("*")
+    }
+    before_bytes = {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in root.rglob("*")
+        if path.is_file()
+    }
+
+    with pytest.raises(CubeMXNativeProjectError) as error:
+        parse_native_project(
+            root,
+            request=request,
+            plan_id="a" * 64,
+            action_digest="b" * 64,
+            environment=environment,
+        )
+
+    assert error.value.code == "CUBEMX_NATIVE_OUTPUT_INVALID"
+    assert error.value.message == "native CMake toolchain path is not source-rooted"
+    assert error.value.details == {}
+    after_paths = {
+        path.relative_to(root).as_posix()
+        for path in root.rglob("*")
+    }
+    after_bytes = {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in root.rglob("*")
+        if path.is_file()
+    }
+    assert after_paths == before_paths
+    assert after_bytes == before_bytes
+    assert not (root / ".stm32-project.json").exists()
+    assert not (root / ".stm32-toolkit" / "cubemx-ownership.json").exists()
+
+
+def test_native_parser_rejects_missing_declared_source_without_writes(tmp_path: Path):
+    root = _real_native_tree(tmp_path)
+    request = CreationRequest.from_mcu("STM32F429ZITx", "generated", framework="hal", language="c")
+    environment = _real_native_environment()
+    control = parse_native_project(
+        root,
+        request=request,
+        plan_id="a" * 64,
+        action_digest="b" * 64,
+        environment=environment,
+    )
+    assert isinstance(control, NativeProjectModel)
+    assert "Core/Src/syscalls.c" in control.sources
+
+    nested = root / "cmake" / "stm32cubemx" / "CMakeLists.txt"
+    text = nested.read_text(encoding="utf-8")
+    canonical = "${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/syscalls.c"
+    replacement = "${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/missing.c"
+    assert text.count(canonical) == 1
+    nested.write_text(text.replace(canonical, replacement), encoding="utf-8")
+    before_paths = {
+        path.relative_to(root).as_posix()
+        for path in root.rglob("*")
+    }
+    before_bytes = {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in root.rglob("*")
+        if path.is_file()
+    }
+
+    with pytest.raises(CubeMXNativeProjectError) as error:
+        parse_native_project(
+            root,
+            request=request,
+            plan_id="a" * 64,
+            action_digest="b" * 64,
+            environment=environment,
+        )
+
+    assert error.value.code == "CUBEMX_NATIVE_OUTPUT_INVALID"
+    assert error.value.message == "native source inventory references a missing file"
+    assert error.value.details == {}
+    after_paths = {
+        path.relative_to(root).as_posix()
+        for path in root.rglob("*")
+    }
+    after_bytes = {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in root.rglob("*")
+        if path.is_file()
+    }
+    assert after_paths == before_paths
+    assert after_bytes == before_bytes
+    assert not (root / ".stm32-project.json").exists()
+    assert not (root / ".stm32-toolkit" / "cubemx-ownership.json").exists()
+
+
+def test_native_parser_preserves_empty_cmake_tokens_without_writes(tmp_path: Path):
+    root = _fixture_tree(tmp_path, "context-f4")
+    request = _fixture_request("context-f4")
+    environment = _fixture_environment("context-f4")
+    control = parse_native_project(
+        root,
+        request=request,
+        plan_id="a" * 64,
+        action_digest="b" * 64,
+        environment=environment,
+    )
+    assert isinstance(control, NativeProjectModel)
+
+    generated = root / "mx-generated.cmake"
+    text = generated.read_text(encoding="utf-8")
+    marker = "set(MX_Defines_Syms USE_HAL_DRIVER STM32F429xx)"
+    replacement = 'set(MX_Defines_Syms "" USE_HAL_DRIVER STM32F429xx)'
+    assert text.count(marker) == 1
+    generated.write_text(text.replace(marker, replacement), encoding="utf-8")
+    before_paths, before_bytes = _snapshot_tree(root)
+
+    model = parse_native_project(
+        root,
+        request=request,
+        plan_id="a" * 64,
+        action_digest="b" * 64,
+        environment=environment,
+    )
+
+    assert isinstance(model, NativeProjectModel)
+    assert model.defines == control.defines
+    assert model.sources == control.sources
+    assert model.include_paths == control.include_paths
+    assert model.linker_script == control.linker_script
+    after_paths, after_bytes = _snapshot_tree(root)
+    assert after_paths == before_paths
+    assert after_bytes == before_bytes
+    assert not (root / ".stm32-project.json").exists()
+    assert not (root / ".stm32-toolkit" / "cubemx-ownership.json").exists()
+
+
+def test_native_parser_rejects_ambiguous_context_scalar_without_writes(tmp_path: Path):
+    root = _fixture_tree(tmp_path, "context-f4")
+    request = _fixture_request("context-f4")
+    environment = _fixture_environment("context-f4")
+    control = parse_native_project(
+        root,
+        request=request,
+        plan_id="a" * 64,
+        action_digest="b" * 64,
+        environment=environment,
+    )
+    assert isinstance(control, NativeProjectModel)
+
+    cmake = root / "CMakeLists.txt"
+    text = cmake.read_text(encoding="utf-8")
+    marker = "set(STM32_LINKER_SCRIPT STM32F429ZITx_FLASH.ld)"
+    replacement = "set(STM32_LINKER_SCRIPT STM32F429ZITx_FLASH.ld other.ld)"
+    assert text.count(marker) == 1
+    cmake.write_text(text.replace(marker, replacement), encoding="utf-8")
+    before_paths, before_bytes = _snapshot_tree(root)
+
+    with pytest.raises(CubeMXNativeProjectError) as error:
+        parse_native_project(
+            root,
+            request=request,
+            plan_id="a" * 64,
+            action_digest="b" * 64,
+            environment=environment,
+        )
+
+    assert error.value.code == "CUBEMX_NATIVE_OUTPUT_INVALID"
+    assert error.value.message == "native CMake fact STM32_LINKER_SCRIPT is missing or ambiguous"
+    assert error.value.details == {}
+    after_paths, after_bytes = _snapshot_tree(root)
+    assert after_paths == before_paths
+    assert after_bytes == before_bytes
+    assert not (root / ".stm32-project.json").exists()
+    assert not (root / ".stm32-toolkit" / "cubemx-ownership.json").exists()
+
+
+def test_native_parser_rejects_control_character_in_native_path_without_writes(tmp_path: Path):
+    root = _fixture_tree(tmp_path, "context-f4")
+    request = _fixture_request("context-f4")
+    environment = _fixture_environment("context-f4")
+    control = parse_native_project(
+        root,
+        request=request,
+        plan_id="a" * 64,
+        action_digest="b" * 64,
+        environment=environment,
+    )
+    assert isinstance(control, NativeProjectModel)
+
+    generated = root / "mx-generated.cmake"
+    text = generated.read_text(encoding="utf-8")
+    marker = "${CMAKE_CURRENT_LIST_DIR}/Core/Src/main.c"
+    replacement = "${CMAKE_CURRENT_LIST_DIR}/Core/Src/main.c\x01"
+    assert text.count(marker) == 1
+    generated.write_text(text.replace(marker, replacement), encoding="utf-8")
+    before_paths, before_bytes = _snapshot_tree(root)
+
+    with pytest.raises(CubeMXNativeProjectError) as error:
+        parse_native_project(
+            root,
+            request=request,
+            plan_id="a" * 64,
+            action_digest="b" * 64,
+            environment=environment,
+        )
+
+    assert error.value.code == "CUBEMX_NATIVE_OUTPUT_INVALID"
+    assert error.value.message == "native CMake path is unsafe"
+    assert error.value.details == {}
+    after_paths, after_bytes = _snapshot_tree(root)
+    assert after_paths == before_paths
+    assert after_bytes == before_bytes
+    assert not (root / ".stm32-project.json").exists()
+    assert not (root / ".stm32-toolkit" / "cubemx-ownership.json").exists()
+
+
+def test_native_parser_accepts_cmake_source_dir_path_without_writes(tmp_path: Path):
+    root = _fixture_tree(tmp_path, "context-f4")
+    request = _fixture_request("context-f4")
+    environment = _fixture_environment("context-f4")
+    control = parse_native_project(
+        root,
+        request=request,
+        plan_id="a" * 64,
+        action_digest="b" * 64,
+        environment=environment,
+    )
+    assert isinstance(control, NativeProjectModel)
+
+    generated = root / "mx-generated.cmake"
+    text = generated.read_text(encoding="utf-8")
+    marker = "${CMAKE_CURRENT_LIST_DIR}/Core/Src/main.c"
+    replacement = "${CMAKE_SOURCE_DIR}/Core/Src/main.c"
+    assert text.count(marker) == 1
+    generated.write_text(text.replace(marker, replacement), encoding="utf-8")
+    before_paths, before_bytes = _snapshot_tree(root)
+
+    model = parse_native_project(
+        root,
+        request=request,
+        plan_id="a" * 64,
+        action_digest="b" * 64,
+        environment=environment,
+    )
+
+    assert isinstance(model, NativeProjectModel)
+    assert model.defines == control.defines
+    assert model.sources == control.sources
+    assert model.include_paths == control.include_paths
+    assert model.linker_script == control.linker_script
+    after_paths, after_bytes = _snapshot_tree(root)
+    assert after_paths == before_paths
+    assert after_bytes == before_bytes
+    assert not (root / ".stm32-project.json").exists()
+    assert not (root / ".stm32-toolkit" / "cubemx-ownership.json").exists()
+
+
+def test_native_parser_rejects_unresolved_cmake_variable_without_writes(tmp_path: Path):
+    root = _fixture_tree(tmp_path, "context-f4")
+    request = _fixture_request("context-f4")
+    environment = _fixture_environment("context-f4")
+    control = parse_native_project(
+        root,
+        request=request,
+        plan_id="a" * 64,
+        action_digest="b" * 64,
+        environment=environment,
+    )
+    assert isinstance(control, NativeProjectModel)
+
+    generated = root / "mx-generated.cmake"
+    text = generated.read_text(encoding="utf-8")
+    marker = "${CMAKE_CURRENT_LIST_DIR}/Core/Inc"
+    replacement = "${UNRESOLVED}/Core/Inc"
+    assert text.count(marker) == 1
+    generated.write_text(text.replace(marker, replacement), encoding="utf-8")
+    before_paths, before_bytes = _snapshot_tree(root)
+
+    with pytest.raises(CubeMXNativeProjectError) as error:
+        parse_native_project(
+            root,
+            request=request,
+            plan_id="a" * 64,
+            action_digest="b" * 64,
+            environment=environment,
+        )
+
+    assert error.value.code == "CUBEMX_NATIVE_OUTPUT_INVALID"
+    assert error.value.message == "native CMake variable is unresolved"
+    assert error.value.details == {}
+    after_paths, after_bytes = _snapshot_tree(root)
+    assert after_paths == before_paths
+    assert after_bytes == before_bytes
+    assert not (root / ".stm32-project.json").exists()
+    assert not (root / ".stm32-toolkit" / "cubemx-ownership.json").exists()
+
+
+def test_native_parser_rejects_unsafe_resolved_cmake_path_without_writes(tmp_path: Path):
+    root = _fixture_tree(tmp_path, "context-f4")
+    request = _fixture_request("context-f4")
+    environment = _fixture_environment("context-f4")
+    control = parse_native_project(
+        root,
+        request=request,
+        plan_id="a" * 64,
+        action_digest="b" * 64,
+        environment=environment,
+    )
+    assert isinstance(control, NativeProjectModel)
+
+    generated = root / "mx-generated.cmake"
+    text = generated.read_text(encoding="utf-8")
+    marker = "${CMAKE_CURRENT_LIST_DIR}/Core/Src/main.c"
+    replacement = "${CMAKE_CURRENT_LIST_DIR}/Core/Src/main!.c"
+    assert text.count(marker) == 1
+    generated.write_text(text.replace(marker, replacement), encoding="utf-8")
+    before_paths, before_bytes = _snapshot_tree(root)
+
+    with pytest.raises(CubeMXNativeProjectError) as error:
+        parse_native_project(
+            root,
+            request=request,
+            plan_id="a" * 64,
+            action_digest="b" * 64,
+            environment=environment,
+        )
+
+    assert error.value.code == "CUBEMX_NATIVE_OUTPUT_INVALID"
+    assert error.value.message == "native CMake path is unsafe"
+    assert error.value.details == {}
+    after_paths, after_bytes = _snapshot_tree(root)
+    assert after_paths == before_paths
+    assert after_bytes == before_bytes
+    assert not (root / ".stm32-project.json").exists()
+    assert not (root / ".stm32-toolkit" / "cubemx-ownership.json").exists()
+
+
+def test_native_parser_rejects_unsafe_cmake_define_without_writes(tmp_path: Path):
+    root = _fixture_tree(tmp_path, "context-f4")
+    request = _fixture_request("context-f4")
+    environment = _fixture_environment("context-f4")
+    control = parse_native_project(
+        root,
+        request=request,
+        plan_id="a" * 64,
+        action_digest="b" * 64,
+        environment=environment,
+    )
+    assert isinstance(control, NativeProjectModel)
+
+    generated = root / "mx-generated.cmake"
+    text = generated.read_text(encoding="utf-8")
+    marker = "set(MX_Defines_Syms USE_HAL_DRIVER STM32F429xx)"
+    replacement = "set(MX_Defines_Syms USE_HAL_DRIVER STM32F429xx UNSAFE!)"
+    assert text.count(marker) == 1
+    generated.write_text(text.replace(marker, replacement), encoding="utf-8")
+    before_paths, before_bytes = _snapshot_tree(root)
+
+    with pytest.raises(CubeMXNativeProjectError) as error:
+        parse_native_project(
+            root,
+            request=request,
+            plan_id="a" * 64,
+            action_digest="b" * 64,
+            environment=environment,
+        )
+
+    assert error.value.code == "CUBEMX_NATIVE_OUTPUT_INVALID"
+    assert error.value.message == "native CMake define is unsafe"
+    assert error.value.details == {}
+    after_paths, after_bytes = _snapshot_tree(root)
+    assert after_paths == before_paths
+    assert after_bytes == before_bytes
+    assert not (root / ".stm32-project.json").exists()
+    assert not (root / ".stm32-toolkit" / "cubemx-ownership.json").exists()
+
+
+def test_native_parser_rejects_malformed_package_fact_without_writes(tmp_path: Path):
+    root = _fixture_tree(tmp_path, "context-f4")
+    request = _fixture_request("context-f4")
+    environment = _fixture_environment("context-f4")
+    control = parse_native_project(
+        root,
+        request=request,
+        plan_id="a" * 64,
+        action_digest="b" * 64,
+        environment=environment,
+    )
+    assert isinstance(control, NativeProjectModel)
+
+    ioc = root / "STM32F429ZITx.ioc"
+    text = ioc.read_text(encoding="utf-8")
+    marker = "ProjectManager.FirmwarePackage=STM32Cube_FW_F4 V1.0.0"
+    replacement = "ProjectManager.FirmwarePackage=not-a-cube-package"
+    assert text.count(marker) == 1
+    ioc.write_text(text.replace(marker, replacement), encoding="utf-8")
+    before_paths, before_bytes = _snapshot_tree(root)
+
+    with pytest.raises(CubeMXNativeProjectError) as error:
+        parse_native_project(
+            root,
+            request=request,
+            plan_id="a" * 64,
+            action_digest="b" * 64,
+            environment=environment,
+        )
+
+    assert error.value.code == "CUBEMX_NATIVE_OUTPUT_INVALID"
+    assert error.value.message == "native IOC package disagrees with the environment"
+    assert error.value.details == {}
+    after_paths, after_bytes = _snapshot_tree(root)
+    assert after_paths == before_paths
+    assert after_bytes == before_bytes
+    assert not (root / ".stm32-project.json").exists()
+    assert not (root / ".stm32-toolkit" / "cubemx-ownership.json").exists()
+
+
+def test_native_parser_rejects_nonliteral_target_flags_without_writes(tmp_path: Path):
+    root = _fixture_tree(tmp_path, "global-f4")
+    request = _fixture_request("global-f4")
+    environment = _fixture_environment("global-f4")
+    control = parse_native_project(
+        root,
+        request=request,
+        plan_id="a" * 64,
+        action_digest="b" * 64,
+        environment=environment,
+    )
+    assert isinstance(control, NativeProjectModel)
+
+    toolchain = root / "cmake" / "gcc-arm-none-eabi.cmake"
+    text = toolchain.read_text(encoding="utf-8")
+    marker = 'set(TARGET_FLAGS "-mcpu=cortex-m4 -mthumb -mfpu=fpv4-sp-d16 -mfloat-abi=hard")'
+    replacement = 'set(TARGET_FLAGS "${TARGET_FLAGS}")'
+    assert text.count(marker) == 1
+    toolchain.write_text(text.replace(marker, replacement), encoding="utf-8")
+    before_paths, before_bytes = _snapshot_tree(root)
+
+    with pytest.raises(CubeMXNativeProjectError) as error:
+        parse_native_project(
+            root,
+            request=request,
+            plan_id="a" * 64,
+            action_digest="b" * 64,
+            environment=environment,
+        )
+
+    assert error.value.code == "CUBEMX_NATIVE_OUTPUT_INVALID"
+    assert error.value.message == "native CPU flags are not literal"
+    assert error.value.details == {}
+    after_paths, after_bytes = _snapshot_tree(root)
+    assert after_paths == before_paths
+    assert after_bytes == before_bytes
+    assert not (root / ".stm32-project.json").exists()
+    assert not (root / ".stm32-toolkit" / "cubemx-ownership.json").exists()
+
+
+def test_native_parser_rejects_incomplete_target_flags_without_writes(tmp_path: Path):
+    root = _fixture_tree(tmp_path, "global-f4")
+    request = _fixture_request("global-f4")
+    environment = _fixture_environment("global-f4")
+    control = parse_native_project(
+        root,
+        request=request,
+        plan_id="a" * 64,
+        action_digest="b" * 64,
+        environment=environment,
+    )
+    assert isinstance(control, NativeProjectModel)
+
+    toolchain = root / "cmake" / "gcc-arm-none-eabi.cmake"
+    text = toolchain.read_text(encoding="utf-8")
+    marker = 'set(TARGET_FLAGS "-mcpu=cortex-m4 -mthumb -mfpu=fpv4-sp-d16 -mfloat-abi=hard")'
+    replacement = 'set(TARGET_FLAGS "-mcpu=cortex-m4 -mthumb")'
+    assert text.count(marker) == 1
+    toolchain.write_text(text.replace(marker, replacement), encoding="utf-8")
+    before_paths, before_bytes = _snapshot_tree(root)
+
+    with pytest.raises(CubeMXNativeProjectError) as error:
+        parse_native_project(
+            root,
+            request=request,
+            plan_id="a" * 64,
+            action_digest="b" * 64,
+            environment=environment,
+        )
+
+    assert error.value.code == "CUBEMX_NATIVE_OUTPUT_INVALID"
+    assert error.value.message == "native CPU floating-point facts are incomplete"
+    assert error.value.details == {}
+    after_paths, after_bytes = _snapshot_tree(root)
+    assert after_paths == before_paths
+    assert after_bytes == before_bytes
+    assert not (root / ".stm32-project.json").exists()
+    assert not (root / ".stm32-toolkit" / "cubemx-ownership.json").exists()
+
+
+def test_native_parser_rejects_missing_linker_reference_without_writes(tmp_path: Path):
+    root = _fixture_tree(tmp_path, "global-f4")
+    request = _fixture_request("global-f4")
+    environment = _fixture_environment("global-f4")
+    control = parse_native_project(
+        root,
+        request=request,
+        plan_id="a" * 64,
+        action_digest="b" * 64,
+        environment=environment,
+    )
+    assert isinstance(control, NativeProjectModel)
+
+    toolchain = root / "cmake" / "gcc-arm-none-eabi.cmake"
+    text = toolchain.read_text(encoding="utf-8")
+    marker = 'set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -T \\"${CMAKE_SOURCE_DIR}/STM32F429ZITx_FLASH.ld\\"")\n'
+    assert text.count(marker) == 1
+    toolchain.write_text(text.replace(marker, ""), encoding="utf-8")
+    before_paths, before_bytes = _snapshot_tree(root)
+
+    with pytest.raises(CubeMXNativeProjectError) as error:
+        parse_native_project(
+            root,
+            request=request,
+            plan_id="a" * 64,
+            action_digest="b" * 64,
+            environment=environment,
+        )
+
+    assert error.value.code == "CUBEMX_NATIVE_OUTPUT_INVALID"
+    assert error.value.message == "native linker script reference is missing or ambiguous"
+    assert error.value.details == {}
+    after_paths, after_bytes = _snapshot_tree(root)
+    assert after_paths == before_paths
+    assert after_bytes == before_bytes
+    assert not (root / ".stm32-project.json").exists()
+    assert not (root / ".stm32-toolkit" / "cubemx-ownership.json").exists()
+
+
+def test_native_parser_rejects_invalid_linker_memory_length_without_writes(tmp_path: Path):
+    root = _real_native_tree(tmp_path)
+    request = CreationRequest.from_mcu("STM32F429ZITx", "generated", framework="hal", language="c")
+    environment = _real_native_environment()
+    control = parse_native_project(
+        root,
+        request=request,
+        plan_id="a" * 64,
+        action_digest="b" * 64,
+        environment=environment,
+    )
+    assert isinstance(control, NativeProjectModel)
+
+    linker = root / "STM32F429xx_FLASH.ld"
+    text = linker.read_text(encoding="utf-8")
+    marker = "LENGTH = 192K"
+    assert text.count(marker) == 1
+    linker.write_text(text.replace(marker, "LENGTH = 12Z"), encoding="utf-8")
+    before_paths, before_bytes = _snapshot_tree(root)
+
+    with pytest.raises(CubeMXNativeProjectError) as error:
+        parse_native_project(
+            root,
+            request=request,
+            plan_id="a" * 64,
+            action_digest="b" * 64,
+            environment=environment,
+        )
+
+    assert error.value.code == "CUBEMX_NATIVE_OUTPUT_INVALID"
+    assert error.value.message == "linker memory length is invalid"
+    assert error.value.details == {}
+    after_paths, after_bytes = _snapshot_tree(root)
+    assert after_paths == before_paths
+    assert after_bytes == before_bytes
+    assert not (root / ".stm32-project.json").exists()
+    assert not (root / ".stm32-toolkit" / "cubemx-ownership.json").exists()
+
+
+def test_native_parser_accepts_megabyte_linker_memory_length_without_writes(tmp_path: Path):
+    root = _real_native_tree(tmp_path)
+    request = CreationRequest.from_mcu("STM32F429ZITx", "generated", framework="hal", language="c")
+    environment = _real_native_environment()
+    control = parse_native_project(
+        root,
+        request=request,
+        plan_id="a" * 64,
+        action_digest="b" * 64,
+        environment=environment,
+    )
+    assert isinstance(control, NativeProjectModel)
+
+    linker = root / "STM32F429xx_FLASH.ld"
+    text = linker.read_text(encoding="utf-8")
+    marker = "LENGTH = 2048K"
+    assert text.count(marker) == 1
+    linker.write_text(text.replace(marker, "LENGTH = 2M"), encoding="utf-8")
+    before_paths, before_bytes = _snapshot_tree(root)
+
+    model = parse_native_project(
+        root,
+        request=request,
+        plan_id="a" * 64,
+        action_digest="b" * 64,
+        environment=environment,
+    )
+
+    assert isinstance(model, NativeProjectModel)
+    flash = next(region for region in model.memory_regions if region["name"] == "FLASH")
+    assert flash["length"] == 2 * 1024 * 1024
+    after_paths, after_bytes = _snapshot_tree(root)
+    assert after_paths == before_paths
+    assert after_bytes == before_bytes
+    assert not (root / ".stm32-project.json").exists()
+    assert not (root / ".stm32-toolkit" / "cubemx-ownership.json").exists()
+
+
+def test_native_parser_accepts_bare_linker_memory_length_without_writes(tmp_path: Path):
+    root = _real_native_tree(tmp_path)
+    request = CreationRequest.from_mcu("STM32F429ZITx", "generated", framework="hal", language="c")
+    environment = _real_native_environment()
+    control = parse_native_project(
+        root,
+        request=request,
+        plan_id="a" * 64,
+        action_digest="b" * 64,
+        environment=environment,
+    )
+    assert isinstance(control, NativeProjectModel)
+
+    linker = root / "STM32F429xx_FLASH.ld"
+    text = linker.read_text(encoding="utf-8")
+    marker = "LENGTH = 2048K"
+    assert text.count(marker) == 1
+    linker.write_text(text.replace(marker, "LENGTH = 2048"), encoding="utf-8")
+    before_paths, before_bytes = _snapshot_tree(root)
+
+    model = parse_native_project(
+        root,
+        request=request,
+        plan_id="a" * 64,
+        action_digest="b" * 64,
+        environment=environment,
+    )
+
+    assert isinstance(model, NativeProjectModel)
+    flash = next(region for region in model.memory_regions if region["name"] == "FLASH")
+    assert flash["length"] == 2048
+    after_paths, after_bytes = _snapshot_tree(root)
+    assert after_paths == before_paths
+    assert after_bytes == before_bytes
+    assert not (root / ".stm32-project.json").exists()
+    assert not (root / ".stm32-toolkit" / "cubemx-ownership.json").exists()
+
+
+def test_native_parser_rejects_unsafe_cmake_construct_without_writes(tmp_path: Path):
+    root = _fixture_tree(tmp_path, "global-f4")
+    request = _fixture_request("global-f4")
+    environment = _fixture_environment("global-f4")
+    control = parse_native_project(
+        root,
+        request=request,
+        plan_id="a" * 64,
+        action_digest="b" * 64,
+        environment=environment,
+    )
+    assert isinstance(control, NativeProjectModel)
+
+    cmake = root / "CMakeLists.txt"
+    cmake.write_text(cmake.read_text(encoding="utf-8") + "\nadd_custom_command(COMMAND noop)\n", encoding="utf-8")
+    before_paths, before_bytes = _snapshot_tree(root)
+
+    with pytest.raises(CubeMXNativeProjectError) as error:
+        parse_native_project(
+            root,
+            request=request,
+            plan_id="a" * 64,
+            action_digest="b" * 64,
+            environment=environment,
+        )
+
+    assert error.value.code == "CUBEMX_NATIVE_OUTPUT_INVALID"
+    assert error.value.message == "native CMake contains an unsafe construct"
+    assert error.value.details == {}
+    after_paths, after_bytes = _snapshot_tree(root)
+    assert after_paths == before_paths
+    assert after_bytes == before_bytes
+    assert not (root / ".stm32-project.json").exists()
+    assert not (root / ".stm32-toolkit" / "cubemx-ownership.json").exists()
+
+
+def test_native_parser_rejects_invalid_index_binding_without_writes(tmp_path: Path):
+    root = _indexed_native_tree(tmp_path)
+    request = CreationRequest.from_mcu("STM32F429ZGTx", "generated", framework="hal", language="c")
+    environment = _indexed_native_environment("STM32F429ZGTx")
+    control = parse_native_project(
+        root,
+        request=request,
+        plan_id="a" * 64,
+        action_digest="b" * 64,
+        environment=environment,
+    )
+    assert isinstance(control, NativeProjectModel)
+
+    environment.native_index_sha256 = "bad"
+    before_paths, before_bytes = _snapshot_tree(root)
+
+    with pytest.raises(CubeMXNativeProjectError) as error:
+        parse_native_project(
+            root,
+            request=request,
+            plan_id="a" * 64,
+            action_digest="b" * 64,
+            environment=environment,
+        )
+
+    assert error.value.code == "CUBEMX_NATIVE_OUTPUT_INVALID"
+    assert error.value.message == "native MCU index binding is invalid"
+    assert error.value.details == {}
+    after_paths, after_bytes = _snapshot_tree(root)
+    assert after_paths == before_paths
+    assert after_bytes == before_bytes
+    assert not (root / ".stm32-project.json").exists()
+    assert not (root / ".stm32-toolkit" / "cubemx-ownership.json").exists()
+
+
+def test_native_parser_rejects_missing_index_descriptor_without_writes(tmp_path: Path):
+    root = _indexed_native_tree(tmp_path)
+    request = CreationRequest.from_mcu("STM32F429ZGTx", "generated", framework="hal", language="c")
+    environment = _indexed_native_environment("STM32F429ZGTx")
+    control = parse_native_project(
+        root,
+        request=request,
+        plan_id="a" * 64,
+        action_digest="b" * 64,
+        environment=environment,
+    )
+    assert isinstance(control, NativeProjectModel)
+
+    environment.native_descriptor_path = None
+    before_paths, before_bytes = _snapshot_tree(root)
+
+    with pytest.raises(CubeMXNativeProjectError) as error:
+        parse_native_project(
+            root,
+            request=request,
+            plan_id="a" * 64,
+            action_digest="b" * 64,
+            environment=environment,
+        )
+
+    assert error.value.code == "CUBEMX_NATIVE_OUTPUT_INVALID"
+    assert error.value.message == "native MCU descriptor binding is missing"
+    assert error.value.details == {}
+    after_paths, after_bytes = _snapshot_tree(root)
+    assert after_paths == before_paths
+    assert after_bytes == before_bytes
+    assert not (root / ".stm32-project.json").exists()
+    assert not (root / ".stm32-toolkit" / "cubemx-ownership.json").exists()
+
+
+def test_native_parser_rejects_invalid_index_descriptor_without_writes(tmp_path: Path):
+    root = _indexed_native_tree(tmp_path)
+    request = CreationRequest.from_mcu("STM32F429ZGTx", "generated", framework="hal", language="c")
+    environment = _indexed_native_environment("STM32F429ZGTx")
+    control = parse_native_project(
+        root,
+        request=request,
+        plan_id="a" * 64,
+        action_digest="b" * 64,
+        environment=environment,
+    )
+    assert isinstance(control, NativeProjectModel)
+
+    environment.native_descriptor_path = "db/mcu/not-a-descriptor.txt"
+    before_paths, before_bytes = _snapshot_tree(root)
+
+    with pytest.raises(CubeMXNativeProjectError) as error:
+        parse_native_project(
+            root,
+            request=request,
+            plan_id="a" * 64,
+            action_digest="b" * 64,
+            environment=environment,
+        )
+
+    assert error.value.code == "CUBEMX_NATIVE_OUTPUT_INVALID"
+    assert error.value.message == "native MCU descriptor binding is invalid"
+    assert error.value.details == {}
+    after_paths, after_bytes = _snapshot_tree(root)
+    assert after_paths == before_paths
+    assert after_bytes == before_bytes
+    assert not (root / ".stm32-project.json").exists()
+    assert not (root / ".stm32-toolkit" / "cubemx-ownership.json").exists()
+
+
+def test_native_parser_rejects_invalid_index_leaf_without_writes(tmp_path: Path):
+    root = _indexed_native_tree(tmp_path)
+    request = CreationRequest.from_mcu("STM32F429ZGTx", "generated", framework="hal", language="c")
+    environment = _indexed_native_environment("STM32F429ZGTx")
+    control = parse_native_project(
+        root,
+        request=request,
+        plan_id="a" * 64,
+        action_digest="b" * 64,
+        environment=environment,
+    )
+    assert isinstance(control, NativeProjectModel)
+
+    ioc = root / "STM32F429ZITx.ioc"
+    text = ioc.read_text(encoding="utf-8")
+    marker = "Mcu.UserName=STM32F429ZGTx"
+    assert text.count(marker) == 1
+    ioc.write_text(text.replace(marker, "Mcu.UserName=bad-leaf"), encoding="utf-8")
+    before_paths, before_bytes = _snapshot_tree(root)
+
+    with pytest.raises(CubeMXNativeProjectError) as error:
+        parse_native_project(
+            root,
+            request=request,
+            plan_id="a" * 64,
+            action_digest="b" * 64,
+            environment=environment,
+        )
+
+    assert error.value.code == "CUBEMX_NATIVE_OUTPUT_INVALID"
+    assert error.value.message == "native MCU leaf identity is invalid"
+    assert error.value.details == {}
+    after_paths, after_bytes = _snapshot_tree(root)
+    assert after_paths == before_paths
+    assert after_bytes == before_bytes
+    assert not (root / ".stm32-project.json").exists()
+    assert not (root / ".stm32-toolkit" / "cubemx-ownership.json").exists()
+
+
+def test_native_parser_rejects_invalid_index_source_token_without_writes(tmp_path: Path):
+    root = _indexed_native_tree(tmp_path)
+    request = CreationRequest.from_mcu("STM32F429ZGTx", "generated", framework="hal", language="c")
+    environment = _indexed_native_environment("STM32F429ZGTx")
+    control = parse_native_project(
+        root,
+        request=request,
+        plan_id="a" * 64,
+        action_digest="b" * 64,
+        environment=environment,
+    )
+    assert isinstance(control, NativeProjectModel)
+
+    environment.native_source_token = "bad-token"
+    before_paths, before_bytes = _snapshot_tree(root)
+
+    with pytest.raises(CubeMXNativeProjectError) as error:
+        parse_native_project(
+            root,
+            request=request,
+            plan_id="a" * 64,
+            action_digest="b" * 64,
+            environment=environment,
+        )
+
+    assert error.value.code == "CUBEMX_NATIVE_OUTPUT_INVALID"
+    assert error.value.message == "native MCU leaf binding is invalid"
+    assert error.value.details == {}
+    after_paths, after_bytes = _snapshot_tree(root)
+    assert after_paths == before_paths
+    assert after_bytes == before_bytes
+    assert not (root / ".stm32-project.json").exists()
+    assert not (root / ".stm32-toolkit" / "cubemx-ownership.json").exists()
+
+
+def test_native_parser_rejects_invalid_native_preset_payload_without_writes(tmp_path: Path):
+    root = _fixture_tree(tmp_path, "global-f4")
+    request = _fixture_request("global-f4")
+    environment = _fixture_environment("global-f4")
+    control = parse_native_project(
+        root,
+        request=request,
+        plan_id="a" * 64,
+        action_digest="b" * 64,
+        environment=environment,
+    )
+    assert isinstance(control, NativeProjectModel)
+
+    presets = root / "CMakePresets.json"
+    payload = json.loads(presets.read_text(encoding="utf-8"))
+    assert payload["version"] == 3
+    payload["version"] = 2
+    presets.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    before_paths, before_bytes = _snapshot_tree(root)
+
+    with pytest.raises(CubeMXNativeProjectError) as error:
+        parse_native_project(
+            root,
+            request=request,
+            plan_id="a" * 64,
+            action_digest="b" * 64,
+            environment=environment,
+        )
+
+    assert error.value.code == "CUBEMX_NATIVE_OUTPUT_INVALID"
+    assert error.value.message == "native CMake presets are invalid"
+    assert error.value.details == {}
+    after_paths, after_bytes = _snapshot_tree(root)
+    assert after_paths == before_paths
+    assert after_bytes == before_bytes
+    assert not (root / ".stm32-project.json").exists()
+    assert not (root / ".stm32-toolkit" / "cubemx-ownership.json").exists()
+
+
+def test_native_parser_rejects_ambiguous_native_default_toolchain_without_writes(tmp_path: Path):
+    root = _fixture_tree(tmp_path, "global-f4")
+    request = _fixture_request("global-f4")
+    environment = _fixture_environment("global-f4")
+    control = parse_native_project(
+        root,
+        request=request,
+        plan_id="a" * 64,
+        action_digest="b" * 64,
+        environment=environment,
+    )
+    assert isinstance(control, NativeProjectModel)
+
+    presets = root / "CMakePresets.json"
+    payload = json.loads(presets.read_text(encoding="utf-8"))
+    defaults = [item for item in payload["configurePresets"] if item.get("name") == "default"]
+    assert len(defaults) == 1
+    defaults[0]["name"] = "other"
+    presets.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    before_paths, before_bytes = _snapshot_tree(root)
+
+    with pytest.raises(CubeMXNativeProjectError) as error:
+        parse_native_project(
+            root,
+            request=request,
+            plan_id="a" * 64,
+            action_digest="b" * 64,
+            environment=environment,
+        )
+
+    assert error.value.code == "CUBEMX_NATIVE_OUTPUT_INVALID"
+    assert error.value.message == "native CMake default toolchain is missing or ambiguous"
+    assert error.value.details == {}
+    after_paths, after_bytes = _snapshot_tree(root)
+    assert after_paths == before_paths
+    assert after_bytes == before_bytes
+    assert not (root / ".stm32-project.json").exists()
+    assert not (root / ".stm32-toolkit" / "cubemx-ownership.json").exists()
+
+
+def test_native_parser_rejects_unavailable_staging_without_writes(tmp_path: Path):
+    root = _fixture_tree(tmp_path, "global-f4")
+    request = _fixture_request("global-f4")
+    environment = _fixture_environment("global-f4")
+    control = parse_native_project(
+        root,
+        request=request,
+        plan_id="a" * 64,
+        action_digest="b" * 64,
+        environment=environment,
+    )
+    assert isinstance(control, NativeProjectModel)
+
+    missing = tmp_path / "missing-staging"
+    assert not missing.exists()
+    before_paths, before_bytes = _snapshot_tree(tmp_path)
+    with pytest.raises(CubeMXNativeProjectError) as error:
+        parse_native_project(
+            missing,
+            request=request,
+            plan_id="a" * 64,
+            action_digest="b" * 64,
+            environment=environment,
+        )
+
+    assert error.value.code == "CUBEMX_NATIVE_OUTPUT_INVALID"
+    assert error.value.message == "native staging is unavailable"
+    assert error.value.details == {}
+    assert not missing.exists()
+    after_paths, after_bytes = _snapshot_tree(tmp_path)
+    assert after_paths == before_paths
+    assert after_bytes == before_bytes
+
+
+def test_native_parser_rejects_invalid_native_binding_without_writes(tmp_path: Path):
+    root = _fixture_tree(tmp_path, "global-f4")
+    request = _fixture_request("global-f4")
+    environment = _fixture_environment("global-f4")
+    control = parse_native_project(
+        root,
+        request=request,
+        plan_id="a" * 64,
+        action_digest="b" * 64,
+        environment=environment,
+    )
+    assert isinstance(control, NativeProjectModel)
+
+    before_paths, before_bytes = _snapshot_tree(root)
+    with pytest.raises(CubeMXNativeProjectError) as error:
+        parse_native_project(
+            root,
+            request=request,
+            plan_id="bad",
+            action_digest="b" * 64,
+            environment=environment,
+        )
+
+    assert error.value.code == "CUBEMX_NATIVE_OUTPUT_INVALID"
+    assert error.value.message == "native binding is invalid"
+    assert error.value.details == {}
+    after_paths, after_bytes = _snapshot_tree(root)
+    assert after_paths == before_paths
+    assert after_bytes == before_bytes
+    assert not (root / ".stm32-project.json").exists()
+    assert not (root / ".stm32-toolkit" / "cubemx-ownership.json").exists()
+
+
+def test_native_parser_rejects_unsafe_global_subdirectory_without_writes(tmp_path: Path):
+    root = _fixture_tree(tmp_path, "global-f4")
+    request = _fixture_request("global-f4")
+    environment = _fixture_environment("global-f4")
+    control = parse_native_project(
+        root,
+        request=request,
+        plan_id="a" * 64,
+        action_digest="b" * 64,
+        environment=environment,
+    )
+    assert isinstance(control, NativeProjectModel)
+
+    cmake = root / "CMakeLists.txt"
+    text = cmake.read_text(encoding="utf-8")
+    marker = "add_subdirectory(cmake/stm32cubemx)"
+    replacement = "add_subdirectory(other)"
+    assert text.count(marker) == 1
+    cmake.write_text(text.replace(marker, replacement), encoding="utf-8")
+    before_paths, before_bytes = _snapshot_tree(root)
+
+    with pytest.raises(CubeMXNativeProjectError) as error:
+        parse_native_project(
+            root,
+            request=request,
+            plan_id="a" * 64,
+            action_digest="b" * 64,
+            environment=environment,
+        )
+
+    assert error.value.code == "CUBEMX_NATIVE_OUTPUT_INVALID"
+    assert error.value.message == "native global CubeMX subdirectory is missing or unsafe"
+    assert error.value.details == {}
+    after_paths, after_bytes = _snapshot_tree(root)
+    assert after_paths == before_paths
+    assert after_bytes == before_bytes
+    assert not (root / ".stm32-project.json").exists()
+    assert not (root / ".stm32-toolkit" / "cubemx-ownership.json").exists()
+
+
+def test_native_parser_rejects_empty_source_inventory_without_writes(tmp_path: Path):
+    root = _fixture_tree(tmp_path, "context-f4")
+    request = _fixture_request("context-f4")
+    environment = _fixture_environment("context-f4")
+    control = parse_native_project(
+        root,
+        request=request,
+        plan_id="a" * 64,
+        action_digest="b" * 64,
+        environment=environment,
+    )
+    assert isinstance(control, NativeProjectModel)
+
+    generated = root / "mx-generated.cmake"
+    text = generated.read_text(encoding="utf-8")
+    main_marker = "Core/Src/main.c"
+    driver_marker = "Drivers/Src/stm32_hal.c"
+    assert text.count(main_marker) == 1
+    assert text.count(driver_marker) == 1
+    generated.write_text(
+        text.replace(main_marker, "Core/Src/main.txt").replace(driver_marker, "Drivers/Src/stm32_hal.txt"),
+        encoding="utf-8",
+    )
+    before_paths, before_bytes = _snapshot_tree(root)
+
+    with pytest.raises(CubeMXNativeProjectError) as error:
+        parse_native_project(
+            root,
+            request=request,
+            plan_id="a" * 64,
+            action_digest="b" * 64,
+            environment=environment,
+        )
+
+    assert error.value.code == "CUBEMX_NATIVE_OUTPUT_INVALID"
+    assert error.value.message == "native source inventory is empty"
+    assert error.value.details == {}
+    after_paths, after_bytes = _snapshot_tree(root)
+    assert after_paths == before_paths
+    assert after_bytes == before_bytes
+    assert not (root / ".stm32-project.json").exists()
+    assert not (root / ".stm32-toolkit" / "cubemx-ownership.json").exists()
+
+
+def test_native_parser_rejects_missing_include_inventory_directory_without_writes(tmp_path: Path):
+    root = _fixture_tree(tmp_path, "context-f4")
+    request = _fixture_request("context-f4")
+    environment = _fixture_environment("context-f4")
+    control = parse_native_project(
+        root,
+        request=request,
+        plan_id="a" * 64,
+        action_digest="b" * 64,
+        environment=environment,
+    )
+    assert isinstance(control, NativeProjectModel)
+
+    generated = root / "mx-generated.cmake"
+    text = generated.read_text(encoding="utf-8")
+    marker = "${CMAKE_CURRENT_LIST_DIR}/Core/Inc"
+    replacement = "${CMAKE_CURRENT_LIST_DIR}/Missing/Inc"
+    assert text.count(marker) == 1
+    generated.write_text(text.replace(marker, replacement), encoding="utf-8")
+    before_paths, before_bytes = _snapshot_tree(root)
+
+    with pytest.raises(CubeMXNativeProjectError) as error:
+        parse_native_project(
+            root,
+            request=request,
+            plan_id="a" * 64,
+            action_digest="b" * 64,
+            environment=environment,
+        )
+
+    assert error.value.code == "CUBEMX_NATIVE_OUTPUT_INVALID"
+    assert error.value.message == "native include inventory references a missing directory"
+    assert error.value.details == {}
+    after_paths, after_bytes = _snapshot_tree(root)
+    assert after_paths == before_paths
+    assert after_bytes == before_bytes
+    assert not (root / ".stm32-project.json").exists()
+    assert not (root / ".stm32-toolkit" / "cubemx-ownership.json").exists()
+
+
+def test_native_parser_rejects_missing_native_memory_regions_without_writes(tmp_path: Path):
+    root = _fixture_tree(tmp_path, "context-f4")
+    request = _fixture_request("context-f4")
+    environment = _fixture_environment("context-f4")
+    control = parse_native_project(
+        root,
+        request=request,
+        plan_id="a" * 64,
+        action_digest="b" * 64,
+        environment=environment,
+    )
+    assert isinstance(control, NativeProjectModel)
+
+    linker = root / "STM32F429ZITx_FLASH.ld"
+    linker.write_text("MEMORY {}\n", encoding="utf-8")
+    before_paths, before_bytes = _snapshot_tree(root)
+
+    with pytest.raises(CubeMXNativeProjectError) as error:
+        parse_native_project(
+            root,
+            request=request,
+            plan_id="a" * 64,
+            action_digest="b" * 64,
+            environment=environment,
+        )
+
+    assert error.value.code == "CUBEMX_NATIVE_OUTPUT_INVALID"
+    assert error.value.message == "native linker memory regions are missing"
+    assert error.value.details == {}
+    after_paths, after_bytes = _snapshot_tree(root)
+    assert after_paths == before_paths
+    assert after_bytes == before_bytes
+    assert not (root / ".stm32-project.json").exists()
+    assert not (root / ".stm32-toolkit" / "cubemx-ownership.json").exists()
+
+
+def test_native_parser_rejects_ambiguous_ioc_inventory_without_writes(tmp_path: Path):
+    root = _real_native_tree(tmp_path)
+    request = CreationRequest.from_mcu("STM32F429ZITx", "generated", framework="hal", language="c")
+    environment = _real_native_environment()
+    control = parse_native_project(
+        root,
+        request=request,
+        plan_id="a" * 64,
+        action_digest="b" * 64,
+        environment=environment,
+    )
+    assert isinstance(control, NativeProjectModel)
+
+    shutil.copy2(root / "STM32F429ZITx.ioc", root / "duplicate.ioc")
+    before_paths, before_bytes = _snapshot_tree(root)
+
+    with pytest.raises(CubeMXNativeProjectError) as error:
+        parse_native_project(
+            root,
+            request=request,
+            plan_id="a" * 64,
+            action_digest="b" * 64,
+            environment=environment,
+        )
+
+    assert error.value.code == "CUBEMX_NATIVE_OUTPUT_INVALID"
+    assert error.value.message == "native IOC inventory is ambiguous"
+    assert error.value.details == {}
+    after_paths, after_bytes = _snapshot_tree(root)
+    assert after_paths == before_paths
+    assert after_bytes == before_bytes
+    assert not (root / ".stm32-project.json").exists()
+    assert not (root / ".stm32-toolkit" / "cubemx-ownership.json").exists()
+
+
+def test_native_parser_rejects_missing_ioc_source_for_ioc_request_without_writes(tmp_path: Path):
+    root = _fixture_tree(tmp_path, "context-f4")
+    request = CreationRequest.from_ioc("STM32F429ZITx.ioc", "generated", framework="hal", language="c")
+    environment = _fixture_environment("context-f4")
+    control = parse_native_project(
+        root,
+        request=request,
+        plan_id="a" * 64,
+        action_digest="b" * 64,
+        environment=environment,
+    )
+    assert isinstance(control, NativeProjectModel)
+
+    ioc = root / "STM32F429ZITx.ioc"
+    ioc.unlink()
+    before_paths, before_bytes = _snapshot_tree(root)
+
+    with pytest.raises(CubeMXNativeProjectError) as error:
+        parse_native_project(
+            root,
+            request=request,
+            plan_id="a" * 64,
+            action_digest="b" * 64,
+            environment=environment,
+        )
+
+    assert error.value.code == "CUBEMX_NATIVE_OUTPUT_INVALID"
+    assert error.value.message == "native IOC source is missing"
+    assert error.value.details == {}
+    after_paths, after_bytes = _snapshot_tree(root)
+    assert after_paths == before_paths
+    assert after_bytes == before_bytes
+    assert not (root / ".stm32-project.json").exists()
+    assert not (root / ".stm32-toolkit" / "cubemx-ownership.json").exists()
+
+
+def test_native_parser_rejects_mcu_identity_mismatch_without_writes(tmp_path: Path):
+    root = _fixture_tree(tmp_path, "context-f4")
+    request = _fixture_request("context-f4")
+    environment = _fixture_environment("context-f4")
+    control = parse_native_project(
+        root,
+        request=request,
+        plan_id="a" * 64,
+        action_digest="b" * 64,
+        environment=environment,
+    )
+    assert isinstance(control, NativeProjectModel)
+
+    ioc = root / "STM32F429ZITx.ioc"
+    text = ioc.read_text(encoding="utf-8")
+    marker = "Mcu.Name=STM32F429ZITx"
+    assert text.count(marker) == 1
+    ioc.write_text(text.replace(marker, "Mcu.Name=STM32F411CEUx"), encoding="utf-8")
+    before_paths, before_bytes = _snapshot_tree(root)
+
+    with pytest.raises(CubeMXNativeProjectError) as error:
+        parse_native_project(
+            root,
+            request=request,
+            plan_id="a" * 64,
+            action_digest="b" * 64,
+            environment=environment,
+        )
+
+    assert error.value.code == "CUBEMX_NATIVE_OUTPUT_INVALID"
+    assert error.value.message == "native MCU identity disagrees with the request"
+    assert error.value.details == {}
+    after_paths, after_bytes = _snapshot_tree(root)
+    assert after_paths == before_paths
+    assert after_bytes == before_bytes
+    assert not (root / ".stm32-project.json").exists()
+    assert not (root / ".stm32-toolkit" / "cubemx-ownership.json").exists()
+
+
+def test_native_parser_rejects_missing_native_package_fact_without_writes(tmp_path: Path):
+    root = _fixture_tree(tmp_path, "context-f4")
+    request = _fixture_request("context-f4")
+    environment = _fixture_environment("context-f4")
+    control = parse_native_project(
+        root,
+        request=request,
+        plan_id="a" * 64,
+        action_digest="b" * 64,
+        environment=environment,
+    )
+    assert isinstance(control, NativeProjectModel)
+
+    ioc = root / "STM32F429ZITx.ioc"
+    text = ioc.read_text(encoding="utf-8")
+    marker = "ProjectManager.FirmwarePackage=STM32Cube_FW_F4 V1.0.0\n"
+    assert text.count(marker) == 1
+    ioc.write_text(text.replace(marker, ""), encoding="utf-8")
+    before_paths, before_bytes = _snapshot_tree(root)
+
+    with pytest.raises(CubeMXNativeProjectError) as error:
+        parse_native_project(
+            root,
+            request=request,
+            plan_id="a" * 64,
+            action_digest="b" * 64,
+            environment=environment,
+        )
+
+    assert error.value.code == "CUBEMX_NATIVE_OUTPUT_INVALID"
+    assert error.value.message == "native IOC package fact is missing"
+    assert error.value.details == {}
+    after_paths, after_bytes = _snapshot_tree(root)
+    assert after_paths == before_paths
+    assert after_bytes == before_bytes
+    assert not (root / ".stm32-project.json").exists()
+    assert not (root / ".stm32-toolkit" / "cubemx-ownership.json").exists()

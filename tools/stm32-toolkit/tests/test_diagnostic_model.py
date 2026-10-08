@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import FrozenInstanceError, replace
 from hashlib import sha256
 
 import pytest
 
-from stm32_toolkit.evidence import EvidenceIdentity
+from stm32_toolkit.evidence import ArtifactRef, EvidenceIdentity
 from stm32_toolkit.monitor_analysis_contract import (
     NativeAnalysisContractError,
     evaluate_physical_monitor_fact,
@@ -14,6 +15,7 @@ from stm32_toolkit.diagnostics import (
     DIAGNOSTIC_INVALID_EVENT,
     DIAGNOSTIC_LIMIT_EXCEEDED,
     DIAGNOSTIC_PLAN_INVALID,
+    DiagnosticMarkerRef,
     EvidenceAssessment,
     Hypothesis,
     ObservationPlan,
@@ -21,6 +23,8 @@ from stm32_toolkit.diagnostics import (
     ObservationStep,
     DiagnosticSession,
     DiagnosticValidationError,
+    SourceChangeDeclaration,
+    calculate_assessment_id,
     calculate_plan_digest,
     canonical_diagnostic_json_bytes,
 )
@@ -205,6 +209,100 @@ def test_failed_run_mode_is_omitted_for_host_and_round_trips_for_target() -> Non
     target = replace(host, failed_run_mode="target")
     assert target.to_dict() == {**host_wire, "failed_run_mode": "target"}
     assert DiagnosticSession.from_value(target.to_dict()) == target
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    [
+        ("hypotheses", {}),
+        ("observation_plans", "not-an-array"),
+        ("observation_results", {}),
+    ],
+)
+def test_session_decode_rejects_non_json_lifecycle_collections_without_materializing(
+    field: str, replacement: object,
+) -> None:
+    session = DiagnosticSession(
+        diagnostic_session_id="f" * 32,
+        revision=1,
+        state="OPEN",
+        identity=IDENTITY,
+        failed_test_run_id="run-1",
+        failed_evidence_id="0" * 64,
+        event_head="3" * 64,
+        hypotheses=(),
+        observation_plans=(),
+        observation_results=(),
+    )
+    candidate = session.to_dict()
+    candidate[field] = replacement
+    before = deepcopy(candidate)
+
+    with pytest.raises(DiagnosticValidationError) as error:
+        DiagnosticSession.from_value(candidate)
+
+    assert error.value.code == DIAGNOSTIC_INVALID_EVENT
+    assert candidate == before
+
+
+def test_extended_open_session_requires_lifecycle_data_before_materializing() -> None:
+    session = DiagnosticSession(
+        diagnostic_session_id="f" * 32,
+        revision=1,
+        state="OPEN",
+        identity=IDENTITY,
+        failed_test_run_id="run-1",
+        failed_evidence_id="0" * 64,
+        event_head="3" * 64,
+        hypotheses=(),
+        observation_plans=(),
+        observation_results=(),
+    )
+    candidate = {
+        **session.to_dict(),
+        "source_change_declarations": [],
+        "verification_plans": [],
+        "diagnostic_marker_refs": [],
+        "fix_verifications": [],
+        "active_verification_plan_id": None,
+    }
+    before = deepcopy(candidate)
+
+    with pytest.raises(DiagnosticValidationError) as error:
+        DiagnosticSession.from_value(candidate)
+
+    assert error.value.code == DIAGNOSTIC_INVALID_EVENT
+    assert candidate == before
+
+
+def test_extended_session_decode_rejects_non_array_lifecycle_collection() -> None:
+    session = DiagnosticSession(
+        diagnostic_session_id="f" * 32,
+        revision=1,
+        state="ABANDONED",
+        identity=IDENTITY,
+        failed_test_run_id="run-1",
+        failed_evidence_id="0" * 64,
+        event_head="3" * 64,
+        hypotheses=(),
+        observation_plans=(),
+        observation_results=(),
+    )
+    candidate = {
+        **session.to_dict(),
+        "source_change_declarations": {},
+        "verification_plans": [],
+        "diagnostic_marker_refs": [],
+        "fix_verifications": [],
+        "active_verification_plan_id": None,
+    }
+    before = deepcopy(candidate)
+
+    with pytest.raises(DiagnosticValidationError) as error:
+        DiagnosticSession.from_value(candidate)
+
+    assert error.value.code == DIAGNOSTIC_INVALID_EVENT
+    assert candidate == before
 
 
 @pytest.mark.parametrize("value", ["host", "unknown", 1, None])
@@ -448,3 +546,771 @@ def test_plan_and_assessment_collection_bounds_are_fixed() -> None:
             (),
         )
     assert error.value.code == DIAGNOSTIC_LIMIT_EXCEEDED
+
+
+_MODEL_INVALID_MESSAGE = "event/model/operation intent is invalid"
+_MODEL_LIMIT_MESSAGE = "a diagnostic collection or byte limit is exceeded"
+_MODEL_PLAN_MESSAGE = "selector, expected value, plan, or step reference is invalid"
+_MISSING_CANDIDATE = object()
+
+
+def _expect_model_failure(
+    factory,
+    expected_code: str,
+    expected_message: str,
+    candidate: object = _MISSING_CANDIDATE,
+) -> None:
+    before = deepcopy(candidate) if candidate is not _MISSING_CANDIDATE else _MISSING_CANDIDATE
+    with pytest.raises(DiagnosticValidationError) as error:
+        factory()
+    assert error.value.code == expected_code
+    assert error.value.message == expected_message
+    assert str(error.value) == expected_message
+    if candidate is not _MISSING_CANDIDATE:
+        assert candidate == before
+
+
+@pytest.mark.parametrize(
+    "case_id",
+    [
+        "observation-purpose-nfc",
+        "observation-purpose-control",
+        "observation-wire-depth",
+        "observation-wire-node-limit",
+        "canonical-evidence-integer-limit",
+        "canonical-evidence-invalid-value",
+        "canonical-event-byte-limit",
+        "selector-nonmapping",
+        "selector-case-count-shape",
+        "case-state-domain",
+        "plan-step-type",
+        "plan-fields-object-control",
+        "plan-fields-nonmapping",
+        "plan-fields-extra",
+        "plan-fields-scalar-steps",
+        "plan-fields-tuple-steps-control",
+        "plan-wire-steps-type",
+        "result-matched",
+    ],
+    ids=lambda case_id: case_id,
+)
+def test_public_observation_model_boundaries(case_id: str) -> None:
+    if case_id == "observation-purpose-nfc":
+        candidate = _step().to_dict()
+        candidate["purpose"] = "e\u0301"
+        _expect_model_failure(
+            lambda: ObservationStep.from_value(candidate),
+            DIAGNOSTIC_INVALID_EVENT,
+            _MODEL_INVALID_MESSAGE,
+            candidate,
+        )
+        return
+    if case_id == "observation-purpose-control":
+        candidate = _step().to_dict()
+        candidate["purpose"] = "purpose\u0001"
+        _expect_model_failure(
+            lambda: ObservationStep.from_value(candidate),
+            DIAGNOSTIC_INVALID_EVENT,
+            _MODEL_INVALID_MESSAGE,
+            candidate,
+        )
+        return
+    if case_id == "observation-wire-depth":
+        candidate = _step().to_dict()
+        nested: object = "leaf"
+        for _ in range(33):
+            nested = [nested]
+        candidate["purpose"] = nested
+        _expect_model_failure(
+            lambda: ObservationStep.from_value(candidate),
+            DIAGNOSTIC_LIMIT_EXCEEDED,
+            _MODEL_LIMIT_MESSAGE,
+            candidate,
+        )
+        return
+    if case_id == "observation-wire-node-limit":
+        candidate = _step().to_dict()
+        candidate["purpose"] = ["x"] * 100_000
+        _expect_model_failure(
+            lambda: ObservationStep.from_value(candidate),
+            DIAGNOSTIC_LIMIT_EXCEEDED,
+            _MODEL_LIMIT_MESSAGE,
+            candidate,
+        )
+        return
+    if case_id == "canonical-evidence-integer-limit":
+        nearby = canonical_diagnostic_json_bytes(1 << 62)
+        assert nearby
+        _expect_model_failure(
+            lambda: canonical_diagnostic_json_bytes(1 << 63),
+            DIAGNOSTIC_LIMIT_EXCEEDED,
+            _MODEL_LIMIT_MESSAGE,
+            1 << 63,
+        )
+        return
+    if case_id == "canonical-evidence-invalid-value":
+        control = {"value": 1}
+        assert canonical_diagnostic_json_bytes(control)
+        candidate = {"value": set()}
+        _expect_model_failure(
+            lambda: canonical_diagnostic_json_bytes(candidate),
+            DIAGNOSTIC_INVALID_EVENT,
+            _MODEL_INVALID_MESSAGE,
+            candidate,
+        )
+        return
+    if case_id == "canonical-event-byte-limit":
+        control = ["0123456789abcdef"] * 10
+        assert canonical_diagnostic_json_bytes(control)
+        candidate = ["0123456789abcdef"] * 90_000
+        _expect_model_failure(
+            lambda: canonical_diagnostic_json_bytes(candidate),
+            DIAGNOSTIC_LIMIT_EXCEEDED,
+            _MODEL_LIMIT_MESSAGE,
+            candidate,
+        )
+        return
+    if case_id == "selector-nonmapping":
+        candidate = _step().to_dict()
+        candidate["selector"] = None
+        _expect_model_failure(
+            lambda: ObservationStep.from_value(candidate),
+            DIAGNOSTIC_INVALID_EVENT,
+            _MODEL_INVALID_MESSAGE,
+            candidate,
+        )
+        return
+    if case_id == "selector-case-count-shape":
+        candidate = _step().to_dict()
+        candidate["selector"] = {"kind": "case-count"}
+        _expect_model_failure(
+            lambda: ObservationStep.from_value(candidate),
+            DIAGNOSTIC_INVALID_EVENT,
+            _MODEL_INVALID_MESSAGE,
+            candidate,
+        )
+        return
+    if case_id == "case-state-domain":
+        candidate = _step().to_dict()
+        candidate["selector"] = {"kind": "case-state", "case_id": "case-1"}
+        candidate["expected_value"] = "unknown"
+        _expect_model_failure(
+            lambda: ObservationStep.from_value(candidate),
+            DIAGNOSTIC_PLAN_INVALID,
+            _MODEL_PLAN_MESSAGE,
+            candidate,
+        )
+        return
+    if case_id == "plan-step-type":
+        plan = _plan()
+        invalid_steps = ({"not": "an ObservationStep"},)
+        _expect_model_failure(
+            lambda: ObservationPlan(
+                plan.plan_id,
+                plan.diagnostic_session_id,
+                plan.created_revision,
+                invalid_steps,
+                plan.digest,
+            ),
+            DIAGNOSTIC_INVALID_EVENT,
+            _MODEL_INVALID_MESSAGE,
+            invalid_steps,
+        )
+        return
+    if case_id == "plan-fields-object-control":
+        plan = _plan()
+        before = plan.to_dict()
+        assert calculate_plan_digest(plan) == plan.digest
+        assert plan.to_dict() == before
+        return
+    if case_id == "plan-fields-nonmapping":
+        candidate = "not-a-plan"
+        _expect_model_failure(
+            lambda: calculate_plan_digest(candidate),
+            DIAGNOSTIC_INVALID_EVENT,
+            _MODEL_INVALID_MESSAGE,
+            candidate,
+        )
+        return
+    if case_id == "plan-fields-extra":
+        candidate = _plan().to_dict()
+        candidate.pop("plan_id")
+        candidate.pop("digest")
+        candidate["extra"] = True
+        _expect_model_failure(
+            lambda: calculate_plan_digest(candidate),
+            DIAGNOSTIC_INVALID_EVENT,
+            _MODEL_INVALID_MESSAGE,
+            candidate,
+        )
+        return
+    if case_id == "plan-fields-scalar-steps":
+        candidate = _plan().to_dict()
+        candidate.pop("plan_id")
+        candidate.pop("digest")
+        candidate["steps"] = "not-a-sequence"
+        _expect_model_failure(
+            lambda: calculate_plan_digest(candidate),
+            DIAGNOSTIC_INVALID_EVENT,
+            _MODEL_INVALID_MESSAGE,
+            candidate,
+        )
+        return
+    if case_id == "plan-fields-tuple-steps-control":
+        steps = (_step(),)
+        candidate = {
+            "diagnostic_session_id": "f" * 32,
+            "created_revision": 3,
+            "steps": steps,
+        }
+        before = {
+            "diagnostic_session_id": candidate["diagnostic_session_id"],
+            "created_revision": candidate["created_revision"],
+            "steps": tuple(step.to_dict() for step in steps),
+        }
+        assert calculate_plan_digest(candidate) == _plan().digest
+        assert candidate.keys() == before.keys()
+        assert candidate["steps"] is steps
+        assert candidate["steps"][0] is steps[0]
+        assert candidate["diagnostic_session_id"] == before["diagnostic_session_id"]
+        assert candidate["created_revision"] == before["created_revision"]
+        assert tuple(step.to_dict() for step in candidate["steps"]) == before["steps"]
+        return
+    if case_id == "plan-wire-steps-type":
+        candidate = _plan().to_dict()
+        candidate["steps"] = "not-a-list"
+        _expect_model_failure(
+            lambda: ObservationPlan.from_value(candidate),
+            DIAGNOSTIC_INVALID_EVENT,
+            _MODEL_INVALID_MESSAGE,
+            candidate,
+        )
+        return
+    if case_id == "result-matched":
+        plan = _plan()
+        step = plan.steps[0]
+        candidate = ObservationResult(
+            plan_id=plan.plan_id,
+            step_id=step.step_id,
+            evidence_id="0" * 64,
+            selector=step.selector,
+            observed_value="failed",
+            expected_value="failed",
+            matched=True,
+        ).to_dict()
+        candidate["matched"] = False
+        _expect_model_failure(
+            lambda: ObservationResult.from_value(candidate),
+            DIAGNOSTIC_PLAN_INVALID,
+            _MODEL_PLAN_MESSAGE,
+            candidate,
+        )
+        return
+    raise AssertionError(f"unhandled case: {case_id}")
+
+
+def _assessment_for(
+    *,
+    hypothesis_id: str = "1" * 32,
+    polarity: str = "supports",
+    rationale: str = "the observed failed state supports this hypothesis",
+) -> EvidenceAssessment:
+    step = _step()
+    return EvidenceAssessment.new(
+        hypothesis_id=hypothesis_id,
+        plan_id=_plan().plan_id,
+        step_id=step.step_id,
+        evidence_id="0" * 64,
+        selector=step.selector,
+        observed_value="failed",
+        polarity=polarity,
+        rationale=rationale,
+    )
+
+
+@pytest.mark.parametrize(
+    "case_id",
+    [
+        "assessment-object-control",
+        "assessment-nonmapping",
+        "assessment-extra",
+        "assessment-polarity",
+        "hypothesis-state",
+        "hypothesis-collections",
+        "hypothesis-member-type",
+        "hypothesis-foreign-assessment",
+        "hypothesis-duplicate-assessment",
+        "hypothesis-overlap",
+    ],
+    ids=lambda case_id: case_id,
+)
+def test_public_hypothesis_assessment_boundaries(case_id: str) -> None:
+    if case_id == "assessment-object-control":
+        assessment = _assessment_for()
+        assert calculate_assessment_id(assessment) == assessment.assessment_id
+        return
+    if case_id == "assessment-nonmapping":
+        candidate = "not-an-assessment"
+        _expect_model_failure(
+            lambda: calculate_assessment_id(candidate),
+            DIAGNOSTIC_INVALID_EVENT,
+            _MODEL_INVALID_MESSAGE,
+            candidate,
+        )
+        return
+    if case_id == "assessment-extra":
+        candidate = _assessment_for().to_dict()
+        candidate["extra"] = True
+        _expect_model_failure(
+            lambda: calculate_assessment_id(candidate),
+            DIAGNOSTIC_INVALID_EVENT,
+            _MODEL_INVALID_MESSAGE,
+            candidate,
+        )
+        return
+    if case_id == "assessment-polarity":
+        _expect_model_failure(
+            lambda: EvidenceAssessment.new(
+                hypothesis_id="1" * 32,
+                plan_id=_plan().plan_id,
+                step_id=_step().step_id,
+                evidence_id="0" * 64,
+                selector=_step().selector,
+                observed_value="failed",
+                polarity="neutral",
+                rationale="invalid polarity",
+            ),
+            DIAGNOSTIC_PLAN_INVALID,
+            _MODEL_PLAN_MESSAGE,
+        )
+        return
+    if case_id == "hypothesis-state":
+        _expect_model_failure(
+            lambda: Hypothesis("1" * 32, "statement", "closed", "unrated", (), ()),
+            DIAGNOSTIC_INVALID_EVENT,
+            _MODEL_INVALID_MESSAGE,
+        )
+        return
+    if case_id == "hypothesis-collections":
+        _expect_model_failure(
+            lambda: Hypothesis("1" * 32, "statement", "open", "unrated", [], ()),
+            DIAGNOSTIC_INVALID_EVENT,
+            _MODEL_INVALID_MESSAGE,
+        )
+        return
+    if case_id == "hypothesis-member-type":
+        _expect_model_failure(
+            lambda: Hypothesis("1" * 32, "statement", "open", "unrated", (object(),), ()),
+            DIAGNOSTIC_INVALID_EVENT,
+            _MODEL_INVALID_MESSAGE,
+        )
+        return
+    if case_id == "hypothesis-foreign-assessment":
+        assessment = _assessment_for(hypothesis_id="2" * 32)
+        _expect_model_failure(
+            lambda: Hypothesis("1" * 32, "statement", "open", "unrated", (assessment,), ()),
+            DIAGNOSTIC_PLAN_INVALID,
+            _MODEL_PLAN_MESSAGE,
+        )
+        return
+    if case_id == "hypothesis-duplicate-assessment":
+        assessment = _assessment_for()
+        _expect_model_failure(
+            lambda: Hypothesis("1" * 32, "statement", "open", "unrated", (assessment, assessment), ()),
+            DIAGNOSTIC_PLAN_INVALID,
+            _MODEL_PLAN_MESSAGE,
+        )
+        return
+    if case_id == "hypothesis-overlap":
+        supporting = _assessment_for(polarity="supports")
+        refuting = _assessment_for(
+            polarity="refutes",
+            rationale="the observed failed state refutes this hypothesis",
+        )
+        assert supporting.assessment_id != refuting.assessment_id
+        _expect_model_failure(
+            lambda: Hypothesis("1" * 32, "statement", "open", "unrated", (supporting,), (refuting,)),
+            DIAGNOSTIC_PLAN_INVALID,
+            _MODEL_PLAN_MESSAGE,
+        )
+        return
+    raise AssertionError(f"unhandled case: {case_id}")
+
+
+_SESSION_ARTIFACT = ArtifactRef(
+    sha256="7" * 64,
+    size_bytes=17,
+    relative_path="changes.diff",
+    kind="source-diff",
+    media_type="text/x-diff",
+)
+
+
+def _session_source(
+    *,
+    claimed_hypothesis_ids: tuple[str, ...] = ("1" * 32,),
+    validation_plan_id: str = "0" * 64,
+) -> SourceChangeDeclaration:
+    return SourceChangeDeclaration.new(
+        before_source_sha256="8" * 64,
+        after_source_sha256="9" * 64,
+        before_build_id="a" * 64,
+        before_elf_sha256="b" * 64,
+        after_build_id="c" * 64,
+        after_elf_sha256="d" * 64,
+        changed_paths=("src/main.c",),
+        diff_evidence_id="e" * 64,
+        diff_artifact=_SESSION_ARTIFACT,
+        claimed_hypothesis_ids=claimed_hypothesis_ids,
+        validation_plan_id=validation_plan_id,
+    )
+
+
+def _session_components() -> tuple[Hypothesis, ObservationPlan, ObservationResult]:
+    plan = _plan()
+    step = plan.steps[0]
+    result = ObservationResult(
+        plan_id=plan.plan_id,
+        step_id=step.step_id,
+        evidence_id="0" * 64,
+        selector=step.selector,
+        observed_value="failed",
+        expected_value="failed",
+        matched=True,
+    )
+    assessment = EvidenceAssessment.new(
+        hypothesis_id="1" * 32,
+        plan_id=plan.plan_id,
+        step_id=step.step_id,
+        evidence_id=result.evidence_id,
+        selector=step.selector,
+        observed_value=result.observed_value,
+        polarity="supports",
+        rationale="the observed failed state supports this hypothesis",
+    )
+    hypothesis = Hypothesis(
+        "1" * 32,
+        "the host test failed",
+        "open",
+        "unrated",
+        (assessment,),
+        (),
+    )
+    return hypothesis, plan, result
+
+
+def _session_kwargs() -> dict[str, object]:
+    hypothesis, plan, result = _session_components()
+    return {
+        "diagnostic_session_id": "f" * 32,
+        "revision": 4,
+        "state": "INVESTIGATING",
+        "identity": IDENTITY,
+        "failed_test_run_id": "run-1",
+        "failed_evidence_id": "0" * 64,
+        "event_head": "3" * 64,
+        "hypotheses": (hypothesis,),
+        "observation_plans": (plan,),
+        "observation_results": (result,),
+    }
+
+
+def _session_plan_for_other_session() -> ObservationPlan:
+    step = _step()
+    fields = {
+        "diagnostic_session_id": "e" * 32,
+        "created_revision": 3,
+        "steps": [step.to_dict()],
+    }
+    digest = calculate_plan_digest(fields)
+    return ObservationPlan(
+        plan_id=digest,
+        diagnostic_session_id=fields["diagnostic_session_id"],
+        created_revision=fields["created_revision"],
+        steps=(step,),
+        digest=digest,
+    )
+
+
+def _session_marker_for_other_session() -> DiagnosticMarkerRef:
+    return DiagnosticMarkerRef.new(
+        marker_id="0" * 64,
+        marker_evidence_id="f" * 64,
+        analysis_id="1" * 64,
+        analysis_evidence_id="2" * 64,
+        diagnostic_session_id="e" * 32,
+        hypothesis_id="2" * 32,
+        polarity="supports",
+        label="change-observed",
+        rationale="the marker belongs to another valid session",
+    )
+
+
+@pytest.mark.parametrize(
+    "case_id",
+    [
+        "session-run-id",
+        "session-revision-type",
+        "session-state",
+        "session-run-mode",
+        "session-identity-type",
+        "session-legacy-collections",
+        "session-result-limit",
+        "session-hypothesis-member",
+        "session-plan-member",
+        "session-result-member",
+        "session-duplicate-hypothesis",
+        "session-duplicate-plan",
+        "session-plan-session-binding",
+        "session-result-reference",
+        "session-duplicate-result",
+        "session-assessment-result-binding",
+        "session-extended-collection-type",
+        "session-extended-limit",
+        "session-duplicate-extended",
+        "session-declaration-foreign-hypothesis",
+        "session-marker-binding",
+        "session-wire-nonmapping",
+    ],
+    ids=lambda case_id: case_id,
+)
+def test_public_session_lifecycle_boundaries(case_id: str) -> None:
+    if case_id == "session-run-id":
+        kwargs = _session_kwargs()
+        kwargs["failed_test_run_id"] = "Invalid Run ID"
+        _expect_model_failure(
+            lambda: DiagnosticSession(**kwargs),
+            DIAGNOSTIC_INVALID_EVENT,
+            _MODEL_INVALID_MESSAGE,
+        )
+        return
+    if case_id == "session-revision-type":
+        kwargs = _session_kwargs()
+        kwargs["revision"] = True
+        _expect_model_failure(
+            lambda: DiagnosticSession(**kwargs),
+            DIAGNOSTIC_INVALID_EVENT,
+            _MODEL_INVALID_MESSAGE,
+        )
+        return
+    if case_id == "session-state":
+        kwargs = _session_kwargs()
+        kwargs["state"] = "UNKNOWN"
+        _expect_model_failure(
+            lambda: DiagnosticSession(**kwargs),
+            DIAGNOSTIC_INVALID_EVENT,
+            _MODEL_INVALID_MESSAGE,
+        )
+        return
+    if case_id == "session-run-mode":
+        kwargs = _session_kwargs()
+        kwargs["failed_run_mode"] = "invalid"
+        _expect_model_failure(
+            lambda: DiagnosticSession(**kwargs),
+            DIAGNOSTIC_INVALID_EVENT,
+            _MODEL_INVALID_MESSAGE,
+        )
+        return
+    if case_id == "session-identity-type":
+        kwargs = _session_kwargs()
+        kwargs["identity"] = {}
+        _expect_model_failure(
+            lambda: DiagnosticSession(**kwargs),
+            DIAGNOSTIC_INVALID_EVENT,
+            _MODEL_INVALID_MESSAGE,
+        )
+        return
+    if case_id == "session-legacy-collections":
+        kwargs = _session_kwargs()
+        kwargs["hypotheses"] = []
+        _expect_model_failure(
+            lambda: DiagnosticSession(**kwargs),
+            DIAGNOSTIC_INVALID_EVENT,
+            _MODEL_INVALID_MESSAGE,
+        )
+        return
+    if case_id == "session-result-limit":
+        kwargs = _session_kwargs()
+        result = kwargs["observation_results"][0]
+        kwargs["observation_results"] = (result,) * 4097
+        _expect_model_failure(
+            lambda: DiagnosticSession(**kwargs),
+            DIAGNOSTIC_LIMIT_EXCEEDED,
+            _MODEL_LIMIT_MESSAGE,
+        )
+        return
+    if case_id == "session-hypothesis-member":
+        kwargs = _session_kwargs()
+        kwargs["hypotheses"] = (object(),)
+        _expect_model_failure(
+            lambda: DiagnosticSession(**kwargs),
+            DIAGNOSTIC_INVALID_EVENT,
+            _MODEL_INVALID_MESSAGE,
+        )
+        return
+    if case_id == "session-plan-member":
+        kwargs = _session_kwargs()
+        kwargs["observation_plans"] = (object(),)
+        _expect_model_failure(
+            lambda: DiagnosticSession(**kwargs),
+            DIAGNOSTIC_INVALID_EVENT,
+            _MODEL_INVALID_MESSAGE,
+        )
+        return
+    if case_id == "session-result-member":
+        kwargs = _session_kwargs()
+        kwargs["observation_results"] = (object(),)
+        _expect_model_failure(
+            lambda: DiagnosticSession(**kwargs),
+            DIAGNOSTIC_INVALID_EVENT,
+            _MODEL_INVALID_MESSAGE,
+        )
+        return
+    if case_id == "session-duplicate-hypothesis":
+        hypothesis, _, _ = _session_components()
+        kwargs = _session_kwargs()
+        kwargs["hypotheses"] = (hypothesis, hypothesis)
+        _expect_model_failure(
+            lambda: DiagnosticSession(**kwargs),
+            DIAGNOSTIC_PLAN_INVALID,
+            _MODEL_PLAN_MESSAGE,
+        )
+        return
+    if case_id == "session-duplicate-plan":
+        _, plan, _ = _session_components()
+        kwargs = _session_kwargs()
+        kwargs["observation_plans"] = (plan, plan)
+        _expect_model_failure(
+            lambda: DiagnosticSession(**kwargs),
+            DIAGNOSTIC_PLAN_INVALID,
+            _MODEL_PLAN_MESSAGE,
+        )
+        return
+    if case_id == "session-plan-session-binding":
+        kwargs = _session_kwargs()
+        kwargs["hypotheses"] = ()
+        kwargs["observation_plans"] = (_session_plan_for_other_session(),)
+        kwargs["observation_results"] = ()
+        _expect_model_failure(
+            lambda: DiagnosticSession(**kwargs),
+            DIAGNOSTIC_PLAN_INVALID,
+            _MODEL_PLAN_MESSAGE,
+        )
+        return
+    if case_id == "session-result-reference":
+        plan = _plan()
+        step = plan.steps[0]
+        result = ObservationResult(
+            plan_id=plan.plan_id,
+            step_id="missing-step",
+            evidence_id="0" * 64,
+            selector=step.selector,
+            observed_value="failed",
+            expected_value="failed",
+            matched=True,
+        )
+        kwargs = _session_kwargs()
+        kwargs["hypotheses"] = ()
+        kwargs["observation_plans"] = (plan,)
+        kwargs["observation_results"] = (result,)
+        _expect_model_failure(
+            lambda: DiagnosticSession(**kwargs),
+            DIAGNOSTIC_PLAN_INVALID,
+            _MODEL_PLAN_MESSAGE,
+        )
+        return
+    if case_id == "session-duplicate-result":
+        _, plan, result = _session_components()
+        kwargs = _session_kwargs()
+        kwargs["hypotheses"] = ()
+        kwargs["observation_plans"] = (plan,)
+        kwargs["observation_results"] = (result, result)
+        _expect_model_failure(
+            lambda: DiagnosticSession(**kwargs),
+            DIAGNOSTIC_PLAN_INVALID,
+            _MODEL_PLAN_MESSAGE,
+        )
+        return
+    if case_id == "session-assessment-result-binding":
+        hypothesis, plan, _ = _session_components()
+        kwargs = _session_kwargs()
+        kwargs["hypotheses"] = (hypothesis,)
+        kwargs["observation_plans"] = (plan,)
+        kwargs["observation_results"] = ()
+        _expect_model_failure(
+            lambda: DiagnosticSession(**kwargs),
+            DIAGNOSTIC_PLAN_INVALID,
+            _MODEL_PLAN_MESSAGE,
+        )
+        return
+    if case_id == "session-extended-collection-type":
+        kwargs = _session_kwargs()
+        kwargs["hypotheses"] = ()
+        kwargs["observation_plans"] = ()
+        kwargs["observation_results"] = ()
+        kwargs["source_change_declarations"] = [_session_source()]
+        _expect_model_failure(
+            lambda: DiagnosticSession(**kwargs),
+            DIAGNOSTIC_INVALID_EVENT,
+            _MODEL_INVALID_MESSAGE,
+        )
+        return
+    if case_id == "session-extended-limit":
+        kwargs = _session_kwargs()
+        kwargs["hypotheses"] = ()
+        kwargs["observation_plans"] = ()
+        kwargs["observation_results"] = ()
+        source = _session_source()
+        kwargs["source_change_declarations"] = (source,) * 65
+        _expect_model_failure(
+            lambda: DiagnosticSession(**kwargs),
+            DIAGNOSTIC_LIMIT_EXCEEDED,
+            _MODEL_LIMIT_MESSAGE,
+        )
+        return
+    if case_id == "session-duplicate-extended":
+        kwargs = _session_kwargs()
+        kwargs["hypotheses"] = ()
+        kwargs["observation_plans"] = ()
+        kwargs["observation_results"] = ()
+        source = _session_source()
+        kwargs["source_change_declarations"] = (source, source)
+        _expect_model_failure(
+            lambda: DiagnosticSession(**kwargs),
+            DIAGNOSTIC_PLAN_INVALID,
+            _MODEL_PLAN_MESSAGE,
+        )
+        return
+    if case_id == "session-declaration-foreign-hypothesis":
+        kwargs = _session_kwargs()
+        kwargs["hypotheses"] = ()
+        kwargs["observation_plans"] = ()
+        kwargs["observation_results"] = ()
+        kwargs["source_change_declarations"] = (_session_source(claimed_hypothesis_ids=("2" * 32,)),)
+        _expect_model_failure(
+            lambda: DiagnosticSession(**kwargs),
+            DIAGNOSTIC_PLAN_INVALID,
+            _MODEL_PLAN_MESSAGE,
+        )
+        return
+    if case_id == "session-marker-binding":
+        kwargs = _session_kwargs()
+        kwargs["hypotheses"] = ()
+        kwargs["observation_plans"] = ()
+        kwargs["observation_results"] = ()
+        kwargs["diagnostic_marker_refs"] = (_session_marker_for_other_session(),)
+        _expect_model_failure(
+            lambda: DiagnosticSession(**kwargs),
+            DIAGNOSTIC_PLAN_INVALID,
+            _MODEL_PLAN_MESSAGE,
+        )
+        return
+    if case_id == "session-wire-nonmapping":
+        _expect_model_failure(
+            lambda: DiagnosticSession.from_value("not-a-session"),
+            DIAGNOSTIC_INVALID_EVENT,
+            _MODEL_INVALID_MESSAGE,
+            "not-a-session",
+        )
+        return
+    raise AssertionError(f"unhandled case: {case_id}")

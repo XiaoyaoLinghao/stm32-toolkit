@@ -67,6 +67,7 @@ from stm32_toolkit.build.model import (
 )
 from stm32_toolkit.generation.managed_files import (
     GENERATED_TARGETS,
+    is_supported_generation_producer,
     parse_managed_manifest,
     portable_path_error,
     sha256_hex,
@@ -230,13 +231,13 @@ def _require_managed_configuration(root: Path) -> ProjectModel:
             "project model is invalid",
             {"field": "schemaVersion", "rule": "version"},
         )
-    if model.generation.tool != "stm32-toolkit":
+    if type(model.generation.tool) is not str or model.generation.tool != "stm32-toolkit":
         raise build_error(
             BUILD_PROJECT_INVALID,
             "project model is invalid",
             {"field": "generation.tool", "rule": "tool"},
         )
-    if model.generation.version != __version__:
+    if not is_supported_generation_producer(model.generation.tool, model.generation.version):
         raise build_error(
             BUILD_PROJECT_INVALID,
             "project model is invalid",

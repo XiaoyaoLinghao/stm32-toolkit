@@ -1,0 +1,24 @@
+{
+  "files": [
+    {
+      "bytes": 581,
+      "computed_blob": "43be14c9c2b1c5fc0fa34cb7b6e85751be2e366b",
+      "fixture": "stm32-monitor.cmd",
+      "fixture_sha256": "e2715d5bdd894f5ac1c40d3872e5375616d7c76a5b5f220504ba04e0fd275ef3",
+      "repository_path": "bin/stm32-monitor.cmd",
+      "source_blob": "43be14c9c2b1c5fc0fa34cb7b6e85751be2e366b",
+      "source_commit": "eae54be02cd28a707488f15f58b8f58e66db1a2c"
+    },
+    {
+      "bytes": 600,
+      "computed_blob": "ad7eaa864a53dd7e6d871f152587eba1de80d56d",
+      "fixture": "stm32-toolkit-mcp.cmd",
+      "fixture_sha256": "73777a6ee92072b09c9487583abba11bde7a55b818e3ad6bcf956c88109617fe",
+      "repository_path": "bin/stm32-toolkit-mcp.cmd",
+      "source_blob": "ad7eaa864a53dd7e6d871f152587eba1de80d56d",
+      "source_commit": "eae54be02cd28a707488f15f58b8f58e66db1a2c"
+    }
+  ],
+  "schema": "stm32tk-0502-launcher-fixture-attribution/1",
+  "source_commit": "eae54be02cd28a707488f15f58b8f58e66db1a2c"
+}

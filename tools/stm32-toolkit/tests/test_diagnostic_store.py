@@ -1,23 +1,28 @@
 from __future__ import annotations
 
+import errno
 import json
 from concurrent.futures import ThreadPoolExecutor
 import os
 from pathlib import Path
 import shutil
-import tempfile
+import subprocess
+import sys
 import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 
 from stm32_toolkit.diagnostics import (
     DIAGNOSTIC_CHAIN_CORRUPT,
     DIAGNOSTIC_EVIDENCE_MISSING,
+    DIAGNOSTIC_INVALID_EVENT,
     DIAGNOSTIC_LIMIT_EXCEEDED,
     DIAGNOSTIC_REVISION_CONFLICT,
     DIAGNOSTIC_OPERATION_CONFLICT,
     DiagnosticEvent,
+    DiagnosticStoreBusyError,
     DiagnosticValidationError,
     canonical_diagnostic_json_bytes,
     create_event,
@@ -50,8 +55,8 @@ UTC = "2026-08-21T12:00:00.000000Z"
 
 
 @pytest.fixture
-def tmp_path():
-    path = Path(tempfile.mkdtemp(prefix="stm32tk-0600-diagnostic-store-", dir=r"C:\tmp"))
+def tmp_path(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    path = tmp_path_factory.mktemp("dstore")
     try:
         yield path
     finally:
@@ -449,6 +454,23 @@ def test_resolve_operation_returns_current_session_for_exact_intent_and_conflict
             )
         assert error.value.code == DIAGNOSTIC_OPERATION_CONFLICT
 
+    for event_type, actor, request in (
+        ("", started.actor, {}),
+        (started.event_type, "", {}),
+        (started.event_type, started.actor, []),
+    ):
+        with pytest.raises(DiagnosticValidationError) as error:
+            store.resolve_operation(
+                SID,
+                started.operation_id,
+                event_type=event_type,
+                actor=actor,
+                request=request,  # type: ignore[arg-type]
+            )
+        assert error.value.code == DIAGNOSTIC_INVALID_EVENT
+
+    assert store.load(SID).revision == 2
+
 
 def test_resolve_accepted_operation_reloads_without_evidence_authority(
     tmp_path: Path,
@@ -614,6 +636,269 @@ def test_store_waits_for_lock_before_inspecting_prepublication_session_layout(tm
         assert second.result(timeout=10).revision == 1
 
 
+def test_windows_lock_contention_expires_as_busy_and_closes_descriptor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    evidence = EvidenceStore(tmp_path / "evidence")
+    failed_evidence_id = _failed_evidence(evidence, tmp_path)
+    store = DiagnosticStore(tmp_path / "diagnostics", evidence)
+    store.create(_created(failed_evidence_id))
+
+    lock_calls: list[tuple[int, int, int]] = []
+    sleeps: list[float] = []
+    clock = [0.0]
+
+    def locking(descriptor: int, mode: int, size: int) -> None:
+        lock_calls.append((descriptor, mode, size))
+        if mode == 2:  # LK_NBLCK
+            raise OSError(errno.EACCES, "permission denied")
+
+    def monotonic() -> float:
+        return clock[0]
+
+    def sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        clock[0] += seconds
+
+    closed: list[int] = []
+    original_close = store_module.os.close
+    fake_msvcrt = SimpleNamespace(LK_NBLCK=2, LK_UNLCK=3, locking=locking)
+    monkeypatch.setitem(sys.modules, "msvcrt", fake_msvcrt)
+    monkeypatch.setattr(store_module.os, "name", "nt")
+    monkeypatch.setattr(store_module, "_WINDOWS_LOCK_TIMEOUT_SECONDS", 0.06)
+    monkeypatch.setattr(store_module.time, "monotonic", monotonic)
+    monkeypatch.setattr(store_module.time, "sleep", sleep)
+    monkeypatch.setattr(store_module.os, "close", lambda descriptor: (closed.append(descriptor), original_close(descriptor))[1])
+
+    entered: list[bool] = []
+
+    def protected_body(*_args: object, **_kwargs: object) -> None:
+        entered.append(True)
+        raise AssertionError("busy acquisition must not enter the protected body")
+
+    monkeypatch.setattr(store, "_load_chain_locked", protected_body)
+    with pytest.raises(DiagnosticStoreBusyError) as error:
+        store.load(SID)
+
+    assert error.value.code == "DIAGNOSTIC_STORE_BUSY"
+    assert error.value.message == "Diagnostic store is busy."
+    assert lock_calls and all(mode == 2 and size == 1 for _, mode, size in lock_calls)
+    assert sleeps and all(0 < seconds <= 0.025 for seconds in sleeps)
+    assert sum(sleeps) == pytest.approx(0.06)
+    assert len(closed) == 1
+
+
+def test_windows_lock_noncontention_error_remains_chain_corrupt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    evidence = EvidenceStore(tmp_path / "evidence")
+    failed_evidence_id = _failed_evidence(evidence, tmp_path)
+    store = DiagnosticStore(tmp_path / "diagnostics", evidence)
+    store.create(_created(failed_evidence_id))
+
+    closed: list[int] = []
+    original_close = store_module.os.close
+
+    def locking(_descriptor: int, _mode: int, _size: int) -> None:
+        raise OSError(errno.ENOSPC, "disk full")
+
+    fake_msvcrt = SimpleNamespace(LK_NBLCK=2, LK_UNLCK=3, locking=locking)
+    monkeypatch.setitem(sys.modules, "msvcrt", fake_msvcrt)
+    monkeypatch.setattr(store_module.os, "name", "nt")
+    monkeypatch.setattr(store_module.os, "close", lambda descriptor: (closed.append(descriptor), original_close(descriptor))[1])
+
+    entered: list[bool] = []
+
+    def protected_body(*_args: object, **_kwargs: object) -> None:
+        entered.append(True)
+        raise AssertionError("non-contention failure must not enter the protected body")
+
+    monkeypatch.setattr(store, "_load_chain_locked", protected_body)
+    with pytest.raises(DiagnosticValidationError) as error:
+        store.load(SID)
+
+    assert error.value.code == DIAGNOSTIC_CHAIN_CORRUPT
+    assert entered == []
+    assert len(closed) == 1
+
+
+def test_windows_acquisition_after_deadline_unlocks_without_entering_body(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    evidence = EvidenceStore(tmp_path / "evidence")
+    failed_evidence_id = _failed_evidence(evidence, tmp_path)
+    store = DiagnosticStore(tmp_path / "diagnostics", evidence)
+    store.create(_created(failed_evidence_id))
+
+    calls: list[int] = []
+    clock = iter((0.0, 0.0, 0.02))
+
+    def locking(_descriptor: int, mode: int, _size: int) -> None:
+        calls.append(mode)
+
+    fake_msvcrt = SimpleNamespace(LK_NBLCK=2, LK_UNLCK=3, locking=locking)
+    monkeypatch.setitem(sys.modules, "msvcrt", fake_msvcrt)
+    monkeypatch.setattr(store_module.os, "name", "nt")
+    monkeypatch.setattr(store_module, "_WINDOWS_LOCK_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(store_module.time, "monotonic", lambda: next(clock))
+
+    entered: list[bool] = []
+
+    def protected_body(*_args: object, **_kwargs: object) -> None:
+        entered.append(True)
+        raise AssertionError("late acquisition must not enter the protected body")
+
+    monkeypatch.setattr(store, "_load_chain_locked", protected_body)
+    with pytest.raises(DiagnosticStoreBusyError):
+        store.load(SID)
+
+    assert entered == []
+    assert calls == [2, 3]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="requires Windows native msvcrt locking")
+def test_windows_unlock_failure_still_closes_descriptor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import msvcrt
+
+    evidence = EvidenceStore(tmp_path / "evidence")
+    failed_evidence_id = _failed_evidence(evidence, tmp_path)
+    store = DiagnosticStore(tmp_path / "diagnostics", evidence)
+    store.create(_created(failed_evidence_id))
+
+    owned_modes: list[int] = []
+    diagnostic_descriptor: int | None = None
+    owned_closes: list[int] = []
+    original_locking = msvcrt.locking
+    original_close = store_module.os.close
+
+    def locking(descriptor: int, mode: int, size: int) -> object:
+        nonlocal diagnostic_descriptor
+        if diagnostic_descriptor is None and mode == msvcrt.LK_NBLCK:
+            diagnostic_descriptor = descriptor
+        if descriptor == diagnostic_descriptor:
+            owned_modes.append(mode)
+        if descriptor == diagnostic_descriptor and mode == msvcrt.LK_UNLCK:
+            raise OSError(errno.EIO, "unlock failed")
+        return original_locking(descriptor, mode, size)
+
+    monkeypatch.setattr(msvcrt, "locking", locking)
+
+    def close(descriptor: int) -> None:
+        if descriptor == diagnostic_descriptor:
+            owned_closes.append(descriptor)
+        return original_close(descriptor)
+
+    monkeypatch.setattr(store_module.os, "close", close)
+
+    with pytest.raises(OSError, match="unlock failed"):
+        store.load(SID)
+
+    assert diagnostic_descriptor is not None
+    assert owned_modes == [msvcrt.LK_NBLCK, msvcrt.LK_UNLCK]
+    assert owned_closes == [diagnostic_descriptor]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="requires Windows native msvcrt locking")
+def test_windows_native_lock_excludes_child_then_reuses_after_release(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    evidence = EvidenceStore(tmp_path / "evidence")
+    failed_evidence_id = _failed_evidence(evidence, tmp_path)
+    store = DiagnosticStore(tmp_path / "diagnostics", evidence)
+    store.create(_created(failed_evidence_id))
+
+    lock_path = store.diagnostics_root / ".diagnostic.lock"
+    ready_path = tmp_path / "child-ready"
+    release_path = tmp_path / "child-release"
+    error_path = tmp_path / "child-error"
+    child_code = """
+import msvcrt
+import os
+from pathlib import Path
+import sys
+import time
+
+lock_path = Path(sys.argv[1])
+ready_path = Path(sys.argv[2])
+release_path = Path(sys.argv[3])
+error_path = Path(sys.argv[4])
+release_deadline = time.monotonic() + float(sys.argv[5])
+descriptor = -1
+try:
+    descriptor = os.open(lock_path, os.O_RDWR | getattr(os, "O_BINARY", 0))
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+    ready_path.write_text("locked", encoding="ascii")
+    while not release_path.exists():
+        if time.monotonic() >= release_deadline:
+            raise TimeoutError("parent did not release native lock")
+        time.sleep(0.01)
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+except BaseException as error:
+    error_path.write_text(repr(error), encoding="utf-8")
+    raise
+finally:
+    if descriptor >= 0:
+        os.close(descriptor)
+"""
+    child = subprocess.Popen(
+        [sys.executable, "-c", child_code, str(lock_path), str(ready_path), str(release_path), str(error_path), "15"],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    child_output: tuple[str | None, str | None] | None = None
+    try:
+        ready_deadline = time.monotonic() + 5.0
+        while not ready_path.exists():
+            if error_path.exists():
+                pytest.fail(f"native lock child failed: {error_path.read_text(encoding='utf-8')}")
+            if child.poll() is not None:
+                stdout, stderr = child.communicate()
+                child_output = (stdout, stderr)
+                pytest.fail(f"native lock child exited before locking: {stdout}{stderr}")
+            if time.monotonic() >= ready_deadline:
+                pytest.fail("native lock child did not publish its ready marker")
+            time.sleep(0.01)
+
+        with monkeypatch.context() as lock_patch:
+            lock_patch.setattr(store_module, "_WINDOWS_LOCK_TIMEOUT_SECONDS", 0.15)
+            entered: list[bool] = []
+
+            def protected_body(*_args: object, **_kwargs: object) -> None:
+                entered.append(True)
+                raise AssertionError("native busy acquisition must not enter the protected body")
+
+            lock_patch.setattr(store, "_load_chain_locked", protected_body)
+            with pytest.raises(DiagnosticStoreBusyError) as error:
+                store.load(SID)
+            assert error.value.code == "DIAGNOSTIC_STORE_BUSY"
+            assert entered == []
+
+        release_path.write_text("release", encoding="ascii")
+        child.wait(timeout=5)
+        stdout, stderr = child.communicate(timeout=5)
+        child_output = (stdout, stderr)
+        assert child.returncode == 0, f"native lock child failed: {stdout}{stderr}"
+        assert not error_path.exists()
+        assert store.load(SID).revision == 1
+    finally:
+        release_path.write_text("release", encoding="ascii")
+        if child.poll() is None:
+            child.terminate()
+        try:
+            child.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            child.kill()
+            child.wait(timeout=5)
+        if child_output is None and (child.stdout is not None or child.stderr is not None):
+            child.communicate(timeout=5)
+
+
 def test_create_retry_validates_every_workspace_session_before_returning(tmp_path: Path) -> None:
     evidence = EvidenceStore(tmp_path / "evidence")
     failed_evidence_id = _failed_evidence(evidence, tmp_path)
@@ -748,3 +1033,419 @@ def test_event_redirect_is_rejected_without_root_mutation(tmp_path: Path) -> Non
     assert error.value.code == DIAGNOSTIC_CHAIN_CORRUPT
     assert event_path.is_symlink()
     assert {path.name: path.read_bytes() for path in roots_directory.glob("*.json")} == root_bytes
+
+
+def _store_file_snapshot(root: Path) -> dict[str, bytes]:
+    if root.is_file():
+        return {root.name: root.read_bytes()}
+    if not root.exists():
+        return {}
+    snapshot: dict[str, bytes] = {}
+    for path in sorted(root.rglob("*")):
+        relative = path.relative_to(root).as_posix()
+        if path.is_dir():
+            snapshot[f"{relative}/"] = b""
+        elif path.is_file():
+            snapshot[relative] = path.read_bytes()
+    return snapshot
+
+
+def _authority_snapshot(diagnostics_root: Path, evidence_root: Path) -> dict[str, dict[str, bytes]]:
+    return {
+        "diagnostics": _store_file_snapshot(diagnostics_root),
+        "evidence": _store_file_snapshot(evidence_root),
+    }
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "extra-root-entry",
+        "sessions-not-directory",
+        "invalid-session-name",
+        "extra-session-child",
+        "intent-extra-session-child",
+        "oversized-event",
+        "bom-event",
+        "duplicate-json-key",
+        "sequence-gap",
+        "event-session-binding",
+        "duplicate-operation-id",
+        "root-not-directory",
+    ],
+)
+def test_public_store_read_integrity_refusals_preserve_persisted_authority(
+    tmp_path: Path, case: str
+) -> None:
+    evidence = EvidenceStore(tmp_path / "evidence")
+    failed_evidence_id = _failed_evidence(evidence, tmp_path)
+    store = DiagnosticStore(tmp_path / "diagnostics", evidence)
+    created = (
+        _created_target(failed_evidence_id)
+        if case == "intent-extra-session-child"
+        else _created(failed_evidence_id)
+    )
+    store.create(created)
+    diagnostics_root = tmp_path / "diagnostics"
+    sessions_root = diagnostics_root / "sessions"
+    events_root = sessions_root / SID / "events"
+    event_path = events_root / "00000000.json"
+
+    if case in {
+        "sequence-gap",
+        "event-session-binding",
+        "duplicate-operation-id",
+    }:
+        started = _started(created, operation_id=f"read-{case}")
+        store.append(
+            SID,
+            started,
+            expected_revision=1,
+        )
+        assert store.load(SID).revision == 2
+
+    if case == "extra-root-entry":
+        (diagnostics_root / "unexpected").write_bytes(b"unexpected")
+    elif case == "sessions-not-directory":
+        backup = tmp_path / "sessions-backup"
+        sessions_root.rename(backup)
+        sessions_root.write_bytes(b"not a directory")
+        try:
+            before = _authority_snapshot(diagnostics_root, evidence.root)
+            with pytest.raises(DiagnosticValidationError) as error:
+                store.load(SID)
+            assert error.value.code == DIAGNOSTIC_CHAIN_CORRUPT
+            assert str(error.value) == "event/checkpoint/root chain is missing or contradictory"
+            assert _authority_snapshot(diagnostics_root, evidence.root) == before
+        finally:
+            sessions_root.unlink()
+            backup.rename(sessions_root)
+        return
+    elif case == "invalid-session-name":
+        (sessions_root / "not-a-session").mkdir()
+    elif case == "extra-session-child":
+        (sessions_root / SID / "unexpected").write_bytes(b"unexpected")
+    elif case == "intent-extra-session-child":
+        (sessions_root / SID / "unexpected").write_bytes(b"unexpected")
+    elif case == "oversized-event":
+        raw = event_path.read_bytes()
+        event_path.write_bytes(raw + b"x" * (store_module.MAX_EVENT_BYTES - len(raw) + 1))
+    elif case == "bom-event":
+        event_path.write_bytes(b"\xef\xbb\xbf" + event_path.read_bytes())
+    elif case == "duplicate-json-key":
+        raw = event_path.read_bytes()
+        assert raw.endswith(b"}")
+        event_path.write_bytes(raw[:-1] + b',"schema":"stm32-diagnostic-event/1"}')
+    elif case == "sequence-gap":
+        (events_root / "00000000.json").unlink()
+    elif case == "event-session-binding":
+        replacement = create_event(
+            diagnostic_session_id="a" * 32,
+            operation_id="read-foreign-session",
+            sequence=1,
+            revision_before=1,
+            event_type="investigation.started",
+            occurred_at_utc=UTC,
+            actor="user",
+            previous_digest=created.digest,
+            payload={"request": {}, "result": {}},
+        )
+        event_path = events_root / "00000001.json"
+        event_path.write_bytes(canonical_diagnostic_json_bytes(replacement.to_dict()))
+    elif case == "duplicate-operation-id":
+        replacement = create_event(
+            diagnostic_session_id=SID,
+            operation_id=created.operation_id,
+            sequence=1,
+            revision_before=1,
+            event_type="investigation.started",
+            occurred_at_utc=UTC,
+            actor="user",
+            previous_digest=created.digest,
+            payload={"request": {}, "result": {}},
+        )
+        event_path = events_root / "00000001.json"
+        event_path.write_bytes(canonical_diagnostic_json_bytes(replacement.to_dict()))
+    elif case == "root-not-directory":
+        backup = tmp_path / "diagnostics-backup"
+        diagnostics_root.rename(backup)
+        diagnostics_root.write_bytes(b"not a directory")
+        try:
+            before = _authority_snapshot(diagnostics_root, evidence.root)
+            with pytest.raises(DiagnosticValidationError) as error:
+                store.load(SID)
+            assert error.value.code == DIAGNOSTIC_CHAIN_CORRUPT
+            assert str(error.value) == "event/checkpoint/root chain is missing or contradictory"
+            assert _authority_snapshot(diagnostics_root, evidence.root) == before
+        finally:
+            diagnostics_root.unlink()
+            backup.rename(diagnostics_root)
+        return
+
+    before = _authority_snapshot(diagnostics_root, evidence.root)
+    with pytest.raises(DiagnosticValidationError) as error:
+        if case == "intent-extra-session-child":
+            store.load_creation_intent(SID)
+        else:
+            store.load(SID)
+    assert error.value.code == DIAGNOSTIC_CHAIN_CORRUPT
+    assert str(error.value) == "event/checkpoint/root chain is missing or contradictory"
+    assert _authority_snapshot(diagnostics_root, evidence.root) == before
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "invalid-session-id",
+        "create-non-event",
+        "create-non-creation-event",
+        "create-duplicate-session",
+        "append-wrong-session",
+        "append-session-created",
+        "append-negative-revision",
+        "append-bad-chain-fields",
+        "resolve-empty-operation",
+        "resolve-accepted-empty-operation",
+        "resolve-accepted-empty-event-type",
+        "resolve-accepted-empty-actor",
+        "create-root-not-directory",
+        "create-invalid-lock-size",
+    ],
+)
+def test_public_store_write_refusals_preserve_authority(tmp_path: Path, case: str) -> None:
+    evidence = EvidenceStore(tmp_path / "evidence")
+    failed_evidence_id = _failed_evidence(evidence, tmp_path)
+
+    if case == "create-root-not-directory":
+        diagnostics_root = tmp_path / "diagnostics-file"
+        diagnostics_root.write_bytes(b"not a directory")
+        store = DiagnosticStore(diagnostics_root, evidence)
+        before = _authority_snapshot(diagnostics_root, evidence.root)
+        with pytest.raises(DiagnosticValidationError) as error:
+            store.create(_created_for("a" * 32, "bad-root", failed_evidence_id))
+        assert error.value.code == DIAGNOSTIC_CHAIN_CORRUPT
+        assert str(error.value) == "event/checkpoint/root chain is missing or contradictory"
+        assert _authority_snapshot(diagnostics_root, evidence.root) == before
+        return
+
+    store = DiagnosticStore(tmp_path / "diagnostics", evidence)
+    created = _created(failed_evidence_id)
+    store.create(created)
+    diagnostics_root = tmp_path / "diagnostics"
+
+    if case == "create-invalid-lock-size":
+        (diagnostics_root / ".diagnostic.lock").write_bytes(b"xx")
+
+    before = _authority_snapshot(diagnostics_root, evidence.root)
+    with pytest.raises(DiagnosticValidationError) as error:
+        if case == "invalid-session-id":
+            store.load("bad-session")
+        elif case == "create-non-event":
+            store.create(object())
+        elif case == "create-non-creation-event":
+            store.create(_started(created, operation_id="not-creation"))
+        elif case == "create-duplicate-session":
+            store.create(_created_for(SID, "duplicate-create", failed_evidence_id))
+        elif case == "append-wrong-session":
+            store.append(
+                SID,
+                _created_for("a" * 32, "wrong-session", failed_evidence_id),
+                expected_revision=1,
+            )
+        elif case == "append-session-created":
+            store.append(
+                SID,
+                _created_for(SID, "append-created", failed_evidence_id),
+                expected_revision=1,
+            )
+        elif case == "append-negative-revision":
+            store.append(
+                SID,
+                _started(created, operation_id="negative-revision"),
+                expected_revision=-1,
+            )
+        elif case == "append-bad-chain-fields":
+            store.append(
+                SID,
+                _event(
+                    sequence=1,
+                    event_type="investigation.started",
+                    request={},
+                    result={},
+                    previous_digest="0" * 64,
+                    operation_id="bad-chain",
+                ),
+                expected_revision=1,
+            )
+        elif case == "resolve-empty-operation":
+            store.resolve_operation(
+                SID,
+                "",
+                event_type="investigation.started",
+                actor="user",
+                request={},
+            )
+        elif case == "resolve-accepted-empty-operation":
+            store.resolve_accepted_operation(
+                SID,
+                "",
+                event_type="investigation.started",
+                actor="user",
+            )
+        elif case == "resolve-accepted-empty-event-type":
+            store.resolve_accepted_operation(
+                SID,
+                "accepted-op",
+                event_type="",
+                actor="user",
+            )
+        elif case == "resolve-accepted-empty-actor":
+            store.resolve_accepted_operation(
+                SID,
+                "accepted-op",
+                event_type="investigation.started",
+                actor="",
+            )
+        elif case == "create-invalid-lock-size":
+            store.create(_created_for("a" * 32, "bad-lock", failed_evidence_id))
+
+    expected = {
+        "invalid-session-id": (
+            "DIAGNOSTIC_INVALID_EVENT",
+            "event/model/operation intent is invalid",
+        ),
+        "create-non-event": (
+            "DIAGNOSTIC_INVALID_EVENT",
+            "event/model/operation intent is invalid",
+        ),
+        "create-non-creation-event": (
+            "DIAGNOSTIC_INVALID_EVENT",
+            "event/model/operation intent is invalid",
+        ),
+        "create-duplicate-session": (
+            "DIAGNOSTIC_INVALID_EVENT",
+            "event/model/operation intent is invalid",
+        ),
+        "append-wrong-session": (
+            "DIAGNOSTIC_INVALID_EVENT",
+            "event/model/operation intent is invalid",
+        ),
+        "append-session-created": (
+            "DIAGNOSTIC_INVALID_EVENT",
+            "event/model/operation intent is invalid",
+        ),
+        "append-negative-revision": (
+            "DIAGNOSTIC_REVISION_CONFLICT",
+            "expected revision is stale or future",
+        ),
+        "append-bad-chain-fields": (
+            "DIAGNOSTIC_INVALID_EVENT",
+            "event/model/operation intent is invalid",
+        ),
+        "resolve-empty-operation": (
+            "DIAGNOSTIC_INVALID_EVENT",
+            "event/model/operation intent is invalid",
+        ),
+        "resolve-accepted-empty-operation": (
+            "DIAGNOSTIC_INVALID_EVENT",
+            "event/model/operation intent is invalid",
+        ),
+        "resolve-accepted-empty-event-type": (
+            "DIAGNOSTIC_INVALID_EVENT",
+            "event/model/operation intent is invalid",
+        ),
+        "resolve-accepted-empty-actor": (
+            "DIAGNOSTIC_INVALID_EVENT",
+            "event/model/operation intent is invalid",
+        ),
+        "create-root-not-directory": (
+            "DIAGNOSTIC_CHAIN_CORRUPT",
+            "event/checkpoint/root chain is missing or contradictory",
+        ),
+        "create-invalid-lock-size": (
+            "DIAGNOSTIC_CHAIN_CORRUPT",
+            "event/checkpoint/root chain is missing or contradictory",
+        ),
+    }[case]
+    assert error.value.code == expected[0]
+    assert str(error.value) == expected[1]
+    assert _authority_snapshot(diagnostics_root, evidence.root) == before
+
+
+@pytest.mark.parametrize(
+    "phase",
+    ["event.after_flush", "event.after_fsync", "event.after_directory_fsync"],
+)
+def test_public_store_recovers_after_event_durability_interruption(
+    tmp_path: Path, phase: str
+) -> None:
+    evidence = EvidenceStore(tmp_path / "evidence")
+    failed_evidence_id = _failed_evidence(evidence, tmp_path)
+    diagnostics_root = tmp_path / "diagnostics"
+    fired = False
+
+    def inject(point: str) -> None:
+        nonlocal fired
+        if point == phase and not fired:
+            fired = True
+            raise RuntimeError("interrupted")
+
+    store = DiagnosticStore(diagnostics_root, evidence, fault_injector=inject)
+    created = _created(failed_evidence_id)
+    with pytest.raises(RuntimeError, match="^interrupted$"):
+        store.create(created)
+    assert fired
+
+    events_root = diagnostics_root / "sessions" / SID / "events"
+    event_path = events_root / "00000000.json"
+    assert sorted(path.name for path in events_root.iterdir()) == ["00000000.json"]
+    snapshot_before_load = _authority_snapshot(diagnostics_root, evidence.root)
+
+    recovered = DiagnosticStore(diagnostics_root, EvidenceStore(evidence.root))
+    session = recovered.load(SID)
+    snapshot_after_first_load = _authority_snapshot(diagnostics_root, evidence.root)
+    before_evidence_files = {
+        path for path in snapshot_before_load["evidence"] if not path.endswith("/")
+    }
+    after_evidence_files = {
+        path for path in snapshot_after_first_load["evidence"] if not path.endswith("/")
+    }
+    added_evidence_files = sorted(after_evidence_files - before_evidence_files)
+    assert len(added_evidence_files) == 3
+    assert len([path for path in added_evidence_files if path.startswith("roots/diagnostic-session/")]) == 1
+    assert snapshot_after_first_load["diagnostics"] == snapshot_before_load["diagnostics"]
+    root_paths = sorted((evidence.root / "roots" / "diagnostic-session").glob("*.json"))
+    assert len(root_paths) == 1
+    assert session.revision == 1
+    assert session.event_head == created.digest
+    assert event_path.read_bytes() == canonical_diagnostic_json_bytes(created.to_dict())
+
+    root = get_root(evidence, "diagnostic-session", f"{SID}.00000001")
+    assert f"roots/diagnostic-session/{root_paths[0].name}" in added_evidence_files
+    assert root.metadata == {
+        "diagnostic_session_id": SID,
+        "revision": 1,
+        "state": "OPEN",
+        "event_digest": created.digest,
+    }
+    envelope = evidence.get_envelope(root.manifest_id)
+    assert envelope.identity == IDENTITY
+    assert envelope.parents == (failed_evidence_id,)
+    assert envelope.operation == "diagnostic-event"
+    manifest_path = f"manifests/{envelope.evidence_id}.json"
+    artifact_path = envelope.artifacts[0].relative_path
+    assert manifest_path in added_evidence_files
+    assert artifact_path in added_evidence_files
+    assert envelope.metadata == {
+        "diagnostic_session_id": SID,
+        "sequence": 0,
+        "revision": 1,
+        "event_digest": created.digest,
+    }
+    assert evidence.read_artifact(
+        envelope.artifacts[0], maximum_bytes=store_module.MAX_EVENT_BYTES
+    ) == event_path.read_bytes()
+
+    second_session = recovered.load(SID)
+    assert second_session.to_dict() == session.to_dict()
+    assert _authority_snapshot(diagnostics_root, evidence.root) == snapshot_after_first_load

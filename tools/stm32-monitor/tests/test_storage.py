@@ -147,6 +147,136 @@ def test_rejected_existing_database_is_validated_before_any_write(tmp_path: Path
         connection.close()
 
 
+def test_journal_only_delete_is_rejected_after_valid_preflight_without_authority_mutation(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    database = _seed_database(paths)
+    setup_connection = sqlite3.connect(database)
+    try:
+        assert setup_connection.execute("PRAGMA journal_mode = DELETE").fetchone()[0].lower() == "delete"
+    finally:
+        setup_connection.close()
+
+    def authority_snapshot() -> dict[str, object]:
+        metadata = os.lstat(database)
+        observer = sqlite3.connect(f"file:{database.as_posix()}?mode=ro", uri=True)
+        try:
+            return {
+                "main": (
+                    database.read_bytes(),
+                    metadata.st_dev,
+                    metadata.st_ino,
+                    metadata.st_size,
+                    metadata.st_nlink,
+                ),
+                "schema": tuple(
+                    tuple(row)
+                    for row in observer.execute(
+                        "SELECT type, name, tbl_name, sql FROM sqlite_master "
+                        "WHERE sql IS NOT NULL ORDER BY type, name"
+                    ).fetchall()
+                ),
+                "application_id": observer.execute(
+                    "PRAGMA application_id"
+                ).fetchone()[0],
+                "user_version": observer.execute(
+                    "PRAGMA user_version"
+                ).fetchone()[0],
+                "journal_mode": observer.execute(
+                    "PRAGMA journal_mode"
+                ).fetchone()[0].lower(),
+                "metadata": tuple(
+                    tuple(row)
+                    for row in observer.execute(
+                        "SELECT singleton, workspace_id, schema_version "
+                        "FROM monitor_metadata ORDER BY singleton"
+                    ).fetchall()
+                ),
+                "accounting": tuple(
+                    tuple(row)
+                    for row in observer.execute(
+                        "SELECT singleton, logical_bytes "
+                        "FROM monitor_history_accounting ORDER BY singleton"
+                    ).fetchall()
+                ),
+                "groups": tuple(
+                    tuple(row)
+                    for row in observer.execute(
+                        "SELECT group_id, name, name_key, description, interval_ms, "
+                        "revision, created_at_utc, updated_at_utc FROM watch_groups "
+                        "ORDER BY group_id"
+                    ).fetchall()
+                ),
+                "items": tuple(
+                    tuple(row)
+                    for row in observer.execute(
+                        "SELECT group_id, ordinal, kind, selector FROM group_items "
+                        "ORDER BY group_id, ordinal"
+                    ).fetchall()
+                ),
+            }
+        finally:
+            observer.close()
+
+    before_authority = authority_snapshot()
+    before_files = _inventory(paths.monitor_root)
+    before_monitor_entries = tuple(sorted(path.name for path in paths.monitor_root.iterdir()))
+    before_project_entries = tuple(sorted(path.name for path in paths.project_root.iterdir()))
+    managed_sidecars = {"monitor.sqlite3-wal", "monitor.sqlite3-shm"}
+
+    store = GroupStore(paths)
+    try:
+        rejected = _create(store, "Rejected journal")
+    finally:
+        store.close()
+
+    assert not rejected.ok
+    assert rejected.operation == "groups.create"
+    assert rejected.code == "MONITOR_STORAGE_INVALID"
+    assert rejected.message == "monitor storage journal mode is invalid"
+    assert rejected.data is None
+
+    reopened = GroupStore(paths)
+    try:
+        listed = reopened.list_groups()
+    finally:
+        reopened.close()
+
+    assert listed.ok
+    assert listed.data is not None
+    expected_groups = tuple(
+        (row[0], row[1], row[3], row[4], row[5])
+        for row in before_authority["groups"]
+    )
+    assert tuple(
+        (str(group.group_id), group.name, group.description, group.interval_ms, group.revision)
+        for group in listed.data
+    ) == expected_groups
+
+    after_authority = authority_snapshot()
+    after_files = _inventory(paths.monitor_root)
+    after_monitor_entries = tuple(sorted(path.name for path in paths.monitor_root.iterdir()))
+    after_project_entries = tuple(sorted(path.name for path in paths.project_root.iterdir()))
+    assert after_authority == before_authority
+    assert {
+        name for name in before_monitor_entries if name not in managed_sidecars
+    } == {
+        name for name in after_monitor_entries if name not in managed_sidecars
+    }
+    assert after_project_entries == before_project_entries
+    assert {
+        name: value
+        for name, value in before_files.items()
+        if name not in managed_sidecars
+    } == {
+        name: value
+        for name, value in after_files.items()
+        if name not in managed_sidecars
+    }
+    assert set(after_files).difference(before_files) <= managed_sidecars
+
+
 def test_main_database_hardlink_is_rejected_without_touching_external_sentinel(tmp_path: Path) -> None:
     paths = _paths(tmp_path)
     database = _seed_database(paths)

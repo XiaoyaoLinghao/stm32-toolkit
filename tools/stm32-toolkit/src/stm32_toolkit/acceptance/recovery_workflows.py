@@ -33,6 +33,7 @@ from stm32_toolkit.diagnostic_workflows import (
 )
 from stm32_toolkit.diagnostics import (
     DiagnosticSession,
+    DiagnosticStoreBusyError,
     DiagnosticValidationError,
     SourceChangeDeclaration,
 )
@@ -46,7 +47,7 @@ from stm32_toolkit.evidence import (
     get_root,
 )
 from stm32_toolkit.evidence.gc import RootRecord
-from stm32_toolkit.evidence.store import EvidenceStore
+from stm32_toolkit.evidence.store import EvidenceStore, MAX_EVIDENCE_READ_BYTES
 from stm32_toolkit.paths import WorkspacePaths, require_safe_session_id
 from stm32_toolkit.probe.flash import load_fresh_firmware_facts
 from stm32_toolkit.project_model import ProjectManifestError, load_project_model
@@ -59,27 +60,54 @@ from .recovery import (
     ATTEMPT_SCHEMA,
     AcceptanceAttempt,
     AcceptanceRecoveryValidationError,
+    CUBEMX_PHYSICAL_ATTEMPT_SCHEMA,
+    CUBEMX_PHYSICAL_SCENARIO_ID,
     PHYSICAL_ATTEMPT_SCHEMA,
-    PHYSICAL_RECOVERY_POLICY_DIGEST,
-    PHYSICAL_SCENARIO_DIGEST,
     PHYSICAL_SCENARIO_ID,
     PHYSICAL_SCENARIO_VERSION,
     PHYSICAL_TRANSPORT,
     PHYSICAL_STAGE_OUTPUT_KEYS,
     PHYSICAL_STAGES,
     PhysicalAcceptanceAttempt,
+    PhysicalAcceptanceProfile,
     SourceChangeIntent,
     RECOVERY_POLICY_DIGEST,
     STAGE_OUTPUT_KEYS,
     acceptance_recovery_policy,
-    physical_acceptance_recovery_policy,
+    physical_acceptance_profile_for_scenario,
+    physical_acceptance_profile_for_schema,
+    physical_acceptance_recovery_policy_for_schema,
 )
 from .continuation import (
-    CONTINUATION_ATTEMPT_SCHEMA, CONTINUATION_SCHEMA, CONTINUATION_ROOT_TYPE,
+    CONTINUATION_ATTEMPT_SCHEMA, CONTINUATION_REQUEST_SCHEMA, CONTINUATION_ROOT_TYPE,
     CONTINUATION_SCENARIO_DIGEST, CONTINUATION_POLICY_DIGEST, CONTINUATION_WINDOW_SECONDS,
     PhysicalContinuationAttempt, ContinuationRequest, ContinuationValidationError, ContinuationIdentityError,
     authenticate_continuation, prepare_continuation, proof_parents, continuation_policy_document,
 )
+from .finalization import (
+    FINALIZATION_ATTEMPT_SCHEMA,
+    FINALIZATION_EXECUTION_SOURCE,
+    FINALIZATION_OPERATION,
+    FINALIZATION_POLICY_DIGEST,
+    FINALIZATION_PROJECT_ORIGIN,
+    FINALIZATION_REQUEST_SCHEMA,
+    FINALIZATION_ROOT_TYPE,
+    FINALIZATION_SCHEMA,
+    FINALIZATION_SCENARIO_DIGEST,
+    FINALIZATION_SCENARIO_ID,
+    FINALIZATION_SCENARIO_VERSION,
+    FINALIZATION_STAGES,
+    FINALIZATION_TRANSPORT,
+    FINALIZATION_WINDOW_SECONDS,
+    AuthenticatedFinalization,
+    FinalizationIdentityError,
+    FinalizationRequest,
+    FinalizationValidationError,
+    PhysicalFinalizationAttempt,
+    PhysicalFinalizationProof,
+    finalization_policy_document,
+)
+from .model import canonical_diagnostic_reference
 from .workflows import AcceptanceWorkflowContext, show_acceptance_scenario
 
 
@@ -96,6 +124,18 @@ _ROOT_METADATA_FIELDS = frozenset(
     {"attempt_sha256", "revision", "workspace_id", "logical_project_id"}
 )
 _ENVELOPE_METADATA_FIELDS = frozenset({"attempt", "attempt_sha256"})
+_PHYSICAL_ATTEMPT_SCHEMAS = frozenset(
+    {PHYSICAL_ATTEMPT_SCHEMA, CUBEMX_PHYSICAL_ATTEMPT_SCHEMA}
+)
+_FINALIZATION_ATTEMPT_SCHEMAS = frozenset({FINALIZATION_ATTEMPT_SCHEMA})
+_KNOWN_ATTEMPT_SCHEMAS = frozenset(
+    {
+        ATTEMPT_SCHEMA,
+        CONTINUATION_ATTEMPT_SCHEMA,
+        *_PHYSICAL_ATTEMPT_SCHEMAS,
+        *_FINALIZATION_ATTEMPT_SCHEMAS,
+    }
+)
 
 _MESSAGES = {
     "ACCEPTANCE_ATTEMPT_INPUT_INVALID": "Acceptance attempt input is invalid.",
@@ -109,6 +149,7 @@ _MESSAGES = {
     "ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH": "Acceptance attempt identity does not match.",
     "ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED": "Acceptance attempt evidence failed integrity validation.",
     "ACCEPTANCE_ATTEMPT_CONFLICT": "Acceptance attempt content conflicts with an immutable revision.",
+    "ACCEPTANCE_ATTEMPT_BUSY": "Acceptance attempt storage is busy.",
 }
 
 
@@ -153,10 +194,14 @@ def _failure(operation: str, code: str) -> OperationResult[None]:
 def _result(operation: str, action: Callable[[], OperationResult[dict[str, object]]]) -> OperationResult[dict[str, object]]:
     try:
         return action()
+    except DiagnosticStoreBusyError:
+        return _failure(operation, "ACCEPTANCE_ATTEMPT_BUSY")
     except _RecoveryFailure as error:
         return _failure(operation, error.code)
     except AcceptanceRecoveryValidationError as error:
         return _failure(operation, error.code)
+    except FinalizationIdentityError:
+        return _failure(operation, "ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH")
     except AcceptanceValidationError:
         return _failure(operation, "ACCEPTANCE_ATTEMPT_INPUT_INVALID")
     except ContinuationIdentityError:
@@ -185,6 +230,13 @@ def _canonical_uuid(field: str, value: object) -> str:
     except (TypeError, ValueError) as error:
         raise AcceptanceRecoveryValidationError(f"{field} must be a canonical lowercase UUID") from error
     return value
+
+
+def _canonical_diagnostic_reference(field: str, value: object) -> str:
+    try:
+        return canonical_diagnostic_reference(field, value)
+    except AcceptanceValidationError as error:
+        raise AcceptanceRecoveryValidationError(str(error)) from error
 
 
 def _canonical_hash(field: str, value: object) -> str:
@@ -219,10 +271,13 @@ def _deadline(updated: str, stage: str) -> str:
     return (_timestamp(updated) + timedelta(seconds=seconds)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
-def _physical_deadline(updated: str, stage: str) -> str:
-    from .recovery import physical_acceptance_recovery_policy
-
-    seconds = physical_acceptance_recovery_policy().stage_timeout_seconds[stage]
+def _physical_deadline(
+    updated: str,
+    stage: str,
+    *,
+    schema: object = PHYSICAL_ATTEMPT_SCHEMA,
+) -> str:
+    seconds = physical_acceptance_recovery_policy_for_schema(schema).stage_timeout_seconds[stage]
     return (_timestamp(updated) + timedelta(seconds=seconds)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
@@ -722,7 +777,11 @@ def _stage_reference_shape(
     acceptance_record_id: object,
 ) -> tuple[str | None, str | None, str | None]:
     test_value = _canonical_uuid("testRunId", test_run_id) if test_run_id is not None else None
-    diagnostic_value = _canonical_uuid("diagnosticSessionId", diagnostic_session_id) if diagnostic_session_id is not None else None
+    diagnostic_value = (
+        _canonical_diagnostic_reference("diagnosticSessionId", diagnostic_session_id)
+        if diagnostic_session_id is not None
+        else None
+    )
     acceptance_value = _canonical_uuid("acceptanceRecordId", acceptance_record_id) if acceptance_record_id is not None else None
     if stage == "target-failure-replayed":
         if test_value is None or diagnostic_value is not None or acceptance_value is not None:
@@ -787,7 +846,11 @@ def _check_deadline(attempt: AcceptanceAttempt, now: str) -> None:
 
 
 def _public_data(result: object) -> Mapping[str, object]:
-    if not isinstance(result, OperationResult) or result.ok is not True:
+    if not isinstance(result, OperationResult):
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_OUTPUT_INVALID")
+    if result.ok is not True:
+        if result.operation == "diagnostic.show" and result.code == "DIAGNOSTIC_STORE_BUSY":
+            raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_BUSY")
         raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_OUTPUT_INVALID")
     value = result.to_dict().get("data")
     if not isinstance(value, Mapping):
@@ -864,7 +927,9 @@ def _build_transition(
                 raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED")
     elif stage == "diagnosis-completed":
         assert diagnostic_session_id is not None
-        storage_id = diagnostic_session_id.replace("-", "")
+        storage_id = _canonical_diagnostic_reference(
+            "diagnosticSessionId", diagnostic_session_id
+        ).replace("-", "")
         data = _public_data(_diagnostic_show(DiagnosticWorkflowContext(context.project_root, context.data_root, context.session_id), diagnostic_session_id=storage_id))
         session_data = data.get("session")
         if not isinstance(session_data, Mapping):
@@ -894,7 +959,9 @@ def _build_transition(
         if authorization is None:
             raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_AUTHORIZATION_REQUIRED")
         session_id = cast(str, attempt.stage_outputs.get("diagnosticSessionId"))
-        storage_id = session_id.replace("-", "")
+        storage_id = _canonical_diagnostic_reference(
+            "diagnosticSessionId", session_id
+        ).replace("-", "")
         data = _public_data(_diagnostic_show(DiagnosticWorkflowContext(context.project_root, context.data_root, context.session_id), diagnostic_session_id=storage_id))
         session_data = data.get("session")
         if not isinstance(session_data, Mapping):
@@ -1002,7 +1069,8 @@ def _validate_diagnostic_session(
     if target is None:
         target = getattr(getattr(model, "target", None), "device", None)
     if (
-        session.diagnostic_session_id != expected_session_id.replace("-", "")
+        session.diagnostic_session_id
+        != _canonical_diagnostic_reference("diagnosticSessionId", expected_session_id).replace("-", "")
         or session.failed_test_run_id != attempt.stage_outputs.get("failedBeforeTestRunId")
         or session.failed_evidence_id != attempt.stage_outputs.get("failedBeforeEvidenceId")
         or session.identity.project_id != str(getattr(model, "logical_project_id"))
@@ -1109,11 +1177,41 @@ def begin_acceptance_attempt(
     scenario_version: object,
     continuation: object = None,
 ) -> OperationResult[dict[str, object]]:
+    if not isinstance(scenario_id, str) or not isinstance(scenario_version, str):
+        return _failure("acceptance.attempt.begin", "ACCEPTANCE_ATTEMPT_INPUT_INVALID")
     if continuation is not None:
+        if scenario_id == FINALIZATION_SCENARIO_ID and scenario_version == FINALIZATION_SCENARIO_VERSION:
+            if not isinstance(continuation, Mapping):
+                return _failure("acceptance.attempt.begin", "ACCEPTANCE_ATTEMPT_INPUT_INVALID")
+            request_schema = continuation.get("schema")
+            # The existing CubeMX /4 adapter historically classified an empty
+            # continuation object as a stage error.  Preserve that exact
+            # legacy edge while every shaped/unknown B request is typed input.
+            if request_schema is None and not continuation:
+                return _failure("acceptance.attempt.begin", "ACCEPTANCE_ATTEMPT_STAGE_INVALID")
+            if request_schema != FINALIZATION_REQUEST_SCHEMA:
+                return _failure("acceptance.attempt.begin", "ACCEPTANCE_ATTEMPT_INPUT_INVALID")
+            return _result("acceptance.attempt.begin", lambda: _validate_finalization_result(
+                context,
+                _begin_finalization_attempt(
+                    context,
+                    attempt_id=attempt_id,
+                    scenario_id=scenario_id,
+                    scenario_version=scenario_version,
+                    continuation=continuation,
+                ),
+            ))
+        if scenario_id != PHYSICAL_SCENARIO_ID or scenario_version != PHYSICAL_SCENARIO_VERSION:
+            return _failure("acceptance.attempt.begin", "ACCEPTANCE_ATTEMPT_STAGE_INVALID")
+        if (
+            not isinstance(continuation, Mapping)
+            or continuation.get("schema") != CONTINUATION_REQUEST_SCHEMA
+        ):
+            return _failure("acceptance.attempt.begin", "ACCEPTANCE_ATTEMPT_INPUT_INVALID")
         return _result("acceptance.attempt.begin", lambda: _validate_continuation_result(context, _begin_continuation_attempt(
             context, attempt_id=attempt_id, scenario_id=scenario_id,
             scenario_version=scenario_version, continuation=continuation)))
-    if scenario_id == PHYSICAL_SCENARIO_ID:
+    if scenario_id in (PHYSICAL_SCENARIO_ID, CUBEMX_PHYSICAL_SCENARIO_ID):
         return _result(
             "acceptance.attempt.begin",
             lambda: _begin_physical_attempt(
@@ -1252,15 +1350,37 @@ def checkpoint_acceptance_attempt(
     try:
         canonical_attempt_id = _canonical_uuid("attemptId", attempt_id)
         schema = _attempt_schema_for_context(context, canonical_attempt_id)
+        if schema == FINALIZATION_ATTEMPT_SCHEMA:
+            return _result("acceptance.attempt.checkpoint", lambda: _validate_finalization_result(
+                context,
+                _checkpoint_finalization_attempt(
+                    context,
+                    attempt_id=attempt_id,
+                    expected_revision=expected_revision,
+                    stage=stage,
+                    test_run_id=test_run_id,
+                    diagnostic_session_id=diagnostic_session_id,
+                    acceptance_record_id=acceptance_record_id,
+                    source_change_intent=source_change_intent,
+                    fix_verification_id=fix_verification_id,
+                ),
+            ))
         if schema == CONTINUATION_ATTEMPT_SCHEMA:
             return _result("acceptance.attempt.checkpoint", lambda: _validate_continuation_result(context, _checkpoint_continuation_attempt(
                 context, attempt_id=attempt_id, expected_revision=expected_revision, stage=stage,
                 test_run_id=test_run_id, diagnostic_session_id=diagnostic_session_id,
                 acceptance_record_id=acceptance_record_id, source_change_intent=source_change_intent,
                 fix_verification_id=fix_verification_id)))
+        if schema is not None and schema not in _KNOWN_ATTEMPT_SCHEMAS:
+            return _failure(
+                "acceptance.attempt.checkpoint",
+                "ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED",
+            )
         if schema is not None:
-            physical = schema != ATTEMPT_SCHEMA
-    except (AcceptanceRecoveryValidationError, _RecoveryFailure):
+            physical = schema in _PHYSICAL_ATTEMPT_SCHEMAS
+    except _RecoveryFailure as error:
+        return _failure("acceptance.attempt.checkpoint", error.code)
+    except AcceptanceRecoveryValidationError:
         physical = physical_hint
     if physical:
         return _result(
@@ -1342,7 +1462,9 @@ def _authorize_source_change(
     diagnostic_data = _public_data(
         _diagnostic_show(
             DiagnosticWorkflowContext(context.project_root, context.data_root, context.session_id),
-            diagnostic_session_id=diagnostic_id.replace("-", ""),
+            diagnostic_session_id=_canonical_diagnostic_reference(
+                "diagnosticSessionId", diagnostic_id
+            ).replace("-", ""),
         )
     )
     session_data = diagnostic_data.get("session")
@@ -1593,7 +1715,13 @@ def _validate_physical_chain_semantics(
         )
         expected_stage = PHYSICAL_STAGES[min(expected_stage_index, len(PHYSICAL_STAGES) - 1)]
         if attempt.deadline_at_utc != (
-            None if revision == 7 else _physical_deadline(attempt.updated_at_utc, expected_stage)
+            None
+            if revision == 7
+            else _physical_deadline(
+                attempt.updated_at_utc,
+                expected_stage,
+                schema=attempt.schema,
+            )
         ):
             raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED")
         if revision == 0 and attempt.opened_at_utc != attempt.updated_at_utc:
@@ -1802,22 +1930,25 @@ def _physical_base_snapshot(
     intent: SourceChangeIntent | None = None,
     status: str = "ACTIVE",
     deadline_at: str | None = None,
+    profile: PhysicalAcceptanceProfile | None = None,
 ) -> PhysicalAcceptanceAttempt:
+    if profile is None:
+        profile = physical_acceptance_profile_for_schema(PHYSICAL_ATTEMPT_SCHEMA)
     if outputs is None:
         outputs = {key: None for key in PHYSICAL_STAGE_OUTPUT_KEYS}
     payload: dict[str, object] = {
-        "schema": PHYSICAL_ATTEMPT_SCHEMA,
+        "schema": profile.attempt_schema,
         "attemptId": attempt_id,
         "revision": revision,
         "checkpointId": "0" * 64,
         "previousCheckpointId": previous_checkpoint_id,
-        "scenarioId": PHYSICAL_SCENARIO_ID,
-        "scenarioVersion": PHYSICAL_SCENARIO_VERSION,
-        "scenarioDigest": PHYSICAL_SCENARIO_DIGEST,
-        "recoveryPolicyDigest": PHYSICAL_RECOVERY_POLICY_DIGEST,
+        "scenarioId": profile.scenario_id,
+        "scenarioVersion": profile.scenario_version,
+        "scenarioDigest": profile.scenario_digest,
+        "recoveryPolicyDigest": profile.recovery_policy_digest,
         "workspaceId": workspace_id,
         "logicalProjectId": logical_project_id,
-        "projectOrigin": "keil",
+        "projectOrigin": profile.project_origin,
         "executionSource": "physical",
         "physicalTransportEvidence": revision >= 3,
         "status": status,
@@ -2382,7 +2513,7 @@ def _physical_build_transition(
 
 def _physical_action_digest(attempt: PhysicalAcceptanceAttempt) -> str:
     payload = {
-        "schema": PHYSICAL_ATTEMPT_SCHEMA,
+        "schema": attempt.schema,
         "action": "source-change",
         "attemptId": attempt.attempt_id,
         "revision": attempt.revision,
@@ -2411,10 +2542,14 @@ def _begin_physical_attempt(
     scenario_version: object,
 ) -> OperationResult[dict[str, object]]:
     attempt_id = _canonical_uuid("attemptId", attempt_id)
-    if scenario_id != PHYSICAL_SCENARIO_ID or scenario_version != PHYSICAL_SCENARIO_VERSION:
+    try:
+        profile = physical_acceptance_profile_for_scenario(scenario_id, scenario_version)
+    except AcceptanceRecoveryValidationError as error:
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_INPUT_INVALID") from error
+    if scenario_id != profile.scenario_id or scenario_version != profile.scenario_version:
         raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_INPUT_INVALID")
     model, workspace, evidence = _load_project_and_workspace(context)
-    if _project_origin(model) != "keil":
+    if _project_origin(model) != profile.project_origin:
         raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH")
     project_id = str(getattr(model, "logical_project_id"))
     root0 = _typed_root_path(evidence, _root_id(attempt_id, 0))
@@ -2434,7 +2569,11 @@ def _begin_physical_attempt(
             chain, model=model, workspace=workspace, session_id=context.session_id
         )
         latest = chain[-1][0]
-        if latest.scenario_id != PHYSICAL_SCENARIO_ID:
+        if (
+            latest.schema != profile.attempt_schema
+            or latest.scenario_id != profile.scenario_id
+            or latest.scenario_version != profile.scenario_version
+        ):
             raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_CONFLICT")
         return OperationResult.success("acceptance.attempt.begin", {"attempt": latest.to_dict()})
     opened = _now(context)
@@ -2444,7 +2583,10 @@ def _begin_physical_attempt(
         updated_at=opened,
         workspace_id=workspace.workspace_id,
         logical_project_id=project_id,
-        deadline_at=_physical_deadline(opened, PHYSICAL_STAGES[0]),
+        deadline_at=_physical_deadline(
+            opened, PHYSICAL_STAGES[0], schema=profile.attempt_schema
+        ),
+        profile=profile,
     )
     published = _publish_physical_snapshot(
         evidence, context, model, workspace, candidate, expected_revision=0, chain=[]
@@ -2467,7 +2609,10 @@ def _physical_attempt_for_context(
         raw = envelope.metadata.get("attempt")
     except (EvidenceValidationError, OSError, FileNotFoundError, ValueError, TypeError) as error:
         raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED") from error
-    if not isinstance(raw, Mapping) or raw.get("schema") != PHYSICAL_ATTEMPT_SCHEMA:
+    if not isinstance(raw, Mapping) or raw.get("schema") not in {
+        PHYSICAL_ATTEMPT_SCHEMA,
+        CUBEMX_PHYSICAL_ATTEMPT_SCHEMA,
+    }:
         if isinstance(raw, Mapping) and raw.get("schema") == ATTEMPT_SCHEMA:
             return None
         raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED")
@@ -2502,7 +2647,9 @@ def _attempt_schema_for_context(
     if not isinstance(raw, Mapping):
         raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED")
     schema = raw.get("schema")
-    return schema if isinstance(schema, str) else None
+    if not isinstance(schema, str):
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED")
+    return schema
 
 
 def _checkpoint_physical_attempt(
@@ -2590,7 +2737,16 @@ def _checkpoint_physical_attempt(
         authorization=current.source_change_authorization,
         intent=expanded_intent if expanded_intent is not None else current.source_change_intent,
         status="COMPLETED" if revision == 7 else "ACTIVE",
-        deadline_at=None if revision == 7 else _physical_deadline(now, PHYSICAL_STAGES[revision if revision <= 4 else revision - 1]),
+        deadline_at=(
+            None
+            if revision == 7
+            else _physical_deadline(
+                now,
+                PHYSICAL_STAGES[revision if revision <= 4 else revision - 1],
+                schema=current.schema,
+            )
+        ),
+        profile=physical_acceptance_profile_for_schema(current.schema),
     )
     published = _publish_physical_snapshot(
         evidence,
@@ -2734,7 +2890,10 @@ def _authorize_physical_source_change(
                 authorization=authorization,
                 intent=current.source_change_intent,
                 status="ACTIVE",
-                deadline_at=_physical_deadline(now, "firmware-built-after"),
+                deadline_at=_physical_deadline(
+                    now, "firmware-built-after", schema=current.schema
+                ),
+                profile=physical_acceptance_profile_for_schema(current.schema),
             )
             identity = _current_identity(
                 context,
@@ -2794,7 +2953,9 @@ def _show_physical_attempt(
                 "authorizationRequired": attempt.revision == 4,
                 "actionDigest": _physical_action_digest(attempt) if attempt.revision == 4 else None,
                 "timedOut": attempt.deadline_at_utc is not None and _timestamp(now) > _timestamp(attempt.deadline_at_utc),
-                "recoveryPolicy": physical_acceptance_recovery_policy().to_dict(),
+                "recoveryPolicy": physical_acceptance_recovery_policy_for_schema(
+                    attempt.schema
+                ).to_dict(),
             }
         )
     return OperationResult.success("acceptance.attempt.resume" if resume else "acceptance.attempt.show", data)
@@ -2813,10 +2974,22 @@ def authorize_acceptance_source_change(
     try:
         canonical_attempt_id = _canonical_uuid("attemptId", attempt_id)
         schema = _attempt_schema_for_context(context, canonical_attempt_id)
+        if schema == FINALIZATION_ATTEMPT_SCHEMA:
+            return _failure(
+                "acceptance.attempt.authorize-source-change",
+                "ACCEPTANCE_ATTEMPT_STAGE_INVALID",
+            )
         if schema == CONTINUATION_ATTEMPT_SCHEMA:
             return _failure("acceptance.attempt.authorize-source-change", "ACCEPTANCE_ATTEMPT_STAGE_INVALID")
-        physical = schema == PHYSICAL_ATTEMPT_SCHEMA
-    except (AcceptanceRecoveryValidationError, _RecoveryFailure):
+        if schema is not None and schema not in _KNOWN_ATTEMPT_SCHEMAS:
+            return _failure(
+                "acceptance.attempt.authorize-source-change",
+                "ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED",
+            )
+        physical = schema in _PHYSICAL_ATTEMPT_SCHEMAS
+    except _RecoveryFailure as error:
+        return _failure("acceptance.attempt.authorize-source-change", error.code)
+    except AcceptanceRecoveryValidationError:
         physical = False
     if physical:
         return _result(
@@ -2884,11 +3057,22 @@ def show_acceptance_attempt(
     try:
         canonical_attempt_id = _canonical_uuid("attemptId", attempt_id)
         schema = _attempt_schema_for_context(context, canonical_attempt_id)
+        if schema == FINALIZATION_ATTEMPT_SCHEMA:
+            return _result("acceptance.attempt.show", lambda: _show_finalization_attempt(
+                context, attempt_id=canonical_attempt_id, resume=False
+            ))
         if schema == CONTINUATION_ATTEMPT_SCHEMA:
             return _result("acceptance.attempt.show", lambda: _show_continuation_attempt(
                 context, attempt_id=canonical_attempt_id, resume=False))
-        physical = schema == PHYSICAL_ATTEMPT_SCHEMA
-    except (AcceptanceRecoveryValidationError, _RecoveryFailure):
+        if schema is not None and schema not in _KNOWN_ATTEMPT_SCHEMAS:
+            return _failure(
+                "acceptance.attempt.show",
+                "ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED",
+            )
+        physical = schema in _PHYSICAL_ATTEMPT_SCHEMAS
+    except _RecoveryFailure as error:
+        return _failure("acceptance.attempt.show", error.code)
+    except AcceptanceRecoveryValidationError:
         physical = False
     if physical:
         return _result(
@@ -2910,11 +3094,22 @@ def resume_acceptance_attempt(
     try:
         canonical_attempt_id = _canonical_uuid("attemptId", attempt_id)
         schema = _attempt_schema_for_context(context, canonical_attempt_id)
+        if schema == FINALIZATION_ATTEMPT_SCHEMA:
+            return _result("acceptance.attempt.resume", lambda: _show_finalization_attempt(
+                context, attempt_id=canonical_attempt_id, resume=True
+            ))
         if schema == CONTINUATION_ATTEMPT_SCHEMA:
             return _result("acceptance.attempt.resume", lambda: _show_continuation_attempt(
                 context, attempt_id=canonical_attempt_id, resume=True))
-        physical = schema == PHYSICAL_ATTEMPT_SCHEMA
-    except (AcceptanceRecoveryValidationError, _RecoveryFailure):
+        if schema is not None and schema not in _KNOWN_ATTEMPT_SCHEMAS:
+            return _failure(
+                "acceptance.attempt.resume",
+                "ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED",
+            )
+        physical = schema in _PHYSICAL_ATTEMPT_SCHEMAS
+    except _RecoveryFailure as error:
+        return _failure("acceptance.attempt.resume", error.code)
+    except AcceptanceRecoveryValidationError:
         physical = False
     if physical:
         return _result(
@@ -3198,4 +3393,1386 @@ def _validate_continuation_result(context, result):
             state = _diagnostic_workflows._WorkflowState(model, workspace, evidence, diagnostic_store,
                 _diagnostic_workflows._repository_factory(evidence))
             _validate_continuation_completion(state, session, association, attempt["fixVerificationId"])
+    return result
+
+
+# ---------------------------------------------------------------------------
+# VS10-B completed-evidence finalization adapter
+# ---------------------------------------------------------------------------
+
+
+def _finalization_root_metadata(attempt: PhysicalFinalizationAttempt) -> dict[str, object]:
+    return {
+        "attempt_sha256": attempt.checkpoint_id,
+        "revision": attempt.revision,
+        "workspace_id": attempt.workspace_id,
+        "logical_project_id": attempt.logical_project_id,
+    }
+
+
+def _finalization_envelope_metadata(attempt: PhysicalFinalizationAttempt) -> dict[str, object]:
+    return {"attempt": attempt.to_dict(), "attempt_sha256": attempt.checkpoint_id}
+
+
+def _decode_finalization_attempt_envelope(
+    evidence: EvidenceStore,
+    *,
+    root: RootRecord,
+    envelope: EvidenceEnvelope,
+    expected_attempt_id: str,
+    expected_revision: int,
+    workspace_id: str,
+    logical_project_id: str,
+) -> PhysicalFinalizationAttempt:
+    if (
+        root.root_type != _ATTEMPT_ROOT_TYPE
+        or root.root_id != _root_id(expected_attempt_id, expected_revision)
+        or set(root.metadata) != _ROOT_METADATA_FIELDS
+        or envelope.operation != _ATTEMPT_OPERATION
+        or set(envelope.metadata) != _ENVELOPE_METADATA_FIELDS
+        or envelope.identity.workspace_id != workspace_id
+        or envelope.identity.project_id != logical_project_id
+        or root.metadata.get("workspace_id") != workspace_id
+        or root.metadata.get("logical_project_id") != logical_project_id
+        or root.metadata.get("revision") != expected_revision
+        or envelope.artifacts != ()
+        or root.manifest_id != str(envelope.evidence_id)
+    ):
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED")
+    try:
+        raw = envelope.metadata["attempt"]
+        attempt = PhysicalFinalizationAttempt.from_value(
+            json.loads(canonical_json_bytes(raw).decode("utf-8"))
+        )
+    except (FinalizationValidationError, TypeError, ValueError, UnicodeError, json.JSONDecodeError) as error:
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED") from error
+    if (
+        attempt.attempt_id != expected_attempt_id
+        or attempt.revision != expected_revision
+        or attempt.workspace_id != workspace_id
+        or attempt.logical_project_id != logical_project_id
+        or canonical_json_bytes(envelope.metadata)
+        != canonical_json_bytes(_finalization_envelope_metadata(attempt))
+        or root.metadata != _finalization_root_metadata(attempt)
+        or envelope.produced_at_utc != attempt.updated_at_utc
+        or _hash_physical_finalization_payload(attempt) != attempt.checkpoint_id
+    ):
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED")
+    return attempt
+
+
+def _read_finalization_revision(
+    evidence: EvidenceStore,
+    *,
+    attempt_id: str,
+    revision: int,
+    workspace_id: str,
+    logical_project_id: str,
+) -> tuple[PhysicalFinalizationAttempt, EvidenceEnvelope] | None:
+    path = _typed_root_path(evidence, _root_id(attempt_id, revision))
+    if not path.exists():
+        return None
+    try:
+        root = get_root(evidence, _ATTEMPT_ROOT_TYPE, _root_id(attempt_id, revision))
+        envelope = evidence.get_envelope(root.manifest_id)
+    except (EvidenceValidationError, OSError, FileNotFoundError, ValueError) as error:
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED") from error
+    return (
+        _decode_finalization_attempt_envelope(
+            evidence,
+            root=root,
+            envelope=envelope,
+            expected_attempt_id=attempt_id,
+            expected_revision=revision,
+            workspace_id=workspace_id,
+            logical_project_id=logical_project_id,
+        ),
+        envelope,
+    )
+
+
+def _finalization_has_published_extra_revision(
+    evidence: EvidenceStore,
+    attempt_id: str,
+) -> bool:
+    """Detect any immutable /5 root beyond the closed 0 -> 1 sequence."""
+    # Keep the explicit legacy guard for the first invalid slot.  This also
+    # rejects a corrupt rev2 payload before the broader directory audit can
+    # mistake it for an unrelated root.
+    if _typed_root_path(evidence, _root_id(attempt_id, 2)).exists():
+        return True
+    try:
+        directory = evidence._existing_managed_path("roots", _ATTEMPT_ROOT_TYPE)
+        paths = tuple(directory.iterdir())
+    except FileNotFoundError:
+        return False
+    except (EvidenceValidationError, OSError) as error:
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED") from error
+    prefix = f"{attempt_id}."
+    marker = attempt_id.encode("ascii")
+    for path in paths:
+        if path.suffix != ".json":
+            continue
+        try:
+            payload = evidence._read_file_bytes(path, maximum_bytes=MAX_EVIDENCE_READ_BYTES)
+        except (EvidenceValidationError, OSError) as error:
+            raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED") from error
+        if marker not in payload:
+            continue
+        try:
+            record = RootRecord.from_value(json.loads(payload.decode("utf-8")))
+        except (EvidenceValidationError, UnicodeError, ValueError, json.JSONDecodeError) as error:
+            raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED") from error
+        if record.root_type != _ATTEMPT_ROOT_TYPE or not record.root_id.startswith(prefix):
+            continue
+        suffix = record.root_id[len(prefix):]
+        if not suffix.isdigit():
+            raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED")
+        if int(suffix) >= 2:
+            return True
+    return False
+
+
+def _finalization_attempt_matches_proof(
+    attempt: PhysicalFinalizationAttempt,
+    envelope: EvidenceEnvelope,
+    proof: AuthenticatedFinalization,
+) -> bool:
+    expected = proof.proof
+    return (
+        attempt.continuation_evidence_id == proof.continuation_evidence_id
+        and attempt.fixed_after_test_run_id == expected.fixed_after_test_run_id
+        and attempt.fixed_after_evidence_id == expected.fixed_after_evidence_id
+        and envelope.identity == proof.before.manifest.identity
+        and (
+            (attempt.revision == 0 and attempt.fix_verification_id is None)
+            or (attempt.revision == 1 and attempt.fix_verification_id == expected.fix_verification_id)
+        )
+    )
+
+
+def _finalization_chain_matches_proof(
+    chain: list[tuple[PhysicalFinalizationAttempt, EvidenceEnvelope]],
+    proof: AuthenticatedFinalization,
+) -> bool:
+    return all(_finalization_attempt_matches_proof(attempt, envelope, proof)
+               for attempt, envelope in chain)
+
+
+def _load_finalization_chain(
+    evidence: EvidenceStore,
+    *,
+    attempt_id: str,
+    workspace_id: str,
+    logical_project_id: str,
+    proof: AuthenticatedFinalization | None = None,
+    expected_session_id: str | None = None,
+) -> list[tuple[PhysicalFinalizationAttempt, EvidenceEnvelope]]:
+    chain: list[tuple[PhysicalFinalizationAttempt, EvidenceEnvelope]] = []
+    for revision in (0, 1):
+        item = _read_finalization_revision(
+            evidence,
+            attempt_id=attempt_id,
+            revision=revision,
+            workspace_id=workspace_id,
+            logical_project_id=logical_project_id,
+        )
+        if item is None:
+            break
+        attempt, envelope = item
+        if chain:
+            previous, previous_envelope = chain[-1]
+            expected_parents = (str(previous_envelope.evidence_id), attempt.continuation_evidence_id)
+            if (
+                attempt.previous_checkpoint_id != previous.checkpoint_id
+                or envelope.parents != expected_parents
+            ):
+                raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED")
+            immutable = (
+                "attempt_id", "scenario_id", "scenario_version", "scenario_digest",
+                "recovery_policy_digest", "workspace_id", "logical_project_id", "session_id",
+                "project_origin", "execution_source", "physical_transport_evidence",
+                "continuation_evidence_id", "fixed_after_test_run_id", "fixed_after_evidence_id",
+                "opened_at_utc", "deadline_at_utc",
+            )
+            if any(getattr(attempt, field) != getattr(chain[0][0], field) for field in immutable):
+                raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED")
+            if _timestamp(attempt.updated_at_utc) < _timestamp(previous.updated_at_utc):
+                raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED")
+        elif attempt.previous_checkpoint_id is not None or envelope.parents != (attempt.continuation_evidence_id,):
+            raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED")
+        if expected_session_id is not None and envelope.identity.session_id != expected_session_id:
+            raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH")
+        if proof is not None and not _finalization_attempt_matches_proof(
+            attempt, envelope, proof
+        ):
+            raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH")
+        chain.append(item)
+    if not chain:
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_NOT_FOUND")
+    if _finalization_has_published_extra_revision(evidence, attempt_id):
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED")
+    return chain
+
+
+def _hash_physical_finalization_payload(attempt: PhysicalFinalizationAttempt) -> str:
+    payload = attempt.to_dict()
+    payload.pop("checkpointId")
+    return hashlib.sha256(canonical_json_bytes(payload)).hexdigest()
+
+
+def _read_finalization_proof_record(
+    evidence: EvidenceStore,
+    evidence_id: str,
+) -> tuple[PhysicalFinalizationProof, RootRecord, EvidenceEnvelope]:
+    try:
+        envelope = evidence.get_envelope(evidence_id)
+        if (
+            envelope.operation != FINALIZATION_OPERATION
+            or len(envelope.artifacts) != 1
+            or envelope.artifacts[0].kind != FINALIZATION_ROOT_TYPE
+            or envelope.artifacts[0].media_type != "application/json"
+        ):
+            raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED")
+        artifact = envelope.artifacts[0]
+        payload = evidence.read_artifact(artifact, maximum_bytes=MAX_EVIDENCE_READ_BYTES)
+        if artifact.size_bytes != len(payload) or artifact.sha256 != hashlib.sha256(payload).hexdigest():
+            raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED")
+        proof = PhysicalFinalizationProof.from_value(json.loads(payload.decode("utf-8")))
+        if canonical_json_bytes(proof.to_dict()) != payload:
+            raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED")
+        root = get_root(evidence, FINALIZATION_ROOT_TYPE, proof.continuation_id)
+    except _RecoveryFailure:
+        raise
+    except FileNotFoundError as error:
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED") from error
+    except OSError as error:
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED") from error
+    except (EvidenceValidationError, FinalizationValidationError, json.JSONDecodeError,
+            UnicodeError, TypeError, ValueError, KeyError, IndexError) as error:
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED") from error
+    if (
+        root.root_type != FINALIZATION_ROOT_TYPE
+        or root.root_id != proof.continuation_id
+        or root.manifest_id != str(envelope.evidence_id)
+        or dict(root.metadata) != {"continuation_id": proof.continuation_id}
+        or dict(envelope.metadata) != dict(root.metadata)
+    ):
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED")
+    return proof, root, envelope
+
+
+def _finalization_proof_parents(
+    proof: PhysicalFinalizationProof,
+    declaration: SourceChangeDeclaration,
+) -> tuple[str, ...]:
+    parents = (
+        proof.predecessor_evidence_id,
+        proof.diagnostic_evidence_id,
+        proof.failed_before_evidence_id,
+        proof.fixed_after_evidence_id,
+        declaration.diff_evidence_id,
+    )
+    if len(set(parents)) != 5:
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED")
+    return parents
+
+
+def _finalization_identity_failure(error: BaseException) -> _RecoveryFailure:
+    code = getattr(error, "code", None)
+    if code in {"INCOMPATIBLE_IDENTITY", "DIAGNOSTIC_IDENTITY_MISMATCH"}:
+        return _RecoveryFailure("ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH")
+    return _RecoveryFailure("ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED")
+
+
+def _load_finalization_graph_locked(
+    context: AcceptanceRecoveryContext,
+    model: object,
+    workspace: WorkspacePaths,
+    evidence: EvidenceStore,
+    proof: PhysicalFinalizationProof,
+    diagnostic_store: object,
+    *,
+    require_proof_root: bool = True,
+) -> AuthenticatedFinalization:
+    """Authenticate one complete B graph while the Diagnostic lock is held."""
+    try:
+        predecessor_root = get_root(
+            evidence,
+            _ATTEMPT_ROOT_TYPE,
+            _root_id(proof.predecessor_attempt_id, 6),
+        )
+        predecessor_envelope = evidence.get_envelope(predecessor_root.manifest_id)
+    except (EvidenceValidationError, FileNotFoundError, OSError, ValueError, TypeError) as error:
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED") from error
+    chain = _load_physical_chain(
+        evidence,
+        attempt_id=proof.predecessor_attempt_id,
+        workspace_id=workspace.workspace_id,
+        logical_project_id=str(model.logical_project_id),
+    )
+    _validate_physical_chain_semantics(
+        chain,
+        model=model,
+        workspace=workspace,
+        session_id=context.session_id,
+    )
+    if len(chain) != 7:
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED")
+    predecessor, predecessor_envelope = chain[-1]
+    if (
+        predecessor.schema != CUBEMX_PHYSICAL_ATTEMPT_SCHEMA
+        or predecessor.scenario_id != CUBEMX_PHYSICAL_SCENARIO_ID
+        or predecessor.scenario_version != FINALIZATION_SCENARIO_VERSION
+        or predecessor.project_origin != FINALIZATION_PROJECT_ORIGIN
+        or predecessor.execution_source != FINALIZATION_EXECUTION_SOURCE
+        or predecessor.physical_transport_evidence is not True
+        or predecessor.status != "ACTIVE"
+        or predecessor.stage_outputs.get("sourceChangeDeclarationId") is None
+        or predecessor.source_change_authorization is None
+        or predecessor.source_change_intent is None
+        or predecessor.checkpoint_id != proof.predecessor_checkpoint_id
+        or str(predecessor_envelope.evidence_id) != proof.predecessor_evidence_id
+        or predecessor.source_change_intent != proof.source_change_intent
+        or predecessor.stage_outputs.get("diagnosticSessionId") != proof.diagnostic_session_id
+    ):
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH")
+    if predecessor.deadline_at_utc is None or _timestamp(_now(context)) <= _timestamp(predecessor.deadline_at_utc):
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_TIMED_OUT")
+
+    outputs = predecessor.stage_outputs
+    authorization = predecessor.source_change_authorization
+    if not isinstance(authorization, Mapping):
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED")
+    auth_revision = authorization.get("diagnosticRevision")
+    auth_head = authorization.get("diagnosticEventHead")
+    if (
+        outputs.get("diagnosticRevision") != auth_revision
+        or outputs.get("diagnosticEventHead") != auth_head
+        or type(auth_revision) is not int
+        or not isinstance(auth_head, str)
+    ):
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH")
+    authorized = chain[4][0]
+    try:
+        authorized_at = authorization.get("authorizedAtUtc")
+        if (
+            not isinstance(authorized_at, str)
+            or not (_timestamp(authorized.updated_at_utc) <= _timestamp(authorized_at) <= _timestamp(authorized.deadline_at_utc))
+            or authorization.get("actionDigest") != _physical_action_digest(authorized)
+        ):
+            raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH")
+    except _RecoveryFailure:
+        raise
+    except (TypeError, ValueError) as error:
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED") from error
+
+    try:
+        session, events = diagnostic_store._load_chain_locked(proof.diagnostic_session_id)
+    except Exception as error:
+        raise _finalization_identity_failure(error) from error
+    state = _diagnostic_workflows._WorkflowState(
+        model,
+        workspace,
+        evidence,
+        diagnostic_store,
+        _diagnostic_workflows._repository_factory(evidence),
+    )
+    try:
+        _validate_physical_diagnostic_session(
+            session,
+            predecessor,
+            model,
+            workspace,
+            context,
+            expected_session_id=proof.diagnostic_session_id,
+            allow_source_change=True,
+        )
+    except _RecoveryFailure:
+        raise
+    if (
+        session.state != "RESOLVED"
+        or session.revision != proof.diagnostic_revision
+        or session.event_head != proof.diagnostic_event_head
+        or not 1 <= auth_revision < proof.diagnostic_revision <= len(events)
+        or events[auth_revision - 1].digest != auth_head
+    ):
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH")
+    try:
+        diagnostic_root = get_root(
+            evidence,
+            "diagnostic-session",
+            f"{proof.diagnostic_session_id}.{proof.diagnostic_revision:08d}",
+        )
+        diagnostic_checkpoint = evidence.get_envelope(diagnostic_root.manifest_id)
+    except (EvidenceValidationError, FileNotFoundError, OSError, TypeError, ValueError) as error:
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED") from error
+    if (
+        diagnostic_root.manifest_id != proof.diagnostic_evidence_id
+        or diagnostic_checkpoint.evidence_id != proof.diagnostic_evidence_id
+    ):
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH")
+
+    before = _load_physical_test_run(
+        context,
+        model,
+        workspace,
+        proof.failed_before_test_run_id,
+        expected_state="failed",
+        expected_transport=FINALIZATION_TRANSPORT,
+        expected_build_id=cast(str, outputs.get("beforeBuildId")),
+        expected_elf_sha256=cast(str, outputs.get("beforeElfSha256")),
+        expected_input_snapshot_sha256=cast(str, outputs.get("beforeInputSnapshotSha256")),
+    )
+    after = _load_physical_test_run(
+        context,
+        model,
+        workspace,
+        proof.fixed_after_test_run_id,
+        expected_state="passed",
+        expected_transport=FINALIZATION_TRANSPORT,
+        expected_build_id=cast(str, outputs.get("afterBuildId")),
+        expected_elf_sha256=cast(str, outputs.get("afterElfSha256")),
+        expected_input_snapshot_sha256=cast(str, outputs.get("afterInputSnapshotSha256")),
+    )
+    if (
+        str(before.envelope.evidence_id) != proof.failed_before_evidence_id
+        or str(after.envelope.evidence_id) != proof.fixed_after_evidence_id
+        or before.manifest.identity.session_id != after.manifest.identity.session_id
+        or before.manifest.identity.session_id != context.session_id
+        or before.manifest.identity.workspace_id != predecessor.workspace_id
+        or before.manifest.identity.project_id != predecessor.logical_project_id
+    ):
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH")
+    before_metadata = getattr(before.envelope, "metadata", {})
+    after_metadata = getattr(after.envelope, "metadata", {})
+    if (
+        not isinstance(before_metadata, Mapping)
+        or not isinstance(after_metadata, Mapping)
+        or not isinstance(before_metadata.get("flash_session_id"), str)
+        or not isinstance(before_metadata.get("lease_id"), str)
+        or not isinstance(after_metadata.get("flash_session_id"), str)
+        or not isinstance(after_metadata.get("lease_id"), str)
+    ):
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH")
+    try:
+        _diagnostic_workflows._validate_pair_execution_policy(before, after)
+    except _diagnostic_workflows._WorkflowFailure as error:
+        raise _finalization_identity_failure(error) from error
+
+    declarations = tuple(session.source_change_declarations)
+    if len(declarations) != 1:
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_OUTPUT_INVALID")
+    declaration = declarations[0]
+    after_build = {
+        "buildId": outputs.get("afterBuildId"),
+        "elfSha256": outputs.get("afterElfSha256"),
+        "inputSnapshotSha256": outputs.get("afterInputSnapshotSha256"),
+    }
+    _physical_validate_declaration(
+        declaration,
+        predecessor,
+        proof.source_change_intent,
+        after_build=after_build,
+    )
+    if (
+        declaration.declaration_id != proof.source_change_declaration_id
+        or declaration.declaration_id != outputs.get("sourceChangeDeclarationId")
+        or declaration.before_source_sha256 != proof.source_change_intent.before_input_snapshot_sha256
+        or declaration.after_source_sha256 != proof.source_change_intent.expected_after_input_snapshot_sha256
+        or tuple(declaration.changed_paths)
+        != tuple(cast(str, change["path"]) for change in proof.source_change_intent.changes)
+        or session.identity != before.manifest.identity
+        or session.failed_test_run_id != proof.failed_before_test_run_id
+        or session.failed_evidence_id != proof.failed_before_evidence_id
+    ):
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH")
+    try:
+        _diagnostic_workflows._read_diff_evidence(state, session, declaration)
+    except _diagnostic_workflows._WorkflowFailure as error:
+        raise _finalization_identity_failure(error) from error
+
+    verification_matches = tuple(
+        item for item in session.fix_verifications
+        if item.fix_verification_id == proof.fix_verification_id
+    )
+    if len(verification_matches) != 1:
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH")
+    verification = verification_matches[0]
+    plans = tuple(
+        item for item in session.verification_plans
+        if item.verification_plan_id == verification.verification_plan_id
+        and item.source_change_declaration_id == declaration.declaration_id
+    )
+    if len(plans) != 1:
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH")
+    plan = plans[0]
+    if (
+        plan.schema != "stm32-verification-plan/1"
+        or plan.continuation_evidence_id is not None
+        or plan.diagnostic_session_id != proof.diagnostic_session_id
+        or plan.failed_before_run_id != proof.failed_before_test_run_id
+        or plan.failed_before_evidence_id != proof.failed_before_evidence_id
+        or plan.fixed_after_run_id != proof.fixed_after_test_run_id
+        or plan.fixed_after_evidence_id != proof.fixed_after_evidence_id
+        or plan.source_change_declaration_id != proof.source_change_declaration_id
+        or plan.required_monitor_quality != "VALID"
+        or plan.expected_changed is not True
+        or verification.verification_plan_digest != plan.plan_digest
+        or verification.status != "PASSED"
+        or verification.reason_code != "VERIFICATION_PASSED"
+        or verification.diagnostic_session_id != proof.diagnostic_session_id
+        or verification.failed_before_run_id != proof.failed_before_test_run_id
+        or verification.failed_before_evidence_id != proof.failed_before_evidence_id
+        or verification.fixed_after_run_id != proof.fixed_after_test_run_id
+        or verification.fixed_after_evidence_id != proof.fixed_after_evidence_id
+        or verification.source_change_declaration_id != proof.source_change_declaration_id
+        or verification.analysis_ids != plan.required_analysis_ids
+        or verification.analysis_evidence_ids != plan.required_analysis_evidence_ids
+    ):
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH")
+    analysis_envelopes: dict[tuple[str, str], EvidenceEnvelope] = {}
+    for analysis_id, analysis_evidence_id in zip(
+        plan.required_analysis_ids,
+        plan.required_analysis_evidence_ids,
+    ):
+        try:
+            analysis_envelopes[(analysis_id, analysis_evidence_id)] = _diagnostic_workflows._validate_analysis(
+                state,
+                session,
+                declaration,
+                plan,
+                before.manifest,
+                after.manifest,
+                analysis_id,
+                analysis_evidence_id,
+            )
+        except _diagnostic_workflows._WorkflowFailure as error:
+            raise _finalization_identity_failure(error) from error
+    marker_by_pair = {
+        (marker.analysis_id, marker.analysis_evidence_id): marker
+        for marker in session.diagnostic_marker_refs
+    }
+    for pair, analysis_envelope in analysis_envelopes.items():
+        marker = marker_by_pair.get(pair)
+        if marker is None:
+            raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED")
+        try:
+            _diagnostic_workflows._validate_marker(
+                state,
+                session,
+                declaration,
+                before.manifest,
+                after.manifest,
+                marker,
+                analysis_identity=analysis_envelope.identity,
+                execution_source=cast(str, analysis_envelope.metadata["execution_source"]),
+                physical_transport_evidence=cast(bool, analysis_envelope.metadata["physical_transport_evidence"]),
+            )
+        except _diagnostic_workflows._WorkflowFailure as error:
+            raise _finalization_identity_failure(error) from error
+
+    if require_proof_root:
+        proof_root, proof_envelope = _proof_root_for_graph(evidence, proof)
+        expected_parents = _finalization_proof_parents(proof, declaration)
+        if (
+            proof_envelope.identity != before.manifest.identity
+            or dict(proof_root.metadata) != {"continuation_id": proof.continuation_id}
+            or dict(proof_envelope.metadata) != dict(proof_root.metadata)
+            or proof_envelope.parents != expected_parents
+        ):
+            raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED")
+    else:
+        proof_root = None
+        proof_envelope = None
+    return AuthenticatedFinalization(
+        proof,
+        proof_envelope,
+        proof_root,
+        predecessor,
+        predecessor_envelope,
+        before,
+        after,
+        session,
+    )
+
+
+def _proof_root_for_graph(
+    evidence: EvidenceStore,
+    proof: PhysicalFinalizationProof,
+) -> tuple[RootRecord, EvidenceEnvelope]:
+    try:
+        root = get_root(evidence, FINALIZATION_ROOT_TYPE, proof.continuation_id)
+        envelope = evidence.get_envelope(root.manifest_id)
+    except (EvidenceValidationError, FileNotFoundError, OSError, ValueError, TypeError) as error:
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED") from error
+    return root, envelope
+
+
+def _authenticate_finalization_locked(
+    context: AcceptanceRecoveryContext,
+    model: object,
+    workspace: WorkspacePaths,
+    evidence: EvidenceStore,
+    diagnostic_store: object,
+    evidence_id: str,
+    *,
+    expected_proof: PhysicalFinalizationProof | None = None,
+) -> AuthenticatedFinalization:
+    proof, _root, _envelope = _read_finalization_proof_record(evidence, evidence_id)
+    if expected_proof is not None and proof != expected_proof:
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_CONFLICT")
+    return _load_finalization_graph_locked(
+        context,
+        model,
+        workspace,
+        evidence,
+        proof,
+        diagnostic_store,
+    )
+
+
+def _authenticate_finalization(
+    context: AcceptanceRecoveryContext,
+    model: object,
+    workspace: WorkspacePaths,
+    evidence: EvidenceStore,
+    evidence_id: str,
+) -> AuthenticatedFinalization:
+    diagnostic_store = _diagnostic_workflows._diagnostic_store_factory(
+        workspace.diagnostics_root,
+        evidence,
+    )
+    with diagnostic_store._store_lock(create=False):
+        return _authenticate_finalization_locked(
+            context,
+            model,
+            workspace,
+            evidence,
+            diagnostic_store,
+            evidence_id,
+        )
+
+
+def _existing_finalization_association(
+    evidence: EvidenceStore,
+    association: AuthenticatedFinalization,
+) -> AuthenticatedFinalization:
+    if association.envelope is None:
+        # A bind that has not published its proof yet has no envelope from
+        # which to obtain the consumer evidence ID.  Resolve the immutable
+        # proof root from its deterministic payload key, then let the normal
+        # reader validate the actual manifest, artifact, proof and root.
+        _root, persisted_envelope = _proof_root_for_graph(evidence, association.proof)
+        evidence_id = str(persisted_envelope.evidence_id)
+    else:
+        # An already authenticated association stays pinned to the evidence
+        # ID it authenticated; do not silently rebind it through the root.
+        evidence_id = association.continuation_evidence_id
+    proof, root, envelope = _read_finalization_proof_record(
+        evidence,
+        evidence_id,
+    )
+    if proof != association.proof:
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_CONFLICT")
+    declaration = association.diagnostic.source_change_declarations[0]
+    if (
+        envelope.identity != association.before.manifest.identity
+        or envelope.parents != _finalization_proof_parents(proof, declaration)
+    ):
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED")
+    return AuthenticatedFinalization(
+        proof,
+        envelope,
+        root,
+        association.predecessor,
+        association.predecessor_envelope,
+        association.before,
+        association.after,
+        association.diagnostic,
+    )
+
+
+def _finalization_request_matches_proof(
+    request: FinalizationRequest,
+    association: AuthenticatedFinalization,
+) -> bool:
+    if request.kind == "reuse":
+        return request.continuation_evidence_id == association.continuation_evidence_id
+    proof = association.proof
+    return all(
+        getattr(request, request_field) == getattr(proof, proof_field)
+        for request_field, proof_field in (
+            ("predecessor_attempt_id", "predecessor_attempt_id"),
+            ("predecessor_checkpoint_id", "predecessor_checkpoint_id"),
+            ("predecessor_evidence_id", "predecessor_evidence_id"),
+            ("fixed_after_test_run_id", "fixed_after_test_run_id"),
+            ("fixed_after_evidence_id", "fixed_after_evidence_id"),
+            ("diagnostic_revision", "diagnostic_revision"),
+            ("diagnostic_event_head", "diagnostic_event_head"),
+            ("fix_verification_id", "fix_verification_id"),
+        )
+    )
+
+
+def _finalization_current_firmware_matches(
+    context: AcceptanceRecoveryContext,
+    model: object,
+    association: AuthenticatedFinalization,
+) -> None:
+    """Bind a new publication to the current immutable firmware facts."""
+    try:
+        build, snapshot = _physical_build_data(context, model)
+    except _RecoveryFailure:
+        raise
+    expected = association.predecessor.stage_outputs
+    if (
+        build.get("buildId") != expected.get("afterBuildId")
+        or build.get("elfSha256") != expected.get("afterElfSha256")
+        or build.get("inputSnapshotSha256") != expected.get("afterInputSnapshotSha256")
+        or getattr(snapshot, "sha256", None)
+        != association.proof.source_change_intent.expected_after_input_snapshot_sha256
+        or association.after.manifest.identity.build_id != build.get("buildId")
+        or association.after.manifest.identity.elf_sha256 != build.get("elfSha256")
+        or association.after.manifest.identity.input_snapshot_sha256 != build.get("inputSnapshotSha256")
+    ):
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH")
+
+
+def _finalization_recheck_before_attempt_publication_locked(
+    context: AcceptanceRecoveryContext,
+    model: object,
+    workspace: WorkspacePaths,
+    evidence: EvidenceStore,
+    association: AuthenticatedFinalization,
+) -> AuthenticatedFinalization:
+    """Recheck immutable proof, predecessor CAS and current facts under E.
+
+    The complete Diagnostic graph is intentionally not reloaded here.  It was
+    authenticated while D was held and the returned association is immutable;
+    E only closes the publication race against EvidenceStore, predecessor
+    revision and current firmware facts.
+    """
+    refreshed = _existing_finalization_association(evidence, association)
+    latest_chain = _load_physical_chain(
+        evidence,
+        attempt_id=refreshed.proof.predecessor_attempt_id,
+        workspace_id=workspace.workspace_id,
+        logical_project_id=str(model.logical_project_id),
+    )
+    if (
+        len(latest_chain) != 7
+        or latest_chain[-1][0].checkpoint_id != refreshed.proof.predecessor_checkpoint_id
+        or str(latest_chain[-1][1].evidence_id) != refreshed.proof.predecessor_evidence_id
+        or _timestamp(_now(context)) <= _timestamp(latest_chain[-1][0].deadline_at_utc)
+    ):
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_REVISION_CONFLICT")
+    _finalization_current_firmware_matches(context, model, refreshed)
+    return refreshed
+
+
+def _prepare_finalization_bind_locked(
+    context: AcceptanceRecoveryContext,
+    model: object,
+    workspace: WorkspacePaths,
+    evidence: EvidenceStore,
+    request: FinalizationRequest,
+    diagnostic_store: object,
+) -> AuthenticatedFinalization:
+    if request.kind != "bind":
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_INPUT_INVALID")
+    try:
+        predecessor_root = get_root(
+            evidence,
+            _ATTEMPT_ROOT_TYPE,
+            _root_id(cast(str, request.predecessor_attempt_id), 6),
+        )
+        predecessor_envelope = evidence.get_envelope(predecessor_root.manifest_id)
+    except (EvidenceValidationError, FileNotFoundError, OSError, TypeError, ValueError) as error:
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED") from error
+    if (
+        predecessor_envelope.identity.workspace_id != workspace.workspace_id
+        or predecessor_envelope.identity.project_id != str(model.logical_project_id)
+        or predecessor_envelope.identity.session_id != context.session_id
+    ):
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH")
+    chain = _load_physical_chain(
+        evidence,
+        attempt_id=cast(str, request.predecessor_attempt_id),
+        workspace_id=workspace.workspace_id,
+        logical_project_id=str(model.logical_project_id),
+    )
+    _validate_physical_chain_semantics(
+        chain,
+        model=model,
+        workspace=workspace,
+        session_id=context.session_id,
+    )
+    if len(chain) != 7:
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED")
+    predecessor = chain[-1][0]
+    diagnostic_id = predecessor.stage_outputs.get("diagnosticSessionId")
+    if not isinstance(diagnostic_id, str):
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH")
+    try:
+        diagnostic_root = get_root(
+            evidence,
+            "diagnostic-session",
+            f"{diagnostic_id}.{cast(int, request.diagnostic_revision):08d}",
+        )
+    except (EvidenceValidationError, FileNotFoundError, OSError, TypeError, ValueError) as error:
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED") from error
+    try:
+        proof = PhysicalFinalizationProof(
+            schema=FINALIZATION_SCHEMA,
+            predecessor_attempt_id=cast(str, request.predecessor_attempt_id),
+            predecessor_checkpoint_id=cast(str, request.predecessor_checkpoint_id),
+            predecessor_evidence_id=cast(str, request.predecessor_evidence_id),
+            diagnostic_session_id=diagnostic_id,
+            diagnostic_revision=cast(int, request.diagnostic_revision),
+            diagnostic_event_head=cast(str, request.diagnostic_event_head),
+            diagnostic_evidence_id=str(diagnostic_root.manifest_id),
+            source_change_declaration_id=cast(str, predecessor.stage_outputs.get("sourceChangeDeclarationId")),
+            source_change_intent=cast(SourceChangeIntent, predecessor.source_change_intent),
+            failed_before_test_run_id=cast(str, predecessor.stage_outputs.get("failedBeforeTestRunId")),
+            failed_before_evidence_id=cast(str, predecessor.stage_outputs.get("failedBeforeEvidenceId")),
+            fixed_after_test_run_id=cast(str, request.fixed_after_test_run_id),
+            fixed_after_evidence_id=cast(str, request.fixed_after_evidence_id),
+            fix_verification_id=cast(str, request.fix_verification_id),
+        )
+    except (FinalizationValidationError, TypeError, ValueError) as error:
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_INPUT_INVALID") from error
+    association = _load_finalization_graph_locked(
+        context,
+        model,
+        workspace,
+        evidence,
+        proof,
+        diagnostic_store,
+        require_proof_root=False,
+    )
+    if (
+        association.proof.diagnostic_evidence_id != proof.diagnostic_evidence_id
+        or not _finalization_request_matches_proof(request, association)
+    ):
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH")
+    return association
+
+
+def _publish_finalization_proof(
+    context: AcceptanceRecoveryContext,
+    model: object,
+    workspace: WorkspacePaths,
+    evidence: EvidenceStore,
+    request: FinalizationRequest,
+) -> AuthenticatedFinalization:
+    diagnostic_store = _diagnostic_workflows._diagnostic_store_factory(
+        workspace.diagnostics_root,
+        evidence,
+    )
+    with diagnostic_store._store_lock(create=False):
+        if request.kind == "reuse":
+            association = _authenticate_finalization_locked(
+                context,
+                model,
+                workspace,
+                evidence,
+                diagnostic_store,
+                cast(str, request.continuation_evidence_id),
+            )
+        else:
+            association = _prepare_finalization_bind_locked(
+                context,
+                model,
+                workspace,
+                evidence,
+                request,
+                diagnostic_store,
+            )
+        proof = association.proof
+        proof_path = _typed_root_path(evidence, proof.continuation_id, FINALIZATION_ROOT_TYPE)
+        if proof_path.exists():
+            return _existing_finalization_association(evidence, association)
+        _finalization_current_firmware_matches(context, model, association)
+        with evidence._mutation_lock():
+            if proof_path.exists():
+                return _existing_finalization_association(evidence, association)
+            payload = canonical_json_bytes(proof.to_dict())
+            digest = hashlib.sha256(payload).hexdigest()
+            relative, object_path = evidence._expected_object(digest)
+            artifact = ArtifactRef(
+                digest,
+                len(payload),
+                relative,
+                FINALIZATION_ROOT_TYPE,
+                "application/json",
+            )
+            evidence._atomic_create_new(object_path, payload, phase="physical-finalization-artifact")
+            declaration = association.diagnostic.source_change_declarations[0]
+            parents = _finalization_proof_parents(proof, declaration)
+            envelope = EvidenceEnvelope(
+                identity=association.before.manifest.identity,
+                operation=FINALIZATION_OPERATION,
+                produced_at_utc=_now(context),
+                parents=parents,
+                artifacts=(artifact,),
+                metadata={"continuation_id": proof.continuation_id},
+            )
+            evidence._put_envelope_locked(envelope)
+            # Recheck only evidence authorities that may race E.  The
+            # Diagnostic session was fully authenticated under D and is reused
+            # here; no public or repairing Diagnostic read is made under E.
+            latest_chain = _load_physical_chain(
+                evidence,
+                attempt_id=proof.predecessor_attempt_id,
+                workspace_id=workspace.workspace_id,
+                logical_project_id=str(model.logical_project_id),
+            )
+            if (
+                len(latest_chain) != 7
+                or latest_chain[-1][0].checkpoint_id != proof.predecessor_checkpoint_id
+                or str(latest_chain[-1][1].evidence_id) != proof.predecessor_evidence_id
+                or _timestamp(_now(context)) <= _timestamp(latest_chain[-1][0].deadline_at_utc)
+            ):
+                raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_REVISION_CONFLICT")
+            _finalization_current_firmware_matches(context, model, association)
+            _publish_root_locked(
+                evidence,
+                RootRecord(
+                    FINALIZATION_ROOT_TYPE,
+                    proof.continuation_id,
+                    str(envelope.evidence_id),
+                    {"continuation_id": proof.continuation_id},
+                ),
+            )
+            root = get_root(evidence, FINALIZATION_ROOT_TYPE, proof.continuation_id)
+            return AuthenticatedFinalization(
+                proof,
+                envelope,
+                root,
+                association.predecessor,
+                association.predecessor_envelope,
+                association.before,
+                association.after,
+                association.diagnostic,
+            )
+
+
+def _finalization_snapshot(payload: Mapping[str, object]) -> PhysicalFinalizationAttempt:
+    data = dict(payload)
+    data.pop("checkpointId", None)
+    data["checkpointId"] = hashlib.sha256(canonical_json_bytes(data)).hexdigest()
+    try:
+        return PhysicalFinalizationAttempt.from_value(data)
+    except (FinalizationValidationError, TypeError, ValueError) as error:
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_OUTPUT_INVALID") from error
+
+
+def _begin_finalization_attempt(
+    context: AcceptanceRecoveryContext,
+    *,
+    attempt_id: object,
+    scenario_id: object,
+    scenario_version: object,
+    continuation: object,
+) -> OperationResult[dict[str, object]]:
+    attempt_id = _canonical_uuid("attemptId", attempt_id)
+    if scenario_id != FINALIZATION_SCENARIO_ID or scenario_version != FINALIZATION_SCENARIO_VERSION:
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_INPUT_INVALID")
+    try:
+        request = FinalizationRequest.from_value(continuation)
+    except FinalizationValidationError as error:
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_INPUT_INVALID") from error
+    model, workspace, evidence = _load_project_and_workspace(context)
+    if _project_origin(model) != FINALIZATION_PROJECT_ORIGIN:
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH")
+    root0 = _typed_root_path(evidence, _root_id(attempt_id, 0))
+    if root0.exists():
+        chain = _load_finalization_chain(
+            evidence,
+            attempt_id=attempt_id,
+            workspace_id=workspace.workspace_id,
+            logical_project_id=str(model.logical_project_id),
+            expected_session_id=context.session_id,
+        )
+        association = _authenticate_finalization(
+            context,
+            model,
+            workspace,
+            evidence,
+            chain[0][0].continuation_evidence_id,
+        )
+        chain = _load_finalization_chain(
+            evidence,
+            attempt_id=attempt_id,
+            workspace_id=workspace.workspace_id,
+            logical_project_id=str(model.logical_project_id),
+            proof=association,
+            expected_session_id=context.session_id,
+        )
+        if not _finalization_request_matches_proof(request, association):
+            raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_CONFLICT")
+        return OperationResult.success("acceptance.attempt.begin", {"attempt": chain[-1][0].to_dict()})
+    association = _publish_finalization_proof(context, model, workspace, evidence, request)
+    diagnostic_store = _diagnostic_workflows._diagnostic_store_factory(workspace.diagnostics_root, evidence)
+    with diagnostic_store._store_lock(create=False):
+        # Proof publication released D after its own D->E boundary.  Reopen D
+        # and reauthenticate the complete graph before beginning a new /5
+        # revision, then retain D while acquiring E below.
+        association = _authenticate_finalization_locked(
+            context,
+            model,
+            workspace,
+            evidence,
+            diagnostic_store,
+            association.continuation_evidence_id,
+            expected_proof=association.proof,
+        )
+        _finalization_current_firmware_matches(context, model, association)
+        with evidence._mutation_lock():
+            if root0.exists():
+                chain = _load_finalization_chain(
+                    evidence,
+                    attempt_id=attempt_id,
+                    workspace_id=workspace.workspace_id,
+                    logical_project_id=str(model.logical_project_id),
+                    expected_session_id=context.session_id,
+                )
+                if not _finalization_chain_matches_proof(chain, association):
+                    raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_CONFLICT")
+                chain = _load_finalization_chain(
+                    evidence,
+                    attempt_id=attempt_id,
+                    workspace_id=workspace.workspace_id,
+                    logical_project_id=str(model.logical_project_id),
+                    proof=association,
+                    expected_session_id=context.session_id,
+                )
+                if not _finalization_request_matches_proof(request, association):
+                    raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_CONFLICT")
+                return OperationResult.success("acceptance.attempt.begin", {"attempt": chain[-1][0].to_dict()})
+            # Complete every authority recheck while D and E are held before
+            # entering the commit phase.  The commit timestamp below is the
+            # immutable publication timestamp for both the attempt and its
+            # envelope; no graph walk or firmware read may follow it.
+            association = _finalization_recheck_before_attempt_publication_locked(
+                context,
+                model,
+                workspace,
+                evidence,
+                association,
+            )
+            opened = _now(context)
+            candidate = _finalization_snapshot(
+                {
+                    "schema": FINALIZATION_ATTEMPT_SCHEMA,
+                    "attemptId": attempt_id,
+                    "revision": 0,
+                    "previousCheckpointId": None,
+                    "scenarioId": FINALIZATION_SCENARIO_ID,
+                    "scenarioVersion": FINALIZATION_SCENARIO_VERSION,
+                    "scenarioDigest": FINALIZATION_SCENARIO_DIGEST,
+                    "recoveryPolicyDigest": FINALIZATION_POLICY_DIGEST,
+                    "workspaceId": workspace.workspace_id,
+                    "logicalProjectId": str(model.logical_project_id),
+                    "sessionId": context.session_id,
+                    "projectOrigin": FINALIZATION_PROJECT_ORIGIN,
+                    "executionSource": FINALIZATION_EXECUTION_SOURCE,
+                    "physicalTransportEvidence": True,
+                    "status": "IN_PROGRESS",
+                    "stage": FINALIZATION_STAGES[0],
+                    "continuationEvidenceId": association.continuation_evidence_id,
+                    "fixedAfterTestRunId": association.proof.fixed_after_test_run_id,
+                    "fixedAfterEvidenceId": association.proof.fixed_after_evidence_id,
+                    "fixVerificationId": None,
+                    "openedAtUtc": opened,
+                    "updatedAtUtc": opened,
+                    "deadlineAtUtc": (
+                        _timestamp(opened) + timedelta(seconds=FINALIZATION_WINDOW_SECONDS)
+                    ).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+                }
+            )
+            envelope = EvidenceEnvelope(
+                identity=association.before.manifest.identity,
+                operation=_ATTEMPT_OPERATION,
+                produced_at_utc=opened,
+                parents=(association.continuation_evidence_id,),
+                artifacts=(),
+                metadata=_finalization_envelope_metadata(candidate),
+            )
+            evidence._put_envelope_locked(envelope)
+            if _timestamp(_now(context)) > _timestamp(candidate.deadline_at_utc):
+                raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_TIMED_OUT")
+            _publish_root_locked(
+                evidence,
+                RootRecord(
+                    _ATTEMPT_ROOT_TYPE,
+                    _root_id(attempt_id, 0),
+                    str(envelope.evidence_id),
+                    _finalization_root_metadata(candidate),
+                ),
+            )
+    return OperationResult.success("acceptance.attempt.begin", {"attempt": candidate.to_dict()})
+
+
+def _finalization_checkpoint_retry(
+    current: PhysicalFinalizationAttempt,
+    *,
+    test_run_id: str,
+    diagnostic_session_id: str | None,
+    expected_diagnostic_session_id: str,
+    fix_verification_id: str,
+) -> bool:
+    return (
+        current.revision == 1
+        and current.stage == FINALIZATION_STAGES[1]
+        and current.fixed_after_test_run_id == test_run_id
+        and current.fix_verification_id == fix_verification_id
+        and diagnostic_session_id in (None, expected_diagnostic_session_id)
+    )
+
+
+def _checkpoint_finalization_attempt(
+    context: AcceptanceRecoveryContext,
+    *,
+    attempt_id: object,
+    expected_revision: object,
+    stage: object,
+    test_run_id: object = None,
+    diagnostic_session_id: object = None,
+    acceptance_record_id: object = None,
+    source_change_intent: object = None,
+    fix_verification_id: object = None,
+) -> OperationResult[dict[str, object]]:
+    attempt_id = _canonical_uuid("attemptId", attempt_id)
+    if type(expected_revision) is not int or expected_revision != 0:
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_REVISION_CONFLICT")
+    if (
+        stage != FINALIZATION_STAGES[1]
+        or acceptance_record_id is not None
+        or source_change_intent is not None
+    ):
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_STAGE_INVALID")
+    _physical_native_run_id("testRunId", test_run_id)
+    _canonical_hash("fixVerificationId", fix_verification_id)
+    if diagnostic_session_id is not None:
+        _physical_diagnostic_id("diagnosticSessionId", diagnostic_session_id)
+    model, workspace, evidence = _load_project_and_workspace(context)
+    if _project_origin(model) != FINALIZATION_PROJECT_ORIGIN:
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH")
+    diagnostic_store = _diagnostic_workflows._diagnostic_store_factory(workspace.diagnostics_root, evidence)
+    with diagnostic_store._store_lock(create=False):
+        chain = _load_finalization_chain(
+            evidence,
+            attempt_id=attempt_id,
+            workspace_id=workspace.workspace_id,
+            logical_project_id=str(model.logical_project_id),
+            expected_session_id=context.session_id,
+        )
+        current = chain[-1][0]
+        association = _authenticate_finalization_locked(
+            context,
+            model,
+            workspace,
+            evidence,
+            diagnostic_store,
+            current.continuation_evidence_id,
+        )
+        chain = _load_finalization_chain(
+            evidence,
+            attempt_id=attempt_id,
+            workspace_id=workspace.workspace_id,
+            logical_project_id=str(model.logical_project_id),
+            proof=association,
+            expected_session_id=context.session_id,
+        )
+        current = chain[-1][0]
+        if (
+            test_run_id != current.fixed_after_test_run_id
+            or diagnostic_session_id not in (None, association.proof.diagnostic_session_id)
+            or fix_verification_id != association.proof.fix_verification_id
+        ):
+            raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH")
+        if current.revision == 1:
+            if not _finalization_checkpoint_retry(
+                current,
+                test_run_id=cast(str, test_run_id),
+                diagnostic_session_id=cast(str | None, diagnostic_session_id),
+                expected_diagnostic_session_id=association.proof.diagnostic_session_id,
+                fix_verification_id=cast(str, fix_verification_id),
+            ):
+                raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_REVISION_CONFLICT")
+            return OperationResult.success("acceptance.attempt.checkpoint", {"attempt": current.to_dict()})
+        if current.revision != 0 or current.next_stage != stage:
+            raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_STAGE_INVALID")
+        _finalization_current_firmware_matches(context, model, association)
+        checked_at = _now(context)
+        if _timestamp(checked_at) > _timestamp(current.deadline_at_utc):
+            raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_TIMED_OUT")
+        with evidence._mutation_lock():
+            latest_chain = _load_finalization_chain(
+                evidence,
+                attempt_id=attempt_id,
+                workspace_id=workspace.workspace_id,
+                logical_project_id=str(model.logical_project_id),
+                proof=association,
+                expected_session_id=context.session_id,
+            )
+            latest = latest_chain[-1][0]
+            if latest.revision == 1:
+                if not _finalization_checkpoint_retry(
+                    latest,
+                    test_run_id=cast(str, test_run_id),
+                    diagnostic_session_id=cast(str | None, diagnostic_session_id),
+                    expected_diagnostic_session_id=association.proof.diagnostic_session_id,
+                    fix_verification_id=cast(str, fix_verification_id),
+                ):
+                    raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_REVISION_CONFLICT")
+                return OperationResult.success("acceptance.attempt.checkpoint", {"attempt": latest.to_dict()})
+            if latest.checkpoint_id != current.checkpoint_id or latest.revision != 0:
+                raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_REVISION_CONFLICT")
+            if _timestamp(_now(context)) > _timestamp(latest.deadline_at_utc):
+                raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_TIMED_OUT")
+            # Finish the proof, predecessor/CAS, firmware and deadline
+            # rechecks before sampling the commit-phase timestamp.  The
+            # timestamp is then reused for the immutable candidate and
+            # envelope without another lengthy authority read.
+            association = _finalization_recheck_before_attempt_publication_locked(
+                context,
+                model,
+                workspace,
+                evidence,
+                association,
+            )
+            published_at = _now(context)
+            if _timestamp(published_at) > _timestamp(latest.deadline_at_utc):
+                raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_TIMED_OUT")
+            candidate = _finalization_snapshot(
+                {
+                    **latest.to_dict(),
+                    "revision": 1,
+                    "previousCheckpointId": latest.checkpoint_id,
+                    "status": "COMPLETED",
+                    "stage": FINALIZATION_STAGES[1],
+                    "fixVerificationId": cast(str, fix_verification_id),
+                    "updatedAtUtc": published_at,
+                }
+            )
+            previous_envelope = latest_chain[-1][1]
+            envelope = EvidenceEnvelope(
+                identity=association.before.manifest.identity,
+                operation=_ATTEMPT_OPERATION,
+                produced_at_utc=published_at,
+                parents=(str(previous_envelope.evidence_id), association.continuation_evidence_id),
+                artifacts=(),
+                metadata=_finalization_envelope_metadata(candidate),
+            )
+            evidence._put_envelope_locked(envelope)
+            if _timestamp(_now(context)) > _timestamp(latest.deadline_at_utc):
+                raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_TIMED_OUT")
+            _publish_root_locked(
+                evidence,
+                RootRecord(
+                    _ATTEMPT_ROOT_TYPE,
+                    _root_id(attempt_id, 1),
+                    str(envelope.evidence_id),
+                    _finalization_root_metadata(candidate),
+                ),
+            )
+    return OperationResult.success("acceptance.attempt.checkpoint", {"attempt": candidate.to_dict()})
+
+
+def _show_finalization_attempt(
+    context: AcceptanceRecoveryContext,
+    *,
+    attempt_id: object,
+    resume: bool,
+) -> OperationResult[dict[str, object]]:
+    attempt_id = _canonical_uuid("attemptId", attempt_id)
+    model, workspace, evidence = _load_project_and_workspace(context)
+    if _project_origin(model) != FINALIZATION_PROJECT_ORIGIN:
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH")
+    diagnostic_store = _diagnostic_workflows._diagnostic_store_factory(workspace.diagnostics_root, evidence)
+    with diagnostic_store._store_lock(create=False):
+        chain = _load_finalization_chain(
+            evidence,
+            attempt_id=attempt_id,
+            workspace_id=workspace.workspace_id,
+            logical_project_id=str(model.logical_project_id),
+            expected_session_id=context.session_id,
+        )
+        current = chain[-1][0]
+        association = _authenticate_finalization_locked(
+            context,
+            model,
+            workspace,
+            evidence,
+            diagnostic_store,
+            current.continuation_evidence_id,
+        )
+        chain = _load_finalization_chain(
+            evidence,
+            attempt_id=attempt_id,
+            workspace_id=workspace.workspace_id,
+            logical_project_id=str(model.logical_project_id),
+            proof=association,
+            expected_session_id=context.session_id,
+        )
+        current = chain[-1][0]
+        if (
+            current.fixed_after_test_run_id != association.proof.fixed_after_test_run_id
+            or current.fixed_after_evidence_id != association.proof.fixed_after_evidence_id
+            or (current.revision == 1 and current.fix_verification_id != association.proof.fix_verification_id)
+        ):
+            raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH")
+        data: dict[str, object] = {
+            "authoritative": True,
+            "attempt": current.to_dict(),
+        }
+        if resume:
+            data.update(
+                nextStage=current.next_stage,
+                authorizationRequired=False,
+                actionDigest=None,
+                timedOut=(
+                    current.revision == 0
+                    and _timestamp(_now(context)) > _timestamp(current.deadline_at_utc)
+                ),
+                recoveryPolicy=finalization_policy_document(),
+            )
+        return OperationResult.success(
+            "acceptance.attempt.resume" if resume else "acceptance.attempt.show",
+            data,
+        )
+
+
+def _validate_finalization_result(
+    context: AcceptanceRecoveryContext,
+    result: OperationResult[dict[str, object]],
+) -> OperationResult[dict[str, object]]:
+    """Keep finalization reads authoritative after any publication lock exits."""
+    if not result.ok:
+        return result
+    attempt_data = result.data.get("attempt")
+    if not isinstance(attempt_data, Mapping):
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_OUTPUT_INVALID")
+    model, workspace, evidence = _load_project_and_workspace(context)
+    continuation_id = attempt_data.get("continuationEvidenceId")
+    if not isinstance(continuation_id, str):
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_OUTPUT_INVALID")
+    association = _authenticate_finalization(context, model, workspace, evidence, continuation_id)
+    try:
+        attempt = PhysicalFinalizationAttempt.from_value(attempt_data)
+    except (FinalizationValidationError, TypeError, ValueError) as error:
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_OUTPUT_INVALID") from error
+    chain = _load_finalization_chain(
+        evidence,
+        attempt_id=attempt.attempt_id,
+        workspace_id=workspace.workspace_id,
+        logical_project_id=str(model.logical_project_id),
+        proof=association,
+        expected_session_id=context.session_id,
+    )
+    if chain[-1][0] != attempt:
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_REVISION_CONFLICT")
     return result

@@ -5,8 +5,10 @@ import json
 import os
 import sqlite3
 import struct
+import sys
 import threading
 import time
+import traceback
 from concurrent.futures import Future, TimeoutError as FutureTimeout
 from dataclasses import replace
 from hashlib import sha256
@@ -40,6 +42,203 @@ from stm32_toolkit.paths import WorkspacePaths
 LOGICAL_ID = UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
 GROUP_ID = UUID("11111111-1111-4111-8111-111111111111")
 RUN_ID = UUID("22222222-2222-4222-8222-222222222222")
+
+
+def _retention_exception_graph(
+    error: BaseException,
+) -> tuple[tuple[BaseException, ...], tuple[dict[str, object], ...]]:
+    nodes: list[BaseException] = []
+    indexes: dict[int, int] = {}
+    edges: list[dict[str, object]] = []
+    edge_keys: set[tuple[int, int, str]] = set()
+    pending: list[tuple[BaseException, int | None, str | None]] = [(error, None, None)]
+
+    while pending:
+        current, parent_index, relation = pending.pop()
+        current_id = id(current)
+        index = indexes.get(current_id)
+        is_new = index is None
+        if is_new:
+            index = len(nodes)
+            indexes[current_id] = index
+            nodes.append(current)
+        assert index is not None
+        if parent_index is not None and relation is not None:
+            edge_key = (parent_index, index, relation)
+            if edge_key not in edge_keys:
+                edge_keys.add(edge_key)
+                edges.append(
+                    {
+                        "from": parent_index,
+                        "to": index,
+                        "relation": relation,
+                    }
+                )
+        if not is_new:
+            continue
+        for child_relation, child in (
+            ("context", current.__context__),
+            ("cause", current.__cause__),
+        ):
+            if child is not None:
+                pending.append((child, index, child_relation))
+    return tuple(nodes), tuple(edges)
+
+
+def _retention_exception_chain(error: BaseException) -> tuple[BaseException, ...]:
+    return _retention_exception_graph(error)[0]
+
+
+def _retention_exception_record(error: BaseException | None) -> dict[str, object] | None:
+    if error is None:
+        return None
+    nodes, edges = _retention_exception_graph(error)
+    records: list[dict[str, object]] = []
+    for index, current in enumerate(nodes):
+        native_code = getattr(current, "sqlite_errorcode", None)
+        native_name = getattr(current, "sqlite_errorname", None)
+        records.append(
+            {
+                "index": index,
+                "type": f"{type(current).__module__}.{type(current).__qualname__}",
+                "code": getattr(current, "code", None),
+                "message": str(current),
+                "nativeErrorCode": native_code if type(native_code) is int else None,
+                "nativeErrorName": native_name if type(native_name) is str else None,
+                "suppressedContext": bool(getattr(current, "__suppress_context__", False)),
+                "traceback": "".join(
+                    traceback.TracebackException.from_exception(
+                        current,
+                        capture_locals=False,
+                    ).format(chain=False)
+                ),
+            }
+        )
+    return {"chain": records, "edges": list(edges)}
+
+
+def _retention_is_sqlite_interrupt(error: BaseException) -> bool:
+    interrupt_code = getattr(sqlite3, "SQLITE_INTERRUPT", None)
+    return isinstance(error, sqlite3.Error) and (
+        getattr(error, "sqlite_errorname", None) == "SQLITE_INTERRUPT"
+        or (
+            interrupt_code is not None
+            and getattr(error, "sqlite_errorcode", None) == interrupt_code
+        )
+    )
+
+
+_RETENTION_ALLOWED_STORAGE_CODES = frozenset(
+    {"MONITOR_STORAGE_BUSY", "MONITOR_STORAGE_INVALID"}
+)
+
+
+def _retention_exception_children(error: BaseException) -> tuple[BaseException, ...]:
+    children: list[BaseException] = []
+    seen: set[int] = set()
+    for child in (error.__cause__, error.__context__):
+        if child is not None and id(child) not in seen:
+            seen.add(id(child))
+            children.append(child)
+    return tuple(children)
+
+
+def _retention_exception_branch_is_allowed(error: BaseException) -> bool:
+    nodes = _retention_exception_chain(error)
+    if not nodes:
+        return False
+    terminal_leaves = [
+        node for node in nodes if not _retention_exception_children(node)
+    ]
+    if not terminal_leaves or not all(
+        _retention_is_sqlite_interrupt(leaf) for leaf in terminal_leaves
+    ):
+        return False
+    return all(
+        _retention_is_sqlite_interrupt(node)
+        or (
+            isinstance(node, StorageFailure)
+            and getattr(node, "code", None) in _RETENTION_ALLOWED_STORAGE_CODES
+        )
+        for node in nodes
+    )
+
+
+def _retention_internal_cancellation_is_allowed(
+    callback_errors: list[BaseException],
+    future_error: BaseException | None,
+    *,
+    caller_cancelled: bool,
+) -> bool:
+    if not caller_cancelled:
+        return False
+    roots = [*callback_errors]
+    if future_error is not None:
+        roots.append(future_error)
+    return bool(roots) and all(_retention_exception_branch_is_allowed(root) for root in roots)
+
+
+def _record_retention_observation(
+    record_property,
+    *,
+    scenario: str,
+    callback_stages: list[str],
+    stage_times: dict[str, int],
+    caller_times: dict[str, int],
+    caller_result: object | None,
+    caller_settled: bool,
+    retention_future: Future[object] | None,
+    cancel_event_set: bool | None,
+    callback_errors: list[BaseException],
+    future_error: BaseException | None,
+    future_outcome: str,
+    final_state: dict[str, object] | None,
+    writer_sentinel: object | None,
+    public_value_count: int | None,
+    cleanup_status: str,
+) -> None:
+    caller = None
+    if caller_result is not None:
+        caller = {
+            "ok": getattr(caller_result, "ok", None),
+            "code": getattr(caller_result, "code", None),
+        }
+    record_property(
+        "retention_observation",
+        json.dumps(
+            {
+                "scenario": scenario,
+                "stages": {
+                    "events": callback_stages,
+                    "monotonicNs": stage_times,
+                },
+                "caller": {
+                    "done": caller_settled,
+                    "monotonicNs": caller_times,
+                    "result": caller,
+                    "cancelEventSet": cancel_event_set,
+                },
+                "future": {
+                    "done": (
+                        None if retention_future is None else retention_future.done()
+                    ),
+                    "observed": future_outcome != "unobserved",
+                    "outcome": future_outcome,
+                    "exception": _retention_exception_record(future_error),
+                },
+                "callbackExceptions": [
+                    _retention_exception_record(error) for error in callback_errors
+                ],
+                "finalState": final_state,
+                "writerSentinel": writer_sentinel,
+                "publicValueCount": public_value_count,
+                "cleanupStatus": cleanup_status,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+    )
 
 
 def _paths(tmp_path: Path) -> WorkspacePaths:
@@ -1777,6 +1976,73 @@ def test_invalid_query_and_workspace_mismatch_fail_closed(tmp_path: Path) -> Non
         store.close()
 
 
+@pytest.mark.parametrize(
+    ("corruption", "expected_message"),
+    [
+        ("accounting", "monitor storage accounting is invalid"),
+        ("candidate", "monitor history is corrupt"),
+    ],
+)
+def test_public_retention_rejects_persisted_accounting_corruption_without_deletion(
+    tmp_path: Path,
+    corruption: str,
+    expected_message: str,
+) -> None:
+    paths = _paths(tmp_path)
+    store = HistoryStore(paths)
+    try:
+        assert store.append_batch(_batch(paths, 1, captured_ns=1_001)).ok
+        database_path = paths.monitor_root / "monitor.sqlite3"
+
+        def corrupt(connection: sqlite3.Connection) -> None:
+            if corruption == "accounting":
+                connection.execute("PRAGMA ignore_check_constraints = ON")
+                connection.execute(
+                    "UPDATE monitor_history_accounting SET logical_bytes = -1"
+                )
+            else:
+                connection.execute(
+                    "UPDATE history_batches SET value_count = -1 WHERE batch_id = 1"
+                )
+
+        store._database.write(corrupt)
+
+        def snapshot() -> tuple[object, ...]:
+            connection = sqlite3.connect(
+                database_path.as_uri() + "?mode=ro", uri=True
+            )
+            try:
+                return (
+                    connection.execute(
+                        "SELECT singleton, logical_bytes "
+                        "FROM monitor_history_accounting"
+                    ).fetchall(),
+                    connection.execute(
+                        "SELECT batch_id,session_id,run_id,sequence,captured_ns,"
+                        "payload_json,payload_bytes,payload_sha256,value_count "
+                        "FROM history_batches ORDER BY batch_id"
+                    ).fetchall(),
+                    connection.execute(
+                        "SELECT batch_id,ordinal,selector_kind,selector,value_json,"
+                        "value_bytes,value_sha256 FROM history_values "
+                        "ORDER BY batch_id,ordinal"
+                    ).fetchall(),
+                )
+            finally:
+                connection.close()
+
+        before = snapshot()
+        result = store.run_retention(
+            now_ns=7 * 24 * 60 * 60 * 1_000_000_000 + 1_002
+        )
+        assert not result.ok
+        assert result.code == "MONITOR_STORAGE_CORRUPT"
+        assert result.message == expected_message
+        assert snapshot() == before
+    finally:
+        store.close()
+
+
 def test_duplicate_batch_is_rejected_without_duplicate_values(tmp_path: Path) -> None:
     paths = _paths(tmp_path)
     store = HistoryStore(paths)
@@ -2287,6 +2553,538 @@ def test_retention_deadline_aborts_before_mutation(tmp_path: Path, monkeypatch) 
         store.close()
 
 
+def test_retention_timeout_after_commit_refresh_keeps_public_state_consistent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    record_property,
+) -> None:
+    import stm32_monitor.history as history_module
+
+    paths = _paths(tmp_path)
+    store = HistoryStore(paths)
+    entered = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+    caller_done = threading.Event()
+    results: list[object] = []
+    errors: list[BaseException] = []
+    callback_stages: list[str] = []
+    callback_errors: list[BaseException] = []
+    stage_times: dict[str, int] = {}
+    caller_times: dict[str, int] = {}
+    submitted: list[tuple[Future[object], threading.Event]] = []
+    retention_future: Future[object] | None = None
+    retention_cancel_event: threading.Event | None = None
+    future_observed = False
+    retained: object | None = None
+    worker_error: BaseException | None = None
+    worker_outcome = "unobserved"
+    final_state: dict[str, object] | None = None
+    writer_sentinel: object | None = None
+    public_value_count: int | None = None
+    caller_cancel_event_set: bool | None = None
+    database_path = paths.monitor_root / "monitor.sqlite3"
+
+    def read_state() -> dict[str, object]:
+        connection = sqlite3.connect(database_path.as_uri() + "?mode=ro", uri=True)
+        try:
+            row = connection.execute(
+                """
+                SELECT
+                    (SELECT logical_bytes FROM monitor_history_accounting WHERE singleton = 1),
+                    COALESCE((SELECT SUM(payload_bytes) FROM history_batches), 0)
+                        + COALESCE((SELECT SUM(value_bytes) FROM history_values), 0),
+                    (SELECT COUNT(*) FROM history_batches),
+                    COALESCE((SELECT SUM(value_count) FROM history_batches), 0),
+                    (SELECT COUNT(*) FROM history_values)
+                """
+            ).fetchone()
+            return {
+                "logicalBytes": row[0],
+                "summedBytes": row[1],
+                "batchCount": row[2],
+                "valueCount": row[3],
+                "valueRows": row[4],
+                "integrity": connection.execute("PRAGMA integrity_check").fetchone()[0],
+            }
+        finally:
+            connection.close()
+
+    original_refresh = store._database._refresh_owned_integrity
+
+    def held_refresh(connection: sqlite3.Connection) -> None:
+        stage_times["refresh.entered"] = time.monotonic_ns()
+        callback_stages.append("refresh.entered")
+        entered.set()
+        try:
+            if not release.wait(timeout=5):
+                raise AssertionError("refresh barrier was not released")
+            stage_times["refresh.released"] = time.monotonic_ns()
+            callback_stages.append("refresh.released")
+            original_refresh(connection)
+        except BaseException as error:
+            callback_errors.append(error)
+            raise
+        finally:
+            stage_times["refresh.finished"] = time.monotonic_ns()
+            callback_stages.append("refresh.finished")
+            finished.set()
+
+    def run_retention() -> None:
+        try:
+            results.append(
+                store.run_retention(now_ns=history_module.RETENTION_AGE_NS + 101)
+            )
+            caller_times["result"] = time.monotonic_ns()
+        except BaseException as error:
+            errors.append(error)
+            caller_times["error"] = time.monotonic_ns()
+        finally:
+            caller_times["done"] = time.monotonic_ns()
+            caller_done.set()
+
+    thread = threading.Thread(target=run_retention)
+
+    try:
+        assert store.append_batch(_batch(paths, 1, captured_ns=100)).ok
+        primed = store.query_history(HistoryQuery("monitor-1", 0, 2_000_000_000))
+        assert primed.ok and primed.data is not None
+        assert len(primed.data.values) == 1
+        monkeypatch.setattr(store._database, "_refresh_owned_integrity", held_refresh)
+        original_submit = store._database._submit
+
+        def capture_submit(operation, *, busy_timeout_ms: int):
+            captured = original_submit(operation, busy_timeout_ms=busy_timeout_ms)
+            submitted.append(captured)
+            return captured
+
+        monkeypatch.setattr(store._database, "_submit", capture_submit)
+
+        thread.start()
+        assert entered.wait(timeout=5)
+        assert callback_stages == ["refresh.entered"]
+        assert caller_done.wait(timeout=5)
+        assert not errors
+        assert len(results) == 1
+        retained = results[0]
+        assert not retained.ok and retained.code == "MONITOR_STORAGE_BUSY"
+        assert len(submitted) == 1
+        retention_future, retention_cancel_event = submitted[0]
+        caller_cancel_event_set = retention_cancel_event.is_set()
+        assert caller_cancel_event_set
+
+        final_state = read_state()
+        assert final_state["batchCount"] == 0
+        assert final_state["valueCount"] == 0
+        assert final_state["valueRows"] == 0
+        assert final_state["logicalBytes"] == final_state["summedBytes"]
+        assert final_state["integrity"] == "ok"
+
+        release.set()
+        assert finished.wait(timeout=5)
+        assert callback_stages[-2:] == ["refresh.released", "refresh.finished"]
+        thread.join(timeout=5)
+        assert not thread.is_alive()
+        worker_result: object | None = None
+        try:
+            worker_result = retention_future.result(timeout=5)
+        except BaseException as error:
+            worker_error = error
+        future_observed = True
+        assert retention_future.done()
+        if worker_error is None:
+            assert type(worker_result) is dict
+            if callback_errors:
+                raise callback_errors[0]
+            worker_outcome = "normal"
+        else:
+            if not _retention_internal_cancellation_is_allowed(
+                callback_errors,
+                worker_error,
+                caller_cancelled=caller_cancel_event_set is True,
+            ):
+                if callback_errors:
+                    raise callback_errors[0]
+                raise worker_error
+            worker_outcome = "allowed-cancellation"
+        writer_sentinel = store._database.try_write(
+            lambda connection: connection.execute("SELECT 1").fetchone()[0],
+            timeout_ms=200,
+        )
+        assert writer_sentinel == 1
+        remaining = store.query_history(HistoryQuery("monitor-1", 0, 2_000_000_000))
+        assert remaining.ok and remaining.data is not None
+        public_value_count = len(remaining.data.values)
+        assert public_value_count == 0
+    finally:
+        active_error = sys.exc_info()[1]
+        release.set()
+        if thread.is_alive():
+            thread.join(timeout=5)
+        caller_settled = not thread.is_alive()
+        submitted_futures = [future for future, _ in submitted]
+        if retention_future is None and len(submitted_futures) == 1:
+            retention_future = submitted_futures[0]
+        if retention_cancel_event is None and len(submitted) == 1:
+            retention_cancel_event = submitted[0][1]
+        if retention_cancel_event is not None:
+            caller_cancel_event_set = retention_cancel_event.is_set()
+        cleanup_worker_error: BaseException | None = None
+        attempted_futures: set[int] = set()
+        if retention_future is not None and not future_observed:
+            attempted_futures.add(id(retention_future))
+            try:
+                retention_future.result(timeout=5)
+                if worker_outcome == "unobserved":
+                    worker_outcome = "normal"
+            except BaseException as error:
+                cleanup_worker_error = error
+                if worker_error is None:
+                    worker_error = error
+            future_observed = True
+        elif retention_future is not None:
+            attempted_futures.add(id(retention_future))
+        for future in submitted_futures:
+            if id(future) in attempted_futures:
+                continue
+            attempted_futures.add(id(future))
+            try:
+                future.result(timeout=5)
+                if worker_outcome == "unobserved":
+                    worker_outcome = "normal"
+            except BaseException as error:
+                if cleanup_worker_error is None:
+                    cleanup_worker_error = error
+                if worker_error is None:
+                    worker_error = error
+        future_settled = all(future.done() for future in submitted_futures)
+        if worker_error is not None and worker_outcome == "unobserved":
+            if _retention_internal_cancellation_is_allowed(
+                callback_errors,
+                worker_error,
+                caller_cancelled=caller_cancel_event_set is True,
+            ):
+                worker_outcome = "allowed-cancellation"
+            else:
+                worker_outcome = "unexpected-error"
+        cleanup_status = (
+            "settled"
+            if caller_settled and future_settled
+            else "unsettled-launcher-owned"
+        )
+        _record_retention_observation(
+            record_property,
+            scenario="after-commit-refresh",
+            callback_stages=callback_stages,
+            stage_times=stage_times,
+            caller_times=caller_times,
+            caller_result=retained,
+            caller_settled=caller_settled,
+            retention_future=retention_future,
+            cancel_event_set=caller_cancel_event_set,
+            callback_errors=callback_errors,
+            future_error=worker_error,
+            future_outcome=worker_outcome,
+            final_state=final_state,
+            writer_sentinel=writer_sentinel,
+            public_value_count=public_value_count,
+            cleanup_status=cleanup_status,
+        )
+        if caller_settled and future_settled:
+            if (
+                active_error is None
+                and cleanup_worker_error is not None
+                and not _retention_internal_cancellation_is_allowed(
+                    callback_errors,
+                    cleanup_worker_error,
+                    caller_cancelled=caller_cancel_event_set is True,
+                )
+            ):
+                raise cleanup_worker_error
+            store.close()
+        elif active_error is None:
+            bounded_failure = AssertionError(
+                "retention caller or writer future did not settle; store.close skipped"
+            )
+            if cleanup_worker_error is not None:
+                bounded_failure.add_note(
+                    "bounded worker observation: "
+                    f"{type(cleanup_worker_error).__name__}: {cleanup_worker_error}"
+                )
+            raise bounded_failure
+        elif cleanup_worker_error is not None:
+            active_error.add_note(
+                "retention writer cleanup error: "
+                f"{type(cleanup_worker_error).__name__}: {cleanup_worker_error}"
+            )
+
+
+def test_retention_timeout_at_commit_boundary_preserves_consistency_and_reuse(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    record_property,
+) -> None:
+    import stm32_monitor.history as history_module
+
+    paths = _paths(tmp_path)
+    store = HistoryStore(paths)
+    entered = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+    caller_done = threading.Event()
+    results: list[object] = []
+    errors: list[BaseException] = []
+    callback_stages: list[str] = []
+    callback_errors: list[BaseException] = []
+    stage_times: dict[str, int] = {}
+    caller_times: dict[str, int] = {}
+    submitted: list[tuple[Future[object], threading.Event]] = []
+    retention_future: Future[object] | None = None
+    retention_cancel_event: threading.Event | None = None
+    future_observed = False
+    retained: object | None = None
+    worker_error: BaseException | None = None
+    worker_outcome = "unobserved"
+    final_state: dict[str, object] | None = None
+    writer_sentinel: object | None = None
+    public_value_count: int | None = None
+    caller_cancel_event_set: bool | None = None
+    database_path = paths.monitor_root / "monitor.sqlite3"
+
+    def read_state() -> dict[str, object]:
+        connection = sqlite3.connect(database_path.as_uri() + "?mode=ro", uri=True)
+        try:
+            row = connection.execute(
+                """
+                SELECT
+                    (SELECT logical_bytes FROM monitor_history_accounting WHERE singleton = 1),
+                    COALESCE((SELECT SUM(payload_bytes) FROM history_batches), 0)
+                        + COALESCE((SELECT SUM(value_bytes) FROM history_values), 0),
+                    (SELECT COUNT(*) FROM history_batches),
+                    COALESCE((SELECT SUM(value_count) FROM history_batches), 0),
+                    (SELECT COUNT(*) FROM history_values)
+                """
+            ).fetchone()
+            return {
+                "logicalBytes": row[0],
+                "summedBytes": row[1],
+                "batchCount": row[2],
+                "valueCount": row[3],
+                "valueRows": row[4],
+                "integrity": connection.execute("PRAGMA integrity_check").fetchone()[0],
+            }
+        finally:
+            connection.close()
+
+    original_before_commit = store._database._before_commit
+
+    def held_before_commit(connection: sqlite3.Connection) -> None:
+        stage_times["commit.entered"] = time.monotonic_ns()
+        callback_stages.append("commit.entered")
+        entered.set()
+        try:
+            if not release.wait(timeout=5):
+                raise AssertionError("commit barrier was not released")
+            stage_times["commit.released"] = time.monotonic_ns()
+            callback_stages.append("commit.released")
+            original_before_commit(connection)
+        except BaseException as error:
+            callback_errors.append(error)
+            raise
+        finally:
+            stage_times["commit.finished"] = time.monotonic_ns()
+            callback_stages.append("commit.finished")
+            finished.set()
+
+    def run_retention() -> None:
+        try:
+            results.append(
+                store.run_retention(now_ns=history_module.RETENTION_AGE_NS + 101)
+            )
+            caller_times["result"] = time.monotonic_ns()
+        except BaseException as error:
+            errors.append(error)
+            caller_times["error"] = time.monotonic_ns()
+        finally:
+            caller_times["done"] = time.monotonic_ns()
+            caller_done.set()
+
+    thread = threading.Thread(target=run_retention)
+
+    try:
+        assert store.append_batch(_batch(paths, 1, captured_ns=100)).ok
+        primed = store.query_history(HistoryQuery("monitor-1", 0, 2_000_000_000))
+        assert primed.ok and primed.data is not None
+        assert len(primed.data.values) == 1
+        monkeypatch.setattr(store._database, "_before_commit", held_before_commit)
+        original_submit = store._database._submit
+
+        def capture_submit(operation, *, busy_timeout_ms: int):
+            captured = original_submit(operation, busy_timeout_ms=busy_timeout_ms)
+            submitted.append(captured)
+            return captured
+
+        monkeypatch.setattr(store._database, "_submit", capture_submit)
+
+        thread.start()
+        assert entered.wait(timeout=5)
+        assert callback_stages == ["commit.entered"]
+        assert caller_done.wait(timeout=5)
+        assert not errors
+        assert len(results) == 1
+        retained = results[0]
+        assert not retained.ok and retained.code == "MONITOR_STORAGE_BUSY"
+        assert len(submitted) == 1
+        retention_future, retention_cancel_event = submitted[0]
+        caller_cancel_event_set = retention_cancel_event.is_set()
+        assert caller_cancel_event_set
+
+        release.set()
+        assert finished.wait(timeout=5)
+        assert callback_stages[-2:] == ["commit.released", "commit.finished"]
+        thread.join(timeout=5)
+        assert not thread.is_alive()
+        worker_result: object | None = None
+        try:
+            worker_result = retention_future.result(timeout=5)
+        except BaseException as error:
+            worker_error = error
+        future_observed = True
+        assert retention_future.done()
+        if worker_error is None:
+            assert type(worker_result) is dict
+            if callback_errors:
+                raise callback_errors[0]
+            worker_outcome = "normal"
+        else:
+            if not _retention_internal_cancellation_is_allowed(
+                callback_errors,
+                worker_error,
+                caller_cancelled=caller_cancel_event_set is True,
+            ):
+                if callback_errors:
+                    raise callback_errors[0]
+                raise worker_error
+            worker_outcome = "allowed-cancellation"
+        writer_sentinel = store._database.try_write(
+            lambda connection: connection.execute("SELECT 1").fetchone()[0],
+            timeout_ms=200,
+        )
+        assert writer_sentinel == 1
+        final_state = read_state()
+        assert final_state["batchCount"] in (0, 1)
+        assert final_state["valueCount"] in (0, 1)
+        assert final_state["batchCount"] == final_state["valueCount"]
+        assert final_state["valueRows"] == final_state["valueCount"]
+        assert final_state["logicalBytes"] == final_state["summedBytes"]
+        assert final_state["integrity"] == "ok"
+        remaining = store.query_history(HistoryQuery("monitor-1", 0, 2_000_000_000))
+        assert remaining.ok and remaining.data is not None
+        public_value_count = len(remaining.data.values)
+        assert public_value_count == final_state["valueCount"]
+    finally:
+        active_error = sys.exc_info()[1]
+        release.set()
+        if thread.is_alive():
+            thread.join(timeout=5)
+        caller_settled = not thread.is_alive()
+        submitted_futures = [future for future, _ in submitted]
+        if retention_future is None and len(submitted_futures) == 1:
+            retention_future = submitted_futures[0]
+        if retention_cancel_event is None and len(submitted) == 1:
+            retention_cancel_event = submitted[0][1]
+        if retention_cancel_event is not None:
+            caller_cancel_event_set = retention_cancel_event.is_set()
+        cleanup_worker_error: BaseException | None = None
+        attempted_futures: set[int] = set()
+        if retention_future is not None and not future_observed:
+            attempted_futures.add(id(retention_future))
+            try:
+                retention_future.result(timeout=5)
+                if worker_outcome == "unobserved":
+                    worker_outcome = "normal"
+            except BaseException as error:
+                cleanup_worker_error = error
+                if worker_error is None:
+                    worker_error = error
+            future_observed = True
+        elif retention_future is not None:
+            attempted_futures.add(id(retention_future))
+        for future in submitted_futures:
+            if id(future) in attempted_futures:
+                continue
+            attempted_futures.add(id(future))
+            try:
+                future.result(timeout=5)
+                if worker_outcome == "unobserved":
+                    worker_outcome = "normal"
+            except BaseException as error:
+                if cleanup_worker_error is None:
+                    cleanup_worker_error = error
+                if worker_error is None:
+                    worker_error = error
+        future_settled = all(future.done() for future in submitted_futures)
+        if worker_error is not None and worker_outcome == "unobserved":
+            if _retention_internal_cancellation_is_allowed(
+                callback_errors,
+                worker_error,
+                caller_cancelled=caller_cancel_event_set is True,
+            ):
+                worker_outcome = "allowed-cancellation"
+            else:
+                worker_outcome = "unexpected-error"
+        cleanup_status = (
+            "settled"
+            if caller_settled and future_settled
+            else "unsettled-launcher-owned"
+        )
+        _record_retention_observation(
+            record_property,
+            scenario="at-commit-boundary",
+            callback_stages=callback_stages,
+            stage_times=stage_times,
+            caller_times=caller_times,
+            caller_result=retained,
+            caller_settled=caller_settled,
+            retention_future=retention_future,
+            cancel_event_set=caller_cancel_event_set,
+            callback_errors=callback_errors,
+            future_error=worker_error,
+            future_outcome=worker_outcome,
+            final_state=final_state,
+            writer_sentinel=writer_sentinel,
+            public_value_count=public_value_count,
+            cleanup_status=cleanup_status,
+        )
+        if caller_settled and future_settled:
+            if (
+                active_error is None
+                and cleanup_worker_error is not None
+                and not _retention_internal_cancellation_is_allowed(
+                    callback_errors,
+                    cleanup_worker_error,
+                    caller_cancelled=caller_cancel_event_set is True,
+                )
+            ):
+                raise cleanup_worker_error
+            store.close()
+        elif active_error is None:
+            bounded_failure = AssertionError(
+                "retention caller or writer future did not settle; store.close skipped"
+            )
+            if cleanup_worker_error is not None:
+                bounded_failure.add_note(
+                    "bounded worker observation: "
+                    f"{type(cleanup_worker_error).__name__}: {cleanup_worker_error}"
+                )
+            raise bounded_failure
+        elif cleanup_worker_error is not None:
+            active_error.add_note(
+                "retention writer cleanup error: "
+                f"{type(cleanup_worker_error).__name__}: {cleanup_worker_error}"
+            )
+
+
 def test_history_integer_binding_failures_map_to_stable_protocol_results(tmp_path: Path) -> None:
     paths = _paths(tmp_path)
     store = HistoryStore(paths)
@@ -2616,6 +3414,101 @@ def test_stream_rejects_corrupt_batch_identity(tmp_path: Path) -> None:
         )
         assert not result.ok
         assert result.code == "MONITOR_STORAGE_CORRUPT"
+    finally:
+        store.close()
+
+
+def test_public_query_rejects_persisted_negative_value_count_without_deletion(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    store = HistoryStore(paths)
+    try:
+        assert store.append_batch(_batch(paths, 1, captured_ns=1_001)).ok
+
+        def corrupt(connection: sqlite3.Connection) -> None:
+            connection.execute("PRAGMA ignore_check_constraints = ON")
+            connection.execute(
+                "UPDATE history_batches SET value_count = -1 WHERE batch_id = 1"
+            )
+
+        store._database.write(corrupt)
+        database_path = paths.monitor_root / "monitor.sqlite3"
+
+        def snapshot() -> tuple[object, ...]:
+            connection = sqlite3.connect(
+                database_path.as_uri() + "?mode=ro", uri=True
+            )
+            try:
+                return (
+                    connection.execute(
+                        "SELECT singleton, logical_bytes "
+                        "FROM monitor_history_accounting"
+                    ).fetchall(),
+                    connection.execute(
+                        "SELECT batch_id,session_id,run_id,sequence,captured_ns,"
+                        "payload_json,payload_bytes,payload_sha256,value_count "
+                        "FROM history_batches ORDER BY batch_id"
+                    ).fetchall(),
+                    connection.execute(
+                        "SELECT batch_id,ordinal,selector_kind,selector,value_json,"
+                        "value_bytes,value_sha256 FROM history_values "
+                        "ORDER BY batch_id,ordinal"
+                    ).fetchall(),
+                )
+            finally:
+                connection.close()
+
+        before = snapshot()
+        result = store.query_history(HistoryQuery("monitor-1", 0, 2_000_000_000))
+        assert not result.ok
+        assert result.code == "MONITOR_STORAGE_CORRUPT"
+        assert result.message == "monitor history is corrupt"
+        assert snapshot() == before
+    finally:
+        store.close()
+
+
+def test_public_query_rejects_extra_persisted_index_row_without_deletion(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    store = HistoryStore(paths)
+    try:
+        assert store.append_batch(_batch(paths, 1, captured_ns=1_001)).ok
+        database_path = paths.monitor_root / "monitor.sqlite3"
+        with sqlite3.connect(database_path) as connection:
+            value = connection.execute(
+                "SELECT batch_id,ordinal,selector_kind,selector,value_json,value_bytes,value_sha256 "
+                "FROM history_values WHERE batch_id = 1 AND ordinal = 0"
+            ).fetchone()
+            assert value is not None
+            connection.execute(
+                "INSERT INTO history_values "
+                "(batch_id,ordinal,selector_kind,selector,value_json,value_bytes,value_sha256) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (1, 1, *value[2:]),
+            )
+            connection.commit()
+
+        def snapshot() -> tuple[object, ...]:
+            with sqlite3.connect(database_path.as_uri() + "?mode=ro", uri=True) as connection:
+                return (
+                    connection.execute(
+                        "SELECT singleton,logical_bytes FROM monitor_history_accounting"
+                    ).fetchall(),
+                    connection.execute(
+                        "SELECT batch_id,ordinal,selector_kind,selector,value_json,value_bytes,value_sha256 "
+                        "FROM history_values ORDER BY batch_id,ordinal"
+                    ).fetchall(),
+                )
+
+        before = snapshot()
+        result = store.query_history(HistoryQuery("monitor-1", 0, 2_000_000_000))
+        assert not result.ok
+        assert result.code == "MONITOR_STORAGE_CORRUPT"
+        assert result.message == "monitor history is corrupt"
+        assert snapshot() == before
     finally:
         store.close()
 

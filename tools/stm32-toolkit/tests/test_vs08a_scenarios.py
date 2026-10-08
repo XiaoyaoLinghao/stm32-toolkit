@@ -511,6 +511,90 @@ def _publish_valid_physical_fixture(
     )
 
 
+def test_aw_preflight_project_and_run_guards_return_complete_public_wire(
+    tmp_path: Path,
+):
+    def failure_wire(code: str, message: str) -> dict[str, object]:
+        return {
+            "protocol": "stm32-toolkit/1",
+            "ok": False,
+            "operation": "acceptance.scenario.record",
+            "code": code,
+            "message": message,
+            "data": None,
+            "details": {},
+        }
+
+    schema2_project = tmp_path / "schema2-project"
+    schema2_project.mkdir()
+    schema2_manifest = _project_manifest("manual")
+    schema2_manifest["schemaVersion"] = 2
+    schema2_manifest.pop("testing")
+    (schema2_project / ".stm32-project.json").write_bytes(
+        json.dumps(schema2_manifest, sort_keys=True, separators=(",", ":")).encode()
+    )
+    schema2_data = tmp_path / "schema2-data"
+    schema2_before = _evidence_snapshot(schema2_project), _evidence_snapshot(schema2_data)
+    schema2_result = record_acceptance_scenario(
+        AcceptanceWorkflowContext(schema2_project, schema2_data, "schema2-session"),
+        record_id=RECORD_ID,
+        scenario_id="legacy-keil-migration",
+        scenario_version="1",
+        failed_before_test_run_id=FAILED_RUN_ID,
+        fixed_after_test_run_id=FIXED_RUN_ID,
+        diagnostic_session_id="00000000-0000-4000-8000-000000000004",
+    )
+    assert schema2_result.to_dict() == failure_wire(
+        "ACCEPTANCE_REFERENCE_INVALID", "Acceptance scenario reference is invalid."
+    )
+    assert (
+        _evidence_snapshot(schema2_project), _evidence_snapshot(schema2_data)
+    ) == schema2_before
+
+    manual_project = tmp_path / "manual-project"
+    manual_project.mkdir()
+    (manual_project / ".stm32-project.json").write_bytes(
+        json.dumps(_project_manifest("manual"), sort_keys=True, separators=(",", ":")).encode()
+    )
+    manual_data = tmp_path / "manual-data"
+    manual_before = _evidence_snapshot(manual_project), _evidence_snapshot(manual_data)
+    manual_result = record_acceptance_scenario(
+        AcceptanceWorkflowContext(manual_project, manual_data, "manual-session"),
+        record_id=RECORD_ID,
+        scenario_id="legacy-keil-migration",
+        scenario_version="1",
+        failed_before_test_run_id=FAILED_RUN_ID,
+        fixed_after_test_run_id=FIXED_RUN_ID,
+        diagnostic_session_id="00000000-0000-4000-8000-000000000004",
+    )
+    assert manual_result.to_dict() == failure_wire(
+        "ACCEPTANCE_PROJECT_ORIGIN_MISMATCH",
+        "Acceptance scenario project origin does not match.",
+    )
+    assert (
+        _evidence_snapshot(manual_project), _evidence_snapshot(manual_data)
+    ) == manual_before
+
+    same_run_project = tmp_path / "same-run-project"
+    same_run_data = tmp_path / "same-run-data"
+    same_run_before = _evidence_snapshot(same_run_project), _evidence_snapshot(same_run_data)
+    same_run_result = record_acceptance_scenario(
+        AcceptanceWorkflowContext(same_run_project, same_run_data, "same-run-session"),
+        record_id=RECORD_ID,
+        scenario_id="legacy-keil-migration",
+        scenario_version="1",
+        failed_before_test_run_id=FAILED_RUN_ID,
+        fixed_after_test_run_id=FAILED_RUN_ID,
+        diagnostic_session_id="00000000-0000-4000-8000-000000000004",
+    )
+    assert same_run_result.to_dict() == failure_wire(
+        "ACCEPTANCE_INPUT_INVALID", "Acceptance scenario input is invalid."
+    )
+    assert (
+        _evidence_snapshot(same_run_project), _evidence_snapshot(same_run_data)
+    ) == same_run_before
+
+
 @pytest.mark.parametrize("origin,scenario_id", [
     ("keil", "legacy-keil-migration"),
     ("cubemx", "new-cubemx-project"),
@@ -696,6 +780,207 @@ def test_vs08a_real_envelope_corruption_is_integrity_failure(
     assert result.code == "ACCEPTANCE_EVIDENCE_INTEGRITY_FAILED"
     assert not list((evidence_root / "roots" / "acceptance-scenario").glob("*.json"))
     assert _evidence_snapshot(evidence_root) == before
+
+
+def test_aw_reader_root_corruption_matrix_preserves_public_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    project_root, data_root, diagnostic_id = _complete_existing_chain(
+        tmp_path, "keil", monkeypatch, operation_prefix="aw-reader"
+    )
+    created = _record(project_root, data_root, diagnostic_id=diagnostic_id)
+    assert created.ok is True, created.to_dict()
+
+    context = AcceptanceWorkflowContext(project_root, data_root, "vs08a-keil-session")
+    workspace = WorkspacePaths.from_roots(
+        data_root, project_root, PROJECT_ID, "vs08a-keil-session"
+    )
+    evidence = EvidenceStore(workspace.workspace_root / "evidence")
+    acceptance_root = next(
+        (evidence.root / "roots" / "acceptance-scenario").glob("*.json")
+    )
+    root_bytes = acceptance_root.read_bytes()
+    root = RootRecord.from_value(json.loads(root_bytes.decode("utf-8")))
+    manifest_id = root.manifest_id
+    manifest_path = evidence.root / "manifests" / f"{manifest_id}.json"
+    manifest_bytes = manifest_path.read_bytes()
+    envelope = evidence.get_envelope(manifest_id)
+
+    positive = show_acceptance_scenario(context, record_id=RECORD_ID)
+    assert positive.ok is True, positive.to_dict()
+    positive_wire = positive.to_dict()
+    baseline_project = _evidence_snapshot(project_root)
+    baseline_data = _evidence_snapshot(data_root)
+
+    def failure_wire(code: str, message: str) -> dict[str, object]:
+        return {
+            "protocol": "stm32-toolkit/1",
+            "ok": False,
+            "operation": "acceptance.scenario.show",
+            "code": code,
+            "message": message,
+            "data": None,
+            "details": {},
+        }
+
+    def assert_positive_show() -> None:
+        shown = show_acceptance_scenario(context, record_id=RECORD_ID)
+        assert shown.to_dict() == positive_wire
+        assert _evidence_snapshot(project_root) == baseline_project
+        assert _evidence_snapshot(data_root) == baseline_data
+
+    for case_id, code, message in (
+        (
+            "noncanonical-root",
+            "ACCEPTANCE_EVIDENCE_INTEGRITY_FAILED",
+            "Acceptance evidence failed integrity validation.",
+        ),
+        (
+            "root-id-mismatch",
+            "ACCEPTANCE_REFERENCE_INVALID",
+            "Acceptance scenario reference is invalid.",
+        ),
+        (
+            "corrupt-envelope",
+            "ACCEPTANCE_EVIDENCE_INTEGRITY_FAILED",
+            "Acceptance evidence failed integrity validation.",
+        ),
+        (
+            "missing-envelope",
+            "ACCEPTANCE_EVIDENCE_INTEGRITY_FAILED",
+            "Acceptance evidence failed integrity validation.",
+        ),
+        (
+            "root-envelope-identity",
+            "ACCEPTANCE_EVIDENCE_INTEGRITY_FAILED",
+            "Acceptance evidence failed integrity validation.",
+        ),
+        (
+            "record-envelope-produced-at",
+            "ACCEPTANCE_EVIDENCE_INTEGRITY_FAILED",
+            "Acceptance evidence failed integrity validation.",
+        ),
+    ):
+        assert_positive_show()
+        extra_manifest_path: Path | None = None
+        try:
+            if case_id == "noncanonical-root":
+                acceptance_root.write_bytes(json.dumps(json.loads(root_bytes)).encode())
+            elif case_id == "root-id-mismatch":
+                mismatched_root = RootRecord(
+                    root.root_type,
+                    "different-record-id",
+                    root.manifest_id,
+                    root.metadata,
+                )
+                acceptance_root.write_bytes(canonical_json_bytes(mismatched_root.to_dict()))
+            elif case_id == "corrupt-envelope":
+                corrupt_metadata = json.loads(
+                    canonical_json_bytes(envelope.metadata).decode("utf-8")
+                )
+                corrupt_metadata["corruption_marker"] = "wrong-content-at-known-id"
+                corrupt_envelope = EvidenceEnvelope(
+                    identity=envelope.identity,
+                    operation=envelope.operation,
+                    produced_at_utc=envelope.produced_at_utc,
+                    parents=envelope.parents,
+                    artifacts=envelope.artifacts,
+                    metadata=corrupt_metadata,
+                )
+                assert str(corrupt_envelope.evidence_id) != manifest_id
+                manifest_path.write_bytes(corrupt_envelope.to_json_bytes())
+            elif case_id == "missing-envelope":
+                manifest_path.unlink()
+            elif case_id == "root-envelope-identity":
+                mismatched_metadata = json.loads(
+                    canonical_json_bytes(root.metadata).decode("utf-8")
+                )
+                mismatched_metadata["logical_project_id"] = (
+                    "87654321-4321-8765-4321-876543214321"
+                )
+                mismatched_root = RootRecord(
+                    root.root_type,
+                    root.root_id,
+                    root.manifest_id,
+                    mismatched_metadata,
+                )
+                acceptance_root.write_bytes(canonical_json_bytes(mismatched_root.to_dict()))
+            else:
+                changed_record_wire = json.loads(
+                    canonical_json_bytes(envelope.metadata["record"]).decode("utf-8")
+                )
+                changed_record_wire["producedAtUtc"] = "2026-08-24T00:00:01.000000Z"
+                changed_record = AcceptanceRecord.from_value(changed_record_wire)
+                changed_record_dict = changed_record.to_dict()
+                changed_metadata = {
+                    "record": changed_record_dict,
+                    "record_sha256": hashlib.sha256(
+                        canonical_json_bytes(changed_record_dict)
+                    ).hexdigest(),
+                    "scenario_digest": changed_record.scenario_digest,
+                    "workspace_id": changed_record.workspace_id,
+                    "logical_project_id": changed_record.logical_project_id,
+                }
+                changed_envelope = EvidenceEnvelope(
+                    identity=envelope.identity,
+                    operation=envelope.operation,
+                    produced_at_utc=envelope.produced_at_utc,
+                    parents=envelope.parents,
+                    artifacts=envelope.artifacts,
+                    metadata=changed_metadata,
+                )
+                extra_manifest_path = evidence.put_envelope(changed_envelope)
+                mismatched_root = RootRecord(
+                    root.root_type,
+                    root.root_id,
+                    str(changed_envelope.evidence_id),
+                    {
+                        "record_sha256": changed_metadata["record_sha256"],
+                        "scenario_digest": changed_record.scenario_digest,
+                        "workspace_id": changed_record.workspace_id,
+                        "logical_project_id": changed_record.logical_project_id,
+                    },
+                )
+                acceptance_root.write_bytes(canonical_json_bytes(mismatched_root.to_dict()))
+
+            before_project = _evidence_snapshot(project_root)
+            before_data = _evidence_snapshot(data_root)
+            shown = show_acceptance_scenario(context, record_id=RECORD_ID)
+            assert shown.to_dict() == failure_wire(code, message)
+            assert _evidence_snapshot(project_root) == before_project
+            assert _evidence_snapshot(data_root) == before_data
+        finally:
+            acceptance_root.write_bytes(root_bytes)
+            manifest_path.write_bytes(manifest_bytes)
+            if extra_manifest_path is not None and extra_manifest_path.exists():
+                extra_manifest_path.unlink()
+        assert_positive_show()
+
+    assert_positive_show()
+    other_project_root = tmp_path / "aw-reader-other-project"
+    other_project_root.mkdir()
+    (other_project_root / ".stm32-project.json").write_bytes(
+        (project_root / ".stm32-project.json").read_bytes()
+    )
+    other_workspace = WorkspacePaths.from_roots(
+        data_root, other_project_root, PROJECT_ID, "vs08a-keil-session"
+    )
+    shutil.copytree(
+        workspace.workspace_root / "evidence",
+        other_workspace.workspace_root / "evidence",
+    )
+    other_context = AcceptanceWorkflowContext(
+        other_project_root, data_root, "vs08a-keil-session"
+    )
+    before_other_project = _evidence_snapshot(other_project_root)
+    before_other_data = _evidence_snapshot(data_root)
+    crossed = show_acceptance_scenario(other_context, record_id=RECORD_ID)
+    assert crossed.to_dict() == failure_wire(
+        "ACCEPTANCE_IDENTITY_MISMATCH",
+        "Acceptance scenario identity does not match.",
+    )
+    assert _evidence_snapshot(other_project_root) == before_other_project
+    assert _evidence_snapshot(data_root) == before_other_data
 
 
 def test_vs08a_real_root_publication_corruption_is_integrity_failure(

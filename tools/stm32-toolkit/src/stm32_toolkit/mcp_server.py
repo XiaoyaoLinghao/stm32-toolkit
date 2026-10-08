@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import argparse
 import os
-import re
 import stat
 import sys
 import unicodedata
@@ -149,6 +148,9 @@ _PROBE_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
 _RUN_ID_PATTERN = r"^[a-z0-9][a-z0-9._-]*$"
 _DIAGNOSTIC_OPERATION_PATTERN = r"^[a-z0-9][a-z0-9._-]{0,127}$"
 _DIAGNOSTIC_SESSION_PATTERN = r"^[0-9a-f]{32}$"
+_DIAGNOSTIC_REFERENCE_PATTERN = (
+    r"^(?:[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$"
+)
 _DIAGNOSTIC_PLAN_PATTERN = r"^[0-9a-f]{64}$"
 _ACCEPTANCE_UUID_PATTERN = r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
 _PORTABLE_PATH_MAX_BYTES = 4096
@@ -240,6 +242,7 @@ AcceptanceAttemptScenarioId = Literal[
     "legacy-keil-migration",
     "new-cubemx-project",
     "legacy-keil-physical-repair",
+    "new-cubemx-physical-repair",
 ]
 AcceptanceScenarioVersion = Literal["1"]
 AcceptanceUuid = Annotated[
@@ -259,11 +262,7 @@ AcceptanceAttemptStage = Literal[
 AcceptanceRunId = RunId
 AcceptanceDiagnosticRef = Annotated[
     StrictStr,
-    Field(
-        pattern=rf"^(?:{_ACCEPTANCE_UUID_PATTERN[1:-1]}|{_DIAGNOSTIC_SESSION_PATTERN[1:-1]})$",
-        min_length=32,
-        max_length=36,
-    ),
+    Field(pattern=_DIAGNOSTIC_REFERENCE_PATTERN, min_length=32, max_length=36),
 ]
 
 
@@ -342,7 +341,33 @@ class ContinuationReuseInput(BaseModel):
     continuationEvidenceId: Digest
 
 
-ContinuationInput = ContinuationBindInput | ContinuationReuseInput
+class FinalizationBindInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+    schema_: Literal["stm32-physical-continuation-request/2"] = Field(alias="schema")
+    kind: Literal["bind"]
+    predecessorAttemptId: AcceptanceUuid
+    predecessorCheckpointId: Digest
+    predecessorEvidenceId: Digest
+    fixedAfterTestRunId: AcceptanceRunId
+    fixedAfterEvidenceId: Digest
+    diagnosticRevision: DiagnosticRevision
+    diagnosticEventHead: Digest
+    fixVerificationId: Digest
+
+
+class FinalizationReuseInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+    schema_: Literal["stm32-physical-continuation-request/2"] = Field(alias="schema")
+    kind: Literal["reuse"]
+    continuationEvidenceId: Digest
+
+
+ContinuationInput = (
+    ContinuationBindInput
+    | ContinuationReuseInput
+    | FinalizationBindInput
+    | FinalizationReuseInput
+)
 
 JsonArray = Annotated[list[object], BeforeValidator(_reject_json_tuple)]
 
@@ -561,6 +586,38 @@ class DiagnosticPhysicalMonitorFactSelector(BaseModel):
         return self
 
 
+class DiagnosticPhysicalMonitorFactV2Selector(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["physical-monitor-fact/2"]
+    monitor_ref_evidence_id: Digest
+    monitor_run_ref: DiagnosticMonitorRunRef
+    selector_kind: Literal["variable", "register"]
+    selector: DiagnosticText
+    fact: Literal["value-varies", "bit-values-mask"]
+    minimum_valid_samples: Annotated[StrictInt, Field(ge=1, le=1024)]
+    bit_index: Annotated[StrictInt, Field(ge=0, le=31)] | None = None
+
+    @model_validator(mode="after")
+    def _validate_fact(self) -> "DiagnosticPhysicalMonitorFactV2Selector":
+        if self.monitor_run_ref.scenario_role != "failed-before":
+            raise ValueError("v2 physical monitor facts require failed-before evidence")
+        if self.fact == "value-varies" and (
+            self.bit_index is not None or "bit_index" in self.model_fields_set
+        ):
+            raise ValueError("value-varies does not accept bit_index")
+        if (
+            self.fact == "bit-values-mask"
+            and (
+                self.selector_kind != "register"
+                or self.bit_index is None
+                or "bit_index" not in self.model_fields_set
+            )
+        ):
+            raise ValueError("bit-values-mask requires a register selector")
+        return self
+
+
 class DiagnosticRunStateSelector(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -585,7 +642,8 @@ DiagnosticSelector = Annotated[
     DiagnosticRunStateSelector
     | DiagnosticCaseStateSelector
     | DiagnosticCaseCountSelector
-    | DiagnosticPhysicalMonitorFactSelector,
+    | DiagnosticPhysicalMonitorFactSelector
+    | DiagnosticPhysicalMonitorFactV2Selector,
     Field(discriminator="kind"),
 ]
 DiagnosticExpectedValue = DiagnosticRunState | DiagnosticCaseState | DiagnosticCount
@@ -621,7 +679,7 @@ class DiagnosticObservationStep(BaseModel):
             raise ValueError("expected value is incompatible with selector")
         if kind == "case-count" and type(self.expected_value) is not int:
             raise ValueError("expected value is incompatible with selector")
-        if kind == "physical-monitor-fact/1":
+        if kind in {"physical-monitor-fact/1", "physical-monitor-fact/2"}:
             if type(self.expected_value) is not int:
                 raise ValueError("expected value is incompatible with selector")
             fact = self.selector.fact
@@ -1450,7 +1508,7 @@ def _diagnostic_step_data(step: DiagnosticObservationStep) -> dict[str, object]:
     selector = data.get("selector")
     if (
         isinstance(selector, dict)
-        and selector.get("kind") == "physical-monitor-fact/1"
+        and selector.get("kind") in {"physical-monitor-fact/1", "physical-monitor-fact/2"}
         and selector.get("bit_index") is None
     ):
         selector.pop("bit_index", None)
@@ -1857,7 +1915,7 @@ async def tool_acceptance_scenario_record_for_request(
     scenario_version: AcceptanceScenarioVersion,
     failed_before_test_run_id: AcceptanceUuid,
     fixed_after_test_run_id: AcceptanceUuid,
-    diagnostic_session_id: AcceptanceUuid,
+    diagnostic_session_id: AcceptanceDiagnosticRef,
 ) -> dict[str, object]:
     operation = "acceptance.scenario.record"
     failure = await _client_roots_failure(runtime, context, operation)
@@ -2661,7 +2719,7 @@ def create_server(
         scenarioVersion: AcceptanceScenarioVersion,
         failedBeforeTestRunId: AcceptanceUuid,
         fixedAfterTestRunId: AcceptanceUuid,
-        diagnosticSessionId: AcceptanceUuid,
+        diagnosticSessionId: AcceptanceDiagnosticRef,
     ) -> dict[str, object]:
         return await tool_acceptance_scenario_record_for_request(
             runtime,

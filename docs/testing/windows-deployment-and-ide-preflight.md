@@ -1,6 +1,6 @@
 # Windows 部署与 IDE 调试前置核对
 
-适用范围：Windows x86_64、CPython 3.12、Toolkit/Monitor 0.9.0、发行策略固定的 PyOCD 0.45.1。IDE 适配经验仅验证到 Cortex-Debug 1.12.1。本文件用于部署方案和执行卡，测试顺序、授权及停止规则以 [标准测试流程](standard-test-procedure.md) 为准。软件安装成功不等于 T9/T10/VS10-A 验收完成。
+适用范围：Windows x86_64、CPython 3.12、Toolkit/Monitor 1.0.0、发行策略固定的 PyOCD 0.45.1。IDE 适配经验仅验证到 Cortex-Debug 1.12.1。本文件用于部署方案和执行卡，测试顺序、授权及停止规则以 [标准测试流程](standard-test-procedure.md) 为准。软件安装成功不等于 T9/T10/VS10-A 验收完成。
 
 ## 部署者必须固定的输入
 
@@ -21,7 +21,7 @@ DataRoot 必须是长期保留的数据位置；runtime、项目身份、会话�
 下面是最终入口的人工离线核对示例。先把占位路径替换成已确认的本机路径；只查询版本，不枚举或连接板子：
 
 ```powershell
-$runtimeRoot = 'D:\STM32ToolkitData\runtime\0.9.0'
+$runtimeRoot = 'D:\STM32ToolkitData\runtime\1.0.0'
 & "$runtimeRoot\Scripts\python.exe" -I -m pyocd --version
 if ($LASTEXITCODE -ne 0) { throw 'PyOCD module failed' }
 & "$runtimeRoot\Scripts\pyocd.exe" --version
@@ -31,6 +31,12 @@ if ($LASTEXITCODE -ne 0) { throw 'PyOCD executable failed' }
 两者应与发行 manifest 的 PyOCD 版本一致。安装器还负责最终解释器绑定检查；上面两条命令不替代完整 Check。不要手改 EXE、重建已删除的 staging 路径或改用 PATH 上未经核对的 PyOCD。
 
 Bootstrap/Repair 的最终化要求精确发行 pin。对已有 runtime，Check 保留既有 `>=0.45.1,<0.46` 模块版本范围，并要求启动器报告与已验证模块相同的版本；它不是把所有已安装环境强制改为 0.45.1，也不会自动改装依赖。
+
+## Monitor 历史清理的已知时序限制
+
+历史保留策略清理已经开始写入后，`MONITOR_STORAGE_BUSY` 不保证事务回滚，也不证明清理已经完成。调用方应等待后台写入任务结束，再通过正常历史查询核对实际保留的数据；不能仅凭超时响应认定数据未变，或把同一清理动作立即重复执行。
+
+已保留的一次 Windows 失败记录中，调用方在 180ms 超时，随后后台任务出现 `SQLITE_INTERRUPT`，仍有 512 个值被持久删除。具体失败阶段尚未确定。后续既定性能测试及受控取消检查通过，证明各自检查范围内的行为，但没有证明这个历史时序问题已修复。该限制按 `KNOWN_TIMING_LIMITATION_ROOT_CAUSE_UNKNOWN` 保留；没有因此增大产品超时或放宽性能要求。记录及处置依据见 [1.0 资格记录](../codex/returns/STM32TK-1.0-local-release/qualification-status.md) 的 retention 段落；其中历史覆盖率快照不是当前发行结论，当前资格以 [有效覆盖率与剩余门槛](../codex/returns/STM32TK-1.0-core-public-contract-qualification/native-result.md) 为准。
 
 ## IDE 就绪后，才交出探针
 

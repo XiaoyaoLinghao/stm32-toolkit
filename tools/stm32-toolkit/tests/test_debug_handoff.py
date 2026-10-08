@@ -1099,6 +1099,71 @@ def test_end_reacquires_revalidates_and_consumes_one_time_ticket(handoff_env):
     assert supervisor.start_calls == 1
 
 
+def test_end_acknowledge_false_preserves_pending_release_until_public_retry(
+    handoff_env, monkeypatch: pytest.MonkeyPatch
+):
+    _, _, session_root, supervisor, client, request = handoff_env
+    ticket = asyncio.run(begin_debug_handoff(request, supervisor, client)).data
+    original_acknowledge = supervisor.acknowledge_consumed_handoff
+    acknowledge_calls = 0
+
+    async def acknowledge_false_once(ticket_id: str) -> bool:
+        nonlocal acknowledge_calls
+        acknowledge_calls += 1
+        if acknowledge_calls == 1:
+            return False
+        return await original_acknowledge(ticket_id)
+
+    monkeypatch.setattr(
+        supervisor, "acknowledge_consumed_handoff", acknowledge_false_once
+    )
+
+    first = asyncio.run(
+        end_debug_handoff(ticket.ticket_id, supervisor, lambda _: client)
+    )
+    assert first.code == "HANDOFF_REACQUIRE_FAILED"
+    assert first.message == "Consumed handoff ownership could not be released"
+    pending = _state(session_root)
+    assert pending["state"] == "observing-pending-release"
+    assert pending["ticketId"] == ticket.ticket_id
+    assert supervisor.endpoint is None
+    assert json.loads(
+        supervisor._lease_manager.path.read_text(encoding="utf-8")
+    )["state"] == "handoff-finalized"
+    assert acknowledge_calls == 1
+    assert "acknowledge" not in supervisor.lifecycle_events
+
+    events_before_begin = list(supervisor.lifecycle_events)
+    starts_before_begin = supervisor.start_calls
+    stops_before_begin = supervisor.stop_calls
+    lease_before_begin = supervisor._lease_manager.path.read_bytes()
+    rejected = asyncio.run(begin_debug_handoff(request, supervisor, client))
+    assert rejected.code == "HANDOFF_REACQUIRE_REQUIRED"
+    assert supervisor.lifecycle_events == events_before_begin
+    assert supervisor.start_calls == starts_before_begin
+    assert supervisor.stop_calls == stops_before_begin
+    assert supervisor._lease_manager.path.read_bytes() == lease_before_begin
+    assert _state(session_root) == pending
+
+    recovered = asyncio.run(
+        end_debug_handoff(ticket.ticket_id, supervisor, lambda _: client)
+    )
+    assert recovered.ok is True
+    assert recovered.data.previous_watch_selection == (
+        "counter",
+        "device.state",
+    )
+    assert acknowledge_calls == 2
+    assert supervisor.endpoint is None
+    assert not (session_root / "probe-endpoint.json").exists()
+    assert _state(session_root)["state"] == "observing"
+    assert _state(session_root)["ticketId"] is None
+    assert _state(session_root)["previousWatchSelection"] == []
+    assert json.loads(
+        supervisor._lease_manager.path.read_text(encoding="utf-8")
+    )["state"] == "released"
+
+
 def test_end_rejects_factory_client_bound_to_another_endpoint(handoff_env):
     _, _, session_root, supervisor, client, request = handoff_env
     ticket = asyncio.run(begin_debug_handoff(request, supervisor, client)).data
@@ -1162,6 +1227,61 @@ def test_end_start_or_readback_failure_stays_reacquiring_for_retry(handoff_env):
     third = asyncio.run(end_debug_handoff(ticket.ticket_id, supervisor, lambda endpoint: FakeClient(endpoint, client.image)))
     assert third.ok is True
     assert _state(session_root)["state"] == "observing"
+
+
+def test_end_readback_failure_and_cleanup_failure_retain_external_reservation(
+    handoff_env,
+):
+    _, _, session_root, supervisor, client, request = handoff_env
+    ticket = asyncio.run(begin_debug_handoff(request, supervisor, client)).data
+    returned_clients: list[FakeClient] = []
+
+    def factory(endpoint: object) -> FakeClient:
+        returned = FakeClient(endpoint, client.image)
+        if not returned_clients:
+            returned.read_error = RuntimeError("private readback provider")
+        returned_clients.append(returned)
+        return returned
+
+    supervisor.stop_error_after_cleanup = RuntimeError("private stop provider")
+    first = asyncio.run(end_debug_handoff(ticket.ticket_id, supervisor, factory))
+    assert first.code == "HANDOFF_REACQUIRE_FAILED"
+    assert first.message == "Probe Service cleanup failed after reacquisition"
+    assert _state(session_root)["state"] == "reacquiring"
+    assert supervisor.endpoint is None
+    reservation = json.loads(
+        supervisor._lease_manager.path.read_text(encoding="utf-8")
+    )
+    assert reservation["state"] == "externally-owned"
+    assert reservation["ticketSha256"] == hashlib.sha256(
+        ticket.ticket_id.encode("ascii")
+    ).hexdigest()
+    assert "consume" not in supervisor.lifecycle_events
+    assert "finalize" not in supervisor.lifecycle_events
+    assert "acknowledge" not in supervisor.lifecycle_events
+    assert len(returned_clients) == 1
+
+    supervisor.stop_error_after_cleanup = None
+    second = asyncio.run(end_debug_handoff(ticket.ticket_id, supervisor, factory))
+    assert second.ok is True
+    assert len(returned_clients) == 2
+    assert supervisor.endpoint is None
+    assert not (session_root / "probe-endpoint.json").exists()
+    assert _state(session_root)["state"] == "observing"
+    assert _state(session_root)["ticketId"] is None
+    assert json.loads(
+        supervisor._lease_manager.path.read_text(encoding="utf-8")
+    )["state"] == "released"
+    assert [event[0] for event in returned_clients[0].events] == [
+        "attach",
+        "read",
+        "close",
+    ]
+    assert [event[0] for event in returned_clients[1].events] == [
+        "attach",
+        "read",
+        "close",
+    ]
 
 
 def test_process_restart_uses_persisted_state_not_python_object_identity(handoff_env):

@@ -5,13 +5,14 @@ from dataclasses import replace
 import hashlib
 import json
 from pathlib import Path
+import shutil
 from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
 
 from stm32_monitor.analysis import AnalysisRequest
-from stm32_monitor.analysis_workflows import compare_monitor_runs
+from stm32_monitor.analysis_workflows import compare_monitor_runs, export_analysis_bundle
 from stm32_monitor.replay import (
     MonitorReplayError,
     MonitorReplayDocument,
@@ -19,10 +20,12 @@ from stm32_monitor.replay import (
 )
 import stm32_toolkit.diagnostic_workflows as diagnostic_workflows
 import stm32_toolkit.testing_workflows as testing_workflows
+import test_vs08b_scenarios as vs08b
 from stm32_toolkit.diagnostic_workflows import (
     DiagnosticWorkflowContext,
     diagnostic_add_hypothesis,
     diagnostic_add_verification_plan,
+    diagnostic_assess_hypothesis,
     diagnostic_attach_marker,
     diagnostic_begin,
     diagnostic_complete_verification,
@@ -34,6 +37,7 @@ from stm32_toolkit.diagnostic_workflows import (
 )
 from stm32_toolkit.diagnostics import (
     DiagnosticMarkerRef,
+    FixVerification,
     SourceChangeDeclaration,
     VerificationPlan,
 )
@@ -188,9 +192,16 @@ def _replace_monitor_reference_authority(
     workspace: WorkspacePaths,
     operation_id: str,
     mutate,
+    *,
+    sync_transcript_root: bool = False,
 ) -> None:
     evidence = EvidenceStore(workspace.workspace_root / "evidence")
     root = get_root(evidence, "monitor-run-ref", operation_id)
+    transcript_root = (
+        get_root(evidence, "monitor-run", operation_id)
+        if sync_transcript_root
+        else None
+    )
     envelope = evidence.get_envelope(root.manifest_id)
     payload = json.loads(
         evidence.read_artifact(envelope.artifacts[0], maximum_bytes=1_000_000).decode("utf-8")
@@ -244,6 +255,19 @@ def _replace_monitor_reference_authority(
             metadata=metadata,
         ),
     )
+    if transcript_root is not None:
+        transcript_metadata = dict(transcript_root.metadata)
+        transcript_metadata["run_ref_sha256"] = payload["run_ref_sha256"]
+        _evidence_root_path(workspace, "monitor-run", operation_id).unlink()
+        put_root(
+            evidence,
+            RootRecord(
+                root_type="monitor-run",
+                root_id=operation_id,
+                manifest_id=transcript_root.manifest_id,
+                metadata=transcript_metadata,
+            ),
+        )
 
 
 def _swap_monitor_reference_authority(
@@ -1516,6 +1540,7 @@ def test_task7b_completion_deterministic_outcome_priority_and_zero_mutation(
     ) = _prepared_cross_state_operations(monkeypatch, tmp_path / "corrupt")
     analysis_root = _evidence_root_path(workspace, "monitor-analysis", marker_ref.analysis_id)
     analysis_root.write_bytes(b"{}")
+    before = _authority_snapshot(workspace)
     corrupt_analysis = diagnostic_complete_verification(
         _fresh_diagnostic_context(diagnostic_context),
         operation_id="complete.corrupt-analysis",
@@ -1523,10 +1548,11 @@ def test_task7b_completion_deterministic_outcome_priority_and_zero_mutation(
         expected_revision=7,
         executed_operation_ids=["target-test.vs03"],
     )
-    assert corrupt_analysis.ok is True
-    assert corrupt_analysis.data["fix_verification"]["status"] == "INCONCLUSIVE"
-    assert corrupt_analysis.data["fix_verification"]["reason_code"] == "MANDATORY_EVIDENCE_CORRUPT"
-    assert corrupt_analysis.data["session"]["state"] == "INVESTIGATING"
+    after = _authority_snapshot(workspace)
+    assert corrupt_analysis.ok is False
+    assert corrupt_analysis.code == "DIAGNOSTIC_CHAIN_CORRUPT"
+    assert corrupt_analysis.data is None
+    assert after == before
 
     (
         diagnostic_context,
@@ -1935,6 +1961,222 @@ def test_task7b_completion_rejects_analysis_or_marker_identity_without_mutation(
     assert after == before
 
 
+@pytest.mark.parametrize("kind", ("analysis", "marker"))
+def test_task7b_completion_artifact_provider_oserror_is_environment_failure_without_mutation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, kind: str
+) -> None:
+    (
+        diagnostic_context,
+        session_id,
+        workspace,
+        _declaration,
+        _plan,
+        marker_ref,
+        _declared,
+        _planned,
+        _started,
+        _attached,
+    ) = _prepared_cross_state_operations(monkeypatch, tmp_path)
+    root_type = "monitor-analysis" if kind == "analysis" else "diagnostic-marker"
+    root_id = marker_ref.analysis_id if kind == "analysis" else marker_ref.marker_id
+    evidence = EvidenceStore(workspace.workspace_root / "evidence")
+    root = get_root(evidence, root_type, root_id)
+    artifact = evidence.get_envelope(root.manifest_id).artifacts[0]
+
+    completion_reader_entered = False
+    provider_calls: list[object] = []
+    original_completion_reader = diagnostic_workflows._read_completion_json_evidence
+    original_read_artifact = EvidenceStore.read_artifact
+
+    def completion_reader(*args: object, **kwargs: object) -> object:
+        nonlocal completion_reader_entered
+        completion_reader_entered = True
+        return original_completion_reader(*args, **kwargs)
+
+    def provider_failure(
+        store: EvidenceStore, requested_artifact: object, *, maximum_bytes: int
+    ) -> bytes:
+        if completion_reader_entered and requested_artifact == artifact:
+            provider_calls.append(requested_artifact)
+            raise OSError("completion evidence provider is unavailable")
+        return original_read_artifact(
+            store, requested_artifact, maximum_bytes=maximum_bytes
+        )
+
+    monkeypatch.setattr(
+        diagnostic_workflows, "_read_completion_json_evidence", completion_reader
+    )
+    monkeypatch.setattr(EvidenceStore, "read_artifact", provider_failure)
+
+    before = _authority_snapshot(workspace)
+    result = diagnostic_complete_verification(
+        _fresh_diagnostic_context(diagnostic_context),
+        operation_id=f"complete.provider.{kind}",
+        diagnostic_session_id=session_id,
+        expected_revision=7,
+        executed_operation_ids=["target-test.vs03"],
+    )
+    after = _authority_snapshot(workspace)
+
+    assert completion_reader_entered is True
+    assert provider_calls == [artifact]
+    assert result.ok is False
+    assert result.code == "ENVIRONMENT_FAILURE"
+    assert result.data is None
+    assert after == before
+
+
+@pytest.mark.parametrize("kind", ("analysis-missing", "marker-corrupt"))
+def test_task7b_completion_artifact_failure_kind_is_classified_without_evidence_mutation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, kind: str
+) -> None:
+    (
+        diagnostic_context,
+        session_id,
+        workspace,
+        _declaration,
+        _plan,
+        marker_ref,
+        _declared,
+        _planned,
+        _started,
+        _attached,
+    ) = _prepared_cross_state_operations(monkeypatch, tmp_path)
+    if kind == "analysis-missing":
+        root_type = "monitor-analysis"
+        root_id = marker_ref.analysis_id
+        expected_reason = "MANDATORY_EVIDENCE_MISSING"
+    else:
+        assert kind == "marker-corrupt"
+        root_type = "diagnostic-marker"
+        root_id = marker_ref.marker_id
+        expected_reason = "MANDATORY_EVIDENCE_CORRUPT"
+    evidence = EvidenceStore(workspace.workspace_root / "evidence")
+    root = get_root(evidence, root_type, root_id)
+    artifact = evidence.get_envelope(root.manifest_id).artifacts[0]
+
+    completion_reader_entered = False
+    completion_reader_active = False
+    provider_calls: list[object] = []
+    original_completion_reader = diagnostic_workflows._read_completion_json_evidence
+    original_read_artifact = EvidenceStore.read_artifact
+
+    def completion_reader(*args: object, **kwargs: object) -> object:
+        nonlocal completion_reader_active, completion_reader_entered
+        completion_reader_entered = True
+        completion_reader_active = True
+        try:
+            return original_completion_reader(*args, **kwargs)
+        finally:
+            completion_reader_active = False
+
+    def selected_artifact_failure(
+        store: EvidenceStore, requested_artifact: object, *, maximum_bytes: int
+    ) -> bytes:
+        if completion_reader_active and requested_artifact == artifact:
+            provider_calls.append(requested_artifact)
+            if kind == "analysis-missing":
+                raise FileNotFoundError("completion analysis evidence is missing")
+            return b"not-json"
+        return original_read_artifact(
+            store, requested_artifact, maximum_bytes=maximum_bytes
+        )
+
+    monkeypatch.setattr(
+        diagnostic_workflows, "_read_completion_json_evidence", completion_reader
+    )
+    monkeypatch.setattr(EvidenceStore, "read_artifact", selected_artifact_failure)
+
+    before_evidence = dict(_tree_snapshot(workspace.workspace_root / "evidence"))
+    before_evidence_roots = {
+        path: payload for path, payload in before_evidence.items() if path.startswith("roots/")
+    }
+    before_diagnostics = dict(_tree_snapshot(workspace.diagnostics_root))
+    result = diagnostic_complete_verification(
+        _fresh_diagnostic_context(diagnostic_context),
+        operation_id=f"complete.{kind}",
+        diagnostic_session_id=session_id,
+        expected_revision=7,
+        executed_operation_ids=["target-test.vs03"],
+    )
+    after_evidence = dict(_tree_snapshot(workspace.workspace_root / "evidence"))
+    after_evidence_roots = {
+        path: payload for path, payload in after_evidence.items() if path.startswith("roots/")
+    }
+    after_diagnostics = dict(_tree_snapshot(workspace.diagnostics_root))
+
+    assert completion_reader_entered is True
+    assert provider_calls == [artifact]
+    assert result.ok is True
+    assert result.operation == "diagnostic.verification.complete"
+    assert result.code == "OK"
+    assert result.message == ""
+    assert result.details == {}
+    assert result.data is not None
+    assert result.data["fix_verification"]["status"] == "INCONCLUSIVE"
+    assert result.data["fix_verification"]["reason_code"] == expected_reason
+    assert result.data["session"]["revision"] == 8
+    assert result.data["session"]["state"] == "INVESTIGATING"
+
+    assert set(before_evidence) <= set(after_evidence)
+    assert {path: after_evidence[path] for path in before_evidence} == before_evidence
+    assert set(before_diagnostics) <= set(after_diagnostics)
+    assert {
+        path: after_diagnostics[path] for path in before_diagnostics
+    } == before_diagnostics
+    new_evidence_root_paths = set(after_evidence_roots) - set(before_evidence_roots)
+    assert len(new_evidence_root_paths) == 1
+    new_evidence_root_path = next(iter(new_evidence_root_paths))
+    checkpoint_root = get_root(evidence, "diagnostic-session", f"{session_id}.00000008")
+    checkpoint_root_path = workspace.workspace_root / "evidence" / new_evidence_root_path
+    checkpoint_root_bytes = checkpoint_root_path.read_bytes()
+    checkpoint_root_payload = json.loads(checkpoint_root_bytes.decode("utf-8"))
+    assert canonical_json_bytes(checkpoint_root_payload) == checkpoint_root_bytes
+    assert RootRecord.from_value(checkpoint_root_payload).to_dict() == checkpoint_root.to_dict()
+    checkpoint_envelope = evidence.get_envelope(checkpoint_root.manifest_id)
+    checkpoint_paths = {
+        new_evidence_root_path,
+        f"manifests/{checkpoint_root.manifest_id}.json",
+        checkpoint_envelope.artifacts[0].relative_path,
+    }
+    pending_parents = list(checkpoint_envelope.parents)
+    while pending_parents:
+        parent_manifest_id = pending_parents.pop()
+        parent_manifest_path = f"manifests/{parent_manifest_id}.json"
+        if parent_manifest_path in before_evidence or parent_manifest_path in checkpoint_paths:
+            continue
+        parent_envelope = evidence.get_envelope(parent_manifest_id)
+        checkpoint_paths.add(parent_manifest_path)
+        checkpoint_paths.update(
+            artifact.relative_path
+            for artifact in parent_envelope.artifacts
+            if artifact.relative_path not in before_evidence
+        )
+        pending_parents.extend(
+            parent_id
+            for parent_id in parent_envelope.parents
+            if f"manifests/{parent_id}.json" not in before_evidence
+        )
+    for checkpoint_path in tuple(checkpoint_paths):
+        parent = Path(checkpoint_path).parent
+        while parent != Path("."):
+            parent_path = parent.as_posix()
+            if parent_path not in before_evidence:
+                checkpoint_paths.add(parent_path)
+            parent = parent.parent
+    assert set(after_evidence) - set(before_evidence) == checkpoint_paths
+    assert set(after_diagnostics) - set(before_diagnostics) == {
+        f"sessions/{session_id}/events/00000007.json",
+    }
+    event_path = workspace.diagnostics_root / "sessions" / session_id / "events" / "00000007.json"
+    event = json.loads(event_path.read_text(encoding="utf-8"))
+    assert event["event_type"] == "verification.completed"
+    assert event["sequence"] == 7
+    assert event["revision_before"] == 7
+    assert event["payload"]["result"]["status"] == "INCONCLUSIVE"
+    assert event["payload"]["result"]["reason_code"] == expected_reason
+
+
 def test_target_replay_diagnostic_session_reloads_with_origin_authority(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -2222,6 +2464,1750 @@ def test_target_bound_operations_project_durable_mode_failures_without_mutation(
     assert result.ok is False
     assert result.code == expected_code
     assert after == before
+
+
+def _assert_public_failure(
+    result: object,
+    operation: str,
+    code: str,
+    *,
+    case_name: str | None = None,
+) -> dict[str, object]:
+    messages = {
+        "DIAGNOSTIC_INVALID_EVENT": "event/model/operation intent is invalid",
+        "DIAGNOSTIC_INVALID_TRANSITION": "event is illegal in current state",
+        "DIAGNOSTIC_PLAN_INVALID": "selector, expected value, plan, or step reference is invalid",
+        "INCOMPATIBLE_IDENTITY": "Target replay identity is incompatible.",
+        "EVIDENCE_INTEGRITY_FAILURE": "Target replay evidence failed integrity validation.",
+    }
+    wire = result.to_dict()  # type: ignore[union-attr]
+    assert wire == {
+        "protocol": "stm32-toolkit/1",
+        "ok": False,
+        "operation": operation,
+        "code": code,
+        "message": messages[code],
+        "data": None,
+        "details": {},
+    }, case_name or operation
+    return wire
+
+
+def _assert_public_success(result: object, operation: str) -> dict[str, object]:
+    wire = result.to_dict()  # type: ignore[union-attr]
+    assert set(wire) == {
+        "protocol",
+        "ok",
+        "operation",
+        "code",
+        "message",
+        "data",
+        "details",
+    }
+    assert wire["protocol"] == "stm32-toolkit/1"
+    assert wire["ok"] is True
+    assert wire["operation"] == operation
+    assert wire["code"] == "OK"
+    assert wire["message"] == ""
+    assert wire["details"] == {}
+    assert wire["data"] is not None
+    return wire
+
+
+def _assert_public_diagnostic_checkpoint(
+    workspace: WorkspacePaths,
+    before: tuple[tuple[str, bytes | None], ...],
+    after: tuple[tuple[str, bytes | None], ...],
+    *,
+    diagnostic_session_id: str,
+    revision: int,
+    operation_id: str,
+    actor: str,
+    event_type: str,
+    expected_state: str,
+    expected_payload: dict[str, object],
+) -> None:
+    evidence = EvidenceStore(workspace.workspace_root / "evidence")
+    root_id = f"{diagnostic_session_id}.{revision:08d}"
+    root = get_root(evidence, "diagnostic-session", root_id)
+    envelope = evidence.get_envelope(root.manifest_id)
+    assert len(envelope.artifacts) == 1
+    artifact = envelope.artifacts[0]
+
+    previous_root = get_root(
+        evidence,
+        "diagnostic-session",
+        f"{diagnostic_session_id}.{revision - 1:08d}",
+    )
+    event_path = (
+        workspace.diagnostics_root
+        / "sessions"
+        / diagnostic_session_id
+        / "events"
+        / f"{revision - 1:08d}.json"
+    )
+    event_bytes = event_path.read_bytes()
+    event = json.loads(event_bytes.decode("utf-8"))
+    assert isinstance(event, dict)
+    assert canonical_json_bytes(event) == event_bytes
+    assert set(event) == {
+        "schema",
+        "diagnostic_session_id",
+        "operation_id",
+        "sequence",
+        "revision_before",
+        "event_type",
+        "occurred_at_utc",
+        "actor",
+        "previous_digest",
+        "payload",
+        "digest",
+    }
+    assert event["schema"] == "stm32-diagnostic-event/1"
+    assert event["diagnostic_session_id"] == diagnostic_session_id
+    assert event["operation_id"] == operation_id
+    assert event["sequence"] == revision - 1
+    assert event["revision_before"] == revision - 1
+    assert event["event_type"] == event_type
+    assert isinstance(event["occurred_at_utc"], str)
+    assert event["actor"] == actor
+    assert event["previous_digest"] == previous_root.metadata["event_digest"]
+    assert event["payload"] == expected_payload
+    event_digest = event["digest"]
+    assert isinstance(event_digest, str)
+    without_digest = {
+        key: value for key, value in event.items() if key != "digest"
+    }
+    assert event_digest == hashlib.sha256(
+        canonical_json_bytes(without_digest)
+    ).hexdigest()
+
+    request = expected_payload["request"]
+    assert isinstance(request, dict)
+    references: list[str] = []
+    if event_type == "source_change.declared":
+        declaration = request["source_change_declaration"]
+        assert isinstance(declaration, dict)
+        references.append(str(declaration["diff_evidence_id"]))
+    elif event_type == "verification.plan_added":
+        plan = request["verification_plan"]
+        assert isinstance(plan, dict)
+        references.extend(
+            (
+                str(plan["failed_before_evidence_id"]),
+                str(plan["fixed_after_evidence_id"]),
+                *(str(item) for item in plan["required_analysis_evidence_ids"]),
+            )
+        )
+        continuation = plan.get("continuation_evidence_id")
+        if continuation is not None:
+            references.append(str(continuation))
+    elif event_type == "analysis.marker_attached":
+        marker = request["diagnostic_marker_ref"]
+        assert isinstance(marker, dict)
+        references.extend(
+            (str(marker["marker_evidence_id"]), str(marker["analysis_evidence_id"]))
+        )
+    elif event_type == "verification.completed":
+        verification = request["fix_verification"]
+        assert isinstance(verification, dict)
+        references.extend(
+            (
+                str(verification["failed_before_evidence_id"]),
+                str(verification["fixed_after_evidence_id"]),
+                *(str(item) for item in verification["analysis_evidence_ids"]),
+            )
+        )
+    expected_parents = [previous_root.manifest_id]
+    for reference in references:
+        if reference not in expected_parents:
+            expected_parents.append(reference)
+
+    artifact_sha256 = hashlib.sha256(event_bytes).hexdigest()
+    artifact_relative_path = (
+        f"objects/sha256/{artifact_sha256[:2]}/{artifact_sha256}"
+    )
+    expected_artifact = {
+        "sha256": artifact_sha256,
+        "size_bytes": len(event_bytes),
+        "relative_path": artifact_relative_path,
+        "kind": "diagnostic-event",
+        "media_type": "application/json",
+    }
+    assert artifact.to_dict() == expected_artifact
+    assert evidence.read_artifact(artifact, maximum_bytes=1_000_000) == event_bytes
+    object_path = evidence.root / artifact_relative_path
+    assert object_path.read_bytes() == event_bytes
+
+    expected_metadata = {
+        "diagnostic_session_id": diagnostic_session_id,
+        "sequence": revision - 1,
+        "revision": revision,
+        "event_digest": event_digest,
+    }
+    assert envelope.to_dict() == {
+        "schema": "stm32-evidence/1",
+        "evidence_id": str(envelope.evidence_id),
+        "identity": envelope.identity.to_dict(),
+        "operation": "diagnostic-event",
+        "produced_at_utc": event["occurred_at_utc"],
+        "parents": expected_parents,
+        "artifacts": [expected_artifact],
+        "metadata": expected_metadata,
+    }
+    assert envelope.to_json_bytes() == (
+        evidence.root / "manifests" / f"{envelope.evidence_id}.json"
+    ).read_bytes()
+    expected_root_metadata = {
+        "diagnostic_session_id": diagnostic_session_id,
+        "revision": revision,
+        "state": expected_state,
+        "event_digest": event_digest,
+    }
+    assert root.to_dict() == {
+        "root_type": "diagnostic-session",
+        "root_id": root_id,
+        "manifest_id": str(envelope.evidence_id),
+        "metadata": expected_root_metadata,
+    }
+    root_path = _public_diagnostic_root_file(
+        evidence, "diagnostic-session", root_id
+    )
+    assert root_path.read_bytes() == canonical_json_bytes(root.to_dict())
+
+    data_root = workspace.data_root
+    before_paths = {path for path, _payload in before}
+    after_paths = {path for path, _payload in after}
+    expected_files = {
+        event_path,
+        root_path,
+        evidence.root / "manifests" / f"{envelope.evidence_id}.json",
+        object_path,
+    }
+    expected_file_paths = {
+        path.relative_to(data_root).as_posix() for path in expected_files
+    }
+    assert expected_file_paths.isdisjoint(before_paths)
+    assert expected_file_paths <= after_paths
+    expected_new_directories: set[str] = set()
+    for file_path in expected_files:
+        parent = file_path.parent
+        while parent != data_root:
+            relative = parent.relative_to(data_root).as_posix()
+            if relative not in before_paths:
+                expected_new_directories.add(relative)
+            parent = parent.parent
+    assert after_paths - before_paths == expected_file_paths | expected_new_directories
+    assert all(entry in after for entry in before)
+
+
+def _copy_public_diagnostic_prefix(
+    source_root: Path,
+    target_root: Path,
+    *,
+    project_root: Path,
+    session_id: str,
+    excluded_root: tuple[str, str] | None = None,
+) -> Path:
+    shutil.copytree(source_root, target_root)
+    if excluded_root is not None:
+        root_type, root_id = excluded_root
+        evidence = EvidenceStore(
+            WorkspacePaths.from_roots(
+                target_root,
+                project_root,
+                PROJECT_ID,
+                session_id,
+            ).workspace_root
+            / "evidence"
+        )
+        key_digest = hashlib.sha256(
+            canonical_json_bytes({"root_type": root_type, "root_id": root_id})
+        ).hexdigest()
+        root_path = evidence.root / "roots" / root_type / f"{key_digest}.json"
+        assert root_path.exists()
+        root_path.unlink()
+    return target_root
+
+
+def _public_diagnostic_root_file(
+    evidence: EvidenceStore, root_type: str, root_id: str
+) -> Path:
+    key_digest = hashlib.sha256(
+        canonical_json_bytes({"root_type": root_type, "root_id": root_id})
+    ).hexdigest()
+    return evidence.root / "roots" / root_type / f"{key_digest}.json"
+
+
+def _publish_public_analysis_variant(
+    evidence: EvidenceStore,
+    *,
+    root_id: str,
+    envelope: EvidenceEnvelope,
+    metadata: dict[str, object],
+) -> None:
+    evidence.put_envelope(envelope)
+    root_path = _public_diagnostic_root_file(evidence, "monitor-analysis", root_id)
+    assert not root_path.exists()
+    put_root(
+        evidence,
+        RootRecord(
+            root_type="monitor-analysis",
+            root_id=root_id,
+            manifest_id=str(envelope.evidence_id),
+            metadata=metadata,
+        ),
+    )
+
+
+def _prepare_public_diagnostic_authorities(
+    tmp_path: Path,
+    project_root: Path,
+    data_root: Path,
+    runtime_session_id: str,
+    diagnostic_storage_id: str,
+    hypothesis_id: str,
+    declaration: SourceChangeDeclaration,
+    fixed_descriptor: Path,
+    fixed_stream: Path,
+) -> tuple[WorkspacePaths, VerificationPlan, object, object]:
+    workspace = WorkspacePaths.from_roots(
+        data_root,
+        project_root,
+        PROJECT_ID,
+        runtime_session_id,
+    )
+    evidence = EvidenceStore(workspace.workspace_root / "evidence")
+    testing = testing_workflows.TestingWorkflowContext(
+        project_root,
+        data_root,
+        runtime_session_id,
+    )
+    assert testing_workflows.target_replay_run(
+        testing,
+        vs08b.FIXED_RUN_ID,
+        fixed_descriptor,
+        fixed_stream,
+    ).ok
+    before_run = TestRunRepository(evidence).load(vs08b.FAILED_RUN_ID)
+    after_run = TestRunRepository(evidence).load(vs08b.FIXED_RUN_ID)
+
+    monitor_paths: dict[str, Path] = {}
+    for role in ("failed-before", "fixed-after"):
+        source = vs08b.MONITOR_FIXTURES / f"{role}.json"
+        descriptor = json.loads(source.read_text(encoding="utf-8"))
+        descriptor["binding"]["workspaceId"] = workspace.workspace_id
+        for batch in descriptor["batches"]:
+            batch["binding"]["workspaceId"] = workspace.workspace_id
+        unsigned = {
+            key: value for key, value in descriptor.items() if key != "fixture_sha256"
+        }
+        descriptor["fixture_sha256"] = hashlib.sha256(
+            json.dumps(
+                unsigned,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            ).encode("utf-8")
+        ).hexdigest()
+        target = tmp_path / f"public-diagnostic-monitor-{role}.json"
+        target.write_text(
+            json.dumps(descriptor, sort_keys=True, separators=(",", ":")),
+            encoding="utf-8",
+        )
+        monitor_paths[role] = target
+    monitor_before = ingest_monitor_replay(
+        workspace,
+        evidence,
+        vs08b.MONITOR_OPERATION_IDS["failed-before"],
+        monitor_paths["failed-before"],
+    )
+    monitor_after = ingest_monitor_replay(
+        workspace,
+        evidence,
+        vs08b.MONITOR_OPERATION_IDS["fixed-after"],
+        monitor_paths["fixed-after"],
+    )
+    analysis_request = AnalysisRequest(
+        schema="stm32-monitor-analysis-request/1",
+        before_run=monitor_before,
+        after_run=monitor_after,
+        selector_kind="variable",
+        selector="counter",
+        alignment="run-relative",
+        minimum_valid_pairs=2,
+    )
+    publication = compare_monitor_runs(
+        workspace,
+        evidence,
+        analysis_request,
+        diagnostic_storage_id,
+        hypothesis_id,
+        "supports",
+        "the fixed replay changed the observed counter",
+        declaration,
+    )
+    export_analysis_bundle(
+        workspace,
+        evidence,
+        analysis_request,
+        publication,
+        vs08b.FAILED_RUN_ID,
+        vs08b.FIXED_RUN_ID,
+        declaration,
+    )
+    verification_plan = VerificationPlan.new(
+        verification_plan_id="b" * 64,
+        diagnostic_session_id=diagnostic_storage_id,
+        failed_before_run_id=vs08b.FAILED_RUN_ID,
+        failed_before_evidence_id=str(before_run.envelope.evidence_id),
+        source_change_declaration_id=declaration.declaration_id,
+        fixed_after_run_id=vs08b.FIXED_RUN_ID,
+        fixed_after_evidence_id=str(after_run.envelope.evidence_id),
+        required_analysis_ids=(publication.analysis_result.analysis_id,),
+        required_analysis_evidence_ids=(publication.analysis_evidence_ref.evidence_id,),
+        required_monitor_quality="VALID",
+        expected_changed=True,
+    )
+    return workspace, verification_plan, publication, after_run
+
+
+def test_public_diagnostic_caller_journey_replay_to_resolution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    journey_root = tmp_path / "j1"
+    journey_root.mkdir()
+    (
+        project_root,
+        data_root,
+        diagnostic_id,
+        hypothesis_id,
+        _failed_descriptor,
+        fixed_descriptor,
+        fixed_stream,
+    ) = vs08b._prepare_real_diagnostic_before_source(
+        journey_root,
+        "cubemx",
+        monkeypatch,
+        "dj1-session",
+    )
+    diagnostic_storage_id = diagnostic_id.replace("-", "")
+    diagnostic = DiagnosticWorkflowContext(project_root, data_root, "dj1-session")
+    baseline_workspace = WorkspacePaths.from_roots(
+        data_root,
+        project_root,
+        PROJECT_ID,
+        "dj1-session",
+    )
+
+    shown = diagnostic_show(
+        _fresh_diagnostic_context(diagnostic),
+        diagnostic_session_id=diagnostic_storage_id,
+    )
+    shown_wire = _assert_public_success(shown, "diagnostic.show")
+    shown_data = shown_wire["data"]
+    assert isinstance(shown_data, dict)
+    shown_session = shown_data["session"]
+    assert isinstance(shown_session, dict)
+    assert shown_data == {"session": shown_session, "authoritative": True}
+    assert shown_session["revision"] == 6
+    assert shown_session["state"] == "INVESTIGATING"
+    observation_plan_id = shown_session["observation_plans"][0]["plan_id"]
+
+    prefix6 = journey_root / "prefix6"
+    _copy_public_diagnostic_prefix(
+        data_root,
+        prefix6,
+        project_root=project_root,
+        session_id="dj1-session",
+    )
+    prefix6_original_bytes = _tree_snapshot(data_root)
+    invalid_hypothesis_context = DiagnosticWorkflowContext(
+        project_root,
+        journey_root / "invalid-hypothesis",
+        "dj1-session",
+    )
+    _copy_public_diagnostic_prefix(
+        prefix6,
+        invalid_hypothesis_context.data_root,
+        project_root=project_root,
+        session_id="dj1-session",
+    )
+    before = _tree_snapshot(invalid_hypothesis_context.data_root)
+    invalid_hypothesis = diagnostic_assess_hypothesis(
+        invalid_hypothesis_context,
+        operation_id="dj1.invalid-hypothesis",
+        diagnostic_session_id=diagnostic_storage_id,
+        expected_revision=6,
+        hypothesis_id="not-a-hypothesis-id",
+        plan_id=observation_plan_id,
+        step_id="failed-run",
+        polarity="supports",
+        rationale="invalid hypothesis syntax is rejected before state access",
+    )
+    _assert_public_failure(
+        invalid_hypothesis,
+        "diagnostic.hypothesis.assess",
+        "DIAGNOSTIC_PLAN_INVALID",
+        case_name="invalid-hypothesis",
+    )
+    assert _tree_snapshot(invalid_hypothesis_context.data_root) == before
+    assert _tree_snapshot(data_root) == prefix6_original_bytes
+
+    invalid_step_context = DiagnosticWorkflowContext(
+        project_root,
+        journey_root / "invalid-step",
+        "dj1-session",
+    )
+    _copy_public_diagnostic_prefix(
+        prefix6,
+        invalid_step_context.data_root,
+        project_root=project_root,
+        session_id="dj1-session",
+    )
+    before = _tree_snapshot(invalid_step_context.data_root)
+    invalid_step = diagnostic_assess_hypothesis(
+        invalid_step_context,
+        operation_id="dj1.invalid-step",
+        diagnostic_session_id=diagnostic_storage_id,
+        expected_revision=6,
+        hypothesis_id=hypothesis_id,
+        plan_id=observation_plan_id,
+        step_id="invalid step id",
+        polarity="supports",
+        rationale="invalid step syntax is rejected before state access",
+    )
+    _assert_public_failure(
+        invalid_step,
+        "diagnostic.hypothesis.assess",
+        "DIAGNOSTIC_PLAN_INVALID",
+        case_name="invalid-step",
+    )
+    assert _tree_snapshot(invalid_step_context.data_root) == before
+    assert _tree_snapshot(data_root) == prefix6_original_bytes
+
+    start_before_declaration_context = DiagnosticWorkflowContext(
+        project_root,
+        journey_root / "start-before-declaration",
+        "dj1-session",
+    )
+    _copy_public_diagnostic_prefix(
+        prefix6,
+        start_before_declaration_context.data_root,
+        project_root=project_root,
+        session_id="dj1-session",
+    )
+    before = _tree_snapshot(start_before_declaration_context.data_root)
+    start_before_declaration = diagnostic_start_verification(
+        start_before_declaration_context,
+        operation_id="dj1.start-before-declaration",
+        diagnostic_session_id=diagnostic_storage_id,
+        expected_revision=6,
+        verification_plan_id="b" * 64,
+    )
+    _assert_public_failure(
+        start_before_declaration,
+        "diagnostic.verification.start",
+        "DIAGNOSTIC_INVALID_TRANSITION",
+        case_name="start-before-declaration",
+    )
+    assert _tree_snapshot(start_before_declaration_context.data_root) == before
+    assert _tree_snapshot(data_root) == prefix6_original_bytes
+
+    evidence = EvidenceStore(baseline_workspace.workspace_root / "evidence")
+    before_run = TestRunRepository(evidence).load(vs08b.FAILED_RUN_ID)
+    fixed_fixture = load_target_replay_fixture(fixed_descriptor, fixed_stream)
+    declaration = vs08b._source_change(
+        journey_root,
+        evidence,
+        before_run,
+        fixed_fixture.descriptor.identity,
+        hypothesis_id,
+    )
+    declaration_before_bytes = _tree_snapshot(data_root)
+    declared = diagnostic_declare_source_change(
+        diagnostic,
+        operation_id="dj1.source-change.declare",
+        diagnostic_session_id=diagnostic_storage_id,
+        expected_revision=6,
+        source_change_declaration=declaration,
+    )
+    declared_wire = _assert_public_success(
+        declared,
+        "diagnostic.source-change.declare",
+    )
+    declared_data = declared_wire["data"]
+    assert isinstance(declared_data, dict)
+    declared_session = declared_data["session"]
+    assert isinstance(declared_session, dict)
+    assert declared_data == {
+        "session": declared_session,
+        "source_change_declaration": declaration.to_dict(),
+    }
+    assert declared_session["revision"] == 7
+    assert declared_session["state"] == "FIX_PROPOSED"
+    assert declared_session["source_change_declarations"] == [declaration.to_dict()]
+    assert declared_session["event_head"] != shown_session["event_head"]
+    assert len(declared_session["event_head"]) == 64
+    declaration_after_bytes = _tree_snapshot(data_root)
+    _assert_public_diagnostic_checkpoint(
+        baseline_workspace,
+        declaration_before_bytes,
+        declaration_after_bytes,
+        diagnostic_session_id=diagnostic_storage_id,
+        revision=7,
+        operation_id="dj1.source-change.declare",
+        actor="user",
+        event_type="source_change.declared",
+        expected_state="FIX_PROPOSED",
+        expected_payload={
+            "request": {"source_change_declaration": declaration.to_dict()},
+            "result": {"declaration_id": declaration.declaration_id},
+        },
+    )
+
+    workspace, verification_plan, publication, after_run = _prepare_public_diagnostic_authorities(
+        journey_root,
+        project_root,
+        data_root,
+        "dj1-session",
+        diagnostic_storage_id,
+        hypothesis_id,
+        declaration,
+        fixed_descriptor,
+        fixed_stream,
+    )
+    assert workspace.workspace_id == baseline_workspace.workspace_id
+    prefix7 = journey_root / "prefix7"
+    _copy_public_diagnostic_prefix(
+        data_root,
+        prefix7,
+        project_root=project_root,
+        session_id="dj1-session",
+    )
+    prefix7_original_bytes = _tree_snapshot(data_root)
+
+    extra_declaration = SourceChangeDeclaration.new(
+        before_source_sha256=declaration.before_source_sha256,
+        after_source_sha256=declaration.after_source_sha256,
+        before_build_id=declaration.before_build_id,
+        before_elf_sha256=declaration.before_elf_sha256,
+        after_build_id=declaration.after_build_id,
+        after_elf_sha256=declaration.after_elf_sha256,
+        changed_paths=("App/extra.c", "App/main.c"),
+        diff_evidence_id=declaration.diff_evidence_id,
+        diff_artifact=declaration.diff_artifact,
+        claimed_hypothesis_ids=declaration.claimed_hypothesis_ids,
+        validation_plan_id=declaration.validation_plan_id,
+    )
+    extra_declaration_context = DiagnosticWorkflowContext(
+        project_root,
+        journey_root / "extra-declaration",
+        "dj1-session",
+    )
+    _copy_public_diagnostic_prefix(
+        prefix7,
+        extra_declaration_context.data_root,
+        project_root=project_root,
+        session_id="dj1-session",
+    )
+    before = _tree_snapshot(extra_declaration_context.data_root)
+    extra_declaration_result = diagnostic_declare_source_change(
+        extra_declaration_context,
+        operation_id="dj1.extra-declaration",
+        diagnostic_session_id=diagnostic_storage_id,
+        expected_revision=7,
+        source_change_declaration=extra_declaration,
+    )
+    _assert_public_failure(
+        extra_declaration_result,
+        "diagnostic.source-change.declare",
+        "DIAGNOSTIC_PLAN_INVALID",
+        case_name="extra-declaration",
+    )
+    assert _tree_snapshot(extra_declaration_context.data_root) == before
+    assert _tree_snapshot(data_root) == prefix7_original_bytes
+
+    different_session_plan = VerificationPlan.new(
+        verification_plan_id=verification_plan.verification_plan_id,
+        diagnostic_session_id="c" * 32,
+        failed_before_run_id=verification_plan.failed_before_run_id,
+        failed_before_evidence_id=verification_plan.failed_before_evidence_id,
+        source_change_declaration_id=verification_plan.source_change_declaration_id,
+        fixed_after_run_id=verification_plan.fixed_after_run_id,
+        fixed_after_evidence_id=verification_plan.fixed_after_evidence_id,
+        required_analysis_ids=verification_plan.required_analysis_ids,
+        required_analysis_evidence_ids=verification_plan.required_analysis_evidence_ids,
+        required_monitor_quality=verification_plan.required_monitor_quality,
+        expected_changed=verification_plan.expected_changed,
+    )
+    different_session_context = DiagnosticWorkflowContext(
+        project_root,
+        journey_root / "different-session-plan",
+        "dj1-session",
+    )
+    _copy_public_diagnostic_prefix(
+        prefix7,
+        different_session_context.data_root,
+        project_root=project_root,
+        session_id="dj1-session",
+    )
+    before = _tree_snapshot(different_session_context.data_root)
+    different_session_result = diagnostic_add_verification_plan(
+        different_session_context,
+        operation_id="dj1.different-session-plan",
+        diagnostic_session_id=diagnostic_storage_id,
+        expected_revision=7,
+        verification_plan=different_session_plan,
+    )
+    _assert_public_failure(
+        different_session_result,
+        "diagnostic.verification-plan.add",
+        "DIAGNOSTIC_PLAN_INVALID",
+        case_name="different-session-plan",
+    )
+    assert _tree_snapshot(different_session_context.data_root) == before
+    assert _tree_snapshot(data_root) == prefix7_original_bytes
+
+    before_evidence_context = DiagnosticWorkflowContext(
+        project_root,
+        journey_root / "different-fixed-evidence",
+        "dj1-session",
+    )
+    _copy_public_diagnostic_prefix(
+        prefix7,
+        before_evidence_context.data_root,
+        project_root=project_root,
+        session_id="dj1-session",
+    )
+    different_fixed_evidence_id = str(publication.analysis_evidence_ref.evidence_id)
+    assert different_fixed_evidence_id != verification_plan.failed_before_evidence_id
+    assert different_fixed_evidence_id != verification_plan.fixed_after_evidence_id
+    different_fixed_evidence_plan = VerificationPlan.new(
+        verification_plan_id=verification_plan.verification_plan_id,
+        diagnostic_session_id=verification_plan.diagnostic_session_id,
+        failed_before_run_id=verification_plan.failed_before_run_id,
+        failed_before_evidence_id=verification_plan.failed_before_evidence_id,
+        source_change_declaration_id=verification_plan.source_change_declaration_id,
+        fixed_after_run_id=verification_plan.fixed_after_run_id,
+        fixed_after_evidence_id=different_fixed_evidence_id,
+        required_analysis_ids=verification_plan.required_analysis_ids,
+        required_analysis_evidence_ids=verification_plan.required_analysis_evidence_ids,
+        required_monitor_quality=verification_plan.required_monitor_quality,
+        expected_changed=verification_plan.expected_changed,
+    )
+    before = _tree_snapshot(before_evidence_context.data_root)
+    different_fixed_evidence_result = diagnostic_add_verification_plan(
+        before_evidence_context,
+        operation_id="dj1.different-fixed-evidence",
+        diagnostic_session_id=diagnostic_storage_id,
+        expected_revision=7,
+        verification_plan=different_fixed_evidence_plan,
+    )
+    _assert_public_failure(
+        different_fixed_evidence_result,
+        "diagnostic.verification-plan.add",
+        "INCOMPATIBLE_IDENTITY",
+        case_name="different-fixed-evidence",
+    )
+    assert _tree_snapshot(before_evidence_context.data_root) == before
+    assert _tree_snapshot(data_root) == prefix7_original_bytes
+
+    absent_plan_context = DiagnosticWorkflowContext(
+        project_root,
+        journey_root / "absent-plan",
+        "dj1-session",
+    )
+    _copy_public_diagnostic_prefix(
+        prefix7,
+        absent_plan_context.data_root,
+        project_root=project_root,
+        session_id="dj1-session",
+    )
+    before = _tree_snapshot(absent_plan_context.data_root)
+    absent_plan_result = diagnostic_start_verification(
+        absent_plan_context,
+        operation_id="dj1.absent-plan",
+        diagnostic_session_id=diagnostic_storage_id,
+        expected_revision=7,
+        verification_plan_id="a" * 64,
+    )
+    _assert_public_failure(
+        absent_plan_result,
+        "diagnostic.verification.start",
+        "DIAGNOSTIC_PLAN_INVALID",
+        case_name="absent-plan",
+    )
+    assert _tree_snapshot(absent_plan_context.data_root) == before
+    assert _tree_snapshot(data_root) == prefix7_original_bytes
+
+    plan_before_bytes = _tree_snapshot(data_root)
+    added = diagnostic_add_verification_plan(
+        diagnostic,
+        operation_id="dj1.verification-plan.add",
+        diagnostic_session_id=diagnostic_storage_id,
+        expected_revision=7,
+        verification_plan=verification_plan,
+    )
+    added_wire = _assert_public_success(
+        added,
+        "diagnostic.verification-plan.add",
+    )
+    added_data = added_wire["data"]
+    assert isinstance(added_data, dict)
+    added_session = added_data["session"]
+    assert isinstance(added_session, dict)
+    assert added_data == {
+        "session": added_session,
+        "verification_plan": verification_plan.to_dict(),
+    }
+    assert added_session["revision"] == 8
+    assert added_session["state"] == "FIX_PROPOSED"
+    assert added_session["event_head"] != declared_session["event_head"]
+    assert len(added_session["event_head"]) == 64
+    plan_after_bytes = _tree_snapshot(data_root)
+    _assert_public_diagnostic_checkpoint(
+        baseline_workspace,
+        plan_before_bytes,
+        plan_after_bytes,
+        diagnostic_session_id=diagnostic_storage_id,
+        revision=8,
+        operation_id="dj1.verification-plan.add",
+        actor="user",
+        event_type="verification.plan_added",
+        expected_state="FIX_PROPOSED",
+        expected_payload={
+            "request": {"verification_plan": verification_plan.to_dict()},
+            "result": {
+                "verification_plan_id": verification_plan.verification_plan_id,
+                "plan_digest": verification_plan.plan_digest,
+            },
+        },
+    )
+
+    prefix8 = journey_root / "prefix8"
+    _copy_public_diagnostic_prefix(
+        data_root,
+        prefix8,
+        project_root=project_root,
+        session_id="dj1-session",
+    )
+    prefix8_original_bytes = _tree_snapshot(data_root)
+    attach_before_start_context = DiagnosticWorkflowContext(
+        project_root,
+        journey_root / "attach-before-start",
+        "dj1-session",
+    )
+    _copy_public_diagnostic_prefix(
+        prefix8,
+        attach_before_start_context.data_root,
+        project_root=project_root,
+        session_id="dj1-session",
+    )
+    before = _tree_snapshot(attach_before_start_context.data_root)
+    attach_before_start = diagnostic_attach_marker(
+        attach_before_start_context,
+        operation_id="dj1.attach-before-start",
+        diagnostic_session_id=diagnostic_storage_id,
+        expected_revision=8,
+        diagnostic_marker_ref=publication.diagnostic_marker_ref,
+    )
+    _assert_public_failure(
+        attach_before_start,
+        "diagnostic.marker.attach",
+        "DIAGNOSTIC_INVALID_TRANSITION",
+        case_name="attach-before-start",
+    )
+    assert _tree_snapshot(attach_before_start_context.data_root) == before
+    assert _tree_snapshot(data_root) == prefix8_original_bytes
+
+    start_before_bytes = _tree_snapshot(data_root)
+    started = diagnostic_start_verification(
+        diagnostic,
+        operation_id="dj1.verification.start",
+        diagnostic_session_id=diagnostic_storage_id,
+        expected_revision=8,
+        verification_plan_id=verification_plan.verification_plan_id,
+    )
+    started_wire = _assert_public_success(
+        started,
+        "diagnostic.verification.start",
+    )
+    started_data = started_wire["data"]
+    assert isinstance(started_data, dict)
+    started_session = started_data["session"]
+    assert isinstance(started_session, dict)
+    assert started_data == {
+        "session": started_session,
+        "verification_plan_id": verification_plan.verification_plan_id,
+    }
+    assert started_session["revision"] == 9
+    assert started_session["state"] == "VERIFYING"
+    assert started_session["event_head"] != added_session["event_head"]
+    assert len(started_session["event_head"]) == 64
+    start_after_bytes = _tree_snapshot(data_root)
+    _assert_public_diagnostic_checkpoint(
+        baseline_workspace,
+        start_before_bytes,
+        start_after_bytes,
+        diagnostic_session_id=diagnostic_storage_id,
+        revision=9,
+        operation_id="dj1.verification.start",
+        actor="tool",
+        event_type="verification.started",
+        expected_state="VERIFYING",
+        expected_payload={
+            "request": {
+                "verification_plan_id": verification_plan.verification_plan_id,
+            },
+            "result": {
+                "verification_plan_id": verification_plan.verification_plan_id,
+            },
+        },
+    )
+
+    prefix9 = journey_root / "prefix9"
+    _copy_public_diagnostic_prefix(
+        data_root,
+        prefix9,
+        project_root=project_root,
+        session_id="dj1-session",
+    )
+    prefix9_original_bytes = _tree_snapshot(data_root)
+    marker_ref = publication.diagnostic_marker_ref
+    unpaired_marker = DiagnosticMarkerRef.new(
+        marker_id="c" * 64,
+        marker_evidence_id=marker_ref.marker_evidence_id,
+        analysis_id=marker_ref.analysis_id,
+        analysis_evidence_id=verification_plan.failed_before_evidence_id,
+        diagnostic_session_id=marker_ref.diagnostic_session_id,
+        hypothesis_id=marker_ref.hypothesis_id,
+        polarity=marker_ref.polarity,
+        label=marker_ref.label,
+        rationale=marker_ref.rationale,
+    )
+    unpaired_marker_context = DiagnosticWorkflowContext(
+        project_root,
+        journey_root / "unpaired-marker",
+        "dj1-session",
+    )
+    _copy_public_diagnostic_prefix(
+        prefix9,
+        unpaired_marker_context.data_root,
+        project_root=project_root,
+        session_id="dj1-session",
+    )
+    before = _tree_snapshot(unpaired_marker_context.data_root)
+    unpaired_marker_result = diagnostic_attach_marker(
+        unpaired_marker_context,
+        operation_id="dj1.unpaired-marker",
+        diagnostic_session_id=diagnostic_storage_id,
+        expected_revision=9,
+        diagnostic_marker_ref=unpaired_marker,
+    )
+    _assert_public_failure(
+        unpaired_marker_result,
+        "diagnostic.marker.attach",
+        "DIAGNOSTIC_PLAN_INVALID",
+        case_name="unpaired-marker",
+    )
+    assert _tree_snapshot(unpaired_marker_context.data_root) == before
+    assert _tree_snapshot(data_root) == prefix9_original_bytes
+
+    attach_before_bytes = _tree_snapshot(data_root)
+    attached = diagnostic_attach_marker(
+        diagnostic,
+        operation_id="dj1.marker.attach",
+        diagnostic_session_id=diagnostic_storage_id,
+        expected_revision=9,
+        diagnostic_marker_ref=marker_ref,
+    )
+    attached_wire = _assert_public_success(
+        attached,
+        "diagnostic.marker.attach",
+    )
+    attached_data = attached_wire["data"]
+    assert isinstance(attached_data, dict)
+    attached_session = attached_data["session"]
+    assert isinstance(attached_session, dict)
+    assert attached_data == {
+        "session": attached_session,
+        "diagnostic_marker_ref": marker_ref.to_dict(),
+    }
+    assert attached_session["revision"] == 10
+    assert attached_session["state"] == "VERIFYING"
+    assert attached_session["event_head"] != started_session["event_head"]
+    assert len(attached_session["event_head"]) == 64
+    attach_after_bytes = _tree_snapshot(data_root)
+    _assert_public_diagnostic_checkpoint(
+        baseline_workspace,
+        attach_before_bytes,
+        attach_after_bytes,
+        diagnostic_session_id=diagnostic_storage_id,
+        revision=10,
+        operation_id="dj1.marker.attach",
+        actor="tool",
+        event_type="analysis.marker_attached",
+        expected_state="VERIFYING",
+        expected_payload={
+            "request": {"diagnostic_marker_ref": marker_ref.to_dict()},
+            "result": {"marker_id": marker_ref.marker_id},
+        },
+    )
+
+    prefix10 = journey_root / "prefix10"
+    _copy_public_diagnostic_prefix(
+        data_root,
+        prefix10,
+        project_root=project_root,
+        session_id="dj1-session",
+    )
+    prefix10_original_bytes = _tree_snapshot(data_root)
+    invalid_completion_cases = (
+        ("empty-executed", [], False),
+        (
+            "too-many-executed",
+            [f"dj1.executed.{index}" for index in range(65)],
+            False,
+        ),
+        ("duplicate-executed", [vs08b.FAILED_RUN_ID, vs08b.FAILED_RUN_ID], False),
+        (
+            "cancelled-one",
+            [vs08b.FAILED_RUN_ID],
+            1,
+        ),
+    )
+    for case_name, executed_operation_ids, cancelled in invalid_completion_cases:
+        case_context = DiagnosticWorkflowContext(
+            project_root,
+            journey_root / f"completion-{case_name}",
+            "dj1-session",
+        )
+        _copy_public_diagnostic_prefix(
+            prefix10,
+            case_context.data_root,
+            project_root=project_root,
+            session_id="dj1-session",
+        )
+        before = _tree_snapshot(case_context.data_root)
+        invalid_completion = diagnostic_complete_verification(
+            case_context,
+            operation_id=f"dj1.completion.{case_name}",
+            diagnostic_session_id=diagnostic_storage_id,
+            expected_revision=10,
+            executed_operation_ids=executed_operation_ids,
+            cancelled=cancelled,
+        )
+        _assert_public_failure(
+            invalid_completion,
+            "diagnostic.verification.complete",
+            "DIAGNOSTIC_INVALID_EVENT",
+            case_name=case_name,
+        )
+        assert _tree_snapshot(case_context.data_root) == before
+        assert _tree_snapshot(data_root) == prefix10_original_bytes
+
+    prefix10_session = diagnostic_show(
+        _fresh_diagnostic_context(diagnostic),
+        diagnostic_session_id=diagnostic_storage_id,
+    ).to_dict()["data"]["session"]
+    assert isinstance(prefix10_session, dict)
+    prefix10_event_head = prefix10_session["event_head"]
+    executed_operation_ids = [
+        vs08b.FAILED_RUN_ID,
+        vs08b.FIXED_RUN_ID,
+        "monitor.analysis.compare",
+        "monitor.analysis.bundle",
+    ]
+    completed = diagnostic_complete_verification(
+        diagnostic,
+        operation_id="dj1.completion",
+        diagnostic_session_id=diagnostic_storage_id,
+        expected_revision=10,
+        executed_operation_ids=executed_operation_ids,
+        cancelled=False,
+    )
+    completed_wire = _assert_public_success(
+        completed,
+        "diagnostic.verification.complete",
+    )
+    completed_data = completed_wire["data"]
+    assert isinstance(completed_data, dict)
+    expected_verification = FixVerification.new(
+        diagnostic_session_id=diagnostic_storage_id,
+        failed_before_run_id=verification_plan.failed_before_run_id,
+        failed_before_evidence_id=verification_plan.failed_before_evidence_id,
+        source_change_declaration_id=verification_plan.source_change_declaration_id,
+        fixed_after_run_id=verification_plan.fixed_after_run_id,
+        fixed_after_evidence_id=verification_plan.fixed_after_evidence_id,
+        verification_plan_id=verification_plan.verification_plan_id,
+        verification_plan_digest=verification_plan.plan_digest,
+        analysis_ids=verification_plan.required_analysis_ids,
+        analysis_evidence_ids=verification_plan.required_analysis_evidence_ids,
+        executed_operation_ids=tuple(executed_operation_ids),
+        status="PASSED",
+        reason_code="VERIFICATION_PASSED",
+        completed_at_utc=after_run.manifest.ended_at_utc,
+    ).to_dict()
+    completed_session = completed_data["session"]
+    assert isinstance(completed_session, dict)
+    assert completed_data == {
+        "session": completed_session,
+        "fix_verification": expected_verification,
+    }
+    assert completed_session["revision"] == 11
+    assert completed_session["state"] == "RESOLVED"
+    assert completed_session["active_verification_plan_id"] is None
+    assert completed_session["event_head"] != prefix10_event_head
+    assert len(completed_session["event_head"]) == 64
+    assert completed_session["fix_verifications"] == [expected_verification]
+    prefix10_bytes = _tree_snapshot(prefix10)
+    after_completion_bytes = _tree_snapshot(data_root)
+    _assert_public_diagnostic_checkpoint(
+        baseline_workspace,
+        prefix10_bytes,
+        after_completion_bytes,
+        diagnostic_session_id=diagnostic_storage_id,
+        revision=11,
+        operation_id="dj1.completion",
+        actor="tool",
+        event_type="verification.completed",
+        expected_state="RESOLVED",
+        expected_payload={
+            "request": {"fix_verification": expected_verification},
+            "result": {
+                "fix_verification_id": expected_verification["fix_verification_id"],
+                "status": "PASSED",
+                "reason_code": "VERIFICATION_PASSED",
+            },
+        },
+    )
+    prefix11 = journey_root / "prefix11"
+    _copy_public_diagnostic_prefix(
+        data_root,
+        prefix11,
+        project_root=project_root,
+        session_id="dj1-session",
+    )
+    prefix11_bytes = _tree_snapshot(prefix11)
+    assert prefix11_bytes == after_completion_bytes
+
+    shown_after = diagnostic_show_verification(
+        _fresh_diagnostic_context(diagnostic),
+        diagnostic_session_id=diagnostic_storage_id,
+    )
+    shown_after_wire = _assert_public_success(
+        shown_after,
+        "diagnostic.verification.show",
+    )
+    assert shown_after_wire["data"] == {
+        "session": completed_session,
+        "fix_verifications": [expected_verification],
+        "authoritative": True,
+    }
+
+    before_retry = _tree_snapshot(data_root)
+    assert before_retry == prefix11_bytes
+    retry = diagnostic_complete_verification(
+        diagnostic,
+        operation_id="dj1.completion",
+        diagnostic_session_id=diagnostic_storage_id,
+        expected_revision=10,
+        executed_operation_ids=executed_operation_ids,
+        cancelled=False,
+    )
+    assert retry.to_dict() == completed_wire  # type: ignore[union-attr]
+    assert _tree_snapshot(data_root) == before_retry
+
+    before_new_completion = _tree_snapshot(data_root)
+    new_completion = diagnostic_complete_verification(
+        diagnostic,
+        operation_id="dj1.completion-new-operation",
+        diagnostic_session_id=diagnostic_storage_id,
+        expected_revision=11,
+        executed_operation_ids=executed_operation_ids,
+        cancelled=False,
+    )
+    _assert_public_failure(
+        new_completion,
+        "diagnostic.verification.complete",
+        "DIAGNOSTIC_INVALID_TRANSITION",
+        case_name="new-completion-operation",
+    )
+    assert _tree_snapshot(data_root) == before_new_completion
+
+    before_new_declaration = _tree_snapshot(data_root)
+    new_declaration = diagnostic_declare_source_change(
+        diagnostic,
+        operation_id="dj1.source-change.new-operation",
+        diagnostic_session_id=diagnostic_storage_id,
+        expected_revision=11,
+        source_change_declaration=declaration,
+    )
+    _assert_public_failure(
+        new_declaration,
+        "diagnostic.source-change.declare",
+        "DIAGNOSTIC_INVALID_TRANSITION",
+        case_name="new-declaration-operation",
+    )
+    assert _tree_snapshot(data_root) == before_new_declaration
+
+
+def test_public_diagnostic_caller_journey_authority_refusals_preserve_graph(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    journey_root = tmp_path / "j2"
+    journey_root.mkdir()
+    (
+        project_root,
+        data_root,
+        diagnostic_id,
+        hypothesis_id,
+        _failed_descriptor,
+        fixed_descriptor,
+        fixed_stream,
+    ) = vs08b._prepare_real_diagnostic_before_source(
+        journey_root,
+        "cubemx",
+        monkeypatch,
+        "dj2-session",
+    )
+    diagnostic_storage_id = diagnostic_id.replace("-", "")
+    diagnostic = DiagnosticWorkflowContext(project_root, data_root, "dj2-session")
+    baseline_workspace = WorkspacePaths.from_roots(
+        data_root,
+        project_root,
+        PROJECT_ID,
+        "dj2-session",
+    )
+    baseline_evidence = EvidenceStore(baseline_workspace.workspace_root / "evidence")
+    before_run = TestRunRepository(baseline_evidence).load(vs08b.FAILED_RUN_ID)
+    fixed_fixture = load_target_replay_fixture(fixed_descriptor, fixed_stream)
+    declaration = vs08b._source_change(
+        journey_root,
+        baseline_evidence,
+        before_run,
+        fixed_fixture.descriptor.identity,
+        hypothesis_id,
+    )
+    base_diff_envelope = baseline_evidence.get_envelope(declaration.diff_evidence_id)
+    base_diff_artifact = declaration.diff_artifact
+
+    prefix6 = journey_root / "prefix6"
+    _copy_public_diagnostic_prefix(
+        data_root,
+        prefix6,
+        project_root=project_root,
+        session_id="dj2-session",
+    )
+    prefix6_bytes = _tree_snapshot(data_root)
+    diff_cases = (
+        "operation",
+        "artifact-kind",
+        "media-type",
+    )
+    for case_name in diff_cases:
+        case_data = journey_root / f"diff-{case_name}"
+        case_context = DiagnosticWorkflowContext(project_root, case_data, "dj2-session")
+        _copy_public_diagnostic_prefix(
+            prefix6,
+            case_data,
+            project_root=project_root,
+            session_id="dj2-session",
+        )
+        case_workspace = WorkspacePaths.from_roots(
+            case_data,
+            project_root,
+            PROJECT_ID,
+            "dj2-session",
+        )
+        case_evidence = EvidenceStore(case_workspace.workspace_root / "evidence")
+        variant_artifact = base_diff_artifact
+        variant_operation = base_diff_envelope.operation
+        variant_media_type = base_diff_artifact.media_type
+        variant_kind = base_diff_artifact.kind
+        if case_name == "operation":
+            variant_operation = "diagnostic-source-change.variant-operation"
+        elif case_name == "artifact-kind":
+            variant_kind = "wrong-source-diff-kind"
+        else:
+            variant_media_type = "application/octet-stream"
+        if case_name != "operation":
+            source = journey_root / f"diff-{case_name}.bin"
+            source.write_bytes(
+                case_evidence.read_artifact(
+                    base_diff_artifact,
+                    maximum_bytes=1_000_000,
+                )
+            )
+            variant_artifact = case_evidence.ingest_file(
+                source,
+                kind=variant_kind,
+                media_type=variant_media_type,
+            )
+        variant_envelope = EvidenceEnvelope(
+            identity=base_diff_envelope.identity,
+            operation=variant_operation,
+            produced_at_utc=base_diff_envelope.produced_at_utc,
+            parents=base_diff_envelope.parents,
+            artifacts=(variant_artifact,),
+            metadata=dict(base_diff_envelope.metadata),
+        )
+        case_evidence.put_envelope(variant_envelope)
+        variant_declaration = SourceChangeDeclaration.new(
+            before_source_sha256=declaration.before_source_sha256,
+            after_source_sha256=declaration.after_source_sha256,
+            before_build_id=declaration.before_build_id,
+            before_elf_sha256=declaration.before_elf_sha256,
+            after_build_id=declaration.after_build_id,
+            after_elf_sha256=declaration.after_elf_sha256,
+            changed_paths=declaration.changed_paths,
+            diff_evidence_id=str(variant_envelope.evidence_id),
+            diff_artifact=variant_artifact,
+            claimed_hypothesis_ids=declaration.claimed_hypothesis_ids,
+            validation_plan_id=declaration.validation_plan_id,
+        )
+        before = _tree_snapshot(case_data)
+        result = diagnostic_declare_source_change(
+            case_context,
+            operation_id=f"dj2.diff.{case_name}",
+            diagnostic_session_id=diagnostic_storage_id,
+            expected_revision=6,
+            source_change_declaration=variant_declaration,
+        )
+        _assert_public_failure(
+            result,
+            "diagnostic.source-change.declare",
+            "EVIDENCE_INTEGRITY_FAILURE",
+            case_name=case_name,
+        )
+        assert _tree_snapshot(case_data) == before
+        assert _tree_snapshot(data_root) == prefix6_bytes
+
+    declaration_before_bytes = _tree_snapshot(data_root)
+    before_declaration_wire = _assert_public_success(
+        diagnostic_show(
+            _fresh_diagnostic_context(diagnostic),
+            diagnostic_session_id=diagnostic_storage_id,
+        ),
+        "diagnostic.show",
+    )
+    before_declaration_data = before_declaration_wire["data"]
+    assert isinstance(before_declaration_data, dict)
+    before_declaration_session = before_declaration_data["session"]
+    assert isinstance(before_declaration_session, dict)
+    assert before_declaration_data == {
+        "session": before_declaration_session,
+        "authoritative": True,
+    }
+    declared = diagnostic_declare_source_change(
+        diagnostic,
+        operation_id="dj2.source-change.declare",
+        diagnostic_session_id=diagnostic_storage_id,
+        expected_revision=6,
+        source_change_declaration=declaration,
+    )
+    declared_wire = _assert_public_success(
+        declared,
+        "diagnostic.source-change.declare",
+    )
+    declared_data = declared_wire["data"]
+    assert isinstance(declared_data, dict)
+    declared_session = declared_data["session"]
+    assert isinstance(declared_session, dict)
+    assert declared_data == {
+        "session": declared_session,
+        "source_change_declaration": declaration.to_dict(),
+    }
+    assert declared_session["revision"] == 7
+    assert declared_session["state"] == "FIX_PROPOSED"
+    assert declared_session["event_head"] != before_declaration_session["event_head"]
+    assert len(declared_session["event_head"]) == 64
+    declaration_after_bytes = _tree_snapshot(data_root)
+    _assert_public_diagnostic_checkpoint(
+        baseline_workspace,
+        declaration_before_bytes,
+        declaration_after_bytes,
+        diagnostic_session_id=diagnostic_storage_id,
+        revision=7,
+        operation_id="dj2.source-change.declare",
+        actor="user",
+        event_type="source_change.declared",
+        expected_state="FIX_PROPOSED",
+        expected_payload={
+            "request": {"source_change_declaration": declaration.to_dict()},
+            "result": {"declaration_id": declaration.declaration_id},
+        },
+    )
+
+    workspace, verification_plan, publication, _after_run = _prepare_public_diagnostic_authorities(
+        journey_root,
+        project_root,
+        data_root,
+        "dj2-session",
+        diagnostic_storage_id,
+        hypothesis_id,
+        declaration,
+        fixed_descriptor,
+        fixed_stream,
+    )
+    assert workspace.workspace_id == baseline_workspace.workspace_id
+    prefix7 = journey_root / "prefix7"
+    _copy_public_diagnostic_prefix(
+        data_root,
+        prefix7,
+        project_root=project_root,
+        session_id="dj2-session",
+    )
+    prefix7_bytes = _tree_snapshot(data_root)
+    analysis_id = publication.analysis_result.analysis_id
+    analysis_root = get_root(baseline_evidence, "monitor-analysis", analysis_id)
+    analysis_envelope = baseline_evidence.get_envelope(analysis_root.manifest_id)
+    analysis_artifact = analysis_envelope.artifacts[0]
+    analysis_payload = json.loads(
+        baseline_evidence.read_artifact(
+            analysis_artifact,
+            maximum_bytes=1_000_000,
+        ).decode("utf-8")
+    )
+
+    def plan_for(analysis_ref: str, evidence_ref: str) -> VerificationPlan:
+        return VerificationPlan.new(
+            verification_plan_id=verification_plan.verification_plan_id,
+            diagnostic_session_id=verification_plan.diagnostic_session_id,
+            failed_before_run_id=verification_plan.failed_before_run_id,
+            failed_before_evidence_id=verification_plan.failed_before_evidence_id,
+            source_change_declaration_id=verification_plan.source_change_declaration_id,
+            fixed_after_run_id=verification_plan.fixed_after_run_id,
+            fixed_after_evidence_id=verification_plan.fixed_after_evidence_id,
+            required_analysis_ids=(analysis_ref,),
+            required_analysis_evidence_ids=(evidence_ref,),
+            required_monitor_quality=verification_plan.required_monitor_quality,
+            expected_changed=verification_plan.expected_changed,
+        )
+
+    def assert_plan_refusal(
+        case_name: str,
+        case_data: Path,
+        plan: VerificationPlan,
+    ) -> None:
+        context = DiagnosticWorkflowContext(project_root, case_data, "dj2-session")
+        before = _tree_snapshot(case_data)
+        result = diagnostic_add_verification_plan(
+            context,
+            operation_id=f"dj2.plan.{case_name}",
+            diagnostic_session_id=diagnostic_storage_id,
+            expected_revision=7,
+            verification_plan=plan,
+        )
+        _assert_public_failure(
+            result,
+            "diagnostic.verification-plan.add",
+            "EVIDENCE_INTEGRITY_FAILURE",
+            case_name=case_name,
+        )
+        assert _tree_snapshot(case_data) == before
+        assert _tree_snapshot(data_root) == prefix7_bytes
+
+    wrong_plan_evidence = plan_for(
+        analysis_id,
+        verification_plan.failed_before_evidence_id,
+    )
+    wrong_plan_data = journey_root / "plan-evidence-mismatch"
+    _copy_public_diagnostic_prefix(
+        prefix7,
+        wrong_plan_data,
+        project_root=project_root,
+        session_id="dj2-session",
+    )
+    assert_plan_refusal("evidence-mismatch", wrong_plan_data, wrong_plan_evidence)
+
+    for case_name, parents in (
+        ("parents-count", analysis_envelope.parents[:2]),
+        (
+            "third-parent",
+            (
+                analysis_envelope.parents[0],
+                analysis_envelope.parents[1],
+                str(TestRunRepository(baseline_evidence).load(vs08b.FAILED_RUN_ID).envelope.evidence_id),
+            ),
+        ),
+    ):
+        case_data = journey_root / f"analysis-{case_name}"
+        _copy_public_diagnostic_prefix(
+            prefix7,
+            case_data,
+            project_root=project_root,
+            session_id="dj2-session",
+            excluded_root=("monitor-analysis", analysis_id),
+        )
+        case_workspace = WorkspacePaths.from_roots(
+            case_data,
+            project_root,
+            PROJECT_ID,
+            "dj2-session",
+        )
+        case_evidence = EvidenceStore(case_workspace.workspace_root / "evidence")
+        variant_envelope = EvidenceEnvelope(
+            identity=analysis_envelope.identity,
+            operation=analysis_envelope.operation,
+            produced_at_utc=analysis_envelope.produced_at_utc,
+            parents=parents,
+            artifacts=analysis_envelope.artifacts,
+            metadata=dict(analysis_envelope.metadata),
+        )
+        _publish_public_analysis_variant(
+            case_evidence,
+            root_id=analysis_id,
+            envelope=variant_envelope,
+            metadata=dict(analysis_root.metadata),
+        )
+        assert_plan_refusal(
+            case_name,
+            case_data,
+            plan_for(analysis_id, str(variant_envelope.evidence_id)),
+        )
+
+    import_metadata_data = journey_root / "analysis-import-workspace"
+    _copy_public_diagnostic_prefix(
+        prefix7,
+        import_metadata_data,
+        project_root=project_root,
+        session_id="dj2-session",
+        excluded_root=("monitor-analysis", analysis_id),
+    )
+    import_metadata_workspace = WorkspacePaths.from_roots(
+        import_metadata_data,
+        project_root,
+        PROJECT_ID,
+        "dj2-session",
+    )
+    import_metadata_evidence = EvidenceStore(
+        import_metadata_workspace.workspace_root / "evidence"
+    )
+    changed_metadata = dict(analysis_envelope.metadata)
+    different_import_workspace_id = hashlib.sha256(
+        b"dj2-different-import-workspace"
+    ).hexdigest()
+    assert different_import_workspace_id != analysis_envelope.metadata["import_workspace_id"]
+    changed_metadata["import_workspace_id"] = different_import_workspace_id
+    import_variant = EvidenceEnvelope(
+        identity=analysis_envelope.identity,
+        operation=analysis_envelope.operation,
+        produced_at_utc=analysis_envelope.produced_at_utc,
+        parents=analysis_envelope.parents,
+        artifacts=analysis_envelope.artifacts,
+        metadata=changed_metadata,
+    )
+    _publish_public_analysis_variant(
+        import_metadata_evidence,
+        root_id=analysis_id,
+        envelope=import_variant,
+        metadata=changed_metadata,
+    )
+    assert_plan_refusal(
+        "import-workspace",
+        import_metadata_data,
+        plan_for(analysis_id, str(import_variant.evidence_id)),
+    )
+
+    canonical_array_data = journey_root / "analysis-canonical-array"
+    _copy_public_diagnostic_prefix(
+        prefix7,
+        canonical_array_data,
+        project_root=project_root,
+        session_id="dj2-session",
+        excluded_root=("monitor-analysis", analysis_id),
+    )
+    canonical_array_workspace = WorkspacePaths.from_roots(
+        canonical_array_data,
+        project_root,
+        PROJECT_ID,
+        "dj2-session",
+    )
+    canonical_array_evidence = EvidenceStore(
+        canonical_array_workspace.workspace_root / "evidence"
+    )
+    array_source = journey_root / "analysis-canonical-array.json"
+    array_source.write_bytes(canonical_json_bytes([]))
+    array_artifact = canonical_array_evidence.ingest_file(
+        array_source,
+        kind="monitor-analysis",
+        media_type="application/json",
+    )
+    array_envelope = EvidenceEnvelope(
+        identity=analysis_envelope.identity,
+        operation=analysis_envelope.operation,
+        produced_at_utc=analysis_envelope.produced_at_utc,
+        parents=analysis_envelope.parents,
+        artifacts=(array_artifact,),
+        metadata=dict(analysis_envelope.metadata),
+    )
+    _publish_public_analysis_variant(
+        canonical_array_evidence,
+        root_id=analysis_id,
+        envelope=array_envelope,
+        metadata=dict(analysis_root.metadata),
+    )
+    assert_plan_refusal(
+        "canonical-array",
+        canonical_array_data,
+        plan_for(analysis_id, str(array_envelope.evidence_id)),
+    )
+
+    claimed_id_data = journey_root / "analysis-claimed-id"
+    _copy_public_diagnostic_prefix(
+        prefix7,
+        claimed_id_data,
+        project_root=project_root,
+        session_id="dj2-session",
+        excluded_root=("monitor-analysis", analysis_id),
+    )
+    claimed_id_workspace = WorkspacePaths.from_roots(
+        claimed_id_data,
+        project_root,
+        PROJECT_ID,
+        "dj2-session",
+    )
+    claimed_id_evidence = EvidenceStore(claimed_id_workspace.workspace_root / "evidence")
+    claimed_payload = copy.deepcopy(analysis_payload)
+    claimed_payload["analysis_id"] = "e" * 64
+    claimed_source = journey_root / "analysis-claimed-id.json"
+    claimed_source.write_bytes(canonical_json_bytes(claimed_payload))
+    claimed_artifact = claimed_id_evidence.ingest_file(
+        claimed_source,
+        kind="monitor-analysis",
+        media_type="application/json",
+    )
+    claimed_envelope = EvidenceEnvelope(
+        identity=analysis_envelope.identity,
+        operation=analysis_envelope.operation,
+        produced_at_utc=analysis_envelope.produced_at_utc,
+        parents=analysis_envelope.parents,
+        artifacts=(claimed_artifact,),
+        metadata=dict(analysis_envelope.metadata),
+    )
+    _publish_public_analysis_variant(
+        claimed_id_evidence,
+        root_id=analysis_id,
+        envelope=claimed_envelope,
+        metadata=dict(analysis_root.metadata),
+    )
+    assert_plan_refusal(
+        "claimed-analysis-id",
+        claimed_id_data,
+        plan_for(analysis_id, str(claimed_envelope.evidence_id)),
+    )
+
+    for case_name, payload_mutation in (
+        ("nested-identity-extra", "nested"),
+        ("top-level-extra", "top-level"),
+        ("schema-two", "schema-two"),
+    ):
+        case_data = journey_root / f"analysis-{case_name}"
+        _copy_public_diagnostic_prefix(
+            prefix7,
+            case_data,
+            project_root=project_root,
+            session_id="dj2-session",
+        )
+        case_workspace = WorkspacePaths.from_roots(
+            case_data,
+            project_root,
+            PROJECT_ID,
+            "dj2-session",
+        )
+        case_evidence = EvidenceStore(case_workspace.workspace_root / "evidence")
+        payload = copy.deepcopy(analysis_payload)
+        if payload_mutation == "nested":
+            payload["identity"]["extra"] = "unexpected"
+        elif payload_mutation == "top-level":
+            payload["unexpected"] = True
+        else:
+            payload["schema"] = "stm32-monitor-analysis/2"
+        unsigned_payload = {
+            key: value for key, value in payload.items() if key != "analysis_id"
+        }
+        payload["analysis_id"] = hashlib.sha256(
+            canonical_json_bytes(unsigned_payload)
+        ).hexdigest()
+        source = journey_root / f"analysis-{case_name}.json"
+        source.write_bytes(canonical_json_bytes(payload))
+        artifact = case_evidence.ingest_file(
+            source,
+            kind="monitor-analysis",
+            media_type="application/json",
+        )
+        metadata = dict(analysis_envelope.metadata)
+        metadata["analysis_id"] = payload["analysis_id"]
+        envelope = EvidenceEnvelope(
+            identity=analysis_envelope.identity,
+            operation=analysis_envelope.operation,
+            produced_at_utc=analysis_envelope.produced_at_utc,
+            parents=analysis_envelope.parents,
+            artifacts=(artifact,),
+            metadata=metadata,
+        )
+        _publish_public_analysis_variant(
+            case_evidence,
+            root_id=payload["analysis_id"],
+            envelope=envelope,
+            metadata=metadata,
+        )
+        assert_plan_refusal(
+            case_name,
+            case_data,
+            plan_for(str(payload["analysis_id"]), str(envelope.evidence_id)),
+        )
+
+    valid_plan_before = _tree_snapshot(data_root)
+    assert valid_plan_before == prefix7_bytes
+    valid_plan = diagnostic_add_verification_plan(
+        diagnostic,
+        operation_id="dj2.valid-plan-after-authority-refusals",
+        diagnostic_session_id=diagnostic_storage_id,
+        expected_revision=7,
+        verification_plan=verification_plan,
+    )
+    valid_plan_wire = _assert_public_success(
+        valid_plan,
+        "diagnostic.verification-plan.add",
+    )
+    valid_plan_data = valid_plan_wire["data"]
+    assert isinstance(valid_plan_data, dict)
+    assert valid_plan_data["verification_plan"] == verification_plan.to_dict()
+    valid_plan_session = valid_plan_data["session"]
+    assert isinstance(valid_plan_session, dict)
+    assert valid_plan_session["revision"] == 8
+    assert valid_plan_session["state"] == "FIX_PROPOSED"
+    assert valid_plan_data == {
+        "session": valid_plan_session,
+        "verification_plan": verification_plan.to_dict(),
+    }
+    assert valid_plan_session["event_head"] != declared_session["event_head"]
+    assert len(valid_plan_session["event_head"]) == 64
+    valid_plan_after = _tree_snapshot(data_root)
+    _assert_public_diagnostic_checkpoint(
+        baseline_workspace,
+        valid_plan_before,
+        valid_plan_after,
+        diagnostic_session_id=diagnostic_storage_id,
+        revision=8,
+        operation_id="dj2.valid-plan-after-authority-refusals",
+        actor="user",
+        event_type="verification.plan_added",
+        expected_state="FIX_PROPOSED",
+        expected_payload={
+            "request": {"verification_plan": verification_plan.to_dict()},
+            "result": {
+                "verification_plan_id": verification_plan.verification_plan_id,
+                "plan_digest": verification_plan.plan_digest,
+            },
+        },
+    )
 
 
 def test_default_host_repository_corruption_keeps_legacy_failure_projection(
@@ -2643,7 +4629,15 @@ def test_target_replay_prepares_and_reloads_fix_verification_checkpoint(
 
 @pytest.mark.parametrize(
     "mutation",
-    ("digest-only", "swapped", "binding", "window", "group", "batch-digest"),
+    (
+        "digest-only",
+        "swapped",
+        "binding",
+        "window",
+        "group",
+        "batch-digest",
+        "projected-digest-count",
+    ),
 )
 def test_target_replay_plan_requires_complete_monitor_reference_authority(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, mutation: str
@@ -2681,12 +4675,21 @@ def test_target_replay_plan_requires_complete_monitor_reference_authority(
             before_operation_id,
             lambda payload: payload.update(group_id="22222222-2222-4222-8222-222222222222"),
         )
+    elif mutation == "projected-digest-count":
+        _replace_monitor_reference_authority(
+            tmp_path,
+            workspace,
+            before_operation_id,
+            lambda payload: payload["projected_batch_sha256s"].pop(),
+            sync_transcript_root=True,
+        )
     else:
         _replace_monitor_reference_authority(
             tmp_path,
             workspace,
             before_operation_id,
             lambda payload: payload["projected_batch_sha256s"].__setitem__(0, "0" * 64),
+            sync_transcript_root=True,
         )
     before = _authority_snapshot(workspace)
     result = diagnostic_add_verification_plan(
@@ -2699,7 +4702,10 @@ def test_target_replay_plan_requires_complete_monitor_reference_authority(
     after = _authority_snapshot(workspace)
     assert result.ok is False
     assert result.code == "EVIDENCE_INTEGRITY_FAILURE"
+    assert result.message == "Target replay evidence failed integrity validation."
     assert after == before
+    assert result.data is None
+    assert result.details == {}
 
 
 @pytest.mark.parametrize("extra_kind", ("batch", "sample", "typed", "watch"))
@@ -3141,7 +5147,7 @@ def test_target_replay_plan_rejects_impossible_valid_analysis_semantics_without_
         ("wrong-kind-media", "EVIDENCE_INTEGRITY_FAILURE"),
         ("corrupt-artifact", "EVIDENCE_INTEGRITY_FAILURE"),
         ("noncanonical-artifact", "EVIDENCE_INTEGRITY_FAILURE"),
-        ("absent-analysis-root", "EVIDENCE_INTEGRITY_FAILURE"),
+        ("absent-analysis-root", "DIAGNOSTIC_CHAIN_CORRUPT"),
         ("wrong-analysis-unsigned-id", "EVIDENCE_INTEGRITY_FAILURE"),
         ("foreign-analysis-identity", "INCOMPATIBLE_IDENTITY"),
     ),

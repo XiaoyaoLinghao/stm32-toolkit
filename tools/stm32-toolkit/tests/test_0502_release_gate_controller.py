@@ -51,6 +51,44 @@ REQUIRED_RELEASE_SURFACES = (
 
 POWERSHELL = os.environ.get("STM32_0502_TEST_POWERSHELL", "powershell.exe")
 
+HISTORICAL_0502_FIXTURES = {
+    "bin/stm32-monitor.cmd": {
+        "fixture": "stm32-monitor.cmd",
+        "blob": "43be14c9c2b1c5fc0fa34cb7b6e85751be2e366b",
+    },
+    "bin/stm32-toolkit-mcp.cmd": {
+        "fixture": "stm32-toolkit-mcp.cmd",
+        "blob": "ad7eaa864a53dd7e6d871f152587eba1de80d56d",
+    },
+}
+HISTORICAL_0502_COMMIT = "eae54be02cd28a707488f15f58b8f58e66db1a2c"
+HISTORICAL_0502_FIXTURE_ROOT = (
+    Path(__file__).resolve().parent / "release" / "fixtures" / "0502"
+)
+
+
+def _historical_0502_launchers(repo: Path) -> None:
+    """Materialize the tracked 0502 bytes without requiring Git ancestry at runtime."""
+    attribution = json.loads(
+        (HISTORICAL_0502_FIXTURE_ROOT / "attribution.json").read_text(encoding="utf-8")
+    )
+    assert attribution["source_commit"] == HISTORICAL_0502_COMMIT
+    entries = {str(item["fixture"]): item for item in attribution["files"]}
+    for destination, expected in HISTORICAL_0502_FIXTURES.items():
+        entry = entries[expected["fixture"]]
+        assert entry["repository_path"] == destination
+        assert entry["source_commit"] == HISTORICAL_0502_COMMIT
+        assert entry["source_blob"] == expected["blob"]
+        data = (HISTORICAL_0502_FIXTURE_ROOT / expected["fixture"]).read_bytes()
+        git_blob = hashlib.sha1(
+            b"blob " + str(len(data)).encode("ascii") + b"\0" + data
+        ).hexdigest()
+        assert git_blob == expected["blob"] == entry["computed_blob"]
+        assert hashlib.sha256(data).hexdigest() == entry["fixture_sha256"]
+        target = repo / destination
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+
 LAUNCHER_CS = r"""
 using System;
 using System.Diagnostics;
@@ -664,8 +702,7 @@ def fake_repo(tmp_path: Path) -> Path:
     (repo / ".gitignore").write_text("dist/\n", encoding="utf-8")
     (repo / ".gitattributes").write_text("* text=auto\n", encoding="utf-8")
     (repo / "bin").mkdir()
-    shutil.copy2(REPO_ROOT / "bin" / "stm32-monitor.cmd", repo / "bin" / "stm32-monitor.cmd")
-    shutil.copy2(REPO_ROOT / "bin" / "stm32-toolkit-mcp.cmd", repo / "bin" / "stm32-toolkit-mcp.cmd")
+    _historical_0502_launchers(repo)
     (repo / "bin" / "setup-stm32-env.ps1").write_text("Write-Output 'setup'\n", encoding="utf-8")
     plans = repo / "docs" / "superpowers" / "plans"
     plans.mkdir(parents=True)

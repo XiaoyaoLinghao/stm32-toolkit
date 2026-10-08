@@ -19,7 +19,13 @@ from uuid import UUID
 
 from stm32_toolkit.evidence import canonical_json_bytes
 
-from .model import AcceptanceValidationError, REQUIRED_STAGES, describe_scenario
+from .model import (
+    AcceptanceValidationError,
+    REQUIRED_STAGES,
+    canonical_diagnostic_reference,
+    describe_scenario,
+    require_grouped_diagnostic_reference,
+)
 
 
 ATTEMPT_SCHEMA = "stm32-acceptance-attempt/1"
@@ -187,6 +193,120 @@ _PHYSICAL_POLICY_DOCUMENT = {
 PHYSICAL_RECOVERY_POLICY_DIGEST = hashlib.sha256(
     canonical_json_bytes(_PHYSICAL_POLICY_DOCUMENT)
 ).hexdigest()
+
+# The A physical attempt schema is already part of the published contract and
+# must remain byte-for-byte compatible.  B has its own closed profile.  The
+# attempt suffix is intentionally /4 because /3 is owned by the cross-session
+# continuation contract in ``acceptance.continuation``.
+CUBEMX_PHYSICAL_ATTEMPT_SCHEMA = "stm32-acceptance-attempt/4"
+CUBEMX_PHYSICAL_RECOVERY_POLICY_SCHEMA = "stm32-acceptance-recovery-policy/3"
+CUBEMX_PHYSICAL_SCENARIO_ID = "new-cubemx-physical-repair"
+CUBEMX_PHYSICAL_SCENARIO_VERSION = "1"
+CUBEMX_PHYSICAL_PROJECT_ORIGIN = "cubemx"
+CUBEMX_PHYSICAL_TRANSPORT = PHYSICAL_TRANSPORT
+_CUBEMX_PHYSICAL_SCENARIO_DOCUMENT = {
+    "scenarioId": CUBEMX_PHYSICAL_SCENARIO_ID,
+    "scenarioVersion": CUBEMX_PHYSICAL_SCENARIO_VERSION,
+    "projectOrigin": CUBEMX_PHYSICAL_PROJECT_ORIGIN,
+    "executionSource": "physical",
+    "transport": CUBEMX_PHYSICAL_TRANSPORT,
+    "physicalTransportEvidence": True,
+    "stages": PHYSICAL_STAGES,
+}
+CUBEMX_PHYSICAL_SCENARIO_DIGEST = hashlib.sha256(
+    canonical_json_bytes(_CUBEMX_PHYSICAL_SCENARIO_DOCUMENT)
+).hexdigest()
+_CUBEMX_PHYSICAL_POLICY_DOCUMENT = {
+    "schema": CUBEMX_PHYSICAL_RECOVERY_POLICY_SCHEMA,
+    "attemptSchema": CUBEMX_PHYSICAL_ATTEMPT_SCHEMA,
+    "scenarioId": CUBEMX_PHYSICAL_SCENARIO_ID,
+    "scenarioVersion": CUBEMX_PHYSICAL_SCENARIO_VERSION,
+    "scenarioDigest": CUBEMX_PHYSICAL_SCENARIO_DIGEST,
+    "stageTimeoutSeconds": PHYSICAL_POLICY_TIMEOUTS,
+    "intrusiveActions": PHYSICAL_POLICY_ACTIONS,
+    "physicalTransportEvidence": True,
+}
+CUBEMX_PHYSICAL_RECOVERY_POLICY_DIGEST = hashlib.sha256(
+    canonical_json_bytes(_CUBEMX_PHYSICAL_POLICY_DOCUMENT)
+).hexdigest()
+
+
+@dataclass(frozen=True)
+class PhysicalAcceptanceProfile:
+    """Closed identity values shared by the two physical attempt profiles."""
+
+    attempt_schema: str
+    recovery_policy_schema: str
+    scenario_id: str
+    scenario_version: str
+    project_origin: str
+    scenario_digest: str
+    recovery_policy_digest: str
+    transport: str
+
+
+_PHYSICAL_PROFILES = {
+    PHYSICAL_ATTEMPT_SCHEMA: PhysicalAcceptanceProfile(
+        attempt_schema=PHYSICAL_ATTEMPT_SCHEMA,
+        recovery_policy_schema=PHYSICAL_RECOVERY_POLICY_SCHEMA,
+        scenario_id=PHYSICAL_SCENARIO_ID,
+        scenario_version=PHYSICAL_SCENARIO_VERSION,
+        project_origin="keil",
+        scenario_digest=PHYSICAL_SCENARIO_DIGEST,
+        recovery_policy_digest=PHYSICAL_RECOVERY_POLICY_DIGEST,
+        transport=PHYSICAL_TRANSPORT,
+    ),
+    CUBEMX_PHYSICAL_ATTEMPT_SCHEMA: PhysicalAcceptanceProfile(
+        attempt_schema=CUBEMX_PHYSICAL_ATTEMPT_SCHEMA,
+        recovery_policy_schema=CUBEMX_PHYSICAL_RECOVERY_POLICY_SCHEMA,
+        scenario_id=CUBEMX_PHYSICAL_SCENARIO_ID,
+        scenario_version=CUBEMX_PHYSICAL_SCENARIO_VERSION,
+        project_origin=CUBEMX_PHYSICAL_PROJECT_ORIGIN,
+        scenario_digest=CUBEMX_PHYSICAL_SCENARIO_DIGEST,
+        recovery_policy_digest=CUBEMX_PHYSICAL_RECOVERY_POLICY_DIGEST,
+        transport=CUBEMX_PHYSICAL_TRANSPORT,
+    ),
+}
+_PHYSICAL_SCENARIO_PROFILES = {
+    (profile.scenario_id, profile.scenario_version): profile
+    for profile in _PHYSICAL_PROFILES.values()
+}
+
+
+def physical_acceptance_profile_for_schema(schema: object) -> PhysicalAcceptanceProfile:
+    try:
+        return _PHYSICAL_PROFILES[schema]  # type: ignore[index]
+    except (KeyError, TypeError) as error:
+        raise AcceptanceRecoveryValidationError("physical attempt schema is unsupported") from error
+
+
+def physical_acceptance_profile_for_scenario(
+    scenario_id: object, scenario_version: object
+) -> PhysicalAcceptanceProfile:
+    try:
+        return _PHYSICAL_SCENARIO_PROFILES[(scenario_id, scenario_version)]  # type: ignore[index]
+    except (KeyError, TypeError) as error:
+        raise AcceptanceRecoveryValidationError("physical scenario is unsupported") from error
+
+
+def physical_acceptance_recovery_policy_for_schema(
+    schema: object,
+) -> "PhysicalAcceptanceRecoveryPolicy":
+    profile = physical_acceptance_profile_for_schema(schema)
+    return PhysicalAcceptanceRecoveryPolicy(
+        schema=profile.recovery_policy_schema,
+        attempt_schema=profile.attempt_schema,
+        scenario_id=profile.scenario_id,
+        scenario_version=profile.scenario_version,
+        scenario_digest=profile.scenario_digest,
+        stage_timeout_seconds=MappingProxyType(dict(PHYSICAL_POLICY_TIMEOUTS)),
+        intrusive_actions=MappingProxyType(
+            {key: MappingProxyType(dict(value)) for key, value in PHYSICAL_POLICY_ACTIONS.items()}
+        ),
+        physical_transport_evidence=True,
+    )
+
+
 _PHYSICAL_ATTEMPT_FIELDS = _ATTEMPT_FIELDS | {"sourceChangeIntent"}
 _PHYSICAL_RUN_ID = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 _PHYSICAL_DIAGNOSTIC_ID = re.compile(r"^[0-9a-f]{32}$")
@@ -253,6 +373,20 @@ def _uuid(field: str, value: object) -> str:
     except (TypeError, ValueError) as error:
         raise AcceptanceRecoveryValidationError(f"{field} must be a canonical lowercase UUID") from error
     return string
+
+
+def _diagnostic_reference(field: str, value: object) -> str:
+    try:
+        return canonical_diagnostic_reference(field, value)
+    except AcceptanceValidationError as error:
+        raise AcceptanceRecoveryValidationError(str(error)) from error
+
+
+def _stored_diagnostic_reference(field: str, value: object) -> str:
+    try:
+        return require_grouped_diagnostic_reference(field, value)
+    except AcceptanceValidationError as error:
+        raise AcceptanceRecoveryValidationError(str(error)) from error
 
 
 def _utc(field: str, value: object) -> str:
@@ -389,7 +523,10 @@ def _validate_stage_outputs(value: object, revision: int) -> dict[str, object]:
             if item is not None and (type(item) is not int or item < 0):
                 raise AcceptanceRecoveryValidationError(f"{key} must be a non-negative integer or null")
             continue
-        if key in {"failedBeforeTestRunId", "diagnosticSessionId", "acceptanceRecordId"}:
+        if key == "diagnosticSessionId":
+            if item is not None:
+                outputs[key] = _diagnostic_reference(key, item)
+        elif key in {"failedBeforeTestRunId", "acceptanceRecordId"}:
             if item is not None:
                 _uuid(key, item)
         elif item is not None:
@@ -413,7 +550,9 @@ def _validate_authorization(value: object) -> dict[str, object] | None:
     if type(value["authorized"]) is not bool or value["authorized"] is not True:
         raise AcceptanceRecoveryValidationError("source change authorization must be true")
     authorized_at = _utc("authorizedAtUtc", value["authorizedAtUtc"])
-    diagnostic_session_id = _uuid("diagnosticSessionId", value["diagnosticSessionId"])
+    diagnostic_session_id = _diagnostic_reference(
+        "diagnosticSessionId", value["diagnosticSessionId"]
+    )
     revision = value["diagnosticRevision"]
     if type(revision) is not int or revision < 0:
         raise AcceptanceRecoveryValidationError("diagnosticRevision must be a non-negative integer")
@@ -579,6 +718,14 @@ class AcceptanceAttempt:
             raise AcceptanceRecoveryValidationError("completedStages must be a JSON array of strings")
         outputs = value["stageOutputs"]
         authorization = value["sourceChangeAuthorization"]
+        if isinstance(outputs, Mapping) and outputs.get("diagnosticSessionId") is not None:
+            _stored_diagnostic_reference(
+                "diagnosticSessionId", outputs["diagnosticSessionId"]
+            )
+        if isinstance(authorization, Mapping) and authorization.get("diagnosticSessionId") is not None:
+            _stored_diagnostic_reference(
+                "diagnosticSessionId", authorization["diagnosticSessionId"]
+            )
         return cls(
             schema=cast(str, value["schema"]),
             attempt_id=cast(str, value["attemptId"]),
@@ -780,19 +927,18 @@ def physical_acceptance_scenario() -> Mapping[str, object]:
     return MappingProxyType(dict(_PHYSICAL_SCENARIO_DOCUMENT))
 
 
+def cubemx_physical_acceptance_scenario() -> Mapping[str, object]:
+    """Return the immutable VS10-B physical scenario definition."""
+    return MappingProxyType(dict(_CUBEMX_PHYSICAL_SCENARIO_DOCUMENT))
+
+
 def physical_acceptance_recovery_policy() -> "PhysicalAcceptanceRecoveryPolicy":
-    return PhysicalAcceptanceRecoveryPolicy(
-        schema=PHYSICAL_RECOVERY_POLICY_SCHEMA,
-        attempt_schema=PHYSICAL_ATTEMPT_SCHEMA,
-        scenario_id=PHYSICAL_SCENARIO_ID,
-        scenario_version=PHYSICAL_SCENARIO_VERSION,
-        scenario_digest=PHYSICAL_SCENARIO_DIGEST,
-        stage_timeout_seconds=MappingProxyType(dict(PHYSICAL_POLICY_TIMEOUTS)),
-        intrusive_actions=MappingProxyType(
-            {key: MappingProxyType(dict(value)) for key, value in PHYSICAL_POLICY_ACTIONS.items()}
-        ),
-        physical_transport_evidence=True,
-    )
+    return physical_acceptance_recovery_policy_for_schema(PHYSICAL_ATTEMPT_SCHEMA)
+
+
+def cubemx_physical_acceptance_recovery_policy() -> "PhysicalAcceptanceRecoveryPolicy":
+    """Return the immutable VS10-B recovery policy."""
+    return physical_acceptance_recovery_policy_for_schema(CUBEMX_PHYSICAL_ATTEMPT_SCHEMA)
 
 
 @dataclass(frozen=True)
@@ -807,12 +953,12 @@ class PhysicalAcceptanceRecoveryPolicy:
     physical_transport_evidence: bool
 
     def __post_init__(self) -> None:
+        profile = physical_acceptance_profile_for_schema(self.attempt_schema)
         if (
-            self.schema != PHYSICAL_RECOVERY_POLICY_SCHEMA
-            or self.attempt_schema != PHYSICAL_ATTEMPT_SCHEMA
-            or self.scenario_id != PHYSICAL_SCENARIO_ID
-            or self.scenario_version != PHYSICAL_SCENARIO_VERSION
-            or self.scenario_digest != PHYSICAL_SCENARIO_DIGEST
+            self.schema != profile.recovery_policy_schema
+            or self.scenario_id != profile.scenario_id
+            or self.scenario_version != profile.scenario_version
+            or self.scenario_digest != profile.scenario_digest
             or self.physical_transport_evidence is not True
             or dict(self.stage_timeout_seconds) != PHYSICAL_POLICY_TIMEOUTS
             or {key: dict(value) for key, value in self.intrusive_actions.items()}
@@ -963,8 +1109,7 @@ class PhysicalAcceptanceAttempt:
     updated_at_utc: str
 
     def __post_init__(self) -> None:
-        if self.schema != PHYSICAL_ATTEMPT_SCHEMA:
-            raise AcceptanceRecoveryValidationError("attempt schema is unsupported")
+        profile = physical_acceptance_profile_for_schema(self.schema)
         _uuid("attemptId", self.attempt_id)
         if type(self.revision) is not int or not 0 <= self.revision <= 7:
             raise AcceptanceRecoveryValidationError("revision must be an integer from 0 through 7")
@@ -977,18 +1122,20 @@ class PhysicalAcceptanceAttempt:
         else:
             _hash("previousCheckpointId", self.previous_checkpoint_id)
         if (
-            self.scenario_id != PHYSICAL_SCENARIO_ID
-            or self.scenario_version != PHYSICAL_SCENARIO_VERSION
-            or self.scenario_digest != PHYSICAL_SCENARIO_DIGEST
-            or self.recovery_policy_digest != PHYSICAL_RECOVERY_POLICY_DIGEST
+            self.scenario_id != profile.scenario_id
+            or self.scenario_version != profile.scenario_version
+            or self.scenario_digest != profile.scenario_digest
+            or self.recovery_policy_digest != profile.recovery_policy_digest
         ):
             raise AcceptanceRecoveryValidationError("physical scenario or policy identity is not frozen")
         _hash("scenarioDigest", self.scenario_digest)
         _hash("recoveryPolicyDigest", self.recovery_policy_digest)
         _hash("workspaceId", self.workspace_id)
         _uuid("logicalProjectId", self.logical_project_id)
-        if self.project_origin != "keil":
-            raise AcceptanceRecoveryValidationError("physical recovery requires a Keil project")
+        if self.project_origin != profile.project_origin:
+            raise AcceptanceRecoveryValidationError(
+                f"physical recovery requires a {profile.project_origin} project"
+            )
         if self.execution_source != "physical":
             raise AcceptanceRecoveryValidationError("physical recovery execution source is frozen")
         if type(self.physical_transport_evidence) is not bool or self.physical_transport_evidence != (self.revision >= 3):
@@ -1133,6 +1280,14 @@ __all__ = [
     "AcceptanceAttempt",
     "AcceptanceRecoveryPolicy",
     "AcceptanceRecoveryValidationError",
+    "CUBEMX_PHYSICAL_ATTEMPT_SCHEMA",
+    "CUBEMX_PHYSICAL_PROJECT_ORIGIN",
+    "CUBEMX_PHYSICAL_RECOVERY_POLICY_DIGEST",
+    "CUBEMX_PHYSICAL_RECOVERY_POLICY_SCHEMA",
+    "CUBEMX_PHYSICAL_SCENARIO_DIGEST",
+    "CUBEMX_PHYSICAL_SCENARIO_ID",
+    "CUBEMX_PHYSICAL_SCENARIO_VERSION",
+    "CUBEMX_PHYSICAL_TRANSPORT",
     "PHYSICAL_ATTEMPT_SCHEMA",
     "PHYSICAL_RECOVERY_POLICY_DIGEST",
     "PHYSICAL_RECOVERY_POLICY_SCHEMA",
@@ -1143,6 +1298,7 @@ __all__ = [
     "PHYSICAL_STAGE_OUTPUT_KEYS",
     "PHYSICAL_STAGES",
     "PhysicalAcceptanceAttempt",
+    "PhysicalAcceptanceProfile",
     "PhysicalAcceptanceRecoveryPolicy",
     "RECOVERY_POLICY_DIGEST",
     "RECOVERY_POLICY_SCHEMA",
@@ -1150,6 +1306,11 @@ __all__ = [
     "SourceChangeIntent",
     "STAGE_OUTPUT_KEYS",
     "acceptance_recovery_policy",
+    "cubemx_physical_acceptance_recovery_policy",
+    "cubemx_physical_acceptance_scenario",
     "physical_acceptance_recovery_policy",
+    "physical_acceptance_recovery_policy_for_schema",
+    "physical_acceptance_profile_for_scenario",
+    "physical_acceptance_profile_for_schema",
     "physical_acceptance_scenario",
 ]

@@ -16,7 +16,7 @@ import pytest
 MANIFEST = {
     "schemaVersion": 2,
     "logicalProjectId": "12345678-1234-5678-1234-567812345678",
-    "generatedBy": {"tool": "stm32-toolkit", "version": "0.9.0"},
+    "generatedBy": {"tool": "stm32-toolkit", "version": "1.0.0"},
     "project": {"name": "monitor-fixture", "origin": "manual"},
     "target": {
         "device": "STM32F407VGTx",
@@ -120,7 +120,7 @@ class FakeEndpoint:
     token: str = field(default="c" * 64, repr=False)
     workspace_id: str = ""
     session_id: str = ""
-    monitor_version: str = "0.9.0"
+    monitor_version: str = "1.0.0"
 
     @property
     def url(self) -> str:
@@ -415,7 +415,7 @@ def test_start_is_project_read_only_and_runtime_record_contains_digest_not_token
         assert record["tokenSha256"] == hashlib.sha256(
             endpoint.token.encode("ascii")
         ).hexdigest()
-        assert record["monitorVersion"] == "0.9.0"
+        assert record["monitorVersion"] == "1.0.0"
         assert endpoint.token not in runtime.runtime_record.read_text(encoding="utf-8")
         assert endpoint.token not in repr(runtime)
         await runtime.stop()
@@ -457,6 +457,81 @@ def test_same_workspace_runtime_lock_is_busy_until_owner_stops(tmp_path: Path) -
             await first.stop()
         await second.start(config)
         await second.stop()
+
+    asyncio.run(scenario())
+
+
+def test_start_cleanup_failure_after_invalid_endpoint_releases_workspace_lock(
+    tmp_path: Path,
+) -> None:
+    from stm32_monitor.models import MonitorConfig
+    from stm32_monitor.runtime import MonitorRuntime, MonitorRuntimeError
+
+    class FailingStore:
+        def __init__(self, _paths) -> None:
+            self.close_calls = 0
+
+        def close(self) -> None:
+            self.close_calls += 1
+            raise RuntimeError("store cleanup detail")
+
+    class InvalidEndpointService:
+        def __init__(self, *args, **kwargs) -> None:
+            del args
+            self.endpoint = FakeEndpoint(
+                host="0.0.0.0",
+                workspace_id=kwargs["workspace_id"],
+                session_id=kwargs["session_id"],
+            )
+            self.stop_calls = 0
+
+        async def start(self):
+            return self.endpoint
+
+        async def stop(self) -> None:
+            self.stop_calls += 1
+
+    async def scenario() -> None:
+        project = _project(tmp_path)
+        config = MonitorConfig(project, (tmp_path / "data").resolve(), "session-a")
+        stores: list[FailingStore] = []
+        services: list[InvalidEndpointService] = []
+
+        def group_factory(paths):
+            store = FailingStore(paths)
+            stores.append(store)
+            return store
+
+        def service_factory(*args, **kwargs):
+            service = InvalidEndpointService(*args, **kwargs)
+            services.append(service)
+            return service
+
+        runtime = MonitorRuntime(
+            group_store_factory=group_factory,
+            history_store_factory=FakeStore,
+            exporter_factory=FakeExporter,
+            sampler_factory=lambda *_args, **_kwargs: object(),
+            observation_factory=lambda *_args, **_kwargs: None,
+            service_factory=service_factory,
+        )
+        with pytest.raises(MonitorRuntimeError) as error:
+            await runtime.start(config)
+        assert error.value.code == "MONITOR_CLEANUP_FAILED"
+        assert error.value.message == "Monitor runtime cleanup failed"
+        assert stores[0].close_calls == 1
+        assert services[0].stop_calls == 1
+
+        replacement = MonitorRuntime(
+            group_store_factory=FakeStore,
+            history_store_factory=FakeStore,
+            exporter_factory=FakeExporter,
+            sampler_factory=lambda *_args, **_kwargs: object(),
+            observation_factory=lambda *_args, **_kwargs: None,
+            service_factory=lambda *args, **kwargs: _ready_service(*args, **kwargs),
+        )
+        await replacement.start(config)
+        await replacement.stop()
 
     asyncio.run(scenario())
 
@@ -2555,6 +2630,45 @@ def test_stop_reports_first_close_error_after_visiting_all_owned_dependencies(
             await runtime.stop()
         assert caught.value.code == "MONITOR_CLEANUP_FAILED"
         assert "SECRET" not in caught.value.message
+
+    asyncio.run(scenario())
+
+
+def test_stop_surfaces_runtime_record_unlink_failure_and_releases_workspace_lock(
+    tmp_path: Path,
+) -> None:
+    from stm32_monitor.models import MonitorConfig
+    from stm32_monitor.runtime import MonitorRuntime, MonitorRuntimeError
+
+    async def scenario() -> None:
+        runtime, config, groups, histories, *_ = _protocol_runtime(tmp_path)
+        await runtime.start(config)
+        record = runtime.runtime_record
+        record.unlink()
+        record.mkdir()
+        try:
+            with pytest.raises(MonitorRuntimeError) as caught:
+                await runtime.stop()
+            assert caught.value.code == "MONITOR_CLEANUP_FAILED"
+            await runtime.wait_closed()
+            assert groups[0].closed == 1
+            assert histories[0].closed == 1
+        finally:
+            if record.is_dir():
+                record.rmdir()
+
+        replacement = MonitorRuntime(
+            group_store_factory=FakeStore,
+            history_store_factory=FakeStore,
+            exporter_factory=FakeExporter,
+            sampler_factory=lambda *_args, **_kwargs: object(),
+            observation_factory=lambda *_args, **_kwargs: None,
+            service_factory=lambda *args, **kwargs: _ready_service(*args, **kwargs),
+        )
+        await replacement.start(
+            MonitorConfig(config.project_root, config.data_root, config.session_id)
+        )
+        await replacement.stop()
 
     asyncio.run(scenario())
 

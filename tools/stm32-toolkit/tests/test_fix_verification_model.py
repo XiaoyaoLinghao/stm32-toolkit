@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import FrozenInstanceError
+from copy import deepcopy
+from dataclasses import FrozenInstanceError, replace
 from hashlib import sha256
 
 import pytest
@@ -54,6 +55,7 @@ def _source(validation_plan_id: str = PLAN_ID) -> SourceChangeDeclaration:
 def _plan(
     source: SourceChangeDeclaration | None = None,
     verification_plan_id: str = PLAN_ID,
+    continuation_evidence_id: str | None = None,
 ) -> VerificationPlan:
     declaration = _source(verification_plan_id) if source is None else source
     return VerificationPlan.new(
@@ -68,6 +70,7 @@ def _plan(
         required_analysis_evidence_ids=ANALYSIS_EVIDENCE_IDS,
         required_monitor_quality="VALID",
         expected_changed=True,
+        continuation_evidence_id=continuation_evidence_id,
     )
 
 
@@ -193,6 +196,28 @@ def test_source_plan_fix_bind_without_digest_fixed_point() -> None:
     _expect_invalid(lambda: FixVerification.from_value(changed_verification))
 
 
+def test_v2_verification_plan_requires_and_binds_continuation_evidence() -> None:
+    plan = _plan(continuation_evidence_id="8" * 64)
+    wire = plan.to_dict()
+
+    assert wire["schema"] == "stm32-verification-plan/2"
+    assert wire["continuation_evidence_id"] == "8" * 64
+    assert VerificationPlan.from_value(wire) == plan
+
+    for mutation in ("missing", "legacy-schema", "changed-id"):
+        candidate = deepcopy(wire)
+        if mutation == "missing":
+            candidate.pop("continuation_evidence_id")
+        elif mutation == "legacy-schema":
+            candidate["schema"] = "stm32-verification-plan/1"
+        else:
+            candidate["continuation_evidence_id"] = "9" * 64
+        before = deepcopy(candidate)
+
+        _expect_invalid(lambda candidate=candidate: VerificationPlan.from_value(candidate))
+        assert candidate == before
+
+
 def test_derived_ids_are_canonical_and_bind_every_field() -> None:
     source = _source()
     plan = _plan(source)
@@ -290,6 +315,85 @@ def test_closed_wire_fields_tuples_subclasses_and_types_are_rejected() -> None:
         source.validation_plan_id,
     )
     _expect_invalid(lambda: SourceChangeDeclaration.from_value(subclass))
+
+
+def test_public_wire_collection_and_identity_guards_preserve_input() -> None:
+    source_paths_empty = _source().to_dict()
+    source_paths_empty["changed_paths"] = []
+    source_hypotheses_duplicate = _source().to_dict()
+    source_hypotheses_duplicate["claimed_hypothesis_ids"] = [HYPOTHESIS_IDS[0], HYPOTHESIS_IDS[0]]
+    source_hypotheses_unsorted = _source().to_dict()
+    source_hypotheses_unsorted["claimed_hypothesis_ids"] = list(reversed(HYPOTHESIS_IDS))
+    source_same_hash = _source().to_dict()
+    source_same_hash["after_source_sha256"] = source_same_hash["before_source_sha256"]
+    source_paths_too_many = _source().to_dict()
+    source_paths_too_many["changed_paths"] = [f"src/{index}.c" for index in range(129)]
+
+    plan_quality = _plan().to_dict()
+    plan_quality["required_monitor_quality"] = "INVALID"
+    plan_expected_unchanged = _plan().to_dict()
+    plan_expected_unchanged["expected_changed"] = False
+    plan_analysis_mismatch = _plan().to_dict()
+    plan_analysis_mismatch["required_analysis_evidence_ids"] = [ANALYSIS_EVIDENCE_IDS[0]]
+    plan_analysis_scalar = _plan().to_dict()
+    plan_analysis_scalar["required_analysis_ids"] = ANALYSIS_IDS[0]
+    plan_analysis_too_many = _plan().to_dict()
+    plan_analysis_too_many["required_analysis_ids"] = [f"{index:064x}" for index in range(17)]
+    plan_analysis_too_many["required_analysis_evidence_ids"] = [f"{index + 17:064x}" for index in range(17)]
+
+    marker_polarity = _marker().to_dict()
+    marker_polarity["polarity"] = "neutral"
+    marker_label = _marker().to_dict()
+    marker_label["label"] = "unknown-label"
+
+    fix_operations_duplicate = _fix().to_dict()
+    fix_operations_duplicate["executed_operation_ids"] = ["verification.complete", "verification.complete"]
+    fix_operations_scalar = _fix().to_dict()
+    fix_operations_scalar["executed_operation_ids"] = "verification.complete"
+    fix_status = _fix().to_dict()
+    fix_status["status"] = "UNKNOWN"
+
+    cases = (
+        (SourceChangeDeclaration.from_value, source_paths_empty, DIAGNOSTIC_INVALID_EVENT),
+        (SourceChangeDeclaration.from_value, source_hypotheses_duplicate, DIAGNOSTIC_INVALID_EVENT),
+        (SourceChangeDeclaration.from_value, source_hypotheses_unsorted, DIAGNOSTIC_INVALID_EVENT),
+        (SourceChangeDeclaration.from_value, source_same_hash, DIAGNOSTIC_INVALID_EVENT),
+        (SourceChangeDeclaration.from_value, source_paths_too_many, DIAGNOSTIC_LIMIT_EXCEEDED),
+        (VerificationPlan.from_value, plan_quality, DIAGNOSTIC_INVALID_EVENT),
+        (VerificationPlan.from_value, plan_expected_unchanged, DIAGNOSTIC_INVALID_EVENT),
+        (VerificationPlan.from_value, plan_analysis_mismatch, DIAGNOSTIC_INVALID_EVENT),
+        (VerificationPlan.from_value, plan_analysis_scalar, DIAGNOSTIC_INVALID_EVENT),
+        (VerificationPlan.from_value, plan_analysis_too_many, DIAGNOSTIC_LIMIT_EXCEEDED),
+        (DiagnosticMarkerRef.from_value, marker_polarity, DIAGNOSTIC_INVALID_EVENT),
+        (DiagnosticMarkerRef.from_value, marker_label, DIAGNOSTIC_INVALID_EVENT),
+        (VerificationPlan.from_value, None, DIAGNOSTIC_INVALID_EVENT),
+        (DiagnosticMarkerRef.from_value, None, DIAGNOSTIC_INVALID_EVENT),
+        (FixVerification.from_value, fix_operations_duplicate, DIAGNOSTIC_INVALID_EVENT),
+        (FixVerification.from_value, fix_operations_scalar, DIAGNOSTIC_INVALID_EVENT),
+        (FixVerification.from_value, fix_status, DIAGNOSTIC_INVALID_EVENT),
+        (FixVerification.from_value, None, DIAGNOSTIC_INVALID_EVENT),
+    )
+
+    for factory, candidate, expected_code in cases:
+        before = deepcopy(candidate)
+        _expect_invalid(lambda factory=factory, candidate=candidate: factory(candidate), expected_code)
+        assert candidate == before
+
+
+def test_public_constructor_requires_tuple_collections() -> None:
+    _expect_invalid(lambda: SourceChangeDeclaration.new(
+        before_source_sha256="8" * 64,
+        after_source_sha256="9" * 64,
+        before_build_id="a" * 64,
+        before_elf_sha256="b" * 64,
+        after_build_id="c" * 64,
+        after_elf_sha256="d" * 64,
+        changed_paths=["src/main.c"],  # type: ignore[arg-type]
+        diff_evidence_id="e" * 64,
+        diff_artifact=ARTIFACT,
+        claimed_hypothesis_ids=HYPOTHESIS_IDS,
+        validation_plan_id=PLAN_ID,
+    ))
 
 
 @pytest.mark.parametrize(
@@ -465,3 +569,153 @@ def test_fix_verification_paired_analysis_evidence_ids_sort_together() -> None:
         ("f" * 64, "1" * 64),
     )
     assert FixVerification.from_value(verification.to_dict()) == verification
+
+
+_SOURCE_INVALID_MESSAGE = "event/model/operation intent is invalid"
+_SOURCE_LIMIT_MESSAGE = "a diagnostic collection or byte limit is exceeded"
+
+
+def _expect_source_failure(factory, expected_code: str, expected_message: str) -> None:
+    with pytest.raises(DiagnosticValidationError) as error:
+        factory()
+    assert error.value.code == expected_code
+    assert error.value.message == expected_message
+    assert str(error.value) == expected_message
+
+
+@pytest.mark.parametrize(
+    "case_id",
+    [
+        "closed-hash-type",
+        "closed-hex-id-type",
+        "closed-safe-id-type",
+        "closed-run-id-type",
+        "closed-utc-type",
+        "artifact-limit",
+        "artifact-invalid",
+        "parallel-analysis-length",
+        "legacy-plan-continuation",
+    ],
+    ids=lambda case_id: case_id,
+)
+def test_public_source_verification_boundaries(case_id: str) -> None:
+    if case_id == "closed-hash-type":
+        candidate = _source().to_dict()
+        candidate["before_source_sha256"] = 1
+        before = deepcopy(candidate)
+        _expect_source_failure(
+            lambda: SourceChangeDeclaration.from_value(candidate),
+            DIAGNOSTIC_INVALID_EVENT,
+            _SOURCE_INVALID_MESSAGE,
+        )
+        assert candidate == before
+        return
+    if case_id == "closed-hex-id-type":
+        candidate = _plan().to_dict()
+        candidate["diagnostic_session_id"] = 1
+        before = deepcopy(candidate)
+        _expect_source_failure(
+            lambda: VerificationPlan.from_value(candidate),
+            DIAGNOSTIC_INVALID_EVENT,
+            _SOURCE_INVALID_MESSAGE,
+        )
+        assert candidate == before
+        return
+    if case_id == "closed-safe-id-type":
+        candidate = _fix().to_dict()
+        candidate["executed_operation_ids"] = [1]
+        before = deepcopy(candidate)
+        _expect_source_failure(
+            lambda: FixVerification.from_value(candidate),
+            DIAGNOSTIC_INVALID_EVENT,
+            _SOURCE_INVALID_MESSAGE,
+        )
+        assert candidate == before
+        return
+    if case_id == "closed-run-id-type":
+        candidate = _plan().to_dict()
+        candidate["failed_before_run_id"] = 1
+        before = deepcopy(candidate)
+        _expect_source_failure(
+            lambda: VerificationPlan.from_value(candidate),
+            DIAGNOSTIC_INVALID_EVENT,
+            _SOURCE_INVALID_MESSAGE,
+        )
+        assert candidate == before
+        return
+    if case_id == "closed-utc-type":
+        candidate = _fix().to_dict()
+        candidate["completed_at_utc"] = 1
+        before = deepcopy(candidate)
+        _expect_source_failure(
+            lambda: FixVerification.from_value(candidate),
+            DIAGNOSTIC_INVALID_EVENT,
+            _SOURCE_INVALID_MESSAGE,
+        )
+        assert candidate == before
+        return
+    if case_id == "artifact-limit":
+        candidate = _source().to_dict()
+        artifact = candidate["diff_artifact"]
+        assert isinstance(artifact, dict)
+        artifact["relative_path"] = "x" * 513
+        before = deepcopy(candidate)
+        _expect_source_failure(
+            lambda: SourceChangeDeclaration.from_value(candidate),
+            DIAGNOSTIC_LIMIT_EXCEEDED,
+            _SOURCE_LIMIT_MESSAGE,
+        )
+        assert candidate == before
+        return
+    if case_id == "artifact-invalid":
+        candidate = _source().to_dict()
+        artifact = candidate["diff_artifact"]
+        assert isinstance(artifact, dict)
+        artifact["relative_path"] = "/absolute.diff"
+        before = deepcopy(candidate)
+        _expect_source_failure(
+            lambda: SourceChangeDeclaration.from_value(candidate),
+            DIAGNOSTIC_INVALID_EVENT,
+            _SOURCE_INVALID_MESSAGE,
+        )
+        assert candidate == before
+        return
+    if case_id == "parallel-analysis-length":
+        plan = _plan()
+        before = plan.to_dict()
+        _expect_source_failure(
+            lambda: replace(
+                plan,
+                required_analysis_evidence_ids=(ANALYSIS_EVIDENCE_IDS[0],),
+            ),
+            DIAGNOSTIC_INVALID_EVENT,
+            _SOURCE_INVALID_MESSAGE,
+        )
+        assert plan.to_dict() == before
+        return
+    if case_id == "legacy-plan-continuation":
+        plan = _plan()
+        before = plan.to_dict()
+        _expect_source_failure(
+            lambda: VerificationPlan(
+                plan.schema,
+                plan.verification_plan_id,
+                plan.diagnostic_session_id,
+                plan.failed_before_run_id,
+                plan.failed_before_evidence_id,
+                plan.source_change_declaration_id,
+                plan.fixed_after_run_id,
+                plan.fixed_after_evidence_id,
+                plan.required_analysis_ids,
+                plan.required_analysis_evidence_ids,
+                plan.required_monitor_quality,
+                plan.expected_changed,
+                plan.plan_digest,
+                "a" * 64,
+            ),
+            DIAGNOSTIC_INVALID_EVENT,
+            _SOURCE_INVALID_MESSAGE,
+        )
+        assert plan.to_dict() == before
+        return
+    raise AssertionError(f"unhandled case: {case_id}")

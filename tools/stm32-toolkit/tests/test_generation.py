@@ -43,6 +43,7 @@ from stm32_toolkit.generation.managed_files import (
     plan_id_for,
     portable_path_error,
     sha256_error,
+    is_supported_generation_producer,
 )
 from stm32_toolkit.project_model import ProjectManifestError, load_project_model
 
@@ -373,7 +374,6 @@ def _redirect_path(monkeypatch, link: Path, target: Path, is_dir: bool) -> None:
             ["cmd", "/c", "mklink", "/J", str(link), str(target)],
             check=True,
             capture_output=True,
-            text=True,
         )
         return
     original_resolve = Path.resolve
@@ -770,6 +770,58 @@ def test_generation_spec_validation(tmp_path, field, rule):
         plan_for(root)
     assert error.value.code == "GENERATION_MODEL_INVALID"
     assert error.value.details == {"field": field, "rule": rule}
+
+
+@pytest.mark.parametrize("schema_version", [2, 3])
+def test_legacy_0_9_generation_producer_plans_and_emits_current_managed_manifest(
+    tmp_path: Path, schema_version: int
+):
+    payload = standard_payload()
+    payload["schemaVersion"] = schema_version
+    payload["generatedBy"] = {"tool": "stm32-toolkit", "version": "0.9.0"}
+    root = write_project(tmp_path / f"schema-{schema_version}", payload)
+
+    plan = plan_for(root)
+    assert plan.model.generation.version == "0.9.0"
+    applied = apply_project_configuration(plan)
+    assert applied.ok is True
+
+    project = json.loads((root / ".stm32-project.json").read_text(encoding="utf-8"))
+    manifest = json.loads(
+        (root / ".stm32-toolkit" / "generated-files.json").read_text(encoding="utf-8")
+    )
+    assert project["generatedBy"]["version"] == "0.9.0"
+    assert manifest["toolVersion"] == __version__
+
+    # A preserved 0.9 managed manifest remains readable while the next plan
+    # continues to emit the current 1.0 manifest bytes.
+    manifest["toolVersion"] = "0.9.0"
+    write_manifest_bytes(
+        root,
+        json.dumps(manifest, indent=2, ensure_ascii=False).encode("utf-8") + b"\n",
+    )
+    replanned = plan_for(root)
+    replanned_manifest = json.loads(replanned.managed_manifest_bytes.decode("utf-8"))
+    assert replanned_manifest["toolVersion"] == __version__
+
+
+def test_generation_producer_allowlist_is_exact_and_type_safe(tmp_path: Path):
+    assert is_supported_generation_producer("stm32-toolkit", __version__)
+    assert is_supported_generation_producer("stm32-toolkit", "0.9.0")
+    for value in ("0.5.0", "2.0.0", 1, None, [], {}):
+        assert not is_supported_generation_producer("stm32-toolkit", value)
+
+    root = write_project(tmp_path / "proj")
+    model = load_project_model(root)
+    for value in (1, None, [], {}):
+        malformed = replace(
+            model,
+            generation=replace(model.generation, version=value),  # type: ignore[arg-type]
+        )
+        with pytest.raises(GenerationError) as error:
+            configure_mod._validate_generation_spec(malformed)
+        assert error.value.code == "GENERATION_MODEL_INVALID"
+        assert error.value.details == {"field": "generation.version", "rule": "value"}
 
 
 @pytest.mark.parametrize(
@@ -1498,6 +1550,21 @@ def test_sanitized_project_name_is_used(tmp_path):
     plan = plan_for(root)
     cmake = next(entry for entry in plan.files if entry.path == "CMakeLists.txt")
     assert b"project(My_App LANGUAGES C CXX ASM)" in cmake.after_bytes
+
+
+@pytest.mark.parametrize(
+    ("project_name", "expected"),
+    [("123abc", "stm32_123abc"), ("!!!", "stm32_firmware")],
+)
+def test_sanitized_project_name_edge_cases_are_rendered(
+    tmp_path: Path, project_name: str, expected: str
+):
+    payload = standard_payload()
+    payload["project"] = {"name": project_name, "origin": "manual"}
+    root = write_project(tmp_path / "proj", payload)
+    plan = plan_for(root)
+    cmake = next(entry for entry in plan.files if entry.path == "CMakeLists.txt")
+    assert f"project({expected} LANGUAGES C CXX ASM)".encode() in cmake.after_bytes
 
 
 def test_sanitize_identifier_fallbacks():
@@ -2274,15 +2341,16 @@ def _valid_manifest_bytes(root: Path, extra_records=()) -> bytes:
         (b"{}", "version"),
         (b'{"extra": 1}', "key"),
         (b'{"schemaVersion":2,"tool":"stm32-toolkit","toolVersion":"0.5.0","templateVersion":1,"projectManifestSha256":"' + b"a" * 64 + b'","files":[]}', "version"),
+        (b'{"schemaVersion":1,"tool":"stm32-toolkit","toolVersion":1,"templateVersion":1,"projectManifestSha256":"' + b"a" * 64 + b'","files":[]}', "version"),
         (b'{"schemaVersion":1,"tool":"other","toolVersion":"0.5.0","templateVersion":1,"projectManifestSha256":"' + b"a" * 64 + b'","files":[]}', "tool"),
         (b'{"schemaVersion":1,"tool":"stm32-toolkit","toolVersion":"9.9.9","templateVersion":1,"projectManifestSha256":"' + b"a" * 64 + b'","files":[]}', "version"),
         (b'{"schemaVersion":1,"tool":"stm32-toolkit","toolVersion":"0.5.0","templateVersion":2,"projectManifestSha256":"' + b"a" * 64 + b'","files":[]}', "version"),
         # Keep historical 0.5.0 producer records above as version-rejection
         # fixtures; these structural cases use the current identity so their
         # targeted hash/type validators remain observable.
-        (b'{"schemaVersion":1,"tool":"stm32-toolkit","toolVersion":"0.9.0","templateVersion":1,"projectManifestSha256":"zzz","files":[]}', "hash"),
-        (b'{"schemaVersion":1,"tool":"stm32-toolkit","toolVersion":"0.9.0","templateVersion":1,"projectManifestSha256":"' + b"a" * 64 + b'","files":{}}', "type"),
-        (b'{"schemaVersion":1,"tool":"stm32-toolkit","toolVersion":"0.9.0","templateVersion":1,"projectManifestSha256":"' + b"a" * 64 + b'","files":[1]}', "type"),
+        (b'{"schemaVersion":1,"tool":"stm32-toolkit","toolVersion":"1.0.0","templateVersion":1,"projectManifestSha256":"zzz","files":[]}', "hash"),
+        (b'{"schemaVersion":1,"tool":"stm32-toolkit","toolVersion":"1.0.0","templateVersion":1,"projectManifestSha256":"' + b"a" * 64 + b'","files":{}}', "type"),
+        (b'{"schemaVersion":1,"tool":"stm32-toolkit","toolVersion":"1.0.0","templateVersion":1,"projectManifestSha256":"' + b"a" * 64 + b'","files":[1]}', "type"),
     ],
 )
 def test_malformed_prior_manifests_are_rejected(tmp_path, content, rule):
@@ -2338,6 +2406,26 @@ def test_manifest_non_regular_file_is_rejected(tmp_path):
         plan_for(root)
     assert error.value.code == "GENERATION_MANIFEST_INVALID"
     assert error.value.details == {"path": MANAGED_MANIFEST_PATH, "rule": "regularFile"}
+
+
+def test_oversized_prior_manifest_is_rejected(tmp_path):
+    root = write_project(tmp_path / "proj")
+    oversized = b"x" * (configure_mod.FILE_LIMIT_BYTES + 1)
+    write_manifest_bytes(root, oversized)
+    manifest_path = root.joinpath(*MANAGED_MANIFEST_PATH.split("/"))
+    after_mutation = tree_snapshot(root)
+
+    with pytest.raises(GenerationError) as error:
+        plan_for(root)
+
+    assert error.value.code == "GENERATION_MANIFEST_INVALID"
+    assert error.value.message == "managed manifest exceeds the limit"
+    assert error.value.details == {"path": MANAGED_MANIFEST_PATH, "rule": "size"}
+    assert tree_snapshot(root) == after_mutation
+    assert manifest_path.is_file()
+    assert manifest_path.stat().st_size == configure_mod.FILE_LIMIT_BYTES + 1
+    assert not any(root.joinpath(*path.split("/")).exists() for path in TARGETS)
+    assert not (root / STAGING_ROOT).exists()
 
 
 # ---------------------------------------------------------------------------
@@ -2657,6 +2745,28 @@ def test_apply_changed_input_is_rejected_before_writes(tmp_path):
     assert not (root / ".stm32-toolkit").exists()
 
 
+def test_apply_recorded_input_directory_is_rejected_before_writes(tmp_path):
+    root = write_project(tmp_path / "proj")
+    plan = plan_for(root)
+    recorded_input = root / "Src/app.c"
+    recorded_input.unlink()
+    recorded_input.mkdir()
+    after_mutation = tree_snapshot(root)
+
+    result = apply_project_configuration(plan)
+
+    assert not result.ok
+    assert result.operation == "project-configuration-apply"
+    assert result.code == "GENERATION_INPUT_CHANGED"
+    assert result.message == "recorded input is not a regular file"
+    assert result.details == {"path": "Src/app.c"}
+    assert tree_snapshot(root) == after_mutation
+    assert recorded_input.is_dir()
+    assert not any(root.joinpath(*path.split("/")).exists() for path in TARGETS)
+    assert not (root / ".stm32-toolkit").exists()
+    assert not staging_dir(root, plan.plan_id).exists()
+
+
 def test_apply_changed_target_after_plan_is_rejected(tmp_path):
     root = write_project(tmp_path / "proj")
     assert apply_project_configuration(plan_for(root)).ok
@@ -2951,6 +3061,49 @@ def test_project_mutation_lock_failure_maps_to_stable_generation_result(tmp_path
     assert result.message == "apply failed"
     assert result.details == {"phase": "projectMutationLock"}
     json.dumps(result.to_dict())
+
+
+@pytest.mark.parametrize("root_kind", ("missing", "file"))
+def test_apply_rejects_plan_root_that_is_not_a_project_directory(
+    tmp_path, root_kind, monkeypatch
+):
+    from contextlib import nullcontext
+
+    import stm32_toolkit.project_upgrade as project_upgrade_mod
+
+    root = write_project(tmp_path / "proj")
+    plan = plan_for(root)
+    if root_kind == "missing":
+        forged_root = tmp_path / "missing-project"
+        forged_before = None
+    else:
+        forged_root = tmp_path / "project-file"
+        forged_root.write_bytes(b"caller supplied a file")
+        forged_before = forged_root.read_bytes()
+    forged = replace(plan, project_root=forged_root)
+    forged = replace(forged, plan_id=plan_id_for(forged))
+    before = tree_snapshot(root)
+    original_fixture = root / "Src" / "main.c"
+    original_fixture_bytes = original_fixture.read_bytes()
+    lock_entries = []
+
+    def track_lock(lock_root):
+        lock_entries.append(lock_root)
+        return nullcontext()
+
+    monkeypatch.setattr(project_upgrade_mod, "project_mutation_lock", track_lock)
+    result = apply_project_configuration(forged)
+    assert result.code == "GENERATION_PLAN_INVALID"
+    assert result.details == {"rule": "projectRoot"}
+    assert lock_entries == []
+    assert tree_snapshot(root) == before
+    if forged_before is None:
+        assert not forged_root.exists()
+    else:
+        assert forged_root.read_bytes() == forged_before
+    assert not (forged_root / ".stm32-toolkit").exists()
+    assert not staging_dir(forged_root, forged.plan_id).exists()
+    assert original_fixture.read_bytes() == original_fixture_bytes
 
 
 def test_generation_planner_rejects_unsupported_model_version(tmp_path):

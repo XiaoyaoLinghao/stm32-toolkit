@@ -1,14 +1,20 @@
 from __future__ import annotations
 
 import threading
+from types import MappingProxyType
 
 import pytest
 
 from stm32_toolkit.probe.backend import (
+    DebugHandoffMetadata,
     FlashBackendReport,
     ProbeBackend,
     ProbeBackendError,
     ProbeDescriptor,
+    extract_program_diagnostic,
+    make_program_diagnostic,
+    program_diagnostic_details,
+    validate_program_diagnostic,
 )
 from fakes.fake_probe import FakeProbeBackend
 
@@ -39,6 +45,26 @@ def fake() -> FakeProbeBackend:
         },
         registers={"r0": 1, "pc": 0x08000101, "xpsr": 0x21000000},
     )
+
+
+def _copy_program_diagnostic(value: dict[str, object]) -> dict[str, object]:
+    """Copy one factory-produced diagnostic without relying on private code."""
+
+    copied = dict(value)
+    copied["exceptions"] = [dict(entry) for entry in value["exceptions"]]
+    return copied
+
+
+def _snapshot_program_diagnostic(value: dict[str, object]) -> dict[str, object]:
+    """Snapshot a non-recursive wire candidate without invoking private helpers."""
+
+    snapshot = dict(value)
+    exceptions = value.get("exceptions")
+    if isinstance(exceptions, list):
+        snapshot["exceptions"] = [
+            dict(entry) if isinstance(entry, dict) else entry for entry in exceptions
+        ]
+    return snapshot
 
 
 def test_fake_probe_satisfies_the_runtime_backend_contract():
@@ -207,3 +233,279 @@ def test_close_is_idempotent_and_clears_target_state():
     assert backend.closed is True
     assert backend.attached_probe_id is None
     assert backend.attached_target is None
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "suppressed-chain-and-empty-redactions",
+        "scalar-redaction",
+        "non-string-redaction-token",
+        "iterator-budget-eight-of-nine",
+        "invalid-stage",
+        "invalid-error",
+        "validator-top-shape",
+        "validator-header",
+        "validator-entry-shape",
+        "validator-integer",
+    ],
+    ids=lambda case: case,
+)
+def test_program_diagnostic_factory_and_validation_boundaries(case):
+    if case == "suppressed-chain-and-empty-redactions":
+        try:
+            try:
+                raise ValueError("hidden context")
+            except ValueError:
+                raise RuntimeError("outer failure") from None
+        except RuntimeError as error:
+            details = program_diagnostic_details("program-call", error)
+
+        value = details["programDiagnostic"]
+        entry = value["exceptions"][0]
+        assert value["schemaVersion"] == 1
+        assert value["stage"] == "program-call"
+        assert len(value["exceptions"]) == 1
+        assert entry == {
+            "type": "builtins.RuntimeError",
+            "message": "outer failure",
+            "errno": None,
+            "winerror": None,
+            "address": None,
+            "resultCode": None,
+        }
+        extracted = extract_program_diagnostic(details)
+        assert extracted == value
+        assert extracted is not value
+        assert extracted["exceptions"] is not value["exceptions"]
+        return
+
+    if case == "scalar-redaction":
+        details = program_diagnostic_details(
+            "program-call",
+            RuntimeError("token-value leaked"),
+            redactions="token-value",
+        )
+        message = details["programDiagnostic"]["exceptions"][0]["message"]
+        assert "token-value" not in message
+        assert "[redacted]" in message
+        return
+
+    if case == "non-string-redaction-token":
+        details = program_diagnostic_details(
+            "program-call",
+            RuntimeError("token-value leaked"),
+            redactions=("", 17, "token-value"),
+        )
+        message = details["programDiagnostic"]["exceptions"][0]["message"]
+        assert "token-value" not in message
+        assert "[redacted]" in message
+        return
+
+    if case == "iterator-budget-eight-of-nine":
+        class RedactionBudget:
+            def __init__(self, values):
+                self._values = iter(values)
+                self.next_calls = 0
+
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                self.next_calls += 1
+                return next(self._values)
+
+        budget = RedactionBudget(
+            (
+                "budget-secret",
+                "second",
+                "third",
+                "fourth",
+                "fifth",
+                "sixth",
+                "seventh",
+                "eighth",
+                "ninth",
+            )
+        )
+        details = program_diagnostic_details(
+            "program-call",
+            RuntimeError("budget-secret leaked"),
+            redactions=budget,
+        )
+        message = details["programDiagnostic"]["exceptions"][0]["message"]
+        assert budget.next_calls == 8
+        assert "budget-secret" not in message
+        assert "[redacted]" in message
+        return
+
+    if case == "invalid-stage":
+        with pytest.raises(ValueError) as error:
+            make_program_diagnostic("unknown-stage", RuntimeError("failure"))
+        assert str(error.value) == "program diagnostic stage is invalid"
+        return
+
+    if case == "invalid-error":
+        with pytest.raises(TypeError) as error:
+            make_program_diagnostic("program-call", object())
+        assert str(error.value) == "program diagnostic exception is invalid"
+        return
+
+    diagnostic = make_program_diagnostic("program-call", RuntimeError("stable"))
+    candidate = _copy_program_diagnostic(diagnostic)
+    if case == "validator-top-shape":
+        candidate["extra"] = "refused"
+    elif case == "validator-header":
+        candidate["schemaVersion"] = 2
+    elif case == "validator-entry-shape":
+        candidate["exceptions"][0] = None
+    elif case == "validator-integer":
+        candidate["exceptions"][0]["errno"] = True
+    else:
+        raise AssertionError(f"unknown diagnostic case: {case}")
+
+    before = _snapshot_program_diagnostic(candidate)
+    assert validate_program_diagnostic(candidate) is None
+    assert candidate == before
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "missing-candidate",
+        "recursive-mapping",
+        "recursive-sequence",
+        "mapping-proxy-roundtrip",
+    ],
+    ids=lambda case: case,
+)
+def test_extract_program_diagnostic_public_nested_wire_boundaries(case):
+    details = program_diagnostic_details("program-call", RuntimeError("stable"))
+
+    if case == "missing-candidate":
+        submitted: dict[str, object] = {}
+        before = dict(submitted)
+        assert extract_program_diagnostic(submitted) is None
+        assert submitted == before
+        assert details["programDiagnostic"] is not None
+        return
+
+    if case == "recursive-mapping":
+        source = details["programDiagnostic"]
+        candidate = _copy_program_diagnostic(source)
+        candidate["loop"] = candidate
+        submitted = {"programDiagnostic": candidate}
+        exceptions = candidate["exceptions"]
+        assert extract_program_diagnostic(submitted) is None
+        assert candidate["loop"] is candidate
+        assert candidate["schemaVersion"] == source["schemaVersion"]
+        assert candidate["stage"] == source["stage"]
+        assert candidate["exceptions"] is exceptions
+        return
+
+    if case == "recursive-sequence":
+        cycle: list[object] = []
+        cycle.append(cycle)
+        candidate = {
+            "schemaVersion": 1,
+            "stage": "program-call",
+            "exceptions": cycle,
+        }
+        submitted = {"programDiagnostic": candidate}
+        assert extract_program_diagnostic(submitted) is None
+        assert candidate["schemaVersion"] == 1
+        assert candidate["stage"] == "program-call"
+        assert candidate["exceptions"] is cycle
+        assert cycle[0] is cycle
+        return
+
+    if case == "mapping-proxy-roundtrip":
+        source = details["programDiagnostic"]
+        proxy_candidate = MappingProxyType(source)
+        proxy_details = MappingProxyType({"programDiagnostic": proxy_candidate})
+        extracted = extract_program_diagnostic(proxy_details)
+        assert extracted == _copy_program_diagnostic(source)
+        assert type(extracted) is dict
+        assert extracted is not source
+        assert source == _copy_program_diagnostic(source)
+        return
+
+    raise AssertionError(f"unknown diagnostic extraction case: {case}")
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "invalid-hardware-id",
+        "selector-mismatch",
+        "fingerprint-mismatch",
+        "valid-default-identity",
+    ],
+    ids=lambda case: case,
+)
+def test_probe_descriptor_identity_validation_preserves_inputs(case):
+    expected = descriptors()[0]
+    arguments = {
+        "probe_id": expected.probe_id,
+        "vendor": expected.vendor,
+        "product": expected.product,
+        "board_name": expected.board_name,
+    }
+
+    if case == "invalid-hardware-id":
+        with pytest.raises(ValueError) as error:
+            ProbeDescriptor(**arguments, hardware_id="")
+        assert str(error.value) == "probe descriptor hardware identifier is invalid"
+        return
+
+    if case == "selector-mismatch":
+        with pytest.raises(ValueError) as error:
+            ProbeDescriptor(**arguments, hardware_id="probe-b")
+        assert str(error.value) == "probe descriptor selector is invalid"
+        return
+
+    if case == "fingerprint-mismatch":
+        with pytest.raises(ValueError) as error:
+            ProbeDescriptor(**arguments, probe_fingerprint="0" * 64)
+        assert str(error.value) == "probe descriptor fingerprint is invalid"
+        return
+
+    descriptor = ProbeDescriptor(**arguments)
+    assert descriptor.to_dict() == expected.to_dict()
+
+
+@pytest.mark.parametrize(
+    "case",
+    ["constructor-invalid", "from-value-invalid", "valid-from-value"],
+    ids=lambda case: case,
+)
+def test_debug_handoff_metadata_model_boundaries(case):
+    value = {
+        "probeId": "probe-a",
+        "target": "STM32F429ZITx",
+        "boardId": "probe-a",
+    }
+
+    if case == "constructor-invalid":
+        with pytest.raises(ValueError) as error:
+            DebugHandoffMetadata("probe-a", "STM32F429ZITx", "probe-b")
+        assert str(error.value) == "debug handoff metadata is invalid"
+        return
+
+    if case == "from-value-invalid":
+        candidate = dict(value)
+        candidate["target"] = 1
+        before = dict(candidate)
+        with pytest.raises(ValueError) as error:
+            DebugHandoffMetadata.from_value(candidate)
+        assert str(error.value) == "debug handoff metadata is invalid"
+        assert candidate == before
+        return
+
+    metadata = DebugHandoffMetadata.from_value(value)
+    assert metadata.to_dict() == value
+    assert value == {
+        "probeId": "probe-a",
+        "target": "STM32F429ZITx",
+        "boardId": "probe-a",
+    }

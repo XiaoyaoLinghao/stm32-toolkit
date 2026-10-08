@@ -32,6 +32,9 @@ _MAX_PACKAGE_FILES = 200_000
 _MAX_REPOSITORY_DEPTH = 16
 _MAX_MCU_DESCRIPTORS = 10_000
 _MAX_MCU_DESCRIPTOR_BYTES = 2 * 1024 * 1024
+_MAX_MCU_INDEX_BYTES = 16 * 1024 * 1024
+_MCU_INDEX_NAME_RE = re.compile(r"^STM32[A-Za-z0-9()_-]{0,123}$")
+_XML_DECLARATION_RE = re.compile(rb"<!\s*(?:DOCTYPE|ENTITY)\b", re.IGNORECASE)
 
 
 class CreationEnvironmentError(ValueError):
@@ -124,10 +127,16 @@ def _default_repository() -> Path:
 def _package_metadata(package: Path) -> tuple[str, str]:
     name = package.name
     version = ""
+    metadata_parsed = False
     metadata_candidates = (package / "package.xml", package / ".pack", package / "package.json")
     for metadata in metadata_candidates:
         try:
             info = os.lstat(metadata)
+        except FileNotFoundError:
+            continue
+        except OSError:
+            raise CreationEnvironmentError("CUBEMX_PACKAGE_INVALID", "firmware package metadata is invalid") from None
+        try:
             if not stat.S_ISREG(info.st_mode) or bool(getattr(info, "st_file_attributes", 0) & _REPARSE):
                 continue
             if info.st_size > _MAX_PACKAGE_METADATA_BYTES:
@@ -142,11 +151,14 @@ def _package_metadata(package: Path) -> tuple[str, str]:
                 root = ET.fromstring(data.decode("utf-8"))
                 name = str(root.attrib.get("name", name))
                 version = str(root.attrib.get("version", ""))
+            metadata_parsed = True
             break
         except CreationEnvironmentError:
             raise
         except (OSError, UnicodeError, ET.ParseError, ValueError, TypeError):
             raise CreationEnvironmentError("CUBEMX_PACKAGE_INVALID", "firmware package metadata is invalid") from None
+    if not metadata_parsed:
+        raise CreationEnvironmentError("CUBEMX_PACKAGE_INVALID", "firmware package metadata is unavailable")
     match = _PACKAGE_RE.match(package.name)
     if match and not version:
         version = match.group(2)
@@ -183,9 +195,105 @@ def _package_digest(package: Path) -> str:
     return sha256_hex(canonical_json_bytes(entries))
 
 
-def _mcu_descriptor_facts(install: Path, request: CreationRequest) -> tuple[str | None, str | None, str | None]:
+def _read_mcu_index(install: Path) -> tuple[Path, bytes, ET.Element]:
+    index = _safe_regular(install / "db" / "mcu" / "families.xml")
+    if index is None:
+        raise CreationEnvironmentError("CUBEMX_MCU_DESCRIPTOR_INVALID", "CubeMX MCU descriptor index is unavailable")
+    try:
+        info = os.lstat(index)
+        if info.st_size > _MAX_MCU_INDEX_BYTES:
+            raise CreationEnvironmentError("CUBEMX_MCU_DESCRIPTOR_INVALID", "CubeMX MCU descriptor index is oversized")
+        data = index.read_bytes()
+        if len(data) > _MAX_MCU_INDEX_BYTES:
+            raise CreationEnvironmentError("CUBEMX_MCU_DESCRIPTOR_INVALID", "CubeMX MCU descriptor index is oversized")
+        if _XML_DECLARATION_RE.search(data):
+            raise CreationEnvironmentError("CUBEMX_MCU_DESCRIPTOR_INVALID", "CubeMX MCU descriptor index contains a DTD or entity")
+        root = ET.fromstring(data.decode("utf-8"))
+    except CreationEnvironmentError:
+        raise
+    except (OSError, UnicodeError, ET.ParseError):
+        raise CreationEnvironmentError("CUBEMX_MCU_DESCRIPTOR_INVALID", "CubeMX MCU descriptor index is malformed") from None
+    return index, data, root
+
+
+def _mcu_index_mapping(install: Path, request: CreationRequest) -> tuple[Path, str, Path, str, str]:
+    index, data, root = _read_mcu_index(install)
+    matches: list[tuple[str, str]] = []
+    for node in root.iter():
+        tag = node.tag.rsplit("}", 1)[-1] if isinstance(node.tag, str) else ""
+        if tag != "Mcu":
+            continue
+        ref_name = node.attrib.get("RefName")
+        if isinstance(ref_name, str) and ref_name.casefold() == request.source.value.casefold():
+            name = node.attrib.get("Name")
+            if not isinstance(name, str) or _MCU_INDEX_NAME_RE.fullmatch(name) is None:
+                raise CreationEnvironmentError("CUBEMX_MCU_DESCRIPTOR_INVALID", "CubeMX MCU descriptor index name is invalid")
+            matches.append((ref_name, name))
+    if len(matches) != 1:
+        raise CreationEnvironmentError("CUBEMX_MCU_DESCRIPTOR_INVALID", "CubeMX MCU descriptor index mapping is missing or ambiguous")
+    ref_name, descriptor_name = matches[0]
+    descriptor_expected = f"{descriptor_name}.xml"
+    descriptor_root = _safe_directory(install / "db" / "mcu")
+    if descriptor_root is None:
+        raise CreationEnvironmentError("CUBEMX_MCU_DESCRIPTOR_INVALID", "CubeMX MCU descriptor database is unavailable")
+    descriptors: list[Path] = []
+    inspected = 0
+    pending = [descriptor_root]
+    try:
+        while pending:
+            current = pending.pop()
+            children = sorted(current.iterdir(), key=lambda path: path.name.casefold())
+            for child in children:
+                inspected += 1
+                if inspected > _MAX_MCU_DESCRIPTORS:
+                    raise CreationEnvironmentError("CUBEMX_MCU_DESCRIPTOR_INVALID", "CubeMX MCU descriptor inventory is oversized")
+                info = os.lstat(child)
+                if stat.S_ISLNK(info.st_mode) or bool(getattr(info, "st_file_attributes", 0) & _REPARSE):
+                    raise CreationEnvironmentError("CUBEMX_MCU_DESCRIPTOR_INVALID", "CubeMX MCU descriptor database contains a redirect")
+                if stat.S_ISDIR(info.st_mode):
+                    pending.append(child)
+                elif stat.S_ISREG(info.st_mode) and child.name.casefold() == descriptor_expected.casefold():
+                    safe = _safe_regular(child)
+                    if safe is None:
+                        raise CreationEnvironmentError("CUBEMX_MCU_DESCRIPTOR_INVALID", "CubeMX MCU descriptor is unsafe")
+                    descriptors.append(safe)
+    except CreationEnvironmentError:
+        raise
+    except OSError:
+        raise CreationEnvironmentError("CUBEMX_MCU_DESCRIPTOR_INVALID", "CubeMX MCU descriptors cannot be inspected") from None
+    if len(descriptors) != 1:
+        raise CreationEnvironmentError("CUBEMX_MCU_DESCRIPTOR_INVALID", "CubeMX MCU descriptor mapping is missing or ambiguous")
+    descriptor = descriptors[0]
+    try:
+        info = os.lstat(descriptor)
+        if info.st_size > _MAX_MCU_DESCRIPTOR_BYTES:
+            raise CreationEnvironmentError("CUBEMX_MCU_DESCRIPTOR_INVALID", "CubeMX MCU descriptor is oversized")
+        descriptor_data = descriptor.read_bytes()
+        if len(descriptor_data) > _MAX_MCU_DESCRIPTOR_BYTES:
+            raise CreationEnvironmentError("CUBEMX_MCU_DESCRIPTOR_INVALID", "CubeMX MCU descriptor is oversized")
+        descriptor_node = ET.fromstring(descriptor_data.decode("utf-8"))
+    except CreationEnvironmentError:
+        raise
+    except (OSError, UnicodeError, ET.ParseError):
+        raise CreationEnvironmentError("CUBEMX_MCU_DESCRIPTOR_INVALID", "CubeMX MCU descriptor is malformed") from None
+    descriptor_ref_name = descriptor_node.attrib.get("RefName")
+    if not isinstance(descriptor_ref_name, str) or descriptor_ref_name != descriptor_name:
+        raise CreationEnvironmentError("CUBEMX_MCU_DESCRIPTOR_INVALID", "CubeMX MCU descriptor RefName disagrees with the index")
+    return (
+        index,
+        ref_name,
+        descriptor,
+        hashlib.sha256(descriptor_data).hexdigest(),
+        hashlib.sha256(data).hexdigest(),
+    )
+
+
+def _mcu_descriptor_facts(
+    install: Path,
+    request: CreationRequest,
+) -> tuple[str | None, str | None, str | None, str | None, str | None]:
     if request.source.kind != "mcu":
-        return None, None, None
+        return None, None, None, None, None
     root = _safe_directory(install / "db" / "mcu")
     if root is None:
         raise CreationEnvironmentError("CUBEMX_MCU_DESCRIPTOR_INVALID", "CubeMX MCU descriptor database is unavailable")
@@ -215,8 +323,17 @@ def _mcu_descriptor_facts(install: Path, request: CreationRequest) -> tuple[str 
         raise
     except OSError:
         raise CreationEnvironmentError("CUBEMX_MCU_DESCRIPTOR_INVALID", "CubeMX MCU descriptors cannot be inspected") from None
-    if len(matches) != 1:
+    if len(matches) > 1:
         raise CreationEnvironmentError("CUBEMX_MCU_DESCRIPTOR_INVALID", "CubeMX MCU descriptor is missing or ambiguous")
+    if not matches:
+        index, native_token, descriptor, descriptor_hash, index_hash = _mcu_index_mapping(install, request)
+        return (
+            native_token,
+            descriptor.relative_to(install).as_posix(),
+            descriptor_hash,
+            index.relative_to(install).as_posix(),
+            index_hash,
+        )
     descriptor = matches[0]
     try:
         info = os.lstat(descriptor)
@@ -231,7 +348,7 @@ def _mcu_descriptor_facts(install: Path, request: CreationRequest) -> tuple[str 
     token = root_node.attrib.get("RefName")
     if not isinstance(token, str) or not token or token.casefold() != request.source.value.casefold():
         raise CreationEnvironmentError("CUBEMX_MCU_DESCRIPTOR_INVALID", "CubeMX MCU descriptor RefName disagrees with the request")
-    return token, descriptor.relative_to(install).as_posix(), hashlib.sha256(data).hexdigest()
+    return token, descriptor.relative_to(install).as_posix(), hashlib.sha256(data).hexdigest(), None, None
 
 
 @dataclass(frozen=True, slots=True)
@@ -265,9 +382,13 @@ class CreationExecutionEnvironment:
         "project generate",
         "exit",
     )
+    native_index_path: str | None = None
+    native_index_sha256: str | None = None
     digest: str = field(init=False)
 
     def __post_init__(self) -> None:
+        if (self.native_index_path is None) != (self.native_index_sha256 is None):
+            raise ValueError("native index path and hash must be provided together")
         payload = {
             "cubeMx": {"path": _display_path(self.cubemx_executable), "version": self.cubemx_version, "sha256": self.cubemx_sha256},
             "java": {"path": _display_path(self.java_executable), "sha256": self.java_sha256},
@@ -284,6 +405,9 @@ class CreationExecutionEnvironment:
             "ninja": self.ninja.to_dict() if self.ninja else None,
             "protocol": list(self.protocol),
         }
+        if self.native_index_path is not None:
+            payload["native"]["indexPath"] = self.native_index_path
+            payload["native"]["indexSha256"] = self.native_index_sha256
         object.__setattr__(self, "digest", sha256_hex(canonical_json_bytes(payload)))
 
     @property
@@ -312,7 +436,7 @@ class CreationExecutionEnvironment:
 
     def to_dict(self) -> dict[str, object]:
         """Return sanitized facts suitable for internal evidence/public filtering."""
-        return {
+        facts: dict[str, object] = {
             "cubeMxVersion": self.cubemx_version,
             "cubeMxSha256": self.cubemx_sha256,
             "javaSha256": self.java_sha256,
@@ -327,6 +451,10 @@ class CreationExecutionEnvironment:
             "digest": self.digest,
             "protocol": list(self.protocol),
         }
+        if self.native_index_path is not None:
+            facts["nativeIndexPath"] = self.native_index_path
+            facts["nativeIndexSha256"] = self.native_index_sha256
+        return facts
 
 
 def discover_creation_environment(
@@ -388,7 +516,7 @@ def discover_creation_environment(
     package = candidates[0]
     name, version = _package_metadata(package)
     package_hash = _package_digest(package)
-    native_token, descriptor_path, descriptor_hash = _mcu_descriptor_facts(install, request)
+    native_token, descriptor_path, descriptor_hash, index_path, index_hash = _mcu_descriptor_facts(install, request)
     try:
         cubemx_hash = _digest_file(cubemx)
         java_hash = _digest_file(sibling)
@@ -408,6 +536,8 @@ def discover_creation_environment(
         native_source_token=native_token,
         native_descriptor_path=descriptor_path,
         native_descriptor_sha256=descriptor_hash,
+        native_index_path=index_path,
+        native_index_sha256=index_hash,
         cubeclt_root=support.cubeclt_root,
         gcc=support.gcc,
         cmake=support.cmake,

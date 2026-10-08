@@ -99,3 +99,38 @@ def test_actual_diagnostic_reader_failures_map_to_closed_acceptance_codes(
         acceptance_workflows._reader_failure_code(result, reader_kind=reader_kind)
         == expected
     )
+
+
+@pytest.mark.parametrize(
+    "variant",
+    ["context-type", "path-types", "session-type"],
+    ids=["context-type", "path-types", "session-type"],
+)
+def test_aw_preflight_context_guards_return_complete_public_wire(
+    tmp_path: Path, variant: str
+):
+    if variant == "context-type":
+        context = None
+    elif variant == "path-types":
+        context = AcceptanceWorkflowContext("project", tmp_path / "data", "session-a")
+    else:
+        context = AcceptanceWorkflowContext(tmp_path / "project", tmp_path / "data", None)
+
+    before = tuple(
+        sorted(path.relative_to(tmp_path).as_posix() for path in tmp_path.rglob("*"))
+    )
+    result = describe_acceptance_scenario(
+        context, scenario_id="legacy-keil-migration", scenario_version="1"
+    )
+    assert result.to_dict() == {
+        "protocol": "stm32-toolkit/1",
+        "ok": False,
+        "operation": "acceptance.scenario.describe",
+        "code": "ACCEPTANCE_INPUT_INVALID",
+        "message": "Acceptance scenario input is invalid.",
+        "data": None,
+        "details": {},
+    }
+    assert tuple(
+        sorted(path.relative_to(tmp_path).as_posix() for path in tmp_path.rglob("*"))
+    ) == before

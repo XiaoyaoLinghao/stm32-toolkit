@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "stm32-toolkit"
-version = "0.9.0"
+version = "1.0.0"
 description = "Agent-neutral STM32 development toolkit"
 license = {text = "MIT"}
 requires-python = ">=3.12,<3.13"

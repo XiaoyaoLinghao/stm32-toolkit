@@ -5,13 +5,15 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import pytest
+
 
 @dataclass(frozen=True)
 class FakeEndpoint:
     host: str = "127.0.0.1"
     port: int = 45678
     token: str = field(default="d" * 64, repr=False)
-    monitor_version: str = "0.9.0"
+    monitor_version: str = "1.0.0"
 
     @property
     def url(self) -> str:
@@ -61,7 +63,7 @@ def test_version_command_reports_the_package_version() -> None:
     output = io.StringIO()
 
     assert main(["version"], _stdout=output) == 0
-    assert output.getvalue() == "0.9.0\n"
+    assert output.getvalue() == "1.0.0\n"
 
 
 def test_serve_cli_accepts_only_project_data_session_and_json(tmp_path: Path) -> None:
@@ -91,7 +93,7 @@ def test_serve_cli_accepts_only_project_data_session_and_json(tmp_path: Path) ->
     payload = json.loads(output.getvalue())
     assert payload["ok"] is True
     assert payload["endpoint"]["url"] == "http://127.0.0.1:45678"
-    assert payload["endpoint"]["monitorVersion"] == "0.9.0"
+    assert payload["endpoint"]["monitorVersion"] == "1.0.0"
     assert payload["endpoint"]["accessUrl"].startswith(
         "http://127.0.0.1:45678/#token="
     )
@@ -204,6 +206,57 @@ def test_cli_returns_sanitized_json_failure_without_traceback(tmp_path: Path) ->
         "code": "MONITOR_INPUT_INVALID",
         "message": "Monitor service failed",
     }
+
+
+def test_adapter_cli_rejects_invalid_project_context_before_workflow(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import stm32_monitor.cli as cli
+
+    workflow_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    loader_calls: list[object] = []
+
+    def workflow_sentinel(*args: object, **kwargs: object) -> object:
+        workflow_calls.append((args, kwargs))
+        return object()
+
+    def loader_sentinel(path: object) -> dict[str, object]:
+        loader_calls.append(path)
+        return {}
+
+    monkeypatch.setattr(cli, "ingest_monitor_replay", workflow_sentinel)
+    monkeypatch.setattr(cli, "_load_json_file", loader_sentinel)
+
+    project = tmp_path / "project"
+    project.mkdir()
+    output = io.StringIO()
+    code = cli.main(
+        [
+            "replay",
+            "ingest",
+            "--project",
+            str(project),
+            "--data-root",
+            str(tmp_path / "data"),
+            "--session-id",
+            "session-a",
+            "--operation-id",
+            "operation-a",
+            "--document-file",
+            str(tmp_path / "missing-replay.json"),
+            "--json",
+        ],
+        _stdout=output,
+    )
+
+    assert code == 1
+    payload = json.loads(output.getvalue())
+    assert payload["ok"] is False
+    assert payload["operation"] == "monitor.replay.ingest"
+    assert payload["code"] == "ANALYSIS_WORKFLOW_INVALID"
+    assert payload["message"] == "Project configuration is invalid"
+    assert workflow_calls == []
+    assert loader_calls == []
 
 
 def test_cli_maps_keyboard_interrupt_to_130(tmp_path: Path) -> None:

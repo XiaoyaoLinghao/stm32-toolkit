@@ -148,8 +148,8 @@ def test_live_event_exact_payloads_roundtrip_and_snapshot_nested_mutability() ->
     payloads = {
         "hello": {
             "protocol": "stm32-toolkit-monitor/1",
-            "toolkitVersion": "0.9.0",
-            "monitorVersion": "0.9.0",
+            "toolkitVersion": "1.0.0",
+            "monitorVersion": "1.0.0",
             "stateRevision": 2,
         },
         "state": {"stateRevision": 2, "gap": False, "status": _live_status()},
@@ -175,8 +175,8 @@ def test_live_event_rejects_inexact_payloads_for_every_discriminator() -> None:
     valid = {
         "hello": {
             "protocol": "stm32-toolkit-monitor/1",
-            "toolkitVersion": "0.9.0",
-            "monitorVersion": "0.9.0",
+            "toolkitVersion": "1.0.0",
+            "monitorVersion": "1.0.0",
             "stateRevision": 0,
         },
         "state": {"stateRevision": 0, "gap": False, "status": _live_status()},
@@ -217,6 +217,75 @@ def test_live_event_rejects_inexact_payloads_for_every_discriminator() -> None:
     capability["batch"]["values"][0]["typedValue"] = object()
     with pytest.raises(TypeError):
         LiveEvent(1, "sample", capability)
+
+
+@pytest.mark.parametrize(
+    ("path", "value"),
+    (
+        (("firmware",), {}),
+        (("firmware", "buildId"), ""),
+        (("probe", "connected"), 1),
+        (("probe", "probeId"), ""),
+        (("probe", "connected"), True),
+        (("sampling", "state"), "UNKNOWN"),
+        (("sampling", "state"), "RUNNING"),
+        (("sampling", "active"), True),
+        (("sampling", "blockedCode"), 1),
+        (("sampling", "groupId"), "not-a-uuid"),
+        (("sampling", "groupRevision"), 0),
+        (("sampling", "lastSequence"), True),
+        (("sampling", "subscriberDrops"), True),
+        (("probeConnected",), True),
+        (("samplingActive",), True),
+    ),
+)
+def test_live_state_public_validation_rejects_each_inconsistent_status_guard(
+    path: tuple[str, ...], value: object
+) -> None:
+    payload = {"stateRevision": 0, "gap": False, "status": _live_status()}
+    status = copy.deepcopy(payload["status"])
+    if path[0] == "firmware":
+        status["firmware"] = {
+            "buildId": "b" * 64,
+            "elfSha256": "e" * 64,
+            "inputSnapshotSha256": "f" * 64,
+            "gitHead": "a" * 40,
+            "gitDirty": False,
+            "targetDevice": "STM32F407VGTx",
+        }
+    current: object = status
+    for key in path[:-1]:
+        current = current[key]  # type: ignore[index]
+    current[path[-1]] = value  # type: ignore[index]
+    payload["status"] = status
+    with pytest.raises((TypeError, ValueError)):
+        LiveEvent(1, "state", payload)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("groupRevision", 0),
+        ("sequence", True),
+        ("scheduledUnixNs", -1),
+        ("capturedUnixNs", 999),
+        ("scheduledAtUtc", "bad"),
+        ("capturedAtUtc", "bad"),
+        ("actualRateHz", float("nan")),
+        ("actualRateHz", -1.0),
+        ("values", {}),
+        ("values", [object()]),
+        ("values", [{"watch": {}}]),
+    ),
+)
+def test_live_sample_public_validation_rejects_each_batch_guard(
+    field: str, value: object
+) -> None:
+    payload = {"stateRevision": 0, "gap": False, "status": _live_status()}
+    sample = {"batch": _live_batch(), "serviceSubscriberDrops": 0}
+    sample["batch"][field] = value  # type: ignore[index]
+    with pytest.raises((TypeError, ValueError)):
+        LiveEvent(1, "sample", sample)
 
 
 def _history_slice(
@@ -535,8 +604,8 @@ def test_protocol_results_are_monitor_versioned_and_details_are_snapshotted() ->
     assert bad.protocol == MONITOR_PROTOCOL_VERSION == "stm32-toolkit-monitor/1"
     assert bad.to_dict() == {
         "protocol": "stm32-toolkit-monitor/1",
-        "toolkitVersion": "0.9.0",
-        "monitorVersion": "0.9.0",
+        "toolkitVersion": "1.0.0",
+        "monitorVersion": "1.0.0",
         "ok": False,
         "operation": "groups.create",
         "code": "MONITOR_REQUEST_INVALID",
@@ -1141,3 +1210,157 @@ def test_json_parser_rejects_duplicate_normalized_keys_and_nonfinite_numbers() -
     ):
         with pytest.raises(ProtocolViolation, match="invalid"):
             parse_json_object(document)
+
+
+def test_models_freeze_shallow_dict_node_limit_preserves_input() -> None:
+    typed = {f"key-{index}": index for index in range(10_000)}
+    before = dict(typed)
+
+    with pytest.raises(ValueError, match="JSON value exceeds its node limit"):
+        SampleValue(WatchItem.variable("counter"), "OK", typed_value=typed)
+
+    assert typed == before
+
+
+def test_models_freeze_nested_dict_cycle_preserves_input_identity() -> None:
+    inner: dict[str, object] = {"value": 1}
+    typed: dict[str, object] = {"nested": inner}
+    inner["self"] = inner
+
+    with pytest.raises(ValueError, match="JSON value contains a cycle"):
+        SampleValue(WatchItem.variable("counter"), "OK", typed_value=typed)
+
+    assert typed["nested"] is inner
+    assert inner["self"] is inner
+
+
+def test_models_freeze_nested_dict_key_type_preserves_input() -> None:
+    valid = SampleValue(
+        WatchItem.variable("counter"),
+        "OK",
+        typed_value={"nested": {"valid": 1}},
+    )
+    assert valid.to_dict()["typedValue"] == {"nested": {"valid": 1}}
+
+    typed: dict[str, object] = {"nested": {1: "invalid"}}
+    before = copy.deepcopy(typed)
+    with pytest.raises(TypeError, match="JSON object keys must be strings"):
+        SampleValue(WatchItem.variable("counter"), "OK", typed_value=typed)
+
+    assert typed == before
+
+
+def test_models_freeze_nested_dict_key_budget_preserves_input() -> None:
+    half_limit = 1024 * 1024 // 2
+    first_key = "a" * half_limit
+    second_key = "b" * half_limit
+    nested = {first_key: 1, second_key: 2}
+    typed: dict[str, object] = {"nested": nested}
+    before = dict(nested)
+
+    with pytest.raises(ValueError, match="JSON value exceeds its string limit"):
+        SampleValue(WatchItem.variable("counter"), "OK", typed_value=typed)
+
+    assert typed["nested"] == before
+
+
+def test_models_freeze_nested_normalized_duplicate_preserves_input() -> None:
+    valid = SampleValue(
+        WatchItem.variable("counter"),
+        "OK",
+        typed_value={"nested": {"Caf\u00e9": 1}},
+    )
+    assert valid.to_dict()["typedValue"] == {"nested": {"Caf\u00e9": 1}}
+
+    typed: dict[str, object] = {"nested": {"Caf\u00e9": 1, "Cafe\u0301": 2}}
+    before = copy.deepcopy(typed)
+    with pytest.raises(
+        ValueError,
+        match="JSON object keys must be unique after normalization",
+    ):
+        SampleValue(WatchItem.variable("counter"), "OK", typed_value=typed)
+
+    assert typed == before
+
+
+def test_models_watch_group_naive_utc_is_rejected_before_persistence() -> None:
+    valid = WatchGroup.create(
+        "Core",
+        "",
+        250,
+        (WatchItem.variable("counter"),),
+        group_id=GROUP_ID,
+        now=NOW,
+    )
+    assert valid.to_dict()["createdAtUtc"] == "2026-08-08T01:02:03.000000Z"
+
+    with pytest.raises(ValueError, match="timestamp must include UTC timezone"):
+        WatchGroup.create(
+            "Core",
+            "",
+            250,
+            (WatchItem.variable("counter"),),
+            group_id=GROUP_ID,
+            now=NOW.replace(tzinfo=None),
+        )
+
+
+def test_models_monitor_config_existing_file_is_rejected_without_state(tmp_path: Path) -> None:
+    project_file = tmp_path / "project-file"
+    project_file.write_text("project", encoding="utf-8")
+    data_root = tmp_path / "state"
+
+    with pytest.raises(ValueError, match="project root must be a directory"):
+        MonitorConfig(project_file, data_root, "monitor-1")
+
+    assert not data_root.exists()
+
+
+def test_models_firmware_status_rejects_invalid_git_head() -> None:
+    with pytest.raises(ValueError, match="Git HEAD is invalid"):
+        FirmwareStatus(
+            build_id="b" * 64,
+            elf_sha256="e" * 64,
+            input_snapshot_sha256="f" * 64,
+            git_head="bad",
+            git_dirty=False,
+            target_device="STM32F407VGTx",
+        )
+
+
+def test_models_firmware_status_rejects_non_boolean_git_dirty() -> None:
+    with pytest.raises(ValueError, match="Git dirty state is invalid"):
+        FirmwareStatus(
+            build_id="b" * 64,
+            elf_sha256="e" * 64,
+            input_snapshot_sha256="f" * 64,
+            git_head="a" * 40,
+            git_dirty=1,
+            target_device="STM32F407VGTx",
+        )
+
+
+def test_models_live_status_rejects_invalid_workspace_id_without_mutation() -> None:
+    valid = {"stateRevision": 0, "gap": False, "status": _live_status()}
+    LiveEvent(1, "state", valid)
+    payload = copy.deepcopy(valid)
+    payload["status"]["workspaceId"] = "bad"  # type: ignore[index]
+    before = copy.deepcopy(payload)
+
+    with pytest.raises(ValueError, match="workspace ID is invalid"):
+        LiveEvent(1, "state", payload)
+
+    assert payload == before
+
+
+def test_models_live_batch_rejects_scalar_definition_without_mutation() -> None:
+    valid = {"batch": _live_batch(), "serviceSubscriberDrops": 0}
+    LiveEvent(1, "sample", valid)
+    payload = copy.deepcopy(valid)
+    payload["batch"]["values"][0]["definition"] = "invalid"  # type: ignore[index]
+    before = copy.deepcopy(payload)
+
+    with pytest.raises(TypeError, match="sample definition is invalid"):
+        LiveEvent(1, "sample", payload)
+
+    assert payload == before

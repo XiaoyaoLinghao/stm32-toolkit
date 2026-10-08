@@ -1,9 +1,13 @@
 """Persisted software fixtures only: these tests never access physical hardware."""
 
 from concurrent.futures import ThreadPoolExecutor
+from collections.abc import Mapping
+from copy import deepcopy
 from dataclasses import replace
+from datetime import datetime, timedelta
 import hashlib
 import json
+import os
 import subprocess
 import sys
 from types import SimpleNamespace
@@ -22,7 +26,12 @@ from stm32_monitor.analysis_workflows import (
     AnalysisPublication, AnalysisWorkflowError, compare_monitor_runs, export_analysis_bundle,
 )
 from stm32_monitor.replay import canonical_replay_json_bytes, publish_physical_monitor_run
-from stm32_toolkit.acceptance.continuation import authenticate_continuation
+from stm32_toolkit.acceptance.continuation import (
+    ContinuationValidationError,
+    authenticate_continuation,
+    validate_continuation_reference,
+)
+from stm32_toolkit.build.identity import snapshot_project_inputs
 import stm32_toolkit.acceptance.recovery_workflows as recovery_workflows
 from stm32_toolkit.acceptance.recovery_workflows import (
     begin_acceptance_attempt, checkpoint_acceptance_attempt, resume_acceptance_attempt,
@@ -40,6 +49,7 @@ from stm32_toolkit.diagnostics import (
     DIAGNOSTIC_CHAIN_CORRUPT,
     DIAGNOSTIC_EVIDENCE_MISSING,
     DIAGNOSTIC_IDENTITY_MISMATCH,
+    DiagnosticStoreBusyError,
     DiagnosticValidationError,
     EvidenceAssessment,
     ObservationResult,
@@ -51,6 +61,7 @@ from stm32_toolkit.evidence import EvidenceEnvelope, canonical_json_bytes, get_r
 from stm32_toolkit.evidence.gc import RootRecord, put_root
 from stm32_toolkit.evidence.gc import plan_gc
 from stm32_toolkit.evidence.store import EvidenceStore
+from stm32_toolkit.project_model import load_project_model
 
 
 def _append_native_physical_monitor_history(
@@ -800,6 +811,177 @@ def test_physical_monitor_fact_persists_and_fresh_store_recomputes(
     ]
 
 
+def test_fresh_failed_physical_monitor_fact_v2_persists_and_replays(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A current failed-before physical fact needs no continuation proof."""
+
+    fixture = _supplementary_physical_fact_fixture(tmp_path, monkeypatch)
+    selector = dict(fixture.selectors[0])
+    selector["kind"] = "physical-monitor-fact/2"
+    selector.pop("continuation_evidence_id")
+    plan = _ok(
+        diagnostic_add_plan(
+            fixture.pair.diagnostic,
+            operation_id="fresh-v2-plan",
+            diagnostic_session_id=fixture.diagnostic_session_id,
+            expected_revision=3,
+            steps=[
+                {
+                    "step_id": "physical-register-fact-v2",
+                    "selector": selector,
+                    "expected_value": 3,
+                    "purpose": "verify the current failed-before physical register bit",
+                }
+            ],
+        )
+    )["observation_plan"]
+    plan_id = str(plan["plan_id"])
+    run = _ok(
+        diagnostic_run_plan(
+            fixture.pair.diagnostic,
+            operation_id="fresh-v2-run",
+            diagnostic_session_id=fixture.diagnostic_session_id,
+            expected_revision=4,
+            plan_id=plan_id,
+        )
+    )
+    assert run["observation_results"][0]["evidence_id"] == fixture.refs[0].transcript_evidence_id
+    _ok(
+        diagnostic_assess_hypothesis(
+            fixture.pair.diagnostic,
+            operation_id="fresh-v2-assess",
+            diagnostic_session_id=fixture.diagnostic_session_id,
+            expected_revision=5,
+            hypothesis_id=fixture.hypothesis_id,
+            plan_id=plan_id,
+            step_id="physical-register-fact-v2",
+            polarity="supports",
+            rationale="the current failed-before physical samples contain both bit values",
+        )
+    )
+
+    fresh_store = DiagnosticStore(
+        fixture.pair.workspace.diagnostics_root,
+        EvidenceStore(fixture.pair.evidence.root),
+    )
+    loaded = fresh_store.load(fixture.diagnostic_session_id)
+    assert loaded.revision == 6
+    assert loaded.observation_results[0].selector["kind"] == "physical-monitor-fact/2"
+    assert loaded.observation_results[0].evidence_id == fixture.refs[0].transcript_evidence_id
+
+    # Advance the active checkout's source snapshot after the before fact was
+    # committed. A separate interpreter must still replay the frozen Target /
+    # Monitor graph without inheriting this test process's monkeypatches.
+    source_path = fixture.pair.project_root / "App" / "main.c"
+    source_path.write_bytes(b"int main(void) { return 1; }\n")
+    active_snapshot = snapshot_project_inputs(
+        load_project_model(fixture.pair.project_root)
+    )
+    assert active_snapshot.sha256 != fixture.pair.before_identity.input_snapshot_sha256
+    source_root = Path(__file__).resolve().parents[1] / "src"
+    monitor_root = Path(__file__).resolve().parents[2] / "stm32-monitor" / "src"
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = os.pathsep.join(
+        [str(source_root), str(monitor_root), environment.get("PYTHONPATH", "")]
+    )
+    process = subprocess.run(
+        [
+            sys.executable,
+            "-B",
+            "-m",
+            "stm32_toolkit.cli",
+            "diagnose",
+            "show",
+            fixture.diagnostic_session_id,
+            "--project-root",
+            str(fixture.pair.project_root),
+            "--data-root",
+            str(fixture.pair.data_root),
+            "--session-id",
+            fixture.pair.before_session_id,
+            "--json",
+        ],
+        cwd=str(Path(__file__).resolve().parents[1]),
+        env=environment,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+        timeout=60,
+    )
+    assert process.returncode == 0, process.stdout + process.stderr
+    replayed = json.loads(process.stdout)
+    assert replayed["ok"] is True
+    assert replayed["data"]["session"]["revision"] == 6
+    assert replayed["data"]["session"]["observation_results"][0]["selector"]["kind"] == (
+        "physical-monitor-fact/2"
+    )
+
+    transcript = fixture.pair.evidence.get_envelope(fixture.refs[0].transcript_evidence_id)
+    artifact_path = fixture.pair.evidence.root.joinpath(
+        *transcript.artifacts[0].relative_path.split("/")
+    )
+    original = artifact_path.read_bytes()
+    artifact_path.write_bytes(original + b" ")
+    try:
+        with pytest.raises(DiagnosticValidationError) as raised:
+            fresh_store.load(fixture.diagnostic_session_id)
+        assert raised.value.code == DIAGNOSTIC_CHAIN_CORRUPT
+    finally:
+        artifact_path.write_bytes(original)
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [
+        "role",
+        "monitor_ref",
+        "probe_id",
+        "flash_session_id",
+        "target_device",
+        "physical_target",
+        "input_snapshot",
+    ],
+)
+def test_fresh_failed_physical_monitor_fact_v2_rejects_lineage_tampering(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, damage: str
+) -> None:
+    fixture = _supplementary_physical_fact_fixture(tmp_path, monkeypatch)
+    state = diagnostic_workflows._make_state(fixture.pair.diagnostic)
+    session = diagnostic_workflows._load_bound_session(
+        state, fixture.diagnostic_session_id
+    )
+    selector = deepcopy(fixture.selectors[0])
+    selector["kind"] = "physical-monitor-fact/2"
+    selector.pop("continuation_evidence_id")
+    if damage == "monitor_ref":
+        selector["monitor_ref_evidence_id"] = "f" * 64
+    reference = selector["monitor_run_ref"]
+    assert isinstance(reference, dict)
+    if damage == "role":
+        reference["scenario_role"] = "fixed-after"
+    elif damage != "monitor_ref":
+        field = {
+            "probe_id": "probe_id",
+            "flash_session_id": "flash_session_id",
+            "target_device": "target_device",
+            "physical_target": "physical_target",
+            "input_snapshot": "input_snapshot_sha256",
+        }[damage]
+        reference[field] = "0" * 64 if field.endswith("sha256") or field == "probe_id" else "tampered"
+    reference["run_ref_sha256"] = hashlib.sha256(
+        canonical_replay_json_bytes(
+            {key: value for key, value in reference.items() if key != "run_ref_sha256"}
+        )
+    ).hexdigest()
+    with pytest.raises(diagnostic_workflows._WorkflowFailure) as raised:
+        diagnostic_workflows._authenticate_physical_monitor_fact(
+            state, session, selector
+        )
+    assert raised.value.code in {"INCOMPATIBLE_IDENTITY", EVIDENCE_INTEGRITY_FAILURE}
+
+
 def _add_one_supplementary_fact_plan(
     fixture: SimpleNamespace,
     *,
@@ -1237,6 +1419,43 @@ def test_diagnostic_continuation_validation_rejects_native_result3_tamper(
     ).load_durable(pair.diagnostic_session_id).revision == pair.diagnostic_revision
 
 
+def test_awf_3a_rejects_continuation_with_different_diagnostic_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pair = prepare_pair(tmp_path, monkeypatch)
+    baseline = _monitor_baseline(pair, tmp_path)
+    paths, evidence, request, _old_session, hypothesis, polarity, rationale, declaration = (
+        baseline.compare_args
+    )
+    before_tree = {
+        str(path.relative_to(paths.data_root)): path.read_bytes()
+        for path in paths.data_root.rglob("*")
+        if path.is_file()
+    }
+
+    with pytest.raises(AnalysisWorkflowError) as error:
+        compare_monitor_runs(
+            paths,
+            evidence,
+            request,
+            "e" * 32,
+            hypothesis,
+            polarity,
+            rationale,
+            declaration,
+            continuation_evidence_id=baseline.continuation_id,
+        )
+
+    assert error.value.code == "INCOMPATIBLE_IDENTITY"
+    assert error.value.message == "continuation does not match Diagnostic declaration"
+    after_tree = {
+        str(path.relative_to(paths.data_root)): path.read_bytes()
+        for path in paths.data_root.rglob("*")
+        if path.is_file()
+    }
+    assert after_tree == before_tree
+
+
 def test_persisted_continuation_monitor_diagnostic_and_expired_attempt_reuse(tmp_path, monkeypatch):
     pair = prepare_pair(tmp_path, monkeypatch)
     original_roots = {p: p.read_bytes() for p in (pair.evidence.root / "roots" / "acceptance-attempt").glob("*.json")}
@@ -1374,6 +1593,412 @@ def test_persisted_continuation_monitor_diagnostic_and_expired_attempt_reuse(tmp
     gc = plan_gc(fresh_evidence)
     assert f"manifests/{continuation_id}.json" in gc.reachable_manifests
     assert all(f"manifests/{parent}.json" in gc.reachable_manifests for parent in loaded.envelope.parents)
+
+
+def _complete_continuation_verification(pair: SimpleNamespace, baseline: SimpleNamespace) -> Mapping[str, object]:
+    plan = _continuation_plan(pair, baseline)
+    revision = pair.diagnostic_revision
+    _ok(
+        diagnostic_add_verification_plan(
+            pair.diagnostic,
+            operation_id="continuation-busy-plan",
+            diagnostic_session_id=pair.diagnostic_session_id,
+            expected_revision=revision,
+            verification_plan=plan,
+        )
+    )
+    _ok(
+        diagnostic_start_verification(
+            pair.diagnostic,
+            operation_id="continuation-busy-start",
+            diagnostic_session_id=pair.diagnostic_session_id,
+            expected_revision=revision + 1,
+            verification_plan_id=plan.verification_plan_id,
+        )
+    )
+    _ok(
+        diagnostic_attach_marker(
+            pair.diagnostic,
+            operation_id="continuation-busy-marker",
+            diagnostic_session_id=pair.diagnostic_session_id,
+            expected_revision=revision + 2,
+            diagnostic_marker_ref=baseline.publication.diagnostic_marker_ref,
+        )
+    )
+    completed = _ok(
+        diagnostic_complete_verification(
+            pair.diagnostic,
+            operation_id="continuation-busy-complete",
+            diagnostic_session_id=pair.diagnostic_session_id,
+            expected_revision=revision + 3,
+            executed_operation_ids=[
+                "fixture-before",
+                "fixture-after",
+                "continuation-compare",
+                "continuation-bundle",
+            ],
+        )
+    )
+    verification = completed["fix_verification"]
+    assert isinstance(verification, Mapping)
+    assert verification["status"] == "PASSED"
+    return verification
+
+
+def test_public_continuation_checkpoint_rejects_wrong_stage_before_chain_load(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pair = prepare_pair(tmp_path, monkeypatch)
+    initial = _ok(
+        begin_acceptance_attempt(
+            pair.context,
+            attempt_id=CONTINUATION_ATTEMPT_ID,
+            scenario_id="legacy-keil-physical-repair",
+            scenario_version="1",
+            continuation=pair.bind_request,
+        )
+    )["attempt"]
+    assert initial["revision"] == 0
+    assert initial["stage"] == "verification-pending"
+
+    shown_before = _ok(
+        recovery_workflows.show_acceptance_attempt(
+            pair.context, attempt_id=CONTINUATION_ATTEMPT_ID
+        )
+    )["attempt"]
+    diagnostic_before = _ok(
+        diagnostic_show(
+            pair.diagnostic, diagnostic_session_id=pair.diagnostic_session_id
+        )
+    )["session"]
+    root0_path = recovery_workflows._typed_root_path(
+        pair.evidence,
+        recovery_workflows._root_id(CONTINUATION_ATTEMPT_ID, 0),
+    )
+    root1_path = recovery_workflows._typed_root_path(
+        pair.evidence,
+        recovery_workflows._root_id(CONTINUATION_ATTEMPT_ID, 1),
+    )
+    root0_bytes = root0_path.read_bytes()
+
+    rejected = checkpoint_acceptance_attempt(
+        pair.context,
+        attempt_id=CONTINUATION_ATTEMPT_ID,
+        expected_revision=0,
+        stage="verification-pending",
+    )
+    assert rejected.ok is False
+    assert rejected.code == "ACCEPTANCE_ATTEMPT_STAGE_INVALID"
+    assert rejected.message == "Acceptance attempt stage is invalid."
+    assert rejected.data is None
+    assert root0_path.read_bytes() == root0_bytes
+    assert not root1_path.exists()
+
+    shown_after = _ok(
+        recovery_workflows.show_acceptance_attempt(
+            pair.context, attempt_id=CONTINUATION_ATTEMPT_ID
+        )
+    )["attempt"]
+    resumed = _ok(
+        resume_acceptance_attempt(pair.context, attempt_id=CONTINUATION_ATTEMPT_ID)
+    )
+    diagnostic_after = _ok(
+        diagnostic_show(
+            pair.diagnostic, diagnostic_session_id=pair.diagnostic_session_id
+        )
+    )["session"]
+    assert shown_before == initial
+    assert shown_after == initial
+    assert resumed["attempt"] == initial
+    assert resumed["nextStage"] == "target-fix-verified"
+    assert resumed["timedOut"] is False
+    assert diagnostic_after == diagnostic_before
+
+
+def test_public_continuation_checkpoint_rejects_wrong_fixed_after_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pair = prepare_pair(tmp_path, monkeypatch)
+    baseline = _monitor_baseline(pair, tmp_path)
+    verification = _complete_continuation_verification(pair, baseline)
+
+    shown_before = _ok(
+        recovery_workflows.show_acceptance_attempt(
+            pair.context, attempt_id=CONTINUATION_ATTEMPT_ID
+        )
+    )["attempt"]
+    diagnostic_before = _ok(
+        diagnostic_show(
+            pair.diagnostic, diagnostic_session_id=pair.diagnostic_session_id
+        )
+    )["session"]
+    root0_path = recovery_workflows._typed_root_path(
+        pair.evidence,
+        recovery_workflows._root_id(CONTINUATION_ATTEMPT_ID, 0),
+    )
+    root1_path = recovery_workflows._typed_root_path(
+        pair.evidence,
+        recovery_workflows._root_id(CONTINUATION_ATTEMPT_ID, 1),
+    )
+    root0_bytes = root0_path.read_bytes()
+
+    rejected = checkpoint_acceptance_attempt(
+        pair.context,
+        attempt_id=CONTINUATION_ATTEMPT_ID,
+        expected_revision=0,
+        stage="target-fix-verified",
+        test_run_id=pair.failed_run_id,
+        diagnostic_session_id=pair.diagnostic_session_id,
+        fix_verification_id=verification["fix_verification_id"],
+    )
+    assert rejected.ok is False
+    assert rejected.code == "ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH"
+    assert rejected.message == "Acceptance attempt identity does not match."
+    assert rejected.data is None
+    assert root0_path.read_bytes() == root0_bytes
+    assert not root1_path.exists()
+
+    shown_after = _ok(
+        recovery_workflows.show_acceptance_attempt(
+            pair.context, attempt_id=CONTINUATION_ATTEMPT_ID
+        )
+    )["attempt"]
+    resumed = _ok(
+        resume_acceptance_attempt(pair.context, attempt_id=CONTINUATION_ATTEMPT_ID)
+    )
+    diagnostic_after = _ok(
+        diagnostic_show(
+            pair.diagnostic, diagnostic_session_id=pair.diagnostic_session_id
+        )
+    )["session"]
+    assert shown_after == shown_before
+    assert resumed["attempt"] == shown_before
+    assert resumed["nextStage"] == "target-fix-verified"
+    assert resumed["timedOut"] is False
+    assert diagnostic_after == diagnostic_before
+
+
+def test_public_continuation_terminal_checkpoint_and_wrong_fix_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pair = prepare_pair(tmp_path, monkeypatch)
+    baseline = _monitor_baseline(pair, tmp_path)
+    verification = _complete_continuation_verification(pair, baseline)
+    checkpoint = dict(
+        attempt_id=CONTINUATION_ATTEMPT_ID,
+        expected_revision=0,
+        stage="target-fix-verified",
+        test_run_id=pair.fixed_run_id,
+        diagnostic_session_id=pair.diagnostic_session_id,
+        fix_verification_id=verification["fix_verification_id"],
+    )
+
+    completed = _ok(checkpoint_acceptance_attempt(pair.context, **checkpoint))["attempt"]
+    assert completed["revision"] == 1
+    assert completed["status"] == "COMPLETED"
+    assert completed["stage"] == "target-fix-verified"
+    assert completed["fixVerificationId"] == verification["fix_verification_id"]
+
+    shown = _ok(
+        recovery_workflows.show_acceptance_attempt(
+            pair.context, attempt_id=CONTINUATION_ATTEMPT_ID
+        )
+    )["attempt"]
+    resumed = _ok(
+        resume_acceptance_attempt(pair.context, attempt_id=CONTINUATION_ATTEMPT_ID)
+    )
+    diagnostic_after_completion = _ok(
+        diagnostic_show(
+            pair.diagnostic, diagnostic_session_id=pair.diagnostic_session_id
+        )
+    )["session"]
+    root1_path = recovery_workflows._typed_root_path(
+        pair.evidence,
+        recovery_workflows._root_id(CONTINUATION_ATTEMPT_ID, 1),
+    )
+    root2_path = recovery_workflows._typed_root_path(
+        pair.evidence,
+        recovery_workflows._root_id(CONTINUATION_ATTEMPT_ID, 2),
+    )
+    root1_bytes = root1_path.read_bytes()
+    assert shown == completed
+    assert resumed["attempt"] == completed
+    assert resumed["nextStage"] is None
+    assert resumed["timedOut"] is False
+    assert diagnostic_after_completion["state"] == "RESOLVED"
+    assert not root2_path.exists()
+
+    wrong_fix = "0" * 64
+    if wrong_fix == verification["fix_verification_id"]:
+        wrong_fix = "1" * 64
+    rejected = checkpoint_acceptance_attempt(
+        pair.context,
+        attempt_id=CONTINUATION_ATTEMPT_ID,
+        expected_revision=0,
+        stage="target-fix-verified",
+        test_run_id=pair.fixed_run_id,
+        diagnostic_session_id=pair.diagnostic_session_id,
+        fix_verification_id=wrong_fix,
+    )
+    assert rejected.ok is False
+    assert rejected.code == "ACCEPTANCE_ATTEMPT_REVISION_CONFLICT"
+    assert rejected.message == "Acceptance attempt revision conflicts with the current chain."
+    assert rejected.data is None
+    assert root1_path.read_bytes() == root1_bytes
+    assert not root2_path.exists()
+
+    shown_after_retry = _ok(
+        recovery_workflows.show_acceptance_attempt(
+            pair.context, attempt_id=CONTINUATION_ATTEMPT_ID
+        )
+    )["attempt"]
+    resumed_after_retry = _ok(
+        resume_acceptance_attempt(pair.context, attempt_id=CONTINUATION_ATTEMPT_ID)
+    )
+    diagnostic_after_retry = _ok(
+        diagnostic_show(
+            pair.diagnostic, diagnostic_session_id=pair.diagnostic_session_id
+        )
+    )["session"]
+    assert shown_after_retry == completed
+    assert resumed_after_retry["attempt"] == completed
+    assert resumed_after_retry["nextStage"] is None
+    assert resumed_after_retry["timedOut"] is False
+    assert diagnostic_after_retry == diagnostic_after_completion
+
+
+def test_public_continuation_checkpoint_times_out_before_terminal_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pair = prepare_pair(tmp_path, monkeypatch)
+    baseline = _monitor_baseline(pair, tmp_path)
+    verification = _complete_continuation_verification(pair, baseline)
+    initial = _ok(
+        recovery_workflows.show_acceptance_attempt(
+            pair.context, attempt_id=CONTINUATION_ATTEMPT_ID
+        )
+    )["attempt"]
+    diagnostic_before = _ok(
+        diagnostic_show(
+            pair.diagnostic, diagnostic_session_id=pair.diagnostic_session_id
+        )
+    )["session"]
+    root0_path = recovery_workflows._typed_root_path(
+        pair.evidence,
+        recovery_workflows._root_id(CONTINUATION_ATTEMPT_ID, 0),
+    )
+    root1_path = recovery_workflows._typed_root_path(
+        pair.evidence,
+        recovery_workflows._root_id(CONTINUATION_ATTEMPT_ID, 1),
+    )
+    root0_bytes = root0_path.read_bytes()
+    deadline = datetime.strptime(
+        str(initial["deadlineAtUtc"]), "%Y-%m-%dT%H:%M:%S.%fZ"
+    )
+    after_deadline = (deadline + timedelta(microseconds=1)).strftime(
+        "%Y-%m-%dT%H:%M:%S.%fZ"
+    )
+    timed_context = replace(pair.context, clock=lambda: after_deadline)
+
+    rejected = checkpoint_acceptance_attempt(
+        timed_context,
+        attempt_id=CONTINUATION_ATTEMPT_ID,
+        expected_revision=0,
+        stage="target-fix-verified",
+        test_run_id=pair.fixed_run_id,
+        diagnostic_session_id=pair.diagnostic_session_id,
+        fix_verification_id=verification["fix_verification_id"],
+    )
+    assert rejected.ok is False
+    assert rejected.code == "ACCEPTANCE_ATTEMPT_TIMED_OUT"
+    assert rejected.message == "Acceptance attempt stage deadline has elapsed."
+    assert rejected.data is None
+    assert root0_path.read_bytes() == root0_bytes
+    assert not root1_path.exists()
+
+    shown_after = _ok(
+        recovery_workflows.show_acceptance_attempt(
+            timed_context, attempt_id=CONTINUATION_ATTEMPT_ID
+        )
+    )["attempt"]
+    resumed = _ok(
+        resume_acceptance_attempt(timed_context, attempt_id=CONTINUATION_ATTEMPT_ID)
+    )
+    diagnostic_after = _ok(
+        diagnostic_show(
+            pair.diagnostic, diagnostic_session_id=pair.diagnostic_session_id
+        )
+    )["session"]
+    assert shown_after == initial
+    assert resumed["attempt"] == initial
+    assert resumed["nextStage"] == "target-fix-verified"
+    assert resumed["timedOut"] is True
+    assert diagnostic_after == diagnostic_before
+
+
+def test_postpublication_diagnostic_busy_preserves_revision_one_for_exact_retry_and_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pair = prepare_pair(tmp_path, monkeypatch)
+    baseline = _monitor_baseline(pair, tmp_path)
+    verification = _complete_continuation_verification(pair, baseline)
+    checkpoint = dict(
+        attempt_id=CONTINUATION_ATTEMPT_ID,
+        expected_revision=0,
+        stage="target-fix-verified",
+        test_run_id=pair.fixed_run_id,
+        fix_verification_id=verification["fix_verification_id"],
+    )
+
+    original_store_lock = DiagnosticStore._store_lock
+    lock_calls = {"count": 0}
+
+    class BusyLock:
+        def __enter__(self):
+            raise DiagnosticStoreBusyError()
+
+        def __exit__(self, _exc_type, _exc_value, _traceback):
+            return False
+
+    def lock_with_postpublication_busy(self, **kwargs):
+        lock_calls["count"] += 1
+        if lock_calls["count"] == 2:
+            return BusyLock()
+        return original_store_lock(self, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(DiagnosticStore, "_store_lock", lock_with_postpublication_busy)
+        busy = checkpoint_acceptance_attempt(pair.context, **checkpoint)
+
+    assert busy.ok is False
+    assert busy.code == "ACCEPTANCE_ATTEMPT_BUSY"
+    assert lock_calls["count"] == 2
+
+    revision_one_path = recovery_workflows._typed_root_path(
+        pair.evidence,
+        recovery_workflows._root_id(CONTINUATION_ATTEMPT_ID, 1),
+    )
+    revision_one_bytes = revision_one_path.read_bytes()
+    revision_one = get_root(
+        pair.evidence,
+        "acceptance-attempt",
+        recovery_workflows._root_id(CONTINUATION_ATTEMPT_ID, 1),
+    )
+    assert revision_one_path.exists()
+    assert revision_one.manifest_id
+    assert not recovery_workflows._typed_root_path(
+        pair.evidence,
+        recovery_workflows._root_id(CONTINUATION_ATTEMPT_ID, 2),
+    ).exists()
+
+    retried = _ok(checkpoint_acceptance_attempt(pair.context, **checkpoint))["attempt"]
+    shown = _ok(
+        recovery_workflows.show_acceptance_attempt(
+            pair.context, attempt_id=CONTINUATION_ATTEMPT_ID
+        )
+    )["attempt"]
+    assert retried == shown
+    assert revision_one_path.read_bytes() == revision_one_bytes
 
 
 def test_diagnostic_store_rejects_self_consistent_forged_continuation_analysis_references(
@@ -1684,3 +2309,328 @@ def test_diagnostic_store_maps_typed_continuation_provider_failure_on_append_and
     assert raised.value.code == DIAGNOSTIC_EVIDENCE_MISSING
     assert provider_calls == [baseline.continuation_id, baseline.continuation_id]
     assert fresh_store.load_durable(pair.diagnostic_session_id).revision == pair.diagnostic_revision + 1
+
+
+def test_public_continuation_reference_variants_preserve_schema2_authority(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pair = prepare_pair(tmp_path, monkeypatch)
+    baseline = _monitor_baseline(pair, tmp_path)
+    assert baseline.publication.analysis_result.schema == "stm32-monitor-analysis/2"
+    association = authenticate_continuation(
+        pair.evidence, pair.workspace.diagnostics_root, baseline.continuation_id
+    )
+
+    def authority_snapshot() -> tuple[object, ...]:
+        files: dict[str, bytes] = {}
+        for label, root in (("project", pair.project_root), ("data", pair.data_root)):
+            for path in root.rglob("*"):
+                if path.is_file():
+                    files[f"{label}/{path.relative_to(root)}"] = path.read_bytes()
+        store_files: dict[str, bytes] = {}
+        for label in ("manifests", "roots"):
+            root = pair.evidence.root / label
+            for path in root.rglob("*"):
+                if path.is_file():
+                    store_files[f"{label}/{path.relative_to(root)}"] = path.read_bytes()
+        run_bytes = tuple(
+            (
+                run_id,
+                pair.repository.load(run_id).envelope.to_json_bytes(),
+            )
+            for run_id in (pair.failed_run_id, pair.fixed_run_id)
+        )
+        session = DiagnosticStore(
+            pair.workspace.diagnostics_root, pair.evidence
+        ).load_durable(pair.diagnostic_session_id)
+        analysis_bytes = pair.evidence.read_artifact(
+            baseline.analysis_envelope.artifacts[0], maximum_bytes=1024 * 1024
+        )
+        return (
+            tuple(sorted(files.items())),
+            tuple(sorted(store_files.items())),
+            canonical_json_bytes(association.root.to_dict()),
+            association.envelope.to_json_bytes(),
+            canonical_json_bytes(baseline.analysis_root.to_dict()),
+            baseline.analysis_envelope.to_json_bytes(),
+            run_bytes,
+            analysis_bytes,
+            session.revision,
+            session.event_head,
+        )
+
+    def reject(candidate: EvidenceEnvelope, message: str) -> None:
+        before = authority_snapshot()
+        with pytest.raises(ContinuationValidationError) as raised:
+            validate_continuation_reference(pair.evidence, association, candidate)
+        assert str(raised.value) == message
+        assert authority_snapshot() == before
+
+    def analysis_envelope(artifact, analysis_id: str) -> EvidenceEnvelope:
+        metadata = dict(baseline.analysis_envelope.metadata)
+        metadata["analysis_id"] = analysis_id
+        return EvidenceEnvelope(
+            identity=baseline.analysis_envelope.identity,
+            operation=baseline.analysis_envelope.operation,
+            produced_at_utc=baseline.analysis_envelope.produced_at_utc,
+            parents=tuple(baseline.analysis_envelope.parents),
+            artifacts=(artifact,),
+            metadata=metadata,
+        )
+
+    def ingest_raw(label: str, raw: bytes):
+        path = tmp_path / f"{label}-analysis.json"
+        path.write_bytes(raw)
+        return pair.evidence.ingest_file(
+            path, kind="monitor-analysis", media_type="application/json"
+        )
+
+    before_identity = association.before.manifest.identity
+    after_identity = association.after.manifest.identity
+    baseline_analysis_id = str(baseline.publication.analysis_result.analysis_id)
+
+    reject(
+        EvidenceEnvelope(
+            identity=before_identity,
+            operation=baseline.analysis_envelope.operation,
+            produced_at_utc=baseline.analysis_envelope.produced_at_utc,
+            parents=tuple(baseline.analysis_envelope.parents),
+            artifacts=tuple(baseline.analysis_envelope.artifacts),
+            metadata=dict(baseline.analysis_envelope.metadata),
+        ),
+        "continuation reference after identity differs",
+    )
+
+    target_produced_at = (
+        datetime.strptime(
+            association.after.envelope.produced_at_utc, "%Y-%m-%dT%H:%M:%S.%fZ"
+        )
+        + timedelta(microseconds=1)
+    ).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    reject(
+        EvidenceEnvelope(
+            identity=association.after.envelope.identity,
+            operation=association.after.envelope.operation,
+            produced_at_utc=target_produced_at,
+            parents=tuple(association.after.envelope.parents),
+            artifacts=tuple(association.after.envelope.artifacts),
+            metadata=dict(association.after.envelope.metadata),
+        ),
+        "continuation reference names another TestRun",
+    )
+
+    reject(
+        EvidenceEnvelope(
+            identity=after_identity,
+            operation="diagnostic-marker",
+            produced_at_utc=baseline.analysis_envelope.produced_at_utc,
+            parents=(),
+            artifacts=(),
+            metadata={},
+        ),
+        "continuation marker parent differs",
+    )
+
+    reject(
+        EvidenceEnvelope(
+            identity=after_identity,
+            operation="diagnostic-marker",
+            produced_at_utc=baseline.analysis_envelope.produced_at_utc,
+            parents=(str(association.after.envelope.evidence_id),),
+            artifacts=(),
+            metadata={},
+        ),
+        "continuation marker must reference an analysis",
+    )
+
+    reject(
+        EvidenceEnvelope(
+            identity=after_identity,
+            operation=baseline.analysis_envelope.operation,
+            produced_at_utc=baseline.analysis_envelope.produced_at_utc,
+            parents=(baseline.analysis_envelope.parents[0],),
+            artifacts=tuple(baseline.analysis_envelope.artifacts),
+            metadata=dict(baseline.analysis_envelope.metadata),
+        ),
+        "continuation analysis parents differ",
+    )
+
+    payload_shape_artifact = ingest_raw(
+        "continuation-schema2-payload-shape", canonical_json_bytes({})
+    )
+    reject(
+        analysis_envelope(payload_shape_artifact, baseline_analysis_id),
+        "continuation analysis payload differs",
+    )
+
+    digest_payload = json.loads(
+        pair.evidence.read_artifact(
+            baseline.analysis_envelope.artifacts[0], maximum_bytes=1024 * 1024
+        ).decode("utf-8")
+    )
+    assert isinstance(digest_payload, dict)
+    digest_id = "f" * 64
+    if digest_id == baseline_analysis_id:
+        digest_id = "e" * 64
+    digest_payload["analysis_id"] = digest_id
+    digest_artifact = ingest_raw(
+        "continuation-schema2-analysis-digest",
+        canonical_replay_json_bytes(digest_payload),
+    )
+    reject(
+        analysis_envelope(digest_artifact, digest_id),
+        "continuation analysis digest differs",
+    )
+
+
+def test_public_continuation_reference_native_variants_preserve_schema3_authority(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pair = prepare_pair(tmp_path, monkeypatch)
+    attempt = _ok(
+        begin_acceptance_attempt(
+            pair.context,
+            attempt_id=CONTINUATION_ATTEMPT_ID,
+            scenario_id="legacy-keil-physical-repair",
+            scenario_version="1",
+            continuation=pair.bind_request,
+        )
+    )["attempt"]
+    continuation_id = str(attempt["continuationEvidenceId"])
+    baseline = _same_session_native_baseline(
+        pair, tmp_path, continuation_id=continuation_id
+    )
+    baseline_analysis_root = get_root(
+        pair.evidence,
+        "monitor-analysis",
+        str(baseline.publication.analysis_result.analysis_id),
+    )
+    assert baseline_analysis_root.manifest_id == str(baseline.analysis_envelope.evidence_id)
+    association = authenticate_continuation(
+        pair.evidence, pair.workspace.diagnostics_root, continuation_id
+    )
+
+    def authority_snapshot() -> tuple[object, ...]:
+        files: dict[str, bytes] = {}
+        for label, root in (("project", pair.project_root), ("data", pair.data_root)):
+            for path in root.rglob("*"):
+                if path.is_file():
+                    files[f"{label}/{path.relative_to(root)}"] = path.read_bytes()
+        store_files: dict[str, bytes] = {}
+        for label in ("manifests", "roots"):
+            root = pair.evidence.root / label
+            for path in root.rglob("*"):
+                if path.is_file():
+                    store_files[f"{label}/{path.relative_to(root)}"] = path.read_bytes()
+        run_bytes = tuple(
+            (
+                run_id,
+                pair.repository.load(run_id).envelope.to_json_bytes(),
+            )
+            for run_id in (pair.failed_run_id, pair.fixed_run_id)
+        )
+        session = DiagnosticStore(
+            pair.workspace.diagnostics_root, pair.evidence
+        ).load_durable(pair.diagnostic_session_id)
+        analysis_bytes = pair.evidence.read_artifact(
+            baseline.analysis_envelope.artifacts[0], maximum_bytes=1024 * 1024
+        )
+        return (
+            tuple(sorted(files.items())),
+            tuple(sorted(store_files.items())),
+            canonical_json_bytes(association.root.to_dict()),
+            association.envelope.to_json_bytes(),
+            canonical_json_bytes(baseline_analysis_root.to_dict()),
+            baseline.analysis_envelope.to_json_bytes(),
+            run_bytes,
+            analysis_bytes,
+            session.revision,
+            session.event_head,
+        )
+
+    def accept(candidate: EvidenceEnvelope) -> None:
+        before = authority_snapshot()
+        assert validate_continuation_reference(
+            pair.evidence, association, candidate
+        ) is None
+        assert authority_snapshot() == before
+
+    def reject(candidate: EvidenceEnvelope, message: str) -> None:
+        before = authority_snapshot()
+        with pytest.raises(ContinuationValidationError) as raised:
+            validate_continuation_reference(pair.evidence, association, candidate)
+        assert str(raised.value) == message
+        assert authority_snapshot() == before
+
+    def analysis_envelope(artifact, analysis_id: str) -> EvidenceEnvelope:
+        metadata = dict(baseline.analysis_envelope.metadata)
+        metadata["analysis_id"] = analysis_id
+        return EvidenceEnvelope(
+            identity=baseline.analysis_envelope.identity,
+            operation=baseline.analysis_envelope.operation,
+            produced_at_utc=baseline.analysis_envelope.produced_at_utc,
+            parents=tuple(baseline.analysis_envelope.parents),
+            artifacts=(artifact,),
+            metadata=metadata,
+        )
+
+    def ingest_raw(label: str, raw: bytes):
+        path = tmp_path / f"{label}-analysis.json"
+        path.write_bytes(raw)
+        return pair.evidence.ingest_file(
+            path, kind="monitor-analysis", media_type="application/json"
+        )
+
+    baseline_raw = pair.evidence.read_artifact(
+        baseline.analysis_envelope.artifacts[0], maximum_bytes=1024 * 1024
+    )
+    baseline_payload = json.loads(baseline_raw.decode("utf-8"))
+    assert isinstance(baseline_payload, dict)
+    baseline_analysis_id = str(baseline_payload["analysis_id"])
+
+    accept(baseline.analysis_envelope)
+
+    request_digest_payload = json.loads(baseline_raw.decode("utf-8"))
+    assert isinstance(request_digest_payload, dict)
+    request_digest = "0" * 64
+    if request_digest == request_digest_payload["request_digest"]:
+        request_digest = "1" * 64
+    request_digest_payload["request_digest"] = request_digest
+    request_digest_unsigned = {
+        key: value
+        for key, value in request_digest_payload.items()
+        if key != "analysis_id"
+    }
+    request_digest_id = hashlib.sha256(
+        canonical_replay_json_bytes(request_digest_unsigned)
+    ).hexdigest()
+    request_digest_payload["analysis_id"] = request_digest_id
+    request_digest_artifact = ingest_raw(
+        "continuation-schema3-request-digest",
+        canonical_replay_json_bytes(request_digest_payload),
+    )
+    reject(
+        analysis_envelope(request_digest_artifact, request_digest_id),
+        "continuation native request digest differs",
+    )
+
+    statistics_payload = json.loads(baseline_raw.decode("utf-8"))
+    assert isinstance(statistics_payload, dict)
+    statistics_payload["before_first"] = statistics_payload["before_first"] + 1
+    statistics_payload["delta_first"] = statistics_payload["delta_first"] + 1
+    statistics_unsigned = {
+        key: value for key, value in statistics_payload.items() if key != "analysis_id"
+    }
+    statistics_id = hashlib.sha256(
+        canonical_replay_json_bytes(statistics_unsigned)
+    ).hexdigest()
+    assert statistics_id != baseline_analysis_id
+    statistics_payload["analysis_id"] = statistics_id
+    statistics_artifact = ingest_raw(
+        "continuation-schema3-statistics",
+        canonical_replay_json_bytes(statistics_payload),
+    )
+    reject(
+        analysis_envelope(statistics_artifact, statistics_id),
+        "continuation native analysis statistics differ",
+    )

@@ -7,7 +7,6 @@ from contextlib import closing
 from pathlib import Path
 import shutil
 import sqlite3
-import tempfile
 from threading import Event
 
 import pytest
@@ -18,9 +17,8 @@ from stm32_toolkit.evidence.store import EvidenceStore
 
 
 @pytest.fixture
-def tmp_path():
-    """Use a fresh C:\\tmp direct child; the host pytest temp root has an unreadable stale ACL."""
-    path = Path(tempfile.mkdtemp(prefix="stm32tk-0601-t04-catalog-", dir=r"C:\tmp"))
+def tmp_path(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    path = tmp_path_factory.mktemp("catalog")
     try:
         yield path
     finally:

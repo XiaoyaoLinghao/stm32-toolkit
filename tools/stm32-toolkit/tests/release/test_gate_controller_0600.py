@@ -10,7 +10,6 @@ import re
 import shutil
 import subprocess
 import sys
-import tempfile
 import types
 import zipfile
 import xml.etree.ElementTree as ElementTree
@@ -64,21 +63,82 @@ HARDWARE = RELEASE / "run_0600_hardware.ps1"
 RUNNER = RELEASE / "run_0600_gates.py"
 RUN_ID = "123e4567-e89b-42d3-a456-426614174000"
 NOW = datetime(2026, 8, 15, 2, 3, 4, 123456, tzinfo=timezone.utc)
+APPROVED_SUPPORT_ROOT_ENV = "STM32TK_RELEASE_SUPPORT_ROOT"
+APPROVED_UI_SUPPORT_ROOT_ENV = "STM32TK_RELEASE_UI_SUPPORT_ROOT"
 
 
 @pytest.fixture
-def tmp_path() -> Path:
-    """Use the approved external test root; the default user temp ACL is broken on this host."""
-    root = Path(tempfile.mkdtemp(prefix="stm32tk-0601-task2-", dir=r"C:\tmp"))
+def tmp_path(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    root = tmp_path_factory.mktemp("gate")
     try:
         yield root
     finally:
-        for sibling in Path(r"C:\tmp").glob(f"{root.name}-coverage-*"):
-            if sibling.parent.resolve() != Path(r"C:\tmp").resolve() or gates._is_reparse(sibling):
+        for sibling in root.parent.glob(f"{root.name}-coverage-*"):
+            if sibling.parent.resolve() != root.parent.resolve() or gates._is_reparse(sibling):
                 raise AssertionError(f"unsafe coverage test cleanup target: {sibling}")
             if sibling.is_dir():
                 shutil.rmtree(sibling)
         shutil.rmtree(root)
+
+
+def _approved_support_source() -> Path:
+    raw = os.environ.get(APPROVED_SUPPORT_ROOT_ENV)
+    if not raw:
+        pytest.fail(f"{APPROVED_SUPPORT_ROOT_ENV} is required for the release fixture")
+    source = Path(raw)
+    try:
+        verify_support_root(source / "feasibility" / "profile.json")
+    except ControllerError as exc:
+        pytest.fail(f"approved support fixture is invalid: {exc}")
+    return source
+
+
+def _stage_approved_support(destination: Path) -> Path:
+    shutil.copytree(_approved_support_source(), destination)
+    profile = destination / "feasibility" / "profile.json"
+    try:
+        verify_support_root(profile)
+    except ControllerError as exc:
+        pytest.fail(f"staged support fixture is invalid: {exc}")
+    return profile
+
+
+def _normalized_lock_graph(path: Path) -> tuple[str, int]:
+    value = json.loads(path.read_text(encoding="utf-8"))
+    value.pop("version", None)
+    packages = value.get("packages")
+    if not isinstance(packages, dict) or not isinstance(packages.get(""), dict):
+        pytest.fail(f"dependency lock graph is not npm-lockfile-shaped: {path}")
+    packages[""] = dict(packages[""])
+    packages[""].pop("version", None)
+    payload = json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest(), len(packages)
+
+
+@pytest.fixture
+def frozen_node_ui(tmp_path: Path) -> Path:
+    """Stage final UI sources with only the approved pinned Node dependency tree."""
+    raw = os.environ.get(APPROVED_UI_SUPPORT_ROOT_ENV)
+    if not raw:
+        pytest.fail(f"{APPROVED_UI_SUPPORT_ROOT_ENV} is required for the Node fixture")
+    support = Path(raw)
+    source = REPO / "tools" / "stm32-monitor" / "ui"
+    source_lock = source / "package-lock.json"
+    support_lock = support / "package-lock.json"
+    if not source_lock.is_file() or not support_lock.is_file():
+        pytest.fail("final and approved UI package locks are required")
+    source_graph, source_packages = _normalized_lock_graph(source_lock)
+    support_graph, support_packages = _normalized_lock_graph(support_lock)
+    assert source_graph == support_graph == "0636253fe3d4d48df368ce3ec940929f40dca4d77a47b1d473277600d32ab304"
+    assert source_packages == support_packages == 435
+    dependency_tree = support / "node_modules"
+    if not dependency_tree.is_dir():
+        pytest.fail(f"approved Node dependency tree is missing: {dependency_tree}")
+    staged = tmp_path / "native-evidence" / "ui"
+    staged.parent.mkdir()
+    shutil.copytree(source, staged, ignore=shutil.ignore_patterns("node_modules"))
+    shutil.copytree(dependency_tree, staged / "node_modules")
+    return staged
 
 
 def _sha(data: bytes) -> str:
@@ -772,15 +832,14 @@ def test_native_executor_rejects_prepositioned_and_create_race_junctions_without
     ],
 )
 def test_real_node_runners_produce_normalized_portable_native_artifacts(
-    tmp_path: Path, tool: str, argv: tuple[str, ...], expected: tuple[str, ...],
+    tmp_path: Path, frozen_node_ui: Path, tool: str, argv: tuple[str, ...], expected: tuple[str, ...],
 ) -> None:
     """The installed frozen Node tools, not a hand-shaped JSON double, cross the adapter."""
-    ui = REPO / "tools" / "stm32-monitor" / "ui"
+    ui = frozen_node_ui
     executable = ui / "node_modules" / ".bin" / tool
     if not executable.is_file():
         pytest.fail(f"frozen Node executable is missing: {executable}")
-    evidence = tmp_path / f"real-{tool}"
-    evidence.mkdir()
+    evidence = frozen_node_ui.parent
     gate = GateRequest(
         f"REAL-{tool[:-4].upper()}", (str(executable), *argv), ui, 60, expected,
     )
@@ -1354,7 +1413,7 @@ def _coverage_git(paths: list[str]):
 
 
 def _coverage_evidence(tmp_path: Path, name: str = "evidence") -> Path:
-    return Path(r"C:\tmp") / f"{tmp_path.name}-coverage-{name}"
+    return tmp_path.parent / f"{tmp_path.name}-coverage-{name}"
 
 
 def _create_junction(path: Path, target: Path) -> None:
@@ -1487,7 +1546,8 @@ def test_dev_coverage_accepts_every_frozen_plan_pytest_shape(
         return 0
 
     result = run_dev_coverage(
-        repo, task_id, evidence, tokens, _coverage_git(changed), runner
+        repo, task_id, evidence, tokens, _coverage_git(changed), runner,
+        _coverage_temporary_root=tmp_path.parent,
     )
 
     assert calls == 1
@@ -1522,7 +1582,10 @@ def test_dev_coverage_rejects_invalid_basetemp_before_evidence_creation(
     evidence = _coverage_evidence(tmp_path)
 
     with pytest.raises(ControllerError):
-        run_dev_coverage(repo, "STM32TK-0603-T12", evidence, tokens, _coverage_git([]))
+        run_dev_coverage(
+            repo, "STM32TK-0603-T12", evidence, tokens, _coverage_git([]),
+            _coverage_temporary_root=tmp_path.parent,
+        )
 
     assert not evidence.exists()
 
@@ -1548,6 +1611,7 @@ def test_dev_coverage_rejects_basetemp_for_other_tasks_and_existing_paths(
                 evidence,
                 [str(test_file), "--cov=stm32_toolkit.a", "--basetemp", str(existing)],
                 _coverage_git([product.relative_to(repo).as_posix()]),
+                _coverage_temporary_root=tmp_path.parent,
             )
         assert not evidence.exists()
 
@@ -1578,6 +1642,7 @@ def test_dev_coverage_rejects_unsafe_absent_basetemp_before_evidence_creation(
             evidence,
             [str(test_file), "--cov=stm32_toolkit.a", "--basetemp", values[case]],
             _coverage_git([product.relative_to(repo).as_posix()]),
+            _coverage_temporary_root=tmp_path.parent,
         )
 
     assert not evidence.exists()
@@ -1612,6 +1677,7 @@ def test_dev_coverage_rejects_evidence_parent_junction_before_claiming_root(
                 evidence,
                 [str(test_file), "--cov=stm32_monitor.package", *extra_tokens],
                 _coverage_git([product.relative_to(repo).as_posix()]),
+                _coverage_temporary_root=tmp_path.parent,
             )
         assert not evidence.exists()
     finally:
@@ -1643,16 +1709,75 @@ def test_dev_coverage_rejects_nested_evidence_root_before_claiming_it(tmp_path: 
             [str(test_file), "--cov=stm32_monitor.package"],
             _coverage_git([product.relative_to(repo).as_posix()]),
             runner,
+            _coverage_temporary_root=tmp_path.parent,
         )
 
     assert runner_calls == 0
     assert not evidence.exists()
 
 
-def test_dev_coverage_win32_directory_identity_uses_volume_and_file_index() -> None:
+def test_dev_coverage_rejects_nonpytest_temporary_root_override_before_side_effects(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The private fixture root seam cannot become a production path override."""
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    repo = tmp_path / "repo"
+    evidence = _coverage_evidence(tmp_path)
+    temporary_root = tmp_path / "override-not-created"
+    runner_calls = 0
+
+    def runner(*_args: object, **_kwargs: object) -> int:
+        nonlocal runner_calls
+        runner_calls += 1
+        return 0
+
+    with pytest.raises(ControllerError, match="test-only"):
+        run_dev_coverage(
+            repo,
+            "STM32TK-0603-T01",
+            evidence,
+            ["tests/test_a.py"],
+            _coverage_git([]),
+            runner,
+            _coverage_temporary_root=temporary_root,
+        )
+
+    assert runner_calls == 0
+    assert not temporary_root.exists()
+    assert not evidence.exists()
+
+
+def test_dev_coverage_rejects_existing_evidence_root_with_fixture_root(tmp_path: Path) -> None:
+    """An override preserves create-new evidence semantics."""
+    repo = tmp_path / "repo"
+    test_file = repo / "tools/stm32-monitor/tests/test_a.py"
+    product = repo / "tools/stm32-monitor/src/stm32_monitor/a.py"
+    test_file.parent.mkdir(parents=True)
+    product.parent.mkdir(parents=True)
+    test_file.write_text("def test_a(): pass\n", encoding="utf-8")
+    product.write_text("VALUE = 1\n", encoding="utf-8")
+    evidence = _coverage_evidence(tmp_path)
+    evidence.mkdir()
+
+    with pytest.raises(ControllerError, match="new path"):
+        run_dev_coverage(
+            repo,
+            "STM32TK-0603-T01",
+            evidence,
+            [str(test_file)],
+            _coverage_git([product.relative_to(repo).as_posix()]),
+            _coverage_temporary_root=tmp_path.parent,
+        )
+
+    assert evidence.is_dir()
+
+
+def test_dev_coverage_win32_directory_identity_uses_volume_and_file_index(
+    tmp_path: Path,
+) -> None:
     """The retained identity comes from an open Win32 handle, not mutable timestamps."""
-    with gates._open_locked_windows_directory(Path(r"C:\tmp")) as locked:
-        assert locked.path == Path(r"C:\tmp")
+    with gates._open_locked_windows_directory(tmp_path) as locked:
+        assert locked.path == tmp_path
         assert isinstance(locked.volume_serial, int)
         assert isinstance(locked.file_index, int)
         assert locked.file_index >= 0
@@ -1694,6 +1819,7 @@ def test_dev_coverage_rejects_prepositioned_root_junction(tmp_path: Path) -> Non
                 evidence,
                 [str(test_file), "--cov=stm32_monitor.package"],
                 _coverage_git([product.relative_to(repo).as_posix()]),
+                _coverage_temporary_root=tmp_path.parent,
             )
     finally:
         os.rmdir(evidence)
@@ -1733,6 +1859,7 @@ def test_dev_coverage_rejects_root_replaced_before_handle_open(
                 evidence,
                 [str(test_file), "--cov=stm32_monitor.package"],
                 _coverage_git([product.relative_to(repo).as_posix()]),
+                _coverage_temporary_root=tmp_path.parent,
             )
     finally:
         if evidence.exists():
@@ -1754,12 +1881,14 @@ def test_dev_coverage_rejects_target_created_before_root_creation(
     original_validate = gates._validate_coverage_attempt_location
     validations = 0
 
-    def create_target_before_second_validation(repo_path: Path, root: Path) -> None:
+    def create_target_before_second_validation(
+        repo_path: Path, root: Path, temporary_root: Path,
+    ) -> None:
         nonlocal validations
         validations += 1
         if validations == 2:
             root.mkdir()
-        original_validate(repo_path, root)
+        original_validate(repo_path, root, temporary_root)
 
     monkeypatch.setattr(gates, "_validate_coverage_attempt_location", create_target_before_second_validation)
     runner_calls = 0
@@ -1777,6 +1906,7 @@ def test_dev_coverage_rejects_target_created_before_root_creation(
             [str(test_file), "--cov=stm32_monitor.package"],
             _coverage_git([product.relative_to(repo).as_posix()]),
             runner,
+            _coverage_temporary_root=tmp_path.parent,
         )
     assert validations == 2
     assert runner_calls == 0
@@ -1832,6 +1962,7 @@ def test_dev_coverage_real_child_cannot_remove_rename_or_unlock_root(tmp_path: P
         [str(test_file), "--cov=stm32_monitor.package"],
         _coverage_git([changed]),
         runner,
+        _coverage_temporary_root=tmp_path.parent,
     )["task_id"] == "STM32TK-0603-T01"
     assert not list(evidence.glob(".stm32tk-coverage-lock-*"))
 
@@ -1861,6 +1992,7 @@ def test_dev_coverage_raw_is_published_only_after_pipe_is_read(tmp_path: Path) -
         [str(test_file), "--cov=stm32_monitor.package"],
         _coverage_git([changed]),
         runner,
+        _coverage_temporary_root=tmp_path.parent,
     )["task_id"] == "STM32TK-0603-T01"
     assert raw_path.is_file()
 
@@ -1911,6 +2043,7 @@ def test_dev_coverage_runner_has_no_final_raw_path_to_unlink_rename_or_swap(tmp_
         [str(test_file), "--cov=stm32_monitor.package"],
         _coverage_git([changed]),
         runner,
+        _coverage_temporary_root=tmp_path.parent,
     )["task_id"] == "STM32TK-0603-T01"
     assert not moved_raw.exists()
     assert outside.is_file()
@@ -1941,6 +2074,7 @@ def test_dev_coverage_runner_cannot_reverse_hardlink_raw_to_new_external_path(tm
             repo, "STM32TK-0603-T01", evidence,
             [str(test_file), "--cov=stm32_monitor.package"],
             _coverage_git([changed]), runner,
+            _coverage_temporary_root=tmp_path.parent,
         )
     except ControllerError:
         pass
@@ -1977,6 +2111,7 @@ def test_dev_coverage_real_pytest_cov_writes_preopened_raw(tmp_path: Path) -> No
         evidence,
         ["-q", "-p", "no:cacheprovider", str(test_file), "--cov=stm32_toolkit.preopened"],
         _coverage_git([changed]),
+        _coverage_temporary_root=tmp_path.parent,
     )
 
     assert result["files"] == [
@@ -2010,6 +2145,7 @@ def test_dev_coverage_result_preoccupation_is_not_overwritten(tmp_path: Path) ->
             [str(test_file), "--cov=stm32_monitor.package"],
             _coverage_git([changed]),
             runner,
+            _coverage_temporary_root=tmp_path.parent,
         )
     assert (evidence / "branch-coverage.json").read_bytes() == occupied
 
@@ -2059,6 +2195,7 @@ def test_dev_coverage_result_swap_is_blocked_until_success_boundary(
         [str(test_file), "--cov=stm32_monitor.package"],
         _coverage_git([changed]),
         runner,
+        _coverage_temporary_root=tmp_path.parent,
     )["task_id"] == "STM32TK-0603-T01"
     assert swap_codes == [32]
     assert not moved_result.exists()
@@ -2097,7 +2234,8 @@ def test_dev_coverage_t12_failed_attempt_retries_same_frozen_argv_with_new_root(
 
     with pytest.raises(ControllerError, match="subprocess failed"):
         run_dev_coverage(
-            repo, "STM32TK-0603-T12", first, tokens, _coverage_git([changed]), failing_runner
+            repo, "STM32TK-0603-T12", first, tokens, _coverage_git([changed]), failing_runner,
+            _coverage_temporary_root=tmp_path.parent,
         )
 
     def successful_runner(argv: list[str], **_kwargs: object) -> int:
@@ -2110,7 +2248,8 @@ def test_dev_coverage_t12_failed_attempt_retries_same_frozen_argv_with_new_root(
         return 0
 
     result = run_dev_coverage(
-        repo, "STM32TK-0603-T12", second, tokens, _coverage_git([changed]), successful_runner
+        repo, "STM32TK-0603-T12", second, tokens, _coverage_git([changed]), successful_runner,
+        _coverage_temporary_root=tmp_path.parent,
     )
 
     assert result["task_id"] == "STM32TK-0603-T12"
@@ -2133,6 +2272,7 @@ def test_dev_coverage_preflight_failure_does_not_claim_evidence_root(
             evidence,
             ["tools/stm32-monitor/tests/missing.py", "--cov=stm32_monitor.models"],
             _coverage_git([]),
+            _coverage_temporary_root=tmp_path.parent,
         )
 
     assert not evidence.exists()
@@ -2163,6 +2303,7 @@ def test_dev_coverage_failed_execution_preserves_evidence_and_requires_new_root(
             [str(test_file), "--cov=stm32_monitor.models"],
             _coverage_git([changed]),
             failing_runner,
+            _coverage_temporary_root=tmp_path.parent,
         )
     assert (evidence / "coverage-raw.json").read_text(encoding="utf-8") == "retained failure\n"
 
@@ -2173,6 +2314,7 @@ def test_dev_coverage_failed_execution_preserves_evidence_and_requires_new_root(
             evidence,
             [str(test_file), "--cov=stm32_monitor.models"],
             _coverage_git([changed]),
+            _coverage_temporary_root=tmp_path.parent,
         )
 
 
@@ -2241,6 +2383,7 @@ def test_dev_coverage_discovers_each_changed_product_file_and_requires_90_percen
         pytest_tokens=["-q", "-p", "no:cacheprovider", str(test_file), "--cov=stm32_toolkit.changed"],
         git_runner=_coverage_git([changed]),
         runner=runner,
+        _coverage_temporary_root=tmp_path.parent,
     )
 
     assert result["files"] == [
@@ -2279,6 +2422,7 @@ def test_dev_coverage_adds_exact_modules_for_changed_package_files(tmp_path: Pat
         [str(test_file), "--cov=stm32_toolkit.evidence.model", "--cov=stm32_toolkit.evidence.model", "-q", "-p", "no:cacheprovider"],
         _coverage_git(changed),
         runner,
+        _coverage_temporary_root=tmp_path.parent,
     )
 
     assert [row["path"] for row in result["files"]] == changed
@@ -2314,7 +2458,10 @@ def test_dev_coverage_rejects_noncanonical_duplicate_or_unpaired_pytest_flags(
         return 0
 
     with pytest.raises(ControllerError):
-        run_dev_coverage(repo, "STM32TK-0601-T03", evidence, tokens, _coverage_git([]), runner)
+        run_dev_coverage(
+            repo, "STM32TK-0601-T03", evidence, tokens, _coverage_git([]), runner,
+            _coverage_temporary_root=tmp_path.parent,
+        )
 
     assert runner_calls == 0
 
@@ -2341,7 +2488,10 @@ def test_dev_coverage_rejects_noncanonical_or_unknown_task_ids_before_side_effec
     evidence = _coverage_evidence(tmp_path)
 
     with pytest.raises(ControllerError, match="unknown coverage task"):
-        run_dev_coverage(repo, task_id, evidence, ["tests/test_changed.py"])
+        run_dev_coverage(
+            repo, task_id, evidence, ["tests/test_changed.py"],
+            _coverage_temporary_root=tmp_path.parent,
+        )
 
     assert not evidence.exists()
 
@@ -2375,7 +2525,10 @@ def test_dev_coverage_rejects_no_change_duplicates_missing_rows_low_file_and_she
         return 0
 
     with pytest.raises(ControllerError):
-        run_dev_coverage(repo, "STM32TK-0601", evidence, tokens, _coverage_git(paths), runner)
+        run_dev_coverage(
+            repo, "STM32TK-0601", evidence, tokens, _coverage_git(paths), runner,
+            _coverage_temporary_root=tmp_path.parent,
+        )
 
 
 def test_dev_coverage_rejects_duplicate_json_object_rows(tmp_path: Path) -> None:
@@ -2406,6 +2559,7 @@ def test_dev_coverage_rejects_duplicate_json_object_rows(tmp_path: Path) -> None
             [str(test_file), "--cov=stm32_toolkit.a"],
             _coverage_git([changed]),
             runner,
+            _coverage_temporary_root=tmp_path.parent,
         )
 
 
@@ -2482,6 +2636,7 @@ def test_dev_coverage_rejects_mutated_coverage_v7_contract(tmp_path: Path, mutat
             [str(test_file), "--cov=stm32_toolkit.a", "-q", "-p", "no:cacheprovider"],
             _coverage_git([changed]),
             runner,
+            _coverage_temporary_root=tmp_path.parent,
         )
 
 
@@ -4250,8 +4405,53 @@ def test_runner_cli_rejects_unknown_switch_and_shell_command_string(tmp_path: Pa
     assert shell.returncode != 0
 
 
-def test_contract_self_tests_use_only_fakes_and_report_pass() -> None:
+@pytest.mark.parametrize("missing", ["temp", "support"])
+def test_contract_self_test_path_overrides_require_both_values_before_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, missing: str
+) -> None:
+    """A partial private seam must fail before the FakeBackend can create output."""
+    temporary_root = tmp_path / "contract-temp"
+    temporary_root.mkdir()
+    support_profile = tmp_path / "support-profile.json"
+    support_profile.write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "fixture-seam")
+    monkeypatch.setenv("STM32TK_TEST_0600_TEMP_ROOT", str(temporary_root))
+    monkeypatch.setenv("STM32TK_TEST_0600_SUPPORT_PROFILE", str(support_profile))
+    monkeypatch.delenv(
+        "STM32TK_TEST_0600_TEMP_ROOT" if missing == "temp" else "STM32TK_TEST_0600_SUPPORT_PROFILE"
+    )
+
+    with pytest.raises(ControllerError, match="paired"):
+        gates._contract_self_test("hardware")
+    assert list(temporary_root.iterdir()) == []
+
+
+def test_contract_self_test_path_overrides_require_pytest_before_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The private path seam cannot be activated by a non-pytest caller."""
+    temporary_root = tmp_path / "contract-temp"
+    temporary_root.mkdir()
+    support_profile = tmp_path / "support-profile.json"
+    support_profile.write_text("{}", encoding="utf-8")
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.setenv("STM32TK_TEST_0600_TEMP_ROOT", str(temporary_root))
+    monkeypatch.setenv("STM32TK_TEST_0600_SUPPORT_PROFILE", str(support_profile))
+
+    with pytest.raises(ControllerError, match="pytest"):
+        gates._contract_self_test("hardware")
+    assert list(temporary_root.iterdir()) == []
+
+
+def test_contract_self_tests_use_only_fakes_and_report_pass(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Acceptance self-tests must exercise pass/fail/blocked paths without product or hardware access."""
+    support_profile = _stage_approved_support(tmp_path / "support")
+    temporary_root = tmp_path / "contract-temp"
+    temporary_root.mkdir()
+    monkeypatch.setenv("STM32TK_TEST_0600_TEMP_ROOT", str(temporary_root.resolve()))
+    monkeypatch.setenv("STM32TK_TEST_0600_SUPPORT_PROFILE", str(support_profile.resolve()))
     for wrapper, expected_mode in (
         (QUICK, "quick"), (CANDIDATE, "candidate"), (FINAL, "final"), (HARDWARE, "hardware")
     ):

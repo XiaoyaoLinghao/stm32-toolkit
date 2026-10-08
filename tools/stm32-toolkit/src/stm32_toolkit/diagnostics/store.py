@@ -5,11 +5,13 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
+import errno
 import json
 import os
 from pathlib import Path
 import re
 import stat
+import time
 from typing import Literal, NoReturn, cast
 
 from stm32_toolkit.evidence import (
@@ -44,6 +46,7 @@ from .model import (
     ObservationResult,
     ObservationStep,
     PHYSICAL_MONITOR_FACT_KIND,
+    PHYSICAL_MONITOR_FACT_KINDS,
     SourceChangeDeclaration,
     VerificationPlan,
     canonical_diagnostic_json_bytes,
@@ -60,6 +63,8 @@ _EVENT_KIND = "diagnostic-event"
 _EVENT_MEDIA_TYPE = "application/json"
 _ROOT_TYPE = "diagnostic-session"
 _MAX_SESSIONS = 64
+_WINDOWS_LOCK_TIMEOUT_SECONDS = 10.0
+_WINDOWS_LOCK_RETRY_SECONDS = 0.025
 
 
 def _raise(code: str) -> NoReturn:
@@ -100,6 +105,16 @@ def _intent(event: DiagnosticEvent) -> tuple[str, str, bytes]:
     request = payload["request"]
     assert isinstance(request, dict)
     return event.event_type, event.actor, canonical_diagnostic_json_bytes(request)
+
+
+class DiagnosticStoreBusyError(RuntimeError):
+    """The DiagnosticStore lock remained held through its bounded wait."""
+
+    code = "DIAGNOSTIC_STORE_BUSY"
+    message = "Diagnostic store is busy."
+
+    def __init__(self) -> None:
+        super().__init__(self.message)
 
 
 
@@ -380,12 +395,29 @@ class DiagnosticStore:
             if os.name == "nt":
                 import msvcrt
 
-                msvcrt.locking(descriptor, msvcrt.LK_LOCK, 1)
+                deadline = time.monotonic() + _WINDOWS_LOCK_TIMEOUT_SECONDS
+                while True:
+                    if time.monotonic() >= deadline:
+                        raise DiagnosticStoreBusyError()
+                    os.lseek(descriptor, 0, os.SEEK_SET)
+                    try:
+                        msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+                    except OSError as error:
+                        if error.errno != errno.EACCES:
+                            raise
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            raise DiagnosticStoreBusyError() from None
+                        time.sleep(min(_WINDOWS_LOCK_RETRY_SECONDS, remaining))
+                        continue
+                    break
             else:  # pragma: no cover - the acceptance owner exercises this on Windows
                 import fcntl
 
                 fcntl.flock(descriptor, fcntl.LOCK_EX)
             locked = True
+            if os.name == "nt" and time.monotonic() >= deadline:
+                raise DiagnosticStoreBusyError()
             held = self._regular_single(lock_path)
             if (held.st_dev, held.st_ino) != (opened.st_dev, opened.st_ino):
                 _raise(DIAGNOSTIC_CHAIN_CORRUPT)
@@ -395,18 +427,20 @@ class DiagnosticStore:
         except OSError:
             _raise(DIAGNOSTIC_CHAIN_CORRUPT)
         finally:
-            if locked:
-                os.lseek(descriptor, 0, os.SEEK_SET)
-                if os.name == "nt":
-                    import msvcrt
+            try:
+                if locked:
+                    os.lseek(descriptor, 0, os.SEEK_SET)
+                    if os.name == "nt":
+                        import msvcrt
 
-                    msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
-                else:  # pragma: no cover - the acceptance owner exercises this on Windows
-                    import fcntl
+                        msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+                    else:  # pragma: no cover - the acceptance owner exercises this on Windows
+                        import fcntl
 
-                    fcntl.flock(descriptor, fcntl.LOCK_UN)
-            if descriptor >= 0:
-                os.close(descriptor)
+                        fcntl.flock(descriptor, fcntl.LOCK_UN)
+            finally:
+                if descriptor >= 0:
+                    os.close(descriptor)
 
     @classmethod
     def _read_event_file(cls, path: Path) -> DiagnosticEvent:
@@ -688,17 +722,18 @@ class DiagnosticStore:
             selectors.append(assessment.selector)
         references: set[str] = set()
         for selector in selectors:
-            if selector.get("kind") != PHYSICAL_MONITOR_FACT_KIND:
+            if selector.get("kind") not in PHYSICAL_MONITOR_FACT_KINDS:
                 continue
             reference = selector["monitor_run_ref"]
             assert isinstance(reference, Mapping)
             references.update(
                 {
-                    cast(str, selector["continuation_evidence_id"]),
                     cast(str, selector["monitor_ref_evidence_id"]),
                     cast(str, reference["transcript_evidence_id"]),
                 }
             )
+            if selector.get("kind") == PHYSICAL_MONITOR_FACT_KIND:
+                references.add(cast(str, selector["continuation_evidence_id"]))
         return references
 
     def _validate_monitor_fact_event(self, event: DiagnosticEvent, session: DiagnosticSession) -> None:
@@ -745,7 +780,7 @@ class DiagnosticStore:
             return
 
         for step, stored in steps_results:
-            if step.selector.get("kind") != PHYSICAL_MONITOR_FACT_KIND:
+            if step.selector.get("kind") not in PHYSICAL_MONITOR_FACT_KINDS:
                 continue
             try:
                 observed, transcript_evidence_id = _resolve_physical_monitor_fact(state, session, step)
@@ -1320,4 +1355,4 @@ class DiagnosticStore:
             return cast(Literal["host", "target"], mode)
 
 
-__all__ = ["DiagnosticMutationRecord", "DiagnosticStore"]
+__all__ = ["DiagnosticMutationRecord", "DiagnosticStore", "DiagnosticStoreBusyError"]

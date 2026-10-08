@@ -22,9 +22,18 @@ from stm32_toolkit import __version__
 import stm32_toolkit.acceptance.recovery_workflows as recovery_workflows
 import stm32_toolkit.diagnostic_workflows as diagnostic_workflows
 from stm32_toolkit.acceptance.recovery import (
+    ATTEMPT_SCHEMA,
+    CUBEMX_PHYSICAL_ATTEMPT_SCHEMA,
+    CUBEMX_PHYSICAL_RECOVERY_POLICY_SCHEMA,
+    CUBEMX_PHYSICAL_SCENARIO_ID,
+    CUBEMX_PHYSICAL_SCENARIO_VERSION,
     PHYSICAL_ATTEMPT_SCHEMA,
+    PHYSICAL_RECOVERY_POLICY_SCHEMA,
     PHYSICAL_STAGE_OUTPUT_KEYS,
+    PHYSICAL_SCENARIO_ID,
+    PHYSICAL_SCENARIO_VERSION,
     SourceChangeIntent,
+    physical_acceptance_profile_for_schema,
 )
 from stm32_toolkit.acceptance.recovery_workflows import (
     AcceptanceRecoveryContext,
@@ -32,6 +41,7 @@ from stm32_toolkit.acceptance.recovery_workflows import (
     begin_acceptance_attempt,
     checkpoint_acceptance_attempt,
     resume_acceptance_attempt,
+    show_acceptance_attempt,
 )
 from stm32_toolkit.build.identity import snapshot_project_inputs
 from stm32_toolkit.diagnostic_workflows import (
@@ -45,6 +55,7 @@ from stm32_toolkit.diagnostic_workflows import (
     diagnostic_complete_verification,
     diagnostic_declare_source_change,
     diagnostic_run_plan,
+    diagnostic_show,
     diagnostic_start,
     diagnostic_start_verification,
 )
@@ -131,9 +142,9 @@ def _ok(result: object):
     return data
 
 
-def _write_physical_project(project_root: Path) -> None:
+def _write_physical_project(project_root: Path, origin: str = "keil") -> None:
     project_root.mkdir()
-    manifest = vs08a_fixtures._project_manifest("keil")
+    manifest = vs08a_fixtures._project_manifest(origin)
     manifest["logicalProjectId"] = str(PROJECT_ID)
     manifest["target"]["device"] = "stm32:vs03-fixture"
     manifest["debug"]["target"] = "board:t10"
@@ -229,8 +240,10 @@ def _append_physical_monitor_history(
     run_id: str,
     *,
     value_offset: int,
+    physical_target: str = "board:t10",
 ) -> tuple[SampleBatch, ...]:
     """Create monitor history bound to the corresponding physical TestRun."""
+    assert hashlib.sha256(raw_probe.encode("utf-8")).hexdigest() == PHYSICAL_PROBE
     monitor_run_id = UUID(run_id)
     group_id = UUID("11111111-1111-4111-8111-111111111111")
     binding = ObservationBinding(
@@ -239,7 +252,7 @@ def _append_physical_monitor_history(
         session_id=identity.session_id,
         probe_id=raw_probe,
         target_device=identity.target_device,
-        physical_target="board:t10",
+        physical_target=physical_target,
         build_id=identity.build_id,
         elf_sha256=identity.elf_sha256,
         input_snapshot_sha256=identity.input_snapshot_sha256,
@@ -681,6 +694,20 @@ def test_v1_attempt_rejects_physical_stage_and_physical_input(
     assert physical_input.code == "ACCEPTANCE_ATTEMPT_STAGE_INVALID"
 
 
+@pytest.mark.parametrize("scenario_id", [{}, []], ids=["mapping", "list"])
+def test_begin_rejects_non_string_scenario_id_as_typed_input_error(
+    tmp_path: Path, scenario_id: object
+):
+    result = begin_acceptance_attempt(
+        AcceptanceRecoveryContext(tmp_path / "project", tmp_path / "data", "session-a"),
+        attempt_id=ATTEMPT_ID,
+        scenario_id=scenario_id,
+        scenario_version="1",
+    )
+    assert result.ok is False
+    assert result.code == "ACCEPTANCE_ATTEMPT_INPUT_INVALID"
+
+
 def test_existing_physical_attempt_dispatches_plain_build_checkpoint(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
@@ -715,13 +742,149 @@ def test_existing_physical_attempt_dispatches_plain_build_checkpoint(
     assert calls == ["physical"]
 
 
-def test_persisted_physical_recovery_chain_uses_real_authorities_and_is_cas_safe(
+def test_cubemx_begin_and_checkpoint_use_the_v4_profile_and_reject_continuation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """Exercise the complete v2 chain against the real stores and authorities."""
+    project = tmp_path / "project"
+    data = tmp_path / "data"
+    project.mkdir()
+    monkeypatch.setattr(
+        recovery_workflows,
+        "_load_project_model",
+        lambda _root: SimpleNamespace(
+            schema_version=3,
+            logical_project_id=UUID(PROJECT_ID),
+            memory=SimpleNamespace(source="cubemx"),
+            target_device=TARGET,
+        ),
+    )
+    context = AcceptanceRecoveryContext(project, data, "session-a")
+    started = begin_acceptance_attempt(
+        context,
+        attempt_id=ATTEMPT_ID,
+        scenario_id=CUBEMX_PHYSICAL_SCENARIO_ID,
+        scenario_version=CUBEMX_PHYSICAL_SCENARIO_VERSION,
+    )
+    assert started.ok
+    attempt = started.to_dict()["data"]["attempt"]
+    assert attempt["schema"] == CUBEMX_PHYSICAL_ATTEMPT_SCHEMA
+    assert attempt["projectOrigin"] == "cubemx"
+    assert attempt["executionSource"] == "physical"
+    assert attempt["physicalTransportEvidence"] is False
+
+    checkpoint = checkpoint_acceptance_attempt(
+        context,
+        attempt_id=ATTEMPT_ID,
+        expected_revision=0,
+        stage="project-materialized",
+    )
+    assert checkpoint.ok
+    assert checkpoint.to_dict()["data"]["attempt"]["schema"] == CUBEMX_PHYSICAL_ATTEMPT_SCHEMA
+    shown = show_acceptance_attempt(context, attempt_id=ATTEMPT_ID)
+    resumed = resume_acceptance_attempt(context, attempt_id=ATTEMPT_ID)
+    assert shown.ok and resumed.ok
+    assert shown.to_dict()["data"]["attempt"]["schema"] == CUBEMX_PHYSICAL_ATTEMPT_SCHEMA
+    assert resumed.to_dict()["data"]["recoveryPolicy"]["schema"] == (
+        "stm32-acceptance-recovery-policy/3"
+    )
+
+    continuation = begin_acceptance_attempt(
+        context,
+        attempt_id="00000000-0000-4000-8000-000000000009",
+        scenario_id=CUBEMX_PHYSICAL_SCENARIO_ID,
+        scenario_version=CUBEMX_PHYSICAL_SCENARIO_VERSION,
+        continuation={},
+    )
+    assert continuation.code == "ACCEPTANCE_ATTEMPT_STAGE_INVALID"
+
+
+@pytest.mark.parametrize("operation", ["checkpoint", "authorize", "show", "resume"])
+def test_unknown_attempt_schema_fails_closed_before_any_dispatch_handler(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str
+):
+    calls: list[str] = []
+    monkeypatch.setattr(
+        recovery_workflows,
+        "_attempt_schema_for_context",
+        lambda _context, _attempt_id: "stm32-acceptance-attempt/999",
+    )
+
+    def reached(name: str):
+        def handler(*_args, **_kwargs):
+            calls.append(name)
+            return recovery_workflows.OperationResult.success(
+                f"acceptance.attempt.{operation}", {}
+            )
+
+        return handler
+
+    for handler_name in (
+        "_checkpoint_physical_attempt",
+        "_checkpoint_attempt",
+        "_checkpoint_continuation_attempt",
+        "_authorize_physical_source_change",
+        "_authorize_source_change",
+        "_show_physical_attempt",
+        "_show_attempt",
+        "_show_continuation_attempt",
+    ):
+        monkeypatch.setattr(recovery_workflows, handler_name, reached(handler_name))
+
+    context = AcceptanceRecoveryContext(tmp_path, tmp_path / "data", "session-a")
+    if operation == "checkpoint":
+        result = checkpoint_acceptance_attempt(
+            context,
+            attempt_id=ATTEMPT_ID,
+            expected_revision=0,
+            stage="project-materialized",
+        )
+    elif operation == "authorize":
+        result = authorize_acceptance_source_change(
+            context,
+            attempt_id=ATTEMPT_ID,
+            expected_revision=4,
+            action_digest="a" * 64,
+            authorized=True,
+        )
+    elif operation == "show":
+        result = show_acceptance_attempt(context, attempt_id=ATTEMPT_ID)
+    else:
+        result = resume_acceptance_attempt(context, attempt_id=ATTEMPT_ID)
+    assert result.ok is False
+    assert result.code == "ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED"
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    ("project_origin", "scenario_id", "attempt_schema", "policy_schema"),
+    [
+        (
+            "keil",
+            "legacy-keil-physical-repair",
+            PHYSICAL_ATTEMPT_SCHEMA,
+            PHYSICAL_RECOVERY_POLICY_SCHEMA,
+        ),
+        (
+            "cubemx",
+            CUBEMX_PHYSICAL_SCENARIO_ID,
+            CUBEMX_PHYSICAL_ATTEMPT_SCHEMA,
+            CUBEMX_PHYSICAL_RECOVERY_POLICY_SCHEMA,
+        ),
+    ],
+    ids=["a-keil", "b-cubemx"],
+)
+def test_persisted_physical_recovery_chain_uses_real_authorities_and_is_cas_safe(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    project_origin: str,
+    scenario_id: str,
+    attempt_schema: str,
+    policy_schema: str,
+):
+    """Exercise the complete physical chain for both closed profiles."""
 
     project_root = tmp_path / "project"
-    _write_physical_project(project_root)
+    _write_physical_project(project_root, project_origin)
     data_root = tmp_path / "data"
     session_id = "t10-physical-session"
     testing = TestingWorkflowContext(project_root, data_root, session_id)
@@ -895,14 +1058,18 @@ def test_persisted_physical_recovery_chain_uses_real_authorities_and_is_cas_safe
     context = AcceptanceRecoveryContext(
         project_root, data_root, session_id, clock=recovery_clock
     )
-    _ok(
+    started_attempt = _ok(
         begin_acceptance_attempt(
             context,
             attempt_id=ATTEMPT_ID,
-            scenario_id="legacy-keil-physical-repair",
+            scenario_id=scenario_id,
             scenario_version="1",
         )
-    )
+    )["attempt"]
+    profile = physical_acceptance_profile_for_schema(attempt_schema)
+    assert started_attempt["schema"] == attempt_schema
+    assert started_attempt["projectOrigin"] == project_origin
+    assert started_attempt["recoveryPolicyDigest"] == profile.recovery_policy_digest
     _ok(
         checkpoint_acceptance_attempt(
             context,
@@ -950,6 +1117,8 @@ def test_persisted_physical_recovery_chain_uses_real_authorities_and_is_cas_safe
         )
     )["attempt"]
     assert diagnosis["revision"] == 4
+    assert diagnosis["schema"] == attempt_schema
+    assert diagnosis["projectOrigin"] == project_origin
     assert diagnosis["sourceChangeIntent"]["beforeInputSnapshotSha256"] == before_snapshot.sha256
     assert diagnosis["sourceChangeIntent"]["expectedAfterInputSnapshotSha256"] == after_snapshot.sha256
 
@@ -963,7 +1132,16 @@ def test_persisted_physical_recovery_chain_uses_real_authorities_and_is_cas_safe
     assert unauthorized_after_build.code == "ACCEPTANCE_ATTEMPT_AUTHORIZATION_REQUIRED"
 
     resume = _ok(resume_acceptance_attempt(context, attempt_id=ATTEMPT_ID))
+    assert resume["attempt"]["schema"] == attempt_schema
+    assert resume["recoveryPolicy"]["schema"] == policy_schema
+    assert resume["recoveryPolicy"]["attemptSchema"] == attempt_schema
+    assert resume["recoveryPolicy"]["scenarioId"] == scenario_id
     action_digest = str(resume["actionDigest"])
+    assert action_digest == recovery_workflows._physical_action_digest(
+        recovery_workflows.PhysicalAcceptanceAttempt.from_value(
+            recovery_workflows._thaw_json(resume["attempt"])
+        )
+    )
     rejected = authorize_acceptance_source_change(
         context,
         attempt_id=ATTEMPT_ID,
@@ -1110,6 +1288,8 @@ def test_persisted_physical_recovery_chain_uses_real_authorities_and_is_cas_safe
     assert raced_authorizations[0].data == raced_authorizations[1].data
     authorized = _ok(raced_authorizations[0])["attempt"]
     assert authorized["revision"] == 5
+    assert authorized["schema"] == attempt_schema
+    assert authorized["projectOrigin"] == project_origin
     root5 = recovery_workflows._typed_root_path(
         evidence, recovery_workflows._root_id(ATTEMPT_ID, 5)
     )
@@ -1221,6 +1401,7 @@ def test_persisted_physical_recovery_chain_uses_real_authorities_and_is_cas_safe
         )
     )["attempt"]
     assert after_build["revision"] == 6
+    assert after_build["schema"] == attempt_schema
 
     failed_batches = _append_physical_monitor_history(
         workspace,
@@ -1384,6 +1565,9 @@ def test_persisted_physical_recovery_chain_uses_real_authorities_and_is_cas_safe
     )["attempt"]
     assert final["revision"] == 7
     assert final["status"] == "COMPLETED"
+    assert final["schema"] == attempt_schema
+    assert final["projectOrigin"] == project_origin
+    assert final["recoveryPolicyDigest"] == profile.recovery_policy_digest
     assert final["stageOutputs"]["fixedAfterTestRunId"] == PHYSICAL_FIXED_RUN
     assert final["stageOutputs"]["fixVerificationId"] == verification["fix_verification_id"]
     retried_final = _ok(
@@ -1397,3 +1581,584 @@ def test_persisted_physical_recovery_chain_uses_real_authorities_and_is_cas_safe
         )
     )["attempt"]
     assert retried_final == final
+
+
+def _prepare_public_physical_attempt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    through_revision: int,
+) -> tuple[
+    AcceptanceRecoveryContext,
+    DiagnosticWorkflowContext | None,
+    str | None,
+]:
+    """Build a legal public physical chain through revision 1 or revision 4."""
+    if through_revision not in {1, 4}:
+        raise ValueError("the focused physical fixtures stop at revision 1 or 4")
+
+    project_root = tmp_path / "project"
+    _write_physical_project(project_root)
+    data_root = tmp_path / "data"
+    session_id = "t10-physical-boundary"
+    testing = TestingWorkflowContext(project_root, data_root, session_id)
+    diagnostic = DiagnosticWorkflowContext(project_root, data_root, session_id)
+    model = load_project_model(project_root)
+    source_path = project_root / "App" / "main.c"
+    before_source = source_path.read_bytes()
+    before_snapshot = snapshot_project_inputs(model)
+    after_source = b"int main(void) { return 1; }\n"
+    source_path.write_bytes(after_source)
+    after_snapshot = snapshot_project_inputs(load_project_model(project_root))
+    source_path.write_bytes(before_source)
+    assert after_snapshot.sha256 != before_snapshot.sha256
+
+    workspace = WorkspacePaths.from_roots(
+        data_root, project_root, UUID(PROJECT_ID), session_id
+    )
+    before_identity = EvidenceIdentity(
+        workspace_id=workspace.workspace_id,
+        project_id=PROJECT_ID,
+        session_id=session_id,
+        build_id=PHYSICAL_BEFORE_BUILD,
+        elf_sha256=PHYSICAL_BEFORE_ELF,
+        target_device=model.target.device,
+        input_snapshot_sha256=before_snapshot.sha256,
+        git_commit="b" * 40,
+        git_dirty=False,
+    )
+    if through_revision >= 3:
+        failed_descriptor, failed_stream = vs08a_fixtures._canonical_replay_inputs(
+            tmp_path, "failed-before", "seed-physical-boundary"
+        )
+        _ok(
+            target_replay_run(
+                testing,
+                "seed-physical-boundary",
+                failed_descriptor,
+                failed_stream,
+            )
+        )
+        _publish_physical_from_seed(
+            tmp_path,
+            project_root,
+            data_root,
+            session_id,
+            "seed-physical-boundary",
+            PHYSICAL_FAILED_RUN,
+            before_identity,
+        )
+
+    def fresh_firmware_facts(_project: Path):
+        current_model = load_project_model(project_root)
+        current_snapshot = snapshot_project_inputs(current_model)
+        return SimpleNamespace(
+            model=current_model,
+            elf_path="build/arm-debug/firmware.elf",
+            elf_sha256=PHYSICAL_BEFORE_ELF,
+            build_id=PHYSICAL_BEFORE_BUILD,
+            input_snapshot_sha256=current_snapshot.sha256,
+            git_commit="b" * 40,
+            git_dirty=False,
+            target_device=current_model.target.device,
+        )
+
+    monkeypatch.setattr(
+        recovery_workflows, "_load_fresh_firmware_facts", fresh_firmware_facts
+    )
+
+    diagnostic_id: str | None = None
+    diagnostic_context: DiagnosticWorkflowContext | None = None
+    if through_revision >= 4:
+        monkeypatch.setattr(
+            diagnostic_workflows,
+            "_session_id_factory",
+            lambda: "9" * 32,
+        )
+        diagnostic_context = diagnostic
+        started_diagnostic = _ok(
+            diagnostic_start(
+                diagnostic,
+                operation_id="physical-boundary-diagnostic-start",
+                failed_test_run_id=PHYSICAL_FAILED_RUN,
+                failed_run_mode="target",
+            )
+        )
+        diagnostic_id = str(started_diagnostic["session"]["diagnostic_session_id"])
+        _ok(
+            diagnostic_begin(
+                diagnostic,
+                operation_id="physical-boundary-diagnostic-begin",
+                diagnostic_session_id=diagnostic_id,
+                expected_revision=1,
+            )
+        )
+
+    context = AcceptanceRecoveryContext(
+        project_root,
+        data_root,
+        session_id,
+        clock=lambda: "2026-09-10T00:00:00.000000Z",
+    )
+    _ok(
+        begin_acceptance_attempt(
+            context,
+            attempt_id=ATTEMPT_ID,
+            scenario_id="legacy-keil-physical-repair",
+            scenario_version="1",
+        )
+    )
+    _ok(
+        checkpoint_acceptance_attempt(
+            context,
+            attempt_id=ATTEMPT_ID,
+            expected_revision=0,
+            stage="project-materialized",
+        )
+    )
+    if through_revision >= 4:
+        _ok(
+            checkpoint_acceptance_attempt(
+                context,
+                attempt_id=ATTEMPT_ID,
+                expected_revision=1,
+                stage="firmware-built-before",
+            )
+        )
+        _ok(
+            checkpoint_acceptance_attempt(
+                context,
+                attempt_id=ATTEMPT_ID,
+                expected_revision=2,
+                stage="target-failure-observed",
+                test_run_id=PHYSICAL_FAILED_RUN,
+            )
+        )
+        intent_input = {
+            "schema": "stm32-source-change-intent/1",
+            "changes": [
+                {
+                    "path": "App/main.c",
+                    "beforeSha256": hashlib.sha256(before_source).hexdigest(),
+                    "afterSha256": hashlib.sha256(after_source).hexdigest(),
+                    "afterSize": len(after_source),
+                }
+            ],
+        }
+        diagnosis = _ok(
+            checkpoint_acceptance_attempt(
+                context,
+                attempt_id=ATTEMPT_ID,
+                expected_revision=3,
+                stage="diagnosis-completed",
+                diagnostic_session_id=diagnostic_id,
+                source_change_intent=intent_input,
+            )
+        )["attempt"]
+        assert diagnosis["revision"] == 4
+        resumed = _ok(resume_acceptance_attempt(context, attempt_id=ATTEMPT_ID))
+        assert resumed["attempt"]["revision"] == 4
+        assert resumed["nextStage"] == "firmware-built-after"
+
+    return context, diagnostic_context, diagnostic_id
+
+
+def test_public_physical_checkpoint_rejects_nonmatching_stale_revision(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    context, _diagnostic, _diagnostic_id = _prepare_public_physical_attempt(
+        tmp_path, monkeypatch, through_revision=1
+    )
+    before = _ok(show_acceptance_attempt(context, attempt_id=ATTEMPT_ID))["attempt"]
+    result = checkpoint_acceptance_attempt(
+        context,
+        attempt_id=ATTEMPT_ID,
+        expected_revision=0,
+        stage="firmware-built-before",
+    )
+    assert result.ok is False
+    assert result.data is None
+    assert result.code == "ACCEPTANCE_ATTEMPT_REVISION_CONFLICT"
+    assert result.message == "Acceptance attempt revision conflicts with the current chain."
+    after = _ok(show_acceptance_attempt(context, attempt_id=ATTEMPT_ID))["attempt"]
+    assert after == before
+    assert _ok(resume_acceptance_attempt(context, attempt_id=ATTEMPT_ID))["attempt"] == before
+
+
+def test_public_physical_authorization_requires_true_consent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    context, diagnostic, diagnostic_id = _prepare_public_physical_attempt(
+        tmp_path, monkeypatch, through_revision=4
+    )
+    assert diagnostic is not None and diagnostic_id is not None
+    before = _ok(show_acceptance_attempt(context, attempt_id=ATTEMPT_ID))["attempt"]
+    diagnostic_before = _ok(
+        diagnostic_show(diagnostic, diagnostic_session_id=diagnostic_id)
+    )["session"]
+    resumed = _ok(resume_acceptance_attempt(context, attempt_id=ATTEMPT_ID))
+    action_digest = resumed["actionDigest"]
+    assert isinstance(action_digest, str)
+    result = authorize_acceptance_source_change(
+        context,
+        attempt_id=ATTEMPT_ID,
+        expected_revision=4,
+        action_digest=action_digest,
+        authorized=False,
+    )
+    assert result.ok is False
+    assert result.data is None
+    assert result.code == "ACCEPTANCE_ATTEMPT_INPUT_INVALID"
+    assert result.message == "Acceptance attempt input is invalid."
+    after = _ok(show_acceptance_attempt(context, attempt_id=ATTEMPT_ID))["attempt"]
+    assert after == before
+    diagnostic_after = _ok(
+        diagnostic_show(diagnostic, diagnostic_session_id=diagnostic_id)
+    )["session"]
+    assert diagnostic_after == diagnostic_before
+    assert _ok(resume_acceptance_attempt(context, attempt_id=ATTEMPT_ID))["attempt"] == before
+
+
+def test_public_physical_authorization_retry_rejects_wrong_digest_after_revision_five(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    context, diagnostic, diagnostic_id = _prepare_public_physical_attempt(
+        tmp_path, monkeypatch, through_revision=4
+    )
+    assert diagnostic is not None and diagnostic_id is not None
+    resumed = _ok(resume_acceptance_attempt(context, attempt_id=ATTEMPT_ID))
+    action_digest = resumed["actionDigest"]
+    assert isinstance(action_digest, str)
+    authorized = _ok(
+        authorize_acceptance_source_change(
+            context,
+            attempt_id=ATTEMPT_ID,
+            expected_revision=4,
+            action_digest=action_digest,
+            authorized=True,
+        )
+    )["attempt"]
+    assert authorized["revision"] == 5
+    diagnostic_before_retry = _ok(
+        diagnostic_show(diagnostic, diagnostic_session_id=diagnostic_id)
+    )["session"]
+    wrong_digest = hashlib.sha256(
+        b"physical-boundary-wrong-authorization-digest"
+    ).hexdigest()
+    assert wrong_digest != action_digest
+    result = authorize_acceptance_source_change(
+        context,
+        attempt_id=ATTEMPT_ID,
+        expected_revision=4,
+        action_digest=wrong_digest,
+        authorized=True,
+    )
+    assert result.ok is False
+    assert result.data is None
+    assert result.code == "ACCEPTANCE_ATTEMPT_REVISION_CONFLICT"
+    assert result.message == "Acceptance attempt revision conflicts with the current chain."
+    after = _ok(show_acceptance_attempt(context, attempt_id=ATTEMPT_ID))["attempt"]
+    assert after == authorized
+    diagnostic_after_retry = _ok(
+        diagnostic_show(diagnostic, diagnostic_session_id=diagnostic_id)
+    )["session"]
+    assert diagnostic_after_retry == diagnostic_before_retry
+    assert _ok(resume_acceptance_attempt(context, attempt_id=ATTEMPT_ID))["attempt"] == authorized
+
+
+def test_public_physical_identity_and_namespace_refusals_use_real_schema3_project(
+    tmp_path: Path,
+):
+    def tree_snapshot(root: Path):
+        if not root.exists():
+            return False, ()
+        return True, tuple(
+            (
+                path.relative_to(root).as_posix(),
+                path.is_file(),
+                path.read_bytes() if path.is_file() else None,
+            )
+            for path in sorted(root.rglob("*"), key=lambda item: item.relative_to(root).as_posix())
+        )
+
+    project_root = tmp_path / "project"
+    data_root = tmp_path / "data"
+    _write_physical_project(project_root, origin="keil")
+    context = AcceptanceRecoveryContext(
+        project_root, data_root, "physical-identity-boundary"
+    )
+
+    before_origin_refusal = (tree_snapshot(project_root), tree_snapshot(data_root))
+    origin_refusal = begin_acceptance_attempt(
+        context,
+        attempt_id="00000000-0000-4000-8000-000000000010",
+        scenario_id=CUBEMX_PHYSICAL_SCENARIO_ID,
+        scenario_version=CUBEMX_PHYSICAL_SCENARIO_VERSION,
+    )
+    assert origin_refusal.to_dict() == {
+        "protocol": "stm32-toolkit/1",
+        "ok": False,
+        "operation": "acceptance.attempt.begin",
+        "code": "ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH",
+        "message": "Acceptance attempt identity does not match.",
+        "data": None,
+        "details": {},
+    }
+    assert (tree_snapshot(project_root), tree_snapshot(data_root)) == before_origin_refusal
+
+    legacy_id = "00000000-0000-4000-8000-000000000011"
+    physical_id = "00000000-0000-4000-8000-000000000012"
+    legacy_started = begin_acceptance_attempt(
+        context,
+        attempt_id=legacy_id,
+        scenario_id="legacy-keil-migration",
+        scenario_version="1",
+    )
+    legacy_data = _ok(legacy_started)
+    legacy_attempt = legacy_data["attempt"]
+    assert legacy_attempt["schema"] == ATTEMPT_SCHEMA
+    assert legacy_attempt["projectOrigin"] == "keil"
+    assert legacy_attempt["physicalTransportEvidence"] is False
+
+    physical_started = begin_acceptance_attempt(
+        context,
+        attempt_id=physical_id,
+        scenario_id=PHYSICAL_SCENARIO_ID,
+        scenario_version=PHYSICAL_SCENARIO_VERSION,
+    )
+    physical_attempt = _ok(physical_started)["attempt"]
+    assert physical_attempt["schema"] == PHYSICAL_ATTEMPT_SCHEMA
+    assert physical_attempt["attemptId"] == physical_id
+    assert physical_attempt["revision"] == 0
+    assert physical_attempt["projectOrigin"] == "keil"
+    assert physical_attempt["executionSource"] == "physical"
+    assert physical_attempt["physicalTransportEvidence"] is False
+
+    before_namespace_refusal = (tree_snapshot(project_root), tree_snapshot(data_root))
+    namespace_refusal = begin_acceptance_attempt(
+        context,
+        attempt_id=legacy_id,
+        scenario_id=PHYSICAL_SCENARIO_ID,
+        scenario_version=PHYSICAL_SCENARIO_VERSION,
+    )
+    assert namespace_refusal.to_dict() == {
+        "protocol": "stm32-toolkit/1",
+        "ok": False,
+        "operation": "acceptance.attempt.begin",
+        "code": "ACCEPTANCE_ATTEMPT_CONFLICT",
+        "message": "Acceptance attempt content conflicts with an immutable revision.",
+        "data": None,
+        "details": {},
+    }
+    assert (tree_snapshot(project_root), tree_snapshot(data_root)) == before_namespace_refusal
+    assert _ok(show_acceptance_attempt(context, attempt_id=legacy_id))["attempt"] == legacy_attempt
+    assert _ok(resume_acceptance_attempt(context, attempt_id=legacy_id))["attempt"] == legacy_attempt
+
+
+def test_public_physical_rev0_request_refusals_preserve_authorities(
+    tmp_path: Path,
+):
+    def tree_snapshot(root: Path):
+        if not root.exists():
+            return False, ()
+        return True, tuple(
+            (
+                path.relative_to(root).as_posix(),
+                path.is_file(),
+                path.read_bytes() if path.is_file() else None,
+            )
+            for path in sorted(root.rglob("*"), key=lambda item: item.relative_to(root).as_posix())
+        )
+
+    def assert_failure(
+        result: OperationResult[object], operation: str, code: str, message: str
+    ) -> None:
+        assert result.to_dict() == {
+            "protocol": "stm32-toolkit/1",
+            "ok": False,
+            "operation": operation,
+            "code": code,
+            "message": message,
+            "data": None,
+            "details": {},
+        }
+
+    project_root = tmp_path / "project"
+    data_root = tmp_path / "data"
+    _write_physical_project(project_root, origin="keil")
+    context = AcceptanceRecoveryContext(
+        project_root,
+        data_root,
+        "physical-rev0-requests",
+        clock=lambda: "2026-09-10T00:00:00.000000Z",
+    )
+    physical_id = "00000000-0000-4000-8000-000000000013"
+    started = begin_acceptance_attempt(
+        context,
+        attempt_id=physical_id,
+        scenario_id=PHYSICAL_SCENARIO_ID,
+        scenario_version=PHYSICAL_SCENARIO_VERSION,
+    )
+    baseline_attempt = _ok(show_acceptance_attempt(context, attempt_id=physical_id))["attempt"]
+    assert started.ok is True
+    assert baseline_attempt["schema"] == PHYSICAL_ATTEMPT_SCHEMA
+    assert baseline_attempt["revision"] == 0
+    assert _ok(resume_acceptance_attempt(context, attempt_id=physical_id))["attempt"] == baseline_attempt
+
+    source_path = project_root / "App" / "main.c"
+    before_source = source_path.read_bytes()
+    source_change = {
+        "path": "App/main.c",
+        "beforeSha256": hashlib.sha256(before_source).hexdigest(),
+        "afterSha256": hashlib.sha256(b"int main(void) { return 1; }\n").hexdigest(),
+        "afterSize": len(b"int main(void) { return 1; }\n"),
+    }
+    unexpanded_intent = SourceChangeIntent.new(changes=[source_change]).to_dict()
+    expanded_intent = SourceChangeIntent.expanded(
+        changes=[source_change],
+        before_input_snapshot_sha256=snapshot_project_inputs(
+            load_project_model(project_root)
+        ).sha256,
+        expected_after_input_snapshot_sha256="b" * 64,
+    ).to_dict()
+    unknown_id = "00000000-0000-4000-8000-000000000099"
+    cases = [
+        (
+            "unknown-physical-id",
+            lambda: checkpoint_acceptance_attempt(
+                context,
+                attempt_id=unknown_id,
+                expected_revision=0,
+                stage="target-failure-observed",
+                test_run_id="target-v2-failed-rev0",
+            ),
+            "acceptance.attempt.checkpoint",
+            "ACCEPTANCE_ATTEMPT_NOT_FOUND",
+            "Acceptance attempt was not found.",
+            unknown_id,
+        ),
+        (
+            "checkpoint-revision-wire",
+            lambda: checkpoint_acceptance_attempt(
+                context,
+                attempt_id=physical_id,
+                expected_revision=8,
+                stage="project-materialized",
+            ),
+            "acceptance.attempt.checkpoint",
+            "ACCEPTANCE_ATTEMPT_INPUT_INVALID",
+            "Acceptance attempt input is invalid.",
+            physical_id,
+        ),
+        (
+            "checkpoint-stage-wire",
+            lambda: checkpoint_acceptance_attempt(
+                context,
+                attempt_id=physical_id,
+                expected_revision=0,
+                stage="stage-not-in-physical-profile",
+            ),
+            "acceptance.attempt.checkpoint",
+            "ACCEPTANCE_ATTEMPT_STAGE_INVALID",
+            "Acceptance attempt stage is invalid.",
+            physical_id,
+        ),
+        (
+            "expanded-intent-on-non-diagnosis-stage",
+            lambda: checkpoint_acceptance_attempt(
+                context,
+                attempt_id=physical_id,
+                expected_revision=0,
+                stage="project-materialized",
+                source_change_intent=expanded_intent,
+            ),
+            "acceptance.attempt.checkpoint",
+            "ACCEPTANCE_ATTEMPT_INPUT_INVALID",
+            "Acceptance attempt input is invalid.",
+            physical_id,
+        ),
+        (
+            "input-intent-on-non-diagnosis-stage",
+            lambda: checkpoint_acceptance_attempt(
+                context,
+                attempt_id=physical_id,
+                expected_revision=0,
+                stage="project-materialized",
+                source_change_intent=unexpanded_intent,
+            ),
+            "acceptance.attempt.checkpoint",
+            "ACCEPTANCE_ATTEMPT_STAGE_INVALID",
+            "Acceptance attempt stage is invalid.",
+            physical_id,
+        ),
+        (
+            "diagnosis-without-intent",
+            lambda: checkpoint_acceptance_attempt(
+                context,
+                attempt_id=physical_id,
+                expected_revision=0,
+                stage="diagnosis-completed",
+                diagnostic_session_id="a" * 32,
+            ),
+            "acceptance.attempt.checkpoint",
+            "ACCEPTANCE_ATTEMPT_STAGE_INVALID",
+            "Acceptance attempt stage is invalid.",
+            physical_id,
+        ),
+        (
+            "rev0-wrong-next-stage",
+            lambda: checkpoint_acceptance_attempt(
+                context,
+                attempt_id=physical_id,
+                expected_revision=0,
+                stage="firmware-built-after",
+            ),
+            "acceptance.attempt.checkpoint",
+            "ACCEPTANCE_ATTEMPT_STAGE_INVALID",
+            "Acceptance attempt stage is invalid.",
+            physical_id,
+        ),
+        (
+            "authorization-before-revision-four",
+            lambda: authorize_acceptance_source_change(
+                context,
+                attempt_id=physical_id,
+                expected_revision=0,
+                action_digest="a" * 64,
+                authorized=True,
+            ),
+            "acceptance.attempt.authorize-source-change",
+            "ACCEPTANCE_ATTEMPT_STAGE_INVALID",
+            "Acceptance attempt stage is invalid.",
+            physical_id,
+        ),
+    ]
+
+    for case_id, invoke, operation, code, message, peek_id in cases:
+        before_refusal = (tree_snapshot(project_root), tree_snapshot(data_root))
+        result = invoke()
+        assert_failure(result, operation, code, message)
+        assert (tree_snapshot(project_root), tree_snapshot(data_root)) == before_refusal
+
+        if peek_id == physical_id:
+            shown = show_acceptance_attempt(context, attempt_id=peek_id)
+            resumed = resume_acceptance_attempt(context, attempt_id=peek_id)
+            assert shown.ok is True and resumed.ok is True, case_id
+            assert _ok(shown)["attempt"] == baseline_attempt
+            assert _ok(resumed)["attempt"] == baseline_attempt
+        else:
+            shown = show_acceptance_attempt(context, attempt_id=peek_id)
+            resumed = resume_acceptance_attempt(context, attempt_id=peek_id)
+            assert_failure(
+                shown,
+                "acceptance.attempt.show",
+                "ACCEPTANCE_ATTEMPT_NOT_FOUND",
+                "Acceptance attempt was not found.",
+            )
+            assert_failure(
+                resumed,
+                "acceptance.attempt.resume",
+                "ACCEPTANCE_ATTEMPT_NOT_FOUND",
+                "Acceptance attempt was not found.",
+            )
+        assert (tree_snapshot(project_root), tree_snapshot(data_root)) == before_refusal

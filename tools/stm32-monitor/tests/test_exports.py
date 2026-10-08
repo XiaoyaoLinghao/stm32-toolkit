@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import errno
 import hashlib
 import json
 import os
@@ -14,6 +15,7 @@ from uuid import UUID
 
 import pytest
 
+import stm32_monitor.exports as exports_module
 from stm32_monitor.exports import ExportRequest, HistoryExporter
 from stm32_monitor.history import HistoryPage, HistoryQuery, HistoryStore
 from stm32_monitor.models import (
@@ -899,6 +901,122 @@ def test_open_download_returns_verified_stream_without_path_or_token_leakage(
         history.close()
 
 
+def test_open_download_allocation_failure_closes_input_and_recovers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = _paths(tmp_path)
+    history = HistoryStore(paths)
+    exporter = HistoryExporter(paths, history)
+    observed_descriptor: int | None = None
+    try:
+        _append(paths, history)
+        artifact = exporter.create_export(
+            ExportRequest("monitor-1", 0, 1_000, "jsonl"), authorized=True
+        ).data
+        assert artifact is not None
+        before_data = artifact.data_path.read_bytes()
+        before_manifest = artifact.manifest_path.read_bytes()
+
+        regular_file = tmp_path / "temporary-file-parent"
+        regular_file.write_bytes(b"not a directory")
+        original_open = exports_module.os.open
+        original_temporary_file = exports_module.tempfile.TemporaryFile
+        allocation_errors: list[OSError] = []
+        allocation_boundary_checks = 0
+
+        def observing_open(path, flags, *args, **kwargs):
+            nonlocal observed_descriptor
+            descriptor = original_open(path, flags, *args, **kwargs)
+            try:
+                observed_path = Path(path).resolve()
+            except (TypeError, ValueError, OSError):
+                observed_path = None
+            if observed_path == artifact.data_path.resolve():
+                observed_descriptor = descriptor
+            return descriptor
+
+        def failing_temporary_file(*args, **kwargs):
+            nonlocal allocation_boundary_checks
+            assert observed_descriptor is not None, (
+                "the artifact descriptor was not observed before allocation"
+            )
+            try:
+                os.fstat(observed_descriptor)
+            except OSError as error:
+                pytest.fail(
+                    "artifact descriptor was not live at the allocation boundary; "
+                    f"fstat={type(error).__name__}(errno={error.errno}, "
+                    f"winerror={getattr(error, 'winerror', None)})"
+                )
+            allocation_boundary_checks += 1
+            options = dict(kwargs)
+            options["dir"] = str(regular_file)
+            try:
+                return original_temporary_file(*args, **options)
+            except OSError as error:
+                allocation_errors.append(error)
+                raise
+
+        monkeypatch.setattr(exports_module.os, "open", observing_open)
+        monkeypatch.setattr(
+            exports_module.tempfile, "TemporaryFile", failing_temporary_file
+        )
+        failed = exporter.open_download(artifact.export_id)
+        assert not failed.ok
+        assert failed.code == "MONITOR_EXPORT_FAILED"
+        assert failed.message == "history export is unavailable"
+        assert failed.data is None
+        assert allocation_errors, "the real TemporaryFile allocation did not fail"
+        assert observed_descriptor is not None, "the artifact descriptor was not observed"
+        assert allocation_boundary_checks == 1
+
+        try:
+            try:
+                os.fstat(observed_descriptor)
+            except OSError as error:
+                fstat_error = error
+            else:
+                fstat_error = None
+            allocation = allocation_errors[0]
+            if fstat_error is None:
+                pytest.fail(
+                    "artifact descriptor remains open after TemporaryFile failure; "
+                    f"allocation={type(allocation).__name__}(errno={allocation.errno}, "
+                    f"winerror={getattr(allocation, 'winerror', None)})"
+                )
+            assert fstat_error.errno == errno.EBADF, (
+                "artifact descriptor returned an unexpected fstat error; "
+                f"fstat={type(fstat_error).__name__}(errno={fstat_error.errno}, "
+                f"winerror={getattr(fstat_error, 'winerror', None)}), "
+                f"allocation={type(allocation).__name__}(errno={allocation.errno}, "
+                f"winerror={getattr(allocation, 'winerror', None)})"
+            )
+        finally:
+            monkeypatch.undo()
+            recovered = exporter.open_download(artifact.export_id)
+            assert recovered.ok
+            assert recovered.data is not None
+            try:
+                body = b"".join(recovered.data.iter_chunks())
+                assert hashlib.sha256(body).hexdigest() == artifact.sha256
+                assert len(body) == artifact.byte_count
+            finally:
+                recovered.data.close()
+            assert artifact.data_path.read_bytes() == before_data
+            assert artifact.manifest_path.read_bytes() == before_manifest
+    finally:
+        if observed_descriptor is not None:
+            try:
+                os.fstat(observed_descriptor)
+            except OSError:
+                pass
+            else:
+                os.close(observed_descriptor)
+        exporter.close()
+        history.close()
+
+
 def test_get_export_rejects_another_session_in_the_same_workspace(
     tmp_path: Path,
 ) -> None:
@@ -1248,8 +1366,8 @@ def test_jsonl_export_manifest_binds_sha_size_count_and_all_runtime_versions(tmp
             "createdAtUtc",
         }
         assert manifest["protocol"] == "stm32-toolkit-monitor/1"
-        assert manifest["toolkitVersion"] == "0.9.0"
-        assert manifest["monitorVersion"] == "0.9.0"
+        assert manifest["toolkitVersion"] == "1.0.0"
+        assert manifest["monitorVersion"] == "1.0.0"
         assert manifest["workspaceId"] == paths.workspace_id
         assert manifest["sha256"] == hashlib.sha256(data).hexdigest()
         assert manifest["bytes"] == len(data)
@@ -1959,3 +2077,241 @@ def test_get_export_maps_storage_failure_without_raw_exception(tmp_path: Path, m
     finally:
         exporter.close()
         history.close()
+
+
+def test_get_export_rejects_non_text_record_format_blob_without_write(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    history = HistoryStore(paths)
+    exporter = HistoryExporter(paths, history)
+    try:
+        _append(paths, history)
+        created = exporter.create_export(
+            ExportRequest("monitor-1", 0, 1_000, "jsonl"), authorized=True
+        )
+        assert created.ok and created.data is not None
+        artifact = created.data
+        assert exporter.get_export(artifact.export_id).ok
+        opened = exporter.open_download(artifact.export_id)
+        assert opened.ok and opened.data is not None
+        assert b"".join(opened.data.iter_chunks()) == artifact.data_path.read_bytes()
+        opened.data.close()
+
+        database_path = paths.monitor_root / "monitor.sqlite3"
+
+        def read_row() -> tuple[object, ...] | None:
+            with sqlite3.connect(database_path) as connection:
+                return connection.execute(
+                    "SELECT export_id,session_id,format,relative_data_path,relative_manifest_path,sha256,byte_count,value_count,created_at_utc "
+                    "FROM export_records WHERE export_id = ?",
+                    (str(artifact.export_id),),
+                ).fetchone()
+
+        before_row = read_row()
+        before_data = artifact.data_path.read_bytes()
+        before_manifest = artifact.manifest_path.read_bytes()
+        exporter._database.write(
+            lambda connection: connection.execute(
+                "UPDATE export_records SET format = ? WHERE export_id = ?",
+                (sqlite3.Binary(b"blob-format"), str(artifact.export_id)),
+            )
+        )
+        mutated_row = read_row()
+        assert before_row is not None and mutated_row is not None
+        assert isinstance(mutated_row[2], bytes)
+
+        rejected = exporter.get_export(artifact.export_id)
+        rejected_download = exporter.open_download(artifact.export_id)
+        assert rejected.code == "MONITOR_EXPORT_FAILED"
+        assert rejected.message == "history export is unavailable"
+        assert not rejected_download.ok
+        assert rejected_download.code == "MONITOR_EXPORT_FAILED"
+        assert rejected_download.message == "history export is unavailable"
+        assert rejected_download.data is None
+        assert read_row() == mutated_row
+        assert artifact.data_path.read_bytes() == before_data
+        assert artifact.manifest_path.read_bytes() == before_manifest
+    finally:
+        exporter.close()
+        history.close()
+
+
+def test_get_export_rejects_unsupported_persisted_format_without_write(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    history = HistoryStore(paths)
+    exporter = HistoryExporter(paths, history)
+    try:
+        _append(paths, history)
+        created = exporter.create_export(
+            ExportRequest("monitor-1", 0, 1_000, "jsonl"), authorized=True
+        )
+        assert created.ok and created.data is not None
+        artifact = created.data
+        opened = exporter.open_download(artifact.export_id)
+        assert opened.ok and opened.data is not None
+        opened.data.close()
+        database_path = paths.monitor_root / "monitor.sqlite3"
+
+        def read_row() -> tuple[object, ...] | None:
+            with sqlite3.connect(database_path) as connection:
+                return connection.execute(
+                    "SELECT export_id,session_id,format,relative_data_path,relative_manifest_path,sha256,byte_count,value_count,created_at_utc "
+                    "FROM export_records WHERE export_id = ?",
+                    (str(artifact.export_id),),
+                ).fetchone()
+
+        before_data = artifact.data_path.read_bytes()
+        before_manifest = artifact.manifest_path.read_bytes()
+        exporter._database.write(
+            lambda connection: connection.execute(
+                "UPDATE export_records SET format = ? WHERE export_id = ?",
+                ("zip", str(artifact.export_id)),
+            )
+        )
+        mutated_row = read_row()
+        assert mutated_row is not None and mutated_row[2] == "zip"
+
+        rejected = exporter.get_export(artifact.export_id)
+        rejected_download = exporter.open_download(artifact.export_id)
+        assert rejected.code == "MONITOR_EXPORT_FAILED"
+        assert rejected.message == "history export is unavailable"
+        assert not rejected_download.ok
+        assert rejected_download.code == "MONITOR_EXPORT_FAILED"
+        assert rejected_download.message == "history export is unavailable"
+        assert rejected_download.data is None
+        assert read_row() == mutated_row
+        assert artifact.data_path.read_bytes() == before_data
+        assert artifact.manifest_path.read_bytes() == before_manifest
+    finally:
+        exporter.close()
+        history.close()
+
+
+def test_get_export_rejects_empty_persisted_manifest_without_write(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    history = HistoryStore(paths)
+    exporter = HistoryExporter(paths, history)
+    try:
+        _append(paths, history)
+        created = exporter.create_export(
+            ExportRequest("monitor-1", 0, 1_000, "jsonl"), authorized=True
+        )
+        assert created.ok and created.data is not None
+        artifact = created.data
+        opened = exporter.open_download(artifact.export_id)
+        assert opened.ok and opened.data is not None
+        opened.data.close()
+        database_path = paths.monitor_root / "monitor.sqlite3"
+
+        def read_row() -> tuple[object, ...] | None:
+            with sqlite3.connect(database_path) as connection:
+                return connection.execute(
+                    "SELECT export_id,session_id,format,relative_data_path,relative_manifest_path,sha256,byte_count,value_count,created_at_utc "
+                    "FROM export_records WHERE export_id = ?",
+                    (str(artifact.export_id),),
+                ).fetchone()
+
+        before_row = read_row()
+        before_data = artifact.data_path.read_bytes()
+        artifact.manifest_path.write_bytes(b"")
+        assert artifact.manifest_path.read_bytes() == b""
+
+        rejected = exporter.get_export(artifact.export_id)
+        rejected_download = exporter.open_download(artifact.export_id)
+        assert rejected.code == "MONITOR_EXPORT_FAILED"
+        assert rejected.message == "history export is unavailable"
+        assert not rejected_download.ok
+        assert rejected_download.code == "MONITOR_EXPORT_FAILED"
+        assert rejected_download.message == "history export is unavailable"
+        assert rejected_download.data is None
+        assert read_row() == before_row
+        assert artifact.data_path.read_bytes() == before_data
+        assert artifact.manifest_path.read_bytes() == b""
+    finally:
+        exporter.close()
+        history.close()
+
+
+def test_pending_rowid_zero_recovery_keeps_regular_marker(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    history: HistoryStore | None = HistoryStore(paths)
+    exporter: HistoryExporter | None = HistoryExporter(paths, history)
+    recovered_history: HistoryStore | None = None
+    recovered: HistoryExporter | None = None
+    pending_id = UUID("33333333-3333-4333-8333-333333333333")
+    try:
+        _append(paths, history)
+        baseline_result = exporter.create_export(
+            ExportRequest("monitor-1", 0, 1_000, "jsonl"), authorized=True
+        )
+        assert baseline_result.ok and baseline_result.data is not None
+        baseline = baseline_result.data
+        baseline_download = exporter.open_download(baseline.export_id)
+        assert baseline_download.ok and baseline_download.data is not None
+        baseline_download.data.close()
+        database_path = paths.monitor_root / "monitor.sqlite3"
+        with sqlite3.connect(database_path) as connection:
+            baseline_row = connection.execute(
+                "SELECT export_id,session_id,format,relative_data_path,relative_manifest_path,sha256,byte_count,value_count,created_at_utc "
+                "FROM export_records WHERE export_id = ?",
+                (str(baseline.export_id),),
+            ).fetchone()
+        assert baseline_row is not None
+
+        exporter.close()
+        exporter = None
+        history.close()
+        history = None
+
+        session_root = paths.monitor_root / "exports" / "monitor-1"
+        marker = session_root / str(pending_id)
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_bytes(b"retain-this-regular-marker")
+        relative_data = f"exports/monitor-1/{pending_id}/history.jsonl"
+        relative_manifest = f"exports/monitor-1/{pending_id}/manifest.json"
+        with sqlite3.connect(database_path) as connection:
+            connection.execute(
+                "INSERT INTO export_records(rowid,export_id,session_id,format,relative_data_path,relative_manifest_path,sha256,byte_count,value_count,created_at_utc) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (
+                    0,
+                    str(pending_id),
+                    "monitor-1",
+                    "PENDING:jsonl",
+                    relative_data,
+                    relative_manifest,
+                    "0" * 64,
+                    160 * 1024 * 1024 + 16 * 1024,
+                    0,
+                    "2026-09-19T00:00:00.000000Z",
+                ),
+            )
+            connection.commit()
+        marker_bytes = marker.read_bytes()
+
+        recovered_history = HistoryStore(paths)
+        recovered = HistoryExporter(paths, recovered_history)
+        missing = recovered.get_export(pending_id)
+        retained = recovered.get_export(baseline.export_id)
+        assert missing.code == "MONITOR_EXPORT_FAILED"
+        assert missing.message == "history export was not found"
+        assert retained.ok and retained.data is not None
+        assert marker.exists() and marker.read_bytes() == marker_bytes
+        with sqlite3.connect(database_path) as connection:
+            assert connection.execute(
+                "SELECT COUNT(*) FROM export_records WHERE export_id = ?",
+                (str(pending_id),),
+            ).fetchone() == (0,)
+            assert connection.execute(
+                "SELECT export_id,session_id,format,relative_data_path,relative_manifest_path,sha256,byte_count,value_count,created_at_utc "
+                "FROM export_records WHERE export_id = ?",
+                (str(baseline.export_id),),
+            ).fetchone() == baseline_row
+    finally:
+        if recovered is not None:
+            recovered.close()
+        if recovered_history is not None:
+            recovered_history.close()
+        if exporter is not None:
+            exporter.close()
+        if history is not None:
+            history.close()

@@ -2015,11 +2015,19 @@ def _coverage_windows_available() -> bool:
     return os.name == "nt"
 
 
-def _validate_coverage_attempt_location(repo: Path, evidence_root: Path) -> None:
+def _validate_coverage_attempt_location(
+    repo: Path,
+    evidence_root: Path,
+    temporary_root: Path = Path(r"C:\tmp"),
+) -> None:
     """Validate the frozen direct-child create-new location before claiming it."""
     if not _coverage_windows_available():
         raise ControllerError("development coverage requires Windows directory locking")
-    temporary_root = Path(r"C:\tmp")
+    if (
+        not temporary_root.is_absolute()
+        or str(temporary_root) != os.path.abspath(temporary_root)
+    ):
+        raise ControllerError("coverage temporary root must be canonical and absolute")
     if (
         not evidence_root.is_absolute()
         or str(evidence_root) != os.path.abspath(evidence_root)
@@ -2558,7 +2566,14 @@ def run_dev_coverage(
     pytest_tokens: Sequence[str],
     git_runner: Callable[[list[str]], list[str]] | None = None,
     runner: Callable[..., int] = _default_runner,
+    *,
+    _coverage_temporary_root: Path = Path(r"C:\tmp"),
 ) -> dict[str, object]:
+    if (
+        _coverage_temporary_root != Path(r"C:\tmp")
+        and "PYTEST_CURRENT_TEST" not in os.environ
+    ):
+        raise ControllerError("coverage temporary root override is test-only")
     scoped_task = COVERAGE_TASK_ID.fullmatch(task_id)
     if task_id not in KNOWN_MODULES and (
         scoped_task is None or scoped_task.group("module") not in KNOWN_MODULES
@@ -2572,12 +2587,12 @@ def run_dev_coverage(
     if _coverage_configured(os.environ):
         raise ControllerError("dev coverage rejects inherited coverage variables")
     basetemp_index = validated.index("--basetemp") if "--basetemp" in validated else None
-    _validate_coverage_attempt_location(repo, evidence_root)
-    with _open_locked_windows_directory(Path(r"C:\tmp")) as temporary_lock:
+    _validate_coverage_attempt_location(repo, evidence_root, _coverage_temporary_root)
+    with _open_locked_windows_directory(_coverage_temporary_root) as temporary_lock:
         with _create_coverage_lock_sentinel(temporary_lock.path) as temporary_sentinel:
             _validate_locked_coverage_file(temporary_sentinel)
             _validate_locked_coverage_directory(temporary_lock)
-            _validate_coverage_attempt_location(repo, evidence_root)
+            _validate_coverage_attempt_location(repo, evidence_root, _coverage_temporary_root)
             evidence = prepare_evidence_root(evidence_root)
             with _open_locked_windows_directory(evidence) as evidence_lock:
                 with _create_coverage_lock_sentinel(evidence) as evidence_sentinel:
@@ -4281,9 +4296,62 @@ def run_final_resume(
     }
 
 
+_CONTRACT_SELF_TEST_TEMP_ROOT_ENV = "STM32TK_TEST_0600_TEMP_ROOT"
+_CONTRACT_SELF_TEST_SUPPORT_PROFILE_ENV = "STM32TK_TEST_0600_SUPPORT_PROFILE"
+
+
+def _contract_self_test_paths() -> tuple[Path, Path]:
+    """Return the historical defaults or the private pytest-only test paths."""
+    temp_override = os.environ.get(_CONTRACT_SELF_TEST_TEMP_ROOT_ENV)
+    support_override = os.environ.get(_CONTRACT_SELF_TEST_SUPPORT_PROFILE_ENV)
+    if temp_override is None and support_override is None:
+        return (
+            Path(r"C:\tmp"),
+            Path(r"C:\tmp\stm32tk-0600-support\feasibility\profile.json"),
+        )
+    if not os.environ.get("PYTEST_CURRENT_TEST"):
+        raise ControllerError("contract self-test path overrides require pytest")
+    if (temp_override is None) != (support_override is None):
+        raise ControllerError("contract self-test path overrides must be paired")
+
+    def existing_path(raw: str, label: str, *, directory: bool) -> Path:
+        path = Path(raw)
+        if (
+            not path.is_absolute()
+            or str(path) != os.path.abspath(path)
+        ):
+            raise ControllerError(f"contract self-test {label} path is not canonical")
+        try:
+            resolved = path.resolve(strict=True)
+        except (OSError, RuntimeError) as exc:
+            raise ControllerError(f"contract self-test {label} path is unavailable") from exc
+        if path != resolved:
+            raise ControllerError(f"contract self-test {label} path is not canonical")
+        current = path
+        while True:
+            if _is_reparse(current):
+                raise ControllerError(f"contract self-test {label} path has a reparse ancestor")
+            parent = current.parent
+            if parent == current:
+                break
+            current = parent
+        if directory:
+            if not resolved.is_dir():
+                raise ControllerError("contract self-test temp root is not a directory")
+        elif not resolved.is_file():
+            raise ControllerError("contract self-test support profile is not a file")
+        return resolved
+
+    return (
+        existing_path(temp_override, "temp root", directory=True),
+        existing_path(support_override, "support profile", directory=False),
+    )
+
+
 def _contract_self_test(kind: str) -> dict[str, object]:
     if kind not in {"quick", "candidate", "final", "hardware"}:
         raise ControllerError("unknown self-test kind")
+    temporary_root, support_profile = _contract_self_test_paths()
     if kind != "hardware":
         fake_calls: list[str] = []
 
@@ -4340,10 +4408,14 @@ def _contract_self_test(kind: str) -> dict[str, object]:
                 self.executed.append(action_id)
                 return {"status": "PASS", "artifacts": []}
 
-        root = Path(tempfile.mkdtemp(prefix="stm32tk-0600-hardware-selftest-", dir=r"C:\tmp"))
+        root = Path(
+            tempfile.mkdtemp(
+                prefix="stm32tk-0600-hardware-selftest-",
+                dir=temporary_root,
+            )
+        )
         try:
             catalog_path = Path(__file__).with_name("gates_0600.json")
-            support_profile = Path(r"C:\tmp\stm32tk-0600-support\feasibility\profile.json")
             if not support_profile.is_file():
                 raise ControllerError("hardware self-test support fixture is unavailable")
             class FakeGit:

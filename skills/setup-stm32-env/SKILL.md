@@ -13,7 +13,7 @@ description: Use when a Claude Code user asks to check, bootstrap, repair, or di
 
 - CHECK is read-only and offline with respect to installation. It never creates files, probes hardware, kills unrelated or existing processes, or installs anything. It may terminate only a probe subprocess that CHECK itself started after that probe exceeds its timeout.
 - Never register a second MCP. The plugin-bundled `.mcp.json` starts only after the managed runtime is healthy.
-- The only MCP interpreter is `${CLAUDE_PLUGIN_DATA}/runtime/0.9.0/Scripts/python.exe`; system `python`, `py`, or `uv` is never an MCP fallback. A healthy runtime includes the exact manifest-listed Toolkit/Monitor wheels with readable UI assets, the pinned `pyocd==0.45.1` distribution, and the existing doctor contract.
+- The only MCP interpreter is `${CLAUDE_PLUGIN_DATA}/runtime/1.0.0/Scripts/python.exe`; system `python`, `py`, or `uv` is never an MCP fallback. A healthy runtime includes the exact manifest-listed Toolkit/Monitor wheels with readable UI assets, the pinned `pyocd==0.45.1` distribution, and the existing doctor contract.
 - CPython >=3.12,<3.13 is the only bounded bootstrap prerequisite for consuming an extracted offline bundle from the official pinned source candidate. Bootstrap never installs from a package index or from the source tree.
 - `${CLAUDE_PLUGIN_ROOT}/tools/stm32-toolkit` remains source provenance only; the historical
   `tools/stm32-toolkit[probe]` source expression is not installed directly.
@@ -22,23 +22,64 @@ description: Use when a Claude Code user asks to check, bootstrap, repair, or di
 
 ## Shell and path contract
 
-Claude substitutes `${CLAUDE_PLUGIN_ROOT}`, `${CLAUDE_PLUGIN_DATA}`, and `${CLAUDE_PROJECT_DIR}` inline. Never read them from ambient shell variables. These single-line commands work from PowerShell or Git Bash because they invoke `powershell.exe` and pass explicit quoted paths.
+The helper fails closed before mutation on empty, relative, unresolved, redirected, or reparse-point
+paths. Never guess a replacement path.
 
-The helper fails closed before mutation on empty, relative, unresolved, redirected, or reparse-point paths. Never guess a replacement path.
+### Agent-host adapter
 
-## CHECK
+Claude substitutes `${CLAUDE_PLUGIN_ROOT}`, `${CLAUDE_PLUGIN_DATA}`, and `${CLAUDE_PROJECT_DIR}`
+inline. Never read them from ambient shell variables. This host command invokes `powershell.exe`
+with explicit quoted paths:
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File '${CLAUDE_PLUGIN_ROOT}/bin/setup-stm32-env.ps1' -Mode Check -ToolkitRoot '${CLAUDE_PLUGIN_ROOT}' -DataRoot '${CLAUDE_PLUGIN_DATA}' -ProjectRoot '${CLAUDE_PROJECT_DIR}'
 ```
 
+### Standalone PowerShell sequence
+
+Standalone users must pass three explicit absolute paths: the extracted `ToolkitRoot`, the
+long-lived `DataRoot`, and the existing `ProjectRoot`. The examples below are complete ordinary
+PowerShell and do not require host placeholders. Set the paths once and always run the read-only
+check first.
+
+```powershell
+$ToolkitRoot = 'C:\tools\stm32-toolkit-1.0.0'
+$DataRoot = 'C:\data\stm32-toolkit'
+$ProjectRoot = 'C:\work\blinky'
+$SetupScript = Join-Path $ToolkitRoot 'bin\setup-stm32-env.ps1'
+
+# Always run the read-only check first.
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $SetupScript -Mode Check `
+  -ToolkitRoot $ToolkitRoot -DataRoot $DataRoot -ProjectRoot $ProjectRoot
+```
+
+If `Check` reports `missing`, review its evidence and explicitly authorize the absent-runtime
+install before running this separate Bootstrap command:
+
+```powershell
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $SetupScript -Mode Bootstrap `
+  -ToolkitRoot $ToolkitRoot -DataRoot $DataRoot -ProjectRoot $ProjectRoot
+```
+
+If `Check` reports `repairable` for an approved 0.9.0/0.5.0/0.3.0 legacy upgrade, or `broken` for
+an existing runtime, review its source and downgrade guards and explicitly authorize Repair before
+running this separate command:
+
+```powershell
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $SetupScript -Mode Repair `
+  -ToolkitRoot $ToolkitRoot -DataRoot $DataRoot -ProjectRoot $ProjectRoot
+```
+
+`Check` is read-only. Run at most one mutation command for the decision, then repeat `Check`.
+
+## CHECK
+
 CHECK always returns JSON. `bundle.status` is `missing` or verified, and `runtimeState.status` is
 `missing`, `matching`, `repairable`, `downgrade-refused`, `source-conflict`, `unsupported`, or
 `invalid`. `runtime.status` is `missing`, `healthy`, or `broken`; it includes version/error evidence
-and `recommendedMode`. A healthy runtime has version `0.9.0` and a successful bounded
-`-m stm32_toolkit.cli ... doctor --json`. An existing 0.5.0 runtime reports broken as legacy
-evidence; an existing 0.3.0 runtime reports broken with `recommendedMode` `Repair`. Repair
-quarantines that runtime before atomically promoting 0.9.0 and publishing one
+and `recommendedMode`. A healthy runtime has version `1.0.0` and a successful bounded
+`-m stm32_toolkit.cli ... doctor --json`. An existing 0.9.0, 0.5.0 or 0.3.0 runtime reports broken as legacy
+evidence. Repair quarantines that runtime before atomically promoting 1.0.0 and publishing one
 `runtime/runtime-state.json` generation. Tool version, extension, and pack inventory commands are
 bounded; timeouts become evidence rather than hangs.
 
@@ -52,30 +93,24 @@ The doctor `vscodeExtensions` evidence checks exactly three recommended extensio
 
 CHECK never installs, removes, or modifies extensions, settings, or the extensions directory. When an extension is `missing` or the probe is unavailable, tell the operator to install or remove the recommended extensions manually in VS Code and re-run CHECK afterwards. Do not run any other VS Code command.
 
-For `missing`, ask authorization for Bootstrap. For `broken`, ask authorization for Repair. Stop until the user explicitly approves the exact mode and paths.
+For `missing`, ask authorization for Bootstrap. For `repairable` legacy-upgrade state or `broken`
+runtime, ask authorization for Repair. Stop until the user explicitly approves the exact mode and
+paths.
 
 ## MUTATE
 
 Both modes first verify `release/release-manifest.json`, every manifest hash, safe path, and the closed
 wheel set. They copy the verified wheels into a unique
-`${CLAUDE_PLUGIN_DATA}/runtime/.staging/0.9.0-<id>` directory before one offline
+`${CLAUDE_PLUGIN_DATA}/runtime/.staging/1.0.0-<id>` directory before one offline
 `pip install --no-index --no-deps` invocation, run `pip check`, validate exact Toolkit/Monitor
 versions and assets, validate isolated `pyocd`, and validate doctor before promotion. Failed safe
 staging is removed; a staging tree containing redirects is preserved for manual recovery rather
 than followed. The state file is written atomically only after runtime promotion; failures restore
 the old runtime and state bytes. After promotion, the verified Toolkit, Monitor and PyOCD wheels regenerate their console launchers using the final runtime interpreter; launcher binding/version checks must pass before healthy state is published.
 
-For an absent runtime, after explicit authorization run:
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File '${CLAUDE_PLUGIN_ROOT}/bin/setup-stm32-env.ps1' -Mode Bootstrap -ToolkitRoot '${CLAUDE_PLUGIN_ROOT}' -DataRoot '${CLAUDE_PLUGIN_DATA}' -ProjectRoot '${CLAUDE_PROJECT_DIR}'
-```
-
-For a broken runtime, after separate explicit authorization run:
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File '${CLAUDE_PLUGIN_ROOT}/bin/setup-stm32-env.ps1' -Mode Repair -ToolkitRoot '${CLAUDE_PLUGIN_ROOT}' -DataRoot '${CLAUDE_PLUGIN_DATA}' -ProjectRoot '${CLAUDE_PROJECT_DIR}'
-```
+For an absent runtime, after explicit authorization, select the separate `Bootstrap` command above.
+For a `repairable` legacy-upgrade state or a broken runtime, after separate explicit authorization,
+select the separate `Repair` command instead.
 
 Repair moves the failed runtime to `${CLAUDE_PLUGIN_DATA}/runtime/.quarantine/` before promotion and rolls it back if promotion fails. Neither mode writes project files, installs external hardware tools, packs, extensions, drivers, or registers MCP.
 

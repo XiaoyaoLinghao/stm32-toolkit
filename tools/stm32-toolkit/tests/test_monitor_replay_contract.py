@@ -95,6 +95,24 @@ def _reference_digest(reference: dict[str, object]) -> str:
     return hashlib.sha256(_raw_canonical_json_bytes(unsigned)).hexdigest()
 
 
+def _redigest_public_document(
+    contract: ModuleType, document: dict[str, object]
+) -> None:
+    unsigned = {key: value for key, value in document.items() if key != "fixture_sha256"}
+    document["fixture_sha256"] = hashlib.sha256(
+        contract.canonical_replay_json_bytes(unsigned)
+    ).hexdigest()
+
+
+def _redigest_public_reference(
+    contract: ModuleType, reference: dict[str, object]
+) -> None:
+    unsigned = {key: value for key, value in reference.items() if key != "run_ref_sha256"}
+    reference["run_ref_sha256"] = hashlib.sha256(
+        contract.canonical_replay_json_bytes(unsigned)
+    ).hexdigest()
+
+
 def _physical_transcript(source: dict[str, object]) -> dict[str, object]:
     binding = deepcopy(source["binding"])
     binding.update(
@@ -120,6 +138,49 @@ def _physical_transcript(source: dict[str, object]) -> dict[str, object]:
         "binding": binding,
         "batches": batches,
     }
+
+
+def _physical_v2_reference() -> dict[str, object]:
+    run_id = "11111111-1111-4111-8111-111111111111"
+    reference: dict[str, object] = {
+        "schema": "stm32-monitor-run-ref/2",
+        "operation_id": run_id,
+        "scenario_role": "failed-before",
+        "execution_source": "physical",
+        "physical_transport_evidence": True,
+        "origin_workspace_id": "a" * 64,
+        "import_workspace_id": "a" * 64,
+        "logical_project_id": "123e4567-e89b-42d3-a456-426614174000",
+        "origin_session_id": "session",
+        "projected_session_id": "session",
+        "origin_run_id": run_id,
+        "projected_run_id": run_id,
+        "target_device": "stm32f429zi",
+        "probe_id": "b" * 64,
+        "physical_target": "stm32f429zi",
+        "build_id": "c" * 64,
+        "elf_sha256": "d" * 64,
+        "input_snapshot_sha256": "e" * 64,
+        "git_head": "f" * 40,
+        "git_dirty": False,
+        "flash_session_id": "flash",
+        "lease_id": "lease",
+        "dwarf_sha256": "1" * 64,
+        "svd_sha256": None,
+        "group_id": "123e4567-e89b-42d3-a456-426614174001",
+        "group_revision": 1,
+        "start_sequence": 0,
+        "end_sequence_exclusive": 2,
+        "start_captured_unix_ns": 1,
+        "end_captured_unix_ns_exclusive": 3,
+        "source_record_sha256": "2" * 64,
+        "projected_batch_sha256s": ["3" * 64, "4" * 64],
+        "transcript_evidence_id": "5" * 64,
+        "run_ref_sha256": "0" * 64,
+    }
+    unsigned = {key: value for key, value in reference.items() if key != "run_ref_sha256"}
+    reference["run_ref_sha256"] = hashlib.sha256(_raw_canonical_json_bytes(unsigned)).hexdigest()
+    return reference
 
 
 def _document_bindings(document: dict[str, object]) -> list[dict[str, object]]:
@@ -451,6 +512,165 @@ def test_shared_contract_accepts_the_two_real_replay_documents_without_mutation(
 
 
 @pytest.mark.parametrize("role", ("failed-before", "fixed-after"))
+def test_shared_byte_decoder_reloads_canonical_replay_fixture_and_optional_final_lf(
+    role: str,
+) -> None:
+    contract = _contract()
+    with_final_lf = (MONITOR_FIXTURES / f"{role}.json").read_bytes()
+    assert with_final_lf.endswith(b"\n")
+    raw = with_final_lf[:-1]
+    before = bytes(raw)
+
+    decoded = contract.decode_canonical_json_bytes(raw)
+    validated = contract.validate_replay_document(decoded)
+    assert decoded == _document(role)
+    assert validated == decoded
+    assert raw == before
+
+    with pytest.raises(contract.ReplayContractError):
+        contract.decode_canonical_json_bytes(with_final_lf)
+    assert contract.decode_canonical_json_bytes(with_final_lf, allow_final_lf=True) == decoded
+    assert with_final_lf == before + b"\n"
+
+
+def test_shared_physical_byte_decoder_reloads_canonical_transcript_without_mutation() -> None:
+    contract = _contract()
+    payload = _physical_transcript(_document("failed-before"))
+    raw = contract.canonical_physical_json_bytes(payload)
+    before = bytes(raw)
+
+    decoded = contract.decode_physical_transcript_bytes(raw)
+
+    assert decoded == payload
+    assert contract.validate_physical_transcript(decoded) == payload
+    assert raw == before
+
+
+@pytest.mark.parametrize(
+    ("case_name", "expected_message"),
+    (
+        pytest.param(
+            "empty",
+            "physical transcript bytes exceed their bounded input limit",
+            id="empty",
+        ),
+        pytest.param(
+            "bom",
+            "physical transcript JSON must not contain a BOM",
+            id="bom",
+        ),
+        pytest.param(
+            "duplicate-key",
+            "physical transcript JSON has duplicate object keys",
+            id="duplicate-key",
+        ),
+        pytest.param(
+            "scalar-root",
+            "physical transcript JSON must be an object",
+            id="scalar-root",
+        ),
+        pytest.param(
+            "noncanonical",
+            "physical transcript JSON is not canonical",
+            id="noncanonical",
+        ),
+    ),
+)
+def test_shared_physical_byte_decoder_rejects_public_encoding_and_size_variants(
+    case_name: str, expected_message: str
+) -> None:
+    contract = _contract()
+    payload = _physical_transcript(_document("failed-before"))
+    source_before = deepcopy(payload)
+    canonical = contract.canonical_physical_json_bytes(payload)
+    assert contract.decode_physical_transcript_bytes(canonical) == payload
+    assert payload == source_before
+
+    if case_name == "empty":
+        raw = canonical[:0]
+    elif case_name == "bom":
+        raw = b"\xef\xbb\xbf" + canonical
+    elif case_name == "duplicate-key":
+        schema = b'"schema":"stm32-monitor-physical-transcript/1"'
+        assert schema in canonical
+        raw = canonical.replace(schema, schema + b"," + schema, 1)
+    elif case_name == "scalar-root":
+        raw = b"[]"
+    else:
+        raw = b" " + canonical
+
+    before = bytes(raw)
+    with pytest.raises(contract.ReplayContractError) as error:
+        contract.decode_physical_transcript_bytes(raw)
+
+    assert str(error.value) == expected_message
+    assert raw == before
+
+
+@pytest.mark.parametrize(
+    ("case_name", "raw"),
+    [
+        pytest.param("duplicate-key", b'{"a":1,"a":2}', id="duplicate-key"),
+        pytest.param("bom", b"\xef\xbb\xbf{}", id="bom"),
+        pytest.param("noncanonical-whitespace", b'{ "a": 1}', id="noncanonical-whitespace"),
+        pytest.param("invalid-utf8", b"\xff", id="invalid-utf8"),
+        pytest.param("scalar-root", b"1", id="scalar-root"),
+        pytest.param(
+            "depth-limit",
+            json.dumps(_deep_json(33), sort_keys=True, separators=(",", ":")).encode("utf-8"),
+            id="depth-limit",
+        ),
+        pytest.param(
+            "node-limit",
+            json.dumps([0] * 10_000, separators=(",", ":")).encode("utf-8"),
+            id="node-limit",
+        ),
+        pytest.param("input-size-limit", b"0" * (1024 * 1024 + 1), id="input-size-limit"),
+    ],
+)
+def test_shared_byte_decoder_rejects_caller_meaningful_raw_wire_failures(
+    case_name: str, raw: bytes,
+) -> None:
+    contract = _contract()
+    before = bytes(raw)
+
+    with pytest.raises(contract.ReplayContractError):
+        contract.decode_canonical_json_bytes(raw)
+
+    assert case_name
+    assert raw == before
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "recompute_digest"),
+    [
+        ("physical_transport_evidence", False, False),
+        ("end_sequence_exclusive", 0, True),
+    ],
+)
+def test_shared_v2_reference_rejects_provenance_and_window_contradictions(
+    field: str, value: object, recompute_digest: bool,
+) -> None:
+    contract = _contract()
+    source = _physical_v2_reference()
+    validated = contract.validate_run_reference(source)
+    assert validated == source
+    assert source == _physical_v2_reference()
+
+    candidate = deepcopy(source)
+    candidate[field] = value
+    if recompute_digest:
+        unsigned = {key: item for key, item in candidate.items() if key != "run_ref_sha256"}
+        candidate["run_ref_sha256"] = hashlib.sha256(_raw_canonical_json_bytes(unsigned)).hexdigest()
+    before = deepcopy(candidate)
+
+    with pytest.raises(contract.ReplayContractError):
+        contract.validate_run_reference(candidate)
+
+    assert candidate == before
+
+
+@pytest.mark.parametrize("role", ("failed-before", "fixed-after"))
 def test_shared_contract_accepts_the_two_real_run_references_without_mutation(
     tmp_path: Path,
     role: str,
@@ -505,6 +725,212 @@ def test_shared_contract_accepts_closed_physical_transcript_without_raw_selector
     extra["unexpected"] = True
     with pytest.raises(contract.ReplayContractError):
         contract.validate_physical_transcript(extra)
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_message"),
+    (
+        ("schema", "physical transcript schema is invalid"),
+        ("source", "physical transcript source is invalid"),
+        ("execution-source", "physical transcript execution source is invalid"),
+        ("physical-evidence", "physical transcript physical evidence must be true"),
+        ("scenario-role", "physical transcript scenario role is invalid"),
+        ("test-run-id", "test_run_id is invalid"),
+        ("binding-probe", "physical binding labels are invalid"),
+        ("binding-git", "gitHead is invalid"),
+        ("binding-svd", "svdSha256 is invalid"),
+        ("empty-batches", "physical transcript batches are invalid"),
+        ("batch-shape", "physical transcript batches are invalid"),
+        ("batch-binding", "replay batch binding contradicts the document binding"),
+        ("batch-group", "physical transcript batch identity is invalid"),
+        ("batch-revision", "physical transcript batch identity is invalid"),
+        ("batch-run", "physical transcript batch identity is invalid"),
+        ("batch-sequence", "physical transcript sequences are not contiguous"),
+        ("batch-captured", "physical transcript captured times are not increasing"),
+        ("batch-selector", "physical transcript batch identity is invalid"),
+        ("duplicate-selector", "physical transcript selectors are not unique"),
+        ("empty-values", "replay batch values are invalid"),
+        ("sample-status", "replay sample status is invalid"),
+        ("sample-code", "replay successful sample is invalid"),
+        ("sample-definition", "sample definition is invalid"),
+        ("integer-rate", "actualRateHz is invalid"),
+        ("captured-before-scheduled", "replay batch captured time precedes scheduled time"),
+        ("value-budget", "physical transcript values exceed their limit"),
+    ),
+)
+def test_shared_physical_contract_rejects_nested_wire_mutations(
+    mutation: str, expected_message: str
+) -> None:
+    contract = _contract()
+    candidate = _physical_transcript(_document("failed-before"))
+    if mutation == "schema":
+        candidate["schema"] = "stm32-monitor-physical-transcript/9"
+    elif mutation == "source":
+        candidate["source"] = "untrusted-source"
+    elif mutation == "execution-source":
+        candidate["execution_source"] = "replay"
+    elif mutation == "physical-evidence":
+        candidate["physical_transport_evidence"] = False
+    elif mutation == "scenario-role":
+        candidate["scenario_role"] = "other"
+    elif mutation == "test-run-id":
+        candidate["test_run_id"] = ""
+    elif mutation == "binding-probe":
+        candidate["binding"]["probeId"] = "replay:probe-v2"
+    elif mutation == "binding-git":
+        candidate["binding"]["gitHead"] = "g" * 40
+    elif mutation == "binding-svd":
+        candidate["binding"]["svdSha256"] = "invalid"
+    elif mutation == "empty-batches":
+        candidate["batches"] = []
+    elif mutation == "batch-shape":
+        candidate["batches"] = {}
+    elif mutation == "batch-binding":
+        candidate["batches"][1]["binding"] = deepcopy(candidate["binding"])
+        candidate["batches"][1]["binding"]["workspaceId"] = "b" * 64
+    elif mutation == "batch-group":
+        candidate["batches"][1]["groupId"] = "55555555-5555-4555-8555-555555555555"
+    elif mutation == "batch-revision":
+        candidate["batches"][1]["groupRevision"] = 2
+    elif mutation == "batch-run":
+        candidate["batches"][1]["runId"] = "55555555-5555-4555-8555-555555555555"
+    elif mutation == "batch-sequence":
+        candidate["batches"][1]["sequence"] = 2
+    elif mutation == "batch-captured":
+        first = candidate["batches"][0]
+        second = candidate["batches"][1]
+        # Keep both rows valid against their own scheduled time and UTC/latency
+        # fields, then violate only the cross-batch increasing-capture rule.
+        first["capturedUnixNs"] = second["capturedUnixNs"]
+        first["capturedAtUtc"] = second["capturedAtUtc"]
+        first["latencyNs"] = first["capturedUnixNs"] - first["scheduledUnixNs"]
+    elif mutation == "batch-selector":
+        watch = candidate["batches"][1]["values"][0]["watch"]
+        watch[_selector_key(watch)] = "different.selector"
+    elif mutation == "duplicate-selector":
+        first_values = candidate["batches"][0]["values"]
+        first_values.append(deepcopy(first_values[0]))
+    elif mutation == "empty-values":
+        candidate["batches"][0]["values"] = []
+    elif mutation == "sample-status":
+        candidate["batches"][0]["values"][0]["status"] = "UNKNOWN"
+    elif mutation == "sample-code":
+        candidate["batches"][0]["values"][0]["code"] = "NATIVE_ERROR"
+    elif mutation == "sample-definition":
+        candidate["batches"][0]["values"][0]["definition"] = []
+    elif mutation == "integer-rate":
+        candidate["batches"][0]["actualRateHz"] = 1
+    elif mutation == "captured-before-scheduled":
+        candidate["batches"][0]["capturedUnixNs"] = candidate["batches"][0]["scheduledUnixNs"] - 1
+    elif mutation == "value-budget":
+        first = candidate["batches"][0]
+        source_sample = first["values"][0]
+        first["values"] = []
+        for index in range(256):
+            sample = deepcopy(source_sample)
+            watch = sample["watch"]
+            watch[_selector_key(watch)] = f"r{index}"
+            sample["typedValue"]["expression"] = f"r{index}"
+            first["values"].append(sample)
+        candidate["batches"] = [deepcopy(first) for _ in range(40)]
+    before = deepcopy(candidate)
+
+    with pytest.raises(contract.ReplayContractError) as error:
+        contract.validate_physical_transcript(candidate)
+    assert str(error.value) == expected_message
+    assert candidate == before
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_message"),
+    (
+        pytest.param(
+            "root-collection",
+            "physical transcript must be an object",
+            id="root-collection",
+        ),
+        pytest.param("group-id-type", "groupId is invalid", id="group-id-type"),
+        pytest.param(
+            "session-device-name",
+            "sessionId is invalid",
+            id="session-device-name",
+        ),
+        pytest.param(
+            "watch-kind",
+            "replay watch kind is invalid",
+            id="watch-kind",
+        ),
+        pytest.param(
+            "captured-utc",
+            "capturedAtUtc is invalid",
+            id="captured-utc",
+        ),
+        pytest.param(
+            "binding-git-dirty-type",
+            "gitDirty is invalid",
+            id="binding-git-dirty-type",
+        ),
+        pytest.param(
+            "failed-status-shape",
+            "replay failed sample is invalid",
+            id="failed-status-shape",
+        ),
+    ),
+)
+def test_shared_physical_validator_rejects_additional_public_nested_variants(
+    mutation: str, expected_message: str
+) -> None:
+    contract = _contract()
+    candidate = _physical_transcript(_document("failed-before"))
+    assert contract.validate_physical_transcript(candidate) == candidate
+
+    if mutation == "root-collection":
+        candidate = [candidate]
+    elif mutation == "group-id-type":
+        candidate["batches"][0]["groupId"] = None
+    elif mutation == "session-device-name":
+        candidate["binding"]["sessionId"] = "con"
+    elif mutation == "watch-kind":
+        candidate["batches"][0]["values"][0]["watch"]["kind"] = "other"
+    elif mutation == "captured-utc":
+        candidate["batches"][0]["capturedAtUtc"] = "1970-01-01T00:00:00.000000Z"
+    elif mutation == "binding-git-dirty-type":
+        candidate["binding"]["gitDirty"] = 1
+    else:
+        candidate["batches"][0]["values"][0]["status"] = "ERROR"
+
+    before = deepcopy(candidate)
+    with pytest.raises(contract.ReplayContractError) as error:
+        contract.validate_physical_transcript(candidate)
+
+    assert str(error.value) == expected_message
+    assert candidate == before
+
+
+@pytest.mark.parametrize(
+    "value",
+    (
+        ("tuple",),
+        {1: "non-string-key"},
+        {"value": float("nan")},
+        {"value": "e\u0301"},
+    ),
+)
+def test_shared_physical_canonicalizer_rejects_unsafe_json_values(value: object) -> None:
+    contract = _contract()
+    before = value
+    with pytest.raises(contract.ReplayContractError):
+        contract.canonical_physical_json_bytes(value)
+    assert value is before
+
+
+def test_shared_physical_canonicalizer_rejects_cycles_without_mutating_input() -> None:
+    contract = _contract()
+    value: list[object] = []
+    value.append(value)
+    with pytest.raises(contract.ReplayContractError):
+        contract.canonical_physical_json_bytes(value)
+    assert value[0] is value
 
 
 @pytest.mark.parametrize("case_name", tuple(_document_mutations(_document("failed-before"))))
@@ -572,6 +998,86 @@ def test_shared_and_monitor_reject_the_same_reference_wire_mutations(
         with pytest.raises(contract.ReplayContractError):
             contract.validate_run_reference(candidate)
         assert candidate == before, case_name
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_message"),
+    (
+        pytest.param(
+            "replay-empty-batches",
+            "replay document batches are invalid",
+            id="replay-empty-batches",
+        ),
+        pytest.param(
+            "replay-scheduled-order",
+            "replay document scheduled times are not increasing",
+            id="replay-scheduled-order",
+        ),
+        pytest.param(
+            "replay-captured-order",
+            "replay document captured times are not increasing",
+            id="replay-captured-order",
+        ),
+        pytest.param(
+            "reference-scenario-role",
+            "monitor run reference scenario role is invalid",
+            id="reference-scenario-role",
+        ),
+        pytest.param(
+            "reference-execution-source",
+            "monitor run reference execution source is invalid",
+            id="reference-execution-source",
+        ),
+        pytest.param(
+            "reference-run-identity",
+            "monitor run reference operation and run IDs contradict",
+            id="reference-run-identity",
+        ),
+    ),
+)
+def test_shared_public_replay_reference_rejects_recomputed_wire_semantics(
+    mutation: str, expected_message: str
+) -> None:
+    contract = _contract()
+    if mutation.startswith("replay-"):
+        source = _document("failed-before")
+        assert contract.validate_replay_document(source) == source
+        candidate = deepcopy(source)
+        if mutation == "replay-empty-batches":
+            candidate["batches"] = []
+        elif mutation == "replay-scheduled-order":
+            first = candidate["batches"][0]
+            second = candidate["batches"][1]
+            second["scheduledUnixNs"] = first["scheduledUnixNs"]
+            second["scheduledAtUtc"] = first["scheduledAtUtc"]
+        else:
+            first = candidate["batches"][0]
+            second = candidate["batches"][1]
+            first["capturedUnixNs"] = second["capturedUnixNs"]
+            first["capturedAtUtc"] = second["capturedAtUtc"]
+            first["latencyNs"] = first["capturedUnixNs"] - first["scheduledUnixNs"]
+        _redigest_document(candidate)
+    else:
+        source = _physical_v2_reference()
+        assert contract.validate_run_reference(source) == source
+        candidate = deepcopy(source)
+        if mutation == "reference-scenario-role":
+            candidate["scenario_role"] = "other"
+        elif mutation == "reference-execution-source":
+            candidate["execution_source"] = "other"
+        else:
+            candidate["projected_run_id"] = "22222222-2222-4222-8222-222222222222"
+        _redigest_reference(candidate)
+
+    before = deepcopy(candidate)
+    with pytest.raises(contract.ReplayContractError) as error:
+        if mutation.startswith("replay-"):
+            contract.validate_replay_document(candidate)
+        else:
+            contract.validate_run_reference(candidate)
+
+    assert str(error.value) == expected_message
+    assert candidate == before
 
 
 @pytest.mark.parametrize("field", ("typedValue", "definition"))
@@ -669,3 +1175,470 @@ def test_physical_typed_json_signed_int64_boundary_matches_monitor() -> None:
         SampleValue(rejected_watch, "OK", typed_value=rejected_sample["typedValue"])
     with pytest.raises(contract.ReplayContractError):
         contract.validate_physical_transcript(rejected)
+
+
+@pytest.mark.parametrize(
+    ("case_id", "entry", "expected_message"),
+    (
+        pytest.param(
+            "M-CANONICAL-NONFINITE",
+            "canonical_replay_json_bytes",
+            "replay JSON number is not finite",
+            id="M-CANONICAL-NONFINITE",
+        ),
+        pytest.param(
+            "M-CANONICAL-STRING-BUDGET",
+            "canonical_replay_json_bytes",
+            "replay JSON string data exceeds its limit",
+            id="M-CANONICAL-STRING-BUDGET",
+        ),
+        pytest.param(
+            "M-CANONICAL-TUPLE",
+            "canonical_replay_json_bytes",
+            "replay JSON must not contain tuple containers",
+            id="M-CANONICAL-TUPLE",
+        ),
+        pytest.param(
+            "M-CANONICAL-MAPPING-CYCLE",
+            "canonical_replay_json_bytes",
+            "replay JSON contains a cycle",
+            id="M-CANONICAL-MAPPING-CYCLE",
+        ),
+        pytest.param(
+            "M-CANONICAL-NONSTRING-KEY",
+            "canonical_replay_json_bytes",
+            "replay JSON object keys must be strings",
+            id="M-CANONICAL-NONSTRING-KEY",
+        ),
+        pytest.param(
+            "M-CANONICAL-NFC-KEY",
+            "canonical_replay_json_bytes",
+            "replay JSON object keys must use NFC",
+            id="M-CANONICAL-NFC-KEY",
+        ),
+        pytest.param(
+            "M-CANONICAL-LIST-CYCLE",
+            "canonical_replay_json_bytes",
+            "replay JSON contains a cycle",
+            id="M-CANONICAL-LIST-CYCLE",
+        ),
+        pytest.param(
+            "M-CANONICAL-UNSUPPORTED",
+            "canonical_replay_json_bytes",
+            "replay JSON contains an unsupported value",
+            id="M-CANONICAL-UNSUPPORTED",
+        ),
+        pytest.param(
+            "M-REPLAY-BINDING-LABEL",
+            "validate_replay_document",
+            "replay binding labels are invalid",
+            id="M-REPLAY-BINDING-LABEL",
+        ),
+        pytest.param(
+            "M-REPLAY-WATCH-TYPE",
+            "validate_replay_document",
+            "replay watch is invalid",
+            id="M-REPLAY-WATCH-TYPE",
+        ),
+        pytest.param(
+            "M-REPLAY-FAILED-SAMPLE-SHAPE",
+            "validate_replay_document",
+            "replay failed sample is invalid",
+            id="M-REPLAY-FAILED-SAMPLE-SHAPE",
+        ),
+        pytest.param(
+            "M-REPLAY-SCHEMA",
+            "validate_replay_document",
+            "replay document schema is invalid",
+            id="M-REPLAY-SCHEMA",
+        ),
+        pytest.param(
+            "M-REPLAY-SOURCE",
+            "validate_replay_document",
+            "replay document source is invalid",
+            id="M-REPLAY-SOURCE",
+        ),
+        pytest.param(
+            "M-REPLAY-PHYSICAL-EVIDENCE",
+            "validate_replay_document",
+            "replay document physical evidence must be false",
+            id="M-REPLAY-PHYSICAL-EVIDENCE",
+        ),
+        pytest.param(
+            "M-REPLAY-ROLE",
+            "validate_replay_document",
+            "replay document scenario role is invalid",
+            id="M-REPLAY-ROLE",
+        ),
+        pytest.param(
+            "M-REPLAY-DUPLICATE-SELECTOR",
+            "validate_replay_document",
+            "replay document selectors are not unique",
+            id="M-REPLAY-DUPLICATE-SELECTOR",
+        ),
+        pytest.param(
+            "M-REFERENCE-GIT-HEAD",
+            "validate_run_reference",
+            "git_head is invalid",
+            id="M-REFERENCE-GIT-HEAD",
+        ),
+        pytest.param(
+            "M-REFERENCE-GIT-DIRTY-TYPE",
+            "validate_run_reference",
+            "git_dirty is invalid",
+            id="M-REFERENCE-GIT-DIRTY-TYPE",
+        ),
+        pytest.param(
+            "M-REFERENCE-EMPTY-DIGEST-LIST",
+            "validate_run_reference",
+            "projected batch digests are invalid",
+            id="M-REFERENCE-EMPTY-DIGEST-LIST",
+        ),
+    ),
+)
+def test_public_replay_wire_remaining(
+    case_id: str,
+    entry: str,
+    expected_message: str,
+    tmp_path: Path,
+) -> None:
+    contract = _contract()
+
+    if entry == "canonical_replay_json_bytes":
+        source = _document("failed-before")
+        source_before = deepcopy(source)
+        assert contract.canonical_replay_json_bytes(source) == canonical_replay_json_bytes(
+            source
+        )
+        candidate = deepcopy(source)
+
+        if case_id == "M-CANONICAL-NONFINITE":
+            nonfinite = float("nan")
+            candidate["batches"][0]["actualRateHz"] = nonfinite
+            with pytest.raises(contract.ReplayContractError) as error:
+                contract.canonical_replay_json_bytes(candidate)
+            assert candidate["batches"][0]["actualRateHz"] is nonfinite
+            candidate["batches"][0]["actualRateHz"] = source["batches"][0]["actualRateHz"]
+            assert candidate == source
+        elif case_id == "M-CANONICAL-STRING-BUDGET":
+            candidate["binding"]["targetDevice"] = "x" * (
+                contract.MAX_REPLAY_JSON_STRING_CHARS + 1
+            )
+            candidate_before = deepcopy(candidate)
+            with pytest.raises(contract.ReplayContractError) as error:
+                contract.canonical_replay_json_bytes(candidate)
+            assert candidate == candidate_before
+        elif case_id == "M-CANONICAL-TUPLE":
+            candidate["batches"][0]["values"] = tuple(candidate["batches"][0]["values"])
+            candidate_before = deepcopy(candidate)
+            with pytest.raises(contract.ReplayContractError) as error:
+                contract.canonical_replay_json_bytes(candidate)
+            assert candidate == candidate_before
+        elif case_id == "M-CANONICAL-MAPPING-CYCLE":
+            binding = candidate["binding"]
+            binding["self"] = binding
+            with pytest.raises(contract.ReplayContractError) as error:
+                contract.canonical_replay_json_bytes(candidate)
+            assert binding["self"] is binding
+            del binding["self"]
+            assert candidate == source
+        elif case_id == "M-CANONICAL-NONSTRING-KEY":
+            binding = candidate["binding"]
+            binding[1] = "non-string-key"
+            candidate_before = deepcopy(candidate)
+            with pytest.raises(contract.ReplayContractError) as error:
+                contract.canonical_replay_json_bytes(candidate)
+            assert candidate == candidate_before
+            del binding[1]
+            assert candidate == source
+        elif case_id == "M-CANONICAL-NFC-KEY":
+            binding = candidate["binding"]
+            nfc_key = "e\u0301"
+            binding[nfc_key] = "decomposed-key"
+            candidate_before = deepcopy(candidate)
+            with pytest.raises(contract.ReplayContractError) as error:
+                contract.canonical_replay_json_bytes(candidate)
+            assert candidate == candidate_before
+            del binding[nfc_key]
+            assert candidate == source
+        elif case_id == "M-CANONICAL-LIST-CYCLE":
+            batches = candidate["batches"]
+            batches.append(batches)
+            with pytest.raises(contract.ReplayContractError) as error:
+                contract.canonical_replay_json_bytes(candidate)
+            assert batches[-1] is batches
+            batches.pop()
+            assert candidate == source
+        elif case_id == "M-CANONICAL-UNSUPPORTED":
+            unsupported = object()
+            candidate["batches"][0]["actualRateHz"] = unsupported
+            with pytest.raises(contract.ReplayContractError) as error:
+                contract.canonical_replay_json_bytes(candidate)
+            assert candidate["batches"][0]["actualRateHz"] is unsupported
+            candidate["batches"][0]["actualRateHz"] = source["batches"][0]["actualRateHz"]
+            assert candidate == source
+        else:
+            pytest.fail(f"unknown canonical replay wire case: {case_id}")
+
+        assert type(error.value) is contract.ReplayContractError
+        assert str(error.value) == expected_message
+        assert source == source_before
+        return
+
+    if entry == "validate_replay_document":
+        source = _document("failed-before")
+        source_before = deepcopy(source)
+        assert contract.validate_replay_document(source) == source
+        candidate = deepcopy(source)
+
+        if case_id == "M-REPLAY-BINDING-LABEL":
+            _set_binding_field(candidate, "probeId", "replay:probe-v3")
+        elif case_id == "M-REPLAY-WATCH-TYPE":
+            candidate["batches"][0]["values"][0]["watch"] = None
+        elif case_id == "M-REPLAY-FAILED-SAMPLE-SHAPE":
+            candidate["batches"][0]["values"][0]["status"] = "ERROR"
+        elif case_id == "M-REPLAY-SCHEMA":
+            candidate["schema"] = "stm32-monitor-replay/other"
+        elif case_id == "M-REPLAY-SOURCE":
+            candidate["source"] = "other-replay-source"
+        elif case_id == "M-REPLAY-PHYSICAL-EVIDENCE":
+            candidate["physical_transport_evidence"] = True
+        elif case_id == "M-REPLAY-ROLE":
+            candidate["scenario_role"] = "other"
+        elif case_id == "M-REPLAY-DUPLICATE-SELECTOR":
+            for batch in candidate["batches"]:
+                batch["values"][1]["watch"] = deepcopy(batch["values"][0]["watch"])
+        else:
+            pytest.fail(f"unknown replay document wire case: {case_id}")
+
+        _redigest_public_document(contract, candidate)
+        candidate_before = deepcopy(candidate)
+        with pytest.raises(contract.ReplayContractError) as error:
+            contract.validate_replay_document(candidate)
+        assert type(error.value) is contract.ReplayContractError
+        assert str(error.value) == expected_message
+        assert candidate == candidate_before
+        assert source == source_before
+        return
+
+    assert entry == "validate_run_reference"
+    reference = _reference(tmp_path, "failed-before")
+    reference_before = deepcopy(reference)
+    assert contract.validate_run_reference(reference) == reference
+    candidate = deepcopy(reference)
+
+    if case_id == "M-REFERENCE-GIT-HEAD":
+        candidate["git_head"] = "g" * 40
+    elif case_id == "M-REFERENCE-GIT-DIRTY-TYPE":
+        candidate["git_dirty"] = 1
+    elif case_id == "M-REFERENCE-EMPTY-DIGEST-LIST":
+        candidate["projected_batch_sha256s"] = []
+    else:
+        pytest.fail(f"unknown run reference wire case: {case_id}")
+
+    _redigest_public_reference(contract, candidate)
+    candidate_before = deepcopy(candidate)
+    with pytest.raises(contract.ReplayContractError) as error:
+        contract.validate_run_reference(candidate)
+    assert type(error.value) is contract.ReplayContractError
+    assert str(error.value) == expected_message
+    assert candidate == candidate_before
+    assert reference == reference_before
+
+
+def test_public_replay_wire_accepts_legal_failed_sample() -> None:
+    contract = _contract()
+    source = _document("failed-before")
+    source_before = deepcopy(source)
+    assert contract.validate_replay_document(source) == source
+
+    candidate = deepcopy(source)
+    sample = candidate["batches"][0]["values"][0]
+    sample["status"] = "ERROR"
+    sample["typedValue"] = None
+    sample["code"] = "MONITOR_READ_FAILED"
+    _redigest_public_document(contract, candidate)
+    candidate_before = deepcopy(candidate)
+
+    validated = contract.validate_replay_document(candidate)
+
+    assert validated == candidate
+    assert validated is not candidate
+    assert candidate == candidate_before
+    assert source == source_before
+
+
+def test_public_physical_wire_integrity_refuses_and_restores_baseline() -> None:
+    contract = _contract()
+    source = _physical_transcript(_document("failed-before"))
+    source_before = deepcopy(source)
+    assert contract.validate_physical_transcript(source) == source
+
+    physical_cases = (
+        (
+            "string-limit",
+            lambda candidate: candidate["binding"].update(
+                {"oversized": "x" * (contract.MAX_REPLAY_JSON_STRING_CHARS + 1)}
+            ),
+            "physical transcript JSON string exceeds its limit",
+        ),
+        (
+            "mapping-cycle",
+            lambda candidate: candidate["binding"].update(
+                {"cycle": candidate["binding"]}
+            ),
+            "physical transcript JSON contains a cycle",
+        ),
+        (
+            "nfc-key",
+            lambda candidate: candidate["binding"].update(
+                {"e\u0301": "decomposed-key"}
+            ),
+            "physical transcript JSON object keys must use NFC",
+        ),
+    )
+    for case_id, mutate, expected_message in physical_cases:
+        candidate = deepcopy(source)
+        mutate(candidate)
+        if case_id == "mapping-cycle":
+            binding = candidate["binding"]
+            with pytest.raises(contract.ReplayContractError) as error:
+                contract.canonical_physical_json_bytes(candidate)
+            assert binding["cycle"] is binding
+            del binding["cycle"]
+            assert candidate == source
+        else:
+            candidate_before = deepcopy(candidate)
+            with pytest.raises(contract.ReplayContractError) as error:
+                contract.canonical_physical_json_bytes(candidate)
+            assert candidate == candidate_before
+        assert type(error.value) is contract.ReplayContractError
+        assert str(error.value) == expected_message
+        assert source == source_before
+        assert contract.validate_physical_transcript(source) == source
+
+    candidate = deepcopy(source)
+    unsupported = object()
+    candidate["binding"]["unsupported"] = unsupported
+    with pytest.raises(contract.ReplayContractError) as error:
+        contract.canonical_physical_json_bytes(candidate)
+    assert type(error.value) is contract.ReplayContractError
+    assert str(error.value) == "physical transcript JSON contains an unsupported value"
+    assert candidate["binding"]["unsupported"] is unsupported
+    del candidate["binding"]["unsupported"]
+    assert candidate == source
+    assert source == source_before
+    assert contract.validate_physical_transcript(source) == source
+
+    finite = deepcopy(source)
+    finite["batches"][0]["values"][0]["typedValue"] = 1.5
+    finite_before = deepcopy(finite)
+    validated = contract.validate_physical_transcript(finite)
+    assert validated == finite
+    assert validated is not finite
+    assert finite == finite_before
+    assert contract.validate_physical_transcript(source) == source
+
+    typed_cases = (
+        (
+            "cumulative-string-budget",
+            {"left": "a" * 700_000, "right": "b" * 700_000},
+            "physical Monitor JSON string data exceeds its limit",
+        ),
+        (
+            "cumulative-key-budget",
+            {"a" * 700_000: 0, "b" * 700_000: 1},
+            "physical Monitor JSON string data exceeds its limit",
+        ),
+        (
+            "shallow-node-budget",
+            {f"key-{index}": index for index in range(10_001)},
+            "physical Monitor JSON exceeds its node limit",
+        ),
+    )
+    for _, typed_value, expected_message in typed_cases:
+        candidate = deepcopy(source)
+        candidate["batches"][0]["values"][0]["typedValue"] = typed_value
+        candidate_before = deepcopy(candidate)
+        with pytest.raises(contract.ReplayContractError) as error:
+            contract.validate_physical_transcript(candidate)
+        assert type(error.value) is contract.ReplayContractError
+        assert str(error.value) == expected_message
+        assert candidate == candidate_before
+        assert source == source_before
+        assert contract.validate_physical_transcript(source) == source
+
+
+def test_public_replay_reference_wire_integrity_refuses_and_restores_baseline(
+    tmp_path: Path,
+) -> None:
+    contract = _contract()
+    source = _document("failed-before")
+    source_before = deepcopy(source)
+    assert MonitorReplayDocument.from_value(source).to_dict() == source
+    assert contract.validate_replay_document(source) == source
+
+    candidate = deepcopy(source)
+    _set_binding_field(candidate, "svdSha256", "f" * 64)
+    _redigest_public_document(contract, candidate)
+    candidate_before = deepcopy(candidate)
+    assert MonitorReplayDocument.from_value(candidate).to_dict() == candidate
+    assert contract.validate_replay_document(candidate) == candidate
+    assert candidate == candidate_before
+    assert source == source_before
+    assert contract.validate_replay_document(source) == source
+
+    for field, value, expected_message in (
+        ("gitDirty", 1, "gitDirty is invalid"),
+        ("gitHead", "g" * 40, "gitHead is invalid"),
+    ):
+        candidate = deepcopy(source)
+        _set_binding_field(candidate, field, value)
+        _redigest_public_document(contract, candidate)
+        candidate_before = deepcopy(candidate)
+        with pytest.raises(contract.ReplayContractError) as error:
+            contract.validate_replay_document(candidate)
+        assert type(error.value) is contract.ReplayContractError
+        assert str(error.value) == expected_message
+        assert candidate == candidate_before
+        assert source == source_before
+        assert contract.validate_replay_document(source) == source
+
+    document_root: object = []
+    with pytest.raises(contract.ReplayContractError) as error:
+        contract.validate_replay_document(document_root)
+    assert type(error.value) is contract.ReplayContractError
+    assert str(error.value) == "replay document must be an object"
+    assert document_root == []
+    assert contract.validate_replay_document(source) == source
+
+    reference = _reference(tmp_path, "failed-before")
+    reference_before = deepcopy(reference)
+    assert MonitorRunRef.from_value(reference).to_dict() == reference
+    assert contract.validate_run_reference(reference) == reference
+    reference_root: object = []
+    with pytest.raises(contract.ReplayContractError) as error:
+        contract.validate_run_reference(reference_root)
+    assert type(error.value) is contract.ReplayContractError
+    assert str(error.value) == "monitor run reference must be an object"
+    assert reference_root == []
+    assert reference == reference_before
+    assert contract.validate_run_reference(reference) == reference
+
+    physical_reference = _physical_v2_reference()
+    physical_reference_before = deepcopy(physical_reference)
+    assert MonitorRunRef.from_value(physical_reference).to_dict() == physical_reference
+    assert contract.validate_run_reference(physical_reference) == physical_reference
+
+    v1_physical = deepcopy(physical_reference)
+    v1_physical["schema"] = "stm32-monitor-run-ref/1"
+    v1_physical["fixture_sha256"] = v1_physical.pop("source_record_sha256")
+    _redigest_public_reference(contract, v1_physical)
+    v1_before = deepcopy(v1_physical)
+    with pytest.raises(contract.ReplayContractError) as error:
+        contract.validate_run_reference(v1_physical)
+    assert type(error.value) is contract.ReplayContractError
+    assert str(error.value) == "monitor run reference execution source is invalid"
+    assert v1_physical == v1_before
+    assert physical_reference == physical_reference_before
+    assert contract.validate_run_reference(physical_reference) == physical_reference
