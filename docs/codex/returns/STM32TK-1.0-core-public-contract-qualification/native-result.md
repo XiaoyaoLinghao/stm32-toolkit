@@ -1,5 +1,17 @@
 # Current native coverage result
 
+## Current candidate-specific release decision — 2026-10-08
+
+The user explicitly approved the three numerical exceptions for fixed RC4/U64.
+Independent reconciliation of all other gates is complete. Final local admission
+is `LOCAL_ACCEPTED_WITH_USER_APPROVED_COVERAGE_EXCEPTION`, recorded separately
+in `r10/e/rc4/final-acceptance-with-coverage-exception.json`.
+Actual U64 ratios, scopes, raw inputs and native UNMET verdicts remain unchanged.
+The original U64 file's `releaseAccepted=false` is the measurement-time snapshot;
+the final release record and current matrix govern the later acceptance decision.
+No product, artifact or test execution is changed by this decision. All older
+NOT_ACCEPTED conclusions below remain true for their historical decision times.
+
 ## Current bounded closure — 2026-10-08
 
 U64 is independently reviewed and accepted as canonical native data. It composes

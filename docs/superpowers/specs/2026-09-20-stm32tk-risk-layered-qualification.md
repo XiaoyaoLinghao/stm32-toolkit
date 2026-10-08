@@ -1,5 +1,37 @@
 # Risk-layered qualification v2
 
+## User-approved fixed RC4 exception — 2026-10-08
+
+The user replied "可以，没有问题" to the explicit proposal at report head
+`57f87542ce99734e45173c51587d683c480ddc9b`, approving only three one-time
+numerical exceptions for fixed product/RC4
+`968cbb69b1f54b95a8fdc18a550481f6ff7c1268`: Toolkit overall90%, Toolkit frozen
+risk-core-v2 90%, and Monitor frozen risk-core-v2 95%. Their actual U64 results
+remain12047/13592,11429/12918 and2770/2956, respectively, all numerically UNMET.
+Monitor overall90% remains met. This does not lower permanent thresholds or
+change frozen file membership, denominators, subprocess collection or broad-v1/UI.
+
+The approved identity is U64 SHA-256
+`E232E8C2CE82F73109D05E3B6F3E811B56949CEC50553CECFD2C4B2112E6C5D2`, input identity
+`C794BC57F3FE777BA56937E856116146C6D383F42CE635706D0CB88A56D31C5B`, release manifest
+`27A2E8A6F00857855A5BA420552D36547BAA5F92C351C9C24EE47878F87377FA`, and Windows ZIP
+`ba242f2d1d79b625e42ac32306a3f854fa50c15a5bcb64e944d80ef833f22cc6`.
+User authority is retained in `r10/e/rc4/user-approved-coverage-exception-u64.json`.
+
+All other frozen requirements remain mandatory. Independent reconciliation is
+complete; this candidate is `LOCAL_ACCEPTED_WITH_USER_APPROVED_COVERAGE_EXCEPTION`.
+the original numeric gates remain UNMET with a separate USER_APPROVED_EXCEPTION
+disposition. The final decision is recorded in
+`r10/e/rc4/final-acceptance-with-coverage-exception.json`; user approval and
+independent gate reconciliation are separate inputs to that decision.
+Keep the stated unknown error/state combinations, historical180ms retention
+timeout/SQLITE_INTERRUPT/512durable deletions and unknown phase/root cause, plus
+the scoped resource, rollback and historical physical-evidence limits. No failure
+is relabeled PASS. See the existing release plan and RC4 handoff for exact scope.
+Product, dependency, build-configuration or support-scope changes require a fresh
+applicability decision. No new test cycle, Toolkit95 work or remote action follows
+automatically. Earlier amendments below remain historical and otherwise effective.
+
 Accepted base: `4bb612beabfdaf1ab4c845b966061832add38482`.
 Product source: `8a11caef14df16c5e56c0be2363d4ef5530110eb`.
 The user's 2026-09-20 approval authorizes this test reorganization and offline
