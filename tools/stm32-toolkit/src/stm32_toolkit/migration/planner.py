@@ -419,7 +419,7 @@ def _inspection_blockers(inspection: KeilInspection) -> list[MigrationBlocker]:
                         0,
                         0,
                         "",
-                        "included ARMCC assembly requires a reviewed GNU startup replacement; no file was written by planning",
+                        "included ARMCC assembly requires a reviewed GNU-compatible assembly adaptation; if this is startup code, review vector table and initialization; no file was written by planning",
                     )
                 )
     if inspection.output.scatter_file:

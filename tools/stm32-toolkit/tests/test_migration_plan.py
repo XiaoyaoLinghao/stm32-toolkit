@@ -1425,27 +1425,29 @@ def test_inline_assembly_blockers(tmp_path):
 
 def test_assembly_source_blocker(tmp_path):
     startup = "; startup\n    AREA RESET, DATA, READONLY\n    END\n"
+    algorithm = "; DSP routine\n    AREA FILTER, CODE, READONLY\n    END\n"
     repo = build_repo(
         tmp_path,
         files={
             "Main/main.c": "int main(void) { return 0; }\n",
             "Startup/startup.s": startup,
+            "DSP/filter.s": algorithm,
         },
         uvprojx_kwargs={
             "groups": (
                 ("Main", (("main.c", "1", "Main/main.c"),)),
                 ("Startup", (("startup.s", "2", "Startup/startup.s"),)),
+                ("DSP", (("filter.s", "2", "DSP/filter.s"),)),
             )
         },
     )
     inspection = fixture_inspection(repo)
     plan = plan_keil_conversion(repo, inspection)
-    assert any(
-        b.code == "ARMCC_ASSEMBLY_UNSUPPORTED"
-        and b.path == "Startup/startup.s"
-        and "reviewed GNU startup replacement" in b.message
-        for b in plan.blockers
-    )
+    assembly = [b for b in plan.blockers if b.code == "ARMCC_ASSEMBLY_UNSUPPORTED"]
+    assert {b.path for b in assembly} == {"Startup/startup.s", "DSP/filter.s"}
+    assert all("reviewed GNU-compatible assembly adaptation" in b.message for b in assembly)
+    assert all("if this is startup code, review vector table and initialization" in b.message for b in assembly)
+    assert all("no file was written by planning" in b.message for b in assembly)
 
 
 def test_pragma_blockers(tmp_path):
