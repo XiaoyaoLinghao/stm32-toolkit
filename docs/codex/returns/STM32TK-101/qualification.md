@@ -5,6 +5,13 @@ release NOT QUALIFIED**. Coverage gates remain unmet, final-package installation
 and current physical evidence is pending. This is not `SOFTWARE_COMPLETE_HARDWARE_PENDING`, because
 not all software release gates passed. No coverage exception is inferred from v1.0.0.
 
+Follow-up authorization, 2026-10-10: the user approved pushing the candidate and a new v1.0.1
+coverage exception conditional on coverage being no lower than v1.0.0. The first measured Toolkit
+and UI aggregate fractions below do not yet satisfy that condition. A bounded supplementary
+measurement is being prepared under the exact comparison rules in
+[release qualification](../../../testing/release-qualification.md). Original results remain historical
+facts, and no new installation or hardware action is authorized by this coverage decision.
+
 ## Identity, ownership and review
 
 - Accepted remote base: `694c825d29a55a53052a148efa4cc6720c315a04`.
@@ -129,10 +136,10 @@ measurement is claimed. Retention, resource-release and rollback limitations rem
 [release status](../../../release-status.md). Further hardware work needs a filled standard execution
 card and specific authorization, not an automatic retry of the original report.
 
-The primary agent has prepared PR text and release-note drafts locally. Push, PR creation/mutation,
-merge, tag and release remain separate external actions requiring explicit authorization under AGENTS.
-Publication also needs a new qualification decision and the required remaining evidence; v1.0.0's
-one-time exception is not transferable.
+The primary agent has prepared PR text and release-note drafts locally. The user's follow-up permits
+the candidate push. Other remote lifecycle actions retain their AGENTS authorization boundary.
+Publication still needs the remaining required evidence and a specific release decision; the new
+conditional coverage exception must first satisfy its no-regression condition.
 
 ## Evidence retention and cleanup
 

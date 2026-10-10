@@ -74,3 +74,9 @@ See [final qualification](codex/returns/STM32TK-101/qualification.md) for fixed 
 evidence ownership, retained limitations and the remaining release conditions, and
 [the execution ledger](codex/returns/STM32TK-101/execution.md) for slice reviews and test records.
 Later report-only commits do not change the source identity of the existing artifacts.
+
+On 2026-10-10 the user additionally authorized the candidate push and a v1.0.1 coverage exception,
+conditional on no lower coverage than v1.0.0. The exact baseline fractions and unchanged collection
+rules are in [release qualification](testing/release-qualification.md). The initial Toolkit and UI
+aggregate measurements fall below their respective old baselines. The new condition must be checked
+using current native evidence before acceptance; original measurements are not overwritten.
