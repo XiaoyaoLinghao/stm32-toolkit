@@ -228,3 +228,14 @@ UI测试只补当前可观察行为：合法失败envelope保持固定拒绝提�
 UI aggregate不低于784/810且每正分母源码文件仍达90%。数值条件满足只接受本次覆盖率例外，不能替代安装或实体证据。
 若现有模块仍不足，保留实际测量，由主代理按具体遗漏行为划定一次后续测试范围，不进行无界补数或改产品来缩减分母。
 清理由主代理统一执行，原始coverage、命令/退出码、旧失败和源绑定保留；A/ar及D此前受拒路径不再触碰。
+
+Python追加范围于执行前冻结为下列17个已有整模块（均相对`tools/stm32-toolkit/tests/`）：
+`test_diagnostic_cli.py`、`test_diagnostic_mcp.py`、`test_fix_verification_cli.py`、`test_fix_verification_mcp.py`、
+`test_acceptance_recovery_cli.py`、`test_acceptance_recovery_mcp.py`、`test_acceptance_cli.py`、`test_acceptance_mcp.py`、
+`test_testing_cli.py`、`test_testing_mcp.py`、`test_creation_cli.py`、`test_creation_mcp.py`、
+`test_regeneration_cli.py`、`test_regeneration_mcp.py`、`test_mcp_roots.py`、`test_mcp_server.py`、
+`test_risk_svd_peripheral_public.py`。现有q-run遗漏的CLI/MCP/SVD调用是本轮补测理由，不运行整个仓库全套。
+验证者在保留的干净q树上运行，其产品/测试blob已证明与最终包相关字节相同，记录实际HEAD。
+预算一次完整新增模块运行（45分钟），首个非预期失败停止并分类；不重跑原22模块。新运行全PASS后将原q-run
+原生数据副本与本轮数据副本用coverage.py combine --keep合并到q2-run专用目录，再生成当前JSON；禁止在旧证据目录
+直接combine/report而消费原始shards。报告必须保留新旧命令、退出码、源码适用性和全部未改成员。
