@@ -1,6 +1,6 @@
 # Windows 部署与 IDE 调试前置核对
 
-本文件面向 Windows x86_64、CPython 3.12 的发行包部署。已发布版本是 v1.0.0；v1.0.1 仍在开发，不能把补丁规格当成已安装功能。实际执行顺序、授权、留证和首错停止以[标准测试流程](standard-test-procedure.md)为准；已知限制见[发布状态](../release-status.md)，常见工程错误见[用户指南](../user-guide.md)。软件安装或离线参数检查不等于真实 IDE/探针验收。
+本文件面向 Windows x86_64、CPython 3.12 的发行包部署。已发布版本是 v1.0.0；当前源码候选标识为 v1.0.1，相关功能已进入代码，仍待独立审查与发布资格验证，未发布或安装。实际执行顺序、授权、留证和首错停止以[标准测试流程](standard-test-procedure.md)为准；已知限制见[发布状态](../release-status.md)，常见工程错误见[用户指南](../user-guide.md)。软件安装或离线参数检查不等于真实 IDE/探针验收。
 
 ## 固定发行与本机输入
 
@@ -22,7 +22,7 @@ if ($LASTEXITCODE -ne 0) { throw 'PyOCD module failed' }
 if ($LASTEXITCODE -ne 0) { throw 'PyOCD executable failed' }
 ```
 
-发行策略当前固定 PyOCD 0.45.1；最终 launcher 应报告与已验证模块一致的版本且绑定最终解释器。`import pyocd`、模块入口成功、文件存在或 Toolkit 版本成功，都不能单独证明 `pyocd.exe` 可供 IDE 使用。安装/Repair 失败保留原状态及 rollback 证据。
+发行策略当前固定 PyOCD 0.45.1；1.0.1 候选经已授权 Repair 成功后应检查 `DataRoot/runtime/1.0.1/Scripts/pyocd.exe`。最终 launcher 应报告与已验证模块一致的版本且绑定最终解释器。`import pyocd`、模块入口成功、文件存在或 Toolkit 版本成功，都不能单独证明 `pyocd.exe` 可供 IDE 使用。安装/Repair 失败保留原状态及 rollback 证据；旧版 runtime 先隔离，提升失败须回滚，原工程及用户数据不改写。
 
 ## IDE 配置离线核对
 

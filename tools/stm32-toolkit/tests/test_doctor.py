@@ -7,6 +7,7 @@ import sys
 import time
 from pathlib import Path
 
+from stm32_toolkit import __version__
 from stm32_toolkit.doctor import (
     TOOLS,
     _READER_JOIN_TIMEOUT_SECONDS,
@@ -71,7 +72,7 @@ def test_doctor_reports_missing_planned_tools_without_mutating(monkeypatch, tmp_
 
 def test_doctor_reports_closed_runtime_and_public_inventory(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(
-        "stm32_toolkit.doctor.importlib.metadata.version", lambda name: "1.0.0"
+        "stm32_toolkit.doctor.importlib.metadata.version", lambda name: __version__
     )
     result = run_doctor(tmp_path)
     runtime = result.data["runtime"]
@@ -79,12 +80,22 @@ def test_doctor_reports_closed_runtime_and_public_inventory(monkeypatch, tmp_pat
         "requiredPython": ">=3.12,<3.13",
         "pythonVersion": ".".join(str(part) for part in sys.version_info[:3]),
         "pythonSupported": sys.version_info[:2] == (3, 12),
-        "toolkitVersion": "1.0.0",
-        "monitorVersion": "1.0.0",
+        "toolkitVersion": __version__,
+        "monitorVersion": __version__,
         "versionsCompatible": True,
     }
     assert len(result.data["publicInventory"]["mcpTools"]) == 48
     assert len(result.data["publicInventory"]["skills"]) == 8
+
+
+def test_doctor_reports_old_monitor_version_as_incompatible(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(
+        "stm32_toolkit.doctor.importlib.metadata.version", lambda name: "1.0.0"
+    )
+    runtime = run_doctor(tmp_path).data["runtime"]
+    assert runtime["toolkitVersion"] == __version__
+    assert runtime["monitorVersion"] == "1.0.0"
+    assert runtime["versionsCompatible"] is False
 
 
 def test_doctor_reports_missing_monitor_metadata_without_fabrication(

@@ -774,16 +774,17 @@ def test_generation_spec_validation(tmp_path, field, rule):
 
 
 @pytest.mark.parametrize("schema_version", [2, 3])
-def test_legacy_0_9_generation_producer_plans_and_emits_current_managed_manifest(
-    tmp_path: Path, schema_version: int
+@pytest.mark.parametrize("producer_version", ["1.0.0", "0.9.0"])
+def test_legacy_generation_producer_plans_and_emits_current_managed_manifest(
+    tmp_path: Path, schema_version: int, producer_version: str
 ):
     payload = standard_payload()
     payload["schemaVersion"] = schema_version
-    payload["generatedBy"] = {"tool": "stm32-toolkit", "version": "0.9.0"}
-    root = write_project(tmp_path / f"schema-{schema_version}", payload)
+    payload["generatedBy"] = {"tool": "stm32-toolkit", "version": producer_version}
+    root = write_project(tmp_path / f"schema-{schema_version}-{producer_version}", payload)
 
     plan = plan_for(root)
-    assert plan.model.generation.version == "0.9.0"
+    assert plan.model.generation.version == producer_version
     applied = apply_project_configuration(plan)
     assert applied.ok is True
 
@@ -791,12 +792,12 @@ def test_legacy_0_9_generation_producer_plans_and_emits_current_managed_manifest
     manifest = json.loads(
         (root / ".stm32-toolkit" / "generated-files.json").read_text(encoding="utf-8")
     )
-    assert project["generatedBy"]["version"] == "0.9.0"
+    assert project["generatedBy"]["version"] == producer_version
     assert manifest["toolVersion"] == __version__
 
-    # A preserved 0.9 managed manifest remains readable while the next plan
-    # continues to emit the current 1.0 manifest bytes.
-    manifest["toolVersion"] = "0.9.0"
+    # Historical producer and managed identity remain truthful; an explicit
+    # configure plan emits the current managed manifest without rewriting the project.
+    manifest["toolVersion"] = producer_version
     write_manifest_bytes(
         root,
         json.dumps(manifest, indent=2, ensure_ascii=False).encode("utf-8") + b"\n",
@@ -804,10 +805,17 @@ def test_legacy_0_9_generation_producer_plans_and_emits_current_managed_manifest
     replanned = plan_for(root)
     replanned_manifest = json.loads(replanned.managed_manifest_bytes.decode("utf-8"))
     assert replanned_manifest["toolVersion"] == __version__
+    assert json.loads((root / ".stm32-project.json").read_text(encoding="utf-8"))["generatedBy"]["version"] == producer_version
+
+    (root / "CMakeLists.txt").write_bytes(b"user edit\n")
+    drift_plan = plan_for(root)
+    assert any(blocker.code == "GENERATED_FILE_DRIFT" for blocker in drift_plan.blockers)
+    assert apply_project_configuration(drift_plan).code == "GENERATED_FILE_DRIFT"
 
 
 def test_generation_producer_allowlist_is_exact_and_type_safe(tmp_path: Path):
     assert is_supported_generation_producer("stm32-toolkit", __version__)
+    assert is_supported_generation_producer("stm32-toolkit", "1.0.0")
     assert is_supported_generation_producer("stm32-toolkit", "0.9.0")
     for value in ("0.5.0", "2.0.0", 1, None, [], {}):
         assert not is_supported_generation_producer("stm32-toolkit", value)

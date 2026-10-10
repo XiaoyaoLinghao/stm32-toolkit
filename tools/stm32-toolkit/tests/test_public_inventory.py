@@ -91,7 +91,7 @@ def test_release_python_and_static_package_versions_are_one_contract(tmp_path: P
     ui = json.loads(
         (REPO_ROOT / "tools/stm32-monitor/ui/package.json").read_text("utf-8")
     )
-    assert __version__ == "1.0.0"
+    assert __version__ == "1.0.1"
     assert REQUIRED_PYTHON == ">=3.12,<3.13"
     assert SUPPORTED_PYTHON == (3, 12)
     assert toolkit["project"]["version"] == __version__

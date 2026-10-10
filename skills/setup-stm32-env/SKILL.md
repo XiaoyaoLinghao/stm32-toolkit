@@ -13,7 +13,7 @@ description: Use when a Claude Code user asks to check, bootstrap, repair, or di
 
 - CHECK is read-only and offline with respect to installation. It never creates files, probes hardware, kills unrelated or existing processes, or installs anything. It may terminate only a probe subprocess that CHECK itself started after that probe exceeds its timeout.
 - Never register a second MCP. The plugin-bundled `.mcp.json` starts only after the managed runtime is healthy.
-- The only MCP interpreter is `${CLAUDE_PLUGIN_DATA}/runtime/1.0.0/Scripts/python.exe`; system `python`, `py`, or `uv` is never an MCP fallback. A healthy runtime includes the exact manifest-listed Toolkit/Monitor wheels with readable UI assets, the pinned `pyocd==0.45.1` distribution, and the existing doctor contract.
+- The only MCP interpreter for this candidate is `${CLAUDE_PLUGIN_DATA}/runtime/1.0.1/Scripts/python.exe`; system `python`, `py`, or `uv` is never an MCP fallback. A healthy runtime includes the exact manifest-listed Toolkit/Monitor wheels with readable UI assets, the pinned `pyocd==0.45.1` distribution, and the existing doctor contract.
 - CPython >=3.12,<3.13 is the only bounded bootstrap prerequisite for consuming an extracted offline bundle from the official pinned source candidate. Bootstrap never installs from a package index or from the source tree.
 - `${CLAUDE_PLUGIN_ROOT}/tools/stm32-toolkit` remains source provenance only; the historical
   `tools/stm32-toolkit[probe]` source expression is not installed directly.
@@ -43,7 +43,7 @@ PowerShell and do not require host placeholders. Set the paths once and always r
 check first.
 
 ```powershell
-$ToolkitRoot = 'C:\tools\stm32-toolkit-1.0.0'
+$ToolkitRoot = 'C:\tools\stm32-toolkit-1.0.1'
 $DataRoot = 'C:\data\stm32-toolkit'
 $ProjectRoot = 'C:\work\blinky'
 $SetupScript = Join-Path $ToolkitRoot 'bin\setup-stm32-env.ps1'
@@ -61,7 +61,7 @@ install before running this separate Bootstrap command:
   -ToolkitRoot $ToolkitRoot -DataRoot $DataRoot -ProjectRoot $ProjectRoot
 ```
 
-If `Check` reports `repairable` for an approved 0.9.0/0.5.0/0.3.0 legacy upgrade, or `broken` for
+If `Check` reports `repairable` for an approved 1.0.0/0.9.0/0.5.0/0.3.0 legacy upgrade, or `broken` for
 an existing runtime, review its source and downgrade guards and explicitly authorize Repair before
 running this separate command:
 
@@ -77,9 +77,9 @@ running this separate command:
 CHECK always returns JSON. `bundle.status` is `missing` or verified, and `runtimeState.status` is
 `missing`, `matching`, `repairable`, `downgrade-refused`, `source-conflict`, `unsupported`, or
 `invalid`. `runtime.status` is `missing`, `healthy`, or `broken`; it includes version/error evidence
-and `recommendedMode`. A healthy runtime has version `1.0.0` and a successful bounded
-`-m stm32_toolkit.cli ... doctor --json`. An existing 0.9.0, 0.5.0 or 0.3.0 runtime reports broken as legacy
-evidence. Repair quarantines that runtime before atomically promoting 1.0.0 and publishing one
+and `recommendedMode`. A healthy runtime has version `1.0.1` and a successful bounded
+`-m stm32_toolkit.cli ... doctor --json`. An existing 1.0.0, 0.9.0, 0.5.0 or 0.3.0 runtime reports broken as legacy
+evidence. Repair quarantines that runtime before atomically promoting 1.0.1 and publishing one
 `runtime/runtime-state.json` generation. Tool version, extension, and pack inventory commands are
 bounded; timeouts become evidence rather than hangs.
 
@@ -87,11 +87,11 @@ The existing isolated PEP 440 `pyocd` distribution check remains bounded to `>=0
 
 Final-path launcher checks additionally require the PyOCD console executable to be bound to the final runtime Python and to return the expected version with `pyocd.exe --version`. Bootstrap/Repair require the exact release pin; Check retains the supported module-version range above and requires the launcher to agree with that validated module version. Import/module checks alone are insufficient after staging promotion. Use the [Windows deployment and IDE preflight](../../docs/testing/windows-deployment-and-ide-preflight.md) when preparing deployment instructions; keep its version-specific IDE compatibility limits explicit.
 
-## VS Code extensions (CHECK evidence only)
+## GUI tools and VS Code extensions (CHECK evidence only)
 
-The doctor `vscodeExtensions` evidence checks exactly three recommended extensions by invoking the bounded read-only `code --list-extensions --show-versions` probe: `ms-vscode.cpptools`, `ms-vscode.cmake-tools`, and `marus25.cortex-debug`. Each reports `installed`, `version`, and a status of `ok`, `missing`, `unavailable` (no `code` executable), or `nonzero`/`timeout`/`error` (probe failed).
+Neither CHECK nor doctor starts CubeMX or VS Code. CHECK locates the CubeMX executable and reads Windows file-version metadata without running it: `cubeMx.status` is `ok` with a static version, `unknown` when an executable has no readable static version, or `missing` when absent. `tools.vscodeExtensions` is `not-probed`, with a located command path or `null`, and `output=null`; it does not enumerate extensions. Other CLI tool probes remain bounded.
 
-CHECK never installs, removes, or modifies extensions, settings, or the extensions directory. When an extension is `missing` or the probe is unavailable, tell the operator to install or remove the recommended extensions manually in VS Code and re-run CHECK afterwards. Do not run any other VS Code command.
+Doctor retains the three recommended extension names: `ms-vscode.cpptools`, `ms-vscode.cmake-tools`, and `marus25.cortex-debug`. Without an actual extension probe, each reports `installed=false`, `version=null`, `status="not-probed"`. This is unknown installation state, not proof that an extension is missing. CHECK never installs, removes, or modifies extensions, settings, or the extensions directory. For IDE use, verify the active VS Code profile and extension versions manually against the [Windows deployment and IDE preflight](../../docs/testing/windows-deployment-and-ide-preflight.md).
 
 For `missing`, ask authorization for Bootstrap. For `repairable` legacy-upgrade state or `broken`
 runtime, ask authorization for Repair. Stop until the user explicitly approves the exact mode and
@@ -101,7 +101,7 @@ paths.
 
 Both modes first verify `release/release-manifest.json`, every manifest hash, safe path, and the closed
 wheel set. They copy the verified wheels into a unique
-`${CLAUDE_PLUGIN_DATA}/runtime/.staging/1.0.0-<id>` directory before one offline
+`${CLAUDE_PLUGIN_DATA}/runtime/.staging/1.0.1-<id>` directory before one offline
 `pip install --no-index --no-deps` invocation, run `pip check`, validate exact Toolkit/Monitor
 versions and assets, validate isolated `pyocd`, and validate doctor before promotion. Failed safe
 staging is removed; a staging tree containing redirects is preserved for manual recovery rather

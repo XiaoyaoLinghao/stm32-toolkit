@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build and verify the STM32 Toolkit 1.0.0 offline Windows bundle.
+"""Build and verify the STM32 Toolkit 1.0.1 offline Windows bundle.
 
 This module intentionally uses the Python standard library for the artifact
 boundary.  It does not resolve packages, contact an index, execute package
@@ -30,7 +30,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Mapping, Sequence
 
 
-VERSION = "1.0.0"
+VERSION = "1.0.1"
 REPOSITORY = "https://github.com/XiaoyaoLinghao/stm32-toolkit.git"
 REQUIRED_PYTHON = ">=3.12,<3.13"
 MANIFEST_SCHEMA = "stm32-toolkit-release/1"
@@ -921,11 +921,11 @@ def _troubleshooting() -> bytes:
             "- Missing or broken runtime: use Check, then authorize Bootstrap or Repair.\n"
             "- Unsupported state, downgrade refusal, or source conflict: preserve the state and use the matching pinned bundle.\n"
             "- pip-check, Monitor asset, license, SBOM, or doctor mismatch: keep the evidence and obtain a matching candidate.\n"
-            "- Keep DataRoot long-lived; verify the exact runtime/1.0.0/Scripts/pyocd.exe version after promotion.\n"
+            f"- Keep DataRoot long-lived; verify the exact runtime/{VERSION}/Scripts/pyocd.exe version after promotion.\n"
             "- Use an absolute project cwd, GDB/pack paths, startup-ready output, and resolved preLaunch task references; a missing task or F5 URI error stops the flow.\n"
             "- During Watch, stop the core through the named handoff and finish with the ordinary detach/cleanup path.\n"
             "- DiagnosticStore native lock-contention classification remains a known limitation; preserve its evidence and follow the shipped runbook.\n"
-            "- Full deployment and IDE checks: when reading the package-root troubleshooting.md, open the companion stm32-toolkit-1.0.0-source.zip beside it and then open stm32-toolkit-1.0.0/docs/testing/windows-deployment-and-ide-preflight.md inside that archive. In an extracted Windows bundle, the copy under stm32-toolkit-1.0.0/release/troubleshooting.md is under the extracted Toolkit root; open ../docs/testing/windows-deployment-and-ide-preflight.md from release/ (or ToolkitRoot/docs/testing/windows-deployment-and-ide-preflight.md from the extracted ToolkitRoot).\n").encode("utf-8")
+            f"- Full deployment and IDE checks: when reading the package-root troubleshooting.md, open the companion stm32-toolkit-{VERSION}-source.zip beside it and then open stm32-toolkit-{VERSION}/docs/testing/windows-deployment-and-ide-preflight.md inside that archive. In an extracted Windows bundle, the copy under stm32-toolkit-{VERSION}/release/troubleshooting.md is under the extracted Toolkit root; open ../docs/testing/windows-deployment-and-ide-preflight.md from release/ (or ToolkitRoot/docs/testing/windows-deployment-and-ide-preflight.md from the extracted ToolkitRoot).\n").encode("utf-8")
 
 
 def _manifest_shape(manifest: Any) -> None:

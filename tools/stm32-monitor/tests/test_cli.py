@@ -13,7 +13,7 @@ class FakeEndpoint:
     host: str = "127.0.0.1"
     port: int = 45678
     token: str = field(default="d" * 64, repr=False)
-    monitor_version: str = "1.0.0"
+    monitor_version: str = "1.0.1"
 
     @property
     def url(self) -> str:
@@ -63,7 +63,7 @@ def test_version_command_reports_the_package_version() -> None:
     output = io.StringIO()
 
     assert main(["version"], _stdout=output) == 0
-    assert output.getvalue() == "1.0.0\n"
+    assert output.getvalue() == "1.0.1\n"
 
 
 def test_serve_cli_accepts_only_project_data_session_and_json(tmp_path: Path) -> None:
@@ -93,7 +93,7 @@ def test_serve_cli_accepts_only_project_data_session_and_json(tmp_path: Path) ->
     payload = json.loads(output.getvalue())
     assert payload["ok"] is True
     assert payload["endpoint"]["url"] == "http://127.0.0.1:45678"
-    assert payload["endpoint"]["monitorVersion"] == "1.0.0"
+    assert payload["endpoint"]["monitorVersion"] == "1.0.1"
     assert payload["endpoint"]["accessUrl"].startswith(
         "http://127.0.0.1:45678/#token="
     )

@@ -1366,8 +1366,8 @@ def test_jsonl_export_manifest_binds_sha_size_count_and_all_runtime_versions(tmp
             "createdAtUtc",
         }
         assert manifest["protocol"] == "stm32-toolkit-monitor/1"
-        assert manifest["toolkitVersion"] == "1.0.0"
-        assert manifest["monitorVersion"] == "1.0.0"
+        assert manifest["toolkitVersion"] == "1.0.1"
+        assert manifest["monitorVersion"] == "1.0.1"
         assert manifest["workspaceId"] == paths.workspace_id
         assert manifest["sha256"] == hashlib.sha256(data).hexdigest()
         assert manifest["bytes"] == len(data)

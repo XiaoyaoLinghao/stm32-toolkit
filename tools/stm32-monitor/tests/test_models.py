@@ -604,8 +604,8 @@ def test_protocol_results_are_monitor_versioned_and_details_are_snapshotted() ->
     assert bad.protocol == MONITOR_PROTOCOL_VERSION == "stm32-toolkit-monitor/1"
     assert bad.to_dict() == {
         "protocol": "stm32-toolkit-monitor/1",
-        "toolkitVersion": "1.0.0",
-        "monitorVersion": "1.0.0",
+        "toolkitVersion": "1.0.1",
+        "monitorVersion": "1.0.1",
         "ok": False,
         "operation": "groups.create",
         "code": "MONITOR_REQUEST_INVALID",

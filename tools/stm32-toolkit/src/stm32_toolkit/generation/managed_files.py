@@ -22,7 +22,7 @@ from stm32_toolkit.project_model import ProjectModel
 #: Frozen generation contract values (work order sections 3 and 8.1).
 PLAN_VERSION = 1
 TEMPLATE_VERSION = 1
-LEGACY_GENERATION_PRODUCER_VERSIONS = ("0.9.0",)
+LEGACY_GENERATION_PRODUCER_VERSIONS = ("1.0.0", "0.9.0")
 SUPPORTED_GENERATION_PRODUCER_VERSIONS = (__version__, *LEGACY_GENERATION_PRODUCER_VERSIONS)
 MANAGED_MANIFEST_PATH = ".stm32-toolkit/generated-files.json"
 STAGING_ROOT = ".stm32-toolkit/configuration-staging"

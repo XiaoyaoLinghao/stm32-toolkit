@@ -9,14 +9,14 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$RuntimeVersion = "1.0.0"
+$RuntimeVersion = "1.0.1"
 $PyOcdVersion = "0.45.1"
-$LegacyRuntimeVersions = @("0.9.0", "0.5.0", "0.3.0")
+$LegacyRuntimeVersions = @("1.0.0", "0.9.0", "0.5.0", "0.3.0")
 $ProcessOutputLimit = 65536
 $ReleaseUtilityRelative = "tools/release/build_0900_artifacts.py"
 $ReleasePolicyRelative = "tools/release/release_0900_policy.json"
-$ReleaseUtilitySha256 = "9fe8b91e3834156b974850f13a89c7c899b49444403d0bbc0ab73b16332d671c"
-$ReleasePolicySha256 = "d575865012631e39596b675daecea343abb2294f6e9ea87e895b0ebe80236d4a"
+$ReleaseUtilitySha256 = "2510ddcab9edcfd59ec343418fd68b9522e4d3461b0c0f385d84c7bad72339a0"
+$ReleasePolicySha256 = "980b6f34baca0d025768eba349612f85b8053763cbeb2e267433697afc639bf4"
 $ReleaseManifestRelative = "release/release-manifest.json"
 $RuntimeStateFileName = "runtime-state.json"
 $InMemoryReleaseLauncher = @'
@@ -95,7 +95,7 @@ try:
 except Exception:
     raise SystemExit(2)
 ui = resources.files("stm32_monitor") / "ui_dist"
-if version != "1.0.0":
+if version != "1.0.1":
     raise SystemExit(3)
 if not _file(ui, "index.html") or not _file(ui, ".vite/manifest.json"):
     raise SystemExit(4)
@@ -690,14 +690,29 @@ function Get-GapEvidence {
         "cmake" = @("cmake", "--version")
         "ninja" = @("ninja", "--version")
         "pyocd" = @("pyocd", "--version")
-        "cubeMx" = @("STM32CubeMX", "--version")
-        "vscodeExtensions" = @("code", "--list-extensions")
+        "cubeMx" = @("STM32CubeMX")
+        "vscodeExtensions" = @("code")
         "cmsisPacks" = @("pyocd", "pack", "show")
     }
     $result = [ordered]@{}
     foreach ($entry in $commands.GetEnumerator()) {
         $tool = Get-Command $entry.Value[0] -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($entry.Key -eq "vscodeExtensions") {
+            $result[$entry.Key] = [ordered]@{ status = "not-probed"; path = if ($tool) { $tool.Source } else { $null }; output = $null }
+            continue
+        }
         if (-not $tool) { $result[$entry.Key] = [ordered]@{ status = "missing"; path = $null; output = $null }; continue }
+        if ($entry.Key -eq "cubeMx") {
+            $staticVersion = $null
+            try {
+                $fileVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo($tool.Source)
+                foreach ($candidate in @($fileVersion.ProductVersion, $fileVersion.FileVersion)) {
+                    if (-not [string]::IsNullOrWhiteSpace($candidate)) { $staticVersion = $candidate.Trim(); break }
+                }
+            } catch { }
+            $result[$entry.Key] = [ordered]@{ status = if ($staticVersion) { "ok" } else { "unknown" }; path = $tool.Source; output = $staticVersion }
+            continue
+        }
         $probe = Invoke-BoundedProcess $tool.Source $entry.Value[1..($entry.Value.Count - 1)] 5
         $result[$entry.Key] = [ordered]@{ status = $probe.status; path = $tool.Source; output = if ($probe.stdout) { ($probe.stdout -split "`r?`n")[0] } else { $null } }
     }
