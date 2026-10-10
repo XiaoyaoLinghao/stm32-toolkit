@@ -659,7 +659,7 @@ def _build_wheel(repo_root: Path, package_path: str, wheelhouse: Path, output: P
         for name in ("TEMP", "TMP", "TMPDIR"):
             if name in os.environ:
                 env[name] = os.environ[name]
-        result = _process([str(python), "-I", "-m", "pip", "wheel", "--disable-pip-version-check", "--no-index", "--no-deps", "--no-build-isolation", "--wheel-dir", str(output), str(repo_root / package_path)], env=env, timeout=600, text=True)
+        result = _process([str(python), "-I", "-m", "pip", "wheel", "--disable-pip-version-check", "--no-cache-dir", "--no-index", "--no-deps", "--no-build-isolation", "--wheel-dir", str(output), str(repo_root / package_path)], env=env, timeout=600, text=True)
         if result.returncode != 0:
             raise ReleaseError("product wheel build failed")
         wheels = sorted(output.glob("*.whl"), key=lambda item: item.name.encode("utf-8"))

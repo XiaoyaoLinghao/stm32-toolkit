@@ -109,6 +109,7 @@ def _assert_build_wheel_call_shape(calls, output: Path) -> None:
         "pip",
         "wheel",
         "--disable-pip-version-check",
+        "--no-cache-dir",
         "--no-index",
         "--no-deps",
         "--no-build-isolation",
@@ -155,6 +156,20 @@ def test_build_wheel_does_not_invent_absent_caller_temp_environment(monkeypatch,
         "SOURCE_DATE_EPOCH": "315532800",
     }
     assert not {"TEMP", "TMP", "TMPDIR"} & set(calls[2]["env"])
+
+
+def test_build_wheel_disables_persistent_pip_cache_even_when_caller_has_one(monkeypatch, tmp_path: Path):
+    persistent_cache = tmp_path / "user-pip-cache"
+    monkeypatch.setenv("PIP_CACHE_DIR", str(persistent_cache))
+    _, calls, output = _capture_build_wheel_processes(
+        monkeypatch,
+        tmp_path,
+        caller_temp={},
+    )
+    _assert_build_wheel_call_shape(calls, output)
+    wheel_call = calls[2]
+    assert "PIP_CACHE_DIR" not in wheel_call["env"]
+    assert wheel_call["argv"].count("--no-cache-dir") == 1
 
 
 def test_bootstrap_anchor_binds_git_archive_bytes_not_worktree_filter_bytes():
