@@ -185,3 +185,8 @@ review_b在独立干净drb按远端完整accepted base `694c825d29a55a53052a148e
 SPDXRef-Document。分类PRODUCT；不能据其它通过项将这套包标为完整发行PASS。D继续负责最小builder修复、
 既有SBOM用例扩充和utility信任锚点，主代理审查后重新冻结与双构建；Python/UI测量适用性不受影响。
 原始失败证据保留p-run，新的构建使用独立p3/p4及新输出目录，防止复用构建残留。最终包身份由后续资格记录给出。
+
+D修订CodeHead `c75adb430fa1f03cc0dc5a4a9e7f519838978664`把SPDX文档ID改为同一局部事实来源，
+现有用例先红后绿验证所有关系指向声明ID。主代理审查全部三文件差异，并在独立dr复测SBOM引用及Git archive锚点：
+2 passed、43 deselected、1.11秒、exit0，日志dr-run/logs/release-sbom.log。新的utility可信SHA256为
+`641f58a01c1dad4b17d4a4d4df720e82544faf2a2ee8480bcf6f997155bc155b`；policy未变。修订接受，待新包重新核验。
