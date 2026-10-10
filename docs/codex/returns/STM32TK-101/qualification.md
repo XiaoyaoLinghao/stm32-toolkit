@@ -85,8 +85,9 @@ Broad-core-v1 is separately retained: Toolkit 11892/13674 and Monitor 2770/2956 
 original 95% target. Toolkit core95 is a later target, not an added current gate.
 The bounded current test selection covers fewer CLI/MCP branches than the older full suite, so the
 lower Toolkit aggregate is not itself evidence of a product regression. Numerical UNMET is classified
-as REPORT / release qualification evidence; it remains an unmet release gate. No threshold waiver,
-membership change or unbounded coverage pursuit was authorized by this implementation task.
+as REPORT / release qualification evidence; it remains an unmet permanent release gate. At this
+initial measurement checkpoint no threshold exception had been authorized. The subsequent user decision
+adds the explicit no-regression condition above; membership changes and unbounded coverage pursuit remain excluded.
 
 ## Reproducible artifacts
 

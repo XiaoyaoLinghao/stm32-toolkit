@@ -3,7 +3,8 @@
 This is the current qualification contract consolidated from the accepted risk-layered design.
 The [standard procedure](standard-test-procedure.md) governs execution and authorization;
 [release status](../release-status.md) preserves the fixed v1.0.0 result and its limitations.
-Historical measurements and one-time exceptions are not thresholds for a later release.
+Historical measurements and one-time exceptions do not transfer automatically to a later release.
+The user's explicit v1.0.1 conditional exception is recorded below, separately from permanent gates.
 
 ## v1.0.1 conditional exception authorized on 2026-10-10
 
