@@ -3,6 +3,7 @@ import {authenticatedGuard,parseEnvelopeText,type ApiResult} from "./api/contrac
 const STARTUP_ERRORS={
   MONITOR_ACCESS_LINK_INVALID:"Monitor access link is missing or invalid. Return to the Monitor terminal and run open to create a new authenticated tab.",
   MONITOR_ACCESS_REJECTED:"Monitor rejected this access link. Check the Monitor terminal, then run open to create a new authenticated tab.",
+  MONITOR_BOOTSTRAP_SERVICE_FAILED:"Monitor could not start. Check the Monitor terminal, then run open to create a new authenticated tab.",
   MONITOR_BOOTSTRAP_RESPONSE_INVALID:"Monitor returned an invalid startup response. Check the Monitor terminal, then run open to create a new authenticated tab.",
   MONITOR_BOOTSTRAP_REQUEST_FAILED:"Monitor startup request did not complete. Check the Monitor terminal, then run open to create a new authenticated tab.",
 } as const;
@@ -24,7 +25,8 @@ export async function bootstrapFromFragment(windowLike:Window,fetchLike:typeof f
   try{
     const response=await fetchLike("/api/v1/auth/bootstrap",{method:"POST",credentials:"same-origin",
       headers:new Headers({Authorization:`Bearer ${token}`}),body:null});
-    if(!response.ok)return startupFailure("MONITOR_ACCESS_REJECTED");
+    if(!response.ok)return startupFailure(response.status===401||response.status===403
+      ?"MONITOR_ACCESS_REJECTED":"MONITOR_BOOTSTRAP_SERVICE_FAILED");
     const result=parseEnvelopeText(await response.text(),"monitor.auth.bootstrap",authenticatedGuard);
     if(!result.ok)return startupFailure(result.code==="MONITOR_RESPONSE_INVALID"
       ?"MONITOR_BOOTSTRAP_RESPONSE_INVALID":"MONITOR_ACCESS_REJECTED");

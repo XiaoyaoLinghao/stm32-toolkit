@@ -55,8 +55,12 @@ it("returns only fixed startup copy on an incomplete bootstrap request",async()=
 });
 
 it.each([
+  [new Response("private server body",{status:401}),"MONITOR_ACCESS_REJECTED"],
   [new Response("private server body",{status:403}),"MONITOR_ACCESS_REJECTED"],
-  [new Response("private server body",{status:500}),"MONITOR_ACCESS_REJECTED"],
+  [new Response("private server body",{status:404}),"MONITOR_BOOTSTRAP_SERVICE_FAILED"],
+  [new Response("private server body",{status:429}),"MONITOR_BOOTSTRAP_SERVICE_FAILED"],
+  [new Response("private server body",{status:500}),"MONITOR_BOOTSTRAP_SERVICE_FAILED"],
+  [new Response("private server body",{status:503}),"MONITOR_BOOTSTRAP_SERVICE_FAILED"],
   [new Response("private server body"),"MONITOR_BOOTSTRAP_RESPONSE_INVALID"],
 ])("renders a safe fixed recovery for response failures",async(response,expectedCode)=>{
   window.history.replaceState(null,"",`/#token=${TOKEN}`);
@@ -67,7 +71,18 @@ it.each([
   expect(text).toContain("Monitor terminal");
   expect(text).not.toContain(TOKEN);
   expect(text).not.toContain("private server body");
+  if(expectedCode==="MONITOR_BOOTSTRAP_SERVICE_FAILED")
+    expect(text).not.toContain("rejected this access link");
   expect(window.location.hash).toBe("");
+});
+
+it("renders fixed safe recovery for an unknown bootstrap error code",()=>{
+  document.body.textContent=`${TOKEN} private server body`;
+  renderStartupError(document,"UNKNOWN_private server body");
+  const text=document.body.textContent??"";
+  expect(text).toContain("Monitor terminal");
+  expect(text).not.toContain(TOKEN);
+  expect(text).not.toContain("private server body");
 });
 
 it("takeFragmentToken returns null for non-fragment and invalid shapes",()=>{
