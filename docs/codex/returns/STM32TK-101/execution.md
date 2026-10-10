@@ -19,7 +19,7 @@
 | B 配置与构建 | implement_b / 主代理 | 已派发；base 7217a5a06800a68062c24800c78c772434598f16；隔离 b 工作树，与 A 无文件交叉；等待按序集成 |
 | C 观测与 Monitor | implement_c / 主代理 | 已派发；base 748efdc6aad422edc8c7b63565b53854855df274；c 隔离工作树，无共享写入 |
 | D 版本、升级 | 待派发 / 主代理 | 现有 Python/wheels/npm/CubeCLT 输入只读核对完成；尚未升级或打包 |
-| E 历史清理、用户文档 | implement_e / 主代理 | 已派发；base 4bf88f137401c03068cd7584b04984c91b27d201；冻结删除范围与当前替代文档；未接受 CodeHead |
+| E 历史清理、用户文档 | implement_e / review_patch_plan 与主代理 | ACCEPTED；CodeHead fdbc979bffb09503930de7a3f83b4ef5d7aadb95；报告 e0320f2cac932f24e83a5d3b7abbb2d910fda67c；已集成本地176251978b7830068e52736fa3d2cf2326cbab1f |
 
 A 派发时间不晚于 2026-10-10 06:41:33 UTC；后续记录提交/验证时间和实际命令，不把文档准备计作产品完成。
 测试与报告成本按切片记录；发布层检查在最终候选运行，不要求每切片重跑全矩阵。
@@ -40,6 +40,7 @@ A 派发时间不晚于 2026-10-10 06:41:33 UTC；后续记录提交/验证时�
 | D:\codex-tmp\tk101\c | C 实现工作树，保留至接受与集成 |
 | D:\codex-tmp\tk101\c-run | C 独立 Python/UI 验证与复制依赖；主代理清理责任 |
 | D:\codex-tmp\tk101\er | E 独立审查 CodeHead 工作树，原始审查结论两处 prose 修订 |
+| D:\codex-tmp\tk101\er-run | 主代理 E 最终文档测试及集成日志，当前保留至最终交付核对 |
 
 仅处理本轮明确归属产物，删除前解析绝对路径并核对根内包含关系；保留当前需诊断失败证据。
 实现报告记录代码头，最终接受由主代理记录；未测试、历史适用性复用及物理未证实必须明确区分。
@@ -71,3 +72,18 @@ A 单次实现/审查周期约30分钟，产品与相关验证并行；文档整
 保留 a-run 下 cache/cache-a/cache-b/cache-5、t/t2/t3a/t3b/t4a/t5、temp；
 ar-run 下 t/t2/temp/j（含 external Junction）/outside；a 工作树 src 下105个生成 pyc 及所属 __pycache__。
 日志保留用于证据。没有改用另一工具、路径或代理绕过清理拒绝。
+
+## E 接受事实
+
+完整范围 `4bf88f137401c03068cd7584b04984c91b27d201` →
+`fdbc979bffb09503930de7a3f83b4ef5d7aadb95`。review_patch_plan 独立检查全部420个最初变更路径及内容：
+413删除严格属于冻结范围，现行发布工具、所需fixtures、合同、权限与资格不被删除；主代理复核所有存续文档/测试差异和修订。
+当前文档替代入口先于删除建立，原资料仍可从固定 Git 历史读取。三个 native CTest 样本保留。
+
+两处独立发现已修正：cmd 环境变量不能被 CLI --data-root 代替，SVD 选择验证全部解析寄存器。
+主代理另要求分开 Check/Bootstrap/Repair 代码块、补回 generic MCP JSON/八技能入口/48工具权威来源、
+保留 Target v1/v2 及 transport 物理资格边界，均已完成并核对，没有新增产品功能。
+实现者117项相关测试属于原CodeHead2bd3beef；后续仅文档改变，其回归适用性保留。
+最终头文档/真实parser审计exit0；主代理在独立 er 的最终 CodeHead 再跑两项受影响 README/setup 测试：
+2 passed、0.75秒、exit0，命令和日志见 er-run/logs/docs.log；PYTHONPATH和三项临时根均绑定er/er-run。
+详见 [E 实现记录](E-implementation.md)。这只接受文档清理切片，不代表1.0.1已发布或实体资格更新。
