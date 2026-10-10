@@ -29,7 +29,7 @@ Keil `inspect`/`convert` 必须指向同一 `uvprojx` 和 `target-name`。确认
 | `build.elf` | configure 要求 `build/arm-debug/<name>.elf`，`<name>` 只是一层文件名。 |
 | `generation.managedManifest` | configure 使用 `.stm32-toolkit/generated-files.json`。已有 managed record 仍按 hash/用户改动保护。 |
 | `build.sources`、`generation.nativeLinkerScript`、`debug.svd` | 路径须在工程根内且安全；SVD 文件应存于工程根，选择其准确设备名。 |
-| `debug.readableRegions` | 只配置经核对的可信范围；使用寄存器观测时必须覆盖所选 SVD 中每个相关寄存器的完整地址宽度。不要为消除报错而信任所有地址。 |
+| `debug.readableRegions` | 只配置经核对的可信范围；选择 SVD 时必须覆盖所选 SVD 中每个解析出的寄存器的完整地址宽度。不要为消除报错而信任所有地址。 |
 | 堆/栈 | manifest 不提供堆栈大小字段。内置 linker 模板保留现行默认容量；特殊工程用已有 `generation.nativeLinkerScript`，自行核对启动向量、初始 SP、区域边界和运行时初始化。 |
 
 `.vscode/{tasks,launch,c_cpp_properties,settings,extensions}.json` 是编辑器目标集合。v1.0.0 的未托管文件可能触发 `UNOWNED_COLLISION`；不要删掉用户文件来绕过。v1.0.1 **目标**仅在 configure/build 保留这些路径上的未托管普通文件，计划会单列 `preserved-unowned`，不读取、改写或收编其内容，IDE 设置仍需用户自行对齐。目录、链接、重解析点、构建必需文件、已有 managed record 或用户修改仍依合同拒绝。CubeMX regeneration 有独立闭域 inventory，configure 成功不代表 regeneration 能接纳这些编辑器文件。
