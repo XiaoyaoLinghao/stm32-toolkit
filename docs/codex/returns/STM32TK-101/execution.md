@@ -18,7 +18,7 @@
 | A 项目发现与诊断 | implement_a / 主代理独立审查 | ACCEPTED；CodeHead 47d78270cff33673a3d2894bdb96fce0f7e14a04；已集成本地 7c751727e003b2ab41fc75ab2f0a8a95aa8db2ba |
 | B 配置与构建 | implement_b / review_b 与主代理 | ACCEPTED；CodeHead bebacc7916b912a70ada50fa0208c8363d3c55fb；已集成本地9c937a66d9ea36c99e2d1efccc13b8a0e7082918 |
 | C 观测与 Monitor | implement_c / 主代理 | ACCEPTED；CodeHead 8454d3f1afb6a435e7bfbcb56fbf2851ac9730ec；报告5d8c41c68c2ce5a370c3fca536758ddd108b8c78；已集成本地68e5d0b16b33f8d475a71a4ded096a20c3427e3d |
-| D 版本、升级 | implement_d / 主代理 | 已派发；base24826f1723aac3c6f4e7a1dd9961e14aab1c5153；隔离d，独占最终版本/白名单/hash/用户文档，不改既有runtime事务 |
+| D 版本、升级 | implement_d / 主代理 | ACCEPTED；base24826f1723aac3c6f4e7a1dd9961e14aab1c5153；CodeHead94a17b53c2f85cdcf08afde403d48d29ef141b61；集成ef93c82b1089211714e2e46f482c3f369a183176 |
 | E 历史清理、用户文档 | implement_e / review_patch_plan 与主代理 | ACCEPTED；CodeHead fdbc979bffb09503930de7a3f83b4ef5d7aadb95；报告 e0320f2cac932f24e83a5d3b7abbb2d910fda67c；已集成本地176251978b7830068e52736fa3d2cf2326cbab1f |
 
 A 派发时间不晚于 2026-10-10 06:41:33 UTC；后续记录提交/验证时间和实际命令，不把文档准备计作产品完成。
@@ -151,3 +151,29 @@ D静态盘点发现setup技能仍指向当前runtime/1.0.0，以及Toolkit publi
 cli/service/exports/runtime测试硬编码当前返回1.0.0。主代理将这些具名文件的当前版本说明/断言
 纳入同一D所有权，保持模拟旧版本与历史fixture原值；无新公共行为或所有权例外。
 最终独立资格验证者verify_qualification仅准备q-run原生测量，待D完整CodeHead再执行，不改产品/测试。
+
+## D 接受与最终集成审查
+
+主代理在独立dr逐项审查base `24826f1723aac3c6f4e7a1dd9961e14aab1c5153` 到最终CodeHead
+`94a17b53c2f85cdcf08afde403d48d29ef141b61`全部差异：版本入口、1.0.0白名单、producer真实身份、
+静态GUI检查、schema常量、builder与锚点、所有测试及用户文档。四个草稿另由review_b独立全文审计。
+文档首轮将“待审查”改为指向实际状态，并限定回滚保证范围；随后打包预检的长期cache问题由同一实现者修正，
+主代理审查全部修订。没有主代理直接修改产品代码，也没有放宽runtime事务。
+
+实现者最终release组45项通过，包含提交后git archive可信锚点；setup完整组、当前版本/迁移/build回归、
+Monitor和UI typecheck/build/verify:dist均exit0。精确分组与日志见D实现报告；GUI/UI验证均为离线软件证据。
+UI重建产物与已接受C字节一致。builder Git blob SHA256为
+`01e80ca978ecf5b4414f1b3bf00c9b67403b82407a44a0d959b8582c20bd4bdb`，policy为
+`980b6f34baca0d025768eba349612f85b8053763cbeb2e267433697afc639bf4`，setup绑定两者。
+
+主代理独立14项边界：14 passed、41.93秒、exit0；覆盖GUI marker、真实临时venv的1.0.0升级fixture及用户标记保留、
+多旧版拒绝、同版本来源/降级拒绝、原Git archive hash、旧producer/drift和版本入口。
+之后仅builder参数/信任锚点变化，针对最终94a17b53复测4项：4 passed、41 deselected、1.15秒、exit0。
+日志及完整首组argv/head在dr-run/logs；这是fixture离线升级，不等于最终发行包安装。
+
+review_b在独立干净drb按远端完整accepted base `694c825d29a55a53052a148efa4cc6720c315a04` →
+`3d0a8568d6dcaa08d11745e091944e46480c28f7`检查全部存续产品Python、两个linker模板、UI源与生成资产、bin脚本。
+没有发现跨切片blocker：root containment、fresh plan/ownership/rollback、旧identity/receipt拒绝、硬件清理及token保护保持。
+其后纯文档与builder缓存修订由主代理完整复核。最终w与D差异仅本轮治理文档，没有产品或测试字节偏离。
+
+切片软件结论为ACCEPTED；最终安装、实体运行、数值门槛及远端发布准入各自独立，不由本结论替代。
