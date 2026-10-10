@@ -108,8 +108,9 @@ D独占 `skills/setup-stm32-env/SKILL.md` 的当前版本及操作说明，对�
 D同时修复setup独立Check的GUI gap探测，按规格保持结果结构、仅静态查CubeMX版本和不探测Code扩展，
 不改runtime事务；test_setup_runtime增加可执行marker证明不会启动GUI。
 D拥有build-firmware技能的纯参数示例修正：clean沿用已展示且获准值，不固定为false。
-基于1.0.1返回值的测试断言另包括Toolkit的 `test_public_inventory.py`、`test_cli.py`，
-Monitor的 `test_cli.py`、`test_service.py`、`test_exports.py`、`test_runtime.py`。
+基于1.0.1返回值的测试断言另包括Toolkit的 `test_public_inventory.py`、`test_cli.py`、`test_doctor.py`、
+`test_build_runner.py`、`test_mcp_migration_build.py`、`test_migration_plan.py`、`test_0900_security.py`，
+Monitor的 `test_cli.py`、`test_service.py`、`test_exports.py`、`test_runtime.py`、`test_models.py`。
 这些只更新当前版本期望；显式模拟旧版本、第三方版本和历史fixtures不替换。
 
 ### 5.1 E 历史清理冻结清单与验收
@@ -187,8 +188,11 @@ python -m pytest -o addopts= -p no:cacheprovider --basetemp D:\codex-tmp\tk101\b
 同一问题两轮不收敛则返回设计；覆盖率/报表工作连续两切片超过产品工作须暂停作治理判断，禁止重新开启旧停止路线。
 没有完整软件证据则不接受代码；缺必需实机证据为 SOFTWARE_COMPLETE_HARDWARE_PENDING；未获发布准入则不发布。
 
-## 7. 本轮准备交付与下一步
+## 7. 开工时快照与当前入口
 
 - 已完成：当前远端/版本/权限/脏工作区盘点、报告逐项静态核查、规格和计划草案。
 - 尚未完成：任何产品修复、测试执行、版本号更新、安装、实机验证、远端提交或 v1.0.1 发布。
-- 当前授权：用户已批准规格和计划，开始切片 A；同时独立审计新增历史内容清理范围，不与产品实现争用文件。
+- 当时授权：用户已批准规格和计划，开始切片 A；同时独立审计新增历史内容清理范围，不与产品实现争用文件。
+
+以上三项仅保留计划批准时的状态，不是最终交付结论。实际切片接受、代码身份和验证结果以
+[执行记录](../../codex/returns/STM32TK-101/execution.md)及[发布状态](../../release-status.md)为准。

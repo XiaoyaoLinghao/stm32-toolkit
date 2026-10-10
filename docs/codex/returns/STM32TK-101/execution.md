@@ -44,7 +44,12 @@ A 派发时间不晚于 2026-10-10 06:41:33 UTC；后续记录提交/验证时�
 | D:\codex-tmp\tk101\br | B 精确 CodeHead 的独立干净审查工作树 |
 | D:\codex-tmp\tk101\br-run | 主代理 B 30项边界验证，argv/head/原始结果保留 |
 | D:\codex-tmp\tk101\cr | C 精确 CodeHead 的独立干净审查工作树 |
-| D:\codex-tmp\tk101\cr-run | 主代理 C Python边界验证；UI另待修订 |
+| D:\codex-tmp\tk101\cr-run | 主代理 C Python边界验证；C UI修订已接受 |
+| D:\codex-tmp\tk101\d、d-run | D实现工作树与离线版本/升级/发行测试，主代理清理责任 |
+| D:\codex-tmp\tk101\dr、dr-run | 主代理 D独立干净审查与14项版本/升级边界验证 |
+| D:\codex-tmp\tk101\drb | review_b独立审查四份草稿删除及最终集成产品差异 |
+| D:\codex-tmp\tk101\q、q-run | verify_qualification最终原生覆盖率测量，保留测量/源绑定/结果 |
+| D:\codex-tmp\tk101\p、p2、p-run | verify_packages冻结候选双构建/解包验证，保留最终资产与哈希证据 |
 
 仅处理本轮明确归属产物，删除前解析绝对路径并核对根内包含关系；保留当前需诊断失败证据。
 实现报告记录代码头，最终接受由主代理记录；未测试、历史适用性复用及物理未证实必须明确区分。
@@ -130,6 +135,12 @@ UI依赖复制为普通目录，不能用指向runroot的junction构建而污染
 这不授权修改用户已有runtime、执行硬件或远端动作。正式runtime部署及物理证据仍须具体候选和执行卡。
 已核验旧原生coverage可仅对源Git blob不变的文件复用；新候选改动文件必须使用当前原生测量。
 Monitor旧core93.7077%低于95%，不沿用v1.0.0例外，不重开无界覆盖率补数路线。
+
+D最终当前版本断言另覆盖Toolkit doctor/build_runner/mcp_migration_build/migration_plan/0900_security和Monitor models，
+仅更新真实当前返回或配套当前manifest fixture；历史输入及第三方版本保留。D产品冻结为
+`3d0a8568d6dcaa08d11745e091944e46480c28f7`，41文件+394/-1274；主代理在独立dr完整审查，
+verify_qualification按该代码头执行原生测量。后续中性状态文案提交不改变产品/测试字节，须另核对。
+四份旧requirements草稿的1025行由review_b逐行审计，exact删除及引用闭合通过，总历史文件清理417个。
 
 D静态盘点发现setup技能仍指向当前runtime/1.0.0，以及Toolkit public_inventory/cli和Monitor
 cli/service/exports/runtime测试硬编码当前返回1.0.0。主代理将这些具名文件的当前版本说明/断言
