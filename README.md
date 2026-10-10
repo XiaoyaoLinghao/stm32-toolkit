@@ -4,11 +4,11 @@ English | [简体中文](README_zh-CN.md)
 
 STM32 Toolkit is a local, agent-neutral toolkit for STM32 projects. Its CLI and stdio MCP server share the same project, build, Probe Service, test, and Monitor contracts. The eight Claude Code Skills are adapters to those public entry points; the core does not depend on an agent host.
 
-**Release status:** [v1.0.0 is published](docs/release-status.md). This source candidate identifies as **v1.0.1** and contains the approved patch behavior, pending independent integration and release qualification. It has not been released or installed. Use a verified bundle and its matching data root for any installed workflow. Supported release platform: Windows x86_64 and CPython `>=3.12,<3.13`. Historical qualification limits remain in [release status](docs/release-status.md).
+**Release status:** [v1.0.0 is published](docs/release-status.md). This source candidate identifies as **v1.0.1** and contains the approved patch behavior. It has not been released or installed. Review and qualification evidence is recorded in [release status](docs/release-status.md) and the [execution ledger](docs/codex/returns/STM32TK-101/execution.md). Use a verified bundle and its matching data root for any installed workflow. Supported release platform: Windows x86_64 and CPython `>=3.12,<3.13`. Historical qualification limits remain in [release status](docs/release-status.md).
 
 ## Start with a verified runtime
 
-Extract a verified bundle to a stable ToolkitRoot. Keep DataRoot durable and separate from the project and disposable test directories. The setup script's `Check` is read-only. Inspect its result before explicitly choosing a missing-runtime `Bootstrap` or an authorized `Repair`; repeat `Check` afterward. This candidate's CLI/MCP uses the managed interpreter in `DATA_ROOT/runtime/1.0.1`; the published v1.0.0 bundle uses `runtime/1.0.0`. There is no system-Python fallback. Existing v1.0.0 runtimes enter the 1.0.1 candidate only through authorized Repair, with the old runtime quarantined and rollback preserved.
+Extract a verified bundle to a stable ToolkitRoot. Keep DataRoot durable and separate from the project and disposable test directories. The setup script's `Check` is read-only. Inspect its result before explicitly choosing a missing-runtime `Bootstrap` or an authorized `Repair`; repeat `Check` afterward. This candidate's CLI/MCP uses the managed interpreter in `DATA_ROOT/runtime/1.0.1`; the published v1.0.0 bundle uses `runtime/1.0.0`. There is no system-Python fallback. Existing v1.0.0 runtimes enter the 1.0.1 candidate only through authorized Repair, with the old runtime quarantined under the existing transaction recovery rules; see the [recorded rollback scope](docs/release-status.md).
 
 ```powershell
 $ToolkitRoot = 'C:\tools\stm32-toolkit-1.0.1'
@@ -57,6 +57,6 @@ Monitor is an observation UI with user-created monitor groups and no automatic p
 - [User guide and troubleshooting](docs/user-guide.md): migration, generation, builds, Probe Service, Monitor, and upgrade decisions.
 - [Windows deployment and IDE preflight](docs/testing/windows-deployment-and-ide-preflight.md): final runtime and debugger checks.
 - [Architecture](docs/architecture.md), [development](docs/development.md), [standard test procedure](docs/testing/standard-test-procedure.md), and [release qualification](docs/testing/release-qualification.md).
-- [Changelog](CHANGELOG.md) and [v1.0.1 patch specification](docs/superpowers/specs/2026-10-10-stm32tk-101-patch-design.md). The candidate implementation still requires independent review and release qualification.
+- [Changelog](CHANGELOG.md) and [v1.0.1 patch specification](docs/superpowers/specs/2026-10-10-stm32tk-101-patch-design.md). Read the [execution ledger](docs/codex/returns/STM32TK-101/execution.md) for its current review and qualification record.
 
 The MCP inventory has all 48 public names, organized by project, build, probe, diagnostic, test, and acceptance workflows. `VS09-B` release construction uses the existing `tools/release/build_0900_artifacts.py` and pinned `release_0900_policy.json`; these historical filenames remain current packaging inputs. Old plans and reports removed from the current tree remain retrievable with `git show 694c825d29a55a53052a148efa4cc6720c315a04:<path>`.

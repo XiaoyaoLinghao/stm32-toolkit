@@ -1,6 +1,6 @@
 # STM32 Toolkit 用户指南与排障
 
-本指南同时说明已发布 **v1.0.0** 与当前源码 **v1.0.1 候选**。下列 v1.0.1 行为已进入候选代码，仍待独立集成审查与发布资格验证；版本号和本文都不代表已安装或已发布。支持环境、发布事实及保留限制见[发布状态](release-status.md)，设计边界见[补丁规格](superpowers/specs/2026-10-10-stm32tk-101-patch-design.md)。本文对应用户报告的 1–22 项；报告是核查输入，不是本机新的实机证据。
+本指南同时说明已发布 **v1.0.0** 与当前源码 **v1.0.1 候选**。下列 v1.0.1 行为已进入候选代码；审查和资格结论以[发布状态](release-status.md)及[执行记录](codex/returns/STM32TK-101/execution.md)为准。版本号和本文都不代表已安装或已发布。支持环境、发布事实及保留限制见[发布状态](release-status.md)，设计边界见[补丁规格](superpowers/specs/2026-10-10-stm32tk-101-patch-design.md)。本文对应用户报告的 1–22 项；报告是核查输入，不是本机新的实机证据。
 
 ## 路径、版本和安全入口
 
@@ -116,6 +116,6 @@ try {
 
 ## 升级与历史材料
 
-已发布 v1.0.0 的标签、发行资产、凭据和数据边界不变。当前候选的 Toolkit、Monitor、UI、插件、启动器与发行身份统一为 1.0.1；已有 1.0.0 runtime 经 `Check` 后只能以获授权的 `Repair` 事务升级，旧目录进入隔离区，失败回滚旧 runtime 和状态。多旧版、未知未来目录、同版本不同来源、降级和锁定提升继续拒绝；不要手动移走状态文件。现有工程 `generatedBy` 保留真实旧版本；1.0.0/0.9.0 工程可计划和应用，只有显式 configure 事务刷新未改动的托管模板与记账，用户改动仍阻断。新 build 生成实际 1.0.1 身份，旧 flash receipt/evidence 不改写。改变 debug 元数据后，完整输入身份合同可能要求重新 configure、clean build 和必要的新烧录；运行观测仍按原完整身份与具名硬件授权，不提供内容等价 rebind。本候选未发布、未安装，也没有新实机资格结论，仍须按[实施计划](superpowers/plans/2026-10-10-stm32tk-101-patch-plan.md)及发布资格验证。
+已发布 v1.0.0 的标签、发行资产、凭据和数据边界不变。当前候选的 Toolkit、Monitor、UI、插件、启动器与发行身份统一为 1.0.1；已有 1.0.0 runtime 经 `Check` 后只能以获授权的 `Repair` 事务升级，旧目录进入隔离区；只有既有事务可恢复分支才按其规则回滚旧 runtime 和状态，具体证据范围见[发布状态](release-status.md)。多旧版、未知未来目录、同版本不同来源、降级和锁定提升继续拒绝；不要手动移走状态文件。现有工程 `generatedBy` 保留真实旧版本；1.0.0/0.9.0 工程可计划和应用，只有显式 configure 事务刷新未改动的托管模板与记账，用户改动仍阻断。新 build 生成实际 1.0.1 身份，旧 flash receipt/evidence 不改写。改变 debug 元数据后，完整输入身份合同可能要求重新 configure、clean build 和必要的新烧录；运行观测仍按原完整身份与具名硬件授权，不提供内容等价 rebind。本候选未发布、未安装，也没有新实机资格结论；当前审查和资格状态见[执行记录](codex/returns/STM32TK-101/execution.md)与[发布状态](release-status.md)。
 
 当前源树已退役旧阶段计划、报告、资格工具及其专属测试。需要审计原文时使用 `git show 694c825d29a55a53052a148efa4cc6720c315a04:<path>`，不要重建旧机器本地路径。发行构建仍使用现行 `tools/release/build_0900_artifacts.py`、`tools/release/release_0900_policy.json`、许可证和当前测试。部署/IDE 另见 [Windows 前置核对](testing/windows-deployment-and-ide-preflight.md)。
