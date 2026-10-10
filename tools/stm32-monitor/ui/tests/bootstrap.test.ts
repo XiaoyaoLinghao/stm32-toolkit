@@ -54,6 +54,29 @@ it("returns only fixed startup copy on an incomplete bootstrap request",async()=
   expect(document.body.textContent).not.toContain(TOKEN);
 });
 
+it("renders fixed recovery for a valid rejected bootstrap envelope without exposing private fields",async()=>{
+  const privateMessage="private rejection message";
+  const privateDetail="private diagnostic detail";
+  window.history.replaceState(null,"",`/#token=${TOKEN}`);
+  const response=new Response(JSON.stringify({
+    protocol:"stm32-toolkit-monitor/1",toolkitVersion:"1.0.1",monitorVersion:"1.0.1",
+    ok:false,operation:"monitor.auth.bootstrap",code:"AUTH_REJECTED",message:privateMessage,
+    data:null,details:{diagnostic:privateDetail,token:TOKEN},
+  }),{status:200});
+  const result=await bootstrapFromFragment(window,vi.fn().mockResolvedValue(response));
+  expect(result).toEqual({ok:false,code:"MONITOR_ACCESS_REJECTED",
+    message:"Monitor rejected this access link. Check the Monitor terminal, then run open to create a new authenticated tab."});
+  expect(JSON.stringify(result)).not.toContain(TOKEN);
+  expect(JSON.stringify(result)).not.toContain(privateMessage);
+  expect(JSON.stringify(result)).not.toContain(privateDetail);
+  renderStartupError(document,result.ok?"":result.code);
+  expect(document.querySelector('[role="alert"]')).toHaveTextContent("Monitor rejected this access link");
+  expect(document.body.textContent).not.toContain(TOKEN);
+  expect(document.body.textContent).not.toContain(privateMessage);
+  expect(document.body.textContent).not.toContain(privateDetail);
+  expect(window.location.hash).toBe("");
+});
+
 it.each([
   [new Response("private server body",{status:401}),"MONITOR_ACCESS_REJECTED"],
   [new Response("private server body",{status:403}),"MONITOR_ACCESS_REJECTED"],
