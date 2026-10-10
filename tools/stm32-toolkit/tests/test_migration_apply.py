@@ -1189,7 +1189,12 @@ def test_apply_dirty_untracked_staged_and_unstaged(tmp_path):
     (repo / "scratch.txt").write_bytes(b"x")
     result = apply_keil_conversion(plan)
     assert result.code == "MIGRATION_GIT_DIRTY"
-    assert result.details == {"rule": "cleanWorktree"}
+    assert result.details["rule"] == "cleanWorktree"
+    assert result.details["phase"] == "applyPreflight"
+    assert result.details["wrote"] is False
+    assert result.to_dict()["details"]["changes"] == [
+        {"kind": "untracked", "path": "scratch.txt"}
+    ]
 
     repo2 = standard_repo(tmp_path)
     plan2 = plan_keil_conversion(repo2, fixture_inspection(repo2))
@@ -1197,7 +1202,7 @@ def test_apply_dirty_untracked_staged_and_unstaged(tmp_path):
     subprocess.run(["git", "add", "-A"], cwd=repo2, check=True)
     result2 = apply_keil_conversion(plan2)
     assert result2.code == "MIGRATION_GIT_DIRTY"
-    assert result2.details == {"rule": "cleanWorktree"}
+    assert result2.to_dict()["details"]["changes"] == [{"kind": "index", "path": "note.txt"}]
 
     repo3 = standard_repo(tmp_path)
     (repo3 / "note.txt").write_bytes(b"z")
@@ -1207,7 +1212,7 @@ def test_apply_dirty_untracked_staged_and_unstaged(tmp_path):
     (repo3 / "note.txt").write_bytes(b"z2")
     result3 = apply_keil_conversion(plan3)
     assert result3.code == "MIGRATION_GIT_DIRTY"
-    assert result3.details == {"rule": "cleanWorktree"}
+    assert result3.to_dict()["details"]["changes"] == [{"kind": "tracked", "path": "note.txt"}]
 
 
 def test_apply_git_status_unavailable(tmp_path, monkeypatch):

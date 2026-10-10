@@ -123,6 +123,7 @@ def test_inspect_workflow_returns_inspection_and_baseline_in_order(tmp_path: Pat
     assert data["inspection"]["device"] == "STM32F429ZGTx"
     assert data["inspection"]["target_name"] == "Legacy"
     assert isinstance(data["baseline"], dict)
+    assert result.details == {"baselineSemantics": "parseable-historical-artifact-only"}
 
 
 def test_inspect_workflow_without_baseline_returns_null_baseline(tmp_path: Path):
@@ -134,6 +135,7 @@ def test_inspect_workflow_without_baseline_returns_null_baseline(tmp_path: Path)
     data = result.to_dict()["data"]
     assert data["inspection"]["device"] == "STM32F429ZGTx"
     assert data["baseline"] is None
+    assert result.details == {}
 
 
 def test_inspect_and_plan_calls_preserve_complete_tree_and_git_state(tmp_path: Path):

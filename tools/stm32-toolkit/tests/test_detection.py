@@ -1,8 +1,11 @@
+import os
 from pathlib import Path
 
 import pytest
 
 from stm32_toolkit.detection import PlannedAction, ProjectDetection, detect_project
+from stm32_toolkit.keil.model import KeilInspectionError
+import stm32_toolkit.keil.uvprojx as uvprojx_mod
 
 MIGRATE_EXPLANATION = (
     "Inspect the Keil project and convert ARMCC sources to GCC "
@@ -177,3 +180,59 @@ def test_directory_only_markers_are_unknown(tmp_path: Path):
     assert result.kind == "unknown"
     assert result.files == ()
     _assert_unavailable(result, "create-project")
+
+
+def test_nested_keil_discovery_is_sorted_and_skips_generated_directories(tmp_path: Path):
+    for relative in ("Project/Zeta.uvprojx", "Project/sub/alpha.uvprojx"):
+        marker = tmp_path / relative
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text("<Project/>", encoding="utf-8")
+    for directory in (
+        ".GIT", ".stm32-toolkit", "BUILD", "build-debug", "cmake-build-debug",
+        "node_modules", ".venv", "venv", "Objects", "LISTINGS",
+    ):
+        ignored = tmp_path / directory / "ignored.uvprojx"
+        ignored.parent.mkdir(parents=True)
+        ignored.write_text("<Project/>", encoding="utf-8")
+
+    result = detect_project(tmp_path)
+
+    assert result.kind == "keil"
+    assert result.files == ("Project/sub/alpha.uvprojx", "Project/Zeta.uvprojx")
+
+
+def test_keil_discovery_does_not_follow_directory_symlink(tmp_path: Path):
+    root = tmp_path / "project"
+    external = tmp_path / "external"
+    root.mkdir()
+    external.mkdir()
+    (external / "outside.uvprojx").write_text("<Project/>", encoding="utf-8")
+    try:
+        (root / "linked").symlink_to(external, target_is_directory=True)
+    except OSError:
+        pytest.skip("directory symlink creation is unavailable")
+
+    result = detect_project(root)
+
+    assert result.kind == "unknown"
+    assert result.files == ()
+
+
+def test_keil_discovery_permission_error_is_not_reported_as_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    blocked = tmp_path / "blocked"
+    blocked.mkdir()
+    real_scandir = os.scandir
+
+    def fail_blocked(path):
+        if Path(path) == blocked:
+            raise PermissionError("fixture denial")
+        return real_scandir(path)
+
+    monkeypatch.setattr(uvprojx_mod.os, "scandir", fail_blocked)
+
+    with pytest.raises(KeilInspectionError) as error:
+        detect_project(tmp_path)
+    assert error.value.code == "KEIL_PROJECT_UNAVAILABLE"
+    assert error.value.details == {"path": "blocked", "rule": "discoveryIncomplete"}

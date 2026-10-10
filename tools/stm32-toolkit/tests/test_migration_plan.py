@@ -668,20 +668,35 @@ def test_dirty_tracked_untracked_and_staged_produce_blocker(tmp_path):
     inspection = fixture_inspection(repo)
     (repo / "README.md").write_bytes(b"readme changed\n")
     plan = plan_keil_conversion(repo, inspection)
-    assert any(b.code == "MIGRATION_GIT_DIRTY" for b in plan.blockers)
+    assert any(
+        b.code == "MIGRATION_GIT_DIRTY"
+        and b.path == "README.md"
+        and b.rule_id == "MIGRATION_GIT_TRACKED_DIRTY"
+        for b in plan.blockers
+    )
 
     repo2 = standard_repo(tmp_path)
     inspection2 = fixture_inspection(repo2)
     (repo2 / "scratch.txt").write_bytes(b"x")
     plan2 = plan_keil_conversion(repo2, inspection2)
-    assert any(b.code == "MIGRATION_GIT_DIRTY" for b in plan2.blockers)
+    assert any(
+        b.code == "MIGRATION_GIT_DIRTY"
+        and b.path == "scratch.txt"
+        and b.rule_id == "MIGRATION_GIT_UNTRACKED_DIRTY"
+        for b in plan2.blockers
+    )
 
     repo3 = standard_repo(tmp_path)
     inspection3 = fixture_inspection(repo3)
     (repo3 / "note.txt").write_bytes(b"n")
     subprocess.run(["git", "add", "-A"], cwd=repo3, check=True)
     plan3 = plan_keil_conversion(repo3, inspection3)
-    assert any(b.code == "MIGRATION_GIT_DIRTY" for b in plan3.blockers)
+    assert any(
+        b.code == "MIGRATION_GIT_DIRTY"
+        and b.path == "note.txt"
+        and b.rule_id == "MIGRATION_GIT_INDEX_DIRTY"
+        for b in plan3.blockers
+    )
 
 
 def test_ignored_files_do_not_dirty_the_baseline(tmp_path):
@@ -1273,7 +1288,9 @@ def test_invalid_encoding_adds_blocker(tmp_path):
     inspection = fixture_inspection(repo)
     plan = plan_keil_conversion(repo, inspection)
     assert any(
-        b.code == "ARMCC_SOURCE_ENCODING_UNSUPPORTED" and b.path == "Common/common.c"
+        b.code == "ARMCC_SOURCE_ENCODING_UNSUPPORTED"
+        and b.path == "Common/common.c"
+        and "convert this file to UTF-8 outside Toolkit" in b.message
         for b in plan.blockers
     )
     assert not any(patch.path == "Common/common.c" for patch in plan.patches)
@@ -1424,7 +1441,9 @@ def test_assembly_source_blocker(tmp_path):
     inspection = fixture_inspection(repo)
     plan = plan_keil_conversion(repo, inspection)
     assert any(
-        b.code == "ARMCC_ASSEMBLY_UNSUPPORTED" and b.path == "Startup/startup.s"
+        b.code == "ARMCC_ASSEMBLY_UNSUPPORTED"
+        and b.path == "Startup/startup.s"
+        and "reviewed GNU startup replacement" in b.message
         for b in plan.blockers
     )
 
@@ -2317,7 +2336,12 @@ def test_existing_different_manifest_adds_blocker(tmp_path):
     subprocess.run(["git", "-c", "user.name=T", "-c", "user.email=t@t", "commit", "-q", "-m", "manifest"], cwd=repo, check=True)
     inspection2 = fixture_inspection(repo)
     plan = plan_keil_conversion(repo, inspection2)
-    assert any(b.code == "MIGRATION_MANIFEST_EXISTS" for b in plan.blockers)
+    assert any(
+        b.code == "MIGRATION_MANIFEST_EXISTS"
+        and b.path == ".stm32-project.json"
+        and "review and resolve it explicitly" in b.message
+        for b in plan.blockers
+    )
     assert not any(patch.path == ".stm32-project.json" for patch in plan.patches)
     assert any(entry.path == ".stm32-project.json" for entry in plan.inputs)
 

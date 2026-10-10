@@ -8,13 +8,20 @@ import stat
 import subprocess
 import sys
 import threading
+from dataclasses import replace
 from pathlib import Path
 from typing import BinaryIO
 
 from stm32_toolkit.detection import detect_project, planned_action
 from stm32_toolkit import __version__ as TOOLKIT_VERSION
+from stm32_toolkit.keil.model import KeilInspectionError
 from stm32_toolkit.result import OperationResult
-from stm32_toolkit.tool_support import SupportProfileRequest, ToolSupportProfile, discover_tool_support
+from stm32_toolkit.tool_support import (
+    SupportProfileRequest,
+    ToolSupportProfile,
+    _windows_file_version,
+    discover_tool_support,
+)
 from stm32_toolkit.public_inventory import (
     MCP_TOOL_NAMES,
     REQUIRED_PYTHON,
@@ -39,6 +46,7 @@ VSCODE_EXTENSIONS = (
     "ms-vscode.cmake-tools",
     "marus25.cortex-debug",
 )
+_GUI_TOOLS = frozenset({"STM32CubeMX", "code"})
 _VERSION_TIMEOUT_SECONDS = 5
 _REAP_TIMEOUT_SECONDS = 1
 _READER_JOIN_TIMEOUT_SECONDS = 0.1
@@ -53,7 +61,7 @@ def run_doctor(
 ) -> OperationResult[dict[str, object]]:
     """Collect offline, read-only evidence about the local toolkit environment."""
     support = support_profile or discover_tool_support(SupportProfileRequest(data_root=data_root), probe_versions=True)
-    return OperationResult.success(
+    return replace(OperationResult.success(
         "doctor",
         {
             "platform": _platform_evidence(),
@@ -66,7 +74,7 @@ def run_doctor(
             "publicInventory": _public_inventory(),
             "mutated": False,
         },
-    )
+    ), details={"probeRegistrySemantics": "probe-lease-directory"})
 
 
 def _monitor_version() -> str | None:
@@ -178,6 +186,17 @@ def _platform_evidence() -> dict[str, str]:
 def _project_evidence(project_root: Path) -> dict[str, object]:
     try:
         return detect_project(project_root).to_dict()
+    except KeilInspectionError as error:
+        return {
+            "kind": "unknown",
+            "files": [],
+            "recommended_action": planned_action("create-project").to_dict(),
+            "discoveryError": {
+                "code": error.code,
+                "message": error.message,
+                "details": error.details,
+            },
+        }
     except (OSError, ValueError):
         return {
             "kind": "unknown",
@@ -194,6 +213,10 @@ def _tool_evidence(name: str) -> dict[str, object]:
 
     if executable is None:
         return _tool_result(False, None, "missing", None, None)
+
+    if name in _GUI_TOOLS:
+        version = _windows_file_version(Path(executable))
+        return _tool_result(True, executable, "ok" if version else "unknown", None, version)
 
     status, return_code, stdout, stderr = _run_process((executable, "--version"))
     if status in {"timeout", "error"}:
@@ -344,37 +367,9 @@ def _extension_evidence(
 
 
 def _vscode_extension_evidence() -> dict[str, dict[str, object]]:
-    """Bounded, read-only evidence for the three recommended VS Code extensions.
-
-    Invokes exactly ``[resolved_code, "--list-extensions", "--show-versions"]``
-    through the existing bounded process machinery.  Missing ``code`` yields
-    ``unavailable`` for all three; a failed probe never claims missing.
-    """
-    try:
-        executable = shutil.which("code")
-    except OSError:
-        executable = None
-    if executable is None:
-        return {
-            extension: _extension_evidence(False, None, "unavailable")
-            for extension in VSCODE_EXTENSIONS
-        }
-    status, return_code, stdout, _stderr = _run_process(
-        (executable, "--list-extensions", "--show-versions")
-    )
-    if status != "ok" or return_code != 0:
-        failure = status if status != "ok" else "nonzero"
-        return {
-            extension: _extension_evidence(False, None, failure)
-            for extension in VSCODE_EXTENSIONS
-        }
-    parsed = _parse_extension_lines(_decode_output(stdout))
+    """Do not launch VS Code to enumerate extensions during offline doctor."""
     return {
-        extension: (
-            _extension_evidence(True, parsed[extension.casefold()], "ok")
-            if extension.casefold() in parsed
-            else _extension_evidence(False, None, "missing")
-        )
+        extension: _extension_evidence(False, None, "not-probed")
         for extension in VSCODE_EXTENSIONS
     }
 

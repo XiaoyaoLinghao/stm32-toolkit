@@ -16,12 +16,15 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 import shutil
 from pathlib import Path
 
 import pytest
 
 import stm32_toolkit.mcp_server as mcp_mod
+import stm32_toolkit.keil.uvprojx as uvprojx_mod
+from stm32_toolkit.cli import main as cli_main
 from stm32_toolkit.context import build_project_context
 from stm32_toolkit.mcp_server import ServerRuntime, create_server, main
 from stm32_toolkit.public_inventory import MCP_TOOL_NAMES
@@ -102,6 +105,91 @@ def convertible_fixture_copy(tmp_path: Path) -> Path:
     (root / ".gitignore").write_text(GITIGNORE, encoding="utf-8")
     git_init(root)
     return root
+
+
+def test_nested_keil_public_cli_mcp_inspect_plan_apply_share_selection(
+    tmp_path: Path, capsys
+):
+    root = tmp_path / "nested"
+    root.mkdir()
+    shutil.copytree(FIXTURES / "keil-convertible", root / "Project")
+    (root / ".gitignore").write_text(GITIGNORE, encoding="utf-8")
+    git_init(root)
+    runtime = ServerRuntime.create(root, tmp_path / "plugin-data", "session-a")
+    selected = "Project/legacy.uvprojx"
+
+    detected = mcp_mod.tool_project_detect(runtime)
+    context = mcp_mod.tool_project_context(runtime)
+    assert detected["data"]["files"] == [selected]
+    assert context["data"]["project"]["files"] == [selected]
+    assert context["details"]["hardwareDiscovery"] == "not-performed"
+    assert cli_main(["project", "detect", "--project-root", str(root), "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["data"]["files"] == [selected]
+
+    inspected = mcp_mod.tool_keil_inspect(runtime, selected, "Legacy")
+    assert inspected["ok"] is True
+    assert inspected["data"]["inspection"]["project_file"] == selected
+    assert inspected["details"]["baselineSemantics"] == "parseable-historical-artifact-only"
+    assert cli_main([
+        "keil", "inspect", "--project", str(root), "--uvprojx", selected,
+        "--target-name", "Legacy", "--json",
+    ]) == 0
+    cli_inspect = json.loads(capsys.readouterr().out)
+    assert cli_inspect["data"]["inspection"] == inspected["data"]["inspection"]
+
+    planned = mcp_mod.tool_keil_convert(runtime, selected, "Legacy")
+    assert planned["ok"] is True
+    assert planned["data"]["blockers"] == []
+    assert cli_main([
+        "keil", "convert", "--project", str(root), "--uvprojx", selected,
+        "--target-name", "Legacy", "--dry-run", "--json",
+    ]) == 0
+    cli_plan = json.loads(capsys.readouterr().out)
+    assert cli_plan["data"]["plan_id"] == planned["data"]["plan_id"]
+    applied = mcp_mod.tool_keil_convert(
+        runtime, selected, "Legacy", planned["data"]["plan_id"], True
+    )
+    assert applied["ok"] is True
+    assert (root / ".stm32-project.json").is_file()
+
+
+def test_public_keil_multi_candidate_and_incomplete_discovery(
+    tmp_path: Path, capsys, monkeypatch
+):
+    root = tmp_path / "multi"
+    root.mkdir()
+    shutil.copytree(FIXTURES / "keil-convertible", root / "Project")
+    shutil.copyfile(root / "Project" / "legacy.uvprojx", root / "Project" / "other.uvprojx")
+    ignored = root / "build-debug" / "ignored.uvprojx"
+    ignored.parent.mkdir()
+    ignored.write_text("<Project/>", encoding="utf-8")
+    runtime = ServerRuntime.create(root, tmp_path / "plugin-data", "session-a")
+    expected = ["Project/legacy.uvprojx", "Project/other.uvprojx"]
+
+    assert mcp_mod.tool_project_detect(runtime)["data"]["files"] == expected
+    assert mcp_mod.tool_keil_inspect(runtime)["details"]["candidates"] == expected
+    assert mcp_mod.tool_keil_inspect(runtime, expected[0], "Legacy")["ok"] is True
+    assert cli_main(["project", "detect", "--project-root", str(root), "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["data"]["files"] == expected
+
+    blocked = root / "blocked"
+    blocked.mkdir()
+    real_scandir = os.scandir
+
+    def fail_blocked(path):
+        if Path(path) == blocked:
+            raise PermissionError("fixture denial")
+        return real_scandir(path)
+
+    monkeypatch.setattr(uvprojx_mod.os, "scandir", fail_blocked)
+    mcp_failed = mcp_mod.tool_project_detect(runtime)
+    assert mcp_failed["code"] == "KEIL_PROJECT_UNAVAILABLE"
+    assert mcp_failed["details"] == {"path": "blocked", "rule": "discoveryIncomplete"}
+    assert cli_main(["project", "detect", "--project-root", str(root), "--json"]) == 2
+    cli_failed = json.loads(capsys.readouterr().out)
+    assert cli_failed["code"] == mcp_failed["code"]
+    assert cli_failed["details"] == mcp_failed["details"]
+    assert mcp_mod.tool_project_context(runtime)["code"] == "KEIL_PROJECT_UNAVAILABLE"
 
 
 def test_convertible_fixture_contains_real_arm_build_prerequisites():

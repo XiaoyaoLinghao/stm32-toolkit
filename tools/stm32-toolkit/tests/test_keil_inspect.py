@@ -30,6 +30,39 @@ DEFAULT_CPU = 'IRAM(0x20000000,0x30000) IROM(0x8000000,0x100000) CPUTYPE("Cortex
 DEFAULT_OUT_DIR = ".\\Objects\\"
 
 
+def test_nested_keil_auto_selection_and_explicit_multi_selection(tmp_path: Path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    project = root / "Project"
+    shutil.copytree(KEIL_FIXTURE, project)
+
+    single = inspect_keil(root)
+    assert single.project_file == "Project/legacy.uvprojx"
+    assert single.target_name == "Legacy"
+
+    shutil.copyfile(project / "legacy.uvprojx", project / "second.uvprojx")
+    with pytest.raises(KeilInspectionError) as error:
+        inspect_keil(root)
+    assert error.value.code == "KEIL_PROJECT_SELECTION_REQUIRED"
+    assert error.value.details["candidates"] == [
+        "Project/legacy.uvprojx", "Project/second.uvprojx"
+    ]
+    explicit = inspect_keil(root, Path("Project/legacy.uvprojx"), "Legacy")
+    assert explicit.project_file == "Project/legacy.uvprojx"
+
+
+def test_explicit_keil_path_bypasses_auto_discovery_exclusions(tmp_path: Path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    shutil.copytree(KEIL_FIXTURE, root / "build")
+
+    with pytest.raises(KeilInspectionError) as error:
+        inspect_keil(root)
+    assert error.value.code == "KEIL_PROJECT_NOT_FOUND"
+    assert "--uvprojx" in error.value.message
+    assert inspect_keil(root, Path("build/legacy.uvprojx")).project_file == "build/legacy.uvprojx"
+
+
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
@@ -593,7 +626,10 @@ def test_no_project_found(tmp_path: Path) -> None:
     with pytest.raises(KeilInspectionError) as error:
         inspect_keil(tmp_path)
     assert error.value.code == "KEIL_PROJECT_NOT_FOUND"
-    assert error.value.details == {"pattern": "*.uvprojx"}
+    assert error.value.details == {
+        "pattern": "**/*.uvprojx",
+        "nextStep": "Pass --uvprojx with a project-root-relative path.",
+    }
 
 
 def test_multiple_projects_require_selection(tmp_path: Path) -> None:

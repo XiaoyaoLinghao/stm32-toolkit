@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 from stm32_toolkit.build.identity import (
@@ -20,6 +21,7 @@ from stm32_toolkit.generation.managed_files import (
     parse_managed_manifest,
     sha256_hex,
 )
+from stm32_toolkit.keil.model import KeilInspectionError
 from stm32_toolkit.paths import WorkspacePaths
 from stm32_toolkit.project import ProjectManifest, ProjectManifestError
 from stm32_toolkit.project_model import load_project_model
@@ -32,6 +34,14 @@ _OPERATION = "project.context"
 _EVIDENCE_LIMIT_BYTES = 8 * 1024 * 1024
 _ELF_LIMIT_BYTES = 64 * 1024 * 1024
 _MAP_LIMIT_BYTES = 32 * 1024 * 1024
+_CONTEXT_DETAILS = {
+    "capabilitySemantics": "current-readiness",
+    "hardwareDiscovery": "not-performed",
+}
+
+
+def _context_success(data: dict[str, object]) -> OperationResult[dict[str, object]]:
+    return replace(OperationResult.success(_OPERATION, data), details=_CONTEXT_DETAILS)
 
 
 def build_project_context(
@@ -43,15 +53,15 @@ def build_project_context(
     try:
         canonical_root = project_root.expanduser().resolve(strict=False)
         detection = detect_project(canonical_root)
+    except KeilInspectionError as error:
+        return OperationResult.failure(_OPERATION, error.code, error.message, error.details)
     except ValueError:
         return _context_invalid("projectRoot", str(project_root))
     except OSError:
         return _context_unavailable("projectRoot", str(project_root))
 
     if detection.kind != "configured":
-        return OperationResult.success(
-            _OPERATION, _unconfigured_context(detection, canonical_root)
-        )
+        return _context_success(_unconfigured_context(detection, canonical_root))
 
     try:
         manifest = ProjectManifest.load(canonical_root)
@@ -92,8 +102,7 @@ def build_project_context(
     except OSError:
         return _context_unavailable("dataRoot", str(canonical_data_root))
     build = _build_evidence(manifest)
-    return OperationResult.success(
-        _OPERATION,
+    return _context_success(
         {
             "project": {
                 "kind": "configured",
@@ -113,7 +122,7 @@ def build_project_context(
                 configure_available=_valid_supported_schema(canonical_root),
             ),
             "recommendedActions": [],
-        },
+        }
     )
 
 

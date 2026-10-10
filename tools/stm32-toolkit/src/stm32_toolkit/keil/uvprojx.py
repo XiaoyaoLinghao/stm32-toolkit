@@ -61,6 +61,10 @@ _SUFFIX_LANGUAGES = {
     ".lib": "library",
 }
 _SCANNED_LANGUAGES = ("c", "cxx", "asm")
+_DISCOVERY_EXCLUDED_DIRS = frozenset(
+    {".git", ".stm32-toolkit", "build", "node_modules", ".venv", "venv", "objects", "listings"}
+)
+_REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 
 
 def _local(tag: str) -> str:
@@ -178,6 +182,53 @@ def _contains_dtd_or_entity(data: bytes) -> bool:
 # ---------------------------------------------------------------------------
 
 
+def discover_projects(root: Path) -> tuple[str, ...]:
+    """Find Keil projects below an explicit root without following directory redirects.
+
+    Enumeration failures are fatal: an incomplete walk cannot justify either
+    automatic selection or a claim that no project exists.
+    """
+    pending = [root]
+    found: list[str] = []
+    while pending:
+        directory = pending.pop()
+        relative_dir = directory.relative_to(root).as_posix()
+        try:
+            with os.scandir(directory) as scan:
+                entries = tuple(scan)
+        except OSError:
+            raise _raise(
+                "KEIL_PROJECT_UNAVAILABLE",
+                "Keil project discovery is incomplete; inspect the directory and retry",
+                {"path": "" if relative_dir == "." else relative_dir, "rule": "discoveryIncomplete"},
+            )
+        for entry in entries:
+            relative = Path(entry.path).relative_to(root).as_posix()
+            try:
+                metadata = entry.stat(follow_symlinks=False)
+            except OSError:
+                raise _raise(
+                    "KEIL_PROJECT_UNAVAILABLE",
+                    "Keil project discovery is incomplete; inspect the entry and retry",
+                    {"path": relative, "rule": "discoveryIncomplete"},
+                )
+            redirected = stat.S_ISLNK(metadata.st_mode) or bool(
+                getattr(metadata, "st_file_attributes", 0) & _REPARSE_POINT
+            )
+            if stat.S_ISDIR(metadata.st_mode):
+                name = entry.name.casefold()
+                excluded = name in _DISCOVERY_EXCLUDED_DIRS or name.startswith(
+                    ("build-", "cmake-build-")
+                )
+                if not excluded and not redirected:
+                    pending.append(Path(entry.path))
+            elif entry.name.casefold().endswith(".uvprojx") and (
+                stat.S_ISREG(metadata.st_mode) or redirected
+            ):
+                found.append(relative)
+    return tuple(sorted(found, key=lambda path: (path.casefold(), path)))
+
+
 def _validate_root(root: object) -> Path:
     if not isinstance(root, Path):
         raise _raise(
@@ -210,25 +261,20 @@ def _validate_root(root: object) -> Path:
 
 def _select_project(root: Path, uvprojx: object) -> tuple[str, Path]:
     if uvprojx is None:
-        candidates = sorted(
-            (path for path in root.glob("*.uvprojx") if path.is_file()),
-            key=lambda path: path.name.casefold(),
-        )
+        candidates = discover_projects(root)
         if not candidates:
             raise _raise(
                 "KEIL_PROJECT_NOT_FOUND",
-                "no .uvprojx project found in the project root",
-                {"pattern": "*.uvprojx"},
+                "no .uvprojx project found under the project root; pass --uvprojx for an explicit project file",
+                {"pattern": "**/*.uvprojx", "nextStep": "Pass --uvprojx with a project-root-relative path."},
             )
         if len(candidates) > 1:
             raise _raise(
                 "KEIL_PROJECT_SELECTION_REQUIRED",
-                "multiple .uvprojx projects found; select one explicitly",
-                {"candidates": [path.name for path in candidates]},
+                "multiple .uvprojx projects found; select one explicitly with --uvprojx",
+                {"candidates": list(candidates)},
             )
-        candidate = candidates[0]
-        _check_redirects(candidate, root, "uvprojx")
-        return candidate.name, candidate
+        return _select_project(root, Path(candidates[0]))
     if not isinstance(uvprojx, Path):
         raise _raise(
             "KEIL_PROJECT_PATH_INVALID",

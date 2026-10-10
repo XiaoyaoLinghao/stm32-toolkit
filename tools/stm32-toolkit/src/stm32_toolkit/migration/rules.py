@@ -454,7 +454,7 @@ def _scan_file(
             0,
             0,
             "",
-            "source encoding is not UTF-8",
+            "source encoding is not UTF-8; convert this file to UTF-8 outside Toolkit, verify the bytes, then rerun inspect and plan; no file was written",
         )
         return _FileScan(
             SourceScan(path, language, data, data, (), (), (blocker,), ()),
