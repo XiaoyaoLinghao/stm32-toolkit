@@ -105,6 +105,9 @@ release `test_0900_artifacts.py`，UI typecheck/build/verify:dist，以及实际
 本计划批准并不自动授权修改用户已有 runtime；本地构建、离线 fixture 验证先行，必要安装另给具体候选与目录。
 
 D独占 `skills/setup-stm32-env/SKILL.md` 的当前版本及操作说明，对齐已接受A/B/C行为，保留原安装授权及事务边界。
+D同时修复setup独立Check的GUI gap探测，按规格保持结果结构、仅静态查CubeMX版本和不探测Code扩展，
+不改runtime事务；test_setup_runtime增加可执行marker证明不会启动GUI。
+D拥有build-firmware技能的纯参数示例修正：clean沿用已展示且获准值，不固定为false。
 基于1.0.1返回值的测试断言另包括Toolkit的 `test_public_inventory.py`、`test_cli.py`，
 Monitor的 `test_cli.py`、`test_service.py`、`test_exports.py`、`test_runtime.py`。
 这些只更新当前版本期望；显式模拟旧版本、第三方版本和历史fixtures不替换。
@@ -144,6 +147,13 @@ E 另拥有 `test_setup_runtime.py` 中读取旧 plugin-foundation 计划的文�
 保留当前 release builder/policy、许可证、ui_dist、setup/launcher、全部当前产品和所需测试/fixture。
 无 Git 历史重写、archive 镜像、远端操作、新验证器或 CI。验收为准确删除清单、剩余代码/测试/文档引用闭合、
 当前打包输入完整、相关 host/CTest 和 release artifact 回归。删除旧专属门禁不降低当前发布资格门槛。
+
+2026-10-10最终交叉审查补充冻结四个非发布草稿退出当前树：
+`requirements/follow-on-skills/{init-stm32-project,migrate-keil,read-var,stm32-monitor}/SKILL.md`。
+它们只有旧layout测试要求保留；现行八个skills已替代其用户场景，没有产品运行依赖。
+草稿含删改用户编辑器文件、旧pyocd-debug-mcp、无效Monitor参数/localhost及一个断链，故不继续作为当前操作入口。
+D执行这四个明确删除，并移除test_plugin_layout中仅要求保留旧草稿的变量/断言，保留八个正式skill准确清单及其它安全检查。
+总历史删除由413增至417，Git历史保持；这属于已获用户批准的master现存历史内容清理，无远端动作。
 
 ## 6. 验证层、责任和终止条件
 

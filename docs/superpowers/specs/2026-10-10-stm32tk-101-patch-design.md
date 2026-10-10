@@ -166,6 +166,11 @@ Host/Origin 只允许原有 `127.0.0.1:<port>`；localhost 仍拒绝，指南解
 版本切片统一更新 Toolkit、Monitor、UI、插件、启动器、setup、release builder/policy 和当前用户指南为 1.0.1。
 第三方依赖版本、许可证名称、历史版本证据、历史生成器版本不做字符串替换。
 runtime Repair 的已知旧版本新增 1.0.0；保持唯一旧 runtime 判定、quarantine/promote/rollback、downgrade/source-conflict 拒绝。
+最终交叉审查发现setup的独立Check gap路径仍执行CubeMX --version及Code扩展枚举，
+会重现Doctor已修复的GUI启动问题。D同步其只读语义：保留tools各key及status/path/output结构；
+CubeMX仅定位命令和读取Windows文件版本，有版本为ok、存在但无静态版本为unknown、未找到为missing；
+vscodeExtensions始终为not-probed，output=null，path仅可为已定位命令路径；不启动两个GUI程序。
+其余CLI工具有界探测与runtime健康/Repair事务判定不变。使用可执行marker fixture证明Check未调用GUI命令。
 generation producer 白名单保留 1.0.0 和 0.9.0，当前 producer 为 1.0.1；已有工程 generatedBy 不被伪造改写。
 旧 managed 文件未被用户修改时经 configure 的显式事务刷新记账/需要的模板；旧用户改动仍先拒绝。
 build 必须发布新的真实 1.0.1 身份；旧 receipt/evidence 不改写。数据路径、用户 groups/history 均保留。
