@@ -202,3 +202,29 @@ python -m pytest -o addopts= -p no:cacheprovider --basetemp D:\codex-tmp\tk101\b
 
 以上三项仅保留计划批准时的状态，不是最终交付结论。实际切片接受、代码身份和验证结果以
 [执行记录](../../codex/returns/STM32TK-101/execution.md)及[发布状态](../../release-status.md)为准。
+
+## 8. 用户追加的 v1.0.0 覆盖率不回退条件
+
+2026-10-10，用户在具体候选交付确认后要求推送，并明确 v1.0.1 可例外但覆盖率不能低于 v1.0.0。
+本节是有界证据补足，accepted base为`62a490fe194da9c96aa07a75cc970f62a0e39eea`；产品包源仍为
+`0f06c659f5e04aa1f8e53022eae9b5e964da2b4b`。主代理负责合同、完整diff审查和验收；子代理均gpt-6-sol/max。
+
+三个可验证场景：既有CLI/MCP入口在当前产品源码上运行充分的现有测试；UI正确处理HTTP 200中合法的认证拒绝；
+用户导入分组后文件输入在异步读取完成后清空。非目标：新增产品功能、修改coverage配置/成员/阈值、虚构分支、
+在新源码上导入旧arcs、重跑实体或安装runtime、重建字节未变的产品包。
+
+冻结状态与所有权：发布资格文档中的精确旧分数是比较源，不用四舍五入百分数作门槛；Toolkit/Monitor原成员不变，
+UI还须保留每正分母文件90%。仅同一源码blob的新原生测量允许native combine；旧证据只对不变blob保留复用。
+Python验证者verify_qualification只运行主代理批准的现有整模块，不改产品或测试，输出归`q2-run`。
+UI实现者独占隔离树`u2`的`tools/stm32-monitor/ui/tests/bootstrap.test.ts`和`groups-panel.test.tsx`；
+不得更改src、lockfile、配置或dist。运行输出与普通复制依赖归`u2-run`，不能使用junction建立依赖路径。
+
+UI测试只补当前可观察行为：合法失败envelope保持固定拒绝提示且不回显私有内容；真实文件选择触发的异步导入结束后，
+等待清空input并确认导入仍需显式确认。不能通过直接调用内部回调、篡改覆盖率或制造不可达状态补数。
+实现者先运行两模块，再运行完整`test:coverage`、`coverage:check`和typecheck；提交后主代理独立审查全部diff，
+复核完整原生branch计数及产品/依赖配置字节与包源一致，运行必要的两模块独立验证。
+
+成功要求Toolkit overall与broad不低于12047/13592、risk不低于11429/12918，Monitor不低于2770/2956，
+UI aggregate不低于784/810且每正分母源码文件仍达90%。数值条件满足只接受本次覆盖率例外，不能替代安装或实体证据。
+若现有模块仍不足，保留实际测量，由主代理按具体遗漏行为划定一次后续测试范围，不进行无界补数或改产品来缩减分母。
+清理由主代理统一执行，原始coverage、命令/退出码、旧失败和源绑定保留；A/ar及D此前受拒路径不再触碰。

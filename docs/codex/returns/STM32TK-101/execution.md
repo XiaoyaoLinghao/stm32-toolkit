@@ -239,3 +239,7 @@ implement_e另承担只读最终文档核对，对照五份具名资格/产物�
 verify_qualification负责只读差距分析，主代理冻结后续现有测试范围；必要的行为测试由独立gpt-6-sol/max实现者负责，
 主代理审查。所有追加输出限于本轮D:\codex-tmp\tk101下新run目录，旧测量、源数据及受拒清理目录不改。
 本轮只为核验用户新条件补齐有界测试，不新增产品功能，不降低指标，不推断最终包安装、硬件或发布授权。
+
+首次推送成功：远端`codex/v1.0.1-integration`为`62a490fe194da9c96aa07a75cc970f62a0e39eea`，
+与本地HEAD相等，push exit0；master仍为原accepted base。用户本次答复承接上一轮明确列出的push、创建PR和合并master
+确认步骤；完成覆盖率条件后继续该交付链，tag/release、最终runtime安装和硬件仍不在其中。

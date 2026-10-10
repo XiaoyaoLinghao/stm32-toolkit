@@ -29,7 +29,9 @@ facts, and no new installation or hardware action is authorized by this coverage
 
 Later report-only commits are not the source of the already-built artifacts. Any future tag or release
 must identify the exact artifact source above, or rebuild and revalidate a newly selected source.
-GitHub master, tags, releases and existing assets have not been changed by this task.
+GitHub master, tags, releases and existing assets were unchanged at this original acceptance checkpoint.
+The authorized follow-up pushed branch `codex/v1.0.1-integration` at
+`62a490fe194da9c96aa07a75cc970f62a0e39eea`; subsequent delivery is recorded in the execution ledger.
 
 ## Completed user behavior
 
@@ -136,8 +138,9 @@ measurement is claimed. Retention, resource-release and rollback limitations rem
 [release status](../../../release-status.md). Further hardware work needs a filled standard execution
 card and specific authorization, not an automatic retry of the original report.
 
-The primary agent has prepared PR text and release-note drafts locally. The user's follow-up permits
-the candidate push. Other remote lifecycle actions retain their AGENTS authorization boundary.
+The primary agent has prepared PR text and release-note drafts locally. The user's follow-up answers
+the preceding explicit push / PR creation / master merge confirmation; that delivery chain proceeds
+after the coverage condition is verified. Tag and release retain their separate authorization boundary.
 Publication still needs the remaining required evidence and a specific release decision; the new
 conditional coverage exception must first satisfy its no-regression condition.
 
