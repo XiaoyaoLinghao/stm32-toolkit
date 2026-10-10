@@ -49,7 +49,7 @@ Original acceptance and supporting records are retained in Git at
 Use `git show <commit>:<path>` to retrieve historical material; it is not an instruction to recreate
 old machine-local runtime or evidence paths.
 
-## v1.0.1 local candidate
+## Published v1.0.1
 
 The user approved [the patch specification](superpowers/specs/2026-10-10-stm32tk-101-patch-design.md)
 and [implementation plan](superpowers/plans/2026-10-10-stm32tk-101-patch-plan.md) on 2026-10-10,
@@ -78,11 +78,39 @@ Toolkit's permanent overall90/risk90 and Monitor core95 remain numerically unmet
 membership and native denominators were not lowered. Changed Python files use combined current
 native data; only unchanged Git blobs reuse accepted U64 data. Earlier measurements remain retained.
 
-**This candidate is not yet release-qualified or published:** final-package installation/upgrade is
-unexecuted, and changed hardware paths need current physical evidence. Old hardware authorizations
-do not transfer automatically; the coverage decision does not authorize installation, hardware or publication.
+GitHub [v1.0.1](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.0.1) was published
+on 2026-10-10 at 11:03:42 UTC and is marked Latest. All 13 uploaded assets were downloaded and
+independently matched by name, size and SHA256 against the frozen local artifacts and GitHub digests.
+The annotated tag `080cec43a36401f1bf8824e779d423c0e8e54a36` resolves to the fixed package source
+`0f06c659f5e04aa1f8e53022eae9b5e964da2b4b`. The v1.0.0 tag and 13 assets remain intact.
+
+**The scoped installation and physical qualification checks passed.** PR #16 was merged at
+`0b3e3bbf9fa4dcb11dac647faed2dfec86a3bac5`. The user subsequently authorized current physical
+verification and v1.0.1 Release publication, confirming the same STM32F429ZGTx board and that its
+firmware need not be preserved. Final-package fresh installation and isolated 1.0.0 to 1.0.1 Repair
+passed, including runtime state, dependency checks and retained user markers. Installed MonitorRuntime
+HTTP/authentication/normal-stop smoke passed; this does not cover the long-running CLI serve lifecycle.
+
+The first current physical Target execute failed with `TEST_EXECUTION_FAILED` and empty public details;
+that attempt produced no TestRun or successful flash receipt. Its lease was released and worker exited,
+and follow-up hardware operations stopped. The original cause remains unresolved. A separately reviewed
+attach-only diagnostic then passed, followed by a freshly prepared full Target attempt using an
+observational exception-capture wrapper around the unchanged installed CLI.
+
+On the confirmed STM32F429ZGTx/CMSIS-DAP setup, the fresh under-reset/SWD 100 kHz attempt verified
+7812 flash bytes and passed the physical `d3-heartbeat` case (2200 ms, one passed/zero failed);
+authoritative show agreed. A variable read, a finite sample window and one `GPIOE.ODR` read passed
+their fixed criteria, with source/build/ELF/session identity consistent throughout and leases released.
+The 1000 ms / eight-slot sample delivered three increasing values, dropped five slots and reported
+seven deadline misses (about 0.372 Hz). This does not establish sustained 1 Hz delivery. The register
+read returned `0x00000010`; it is a point observation, not an external waveform measurement.
+
+The historical project's native linker does not independently exercise the new generated stack aliases;
+their accepted linker/software evidence remains separate. Browser UI, CLI serve/Ctrl-C, IDE handoff,
+complete Fault, visual LED and external waveform checks were outside this current physical scope.
+The original failed attempt and the sampling limitation remain part of the release record.
 See [final qualification](codex/returns/STM32TK-101/qualification.md) for fixed artifact hashes,
-evidence ownership, retained limitations and the remaining release conditions, and
+evidence ownership, retained limitations and published release provenance, and
 [the execution ledger](codex/returns/STM32TK-101/execution.md) for slice reviews and test records.
 Later documentation and UI-test commits do not change the source identity of the existing artifacts.
 

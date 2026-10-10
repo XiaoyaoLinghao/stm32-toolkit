@@ -3,8 +3,9 @@
 2026-10-10. Primary-agent verdict: **A/B/C/D/E implementation ACCEPTED; package verification PASS;
 user-authorized coverage exception ACCEPTED with its no-regression condition verified**.
 Permanent numerical gates are unchanged and remain numerically unmet where stated below.
-Final-package installation/upgrade is unexecuted and current physical evidence is pending, so this
-is not final release qualification or `SOFTWARE_COMPLETE_HARDWARE_PENDING`.
+Final-package installation/upgrade and the bounded current physical scenarios passed. The first
+Target attempt remains a retained failure with unresolved cause; the later fresh successful run
+does not erase it. Release qualification is accepted within the scope and limitations below.
 
 The user explicitly approved the v1.0.1 exception on condition that coverage is no lower than v1.0.0.
 Supplementary current native measurement now satisfies that condition in every recorded scope under
@@ -177,23 +178,65 @@ here and add no current coverage credit. The primary admission JSON is retained 
 `D:\codex-tmp\v10b-0918\r10\e\python-final\windows-symlinks-rc4-current\primary-admission.json`,
 SHA256 `20fd168e637bbb08d149cc0ecb233951cb44a86cbe83363708534cb4a922cdc1`.
 
-New final-package installation/upgrade is **UNEXECUTED**. The passed 1.0.0 upgrade fixtures do not
-replace it. A concrete pending execution card is prepared at
-`D:\codex-tmp\tk101\delivery\runtime-validation-card.md`, limited to a new `install-check` root.
-It requires installation authorization before execution; user runtimes remain untouched.
+Final-package installation/upgrade is **PASS**, executed by verify_packages and independently
+reviewed by implement_e. All 21 recorded steps exited zero. Fresh Check/Bootstrap/Check produced
+healthy 1.0.1 generation 1. The separate published-1.0.0 installation upgraded through Repair to
+healthy 1.0.1 generation 2; the old runtime was quarantined and user/project marker hashes retained.
+Installed Toolkit/Monitor report 1.0.1, Python 3.12.10 and PyOCD 0.45.1; pip check passed. Installed
+MonitorRuntime UI/authenticated status returned HTTP 200, missing authentication 401 and wrong Host
+403; normal stop closed the listener, removed the runtime record and released the lock. This is
+backend HTTP evidence, not a browser UI or CLI serve/Ctrl-C lifecycle check. Complete commands,
+environment, stdout/stderr and exits are under `D:\codex-tmp\tk101\install-check\logs`.
 
-Current physical qualification is **PENDING**. Firmware identity, linker and hardware/debug code
-changed, so historical F429ZGTx/CMSIS-DAP evidence is not transferred wholesale. Historical normal
-attach/flash did not pass, under-reset and IDE handoff did; no current physical TestRun or timing/pin
-measurement is claimed. Retention, resource-release and rollback limitations remain in
-[release status](../../../release-status.md). Further hardware work needs a filled standard execution
-card and specific authorization, not an automatic retry of the original report.
+Current bounded physical qualification is **PASS with retained limitations**. The user confirmed the same STM32F429ZGTx board and
+that its firmware need not be retained. A fresh isolated copy of the historical real project was
+configured and built with the installed final runtime; offline whole-file SVD selection passed.
+One static recovery prepare passed, then one physical Target execute failed on 2026-10-10 with
+`TEST_EXECUTION_FAILED` and empty details. That action was consumed, but produced no physical TestRun or
+successful flash receipt. The lease was released and worker exited; target running state
+is not thereby established. Sampling and register reads stopped. Root cause remains unresolved;
+offline inventory confirms the exact target is registered in the existing CMSIS pack. Raw evidence
+and classification are retained under `D:\codex-tmp\tk101\h-run`, including
+`h1-failure-assessment.md`. Historical hardware evidence is not relabeled as current PASS.
+Retention, resource-release and rollback limitations remain in [release status](../../../release-status.md).
 
-The primary agent has prepared PR text and release-note drafts locally. The user's follow-up answers
-the preceding explicit push / PR creation / master merge confirmation; that delivery chain proceeds
-after the coverage condition is verified. Tag and release retain their separate authorization boundary.
-Publication still needs the remaining required evidence and a specific release decision. The
-conditional coverage exception's no-regression condition is now verified and accepted.
+A separately reviewed single attach/identity diagnostic passed. A fresh Target prepare then matched
+all 20 nonvolatile binding fields. Its single execute passed using a reviewed run-local wrapper that
+observes the original workflow exception before delegating to its unchanged mapper; source, runtime,
+timeouts and public return semantics were unchanged. Windows spawn and mapping-preservation checks
+passed offline. The new physical run is `target-v2-eb5d6d9eb9b9b27a9779d70b0b77ba2a`, evidence
+`8db1669e95f6cd789d3b9c54aa019978b5e84d3624f793430df29410973d17e6`; authoritative show agrees.
+The flash receipt verifies 7812 bytes. The physical case passed with `timer-and-pe3`, 2200 ms,
+one passed/zero failed. Test manifest SHA256 is
+`d7279b948654955de49e2b93b5470ad4ecaab8ea39b208a97daf9e3186de2576`.
+
+One variable read returned testtime=13728. One 1000 ms/eight-slot sample delivered three valid
+increasing values 17891, 18171 and 18431 at indices 0, 2 and 5, satisfying the predeclared minimum
+of two increasing values. Five slots were dropped, seven deadlines missed and actual rate was
+0.372 Hz; no top-up sampling or sustained-1-Hz claim. One SVD register read returned GPIOE.ODR=16
+(`0x00000010`, 32 bits). Its address/width association comes from offline full-file selection and
+the unchanged SVD hash, not additional fields in the public register response. All observations
+share the current build/ELF/input/session binding; leases released and final owned process count zero.
+verify_qualification executed these checks; hardware_preflight and the primary independently
+reviewed raw evidence. Exact commands, native responses and scope are in
+`D:\codex-tmp\tk101\h-run\h1b\final-assessment.md` and its referenced files. No new physical
+claim covers generated linker aliases, IDE handoff, full Fault, visual LED or external waveforms.
+
+PR #16 merged at `0b3e3bbf9fa4dcb11dac647faed2dfec86a3bac5`. The user subsequently authorized
+physical verification followed by v1.0.1 tag/Release publication. The required bounded physical
+acceptance is now complete. [v1.0.1](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.0.1)
+was published as Latest at 2026-10-10 11:03:42 UTC. The annotated tag
+`080cec43a36401f1bf8824e779d423c0e8e54a36` resolves to the exact
+frozen artifact source above; later master changes contain documentation and two UI tests, with
+no changed product, dependency, configuration or generated distribution bytes.
+
+All 13 uploaded assets were independently verified after download: exact name set, ordinary files,
+size and SHA256 match the local double-build list and GitHub's uploaded digests. The downloaded
+manifest source/archive identity matches. The raw audit is
+`D:\codex-tmp\tk101\delivery\post-upload-verification.json`, SHA256
+`596ee2410dacded4f8eb30813fc12fa6c17b51a3b64680b610823667a7fe3adb`.
+Primary confirmed the remote peeled tag, published/non-prerelease status and Latest selection.
+The v1.0.0 asset names, IDs, URLs, sizes and digests, publication time and target remain unchanged.
 
 ## Evidence retention and cleanup
 
@@ -214,6 +257,15 @@ Retained paths are `a-run/{cache,cache-a,cache-b,cache-5,t,t2,t3a,t3b,t4a,t5,tem
 `ar-run/{t,t2,temp,j,outside}`, A source-generated pyc/cache directories, and
 `d-run/{pytest-sbom-red,pytest-sbom-green,pytest-release-sbom-head}` under `D:\codex-tmp\tk101`.
 The original dirty workspace and shared dependencies were preserved.
+
+After physical and post-upload acceptance, primary cleaned 19 exact run-owned installation,
+upgrade, extracted-bundle, cache/temp and download-copy directories. Preflight verified task-root
+containment and no ancestor/descendant reparse points; all 19 removals succeeded. Raw runtime-state
+copies, marker hashes, commands/results, original H1 failure, subsequent physical evidence, current
+real project/ELF/map and the frozen 13 local assets remain. The isolated installed runtimes used for
+testing were removed; these records do not describe an upgrade of the user's ordinary runtime.
+Exact paths/results are in `delivery/cleanup-release-candidates.json` and
+`delivery/cleanup-release-result.json`. Earlier refused cleanup targets were not retried.
 
 Evidence checksums:
 

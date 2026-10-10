@@ -4,7 +4,7 @@
 
 依据：[补丁规格](../specs/2026-10-10-stm32tk-101-patch-design.md)。
 完整 accepted base：`694c825d29a55a53052a148efa4cc6720c315a04`。
-本计划现可派发实现；具体进展以本轮执行记录为准。远端尚未改变。
+本文初始阶段为实现派发计划；具体进展以本轮执行记录和后续授权条目为准。
 
 ## 1. 责任与执行次序
 
@@ -245,3 +245,38 @@ UI第一次完整补测270项全PASS，原生795/822，仍差1条。真实V8 `[5
 同一groups-panel测试所有权内一个场景：真实FileReader尚未完成时，用户离开分组界面导致组件卸载；读取结束后
 不能访问已卸载的input、不能执行onImport或重建界面。使用公开组件render/unmount及真实文件事件，保留实际读取，
 仅控制可达的异步时序，不注入fileRef或直接调用内部回调。实现后重跑两模块与一次完整UI覆盖率，配置及产品字节不改。
+
+## 9. 最终安装、实机与 Release 授权
+
+用户于 2026-10-10 在 PR #16 合并后明确要求“我连接了硬件，你现在进行实机验证，然后更新release”，
+并确认板卡“与原来的一样，固件无需保留”。本阶段 accepted master 为
+`0b3e3bbf9fa4dcb11dac647faed2dfec86a3bac5`；发行资产仍绑定
+`0f06c659f5e04aa1f8e53022eae9b5e964da2b4b`。两者之间仅文档及两份 UI 测试差异。
+
+主代理负责现场执行卡、单一硬件调度、独立验收、GitHub 交付和清理。`verify_packages` 负责新装、
+1.0.0→1.0.1 Repair 及无硬件 Monitor 服务冒烟；`hardware_preflight` 仅负责只读设备/历史证据核对；
+`verify_qualification` 负责新工程配置、构建及获主代理 GO 后的实机执行；`implement_e` 独立审查最终证据。
+所有子代理继续使用 gpt-6-sol / max，不递归委派，不自行接受或执行远端动作。
+
+有限验证场景：
+
+1. 在本轮 `install-check` 的独立 DataRoot 用最终 Windows ZIP 执行 Check→Bootstrap→Check；
+   核对最终解释器、版本、固定依赖、入口、UI 与 source manifest。
+2. 在另一个 DataRoot 用已发布 1.0.0 包建立旧 runtime，再用新包 Check→Repair→Check；
+   核对状态代数、旧目录隔离、用户/工程标记保留。Monitor 无硬件启动、认证、拒绝和正常停止按实际支持入口运行一次。
+3. 从仍存在且干净的历史 B 工程创建本轮副本，排除旧 build/cache。用最终 1.0.1 runtime 配置、构建，
+   获得新 build/ELF/input 身份。使用已枚举探针和声明的 STM32F429ZGTx，执行一次显式 100 kHz SWD
+   recovery-under-reset Target，先验证物理身份再编程，核对 readback、真实 mailbox TestRun 与 cleanup。
+   该路径包含 reset/run 和 PE3/PE4 测试输出，不要求保留原固件。首错停止，不先试历史失败的普通烧录，
+   不自动重试或回退。成功后按当前 running/receipt/session 绑定做有限变量采样与 GPIOE SVD 读取。
+4. 所需证据接受后，在精确包源创建 v1.0.1 标签并发布既有 13 件资产；说明 master 后续文档/UI 测试身份、
+   覆盖率条件例外和仍适用的限制，核对远端标签、上传资产和下载内容。v1.0.0 标签/资产保留。
+
+本轮源和证据根为 `D:\codex-tmp\tk101` 下的 `rel`、`install-check`、`h`、`h-run`、`hw-preflight`、
+`delivery`；不同执行者不共用可变数据根。硬件场景的完整运行参数、动态 action、时间和样本预算在本轮执行卡中冻结。
+原脏工作区、历史工程、现有用户 runtime、共享依赖和受拒清理路径保持原状。
+
+B 工程使用 native linker，不能以其物理 PASS 代替模板栈符号的既有链接验证；GPIO 寄存器/固件断言
+也不等于外部引脚电压、波形或肉眼灯态测量。不新增普通 flash、Fault 停核或 IDE handoff 场景；
+未变合同只复用已证明适用的历史证据，既有限制继续公开。遇产品故障另派有界实现及独立审查，
+不以报告修改掩盖故障或重建身份。验证通过前不宣布 Release 已发布。

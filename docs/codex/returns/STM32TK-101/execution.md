@@ -269,3 +269,56 @@ UI由ui_coverage在隔离u2负责两个现有测试文件，CodeHead`d402e8505cc
 主代理在全部验证完成后，按精确清单复核根与reparse，清理q2/u2/ur2本轮8个临时目录（8/8成功），
 命令与结果在`cleanup-followup.ps1`、`cleanup-followup-candidates.json`、`cleanup-followup-result.json`。
 原始新旧coverage、两轮UI结果、命令/退出码、最小日志包装错误证据及正式13件资产保留；此前受拒路径未重试。
+
+## 当前安装与实机验证
+
+PR #16 已合并，master 为 `0b3e3bbf9fa4dcb11dac647faed2dfec86a3bac5`。用户随后明确要求连接硬件验收后更新 Release，
+并确认仍为原 STM32F429ZGTx 板卡、固件无需保留。冻结包源仍为 `0f06c659f5e04aa1f8e53022eae9b5e964da2b4b`；
+此后的 master 增量只有文档与两份 UI 测试，没有重标记包源。
+
+verify_packages 对最终包执行隔离新装、已发布 1.0.0 安装后 Repair 升级、版本/依赖核对和 MonitorRuntime HTTP 冒烟，
+21 步 exit0；implement_e 独立读取原始证据并接受。新装 generation1、升级 generation2，旧 runtime 隔离，用户标记保留。
+服务认证、Host 拒绝和正常停止通过；此项不证明浏览器交互或 CLI serve/Ctrl-C 生命周期。完整原始记录在 install-check/logs。
+
+verify_qualification 在新克隆 h/c 使用最终安装版配置、构建历史真实工程，ELF SHA256 为
+`0dc00ad3338039c140c671641f989acb6619f1392fb1923833b88db2b33471da`。第一次克隆触发 Git CRLF 造成的生成文件 drift，
+未 apply 或访问硬件；另以 core.autocrlf=false 克隆同一提交后八个受管文件精确相等，其余24项仅换行归一化，主代理接受。
+当前构建和完整 SVD 离线选择通过。该工程使用历史原生 linker；不将它表述为新增生成器栈符号的独立实机覆盖。
+
+一次静态 recovery prepare 成功，随后唯一物理 Target execute 于 2026-10-10 10:25:52 UTC 返回 exit2、
+`TEST_EXECUTION_FAILED`、空 details。动作已消费，无 TestRun 或成功 flash receipt；租约已释放，工作进程已退出。
+停止后续 H2/H3，没有自动重烧、采样或寄存器读取。H1 验收 UNMET；原因仍待区分 HARDWARE/ENVIRONMENT/PRODUCT。
+离线目标清单证实 stm32f429zgtx 已由现存 CMSIS pack 注册，缺少 target 定义的假设不成立。
+原错误、配置/构建身份、动作记录及清理终态保留 h-run/h1-failure-assessment.md 及关联原始文件。
+
+主代理在当前实机验证授权内另准备一项有界连接诊断：仍经既有生产 Probe Service，沿用 under-reset/SWD100kHz，
+仅连接与身份读取，不调用烧录或 Target execute，保留映射前的安全诊断。该脚本须离线独立审查并由主代理单次调度，
+截至该阶段尚未执行。现场供电接线问询当时尚无回复；诊断按已有连接执行，不假定接线已确认正常。
+截至该阶段，正式13件资产和本轮失败证据保留，尚未发布 v1.0.1 标签或 Release。
+
+上述连接诊断随后经独立审查及单次调度完成，attach/identity 通过，服务清理、lease 与进程终态闭合。
+主代理据当前可用连接，明确批准一项新 H1b 尝试，并在执行前保留底层异常：run-local 观察包装调用安装版 CLI，
+捕获安全诊断后原样委托原 mapper，不改变产品文件、响应、超时或硬件策略；错误映射一致性和 Windows spawn 离线检查通过。
+新的静态 prepare 与原记录20个非变动字段一致。日期检查曾因 PowerShell JSON 自动 DateTime 转换丢失 Z 而误报过期，
+执行前改为保留原字符串并核准有效 UTC 期限；分类 INFRASTRUCTURE，无重新 prepare 或产品修改。
+
+H1b 单次 execute exit0、16.38秒，读回校验7812字节，物理 d3-heartbeat 2200ms、1通过/0失败；authoritative show一致。
+其 run 为 `target-v2-eb5d6d9eb9b9b27a9779d70b0b77ba2a`，证据
+`8db1669e95f6cd789d3b9c54aa019978b5e84d3624f793430df29410973d17e6`。后续有界 H2 一次变量读取得到13728；
+1000ms/8槽采样只交付0/2/5三槽，17891→18171→18431递增，满足预定至少2个有效递增值；5槽丢失、7次期限错过，
+实际0.372Hz，保留此性能限制，不补采。H3 一次 GPIOE.ODR 读取为16/0x10、32bit；预选SVD文件hash保持一致。
+所有阶段当前身份绑定一致，lease释放、最终owned process为0。verify_qualification执行，hardware_preflight及主代理独立复核通过。
+详细原始证据及边界在 `D:\codex-tmp\tk101\h-run\h1b\final-assessment.md`。首次 H1 的失败原因仍未明，未被后续通过抹去。
+至此软件安装与限定实机资格已满足，当时下一步为既有13件资产的 v1.0.1 发布及上传后复核。
+
+## 发布完成
+
+2026-10-10 11:03:42 UTC，主代理发布 [v1.0.1](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.0.1)
+并标为 Latest；annotated tag `080cec43a36401f1bf8824e779d423c0e8e54a36` 的 peeled commit 为冻结包源0f06。
+先上传草稿的13件资产，再完整下载；verify_packages逐件比对文件名、大小、SHA256、本地双构建清单及GitHub digest，13/13一致，
+manifest源身份正确，主代理核准后正式发布。post-upload-verification.json SHA256为
+`596ee2410dacded4f8eb30813fc12fa6c17b51a3b64680b610823667a7fe3adb`。v1.0.0的13件资产身份、发布时间和target未变。
+
+主代理在归属、绝对根和所有父级/子级reparse复核通过后，清理本轮19个隔离安装、升级、解包、缓存、临时及下载副本目录，19/19成功。
+原始runtime-state、用户标记校验、执行日志、首次失败、当前实机结果和工程/ELF/map、正式13件资产继续保留；用户普通runtime未作升级或清理。
+清单、结果与脚本保存在delivery/cleanup-release-*；早先受拒路径未重试。清理预检最初的内联命令因语法错误未执行，改用可审查脚本后通过。
