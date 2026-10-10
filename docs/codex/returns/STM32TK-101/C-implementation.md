@@ -1,7 +1,7 @@
 # STM32TK-101 C implementation return
 
 - Slice base: `748efdc6aad422edc8c7b63565b53854855df274`
-- CodeHead before this report: `7ab042b7dd82aaf784635ae23c80faaa37b57fdc`
+- CodeHead before this report: `8454d3f1afb6a435e7bfbcb56fbf2851ac9730ec`
 - Owner: C implementation agent. Independent complete-diff review and acceptance belong to the primary agent.
 - Authority used: local implementation, offline software tests, and local commits only. No board access, install, push, PR, merge, tag, or release.
 
@@ -9,11 +9,11 @@ The result now identifies the first out-of-range SVD register with its path, add
 
 Successful public flash results add `details.postFlash={targetState:"unknown",runVerified:false}` after workflow cleanup. The persisted `FlashReport` and receipt format were not changed, and the fake-backend tests show no added reset, resume, state query, attach retry, or programming call. Recovery flash remains a separate explicit policy and may leave the target halted.
 
-The Monitor launcher now explains why `STM32_TOOLKIT_DATA_ROOT` is needed before Python can parse `--data-root`, while retaining the exact missing runtime path in errors. The Monitor skill gives a foreground PowerShell invocation with environment restoration, Ctrl-C shutdown, and fresh-tab recovery. UI startup errors use fixed messages for invalid links, rejected responses, malformed responses, and incomplete requests; the fragment is still cleared before fetch and no token or raw response body is rendered. The committed `ui_dist` was rebuilt at the current 1.0.0 source version; slice D must rebuild it with the final 1.0.1 version.
+The Monitor launcher now explains why `STM32_TOOLKIT_DATA_ROOT` is needed before Python can parse `--data-root`, while retaining the exact missing runtime path in errors. The Monitor skill gives a foreground PowerShell invocation with environment restoration, Ctrl-C shutdown, and fresh-tab recovery. UI startup errors use fixed messages for invalid links, 401/403 access rejection, other non-2xx service failures, malformed responses, and incomplete requests; the fragment is still cleared before fetch and no token or raw response body is rendered. The committed `ui_dist` was rebuilt at the current 1.0.0 source version; slice D must rebuild it with the final 1.0.1 version.
 
 ## Verification
 
-All runs used Python 3.12.10 or Node 24.18.0/npm 11.16.0 from the existing verified environments. `PYTHONPATH` pointed to this worktree's Toolkit and Monitor `src`, bytecode was disabled, and `TEMP`, `TMP`, `TMPDIR`, npm cache, pytest basetemp, and browser output were under `D:\codex-tmp\tk101\c-run`. Node dependencies were copied from the verified tree into this run root, with a task-owned UI junction; nothing was installed.
+All runs used Python 3.12.10 or Node 24.18.0/npm 11.16.0 from the existing verified environments. `PYTHONPATH` pointed to this worktree's Toolkit and Monitor `src`, bytecode was disabled, and `TEMP`, `TMP`, `TMPDIR`, npm cache, pytest basetemp, and browser output were under `D:\codex-tmp\tk101\c-run`. Node dependencies were copied from the verified tree into this run root; the initial task-owned UI junction was replaced with an ordinary copy in `tools/stm32-monitor/ui/node_modules` for the reproducible dist build. Nothing was installed.
 
 Before each Python run, the process environment set `PYTHONPATH=D:/codex-tmp/tk101/c/tools/stm32-toolkit/src;D:/codex-tmp/tk101/c/tools/stm32-monitor/src`, `PYTHONDONTWRITEBYTECODE=1`, and all three temporary variables to that run's `tmp` directory. The commands below ran from the worktree root unless marked UI:
 
@@ -47,4 +47,6 @@ The UI browser run additionally bound `STM32_MONITOR_PYTHON` to the verified Pyt
 
 The first broad run was interrupted after exposing the same test assertion, and a focused diagnostic run confirmed it; their minimal logs are retained under `c-run/py1` and `c-run/py2`. An initial launcher test failed because its error string omitted the exact runtime path; the final launcher test passes. The initial eight-module aggregate is not a whole-suite PASS; the affected module and edge cases passed after correction. The other seven modules had no subsequent product changes.
 
-All `c-run` subdirectories and `D:\codex-tmp\tk101\c\tools\stm32-monitor\ui\node_modules` (junction to the copied dependency tree) are disposable after the primary agent retains the needed evidence. The primary agent owns their cleanup. Actual target behavior and the reported physical attach cause remain external evidence, not software PASS.
+After independent review requested two corrections, 401/403 remained the only non-2xx statuses labeled access rejection; 404, 429, 500, and 503 now use a fixed neutral startup failure. The revised DOM test also checks unknown-code fallback and absence of token, response body, and false rejection wording. A rebuilt manifest now uses `node_modules/preact/...`, with no `c-run` path; the UI dependency path was verified as an ordinary directory. Using the same UI commands above, the revision passed `npm run test -- tests/bootstrap.test.ts tests/main.test.tsx` (20 passed, exit 0), `npm run typecheck` (exit 0), `npm run build` (exit 0), and `npm run verify:dist` (seven files byte-identical, exit 0). Logs and exit markers are in `c-run/rev-ui-test`, `rev-ui-type`, `rev-ui-build`, and `rev-ui-verify`. Python product bytes were unchanged in this revision, so their prior evidence was retained without rerunning the broad matrix.
+
+All `c-run` subdirectories (including `replace_ui_deps.py` and the original copied dependency source) and `D:\codex-tmp\tk101\c\tools\stm32-monitor\ui\node_modules` (ordinary copied dependency directory) are disposable after the primary agent retains the needed evidence. The primary agent owns their cleanup. Actual target behavior and the reported physical attach cause remain external evidence, not software PASS.
