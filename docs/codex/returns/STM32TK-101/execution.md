@@ -177,3 +177,11 @@ review_b在独立干净drb按远端完整accepted base `694c825d29a55a53052a148e
 其后纯文档与builder缓存修订由主代理完整复核。最终w与D差异仅本轮治理文档，没有产品或测试字节偏离。
 
 切片软件结论为ACCEPTED；最终安装、实体运行、数值门槛及远端发布准入各自独立，不由本结论替代。
+
+## 首轮发行包检查发现与修订
+
+冻结源f652028930456ff0c2354f0da7c830f1854ff10d的双构建13/13哈希一致，解包verify-bundle通过，
+但独立verify_packages检查SBOM精确引用闭合失败：文档声明SPDXRef-DOCUMENT，两个DESCRIBES来源却为
+SPDXRef-Document。分类PRODUCT；不能据其它通过项将这套包标为完整发行PASS。D继续负责最小builder修复、
+既有SBOM用例扩充和utility信任锚点，主代理审查后重新冻结与双构建；Python/UI测量适用性不受影响。
+原始失败证据保留p-run，新的构建使用独立p3/p4及新输出目录，防止复用构建残留。最终包身份由后续资格记录给出。

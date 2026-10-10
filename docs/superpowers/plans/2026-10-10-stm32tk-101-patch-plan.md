@@ -98,6 +98,9 @@ Toolkit `__init__.py`、UI `package.json`/lockfile 顶层项目版本、两个 `
    最终打包预检确认既有pip将本地产品目录识别为可长期缓存wheel的name-version路径，而builder为wheel进程
    重建env时丢弃PIP_CACHE_DIR。D在已有builder所有权内仅对pip wheel增加--no-cache-dir，补参数边界验证并重算
    utility信任锚点；不改变包输入、依赖或构建语义。临时backend安装仍继承本轮受控cache/TEMP环境。
+   独立发布包检查进一步确认现有SBOM的SPDXRef-DOCUMENT与DESCRIBES来源SPDXRef-Document大小写不一致，
+   是无效引用。D在既有builder内统一已声明ID，并扩展现有SBOM测试检验所有关系引用闭合；重算utility锚点，
+   新代码头重新双构建，不把已失败SBOM的旧包计作发行PASS。无新验证工具、依赖或CI。
 4. 在一次最终集成/发布层执行适用检查；已改变的产品不能照搬 RC4 覆盖率数字/例外。
 5. 准备具体 GitHub 交付材料后再请求远端动作授权；成功后逐项记录 push/PR/merge/tag/Release 身份与下载校验。
    v1.0.0 标签和资产保持不变，GitHub about 可建议描述“Agent-neutral STM32 development toolkit: Keil migration, reproducible builds, probe debugging and Monitor”。
