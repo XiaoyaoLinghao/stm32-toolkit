@@ -130,6 +130,8 @@ release `test_0900_artifacts.py`，UI typecheck/build/verify:dist，以及实际
 `docs/testing/release-qualification.md` 并更新标准测试流程和 AGENTS 入口；E 不改这些治理文件。
 E 补齐双语 README、CHANGELOG、用户指南与既有路径的 Windows 部署指南；命令必须对照真实 parser/技能，
 1.0.1 仍标 in development，未实现的目标行为标版本边界，最终 D 再对齐实际接受结果。
+E 另拥有 `test_setup_runtime.py` 中读取旧 plugin-foundation 计划的文档断言，及 `test_plugin_layout.py`
+中断言 README 仍为 pending 1.0.0 的用例；只替换已过时的文档期望，不删除当前安装/布局行为检查。
 
 保留当前 release builder/policy、许可证、ui_dist、setup/launcher、全部当前产品和所需测试/fixture。
 无 Git 历史重写、archive 镜像、远端操作、新验证器或 CI。验收为准确删除清单、剩余代码/测试/文档引用闭合、
