@@ -103,6 +103,11 @@ Toolkit `__init__.py`、UI `package.json`/lockfile 顶层项目版本、两个 `
 release `test_0900_artifacts.py`，UI typecheck/build/verify:dist，以及实际受管 runtime 的版本与入口检查。
 本计划批准并不自动授权修改用户已有 runtime；本地构建、离线 fixture 验证先行，必要安装另给具体候选与目录。
 
+D独占当前版本说明的 `skills/setup-stm32-env/SKILL.md`，保留原安装授权及事务边界。
+基于1.0.1返回值的测试断言另包括Toolkit的 `test_public_inventory.py`、`test_cli.py`，
+Monitor的 `test_cli.py`、`test_service.py`、`test_exports.py`、`test_runtime.py`。
+这些只更新当前版本期望；显式模拟旧版本、第三方版本和历史fixtures不替换。
+
 ### 5.1 E 历史清理冻结清单与验收
 
 删除选择从远端 base `694c825d29a55a53052a148efa4cc6720c315a04` 的 tracked tree 计算，

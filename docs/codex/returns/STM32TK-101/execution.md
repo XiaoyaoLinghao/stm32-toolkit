@@ -18,7 +18,7 @@
 | A 项目发现与诊断 | implement_a / 主代理独立审查 | ACCEPTED；CodeHead 47d78270cff33673a3d2894bdb96fce0f7e14a04；已集成本地 7c751727e003b2ab41fc75ab2f0a8a95aa8db2ba |
 | B 配置与构建 | implement_b / review_b 与主代理 | ACCEPTED；CodeHead bebacc7916b912a70ada50fa0208c8363d3c55fb；已集成本地9c937a66d9ea36c99e2d1efccc13b8a0e7082918 |
 | C 观测与 Monitor | implement_c / 主代理 | ACCEPTED；CodeHead 8454d3f1afb6a435e7bfbcb56fbf2851ac9730ec；报告5d8c41c68c2ce5a370c3fca536758ddd108b8c78；已集成本地68e5d0b16b33f8d475a71a4ded096a20c3427e3d |
-| D 版本、升级 | 待派发 / 主代理 | A/B/C/E已接受；下一提交作为D精确base，独占最终版本/白名单/hash/用户文档，不改既有runtime事务 |
+| D 版本、升级 | implement_d / 主代理 | 已派发；base24826f1723aac3c6f4e7a1dd9961e14aab1c5153；隔离d，独占最终版本/白名单/hash/用户文档，不改既有runtime事务 |
 | E 历史清理、用户文档 | implement_e / review_patch_plan 与主代理 | ACCEPTED；CodeHead fdbc979bffb09503930de7a3f83b4ef5d7aadb95；报告 e0320f2cac932f24e83a5d3b7abbb2d910fda67c；已集成本地176251978b7830068e52736fa3d2cf2326cbab1f |
 
 A 派发时间不晚于 2026-10-10 06:41:33 UTC；后续记录提交/验证时间和实际命令，不把文档准备计作产品完成。
@@ -130,3 +130,8 @@ UI依赖复制为普通目录，不能用指向runroot的junction构建而污染
 这不授权修改用户已有runtime、执行硬件或远端动作。正式runtime部署及物理证据仍须具体候选和执行卡。
 已核验旧原生coverage可仅对源Git blob不变的文件复用；新候选改动文件必须使用当前原生测量。
 Monitor旧core93.7077%低于95%，不沿用v1.0.0例外，不重开无界覆盖率补数路线。
+
+D静态盘点发现setup技能仍指向当前runtime/1.0.0，以及Toolkit public_inventory/cli和Monitor
+cli/service/exports/runtime测试硬编码当前返回1.0.0。主代理将这些具名文件的当前版本说明/断言
+纳入同一D所有权，保持模拟旧版本与历史fixture原值；无新公共行为或所有权例外。
+最终独立资格验证者verify_qualification仅准备q-run原生测量，待D完整CodeHead再执行，不改产品/测试。
