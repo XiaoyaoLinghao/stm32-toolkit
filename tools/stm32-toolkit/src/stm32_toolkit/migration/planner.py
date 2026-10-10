@@ -419,7 +419,7 @@ def _inspection_blockers(inspection: KeilInspection) -> list[MigrationBlocker]:
                         0,
                         0,
                         "",
-                        "included ARM assembly source is unsupported",
+                        "included ARMCC assembly requires a reviewed GNU-compatible assembly adaptation; if this is startup code, review vector table and initialization; no file was written by planning",
                     )
                 )
     if inspection.output.scatter_file:
@@ -664,16 +664,21 @@ def plan_keil_conversion(root: Path, inspection: KeilInspection) -> MigrationPla
 
     blockers: list[MigrationBlocker] = []
     scoped_option_blockers = _scoped_option_blockers(inspection)
-    if status:
+    for category, path in git_guard.dirty_paths(status):
+        next_step = {
+            "index": "Review staged changes and commit or preserve them before replanning.",
+            "tracked": "Review tracked working-tree changes and commit or preserve them before replanning.",
+            "untracked": "Review and intentionally preserve this untracked file before replanning; Toolkit will not delete it.",
+        }[category]
         blockers.append(
             MigrationBlocker(
                 "MIGRATION_GIT_DIRTY",
-                "MIGRATION_GIT_DIRTY",
-                "",
+                f"MIGRATION_GIT_{category.upper()}_DIRTY",
+                path,
                 0,
                 0,
-                "",
-                "Git working tree is not clean",
+                category,
+                f"Git {category} path blocks the read-only conversion plan. {next_step}",
             )
         )
     blockers.extend(_inspection_blockers(inspection))
@@ -765,7 +770,7 @@ def plan_keil_conversion(root: Path, inspection: KeilInspection) -> MigrationPla
                     0,
                     0,
                     "",
-                    "an existing .stm32-project.json differs from the proposal",
+                    "existing .stm32-project.json differs from the proposal; review and resolve it explicitly before replanning; no file was written",
                 )
             )
     inputs.sort(key=lambda entry: entry.path)

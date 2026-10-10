@@ -1,0 +1,100 @@
+
+There are no discarded input sections
+
+Memory Configuration
+
+Name             Origin             Length             Attributes
+FLASH            0x08000000         0x00100000         xr
+RAM              0x20000000         0x00020000         xrw
+*default*        0x00000000         0xffffffff
+
+Linker script and memory map
+
+                0x00001000                        _Min_Heap_Size = 0x1000
+                0x00000400                        _Min_Stack_Size = 0x400
+
+.isr_vector     0x08000000        0x8
+ *(.isr_vector)
+ .isr_vector    0x08000000        0x8 oracle.o
+
+.text           0x08000008        0x4
+ *(.text*)
+ .text          0x08000008        0x0 oracle.o
+ .text.Reset_Handler
+                0x08000008        0x2 oracle.o
+                0x08000008                Reset_Handler
+ *(.rodata*)
+ *(.init)
+ *(.fini)
+                0x0800000c                        . = ALIGN (0x4)
+ *fill*         0x0800000a        0x2
+                0x0800000c                        _etext = .
+
+.glue_7         0x0800000c        0x0
+ .glue_7        0x0800000c        0x0 linker stubs
+
+.glue_7t        0x0800000c        0x0
+ .glue_7t       0x0800000c        0x0 linker stubs
+
+.vfp11_veneer   0x0800000c        0x0
+ .vfp11_veneer  0x0800000c        0x0 linker stubs
+
+.v4_bx          0x0800000c        0x0
+ .v4_bx         0x0800000c        0x0 linker stubs
+
+.iplt           0x0800000c        0x0
+ .iplt          0x0800000c        0x0 oracle.o
+
+.rel.dyn        0x0800000c        0x0
+ .rel.iplt      0x0800000c        0x0 oracle.o
+
+.ARM.extab
+ *(.ARM.extab* .gnu.linkonce.arm.extab.*)
+
+.ARM.exidx
+ *(.ARM.exidx* .gnu.linkonce.arm.exidx.*)
+
+.data           0x20000000       0x20 load address 0x0800000c
+                0x20000000                        _sdata = .
+ *(.data*)
+ .data          0x20000000        0x0 oracle.o
+ .data.payload  0x20000000       0x20 oracle.o
+                0x20000020                        . = ALIGN (0x4)
+                0x20000020                        _edata = .
+                0x0800000c                        _sidata = LOADADDR (.data)
+
+.igot.plt       0x20000020        0x0 load address 0x0800002c
+ .igot.plt      0x20000020        0x0 oracle.o
+
+.bss            0x20000020       0x30 load address 0x0800002c
+                0x20000020                        _sbss = .
+ *(.bss*)
+ .bss           0x20000020        0x0 oracle.o
+ .bss.reserved  0x20000020       0x30 oracle.o
+ *(COMMON)
+                0x20000050                        . = ALIGN (0x4)
+                0x20000050                        _ebss = .
+
+.heap           0x20000050     0x1000 load address 0x0800002c
+                0x20000050                        . = ALIGN (0x8)
+                0x20000050                        __end__ = .
+                0x20000050                        end = __end__
+                0x20000050                        __HeapBase = .
+                0x20001050                        . = (. + _Min_Heap_Size)
+ *fill*         0x20000050     0x1000
+                0x20001050                        __HeapLimit = .
+
+.stack          0x20001050      0x400 load address 0x0800002c
+                0x20001050                        . = ALIGN (0x8)
+                0x20001050                        __StackLimit = .
+                0x20001450                        . = (. + _Min_Stack_Size)
+ *fill*         0x20001050      0x400
+                0x20001450                        __StackTop = .
+LOAD oracle.o
+OUTPUT(template.elf elf32-littlearm)
+LOAD linker stubs
+
+.ARM.attributes
+                0x00000000       0x21
+ .ARM.attributes
+                0x00000000       0x21 oracle.o

@@ -685,10 +685,11 @@ def _inspect_elf(elffile: ELFFile, rel: str, model: ProjectModel, data: bytes) -
         if size == 0:
             continue
         alloc = bool(section["sh_flags"] & _SHF_ALLOC)
+        nobits = section["sh_type"] == "SHT_NOBITS"
         addr = section["sh_addr"]
         if not alloc:
             section_evidence.append(
-                ElfSectionEvidence(name=section.name, address=addr, size=size, alloc=False)
+                ElfSectionEvidence(name=section.name, address=addr, size=size, alloc=False, nobits=nobits)
             )
             continue
         if not _in_any_region(addr, size, model):
@@ -697,7 +698,7 @@ def _inspect_elf(elffile: ELFFile, rel: str, model: ProjectModel, data: bytes) -
         if fixed is not None and addr != int(fixed.group(1), 16):
             raise _artifact_invalid(rel, "fixedSectionAddress")
         section_evidence.append(
-            ElfSectionEvidence(name=section.name, address=addr, size=size, alloc=True)
+            ElfSectionEvidence(name=section.name, address=addr, size=size, alloc=True, nobits=nobits)
         )
 
     return ElfEvidence(

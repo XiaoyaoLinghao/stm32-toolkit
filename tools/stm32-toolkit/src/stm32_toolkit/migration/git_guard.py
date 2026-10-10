@@ -109,3 +109,44 @@ def porcelain_status(root: Path) -> bytes:
         return _run_git(["status", "--porcelain=v1", "-z", "--untracked-files=all"], root)
     except _GitError:
         raise _git_unavailable("status")
+
+
+def dirty_paths(status: bytes) -> tuple[tuple[str, str], ...]:
+    """Classify porcelain-v1 -z entries as index, tracked, or untracked.
+
+    Rename/copy entries have one extra NUL-delimited old name. The primary
+    path is the destination shown by Git and all paths remain root-relative.
+    """
+    if not status:
+        return ()
+    parts = status.split(b"\0")
+    if parts[-1] != b"":
+        raise _git_unavailable("status")
+    entries: list[tuple[str, str]] = []
+    cursor = 0
+    while cursor < len(parts) - 1:
+        record = parts[cursor]
+        cursor += 1
+        if len(record) < 4 or record[2:3] != b" ":
+            raise _git_unavailable("status")
+        index, worktree = record[:1], record[1:2]
+        try:
+            path = record[3:].decode("utf-8", errors="strict")
+        except UnicodeDecodeError:
+            raise _git_unavailable("status")
+        if not path or path.startswith("/") or "\\" in path or any(
+            part in {"", ".", ".."} for part in path.split("/")
+        ):
+            raise _git_unavailable("status")
+        if index == b"?" and worktree == b"?":
+            entries.append(("untracked", path))
+        else:
+            if index != b" ":
+                entries.append(("index", path))
+            if worktree != b" ":
+                entries.append(("tracked", path))
+        if index in {b"R", b"C"} or worktree in {b"R", b"C"}:
+            if cursor >= len(parts) - 1:
+                raise _git_unavailable("status")
+            cursor += 1
+    return tuple(entries)

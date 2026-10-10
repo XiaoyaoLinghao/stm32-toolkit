@@ -1,224 +1,62 @@
-# STM32 Toolkit 1.0
+# STM32 Toolkit
 
 [English](README.md) | 简体中文
 
-STM32 Toolkit 是本地、与 Agent 无关的 STM32 开发控制面。CLI 与 MCP 服务共享项目身份、
-Keil→GCC 迁移、构建、探针工作流、Monitor、测试和证据诊断契约。Claude Code 只是该契约的
-薄适配器。
+STM32 Toolkit 是面向 STM32 工程的本地工具。CLI 与 stdio MCP 共用工程、构建、Probe Service、测试和 Monitor 合同；八个 Claude Code Skill 只是这些公开入口的适配层，产品核心不依赖特定 Agent 宿主。
 
-## 1.0.0 本地 release candidate 与运行时边界
+**版本状态：**[v1.0.0 已发布](docs/release-status.md)；当前源码候选标识为 **v1.0.1**，已包含获批补丁行为，未发布、未安装。审查和资格状态以[发布状态](docs/release-status.md)及[执行记录](docs/codex/returns/STM32TK-101/execution.md)为准。已安装使用请选已核验发行包及其匹配的 DataRoot。发行支持范围为 Windows x86_64、CPython `>=3.12,<3.13`。历史资格限制见[发布状态](docs/release-status.md)。
 
-本仓库包含待最终发布校验的 **1.0.0 本地 release candidate**；最终验收由 release 流程完成，
-目前尚未打 tag、上传或 release。官方源码为
-`https://github.com/XiaoyaoLinghao/stm32-toolkit.git`；candidate 构建绑定一个完整 40 位 Git
-CodeHead 和封闭的 Windows CPython 3.12 wheelhouse。发布契约是 CPython `>=3.12,<3.13`；托管
-解释器只能使用 `DATA_ROOT/runtime/1.0.0/Scripts/python.exe`。MCP 绝不回退到系统解释器。
-setup helper 的 CHECK 模式只读；Bootstrap 和 Repair 必须得到明确授权，先校验解压后的离线
-bundle，只安装 manifest 中的 wheel，运行 `pip check`，在本地 staging 后才可提升。
+## 从已核验 runtime 开始
 
-Repair 只修改 runtime。对于 `generatedBy` 为 `stm32-toolkit` `0.9.0` 的 Schema v2 或 v3 工程，
-Repair 完成后先启动新的 Toolkit session，再按现有受保护的 configure/build 顺序执行：
+将已核验发行包解压到稳定的 ToolkitRoot。DataRoot 要长期保留，并与工程、一次性测试目录分开。setup 的 `Check` 只读；审阅结果后，仅在缺少 runtime 时选择已授权的 `Bootstrap`，或在受控升级/修复时选择已授权的 `Repair`，然后再次运行 `Check`。本候选的 CLI/MCP 使用 `DATA_ROOT/runtime/1.0.1`；已发布 v1.0.0 包使用 `runtime/1.0.0`，均不回退到系统 Python。已有 v1.0.0 runtime 只能经获授权的 Repair 进入新候选，旧目录按既有事务规则隔离；恢复保证以[已记录的回滚范围](docs/release-status.md)为限。
 
 ```powershell
-stm32-toolkit --project-root C:\work\blinky project configure --dry-run --json
-stm32-toolkit --project-root C:\work\blinky project configure --apply --plan-id <plan-id> --authorized --json
-stm32-toolkit --project-root C:\work\blinky build --preset arm-debug --json
-```
-
-configure 事务会保留工程真实的 `generatedBy.version` `0.9.0`，写出当前 `1.0.0` managed manifest。
-随后 build 才会发布使用 `1.0.0` 的新 build identity。用户编辑、畸形 manifest、未知/未来 producer
-与过期 plan 继续沿用既有的拒绝和回滚规则。
-
-回放证据只保证向后读取兼容：1.0 可以读取已有的 0.9 Acceptance 记录，并保留其原始字节。
-新建的 1.0 记录可能包含 0.9 读取器不支持的诊断引用，即使证据 schema 标签没有变化，
-这些新记录也应继续使用 1.0 读取。Repair 保留旧 runtime，不代表旧 runtime 能读取新证据。
-恢复时应保留原状态和证据，不要修改身份字段或绕过降级检查。
-
-当前运行时是通用的：集成方可以选择任意绝对的 `TOOLKIT_ROOT`、`DATA_ROOT` 和
-`PROJECT_ROOT`。启动器只读取 `STM32_TOOLKIT_DATA_ROOT`；所有项目命令都必须显式提供
-`--project-root`。
-
-```powershell
-stm32-toolkit --project-root C:\work\blinky doctor --json
-stm32-toolkit --project-root C:\work\blinky build --preset arm-debug --json
-```
-
-## 通用 MCP 模板
-
-通用配置使用**绝对 launcher**、显式的 project/data 参数，并且 `env` 中只有
-`STM32_TOOLKIT_DATA_ROOT`：
-
-```json
-{
-  "mcpServers": {
-    "stm32-toolkit": {
-      "command": "C:\\tools\\stm32-toolkit\\bin\\stm32-toolkit-mcp.cmd",
-      "args": [
-        "--project-root", "C:\\work\\blinky",
-        "--data-root", "C:\\data\\stm32-toolkit"
-      ],
-      "env": {
-        "STM32_TOOLKIT_DATA_ROOT": "C:\\data\\stm32-toolkit"
-      }
-    }
-  }
-}
-```
-
-Claude `.mcp.json` 只是同一契约的映射。它内联替换 `${CLAUDE_PLUGIN_ROOT}`、
-`${CLAUDE_PROJECT_DIR}`、`${CLAUDE_PLUGIN_DATA}`，传递显式 project/data 参数，并且只把
-`STM32_TOOLKIT_DATA_ROOT` 映射到 plugin data。它不添加第二个 server，也不回退到宿主 Python。
-
-## CLI、setup 与隔离
-
-在 Claude Code 中先运行 `/stm32-toolkit:setup-stm32-env`。在普通 Windows PowerShell 会话中，
-先为当前 checkout、持久化数据和已有工程设置三个绝对路径。下面的路径可以替换为用户自己的
-本地路径，不依赖 agent host 占位符：
-
-```powershell
-$ToolkitRoot = 'C:\tools\stm32-toolkit-1.0.0'
+$ToolkitRoot = 'C:\tools\stm32-toolkit-1.0.1'
 $DataRoot = 'C:\data\stm32-toolkit'
 $ProjectRoot = 'C:\work\blinky'
 $SetupScript = Join-Path $ToolkitRoot 'bin\setup-stm32-env.ps1'
 
-# 始终先运行只读 Check。
 & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $SetupScript -Mode Check `
   -ToolkitRoot $ToolkitRoot -DataRoot $DataRoot -ProjectRoot $ProjectRoot
 ```
 
-如果 `Check` 报告 `missing`，请先查看证据并明确授权缺少 runtime 的安装，再运行下面独立的
-Bootstrap 命令：
+若 `Check` 返回 `missing` 且已获安装授权，**仅执行 Bootstrap**：
 
 ```powershell
 & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $SetupScript -Mode Bootstrap `
   -ToolkitRoot $ToolkitRoot -DataRoot $DataRoot -ProjectRoot $ProjectRoot
 ```
 
-如果 `Check` 对获准的 0.9.0/0.5.0/0.3.0 legacy upgrade 报告 `repairable`，或对已有 runtime
-报告 `broken`，请查看 source 和 downgrade guard 并另行明确授权 Repair，再运行下面独立的命令：
+若 `Check` 表明可进行已授权修复，**改为仅执行 Repair**：
 
 ```powershell
 & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $SetupScript -Mode Repair `
   -ToolkitRoot $ToolkitRoot -DataRoot $DataRoot -ProjectRoot $ProjectRoot
 ```
 
-`Check` 是只读的。一次 setup 决策最多运行一个 mutation 命令，完成后再次运行 `Check`。
+每次至多执行一个修改动作，再重复 `Check`。Claude Code 可用 `/stm32-toolkit:setup-stm32-env`，其底层仍是同一 setup 合同。其它 MCP 宿主使用 `bin/stm32-toolkit-mcp.cmd` 的绝对路径、显式工程/DataRoot 参数，环境变量 `STM32_TOOLKIT_DATA_ROOT` 指向该 DataRoot。[通用 MCP 配置示例和公开入口](docs/user-guide.md)见用户指南。`${CLAUDE_PROJECT_DIR}` 和 `${CLAUDE_PLUGIN_DATA}/projects/<workspaceId>` 是 Claude 适配占位符，不是通用 CLI 的依赖。所有工程 CLI 命令都要显式给出绝对 `--project-root`。
 
-### 离线 candidate 构建与安装
+## 工程操作入口
 
-部署方案及 IDE 准备请同时遵循 [Windows 部署与 IDE 前置核对](docs/testing/windows-deployment-and-ide-preflight.md)。特别要在最终 runtime 目录验证真实的 `pyocd.exe --version`；Python 模块导入成功不能替代启动器检查。
-
-在 pinned CodeHead 的干净 checkout 中，release owner 可以使用精确的 Windows CPython 3.12
-wheelhouse 组装本地 candidate。utility 不从 index 解析、不上传、不 push，也不发布远程
-release：
+在已核验 runtime 的 `Scripts` 目录可用的 shell 中执行。检测、检查及首次 configure plan 均只读；应用前审阅计划和 blocker。`.stm32-project.json` 是版本控制的工程意图，`.stm32-toolkit/` 中的 managed manifest 另行记录生成文件所有权。
 
 ```powershell
-py -3.12 tools/release/build_0900_artifacts.py build `
-  --repo-root D:\src\stm32-toolkit `
-  --code-head <40-位小写十六进制 commit> `
-  --wheelhouse C:\release-inputs\wheelhouse `
-  --output-root C:\release-output\stm32-toolkit-1.0.0
+stm32-toolkit --project-root C:\work\blinky doctor --json
+stm32-toolkit --project-root C:\work\blinky project detect --json
+stm32-toolkit --project-root C:\work\blinky keil inspect --uvprojx Project\blinky.uvprojx --json
+stm32-toolkit --project-root C:\work\blinky project configure --dry-run --json
+stm32-toolkit --project-root C:\work\blinky build --preset arm-debug --json
 ```
 
-请将 release 输入和输出路径替换为自己的绝对目录。先验证外置的 `CHECKSUMS.sha256`，再解压
-`stm32-toolkit-1.0.0-windows-x86_64.zip`。上面的 standalone setup 命令使用解压后的
-`ToolkitRoot`、持久化的 `DataRoot` 与已有的 `ProjectRoot`。CHECK 会报告 bundle 和
-`runtime-state.json` 证据；Bootstrap/Repair 只用 `release/wheels/` 中 manifest 列出的 wheel，
-并使用 `--no-index`、`--no-deps`。授权 Repair 会隔离 0.9.0/0.5.0/0.3.0 legacy runtime；记录过更高
-版本时返回 `downgrade-refused`，同版本但 manifest/source 不同时返回 `source-conflict`，未来
-state 永不被猜测或重写。Project 与 Monitor 数据仍由既有的显式事务负责。
+Keil→GCC 是单向迁移，不改写 Keil 工程。当前候选可在受保护工程根内发现子目录 Keil 工程；多个候选仍须显式选择。非 UTF-8 源码、ARMCC 汇编需要工程自行适配；未跟踪文件也可能使 Git clean 检查阻断转换。configure 保留未托管的普通 `.vscode` 目标文件，已有托管文件改动保护不变；CubeMX regeneration 另有 inventory 规则。烧录/回读成功不证明程序正在运行。探针访问、handoff、读数与物理测试依照各自身份和授权合同执行。
 
-candidate 只承诺 Windows x86_64，并包含确定性的 source/archive/SBOM/license/
-compatibility/troubleshooting 材料；不包含硬件或远程 release 的 acceptance 声明。
+Monitor 是观测 UI：组由用户创建，不自动连接探针。应从已核验启动器进入本次认证浏览器标签。允许的本地 Host 是 `127.0.0.1`；不要手输 `localhost` 或复制、记录 token 片段。[用户指南](docs/user-guide.md)含配置约束、22 项问题的处理和 Monitor 入口命令。
 
-`.stm32-project.json` 是版本控制的项目配置。机器状态保存在
-`${CLAUDE_PLUGIN_DATA}/projects/<workspaceId>`（或等价的通用 `DATA_ROOT`）下，因此不同
-clone 拥有不同 workspace 和 session。Monitor 组仍由用户创建，Toolkit 不附带虚构预设；
-Monitor Skill 只在调用启动器期间临时设置通用 data-root 环境，并恢复进程原值。
+## 当前文档
 
-## Skill（恰好八个）
+- [用户指南与排障](docs/user-guide.md)：迁移、配置、构建、Probe Service、Monitor 和升级。
+- [Windows 部署与 IDE 前置核对](docs/testing/windows-deployment-and-ide-preflight.md)：最终 runtime 与调试器检查。
+- [架构](docs/architecture.md)、[开发](docs/development.md)、[标准测试流程](docs/testing/standard-test-procedure.md)及[发布资格](docs/testing/release-qualification.md)。
+- [变更记录](CHANGELOG.md)及[v1.0.1 补丁规格](docs/superpowers/specs/2026-10-10-stm32tk-101-patch-design.md)。候选的当前审查与资格记录见[执行记录](docs/codex/returns/STM32TK-101/execution.md)。
 
-- `/stm32-toolkit:setup-stm32-env`
-- `/stm32-toolkit:migrate-keil`
-- `/stm32-toolkit:configure-stm32-project`
-- `/stm32-toolkit:build-firmware`
-- `/stm32-toolkit:flash-firmware`
-- `/stm32-toolkit:debug-firmware`
-- `/stm32-toolkit:read-var`
-- `/stm32-toolkit:stm32-monitor`
-
-每个 Skill 都只是对同一 CLI/MCP 行为的薄交接。硬件 Skill 先建立 project context，并展示
-精确固件/探针身份；模拟、跳过、延期或失败的硬件证据绝不描述为真实物理成功。Keil→GCC
-迁移是单向的，不会写回 Keil 工程。
-
-## MCP inventory（全部 48 个名称）
-
-公开 inventory 按职责分组：
-
-### Project
-
-`stm32_doctor`、`stm32_project_detect`、`stm32_project_context`、`stm32_project_create_plan`、
-`stm32_project_create_prepare`、`stm32_project_create_apply`、`stm32_project_regenerate_plan`、
-`stm32_project_regenerate_prepare`、`stm32_project_regenerate_apply`、`stm32_keil_inspect`、
-`stm32_keil_convert`、`stm32_project_configure`
-
-### Build
-
-`stm32_build`
-
-### Probe
-
-`stm32_probe_list`、`stm32_flash`、`stm32_debug_handoff_begin`、`stm32_debug_handoff_end`、
-`stm32_variable_read`、`stm32_variable_sample`、`stm32_register_read`、`stm32_fault_analyze`
-
-### Diagnostic
-
-`stm32_diagnostic_start`、`stm32_diagnostic_show`、`stm32_diagnostic_begin`、
-`stm32_diagnostic_hypothesis_add`、`stm32_diagnostic_hypothesis_assess`、
-`stm32_diagnostic_plan_add`、`stm32_diagnostic_plan_run`、`stm32_test_target_replay`、
-`stm32_diagnostic_source_change_declare`、`stm32_diagnostic_verification_plan_add`、
-`stm32_diagnostic_verification_start`、`stm32_diagnostic_marker_attach`、
-`stm32_diagnostic_verification_complete`、`stm32_diagnostic_verification_show`
-
-### Test
-
-`stm32_test_host_discover`、`stm32_test_host_run`、`stm32_test_show`、
-`stm32_test_target_prepare`、`stm32_test_target_execute`
-
-### Acceptance
-
-`stm32_acceptance_scenario_describe`、`stm32_acceptance_scenario_record`、
-`stm32_acceptance_scenario_show`、`stm32_acceptance_attempt_begin`、
-`stm32_acceptance_attempt_checkpoint`、`stm32_acceptance_attempt_authorize_source_change`、
-`stm32_acceptance_attempt_show`、`stm32_acceptance_attempt_resume`
-
-服务恰好注册上述 48 个名称，顺序和 schema 也是 Agent-neutral 契约的一部分。项目操作不能
-通过参数偷偷替换 project root、环境、target、ELF、SVD、地址或服务凭据。
-
-## Target 测试与实体资格
-
-Target frame v1 保持 replay 兼容：旧项目的 v1 fixture、字节和回放语义继续保持不变。
-Target frame v2 是 host-bound 的。项目在显式 project root 的 `testing.target.protocol` 中
-选择 v2；host 会把完整的 project、固件、Probe、target、session、revision identity 与
-case-inventory digest 绑定，并且只有在受保护的 flash、readback 和 transport identity 检查
-完成后才发布实体结果。CLI 与 MCP 的 target prepare/execute 入口读取该项目配置，不接受调用
-方注入的 identity、ELF、target 或 address。
-
-VS10-A 的参考 transport 只有一个 `memory-mailbox` 路径。RTT、UART 和 semihosting 仍保留
-软件 adapter 及 replay 兼容协议选项，但尚未在指定参考硬件上进行实体资格化。
-
-## 产品工具边界
-
-STM32CubeMX 负责生成新工程的 MCU、pin、clock、peripheral、startup、HAL/LL 和原生 CMake
-字节。STM32CubeCLT 提供 ARM GCC、CMake、Ninja、ST 工具、target 事实与 SVD。PyOCD 是生产
-探针后端，Cortex-Debug 是明确交接后的 VS Code 人工 UI。外部工具、扩展、驱动和
-CMSIS-Pack 检查均有界且只读；缺少的工具仍由操作者处理。
-
-## VS09-B 边界
-
-VS09-B 负责 pinned-source 安装、安全升级/降级、恶意名称测试、checksums、archives、SBOM、
-licenses、compatibility 和 troubleshooting。本地 candidate 可复现且可审计，但本仓库不执行
-远程 release、PR、merge、tag、上传、签名或硬件操作。
-
-历史 0.5 证据继续保存在有明确标记的 release-controller 与 replay fixture 中，只作为历史，
-不作为当前 runtime 或 inventory。
+MCP inventory 有全部 48 个公开名称，覆盖工程、构建、探针、诊断、测试、验收。`VS09-B` 的当前发行构建仍使用 `tools/release/build_0900_artifacts.py` 和固定的 `release_0900_policy.json`；历史文件名不表示当前另有 0.9 runtime。退出当前树的旧计划与报告仍可用 `git show 694c825d29a55a53052a148efa4cc6720c315a04:<path>` 查阅。

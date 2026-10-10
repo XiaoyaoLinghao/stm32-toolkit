@@ -797,6 +797,35 @@ def test_run_build_requires_valid_managed_configuration(tmp_path: Path):
     assert result.data is None
 
 
+def test_public_configure_to_build_preserves_unowned_editor_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    root = prepare_project(tmp_path)
+    settings = root / ".vscode/settings.json"
+    settings.write_bytes(b"user editor settings\n")
+    manifest_path = root / ".stm32-toolkit/generated-files.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["files"] = [
+        entry for entry in manifest["files"]
+        if entry["path"] != ".vscode/settings.json"
+    ]
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+
+    plan = plan_project_configuration(load_project_model(root))
+    assert next(entry for entry in plan.files if entry.path == ".vscode/settings.json").status == "preserved-unowned"
+    applied = apply_project_configuration(plan)
+    assert applied.ok
+    assert applied.data["preservedPaths"] == (".vscode/settings.json",)
+    snapshot = snapshot_project_inputs(load_project_model(root))
+    settings.write_bytes(b"changed user editor settings\n")
+    assert snapshot_project_inputs(load_project_model(root)).sha256 == snapshot.sha256
+
+    install_fake_cmake(monkeypatch, tmp_path)
+    result = run_build(BuildRequest(project_root=root, preset="arm-debug"))
+    assert result.ok, result
+    assert settings.read_bytes() == b"changed user editor settings\n"
+
+
 def test_run_build_accepts_schema_v3_managed_configuration(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     root = prepare_project(tmp_path, overrides={"schemaVersion": 3})
     install_fake_cmake(monkeypatch, tmp_path)
@@ -825,7 +854,7 @@ def test_run_build_accepts_legacy_0_9_producer_and_publishes_current_identity(
     assert result.ok is True, result
     identity = read_json(identity_path_for(root))
     project = read_json(root / ".stm32-project.json")
-    assert identity["toolkitVersion"] == "1.0.0"
+    assert identity["toolkitVersion"] == "1.0.1"
     assert project["generatedBy"]["version"] == "0.9.0"
     assert json.loads(manifest_path.read_text(encoding="utf-8"))["toolVersion"] == "0.9.0"
 
@@ -939,7 +968,7 @@ def test_run_build_success_debug_publishes_exact_evidence(
     assert identity_doc["mapPath"] == "build/arm-debug/firmware.map"
     assert identity_doc["targetDevice"] == "STM32F407VGTx"
     assert identity_doc["logicalProjectId"] == "12345678-1234-5678-1234-567812345678"
-    assert identity_doc["toolkitVersion"] == "1.0.0"
+    assert identity_doc["toolkitVersion"] == "1.0.1"
     assert identity_doc["buildId"] == report.identity.build_id
     assert len(identity_doc["gitHead"]) == 40
     assert identity_doc["entryPoint"] == 0x08000011

@@ -3,7 +3,7 @@ from __future__ import annotations
 from importlib import import_module
 from typing import TYPE_CHECKING, Any
 
-__version__ = "1.0.0"
+__version__ = "1.0.1"
 
 __all__ = [
     "MonitorObservationError",

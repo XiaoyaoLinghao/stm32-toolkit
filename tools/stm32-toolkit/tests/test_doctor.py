@@ -7,6 +7,7 @@ import sys
 import time
 from pathlib import Path
 
+from stm32_toolkit import __version__
 from stm32_toolkit.doctor import (
     TOOLS,
     _READER_JOIN_TIMEOUT_SECONDS,
@@ -71,7 +72,7 @@ def test_doctor_reports_missing_planned_tools_without_mutating(monkeypatch, tmp_
 
 def test_doctor_reports_closed_runtime_and_public_inventory(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(
-        "stm32_toolkit.doctor.importlib.metadata.version", lambda name: "1.0.0"
+        "stm32_toolkit.doctor.importlib.metadata.version", lambda name: __version__
     )
     result = run_doctor(tmp_path)
     runtime = result.data["runtime"]
@@ -79,12 +80,22 @@ def test_doctor_reports_closed_runtime_and_public_inventory(monkeypatch, tmp_pat
         "requiredPython": ">=3.12,<3.13",
         "pythonVersion": ".".join(str(part) for part in sys.version_info[:3]),
         "pythonSupported": sys.version_info[:2] == (3, 12),
-        "toolkitVersion": "1.0.0",
-        "monitorVersion": "1.0.0",
+        "toolkitVersion": __version__,
+        "monitorVersion": __version__,
         "versionsCompatible": True,
     }
     assert len(result.data["publicInventory"]["mcpTools"]) == 48
     assert len(result.data["publicInventory"]["skills"]) == 8
+
+
+def test_doctor_reports_old_monitor_version_as_incompatible(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(
+        "stm32_toolkit.doctor.importlib.metadata.version", lambda name: "1.0.0"
+    )
+    runtime = run_doctor(tmp_path).data["runtime"]
+    assert runtime["toolkitVersion"] == __version__
+    assert runtime["monitorVersion"] == "1.0.0"
+    assert runtime["versionsCompatible"] is False
 
 
 def test_doctor_reports_missing_monitor_metadata_without_fabrication(
@@ -538,95 +549,66 @@ from stm32_toolkit.doctor import (
 )
 
 
-def _code_extension_processes(stdout: bytes):
-    def fake_popen(argv, **kwargs):
-        if argv[1:] == ("--list-extensions", "--show-versions"):
-            return _FakeProcess(stdout=stdout)
-        return _FakeProcess(stdout=b"code version 1.90.0\n")
-
-    return fake_popen
-
-
-def test_doctor_vscode_extensions_unavailable_without_code(monkeypatch, tmp_path: Path):
+def test_doctor_vscode_extensions_are_not_probed_without_code(monkeypatch, tmp_path: Path):
     monkeypatch.setattr("stm32_toolkit.doctor.shutil.which", lambda name: None)
 
     result = run_doctor(tmp_path)
 
-    extensions = result.data["vscodeExtensions"]
-    assert tuple(extensions) == VSCODE_EXTENSIONS
+    assert tuple(result.data["vscodeExtensions"]) == VSCODE_EXTENSIONS
     assert all(
-        value == {"installed": False, "version": None, "status": "unavailable"}
-        for value in extensions.values()
+        value == {"installed": False, "version": None, "status": "not-probed"}
+        for value in result.data["vscodeExtensions"].values()
     )
-    assert result.data["mutated"] is False
 
 
-def test_doctor_vscode_extensions_parsed_with_fixed_argv(monkeypatch, tmp_path: Path):
-    code_path = r"C:\Program Files\Microsoft VS Code\bin\code.exe"
-    calls: list[tuple[object, dict[str, object]]] = []
+def test_doctor_gui_version_is_static_and_never_starts_a_process(monkeypatch, tmp_path: Path):
+    from types import SimpleNamespace
 
-    def fake_which(name: str) -> str | None:
-        return code_path if name == "code" else None
+    paths = {"STM32CubeMX": "C:/tools/STM32CubeMX.exe", "code": "C:/tools/code.exe"}
+    reads = []
+    monkeypatch.setattr("stm32_toolkit.doctor.shutil.which", lambda name: paths.get(name))
+    monkeypatch.setattr(
+        "stm32_toolkit.doctor._windows_file_version",
+        lambda path: reads.append(path) or ("6.18.1" if path.name == "STM32CubeMX.exe" else None),
+    )
+    monkeypatch.setattr(
+        "stm32_toolkit.doctor._run_process",
+        lambda argv: (_ for _ in ()).throw(AssertionError(f"unexpected process: {argv}")),
+    )
+    support = SimpleNamespace(to_dict=lambda: {})
 
-    def fake_popen(argv, **kwargs):
-        calls.append((argv, kwargs))
-        if argv[1:] == ("--list-extensions", "--show-versions"):
-            return _FakeProcess(
-                stdout=(
-                    b"ms-vscode.cpptools@1.21.0\n"
-                    b"ms-vscode.cmake-tools@1.18.42\n"
-                    b"unrelated.extension@9.9.9\n"
-                )
-            )
-        return _FakeProcess(stdout=b"code version 1.90.0\n")
+    result = run_doctor(tmp_path, support_profile=support)
 
-    monkeypatch.setattr("stm32_toolkit.doctor.shutil.which", fake_which)
-    monkeypatch.setattr("stm32_toolkit.doctor.subprocess.Popen", fake_popen)
-
-    result = run_doctor(tmp_path)
-
-    extensions = result.data["vscodeExtensions"]
-    assert extensions["ms-vscode.cpptools"] == {
-        "installed": True,
-        "version": "1.21.0",
+    assert result.data["tools"]["STM32CubeMX"] == {
+        "available": True,
+        "path": paths["STM32CubeMX"],
         "status": "ok",
+        "returnCode": None,
+        "version": "6.18.1",
     }
-    assert extensions["ms-vscode.cmake-tools"] == {
-        "installed": True,
-        "version": "1.18.42",
-        "status": "ok",
-    }
-    assert extensions["marus25.cortex-debug"] == {
-        "installed": False,
+    assert result.data["tools"]["code"] == {
+        "available": True,
+        "path": paths["code"],
+        "status": "unknown",
+        "returnCode": None,
         "version": None,
-        "status": "missing",
     }
-    extension_call = next(
-        call for call in calls if call[0][1:] == ("--list-extensions", "--show-versions")
+    assert reads == [Path(paths["STM32CubeMX"]), Path(paths["code"])]
+    assert all(
+        value == {"installed": False, "version": None, "status": "not-probed"}
+        for value in result.data["vscodeExtensions"].values()
     )
-    assert extension_call[0] == (code_path, "--list-extensions", "--show-versions")
-    assert extension_call[1]["shell"] is False
-    assert extension_call[1]["stdin"] == subprocess.DEVNULL
+    assert result.details["probeRegistrySemantics"] == "probe-lease-directory"
     assert not any(tmp_path.iterdir())
 
 
-def test_doctor_vscode_extensions_case_insensitive_parse(monkeypatch, tmp_path: Path):
-    code_path = "C:/tools/code.exe"
+def test_doctor_extension_evidence_does_not_launch_code(monkeypatch):
     monkeypatch.setattr(
-        "stm32_toolkit.doctor.shutil.which",
-        lambda name: code_path if name == "code" else None,
+        "stm32_toolkit.doctor._run_process",
+        lambda argv: (_ for _ in ()).throw(AssertionError(f"unexpected process: {argv}")),
     )
-    monkeypatch.setattr(
-        "stm32_toolkit.doctor.subprocess.Popen",
-        _code_extension_processes(b"MS-VSCODE.CPPTOOLS@1.2.3\nMARUS25.Cortex-Debug@1.8.0\n"),
-    )
-
-    result = run_doctor(tmp_path)
-
-    extensions = result.data["vscodeExtensions"]
-    assert extensions["ms-vscode.cpptools"]["status"] == "ok"
-    assert extensions["ms-vscode.cpptools"]["version"] == "1.2.3"
-    assert extensions["marus25.cortex-debug"]["installed"] is True
+    evidence = _vscode_extension_evidence()
+    assert all(item["status"] == "not-probed" for item in evidence.values())
 
 
 def test_parse_extension_lines_ignores_malformed_and_unrelated():
@@ -639,121 +621,7 @@ def test_parse_extension_lines_ignores_malformed_and_unrelated():
         "has space.id@1.0\n"
         "other.ext@2.0\n"
     )
-    parsed = _parse_extension_lines(output)
-    assert parsed == {
+    assert _parse_extension_lines(output) == {
         "ms-vscode.cpptools": "1.21.0",
         "other.ext": "2.0",
     }
-
-
-def test_doctor_vscode_extensions_nonzero_probe(monkeypatch, tmp_path: Path):
-    code_path = "C:/tools/code.exe"
-    monkeypatch.setattr(
-        "stm32_toolkit.doctor.shutil.which",
-        lambda name: code_path if name == "code" else None,
-    )
-    monkeypatch.setattr(
-        "stm32_toolkit.doctor.subprocess.Popen",
-        lambda argv, **kwargs: _FakeProcess(stdout=b"", returncode=7),
-    )
-
-    result = run_doctor(tmp_path)
-
-    assert all(
-        value == {"installed": False, "version": None, "status": "nonzero"}
-        for value in result.data["vscodeExtensions"].values()
-    )
-
-
-def test_doctor_vscode_extensions_timeout_probe(monkeypatch, tmp_path: Path):
-    code_path = "C:/tools/code.exe"
-    monkeypatch.setattr(
-        "stm32_toolkit.doctor.shutil.which",
-        lambda name: code_path if name == "code" else None,
-    )
-    processes = []
-
-    def fake_popen(argv, **kwargs):
-        process = _FakeProcess(timeout_once=True)
-        processes.append(process)
-        return process
-
-    monkeypatch.setattr("stm32_toolkit.doctor.subprocess.Popen", fake_popen)
-
-    result = run_doctor(tmp_path)
-
-    assert all(
-        value == {"installed": False, "version": None, "status": "timeout"}
-        for value in result.data["vscodeExtensions"].values()
-    )
-    assert all(process.terminated for process in processes)
-
-
-def test_doctor_vscode_extensions_error_probe(monkeypatch, tmp_path: Path):
-    code_path = "C:/tools/code.exe"
-    monkeypatch.setattr(
-        "stm32_toolkit.doctor.shutil.which",
-        lambda name: code_path if name == "code" else None,
-    )
-
-    def unavailable(argv, **kwargs):
-        raise OSError("cannot start")
-
-    monkeypatch.setattr("stm32_toolkit.doctor.subprocess.Popen", unavailable)
-
-    result = run_doctor(tmp_path)
-
-    assert all(
-        value == {"installed": False, "version": None, "status": "error"}
-        for value in result.data["vscodeExtensions"].values()
-    )
-
-
-def test_doctor_vscode_extensions_capped_output_still_parses(monkeypatch, tmp_path: Path):
-    code_path = "C:/tools/code.exe"
-    monkeypatch.setattr(
-        "stm32_toolkit.doctor.shutil.which",
-        lambda name: code_path if name == "code" else None,
-    )
-    monkeypatch.setattr(
-        "stm32_toolkit.doctor.subprocess.Popen",
-        _code_extension_processes(
-            b"ms-vscode.cpptools@1.21.0\n" + b"x" * (_VERSION_CAPTURE_LIMIT * 3)
-        ),
-    )
-
-    result = run_doctor(tmp_path)
-
-    assert result.data["vscodeExtensions"]["ms-vscode.cpptools"]["status"] == "ok"
-    assert result.data["vscodeExtensions"]["ms-vscode.cpptools"]["installed"] is True
-
-
-def test_doctor_vscode_extension_evidence_never_mutates(monkeypatch, tmp_path: Path):
-    code_path = "C:/tools/code.exe"
-    monkeypatch.setattr(
-        "stm32_toolkit.doctor.shutil.which",
-        lambda name: code_path if name == "code" else None,
-    )
-    monkeypatch.setattr(
-        "stm32_toolkit.doctor.subprocess.Popen",
-        _code_extension_processes(b"ms-vscode.cpptools@1.21.0\n"),
-    )
-
-    evidence = _vscode_extension_evidence()
-
-    assert evidence["ms-vscode.cpptools"]["status"] == "ok"
-    assert not any(tmp_path.iterdir())
-
-
-def test_doctor_extension_discovery_error_is_unavailable(monkeypatch, tmp_path: Path):
-    def unavailable(name: str) -> str | None:
-        raise OSError("lookup unavailable")
-
-    monkeypatch.setattr("stm32_toolkit.doctor.shutil.which", unavailable)
-
-    result = run_doctor(tmp_path)
-
-    assert all(
-        value["status"] == "unavailable"
-        for value in result.data["vscodeExtensions"].values()
-    )

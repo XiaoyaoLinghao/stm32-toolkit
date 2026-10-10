@@ -698,10 +698,19 @@ def _apply(plan: MigrationPlan) -> dict[str, object]:
     except MigrationPlanError as error:
         raise _fail(error.code, error.message, error.details)
     if status:
+        changes = git_guard.dirty_paths(status)
         raise _fail(
             "MIGRATION_GIT_DIRTY",
-            "Git working tree is not clean",
-            {"rule": "cleanWorktree"},
+            "Git working tree changed after planning; review these paths and replan before applying",
+            {
+                "rule": "cleanWorktree",
+                "phase": "applyPreflight",
+                "wrote": False,
+                "changes": [
+                    {"kind": category, "path": path} for category, path in changes[:32]
+                ],
+                "remainingCount": max(0, len(changes) - 32),
+            },
         )
 
     fresh = _fresh_plan(canonical, plan)

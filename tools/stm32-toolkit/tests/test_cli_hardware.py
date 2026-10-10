@@ -243,6 +243,22 @@ def test_flash_cli_forwards_explicit_under_reset_recovery_flag(
     assert request.recovery_under_reset is True
 
 
+def test_flash_cli_preserves_public_post_flash_details(monkeypatch, tmp_path: Path, capsys) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    async def accepted(_request: object) -> OperationResult[object]:
+        return OperationResult(
+            OperationResult.success("stm32_flash", {}).protocol,
+            True, "stm32_flash", "OK", "", {"verifiedBytes": 4},
+            {"postFlash": {"targetState": "unknown", "runVerified": False}},
+        )
+
+    monkeypatch.setattr("stm32_toolkit.cli.flash_workflow", accepted)
+    assert main(["flash", *_context(project, tmp_path / "data"), *_pins(), "--authorized"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["details"]["postFlash"] == {"targetState": "unknown", "runVerified": False}
+
+
 def test_hardware_cli_public_signature_and_request_shape_remain_project_bound() -> None:
     assert tuple(signature(main).parameters) == ("argv",)
     assert tuple(item.name for item in fields(RegisterReadWorkflowRequest)) == (

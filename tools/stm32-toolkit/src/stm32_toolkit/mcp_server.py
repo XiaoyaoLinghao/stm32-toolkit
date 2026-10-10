@@ -42,6 +42,7 @@ from stm32_toolkit.acceptance.recovery_workflows import (
     show_acceptance_attempt,
 )
 from stm32_toolkit.context import build_project_context
+from stm32_toolkit.keil.model import KeilInspectionError
 from stm32_toolkit.monitor_replay_contract import (
     ReplayContractError,
     validate_run_reference,
@@ -800,6 +801,10 @@ def tool_project_detect(runtime: ServerRuntime) -> dict[str, object]:
     """Return project markers for the bound project."""
     try:
         detection = detect_project(runtime.project_root)
+    except KeilInspectionError as error:
+        return OperationResult.failure(
+            "project.detect", error.code, error.message, error.details
+        ).to_dict()
     except (OSError, ValueError):
         return OperationResult.failure(
             "project.detect",

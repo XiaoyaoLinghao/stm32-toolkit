@@ -388,6 +388,22 @@ def test_flash_wrapper_forwards_explicit_recovery_selection(
     assert received[0].recovery_under_reset is True
 
 
+def test_flash_wrapper_preserves_public_post_flash_details(monkeypatch, tmp_path: Path) -> None:
+    runtime = _runtime(tmp_path)
+    async def accepted(_request: object) -> OperationResult[object]:
+        return OperationResult(
+            OperationResult.success("stm32_flash", {}).protocol,
+            True, "stm32_flash", "OK", "", {"verifiedBytes": 4},
+            {"postFlash": {"targetState": "unknown", "runVerified": False}},
+        )
+
+    monkeypatch.setattr(mcp_mod, "flash_workflow", accepted)
+    result = asyncio.run(mcp_mod.tool_flash_for_request(
+        runtime, None, "probe-a", "a" * 64, "b" * 64, True, False,
+    ))
+    assert result["details"]["postFlash"] == {"targetState": "unknown", "runVerified": False}
+
+
 @pytest.mark.parametrize("value", ["true", "false", 1, 0, None, [], {}])
 def test_fault_wrapper_rejects_non_boolean_halt_selection(
     monkeypatch, tmp_path: Path, value: object

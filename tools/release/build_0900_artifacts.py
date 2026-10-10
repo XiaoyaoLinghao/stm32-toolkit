@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build and verify the STM32 Toolkit 1.0.0 offline Windows bundle.
+"""Build and verify the STM32 Toolkit 1.0.1 offline Windows bundle.
 
 This module intentionally uses the Python standard library for the artifact
 boundary.  It does not resolve packages, contact an index, execute package
@@ -30,7 +30,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Mapping, Sequence
 
 
-VERSION = "1.0.0"
+VERSION = "1.0.1"
 REPOSITORY = "https://github.com/XiaoyaoLinghao/stm32-toolkit.git"
 REQUIRED_PYTHON = ">=3.12,<3.13"
 MANIFEST_SCHEMA = "stm32-toolkit-release/1"
@@ -659,7 +659,7 @@ def _build_wheel(repo_root: Path, package_path: str, wheelhouse: Path, output: P
         for name in ("TEMP", "TMP", "TMPDIR"):
             if name in os.environ:
                 env[name] = os.environ[name]
-        result = _process([str(python), "-I", "-m", "pip", "wheel", "--disable-pip-version-check", "--no-index", "--no-deps", "--no-build-isolation", "--wheel-dir", str(output), str(repo_root / package_path)], env=env, timeout=600, text=True)
+        result = _process([str(python), "-I", "-m", "pip", "wheel", "--disable-pip-version-check", "--no-cache-dir", "--no-index", "--no-deps", "--no-build-isolation", "--wheel-dir", str(output), str(repo_root / package_path)], env=env, timeout=600, text=True)
         if result.returncode != 0:
             raise ReleaseError("product wheel build failed")
         wheels = sorted(output.glob("*.whl"), key=lambda item: item.name.encode("utf-8"))
@@ -754,6 +754,7 @@ def _spdx_legacy(selected: Mapping[str, WheelInfo], product_wheels: Mapping[str,
 
 def _spdx(selected: Mapping[str, WheelInfo], product_wheels: Mapping[str, bytes], code_head: str, epoch: int, repo_root: Path, policy: Mapping[str, Any] | None = None) -> dict[str, Any]:
     policy = policy or _load_policy()
+    document_id = "SPDXRef-DOCUMENT"
     packages: dict[str, dict[str, Any]] = {}
     product_names = {_normalized_name(name) for name in product_wheels}
     python_ids: dict[str, str] = {}
@@ -819,7 +820,7 @@ def _spdx(selected: Mapping[str, WheelInfo], product_wheels: Mapping[str, bytes]
             }
     relationships: set[tuple[str, str, str]] = set()
     for package_id in product_ids.values():
-        relationships.add(("SPDXRef-Document", "DESCRIBES", package_id))
+        relationships.add((document_id, "DESCRIBES", package_id))
     for normalized, requires in product_requirements.items():
         source_id = product_ids[normalized]
         for requirement in requires:
@@ -852,7 +853,7 @@ def _spdx(selected: Mapping[str, WheelInfo], product_wheels: Mapping[str, bytes]
         for source, relation, target in sorted(relationships)
     ]
     return {
-        "spdxVersion": "SPDX-2.3", "dataLicense": "CC0-1.0", "SPDXID": "SPDXRef-DOCUMENT",
+        "spdxVersion": "SPDX-2.3", "dataLicense": "CC0-1.0", "SPDXID": document_id,
         "name": f"stm32-toolkit-{VERSION}", "documentNamespace": f"https://github.com/xiaoyaolinghao/stm32-toolkit/spdx/{code_head}",
         "creationInfo": {"created": _datetime.datetime.fromtimestamp(epoch, _datetime.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"), "creators": ["Tool: stm32-toolkit-release", f"Commit: {code_head}"]},
         "packages": sorted(packages.values(), key=lambda item: item["SPDXID"]), "relationships": ordered_relationships,
@@ -921,11 +922,11 @@ def _troubleshooting() -> bytes:
             "- Missing or broken runtime: use Check, then authorize Bootstrap or Repair.\n"
             "- Unsupported state, downgrade refusal, or source conflict: preserve the state and use the matching pinned bundle.\n"
             "- pip-check, Monitor asset, license, SBOM, or doctor mismatch: keep the evidence and obtain a matching candidate.\n"
-            "- Keep DataRoot long-lived; verify the exact runtime/1.0.0/Scripts/pyocd.exe version after promotion.\n"
+            f"- Keep DataRoot long-lived; verify the exact runtime/{VERSION}/Scripts/pyocd.exe version after promotion.\n"
             "- Use an absolute project cwd, GDB/pack paths, startup-ready output, and resolved preLaunch task references; a missing task or F5 URI error stops the flow.\n"
             "- During Watch, stop the core through the named handoff and finish with the ordinary detach/cleanup path.\n"
             "- DiagnosticStore native lock-contention classification remains a known limitation; preserve its evidence and follow the shipped runbook.\n"
-            "- Full deployment and IDE checks: when reading the package-root troubleshooting.md, open the companion stm32-toolkit-1.0.0-source.zip beside it and then open stm32-toolkit-1.0.0/docs/testing/windows-deployment-and-ide-preflight.md inside that archive. In an extracted Windows bundle, the copy under stm32-toolkit-1.0.0/release/troubleshooting.md is under the extracted Toolkit root; open ../docs/testing/windows-deployment-and-ide-preflight.md from release/ (or ToolkitRoot/docs/testing/windows-deployment-and-ide-preflight.md from the extracted ToolkitRoot).\n").encode("utf-8")
+            f"- Full deployment and IDE checks: when reading the package-root troubleshooting.md, open the companion stm32-toolkit-{VERSION}-source.zip beside it and then open stm32-toolkit-{VERSION}/docs/testing/windows-deployment-and-ide-preflight.md inside that archive. In an extracted Windows bundle, the copy under stm32-toolkit-{VERSION}/release/troubleshooting.md is under the extracted Toolkit root; open ../docs/testing/windows-deployment-and-ide-preflight.md from release/ (or ToolkitRoot/docs/testing/windows-deployment-and-ide-preflight.md from the extracted ToolkitRoot).\n").encode("utf-8")
 
 
 def _manifest_shape(manifest: Any) -> None:

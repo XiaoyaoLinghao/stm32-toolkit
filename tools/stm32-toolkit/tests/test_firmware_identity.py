@@ -13,6 +13,7 @@ import shutil
 from pathlib import Path
 
 import pytest
+from elftools.elf.elffile import ELFFile
 
 from stm32_toolkit import __version__
 from stm32_toolkit.build import identity as identity_mod
@@ -25,7 +26,7 @@ from stm32_toolkit.build.identity import (
     validate_elf,
     validate_identity_document,
 )
-from stm32_toolkit.build.map_file import MapError
+from stm32_toolkit.build.map_file import MapError, parse_map
 from stm32_toolkit.project_model import load_project_model
 from stm32_toolkit.process import ProcessError
 
@@ -38,6 +39,8 @@ from test_build_runner import (
     prepare_project,
     read_json,
 )
+
+LINKED_ORACLE_ROOT = Path(__file__).parent / "fixtures" / "build-nobits"
 
 
 def model_for(root: Path):
@@ -465,6 +468,61 @@ def test_validate_elf_evidence_classifies_alloc_and_non_alloc_sections(tmp_path:
     assert by_name[".symtab"].alloc is False
     with pytest.raises(AttributeError):
         by_name[".text"].size = 1  # type: ignore[misc]
+
+
+def test_real_linked_elf_map_nobits_oracle(tmp_path: Path):
+    root = prepare_project(tmp_path, git_repo=False)
+    elf_path = root / "oracle.elf"
+    shutil.copyfile(LINKED_ORACLE_ROOT / "oracle.elf", elf_path)
+    model = model_for(root)
+    elf = validate_elf(elf_path, model)
+    by_name = {section.name: section for section in elf.sections}
+    assert {name: (by_name[name].size, by_name[name].nobits) for name in (
+        ".isr_vector", ".text", ".data", ".bss", ".heap", ".stack"
+    )} == {
+        ".isr_vector": (0x8, False),
+        ".text": (0x2, False),
+        ".data": (0x20, False),
+        ".bss": (0x30, True),
+        ".heap": (0x20, True),
+        ".stack": (0x400, True),
+    }
+    map_text = (LINKED_ORACLE_ROOT / "oracle.map").read_text(encoding="utf-8")
+    flash, ram = parse_map(map_text, model.memory.regions, elf_sections=elf.sections)
+    assert flash.used == 0x2A
+    assert ram.used == 0x470
+    assert flash.free == 0x100000 - 0x2A
+    assert ram.free == 0x20000 - 0x470
+
+
+def test_real_linked_toolkit_template_stack_symbols(tmp_path: Path):
+    root = prepare_project(tmp_path, git_repo=False)
+    assert (root / "linker/stm32tk.ld").read_bytes() == (
+        LINKED_ORACLE_ROOT / "template-rendered.ld"
+    ).read_bytes()
+    elf_path = root / "template.elf"
+    shutil.copyfile(LINKED_ORACLE_ROOT / "template.elf", elf_path)
+    model = model_for(root)
+    elf = validate_elf(elf_path, model)
+    with elf_path.open("rb") as stream:
+        linked = ELFFile(stream)
+        symbols = linked.get_section_by_name(".symtab")
+        assert symbols is not None
+        limit = symbols.get_symbol_by_name("__StackLimit")[0]["st_value"]
+        top = symbols.get_symbol_by_name("__StackTop")[0]["st_value"]
+        heap_base = symbols.get_symbol_by_name("__HeapBase")[0]["st_value"]
+        heap_limit = symbols.get_symbol_by_name("__HeapLimit")[0]["st_value"]
+    stack = next(section for section in elf.sections if section.name == ".stack")
+    heap = next(section for section in elf.sections if section.name == ".heap")
+    assert stack.nobits and heap.nobits
+    assert stack.address == limit == heap_limit == 0x20001050
+    assert top == stack.address + stack.size == 0x20001450
+    assert heap_limit - heap_base == 0x1000
+    assert limit < top <= 0x20020000
+    map_text = (LINKED_ORACLE_ROOT / "template.map").read_text(encoding="utf-8")
+    flash, ram = parse_map(map_text, model.memory.regions, elf_sections=elf.sections)
+    assert flash.used == 0x2C
+    assert ram.used == 0x1450
 
 
 @pytest.mark.parametrize(

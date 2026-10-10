@@ -14,6 +14,7 @@ from stm32_toolkit.probe.client import ProbeClientError
 from stm32_toolkit.probe.attach_diagnostics import extract_attach_diagnostic
 from stm32_toolkit.probe.flash import _load_fresh_firmware, _verify_segments
 from stm32_toolkit.probe.handoff import (
+    _flash_mismatch_fields,
     _load_flash_result,
     _validate_attachment,
     _validate_flash,
@@ -128,6 +129,7 @@ def _firmware(root: Path, *, changed: bool = False):
 
 
 def _flash(root: Path, firmware: object, request: DebugBindingRequest, *, changed: bool = False) -> dict[str, object]:
+    result: dict[str, object] | None = None
     try:
         result = _load_flash_result(root)
         source_session = result.get("sessionId")
@@ -148,15 +150,39 @@ def _flash(root: Path, firmware: object, request: DebugBindingRequest, *, change
                 "DEBUG_FIRMWARE_CHANGED",
                 "Flash evidence changed during debug binding",
             ) from None
-        try:
-            _load_flash_result(root)
-        except Exception:
-            raise _fail(
-                "DEBUG_FLASH_REQUIRED", "A current successful flash result is required"
-            ) from None
+        if result is None:
+            try:
+                result = _load_flash_result(root)
+            except Exception:
+                raise _fail(
+                    "DEBUG_FLASH_REQUIRED", "A current successful flash result is required"
+                ) from None
+        mismatched_fields = list(_flash_mismatch_fields(
+            result,
+            firmware,
+            probe=request.probe_id,
+            workspace=request.workspace_id,
+            session=str(result.get("sessionId")),
+            target=request.target,
+        ))
+        source_session = result.get("sessionId")
+        if not isinstance(source_session, str) or _IDENTIFIER.fullmatch(source_session) is None:
+            mismatched_fields.append("sessionId")
+        receipt_sha = result.get("elfSha256")
+        current_sha = getattr(firmware, "identity").get("elfSha256")
+        content_matches = (
+            receipt_sha == current_sha
+            if isinstance(receipt_sha, str)
+            and _SHA256.fullmatch(receipt_sha) is not None
+            and isinstance(current_sha, str)
+            and _SHA256.fullmatch(current_sha) is not None
+            else None
+        )
         raise _fail(
             "DEBUG_FLASH_MISMATCH",
             "Flash result does not match the debug binding request",
+            mismatchedFields=mismatched_fields,
+            elfContentMatches=content_matches,
         ) from None
 
 

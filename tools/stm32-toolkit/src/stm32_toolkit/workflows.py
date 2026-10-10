@@ -14,6 +14,7 @@ value fails closed without calling an apply seam.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 from stm32_toolkit.build import BuildRequest, run_build
@@ -182,7 +183,12 @@ def inspect_keil_workflow(
     data: dict[str, object] = {"inspection": inspection.to_dict(), "baseline": None}
     if baseline is not None:
         data["baseline"] = baseline.to_dict()
-    return OperationResult.success("keil-inspect", data)
+    result = OperationResult.success("keil-inspect", data)
+    if baseline is not None:
+        return replace(
+            result, details={"baselineSemantics": "parseable-historical-artifact-only"}
+        )
+    return result
 
 
 # ---------------------------------------------------------------------------

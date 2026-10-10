@@ -20,15 +20,8 @@ LAUNCHER = REPO_ROOT / "bin" / "stm32-toolkit-mcp.cmd"
 MONITOR_LAUNCHER = REPO_ROOT / "bin" / "stm32-monitor.cmd"
 SETUP_SKILL = REPO_ROOT / "skills" / "setup-stm32-env" / "SKILL.md"
 SETUP_HELPER = REPO_ROOT / "bin" / "setup-stm32-env.ps1"
-FOLLOW_ON_SKILLS = REPO_ROOT / "requirements" / "follow-on-skills"
 README = REPO_ROOT / "README.md"
 LOGICAL_PROJECT_ID = "12345678-1234-5678-1234-567812345678"
-LEGACY_SKILLS = {
-    "init-stm32-project",
-    "migrate-keil",
-    "read-var",
-    "stm32-monitor",
-}
 
 
 def test_plugin_manifest_uses_standard_skill_discovery_and_version():
@@ -37,7 +30,7 @@ def test_plugin_manifest_uses_standard_skill_discovery_and_version():
     assert plugin == {
         "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
         "name": "stm32-toolkit",
-        "version": "1.0.0",
+        "version": "1.0.1",
         "description": (
             "AI-assisted STM32 development with read-only Keil inspection, "
             "guarded ARMCC-to-GCC conversion, managed GCC/CMake configuration, "
@@ -45,7 +38,7 @@ def test_plugin_manifest_uses_standard_skill_discovery_and_version():
         ),
         "author": {"name": "STM32 Toolkit Team"},
     }
-    assert plugin["version"] == __version__ == "1.0.0"
+    assert plugin["version"] == __version__ == "1.0.1"
 
 
 def test_marketplace_manifest_uses_a_supported_plugin_source():
@@ -133,14 +126,14 @@ def test_launcher_reports_missing_versioned_runtime_without_interpreter_fallback
     assert result.returncode != 0
     assert result.stdout == ""
     assert "STM32_TOOLKIT_DATA_ROOT" in result.stderr
-    assert "runtime/1.0.0/Scripts/python.exe" in result.stderr.replace("\\", "/")
+    assert "runtime/1.0.1/Scripts/python.exe" in result.stderr.replace("\\", "/")
     assert not marker.exists()
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows cmd.exe launcher")
 def test_launcher_forwards_arguments_and_preserves_runtime_exit_code(tmp_path: Path):
     plugin_data = tmp_path / "plugin data"
-    runtime = plugin_data / "runtime" / "1.0.0"
+    runtime = plugin_data / "runtime" / "1.0.1"
     venv.EnvBuilder(with_pip=False).create(runtime)
     module_root = tmp_path / "stub module"
     package = module_root / "stm32_toolkit"
@@ -225,7 +218,7 @@ def test_monitor_launcher_reports_missing_versioned_runtime_without_interpreter_
     assert result.returncode != 0
     assert result.stdout == ""
     assert "stm32-monitor" in result.stderr
-    assert "runtime/1.0.0/Scripts/python.exe" in result.stderr.replace("\\", "/")
+    assert "runtime/1.0.1/Scripts/python.exe" in result.stderr.replace("\\", "/")
     assert not marker.exists()
 
 
@@ -234,7 +227,7 @@ def test_monitor_launcher_forwards_arguments_and_preserves_runtime_exit_code(
     tmp_path: Path,
 ):
     plugin_data = tmp_path / "plugin data"
-    runtime = plugin_data / "runtime" / "1.0.0"
+    runtime = plugin_data / "runtime" / "1.0.1"
     venv.EnvBuilder(with_pip=False).create(runtime)
     module_root = tmp_path / "stub module"
     package = module_root / "stm32_monitor"
@@ -286,7 +279,7 @@ def test_setup_skill_has_an_explicit_read_only_check_and_authorized_mutation_con
         "read-only",
         "offline",
         "explicit authorization",
-        "${CLAUDE_PLUGIN_DATA}/runtime/1.0.0",
+        "${CLAUDE_PLUGIN_DATA}/runtime/1.0.1",
         "${CLAUDE_PLUGIN_ROOT}/tools/stm32-toolkit",
         "CPython >=3.12,<3.13",
         "ARM GCC",
@@ -318,16 +311,11 @@ def test_setup_skill_has_an_explicit_read_only_check_and_authorized_mutation_con
     assert "pip install pyocd" not in normalized
 
 
-def test_exactly_eight_release_skills_are_discovered_and_follow_on_sources_are_preserved():
+def test_exactly_eight_release_skills_are_discovered():
     discovered = {
         path.parent.name
         for path in (REPO_ROOT / "skills").glob("*/SKILL.md")
     }
-    preserved = {
-        path.parent.name
-        for path in FOLLOW_ON_SKILLS.glob("*/SKILL.md")
-    }
-
     assert discovered == {
         "setup-stm32-env",
         "migrate-keil",
@@ -338,7 +326,6 @@ def test_exactly_eight_release_skills_are_discovered_and_follow_on_sources_are_p
         "read-var",
         "stm32-monitor",
     }
-    assert preserved == LEGACY_SKILLS
 
 
 def test_monitor_skill_is_thin_explicit_and_launcher_bound():
@@ -434,7 +421,7 @@ def test_setup_helper_uses_explicit_paths_without_ambient_environment(tmp_path: 
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
     assert payload["mode"] == "CHECK"
-    assert payload["runtime"]["path"].endswith("/runtime/1.0.0")
+    assert payload["runtime"]["path"].endswith("/runtime/1.0.1")
     assert payload["project"] == project.as_posix()
     assert payload["mutated"] is False
     assert not plugin_data.exists()
@@ -487,23 +474,29 @@ def test_setup_skill_passes_inline_claude_paths_explicitly_without_ambient_varia
     assert "PowerShell" in skill
     assert "### Agent-host adapter" in skill
 
-def test_readme_documents_the_1_0_contract_and_preserved_vs09b_boundary():
+def test_readme_links_current_user_guidance_and_release_boundaries():
     readme = README.read_text(encoding="utf-8")
     readme_zh = (REPO_ROOT / "README_zh-CN.md").read_text(encoding="utf-8")
 
-    assert "pending 1.0.0 local release candidate" in readme
+    assert "v1.0.0 is published" in readme
+    assert "source candidate identifies as **v1.0.1**" in readme
+    assert "has not been released or installed" in readme
+    assert "v1.0.0 已发布" in readme_zh
+    assert "源码候选标识为 **v1.0.1**" in readme_zh
+    assert "未发布、未安装" in readme_zh
     assert "CPython `>=3.12,<3.13`" in readme
-    assert "DATA_ROOT/runtime/1.0.0" in readme
-    assert '"STM32_TOOLKIT_DATA_ROOT"' in readme
+    assert "docs/user-guide.md" in readme
+    assert "docs/user-guide.md" in readme_zh
+    assert "docs/testing/windows-deployment-and-ide-preflight.md" in readme
+    assert "docs/testing/standard-test-procedure.md" in readme
+    assert "-Mode Check" in readme and "-Mode Repair" in readme
+    assert "STM32_TOOLKIT_DATA_ROOT" in readme
     assert "absolute launcher" in readme
-    assert "all 48" in readme
-    assert "VS09-B" in readme
     expected_build = "stm32-toolkit --project-root C:\\work\\blinky build --preset arm-debug --json"
     assert expected_build in readme
     assert expected_build in readme_zh
     for phrase in (
         "/stm32-toolkit:setup-stm32-env",
-        "automatically",
         "${CLAUDE_PROJECT_DIR}",
         ".stm32-project.json",
         "${CLAUDE_PLUGIN_DATA}/projects/<workspaceId>",
@@ -650,7 +643,7 @@ def _project_snapshot(root: Path) -> dict[str, bytes]:
     }
 
 
-def test_unified_1_0_0_runtime_version_across_launcher_setup_and_skill():
+def test_unified_1_0_1_runtime_version_across_launcher_setup_and_skill():
     """No launcher/helper/Skill selects a legacy runtime."""
     launcher = LAUNCHER.read_text(encoding="utf-8")
     monitor_launcher = MONITOR_LAUNCHER.read_text(encoding="utf-8")
@@ -659,15 +652,15 @@ def test_unified_1_0_0_runtime_version_across_launcher_setup_and_skill():
     command_blocks = "\n".join(_fenced_blocks(skill)).replace("\\", "/")
     manifest = json.loads(PLUGIN_MANIFEST.read_text(encoding="utf-8"))
 
-    assert manifest["version"] == __version__ == "1.0.0"
-    assert "runtime\\1.0.0\\Scripts\\python.exe" in launcher
-    assert "runtime/1.0.0/Scripts/python.exe" in launcher.replace("\\", "/")
+    assert manifest["version"] == __version__ == "1.0.1"
+    assert "runtime\\1.0.1\\Scripts\\python.exe" in launcher
+    assert "runtime/1.0.1/Scripts/python.exe" in launcher.replace("\\", "/")
     assert "0.3.0" not in launcher
-    assert "runtime\\1.0.0\\Scripts\\python.exe" in monitor_launcher
-    assert "runtime/1.0.0/Scripts/python.exe" in monitor_launcher.replace("\\", "/")
+    assert "runtime\\1.0.1\\Scripts\\python.exe" in monitor_launcher
+    assert "runtime/1.0.1/Scripts/python.exe" in monitor_launcher.replace("\\", "/")
     assert "0.3.0" not in monitor_launcher
     assert " -m stm32_monitor " in monitor_launcher
-    assert '$RuntimeVersion = "1.0.0"' in helper
+    assert '$RuntimeVersion = "1.0.1"' in helper
     assert "0.3.0" in helper  # legacy-upgrade detection, never current selection
     assert '"${package}[probe]"' in helper
     assert "$monitorPackage" in helper
@@ -676,12 +669,12 @@ def test_unified_1_0_0_runtime_version_across_launcher_setup_and_skill():
     assert "ui_dist" in helper
     assert "import pyocd" in helper
     assert '"-I", "-c"' in helper
-    assert "${CLAUDE_PLUGIN_DATA}/runtime/1.0.0" in skill
-    assert "${CLAUDE_PLUGIN_DATA}/runtime/.staging/1.0.0-<id>" in skill
+    assert "${CLAUDE_PLUGIN_DATA}/runtime/1.0.1" in skill
+    assert "${CLAUDE_PLUGIN_DATA}/runtime/.staging/1.0.1-<id>" in skill
     assert "tools/stm32-toolkit[probe]" in skill
     assert "isolated PEP 440 `pyocd` distribution check" in skill
     assert ">=0.45.1,<0.46" in skill
-    assert "existing 0.9.0, 0.5.0 or 0.3.0 runtime reports broken" in skill
-    assert "${CLAUDE_PLUGIN_DATA}/runtime/1.0.0/Scripts/python.exe" in skill
-    for legacy_version in ("0.9.0", "0.5.0", "0.3.0"):
+    assert "existing 1.0.0, 0.9.0, 0.5.0 or 0.3.0 runtime reports broken" in skill
+    assert "${CLAUDE_PLUGIN_DATA}/runtime/1.0.1/Scripts/python.exe" in skill
+    for legacy_version in ("1.0.0", "0.9.0", "0.5.0", "0.3.0"):
         assert f"runtime/{legacy_version}" not in command_blocks

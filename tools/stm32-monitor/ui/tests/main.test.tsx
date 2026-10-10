@@ -18,8 +18,19 @@ it("renders only the fixed startup error when fragment bootstrap fails",async()=
   const fetchLike=vi.fn();
   vi.stubGlobal("fetch",fetchLike);
   await import("../src/main");
-  expect(document.querySelector('[role="alert"]')).toHaveTextContent("Monitor could not start");
+  expect(document.querySelector('[role="alert"]')).toHaveTextContent("access link is missing or invalid");
   expect(fetchLike).not.toHaveBeenCalled();
+  expect(render).not.toHaveBeenCalled();
+});
+
+it("renders a rejected access link without exposing the fragment or response body",async()=>{
+  window.history.replaceState(null,"",`/#token=${TOKEN}`);
+  vi.stubGlobal("fetch",vi.fn().mockResolvedValue(new Response(`private ${TOKEN}`,{status:403})));
+  await import("../src/main");
+  expect(document.querySelector('[role="alert"]')).toHaveTextContent("rejected this access link");
+  expect(document.body.innerHTML).not.toContain(TOKEN);
+  expect(document.body.innerHTML).not.toContain("private");
+  expect(window.location.hash).toBe("");
   expect(render).not.toHaveBeenCalled();
 });
 

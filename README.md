@@ -1,245 +1,62 @@
-# STM32 Toolkit 1.0
+# STM32 Toolkit
 
-[简体中文](README_zh-CN.md) | English
+English | [简体中文](README_zh-CN.md)
 
-STM32 Toolkit is a local, Agent-neutral STM32 development control plane. The CLI and MCP server
-share one product contract for project identity, Keil-to-GCC migration, builds, probe workflows,
-Monitor, tests, and evidence-driven diagnosis. Claude Code is a thin adapter to that contract.
+STM32 Toolkit is a local, agent-neutral toolkit for STM32 projects. Its CLI and stdio MCP server share the same project, build, Probe Service, test, and Monitor contracts. The eight Claude Code Skills are adapters to those public entry points; the core does not depend on an agent host.
 
-## 1.0.0 local release candidate and runtime boundary
+**Release status:** [v1.0.0 is published](docs/release-status.md). This source candidate identifies as **v1.0.1** and contains the approved patch behavior. It has not been released or installed. Review and qualification evidence is recorded in [release status](docs/release-status.md) and the [execution ledger](docs/codex/returns/STM32TK-101/execution.md). Use a verified bundle and its matching data root for any installed workflow. Supported release platform: Windows x86_64 and CPython `>=3.12,<3.13`. Historical qualification limits remain in [release status](docs/release-status.md).
 
-This repository contains the pending 1.0.0 local release candidate. Final release validation and
-acceptance are owned by the primary release workflow. It has not been tagged, published, or released.
-The official source is
-`https://github.com/XiaoyaoLinghao/stm32-toolkit.git`; candidate builds bind one full 40-hex Git
-CodeHead and a closed Windows CPython 3.12 wheelhouse. The release contract is CPython `>=3.12,<3.13`; the managed interpreter is selected only from
-`DATA_ROOT/runtime/1.0.0/Scripts/python.exe`. A system interpreter is never an MCP fallback. The
-setup helper's CHECK mode is read-only. Bootstrap and Repair require explicit authorization,
-verify the extracted offline bundle, stage locally, validate the Toolkit/Monitor packages, run
-`pip check`, and promote only after validation.
-The accepted 0.9.0 candidate remains the explicitly recognized legacy runtime for Repair.
+## Start with a verified runtime
 
-Repair changes only the runtime. For an existing Schema v2 or v3 project whose producer is
-`stm32-toolkit` `0.9.0`, start a new Toolkit session after Repair, then use the guarded configure
-and build sequence below:
+Extract a verified bundle to a stable ToolkitRoot. Keep DataRoot durable and separate from the project and disposable test directories. The setup script's `Check` is read-only. Inspect its result before explicitly choosing a missing-runtime `Bootstrap` or an authorized `Repair`; repeat `Check` afterward. This candidate's CLI/MCP uses the managed interpreter in `DATA_ROOT/runtime/1.0.1`; the published v1.0.0 bundle uses `runtime/1.0.0`. There is no system-Python fallback. Existing v1.0.0 runtimes enter the 1.0.1 candidate only through authorized Repair, with the old runtime quarantined under the existing transaction recovery rules; see the [recorded rollback scope](docs/release-status.md).
 
 ```powershell
-stm32-toolkit --project-root C:\work\blinky project configure --dry-run --json
-stm32-toolkit --project-root C:\work\blinky project configure --apply --plan-id <plan-id> --authorized --json
-stm32-toolkit --project-root C:\work\blinky build --preset arm-debug --json
-```
-
-The configure transaction keeps the project's `generatedBy.version` truthful at `0.9.0` and emits a
-current `1.0.0` managed manifest. The following build publishes a new identity at `1.0.0`. User
-edits, malformed manifests, unknown/future producers, and stale plans retain their existing refusal
-and rollback rules.
-
-Replay evidence compatibility is backward only: 1.0 reads existing 0.9 Acceptance
-records without rewriting them. New 1.0 records can contain Diagnostic references
-that 0.9 readers reject, even when the evidence schema label is unchanged. Keep
-using 1.0 to read those records. Repair preserves the legacy runtime; that does
-not make newly created evidence readable by it. Recovery must retain the original
-state and evidence, without editing identity values or bypassing downgrade guards.
-
-The current runtime is generic: an integration may choose any absolute `TOOLKIT_ROOT`,
-`DATA_ROOT`, and `PROJECT_ROOT`. The launcher reads only `STM32_TOOLKIT_DATA_ROOT`; the CLI requires
-an explicit `--project-root` for every project-bound command.
-
-```powershell
-stm32-toolkit --project-root C:\work\blinky doctor --json
-stm32-toolkit --project-root C:\work\blinky build --preset arm-debug --json
-```
-
-## Generic MCP template
-
-The generic configuration uses an **absolute launcher**, explicit project/data arguments, and only
-`STM32_TOOLKIT_DATA_ROOT` in `env`:
-
-```json
-{
-  "mcpServers": {
-    "stm32-toolkit": {
-      "command": "C:\\tools\\stm32-toolkit\\bin\\stm32-toolkit-mcp.cmd",
-      "args": [
-        "--project-root", "C:\\work\\blinky",
-        "--data-root", "C:\\data\\stm32-toolkit"
-      ],
-      "env": {
-        "STM32_TOOLKIT_DATA_ROOT": "C:\\data\\stm32-toolkit"
-      }
-    }
-  }
-}
-```
-
-The Claude `.mcp.json` is only a mapping to the same contract. Claude automatically substitutes
-the inline paths while it keeps one server, substitutes
-`${CLAUDE_PLUGIN_ROOT}`, `${CLAUDE_PROJECT_DIR}`, and `${CLAUDE_PLUGIN_DATA}` inline, passes the
-explicit project/data arguments, and maps only `STM32_TOOLKIT_DATA_ROOT` to plugin data. It does
-not add a second server or a host-Python fallback.
-
-## CLI, setup, and isolation
-
-Run `/stm32-toolkit:setup-stm32-env` first when using Claude Code. For an ordinary Windows
-PowerShell session, set the three absolute paths for this checkout, its durable data, and the
-existing project. These examples use replaceable local paths and do not depend on an agent-host
-placeholder:
-
-```powershell
-$ToolkitRoot = 'C:\tools\stm32-toolkit-1.0.0'
+$ToolkitRoot = 'C:\tools\stm32-toolkit-1.0.1'
 $DataRoot = 'C:\data\stm32-toolkit'
 $ProjectRoot = 'C:\work\blinky'
 $SetupScript = Join-Path $ToolkitRoot 'bin\setup-stm32-env.ps1'
 
-# Always run the read-only check first.
 & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $SetupScript -Mode Check `
   -ToolkitRoot $ToolkitRoot -DataRoot $DataRoot -ProjectRoot $ProjectRoot
 ```
 
-If `Check` reports `missing`, review its evidence and explicitly authorize the absent-runtime
-install before running this separate Bootstrap command:
+If `Check` reports `missing` and installation is authorized, run **Bootstrap only**:
 
 ```powershell
 & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $SetupScript -Mode Bootstrap `
   -ToolkitRoot $ToolkitRoot -DataRoot $DataRoot -ProjectRoot $ProjectRoot
 ```
 
-If `Check` reports `repairable` for an approved 0.9.0/0.5.0/0.3.0 legacy upgrade, or `broken` for
-an existing runtime, review its source and downgrade guards and explicitly authorize Repair before
-running this separate command:
+If `Check` instead reports an authorized repairable/broken state, run **Repair only**:
 
 ```powershell
 & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $SetupScript -Mode Repair `
   -ToolkitRoot $ToolkitRoot -DataRoot $DataRoot -ProjectRoot $ProjectRoot
 ```
 
-`Check` is read-only. Run at most one mutation command for the decision, then repeat `Check`.
+Run at most one mutation command, then repeat `Check`. For Claude Code, `/stm32-toolkit:setup-stm32-env` uses the same setup contract. For any MCP host, configure an **absolute launcher** at `bin/stm32-toolkit-mcp.cmd`, explicit project/data roots, and `"STM32_TOOLKIT_DATA_ROOT"` pointing to that DataRoot. A copyable [generic MCP configuration and public inventory](docs/user-guide.md) are in the user guide. `${CLAUDE_PROJECT_DIR}` and `${CLAUDE_PLUGIN_DATA}/projects/<workspaceId>` are Claude adapter placeholders, not required by the generic CLI. The CLI needs an explicit absolute `--project-root` for project-bound commands.
 
-### Offline candidate build and install
+## Work with a project
 
-From a clean checkout at the pinned CodeHead, a release owner may assemble a disposable local
-candidate with the exact Windows CPython 3.12 wheelhouse. The utility never resolves from an index,
-uses only executable-plus-argument subprocesses, and does not push or publish:
+Run these from a shell where the verified runtime's `Scripts` directory is available. Detection, inspection, and the first configure call are read-only. Review the returned plan and blockers before any authorized apply. `.stm32-project.json` is the versioned project intent; managed generated-file ownership is tracked separately under `.stm32-toolkit/`.
 
 ```powershell
-py -3.12 tools/release/build_0900_artifacts.py build `
-  --repo-root C:\src\stm32-toolkit `
-  --code-head <40-lowercase-hex-commit> `
-  --wheelhouse C:\release-inputs\wheelhouse `
-  --output-root C:\release-output\stm32-toolkit-1.0.0
+stm32-toolkit --project-root C:\work\blinky doctor --json
+stm32-toolkit --project-root C:\work\blinky project detect --json
+stm32-toolkit --project-root C:\work\blinky keil inspect --uvprojx Project\blinky.uvprojx --json
+stm32-toolkit --project-root C:\work\blinky project configure --dry-run --json
+stm32-toolkit --project-root C:\work\blinky build --preset arm-debug --json
 ```
 
-Replace the release input and output paths with your own absolute directories. Verify
-`CHECKSUMS.sha256` before extracting `stm32-toolkit-1.0.0-windows-x86_64.zip`. Point the standalone
-setup commands above at the extracted `ToolkitRoot`, the long-lived `DataRoot`, and the existing
-`ProjectRoot`. CHECK reports bundle and `runtime-state.json` evidence; Bootstrap and Repair install
-only the manifest-listed wheels from the extracted `release/wheels/` directory with `--no-index`
-and `--no-deps`. Legacy 0.9.0/0.5.0/0.3.0 runtimes are quarantined during authorized Repair. A recorded
-higher installed version returns `downgrade-refused`; a same-version different manifest/source
-returns `source-conflict`; unsupported future state is never rewritten. Project and Monitor data
-remain owned by their existing explicit transactions.
+Keil-to-GCC migration is **one-way** and does not rewrite the Keil project. The candidate discovers nested Keil projects within the guarded root; multiple candidates require an explicit choice. Unsupported source encodings and ARMCC assembly require project-owned adaptation; Git changes, including untracked files, can block conversion. Configure preserves existing unowned regular `.vscode` target files while retaining managed-file drift protection; CubeMX regeneration has a separate inventory rule. Flash programming/readback does not establish that firmware is running. Probe access, handoff, reads, and physical tests require their explicit identity and authorization contracts.
 
-The candidate is Windows x86_64 only, contains the deterministic source/archive/SBOM/license/
-compatibility/troubleshooting material, and has no hardware or remote-release acceptance claim.
+Monitor is an observation UI with user-created monitor groups and no automatic probe connection. Open it from the verified launcher and its current authenticated browser tab. The allowed local Host is `127.0.0.1`, not a hand-entered `localhost` URL; never copy or log its token fragment. See the [user guide](docs/user-guide.md) for configuration constraints, all 22 issue remedies, and the Monitor entry command.
 
-`.stm32-project.json` is the version-controlled project configuration. Machine-owned state lives
-under `${CLAUDE_PLUGIN_DATA}/projects/<workspaceId>` (or the equivalent generic `DATA_ROOT`), so
-separate clones have distinct workspaces and sessions. Monitor groups remain user-created; the
-product's user-created monitor groups are never replaced by presets.
-Toolkit ships no invented presets. The Monitor Skill temporarily supplies the generic data-root
-environment to its launcher and restores the previous process value.
+## Current documentation
 
-## Skills (exactly eight)
+- [User guide and troubleshooting](docs/user-guide.md): migration, generation, builds, Probe Service, Monitor, and upgrade decisions.
+- [Windows deployment and IDE preflight](docs/testing/windows-deployment-and-ide-preflight.md): final runtime and debugger checks.
+- [Architecture](docs/architecture.md), [development](docs/development.md), [standard test procedure](docs/testing/standard-test-procedure.md), and [release qualification](docs/testing/release-qualification.md).
+- [Changelog](CHANGELOG.md) and [v1.0.1 patch specification](docs/superpowers/specs/2026-10-10-stm32tk-101-patch-design.md). Read the [execution ledger](docs/codex/returns/STM32TK-101/execution.md) for its current review and qualification record.
 
-The public Skills are:
-
-- `/stm32-toolkit:setup-stm32-env`
-- `/stm32-toolkit:migrate-keil`
-- `/stm32-toolkit:configure-stm32-project`
-- `/stm32-toolkit:build-firmware`
-- `/stm32-toolkit:flash-firmware`
-- `/stm32-toolkit:debug-firmware`
-- `/stm32-toolkit:read-var`
-- `/stm32-toolkit:stm32-monitor`
-
-Each Skill is a thin handoff to the same CLI/MCP behavior. Hardware Skills first establish project
-context and exact firmware/probe identity; fake, skipped, deferred, or failed hardware evidence is
-never described as physical success. Keil-to-GCC migration is one-way and never writes back to a
-Keil project.
-
-## MCP inventory (all 48 names)
-
-The closed public inventory is grouped by responsibility:
-
-### Project
-
-`stm32_doctor`, `stm32_project_detect`, `stm32_project_context`, `stm32_project_create_plan`,
-`stm32_project_create_prepare`, `stm32_project_create_apply`, `stm32_project_regenerate_plan`,
-`stm32_project_regenerate_prepare`, `stm32_project_regenerate_apply`, `stm32_keil_inspect`,
-`stm32_keil_convert`, `stm32_project_configure`
-
-### Build
-
-`stm32_build`
-
-### Probe
-
-`stm32_probe_list`, `stm32_flash`, `stm32_debug_handoff_begin`, `stm32_debug_handoff_end`,
-`stm32_variable_read`, `stm32_variable_sample`, `stm32_register_read`, `stm32_fault_analyze`
-
-### Diagnostic
-
-`stm32_diagnostic_start`, `stm32_diagnostic_show`, `stm32_diagnostic_begin`,
-`stm32_diagnostic_hypothesis_add`, `stm32_diagnostic_hypothesis_assess`,
-`stm32_diagnostic_plan_add`, `stm32_diagnostic_plan_run`, `stm32_test_target_replay`,
-`stm32_diagnostic_source_change_declare`, `stm32_diagnostic_verification_plan_add`,
-`stm32_diagnostic_verification_start`, `stm32_diagnostic_marker_attach`,
-`stm32_diagnostic_verification_complete`, `stm32_diagnostic_verification_show`
-
-### Test
-
-`stm32_test_host_discover`, `stm32_test_host_run`, `stm32_test_show`,
-`stm32_test_target_prepare`, `stm32_test_target_execute`
-
-### Acceptance
-
-`stm32_acceptance_scenario_describe`, `stm32_acceptance_scenario_record`,
-`stm32_acceptance_scenario_show`, `stm32_acceptance_attempt_begin`,
-`stm32_acceptance_attempt_checkpoint`, `stm32_acceptance_attempt_authorize_source_change`,
-`stm32_acceptance_attempt_show`, `stm32_acceptance_attempt_resume`
-
-The server exposes exactly these 48 names. Registration order and schemas are part of the
-Agent-neutral contract; callers cannot smuggle an alternate project root, environment, target,
-ELF, SVD, address, or service credential through a project-bound operation.
-
-## Target testing and physical qualification
-
-Target-frame v1 remains replay-compatible: existing v1 fixtures, bytes, and replay semantics are
-preserved for legacy projects. Target-frame v2 is host-bound. A project selects it with
-`testing.target.protocol` in its explicit project root; the host binds the full project, firmware,
-probe, target, session, and revision identity together with the case-inventory digest, and only
-publishes a physical result after guarded flash, readback, and transport-identity checks. The CLI
-and MCP target prepare/execute entry points read that project configuration and do not accept
-caller-supplied identity, ELF, target, or address values.
-
-The VS10-A reference transport is the single `memory-mailbox` path. RTT, UART, and semihosting
-remain software adapters and replay-compatible protocol options, but they are not physically
-qualified on the named reference hardware.
-
-## Product tool boundary
-
-STM32CubeMX generates new-project MCU, pin, clock, peripheral, startup, HAL/LL, and native CMake
-bytes. STM32CubeCLT supplies ARM GCC, CMake, Ninja, ST tools, target facts, and SVD data. PyOCD is
-the production probe backend, and Cortex-Debug is the human VS Code UI after an explicit handoff.
-External tool, extension, driver, and CMSIS-Pack checks are bounded and read-only; missing tools
-remain operator actions.
-
-## VS09-B boundary
-
-VS09-B owns pinned-source installation, secure upgrade and downgrade, malicious-name tests,
-checksums, archives, SBOM, licenses, compatibility, and troubleshooting. The local candidate is
-reproducible and auditable, but no remote release, PR, merge, tag, upload, signing, or hardware
-action is performed by this repository.
-
-Historical 0.5 evidence remains in its labelled release-controller and replay fixtures. It is
-preserved as history, not presented as the current runtime or inventory.
+The MCP inventory has all 48 public names, organized by project, build, probe, diagnostic, test, and acceptance workflows. `VS09-B` release construction uses the existing `tools/release/build_0900_artifacts.py` and pinned `release_0900_policy.json`; these historical filenames remain current packaging inputs. Old plans and reports removed from the current tree remain retrievable with `git show 694c825d29a55a53052a148efa4cc6720c315a04:<path>`.

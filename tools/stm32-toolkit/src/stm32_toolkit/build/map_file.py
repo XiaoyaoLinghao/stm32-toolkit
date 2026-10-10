@@ -3,16 +3,16 @@
 Parses ``Memory Configuration`` region rows and output-section rows with
 optional ``load address`` using anchored bounded regexes, requires the
 declared regions to exactly equal the model memory regions in model order,
-accounts non-empty section VMA intervals (and LMA intervals when an explicit
-load address differs) to their containing model region as interval union,
+accounts non-empty section VMA intervals (and, with ELF evidence, file-backed
+LMA intervals when an explicit load address differs) as interval union,
 rejects every malformed, duplicate, conflicting, ambiguous, unknown, or
 out-of-region row, and maps region overflow to the stable overflow codes.
 
 When ``parse_map`` receives the immutable ``ElfSectionEvidence`` produced by
 ELF validation, every non-zero MAP output section is classified from the ELF
 flags instead of its name: sections with ``SHF_ALLOC`` participate in VMA
-memory accounting (and their explicit different LMA continues to participate
-in the corresponding region), sections without ``SHF_ALLOC`` never
+memory accounting (and an explicit different LMA participates only when
+the section is not ``SHT_NOBITS``), sections without ``SHF_ALLOC`` never
 participate (GNU ld may place them at VMA 0), a non-zero MAP section absent
 from the ELF evidence fails closed, MAP/ELF VMA or size disagreement for an
 alloc section fails closed, and every non-zero ``SHF_ALLOC`` ELF section
@@ -84,7 +84,8 @@ class ElfSectionEvidence:
 
     Produced by the ELF validation stage from the already validated ELF
     bytes and consumed by ``parse_map``: ``alloc`` is the ``SHF_ALLOC``
-    flag, ``address`` is the section VMA, and ``size`` is the section size.
+    flag, ``address`` is the section VMA, ``size`` is the section size, and
+    ``nobits`` records the actual ``SHT_NOBITS`` section type.
     Zero-size sections are excluded by the producer and never required to
     match.
     """
@@ -93,6 +94,7 @@ class ElfSectionEvidence:
     address: int
     size: int
     alloc: bool
+    nobits: bool = False
 
 
 @dataclass(frozen=True)
@@ -124,8 +126,9 @@ def parse_map(
 
     When ``elf_sections`` is provided every non-zero MAP output section is
     classified from the ELF evidence: ``SHF_ALLOC`` sections must agree with
-    the MAP on VMA and size and participate in memory accounting; non-alloc
-    sections never participate (GNU ld may place them at VMA 0); a non-zero
+    the MAP on VMA and size and participate in VMA memory accounting.  An
+    explicit different LMA counts only for file-backed (non-NOBITS) sections;
+    non-alloc sections never participate (GNU ld may place them at VMA 0); a non-zero
     MAP section absent from the evidence fails closed with ``unknown``; and
     every non-zero ``SHF_ALLOC`` ELF section must be matched in the MAP or
     the MAP fails closed with ``missing``.  When omitted, every non-zero MAP
@@ -286,7 +289,11 @@ def _account(
                 raise map_error("size", path)
             matched.add(section.name)
             _account_interval(section.address, section.size, intervals, regions, path)
-            if section.load_address is not None and section.load_address != section.address:
+            if (
+                not evidence.nobits
+                and section.load_address is not None
+                and section.load_address != section.address
+            ):
                 _account_interval(section.load_address, section.size, intervals, regions, path)
         for evidence in elf_sections:
             if evidence.alloc and evidence.size > 0 and evidence.name not in matched:
@@ -332,6 +339,8 @@ def _index_evidence(
     matching impossible and fail closed."""
     indexed: dict[str, ElfSectionEvidence] = {}
     for evidence in elf_sections:
+        if type(evidence.nobits) is not bool:
+            raise map_error("evidence", path)
         if evidence.name in indexed:
             raise map_error("duplicate", path)
         indexed[evidence.name] = evidence

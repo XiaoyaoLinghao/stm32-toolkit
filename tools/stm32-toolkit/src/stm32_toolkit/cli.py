@@ -36,6 +36,7 @@ class _RejectDuplicateTrue(argparse.Action):
         setattr(namespace, self.dest, True)
 
 from stm32_toolkit.context import build_project_context
+from stm32_toolkit.keil.model import KeilInspectionError
 from stm32_toolkit.acceptance.model import canonical_diagnostic_reference
 from stm32_toolkit.acceptance.workflows import (
     AcceptanceWorkflowContext,
@@ -1627,6 +1628,8 @@ def _operation_result(
 def _detect_result(project_root: Path) -> OperationResult[dict[str, object]]:
     try:
         detection = detect_project(project_root)
+    except KeilInspectionError as error:
+        return OperationResult.failure("project.detect", error.code, error.message, error.details)
     except (OSError, ValueError):
         return OperationResult.failure(
             "project.detect",

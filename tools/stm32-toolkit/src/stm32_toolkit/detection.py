@@ -2,6 +2,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from stm32_toolkit.keil.uvprojx import discover_projects
+
 
 ProjectKind = Literal["configured", "keil", "cubemx", "cmake", "unknown"]
 ActionId = Literal["migrate-keil", "configure-project", "create-project"]
@@ -87,7 +89,7 @@ def detect_project(project_root: Path) -> ProjectDetection:
             recommended_action=planned_action("configure-project"),
         )
 
-    keil_files = _sorted_marker_names(entries, ".uvprojx")
+    keil_files = discover_projects(project_root)
     if keil_files:
         return ProjectDetection(
             kind="keil",

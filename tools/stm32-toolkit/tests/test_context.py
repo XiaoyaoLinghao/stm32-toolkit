@@ -117,7 +117,10 @@ def test_configured_context_reports_evidence_sections_without_build(
             },
             "recommendedActions": [],
         },
-        "details": {},
+        "details": {
+            "capabilitySemantics": "current-readiness",
+            "hardwareDiscovery": "not-performed",
+        },
     }
     workspace_id = result.data["workspace"]["workspaceId"]
     assert (
@@ -185,6 +188,27 @@ def test_keil_context_stays_read_only_and_reports_inspection_capabilities(
             ),
         }],
     }
+    assert not data_root.exists()
+    assert result.details == {
+        "capabilitySemantics": "current-readiness",
+        "hardwareDiscovery": "not-performed",
+    }
+
+
+def test_nested_keil_context_reports_readiness_without_probe_access(tmp_path: Path):
+    project = tmp_path / "Project"
+    project.mkdir()
+    (project / "legacy.uvprojx").write_text("<Project/>", encoding="utf-8")
+    data_root = tmp_path / "data"
+
+    result = build_project_context(tmp_path, data_root)
+
+    assert result.ok is True
+    assert result.data["project"]["files"] == ("Project/legacy.uvprojx",)
+    assert result.data["capabilities"]["keilInspect"] is True
+    assert result.data["capabilities"]["keilConvert"] is True
+    assert result.data["hardware"] == {"probe": None, "state": "unavailable"}
+    assert result.details["hardwareDiscovery"] == "not-performed"
     assert not data_root.exists()
 
 

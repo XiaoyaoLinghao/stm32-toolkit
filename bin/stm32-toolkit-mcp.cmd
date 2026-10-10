@@ -6,9 +6,9 @@ if not defined STM32_TOOLKIT_DATA_ROOT (
   exit /b 2
 )
 
-set "STM32_TOOLKIT_RUNTIME=%STM32_TOOLKIT_DATA_ROOT%\runtime\1.0.0\Scripts\python.exe"
+set "STM32_TOOLKIT_RUNTIME=%STM32_TOOLKIT_DATA_ROOT%\runtime\1.0.1\Scripts\python.exe"
 if not exist "%STM32_TOOLKIT_RUNTIME%" (
-  >&2 echo stm32-toolkit-mcp: runtime/1.0.0/Scripts/python.exe is missing under STM32_TOOLKIT_DATA_ROOT.
+  >&2 echo stm32-toolkit-mcp: runtime/1.0.1/Scripts/python.exe is missing under STM32_TOOLKIT_DATA_ROOT. Run runtime Check or Repair for this data root, then retry.
   exit /b 2
 )
 

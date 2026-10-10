@@ -18,11 +18,13 @@ Before acting, reconstruct this ledger: module and phase, full accepted-base SHA
 - Current reports: `docs/codex/returns/{MODULE-ID}/implementation-report.md`.
 - Approved specifications live under `docs/superpowers/specs/`.
 - Approved implementation plans live under `docs/superpowers/plans/`.
-- Architecture: `docs/superpowers/specs/2026-07-29-stm32-toolkit-ai-development-design.md`.
-- Roadmap: `docs/superpowers/plans/2026-08-04-stm32-toolkit-complete-development-roadmap.md`.
-- Current 0.7–1.0 integration design: `docs/superpowers/specs/2026-08-22-stm32-toolkit-0.7-1.0-integrated-product-design.md`.
-- Current 0.7–1.0 delivery plan: `docs/superpowers/plans/2026-08-22-stm32-toolkit-0.7-1.0-vertical-delivery-plan.md`.
-- Large-project lessons: `docs/codex/lessons/2026-08-22-large-project-development-error-book.md`.
+- Current architecture: `docs/architecture.md`.
+- Development and review: `docs/development.md`.
+- Current change specification: `docs/superpowers/specs/2026-10-10-stm32tk-101-patch-design.md`.
+- Current delivery plan: `docs/superpowers/plans/2026-10-10-stm32tk-101-patch-plan.md`.
+- Release qualification: `docs/testing/release-qualification.md`.
+- Release status and retained limitations: `docs/release-status.md`.
+- Engineering lessons are retrieved from the local engineering-lessons skill/store; mutable lesson data is not tracked here.
 
 Never accept, repeat, retain, or commit plaintext credentials. Commit identity is not proof of GitHub authentication; verify each computer independently. Preserve unrelated changes and review in a clean isolated worktree at the exact reviewed CodeHead/final head, using the accepted base only as the diff origin.
 

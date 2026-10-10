@@ -307,7 +307,10 @@ def _prepare(
         or not model.debug.svd
         or "\\" in model.debug.svd
     ):
-        raise _fail("SVD_SELECTION_REQUIRED", "An exact project SVD selection is required")
+        raise _fail(
+            "SVD_SELECTION_REQUIRED",
+            "Place the device SVD inside the project root and configure debug.svd",
+        )
     if require_probe:
         probe = getattr(request, "probe_id", None)
         if not isinstance(probe, str) or _IDENTIFIER.fullmatch(probe) is None:
@@ -650,6 +653,27 @@ def _public_result(result: object, paths: WorkspacePaths) -> OperationResult[obj
     )
 
 
+def _with_attach_guidance(
+    result: OperationResult[object], requested_target: str | None
+) -> OperationResult[object]:
+    if result.ok or requested_target is None:
+        return result
+    diagnostic = extract_attach_diagnostic(result.details)
+    if diagnostic is None:
+        return result
+    primary = diagnostic["primary"]
+    details = dict(result.details)
+    if primary["reason"] == "target-unsupported":
+        details["requestedTarget"] = requested_target
+        details["guidance"] = "Check this target against the offline pyocd list --targets output"
+    elif primary["stage"] == "resume-verify" and primary["reason"] == "postcondition-failed":
+        details["lastVerifiedTargetState"] = diagnostic["lastVerifiedTargetState"]
+        details["guidance"] = "Attach did not verify running; check target run and reset conditions before a new authorized attach"
+    else:
+        return result
+    return _result_with_details(result, details)
+
+
 def _result_with_details(
     result: OperationResult[Any], details: Mapping[str, object]
 ) -> OperationResult[Any]:
@@ -730,6 +754,7 @@ async def _one_shot(
     seams: HardwareWorkflowSeams,
     action: Callable[[object, object], Awaitable[OperationResult[Any]]],
     worker_config: ProbeWorkerConfig | None = None,
+    requested_target: str | None = None,
 ) -> OperationResult[object]:
     supervisor: object | None = None
     clients: list[object] = []
@@ -804,7 +829,7 @@ async def _one_shot(
             )
             if merged is not None:
                 details["attachDiagnostic"] = merged
-        return _public_result(
+        return _with_attach_guidance(_public_result(
             OperationResult.failure(
                 operation,
                 "HARDWARE_CLEANUP_FAILED",
@@ -812,14 +837,14 @@ async def _one_shot(
                 details,
             ),
             paths,
-        )
+        ), requested_target)
     if fatal is not None:
         raise fatal
     cancellation = _merge_cancellation(cancelled, cleanup.cancellation)
     if cancellation is not None:
         raise cancellation
     assert result is not None
-    return _public_result(result, paths)
+    return _with_attach_guidance(_public_result(result, paths), requested_target)
 
 
 async def probe_list_workflow(
@@ -952,14 +977,20 @@ async def flash_workflow(
             client,
         )
 
-    return await _one_shot(
+    result = await _one_shot(
         operation=operation,
         paths=paths,
         probe_id=typed.probe_id,
         level=OperationLevel.MODIFY,
         seams=selected_seams,
         action=action,
+        requested_target=model.debug.target,
     )
+    if result.ok:
+        return _result_with_details(
+            result, {"postFlash": {"targetState": "unknown", "runVerified": False}}
+        )
+    return result
 
 
 async def handoff_begin_workflow(
@@ -969,7 +1000,7 @@ async def handoff_begin_workflow(
 ) -> OperationResult[object]:
     operation = "stm32_debug_handoff_begin"
     try:
-        typed, _, paths = _prepare(
+        typed, model, paths = _prepare(
             request, HandoffBeginWorkflowRequest, require_probe=True, require_pins=True
         )
         if typed.authorized is not True:
@@ -1002,6 +1033,7 @@ async def handoff_begin_workflow(
         level=OperationLevel.OBSERVE,
         seams=_seams,
         action=action,
+        requested_target=model.debug.target,
     )
 
 
@@ -1012,7 +1044,7 @@ async def handoff_end_workflow(
 ) -> OperationResult[object]:
     operation = "stm32_debug_handoff_end"
     try:
-        typed, _, paths = _prepare(
+        typed, model, paths = _prepare(
             request, HandoffEndWorkflowRequest, require_probe=True, require_pins=False
         )
         if not isinstance(typed.ticket, str) or _DIGEST.fullmatch(typed.ticket) is None:
@@ -1058,7 +1090,7 @@ async def handoff_end_workflow(
     if cancellation is not None:
         raise cancellation
     assert result is not None
-    return _public_result(result, paths)
+    return _with_attach_guidance(_public_result(result, paths), model.debug.target)
 
 
 async def _bind_and_run(
@@ -1097,6 +1129,7 @@ async def _bind_and_run(
         level=OperationLevel.OBSERVE,
         seams=seams,
         action=action,
+        requested_target=model.debug.target,
     )
 
 
@@ -1774,6 +1807,7 @@ async def fault_workflow(
             seams=_seams,
             action=action,
             worker_config=worker_config,
+            requested_target=model.debug.target,
         )
     return await _bind_and_run(
         operation=operation,

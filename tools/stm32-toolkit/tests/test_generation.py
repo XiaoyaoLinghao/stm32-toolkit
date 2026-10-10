@@ -21,6 +21,7 @@ from pathlib import Path
 import pytest
 
 from stm32_toolkit import __version__
+from stm32_toolkit.context import build_project_context
 from stm32_toolkit.generation import (
     GenerationBlocker,
     GenerationError,
@@ -191,9 +192,9 @@ SECTIONS
   .stack (NOLOAD) :
   {
     . = ALIGN(8);
-    __StackTop = .;
-    . += _Min_Stack_Size;
     __StackLimit = .;
+    . += _Min_Stack_Size;
+    __StackTop = .;
   } > RAM
 }
 """
@@ -773,16 +774,17 @@ def test_generation_spec_validation(tmp_path, field, rule):
 
 
 @pytest.mark.parametrize("schema_version", [2, 3])
-def test_legacy_0_9_generation_producer_plans_and_emits_current_managed_manifest(
-    tmp_path: Path, schema_version: int
+@pytest.mark.parametrize("producer_version", ["1.0.0", "0.9.0"])
+def test_legacy_generation_producer_plans_and_emits_current_managed_manifest(
+    tmp_path: Path, schema_version: int, producer_version: str
 ):
     payload = standard_payload()
     payload["schemaVersion"] = schema_version
-    payload["generatedBy"] = {"tool": "stm32-toolkit", "version": "0.9.0"}
-    root = write_project(tmp_path / f"schema-{schema_version}", payload)
+    payload["generatedBy"] = {"tool": "stm32-toolkit", "version": producer_version}
+    root = write_project(tmp_path / f"schema-{schema_version}-{producer_version}", payload)
 
     plan = plan_for(root)
-    assert plan.model.generation.version == "0.9.0"
+    assert plan.model.generation.version == producer_version
     applied = apply_project_configuration(plan)
     assert applied.ok is True
 
@@ -790,12 +792,12 @@ def test_legacy_0_9_generation_producer_plans_and_emits_current_managed_manifest
     manifest = json.loads(
         (root / ".stm32-toolkit" / "generated-files.json").read_text(encoding="utf-8")
     )
-    assert project["generatedBy"]["version"] == "0.9.0"
+    assert project["generatedBy"]["version"] == producer_version
     assert manifest["toolVersion"] == __version__
 
-    # A preserved 0.9 managed manifest remains readable while the next plan
-    # continues to emit the current 1.0 manifest bytes.
-    manifest["toolVersion"] = "0.9.0"
+    # Historical producer and managed identity remain truthful; an explicit
+    # configure plan emits the current managed manifest without rewriting the project.
+    manifest["toolVersion"] = producer_version
     write_manifest_bytes(
         root,
         json.dumps(manifest, indent=2, ensure_ascii=False).encode("utf-8") + b"\n",
@@ -803,10 +805,17 @@ def test_legacy_0_9_generation_producer_plans_and_emits_current_managed_manifest
     replanned = plan_for(root)
     replanned_manifest = json.loads(replanned.managed_manifest_bytes.decode("utf-8"))
     assert replanned_manifest["toolVersion"] == __version__
+    assert json.loads((root / ".stm32-project.json").read_text(encoding="utf-8"))["generatedBy"]["version"] == producer_version
+
+    (root / "CMakeLists.txt").write_bytes(b"user edit\n")
+    drift_plan = plan_for(root)
+    assert any(blocker.code == "GENERATED_FILE_DRIFT" for blocker in drift_plan.blockers)
+    assert apply_project_configuration(drift_plan).code == "GENERATED_FILE_DRIFT"
 
 
 def test_generation_producer_allowlist_is_exact_and_type_safe(tmp_path: Path):
     assert is_supported_generation_producer("stm32-toolkit", __version__)
+    assert is_supported_generation_producer("stm32-toolkit", "1.0.0")
     assert is_supported_generation_producer("stm32-toolkit", "0.9.0")
     for value in ("0.5.0", "2.0.0", 1, None, [], {}):
         assert not is_supported_generation_producer("stm32-toolkit", value)
@@ -2491,7 +2500,7 @@ def test_user_drift_blocks_apply_without_writes(tmp_path):
     assert not staging_dir(root, plan.plan_id).exists()
 
 
-def test_unowned_equal_collision_blocks_apply(tmp_path):
+def test_unowned_equal_editor_file_is_preserved(tmp_path):
     root = write_project(tmp_path / "proj")
     proposal = plan_for(root)
     settings = next(entry for entry in proposal.files if entry.path == ".vscode/settings.json")
@@ -2499,26 +2508,209 @@ def test_unowned_equal_collision_blocks_apply(tmp_path):
     (root / ".vscode/settings.json").write_bytes(settings.after_bytes)
     plan = plan_for(root)
     entry = next(entry for entry in plan.files if entry.path == ".vscode/settings.json")
-    assert entry.status == "unowned-collision"
-    assert [blocker.code for blocker in plan.blockers] == ["UNOWNED_COLLISION"]
+    assert entry.status == "preserved-unowned"
+    assert entry.before_bytes is None
+    assert entry.before_sha256 is None
+    assert entry.before_size is None
+    assert entry.unified_diff == ""
+    assert not plan.blockers
     result = apply_project_configuration(plan)
-    assert not result.ok
-    assert result.code == "GENERATION_BLOCKED"
-    assert result.details["codes"] == ("UNOWNED_COLLISION",)
-    assert result.details["paths"] == (".vscode/settings.json",)
+    assert result.ok
+    assert result.data["preservedPaths"] == (".vscode/settings.json",)
+    assert ".vscode/settings.json" not in result.data["createdPaths"]
+    assert ".vscode/settings.json" not in result.data["unchangedPaths"]
+    assert ".vscode/settings.json" not in {item["path"] for item in manifest_on_disk(root)["files"]}
     assert (root / ".vscode/settings.json").read_bytes() == settings.after_bytes
 
 
-def test_unowned_different_collision_blocks_apply(tmp_path):
+def test_unowned_different_editor_file_is_preserved(tmp_path):
     root = write_project(tmp_path / "proj")
     (root / ".vscode").mkdir(exist_ok=True)
     (root / ".vscode/settings.json").write_bytes(b"unrelated content\n")
     plan = plan_for(root)
     entry = next(entry for entry in plan.files if entry.path == ".vscode/settings.json")
-    assert entry.status == "unowned-collision"
+    assert entry.status == "preserved-unowned"
     result = apply_project_configuration(plan)
-    assert result.code == "GENERATION_BLOCKED"
+    assert result.ok
+    assert result.data["preservedPaths"] == (".vscode/settings.json",)
     assert (root / ".vscode/settings.json").read_bytes() == b"unrelated content\n"
+
+
+def test_unowned_editor_is_never_read_and_content_change_keeps_plan_valid(monkeypatch, tmp_path):
+    root = write_project(tmp_path / "proj")
+    settings = root / ".vscode/settings.json"
+    settings.parent.mkdir()
+    settings.write_bytes(b"private settings\n" * 512)
+    original_mode = stat.S_IMODE(os.lstat(settings).st_mode)
+    real_read = configure_mod._read_limited
+
+    def read_without_editor(path, limit):
+        if Path(path) == settings:
+            raise AssertionError("unowned editor bytes must not be read")
+        return real_read(path, limit)
+
+    monkeypatch.setattr(configure_mod, "_read_limited", read_without_editor)
+    plan = plan_for(root)
+    settings.write_bytes(b"changed while the plan was open\n")
+    assert plan_for(root).plan_id == plan.plan_id
+    result = apply_project_configuration(plan)
+    assert result.ok
+    assert result.data["preservedPaths"] == (".vscode/settings.json",)
+    assert result.data["warnings"]
+    assert settings.read_bytes() == b"changed while the plan was open\n"
+    assert stat.S_IMODE(os.lstat(settings).st_mode) == original_mode
+
+
+def test_mixed_editor_ownership_missing_target_and_public_context(tmp_path):
+    root = write_project(tmp_path / "proj")
+    assert apply_project_configuration(plan_for(root)).ok
+    settings = root / ".vscode/settings.json"
+    settings.write_bytes(b"user-owned\n")
+    extensions = root / ".vscode/extensions.json"
+    extensions.unlink()
+    manifest = manifest_on_disk(root)
+    manifest["files"] = [
+        item for item in manifest["files"]
+        if item["path"] not in {".vscode/settings.json", ".vscode/extensions.json"}
+    ]
+    write_manifest_bytes(root, json.dumps(manifest, indent=2).encode("utf-8") + b"\n")
+    plan = plan_for(root)
+    statuses = {entry.path: entry.status for entry in plan.files}
+    assert statuses[".vscode/settings.json"] == "preserved-unowned"
+    assert statuses[".vscode/extensions.json"] == "create"
+    assert statuses[".vscode/tasks.json"] == "unchanged"
+    result = apply_project_configuration(plan)
+    assert result.ok
+    assert result.data["preservedPaths"] == (".vscode/settings.json",)
+    assert ".vscode/extensions.json" in result.data["createdPaths"]
+    assert settings.read_bytes() == b"user-owned\n"
+    records = {item["path"] for item in manifest_on_disk(root)["files"]}
+    assert ".vscode/settings.json" not in records
+    assert ".vscode/extensions.json" in records
+    context = build_project_context(root, tmp_path / "data")
+    assert context.ok
+    assert context.data["capabilities"]["build"] is True
+    assert context.data["build"]["managedFilesMissing"] == ()
+    assert context.data["build"]["managedFilesDrifted"] == ()
+    settings.write_bytes(b"user changed the IDE configuration again\n")
+    assert build_project_context(root, tmp_path / "data").data["capabilities"]["build"] is True
+    (root / ".vscode/tasks.json").write_bytes(b"managed file drift\n")
+    assert build_project_context(root, tmp_path / "data").data["capabilities"]["build"] is False
+
+
+@pytest.mark.parametrize("change", ["removed", "directory"])
+def test_preserved_editor_type_change_invalidates_stale_plan(tmp_path, change):
+    root = write_project(tmp_path / "proj")
+    settings = root / ".vscode/settings.json"
+    settings.parent.mkdir()
+    settings.write_bytes(b"keep me\n")
+    plan = plan_for(root)
+    settings.unlink()
+    if change == "directory":
+        settings.mkdir()
+    result = apply_project_configuration(plan)
+    assert not result.ok
+    assert result.code == "GENERATION_INPUT_CHANGED"
+    assert result.details["path"] == ".vscode/settings.json"
+    assert not (root / "CMakeLists.txt").exists()
+    assert not staging_dir(root, plan.plan_id).exists()
+
+
+def test_preserved_editor_redirect_is_rejected_without_reading_target(monkeypatch, tmp_path):
+    root = write_project(tmp_path / "proj")
+    (root / ".vscode").mkdir()
+    outside = tmp_path / "outside-settings"
+    outside.write_bytes(b"outside\n")
+    _redirect_path(monkeypatch, root / ".vscode/settings.json", outside, is_dir=False)
+    with pytest.raises(GenerationError) as error:
+        plan_for(root)
+    assert error.value.code == "GENERATION_INPUT_INVALID"
+    assert error.value.details == {"path": ".vscode/settings.json", "rule": "redirect"}
+    assert outside.read_bytes() == b"outside\n"
+
+
+@pytest.mark.parametrize("location", [".vscode", ".vscode/settings.json"])
+def test_editor_directory_category_is_rejected(tmp_path, location):
+    root = write_project(tmp_path / "proj")
+    path = root.joinpath(*location.split("/"))
+    if location == ".vscode":
+        path.write_bytes(b"blocks editor directory\n")
+    else:
+        path.mkdir(parents=True)
+    with pytest.raises(GenerationError) as error:
+        plan_for(root)
+    assert error.value.code == "GENERATION_INPUT_INVALID"
+    assert error.value.details["path"].startswith(".vscode/")
+    assert error.value.details["rule"] in {"directory", "regularFile"}
+
+
+def test_preserved_editor_ownership_change_invalidates_stale_plan(tmp_path):
+    root = write_project(tmp_path / "proj")
+    settings = root / ".vscode/settings.json"
+    settings.parent.mkdir()
+    settings.write_bytes(b"user settings\n")
+    plan = plan_for(root)
+    write_manifest_bytes(root, plan.managed_manifest_bytes)
+    result = apply_project_configuration(plan)
+    assert not result.ok
+    assert result.code == "GENERATION_INPUT_CHANGED"
+    assert result.details["path"] == MANAGED_MANIFEST_PATH
+    assert settings.read_bytes() == b"user settings\n"
+    assert not (root / "CMakeLists.txt").exists()
+
+
+def test_editor_appearing_after_plan_is_not_overwritten(tmp_path):
+    root = write_project(tmp_path / "proj")
+    plan = plan_for(root)
+    settings = root / ".vscode/settings.json"
+    settings.parent.mkdir()
+    settings.write_bytes(b"new user file\n")
+    result = apply_project_configuration(plan)
+    assert not result.ok
+    assert result.code == "GENERATION_TARGET_EXISTS"
+    assert settings.read_bytes() == b"new user file\n"
+    assert not (root / "CMakeLists.txt").exists()
+
+
+def test_failed_apply_leaves_preserved_editor_bytes_and_mode(monkeypatch, tmp_path):
+    root = write_project(tmp_path / "proj")
+    settings = root / ".vscode/settings.json"
+    settings.parent.mkdir()
+    settings.write_bytes(b"untouched\n")
+    before = (settings.read_bytes(), stat.S_IMODE(os.lstat(settings).st_mode))
+    plan = plan_for(root)
+    fail_replace_at(monkeypatch, {1})
+    result = apply_project_configuration(plan)
+    assert not result.ok
+    assert result.code == "GENERATION_APPLY_FAILED"
+    assert (settings.read_bytes(), stat.S_IMODE(os.lstat(settings).st_mode)) == before
+    assert not staging_dir(root, plan.plan_id).exists()
+
+
+def test_preserved_editor_type_change_during_staging_refuses_before_replace(monkeypatch, tmp_path):
+    root = write_project(tmp_path / "proj")
+    settings = root / ".vscode/settings.json"
+    settings.parent.mkdir()
+    settings.write_bytes(b"untouched until staging\n")
+    plan = plan_for(root)
+    real_stage = configure_mod._stage_write
+    changed = False
+
+    def mutate_during_stage(path, data, mode):
+        nonlocal changed
+        real_stage(path, data, mode)
+        if not changed:
+            changed = True
+            settings.unlink()
+            settings.mkdir()
+
+    monkeypatch.setattr(configure_mod, "_stage_write", mutate_during_stage)
+    result = apply_project_configuration(plan)
+    assert not result.ok
+    assert result.code == "GENERATION_INPUT_CHANGED"
+    assert settings.is_dir()
+    assert not (root / "CMakeLists.txt").exists()
+    assert not staging_dir(root, plan.plan_id).exists()
 
 
 def test_orphaned_prior_record_blocks_apply(tmp_path):
@@ -2545,7 +2737,7 @@ def test_blocker_aggregation_drift_takes_precedence(tmp_path):
     base["files"] = [
         item
         for item in base["files"]
-        if item["path"] != ".vscode/settings.json"
+        if item["path"] != "CMakePresets.json"
     ]
     base["files"].append(record("docs/notes.md", "c" * 64))
     base["files"].sort(key=lambda item: item["path"].encode("utf-8"))
@@ -2566,7 +2758,7 @@ def test_blocker_aggregation_collision_and_orphan(tmp_path):
     assert apply_project_configuration(plan_for(root)).ok
     base = json.loads((root / ".stm32-toolkit/generated-files.json").read_text("utf-8"))
     base["files"] = [
-        item for item in base["files"] if item["path"] != ".vscode/extensions.json"
+        item for item in base["files"] if item["path"] != "CMakePresets.json"
     ]
     base["files"].append(record("docs/notes.md", "c" * 64))
     base["files"].sort(key=lambda item: item["path"].encode("utf-8"))
@@ -2576,7 +2768,7 @@ def test_blocker_aggregation_collision_and_orphan(tmp_path):
     assert not result.ok
     assert result.code == "GENERATION_BLOCKED"
     assert result.details["codes"] == ("GENERATION_ORPHANED_MANAGED_FILE", "UNOWNED_COLLISION")
-    assert result.details["paths"] == (".vscode/extensions.json", "docs/notes.md")
+    assert result.details["paths"] == ("CMakePresets.json", "docs/notes.md")
 
 
 def test_changed_prior_manifest_blocks_apply(tmp_path):
@@ -3419,9 +3611,9 @@ def test_plan_target_directory_is_rejected(tmp_path):
 
 
 def test_plan_oversized_current_target_is_rejected(monkeypatch, tmp_path):
-    monkeypatch.setattr(configure_mod, "FILE_LIMIT_BYTES", 2048)
     root = write_project(tmp_path / "proj")
-    (root / ".vscode").mkdir()
+    assert apply_project_configuration(plan_for(root)).ok
+    monkeypatch.setattr(configure_mod, "FILE_LIMIT_BYTES", 2048)
     (root / ".vscode/settings.json").write_bytes(b"x" * 3000)
     with pytest.raises(GenerationError) as error:
         plan_for(root)
@@ -3828,7 +4020,7 @@ def test_current_target_lstat_failure_is_rejected(monkeypatch, tmp_path):
 
 def test_plan_unreadable_current_target_is_rejected(monkeypatch, tmp_path):
     root = write_project(tmp_path / "proj")
-    (root / ".vscode").mkdir()
+    assert apply_project_configuration(plan_for(root)).ok
     settings = root / ".vscode/settings.json"
     settings.write_bytes(b"unreadable target\n")
     real_read = configure_mod._read_limited

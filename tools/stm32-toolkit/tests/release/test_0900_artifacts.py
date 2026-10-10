@@ -1,4 +1,4 @@
-"""Contract tests for the 1.0.0 offline release utility.
+"""Contract tests for the 1.0.1 offline release utility.
 
 The fixtures in this file are deliberately tiny and local.  They exercise the
 builder boundary without pretending that a fake wheelhouse is a real release
@@ -32,7 +32,11 @@ def _run(*args: str, cwd: Path = REPO_ROOT) -> subprocess.CompletedProcess[str]:
         cwd=cwd,
         text=True,
         capture_output=True,
-        env={"PATH": os.environ["PATH"], "PYTHONNOUSERSITE": "1"},
+        env={
+            "PATH": os.environ["PATH"],
+            "PYTHONNOUSERSITE": "1",
+            **{name: os.environ[name] for name in ("TEMP", "TMP", "TMPDIR") if name in os.environ},
+        },
     )
 
 
@@ -105,6 +109,7 @@ def _assert_build_wheel_call_shape(calls, output: Path) -> None:
         "pip",
         "wheel",
         "--disable-pip-version-check",
+        "--no-cache-dir",
         "--no-index",
         "--no-deps",
         "--no-build-isolation",
@@ -153,6 +158,20 @@ def test_build_wheel_does_not_invent_absent_caller_temp_environment(monkeypatch,
     assert not {"TEMP", "TMP", "TMPDIR"} & set(calls[2]["env"])
 
 
+def test_build_wheel_disables_persistent_pip_cache_even_when_caller_has_one(monkeypatch, tmp_path: Path):
+    persistent_cache = tmp_path / "user-pip-cache"
+    monkeypatch.setenv("PIP_CACHE_DIR", str(persistent_cache))
+    _, calls, output = _capture_build_wheel_processes(
+        monkeypatch,
+        tmp_path,
+        caller_temp={},
+    )
+    _assert_build_wheel_call_shape(calls, output)
+    wheel_call = calls[2]
+    assert "PIP_CACHE_DIR" not in wheel_call["env"]
+    assert wheel_call["argv"].count("--no-cache-dir") == 1
+
+
 def test_bootstrap_anchor_binds_git_archive_bytes_not_worktree_filter_bytes():
     from importlib.util import module_from_spec, spec_from_file_location
 
@@ -164,9 +183,9 @@ def test_bootstrap_anchor_binds_git_archive_bytes_not_worktree_filter_bytes():
     epoch = module._git_epoch(REPO_ROOT, head)
     source_archive = module._git_archive(REPO_ROOT, head, epoch)
     members = module._zip_members(source_archive)
-    setup = members["stm32-toolkit-1.0.0/bin/setup-stm32-env.ps1"].decode("utf-8")
-    utility = members["stm32-toolkit-1.0.0/tools/release/build_0900_artifacts.py"]
-    policy = members["stm32-toolkit-1.0.0/tools/release/release_0900_policy.json"]
+    setup = members["stm32-toolkit-1.0.1/bin/setup-stm32-env.ps1"].decode("utf-8")
+    utility = members["stm32-toolkit-1.0.1/tools/release/build_0900_artifacts.py"]
+    policy = members["stm32-toolkit-1.0.1/tools/release/release_0900_policy.json"]
     utility_match = re.search(r'(?m)^\$ReleaseUtilitySha256\s*=\s*"([0-9a-f]{64})"\s*$', setup)
     policy_match = re.search(r'(?m)^\$ReleasePolicySha256\s*=\s*"([0-9a-f]{64})"\s*$', setup)
     assert utility_match and policy_match
@@ -208,13 +227,13 @@ def _write_manifest_tree(root: Path) -> None:
     _write_wheel(wheel)
     payload = {
         "schema": "stm32-toolkit-release/1",
-        "productVersion": "1.0.0",
+        "productVersion": "1.0.1",
         "requiredPython": ">=3.12,<3.13",
         "platform": {"os": "windows", "architecture": "x86_64", "python": "cp312"},
         "source": {
             "repository": "https://github.com/XiaoyaoLinghao/stm32-toolkit.git",
             "commit": "a" * 40,
-            "archive": "stm32-toolkit-1.0.0-source.zip",
+            "archive": "stm32-toolkit-1.0.1-source.zip",
             "sha256": "b" * 64,
         },
         "runtimeStateSchema": "stm32-toolkit-runtime-state/1",
@@ -250,7 +269,7 @@ def test_policy_schema_and_license_authority_are_present():
     assert (REPO_ROOT / "LICENSE").is_file()
     policy = json.loads(POLICY.read_text(encoding="utf-8"))
     assert policy["repository"] == "https://github.com/XiaoyaoLinghao/stm32-toolkit.git"
-    assert policy["version"] == "1.0.0"
+    assert policy["version"] == "1.0.1"
     assert policy["directPins"]["jsonschema"] == "4.26.0"
 
 
@@ -264,10 +283,25 @@ def test_current_release_identity_is_consistent_across_builder_policy_and_schema
     policy = json.loads(POLICY.read_text(encoding="utf-8"))
     schema = json.loads(SCHEMA.read_text(encoding="utf-8"))
 
-    assert module.VERSION == "1.0.0"
+    assert module.VERSION == "1.0.1"
     assert policy["version"] == module.VERSION
     assert schema["properties"]["productVersion"]["const"] == module.VERSION
-    assert module.SOURCE_PREFIX == "stm32-toolkit-1.0.0/"
+    assert module.SOURCE_PREFIX == "stm32-toolkit-1.0.1/"
+
+
+def test_current_troubleshooting_points_to_the_candidate_runtime_and_source_archive():
+    from importlib.util import module_from_spec, spec_from_file_location
+
+    spec = spec_from_file_location("stm32tk_release_troubleshooting", UTILITY)
+    module = module_from_spec(spec)
+    assert spec and spec.loader
+    spec.loader.exec_module(module)
+
+    guide = module._troubleshooting().decode("utf-8")
+    assert "runtime/1.0.1/Scripts/pyocd.exe" in guide
+    assert "stm32-toolkit-1.0.1-source.zip" in guide
+    assert "stm32-toolkit-1.0.1/docs/testing/windows-deployment-and-ide-preflight.md" in guide
+    assert "runtime/1.0.0/" not in guide
 
 
 def test_policy_binds_complete_source_controlled_spdx_texts():
@@ -349,9 +383,9 @@ def test_verify_bundle_rejects_hash_or_size_mismatch_before_mutation(tmp_path: P
 
 
 def _write_source_archive(root: Path, *, source_text: bytes = b"source\n") -> None:
-    archive = root / "stm32-toolkit-1.0.0-source.zip"
+    archive = root / "stm32-toolkit-1.0.1-source.zip"
     with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_STORED) as zf:
-        zf.writestr("stm32-toolkit-1.0.0/bin/setup-stm32-env.ps1", source_text)
+        zf.writestr("stm32-toolkit-1.0.1/bin/setup-stm32-env.ps1", source_text)
     manifest_path = root / "release" / "release-manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest["source"]["sha256"] = _sha(archive)
@@ -430,8 +464,8 @@ def _write_canonical_state_manifest(path: Path) -> None:
         wheels.append(
             {
                 "name": name,
-                "version": "1.0.0" if name.startswith("stm32-") else resolved[name],
-                "file": f"release/wheels/{name.replace('-', '_')}-1.0.0-py3-none-any.whl",
+                "version": "1.0.1" if name.startswith("stm32-") else resolved[name],
+                "file": f"release/wheels/{name.replace('-', '_')}-{'1.0.1' if name.startswith('stm32-') else resolved[name]}-py3-none-any.whl",
                 "sha256": "b" * 64,
                 "size": 1,
                 "direct": name in direct or name.startswith("stm32-"),
@@ -451,13 +485,13 @@ def _write_canonical_state_manifest(path: Path) -> None:
     ]
     manifest = {
         "schema": "stm32-toolkit-release/1",
-        "productVersion": "1.0.0",
+        "productVersion": "1.0.1",
         "requiredPython": ">=3.12,<3.13",
         "platform": {"os": "windows", "architecture": "x86_64", "python": "cp312"},
         "source": {
             "repository": "https://github.com/XiaoyaoLinghao/stm32-toolkit.git",
             "commit": "a" * 40,
-            "archive": "stm32-toolkit-1.0.0-source.zip",
+            "archive": "stm32-toolkit-1.0.1-source.zip",
             "sha256": "d" * 64,
         },
         "runtimeStateSchema": "stm32-toolkit-runtime-state/1",
@@ -476,8 +510,8 @@ def test_runtime_state_verifier_accepts_canonical_state(tmp_path: Path):
         json.dumps(
             {
                 "schema": "stm32-toolkit-runtime-state/1",
-                "activeVersion": "1.0.0",
-                "highestInstalledVersion": "1.0.0",
+                "activeVersion": "1.0.1",
+                "highestInstalledVersion": "1.0.1",
                 "releaseManifestSha256": _sha(manifest),
                 "sourceCommit": "a" * 40,
                 "installGeneration": 1,
@@ -491,6 +525,41 @@ def test_runtime_state_verifier_accepts_canonical_state(tmp_path: Path):
     result = _run("verify-runtime-state", "--state", str(state), "--candidate-manifest", str(manifest), "--json")
     assert result.returncode == 0
     assert json.loads(result.stdout)["status"] == "matching"
+
+
+@pytest.mark.parametrize(
+    ("active", "highest", "manifest_hash", "source_commit", "expected"),
+    [
+        ("1.0.0", "1.0.0", "b" * 64, "b" * 40, "repairable"),
+        ("1.0.1", "1.0.1", "b" * 64, "b" * 40, "source-conflict"),
+        ("1.0.1", "1.0.2", "b" * 64, "b" * 40, "downgrade-refused"),
+    ],
+)
+def test_runtime_state_upgrade_and_refusal_boundaries(
+    tmp_path: Path, active: str, highest: str, manifest_hash: str,
+    source_commit: str, expected: str,
+):
+    manifest = tmp_path / "release-manifest.json"
+    _write_canonical_state_manifest(manifest)
+    state = tmp_path / "runtime-state.json"
+    state.write_text(
+        json.dumps(
+            {
+                "schema": "stm32-toolkit-runtime-state/1",
+                "activeVersion": active,
+                "highestInstalledVersion": highest,
+                "releaseManifestSha256": manifest_hash,
+                "sourceCommit": source_commit,
+                "installGeneration": 3,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ) + "\n",
+        encoding="utf-8",
+    )
+    result = _run("verify-runtime-state", "--state", str(state), "--candidate-manifest", str(manifest), "--json")
+    assert result.returncode == (0 if expected == "repairable" else 2)
+    assert json.loads(result.stdout)["status"] == expected
 
 
 def test_manifest_requires_normalized_names_and_closed_artifacts(tmp_path: Path):
@@ -661,10 +730,10 @@ def test_sbom_has_closed_runtime_and_ui_relationships_and_unique_authority(tmp_p
         ("py3", "none", "any"), {"home-page": "https://example.invalid", "author": "Example", "license-expression": "MIT"},
         (), {}, "MIT",
     )
-    toolkit_path = tmp_path / "stm32_toolkit-1.0.0-py3-none-any.whl"
-    monitor_path = tmp_path / "stm32_monitor-1.0.0-py3-none-any.whl"
-    _write_wheel(toolkit_path, "stm32-toolkit", "1.0.0", ("example>=1.0.0",))
-    _write_wheel(monitor_path, "stm32-monitor", "1.0.0")
+    toolkit_path = tmp_path / "stm32_toolkit-1.0.1-py3-none-any.whl"
+    monitor_path = tmp_path / "stm32_monitor-1.0.1-py3-none-any.whl"
+    _write_wheel(toolkit_path, "stm32-toolkit", "1.0.1", ("example>=1.0.0",))
+    _write_wheel(monitor_path, "stm32-monitor", "1.0.1")
     document = module._spdx(
         {"example": info},
         {"stm32-toolkit": toolkit_path.read_bytes(), "stm32-monitor": monitor_path.read_bytes()},
@@ -674,6 +743,15 @@ def test_sbom_has_closed_runtime_and_ui_relationships_and_unique_authority(tmp_p
     )
     relationships = {item["relationshipType"] for item in document["relationships"]}
     assert {"DESCRIBES", "DEPENDS_ON", "GENERATED_FROM"} <= relationships
+    package_ids = [item["SPDXID"] for item in document["packages"]]
+    assert len(package_ids) == len(set(package_ids))
+    assert document["SPDXID"] not in package_ids
+    declared_ids = {document["SPDXID"], *package_ids}
+    for item in document["relationships"]:
+        assert item["spdxElementId"] in declared_ids
+        assert item["relatedSpdxElement"] in declared_ids
+        if item["relationshipType"] == "DESCRIBES":
+            assert item["spdxElementId"] == document["SPDXID"]
     authority = [(item["name"], item["versionInfo"]) for item in document["packages"]]
     assert len(authority) == len(set(authority))
 
@@ -697,9 +775,9 @@ def test_windows_bundle_keeps_release_members_available_below_source_prefix():
     # The contract is represented by the fixed archive member layout; the
     # real candidate build asserts the same closure before activation.
     members = {
-        "stm32-toolkit-1.0.0/tools/release/build_0900_artifacts.py",
-        "stm32-toolkit-1.0.0/release/release-manifest.json",
-        "stm32-toolkit-1.0.0/stm32-toolkit-1.0.0-source.zip",
+        "stm32-toolkit-1.0.1/tools/release/build_0900_artifacts.py",
+        "stm32-toolkit-1.0.1/release/release-manifest.json",
+        "stm32-toolkit-1.0.1/stm32-toolkit-1.0.1-source.zip",
     }
-    assert "stm32-toolkit-1.0.0/release/release-manifest.json" in members
-    assert "stm32-toolkit-1.0.0/stm32-toolkit-1.0.0-source.zip" in members
+    assert "stm32-toolkit-1.0.1/release/release-manifest.json" in members
+    assert "stm32-toolkit-1.0.1/stm32-toolkit-1.0.1-source.zip" in members
