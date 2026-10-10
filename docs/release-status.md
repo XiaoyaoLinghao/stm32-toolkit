@@ -59,24 +59,33 @@ The remote accepted base is `694c825d29a55a53052a148efa4cc6720c315a04`.
 Implementation and independent review are complete for all five approved slices. The frozen artifact
 source is `0f06c659f5e04aa1f8e53022eae9b5e964da2b4b`; two clean builds produced 13 identical assets,
 and bundle, dependency, license and SBOM checks passed. Python related regression passed 1709 tests
-with one Windows symlink skip; all 269 UI tests passed. The candidate tree removes 417 obsolete
-historical files and updates the bilingual README and user guidance. GitHub master is unchanged.
+with one Windows symlink skip, followed by 381 passed / one skipped in 17 supplementary modules.
+The final UI run passed 271 tests. The current tree removes 417 obsolete historical files and updates
+the bilingual README and user guidance. Remote delivery is tracked separately through Git refs and pull requests.
 
-**This candidate is not release-qualified or published.** Toolkit overall branch coverage is
-11892/13674 (86.968%, below 90%); Toolkit risk-core-v2 is 11262/12988 (86.711%, below 90%).
-Monitor overall meets 90%, but its risk-core-v2 is 2770/2956 (93.708%, below 95%). UI meets its
-per-file branch gate. Current changed Python files use new native data; only unchanged Git blobs
-reuse U64 data. A narrower current suite does not itself demonstrate product regression.
+**The user-authorized v1.0.1 coverage exception is accepted:** every measured scope is at least the
+published v1.0.0 fraction. This is a new conditional decision, not inheritance of the old exception.
 
-Final-package installation/upgrade is unexecuted; changed hardware paths need current physical
-evidence. RC4 coverage exceptions and old hardware authorizations do not transfer automatically.
+| Branch coverage | v1.0.0 | v1.0.1 | No-regression condition |
+| --- | --- | --- | --- |
+| Toolkit overall / broad-core-v1 | 12047/13592 (88.6330%) | 12124/13674 (88.6646%) | PASS |
+| Toolkit risk-core-v2 | 11429/12918 (88.4734%) | 11494/12988 (88.4971%) | PASS |
+| Monitor overall / broad-core-v1 / risk-core-v2 | 2770/2956 (93.7077%) | 2770/2956 (93.7077%) | PASS |
+| UI aggregate | 784/810 (96.7901%) | 796/822 (96.8370%) | PASS |
+
+UI also retains its 90% gate for every positive-denominator source file (25 PASS, four N/A).
+Toolkit's permanent overall90/risk90 and Monitor core95 remain numerically unmet; those thresholds,
+membership and native denominators were not lowered. Changed Python files use combined current
+native data; only unchanged Git blobs reuse accepted U64 data. Earlier measurements remain retained.
+
+**This candidate is not yet release-qualified or published:** final-package installation/upgrade is
+unexecuted, and changed hardware paths need current physical evidence. Old hardware authorizations
+do not transfer automatically; the coverage decision does not authorize installation, hardware or publication.
 See [final qualification](codex/returns/STM32TK-101/qualification.md) for fixed artifact hashes,
 evidence ownership, retained limitations and the remaining release conditions, and
 [the execution ledger](codex/returns/STM32TK-101/execution.md) for slice reviews and test records.
-Later report-only commits do not change the source identity of the existing artifacts.
+Later documentation and UI-test commits do not change the source identity of the existing artifacts.
 
-On 2026-10-10 the user additionally authorized the candidate push and a v1.0.1 coverage exception,
-conditional on no lower coverage than v1.0.0. The exact baseline fractions and unchanged collection
-rules are in [release qualification](testing/release-qualification.md). The initial Toolkit and UI
-aggregate measurements fall below their respective old baselines. The new condition must be checked
-using current native evidence before acceptance; original measurements are not overwritten.
+The exact authorized baseline fractions and unchanged collection rules are in
+[release qualification](testing/release-qualification.md). Numerical acceptance uses exact fractions
+before rounding and is bound to the measured candidate source.

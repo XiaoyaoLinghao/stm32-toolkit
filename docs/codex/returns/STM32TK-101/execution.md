@@ -1,7 +1,8 @@
 # v1.0.1 执行记录
 
 2026-10-10 用户批准开始实现，新增 master 历史内容清理和 README 补足。当前状态：五个切片实现 ACCEPTED，
-双构建及包验证 PASS，发行资格未满足；最终包安装、实机与远端发布未执行。详见[最终资格记录](qualification.md)。
+双构建及包验证 PASS，用户追加的覆盖率不回退条件已满足并接受例外；最终包安装、实机与正式发布未执行。
+授权推送/PR/master交付另记于后续条目，详见[最终资格记录](qualification.md)。
 主代理负责规格、调度、完整 diff 审查、集成、验收与清理；所有子代理为 gpt-6-sol / max。
 
 ## 固定身份与授权
@@ -243,3 +244,28 @@ verify_qualification负责只读差距分析，主代理冻结后续现有测试
 首次推送成功：远端`codex/v1.0.1-integration`为`62a490fe194da9c96aa07a75cc970f62a0e39eea`，
 与本地HEAD相等，push exit0；master仍为原accepted base。用户本次答复承接上一轮明确列出的push、创建PR和合并master
 确认步骤；完成覆盖率条件后继续该交付链，tag/release、最终runtime安装和硬件仍不在其中。
+
+## 条件例外验证完成
+
+verify_qualification在同一干净q源新增运行17个现有整模块，381 passed/1 skipped/1 warning、324.09秒、exit0。
+原22模块不重跑，两轮native数据只在q2-run副本内combine --keep，再json --keep-combined；命令均exit0。
+20个变更源用当前合并完整summary，106个不变blob沿用已核U64原生摘要。精确分数：Toolkit overall/broad
+12124/13674≥12047/13592，risk11494/12988≥11429/12918；Monitor三项2770/2956持平，全部满足新条件。
+
+UI由ui_coverage在隔离u2负责两个现有测试文件，CodeHead`d402e8505ccb46616a2188fabb022edfc64c76b5`，
+最终271项全通过，原生796/822≥784/810，每文件90%门槛仍通过（25正分母/4N/A）；typecheck和coverage:check exit0。
+合法拒绝envelope验证不回显敏感内容；分组导入等待实际清空input；真实FileReader未结束时卸载组件验证安全完成。
+第一轮270PASS/795覆盖的记录保留：将GroupPanel缺失分支误读为true属REPORT，后据实际V8补公共unmount场景。
+原PowerShell日志包装错误为INFRASTRUCTURE，worker保留原日志，不改变产品。
+
+主代理在独立ur2完整审查base62a490fe→d402e850两文件全部diff；独立两模块36passed、3.91秒、exit0，
+日志及head/argv在ur2-run。另独立复核126个Python源码blob、当前原生summary、各范围分子/分母和精确Fraction，
+重算UI全29源码的原生branch分数，全部一致。合并测试提交为`ec7c6b5f9f97404928ba4a496020f7bc63236879`。
+本轮产品src、dist、依赖、配置、版本与冻结包源0f06完全相同，已有13件资产不重建、不重命名源提交。
+
+验收：覆盖率例外条件满足，永久90/95数值仍未达；只接受用户明确的1.0.1不回退例外，不宣称达到永久门槛。
+最终runtime安装、实体板卡、tag/Release仍未执行。证据hash、逐文件归属及原始记录见最终资格记录的新补测章节。
+
+主代理在全部验证完成后，按精确清单复核根与reparse，清理q2/u2/ur2本轮8个临时目录（8/8成功），
+命令与结果在`cleanup-followup.ps1`、`cleanup-followup-candidates.json`、`cleanup-followup-result.json`。
+原始新旧coverage、两轮UI结果、命令/退出码、最小日志包装错误证据及正式13件资产保留；此前受拒路径未重试。

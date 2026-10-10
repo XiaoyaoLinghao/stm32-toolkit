@@ -1,16 +1,15 @@
 # v1.0.1 candidate acceptance and release qualification
 
 2026-10-10. Primary-agent verdict: **A/B/C/D/E implementation ACCEPTED; package verification PASS;
-release NOT QUALIFIED**. Coverage gates remain unmet, final-package installation/upgrade is unexecuted,
-and current physical evidence is pending. This is not `SOFTWARE_COMPLETE_HARDWARE_PENDING`, because
-not all software release gates passed. No coverage exception is inferred from v1.0.0.
+user-authorized coverage exception ACCEPTED with its no-regression condition verified**.
+Permanent numerical gates are unchanged and remain numerically unmet where stated below.
+Final-package installation/upgrade is unexecuted and current physical evidence is pending, so this
+is not final release qualification or `SOFTWARE_COMPLETE_HARDWARE_PENDING`.
 
-Follow-up authorization, 2026-10-10: the user approved pushing the candidate and a new v1.0.1
-coverage exception conditional on coverage being no lower than v1.0.0. The first measured Toolkit
-and UI aggregate fractions below do not yet satisfy that condition. A bounded supplementary
-measurement is being prepared under the exact comparison rules in
-[release qualification](../../../testing/release-qualification.md). Original results remain historical
-facts, and no new installation or hardware action is authorized by this coverage decision.
+The user explicitly approved the v1.0.1 exception on condition that coverage is no lower than v1.0.0.
+Supplementary current native measurement now satisfies that condition in every recorded scope under
+[release qualification](../../../testing/release-qualification.md). This is a new user decision, not
+automatic inheritance of v1.0.0's exception. Original measurements remain intact below.
 
 ## Identity, ownership and review
 
@@ -66,7 +65,7 @@ the CLI runpy module being preloaded. The raw terminal result is retained unchan
 Git trees, plus identical blobs for all 22 selected tests, between measurement and artifact sources.
 Release-builder changes have their own current tests and the two actual builds below.
 
-## Numerical qualification
+## Initial numerical measurement
 
 Native branch numerators and denominators are summed without changing membership or excluding files.
 Of 126 Python source files, the 20 changed files use current passing-run native summaries; 106 unchanged
@@ -88,6 +87,57 @@ lower Toolkit aggregate is not itself evidence of a product regression. Numerica
 as REPORT / release qualification evidence; it remains an unmet permanent release gate. At this
 initial measurement checkpoint no threshold exception had been authorized. The subsequent user decision
 adds the explicit no-regression condition above; membership changes and unbounded coverage pursuit remain excluded.
+
+## Accepted supplementary coverage evidence
+
+The frozen extra 17 existing Toolkit modules passed: **381 passed, 1 skipped, 1 warning**, exit 0,
+324.09 seconds. The original 22-module run was not repeated. Both runs used the same current source
+blobs and native branch/subprocess configuration; copied native databases were combined only under
+`q2-run/combiner` using coverage.py 7.15.4 `combine --keep` and `json --keep-combined` (both exit 0).
+The 20 changed Python files use the resulting complete native per-file summaries; the 106 unchanged
+files retain the source-bound U64 summaries. No old-version arcs were imported onto changed source.
+
+UI implementation owner `ui_coverage` added only two tests and strengthened an existing asynchronous
+import assertion, committed as `d402e8505ccb46616a2188fabb022edfc64c76b5` and integrated at
+`ec7c6b5f9f97404928ba4a496020f7bc63236879`. Public behavior now tested includes a valid HTTP 200
+failure envelope without exposing private fields, clearing file input after import, and completing
+a real FileReader after component unmount without publishing an import or rebuilding the UI.
+No product, dependency, configuration, coverage-membership or generated-asset file changed.
+
+The final UI run passed **271 tests in 33 files**, plus coverage:check and typecheck (all exit 0).
+The primary agent reviewed the complete two-file diff in a clean isolated tree and independently
+ran both affected modules at the returned commit: **36 passed**, exit 0, 3.91 seconds.
+The existing jsdom export-navigation notice is retained in that passing log; no browser or hardware
+execution is inferred. The primary also independently checked every Python row's source blob and
+native summary, all scope sums, exact fraction comparisons and all UI source-file branch counts.
+
+| Scope | Published v1.0.0 | Current v1.0.1 | Exact no-regression result |
+| --- | --- | --- | --- |
+| Toolkit overall / broad-core-v1 | 12047/13592 = 88.6330% | 12124/13674 = 88.6646% | PASS |
+| Toolkit risk-core-v2 | 11429/12918 = 88.4734% | 11494/12988 = 88.4971% | PASS |
+| Monitor overall / broad-core-v1 / risk-core-v2 | 2770/2956 = 93.7077% | 2770/2956 = 93.7077% | PASS, unchanged source |
+| UI aggregate | 784/810 = 96.7901% | 796/822 = 96.8370% | PASS |
+
+All 25 positive-denominator UI source files still meet 90%; four remain N/A. Exact fractions, not
+rounded percentages, decide acceptance. Toolkit's permanent overall90/risk90 and Monitor core95
+remain numerically UNMET; only this user's conditional v1.0.1 exception changes their admission.
+
+An intermediate complete UI run passed 270 tests but measured 795/822, so it did not meet the new
+condition. The initial read-only analysis had misidentified the missing direction of GroupPanel's
+file-ref guard (REPORT); the real V8 `[5,0]` showed the unmount/false branch was missing. The bounded
+unmount scenario produced `[5,1]`; the earlier evidence remains under `u2-run/evidence/first`.
+
+Retained audit records under `D:\codex-tmp\tk101`:
+
+| Record | SHA256 |
+| --- | --- |
+| q2-run/python-qualification-combined.json | `81876cc562c73381fa480c04310b48e9a1ce235861658948cc2f5025b96b81f5` |
+| q2-run/combiner/coverage-combined.json | `fbd5c3990291b0f08fe2871ecae9931b29b8d405a2b4bc32e09f4e52e3db85e4` |
+| u2-run/evidence/coverage-final.json | `0db6356643526f31def1a560a9064c8d55ae9b46f539ef1ace24b6f273f9d8f0` |
+
+Exact commands/exits and raw data are in `q2-run/py`, `q2-run/combiner`, `u2-run/evidence` and
+`ur2-run`. The supplementary checks do not change the frozen artifact source or replace final-package
+installation, remaining rollback/platform evidence or physical qualification.
 
 ## Reproducible artifacts
 
@@ -142,8 +192,8 @@ card and specific authorization, not an automatic retry of the original report.
 The primary agent has prepared PR text and release-note drafts locally. The user's follow-up answers
 the preceding explicit push / PR creation / master merge confirmation; that delivery chain proceeds
 after the coverage condition is verified. Tag and release retain their separate authorization boundary.
-Publication still needs the remaining required evidence and a specific release decision; the new
-conditional coverage exception must first satisfy its no-regression condition.
+Publication still needs the remaining required evidence and a specific release decision. The
+conditional coverage exception's no-regression condition is now verified and accepted.
 
 ## Evidence retention and cleanup
 
@@ -154,6 +204,9 @@ Final q/p/dr cleanup removed a further 38 exact paths after preflight, including
 junctions removed non-recursively. `cleanup-final-candidates.json` and `cleanup-final-result.json`
 under the task root record every path; all 38 removals succeeded. The 13 final artifacts, old failing
 SBOM, raw coverage, source bindings and logs remain. Isolated source worktrees remain for delivery.
+After the follow-up checks, eight additional q2/u2/ur2 disposable directories were preflighted and
+removed successfully; exact paths/results are in `cleanup-followup-candidates.json` and
+`cleanup-followup-result.json`. Supplementary raw coverage, command logs and both UI runs remain.
 
 Automatic approval rejected A/ar cleanup and D's three new SBOM fixture directories with only
 `blocked by policy`; commands did not execute. No other tool or agent retried those deletions.
