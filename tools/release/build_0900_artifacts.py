@@ -754,6 +754,7 @@ def _spdx_legacy(selected: Mapping[str, WheelInfo], product_wheels: Mapping[str,
 
 def _spdx(selected: Mapping[str, WheelInfo], product_wheels: Mapping[str, bytes], code_head: str, epoch: int, repo_root: Path, policy: Mapping[str, Any] | None = None) -> dict[str, Any]:
     policy = policy or _load_policy()
+    document_id = "SPDXRef-DOCUMENT"
     packages: dict[str, dict[str, Any]] = {}
     product_names = {_normalized_name(name) for name in product_wheels}
     python_ids: dict[str, str] = {}
@@ -819,7 +820,7 @@ def _spdx(selected: Mapping[str, WheelInfo], product_wheels: Mapping[str, bytes]
             }
     relationships: set[tuple[str, str, str]] = set()
     for package_id in product_ids.values():
-        relationships.add(("SPDXRef-Document", "DESCRIBES", package_id))
+        relationships.add((document_id, "DESCRIBES", package_id))
     for normalized, requires in product_requirements.items():
         source_id = product_ids[normalized]
         for requirement in requires:
@@ -852,7 +853,7 @@ def _spdx(selected: Mapping[str, WheelInfo], product_wheels: Mapping[str, bytes]
         for source, relation, target in sorted(relationships)
     ]
     return {
-        "spdxVersion": "SPDX-2.3", "dataLicense": "CC0-1.0", "SPDXID": "SPDXRef-DOCUMENT",
+        "spdxVersion": "SPDX-2.3", "dataLicense": "CC0-1.0", "SPDXID": document_id,
         "name": f"stm32-toolkit-{VERSION}", "documentNamespace": f"https://github.com/xiaoyaolinghao/stm32-toolkit/spdx/{code_head}",
         "creationInfo": {"created": _datetime.datetime.fromtimestamp(epoch, _datetime.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"), "creators": ["Tool: stm32-toolkit-release", f"Commit: {code_head}"]},
         "packages": sorted(packages.values(), key=lambda item: item["SPDXID"]), "relationships": ordered_relationships,

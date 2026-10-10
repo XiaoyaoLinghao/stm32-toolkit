@@ -743,6 +743,15 @@ def test_sbom_has_closed_runtime_and_ui_relationships_and_unique_authority(tmp_p
     )
     relationships = {item["relationshipType"] for item in document["relationships"]}
     assert {"DESCRIBES", "DEPENDS_ON", "GENERATED_FROM"} <= relationships
+    package_ids = [item["SPDXID"] for item in document["packages"]]
+    assert len(package_ids) == len(set(package_ids))
+    assert document["SPDXID"] not in package_ids
+    declared_ids = {document["SPDXID"], *package_ids}
+    for item in document["relationships"]:
+        assert item["spdxElementId"] in declared_ids
+        assert item["relatedSpdxElement"] in declared_ids
+        if item["relationshipType"] == "DESCRIBES":
+            assert item["spdxElementId"] == document["SPDXID"]
     authority = [(item["name"], item["versionInfo"]) for item in document["packages"]]
     assert len(authority) == len(set(authority))
 
