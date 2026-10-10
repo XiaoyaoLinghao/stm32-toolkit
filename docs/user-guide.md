@@ -6,6 +6,29 @@
 
 使用[双语 README](../README_zh-CN.md) 中的 `Check` 确认 ToolkitRoot、持久 DataRoot、工程根、发行包及受管 runtime。`Bootstrap`/`Repair` 修改 runtime，先审阅 `Check` 结果和对应发行包，再只执行获准的一种动作。Claude Code 的入口为 [skills/setup-stm32-env/SKILL.md](../skills/setup-stm32-env/SKILL.md)；其它 MCP 宿主使用绝对 launcher、显式 project/data root 和 `STM32_TOOLKIT_DATA_ROOT`。`.stm32-project.json` 属于工程，DataRoot 保存机器状态和证据，不能把一次性测试目录当作长期 DataRoot。
 
+## 通用 MCP 配置与公开入口
+
+下例供支持 `mcpServers` 的宿主使用。将三个示例路径换成真实绝对路径；`args` 的 `--data-root` 与 `env` 中的 `STM32_TOOLKIT_DATA_ROOT` 必须指向同一持久目录。cmd 启动器先用环境变量找到受管解释器，Python MCP 入口随后读取这两个显式参数。其它宿主请按其配置格式映射同一 `command`、`args`、`env`，不要改用系统 Python。
+
+```json
+{
+  "mcpServers": {
+    "stm32-toolkit": {
+      "command": "C:\\tools\\stm32-toolkit-1.0.0\\bin\\stm32-toolkit-mcp.cmd",
+      "args": [
+        "--project-root", "C:\\work\\blinky",
+        "--data-root", "C:\\data\\stm32-toolkit"
+      ],
+      "env": {
+        "STM32_TOOLKIT_DATA_ROOT": "C:\\data\\stm32-toolkit"
+      }
+    }
+  }
+}
+```
+
+八个 Claude Code Skill 均调用相同的公开合同：[setup-stm32-env](../skills/setup-stm32-env/SKILL.md)、[migrate-keil](../skills/migrate-keil/SKILL.md)、[configure-stm32-project](../skills/configure-stm32-project/SKILL.md)、[build-firmware](../skills/build-firmware/SKILL.md)、[flash-firmware](../skills/flash-firmware/SKILL.md)、[debug-firmware](../skills/debug-firmware/SKILL.md)、[read-var](../skills/read-var/SKILL.md)、[stm32-monitor](../skills/stm32-monitor/SKILL.md)。48 个 MCP 工具名称及八个 Skill 的当前权威清单在 [public_inventory.py](../tools/stm32-toolkit/src/stm32_toolkit/public_inventory.py)；宿主应以实际已安装版本为准。
+
 以下命令中的路径均为示例，须替换为本机真实绝对路径。CLI 工程命令需显式 `--project-root`；`--json` 命令返回结构化 code/details。`--dry-run` 只产生计划，`--apply --plan-id ... --authorized` 是独立写操作，不要直接套用示例 plan ID。
 
 ```powershell
@@ -62,6 +85,12 @@ Keil `inspect`/`convert` 必须指向同一 `uvprojx` 和 `target-name`。确认
 | 14 | doctor 启动 CubeMX GUI 或扩展显示 missing | v1.0.1 目标对 GUI 工具只读静态版本，取不到标 unknown；VS Code 扩展未实际探测应是 not-probed，不能等同“未安装”。在 v1.0.0 现场若 GUI 被启动，先退出/记录，不把该次输出当静态版本证明。 |
 
 `read variable`、`read register`、有限采样与 Fault 有不同前置。OBSERVE 的短暂停核与持续观测需分开记证；完整 Fault 需稳定 halted，不能把 running OBSERVE 偷偷升权。[标准测试流程](testing/standard-test-procedure.md)规定实机前置、首错停止与证据归属。
+
+## Target 测试与 transport 资格边界
+
+Target-frame v1 继续兼容已有工程的 v1 fixture、字节和 replay；回放不等于新物理证据。v2 由工程根内的 `testing.target.protocol` 显式选择，host 将工程、固件、Probe、target、session、revision 和 case-inventory digest 绑定。只有受控 flash、readback 与 transport 身份检查通过后，才可按真实结果发布物理 TestRun；CLI/MCP 的 target prepare/execute 从工程配置读取身份，不允许调用方注入另一 ELF、target 或地址。
+
+VS10-A 在具名参考硬件上只有 `memory-mailbox` transport 取得实体资格证据。RTT、UART、semihosting 仍有软件 adapter 和 replay 兼容路径，但不据此称为同一参考硬件上的物理 PASS。新增设备、transport 或当前候选的实体结论都须按[发布资格](testing/release-qualification.md)与[标准测试流程](testing/standard-test-procedure.md)重新取证。
 
 ## Monitor：报告项 18–19
 
