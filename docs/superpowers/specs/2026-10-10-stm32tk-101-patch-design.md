@@ -97,7 +97,8 @@ preserved 路径及类型分类进入计划摘要/digest，apply 前 fresh repla
 after 字段仍是渲染模板候选，不是将写入的结果。状态只能用于固定普通 editor 文件，并隐含 regular-file 类型。
 所有重检循环都按此状态做安全类型检查，不将其误当缺失目标或读取内容。
 `preserved-unowned` 不计 changed/unchanged generated files；另列保留路径和“IDE 配置需用户自行对齐”的提示。
-apply 成功 details 使用 `preservedPaths` 给出确定性排序的保留路径；原生成计数语义不变。
+apply 成功的 `OperationResult.data` 使用 `preservedPaths` 给出确定性排序的保留路径，
+与原有 `createdPaths`、`updatedPaths`、`unchangedPaths` 同层；不另复制到外层 details，原生成计数语义不变。
 managed manifest 是所有权唯一事实来源，build/context 继续只校验实际托管文件；保留文件不能取得可覆盖资格。
 本修复限 configure/build。CubeMX regeneration 的闭域 inventory/unknown-path 规则保留，遇到未纳入其来源集合的编辑器文件仍会拒绝；
 指南必须明确这一区别，不能将 configure 成功等同于 regeneration 已就绪。
