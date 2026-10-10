@@ -17,8 +17,8 @@
 | --- | --- | --- |
 | A 项目发现与诊断 | implement_a / 主代理独立审查 | ACCEPTED；CodeHead 47d78270cff33673a3d2894bdb96fce0f7e14a04；已集成本地 7c751727e003b2ab41fc75ab2f0a8a95aa8db2ba |
 | B 配置与构建 | implement_b / review_b 与主代理 | ACCEPTED；CodeHead bebacc7916b912a70ada50fa0208c8363d3c55fb；已集成本地9c937a66d9ea36c99e2d1efccc13b8a0e7082918 |
-| C 观测与 Monitor | implement_c / 主代理 | 已派发；base 748efdc6aad422edc8c7b63565b53854855df274；c 隔离工作树，无共享写入 |
-| D 版本、升级 | 待派发 / 主代理 | 现有 Python/wheels/npm/CubeCLT 输入只读核对完成；尚未升级或打包 |
+| C 观测与 Monitor | implement_c / 主代理 | ACCEPTED；CodeHead 8454d3f1afb6a435e7bfbcb56fbf2851ac9730ec；报告5d8c41c68c2ce5a370c3fca536758ddd108b8c78；已集成本地68e5d0b16b33f8d475a71a4ded096a20c3427e3d |
+| D 版本、升级 | 待派发 / 主代理 | A/B/C/E已接受；下一提交作为D精确base，独占最终版本/白名单/hash/用户文档，不改既有runtime事务 |
 | E 历史清理、用户文档 | implement_e / review_patch_plan 与主代理 | ACCEPTED；CodeHead fdbc979bffb09503930de7a3f83b4ef5d7aadb95；报告 e0320f2cac932f24e83a5d3b7abbb2d910fda67c；已集成本地176251978b7830068e52736fa3d2cf2326cbab1f |
 
 A 派发时间不晚于 2026-10-10 06:41:33 UTC；后续记录提交/验证时间和实际命令，不把文档准备计作产品完成。
@@ -106,3 +106,27 @@ NOBITS与StackLimit/StackTop地址，无阻断项。原managed replace重检和�
 30 passed、329 deselected、8.90秒、exit0，精确CodeHead及完整argv/stdout见br-run/logs。
 这些是软件与真实链接fixture证据，不是原报告ELF/MAP数字或板卡复现。
 规格已明确preservedPaths与原createdPaths等同在OperationResult.data内，避免复制到外层details形成两份事实。
+
+## C 接受事实
+
+完整范围 `748efdc6aad422edc8c7b63565b53854855df274` →
+`8454d3f1afb6a435e7bfbcb56fbf2851ac9730ec`，由主代理在干净cr逐项审查全部源码/技能/测试、生成JS及manifest。
+首轮要求两项修订：500等HTTP错误不能归因于认证链接，构建manifest不能带本机junction的c-run路径。
+实现者同分支修正：仅401/403使用拒绝链接文案，其余错误固定安全提示；普通目录依赖重建恢复稳定node_modules路径。
+最终20项UI用例、typecheck/build/verify:dist通过；原lint与两视口4项security E2E证据按改动适用性保留。
+
+主代理在原Python CodeHead `7ab042b7dd82aaf784635ae23c80faaa37b57fdc` 的cr运行
+hardware_workflows、SVD、debug firmware全组及handoff坏receipt/CLI/MCP具体边界：345 passed、95.08秒、exit0。
+argv/head/stdout在cr-run/logs；C后续只改UI，Python证据仍适用。原实现者770pass/1测试断言失败和修复后104pass的归属
+按[C报告](C-implementation.md)保留，不能将原失败聚合冒充全套PASS。未新增硬件操作或取得原报告实机根因证据。
+
+## D 开工决定
+
+A/B/C/E无存续未解决产品问题，D从本条记录提交后的干净集成头创建隔离树d，主代理另记录完整base再派发。
+沿既有获批D范围：统一1.0.1、增加1.0.0 runtime/producer兼容、保留旧拒绝/rollback、更新当前版本断言与用户文档。
+生成器原工程generatedBy保持历史真实值；当前默认模板升级仍需要显式configure事务，不修改原生linker。
+UI依赖复制为普通目录，不能用指向runroot的junction构建而污染manifest；最终重建并检查dist。
+最终发行验证从冻结候选构建13件资产两次并逐文件比较，只在本轮隔离临时环境离线构建轮子。
+这不授权修改用户已有runtime、执行硬件或远端动作。正式runtime部署及物理证据仍须具体候选和执行卡。
+已核验旧原生coverage可仅对源Git blob不变的文件复用；新候选改动文件必须使用当前原生测量。
+Monitor旧core93.7077%低于95%，不沿用v1.0.0例外，不重开无界覆盖率补数路线。
