@@ -91,7 +91,12 @@ inspect、plan、apply 必须沿用同一 `uvprojx/targetName` 并重新验证 p
 
 preserved 路径及类型分类进入计划摘要/digest，apply 前 fresh replan 验证仍为相同类别；保留文件内容改变不使计划失效，
 因为工具始终不读写其内容。新出现/消失、变成链接或 ownership 改变使旧计划失效。
+沿用 `GenerationPlan.files` 的固定目标集合，不新增平行的 preserved 计划模型。
+该状态的 before_bytes/before_sha256/before_size 均为 null、unified_diff 为空，表示原内容未读取；
+after 字段仍是渲染模板候选，不是将写入的结果。状态只能用于固定普通 editor 文件，并隐含 regular-file 类型。
+所有重检循环都按此状态做安全类型检查，不将其误当缺失目标或读取内容。
 `preserved-unowned` 不计 changed/unchanged generated files；另列保留路径和“IDE 配置需用户自行对齐”的提示。
+apply 成功 details 使用 `preservedPaths` 给出确定性排序的保留路径；原生成计数语义不变。
 managed manifest 是所有权唯一事实来源，build/context 继续只校验实际托管文件；保留文件不能取得可覆盖资格。
 本修复限 configure/build。CubeMX regeneration 的闭域 inventory/unknown-path 规则保留，遇到未纳入其来源集合的编辑器文件仍会拒绝；
 指南必须明确这一区别，不能将 configure 成功等同于 regeneration 已就绪。
@@ -102,6 +107,8 @@ managed manifest 是所有权唯一事实来源，build/context 继续只校验�
 断言对齐、顺序和与其它分配不重叠；不能通过修改原生脚本假装所有工程都已修复。
 
 ELF section evidence 保留 alloc、VMA、size，并携带是否 `SHT_NOBITS`。容量统计：
+内部 `ElfSectionEvidence` 末尾新增 `nobits: bool = False` 以保持原四参数调用兼容；实际 ELF 提取明确赋值，
+不改变持久 BuildResult schema，不用单独 MAP 的段名推断 NOBITS。
 alloc section 的 VMA 作为运行/预留容量；仅非 NOBITS section 的不同 LMA 才作为加载容量。
 继续按每个 memory region 内的区间并集计量，保留 MAP/ELF 地址和大小一致性、范围/overflow 校验；不依段名猜测。
 段间空隙不算 used；一个 section 内实际保留的空间仍算 used，不能把带空隙的 72,440-byte `.stack` 擅自缩为 4KB。
