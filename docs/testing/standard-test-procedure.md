@@ -1,359 +1,104 @@
 # STM32 Toolkit 标准测试流程
 
-本文件是测试执行顺序、前置检查和失败处理的唯一流程入口。适用于离线验证、部署和实机验收；操作前必须阅读本文件及对应已批准规格。规格定义验收要求，源码定义实际入口契约，本文件规定执行流程，实际报告记录发生的事实。三者冲突时先离线解决，不能临场猜测硬件步骤。
+本文件是离线验证、部署与实机验收的执行入口。规格定义要求，源码定义实际入口合同，本文件规定执行顺序，报告记录事实。冲突须先离线解决，不在硬件操作中猜测。主代理维护本流程、调度和验收；实现和新增测试由 gpt-6-sol / max 子代理负责，作者不能自行接受差异。本文不授予安装、硬件或远端权限。
 
-维护责任：主对话框代理维护流程、调度、授权账本和验收结论；实现及新增测试由用户当前指定的 `gpt-6-sol / max` 子代理负责，另由独立审查者检查变更。历史实现署名保留。文档修正不触发打包、部署或整轮实机测试。本文件不授予硬件或远程操作权限。
+## 1. 当前断点与证据
 
-## 1. 从真实断点继续
+已发布 v1.0.0 的固定身份、一次性覆盖率例外和限制见[发布状态](../release-status.md)。例外不延续至新版本，已停止的旧覆盖率路线不因文档整理重开。当前 v1.0.1 的[规格](../superpowers/specs/2026-10-10-stm32tk-101-patch-design.md)、[计划](../superpowers/plans/2026-10-10-stm32tk-101-patch-plan.md)和[执行记录](../codex/returns/STM32TK-101/execution.md)是本轮入口；[发布资格](release-qualification.md)保留分母、成员和门槛。
 
-当前发布决定（2026-10-08）：用户已批准固定RC4/U64的三项一次性覆盖率例外，
-其余门禁已独立核对，本地结论为 `LOCAL_ACCEPTED_WITH_USER_APPROVED_COVERAGE_EXCEPTION`。
-以发布计划的 Current RC4 acceptance
-decision 和 `r10/e/rc4/final-acceptance-with-coverage-exception.json` 为当前判定；
-下述有限补测收尾时的“未验收/例外未批准”是历史状态，不触发另一轮补测。
+先记录实际工作树、分支、完整 accepted base/CodeHead、设计/实现/审查者、部署 source、project/data/runtime 路径、授权、有效证据和剩余场景。检查 tracked/untracked、已提交/未提交、已推送/未推送状态；保留无关改动。使用精确 CodeHead 的干净隔离工作树审查完整差异。
 
-2026-10-08 本次有限补测的 U64 原生数据已通过独立审查并接纳，净增 Toolkit18、Monitor7。
-当前剩余缺口为 Toolkit 整体186、冻结核心198（重叠），Monitor 核心39；门槛不变。
-通过组和失败的 Monitor 首轮分别留证，失败原始数据不入聚合。后续未证明有收益明确的
-合法成组入口，因此本轮提前收尾，不自动开启下一轮或宣称1.0已验收。
+状态含义：PASS 为证据满足条款；READY 为前置成立但未执行；PENDING 为尚缺结果；BLOCKED 为已知前置缺口；TERMINAL_STOPPED 为本次执行结束。REUSED 必须附原证据及适用性；N/A 不能代替缺失、失败或不可用硬件。文档变化本身不触发重测；相关产品字节、环境、依赖或身份变更只使对应证据需要重新核对。
 
-2026-10-08 用户批准一次最长4小时的有限覆盖率收尾及实际所需的子代理调度。
-本次由主对话框设计、调度和集成，所有子代理使用 `gpt-6-sol / max`，独立审查保留。
-依据现行发布计划的 `Authorized bounded coverage closure`：以 U63 和冻结 RC4 为基线，
-采用有限候选筛选、一次实测校准和有条件扩展；实际套件最多两组并行，正式聚合串行。
-旧最终轮及两轮不收敛路线不重置，覆盖率例外未批准。新一轮不授权产品改动、通用测试
-框架、新内部 I/O 入口或硬件操作。精确函数准入、独立工作树和 UTC 截止时间由该计划
-及现有账本记录；下方历史实施者与 U60 数值不代表当前状态。
+## 2. 离线环境与执行卡
 
-2026-09-23 用户批准一次最多4小时的方法验证：允许执行计划逐项具名、经无副作用审查的现有内部纯校验/转换函数直接单元测试，并将独立审查接受的真实原生分支纳入正式覆盖率。此为测试入口准入规则修订，分母、统计方法、冻结范围及发布门槛不变。使用普通 wire/公开构造器输入，不改私有状态、不替换验证/身份/哈希、不伪造成功权限或实机证据。每项标记 `internal-pure-unit`，明确不证明公共流程可达性、授权或实机 PASS。资源、权限、发布和恢复行为仍由原公开流程及真实资源证据证明。准确函数范围、来源 blob、运行身份和预算以现行发布计划及账本为准；原两轮停止路线不自动重开。
+Windows 使用已核实的 PowerShell、解释器与工作目录。每次运行把 TEMP、TMP、TMPDIR 一起指向本轮短目录，显式指定 pytest basetemp、缓存、构建及日志路径；默认根为 `D:\codex-tmp`。CPython 会优先读 TMPDIR。不同进程/代理不共享可变 basetemp，禁止写回借用的环境或共享缓存。
 
-2026-09-24 用户另行批准具名内部文件读取边界：仅 `diagnostic_workflows._read_transcript_parent`，由真实 `_make_state(context)` 建立状态，使用真实 EvidenceStore 和正常构造、身份、哈希校验。负面记录携带自己的真实 ID，仅作不可信组件输入；读取前后证据不变并复查合法对照。标记 `internal-component-io`，不宣称公共流程、授权或实机 PASS；未命中的深层守卫不计分。其他内部 I/O 入口及原停止路线不自动获准，范围和有限预算仍以现行规范、计划和账本为准。
+从被测仓库根运行，PYTHONPATH 显式指向同一工作树源码。Fault 的 DWARF fixture 有仓库根相对路径；先核对入口和 fixtures。预检含 64 字符 plan ID 的 configuration-staging 最终路径长度，长路径错误先分类 ENVIRONMENT，不直接修改生成器。记录完整 argv、退出码和 stdout/stderr。
 
-先读第 8 节和最近执行报告，记录实际工作树、分支、完整 HEAD、accepted base、规格/实现/审查所有者、部署 source commit、工程及 data/runtime 路径、有效证据和剩余场景。核对 tracked/untracked、已提交/未提交、已推送/未推送状态；不能从默认 master 推测状态。保留不属于本轮的改动及产物。
+任何 Python 进程包装的 CLI/进程创建须放在 `if __name__ == "__main__":` 中；实机前用真实 Windows spawn 入口和纯软件 child 验证导入不会重入。优先用既有入口；新增捕获包装须说明证据缺口并先离线审查。若按命令行片段检查进程，避免把父 PowerShell 自身误判为 backend；只读核对 PID、可执行路径、父子关系与阶段，不杀无关进程。
 
-本流程覆盖三个场景：软件修改后的相关离线验证与部署；固定身份下的 Target、运行观测及 IDE 交接；共同验收身份下的 P3 失败、Diagnostic、受控 P4 修复与 FixVerification。非目标是重测未改变的已验行为、升级到 50ms、自动恢复坏板或绕过身份契约。
+实机前在 run 目录保存一张普通 Markdown/JSON 执行卡，无需新框架：
 
-分别记录：`PASS` 有满足条款的证据；`READY` 入口及前置条件成立、尚未执行；`PENDING` 尚缺结果；`BLOCKED` 存在已知前置或契约缺口；`TERMINAL_STOPPED` 该次执行已结束。不能因为本轮没重测就撤销旧 PASS，也不能把部署 READY 写成整个验收 READY。
-
-## 2. 实机前必须填齐的一张执行卡
-
-Windows 每个验证或部署进程须同时把 `TEMP`、`TMP`、`TMPDIR` 固定到本轮获准的短目录，并显式固定 pytest basetemp、缓存和输出目录。CPython 优先读取 `TMPDIR`；只设置前两项无法阻止继承的外部目录被使用。子进程继承同一设置。运行前记录三项实际值；越界产物先做只读归属核对，不凭目录名删除。当前 VS10-B 运行根为 `D:\codex-tmp\v10b-0918`；`D:\codex-tmp\t10h-0917` 保留 VS10-A 既有工程和证据，下方历史示例不是本轮新目录授权。
-
-Windows 离线回归的生成工程 fixture 也须预检路径深度：configuration-staging 含 64 位 plan ID，长 basetemp 会使最终文件达到 260 字符并在 stage 阶段失败。使用独立短 D 盘 basetemp（例如 `D:\codex-tmp\fc-b1`），日志另放有描述性的证据目录；统一记录实际工作目录。2026-09-11 对照已在接受基线复现长路径失败，缩短路径通过；不能仅看到 GENERATION_APPLY_FAILED 就改本轮产品或归因 cwd。清理遭自动策略拒绝时保留，不换工具绕过。
-
-当前 Toolkit Fault fixture 使用相对仓库根目录的 `tools/stm32-toolkit/tests/fixtures/dwarf/typed.elf`。相关五模块回归从实际工作树根目录执行，PYTHONPATH 指向同一工作树的 Toolkit src；短 basetemp 不能替代工作目录核对。fixture 初始化失败和已执行的产品断言分别记录，仅补跑尚未执行的检查。
-
-若为原始异常留证增加 Python 启动包装，CLI 执行及进程创建必须放在 `if __name__ == "__main__":` 保护内。实机前使用实际 Windows spawn 进程入口和纯软件 child 验证子进程导入 `__mp_main__` 时不会再次执行 CLI；`--help` 或单函数留证自检不足以覆盖这一启动契约。优先直接使用已发布 CLI；确需包装时先说明缺少的证据及最小包装范围，不修改已部署产品文件。2026-09-11 首次受控 Fault 调用曾因测试包装缺少此保护，在 worker bootstrap 阶段失败，尚未进入枚举/attach/halt；应分类为测试入口 INFRASTRUCTURE，保留该次终态记录，不重新部署或自动重试硬件。
-
-run-local entry 若做命令行 substring 进程预检，参数必须从已记录 JSON 加载，避免父 PowerShell 命令因包含 backend selector 被误判；命中后只核对 PID、实际 `ExecutablePath`、直属父子关系及所处阶段，不 kill、不全局豁免 pwsh。pre-device 预检失败必须与已 dispatch 的 physical 结果分开记录；本轮依据见 `D:\codex-tmp\t10h-0917\task7\p4restore-preflight-stop-analysis.json`。
-
-使用 run 目录里的普通 Markdown/JSON 即可，不新增通用诊断框架或验证器。一次授权可以覆盖明确的连续步骤，无需逐命令重复确认；终态失败后的重试、范围变化或恢复策略必须重新核对并取得相应授权。
-
-| 必填项 | 执行前必须回答 |
+| 项目 | 执行前必须确定 |
 | --- | --- |
-| 场景与依据 | 对应哪条规格、交付什么新证据、复用哪些有效 PASS？ |
-| 版本与路径 | 实际代码/部署身份；工程、data、runtime、ELF 路径已核实？临时输出位于 D 盘？ |
-| 身份来源 | workspace/session/build/ELF/input snapshot/Git/probe/target/flash receipt 来自哪里，哪些字段必须相等？ |
-| 状态与所有权 | 最后已证实 target 状态及时间；Toolkit/IDE/无人持有哪个 lease/ticket？用户灯态与机器状态分开记录？ |
-| 操作契约 | 现有入口、参数、running/halted 前置、连接及执行的状态变化、输出字段，源码依据在哪里？ |
-| 授权与预算 | 当前用户授权原文及范围、新 action 来源、固定次数/时长/超时、是否允许 flash/reset/halt/resume？ |
-| 判定与收尾 | 成功字段、下一步条件、首错停止条件、既有 cleanup 及其终态证明？ |
-| 留证 | stdout/stderr、原始异常 code/details/cause、阶段、身份、TestRun/receipt/lease 保存到哪里？ |
+| 场景 | 规格条款、所需新证据、可复用 PASS |
+| 版本与路径 | source/runtime/build/ELF 身份，project/data/output 绝对路径 |
+| 身份 | workspace/session/input snapshot/Git/probe/target/receipt 来源及相等条件 |
+| 状态与所有权 | 最近证实的 target 状态和时间，Toolkit/IDE lease/ticket owner |
+| 入口 | 实际 argv、状态前置、连接/执行副作用、返回字段、源码函数依据 |
+| 授权与预算 | 当前授权范围，新 action 来源，固定次数/时长/超时，允许的控制操作 |
+| 成功与停止 | 成功证据、下一步条件、首错停止、既有 cleanup 终态证明 |
+| 留证 | 原 code/details/cause、最后阶段、动作消费、TestRun/receipt/lease 保存位置 |
 
-关键字段未知的步骤不是 READY。先用现有源码、日志、CLI help 或既有函数离线补齐。若公共响应吞掉原始异常，必须在首次获准实机前准备好现有异常边界的捕获方式；不能失败后无授权重连补日志。新增脚本前说明现有入口为什么不够，并先离线验证。
+缺关键项不标 READY。先用源码、既有纯校验或 CLI parser 离线核对，不调用 backend。一次授权可覆盖明确连续步骤；终态失败后的重试、恢复或扩展范围另核对授权。Target execute 自身要求 probe-id，不能因 prepare 已指定而省略；动态 digest 只来自本次真实返回。
 
-开始有限计时 attempt 前，冻结将实际调用的完整 argv，复用当前已验证命令结构，直接使用已安装 CLI 的 parser、mode 与 explicit-project-root 检查离线解析；不调用 main/backend。`test target execute` 自身必需 `--probe-id`，不能因 prepare 已指定而省略。动态 digest 等值只从本次返回写入已核对的位置，不在实机前重新手工拼接整条命令。2026-09-18 card04 因主代理遗漏 execute 的该参数而在解析阶段 exit2；这属于执行入口 INFRASTRUCTURE，未进入硬件，不能归因板态或重部署产品。原始记录和首错停止边界保留。
+SVD 场景在首次硬件操作前以实际 project/target/device、完整 SVD 和 readableRegions 复用 select_svd 做语义预检。整个选定文件的每个寄存器都必须在可信区域内，单点 Watch 合法或文件 hash 相等不代表整个选择合法。配置变化后重做相关检查。
 
-使用 SVD 的 Monitor 场景，首次故障烧录前须直接复用已安装的 `select_svd`，用当前工程实际 target、svdDevice、完整 SVD 与 debug.readableRegions 做离线语义预检。现有契约要求整个 SVD 中每个寄存器都落入可信范围，仅校验文件哈希、Watch 中 GPIOE.ODR 的地址或部署健康不足以证明可连接。SVD、device 或 readableRegions 改变时重做此项；文档、命名或无关行为不触发。2026-09-18 B 全量 SVD 配单个 ODR 4字节范围，在外层探针枚举之后、观察 supervisor/lease/attach 之前触发 SVD_ADDRESS_OUT_OF_RANGE；应先修工程配置，不能归因板卡或扩大硬件重试。现有函数即可完成检查，不新增诊断框架。
+迁移工程重新构建前核对 CMakeCache 的 CMAKE_HOME_DIRECTORY/CMAKE_CACHEFILE_DIR。旧路径缓存须先留证、核实生成物归属与 reparse 边界，再移入本轮证据目录并使用当前构建入口；不复活退役工程，不因此重烧已有有效固件。
 
-2026-09-17 编程异常修正候选使用现有响应的 `details.programDiagnostic`：记录实际 Python 调用阶段、脱敏异常及原因链、可用的 OS 错误号/Flash 地址/算法返回码。部署该候选前须用既有 fake/Windows worker 测试证明字段从 backend 经 IPC 到 Target 公共响应仍保留；外层捕获脚本无法还原 worker 已丢弃的异常。`program-call` 只表示进入编程调用，不能判定擦除或写入是否完成；无字段或 null 就记录证据缺失，不能再次自动连接补证。现有部署在该候选实际部署验证前仍按旧能力记录。
+原始异常必须在首次获准执行前具备留证路径。details.programDiagnostic 仅说明对应编程阶段，program-call 不证明已经擦除/写入。按当前源码检查 backend、IPC、外层映射是否保留所需字段；若 prepare/attach 信息会丢失，先离线验证最小捕获边界，不能失败后自动重连补日志。
 
-该字段仅覆盖编程路径，不代表 prepare/attach 异常也已完整出现在公共响应中。当前 `_exception_result()` 仍把未识别的 typed 错误映射为 `TEST_EXECUTION_FAILED` 并省略 details；下一次诊断性 Target 调用继续使用已有、经离线验证的 `target-capture.py` 在映射前保存原始异常，不能因编程补丁部署而撤掉 prepare 的捕获。复用时核对脚本字节及新 runtime 上的既有 probe-exception / Windows spawn 自检；只代理既有 CLI，不改变参数、授权、次数、连接策略或返回结果。此要求只补留证入口，既有软件/部署 PASS 保留；2026-09-17 的已丢失异常无法追回，也不授权重试。
+## 3. 状态和所有权
 
-迁移工程首次重新构建前，核对 `build/<preset>/CMakeCache.txt` 的 `CMAKE_HOME_DIRECTORY` 和 `CMAKE_CACHEFILE_DIR` 与当前源目录/构建目录一致。缓存仍引用旧临时路径时，先保存失败日志，验证绝对路径及 reparse 边界后，将生成的 CMakeCache.txt 和 CMakeFiles 移入本轮证据目录，再用现有 build 入口从当前工程重新配置；不得执行或重建旧临时工程。该离线环境纠正不授权硬件重试，不覆盖原失败记录，也不使已接受的 P2 ELF/实机证据失效。
+按被测版本的函数重新核对，不复用旧部署的行号或机器路径。
 
-provenance 拒绝必须记录检查函数/行号、逐字段预期值/实际值及各自来源、最后已证实阶段，不能只看错误码或 gitDirty。迁移后文件字节相同不保证 device/inode 身份相同；使用既有只读验证入口，不改 pin、不复活已消费记录。按场景创建 session：当前固件观测和 T9 沿用有效 flash receipt 的绑定，T10 按共同身份契约另建，不能每条命令任意换 session。T10 中的故障诊断或恢复烧录需要新授权、action、lease 和 run 目录时，仍须保留 P3/P4/Diagnostic 的共同 EvidenceIdentity.session_id；新操作不等于新验收身份。恢复前离线核对最终 compare/FixVerification 的 session 前置。若已经生成不同 session 的实机结果，保留原身份并先解决合法续接契约；不能改元数据、改下一轮采样参数或重烧来掩盖关联缺口。
-
-## 3. 状态契约表
-
-源码路径相对于 `tools/stm32-toolkit/src/stm32_toolkit/`，核对基线为部署 source `5f036363383e6c85cc87426da1b4a1c20dfe7acc`。行号用于定位，入口改变时按函数重新核对并更新。
-
-| 入口 | 实际状态契约及源码依据 | 执行限制 |
-| --- | --- | --- |
-| 正常 Target prepare | `testing_workflows.py:502-556` 建 OBSERVE，attach 后才持久化授权；`probe/pyocd_backend.py:978-988` 连接暂时 halt，然后 resume 并验证 running | 需要连接授权及唯一 owner；不烧录；无新 digest 不得 execute |
-| 正常 Target execute | `testing_workflows.py:647-654` 使用 MODIFY；`probe/pyocd_backend.py:970-977` 要求 attach halted；`testing/target.py:899-929,1599-1619` flash/readback 后 reset，必要时 resume，再开 transport | 只消费本次匹配的新 digest；flash 成功不等于程序运行成功，须得到真实 TestRun |
-| 已获本次恢复烧录授权的 Target | 复用已批准 recovery-static-prepare 规格：prepare 显式 `--recovery-under-reset`，`testing_workflows.py:502-514` 跳过全部硬件，仅验证静态事实并将 true 写入 action；execute `640-654` 从新 action 派生100kHz SWD/under-reset MODIFY，停核及物理身份核对后才写入 | 不要求旧程序先 running，不执行正常 prepare 作为前导；一次新 prepare/execute，禁止旧 digest、自动切换或失败重试。sector erase、keepUnwritten=true、auto_unlock=false；沿用现有回读/reset/条件 resume/transport/cleanup，不能把静态 prepare 成功当作板子已连接或烧录成功 |
-| 变量/有限采样 | `debug/read.py:237-253,580-603` 走 memory.read；`probe/pyocd_backend.py:1193-1225` 无 halted 前置 | 允许运行态读取；正常 attach 仍有暂时停核。接口允许不等于已物理证明底层全程无瞬时停核 |
-| SVD 外设寄存器 | `debug/read.py:606-637` 解析后仍走 memory.read | 只读已核对安全的路径；不同于 core register；单点 ODR 仅证明当时位值 |
-| 完整 Fault | `debug/fault.py:227-245,514-558` 初次/最终 core register 要求 halted 且稳定；`debug/model.py:563-600` 强制 halted 报告 | 必须有保持 halted 的入口和所有权/控制契约；运行正常不等于无活动 Fault |
-| 已部署默认 Fault wrapper | `hardware_workflows.py` 的 `fault_workflow` 默认 OBSERVE attach 并恢复 running；当前部署 e88 无受控参数 | **BLOCKED：入口状态与 Fault 前置冲突。** 不能先 halt 再调用会 resume 的 wrapper，也不能放宽检查或把所有 OBSERVE 改为 halt |
-| 受控 Fault 候选 | 新版 `fault --halt-for-analysis` / MCP `haltForAnalysis=true`；`fault_workflow` / `_controlled_fault_action` 一次 CONTROL 会话，保留正常 100kHz；固件绑定后验证真实 identity/running，再以新授权 halt、分析、resume 并验证 running | 软件审查和部署完成、取得本次实机授权后才可用。一个 halt、至多一个恢复 resume，不 reset/flash/reattach/retry；身份未知不猜测恢复。默认关闭。成功须有 Fault report、details.controlledSnapshot 及正常收尾；固定恢复总预算45秒和既有RPC/cleanup预算，执行卡不能复用旧IDE的45秒外层限制 |
-| IDE handoff | `probe/handoff.py` 的 begin/end 和 `CortexDebugAttachContract` 管理 ticket 与身份 | begin 成功后由 IDE 独占；正常 detach 后原 ticket end，回收成功才可 Toolkit read |
-
-连接时暂时停核是用户已接受的边界；连续采样阶段不得 halt/reset/resume，二者分别留证。完整 Fault 停核场景不能混入不停核采样，也不能在 IDE 持有探针时用 Toolkit 抢读。
-
-## 4. 固定顺序与出口
-
-1. **离线准备**：执行卡、入口、原始错误保留齐备；仅跑受影响的既有验证。报告/命名修正不触发产品测试。候选改变且获准时才部署一次，核对最终固定 runtime 路径下的版本/manifest/安装字节；有效部署结果继续复用。
-2. **正常 Target（确有需要时）**：一次 prepare → 核对身份/digest → 一次 execute → 公共 test show。核对 physical 来源、断言/mailbox、flash/run 身份及 cleanup。已经接受的 P2 不因进入下一轮而重烧。
-3. **运行中观测**：绑定当前固件，固定有限 testtime/GPIO 预算。计数增长证明活性；不同时刻的 PE4 变化才证明位翻转；ODR 单点、用户 D4 观察、Target heartbeat 分别留证，不能互相冒充。预算内没观测到则记未证实，不追加读取直到通过。完整 Fault 独立列为阻塞项。
-4. **T9**：先离线核对 IDE/GDB/PyOCD 服务入口、target/pack 支持、实际 ELF/外置 workspace、真实 UI 操作者和 detach 方法。一次 begin → 本次返回配置 → IDE attach/只读观察/正常 detach → 原 ticket end → Toolkit typed read → 同绑定 MCP 只读。异常停止，不 steal、不杀无关 owner、不重复 begin。
-5. **T10**：P3 修改/烧录前，必须明确两侧 Target、物理 Monitor history 采集入口/预算、LED selector、Analysis/Diagnostic 和恢复意图的数据流。只有 publish 命令不算采集入口 READY。按批准计划完成 T9 后，执行第 5 节 T10 顺序。
-6. **收尾**：记录每项状态、证据/hash、身份及阶段；保留租约释放与所属 worker 退出的正面证据。板态仅由既有获准测量或用户观察记录，不为收尾额外隐式访问硬件。Task11 lineage、Task12 全量 diff 未完成不得宣布 VS10-A 完成。
-
-## 5. 公共模板及 T10 数据流
-
-模板不能连续粘贴执行，也不构成授权。`TK` 为已核实 D runtime 的 `Scripts/python.exe -I -m stm32_toolkit.cli`；Target/read/debug/diagnose/scenario 命令附 `--project-root <P> --data-root <D> --session-id <S> --json`。build 例外，不附 data/session。
-
-```text
-TK build --project-root <P> --preset arm-debug --json
-TK test target prepare --probe-id <selector> --case-id <当前规格的case-id>
-TK test target execute --probe-id <selector> --authorized-action-digest <本次新digest>
-TK test show <实际nativeRunID>
-TK read sample --probe <selector> --expected-build-id <build> --expected-elf-sha256 <elf> --expression testtime --interval-ms 250 --count 3
-TK read register --probe <selector> --expected-build-id <build> --expected-elf-sha256 <elf> --path GPIOE.ODR
-TK debug handoff begin --probe <selector> --expected-build-id <build> --expected-elf-sha256 <elf> --authorized --watch testtime
-TK debug handoff end --probe <selector> --ticket <本次原ticket>
-TK read variable --probe <selector> --expected-build-id <build> --expected-elf-sha256 <elf> --expression testtime
-```
-
-保存完整响应，再提取标量。Target run ID 取 `data.run.run_id`，evidence 取 `data.evidence_id`；`data.test_manifest` 是 artifact 引用，不能当 run ID。MCP `stm32_variable_read` 使用 `probeId/expectedBuildId/expectedElfSha256/expressions`，project/data/session 由服务端绑定并核对等价身份。
-
-T9 外置 run-owned `.code-workspace` 的 folders 指向实际 P2；launch/configurations 包装本次 begin 返回的 Cortex-Debug 片段并加 name/type。保留 `servertype=pyocd`、`request=attach`、`targetId=target` 及返回的 serialNumber/boardId/executable。boardId 不可用 selector/fingerprint 或旧 raw ID 替代；executable 保留返回的 `${workspaceFolder}/...` 展开形式，确认解析后 ELF 存在且身份匹配。不写 P2 `.vscode` 改变输入身份。原生 UI 不可自动控制时由用户操作，headless DAP/fixture 不等价。
-
-生成配置兼容修正的版本边界见 [修正计划](../superpowers/plans/2026-09-11-stm32tk-t9-generated-ide-compatibility.md)。修正候选保留原 `cortexDebug` 身份数据，并新增 `cortexDebugLaunch`：核对 schemaVersion=1 及 profile 中的 Cortex-Debug/PyOCD 版本与实际环境完全一致后，原样包装其 `configuration`；不匹配则停止，不猜测通用兼容性。该配置直接提供绝对 cwd、UID/attach argv 和就绪正则，launch 不含 boardId；canonical cortexDebug 和内部 companion 仍保留并校验 boardId。先按部署 source 判断是否有新字段，不把旧 runtime 误当新候选；不再次手工改探针参数或补同名任务，环境路径/name/type 仍由已核对配置提供。旧版适配方法及其历史证据继续如下保留。
-
-workspace 级 launch 必须显式设置 `cwd` 为实际工程的**绝对路径**。Cortex-Debug 1.12.1 的 `resolveDebugConfigurationWithSubstitutedVariables(folder,config,...)` 在 cwd 缺失时执行 `config.cwd || folder.uri.fsPath`，相对 cwd 也会访问 folder.uri；workspace 级回调的 folder 可为 undefined。不得假设顶层 folders 会自动给该回调补齐上下文。配置核对须覆盖此分支，不能只检查命令参数。
-
-handoff begin 前，还必须在**不启动调试**的情况下确认实际 IDE 已成功打开目标 workspace，核对真实 executable/version/profile 与扩展激活状态；可使用当前窗口确认或该实例的启动/renderer/extension 日志。exe 存在或 Start-Process 返回不算成功。更新锁、启动退出或实际窗口属于另一安装时先记录并解决该环境前置，不终止无关更新程序，也不先交出探针再排查界面启动。
-
-在同一离线阶段，用配置实际选中的最终 runtime `pyocd.exe --version` 验证真实入口，并核对最终 Python 绑定及无 staging 残留；模块 parser/import 成功不能替代此项。缺失、退出非零或版本不符先修复，禁止进入 handoff。部署说明及这次 IDE 故障的复用核对项统一见 [Windows 部署与 IDE 前置核对](windows-deployment-and-ide-preflight.md)。
-
-本机环境适配（仅 Cortex-Debug 1.12.1 + PyOCD 0.45.1）：原始 handoff 返回值及 boardId 完整保存。该扩展的 PyOCD 控制器把 launch.boardId 转为旧 `--board`，而当前 pyocd.exe 不接受此参数；pyocd-gdbserver.exe 又不接受扩展附加的 `gdbserver` 子命令。故仅在本次外置 launch 中省略 boardId，并设 `serverArgs=["--uid", <本次返回的原始boardId>, "--connect", "attach"]`；其他返回字段不变，serverpath 指向已核实的 D runtime pyocd.exe，cmsisPack 指向已验证包含该 target 的实际 pack。禁止丢失原始身份或让 PyOCD 自动挑探针。
-
-离线依据：扩展 `dist/debugadapter.js` 的 PyOCDServerController.serverArguments() 仅在 boardId 存在时追加 --board，最后追加 serverArgs，不读取 serialNumber；当前 PyOCD parser 接受上述完整参数。`pyocd/subcommands/base.py:95-96` 定义 --connect，`gdbserver_cmd.py:184-197` 传入 Session；未设 --reset-run 时 `234-236` 不执行 reset，Cortex-Debug attach 仍会 monitor halt。此适配不修改插件/安装/固件、不新增启动脚本，连接时停核在当前授权内。实际结果必须标明“适配后的 IDE 路径”；不能把它宣称为原始生成配置直接可用或原始兼容缺口已修复，完整 T9 是否满足原规格须单独判定。
-
-该版本对还须核对服务 ready 信号：Cortex-Debug 默认 `GDB server started (at|on) port` 不匹配 PyOCD 0.45.1 的 `GDB server listening on port`。仅外置 launch 增加现有字段 `overrideGDBServerStartedRegex="GDB server (?:started (?:at|on)|listening on) port [0-9]+"`，用已取得日志离线验证匹配及 STDIO 反例，独立审查后才进入下一次获准 IDE 步骤；不延长超时或重连补同一证据。
-
-当前 T10 使用用户于 2026-09-14 批准的 [D3 修订规格](../superpowers/specs/2026-09-14-stm32tk-t10-d3-fixture-design.md)。原图 BSMR-MC04.PDF（SHA e14a70e9e49f7ce6e0285a687f215f591bb1f53d6322f6d32a5e4052c92f1af1）第 1 页确认 D3=LED0/PE3（MCU pin2），经 R11 1K 接 VCC3.3，0 亮/1 灭；D4=LED1/PE4 同为低电平亮。新 fixture/case/双位采样须使用新 session/attempt 与实际新 build/digest；旧 d4-heartbeat、P3/P4 和历史授权留存不改写。常亮/常灭不能代替 CPU 活性或规范状态证据。
-
-T10 顺序如下；动态值只能来自真实返回，缺少的输入结构必须在开始前明确：
-
-恢复既有 P3 证据时，先通过公共 `physical publish` 发布并重新读取已提交的 failed-before window，再建立新的计时 attempt，按公共检查点引用原 TestRun；不得为补记账本重烧或重采样。新采集窗口同样必须完成发布及读取验证后，才能进入依赖它的源码授权或 FixVerification。Target 与 Monitor 的租约分别属于各自连接，保留两份真实值，以现有 TestRun 链接及稳定身份关联；同一 Monitor window/transcript/reference 内的租约仍须一致，不能复制旧租约来消除不匹配。
-
-| 步骤 | 操作与必要引用 |
+| 入口 | 前置和结果边界 |
 | --- | --- |
-| A | 新 UUID attempt，scenario=`legacy-keil-physical-repair`、version=1；scenario attempt begin → checkpoint project-materialized。P3/P4/Diagnostic 共用 EvidenceIdentity.session_id，各 flash/action/lease 独立且新鲜 |
-| B | 当前 D3 修订使用 `d3-heartbeat`：P3 初始化后及周期块 `LED0=0`，D3 常亮；保留周期 `LED1=!LED1`，D4 继续闪烁。真实 build → checkpoint firmware-built-before → 新 prepare/execute → P3 physical failed。仅预期 D3 heartbeat 断言失败可继续，基础设施/身份/超时错误不能算预期 P3 |
-| C | checkpoint target-failure-observed 绑定 P3 run；`diagnose start <P3> --failed-run-mode target --operation-id <新ID>` → begin/hypothesis add/plan add、run/hypothesis assess，形成实际诊断。failed-run-mode 默认 host，不可省略 |
-| D | P3 固件仍运行时，使用已准备入口采集有限 Monitor window 并 publish failed-before；不能切换 P4 后补采 P3 |
-| E | 核对实际 before 文件 SHA、完整 InputSnapshot、Diagnostic 对应的 source-change intent → checkpoint diagnosis-completed → scenario attempt resume → 核对返回 revision/actionDigest → authorize-source-change --authorized。旧 planned intent 只是候选，不是授权 |
-| F | 只将获准的周期块 `LED0=0` 恢复为 `LED0=!LED0`，保持初始 `LED0=0` 和 D4 翻转 → 真实 build，完整 after InputSnapshot 等于 intent 派生值 → diagnose source-change declare → checkpoint firmware-built-after → 新 prepare/execute → 同 T10 身份 P4 physical passed |
-| G | P4 运行时采集真实 window → publish fixed-after → compare/bundle 绑定两侧 monitor refs、TestRun、declaration、Diagnostic。selector 必须证明 LED 修复，只有 testtime 增长不够 |
-| H | VerificationPlan → verification start → marker attach → verification complete；Diagnostic=RESOLVED 且 FixVerification=PASSED 后，checkpoint target-fix-verified 绑定 P4 native ID 和实际 fix-verification-id |
+| 正常 Target prepare | OBSERVE 连接，可能短暂停核，再恢复并验证 running；授权持久化前的失败不能视作可 execute |
+| 正常 Target execute | 使用匹配的新 MODIFY action；flash/readback 后按既有流程 reset、必要 resume、启动 transport；须有真实 TestRun |
+| Target recovery-under-reset | prepare 只做静态检查；execute 从该新 action 派生 100kHz SWD/under-reset MODIFY，先核对真实身份；sector erase、keepUnwritten=true、auto_unlock=false，保留既有 readback/reset/条件 resume/transport/cleanup |
+| 普通 flash / recovery flash | 与 Target 测试流程不同；成功编程或 receipt 不证明运行态。恢复烧录保持既有 halted 后置，不擅自 reset/run |
+| 变量/SVD/有限采样 | memory.read 不要求 halted；OBSERVE attach 的瞬时停核与后续持续采样分别留证，采样不得隐式 halt/reset/resume |
+| 完整 Fault | 核心寄存器必须 halted 且稳定；默认 running OBSERVE 不能满足该前置。显式 halt-for-analysis 使用受控 CONTROL、独立授权、身份校验及 bounded resume/cleanup |
+| IDE handoff | begin 后 IDE 独占；正常 detach、原 ticket end 和成功回收后 Toolkit 才能访问 |
 
-若已获准的恢复操作使 P4 与原 P3/Diagnostic 分属两个原始 session，按[显式续验规格](../superpowers/specs/2026-09-17-stm32tk-t10-explicit-continuation-design.md)补充关联，不重做 A–F、不重命名原记录。此入口须先部署包含该规格实现的版本；旧 runtime 不支持续验。先核对原 v2 attempt 停在 revision6、没有 revision7，原 Diagnostic 当前头包含对应 source-change declaration；核对两侧实际 physical TestRun 的 workspace/project/target/probe/transport_config、各自 build/ELF/InputSnapshot，以及历史 source-change intent/authorization。源码授权所引 Diagnostic revision 可以早于 declaration revision，须证明同一事件链中的祖先关系，不能强制两者相等。
+受控 Fault 最多执行既有一个 halt 和一次恢复 resume，不 reset/flash/reattach/retry，未知身份不猜测恢复。核对当前 controlledSnapshot 字段及原45秒恢复总预算和 RPC/cleanup 预算，不能套用无关外层超时。完整 Fault 与不停核采样是不同证据。
 
-在原 P3/Diagnostic session 下，以新 UUID 调用 `scenario attempt begin --continuation-file <bind.json>`；文件 schema 为 `stm32-physical-continuation-request/1`、kind=`bind`，另含 `predecessorAttemptId`、`predecessorCheckpointId`、`predecessorEvidenceId`、`fixedAfterTestRunId`、`fixedAfterEvidenceId`、`diagnosticRevision`、`diagnosticEventHead`，值均取实际已发布记录。begin 发布不可变关联证明及 v3 revision0 attempt；保存返回的 `continuationEvidenceId`，经新进程 show 重新读取。bind 时 Diagnostic 当前头和旧 attempt 状态不匹配即停止，不手工改字段绕过。
+provenance 拒绝须逐字段记录预期/实际及来源。相同 ELF 不等于相同 build/input/session/probe；相同文件字节不保证相同文件身份。不得改 pin、hash 或复活已消费记录。灯态、单点寄存器值和 CPU 活性分别记录，不相互替代。
 
-G 步中，各侧 physical publish 保持该侧原始 session。compare/bundle 在原 P3/Diagnostic 上下文执行，并都显式附加 `--continuation-evidence-id <同一证明ID>`；输出 analysis v2 保存两侧原始 session 和该证明。H 步使用 `stm32-verification-plan/2`，增加 `continuation_evidence_id`，其余 run/declaration/analysis 等引用仍取真实返回；在原 Diagnostic 内完成验证，再以 v3 当前 revision 调用 target-fix-verified。没有显式证明时仍执行原有同 session 规则，普通 v1/v2 流程不变。
+## 4. 执行顺序与接口核对
 
-v3 只承担验证完成记录，900 秒截止时间固定，不产生源码、烧录或硬件授权。开始前备齐已有证明与离线验证材料；窗口过期后，以另一新 UUID 和 `{ "schema": "stm32-physical-continuation-request/1", "kind": "reuse", "continuationEvidenceId": "<已接受证明ID>" }` 创建新 attempt，复用仍有效的 FixVerification/Monitor 证据。不能续期旧 attempt、重复消费旧 action，也不能为重建账本重烧或补采同一已充分结论。首次接受证明后，消费者验证其固定历史链；随后正常产生的 Diagnostic 验证事件不使该证明失效。缺失的真实 P4 Monitor 仍需获准的有限采样，离线 fixture 不计作 G/H 实机完成。
+1. 完成离线执行卡、相关软件检查和原始异常留证准备。只有实际需要且获准才部署候选；在最终 runtime 路径验证版本、manifest 和入口字节。
+2. 如需正常 Target，执行一次 prepare → 身份/digest 校验 → execute → public show。核对 physical 来源、断言/mailbox、flash/build/run 绑定和 cleanup；不因下一场景重烧已接受固件。
+3. 运行观测绑定当前 receipt，固定时间/样本预算。count 是 scheduled slots，不保证 delivered values；首读可耗秒级。按有效值、身份、丢失和窗口判定，未观测到就记录未证实，不循环补采至通过。
+4. IDE 场景先完成[部署与 IDE 前置核对](windows-deployment-and-ide-preflight.md)：真实 UI、扩展版本/profile、最终 pyocd.exe、target/pack、实际 ELF 与外置 workspace 均可用，再 begin → 原样使用本次配置 → attach/观察/正常 detach → 原 ticket end → 同绑定 Toolkit/MCP read。
+5. 物理失败—修复场景须先具备 Target、两侧 Monitor 采集、发布、Analysis/Diagnostic 与恢复授权的完整数据流，再执行下一节。只存在 publish 命令不等于具备采集入口。
+6. 记录各结论、身份及证据、lease 释放和 worker 退出。收尾不隐式访问板卡；缺失的合同或 lineage 仍保留为阻塞。
 
-attempt 写操作使用当前 attempt revision；Diagnostic 写操作分别使用新 operation-id 和当前 Diagnostic revision，不能混用。hypothesis add 带 statement；plan add 带 steps-file、run 带 plan-id；assess 带 hypothesis-id/plan-id/step-id/polarity/rationale。Diagnostic ID 是实际 32hex，FixVerification ID 是实际 64hex。P3/P4 分别核对 execution_source=physical、physical_transport_evidence=true、build/ELF/input/session/probe/target，以及相同 mailbox transport_config_digest，不能只看 passed 字样。
+命令按安装版本的子命令 help 和 parser 核对，不从邻近命令猜参数。Target/read/debug/diagnose/scenario 显式绑定 project/data/session；build 按自身入口。保存完整响应后提取标量，Target nativeRunID、evidence ID、artifact 引用不能混用。MCP 也必须绑定同一身份。
 
-`MON` 是安装的 `Scripts/stm32-monitor.exe`，不能用无 main 调用入口的 `python -m stm32_monitor.cli`。以下附 `--project <P> --data-root <D> --session-id <T10共同S> --json`；只发布/分析已有 history，**不生成物理采样窗口**。
+IDE 使用 run-owned 外置 workspace，不为验收修改工程的 .vscode 而改变构建身份。核对 CortexDebugLaunch schema/profile 与真实扩展/PyOCD 版本，再原样包装 configuration；保持绝对 cwd、真实 target、UID、ELF、就绪正则与 attach 语义。canonical cortexDebug 身份信息及内部 companion 仍保存并校验 boardId。未知版本不得猜兼容参数或让 PyOCD 自动选 probe。最终 runtime 的 pyocd.exe --version 必须通过，模块 import 不替代 console entry 检查。
 
-```text
-MON physical publish --scenario-role <failed-before或fixed-after> --test-run-id <P3或P4> --run-id <实际historyRun> --group-id <实际group> --start-sequence <起点> --end-sequence-exclusive <终点不含> --start-captured-unix-ns <起点> --end-captured-unix-ns-exclusive <终点不含> --probe-id <history.binding.probeId原始selector>
-MON analysis compare --request-file <request.json> --diagnostic-session-id <diagnostic> --hypothesis-id <hypothesis> --polarity supports --rationale <实际理由> --source-change-file <declaration.json>
-MON analysis bundle --request-file <同一request.json> --publication-file <publication.json> --failed-before-test-run-id <P3> --fixed-after-test-run-id <P4> --source-change-file <同一declaration.json>
-```
+## 5. 物理失败、诊断、修复和续验
 
-physical publish 的 --probe-id 必须取 `history.binding.probeId` 原始 selector，离线验证 `sha256(selector)==TestRun metadata.probe_id`；不得传已发布 `MonitorRunRef.probe_id` 的 SHA-256 值，否则会重复哈希并导致身份比较失败。字段来源见 Monitor `replay.py:1441-1450,1893-1899,1931-1965`。
+正常路径在共同 EvidenceIdentity.session 下完成 failed-before TestRun、Diagnostic、受授权源码变更、fixed-after TestRun 和两侧物理 Monitor window；action、lease 和操作 ID 各自新鲜。两侧 window 均须 publish 并重新读取后才能成为后续引用。不同操作的 lease 不可复制来消除不匹配。
 
-publish 的 data.monitor_run_ref 填 request before/after；compare 的 data.analysis_publication 单独保存为规范 JSON 的 publication.json，并从该文件重新解析后交给 bundle，不能传完整响应或用内存对象代替文件读回；其中 diagnostic_marker_ref 用于 marker。要求 quality=VALID、conclusion=COMPLETED、changed=true。VerificationPlan ID 必须等于 declaration.validation_plan_id，绑定两侧 run/evidence、declaration、analysis ID/evidence，required_monitor_quality=VALID、expected_changed=true。verification complete 引用两侧已认证 MonitorRunRef.operation_id 及 monitor.analysis.compare、monitor.analysis.bundle，并记录本轮实际 Diagnostic 操作 ID；Target native TestRun ID 单独用于 plan/checkpoint，不能把 Monitor operation ID 标作 Target 调用 ID。不生成 VS08 AcceptanceRecord 冒充物理验收。
-
-Monitor analysis CLI 对 request、source-change 和 publication 文件要求规范 JSON 字节；普通缩进版或 PowerShell `ConvertTo-Json` 输出不能直接作为输入。复用现有 `canonical_replay_json_bytes` 生成文件，并用实际入口的纯软件解析器预检；原始返回文件另外保留。格式拒绝属于离线输入问题，不触发部署或硬件重试。analysis 操作返回 OK 也不代表比较通过，必须继续核对 quality/conclusion/changed；INVALID 结果保留为不充分分析，不能进入 H 步。
-
-调用准备以安装版本的具体子命令 `--help` 和已读取的序列化字段为准，不从相邻命令或 Python 属性名推断：`diagnose show` 使用 `--session-id`；本轮 verification-plan add、verification start/complete、marker attach 支持 `--tool-session-id`；continuation proof 序列化字段为 camelCase。参数/本地转换失败单独留证，只纠正尚未成功的步骤，不重复已成功的 compare、bundle 或部署。
-
-原生寄存器与独立时钟比较采用[显式版本化数值/对齐契约](../superpowers/specs/2026-09-17-stm32tk-t10-native-analysis-design.md)。该候选通过软件验收并部署前，旧 runtime 的 request/1 行为不变。新 request/2 显式设置 `selector_kind=register`、`alignment=bounded-run-relative`、`scalar_policy=native-uint-register/1`、`max_pairing_skew_ns=5000000`；本次已有真实 P3/P4 的 `GPIOE.ODR` 保留 `minimum_valid_pairs=297` 和全部 300 批次。先核对双侧原始引用及 native 值的类型/位宽/十六进制一致性；不得降低门槛、改写时间戳或重采相同窗口。result/3 须内嵌完整 request 并经保存后重新读取、重新计算验证。先在隔离证据副本验证 compare → bundle → Diagnostic completion → v3 最终 checkpoint 与新进程读回；副本通过仅证明软件路径，不自动完成原业务账本或整个 T10/VS10-A。原始记录和旧版结果继续保留。
-
-`diagnose source-change declare` 只消费完整 declaration，不生成 diff artifact/envelope。按现有 EvidenceStore 公共 API 准备：从真实 P3 TestRun envelope 读取 before identity，以 P3/P4 实际提交间仅 Main/Main.c 的 Git diff 创建 `kind=source-diff`、`media_type=text/x-diff` artifact；写入 operation 为 `diagnostic-source-change`、parents 为空、恰好一个 artifact、metadata 精确为 `{"kind":"source-change-diff"}` 的 envelope。declaration 的前后 source SHA 使用完整 InputSnapshot SHA，build/ELF 来自对应真实构建，不能用单文件 SHA 替代。run-local 包装必须先独立审查；不得使用测试中的合成 diff 或 identity。依据：EvidenceStore 规格 2026-08-14 第 139–159 行及 diagnostic_workflows.py 的 `_read_diff_evidence` 校验。
-
-T10 采样入口复用已接受的有限 Monitor 生命周期，在执行卡中固定两侧独立 output root、当前源码/ELF/runtime pins 和真实 session；调用前读取配置，Windows spawn 导入时不得启动 runtime。当前 D3 修订的每个完整 batch 必须同时包含 testtime 与 GPIOE.ODR；两侧都要求 testtime 至少两个不同有效值且 PE4 同时出现 0/1，以验证 D4 主循环活性。P3 要求 PE3 仅为 0（D3 常亮），P4 要求 PE3 同时出现 0/1。固定 30 秒/100ms 窗口保留全部批次；发布边界使用实际选中 history 的首尾 sequence/captured 时间。历史 D4 回放只能验证原入口，不作为新 D3 物理证据。
-
-公共 `read sample` 的 `count` 表示 scheduled slots，不保证 delivered values；首读可耗秒级，不能把 `min100ms` 当作保证。生命周期/activity smoke 必须按有效样本数、identity、0 drops 和合理窗口判定；100ms 连续不停核资格继续由 Monitor 既有路径证明。依据：`D:\codex-tmp\t10h-0917\ship\physical-smoke\verification.json` 与 `D:\codex-tmp\t10h-0917\ship\physical-smoke-02\verification.json`。
-
-## 6. 首错即停，先分类再改动
-
-非预期枚举/attach/状态/身份/烧录/读取/发布/清理错误发生后，停止后续硬件及动作消费。保存原响应/异常链、最后成功阶段、授权消费状态、flash/TestRun 是否产生、当前 lease/ticket。执行原入口约定 cleanup；同次调用内部清理与外部重新调用硬件必须分开报告。cleanup 未证实成功则状态未知/阻塞，不能把超时或发送进程终止信号写成释放成功。
-
-分类 PRODUCT、INFRASTRUCTURE、ENVIRONMENT、PLATFORM、HARDWARE、REPORT；未确证则列明唯一证据缺口。不能凭错误码、gitDirty、D4 常亮猜根因。优先调用现有函数或复用测试离线定位。产品修复按规格、Luna/max 实现和独立审查；流程修正由主代理维护，不能放宽身份/状态契约让测试变绿。
-
-确需硬件补证时，先说明唯一假设、一次操作边界、成功标准和失败停止条件，再申请新授权。不自动重试、不切 under-reset、不擅自 reset/halt/resume、解锁、断电或换板。用户重连/换板后重新记录现场与证据适用范围，不继承旧 action。
-
-## 7. 保留成果和维护规则
-
-### 何时修改，何时可以跳过
-
-| 情况 | 处理方式 |
+| 顺序 | 必要合同 |
 | --- | --- |
-| 入口参数/返回字段、状态迁移、所有权、身份契约、错误或 cleanup 行为改变；发现遗漏/冲突；正式验收要求改变 | **必须修改**相应流程条目，标明依据及受影响步骤；独立审查新增/改变的内容后才执行依赖步骤。未受影响且已审查的内容不重审 |
-| 只变化当前 HEAD、session、路径、授权或本轮结果，操作契约不变 | 更新当前断点和本轮执行卡，不重写通用流程，不触发产品回归或整轮流程审查；路径迁移若改变身份/入口契约则按上一行处理 |
-| 仅排版、错别字、链接或报告命名修正，语义不变 | 可直接修正并检查差异/引用，不重跑测试；一旦改变参数或判定含义就不是纯排版 |
-| 某项已有 PASS，且该验收条款要求的版本/固件/身份/环境/契约仍适用 | 可跳过**重复执行**，在卡中记 REUSED、原证据和适用依据，验收条款仍由该证据覆盖 |
-| 某步骤对本次场景不适用，或有相同覆盖能力的已批准入口 | 可记 N/A 或使用等价入口，说明不适用理由/等价契约及证据；不能把缺失证据、缺硬件、失败或入口阻塞写成 N/A |
-| 临时改变预算、命令、顺序或连接策略 | 若仍在已批准契约与当前授权内，由主代理在执行前记录限定范围/理由/等价性；涉及契约变化先改流程并审查，涉及新控制或失败重试另取授权。例外本轮结束失效 |
+| 建立场景 | 新 attempt ID 和对应 scenario/version；project-materialized、firmware-built-before 使用真实身份 |
+| 失败前 | 仅预期行为断言失败可作为 failed-before；基础设施/身份/超时错误不能冒充预期失败 |
+| 诊断与采集 | Diagnostic 明确 failed-run-mode=target；P3 仍运行时采集、发布 failed-before，切换 P4 后不能补采 P3 |
+| 变更授权 | diagnosis-completed → resume → 当前 revision/actionDigest → authorize-source-change；planned intent 本身不是授权 |
+| 修复后 | 仅修改获准范围；完整 after InputSnapshot 等于 intent 派生值；声明变更、构建、新 Target action、同身份成功 TestRun |
+| 比较与完成 | 发布 fixed-after；compare/bundle 绑定两侧引用、TestRun、declaration、Diagnostic；真实 marker、VerificationPlan、FixVerification 和最后 checkpoint 完成链路 |
 
-不能忽略授权、身份匹配、状态前置、唯一 owner、有限预算、首错停止和证据真实性。显式用户新要求优先于旧流程，但只覆盖其明确改变的范围；不得将“开始测试”解释成放弃这些边界或取消必验条款。一个场景 BLOCKED 时，可继续前置独立且已授权的场景，在报告中保留未闭合项；不能借此宣称整体验收完成。
+原始 session 不同只能用已实现的显式 physical continuation proof 关联，不能重命名记录。bind 验证 predecessor attempt/checkpoint/evidence、真实 fixed-after TestRun/evidence、Diagnostic revision/event head 和源变更祖先链，产生不可变证明和 v3 attempt；新进程 show 复核。证明授予零源码/硬件权限。compare/bundle 与 VerificationPlan/2 显式携带同一 continuation evidence；缺证明时原同 session 规则仍有效。900秒 continuation attempt 过期可按公共 reuse 入口创建新 attempt，不续期旧对象、不重复消费 action、不重烧补账本。
 
-每轮实际结果进入执行报告；第 8 节只更新当前状态及指针。旧 run-local 卡片是历史快照，不是下一轮入口。操作、状态前置、参数/输出或流程遗漏有变化时，先更新本文件相关条目并独立审查，再执行依赖步骤；不能只在聊天中修正。
+Attempt revision 与 Diagnostic revision 分属不同对象。Physical TestRun 必须核对 execution_source=physical、physical_transport_evidence、完整 build/ELF/input/session/probe/target 和 transport_config_digest。source-change declare 消费已有完整 declaration，不生成 diff evidence；diff artifact 来自两次真实源码间获准范围，before identity 来自真实 TestRun envelope，source SHA 是完整 InputSnapshot，不是单文件 hash。最小 run-local 包装须先审查，不借用测试合成 identity。
 
-复用证据逐条核对规格要求的身份/版本/环境/契约未变，写明来源和范围。文档改变不使产品证据失效；相关固件/产品字节/绑定改变只补受影响结论。attempt 7、-12 不改标为当前 T10 lineage，也不因新失败删除。文档、等待、测试数量不计作产品进度。
+Monitor physical publish 的 probe-id 取 history.binding.probeId 原始 selector，离线核对其 hash 与 TestRun 绑定，不能把已哈希的公开引用再传入。两侧窗口必须保留原始时间/sequence边界，不伪造对齐。发布不产生采样。request、source-change 和 publication 使用既有 canonical_replay_json_bytes；完整响应另存，publication 从文件重新解析。compare OK 之后仍要检查 quality=VALID、conclusion=COMPLETED 和所需 changed。
 
-按已核实绝对路径清理本轮不再需要的临时输出；保留源码测试、可复用基线、用户数据、共享缓存、rollback、授权账本、有效 PASS 和最小失败证据。Windows 使用同一 PowerShell 原生命令，删除前确认在本轮目录内。自动策略拒绝 cleanup 时记录保留，不换工具/路径绕过。没有新测试不制造清理工作。
+寄存器分析使用显式 request/2 的 selector_kind=register、alignment=bounded-run-relative、scalar_policy=native-uint-register/1 和已批准 max_pairing_skew_ns；不得为通过降低有效配对数、改时间或重采同一充分窗口。result/3 内嵌完整 request，持久化后重新读取计算验证。VerificationPlan ID 等于 declaration.validation_plan_id，绑定真实两侧 run/evidence、analysis、declaration；Target native ID 与 Monitor operation ID 不混用。软件副本验证不能自动完成原业务账本。
 
-## 8. 当前验收断点（2026-09-20）
+板卡引脚、电平、采样频率和批次数只来自对应具体 fixture 规格与现场卡；旧 D3/D4 场景不是所有 STM32 的默认定义。需要重现旧资格场景时从 Git 历史取其原始规格和报告，保留其原身份、阈值与限制，不把历史授权带入本轮。
 
-**当前覆盖率断点（2026-10-08）：有限收尾已授权，1.0 尚未验收。**
-当前报告基线 `b99f717ddb0d2a8c06a965e69118b3ee9bd91418`，产品/RC4 仍为
-`968cbb69b1f54b95a8fdc18a550481f6ff7c1268`。正式 U63：Toolkit 整体
-12029/13592、risk-core-v2 11411/12918，距90%分别差204/216条且重叠；
-Monitor 整体及核心2763/2956，整体90%已满足、核心95%差46条。
-当前实测增量为0；后续仅以独立接纳的原始数据更新。以现行发布计划新批准的有限
-收尾条目及 `r10/e/work-ledger.json` 为准；既有构建、安装、升级、回滚、Windows
-和实机证据及其限制保留，不因补测重跑。发布例外仍待用户另行决定。
+## 6. 首错停止与清理
 
-**当前 B：VS10-B 已 ACCEPTED，开始1.0本地发布收敛。** 最终代码 `22ec7ba68967bcbcacea325848886dd953affb31` 已接受；正式 `/5` attempt `17af06e8-a940-45df-8ccb-e1f250314fc6` 为 `COMPLETED/revision1`，新进程读回通过。原175份证据不变，仅新增7份允许记录；旧 `/4` 超时不改写。`D:\codex-tmp\v10b-0918\fin\archive` 的3,000文件统一归档已逐项通过独立核验，原B各阶段和独立Monitor bundle门槛闭合。当前部署仍为 `12df4fe`，此次只运行审查后的源码离线入口，未部署或操作硬件。见[最终验收记录](../codex/returns/2026-09-19-stm32tk-vs10b-final-acceptance.md)。
+任何非预期枚举/attach/状态/身份/烧录/读取/发布/清理错误都停止后续硬件和 action 消费。保存原异常链、最后成功阶段、动作消费和实际产物，执行原入口已有 cleanup。内部 cleanup 与外部重新调用硬件分开；未证实释放即未知/阻塞，发送 terminate 不算 worker 已退出。
 
-用户随后授权持续推进至1.0本地发布就绪，包括必要本地修复、审查、测试、打包、部署及既定板卡/探针验证；允许保留失败证据并在明确诊断/修正依据后自动重试，无需逐步再询问。该授权不包含新板卡、新功能、采样频率升级或未具名远程操作。主代理统一调度，Luna/max仍唯一产品实现者；本轮发布运行根为 `D:\codex-tmp\v10b-0918\r10`。原单次硬件 action 不可重放；新的必要执行仍使用新身份和已固定的生命周期。
+先分类 PRODUCT、INFRASTRUCTURE、ENVIRONMENT、PLATFORM、HARDWARE、REPORT；不凭错误码或灯态猜原因。先离线定位，再由实现者修复并独立审查。补硬件证据须具名假设、一次操作边界、成功标准、失败停止及新授权；不自动重试、切 under-reset、reset/halt/resume、解锁、断电或换板。
 
-**1.0 当前离线资格入口（2026-09-23）：尚未验收。** 以[当前资格结果](../codex/returns/STM32TK-1.0-core-public-contract-qualification/native-result.md)、[当前发布执行计划](../superpowers/plans/2026-09-19-stm32tk-1.0-local-release.md)及运行账本 `r10/e/work-ledger.json` 为准；下方 U29 数值仅为历史。用户批准的现行门槛为 Toolkit 整体及原 risk-core-v2 均 ≥90%，Monitor 整体 ≥90%／核心 ≥95%；原 Toolkit 核心95%未达记录保留，作为后续非阻塞质量目标。当前冻结产品／RC4源码为 `968cbb69b1f54b95a8fdc18a550481f6ff7c1268`；Monitor锁恢复修复、受影响发行包验收和七项Windows原生检查已接受。U60覆盖率（该次聚合新增7条Toolkit核心分支）、已通过的构建、安装、Repair、回滚、Monitor使用及实机证据按各自适用范围保留。本次只读核对已完成非覆盖率证据适用性及双工作区后续映射绑定，未运行测试，新增覆盖为0。剩余阻塞为覆盖率：Toolkit整体差221条、核心差233条（两者重叠），Monitor核心差57条；现有已证明场景不足以形成达标路线。停止低收益零散补测，原Monitor cleanup两轮历史及停止裁决保留；后续先证明有明确收益的合法输入、公开入口和故障作用边界，不降低门槛，不重置轮次。报告修正不触发已有效验证重跑。
+只有参数/状态/所有权/身份/错误/cleanup合同或验收要求改变才修改本流程并先独立审查受影响条目。只改路径、HEAD、session 或结果则更新执行卡；排版和链接修正不触发测试。一个场景 BLOCKED 时继续独立且已授权的工作，不能因此宣称全体验收。
 
-**历史 U29 离线资格断点：当时尚未验收。** 当时已核验测试 code head 为 `9865c88a7f8b9e1ee297957657e623556f8642ae`，产品 source 保持 `8a11caef14df16c5e56c0be2363d4ef5530110eb`。union29 已独立接受：Toolkit 整体11850/13580（87.2607%），距90%差372条；Monitor整体2680/2940（91.1565%）。冻结risk-core-v2为Toolkit 90文件11232/12906（87.0293%）、Monitor 16文件2680/2940（91.1565%），距95%分别差1029/113条；旧broad-core-v1、UI 784/810与全部既有实机结论单独保留。此次纳入ProbeSession11、Analysis1、既有Recovery5完整通过证据，新增Toolkit9和Monitor12条分支，148个产品源文件身份不变；失败批次排除，聚合配置修正没有重跑测试。后续仅按公开风险场景补测，wave6未运行的候选不计入结果。七项Windows原生检查、最终发行物和部署仍未完成。当前没有部署、硬件或远程操作；本轮5个新临时目录的清理被自动策略拒绝，命令未启动、未删除、未重试，先前拒绝记录保留。见[当前资格结果](../codex/returns/STM32TK-1.0-core-public-contract-qualification/native-result.md)与[risk-core-v2计划](../superpowers/plans/2026-09-20-stm32tk-risk-layered-qualification.md)。
-以下为历史断点，保留发生时的失败和状态；不覆盖上方当前结论。
-
-**最新：card05 实机修复与 FixVerification 已 PASS，但最终验收检查点超时，VS10-B 尚未验收。** 故障/修复 Target 各一次、两侧30秒100ms采样均已完成；每侧300组有效批次且零丢样。单行 PE3 周期修复后 Target PASS，PE3/PE4 均变化，Diagnostic revision15/RESOLVED、FixVerification PASSED；新进程读取确认。最终 checkpoint 比300秒截止时间晚约23秒，被 `ACCEPTANCE_ATTEMPT_TIMED_OUT` 拒绝；这是主代理收尾调度问题，不能归因板子或撤销有效实机证据。执行已停止，存储 attempt 保持过期的 ACTIVE/revision6，未篡改终态。两侧 marker 已消费，probe/runtime released/stopped、相关进程0。后续先离线核对显式证据续验契约，不为补账本重新烧录/采样。见 [card05 结果与精确超时点](../codex/returns/2026-09-18-stm32tk-vs10b-card05-physical-pass-checkpoint-timeout.md)。以下 card04 等为历史断点。
-
-**最新：card04 已 TERMINAL_STOPPED_BEFORE_HARDWARE_ARGUMENT_ERROR。** 用户授权后，新 attempt 完成到 revision2，静态恢复 prepare 成功；主代理 execute argv 遗漏必填 `--probe-id`，CLI 解析 exit2，未进入 backend/烧录/读取。无新 Target TestRun、Monitor window 或物理 lease，prepared action 未消费，原 registry=released、相关进程0、monitor04 两侧 marker 均不存在。现有 parser 离线复现失败并验证完整修正 argv 通过，独立审查确认阶段与原因；未重试硬件或修改产品/固件。后续须以完整固化参数、新 attempt/action/log 和新确认的有限操作继续；现有部署、构建、SVD 与采样入口证据保留。见 [本轮参数失败与修正](../codex/returns/2026-09-18-stm32tk-vs10b-card04-argument-stop.md)。下段 OFFLINE_PLAN_ACCEPTED 为执行前状态。
-
-**最新继续断点：card04 已 OFFLINE_PLAN_ACCEPTED；尚无新实机操作。** 原 Luna/max 固件所有者已恢复并完成只读执行准备。新采样入口 `entries/monitor04/vs10b_monitor_entry.py` 仅将输出根改为 monitor04，SHA256 `5a5a8b678e49b2bdda28f51e2e859cbe5df344fd82c09b563fc894b67512441a`；配置 SHA256 `32bc2140d418428560c98d17b18b1cbd5ef256094ccd1ee5b7960f5cd3036a53`。现有 `--offline-preflight` exit0，六项实际 pins 一致；主代理独立核对完整原始字节差异仅 +2 bytes，旧入口/marker 保留。独立审查者已接受本轮身份、输出及有限次数执行卡；新 begin 的 origin/source/descriptor digests 和四个异常日志文件名已明确。卡片及限定结论在 `D:\codex-tmp\v10b-0918\evidence\closed-loop-04`。当前工程仍为 d29281d 故障固件，D3 修复仅为预测；source12df 部署及已接受构建不重复。下一步只在新卡硬件授权、当前现场确认和即时进程/租约检查成立后，执行故障/修复各一次 under-reset100kHz 烧录、各一次30秒100ms采样及串行 Diagnostic 闭环；首个非预期异常停止。新 attempt/action/硬件均未创建或调用，不宣称 VS10-B 验收通过。下段配置修复结论继续有效，额度不足仅是其当时记录。
-
-**当前 VS10-B：SVD 工程配置修正已 CONFIGURATION_OFFLINE_ACCEPTED；尚未进行新一轮实机验收。** Luna/max完成仅修改debug.readableRegions的候选d29281d及一次Debug构建；主代理作为非实现者在clean detached树审查完整差异并复用现有函数验证实际工程，1536寄存器/12范围通过。新build=db585b5c、input=75b64c62；ELF/MAP与旧故障固件一致，不能因此复用旧配置身份的receipt/digest。原故障源码仍保留，新D3意图仅为未授权预测。Toolkit部署source12df及NORMAL/IDE/CLI/MCP证据继续有效，不重新打包或重复测试。原closed-loop03、已消费Monitor marker及授权保持停止；后续须准备新身份/新输出绑定的有限实机流程。实际SVD哈希未变，review checkout的CRLF差异已单独核对；构建临时变量错用同级D盘目录的记录保留，后续独立验证已固定正确根。两名子代理额度用尽后，独立验收由主代理亲自完成，不能归属给未完成审查的子代理。见 [修复与独立验证](../codex/returns/2026-09-18-stm32tk-vs10b-svd-configuration-fix.md)。下方为历史断点。
-
-**最新 VS10-B 恢复结果：正常固件 physical Target 1/1 PASS，IDE 手动步骤待用户结果，B 尚未验收。** 用户在前一次终态失败后明确授权一次恢复烧录；未改源码/ELF或重部署，以新 digest `8f973292...40517` 走现有 under-reset/100kHz，回读验证7812字节，physical mailbox run `target-v2-8f97329220c7d71112d1f29548cecc6a` 为passed，新lease已释放，独立证据审查接受。两个已知Python进程属于Monitor离线validate-only，不计为硬件残留。随后本次B新handoff begin成功，探针处于externally-owned；已在VS10-B窗口准备 **VS10-B NORMAL - Attach** 并提示用户F5/Watch testtime/正常停止。用户确认detach前禁止Toolkit/Monitor访问，随后只用 `evidence/ide-01/handoff-begin.stdout.json` 的原ticket end。P3/P4、B attempt、30秒采样和最终验收均未开始。详见 [本轮部署、停止与恢复记录](../codex/returns/2026-09-18-stm32tk-vs10b-deployment-and-normal-stop.md)。下段首次普通策略失败继续保留，不被恢复PASS抹除。
-
-**最新 VS10-B：部署 PASS，首次正常烧录已终态停止，B 尚未验收。** 用户本次已授权部署和有限实机闭环；source `907b17094d7d6192f68735c470ca0bb73c1c7e23` 的独立 B runtime 位于 `D:\codex-tmp\v10b-0918\dep\data\runtime\0.9.0`，Check、安装字节与实际启动器通过。工程当前为 clean NORMAL `3a34dfd`，fresh build `ce6fb3cd`，证据取 `evidence/firmware/normal-active-01`。唯一探针枚举及普通 Target prepare 成功；一次 execute 在 `program-call` 返回 `TEST_FLASH_FAILED` / `PROBE_PROGRAM_FAILED`，原始 PyOCD 异常为 `target was not halted as expected after calling flash algorithm routine (IPSR=3)`。尚不能确定擦除/写入阶段或根因，无 TestRun/成功 receipt。新 action consumed、lease released、后端进程0；用户观察 D3亮/D4灭，不作为 running 证明。无重试、恢复或后续读取；F5、Monitor、故障切换、B attempt 均未开始。后续只做离线比较与具体恢复方案准备；新操作须按本次终态边界重新核对授权。详见 [部署与首次实机停止记录](../codex/returns/2026-09-18-stm32tk-vs10b-deployment-and-normal-stop.md)。A 已验收和 attempt7 保留；以下为历史状态。
-
-**当前状态：VS10-A 已 ACCEPTED；VS10-B 离线实施、构建与独立审查均已完成（SOFTWARE_READY），尚未部署或实机验收。** A 的正式结论及清理保留例外见 [最终验收附录](../codex/returns/STM32TK-1001-LEGACY-KEIL-REAL-BOARD-CLOSED-LOOP/final-acceptance-20260918.md)，远端 master 已同步至 `16a6e59dff7fed2999fae611e3d936b0b04bbabd`。B 产品源码 `f9c8ff7479f96ea799f6218f1c74efb90399424d` 包含已接受的主机 /4 适配、descriptor 索引和 indexed IOC 身份修正；A 旧序列化字节不变。真实 CubeMX 创建、校验、Debug/Release 构建和正式激活均已通过，项目为 `D:\codex-tmp\v10b-0918\p\b`。最终正常固件 `3a34dfdaad97d29d47f1e5405b3dedfe52318d43`、故障固件 `822d75758f5a705fd9ef1093f3bf9d8101191570` 的 Debug/Release 均成功且 Git clean；完整源码及两版 ELF/MAP/buildId 独立核对已接受，ODR finding 已修正。Git 行尾归一化不等于运行目录原始字节；切换正常版本后先核对现有 freshness，必要时离线重建取得新身份，不篡改旧记录或绕过检查。仅故障 D3 周期语句不同，当前工程停在 fault；actual fixed-after 尚未写入，不得提前恢复源码冒充诊断修复。最终正常产物取 `evidence/firmware/normal-odr`，不得误用旧 `normal`；完整身份在 `final-firmware-identities.json`。本轮仍无 B 部署、探针枚举或硬件操作。后续先准备已审查候选部署及新 B 有限执行卡/授权与现场状态，再进行正常 Target/一次 IDE 交接、真实 failed-before、诊断和单次源码修复、fixed-after 及归档。规格、计划和 [实现记录](../codex/returns/2026-09-18-stm32tk-vs10b-offline-implementation.md) 位于本轮 `integration`，原始事实以 `evidence/implementation-ledger.json` 为准。A 截止验收的实机授权不外推到 B。清理命令策略拒绝后保留一次性目录，不绕过。本段以下全部是 A 历史技术断点，不能覆盖上述正式验收及 B 当前状态。
-
-最新（2026-09-18 最终技术校验断点）：最终部署 source `6e069660e4a5b62598f16637176caf086f82d3c8`，runtime 为 `D:\stm32tk-data\fault-controlled-20260911\candidates\vs10a-final-20260918\runtime\0.9.0`；软件包、安装身份及 release child `TEMP`/`TMP`/`TMPDIR` 传递修正均已审查通过。Task7 bounded flash/Monitor/Fault、P4restore、用户 D4 质性佐证及两次有限 activity smoke 均已有归档结果；P1c flash/Monitor/Fault 与 P4restore 仍明确归属于 retained hypothesis source `227f8ea8b6895d4c2eaa14bd2483cfbce668b4b9`，只有两次 final finite smoke 使用 source `6e069660`。Task12 完整软件校验是连续的 `291/291 + 37/37` 两段，Target/Keil/Probe/release-child 修正均已接受。Task11 技术归档现有 18/18 bundle roles，最终报告位于 bundle 外；primary checksum verification 已通过：直接重算 474-file `CHECKSUMS.sha256` 得到零 mismatch、零 set difference 和正确 Ordinal 顺序（SHA256 `509a7db2c51cc89704a6d35cf591f619223f01af7293b7aae0307364bb3e43f0`），证据为 `D:\codex-tmp\t10h-0917\evidence\final-checksum-primary-verification.json` 与 `D:\codex-tmp\t10h-0917\evidence\final-checksum-primary-command.ps1`；既有 independent content review 保持 ACCEPTED，本流程不新增 independent checksum verdict。当前技术校验完成，cleanup disposition 未决，正式 VS10-A 验收尚未宣布；本段之后保留的内容均为历史断点。
-
-Task7 本轮是未插桩 P1c 的事后补证，完整固定输入见 `D:\codex-tmp\t10h-0917\task7\execution-card.md`：在新的 P1c checkout/session 中使用与历史 P1c 相同的可编程镜像，保留原 P4 工程和 receipt。普通 flash 成功只证明编程及回读，不证明应用启动；有限入口必须在同一个 MODIFY supervisor/client/lease 中调用公共 `flash_firmware`，核对真实身份，再复用 `PhysicalTargetFlashAdapter.start_after_flash` 的新 reset 和条件 resume，最后验证 running。其 constructor 使用 `project_root`、`raw_probe_id`、`client`、`control_authorizations` 关键字；离线替身须遵循真实签名。P1c 没有 mailbox，不执行 Target 测试或制造 TestRun。烧录/启动主动预算 90 秒，拥有的 cleanup 正常完成。
-
-随后采集一次 5 秒/100ms 的 testtime 与 GPIOE.ODR 同批 Monitor history/snapshot，证明值变化及 PE4 两态；这不是重复 30 秒周期资格验证。一次公共受控 Fault 使用相同固件/探针身份，证明无活动 Cortex-M fault 并恢复 running。用户 D4 目视观察是独立佐证，不能由软件结果代填。最后从独立 p4restore checkout/session 恢复原 P4 相同镜像，通过公共入口取得 running 及 activity 证据，并保留该独立 session 的身份绑定和收尾证据。任一步首错停止并保留错误，诊断修正后依当前用户目标授权作有据重试；禁止盲目重试、绕过身份或复用旧 action。此段和两个有限入口须经审查后才执行依赖实机步骤。
-
-当前技术校验已完成；执行与所有权边界见[完成计划](../superpowers/plans/2026-09-17-stm32tk-vs10a-completion.md)。cleanup disposition 仍待 primary 按用户决定处理，正式 VS10-A 验收在此之前不宣布。下方较早的“待新授权”“未完成”和旧 runtime 状态均是历史记录，不能覆盖本节顶部的最终技术校验状态；本文件不授予新的硬件、远程或清理权限。
-
-T10 补充评估的生产副本链已按批准范围完成：revision14 保持 `INVESTIGATING` 的历史语义，三假设、五观测、七评估和 131 份原文件均已核对；不把该补充链改写为原始 T10 `RESOLVED`。以下旧候选、旧部署及旧 review 状态只作为历史断点保留。
-
-以下为按时间保留的历史断点；以本节顶部和对应实际执行记录判定当前状态。
-用户已批准[补充评估规格](../superpowers/specs/2026-09-17-stm32tk-t10-hypothesis-assessment-design.md)及计划的实现、独立审查、部署和一次生产离线补充；零硬件、零远程操作。实现候选未接受/部署前，不用旧runtime尝试新selector。新版就绪后，按现有公共入口：fresh `diagnose start <原P3> --failed-run-mode target --operation-id <新ID>` → begin → 三类hypothesis add → plan add/run → 七条明确polarity/rationale的assess → 新进程diagnose show。所有命令以实际help的`--session-id`为准，每步使用返回的新revision；计划输入一次准备五个真实窗口事实（P3 testtime变化、P3 PE3/PE4值集合、P4 PE3/PE4值集合），min297不变，完整引用及proof保持原样。先在131文件哈希核对的真实副本跑通，再执行一次生产链；原RESOLVED/G/H不得重开或重跑。新session仅记录事后补充评估，保留open/unrated/INVESTIGATING实际语义，不制造新的FixVerification终态。输入、执行卡及后续结果在`D:\codex-tmp\t10h-0917`。
-
-原T10 Steps1/2/4/5现已按既有证据独立核对并勾选，Step6保留生产G/H通过；唯一剩余T10条款为Step3。已安装旧版本的ObservationStep只支持run-state、case-state、case-count，直接调用模型已确认无法表达Monitor事实。[补充评估规格](../superpowers/specs/2026-09-17-stm32tk-t10-hypothesis-assessment-design.md)和[实现计划](../superpowers/plans/2026-09-17-stm32tk-t10-hypothesis-assessment.md)已获用户批准，目前正在隔离工作树实现，尚未完成本次新部署/生产链。按计划Step4，在实现提交及针对性测试固定、输入审查通过后，独立代码审查与副本离线集成可针对同一候选并行；两者均通过后才进入部署和生产链。详见[条款对账](../codex/returns/STM32TK-T10-NATIVE-ANALYSIS/t10-clause-reconciliation.md)。
-
-原T10 Step3仍有明确缺口：现有Diagnostic只有应用逻辑候选（open/unrated），无计时/中断、GPIO/板级通路、应用持续拉低PE3三类假设的正式评估。新change-observed marker不替代这些评估。已有真实采样可用于离线补齐方案，不能改写已RESOLVED历史或凭最终通过追认诊断过程。G/H与Step6完成状态保留；下一步先准备这项限定补齐，再做Task11/12。
-
-source `2c6aedc6f9e85e9db43d2895d26395387c127a6b` 已按本轮授权部署至 `D:\stm32tk-data\fault-controlled-20260911\candidates\native-20260917\runtime\0.9.0`。Check healthy/matching、147个安装文件及真实PyOCD入口通过。复用原实机窗口完成**生产 G/H**：300有效对/0排除、minimum297不变；Diagnostic revision10/RESOLVED，FixVerification `dfbe6d789c79d3379f0b608f1526096c436f941d7d5eb6e807a3f911bea420e7` PASSED；新v3 attempt `ee7b50a4-22f5-4547-99ed-344582bcb853` COMPLETED，新进程show/resume及Diagnostic读回通过、timedOut=false。原85文件和上一runtime-state哈希未变，旧INVALID/过期attempt保留。本轮零硬件操作、未推送；不重烧、不重采、不重复部署。下一步逐条核对原T10剩余条款及Task11证据链、Task12全量差异；不据G/H完成宣布整个T10/VS10-A完成。详见[本次部署及生产结果](../codex/returns/STM32TK-T10-NATIVE-ANALYSIS/production-delivery.md)。以下均为历史断点。
-
-最新离线修正已接受：CodeHead `2c00d85abc739b404bae0f37e81e8f89263ed8a4` 支持严格原生寄存器数值和显式有界相对时间对齐。真实 P3/P4 证据副本得到300有效对/0排除，保留 minimum297；compare/bundle、Diagnostic RESOLVED/FixVerification PASSED、v3 COMPLETED及最终版本的新进程读回通过。生产85个原始文件哈希未变，旧 INVALID 分析保留。此结果仅为离线软件验收；当前部署仍为 `ee2152b497e62389a103ea4ff9ce2ebf92aae160`，未重新部署、推送或访问硬件。下一步在获准部署修正后，复用现有窗口及不可变 continuation proof 完成原业务 G/H；不重采，不复活过期 attempt。T10 G/H和VS10-A Task11/12仍未完成。详见[本次修正与真实副本验证记录](../codex/returns/STM32TK-T10-NATIVE-ANALYSIS/implementation-report.md)。下文为修正前的历史断点。
-
-当前集成已从用户恢复的历史目录迁至 `D:\codex-tmp\stm32tk-integration`，核对旧 index/唯一未提交补充并保全后同步到已验收 source `ee2152b497e62389a103ea4ff9ce2ebf92aae160`。该 source 已部署至长期候选 `D:\stm32tk-data\fault-controlled-20260911\candidates\continuation-20260917\runtime\0.9.0`，Check healthy/matching、146文件字节和真实PyOCD入口校验通过。一次获准的 P4 Monitor **PASS**：30秒300批/10Hz、零丢批、PE3/PE4均0/1、testtime增长；已释放并退出，用户确认仍正常交替闪烁。真实 continuation bind/show 和 P4 physical publish 均通过。当前阻塞转为离线分析契约：`analysis.py:1088` 不接受 native register typedValue，`:1166–1185` 要求两份独立时钟逐纳秒对齐；因此有效pair=0、quality=INVALID。保留此次真实数据，禁止重采或降低门槛补账本；须先冻结版本化数值/对齐修正。T10 G/H、VS10-A Task11/12仍未完成。完整根因、文件范围及必要验证见[迁移、部署及单次实测记录](../codex/returns/2026-09-17-stm32tk-restored-integration-deployment.md)。以下段落均为此前断点。
-
-显式恢复续接的软件修复已通过独立审查，CodeHead=`30ceae845f7770dfd01db90104bd01e5c3a70894`；[规格](../superpowers/specs/2026-09-17-stm32tk-t10-explicit-continuation-design.md)与[实现计划](../superpowers/plans/2026-09-17-stm32tk-t10-explicit-continuation.md)冻结原始实机身份保留、共同关联证明及独立限时 attempt。完整软件链和底层伪造/分类负例均通过；真实 P3/P4 证据的隔离副本已完成 bind 及新进程读取，原业务记录和副本中 68 个原有文件哈希不变。当前未部署、未操作硬件或补采样；T10 G/H、VS10-A Task11/12 未完成。后续部署后按新流程补真实 P4 Monitor 与验证闭环，不重烧补账本。当前源码工作区为 `D:\codex-tmp\t10c-0917\impl`；原 D:\workspace 集成工作区已不存在，不重建或依据 master 推测状态。见[实现与证据记录](../codex/returns/2026-09-17-stm32tk-t10-explicit-continuation-implementation.md)。以下“待批准/尚未实现”均保留为历史状态。
-
-本轮离线续接 **BLOCKED_SESSION_SCOPE**：原 P3/Diagnostic session 为 `vs10a-t10-d3-20260914-01`，恢复成功的 P4 为 `p4-recovery-20260917-03`；对实际记录调用现有 `_same_scope` 返回 false，四项比较仅 session 不同。现有 Monitor、Diagnostic 和 recovery 要求同一 session，公共导入不能合法重命名 physical 身份。原因是主代理将恢复操作放入独立身份造成的关联缺口；P4 的烧录/native/目视 PASS 保留，不归为硬件失败。原 revision6 attempt 已过期，不能原地续期。本轮没有操作硬件、部署、采样或执行完整 compare。先决定是否批准显式恢复续接的契约扩展；未批准前不修改验证器，T10 G/H、VS10-A Task11/12仍未完成。见 [具体检查、字段与最小纠正提案](../codex/returns/2026-09-17-stm32tk-t10-session-continuation-block.md)。
-
-最新受控 P4 恢复烧录 **PASS**：用户新授权后，现有 recovery 静态prepare绑定新action；一次execute在26431ms/exit0返回OK，回读54920字节，physical run `target-v2-d5b0e440822671ba2812a367bfedf2f6` 的 d3-heartbeat 1/1 passed。复用source7d22与原P4构建，无重复部署/编译/硬件重试；新session `p4-recovery-20260917-03`，action consumed、lease released、相关进程0。用户随后确认D3/D4都闪烁、一亮一暗交替，与P4的相反初值及同步取反逻辑一致；这是目视证据。独立核对确认native case覆盖计时及PE3变化，不替代PE3/PE4双位Monitor。T10 G/H及VS10-A其余验收仍未完成，此前失败根因也不因此自动确证；保留本轮PASS，不重烧补账本。见 [本次恢复烧录结果](../codex/returns/2026-09-17-stm32tk-p4-recovery-result.md)。以下终态失败均为历史记录，不覆盖本轮成功结果。
-
-最新 diagnostic-02 已取得原始异常：用户新授权一次正常 prepare 后，4884ms 返回 `PROBE_ATTACH_FAILED`；primary 为 `resume-verify/postcondition-failed`，初始检查未达到预期 running；cleanup 再次恢复并复查为 faulted，初始具体状态已被共享槽位中的后者覆盖，不能回填。session关闭、probe关闭检查及worker-parent-abort成功；新lease released、相关进程0。未生成action，未烧录或重试；原始异常留证缺口已补齐，但异常运行态及此前烧录失败的根因仍未确证，未证实状态映射bug。可准备现有受控恢复烧录路线，须另获授权，不应再重复普通prepare或部署。T10/VS10-A仍未完成；见 [本次诊断证据](../codex/returns/2026-09-17-stm32tk-program-diagnostic-deployment.md#newly-authorized-diagnostic-02-running-postcondition-failed)。以下为此前断点。
-
-编程异常补丁已完成本地部署：source `7d22c149d5f83ded14024569bce9a17734b2b7d1`，独立 runtime 位于原业务 DataRoot 的 `candidates\program-diagnostic-20260917\runtime\0.9.0`；Check healthy/matching、145 个安装文件匹配。新诊断 session `p4-program-diag-20260917-01` 的唯一正常 prepare 在 4873ms 返回 `TEST_EXECUTION_FAILED` / details={}，未生成烧录授权、未 execute/烧录；本轮已终态停止。新 lease released、所属进程无残留，用户确认 D3/D4 均常亮。原始异常未留存，不能确认为 attach、Flash 或板态根因；已离线验证复用的现有捕获入口，下一次硬件须新授权，不需再次部署。P4 构建、P3 备份及历史 PASS 保留，T10/VS10-A 未完成。见 [本地部署及本轮停止记录](../codex/returns/2026-09-17-stm32tk-program-diagnostic-deployment.md)。以下未部署/旧实机断点均为历史记录。
-
-编程异常详情保留补丁已离线 ACCEPTED，CodeHead `8e75012e0c92dc37e67d0d31064590772a53be4b`：保留实际调用阶段、脱敏异常链及可用错误号/Flash地址/算法返回码，贯穿 worker 与 Target 公共响应。实现者相关回归489项通过，主代理干净工作树完整审查及8项关键用例通过；仅本地集成，未部署、未操作硬件。部署仍为 `0c375c03`；不能据此宣称物理烧录已修复。下述P4烧录失败仍是实机断点，T10/VS10-A仍未完成。见 [修正与独立验证](../codex/returns/2026-09-17-stm32tk-program-failure-diagnostic.md)。
-
-P4 单行修复已完成并离线审查通过：固件 commit `a5ebcab69278d3e25776ba7f9b0ab1376910cdd2`，build `5089b0924da702e38b05d245ae3b05d5f73935c02ee232b097f3e243c132e9fb`，只有周期 `LED0=0`→`LED0=!LED0`。用户已授权同轮烧录、30秒采样和闭环；新 attempt `4956a90c-6132-4651-b597-e5aef5a7fd22` 到 revision6。一次正常 prepare 成功，唯一 execute 在6259ms/exit2返回 `TEST_FLASH_FAILED`，原始flash结果为 `PROBE_PROGRAM_FAILED`、details为空。已终态停止；未取得P4烧录成功/TestRun，未采样或闭环、无重试。registry released、无所属调试进程残留；用户随后确认D3/D4均常亮，机器运行状态未证实。原83文件P3备份和既有PASS保留，当前P4构建需保留。T10/VS10-A仍未完成；见 [P4实施与本次烧录停止](../codex/returns/2026-09-17-stm32tk-t10-p4-programming.md)。下述P4尚未改动/待实施是历史断点。
-
-租约修正已部署并完成生产存证验证 **PASS**：部署 source `0c375c03ab6afa4192a37d5732009b82845216a7`，独立 runtime 为业务 DataRoot 下 `candidates\lease-20260914\runtime\0.9.0`，调用其绝对 Python，业务 DataRoot 不变。Check healthy/matching、145 个安装文件匹配；原 failed-before 经公共 publisher 发布 OK，新进程认证读取通过，ref SHA `37e15560615974b49d041cd4386d3fbcbebaea76df395afd09581ae643739fc1`，两侧原 lease 分别保留、32 份原始证据不变。未新增硬件/烧录/采样/P4/attempt；旧 PASS 保留，T10/VS10-A 未完成。下一步按已准备的 P4 修复链路推进，不能使用旧默认 runtime 或复用已消费动作。详见 [部署及生产验证](../codex/returns/2026-09-14-stm32tk-monitor-lease-deployment.md)。以下“未部署/生产发布待执行”均为历史断点。
-
-租约关联修正已离线 **ACCEPTED**：CodeHead `72e9706c9cf60dc3204b351a98d3d01623125dd5`，仅修改跨操作租约相等谓词及现有测试；36项相关测试通过，主代理在干净工作树完成完整差异审查，并用实际存证副本经公共发布器及新进程读取验证通过，32份原始证据哈希不变。尚未部署到source6250 runtime，生产 evidence 尚未执行新发布，P4源码/新attempt/硬件均未动；下一步部署获准后先离线发布原窗口，再继续P4。见 [实现及独立验证](../codex/returns/2026-09-14-stm32tk-monitor-physical-lease-link.md)。下文“待批准修正”为此前断点。
-
-当前 P4 前置阻塞已离线确证：公共 Monitor physical publish 在 `replay.py:1976` 强制原 Target lease 与后续 Monitor lease 相等；实际26项身份/上下文比较仅该字段不同。两次独立连接各自正确释放，原烧录与下述300批采样PASS保留，不能改称硬件失败。P4源码未改、未构建、未创建新attempt、无新硬件；待批准并修正发布契约后复用既有数据继续。见 [根因及最小范围](../codex/returns/2026-09-14-stm32tk-t10-monitor-lease-publication-block.md)、[拟议规格](../superpowers/specs/2026-09-14-stm32tk-monitor-physical-lease-link-design.md) 和 [拟议计划](../superpowers/plans/2026-09-14-stm32tk-monitor-physical-lease-link.md)。
-
-最新 failed-before Monitor **PASS**：用户授权后单次30秒/100ms窗口，300个完整相关批次、零丢批，testtime有102个不同值，PE3={0}、PE4={0,1}；周期P95=101.8052ms、P99=103.5901ms、最大155.7186ms，现有功能/性能门槛均通过。采样停止、probe released、runtime stopped，registry released，相关进程无残留。未重烧、未重试；采样后用户灯态确认待回复。T10/VS10-A仍未完成；下文Monitor待授权为此前断点。见 [本轮实机采样记录](../codex/returns/2026-09-14-stm32tk-t10-d3-before-monitor.md)。
-
-离线衔接已完成：现有 physical run 已通过公共接口绑定 Diagnostic `2781df6812f2dc0ba067e0b1b9d07b5a`，revision 5 / INVESTIGATING。原运行及 d3-heartbeat 均为 failed，离线观察匹配；timer-or-pe3 的具体分支仍未被机器证据区分，假设保持 open/unrated。旧 attempt 的公共 resume 确认 timedOut=true；尚未建立新计时 attempt，待 Monitor 与 P4 精确动作准备齐全后引用原 TestRun 连续推进。未新增任何硬件访问。下一步是一轮30秒/100ms的 failed-before 双位 Monitor 观测，待该范围授权；详见 [Diagnostic 衔接记录](../codex/returns/2026-09-14-stm32tk-t10-d3-diagnostic-lineage.md)。下文尚无 Diagnostic 为历史断点。
-
-最新恢复烧录 **成功**：用户重新要求烧录后，一次恢复 execute 27,189ms/exit0，D3 固件 build `96e92552c24c1351588d44df5a97f6402b2740294366b8a49f1d879a053f71ea` 已写入并回读54,904字节，取得 physical run `target-v2-53b0c81ffeb50ab65bd6c0ad815ad273`，d3-heartbeat 为预期 failed，error/timeout/skipped=0。lease released、相关进程无残留；用户已确认“D3常亮，D4闪烁”，本次可见灯态符合预期；这是用户目视证据，不冒充双位Monitor结果。随后补记 target-failure-observed 检查点返回 ACCEPTANCE_ATTEMPT_TIMED_OUT；真实烧录/TestRun保留，不因账本超时重烧。T10/VS10-A尚未完成，后续先按恢复/lineage契约核对既有证据。见 [恢复烧录记录](../codex/returns/2026-09-14-stm32tk-t10-d3-recovery-flash.md)。以下“未烧录/停止”均为先前断点。
-
-最新 D3 部署已通过：source `6250ef14035c053caa5ddc98c072c4be5b5e3650`，独立安装于原 DataRoot 子目录 `candidates\lockup-20260914`；调用该候选绝对 Python，业务 DataRoot 仍保留原根（旧默认 launcher 仍会选旧 runtime，不能混用）。一次新 prepare 在 5,269ms 终态停止：resume-verify/postcondition-failed，预期 running，实测规范状态 faulted。未产生 action、未 execute/烧录；lease released、相关进程无残留，不能称已恢复运行。D3 固件仍只是离线候选，T10/VS10-A 未完成。详见 [部署和本次停止记录](../codex/returns/2026-09-14-stm32tk-t10-d3-deployment.md)。下方“未部署”均为此前历史断点；禁止重用本次终态授权或自动恢复重试。
-
-新 D3 before-firmware 已完成实现和独立离线审查：工程 `D:\codex-tmp\t10-d3-fw`，CodeHead `8755ba8fd0c678f32d7d23e7d827e84317026429`，build `96e92552c24c1351588d44df5a97f6402b2740294366b8a49f1d879a053f71ea`。D3 低电平常亮、D4 主循环翻转，case 为 d3-heartbeat；新双位采样及精确 P3→P4 源码变更入口已离线验证。最终构建集已保留且现有 freshness loader 通过；不得把这些后续交付所需生成文件当作一次性测试垃圾清除。本轮未部署、未连接硬件，不改变以下 diagnostic-03 终态；后续仍需当前绑定和新的有界实机授权。见 [实现与审查记录](../codex/returns/2026-09-14-stm32tk-t10-d3-fixture.md)。T10、VS10-A 未完成。
-
-最新 diagnostic-03：新授权下唯一连接诊断 4,796ms 终态失败；primary 为 resume-verify/backend-code/PROBE_BACKEND_ERROR，lastVerifiedTargetState=null，已到恢复后的状态读取/归一化，尚不能区分读异常与未支持的返回状态。未产生 action，未烧录；registry released、所属进程无残留。LOCKUP/lockedup 映射缺陷已修复并通过独立审查，集成本地 commit 26eaab9d47239ca0eacb7eca34bf9b8131537cfd；尚未部署。不把它称为本轮板态已确证。用户报告 D4 常亮，但旧 P3 的 LED1=1 按原图应为熄灭；不能把该目视报告归为预期 P3，也不能据此证明程序停住。见 [diagnostic-03 记录](../codex/returns/2026-09-14-stm32tk-t10-p3-stopped.md#newly-authorized-diagnostic-03)。以下 continuation-02 是历史断点。
-
-最新 continuation-02：用户重新授权继续测试后，新 attempt `1aba83ba-531e-4ede-b2dd-553dc9fa7b47` 复用已验证 P3 构建，唯一 prepare 在 4,746ms 返回 `TEST_EXECUTION_FAILED`，原始异常码为 `PROBE_ATTACH_FAILED`。未完成 attach，未生成新 action、未调用 execute/烧录/Monitor/P4；已再次终态停止，无重试。registry released、所属进程无残留，当前运行状态未证实。详细证据见 [T10 停止记录](../codex/returns/2026-09-14-stm32tk-t10-p3-stopped.md#newly-authorized-continuation-02)。下段为上一轮烧录失败，不能混为同一执行阶段；历史 PASS 保留。
-
-上一轮 T10 **TERMINAL_STOPPED**：P3 唯一源码改动已提交 `2bfa4bd81dc7474130e2d2c5acdad0162e15eb04`，旧 CMake 缓存迁移问题纠正后构建成功；同一部署 source `70ed9c70075445d66d9229a1420817f604843fd2` 上唯一 prepare OK，唯一 execute 在 6,430ms 返回 `TEST_FLASH_FAILED`。没有产生 P3 TestRun，未运行 Monitor/Diagnostic/P4。新 action 已消费；当前源码/ELF 为 P3，flash receipt 不存在，板上烧录完成和运行状态未证实，用户观察 D4 常亮。registry released、两次调用所属进程均已退出。执行账本终态停止，acceptance 最后 checkpoint 为 revision 2 / firmware-built-before；不能复活该次授权或自动重试。证据目录 `D:\codex-tmp\t10-acceptance-20260911-01`，终态摘要 `physical-stop-20260914.json`。T9、100ms、FullFault 和 attempt 7 历史 PASS 保留；T10、Task11/12、VS10-A 仍未完成。以下为历史断点。
-
-最新单次受控 FullFault 实机路径 **PASS**：用户新授权“可以开始”后，修正入口在已部署 source `70ed9c70075445d66d9229a1420817f604843fd2` 上执行一次，13,347ms、exit0/OK，取得完整报告及 running→halted→running、halt/resume 成功、全部 cleanup 成功。registry released、所属进程收尾已核对；用户事后确认 D4“在闪烁”。证据 `D:\codex-tmp\fault-verify-20260911-02`，详见 [最新执行结果](../codex/returns/2026-09-11-stm32tk-fault-controlled-deployment.md#newly-authorized-guarded-invocation-physical-pass)。无需重新部署或重复本场景；下文“待新授权/FullFault 未完成”保留为前次断点历史，已由本结果更新。其余 Task7 观测、T10、Task11/12、VS10-A 仍未完成。
-
-T9 已按原条款及独立审查收口：本次新生成 IDE 配置 PASS；09 的 end/reacquire 后 CLI typed read 和 814 的 CLI/MCP parity 分别按未变行为复用，不冒充同一次新 DataRoot 单序列，也不追加读取。原 Task9 三项已勾选；后文完整 T9 未通过为历史状态。下一项为 Task7 FullFault/观测及 T10 实机准备，VS10-A 仍未完成。
-
-受控 Fault 修复现为 **SOFTWARE_COMPLETE_HARDWARE_PENDING**：产品 CodeHead `333f456dfd0382ceb6b1904e5e29a7592a9ebda9`，最终五模块392项通过，完整差异与新增流程条目已独立审查。见 [实现与审查记录](../codex/returns/2026-09-11-stm32tk-fault-controlled-snapshot.md)。集成 source `70ed9c70075445d66d9229a1420817f604843fd2` 已部署至 `D:\stm32tk-data\fault-controlled-20260911\runtime\0.9.0`，Check healthy/matching、145项安装文件及固件绑定验证通过。随后唯一一次调用因主代理留证包装缺少 __main__ guard，在 Windows worker bootstrap 阶段返回 PROBE_TIMEOUT，尚未进入枚举/attach/halt；分类 **TERMINAL_STOPPED_INFRASTRUCTURE**。修正入口的离线真实 spawn 检查已通过，新一次实机调用待新授权；不重新部署，不自动重试。详见 [部署与首次调用记录](../codex/returns/2026-09-11-stm32tk-fault-controlled-deployment.md)。FullFault 及剩余观测、T10、Task11/12、VS10-A 仍未完成。下文 e88 部署为历史记录。
-
-生成配置候选已部署：source `e88c012b6b965c048474f2bba12e1ef396f1d193`，新 DataRoot `D:\stm32tk-data\t9-generated-ide-20260911`；Check missing → Bootstrap → Check healthy/matching、安装字节、最终 PyOCD 启动器及生产身份离线核对通过。**GENERATED_IDE_PHYSICAL_ACCEPTED**；新配置原样使用，实际 IDE session `1f93448d-6f49-4918-a06f-837bdf941e1d` attach/terminated 已证实，用户 `testtime=20`、IDE 停止后 D4 闪烁。一 begin/一原 ticket end 均 OK，最终 observing/ticket cleared/registry released/无调试残留；用户补充归还后 D4 仍闪烁；Watch 时不闪与 IDE attach 停核日志一致，连续不停核采样证据分开保留。独立证据审查已 ACCEPTED（生成 IDE/handoff 切片）；不声称源文件导航已验证、GDB exit code=0 或机器采集 Watch 值。已消费配置从活动 workspace 撤下，快照保留。CLI/MCP 按原候选/原环境范围 REUSED，零追加读取，不宣布完整 T9。见 [部署记录](../codex/returns/2026-09-11-stm32tk-t9-generated-ide-delivery.md)。以下部署 814/未部署为历史断点。
-
-生成 IDE 配置软件修复已独立接受：候选 `894a03d0b241bd139ae3ea890684ca29c16f6edb` 新增版本限定的 `cortexDebugLaunch`，保留旧 API/companion；127 项 owner 回归、5 项主代理独立检查及实际扩展方法/PyOCD parser 离线验证通过。**SOFTWARE_COMPLETE_HARDWARE_PENDING**；当前部署仍为 `814b1683...`，本轮未部署或访问硬件。后续需准备并授权候选部署和一次新生成配置的真实 IDE 验证；完整 T9/T10/VS10-A 仍未完成。见 [软件修复记录](../codex/returns/2026-09-11-stm32tk-t9-generated-ide-compatibility.md)。下文“兼容缺口”保留为尚未实机闭合及旧版本的历史边界。
-
-最新 worker 修复及剩余读取已完成：候选 `814b1683d2f562ce1bb2db464ee4c572cb31d658` 经独立完整审查，部署至 `D:\stm32tk-data\t9-worker-stdin-20260911`；Check healthy/matching、安装字节及真实 stdio 离线检查通过。仅一次 CLI `testtime=38`、一次 MCP `testtime=0`，均为有效 32 位 typed read，完整绑定除采集时刻外一致；租约释放、无消费者残留，用户确认 D4 仍闪烁。**T9_CLI_MCP_PHYSICAL_PARITY_PASS**；下方 NOT_READY/未实现描述仅为历史状态。原始生成配置兼容性、完整 T9、T10/VS10-A 仍未完成。不得为同一结论重跑这两次读取。见 [本次修复与实机记录](../codex/returns/2026-09-11-stm32tk-t9-worker-stdin-delivery.md)。
-
-用户已授权 worker 修复后继续 T9。新候选部署路线经独立条款核对：保留旧 DataRoot，不绕过同版本 source-conflict；在 `D:\stm32tk-data\t9-worker-stdin-20260911` 先 Check=missing 再 Bootstrap，核对候选身份及真实启动器。不要复制旧 session/ticket/lease/action/runtime-state。P2 工程及 flash receipt 不变；由于 runtime/DataRoot 改变，本轮只新增同候选一次 CLI typed read → 一次 MCP typed read，首错停止。09 IDE/handoff 成功证据复用；原生成配置兼容性仍单独保留，不能自动宣布完整 T9。执行卡：`D:\codex-tmp\t9-worker-stdin-delivery-20260911\execution-card.md`，代码审查/部署前仍 NOT_READY。
-
-09 超时的后续离线定位：真实 stdio 中仅构造/关闭 worker 即复现 10 秒超时；仅对 Windows spawn worker 显式设 child stdin=NUL 后 1.469 秒 ready、关闭后无残留、协议正常。独立审查确认 stdin 继承触发的进程环境兼容问题，发生在服务/探针访问前；更底层阻塞栈未取得。诊断及最小修正边界见 [MCP worker stdin 修正计划](../superpowers/plans/2026-09-11-stm32tk-mcp-worker-stdin-repair.md)。产品修复尚未实现/部署，无硬件重试；下段“根因不足”为当时断点，已由此处取代。
-
-最新 continuation 09：适配后的 IDE 路径 PASS（用户 testtime=10、GDB exit 0、D4 闪烁；本地 session events 佐证 attach/terminated），原 ticket end/reacquire OK，一次 CLI 读取 testtime=10。随后一次 MCP 读取返回 PROBE_TIMEOUT，本轮 **TERMINAL_STOPPED_MCP_PROBE_TIMEOUT**，没有重试。最终 registry=released、handoff=observing/ticket=null，无 Python/PyOCD/GDB 残留；MCP 后 D4 未再次目视确认。根因/具体超时阶段证据不足，下一步仅离线定位。原始生成配置兼容缺口及 T9 MCP 等价仍未闭合，T10/VS10-A 未完成。证据 `D:\codex-tmp\t9t10-t9-20260911-09` 及下方 T9 执行记录。以下 07/08 为历史断点，原外部预约现已消费释放。
-
-最近 IDE 尝试：continuation 07 已因用户报告 `PyOCD: GDB Server Quit` **TERMINAL_STOPPED**。实际扩展日志确认正确 T9 attach 配置进入 initializing/capabilities 后 terminated；没有成功 attach/detach 证据。当时离线确认所配置的 pyocd.exe 内嵌已不存在的 D runtime staging Python，`--version` 退出 1，而最终 runtime Python 的 `-I -m pyocd --version` 返回 0 / 0.45.1。原 IDE server stderr 尚未取到，不能宣称已还原全部现场错误。当时的启动入口阻塞已按下段修正，后续硬件仍停止；未重复 begin、未执行 end/reacquire，最后已核实的 externally-owned 预约保留。证据目录 `D:\codex-tmp\t9t10-t9-20260911-07\gdb-server-failure`。参见 [T9 执行记录](../codex/returns/2026-09-11-stm32tk-1001-t9-ide-attempt-06.md)。
-
-后续离线修正已完成：部署脚本增加 PyOCD 最终化/绑定/版本检查并独立接受，本机从原 manifest 验证的同版本 wheel 限定修复后，真实 pyocd.exe 与模块版本均为 0 / 0.45.1。运行时产品 source、固件、receipt、runtime-state 及外部预约哈希未变；没有重新打包、全量部署或访问硬件。启动器阻塞已解除，07 仍为历史终态失败，下一步 IDE 重试及原 ticket 回收仍需新授权。参见 [修复及验证记录](../codex/returns/2026-09-11-stm32tk-runtime-pyocd-launcher-repair.md)。
-
-当前 continuation 08 已因用户报告“testtime=不可用，PyOCD报错” **TERMINAL_STOPPED_IDE_PYOCD_ERROR**。修复后的 EXE 哈希未变；当前没有 PyOCD/GDB/Python 进程，handoff/registry 仍为 externally-owned。扩展日志记录 T9 初始化、capabilities 后 terminated，未证明 server ready、attach 或成功 Watch 读取；已有多个会话记录，不能无时间链把它们都算作本轮操作。原始 gdb-server 错误尚缺，已请求用户复制现有输出，不重新连接补日志。暂停 end/reacquire、CLI/MCP 读取及重试。证据及执行卡：`D:\codex-tmp\t9t10-t9-20260911-08`。原生窗口工具身份校验失败仍限制直接读取 UI；不据错误码或变量不可用猜测硬件原因。
-
-用户随后提供的终端原文补齐阶段：DP/AP/ROM/CPU 发现完成，GDB 已监听 50000；因此早先的“server ready 未证明”已被这份新证据替代。离线实际扩展函数复现就绪正则不匹配，10 秒超时关闭路径与现有约 10.4 秒时间记录一致，分类为 IDE 版本兼容；完整现场 timeout/kill DAP 记录仍缺。外置配置已仅添加上述 ready override，已通过独立审查，未启动服务或重试硬件，08 仍终态停止。
-
-| 项目 | 状态及下一步 |
-| --- | --- |
-| 工作树 | `D:\workspace\stm32tk-1001-legacy-hardware-impl`，分支 `codex/STM32TK-1001-LEGACY-HARDWARE-CLOSED-LOOP-impl`；本次文档 accepted base `35e08b72179dfa1784d447f09d2b2c33b39f0064` |
-| 部署 | source `5f036363383e6c85cc87426da1b4a1c20dfe7acc` / 0.9.0，Check healthy/matching、安装字节检查有效；不重新部署 |
-| runtime / data | `D:\codex-tmp\stm32tk-vs10a-legacy-campaign\data\runtime\0.9.0` / `D:\codex-tmp\stm32tk-vs10a-legacy-campaign\data` |
-| P2 | `D:\codex-tmp\stm32tk-vs10a-legacy-campaign\project-standard-math`，HEAD `4bfcf9f95b1d761c9a82042d6ded751d068c1e06`；保留现有 untracked 产物，不声称目录全净 |
-| P2 build / ELF | build `77d787ee83f744831316f9531b825935ef276520472221a8174f7a7d4cfe57f9`；`build/arm-debug/LWIP.elf` SHA256 `10df523425dbe8567d5876e5e790714d1314a5dd3d545e4d43a063c300fd6ead` |
-| 正常 Target | **PASS**：session `vs10a-t9t10-p2-20260911-04`，run `target-v2-c3ff80b549561c68d3a5961072d728ba`，heartbeat 1/1、54896 字节 readback；用户确认结束后 D4 仍闪烁。当前 flash receipt 属于 04；不重烧，digest 已消费 |
-| observation 05 | **TERMINAL_STOPPED**：Fault 返回 FAULT_TARGET_NOT_HALTED / state=running；无 Fault report、无“无活动 Fault”结论；此后无采样/GPIO/handoff。lease released、runtime 进程 0、P2 receipt 未变 |
-| 必要观测 | **PENDING**：按原 Task7 逐项核对 -12 能覆盖的相同固件/probe/workspace 条款，仅补缺口；完整 Fault 公共入口 **BLOCKED**，见第 3 节 |
-| 100ms / 历史 | -12 的 30 秒 299 批、P95 102.8332ms 连续不停核 PASS 和 attempt 7 历史实机 PASS 保留，不冒充当前 T10 run |
-| T9 | 09 适配后 IDE attach/Watch/detach PASS；end/reacquire OK，CLI typed read PASS；MCP PROBE_TIMEOUT 后终态停止，预约已释放。保留原始生成配置兼容缺口，完整 T9 未通过 |
-| T10 | 软件独立接受；P3/P4/Diagnostic/FixVerification **PENDING**；当前候选物理窗口采集入口/预算/LED selector 尚待完整冻结，完成前不得开始 P3 |
-| VS10-A | **未完成**：剩余观测、T9、T10、Task11 lineage 和 Task12 全量 diff |
-
-T9 本次实际运行的 IDE 为 `D:\Program Files\Microsoft VS Code\Code.exe` 1.129.1；此前 C 盘 `C:\Users\ZhangYang\AppData\Local\Programs\Microsoft VS Code\new_Code.exe` 因更新锁退出，不能继续列作已就绪入口。后续以实际进程及加载上下文重新核对。GDB 为 `C:\ST\STM32CubeCLT_1.22.0\GNU-tools-for-STM32\bin\arm-none-eabi-gdb.EXE`，Cortex-Debug 1.12.1。外置 workspace 必须指向上表 project-standard-math，不能误用 sibling project。本地 pack 3.1.1 与 manifest 声明 2.17.1 不同，应核对实际 PyOCD target 支持/来源，不能静默等同。C 盘安装程序允许使用，旧 C temp/tmp 工作产物不可用。
-
-可核验依据：
-
-- [P2 各次执行及最新断点](../codex/returns/2026-09-11-stm32tk-1001-p2-serial-attempt-01.md)；04 原证据 `D:\codex-tmp\t9t10-p2-20260911-04`，05 原证据 `D:\codex-tmp\t9t10-p2-observe-20260911-05`。
-- [软件集成与部署](../codex/returns/2026-09-11-stm32tk-1001-t9-t10-local-delivery.md)。
-- [VS10-A 规格](../superpowers/specs/2026-08-25-stm32-toolkit-1001-legacy-keil-real-board-closed-loop-design.md)、[原计划 Task7–12](../superpowers/plans/2026-08-25-stm32-toolkit-1001-legacy-keil-real-board-closed-loop.md)、[运行/停核状态契约](../superpowers/plans/2026-09-10-stm32tk-1001-protocol-test-state-alignment.md)。
-- Task12 Toolkit 全量 diff 基线 `9b7839bb01f88a9e3d2c13203f38aa0d11647232`，工程 P0–P4 全量 diff；软件切片 base `4b79ad97c51a3bc62f7c57c4637489ac9d5c6da1` 不替代最终历史基线。
+每次运行后清理归属明确且不再需要的一次性输出。解析绝对路径并确认位于本轮根内，使用同一 PowerShell 的原生文件操作；保留源测试、可复用 fixture、用户数据、共享缓存、rollback、有效证据及最小失败材料。被自动策略拒绝时记录路径及原因，不换工具绕过。当前代码接受与目录清理由执行账本记录。

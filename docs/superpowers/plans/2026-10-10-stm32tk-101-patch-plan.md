@@ -11,7 +11,9 @@
 主代理负责规格、集成、所有公共 schema/类型/lockfile 决策、完整差异审查和最终验收。
 每切片一个 `gpt-6-sol / max` 实现者，禁止自我批准或递归委派。实现和独立审查分离。
 所有产品写入、实现测试和用户技能改动由实现者完成；主代理只写规格/计划/验收文档。
-下面 A/B/C/D 依次实施，避免 context、CLI、公共返回、生成器及版本资源争用；独立只读核查可并行。
+下面 A/B/C/D 依次实施，避免 context、CLI、公共返回、生成器及版本资源争用。
+新增 E 为用户已授权的历史清理与用户指南，可在独立工作树与 A 并行；先冻结下面清单和替代文档，
+E 不修改产品运行代码、版本资源、技能或 A/B/C 所有文件，D 在 E 集成后只核对版本与最终行为一致性。
 各切片的具体实施分支从上一个被主代理接受的 full SHA 创建，派发前把该 SHA 写入切片开工记录，不能使用浮动 HEAD。
 如某切片超出一至三个工作日，先缩减/重设计边界，不递归拆成文件任务。
 
@@ -20,7 +22,8 @@
 | A / 项目诊断与入口 | 子目录 Keil 可发现；doctor 不启动 GUI；迁移拒绝准确可操作 | Toolkit detection/context/doctor/tool_support、keil 发现/基线和 migration 诊断；对应测试；migrate/build 技能 |
 | B / 配置与构建 | 保留未托管编辑器文件并构建；栈符号与 NOBITS 统计正确 | generation/configure/managed_files、build/map_file/identity、两个模板副本；对应测试；configure 技能 |
 | C / 观测与 Monitor 可用性 | 具体 SVD/绑定/目标失败原因；flash 运行状态不误导；UI 有安全恢复提示 | debug/svd/firmware、probe flash/handoff/pyocd 诊断、hardware_workflows；Monitor UI/bootstrap 及 launcher 提示；受影响测试；flash/monitor 技能 |
-| D / 统一版本与交付 | 用户能找到当前指引，1.0.0 可受控升级到统一 1.0.1 | 元数据、setup/launcher、release builder/policy、UI lockfile、generation producer 兼容、双语 README/约束文档、发布说明及受影响测试 |
+| D / 统一版本与交付 | 1.0.0 可受控升级到统一 1.0.1 | 元数据、setup/launcher、release builder/policy、UI lockfile、generation producer 兼容、最终文档版本核对及受影响测试 |
+| E / 当前仓库入口 | README 与故障指引完整，过期资料退出当前树 | 下列冻结历史路径、双语 README、CHANGELOG、docs/user-guide.md、保留路径的 Windows preflight 文档；删除旧工具专属测试/fixtures |
 
 实现者只修改本切片具名职责相关文件；新文件/公共字段/跨责任区改动先返回主代理决定。
 共享文件的后续修改必须基于已接受前一切片，不覆盖其他人的更改。不得把原脏工作区的改动顺带纳入。
@@ -95,6 +98,40 @@ Toolkit `__init__.py`、UI `package.json`/lockfile 顶层项目版本、两个 `
 重点既有验证：`test_setup_runtime.py`、`test_plugin_layout.py`、`test_package_boundary.py`、
 release `test_0900_artifacts.py`，UI typecheck/build/verify:dist，以及实际受管 runtime 的版本与入口检查。
 本计划批准并不自动授权修改用户已有 runtime；本地构建、离线 fixture 验证先行，必要安装另给具体候选与目录。
+
+### 5.1 E 历史清理冻结清单与验收
+
+删除选择从远端 base `694c825d29a55a53052a148efa4cc6720c315a04` 的 tracked tree 计算，
+不匹配本轮新文件或原脏工作区。380 个旧 docs 与三个旧进度文件退出当前树：
+
+- `docs/openclaw/**`、`docs/codex/lessons/**`。
+- `docs/codex/returns/**` 中该 base 的所有文件；保留本轮新增 `STM32TK-101/**`。
+- `docs/superpowers/specs/**` 和 `docs/superpowers/plans/**` 中该 base 的全部历史文件；保留本轮新增 2026-10-10 101 规格/计划。
+- `docs/testing/2026-10-08-rc4-local-handoff.md`、`.superpowers/sdd/**` 中三个 tracked progress 文件。
+
+同时退役仅用于旧资格流程的12个工具，以下路径均相对 `tools/release/`：
+`gates_0600.json`、`performance_0600.json`、`path_contract_0600.ps1`、`run_0502_windows_gates.ps1`、
+`run_0600_candidate.ps1`、`run_0600_final.ps1`、`run_0600_gates.py`、`run_0600_hardware.ps1`、
+`run_0600_quick.ps1`、`verify_0502_release.py`、`verify_0600_feasibility.py`、`verify_0600_release.py`。
+
+成组删除仅服务这些工具的 Toolkit 测试：`tests/test_0502_release_gate_helper.py`、
+`tests/test_0502_release_gate_controller.py`、`tests/release/test_acceptance_feasibility_0600.py`、
+`tests/release/test_gate_catalog_0600.py`、`tests/release/test_gate_controller_0600.py`、
+`tests/release/test_release_verifier_0600.py`。可删除 `tests/release/fixtures/` 下的
+`0502/**`、`coverage/**`、`npm-audit-v11-zero.json`、`native-outcomes/fixture.py`、
+`native-outcomes/ctest-pipe/**`、`native-outcomes/playwright-1.56.1-list.json`、
+`native-outcomes/pytest-8.4.2-junit.xml`、`native-outcomes/vitest-4.1.10.json`。
+明确保留 native-outcomes 的 `ctest-4.3.1-junit.xml`、`ctest-4.3.1-output.txt`、
+`ctest-4.3.1-failure-output.txt`，它们仍服务现行 host/CTest bridge 测试。
+
+主代理先建立 `docs/architecture.md`、`docs/development.md`、`docs/release-status.md`、
+`docs/testing/release-qualification.md` 并更新标准测试流程和 AGENTS 入口；E 不改这些治理文件。
+E 补齐双语 README、CHANGELOG、用户指南与既有路径的 Windows 部署指南；命令必须对照真实 parser/技能，
+1.0.1 仍标 in development，未实现的目标行为标版本边界，最终 D 再对齐实际接受结果。
+
+保留当前 release builder/policy、许可证、ui_dist、setup/launcher、全部当前产品和所需测试/fixture。
+无 Git 历史重写、archive 镜像、远端操作、新验证器或 CI。验收为准确删除清单、剩余代码/测试/文档引用闭合、
+当前打包输入完整、相关 host/CTest 和 release artifact 回归。删除旧专属门禁不降低当前发布资格门槛。
 
 ## 6. 验证层、责任和终止条件
 

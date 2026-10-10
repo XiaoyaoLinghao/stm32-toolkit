@@ -114,6 +114,9 @@ Doctor 对 CubeMX/VS Code 等 GUI 工具复用 tool_support 的静态版本读�
 VS Code 扩展不再通过启动 Code 枚举：保留现有三项与字段，未实测时为 `installed=false, version=null, status="not-probed"`，
 并明确只有 `status=ok` 才表示实际探测到安装；不把未知写作 missing，不新增扩展扫描器或把 profile 配置当安装证明。
 `probeCore.registry` 明确为 Probe 租约目录；missing 不等于没有 PyOCD targets，不能因此擅改 safe 判定。
+Doctor 成功外层 details 增加 `probeRegistrySemantics="probe-lease-directory"`；
+keil-inspect 仅在 includeBaseline=true 的成功外层 details 增加
+`baselineSemantics="parseable-historical-artifact-only"`，不修改 KeilBaseline 持久/数据模型。
 context 保持无隐式探针访问；成功的外层 details 固定增加 `capabilitySemantics="current-readiness"` 与
 `hardwareDiscovery="not-performed"`，不改变 data.hardware 和 capabilities 原结构，明确 hardware 为未探测快照、capabilities 为当前 readiness，
 不伪造最近探针数据，不加入新的持久缓存或隐式枚举。
