@@ -83,7 +83,8 @@ UI 针对缺/错 token 和拒绝分支运行现有 Vitest，检查真实 DOM 不
 
 版本文件清单：`.claude-plugin/plugin.json`、两个 `pyproject.toml`（含 Monitor 精确 Toolkit 依赖）、
 Toolkit `__init__.py`、UI `package.json`/lockfile 顶层项目版本、两个 `bin/*.cmd` 的 runtime 目录、
-`bin/setup-stm32-env.ps1` 的当前/旧版白名单/内嵌校验/可信 hash、release builder/policy。
+`bin/setup-stm32-env.ps1` 的当前/旧版白名单/内嵌校验/可信 hash、release builder/policy，
+以及 `schemas/stm32-release.schema.json` 唯一 `productVersion` 常量（不改schema结构或schema版本）。
 对生成器 producer 兼容表新增 1.0.0，同时保留 0.9.0；不能伪造原 project generatedBy。
 
 1. 升级代码只使用既有事务，验证 Check → 经授权的 Repair → Check、用户数据保留、旧目录 quarantine；
@@ -103,7 +104,7 @@ Toolkit `__init__.py`、UI `package.json`/lockfile 顶层项目版本、两个 `
 release `test_0900_artifacts.py`，UI typecheck/build/verify:dist，以及实际受管 runtime 的版本与入口检查。
 本计划批准并不自动授权修改用户已有 runtime；本地构建、离线 fixture 验证先行，必要安装另给具体候选与目录。
 
-D独占当前版本说明的 `skills/setup-stm32-env/SKILL.md`，保留原安装授权及事务边界。
+D独占 `skills/setup-stm32-env/SKILL.md` 的当前版本及操作说明，对齐已接受A/B/C行为，保留原安装授权及事务边界。
 基于1.0.1返回值的测试断言另包括Toolkit的 `test_public_inventory.py`、`test_cli.py`，
 Monitor的 `test_cli.py`、`test_service.py`、`test_exports.py`、`test_runtime.py`。
 这些只更新当前版本期望；显式模拟旧版本、第三方版本和历史fixtures不替换。
