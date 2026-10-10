@@ -16,7 +16,7 @@
 | 场景 | 实现者/审查者 | 当前事实 |
 | --- | --- | --- |
 | A 项目发现与诊断 | implement_a / 主代理独立审查 | ACCEPTED；CodeHead 47d78270cff33673a3d2894bdb96fce0f7e14a04；已集成本地 7c751727e003b2ab41fc75ab2f0a8a95aa8db2ba |
-| B 配置与构建 | implement_b / 主代理 | 已派发；base 7217a5a06800a68062c24800c78c772434598f16；隔离 b 工作树，与 A 无文件交叉；等待按序集成 |
+| B 配置与构建 | implement_b / review_b 与主代理 | ACCEPTED；CodeHead bebacc7916b912a70ada50fa0208c8363d3c55fb；已集成本地9c937a66d9ea36c99e2d1efccc13b8a0e7082918 |
 | C 观测与 Monitor | implement_c / 主代理 | 已派发；base 748efdc6aad422edc8c7b63565b53854855df274；c 隔离工作树，无共享写入 |
 | D 版本、升级 | 待派发 / 主代理 | 现有 Python/wheels/npm/CubeCLT 输入只读核对完成；尚未升级或打包 |
 | E 历史清理、用户文档 | implement_e / review_patch_plan 与主代理 | ACCEPTED；CodeHead fdbc979bffb09503930de7a3f83b4ef5d7aadb95；报告 e0320f2cac932f24e83a5d3b7abbb2d910fda67c；已集成本地176251978b7830068e52736fa3d2cf2326cbab1f |
@@ -41,6 +41,10 @@ A 派发时间不晚于 2026-10-10 06:41:33 UTC；后续记录提交/验证时�
 | D:\codex-tmp\tk101\c-run | C 独立 Python/UI 验证与复制依赖；主代理清理责任 |
 | D:\codex-tmp\tk101\er | E 独立审查 CodeHead 工作树，原始审查结论两处 prose 修订 |
 | D:\codex-tmp\tk101\er-run | 主代理 E 最终文档测试及集成日志，当前保留至最终交付核对 |
+| D:\codex-tmp\tk101\br | B 精确 CodeHead 的独立干净审查工作树 |
+| D:\codex-tmp\tk101\br-run | 主代理 B 30项边界验证，argv/head/原始结果保留 |
+| D:\codex-tmp\tk101\cr | C 精确 CodeHead 的独立干净审查工作树 |
+| D:\codex-tmp\tk101\cr-run | 主代理 C Python边界验证；UI另待修订 |
 
 仅处理本轮明确归属产物，删除前解析绝对路径并核对根内包含关系；保留当前需诊断失败证据。
 实现报告记录代码头，最终接受由主代理记录；未测试、历史适用性复用及物理未证实必须明确区分。
@@ -87,3 +91,18 @@ ar-run 下 t/t2/temp/j（含 external Junction）/outside；a 工作树 src 下1
 最终头文档/真实parser审计exit0；主代理在独立 er 的最终 CodeHead 再跑两项受影响 README/setup 测试：
 2 passed、0.75秒、exit0，命令和日志见 er-run/logs/docs.log；PYTHONPATH和三项临时根均绑定er/er-run。
 详见 [E 实现记录](E-implementation.md)。这只接受文档清理切片，不代表1.0.1已发布或实体资格更新。
+
+## B 接受事实
+
+完整范围 `7217a5a06800a68062c24800c78c772434598f16` →
+`bebacc7916b912a70ada50fa0208c8363d3c55fb`，19文件 +843/-44。
+主代理逐项审查全部文本差异与fixture；review_b在独立干净br再次完整审查，readelf独立核对两个ELF、
+NOBITS与StackLimit/StackTop地址，无阻断项。原managed replace重检和回滚保留；preserved路径既不读写也不进入所有权记录。
+
+实现者最初宽回归538 passed/1 failed：过宽的stage后重检改变原managed回滚注入时机，分类PRODUCT；
+改为仅重检preserved类型后，r7完整generation及相关MAP/公开build/ELF用例359 passed，r8规范化MAP后真实fixture2 passed。
+旧失败原始输出仍在b-run/r5；当前证据在b-run/r7、r8，不将旧失败聚合改标为PASS。
+主代理独立运行preserve、ownership、类型、rollback、drift、NOBITS/overflow和真实链接/公开configure→build：
+30 passed、329 deselected、8.90秒、exit0，精确CodeHead及完整argv/stdout见br-run/logs。
+这些是软件与真实链接fixture证据，不是原报告ELF/MAP数字或板卡复现。
+规格已明确preservedPaths与原createdPaths等同在OperationResult.data内，避免复制到外层details形成两份事实。
