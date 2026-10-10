@@ -45,3 +45,37 @@ ELF 等价绑定、目标型号建议、显式 reset/resume、Monitor 后台/sto
 
 完整合同与验证责任见[规格](../../../superpowers/specs/2026-10-10-stm32tk-101-patch-design.md)和
 [实施计划](../../../superpowers/plans/2026-10-10-stm32tk-101-patch-plan.md)。
+
+## 实施后逐项结论
+
+下表是软件与文档处置，不把未提供的原工程、ELF/MAP、板卡或运行日志当成本轮复现证据。
+实现头、审查范围、命令及失败归属详见[执行记录](execution.md)和 B/C/E/D 实现报告；最终发行准入另见
+[发布状态](../../../release-status.md)。
+
+| 报告项 | 已完成处置 | 验证边界或仍待证事项 |
+| --- | --- | --- |
+| 1 | 根内安全递归 Keil 发现，共享给 detect/context/inspect/convert | 多候选明确拒绝；Junction 不越界；不可枚举不是“无工程” |
+| 2 | 明确 UTF-8 限制和工程自有编码适配步骤 | 未新增自动猜编码或转码；原拒绝是现有边界 |
+| 3 | 通用 ARMCC 汇编与 startup 分开说明，保留 blocker | 指令/段/符号/调用约定需工程适配；startup另核对向量和初始化 |
+| 4 | configure 保留五个未托管普通编辑器目标文件 | 不读写/收编；目录/链接/构建文件冲突及 managed drift仍拒绝 |
+| 5 | flash 外层结果明确 postFlash 未验证 running；失败给最后已知状态 | 原现场 attach失败根因仍需原板卡证据；不新增reset/resume |
+| 6 | SVD越界错误给首个寄存器路径/地址/宽度/可信区域 | 保持所选文件全部解析寄存器校验；用户指南补齐选择步骤 |
+| 7 | mismatch给具体身份字段及经过验证的ELF内容比较 | 不放宽完整provenance，不复用/改写旧receipt |
+| 8 | target-unsupported给请求target和离线支持列表核对方式 | registry仍是Probe租约目录；不自动猜器件或安装pack |
+| 9 | ELF传递NOBITS类型，MAP加载区统计排除无文件内容段 | 真实ELF/MAP fixture与公开build验证；原报告数值未复现 |
+| 10 | 保留区间并集统计，补allocated/reserved与运行峰值区别 | section内部预留不能算空闲；运行峰值需实体测量 |
+| 11 | context与发现一致，显式标当前readiness和硬件未探测 | 没有制造探针缓存或宣称硬件已连接 |
+| 12 | Git dirty诊断区分tracked/index/untracked，补处置引导 | 保留迁移保护；不自动ignore/stash/delete |
+| 13 | baseline明确仅历史产物可解析 | 不凭mtime或文件存在升级为本次构建证据 |
+| 14 | doctor与setup Check都不启动CubeMX/Code；扩展not-probed | 静态版本缺失为unknown；marker用例证明GUI命令未执行 |
+| 15 | migrate Skill传递同一uvprojx/targetName/planId，解释capability | 公开迁移→配置→构建fixture回归保持 |
+| 16 | 补recovery、halted、Fault及运行态前置说明 | recovery不是通用自动补救；未宣称实机自动恢复 |
+| 17 | configure Skill与指南解释preserved editor和仍阻断项 | 不建议删除用户文件来绕过保护 |
+| 18 | launcher解释环境变量/CLI根区别，补前台open/Ctrl-C步骤 | 不新增daemon或stop/restart协议 |
+| 19 | UI区分无token、401/403、其它服务错误、连接失败的安全提示 | token不回显；127.0.0.1 Host限制不放宽；UI与security E2E验证 |
+| 20 | 文档明确loader与configure阶段约束 | 不改变schema全局兼容性；保留唯一约束来源 |
+| 21 | 两个模板改为StackTop高、StackLimit低 | readelf和链接fixture核对；不新增堆栈容量字段 |
+| 22 | 与4同一preserve合同，应用结果返回data.preservedPaths | 既有managed记录和CubeMX regeneration闭域规则保持 |
+
+额外交叉审查修正：setup技能旧GUI探测说明、build技能丢失已批准clean参数、1.0.0升级/producer兼容、
+各发行身份与可信hash，以及四份无现行依赖的旧技能草稿。当前树共退出417个历史文件；完整Git历史保留。
