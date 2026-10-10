@@ -1,86 +1,48 @@
 # Windows 部署与 IDE 调试前置核对
 
-适用范围：Windows x86_64、CPython 3.12、Toolkit/Monitor 1.0.0、发行策略固定的 PyOCD 0.45.1。IDE 适配经验仅验证到 Cortex-Debug 1.12.1。本文件用于部署方案和执行卡，测试顺序、授权及停止规则以 [标准测试流程](standard-test-procedure.md) 为准。软件安装成功不等于 T9/T10/VS10-A 验收完成。
+本文件面向 Windows x86_64、CPython 3.12 的发行包部署。已发布版本是 v1.0.0；v1.0.1 仍在开发，不能把补丁规格当成已安装功能。实际执行顺序、授权、留证和首错停止以[标准测试流程](standard-test-procedure.md)为准；已知限制见[发布状态](../release-status.md)，常见工程错误见[用户指南](../user-guide.md)。软件安装或离线参数检查不等于真实 IDE/探针验收。
 
-## 部署者必须固定的输入
+## 固定发行与本机输入
 
-记录来源 commit、bundle/manifest SHA256、bootstrap Python 版本，以及本机真实的 ToolkitRoot、DataRoot、ProjectRoot。从包含启动器修正的已审查 commit 构建并分发 bundle；旧 bundle 中的 setup 不会因为仓库更新而自动修复。不要混用新脚本、另一来源 manifest 和另一版产品 wheel。
+先记录经过审查的完整 source commit、发行 manifest 和 bundle SHA256、CPython 版本，以及真实的 ToolkitRoot、长期 DataRoot、ProjectRoot。仅使用与该 source/manifest 匹配的完整离线 wheelhouse，不能混用另一版 setup、wheel 或状态文件。DataRoot 保留 runtime、工程身份、会话和证据，不用可清理的测试临时目录；移动机器或磁盘后重新核对路径和当前绑定，不能复制旧探针 selector、ticket、已消费 action 作为新会话状态。
 
-发布构建还须固定两个已实际遇到的环境条件：打包隔离 checkout 的 `core.autocrlf=false`、`core.eol=lf`，避免 Git archive 的字节转换破坏确定性；构建 wheelhouse 包含策略固定的构建后端（当前 setuptools 84.0.0、wheel 0.48.0），不能把面向用户安装的 runtime wheel 集当成完整构建 wheelhouse。这两项来自已保存的 candidate-preparation 记录，修正的是构建环境，不应更改产品代码。不要因此修改使用者的全局 Git 配置。 创建工作树时单条 `git -c core.autocrlf=false worktree add` 仅约束该次命令，不保证随后 builder 调用的 `git archive` 沿用。构建前在专用工作树核对有效配置来源及 `git ls-files --eol`；使用该工作树独有配置或覆盖整个构建进程的 Git 参数，确保 checkout 和 archive 同为 LF。2026-09-14 的租约修正部署曾在此处被 trust anchor 拒绝，修正打包环境后通过；完整错误留在该轮部署证据中。
+发行构建所用的专用干净工作树应保证 checkout 与 `git archive` 的实际字节一致。若使用 LF 归档，在创建工作树前确定进程/工作树 Git 配置；仅一次 `git -c core.autocrlf=false worktree add` 不保证后续 builder 沿用。核对 `git ls-files --eol`，不改用户全局 Git 配置。构建 wheelhouse 须包含发行策略固定的 build backend（当前 setuptools 84.0.0、wheel 0.48.0），runtime wheels 本身不构成完整构建输入。现行工具是 `tools/release/build_0900_artifacts.py` 与 `tools/release/release_0900_policy.json`；文件名是历史延续，不表示应安装 0.9.0。
 
-DataRoot 必须是长期保留的数据位置；runtime、项目身份、会话及烧录证据不能放入允许随意清理的临时目录。仅一次验证的 stdout/stderr、pytest basetemp 等使用独立且可归属的临时目录。迁移机器或磁盘后重新核对实际路径和 workspace/probe/固件绑定；不复制旧机器的 raw probe ID、ticket、已消费 action 或旧临时目录作为默认配置。
+## runtime Check 在硬件和 handoff 之前
 
-统一使用现有 `bin/setup-stm32-env.ps1`：先 Check；缺失 runtime 才使用获准的 Bootstrap，损坏 runtime 才使用获准的 Repair。同版本 source-conflict、较高版本记录或未知状态按现有契约停止，不删除 runtime-state 绕过限制。升级/重新发布需遵守发行版本契约。
+对已核验 bundle 使用 `bin/setup-stm32-env.ps1 -Mode Check`。`Check` 只读；`missing` 只在获准安装时进入 Bootstrap，`repairable`/`broken` 只在获准修复时进入 Repair。成功动作后再 `Check`。同版本不同 source/manifest 返回 source-conflict，记录过更高版本或未知状态按原拒绝处理；不要删除 `runtime-state.json`、降级或手修 EXE 绕过。
 
-## 最终目录验证，先于硬件和 handoff
-
-1. 校验 bundle 的完整性及闭合 wheel 集。staging 内安装成功只是中间状态。
-2. runtime 移至最终路径后，必须用最终 Python 从已验证的 Toolkit、Monitor、PyOCD wheel 重建对应 console launcher。先检查绑定，再运行版本入口，最后才允许写入 healthy runtime state；失败沿用 rollback。
-3. Check 必须覆盖实际的 `Scripts/pyocd.exe`。`import pyocd`、`python -m pyocd --version`、文件存在、pip check 或 Toolkit 版本成功，均不能替代它。最终启动器缺失、残留 staging 绑定、退出非零或版本不符，判 broken 并停止 IDE 准备。
-
-下面是最终入口的人工离线核对示例。先把占位路径替换成已确认的本机路径；只查询版本，不枚举或连接板子：
+最终目录的验证包括：发行包 hash 与闭合 wheel 集、最终位置的 Toolkit/Monitor/PyOCD wheel、`pip check`、console launcher 绑定及版本。staging 内成功并非最终位置成功。对已有 v1.0.0 runtime，先以 `Check` 为准，再可只读核对以下两个 PyOCD 入口；把路径换成实际 DataRoot，不访问板子：
 
 ```powershell
-$runtimeRoot = 'D:\STM32ToolkitData\runtime\1.0.0'
+$runtimeRoot = 'C:\data\stm32-toolkit\runtime\1.0.0'
 & "$runtimeRoot\Scripts\python.exe" -I -m pyocd --version
 if ($LASTEXITCODE -ne 0) { throw 'PyOCD module failed' }
 & "$runtimeRoot\Scripts\pyocd.exe" --version
 if ($LASTEXITCODE -ne 0) { throw 'PyOCD executable failed' }
 ```
 
-两者应与发行 manifest 的 PyOCD 版本一致。安装器还负责最终解释器绑定检查；上面两条命令不替代完整 Check。不要手改 EXE、重建已删除的 staging 路径或改用 PATH 上未经核对的 PyOCD。
+发行策略当前固定 PyOCD 0.45.1；最终 launcher 应报告与已验证模块一致的版本且绑定最终解释器。`import pyocd`、模块入口成功、文件存在或 Toolkit 版本成功，都不能单独证明 `pyocd.exe` 可供 IDE 使用。安装/Repair 失败保留原状态及 rollback 证据。
 
-Bootstrap/Repair 的最终化要求精确发行 pin。对已有 runtime，Check 保留既有 `>=0.45.1,<0.46` 模块版本范围，并要求启动器报告与已验证模块相同的版本；它不是把所有已安装环境强制改为 0.45.1，也不会自动改装依赖。
+## IDE 配置离线核对
 
-## Monitor 历史清理的已知时序限制
+在不按 F5、不连接探针的条件下，打开本次真实 VS Code workspace，确认正在运行的 Code.exe、版本、profile、Cortex-Debug 扩展及其实际行为。旧适配经验限已验证的 Cortex-Debug 1.12.1 / PyOCD 0.45.1 版本对；profile 声明不是本机安装证明。版本不同就先核对配置兼容性，不能假定适配仍有效。
 
-历史保留策略清理已经开始写入后，`MONITOR_STORAGE_BUSY` 不保证事务回滚，也不证明清理已经完成。调用方应等待后台写入任务结束，再通过正常历史查询核对实际保留的数据；不能仅凭超时响应认定数据未变，或把同一清理动作立即重复执行。
-
-已保留的一次 Windows 失败记录中，调用方在 180ms 超时，随后后台任务出现 `SQLITE_INTERRUPT`，仍有 512 个值被持久删除。具体失败阶段尚未确定。后续既定性能测试及受控取消检查通过，证明各自检查范围内的行为，但没有证明这个历史时序问题已修复。该限制按 `KNOWN_TIMING_LIMITATION_ROOT_CAUSE_UNKNOWN` 保留；没有因此增大产品超时或放宽性能要求。记录及处置依据见 [1.0 资格记录](../codex/returns/STM32TK-1.0-local-release/qualification-status.md) 的 retention 段落；其中历史覆盖率快照不是当前发行结论，当前资格以 [有效覆盖率与剩余门槛](../codex/returns/STM32TK-1.0-core-public-contract-qualification/native-result.md) 为准。
-
-## IDE 就绪后，才交出探针
-
-先在不按 F5 的情况下打开实际 workspace，核对当前窗口所属 Code.exe、版本、用户 profile 和已激活的 Cortex-Debug。Start-Process 返回、exe 文件存在或另一安装的扩展清单均不证明目标 IDE 已就绪；更新锁或启动退出必须先解决。
-
-逐项核对实际展开后的配置：
-
-| 项目 | 部署要求 |
+| 检查项 | 必须核对 |
 | --- | --- |
-| cwd | workspace 级配置显式使用实际工程绝对路径；不能假设 WorkspaceFolder 回调始终存在 |
-| 调试入口 | T9 使用命名明确的 `request=attach` 配置；不误选含烧录/构建任务的 launch 配置 |
-| tasks | 每个 preLaunchTask/postDebugTask 都须解析到实际任务；手动交接的 T9 配置没有这些字段，不要求用户忽略缺任务警告 |
-| GDB/ELF | 核对绝对 GDB 路径、实际 ELF 及其 build/哈希绑定；不能借更改工程配置破坏验收身份 |
-| PyOCD | serverpath 指向已通过最终入口检查的 pyocd.exe；不是 pyocd-gdbserver.exe |
-| pack | 从实际 pack 离线确认目标支持，记录版本及来源；已安装 3.1.1 不等于 manifest 声明的 2.17.1 |
-| 探针选择 | 只能来自本次授权 handoff 的真实返回；不使用旧机器 selector/raw ID，不自动挑第一个探针 |
+| workspace/cwd | 本次工程绝对路径可解析，不能依赖可能为 undefined 的 workspace folder 回调。 |
+| 配置与任务 | 手动 handoff 使用明确的 attach 配置。每个 `preLaunchTask`/`postDebugTask` 都有实际任务；无任务依赖的配置不应伪造一个任务。 |
+| GDB/ELF | 工具链路径和本次 ELF、build ID、hash 与当前工程身份一致；不通过编辑旧 receipt 重新绑定。 |
+| PyOCD | `serverpath` 指向通过最终 Check 的 `pyocd.exe`，不是旧 `pyocd-gdbserver.exe`。 |
+| target/pack | 从真实器件与已安装 pack 离线核对 PyOCD target 支持、版本、来源；不把 Probe 租约目录当 target 注册表。 |
+| probe/ticket | 只使用本次授权 handoff 的真实返回，不选旧机器 selector/raw ID，也不自动选第一个探针。 |
 
-Cortex-Debug 1.12.1 会把 boardId 转为旧 `--board`，PyOCD 0.45.1 的主 CLI 不接受它；旧 pyocd-gdbserver.exe 又不接受扩展生成的 `gdbserver` 子命令。本次受限适配是在外置配置中省略 boardId，设置 `serverArgs=["--uid", <本次返回的原始boardId>, "--connect", "attach"]`，并单独完整保留原始 handoff 返回值。它不代表所有扩展版本通用，更不代表产品原始生成配置的兼容缺口已经修复。离线验证实际扩展生成的参数后才能进入获准的 IDE 步骤。
+在上述版本对，Cortex-Debug 可能将 `boardId` 展开成 PyOCD 0.45.1 不接受的 `--board`。核对本次生成的 `cortexDebugLaunch.configuration` 是否给出绝对 cwd、`request=attach`、无 `boardId`、以及 `serverArgs=["--uid", <本次返回的原始boardId>, "--connect", "attach"]`。原始 handoff 返回值需另行完整保留；外置配置只是该版本对的适配，不改变 Toolkit 的 canonical 身份。
 
-同一版本对还存在**就绪日志匹配差异**：扩展默认匹配 `/GDB server started (at|on) port/`，实际 PyOCD 输出 `GDB server listening on port 50000`。服务虽然已监听，扩展仍可能等到 10 秒超时后主动终止它。外置配置使用扩展已有字段 `overrideGDBServerStartedRegex="GDB server (?:started (?:at|on)|listening on) port [0-9]+"`；离线验证新旧 GDB 就绪行均匹配、STDIO 就绪行不匹配。不要延长超时、改端口、关闭就绪检测或因终端关闭就断言板子故障。该适配仍需独立审查及单独授权的真实 IDE 验证。
+同一版本对的 GDB 就绪行可能为 `GDB server listening on port 50000`，而扩展旧默认只识别 `GDB server started at/on port`。确认生成配置的 `overrideGDBServerStartedRegex` 能匹配真实就绪行，且不会误匹配 STDIO 行。不要仅因扩展超时弹窗断言硬件故障；先保存完整服务命令、stdout/stderr、时序及退出码。也不要靠关闭就绪检测、改端口或延长超时掩盖配置失配。
 
-## 本次故障资料及后续方案要求
+## 授权交接与首错停止
 
-生成配置修正候选及验证范围见 [T9 兼容修正计划](../superpowers/plans/2026-09-11-stm32tk-t9-generated-ide-compatibility.md)。新的 `cortexDebugLaunch.configuration` 含绝对 cwd、UID/attach 参数和兼容就绪正则，launch 无 boardId；原 canonical cortexDebug/内部 companion 身份数据不变。先核对部署 source、新字段 schemaVersion=1 和 profile 声明的 Cortex-Debug 1.12.1/PyOCD 0.45.1 与实际环境一致；缺失或不同则停止，不能把 profile 当作已检测事实或自行套用于未知版本。此修正不自动发现 GDB/pack/IDE 路径，不生成额外任务，也不代表尚未运行的真实 IDE 验收已通过。
+标准流程先核对项目、固件、目标、Probe、session、当前 lease/ticket 归属和最后证实的目标状态；再按实际授权执行 begin → 原样使用本次配置 → attach/观察 → 正常 detach → 原 ticket end → 同绑定 Toolkit/MCP read。IDE 独占期间 Toolkit 不能抢读。flash/readback 成功只证明其原有编程契约，不代表目标已 running；观察、Fault 和显式控制各有不同前置，不能自动 reset/resume。
 
-Windows 打包还须核对专用工作树与 `git archive` 的实际换行字节一致；仅设置归档 LF 而沿用已有 CRLF 工作树会触发 wheel/source binding 拒绝。应在创建干净打包工作树前设置该进程的 Git LF 参数，不改共享配置。证据 JSON 一律显式 UTF-8 读取；全新 DataRoot 的 session 目录尚不存在时验证其缺省状态，不直接调用要求父目录存在的 `_read_state`。这类离线检查失败应先修正检查前提，不能被计作硬件失败或要求重连。
-
-已部署 worker 修正及一次 CLI/MCP 实机等价结果见 [交付记录](../codex/returns/2026-09-11-stm32tk-t9-worker-stdin-delivery.md)。该记录对应当时尚未修复生成配置的候选。后续生成配置已完成真实 IDE/handoff 验证，T9 按未变行为复用 CLI/MCP 证据收口，见 [生成配置交付](../codex/returns/2026-09-11-stm32tk-t9-generated-ide-delivery.md)。新部署使用包含该修正的 `cortexDebugLaunch.configuration`，不应要求后来部署者自行猜测旧适配参数；此结论仍限已验证版本对。
-
-Windows MCP 前置还须覆盖真实 stdio 会话中的 worker 启动/关闭，而不只是 initialize/list_tools：09 的工具清单成功，但 Windows spawn 子进程沿用父 MCP stdin 后在 ready 握手超时。隔离 child 标准输入的离线重放已证明纠正方向；实际发行是否包含并通过该修复，以候选源码及对应测试证据为准。不能全局替换父 stdio/WinAPI，也不能把 worker-only 离线检查称为实机读取 PASS。见 [修正计划与证据](../superpowers/plans/2026-09-11-stm32tk-mcp-worker-stdin-repair.md)。
-
-开发候选版本号相同但 source/manifest 不同时，保留原 DataRoot 的 source-conflict 拒绝。若本次明确使用独立候选安装，应在新的长期 D 盘 DataRoot 执行 Check/Bootstrap；不要复制旧 runtime-state、活动或已消费的 ticket/lease/action 来制造连续状态。相同工程/固件的历史证据可按身份引用，新环境下 CLI/MCP 等价应由同候选的有界检查补齐。
-
-| 观察到的错误 | 已证实的信息 / 证据限度 | 应进入部署验收的检查 |
-| --- | --- | --- |
-| GDB Server Quit | 最终 PyOCD EXE 内嵌已删除的 staging Python；EXE --version exit 1、最终 Python 模块入口 exit 0。原 IDE 子进程 stderr/完整时序尚缺，不能仅凭弹窗推断硬件阶段 | 真实最终启动器绑定与版本；安装/Repair 的最终化、失败 rollback、只读 Check 回归 |
-| undefined reading uri | 实际 Cortex-Debug provider 表达式在缺 cwd、folder undefined 时离线复现；没有恢复原弹窗堆栈 | workspace 级绝对 cwd 和配置解析 |
-| 找不到 STM32 Toolkit 任务 | 工程 launch 引用了 tasks.json 不包含的 handoff 任务；后续日志证实用户已选中无该任务依赖的 T9 配置 | 实际选中的配置、任务引用闭合，不用“仍然调试”跳过 |
-| IDE 启动未成功 | 请求启动的实例因更新锁退出；实际使用的是另一安装 | 当前窗口/进程/日志证明就绪，不以进程派发成功替代 |
-| 旧 PyOCD 参数不兼容 | 当前扩展控制器生成 --board；当前 CLI parser 拒绝。兼容适配仅适用于已核对的版本对 | 扩展、服务命令、pack、目标四者一致，先做离线参数检查 |
-| 已监听后 GDB Server 关闭 | 用户终端已证明目标发现和 GDB listen；实际扩展就绪正则不匹配 listening 文案，源码超时会关闭服务；现场完整 timeout/kill DAP 记录尚缺 | 实际服务输出与扩展 ready 正则一致，不能只验证 CLI 参数和启动器版本 |
-
-原始证据及本机路径在 [T9 执行记录](../codex/returns/2026-09-11-stm32tk-1001-t9-ide-attempt-06.md)，启动器修复范围见 [修复计划](../superpowers/plans/2026-09-11-stm32tk-runtime-pyocd-launcher-repair.md)。后续发行方案应引用本文件，并记录该版本已通过哪些检查、哪些兼容项仍有限制；不能仅在聊天中保留这些信息。
-
-打包与既有部署证据见 [软件集成与部署记录](../codex/returns/2026-09-11-stm32tk-1001-t9-t10-local-delivery.md) 引用的 `candidate-preparation-summary.json`。旧记录中的 publicLauncherVersions PASS 当时仅覆盖 Toolkit/Monitor，不能追认其已覆盖 PyOCD。
-
-出现首个非预期错误后保存有效配置、服务命令、stdout/stderr、退出码、最后阶段和 lease/ticket 状态，停止后续硬件。无原始输出时明确证据缺口，不自动重新连接补日志；IDE 独占期间不能让 Toolkit 抢读。现有 Target、历史采样 PASS 按原绑定保留，不被部署报告替代或重写。
+第一个非预期错误出现后记录原 code/details/cause、有效配置、命令、stdout/stderr、退出码、最后阶段与 lease/ticket 状态，并停止后续硬件。缺少原始输出是证据缺口，不能自动重连补日志。Monitor 历史清理在收到 `MONITOR_STORAGE_BUSY` 后也不能假定事务完全回滚；等待写入结束并通过正常历史查询核对实际数据，再决定下一动作。旧计划和报告已退出当前树，需要审计时用 `git show 694c825d29a55a53052a148efa4cc6720c315a04:<path>` 从 Git 历史读取。

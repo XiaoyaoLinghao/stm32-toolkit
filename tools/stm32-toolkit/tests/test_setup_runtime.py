@@ -1052,7 +1052,7 @@ def test_setup_contract_uses_namespaced_skill_and_ignores_coverage_data():
     launcher = (REPO_ROOT / "bin" / "stm32-toolkit-mcp.cmd").read_text(encoding="utf-8")
     readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
     skill = (REPO_ROOT / "skills" / "setup-stm32-env" / "SKILL.md").read_text(encoding="utf-8")
-    plan = (REPO_ROOT / "docs" / "superpowers" / "plans" / "2026-07-29-stm32-toolkit-plugin-foundation.md").read_text(encoding="utf-8")
+    guide = (REPO_ROOT / "docs" / "user-guide.md").read_text(encoding="utf-8")
     gitignore = (REPO_ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
 
     assert "STM32_TOOLKIT_DATA_ROOT" in launcher
@@ -1076,9 +1076,9 @@ def test_setup_contract_uses_namespaced_skill_and_ignores_coverage_data():
     check_position = readme.index("-Mode Check")
     assert check_position < readme.index("-Mode Bootstrap")
     assert check_position < readme.index("-Mode Repair")
-    assert "skills/setup-stm32-env/SKILL.md" in plan
+    assert "skills/setup-stm32-env/SKILL.md" in guide
     assert "stm32-toolkit:setup-stm32-env.ps1" not in readme
-    assert "skills/stm32-toolkit:setup-stm32-env" not in plan
+    assert "skills/stm32-toolkit:setup-stm32-env" not in guide
     assert "Repair" in skill
     assert "staging" in skill
     assert "quarantine" in skill

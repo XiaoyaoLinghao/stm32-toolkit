@@ -487,23 +487,27 @@ def test_setup_skill_passes_inline_claude_paths_explicitly_without_ambient_varia
     assert "PowerShell" in skill
     assert "### Agent-host adapter" in skill
 
-def test_readme_documents_the_1_0_contract_and_preserved_vs09b_boundary():
+def test_readme_links_current_user_guidance_and_release_boundaries():
     readme = README.read_text(encoding="utf-8")
     readme_zh = (REPO_ROOT / "README_zh-CN.md").read_text(encoding="utf-8")
 
-    assert "pending 1.0.0 local release candidate" in readme
+    assert "v1.0.0 is published" in readme
+    assert "v1.0.1 patch is **in development**" in readme
+    assert "v1.0.0 已发布" in readme_zh
+    assert "v1.0.1 补丁仍**在开发中**" in readme_zh
     assert "CPython `>=3.12,<3.13`" in readme
-    assert "DATA_ROOT/runtime/1.0.0" in readme
-    assert '"STM32_TOOLKIT_DATA_ROOT"' in readme
+    assert "docs/user-guide.md" in readme
+    assert "docs/user-guide.md" in readme_zh
+    assert "docs/testing/windows-deployment-and-ide-preflight.md" in readme
+    assert "docs/testing/standard-test-procedure.md" in readme
+    assert "-Mode Check" in readme and "-Mode Repair" in readme
+    assert "STM32_TOOLKIT_DATA_ROOT" in readme
     assert "absolute launcher" in readme
-    assert "all 48" in readme
-    assert "VS09-B" in readme
     expected_build = "stm32-toolkit --project-root C:\\work\\blinky build --preset arm-debug --json"
     assert expected_build in readme
     assert expected_build in readme_zh
     for phrase in (
         "/stm32-toolkit:setup-stm32-env",
-        "automatically",
         "${CLAUDE_PROJECT_DIR}",
         ".stm32-project.json",
         "${CLAUDE_PLUGIN_DATA}/projects/<workspaceId>",
