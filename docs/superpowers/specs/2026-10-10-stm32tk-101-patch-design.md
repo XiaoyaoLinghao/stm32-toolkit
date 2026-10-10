@@ -68,6 +68,7 @@ SHA256 `ef8b0cb66d76f9d3088162baf9e50b093e9c2ff288dab58c833b671dd60372ae`。
 显式 `uvprojx` 保持既有 containment/文件校验，不受自动发现排除目录影响。
 零候选沿用 `KEIL_PROJECT_NOT_FOUND` 并给出显式参数提示；一候选自动选择；多候选沿用既有歧义错误并列相对路径，不能取第一个。
 无权限子目录或枚举错误必须作为发现不完整返回，不能悄悄当作零候选/不存在。
+沿用 `KEIL_PROJECT_UNAVAILABLE`，`details.rule="discoveryIncomplete"`；CLI/MCP 的 project.detect 薄入口同样映射此拒绝。
 `capabilities.keilInspect/keilConvert` 表示存在可进入 inspect/plan 的候选，不保证迁移无 blocker。
 inspect、plan、apply 必须沿用同一 `uvprojx/targetName` 并重新验证 plan digest。
 
@@ -110,8 +111,11 @@ alloc section 的 VMA 作为运行/预留容量；仅非 NOBITS section 的不�
 
 Doctor 对 CubeMX/VS Code 等 GUI 工具复用 tool_support 的静态版本读取；无法静态取得版本则明确 unknown，
 不能启动 GUI，也不能虚构版本。其它 CLI 工具保持既有有界探测。
+VS Code 扩展不再通过启动 Code 枚举：保留现有三项与字段，未实测时为 `installed=false, version=null, status="not-probed"`，
+并明确只有 `status=ok` 才表示实际探测到安装；不把未知写作 missing，不新增扩展扫描器或把 profile 配置当安装证明。
 `probeCore.registry` 明确为 Probe 租约目录；missing 不等于没有 PyOCD targets，不能因此擅改 safe 判定。
-context 保持无隐式探针访问；在已有 details/warnings 中明确 hardware 为未探测快照、capabilities 为当前 readiness，
+context 保持无隐式探针访问；成功的外层 details 固定增加 `capabilitySemantics="current-readiness"` 与
+`hardwareDiscovery="not-performed"`，不改变 data.hardware 和 capabilities 原结构，明确 hardware 为未探测快照、capabilities 为当前 readiness，
 不伪造最近探针数据，不加入新的持久缓存或隐式枚举。
 
 完整 SVD 选择继续先验证每个寄存器的可信范围；`SVD_ADDRESS_OUT_OF_RANGE` details 增加首个失败寄存器完整路径、
