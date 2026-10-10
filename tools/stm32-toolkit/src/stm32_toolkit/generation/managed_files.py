@@ -50,6 +50,9 @@ GENERATED_TARGETS = (
     ".vscode/settings.json",
     ".vscode/extensions.json",
 )
+PRESERVABLE_EDITOR_TARGETS = frozenset(
+    target for target in GENERATED_TARGETS if target.startswith(".vscode/")
+)
 
 #: Supported cores with their exact GCC CPU flags (work order 7.2).
 CORE_CPU_FLAGS = {
@@ -66,7 +69,7 @@ CORE_CPU_FLAGS = {
 VSCODE_EXTENSIONS = ("ms-vscode.cpptools", "ms-vscode.cmake-tools", "marus25.cortex-debug")
 
 _FILE_STATUSES = frozenset(
-    {"create", "unchanged", "update-managed", "user-drift", "unowned-collision"}
+    {"create", "unchanged", "update-managed", "user-drift", "unowned-collision", "preserved-unowned"}
 )
 
 _BLOCKER_CODES = frozenset(
@@ -162,7 +165,7 @@ class ManagedFileRecord:
 @dataclass(frozen=True)
 class GeneratedFile:
     path: str
-    status: str  # create|unchanged|update-managed|user-drift|unowned-collision
+    status: str  # plus preserved-unowned for a fixed, unowned regular editor file
     template_name: str
     template_version: int
     before_sha256: str | None
@@ -428,8 +431,9 @@ def casefold_collision(paths: list[str]) -> str | None:
 def build_managed_manifest_bytes(files: tuple[GeneratedFile, ...], model_sha256: str) -> bytes:
     """Deterministic proposed manifest bytes (work order 8.1).
 
-    ``files`` must already be sorted by portable path; every entry is
-    recorded with ``ownership: managed`` and the current template version.
+    ``files`` must already be sorted by portable path. Only files generated
+    or already managed are recorded with ``ownership: managed``. Existing
+    unowned editor files remain outside the ownership manifest.
     The manifest itself is never listed.
     """
     payload = {
@@ -446,6 +450,7 @@ def build_managed_manifest_bytes(files: tuple[GeneratedFile, ...], model_sha256:
                 "sha256": entry.after_sha256,
             }
             for entry in files
+            if entry.status != "preserved-unowned"
         ],
     }
     return json.dumps(payload, indent=2, ensure_ascii=False).encode("utf-8") + b"\n"

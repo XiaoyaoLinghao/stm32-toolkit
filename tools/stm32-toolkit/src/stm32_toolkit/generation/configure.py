@@ -43,6 +43,7 @@ from stm32_toolkit.generation.managed_files import (
     MANAGED_MANIFEST_PATH,
     PLAN_LIMIT_BYTES,
     PLAN_VERSION,
+    PRESERVABLE_EDITOR_TARGETS,
     STAGING_ROOT,
     TARGET_TEMPLATES,
     TEMPLATE_LIMIT_BYTES,
@@ -78,6 +79,9 @@ _C_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _FPU_RE = re.compile(r"^[A-Za-z0-9_.+-]+$")
 _FULL_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 _OPTION_FORBIDDEN = re.compile(r"[\s;\"\\$`@]")
+_PRESERVED_EDITOR_GUIDANCE = (
+    "Preserved VS Code files are user-owned; align their IDE settings with the generated build manually."
+)
 
 _ENV = Environment(undefined=StrictUndefined, autoescape=False, loader=None)
 _ENV.filters["json"] = lambda value: json.dumps(value, indent=2, ensure_ascii=False)
@@ -1157,10 +1161,31 @@ def _classify_targets(
     prior_by_path = {record.path: record for record in prior}
     files: list[GeneratedFile] = []
     for target in sorted(rendered, key=portable_sort_key):
-        current = _read_current_target(root, target)
         template_name, after_bytes = rendered[target]
         after_sha256 = sha256_hex(after_bytes)
         prior_record = prior_by_path.get(target)
+        if target in PRESERVABLE_EDITOR_TARGETS:
+            editor_exists = _editor_target_exists(root, target)
+            if editor_exists and prior_record is None:
+                # The user's editor bytes are never opened, hashed, or adopted.
+                # The rendered template is only candidate metadata for the plan.
+                files.append(
+                    GeneratedFile(
+                        path=target,
+                        status="preserved-unowned",
+                        template_name=template_name,
+                        template_version=TEMPLATE_VERSION,
+                        before_sha256=None,
+                        after_sha256=after_sha256,
+                        before_size=None,
+                        after_size=len(after_bytes),
+                        unified_diff="",
+                        before_bytes=None,
+                        after_bytes=after_bytes,
+                    )
+                )
+                continue
+        current = _read_current_target(root, target)
         if prior_record is None:
             if current is None:
                 status = "create"
@@ -1193,6 +1218,52 @@ def _classify_targets(
         )
     files.sort(key=lambda entry: portable_sort_key(entry.path))
     return files
+
+
+def _editor_target_exists(root: Path, target: str) -> bool:
+    """Classify a fixed editor path by metadata only, without following links."""
+    parts = target.split("/")
+    for index in range(1, len(parts) + 1):
+        component = root.joinpath(*parts[:index])
+        try:
+            state = os.lstat(component)
+        except FileNotFoundError:
+            return False
+        except NotADirectoryError:
+            raise _raise_error(
+                "GENERATION_INPUT_INVALID",
+                "editor target parent is not a directory",
+                {"path": target, "rule": "directory"},
+            ) from None
+        except OSError:
+            raise _raise_error(
+                "GENERATION_INPUT_INVALID",
+                "editor target inspection failed",
+                {"path": target, "rule": "unreadable"},
+            ) from None
+        if stat.S_ISLNK(state.st_mode) or bool(
+            getattr(state, "st_file_attributes", 0)
+            & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+        ):
+            raise _raise_error(
+                "GENERATION_INPUT_INVALID",
+                "editor target must not redirect",
+                {"path": target, "rule": "redirect"},
+            )
+        terminal = index == len(parts)
+        if terminal and not stat.S_ISREG(state.st_mode):
+            raise _raise_error(
+                "GENERATION_INPUT_INVALID",
+                "editor target is not a regular file",
+                {"path": target, "rule": "regularFile"},
+            )
+        if not terminal and not stat.S_ISDIR(state.st_mode):
+            raise _raise_error(
+                "GENERATION_INPUT_INVALID",
+                "editor target parent is not a directory",
+                {"path": target, "rule": "directory"},
+            )
+    return True
 
 
 def _read_current_target(root: Path, target: str) -> bytes | None:
@@ -1374,7 +1445,9 @@ def _validate_plan(plan: object) -> None:
             raise _plan_invalid("portablePath")
         if entry.path not in target_set:
             raise _plan_invalid("targetPath")
-        if entry.status not in {"create", "unchanged", "update-managed", "user-drift", "unowned-collision"}:
+        if entry.status not in {"create", "unchanged", "update-managed", "user-drift", "unowned-collision", "preserved-unowned"}:
+            raise _plan_invalid("status")
+        if entry.status == "preserved-unowned" and entry.path not in PRESERVABLE_EDITOR_TARGETS:
             raise _plan_invalid("status")
         if entry.template_name != _target_template(entry.path):
             raise _plan_invalid("templateName")
@@ -1407,6 +1480,13 @@ def _validate_plan(plan: object) -> None:
         ):
             raise _plan_invalid("fileDigest")
         if entry.status == "create" and entry.before_bytes is not None:
+            raise _plan_invalid("fileDigest")
+        if entry.status == "preserved-unowned" and (
+            entry.before_bytes is not None
+            or entry.before_sha256 is not None
+            or entry.before_size is not None
+            or entry.unified_diff != ""
+        ):
             raise _plan_invalid("fileDigest")
         if entry.status in ("unchanged", "user-drift", "unowned-collision") and entry.before_bytes is None:
             raise _plan_invalid("fileDigest")
@@ -1527,6 +1607,9 @@ def _revalidate_inputs(root: Path, plan: GenerationPlan) -> None:
 def _validate_destinations(root: Path, plan: GenerationPlan) -> None:
     for entry in plan.files:
         path = entry.path
+        if entry.status == "preserved-unowned":
+            _validate_preserved_editor(root, path)
+            continue
         absolute = _resolve_apply_target(root, path, "GENERATION_PATH_INVALID")
         try:
             lst = os.lstat(absolute)
@@ -1566,6 +1649,23 @@ def _validate_destinations(root: Path, plan: GenerationPlan) -> None:
                 "current target bytes changed",
                 {"path": path},
             )
+
+
+def _validate_preserved_editor(root: Path, path: str) -> None:
+    try:
+        exists = _editor_target_exists(root, path)
+    except GenerationError:
+        raise _fail(
+            "GENERATION_INPUT_CHANGED",
+            "preserved editor target type changed",
+            {"path": path},
+        ) from None
+    if not exists:
+        raise _fail(
+            "GENERATION_INPUT_CHANGED",
+            "preserved editor target is missing",
+            {"path": path},
+        )
 
 
 def _within_root_prefix(root_resolved: str, candidate: Path) -> bool:
@@ -1691,7 +1791,11 @@ def _ensure_dir(path: Path, created_dirs: list[Path]) -> None:
 
 
 def _before_sha_by_path(plan: GenerationPlan) -> dict[str, str | None]:
-    mapping = {entry.path: entry.before_sha256 for entry in plan.files}
+    mapping = {
+        entry.path: entry.before_sha256
+        for entry in plan.files
+        if entry.status != "preserved-unowned"
+    }
     for entry in plan.inputs:
         if entry.path == MANAGED_MANIFEST_PATH:
             mapping[MANAGED_MANIFEST_PATH] = entry.sha256
@@ -1923,7 +2027,16 @@ def _apply(plan: GenerationPlan) -> dict[str, object]:
             "createdPaths": [],
             "updatedPaths": [],
             "unchangedPaths": sorted(
-                (entry.path for entry in plan.files), key=portable_sort_key
+                (entry.path for entry in plan.files if entry.status == "unchanged"), key=portable_sort_key
+            ),
+            "preservedPaths": sorted(
+                (entry.path for entry in plan.files if entry.status == "preserved-unowned"),
+                key=portable_sort_key,
+            ),
+            "warnings": (
+                [_PRESERVED_EDITOR_GUIDANCE]
+                if any(entry.status == "preserved-unowned" for entry in plan.files)
+                else []
             ),
             "managedManifestPath": MANAGED_MANIFEST_PATH,
             "managedManifestSha256": sha256_hex(plan.managed_manifest_bytes),
@@ -1966,6 +2079,11 @@ def _apply(plan: GenerationPlan) -> dict[str, object]:
 
         # --- replace phase --------------------------------------------------
         in_replace = True
+        # Staging can take time. Recheck preserved editor categories by stat
+        # before writing, without changing managed-target replace semantics.
+        for entry in plan.files:
+            if entry.status == "preserved-unowned":
+                _validate_preserved_editor(canonical, entry.path)
         for path, data, existed in destinations:
             target = canonical.joinpath(*path.split("/"))
             _resolve_apply_target(canonical, path, "GENERATION_PATH_INVALID")
@@ -2071,6 +2189,15 @@ def _apply(plan: GenerationPlan) -> dict[str, object]:
         "unchangedPaths": sorted(
             (entry.path for entry in plan.files if entry.status == "unchanged"),
             key=portable_sort_key,
+        ),
+        "preservedPaths": sorted(
+            (entry.path for entry in plan.files if entry.status == "preserved-unowned"),
+            key=portable_sort_key,
+        ),
+        "warnings": (
+            [_PRESERVED_EDITOR_GUIDANCE]
+            if any(entry.status == "preserved-unowned" for entry in plan.files)
+            else []
         ),
         "managedManifestPath": MANAGED_MANIFEST_PATH,
         "managedManifestSha256": sha256_hex(plan.managed_manifest_bytes),

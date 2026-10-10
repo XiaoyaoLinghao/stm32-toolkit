@@ -302,6 +302,68 @@ def test_real_gnu_ld_style_map_uses_elf_alloc_classification():
     assert ram.used == 0x800 + 0x400 + 0x100 + 0x400  # heap + stack + data + bss
 
 
+def test_nobits_explicit_lma_reserves_ram_without_flash_load_copy():
+    text = build_map_text(
+        sections=(
+            (".text", 0x08000000, 0x20, None),
+            (".data", 0x20000000, 0x40, 0x08000100),
+            (".bss", 0x20000080, 0x80, 0x08000200),
+            (".stack", 0x20000200, 0x400, 0x08000300),
+        )
+    )
+    sections = (
+        ElfSectionEvidence(".text", 0x08000000, 0x20, True),
+        ElfSectionEvidence(".data", 0x20000000, 0x40, True),
+        ElfSectionEvidence(".bss", 0x20000080, 0x80, True, nobits=True),
+        ElfSectionEvidence(".stack", 0x20000200, 0x400, True, nobits=True),
+    )
+    flash, ram = parse(text, elf_sections=sections)
+    assert flash.used == 0x20 + 0x40
+    assert ram.used == 0x40 + 0x80 + 0x400
+    assert ram.free == RAM.length - ram.used
+
+    # Without ELF evidence, standalone MAP parsing retains its prior rule:
+    # an explicit LMA is counted because section type is unavailable.
+    standalone_flash, standalone_ram = parse(text)
+    assert standalone_flash.used == 0x20 + 0x40 + 0x80 + 0x400
+    assert standalone_ram.used == ram.used
+
+
+def test_nobits_evidence_requires_a_real_boolean():
+    text = build_map_text(sections=((".bss", 0x20000000, 0x20, 0x08000100),))
+    malformed = ElfSectionEvidence(".bss", 0x20000000, 0x20, True, nobits="yes")  # type: ignore[arg-type]
+    with pytest.raises(MapError) as error:
+        parse(text, elf_sections=(malformed,))
+    assert error.value.details == {"rule": "evidence"}
+
+
+def test_nobits_vma_overlap_uses_interval_union():
+    text = build_map_text(
+        sections=(
+            (".bss", 0x20000000, 0x80, 0x08000100),
+            (".stack", 0x20000040, 0x80, 0x08000200),
+        )
+    )
+    sections = (
+        ElfSectionEvidence(".bss", 0x20000000, 0x80, True, nobits=True),
+        ElfSectionEvidence(".stack", 0x20000040, 0x80, True, nobits=True),
+    )
+    flash, ram = parse(text, elf_sections=sections)
+    assert flash.used == 0
+    assert ram.used == 0xC0
+
+
+def test_nobits_vma_overflow_keeps_stable_ram_overflow():
+    text = build_map_text(sections=((".stack", 0x20000000, 0x30000, 0x08000100),))
+    sections = (ElfSectionEvidence(".stack", 0x20000000, 0x30000, True, nobits=True),)
+    with pytest.raises(MapError) as error:
+        parse(text, elf_sections=sections)
+    assert error.value.code == "RAM_OVERFLOW"
+    assert error.value.details == {
+        "region": "RAM", "used": 0x30000, "length": 0x20000, "overflow": 0x10000
+    }
+
+
 def test_real_gnu_ld_wrapped_output_section_row_is_reconciled_with_elf():
     """GNU ld wraps long output-section names onto an address-only line."""
     name = ".stm32tk.abs.20000000"

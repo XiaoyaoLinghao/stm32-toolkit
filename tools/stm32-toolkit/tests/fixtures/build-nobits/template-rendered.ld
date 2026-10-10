@@ -5,8 +5,8 @@ _Min_Stack_Size = 1K;
 
 MEMORY
 {
-{%- for region in regions %}
-  {{ region.name }} ({{ region.attributes }}) : ORIGIN = {{ region.origin_hex }}, LENGTH = {{ region.length_hex }}{% endfor %}
+  FLASH (rx) : ORIGIN = 0x08000000, LENGTH = 0x00100000
+  RAM (rwx) : ORIGIN = 0x20000000, LENGTH = 0x00020000
 }
 
 SECTIONS
@@ -14,7 +14,7 @@ SECTIONS
   .isr_vector :
   {
     KEEP(*(.isr_vector))
-  } > {{ flash_region }}
+  } > FLASH
 
   .text :
   {
@@ -24,23 +24,17 @@ SECTIONS
     KEEP(*(.fini))
     . = ALIGN(4);
     _etext = .;
-  } > {{ flash_region }}
+  } > FLASH
 
   .ARM.extab :
   {
     *(.ARM.extab* .gnu.linkonce.arm.extab.*)
-  } > {{ flash_region }}
+  } > FLASH
 
   .ARM.exidx :
   {
     *(.ARM.exidx* .gnu.linkonce.arm.exidx.*)
-  } > {{ flash_region }}
-{%- for section in fixed_sections %}
-
-  {{ section.name }} {{ section.address_hex }} (NOLOAD) :
-  {
-    KEEP(*({{ section.name }}))
-  } > {{ section.region }}{% endfor %}
+  } > FLASH
 
   .data :
   {
@@ -48,7 +42,7 @@ SECTIONS
     *(.data*)
     . = ALIGN(4);
     _edata = .;
-  } > {{ ram_region }} AT> {{ flash_region }}
+  } > RAM AT> FLASH
   _sidata = LOADADDR(.data);
 
   .bss :
@@ -58,7 +52,7 @@ SECTIONS
     *(COMMON)
     . = ALIGN(4);
     _ebss = .;
-  } > {{ ram_region }}
+  } > RAM
 
   .heap (NOLOAD) :
   {
@@ -68,7 +62,7 @@ SECTIONS
     __HeapBase = .;
     . += _Min_Heap_Size;
     __HeapLimit = .;
-  } > {{ ram_region }}
+  } > RAM
 
   .stack (NOLOAD) :
   {
@@ -76,5 +70,5 @@ SECTIONS
     __StackLimit = .;
     . += _Min_Stack_Size;
     __StackTop = .;
-  } > {{ ram_region }}
+  } > RAM
 }
