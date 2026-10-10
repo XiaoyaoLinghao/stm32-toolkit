@@ -65,7 +65,7 @@ Keil `inspect`/`convert` 必须指向同一 `uvprojx` 和 `target-name`。确认
 
 ## Monitor：报告项 18–19
 
-v1.0.0 的 `bin/stm32-monitor.cmd` 先通过进程环境变量定位受管 Python；即使 `open` 有 `--data-root`，单给参数也不能满足旧 launcher。以下命令符合当前 parser，打开服务和新浏览器标签，前台保持运行。v1.0.1 **目标**让显式 `--data-root` 也能选择已验证 launcher runtime，但仍不提供后台 daemon/stop 协议。
+`bin/stm32-monitor.cmd` 在 v1.0.0 和 v1.0.1 都先用 `STM32_TOOLKIT_DATA_ROOT` 定位受管 Python；单给 `--data-root` 不能启动 cmd。Python CLI 启动后才读取 `open --data-root`，两处须指向同一 DataRoot。以下命令符合当前 parser，暂设环境变量、打开服务和新浏览器标签、前台保持运行，并在退出时恢复原环境。v1.0.1 不新增后台 daemon/stop 协议。
 
 ```powershell
 $ToolkitRoot = 'C:\tools\stm32-toolkit-1.0.0'
@@ -82,7 +82,7 @@ try {
 
 | # | 看见什么 | 处置 |
 | --- | --- | --- |
-| 18 | 缺 DataRoot、调用超时、想重启 | 先运行只读 `Check` 并确认同一发行包与 DataRoot；在可保持运行的终端前台调用 `open`，完成后用该前台的 Ctrl-C 正常结束。受限自动化终端超时不能证明服务损坏；没有通用 stop/restart 子命令。 |
+| 18 | 启动器报缺少 `STM32_TOOLKIT_DATA_ROOT`、调用超时、想重启 | 先运行只读 `Check` 并确认同一发行包与 DataRoot；按上例暂设环境变量并向 Python CLI 传相同的 `--data-root`。在可保持运行的终端前台调用 `open`，完成后用该前台的 Ctrl-C 正常结束。受限自动化终端超时不能证明服务损坏；没有通用 stop/restart 子命令。 |
 | 19 | 手输 `localhost` 得 403，或旧标签提示 bootstrap 失败 | 使用 `open` 本次新开的 `127.0.0.1` 认证标签；不要手输 URL、复用失去 fragment token 的书签或尝试放宽 Host/Origin。v1.0.1 目标在缺 token/连接失败时显示无秘密恢复提示；不要打印、复制、保存完整 fragment URL。 |
 
 ## 升级与历史材料
