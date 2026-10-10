@@ -49,14 +49,28 @@ Original acceptance and supporting records are retained in Git at
 Use `git show <commit>:<path>` to retrieve historical material; it is not an instruction to recreate
 old machine-local runtime or evidence paths.
 
-## v1.0.1 in development
+## v1.0.1 local candidate
 
 The user approved [the patch specification](superpowers/specs/2026-10-10-stm32tk-101-patch-design.md)
 and [implementation plan](superpowers/plans/2026-10-10-stm32tk-101-patch-plan.md) on 2026-10-10,
 including audit-driven removal of obsolete history from the current master tree.
 The remote accepted base is `694c825d29a55a53052a148efa4cc6720c315a04`.
 
-This is not yet a published release. Current implementation, accepted CodeHeads and test results are
-recorded in [the execution ledger](codex/returns/STM32TK-101/execution.md). Final artifact identity,
-upgrade validation, independent review and current release qualification must be recorded before
-publication. RC4 coverage exceptions and old hardware authorizations do not transfer automatically.
+Implementation and independent review are complete for all five approved slices. The frozen artifact
+source is `0f06c659f5e04aa1f8e53022eae9b5e964da2b4b`; two clean builds produced 13 identical assets,
+and bundle, dependency, license and SBOM checks passed. Python related regression passed 1709 tests
+with one Windows symlink skip; all 269 UI tests passed. The candidate tree removes 417 obsolete
+historical files and updates the bilingual README and user guidance. GitHub master is unchanged.
+
+**This candidate is not release-qualified or published.** Toolkit overall branch coverage is
+11892/13674 (86.968%, below 90%); Toolkit risk-core-v2 is 11262/12988 (86.711%, below 90%).
+Monitor overall meets 90%, but its risk-core-v2 is 2770/2956 (93.708%, below 95%). UI meets its
+per-file branch gate. Current changed Python files use new native data; only unchanged Git blobs
+reuse U64 data. A narrower current suite does not itself demonstrate product regression.
+
+Final-package installation/upgrade is unexecuted; changed hardware paths need current physical
+evidence. RC4 coverage exceptions and old hardware authorizations do not transfer automatically.
+See [final qualification](codex/returns/STM32TK-101/qualification.md) for fixed artifact hashes,
+evidence ownership, retained limitations and the remaining release conditions, and
+[the execution ledger](codex/returns/STM32TK-101/execution.md) for slice reviews and test records.
+Later report-only commits do not change the source identity of the existing artifacts.
