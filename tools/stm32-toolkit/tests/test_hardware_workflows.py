@@ -792,6 +792,7 @@ def test_flash_derives_target_and_workspace_and_uses_modify_with_exact_pins(tmp_
     )
 
     assert result.ok
+    assert result.details["postFlash"] == {"targetState": "unknown", "runVerified": False}
     config = recorder.configs[0]
     request = recorder.operation_request
     assert config.operation_level is OperationLevel.MODIFY
@@ -861,6 +862,8 @@ def test_flash_recovery_selects_one_fixed_worker_policy_and_preserves_normal_fla
 
     assert ordinary.ok is True
     assert recovery.ok is True
+    assert ordinary.details["postFlash"] == {"targetState": "unknown", "runVerified": False}
+    assert recovery.details["postFlash"] == ordinary.details["postFlash"]
     assert ordinary_captured == [ProbeWorkerConfig()]
     assert len(recovery_captured) == 1
     recovery_config = recovery_captured[0]
@@ -873,6 +876,71 @@ def test_flash_recovery_selects_one_fixed_worker_policy_and_preserves_normal_fla
     assert recovery_recorder.events.count("operation") == 1
     assert ordinary_recorder.configs[0].operation_level is OperationLevel.MODIFY
     assert recovery_recorder.configs[0].operation_level is OperationLevel.MODIFY
+
+
+@pytest.mark.parametrize(
+    ("stage", "reason", "state"),
+    [
+        ("session-open", "target-unsupported", None),
+        ("resume-verify", "postcondition-failed", "halted"),
+    ],
+)
+def test_flash_public_attach_guidance_uses_closed_diagnostic_without_new_control_calls(
+    tmp_path: Path, stage: str, reason: str, state: str | None
+) -> None:
+    project = _project(tmp_path / "project")
+    recorder = _Recorder()
+    diagnostic = make_attach_diagnostic(
+        make_primary(stage, reason, "UNTYPED"),
+        last_verified_target_state=state,
+    )
+
+    async def refused(_request: object, _client: object) -> OperationResult[object]:
+        recorder.events.append("operation")
+        return OperationResult.failure(
+            "stm32_flash", "PROBE_ATTACH_FAILED", "Debug probe attach failed",
+            {"attachDiagnostic": diagnostic},
+        )
+
+    result = _run(flash_workflow(
+        FlashWorkflowRequest(project, tmp_path / "data", "session-a", "probe-a", BUILD_ID, ELF_SHA, True),
+        _seams=replace(_seams(recorder), flash=refused),
+    ))
+    assert result.ok is False
+    assert result.details["attachDiagnostic"]["primary"]["reason"] == reason
+    assert "postFlash" not in result.details
+    if reason == "target-unsupported":
+        assert result.details["requestedTarget"] == "stm32f407vg"
+        assert "pyocd list --targets" in result.details["guidance"]
+    else:
+        assert result.details["lastVerifiedTargetState"] == "halted"
+        assert "run and reset conditions" in result.details["guidance"]
+    assert recorder.events == ["supervisor.start", "operation", "client.close", "supervisor.stop"]
+
+
+def test_handoff_reclaim_preserves_unsupported_target_guidance_without_attach_retry(
+    tmp_path: Path,
+) -> None:
+    project = _project(tmp_path / "project")
+    recorder = _Recorder()
+    diagnostic = make_attach_diagnostic(make_primary("session-open", "target-unsupported", "UNTYPED"))
+
+    async def refused(_ticket: object, _supervisor: object, _client_factory: object) -> OperationResult[object]:
+        recorder.events.append("operation")
+        return OperationResult.failure(
+            "stm32_debug_handoff_end", "PROBE_ATTACH_FAILED", "Debug probe attach failed",
+            {"attachDiagnostic": diagnostic},
+        )
+
+    result = _run(handoff_end_workflow(
+        HandoffEndWorkflowRequest(project, tmp_path / "data", "session-a", "probe-a", TICKET),
+        _seams=replace(_seams(recorder), handoff_end=refused),
+    ))
+    assert result.ok is False
+    assert result.details["requestedTarget"] == "stm32f407vg"
+    assert "pyocd list --targets" in result.details["guidance"]
+    assert recorder.events.count("operation") == 1
+    assert "client.create" not in recorder.events
 
 
 @pytest.mark.parametrize("recovery_under_reset", ["true", 1, None, [], {}])
@@ -1209,6 +1277,13 @@ def test_register_workflow_real_svd_failures_precede_service_start(
 
     assert result.ok is False
     assert result.code == expected_code
+    if case == "out-of-range":
+        assert result.details["registerPath"] == "GPIOA.IDR"
+        assert result.details["address"] == 0x40020010
+        assert result.details["widthBits"] == 32
+        assert result.to_dict()["details"]["trustedRegions"] == [
+            {"name": "PERIPH-NARROW", "origin": 0x40020000, "length": 0x10}
+        ]
     assert recorder.events == []
     assert recorder.configs == []
     assert not data_root.exists()

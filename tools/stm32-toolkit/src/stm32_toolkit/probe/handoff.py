@@ -878,6 +878,58 @@ def _load_flash_result(root: Path) -> dict[str, object]:
     return value
 
 
+def _flash_mismatch_fields(
+    result: Mapping[str, object],
+    firmware: object,
+    *,
+    probe: str,
+    workspace: str,
+    session: str,
+    target: str,
+) -> tuple[str, ...]:
+    identity = getattr(firmware, "identity")
+    model = getattr(firmware, "model")
+    segments = getattr(firmware, "segments")
+    verified_bytes = sum(len(segment.data) for segment in segments)
+    telemetry = (
+        result.get("backendBytesProgrammed"),
+        result.get("backendSectorsProgrammed"),
+    )
+    expected = {
+        "toolkitVersion": __version__,
+        "operationLevel": "modify",
+        "flashResultPath": _FLASH_RESULT_REL,
+        "buildId": identity.get("buildId"),
+        "elfSha256": identity.get("elfSha256"),
+        "elfSize": len(getattr(firmware, "elf_data")),
+        "verifiedBytes": verified_bytes,
+        "elfPath": getattr(firmware, "elf_path"),
+        "targetDevice": model.target.device,
+        "debugTarget": target,
+        "workspaceId": workspace,
+        "sessionId": session,
+        "gitHead": identity.get("gitHead"),
+        "gitDirty": identity.get("gitDirty"),
+        "inputSnapshotSha256": identity.get("inputSnapshotSha256"),
+    }
+    mismatches = [field for field, value in expected.items() if result.get(field) != value]
+    if result.get("authorized") is not True:
+        mismatches.append("authorized")
+    if result.get("probeId") not in (
+        probe,
+        hashlib.sha256(probe.encode("utf-8")).hexdigest(),
+    ):
+        mismatches.append("probeId")
+    for field in ("startedAtUtc", "finishedAtUtc"):
+        value = result.get(field)
+        if not isinstance(value, str) or _TIMESTAMP.fullmatch(value) is None:
+            mismatches.append(field)
+    for field, value in zip(("backendBytesProgrammed", "backendSectorsProgrammed"), telemetry):
+        if value is not None and (type(value) is not int or value < 0 or value > 0x7FFF_FFFF):
+            mismatches.append(field)
+    return tuple(mismatches)
+
+
 def _validate_flash(
     result: Mapping[str, object],
     firmware: object,
@@ -887,44 +939,8 @@ def _validate_flash(
     session: str,
     target: str,
 ) -> None:
-    identity = getattr(firmware, "identity")
-    model = getattr(firmware, "model")
-    segments = getattr(firmware, "segments")
-    verified_bytes = sum(len(segment.data) for segment in segments)
-    telemetry = (
-        result.get("backendBytesProgrammed"),
-        result.get("backendSectorsProgrammed"),
-    )
-    if (
-        result.get("toolkitVersion") != __version__
-        or result.get("authorized") is not True
-        or result.get("operationLevel") != "modify"
-        or result.get("flashResultPath") != _FLASH_RESULT_REL
-        or result.get("buildId") != identity.get("buildId")
-        or result.get("elfSha256") != identity.get("elfSha256")
-        or result.get("elfSize") != len(getattr(firmware, "elf_data"))
-        or result.get("verifiedBytes") != verified_bytes
-        or result.get("elfPath") != getattr(firmware, "elf_path")
-        or result.get("targetDevice") != model.target.device
-        or result.get("debugTarget") != target
-        or result.get("probeId") not in (
-            probe,
-            hashlib.sha256(probe.encode("utf-8")).hexdigest(),
-        )
-        or result.get("workspaceId") != workspace
-        or result.get("sessionId") != session
-        or result.get("gitHead") != identity.get("gitHead")
-        or result.get("gitDirty") != identity.get("gitDirty")
-        or result.get("inputSnapshotSha256") != identity.get("inputSnapshotSha256")
-        or not isinstance(result.get("startedAtUtc"), str)
-        or _TIMESTAMP.fullmatch(str(result["startedAtUtc"])) is None
-        or not isinstance(result.get("finishedAtUtc"), str)
-        or _TIMESTAMP.fullmatch(str(result["finishedAtUtc"])) is None
-        or any(
-            value is not None
-            and (type(value) is not int or value < 0 or value > 0x7FFF_FFFF)
-            for value in telemetry
-        )
+    if _flash_mismatch_fields(
+        result, firmware, probe=probe, workspace=workspace, session=session, target=target
     ):
         raise _fail("HANDOFF_FLASH_MISMATCH", "Flash result does not match the debug handoff")
 

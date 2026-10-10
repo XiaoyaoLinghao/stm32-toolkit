@@ -1,10 +1,16 @@
 {
+  "../../../../c-run/node_modules/preact/dist/preact.module.js": {
+    "file": "assets/preact.module-ZOr5Neeu.js",
+    "name": "preact.module",
+    "src": "../../../../c-run/node_modules/preact/dist/preact.module.js",
+    "isDynamicEntry": true
+  },
   "_contract-BPQw5UZt.js": {
     "file": "assets/contract-BPQw5UZt.js",
     "name": "contract"
   },
   "index.html": {
-    "file": "assets/index-6JLIetMy.js",
+    "file": "assets/index-3E3JXDEf.js",
     "name": "index",
     "src": "index.html",
     "isEntry": true,
@@ -12,18 +18,12 @@
       "_contract-BPQw5UZt.js"
     ],
     "dynamicImports": [
-      "node_modules/preact/dist/preact.module.js",
+      "../../../../c-run/node_modules/preact/dist/preact.module.js",
       "src/app.tsx"
     ],
     "css": [
       "assets/index-ytfcZfPW.css"
     ]
-  },
-  "node_modules/preact/dist/preact.module.js": {
-    "file": "assets/preact.module-ZOr5Neeu.js",
-    "name": "preact.module",
-    "src": "node_modules/preact/dist/preact.module.js",
-    "isDynamicEntry": true
   },
   "src/app.tsx": {
     "file": "assets/app-CzzUzrMN.js",
@@ -31,7 +31,7 @@
     "src": "src/app.tsx",
     "isDynamicEntry": true,
     "imports": [
-      "node_modules/preact/dist/preact.module.js",
+      "../../../../c-run/node_modules/preact/dist/preact.module.js",
       "_contract-BPQw5UZt.js"
     ]
   }

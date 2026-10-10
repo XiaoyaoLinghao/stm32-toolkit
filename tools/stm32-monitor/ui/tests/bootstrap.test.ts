@@ -29,7 +29,7 @@ it.each(["","#token=A"+"a".repeat(63),`#token=${TOKEN}&token=${TOKEN}`,
   window.history.replaceState(null,"",`/${hash}`);
   const fetchLike=vi.fn();
   const result=await bootstrapFromFragment(window,fetchLike);
-  expect(result).toEqual({ok:false,code:"MONITOR_BOOTSTRAP_FAILED",message:"Monitor could not start"});
+  expect(result).toMatchObject({ok:false,code:"MONITOR_ACCESS_LINK_INVALID"});
   expect(window.location.hash).toBe("");
   expect(fetchLike).not.toHaveBeenCalled();
 });
@@ -44,14 +44,30 @@ it("ignores a query token and creates no normal state or request",async()=>{
   expect(mount).not.toHaveBeenCalled();
 });
 
-it("returns only fixed startup copy on bootstrap failure",async()=>{
+it("returns only fixed startup copy on an incomplete bootstrap request",async()=>{
   window.history.replaceState(null,"",`/#token=${TOKEN}`);
   const result=await bootstrapFromFragment(window,vi.fn().mockRejectedValue(new Error(TOKEN)));
-  expect(result).toEqual({ok:false,code:"MONITOR_BOOTSTRAP_FAILED",message:"Monitor could not start"});
+  expect(result).toMatchObject({ok:false,code:"MONITOR_BOOTSTRAP_REQUEST_FAILED"});
   expect(JSON.stringify(result)).not.toContain(TOKEN);
-  renderStartupError(document);
-  expect(document.querySelector('[role="alert"]')?.textContent).toBe("Monitor could not start");
+  renderStartupError(document,result.ok?"":result.code);
+  expect(document.querySelector('[role="alert"]')?.textContent).toContain("request did not complete");
   expect(document.body.textContent).not.toContain(TOKEN);
+});
+
+it.each([
+  [new Response("private server body",{status:403}),"MONITOR_ACCESS_REJECTED"],
+  [new Response("private server body",{status:500}),"MONITOR_ACCESS_REJECTED"],
+  [new Response("private server body"),"MONITOR_BOOTSTRAP_RESPONSE_INVALID"],
+])("renders a safe fixed recovery for response failures",async(response,expectedCode)=>{
+  window.history.replaceState(null,"",`/#token=${TOKEN}`);
+  const result=await bootstrapFromFragment(window,vi.fn().mockResolvedValue(response));
+  expect(result).toMatchObject({ok:false,code:expectedCode});
+  renderStartupError(document,result.ok?"":result.code);
+  const text=document.body.textContent??"";
+  expect(text).toContain("Monitor terminal");
+  expect(text).not.toContain(TOKEN);
+  expect(text).not.toContain("private server body");
+  expect(window.location.hash).toBe("");
 });
 
 it("takeFragmentToken returns null for non-fragment and invalid shapes",()=>{

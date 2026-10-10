@@ -15,6 +15,7 @@ import unicodedata
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Mapping
 
 from .model import DebugFirmwareBinding, MemoryRegionBinding
 from .types import CatalogPage, RegisterDescriptor
@@ -39,10 +40,11 @@ _CURSOR_KEY = secrets.token_bytes(32)
 
 
 class SvdError(Exception):
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(self, code: str, message: str, details: Mapping[str, object] | None = None) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
+        self.details = dict(details or {})
 
 
 @dataclass(frozen=True)
@@ -226,8 +228,8 @@ class SvdSelection:
         return CatalogPage(items, next_cursor)
 
 
-def _fail(code: str, message: str) -> SvdError:
-    return SvdError(code, message)
+def _fail(code: str, message: str, **details: object) -> SvdError:
+    return SvdError(code, message, details)
 
 
 def _catalog_query(value: object) -> str:
@@ -1050,6 +1052,14 @@ def _validate_register_ranges(
             raise _fail(
                 "SVD_ADDRESS_OUT_OF_RANGE",
                 "SVD register is outside trusted readable memory",
+                registerPath=register.path,
+                address=register.address,
+                widthBits=register.size_bytes * 8,
+                sizeBytes=register.size_bytes,
+                trustedRegions=[
+                    {"name": region.name, "origin": region.origin, "length": region.length}
+                    for region in readable_regions
+                ],
             )
 
 
@@ -1073,7 +1083,10 @@ def select_svd(
             not isinstance(svd_device, str) or _NAME.fullmatch(svd_device) is None
         ))
     ):
-        raise _fail("SVD_SELECTION_REQUIRED", "An exact SVD selection is required")
+        raise _fail(
+            "SVD_SELECTION_REQUIRED",
+            "Select an SVD file inside the project root and configure debug.svd for this device",
+        )
     trusted_regions = _validate_readable_regions(readable_regions)
     expected_document_device = target_device if svd_device is None else svd_device
     documents: list[
@@ -1092,7 +1105,10 @@ def select_svd(
         item for item in documents if item[0] == expected_document_device
     )
     if len(matches) != 1:
-        raise _fail("SVD_SELECTION_REQUIRED", "An exact SVD selection is required")
+        raise _fail(
+            "SVD_SELECTION_REQUIRED",
+            "Select an SVD file inside the project root and configure debug.svd for this device",
+        )
     device, registers, portable, source = matches[0]
     _validate_register_ranges(registers, trusted_regions)
     return SvdSelection._create(

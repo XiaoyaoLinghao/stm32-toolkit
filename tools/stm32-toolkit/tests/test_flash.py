@@ -332,6 +332,7 @@ def test_flash_programs_exact_elf_reads_back_segments_and_commits_result(
     result = asyncio.run(flash_firmware(_request(root, identity), client))
 
     assert result.ok is True
+    assert result.details == {}
     assert result.data is not None
     payload = result.to_dict()["data"]
     assert payload["buildId"] == identity["buildId"]

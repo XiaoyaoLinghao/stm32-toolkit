@@ -623,6 +623,13 @@ def test_readable_regions_are_required_and_every_register_must_be_contained(
             readable_regions=(MemoryRegionBinding("RAM", 0x20000000, 0x1000, "rw-"),),
         )
     assert outside.value.code == "SVD_ADDRESS_OUT_OF_RANGE"
+    assert outside.value.details == {
+        "registerPath": "GPIOA.IDR",
+        "address": 0x40020010,
+        "widthBits": 32,
+        "sizeBytes": 4,
+        "trustedRegions": [{"name": "RAM", "origin": 0x20000000, "length": 0x1000}],
+    }
 
 
 def test_selection_has_unforgeable_provenance_and_revalidates_current_binding(

@@ -932,6 +932,35 @@ def test_flash_must_match_workspace_probe_target_and_current_firmware(
     result = asyncio.run(bind_debug_firmware(request, client))
     assert result.ok is False
     assert result.code == "DEBUG_FLASH_MISMATCH"
+    assert result.to_dict()["details"]["mismatchedFields"] == [field]
+    assert result.details["elfContentMatches"] is True
+    assert client.events == []
+
+
+def test_flash_mismatch_reports_all_fields_without_exposing_receipt_values(binding_env):
+    root, identity, client, request = binding_env
+    document = _flash_result(identity)
+    document["workspaceId"] = "other-workspace"
+    document["debugTarget"] = "other-target"
+    document["elfSha256"] = "0" * 64
+    atomic_write_json(root / "artifacts" / "migration" / "flash-result.json", document)
+    result = asyncio.run(bind_debug_firmware(request, client))
+    assert result.code == "DEBUG_FLASH_MISMATCH"
+    assert set(result.details["mismatchedFields"]) == {"workspaceId", "debugTarget", "elfSha256"}
+    assert result.details["elfContentMatches"] is False
+    assert "other-workspace" not in str(result.details)
+    assert client.events == []
+
+
+def test_flash_receipt_boolean_identity_remains_exact(binding_env):
+    root, identity, client, request = binding_env
+    document = _flash_result(identity)
+    document["authorized"] = 1
+    atomic_write_json(root / "artifacts" / "migration" / "flash-result.json", document)
+    result = asyncio.run(bind_debug_firmware(request, client))
+    assert result.code == "DEBUG_FLASH_MISMATCH"
+    assert result.to_dict()["details"]["mismatchedFields"] == ["authorized"]
+    assert result.details["elfContentMatches"] is True
     assert client.events == []
 
 
