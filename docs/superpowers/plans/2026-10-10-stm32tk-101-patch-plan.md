@@ -95,6 +95,9 @@ Toolkit `__init__.py`、UI `package.json`/lockfile 顶层项目版本、两个 `
    保留 Git 历史，不改 v1.0.0 资产；不预写“v1.0.1 已发布”。
 3. 使用已有 release builder、精确 wheelhouse/UI 输入和固定 CodeHead 打包；核对全部输出、SBOM/许可和 hash。
    修改 builder/policy 后重算 setup 可信 hash，再冻结最终代码与构建身份。
+   最终打包预检确认既有pip将本地产品目录识别为可长期缓存wheel的name-version路径，而builder为wheel进程
+   重建env时丢弃PIP_CACHE_DIR。D在已有builder所有权内仅对pip wheel增加--no-cache-dir，补参数边界验证并重算
+   utility信任锚点；不改变包输入、依赖或构建语义。临时backend安装仍继承本轮受控cache/TEMP环境。
 4. 在一次最终集成/发布层执行适用检查；已改变的产品不能照搬 RC4 覆盖率数字/例外。
 5. 准备具体 GitHub 交付材料后再请求远端动作授权；成功后逐项记录 push/PR/merge/tag/Release 身份与下载校验。
    v1.0.0 标签和资产保持不变，GitHub about 可建议描述“Agent-neutral STM32 development toolkit: Keil migration, reproducible builds, probe debugging and Monitor”。

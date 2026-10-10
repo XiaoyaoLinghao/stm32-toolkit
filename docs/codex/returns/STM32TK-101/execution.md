@@ -142,6 +142,11 @@ D最终当前版本断言另覆盖Toolkit doctor/build_runner/mcp_migration_buil
 verify_qualification按该代码头执行原生测量。后续中性状态文案提交不改变产品/测试字节，须另核对。
 四份旧requirements草稿的1025行由review_b逐行审计，exact删除及引用闭合通过，总历史文件清理417个。
 
+发布预检由verify_packages只读确认现有pip的wheel_builder._should_cache会将stm32-toolkit/monitor目录
+识别为可常驻缓存的name-version路径；builder重建env丢弃PIP_CACHE_DIR，可能落到用户LocalAppData/pip/Cache。
+未执行该构建或写缓存。分类ENVIRONMENT边界；D获派最小--no-cache-dir及信任锚点/用例修正，冻结后才开始双构建。
+该改动不影响q正在测量的产品Python/UI源；已有测试只按实际字节适用性复用，不宣称旧archive检验覆盖新锚点。
+
 D静态盘点发现setup技能仍指向当前runtime/1.0.0，以及Toolkit public_inventory/cli和Monitor
 cli/service/exports/runtime测试硬编码当前返回1.0.0。主代理将这些具名文件的当前版本说明/断言
 纳入同一D所有权，保持模拟旧版本与历史fixture原值；无新公共行为或所有权例外。
