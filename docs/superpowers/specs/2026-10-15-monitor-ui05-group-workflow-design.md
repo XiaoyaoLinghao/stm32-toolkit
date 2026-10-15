@@ -45,8 +45,9 @@
 
 ## R1 补充：冲突后的列表有效性门禁
 
-2026-10-16：reducer 增加唯一 `groupsNeedRefresh` 布尔状态，初始为 false。组写收到 MONITOR_GROUP_CONFLICT / MONITOR_GROUP_NOT_FOUND / MONITOR_IMPORT_CONFLICT 时设 true，表示当前列表不足以授权新的组写。只有完整成功 `groups.loaded` 或重新成功初始化可以清除；普通 ACK、关闭提示、导航和另存均不清除。GET 失败或迟到被拒绝不得清除。
+2026-10-16：reducer 增加唯一 `groupsNeedRefresh` 布尔状态，初始为 false。组写收到 MONITOR_GROUP_CONFLICT / MONITOR_GROUP_NOT_FOUND / MONITOR_IMPORT_CONFLICT 时设 true，表示当前列表不足以授权新的组写。已有 controller 只有完整成功 `groups.loaded` 可以清除；普通 ACK、关闭提示、导航和另存均不清除。GET 失败或迟到被拒绝不得清除。
 
 该门禁为 true 时，controller 拒绝全部 groups family 写入口，包括直接调用或尚未重绘的按钮；UI 禁用保存、删除与导入确认，但允许继续编辑、导航、另存、文件预览以及只读刷新。GroupPanel 常驻中文“需先刷新观测组”的解释与既有刷新按钮，不能依赖可能被关闭或退出上下文的 operation failure 作为唯一恢复入口。门禁不是 busy，不得锁住刷新和草稿编辑。完整 GET 成功后恢复新提交；同 revision 名称冲突允许用户核对后改名保存。此门禁不扩展到 probe/sampling/export，不引入自动 GET 或自动重写。
 
-门禁的同步 admission 属于 controller 组操作生命周期，reducer 布尔仅呈现已归约状态。controller 使用 `groupRefreshFence = null | {refreshedGroups: readonly WatchGroup[] | null}`：冲突 fail 派发前同步置 `{refreshedGroups:null}`；完整 current GET 成功后记录其返回数组，不能在派发成功时立即放行。后续组写必须先观察 `getState().groups` 与该返回数组相同且 `groupsNeedRefresh === false`，确认 UI 状态已采用完整新事实后才清 fence。未完成、失败或被退休的 GET 不改变 fence，导航/关闭提示/ACK 不释放。初始化若清门禁也使用成功快照已采纳规则。该控制状态与既有 writing/active 同属 controller，不另存第二份可编辑数据；不全局重写 App dispatch，也不扩大到其他操作 family。覆盖冲突回包之后未 render 立即重写，以及 GET 成功尚未 render 时旧 revision 写入均被拒绝。
+门禁的同步 admission 属于 controller 组操作生命周期，reducer 布尔仅呈现已归约状态。controller 使用 `groupRefreshFence = null | {refreshedGroups: readonly WatchGroup[] | null}`：冲突 fail 派发前同步置 `{refreshedGroups:null}`；完整 current GET 成功后记录其返回数组，不能在派发成功时立即放行。后续组写必须先观察 `getState().groups` 与该返回数组相同且 `groupsNeedRefresh === false`，确认 UI 状态已采用完整新事实后才清 fence。未完成、失败或被退休的 GET 不改变 fence，导航/关闭提示/ACK 不释放。新 controller 从 false/无 fence 起步；现有 controller 的 successful initial() 为一次性生命周期，之后 loadInitial 直接返回，不新增重新初始化解锁路径。该控制状态与既有 writing/active 同属 controller，不另存第二份可编辑数据；不全局重写 App dispatch，也不扩大到其他操作 family。覆盖冲突回包之后未 render 立即重写，以及 GET 成功尚未 render 时旧 revision 写入均被拒绝。
+
