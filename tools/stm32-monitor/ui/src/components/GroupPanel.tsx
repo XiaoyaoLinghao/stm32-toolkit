@@ -34,7 +34,7 @@ type ImportState=
   |{kind:"closed"}
   |{kind:"selecting"}
   |{kind:"reading"}
-  |{kind:"preview";document:GroupImportDocument}
+  |{kind:"preview";generation:number;document:GroupImportDocument}
   |{kind:"error";message:string;diagnostic:string|null};
 
 export function GroupPanel(p:GroupPanelProps):JSX.Element{
@@ -79,7 +79,7 @@ export function GroupPanel(p:GroupPanelProps):JSX.Element{
       try{value=parseLossless(text);}catch{setImportState({kind:"error",message:copy.importJsonInvalid,diagnostic:null});return;}
       const parsed=parseGroupImportDocument(value);
       if(!parsed.ok){setImportState({kind:"error",message:`${errorText(parsed.code).title}。${errorText(parsed.code).action}`,diagnostic:`${parsed.code}: ${parsed.message}`});return;}
-      setImportState({kind:"preview",document:parsed.data});
+      setImportState({kind:"preview",generation,document:parsed.data});
     }catch{
       if(isCurrent())setImportState({kind:"error",message:copy.importReadFailed,diagnostic:null});
     }
@@ -91,7 +91,7 @@ export function GroupPanel(p:GroupPanelProps):JSX.Element{
     if(fileRef.current!==null)fileRef.current.value="";
   };
   const confirmImport=():void=>{
-    if(importState.kind!=="preview")return;
+    if(importState.kind!=="preview"||!mounted.current||importState.generation!==importGeneration.current)return;
     const doc=importState.document;
     cancelImport();
     void p.onImport(doc);

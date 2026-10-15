@@ -1,6 +1,7 @@
 import {afterEach,beforeEach,expect,it,vi} from "vitest";
 import {fireEvent,render,screen,waitFor} from "@testing-library/preact";
 import userEvent from "@testing-library/user-event";
+import {act} from "preact/test-utils";
 import {GroupPanel} from "../src/components/GroupPanel";
 import {watchGroup} from "./fixtures";
 
@@ -146,4 +147,42 @@ it("can reselect the same file while the older read is pending and only submits 
   expect(await screen.findByText(/将导入 1 个观测组/)).toBeTruthy();
   await userEvent.click(screen.getByRole("button",{name:"确认导入"}));
   expect(onImport).toHaveBeenCalledExactlyOnceWith({schemaVersion:1,groups:[{name:"New",description:"",intervalMs:250,items:[]}]});
+});
+
+it("rejects a stale confirm handler in the same event batch as a new file selection",async()=>{
+  const onImport=vi.fn();
+  render(<GroupPanel {...props(onImport)}/>);
+  fireEvent.click(screen.getByRole("button",{name:"导入观测组"}));
+  select("old.json");
+  ControlledFileReader.requests[0]!.succeed(empty);
+  const oldConfirm=await screen.findByRole("button",{name:"确认导入"});
+  const input=screen.getByTestId("group-import-file") as HTMLInputElement;
+  await act(()=>{
+    Object.defineProperty(input,"files",{configurable:true,value:[new File([one],"new.json",{type:"application/json"})]});
+    input.dispatchEvent(new Event("change",{bubbles:true}));
+    oldConfirm.dispatchEvent(new MouseEvent("click",{bubbles:true}));
+  });
+  expect(onImport).not.toHaveBeenCalled();
+  expect(screen.queryByRole("button",{name:"确认导入"})).toBeNull();
+  ControlledFileReader.requests[1]!.succeed(one);
+  expect(await screen.findByText(/将导入 1 个观测组/)).toBeTruthy();
+  await userEvent.click(screen.getByRole("button",{name:"确认导入"}));
+  expect(onImport).toHaveBeenCalledExactlyOnceWith({schemaVersion:1,groups:[{name:"New",description:"",intervalMs:250,items:[]}]});
+});
+
+it.each(["取消","导入观测组"])("rejects a stale confirm handler in the same event batch as %s",async(action)=>{
+  const onImport=vi.fn();
+  render(<GroupPanel {...props(onImport)}/>);
+  fireEvent.click(screen.getByRole("button",{name:"导入观测组"}));
+  select("old.json");
+  ControlledFileReader.requests[0]!.succeed(one);
+  const oldConfirm=await screen.findByRole("button",{name:"确认导入"});
+  const stop=screen.getByRole("button",{name:action});
+  await act(()=>{
+    stop.dispatchEvent(new MouseEvent("click",{bubbles:true}));
+    oldConfirm.dispatchEvent(new MouseEvent("click",{bubbles:true}));
+  });
+  expect(onImport).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button",{name:"导入观测组"}));
+  expect(screen.queryByRole("button",{name:"确认导入"})).toBeNull();
 });
