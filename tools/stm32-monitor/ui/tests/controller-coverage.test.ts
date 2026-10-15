@@ -36,7 +36,8 @@ function makeApi(overrides:Partial<MonitorApi>={}):MonitorApi{
 }
 
 function harness(api:MonitorApi){
-  let state:MonitorState=reducer(initialState,{type:"zoom.reset"});
+  // Each harness owns a state object; a no-op zoom reset is intentionally identity-preserving.
+  let state:MonitorState={...initialState};
   const actions:MonitorAction[]=[];
   const dispatch=(action:MonitorAction)=>{state=reducer(state,action);actions.push(action);if(action.type==="request.succeeded"&&action.data!==undefined)actions.push(action.data);};
   const controller=createController(api,dispatch,()=>state);

@@ -35,8 +35,11 @@ export const copy={
   identityTitle:"项目与固件身份",logicalProject:"逻辑项目：",targetDevice:"目标芯片：",
   noFirmware:"尚无已验证的固件身份。",firmwareBuild:"固件构建：",elfLabel:"ELF：",gitLabel:"Git：",gitDirty:"有未提交改动",copyIdentity:"复制工作区身份",
   chartTitle:"实时波形",chartLimit:"最多显示 8 条曲线",chartAria:"实时数值波形图",
-  chartEmpty:"选择观测组及曲线后显示波形。",valuesTitle:"最新数值",valuesStale:"非最新数据",
+  chartTimeAxis:"相对时间（ms）",chartOrigin:"起点（UTC）：",chartMissingValue:"读取空缺",
+  chartEmpty:"选择曲线后显示波形。",chartWaiting:"已选择曲线，等待采样数据。",
+  chartNoValues:"已有采集时间，但暂无可绘制的数值。",valuesTitle:"最新数值",valuesStale:"非最新数据",
   trend:"趋势",curve:"曲线",curveShow:"显示曲线",curveHide:"隐藏曲线",
+  selectedCurves:"已选曲线",removeCurve:"移除曲线",curveLimitReached:"最多只能选择 8 条曲线；先移除已选曲线。",
   valuesEmpty:"当前观测组暂无最新数值。请选择观测对象并开始采样。",
   notices:"监视通知",probeTitle:"探针连接",probeRefresh:"刷新探针列表",
   probeNone:"未检测到探针。请检查连接后刷新列表。",probeOnline:"（已连接）",probeConnect:"连接",
@@ -93,6 +96,7 @@ export function recoveryAction(recovery:RecoveryKind,scope:RequestScope):string{
 }
 
 export const formatCopy={
+  selectedCount:(count:number)=>`已选择 ${count} / 8 条曲线`,
   bits:(count:number)=>`${count} 位`,
   groupDelete:(name:string)=>`确定删除 ${name}？`,
   importPreview:(groups:number,items:number)=>`将导入 ${groups} 个观测组、${items} 个观测对象。确认继续？`,

@@ -63,3 +63,12 @@ it("ChartZoomControls fires reset action",async()=>{
   await userEvent.click(screen.getByRole("button",{name:"重置缩放"}));
   expect(onAction).toHaveBeenCalledWith({type:"zoom.reset"});
 });
+
+it("ChartZoomControls disables inward movement at 1 percent and outward movement at full range",()=>{
+  const view=render(<ChartZoomControls range={{start:49.5,end:50.5}} onAction={vi.fn()}/>);
+  expect(screen.getByRole("button",{name:"放大"})).toBeDisabled();
+  expect(screen.getByRole("button",{name:"缩小"})).toBeEnabled();
+  view.rerender(<ChartZoomControls range={{start:0,end:100}} onAction={vi.fn()}/>);
+  expect(screen.getByRole("button",{name:"缩小"})).toBeDisabled();
+  expect(screen.getByRole("button",{name:"放大"})).toBeEnabled();
+});

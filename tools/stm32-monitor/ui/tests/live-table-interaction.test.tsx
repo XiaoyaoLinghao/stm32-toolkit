@@ -23,3 +23,29 @@ it("labels each curve button with its next action while reducer selection remain
   view.rerender(<LiveTable rows={[row]} selectedSeries={[]} onSeriesToggle={toggle}/>);
   expect(screen.getByRole("button",{name:"显示曲线"})).toHaveAttribute("aria-pressed","false");
 });
+
+it("explains the eight-curve cap, still allows hiding, and enables the next curve after removal",async()=>{
+  const toggle=vi.fn();
+  const rows=Array.from({length:9},(_,index)=>({watch:{kind:"variable" as const,expression:`point${index}`},
+    displayValue:String(index),rawHex:null,typeName:"int",capturedAtUtc:"",trend:"none" as const,
+    errorCode:null,numericValue:index}));
+  const selected=rows.slice(0,8).map(row=>`variable:${row.watch.expression}`);
+  const view=render(<LiveTable rows={rows} selectedSeries={selected} onSeriesToggle={toggle}/>);
+  expect(screen.getByText("已选择 8 / 8 条曲线")).toBeTruthy();
+  expect(screen.getByText("最多只能选择 8 条曲线；先移除已选曲线。")).toBeTruthy();
+  expect(screen.getByRole("button",{name:"显示曲线"})).toBeDisabled();
+  await userEvent.click(screen.getAllByRole("button",{name:"隐藏曲线"})[0]!);
+  expect(toggle).toHaveBeenCalledWith("variable:point0");
+  view.rerender(<LiveTable rows={rows} selectedSeries={selected.slice(1)} onSeriesToggle={toggle}/>);
+  expect(screen.getAllByRole("button",{name:"显示曲线"})).toHaveLength(2);
+  for(const button of screen.getAllByRole("button",{name:"显示曲线"}))expect(button).toBeEnabled();
+});
+
+it("keeps an already-selected curve removable after its row leaves the current group",async()=>{
+  const toggle=vi.fn();
+  render(<LiveTable rows={[]} selectedSeries={["variable:orphan"]} onSeriesToggle={toggle}/>);
+  expect(screen.getByText("已选择 1 / 8 条曲线")).toBeTruthy();
+  expect(screen.getByText("变量 orphan")).toBeTruthy();
+  await userEvent.click(screen.getByRole("button",{name:/移除曲线.*orphan/}));
+  expect(toggle).toHaveBeenCalledExactlyOnceWith("variable:orphan");
+});

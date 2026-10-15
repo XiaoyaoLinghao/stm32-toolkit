@@ -113,8 +113,11 @@ export function reducer(state:MonitorState,action:MonitorAction):MonitorState{
  if(action.type==="group.watch.added")return state.groupDraft.items.some(item=>watchKey(item)===watchKey(action.watch))?state:{...state,groupDraft:{...state.groupDraft,items:[...state.groupDraft.items,action.watch]}};
  if(action.type==="group.watch.removed"){const items=state.groupDraft.items.filter(item=>watchKey(item)!==action.key);return items.length===state.groupDraft.items.length?state:{...state,groupDraft:{...state.groupDraft,items}};}
  if(action.type==="series.toggled"){const selected=new Set(state.selectedSeries);if(selected.has(action.key))selected.delete(action.key);else if(selected.size<8)selected.add(action.key);else return state;return {...state,selectedSeries:selected,live:{...state.live,selectedSeries:selected}};}
- if(action.type==="zoom.changed")return {...state,zoom:zoomReducer(state.zoom,action.action)};
- if(action.type==="zoom.reset")return {...state,zoom:initialZoom};
+ if(action.type==="zoom.changed"){
+  const zoom=zoomReducer(state.zoom,action.action);
+  return zoom===state.zoom?state:{...state,zoom};
+ }
+ if(action.type==="zoom.reset")return state.zoom===initialZoom?state:{...state,zoom:initialZoom};
  if(action.type==="history.loaded"){
   const projection=projectHistoryPage(action.page,new Map(state.groups.map(group=>[group.groupId,group])),state.selectedSeries);
   const cursorStack=action.navigation==="next"?[...state.history.cursorStack,state.history.query?.cursor]
