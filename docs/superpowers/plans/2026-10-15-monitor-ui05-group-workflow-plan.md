@@ -4,7 +4,7 @@ Full accepted base：`acf6953221f87b0e7951e5c0db4d9a57a381313e`。规范为同�
 
 1. 独立契约审查通过，从已接受 UI04 完整 SHA 建立 `codex/monitor-ui-05-group-workflow`，工作根 `D:\codex-tmp\mu51015`，实现树 `impl`，独立树 `review`。无 PR。TEMP/TMP/TMPDIR 与日志/缓存限定该根，主代理清理。锁文件一致时复用已安装依赖，不安装。
 2. 先补用户行为红回归：同组点击不丢稿、切组取消/确认、新稿无采样旧目标、删除确认后无孤立可写 ID、版本冲突恢复只 GET、旧列表迟到不覆盖 ack、保存后列表失败不重复 POST、不可采样寄存器不能加入。
-3. 实现唯一编辑基线和导航状态，打通组件→reducer→controller，保留现有写 family/request 生命周期。补多操作重复点击、切换后旧重试、同 ID 新 revision、dirty refresh、删除源孤立稿直接 Save 被拒绝及另存、同 revision 名称冲突后改名新提交、确认目标消失等边界；再完成目录/导入中文呈现。不要平行写共享 app/reducer。
+3. 实现唯一编辑基线和导航状态，打通组件→reducer→controller，保留现有写 family/request 生命周期。补多操作重复点击、切换后旧重试、同 ID 新 revision、dirty refresh、删除源孤立稿直接 Save 被拒绝及另存、同 revision 名称冲突后改名新提交、确认目标消失、打开删除确认后 revision/编辑 generation 改变使旧确认失效等边界；再完成目录/导入中文呈现。不要平行写共享 app/reducer。
 4. 实现者先跑相关 group/catalog/controller/recovery/reducer/app 以及新增回归，再执行两个 typecheck、lint、完整 UI unit、build、verify:dist。共享 state/controller 是完整 UI 回归的风险理由，不触发无关后端/发布矩阵。保留命令、退出码、产品源身份与必要红日志，清理不再需要的中间产物。
 5. 固定 CodeHead，单独报告 commit 写 accepted base 与 CodeHead（不写报告自身 SHA）。主代理在独立干净树复核完整 base→CodeHead，运行关键 group/controller/recovery 回归、typecheck、verify:dist；只读审查者并行审完整 diff。修订返回原实现者，同一问题两轮不收敛重审契约。
 

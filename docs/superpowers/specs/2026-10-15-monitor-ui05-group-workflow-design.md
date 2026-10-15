@@ -15,6 +15,7 @@
 - 增加 reducer 所有的编辑基线（加载/成功保存时的完整 GroupDraft 快照）和单调 editor generation；逻辑导航/另存/重载使 generation 增加，提交捕获 generation。脏状态仅比较可编辑字段及有序 watch key，不比较 ID/revision 元数据，不能通过刷新后的组列表倒算。不新增本地存储、自动保存或跨页持久化。
 - 编辑目标由 `groupDraft.sourceGroupId` 表示；new 时 source/expectedRevision 和 selectedGroupId 均为 null。初始加载可以选择第一组；普通刷新不把空选组自动改为第一组。现有 active run 的目标来自 `status.sampling`，与下一次开始采样的选择分开说明。
 - 编辑导航请求（选择、新建、重新载入）及待确认目标由 reducer 管理。选择当前编辑组是无操作，脏稿不变；其他破坏性导航遇脏稿生成一个确认状态，按钮选择继续编辑或放弃后切换，复用已有焦点管理。确认时重新校验目标存在；消失则保留原稿并提示，不静默选择其他组。确认出现时冻结编辑控件，避免确认内容漂移。
+- 删除确认绑定打开确认时的 ID/revision 和编辑 generation；选择/新建/刷新导致目标或版本变化时旧确认失效，需重新确认，不能把旧确认自动升级为删除最新 revision。controller 再校验捕获的 revision，写失败重试也保持该身份约束。
 - 刷新成功：干净编辑稿可更新至同 ID 最新组；脏稿保持其内容、原 expectedRevision、基线。源已删除时无论是否 dirty 都清除指向该 ID 的 selectedGroupId；脏稿保留为可恢复的孤立稿并显示“原组已删除”，干净稿则清为新稿。不存在的 source ID 或已知 revision 不匹配时，保存按钮及 controller 的直接保存入口禁止 UPDATE，直到显式导航/载入最新或另存为新稿。显式另存保留 name/description/interval/items，清 source/revision/selected，基线为空稿，要求用户审阅名称再保存。
 - 冲突标记可由最新列表中同 ID 的 revision 与草稿 expectedRevision 差异、或缺失情况派生；尚未完成刷新时不能把旧列表称为最新。明确失败码也必须显示恢复提示，不等刷新后才告诉用户。
 - 成功保存总是 upsert 服务端规范组；只有提交捕获 generation 与当前编辑 generation 相同才更新选组、编辑内容和基线，不能只靠内容相等推断身份。交互锁阻止在途编辑；迟到确认仍须有 generation 防线。保存成功而后续列表读取失败只重试读取，不能再次 POST。删除确认成功立即移除捕获目标并清理对应编辑状态，后续列表失败也不能留下可保存到已删 ID 的稿。导入成功立即合并返回的组数组，保持现有编辑稿/基线/选组，不能丢弃成功返回值等 GET 后才显示。
