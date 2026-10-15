@@ -8,7 +8,7 @@
 
 ## 集成行为
 
-1. `bootstrap.test.ts` 保留远端新增的纯根入口、拒绝和异常响应测试；将固定恢复断言改为产品中文。测试仍核对 fragment hash 清除、一次同源请求，以及 token、服务端 message/details 和原始响应不进入返回值或页面。
+1. `bootstrap.test.ts` 保留既有纯根入口、拒绝和异常响应测试，并纳入远端新增的有效拒绝 envelope 回归；将该回归的固定恢复断言改为产品中文。测试仍核对 fragment hash 清除、一次同源请求，以及 token、服务端 message/details 和原始响应不进入返回值或页面。
 2. `groups-panel.test.tsx` 保留导入预览确认及远端新增的读取中卸载测试。输入文件在读取开始即清空，以允许重新选同一文件；卸载前捕获输入状态，卸载后等 FileReader 完成，断言无 detached input 的 value setter 调用、状态无变化、无导入回调和无预览。原 `groups-import-lifecycle.test.tsx` 回归一并通过。
 3. `zh.ts` 的通用 `invalidRange` 只说明 UTC 解析与先后顺序；新增 `historyInvalidRange` 专属历史记录的 1970/int64 提示，`HistoryPanel` 使用后者。`ExportPanel` 继续使用通用文案，`historyInput/inputNs` 与导出操作未变。重新构建并跟踪 7 个 UI dist 文件。
 
