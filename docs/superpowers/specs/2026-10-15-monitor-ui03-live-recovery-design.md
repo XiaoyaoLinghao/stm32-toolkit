@@ -30,9 +30,11 @@ Accepted base：`261f49027dc1050b35720717a41efba687c72a32`，产品字节继承�
 - 开始恢复前必须没有在途 status、probe 或 sampling 操作；checking/connecting 期间也禁止新的 probe/sampling 写入和重复 status 刷新。UI 禁用与 controller 同步守卫一致；“取消连接”始终可用。目录、历史、导出和编辑草稿不因此整页锁住。
 - 旧 socket 在恢复 GET 前退休，GET 使用原 same-origin cookie API。精确致命错误统一通过 UI02 的 access.blocked 处理，关闭实时资源；普通失败不卸载工作台。
 - GET 成功必须与原 workspaceId/sessionId/logicalProjectId 相同。若服务身份变化，停止自动恢复，以会话已变化的中文说明进入原会话失效处理，要求重新打开工作台；不带旧游标进入新会话，不把旧草稿作用到新工程。
+- 恢复前的 GET 只作权限与会话身份校验，不发布 status.loaded、不重基样本或丢弃计数。该 HTTP 响应没有 stateRevision，不能将它误作重放终点；连接后的状态仍由有序 replay 或 gap state 快照发布。仅重连本身不重置数据；离线期间真实发生的 binding/run 变化仍按重放顺序触发既有重置。
 - 同一会话保留 lastAcceptedEventId，使用既有 afterEventId 重放；无有效游标则省略。保留现有 eventId 去重、binding/run 校验及服务器 gap 快照语义，不伪造补点。服务端 API 和事件 schema 不变。
 - reducer 为缺口维护单调 gapRevision。每次 GET 捕获开始时的 gapRevision 和 live stateRevision；GET 完成时，只有相同代次才清 needsStatusRefresh。期间收到更高 stateRevision 时不得用旧 GET 覆盖更新的 live 状态；完成可解除该请求 pending，但保留刷新提示，等待下一次手动操作，不自动补发。
 - 状态 GET 的保护规则集中应用于 controller 的状态读取路径，包括写后刷新；成功的写操作不能因读取快照被新状态淘汰而重新发送。gap 期间仍可接收有效数据，但不能由 heartbeat 或较旧 GET 提前清除非最新提示。
+- 接受回归须包含离线 A→B→A 的状态重放：预检 GET 返回当前 A 不能先发布一个没有事件版本的快照，再让旧 B 回退覆盖；应仅由已有事件顺序决定 B、A 的合法转移。不得为维持图表外观而忽略真实绑定变化。
 
 ## 呈现与验收边界
 

@@ -19,7 +19,7 @@
 
 - 构造不是 open；close-before-open、error+close 只结算一次、constructor 抛错、取消/关闭后的迟到事件、重复点击最多一个 socket。
 - 恢复 GET 普通失败和原意图重试、认证失败的可见阻断；不发生探针/采样 POST；与在途 status/probe/sampling 的守卫及取消释放一致。
-- 相同会话 afterEventId、不同会话拒绝复用、重放去重；保留草稿/历史/同 binding 数据，按原规则处理 binding/run 变化。
+- 相同会话 afterEventId、不同会话拒绝复用、重放去重；恢复 GET 仅校验身份，离线 A→B→A 回归中不抢先发布无事件版本的 HTTP 状态；保留草稿/历史，仅真实 binding/run 转移按原规则重置数据。
 - open/hello/heartbeat/status 不会把保留样本标新，匹配 sample 才恢复就绪；身份不匹配后 heartbeat 不清 stale。
 - 缺口可见、GET 失败可重试、GET 期间新 gap/stateRevision 不被旧快照抹掉；写后刷新被更新状态淘汰时不重放写入。
 - 中文连接/取消/刷新动作与非最新提示；UI02 普通错误和授权阻断无回归；生成资产与源码逐字节一致。
