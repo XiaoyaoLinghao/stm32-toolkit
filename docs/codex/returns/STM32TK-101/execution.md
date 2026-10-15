@@ -1,6 +1,8 @@
 # v1.0.1 执行记录
 
-2026-10-10 用户批准开始实现，新增 master 历史内容清理和 README 补足。当前状态：IMPLEMENTING。
+2026-10-10 用户批准开始实现，新增 master 历史内容清理和 README 补足。当前状态：五个切片实现 ACCEPTED，
+双构建及包验证 PASS，用户追加的覆盖率不回退条件已满足并接受例外；最终包安装、实机与正式发布未执行。
+授权推送/PR/master交付另记于后续条目，详见[最终资格记录](qualification.md)。
 主代理负责规格、调度、完整 diff 审查、集成、验收与清理；所有子代理为 gpt-6-sol / max。
 
 ## 固定身份与授权
@@ -18,7 +20,7 @@
 | A 项目发现与诊断 | implement_a / 主代理独立审查 | ACCEPTED；CodeHead 47d78270cff33673a3d2894bdb96fce0f7e14a04；已集成本地 7c751727e003b2ab41fc75ab2f0a8a95aa8db2ba |
 | B 配置与构建 | implement_b / review_b 与主代理 | ACCEPTED；CodeHead bebacc7916b912a70ada50fa0208c8363d3c55fb；已集成本地9c937a66d9ea36c99e2d1efccc13b8a0e7082918 |
 | C 观测与 Monitor | implement_c / 主代理 | ACCEPTED；CodeHead 8454d3f1afb6a435e7bfbcb56fbf2851ac9730ec；报告5d8c41c68c2ce5a370c3fca536758ddd108b8c78；已集成本地68e5d0b16b33f8d475a71a4ded096a20c3427e3d |
-| D 版本、升级 | implement_d / 主代理 | ACCEPTED；base24826f1723aac3c6f4e7a1dd9961e14aab1c5153；CodeHead94a17b53c2f85cdcf08afde403d48d29ef141b61；集成ef93c82b1089211714e2e46f482c3f369a183176 |
+| D 版本、升级 | implement_d / 主代理 | ACCEPTED；base24826f1723aac3c6f4e7a1dd9961e14aab1c5153；最终CodeHead c75adb430fa1f03cc0dc5a4a9e7f519838978664；含随后SBOM修订 |
 | E 历史清理、用户文档 | implement_e / review_patch_plan 与主代理 | ACCEPTED；CodeHead fdbc979bffb09503930de7a3f83b4ef5d7aadb95；报告 e0320f2cac932f24e83a5d3b7abbb2d910fda67c；已集成本地176251978b7830068e52736fa3d2cf2326cbab1f |
 
 A 派发时间不晚于 2026-10-10 06:41:33 UTC；后续记录提交/验证时间和实际命令，不把文档准备计作产品完成。
@@ -49,7 +51,7 @@ A 派发时间不晚于 2026-10-10 06:41:33 UTC；后续记录提交/验证时�
 | D:\codex-tmp\tk101\dr、dr-run | 主代理 D独立干净审查与14项版本/升级边界验证 |
 | D:\codex-tmp\tk101\drb | review_b独立审查四份草稿删除及最终集成产品差异 |
 | D:\codex-tmp\tk101\q、q-run | verify_qualification最终原生覆盖率测量，保留测量/源绑定/结果 |
-| D:\codex-tmp\tk101\p、p2、p-run | verify_packages冻结候选双构建/解包验证，保留最终资产与哈希证据 |
+| D:\codex-tmp\tk101\p、p2、p3、p4、p-run | verify_packages两候选双构建/解包验证；正式资产为p-run/r2/artifacts1，旧失败SBOM独立留证 |
 
 仅处理本轮明确归属产物，删除前解析绝对路径并核对根内包含关系；保留当前需诊断失败证据。
 实现报告记录代码头，最终接受由主代理记录；未测试、历史适用性复用及物理未证实必须明确区分。
@@ -189,4 +191,134 @@ SPDXRef-Document。分类PRODUCT；不能据其它通过项将这套包标为完
 D修订CodeHead `c75adb430fa1f03cc0dc5a4a9e7f519838978664`把SPDX文档ID改为同一局部事实来源，
 现有用例先红后绿验证所有关系指向声明ID。主代理审查全部三文件差异，并在独立dr复测SBOM引用及Git archive锚点：
 2 passed、43 deselected、1.11秒、exit0，日志dr-run/logs/release-sbom.log。新的utility可信SHA256为
-`641f58a01c1dad4b17d4a4d4df720e82544faf2a2ee8480bcf6f997155bc155b`；policy未变。修订接受，待新包重新核验。
+`641f58a01c1dad4b17d4a4d4df720e82544faf2a2ee8480bcf6f997155bc155b`；policy未变。修订接受，新包已重新核验通过。
+
+## 最终候选核对
+
+冻结包源 `0f06c659f5e04aa1f8e53022eae9b5e964da2b4b`；后续报告提交不改变已有包的源码身份。
+verify_packages在p3/p4从该头各构建一次，13/13产物同名、同大小、同SHA256，两个构建exit0。
+独立解包verify-bundle及64wheel/62pin/7UI资产/许可证/525条SBOM关系精确ID闭合全部通过；输入wheelhouse未变。
+首轮f652包原始SBOM缺陷仍记PRODUCT，不因后续通过抹去。最终完整身份见[资格记录](qualification.md)。
+
+verify_qualification当前Python选择22个相关模块，1709 passed/1 skipped/2 warnings，exit0，1348.33秒；
+完整UI33文件269项测试通过。原生覆盖率对126个Python文件逐Git blob绑定：20个已改变文件用当前结果，
+106个不变文件复用U64逐文件摘要。Toolkit overall86.968%、risk-core86.711%未达90%；Monitor overall93.708%
+通过90%，core未达95%；UI25个正分母源码文件各达90%。未达项是发行资格不足，不能当作产品退化证据或自动豁免。
+测量源3d0a与最终包源的Toolkit/Monitor/UI及22测试逐blob一致；release builder另有最终测试及实际包检查。
+
+所有切片及最终整体修改均已独立审查。远端master复核仍是accepted base，无本轮PR或v1.0.1 tag；
+没有push/merge/release，也没有最终包runtime部署或新增实体板卡操作。原工作区121项tracked修改、10403项
+展开untracked仍保留。后续用户只需审阅具体候选及具名剩余动作，不需要重建已通过证据。
+
+## 最终清理与交付记录
+
+主代理已清理早先76个归属明确的临时目录。最终读取各验证者清单并复核绝对根、父路径、tracked归属及reparse后，
+再清理38个精确路径：q的测试临时工程、普通复制的UI依赖/工作副本，dr最后复测输出，p/p2/p3/p4的生成build及
+egg-info，以及p-run旧失败包、两轮第二套包、解包/缓存/临时目录。q basetemp内8个Junction先核对目标位于
+所属basetemp内，再非递归删除链接；其它路径无reparse。38项全部成功，清单及结果分别为
+`D:\codex-tmp\tk101\cleanup-final-candidates.json`和`cleanup-final-result.json`。
+
+正式13件资产仍在p-run/r2/artifacts1；原始coverage、源绑定、运行命令/退出码、测试日志均保留。
+旧失败SBOM另存p-run/logs/old-f652-sbom.spdx.json，SHA256
+`7ab8fc1cc201c377db024f4cf75d2bc582d1e8f3616f162e2b77d9a17ff5c93a`；原SBOM失败结果不删除。
+独立源码worktree保留供后续交付审查。共享wheelhouse、旧证据、原工作区及用户runtime没有清理或改写。
+
+A/ar此前受拒路径仍保留，D新增的`pytest-sbom-red`、`pytest-sbom-green`、`pytest-release-sbom-head`
+清理亦被自动审批拒绝，唯一返回原因为`blocked by policy`，命令未执行。主代理没有换工具或代理绕过。
+
+主代理最终只读核对126行Python覆盖率复用条件及各范围分子/分母，逐文件重算13件正式产物哈希，结果一致；
+当前107个Markdown本地内链无断链，git diff --check通过。远端master最后查询仍为完整accepted base，未出现v1.0.1标签。
+PR正文、发布说明草稿和最终包安装执行卡已准备在`D:\codex-tmp\tk101\delivery`，均未向外发布或执行安装。
+implement_e另承担只读最终文档核对，对照五份具名资格/产物证据检查本记录、qualification及release-status。
+首次指出的清理状态叙述已随真实38项执行补齐；最终复核无存续问题。此项仅审查主代理报告，不是实现者自批E代码。
+
+## 用户批准推送及覆盖率条件例外
+
+2026-10-10 用户明确要求“推送吧，另外覆盖率对1.0.1也做赦免，保证不低于1.0.0的覆盖率即可”。
+候选推送获得授权；仅为1.0.1新增“不低于1.0.0”的条件例外，永久门槛及分母/成员/原生采集规则不改。
+现有Toolkit overall/risk和UI总体原始比值尚低于旧版，不能将条件直接标PASS。Monitor数据源blob及比值相同。
+verify_qualification负责只读差距分析，主代理冻结后续现有测试范围；必要的行为测试由独立gpt-6-sol/max实现者负责，
+主代理审查。所有追加输出限于本轮D:\codex-tmp\tk101下新run目录，旧测量、源数据及受拒清理目录不改。
+本轮只为核验用户新条件补齐有界测试，不新增产品功能，不降低指标，不推断最终包安装、硬件或发布授权。
+
+首次推送成功：远端`codex/v1.0.1-integration`为`62a490fe194da9c96aa07a75cc970f62a0e39eea`，
+与本地HEAD相等，push exit0；master仍为原accepted base。用户本次答复承接上一轮明确列出的push、创建PR和合并master
+确认步骤；完成覆盖率条件后继续该交付链，tag/release、最终runtime安装和硬件仍不在其中。
+
+## 条件例外验证完成
+
+verify_qualification在同一干净q源新增运行17个现有整模块，381 passed/1 skipped/1 warning、324.09秒、exit0。
+原22模块不重跑，两轮native数据只在q2-run副本内combine --keep，再json --keep-combined；命令均exit0。
+20个变更源用当前合并完整summary，106个不变blob沿用已核U64原生摘要。精确分数：Toolkit overall/broad
+12124/13674≥12047/13592，risk11494/12988≥11429/12918；Monitor三项2770/2956持平，全部满足新条件。
+
+UI由ui_coverage在隔离u2负责两个现有测试文件，CodeHead`d402e8505ccb46616a2188fabb022edfc64c76b5`，
+最终271项全通过，原生796/822≥784/810，每文件90%门槛仍通过（25正分母/4N/A）；typecheck和coverage:check exit0。
+合法拒绝envelope验证不回显敏感内容；分组导入等待实际清空input；真实FileReader未结束时卸载组件验证安全完成。
+第一轮270PASS/795覆盖的记录保留：将GroupPanel缺失分支误读为true属REPORT，后据实际V8补公共unmount场景。
+原PowerShell日志包装错误为INFRASTRUCTURE，worker保留原日志，不改变产品。
+
+主代理在独立ur2完整审查base62a490fe→d402e850两文件全部diff；独立两模块36passed、3.91秒、exit0，
+日志及head/argv在ur2-run。另独立复核126个Python源码blob、当前原生summary、各范围分子/分母和精确Fraction，
+重算UI全29源码的原生branch分数，全部一致。合并测试提交为`ec7c6b5f9f97404928ba4a496020f7bc63236879`。
+本轮产品src、dist、依赖、配置、版本与冻结包源0f06完全相同，已有13件资产不重建、不重命名源提交。
+
+验收：覆盖率例外条件满足，永久90/95数值仍未达；只接受用户明确的1.0.1不回退例外，不宣称达到永久门槛。
+最终runtime安装、实体板卡、tag/Release仍未执行。证据hash、逐文件归属及原始记录见最终资格记录的新补测章节。
+
+主代理在全部验证完成后，按精确清单复核根与reparse，清理q2/u2/ur2本轮8个临时目录（8/8成功），
+命令与结果在`cleanup-followup.ps1`、`cleanup-followup-candidates.json`、`cleanup-followup-result.json`。
+原始新旧coverage、两轮UI结果、命令/退出码、最小日志包装错误证据及正式13件资产保留；此前受拒路径未重试。
+
+## 当前安装与实机验证
+
+PR #16 已合并，master 为 `0b3e3bbf9fa4dcb11dac647faed2dfec86a3bac5`。用户随后明确要求连接硬件验收后更新 Release，
+并确认仍为原 STM32F429ZGTx 板卡、固件无需保留。冻结包源仍为 `0f06c659f5e04aa1f8e53022eae9b5e964da2b4b`；
+此后的 master 增量只有文档与两份 UI 测试，没有重标记包源。
+
+verify_packages 对最终包执行隔离新装、已发布 1.0.0 安装后 Repair 升级、版本/依赖核对和 MonitorRuntime HTTP 冒烟，
+21 步 exit0；implement_e 独立读取原始证据并接受。新装 generation1、升级 generation2，旧 runtime 隔离，用户标记保留。
+服务认证、Host 拒绝和正常停止通过；此项不证明浏览器交互或 CLI serve/Ctrl-C 生命周期。完整原始记录在 install-check/logs。
+
+verify_qualification 在新克隆 h/c 使用最终安装版配置、构建历史真实工程，ELF SHA256 为
+`0dc00ad3338039c140c671641f989acb6619f1392fb1923833b88db2b33471da`。第一次克隆触发 Git CRLF 造成的生成文件 drift，
+未 apply 或访问硬件；另以 core.autocrlf=false 克隆同一提交后八个受管文件精确相等，其余24项仅换行归一化，主代理接受。
+当前构建和完整 SVD 离线选择通过。该工程使用历史原生 linker；不将它表述为新增生成器栈符号的独立实机覆盖。
+
+一次静态 recovery prepare 成功，随后唯一物理 Target execute 于 2026-10-10 10:25:52 UTC 返回 exit2、
+`TEST_EXECUTION_FAILED`、空 details。动作已消费，无 TestRun 或成功 flash receipt；租约已释放，工作进程已退出。
+停止后续 H2/H3，没有自动重烧、采样或寄存器读取。H1 验收 UNMET；原因仍待区分 HARDWARE/ENVIRONMENT/PRODUCT。
+离线目标清单证实 stm32f429zgtx 已由现存 CMSIS pack 注册，缺少 target 定义的假设不成立。
+原错误、配置/构建身份、动作记录及清理终态保留 h-run/h1-failure-assessment.md 及关联原始文件。
+
+主代理在当前实机验证授权内另准备一项有界连接诊断：仍经既有生产 Probe Service，沿用 under-reset/SWD100kHz，
+仅连接与身份读取，不调用烧录或 Target execute，保留映射前的安全诊断。该脚本须离线独立审查并由主代理单次调度，
+截至该阶段尚未执行。现场供电接线问询当时尚无回复；诊断按已有连接执行，不假定接线已确认正常。
+截至该阶段，正式13件资产和本轮失败证据保留，尚未发布 v1.0.1 标签或 Release。
+
+上述连接诊断随后经独立审查及单次调度完成，attach/identity 通过，服务清理、lease 与进程终态闭合。
+主代理据当前可用连接，明确批准一项新 H1b 尝试，并在执行前保留底层异常：run-local 观察包装调用安装版 CLI，
+捕获安全诊断后原样委托原 mapper，不改变产品文件、响应、超时或硬件策略；错误映射一致性和 Windows spawn 离线检查通过。
+新的静态 prepare 与原记录20个非变动字段一致。日期检查曾因 PowerShell JSON 自动 DateTime 转换丢失 Z 而误报过期，
+执行前改为保留原字符串并核准有效 UTC 期限；分类 INFRASTRUCTURE，无重新 prepare 或产品修改。
+
+H1b 单次 execute exit0、16.38秒，读回校验7812字节，物理 d3-heartbeat 2200ms、1通过/0失败；authoritative show一致。
+其 run 为 `target-v2-eb5d6d9eb9b9b27a9779d70b0b77ba2a`，证据
+`8db1669e95f6cd789d3b9c54aa019978b5e84d3624f793430df29410973d17e6`。后续有界 H2 一次变量读取得到13728；
+1000ms/8槽采样只交付0/2/5三槽，17891→18171→18431递增，满足预定至少2个有效递增值；5槽丢失、7次期限错过，
+实际0.372Hz，保留此性能限制，不补采。H3 一次 GPIOE.ODR 读取为16/0x10、32bit；预选SVD文件hash保持一致。
+所有阶段当前身份绑定一致，lease释放、最终owned process为0。verify_qualification执行，hardware_preflight及主代理独立复核通过。
+详细原始证据及边界在 `D:\codex-tmp\tk101\h-run\h1b\final-assessment.md`。首次 H1 的失败原因仍未明，未被后续通过抹去。
+至此软件安装与限定实机资格已满足，当时下一步为既有13件资产的 v1.0.1 发布及上传后复核。
+
+## 发布完成
+
+2026-10-10 11:03:42 UTC，主代理发布 [v1.0.1](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.0.1)
+并标为 Latest；annotated tag `080cec43a36401f1bf8824e779d423c0e8e54a36` 的 peeled commit 为冻结包源0f06。
+先上传草稿的13件资产，再完整下载；verify_packages逐件比对文件名、大小、SHA256、本地双构建清单及GitHub digest，13/13一致，
+manifest源身份正确，主代理核准后正式发布。post-upload-verification.json SHA256为
+`596ee2410dacded4f8eb30813fc12fa6c17b51a3b64680b610823667a7fe3adb`。v1.0.0的13件资产身份、发布时间和target未变。
+
+主代理在归属、绝对根和所有父级/子级reparse复核通过后，清理本轮19个隔离安装、升级、解包、缓存、临时及下载副本目录，19/19成功。
+原始runtime-state、用户标记校验、执行日志、首次失败、当前实机结果和工程/ELF/map、正式13件资产继续保留；用户普通runtime未作升级或清理。
+清单、结果与脚本保存在delivery/cleanup-release-*；早先受拒路径未重试。清理预检最初的内联命令因语法错误未执行，改用可审查脚本后通过。

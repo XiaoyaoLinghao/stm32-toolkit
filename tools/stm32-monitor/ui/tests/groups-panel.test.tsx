@@ -1,5 +1,5 @@
 import {expect,it,vi} from "vitest";
-import {fireEvent,render,screen} from "@testing-library/preact";
+import {fireEvent,render,screen,waitFor} from "@testing-library/preact";
 import userEvent from "@testing-library/user-event";
 import {GroupPanel} from "../src/components/GroupPanel";
 import {watchGroup} from "./fixtures";
@@ -108,12 +108,43 @@ it("imports a group document after preview and confirmation",async()=>{
   const importFn=vi.fn();
   render(<GroupPanel {...props({onImport:importFn})}/>);
   await userEvent.click(screen.getByRole("button",{name:"导入观测组"}));
-  const file=screen.getByTestId("group-import-file");
+  const file=screen.getByTestId("group-import-file") as HTMLInputElement;
   await userEvent.upload(file,new File(['{"schemaVersion":1,"groups":[]}'],"groups.json",{type:"application/json"}));
-  expect(importFn).not.toHaveBeenCalled();
   const confirm=await screen.findByRole("button",{name:"确认导入"});
+  await waitFor(()=>expect(file.value).toBe(""));
+  expect(importFn).not.toHaveBeenCalled();
   await userEvent.click(confirm);
   expect(importFn).toHaveBeenCalledWith({schemaVersion:1,groups:[]});
+});
+
+it("finishes reading after the group panel unmounts without touching its detached file input",async()=>{
+  const importFn=vi.fn();
+  const readAsText=FileReader.prototype.readAsText;
+  let resolveRead!:()=>void;
+  const readCompleted=new Promise<void>(resolve=>{resolveRead=resolve;});
+  const readSpy=vi.spyOn(FileReader.prototype,"readAsText").mockImplementation(function(this:FileReader,blob:Blob,encoding?:string){
+    this.addEventListener("loadend",resolveRead,{once:true});
+    readAsText.call(this,blob,encoding);
+  });
+  try{
+    const view=render(<GroupPanel {...props({onImport:importFn})}/>);
+    fireEvent.click(screen.getByRole("button",{name:"导入观测组"}));
+    const input=screen.getByTestId("group-import-file") as HTMLInputElement;
+    const file=new File(['{"schemaVersion":1,"groups":[]}'],"groups.json",{type:"application/json"});
+    fireEvent.change(input,{target:{files:[file]}});
+    expect(readSpy).toHaveBeenCalledTimes(1);
+    const beforeUnmount={value:input.value,fileCount:input.files?.length};
+    expect(beforeUnmount.value).toBe("");
+    view.unmount();
+    expect(input.isConnected).toBe(false);
+    await readCompleted;
+    expect({value:input.value,fileCount:input.files?.length}).toEqual(beforeUnmount);
+    expect(importFn).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button",{name:"确认导入"})).toBeNull();
+    expect(screen.queryByRole("region",{name:"观测组"})).toBeNull();
+  }finally{
+    readSpy.mockRestore();
+  }
 });
 
 it("rejects invalid import JSON with an error and no confirmation",async()=>{

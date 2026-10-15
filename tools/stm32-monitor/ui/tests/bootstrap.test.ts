@@ -117,6 +117,29 @@ it("returns only fixed startup copy on an incomplete bootstrap request",async()=
   expect(document.body.textContent).not.toContain(TOKEN);
 });
 
+it("renders fixed recovery for a valid rejected bootstrap envelope without exposing private fields",async()=>{
+  const privateMessage="private rejection message";
+  const privateDetail="private diagnostic detail";
+  window.history.replaceState(null,"",`/#token=${TOKEN}`);
+  const response=new Response(JSON.stringify({
+    protocol:"stm32-toolkit-monitor/1",toolkitVersion:"1.0.1",monitorVersion:"1.0.1",
+    ok:false,operation:"monitor.auth.bootstrap",code:"AUTH_REJECTED",message:privateMessage,
+    data:null,details:{diagnostic:privateDetail,token:TOKEN},
+  }),{status:200});
+  const result=await bootstrapFromFragment(window,vi.fn().mockResolvedValue(response));
+  expect(result).toEqual({ok:false,code:"MONITOR_ACCESS_REJECTED",
+    message:"授权链接被拒绝。若服务仍在运行，请先在所属 Monitor 终端按 Ctrl-C 结束，再运行 open 打开新的授权页面。"});
+  expect(JSON.stringify(result)).not.toContain(TOKEN);
+  expect(JSON.stringify(result)).not.toContain(privateMessage);
+  expect(JSON.stringify(result)).not.toContain(privateDetail);
+  renderStartupError(document,result.ok?"":result.code);
+  expect(document.querySelector('[role="alert"]')).toHaveTextContent("授权链接被拒绝");
+  expect(document.body.textContent).not.toContain(TOKEN);
+  expect(document.body.textContent).not.toContain(privateMessage);
+  expect(document.body.textContent).not.toContain(privateDetail);
+  expect(window.location.hash).toBe("");
+});
+
 it.each([
   [new Response("private server body",{status:401}),"MONITOR_ACCESS_REJECTED"],
   [new Response("private server body",{status:403}),"MONITOR_ACCESS_REJECTED"],

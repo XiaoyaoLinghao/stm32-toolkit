@@ -3,7 +3,29 @@
 This is the current qualification contract consolidated from the accepted risk-layered design.
 The [standard procedure](standard-test-procedure.md) governs execution and authorization;
 [release status](../release-status.md) preserves the fixed v1.0.0 result and its limitations.
-Historical measurements and one-time exceptions are not thresholds for a later release.
+Historical measurements and one-time exceptions do not transfer automatically to a later release.
+The user's explicit v1.0.1 conditional exception is recorded below, separately from permanent gates.
+
+## v1.0.1 conditional exception authorized on 2026-10-10
+
+The user explicitly approved an exception for v1.0.1 on condition that coverage is no lower than
+published v1.0.0. This is a new, version-specific decision; it does not lower the permanent gates
+below or grant installation, hardware, tag or release permission. Compare exact native fractions
+before rounding, with the same source membership and collection rules:
+
+| Scope | v1.0.0 minimum fraction |
+| --- | --- |
+| Toolkit overall / broad-core-v1 | 12047 / 13592 |
+| Toolkit risk-core-v2 | 11429 / 12918 |
+| Monitor overall / broad-core-v1 / risk-core-v2 | 2770 / 2956 |
+| UI aggregate | 784 / 810 |
+
+UI's existing 90% gate for every positive-denominator source file remains required. Denominators
+follow actual current source; no exclusions, shifted membership, threshold rounding, or old arcs
+on changed source are permitted. Identical source blobs may reuse applicable accepted native data;
+current runs may be combined only through native coverage tooling after source binding is verified.
+The [candidate qualification record](../codex/returns/STM32TK-101/qualification.md) retains original
+results and records whether these new conditions are actually satisfied.
 
 ## Permanent gates
 

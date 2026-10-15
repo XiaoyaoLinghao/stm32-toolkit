@@ -49,14 +49,71 @@ Original acceptance and supporting records are retained in Git at
 Use `git show <commit>:<path>` to retrieve historical material; it is not an instruction to recreate
 old machine-local runtime or evidence paths.
 
-## v1.0.1 in development
+## Published v1.0.1
 
 The user approved [the patch specification](superpowers/specs/2026-10-10-stm32tk-101-patch-design.md)
 and [implementation plan](superpowers/plans/2026-10-10-stm32tk-101-patch-plan.md) on 2026-10-10,
 including audit-driven removal of obsolete history from the current master tree.
 The remote accepted base is `694c825d29a55a53052a148efa4cc6720c315a04`.
 
-This is not yet a published release. Current implementation, accepted CodeHeads and test results are
-recorded in [the execution ledger](codex/returns/STM32TK-101/execution.md). Final artifact identity,
-upgrade validation, independent review and current release qualification must be recorded before
-publication. RC4 coverage exceptions and old hardware authorizations do not transfer automatically.
+Implementation and independent review are complete for all five approved slices. The frozen artifact
+source is `0f06c659f5e04aa1f8e53022eae9b5e964da2b4b`; two clean builds produced 13 identical assets,
+and bundle, dependency, license and SBOM checks passed. Python related regression passed 1709 tests
+with one Windows symlink skip, followed by 381 passed / one skipped in 17 supplementary modules.
+The final UI run passed 271 tests. The current tree removes 417 obsolete historical files and updates
+the bilingual README and user guidance. Remote delivery is tracked separately through Git refs and pull requests.
+
+**The user-authorized v1.0.1 coverage exception is accepted:** every measured scope is at least the
+published v1.0.0 fraction. This is a new conditional decision, not inheritance of the old exception.
+
+| Branch coverage | v1.0.0 | v1.0.1 | No-regression condition |
+| --- | --- | --- | --- |
+| Toolkit overall / broad-core-v1 | 12047/13592 (88.6330%) | 12124/13674 (88.6646%) | PASS |
+| Toolkit risk-core-v2 | 11429/12918 (88.4734%) | 11494/12988 (88.4971%) | PASS |
+| Monitor overall / broad-core-v1 / risk-core-v2 | 2770/2956 (93.7077%) | 2770/2956 (93.7077%) | PASS |
+| UI aggregate | 784/810 (96.7901%) | 796/822 (96.8370%) | PASS |
+
+UI also retains its 90% gate for every positive-denominator source file (25 PASS, four N/A).
+Toolkit's permanent overall90/risk90 and Monitor core95 remain numerically unmet; those thresholds,
+membership and native denominators were not lowered. Changed Python files use combined current
+native data; only unchanged Git blobs reuse accepted U64 data. Earlier measurements remain retained.
+
+GitHub [v1.0.1](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.0.1) was published
+on 2026-10-10 at 11:03:42 UTC and is marked Latest. All 13 uploaded assets were downloaded and
+independently matched by name, size and SHA256 against the frozen local artifacts and GitHub digests.
+The annotated tag `080cec43a36401f1bf8824e779d423c0e8e54a36` resolves to the fixed package source
+`0f06c659f5e04aa1f8e53022eae9b5e964da2b4b`. The v1.0.0 tag and 13 assets remain intact.
+
+**The scoped installation and physical qualification checks passed.** PR #16 was merged at
+`0b3e3bbf9fa4dcb11dac647faed2dfec86a3bac5`. The user subsequently authorized current physical
+verification and v1.0.1 Release publication, confirming the same STM32F429ZGTx board and that its
+firmware need not be preserved. Final-package fresh installation and isolated 1.0.0 to 1.0.1 Repair
+passed, including runtime state, dependency checks and retained user markers. Installed MonitorRuntime
+HTTP/authentication/normal-stop smoke passed; this does not cover the long-running CLI serve lifecycle.
+
+The first current physical Target execute failed with `TEST_EXECUTION_FAILED` and empty public details;
+that attempt produced no TestRun or successful flash receipt. Its lease was released and worker exited,
+and follow-up hardware operations stopped. The original cause remains unresolved. A separately reviewed
+attach-only diagnostic then passed, followed by a freshly prepared full Target attempt using an
+observational exception-capture wrapper around the unchanged installed CLI.
+
+On the confirmed STM32F429ZGTx/CMSIS-DAP setup, the fresh under-reset/SWD 100 kHz attempt verified
+7812 flash bytes and passed the physical `d3-heartbeat` case (2200 ms, one passed/zero failed);
+authoritative show agreed. A variable read, a finite sample window and one `GPIOE.ODR` read passed
+their fixed criteria, with source/build/ELF/session identity consistent throughout and leases released.
+The 1000 ms / eight-slot sample delivered three increasing values, dropped five slots and reported
+seven deadline misses (about 0.372 Hz). This does not establish sustained 1 Hz delivery. The register
+read returned `0x00000010`; it is a point observation, not an external waveform measurement.
+
+The historical project's native linker does not independently exercise the new generated stack aliases;
+their accepted linker/software evidence remains separate. Browser UI, CLI serve/Ctrl-C, IDE handoff,
+complete Fault, visual LED and external waveform checks were outside this current physical scope.
+The original failed attempt and the sampling limitation remain part of the release record.
+See [final qualification](codex/returns/STM32TK-101/qualification.md) for fixed artifact hashes,
+evidence ownership, retained limitations and published release provenance, and
+[the execution ledger](codex/returns/STM32TK-101/execution.md) for slice reviews and test records.
+Later documentation and UI-test commits do not change the source identity of the existing artifacts.
+
+The exact authorized baseline fractions and unchanged collection rules are in
+[release qualification](testing/release-qualification.md). Numerical acceptance uses exact fractions
+before rounding and is bound to the measured candidate source.

@@ -4,7 +4,7 @@
 
 ## 1. 当前断点与证据
 
-已发布 v1.0.0 的固定身份、一次性覆盖率例外和限制见[发布状态](../release-status.md)。例外不延续至新版本，已停止的旧覆盖率路线不因文档整理重开。当前 v1.0.1 的[规格](../superpowers/specs/2026-10-10-stm32tk-101-patch-design.md)、[计划](../superpowers/plans/2026-10-10-stm32tk-101-patch-plan.md)和[执行记录](../codex/returns/STM32TK-101/execution.md)是本轮入口；[发布资格](release-qualification.md)保留分母、成员和门槛。
+已发布 v1.0.0 的固定身份、一次性覆盖率例外和限制见[发布状态](../release-status.md)。旧例外不自动延续至新版本；2026-10-10 用户另行批准 v1.0.1 以“不低于 v1.0.0”为条件的新例外，精确比较范围见[发布资格](release-qualification.md)。本次允许为该条件补齐相关测量，不重开无界覆盖率补数。当前 v1.0.1 的[规格](../superpowers/specs/2026-10-10-stm32tk-101-patch-design.md)、[计划](../superpowers/plans/2026-10-10-stm32tk-101-patch-plan.md)和[执行记录](../codex/returns/STM32TK-101/execution.md)是本轮入口；分母、成员和永久门槛保留。
 
 先记录实际工作树、分支、完整 accepted base/CodeHead、设计/实现/审查者、部署 source、project/data/runtime 路径、授权、有效证据和剩余场景。检查 tracked/untracked、已提交/未提交、已推送/未推送状态；保留无关改动。使用精确 CodeHead 的干净隔离工作树审查完整差异。
 
