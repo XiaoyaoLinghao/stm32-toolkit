@@ -22,7 +22,7 @@
 
 ## 异步与错误合同
 
-- 沿用 controller 的 groups 写 family 串行锁和 requestId 过滤。组写/列表在途时组选择、新建、编辑输入、增删 watch、保存、删除、导入及冲突解决按钮禁用，reducer/控制器同样防御重复调用。正在进行的独立采样/实时恢复不因编辑锁改变。
+- 沿用 controller 的 groups 写 family 串行锁和 requestId 过滤。组写/列表在途时组选择、新建、编辑输入、增删 watch、保存、删除、导入及冲突解决按钮禁用；reducer 防御在途编辑/导航，controller 串行化写入。若显式新写调用在按钮禁用提交到 DOM 前到达，可按下一条退休旧列表读后接纳该写；这属于读被新写取代，不是两个逻辑组操作并行。正在进行的独立采样/实时恢复不因编辑锁改变。
 - 写开始前退休可能在途的旧 groups.list 请求/重试，防止旧快照覆盖写确认；公开刷新在组写期间不启动，写成功的内部 follow-up 可启动一次读取。写成功确认后至 follow-up 列表完成期间仍保持组工作流互斥。旧请求迟到不得清新 pending 或覆盖列表/基线。
 - 组写的 `MONITOR_GROUP_CONFLICT`、`MONITOR_GROUP_NOT_FOUND`、`MONITOR_IMPORT_CONFLICT` 进入专门的 `groups-refresh` 恢复，“刷新观测组”，GET only，保留草稿；不得沿用 generic write-confirm 重播原请求。GROUP_CONFLICT 也可能来自名称重复，文案不能一律断言版本变化。其他确定性输入错误提供“修改草稿/重新选择导入文件”的准确提示，不把它们说成未知写结果。API 不携带当前 revision，必须真正 GET。
 - 刷新证实 source 仍存在且 revision 与稿基线相同时，不应强制丢稿或另存；提示可能为名称冲突，允许用户修改名称后点击保存发起一个全新的提交。禁止的是自动/通用重试重播失败请求；不禁止同 revision 下用户修正内容后的新提交。source 已改变或消失则遵守上条 UPDATE 防线。
