@@ -1,5 +1,5 @@
 import type {JSX} from "preact";
-import {useRef,useState} from "preact/hooks";
+import {useEffect,useRef,useState} from "preact/hooks";
 import type {ApiFailure,GroupDraft,GroupImportDocument,WatchGroup,WatchItem} from "../api/contract";
 import {
   parseGroupImportDocument,
@@ -30,14 +30,24 @@ function watchKey(watch:WatchItem):string{
   return watch.kind==="variable"?`variable:${watch.expression}`:`register:${watch.registerPath}`;
 }
 
+type ImportState=
+  |{kind:"closed"}
+  |{kind:"selecting"}
+  |{kind:"reading"}
+  |{kind:"preview";document:GroupImportDocument}
+  |{kind:"error";message:string;diagnostic:string|null};
+
 export function GroupPanel(p:GroupPanelProps):JSX.Element{
   const [confirmDelete,setConfirmDelete]=useState<string|null>(null);
-  const [importState,setImportState]=useState<"idle"|"preview">("idle");
-  const [importDoc,setImportDoc]=useState<GroupImportDocument|null>(null);
-  const [importError,setImportError]=useState<string|null>(null);
-  const [importDiagnostic,setImportDiagnostic]=useState<string|null>(null);
+  const [importState,setImportState]=useState<ImportState>({kind:"closed"});
   const [editorOpen,setEditorOpen]=useState(!p.compact);
   const fileRef=useRef<HTMLInputElement>(null);
+  const importGeneration=useRef(0);
+  const mounted=useRef(true);
+  useEffect(()=>{
+    mounted.current=true;
+    return()=>{mounted.current=false;importGeneration.current+=1;};
+  },[]);
   const isNew=p.draft.sourceGroupId===null;
   const exportDoc=toGroupImportDocument(p.groups);
   const exportBlob=()=>{
@@ -52,30 +62,40 @@ export function GroupPanel(p:GroupPanelProps):JSX.Element{
     const input=event.currentTarget as HTMLInputElement;
     const file=input.files?.[0];
     if(file===undefined)return;
-    const text=await new Promise<string>((resolve,reject)=>{
-      const reader=new FileReader();
-      reader.onload=()=>resolve(reader.result as string);
-      reader.onerror=()=>reject(new Error("read failed"));
-      reader.readAsText(file);
-    });
+    const generation=++importGeneration.current;
+    const isCurrent=()=>mounted.current&&generation===importGeneration.current;
+    input.value="";
+    setImportState({kind:"reading"});
     try{
+      const text=await new Promise<string>((resolve,reject)=>{
+        const reader=new FileReader();
+        reader.onload=()=>typeof reader.result==="string"?resolve(reader.result):reject(new Error("read failed"));
+        reader.onerror=()=>reject(new Error("read failed"));
+        reader.onabort=()=>reject(new Error("read aborted"));
+        reader.readAsText(file);
+      });
+      if(!isCurrent())return;
       let value:unknown;
-      try{value=parseLossless(text);}catch{setImportDoc(null);setImportError(copy.importJsonInvalid);setImportDiagnostic(null);return;}
+      try{value=parseLossless(text);}catch{setImportState({kind:"error",message:copy.importJsonInvalid,diagnostic:null});return;}
       const parsed=parseGroupImportDocument(value);
-      if(!parsed.ok){setImportDoc(null);setImportError(`${errorText(parsed.code).title}。${errorText(parsed.code).action}`);setImportDiagnostic(`${parsed.code}: ${parsed.message}`);return;}
-      setImportDoc(parsed.data);setImportError(null);setImportDiagnostic(null);setImportState("preview");
+      if(!parsed.ok){setImportState({kind:"error",message:`${errorText(parsed.code).title}。${errorText(parsed.code).action}`,diagnostic:`${parsed.code}: ${parsed.message}`});return;}
+      setImportState({kind:"preview",document:parsed.data});
     }catch{
-      setImportDoc(null);setImportError(copy.importReadFailed);setImportDiagnostic(null);
-    }finally{
-      if(fileRef.current!==null)fileRef.current.value="";
+      if(isCurrent())setImportState({kind:"error",message:copy.importReadFailed,diagnostic:null});
     }
   };
 
-  const confirmImport=(doc:GroupImportDocument):void=>{
-    void p.onImport(doc);
-    setImportDoc(null);setImportState("idle");
+  const cancelImport=():void=>{
+    importGeneration.current+=1;
+    setImportState({kind:"closed"});
+    if(fileRef.current!==null)fileRef.current.value="";
   };
-  const cancelImport=():void=>{setImportDoc(null);setImportState("idle");setImportError(null);setImportDiagnostic(null);};
+  const confirmImport=():void=>{
+    if(importState.kind!=="preview")return;
+    const doc=importState.document;
+    cancelImport();
+    void p.onImport(doc);
+  };
 
   return<section className="panel group-panel" aria-label={copy.groupTitle}>
     <h2>{copy.groupTitle}</h2>
@@ -99,23 +119,24 @@ export function GroupPanel(p:GroupPanelProps):JSX.Element{
       <button type="button" onClick={()=>{setEditorOpen(true);void p.onNew();}}>{copy.groupNew}</button>
       <button type="button" onClick={()=>setEditorOpen(value=>!value)} aria-expanded={editorOpen}>{editorOpen?copy.groupCollapse:copy.groupEdit}</button>
       <button type="button" onClick={exportBlob}>{copy.groupExport}</button>
-      <button type="button" onClick={()=>setImportState(v=>v==="idle"?"preview":"idle")}>{copy.groupImport}</button>
+      <button type="button" onClick={()=>importState.kind==="closed"?setImportState({kind:"selecting"}):cancelImport()}>{copy.groupImport}</button>
     </div>
-    {importState!=="idle"&&(
+    {importState.kind!=="closed"&&(
       <div>
         <label>{copy.groupFile} <input ref={fileRef} type="file" accept="application/json" data-testid="group-import-file"
           onChange={readImportFile}/></label>
-        {importError!==null&&<div role="alert">{importError}{importDiagnostic!==null&&<details><summary>{copy.diagnostics}</summary><code>{importDiagnostic}</code></details>}</div>}
-        {importDoc!==null&&(()=>{
-          const preview=previewGroupImport(importDoc,p.groups);
+        {importState.kind==="reading"&&<p role="status">{copy.importReading}</p>}
+        {importState.kind==="error"&&<div role="alert">{importState.message}{importState.diagnostic!==null&&<details><summary>{copy.diagnostics}</summary><code>{importState.diagnostic}</code></details>}</div>}
+        {importState.kind==="preview"&&(()=>{
+          const preview=previewGroupImport(importState.document,p.groups);
           return(
             <div>
               <p>{formatCopy.importPreview(preview.groupCount,preview.itemCount)}</p>
-              <button type="button" onClick={()=>confirmImport(importDoc)}>{copy.groupConfirmImport}</button>
-              <button type="button" onClick={cancelImport}>{copy.cancel}</button>
+              <button type="button" onClick={confirmImport}>{copy.groupConfirmImport}</button>
             </div>
           );
         })()}
+        <button type="button" onClick={cancelImport}>{copy.cancel}</button>
       </div>)}
     <div className="group-editor" hidden={!editorOpen}>
     <h3>{isNew?copy.groupNewDraft:copy.groupEditDraft}</h3>

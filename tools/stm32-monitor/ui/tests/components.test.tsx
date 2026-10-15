@@ -56,7 +56,7 @@ it("LiveTable renders rows and toggles series",async()=>{
   render(<LiveTable rows={[{watch,displayValue:"42",rawHex:null,typeName:"int",capturedAtUtc:"",trend:"up",errorCode:null,numericValue:42}]}
     selectedSeries={[]} onSeriesToggle={toggle}/>);
   expect(screen.getByText("42")).toBeTruthy();
-  await userEvent.click(screen.getByRole("button",{name:"隐藏"}));
+  await userEvent.click(screen.getByRole("button",{name:"显示曲线"}));
   expect(toggle).toHaveBeenCalledWith("variable:counter");
 });
 

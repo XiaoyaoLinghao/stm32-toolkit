@@ -72,7 +72,7 @@ export async function createGroupViaApi(monitor:MonitorHandle,name:string,rows:n
 
 export async function selectSeries(page:Page,count:number):Promise<void>{
   for(let index=0;index<count;index++){
-    await page.getByRole("button",{name:"隐藏"}).first().click();
+    await page.getByRole("button",{name:"显示曲线"}).first().click();
   }
 }
 

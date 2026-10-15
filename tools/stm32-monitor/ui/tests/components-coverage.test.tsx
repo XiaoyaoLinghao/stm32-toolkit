@@ -56,8 +56,8 @@ it("LiveTable renders an error row and a register row with type dash",async()=>{
   expect(screen.getByText("OVERRUN")).toBeTruthy();
   expect(screen.getByText("RCC.CSR")).toBeTruthy();
   expect(screen.getAllByText("-")).toHaveLength(2);
-  expect(screen.getByRole("button",{name:"显示"})).toBeTruthy();
-  await userEvent.click(screen.getByRole("button",{name:"显示"}));
+  expect(screen.getByRole("button",{name:"隐藏曲线"})).toBeTruthy();
+  await userEvent.click(screen.getByRole("button",{name:"隐藏曲线"}));
   expect(toggle).toHaveBeenCalledWith("variable:bad");
 });
 

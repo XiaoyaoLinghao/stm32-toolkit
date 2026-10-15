@@ -25,7 +25,7 @@ export function LiveTable({rows,selectedSeries,onSeriesToggle,fresh=true}:LiveTa
           <td>{row.errorCode!==null?<span>{copy.readFailed} <details><summary>{copy.diagnostics}</summary><code>{row.errorCode}</code></details></span>:row.displayValue}</td>
           <td>{row.typeName??"-"}</td>
           <td>{trendText(row.trend)}</td>
-          <td><button type="button" aria-pressed={selected} onClick={()=>void onSeriesToggle(key)}>{selected?copy.curveShow:copy.curveHide}</button></td>
+          <td><button type="button" aria-pressed={selected} onClick={()=>void onSeriesToggle(key)}>{selected?copy.curveHide:copy.curveShow}</button></td>
         </tr>;})}</tbody></table></div>
     {rows.length===0&&<p>{copy.valuesEmpty}</p>}
   </section>;
