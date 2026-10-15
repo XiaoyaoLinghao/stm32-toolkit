@@ -11,3 +11,5 @@ Full accepted base：`3ee0bc2180047b45bbf3d2dae2dd2deed4e46e6a`，2026-10-16 主
 全部 TEMP/TMP/TMPDIR、缓存/证据在本片短根；主代理清理自有运行产物并保留最小最终证据。接受需三场景闭合、全部非 deferred 检查通过及独立完整差异审查无未闭合问题。集成后统一更新 8765，不推送 GitHub。
 
 工作树：D:\codex-tmp\mu61015\impl；独立审查树：D:\codex-tmp\mu61015\review。实现证据 owner 为实现者；精确 CodeHead 独立检查/完整 diff/接受 owner 为主代理，另一只读审查者复审。环境为本机 Windows PowerShell、既有 Node/npm 与锁文件匹配依赖；不安装，不启动浏览器，不改 8765，报告放 MONITOR-UI-06/implementation.md。
+
+2026-10-16 第三场景补充已独立审查 READY：允许 selectors.ts 的运行组/行投影及 App 数据来源/fresh 门禁。实现前补上述时序红回归，完整 UI 覆盖既有 selector 语义适配，主代理独立复验加入 selectors.test.ts 与新 UI06 App 用例。仍不改 backend/图表算法/组写或采样控制规则。

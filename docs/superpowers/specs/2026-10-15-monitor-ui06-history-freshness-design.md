@@ -30,3 +30,14 @@
 允许 HistoryPanel、StatusStrip、LiveTable 的时间呈现；model/reducer/controller 的历史在途上下文和样本时刻字段；series.ts 仅维护该字段；app/zh/styles/必要展示 helper；相关 tests、确受影响 e2e 源、生成 ui_dist、指南历史/时效段和实施报告。不改 API/wire/codec/Python/导出行为/图表投影/组编辑规则/依赖/版本/构建配置。
 
 浏览器拦截、真实视口/手势/关闭重开和硬件证据继续 DEFERRED。完成本片后进行本地集成、独立验收、服务切换和推送前清单，停止在任何远端修改之前。
+
+## 第三场景补充：实时数据归属（主代理与独立契约审查 READY）
+
+2026-10-16 静态链路核实：保存/删除组不会在 ACK 时同步改变 sampler；sampler 下一周期检查旧组 revision/存在性，必要时转 PAUSED_BLOCKED 并发布状态。现有实时表却按 selectedGroup（下次采样/编辑目标）投影，且 fresh 未验证运行组版本，存在表归属误显和 ACK 后短暂错误 fresh。该补充只改变 UI 的数据归属与时效呈现，不改变采样或组写规则。
+
+- `selectedGroup` 仍仅表示编辑与下一次启动目标，不改其语义。允许扩展 `state/selectors.ts`：`activeGroup` 仅在 status.sampling.runId 非 null 时，按 status 的 groupId + groupRevision 精确匹配 groups。不得使用较新 revision 的 items 解释旧 run。
+- 有 runId 时，实时表按 activeGroup.items 显示；仅在 live.runId 与 status.runId 相同时取 live.rows，否则显示该组空占位。运行组版本未在列表中核对时，仅当上述 runId 相同时保留现存 live.rows 的已接受旧值，否则为空。没有 runId 时，选中组只提供 emptyRow 预览，不借用上轮 live.rows。
+- App 的唯一 fresh 同时要求 RUNNING、transport open、非 stale、不需状态刷新、activeGroup 匹配且 live.runId 与 status.runId 相同。LiveTable 与 StatusStrip 共用。组更新/删除 ACK 改变列表后立即不 fresh，保留已接受的最后时间；不等待后端下一周期状态事件。没有样本仍显示“尚未收到样本”。
+- 在 live-main 的图表和数值表共同区域明确显示数据来源：当前/上次采样的 runId、groupId、revision；精确匹配时可加组名。无 run 时标明下次目标预览、尚未开始采样。版本不匹配说明“运行组版本未在列表中核对，仅展示上次样本”，不推断后端故障或宣布已删除。SamplingControls 的 activeGroupName 也仅取精确匹配组名称，不能用较新组名代替旧版本运行身份。
+- UI04 的已选曲线和移除行为仍独立于编辑选组；不改 chartSeries/LiveChart/缓存/投影/缩放，不新增运行快照存储，不改后端、API、组编辑或采样控制规则。
+- 新增 selector/App 回归覆盖：A 正运行时切换编辑 B/新建，表仍显示 A；组变新 revision 或删除 ACK 后立即非 fresh 且时间保留；无 run 或 live.runId 不匹配不复用旧值；旧版本无列表匹配时仅保留当前 run 已接受行。后端静态证据不冒充本轮物理测试。
