@@ -3,7 +3,7 @@ import type {ChartPoint,LiveRow} from "../chart/series";
 import type {ZoomRange} from "../chart/zoom";
 
 export type DropTotals={subscriber:bigint;history:bigint;deadline:bigint;service:bigint};
-export type RequestScope="initial"|"status"|"probes"|"probe.connect"|"probe.reconnect"|"probe.release"|"catalog.variables"|"catalog.registers"|"groups.list"|"groups.create"|"groups.update"|"groups.delete"|"groups.import"|"sampling.start"|"sampling.pause"|"sampling.resume"|"sampling.stop"|"history"|"export.create"|"export.status"|"export.download";
+export type RequestScope="initial"|"status"|"live.reconnect"|"probes"|"probe.connect"|"probe.reconnect"|"probe.release"|"catalog.variables"|"catalog.registers"|"groups.list"|"groups.create"|"groups.update"|"groups.delete"|"groups.import"|"sampling.start"|"sampling.pause"|"sampling.resume"|"sampling.stop"|"history"|"export.create"|"export.status"|"export.download";
 export type PendingRequest={requestId:bigint};
 export type RecoveryKind="read-retry"|"write-confirm"|"reconcile"|"input"|"none";
 export type OperationFailure=ApiFailure&{requestId:bigint;recovery:RecoveryKind;summary:string};
@@ -15,11 +15,11 @@ export type HistoryProjection={rows:readonly HistoryRow[];series:ReadonlyMap<str
 export type DisplaySeries={key:string;label:string;points:readonly ChartPoint[]};
 export type LiveState={rows:ReadonlyMap<string,LiveRow>;series:ReadonlyMap<string,readonly ChartPoint[]>;selectedSeries:ReadonlySet<string>;binding:ObservationBinding|null;bindingEpoch:bigint|null;runId:string|null;segment:bigint;lastSequence:bigint|null;actualRateHz:number;latencyNs:bigint;authoritativeDrops:DropTotals;pendingDropDeltas:DropTotals};
 export type Notice={id:string;kind:"view-reset"|"drop";text:string};
-export type MonitorState={status:MonitorStatus|null;probes:readonly ProbeInfo[];groups:readonly WatchGroup[];selectedGroupId:string|null;groupDraft:GroupDraft;stateRevision:bigint;lastAcceptedEventId:bigint|null;pending:Readonly<Partial<Record<RequestScope,PendingRequest>>>;reconciling:Readonly<Partial<Record<RequestScope,bigint>>>;failures:Readonly<Partial<Record<RequestScope,OperationFailure>>>;catalog:{variables:VariableCatalog|null;registers:RegisterCatalog|null};selectedSeries:ReadonlySet<string>;live:LiveState;zoom:ZoomRange;transport:{open:boolean;stale:boolean;needsStatusRefresh:boolean};history:{query:HistoryQuery|null;page:HistoryPage|null;projection:HistoryProjection;cursorIndex:number;cursorStack:readonly (string|undefined)[];nextCursor:string|null};exports:{artifact:ExportArtifact|null;submitted:{exportId:string;startNs:bigint;endNs:bigint;format:"csv"|"jsonl"}|null};notices:readonly Notice[];blockingError:ApiFailure|null};
+export type MonitorState={status:MonitorStatus|null;probes:readonly ProbeInfo[];groups:readonly WatchGroup[];selectedGroupId:string|null;groupDraft:GroupDraft;stateRevision:bigint;lastAcceptedEventId:bigint|null;pending:Readonly<Partial<Record<RequestScope,PendingRequest>>>;reconciling:Readonly<Partial<Record<RequestScope,bigint>>>;failures:Readonly<Partial<Record<RequestScope,OperationFailure>>>;catalog:{variables:VariableCatalog|null;registers:RegisterCatalog|null};selectedSeries:ReadonlySet<string>;live:LiveState;zoom:ZoomRange;transport:{phase:"idle"|"checking"|"connecting"|"open"|"disconnected";open:boolean;stale:boolean;needsStatusRefresh:boolean;gapRevision:bigint};history:{query:HistoryQuery|null;page:HistoryPage|null;projection:HistoryProjection;cursorIndex:number;cursorStack:readonly (string|undefined)[];nextCursor:string|null};exports:{artifact:ExportArtifact|null;submitted:{exportId:string;startNs:bigint;endNs:bigint;format:"csv"|"jsonl"}|null};notices:readonly Notice[];blockingError:ApiFailure|null};
 
 export type LoadedAction=
  | {type:"initial.loaded";status:MonitorStatus;probes:readonly ProbeInfo[];groups:readonly WatchGroup[]}
- | {type:"status.loaded";status:MonitorStatus}
+ | {type:"status.loaded";status:MonitorStatus;startedGapRevision?:bigint;startedStateRevision?:bigint}
  | {type:"probes.loaded";probes:readonly ProbeInfo[]}
  | {type:"groups.loaded";groups:readonly WatchGroup[];submittedDraft?:GroupDraft;createdGroupId?:string}
  | {type:"group.acknowledged";group:WatchGroup;submittedDraft:GroupDraft}
@@ -46,7 +46,7 @@ export type MonitorAction=LoadedAction
  | {type:"request.reconciled";scope:RequestScope;requestId:bigint}
  | {type:"access.blocked";code:string;message:string}
  | {type:"live.envelope";value:import("../api/contract").ParsedLiveEnvelope}
- | {type:"transport.open"}|{type:"transport.stale"};
+ | {type:"transport.checking"}|{type:"transport.connecting"}|{type:"transport.open"}|{type:"transport.stale"};
 
 export const emptyDraft:GroupDraft={sourceGroupId:null,expectedRevision:null,name:"",description:"",intervalMs:250,items:[]};
 export const draftFromGroup=(group:WatchGroup):GroupDraft=>({sourceGroupId:group.groupId,expectedRevision:group.revision,name:group.name,description:group.description,intervalMs:group.intervalMs,items:[...group.items]});

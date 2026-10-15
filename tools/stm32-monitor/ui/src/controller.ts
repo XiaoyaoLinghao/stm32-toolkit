@@ -1,6 +1,6 @@
 import {
   groupImportGuard,
-  type ApiFailure,type ApiResult,type GroupDraft,type GroupImportDocument,
+  type ApiFailure,type ApiResult,type GroupDraft,type GroupImportDocument,type MonitorStatus,
   type HistoryQuery,type MonitorApi,type WatchGroup,type WatchItem,
 } from "./api/contract";
 import {parseLossless} from "./api/wire";
@@ -9,7 +9,7 @@ import {operationSummary} from "./presentation/zh";
 import type {LoadedAction,MonitorAction,MonitorState,RecoveryKind,RequestScope} from "./state/model";
 
 export type Controller={
-  loadInitial:()=>Promise<void>;refreshStatus:()=>Promise<void>;refreshProbes:()=>Promise<void>;refreshGroups:()=>Promise<void>;
+  loadInitial:()=>Promise<void>;refreshStatus:()=>Promise<void>;reconnectLive:()=>Promise<void>;cancelLiveReconnect:()=>void;refreshProbes:()=>Promise<void>;refreshGroups:()=>Promise<void>;
   connectProbe:(probeId:string)=>Promise<void>;reconnectProbe:()=>Promise<void>;releaseProbe:()=>Promise<void>;
   searchCatalog:(kind:"variables"|"registers",query:string)=>Promise<void>;
   nextCatalog:(kind:"variables"|"registers")=>Promise<void>;
@@ -45,11 +45,24 @@ type Family="groups"|"probe"|"sampling"|"export";
 
 export function createController(api:MonitorApi,dispatch:(action:MonitorAction)=>void,getState:()=>MonitorState):Controller{
   let nextId=1n,closed=false,blocked=false,initialized=false,lifecycle=0,latestInitialId:bigint|null=null;
-  let closeLive:(()=>void)|null=null;
+  let closeLive:(()=>void)|null=null,liveGeneration=0,connectingInitial=false;
+  let workbenchIdentity:{workspaceId:string;sessionId:string;logicalProjectId:string}|null=null;
   const active=new Map<RequestScope,bigint>();
   const retries=new Map<RequestScope,Retry>();
   const writing=new Set<Family>();
   const reconciling=new Set<RequestScope>();
+  const retireLive=():void=>{
+    liveGeneration++;connectingInitial=false;
+    const close=closeLive;closeLive=null;
+    close?.();
+  };
+  const liveBusy=()=>connectingInitial||active.has("live.reconnect");
+  const sameWorkbench=(status:MonitorStatus):boolean=>workbenchIdentity===null||
+    status.workspaceId===workbenchIdentity.workspaceId&&status.sessionId===workbenchIdentity.sessionId
+    &&status.project.logicalProjectId===workbenchIdentity.logicalProjectId;
+  const changedWorkbench=():ApiFailure=>({ok:false,code:"MONITOR_SESSION_EXPIRED",message:"当前监视会话或工程已变化，请重新打开工作台。"});
+  const conflictsWithRecovery=()=>active.has("status")||writing.has("probe")||writing.has("sampling")
+    ||["probe.connect","probe.reconnect","probe.release","sampling.start","sampling.pause","sampling.resume","sampling.stop"].some(scope=>active.has(scope as RequestScope));
   const key=(state:MonitorState):string=>{
     const status=state.status;
     return status===null?"":status.workspaceId+"/"+status.sessionId+"/"+status.project.logicalProjectId+"/"+status.sampling.bindingEpoch;
@@ -89,7 +102,7 @@ export function createController(api:MonitorApi,dispatch:(action:MonitorAction)=
     if(closed||blocked)return;
     dispatch({type:"access.blocked",code:result.code,message:result.message});
     blocked=true;lifecycle++;active.clear();retries.clear();writing.clear();reconciling.clear();
-    if(closeLive!==null){closeLive();closeLive=null;}
+    retireLive();
   };
   const fail=(scope:RequestScope,id:bigint,result:ApiFailure,recovery:RecoveryKind,summary:string,run?:()=>Promise<void>,valid?:()=>boolean):void=>{
     if(!current(scope,id))return;
@@ -133,13 +146,20 @@ export function createController(api:MonitorApi,dispatch:(action:MonitorAction)=
     id=>groupPages(()=>current("groups.list",id)),
     groups=>({type:"groups.loaded",groups,...(submittedDraft===undefined?{}:{submittedDraft}),
       ...(createdGroupId===undefined?{}:{createdGroupId})}));
-  const refreshStatus=()=>read("status",operationSummary("status"),()=>api.status(),
-    status=>({type:"status.loaded",status}));
+  const refreshStatus=()=>{
+    if(liveBusy())return Promise.resolve();
+    const {gapRevision}=getState().transport,startedStateRevision=getState().stateRevision;
+    return read("status",operationSummary("status"),async()=>{
+      const result=await api.status();
+      return result.ok&&!sameWorkbench(result.data)?changedWorkbench():result;
+    },
+      status=>({type:"status.loaded",status,startedGapRevision:gapRevision,startedStateRevision}));
+  };
   const refreshProbes=()=>read("probes",operationSummary("probes"),()=>api.probes(),
     data=>({type:"probes.loaded",probes:data.probes}));
   const write=async<T>(scope:RequestScope,family:Family,summary:string,invoke:()=>Promise<ApiResult<T>>,
     accepted:(data:T)=>LoadedAction|undefined,followup:(data:T)=>Promise<void>,reconcile?:()=>Promise<void>,valid?:()=>boolean):Promise<void>=>{
-    if(writing.has(family))return;
+    if(writing.has(family)||liveBusy()&&(family==="probe"||family==="sampling"))return;
     const id=start(scope,true);if(id===null)return;
     writing.add(family);
     try{
@@ -187,6 +207,72 @@ export function createController(api:MonitorApi,dispatch:(action:MonitorAction)=
       succeed(scope,id);
     }catch(error){fail(scope,id,unexpected(error),"read-retry",summary,()=>download(exportId));}
   };
+  const startLiveConnection=(cursor:bigint|null,recoveryId:bigint|null,identity:MonitorStatus):void=>{
+    const generation=++liveGeneration;
+    if(recoveryId===null)connectingInitial=true;
+    dispatch({type:"transport.connecting"});
+    const alive=()=>!closed&&!blocked&&generation===liveGeneration;
+    const terminal=()=>{
+      if(!alive())return;
+      retireLive();
+      dispatch({type:"transport.stale"});
+      if(recoveryId!==null)fail("live.reconnect",recoveryId,
+        {ok:false,code:"MONITOR_LIVE_FAILED",message:"Real-time data connection failed"},
+        "read-retry",operationSummary("live.reconnect"),reconnectLive);
+    };
+    try{
+      const stop=openLive(window.location.origin,cursor,{
+        onOpen:()=>{
+          if(!alive())return;
+          connectingInitial=false;
+          dispatch({type:"transport.open"});
+          if(recoveryId!==null)succeed("live.reconnect",recoveryId);
+        },
+        onEnvelope:value=>{
+          if(!alive())return;
+          if(value.event.type==="state"){
+            const status=value.event.data.status;
+            if(status.workspaceId!==identity.workspaceId||status.sessionId!==identity.sessionId
+              ||status.project.logicalProjectId!==identity.project.logicalProjectId){
+              blockAccess(changedWorkbench());
+              return;
+            }
+          }
+          dispatch({type:"live.envelope",value});
+        },
+        onFailed:terminal,onClosed:terminal,
+      });
+      if(alive())closeLive=stop;
+      else stop();
+    }catch{terminal();}
+  };
+  const reconnectLive=async():Promise<void>=>{
+    if(!initialized||closed||blocked||getState().status===null||workbenchIdentity===null||liveBusy()||closeLive!==null||conflictsWithRecovery())return;
+    const original=getState().status!;
+    const id=start("live.reconnect",true);if(id===null)return;
+    retireLive();
+    dispatch({type:"transport.checking"});
+    let result:ApiResult<MonitorStatus>;
+    try{result=await api.status();}catch(error){result=unexpected(error);}
+    if(!current("live.reconnect",id))return;
+    if(!result.ok){
+      fail("live.reconnect",id,result,"read-retry",operationSummary("live.reconnect"),reconnectLive);
+      dispatch({type:"transport.stale"});
+      return;
+    }
+    if(!sameWorkbench(result.data)){
+      blockAccess(changedWorkbench());
+      return;
+    }
+    startLiveConnection(getState().lastAcceptedEventId,id,original);
+  };
+  const cancelLiveReconnect=():void=>{
+    const id=active.get("live.reconnect");
+    if(id===undefined&&!connectingInitial)return;
+    retireLive();
+    if(id!==undefined)retire("live.reconnect",id);
+    dispatch({type:"transport.stale"});
+  };
   const initial=async():Promise<void>=>{
     if(initialized)return;
     const id=start("initial",true);if(id===null)return;
@@ -228,16 +314,13 @@ export function createController(api:MonitorApi,dispatch:(action:MonitorAction)=
     if(!status.ok||!probes.ok||!groups.ok)return;
     if(!succeed("initial",id,{type:"initial.loaded",status:status.data,probes:probes.data.probes,groups:groups.data}))return;
     initialized=true;
+    workbenchIdentity={workspaceId:status.data.workspaceId,sessionId:status.data.sessionId,logicalProjectId:status.data.project.logicalProjectId};
     if(closed||blocked||epoch!==lifecycle||closeLive!==null)return;
-    closeLive=openLive(window.location.origin,null,{
-      onEnvelope:value=>{if(!closed&&!blocked&&epoch===lifecycle)dispatch({type:"live.envelope",value});},
-      onClosed:()=>{if(!closed&&!blocked&&epoch===lifecycle)dispatch({type:"transport.stale"});},
-    });
-    if(!closed&&!blocked&&epoch===lifecycle)dispatch({type:"transport.open"});
+    startLiveConnection(null,null,status.data);
   };
   const noAction=()=>undefined;
   return{
-    loadInitial:initial,refreshStatus,refreshProbes,refreshGroups:()=>refreshGroups(),
+    loadInitial:initial,refreshStatus,reconnectLive,cancelLiveReconnect,refreshProbes,refreshGroups:()=>refreshGroups(),
     connectProbe:probeId=>write("probe.connect","probe",operationSummary("probe.connect",probeId),
       ()=>api.connect(probeId),noAction,refreshStatus,refreshStatus,targetValid(false)),
     reconnectProbe:()=>write("probe.reconnect","probe",operationSummary("probe.reconnect",getState().status?.probe.probeId??undefined),
@@ -338,7 +421,7 @@ export function createController(api:MonitorApi,dispatch:(action:MonitorAction)=
     close:()=>{
       if(closed)return;
       closed=true;lifecycle++;active.clear();retries.clear();writing.clear();reconciling.clear();
-      if(closeLive!==null){closeLive();closeLive=null;}
+      retireLive();
     },
   };
 }

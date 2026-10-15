@@ -42,6 +42,25 @@ describe("authoritative monitor reducer",()=>{
     expect(next.live.rows).toEqual(accepted.live.rows);
     expect(next.live.pendingDropDeltas.service).toBe(0n);
     expect(next.transport.stale).toBe(true);
+    const heartbeat=reduceAcceptedLiveEnvelope(next,{event:{eventId:3n,type:"heartbeat",data:{stateRevision:2n,capturedAtUtc:"now"}},subscriberDropped:0n});
+    expect(heartbeat.transport.stale).toBe(true);
+  });
+
+  it("keeps a gap stale through heartbeat and status, then accepts a matching sample",()=>{
+    const fresh=seeded();
+    expect(fresh.transport.stale).toBe(false);
+    const gap=reduceAcceptedLiveEnvelope(fresh,{event:stateEvent(2n,1n,4n,true),subscriberDropped:0n});
+    expect(gap.transport.gapRevision).toBe(1n);
+    expect(gap.transport.stale).toBe(true);
+    const heartbeat=reduceAcceptedLiveEnvelope(gap,{event:{eventId:3n,type:"heartbeat",data:{stateRevision:1n,capturedAtUtc:"now"}},subscriberDropped:0n});
+    expect(heartbeat.transport.stale).toBe(true);
+    const unguarded=reducer(heartbeat,{type:"status.loaded",status:status()});
+    expect(unguarded.transport.needsStatusRefresh).toBe(true);
+    const refreshed=reducer(unguarded,{type:"status.loaded",status:status(),startedGapRevision:1n,startedStateRevision:1n});
+    expect(refreshed.transport.needsStatusRefresh).toBe(false);
+    expect(refreshed.transport.stale).toBe(true);
+    const sampled=reduceAcceptedLiveEnvelope(refreshed,sampleEnvelope(4n));
+    expect(sampled.transport.stale).toBe(false);
   });
 
   it("adds sample deltas once, never decreases on zero, and rebases from status",()=>{

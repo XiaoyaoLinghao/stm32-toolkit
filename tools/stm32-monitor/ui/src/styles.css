@@ -28,6 +28,8 @@ small,.hint{color:var(--muted);font-size:12px;}
 .main-nav{display:flex;gap:4px;border-bottom:1px solid var(--line);}
 .main-nav button{border:0;border-radius:0;background:transparent;color:var(--muted);font-weight:600;padding:8px 16px;}
 .main-nav button.active{color:var(--blue-dark);border-bottom:3px solid var(--blue);}
+.live-recovery{display:flex;align-items:center;gap:8px;flex-wrap:wrap;background:#fff9ed;border:1px solid #e6c995;border-radius:8px;padding:8px 10px;}
+.live-recovery [role="status"]{color:var(--warn);font-weight:600;}
 .operation-region{background:#fff9ed;border:1px solid #e6c995;border-radius:8px;padding:10px 12px;}
 .operation-region h2{font-size:15px;margin-bottom:6px;}
 .operation-region ul{margin:0;padding:0;list-style:none;display:grid;gap:7px;}

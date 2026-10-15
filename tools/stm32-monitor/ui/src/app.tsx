@@ -4,7 +4,7 @@ import {createMonitorApi} from "./api/client";
 import {createController,type Controller} from "./controller";
 import {initialState,reducer} from "./state/reducer";
 import {chartSeries,liveRows,selectedGroup} from "./state/selectors";
-import {emptyDraft} from "./state/model";
+import {emptyDraft,type RequestScope} from "./state/model";
 import {displayDropTotals} from "./chart/series";
 import {copy} from "./presentation/zh";
 import {IdentityBar} from "./components/IdentityBar";
@@ -57,24 +57,36 @@ export function App():JSX.Element{
   }
 
   const currentExportRange=state.history.query===null?null:{startNs:state.history.query.startNs,endNs:state.history.query.endNs};
-  const fresh=status.sampling.state==="RUNNING"&&state.transport.open&&!state.transport.stale;
+  const fresh=status.sampling.state==="RUNNING"&&state.transport.open&&!state.transport.stale&&!state.transport.needsStatusRefresh;
   const liveView=view==="live";
   const busyGroups=["groups.create","groups.update","groups.delete","groups.import","groups.list"].some(scope=>state.pending[scope as keyof typeof state.pending]!==undefined);
-  const busyProbe=["probe.connect","probe.reconnect","probe.release","status"].some(scope=>state.pending[scope as keyof typeof state.pending]!==undefined);
-  const busySampling=["sampling.start","sampling.pause","sampling.resume","sampling.stop","status"].some(scope=>state.pending[scope as keyof typeof state.pending]!==undefined);
+  const liveBusy=state.transport.phase==="checking"||state.transport.phase==="connecting";
+  const busyProbe=liveBusy||["probe.connect","probe.reconnect","probe.release","status"].some(scope=>state.pending[scope as keyof typeof state.pending]!==undefined);
+  const busySampling=liveBusy||["sampling.start","sampling.pause","sampling.resume","sampling.stop","status"].some(scope=>state.pending[scope as keyof typeof state.pending]!==undefined);
+  const reconnectBlocked=state.pending.status!==undefined||["probe.connect","probe.reconnect","probe.release","sampling.start","sampling.pause","sampling.resume","sampling.stop"].some(scope=>state.pending[scope as keyof typeof state.pending]!==undefined);
+  const retryDisabledScopes:RequestScope[]=liveBusy?["status","probe.connect","probe.reconnect","probe.release","sampling.start","sampling.pause","sampling.resume","sampling.stop"]:[];
+  if(reconnectBlocked)retryDisabledScopes.push("live.reconnect");
 
   return<main aria-label={copy.app} className="monitor-shell">
     <header className="workbench-header">
       <div className="brand"><strong>{copy.app}</strong><span>{status.project.name} · <code>{status.project.targetDevice}</code></span></div>
       <div className="header-status"><span>{status.probe.connected?copy.probeConnected:copy.probeDisconnected}</span>
-        <TransportStatus sampling={status.sampling.state} open={state.transport.open} stale={state.transport.stale}/></div>
+        <TransportStatus sampling={status.sampling.state} phase={state.transport.phase} stale={state.transport.stale}/></div>
       <button type="button" aria-expanded={deviceOpen} aria-controls="device-details" onClick={()=>setDeviceOpen(open=>!open)}>{copy.device}</button>
     </header>
     <nav className="main-nav" aria-label={copy.mainNav}>
       <button type="button" className={liveView?"active":""} aria-current={liveView?"page":undefined} onClick={()=>setView("live")}>{copy.live}</button>
       <button type="button" className={!liveView?"active":""} aria-current={!liveView?"page":undefined} onClick={()=>setView("history")}>{copy.history}</button>
     </nav>
-    <OperationRegion failures={state.failures} pending={state.pending} reconciling={state.reconciling}
+    {(state.transport.phase==="disconnected"||liveBusy||state.transport.needsStatusRefresh)&&<div className="live-recovery" aria-label={copy.liveReconnect}>
+      {state.transport.phase==="disconnected"&&<button type="button" disabled={reconnectBlocked} onClick={()=>void controller.reconnectLive()}>{copy.liveReconnect}</button>}
+      {liveBusy&&<button type="button" onClick={()=>controller.cancelLiveReconnect()}>{copy.liveCancel}</button>}
+      {state.transport.needsStatusRefresh&&<>
+        <span role="status">{copy.statusRefreshNeeded}</span>
+        <button type="button" disabled={liveBusy||state.pending.status!==undefined} onClick={()=>void controller.refreshStatus()}>{copy.statusRefresh}</button>
+      </>}
+    </div>}
+    <OperationRegion failures={state.failures} pending={state.pending} reconciling={state.reconciling} retryDisabledScopes={retryDisabledScopes}
       onRetry={(scope,id)=>controller.retry(scope,id)} onDismiss={(scope,id)=>controller.dismiss(scope,id)}/>
     <div className="device-details" id="device-details" hidden={!deviceOpen}>
       <div className="device-heading"><h2>{copy.device}</h2><button type="button" onClick={()=>setDeviceOpen(false)}>{copy.close}</button></div>

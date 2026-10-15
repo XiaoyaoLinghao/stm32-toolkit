@@ -25,11 +25,11 @@ it("shows interrupted values as stale, and exposes a blocked sampling state with
   const opened=reducer(reducer(initialState,{type:"status.loaded",status:running}),{type:"transport.open"});
   const stale=reducer(opened,{type:"transport.stale"});
   expect(stale.transport.stale).toBe(true);
-  render(<TransportStatus sampling={stale.status!.sampling.state} open={stale.transport.open} stale={stale.transport.stale}/>);
+  render(<TransportStatus sampling={stale.status!.sampling.state} phase={stale.transport.phase} stale={stale.transport.stale}/>);
   expect(screen.getByText("设备采样状态：采样中")).toBeTruthy();
   expect(screen.getByRole("status")).toHaveTextContent("数据连接中断 · 等待重新连接");
   render(<LiveTable rows={[row]} selectedSeries={[]} fresh={!stale.transport.stale} onSeriesToggle={vi.fn()}/>);
-  expect(screen.getByText("非最新数据")).toBeTruthy();
+  expect(screen.getByLabelText("最新数值")).toHaveTextContent("非最新数据");
   cleanup();
   const blocked={...running.sampling,state:"PAUSED_BLOCKED" as const,blockedCode:"MONITOR_PROBE_BUSY"};
   render(<SamplingControls status={blocked} group={null} failure={null} onStart={vi.fn()} onPause={vi.fn()} onResume={vi.fn()} onStop={vi.fn()}/>);

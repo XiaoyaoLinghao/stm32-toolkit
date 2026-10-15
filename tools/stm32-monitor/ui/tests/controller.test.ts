@@ -44,12 +44,13 @@ function harness(api:MonitorApi){
   return{controller,state:()=>state,actions,dispatch};
 }
 
-it("loadInitial dispatches initial.loaded and opens live",async()=>{
+it("loadInitial dispatches initial.loaded and waits for the live socket to open",async()=>{
   const api=makeApi();
   const {controller,actions}=harness(api);
   await controller.loadInitial();
   expect(actions.some(a=>a.type==="initial.loaded")).toBe(true);
-  expect(actions.some(a=>a.type==="transport.open")).toBe(true);
+  expect(actions.some(a=>a.type==="transport.connecting")).toBe(true);
+  expect(actions.some(a=>a.type==="transport.open")).toBe(false);
 });
 
 it("loadInitial fails when first groups page fails",async()=>{

@@ -8,6 +8,8 @@ export const copy={
   invalidRange:"请填写有效的 UTC 起止时间，且结束时间晚于开始时间。",
   probeConnected:"探针已连接",probeDisconnected:"探针未连接",mainNav:"主导航",watchConfig:"观测对象配置",
   samplingServerLabel:"设备采样状态：",streamLost:"数据连接中断 · 等待重新连接",streamConnecting:"正在连接实时数据",
+  streamChecking:"正在核对监视会话",streamConnected:"实时数据已连接",streamStale:"非最新数据",
+  liveReconnect:"重新连接实时数据",liveCancel:"取消连接",statusRefreshNeeded:"需要刷新状态",statusRefresh:"刷新状态",
   catalogBrowse:"浏览变量与寄存器",catalogCollapse:"收起变量目录",catalogTitle:"变量与寄存器目录",catalogResults:"目录搜索结果",
   catalogKind:"目录类型",variables:"变量",registers:"寄存器",search:"搜索",
   searchPlaceholder:"输入符号或寄存器前缀",catalogNeedsProbe:"连接探针后可搜索目录。",
@@ -53,7 +55,7 @@ export const copy={
 } as const;
 
 const operationNames:Record<RequestScope,string>={
-  initial:"初始化读取",status:"状态刷新",probes:"探针列表刷新",
+  initial:"初始化读取",status:"状态刷新","live.reconnect":"重新连接实时数据",probes:"探针列表刷新",
   "probe.connect":"连接探针","probe.reconnect":"重新连接探针","probe.release":"释放探针",
   "catalog.variables":"变量目录搜索","catalog.registers":"寄存器目录搜索",
   "groups.list":"观测组列表刷新","groups.create":"创建观测组","groups.update":"保存观测组",

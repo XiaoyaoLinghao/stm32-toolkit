@@ -43,7 +43,7 @@ export interface MonitorApi{status():Promise<ApiResult<MonitorStatus>>;probes():
  connect(probeId:string):Promise<ApiResult<DebugFirmwareBinding>>;reconnect():Promise<ApiResult<DebugFirmwareBinding>>;release():Promise<ApiResult<{released:boolean}>>;
  start(groupId:string,expectedRevision:I64):Promise<ApiResult<SamplerStartResult>>;pause():Promise<ApiResult<{paused:boolean}>>;resume():Promise<ApiResult<{resumed:boolean}>>;stop():Promise<ApiResult<{stopped:boolean}>>;
  history(query:HistoryQuery):Promise<ApiResult<HistoryPage>>;createExport(startNs:I64,endNs:I64,format:"csv"|"jsonl"):Promise<ApiResult<ExportArtifact>>;exportStatus(exportId:string):Promise<ApiResult<ExportArtifact>>;downloadExport(exportId:string):Promise<DownloadResult>}
-export type LiveHandlers={onEnvelope(value:ParsedLiveEnvelope):void;onClosed():void};
+export type LiveHandlers={onOpen():void;onEnvelope(value:ParsedLiveEnvelope):void;onFailed():void;onClosed():void};
 export type OpenLive=(afterEventId:I64|null,handlers:LiveHandlers)=>(()=>void);
 export type DataGuard<T>=(value:unknown)=>T;
 

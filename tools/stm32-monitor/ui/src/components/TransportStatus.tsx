@@ -1,11 +1,14 @@
 import type {JSX} from "preact";
 import type {SamplingStatus} from "../api/contract";
+import type {MonitorState} from "../state/model";
 import {copy,samplingState} from "../presentation/zh";
 
-export function TransportStatus(p:{sampling:SamplingStatus["state"];open:boolean;stale:boolean}):JSX.Element{
+export function TransportStatus(p:{sampling:SamplingStatus["state"];phase:MonitorState["transport"]["phase"];stale:boolean}):JSX.Element{
+  const phase=p.phase==="open"?copy.streamConnected:p.phase==="checking"?copy.streamChecking
+    :p.phase==="connecting"||p.phase==="idle"?copy.streamConnecting:copy.streamLost;
   return<>
     <span>{copy.samplingServerLabel}{samplingState(p.sampling)}</span>
-    {p.stale?<span className="stream-warning" role="status">{copy.streamLost}</span>
-      :!p.open?<span className="stream-connecting" role="status">{copy.streamConnecting}</span>:null}
+    <span className={p.phase==="disconnected"?"stream-warning":"stream-connecting"} role="status">{phase}</span>
+    {p.stale&&<span className="stream-warning">{copy.streamStale}</span>}
   </>;
 }

@@ -4,8 +4,9 @@ import type {MonitorState,OperationFailure,RequestScope} from "../state/model";
 import {copy,errorText,recoveryAction,recoveryText} from "../presentation/zh";
 import {useDialogFocus} from "./dialog-focus";
 
-export function OperationRegion({failures,pending,reconciling,allowDismissInitial=true,onRetry,onDismiss}:{
+export function OperationRegion({failures,pending,reconciling,retryDisabledScopes=[],allowDismissInitial=true,onRetry,onDismiss}:{
   failures:MonitorState["failures"];pending:MonitorState["pending"];reconciling?:MonitorState["reconciling"];
+  retryDisabledScopes?:readonly RequestScope[];
   allowDismissInitial?:boolean;
   onRetry:(scope:RequestScope,id:bigint)=>void|Promise<void>;
   onDismiss:(scope:RequestScope,id:bigint)=>void;
@@ -27,7 +28,7 @@ export function OperationRegion({failures,pending,reconciling,allowDismissInitia
       <div><strong>{failure.summary}</strong><p>{errorText(failure.code).title}。{recoveryText(failure.recovery,scope)}</p></div>
       <div className="operation-actions">
         {(failure.recovery==="read-retry"||failure.recovery==="write-confirm"||failure.recovery==="reconcile")&&
-          <button type="button" disabled={pending[scope]!==undefined||reconciling?.[scope]===failure.requestId} onClick={event=>{
+          <button type="button" disabled={pending[scope]!==undefined||reconciling?.[scope]===failure.requestId||retryDisabledScopes.includes(scope)} onClick={event=>{
             if(failure.recovery==="write-confirm"){dialog.rememberTrigger(event.currentTarget);const target={scope,id:failure.requestId};confirmRef.current=target;setConfirm(target);}
             else void onRetry(scope,failure.requestId);
           }}>{recoveryAction(failure.recovery,scope)}</button>}

@@ -155,12 +155,13 @@ describe("controller coverage",()=>{
     expect(groupsFail.actions.some(a=>a.type==="request.failed")).toBe(true);
   });
 
-  it("loadInitial reloads an already-open live stream",async()=>{
+  it("loadInitial does not create a second in-progress live stream",async()=>{
     const api=makeApi();
     const {controller,actions}=harness(api);
     await controller.loadInitial();
     await controller.loadInitial();
-    expect(actions.some(a=>a.type==="transport.open")).toBe(true);
+    expect(actions.some(a=>a.type==="transport.connecting")).toBe(true);
+    expect(actions.some(a=>a.type==="transport.open")).toBe(false);
   });
 
   it("saveGroup and deleteGroup fail paths",async()=>{

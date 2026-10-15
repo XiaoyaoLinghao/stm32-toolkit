@@ -3,13 +3,13 @@ import {liveUrl,openLive,parseLiveEnvelope} from "../src/api/live";
 
 const helloEnvelope=`{"protocol":"stm32-toolkit-monitor/1","toolkitVersion":"0.4.0","monitorVersion":"0.4.0","ok":true,"operation":"monitor.live","code":"OK","message":"","data":{"eventId":1,"type":"hello","data":{"protocol":"stm32-toolkit-monitor/1","toolkitVersion":"0.4.0","monitorVersion":"0.4.0","stateRevision":1}},"details":{"subscriberDropped":9223372036854775807}}`;
 
-type FakeSocket={url:string;onmessage:null|((event:{data:unknown})=>void);onclose:null|((event:unknown)=>void);close:ReturnType<typeof vi.fn>};
+type FakeSocket={url:string;onopen:null|(()=>void);onmessage:null|((event:{data:unknown})=>void);onerror:null|(()=>void);onclose:null|((event:unknown)=>void);close:ReturnType<typeof vi.fn>};
 
 function harness(url="https://monitor.test",afterEventId:bigint|null=null){
-  const handlers={onEnvelope:vi.fn(),onClosed:vi.fn()};
+  const handlers={onOpen:vi.fn(),onEnvelope:vi.fn(),onFailed:vi.fn(),onClosed:vi.fn()};
   let socket:FakeSocket|undefined;
   const stop=openLive(url,afterEventId,handlers,fakeUrl=>{
-    socket={url:fakeUrl,onmessage:null,onclose:null,close:vi.fn()};
+    socket={url:fakeUrl,onopen:null,onmessage:null,onerror:null,onclose:null,close:vi.fn()};
     return socket as unknown as WebSocket;
   });
   if(socket===undefined)throw new Error("socketFactory was not invoked");
@@ -64,6 +64,19 @@ describe("openLive",()=>{
     stop();
     expect(socket.close).toHaveBeenCalledTimes(1);
   });
+  it("reports open only on the actual open callback, and settles an error plus close once",()=>{
+    const {handlers,socket,stop}=harness();
+    expect(handlers.onOpen).not.toHaveBeenCalled();
+    socket.onopen?.();
+    expect(handlers.onOpen).toHaveBeenCalledTimes(1);
+    const lateClose=socket.onclose;
+    socket.onerror?.();
+    lateClose?.({});
+    expect(handlers.onFailed).toHaveBeenCalledTimes(1);
+    expect(handlers.onClosed).not.toHaveBeenCalled();
+    stop();
+    expect(socket.close).toHaveBeenCalledTimes(1);
+  });
   it("ignores late messages and close events once stopped",()=>{
     const {handlers,socket,stop}=harness();
     const onmessage=socket.onmessage;
@@ -75,7 +88,7 @@ describe("openLive",()=>{
     expect(handlers.onClosed).not.toHaveBeenCalled();
   });
   it("falls back to the platform WebSocket constructor when no factory is supplied",()=>{
-    const handlers={onEnvelope:vi.fn(),onClosed:vi.fn()};
+    const handlers={onOpen:vi.fn(),onEnvelope:vi.fn(),onFailed:vi.fn(),onClosed:vi.fn()};
     const stop=openLive("https://monitor.test",null,handlers);
     expect(typeof stop).toBe("function");
     stop();
