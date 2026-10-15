@@ -17,3 +17,14 @@
 - 两次普通本地 clone 因 Git for Windows 的 MSYS 命名对象权限失败，分类 ENVIRONMENT；通过原生 git init + 只读 object alternate 准备隔离树，不改产品。
 - Cleanup owner：主代理。run root：`D:\codex-tmp\mui1015`。保留源码、规范、必要验证/失败证据；只删除本轮归属明确的可丢弃输出。
 - 经验采用：GL-001/003/004、STM32TK-EL-007/008（active-provisional）；冻结契约、单一实现者、独立审查、比例适当验证、统一 TEMP/TMP/TMPDIR 与可定位结果。
+
+## 本地代码完成与验收
+
+- Product CodeHead：`67f0ec4fbc375ed60e1f857b4cae248bf73d1589`。
+- 实现回报提交：`c17bf0c735367cc028098a96a1a87996eb14a5ed`；其增量仅为 implementation.md。
+- 主代理完整 accepted-base 差异审查与独立 review 树验证通过：双 typecheck、lint、34 文件/277 测试、build、verify:dist（7 文件字节一致）；重建后 clean。
+- 审查闭合：320px 目录局部滚动、导出 create/refresh 串行、弹窗焦点约束与恢复、S3 浏览器测试源码；另在既有波形范围修复发布版遗漏的 DataZoom 组件注册，并以真实引擎 Node SSR 回归验证。
+- 本地代码 verdict：ACCEPTED；浏览器/视觉/a11y/HTTP-WS 证据 DEFERRED，由主对话代理在获准且 loopback/浏览器可用的 Windows 环境补验。没有完整视觉验收、物理或发布 PASS。
+- 浏览器失败分类 ENVIRONMENT：Python socketpair 阻塞、独立 Chromium 启动失败、Node 本机自连 EACCES；CUA 本机访问授权被拒绝后停止，没有换浏览器/端口/代理规避。无截图。
+- token/固定地址仅完成源代码事实核对与独立方案审查，UI01 未改认证/端口；新增 ENTRY01 规范和计划待另行批准。
+- Cleanup 结果在 task root 的 cleanup-result.json；保留源码/Git/必要证据，原工作区、共享缓存与用户数据保持不动。具体验收边界见 review.md。
