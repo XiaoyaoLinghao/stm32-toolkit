@@ -24,6 +24,16 @@ Accepted base：`224d5ea416971b1ba401147a4a2b4bf99a3cb8de`（用户批准的 UI0
 - `open` 成功后打印一行 token-free 的 `endpoint.url + '/'`；不新增带 token 的 stdout/stderr。`serve --json` 字段、Bearer 客户端与 endpoint 数据模型保持兼容。
 - 第二个 `open` 仍由现有工作区锁拒绝，不宣称它可以重新打开已有服务。
 
+### HTTP 默认端口的统一表示（审查修订）
+
+2026-10-15 独立审查确认：允许的端口范围包含 80，但浏览器会省略 HTTP 默认端口，旧的显式 `:80` 字符串检查会拒绝同一服务。本修订实现原已批准的端口范围，不缩小支持集，也不增加新的可信主机或来源。
+
+- 在既有 auth 适配边界集中定义 authority/origin 表示与匹配，供 MonitorAuth 和 MonitorEndpoint/静态页面检查共同使用，避免各处自行解释。
+- 实际端口为 80 时，canonical authority 是 `127.0.0.1`，canonical URL/origin 是 `http://127.0.0.1`；endpoint.url 和启动器输出使用此表示。实际端口字段和 cookie 后缀仍为 80。
+- 仅在实际监听 80 时，Host 可为精确的 `127.0.0.1` 或 `127.0.0.1:80`；Origin 可为精确的 `http://127.0.0.1` 或 `http://127.0.0.1:80`。这两组字符串表示同一 HTTP authority。其他端口继续要求显式且精确的端口。
+- 不做任意 URL 归一化或去空白；localhost、其他端口、尾点主机、userinfo、路径、query、fragment、HTTPS 与畸形 authority/origin 均不因该修订获得授权。Origin 缺失、Fetch Metadata、方法、WS 与 bootstrap 的原有证明条件保持不变。
+- auth.py 的新增可写范围仅限以上共享表示与匹配；token 生成/比较、cookie 生命周期、请求大小预算和其他请求保护不改。新增纯 auth/endpoint 边界回归，不通过网络或权限规避来证明该行为。
+
 ### 会话 cookie
 
 - HTTP bootstrap 仍是唯一创建浏览器认证会话的入口；随机 token 的生成、校验和失效语义不变，不持久化原始 token。
@@ -52,7 +62,7 @@ Accepted base：`224d5ea416971b1ba401147a4a2b4bf99a3cb8de`（用户批准的 UI0
 
 ## 文件与责任
 
-预计产品范围：Monitor `cli.py`、`models.py`、`runtime.py`、`service.py`；UI `bootstrap.ts`、必要的集中中文词条；对应已有测试、生成 ui_dist 与用户指南。auth.py、API schema、controller/reducer、协议版本、依赖/CI/发布脚本不在范围；若实现发现需要改变其中行为，退回主代理设计，不自行扩大。
+预计产品范围：Monitor `cli.py`、`models.py`、`runtime.py`、`service.py`；auth.py 仅限本规范的 HTTP 默认端口共享表示与匹配；UI `bootstrap.ts`、必要的集中中文词条；对应已有测试、生成 ui_dist 与用户指南。API schema、controller/reducer、协议版本、依赖/CI/发布脚本不在范围；若实现发现需要改变其中行为，退回主代理设计，不自行扩大。
 
 批准后由一个 `gpt-6-sol/max` 实现 owner 在新隔离树实现；主对话代理独立审查 accepted-base 到 final-head 全部差异。无 push、PR mutation、merge、tag/release、close 或远端删除授权。
 

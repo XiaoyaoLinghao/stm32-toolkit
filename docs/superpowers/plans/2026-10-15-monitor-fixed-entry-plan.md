@@ -16,7 +16,7 @@ Accepted base：`224d5ea416971b1ba401147a4a2b4bf99a3cb8de`。用户于 2026-10-1
 
 1. 确认 clean/full SHA，记录 config/service factory 调用者、CLI 兼容断言和认证安全检查的既有测试。
 2. 贯通可选端口：CLI 校验、模型默认值、runtime 转发、service 指定绑定和失败清理。`open` 输出无 token 短地址；不改变 serve JSON。
-3. 在 service 统一按实际端口计算 cookie 名并用于 bootstrap/授权，验证不同服务互不覆盖，Bearer 与各项请求边界不变。
+3. 在 auth 适配边界集中定义 HTTP 默认端口 authority/origin 表示与精确匹配，供 endpoint/静态服务/认证共同使用；在 service 统一按实际端口计算 cookie 名并用于 bootstrap/授权。验证实际端口 80 的 canonical/显式等价写法与其他主机/来源拒绝，并验证不同服务 cookie 互不覆盖，Bearer 与其他请求边界不变。
 4. 前端先分类 URL 再清除敏感信息，增加严格的普通根地址 cookie/status 恢复；沿用原挂载/controller 生命周期和集中中文错误词条。
 5. 更新指南，完成下列检查、重建 ui_dist，提交产品 CodeHead 后返回；主代理在干净树独立审查，修订留在同一分支。通过后写实现报告，区分 CodeHead 与报告提交。
 
@@ -27,6 +27,7 @@ Accepted base：`224d5ea416971b1ba401147a4a2b4bf99a3cb8de`。用户于 2026-10-1
 | CLI/模型/传参 | 实现代理 / Windows pinned Python | 默认动态端口、显式端口、非法值退出码、service factory 传参；stdout 无新增 token，serve JSON 兼容 |
 | 绑定/清理 | 实现代理 / 可用 loopback 的 Python 环境 | 指定端口成功、冲突明确失败、只绑定127.0.0.1、失败/正常停止清理；运行根自包含 |
 | 认证回归 | 实现代理 / Python aiohttp fixture | cookie 名写读一致、双服务 cookie 并存、同端口重启旧 cookie 拒绝、旧固定名拒绝；既有 Bearer、HTTP/WS、Host/Origin/Fetch Metadata 检查 |
+| 默认端口边界 | 实现代理与主代理分别 / 纯 Python auth+endpoint、Node URL parser | 实际端口 80 的 endpoint canonical URL、浏览器解析与精确 Host/Origin 等价形式；非 80、localhost、错误端口/协议/畸形来源均不放宽。纯解析/函数结果不能代表真实监听或浏览器 PASS |
 | 启动分支 | 实现代理 / pinned Node+Vitest | 使用会真实更新 location 的 Window fixture，验证 href/query 在 scrub 前判定，包括 `/?`、`/#`；普通根路径有效/失效 cookie、无效响应/网络失败；非法 token/query 不发 status 请求；失败不挂载 App |
 | 前端静态/资产 | 实现代理 / pinned Node | typecheck、typecheck:e2e、lint、受影响 Vitest；build、verify:dist；不得手改 bundle |
 | 用户路径 | 主对话代理 / 获准访问本机端口的 Windows 浏览器 | 在同一浏览器配置中首次 bootstrap→token移除→关标签页→短书签恢复；同端口重启后重新加载授权链接并完成 bootstrap；不同配置不宣称同步会话；双工程并开；会话丢失和占用端口提示 |
