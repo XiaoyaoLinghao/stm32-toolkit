@@ -37,7 +37,7 @@
 - 新增只读 scope `groups.list`；既有 scope 不改线协议。每次请求都有单调 requestId；pending、failure、retry/dismiss 均关联 scope 与 requestId。
 - failure 在 UI 内扩展为带 requestId、恢复方式和原操作中文摘要的记录；wire `ApiFailure` 不扩展。恢复方式为 read-retry / write-confirm / reconcile / input / none；致命分类单独决定 blockingError。
 - 不可变重试输入和执行闭包只归 controller，不放入 reducer/持久化；UI 仅调用 `retry(scope, requestId)` / `dismiss(scope, requestId)`。确认框提交前再次验证 id，过期确认不能重发新请求。
-- request.started 清除同 scope 旧失败，其他 scope 不受影响。成功与失败都必须匹配最新 pending ID 后才能提交；成功清理与数据应用为一个受保护的状态转移，不能先 clear 再无条件 loaded。
+- request.started 清除同 scope 旧失败，其他 scope 不受影响。成功与普通失败都必须匹配最新 pending ID 后才能提交；成功清理与数据应用为一个受保护的状态转移，不能先 clear 再无条件 loaded。会话致命错误遵循下面独立的生命周期规则。
 - controller 同步保护在途重复动作，关闭/认证阻断后使在途回调失效。独立读取 scope 可并行；同一 mutation 家族（groups、probe、sampling、export 创建）不同时重放两个写入。界面 pending 禁用对应重复动作；双击与旧确认也须被 controller 拦住。
 - 初始化的 status、probes、全部 groups 页是一个完整快照；任何失败均不发布部分初始状态。成功后仅建立一个 live；close/迟到响应不能重开 live。现有已初始化工作台内的普通失败不关闭 live。
 - 组列表每次完整分页后原子提交，失败保留此前完整列表。刷新不得覆盖正在编辑的草稿；明确保存成功只能在草稿仍等于提交快照时更新对应 revision/保存结果。切换组/新建草稿保持既有明确用户动作语义。
@@ -55,6 +55,15 @@
 - 探针/采样重试同时捕获原上下文。确认摘要含原探针 ID，采样含原组和 run；重试前核对 workspace/session/project、probe 与 binding epoch，采样再核对 run/group。零参数后端方法也不能隐式操作新目标；上下文已变则废弃旧重试，绝不发出 POST。已有明确目标参数原样保留，不扩展 wire。
 - 初始化仍并行读取并原子发布完整快照，但任一普通失败应立即结束可见 pending 并允许手动重试，不能等待另一悬挂读取。完整成功与已观察到的失败竞争；同一最新初始化尝试、同一 controller 生命周期的迟到致命错误仍可建立阻断。新的尝试或 close 使旧尝试全部观察者失效。不新增超时、自动重试或 API 取消协议。
 - 已确认 mutation 返回的 WatchGroup 可以直接 upsert 到已接受组列表，保持新选中 ID 可解析；这属于权威写入回执，不是发布部分 GET 页。只有原提交草稿仍在编辑时才改变选中项/草稿身份，之后完整 GET 失败仍不能截断已有列表。正在编辑或已切换的其他草稿继续保留。
+
+### 第二轮审查后的致命状态所有权决策
+
+审查发现普通请求的 pending 与 controller 在途观察者不是同一种生命周期：绑定或导出任务变化可以清除可见 pending，但旧请求仍可能报告本会话权限已经失效。因此停止针对各 scope 补丁，统一如下契约：
+
+- controller 决定回调是否仍属于当前、未关闭、未被更新请求替代的会话观察者；该判断通过后，精确致命 code 统一发出 `access.blocked`，不借用需要 pending ID 的 `request.failed` 递送。
+- reducer 独占可见 `blockingError` 状态；`access.blocked` 原子清除普通 pending/失败。controller 同步停止 live 和后续 API 调用。不能出现 controller 已阻断但工作台仍无阻断说明的分裂状态。
+- 上下文退休只废弃普通数据/失败的显示，不将仍有效观察者报告的认证失效降级为普通提示。已经被更新请求替代、close 或新初始化尝试淘汰的回调仍按既有代次规则忽略。
+- 必须分别覆盖目录绑定变化、导出任务替换后旧读取返回致命 code 的场景，验证可见阻断及后续 API 零调用；保留普通旧失败被退休的测试。
 
 ## 工作台呈现
 
