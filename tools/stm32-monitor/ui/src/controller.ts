@@ -54,6 +54,14 @@ export function createController(api:MonitorApi,dispatch:(action:MonitorAction)=
   const retries=new Map<RequestScope,Retry>();
   const writing=new Set<Family>();
   const reconciling=new Set<RequestScope>();
+  let groupRefreshFence:{refreshedGroups:readonly WatchGroup[]|null}|null=null;
+  const groupWriteAllowed=():boolean=>{
+    const state=getState(),refreshed=groupRefreshFence?.refreshedGroups;
+    if(groupRefreshFence===null)return !state.groupsNeedRefresh;
+    if(refreshed===null||state.groups!==refreshed||state.groupsNeedRefresh)return false;
+    groupRefreshFence=null;
+    return true;
+  };
   const retireLive=():void=>{
     liveGeneration++;connectingInitial=false;
     const close=closeLive;closeLive=null;
@@ -147,7 +155,10 @@ export function createController(api:MonitorApi,dispatch:(action:MonitorAction)=
   };
   const refreshGroups=(internal=false):Promise<void>=>writing.has("groups")&&!internal?Promise.resolve():
     read("groups.list",operationSummary("groups.list"),id=>groupPages(()=>current("groups.list",id)),
-      groups=>({type:"groups.loaded",groups}),undefined,()=>refreshGroups());
+      groups=>{
+        if(groupRefreshFence!==null)groupRefreshFence.refreshedGroups=groups;
+        return{type:"groups.loaded",groups};
+      },undefined,()=>refreshGroups());
   const refreshStatus=():Promise<void>=>{
     if(liveBusy())return Promise.resolve();
     const {gapRevision}=getState().transport,startedStateRevision=getState().stateRevision;
@@ -161,7 +172,8 @@ export function createController(api:MonitorApi,dispatch:(action:MonitorAction)=
     data=>({type:"probes.loaded",probes:data.probes}));
   const write=async<T>(scope:RequestScope,family:Family,summary:string,invoke:()=>Promise<ApiResult<T>>,
     accepted:(data:T)=>LoadedAction|undefined,followup:(data:T)=>Promise<void>,reconcile?:()=>Promise<void>,valid?:()=>boolean):Promise<void>=>{
-    if(writing.has(family)||liveBusy()&&(family==="probe"||family==="sampling")||valid!==undefined&&!valid())return;
+    if(writing.has(family)||liveBusy()&&(family==="probe"||family==="sampling")||
+      family==="groups"&&!groupWriteAllowed()||valid!==undefined&&!valid())return;
     const startedGeneration=getState().groupGeneration;
     if(family==="groups"){
       const old=active.get("groups.list")??retries.get("groups.list")?.requestId;
@@ -178,6 +190,7 @@ export function createController(api:MonitorApi,dispatch:(action:MonitorAction)=
         const uncertain=uncertainCode(result.code);
         const conflict=family==="groups"&&groupConflictCode(result.code);
         const input=family==="groups"&&groupInputCode(result.code);
+        if(conflict)groupRefreshFence={refreshedGroups:null};
         const recovery:RecoveryKind=conflict?"groups-refresh":input?"input":uncertain?(reconcile===undefined?"none":"reconcile"):"write-confirm";
         const retryRun=conflict?()=>refreshGroups():input?undefined:uncertain?reconcile:()=>write(scope,family,summary,invoke,accepted,followup,reconcile,valid);
         const retryValid=conflict?(()=>getState().groupGeneration===startedGeneration):valid;
@@ -343,12 +356,12 @@ export function createController(api:MonitorApi,dispatch:(action:MonitorAction)=
     };
     if(draft.sourceGroupId===null)return write("groups.create","groups",operationSummary("groups.create",draft.name),
       ()=>api.createGroup({authorized:true,name:draft.name,description:draft.description,intervalMs:draft.intervalMs,items:draft.items}),
-      group=>({type:"group.acknowledged",group,generation}),()=>refreshGroups(true),()=>refreshGroups(),valid);
+      group=>({type:"group.acknowledged",group,generation,submittedDraft:draft}),()=>refreshGroups(true),()=>refreshGroups(),valid);
     if(draft.expectedRevision===null)return Promise.resolve();
     return write("groups.update","groups",operationSummary("groups.update",draft.name,draft.sourceGroupId),
       ()=>api.updateGroup(draft.sourceGroupId!,{authorized:true,expectedRevision:draft.expectedRevision!,name:draft.name,
         description:draft.description,intervalMs:draft.intervalMs,items:draft.items}),
-      group=>({type:"group.acknowledged",group,generation}),()=>refreshGroups(true),()=>refreshGroups(),valid);
+      group=>({type:"group.acknowledged",group,generation,submittedDraft:draft}),()=>refreshGroups(true),()=>refreshGroups(),valid);
   };
   return{
     loadInitial:initial,refreshStatus,reconnectLive,cancelLiveReconnect,refreshProbes,refreshGroups:()=>refreshGroups(),
@@ -379,7 +392,7 @@ export function createController(api:MonitorApi,dispatch:(action:MonitorAction)=
         ()=>({type:"group.deleted",groupId}),()=>refreshGroups(true),()=>refreshGroups(),valid);
     },
     importGroups:value=>{
-      if(writing.has("groups"))return Promise.resolve();
+      if(writing.has("groups")||!groupWriteAllowed())return Promise.resolve();
       const parsed=parseGroupImport(value);
       if(!parsed.ok){
         const id=start("groups.import",true);

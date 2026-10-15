@@ -7,7 +7,7 @@ const zeroDrops=():DropTotals=>({subscriber:0n,history:0n,deadline:0n,service:0n
 const dropsFrom=(status:MonitorStatus):DropTotals=>({subscriber:status.sampling.subscriberDrops,history:status.sampling.historyDrops,deadline:status.sampling.deadlineDrops,service:status.sampling.serviceDrops});
 const liveForStatus=(status:MonitorStatus,selected:ReadonlySet<string>):LiveState=>({...emptyLive(),selectedSeries:new Set([...selected].slice(0,8)),bindingEpoch:status.sampling.bindingEpoch,runId:status.sampling.runId,authoritativeDrops:dropsFrom(status)});
 const emptyProjection={rows:[],series:new Map()};
-export const initialState:MonitorState={status:null,probes:[],groups:[],selectedGroupId:null,groupDraft:emptyDraft,groupBaseline:emptyDraft,groupGeneration:0n,groupNavigation:null,groupNavigationMissing:false,groupNameReviewRequired:false,groupWriteBusy:false,stateRevision:-1n,lastAcceptedEventId:null,pending:{},reconciling:{},failures:{},catalog:{variables:null,registers:null},selectedSeries:new Set(),live:emptyLive(),zoom:initialZoom,transport:{phase:"idle",open:false,stale:true,needsStatusRefresh:false,gapRevision:0n},history:{query:null,page:null,projection:emptyProjection,cursorIndex:0,cursorStack:[],nextCursor:null},exports:{artifact:null,submitted:null},notices:[],blockingError:null};
+export const initialState:MonitorState={status:null,probes:[],groups:[],selectedGroupId:null,groupDraft:emptyDraft,groupBaseline:emptyDraft,groupGeneration:0n,groupNavigation:null,groupNavigationMissing:false,groupNameReviewRequired:false,groupWriteBusy:false,groupsNeedRefresh:false,stateRevision:-1n,lastAcceptedEventId:null,pending:{},reconciling:{},failures:{},catalog:{variables:null,registers:null},selectedSeries:new Set(),live:emptyLive(),zoom:initialZoom,transport:{phase:"idle",open:false,stale:true,needsStatusRefresh:false,gapRevision:0n},history:{query:null,page:null,projection:emptyProjection,cursorIndex:0,cursorStack:[],nextCursor:null},exports:{artifact:null,submitted:null},notices:[],blockingError:null};
 const sameBinding=(a:ObservationBinding,b:ObservationBinding):boolean=>a.workspaceId===b.workspaceId&&a.sessionId===b.sessionId&&a.logicalProjectId===b.logicalProjectId&&a.probeId===b.probeId&&a.targetDevice===b.targetDevice&&a.physicalTarget===b.physicalTarget&&a.buildId===b.buildId&&a.elfSha256===b.elfSha256&&a.inputSnapshotSha256===b.inputSnapshotSha256&&a.gitHead===b.gitHead&&a.gitDirty===b.gitDirty&&a.flashSessionId===b.flashSessionId&&a.leaseId===b.leaseId&&a.dwarfSha256===b.dwarfSha256&&a.svdSha256===b.svdSha256;
 const statusMatches=(status:MonitorStatus,binding:ObservationBinding):boolean=>status.workspaceId===binding.workspaceId&&status.sessionId===binding.sessionId&&status.project.logicalProjectId===binding.logicalProjectId&&status.project.targetDevice===binding.targetDevice&&status.probe.connected&&status.probe.probeId===binding.probeId&&status.firmware!==null&&status.firmware.buildId===binding.buildId&&status.firmware.elfSha256===binding.elfSha256&&status.firmware.inputSnapshotSha256===binding.inputSnapshotSha256&&status.firmware.gitHead===binding.gitHead&&status.firmware.gitDirty===binding.gitDirty&&status.firmware.targetDevice===binding.targetDevice;
 const catalogBindingKey=(status:MonitorStatus):string=>`${status.workspaceId}/${status.sessionId}/${status.project.logicalProjectId}/${status.sampling.bindingEpoch}`;
@@ -15,6 +15,8 @@ const rebased=(live:LiveState,status:MonitorStatus):LiveState=>({...live,authori
 const sameFirmware=(left:MonitorStatus["firmware"],right:MonitorStatus["firmware"]):boolean=>left===null?right===null:right!==null&&left.buildId===right.buildId&&left.elfSha256===right.elfSha256&&left.inputSnapshotSha256===right.inputSnapshotSha256&&left.gitHead===right.gitHead&&left.gitDirty===right.gitDirty&&left.targetDevice===right.targetDevice;
 const resetForStatus=(state:MonitorState,status:MonitorStatus):boolean=>{const prior=state.status;return prior!==null&&(prior.workspaceId!==status.workspaceId||prior.sessionId!==status.sessionId||prior.project.logicalProjectId!==status.project.logicalProjectId||prior.project.targetDevice!==status.project.targetDevice||!sameFirmware(prior.firmware,status.firmware)||prior.probe.connected!==status.probe.connected||prior.probe.probeId!==status.probe.probeId||prior.sampling.bindingEpoch!==status.sampling.bindingEpoch||prior.sampling.runId!==status.sampling.runId);};
 const resetNotice=(state:MonitorState,text:string)=>[...state.notices,{id:`view-reset-${state.notices.length}`,kind:"view-reset" as const,text}];
+const sameDraft=(left:MonitorState["groupDraft"],right:MonitorState["groupDraft"]):boolean=>
+  left.sourceGroupId===right.sourceGroupId&&left.expectedRevision===right.expectedRevision&&sameGroupContent(left,right);
 const groupFailureScopes=["groups.create","groups.update","groups.delete","groups.import"] as const;
 function withoutConflictFailures(state:MonitorState):MonitorState{
   const failures={...state.failures};
@@ -97,7 +99,7 @@ export function reducer(state:MonitorState,action:MonitorAction):MonitorState{
   const source=sourceId===null?null:action.groups.find(group=>group.groupId===sourceId)??null;
   const dirty=groupDirty(state);
   const draft=sourceId!==null&&!dirty?(source===null?emptyDraft:draftFromGroup(source)):state.groupDraft;
-  return withoutConflictFailures({...state,groups:action.groups,selectedGroupId:selected?.groupId??null,groupDraft:draft,
+  return withoutConflictFailures({...state,groups:action.groups,groupsNeedRefresh:false,selectedGroupId:selected?.groupId??null,groupDraft:draft,
     groupBaseline:sourceId!==null&&!dirty?draft:state.groupBaseline,
     groupGeneration:sourceId!==null&&!dirty?state.groupGeneration+1n:state.groupGeneration});
  }
@@ -105,8 +107,10 @@ export function reducer(state:MonitorState,action:MonitorAction):MonitorState{
   const existing=state.groups.findIndex(group=>group.groupId===action.group.groupId);
   const groups=existing<0?[...state.groups,action.group]:state.groups.map(group=>group.groupId===action.group.groupId?action.group:group);
   if(state.groupGeneration!==action.generation)return {...state,groups};
-  const draft=draftFromGroup(action.group);
-  return withoutConflictFailures({...state,groups,selectedGroupId:action.group.groupId,groupDraft:draft,groupBaseline:draft,groupNameReviewRequired:false});
+  const canonical=draftFromGroup(action.group);
+  const draft=sameDraft(state.groupDraft,action.submittedDraft)?canonical:
+    {...state.groupDraft,sourceGroupId:action.group.groupId,expectedRevision:action.group.revision};
+  return withoutConflictFailures({...state,groups,selectedGroupId:action.group.groupId,groupDraft:draft,groupBaseline:canonical,groupNameReviewRequired:false});
  }
  if(action.type==="group.deleted"){
   const groups=state.groups.filter(group=>group.groupId!==action.groupId);
@@ -194,7 +198,8 @@ export function reducer(state:MonitorState,action:MonitorAction):MonitorState{
  if(action.type==="request.failed"){
   const pending=state.pending[action.scope];if(pending===undefined||pending.requestId!==action.requestId||state.blockingError!==null)return state;
   const pendingCopy={...state.pending};delete pendingCopy[action.scope];
-  return {...state,pending:pendingCopy,failures:{...state.failures,[action.scope]:{ok:false,code:action.code,message:action.message,requestId:action.requestId,recovery:action.recovery??"none",summary:action.summary??"操作"}}};
+  return {...state,pending:pendingCopy,groupsNeedRefresh:state.groupsNeedRefresh||action.recovery==="groups-refresh",
+    failures:{...state.failures,[action.scope]:{ok:false,code:action.code,message:action.message,requestId:action.requestId,recovery:action.recovery??"none",summary:action.summary??"操作"}}};
  }
   if(action.type==="transport.checking")return {...state,transport:{...state.transport,phase:"checking",open:false,stale:true}};
   if(action.type==="transport.connecting")return {...state,transport:{...state.transport,phase:"connecting",open:false,stale:true}};

@@ -21,6 +21,7 @@ export type GroupPanelProps={
   navigationMissing?:boolean;
   sourceProblem?:"missing"|"changed"|null;
   nameReviewRequired?:boolean;
+  needsRefresh?:boolean;
   editorGeneration?:bigint;
   failure:ApiFailure|null;
   busy?:boolean;
@@ -118,7 +119,7 @@ export function GroupPanel(p:GroupPanelProps):JSX.Element{
     if(fileRef.current!==null)fileRef.current.value="";
   };
   const confirmImport=():void=>{
-    if(locked||importState.kind!=="preview"||!mounted.current||importState.generation!==importGeneration.current)return;
+    if(locked||p.needsRefresh||importState.kind!=="preview"||!mounted.current||importState.generation!==importGeneration.current)return;
     const doc=importState.document;
     cancelImport();
     void p.onImport(doc);
@@ -131,7 +132,7 @@ export function GroupPanel(p:GroupPanelProps):JSX.Element{
         <button type="button" aria-pressed={group.groupId===p.selectedGroupId}
           disabled={locked} onClick={event=>{clearDelete();navigationDialog.rememberTrigger(event.currentTarget);void p.onSelect(group.groupId);}}>{group.name} ({group.items.length})</button>
         {group.groupId===p.selectedGroupId&&confirmDelete?.groupId!==group.groupId&&(
-          <button type="button" disabled={locked} onClick={()=>{
+          <button type="button" disabled={locked||p.needsRefresh} onClick={()=>{
             const captured={groupId:group.groupId,revision:group.revision,generation:p.editorGeneration??0n};
             deleteConfirmation.current=captured;setConfirmDelete(captured);
           }}>{copy.groupDelete}</button>
@@ -139,7 +140,7 @@ export function GroupPanel(p:GroupPanelProps):JSX.Element{
         {confirmDelete?.groupId===group.groupId&&(
           <>
             <span>{formatCopy.groupDelete(group.name)}</span>
-            <button type="button" disabled={locked||group.revision!==confirmDelete.revision||(p.editorGeneration??0n)!==confirmDelete.generation}
+            <button type="button" disabled={locked||p.needsRefresh||group.revision!==confirmDelete.revision||(p.editorGeneration??0n)!==confirmDelete.generation}
               onClick={()=>{
                 const captured=confirmDelete;
                 const valid=captured!==null&&deleteConfirmation.current===captured;
@@ -153,6 +154,7 @@ export function GroupPanel(p:GroupPanelProps):JSX.Element{
       </li>))}</ul>
     {p.groups.length===0&&<p>{copy.groupNone}</p>}
     {p.navigationMissing&&<p role="alert">{copy.groupNavigationMissing}</p>}
+    {p.needsRefresh&&<p role="status">{copy.groupConflictRefresh}</p>}
     <div className="group-actions">
       <button type="button" disabled={locked} onClick={event=>{clearDelete();navigationDialog.rememberTrigger(event.currentTarget);setEditorOpen(true);void p.onNew();}}>{copy.groupNew}</button>
       <button type="button" onClick={()=>setEditorOpen(value=>!value)} aria-expanded={editorOpen}>{editorOpen?copy.groupCollapse:copy.groupEdit}</button>
@@ -180,7 +182,7 @@ export function GroupPanel(p:GroupPanelProps):JSX.Element{
               <p>{formatCopy.importPreview(preview.groupCount,preview.itemCount)}</p>
               <ul>{importState.document.groups.map((group,index)=><li key={`${index}-${group.name}`}>{group.name} · {group.items.length} {copy.groupImportItems}</li>)}</ul>
               <p>{copy.groupImportNoOverwrite}</p>
-              <button type="button" disabled={locked} onClick={confirmImport}>{copy.groupConfirmImport}</button>
+              <button type="button" disabled={locked||p.needsRefresh} onClick={confirmImport}>{copy.groupConfirmImport}</button>
             </div>
           );
         })()}
@@ -209,7 +211,7 @@ export function GroupPanel(p:GroupPanelProps):JSX.Element{
         return<tr key={key}><td><code>{item.kind==="variable"?item.expression:item.registerPath}</code></td>
           <td><button type="button" disabled={locked} onClick={()=>void p.onRemove(key)}>{copy.remove}</button></td></tr>;})}</tbody></table>
     {p.failure!==null&&<FailureMessage failure={p.failure}/>}
-    <button type="button" onClick={()=>void p.onSave()} disabled={p.draft.name===""||p.draft.items.length===0||locked||p.nameReviewRequired||p.sourceProblem!==null&&p.sourceProblem!==undefined}>
+    <button type="button" onClick={()=>void p.onSave()} disabled={p.draft.name===""||p.draft.items.length===0||locked||p.needsRefresh||p.nameReviewRequired||p.sourceProblem!==null&&p.sourceProblem!==undefined}>
       {isNew?copy.groupCreate:copy.groupSave}
     </button>
     </div>

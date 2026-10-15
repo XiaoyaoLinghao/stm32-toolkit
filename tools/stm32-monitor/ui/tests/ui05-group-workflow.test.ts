@@ -124,6 +124,78 @@ it("conflict recovery reads only, then same-revision rename is a fresh submit",a
   expect(update).toHaveBeenCalledTimes(2);
 });
 
+it("blocks group writes until a post-conflict list GET succeeds, even after dismissal or a failed GET",async()=>{
+  const existing=group("first","First");
+  const update=vi.fn().mockResolvedValueOnce(err("MONITOR_GROUP_CONFLICT"))
+    .mockResolvedValueOnce(ok({...existing,name:"Fresh",revision:2n}));
+  const groups=vi.fn().mockResolvedValueOnce(err("GROUPS_DOWN")).mockResolvedValueOnce(ok(page([existing])));
+  const h=harness({updateGroup:update,groups},[existing]);
+  h.dispatch({type:"group.draft.changed",draft:{...h.state().groupDraft,name:"Collision"}});
+  await h.controller.saveGroup(h.state().groupDraft);
+  expect(h.state().failures["groups.update"]?.recovery).toBe("groups-refresh");
+  await h.controller.saveGroup(h.state().groupDraft);
+  expect(update).toHaveBeenCalledTimes(1);
+  const failedId=h.state().failures["groups.update"]!.requestId;
+  h.controller.dismiss("groups.update",failedId);
+  h.dispatch({type:"group.draft.changed",draft:{...h.state().groupDraft,name:"Fresh"}});
+  await h.controller.saveGroup(h.state().groupDraft);
+  expect(update).toHaveBeenCalledTimes(1);
+  await h.controller.refreshGroups();
+  expect(h.state().failures["groups.list"]?.code).toBe("GROUPS_DOWN");
+  await h.controller.saveGroup(h.state().groupDraft);
+  expect(update).toHaveBeenCalledTimes(1);
+  await h.controller.retry("groups.list",h.state().failures["groups.list"]!.requestId);
+  await h.controller.saveGroup(h.state().groupDraft);
+  expect(update).toHaveBeenCalledTimes(2);
+  expect(update).toHaveBeenLastCalledWith("first",expect.objectContaining({expectedRevision:1n,name:"Fresh"}));
+});
+
+it("fences a queued conflict and waits for the successful GET snapshot to reach reducer state",async()=>{
+  const existing=group("first","First");
+  let state=reducer(initialState,{type:"initial.loaded",status:statusResult(),probes:[],groups:[existing]});
+  state=reducer(state,{type:"group.draft.changed",draft:{...state.groupDraft,name:"Fresh"}});
+  const queued:MonitorAction[]=[];
+  const dispatch=(action:MonitorAction)=>{queued.push(action);};
+  const flush=()=>{for(const action of queued.splice(0))state=reducer(state,action);};
+  const update=vi.fn().mockResolvedValueOnce(err("MONITOR_GROUP_CONFLICT"))
+    .mockResolvedValueOnce(ok({...existing,name:"Fresh",revision:2n}));
+  const groups=vi.fn(async()=>ok(page([existing])));
+  const controller=createController({updateGroup:update,groups} as unknown as MonitorApi,dispatch,()=>state);
+  await controller.saveGroup(state.groupDraft);
+  await controller.saveGroup(state.groupDraft);
+  expect(update).toHaveBeenCalledTimes(1);
+  flush();
+  expect(state.groupsNeedRefresh).toBe(true);
+  await controller.refreshGroups();
+  await controller.saveGroup(state.groupDraft);
+  expect(update).toHaveBeenCalledTimes(1);
+  flush();
+  expect(state.groupsNeedRefresh).toBe(false);
+  await controller.saveGroup(state.groupDraft);
+  expect(update).toHaveBeenCalledTimes(2);
+});
+
+it("applies the conflict refresh gate to create, delete, and import without locking draft navigation",async()=>{
+  const existing=group("first","First");
+  const create=vi.fn(async()=>ok(group("new","New")));
+  const remove=vi.fn(async()=>ok({groupId:"first",deleted:true as const}));
+  const imported=vi.fn(async()=>ok([]));
+  const h=harness({updateGroup:vi.fn(async()=>err("MONITOR_GROUP_CONFLICT")),createGroup:create,
+    deleteGroup:remove,importGroups:imported},[existing]);
+  h.dispatch({type:"group.draft.changed",draft:{...h.state().groupDraft,name:"Collision"}});
+  await h.controller.saveGroup(h.state().groupDraft);
+  await h.controller.deleteGroup("first",1n,h.state().groupGeneration);
+  await h.controller.importGroups({schemaVersion:1,groups:[]});
+  h.dispatch({type:"group.save-as-new"});
+  expect(h.state().groupDraft.sourceGroupId).toBeNull();
+  h.dispatch({type:"group.name.reviewed"});
+  await h.controller.createGroup();
+  expect(remove).not.toHaveBeenCalled();
+  expect(imported).not.toHaveBeenCalled();
+  expect(create).not.toHaveBeenCalled();
+  expect(h.state().groupsNeedRefresh).toBe(true);
+});
+
 it("import name conflict refreshes without replay and preserves the editing draft",async()=>{
   const imported=vi.fn(async()=>err("MONITOR_IMPORT_CONFLICT"));
   const groups=vi.fn(async()=>ok(page([group("first","First")])));

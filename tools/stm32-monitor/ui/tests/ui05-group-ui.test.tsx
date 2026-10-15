@@ -119,3 +119,22 @@ it("offers GET-only group refresh for a conflict without a write confirmation di
   expect(onRetry).toHaveBeenCalledWith("groups.update",4n);
   expect(screen.queryByRole("dialog",{name:"确认重试上次写入"})).toBeNull();
 });
+
+it("keeps conflict refresh guidance after the failure prompt is gone while allowing editing and preview",async()=>{
+  const refresh=vi.fn(),save=vi.fn(),importGroups=vi.fn();
+  render(<GroupPanel {...panel({needsRefresh:true,onRefresh:refresh,onSave:save,onImport:importGroups})}/>);
+  expect(screen.getByText(/刷新观测组列表以核对版本和名称/)).toBeTruthy();
+  expect(screen.getByLabelText("名称")).toBeEnabled();
+  expect(screen.getByRole("button",{name:"保存观测组"})).toBeDisabled();
+  expect(screen.getByRole("button",{name:"删除"})).toBeDisabled();
+  await userEvent.click(screen.getByRole("button",{name:"刷新观测组"}));
+  expect(refresh).toHaveBeenCalledOnce();
+  await userEvent.click(screen.getByRole("button",{name:"导入观测组"}));
+  await userEvent.upload(screen.getByTestId("group-import-file"),new File([
+    JSON.stringify({schemaVersion:1,groups:[{name:"Alpha",description:"",intervalMs:250,items:[]}]}),
+  ],"groups.json",{type:"application/json"}));
+  expect(await screen.findByText(/Alpha · 0 个对象/)).toBeTruthy();
+  expect(screen.getByRole("button",{name:"确认导入"})).toBeDisabled();
+  expect(save).not.toHaveBeenCalled();
+  expect(importGroups).not.toHaveBeenCalled();
+});

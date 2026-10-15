@@ -1,6 +1,7 @@
-import {expect,it,vi} from "vitest";
+import {afterEach,expect,it,vi} from "vitest";
 import {render,screen,fireEvent,waitFor} from "@testing-library/preact";
 import {App} from "../src/app";
+import {watchGroup} from "./fixtures";
 
 vi.mock("echarts/core",()=>({init:vi.fn(()=>null),use:vi.fn(),default:{init:vi.fn(()=>null),use:vi.fn()}}));
 vi.mock("echarts/charts",()=>({LineChart:class{}}));
@@ -35,11 +36,64 @@ function apiOverrides(){
   };
 }
 
+let preparedApi:object|null=null;
+afterEach(()=>{preparedApi=null;});
 vi.mock("../src/api/client",()=>({
-  createMonitorApi:()=>apiOverrides(),
+  createMonitorApi:()=>preparedApi??apiOverrides(),
 }));
 
 vi.mock("../src/api/live",()=>({openLive:()=>()=>{}}));
+
+function queuedNameInputAndSave(nextName:string,saveLabel:string):void{
+  const input=screen.getByLabelText("名称") as HTMLInputElement;
+  const oldSave=screen.getByRole("button",{name:saveLabel});
+  input.value=nextName;
+  input.dispatchEvent(new Event("input",{bubbles:true}));
+  oldSave.click();
+}
+
+it("keeps a queued newer create draft after the old Save ACK and a failed list GET",async()=>{
+  const created={...watchGroup(),groupId:"created",name:"A",revision:1n};
+  const groups=vi.fn().mockResolvedValueOnce(ok({groups:[],nextCursor:null,revision:"0"}))
+    .mockResolvedValue(err("GROUPS_DOWN","list unavailable"));
+  const create=vi.fn(async()=>ok(created));
+  const update=vi.fn(async()=>ok({...created,name:"B",revision:2n}));
+  preparedApi={...apiOverrides(),groups,createGroup:create,updateGroup:update};
+  render(<App/>);
+  await screen.findByText("Project");
+  fireEvent.click(screen.getByRole("button",{name:"新建观测组"}));
+  fireEvent.input(screen.getByLabelText("名称"),{target:{value:"A"}});
+  fireEvent.click(screen.getByRole("button",{name:"浏览变量与寄存器"}));
+  fireEvent.click(screen.getByRole("button",{name:"搜索/加载"}));
+  await screen.findByRole("button",{name:"加入观测组草稿"});
+  fireEvent.click(screen.getByRole("button",{name:"加入观测组草稿"}));
+  queuedNameInputAndSave("B","创建观测组");
+  expect(create).toHaveBeenCalledWith(expect.objectContaining({name:"A"}));
+  await waitFor(()=>expect(groups).toHaveBeenCalledTimes(2));
+  expect(screen.getByLabelText("名称")).toHaveValue("B");
+  expect(screen.getByText(/有未保存的修改/)).toBeTruthy();
+  fireEvent.click(screen.getByRole("button",{name:"保存观测组"}));
+  await waitFor(()=>expect(update).toHaveBeenCalledWith("created",expect.objectContaining({expectedRevision:1n,name:"B"})));
+});
+
+it("keeps a queued newer update draft and advances its revision after a failed list GET",async()=>{
+  const existing=watchGroup(),saved={...existing,name:"A",revision:2n};
+  const groups=vi.fn().mockResolvedValueOnce(ok({groups:[existing],nextCursor:null,revision:"0"}))
+    .mockResolvedValue(err("GROUPS_DOWN","list unavailable"));
+  const update=vi.fn().mockResolvedValueOnce(ok(saved)).mockResolvedValue(ok({...saved,name:"B",revision:3n}));
+  preparedApi={...apiOverrides(),groups,updateGroup:update};
+  render(<App/>);
+  await screen.findByText("Project");
+  fireEvent.click(screen.getByRole("button",{name:"编辑组配置"}));
+  fireEvent.input(screen.getByLabelText("名称"),{target:{value:"A"}});
+  queuedNameInputAndSave("B","保存观测组");
+  expect(update).toHaveBeenCalledWith(existing.groupId,expect.objectContaining({expectedRevision:1n,name:"A"}));
+  await waitFor(()=>expect(groups).toHaveBeenCalledTimes(2));
+  expect(screen.getByLabelText("名称")).toHaveValue("B");
+  expect(screen.getByText(/有未保存的修改/)).toBeTruthy();
+  fireEvent.click(screen.getByRole("button",{name:"保存观测组"}));
+  await waitFor(()=>expect(update).toHaveBeenCalledWith(existing.groupId,expect.objectContaining({expectedRevision:2n,name:"B"})));
+});
 
 it("App retains the workbench and edited group draft when creation fails",async()=>{
   render(<App/>);

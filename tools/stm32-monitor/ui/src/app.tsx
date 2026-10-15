@@ -102,7 +102,7 @@ export function App():JSX.Element{
         <GroupPanel compact groups={state.groups} selectedGroupId={state.selectedGroupId} draft={state.groupDraft}
           dirty={groupDirty(state)} navigation={state.groupNavigation} navigationMissing={state.groupNavigationMissing}
           sourceProblem={groupSourceProblem(state)} editorGeneration={state.groupGeneration}
-          nameReviewRequired={state.groupNameReviewRequired}
+          nameReviewRequired={state.groupNameReviewRequired} needsRefresh={state.groupsNeedRefresh}
           failure={null} busy={busyGroups}
           onSelect={(groupId)=>dispatch({type:"group.navigation.requested",target:{kind:"group",groupId}})}
           onDraftChange={(draft)=>dispatch({type:"group.draft.changed",draft})}
