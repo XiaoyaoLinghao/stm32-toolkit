@@ -85,17 +85,15 @@ export function createController(api:MonitorApi,dispatch:(action:MonitorAction)=
     dispatch(data===undefined?{type:"request.succeeded",scope,requestId:id}:{type:"request.succeeded",scope,requestId:id,data});
     return true;
   };
-  const blockAccess=(result:ApiFailure,scope?:RequestScope,id?:bigint):void=>{
+  const blockAccess=(result:ApiFailure):void=>{
     if(closed||blocked)return;
-    if(scope!==undefined&&id!==undefined&&current(scope,id))
-      dispatch({type:"request.failed",scope,requestId:id,code:result.code,message:result.message,fatal:true});
-    else dispatch({type:"access.blocked",code:result.code,message:result.message});
+    dispatch({type:"access.blocked",code:result.code,message:result.message});
     blocked=true;lifecycle++;active.clear();retries.clear();writing.clear();reconciling.clear();
     if(closeLive!==null){closeLive();closeLive=null;}
   };
   const fail=(scope:RequestScope,id:bigint,result:ApiFailure,recovery:RecoveryKind,summary:string,run?:()=>Promise<void>,valid?:()=>boolean):void=>{
     if(!current(scope,id))return;
-    if(fatalCode(result.code)){blockAccess(result,scope,id);return;}
+    if(fatalCode(result.code)){blockAccess(result);return;}
     active.delete(scope);
     if(run!==undefined)retries.set(scope,{requestId:id,recovery,run,...(valid===undefined?{}:{valid})});
     dispatch({type:"request.failed",scope,requestId:id,code:result.code,message:result.message,recovery,summary});
@@ -203,7 +201,7 @@ export function createController(api:MonitorApi,dispatch:(action:MonitorAction)=
       try{result=await invoke();}catch(error){result=unexpected(error);}
       if(!result.ok&&latest()){
         if(fatalCode(result.code)){
-          blockAccess(result,"initial",id);
+          blockAccess(result);
           if(!signaled){signaled=true;signalFailure(result);}
         }
         else if(!signaled){signaled=true;signalFailure(result);}

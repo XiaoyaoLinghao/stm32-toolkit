@@ -39,7 +39,7 @@ export type MonitorAction=LoadedAction
  | {type:"request.started";scope:RequestScope;requestId:bigint}
  | {type:"request.succeeded";scope:RequestScope;requestId:bigint;data?:LoadedAction}
  | {type:"request.cleared";scope:RequestScope;requestId:bigint}
- | {type:"request.failed";scope:RequestScope;requestId:bigint;code:string;message:string;recovery?:RecoveryKind;summary?:string;fatal?:boolean}
+ | {type:"request.failed";scope:RequestScope;requestId:bigint;code:string;message:string;recovery?:RecoveryKind;summary?:string}
  | {type:"request.dismissed";scope:RequestScope;requestId:bigint}
  | {type:"request.retired";scope:RequestScope;requestId:bigint}
  | {type:"request.reconciling";scope:RequestScope;requestId:bigint}

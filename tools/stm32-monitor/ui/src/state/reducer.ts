@@ -130,7 +130,6 @@ export function reducer(state:MonitorState,action:MonitorAction):MonitorState{
  if(action.type==="request.cleared"){const pending=state.pending[action.scope];if(pending===undefined||pending.requestId!==action.requestId)return state;const copy={...state.pending};delete copy[action.scope];return {...state,pending:copy};}
  if(action.type==="request.failed"){
   const pending=state.pending[action.scope];if(pending===undefined||pending.requestId!==action.requestId||state.blockingError!==null)return state;
-  if(action.fatal)return {...state,pending:{},reconciling:{},failures:{},blockingError:{ok:false,code:action.code,message:action.message},transport:{...state.transport,open:false,stale:true}};
   const pendingCopy={...state.pending};delete pendingCopy[action.scope];
   return {...state,pending:pendingCopy,failures:{...state.failures,[action.scope]:{ok:false,code:action.code,message:action.message,requestId:action.requestId,recovery:action.recovery??"none",summary:action.summary??"操作"}}};
  }

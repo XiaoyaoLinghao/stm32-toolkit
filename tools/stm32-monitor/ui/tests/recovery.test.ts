@@ -388,6 +388,26 @@ it("retires an in-flight old export status error after a new artifact arrives",a
   expect(h.state().exports.artifact?.exportId).toBe("e2");
 });
 
+it("blocks on fatal export status after its old artifact pending was retired",async()=>{
+  const old=deferred<Awaited<ReturnType<MonitorApi["exportStatus"]>>>();
+  const artifact=(exportId:string)=>({exportId,format:"csv" as const,sha256:"a".repeat(64),bytes:1n,valueCount:1n});
+  const create=vi.fn().mockImplementationOnce(async()=>ok(artifact("e1")))
+    .mockImplementationOnce(async()=>ok(artifact("e2")));
+  const status=vi.fn(()=>old.promise);
+  const h=harness(makeApi({createExport:create,exportStatus:status}));
+  await h.controller.createExport(1n,2n,"csv");
+  const pending=h.controller.refreshExport("e1");
+  await h.controller.createExport(3n,4n,"csv");
+  expect(h.state().pending["export.status"]).toBeUndefined();
+  old.resolve(err("MONITOR_AUTH_REQUIRED"));
+  await pending;
+  expect(h.state().blockingError?.code).toBe("MONITOR_AUTH_REQUIRED");
+  await h.controller.refreshExport("e2");
+  await h.controller.createExport(5n,6n,"csv");
+  expect(status).toHaveBeenCalledTimes(1);
+  expect(create).toHaveBeenCalledTimes(2);
+});
+
 it("retires obsolete catalog failure and pending read on binding change",async()=>{
   const old=deferred<Awaited<ReturnType<MonitorApi["variables"]>>>();
   const variables=vi.fn().mockImplementationOnce(async()=>err("CATALOG_DOWN"))
@@ -407,6 +427,23 @@ it("retires obsolete catalog failure and pending read on binding change",async()
   old.resolve(err("LATE_CATALOG_DOWN"));
   await pending;
   expect(h.state().failures["catalog.variables"]).toBeUndefined();
+});
+
+it("blocks on fatal catalog result after a binding change retired its pending record",async()=>{
+  const old=deferred<Awaited<ReturnType<MonitorApi["variables"]>>>();
+  const variables=vi.fn(()=>old.promise);
+  const h=harness(makeApi({variables}));
+  const firstStatus=statusResult();
+  h.dispatch({type:"initial.loaded",status:firstStatus,probes:[],groups:[]});
+  const pending=h.controller.searchCatalog("variables","old");
+  h.dispatch({type:"status.loaded",status:{...firstStatus,
+    sampling:{...firstStatus.sampling,bindingEpoch:firstStatus.sampling.bindingEpoch+1n}}});
+  expect(h.state().pending["catalog.variables"]).toBeUndefined();
+  old.resolve(err("MONITOR_ORIGIN_REJECTED"));
+  await pending;
+  expect(h.state().blockingError?.code).toBe("MONITOR_ORIGIN_REJECTED");
+  await h.controller.searchCatalog("variables","new");
+  expect(variables).toHaveBeenCalledTimes(1);
 });
 
 it("retiring a failed catalog binding removes its enabled retry",async()=>{
