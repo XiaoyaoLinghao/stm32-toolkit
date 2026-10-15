@@ -18,7 +18,7 @@
 - 删除确认绑定打开确认时的 ID/revision 和编辑 generation；选择/新建/刷新导致目标或版本变化时旧确认失效，需重新确认，不能把旧确认自动升级为删除最新 revision。controller 再校验捕获的 revision，写失败重试也保持该身份约束。
 - 刷新成功：干净编辑稿可更新至同 ID 最新组；脏稿保持其内容、原 expectedRevision、基线。源已删除时无论是否 dirty 都清除指向该 ID 的 selectedGroupId；脏稿保留为可恢复的孤立稿并显示“原组已删除”，干净稿则清为新稿。不存在的 source ID 或已知 revision 不匹配时，保存按钮及 controller 的直接保存入口禁止 UPDATE，直到显式导航/载入最新或另存为新稿。显式另存保留 name/description/interval/items，清 source/revision/selected，基线为空稿，要求用户审阅名称再保存。
 - 冲突标记可由最新列表中同 ID 的 revision 与草稿 expectedRevision 差异、或缺失情况派生；尚未完成刷新时不能把旧列表称为最新。明确失败码也必须显示恢复提示，不等刷新后才告诉用户。
-- 成功保存总是 upsert 服务端规范组；只有提交捕获 generation 与当前编辑 generation 相同才更新选组、编辑内容和基线，不能只靠内容相等推断身份。交互锁阻止在途编辑；迟到确认仍须有 generation 防线。保存成功而后续列表读取失败只重试读取，不能再次 POST。删除确认成功立即移除捕获目标并清理对应编辑状态，后续列表失败也不能留下可保存到已删 ID 的稿。导入成功立即合并返回的组数组，保持现有编辑稿/基线/选组，不能丢弃成功返回值等 GET 后才显示。
+- 成功保存总是 upsert 服务端规范组；只有提交捕获 generation 与当前编辑 generation 相同才更新选组、编辑内容和基线，不能只靠内容相等推断身份。交互锁阻止在途编辑；迟到确认仍须有 generation 防线。提交同时捕获不可变 submittedDraft：相同 generation 且当前稿内容/身份仍等于提交稿时采用 canonical ACK；相同 generation 但编辑内容已变化时，保留当前可编辑字段，仅采用 ACK 的 sourceGroupId/revision，并将 baseline 更新为 canonical ACK。这样输入事件已排队、旧 Save 闭包尚未重绘的同事件窗口中，新稿仍为 dirty，后续 GET 不覆盖它，下一次保存正确更新已创建组。不同 generation 只 upsert 列表，不改另一编辑会话。保存成功而后续列表读取失败只重试读取，不能再次 POST。删除确认成功立即移除捕获目标并清理对应编辑状态，后续列表失败也不能留下可保存到已删 ID 的稿。导入成功立即合并返回的组数组，保持现有编辑稿/基线/选组，不能丢弃成功返回值等 GET 后才显示。
 
 ## 异步与错误合同
 
@@ -41,3 +41,4 @@
 允许 UI 内部 group model/actions/selectors/reducer、controller 的组 CRUD/refresh/retry、GroupPanel、CatalogPanel、SamplingControls 的目标标签、app 接线、OperationRegion 恢复文案、zh/styles、相关测试及确受影响 e2e 源、构建 ui_dist、指南组编辑段。纯 helper 可新增；公开 API/codec/Python、鉴权/固定端口、采样协议、图表算法、历史/导出、依赖/版本/构建配置不改。实现者独占产品及实施报告，主代理独占本规范/计划/验收。无远端动作。
 
 浏览器/真实硬件/发布检查继续 DEFERRED；本片要求有意义的 reducer/controller/组件自动化证据，不以 jsdom 冒充真实浏览器。
+
