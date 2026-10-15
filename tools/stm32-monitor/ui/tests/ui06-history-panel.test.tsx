@@ -50,7 +50,7 @@ it("rejects negative or overflowing history bounds without changing shared expor
   fireEvent.input(end,{target:{value:"1970-01-01T00:00:01.000"}});
   fireEvent.click(screen.getByRole("button",{name:"查询历史"}));
   expect(onLoad).not.toHaveBeenCalled();
-  expect(screen.getByRole("alert")).toBeTruthy();
+  expect(screen.getByRole("alert")).toHaveTextContent("起点不得早于 1970 年");
   expect(inputNs("1969-12-31T23:59:59.000")).toBe(-1_000_000_000n);
   fireEvent.input(start,{target:{value:"2300-01-01T00:00:00.000"}});
   fireEvent.input(end,{target:{value:"2300-01-02T00:00:00.000"}});

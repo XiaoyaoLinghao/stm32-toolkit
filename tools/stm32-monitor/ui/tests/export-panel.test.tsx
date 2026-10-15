@@ -63,6 +63,8 @@ it("does not create export for an invalid inverted range",async()=>{
   await userEvent.click(screen.getByRole("button",{name:"创建 JSONL 导出"}));
   await userEvent.click(screen.getByRole("button",{name:"确认导出"}));
   expect(create).not.toHaveBeenCalled();
+  expect(screen.getByRole("alert")).toHaveTextContent("结束时间晚于开始时间");
+  expect(screen.getByRole("alert")).not.toHaveTextContent("1970 年");
 });
 
 it("refreshes and downloads a verified artifact",async()=>{

@@ -88,7 +88,7 @@ export function HistoryPanel({query,page,inFlight=null,failure,cursorStack=[],bu
     <label>{copy.historyEnd} <input type="datetime-local" step="0.001" value={end}
       onInput={event=>{draft.current.end=event.currentTarget.value;setEnd(draft.current.end);}}/></label>
     <button type="button" className="primary" disabled={busy||inFlight!==null} onClick={load}>{copy.historyLoad}</button></div>
-    {validation&&<p role="alert">{copy.invalidRange}</p>}
+    {validation&&<p role="alert">{copy.historyInvalidRange}</p>}
     {failure!==null&&<FailureMessage failure={failure}/>}
     {inFlight!==null&&<p role="status" className="history-range">{copy.historyPendingRange}：{range(inFlight.query)}</p>}
     {query!==null&&<p className="history-range">{copy.historyCurrentRange}：{range(query)}（{copy.historyHalfOpen}）</p>}

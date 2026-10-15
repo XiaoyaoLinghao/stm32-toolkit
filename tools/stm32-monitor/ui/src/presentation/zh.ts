@@ -5,7 +5,8 @@ import type {RequestScope,RecoveryKind} from "../state/model";
 export const copy={
   app:"STM32 监视器",loading:"正在读取监视状态…",live:"实时监视",history:"历史记录",
   device:"连接与固件详情",close:"关闭",diagnostics:"诊断详情",retryOpen:"若服务仍在运行，请先在所属 Monitor 终端按 Ctrl-C 结束，再运行 open 打开新的授权页面。",
-  invalidRange:"请填写有效的 UTC 起止时间：起点不得早于 1970 年，终点须晚于起点且不超过可查询范围。",
+  invalidRange:"请填写有效的 UTC 起止时间，且结束时间晚于开始时间。",
+  historyInvalidRange:"请填写有效的 UTC 起止时间：起点不得早于 1970 年，终点须晚于起点且不超过可查询范围。",
   probeConnected:"探针已连接",probeDisconnected:"探针未连接",mainNav:"主导航",watchConfig:"观测对象配置",
   samplingServerLabel:"设备采样状态：",streamLost:"数据连接中断 · 等待重新连接",streamConnecting:"正在连接实时数据",
   streamChecking:"正在核对监视会话",streamConnected:"实时数据已连接",streamStale:"非最新数据",

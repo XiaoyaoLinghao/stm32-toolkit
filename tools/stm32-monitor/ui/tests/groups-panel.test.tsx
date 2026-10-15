@@ -137,11 +137,17 @@ it("finishes reading after the group panel unmounts without touching its detache
     expect(beforeUnmount.value).toBe("");
     view.unmount();
     expect(input.isConnected).toBe(false);
-    await readCompleted;
-    expect({value:input.value,fileCount:input.files?.length}).toEqual(beforeUnmount);
-    expect(importFn).not.toHaveBeenCalled();
-    expect(screen.queryByRole("button",{name:"确认导入"})).toBeNull();
-    expect(screen.queryByRole("region",{name:"观测组"})).toBeNull();
+    const lateValueWrite=vi.spyOn(input,"value","set");
+    try{
+      await readCompleted;
+      expect(lateValueWrite).not.toHaveBeenCalled();
+      expect({value:input.value,fileCount:input.files?.length}).toEqual(beforeUnmount);
+      expect(importFn).not.toHaveBeenCalled();
+      expect(screen.queryByRole("button",{name:"确认导入"})).toBeNull();
+      expect(screen.queryByRole("region",{name:"观测组"})).toBeNull();
+    }finally{
+      lateValueWrite.mockRestore();
+    }
   }finally{
     readSpy.mockRestore();
   }
