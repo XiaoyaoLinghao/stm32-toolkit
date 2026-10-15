@@ -22,3 +22,13 @@
 - 主代理裁决 REVISION_REQUIRED；不删除端口 80 支持、不放宽实际来源。规范和计划已冻结共享 canonical authority 与精确等价表示规则，auth.py 窄范围扩展仍由原实现 owner 执行；token、CSRF/Fetch Metadata 和生命周期不改。
 - 保持同一分支/实现 owner，不推送/发布；修订后只复核受影响 auth/endpoint/入口、现有安全回归与产物一致性。初始证据仅代表对应字节，不替代修订后检查。
 - 本机 Codex 全局模型配置位于受限用户目录，尚未改写；用户请求的配置更新脚本位于 task root，默认只读校验通过，供用户在其终端显式应用。未修改主模型或权限配置。
+
+## 最终本地代码裁决
+
+- 修订 Product CodeHead：`0bbca0538489def23675a93b9834d6c2812bf7b5`。同一实现 owner 完成 auth/endpoint/static 统一表示与窄范围回归；没有引入其他可信主机、来源或状态所有者。
+- 主代理完整审查 accepted-base 到初始产品提交，再完整审查至修订 Product CodeHead；独立 Sol 6.1/max reviewer 采用相同范围并确认唯一 P2 闭合，无新增实质发现。
+- 主代理在 clean detached 修订提交独立通过 54 项纯 Python、verify:dist 7 文件字节一致和默认端口纯 URL 解析。UI 源码/产物字节相对初始提交不变，复用其 292 项 UI、类型检查、lint/build 证据，不将旧提交检查冒记为新运行。
+- 裁决 ACCEPTED（本地代码）；真实 HTTP/WS/固定端口/书签/视觉路径仍 DEFERRED 给主代理在获准可用环境补验。未宣称完整用户路径、物理设备或发布 PASS。
+- 完整验证、唯一问题闭合及交付限制见 review.md；实现者单独提交 implementation.md。主代理负责报告差异复核与最终清理，源代码和最小证据保留。
+- 实现者仅提交 implementation.md，主代理已完整复核该报告与产品 CodeHead 的归属、实际检查和待验项。报告后的产品字节保持不变。
+- 已清理 31 个明确归属本轮的目录/重复开发日志，阻塞路径 0；记录为 `D:\codex-tmp\men1015\cleanup.json`。保留源代码/Git、精确 CodeHead 日志、主代理结果文件与配置更新脚本。
