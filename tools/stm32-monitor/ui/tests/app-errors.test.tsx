@@ -41,7 +41,7 @@ vi.mock("../src/api/client",()=>({
 
 vi.mock("../src/api/live",()=>({openLive:()=>()=>{}}));
 
-it("App renders a blocking error when a create-group request fails",async()=>{
+it("App retains the workbench and edited group draft when creation fails",async()=>{
   render(<App/>);
   await screen.findByText("Project");
   fireEvent.click(screen.getByRole("button",{name:"新建观测组"}));
@@ -52,6 +52,9 @@ it("App renders a blocking error when a create-group request fails",async()=>{
   fireEvent.click(screen.getByRole("button",{name:"加入观测组草稿"}));
   fireEvent.click(screen.getByRole("button",{name:"创建观测组"}));
   expect(await screen.findByRole("alert")).toHaveTextContent("UNAVAILABLE");
+  expect(screen.getByRole("navigation",{name:"主导航"})).toBeTruthy();
+  expect(screen.getByLabelText("名称")).toHaveValue("Motor");
+  expect(screen.getByRole("button",{name:"重试上次操作"})).toBeTruthy();
 });
 
 it("App records a history query after loading history through the panel",async()=>{

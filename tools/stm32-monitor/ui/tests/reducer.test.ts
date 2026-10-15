@@ -70,7 +70,7 @@ describe("authoritative monitor reducer",()=>{
     const failed=reducer(old,{type:"request.failed",scope:"sampling.start",requestId:9223372036854775807n,code:"MONITOR_BUSY",message:"busy"});
     expect(old.pending["sampling.start"]?.requestId).toBe(9223372036854775807n);
     expect(failed.pending["sampling.start"]).toBeUndefined();
-    expect(failed.failures["sampling.start"]).toEqual({ok:false,code:"MONITOR_BUSY",message:"busy"});
+    expect(failed.failures["sampling.start"]).toMatchObject({ok:false,code:"MONITOR_BUSY",message:"busy",requestId:9223372036854775807n});
   });
 
   it.each([

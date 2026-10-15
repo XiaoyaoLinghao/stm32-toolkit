@@ -39,7 +39,7 @@ function makeApi(overrides:Partial<MonitorApi>={}):MonitorApi{
 function harness(api:MonitorApi){
   let state:MonitorState=initialState;
   const actions:MonitorAction[]=[];
-  const dispatch=(action:MonitorAction)=>{state=reducer(state,action);actions.push(action);};
+  const dispatch=(action:MonitorAction)=>{state=reducer(state,action);actions.push(action);if(action.type==="request.succeeded"&&action.data!==undefined)actions.push(action.data);};
   const controller=createController(api,dispatch,()=>state);
   return{controller,state:()=>state,actions,dispatch};
 }
@@ -66,7 +66,7 @@ it("loadInitial follows group cursors",async()=>{
     calls.push(cursor as never);
     return cursor===undefined
       ?ok({groups:[group],nextCursor:"c1",revision:"0"})
-      :ok({groups:[{...group,groupId:"group2"}],nextCursor:null,revision:"1"});
+      :ok({groups:[{...group,groupId:"group2"}],nextCursor:null,revision:"0"});
   })});
   const {controller,actions}=harness(api);
   await controller.loadInitial();
@@ -100,7 +100,7 @@ it("connectProbe succeeds and refreshes status",async()=>{
   });
   const {controller,actions}=harness(api);
   await controller.connectProbe("p1");
-  expect(actions.some(a=>a.type==="request.cleared"&&a.scope==="probe.connect")).toBe(true);
+  expect(actions.some(a=>a.type==="request.succeeded"&&a.scope==="probe.connect")).toBe(true);
   void group;
 });
 
@@ -116,7 +116,7 @@ it("releaseProbe succeeds and refreshes status",async()=>{
   const api=makeApi();
   const {controller,actions}=harness(api);
   await controller.releaseProbe();
-  expect(actions.some(a=>a.type==="request.cleared"&&a.scope==="probe.release")).toBe(true);
+  expect(actions.some(a=>a.type==="request.succeeded"&&a.scope==="probe.release")).toBe(true);
 });
 
 it("searchCatalog dispatches catalog.loaded for variables",async()=>{

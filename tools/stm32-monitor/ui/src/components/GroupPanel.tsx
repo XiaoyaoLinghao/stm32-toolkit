@@ -15,6 +15,7 @@ export type GroupPanelProps={
   selectedGroupId:string|null;
   draft:GroupDraft;
   failure:ApiFailure|null;
+  busy?:boolean;
   onSelect:(groupId:string)=>void|Promise<void>;
   onDraftChange:(draft:GroupDraft)=>void|Promise<void>;
   onRemove:(key:string)=>void|Promise<void>;
@@ -109,7 +110,7 @@ export function GroupPanel(p:GroupPanelProps):JSX.Element{
         {confirmDelete===group.groupId&&(
           <>
             <span>{formatCopy.groupDelete(group.name)}</span>
-            <button type="button" onClick={()=>{void p.onDelete(group.groupId);setConfirmDelete(null);}}>{copy.groupConfirmDelete}</button>
+            <button type="button" disabled={p.busy} onClick={()=>{void p.onDelete(group.groupId);setConfirmDelete(null);}}>{copy.groupConfirmDelete}</button>
             <button type="button" onClick={()=>setConfirmDelete(null)}>{copy.cancel}</button>
           </>
         )}
@@ -132,7 +133,7 @@ export function GroupPanel(p:GroupPanelProps):JSX.Element{
           return(
             <div>
               <p>{formatCopy.importPreview(preview.groupCount,preview.itemCount)}</p>
-              <button type="button" onClick={confirmImport}>{copy.groupConfirmImport}</button>
+              <button type="button" disabled={p.busy} onClick={confirmImport}>{copy.groupConfirmImport}</button>
             </div>
           );
         })()}
@@ -153,7 +154,7 @@ export function GroupPanel(p:GroupPanelProps):JSX.Element{
         return<tr key={key}><td><code>{item.kind==="variable"?item.expression:item.registerPath}</code></td>
           <td><button type="button" onClick={()=>void p.onRemove(key)}>{copy.remove}</button></td></tr>;})}</tbody></table>
     {p.failure!==null&&<FailureMessage failure={p.failure}/>}
-    <button type="button" onClick={()=>void p.onSave()} disabled={p.draft.name===""||p.draft.items.length===0}>
+    <button type="button" onClick={()=>void p.onSave()} disabled={p.draft.name===""||p.draft.items.length===0||p.busy}>
       {isNew?copy.groupCreate:copy.groupSave}
     </button>
     </div>

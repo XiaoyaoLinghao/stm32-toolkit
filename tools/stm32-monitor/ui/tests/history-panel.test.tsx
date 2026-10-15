@@ -55,7 +55,7 @@ it("previous page uses the visited cursor stack",async()=>{
   const {rerender}=render(<HistoryPanel query={query} page={page} failure={null} onLoad={vi.fn()} onPage={pageFn}/>);
   await userEvent.click(screen.getByRole("button",{name:"下一页"}));
   expect(pageFn).toHaveBeenCalledWith("cursor-2");
-  rerender(<HistoryPanel query={{...query,cursor:"cursor-2"}} page={{...page,nextCursor:null}} failure={null} onLoad={vi.fn()} onPage={pageFn}/>);
+  rerender(<HistoryPanel query={{...query,cursor:"cursor-2"}} page={{...page,nextCursor:null}} cursorStack={[undefined]} failure={null} onLoad={vi.fn()} onPage={pageFn}/>);
   await userEvent.click(screen.getByRole("button",{name:"上一页"}));
   expect(pageFn).toHaveBeenLastCalledWith(undefined);
 });

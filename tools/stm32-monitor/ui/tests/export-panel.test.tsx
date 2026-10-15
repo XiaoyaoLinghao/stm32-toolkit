@@ -49,7 +49,6 @@ it("traps Tab in the export dialog and restores an enabled field after confirmat
   await userEvent.tab();
   expect(confirm).toHaveFocus();
   await userEvent.click(confirm);
-  expect(trigger).toBeDisabled();
   await waitFor(()=>expect(screen.getByLabelText("导出开始时间（UTC）")).toHaveFocus());
 });
 
@@ -103,59 +102,37 @@ it("syncs clean query bounds, retains an edited draft, and restores the query on
   expect(start.value).toBe("2026-08-10T00:00");
 });
 
-it("binds submitted UTC range to the arriving artifact, even when a prior artifact remains visible",async()=>{
+it("shows reducer-owned submitted range only for its artifact ID",async()=>{
   const first={startNs:1786320000000000000n,endNs:1786320002000000000n};
   const second={startNs:1786320010000000000n,endNs:1786320012000000000n};
   const create=vi.fn();
   const callbacks={failure:null,onCreate:create,onRefresh:vi.fn(),onDownload:vi.fn()};
-  const {rerender}=render(<ExportPanel range={first} artifact={null} {...callbacks}/>);
-  await userEvent.click(screen.getByRole("button",{name:"创建 CSV 导出"}));
-  await userEvent.click(screen.getByRole("button",{name:"确认导出"}));
-  expect(create).toHaveBeenLastCalledWith({...first,format:"csv",authorized:true});
-  expect(screen.getByRole("button",{name:"创建 JSONL 导出"})).toBeDisabled();
-  await userEvent.click(screen.getByRole("button",{name:"创建 JSONL 导出"}));
-  expect(screen.queryByRole("dialog")).toBeNull();
-  expect(create).toHaveBeenCalledTimes(1);
-  rerender(<ExportPanel range={first} artifact={artifact} {...callbacks}/>);
-  await waitFor(()=>expect(screen.getByText(/提交时范围.*00:00:00.*00:00:02/)).toBeTruthy());
-  expect(screen.getByRole("button",{name:"创建 JSONL 导出"})).toBeEnabled();
-  rerender(<ExportPanel range={second} artifact={artifact} {...callbacks}/>);
-  await userEvent.click(screen.getByRole("button",{name:"创建 JSONL 导出"}));
-  await userEvent.click(screen.getByRole("button",{name:"确认导出"}));
-  expect(create).toHaveBeenLastCalledWith({...second,format:"jsonl",authorized:true});
+  const {rerender}=render(<ExportPanel range={first} artifact={artifact}
+    submitted={{...first,exportId:"e1",format:"csv"}} {...callbacks}/>);
   expect(screen.getByText(/提交时范围.*00:00:00.*00:00:02/)).toBeTruthy();
-  rerender(<ExportPanel range={second} artifact={{...artifact,exportId:"e2",format:"jsonl"}} {...callbacks}/>);
-  await waitFor(()=>expect(screen.getByText(/提交时范围.*00:00:10.*00:00:12/)).toBeTruthy());
-  expect(screen.queryByText(/提交时范围.*00:00:00.*00:00:02/)).toBeNull();
-  rerender(<ExportPanel range={second} artifact={artifact} {...callbacks}/>);
+  rerender(<ExportPanel range={second} artifact={artifact}
+    submitted={{...first,exportId:"e1",format:"csv"}} {...callbacks}/>);
   expect(screen.getByText(/提交时范围.*00:00:00.*00:00:02/)).toBeTruthy();
+  rerender(<ExportPanel range={second} artifact={{...artifact,exportId:"e2",format:"jsonl"}}
+    submitted={{...first,exportId:"e1",format:"csv"}} {...callbacks}/>);
+  expect(screen.queryByText(/提交时范围/)).toBeNull();
+  rerender(<ExportPanel range={second} artifact={{...artifact,exportId:"e2",format:"jsonl"}}
+    submitted={{...second,exportId:"e2",format:"jsonl"}} {...callbacks}/>);
+  expect(screen.getByText(/提交时范围.*00:00:10.*00:00:12/)).toBeTruthy();
 });
 
-it("serializes refresh and creation until each response arrives, and clears busy on failure",async()=>{
-  const first={startNs:1786320000000000000n,endNs:1786320002000000000n};
-  const refreshed={...artifact,bytes:124n};
-  const second={...artifact,exportId:"e2",format:"jsonl" as const};
-  let resolveRefresh:(value:void)=>void=()=>{};
-  const refresh=vi.fn(()=>new Promise<void>(resolve=>{resolveRefresh=resolve;}));
-  const create=vi.fn();
-  const callbacks={range:first,failure:null,onCreate:create,onRefresh:refresh,onDownload:vi.fn()};
-  const {rerender}=render(<ExportPanel artifact={artifact} {...callbacks}/>);
+it("uses reducer pending props to serialize create, refresh and download",async()=>{
+  const create=vi.fn(),refresh=vi.fn(),download=vi.fn();
+  const callbacks={range,artifact,failure:null,onCreate:create,onRefresh:refresh,onDownload:download};
+  const {rerender}=render(<ExportPanel {...callbacks} refreshing/>);
+  expect(screen.getByRole("button",{name:"创建 CSV 导出"})).toBeDisabled();
+  expect(screen.getByRole("button",{name:"刷新导出状态"})).toBeDisabled();
+  rerender(<ExportPanel {...callbacks} creating/>);
+  expect(screen.getByRole("button",{name:"创建 JSONL 导出"})).toBeDisabled();
+  rerender(<ExportPanel {...callbacks} downloading/>);
+  expect(screen.getByRole("button",{name:"下载已验证的 CSV"})).toBeDisabled();
+  rerender(<ExportPanel {...callbacks}/>);
+  expect(screen.getByRole("button",{name:"创建 CSV 导出"})).toBeEnabled();
   await userEvent.click(screen.getByRole("button",{name:"刷新导出状态"}));
   expect(refresh).toHaveBeenCalledWith("e1");
-  expect(screen.getByRole("button",{name:"创建 CSV 导出"})).toBeDisabled();
-  await userEvent.click(screen.getByRole("button",{name:"创建 CSV 导出"}));
-  expect(create).not.toHaveBeenCalled();
-  rerender(<ExportPanel artifact={refreshed} {...callbacks}/>);
-  resolveRefresh();
-  await waitFor(()=>expect(screen.getByRole("button",{name:"创建 JSONL 导出"})).toBeEnabled());
-  await userEvent.click(screen.getByRole("button",{name:"创建 JSONL 导出"}));
-  await userEvent.click(screen.getByRole("button",{name:"确认导出"}));
-  expect(create).toHaveBeenCalledTimes(1);
-  expect(screen.getByRole("button",{name:"刷新导出状态"})).toBeDisabled();
-  rerender(<ExportPanel artifact={second} {...callbacks}/>);
-  await waitFor(()=>expect(screen.getByText(/提交时范围.*00:00:00.*00:00:02/)).toBeTruthy());
-  expect(screen.getByRole("button",{name:"刷新导出状态"})).toBeEnabled();
-  await userEvent.click(screen.getByRole("button",{name:"刷新导出状态"}));
-  rerender(<ExportPanel artifact={second} {...callbacks} failure={{ok:false,code:"FAILED",message:"raw"}}/>);
-  await waitFor(()=>expect(screen.getByRole("button",{name:"创建 CSV 导出"})).toBeEnabled());
 });

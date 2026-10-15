@@ -9,6 +9,7 @@ export type CatalogPanelProps={
   bindingEpoch:bigint;
   variables:VariableCatalog|null;
   registers:RegisterCatalog|null;
+  pending?:boolean;
   onSearch:(kind:CatalogKind,query:string)=>void|Promise<void>;
   onNext:(kind:CatalogKind)=>void|Promise<void>;
   onAdd:(watch:WatchItem)=>void|Promise<void>;
@@ -28,7 +29,8 @@ export function CatalogPanel(p:CatalogPanelProps):JSX.Element{
   const [kind,setKind]=useState<CatalogKind>("variables");
   const [query,setQuery]=useState("");
   const current=kind==="variables"?p.variables:p.registers;
-  const resultIdentityMatches=current!==null&&current.query===query.trim()&&current.bindingKey.includes(String(p.bindingEpoch));
+  const resultIdentityMatches=current!==null&&current.bindingKey.endsWith("/"+String(p.bindingEpoch));
+  const isPrevious=resultIdentityMatches&&current.query!==query.trim();
 
   return<section className="panel catalog-panel" aria-label={copy.catalogTitle}>
     <h2>{copy.catalogTitle}</h2>
@@ -40,6 +42,8 @@ export function CatalogPanel(p:CatalogPanelProps):JSX.Element{
       onInput={event=>{const value=event.currentTarget.value;setQuery(value);void p.onSearch(kind,value.trim());}}/></label>
     {!p.connected&&<p>{copy.catalogNeedsProbe}</p>}
     {p.connected&&current!==null&&resultIdentityMatches&&(
+      <>
+      {isPrevious&&<p role="status">{copy.previousCatalog}</p>}
       <div className="table-scroll" role="region" aria-label={copy.catalogResults} tabIndex={0}>
       <table><thead><tr><th>{copy.selector}</th><th>{copy.type}</th><th>{copy.action}</th></tr></thead>
         <tbody>{(kind==="variables"?current.items:current.items as RegisterDescriptor[]).map(item=>{
@@ -48,7 +52,7 @@ export function CatalogPanel(p:CatalogPanelProps):JSX.Element{
             <td><code>{descriptor.selector}</code></td>
             <td>{"typeName" in descriptor?descriptor.typeName:formatCopy.bits(descriptor.sizeBits)}</td>
             <td><button type="button" onClick={()=>addWatch(descriptor,p.onAdd)}>{copy.addDraft}</button></td>
-          </tr>;})}</tbody></table></div>)}
-    <button type="button" disabled={!resultIdentityMatches||current?.nextCursor===null} onClick={()=>void p.onNext(kind)}>{copy.nextPage}</button>
+          </tr>;})}</tbody></table></div></>)}
+    <button type="button" disabled={!resultIdentityMatches||isPrevious||current?.nextCursor===null||p.pending} onClick={()=>void p.onNext(kind)}>{copy.nextPage}</button>
   </section>;
 }

@@ -7,6 +7,7 @@ export type ProbePanelProps={
   connectedProbeId:string|null;
   canReconnect:boolean;
   leaseReason:string|null;
+  busy?:boolean;
   onRefresh:()=>void|Promise<void>;
   onConnect:(probeId:string)=>void|Promise<void>;
   onReconnect:()=>void|Promise<void>;
@@ -25,12 +26,12 @@ export function ProbePanel(p:ProbePanelProps):JSX.Element{
           <code>{probe.probeId}</code> {probe.vendor} {probe.product}{probe.boardName?` · ${probe.boardName}`:""}
           {probe.probeId===p.connectedProbeId
             ?<strong>{copy.probeOnline}</strong>
-            :<button type="button" onClick={()=>void p.onConnect(probe.probeId)}>{copy.probeConnect}</button>}
+            :<button type="button" disabled={p.busy} onClick={()=>void p.onConnect(probe.probeId)}>{copy.probeConnect}</button>}
         </li>))}</ul>}
     {connected!==null&&(
       <p>{copy.probeConnectedPrefix}<code>{connected.probeId}</code>{p.leaseReason!==null?` · ${p.leaseReason}`:""}</p>
     )}
-    <button type="button" disabled={!p.canReconnect} onClick={()=>void p.onReconnect()}>{copy.probeReConnect}</button>
-    <button type="button" disabled={connected===null} onClick={()=>void p.onRelease()}>{copy.probeRelease}</button>
+    <button type="button" disabled={!p.canReconnect||p.busy} onClick={()=>void p.onReconnect()}>{copy.probeReConnect}</button>
+    <button type="button" disabled={connected===null||p.busy} onClick={()=>void p.onRelease()}>{copy.probeRelease}</button>
   </section>;
 }

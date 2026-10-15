@@ -21,6 +21,7 @@ import {HistoryPanel} from "./components/HistoryPanel";
 import {ExportPanel} from "./components/ExportPanel";
 import {FailureMessage} from "./components/FailureMessage";
 import {TransportStatus} from "./components/TransportStatus";
+import {OperationRegion} from "./components/OperationRegion";
 
 export function App():JSX.Element{
   const [state,dispatch]=useReducer(reducer,initialState);
@@ -47,12 +48,20 @@ export function App():JSX.Element{
   }
   const status=state.status;
   if(status===null){
-    return<main className="blocking-screen" aria-label={copy.app}><h1>{copy.app}</h1><p role="status">{copy.loading}</p></main>;
+    return<main className="blocking-screen" aria-label={copy.app}><h1>{copy.app}</h1>
+      {state.pending.initial!==undefined&&<p role="status">{copy.loading}</p>}
+      <OperationRegion failures={state.failures} pending={state.pending} reconciling={state.reconciling}
+        allowDismissInitial={false}
+        onRetry={(scope,id)=>controller.retry(scope,id)} onDismiss={(scope,id)=>controller.dismiss(scope,id)}/>
+    </main>;
   }
 
   const currentExportRange=state.history.query===null?null:{startNs:state.history.query.startNs,endNs:state.history.query.endNs};
   const fresh=status.sampling.state==="RUNNING"&&state.transport.open&&!state.transport.stale;
   const liveView=view==="live";
+  const busyGroups=["groups.create","groups.update","groups.delete","groups.import","groups.list"].some(scope=>state.pending[scope as keyof typeof state.pending]!==undefined);
+  const busyProbe=["probe.connect","probe.reconnect","probe.release","status"].some(scope=>state.pending[scope as keyof typeof state.pending]!==undefined);
+  const busySampling=["sampling.start","sampling.pause","sampling.resume","sampling.stop","status"].some(scope=>state.pending[scope as keyof typeof state.pending]!==undefined);
 
   return<main aria-label={copy.app} className="monitor-shell">
     <header className="workbench-header">
@@ -65,18 +74,20 @@ export function App():JSX.Element{
       <button type="button" className={liveView?"active":""} aria-current={liveView?"page":undefined} onClick={()=>setView("live")}>{copy.live}</button>
       <button type="button" className={!liveView?"active":""} aria-current={!liveView?"page":undefined} onClick={()=>setView("history")}>{copy.history}</button>
     </nav>
+    <OperationRegion failures={state.failures} pending={state.pending} reconciling={state.reconciling}
+      onRetry={(scope,id)=>controller.retry(scope,id)} onDismiss={(scope,id)=>controller.dismiss(scope,id)}/>
     <div className="device-details" id="device-details" hidden={!deviceOpen}>
       <div className="device-heading"><h2>{copy.device}</h2><button type="button" onClick={()=>setDeviceOpen(false)}>{copy.close}</button></div>
       <div className="device-grid"><IdentityBar project={status.project} firmware={status.firmware}
         onCopy={()=>{void navigator.clipboard?.writeText(JSON.stringify({workspaceId:status.workspaceId,sessionId:status.sessionId}));}}/>
-      <ProbePanel probes={state.probes} connectedProbeId={status.probe.probeId} canReconnect={status.probe.connected}
+      <ProbePanel probes={state.probes} connectedProbeId={status.probe.probeId} canReconnect={status.probe.connected} busy={busyProbe}
         leaseReason={null} onRefresh={()=>controller.refreshProbes()} onConnect={(id)=>controller.connectProbe(id)}
         onReconnect={()=>controller.reconnectProbe()} onRelease={()=>controller.releaseProbe()}/></div>
     </div>
     <div className="workspace live-workspace" hidden={!liveView}>
       <aside className="watch-sidebar" aria-label={copy.watchConfig}>
         <GroupPanel compact groups={state.groups} selectedGroupId={state.selectedGroupId} draft={state.groupDraft}
-          failure={state.failures["groups.create"]??state.failures["groups.update"]??state.failures["groups.delete"]??null}
+          failure={null} busy={busyGroups}
           onSelect={(groupId)=>dispatch({type:"group.selected",groupId})}
           onDraftChange={(draft)=>dispatch({type:"group.draft.changed",draft})}
           onRemove={(key)=>dispatch({type:"group.watch.removed",key})}
@@ -89,16 +100,17 @@ export function App():JSX.Element{
         <div id="catalog-container" hidden={!catalogOpen}>
           <CatalogPanel connected={status.probeConnected} bindingEpoch={status.sampling.bindingEpoch}
             variables={state.catalog.variables} registers={state.catalog.registers}
+            pending={state.pending["catalog.variables"]!==undefined||state.pending["catalog.registers"]!==undefined}
             onSearch={(kind,query)=>controller.searchCatalog(kind,query)} onNext={(kind)=>controller.nextCatalog(kind)}
             onAdd={(watch)=>dispatch({type:"group.watch.added",watch})}/>
         </div>
       </aside>
       <div className="live-main">
-        <SamplingControls status={status.sampling} group={selectedGroup(state)}
+        <SamplingControls status={status.sampling} group={selectedGroup(state)} busy={busySampling}
           onStart={(groupId,revision)=>controller.startSampling(groupId,revision)}
           onPause={()=>controller.pauseSampling()} onResume={()=>controller.resumeSampling()}
           onStop={()=>controller.stopSampling()}
-          failure={state.failures["sampling.start"]??state.failures["sampling.pause"]??state.failures["sampling.resume"]??state.failures["sampling.stop"]??null}/>
+          failure={null}/>
         <LiveChart series={chartSeries(state)} range={state.zoom} visible={liveView}
           onZoom={(range)=>dispatch({type:"zoom.changed",action:{type:"zoom.set",start:range.start,end:range.end}})}/>
         <ChartZoomControls range={state.zoom} onAction={(action)=>dispatch({type:"zoom.changed",action})}/>
@@ -107,10 +119,13 @@ export function App():JSX.Element{
       </div>
     </div>
     <div className="history-workspace" hidden={liveView}>
-      <HistoryPanel query={state.history.query} page={state.history.page} failure={state.failures["history"]??null}
+      <HistoryPanel query={state.history.query} page={state.history.page} cursorStack={state.history.cursorStack}
+        busy={state.pending.history!==undefined} failure={null}
         onLoad={(query)=>controller.loadHistory(query)} onPage={(cursor)=>controller.nextHistory(cursor)}/>
-      <ExportPanel range={currentExportRange} artifact={state.exports.artifact}
-        failure={state.failures["export.create"]??state.failures["export.status"]??state.failures["export.download"]??null}
+      <ExportPanel range={currentExportRange} artifact={state.exports.artifact} submitted={state.exports.submitted}
+        creating={state.pending["export.create"]!==undefined} refreshing={state.pending["export.status"]!==undefined}
+        downloading={state.pending["export.download"]!==undefined}
+        failure={null}
         onCreate={({startNs,endNs,format})=>controller.createExport(startNs,endNs,format)}
         onRefresh={(exportId)=>controller.refreshExport(exportId)}
         onDownload={(exportId)=>controller.downloadExport(exportId)}/>

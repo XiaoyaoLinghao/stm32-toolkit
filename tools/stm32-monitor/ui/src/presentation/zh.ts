@@ -1,4 +1,5 @@
 import type {ApiFailure,SamplingStatus} from "../api/contract";
+import type {RequestScope,RecoveryKind} from "../state/model";
 
 /** Product copy stays here; wire codes and user data remain unchanged. */
 export const copy={
@@ -43,7 +44,47 @@ export const copy={
   samplingResume:"继续采样",samplingStop:"停止采样",statusSummary:"采样状态汇总",
   actualRate:"实际采样率",latency:"延迟",rawNs:"原始纳秒值",dropsSubscriber:"丢弃：订阅者",
   dropsHistory:"历史",dropsDeadline:"截止时间",dropsService:"服务",blockedOperation:"当前操作未完成。",
+  operations:"操作提示",retry:"重试上次操作",reconcile:"刷新核对",retryConfirm:"确认重试上次写入",
+  retryQuestion:"将按原提交内容再次发送此操作。请确认：",initialRetry:"重试初始化",
+  previousCatalog:"显示上次成功的查询结果；当前搜索尚未成功。",
+  pendingOperation:"正在处理…",unknownWrite:"写入结果未知。刷新只能核对当前状态，不能证明原操作成功。",
+  unknownExport:"导出创建结果未知，无法查询未知任务。可保留当前表单并自行发起新的导出。",
+  chooseImportAgain:"请重新选择有效的导入文件。",
 } as const;
+
+const operationNames:Record<RequestScope,string>={
+  initial:"初始化读取",status:"状态刷新",probes:"探针列表刷新",
+  "probe.connect":"连接探针","probe.reconnect":"重新连接探针","probe.release":"释放探针",
+  "catalog.variables":"变量目录搜索","catalog.registers":"寄存器目录搜索",
+  "groups.list":"观测组列表刷新","groups.create":"创建观测组","groups.update":"保存观测组",
+  "groups.delete":"删除观测组","groups.import":"导入观测组",
+  "sampling.start":"开始采样","sampling.pause":"暂停采样","sampling.resume":"继续采样",
+  "sampling.stop":"停止采样",history:"历史查询","export.create":"创建导出",
+  "export.status":"导出状态刷新","export.download":"导出下载",
+};
+const utcNs=(value:string):string=>{
+  try{return new Date(Number(BigInt(value)/1_000_000n)).toISOString();}
+  catch{return value+" ns";}
+};
+export function operationSummary(scope:RequestScope,...details:(string|undefined)[]):string{
+  const name=operationNames[scope];
+  if(scope==="export.create")return name+" · "+(details[0]??"").toUpperCase()+" · "+utcNs(details[1]??"0")+" 至 "+utcNs(details[2]??"0");
+  if(scope==="history")return name+" · "+utcNs(details[0]??"0")+" 至 "+utcNs(details[1]??"0")+(details[2]===undefined?"":" · 翻页");
+  if(scope==="catalog.variables"||scope==="catalog.registers")return name+" · "+(details[0]??"")+(details[1]===undefined?"":" · 下一页");
+  if(scope==="groups.import")return name+" · "+(details[0]??"0")+" 组";
+  const extra=details.filter((item):item is string=>item!==undefined&&item!=="");
+  return extra.length===0?name:name+" · "+extra.join(" · ");
+}
+export function recoveryText(recovery:RecoveryKind,scope:RequestScope):string{
+  if(recovery==="read-retry")return scope==="initial"?copy.initialRetry:copy.retry;
+  if(recovery==="write-confirm")return copy.retry;
+  if(recovery==="reconcile")return copy.unknownWrite+" "+copy.reconcile;
+  if(recovery==="input")return copy.chooseImportAgain;
+  return scope==="export.create"?copy.unknownExport:copy.unknownWrite;
+}
+export function recoveryAction(recovery:RecoveryKind,scope:RequestScope):string{
+  return recovery==="reconcile"?copy.reconcile:scope==="initial"?copy.initialRetry:copy.retry;
+}
 
 export const formatCopy={
   bits:(count:number)=>`${count} 位`,

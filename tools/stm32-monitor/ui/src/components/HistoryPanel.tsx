@@ -10,6 +10,8 @@ export type HistoryPanelProps={
   query:HistoryQuery|null;
   page:HistoryPage|null;
   failure:ApiFailure|null;
+  cursorStack?:readonly (string|undefined)[];
+  busy?:boolean;
   onLoad:(query:HistoryQuery)=>void|Promise<void>;
   onPage:(cursor:string|undefined)=>void|Promise<void>;
 };
@@ -40,15 +42,14 @@ function watchLabel(watch:WatchItem):string{
   return watch.kind==="variable"?watch.expression:watch.registerPath;
 }
 
-export function HistoryPanel({query,page,failure,onLoad,onPage}:HistoryPanelProps):JSX.Element{
+export function HistoryPanel({query,page,failure,cursorStack=[],busy=false,onLoad,onPage}:HistoryPanelProps):JSX.Element{
   const [start,setStart]=useState(()=>query===null?"":historyInput(query.startNs));
   const [end,setEnd]=useState(()=>query===null?"":historyInput(query.endNs));
   const [validation,setValidation]=useState(false);
-  const [visited,setVisited]=useState<readonly (string|undefined)[]>([]);
   const key=query===null?"":historyQueryKey(query);
   const rows=page===null?[]:flattenHistory(page);
   const next=page?.nextCursor??null;
-  useEffect(()=>{setVisited([]);if(query!==null){setStart(historyInput(query.startNs));setEnd(historyInput(query.endNs));setValidation(false);}},[key]);
+  useEffect(()=>{if(query!==null){setStart(historyInput(query.startNs));setEnd(historyInput(query.endNs));setValidation(false);}},[key]);
   const load=():void=>{
     const startNs=inputNs(start),endNs=inputNs(end);
     if(startNs===null||endNs===null||endNs<=startNs){setValidation(true);return;}
@@ -57,8 +58,8 @@ export function HistoryPanel({query,page,failure,onLoad,onPage}:HistoryPanelProp
     delete nextQuery.cursor;
     void onLoad(nextQuery);
   };
-  const goNext=():void=>{if(next===null)return;setVisited(v=>[...v,query?.cursor]);void onPage(next);};
-  const goPrevious=():void=>{if(visited.length===0)return;const prior=visited[visited.length-1];setVisited(v=>v.slice(0,-1));void onPage(prior);};
+  const goNext=():void=>{if(next===null||busy)return;void onPage(next);};
+  const goPrevious=():void=>{if(cursorStack.length===0||busy)return;void onPage(cursorStack[cursorStack.length-1]);};
   return<section className="panel history-panel" aria-label={copy.historyTitle}>
     <h2>{copy.historyTitle}</h2>
     <p className="hint">{copy.historyHint}</p>
@@ -80,7 +81,7 @@ export function HistoryPanel({query,page,failure,onLoad,onPage}:HistoryPanelProp
         </tr>;
       })}</tbody></table></div>
     {query!==null&&rows.length===0&&<p>{copy.historyEmpty}</p>}
-    <div className="pagination"><button type="button" disabled={visited.length===0} onClick={goPrevious}>{copy.previousPage}</button>
-    <button type="button" disabled={next===null} onClick={goNext}>{copy.nextPage}</button></div>
+    <div className="pagination"><button type="button" disabled={cursorStack.length===0||busy} onClick={goPrevious}>{copy.previousPage}</button>
+    <button type="button" disabled={next===null||busy} onClick={goNext}>{copy.nextPage}</button></div>
   </section>;
 }

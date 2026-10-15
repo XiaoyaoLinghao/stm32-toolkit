@@ -38,7 +38,7 @@ function makeApi(overrides:Partial<MonitorApi>={}):MonitorApi{
 function harness(api:MonitorApi){
   let state:MonitorState=reducer(initialState,{type:"zoom.reset"});
   const actions:MonitorAction[]=[];
-  const dispatch=(action:MonitorAction)=>{state=reducer(state,action);actions.push(action);};
+  const dispatch=(action:MonitorAction)=>{state=reducer(state,action);actions.push(action);if(action.type==="request.succeeded"&&action.data!==undefined)actions.push(action.data);};
   const controller=createController(api,dispatch,()=>state);
   return{controller,state:()=>state,actions};
 }
@@ -122,7 +122,7 @@ describe("controller coverage",()=>{
     const failApi=makeApi({groups:vi.fn(async()=>err("GROUPS_DOWN","down"))});
     const fail=harness(failApi);
     await fail.controller.refreshGroups();
-    expect(fail.actions.some(a=>a.type==="request.failed"&&a.scope==="groups.create")).toBe(true);
+    expect(fail.actions.some(a=>a.type==="request.failed"&&a.scope==="groups.list")).toBe(true);
     const okApi=makeApi();
     const okH=harness(okApi);
     await okH.controller.refreshGroups();
@@ -230,7 +230,11 @@ describe("controller coverage",()=>{
     await controller.createExport(0n,1n,"csv");
     await controller.refreshExport("e1");
     expect(actions.some(a=>a.type==="request.failed"&&a.scope==="export.create")).toBe(true);
-    expect(actions.some(a=>a.type==="request.failed"&&a.scope==="export.status")).toBe(true);
+    expect(actions.some(a=>a.type==="request.failed"&&a.scope==="export.status")).toBe(false);
+    const known=harness(makeApi({exportStatus:vi.fn(async()=>err("STATUS_DOWN","down"))}));
+    known.state().exports={artifact:{exportId:"e1",format:"csv",sha256:"a".repeat(64),bytes:1n,valueCount:1n},submitted:null};
+    await known.controller.refreshExport("e1");
+    expect(known.actions.some(a=>a.type==="request.failed"&&a.scope==="export.status")).toBe(true);
   });
 
   it("downloadExport triggers a browser download on success",async()=>{

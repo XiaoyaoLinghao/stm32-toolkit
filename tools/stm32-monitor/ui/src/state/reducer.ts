@@ -7,7 +7,7 @@ const zeroDrops=():DropTotals=>({subscriber:0n,history:0n,deadline:0n,service:0n
 const dropsFrom=(status:MonitorStatus):DropTotals=>({subscriber:status.sampling.subscriberDrops,history:status.sampling.historyDrops,deadline:status.sampling.deadlineDrops,service:status.sampling.serviceDrops});
 const liveForStatus=(status:MonitorStatus,selected:ReadonlySet<string>):LiveState=>({...emptyLive(),selectedSeries:new Set([...selected].slice(0,8)),bindingEpoch:status.sampling.bindingEpoch,runId:status.sampling.runId,authoritativeDrops:dropsFrom(status)});
 const emptyProjection={rows:[],series:new Map()};
-export const initialState:MonitorState={status:null,probes:[],groups:[],selectedGroupId:null,groupDraft:emptyDraft,stateRevision:-1n,lastAcceptedEventId:null,pending:{},failures:{},catalog:{variables:null,registers:null},selectedSeries:new Set(),live:emptyLive(),zoom:initialZoom,transport:{open:false,stale:false,needsStatusRefresh:false},history:{query:null,page:null,projection:emptyProjection,cursorIndex:0,nextCursor:null},exports:{artifact:null},notices:[],blockingError:null};
+export const initialState:MonitorState={status:null,probes:[],groups:[],selectedGroupId:null,groupDraft:emptyDraft,stateRevision:-1n,lastAcceptedEventId:null,pending:{},reconciling:{},failures:{},catalog:{variables:null,registers:null},selectedSeries:new Set(),live:emptyLive(),zoom:initialZoom,transport:{open:false,stale:false,needsStatusRefresh:false},history:{query:null,page:null,projection:emptyProjection,cursorIndex:0,cursorStack:[],nextCursor:null},exports:{artifact:null,submitted:null},notices:[],blockingError:null};
 const sameBinding=(a:ObservationBinding,b:ObservationBinding):boolean=>a.workspaceId===b.workspaceId&&a.sessionId===b.sessionId&&a.logicalProjectId===b.logicalProjectId&&a.probeId===b.probeId&&a.targetDevice===b.targetDevice&&a.physicalTarget===b.physicalTarget&&a.buildId===b.buildId&&a.elfSha256===b.elfSha256&&a.inputSnapshotSha256===b.inputSnapshotSha256&&a.gitHead===b.gitHead&&a.gitDirty===b.gitDirty&&a.flashSessionId===b.flashSessionId&&a.leaseId===b.leaseId&&a.dwarfSha256===b.dwarfSha256&&a.svdSha256===b.svdSha256;
 const statusMatches=(status:MonitorStatus,binding:ObservationBinding):boolean=>status.workspaceId===binding.workspaceId&&status.sessionId===binding.sessionId&&status.project.logicalProjectId===binding.logicalProjectId&&status.project.targetDevice===binding.targetDevice&&status.probe.connected&&status.probe.probeId===binding.probeId&&status.firmware!==null&&status.firmware.buildId===binding.buildId&&status.firmware.elfSha256===binding.elfSha256&&status.firmware.inputSnapshotSha256===binding.inputSnapshotSha256&&status.firmware.gitHead===binding.gitHead&&status.firmware.gitDirty===binding.gitDirty&&status.firmware.targetDevice===binding.targetDevice;
 const catalogBindingKey=(status:MonitorStatus):string=>`${status.workspaceId}/${status.sessionId}/${status.project.logicalProjectId}/${status.sampling.bindingEpoch}`;
@@ -16,6 +16,7 @@ const sameFirmware=(left:MonitorStatus["firmware"],right:MonitorStatus["firmware
 const resetForStatus=(state:MonitorState,status:MonitorStatus):boolean=>{const prior=state.status;return prior!==null&&(prior.workspaceId!==status.workspaceId||prior.sessionId!==status.sessionId||prior.project.logicalProjectId!==status.project.logicalProjectId||prior.project.targetDevice!==status.project.targetDevice||!sameFirmware(prior.firmware,status.firmware)||prior.probe.connected!==status.probe.connected||prior.probe.probeId!==status.probe.probeId||prior.sampling.bindingEpoch!==status.sampling.bindingEpoch||prior.sampling.runId!==status.sampling.runId);};
 const selectFirst=(groups:readonly WatchGroup[],selectedId:string|null):WatchGroup|null=>selectedId===null?groups[0]??null:groups.find(group=>group.groupId===selectedId)??groups[0]??null;
 const resetNotice=(state:MonitorState,text:string)=>[...state.notices,{id:`view-reset-${state.notices.length}`,kind:"view-reset" as const,text}];
+const sameDraft=(left:MonitorState["groupDraft"],right:MonitorState["groupDraft"]):boolean=>left.sourceGroupId===right.sourceGroupId&&left.expectedRevision===right.expectedRevision&&left.name===right.name&&left.description===right.description&&left.intervalMs===right.intervalMs&&left.items.length===right.items.length&&left.items.every((item,index)=>watchKey(item)===watchKey(right.items[index]!));
 
 export function reduceAcceptedLiveEnvelope(state:MonitorState,envelope:ParsedLiveEnvelope):MonitorState{
  const {event,subscriberDropped}=envelope;if(state.lastAcceptedEventId!==null&&event.eventId<=state.lastAcceptedEventId)return state;let next:MonitorState={...state,lastAcceptedEventId:event.eventId,transport:{...state.transport,stale:false}};if(subscriberDropped>0n)next={...next,live:appendContinuityGap(next.live),zoom:initialZoom,transport:{...next.transport,needsStatusRefresh:true}};
@@ -32,13 +33,58 @@ export function reduceAcceptedLiveEnvelope(state:MonitorState,envelope:ParsedLiv
 }
 
 export function reducer(state:MonitorState,action:MonitorAction):MonitorState{
+ if(action.type==="request.succeeded"){
+  if(state.blockingError!==null||state.pending[action.scope]?.requestId!==action.requestId)return state;
+  const pending={...state.pending};delete pending[action.scope];
+  const failures={...state.failures};delete failures[action.scope];
+  const settled={...state,pending,failures};
+  return action.data===undefined?settled:reducer(settled,action.data);
+ }
+ if(action.type==="request.dismissed"){
+  if(state.failures[action.scope]?.requestId!==action.requestId)return state;
+  const failures={...state.failures};delete failures[action.scope];
+  const reconciling={...state.reconciling};delete reconciling[action.scope];
+  return {...state,failures,reconciling};
+ }
+ if(action.type==="request.reconciling")return state.failures[action.scope]?.requestId===action.requestId
+  ?{...state,reconciling:{...state.reconciling,[action.scope]:action.requestId}}:state;
+ if(action.type==="request.reconciled"){
+  if(state.reconciling[action.scope]!==action.requestId)return state;
+  const reconciling={...state.reconciling};delete reconciling[action.scope];
+  return {...state,reconciling};
+ }
+ if(action.type==="access.blocked")return {...state,pending:{},reconciling:{},failures:{},blockingError:{ok:false,code:action.code,message:action.message},transport:{...state.transport,open:false,stale:true}};
  if(action.type==="live.envelope")return reduceAcceptedLiveEnvelope(state,action.value);
  if(action.type==="initial.loaded"){const selected=action.groups[0]??null;return {...state,status:action.status,probes:action.probes,groups:action.groups,selectedGroupId:selected?.groupId??null,groupDraft:selected===null?emptyDraft:draftFromGroup(selected),live:liveForStatus(action.status,state.selectedSeries)};}
  if(action.type==="status.loaded"){const changed=resetForStatus(state,action.status);return {...state,status:action.status,live:changed?liveForStatus(action.status,state.selectedSeries):rebased(state.live,action.status),zoom:changed?initialZoom:state.zoom,catalog:changed?{variables:null,registers:null}:state.catalog,transport:{...state.transport,needsStatusRefresh:false},notices:changed?resetNotice(state,"Live view reset for a new binding or run"):state.notices};}
  if(action.type==="probes.loaded")return {...state,probes:action.probes};
- if(action.type==="groups.loaded"){const selected=selectFirst(action.groups,state.selectedGroupId);return {...state,groups:action.groups,selectedGroupId:selected?.groupId??null,groupDraft:selected===null?emptyDraft:draftFromGroup(selected)};}
+ if(action.type==="groups.loaded"){
+  const created=action.createdGroupId===undefined?null:action.groups.find(group=>group.groupId===action.createdGroupId)??null;
+  const submittedStillActive=action.submittedDraft!==undefined&&sameDraft(state.groupDraft,action.submittedDraft);
+  const selected=created!==null&&submittedStillActive?created:selectFirst(action.groups,state.selectedGroupId);
+  const previous=selectFirst(state.groups,state.selectedGroupId);
+  const draft=state.groupDraft;
+  const canRefresh=submittedStillActive
+    || previous!==null&&sameDraft(draft,draftFromGroup(previous));
+  return {...state,groups:action.groups,selectedGroupId:selected?.groupId??null,groupDraft:canRefresh?(selected===null?emptyDraft:draftFromGroup(selected)):draft};
+ }
+ if(action.type==="group.acknowledged"){
+  if(!sameDraft(state.groupDraft,action.submittedDraft))return state;
+  return {...state,selectedGroupId:action.group.groupId,
+    groupDraft:{...state.groupDraft,sourceGroupId:action.group.groupId,expectedRevision:action.group.revision}};
+ }
  if(action.type==="catalog.requested"){if(state.status===null||catalogBindingKey(state.status)!==action.bindingKey)return state;if(action.catalog==="variables"){const prior=state.catalog.variables,append=action.cursor!==null&&prior!==null&&prior.query===action.query&&prior.bindingKey===action.bindingKey&&prior.nextCursor===action.cursor;return {...state,catalog:{...state.catalog,variables:{kind:"variables",query:action.query,bindingKey:action.bindingKey,cursor:action.cursor,items:append?prior.items:[],nextCursor:null}}};}const prior=state.catalog.registers,append=action.cursor!==null&&prior!==null&&prior.query===action.query&&prior.bindingKey===action.bindingKey&&prior.nextCursor===action.cursor;return {...state,catalog:{...state.catalog,registers:{kind:"registers",query:action.query,bindingKey:action.bindingKey,cursor:action.cursor,items:append?prior.items:[],nextCursor:null}}};}
- if(action.type==="catalog.loaded"){if(state.status===null||catalogBindingKey(state.status)!==action.bindingKey)return state;if(action.catalog==="variables"){const pending=state.catalog.variables;if(pending===null||pending.query!==action.query||pending.bindingKey!==action.bindingKey||pending.cursor!==action.cursor)return state;return {...state,catalog:{...state.catalog,variables:{...pending,items:action.cursor===null?action.items:[...pending.items,...action.items],nextCursor:action.nextCursor}}};}const pending=state.catalog.registers;if(pending===null||pending.query!==action.query||pending.bindingKey!==action.bindingKey||pending.cursor!==action.cursor)return state;return {...state,catalog:{...state.catalog,registers:{...pending,items:action.cursor===null?action.items:[...pending.items,...action.items],nextCursor:action.nextCursor}}};}
+ if(action.type==="catalog.loaded"){
+  if(state.status===null||catalogBindingKey(state.status)!==action.bindingKey)return state;
+  if(action.catalog==="variables"){
+   const prior=state.catalog.variables;
+   if(action.cursor!==null&&(prior===null||prior.query!==action.query||prior.bindingKey!==action.bindingKey||prior.nextCursor!==action.cursor&&prior.cursor!==action.cursor))return state;
+   return {...state,catalog:{...state.catalog,variables:{kind:"variables",query:action.query,bindingKey:action.bindingKey,cursor:action.cursor,items:action.cursor===null?action.items:[...prior!.items,...action.items],nextCursor:action.nextCursor}}};
+  }
+  const prior=state.catalog.registers;
+  if(action.cursor!==null&&(prior===null||prior.query!==action.query||prior.bindingKey!==action.bindingKey||prior.nextCursor!==action.cursor&&prior.cursor!==action.cursor))return state;
+  return {...state,catalog:{...state.catalog,registers:{kind:"registers",query:action.query,bindingKey:action.bindingKey,cursor:action.cursor,items:action.cursor===null?action.items:[...prior!.items,...action.items],nextCursor:action.nextCursor}}};
+ }
  if(action.type==="group.selected"){const selected=action.groupId===null?null:state.groups.find(group=>group.groupId===action.groupId)??null;return {...state,selectedGroupId:selected?.groupId??null,groupDraft:selected===null?emptyDraft:draftFromGroup(selected)};}
  if(action.type==="group.draft.changed")return {...state,groupDraft:action.draft};
  if(action.type==="group.watch.added")return state.groupDraft.items.some(item=>watchKey(item)===watchKey(action.watch))?state:{...state,groupDraft:{...state.groupDraft,items:[...state.groupDraft.items,action.watch]}};
@@ -46,10 +92,31 @@ export function reducer(state:MonitorState,action:MonitorAction):MonitorState{
  if(action.type==="series.toggled"){const selected=new Set(state.selectedSeries);if(selected.has(action.key))selected.delete(action.key);else if(selected.size<8)selected.add(action.key);else return state;return {...state,selectedSeries:selected,live:{...state.live,selectedSeries:selected}};}
  if(action.type==="zoom.changed")return {...state,zoom:zoomReducer(state.zoom,action.action)};
  if(action.type==="zoom.reset")return {...state,zoom:initialZoom};
- if(action.type==="history.loaded"){const projection=projectHistoryPage(action.page,new Map(state.groups.map(group=>[group.groupId,group])),state.selectedSeries);return {...state,history:{query:action.query,page:action.page,projection,cursorIndex:0,nextCursor:action.page.nextCursor}};}
- if(action.type==="export.loaded")return {...state,exports:{artifact:action.artifact}};
- if(action.type==="request.started")return {...state,pending:{...state.pending,[action.scope]:{requestId:action.requestId}},failures:{...state.failures,[action.scope]:undefined}};
+ if(action.type==="history.loaded"){
+  const projection=projectHistoryPage(action.page,new Map(state.groups.map(group=>[group.groupId,group])),state.selectedSeries);
+  const cursorStack=action.navigation==="next"?[...state.history.cursorStack,state.history.query?.cursor]
+    :action.navigation==="previous"?state.history.cursorStack.slice(0,-1):[];
+  return {...state,history:{query:action.query,page:action.page,projection,cursorIndex:cursorStack.length,cursorStack,nextCursor:action.page.nextCursor}};
+ }
+ if(action.type==="export.loaded"){
+  if(action.submitted!==undefined){
+   if(action.submitted.exportId!==action.artifact.exportId)return state;
+   return {...state,exports:{artifact:action.artifact,submitted:action.submitted}};
+  }
+  if(state.exports.artifact!==null&&state.exports.artifact.exportId!==action.artifact.exportId)return state;
+  return {...state,exports:{artifact:action.artifact,submitted:state.exports.submitted}};
+ }
+ if(action.type==="request.started"){
+  const failures={...state.failures};delete failures[action.scope];
+  const reconciling={...state.reconciling};delete reconciling[action.scope];
+  return {...state,pending:{...state.pending,[action.scope]:{requestId:action.requestId}},failures,reconciling};
+ }
  if(action.type==="request.cleared"){const pending=state.pending[action.scope];if(pending===undefined||pending.requestId!==action.requestId)return state;const copy={...state.pending};delete copy[action.scope];return {...state,pending:copy};}
- if(action.type==="request.failed"){const pending=state.pending[action.scope];if(pending===undefined||pending.requestId!==action.requestId)return state;const copy={...state.pending};delete copy[action.scope];return {...state,pending:copy,failures:{...state.failures,[action.scope]:{ok:false,code:action.code,message:action.message}},blockingError:{ok:false,code:action.code,message:action.message}};}
+ if(action.type==="request.failed"){
+  const pending=state.pending[action.scope];if(pending===undefined||pending.requestId!==action.requestId||state.blockingError!==null)return state;
+  if(action.fatal)return {...state,pending:{},reconciling:{},failures:{},blockingError:{ok:false,code:action.code,message:action.message},transport:{...state.transport,open:false,stale:true}};
+  const pendingCopy={...state.pending};delete pendingCopy[action.scope];
+  return {...state,pending:pendingCopy,failures:{...state.failures,[action.scope]:{ok:false,code:action.code,message:action.message,requestId:action.requestId,recovery:action.recovery??"none",summary:action.summary??"操作"}}};
+ }
  return action.type==="transport.open"?{...state,transport:{...state.transport,open:true,stale:false}}:{...state,transport:{...state.transport,open:false,stale:true}};
 }

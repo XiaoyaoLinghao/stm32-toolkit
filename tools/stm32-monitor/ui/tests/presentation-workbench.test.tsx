@@ -47,8 +47,8 @@ it("translates binding changes while preserving raw notices and request failures
   expect(screen.getByText(/连接身份或采样轮次已变化/)).toBeTruthy();
   const started=reducer(changed,{type:"request.started",scope:"history",requestId:1n});
   const failed=reducer(started,{type:"request.failed",scope:"history",requestId:1n,code:"UNKNOWN_CODE",message:"raw diagnostic"});
-  expect(failed.blockingError?.code).toBe("UNKNOWN_CODE");
-  render(<FailureMessage failure={failed.blockingError!} blocked/>);
+  expect(failed.blockingError).toBeNull();
+  render(<FailureMessage failure={failed.failures.history!}/>);
   expect(screen.getByRole("alert")).toHaveTextContent("操作未完成");
   expect(screen.getByRole("alert")).toHaveTextContent("UNKNOWN_CODE");
   expect(screen.getByRole("alert")).toHaveTextContent("raw diagnostic");
