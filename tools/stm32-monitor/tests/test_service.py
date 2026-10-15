@@ -436,6 +436,8 @@ def test_cookie_names_use_actual_endpoint_port_and_ignore_legacy_name() -> None:
     with pytest.raises(_ServiceFailure) as stale:
         service._authorize(request({service._session_cookie_name(): token}))
     assert stale.value.status == 401
+    service._endpoint = MonitorEndpoint("127.0.0.1", 80, "c" * 64, "workspace-a", "session-a")
+    assert service._session_cookie_name() == "stm32_monitor_session_80"
 
 
 def test_fixed_port_conflict_does_not_fall_back_and_cleans_runner() -> None:

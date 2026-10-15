@@ -64,6 +64,101 @@ def test_bearer_auth_accepts_exact_loopback_origin_and_rejects_wrong_token() -> 
     assert TOKEN not in str(caught.value)
 
 
+def test_http_default_port_has_only_two_exact_authority_and_origin_forms() -> None:
+    from stm32_monitor.auth import (
+        MonitorAuth,
+        MonitorAuthError,
+        http_authority,
+        http_origin,
+        matches_http_host,
+        matches_http_origin,
+    )
+    from stm32_monitor.service import MonitorEndpoint
+
+    auth = MonitorAuth.create(
+        host="127.0.0.1", port=80,
+        token_factory=lambda size: TOKEN_BYTES if size == 32 else b"",
+    )
+    endpoint = MonitorEndpoint("127.0.0.1", 80, auth.token, "workspace", "session")
+    assert http_authority("127.0.0.1", 80) == "127.0.0.1"
+    assert http_origin("127.0.0.1", 80) == "http://127.0.0.1"
+    assert auth.origin == endpoint.url == "http://127.0.0.1"
+    assert endpoint.access_url == f"http://127.0.0.1/#token={TOKEN}"
+
+    valid_hosts = ("127.0.0.1", "127.0.0.1:80")
+    valid_origins = ("http://127.0.0.1", "http://127.0.0.1:80")
+    for host in valid_hosts:
+        assert matches_http_host(host, "127.0.0.1", 80)
+        for origin in valid_origins:
+            assert matches_http_origin(origin, "127.0.0.1", 80)
+            assert auth.authorize(
+                peer="127.0.0.1", host=host, origin=origin,
+                authorization=f"Bearer {TOKEN}", cookie=None, bootstrap=True,
+                method="POST", fetch_site="same-origin",
+            ) == "bearer"
+            assert auth.authorize(
+                peer="127.0.0.1", host=host, origin=origin,
+                authorization="", cookie=TOKEN, bootstrap=False, method="GET",
+            ) == "cookie"
+
+    bad_hosts = (
+        "127.0.0.1:080", "127.0.0.1:81", "localhost", "127.0.0.1.",
+        "127.0.0.1/path", "user@127.0.0.1", " 127.0.0.1", "127.0.0.1:80 ",
+    )
+    for host in bad_hosts:
+        assert not matches_http_host(host, "127.0.0.1", 80)
+        with pytest.raises(MonitorAuthError) as caught:
+            auth.authorize(
+                peer="127.0.0.1", host=host, origin=valid_origins[0],
+                authorization=f"Bearer {TOKEN}", cookie=None, bootstrap=True,
+                method="POST",
+            )
+        assert caught.value.code == "MONITOR_HOST_REJECTED"
+
+    bad_origins = (
+        "http://127.0.0.1:080", "http://127.0.0.1:81", "http://localhost",
+        "http://127.0.0.1.", "http://127.0.0.1/path", "http://127.0.0.1?x=1",
+        "http://127.0.0.1/#x", "https://127.0.0.1", "HTTP://127.0.0.1",
+        "http://user@127.0.0.1", " http://127.0.0.1",
+    )
+    for origin in bad_origins:
+        assert not matches_http_origin(origin, "127.0.0.1", 80)
+        with pytest.raises(MonitorAuthError) as caught:
+            auth.authorize(
+                peer="127.0.0.1", host=valid_hosts[0], origin=origin,
+                authorization=f"Bearer {TOKEN}", cookie=None, bootstrap=True,
+                method="POST",
+            )
+        assert caught.value.code == "MONITOR_ORIGIN_REJECTED"
+
+
+def test_nondefault_http_port_keeps_one_explicit_form() -> None:
+    from stm32_monitor.auth import (
+        MonitorAuthError, http_authority, http_origin, matches_http_host,
+        matches_http_origin,
+    )
+    from stm32_monitor.service import MonitorEndpoint
+
+    auth = _auth()
+    endpoint = MonitorEndpoint("127.0.0.1", 43125, TOKEN, "workspace", "session")
+    assert http_authority("127.0.0.1", 43125) == "127.0.0.1:43125"
+    assert http_origin("127.0.0.1", 43125) == ORIGIN
+    assert auth.origin == endpoint.url == ORIGIN
+    assert matches_http_host("127.0.0.1:43125", "127.0.0.1", 43125)
+    assert matches_http_origin(ORIGIN, "127.0.0.1", 43125)
+    assert not matches_http_host("127.0.0.1", "127.0.0.1", 43125)
+    assert not matches_http_origin("http://127.0.0.1", "127.0.0.1", 43125)
+    with pytest.raises(MonitorAuthError) as host_error:
+        auth.authorize(peer="127.0.0.1", host="127.0.0.1", origin=ORIGIN,
+                       authorization=f"Bearer {TOKEN}", cookie=None, bootstrap=True)
+    assert host_error.value.code == "MONITOR_HOST_REJECTED"
+    with pytest.raises(MonitorAuthError) as origin_error:
+        auth.authorize(peer="127.0.0.1", host="127.0.0.1:43125",
+                       origin="http://127.0.0.1", authorization=f"Bearer {TOKEN}",
+                       cookie=None, bootstrap=True)
+    assert origin_error.value.code == "MONITOR_ORIGIN_REJECTED"
+
+
 @pytest.mark.parametrize(
     ("peer", "host", "origin", "code"),
     [

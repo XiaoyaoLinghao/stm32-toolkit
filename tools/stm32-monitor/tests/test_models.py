@@ -331,6 +331,7 @@ def test_monitor_config_accepts_explicit_port_and_rejects_invalid_values(tmp_pat
     project.mkdir()
     data = tmp_path / "state"
     assert MonitorConfig(project, data, "monitor-1", port=1).port == 1
+    assert MonitorConfig(project, data, "monitor-1", port=80).port == 80
     assert MonitorConfig(project, data, "monitor-1", port=65_535).port == 65_535
     for port in (True, False, -1, 65_536, 8765.0, "8765", None):
         with pytest.raises(ValueError, match="port"):

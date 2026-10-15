@@ -14,6 +14,9 @@ from .auth import (
     MAX_REQUEST_BYTES,
     MonitorAuth,
     MonitorAuthError,
+    http_origin,
+    matches_http_host,
+    matches_http_origin,
 )
 from .protocol import (
     MONITOR_PROTOCOL_VERSION,
@@ -53,7 +56,7 @@ class MonitorEndpoint:
 
     @property
     def url(self) -> str:
-        return f"http://{self.host}:{self.port}"
+        return http_origin(self.host, self.port)
 
     @property
     def access_url(self) -> str:
@@ -411,9 +414,13 @@ class MonitorService:
         except MonitorAuthError as error:
             return web.Response(status=error.status, body=b"")
         origin = request.headers.get("Origin")
-        if request.remote != "127.0.0.1" or request.host != f"127.0.0.1:{endpoint.port}":
+        if request.remote != "127.0.0.1" or not matches_http_host(
+            request.host, endpoint.host, endpoint.port
+        ):
             return web.Response(status=403, body=b"")
-        if origin is not None and origin != endpoint.url:
+        if origin is not None and not matches_http_origin(
+            origin, endpoint.host, endpoint.port
+        ):
             return web.Response(status=403, body=b"")
         route = "/" if request.path == "/" else "/assets/" + request.match_info["asset"]
         return assets.response(route, endpoint.port, head=request.method == "HEAD")

@@ -25,6 +25,26 @@ def _error(code: str, message: str, status: int) -> MonitorAuthError:
     return MonitorAuthError(code, message, status)
 
 
+def http_authority(host: str, port: int) -> str:
+    if host != "127.0.0.1" or type(port) is not int or not 1 <= port <= 65_535:
+        raise ValueError("Monitor authentication endpoint is invalid")
+    return host if port == 80 else f"{host}:{port}"
+
+
+def http_origin(host: str, port: int) -> str:
+    return f"http://{http_authority(host, port)}"
+
+
+def matches_http_host(value: str, host: str, port: int) -> bool:
+    authority = http_authority(host, port)
+    return value == authority or (port == 80 and value == f"{host}:80")
+
+
+def matches_http_origin(value: str, host: str, port: int) -> bool:
+    origin = http_origin(host, port)
+    return value == origin or (port == 80 and value == f"{origin}:80")
+
+
 @dataclass(frozen=True)
 class MonitorAuth:
     host: str
@@ -40,8 +60,7 @@ class MonitorAuth:
         port: int,
         token_factory: Callable[[int], object] = secrets.token_bytes,
     ) -> "MonitorAuth":
-        if host != "127.0.0.1" or type(port) is not int or not 1 <= port <= 65_535:
-            raise ValueError("Monitor authentication endpoint is invalid")
+        http_authority(host, port)
         value = token_factory(32)
         if type(value) is not bytes or len(value) != 32:
             raise ValueError("Monitor token factory must return exactly 32 bytes")
@@ -50,7 +69,7 @@ class MonitorAuth:
 
     @property
     def origin(self) -> str:
-        return f"http://{self.host}:{self.port}"
+        return http_origin(self.host, self.port)
 
     def require_header_budget(self, headers: Iterable[tuple[str, str]]) -> None:
         total = 0
@@ -87,11 +106,14 @@ class MonitorAuth:
                 "Monitor Service accepts IPv4 loopback peers only",
                 403,
             )
-        if host != f"{self.host}:{self.port}":
+        if not matches_http_host(host, self.host, self.port):
             raise _error(
                 "MONITOR_HOST_REJECTED", "Monitor Service Host is invalid", 403
             )
-        if origin is not None and origin != self.origin:
+        same_origin = origin is not None and matches_http_origin(
+            origin, self.host, self.port
+        )
+        if origin is not None and not same_origin:
             raise _error(
                 "MONITOR_ORIGIN_REJECTED", "Monitor Service Origin is invalid", 403
             )
@@ -106,14 +128,14 @@ class MonitorAuth:
         bearer_ok = (
             len(bearer) == 64
             and secrets.compare_digest(bearer, self.token)
-            and origin == self.origin
+            and same_origin
         )
         websocket_ok = (not websocket) or method == "GET"
         safe_method = method in ("GET", "HEAD")
         mutation = method in ("POST", "PATCH", "PUT", "DELETE")
         allowed_method = safe_method or mutation
         fetch_site_proven = fetch_site == "same-origin" and safe_method
-        origin_proven = origin == self.origin and websocket_ok
+        origin_proven = same_origin and websocket_ok
         proven_same_origin = (origin_proven and allowed_method) or fetch_site_proven
         cookie_ok = (
             not bootstrap

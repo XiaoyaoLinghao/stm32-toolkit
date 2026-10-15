@@ -139,6 +139,7 @@ def test_cli_port_parser_accepts_ascii_decimal_and_rejects_invalid_values(tmp_pa
     for command, tail in (("open", []), ("serve", ["--session-id", "session-a", "--json"])):
         assert _parser().parse_args([command, *base, *tail]).port is None
         assert _parser().parse_args([command, *base, *tail, "--port", "00001"]).port == 1
+        assert _parser().parse_args([command, *base, *tail, "--port", "80"]).port == 80
         assert _parser().parse_args([command, *base, *tail, "--port", "65535"]).port == 65_535
         for value in ("0", "65536", "-1", "+1", " 1", "1 ", "1_000", "１", "x"):
             stderr = io.StringIO()
