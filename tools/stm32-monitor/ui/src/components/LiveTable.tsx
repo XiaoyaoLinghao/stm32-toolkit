@@ -27,13 +27,14 @@ export function LiveTable({rows,selectedSeries,onSeriesToggle,fresh=true}:LiveTa
       })}</ul>}
       {full&&<p className="curve-limit-note">{copy.curveLimitReached}</p>}
     </section>
-    <div className="table-scroll"><table><thead><tr><th>{copy.watch}</th><th>{copy.value}</th><th>{copy.type}</th><th>{copy.trend}</th><th>{copy.curve}</th></tr></thead>
+    <div className="table-scroll"><table><thead><tr><th>{copy.watch}</th><th>{copy.value}</th><th>{copy.historyCaptured}</th><th>{copy.type}</th><th>{copy.trend}</th><th>{copy.curve}</th></tr></thead>
       <tbody>{rows.map(row=>{
         const key=row.watch.kind==="variable"?`variable:${row.watch.expression}`:`register:${row.watch.registerPath}`;
         const selected=selectedSeries.includes(key);
         return<tr key={key}>
           <td><code>{watchLabel(row)}</code></td>
           <td>{row.errorCode!==null?<span>{copy.readFailed} <details><summary>{copy.diagnostics}</summary><code>{row.errorCode}</code></details></span>:row.displayValue}</td>
+          <td><time>{row.capturedAtUtc||"-"}</time></td>
           <td>{row.typeName??"-"}</td>
           <td>{trendText(row.trend)}</td>
           <td><button type="button" aria-pressed={selected} disabled={!selected&&full}

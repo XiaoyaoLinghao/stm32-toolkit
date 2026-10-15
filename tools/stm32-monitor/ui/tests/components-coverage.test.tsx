@@ -48,14 +48,18 @@ it("ProbePanel renders an unconnected probe with a connect button and no lease l
   expect(onConnect).toHaveBeenCalledWith("p1");
 });
 
-it("LiveTable renders an error row and a register row with type dash",async()=>{
+it("LiveTable renders error/register rows with an empty capture placeholder and type dash",async()=>{
   const toggle=vi.fn();
   const errorRow={watch:{kind:"variable" as const,expression:"bad"},displayValue:"",rawHex:null,typeName:null,capturedAtUtc:"",trend:"none" as const,errorCode:"OVERRUN",numericValue:null};
   const registerRow={watch:{kind:"register" as const,registerPath:"RCC.CSR"},displayValue:"0x1",rawHex:"0x1",typeName:null,capturedAtUtc:"",trend:"down" as const,errorCode:null,numericValue:1};
   render(<LiveTable rows={[errorRow,registerRow]} selectedSeries={["variable:bad"]} onSeriesToggle={toggle}/>);
   expect(screen.getByText("OVERRUN")).toBeTruthy();
   expect(screen.getByText("RCC.CSR")).toBeTruthy();
-  expect(screen.getAllByText("-")).toHaveLength(2);
+  for(const row of screen.getAllByRole("row").slice(1)){
+    const cells=row.querySelectorAll("td");
+    expect(cells[2]).toHaveTextContent("-");
+    expect(cells[3]).toHaveTextContent("-");
+  }
   expect(screen.getByRole("button",{name:"隐藏曲线"})).toBeTruthy();
   await userEvent.click(screen.getByRole("button",{name:"隐藏曲线"}));
   expect(toggle).toHaveBeenCalledWith("variable:bad");

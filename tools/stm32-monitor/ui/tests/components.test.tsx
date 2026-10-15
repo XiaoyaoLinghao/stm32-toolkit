@@ -61,7 +61,7 @@ it("LiveTable renders rows and toggles series",async()=>{
 });
 
 it("StatusStrip renders rate, latency and drops",()=>{
-  render(<StatusStrip actualRateHz={10} latencyNs={2500000n}
+  render(<StatusStrip actualRateHz={10} latencyNs={2500000n} lastSampleCapturedAtUtc="2026-08-10T00:00:00Z" fresh
     drops={{subscriber:1n,history:2n,deadline:3n,service:4n}}/>);
   expect(screen.getByText(/实际采样率/)).toBeTruthy();
   expect(screen.getByText("10.00 Hz")).toBeTruthy();

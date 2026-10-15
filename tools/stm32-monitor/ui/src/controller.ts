@@ -6,7 +6,7 @@ import {
 import {parseLossless} from "./api/wire";
 import {openLive} from "./api/live";
 import {operationSummary} from "./presentation/zh";
-import {groupSourceProblem,sameGroupContent,type LoadedAction,type MonitorAction,type MonitorState,type RecoveryKind,type RequestScope} from "./state/model";
+import {groupSourceProblem,sameGroupContent,type HistoryInFlight,type LoadedAction,type MonitorAction,type MonitorState,type RecoveryKind,type RequestScope} from "./state/model";
 
 export type Controller={
   loadInitial:()=>Promise<void>;refreshStatus:()=>Promise<void>;reconnectLive:()=>Promise<void>;cancelLiveReconnect:()=>void;refreshProbes:()=>Promise<void>;refreshGroups:()=>Promise<void>;
@@ -98,10 +98,10 @@ export function createController(api:MonitorApi,dispatch:(action:MonitorAction)=
     if(retries.get(scope)?.requestId===id)retries.delete(scope);
     dispatch({type:"request.retired",scope,requestId:id});
   };
-  const start=(scope:RequestScope,unique=false):bigint|null=>{
+  const start=(scope:RequestScope,unique=false,historyContext?:Omit<HistoryInFlight,"requestId">):bigint|null=>{
     if(closed||blocked||unique&&active.has(scope))return null;
     const id=nextId++;active.set(scope,id);retries.delete(scope);
-    dispatch({type:"request.started",scope,requestId:id});return id;
+    dispatch({type:"request.started",scope,requestId:id,...(historyContext===undefined?{}:{historyContext})});return id;
   };
   const succeed=(scope:RequestScope,id:bigint,data?:LoadedAction):boolean=>{
     if(!current(scope,id))return false;
@@ -123,9 +123,10 @@ export function createController(api:MonitorApi,dispatch:(action:MonitorAction)=
     dispatch({type:"request.failed",scope,requestId:id,code:result.code,message:result.message,recovery,summary});
   };
   const read=async<T>(scope:RequestScope,summary:string,invoke:(id:bigint)=>Promise<ApiResult<T>>,
-      loaded:(data:T)=>LoadedAction|undefined,valid?:()=>boolean,retryRun?:()=>Promise<void>):Promise<void>=>{
+      loaded:(data:T)=>LoadedAction|undefined,valid?:()=>boolean,retryRun?:()=>Promise<void>,
+      historyContext?:Omit<HistoryInFlight,"requestId">):Promise<void>=>{
     if(valid!==undefined&&!valid())return;
-    const id=start(scope);if(id===null)return;
+    const id=start(scope,false,historyContext);if(id===null)return;
     let result:ApiResult<T>;
     try{result=await invoke(id);}catch(error){result=unexpected(error);}
     if(!current(scope,id))return;
@@ -213,7 +214,7 @@ export function createController(api:MonitorApi,dispatch:(action:MonitorAction)=
   const history=async(queryInput:HistoryQuery,navigation:"replace"|"next"|"previous"):Promise<void>=>{
     const query={...queryInput};
     await read("history",operationSummary("history",String(query.startNs),String(query.endNs),query.cursor),()=>api.history(query),
-      page=>({type:"history.loaded",page,query,navigation}));
+      page=>({type:"history.loaded",page,query,navigation}),undefined,()=>history(query,navigation),{query,navigation});
   };
   const exportStatus=(exportId:string)=>read("export.status",operationSummary("export.status",exportId),
     ()=>api.exportStatus(exportId),artifact=>({type:"export.loaded",artifact}),

@@ -66,6 +66,7 @@ th{color:var(--muted);font-size:12px;font-weight:600;white-space:nowrap;}
 td{font-variant-numeric:tabular-nums;}
 td code{white-space:normal;}
 .values-panel .table-scroll{max-height:220px;overflow:auto;}
+.live-source{display:flex;align-items:center;gap:8px;flex-wrap:wrap;background:#eef1f5;border:1px solid var(--line);border-radius:8px;padding:7px 10px;font-size:13px;overflow-wrap:anywhere;}
 .selected-curves{border:1px solid var(--line);border-radius:6px;padding:8px;margin:8px 0;}
 .selected-curves>p:first-child{font-weight:600;}
 .selected-curves ul{list-style:none;display:flex;gap:6px;flex-wrap:wrap;padding:0;margin:6px 0 0;}
@@ -89,7 +90,9 @@ td code{white-space:normal;}
 .device-grid p{overflow-wrap:anywhere;}
 .history-workspace{max-width:1200px;width:100%;margin:0 auto;}
 .history-panel .hint,.export-panel .hint{margin-bottom:8px;}
+.history-panel .history-range{margin:5px 0;overflow-wrap:anywhere;font-variant-numeric:tabular-nums;}
 .history-panel .table-scroll{margin-top:12px;max-height:350px;overflow:auto;}
+.history-panel td:last-child,.values-panel time{overflow-wrap:anywhere;font-variant-numeric:tabular-nums;}
 .history-panel label,.export-panel label{min-width:220px;}
 .empty-state{margin:14px 0;color:var(--muted);}
 .pagination{justify-content:flex-end;margin-top:8px;}

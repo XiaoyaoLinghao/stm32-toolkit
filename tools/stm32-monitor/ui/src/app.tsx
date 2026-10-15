@@ -3,7 +3,7 @@ import {useEffect,useReducer,useRef,useState} from "preact/hooks";
 import {createMonitorApi} from "./api/client";
 import {createController,type Controller} from "./controller";
 import {initialState,reducer} from "./state/reducer";
-import {chartSeries,liveRows,selectedGroup} from "./state/selectors";
+import {activeGroup,chartSeries,liveRows,selectedGroup} from "./state/selectors";
 import {groupDirty,groupSourceProblem,groupWorkflowBusy,type RequestScope} from "./state/model";
 import {displayDropTotals} from "./chart/series";
 import {copy} from "./presentation/zh";
@@ -57,7 +57,9 @@ export function App():JSX.Element{
   }
 
   const currentExportRange=state.history.query===null?null:{startNs:state.history.query.startNs,endNs:state.history.query.endNs};
-  const fresh=status.sampling.state==="RUNNING"&&state.transport.open&&!state.transport.stale&&!state.transport.needsStatusRefresh;
+  const runningGroup=activeGroup(state),runId=status.sampling.runId;
+  const fresh=status.sampling.state==="RUNNING"&&state.transport.open&&!state.transport.stale&&!state.transport.needsStatusRefresh&&
+    runningGroup!==null&&state.live.runId===runId;
   const liveView=view==="live";
   const busyGroups=groupWorkflowBusy(state);
   const liveBusy=state.transport.phase==="checking"||state.transport.phase==="connecting";
@@ -130,11 +132,20 @@ export function App():JSX.Element{
       </aside>
       <div className="live-main">
         <SamplingControls status={status.sampling} group={selectedGroup(state)} busy={busySampling}
-          activeGroupName={state.groups.find(group=>group.groupId===status.sampling.groupId)?.name??null}
+          activeGroupName={runningGroup?.name??null}
           onStart={(groupId,revision)=>controller.startSampling(groupId,revision)}
           onPause={()=>controller.pauseSampling()} onResume={()=>controller.resumeSampling()}
           onStop={()=>controller.stopSampling()}
           failure={null}/>
+        <div className="live-source" aria-label={copy.liveSource}>
+          {runId===null?<span>{copy.liveSourcePreview}</span>:<>
+            <span>{state.live.lastSampleCapturedAtUtc===null?copy.liveSourceAwaiting:fresh?copy.liveSourceCurrent:copy.liveSourcePrevious}：
+              <code>{runId}</code> · {copy.liveSourceGroup} <code>{status.sampling.groupId??"-"}</code> ·
+              {copy.liveSourceRevision} <code>{status.sampling.groupRevision?.toString()??"-"}</code>
+              {runningGroup!==null&&<> · {runningGroup.name}</>}</span>
+            {runningGroup===null&&<span className="stale-label">{state.live.lastSampleCapturedAtUtc===null?copy.liveSourceUnverifiedEmpty:copy.liveSourceUnverified}</span>}
+          </>}
+        </div>
         <LiveChart series={chartSeries(state)} range={state.zoom} visible={liveView}
           onZoom={(range)=>dispatch({type:"zoom.changed",action:{type:"zoom.set",start:range.start,end:range.end}})}/>
         <ChartZoomControls range={state.zoom} onAction={(action)=>dispatch({type:"zoom.changed",action})}/>
@@ -143,7 +154,7 @@ export function App():JSX.Element{
       </div>
     </div>
     <div className="history-workspace" hidden={liveView}>
-      <HistoryPanel query={state.history.query} page={state.history.page} cursorStack={state.history.cursorStack}
+      <HistoryPanel query={state.history.query} page={state.history.page} inFlight={state.history.inFlight} cursorStack={state.history.cursorStack}
         busy={state.pending.history!==undefined} failure={null}
         onLoad={(query)=>controller.loadHistory(query)} onPage={(cursor)=>controller.nextHistory(cursor)}/>
       <ExportPanel range={currentExportRange} artifact={state.exports.artifact} submitted={state.exports.submitted}
@@ -155,6 +166,7 @@ export function App():JSX.Element{
         onDownload={(exportId)=>controller.downloadExport(exportId)}/>
     </div>
     <NoticeRegion notices={state.notices}/>
-    <StatusStrip actualRateHz={state.live.actualRateHz} latencyNs={state.live.latencyNs} drops={displayDropTotals(state.live)}/>
+    <StatusStrip actualRateHz={state.live.actualRateHz} latencyNs={state.live.latencyNs}
+      lastSampleCapturedAtUtc={state.live.lastSampleCapturedAtUtc} fresh={fresh} drops={displayDropTotals(state.live)}/>
   </main>;
 }

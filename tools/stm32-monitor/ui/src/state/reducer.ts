@@ -7,7 +7,7 @@ const zeroDrops=():DropTotals=>({subscriber:0n,history:0n,deadline:0n,service:0n
 const dropsFrom=(status:MonitorStatus):DropTotals=>({subscriber:status.sampling.subscriberDrops,history:status.sampling.historyDrops,deadline:status.sampling.deadlineDrops,service:status.sampling.serviceDrops});
 const liveForStatus=(status:MonitorStatus,selected:ReadonlySet<string>):LiveState=>({...emptyLive(),selectedSeries:new Set([...selected].slice(0,8)),bindingEpoch:status.sampling.bindingEpoch,runId:status.sampling.runId,authoritativeDrops:dropsFrom(status)});
 const emptyProjection={rows:[],series:new Map()};
-export const initialState:MonitorState={status:null,probes:[],groups:[],selectedGroupId:null,groupDraft:emptyDraft,groupBaseline:emptyDraft,groupGeneration:0n,groupNavigation:null,groupNavigationMissing:false,groupNameReviewRequired:false,groupWriteBusy:false,groupsNeedRefresh:false,stateRevision:-1n,lastAcceptedEventId:null,pending:{},reconciling:{},failures:{},catalog:{variables:null,registers:null},selectedSeries:new Set(),live:emptyLive(),zoom:initialZoom,transport:{phase:"idle",open:false,stale:true,needsStatusRefresh:false,gapRevision:0n},history:{query:null,page:null,projection:emptyProjection,cursorIndex:0,cursorStack:[],nextCursor:null},exports:{artifact:null,submitted:null},notices:[],blockingError:null};
+export const initialState:MonitorState={status:null,probes:[],groups:[],selectedGroupId:null,groupDraft:emptyDraft,groupBaseline:emptyDraft,groupGeneration:0n,groupNavigation:null,groupNavigationMissing:false,groupNameReviewRequired:false,groupWriteBusy:false,groupsNeedRefresh:false,stateRevision:-1n,lastAcceptedEventId:null,pending:{},reconciling:{},failures:{},catalog:{variables:null,registers:null},selectedSeries:new Set(),live:emptyLive(),zoom:initialZoom,transport:{phase:"idle",open:false,stale:true,needsStatusRefresh:false,gapRevision:0n},history:{query:null,page:null,projection:emptyProjection,cursorIndex:0,cursorStack:[],nextCursor:null,inFlight:null},exports:{artifact:null,submitted:null},notices:[],blockingError:null};
 const sameBinding=(a:ObservationBinding,b:ObservationBinding):boolean=>a.workspaceId===b.workspaceId&&a.sessionId===b.sessionId&&a.logicalProjectId===b.logicalProjectId&&a.probeId===b.probeId&&a.targetDevice===b.targetDevice&&a.physicalTarget===b.physicalTarget&&a.buildId===b.buildId&&a.elfSha256===b.elfSha256&&a.inputSnapshotSha256===b.inputSnapshotSha256&&a.gitHead===b.gitHead&&a.gitDirty===b.gitDirty&&a.flashSessionId===b.flashSessionId&&a.leaseId===b.leaseId&&a.dwarfSha256===b.dwarfSha256&&a.svdSha256===b.svdSha256;
 const statusMatches=(status:MonitorStatus,binding:ObservationBinding):boolean=>status.workspaceId===binding.workspaceId&&status.sessionId===binding.sessionId&&status.project.logicalProjectId===binding.logicalProjectId&&status.project.targetDevice===binding.targetDevice&&status.probe.connected&&status.probe.probeId===binding.probeId&&status.firmware!==null&&status.firmware.buildId===binding.buildId&&status.firmware.elfSha256===binding.elfSha256&&status.firmware.inputSnapshotSha256===binding.inputSnapshotSha256&&status.firmware.gitHead===binding.gitHead&&status.firmware.gitDirty===binding.gitDirty&&status.firmware.targetDevice===binding.targetDevice;
 const catalogBindingKey=(status:MonitorStatus):string=>`${status.workspaceId}/${status.sessionId}/${status.project.logicalProjectId}/${status.sampling.bindingEpoch}`;
@@ -36,6 +36,8 @@ function retireScopes(state:MonitorState,scopes:readonly RequestScope[]):Monitor
  for(const scope of scopes){delete pending[scope];delete failures[scope];delete reconciling[scope];}
  return {...state,pending,failures,reconciling};
 }
+const settledHistory=(state:MonitorState,scope:RequestScope,requestId:bigint):MonitorState["history"]=>
+ scope==="history"&&state.history.inFlight?.requestId===requestId?{...state.history,inFlight:null}:state.history;
 
 export function reduceAcceptedLiveEnvelope(state:MonitorState,envelope:ParsedLiveEnvelope):MonitorState{
   const {event,subscriberDropped}=envelope;if(state.lastAcceptedEventId!==null&&event.eventId<=state.lastAcceptedEventId)return state;
@@ -59,7 +61,7 @@ export function reducer(state:MonitorState,action:MonitorAction):MonitorState{
   if(state.blockingError!==null||state.pending[action.scope]?.requestId!==action.requestId)return state;
   const pending={...state.pending};delete pending[action.scope];
   const failures={...state.failures};delete failures[action.scope];
-  const settled={...state,pending,failures};
+  const settled={...state,pending,failures,history:settledHistory(state,action.scope,action.requestId)};
   return action.data===undefined?settled:reducer(settled,action.data);
  }
  if(action.type==="request.dismissed"){
@@ -73,7 +75,7 @@ export function reducer(state:MonitorState,action:MonitorAction):MonitorState{
   if(pending[action.scope]?.requestId===action.requestId)delete pending[action.scope];
   if(failures[action.scope]?.requestId===action.requestId)delete failures[action.scope];
   if(reconciling[action.scope]===action.requestId)delete reconciling[action.scope];
-  return {...state,pending,failures,reconciling};
+  return {...state,pending,failures,reconciling,history:settledHistory(state,action.scope,action.requestId)};
  }
  if(action.type==="request.reconciling")return state.failures[action.scope]?.requestId===action.requestId
   ?{...state,reconciling:{...state.reconciling,[action.scope]:action.requestId}}:state;
@@ -82,7 +84,7 @@ export function reducer(state:MonitorState,action:MonitorAction):MonitorState{
   const reconciling={...state.reconciling};delete reconciling[action.scope];
   return {...state,reconciling};
  }
-  if(action.type==="access.blocked")return {...state,pending:{},reconciling:{},failures:{},blockingError:{ok:false,code:action.code,message:action.message},transport:{...state.transport,phase:"disconnected",open:false,stale:true}};
+  if(action.type==="access.blocked")return {...state,pending:{},reconciling:{},failures:{},history:{...state.history,inFlight:null},blockingError:{ok:false,code:action.code,message:action.message},transport:{...state.transport,phase:"disconnected",open:false,stale:true}};
  if(action.type==="live.envelope")return reduceAcceptedLiveEnvelope(state,action.value);
  if(action.type==="initial.loaded"){const selected=action.groups[0]??null;const draft=selected===null?emptyDraft:draftFromGroup(selected);const updated={...state,status:action.status,probes:action.probes,groups:action.groups,selectedGroupId:selected?.groupId??null,groupDraft:draft,groupBaseline:draft,groupGeneration:state.groupGeneration+1n,groupNavigation:null,groupNavigationMissing:false,groupNameReviewRequired:false,live:liveForStatus(action.status,state.selectedSeries)};return state.status!==null&&catalogBindingKey(state.status)!==catalogBindingKey(action.status)?retireScopes(updated,catalogScopes):updated;}
   if(action.type==="status.loaded"){
@@ -178,7 +180,7 @@ export function reducer(state:MonitorState,action:MonitorAction):MonitorState{
   const projection=projectHistoryPage(action.page,new Map(state.groups.map(group=>[group.groupId,group])),state.selectedSeries);
   const cursorStack=action.navigation==="next"?[...state.history.cursorStack,state.history.query?.cursor]
     :action.navigation==="previous"?state.history.cursorStack.slice(0,-1):[];
-  return {...state,history:{query:action.query,page:action.page,projection,cursorIndex:cursorStack.length,cursorStack,nextCursor:action.page.nextCursor}};
+  return {...state,history:{...state.history,query:action.query,page:action.page,projection,cursorIndex:cursorStack.length,cursorStack,nextCursor:action.page.nextCursor}};
  }
  if(action.type==="export.loaded"){
   if(action.submitted!==undefined){
@@ -192,13 +194,15 @@ export function reducer(state:MonitorState,action:MonitorAction):MonitorState{
  if(action.type==="request.started"){
   const failures={...state.failures};delete failures[action.scope];
   const reconciling={...state.reconciling};delete reconciling[action.scope];
-  return {...state,pending:{...state.pending,[action.scope]:{requestId:action.requestId}},failures,reconciling};
+  const history=action.scope==="history"?{...state.history,inFlight:action.historyContext===undefined?null:
+    {requestId:action.requestId,query:{...action.historyContext.query},navigation:action.historyContext.navigation}}:state.history;
+  return {...state,pending:{...state.pending,[action.scope]:{requestId:action.requestId}},failures,reconciling,history};
  }
- if(action.type==="request.cleared"){const pending=state.pending[action.scope];if(pending===undefined||pending.requestId!==action.requestId)return state;const copy={...state.pending};delete copy[action.scope];return {...state,pending:copy};}
+ if(action.type==="request.cleared"){const pending=state.pending[action.scope];if(pending===undefined||pending.requestId!==action.requestId)return state;const copy={...state.pending};delete copy[action.scope];return {...state,pending:copy,history:settledHistory(state,action.scope,action.requestId)};}
  if(action.type==="request.failed"){
   const pending=state.pending[action.scope];if(pending===undefined||pending.requestId!==action.requestId||state.blockingError!==null)return state;
   const pendingCopy={...state.pending};delete pendingCopy[action.scope];
-  return {...state,pending:pendingCopy,groupsNeedRefresh:state.groupsNeedRefresh||action.recovery==="groups-refresh",
+  return {...state,pending:pendingCopy,history:settledHistory(state,action.scope,action.requestId),groupsNeedRefresh:state.groupsNeedRefresh||action.recovery==="groups-refresh",
     failures:{...state.failures,[action.scope]:{ok:false,code:action.code,message:action.message,requestId:action.requestId,recovery:action.recovery??"none",summary:action.summary??"操作"}}};
  }
   if(action.type==="transport.checking")return {...state,transport:{...state.transport,phase:"checking",open:false,stale:true}};
