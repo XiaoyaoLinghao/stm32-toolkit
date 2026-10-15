@@ -104,17 +104,28 @@ Monitor 工作台默认使用简体中文和浅色界面。打开授权标签后
 
 `open --port 8765` 成功后，终端显示不带 token 的 `http://127.0.0.1:8765/`，可将这个短地址加入书签。服务保持运行、同一浏览器配置的会话 cookie 有效时，关闭标签页后打开书签可回到工作台。关闭整个浏览器后是否保留会话取决于浏览器配置；新浏览器配置不会自动继承原会话。会话失效时，先在启动终端按 Ctrl+C 停止，再用相同的 `open ... --port 8765` 命令重新启动，使用启动器自动打开的新授权标签。不要保存或手输包含 fragment token 的授权链接。
 
-`bin/stm32-monitor.cmd` 在 v1.0.0 和 v1.0.1 都先用 `STM32_TOOLKIT_DATA_ROOT` 定位受管 Python；单给 `--data-root` 不能启动 cmd。Python CLI 启动后才读取 `open --data-root`，两处须指向同一 DataRoot。以下 `$ToolkitRoot` 指向已构建、同时包含 ENTRY01/UI02 的本地源码候选，不能指向已安装的 v1.0.1 发布目录。命令暂设环境变量、打开服务和新浏览器标签、前台保持运行，并在退出时恢复原环境；当前候选不新增后台 daemon/stop 协议。
+`bin/stm32-monitor.cmd` 先用 `STM32_TOOLKIT_DATA_ROOT` 定位受管 Python；单给 `--data-root` 不能启动 cmd。Python CLI 启动后才读取 `open --data-root`，两处须指向同一 DataRoot。仅更换 `$ToolkitRoot` 不会让该 Python 自动加载候选源码。以下示例仅用于已构建、同时包含 ENTRY01/UI02 的未发布本地源码候选：暂将 Monitor 与 Toolkit 的 `src` 放在 `PYTHONPATH` 首位，借用现有受管 Python 及其依赖，不安装或改写已发布的 v1.0.1 包；`Repair` 也不能将发布包替换为该候选。命令打开服务和新浏览器标签、前台保持运行，并在退出时恢复原环境；当前候选不新增后台 daemon/stop 协议。
 
 ```powershell
 $ToolkitRoot = 'C:\work\stm32-toolkit-candidate'
 $DataRoot = 'C:\data\stm32-toolkit'
 $ProjectRoot = 'C:\work\blinky'
+$monitorSource = Join-Path $ToolkitRoot 'tools\stm32-monitor\src'
+$toolkitSource = Join-Path $ToolkitRoot 'tools\stm32-toolkit\src'
 $previousDataRoot = [Environment]::GetEnvironmentVariable('STM32_TOOLKIT_DATA_ROOT', 'Process')
+$previousPythonPath = [Environment]::GetEnvironmentVariable('PYTHONPATH', 'Process')
 try {
+  if (-not (Test-Path -LiteralPath (Join-Path $monitorSource 'stm32_monitor') -PathType Container) -or
+      -not (Test-Path -LiteralPath (Join-Path $toolkitSource 'stm32_toolkit') -PathType Container)) {
+    throw 'Local candidate source is missing.'
+  }
+  $sourcePaths = @($monitorSource, $toolkitSource)
+  if ($previousPythonPath) { $sourcePaths += $previousPythonPath }
   [Environment]::SetEnvironmentVariable('STM32_TOOLKIT_DATA_ROOT', $DataRoot, 'Process')
+  [Environment]::SetEnvironmentVariable('PYTHONPATH', ($sourcePaths -join [IO.Path]::PathSeparator), 'Process')
   & (Join-Path $ToolkitRoot 'bin\stm32-monitor.cmd') open --project $ProjectRoot --data-root $DataRoot --port 8765
 } finally {
+  [Environment]::SetEnvironmentVariable('PYTHONPATH', $previousPythonPath, 'Process')
   [Environment]::SetEnvironmentVariable('STM32_TOOLKIT_DATA_ROOT', $previousDataRoot, 'Process')
 }
 ```
