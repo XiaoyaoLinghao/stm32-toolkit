@@ -42,31 +42,35 @@ test.describe("STM32 Monitor browser accessibility",()=>{
     ]);
     expect(await page.evaluate(()=>matchMedia("(prefers-reduced-motion: reduce)").matches)).toBe(true);
 
-    const connect=page.getByRole("button",{name:"Connect",exact:true});
+    await page.getByRole("button",{name:"连接与固件详情"}).click();
+    const connect=page.getByRole("button",{name:"连接",exact:true});
     await tabTo(page,connect);
     await expect(connect).toBeFocused();
     await page.keyboard.press("Enter");
-    await expect(page.getByText(/Connected: probe-a/)).toBeVisible();
+    await expect(page.getByText(/已连接：probe-a/)).toBeVisible();
+    await page.getByRole("button",{name:"关闭"}).click();
+    await page.getByRole("button",{name:"新建观测组"}).click();
+    await page.getByRole("button",{name:"浏览变量与寄存器"}).click();
 
-    const name=page.getByLabel("Name",{exact:true});
+    const name=page.getByLabel("名称",{exact:true});
     await tabTo(page,name);
     await page.keyboard.type("Keyboard group");
-    const search=page.getByLabel("Search",{exact:true});
+    const search=page.getByLabel("搜索",{exact:true});
     await tabTo(page,search);
     await page.keyboard.type("counter");
-    const add=page.getByRole("button",{name:"Add to group",exact:true});
+    const add=page.getByRole("button",{name:"加入观测组草稿",exact:true});
     await tabTo(page,add);
     await page.keyboard.press("Enter");
-    const create=page.getByRole("button",{name:"Create group",exact:true});
+    const create=page.getByRole("button",{name:"创建观测组",exact:true});
     await tabTo(page,create);
     await expect(create).toBeEnabled();
     await page.keyboard.press("Enter");
     await expect(page.getByRole("button",{name:"Keyboard group (1)"})).toBeVisible();
-    const start=page.getByRole("button",{name:"Start",exact:true});
+    const start=page.getByRole("button",{name:"开始采样",exact:true});
     await tabTo(page,start);
     await expect(start).toBeFocused();
     await page.keyboard.press("Enter");
-    await expect(page.getByText("RUNNING",{exact:true})).toBeVisible();
+    await expect(page.getByText("采样中",{exact:true}).first()).toBeVisible();
 
     // @axe-core/playwright currently carries a structurally newer Playwright
     // Page declaration than the release-pinned runner. Runtime compatibility

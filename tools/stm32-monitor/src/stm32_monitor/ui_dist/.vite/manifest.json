@@ -1,22 +1,22 @@
 {
-  "_contract-BPQw5UZt.js": {
-    "file": "assets/contract-BPQw5UZt.js",
-    "name": "contract"
+  "_zh-BofhAlhR.js": {
+    "file": "assets/zh-BofhAlhR.js",
+    "name": "zh"
   },
   "index.html": {
-    "file": "assets/index-BgqU--M9.js",
+    "file": "assets/index-CTn85hes.js",
     "name": "index",
     "src": "index.html",
     "isEntry": true,
     "imports": [
-      "_contract-BPQw5UZt.js"
+      "_zh-BofhAlhR.js"
     ],
     "dynamicImports": [
       "node_modules/preact/dist/preact.module.js",
       "src/app.tsx"
     ],
     "css": [
-      "assets/index-ytfcZfPW.css"
+      "assets/index-VjAo2o2U.css"
     ]
   },
   "node_modules/preact/dist/preact.module.js": {
@@ -26,13 +26,13 @@
     "isDynamicEntry": true
   },
   "src/app.tsx": {
-    "file": "assets/app-CzzUzrMN.js",
+    "file": "assets/app-B8F_sUmj.js",
     "name": "app",
     "src": "src/app.tsx",
     "isDynamicEntry": true,
     "imports": [
       "node_modules/preact/dist/preact.module.js",
-      "_contract-BPQw5UZt.js"
+      "_zh-BofhAlhR.js"
     ]
   }
 }

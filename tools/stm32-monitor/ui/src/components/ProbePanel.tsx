@@ -1,5 +1,6 @@
 import type {JSX} from "preact";
 import type {ProbeInfo} from "../api/contract";
+import {copy} from "../presentation/zh";
 
 export type ProbePanelProps={
   probes:readonly ProbeInfo[];
@@ -14,22 +15,22 @@ export type ProbePanelProps={
 
 export function ProbePanel(p:ProbePanelProps):JSX.Element{
   const connected=p.probes.find(probe=>probe.probeId===p.connectedProbeId)??null;
-  return<section className="panel" aria-label="Probe">
-    <h2>Probe</h2>
-    <button type="button" onClick={()=>void p.onRefresh()}>Refresh probes</button>
+  return<section className="panel" aria-label={copy.probeTitle}>
+    <h2>{copy.probeTitle}</h2>
+    <button type="button" onClick={()=>void p.onRefresh()}>{copy.probeRefresh}</button>
     {p.probes.length===0
-      ?<p>No probes detected.</p>
+      ?<p>{copy.probeNone}</p>
       :<ul>{p.probes.map(probe=>(
         <li key={probe.probeId}>
           <code>{probe.probeId}</code> {probe.vendor} {probe.product}{probe.boardName?` · ${probe.boardName}`:""}
           {probe.probeId===p.connectedProbeId
-            ?<strong> (connected)</strong>
-            :<button type="button" onClick={()=>void p.onConnect(probe.probeId)}>Connect</button>}
+            ?<strong>{copy.probeOnline}</strong>
+            :<button type="button" onClick={()=>void p.onConnect(probe.probeId)}>{copy.probeConnect}</button>}
         </li>))}</ul>}
     {connected!==null&&(
-      <p>Connected: <code>{connected.probeId}</code>{p.leaseReason!==null?` · ${p.leaseReason}`:""}</p>
+      <p>{copy.probeConnectedPrefix}<code>{connected.probeId}</code>{p.leaseReason!==null?` · ${p.leaseReason}`:""}</p>
     )}
-    <button type="button" disabled={!p.canReconnect} onClick={()=>void p.onReconnect()}>Reconnect</button>
-    <button type="button" disabled={connected===null} onClick={()=>void p.onRelease()}>Release</button>
+    <button type="button" disabled={!p.canReconnect} onClick={()=>void p.onReconnect()}>{copy.probeReConnect}</button>
+    <button type="button" disabled={connected===null} onClick={()=>void p.onRelease()}>{copy.probeRelease}</button>
   </section>;
 }

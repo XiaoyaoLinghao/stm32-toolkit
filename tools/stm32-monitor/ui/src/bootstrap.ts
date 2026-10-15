@@ -1,14 +1,10 @@
 import {authenticatedGuard,parseEnvelopeText,type ApiResult} from "./api/contract";
+import {copy,errorText} from "./presentation/zh";
 
-const STARTUP_ERRORS={
-  MONITOR_ACCESS_LINK_INVALID:"Monitor access link is missing or invalid. Return to the Monitor terminal and run open to create a new authenticated tab.",
-  MONITOR_ACCESS_REJECTED:"Monitor rejected this access link. Check the Monitor terminal, then run open to create a new authenticated tab.",
-  MONITOR_BOOTSTRAP_SERVICE_FAILED:"Monitor could not start. Check the Monitor terminal, then run open to create a new authenticated tab.",
-  MONITOR_BOOTSTRAP_RESPONSE_INVALID:"Monitor returned an invalid startup response. Check the Monitor terminal, then run open to create a new authenticated tab.",
-  MONITOR_BOOTSTRAP_REQUEST_FAILED:"Monitor startup request did not complete. Check the Monitor terminal, then run open to create a new authenticated tab.",
-} as const;
-type StartupErrorCode=keyof typeof STARTUP_ERRORS;
-const startupFailure=(code:StartupErrorCode):ApiResult<{authenticated:true}>=>({ok:false,code,message:STARTUP_ERRORS[code]});
+type StartupErrorCode=
+  "MONITOR_ACCESS_LINK_INVALID"|"MONITOR_ACCESS_REJECTED"|"MONITOR_BOOTSTRAP_SERVICE_FAILED"|
+  "MONITOR_BOOTSTRAP_RESPONSE_INVALID"|"MONITOR_BOOTSTRAP_REQUEST_FAILED";
+const startupFailure=(code:StartupErrorCode):ApiResult<{authenticated:true}>=>({ok:false,code,message:`${errorText(code).title}。${copy.retryOpen}`});
 
 export function takeFragmentToken(windowLike:Pick<Window,"location"|"history">):string|null{
   const raw=windowLike.location.hash.startsWith("#")?windowLike.location.hash.slice(1):"";
@@ -42,8 +38,6 @@ export function renderStartupError(documentLike:Document,code:string):void{
   const host=documentLike.getElementById("app")??documentLike.body;
   const alert=documentLike.createElement("p");
   alert.setAttribute("role","alert");
-  alert.textContent=Object.prototype.hasOwnProperty.call(STARTUP_ERRORS,code)
-    ?STARTUP_ERRORS[code as StartupErrorCode]
-    :"Monitor could not start. Check the Monitor terminal and run open to create a new authenticated tab.";
+  alert.textContent=`${errorText(code).title}。${copy.retryOpen}`;
   host.replaceChildren(alert);
 }

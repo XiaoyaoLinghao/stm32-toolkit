@@ -14,7 +14,7 @@ import {openMonitor,startMonitor} from "./conftest";
 
 async function navigate(page:Page,monitor:{accessUrl:string}):Promise<void>{
   await openMonitor(page,monitor.accessUrl);
-  await expect(page.getByLabel("STM32 Monitor")).toBeAttached();
+  await expect(page.getByLabel("STM32 监视器")).toBeAttached();
 }
 
 test("five-minute production fixture stays bounded",async({page,context})=>{
@@ -31,10 +31,12 @@ test("five-minute production fixture stays bounded",async({page,context})=>{
     await navigate(page,monitor);
     await expect(page.getByRole("button",{name:"Perf Watch (256)"})).toBeVisible();
 
-    await page.getByRole("button",{name:"Connect",exact:true}).click();
-    await expect(page.getByText(/Connected: probe-a/)).toBeVisible();
-    await page.getByRole("button",{name:"Start"}).click();
-    await expect(page.getByLabel("Sampling controls").getByRole("status")).toContainText("RUNNING");
+    await page.getByRole("button",{name:"连接与固件详情"}).click();
+    await page.getByRole("button",{name:"连接",exact:true}).click();
+    await expect(page.getByText(/已连接：probe-a/)).toBeVisible();
+    await page.getByRole("button",{name:"关闭"}).click();
+    await page.getByRole("button",{name:"开始采样"}).click();
+    await expect(page.getByLabel("采样控制").getByRole("status")).toContainText("采样中");
 
     await selectSeries(page,8);
 

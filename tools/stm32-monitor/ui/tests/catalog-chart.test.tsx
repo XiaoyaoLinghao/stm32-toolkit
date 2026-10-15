@@ -26,16 +26,16 @@ it("CatalogPanel searches variables and adds a watch",async()=>{
   render(<CatalogPanel connected bindingEpoch={3n}
     variables={{kind:"variables",query:"counter",bindingKey:"ws/s/p/3",cursor:null,items:[variable],nextCursor:null}}
     registers={null} onSearch={search} onNext={vi.fn()} onAdd={add}/>);
-  await userEvent.type(screen.getByPlaceholderText("symbol or register prefix"),"counter");
+  await userEvent.type(screen.getByPlaceholderText("输入符号或寄存器前缀"),"counter");
   expect(search).toHaveBeenCalledWith("variables","counter");
-  await userEvent.click(screen.getByRole("button",{name:"Add to group"}));
+  await userEvent.click(screen.getByRole("button",{name:"加入观测组草稿"}));
   expect(add).toHaveBeenCalledWith({kind:"variable",expression:"counter"});
 });
 
 it("CatalogPanel shows no-catalog message when disconnected",()=>{
   render(<CatalogPanel connected={false} bindingEpoch={0n} variables={null} registers={null}
     onSearch={vi.fn()} onNext={vi.fn()} onAdd={vi.fn()}/>);
-  expect(screen.getByText("Connect a probe to search the catalog.")).toBeTruthy();
+  expect(screen.getByText("连接探针后可搜索目录。")).toBeTruthy();
 });
 
 it("CatalogPanel renders register descriptors",async()=>{
@@ -45,21 +45,21 @@ it("CatalogPanel renders register descriptors",async()=>{
   render(<CatalogPanel connected bindingEpoch={3n} variables={null}
     registers={{kind:"registers",query:"TIM2",bindingKey:"ws/s/p/3",cursor:null,items:[register],nextCursor:null}}
     onSearch={vi.fn()} onNext={vi.fn()} onAdd={add}/>);
-  await userEvent.click(screen.getByRole("tab",{name:"Registers"}));
-  await userEvent.type(screen.getByPlaceholderText("symbol or register prefix"),"TIM2");
-  await userEvent.click(screen.getByRole("button",{name:"Add to group"}));
+  await userEvent.click(screen.getByRole("tab",{name:"寄存器"}));
+  await userEvent.type(screen.getByPlaceholderText("输入符号或寄存器前缀"),"TIM2");
+  await userEvent.click(screen.getByRole("button",{name:"加入观测组草稿"}));
   expect(add).toHaveBeenCalledWith({kind:"register",registerPath:"TIM2_CNT"});
 });
 
 it("LiveChart initializes and renders chart host",()=>{
   const onZoom=vi.fn();
   render(<LiveChart series={[]} range={{start:0,end:100}} onZoom={onZoom}/>);
-  expect(screen.getByRole("img",{name:"Live value chart"})).toBeTruthy();
+  expect(screen.getByRole("img",{name:"实时数值波形图"})).toBeTruthy();
 });
 
 it("ChartZoomControls fires reset action",async()=>{
   const onAction=vi.fn();
   render(<ChartZoomControls range={{start:0,end:100}} onAction={onAction}/>);
-  await userEvent.click(screen.getByRole("button",{name:"Reset zoom"}));
+  await userEvent.click(screen.getByRole("button",{name:"重置缩放"}));
   expect(onAction).toHaveBeenCalledWith({type:"zoom.reset"});
 });

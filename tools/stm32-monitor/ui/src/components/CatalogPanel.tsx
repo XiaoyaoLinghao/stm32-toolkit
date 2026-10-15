@@ -2,6 +2,7 @@ import type {JSX} from "preact";
 import {useState} from "preact/hooks";
 import type {RegisterDescriptor,VariableDescriptor,WatchItem} from "../api/contract";
 import type {VariableCatalog,RegisterCatalog,CatalogKind} from "../state/model";
+import {copy,formatCopy} from "../presentation/zh";
 
 export type CatalogPanelProps={
   connected:boolean;
@@ -29,24 +30,24 @@ export function CatalogPanel(p:CatalogPanelProps):JSX.Element{
   const current=kind==="variables"?p.variables:p.registers;
   const resultIdentityMatches=current!==null&&current.query===query.trim()&&current.bindingKey.includes(String(p.bindingEpoch));
 
-  return<section className="panel" aria-label="Catalog">
-    <h2>Symbol &amp; register catalog</h2>
-    <div role="tablist" aria-label="Catalog kind">
-      <button type="button" role="tab" aria-selected={kind==="variables"} onClick={()=>setKind("variables")}>Variables</button>
-      <button type="button" role="tab" aria-selected={kind==="registers"} onClick={()=>setKind("registers")}>Registers</button>
+  return<section className="panel" aria-label={copy.catalogTitle}>
+    <h2>{copy.catalogTitle}</h2>
+    <div role="tablist" aria-label={copy.catalogKind}>
+      <button type="button" role="tab" aria-selected={kind==="variables"} onClick={()=>setKind("variables")}>{copy.variables}</button>
+      <button type="button" role="tab" aria-selected={kind==="registers"} onClick={()=>setKind("registers")}>{copy.registers}</button>
     </div>
-    <label>Search <input value={query} placeholder="symbol or register prefix" disabled={!p.connected}
+    <label>{copy.search} <input value={query} placeholder={copy.searchPlaceholder} disabled={!p.connected}
       onInput={event=>{const value=event.currentTarget.value;setQuery(value);void p.onSearch(kind,value.trim());}}/></label>
-    {!p.connected&&<p>Connect a probe to search the catalog.</p>}
+    {!p.connected&&<p>{copy.catalogNeedsProbe}</p>}
     {p.connected&&current!==null&&resultIdentityMatches&&(
-      <table><thead><tr><th>Selector</th><th>Type</th><th>Action</th></tr></thead>
+      <table><thead><tr><th>{copy.selector}</th><th>{copy.type}</th><th>{copy.action}</th></tr></thead>
         <tbody>{(kind==="variables"?current.items:current.items as RegisterDescriptor[]).map(item=>{
           const descriptor=item as VariableDescriptor|RegisterDescriptor;
           return<tr key={descriptor.selector}>
             <td><code>{descriptor.selector}</code></td>
-            <td>{"typeName" in descriptor?descriptor.typeName:`${descriptor.sizeBits} bit`}</td>
-            <td><button type="button" onClick={()=>addWatch(descriptor,p.onAdd)}>Add to group</button></td>
+            <td>{"typeName" in descriptor?descriptor.typeName:formatCopy.bits(descriptor.sizeBits)}</td>
+            <td><button type="button" onClick={()=>addWatch(descriptor,p.onAdd)}>{copy.addDraft}</button></td>
           </tr>;})}</tbody></table>)}
-    <button type="button" disabled={!resultIdentityMatches||current?.nextCursor===null} onClick={()=>void p.onNext(kind)}>Next page</button>
+    <button type="button" disabled={!resultIdentityMatches||current?.nextCursor===null} onClick={()=>void p.onNext(kind)}>{copy.nextPage}</button>
   </section>;
 }

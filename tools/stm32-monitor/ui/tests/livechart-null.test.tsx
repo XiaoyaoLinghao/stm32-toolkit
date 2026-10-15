@@ -33,7 +33,7 @@ beforeEach(()=>{
 it("renders a chart host normally",()=>{
   const onZoom=vi.fn();
   render(<LiveChart series={[]} range={{start:0,end:100}} onZoom={onZoom}/>);
-  expect(document.querySelector('[aria-label="Live value chart"]')).not.toBeNull();
+  expect(document.querySelector('[aria-label="实时数值波形图"]')).not.toBeNull();
 });
 
 it("tolerates a null host ref in the mount effect",async()=>{

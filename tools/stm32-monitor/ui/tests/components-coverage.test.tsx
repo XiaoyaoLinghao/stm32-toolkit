@@ -13,7 +13,7 @@ const firmware:FirmwareStatus={buildId:"b".repeat(64),elfSha256:"e".repeat(64),i
 
 it("IdentityBar shows dirty firmware state",()=>{
   render(<IdentityBar project={project} firmware={firmware} onCopy={vi.fn()}/>);
-  expect(screen.getByText(/Git dirty/)).toBeTruthy();
+  expect(screen.getByText(/Git：有未提交改动/)).toBeTruthy();
 });
 
 it("ProbePanel renders a connected probe with a board name and lease reason",async()=>{
@@ -22,20 +22,20 @@ it("ProbePanel renders a connected probe with a board name and lease reason",asy
   render(<ProbePanel probes={probes} connectedProbeId="p1" canReconnect leaseReason="leased"
     onRefresh={vi.fn()} onConnect={vi.fn()} onReconnect={onReconnect} onRelease={onRelease}/>);
   expect(screen.getByText(/Nucleo/)).toBeTruthy();
-  expect(screen.getByText(/connected/)).toBeTruthy();
+  expect(screen.getByText("（已连接）")).toBeTruthy();
   expect(screen.getByText(/leased/)).toBeTruthy();
-  await userEvent.click(screen.getByRole("button",{name:"Reconnect"}));
+  await userEvent.click(screen.getByRole("button",{name:"重新连接"}));
   expect(onReconnect).toHaveBeenCalled();
-  await userEvent.click(screen.getByRole("button",{name:"Release"}));
+  await userEvent.click(screen.getByRole("button",{name:"释放探针"}));
   expect(onRelease).toHaveBeenCalled();
 });
 
 it("ProbePanel shows the no-probes message and disables actions",()=>{
   render(<ProbePanel probes={[]} connectedProbeId={null} canReconnect={false} leaseReason={null}
     onRefresh={vi.fn()} onConnect={vi.fn()} onReconnect={vi.fn()} onRelease={vi.fn()}/>);
-  expect(screen.getByText("No probes detected.")).toBeTruthy();
-  expect(screen.getByRole("button",{name:"Reconnect"})).toBeDisabled();
-  expect(screen.getByRole("button",{name:"Release"})).toBeDisabled();
+  expect(screen.getByText("未检测到探针。请检查连接后刷新列表。")).toBeTruthy();
+  expect(screen.getByRole("button",{name:"重新连接"})).toBeDisabled();
+  expect(screen.getByRole("button",{name:"释放探针"})).toBeDisabled();
 });
 
 it("ProbePanel renders an unconnected probe with a connect button and no lease line",async()=>{
@@ -44,7 +44,7 @@ it("ProbePanel renders an unconnected probe with a connect button and no lease l
   render(<ProbePanel probes={probes} connectedProbeId={null} canReconnect={false} leaseReason={null}
     onRefresh={vi.fn()} onConnect={onConnect} onReconnect={vi.fn()} onRelease={vi.fn()}/>);
   expect(screen.queryByText(/Connected:/)).toBeNull();
-  await userEvent.click(screen.getByRole("button",{name:"Connect"}));
+  await userEvent.click(screen.getByRole("button",{name:"连接"}));
   expect(onConnect).toHaveBeenCalledWith("p1");
 });
 
@@ -56,14 +56,14 @@ it("LiveTable renders an error row and a register row with type dash",async()=>{
   expect(screen.getByText("OVERRUN")).toBeTruthy();
   expect(screen.getByText("RCC.CSR")).toBeTruthy();
   expect(screen.getAllByText("-")).toHaveLength(2);
-  expect(screen.getByRole("button",{name:"On"})).toBeTruthy();
-  await userEvent.click(screen.getByRole("button",{name:"On"}));
+  expect(screen.getByRole("button",{name:"显示"})).toBeTruthy();
+  await userEvent.click(screen.getByRole("button",{name:"显示"}));
   expect(toggle).toHaveBeenCalledWith("variable:bad");
 });
 
 it("LiveTable shows the empty message when there are no rows",()=>{
   render(<LiveTable rows={[]} selectedSeries={[]} onSeriesToggle={vi.fn()}/>);
-  expect(screen.getByText("No watches in the selected group.")).toBeTruthy();
+  expect(screen.getByText("当前观测组暂无最新数值。请选择观测对象并开始采样。")).toBeTruthy();
 });
 
 it("NoticeRegion renders a non-view-reset notice without a prefix",()=>{
@@ -131,5 +131,5 @@ it("useDialogFocus ignores non-Escape keys",()=>{
 
 it("NoticeRegion renders an empty footer for no notices",()=>{
   render(<NoticeRegion notices={[]}/>);
-  expect(screen.getByLabelText("Notices")).toBeTruthy();
+  expect(screen.getByLabelText("监视通知")).toBeTruthy();
 });

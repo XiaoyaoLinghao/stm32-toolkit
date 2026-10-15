@@ -1,5 +1,6 @@
 import type {JSX} from "preact";
 import type {FirmwareStatus,ProjectStatus} from "../api/contract";
+import {copy} from "../presentation/zh";
 
 export type IdentityBarProps={
   project:ProjectStatus;
@@ -8,12 +9,13 @@ export type IdentityBarProps={
 };
 
 export function IdentityBar({project,firmware,onCopy}:IdentityBarProps):JSX.Element{
-  return<header className="panel">
-    <h1>{project.name}</h1>
-    <p>Logical project: <code>{project.logicalProjectId}</code> · Target: <code>{project.targetDevice}</code></p>
+  return<section className="panel" aria-label={copy.identityTitle}>
+    <h2>{copy.identityTitle}</h2>
+    <p>{project.name}</p>
+    <p>{copy.logicalProject}<code>{project.logicalProjectId}</code> · {copy.targetDevice}<code>{project.targetDevice}</code></p>
     {firmware===null
-      ?<p>No verified firmware identity.</p>
-      :<p>Firmware <code>{firmware.buildId}</code> · ELF <code>{firmware.elfSha256}</code> · Git {firmware.gitDirty?"dirty":firmware.gitHead} · {firmware.targetDevice}</p>}
-    <button type="button" onClick={()=>void onCopy()}>Copy workspace identity</button>
-  </header>;
+      ?<p>{copy.noFirmware}</p>
+      :<p>{copy.firmwareBuild}<code>{firmware.buildId}</code> · {copy.elfLabel}<code>{firmware.elfSha256}</code> · {copy.gitLabel}{firmware.gitDirty?copy.gitDirty:firmware.gitHead} · {firmware.targetDevice}</p>}
+    <button type="button" onClick={()=>void onCopy()}>{copy.copyIdentity}</button>
+  </section>;
 }

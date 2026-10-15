@@ -15,7 +15,7 @@ test.describe("STM32 Monitor end-to-end",()=>{
 
   test("bootstraps from a fragment token and renders the shell",async({page})=>{
     await openMonitor(page,monitor.accessUrl);
-    await expect(page.getByLabel("STM32 Monitor")).toBeAttached();
+    await expect(page.getByLabel("STM32 监视器")).toBeAttached();
     await expect(page.getByText("Fake Project")).toBeVisible();
   });
 

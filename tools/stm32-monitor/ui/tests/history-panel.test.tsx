@@ -29,59 +29,59 @@ it("historyInput and inputNs round-trip nanoseconds",()=>{
 it("loads edited bounds once",async()=>{
   const load=vi.fn();
   render(<HistoryPanel query={query} page={null} failure={null} onLoad={load} onPage={vi.fn()}/>);
-  const start=screen.getByLabelText("History start"),end=screen.getByLabelText("History end");
+  const start=screen.getByLabelText("开始时间（UTC）"),end=screen.getByLabelText("结束时间（UTC）");
   await userEvent.clear(start);
   await userEvent.type(start,"2026-08-10T00:00:00.000");
   await userEvent.clear(end);
   await userEvent.type(end,"2026-08-10T00:00:01.000");
-  await userEvent.click(screen.getByRole("button",{name:"Load history"}));
+  await userEvent.click(screen.getByRole("button",{name:"查询历史"}));
   expect(load).toHaveBeenCalledTimes(1);
 });
 
 it("does not load an inverted or invalid range",async()=>{
   const load=vi.fn();
   render(<HistoryPanel query={query} page={null} failure={null} onLoad={load} onPage={vi.fn()}/>);
-  const start=screen.getByLabelText("History start"),end=screen.getByLabelText("History end");
+  const start=screen.getByLabelText("开始时间（UTC）"),end=screen.getByLabelText("结束时间（UTC）");
   await userEvent.clear(start);
   await userEvent.type(start,"not-a-date");
   await userEvent.clear(end);
   await userEvent.type(end,"also-invalid");
-  await userEvent.click(screen.getByRole("button",{name:"Load history"}));
+  await userEvent.click(screen.getByRole("button",{name:"查询历史"}));
   expect(load).not.toHaveBeenCalled();
 });
 
 it("previous page uses the visited cursor stack",async()=>{
   const pageFn=vi.fn();
   const {rerender}=render(<HistoryPanel query={query} page={page} failure={null} onLoad={vi.fn()} onPage={pageFn}/>);
-  await userEvent.click(screen.getByRole("button",{name:"Next history page"}));
+  await userEvent.click(screen.getByRole("button",{name:"下一页"}));
   expect(pageFn).toHaveBeenCalledWith("cursor-2");
   rerender(<HistoryPanel query={{...query,cursor:"cursor-2"}} page={{...page,nextCursor:null}} failure={null} onLoad={vi.fn()} onPage={pageFn}/>);
-  await userEvent.click(screen.getByRole("button",{name:"Previous history page"}));
+  await userEvent.click(screen.getByRole("button",{name:"上一页"}));
   expect(pageFn).toHaveBeenLastCalledWith(undefined);
 });
 
 it("pages next and previous with visited cursor stack",async()=>{
   const load=vi.fn(),pageFn=vi.fn();
   render(<HistoryPanel query={query} page={page} failure={null} onLoad={load} onPage={pageFn}/>);
-  expect(screen.getByRole("button",{name:"Previous history page"})).toBeDisabled();
-  await userEvent.click(screen.getByRole("button",{name:"Next history page"}));
+  expect(screen.getByRole("button",{name:"上一页"})).toBeDisabled();
+  await userEvent.click(screen.getByRole("button",{name:"下一页"}));
   expect(pageFn).toHaveBeenCalledWith("cursor-2");
 });
 
 it("does not navigate when next is null or visited is empty",async()=>{
   const pageFn=vi.fn();
   const {rerender}=render(<HistoryPanel query={{...query,cursor:"cursor-2"}} page={{...page,nextCursor:null}} failure={null} onLoad={vi.fn()} onPage={pageFn}/>);
-  await userEvent.click(screen.getByRole("button",{name:"Next history page"}));
+  await userEvent.click(screen.getByRole("button",{name:"下一页"}));
   expect(pageFn).not.toHaveBeenCalled();
   rerender(<HistoryPanel query={{...query,cursor:"cursor-2"}} page={page} failure={null} onLoad={vi.fn()} onPage={pageFn}/>);
-  await userEvent.click(screen.getByRole("button",{name:"Previous history page"}));
+  await userEvent.click(screen.getByRole("button",{name:"上一页"}));
   expect(pageFn).not.toHaveBeenCalled();
 });
 
 it("renders failure alert and keeps inputs",()=>{
   render(<HistoryPanel query={query} page={page} failure={{ok:false,code:"HISTORY_FAILED",message:"query failed"}} onLoad={vi.fn()} onPage={vi.fn()}/>);
   expect(screen.getByRole("alert")).toHaveTextContent("HISTORY_FAILED");
-  expect(screen.getByLabelText("History start")).toHaveValue("1970-01-01T00:00");
+  expect(screen.getByLabelText("开始时间（UTC）")).toHaveValue("1970-01-01T00:00");
 });
 
 it("renders flattened rows in a table",()=>{

@@ -29,69 +29,69 @@ function props(overrides:Record<string,unknown>={}){
 it("starts sampling with the selected group id and expected revision",async()=>{
   const start=vi.fn();
   render(<SamplingControls {...props({onStart:start})}/>);
-  await userEvent.click(screen.getByRole("button",{name:"Start"}));
+  await userEvent.click(screen.getByRole("button",{name:"开始采样"}));
   expect(start).toHaveBeenCalledWith("group",1n);
 });
 
 it("disables start without a selected group",()=>{
   render(<SamplingControls {...props({group:null})}/>);
-  expect(screen.getByRole("button",{name:"Start"})).toBeDisabled();
+  expect(screen.getByRole("button",{name:"开始采样"})).toBeDisabled();
 });
 
 it("disables start while sampling is running or paused",()=>{
   const first=render(<SamplingControls {...props({status:sampling("RUNNING",{active:true})})}/>);
-  expect(screen.getByRole("button",{name:"Start"})).toBeDisabled();
+  expect(screen.getByRole("button",{name:"开始采样"})).toBeDisabled();
   first.unmount();
   render(<SamplingControls {...props({status:sampling("PAUSED",{active:true})})}/>);
-  expect(screen.getByRole("button",{name:"Start"})).toBeDisabled();
+  expect(screen.getByRole("button",{name:"开始采样"})).toBeDisabled();
 });
 
 it("allows start again from STOPPING",()=>{
   render(<SamplingControls {...props({status:sampling("STOPPING",{active:true})})}/>);
-  expect(screen.getByRole("button",{name:"Start"})).toBeEnabled();
+  expect(screen.getByRole("button",{name:"开始采样"})).toBeEnabled();
 });
 
 it("pauses only while running",async()=>{
   const pause=vi.fn();
   const running=render(<SamplingControls {...props({status:sampling("RUNNING",{active:true}),onPause:pause})}/>);
-  await userEvent.click(screen.getByRole("button",{name:"Pause"}));
+  await userEvent.click(screen.getByRole("button",{name:"暂停采样"}));
   expect(pause).toHaveBeenCalled();
   running.unmount();
   const idle=vi.fn();
   render(<SamplingControls {...props({onPause:idle})}/>);
-  expect(screen.getByRole("button",{name:"Pause"})).toBeDisabled();
+  expect(screen.getByRole("button",{name:"暂停采样"})).toBeDisabled();
   expect(idle).not.toHaveBeenCalled();
 });
 
 it("resumes only while paused or paused-blocked",async()=>{
   const resume=vi.fn();
   const paused=render(<SamplingControls {...props({status:sampling("PAUSED",{active:true}),onResume:resume})}/>);
-  await userEvent.click(screen.getByRole("button",{name:"Resume"}));
+  await userEvent.click(screen.getByRole("button",{name:"继续采样"}));
   expect(resume).toHaveBeenCalled();
   paused.unmount();
   const blocked=vi.fn();
   const blockedRender=render(<SamplingControls {...props({status:sampling("PAUSED_BLOCKED",{active:true,blockedCode:"MONITOR_PROBE_BUSY"}),onResume:blocked})}/>);
-  await userEvent.click(screen.getByRole("button",{name:"Resume"}));
+  await userEvent.click(screen.getByRole("button",{name:"继续采样"}));
   expect(blocked).toHaveBeenCalled();
   blockedRender.unmount();
   render(<SamplingControls {...props({status:sampling("IDLE"),onResume:resume})}/>);
-  expect(screen.getByRole("button",{name:"Resume"})).toBeDisabled();
+  expect(screen.getByRole("button",{name:"继续采样"})).toBeDisabled();
 });
 
 it("stops only when sampling is active",async()=>{
   const stop=vi.fn();
   const running=render(<SamplingControls {...props({status:sampling("RUNNING",{active:true}),onStop:stop})}/>);
-  await userEvent.click(screen.getByRole("button",{name:"Stop"}));
+  await userEvent.click(screen.getByRole("button",{name:"停止采样"}));
   expect(stop).toHaveBeenCalled();
   running.unmount();
   render(<SamplingControls {...props({status:sampling("IDLE"),onStop:stop})}/>);
-  expect(screen.getByRole("button",{name:"Stop"})).toBeDisabled();
+  expect(screen.getByRole("button",{name:"停止采样"})).toBeDisabled();
   expect(stop).toHaveBeenCalledTimes(1);
 });
 
 it("shows the authoritative state and current group",()=>{
   render(<SamplingControls {...props({status:sampling("PAUSED",{active:true})})}/>);
-  expect(screen.getByRole("status")).toHaveTextContent("PAUSED");
+  expect(screen.getByRole("status")).toHaveTextContent("已暂停");
   expect(screen.getByText("Group",{exact:false})).toBeTruthy();
 });
 

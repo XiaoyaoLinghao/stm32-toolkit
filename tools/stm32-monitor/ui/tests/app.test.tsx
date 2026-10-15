@@ -2,6 +2,11 @@ import {expect,it,vi,beforeEach} from "vitest";
 import {render,screen} from "@testing-library/preact";
 import {App} from "../src/app";
 
+vi.mock("echarts/core",()=>({init:vi.fn(()=>null),use:vi.fn(),default:{init:vi.fn(()=>null),use:vi.fn()}}));
+vi.mock("echarts/charts",()=>({LineChart:class{}}));
+vi.mock("echarts/components",()=>({GridComponent:class{},TooltipComponent:class{},LegendComponent:class{}}));
+vi.mock("echarts/renderers",()=>({CanvasRenderer:class{}}));
+
 vi.mock("../src/api/client",()=>({
   createMonitorApi:()=>{
     return{
@@ -40,9 +45,11 @@ beforeEach(()=>{
 it("App renders the monitor shell with identity and probe panels after load",async()=>{
   render(<App/>);
   expect(await screen.findByText("Project")).toBeTruthy();
-  expect(screen.getByLabelText("Probe")).toBeTruthy();
-  expect(screen.getByLabelText("Watch groups")).toBeTruthy();
-  expect(screen.getByLabelText("Live values")).toBeTruthy();
-  expect(screen.getByLabelText("Catalog")).toBeTruthy();
-  expect(screen.getByLabelText("Sampling status")).toBeTruthy();
+  screen.getByRole("button",{name:"连接与固件详情"}).click();
+  expect(screen.getByLabelText("探针连接")).toBeTruthy();
+  expect(screen.getByLabelText("观测组")).toBeTruthy();
+  expect(screen.getByLabelText("最新数值")).toBeTruthy();
+  screen.getByRole("button",{name:"浏览变量与寄存器"}).click();
+  expect(screen.getByLabelText("变量与寄存器目录")).toBeTruthy();
+  expect(screen.getByLabelText("采样状态汇总")).toBeTruthy();
 });

@@ -37,15 +37,15 @@ it("new group creates and saves",async()=>{
     draft:{sourceGroupId:null,expectedRevision:null,name:"",description:"",intervalMs:250,items:[]},
     onNew:create,onSave:save,
   })}/>);
-  expect(screen.getByRole("button",{name:"Create group"})).toBeTruthy();
-  await userEvent.click(screen.getByRole("button",{name:"New group"}));
+  expect(screen.getByRole("button",{name:"创建观测组"})).toBeTruthy();
+  await userEvent.click(screen.getByRole("button",{name:"新建观测组"}));
   expect(create).toHaveBeenCalled();
 });
 
 it("ignores a non-finite interval input",async()=>{
   const change=vi.fn();
   render(<GroupPanel {...props({onDraftChange:change})}/>);
-  const interval=screen.getByLabelText("Interval ms");
+  const interval=screen.getByLabelText("采样间隔（ms）");
   await userEvent.clear(interval);
   await userEvent.type(interval,"abc");
   expect(change).toHaveBeenCalled();
@@ -54,15 +54,15 @@ it("ignores a non-finite interval input",async()=>{
 it("edits draft name, description and interval",async()=>{
   const change=vi.fn();
   render(<GroupPanel {...props({onDraftChange:change})}/>);
-  const nameInput=screen.getByLabelText("Name");
+  const nameInput=screen.getByLabelText("名称");
   await userEvent.clear(nameInput);
   await userEvent.type(nameInput,"Renamed");
   expect(change).toHaveBeenCalled();
-  const description=screen.getByLabelText("Description");
+  const description=screen.getByLabelText("描述");
   await userEvent.clear(description);
   await userEvent.type(description,"a motor controller");
   expect(change).toHaveBeenCalled();
-  const interval=screen.getByLabelText("Interval ms");
+  const interval=screen.getByLabelText("采样间隔（ms）");
   await userEvent.clear(interval);
   await userEvent.type(interval,"500");
   expect(change).toHaveBeenCalled();
@@ -71,31 +71,31 @@ it("edits draft name, description and interval",async()=>{
 it("removes a register watch from the draft",async()=>{
   const remove=vi.fn();
   render(<GroupPanel {...props({draft:{sourceGroupId:"group",expectedRevision:1n,name:"Group",description:"",intervalMs:250,items:[{kind:"register" as const,registerPath:"TIM2_CNT"}]},onRemove:remove})}/>);
-  await userEvent.click(screen.getByRole("button",{name:"Remove"}));
+  await userEvent.click(screen.getByRole("button",{name:"移除"}));
   expect(remove).toHaveBeenCalledWith("register:TIM2_CNT");
 });
 
 it("saves the selected group",async()=>{
   const save=vi.fn();
   render(<GroupPanel {...props({onSave:save})}/>);
-  await userEvent.click(screen.getByRole("button",{name:"Save group"}));
+  await userEvent.click(screen.getByRole("button",{name:"保存观测组"}));
   expect(save).toHaveBeenCalled();
 });
 
 it("deletes only after explicit confirmation",async()=>{
   const del=vi.fn();
   render(<GroupPanel {...props({onDelete:del})}/>);
-  await userEvent.click(screen.getByRole("button",{name:"Delete"}));
+  await userEvent.click(screen.getByRole("button",{name:"删除"}));
   expect(del).not.toHaveBeenCalled();
-  await userEvent.click(screen.getByRole("button",{name:"Confirm delete"}));
+  await userEvent.click(screen.getByRole("button",{name:"确认删除"}));
   expect(del).toHaveBeenCalledWith("group");
 });
 
 it("cancelling delete does not call delete",async()=>{
   const del=vi.fn();
   render(<GroupPanel {...props({onDelete:del})}/>);
-  await userEvent.click(screen.getByRole("button",{name:"Delete"}));
-  await userEvent.click(screen.getByRole("button",{name:"Cancel"}));
+  await userEvent.click(screen.getByRole("button",{name:"删除"}));
+  await userEvent.click(screen.getByRole("button",{name:"取消"}));
   expect(del).not.toHaveBeenCalled();
 });
 
@@ -107,11 +107,11 @@ it("renders failure alert",()=>{
 it("imports a group document after preview and confirmation",async()=>{
   const importFn=vi.fn();
   render(<GroupPanel {...props({onImport:importFn})}/>);
-  await userEvent.click(screen.getByRole("button",{name:"Import groups"}));
+  await userEvent.click(screen.getByRole("button",{name:"导入观测组"}));
   const file=screen.getByTestId("group-import-file");
   await userEvent.upload(file,new File(['{"schemaVersion":1,"groups":[]}'],"groups.json",{type:"application/json"}));
   expect(importFn).not.toHaveBeenCalled();
-  const confirm=await screen.findByRole("button",{name:"Confirm import"});
+  const confirm=await screen.findByRole("button",{name:"确认导入"});
   await userEvent.click(confirm);
   expect(importFn).toHaveBeenCalledWith({schemaVersion:1,groups:[]});
 });
@@ -119,20 +119,20 @@ it("imports a group document after preview and confirmation",async()=>{
 it("rejects invalid import JSON with an error and no confirmation",async()=>{
   const importFn=vi.fn();
   render(<GroupPanel {...props({onImport:importFn})}/>);
-  await userEvent.click(screen.getByRole("button",{name:"Import groups"}));
+  await userEvent.click(screen.getByRole("button",{name:"导入观测组"}));
   const file=screen.getByTestId("group-import-file");
   await userEvent.upload(file,new File(["not-json"],"bad.json",{type:"application/json"}));
-  expect(screen.queryByRole("button",{name:"Confirm import"})).toBeNull();
+  expect(screen.queryByRole("button",{name:"确认导入"})).toBeNull();
   expect(importFn).not.toHaveBeenCalled();
 });
 
 it("cancels an import preview without sending",async()=>{
   const importFn=vi.fn();
   render(<GroupPanel {...props({onImport:importFn})}/>);
-  await userEvent.click(screen.getByRole("button",{name:"Import groups"}));
+  await userEvent.click(screen.getByRole("button",{name:"导入观测组"}));
   const file=screen.getByTestId("group-import-file");
   await userEvent.upload(file,new File(['{"schemaVersion":1,"groups":[]}'],"groups.json",{type:"application/json"}));
-  const cancel=await screen.findByRole("button",{name:"Cancel"});
+  const cancel=await screen.findByRole("button",{name:"取消"});
   await userEvent.click(cancel);
   expect(importFn).not.toHaveBeenCalled();
 });
@@ -140,7 +140,7 @@ it("cancels an import preview without sending",async()=>{
 it("ignores an import change event without a file",()=>{
   const importFn=vi.fn();
   render(<GroupPanel {...props({onImport:importFn})}/>);
-  fireEvent.click(screen.getByRole("button",{name:"Import groups"}));
+  fireEvent.click(screen.getByRole("button",{name:"导入观测组"}));
   fireEvent.change(screen.getByTestId("group-import-file"),{target:{files:[]}});
   expect(importFn).not.toHaveBeenCalled();
 });
@@ -149,7 +149,7 @@ it("shows empty draft for a new group selection",()=>{
   render(<GroupPanel {...props({groups:[],selectedGroupId:null,
     draft:{sourceGroupId:null,expectedRevision:null,name:"",description:"",intervalMs:250,items:[]}})}/>);
   expect(screen.queryByRole("button",{name:"Group (1)"})).toBeNull();
-  expect(screen.getByRole("button",{name:"New group"})).toBeTruthy();
+  expect(screen.getByRole("button",{name:"新建观测组"})).toBeTruthy();
 });
 
 it("exports authoritative groups as a blob download on click",async()=>{
@@ -160,7 +160,7 @@ it("exports authoritative groups as a blob download on click",async()=>{
   URL.revokeObjectURL=vi.fn() as unknown as typeof URL.revokeObjectURL;
   try{
     render(<GroupPanel {...props({groups:[watchGroup()]})}/>);
-    await userEvent.click(screen.getByRole("button",{name:"Export groups JSON"}));
+    await userEvent.click(screen.getByRole("button",{name:"导出观测组 JSON"}));
     expect(URL.createObjectURL).toHaveBeenCalledTimes(1);
     expect(URL.revokeObjectURL).toHaveBeenCalledWith(created[0]!.href);
   }finally{
@@ -172,22 +172,22 @@ it("exports authoritative groups as a blob download on click",async()=>{
 it("surfaces an invalid schema before confirmation and hides the preview",async()=>{
   const importFn=vi.fn();
   render(<GroupPanel {...props({onImport:importFn})}/>);
-  await userEvent.click(screen.getByRole("button",{name:"Import groups"}));
+  await userEvent.click(screen.getByRole("button",{name:"导入观测组"}));
   const file=screen.getByTestId("group-import-file");
   await userEvent.upload(file,new File(['{"schemaVersion":1,"groups":{}}'],"bad-schema.json",{type:"application/json"}));
-  expect(await screen.findByRole("alert")).toHaveTextContent("invalid");
-  expect(screen.queryByRole("button",{name:"Confirm import"})).toBeNull();
+  expect(await screen.findByRole("alert")).toHaveTextContent("导入文件无效");
+  expect(screen.queryByRole("button",{name:"确认导入"})).toBeNull();
   expect(importFn).not.toHaveBeenCalled();
 });
 
 it("closes the import preview when toggling the import button again",async()=>{
   const importFn=vi.fn();
   render(<GroupPanel {...props({onImport:importFn})}/>);
-  await userEvent.click(screen.getByRole("button",{name:"Import groups"}));
+  await userEvent.click(screen.getByRole("button",{name:"导入观测组"}));
   const file=screen.getByTestId("group-import-file");
   await userEvent.upload(file,new File(['{"schemaVersion":1,"groups":[]}'],"groups.json",{type:"application/json"}));
-  expect(await screen.findByRole("button",{name:"Confirm import"})).toBeTruthy();
-  await userEvent.click(screen.getByRole("button",{name:"Import groups"}));
-  expect(screen.queryByRole("button",{name:"Confirm import"})).toBeNull();
+  expect(await screen.findByRole("button",{name:"确认导入"})).toBeTruthy();
+  await userEvent.click(screen.getByRole("button",{name:"导入观测组"}));
+  expect(screen.queryByRole("button",{name:"确认导入"})).toBeNull();
   expect(importFn).not.toHaveBeenCalled();
 });

@@ -11,10 +11,12 @@ echarts.use([LineChart,GridComponent,TooltipComponent,LegendComponent,CanvasRend
 export function buildChartOption(series:readonly DisplaySeries[],range:ZoomRange):EChartsCoreOption{
   const start=range.start,end=range.end;
   return{
-    legend:{type:"scroll"},
+    color:["#2563eb","#0f9b8e","#e58a1f","#8b5cf6","#db5270","#137eaf","#ba7b1b","#537455"],
+    textStyle:{fontFamily:"Segoe UI, Microsoft YaHei UI, Microsoft YaHei, sans-serif",color:"#536174"},
+    legend:{type:"scroll",textStyle:{color:"#536174"}},
     grid:{left:48,right:16,top:32,bottom:40},
-    xAxis:{type:"category",data:series[0]?.points.map(point=>point.capturedAtUtc)??[]},
-    yAxis:{type:"value",scale:true},
+    xAxis:{type:"category",data:series[0]?.points.map(point=>point.capturedAtUtc)??[],axisLabel:{color:"#536174"}},
+    yAxis:{type:"value",scale:true,axisLabel:{color:"#536174"}},
     dataZoom:[{type:"inside",start,end},{type:"slider",start,end}],
     tooltip:{trigger:"axis"},
     series:series.map(item=>({

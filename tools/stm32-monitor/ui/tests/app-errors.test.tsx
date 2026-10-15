@@ -44,22 +44,24 @@ vi.mock("../src/api/live",()=>({openLive:()=>()=>{}}));
 it("App renders a blocking error when a create-group request fails",async()=>{
   render(<App/>);
   await screen.findByText("Project");
-  fireEvent.click(screen.getByRole("button",{name:"New group"}));
-  fireEvent.input(screen.getByLabelText("Name"),{target:{value:"Motor"}});
-  fireEvent.input(screen.getByPlaceholderText("symbol or register prefix"),{target:{value:"counter"}});
-  await waitFor(()=>{expect(screen.getByRole("button",{name:"Add to group"})).toBeTruthy();});
-  fireEvent.click(screen.getByRole("button",{name:"Add to group"}));
-  fireEvent.click(screen.getByRole("button",{name:"Create group"}));
+  fireEvent.click(screen.getByRole("button",{name:"新建观测组"}));
+  fireEvent.input(screen.getByLabelText("名称"),{target:{value:"Motor"}});
+  fireEvent.click(screen.getByRole("button",{name:"浏览变量与寄存器"}));
+  fireEvent.input(screen.getByPlaceholderText("输入符号或寄存器前缀"),{target:{value:"counter"}});
+  await waitFor(()=>{expect(screen.getByRole("button",{name:"加入观测组草稿"})).toBeTruthy();});
+  fireEvent.click(screen.getByRole("button",{name:"加入观测组草稿"}));
+  fireEvent.click(screen.getByRole("button",{name:"创建观测组"}));
   expect(await screen.findByRole("alert")).toHaveTextContent("UNAVAILABLE");
 });
 
 it("App records a history query after loading history through the panel",async()=>{
   render(<App/>);
   await screen.findByText("Project");
-  const start=screen.getByLabelText("History start") as HTMLInputElement;
-  const end=screen.getByLabelText("History end") as HTMLInputElement;
+  fireEvent.click(screen.getByRole("button",{name:"历史记录"}));
+  const start=screen.getByLabelText("开始时间（UTC）") as HTMLInputElement;
+  const end=screen.getByLabelText("结束时间（UTC）") as HTMLInputElement;
   fireEvent.input(start,{target:{value:"2026-08-10T00:00:00"}});
   fireEvent.input(end,{target:{value:"2026-08-10T00:00:02"}});
-  fireEvent.click(screen.getByRole("button",{name:"Load history"}));
-  await waitFor(()=>{expect(screen.getByText("No history rows for this query.")).toBeTruthy();});
+  fireEvent.click(screen.getByRole("button",{name:"查询历史"}));
+  await waitFor(()=>{expect(screen.getByText("此范围内暂无历史记录。")).toBeTruthy();});
 });

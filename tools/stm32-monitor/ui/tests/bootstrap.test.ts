@@ -50,7 +50,7 @@ it("returns only fixed startup copy on an incomplete bootstrap request",async()=
   expect(result).toMatchObject({ok:false,code:"MONITOR_BOOTSTRAP_REQUEST_FAILED"});
   expect(JSON.stringify(result)).not.toContain(TOKEN);
   renderStartupError(document,result.ok?"":result.code);
-  expect(document.querySelector('[role="alert"]')?.textContent).toContain("request did not complete");
+  expect(document.querySelector('[role="alert"]')?.textContent).toContain("启动请求未完成");
   expect(document.body.textContent).not.toContain(TOKEN);
 });
 
@@ -68,11 +68,11 @@ it.each([
   expect(result).toMatchObject({ok:false,code:expectedCode});
   renderStartupError(document,result.ok?"":result.code);
   const text=document.body.textContent??"";
-  expect(text).toContain("Monitor terminal");
+  expect(text).toContain("Monitor 终端");
   expect(text).not.toContain(TOKEN);
   expect(text).not.toContain("private server body");
   if(expectedCode==="MONITOR_BOOTSTRAP_SERVICE_FAILED")
-    expect(text).not.toContain("rejected this access link");
+    expect(text).not.toContain("授权链接被拒绝");
   expect(window.location.hash).toBe("");
 });
 
@@ -80,7 +80,7 @@ it("renders fixed safe recovery for an unknown bootstrap error code",()=>{
   document.body.textContent=`${TOKEN} private server body`;
   renderStartupError(document,"UNKNOWN_private server body");
   const text=document.body.textContent??"";
-  expect(text).toContain("Monitor terminal");
+  expect(text).toContain("Monitor 终端");
   expect(text).not.toContain(TOKEN);
   expect(text).not.toContain("private server body");
 });

@@ -1,5 +1,6 @@
 import type {JSX} from "preact";
 import type {ZoomAction,ZoomRange} from "../chart/zoom";
+import {copy} from "../presentation/zh";
 
 export type ChartZoomControlsProps={
   range:ZoomRange;
@@ -7,10 +8,10 @@ export type ChartZoomControlsProps={
 };
 
 export function ChartZoomControls({range,onAction}:ChartZoomControlsProps):JSX.Element{
-  return<section className="panel" aria-label="Chart zoom">
-    <p>Zoom: {range.start}%–{range.end}%</p>
-    <button type="button" onClick={()=>void onAction({type:"zoom.in"})}>Zoom in</button>
-    <button type="button" onClick={()=>void onAction({type:"zoom.out"})}>Zoom out</button>
-    <button type="button" onClick={()=>void onAction({type:"zoom.reset"})}>Reset zoom</button>
+  return<section className="panel zoom-controls" aria-label={copy.zoomTitle}>
+    <p>{copy.zoomRange}{range.start}%–{range.end}%</p>
+    <button type="button" onClick={()=>void onAction({type:"zoom.in"})}>{copy.zoomIn}</button>
+    <button type="button" onClick={()=>void onAction({type:"zoom.out"})}>{copy.zoomOut}</button>
+    <button type="button" onClick={()=>void onAction({type:"zoom.reset"})}>{copy.zoomReset}</button>
   </section>;
 }
