@@ -30,7 +30,7 @@ export function CatalogPanel(p:CatalogPanelProps):JSX.Element{
   const current=kind==="variables"?p.variables:p.registers;
   const resultIdentityMatches=current!==null&&current.query===query.trim()&&current.bindingKey.includes(String(p.bindingEpoch));
 
-  return<section className="panel" aria-label={copy.catalogTitle}>
+  return<section className="panel catalog-panel" aria-label={copy.catalogTitle}>
     <h2>{copy.catalogTitle}</h2>
     <div role="tablist" aria-label={copy.catalogKind}>
       <button type="button" role="tab" aria-selected={kind==="variables"} onClick={()=>setKind("variables")}>{copy.variables}</button>
@@ -40,6 +40,7 @@ export function CatalogPanel(p:CatalogPanelProps):JSX.Element{
       onInput={event=>{const value=event.currentTarget.value;setQuery(value);void p.onSearch(kind,value.trim());}}/></label>
     {!p.connected&&<p>{copy.catalogNeedsProbe}</p>}
     {p.connected&&current!==null&&resultIdentityMatches&&(
+      <div className="table-scroll" role="region" aria-label={copy.catalogResults} tabIndex={0}>
       <table><thead><tr><th>{copy.selector}</th><th>{copy.type}</th><th>{copy.action}</th></tr></thead>
         <tbody>{(kind==="variables"?current.items:current.items as RegisterDescriptor[]).map(item=>{
           const descriptor=item as VariableDescriptor|RegisterDescriptor;
@@ -47,7 +48,7 @@ export function CatalogPanel(p:CatalogPanelProps):JSX.Element{
             <td><code>{descriptor.selector}</code></td>
             <td>{"typeName" in descriptor?descriptor.typeName:formatCopy.bits(descriptor.sizeBits)}</td>
             <td><button type="button" onClick={()=>addWatch(descriptor,p.onAdd)}>{copy.addDraft}</button></td>
-          </tr>;})}</tbody></table>)}
+          </tr>;})}</tbody></table></div>)}
     <button type="button" disabled={!resultIdentityMatches||current?.nextCursor===null} onClick={()=>void p.onNext(kind)}>{copy.nextPage}</button>
   </section>;
 }

@@ -19,16 +19,38 @@ it("cancels the export confirmation dialog and returns focus",async()=>{
   expect(screen.getByRole("dialog",{name:"确认历史导出"})).toBeTruthy();
   await userEvent.keyboard("{Escape}");
   expect(screen.queryByRole("dialog",{name:"确认历史导出"})).toBeNull();
+  await waitFor(()=>expect(trigger).toHaveFocus());
   expect(create).not.toHaveBeenCalled();
 });
 
 it("cancels via the Cancel button without creating",async()=>{
   const create=vi.fn();
   render(<ExportPanel range={range} artifact={null} failure={null} onCreate={create} onRefresh={vi.fn()} onDownload={vi.fn()}/>);
-  await userEvent.click(screen.getByRole("button",{name:"创建 JSONL 导出"}));
+  const trigger=screen.getByRole("button",{name:"创建 JSONL 导出"});
+  await userEvent.click(trigger);
   await userEvent.click(screen.getByRole("button",{name:"取消"}));
   expect(screen.queryByRole("dialog",{name:"确认历史导出"})).toBeNull();
+  await waitFor(()=>expect(trigger).toHaveFocus());
   expect(create).not.toHaveBeenCalled();
+});
+
+it("traps Tab in the export dialog and restores an enabled field after confirmation",async()=>{
+  render(<ExportPanel range={range} artifact={null} failure={null} onCreate={vi.fn()} onRefresh={vi.fn()} onDownload={vi.fn()}/>);
+  const trigger=screen.getByRole("button",{name:"创建 CSV 导出"});
+  await userEvent.click(trigger);
+  const dialog=screen.getByRole("dialog",{name:"确认历史导出"});
+  const confirm=screen.getByRole("button",{name:"确认导出"});
+  const cancel=screen.getByRole("button",{name:"取消"});
+  expect(dialog).toHaveFocus();
+  await userEvent.tab();
+  expect(confirm).toHaveFocus();
+  await userEvent.tab({shift:true});
+  expect(cancel).toHaveFocus();
+  await userEvent.tab();
+  expect(confirm).toHaveFocus();
+  await userEvent.click(confirm);
+  expect(trigger).toBeDisabled();
+  await waitFor(()=>expect(screen.getByLabelText("导出开始时间（UTC）")).toHaveFocus());
 });
 
 it("does not create export for an invalid inverted range",async()=>{
@@ -107,4 +129,33 @@ it("binds submitted UTC range to the arriving artifact, even when a prior artifa
   expect(screen.queryByText(/提交时范围.*00:00:00.*00:00:02/)).toBeNull();
   rerender(<ExportPanel range={second} artifact={artifact} {...callbacks}/>);
   expect(screen.getByText(/提交时范围.*00:00:00.*00:00:02/)).toBeTruthy();
+});
+
+it("serializes refresh and creation until each response arrives, and clears busy on failure",async()=>{
+  const first={startNs:1786320000000000000n,endNs:1786320002000000000n};
+  const refreshed={...artifact,bytes:124n};
+  const second={...artifact,exportId:"e2",format:"jsonl" as const};
+  let resolveRefresh:(value:void)=>void=()=>{};
+  const refresh=vi.fn(()=>new Promise<void>(resolve=>{resolveRefresh=resolve;}));
+  const create=vi.fn();
+  const callbacks={range:first,failure:null,onCreate:create,onRefresh:refresh,onDownload:vi.fn()};
+  const {rerender}=render(<ExportPanel artifact={artifact} {...callbacks}/>);
+  await userEvent.click(screen.getByRole("button",{name:"刷新导出状态"}));
+  expect(refresh).toHaveBeenCalledWith("e1");
+  expect(screen.getByRole("button",{name:"创建 CSV 导出"})).toBeDisabled();
+  await userEvent.click(screen.getByRole("button",{name:"创建 CSV 导出"}));
+  expect(create).not.toHaveBeenCalled();
+  rerender(<ExportPanel artifact={refreshed} {...callbacks}/>);
+  resolveRefresh();
+  await waitFor(()=>expect(screen.getByRole("button",{name:"创建 JSONL 导出"})).toBeEnabled());
+  await userEvent.click(screen.getByRole("button",{name:"创建 JSONL 导出"}));
+  await userEvent.click(screen.getByRole("button",{name:"确认导出"}));
+  expect(create).toHaveBeenCalledTimes(1);
+  expect(screen.getByRole("button",{name:"刷新导出状态"})).toBeDisabled();
+  rerender(<ExportPanel artifact={second} {...callbacks}/>);
+  await waitFor(()=>expect(screen.getByText(/提交时范围.*00:00:00.*00:00:02/)).toBeTruthy());
+  expect(screen.getByRole("button",{name:"刷新导出状态"})).toBeEnabled();
+  await userEvent.click(screen.getByRole("button",{name:"刷新导出状态"}));
+  rerender(<ExportPanel artifact={second} {...callbacks} failure={{ok:false,code:"FAILED",message:"raw"}}/>);
+  await waitFor(()=>expect(screen.getByRole("button",{name:"创建 CSV 导出"})).toBeEnabled());
 });

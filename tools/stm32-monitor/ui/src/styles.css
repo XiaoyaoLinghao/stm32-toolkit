@@ -47,6 +47,7 @@ small,.hint{color:var(--muted);font-size:12px;}
 .zoom-controls{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:8px 12px;}
 .zoom-controls p{margin-right:auto;color:var(--muted);}
 .table-scroll{width:100%;overflow-x:auto;}
+.catalog-panel .table-scroll{max-width:100%;}
 table{border-collapse:collapse;width:100%;min-width:470px;}
 th,td{text-align:left;padding:7px 8px;border-bottom:1px solid #e9edf2;vertical-align:top;}
 th{color:var(--muted);font-size:12px;font-weight:600;white-space:nowrap;}

@@ -158,6 +158,86 @@ test.describe("STM32 Monitor user workflow",()=>{
     await expect(table).toContainText("读取失败");
     await expect(table).toContainText("faulty");
   });
+
+  test("keeps catalog results inside a local scroller at 320 pixels",async({page})=>{
+    await page.setViewportSize({width:320,height:700});
+    await freshPage(page);
+    await connectProbe(page);
+    await page.getByRole("button",{name:"浏览变量与寄存器"}).click();
+    await page.getByLabel("搜索").fill("counter");
+    const results=page.getByRole("region",{name:"目录搜索结果"});
+    await expect(results.getByText("counter")).toBeVisible();
+    const widths=await page.evaluate(()=>({page:document.documentElement.scrollWidth,viewport:window.innerWidth}));
+    expect(widths.page).toBeLessThanOrEqual(widths.viewport);
+    expect(await results.evaluate(element=>element.scrollWidth>element.clientWidth)).toBe(true);
+  });
+
+  test("queries UTC history, retains a manual export draft, and downloads the submitted task",async({page})=>{
+    // This route supplies only the fake runtime's missing export capability;
+    // history, navigation and UI state still run through the normal browser app.
+    const submitted:string[]=[];
+    const artifacts=new Map<string,{exportId:string;format:"csv"|"jsonl";sha256:string;bytes:number;valueCount:number}>();
+    let nextId=1;
+    const envelope=(operation:string,data:unknown)=>JSON.stringify({protocol:"stm32-toolkit-monitor/1",
+      toolkitVersion:"1.0.0",monitorVersion:"1.0.0",ok:true,operation,code:"OK",message:"",data,details:{}});
+    await page.route(/\/api\/v1\/exports(?:\/.*)?$/,async route=>{
+      const request=route.request(),path=new URL(request.url()).pathname;
+      if(request.method()==="POST"&&path==="/api/v1/exports"){
+        const body=request.postData()??"";
+        submitted.push(body);
+        const format=JSON.parse(body).format as "csv"|"jsonl";
+        const artifact={exportId:`e${nextId++}`,format,sha256:"a".repeat(64),bytes:12,valueCount:1};
+        artifacts.set(artifact.exportId,artifact);
+        await route.fulfill({status:200,contentType:"application/json",body:envelope("monitor.exports.create",artifact)});
+        return;
+      }
+      const match=/^\/api\/v1\/exports\/(e\d+)(\/download)?$/.exec(path);
+      const artifact=match===null?undefined:artifacts.get(match[1]!);
+      if(artifact===undefined){await route.abort();return;}
+      if(match?.[2]!==undefined){
+        await route.fulfill({status:200,headers:{"Content-Type":artifact.format==="csv"?"text/csv":"application/x-ndjson",
+          "Content-Disposition":`attachment; filename="${artifact.exportId}.${artifact.format}"`},body:"value\n1\n"});
+        return;
+      }
+      await route.fulfill({status:200,contentType:"application/json",body:envelope("monitor.exports.get",artifact)});
+    });
+    await freshPage(page);
+    await page.getByRole("button",{name:"历史记录"}).click();
+    await page.getByLabel("开始时间（UTC）").fill("2026-08-10T00:00:00.000");
+    await page.getByLabel("结束时间（UTC）").fill("2026-08-10T00:00:02.000");
+    await page.getByRole("button",{name:"查询历史"}).click();
+    await expect(page.getByText("此范围内暂无历史记录。")).toBeVisible();
+    const exportStart=page.getByLabel("导出开始时间（UTC）");
+    const exportEnd=page.getByLabel("导出结束时间（UTC）");
+    await expect(exportStart).toHaveValue(/2026-08-10T00:00:00/);
+    await exportStart.fill("2026-08-10T00:00:01.000");
+    await exportEnd.fill("2026-08-10T00:00:04.000");
+    await page.getByRole("button",{name:"实时监视"}).click();
+    await page.getByRole("button",{name:"历史记录"}).click();
+    await expect(exportStart).toHaveValue(/2026-08-10T00:00:01/);
+    await page.getByRole("button",{name:"创建 CSV 导出"}).click();
+    await page.getByRole("button",{name:"确认导出"}).click();
+    await expect(page.getByText(/提交时范围.*00:00:01.*00:00:04/)).toBeVisible();
+    expect(submitted).toHaveLength(1);
+    expect(submitted[0]).toContain((BigInt(Date.parse("2026-08-10T00:00:01Z"))*1_000_000n).toString());
+    expect(submitted[0]).toContain('"format":"csv"');
+    await page.getByLabel("开始时间（UTC）").fill("2026-08-10T00:00:10.000");
+    await page.getByLabel("结束时间（UTC）").fill("2026-08-10T00:00:12.000");
+    await page.getByRole("button",{name:"查询历史"}).click();
+    await expect(page.getByText("查询范围已更新，保留当前导出范围。")).toBeVisible();
+    await expect(exportStart).toHaveValue(/2026-08-10T00:00:01/);
+    await expect(page.getByText(/提交时范围.*00:00:01.*00:00:04/)).toBeVisible();
+    await page.getByRole("button",{name:"使用查询范围"}).click();
+    await expect(exportStart).toHaveValue(/2026-08-10T00:00:10/);
+    await page.getByRole("button",{name:"创建 JSONL 导出"}).click();
+    await page.getByRole("button",{name:"确认导出"}).click();
+    await expect(page.getByText(/提交时范围.*00:00:10.*00:00:12/)).toBeVisible();
+    expect(submitted).toHaveLength(2);
+    expect(submitted[1]).toContain('"format":"jsonl"');
+    const downloadPromise=page.waitForEvent("download");
+    await page.getByRole("button",{name:"下载已验证的 JSONL"}).click();
+    expect((await downloadPromise).suggestedFilename()).toBe("e2.jsonl");
+  });
 });
 
 function readStream(stream:NodeJS.ReadableStream):Promise<Buffer>{
