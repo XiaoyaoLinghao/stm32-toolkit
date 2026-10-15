@@ -42,3 +42,9 @@
 
 浏览器/真实硬件/发布检查继续 DEFERRED；本片要求有意义的 reducer/controller/组件自动化证据，不以 jsdom 冒充真实浏览器。
 
+
+## R1 补充：冲突后的列表有效性门禁
+
+2026-10-16：reducer 增加唯一 `groupsNeedRefresh` 布尔状态，初始为 false。组写收到 MONITOR_GROUP_CONFLICT / MONITOR_GROUP_NOT_FOUND / MONITOR_IMPORT_CONFLICT 时设 true，表示当前列表不足以授权新的组写。只有完整成功 `groups.loaded` 或重新成功初始化可以清除；普通 ACK、关闭提示、导航和另存均不清除。GET 失败或迟到被拒绝不得清除。
+
+该门禁为 true 时，controller 拒绝全部 groups family 写入口，包括直接调用或尚未重绘的按钮；UI 禁用保存、删除与导入确认，但允许继续编辑、导航、另存、文件预览以及只读刷新。GroupPanel 常驻中文“需先刷新观测组”的解释与既有刷新按钮，不能依赖可能被关闭或退出上下文的 operation failure 作为唯一恢复入口。门禁不是 busy，不得锁住刷新和草稿编辑。完整 GET 成功后恢复新提交；同 revision 名称冲突允许用户核对后改名保存。此门禁不扩展到 probe/sampling/export，不引入自动 GET 或自动重写。

@@ -11,3 +11,5 @@ Full accepted base：`acf6953221f87b0e7951e5c0db4d9a57a381313e`。规范为同�
 接受条件：四条用户场景连通；脏稿无静默丢失，组状态/写确认不存在竞态覆盖，冲突和未知写结果不自动重发；全部必需非 deferred 检查通过；完整差异独立审查无未闭合发现。浏览器和硬件待验收单列，不改变其 DEFERRED 状态。服务最终在 UI06 和集成验收后统一更新。
 
 2026-10-16 独立预审 R1 补充：在实际 App/Preact 中同事件输入 B 后点击尚未重绘的 Save（提交 A），覆盖 create/update、后续列表失败。ACK 必须落地服务端身份/版本与 canonical baseline，同时保留 B 为 dirty；不同 generation 仍不得改当前稿。状态行为修订后重跑完整 UI、两个 typecheck、lint、build 与 verify:dist。
+
+同轮 R1 覆盖：冲突后直接再次 Save/Delete/Import 不触网；GET失败仍不可写；关闭提示/导航/另存不绕过列表门禁；刷新成功后同revision改名新提交可行；UI禁写但编辑和刷新可用。
