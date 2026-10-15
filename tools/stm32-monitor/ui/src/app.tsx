@@ -4,7 +4,7 @@ import {createMonitorApi} from "./api/client";
 import {createController,type Controller} from "./controller";
 import {initialState,reducer} from "./state/reducer";
 import {chartSeries,liveRows,selectedGroup} from "./state/selectors";
-import {emptyDraft,type RequestScope} from "./state/model";
+import {groupDirty,groupSourceProblem,groupWorkflowBusy,type RequestScope} from "./state/model";
 import {displayDropTotals} from "./chart/series";
 import {copy} from "./presentation/zh";
 import {IdentityBar} from "./components/IdentityBar";
@@ -59,13 +59,14 @@ export function App():JSX.Element{
   const currentExportRange=state.history.query===null?null:{startNs:state.history.query.startNs,endNs:state.history.query.endNs};
   const fresh=status.sampling.state==="RUNNING"&&state.transport.open&&!state.transport.stale&&!state.transport.needsStatusRefresh;
   const liveView=view==="live";
-  const busyGroups=["groups.create","groups.update","groups.delete","groups.import","groups.list"].some(scope=>state.pending[scope as keyof typeof state.pending]!==undefined);
+  const busyGroups=groupWorkflowBusy(state);
   const liveBusy=state.transport.phase==="checking"||state.transport.phase==="connecting";
   const busyProbe=liveBusy||["probe.connect","probe.reconnect","probe.release","status"].some(scope=>state.pending[scope as keyof typeof state.pending]!==undefined);
   const busySampling=liveBusy||["sampling.start","sampling.pause","sampling.resume","sampling.stop","status"].some(scope=>state.pending[scope as keyof typeof state.pending]!==undefined);
   const reconnectBlocked=state.pending.status!==undefined||["probe.connect","probe.reconnect","probe.release","sampling.start","sampling.pause","sampling.resume","sampling.stop"].some(scope=>state.pending[scope as keyof typeof state.pending]!==undefined);
   const retryDisabledScopes:RequestScope[]=liveBusy?["status","probe.connect","probe.reconnect","probe.release","sampling.start","sampling.pause","sampling.resume","sampling.stop"]:[];
   if(reconnectBlocked)retryDisabledScopes.push("live.reconnect");
+  if(busyGroups)retryDisabledScopes.push("groups.list","groups.create","groups.update","groups.delete","groups.import");
 
   return<main aria-label={copy.app} className="monitor-shell">
     <header className="workbench-header">
@@ -99,26 +100,37 @@ export function App():JSX.Element{
     <div className="workspace live-workspace" hidden={!liveView}>
       <aside className="watch-sidebar" aria-label={copy.watchConfig}>
         <GroupPanel compact groups={state.groups} selectedGroupId={state.selectedGroupId} draft={state.groupDraft}
+          dirty={groupDirty(state)} navigation={state.groupNavigation} navigationMissing={state.groupNavigationMissing}
+          sourceProblem={groupSourceProblem(state)} editorGeneration={state.groupGeneration}
+          nameReviewRequired={state.groupNameReviewRequired}
           failure={null} busy={busyGroups}
-          onSelect={(groupId)=>dispatch({type:"group.selected",groupId})}
+          onSelect={(groupId)=>dispatch({type:"group.navigation.requested",target:{kind:"group",groupId}})}
           onDraftChange={(draft)=>dispatch({type:"group.draft.changed",draft})}
           onRemove={(key)=>dispatch({type:"group.watch.removed",key})}
-          onNew={()=>dispatch({type:"group.draft.changed",draft:emptyDraft})}
+          onNew={()=>dispatch({type:"group.navigation.requested",target:{kind:"new"}})}
+          onNavigateConfirm={()=>dispatch({type:"group.navigation.confirmed"})}
+          onNavigateCancel={()=>dispatch({type:"group.navigation.cancelled"})}
+          onSaveAsNew={()=>dispatch({type:"group.save-as-new"})}
+          onNameReviewed={()=>dispatch({type:"group.name.reviewed"})}
+          onReload={()=>{const groupId=state.groupDraft.sourceGroupId;if(groupId!==null)dispatch({type:"group.navigation.requested",target:{kind:"reload",groupId}});}}
           onSave={()=>controller.saveGroup(state.groupDraft)}
-          onDelete={(groupId)=>controller.deleteGroup(groupId)}
+          onDelete={(groupId,revision,generation)=>controller.deleteGroup(groupId,revision,generation)}
           onImport={(value)=>controller.importGroups(value)}
-          onExport={()=>controller.refreshGroups()}/>
+          onExport={()=>controller.refreshGroups()} onRefresh={()=>controller.refreshGroups()}/>
         <button type="button" className="catalog-toggle" aria-expanded={catalogOpen} aria-controls="catalog-container" onClick={()=>setCatalogOpen(open=>!open)}>{catalogOpen?copy.catalogCollapse:copy.catalogBrowse}</button>
         <div id="catalog-container" hidden={!catalogOpen}>
           <CatalogPanel connected={status.probeConnected} bindingEpoch={status.sampling.bindingEpoch}
+            bindingKey={`${status.workspaceId}/${status.sessionId}/${status.project.logicalProjectId}/${status.sampling.bindingEpoch}`}
             variables={state.catalog.variables} registers={state.catalog.registers}
             pending={state.pending["catalog.variables"]!==undefined||state.pending["catalog.registers"]!==undefined}
+            editBusy={busyGroups||state.groupNavigation!==null}
             onSearch={(kind,query)=>controller.searchCatalog(kind,query)} onNext={(kind)=>controller.nextCatalog(kind)}
             onAdd={(watch)=>dispatch({type:"group.watch.added",watch})}/>
         </div>
       </aside>
       <div className="live-main">
         <SamplingControls status={status.sampling} group={selectedGroup(state)} busy={busySampling}
+          activeGroupName={state.groups.find(group=>group.groupId===status.sampling.groupId)?.name??null}
           onStart={(groupId,revision)=>controller.startSampling(groupId,revision)}
           onPause={()=>controller.pauseSampling()} onResume={()=>controller.resumeSampling()}
           onStop={()=>controller.stopSampling()}

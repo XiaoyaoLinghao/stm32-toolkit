@@ -48,6 +48,7 @@ it("App retains the workbench and edited group draft when creation fails",async(
   fireEvent.input(screen.getByLabelText("名称"),{target:{value:"Motor"}});
   fireEvent.click(screen.getByRole("button",{name:"浏览变量与寄存器"}));
   fireEvent.input(screen.getByPlaceholderText("输入符号或寄存器前缀"),{target:{value:"counter"}});
+  fireEvent.click(screen.getByRole("button",{name:"搜索/加载"}));
   await waitFor(()=>{expect(screen.getByRole("button",{name:"加入观测组草稿"})).toBeTruthy();});
   fireEvent.click(screen.getByRole("button",{name:"加入观测组草稿"}));
   fireEvent.click(screen.getByRole("button",{name:"创建观测组"}));

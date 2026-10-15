@@ -160,15 +160,18 @@ it("createGroup succeeds and refreshes groups",async()=>{
 it("saveGroup succeeds for existing groups",async()=>{
   const group=watchGroup();
   const api=makeApi();
-  const {controller,actions}=harness(api);
-  await controller.saveGroup({sourceGroupId:group.groupId,expectedRevision:1n,name:"Renamed",description:"",intervalMs:250,items:[{kind:"variable",expression:"counter"}]});
+  const {controller,actions,dispatch,state}=harness(api);
+  dispatch({type:"initial.loaded",status:statusResult(),probes:[],groups:[group]});
+  dispatch({type:"group.draft.changed",draft:{...state().groupDraft,name:"Renamed"}});
+  await controller.saveGroup(state().groupDraft);
   expect(actions.some(a=>a.type==="groups.loaded")).toBe(true);
 });
 
 it("saveGroup creates a new group when the draft has no sourceGroupId",async()=>{
   const api=makeApi();
-  const {controller,actions}=harness(api);
-  await controller.saveGroup({sourceGroupId:null,expectedRevision:null,name:"New",description:"",intervalMs:250,items:[{kind:"variable",expression:"x"}]});
+  const {controller,actions,dispatch,state}=harness(api);
+  dispatch({type:"group.draft.changed",draft:{sourceGroupId:null,expectedRevision:null,name:"New",description:"",intervalMs:250,items:[{kind:"variable",expression:"x"}]}});
+  await controller.saveGroup(state().groupDraft);
   expect(actions.some(a=>a.type==="request.started"&&a.scope==="groups.create")).toBe(true);
 });
 

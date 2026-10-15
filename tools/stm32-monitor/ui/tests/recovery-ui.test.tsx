@@ -53,8 +53,11 @@ it("keeps the last successful catalog rows visible when a new query fails",async
     registers={null} onSearch={search} onNext={vi.fn()} onAdd={vi.fn()}/>);
   expect(screen.getByText("counter")).toBeTruthy();
   fireEvent.input(screen.getByPlaceholderText("输入符号或寄存器前缀"),{target:{value:"new"}});
+  expect(search).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button",{name:"搜索/加载"}));
   expect(search).toHaveBeenCalledWith("variables","new");
   expect(screen.getByText("counter")).toBeTruthy();
   expect(screen.getByText("显示上次成功的查询结果；当前搜索尚未成功。")).toBeTruthy();
+  expect(screen.getByRole("button",{name:"加入观测组草稿"})).toBeDisabled();
   expect(screen.getByRole("button",{name:"下一页"})).toBeDisabled();
 });

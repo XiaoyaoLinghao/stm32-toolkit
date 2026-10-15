@@ -27,6 +27,7 @@ it("CatalogPanel searches variables and adds a watch",async()=>{
     variables={{kind:"variables",query:"counter",bindingKey:"ws/s/p/3",cursor:null,items:[variable],nextCursor:null}}
     registers={null} onSearch={search} onNext={vi.fn()} onAdd={add}/>);
   await userEvent.type(screen.getByPlaceholderText("输入符号或寄存器前缀"),"counter");
+  await userEvent.click(screen.getByRole("button",{name:"搜索/加载"}));
   expect(search).toHaveBeenCalledWith("variables","counter");
   await userEvent.click(screen.getByRole("button",{name:"加入观测组草稿"}));
   expect(add).toHaveBeenCalledWith({kind:"variable",expression:"counter"});

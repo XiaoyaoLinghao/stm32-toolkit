@@ -7,7 +7,7 @@ import {SamplingControls} from "../src/components/SamplingControls";
 import {NoticeRegion} from "../src/components/NoticeRegion";
 import {FailureMessage} from "../src/components/FailureMessage";
 import {TransportStatus} from "../src/components/TransportStatus";
-import {errorText,latencyText,noticeText,samplingState} from "../src/presentation/zh";
+import {errorText,latencyText,noticeText,recoveryText,samplingState} from "../src/presentation/zh";
 
 it("keeps large and signed latency values exact and gives unknown codes a neutral explanation",()=>{
   expect(latencyText(1_234_567_890_123_456_789_123n)).toBe("1234567890123.45 s");
@@ -15,6 +15,14 @@ it("keeps large and signed latency values exact and gives unknown codes a neutra
   expect(samplingState("FUTURE_STATE")).toBe("状态未知");
   expect(errorText("UNKNOWN_CODE").title).toBe("操作未完成");
   expect(noticeText("unknown notice from reducer")).toBe("监视状态已变化，请查看详情。");
+});
+
+it("does not attribute a shared invalid-request code to group editing",()=>{
+  const guidance=errorText("MONITOR_REQUEST_INVALID");
+  expect(guidance.title).toBe("请求无效");
+  expect(guidance.action).toBe("请检查当前操作的输入后重新提交。");
+  expect(recoveryText("input","groups.update")).toBe("请修改草稿或观测对象后重新提交。");
+  expect(recoveryText("input","export.create")).toBe(guidance.action);
 });
 
 it("shows interrupted values as stale, and exposes a blocked sampling state without changing control rules",()=>{

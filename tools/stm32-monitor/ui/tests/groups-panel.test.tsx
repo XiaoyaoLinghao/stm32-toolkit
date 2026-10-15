@@ -88,7 +88,7 @@ it("deletes only after explicit confirmation",async()=>{
   await userEvent.click(screen.getByRole("button",{name:"删除"}));
   expect(del).not.toHaveBeenCalled();
   await userEvent.click(screen.getByRole("button",{name:"确认删除"}));
-  expect(del).toHaveBeenCalledWith("group");
+  expect(del).toHaveBeenCalledWith("group",1n,0n);
 });
 
 it("cancelling delete does not call delete",async()=>{

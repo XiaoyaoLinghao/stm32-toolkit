@@ -6,14 +6,14 @@ import {
 import {parseLossless} from "./api/wire";
 import {openLive} from "./api/live";
 import {operationSummary} from "./presentation/zh";
-import type {LoadedAction,MonitorAction,MonitorState,RecoveryKind,RequestScope} from "./state/model";
+import {groupSourceProblem,sameGroupContent,type LoadedAction,type MonitorAction,type MonitorState,type RecoveryKind,type RequestScope} from "./state/model";
 
 export type Controller={
   loadInitial:()=>Promise<void>;refreshStatus:()=>Promise<void>;reconnectLive:()=>Promise<void>;cancelLiveReconnect:()=>void;refreshProbes:()=>Promise<void>;refreshGroups:()=>Promise<void>;
   connectProbe:(probeId:string)=>Promise<void>;reconnectProbe:()=>Promise<void>;releaseProbe:()=>Promise<void>;
   searchCatalog:(kind:"variables"|"registers",query:string)=>Promise<void>;
   nextCatalog:(kind:"variables"|"registers")=>Promise<void>;
-  createGroup:()=>Promise<void>;saveGroup:(draft:GroupDraft)=>Promise<void>;deleteGroup:(groupId:string)=>Promise<void>;
+  createGroup:()=>Promise<void>;saveGroup:(draft:GroupDraft)=>Promise<void>;deleteGroup:(groupId:string,expectedRevision?:bigint,editorGeneration?:bigint)=>Promise<void>;
   importGroups:(value:unknown)=>Promise<void>;
   startSampling:(groupId:string,expectedRevision:bigint)=>Promise<void>;
   pauseSampling:()=>Promise<void>;resumeSampling:()=>Promise<void>;stopSampling:()=>Promise<void>;
@@ -26,6 +26,7 @@ export type Controller={
 const cloneWatch=(item:WatchItem):WatchItem=>item.kind==="variable"
   ?{kind:"variable",expression:item.expression}:{kind:"register",registerPath:item.registerPath};
 const cloneDraft=(draft:GroupDraft):GroupDraft=>({...draft,items:draft.items.map(cloneWatch)});
+const sameDraft=(left:GroupDraft,right:GroupDraft):boolean=>left.sourceGroupId===right.sourceGroupId&&left.expectedRevision===right.expectedRevision&&sameGroupContent(left,right);
 const cloneImport=(doc:GroupImportDocument):GroupImportDocument=>({schemaVersion:1,
   groups:doc.groups.map(group=>({...group,items:group.items.map(cloneWatch)}))});
 const unexpected=(error:unknown):ApiFailure=>({ok:false,code:"MONITOR_TRANSPORT_FAILED",
@@ -35,6 +36,8 @@ const fatalCode=(code:string)=>[
   "MONITOR_ORIGIN_REJECTED","MONITOR_SESSION_EXPIRED","MONITOR_ACCESS_REJECTED",
 ].includes(code);
 const uncertainCode=(code:string)=>code==="MONITOR_TRANSPORT_FAILED"||code==="MONITOR_RESPONSE_INVALID";
+const groupConflictCode=(code:string)=>["MONITOR_GROUP_CONFLICT","MONITOR_GROUP_NOT_FOUND","MONITOR_IMPORT_CONFLICT"].includes(code);
+const groupInputCode=(code:string)=>["MONITOR_REQUEST_INVALID","MONITOR_GROUP_LIMIT_EXCEEDED","MONITOR_IMPORT_INVALID"].includes(code);
 function parseGroupImport(value:unknown):ApiResult<GroupImportDocument>{
   try{return{ok:true,data:groupImportGuard(value)};}catch{/* In-memory document path. */}
   try{return{ok:true,data:groupImportGuard(parseLossless(JSON.stringify(value)))};}
@@ -142,10 +145,9 @@ export function createController(api:MonitorApi,dispatch:(action:MonitorAction)=
     }
     return{ok:true,data:groups};
   };
-  const refreshGroups=(submittedDraft?:GroupDraft,createdGroupId?:string)=>read("groups.list",operationSummary("groups.list"),
-    id=>groupPages(()=>current("groups.list",id)),
-    groups=>({type:"groups.loaded",groups,...(submittedDraft===undefined?{}:{submittedDraft}),
-      ...(createdGroupId===undefined?{}:{createdGroupId})}));
+  const refreshGroups=(internal=false):Promise<void>=>writing.has("groups")&&!internal?Promise.resolve():
+    read("groups.list",operationSummary("groups.list"),id=>groupPages(()=>current("groups.list",id)),
+      groups=>({type:"groups.loaded",groups}),undefined,()=>refreshGroups());
   const refreshStatus=():Promise<void>=>{
     if(liveBusy())return Promise.resolve();
     const {gapRevision}=getState().transport,startedStateRevision=getState().stateRevision;
@@ -159,21 +161,31 @@ export function createController(api:MonitorApi,dispatch:(action:MonitorAction)=
     data=>({type:"probes.loaded",probes:data.probes}));
   const write=async<T>(scope:RequestScope,family:Family,summary:string,invoke:()=>Promise<ApiResult<T>>,
     accepted:(data:T)=>LoadedAction|undefined,followup:(data:T)=>Promise<void>,reconcile?:()=>Promise<void>,valid?:()=>boolean):Promise<void>=>{
-    if(writing.has(family)||liveBusy()&&(family==="probe"||family==="sampling"))return;
+    if(writing.has(family)||liveBusy()&&(family==="probe"||family==="sampling")||valid!==undefined&&!valid())return;
+    const startedGeneration=getState().groupGeneration;
+    if(family==="groups"){
+      const old=active.get("groups.list")??retries.get("groups.list")?.requestId;
+      if(old!==undefined)retire("groups.list",old);
+    }
     const id=start(scope,true);if(id===null)return;
     writing.add(family);
+    if(family==="groups")dispatch({type:"group.write.started"});
     try{
       let result:ApiResult<T>;
       try{result=await invoke();}catch(error){result=unexpected(error);}
       if(!current(scope,id))return;
       if(!result.ok){
         const uncertain=uncertainCode(result.code);
-        const recovery:RecoveryKind=uncertain?(reconcile===undefined?"none":"reconcile"):"write-confirm";
-        fail(scope,id,result,recovery,summary,uncertain?reconcile:()=>write(scope,family,summary,invoke,accepted,followup,reconcile,valid),valid);
+        const conflict=family==="groups"&&groupConflictCode(result.code);
+        const input=family==="groups"&&groupInputCode(result.code);
+        const recovery:RecoveryKind=conflict?"groups-refresh":input?"input":uncertain?(reconcile===undefined?"none":"reconcile"):"write-confirm";
+        const retryRun=conflict?()=>refreshGroups():input?undefined:uncertain?reconcile:()=>write(scope,family,summary,invoke,accepted,followup,reconcile,valid);
+        const retryValid=conflict?(()=>getState().groupGeneration===startedGeneration):valid;
+        fail(scope,id,result,recovery,summary,retryRun,retryValid);
         return;
       }
       if(succeed(scope,id,accepted(result.data)))await followup(result.data);
-    }finally{writing.delete(family);}
+    }finally{writing.delete(family);if(family==="groups")dispatch({type:"group.write.ended"});}
   };
   const catalog=async(kind:"variables"|"registers",query:string,cursor:string|undefined,bindingKey:string):Promise<void>=>{
     const scope:RequestScope=kind==="variables"?"catalog.variables":"catalog.registers";
@@ -319,6 +331,25 @@ export function createController(api:MonitorApi,dispatch:(action:MonitorAction)=
     startLiveConnection(null,null,status.data);
   };
   const noAction=()=>undefined;
+  const saveGroup=(draftInput:GroupDraft):Promise<void>=>{
+    const state=getState(),draft=cloneDraft(draftInput),generation=state.groupGeneration;
+    if(state.groupNavigation!==null||state.groupNameReviewRequired||!sameDraft(draft,state.groupDraft)||
+      draft.sourceGroupId!==null&&groupSourceProblem(state)!==null)return Promise.resolve();
+    const valid=()=>{
+      const latest=getState();
+      return latest.groupGeneration===generation&&latest.groupNavigation===null&&!latest.groupNameReviewRequired&&
+        sameDraft(latest.groupDraft,draft)&&
+        (draft.sourceGroupId===null||groupSourceProblem(latest)===null);
+    };
+    if(draft.sourceGroupId===null)return write("groups.create","groups",operationSummary("groups.create",draft.name),
+      ()=>api.createGroup({authorized:true,name:draft.name,description:draft.description,intervalMs:draft.intervalMs,items:draft.items}),
+      group=>({type:"group.acknowledged",group,generation}),()=>refreshGroups(true),()=>refreshGroups(),valid);
+    if(draft.expectedRevision===null)return Promise.resolve();
+    return write("groups.update","groups",operationSummary("groups.update",draft.name,draft.sourceGroupId),
+      ()=>api.updateGroup(draft.sourceGroupId!,{authorized:true,expectedRevision:draft.expectedRevision!,name:draft.name,
+        description:draft.description,intervalMs:draft.intervalMs,items:draft.items}),
+      group=>({type:"group.acknowledged",group,generation}),()=>refreshGroups(true),()=>refreshGroups(),valid);
+  };
   return{
     loadInitial:initial,refreshStatus,reconnectLive,cancelLiveReconnect,refreshProbes,refreshGroups:()=>refreshGroups(),
     connectProbe:probeId=>write("probe.connect","probe",operationSummary("probe.connect",probeId),
@@ -333,32 +364,22 @@ export function createController(api:MonitorApi,dispatch:(action:MonitorAction)=
       return prior===null||prior.nextCursor===null||prior.bindingKey!==bindingKey
         ?Promise.resolve():catalog(kind,prior.query,prior.nextCursor,bindingKey);
     },
-    createGroup:()=>{
-      const draft=cloneDraft(getState().groupDraft);
-      return draft.sourceGroupId!==null?Promise.resolve():write("groups.create","groups",operationSummary("groups.create",draft.name),
-        ()=>api.createGroup({authorized:true,name:draft.name,description:draft.description,intervalMs:draft.intervalMs,items:draft.items}),
-        group=>({type:"group.acknowledged",group,submittedDraft:draft}),group=>refreshGroups(draft,group.groupId),()=>refreshGroups());
-    },
-    saveGroup:draftInput=>{
-      const draft=cloneDraft(draftInput);
-      if(draft.sourceGroupId===null)return write("groups.create","groups",operationSummary("groups.create",draft.name),
-        ()=>api.createGroup({authorized:true,name:draft.name,description:draft.description,intervalMs:draft.intervalMs,items:draft.items}),
-        group=>({type:"group.acknowledged",group,submittedDraft:draft}),group=>refreshGroups(draft,group.groupId),()=>refreshGroups());
-      if(draft.expectedRevision===null)return Promise.resolve();
-      return write("groups.update","groups",operationSummary("groups.update",draft.name,draft.sourceGroupId),
-        ()=>api.updateGroup(draft.sourceGroupId!,{authorized:true,expectedRevision:draft.expectedRevision!,name:draft.name,
-          description:draft.description,intervalMs:draft.intervalMs,items:draft.items}),
-        group=>({type:"group.acknowledged",group,submittedDraft:draft}),()=>refreshGroups(draft),()=>refreshGroups());
-    },
-    deleteGroup:groupId=>{
+    createGroup:()=>getState().groupDraft.sourceGroupId===null?saveGroup(getState().groupDraft):Promise.resolve(),
+    saveGroup,
+    deleteGroup:(groupId,expectedRevision,editorGeneration)=>{
       const group=getState().groups.find(item=>item.groupId===groupId);
-      if(group===undefined)return Promise.resolve();
-      const revision=group.revision;
+      if(group===undefined||expectedRevision!==undefined&&group.revision!==expectedRevision||
+        editorGeneration!==undefined&&getState().groupGeneration!==editorGeneration||
+        getState().groupNavigation!==null)return Promise.resolve();
+      const revision=expectedRevision??group.revision,generation=editorGeneration??getState().groupGeneration;
+      const valid=()=>getState().groupGeneration===generation&&
+        getState().groups.some(item=>item.groupId===groupId&&item.revision===revision);
       return write("groups.delete","groups",operationSummary("groups.delete",group.name,groupId),
         ()=>api.deleteGroup(groupId,{authorized:true,expectedRevision:revision}),
-        noAction,()=>refreshGroups(),()=>refreshGroups());
+        ()=>({type:"group.deleted",groupId}),()=>refreshGroups(true),()=>refreshGroups(),valid);
     },
     importGroups:value=>{
+      if(writing.has("groups"))return Promise.resolve();
       const parsed=parseGroupImport(value);
       if(!parsed.ok){
         const id=start("groups.import",true);
@@ -367,7 +388,7 @@ export function createController(api:MonitorApi,dispatch:(action:MonitorAction)=
       }
       const doc=cloneImport(parsed.data);
       return write("groups.import","groups",operationSummary("groups.import",String(doc.groups.length)),
-        ()=>api.importGroups(doc),noAction,()=>refreshGroups(),()=>refreshGroups());
+        ()=>api.importGroups(doc),groups=>({type:"groups.imported",groups}),()=>refreshGroups(true),()=>refreshGroups());
     },
     startSampling:(groupId,expectedRevision)=>write("sampling.start","sampling",
       operationSummary("sampling.start",groupId,getState().status?.probe.probeId??undefined,getState().status?.sampling.runId??undefined),

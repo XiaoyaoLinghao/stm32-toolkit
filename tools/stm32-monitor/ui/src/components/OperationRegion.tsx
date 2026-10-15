@@ -27,7 +27,7 @@ export function OperationRegion({failures,pending,reconciling,retryDisabledScope
     <ul>{entries.map(([scope,failure])=><li key={scope+String(failure.requestId)} role="alert">
       <div><strong>{failure.summary}</strong><p>{errorText(failure.code).title}。{recoveryText(failure.recovery,scope)}</p></div>
       <div className="operation-actions">
-        {(failure.recovery==="read-retry"||failure.recovery==="write-confirm"||failure.recovery==="reconcile")&&
+        {(failure.recovery==="read-retry"||failure.recovery==="write-confirm"||failure.recovery==="reconcile"||failure.recovery==="groups-refresh")&&
           <button type="button" disabled={pending[scope]!==undefined||reconciling?.[scope]===failure.requestId||retryDisabledScopes.includes(scope)} onClick={event=>{
             if(failure.recovery==="write-confirm"){dialog.rememberTrigger(event.currentTarget);const target={scope,id:failure.requestId};confirmRef.current=target;setConfirm(target);}
             else void onRetry(scope,failure.requestId);

@@ -12,7 +12,8 @@ export const copy={
   liveReconnect:"重新连接实时数据",liveCancel:"取消连接",statusRefreshNeeded:"需要刷新状态",statusRefresh:"刷新状态",
   catalogBrowse:"浏览变量与寄存器",catalogCollapse:"收起变量目录",catalogTitle:"变量与寄存器目录",catalogResults:"目录搜索结果",
   catalogKind:"目录类型",variables:"变量",registers:"寄存器",search:"搜索",
-  searchPlaceholder:"输入符号或寄存器前缀",catalogNeedsProbe:"连接探针后可搜索目录。",
+  searchPlaceholder:"输入符号或寄存器前缀",catalogLoad:"搜索/加载",catalogNeedsProbe:"连接探针后可搜索目录。",
+  registerAccessAcknowledgement:"该寄存器需要现有访问能力确认；添加草稿不会自动授权。",
   selector:"选择器",type:"类型",action:"操作",addDraft:"加入观测组草稿",nextPage:"下一页",
   zoomTitle:"图表缩放",zoomRange:"显示范围：",zoomIn:"放大",zoomOut:"缩小",zoomReset:"重置缩放",
   exportRegion:"历史导出",exportTitle:"导出历史记录",exportHint:"使用已提交查询范围，或手动指定独立的 UTC 范围。",
@@ -25,6 +26,15 @@ export const copy={
   groupNew:"新建观测组",groupCollapse:"收起组配置",groupEdit:"编辑组配置",groupExport:"导出观测组 JSON",
   groupImport:"导入观测组",groupFile:"选择观测组 JSON 文件",groupConfirmImport:"确认导入",
   groupNewDraft:"新建观测组草稿",groupEditDraft:"编辑观测组草稿",groupDraftHint:"草稿需要保存后才会用于采样。",
+  groupUnsaved:"未保存；下次采样尚无此目标。",groupDirty:"有未保存的修改",
+  groupRefresh:"刷新观测组",groupUnsavedTitle:"未保存的观测组修改",
+  groupUnsavedQuestion:"切换会放弃当前未保存的修改。",groupKeepEditing:"继续编辑",groupDiscardContinue:"放弃修改并继续",
+  groupNavigationMissing:"目标观测组已不在列表中；原草稿仍保留。请刷新或重新选择。",
+  groupSourceDeleted:"原组已删除。当前草稿已保留；不能向原组保存。",
+  groupSourceChanged:"原组版本已变化。当前草稿已保留；请重新载入或另存。",
+  groupReloadLatest:"放弃草稿并载入最新版本",groupSaveAsNew:"保留为新组",
+  groupReviewName:"请检查新组名称；名称冲突仍以服务端核对为准。",groupConfirmName:"确认使用此名称",
+  groupImportItems:"个对象",groupImportNoOverwrite:"导入不会覆盖已有组；名称冲突由服务端检查，失败时保留当前草稿。",
   name:"名称",description:"描述",interval:"采样间隔（ms）",watch:"观测对象",remove:"移除",
   groupCreate:"创建观测组",groupSave:"保存观测组",importReading:"正在读取导入文件…",importJsonInvalid:"导入文件不是有效的 JSON。",
   importReadFailed:"无法读取导入文件，请重新选择。",
@@ -45,7 +55,7 @@ export const copy={
   probeNone:"未检测到探针。请检查连接后刷新列表。",probeOnline:"（已连接）",probeConnect:"连接",
   probeReConnect:"重新连接",probeRelease:"释放探针",probeConnectedPrefix:"已连接：",
   samplingControls:"采样控制",samplingTitle:"实时采样",samplingBlocked:" · 已受阻",
-  samplingGroup:"观测组：",samplingNoGroup:"尚未选择",samplingStart:"开始采样",samplingPause:"暂停采样",
+  samplingGroup:"下次开始采样：",samplingActiveGroup:"当前运行：",samplingNoGroup:"尚未选择",samplingStart:"开始采样",samplingPause:"暂停采样",
   samplingResume:"继续采样",samplingStop:"停止采样",statusSummary:"采样状态汇总",
   actualRate:"实际采样率",latency:"延迟",rawNs:"原始纳秒值",dropsSubscriber:"丢弃：订阅者",
   dropsHistory:"历史",dropsDeadline:"截止时间",dropsService:"服务",blockedOperation:"当前操作未完成。",
@@ -54,7 +64,10 @@ export const copy={
   previousCatalog:"显示上次成功的查询结果；当前搜索尚未成功。",
   pendingOperation:"正在处理…",unknownWrite:"写入结果未知。刷新只能核对当前状态，不能证明原操作成功。",
   unknownExport:"导出创建结果未知，无法查询未知任务。可保留当前表单并自行发起新的导出。",
-  chooseImportAgain:"请重新选择有效的导入文件。",
+  chooseImportAgain:"请检查导入文件内容或数量，再重新选择文件。",
+  groupConflictRefresh:"服务端未接受这次组操作。刷新观测组列表以核对版本和名称；草稿会保留，刷新不会重发写入。",
+  groupInputCorrect:"请修改草稿或观测对象后重新提交。",
+  requestInputCorrect:"请检查当前操作的输入后重新提交。",
 } as const;
 
 const operationNames:Record<RequestScope,string>={
@@ -88,11 +101,13 @@ export function recoveryText(recovery:RecoveryKind,scope:RequestScope):string{
   if(recovery==="read-retry")return scope==="initial"?copy.initialRetry:copy.retry;
   if(recovery==="write-confirm")return copy.retry;
   if(recovery==="reconcile")return copy.unknownWrite+" "+copy.reconcile;
-  if(recovery==="input")return copy.chooseImportAgain;
+  if(recovery==="groups-refresh")return copy.groupConflictRefresh;
+  if(recovery==="input")return scope==="groups.import"?copy.chooseImportAgain:
+    scope==="groups.create"||scope==="groups.update"||scope==="groups.delete"?copy.groupInputCorrect:copy.requestInputCorrect;
   return scope==="export.create"?copy.unknownExport:copy.unknownWrite;
 }
 export function recoveryAction(recovery:RecoveryKind,scope:RequestScope):string{
-  return recovery==="reconcile"?copy.reconcile:scope==="initial"?copy.initialRetry:copy.retry;
+  return recovery==="groups-refresh"?copy.groupRefresh:recovery==="reconcile"?copy.reconcile:scope==="initial"?copy.initialRetry:copy.retry;
 }
 
 export const formatCopy={
@@ -100,6 +115,7 @@ export const formatCopy={
   bits:(count:number)=>`${count} 位`,
   groupDelete:(name:string)=>`确定删除 ${name}？`,
   importPreview:(groups:number,items:number)=>`将导入 ${groups} 个观测组、${items} 个观测对象。确认继续？`,
+  registerUnavailable:(access:string|null,readAction:string|null)=>`不可采样（access: ${access??"未知"}；readAction: ${readAction??"未知"}）。`,
   exportQuestion:(format:string)=>`将当前会话中所选时间范围导出为 ${format}？`,
   artifactSummary:(bytes:bigint,count:bigint)=>`已生成：${bytes} 字节 · ${count} 个数值`,
   submittedRange:(start:string,end:string)=>`提交时范围（UTC）：${start} 至 ${end}`,
@@ -119,6 +135,11 @@ const knownErrors:Record<string,{title:string;action:string}>={
   MONITOR_BOOTSTRAP_RESPONSE_INVALID:{title:"启动响应无效",action:copy.retryOpen},
   MONITOR_BOOTSTRAP_REQUEST_FAILED:{title:"启动请求未完成",action:copy.retryOpen},
   MONITOR_IMPORT_INVALID:{title:"导入文件无效",action:"检查 JSON 文件内容后重新选择文件。"},
+  MONITOR_GROUP_CONFLICT:{title:"观测组冲突",action:copy.groupConflictRefresh},
+  MONITOR_GROUP_NOT_FOUND:{title:"观测组不存在",action:copy.groupConflictRefresh},
+  MONITOR_IMPORT_CONFLICT:{title:"导入名称冲突",action:copy.groupConflictRefresh},
+  MONITOR_REQUEST_INVALID:{title:"请求无效",action:copy.requestInputCorrect},
+  MONITOR_GROUP_LIMIT_EXCEEDED:{title:"观测组或对象数量超限",action:copy.groupInputCorrect},
 };
 export function errorText(code:string):{title:string;action:string}{
   return knownErrors[code]??{title:"操作未完成",action:"请查看详细信息。"};

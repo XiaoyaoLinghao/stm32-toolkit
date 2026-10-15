@@ -7,6 +7,7 @@ import {FailureMessage} from "./FailureMessage";
 export type SamplingControlsProps={
   status:SamplingStatus;
   group:WatchGroup|null;
+  activeGroupName?:string|null;
   onStart:(groupId:string,expectedRevision:bigint)=>void|Promise<void>;
   onPause:()=>void|Promise<void>;
   onResume:()=>void|Promise<void>;
@@ -21,6 +22,7 @@ export function SamplingControls(p:SamplingControlsProps):JSX.Element{
   return<section className="panel sampling-controls" aria-label={copy.samplingControls}>
     <div className="sampling-heading"><h2>{copy.samplingTitle}</h2><p role="status" aria-live="polite">{samplingState(state)}{p.status.blockedCode!==null?copy.samplingBlocked:""}</p></div>
     <p>{copy.samplingGroup}{p.group===null?copy.samplingNoGroup:p.group.name}</p>
+    {p.status.groupId!==null&&<p>{copy.samplingActiveGroup}{p.activeGroupName??p.status.groupId}</p>}
     <button type="button" disabled={p.group===null||!canStart||p.busy}
       onClick={()=>{if(p.group!==null)void p.onStart(p.group.groupId,p.group.revision);}}>
       {copy.samplingStart}

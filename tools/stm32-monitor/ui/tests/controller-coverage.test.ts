@@ -170,7 +170,8 @@ describe("controller coverage",()=>{
     const api=makeApi({updateGroup:vi.fn(async()=>err("UPDATE_DOWN","down")),deleteGroup:vi.fn(async()=>err("DELETE_DOWN","down"))});
     const {controller,actions,state}=harness(api);
     state().groups=[group];
-    await controller.saveGroup({sourceGroupId:group.groupId,expectedRevision:1n,name:"n",description:"",intervalMs:250,items:[]});
+    state().groupDraft={sourceGroupId:group.groupId,expectedRevision:1n,name:"n",description:"",intervalMs:250,items:[]};
+    await controller.saveGroup(state().groupDraft);
     await controller.deleteGroup(group.groupId);
     expect(actions.some(a=>a.type==="request.failed"&&a.scope==="groups.update")).toBe(true);
     expect(actions.some(a=>a.type==="request.failed"&&a.scope==="groups.delete")).toBe(true);

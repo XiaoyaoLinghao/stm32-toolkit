@@ -180,7 +180,7 @@ it("failed complete group refresh preserves its prior list and edited draft",asy
   expect(h.state().groupDraft.name).toBe("unsaved");
 });
 
-it("confirmed retry captures original draft and blocks a second group write",async()=>{
+it("a changed draft retires the old write retry and a fresh submit remains locked in flight",async()=>{
   const pending=deferred<Awaited<ReturnType<MonitorApi["createGroup"]>>>();
   const create=vi.fn().mockImplementationOnce(async()=>err("REJECTED"))
     .mockImplementationOnce(()=>pending.promise);
@@ -190,14 +190,15 @@ it("confirmed retry captures original draft and blocks a second group write",asy
   const id=failureId(h.state(),"groups.create");
   expect(h.state().failures["groups.create"]?.recovery).toBe("write-confirm");
   h.dispatch({type:"group.draft.changed",draft:draft("new draft")});
-  const retried=h.controller.retry("groups.create",id);
   await h.controller.retry("groups.create",id);
+  expect(create).toHaveBeenCalledTimes(1);
+  const submitted=h.controller.createGroup();
   await h.controller.createGroup();
   expect(create).toHaveBeenCalledTimes(2);
-  expect(create.mock.calls[1]?.[0]?.name).toBe("original");
+  expect(create.mock.calls[1]?.[0]?.name).toBe("new draft");
   pending.resolve(ok(watchGroup()));
-  await retried;
-  expect(h.state().groupDraft.name).toBe("new draft");
+  await submitted;
+  expect(h.state().groupDraft.sourceGroupId).toBe("group");
 });
 
 it("uncertain group write reconciles once without repeating POST",async()=>{
@@ -242,20 +243,21 @@ it("accepted group create keeps its identity and family lock through failed foll
   expect(create).toHaveBeenCalledTimes(1);
 });
 
-it("upserts a returned group without overwriting a newer selected draft",async()=>{
+it("upserts a late acknowledgement without replacing a newer editor generation",async()=>{
   const existing=watchGroup(),created={...existing,groupId:"created",revision:7n};
   const pending=deferred<ApiResult<typeof created>>();
   const h=harness(makeApi({createGroup:vi.fn(()=>pending.promise),groups:vi.fn(async()=>err("GROUPS_DOWN"))}));
   h.dispatch({type:"initial.loaded",status:statusResult(),probes:[],groups:[existing]});
+  h.dispatch({type:"group.navigation.requested",target:{kind:"new"}});
   h.dispatch({type:"group.draft.changed",draft:draft("new")});
   const saving=h.controller.createGroup();
-  h.dispatch({type:"group.selected",groupId:existing.groupId});
-  h.dispatch({type:"group.draft.changed",draft:{...h.state().groupDraft,name:"editing existing"}});
+  h.dispatch({type:"initial.loaded",status:statusResult(),probes:[],groups:[existing]});
+  expect(h.state().groupDraft.name).toBe("Group");
   pending.resolve(ok(created));
   await saving;
   expect(h.state().groups.map(group=>group.groupId)).toEqual([existing.groupId,"created"]);
   expect(h.state().selectedGroupId).toBe(existing.groupId);
-  expect(h.state().groupDraft.name).toBe("editing existing");
+  expect(h.state().groupDraft.name).toBe("Group");
 });
 
 it("does not replay failed probe or sampling writes after their target changes",async()=>{

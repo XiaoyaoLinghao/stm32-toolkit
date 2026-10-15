@@ -43,12 +43,12 @@ describe("reducer dispatch coverage",()=>{
     const refused=reducer(full,{type:"series.toggled",key:"k8"});
     expect(refused.selectedSeries.size).toBe(8);
   });
-  it("selects an existing group by id and falls back when the id is unknown",()=>{
+  it("selects an existing group by id and preserves the editor when the target is unknown",()=>{
     const selected=reducer(base(),{type:"group.selected",groupId:"g"});
     expect(selected.selectedGroupId).toBe("g");
     const unknown=reducer(base(),{type:"group.selected",groupId:"missing"});
-    expect(unknown.selectedGroupId).toBeNull();
-    expect(unknown.groupDraft).toEqual(emptyDraft);
+    expect(unknown.selectedGroupId).toBe("g");
+    expect(unknown.groupNavigationMissing).toBe(true);
   });
   it("rejects catalog results when status is absent or the binding key differs",()=>{
     const noStatus=reducer(initialState,{type:"catalog.loaded",catalog:"variables",query:"x",bindingKey:"w/s/p/4",cursor:null,items:[],nextCursor:null});
@@ -57,10 +57,11 @@ describe("reducer dispatch coverage",()=>{
     const mismatch=reducer(rebound,{type:"catalog.loaded",catalog:"variables",query:"x",bindingKey:"WRONG",cursor:null,items:[],nextCursor:null});
     expect(mismatch.catalog.variables).toBeNull();
   });
-  it("reloads groups selecting the first group by id and resets to empty on none",()=>{
+  it("refreshes groups without silently selecting a target from a null selection",()=>{
     const g=group();
-    const present=reducer(base(),{type:"groups.loaded",groups:[g]});
-    expect(present.selectedGroupId).toBe("g");
+    const noSelection=reducer(base(),{type:"group.navigation.requested",target:{kind:"new"}});
+    const present=reducer(noSelection,{type:"groups.loaded",groups:[g]});
+    expect(present.selectedGroupId).toBeNull();
     const rebound=reducer(base(),{type:"group.selected",groupId:"g"});
     const firstFallback=reducer(rebound,{type:"groups.loaded",groups:[g]});
     expect(firstFallback.selectedGroupId).toBe("g");
