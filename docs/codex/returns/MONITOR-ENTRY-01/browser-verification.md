@@ -22,6 +22,10 @@
 
 用户随后确认在当前 Codex 桌面应用中保存了精确允许项。主代理只读核实 `C:\Users\ZhangYang\.codex\browser\config.toml` 在 2026-10-15 03:49:57 UTC 更新，其 `origins.allowed` 已为 `["http://127.0.0.1:8765"]`、`origins.denied` 为空，公开配置也同期更新。对同一个 Edge 标签页的正常访问仍返回保存权限或托管策略拒绝。因此端口遗漏已被修正，不能再将其当作当前拒绝的充分解释；运行时权限状态未刷新和更高层策略只是尚未排除的假设。
 
-**PENDING**：通过应用的正常退出、重启流程刷新运行状态后，由主代理重新核实服务与权限，再继续同一真实浏览器的页面检查、关闭标签页、仅以短地址重新打开及视觉确认。如果重启后仍拒绝，需从应用的有效配置诊断取得最终策略来源。不得将后端 75 项 PASS、标签标题或地址清除当作这些场景通过。
+用户重启电脑后，主代理核实 8765 没有监听、Edge 扩展已连接且无标签页、精确允许项仍存在。恢复生产 CLI 的 `Start-Process` 命令在执行前被自动策略拒绝（仅 `blocked by policy`）；正常 `cua.createBrowserTab` 也在触发网络访问前被 origin approval gate 拒绝。两项均未改用其他路径重试。证据：`evidence/reboot-diagnostic.json`。
 
-真实服务与验证工程/data 保留运行，供用户查看和后续补验。一次性 `backend/t` 清理被自动策略拒绝（仅返回 blocked by policy），保留该绝对路径且不绕过；记录为 `evidence/cleanup.json`。源代码与最小有效证据继续保留。
+`/debug-config` 在当前桌面对话只作为普通文本传入，未执行 CLI TUI 命令。主代理改用公开 app-server 稳定只读方法 `config/read`、`configRequirements/read`，没有创建 thread/turn、改写策略或访问浏览器。2026-10-15 04:04:42 UTC 的独立 stdio 进程诊断返回：用户层精确 origin 的 access/downloads/uploads/full_cdp_access 均为 allow，未发现相关 system 层覆盖，requirements 为 null；自有诊断进程已退出。证据：`evidence/public-policy-read.json`，复现脚本 `read-public-policy.py`。这仅证明该新进程的配置读取结果，不证明当前桌面进程、当前工具会话或浏览器侧最终策略。连接正在运行的本机 app-server 控制 socket 的公开 `daemon version` 命令另返回 Windows 10050 网络错误，不能据此认定 Monitor 故障。
+
+**BLOCKED (TOOL POLICY)**：公开诊断结果与桌面浏览器拒绝并存，当前接口未提供最终命中规则。待有效工具策略来源得到解释或授权状态确实变化后，再恢复服务并完成真实页面、关闭重开和视觉确认。不得将独立 CLI 的 requirements=null、后端 75 项 PASS、旧标签标题或地址清除当作浏览器场景通过。
+
+真实服务在电脑重启后已停止且恢复启动被拒绝；验证工程/data 与最小有效证据继续保留。一次性 `backend/t` 的旧清理被自动策略拒绝（仅返回 blocked by policy），保留该绝对路径且不绕过；记录为 `evidence/cleanup.json`。本轮生成的公开协议 schema 根 `D:\codex-tmp\mbv1015\policy-schema` 清理也在执行前被自动策略拒绝，保留路径并记录 `evidence/policy-schema-cleanup.json`，未换用其他删除方法。
