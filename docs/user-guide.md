@@ -98,7 +98,7 @@ Monitor 工作台默认使用简体中文和浅色界面。打开授权标签后
 
 历史页的时间输入均按 **UTC** 解释。初次打开不自动查询全部历史；输入起止时间并点击“查询历史”，然后可逐页查看。导出默认跟随已提交的查询范围；手工修改导出范围后，新查询会保留这份草稿并提供“使用查询范围”按钮。没有查询时也可手工指定范围独立导出。导出格式是 CSV 或 JSONL，已生成任务显示其提交时的范围；修改当前输入不会改写已提交任务。遇到采样中断时，“非最新数据”和状态文字提示旧数值；展开“诊断详情”可查看原始代码与消息。
 
-本界面仍保留 v1.0.1 的整页阻断错误行为。阻断后，若服务仍在运行，先在其所属 Monitor 终端按 Ctrl-C 正常结束，再运行 `open` 打开新的授权页面；不要手输已清除 fragment token 的旧地址。普通请求错误的局部恢复不属于当前界面切片。
+本界面仍保留 v1.0.1 的整页阻断错误行为。`open --port 8765` 成功后，终端显示不带 token 的 `http://127.0.0.1:8765/`，可将这个短地址加入书签。服务保持运行、同一浏览器配置的会话 cookie 有效时，关闭标签页后打开书签可回到工作台。关闭整个浏览器后是否保留会话取决于浏览器配置；新浏览器配置不会自动继承原会话。会话失效时，先在启动终端按 Ctrl+C 停止，再用相同的 `open ... --port 8765` 命令重新启动，使用启动器自动打开的新授权标签。不要保存或手输包含 fragment token 的授权链接。普通请求错误的局部恢复不属于当前界面切片。
 
 `bin/stm32-monitor.cmd` 在 v1.0.0 和 v1.0.1 都先用 `STM32_TOOLKIT_DATA_ROOT` 定位受管 Python；单给 `--data-root` 不能启动 cmd。Python CLI 启动后才读取 `open --data-root`，两处须指向同一 DataRoot。以下命令符合当前 parser，暂设环境变量、打开服务和新浏览器标签、前台保持运行，并在退出时恢复原环境。v1.0.1 不新增后台 daemon/stop 协议。
 
@@ -109,7 +109,7 @@ $ProjectRoot = 'C:\work\blinky'
 $previousDataRoot = [Environment]::GetEnvironmentVariable('STM32_TOOLKIT_DATA_ROOT', 'Process')
 try {
   [Environment]::SetEnvironmentVariable('STM32_TOOLKIT_DATA_ROOT', $DataRoot, 'Process')
-  & (Join-Path $ToolkitRoot 'bin\stm32-monitor.cmd') open --project $ProjectRoot --data-root $DataRoot
+  & (Join-Path $ToolkitRoot 'bin\stm32-monitor.cmd') open --project $ProjectRoot --data-root $DataRoot --port 8765
 } finally {
   [Environment]::SetEnvironmentVariable('STM32_TOOLKIT_DATA_ROOT', $previousDataRoot, 'Process')
 }
@@ -118,7 +118,9 @@ try {
 | # | 看见什么 | 处置 |
 | --- | --- | --- |
 | 18 | 启动器报缺少 `STM32_TOOLKIT_DATA_ROOT`、调用超时、想重启 | 先运行只读 `Check` 并确认同一发行包与 DataRoot；按上例暂设环境变量并向 Python CLI 传相同的 `--data-root`。在可保持运行的终端前台调用 `open`，完成后用该前台的 Ctrl-C 正常结束。受限自动化终端超时不能证明服务损坏；没有通用 stop/restart 子命令。 |
-| 19 | 手输 `localhost` 得 403，或旧标签提示 bootstrap 失败 | 使用 `open` 本次新开的 `127.0.0.1` 认证标签；不要手输 URL、复用失去 fragment token 的书签或尝试放宽 Host/Origin。候选在缺 token/连接失败时显示无秘密恢复提示；不要打印、复制、保存完整 fragment URL。 |
+| 19 | 手输 `localhost` 得 403、书签会话失效，或端口已占用 | 只使用终端显示的 `127.0.0.1` 短地址作为书签；不要改成 `localhost` 或放宽 Host/Origin。会话失效时在原终端停止服务，再用相同端口的 `open` 命令自动认证；端口占用不会静默改用随机端口，检查并分配各工程独立端口。短书签指向该端口当前服务，重新分配给另一工程后应在工作台顶栏核对工程身份。不要打印、复制、保存完整 fragment URL。 |
+
+省略 `--port` 时继续由系统分配临时端口；`serve --json` 也可指定 `--port`，其 JSON 字段保持不变。服务停止后，短书签不能自行启动服务；重复执行 `open` 也不能重新打开已经运行的同一工作区服务。
 
 ## 升级与历史材料
 

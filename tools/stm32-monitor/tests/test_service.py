@@ -367,7 +367,7 @@ def test_bearer_bootstrap_sets_only_httponly_strict_cookie() -> None:
                 },
             )
             assert bootstrap.status == 200
-            cookie = bootstrap.cookies["stm32_monitor_session"]
+            cookie = bootstrap.cookies[f"stm32_monitor_session_{endpoint.port}"]
             assert cookie["httponly"] is True
             assert cookie["samesite"].lower() == "strict"
             assert cookie["path"] == "/api/v1"
@@ -378,6 +378,156 @@ def test_bearer_bootstrap_sets_only_httponly_strict_cookie() -> None:
         assert TOKEN_BYTES.hex() not in json.dumps(await bootstrap.json())
 
     asyncio.run(_with_service(scenario))
+
+
+def test_cookie_names_use_actual_endpoint_port_and_ignore_legacy_name() -> None:
+    from types import SimpleNamespace
+
+    from stm32_monitor.auth import MonitorAuth
+    from stm32_monitor.service import MonitorEndpoint, MonitorService, _ServiceFailure
+
+    for invalid in (True, False, -1, 65_536, 8765.0, "8765", None):
+        with pytest.raises(ValueError, match="port"):
+            MonitorService(
+                FakeRuntime(), workspace_id="workspace-a", session_id="session-a", port=invalid
+            )
+
+    service = MonitorService(
+        FakeRuntime(), workspace_id="workspace-a", session_id="session-a", port=8765
+    )
+    actual_port = 49123
+    service._endpoint = MonitorEndpoint(
+        "127.0.0.1", actual_port, "a" * 64, "workspace-a", "session-a"
+    )
+    service._auth = MonitorAuth.create(
+        host="127.0.0.1", port=actual_port, token_factory=lambda size: b"a" * size
+    )
+    assert service._session_cookie_name() == f"stm32_monitor_session_{actual_port}"
+    token = service._auth.token
+
+    def request(cookies: dict[str, str]):
+        return SimpleNamespace(
+            remote="127.0.0.1",
+            host=f"127.0.0.1:{actual_port}",
+            headers={"Sec-Fetch-Site": "same-origin"},
+            cookies=cookies,
+            method="GET",
+        )
+
+    with pytest.raises(_ServiceFailure) as legacy:
+        service._authorize(request({"stm32_monitor_session": token}))
+    assert legacy.value.status == 401
+    with pytest.raises(_ServiceFailure) as wrong_port:
+        service._authorize(request({"stm32_monitor_session_8765": token}))
+    assert wrong_port.value.status == 401
+    assert service._authorize(request({service._session_cookie_name(): token})) == "cookie"
+    assert service._authorize(request({
+        "stm32_monitor_session_8765": "b" * 64,
+        service._session_cookie_name(): token,
+    })) == "cookie"
+    bearer = request({})
+    bearer.headers = {"Origin": f"http://127.0.0.1:{actual_port}",
+                      "Authorization": f"Bearer {token}"}
+    assert service._authorize(bearer) == "bearer"
+
+    service._auth = MonitorAuth.create(
+        host="127.0.0.1", port=actual_port, token_factory=lambda size: b"b" * size
+    )
+    with pytest.raises(_ServiceFailure) as stale:
+        service._authorize(request({service._session_cookie_name(): token}))
+    assert stale.value.status == 401
+
+
+def test_fixed_port_conflict_does_not_fall_back_and_cleans_runner() -> None:
+    from stm32_monitor.service import MonitorService
+
+    async def scenario() -> None:
+        first = MonitorService(FakeRuntime(), workspace_id="first", session_id="first")
+        endpoint = await first.start()
+        second = MonitorService(
+            FakeRuntime(), workspace_id="second", session_id="second", port=endpoint.port
+        )
+        try:
+            with pytest.raises(OSError):
+                await second.start()
+            assert second.endpoint is None
+            assert second._runner is None
+            assert first.endpoint == endpoint
+        finally:
+            await second.stop()
+            await first.stop()
+
+    asyncio.run(scenario())
+
+
+def test_port_scoped_cookies_coexist_and_restart_rejects_stale_session() -> None:
+    from stm32_monitor.service import MonitorService
+
+    async def scenario() -> None:
+        first = MonitorService(
+            FakeRuntime(), workspace_id="first", session_id="first",
+            token_factory=lambda size: b"a" * size,
+        )
+        second = MonitorService(
+            FakeRuntime(), workspace_id="second", session_id="second",
+            token_factory=lambda size: b"b" * size,
+        )
+        restarted = None
+        try:
+            first_endpoint = await first.start()
+            second_endpoint = await second.start()
+            assert first_endpoint.port != second_endpoint.port
+            jar = aiohttp.CookieJar(unsafe=True)
+            async with aiohttp.ClientSession(cookie_jar=jar) as client:
+                for endpoint in (first_endpoint, second_endpoint):
+                    response = await client.post(
+                        endpoint.url + "/api/v1/auth/bootstrap",
+                        headers={
+                            "Authorization": f"Bearer {endpoint.token}",
+                            "Origin": endpoint.url,
+                        },
+                    )
+                    assert response.status == 200
+                cookies = jar.filter_cookies(first_endpoint.url + "/api/v1/status")
+                assert f"stm32_monitor_session_{first_endpoint.port}" in cookies
+                assert f"stm32_monitor_session_{second_endpoint.port}" in cookies
+                for endpoint in (first_endpoint, second_endpoint):
+                    response = await client.get(
+                        endpoint.url + "/api/v1/status", headers={"Origin": endpoint.url}
+                    )
+                    assert response.status == 200
+
+            await first.stop()
+            restarted = MonitorService(
+                FakeRuntime(), workspace_id="first", session_id="first",
+                token_factory=lambda size: b"c" * size, port=first_endpoint.port,
+            )
+            new_endpoint = await restarted.start()
+            assert new_endpoint.port == first_endpoint.port
+            async with aiohttp.ClientSession(cookie_jar=jar) as client:
+                stale = await client.get(
+                    new_endpoint.url + "/api/v1/status", headers={"Origin": new_endpoint.url}
+                )
+                assert stale.status == 401
+                refreshed = await client.post(
+                    new_endpoint.url + "/api/v1/auth/bootstrap",
+                    headers={
+                        "Authorization": f"Bearer {new_endpoint.token}",
+                        "Origin": new_endpoint.url,
+                    },
+                )
+                assert refreshed.status == 200
+                valid = await client.get(
+                    new_endpoint.url + "/api/v1/status", headers={"Origin": new_endpoint.url}
+                )
+                assert valid.status == 200
+        finally:
+            if restarted is not None:
+                await restarted.stop()
+            await second.stop()
+            await first.stop()
+
+    asyncio.run(scenario())
 
 
 def test_host_origin_and_forbidden_identity_overrides_fail_closed() -> None:

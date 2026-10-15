@@ -322,7 +322,19 @@ def test_monitor_config_canonicalizes_external_roots_without_creating_state(tmp_
     assert config.project_root == (tmp_path / "project").resolve()
     assert config.data_root == (tmp_path / "state").resolve()
     assert config.session_id == "monitor-1"
+    assert config.port == 0
     assert not config.data_root.exists()
+
+
+def test_monitor_config_accepts_explicit_port_and_rejects_invalid_values(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    data = tmp_path / "state"
+    assert MonitorConfig(project, data, "monitor-1", port=1).port == 1
+    assert MonitorConfig(project, data, "monitor-1", port=65_535).port == 65_535
+    for port in (True, False, -1, 65_536, 8765.0, "8765", None):
+        with pytest.raises(ValueError, match="port"):
+            MonitorConfig(project, data, "monitor-1", port=port)
 
 
 def test_group_page_is_deeply_immutable_bounded_and_address_free() -> None:

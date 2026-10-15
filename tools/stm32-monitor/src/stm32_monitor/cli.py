@@ -7,6 +7,7 @@ import asyncio
 import contextlib
 import errno
 import json
+import re
 import secrets
 import sys
 import webbrowser
@@ -82,6 +83,7 @@ def _parser() -> argparse.ArgumentParser:
     serve.add_argument("--project", required=True)
     serve.add_argument("--data-root", required=True)
     serve.add_argument("--session-id", required=True)
+    serve.add_argument("--port", type=_cli_port)
     serve.add_argument("--serve-ui", action="store_true")
     serve.add_argument("--json", action="store_true", required=True)
     open_command = commands.add_parser(
@@ -90,6 +92,7 @@ def _parser() -> argparse.ArgumentParser:
     open_command.add_argument("--project", required=True)
     open_command.add_argument("--data-root", required=True)
     open_command.add_argument("--session-id")
+    open_command.add_argument("--port", type=_cli_port)
 
     replay = commands.add_parser("replay", help="import a Monitor replay")
     replay_commands = replay.add_subparsers(dest="replay_command", required=True)
@@ -143,6 +146,18 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _cli_port(value: str) -> int:
+    if re.fullmatch(r"[0-9]+", value) is None:
+        raise argparse.ArgumentTypeError("port must be a decimal integer from 1 to 65535")
+    digits = value.lstrip("0") or "0"
+    if len(digits) > 5:
+        raise argparse.ArgumentTypeError("port must be a decimal integer from 1 to 65535")
+    port = int(digits, 10)
+    if not 1 <= port <= 65_535:
+        raise argparse.ArgumentTypeError("port must be a decimal integer from 1 to 65535")
+    return port
+
+
 def _add_context_options(parser: argparse.ArgumentParser, *, session_required: bool) -> None:
     parser.add_argument("--project", required=True)
     parser.add_argument("--data-root", required=True)
@@ -174,6 +189,7 @@ async def _open(
     config: MonitorConfig,
     runtime: object,
     browser_open: Callable[[str], bool],
+    stdout: TextIO,
 ) -> int:
     endpoint = await runtime.start(config)
     try:
@@ -186,6 +202,8 @@ async def _open(
             raise MonitorRuntimeError(
                 "MONITOR_BROWSER_FAILED", "Monitor browser handoff failed"
             )
+        stdout.write(endpoint.url + "/\n")
+        stdout.flush()
         await runtime.wait_closed()
         return 0
     finally:
@@ -226,6 +244,7 @@ def main(
             Path(arguments.project).expanduser().absolute(),
             Path(arguments.data_root).expanduser().absolute(),
             _session_id(arguments.session_id),
+            port=arguments.port if arguments.port is not None else 0,
         )
         serve_ui = (
             bool(arguments.serve_ui)
@@ -238,7 +257,7 @@ def main(
             runtime = _runtime_factory()
         if arguments.command == "serve":
             return asyncio.run(_serve(config, runtime, _stdout))
-        return asyncio.run(_open(config, runtime, _browser_open))
+        return asyncio.run(_open(config, runtime, _browser_open, _stdout))
     except KeyboardInterrupt:
         return 130
     except MonitorRuntimeError as error:

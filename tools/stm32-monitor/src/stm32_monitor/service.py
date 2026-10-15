@@ -12,7 +12,6 @@ from aiohttp import WSCloseCode, WSMsgType, web
 
 from .auth import (
     MAX_REQUEST_BYTES,
-    MONITOR_COOKIE_NAME,
     MonitorAuth,
     MonitorAuthError,
 )
@@ -187,7 +186,7 @@ async def _protocol_errors(
 
 
 class MonitorService:
-    """One dynamic loopback listener bound to a single runtime identity."""
+    """One loopback listener bound to a single runtime identity."""
 
     def __init__(
         self,
@@ -199,6 +198,7 @@ class MonitorService:
         send_delay_seconds: float = 0.0,
         serve_ui: bool = False,
         ui_assets_root: object | None = None,
+        port: int = 0,
     ) -> None:
         if not isinstance(workspace_id, str) or not workspace_id:
             raise ValueError("Monitor workspace identity is invalid")
@@ -206,6 +206,8 @@ class MonitorService:
             raise ValueError("Monitor session identity is invalid")
         if not isinstance(send_delay_seconds, (int, float)) or not 0 <= send_delay_seconds <= 1:
             raise ValueError("Monitor send delay seam is invalid")
+        if type(port) is not int or not 0 <= port <= 65_535:
+            raise ValueError("Monitor port is invalid")
         self._runtime = runtime
         self._workspace_id = workspace_id
         self._session_id = session_id
@@ -213,6 +215,7 @@ class MonitorService:
         self._send_delay_seconds = float(send_delay_seconds)
         self._serve_ui = serve_ui
         self._ui_assets_root = ui_assets_root
+        self._port = port
         self._ui_assets: UiAssets | None = None
         self._runner: web.AppRunner | None = None
         self._endpoint: MonitorEndpoint | None = None
@@ -317,12 +320,14 @@ class MonitorService:
         self._runner = runner
         try:
             await runner.setup()
-            site = web.TCPSite(runner, host="127.0.0.1", port=0)
+            site = web.TCPSite(runner, host="127.0.0.1", port=self._port)
             await site.start()
             addresses = runner.addresses
             if len(addresses) != 1 or addresses[0][0] != "127.0.0.1":
                 raise RuntimeError("Monitor Service did not bind exact IPv4 loopback")
             port = int(addresses[0][1])
+            if not 1 <= port <= 65_535 or (self._port != 0 and port != self._port):
+                raise RuntimeError("Monitor Service did not bind the requested port")
             factory = self._token_factory
             auth = MonitorAuth.create(
                 host="127.0.0.1",
@@ -426,7 +431,7 @@ class MonitorService:
                 host=request.host,
                 origin=request.headers.get("Origin"),
                 authorization=request.headers.get("Authorization"),
-                cookie=request.cookies.get(MONITOR_COOKIE_NAME),
+                cookie=request.cookies.get(self._session_cookie_name()),
                 bootstrap=bootstrap,
                 method=request.method,
                 fetch_site=request.headers.get("Sec-Fetch-Site"),
@@ -434,6 +439,14 @@ class MonitorService:
             )
         except MonitorAuthError as error:
             raise _ServiceFailure(error.code, error.message, error.status) from None
+
+    def _session_cookie_name(self) -> str:
+        endpoint = self._endpoint
+        if endpoint is None:
+            raise _ServiceFailure(
+                "MONITOR_SERVICE_UNAVAILABLE", "Monitor Service is unavailable", 503
+            )
+        return f"stm32_monitor_session_{endpoint.port}"
 
     async def _bootstrap(self, request: web.Request) -> web.Response:
         try:
@@ -452,7 +465,7 @@ class MonitorService:
         response = _response("monitor.auth.bootstrap", data={"authenticated": True})
         assert self._auth is not None
         response.set_cookie(
-            MONITOR_COOKIE_NAME,
+            self._session_cookie_name(),
             self._auth.token,
             httponly=True,
             samesite="Strict",

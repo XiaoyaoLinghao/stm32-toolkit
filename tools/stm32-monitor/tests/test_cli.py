@@ -32,7 +32,7 @@ class RecordingRuntime:
     async def start(self, config):
         self.events.append("start")
         self.config = config
-        return FakeEndpoint()
+        return FakeEndpoint(port=config.port or 45678)
 
     async def wait_closed(self) -> None:
         self.events.append("wait")
@@ -100,13 +100,14 @@ def test_serve_cli_accepts_only_project_data_session_and_json(tmp_path: Path) ->
     assert runtime.config.project_root == project
     assert runtime.config.data_root == data
     assert runtime.config.session_id == "session-a"
+    assert runtime.config.port == 0
     assert runtime.stopped is True
 
 
 def test_cli_rejects_legacy_and_override_options(tmp_path: Path) -> None:
     from stm32_monitor.cli import main
 
-    for option in ("--open-browser", "--port", "--target", "--elf", "--svd", "--address"):
+    for option in ("--open-browser", "--target", "--elf", "--svd", "--address"):
         errors = io.StringIO()
         try:
             main(
@@ -129,6 +130,22 @@ def test_cli_rejects_legacy_and_override_options(tmp_path: Path) -> None:
             assert error.code == 2
         else:
             raise AssertionError(f"legacy option was accepted: {option}")
+
+
+def test_cli_port_parser_accepts_ascii_decimal_and_rejects_invalid_values(tmp_path: Path) -> None:
+    from stm32_monitor.cli import _parser, main
+
+    base = ["--project", str(tmp_path), "--data-root", str(tmp_path / "data")]
+    for command, tail in (("open", []), ("serve", ["--session-id", "session-a", "--json"])):
+        assert _parser().parse_args([command, *base, *tail]).port is None
+        assert _parser().parse_args([command, *base, *tail, "--port", "00001"]).port == 1
+        assert _parser().parse_args([command, *base, *tail, "--port", "65535"]).port == 65_535
+        for value in ("0", "65536", "-1", "+1", " 1", "1 ", "1_000", "１", "x"):
+            stderr = io.StringIO()
+            with pytest.raises(SystemExit) as error:
+                main([command, *base, *tail, "--port", value], _stderr=stderr)
+            assert error.value.code == 2
+            assert "port" in stderr.getvalue()
 
 
 def test_module_entrypoint_delegates_to_cli_without_importing_legacy_runtime() -> None:
@@ -320,13 +337,13 @@ def test_open_starts_then_opens_once_and_cleans_up(tmp_path: Path) -> None:
     opened: list[str] = []
     runtime = RecordingRuntime(events)
     code = main(
-        ["open", "--project", str(project), "--data-root", str((tmp_path / "data").resolve())],
+        ["open", "--project", str(project), "--data-root", str((tmp_path / "data").resolve()), "--port", "8765"],
         _runtime_factory=lambda: runtime,
         _browser_open=lambda url: opened.append(url) or True,
         _stdout=io.StringIO(),
     )
     assert code == 0
-    assert opened == ["http://127.0.0.1:45678/#token=" + "d" * 64]
+    assert opened == ["http://127.0.0.1:8765/#token=" + "d" * 64]
     assert [item[0] if isinstance(item, tuple) else item for item in events] == [
         "start",
         "wait",
@@ -334,6 +351,7 @@ def test_open_starts_then_opens_once_and_cleans_up(tmp_path: Path) -> None:
     ]
     assert isinstance(runtime.config.session_id, str)
     assert runtime.config.session_id.startswith("monitor-")
+    assert runtime.config.port == 8765
 
 
 def test_open_accepts_an_explicit_session_id(tmp_path: Path) -> None:
@@ -408,7 +426,7 @@ def test_open_rejects_an_endpoint_without_a_valid_access_url(tmp_path: Path) -> 
     assert events == ["start", "stop"]
 
 
-def test_open_prints_no_access_url_to_stdout(tmp_path: Path) -> None:
+def test_open_prints_only_the_token_free_endpoint_to_stdout(tmp_path: Path) -> None:
     from stm32_monitor.cli import main
 
     project = (tmp_path / "project").resolve()
@@ -423,7 +441,7 @@ def test_open_prints_no_access_url_to_stdout(tmp_path: Path) -> None:
     assert code == 0
     assert "token" not in output.getvalue()
     assert "#" not in output.getvalue()
-    assert output.getvalue() == ""
+    assert output.getvalue() == "http://127.0.0.1:45678/\n"
 
 
 def test_open_keyboard_interrupt_returns_130_and_cleans_up(tmp_path: Path) -> None:

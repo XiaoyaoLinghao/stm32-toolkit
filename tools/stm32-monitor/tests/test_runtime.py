@@ -129,7 +129,9 @@ class FakeEndpoint:
 
 class FakeService:
     def __init__(self, *_args, **_kwargs) -> None:
+        self.requested_port = _kwargs.get("port")
         self.endpoint = FakeEndpoint(
+            port=self.requested_port or 39123,
             workspace_id=_kwargs.get("workspace_id", ""),
             session_id=_kwargs.get("session_id", ""),
         )
@@ -409,13 +411,14 @@ def test_start_is_project_read_only_and_runtime_record_contains_digest_not_token
             service_factory=service_factory,
         )
         endpoint = await runtime.start(
-            MonitorConfig(project, (tmp_path / "data").resolve(), "session-a")
+            MonitorConfig(project, (tmp_path / "data").resolve(), "session-a", port=8765)
         )
         record = json.loads(runtime.runtime_record.read_text(encoding="utf-8"))
         assert record["tokenSha256"] == hashlib.sha256(
             endpoint.token.encode("ascii")
         ).hexdigest()
         assert record["monitorVersion"] == "1.0.1"
+        assert record["port"] == 8765
         assert endpoint.token not in runtime.runtime_record.read_text(encoding="utf-8")
         assert endpoint.token not in repr(runtime)
         await runtime.stop()
@@ -424,6 +427,7 @@ def test_start_is_project_read_only_and_runtime_record_contains_digest_not_token
     after = {p.relative_to(project).as_posix(): p.read_bytes() for p in project.rglob("*") if p.is_file()}
     assert after == before
     assert service_holder[0].stop_calls == 1
+    assert service_holder[0].requested_port == 8765
 
 
 def test_same_workspace_runtime_lock_is_busy_until_owner_stops(tmp_path: Path) -> None:

@@ -191,8 +191,11 @@ class MonitorConfig:
     project_root: Path
     data_root: Path
     session_id: str
+    port: int = 0
 
     def __post_init__(self) -> None:
+        if type(self.port) is not int or not 0 <= self.port <= 65_535:
+            raise ValueError("Monitor port is invalid")
         try:
             project = Path(self.project_root).expanduser().resolve(strict=True)
         except OSError as error:

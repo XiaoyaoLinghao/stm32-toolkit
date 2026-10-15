@@ -63,6 +63,7 @@ export function samplingState(value:string):string{return states[value as Sampli
 const knownErrors:Record<string,{title:string;action:string}>={
   MONITOR_ACCESS_LINK_INVALID:{title:"授权链接无效",action:copy.retryOpen},
   MONITOR_ACCESS_REJECTED:{title:"授权链接被拒绝",action:copy.retryOpen},
+  MONITOR_SESSION_EXPIRED:{title:"当前会话已失效",action:"如果服务仍在运行，先在启动终端按 Ctrl+C 停止，再用相同 open ... --port ... 命令重新启动并自动认证。"},
   MONITOR_BOOTSTRAP_SERVICE_FAILED:{title:"监视器启动失败",action:copy.retryOpen},
   MONITOR_BOOTSTRAP_RESPONSE_INVALID:{title:"启动响应无效",action:copy.retryOpen},
   MONITOR_BOOTSTRAP_REQUEST_FAILED:{title:"启动请求未完成",action:copy.retryOpen},

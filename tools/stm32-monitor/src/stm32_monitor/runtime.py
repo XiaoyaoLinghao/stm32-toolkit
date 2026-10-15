@@ -546,6 +546,7 @@ class MonitorRuntime:
                 workspace_id=paths.workspace_id,
                 session_id=paths.session_id,
                 serve_ui=self._serve_ui,
+                port=config.port,
             )
             endpoint = await service.start()
             token = getattr(endpoint, "token", None)
@@ -557,6 +558,7 @@ class MonitorRuntime:
                 or getattr(endpoint, "host", None) != "127.0.0.1"
                 or type(port) is not int
                 or not 1 <= port <= 65_535
+                or (config.port != 0 and port != config.port)
                 or getattr(endpoint, "workspace_id", None) != paths.workspace_id
                 or getattr(endpoint, "session_id", None) != paths.session_id
                 or getattr(endpoint, "monitor_version", None) != MONITOR_VERSION
