@@ -54,4 +54,24 @@ describe("buildChartOption",()=>{
       expect(model.getSeries()[0]!.getData().count()).toBeLessThan(points.length);
     }finally{chart.dispose();}
   });
+  it("filters the latter half of a sub-millisecond cache domain in the real engine",()=>{
+    echarts.use([SVGRenderer]);
+    const chart=echarts.init(null,null,{renderer:"svg",ssr:true,width:800,height:320});
+    try{
+      const samples=[
+        point("start",1,0n),
+        point("middle",2,250_000n),
+        point("end",3,500_000n),
+      ];
+      const option=buildChartOption([series("variable:fast",samples)],{start:50,end:100});
+      expect(option.xAxis).toMatchObject({type:"value",min:0,max:0.5});
+      chart.setOption(option,{notMerge:true});
+      const model=(chart as unknown as {getModel:()=>{
+        getSeries:()=>{getData:()=>{count:()=>number;get:(dimension:string,index:number)=>number}}[];
+      }}).getModel();
+      const data=model.getSeries()[0]!.getData();
+      expect(data.count()).toBe(2);
+      expect([data.get("x",0),data.get("x",1)]).toEqual([0.25,0.5]);
+    }finally{chart.dispose();}
+  });
 });

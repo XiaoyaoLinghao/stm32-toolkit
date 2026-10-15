@@ -53,6 +53,18 @@ it("keeps signed-int64 precision and finite axes for empty and single-point seri
   }
 });
 
+it("uses the actual domain for two samples less than a millisecond apart",()=>{
+  const samples=line("variable:fast",[
+    point(1_000_000_000n,"first",1),
+    point(1_000_500_000n,"second",2),
+  ]);
+  const projection=projectChart([samples]);
+  const option=buildChartOption([samples],{start:50,end:100});
+  expect(projection.maxMilliseconds).toBe(0.5);
+  expect(option.xAxis).toMatchObject({type:"value",min:0,max:0.5});
+  expect(data(option)[0]?.data.map(item=>item.value)).toEqual([[0,1],[0.5,2]]);
+});
+
 it("uses a time-bearing null as the origin and breaks a new segment without rewriting samples",()=>{
   const points=Object.freeze([
     Object.freeze(point(100_000_000n,"missing at 100",null,0n)),

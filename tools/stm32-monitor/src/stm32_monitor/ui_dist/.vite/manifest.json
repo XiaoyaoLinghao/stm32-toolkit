@@ -4,7 +4,7 @@
     "name": "zh"
   },
   "index.html": {
-    "file": "assets/index-DEReK6Kl.js",
+    "file": "assets/index-BzTzz0b5.js",
     "name": "index",
     "src": "index.html",
     "isEntry": true,
@@ -26,7 +26,7 @@
     "isDynamicEntry": true
   },
   "src/app.tsx": {
-    "file": "assets/app-CoqZGui6.js",
+    "file": "assets/app-Dv4J7BIV.js",
     "name": "app",
     "src": "src/app.tsx",
     "isDynamicEntry": true,

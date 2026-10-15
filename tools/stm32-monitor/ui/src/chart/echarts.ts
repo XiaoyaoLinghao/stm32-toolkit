@@ -43,7 +43,7 @@ export function projectChart(series:readonly DisplaySeries[]):ChartProjection{
     return{id:item.key,name:item.label,data};
   });
   const span=originNs===null||latestNs===null?0:millisecondsFrom(latestNs,originNs);
-  return{originNs,originUtc,maxMilliseconds:Math.max(1,span),series:projected};
+  return{originNs,originUtc,maxMilliseconds:span>0?span:1,series:projected};
 }
 const chartDatum=(value:unknown):value is ChartDatum=>{
   if(value===null||typeof value!=="object")return false;
