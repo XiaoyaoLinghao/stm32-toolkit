@@ -112,7 +112,7 @@ export function createController(api:MonitorApi,dispatch:(action:MonitorAction)=
     dispatch({type:"request.failed",scope,requestId:id,code:result.code,message:result.message,recovery,summary});
   };
   const read=async<T>(scope:RequestScope,summary:string,invoke:(id:bigint)=>Promise<ApiResult<T>>,
-      loaded:(data:T)=>LoadedAction|undefined,valid?:()=>boolean):Promise<void>=>{
+      loaded:(data:T)=>LoadedAction|undefined,valid?:()=>boolean,retryRun?:()=>Promise<void>):Promise<void>=>{
     if(valid!==undefined&&!valid())return;
     const id=start(scope);if(id===null)return;
     let result:ApiResult<T>;
@@ -123,7 +123,7 @@ export function createController(api:MonitorApi,dispatch:(action:MonitorAction)=
       else retire(scope,id);
       return;
     }
-    if(!result.ok){fail(scope,id,result,"read-retry",summary,()=>read(scope,summary,invoke,loaded,valid),valid);return;}
+    if(!result.ok){fail(scope,id,result,"read-retry",summary,retryRun??(()=>read(scope,summary,invoke,loaded,valid)),valid);return;}
     succeed(scope,id,loaded(result.data));
   };
   const groupPages=async(valid:()=>boolean=()=>true):Promise<ApiResult<readonly WatchGroup[]>>=>{
@@ -146,14 +146,14 @@ export function createController(api:MonitorApi,dispatch:(action:MonitorAction)=
     id=>groupPages(()=>current("groups.list",id)),
     groups=>({type:"groups.loaded",groups,...(submittedDraft===undefined?{}:{submittedDraft}),
       ...(createdGroupId===undefined?{}:{createdGroupId})}));
-  const refreshStatus=()=>{
+  const refreshStatus=():Promise<void>=>{
     if(liveBusy())return Promise.resolve();
     const {gapRevision}=getState().transport,startedStateRevision=getState().stateRevision;
     return read("status",operationSummary("status"),async()=>{
       const result=await api.status();
       return result.ok&&!sameWorkbench(result.data)?changedWorkbench():result;
     },
-      status=>({type:"status.loaded",status,startedGapRevision:gapRevision,startedStateRevision}));
+      status=>({type:"status.loaded",status,startedGapRevision:gapRevision,startedStateRevision}),undefined,refreshStatus);
   };
   const refreshProbes=()=>read("probes",operationSummary("probes"),()=>api.probes(),
     data=>({type:"probes.loaded",probes:data.probes}));

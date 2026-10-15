@@ -19,9 +19,13 @@ function harness(status=vi.fn(async()=>ok(statusResult()))){
     connect:vi.fn(),reconnect:vi.fn(),release:vi.fn(),start:vi.fn(),pause:vi.fn(),resume:vi.fn(),stop:vi.fn()} as unknown as MonitorApi;
   let state:MonitorState=initialState;
   const actions:MonitorAction[]=[];
-  const dispatch=(action:MonitorAction)=>{state=reducer(state,action);actions.push(action);};
+  const queued:MonitorAction[]=[];
+  let queueActions=false;
+  const dispatch=(action:MonitorAction)=>{actions.push(action);if(queueActions)queued.push(action);else state=reducer(state,action);};
   const controller=createController(api,dispatch,()=>state);
-  return{controller,api,sockets,actions,state:()=>state,dispatch};
+  return{controller,api,sockets,actions,state:()=>state,dispatch,
+    queueDispatch:()=>{queueActions=true;},
+    flushDispatch:()=>{queueActions=false;for(const action of queued.splice(0))state=reducer(state,action);}};
 }
 beforeEach(()=>vi.mocked(openLive).mockReset());
 
@@ -122,6 +126,67 @@ it("keeps a new gap seen while a status GET is in flight",async()=>{
   slow.resolve(ok(statusResult()));await reading;
   expect(h.state().transport.gapRevision).toBe(2n);
   expect(h.state().transport.needsStatusRefresh).toBe(true);
+  h.controller.close();
+});
+
+it.each(["gap","state revision"] as const)("starts a status retry against the current %s generation",async kind=>{
+  const refreshed={...statusResult(),sampling:{...statusResult().sampling,bindingEpoch:9n}};
+  const status=vi.fn().mockResolvedValueOnce(ok(statusResult())).mockResolvedValueOnce(failed("STATUS_DOWN"))
+    .mockResolvedValueOnce(ok(refreshed));
+  const h=harness(status);await h.controller.loadInitial();h.sockets[0]!.handlers.onOpen();
+  await h.controller.refreshStatus();
+  const failureId=h.state().failures.status!.requestId;
+  h.sockets[0]!.handlers.onEnvelope({event:{eventId:1n,type:"state",
+    data:{stateRevision:1n,gap:kind==="gap",status:statusResult()}},subscriberDropped:0n});
+  await h.controller.retry("status",failureId);
+  expect(status).toHaveBeenCalledTimes(3);
+  expect(h.state().status?.sampling.bindingEpoch).toBe(9n);
+  expect(h.state().transport.needsStatusRefresh).toBe(false);
+  expect(h.state().failures.status).toBeUndefined();
+  h.controller.close();
+});
+
+it("guards an old status retry through queued checking and connecting, then permits it after cancel",async()=>{
+  const preflight=deferred<ApiResult<MonitorStatus>>();
+  const status=vi.fn().mockResolvedValueOnce(ok(statusResult())).mockResolvedValueOnce(failed("STATUS_DOWN"))
+    .mockImplementationOnce(()=>preflight.promise).mockResolvedValueOnce(ok(statusResult()));
+  const h=harness(status);await h.controller.loadInitial();h.sockets[0]!.handlers.onOpen();
+  await h.controller.refreshStatus();
+  const failureId=h.state().failures.status!.requestId;
+  h.sockets[0]!.handlers.onClosed();
+  h.queueDispatch();
+  const recovery=h.controller.reconnectLive();
+  expect(h.state().transport.phase).toBe("disconnected");
+  await h.controller.retry("status",failureId);
+  expect(status).toHaveBeenCalledTimes(3);
+  preflight.resolve(ok(statusResult()));await recovery;
+  expect(h.sockets).toHaveLength(2);
+  expect(h.state().transport.phase).toBe("disconnected");
+  await h.controller.retry("status",failureId);
+  expect(status).toHaveBeenCalledTimes(3);
+  h.controller.cancelLiveReconnect();h.flushDispatch();
+  await h.controller.retry("status",failureId);
+  expect(status).toHaveBeenCalledTimes(4);
+  expect(h.state().failures.status).toBeUndefined();
+  h.controller.close();
+});
+
+it("retries only the fresh status GET after a successful sampling write",async()=>{
+  const refreshed={...statusResult(),sampling:{...statusResult().sampling,bindingEpoch:9n}};
+  const status=vi.fn().mockResolvedValueOnce(ok(statusResult())).mockResolvedValueOnce(failed("STATUS_DOWN"))
+    .mockResolvedValueOnce(ok(refreshed));
+  const h=harness(status);await h.controller.loadInitial();h.sockets[0]!.handlers.onOpen();
+  vi.mocked(h.api.start).mockResolvedValue(ok({groupId:"group",groupRevision:1n,runId:"run",intervalMs:250}));
+  await h.controller.startSampling("group",1n);
+  expect(h.api.start).toHaveBeenCalledTimes(1);
+  const failureId=h.state().failures.status!.requestId;
+  h.sockets[0]!.handlers.onEnvelope({event:{eventId:1n,type:"state",
+    data:{stateRevision:1n,gap:true,status:statusResult()}},subscriberDropped:0n});
+  await h.controller.retry("status",failureId);
+  expect(h.api.start).toHaveBeenCalledTimes(1);
+  expect(status).toHaveBeenCalledTimes(3);
+  expect(h.state().status?.sampling.bindingEpoch).toBe(9n);
+  expect(h.state().transport.needsStatusRefresh).toBe(false);
   h.controller.close();
 });
 
