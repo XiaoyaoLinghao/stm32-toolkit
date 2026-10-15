@@ -15,7 +15,7 @@ vi.mock("echarts/core",()=>{
   };
 });
 vi.mock("echarts/charts",()=>({LineChart:class{}}));
-vi.mock("echarts/components",()=>({GridComponent:class{},TooltipComponent:class{},LegendComponent:class{}}));
+vi.mock("echarts/components",()=>({GridComponent:class{},TooltipComponent:class{},LegendComponent:class{},DataZoomComponent:class{}}));
 vi.mock("echarts/renderers",()=>({CanvasRenderer:class{}}));
 
 const variable:VariableDescriptor={selector:"counter",typeName:"int",kind:"int",byteSize:4,signed:true,encoding:null,

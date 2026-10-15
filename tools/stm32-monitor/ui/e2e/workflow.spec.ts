@@ -1,4 +1,5 @@
 import {Buffer} from "node:buffer";
+import {createHash} from "node:crypto";
 import {expect,test} from "@playwright/test";
 import {openMonitor,startMonitor} from "./conftest";
 
@@ -177,6 +178,7 @@ test.describe("STM32 Monitor user workflow",()=>{
     // history, navigation and UI state still run through the normal browser app.
     const submitted:string[]=[];
     const artifacts=new Map<string,{exportId:string;format:"csv"|"jsonl";sha256:string;bytes:number;valueCount:number}>();
+    const files=new Map<string,string>();
     let nextId=1;
     const envelope=(operation:string,data:unknown)=>JSON.stringify({protocol:"stm32-toolkit-monitor/1",
       toolkitVersion:"1.0.0",monitorVersion:"1.0.0",ok:true,operation,code:"OK",message:"",data,details:{}});
@@ -186,8 +188,13 @@ test.describe("STM32 Monitor user workflow",()=>{
         const body=request.postData()??"";
         submitted.push(body);
         const format=JSON.parse(body).format as "csv"|"jsonl";
-        const artifact={exportId:`e${nextId++}`,format,sha256:"a".repeat(64),bytes:12,valueCount:1};
+        const payload=format==="csv"
+          ?"captured_at_utc,selector,value\n2026-08-10T00:00:01Z,counter,1\n"
+          :'{"capturedAtUtc":"2026-08-10T00:00:01Z","selector":"counter","value":1}\n';
+        const artifact={exportId:`e${nextId++}`,format,sha256:createHash("sha256").update(payload).digest("hex"),
+          bytes:Buffer.byteLength(payload),valueCount:1};
         artifacts.set(artifact.exportId,artifact);
+        files.set(artifact.exportId,payload);
         await route.fulfill({status:200,contentType:"application/json",body:envelope("monitor.exports.create",artifact)});
         return;
       }
@@ -196,7 +203,7 @@ test.describe("STM32 Monitor user workflow",()=>{
       if(artifact===undefined){await route.abort();return;}
       if(match?.[2]!==undefined){
         await route.fulfill({status:200,headers:{"Content-Type":artifact.format==="csv"?"text/csv":"application/x-ndjson",
-          "Content-Disposition":`attachment; filename="${artifact.exportId}.${artifact.format}"`},body:"value\n1\n"});
+          "Content-Disposition":`attachment; filename="${artifact.exportId}.${artifact.format}"`},body:files.get(artifact.exportId)!});
         return;
       }
       await route.fulfill({status:200,contentType:"application/json",body:envelope("monitor.exports.get",artifact)});
@@ -236,7 +243,12 @@ test.describe("STM32 Monitor user workflow",()=>{
     expect(submitted[1]).toContain('"format":"jsonl"');
     const downloadPromise=page.waitForEvent("download");
     await page.getByRole("button",{name:"下载已验证的 JSONL"}).click();
-    expect((await downloadPromise).suggestedFilename()).toBe("e2.jsonl");
+    const download=await downloadPromise;
+    expect(download.suggestedFilename()).toBe("e2.jsonl");
+    const stream=await download.createReadStream();
+    const downloaded=stream===null?"":(await readStream(stream)).toString("utf-8");
+    expect(downloaded).toBe(files.get("e2"));
+    expect(createHash("sha256").update(downloaded).digest("hex")).toBe(artifacts.get("e2")?.sha256);
   });
 });
 

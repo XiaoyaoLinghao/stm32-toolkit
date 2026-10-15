@@ -1,4 +1,7 @@
+// @vitest-environment node
 import {describe,expect,it} from "vitest";
+import * as echarts from "echarts/core";
+import {SVGRenderer} from "echarts/renderers";
 import type {DisplaySeries} from "../src/state/model";
 import {buildChartOption} from "../src/chart/echarts";
 
@@ -30,5 +33,21 @@ describe("buildChartOption",()=>{
     const option=buildChartOption([series("variable:x",[point("t",null)])],{start:0,end:100});
     const data=(option.series as readonly {data:readonly {value:number|null}[]}[])[0]?.data;
     expect(data?.[0]?.value).toBeNull();
+  });
+  it("registers a working dataZoom window in the real ECharts engine",()=>{
+    echarts.use([SVGRenderer]);
+    const chart=echarts.init(null,null,{renderer:"svg",ssr:true,width:800,height:320});
+    try{
+      const points=Array.from({length:8},(_,index)=>point(`t${index}`,index));
+      chart.setOption(buildChartOption([series("variable:x",points)],{start:50,end:100}),{notMerge:true});
+      // ECharts keeps the processed data window behind its model API. Accessing
+      // it here verifies the registered component actually filters the series.
+      const model=(chart as unknown as {getModel:()=>{
+        getComponent:(kind:string,index:number)=>unknown;
+        getSeries:()=>{getData:()=>{count:()=>number}}[];
+      }}).getModel();
+      expect(model.getComponent("dataZoom",0)).toBeTruthy();
+      expect(model.getSeries()[0]!.getData().count()).toBeLessThan(points.length);
+    }finally{chart.dispose();}
   });
 });

@@ -1,12 +1,12 @@
 import * as echarts from "echarts/core";
 import {LineChart} from "echarts/charts";
-import {GridComponent,TooltipComponent,LegendComponent} from "echarts/components";
+import {GridComponent,TooltipComponent,LegendComponent,DataZoomComponent} from "echarts/components";
 import {CanvasRenderer} from "echarts/renderers";
 import type {EChartsCoreOption} from "echarts/core";
 import type {DisplaySeries} from "../state/model";
 import type {ZoomRange} from "./zoom";
 
-echarts.use([LineChart,GridComponent,TooltipComponent,LegendComponent,CanvasRenderer]);
+echarts.use([LineChart,GridComponent,TooltipComponent,LegendComponent,DataZoomComponent,CanvasRenderer]);
 
 export function buildChartOption(series:readonly DisplaySeries[],range:ZoomRange):EChartsCoreOption{
   const start=range.start,end=range.end;

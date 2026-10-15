@@ -5,7 +5,7 @@ import {ExportPanel} from "../src/components/ExportPanel";
 
 vi.mock("echarts/core",()=>({init:vi.fn(()=>null),use:vi.fn()}));
 vi.mock("echarts/charts",()=>({LineChart:class{}}));
-vi.mock("echarts/components",()=>({GridComponent:class{},TooltipComponent:class{},LegendComponent:class{}}));
+vi.mock("echarts/components",()=>({GridComponent:class{},TooltipComponent:class{},LegendComponent:class{},DataZoomComponent:class{}}));
 vi.mock("echarts/renderers",()=>({CanvasRenderer:class{}}));
 
 const range={startNs:0n,endNs:3000000000n};

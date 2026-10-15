@@ -4,7 +4,7 @@ import {App} from "../src/app";
 
 vi.mock("echarts/core",()=>({init:vi.fn(()=>null),use:vi.fn(),default:{init:vi.fn(()=>null),use:vi.fn()}}));
 vi.mock("echarts/charts",()=>({LineChart:class{}}));
-vi.mock("echarts/components",()=>({GridComponent:class{},TooltipComponent:class{},LegendComponent:class{}}));
+vi.mock("echarts/components",()=>({GridComponent:class{},TooltipComponent:class{},LegendComponent:class{},DataZoomComponent:class{}}));
 vi.mock("echarts/renderers",()=>({CanvasRenderer:class{}}));
 
 function ok<T>(data:T){return {ok:true,data} as const;}
