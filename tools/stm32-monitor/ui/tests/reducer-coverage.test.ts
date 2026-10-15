@@ -50,11 +50,11 @@ describe("reducer dispatch coverage",()=>{
     expect(unknown.selectedGroupId).toBeNull();
     expect(unknown.groupDraft).toEqual(emptyDraft);
   });
-  it("rejects catalog requests when status is absent or the binding key differs",()=>{
-    const noStatus=reducer(initialState,{type:"catalog.requested",catalog:"variables",query:"x",bindingKey:"w/s/p/4",cursor:null});
+  it("rejects catalog results when status is absent or the binding key differs",()=>{
+    const noStatus=reducer(initialState,{type:"catalog.loaded",catalog:"variables",query:"x",bindingKey:"w/s/p/4",cursor:null,items:[],nextCursor:null});
     expect(noStatus.catalog.variables).toBeNull();
     const rebound=base();
-    const mismatch=reducer(rebound,{type:"catalog.requested",catalog:"variables",query:"x",bindingKey:"WRONG",cursor:null});
+    const mismatch=reducer(rebound,{type:"catalog.loaded",catalog:"variables",query:"x",bindingKey:"WRONG",cursor:null,items:[],nextCursor:null});
     expect(mismatch.catalog.variables).toBeNull();
   });
   it("reloads groups selecting the first group by id and resets to empty on none",()=>{
@@ -85,5 +85,13 @@ describe("live envelope edge branches",()=>{
     expect(next.zoom).toEqual({start:0,end:100});
     expect(next.notices[0]?.text).toContain("new binding");
     expect(next.transport.needsStatusRefresh).toBe(false);
+  });
+  it("retires both catalog scopes when a live state changes their binding",()=>{
+    const failed=reducer(reducer(base(),{type:"request.started",scope:"catalog.variables",requestId:1n}),
+      {type:"request.failed",scope:"catalog.variables",requestId:1n,code:"DOWN",message:"down"});
+    const pending=reducer(failed,{type:"request.started",scope:"catalog.registers",requestId:2n});
+    const next=reduceAcceptedLiveEnvelope(pending,{event:stateEvent(1n,1n,5n),subscriberDropped:0n});
+    expect(next.failures["catalog.variables"]).toBeUndefined();
+    expect(next.pending["catalog.registers"]).toBeUndefined();
   });
 });

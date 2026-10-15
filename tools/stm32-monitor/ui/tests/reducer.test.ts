@@ -123,23 +123,29 @@ describe("authoritative monitor reducer",()=>{
     expect(next.zoom).toEqual({start:25,end:75});
   });
 
-  it.each(["variables","registers"] as const)("retains matching %s page items and appends the requested continuation",catalog=>{
+  it.each(["variables","registers"] as const)("appends each accepted %s page cursor once and retains rows after failure",catalog=>{
     const base=reducer(initialState,{type:"initial.loaded",status:status(),probes:[],groups:[]});
-    const first=reducer(base,{type:"catalog.requested",catalog,query:"x",bindingKey:"w/s/p/4",cursor:null});
+    const first=reducer(base,{type:"request.started",scope:`catalog.${catalog}`,requestId:1n});
     const loaded=catalog==="variables"
-      ?reducer(first,{type:"catalog.loaded",catalog,query:"x",bindingKey:"w/s/p/4",cursor:null,items:[variable],nextCursor:"next"})
-      :reducer(first,{type:"catalog.loaded",catalog,query:"x",bindingKey:"w/s/p/4",cursor:null,items:[register],nextCursor:"next"});
-    const continued=reducer(loaded,{type:"catalog.requested",catalog,query:"x",bindingKey:"w/s/p/4",cursor:"next"});
+      ?reducer(first,{type:"request.succeeded",scope:`catalog.${catalog}`,requestId:1n,data:{type:"catalog.loaded",catalog,query:"x",bindingKey:"w/s/p/4",cursor:null,items:[variable],nextCursor:"next"}})
+      :reducer(first,{type:"request.succeeded",scope:`catalog.${catalog}`,requestId:1n,data:{type:"catalog.loaded",catalog,query:"x",bindingKey:"w/s/p/4",cursor:null,items:[register],nextCursor:"next"}});
+    const continued=reducer(loaded,{type:"request.started",scope:`catalog.${catalog}`,requestId:2n});
     expect(continued.catalog[catalog]?.items).toHaveLength(1);
     const appended=catalog==="variables"
-      ?reducer(continued,{type:"catalog.loaded",catalog,query:"x",bindingKey:"w/s/p/4",cursor:"next",items:[{...variable,selector:"y"}],nextCursor:null})
-      :reducer(continued,{type:"catalog.loaded",catalog,query:"x",bindingKey:"w/s/p/4",cursor:"next",items:[{...register,selector:"GPIO.IDR"}],nextCursor:null});
+      ?reducer(continued,{type:"request.succeeded",scope:`catalog.${catalog}`,requestId:2n,data:{type:"catalog.loaded",catalog,query:"x",bindingKey:"w/s/p/4",cursor:"next",items:[{...variable,selector:"y"}],nextCursor:null}})
+      :reducer(continued,{type:"request.succeeded",scope:`catalog.${catalog}`,requestId:2n,data:{type:"catalog.loaded",catalog,query:"x",bindingKey:"w/s/p/4",cursor:"next",items:[{...register,selector:"GPIO.IDR"}],nextCursor:null}});
     expect(appended.catalog[catalog]?.items).toHaveLength(2);
-    const changed=reducer(appended,{type:"catalog.requested",catalog,query:"new",bindingKey:"w/s/p/4",cursor:null});
-    expect(changed.catalog[catalog]?.items).toEqual([]);
+    const duplicateStarted=reducer(appended,{type:"request.started",scope:`catalog.${catalog}`,requestId:3n});
+    const duplicate=catalog==="variables"
+      ?reducer(duplicateStarted,{type:"request.succeeded",scope:`catalog.${catalog}`,requestId:3n,data:{type:"catalog.loaded",catalog,query:"x",bindingKey:"w/s/p/4",cursor:"next",items:[{...variable,selector:"y"}],nextCursor:null}})
+      :reducer(duplicateStarted,{type:"request.succeeded",scope:`catalog.${catalog}`,requestId:3n,data:{type:"catalog.loaded",catalog,query:"x",bindingKey:"w/s/p/4",cursor:"next",items:[{...register,selector:"GPIO.IDR"}],nextCursor:null}});
+    expect(duplicate.catalog[catalog]?.items).toHaveLength(2);
+    const newQuery=reducer(duplicate,{type:"request.started",scope:`catalog.${catalog}`,requestId:4n});
+    const failed=reducer(newQuery,{type:"request.failed",scope:`catalog.${catalog}`,requestId:4n,code:"DOWN",message:"down"});
+    expect(failed.catalog[catalog]?.items).toHaveLength(2);
     const stale=catalog==="variables"
-      ?reducer(changed,{type:"catalog.loaded",catalog,query:"new",bindingKey:"w/s/p/4",cursor:"old",items:[variable],nextCursor:null})
-      :reducer(changed,{type:"catalog.loaded",catalog,query:"new",bindingKey:"w/s/p/4",cursor:"old",items:[register],nextCursor:null});
-    expect(stale).toEqual(changed);
+      ?reducer(failed,{type:"catalog.loaded",catalog,query:"new",bindingKey:"w/s/p/4",cursor:"old",items:[variable],nextCursor:null})
+      :reducer(failed,{type:"catalog.loaded",catalog,query:"new",bindingKey:"w/s/p/4",cursor:"old",items:[register],nextCursor:null});
+    expect(stale).toEqual(failed);
   });
 });

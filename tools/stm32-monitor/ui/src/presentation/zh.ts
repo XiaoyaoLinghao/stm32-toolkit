@@ -72,6 +72,10 @@ export function operationSummary(scope:RequestScope,...details:(string|undefined
   if(scope==="history")return name+" · "+utcNs(details[0]??"0")+" 至 "+utcNs(details[1]??"0")+(details[2]===undefined?"":" · 翻页");
   if(scope==="catalog.variables"||scope==="catalog.registers")return name+" · "+(details[0]??"")+(details[1]===undefined?"":" · 下一页");
   if(scope==="groups.import")return name+" · "+(details[0]??"0")+" 组";
+  if(scope==="probe.reconnect"||scope==="probe.release")return name+" · 探针 "+(details[0]??"未知");
+  if(scope==="sampling.start")return name+" · 观测组 "+(details[0]??"未知")+" · 探针 "+(details[1]??"未知")+" · 轮次 "+(details[2]??"未开始");
+  if(scope==="sampling.pause"||scope==="sampling.resume"||scope==="sampling.stop")
+    return name+" · 观测组 "+(details[0]??"未知")+" · 轮次 "+(details[1]??"未知")+" · 探针 "+(details[2]??"未知");
   const extra=details.filter((item):item is string=>item!==undefined&&item!=="");
   return extra.length===0?name:name+" · "+extra.join(" · ");
 }

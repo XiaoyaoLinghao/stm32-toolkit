@@ -1,7 +1,7 @@
 import type {MonitorStatus,ObservationBinding,ParsedLiveEnvelope,WatchGroup} from "../api/contract";
 import {appendAuthoritativeSample,appendContinuityGap,emptyLive,addSampleDropDeltas,watchKey,projectHistoryPage} from "../chart/series";
 import {initialZoom,zoomReducer} from "../chart/zoom";
-import {draftFromGroup,emptyDraft,type DropTotals,type LiveState,type MonitorAction,type MonitorState} from "./model";
+import {draftFromGroup,emptyDraft,type DropTotals,type LiveState,type MonitorAction,type MonitorState,type RequestScope} from "./model";
 
 const zeroDrops=():DropTotals=>({subscriber:0n,history:0n,deadline:0n,service:0n});
 const dropsFrom=(status:MonitorStatus):DropTotals=>({subscriber:status.sampling.subscriberDrops,history:status.sampling.historyDrops,deadline:status.sampling.deadlineDrops,service:status.sampling.serviceDrops});
@@ -17,6 +17,12 @@ const resetForStatus=(state:MonitorState,status:MonitorStatus):boolean=>{const p
 const selectFirst=(groups:readonly WatchGroup[],selectedId:string|null):WatchGroup|null=>selectedId===null?groups[0]??null:groups.find(group=>group.groupId===selectedId)??groups[0]??null;
 const resetNotice=(state:MonitorState,text:string)=>[...state.notices,{id:`view-reset-${state.notices.length}`,kind:"view-reset" as const,text}];
 const sameDraft=(left:MonitorState["groupDraft"],right:MonitorState["groupDraft"]):boolean=>left.sourceGroupId===right.sourceGroupId&&left.expectedRevision===right.expectedRevision&&left.name===right.name&&left.description===right.description&&left.intervalMs===right.intervalMs&&left.items.length===right.items.length&&left.items.every((item,index)=>watchKey(item)===watchKey(right.items[index]!));
+const catalogScopes=["catalog.variables","catalog.registers"] as const;
+function retireScopes(state:MonitorState,scopes:readonly RequestScope[]):MonitorState{
+ const pending={...state.pending},failures={...state.failures},reconciling={...state.reconciling};
+ for(const scope of scopes){delete pending[scope];delete failures[scope];delete reconciling[scope];}
+ return {...state,pending,failures,reconciling};
+}
 
 export function reduceAcceptedLiveEnvelope(state:MonitorState,envelope:ParsedLiveEnvelope):MonitorState{
  const {event,subscriberDropped}=envelope;if(state.lastAcceptedEventId!==null&&event.eventId<=state.lastAcceptedEventId)return state;let next:MonitorState={...state,lastAcceptedEventId:event.eventId,transport:{...state.transport,stale:false}};if(subscriberDropped>0n)next={...next,live:appendContinuityGap(next.live),zoom:initialZoom,transport:{...next.transport,needsStatusRefresh:true}};
@@ -24,7 +30,8 @@ export function reduceAcceptedLiveEnvelope(state:MonitorState,envelope:ParsedLiv
  if(event.type==="heartbeat")return next;
  if(event.type==="state"){
   if(event.data.stateRevision<state.stateRevision)return next;const changed=resetForStatus(state,event.data.status);let live=changed?liveForStatus(event.data.status,state.selectedSeries):rebased(next.live,event.data.status);const gap=event.data.gap||subscriberDropped>0n;if(event.data.gap&&subscriberDropped===0n)live=appendContinuityGap(live);
-  return {...next,status:event.data.status,stateRevision:event.data.stateRevision,live,zoom:changed||gap?initialZoom:next.zoom,catalog:changed?{variables:null,registers:null}:state.catalog,transport:{...next.transport,needsStatusRefresh:gap||next.transport.needsStatusRefresh},notices:changed||gap?resetNotice(state,changed?"Live view reset for a new binding or run":"Live event gap; status refresh required"):state.notices};
+  const updated={...next,status:event.data.status,stateRevision:event.data.stateRevision,live,zoom:changed||gap?initialZoom:next.zoom,catalog:changed?{variables:null,registers:null}:state.catalog,transport:{...next.transport,needsStatusRefresh:gap||next.transport.needsStatusRefresh},notices:changed||gap?resetNotice(state,changed?"Live view reset for a new binding or run":"Live event gap; status refresh required"):state.notices};
+  return state.status!==null&&catalogBindingKey(state.status)!==catalogBindingKey(event.data.status)?retireScopes(updated,catalogScopes):updated;
  }
  const batch=event.data.batch,group=state.groups.find(item=>item.groupId===batch.groupId&&item.revision===batch.groupRevision);
  if(state.status===null||group===undefined||!statusMatches(state.status,batch.binding)||state.status.sampling.bindingEpoch!==state.live.bindingEpoch||state.status.sampling.runId!==batch.runId||(state.live.binding!==null&&!sameBinding(state.live.binding,batch.binding)))return {...next,transport:{...next.transport,stale:true}};
@@ -46,6 +53,13 @@ export function reducer(state:MonitorState,action:MonitorAction):MonitorState{
   const reconciling={...state.reconciling};delete reconciling[action.scope];
   return {...state,failures,reconciling};
  }
+ if(action.type==="request.retired"){
+  const pending={...state.pending},failures={...state.failures},reconciling={...state.reconciling};
+  if(pending[action.scope]?.requestId===action.requestId)delete pending[action.scope];
+  if(failures[action.scope]?.requestId===action.requestId)delete failures[action.scope];
+  if(reconciling[action.scope]===action.requestId)delete reconciling[action.scope];
+  return {...state,pending,failures,reconciling};
+ }
  if(action.type==="request.reconciling")return state.failures[action.scope]?.requestId===action.requestId
   ?{...state,reconciling:{...state.reconciling,[action.scope]:action.requestId}}:state;
  if(action.type==="request.reconciled"){
@@ -55,8 +69,8 @@ export function reducer(state:MonitorState,action:MonitorAction):MonitorState{
  }
  if(action.type==="access.blocked")return {...state,pending:{},reconciling:{},failures:{},blockingError:{ok:false,code:action.code,message:action.message},transport:{...state.transport,open:false,stale:true}};
  if(action.type==="live.envelope")return reduceAcceptedLiveEnvelope(state,action.value);
- if(action.type==="initial.loaded"){const selected=action.groups[0]??null;return {...state,status:action.status,probes:action.probes,groups:action.groups,selectedGroupId:selected?.groupId??null,groupDraft:selected===null?emptyDraft:draftFromGroup(selected),live:liveForStatus(action.status,state.selectedSeries)};}
- if(action.type==="status.loaded"){const changed=resetForStatus(state,action.status);return {...state,status:action.status,live:changed?liveForStatus(action.status,state.selectedSeries):rebased(state.live,action.status),zoom:changed?initialZoom:state.zoom,catalog:changed?{variables:null,registers:null}:state.catalog,transport:{...state.transport,needsStatusRefresh:false},notices:changed?resetNotice(state,"Live view reset for a new binding or run"):state.notices};}
+ if(action.type==="initial.loaded"){const selected=action.groups[0]??null;const updated={...state,status:action.status,probes:action.probes,groups:action.groups,selectedGroupId:selected?.groupId??null,groupDraft:selected===null?emptyDraft:draftFromGroup(selected),live:liveForStatus(action.status,state.selectedSeries)};return state.status!==null&&catalogBindingKey(state.status)!==catalogBindingKey(action.status)?retireScopes(updated,catalogScopes):updated;}
+ if(action.type==="status.loaded"){const changed=resetForStatus(state,action.status);const updated={...state,status:action.status,live:changed?liveForStatus(action.status,state.selectedSeries):rebased(state.live,action.status),zoom:changed?initialZoom:state.zoom,catalog:changed?{variables:null,registers:null}:state.catalog,transport:{...state.transport,needsStatusRefresh:false},notices:changed?resetNotice(state,"Live view reset for a new binding or run"):state.notices};return state.status!==null&&catalogBindingKey(state.status)!==catalogBindingKey(action.status)?retireScopes(updated,catalogScopes):updated;}
  if(action.type==="probes.loaded")return {...state,probes:action.probes};
  if(action.type==="groups.loaded"){
   const created=action.createdGroupId===undefined?null:action.groups.find(group=>group.groupId===action.createdGroupId)??null;
@@ -69,20 +83,21 @@ export function reducer(state:MonitorState,action:MonitorAction):MonitorState{
   return {...state,groups:action.groups,selectedGroupId:selected?.groupId??null,groupDraft:canRefresh?(selected===null?emptyDraft:draftFromGroup(selected)):draft};
  }
  if(action.type==="group.acknowledged"){
-  if(!sameDraft(state.groupDraft,action.submittedDraft))return state;
-  return {...state,selectedGroupId:action.group.groupId,
+  const existing=state.groups.findIndex(group=>group.groupId===action.group.groupId);
+  const groups=existing<0?[...state.groups,action.group]:state.groups.map(group=>group.groupId===action.group.groupId?action.group:group);
+  if(!sameDraft(state.groupDraft,action.submittedDraft))return {...state,groups};
+  return {...state,groups,selectedGroupId:action.group.groupId,
     groupDraft:{...state.groupDraft,sourceGroupId:action.group.groupId,expectedRevision:action.group.revision}};
  }
- if(action.type==="catalog.requested"){if(state.status===null||catalogBindingKey(state.status)!==action.bindingKey)return state;if(action.catalog==="variables"){const prior=state.catalog.variables,append=action.cursor!==null&&prior!==null&&prior.query===action.query&&prior.bindingKey===action.bindingKey&&prior.nextCursor===action.cursor;return {...state,catalog:{...state.catalog,variables:{kind:"variables",query:action.query,bindingKey:action.bindingKey,cursor:action.cursor,items:append?prior.items:[],nextCursor:null}}};}const prior=state.catalog.registers,append=action.cursor!==null&&prior!==null&&prior.query===action.query&&prior.bindingKey===action.bindingKey&&prior.nextCursor===action.cursor;return {...state,catalog:{...state.catalog,registers:{kind:"registers",query:action.query,bindingKey:action.bindingKey,cursor:action.cursor,items:append?prior.items:[],nextCursor:null}}};}
  if(action.type==="catalog.loaded"){
   if(state.status===null||catalogBindingKey(state.status)!==action.bindingKey)return state;
   if(action.catalog==="variables"){
    const prior=state.catalog.variables;
-   if(action.cursor!==null&&(prior===null||prior.query!==action.query||prior.bindingKey!==action.bindingKey||prior.nextCursor!==action.cursor&&prior.cursor!==action.cursor))return state;
+   if(action.cursor!==null&&(prior===null||prior.query!==action.query||prior.bindingKey!==action.bindingKey||prior.nextCursor!==action.cursor||prior.cursor===action.cursor))return state;
    return {...state,catalog:{...state.catalog,variables:{kind:"variables",query:action.query,bindingKey:action.bindingKey,cursor:action.cursor,items:action.cursor===null?action.items:[...prior!.items,...action.items],nextCursor:action.nextCursor}}};
   }
   const prior=state.catalog.registers;
-  if(action.cursor!==null&&(prior===null||prior.query!==action.query||prior.bindingKey!==action.bindingKey||prior.nextCursor!==action.cursor&&prior.cursor!==action.cursor))return state;
+  if(action.cursor!==null&&(prior===null||prior.query!==action.query||prior.bindingKey!==action.bindingKey||prior.nextCursor!==action.cursor||prior.cursor===action.cursor))return state;
   return {...state,catalog:{...state.catalog,registers:{kind:"registers",query:action.query,bindingKey:action.bindingKey,cursor:action.cursor,items:action.cursor===null?action.items:[...prior!.items,...action.items],nextCursor:action.nextCursor}}};
  }
  if(action.type==="group.selected"){const selected=action.groupId===null?null:state.groups.find(group=>group.groupId===action.groupId)??null;return {...state,selectedGroupId:selected?.groupId??null,groupDraft:selected===null?emptyDraft:draftFromGroup(selected)};}
@@ -101,7 +116,8 @@ export function reducer(state:MonitorState,action:MonitorAction):MonitorState{
  if(action.type==="export.loaded"){
   if(action.submitted!==undefined){
    if(action.submitted.exportId!==action.artifact.exportId)return state;
-   return {...state,exports:{artifact:action.artifact,submitted:action.submitted}};
+   const updated={...state,exports:{artifact:action.artifact,submitted:action.submitted}};
+   return state.exports.artifact?.exportId!==action.artifact.exportId?retireScopes(updated,["export.status"]):updated;
   }
   if(state.exports.artifact!==null&&state.exports.artifact.exportId!==action.artifact.exportId)return state;
   return {...state,exports:{artifact:action.artifact,submitted:state.exports.submitted}};

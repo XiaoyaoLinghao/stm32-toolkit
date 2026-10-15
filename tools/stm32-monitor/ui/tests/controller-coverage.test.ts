@@ -59,7 +59,7 @@ describe("controller coverage",()=>{
     const {controller,actions}=harness(api);
     await controller.searchCatalog("variables","x");
     await controller.nextCatalog("variables");
-    expect(actions.some(a=>a.type==="catalog.requested")).toBe(false);
+    expect(actions.some(a=>a.type==="request.started"&&a.scope==="catalog.variables")).toBe(false);
   });
 
   it("searchCatalog and nextCatalog drive the registers path",async()=>{

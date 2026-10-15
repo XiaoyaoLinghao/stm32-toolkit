@@ -23,7 +23,6 @@ export type LoadedAction=
  | {type:"probes.loaded";probes:readonly ProbeInfo[]}
  | {type:"groups.loaded";groups:readonly WatchGroup[];submittedDraft?:GroupDraft;createdGroupId?:string}
  | {type:"group.acknowledged";group:WatchGroup;submittedDraft:GroupDraft}
- | {type:"catalog.requested";catalog:CatalogKind;query:string;bindingKey:string;cursor:string|null}
  | {type:"catalog.loaded";catalog:"variables";query:string;bindingKey:string;cursor:string|null;items:readonly VariableDescriptor[];nextCursor:string|null}
  | {type:"catalog.loaded";catalog:"registers";query:string;bindingKey:string;cursor:string|null;items:readonly RegisterDescriptor[];nextCursor:string|null}
  | {type:"group.selected";groupId:string|null}
@@ -42,6 +41,7 @@ export type MonitorAction=LoadedAction
  | {type:"request.cleared";scope:RequestScope;requestId:bigint}
  | {type:"request.failed";scope:RequestScope;requestId:bigint;code:string;message:string;recovery?:RecoveryKind;summary?:string;fatal?:boolean}
  | {type:"request.dismissed";scope:RequestScope;requestId:bigint}
+ | {type:"request.retired";scope:RequestScope;requestId:bigint}
  | {type:"request.reconciling";scope:RequestScope;requestId:bigint}
  | {type:"request.reconciled";scope:RequestScope;requestId:bigint}
  | {type:"access.blocked";code:string;message:string}

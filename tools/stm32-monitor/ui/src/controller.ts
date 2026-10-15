@@ -40,11 +40,11 @@ function parseGroupImport(value:unknown):ApiResult<GroupImportDocument>{
   try{return{ok:true,data:groupImportGuard(parseLossless(JSON.stringify(value)))};}
   catch{return{ok:false,code:"MONITOR_IMPORT_INVALID",message:"Group import document is invalid"};}
 }
-type Retry={requestId:bigint;recovery:RecoveryKind;run:()=>Promise<void>};
+type Retry={requestId:bigint;recovery:RecoveryKind;run:()=>Promise<void>;valid?:()=>boolean};
 type Family="groups"|"probe"|"sampling"|"export";
 
 export function createController(api:MonitorApi,dispatch:(action:MonitorAction)=>void,getState:()=>MonitorState):Controller{
-  let nextId=1n,closed=false,blocked=false,initialized=false,lifecycle=0;
+  let nextId=1n,closed=false,blocked=false,initialized=false,lifecycle=0,latestInitialId:bigint|null=null;
   let closeLive:(()=>void)|null=null;
   const active=new Map<RequestScope,bigint>();
   const retries=new Map<RequestScope,Retry>();
@@ -54,7 +54,26 @@ export function createController(api:MonitorApi,dispatch:(action:MonitorAction)=
     const status=state.status;
     return status===null?"":status.workspaceId+"/"+status.sessionId+"/"+status.project.logicalProjectId+"/"+status.sampling.bindingEpoch;
   };
+  const targetValid=(includeRun:boolean):(()=>boolean)=>{
+    const status=getState().status;
+    if(status===null)return()=>getState().status===null;
+    const original={workspaceId:status.workspaceId,sessionId:status.sessionId,projectId:status.project.logicalProjectId,
+      probeId:status.probe.probeId,bindingEpoch:status.sampling.bindingEpoch,
+      groupId:status.sampling.groupId,runId:status.sampling.runId};
+    return()=>{
+      const latest=getState().status;
+      return latest!==null&&latest.workspaceId===original.workspaceId&&latest.sessionId===original.sessionId
+        &&latest.project.logicalProjectId===original.projectId&&latest.probe.probeId===original.probeId
+        &&latest.sampling.bindingEpoch===original.bindingEpoch
+        &&(!includeRun||latest.sampling.groupId===original.groupId&&latest.sampling.runId===original.runId);
+    };
+  };
   const current=(scope:RequestScope,id:bigint)=>!closed&&!blocked&&active.get(scope)===id;
+  const retire=(scope:RequestScope,id:bigint):void=>{
+    if(active.get(scope)===id)active.delete(scope);
+    if(retries.get(scope)?.requestId===id)retries.delete(scope);
+    dispatch({type:"request.retired",scope,requestId:id});
+  };
   const start=(scope:RequestScope,unique=false):bigint|null=>{
     if(closed||blocked||unique&&active.has(scope))return null;
     const id=nextId++;active.set(scope,id);retries.delete(scope);
@@ -66,15 +85,19 @@ export function createController(api:MonitorApi,dispatch:(action:MonitorAction)=
     dispatch(data===undefined?{type:"request.succeeded",scope,requestId:id}:{type:"request.succeeded",scope,requestId:id,data});
     return true;
   };
-  const fail=(scope:RequestScope,id:bigint,result:ApiFailure,recovery:RecoveryKind,summary:string,run?:()=>Promise<void>):void=>{
-    if(!current(scope,id))return;
-    if(fatalCode(result.code)){
+  const blockAccess=(result:ApiFailure,scope?:RequestScope,id?:bigint):void=>{
+    if(closed||blocked)return;
+    if(scope!==undefined&&id!==undefined&&current(scope,id))
       dispatch({type:"request.failed",scope,requestId:id,code:result.code,message:result.message,fatal:true});
-      blocked=true;lifecycle++;active.clear();retries.clear();writing.clear();reconciling.clear();
-      if(closeLive!==null){closeLive();closeLive=null;}return;
-    }
+    else dispatch({type:"access.blocked",code:result.code,message:result.message});
+    blocked=true;lifecycle++;active.clear();retries.clear();writing.clear();reconciling.clear();
+    if(closeLive!==null){closeLive();closeLive=null;}
+  };
+  const fail=(scope:RequestScope,id:bigint,result:ApiFailure,recovery:RecoveryKind,summary:string,run?:()=>Promise<void>,valid?:()=>boolean):void=>{
+    if(!current(scope,id))return;
+    if(fatalCode(result.code)){blockAccess(result,scope,id);return;}
     active.delete(scope);
-    if(run!==undefined)retries.set(scope,{requestId:id,recovery,run});
+    if(run!==undefined)retries.set(scope,{requestId:id,recovery,run,...(valid===undefined?{}:{valid})});
     dispatch({type:"request.failed",scope,requestId:id,code:result.code,message:result.message,recovery,summary});
   };
   const read=async<T>(scope:RequestScope,summary:string,invoke:(id:bigint)=>Promise<ApiResult<T>>,
@@ -84,8 +107,13 @@ export function createController(api:MonitorApi,dispatch:(action:MonitorAction)=
     let result:ApiResult<T>;
     try{result=await invoke(id);}catch(error){result=unexpected(error);}
     if(!current(scope,id))return;
-    if(!result.ok){fail(scope,id,result,"read-retry",summary,()=>read(scope,summary,invoke,loaded,valid));return;}
-    succeed(scope,id,valid===undefined||valid()?loaded(result.data):undefined);
+    if(valid!==undefined&&!valid()){
+      if(!result.ok&&fatalCode(result.code))fail(scope,id,result,"none",summary);
+      else retire(scope,id);
+      return;
+    }
+    if(!result.ok){fail(scope,id,result,"read-retry",summary,()=>read(scope,summary,invoke,loaded,valid),valid);return;}
+    succeed(scope,id,loaded(result.data));
   };
   const groupPages=async(valid:()=>boolean=()=>true):Promise<ApiResult<readonly WatchGroup[]>>=>{
     const first=await api.groups(undefined);
@@ -112,7 +140,7 @@ export function createController(api:MonitorApi,dispatch:(action:MonitorAction)=
   const refreshProbes=()=>read("probes",operationSummary("probes"),()=>api.probes(),
     data=>({type:"probes.loaded",probes:data.probes}));
   const write=async<T>(scope:RequestScope,family:Family,summary:string,invoke:()=>Promise<ApiResult<T>>,
-    accepted:(data:T)=>LoadedAction|undefined,followup:(data:T)=>Promise<void>,reconcile?:()=>Promise<void>):Promise<void>=>{
+    accepted:(data:T)=>LoadedAction|undefined,followup:(data:T)=>Promise<void>,reconcile?:()=>Promise<void>,valid?:()=>boolean):Promise<void>=>{
     if(writing.has(family))return;
     const id=start(scope,true);if(id===null)return;
     writing.add(family);
@@ -123,7 +151,7 @@ export function createController(api:MonitorApi,dispatch:(action:MonitorAction)=
       if(!result.ok){
         const uncertain=uncertainCode(result.code);
         const recovery:RecoveryKind=uncertain?(reconcile===undefined?"none":"reconcile"):"write-confirm";
-        fail(scope,id,result,recovery,summary,uncertain?reconcile:()=>write(scope,family,summary,invoke,accepted,followup,reconcile));
+        fail(scope,id,result,recovery,summary,uncertain?reconcile:()=>write(scope,family,summary,invoke,accepted,followup,reconcile,valid),valid);
         return;
       }
       if(succeed(scope,id,accepted(result.data)))await followup(result.data);
@@ -165,20 +193,37 @@ export function createController(api:MonitorApi,dispatch:(action:MonitorAction)=
     if(initialized)return;
     const id=start("initial",true);if(id===null)return;
     const epoch=lifecycle;
-    let status:Awaited<ReturnType<MonitorApi["status"]>>;
-    let probes:Awaited<ReturnType<MonitorApi["probes"]>>;
-    let groups:Awaited<ReturnType<typeof groupPages>>;
-    const observeFatal=async<T>(promise:Promise<ApiResult<T>>):Promise<ApiResult<T>>=>{
-      const result=await promise;
-      if(!result.ok&&fatalCode(result.code))fail("initial",id,result,"none",operationSummary("initial"));
+    latestInitialId=id;
+    let signalFailure!:(failure:ApiFailure)=>void;
+    const firstFailure=new Promise<ApiFailure>(resolve=>{signalFailure=resolve;});
+    let signaled=false;
+    const latest=()=>!closed&&!blocked&&latestInitialId===id&&epoch===lifecycle;
+    const observe=async<T>(invoke:()=>Promise<ApiResult<T>>):Promise<ApiResult<T>>=>{
+      let result:ApiResult<T>;
+      try{result=await invoke();}catch(error){result=unexpected(error);}
+      if(!result.ok&&latest()){
+        if(fatalCode(result.code)){
+          blockAccess(result,"initial",id);
+          if(!signaled){signaled=true;signalFailure(result);}
+        }
+        else if(!signaled){signaled=true;signalFailure(result);}
+      }
       return result;
     };
-    try{[status,probes,groups]=await Promise.all([
-      observeFatal(api.status()),observeFatal(api.probes()),
-      observeFatal(groupPages(()=>current("initial",id)&&epoch===lifecycle)),
-    ]);}
-    catch(error){fail("initial",id,unexpected(error),"read-retry",operationSummary("initial"),initial);return;}
+    const all=Promise.all([
+      observe(()=>api.status()),observe(()=>api.probes()),
+      observe(()=>groupPages(()=>current("initial",id)&&epoch===lifecycle)),
+    ]);
+    const outcome=await Promise.race([
+      all.then(results=>({kind:"complete" as const,results})),
+      firstFailure.then(failure=>({kind:"failed" as const,failure})),
+    ]);
+    if(outcome.kind==="failed"){
+      if(latest())fail("initial",id,outcome.failure,"read-retry",operationSummary("initial"),initial);
+      return;
+    }
     if(!current("initial",id)||epoch!==lifecycle)return;
+    const [status,probes,groups]=outcome.results;
     const failures=[status,probes,groups].filter((result):result is ApiFailure=>!result.ok);
     const failure=failures.find(result=>fatalCode(result.code))??failures[0]??null;
     if(failure!==null){fail("initial",id,failure,"read-retry",operationSummary("initial"),initial);return;}
@@ -196,11 +241,11 @@ export function createController(api:MonitorApi,dispatch:(action:MonitorAction)=
   return{
     loadInitial:initial,refreshStatus,refreshProbes,refreshGroups:()=>refreshGroups(),
     connectProbe:probeId=>write("probe.connect","probe",operationSummary("probe.connect",probeId),
-      ()=>api.connect(probeId),noAction,refreshStatus,refreshStatus),
-    reconnectProbe:()=>write("probe.reconnect","probe",operationSummary("probe.reconnect"),
-      ()=>api.reconnect(),noAction,refreshStatus,refreshStatus),
-    releaseProbe:()=>write("probe.release","probe",operationSummary("probe.release"),
-      ()=>api.release(),noAction,refreshStatus,refreshStatus),
+      ()=>api.connect(probeId),noAction,refreshStatus,refreshStatus,targetValid(false)),
+    reconnectProbe:()=>write("probe.reconnect","probe",operationSummary("probe.reconnect",getState().status?.probe.probeId??undefined),
+      ()=>api.reconnect(),noAction,refreshStatus,refreshStatus,targetValid(false)),
+    releaseProbe:()=>write("probe.release","probe",operationSummary("probe.release",getState().status?.probe.probeId??undefined),
+      ()=>api.release(),noAction,refreshStatus,refreshStatus,targetValid(false)),
     searchCatalog:(kind,query)=>{const bindingKey=key(getState());return bindingKey===""?Promise.resolve():catalog(kind,query,undefined,bindingKey);},
     nextCatalog:kind=>{
       const prior=getState().catalog[kind],bindingKey=key(getState());
@@ -243,14 +288,18 @@ export function createController(api:MonitorApi,dispatch:(action:MonitorAction)=
       return write("groups.import","groups",operationSummary("groups.import",String(doc.groups.length)),
         ()=>api.importGroups(doc),noAction,()=>refreshGroups(),()=>refreshGroups());
     },
-    startSampling:(groupId,expectedRevision)=>write("sampling.start","sampling",operationSummary("sampling.start",groupId),
-      ()=>api.start(groupId,expectedRevision),noAction,refreshStatus,refreshStatus),
-    pauseSampling:()=>write("sampling.pause","sampling",operationSummary("sampling.pause"),
-      ()=>api.pause(),noAction,refreshStatus,refreshStatus),
-    resumeSampling:()=>write("sampling.resume","sampling",operationSummary("sampling.resume"),
-      ()=>api.resume(),noAction,refreshStatus,refreshStatus),
-    stopSampling:()=>write("sampling.stop","sampling",operationSummary("sampling.stop"),
-      ()=>api.stop(),noAction,refreshStatus,refreshStatus),
+    startSampling:(groupId,expectedRevision)=>write("sampling.start","sampling",
+      operationSummary("sampling.start",groupId,getState().status?.probe.probeId??undefined,getState().status?.sampling.runId??undefined),
+      ()=>api.start(groupId,expectedRevision),noAction,refreshStatus,refreshStatus,targetValid(true)),
+    pauseSampling:()=>write("sampling.pause","sampling",
+      operationSummary("sampling.pause",getState().status?.sampling.groupId??undefined,getState().status?.sampling.runId??undefined,getState().status?.probe.probeId??undefined),
+      ()=>api.pause(),noAction,refreshStatus,refreshStatus,targetValid(true)),
+    resumeSampling:()=>write("sampling.resume","sampling",
+      operationSummary("sampling.resume",getState().status?.sampling.groupId??undefined,getState().status?.sampling.runId??undefined,getState().status?.probe.probeId??undefined),
+      ()=>api.resume(),noAction,refreshStatus,refreshStatus,targetValid(true)),
+    stopSampling:()=>write("sampling.stop","sampling",
+      operationSummary("sampling.stop",getState().status?.sampling.groupId??undefined,getState().status?.sampling.runId??undefined,getState().status?.probe.probeId??undefined),
+      ()=>api.stop(),noAction,refreshStatus,refreshStatus,targetValid(true)),
     loadHistory:query=>history(query,"replace"),
     nextHistory:cursor=>{
       const currentPage=getState().history;
@@ -272,6 +321,7 @@ export function createController(api:MonitorApi,dispatch:(action:MonitorAction)=
     retry:async(scope,id)=>{
       const retry=retries.get(scope),failure=getState().failures[scope];
       if(retry===undefined||retry.requestId!==id||failure?.requestId!==id||active.has(scope)||closed||blocked||reconciling.has(scope))return;
+      if(retry.valid!==undefined&&!retry.valid()){retire(scope,id);return;}
       if(retry.recovery!=="reconcile"){await retry.run();return;}
       reconciling.add(scope);
       dispatch({type:"request.reconciling",scope,requestId:id});
