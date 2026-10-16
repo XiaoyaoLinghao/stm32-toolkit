@@ -1,4 +1,4 @@
-import {IntegerToken,i64,parseLossless} from "./wire";
+import {IntegerToken,encodeJson,i64,parseLossless} from "./wire";
 export {i64} from "./wire";
 
 export type I64=bigint;
@@ -12,6 +12,9 @@ export type MonitorStatus={workspaceId:string;sessionId:string;project:ProjectSt
 export type ProbeInfo={probeId:string;vendor:string;product:string;boardName:string|null};
 export type VariableDescriptor={selector:string;typeName:string;kind:string;byteSize:number;signed:boolean|null;encoding:string|null;qualifiers:readonly string[];aliases:readonly string[];enumValues:readonly {value:bigint;name:string}[];elementCount:I64|null;elementKind:string|null;memberNames:readonly string[]};
 export type RegisterDescriptor={selector:string;sizeBits:number;access:string|null;readAction:string|null;resetValue:bigint|null;resetMask:bigint|null;fields:readonly {name:string;bitOffset:number;bitWidth:number}[];sampleable:boolean;requiresAccessAcknowledgement:boolean};
+export type CatalogGroup={id:string;label:string};
+export type VariableCatalogItem=VariableDescriptor&{group:CatalogGroup};
+export type RegisterCatalogItem=RegisterDescriptor&{group:CatalogGroup};
 export type VariableWatch={kind:"variable";expression:string};
 export type RegisterWatch={kind:"register";registerPath:string};
 export type WatchItem=VariableWatch|RegisterWatch;
@@ -38,7 +41,7 @@ export type DeleteGroupRequest={expectedRevision:I64;authorized:true};
 export type SamplerStartResult={groupId:string;groupRevision:I64;runId:string;intervalMs:number};
 export type DownloadResult=ApiFailure|{ok:true;blob:Blob;filename:string;contentType:string};
 export interface MonitorApi{status():Promise<ApiResult<MonitorStatus>>;probes():Promise<ApiResult<{probes:readonly ProbeInfo[]}>>;
- variables(query:string,cursor?:string):Promise<ApiResult<{items:readonly VariableDescriptor[];nextCursor:string|null}>>;registers(query:string,cursor?:string):Promise<ApiResult<{items:readonly RegisterDescriptor[];nextCursor:string|null}>>;
+ variables(query:string,cursor?:string):Promise<ApiResult<{items:readonly VariableCatalogItem[];nextCursor:string|null}>>;registers(query:string,cursor?:string):Promise<ApiResult<{items:readonly RegisterCatalogItem[];nextCursor:string|null}>>;
  groups(cursor?:string):Promise<ApiResult<GroupPage>>;createGroup(request:CreateGroupRequest):Promise<ApiResult<WatchGroup>>;updateGroup(groupId:string,request:UpdateGroupRequest):Promise<ApiResult<WatchGroup>>;deleteGroup(groupId:string,request:DeleteGroupRequest):Promise<ApiResult<{groupId:string;deleted:true}>>;importGroups(document:GroupImportDocument):Promise<ApiResult<readonly WatchGroup[]>>;
  connect(probeId:string):Promise<ApiResult<DebugFirmwareBinding>>;reconnect():Promise<ApiResult<DebugFirmwareBinding>>;release():Promise<ApiResult<{released:boolean}>>;
  start(groupId:string,expectedRevision:I64):Promise<ApiResult<SamplerStartResult>>;pause():Promise<ApiResult<{paused:boolean}>>;resume():Promise<ApiResult<{resumed:boolean}>>;stop():Promise<ApiResult<{stopped:boolean}>>;
@@ -73,6 +76,33 @@ export const monitorStatusGuard:DataGuard<MonitorStatus>=(value)=>{const v=objec
 export const probeInfoGuard:DataGuard<ProbeInfo>=(value)=>{const v=object(value);exact(v,["probeId","vendor","product","boardName"]);return{probeId:string(v.probeId),vendor:string(v.vendor),product:string(v.product),boardName:nullable(v.boardName,string)};};
 export const variableDescriptorGuard:DataGuard<VariableDescriptor>=(value)=>{const v=object(value);exact(v,["selector","typeName","kind","byteSize","signed","encoding","qualifiers","aliases","enumValues","elementCount","elementKind","memberNames"]);return{selector:string(v.selector),typeName:string(v.typeName),kind:string(v.kind),byteSize:boundedInteger(v.byteSize),signed:nullable(v.signed,boolean),encoding:nullable(v.encoding,string),qualifiers:stringArray(v.qualifiers),aliases:stringArray(v.aliases),enumValues:array(v.enumValues,item=>{const e=object(item);exact(e,["value","name"]);return{value:bigintInteger(e.value),name:string(e.name)};}),elementCount:nullable(v.elementCount,i64),elementKind:nullable(v.elementKind,string),memberNames:stringArray(v.memberNames)};};
 export const registerDescriptorGuard:DataGuard<RegisterDescriptor>=(value)=>{const v=object(value);exact(v,["selector","sizeBits","access","readAction","resetValue","resetMask","fields","sampleable","requiresAccessAcknowledgement"]);return{selector:string(v.selector),sizeBits:boundedInteger(v.sizeBits),access:nullable(v.access,string),readAction:nullable(v.readAction,string),resetValue:nullable(v.resetValue,nonnegativeBigint),resetMask:nullable(v.resetMask,nonnegativeBigint),fields:array(v.fields,item=>{const f=object(item);exact(f,["name","bitOffset","bitWidth"]);return{name:string(f.name),bitOffset:boundedInteger(f.bitOffset),bitWidth:boundedInteger(f.bitWidth)};}),sampleable:boolean(v.sampleable),requiresAccessAcknowledgement:boolean(v.requiresAccessAcknowledgement)};};
+export const catalogGroupGuard:DataGuard<CatalogGroup>=(value)=>{
+  const v=object(value);exact(v,["id","label"]);
+  const id=string(v.id),label=string(v.label);
+  if(!/^[A-Za-z0-9:_-]{1,128}$/.test(id)||label.length<1||label.length>512||!label.trim()||
+    /[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/u.test(label)||label.startsWith("/")||label.startsWith("\\")||
+    /^[A-Za-z]:[\\/]/.test(label)||label.replaceAll("\\","/").split("/").some(component=>component==="."||component===".."))
+    throw new Error("invalid catalog group");
+  return{id,label};
+};
+export const variableCatalogItemGuard:DataGuard<VariableCatalogItem>=(value)=>{
+  const v=object(value),{group,...descriptor}=v;
+  return{...variableDescriptorGuard(descriptor),group:catalogGroupGuard(group)};
+};
+export const registerCatalogItemGuard:DataGuard<RegisterCatalogItem>=(value)=>{
+  const v=object(value),{group,...descriptor}=v;
+  return{...registerDescriptorGuard(descriptor),group:catalogGroupGuard(group)};
+};
+function catalogItems<T extends {selector:string;group:CatalogGroup}>(value:unknown,guard:DataGuard<T>):readonly T[]{
+  const items=array(value,guard),labels=new Map<string,string>(),selectors=new Map<string,T>();
+  for(const item of items){
+    const label=labels.get(item.group.id),prior=selectors.get(item.selector);
+    if(label!==undefined&&label!==item.group.label||prior!==undefined&&encodeJson(prior)!==encodeJson(item))
+      throw new Error("conflicting catalog page");
+    labels.set(item.group.id,item.group.label);selectors.set(item.selector,item);
+  }
+  return items;
+}
 export const watchItemGuard:DataGuard<WatchItem>=(value)=>{const v=object(value),kind=string(v.kind);if(kind==="variable"){exact(v,["kind","expression"]);return{kind:"variable",expression:string(v.expression)};}if(kind==="register"){exact(v,["kind","registerPath"]);return{kind:"register",registerPath:string(v.registerPath)};}throw new Error("unknown watch kind");};
 export const watchGroupGuard:DataGuard<WatchGroup>=(value)=>{const v=object(value);exact(v,["groupId","name","description","intervalMs","items","revision","createdAtUtc","updatedAtUtc"]);return{groupId:string(v.groupId),name:string(v.name),description:string(v.description),intervalMs:boundedInteger(v.intervalMs),items:array(v.items,watchItemGuard),revision:i64(v.revision),createdAtUtc:string(v.createdAtUtc),updatedAtUtc:string(v.updatedAtUtc)};};
 export const groupPageGuard:DataGuard<GroupPage>=(value)=>{const v=object(value);exact(v,["groups","nextCursor","revision"]);return{groups:array(v.groups,watchGroupGuard),nextCursor:nullable(v.nextCursor,string),revision:string(v.revision)};};
@@ -96,8 +126,8 @@ export const historyPageGuard:DataGuard<HistoryPage>=(value)=>{const v=object(va
 export const exportArtifactGuard:DataGuard<ExportArtifact>=(value)=>{const v=object(value);exact(v,["exportId","format","sha256","bytes","valueCount"]);return{exportId:string(v.exportId),format:enumValue(["csv","jsonl"],v.format),sha256:string(v.sha256),bytes:i64(v.bytes),valueCount:i64(v.valueCount)};};
 
 export const probesGuard:DataGuard<{probes:readonly ProbeInfo[]}>=(value)=>{const v=object(value);exact(v,["probes"]);return{probes:array(v.probes,probeInfoGuard)};};
-export const variablesGuard:DataGuard<{items:readonly VariableDescriptor[];nextCursor:string|null}>=(value)=>{const v=object(value);exact(v,["items","nextCursor"]);return{items:array(v.items,variableDescriptorGuard),nextCursor:nullable(v.nextCursor,string)};};
-export const registersGuard:DataGuard<{items:readonly RegisterDescriptor[];nextCursor:string|null}>=(value)=>{const v=object(value);exact(v,["items","nextCursor"]);return{items:array(v.items,registerDescriptorGuard),nextCursor:nullable(v.nextCursor,string)};};
+export const variablesGuard:DataGuard<{items:readonly VariableCatalogItem[];nextCursor:string|null}>=(value)=>{const v=object(value);exact(v,["items","nextCursor"]);return{items:catalogItems(v.items,variableCatalogItemGuard),nextCursor:nullable(v.nextCursor,string)};};
+export const registersGuard:DataGuard<{items:readonly RegisterCatalogItem[];nextCursor:string|null}>=(value)=>{const v=object(value);exact(v,["items","nextCursor"]);return{items:catalogItems(v.items,registerCatalogItemGuard),nextCursor:nullable(v.nextCursor,string)};};
 export const watchGroupsGuard:DataGuard<readonly WatchGroup[]>=(value)=>array(value,watchGroupGuard);
 export const deletedGroupGuard:DataGuard<{groupId:string;deleted:true}>=(value)=>{const v=object(value);exact(v,["groupId","deleted"]);return{groupId:string(v.groupId),deleted:literal(true)(v.deleted)};};
 export const releasedGuard:DataGuard<{released:boolean}>=(value)=>{const v=object(value);exact(v,["released"]);return{released:boolean(v.released)};};

@@ -60,6 +60,10 @@ small,.hint{color:var(--muted);font-size:12px;}
 .zoom-controls p{margin-right:auto;color:var(--muted);}
 .table-scroll{width:100%;overflow-x:auto;}
 .catalog-panel .table-scroll{max-width:100%;}
+.catalog-tree details{border:1px solid var(--line);border-radius:6px;margin:8px 0;background:#fff;}
+.catalog-tree summary{cursor:pointer;padding:9px 12px;font-weight:600;overflow-wrap:anywhere;}
+.catalog-tree details[open] summary{border-bottom:1px solid var(--line);}
+.catalog-tree table{margin:0;}
 table{border-collapse:collapse;width:100%;min-width:470px;}
 th,td{text-align:left;padding:7px 8px;border-bottom:1px solid #e9edf2;vertical-align:top;}
 th{color:var(--muted);font-size:12px;font-weight:600;white-space:nowrap;}

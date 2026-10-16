@@ -1,6 +1,6 @@
 import type {JSX} from "preact";
-import {useState} from "preact/hooks";
-import type {RegisterDescriptor,VariableDescriptor,WatchItem} from "../api/contract";
+import {useRef,useState} from "preact/hooks";
+import type {CatalogGroup,RegisterCatalogItem,VariableCatalogItem,WatchItem} from "../api/contract";
 import type {VariableCatalog,RegisterCatalog,CatalogKind} from "../state/model";
 import {copy,formatCopy} from "../presentation/zh";
 
@@ -17,24 +17,49 @@ export type CatalogPanelProps={
   onAdd:(watch:WatchItem)=>void|Promise<void>;
 };
 
-export type CatalogResult<T>={kind:CatalogKind;query:string;bindingEpoch:bigint;items:readonly T[];nextCursor:string|null};
+type CatalogItem=VariableCatalogItem|RegisterCatalogItem;
+type OpenChoices={key:string;overrides:Readonly<Record<string,boolean>>};
 
-function addWatch(descriptor:VariableDescriptor|RegisterDescriptor,onAdd:(watch:WatchItem)=>void|Promise<void>):void{
-  if("expression" in descriptor||"memberNames" in descriptor||"elementCount" in descriptor){
-    void onAdd({kind:"variable",expression:descriptor.selector});
-  }else{
-    if(!descriptor.sampleable)return;
-    void onAdd({kind:"register",registerPath:descriptor.selector});
+function groups(items:readonly CatalogItem[]):{group:CatalogGroup;items:CatalogItem[]}[]{
+  const result:{group:CatalogGroup;items:CatalogItem[]}[]=[],byId=new Map<string,number>();
+  for(const item of items){
+    let index=byId.get(item.group.id);
+    if(index===undefined){index=result.length;byId.set(item.group.id,index);result.push({group:item.group,items:[]});}
+    result[index]!.items.push(item);
   }
+  return result;
+}
+
+function addWatch(item:CatalogItem,onAdd:(watch:WatchItem)=>void|Promise<void>):void{
+  if("typeName" in item)void onAdd({kind:"variable",expression:item.selector});
+  else if(item.sampleable)void onAdd({kind:"register",registerPath:item.selector});
 }
 
 export function CatalogPanel(p:CatalogPanelProps):JSX.Element{
   const [kind,setKind]=useState<CatalogKind>("variables");
   const [query,setQuery]=useState("");
+  const variableOpen=useRef<OpenChoices>({key:"",overrides:{}});
+  const registerOpen=useRef<OpenChoices>({key:"",overrides:{}});
+  const bindingIdentity=p.bindingKey??String(p.bindingEpoch);
+  const matchesBinding=(catalog:VariableCatalog|RegisterCatalog|null)=>catalog!==null&&(
+    p.bindingKey===undefined?catalog.bindingKey.endsWith("/"+String(p.bindingEpoch)):catalog.bindingKey===p.bindingKey);
+  const variableKey=JSON.stringify([bindingIdentity,"variables",matchesBinding(p.variables)?p.variables!.query:null]);
+  const registerKey=JSON.stringify([bindingIdentity,"registers",matchesBinding(p.registers)?p.registers!.query:null]);
+  if(variableOpen.current.key!==variableKey)variableOpen.current={key:variableKey,overrides:{}};
+  if(registerOpen.current.key!==registerKey)registerOpen.current={key:registerKey,overrides:{}};
   const current=kind==="variables"?p.variables:p.registers;
-  const resultIdentityMatches=current!==null&&(p.bindingKey===undefined
-    ?current.bindingKey.endsWith("/"+String(p.bindingEpoch)):current.bindingKey===p.bindingKey);
-  const isPrevious=resultIdentityMatches&&current.query!==query.trim();
+  const resultIdentityMatches=matchesBinding(current);
+  const isPrevious=resultIdentityMatches&&current!==null&&current.query!==query.trim();
+  const visibleGroups=resultIdentityMatches&&current!==null?groups(current.items):[];
+  const openChoices=kind==="variables"?variableOpen:registerOpen;
+  const overrides=openChoices.current.overrides;
+  const setGroupOpen=(id:string,open:boolean)=>{
+    const previous=openChoices.current;
+    openChoices.current={...previous,overrides:{...previous.overrides,[id]:open}};
+  };
+  const labelCounts=new Map<string,number>();
+  for(const entry of visibleGroups)labelCounts.set(entry.group.label,(labelCounts.get(entry.group.label)??0)+1);
+  const labelOrdinals=new Map<string,number>();
 
   return<section className="panel catalog-panel" aria-label={copy.catalogTitle}>
     <h2>{copy.catalogTitle}</h2>
@@ -49,19 +74,28 @@ export function CatalogPanel(p:CatalogPanelProps):JSX.Element{
     {p.connected&&current!==null&&resultIdentityMatches&&(
       <>
       {isPrevious&&<p role="status">{copy.previousCatalog}</p>}
-      <div className="table-scroll" role="region" aria-label={copy.catalogResults} tabIndex={0}>
-      <table><thead><tr><th>{copy.selector}</th><th>{copy.type}</th><th>{copy.action}</th></tr></thead>
-        <tbody>{(kind==="variables"?current.items:current.items as RegisterDescriptor[]).map(item=>{
-          const descriptor=item as VariableDescriptor|RegisterDescriptor;
-          return<tr key={descriptor.selector}>
-            <td><code>{descriptor.selector}</code></td>
-            <td>{"typeName" in descriptor?descriptor.typeName:formatCopy.bits(descriptor.sizeBits)}</td>
-            <td><button type="button" disabled={isPrevious||p.pending||p.editBusy||("sampleable" in descriptor&&!descriptor.sampleable)}
-              onClick={()=>{if(!isPrevious&&!p.pending&&!p.editBusy)addWatch(descriptor,p.onAdd);}}>{copy.addDraft}</button>
-              {"sampleable" in descriptor&&!descriptor.sampleable&&<span>{formatCopy.registerUnavailable(descriptor.access,descriptor.readAction)}</span>}
-              {"requiresAccessAcknowledgement" in descriptor&&descriptor.requiresAccessAcknowledgement&&<span>{copy.registerAccessAcknowledgement}</span>}
-            </td>
-          </tr>;})}</tbody></table></div></>)}
+      <p role="status">{formatCopy.catalogLoaded(current.items.length)}{current.nextCursor!==null&&copy.catalogMore}</p>
+      <div className="table-scroll catalog-tree" role="region" aria-label={copy.catalogResults} tabIndex={0}>
+      {visibleGroups.map(entry=>{
+        const ordinal=(labelOrdinals.get(entry.group.label)??0)+1;
+        labelOrdinals.set(entry.group.label,ordinal);
+        const repeated=(labelCounts.get(entry.group.label)??0)>1;
+        const summary=entry.group.label+(repeated?` (${ordinal})`:"")+" · "+formatCopy.catalogLoaded(entry.items.length);
+        const open=overrides[entry.group.id]??current.query!=="";
+        return<details key={entry.group.id} open={open}>
+          <summary onClick={event=>setGroupOpen(entry.group.id,!(event.currentTarget.parentElement as HTMLDetailsElement).open)}>{summary}</summary>
+          <table><thead><tr><th>{copy.selector}</th><th>{copy.type}</th><th>{copy.action}</th></tr></thead>
+            <tbody>{entry.items.map(item=><tr key={item.selector}>
+              <td><code>{item.selector}</code></td>
+              <td>{"typeName" in item?item.typeName:formatCopy.bits(item.sizeBits)}</td>
+              <td><button type="button" disabled={isPrevious||p.pending||p.editBusy||("sampleable" in item&&!item.sampleable)}
+                onClick={()=>{if(!isPrevious&&!p.pending&&!p.editBusy)addWatch(item,p.onAdd);}}>{copy.addDraft}</button>
+                {"sampleable" in item&&!item.sampleable&&<span>{formatCopy.registerUnavailable(item.access,item.readAction)}</span>}
+                {"requiresAccessAcknowledgement" in item&&item.requiresAccessAcknowledgement&&<span>{copy.registerAccessAcknowledgement}</span>}
+              </td>
+            </tr>)}</tbody></table>
+        </details>;
+      })}</div></>)}
     <button type="button" disabled={!resultIdentityMatches||isPrevious||current?.nextCursor===null||p.pending} onClick={()=>void p.onNext(kind)}>{copy.nextPage}</button>
   </section>;
 }

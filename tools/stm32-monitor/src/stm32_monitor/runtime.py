@@ -21,6 +21,7 @@ from uuid import UUID, uuid4
 from stm32_toolkit import __version__ as TOOLKIT_VERSION
 from stm32_toolkit.paths import WorkspacePaths
 from stm32_toolkit.project_model import load_project_model
+from stm32_toolkit.debug.types import CatalogGroup, CatalogPage, RegisterDescriptor, VariableDescriptor
 
 from .service import MONITOR_PROTOCOL_VERSION, MONITOR_VERSION, MonitorEndpoint, MonitorService
 
@@ -41,6 +42,31 @@ class MonitorRuntimeError(Exception):
 
 def _fail(code: str, message: str) -> MonitorRuntimeError:
     return MonitorRuntimeError(code, message)
+
+
+def _catalog_page_payload(page: CatalogPage, kind: str) -> dict[str, object]:
+    """Only the Monitor list wire adds source groups to Toolkit descriptors."""
+
+    descriptor_type = VariableDescriptor if kind == "variables" else RegisterDescriptor
+    if kind not in ("variables", "registers") or type(page) is not CatalogPage or any(
+        type(item) is not descriptor_type for item in page.items
+    ):
+        raise TypeError("Monitor catalog response is invalid")
+    fallback = (
+        CatalogGroup("unknown:variables", "未标注来源")
+        if kind == "variables"
+        else CatalogGroup("unknown:registers", "未标注外设")
+    )
+    return {
+        "items": [
+            {**item.to_dict(), "group": {
+                "id": (item.catalog_group or fallback).id,
+                "label": (item.catalog_group or fallback).label,
+            }}
+            for item in page.items
+        ],
+        "nextCursor": page.next_cursor,
+    }
 
 
 def _probe_public_text(value: object, *, optional: bool = False) -> str | None:
@@ -1016,12 +1042,6 @@ class MonitorRuntime:
                         self._probe_request = request
                     return result
             if operation in {"monitor.catalog.variables", "monitor.catalog.registers"}:
-                from stm32_toolkit.debug.types import (
-                    CatalogPage,
-                    RegisterDescriptor,
-                    VariableDescriptor,
-                )
-
                 _exact(payload, set())
                 allowed = {"query", "cursor", "limit"}
                 if query is None or set(query) - allowed:
@@ -1058,7 +1078,9 @@ class MonitorRuntime:
                         "MONITOR_PROVENANCE_CHANGED",
                         "Monitor catalog response is invalid",
                     )
-                return success(operation, data.to_dict())
+                return success(operation, _catalog_page_payload(
+                    data, "variables" if operation.endswith("variables") else "registers"
+                ))
             if operation == "monitor.probe.release":
                 _exact(payload, set())
                 if self._probe_lifecycle_lock.locked():

@@ -47,7 +47,7 @@ it("keeps initialization recoverable and disables an in-flight reconcile",()=>{
 it("keeps the last successful catalog rows visible when a new query fails",async()=>{
   const search=vi.fn();
   const descriptor={selector:"counter",typeName:"int",kind:"int",byteSize:4,signed:true,
-    encoding:null,qualifiers:[],aliases:[],enumValues:[],elementCount:null,elementKind:null,memberNames:[]};
+    encoding:null,qualifiers:[],aliases:[],enumValues:[],elementCount:null,elementKind:null,memberNames:[],group:{id:"cu:1",label:"main.c"}};
   render(<CatalogPanel connected bindingEpoch={3n}
     variables={{kind:"variables",query:"old",bindingKey:"w/s/p/3",cursor:null,items:[descriptor],nextCursor:"c2"}}
     registers={null} onSearch={search} onNext={vi.fn()} onAdd={vi.fn()}/>);

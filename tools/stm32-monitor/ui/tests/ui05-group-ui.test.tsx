@@ -6,7 +6,7 @@ import {CatalogPanel} from "../src/components/CatalogPanel";
 import {SamplingControls} from "../src/components/SamplingControls";
 import {OperationRegion} from "../src/components/OperationRegion";
 import {statusResult,watchGroup} from "./fixtures";
-import type {RegisterDescriptor} from "../src/api/contract";
+import type {RegisterCatalogItem} from "../src/api/contract";
 
 const first=watchGroup();
 const second={...first,groupId:"other",name:"Other"};
@@ -58,8 +58,8 @@ it("invalidates delete synchronously when navigation is requested before a rende
 
 it("loads an empty catalog query explicitly and rejects non-sampleable registers",async()=>{
   const search=vi.fn(),add=vi.fn();
-  const register:RegisterDescriptor={selector:"GPIO.ODR",sizeBits:32,access:"wo",readAction:"none",
-    resetValue:null,resetMask:null,fields:[],sampleable:false,requiresAccessAcknowledgement:false};
+  const register:RegisterCatalogItem={selector:"GPIO.ODR",sizeBits:32,access:"wo",readAction:"none",
+    resetValue:null,resetMask:null,fields:[],sampleable:false,requiresAccessAcknowledgement:false,group:{id:"svd:gpio",label:"GPIO"}};
   render(<CatalogPanel connected bindingEpoch={1n} variables={null}
     registers={{kind:"registers",query:"",bindingKey:"w/s/p/1",cursor:null,items:[register],nextCursor:null}}
     onSearch={search} onNext={vi.fn()} onAdd={add}/>);
@@ -75,8 +75,8 @@ it("loads an empty catalog query explicitly and rejects non-sampleable registers
 
 it("does not add an older catalog query while a new query is being composed",async()=>{
   const add=vi.fn();
-  const register:RegisterDescriptor={selector:"GPIO.IDR",sizeBits:32,access:"ro",readAction:"safe",
-    resetValue:null,resetMask:null,fields:[],sampleable:true,requiresAccessAcknowledgement:false};
+  const register:RegisterCatalogItem={selector:"GPIO.IDR",sizeBits:32,access:"ro",readAction:"safe",
+    resetValue:null,resetMask:null,fields:[],sampleable:true,requiresAccessAcknowledgement:false,group:{id:"svd:gpio",label:"GPIO"}};
   render(<CatalogPanel connected bindingEpoch={1n} variables={null}
     registers={{kind:"registers",query:"GPIO",bindingKey:"w/s/p/1",cursor:null,items:[register],nextCursor:null}}
     onSearch={vi.fn()} onNext={vi.fn()} onAdd={add}/>);

@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import {CatalogPanel} from "../src/components/CatalogPanel";
 import {LiveChart} from "../src/components/LiveChart";
 import {ChartZoomControls} from "../src/components/ChartZoomControls";
-import type {VariableDescriptor,RegisterDescriptor} from "../src/api/contract";
+import type {VariableCatalogItem,RegisterCatalogItem} from "../src/api/contract";
 
 vi.mock("echarts/core",()=>{
   const chart={setOption:vi.fn(),dispose:vi.fn(),on:vi.fn()};
@@ -18,8 +18,8 @@ vi.mock("echarts/charts",()=>({LineChart:class{}}));
 vi.mock("echarts/components",()=>({GridComponent:class{},TooltipComponent:class{},LegendComponent:class{},DataZoomComponent:class{}}));
 vi.mock("echarts/renderers",()=>({CanvasRenderer:class{}}));
 
-const variable:VariableDescriptor={selector:"counter",typeName:"int",kind:"int",byteSize:4,signed:true,encoding:null,
-  qualifiers:[],aliases:[],enumValues:[],elementCount:null,elementKind:null,memberNames:[]};
+const variable:VariableCatalogItem={selector:"counter",typeName:"int",kind:"int",byteSize:4,signed:true,encoding:null,
+  qualifiers:[],aliases:[],enumValues:[],elementCount:null,elementKind:null,memberNames:[],group:{id:"cu:1",label:"main.c"}};
 
 it("CatalogPanel searches variables and adds a watch",async()=>{
   const search=vi.fn(),add=vi.fn();
@@ -40,8 +40,8 @@ it("CatalogPanel shows no-catalog message when disconnected",()=>{
 });
 
 it("CatalogPanel renders register descriptors",async()=>{
-  const register:RegisterDescriptor={selector:"TIM2_CNT",sizeBits:32,access:"rw",readAction:null,
-    resetValue:null,resetMask:null,fields:[],sampleable:true,requiresAccessAcknowledgement:false};
+  const register:RegisterCatalogItem={selector:"TIM2_CNT",sizeBits:32,access:"rw",readAction:null,
+    resetValue:null,resetMask:null,fields:[],sampleable:true,requiresAccessAcknowledgement:false,group:{id:"svd:tim2",label:"TIM2"}};
   const add=vi.fn();
   render(<CatalogPanel connected bindingEpoch={3n} variables={null}
     registers={{kind:"registers",query:"TIM2",bindingKey:"ws/s/p/3",cursor:null,items:[register],nextCursor:null}}

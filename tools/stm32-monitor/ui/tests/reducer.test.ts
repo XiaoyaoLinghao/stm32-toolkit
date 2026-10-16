@@ -1,5 +1,5 @@
 import {describe,expect,it} from "vitest";
-import type {LiveEvent,MonitorStatus,ObservationBinding,RegisterDescriptor,SampleBatch,VariableDescriptor,WatchGroup} from "../src/api/contract";
+import type {LiveEvent,MonitorStatus,ObservationBinding,RegisterCatalogItem,SampleBatch,VariableCatalogItem,WatchGroup} from "../src/api/contract";
 import {displayDropTotals} from "../src/chart/series";
 import {initialState,reducer,reduceAcceptedLiveEnvelope} from "../src/state/reducer";
 
@@ -11,8 +11,8 @@ const stateEvent=(eventId:bigint,revision:bigint,epoch=4n,gap=false):LiveEvent=>
 const sampleEnvelope=(eventId:bigint,drops={subscriber:0n,history:0n,deadline:0n},service=0n,outer=0n)=>({event:{eventId,type:"sample" as const,data:{batch:batch(eventId,drops),serviceSubscriberDrops:service}},subscriberDropped:outer});
 const running=()=>reducer(reducer(initialState,{type:"initial.loaded",status:status(),probes:[],groups:[group()]}),{type:"series.toggled",key:"variable:x"});
 const seeded=()=>reduceAcceptedLiveEnvelope(running(),sampleEnvelope(1n));
-const variable:VariableDescriptor={selector:"x",typeName:"int",kind:"scalar",byteSize:4,signed:true,encoding:null,qualifiers:[],aliases:[],enumValues:[],elementCount:null,elementKind:null,memberNames:[]};
-const register:RegisterDescriptor={selector:"RCC.CSR",sizeBits:32,access:"read",readAction:null,resetValue:null,resetMask:null,fields:[],sampleable:true,requiresAccessAcknowledgement:false};
+const variable:VariableCatalogItem={selector:"x",typeName:"int",kind:"scalar",byteSize:4,signed:true,encoding:null,qualifiers:[],aliases:[],enumValues:[],elementCount:null,elementKind:null,memberNames:[],group:{id:"cu:1",label:"main.c"}};
+const register:RegisterCatalogItem={selector:"RCC.CSR",sizeBits:32,access:"read",readAction:null,resetValue:null,resetMask:null,fields:[],sampleable:true,requiresAccessAcknowledgement:false,group:{id:"svd:rcc",label:"RCC"}};
 
 describe("authoritative monitor reducer",()=>{
   it("loads authoritative state and rejects lower revisions while retaining event ordering",()=>{

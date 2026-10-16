@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Mapping
 
 from .model import DebugFirmwareBinding, MemoryRegionBinding
-from .types import CatalogPage, RegisterDescriptor
+from .types import CatalogGroup, CatalogPage, RegisterDescriptor
 
 _MAX_SVD_BYTES = 8 * 1024 * 1024
 _MAX_CANDIDATES = 32
@@ -65,6 +65,7 @@ class SvdRegister:
     reset_value: int | None
     reset_mask: int | None
     fields: tuple[SvdField, ...]
+    catalog_group: CatalogGroup | None = None
 
     @property
     def has_read_side_effect(self) -> bool:
@@ -216,6 +217,7 @@ class SvdSelection:
                 and register.access not in ("write-only", "writeOnce"),
                 requires_access_acknowledgement=register.has_read_side_effect
                 and register.access not in ("write-only", "writeOnce"),
+                catalog_group=register.catalog_group,
             )
             for register in page
         )
@@ -895,6 +897,10 @@ def _parse_registers(
                     template.reset_value,
                     template.reset_mask,
                     template.fields,
+                    CatalogGroup(
+                        "svd:" + hashlib.sha256(peripheral_name.encode("utf-8")).hexdigest(),
+                        peripheral_name,
+                    ),
                 )
             )
             if len(result) > _MAX_REGISTERS:

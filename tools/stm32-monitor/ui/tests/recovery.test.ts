@@ -3,7 +3,7 @@ import {createController} from "../src/controller";
 import {initialState,reducer} from "../src/state/reducer";
 import {selectedGroup} from "../src/state/selectors";
 import {statusResult,watchGroup} from "./fixtures";
-import type {ApiResult,GroupDraft,GroupPage,HistoryPage,HistoryQuery,MonitorApi,VariableDescriptor,WatchGroup} from "../src/api/contract";
+import type {ApiResult,GroupDraft,GroupPage,HistoryPage,HistoryQuery,MonitorApi,VariableCatalogItem,WatchGroup} from "../src/api/contract";
 import type {MonitorAction,MonitorState,RequestScope} from "../src/state/model";
 import {openLive} from "../src/api/live";
 
@@ -40,8 +40,8 @@ function harness(api:MonitorApi){
 const failureId=(state:MonitorState,scope:RequestScope)=>state.failures[scope]!.requestId;
 const draft=(name:string):GroupDraft=>({sourceGroupId:null,expectedRevision:null,name,description:"",intervalMs:250,
   items:[{kind:"variable",expression:"counter"}]});
-const variable=(selector:string):VariableDescriptor=>({selector,typeName:"int",kind:"scalar",byteSize:4,signed:true,
-  encoding:null,qualifiers:[],aliases:[],enumValues:[],elementCount:null,elementKind:null,memberNames:[]});
+const variable=(selector:string):VariableCatalogItem=>({selector,typeName:"int",kind:"scalar",byteSize:4,signed:true,
+  encoding:null,qualifiers:[],aliases:[],enumValues:[],elementCount:null,elementKind:null,memberNames:[],group:{id:"cu:1",label:"main.c"}});
 
 it("retries the whole initial snapshot after page two fails and opens one live connection",async()=>{
   const group=watchGroup();

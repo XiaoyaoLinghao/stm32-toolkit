@@ -8,6 +8,7 @@ import hmac
 import base64
 import binascii
 import json
+import ntpath
 import os
 import re
 import secrets
@@ -32,6 +33,7 @@ from .types import (
     DwarfSelection,
     DwarfType,
     CatalogPage,
+    CatalogGroup,
     VariableDescriptor,
 )
 
@@ -231,6 +233,48 @@ class _CatalogSymbol:
     address: int | None
     location_error: str | None
     type_error: str | None = None
+    catalog_group: CatalogGroup | None = None
+
+
+def _cu_catalog_group(cu: object, project_root: Path) -> CatalogGroup:
+    """Use the definition CU's identity; source paths are lexical display data only."""
+
+    group_id = f"cu:{getattr(cu, 'cu_offset'):x}"
+    unknown = CatalogGroup(group_id, "未标注编译单元")
+    try:
+        attributes = cu.get_top_DIE().attributes
+        raw_name = attributes["DW_AT_name"].value
+        if isinstance(raw_name, bytes):
+            name = raw_name.decode("utf-8", "strict")
+        elif isinstance(raw_name, str):
+            name = raw_name
+        else:
+            return unknown
+        if not name or len(name) > 4096:
+            return unknown
+        raw_dir = attributes.get("DW_AT_comp_dir")
+        comp_dir = raw_dir.value if raw_dir is not None else None
+        if isinstance(comp_dir, bytes):
+            comp_dir = comp_dir.decode("utf-8", "strict")
+        if not isinstance(comp_dir, str) or len(comp_dir) > 4096:
+            comp_dir = None
+        absolute = name if os.path.isabs(name) else (
+            os.path.join(comp_dir, name)
+            if comp_dir is not None and os.path.isabs(comp_dir) else None
+        )
+        if absolute is not None:
+            candidate = os.path.normcase(os.path.normpath(absolute))
+            root = os.path.normcase(os.path.normpath(str(project_root)))
+            if os.path.commonpath((candidate, root)) == root:
+                relative = os.path.relpath(candidate, root).replace("\\", "/")
+                if relative != "." and len(relative) <= 512 and relative.isprintable():
+                    return CatalogGroup(group_id, relative)
+        basename = ntpath.basename(name.replace("/", "\\"))
+        if basename not in ("", ".", "..") and len(basename) <= 512 and basename.isprintable():
+            return CatalogGroup(group_id, basename)
+    except (AttributeError, KeyError, UnicodeError, ValueError, TypeError, OSError):
+        pass
+    return unknown
 
 
 @dataclass(frozen=True)
@@ -657,6 +701,7 @@ class DwarfCatalog:
             die_count = 0
             catalog_count = 0
             for cu in dwarf.iter_CUs():
+                cu_group = _cu_catalog_group(cu, source.canonical_project_root)
                 dies = []
                 boundary_offsets: set[int] = set()
                 for die in cu.iter_DIEs():
@@ -716,7 +761,8 @@ class DwarfCatalog:
                     )
                     entries.setdefault(name, []).append(
                         _CatalogSymbol(
-                            name, dwarf_type, address, location_error, type_error
+                            name, dwarf_type, address, location_error, type_error,
+                            cu_group,
                         )
                     )
             frozen = {name: tuple(values) for name, values in entries.items()}
@@ -869,6 +915,7 @@ class DwarfCatalog:
                         else dwarf_type.element_type.kind
                     ),
                     member_names=tuple(member.name for member in dwarf_type.members),
+                    catalog_group=symbol.catalog_group,
                 )
             )
         if offset > len(descriptors):

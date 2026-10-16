@@ -1,4 +1,4 @@
-import type {ApiFailure,ExportArtifact,GroupDraft,HistoryPage,HistoryQuery,MonitorStatus,ObservationBinding,ProbeInfo,SampleValue,VariableDescriptor,RegisterDescriptor,WatchGroup,WatchItem} from "../api/contract";
+import type {ApiFailure,ExportArtifact,GroupDraft,HistoryPage,HistoryQuery,MonitorStatus,ObservationBinding,ProbeInfo,SampleValue,VariableCatalogItem,RegisterCatalogItem,WatchGroup,WatchItem} from "../api/contract";
 import type {ChartPoint,LiveRow} from "../chart/series";
 import type {ZoomRange} from "../chart/zoom";
 
@@ -8,8 +8,8 @@ export type PendingRequest={requestId:bigint};
 export type RecoveryKind="read-retry"|"write-confirm"|"reconcile"|"groups-refresh"|"input"|"none";
 export type OperationFailure=ApiFailure&{requestId:bigint;recovery:RecoveryKind;summary:string};
 export type CatalogKind="variables"|"registers";
-export type VariableCatalog={kind:"variables";query:string;bindingKey:string;cursor:string|null;items:readonly VariableDescriptor[];nextCursor:string|null};
-export type RegisterCatalog={kind:"registers";query:string;bindingKey:string;cursor:string|null;items:readonly RegisterDescriptor[];nextCursor:string|null};
+export type VariableCatalog={kind:"variables";query:string;bindingKey:string;cursor:string|null;items:readonly VariableCatalogItem[];nextCursor:string|null};
+export type RegisterCatalog={kind:"registers";query:string;bindingKey:string;cursor:string|null;items:readonly RegisterCatalogItem[];nextCursor:string|null};
 export type HistoryRow={runId:string;sequence:bigint;startOrdinal:bigint;batchValueCount:bigint;capturedAtUtc:string;values:readonly SampleValue[]};
 export type HistoryProjection={rows:readonly HistoryRow[];series:ReadonlyMap<string,readonly ChartPoint[]>};
 export type HistoryInFlight={requestId:bigint;query:HistoryQuery;navigation:"replace"|"next"|"previous"};
@@ -27,8 +27,8 @@ export type LoadedAction=
  | {type:"group.acknowledged";group:WatchGroup;generation:bigint;submittedDraft:GroupDraft}
  | {type:"group.deleted";groupId:string}
  | {type:"groups.imported";groups:readonly WatchGroup[]}
- | {type:"catalog.loaded";catalog:"variables";query:string;bindingKey:string;cursor:string|null;items:readonly VariableDescriptor[];nextCursor:string|null}
- | {type:"catalog.loaded";catalog:"registers";query:string;bindingKey:string;cursor:string|null;items:readonly RegisterDescriptor[];nextCursor:string|null}
+ | {type:"catalog.loaded";catalog:"variables";query:string;bindingKey:string;cursor:string|null;items:readonly VariableCatalogItem[];nextCursor:string|null}
+ | {type:"catalog.loaded";catalog:"registers";query:string;bindingKey:string;cursor:string|null;items:readonly RegisterCatalogItem[];nextCursor:string|null}
  | {type:"group.selected";groupId:string|null}
  | {type:"group.navigation.requested";target:GroupNavigation}
  | {type:"group.navigation.confirmed"}|{type:"group.navigation.cancelled"}

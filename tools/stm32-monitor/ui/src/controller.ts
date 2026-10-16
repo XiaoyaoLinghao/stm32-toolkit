@@ -1,12 +1,24 @@
 import {
   groupImportGuard,
   type ApiFailure,type ApiResult,type GroupDraft,type GroupImportDocument,type MonitorStatus,
-  type HistoryQuery,type MonitorApi,type WatchGroup,type WatchItem,
+  type HistoryQuery,type MonitorApi,type WatchGroup,type WatchItem,type VariableCatalogItem,type RegisterCatalogItem,
 } from "./api/contract";
-import {parseLossless} from "./api/wire";
+import {encodeJson,parseLossless} from "./api/wire";
 import {openLive} from "./api/live";
 import {operationSummary} from "./presentation/zh";
-import {groupSourceProblem,sameGroupContent,type HistoryInFlight,type LoadedAction,type MonitorAction,type MonitorState,type RecoveryKind,type RequestScope} from "./state/model";
+import {groupSourceProblem,sameGroupContent,type HistoryInFlight,type LoadedAction,type MonitorAction,type MonitorState,type RecoveryKind,type RequestScope,type VariableCatalog,type RegisterCatalog} from "./state/model";
+
+function catalogConflict(prior:VariableCatalog|RegisterCatalog|null,items:readonly (VariableCatalogItem|RegisterCatalogItem)[]):boolean{
+  if(prior===null)return false;
+  const labels=new Map(prior.items.map(item=>[item.group.id,item.group.label]));
+  const selectors=new Map(prior.items.map(item=>[item.selector,item]));
+  for(const item of items){
+    const label=labels.get(item.group.id),previous=selectors.get(item.selector);
+    if(label!==undefined&&label!==item.group.label||previous!==undefined&&encodeJson(previous)!==encodeJson(item))return true;
+    labels.set(item.group.id,item.group.label);selectors.set(item.selector,item);
+  }
+  return false;
+}
 
 export type Controller={
   loadInitial:()=>Promise<void>;refreshStatus:()=>Promise<void>;reconnectLive:()=>Promise<void>;cancelLiveReconnect:()=>void;refreshProbes:()=>Promise<void>;refreshGroups:()=>Promise<void>;
@@ -204,10 +216,18 @@ export function createController(api:MonitorApi,dispatch:(action:MonitorAction)=
   const catalog=async(kind:"variables"|"registers",query:string,cursor:string|undefined,bindingKey:string):Promise<void>=>{
     const scope:RequestScope=kind==="variables"?"catalog.variables":"catalog.registers";
     const summary=operationSummary(scope,query,cursor);
-    if(kind==="variables")await read(scope,summary,()=>api.variables(query,cursor),
+    if(kind==="variables")await read(scope,summary,async()=>{
+        const result=await api.variables(query,cursor),prior=getState().catalog.variables;
+        return result.ok&&cursor!==undefined&&prior?.query===query&&prior.bindingKey===bindingKey&&catalogConflict(prior,result.data.items)
+          ?{ok:false,code:"MONITOR_RESPONSE_INVALID",message:"Catalog group conflicts with an accepted page"}:result;
+      },
       data=>({type:"catalog.loaded",catalog:"variables",query,bindingKey,cursor:cursor??null,items:data.items,nextCursor:data.nextCursor}),
       ()=>key(getState())===bindingKey);
-    else await read(scope,summary,()=>api.registers(query,cursor),
+    else await read(scope,summary,async()=>{
+        const result=await api.registers(query,cursor),prior=getState().catalog.registers;
+        return result.ok&&cursor!==undefined&&prior?.query===query&&prior.bindingKey===bindingKey&&catalogConflict(prior,result.data.items)
+          ?{ok:false,code:"MONITOR_RESPONSE_INVALID",message:"Catalog group conflicts with an accepted page"}:result;
+      },
       data=>({type:"catalog.loaded",catalog:"registers",query,bindingKey,cursor:cursor??null,items:data.items,nextCursor:data.nextCursor}),
       ()=>key(getState())===bindingKey);
   };

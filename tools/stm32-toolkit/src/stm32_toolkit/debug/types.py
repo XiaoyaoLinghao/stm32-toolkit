@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import re
 import struct
 import unicodedata
 from dataclasses import dataclass, field
@@ -111,6 +112,35 @@ def _descriptor_text(value: object, label: str, maximum: int = 256) -> str:
     return normalized
 
 
+_CATALOG_GROUP_ID = re.compile(r"[A-Za-z0-9:_-]{1,128}\Z")
+
+
+@dataclass(frozen=True)
+class CatalogGroup:
+    """Opaque catalog identity and safe display text; never part of descriptor JSON."""
+
+    id: str
+    label: str
+
+    def __post_init__(self) -> None:
+        if type(self.id) is not str or _CATALOG_GROUP_ID.fullmatch(self.id) is None:
+            raise ValueError("catalog group id is invalid")
+        if type(self.label) is not str:
+            raise ValueError("catalog group label is invalid")
+        label = unicodedata.normalize("NFC", self.label)
+        components = label.replace("\\", "/").split("/")
+        if (
+            not 1 <= len(label) <= 512
+            or not label.strip()
+            or not label.isprintable()
+            or label.startswith(("/", "\\"))
+            or re.match(r"[A-Za-z]:[\\/]", label) is not None
+            or any(component in (".", "..") for component in components)
+        ):
+            raise ValueError("catalog group label is invalid")
+        object.__setattr__(self, "label", label)
+
+
 @dataclass(frozen=True)
 class VariableDescriptor:
     """Display-only DWARF metadata for one symbolic variable selector."""
@@ -127,6 +157,7 @@ class VariableDescriptor:
     element_count: int | None = None
     element_kind: str | None = None
     member_names: tuple[str, ...] = ()
+    catalog_group: CatalogGroup | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "selector", _descriptor_text(self.selector, "selector"))
@@ -166,6 +197,8 @@ class VariableDescriptor:
         object.__setattr__(self, "aliases", aliases)
         object.__setattr__(self, "enum_values", enum_values)
         object.__setattr__(self, "member_names", member_names)
+        if self.catalog_group is not None and type(self.catalog_group) is not CatalogGroup:
+            raise ValueError("catalog group is invalid")
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -199,6 +232,7 @@ class RegisterDescriptor:
     fields: tuple[tuple[str, int, int], ...]
     sampleable: bool
     requires_access_acknowledgement: bool
+    catalog_group: CatalogGroup | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "selector", _descriptor_text(self.selector, "selector"))
@@ -231,6 +265,8 @@ class RegisterDescriptor:
         if type(self.sampleable) is not bool or type(self.requires_access_acknowledgement) is not bool:
             raise ValueError("register read-risk metadata is invalid")
         object.__setattr__(self, "fields", fields)
+        if self.catalog_group is not None and type(self.catalog_group) is not CatalogGroup:
+            raise ValueError("catalog group is invalid")
 
     def to_dict(self) -> dict[str, object]:
         return {

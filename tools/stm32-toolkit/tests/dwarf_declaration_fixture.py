@@ -17,6 +17,7 @@ _DW_TAG_TYPEDEF = 0x16
 _DW_TAG_VARIABLE = 0x34
 
 _DW_AT_NAME = 0x03
+_DW_AT_COMP_DIR = 0x1B
 _DW_AT_BYTE_SIZE = 0x0B
 _DW_AT_ENCODING = 0x3E
 _DW_AT_TYPE = 0x49
@@ -126,7 +127,7 @@ class _Cu:
     def _attribute_bytes(self, attribute: _Attribute) -> bytes:
         value = attribute.value
         if attribute.form == _DW_FORM_STRING:
-            return str(value).encode("utf-8") + b"\x00"
+            return (value if isinstance(value, bytes) else str(value).encode("utf-8")) + b"\x00"
         if attribute.form == _DW_FORM_DATA1:
             return struct.pack("<B", int(value))
         if attribute.form == _DW_FORM_FLAG:
@@ -173,7 +174,7 @@ class _Cu:
 
 def _attribute_size(attribute: _Attribute) -> int:
     if attribute.form == _DW_FORM_STRING:
-        return len(str(attribute.value).encode("utf-8")) + 1
+        return len(attribute.value if isinstance(attribute.value, bytes) else str(attribute.value).encode("utf-8")) + 1
     if attribute.form in {_DW_FORM_DATA1, _DW_FORM_FLAG}:
         return 1
     if attribute.form == _DW_FORM_FLAG_PRESENT:
@@ -368,6 +369,38 @@ def build_declaration_elf(
     info = cu1_bytes + cu2_bytes
     abbrev = abbreviations.encode()
     return _build_elf(info, abbrev)
+
+
+def build_grouped_catalog_elf(project_root: str, external_root: str) -> bytes:
+    """Distinct definition CUs, including same-name and untrusted path metadata."""
+
+    abbreviations = _Abbreviations()
+    info = bytearray()
+    sources = (
+        ("main.c", "relative/a", ("a", "duplicate")),
+        ("main.c", "relative/b", ("b", "duplicate")),
+        (project_root + "/src/inside.c", None, ("c",)),
+        (external_root + "/external.c", None, ("d",)),
+        (None, None, ("e",)),
+        (b"\xffbroken.c", None, ("f",)),
+    )
+    for source_name, comp_dir, variables in sources:
+        cu = _Cu(len(info), abbreviations, source_name or "")
+        base = _Die(_DW_TAG_BASE_TYPE, (
+            _name("unsigned int"),
+            _Attribute(_DW_AT_BYTE_SIZE, _DW_FORM_DATA1, 4),
+            _Attribute(_DW_AT_ENCODING, _DW_FORM_DATA1, 7),
+        ))
+        children = (base,) + tuple(
+            _Die(_DW_TAG_VARIABLE, (_name(selector), _type(base), _location(VARIABLE_ADDRESS)))
+            for selector in variables
+        )
+        root_attributes = (() if source_name is None else (_Attribute(_DW_AT_NAME, _DW_FORM_STRING, source_name),)) + (
+            () if comp_dir is None else (_Attribute(_DW_AT_COMP_DIR, _DW_FORM_STRING, comp_dir),)
+        )
+        cu.add(_Die(_DW_TAG_COMPILE_UNIT, root_attributes, children))
+        info += cu.encode()
+    return _build_elf(bytes(info), abbreviations.encode())
 
 
 def build_interior_payload_elf() -> bytes:

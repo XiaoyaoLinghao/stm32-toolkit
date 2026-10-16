@@ -995,6 +995,12 @@ def test_probe_discovery_status_catalogs_and_connect_are_server_owned(
             )
             assert variables.ok and variables.data["items"][0]["selector"] == "counter"
             assert registers.ok and registers.data["items"][0]["selector"] == "GPIOA.IDR"
+            assert variables.data["items"][0]["group"] == {
+                "id": "unknown:variables", "label": "未标注来源"
+            }
+            assert registers.data["items"][0]["group"] == {
+                "id": "unknown:registers", "label": "未标注外设"
+            }
             assert (await runtime.dispatch("monitor.probe.connect", {
                 "probeId": "probe-b", "target": "attacker", "expectedBuildId": "f" * 64
             })).code == "MONITOR_REQUEST_INVALID"
@@ -1137,8 +1143,10 @@ def test_probe_catalog_and_status_failure_boundaries_are_closed_and_bounded(
             assert changed.code == "MONITOR_PROVENANCE_CHANGED"
 
             async def typed_page(*_args):
+                from stm32_toolkit.debug.types import CatalogGroup
                 descriptor = VariableDescriptor(
-                    "counter", "uint32_t", "integer", 4, signed=False
+                    "counter", "uint32_t", "integer", 4, signed=False,
+                    catalog_group=CatalogGroup("cu:3a9a", "App/vs10_app.c")
                 )
                 return OperationResult.success(
                     "variables.list", CatalogPage((descriptor,), None)
@@ -1149,6 +1157,9 @@ def test_probe_catalog_and_status_failure_boundaries_are_closed_and_bounded(
                 "monitor.catalog.variables", {}, query={}
             )
             assert page.to_dict()["data"]["items"][0]["selector"] == "counter"
+            assert page.to_dict()["data"]["items"][0]["group"] == {
+                "id": "cu:3a9a", "label": "App/vs10_app.c"
+            }
 
             sampler = samplers[0]
             sampler.state = "RUNNING"

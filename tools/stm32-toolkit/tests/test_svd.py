@@ -52,9 +52,34 @@ def test_selects_one_exact_device_and_expands_register_metadata(tmp_path: Path) 
     assert selection.register("GPIOA.IDR_COPY").access == "read-only"
     assert selection.register("GPIOA.CHANNEL0.VALUE").address == 0x40020100
     assert selection.register("GPIOA.CHANNEL1.VALUE").address == 0x40020120
+    assert selection.register("GPIOA.CHANNEL1.VALUE").catalog_group is not None
+    assert selection.register("GPIOA.CHANNEL1.VALUE").catalog_group.label == "GPIOA"
     with pytest.raises(SvdError) as missing:
         selection.register("GPIOA.MISSING")
     assert missing.value.code == "SVD_REGISTER_NOT_FOUND"
+
+
+def test_catalog_group_uses_expanded_dotted_peripheral_across_cluster_pages(tmp_path: Path) -> None:
+    payload = _document(
+        '<registers><register><name>VALUE</name><addressOffset>0</addressOffset></register>'
+        '<cluster><name>CH0</name><addressOffset>0x20</addressOffset>'
+        '<register><name>VALUE</name><addressOffset>0</addressOffset></register>'
+        '</cluster></registers>'
+    ).replace(b'<name>GPIOA</name>', b'<name>GPIO.A</name>')
+    selection = _select_payload(tmp_path, payload)
+    project = tmp_path / "project"
+    binding = _binding(project)
+    first = selection.register_descriptors(binding, project, limit=1)
+    second = selection.register_descriptors(binding, project, cursor=first.next_cursor, limit=1)
+    assert [item.selector for item in first.items + second.items] == [
+        "GPIO.A.CH0.VALUE", "GPIO.A.VALUE"
+    ]
+    groups = [item.catalog_group for item in first.items + second.items]
+    assert groups[0] == groups[1]
+    assert groups[0].label == "GPIO.A"
+    assert groups[0].id == "svd:" + hashlib.sha256(b"GPIO.A").hexdigest()
+    assert all("catalog_group" not in item.to_dict() for item in first.items + second.items)
+    assert first.to_dict() == {"items": [first.items[0].to_dict()], "nextCursor": first.next_cursor}
 
 
 @pytest.mark.parametrize("target", ["STM32F429", "stm32f429zitx", "STM32F429ZIT"])

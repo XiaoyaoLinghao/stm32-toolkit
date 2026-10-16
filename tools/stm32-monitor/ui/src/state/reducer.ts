@@ -11,6 +11,12 @@ export const initialState:MonitorState={status:null,probes:[],groups:[],selected
 const sameBinding=(a:ObservationBinding,b:ObservationBinding):boolean=>a.workspaceId===b.workspaceId&&a.sessionId===b.sessionId&&a.logicalProjectId===b.logicalProjectId&&a.probeId===b.probeId&&a.targetDevice===b.targetDevice&&a.physicalTarget===b.physicalTarget&&a.buildId===b.buildId&&a.elfSha256===b.elfSha256&&a.inputSnapshotSha256===b.inputSnapshotSha256&&a.gitHead===b.gitHead&&a.gitDirty===b.gitDirty&&a.flashSessionId===b.flashSessionId&&a.leaseId===b.leaseId&&a.dwarfSha256===b.dwarfSha256&&a.svdSha256===b.svdSha256;
 const statusMatches=(status:MonitorStatus,binding:ObservationBinding):boolean=>status.workspaceId===binding.workspaceId&&status.sessionId===binding.sessionId&&status.project.logicalProjectId===binding.logicalProjectId&&status.project.targetDevice===binding.targetDevice&&status.probe.connected&&status.probe.probeId===binding.probeId&&status.firmware!==null&&status.firmware.buildId===binding.buildId&&status.firmware.elfSha256===binding.elfSha256&&status.firmware.inputSnapshotSha256===binding.inputSnapshotSha256&&status.firmware.gitHead===binding.gitHead&&status.firmware.gitDirty===binding.gitDirty&&status.firmware.targetDevice===binding.targetDevice;
 const catalogBindingKey=(status:MonitorStatus):string=>`${status.workspaceId}/${status.sessionId}/${status.project.logicalProjectId}/${status.sampling.bindingEpoch}`;
+const uniqueCatalogItems=<T extends {selector:string}>(prior:readonly T[],incoming:readonly T[]):readonly T[]=>{
+ const seen=new Set(prior.map(item=>item.selector));
+ const result=[...prior];
+ for(const item of incoming)if(!seen.has(item.selector)){seen.add(item.selector);result.push(item);}
+ return result;
+};
 const rebased=(live:LiveState,status:MonitorStatus):LiveState=>({...live,authoritativeDrops:dropsFrom(status),pendingDropDeltas:zeroDrops(),bindingEpoch:status.sampling.bindingEpoch,runId:status.sampling.runId});
 const sameFirmware=(left:MonitorStatus["firmware"],right:MonitorStatus["firmware"]):boolean=>left===null?right===null:right!==null&&left.buildId===right.buildId&&left.elfSha256===right.elfSha256&&left.inputSnapshotSha256===right.inputSnapshotSha256&&left.gitHead===right.gitHead&&left.gitDirty===right.gitDirty&&left.targetDevice===right.targetDevice;
 const resetForStatus=(state:MonitorState,status:MonitorStatus):boolean=>{const prior=state.status;return prior!==null&&(prior.workspaceId!==status.workspaceId||prior.sessionId!==status.sessionId||prior.project.logicalProjectId!==status.project.logicalProjectId||prior.project.targetDevice!==status.project.targetDevice||!sameFirmware(prior.firmware,status.firmware)||prior.probe.connected!==status.probe.connected||prior.probe.probeId!==status.probe.probeId||prior.sampling.bindingEpoch!==status.sampling.bindingEpoch||prior.sampling.runId!==status.sampling.runId);};
@@ -134,11 +140,11 @@ export function reducer(state:MonitorState,action:MonitorAction):MonitorState{
   if(action.catalog==="variables"){
    const prior=state.catalog.variables;
    if(action.cursor!==null&&(prior===null||prior.query!==action.query||prior.bindingKey!==action.bindingKey||prior.nextCursor!==action.cursor||prior.cursor===action.cursor))return state;
-   return {...state,catalog:{...state.catalog,variables:{kind:"variables",query:action.query,bindingKey:action.bindingKey,cursor:action.cursor,items:action.cursor===null?action.items:[...prior!.items,...action.items],nextCursor:action.nextCursor}}};
+   return {...state,catalog:{...state.catalog,variables:{kind:"variables",query:action.query,bindingKey:action.bindingKey,cursor:action.cursor,items:uniqueCatalogItems(action.cursor===null?[]:prior!.items,action.items),nextCursor:action.nextCursor}}};
   }
   const prior=state.catalog.registers;
   if(action.cursor!==null&&(prior===null||prior.query!==action.query||prior.bindingKey!==action.bindingKey||prior.nextCursor!==action.cursor||prior.cursor===action.cursor))return state;
-  return {...state,catalog:{...state.catalog,registers:{kind:"registers",query:action.query,bindingKey:action.bindingKey,cursor:action.cursor,items:action.cursor===null?action.items:[...prior!.items,...action.items],nextCursor:action.nextCursor}}};
+  return {...state,catalog:{...state.catalog,registers:{kind:"registers",query:action.query,bindingKey:action.bindingKey,cursor:action.cursor,items:uniqueCatalogItems(action.cursor===null?[]:prior!.items,action.items),nextCursor:action.nextCursor}}};
  }
  if(action.type==="group.selected")return reducer(state,{type:"group.navigation.requested",target:action.groupId===null?{kind:"new"}:{kind:"group",groupId:action.groupId}});
  if(action.type==="group.navigation.requested"){

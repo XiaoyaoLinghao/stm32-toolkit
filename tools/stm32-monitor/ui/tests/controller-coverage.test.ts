@@ -44,8 +44,8 @@ function harness(api:MonitorApi){
   return{controller,state:()=>state,actions};
 }
 
-const descriptor={selector:"counter",typeName:"int",kind:"int",byteSize:4,signed:true,encoding:null,qualifiers:[],aliases:[],enumValues:[],elementCount:null,elementKind:null,memberNames:[]};
-const registerDescriptor={selector:"TIM2_CNT",sizeBits:32,access:"rw",readAction:null,resetValue:null,resetMask:null,fields:[],sampleable:true,requiresAccessAcknowledgement:false};
+const descriptor={selector:"counter",typeName:"int",kind:"int",byteSize:4,signed:true,encoding:null,qualifiers:[],aliases:[],enumValues:[],elementCount:null,elementKind:null,memberNames:[],group:{id:"cu:1",label:"main.c"}};
+const registerDescriptor={selector:"TIM2_CNT",sizeBits:32,access:"rw",readAction:null,resetValue:null,resetMask:null,fields:[],sampleable:true,requiresAccessAcknowledgement:false,group:{id:"svd:tim2",label:"TIM2"}};
 
 function readyState():MonitorState{
   const status=statusResult();

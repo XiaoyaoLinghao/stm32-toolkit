@@ -16,7 +16,7 @@ function apiOverrides(){
     status:vi.fn(async()=>ok({workspaceId:"workspace",sessionId:"session",project:{logicalProjectId:"project",name:"Project",targetDevice:"STM32F407VG"},firmware:null,probe:{connected:true,probeId:"p1"},sampling:{state:"IDLE",active:false,blockedCode:null,groupId:null,groupRevision:null,runId:null,lastSequence:null,bindingEpoch:0n,subscriberDrops:0n,historyDrops:0n,deadlineDrops:0n,serviceDrops:0n},probeConnected:true,samplingActive:false})),
     probes:vi.fn(async()=>ok({probes:[{probeId:"p1",vendor:"ST",product:"ST-Link",boardName:null}]})),
     groups:vi.fn(async()=>ok({groups:[],nextCursor:null,revision:"0"})),
-    variables:vi.fn(async()=>ok({items:[{selector:"counter",typeName:"int",kind:"int",byteSize:4,signed:true,encoding:null,qualifiers:[],aliases:[],enumValues:[],elementCount:null,elementKind:null,memberNames:[]}],nextCursor:null})),
+    variables:vi.fn(async()=>ok({items:[{selector:"counter",typeName:"int",kind:"int",byteSize:4,signed:true,encoding:null,qualifiers:[],aliases:[],enumValues:[],elementCount:null,elementKind:null,memberNames:[],group:{id:"cu:1",label:"main.c"}}],nextCursor:null})),
     registers:vi.fn(async()=>ok({items:[],nextCursor:null})),
     createGroup:vi.fn(async()=>err("UNAVAILABLE","not configured")),
     updateGroup:vi.fn(async()=>err("UNAVAILABLE","not configured")),
@@ -65,6 +65,8 @@ it("keeps a queued newer create draft after the old Save ACK and a failed list G
   fireEvent.input(screen.getByLabelText("名称"),{target:{value:"A"}});
   fireEvent.click(screen.getByRole("button",{name:"浏览变量与寄存器"}));
   fireEvent.click(screen.getByRole("button",{name:"搜索/加载"}));
+  await screen.findByText("main.c · 已加载 1 项");
+  fireEvent.click(screen.getByText("main.c · 已加载 1 项"));
   await screen.findByRole("button",{name:"加入观测组草稿"});
   fireEvent.click(screen.getByRole("button",{name:"加入观测组草稿"}));
   queuedNameInputAndSave("B","创建观测组");

@@ -121,7 +121,7 @@ it("releaseProbe succeeds and refreshes status",async()=>{
 });
 
 it("searchCatalog dispatches catalog.loaded for variables",async()=>{
-  const descriptor={selector:"counter",typeName:"int",kind:"int",byteSize:4,signed:true,encoding:null,qualifiers:[],aliases:[],enumValues:[],elementCount:null,elementKind:null,memberNames:[]};
+  const descriptor={selector:"counter",typeName:"int",kind:"int",byteSize:4,signed:true,encoding:null,qualifiers:[],aliases:[],enumValues:[],elementCount:null,elementKind:null,memberNames:[],group:{id:"cu:1",label:"main.c"}};
   const status=statusResult();
   status.sampling.bindingEpoch=3n;
   const api=makeApi({status:vi.fn(async()=>ok(status)),variables:vi.fn(async()=>ok({items:[descriptor],nextCursor:null}))});
@@ -134,7 +134,7 @@ it("searchCatalog dispatches catalog.loaded for variables",async()=>{
 });
 
 it("nextCatalog pages through variables",async()=>{
-  const descriptor={selector:"counter",typeName:"int",kind:"int",byteSize:4,signed:true,encoding:null,qualifiers:[],aliases:[],enumValues:[],elementCount:null,elementKind:null,memberNames:[]};
+  const descriptor={selector:"counter",typeName:"int",kind:"int",byteSize:4,signed:true,encoding:null,qualifiers:[],aliases:[],enumValues:[],elementCount:null,elementKind:null,memberNames:[],group:{id:"cu:1",label:"main.c"}};
   const status=statusResult();
   status.sampling.bindingEpoch=3n;
   const api=makeApi({
@@ -147,6 +147,32 @@ it("nextCatalog pages through variables",async()=>{
   await controller.nextCatalog("variables");
   const loaded=actions.filter(a=>a.type==="catalog.loaded");
   expect(loaded.length).toBe(2);
+});
+
+it.each(["label","selector"] as const)("rejects a %s-conflicting next catalog page and retries the same cursor without losing accepted rows",async conflict=>{
+  const descriptor={selector:"counter",typeName:"int",kind:"int",byteSize:4,signed:true,encoding:null,
+    qualifiers:[],aliases:[],enumValues:[],elementCount:null,elementKind:null,memberNames:[],group:{id:"cu:1",label:"main.c"}};
+  let calls=0;
+  const api=makeApi({variables:vi.fn(async(_query,cursor)=>{
+    calls++;
+    if(cursor===undefined)return ok({items:[descriptor],nextCursor:"c2"});
+    if(calls===2)return ok({items:[conflict==="label"
+      ?{...descriptor,selector:"other",group:{id:"cu:1",label:"changed.c"}}
+      :{...descriptor,group:{id:"cu:2",label:"other.c"}}],nextCursor:null});
+    return ok({items:[{...descriptor,selector:"other"}],nextCursor:null});
+  })});
+  const {controller,state}=harness(api),status=statusResult();
+  state().status={...status,sampling:{...status.sampling,bindingEpoch:3n}};
+  await controller.searchCatalog("variables","");
+  await controller.nextCatalog("variables");
+  expect(state().catalog.variables?.items.map(item=>item.selector)).toEqual(["counter"]);
+  expect(state().catalog.variables?.nextCursor).toBe("c2");
+  const failure=state().failures["catalog.variables"];
+  expect(failure?.code).toBe("MONITOR_RESPONSE_INVALID");
+  expect(failure?.recovery).toBe("read-retry");
+  await controller.retry("catalog.variables",failure!.requestId);
+  expect(calls).toBe(3);
+  expect(state().catalog.variables?.items.map(item=>item.selector)).toEqual(["counter","other"]);
 });
 
 it("createGroup succeeds and refreshes groups",async()=>{

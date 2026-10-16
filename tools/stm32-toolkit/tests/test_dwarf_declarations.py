@@ -15,13 +15,14 @@ from stm32_toolkit.debug.dwarf import DwarfCatalog, _integer_attribute
 from stm32_toolkit.debug.model import DebugFirmwareBinding, MemoryRegionBinding
 from stm32_toolkit.debug.read import VariableReadRequest, read_variables
 from stm32_toolkit.debug.sampling import SampleVariablesRequest, sample_variables
-from stm32_toolkit.debug.types import DwarfError
+from stm32_toolkit.debug.types import CatalogGroup, DwarfError
 from stm32_toolkit.probe.model import OperationLevel, PROBE_PROTOCOL_VERSION
 
 from dwarf_declaration_fixture import (
     DECLARATION_ADDRESS,
     VARIABLE_ADDRESS,
     build_declaration_elf,
+    build_grouped_catalog_elf,
     build_interior_payload_elf,
 )
 from stm32_toolkit.project_model import load_project_model
@@ -352,6 +353,46 @@ def test_catalog_listing_exposes_only_the_concrete_definition(
     )
 
     assert [item.selector for item in page.items] == ["testtime"]
+    assert page.items[0].catalog_group is not None
+    assert page.items[0].catalog_group.id.startswith("cu:")
+    assert page.items[0].catalog_group.label == "definition.c"
+    assert "catalog_group" not in page.items[0].to_dict()
+    assert page.to_dict() == {"items": [page.items[0].to_dict()], "nextCursor": None}
+
+
+def test_catalog_groups_use_definition_cu_identity_and_safe_source_labels(debug_env: DebugEnv) -> None:
+    project = str(debug_env.root).replace("\\", "/")
+    external = str(debug_env.root.parent / "outside").replace("\\", "/")
+    env = _rewrite_debug_environment(debug_env, build_grouped_catalog_elf(project, external))
+    pages = []
+    cursor = None
+    while True:
+        page = env.catalog.variable_descriptors(env.binding, limit=2, cursor=cursor)
+        pages.extend(page.items)
+        cursor = page.next_cursor
+        if cursor is None:
+            break
+    assert [item.selector for item in pages] == ["a", "b", "c", "d", "e", "f"]
+    by_selector = {item.selector: item.catalog_group for item in pages}
+    assert all(group is not None for group in by_selector.values())
+    assert by_selector["a"].label == by_selector["b"].label == "main.c"
+    assert by_selector["a"].id != by_selector["b"].id
+    assert by_selector["c"].label == "src/inside.c"
+    assert by_selector["d"].label == "external.c"
+    assert by_selector["e"].label == "未标注编译单元"
+    assert by_selector["f"].label == "未标注编译单元"
+    assert "outside" not in str([group.label for group in by_selector.values()])
+    assert all("catalog_group" not in item.to_dict() for item in pages)
+
+
+@pytest.mark.parametrize("group_id,label", [
+    ("cu/1", "main.c"), ("cu:1", "C:\\private\\main.c"),
+    ("cu:1", "../main.c"), ("cu:1", "bad\nname"),
+    ("cu:1", "x" * 513),
+])
+def test_catalog_group_rejects_unsafe_identity_or_display_text(group_id: str, label: str) -> None:
+    with pytest.raises(ValueError):
+        CatalogGroup(group_id, label)
 
 
 def test_catalog_listing_excludes_declaration_only_symbols(

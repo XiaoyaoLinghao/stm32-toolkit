@@ -1,11 +1,11 @@
 import {describe,expect,it} from "vitest";
 import {readFileSync} from "node:fs";
-import {debugFirmwareBindingGuard,parseEnvelope,registerDescriptorGuard,sampleValueGuard,variableDescriptorGuard} from "../src/api/contract";
+import {debugFirmwareBindingGuard,parseEnvelope,registerDescriptorGuard,registersGuard,sampleValueGuard,variableDescriptorGuard,variablesGuard} from "../src/api/contract";
 import {createMonitorApi} from "../src/api/client";
 import {parseLiveEnvelope} from "../src/api/live";
 import {encodeJson,parseLossless} from "../src/api/wire";
 const envelope=(data:string)=>`{"protocol":"stm32-toolkit-monitor/1","toolkitVersion":"0.4.0","monitorVersion":"0.4.0","ok":true,"operation":"monitor.live","code":"OK","message":"","data":${data},"details":{"subscriberDropped":9223372036854775807}}`;
-type PythonFixture={connect:{data:Record<string,unknown>};reconnect:{data:Record<string,unknown>};sample:unknown};
+type PythonFixture={connect:{data:Record<string,unknown>};reconnect:{data:Record<string,unknown>};sample:unknown;variables:unknown;registers:unknown};
 const pythonFixture=():PythonFixture=>{
   const path=process.env.STM32_MONITOR_WIRE_FIXTURE;
   if(path===undefined)throw new Error("STM32_MONITOR_WIRE_FIXTURE is required");
@@ -60,6 +60,14 @@ describe("accepted-base lossless live envelope",()=>{
     const sample=sampleValueGuard(parseLossless(JSON.stringify(fixture.sample)));
     expect(sample.status).toBe("OK");
     if(sample.status==="OK")expect(sample.typedValue).toEqual({vendorShape:[1,{nested:true}]});
+  });
+  it("consumes current Python catalog page serializer with strict group wrappers",()=>{
+    const fixture=pythonFixture();
+    const variables=parseEnvelope(JSON.stringify(fixture.variables),"monitor.catalog.variables",variablesGuard);
+    const registers=parseEnvelope(JSON.stringify(fixture.registers),"monitor.catalog.registers",registersGuard);
+    expect(variables.ok).toBe(true);expect(registers.ok).toBe(true);
+    if(variables.ok)expect(variables.data.items[0]?.group).toEqual({id:"cu:3a9a",label:"App/vs10_app.c"});
+    if(registers.ok)expect(registers.data.items[0]?.group.label).toBe("GPIO.A");
   });
   it("accepts current Python connect and reconnect responses through the HTTP adapter",async()=>{
     const fixture=pythonFixture(),requests:{url:string;init:RequestInit|undefined}[]=[];

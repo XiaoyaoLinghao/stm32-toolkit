@@ -14,6 +14,7 @@ export const copy={
   catalogBrowse:"浏览变量与寄存器",catalogCollapse:"收起变量目录",catalogTitle:"变量与寄存器目录",catalogResults:"目录搜索结果",
   catalogKind:"目录类型",variables:"变量",registers:"寄存器",search:"搜索",
   searchPlaceholder:"输入符号或寄存器前缀",catalogLoad:"搜索/加载",catalogNeedsProbe:"连接探针后可搜索目录。",
+  catalogMore:"；还有更多结果，可加载下一页。",
   registerAccessAcknowledgement:"该寄存器需要现有访问能力确认；添加草稿不会自动授权。",
   selector:"选择器",type:"类型",action:"操作",addDraft:"加入观测组草稿",nextPage:"下一页",
   zoomTitle:"图表缩放",zoomRange:"显示范围：",zoomIn:"放大",zoomOut:"缩小",zoomReset:"重置缩放",
@@ -117,6 +118,7 @@ export function recoveryAction(recovery:RecoveryKind,scope:RequestScope):string{
 }
 
 export const formatCopy={
+  catalogLoaded:(count:number)=>`已加载 ${count} 项`,
   selectedCount:(count:number)=>`已选择 ${count} / 8 条曲线`,
   bits:(count:number)=>`${count} 位`,
   groupDelete:(name:string)=>`确定删除 ${name}？`,
