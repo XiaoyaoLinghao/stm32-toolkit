@@ -1366,8 +1366,8 @@ def test_jsonl_export_manifest_binds_sha_size_count_and_all_runtime_versions(tmp
             "createdAtUtc",
         }
         assert manifest["protocol"] == "stm32-toolkit-monitor/1"
-        assert manifest["toolkitVersion"] == "1.0.1"
-        assert manifest["monitorVersion"] == "1.0.1"
+        assert manifest["toolkitVersion"] == "1.1.2"
+        assert manifest["monitorVersion"] == "1.1.2"
         assert manifest["workspaceId"] == paths.workspace_id
         assert manifest["sha256"] == hashlib.sha256(data).hexdigest()
         assert manifest["bytes"] == len(data)
@@ -1386,8 +1386,9 @@ def test_jsonl_export_manifest_binds_sha_size_count_and_all_runtime_versions(tmp
 
 
 @pytest.mark.parametrize("field", ["toolkitVersion", "monitorVersion"])
+@pytest.mark.parametrize("old_or_invalid_version", ["1.0.1", "9.9.9"])
 def test_get_export_rejects_tampered_runtime_versions(
-    tmp_path: Path, field: str
+    tmp_path: Path, field: str, old_or_invalid_version: str
 ) -> None:
     paths = _paths(tmp_path)
     history = HistoryStore(paths)
@@ -1398,7 +1399,7 @@ def test_get_export_rejects_tampered_runtime_versions(
             ExportRequest("monitor-1", 0, 1_000, "jsonl"), authorized=True
         ).data
         manifest = json.loads(artifact.manifest_path.read_text(encoding="utf-8"))
-        manifest[field] = "9.9.9"
+        manifest[field] = old_or_invalid_version
         artifact.manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
         rejected = exporter.get_export(artifact.export_id)
         assert not rejected.ok and rejected.code == "MONITOR_EXPORT_FAILED"

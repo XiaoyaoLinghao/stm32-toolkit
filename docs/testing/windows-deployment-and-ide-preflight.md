@@ -1,6 +1,6 @@
 # Windows 部署与 IDE 调试前置核对
 
-本文件面向 Windows x86_64、CPython 3.12 的发行包部署。已发布版本是 v1.0.0；当前源码候选标识为 v1.0.1，相关功能已进入代码，未发布或安装；当前审查与资格状态见[发布状态](../release-status.md)及[执行记录](../codex/returns/STM32TK-101/execution.md)。实际执行顺序、授权、留证和首错停止以[标准测试流程](standard-test-procedure.md)为准；已知限制见[发布状态](../release-status.md)，常见工程错误见[用户指南](../user-guide.md)。软件安装或离线参数检查不等于真实 IDE/探针验收。
+本文件面向 Windows x86_64、CPython 3.12 的发行包部署。最新已发布版本是 v1.0.1；当前源码候选标识为 v1.1.2，相关 Monitor 功能已进入代码，但未构建发行包或安装；当前候选范围见[源码交付规范](../superpowers/specs/2026-10-16-monitor-v112-source-delivery-design.md)，旧版资格事实见[发布状态](../release-status.md)及[v1.0.1 执行记录](../codex/returns/STM32TK-101/execution.md)。实际执行顺序、授权、留证和首错停止以[标准测试流程](standard-test-procedure.md)为准；已知限制见[发布状态](../release-status.md)，常见工程错误见[用户指南](../user-guide.md)。软件安装或离线参数检查不等于真实 IDE/探针验收。
 
 ## 固定发行与本机输入
 
@@ -12,17 +12,17 @@
 
 对已核验 bundle 使用 `bin/setup-stm32-env.ps1 -Mode Check`。`Check` 只读；`missing` 只在获准安装时进入 Bootstrap，`repairable`/`broken` 只在获准修复时进入 Repair。成功动作后再 `Check`。同版本不同 source/manifest 返回 source-conflict，记录过更高版本或未知状态按原拒绝处理；不要删除 `runtime-state.json`、降级或手修 EXE 绕过。
 
-最终目录的验证包括：发行包 hash 与闭合 wheel 集、最终位置的 Toolkit/Monitor/PyOCD wheel、`pip check`、console launcher 绑定及版本。staging 内成功并非最终位置成功。对已有 v1.0.0 runtime，先以 `Check` 为准，再可只读核对以下两个 PyOCD 入口；把路径换成实际 DataRoot，不访问板子：
+最终目录的验证包括：发行包 hash 与闭合 wheel 集、最终位置的 Toolkit/Monitor/PyOCD wheel、`pip check`、console launcher 绑定及版本。staging 内成功并非最终位置成功。对已有 v1.0.1 runtime，先以 `Check` 为准，再可只读核对以下两个 PyOCD 入口；把路径换成实际 DataRoot，不访问板子：
 
 ```powershell
-$runtimeRoot = 'C:\data\stm32-toolkit\runtime\1.0.0'
+$runtimeRoot = 'C:\data\stm32-toolkit\runtime\1.0.1'
 & "$runtimeRoot\Scripts\python.exe" -I -m pyocd --version
 if ($LASTEXITCODE -ne 0) { throw 'PyOCD module failed' }
 & "$runtimeRoot\Scripts\pyocd.exe" --version
 if ($LASTEXITCODE -ne 0) { throw 'PyOCD executable failed' }
 ```
 
-发行策略当前固定 PyOCD 0.45.1；1.0.1 候选经已授权 Repair 成功后应检查 `DataRoot/runtime/1.0.1/Scripts/pyocd.exe`。最终 launcher 应报告与已验证模块一致的版本且绑定最终解释器。`import pyocd`、模块入口成功、文件存在或 Toolkit 版本成功，都不能单独证明 `pyocd.exe` 可供 IDE 使用。安装/Repair 失败时记录原状态与 rollback 证据；旧版 runtime 先隔离，既有事务可恢复分支按规则回滚，原工程及用户数据不改写。回滚已验证范围见[发布状态](../release-status.md)。
+发行策略当前固定 PyOCD 0.45.1；1.1.2 候选未来若构建发行包并经另行授权的 Repair 成功，应检查 `DataRoot/runtime/1.1.2/Scripts/pyocd.exe`。最终 launcher 应报告与已验证模块一致的版本且绑定最终解释器。`import pyocd`、模块入口成功、文件存在或 Toolkit 版本成功，都不能单独证明 `pyocd.exe` 可供 IDE 使用。安装/Repair 失败时记录原状态与 rollback 证据；旧版 runtime 先隔离，既有事务可恢复分支按规则回滚，原工程及用户数据不改写。旧版回滚已验证范围见[发布状态](../release-status.md)，本候选不继承该发布资格。
 
 ## IDE 配置离线核对
 

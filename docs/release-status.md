@@ -117,3 +117,18 @@ Later documentation and UI-test commits do not change the source identity of the
 The exact authorized baseline fractions and unchanged collection rules are in
 [release qualification](testing/release-qualification.md). Numerical acceptance uses exact fractions
 before rounding and is bound to the measured candidate source.
+
+## v1.1.2 source candidate (not released)
+
+The accepted Monitor workbench update is being aligned to a v1.1.2 source-branch delivery. The
+latest published release remains v1.0.1; this candidate has no v1.1.2 bundle, installation,
+tag, GitHub Release, browser qualification or physical-device qualification. The v1.0.1 coverage
+exception and release evidence do not transfer to a future v1.1.2 release decision.
+
+The candidate recognizes an existing v1.0.1 managed runtime as legacy during read-only `Check`.
+Only an explicit, separately authorized `Repair` enters the existing upgrade transaction. It can
+read v1.0.1-generated projects without rewriting their historical `generatedBy` identity; an
+explicit configure still protects user-edited managed files. Existing history, group data and
+firmware evidence retain their original identity. Export manifests remain exact-version bound:
+use the original version to read an old export or create a new export after upgrading; v1.0.1
+exports are not automatically migrated or re-signed as v1.1.2 artifacts.

@@ -1,6 +1,6 @@
 # STM32 Toolkit 用户指南与排障
 
-本指南同时说明已发布 **v1.0.0** 与当前源码 **v1.0.1 候选**。下列 v1.0.1 行为已进入候选代码；审查和资格结论以[发布状态](release-status.md)及[执行记录](codex/returns/STM32TK-101/execution.md)为准。版本号和本文都不代表已安装或已发布。支持环境、发布事实及保留限制见[发布状态](release-status.md)，设计边界见[补丁规格](superpowers/specs/2026-10-10-stm32tk-101-patch-design.md)。本文对应用户报告的 1–22 项；报告是核查输入，不是本机新的实机证据。
+本指南同时说明已发布 **v1.0.1** 与当前源码 **v1.1.2 候选**。v1.0.1 补丁的历史资格见[发布状态](release-status.md)及[执行记录](codex/returns/STM32TK-101/execution.md)；新增 Monitor 工作台行为按[v1.1.2 源码交付规范](superpowers/specs/2026-10-16-monitor-v112-source-delivery-design.md)交付，未打包、安装或取得新实机资格。版本号和本文不代表 v1.1.2 已发布。本文对应用户报告的 1–22 项；报告是核查输入，不是本机新的实机证据。
 
 ## 路径、版本和安全入口
 
@@ -14,7 +14,7 @@
 {
   "mcpServers": {
     "stm32-toolkit": {
-      "command": "C:\\tools\\stm32-toolkit-1.0.1\\bin\\stm32-toolkit-mcp.cmd",
+      "command": "C:\\tools\\stm32-toolkit-1.1.2\\bin\\stm32-toolkit-mcp.cmd",
       "args": [
         "--project-root", "C:\\work\\blinky",
         "--data-root", "C:\\data\\stm32-toolkit"
@@ -55,16 +55,16 @@ Keil `inspect`/`convert` 必须指向同一 `uvprojx` 和 `target-name`。确认
 | `debug.readableRegions` | 只配置经核对的可信范围；选择 SVD 时必须覆盖所选 SVD 中每个解析出的寄存器的完整地址宽度。不要为消除报错而信任所有地址。 |
 | 堆/栈 | manifest 不提供堆栈大小字段。内置 linker 模板保留现行默认容量；特殊工程用已有 `generation.nativeLinkerScript`，自行核对启动向量、初始 SP、区域边界和运行时初始化。 |
 
-`.vscode/{tasks,launch,c_cpp_properties,settings,extensions}.json` 是编辑器目标集合。v1.0.0 的未托管文件可能触发 `UNOWNED_COLLISION`；不要删掉用户文件来绕过。v1.0.1 候选仅在 configure/build 保留这些路径上的未托管普通文件，计划单列 `preserved-unowned`，不读取、改写或收编其内容，IDE 设置仍需用户自行对齐。目录、链接、重解析点、构建必需文件、已有 managed record 或用户修改仍依合同拒绝。CubeMX regeneration 有独立闭域 inventory，configure 成功不代表 regeneration 能接纳这些编辑器文件。
+`.vscode/{tasks,launch,c_cpp_properties,settings,extensions}.json` 是编辑器目标集合。v1.0.0 的未托管文件可能触发 `UNOWNED_COLLISION`；不要删掉用户文件来绕过。自 v1.0.1 起，configure/build 仅保留这些路径上的未托管普通文件，计划单列 `preserved-unowned`，不读取、改写或收编其内容，IDE 设置仍需用户自行对齐。目录、链接、重解析点、构建必需文件、已有 managed record 或用户修改仍依合同拒绝。CubeMX regeneration 有独立闭域 inventory，configure 成功不代表 regeneration 能接纳这些编辑器文件。
 
 ## 迁移和构建：报告项 1–4、9–10、12–13、15、17、20–22
 
 | # | 看见什么 | 当前候选行为与处置 |
 | --- | --- | --- |
-| 1 | 子目录 `.uvprojx` 报 `KEIL_PROJECT_NOT_FOUND` | v1.0.0 可用 `--uvprojx Project\xxx.uvprojx` 指明根内路径；v1.0.1 候选在工程根内安全递归发现，多候选要求显式选择。目录不可枚举返回发现不完整，不能冒充“无工程”。 |
+| 1 | 子目录 `.uvprojx` 报 `KEIL_PROJECT_NOT_FOUND` | v1.0.0 可用 `--uvprojx Project\xxx.uvprojx` 指明根内路径；自 v1.0.1 起在工程根内安全递归发现，多候选要求显式选择。目录不可枚举返回发现不完整，不能冒充“无工程”。 |
 | 2 | `ARMCC_SOURCE_ENCODING_UNSUPPORTED` | 先确认原始编码与版本控制状态，工程负责人决定转换副本/源码；Toolkit 不猜 GB2312/GB18030，也不自动转码。字节保真是项目责任。 |
 | 3 | `ARMCC_ASSEMBLY_UNSUPPORTED` | 逐个将 ARMCC 汇编适配为 GNU 汇编或等价 C，并核对指令、段、符号和调用约定；若文件是 startup，还须核对向量表、初始 SP 和运行时初始化。不得强行应用旧语法，也不能从旧产物推断适配已正确。 |
-| 4, 17, 22 | configure 遇 `UNOWNED_COLLISION` 或编辑器设置已存在 | 核对目标路径与 managed manifest。构建必需文件冲突需工程方决定所有权；v1.0.1 候选只保留上述五个未托管普通编辑器文件，不 merge/adopt。 |
+| 4, 17, 22 | configure 遇 `UNOWNED_COLLISION` 或编辑器设置已存在 | 核对目标路径与 managed manifest。构建必需文件冲突需工程方决定所有权；自 v1.0.1 起只保留上述五个未托管普通编辑器文件，不 merge/adopt。 |
 | 9 | Flash used 似乎含 `.bss`/栈 | 核对原始 ELF/MAP。候选按有内容段的 LMA 计加载容量，NOBITS 只计运行地址预留；没有原始 ELF/MAP 不可宣称复现报告数字。 |
 | 10 | RAM `free=0`，栈处于区域高端 | 报告按 section 实际占用区间并集，而非区域首尾跨度。若 `.stack` section 自身含大空隙/预留，它仍是 linker 分配；不能当成可用 RAM。运行时峰值需另测。 |
 | 12 | `MIGRATION_GIT_DIRTY` 只有 untracked 文件 | 仍是迁移安全阻断。查看 `git status --short`，逐项决定版本控制或项目 `.gitignore`；不要自动删除、stash、忽略或放宽检查。候选 details 区分 index/tracked/untracked。 |
@@ -108,13 +108,13 @@ Monitor 工作台默认使用简体中文和浅色界面。打开授权标签后
 
 实时数值每行显示自己的 UTC 采集时间。图表与数值表上方标明当前或上次采样的轮次、运行组和版本；切换左侧的编辑组不会将另一组的对象误标为当前运行组。运行组版本尚未从列表核对时，只保留同一轮次已接受的旧值并标明其来源。尚未收到样本时，状态栏的速率和延迟会显示“尚未收到样本”；暂停、断流、状态待核对或运行组版本变化时，既有速率和延迟标为“上次样本”并显示其 UTC 时间。丢弃计数仍是单独的累计数据。观测绑定或采样轮次变化后，上轮样本时间会清除。
 
-以下 UI02/UI03 就地恢复、固定端口与书签恢复行为适用于同时包含 MONITOR-ENTRY-01、MONITOR-UI-02 和 MONITOR-UI-03 的未发布源码候选；已安装的 v1.0.1 发布包不支持 `--port`，也不包含这些就地恢复操作。
+以下 UI02/UI03 就地恢复、固定端口与书签恢复行为适用于 v1.1.2 未发布源码候选；已安装的 v1.0.1 发布包不支持 `--port`，也不包含这些就地恢复操作。
 
 已打开的工作台内，普通操作失败会在导航下方的“操作提示”就地显示原因；多个提示可分别查看、关闭或按提示重试，当前页面、最后成功的数据和未保存草稿保留。读取重试使用失败时的原查询、页游标或导出任务 ID。除上述组冲突外，写入被明确拒绝时，须先核对原目标和内容并确认，才会重试上次操作；编辑按钮仍提交当前草稿。写入结果未知时不盲目重复提交：能核对的操作只刷新状态或列表，导出创建若没有任务 ID 则说明结果未知。若写入已成功而随后刷新失败，只重试读取，不重复写入。无效的导入文件须重新选择。初次读取普通失败可重试初始化；真正的认证或访问失效仍整页阻断，按提示重新打开授权标签。
 
 `open --port 8765` 成功后，终端显示不带 token 的 `http://127.0.0.1:8765/`，可将这个短地址加入书签。服务保持运行、同一浏览器配置的会话 cookie 有效时，关闭标签页后打开书签可回到工作台。关闭整个浏览器后是否保留会话取决于浏览器配置；新浏览器配置不会自动继承原会话。会话失效时，先在启动终端按 Ctrl+C 停止，再用相同的 `open ... --port 8765` 命令重新启动，使用启动器自动打开的新授权标签。不要保存或手输包含 fragment token 的授权链接。
 
-`bin/stm32-monitor.cmd` 先用 `STM32_TOOLKIT_DATA_ROOT` 定位受管 Python；单给 `--data-root` 不能启动 cmd。Python CLI 启动后才读取 `open --data-root`，两处须指向同一 DataRoot。仅更换 `$ToolkitRoot` 不会让该 Python 自动加载候选源码。以下示例仅用于已构建、同时包含 ENTRY01/UI02/UI03 的未发布本地源码候选：暂将 Monitor 与 Toolkit 的 `src` 放在 `PYTHONPATH` 首位，借用现有受管 Python 及其依赖，不安装或改写已发布的 v1.0.1 包；`Repair` 也不能将发布包替换为该候选。命令打开服务和新浏览器标签、前台保持运行，并在退出时恢复原环境；当前候选不新增后台 daemon/stop 协议。
+`bin/stm32-monitor.cmd` 先用 `STM32_TOOLKIT_DATA_ROOT` 定位相同版本的受管 Python；单给 `--data-root` 不能启动 cmd。Python CLI 启动后才读取 `open --data-root`，两处须指向同一 DataRoot。v1.1.2 启动器预期 `runtime/1.1.2`，不能靠更换 `$ToolkitRoot` 自动加载未安装的候选源码。以下仅为未发布本地源码的测试示例：暂将 Monitor 与 Toolkit 的 `src` 放在 `PYTHONPATH` 首位，显式借用已发布 `runtime/1.0.1` 的 Python 及依赖，不安装或改写已发布的包；`Repair` 也不能将发布包替换为候选源码。命令打开服务和新浏览器标签、前台保持运行，并在退出时恢复原环境；当前候选不新增后台 daemon/stop 协议。
 
 ```powershell
 $ToolkitRoot = 'C:\work\stm32-toolkit-candidate'
@@ -133,7 +133,7 @@ try {
   if ($previousPythonPath) { $sourcePaths += $previousPythonPath }
   [Environment]::SetEnvironmentVariable('STM32_TOOLKIT_DATA_ROOT', $DataRoot, 'Process')
   [Environment]::SetEnvironmentVariable('PYTHONPATH', ($sourcePaths -join [IO.Path]::PathSeparator), 'Process')
-  & (Join-Path $ToolkitRoot 'bin\stm32-monitor.cmd') open --project $ProjectRoot --data-root $DataRoot --port 8765
+  & (Join-Path $DataRoot 'runtime\1.0.1\Scripts\python.exe') -m stm32_monitor open --project $ProjectRoot --data-root $DataRoot --port 8765
 } finally {
   [Environment]::SetEnvironmentVariable('PYTHONPATH', $previousPythonPath, 'Process')
   [Environment]::SetEnvironmentVariable('STM32_TOOLKIT_DATA_ROOT', $previousDataRoot, 'Process')
@@ -149,6 +149,6 @@ try {
 
 ## 升级与历史材料
 
-已发布 v1.0.0 的标签、发行资产、凭据和数据边界不变。当前候选的 Toolkit、Monitor、UI、插件、启动器与发行身份统一为 1.0.1；已有 1.0.0 runtime 经 `Check` 后只能以获授权的 `Repair` 事务升级，旧目录进入隔离区；只有既有事务可恢复分支才按其规则回滚旧 runtime 和状态，具体证据范围见[发布状态](release-status.md)。多旧版、未知未来目录、同版本不同来源、降级和锁定提升继续拒绝；不要手动移走状态文件。现有工程 `generatedBy` 保留真实旧版本；1.0.0/0.9.0 工程可计划和应用，只有显式 configure 事务刷新未改动的托管模板与记账，用户改动仍阻断。新 build 生成实际 1.0.1 身份，旧 flash receipt/evidence 不改写。改变 debug 元数据后，完整输入身份合同可能要求重新 configure、clean build 和必要的新烧录；运行观测仍按原完整身份与具名硬件授权，不提供内容等价 rebind。本候选未发布、未安装，也没有新实机资格结论；当前审查和资格状态见[执行记录](codex/returns/STM32TK-101/execution.md)与[发布状态](release-status.md)。
+已发布 v1.0.0/v1.0.1 的标签、发行资产、凭据和数据边界不变。当前候选的 Toolkit、Monitor、UI、插件、启动器与发行身份统一为 1.1.2；已有 1.0.1 及更早获批 runtime 经 `Check` 后只能以获授权的 `Repair` 事务升级，旧目录进入隔离区；只有既有事务可恢复分支才按其规则回滚旧 runtime 和状态，具体证据范围见[发布状态](release-status.md)。多旧版、未知未来目录、同版本不同来源、降级和锁定提升继续拒绝；不要手动移走状态文件。现有工程 `generatedBy` 保留真实旧版本；1.0.1/1.0.0/0.9.0 工程可计划和应用，只有显式 configure 事务刷新未改动的托管模板与记账，用户改动仍阻断。新 build 生成实际 1.1.2 身份，旧 flash receipt/evidence 不改写。旧 1.0.1 导出清单的 Toolkit/Monitor 版本不符合 1.1.2 精确校验；需使用原版本读取旧导出，或在新版本重新创建，不自动迁移或重签。改变 debug 元数据后，完整输入身份合同可能要求重新 configure、clean build 和必要的新烧录；运行观测仍按原完整身份与具名硬件授权，不提供内容等价 rebind。本候选未发布、未安装，也没有新实机资格结论；v1.0.1 的资格事实见[执行记录](codex/returns/STM32TK-101/execution.md)与[发布状态](release-status.md)。
 
 当前源树已退役旧阶段计划、报告、资格工具及其专属测试。需要审计原文时使用 `git show 694c825d29a55a53052a148efa4cc6720c315a04:<path>`，不要重建旧机器本地路径。发行构建仍使用现行 `tools/release/build_0900_artifacts.py`、`tools/release/release_0900_policy.json`、许可证和当前测试。部署/IDE 另见 [Windows 前置核对](testing/windows-deployment-and-ide-preflight.md)。
