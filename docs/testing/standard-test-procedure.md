@@ -4,7 +4,9 @@
 
 ## 1. 当前断点与证据
 
-已发布 v1.0.0 的固定身份、一次性覆盖率例外和限制见[发布状态](../release-status.md)。旧例外不自动延续至新版本；2026-10-10 用户另行批准 v1.0.1 以“不低于 v1.0.0”为条件的新例外，精确比较范围见[发布资格](release-qualification.md)。本次允许为该条件补齐相关测量，不重开无界覆盖率补数。当前 v1.0.1 的[规格](../superpowers/specs/2026-10-10-stm32tk-101-patch-design.md)、[计划](../superpowers/plans/2026-10-10-stm32tk-101-patch-plan.md)和[执行记录](../codex/returns/STM32TK-101/execution.md)是本轮入口；分母、成员和永久门槛保留。
+已发布 v1.0.0/v1.0.1 的固定身份、一次性覆盖率例外和限制见[发布状态](../release-status.md)。旧例外不自动延续至新版本；2026-10-10 用户为 v1.0.1 批准的“不低于 v1.0.0”条件与已完成测量保留在[发布资格](release-qualification.md)和[执行记录](../codex/returns/STM32TK-101/execution.md)，分母、成员和永久门槛不改。
+
+2026-10-16 当前切片为已接受 Monitor 更新的 v1.1.2 源码版本同步及授权交付分支推送，入口为[规范](../superpowers/specs/2026-10-16-monitor-v112-source-delivery-design.md)和[计划](../superpowers/plans/2026-10-16-monitor-v112-source-delivery-plan.md)。已有本地 Monitor 接受证据见[推送前记录](../codex/returns/MONITOR-LOCAL-COMPLETION/prepush.md)；浏览器、硬件和新版本发布资格仍暂缓。版本变更仅使相关身份/兼容检查需要重新核对，不复用旧版发布或物理授权。
 
 先记录实际工作树、分支、完整 accepted base/CodeHead、设计/实现/审查者、部署 source、project/data/runtime 路径、授权、有效证据和剩余场景。检查 tracked/untracked、已提交/未提交、已推送/未推送状态；保留无关改动。使用精确 CodeHead 的干净隔离工作树审查完整差异。
 

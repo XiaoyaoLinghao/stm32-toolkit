@@ -115,7 +115,9 @@ PASS may be reused only when the relevant source, environment, dependencies and 
 See the [standard test procedure](testing/standard-test-procedure.md) and
 [development rules](development.md) for acceptance and execution ownership.
 
-The current v1.0.1 contract and schedule are its [specification](superpowers/specs/2026-10-10-stm32tk-101-patch-design.md)
+The published v1.0.1 contract and schedule remain in its [specification](superpowers/specs/2026-10-10-stm32tk-101-patch-design.md)
 and [implementation plan](superpowers/plans/2026-10-10-stm32tk-101-patch-plan.md).
+The current v1.1.2 source-delivery slice follows its [specification](superpowers/specs/2026-10-16-monitor-v112-source-delivery-design.md)
+and [plan](superpowers/plans/2026-10-16-monitor-v112-source-delivery-plan.md); browser, hardware and release qualification remain deferred.
 Older designs remain recoverable from Git history at `694c825d29a55a53052a148efa4cc6720c315a04`;
 they are historical evidence rather than additional current workflow entry points.
