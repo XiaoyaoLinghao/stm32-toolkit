@@ -5,6 +5,8 @@ Full accepted base：`b257c7e2ebb757c5228d5176d813e14573c4403e`；规范见同�
 ## 所有权与步骤
 
 1. 实现者在既有 clean 隔离树 `D:\codex-tmp\mufin1015\impl` 单独实现。产品白名单：`.claude-plugin/plugin.json`，两包 pyproject，Toolkit `__init__.py`、`generation/managed_files.py`，UI package.json/package-lock.json，bin 的两个 cmd 与 setup-stm32-env.ps1，skills/setup-stm32-env/SKILL.md，tools/release/build_0900_artifacts.py/release_0900_policy.json，schemas/stm32-release.schema.json。只同步产品版本与必要1.0.1旧版白名单，不改变运行行为或依赖图。主代理只写本规范/计划、review/delivery文档，不改产品。
+
+   独立契约审查补充：setup 的 release builder/policy 两个 SHA256 常量随最终 Git blob/archive 字节同步，保留原 trust gate。实施者从最终暂存/提交字节求 hash，主代理独立复算；既有 test_setup_trust_anchors_match_archived_release_files（按源码实际节点名）继续覆盖，archive prefix 改为当前1.1.2，不把 checkout CRLF当归档字节。不新增锚点或放宽校验。
 2. 实现者拥有相应当前版本测试适配及旧版1.0.1回归：Toolkit test_plugin_layout/test_setup_runtime/test_generation、release/test_0900_artifacts，Monitor test_package_boundary/test_cli/test_models/test_exports。最终定点搜索发现的 CLI/build/migration/MCP/runtime/service 当前版本断言可适配并运行受影响节点；不得全库盲替。旧版本 fixture 保持历史意图。新增测试须针对一致性/兼容实际风险，优先扩展已有参数化测试，不新建通用validator。
 3. 实现者同步 README.md、README_zh-CN.md、CHANGELOG.md、docs/user-guide.md、docs/testing/windows-deployment-and-ide-preflight.md、docs/release-status.md 的当前候选说明和兼容限制。历史报告、旧发布事实保持。生成 ui_dist 仅在正常构建实际变化时跟踪。
 4. 实施前已阅读标准测试流程当前断点与 STM32TK-101/execution.md 最新记录；该历史实机/发布授权不延续。本轮输出统一 `D:\codex-tmp\mv11216`，解释器为既有 Python3.12，Node/npm与既有依赖；TEMP/TMP/TMPDIR、pytest basetemp/cache、node/npm缓存明确绑定到短子目录。主代理清理。复制依赖来自既有源，不安装；原始脏工作区与活动服务树不写。

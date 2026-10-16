@@ -14,6 +14,8 @@
 
 运行版本的源头仍为 Toolkit `__version__`，Monitor import/协议沿用它；现有静态 manifest、pyproject、启动器、setup 与 release builder/policy/schema 按既有机制同步为1.1.2，不新增版本框架。Monitor 的 Toolkit 精确依赖同步为 `stm32-toolkit==1.1.2`。UI lockfile 只改顶层与根 package 元数据，不改第三方包版本、resolved、integrity 或依赖图。
 
+setup 对 release builder 与 policy 的两个 SHA256 trust anchor 必须随对应文件最终字节重新计算并同步。锚点以 Git 提交/归档内的精确文件字节为准，不以 Windows checkout 的自动换行副本代替；由既有归档锚点回归证明。除这两个必要派生常量外，不改变 trust 校验规则或失败语义。
+
 setup 的 LegacyRuntimeVersions 纳入1.0.1，保留已有旧版本及未知/未来/同版本异源/降级拒绝；generation 的 legacy producer 纳入1.0.1，仍保留1.0.0/0.9.0支持。不变更 schema/协议名称或授权、身份、哈希、事务、锁、恢复规则，不实际升级用户安装环境。
 
 持久导出清单继续按现有精确 Toolkit/Monitor 版本校验；不放宽 `exports.py`，不自动迁移或重签旧清单。旧1.0.1导出在1.1.2下不能视为新版本合法产物；使用原版本读取原导出或在新版本重新创建导出。历史采样/组数据及旧固件/证据保留原身份，相关文档说明此边界。
