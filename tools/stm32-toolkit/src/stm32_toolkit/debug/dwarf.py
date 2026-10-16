@@ -252,27 +252,41 @@ def _cu_catalog_group(cu: object, project_root: Path) -> CatalogGroup:
             return unknown
         if not name or len(name) > 4096:
             return unknown
+    except (AttributeError, KeyError, UnicodeError, ValueError, TypeError, OSError):
+        return unknown
+
+    try:
         raw_dir = attributes.get("DW_AT_comp_dir")
         comp_dir = raw_dir.value if raw_dir is not None else None
         if isinstance(comp_dir, bytes):
             comp_dir = comp_dir.decode("utf-8", "strict")
         if not isinstance(comp_dir, str) or len(comp_dir) > 4096:
             comp_dir = None
+    except (AttributeError, UnicodeError, ValueError, TypeError, OSError):
+        comp_dir = None
+
+    try:
         absolute = name if os.path.isabs(name) else (
             os.path.join(comp_dir, name)
             if comp_dir is not None and os.path.isabs(comp_dir) else None
         )
         if absolute is not None:
-            candidate = os.path.normcase(os.path.normpath(absolute))
-            root = os.path.normcase(os.path.normpath(str(project_root)))
-            if os.path.commonpath((candidate, root)) == root:
+            candidate = os.path.normpath(absolute)
+            root = os.path.normpath(str(project_root))
+            comparison_candidate = os.path.normcase(candidate)
+            comparison_root = os.path.normcase(root)
+            if os.path.commonpath((comparison_candidate, comparison_root)) == comparison_root:
                 relative = os.path.relpath(candidate, root).replace("\\", "/")
                 if relative != "." and len(relative) <= 512 and relative.isprintable():
                     return CatalogGroup(group_id, relative)
+    except (ValueError, TypeError, OSError):
+        pass
+
+    try:
         basename = ntpath.basename(name.replace("/", "\\"))
         if basename not in ("", ".", "..") and len(basename) <= 512 and basename.isprintable():
             return CatalogGroup(group_id, basename)
-    except (AttributeError, KeyError, UnicodeError, ValueError, TypeError, OSError):
+    except (ValueError, TypeError, OSError):
         pass
     return unknown
 

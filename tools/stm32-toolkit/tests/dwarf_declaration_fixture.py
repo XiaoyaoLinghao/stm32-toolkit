@@ -383,6 +383,7 @@ def build_grouped_catalog_elf(project_root: str, external_root: str) -> bytes:
         (external_root + "/external.c", None, ("d",)),
         (None, None, ("e",)),
         (b"\xffbroken.c", None, ("f",)),
+        (project_root + "/App/vs10_app.c", None, ("g",)),
     )
     for source_name, comp_dir, variables in sources:
         cu = _Cu(len(info), abbreviations, source_name or "")

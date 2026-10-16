@@ -72,6 +72,30 @@ it("keeps same-label source CUs separate and retains native expansion across app
   expect(view.container.querySelectorAll("details")).toHaveLength(0);
 });
 
+it("treats prototype-named group IDs as independent expansion choices across pages",async()=>{
+  const items=["__proto__","constructor","toString"].map((id,index)=>({...variable,
+    selector:`value${index}`,group:{id,label:`source${index}.c`}}));
+  const catalog=(pageItems:typeof items,query="")=>({kind:"variables" as const,query,
+    bindingKey:"w/s/p/3",cursor:null,items:pageItems,nextCursor:null});
+  const noop=()=>undefined;
+  const view=render(<CatalogPanel connected bindingEpoch={3n} variables={catalog(items)} registers={null}
+    onSearch={noop} onNext={noop} onAdd={noop}/>);
+  let details=[...view.container.querySelectorAll("details")];
+  expect(details.map(node=>node.open)).toEqual([false,false,false]);
+  await userEvent.click(details[0]!.querySelector("summary")!);
+  details=[...view.container.querySelectorAll("details")];
+  expect(details.map(node=>node.open)).toEqual([true,false,false]);
+  view.rerender(<CatalogPanel connected bindingEpoch={3n} variables={catalog([...items,{...variable,
+    selector:"later",group:items[0]!.group}])} registers={null}
+    onSearch={noop} onNext={noop} onAdd={noop}/>);
+  details=[...view.container.querySelectorAll("details")];
+  expect(details.map(node=>node.open)).toEqual([true,false,false]);
+  view.rerender(<CatalogPanel connected bindingEpoch={3n} variables={catalog(items,"value")} registers={null}
+    onSearch={noop} onNext={noop} onAdd={noop}/>);
+  details=[...view.container.querySelectorAll("details")];
+  expect(details.map(node=>node.open)).toEqual([true,true,true]);
+});
+
 it("resets an expansion choice after a binding round-trip even when the other binding has no result",async()=>{
   const item={...variable,group:{id:"cu:1",label:"main.c"}};
   const a={kind:"variables" as const,query:"",bindingKey:"w/s/p/3",cursor:null,items:[item],nextCursor:null};

@@ -18,7 +18,7 @@ export type CatalogPanelProps={
 };
 
 type CatalogItem=VariableCatalogItem|RegisterCatalogItem;
-type OpenChoices={key:string;overrides:Readonly<Record<string,boolean>>};
+type OpenChoices={key:string;overrides:ReadonlyMap<string,boolean>};
 
 function groups(items:readonly CatalogItem[]):{group:CatalogGroup;items:CatalogItem[]}[]{
   const result:{group:CatalogGroup;items:CatalogItem[]}[]=[],byId=new Map<string,number>();
@@ -38,15 +38,15 @@ function addWatch(item:CatalogItem,onAdd:(watch:WatchItem)=>void|Promise<void>):
 export function CatalogPanel(p:CatalogPanelProps):JSX.Element{
   const [kind,setKind]=useState<CatalogKind>("variables");
   const [query,setQuery]=useState("");
-  const variableOpen=useRef<OpenChoices>({key:"",overrides:{}});
-  const registerOpen=useRef<OpenChoices>({key:"",overrides:{}});
+  const variableOpen=useRef<OpenChoices>({key:"",overrides:new Map()});
+  const registerOpen=useRef<OpenChoices>({key:"",overrides:new Map()});
   const bindingIdentity=p.bindingKey??String(p.bindingEpoch);
   const matchesBinding=(catalog:VariableCatalog|RegisterCatalog|null)=>catalog!==null&&(
     p.bindingKey===undefined?catalog.bindingKey.endsWith("/"+String(p.bindingEpoch)):catalog.bindingKey===p.bindingKey);
   const variableKey=JSON.stringify([bindingIdentity,"variables",matchesBinding(p.variables)?p.variables!.query:null]);
   const registerKey=JSON.stringify([bindingIdentity,"registers",matchesBinding(p.registers)?p.registers!.query:null]);
-  if(variableOpen.current.key!==variableKey)variableOpen.current={key:variableKey,overrides:{}};
-  if(registerOpen.current.key!==registerKey)registerOpen.current={key:registerKey,overrides:{}};
+  if(variableOpen.current.key!==variableKey)variableOpen.current={key:variableKey,overrides:new Map()};
+  if(registerOpen.current.key!==registerKey)registerOpen.current={key:registerKey,overrides:new Map()};
   const current=kind==="variables"?p.variables:p.registers;
   const resultIdentityMatches=matchesBinding(current);
   const isPrevious=resultIdentityMatches&&current!==null&&current.query!==query.trim();
@@ -55,7 +55,9 @@ export function CatalogPanel(p:CatalogPanelProps):JSX.Element{
   const overrides=openChoices.current.overrides;
   const setGroupOpen=(id:string,open:boolean)=>{
     const previous=openChoices.current;
-    openChoices.current={...previous,overrides:{...previous.overrides,[id]:open}};
+    const updated=new Map(previous.overrides);
+    updated.set(id,open);
+    openChoices.current={...previous,overrides:updated};
   };
   const labelCounts=new Map<string,number>();
   for(const entry of visibleGroups)labelCounts.set(entry.group.label,(labelCounts.get(entry.group.label)??0)+1);
@@ -81,7 +83,7 @@ export function CatalogPanel(p:CatalogPanelProps):JSX.Element{
         labelOrdinals.set(entry.group.label,ordinal);
         const repeated=(labelCounts.get(entry.group.label)??0)>1;
         const summary=entry.group.label+(repeated?` (${ordinal})`:"")+" · "+formatCopy.catalogLoaded(entry.items.length);
-        const open=overrides[entry.group.id]??current.query!=="";
+        const open=overrides.get(entry.group.id)??current.query!=="";
         return<details key={entry.group.id} open={open}>
           <summary onClick={event=>setGroupOpen(entry.group.id,!(event.currentTarget.parentElement as HTMLDetailsElement).open)}>{summary}</summary>
           <table><thead><tr><th>{copy.selector}</th><th>{copy.type}</th><th>{copy.action}</th></tr></thead>

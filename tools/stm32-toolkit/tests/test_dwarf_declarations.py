@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,7 +12,7 @@ from elftools.elf.elffile import ELFFile
 
 from stm32_toolkit import __version__
 from stm32_toolkit.build.identity import atomic_write_json, compute_build_id, validate_elf
-from stm32_toolkit.debug.dwarf import DwarfCatalog, _integer_attribute
+from stm32_toolkit.debug.dwarf import DwarfCatalog, _cu_catalog_group, _integer_attribute
 from stm32_toolkit.debug.model import DebugFirmwareBinding, MemoryRegionBinding
 from stm32_toolkit.debug.read import VariableReadRequest, read_variables
 from stm32_toolkit.debug.sampling import SampleVariablesRequest, sample_variables
@@ -372,7 +373,7 @@ def test_catalog_groups_use_definition_cu_identity_and_safe_source_labels(debug_
         cursor = page.next_cursor
         if cursor is None:
             break
-    assert [item.selector for item in pages] == ["a", "b", "c", "d", "e", "f"]
+    assert [item.selector for item in pages] == ["a", "b", "c", "d", "e", "f", "g"]
     by_selector = {item.selector: item.catalog_group for item in pages}
     assert all(group is not None for group in by_selector.values())
     assert by_selector["a"].label == by_selector["b"].label == "main.c"
@@ -381,8 +382,33 @@ def test_catalog_groups_use_definition_cu_identity_and_safe_source_labels(debug_
     assert by_selector["d"].label == "external.c"
     assert by_selector["e"].label == "未标注编译单元"
     assert by_selector["f"].label == "未标注编译单元"
+    assert by_selector["g"].label == "App/vs10_app.c"
     assert "outside" not in str([group.label for group in by_selector.values()])
     assert all("catalog_group" not in item.to_dict() for item in pages)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows drive semantics")
+def test_catalog_group_cross_drive_source_keeps_safe_basename() -> None:
+    attributes = {"DW_AT_name": SimpleNamespace(value=b"Z:/outside/CrossDrive.c")}
+    cu = SimpleNamespace(cu_offset=0x3A9A, get_top_DIE=lambda: SimpleNamespace(attributes=attributes))
+
+    assert _cu_catalog_group(cu, Path("D:/Project")).label == "CrossDrive.c"
+
+
+def test_catalog_group_bad_comp_dir_keeps_valid_source_basename() -> None:
+    attributes = {"DW_AT_name": SimpleNamespace(value=b"ValidSource.c"),
+                  "DW_AT_comp_dir": SimpleNamespace(value=b"\xffbroken")}
+    cu = SimpleNamespace(cu_offset=0x3A9A, get_top_DIE=lambda: SimpleNamespace(attributes=attributes))
+
+    assert _cu_catalog_group(cu, Path("D:/Project")).label == "ValidSource.c"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows path casing semantics")
+def test_catalog_group_project_relative_display_keeps_source_case() -> None:
+    attributes = {"DW_AT_name": SimpleNamespace(value=b"D:/Project/App/vs10_app.c")}
+    cu = SimpleNamespace(cu_offset=0x3A9A, get_top_DIE=lambda: SimpleNamespace(attributes=attributes))
+
+    assert _cu_catalog_group(cu, Path("D:/Project")).label == "App/vs10_app.c"
 
 
 @pytest.mark.parametrize("group_id,label", [
