@@ -83,6 +83,35 @@ describe("authoritative monitor reducer",()=>{
     expect(rebound.live.rows.size).toBe(0);
   });
 
+  it("keeps one stable notice per reset reason while identity changes still reset data",()=>{
+    const first=reducer(seeded(),{type:"status.loaded",status:status(5n)});
+    expect(first.live.rows.size).toBe(0);
+    expect(first.live.bindingEpoch).toBe(5n);
+    expect(first.notices).toHaveLength(1);
+    const firstId=first.notices[0]?.id;
+    const sampled=reduceAcceptedLiveEnvelope(first,sampleEnvelope(2n));
+    const sameHttp=reducer(sampled,{type:"status.loaded",status:status(5n)});
+    const sameWs=reduceAcceptedLiveEnvelope(sameHttp,{event:stateEvent(3n,1n,5n),subscriberDropped:0n});
+    expect(sameWs.live.rows.get("variable:x")?.displayValue).toBe(sampled.live.rows.get("variable:x")?.displayValue);
+    expect(sameWs.notices).toHaveLength(1);
+    const changedWs=reduceAcceptedLiveEnvelope(sameWs,{event:stateEvent(4n,2n,6n),subscriberDropped:0n});
+    const changedRun=reducer(changedWs,{type:"status.loaded",status:{...status(6n),sampling:{...status(6n).sampling,runId:"other"}}});
+    expect(changedWs.live.rows.size).toBe(0);
+    expect(changedRun.live.runId).toBe("other");
+    expect(changedRun.notices).toHaveLength(1);
+    expect(changedRun.notices[0]?.id).toBe(firstId);
+    const newRunBatch={...batch(5n),runId:"other"};
+    const newRunSample=reduceAcceptedLiveEnvelope(changedRun,{event:{eventId:5n,type:"sample",data:{batch:newRunBatch,serviceSubscriberDrops:0n}},subscriberDropped:0n});
+    expect(newRunSample.live.rows.get("variable:x")?.displayValue).toBe("12.5");
+    expect(newRunSample.live.actualRateHz).toBe(4);
+    const gap=reduceAcceptedLiveEnvelope(newRunSample,{event:{eventId:6n,type:"state",data:{stateRevision:3n,gap:true,status:changedRun.status!}},subscriberDropped:0n});
+    const repeatedGap=reduceAcceptedLiveEnvelope(gap,{event:{eventId:7n,type:"state",data:{stateRevision:4n,gap:true,status:changedRun.status!}},subscriberDropped:0n});
+    expect(repeatedGap.notices).toHaveLength(2);
+    expect(repeatedGap.notices.map(notice=>notice.text)).toEqual(["Live view reset for a new binding or run","Live event gap; status refresh required"]);
+    expect(repeatedGap.notices[0]?.id).toBe(firstId);
+    expect(repeatedGap.notices[1]?.id).toBe(gap.notices[1]?.id);
+  });
+
   it("tracks only matching request lifecycle IDs",()=>{
     const started=reducer(running(),{type:"request.started",scope:"sampling.start",requestId:9223372036854775807n});
     const old=reducer(started,{type:"request.cleared",scope:"sampling.start",requestId:1n});

@@ -1,9 +1,16 @@
 import {describe,expect,it} from "vitest";
 import {readFileSync} from "node:fs";
 import {debugFirmwareBindingGuard,parseEnvelope,registerDescriptorGuard,sampleValueGuard,variableDescriptorGuard} from "../src/api/contract";
+import {createMonitorApi} from "../src/api/client";
 import {parseLiveEnvelope} from "../src/api/live";
 import {encodeJson,parseLossless} from "../src/api/wire";
 const envelope=(data:string)=>`{"protocol":"stm32-toolkit-monitor/1","toolkitVersion":"0.4.0","monitorVersion":"0.4.0","ok":true,"operation":"monitor.live","code":"OK","message":"","data":${data},"details":{"subscriberDropped":9223372036854775807}}`;
+type PythonFixture={connect:{data:Record<string,unknown>};reconnect:{data:Record<string,unknown>};sample:unknown};
+const pythonFixture=():PythonFixture=>{
+  const path=process.env.STM32_MONITOR_WIRE_FIXTURE;
+  if(path===undefined)throw new Error("STM32_MONITOR_WIRE_FIXTURE is required");
+  return JSON.parse(readFileSync(path,"utf8")) as PythonFixture;
+};
 describe("accepted-base lossless live envelope",()=>{
   it("keeps every identity and counter outside Number",()=>{
     const result=parseLiveEnvelope(envelope(`{"eventId":9223372036854775807,"type":"hello","data":{"protocol":"stm32-toolkit-monitor/1","toolkitVersion":"0.4.0","monitorVersion":"0.4.0","stateRevision":9223372036854775807}}`));
@@ -42,17 +49,43 @@ describe("accepted-base lossless live envelope",()=>{
     ];
     for(const text of invalid)expect(parseEnvelope(text,"monitor.test",()=>null)).toEqual({ok:false,code:"MONITOR_RESPONSE_INVALID",message:"Monitor response is invalid"});
   });
-  it("consumes the dual-Python accepted serializer fixture",()=>{
-    const path=process.env.STM32_MONITOR_WIRE_FIXTURE;
-    if(path===undefined)throw new Error("STM32_MONITOR_WIRE_FIXTURE is required");
-    const fixture=readFileSync(path,"utf8"),divider=',"sample":',dividerIndex=fixture.indexOf(divider);
-    expect(fixture.startsWith('{"connect":')&&dividerIndex>0&&fixture.endsWith("}")).toBe(true);
-    const connectText=fixture.slice('{"connect":'.length,dividerIndex),sampleText=fixture.slice(dividerIndex+divider.length,-1);
-    const connect=parseEnvelope(connectText,"monitor.probe.connect",debugFirmwareBindingGuard);
+  it("consumes current Python connect and reconnect binding serializers",()=>{
+    const fixture=pythonFixture();
+    const connect=parseEnvelope(JSON.stringify(fixture.connect),"monitor.probe.connect",debugFirmwareBindingGuard);
+    const reconnect=parseEnvelope(JSON.stringify(fixture.reconnect),"monitor.probe.reconnect",debugFirmwareBindingGuard);
     expect(connect.ok).toBe(true);
-    if(connect.ok){expect(connect.data.observationSessionId).toBe("observe");expect(connect.data.elfSize).toBe(4096);expect(connect.data.memoryRegions[0]?.origin).toBe(0x08000000);}
-    const sample=sampleValueGuard(parseLossless(sampleText));
+    expect(reconnect.ok).toBe(true);
+    if(connect.ok){expect(connect.data.observationSessionId).toBe("observe");expect(connect.data.elfSize).toBe(4096);expect(connect.data.memoryRegions[0]?.origin).toBe(0x08000000);expect(connect.data.svdReadableRegions).toEqual([{name:"PERIPH",origin:0x40000000,length:0x1000,attributes:"r--"}]);}
+    if(reconnect.ok)expect(reconnect.data.svdReadableRegions).toEqual(connect.ok?connect.data.svdReadableRegions:[]);
+    const sample=sampleValueGuard(parseLossless(JSON.stringify(fixture.sample)));
     expect(sample.status).toBe("OK");
     if(sample.status==="OK")expect(sample.typedValue).toEqual({vendorShape:[1,{nested:true}]});
+  });
+  it("accepts current Python connect and reconnect responses through the HTTP adapter",async()=>{
+    const fixture=pythonFixture(),requests:{url:string;init:RequestInit|undefined}[]=[];
+    const api=createMonitorApi(async(input,init)=>{
+      requests.push({url:String(input),init});
+      return new Response(JSON.stringify(requests.length===1?fixture.connect:fixture.reconnect));
+    },"http://monitor.test");
+    const connected=await api.connect("probe"),reconnected=await api.reconnect();
+    expect(connected.ok).toBe(true);
+    expect(reconnected.ok).toBe(true);
+    if(connected.ok&&reconnected.ok)expect(reconnected.data).toEqual(connected.data);
+    expect(requests.map(request=>new URL(request.url).pathname)).toEqual(["/api/v1/probe/connect","/api/v1/probe/reconnect"]);
+    expect(requests.map(request=>request.init?.method)).toEqual(["POST","POST"]);
+  });
+  it("rejects missing, empty, null, malformed and extra binding fields from Python responses",()=>{
+    const fixture=pythonFixture(),base=fixture.connect.data;
+    const absent={...base};delete absent.svdReadableRegions;
+    const region=(base.svdReadableRegions as Record<string,unknown>[])[0];
+    expect(region).toBeDefined();
+    const invalid=[absent,{...base,svdReadableRegions:[]},{...base,svdReadableRegions:null},
+      {...base,svdReadableRegions:{}},{...base,svdReadableRegions:[{...region,origin:"invalid"}]},
+      {...base,svdReadableRegions:[{...region,unknown:true}]},{...base,unknown:true}];
+    for(const {operation,response} of [{operation:"monitor.probe.connect",response:fixture.connect},{operation:"monitor.probe.reconnect",response:fixture.reconnect}])
+      for(const data of invalid){
+        const result=parseEnvelope(JSON.stringify({...response,data}),operation,debugFirmwareBindingGuard);
+        expect(result).toEqual({ok:false,code:"MONITOR_RESPONSE_INVALID",message:"Monitor response is invalid"});
+      }
   });
 });

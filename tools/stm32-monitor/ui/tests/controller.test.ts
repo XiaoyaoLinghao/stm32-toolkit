@@ -97,7 +97,7 @@ it("refreshStatus fails and dispatches request.failed",async()=>{
 it("connectProbe succeeds and refreshes status",async()=>{
   const group=watchGroup();
   const api=makeApi({
-    connect:vi.fn(async()=>ok({logicalProjectId:"p",workspaceId:"w",observationSessionId:"o",flashSessionId:"f",leaseId:"l",probeId:"p1",targetDevice:"T",debugTarget:"cortex_m",buildId:"b".repeat(64),elfSha256:"e".repeat(64),elfSize:4096,elfPath:"build/fw.elf",inputSnapshotSha256:"i".repeat(64),gitHead:"g".repeat(40),gitDirty:false,confirmedAtUtc:"2026-08-10T00:00:00Z",memoryRegions:[{name:"FLASH",origin:0x08000000,length:0x10000,attributes:"rx"}]})),
+    connect:vi.fn(async()=>ok({logicalProjectId:"p",workspaceId:"w",observationSessionId:"o",flashSessionId:"f",leaseId:"l",probeId:"p1",targetDevice:"T",debugTarget:"cortex_m",buildId:"b".repeat(64),elfSha256:"e".repeat(64),elfSize:4096,elfPath:"build/fw.elf",inputSnapshotSha256:"i".repeat(64),gitHead:"g".repeat(40),gitDirty:false,confirmedAtUtc:"2026-08-10T00:00:00Z",memoryRegions:[{name:"FLASH",origin:0x08000000,length:0x10000,attributes:"rx"}],svdReadableRegions:[{name:"FLASH",origin:0x08000000,length:0x10000,attributes:"rx"}]})),
   });
   const {controller,actions}=harness(api);
   await controller.connectProbe("p1");

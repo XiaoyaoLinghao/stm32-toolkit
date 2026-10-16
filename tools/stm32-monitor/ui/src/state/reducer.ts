@@ -14,7 +14,8 @@ const catalogBindingKey=(status:MonitorStatus):string=>`${status.workspaceId}/${
 const rebased=(live:LiveState,status:MonitorStatus):LiveState=>({...live,authoritativeDrops:dropsFrom(status),pendingDropDeltas:zeroDrops(),bindingEpoch:status.sampling.bindingEpoch,runId:status.sampling.runId});
 const sameFirmware=(left:MonitorStatus["firmware"],right:MonitorStatus["firmware"]):boolean=>left===null?right===null:right!==null&&left.buildId===right.buildId&&left.elfSha256===right.elfSha256&&left.inputSnapshotSha256===right.inputSnapshotSha256&&left.gitHead===right.gitHead&&left.gitDirty===right.gitDirty&&left.targetDevice===right.targetDevice;
 const resetForStatus=(state:MonitorState,status:MonitorStatus):boolean=>{const prior=state.status;return prior!==null&&(prior.workspaceId!==status.workspaceId||prior.sessionId!==status.sessionId||prior.project.logicalProjectId!==status.project.logicalProjectId||prior.project.targetDevice!==status.project.targetDevice||!sameFirmware(prior.firmware,status.firmware)||prior.probe.connected!==status.probe.connected||prior.probe.probeId!==status.probe.probeId||prior.sampling.bindingEpoch!==status.sampling.bindingEpoch||prior.sampling.runId!==status.sampling.runId);};
-const resetNotice=(state:MonitorState,text:string)=>[...state.notices,{id:`view-reset-${state.notices.length}`,kind:"view-reset" as const,text}];
+const resetNotice=(state:MonitorState,text:string)=>state.notices.some(notice=>notice.kind==="view-reset"&&notice.text===text)
+  ?state.notices:[...state.notices,{id:`view-reset-${state.notices.length}`,kind:"view-reset" as const,text}];
 const sameDraft=(left:MonitorState["groupDraft"],right:MonitorState["groupDraft"]):boolean=>
   left.sourceGroupId===right.sourceGroupId&&left.expectedRevision===right.expectedRevision&&sameGroupContent(left,right);
 const groupFailureScopes=["groups.create","groups.update","groups.delete","groups.import"] as const;
