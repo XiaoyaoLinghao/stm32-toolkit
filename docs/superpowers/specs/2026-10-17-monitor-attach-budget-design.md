@@ -25,8 +25,8 @@ Accepted base：`0b9f3a75c6490f1f7c2706b1eef907f0fa252de6`，其产品字节与�
 - `ProbeClient` 增加向后兼容的关键字构造选项 `attach_timeout_ms=5000`。类型必须为严格 int（不含 bool），范围 1..300000 ms，非法值在发送前拒绝。仅 `attach` 转发该值到已有 request timeout_ms；所有其他操作不变。
 - Monitor 定义唯一常量 35000 ms，通过默认 client factory 创建 ProbeClient。35 秒是现有 worker 30 秒加 5 秒准入/完成余量的明确产品策略，不是硬件实测值。保留单参数 client_factory 测试注入合同，不改变 bind_debug_firmware 参数或公共协议版本。同一个 Monitor client 的初始绑定和后续重验证使用相同预算。
 - Probe Service 仍唯一拥有请求绝对 deadline、排队、附加候选状态和清理。worker 仍拥有原 30 秒操作上限；不增锁、不重启 timer、不接纳迟到成功、不循环重试。HTTP transport 原 305 秒上限不变。
-- `PROBE_TIMEOUT` 映射为 `MONITOR_PROBE_TIMEOUT`，贯穿 observation open、revalidate/read 中既有映射路径及 ProbeSession 阻断码归一化。超时不得发布部分 binding 或样本。相邻 busy/firmware/SVD/DWARF/unknown 分类及 cleanup failure 优先级保持。仅保留现有白名单 attachDiagnostic，不新增原始后端文本或令牌。
-- UI 仅新增超时中文标题与适当行动说明，沿用现有工作台失败卡和人工重试机制，不扩展页面、协议或 fatal 规则。构建产物与源码一致。
+- `PROBE_TIMEOUT` 映射为 `MONITOR_PROBE_TIMEOUT`，贯穿 observation open、revalidate/read 中既有映射路径、ProbeSession 阻断码及目录码归一化、runtime 的目录失败映射。超时不得发布部分 binding 或样本。相邻 busy/firmware/SVD/DWARF/unknown 分类及 cleanup failure 优先级保持。连接路径继续保留现有白名单 attachDiagnostic，不承诺扩展其他路径的诊断字段，不新增原始后端文本或令牌。
+- UI 仅新增超时中文标题，沿用现有工作台失败卡、当前人工恢复说明和重试机制，不新增专属行动按钮，不扩展页面、协议或 fatal 规则。构建产物与源码一致。
 - 实测唯一所有者为主代理；实现者和审查者不得连接硬件。新采样使用独立运行根，原 mh1017 证据及现有组/历史完整保留。
 
 ## 验收与风险

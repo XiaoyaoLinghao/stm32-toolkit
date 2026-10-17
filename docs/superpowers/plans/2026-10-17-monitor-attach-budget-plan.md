@@ -4,7 +4,7 @@ Accepted base：`0b9f3a75c6490f1f7c2706b1eef907f0fa252de6`。规范：[设计](.
 
 ## 1. 单一实现者的纵向修复
 
-ui03_impl 独占产品实现及测试：Toolkit probe/client.py、monitor_observation.py 和对应测试；Monitor probe_session.py、相关 runtime/probe-session 测试；UI presentation/zh.ts、失败卡/中文映射测试和必要 ui_dist 生成物。不得更改全局服务或 worker 时限、锁、协议模式、依赖锁文件或其他行为。主代理独占本规范、计划、最终审查报告。测试流程若需记录本次状态/时限条款，由主代理更新并交审。
+ui03_impl 独占产品实现及测试：Toolkit probe/client.py、monitor_observation.py 和对应测试；Monitor probe_session.py、runtime.py 的目录超时映射、相关 runtime/probe-session 测试；UI presentation/zh.ts、失败卡/中文映射测试和必要 ui_dist 生成物。不得更改全局服务或 worker 时限、锁、协议模式、依赖锁文件或其他行为。主代理独占本规范、计划、最终审查报告。测试流程若需记录本次状态/时限条款，由主代理更新并交审。
 
 先补能证明差异的测试，再按设计修复。优先选低耗时但实际经过请求编码及 Service 生命周期的测试，不能仅镜像常量。每次命令保存 argv、exit 和完整输出。Python TEMP/TMP/TMPDIR、pytest basetemp/cache 与 UI 缓存都指向 D:\codex-tmp\mf1017 的独占子目录；不污染旧工作树或依赖。复用本机现有依赖，不安装。
 
