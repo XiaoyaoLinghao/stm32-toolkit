@@ -25,6 +25,17 @@ it("does not attribute a shared invalid-request code to group editing",()=>{
   expect(recoveryText("input","export.create")).toBe(guidance.action);
 });
 
+it("shows probe timeout as a recoverable probe request failure",()=>{
+  const guidance=errorText("MONITOR_PROBE_TIMEOUT");
+  expect(guidance.title).toBe("探针请求超时");
+  expect(guidance.action).toBe("请查看详细信息。");
+  const started=reducer(initialState,{type:"request.started",scope:"probe.connect",requestId:1n});
+  const failed=reducer(started,{type:"request.failed",scope:"probe.connect",requestId:1n,code:"MONITOR_PROBE_TIMEOUT",message:"Monitor observation could not be established"});
+  render(<FailureMessage failure={failed.failures["probe.connect"]!}/>);
+  expect(screen.getByRole("alert")).toHaveTextContent("探针请求超时");
+  expect(screen.getByRole("alert")).toHaveTextContent("MONITOR_PROBE_TIMEOUT");
+});
+
 it("shows interrupted values as stale, and exposes a blocked sampling state without changing control rules",()=>{
   const watch={kind:"variable" as const,expression:"counter"};
   const row={watch,displayValue:"42",rawHex:null,typeName:"uint32_t",capturedAtUtc:"2026-08-10T00:00:00Z",trend:"none" as const,errorCode:null,numericValue:42};

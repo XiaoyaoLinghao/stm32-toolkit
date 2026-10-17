@@ -286,6 +286,17 @@ def test_probe_session_catalog_distinguishes_invalid_query_from_provider_loss(
         assert unavailable.message == "Monitor catalog changed"
         assert "secret" not in unavailable.message
 
+        async def timed_out(*_args):
+            return OperationResult.failure(
+                "variables.list", "MONITOR_PROBE_TIMEOUT", "private timeout", {}
+            )
+
+        observation.list_variables = timed_out
+        timeout = await session.list_variables("counter", None, 100)
+        assert not timeout.ok
+        assert timeout.code == "MONITOR_PROBE_TIMEOUT"
+        assert "private" not in timeout.message
+
     asyncio.run(scenario())
 
 
@@ -456,6 +467,33 @@ def test_item_failure_is_isolated_but_provenance_failure_blocks_whole_read(tmp_p
         assert blocked.values == ()
         assert blocked.blocked_code == "MONITOR_PROVENANCE_CHANGED"
         assert "secret" not in blocked.message
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("source_code", ["PROBE_TIMEOUT", "MONITOR_PROBE_TIMEOUT"])
+def test_probe_timeout_blocks_without_samples_or_provenance_reclassification(
+    tmp_path: Path, source_code: str
+) -> None:
+    async def scenario() -> None:
+        project = tmp_path / "project"
+        project.mkdir()
+        observation = FakeObservation(_binding(project))
+        session = ProbeSession(observation)
+        observation.read_failure = (source_code, "private timeout")
+        blocked = await session.read((WatchItem.variable("counter"),))
+        assert blocked.values == ()
+        assert blocked.blocked_code == "MONITOR_PROBE_TIMEOUT"
+        assert "private" not in blocked.message
+
+        observation.revalidate_result = OperationResult.failure(
+            "revalidate", source_code, "private timeout", {}
+        )
+        checked = await session.revalidate()
+        assert checked.code == "MONITOR_PROBE_TIMEOUT"
+        observation.lightweight_result = observation.revalidate_result
+        lightweight = await session._revalidate_lightweight()
+        assert lightweight.code == "MONITOR_PROBE_TIMEOUT"
 
     asyncio.run(scenario())
 

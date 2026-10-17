@@ -1212,6 +1212,43 @@ def test_client_lists_attaches_and_reads_without_halting(tmp_path: Path):
     run(scenario())
 
 
+def test_monitor_client_accepts_real_service_attach_after_old_five_second_deadline(
+    tmp_path: Path,
+) -> None:
+    from stm32_toolkit.monitor_observation import MonitorObservationSeams
+
+    class SlowAttachBackend(FakeProbeBackend):
+        def open_attach(self, probe_id, target, *, halt_on_connect=False):
+            time.sleep(5.25)
+            return super().open_attach(
+                probe_id, target, halt_on_connect=halt_on_connect
+            )
+
+    async def scenario() -> None:
+        original = fake_backend()
+        backend = SlowAttachBackend(
+            probes=original.list_probes(),
+            memory={0x20000000: b"\x01\x02\x03\x04"},
+            registers={"r0": 7, "pc": 0x08000101},
+        )
+        service = make_service(tmp_path, level=OperationLevel.OBSERVE, backend=backend)
+        endpoint = await service.start()
+        client = MonitorObservationSeams().client_factory(endpoint)
+        try:
+            attached = await client.attach("probe-a", "STM32F429ZITx")
+            assert attached.probe_id == "probe-a"
+            assert backend.halted is False
+            assert [event for event in backend.events if event[0] == "open_attach"] == [
+                ("open_attach", "probe-a", "STM32F429ZITx", False)
+            ]
+            assert await client.read_memory(0x20000000, 4) == b"\x01\x02\x03\x04"
+        finally:
+            await client.close()
+            await service.stop()
+
+    run(scenario())
+
+
 def test_maximum_memory_read_round_trips_through_service_and_client(
     tmp_path: Path,
 ) -> None:

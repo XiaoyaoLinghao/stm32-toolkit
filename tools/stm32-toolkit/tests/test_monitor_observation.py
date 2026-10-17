@@ -197,6 +197,38 @@ def test_monitor_production_supervisor_uses_normal_observation_profile(
             asyncio.run(opened.data.close())
 
 
+def test_monitor_default_client_factory_encodes_its_attach_budget_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    endpoint = ProbeEndpoint(
+        protocol=PROBE_PROTOCOL_VERSION, toolkit_version=__version__,
+        host="127.0.0.1", port=43123, token="11" * 32,
+        workspace_id="workspace-a", session_id="session-a", lease_id="lease-a",
+        probe_id="probe-a", operation_level=OperationLevel.OBSERVE,
+    )
+    client = MonitorObservationSeams().client_factory(endpoint)
+    encoded: list[dict[str, object]] = []
+
+    async def capture(body: bytes, **_kwargs: object) -> dict[str, object]:
+        payload = json.loads(body)
+        encoded.append(payload)
+        if payload["operation"] == "probe.attach":
+            return {
+                "probeId": "probe-a", "requestedTarget": "stm32f407vg",
+                "resolvedPartNumber": "STM32F407VG", "coreCount": 1,
+            }
+        return {"bytes": "00"}
+
+    monkeypatch.setattr(client, "_send", capture)
+    asyncio.run(client.attach("probe-a", "stm32f407vg"))
+    asyncio.run(client.attach("probe-a", "stm32f407vg"))
+    asyncio.run(client.read_memory(0x20000000, 1))
+    assert [(item["operation"], item["timeoutMs"]) for item in encoded] == [
+        ("probe.attach", 35_000), ("probe.attach", 35_000),
+        ("memory.read", 5_000),
+    ]
+
+
 def _project_snapshot(root: Path) -> dict[str, tuple[str, bytes | None, int]]:
     return {
         path.relative_to(root).as_posix(): (
@@ -2245,6 +2277,61 @@ def test_open_cleanup_success_merges_valid_attach_diagnostic(
         {"stage": "monitor-root-guard-close", "outcome": "succeeded"},
     ]
     assert "secret" not in str(result.to_dict())
+
+
+def test_attach_timeout_keeps_its_code_and_sanitized_diagnostic_after_cleanup(
+    debug_env: DebugEnv, tmp_path: Path
+) -> None:
+    harness = Harness(debug_env)
+    diagnostic = make_attach_diagnostic(
+        make_primary("service-attach-deadline", "timeout", "PROBE_TIMEOUT")
+    )
+    harness.bind_result = OperationResult.failure(
+        "stm32_debug_bind", "PROBE_TIMEOUT", "private timeout",
+        {"attachDiagnostic": diagnostic, "private": "C:\\secret"},
+    )
+    result = asyncio.run(open_monitor_observation(
+        request(debug_env, tmp_path / "data"), _seams=harness.seams()
+    ))
+    assert result.ok is False
+    assert result.code == "MONITOR_PROBE_TIMEOUT"
+    assert result.to_dict()["details"]["attachDiagnostic"]["primary"] == diagnostic["primary"]
+    assert "secret" not in str(result.to_dict())
+    assert harness.clients[0].closed is True
+    assert harness.supervisors[0].stopped is True
+
+
+def test_revalidation_and_read_keep_probe_timeout_classification(
+    debug_env: DebugEnv, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import stm32_toolkit.monitor_observation as observation
+
+    harness = Harness(debug_env)
+
+    async def scenario() -> None:
+        opened = await open_monitor_observation(
+            request(debug_env, tmp_path / "data"), _seams=harness.seams()
+        )
+        assert opened.ok is True
+        session = opened.data
+        original_binding = session.binding
+        try:
+            harness.bind_result = OperationResult.failure(
+                "stm32_debug_bind", "PROBE_TIMEOUT", "private timeout", {}
+            )
+            checked = await session.revalidate()
+            assert checked.code == "MONITOR_PROBE_TIMEOUT"
+            assert session.binding is original_binding
+            harness.bind_result = None
+            async def timed_out_read(*_args: object, **_kwargs: object) -> object:
+                return OperationResult.failure("read", "PROBE_TIMEOUT", "private timeout", {})
+            monkeypatch.setattr(observation, "_execute_prepared", timed_out_read)
+            read = await session._read_batch(("counter",), ())
+            assert read.code == "MONITOR_PROBE_TIMEOUT"
+        finally:
+            await session.close()
+
+    asyncio.run(scenario())
 
 
 def test_close_finishes_owned_cleanup_despite_repeated_cancellation(

@@ -265,10 +265,14 @@ class ProbeClient:
         *,
         extra_headers: Mapping[str, str] | None = None,
         content_type: str = "application/json",
+        attach_timeout_ms: int = 5_000,
     ) -> None:
+        if type(attach_timeout_ms) is not int or not 1 <= attach_timeout_ms <= 300_000:
+            raise ValueError("Probe attach timeout is invalid")
         self.endpoint = endpoint
         self._extra_headers = dict(extra_headers or {})
         self._content_type = content_type
+        self._attach_timeout_ms = attach_timeout_ms
         self._session: aiohttp.ClientSession | None = None
 
     async def _session_for_request(self) -> aiohttp.ClientSession:
@@ -381,7 +385,10 @@ class ProbeClient:
         return probes
 
     async def attach(self, probe_id: str, target: str) -> ProbeAttachmentEvidence:
-        data = await self.request("probe.attach", {"probeId": probe_id, "target": target})
+        data = await self.request(
+            "probe.attach", {"probeId": probe_id, "target": target},
+            timeout_ms=self._attach_timeout_ms,
+        )
         if set(data) != {
             "probeId",
             "requestedTarget",

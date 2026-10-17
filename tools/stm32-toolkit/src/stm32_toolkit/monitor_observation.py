@@ -65,6 +65,7 @@ _REVALIDATE_OPERATION = "stm32_monitor_observation_revalidate"
 _BATCH_OPERATION = "stm32_monitor_observation_batch"
 _PREPARE_OPERATION = "stm32_monitor_observation_prepare"
 _PREPARED_READ_OPERATION = "stm32_monitor_observation_prepared_read"
+_MONITOR_ATTACH_TIMEOUT_MS = 35_000
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
@@ -128,13 +129,17 @@ def _supervisor_factory(
     )
 
 
+def _monitor_client_factory(endpoint: object) -> ProbeClient:
+    return ProbeClient(endpoint, attach_timeout_ms=_MONITOR_ATTACH_TIMEOUT_MS)
+
+
 @dataclass(frozen=True)
 class MonitorObservationSeams:
     worker_config: ProbeWorkerConfig = ProbeWorkerConfig()
     _test_backend_factory: Callable[[], object] | None = None
     lease_manager_factory: Callable[[Path], object] = ProbeLeaseManager
     supervisor_factory: Callable[[ProbeServiceConfig, object, object], object] = _supervisor_factory
-    client_factory: Callable[[object], object] = ProbeClient
+    client_factory: Callable[[object], object] = _monitor_client_factory
     bind: Callable[[object, object], Awaitable[OperationResult]] = bind_debug_firmware
     catalog_from_binding: Callable[[object], object] = DwarfCatalog.from_binding
     svd_select: Callable[..., object] = select_svd
@@ -701,6 +706,8 @@ def _endpoint(endpoint: object, paths: WorkspacePaths, probe_id: str) -> None:
 def _failure_code(code: object) -> str:
     if code in {"MONITOR_REQUEST_INVALID", "MONITOR_CLEANUP_FAILED"}:
         return code
+    if code in {"PROBE_TIMEOUT", "MONITOR_PROBE_TIMEOUT"}:
+        return "MONITOR_PROBE_TIMEOUT"
     if code == "PROBE_BUSY":
         return "MONITOR_PROBE_BUSY"
     if isinstance(code, str) and (
@@ -1151,7 +1158,7 @@ class MonitorObservationSession:
         if not result.ok:
             return OperationResult.failure(
                 _BATCH_OPERATION,
-                "MONITOR_PROVENANCE_CHANGED",
+                _failure_code(result.code),
                 "Monitor observation changed",
                 {},
             )

@@ -186,6 +186,63 @@ def test_attach_returns_strict_physical_target_evidence(monkeypatch):
     }
 
 
+def test_attach_budget_is_encoded_per_client_without_changing_reads(monkeypatch):
+    endpoint = ProbeEndpoint(
+        protocol="stm32-toolkit-probe/2", toolkit_version=__version__,
+        host="127.0.0.1", port=43123, token="11" * 32,
+        workspace_id="workspace-a", session_id="session-a", lease_id="lease-a",
+        probe_id="probe-a", operation_level=OperationLevel.OBSERVE,
+    )
+    encoded: list[dict[str, object]] = []
+
+    async def capture(body: bytes, **_kwargs: object) -> dict[str, object]:
+        request = json.loads(body)
+        encoded.append(request)
+        if request["operation"] == "probe.attach":
+            return {
+                "probeId": "probe-a", "requestedTarget": "stm32f407vg",
+                "resolvedPartNumber": "STM32F407VG", "coreCount": 1,
+            }
+        return {"bytes": "aabb"}
+
+    default = ProbeClient(endpoint)
+    monitor = ProbeClient(endpoint, attach_timeout_ms=35_000)
+    monkeypatch.setattr(default, "_send", capture)
+    monkeypatch.setattr(monitor, "_send", capture)
+
+    import asyncio
+
+    asyncio.run(default.attach("probe-a", "stm32f407vg"))
+    asyncio.run(monitor.attach("probe-a", "stm32f407vg"))
+    asyncio.run(monitor.attach("probe-a", "stm32f407vg"))
+    assert asyncio.run(monitor.read_memory(0x20000000, 2)) == b"\xaa\xbb"
+    assert [(item["operation"], item["timeoutMs"]) for item in encoded] == [
+        ("probe.attach", 5_000), ("probe.attach", 35_000),
+        ("probe.attach", 35_000), ("memory.read", 5_000),
+    ]
+
+
+@pytest.mark.parametrize("invalid", [None, True, False, 0, 300_001, 1.0, "35000"])
+def test_attach_budget_rejects_noninteger_or_out_of_range_values(invalid: object):
+    endpoint = ProbeEndpoint(
+        protocol="stm32-toolkit-probe/2", toolkit_version=__version__,
+        host="127.0.0.1", port=43123, token="11" * 32,
+        workspace_id="workspace-a", session_id="session-a", lease_id="lease-a",
+    )
+    with pytest.raises(ValueError):
+        ProbeClient(endpoint, attach_timeout_ms=invalid)
+
+
+@pytest.mark.parametrize("boundary", [1, 300_000])
+def test_attach_budget_accepts_both_closed_boundaries(boundary: int):
+    endpoint = ProbeEndpoint(
+        protocol="stm32-toolkit-probe/2", toolkit_version=__version__,
+        host="127.0.0.1", port=43123, token="11" * 32,
+        workspace_id="workspace-a", session_id="session-a", lease_id="lease-a",
+    )
+    assert ProbeClient(endpoint, attach_timeout_ms=boundary) is not None
+
+
 @pytest.mark.parametrize(
     "response",
     [

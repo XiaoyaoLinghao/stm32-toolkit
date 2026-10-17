@@ -37,6 +37,8 @@ class ProbeReadOutcome:
 def _blocked_code(code: object) -> str | None:
     if code == "MONITOR_FIRMWARE_CHANGED":
         return "MONITOR_FIRMWARE_CHANGED"
+    if isinstance(code, str) and code in {"PROBE_TIMEOUT", "MONITOR_PROBE_TIMEOUT"}:
+        return "MONITOR_PROBE_TIMEOUT"
     if isinstance(code, str) and (
         code in _BLOCKING_CODES
         or code.startswith("PROBE_")
@@ -51,6 +53,8 @@ def _blocked_code(code: object) -> str | None:
 
 
 def _catalog_code(code: object) -> str:
+    if isinstance(code, str) and code in {"PROBE_TIMEOUT", "MONITOR_PROBE_TIMEOUT"}:
+        return "MONITOR_PROBE_TIMEOUT"
     if isinstance(code, str) and code.endswith(
         ("QUERY_INVALID", "CURSOR_INVALID", "LIMIT_INVALID")
     ):

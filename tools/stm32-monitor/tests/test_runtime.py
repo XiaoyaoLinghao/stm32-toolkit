@@ -1142,6 +1142,17 @@ def test_probe_catalog_and_status_failure_boundaries_are_closed_and_bounded(
             )
             assert changed.code == "MONITOR_PROVENANCE_CHANGED"
 
+            async def timed_out_page(*_args):
+                return OperationResult.failure(
+                    "registers.list", "MONITOR_PROBE_TIMEOUT", "Monitor catalog request failed", {}
+                )
+
+            observation.list_registers = timed_out_page
+            timed_out = await runtime.dispatch(
+                "monitor.catalog.registers", {}, query={}
+            )
+            assert timed_out.code == "MONITOR_PROBE_TIMEOUT"
+
             async def typed_page(*_args):
                 from stm32_toolkit.debug.types import CatalogGroup
                 descriptor = VariableDescriptor(
@@ -2053,6 +2064,7 @@ def test_probe_failures_are_stable_and_do_not_leave_partial_sessions(tmp_path: P
         object(),
         failure("observe", "MONITOR_PROBE_BUSY", "Probe busy"),
         success("observe", None),
+        failure("observe", "MONITOR_PROBE_TIMEOUT", "Monitor observation could not be established"),
     ]
 
     async def observation_factory(_request):
@@ -2069,12 +2081,17 @@ def test_probe_failures_are_stable_and_do_not_leave_partial_sessions(tmp_path: P
             malformed = await runtime.dispatch("monitor.probe.connect", payload)
             busy = await runtime.dispatch("monitor.probe.connect", payload)
             empty = await runtime.dispatch("monitor.probe.connect", payload)
-            assert [malformed.code, busy.code, empty.code, no_prior.code] == [
+            timed_out = await runtime.dispatch("monitor.probe.connect", payload)
+            assert [malformed.code, busy.code, empty.code, timed_out.code, no_prior.code] == [
                 "MONITOR_INTERNAL_ERROR",
                 "MONITOR_PROBE_BUSY",
                 "MONITOR_INTERNAL_ERROR",
+                "MONITOR_PROBE_TIMEOUT",
                 "MONITOR_REQUEST_INVALID",
             ]
+            status = await runtime.dispatch("monitor.status", {})
+            assert status.data["probe"] == {"connected": False, "probeId": None}
+            assert status.data["sampling"]["runId"] is None
         finally:
             await runtime.stop()
 

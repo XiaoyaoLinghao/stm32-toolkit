@@ -1056,12 +1056,16 @@ class MonitorRuntime:
                 result = await _call(getattr(observation, method_name), text_query, cursor, limit)
                 if getattr(result, "ok", None) is not True:
                     raw_code = getattr(result, "code", None)
-                    code = (
-                        "MONITOR_REQUEST_INVALID"
-                        if isinstance(raw_code, str)
-                        and raw_code.endswith(("QUERY_INVALID", "CURSOR_INVALID", "LIMIT_INVALID"))
-                        else "MONITOR_PROVENANCE_CHANGED"
-                    )
+                    if isinstance(raw_code, str) and raw_code.endswith(
+                        ("QUERY_INVALID", "CURSOR_INVALID", "LIMIT_INVALID")
+                    ):
+                        code = "MONITOR_REQUEST_INVALID"
+                    elif isinstance(raw_code, str) and raw_code in {
+                        "PROBE_TIMEOUT", "MONITOR_PROBE_TIMEOUT"
+                    }:
+                        code = "MONITOR_PROBE_TIMEOUT"
+                    else:
+                        code = "MONITOR_PROVENANCE_CHANGED"
                     message = getattr(result, "message", "Monitor catalog request failed")
                     return failure(operation, code, message)
                 data = getattr(result, "data", None)

@@ -148,6 +148,7 @@ const knownErrors:Record<string,{title:string;action:string}>={
   MONITOR_IMPORT_CONFLICT:{title:"导入名称冲突",action:copy.groupConflictRefresh},
   MONITOR_REQUEST_INVALID:{title:"请求无效",action:copy.requestInputCorrect},
   MONITOR_GROUP_LIMIT_EXCEEDED:{title:"观测组或对象数量超限",action:copy.groupInputCorrect},
+  MONITOR_PROBE_TIMEOUT:{title:"探针请求超时",action:"请查看详细信息。"},
 };
 export function errorText(code:string):{title:string;action:string}{
   return knownErrors[code]??{title:"操作未完成",action:"请查看详细信息。"};
