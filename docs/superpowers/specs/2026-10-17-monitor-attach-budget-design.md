@@ -9,10 +9,10 @@ Accepted base：`0b9f3a75c6490f1f7c2706b1eef907f0fa252de6`，其产品字节与�
 ## 三个用户场景
 
 1. Monitor 连接处于正常启动过程的探针时，单次附加可以使用底层已有的有限启动时间；真实成功后才发布固件绑定。通用客户端和读请求的默认期限保持 5 秒。
-2. 附加或后续探针请求真正超时时，Monitor 保留 `MONITOR_PROBE_TIMEOUT` 分类和已清理的诊断；工作台就地显示“探针请求超时”，不自动重连，也不伪称固件来源变化。
+2. 正常附加或固件重验证真正超时时，Monitor 保留 `MONITOR_PROBE_TIMEOUT` 分类；由目录查询或采样准入触发的重验证也适用。连接路径保持已清理的诊断，工作台就地显示“探针请求超时”，不自动重连，也不伪称固件来源变化。
 3. 修复通过离线审查后，当前 F429 使用原固件进行一次正常 OBSERVE 连接，目录定位 `App/vs10_app.c / testtime`，新建独立演示组，以 1000 ms 间隔采样 30 秒。核验持续增大、身份及丢样，导出本轮 CSV，并绘制真实数据曲线。
 
-非目标：改变 Probe Service 的锁、绝对截止时间、候选绑定提交/放弃状态、worker 生命周期、超时清理或授权；改变正常 OBSERVE 的硬件副作用；扩大全局默认超时、读超时或 worker 操作预算；新增 UI 自动重试；发布新版本或进行真实浏览器验证。
+非目标：改变 Probe Service 的锁、绝对截止时间、候选绑定提交/放弃状态、worker 生命周期、超时清理或授权；改变正常 OBSERVE 的硬件副作用；扩大全局默认超时、读超时或 worker 操作预算；改变 debug/read.py 的逐项 memory.read 失败隔离、重试或错误项报告；新增 UI 自动重试；发布新版本或进行真实浏览器验证。
 
 ## 已证实问题与未确定部分
 
@@ -25,7 +25,7 @@ Accepted base：`0b9f3a75c6490f1f7c2706b1eef907f0fa252de6`，其产品字节与�
 - `ProbeClient` 增加向后兼容的关键字构造选项 `attach_timeout_ms=5000`。类型必须为严格 int（不含 bool），范围 1..300000 ms，非法值在发送前拒绝。仅 `attach` 转发该值到已有 request timeout_ms；所有其他操作不变。
 - Monitor 定义唯一常量 35000 ms，通过默认 client factory 创建 ProbeClient。35 秒是现有 worker 30 秒加 5 秒准入/完成余量的明确产品策略，不是硬件实测值。保留单参数 client_factory 测试注入合同，不改变 bind_debug_firmware 参数或公共协议版本。同一个 Monitor client 的初始绑定和后续重验证使用相同预算。
 - Probe Service 仍唯一拥有请求绝对 deadline、排队、附加候选状态和清理。worker 仍拥有原 30 秒操作上限；不增锁、不重启 timer、不接纳迟到成功、不循环重试。HTTP transport 原 305 秒上限不变。
-- `PROBE_TIMEOUT` 映射为 `MONITOR_PROBE_TIMEOUT`，贯穿 observation open、revalidate/read 中既有映射路径、ProbeSession 阻断码及目录码归一化、runtime 的目录失败映射。超时不得发布部分 binding 或样本。相邻 busy/firmware/SVD/DWARF/unknown 分类及 cleanup failure 优先级保持。连接路径继续保留现有白名单 attachDiagnostic，不承诺扩展其他路径的诊断字段，不新增原始后端文本或令牌。
+- 已作为失败结果暴露的 `PROBE_TIMEOUT` 映射为 `MONITOR_PROBE_TIMEOUT`，贯穿 observation open、revalidate 中既有映射路径、ProbeSession 阻断码及目录码归一化、runtime 的目录失败映射。附加/重验证超时不得发布部分 binding 或继续产生样本。_read_batch 对失败 OperationResult 仅特殊保留超时，其余仍为原 MONITOR_PROVENANCE_CHANGED；这不改变更底层将单项 memory.read 异常转换为 DEBUG_READ_UNAVAILABLE 错误项的既有行为，也不宣称所有内存读取超时都变成整批阻断。相邻 busy/firmware/SVD/DWARF/unknown 分类及 cleanup failure 优先级保持。连接路径继续保留现有白名单 attachDiagnostic，不承诺扩展其他路径的诊断字段，不新增原始后端文本或令牌。
 - UI 仅新增超时中文标题，沿用现有工作台失败卡、当前人工恢复说明和重试机制，不新增专属行动按钮，不扩展页面、协议或 fatal 规则。构建产物与源码一致。
 - 实测唯一所有者为主代理；实现者和审查者不得连接硬件。新采样使用独立运行根，原 mh1017 证据及现有组/历史完整保留。
 

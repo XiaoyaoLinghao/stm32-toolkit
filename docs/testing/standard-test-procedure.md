@@ -6,7 +6,9 @@
 
 已发布 v1.0.0/v1.0.1 的固定身份、一次性覆盖率例外和限制见[发布状态](../release-status.md)。旧例外不自动延续至新版本；2026-10-10 用户为 v1.0.1 批准的“不低于 v1.0.0”条件与已完成测量保留在[发布资格](release-qualification.md)和[执行记录](../codex/returns/STM32TK-101/execution.md)，分母、成员和永久门槛不改。
 
-2026-10-16 当前切片为 Monitor 按真实来源分组的变量/寄存器目录，入口为[规范](../superpowers/specs/2026-10-16-monitor-catalog-tree-design.md)和[计划](../superpowers/plans/2026-10-16-monitor-catalog-tree-plan.md)。连接响应与重复提示修复已[本地接受](../codex/returns/MONITOR-CONNECT-RESPONSE/review.md)并更新8765；v1.1.2源码交付仍见[既有规范](../superpowers/specs/2026-10-16-monitor-v112-source-delivery-design.md)。本轮只新增离线软件证据，浏览器与新候选实机验证暂缓；既有演示工程和物理历史样本保持原身份，不据此宣称新目录的实机PASS。
+2026-10-17 当前切片为 Monitor 有界附加预算与超时语义修复，入口为[规范](../superpowers/specs/2026-10-17-monitor-attach-budget-design.md)和[计划](../superpowers/plans/2026-10-17-monitor-attach-budget-plan.md)。按真实来源分组的目录已有本地接受记录；本轮用户授权修复后一次 F429 物理采样续验，真实浏览器仍暂缓。已有演示工程和历史样本保持原身份，不据此宣称本轮物理 PASS。v1.1.2 源码交付仍见[既有规范](../superpowers/specs/2026-10-16-monitor-v112-source-delivery-design.md)。
+
+本轮候选将 Monitor 每次正常 probe.attach 请求设置为 35000 ms，通用 ProbeClient 仍默认 5000 ms，worker 既有 30 秒上限和普通读取期限不变。此为每请求预算，并非整个 Monitor connect 的总时限；固件绑定含两次 attach。Service 仍拥有包含排队的唯一绝对 deadline，超时后的既有清理不转为迟到成功。本轮只修附加/重验证暴露的超时分类，不改变底层逐项内存读取的失败隔离或重试。
 
 先记录实际工作树、分支、完整 accepted base/CodeHead、设计/实现/审查者、部署 source、project/data/runtime 路径、授权、有效证据和剩余场景。检查 tracked/untracked、已提交/未提交、已推送/未推送状态；保留无关改动。使用精确 CodeHead 的干净隔离工作树审查完整差异。
 

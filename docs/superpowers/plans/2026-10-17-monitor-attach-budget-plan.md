@@ -12,6 +12,8 @@ ui03_impl 独占产品实现及测试：Toolkit probe/client.py、monitor_observ
 
 实现者运行 test_probe_client、test_monitor_observation、Monitor test_probe_session、涉及连接失败状态的 runtime 测试，以及既有 ProbeService/worker attach deadline、queued expiry、cancellation、cleanup 回归的相关节点。UI 运行相关 failure/operations/Chinese tests、typecheck、build、verify-dist；不运行浏览器。保留清晰结果，不扩大到发布矩阵。
 
+R1 边界明确：_read_batch 的 failed-result 映射只特殊处理超时，其余维持旧来源变化分类，并用相邻失败码回归验证。模拟 _execute_prepared 的失败结果只能证明该映射分支，不能作为真实 memory.read 超时/零样本证据；测试命名和报告须明确。debug/read.py 逐项读取行为在本轮范围之外。
+
 单独产品提交后记录完整 CodeHead；实现报告写在 docs/codex/returns/MONITOR-ATTACH-BUDGET/implementation.md，仅引用 accepted base 和报告前 CodeHead，不把自身最终 SHA 写入自身报告。
 
 ## 3. 独立审查与集成
