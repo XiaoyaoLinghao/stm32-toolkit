@@ -1158,7 +1158,11 @@ class MonitorObservationSession:
         if not result.ok:
             return OperationResult.failure(
                 _BATCH_OPERATION,
-                _failure_code(result.code),
+                (
+                    "MONITOR_PROBE_TIMEOUT"
+                    if result.code in ("PROBE_TIMEOUT", "MONITOR_PROBE_TIMEOUT")
+                    else "MONITOR_PROVENANCE_CHANGED"
+                ),
                 "Monitor observation changed",
                 {},
             )

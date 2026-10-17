@@ -2301,8 +2301,12 @@ def test_attach_timeout_keeps_its_code_and_sanitized_diagnostic_after_cleanup(
     assert harness.supervisors[0].stopped is True
 
 
-def test_revalidation_and_read_keep_probe_timeout_classification(
-    debug_env: DebugEnv, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("source_code", ("PROBE_TIMEOUT", "MONITOR_PROBE_TIMEOUT"))
+def test_revalidation_and_failed_batch_keep_probe_timeout_classification(
+    debug_env: DebugEnv,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    source_code: str,
 ) -> None:
     import stm32_toolkit.monitor_observation as observation
 
@@ -2317,17 +2321,52 @@ def test_revalidation_and_read_keep_probe_timeout_classification(
         original_binding = session.binding
         try:
             harness.bind_result = OperationResult.failure(
-                "stm32_debug_bind", "PROBE_TIMEOUT", "private timeout", {}
+                "stm32_debug_bind", source_code, "private timeout", {}
             )
             checked = await session.revalidate()
             assert checked.code == "MONITOR_PROBE_TIMEOUT"
             assert session.binding is original_binding
             harness.bind_result = None
             async def timed_out_read(*_args: object, **_kwargs: object) -> object:
-                return OperationResult.failure("read", "PROBE_TIMEOUT", "private timeout", {})
+                return OperationResult.failure("read", source_code, "private timeout", {})
             monkeypatch.setattr(observation, "_execute_prepared", timed_out_read)
             read = await session._read_batch(("counter",), ())
             assert read.code == "MONITOR_PROBE_TIMEOUT"
+        finally:
+            await session.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "source_code",
+    ("PROBE_BUSY", "DEBUG_PLAN_CHANGED", "MONITOR_REQUEST_INVALID", "DEBUG_READ_FAILED"),
+)
+def test_failed_batch_non_timeout_codes_keep_provenance_classification(
+    debug_env: DebugEnv,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    source_code: str,
+) -> None:
+    import stm32_toolkit.monitor_observation as observation
+
+    harness = Harness(debug_env)
+
+    async def scenario() -> None:
+        opened = await open_monitor_observation(
+            request(debug_env, tmp_path / "data"), _seams=harness.seams()
+        )
+        assert opened.ok is True
+        session = opened.data
+        try:
+            async def failed_read(*_args: object, **_kwargs: object) -> object:
+                return OperationResult.failure("read", source_code, "private failure", {})
+
+            monkeypatch.setattr(observation, "_execute_prepared", failed_read)
+            read = await session._read_batch(("counter",), ())
+            assert read.ok is False
+            assert read.code == "MONITOR_PROVENANCE_CHANGED"
+            assert "private" not in read.message
         finally:
             await session.close()
 
