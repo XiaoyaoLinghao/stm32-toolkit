@@ -59,6 +59,8 @@ controller/state/API/chart数学、Python后端、schemas、依赖/锁文件和�
 - 打包静态资源七文件已记录路径、大小和SHA256；manifest SHA256为`4C2BCA26C9C7ED663622FC8CE7416E9627BFE61A2E55C31C7FE7556F09DCADEE`。
 - 完整部署卡：`D:\codex-tmp\mw1018\service.json`；公开CLI成功输出与OS进程/监听已核对。
 
+收尾复查`service-final-check.json`确认同一PID/UTC创建时间、精确CodeHead、干净源码和监听仍存活。首次收尾比较把JSON自动解析的DateTime与ISO字符串直接相比，产生REPORT类型误报；按UTC ticks归一后相等，服务没有重启，产品验证不受影响。
+
 **DEFERRED**：真实浏览器渲染、关闭后重开/交互、浏览器e2e、新版UI硬件采样。启动可能进行正常系统浏览器交接，但本轮未读取或操作浏览器，未据此声称页面验证通过；旧F429物理证据不重标为新UI PASS。
 
 ## 产物与收尾
