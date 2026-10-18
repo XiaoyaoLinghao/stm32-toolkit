@@ -68,10 +68,10 @@ td code{white-space:normal;}
 .catalog-leaf-text code{font-size:11px;font-weight:700;}
 .catalog-leaf-text small{overflow-wrap:anywhere;}
 .catalog-leaves button{flex:none;width:26px;height:26px;min-height:26px;padding:0;font-size:17px;line-height:1;color:var(--signal);}
-.live-main{--value-height:108px;min-width:0;min-height:0;display:grid;grid-template-rows:44px minmax(0,1fr) var(--value-height);gap:0;border:1px solid var(--border);border-radius:6px;background:var(--surface);overflow:hidden;position:relative;}
-.live-main.two-rows{--value-height:144px;}
-.live-main.three-rows{--value-height:180px;}
-.live-main.many-rows{--value-height:208px;}
+.live-main{--value-height:clamp(84px,calc(100dvh - 360px),108px);min-width:0;min-height:0;display:grid;grid-template-rows:44px minmax(0,1fr) var(--value-height);gap:0;border:1px solid var(--border);border-radius:6px;background:var(--surface);overflow:hidden;position:relative;}
+.live-main.two-rows{--value-height:clamp(84px,calc(100dvh - 360px),144px);}
+.live-main.three-rows{--value-height:clamp(84px,calc(100dvh - 360px),180px);}
+.live-main.many-rows{--value-height:clamp(84px,calc(100dvh - 360px),208px);}
 .live-main.values-collapsed{--value-height:40px;}
 .chart-maximized .live-main{grid-template-rows:44px minmax(0,1fr);}
 .sampling-toolbar{min-width:0;display:flex;align-items:center;gap:6px;padding:3px 10px;border-bottom:1px solid var(--border);overflow:auto;white-space:nowrap;}
@@ -109,7 +109,7 @@ td code{white-space:normal;}
 .values-panel .panel-heading span{font-size:11px;color:var(--muted);}
 .selected-curves{position:relative;margin:0 80px 0 2px;color:var(--muted);font-size:11px;}
 .selected-curves summary{cursor:pointer;}
-.selected-curves-popover{position:absolute;bottom:21px;left:0;z-index:4;width:min(320px,80vw);max-height:190px;overflow:auto;padding:8px;background:white;border:1px solid var(--border);border-radius:5px;box-shadow:0 8px 22px #15243b24;}
+.selected-curves-popover{position:absolute;top:21px;left:0;z-index:4;width:min(320px,80vw);max-height:calc(var(--value-height) - 36px);overflow:auto;padding:8px;background:white;border:1px solid var(--border);border-radius:5px;box-shadow:0 8px 22px #15243b24;}
 .selected-curves ul{list-style:none;display:flex;gap:5px;flex-wrap:wrap;margin:4px 0;padding:0;}
 .selected-curves li{display:flex;align-items:center;gap:5px;border:1px solid var(--border);border-radius:4px;padding:2px 5px;}
 .selected-curves button{min-height:22px;padding:1px 4px;}
@@ -128,11 +128,14 @@ td code{white-space:normal;}
 .pagination{justify-content:flex-end;margin-top:8px;}
 .empty-state{margin:14px 0;color:var(--muted);}
 .workbench-footer{display:flex;align-items:center;gap:8px;min-width:0;padding:0 12px;border-top:1px solid var(--border);background:#eaf0f6;color:var(--muted);font-size:10px;}
-.status-strip{flex:1;min-width:0;display:flex;align-items:center;gap:14px;overflow:hidden;white-space:nowrap;}
-.status-strip>span{min-width:0;overflow:hidden;text-overflow:ellipsis;}
+.status-strip{min-width:0;display:flex;align-items:center;gap:14px;}
+.status-strip.compact{flex:1;height:100%;overflow-x:auto;overflow-y:hidden;white-space:nowrap;scrollbar-width:thin;}
+.status-strip.compact>span{flex:none;}
+.status-strip.compact .status-source{max-width:min(220px,35vw);overflow:hidden;text-overflow:ellipsis;}
+.status-strip.detailed{display:grid;gap:6px;align-items:start;white-space:normal;margin:10px 0;padding:10px;border:1px solid var(--border);border-radius:6px;}
+.status-strip.detailed>span{overflow-wrap:anywhere;}
+.status-strip.detailed h3{font-size:13px;}
 .status-strip output{color:var(--ink);font-weight:650;}
-.status-strip details{display:inline-block;position:relative;margin-left:4px;}
-.status-strip details[open] code{position:fixed;bottom:30px;z-index:10;padding:8px;background:white;border:1px solid var(--border);}
 .status-strip.has-drops{border-left:3px solid #c5781a;padding-left:6px;}
 .problem-entry{min-height:23px;flex:none;padding:1px 7px;background:transparent;border:0;color:var(--muted);font-size:10px;}
 .problem-entry.has-problems{color:var(--warn);font-weight:700;}

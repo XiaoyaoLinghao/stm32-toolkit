@@ -97,6 +97,11 @@ export function App():JSX.Element{
   const rowClass=rows.length<=1?"one-row":rows.length===2?"two-rows":rows.length===3?"three-rows":"many-rows";
   const selected=selectedGroup(state);
   const groupName=state.groupDraft.name||selected?.name||copy.samplingNoGroup;
+  const sourceLabel=runId===null?copy.liveSourcePreview:
+    `${copy.liveSourceGroup} ${runningGroup?.name??copy.liveSourceUnknownGroup} · ${copy.liveSourceRevision} ${status.sampling.groupRevision?.toString()??"-"}`;
+  const sourceFreshness=runId===null?undefined:state.live.lastSampleCapturedAtUtc===null?copy.liveSourceAwaiting:
+    fresh?copy.liveSourceCurrent:copy.liveSourcePrevious;
+  const drops=displayDropTotals(state.live);
 
   return<main aria-label={copy.app} className="monitor-shell">
     <header className="workbench-header">
@@ -149,10 +154,8 @@ export function App():JSX.Element{
                 onClick={()=>setChartMaximized(value=>!value)}>{chartMaximized?copy.chartRestore:copy.chartMaximize}</button></>}
             onZoom={(range)=>dispatch({type:"zoom.changed",action:{type:"zoom.set",start:range.start,end:range.end}})}/>
           <div className="live-source" aria-label={copy.liveSource}>
-            {runId===null?<span>{copy.liveSourcePreview}</span>:<>
-              <span>{state.live.lastSampleCapturedAtUtc===null?copy.liveSourceAwaiting:fresh?copy.liveSourceCurrent:copy.liveSourcePrevious}：
-                {copy.liveSourceGroup} {runningGroup?.name??copy.liveSourceUnknownGroup} ·
-                {copy.liveSourceRevision} {status.sampling.groupRevision?.toString()??"-"}</span>
+            {runId===null?<span>{sourceLabel}</span>:<>
+              <span>{sourceFreshness}：{sourceLabel}</span>
               {runningGroup===null&&<span className="stale-label">{state.live.lastSampleCapturedAtUtc===null?copy.liveSourceUnverifiedEmpty:copy.liveSourceUnverified}</span>}
             </>}
           </div>
@@ -229,11 +232,15 @@ export function App():JSX.Element{
           <p>{copy.liveSourceGroup}：<code>{status.sampling.groupId??"-"}</code></p>
           <p>{copy.liveSourceRevision}：<code>{status.sampling.groupRevision?.toString()??"-"}</code></p>
         </section>
+        <StatusStrip actualRateHz={state.live.actualRateHz} latencyNs={state.live.latencyNs}
+          lastSampleCapturedAtUtc={state.live.lastSampleCapturedAtUtc} fresh={fresh} drops={drops}
+          sourceLabel={sourceLabel} sourceFreshness={sourceFreshness}/>
         <NoticeRegion notices={state.notices}/>
       </div>
     </aside>
-    <div className="workbench-footer"><StatusStrip actualRateHz={state.live.actualRateHz} latencyNs={state.live.latencyNs}
-      lastSampleCapturedAtUtc={state.live.lastSampleCapturedAtUtc} fresh={fresh} drops={displayDropTotals(state.live)}/>
+    <div className="workbench-footer"><StatusStrip compact actualRateHz={state.live.actualRateHz} latencyNs={state.live.latencyNs}
+      lastSampleCapturedAtUtc={state.live.lastSampleCapturedAtUtc} fresh={fresh} drops={drops}
+      sourceLabel={sourceLabel} sourceFreshness={sourceFreshness}/>
       <button type="button" className={failureCount>0?"problem-entry has-problems":"problem-entry"} aria-label={formatCopy.problemCount(failureCount)}
         onClick={event=>openDrawer("diagnostics",event.currentTarget)}>{formatCopy.problemCount(failureCount)}</button></div>
   </main>;

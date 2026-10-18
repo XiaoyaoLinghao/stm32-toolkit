@@ -69,7 +69,7 @@ export const copy={
   samplingGroup:"下次开始采样：",samplingActiveGroup:"当前运行：",samplingNoGroup:"尚未选择",samplingStart:"开始采样",samplingPause:"暂停采样",
   samplingResume:"继续采样",samplingStop:"停止采样",statusSummary:"采样状态汇总",
   actualRate:"实际采样率",latency:"延迟",rawNs:"原始纳秒值",noSampleYet:"尚未收到样本",lastSample:"上次样本（UTC）",dropsSubscriber:"丢弃：订阅者",
-  dropsHistory:"历史",dropsDeadline:"截止时间",dropsService:"服务",blockedOperation:"当前操作未完成。",
+  dropsHistory:"历史",dropsDeadline:"截止时间",dropsService:"服务",dropTotal:"丢弃合计",blockedOperation:"当前操作未完成。",
   operations:"操作提示",retry:"重试上次操作",reconcile:"刷新核对",retryConfirm:"确认重试上次写入",
   closeDevice:"关闭设备详情",closeDiagnostics:"关闭诊断详情",
   retryQuestion:"将按原提交内容再次发送此操作。请确认：",initialRetry:"重试初始化",
