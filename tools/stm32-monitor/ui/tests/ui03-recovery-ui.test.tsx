@@ -26,13 +26,18 @@ it("shows connection and gap actions while preserving a draft and history naviga
   await screen.findByText("Project");
   expect(screen.getByText("正在连接实时数据")).toBeTruthy();
   expect(screen.queryByText("实时数据已连接")).toBeNull();
+  fireEvent.click(screen.getByRole("button",{name:"编辑并保存"}));
   fireEvent.click(screen.getByRole("button",{name:"新建观测组"}));
   fireEvent.input(screen.getByLabelText("名称"),{target:{value:"未保存的草稿"}});
   act(()=>controls.sockets[0]!.handlers.onClosed());
   expect(screen.getByText("数据连接中断 · 等待重新连接")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button",{name:"关闭观测组"}));
   fireEvent.click(screen.getByRole("button",{name:"历史记录"}));
   fireEvent.click(screen.getByRole("button",{name:"实时监视"}));
+  fireEvent.click(screen.getByRole("button",{name:"编辑并保存"}));
   expect(screen.getByLabelText("名称")).toHaveValue("未保存的草稿");
+  fireEvent.click(screen.getByRole("button",{name:"关闭观测组"}));
+  fireEvent.click(screen.getByRole("button",{name:"操作问题 0"}));
   fireEvent.click(screen.getByRole("button",{name:"重新连接实时数据"}));
   await waitFor(()=>expect(controls.sockets).toHaveLength(2));
   expect(screen.getByRole("button",{name:"取消连接"})).toBeEnabled();
@@ -44,5 +49,7 @@ it("shows connection and gap actions while preserving a draft and history naviga
   fireEvent.click(screen.getByRole("button",{name:"刷新状态"}));
   await waitFor(()=>expect(screen.queryByText("需要刷新状态")).toBeNull());
   expect(controls.statusCalls).toHaveBeenCalledTimes(3);
+  fireEvent.click(screen.getByRole("button",{name:"关闭诊断详情"}));
+  fireEvent.click(screen.getByRole("button",{name:"编辑并保存"}));
   expect(screen.getByLabelText("名称")).toHaveValue("未保存的草稿");
 });

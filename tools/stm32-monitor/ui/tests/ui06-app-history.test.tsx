@@ -26,9 +26,12 @@ it("shows ordinary history failure in OperationRegion and retries A without over
   fireEvent.input(screen.getByLabelText("开始时间（UTC）"),{target:{value:"2026-08-10T00:00:00.000"}});
   fireEvent.input(screen.getByLabelText("结束时间（UTC）"),{target:{value:"2026-08-10T00:00:02.000"}});
   fireEvent.click(screen.getByRole("button",{name:"查询历史"}));
+  fireEvent.click(await screen.findByRole("button",{name:"操作问题 1"}));
   expect(await screen.findByRole("alert")).toHaveTextContent("HISTORY_DOWN");
+  fireEvent.click(screen.getByRole("button",{name:"关闭诊断详情"}));
   fireEvent.input(screen.getByLabelText("开始时间（UTC）"),{target:{value:"2026-08-11T00:00:00.000"}});
   fireEvent.input(screen.getByLabelText("结束时间（UTC）"),{target:{value:"2026-08-11T00:00:02.000"}});
+  fireEvent.click(screen.getByRole("button",{name:"操作问题 1"}));
   fireEvent.click(screen.getByRole("button",{name:"重试上次操作"}));
   await waitFor(()=>expect(history).toHaveBeenCalledTimes(2));
   expect(history.mock.calls[1]?.[0]).toEqual(history.mock.calls[0]?.[0]);

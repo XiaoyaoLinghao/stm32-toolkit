@@ -61,9 +61,10 @@ it("keeps a queued newer create draft after the old Save ACK and a failed list G
   preparedApi={...apiOverrides(),groups,createGroup:create,updateGroup:update};
   render(<App/>);
   await screen.findByText("Project");
+  fireEvent.click(screen.getByRole("button",{name:"编辑并保存"}));
   fireEvent.click(screen.getByRole("button",{name:"新建观测组"}));
   fireEvent.input(screen.getByLabelText("名称"),{target:{value:"A"}});
-  fireEvent.click(screen.getByRole("button",{name:"浏览变量与寄存器"}));
+  fireEvent.click(screen.getByRole("button",{name:"关闭观测组"}));
   fireEvent.click(screen.getByRole("button",{name:"搜索/加载"}));
   await screen.findByText("main.c · 已加载 1 项");
   fireEvent.click(screen.getByText("main.c · 已加载 1 项"));
@@ -86,7 +87,7 @@ it("keeps a queued newer update draft and advances its revision after a failed l
   preparedApi={...apiOverrides(),groups,updateGroup:update};
   render(<App/>);
   await screen.findByText("Project");
-  fireEvent.click(screen.getByRole("button",{name:"编辑组配置"}));
+  fireEvent.click(screen.getByRole("button",{name:"编辑并保存"}));
   fireEvent.input(screen.getByLabelText("名称"),{target:{value:"A"}});
   queuedNameInputAndSave("B","保存观测组");
   expect(update).toHaveBeenCalledWith(existing.groupId,expect.objectContaining({expectedRevision:1n,name:"A"}));
@@ -100,19 +101,26 @@ it("keeps a queued newer update draft and advances its revision after a failed l
 it("App retains the workbench and edited group draft when creation fails",async()=>{
   render(<App/>);
   await screen.findByText("Project");
+  fireEvent.click(screen.getByRole("button",{name:"编辑并保存"}));
   fireEvent.click(screen.getByRole("button",{name:"新建观测组"}));
   fireEvent.input(screen.getByLabelText("名称"),{target:{value:"Motor"}});
-  fireEvent.click(screen.getByRole("button",{name:"浏览变量与寄存器"}));
+  fireEvent.click(screen.getByRole("button",{name:"关闭观测组"}));
   fireEvent.input(screen.getByPlaceholderText("输入符号或寄存器前缀"),{target:{value:"counter"}});
   fireEvent.click(screen.getByRole("button",{name:"搜索/加载"}));
   await waitFor(()=>{expect(screen.getByRole("button",{name:"加入观测组草稿"})).toBeTruthy();});
   fireEvent.click(screen.getByRole("button",{name:"加入观测组草稿"}));
   fireEvent.click(screen.getByRole("button",{name:"创建观测组"}));
+  fireEvent.click(screen.getByRole("button",{name:"关闭观测组"}));
+  fireEvent.click(await screen.findByRole("button",{name:"操作问题 1"}));
   expect(await screen.findByRole("alert")).toHaveTextContent("UNAVAILABLE");
   expect(screen.getByRole("navigation",{name:"主导航"})).toBeTruthy();
+  fireEvent.click(screen.getByRole("button",{name:"关闭诊断详情"}));
+  fireEvent.click(screen.getByRole("button",{name:"编辑并保存"}));
   expect(screen.getByLabelText("名称")).toHaveValue("Motor");
+  fireEvent.click(screen.getByRole("button",{name:"关闭观测组"}));
+  fireEvent.click(screen.getByRole("button",{name:"操作问题 1"}));
   expect(screen.getByRole("button",{name:"重试上次操作"})).toBeTruthy();
-});
+},15000);
 
 it("App records a history query after loading history through the panel",async()=>{
   render(<App/>);

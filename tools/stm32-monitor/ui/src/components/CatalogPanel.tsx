@@ -86,16 +86,16 @@ export function CatalogPanel(p:CatalogPanelProps):JSX.Element{
         const open=overrides.get(entry.group.id)??current.query!=="";
         return<details key={entry.group.id} open={open}>
           <summary onClick={event=>setGroupOpen(entry.group.id,!(event.currentTarget.parentElement as HTMLDetailsElement).open)}>{summary}</summary>
-          <table><thead><tr><th>{copy.selector}</th><th>{copy.type}</th><th>{copy.action}</th></tr></thead>
-            <tbody>{entry.items.map(item=><tr key={item.selector}>
-              <td><code>{item.selector}</code></td>
-              <td>{"typeName" in item?item.typeName:formatCopy.bits(item.sizeBits)}</td>
-              <td><button type="button" disabled={isPrevious||p.pending||p.editBusy||("sampleable" in item&&!item.sampleable)}
-                onClick={()=>{if(!isPrevious&&!p.pending&&!p.editBusy)addWatch(item,p.onAdd);}}>{copy.addDraft}</button>
-                {"sampleable" in item&&!item.sampleable&&<span>{formatCopy.registerUnavailable(item.access,item.readAction)}</span>}
-                {"requiresAccessAcknowledgement" in item&&item.requiresAccessAcknowledgement&&<span>{copy.registerAccessAcknowledgement}</span>}
-              </td>
-            </tr>)}</tbody></table>
+          <ul className="catalog-leaves">{entry.items.map(item=><li key={item.selector}>
+            <div className="catalog-leaf-text"><code>{item.selector}</code>
+              <small>{"typeName" in item?item.typeName:formatCopy.bits(item.sizeBits)}</small>
+              {"sampleable" in item&&!item.sampleable&&<small>{formatCopy.registerUnavailable(item.access,item.readAction)}</small>}
+              {"requiresAccessAcknowledgement" in item&&item.requiresAccessAcknowledgement&&<small>{copy.registerAccessAcknowledgement}</small>}
+            </div>
+            <button type="button" aria-label={copy.addDraft} title={copy.addDraft}
+              disabled={isPrevious||p.pending||p.editBusy||("sampleable" in item&&!item.sampleable)}
+              onClick={()=>{if(!isPrevious&&!p.pending&&!p.editBusy)addWatch(item,p.onAdd);}}>+</button>
+          </li>)}</ul>
         </details>;
       })}</div></>)}
     <button type="button" disabled={!resultIdentityMatches||isPrevious||current?.nextCursor===null||p.pending} onClick={()=>void p.onNext(kind)}>{copy.nextPage}</button>

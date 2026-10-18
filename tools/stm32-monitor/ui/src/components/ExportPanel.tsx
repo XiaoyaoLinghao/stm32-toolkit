@@ -1,4 +1,5 @@
 import type {JSX} from "preact";
+import {createPortal} from "preact/compat";
 import {useEffect,useRef,useState} from "preact/hooks";
 import type {ApiFailure,ExportArtifact} from "../api/contract";
 import {historyInput,inputNs} from "./HistoryPanel";
@@ -67,12 +68,12 @@ export function ExportPanel(p:ExportPanelProps):JSX.Element{
     <button type="button" disabled={busy} onClick={event=>{if(busyRef.current)return;dialog.rememberTrigger(event.currentTarget);setPending("jsonl");}}>{copy.exportJsonl}</button></div>
     {busy&&<p role="status">{p.refreshing?copy.exportRefreshing:copy.exportSubmitting}</p>}
     {validation&&<p role="alert">{copy.invalidRange}</p>}
-    {pending!==null&&(
+    {pending!==null&&createPortal(
       <div role="dialog" aria-modal="true" aria-label={copy.exportConfirmTitle} tabIndex={-1} ref={dialog.dialogRef} onKeyDown={dialog.onDialogKeyDown}>
         <div><p>{formatCopy.exportQuestion(pending.toUpperCase())}</p>
         <button type="button" onClick={confirm}>{copy.exportConfirm}</button>
         <button type="button" onClick={()=>setPending(null)}>{copy.cancel}</button></div>
-      </div>)}
+      </div>,document.body)}
     {p.artifact!==null&&(
       <>
         <p>{formatCopy.artifactSummary(p.artifact.bytes,p.artifact.valueCount)}</p>

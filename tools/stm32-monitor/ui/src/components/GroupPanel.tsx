@@ -40,6 +40,7 @@ export type GroupPanelProps={
   onImport:(value:unknown)=>void|Promise<void>;
   onExport:()=>void|Promise<void>;
   compact?:boolean;
+  editorOpen?:boolean;
 };
 
 function watchKey(watch:WatchItem):string{
@@ -57,7 +58,8 @@ export function GroupPanel(p:GroupPanelProps):JSX.Element{
   const [confirmDelete,setConfirmDelete]=useState<{groupId:string;revision:bigint;generation:bigint}|null>(null);
   const deleteConfirmation=useRef<{groupId:string;revision:bigint;generation:bigint}|null>(null);
   const [importState,setImportState]=useState<ImportState>({kind:"closed"});
-  const [editorOpen,setEditorOpen]=useState(!p.compact);
+  const [localEditorOpen,setLocalEditorOpen]=useState(!p.compact);
+  const editorOpen=p.editorOpen??localEditorOpen;
   const fileRef=useRef<HTMLInputElement>(null);
   const importGeneration=useRef(0);
   const mounted=useRef(true);
@@ -156,8 +158,8 @@ export function GroupPanel(p:GroupPanelProps):JSX.Element{
     {p.navigationMissing&&<p role="alert">{copy.groupNavigationMissing}</p>}
     {p.needsRefresh&&<p role="status">{copy.groupConflictRefresh}</p>}
     <div className="group-actions">
-      <button type="button" disabled={locked} onClick={event=>{clearDelete();navigationDialog.rememberTrigger(event.currentTarget);setEditorOpen(true);void p.onNew();}}>{copy.groupNew}</button>
-      <button type="button" onClick={()=>setEditorOpen(value=>!value)} aria-expanded={editorOpen}>{editorOpen?copy.groupCollapse:copy.groupEdit}</button>
+      <button type="button" disabled={locked} onClick={event=>{clearDelete();navigationDialog.rememberTrigger(event.currentTarget);if(p.editorOpen===undefined)setLocalEditorOpen(true);void p.onNew();}}>{copy.groupNew}</button>
+      {p.editorOpen===undefined&&<button type="button" onClick={()=>setLocalEditorOpen(value=>!value)} aria-expanded={editorOpen}>{editorOpen?copy.groupCollapse:copy.groupEdit}</button>}
       <button type="button" onClick={exportBlob}>{copy.groupExport}</button>
       <button type="button" disabled={locked} onClick={()=>importState.kind==="closed"?setImportState({kind:"selecting"}):cancelImport()}>{copy.groupImport}</button>
       {p.onRefresh&&<button type="button" disabled={locked} onClick={()=>{clearDelete();void p.onRefresh?.();}}>{copy.groupRefresh}</button>}

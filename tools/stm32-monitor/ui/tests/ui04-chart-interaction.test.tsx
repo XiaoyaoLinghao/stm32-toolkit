@@ -1,4 +1,4 @@
-import {beforeEach,expect,it,vi} from "vitest";
+import {afterEach,beforeEach,expect,it,vi} from "vitest";
 import {render,screen} from "@testing-library/preact";
 import {LiveChart} from "../src/components/LiveChart";
 import {buildChartOption} from "../src/chart/echarts";
@@ -9,6 +9,20 @@ vi.mock("echarts/charts",()=>({LineChart:class{}}));
 vi.mock("echarts/components",()=>({GridComponent:class{},TooltipComponent:class{},LegendComponent:class{},DataZoomComponent:class{}}));
 vi.mock("echarts/renderers",()=>({CanvasRenderer:class{}}));
 beforeEach(()=>vi.clearAllMocks());
+afterEach(()=>vi.unstubAllGlobals());
+
+it("resizes the existing chart when workbench space changes",()=>{
+  const frames:FrameRequestCallback[]=[];
+  vi.stubGlobal("requestAnimationFrame",(callback:FrameRequestCallback)=>{frames.push(callback);return frames.length;});
+  vi.stubGlobal("cancelAnimationFrame",vi.fn());
+  const view=render(<LiveChart series={[]} range={{start:0,end:100}} onZoom={vi.fn()} layoutKey="directory-open"/>);
+  frames.shift()?.(0);
+  const before=chart.resize.mock.calls.length;
+  view.rerender(<LiveChart series={[]} range={{start:0,end:100}} onZoom={vi.fn()} layoutKey="directory-closed"/>);
+  frames.shift()?.(0);
+  expect(chart.resize).toHaveBeenCalledTimes(before+1);
+  view.unmount();
+});
 
 it("feeds chart gestures into the latest zoom callback without setOption loops or late unmount effects",()=>{
   const first=vi.fn(),second=vi.fn();

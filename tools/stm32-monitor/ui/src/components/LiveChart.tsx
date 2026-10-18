@@ -11,6 +11,8 @@ export type LiveChartProps={
   range:ZoomRange;
   onZoom:(range:ZoomRange)=>void|Promise<void>;
   visible?:boolean;
+  layoutKey?:string;
+  headerActions?:JSX.Element;
 };
 
 function eventZoom(event:unknown):ZoomRange|null{
@@ -29,7 +31,7 @@ function eventZoom(event:unknown):ZoomRange|null{
   }
   return null;
 }
-export function LiveChart({series,range,onZoom,visible=true}:LiveChartProps):JSX.Element{
+export function LiveChart({series,range,onZoom,visible=true,layoutKey,headerActions}:LiveChartProps):JSX.Element{
   const hostRef=useRef<HTMLDivElement>(null);
   const chartRef=useRef<echarts.ECharts|null>(null);
   const rangeRef=useRef(range),onZoomRef=useRef(onZoom);
@@ -61,7 +63,7 @@ export function LiveChart({series,range,onZoom,visible=true}:LiveChartProps):JSX
     if(!visible||typeof requestAnimationFrame==="undefined")return;
     const frame=requestAnimationFrame(()=>chartRef.current?.resize());
     return()=>cancelAnimationFrame(frame);
-  },[visible]);
+  },[visible,layoutKey]);
   useEffect(()=>{
     const chart=chartRef.current;
     if(chart===null)return;
@@ -77,7 +79,7 @@ export function LiveChart({series,range,onZoom,visible=true}:LiveChartProps):JSX
   const hasValue=series.some(item=>item.points.some(point=>point.capturedAtUtc!==""&&point.value!==null));
   const empty=series.length===0?copy.chartEmpty:projection.originNs===null?copy.chartWaiting:hasValue?null:copy.chartNoValues;
   return<section className="panel chart-panel" aria-label={copy.chartTitle}>
-    <div className="panel-heading"><h2>{copy.chartTitle}</h2><span>{copy.chartLimit}</span></div>
+    <div className="panel-heading chart-heading"><h2>{copy.chartTitle}</h2><span>{copy.chartLimit}</span>{headerActions}</div>
     <div ref={hostRef} className="chart-host" role="img" aria-label={copy.chartAria}/>
     {projection.originUtc!==null&&<p className="chart-origin">{copy.chartOrigin}{projection.originUtc}</p>}
     {empty!==null&&<p className="chart-empty">{empty}</p>}

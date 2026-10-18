@@ -33,10 +33,11 @@ it("immediately marks old run samples nonfresh after a group revision ACK and ke
   act(()=>controls.sockets[0]!.onEnvelope({event:{eventId:1n,type:"sample",data:{batch,serviceSubscriberDrops:0n}},subscriberDropped:0n}));
   expect(screen.getByText("12.5")).toBeTruthy();
   expect(screen.queryByText(/上次样本/)).toBeNull();
-  fireEvent.click(screen.getByRole("button",{name:"编辑组配置"}));
+  fireEvent.click(screen.getByRole("button",{name:"编辑并保存"}));
   fireEvent.input(screen.getByLabelText("名称"),{target:{value:"New version"}});
   fireEvent.click(screen.getByRole("button",{name:"保存观测组"}));
   await waitFor(()=>expect(groups).toHaveBeenCalledTimes(2));
+  fireEvent.click(screen.getByRole("button",{name:"关闭观测组"}));
   expect(screen.getByText(/上次样本（UTC）/)).toHaveTextContent(at);
   expect(screen.getByText(/运行组版本未在列表中核对/)).toBeTruthy();
   expect(screen.getByText(/当前运行：/)).toHaveTextContent("g");

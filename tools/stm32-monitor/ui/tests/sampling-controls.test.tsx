@@ -89,6 +89,18 @@ it("stops only when sampling is active",async()=>{
   expect(stop).toHaveBeenCalledTimes(1);
 });
 
+it("offers the device chooser while disconnected and still permits Stop for an active run",async()=>{
+  const choose=vi.fn(),stop=vi.fn(),start=vi.fn();
+  render(<SamplingControls {...props({status:sampling("RUNNING",{active:true}),probeConnected:false,
+    onConnectRequest:choose,onStart:start,onStop:stop})}/>);
+  expect(screen.queryByRole("button",{name:"开始采样"})).toBeNull();
+  await userEvent.click(screen.getByRole("button",{name:"连接探针"}));
+  expect(choose).toHaveBeenCalledOnce();
+  await userEvent.click(screen.getByRole("button",{name:"停止采样"}));
+  expect(stop).toHaveBeenCalledOnce();
+  expect(start).not.toHaveBeenCalled();
+});
+
 it("shows the authoritative state and current group",()=>{
   render(<SamplingControls {...props({status:sampling("PAUSED",{active:true})})}/>);
   expect(screen.getByRole("status")).toHaveTextContent("已暂停");
