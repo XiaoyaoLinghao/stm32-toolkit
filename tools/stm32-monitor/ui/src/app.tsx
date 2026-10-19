@@ -1,10 +1,10 @@
 import type {JSX} from "preact";
-import {useEffect,useReducer,useRef,useState} from "preact/hooks";
+import {useEffect,useLayoutEffect,useReducer,useRef,useState} from "preact/hooks";
 import {createMonitorApi} from "./api/client";
 import {createController,type Controller} from "./controller";
 import {initialState,reducer} from "./state/reducer";
 import {activeGroup,chartSeries,liveRows,selectedGroup} from "./state/selectors";
-import {groupDirty,groupSourceProblem,groupWorkflowBusy,type RequestScope} from "./state/model";
+import {groupDirty,groupSourceProblem,groupWorkflowBusy,type MonitorAction,type MonitorState,type RequestScope} from "./state/model";
 import {displayDropTotals} from "./chart/series";
 import {copy,formatCopy} from "./presentation/zh";
 import {IdentityBar} from "./components/IdentityBar";
@@ -25,28 +25,81 @@ import {OperationRegion} from "./components/OperationRegion";
 import {useDialogFocus} from "./components/dialog-focus";
 
 type Drawer="device"|"group"|"diagnostics"|null;
+type ProbeScope="probe.connect"|"probe.reconnect"|"probe.release";
+type ProbeReceipt={scope:ProbeScope;requestId:bigint};
+type AppSnapshot={monitor:MonitorState;probeReceipt:ProbeReceipt|null};
+type DeviceIntent={scope:ProbeScope;requestId:bigint|null;epoch:number};
+const probeScope=(scope:RequestScope):scope is ProbeScope=>
+  scope==="probe.connect"||scope==="probe.reconnect"||scope==="probe.release";
+
+// The existing reducer is called exactly once for each original action. This
+// presentation receipt exists only when it adopted the matching write ACK.
+function reduceAppSnapshot(current:AppSnapshot,action:MonitorAction):AppSnapshot{
+  const next=reducer(current.monitor,action);
+  let receipt=current.probeReceipt;
+  if(action.type==="request.succeeded"&&probeScope(action.scope)){
+    if(current.monitor.blockingError===null&&current.monitor.pending[action.scope]?.requestId===action.requestId&&next!==current.monitor)
+      receipt={scope:action.scope,requestId:action.requestId};
+    else if(receipt?.scope===action.scope&&receipt.requestId===action.requestId)receipt=null;
+  }else if(action.type==="request.started"&&probeScope(action.scope))receipt=null;
+  else if((action.type==="request.failed"||action.type==="request.retired"||action.type==="request.cleared")&&
+    receipt?.scope===action.scope&&receipt.requestId===action.requestId)receipt=null;
+  else if(action.type==="access.blocked")receipt=null;
+  return next===current.monitor&&receipt===current.probeReceipt?current:{monitor:next,probeReceipt:receipt};
+}
 
 export function App():JSX.Element{
-  const [state,dispatch]=useReducer(reducer,initialState);
+  const [snapshot,send]=useReducer(reduceAppSnapshot,{monitor:initialState,probeReceipt:null});
+  const state=snapshot.monitor;
   const [view,setView]=useState<"live"|"history">("live");
   const [directoryOpen,setDirectoryOpen]=useState(true);
-  const [valuesCollapsed,setValuesCollapsed]=useState(false);
-  const [chartMaximized,setChartMaximized]=useState(false);
+  const [chartEmphasized,setChartEmphasized]=useState(false);
   const [activeDrawer,setActiveDrawer]=useState<Drawer>(null);
   const groupEntryRef=useRef<HTMLButtonElement>(null);
   const directoryToggleRef=useRef<HTMLButtonElement>(null);
+  const headerDeviceRef=useRef<HTMLButtonElement>(null);
+  const diagnosticEntryRef=useRef<HTMLButtonElement>(null);
+  const drawerRef=useRef<{kind:Drawer;epoch:number}>({kind:null,epoch:0});
+  const deviceIntentRef=useRef<DeviceIntent|null>(null);
   const stateRef=useRef(state);
   stateRef.current=state;
+  const invalidateDrawer=(kind:Drawer)=>{
+    drawerRef.current={kind,epoch:drawerRef.current.epoch+1};
+    deviceIntentRef.current=null;
+  };
+  const dispatch=(action:MonitorAction)=>{
+    const intent=deviceIntentRef.current;
+    if(action.type==="request.started"&&probeScope(action.scope)&&intent!==null){
+      if(intent.scope===action.scope&&intent.epoch===drawerRef.current.epoch&&drawerRef.current.kind==="device"&&intent.requestId===null)
+        intent.requestId=action.requestId;
+      else if(intent.requestId!==action.requestId)deviceIntentRef.current=null;
+    }else if((action.type==="request.failed"||action.type==="request.retired"||action.type==="request.cleared")&&
+      intent?.scope===action.scope&&intent.requestId===action.requestId)deviceIntentRef.current=null;
+    else if(action.type==="access.blocked"||action.type==="group.navigation.requested"||
+      action.type==="group.navigation.confirmed"||action.type==="group.navigation.cancelled"){
+      if(action.type!=="access.blocked")invalidateDrawer(drawerRef.current.kind);
+      else deviceIntentRef.current=null;
+    }
+    send(action);
+  };
   const controllerRef=useRef<Controller|null>(null);
   if(controllerRef.current===null){
     controllerRef.current=createController(createMonitorApi(fetch,window.location.origin),dispatch,()=>stateRef.current);
   }
   const controller=controllerRef.current;
-  const closeDrawer=()=>{if(stateRef.current.groupNavigation===null)setActiveDrawer(null);};
-  const deviceDialog=useDialogFocus(activeDrawer==="device",closeDrawer);
+  const closeDrawer=()=>{
+    if(stateRef.current.groupNavigation!==null)return;
+    invalidateDrawer(null);setActiveDrawer(null);
+  };
+  const deviceDialog=useDialogFocus(activeDrawer==="device",closeDrawer,()=>{
+    const header=headerDeviceRef.current;
+    return header!==null&&header.isConnected&&!header.closest("[hidden]")&&!header.hasAttribute("disabled")
+      ?header:diagnosticEntryRef.current;
+  });
   const groupDialog=useDialogFocus(activeDrawer==="group",closeDrawer,()=>directoryToggleRef.current);
   const diagnosticsDialog=useDialogFocus(activeDrawer==="diagnostics",closeDrawer);
   const openDrawer=(name:Exclude<Drawer,null>,trigger:HTMLElement|null)=>{
+    invalidateDrawer(name);
     if(trigger!==null){
       if(name==="device")deviceDialog.rememberTrigger(trigger);
       else if(name==="group")groupDialog.rememberTrigger(trigger);
@@ -54,14 +107,34 @@ export function App():JSX.Element{
     }
     setActiveDrawer(name);
   };
+  const runDeviceOperation=(scope:ProbeScope,invoke:()=>Promise<void>):Promise<void>=>{
+    if(drawerRef.current.kind!=="device"||deviceIntentRef.current!==null)return invoke();
+    const intent:DeviceIntent={scope,requestId:null,epoch:drawerRef.current.epoch};
+    deviceIntentRef.current=intent;
+    const operation=invoke();
+    if(deviceIntentRef.current===intent&&intent.requestId===null)deviceIntentRef.current=null;
+    return operation;
+  };
+
+  useLayoutEffect(()=>{
+    const receipt=snapshot.probeReceipt,intent=deviceIntentRef.current;
+    if(receipt===null||intent===null||intent.requestId!==receipt.requestId||intent.scope!==receipt.scope||
+      intent.epoch!==drawerRef.current.epoch||drawerRef.current.kind!=="device"||activeDrawer!=="device"||
+      state.blockingError!==null||state.groupNavigation!==null)return;
+    invalidateDrawer(null);
+    setActiveDrawer(null);
+  },[snapshot.probeReceipt,activeDrawer,state.blockingError,state.groupNavigation]);
 
   useEffect(()=>{
     void controller.loadInitial();
     return()=>{controller.close();};
   },[controller]);
   useEffect(()=>{
-    if(state.groupNavigation!==null)setActiveDrawer("group");
+    if(state.groupNavigation!==null&&drawerRef.current.kind!=="group"){
+      invalidateDrawer("group");setActiveDrawer("group");
+    }
   },[state.groupNavigation]);
+  useEffect(()=>{if(state.selectedSeries.size===0)setChartEmphasized(false);},[state.selectedSeries]);
 
   if(state.blockingError!==null){
     return<main className="blocking-screen" aria-label={copy.app}>
@@ -94,7 +167,8 @@ export function App():JSX.Element{
   const failureCount=Object.values(state.failures).filter(failure=>failure!==undefined).length;
   const dirty=groupDirty(state);
   const rows=liveRows(state);
-  const rowClass=rows.length<=1?"one-row":rows.length===2?"two-rows":rows.length===3?"three-rows":"many-rows";
+  const hasCurves=state.selectedSeries.size>0;
+  const chartEmphasisActive=hasCurves&&chartEmphasized;
   const selected=selectedGroup(state);
   const groupName=state.groupDraft.name||selected?.name||copy.samplingNoGroup;
   const sourceLabel=runId===null?copy.liveSourcePreview:
@@ -113,13 +187,13 @@ export function App():JSX.Element{
       <div className="header-status"><span>{status.project.name} · {status.project.targetDevice}</span>
         <span>{status.probe.connected?copy.probeConnected:copy.probeDisconnected}</span>
         <TransportStatus sampling={status.sampling.state} phase={state.transport.phase} stale={state.transport.stale}/></div>
-      <button type="button" className="header-device" aria-label={copy.device} aria-expanded={activeDrawer==="device"} aria-controls="device-details"
+      <button ref={headerDeviceRef} type="button" className="header-device" aria-label={copy.device} aria-expanded={activeDrawer==="device"} aria-controls="device-details"
         onClick={event=>openDrawer("device",event.currentTarget)}>{copy.device}</button>
     </header>
 
     <div className="workbench-body">
-      <div className={"workspace live-workspace "+(!directoryOpen?"directory-closed ":"")+(chartMaximized?"chart-maximized":"")} hidden={!liveView}>
-        <aside className="watch-sidebar" aria-label={copy.watchConfig} hidden={!directoryOpen||chartMaximized}>
+      <div className={"workspace live-workspace "+(!directoryOpen?"directory-closed ":"")+(chartEmphasisActive?"chart-emphasized":"")} hidden={!liveView}>
+        <aside className="watch-sidebar" aria-label={copy.watchConfig} hidden={!directoryOpen||chartEmphasisActive}>
           <div className="sidebar-group">
             <small>{copy.groupTitle}</small><strong title={groupName}>{groupName}</strong>
             <span className={dirty?"group-dirty":""}>{dirty?formatCopy.draftCount(state.groupDraft.items.length):copy.groupSaved}</span>
@@ -134,7 +208,7 @@ export function App():JSX.Element{
             onSearch={(kind,query)=>controller.searchCatalog(kind,query)} onNext={(kind)=>controller.nextCatalog(kind)}
             onAdd={(watch)=>{dispatch({type:"group.watch.added",watch});openDrawer("group",groupEntryRef.current);}}/>
         </aside>
-        <div className={"live-main "+rowClass+(valuesCollapsed?" values-collapsed":"")}>
+        <div className={"live-main "+(hasCurves?"with-curves":"without-curves")+(chartEmphasisActive?" chart-emphasized":"")}>
           <div className="sampling-toolbar">
             <button ref={directoryToggleRef} type="button" className="directory-toggle" aria-label={directoryOpen?copy.directoryCollapse:copy.directoryExpand}
               aria-expanded={directoryOpen} onClick={()=>setDirectoryOpen(open=>!open)}>{directoryOpen?"☰":"☷"}</button>
@@ -147,23 +221,26 @@ export function App():JSX.Element{
               failure={null}/>
             <button type="button" className="toolbar-detail" aria-label={copy.toolbarDevice} onClick={event=>openDrawer("device",event.currentTarget)}>ⓘ</button>
           </div>
-          <LiveChart series={chartSeries(state)} range={state.zoom} visible={liveView}
-            layoutKey={String(liveView)+":"+String(directoryOpen)+":"+String(valuesCollapsed)+":"+String(chartMaximized)}
-            headerActions={<><ChartZoomControls compact range={state.zoom} onAction={(action)=>dispatch({type:"zoom.changed",action})}/>
-              <button type="button" className="chart-maximize" aria-label={chartMaximized?copy.chartRestore:copy.chartMaximize}
-                onClick={()=>setChartMaximized(value=>!value)}>{chartMaximized?copy.chartRestore:copy.chartMaximize}</button></>}
-            onZoom={(range)=>dispatch({type:"zoom.changed",action:{type:"zoom.set",start:range.start,end:range.end}})}/>
           <div className="live-source" aria-label={copy.liveSource}>
             {runId===null?<span>{sourceLabel}</span>:<>
               <span>{sourceFreshness}：{sourceLabel}</span>
               {runningGroup===null&&<span className="stale-label">{state.live.lastSampleCapturedAtUtc===null?copy.liveSourceUnverifiedEmpty:copy.liveSourceUnverified}</span>}
             </>}
           </div>
-          <div className={"values-region "+rowClass} hidden={chartMaximized}>
-            <button type="button" className="values-collapse" aria-label={valuesCollapsed?copy.valuesExpand:copy.valuesCollapse}
-              aria-expanded={!valuesCollapsed} onClick={()=>setValuesCollapsed(value=>!value)}>{valuesCollapsed?copy.valuesExpand:copy.valuesCollapse}</button>
-            <LiveTable rows={rows} selectedSeries={[...state.selectedSeries]} fresh={fresh} collapsed={valuesCollapsed}
-              onSeriesToggle={(key)=>dispatch({type:"series.toggled",key})}/>
+          <div className="values-region">
+            <LiveTable rows={rows} selectedSeries={[...state.selectedSeries]} fresh={fresh}
+              onSeriesToggle={(key)=>{
+                if(stateRef.current.selectedSeries.size===1&&stateRef.current.selectedSeries.has(key))setChartEmphasized(false);
+                dispatch({type:"series.toggled",key});
+              }}/>
+          </div>
+          <div className="chart-region" hidden={!hasCurves}>
+            <LiveChart series={chartSeries(state)} range={state.zoom} visible={liveView&&hasCurves}
+              layoutKey={String(liveView)+":"+String(state.selectedSeries.size)+":"+String(directoryOpen)+":"+String(chartEmphasisActive)}
+              headerActions={<><ChartZoomControls compact range={state.zoom} onAction={(action)=>dispatch({type:"zoom.changed",action})}/>
+                <button type="button" className="chart-maximize" aria-label={chartEmphasisActive?copy.chartRestore:copy.chartMaximize}
+                  onClick={()=>setChartEmphasized(value=>!value)}>{chartEmphasisActive?copy.chartRestore:copy.chartMaximize}</button></>}
+              onZoom={(range)=>dispatch({type:"zoom.changed",action:{type:"zoom.set",start:range.start,end:range.end}})}/>
           </div>
         </div>
       </div>
@@ -187,8 +264,9 @@ export function App():JSX.Element{
         <IdentityBar project={status.project} firmware={status.firmware}
           onCopy={()=>{void navigator.clipboard?.writeText(JSON.stringify({workspaceId:status.workspaceId,sessionId:status.sessionId}));}}/>
         <ProbePanel probes={state.probes} connectedProbeId={status.probe.probeId} canReconnect={status.probe.connected} busy={busyProbe}
-          leaseReason={null} onRefresh={()=>controller.refreshProbes()} onConnect={(id)=>controller.connectProbe(id)}
-          onReconnect={()=>controller.reconnectProbe()} onRelease={()=>controller.releaseProbe()}/>
+          leaseReason={null} onRefresh={()=>controller.refreshProbes()} onConnect={(id)=>runDeviceOperation("probe.connect",()=>controller.connectProbe(id))}
+          onReconnect={()=>runDeviceOperation("probe.reconnect",()=>controller.reconnectProbe())}
+          onRelease={()=>runDeviceOperation("probe.release",()=>controller.releaseProbe())}/>
       </div>
     </aside>
     <aside className="workbench-drawer" role="dialog" aria-modal="true" aria-label={copy.groupTitle} tabIndex={-1}
@@ -241,7 +319,7 @@ export function App():JSX.Element{
     <div className="workbench-footer"><StatusStrip compact actualRateHz={state.live.actualRateHz} latencyNs={state.live.latencyNs}
       lastSampleCapturedAtUtc={state.live.lastSampleCapturedAtUtc} fresh={fresh} drops={drops}
       sourceLabel={sourceLabel} sourceFreshness={sourceFreshness}/>
-      <button type="button" className={failureCount>0?"problem-entry has-problems":"problem-entry"} aria-label={formatCopy.problemCount(failureCount)}
+      <button ref={diagnosticEntryRef} type="button" className={failureCount>0?"problem-entry has-problems":"problem-entry"} aria-label={formatCopy.problemCount(failureCount)}
         onClick={event=>openDrawer("diagnostics",event.currentTarget)}>{formatCopy.problemCount(failureCount)}</button></div>
   </main>;
 }
