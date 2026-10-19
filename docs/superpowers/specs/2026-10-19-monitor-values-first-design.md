@@ -1,8 +1,8 @@
 # Monitor 数值优先与成功返回方案
 
-状态：待用户批准的规格；2026-10-19。此文件没有授权产品实现或部署。
+状态：已批准；2026-10-19用户明确“同意，开始实施吧”。授权本UI切片实施、软件测试、独立审查后更新8765；浏览器、硬件、安装及远端动作仍不在范围。
 
-Accepted base：`1a9cadb42f9eace2fa173bdd9d5a42e9a4d20742`；现有产品CodeHead `8649c494721e8cb631c84855a204dc271e09df00`。新分支`codex/monitor-values-first`，无PR、远端授权或所有权例外。主代理负责设计、计划、调度、完整差异审查和验收；批准后由一个gpt-6-sol/max实现者写产品，另由独立gpt-6-sol/max审查。本阶段仅提交规格/计划，不修改原8765服务。
+Accepted base：`1a9cadb42f9eace2fa173bdd9d5a42e9a4d20742`；现有产品CodeHead `8649c494721e8cb631c84855a204dc271e09df00`。新分支`codex/monitor-values-first`，无PR、远端授权或所有权例外。主代理负责设计、计划、调度、完整差异审查、验收和部署；`values_first_impl`独占产品实现和实现测试，`values_first_review`独立只读审查，两个子代理均使用gpt-6-sol/max。8765在软件验收后更新。
 
 ## 三个用户场景
 

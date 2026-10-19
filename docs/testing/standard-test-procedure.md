@@ -6,9 +6,9 @@
 
 已发布 v1.0.0/v1.0.1 的固定身份、一次性覆盖率例外和限制见[发布状态](../release-status.md)。旧例外不自动延续至新版本；2026-10-10 用户为 v1.0.1 批准的“不低于 v1.0.0”条件与已完成测量保留在[发布资格](release-qualification.md)和[执行记录](../codex/returns/STM32TK-101/execution.md)，分母、成员和永久门槛不改。
 
-2026-10-18 当前切片为已批准的 Monitor 浅色中文工作台重构，入口为[规范](../superpowers/specs/2026-10-18-monitor-workbench-refactor-design.md)和[计划](../superpowers/plans/2026-10-18-monitor-workbench-refactor-plan.md)。accepted base 为 `ab274cf8ecde1bfd352419eb49140961818a43ac`；上一轮附加预算修复和 F429 采样证据见[接受记录](../codex/returns/MONITOR-ATTACH-BUDGET/review.md)。本轮授权 UI 实施、软件测试、独立审查和更新 8765 服务；真实浏览器和新增硬件验证继续暂缓。已有演示工程、观测组和历史样本保持原身份，不据此宣称新版 UI 的浏览器或物理 PASS。v1.1.2 源码交付仍见[既有规范](../superpowers/specs/2026-10-16-monitor-v112-source-delivery-design.md)。
+2026-10-19 当前切片为用户已批准的 Monitor 数值优先与成功返回，入口为[规范](../superpowers/specs/2026-10-19-monitor-values-first-design.md)和[计划](../superpowers/plans/2026-10-19-monitor-values-first-plan.md)。accepted base为`1a9cadb42f9eace2fa173bdd9d5a42e9a4d20742`；主代理负责规格、集成验收和部署，`values_first_impl`独占实现，`values_first_review`独立审查。授权软件实施、测试、独立审查后更新8765；真实浏览器、新增硬件验证、安装和远端动作继续暂缓。已有演示工程、观测组和历史样本保持原身份，不据此宣称新版UI的浏览器或物理PASS。源码目录完整性单独调查，不混入本切片。
 
-本轮只重构展示层和相应交互测试，继续复用 reducer/controller 的采样、草稿、分组目录、恢复和服务端 CSV/JSONL 导出合同；不改变后端、依赖、版本号或硬件行为。共享 App 装配和 CSS 的风险由完整 UI unit/a11y、类型检查、lint、build 和 dist 一致性检查覆盖，主代理在精确 CodeHead 的干净工作树做精选集成核对和完整差异审查。2026-10-18已接受 CodeHead `8649c494721e8cb631c84855a204dc271e09df00`并使用既有 project/data/session 的公开入口启动8765；[验收与部署记录](../codex/returns/MONITOR-WORKBENCH-REFACTOR/review.md)区分438项既有全量、最终聚焦和主代理34项UI/29项静态测试证据。服务仅核对源码、资源和OS进程监听，浏览器及新版硬件验证仍DEFERRED；不将静态设计图或旧实机证据重标为新UI PASS。
+本轮复用reducer/controller既有合同，数值固定在波形上方；按selectedSeries决定波形是否占位；仅设备抽屉自己的写入ACK成功并经reducer采用才自动返回。共享App/CSS风险由最终UI unit/a11y、两项类型检查、lint、build和dist一致性覆盖；主代理在精确CodeHead干净树进行精选集成和完整差异审查。上一轮CodeHead `8649c494721e8cb631c84855a204dc271e09df00`的438项既有全量及主代理34项UI/29项静态测试证据见[既有验收](../codex/returns/MONITOR-WORKBENCH-REFACTOR/review.md)，不替代本轮受影响验证。服务验收只核对源码、资源和OS进程监听，浏览器及新版硬件仍DEFERRED。
 
 先记录实际工作树、分支、完整 accepted base/CodeHead、设计/实现/审查者、部署 source、project/data/runtime 路径、授权、有效证据和剩余场景。检查 tracked/untracked、已提交/未提交、已推送/未推送状态；保留无关改动。使用精确 CodeHead 的干净隔离工作树审查完整差异。
 
