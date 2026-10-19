@@ -77,3 +77,13 @@ UI验证未连接自动发现、文件/作用域搜索/收纳、分页、展开�
 上述修正及直接AST→真实离线ELF→旧lookup/read限制的测试属于本轮首次完整预审反馈；实现者完成后冻结CodeHead，独立审查仍以完整accepted-base差异为准。
 
 封套operation命名核对：既有协议只允许点分隔的字母数字段，故两个新operation最终固定为`monitor.catalog.source.variables`和`monitor.catalog.source.selection`；HTTP路径、DTO和查询不变，不扩展旧协议语法。先前草案中的下划线写法不兼容，已由主代理更正，真实runtime成功/失败封套均须验证。
+
+## R1 编译器调用生命周期补充
+
+完整差异审查确认既有通用进程终止帮助函数在父进程先退出时不能证明后代已回收。本切片仅在源码适配器私有边界补齐，原`process.py`公共行为和其他调用者不变。唯一实现者拥有新增`debug/source_windows.py`（或同一适配器的等价私有帮助文件）及对应测试；不新增依赖、安装、通用进程框架或公开模型。
+
+Windows/Python3.12调用使用不命名且不可继承的原生Job Object，先设置KILL_ON_JOB_CLOSE，再以CREATE_SUSPENDED和新进程组启动受信编译器。把该次Popen持有的进程句柄加入job后才恢复其唯一初始线程；线程通过原生Toolhelp32快照按本次PID定位，OpenThread/ResumeThread，所有临时句柄归本次调用并在finally关闭。挂接或恢复失败时只终止/回收仍挂起的自有根进程并关闭自有job，失败关闭，不能放行未纳管的编译器。
+
+适配器child lock封口发布、挂接、恢复与close的竞态；close先设closed，再关闭本次自有job。每个运行的finally均无条件关闭job，即使根已退出；job关闭须幂等，不能复用或操作其他进程的job/句柄。先结束完整job并回收根，再有界结束输出drain及关管道。排队中的调用在关闭或绝对deadline到期后不得启动。测试至少包含父先退出、子持有管道和超时/close的完整拥有关系，不依赖宽泛进程名清理。
+
+同一R1还要求：索引job的发布及inflight移除由job自身finally负责，独立于任何被取消的HTTP waiter；仅完整结果进入最多2项缓存，partial retry重新索引。聚合成员ID加入稳定ordinal，多个匿名/重名成员可独立显示为不可加入，不覆盖节点或使整个页面响应无效。UI加入真实client→App的自动首屏目录与有效选择验证，不把仅标签存在当作自动加载证据。
