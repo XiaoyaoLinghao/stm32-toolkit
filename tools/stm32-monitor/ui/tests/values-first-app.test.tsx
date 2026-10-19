@@ -1,7 +1,7 @@
 import {afterEach,beforeEach,expect,it,vi} from "vitest";
 import {act,fireEvent,render,screen,waitFor,within} from "@testing-library/preact";
 import {App} from "../src/app";
-import {statusResult,watchGroup} from "./fixtures";
+import {sourcePage,statusResult,watchGroup} from "./fixtures";
 import type {LiveHandlers,MonitorStatus,WatchGroup} from "../src/api/contract";
 
 const chart=vi.hoisted(()=>({init:vi.fn(),resize:vi.fn(),dispose:vi.fn(),setOption:vi.fn(),on:vi.fn(),off:vi.fn()}));
@@ -30,6 +30,8 @@ const api=(status:MonitorStatus=withProbe(true),groups:WatchGroup[]=[])=>({
   status:vi.fn(async()=>ok(status)),
   probes:vi.fn(async()=>ok({probes:[{probeId:"p1",vendor:"Acme",product:"Probe",boardName:null}]})),
   groups:vi.fn(async()=>ok({groups,nextCursor:null,revision:"0"})),
+  sourceVariables:vi.fn(async()=>ok(sourcePage(status))),
+  sourceSelection:vi.fn(async()=>failed("MONITOR_SOURCE_SELECTION_UNAVAILABLE")),
   connect:vi.fn(async(_id:string)=>{void _id;return ok({connected:true});}),
   reconnect:vi.fn(async()=>ok({connected:true})),
   release:vi.fn(async()=>ok({released:true})),

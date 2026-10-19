@@ -15,6 +15,10 @@ export type RegisterDescriptor={selector:string;sizeBits:number;access:string|nu
 export type CatalogGroup={id:string;label:string};
 export type VariableCatalogItem=VariableDescriptor&{group:CatalogGroup};
 export type RegisterCatalogItem=RegisterDescriptor&{group:CatalogGroup};
+export type SourceReason="probe_required"|"source_mismatch"|"firmware_unavailable"|"frame_required"|"debug_entry_missing"|"ambiguous_symbol"|"unsupported_type"|"unsupported_location"|"read_range_denied"|"aggregate"|"coverage_incomplete"|"limit_reached"|"source_attribution_unproven";
+export type SourceCatalogItem={id:string;parentId:string|null;name:string;typeName:string;file:string;line:number|null;column:number|null;scope:{kind:"global"|"file_static"|"static_local"|"local"|"parameter"|"member"|"element";function:string|null;path:readonly string[]};storage:"none"|"static"|"extern"|"register"|"thread_local";translationUnits:readonly string[];selector:string|null;canAdd:boolean;reason:SourceReason|null;expandable:boolean;truncated:boolean};
+export type SourceCatalogPage={schemaVersion:1;catalogId:string;identity:{workspaceId:string;sessionId:string;logicalProjectId:string;targetDevice:string;sourceSnapshotSha256:string;buildId:string|null;elfSha256:string|null;bindingEpoch:I64};engine:{name:string;version:string;inputKind:"compdb"|"manifest"};coverage:{complete:boolean;totalUnits:number;parsedUnits:number;issues:readonly {unit:string|null;code:string;message:string}[];truncated:boolean};total:number;items:readonly SourceCatalogItem[];nextCursor:string|null};
+export type SourceSelection={catalogId:string;item:VariableWatch};
 export type VariableWatch={kind:"variable";expression:string};
 export type RegisterWatch={kind:"register";registerPath:string};
 export type WatchItem=VariableWatch|RegisterWatch;
@@ -42,6 +46,7 @@ export type SamplerStartResult={groupId:string;groupRevision:I64;runId:string;in
 export type DownloadResult=ApiFailure|{ok:true;blob:Blob;filename:string;contentType:string};
 export interface MonitorApi{status():Promise<ApiResult<MonitorStatus>>;probes():Promise<ApiResult<{probes:readonly ProbeInfo[]}>>;
  variables(query:string,cursor?:string):Promise<ApiResult<{items:readonly VariableCatalogItem[];nextCursor:string|null}>>;registers(query:string,cursor?:string):Promise<ApiResult<{items:readonly RegisterCatalogItem[];nextCursor:string|null}>>;
+ sourceVariables(query:string,cursor?:string,parentId?:string,catalogId?:string):Promise<ApiResult<SourceCatalogPage>>;sourceSelection(catalogId:string,id:string,selector:string):Promise<ApiResult<SourceSelection>>;
  groups(cursor?:string):Promise<ApiResult<GroupPage>>;createGroup(request:CreateGroupRequest):Promise<ApiResult<WatchGroup>>;updateGroup(groupId:string,request:UpdateGroupRequest):Promise<ApiResult<WatchGroup>>;deleteGroup(groupId:string,request:DeleteGroupRequest):Promise<ApiResult<{groupId:string;deleted:true}>>;importGroups(document:GroupImportDocument):Promise<ApiResult<readonly WatchGroup[]>>;
  connect(probeId:string):Promise<ApiResult<DebugFirmwareBinding>>;reconnect():Promise<ApiResult<DebugFirmwareBinding>>;release():Promise<ApiResult<{released:boolean}>>;
  start(groupId:string,expectedRevision:I64):Promise<ApiResult<SamplerStartResult>>;pause():Promise<ApiResult<{paused:boolean}>>;resume():Promise<ApiResult<{resumed:boolean}>>;stop():Promise<ApiResult<{stopped:boolean}>>;
@@ -93,6 +98,29 @@ export const registerCatalogItemGuard:DataGuard<RegisterCatalogItem>=(value)=>{
   const v=object(value),{group,...descriptor}=v;
   return{...registerDescriptorGuard(descriptor),group:catalogGroupGuard(group)};
 };
+const sha256=(value:unknown):string=>{const result=string(value);if(!/^[0-9a-f]{64}$/.test(result))throw new Error("invalid identity");return result;};
+const relativeFile=(value:unknown):string=>{const result=string(value);if(!result||result.length>512||result.startsWith("/")||result.startsWith("\\")||/^[A-Za-z]:/.test(result)||result.split(/[\\/]/).some(part=>!part||part==="."||part==="..")||[...result].some(char=>char.charCodeAt(0)<32))throw new Error("invalid source path");return result;};
+const positive=(value:unknown):number=>{const result=boundedInteger(value);if(result<1)throw new Error("expected positive integer");return result;};
+const nonnegative=(value:unknown):number=>{const result=boundedInteger(value);if(result<0)throw new Error("expected nonnegative integer");return result;};
+const reasonValues=["probe_required","source_mismatch","firmware_unavailable","frame_required","debug_entry_missing","ambiguous_symbol","unsupported_type","unsupported_location","read_range_denied","aggregate","coverage_incomplete","limit_reached","source_attribution_unproven"] as const;
+export const sourceCatalogItemGuard:DataGuard<SourceCatalogItem>=(value)=>{
+ const v=object(value);exact(v,["id","parentId","name","typeName","file","line","column","scope","storage","translationUnits","selector","canAdd","reason","expandable","truncated"]);
+ const s=object(v.scope);exact(s,["kind","function","path"]);
+ const item:SourceCatalogItem={id:sha256(v.id),parentId:nullable(v.parentId,sha256),name:string(v.name),typeName:string(v.typeName),file:relativeFile(v.file),line:nullable(v.line,positive),column:nullable(v.column,positive),scope:{kind:enumValue(["global","file_static","static_local","local","parameter","member","element"],s.kind),function:nullable(s.function,string),path:stringArray(s.path)},storage:enumValue(["none","static","extern","register","thread_local"],v.storage),translationUnits:array(v.translationUnits,relativeFile),selector:nullable(v.selector,string),canAdd:boolean(v.canAdd),reason:nullable(v.reason,value=>enumValue(reasonValues,value)),expandable:boolean(v.expandable),truncated:boolean(v.truncated)};
+ if(!item.name||item.name.length>256||item.typeName.length>512||item.translationUnits.length>256||item.scope.path.length>64||item.canAdd&&(item.selector===null||item.reason!==null)||item.reason===null&&!item.canAdd)throw new Error("invalid source item");
+ return item;
+};
+export const sourceCatalogPageGuard:DataGuard<SourceCatalogPage>=(value)=>{
+ const v=object(value);exact(v,["schemaVersion","catalogId","identity","engine","coverage","total","items","nextCursor"]);
+ const i=object(v.identity);exact(i,["workspaceId","sessionId","logicalProjectId","targetDevice","sourceSnapshotSha256","buildId","elfSha256","bindingEpoch"]);
+ const e=object(v.engine);exact(e,["name","version","inputKind"]);
+ const c=object(v.coverage);exact(c,["complete","totalUnits","parsedUnits","issues","truncated"]);
+ const items=array(v.items,sourceCatalogItemGuard),ids=new Set<string>();for(const item of items){if(ids.has(item.id))throw new Error("duplicate source id");ids.add(item.id);}
+ const total=nonnegative(v.total),totalUnits=nonnegative(c.totalUnits),parsedUnits=nonnegative(c.parsedUnits);
+ if(items.length>100||total<items.length||parsedUnits>totalUnits||Boolean(c.complete)&&Boolean(c.truncated)||!string(e.name)||!string(e.version))throw new Error("invalid source page");
+ return{schemaVersion:literal(1)(v.schemaVersion),catalogId:sha256(v.catalogId),identity:{workspaceId:string(i.workspaceId),sessionId:string(i.sessionId),logicalProjectId:string(i.logicalProjectId),targetDevice:string(i.targetDevice),sourceSnapshotSha256:sha256(i.sourceSnapshotSha256),buildId:nullable(i.buildId,string),elfSha256:nullable(i.elfSha256,sha256),bindingEpoch:i64(i.bindingEpoch)},engine:{name:string(e.name),version:string(e.version),inputKind:enumValue(["compdb","manifest"],e.inputKind)},coverage:{complete:boolean(c.complete),totalUnits,parsedUnits,issues:array(c.issues,item=>{const issue=object(item);exact(issue,["unit","code","message"]);return{unit:nullable(issue.unit,relativeFile),code:string(issue.code),message:string(issue.message)};}),truncated:boolean(c.truncated)},total,items,nextCursor:nullable(v.nextCursor,string)};
+};
+export const sourceSelectionGuard:DataGuard<SourceSelection>=(value)=>{const v=object(value);exact(v,["catalogId","item"]);const item=watchItemGuard(v.item);if(item.kind!=="variable")throw new Error("source selection must be variable");return{catalogId:sha256(v.catalogId),item};};
 function catalogItems<T extends {selector:string;group:CatalogGroup}>(value:unknown,guard:DataGuard<T>):readonly T[]{
   const items=array(value,guard),labels=new Map<string,string>(),selectors=new Map<string,T>();
   for(const item of items){

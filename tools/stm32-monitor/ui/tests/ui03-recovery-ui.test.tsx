@@ -2,6 +2,7 @@ import {expect,it,vi} from "vitest";
 import {act,fireEvent,render,screen,waitFor} from "@testing-library/preact";
 import type {LiveHandlers} from "../src/api/contract";
 import {App} from "../src/app";
+import {sourcePage} from "./fixtures";
 
 const controls=vi.hoisted(()=>({sockets:[] as {handlers:LiveHandlers;close:ReturnType<typeof vi.fn>}[],statusCalls:vi.fn()}));
 vi.mock("echarts/core",()=>({init:vi.fn(()=>null),use:vi.fn(),default:{init:vi.fn(()=>null),use:vi.fn()}}));
@@ -15,6 +16,7 @@ const ok=<T,>(data:T)=>({ok:true,data} as const);
 vi.mock("../src/api/client",()=>({createMonitorApi:()=>({
   status:async()=>{controls.statusCalls();return ok(status());},probes:async()=>ok({probes:[]}),groups:async()=>ok({groups:[],nextCursor:null,revision:"0"}),
   variables:async()=>ok({items:[],nextCursor:null}),registers:async()=>ok({items:[],nextCursor:null}),
+  sourceVariables:async()=>ok(sourcePage(status())),
 })}));
 vi.mock("../src/api/live",()=>({openLive:(_origin:string,_cursor:bigint|null,handlers:LiveHandlers)=>{
   const socket={handlers,close:vi.fn()};controls.sockets.push(socket);return socket.close;

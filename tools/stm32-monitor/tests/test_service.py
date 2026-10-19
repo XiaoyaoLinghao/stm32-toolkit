@@ -758,6 +758,29 @@ def test_probe_and_catalog_get_routes_are_authenticated_exact_and_bounded() -> N
     asyncio.run(_with_service(scenario))
 
 
+def test_source_catalog_routes_share_auth_and_exact_query_grammar() -> None:
+    async def scenario(runtime, _service, endpoint) -> None:
+        auth = {"Authorization": f"Bearer {TOKEN_BYTES.hex()}", "Origin": endpoint.url}
+        async with aiohttp.ClientSession() as client:
+            denied = await client.get(endpoint.url + "/api/v1/catalog/source-variables")
+            page = await client.get(endpoint.url + "/api/v1/catalog/source-variables?query=counter&limit=20", headers=auth)
+            selection = await client.get(endpoint.url + "/api/v1/catalog/source-selection?catalogId=cat&id=item&selector=counter", headers=auth)
+            before_invalid = len(runtime.calls)
+            unknown = await client.get(endpoint.url + "/api/v1/catalog/source-variables?plugin=run", headers=auth)
+            repeated = await client.get(endpoint.url + "/api/v1/catalog/source-selection?id=a&id=b", headers=auth)
+            wrong_method = await client.post(endpoint.url + "/api/v1/catalog/source-selection", headers=auth)
+        assert denied.status == 401
+        assert page.status == selection.status == 200
+        assert runtime.calls == [
+            ("monitor.catalog.source.variables", {}, None, {"query": "counter", "limit": "20"}),
+            ("monitor.catalog.source.selection", {}, None, {"catalogId": "cat", "id": "item", "selector": "counter"}),
+        ]
+        assert [unknown.status, repeated.status, wrong_method.status] == [400, 400, 405]
+        assert len(runtime.calls) == before_invalid
+
+    asyncio.run(_with_service(scenario))
+
+
 def test_group_pages_use_exact_query_grammar_and_fit_actual_http_body(
     tmp_path,
 ) -> None:

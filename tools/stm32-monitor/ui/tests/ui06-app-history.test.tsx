@@ -1,6 +1,7 @@
 import {afterEach,expect,it,vi} from "vitest";
 import {fireEvent,render,screen,waitFor} from "@testing-library/preact";
 import {App} from "../src/app";
+import {sourcePage} from "./fixtures";
 
 vi.mock("echarts/core",()=>({init:vi.fn(()=>null),use:vi.fn(),default:{init:vi.fn(()=>null),use:vi.fn()}}));
 vi.mock("echarts/charts",()=>({LineChart:class{}}));
@@ -19,6 +20,7 @@ it("shows ordinary history failure in OperationRegion and retries A without over
   preparedApi={
     status:vi.fn(async()=>ok({workspaceId:"workspace",sessionId:"session",project:{logicalProjectId:"project",name:"Project",targetDevice:"STM32F407VG"},firmware:null,probe:{connected:false,probeId:null},sampling:{state:"IDLE",active:false,blockedCode:null,groupId:null,groupRevision:null,runId:null,lastSequence:null,bindingEpoch:0n,subscriberDrops:0n,historyDrops:0n,deadlineDrops:0n,serviceDrops:0n},probeConnected:false,samplingActive:false})),
     probes:vi.fn(async()=>ok({probes:[]})),groups:vi.fn(async()=>ok({groups:[],nextCursor:null,revision:"0"})),history,
+    sourceVariables:vi.fn(async()=>ok(sourcePage())),
   };
   render(<App/>);
   await screen.findByText("Project");

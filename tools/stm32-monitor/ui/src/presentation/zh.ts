@@ -1,4 +1,4 @@
-import type {ApiFailure,SamplingStatus} from "../api/contract";
+import type {ApiFailure,SamplingStatus,SourceReason} from "../api/contract";
 import type {RequestScope,RecoveryKind} from "../state/model";
 
 /** Product copy stays here; wire codes and user data remain unchanged. */
@@ -15,6 +15,15 @@ export const copy={
   catalogKind:"目录类型",variables:"变量",registers:"寄存器",search:"搜索",
   searchPlaceholder:"输入符号或寄存器前缀",catalogLoad:"搜索/加载",catalogNeedsProbe:"连接探针后可搜索目录。",
   catalogMore:"；还有更多结果，可加载下一页。",
+  sourceTitle:"源码变量",sourceBrowse:"源码变量",firmwareBrowse:"固件变量与寄存器",sourceResults:"源码变量结果",
+  sourceSearchPlaceholder:"搜索名称、文件或函数",sourceRefresh:"刷新源码目录",sourceLoading:"正在离线分析源码…",
+  sourceEmptyPrompt:"正在准备源码目录；无需连接探针即可浏览。",sourcePartial:"部分编译单元未解析，当前列表不完整。",
+  sourceTruncated:"达到目录上限，仍有未展示内容。",sourceUnknownUnit:"未知编译单元",sourceGlobalScope:"全局／文件作用域",
+  sourceCollapse:"收起",sourceExpand:"展开",sourceChildrenLoading:"正在读取成员…",sourceChecking:"正在核对变量与当前固件…",
+  sourceExpandPrompt:"可重试展开成员。",sourceIndexFailed:"源码目录加载失败：",sourceChildFailed:"成员加载失败：",
+  sourceSelectionFailed:"加入前核对失败：",sourceUseFirmware:"查看固件变量与寄存器",
+  sourceAdded:"已加入组草稿（尚未保存）",sourceUnits:(parsed:number,total:number)=>`已解析 ${parsed} / ${total} 个编译单元`,
+  sourceCount:(loaded:number,total:number)=>`已加载 ${loaded} / ${total} 项`,
   registerAccessAcknowledgement:"该寄存器需要现有访问能力确认；添加草稿不会自动授权。",
   selector:"选择器",type:"类型",action:"操作",addDraft:"加入观测组草稿",nextPage:"下一页",
   zoomTitle:"图表缩放",zoomRange:"显示范围：",zoomIn:"放大",zoomOut:"缩小",zoomReset:"重置缩放",
@@ -91,6 +100,7 @@ const operationNames:Record<RequestScope,string>={
   initial:"初始化读取",status:"状态刷新","live.reconnect":"重新连接实时数据",probes:"探针列表刷新",
   "probe.connect":"连接探针","probe.reconnect":"重新连接探针","probe.release":"释放探针",
   "catalog.variables":"变量目录搜索","catalog.registers":"寄存器目录搜索",
+  "catalog.source":"源码变量目录","catalog.source-child":"源码成员","catalog.source-selection":"源码变量加入前核对",
   "groups.list":"观测组列表刷新","groups.create":"创建观测组","groups.update":"保存观测组",
   "groups.delete":"删除观测组","groups.import":"导入观测组",
   "sampling.start":"开始采样","sampling.pause":"暂停采样","sampling.resume":"继续采样",
@@ -126,6 +136,17 @@ export function recoveryText(recovery:RecoveryKind,scope:RequestScope):string{
 export function recoveryAction(recovery:RecoveryKind,scope:RequestScope):string{
   return recovery==="groups-refresh"?copy.groupRefresh:recovery==="reconcile"?copy.reconcile:scope==="initial"?copy.initialRetry:copy.retry;
 }
+
+const sourceReasons:Record<SourceReason,string>={
+  probe_required:"需连接与此固件匹配的探针",source_mismatch:"当前源码、固件或探针绑定不一致",
+  firmware_unavailable:"尚无可核对的固件与调试信息",frame_required:"局部变量需要运行栈帧",
+  debug_entry_missing:"固件调试信息中没有对应声明",ambiguous_symbol:"同名调试对象不唯一",
+  unsupported_type:"现有读取引擎不支持该类型",unsupported_location:"没有稳定可读取地址",
+  read_range_denied:"地址不在已登记可读范围",aggregate:"展开成员或元素后选择标量",
+  coverage_incomplete:"源码索引覆盖不完整",limit_reached:"展开已达安全上限",
+  source_attribution_unproven:"无法唯一证明源码声明与调试对象对应",
+};
+export const sourceReasonText=(reason:SourceReason):string=>sourceReasons[reason];
 
 export const formatCopy={
   catalogLoaded:(count:number)=>`已加载 ${count} 项`,

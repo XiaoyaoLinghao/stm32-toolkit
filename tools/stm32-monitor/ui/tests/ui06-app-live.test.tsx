@@ -2,6 +2,7 @@ import {expect,it,vi} from "vitest";
 import {act,fireEvent,render,screen,waitFor,within} from "@testing-library/preact";
 import type {LiveHandlers,MonitorStatus,ObservationBinding,SampleBatch,WatchGroup} from "../src/api/contract";
 import {App} from "../src/app";
+import {sourcePage} from "./fixtures";
 
 const controls=vi.hoisted(()=>({sockets:[] as LiveHandlers[]}));
 vi.mock("echarts/core",()=>({init:vi.fn(()=>null),use:vi.fn(),default:{init:vi.fn(()=>null),use:vi.fn()}}));
@@ -25,6 +26,7 @@ it("immediately marks old run samples nonfresh after a group revision ACK and ke
   const groups=vi.fn().mockResolvedValueOnce(ok({groups:[group],nextCursor:null,revision:"0"})).mockReturnValueOnce(followup);
   const revised={...group,revision:2n,name:"New version"};
   preparedApi={status:vi.fn(async()=>ok(status)),probes:vi.fn(async()=>ok({probes:[]})),groups,
+    sourceVariables:vi.fn(async()=>ok(sourcePage(status))),
     updateGroup:vi.fn(async()=>ok(revised))};
   render(<App/>);
   await screen.findByText("Project");

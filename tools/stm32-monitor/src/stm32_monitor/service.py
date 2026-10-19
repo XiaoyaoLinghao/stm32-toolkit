@@ -271,6 +271,16 @@ class MonitorService:
             ),
         )
         application.router.add_get(
+            "/api/v1/catalog/source-variables",
+            self._route("monitor.catalog.source.variables", query=True,
+                        query_fields=frozenset({"query", "cursor", "limit", "parentId", "catalogId"})),
+        )
+        application.router.add_get(
+            "/api/v1/catalog/source-selection",
+            self._route("monitor.catalog.source.selection", query=True,
+                        query_fields=frozenset({"catalogId", "id", "selector"})),
+        )
+        application.router.add_get(
             "/api/v1/groups",
             self._route(
                 "monitor.groups.list",

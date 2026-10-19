@@ -10,6 +10,7 @@ import {copy,formatCopy,operationSummary} from "./presentation/zh";
 import {IdentityBar} from "./components/IdentityBar";
 import {ProbePanel} from "./components/ProbePanel";
 import {CatalogPanel} from "./components/CatalogPanel";
+import {SourceCatalogPanel} from "./components/SourceCatalogPanel";
 import {GroupPanel} from "./components/GroupPanel";
 import {SamplingControls} from "./components/SamplingControls";
 import {LiveTable} from "./components/LiveTable";
@@ -57,6 +58,7 @@ export function App():JSX.Element{
   const state=snapshot.monitor;
   const [view,setView]=useState<"live"|"history">("live");
   const [directoryOpen,setDirectoryOpen]=useState(true);
+  const [catalogView,setCatalogView]=useState<"source"|"firmware">("source");
   const [chartEmphasized,setChartEmphasized]=useState(false);
   const [activeDrawer,setActiveDrawer]=useState<Drawer>(null);
   const [dismissedReceipt,setDismissedReceipt]=useState<ProbeReceipt|null>(null);
@@ -143,6 +145,10 @@ export function App():JSX.Element{
     return()=>{controller.close();};
   },[controller]);
   useEffect(()=>{
+    if(state.status!==null&&!state.catalog.source.initialized&&state.pending["catalog.source"]===undefined)
+      void controller.searchSource("");
+  },[controller,state.status,state.catalog.source.initialized,state.pending["catalog.source"]]);
+  useEffect(()=>{
     if(state.groupNavigation!==null&&drawerRef.current.kind!=="group"){
       invalidateDrawer("group");setActiveDrawer("group");
     }
@@ -217,13 +223,28 @@ export function App():JSX.Element{
             <button ref={groupEntryRef} type="button" onClick={event=>openDrawer("group",event.currentTarget)}>{copy.groupEditSave}</button>
             <button type="button" className="sidebar-close" aria-label={copy.directoryClosePanel} onClick={()=>setDirectoryOpen(false)}>{copy.close}</button>
           </div>
-          <CatalogPanel connected={status.probeConnected} bindingEpoch={status.sampling.bindingEpoch}
+          <div role="tablist" aria-label={copy.catalogKind} className="source-view-tabs">
+            <button type="button" role="tab" aria-selected={catalogView==="source"} onClick={()=>setCatalogView("source")}>{copy.sourceBrowse}</button>
+            <button type="button" role="tab" aria-selected={catalogView==="firmware"} onClick={()=>setCatalogView("firmware")}>{copy.firmwareBrowse}</button>
+          </div>
+          {catalogView==="source"?<SourceCatalogPanel source={state.catalog.source}
+            pending={state.pending["catalog.source"]!==undefined}
+            childPending={state.pending["catalog.source-child"]!==undefined}
+            selectionPending={state.pending["catalog.source-selection"]!==undefined}
+            failures={{"catalog.source":state.failures["catalog.source"],
+              "catalog.source-child":state.failures["catalog.source-child"],
+              "catalog.source-selection":state.failures["catalog.source-selection"]}}
+            editBusy={busyGroups||state.groupNavigation!==null}
+            onRetry={(scope,id)=>controller.retry(scope,id)} onFirmware={()=>setCatalogView("firmware")}
+            onSearch={query=>controller.searchSource(query)} onNext={()=>controller.nextSource()}
+            onChildren={(parentId,next)=>controller.sourceChildren(parentId,next)} onSelect={item=>controller.selectSource(item)}/>
+          :<CatalogPanel connected={status.probeConnected} bindingEpoch={status.sampling.bindingEpoch}
             bindingKey={status.workspaceId+"/"+status.sessionId+"/"+status.project.logicalProjectId+"/"+status.sampling.bindingEpoch}
             variables={state.catalog.variables} registers={state.catalog.registers}
             pending={state.pending["catalog.variables"]!==undefined||state.pending["catalog.registers"]!==undefined}
             editBusy={busyGroups||state.groupNavigation!==null}
             onSearch={(kind,query)=>controller.searchCatalog(kind,query)} onNext={(kind)=>controller.nextCatalog(kind)}
-            onAdd={(watch)=>{dispatch({type:"group.watch.added",watch});openDrawer("group",groupEntryRef.current);}}/>
+            onAdd={(watch)=>{dispatch({type:"group.watch.added",watch});openDrawer("group",groupEntryRef.current);}}/>}
         </aside>
         <div className={"live-main "+(hasCurves?"with-curves":"without-curves")+(chartEmphasisActive?" chart-emphasized":"")}>
           <div className="sampling-toolbar">

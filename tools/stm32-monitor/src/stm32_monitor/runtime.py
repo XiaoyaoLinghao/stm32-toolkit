@@ -513,6 +513,7 @@ class MonitorRuntime:
         self._exporter: object | None = None
         self._sampler: object | None = None
         self._observation: object | None = None
+        self._source_provider: object | None = None
         self._probe_request: object | None = None
         self._probe_lifecycle_lock = asyncio.Lock()
         self._binding_epoch = 0
@@ -954,6 +955,56 @@ class MonitorRuntime:
             if operation == "monitor.probes.list":
                 _exact(payload, set())
                 return await self._list_probes(operation, config, failure, success)
+            if operation in {"monitor.catalog.source.variables", "monitor.catalog.source.selection"}:
+                from .source_catalog import SourceCatalogFailure, SourceCatalogProvider, _binding_signature
+                from stm32_toolkit.debug.source import SourceCatalogError
+
+                _exact(payload, set())
+                if query is None:
+                    return failure(operation, "MONITOR_SOURCE_INDEX_FAILED", "Source catalog query is invalid")
+                if self._source_provider is None:
+                    self._source_provider = SourceCatalogProvider(
+                        paths.project_root, paths.workspace_id, paths.session_id
+                    )
+                provider = self._source_provider
+                observation = self._observation
+                binding = getattr(observation, "binding", None)
+                binding_epoch = self._binding_epoch
+                binding_signature = _binding_signature(binding)
+                try:
+                    if operation == "monitor.catalog.source.variables":
+                        if set(query) - {"query", "cursor", "limit", "parentId", "catalogId"}:
+                            raise SourceCatalogFailure("MONITOR_SOURCE_INDEX_FAILED", "Source catalog query is invalid")
+                        limit_text = query.get("limit", "100")
+                        if not limit_text.isascii() or not limit_text.isdigit() or len(limit_text) > 3:
+                            raise SourceCatalogFailure("MONITOR_SOURCE_INDEX_FAILED", "Source catalog limit is invalid")
+                        data = await provider.page(
+                            query=query.get("query", ""), cursor=query.get("cursor"),
+                            limit=int(limit_text), parent_id=query.get("parentId"),
+                            catalog_id=query.get("catalogId"), binding=binding,
+                            binding_epoch=binding_epoch,
+                        )
+                    else:
+                        if set(query) != {"catalogId", "id", "selector"}:
+                            raise SourceCatalogFailure("MONITOR_SOURCE_SELECTION_UNAVAILABLE", "Source selection is invalid")
+                        data = await provider.select(
+                            catalog_id=query["catalogId"], item_id=query["id"],
+                            selector=query["selector"], binding=binding,
+                            binding_epoch=binding_epoch,
+                        )
+                    if (self._observation is not observation or self._binding_epoch != binding_epoch
+                            or _binding_signature(getattr(self._observation, "binding", None)) != binding_signature
+                            or self._source_provider is not provider):
+                        raise SourceCatalogFailure(
+                            "MONITOR_SOURCE_CONTEXT_CHANGED", "Source catalog context changed during request"
+                        )
+                    return success(operation, data)
+                except (SourceCatalogFailure, SourceCatalogError) as error:
+                    return failure(operation, error.code, error.message)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    return failure(operation, "MONITOR_SOURCE_INDEX_FAILED", "Source catalog could not be indexed")
             if operation == "monitor.groups.list":
                 _exact(payload, set())
                 group_query = {} if query is None else query
@@ -1336,6 +1387,8 @@ class MonitorRuntime:
 
     async def _stop_owned(self) -> None:
         first_error: BaseException | None = None
+        if self._source_provider is not None:
+            self._source_provider.close()
         async with self._probe_lifecycle_lock:
             pass
         for task in (self._heartbeat_task, self._sample_task):
@@ -1386,6 +1439,7 @@ class MonitorRuntime:
         self._service = None
         self._sampler = None
         self._observation = None
+        self._source_provider = None
         self._history_store = None
         self._exporter = None
         self._group_store = None

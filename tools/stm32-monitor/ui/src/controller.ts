@@ -2,11 +2,12 @@ import {
   groupImportGuard,
   type ApiFailure,type ApiResult,type GroupDraft,type GroupImportDocument,type MonitorStatus,
   type HistoryQuery,type MonitorApi,type WatchGroup,type WatchItem,type VariableCatalogItem,type RegisterCatalogItem,
+  type SourceCatalogItem,
 } from "./api/contract";
 import {encodeJson,parseLossless} from "./api/wire";
 import {openLive} from "./api/live";
 import {operationSummary} from "./presentation/zh";
-import {groupSourceProblem,sameGroupContent,type HistoryInFlight,type LoadedAction,type MonitorAction,type MonitorState,type RecoveryKind,type RequestScope,type VariableCatalog,type RegisterCatalog} from "./state/model";
+import {groupSourceProblem,sameGroupContent,sourceContextKey,type HistoryInFlight,type LoadedAction,type MonitorAction,type MonitorState,type RecoveryKind,type RequestScope,type VariableCatalog,type RegisterCatalog} from "./state/model";
 
 function catalogConflict(prior:VariableCatalog|RegisterCatalog|null,items:readonly (VariableCatalogItem|RegisterCatalogItem)[]):boolean{
   if(prior===null)return false;
@@ -25,6 +26,7 @@ export type Controller={
   connectProbe:(probeId:string)=>Promise<void>;reconnectProbe:()=>Promise<void>;releaseProbe:()=>Promise<void>;
   searchCatalog:(kind:"variables"|"registers",query:string)=>Promise<void>;
   nextCatalog:(kind:"variables"|"registers")=>Promise<void>;
+  searchSource:(query:string)=>Promise<void>;nextSource:()=>Promise<void>;sourceChildren:(parentId:string,next?:boolean)=>Promise<void>;selectSource:(item:SourceCatalogItem)=>Promise<void>;
   createGroup:()=>Promise<void>;saveGroup:(draft:GroupDraft)=>Promise<void>;deleteGroup:(groupId:string,expectedRevision?:bigint,editorGeneration?:bigint)=>Promise<void>;
   importGroups:(value:unknown)=>Promise<void>;
   startSampling:(groupId:string,expectedRevision:bigint)=>Promise<void>;
@@ -67,6 +69,7 @@ export function createController(api:MonitorApi,dispatch:(action:MonitorAction)=
   const writing=new Set<Family>();
   const reconciling=new Set<RequestScope>();
   let groupRefreshFence:{refreshedGroups:readonly WatchGroup[]|null}|null=null;
+  let sourceRequestEpoch=0;
   const groupWriteAllowed=():boolean=>{
     const state=getState(),refreshed=groupRefreshFence?.refreshedGroups;
     if(groupRefreshFence===null)return !state.groupsNeedRefresh;
@@ -230,6 +233,53 @@ export function createController(api:MonitorApi,dispatch:(action:MonitorAction)=
       },
       data=>({type:"catalog.loaded",catalog:"registers",query,bindingKey,cursor:cursor??null,items:data.items,nextCursor:data.nextCursor}),
       ()=>key(getState())===bindingKey);
+  };
+  const sourceSearch=async(queryInput:string):Promise<void>=>{
+    const status=getState().status;if(status===null)return;
+    const query=queryInput.trim().slice(0,128),contextKey=sourceContextKey(status);
+    const generation=getState().catalog.source.generation+1n,epoch=++sourceRequestEpoch;
+    for(const scope of ["catalog.source-child","catalog.source-selection"] as const){const id=active.get(scope);if(id!==undefined)retire(scope,id);}
+    dispatch({type:"source.started",query,contextKey});
+    const valid=()=>getState().status!==null&&sourceContextKey(getState().status!)===contextKey&&sourceRequestEpoch===epoch;
+    await read("catalog.source",operationSummary("catalog.source",query),()=>api.sourceVariables(query),
+      page=>({type:"source.loaded",query,contextKey,generation,cursor:null,parentId:null,page}),valid,()=>sourceSearch(query));
+  };
+  const sourcePage=async(parentId:string|null,cursor:string):Promise<void>=>{
+    const state=getState(),source=state.catalog.source,root=source.page;
+    if(state.status===null||root===null||source.contextKey!==sourceContextKey(state.status))return;
+    const prior=parentId===null?root:source.children[parentId],scope:RequestScope=parentId===null?"catalog.source":"catalog.source-child";
+    if(prior===undefined||prior.nextCursor!==cursor)return;
+    const contextKey=source.contextKey,generation=source.generation,catalogId=root.catalogId,query=source.query;
+    const valid=()=>{const current=getState(),catalog=current.catalog.source;return current.status!==null&&sourceContextKey(current.status)===contextKey&&catalog.generation===generation&&catalog.page?.catalogId===catalogId;};
+    await read(scope,operationSummary(scope,query,cursor),()=>api.sourceVariables(parentId===null?query:"",cursor,parentId??undefined,catalogId),
+      page=>({type:"source.loaded",query,contextKey,generation,cursor,parentId,page}),valid,
+      ()=>sourcePage(parentId,cursor));
+  };
+  const sourceChildren=async(parentId:string,next=false):Promise<void>=>{
+    const state=getState(),source=state.catalog.source,root=source.page;
+    if(state.status===null||root===null||source.contextKey!==sourceContextKey(state.status))return;
+    const prior=source.children[parentId];
+    if(next&&prior?.nextCursor!==null&&prior?.nextCursor!==undefined)return sourcePage(parentId,prior.nextCursor);
+    if(next||prior!==undefined||!root.items.some(item=>item.id===parentId&&item.expandable)&&
+      !Object.values(source.children).some(page=>page.items.some(item=>item.id===parentId&&item.expandable)))return;
+    const contextKey=source.contextKey,generation=source.generation,catalogId=root.catalogId,query=source.query;
+    const valid=()=>{const current=getState();return current.status!==null&&sourceContextKey(current.status)===contextKey&&current.catalog.source.generation===generation&&current.catalog.source.page?.catalogId===catalogId;};
+    await read("catalog.source-child",operationSummary("catalog.source-child",parentId),()=>api.sourceVariables("",undefined,parentId,catalogId),
+      page=>({type:"source.loaded",query,contextKey,generation,cursor:null,parentId,page}),valid,()=>sourceChildren(parentId));
+  };
+  const sourceSelect=async(item:SourceCatalogItem):Promise<void>=>{
+    const state=getState(),source=state.catalog.source,selector=item.selector;
+    if(state.status===null||source.page===null||source.contextKey!==sourceContextKey(state.status)||
+      !item.canAdd||selector===null||state.groupNavigation!==null||state.groupWriteBusy)return;
+    const catalogId=source.page.catalogId,contextKey=source.contextKey,generation=source.generation,
+      groupGeneration=state.groupGeneration;
+    const valid=()=>{const current=getState();return current.status!==null&&sourceContextKey(current.status)===contextKey&&
+      current.catalog.source.generation===generation&&current.catalog.source.page?.catalogId===catalogId&&
+      current.groupGeneration===groupGeneration&&current.groupNavigation===null;};
+    await read("catalog.source-selection",operationSummary("catalog.source-selection",item.name),
+      ()=>api.sourceSelection(catalogId,item.id,selector),selection=>selection.catalogId===catalogId&&
+        selection.item.expression===selector?{type:"source.selection.accepted",contextKey,generation,groupGeneration,
+        catalogId,itemId:item.id,selector,watch:selection.item}:undefined,valid,()=>sourceSelect(item));
   };
   const history=async(queryInput:HistoryQuery,navigation:"replace"|"next"|"previous"):Promise<void>=>{
     const query={...queryInput};
@@ -398,6 +448,10 @@ export function createController(api:MonitorApi,dispatch:(action:MonitorAction)=
       return prior===null||prior.nextCursor===null||prior.bindingKey!==bindingKey
         ?Promise.resolve():catalog(kind,prior.query,prior.nextCursor,bindingKey);
     },
+    searchSource:sourceSearch,
+    nextSource:()=>{const source=getState().catalog.source;return source.page?.nextCursor===null||source.page===null
+      ?Promise.resolve():sourcePage(null,source.page.nextCursor);},
+    sourceChildren,selectSource:sourceSelect,
     createGroup:()=>getState().groupDraft.sourceGroupId===null?saveGroup(getState().groupDraft):Promise.resolve(),
     saveGroup,
     deleteGroup:(groupId,expectedRevision,editorGeneration)=>{

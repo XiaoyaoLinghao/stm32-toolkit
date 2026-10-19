@@ -1,5 +1,5 @@
 import {encodeJson} from "./wire";
-import {debugFirmwareBindingGuard,deletedGroupGuard,exportArtifactGuard,groupPageGuard,historyPageGuard,monitorStatusGuard,parseEnvelope,pausedGuard,probesGuard,registersGuard,releasedGuard,resumedGuard,samplerStartGuard,stoppedGuard,variablesGuard,watchGroupGuard,watchGroupsGuard,type ApiResult,type DataGuard,type DownloadResult,type GroupImportDocument,type HistoryQuery,type MonitorApi} from "./contract";
+import {debugFirmwareBindingGuard,deletedGroupGuard,exportArtifactGuard,groupPageGuard,historyPageGuard,monitorStatusGuard,parseEnvelope,pausedGuard,probesGuard,registersGuard,releasedGuard,resumedGuard,samplerStartGuard,sourceCatalogPageGuard,sourceSelectionGuard,stoppedGuard,variablesGuard,watchGroupGuard,watchGroupsGuard,type ApiResult,type DataGuard,type DownloadResult,type GroupImportDocument,type HistoryQuery,type MonitorApi} from "./contract";
 
 type FetchLike=(input:RequestInfo|URL,init?:RequestInit)=>Promise<Response>;
 const pathSegment=(value:string)=>encodeURIComponent(value);
@@ -16,6 +16,17 @@ export function createMonitorApi(fetchImpl:FetchLike,origin:string):MonitorApi{
     probes:()=>call("GET","api/v1/probes","monitor.probes.list",probesGuard),
     variables:(value,cursor)=>call("GET","api/v1/catalog/variables"+query([["query",value],["limit","100"],["cursor",cursor]]),"monitor.catalog.variables",variablesGuard),
     registers:(value,cursor)=>call("GET","api/v1/catalog/registers"+query([["query",value],["limit","100"],["cursor",cursor]]),"monitor.catalog.registers",registersGuard),
+    sourceVariables:async(value,cursor,parentId,catalogId)=>{
+      const result=await call("GET","api/v1/catalog/source-variables"+query([["query",value],["limit","100"],["cursor",cursor],["parentId",parentId],["catalogId",catalogId]]),"monitor.catalog.source.variables",sourceCatalogPageGuard);
+      return result.ok&&(catalogId!==undefined&&result.data.catalogId!==catalogId||
+        result.data.items.some(item=>item.parentId!==(parentId??null)))
+        ?{ok:false,code:"MONITOR_RESPONSE_INVALID",message:"Monitor response is invalid"}:result;
+    },
+    sourceSelection:async(catalogId,id,selector)=>{
+      const result=await call("GET","api/v1/catalog/source-selection"+query([["catalogId",catalogId],["id",id],["selector",selector]]),"monitor.catalog.source.selection",sourceSelectionGuard);
+      return result.ok&&(result.data.catalogId!==catalogId||result.data.item.expression!==selector)
+        ?{ok:false,code:"MONITOR_RESPONSE_INVALID",message:"Monitor response is invalid"}:result;
+    },
     groups:(cursor)=>call("GET","api/v1/groups"+query([["limit","16"],["cursor",cursor]]),"monitor.groups.list",groupPageGuard),
     createGroup:(request)=>call("POST","api/v1/groups","monitor.groups.create",watchGroupGuard,request),
     updateGroup:(groupId,request)=>call("PATCH",`api/v1/groups/${pathSegment(groupId)}`,"monitor.groups.update",watchGroupGuard,request),

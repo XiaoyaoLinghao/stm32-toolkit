@@ -116,6 +116,29 @@ td code{white-space:normal;}
 .values-panel th,.values-panel td{padding:5px 10px;}
 .values-panel>p{padding:5px 12px;}
 .history-workspace{height:100%;min-width:0;overflow:auto;display:flex;flex-direction:column;gap:12px;max-width:1200px;margin:auto;}
+.source-view-tabs,.source-actions{display:flex;gap:5px;flex-wrap:wrap;margin:7px 0;}
+.source-view-tabs button[aria-selected="true"]{background:#eaf2ff;border-color:var(--signal);color:var(--signal-dark);font-weight:700;}
+.source-catalog-panel{min-width:0;}
+.source-catalog-panel label{display:flex;flex-direction:column;gap:3px;}
+.source-catalog-panel input{width:100%;min-width:0;}
+.source-catalog-panel>p{font-size:11px;color:var(--muted);margin:7px 0;}
+.source-coverage{display:grid;gap:3px;margin:7px 0;padding:8px;border:1px solid #e2bf83;border-radius:5px;background:var(--warn-bg);font-size:11px;overflow-wrap:anywhere;}
+.source-coverage button{justify-self:start;}
+.source-tree{max-height:50vh;overflow:auto;border:1px solid var(--border);border-radius:5px;padding:5px;}
+.source-tree details{min-width:0;margin:2px 0 2px 5px;}
+.source-tree summary{cursor:pointer;overflow-wrap:anywhere;font-size:11px;font-weight:600;padding:3px;}
+.source-tree ul,.source-children ul{list-style:none;padding:0;margin:0;}
+.source-item{min-width:0;padding:3px 0;border-top:1px solid var(--border);}
+.source-item-line{display:flex;align-items:start;gap:4px;min-width:0;}
+.source-item-label{min-width:0;flex:1;display:flex;flex-direction:column;gap:2px;overflow-wrap:anywhere;font-size:11px;}
+.source-item-label code{font-weight:650;}
+.source-item-label small{color:var(--muted);}
+.source-item-label .source-reason{color:var(--warn);}
+.source-expand,.source-expand-placeholder{flex:none;width:22px;min-height:22px;padding:0;text-align:center;}
+.source-expand{background:transparent;border:0;}
+.source-item-line>button:last-child{flex:none;min-height:22px;padding:0 6px;}
+.source-children{margin-left:14px;padding-left:6px;border-left:1px solid var(--border);}
+.source-children>p{font-size:10px;color:var(--muted);}
 .history-panel,.export-panel{flex:none;}
 .history-panel label,.export-panel label,.group-editor label{display:flex;flex-direction:column;gap:4px;margin:7px 0;}
 .history-panel label,.export-panel label{min-width:220px;}

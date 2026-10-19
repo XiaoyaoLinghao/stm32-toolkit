@@ -1,7 +1,7 @@
 import {afterEach,expect,it,vi} from "vitest";
 import {render,screen,fireEvent,waitFor} from "@testing-library/preact";
 import {App} from "../src/app";
-import {watchGroup} from "./fixtures";
+import {sourcePage,watchGroup} from "./fixtures";
 
 vi.mock("echarts/core",()=>({init:vi.fn(()=>null),use:vi.fn(),default:{init:vi.fn(()=>null),use:vi.fn()}}));
 vi.mock("echarts/charts",()=>({LineChart:class{}}));
@@ -18,6 +18,8 @@ function apiOverrides(){
     groups:vi.fn(async()=>ok({groups:[],nextCursor:null,revision:"0"})),
     variables:vi.fn(async()=>ok({items:[{selector:"counter",typeName:"int",kind:"int",byteSize:4,signed:true,encoding:null,qualifiers:[],aliases:[],enumValues:[],elementCount:null,elementKind:null,memberNames:[],group:{id:"cu:1",label:"main.c"}}],nextCursor:null})),
     registers:vi.fn(async()=>ok({items:[],nextCursor:null})),
+    sourceVariables:vi.fn(async()=>ok(sourcePage())),
+    sourceSelection:vi.fn(async()=>err("MONITOR_SOURCE_SELECTION_UNAVAILABLE","not configured")),
     createGroup:vi.fn(async()=>err("UNAVAILABLE","not configured")),
     updateGroup:vi.fn(async()=>err("UNAVAILABLE","not configured")),
     deleteGroup:vi.fn(async()=>err("UNAVAILABLE","not configured")),
@@ -65,6 +67,7 @@ it("keeps a queued newer create draft after the old Save ACK and a failed list G
   fireEvent.click(screen.getByRole("button",{name:"新建观测组"}));
   fireEvent.input(screen.getByLabelText("名称"),{target:{value:"A"}});
   fireEvent.click(screen.getByRole("button",{name:"关闭观测组"}));
+  fireEvent.click(screen.getByRole("tab",{name:"固件变量与寄存器"}));
   fireEvent.click(screen.getByRole("button",{name:"搜索/加载"}));
   await screen.findByText("main.c · 已加载 1 项");
   fireEvent.click(screen.getByText("main.c · 已加载 1 项"));
@@ -105,6 +108,7 @@ it("App retains the workbench and edited group draft when creation fails",async(
   fireEvent.click(screen.getByRole("button",{name:"新建观测组"}));
   fireEvent.input(screen.getByLabelText("名称"),{target:{value:"Motor"}});
   fireEvent.click(screen.getByRole("button",{name:"关闭观测组"}));
+  fireEvent.click(screen.getByRole("tab",{name:"固件变量与寄存器"}));
   fireEvent.input(screen.getByPlaceholderText("输入符号或寄存器前缀"),{target:{value:"counter"}});
   fireEvent.click(screen.getByRole("button",{name:"搜索/加载"}));
   await waitFor(()=>{expect(screen.getByRole("button",{name:"加入观测组草稿"})).toBeTruthy();});

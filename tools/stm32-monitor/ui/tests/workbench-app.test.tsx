@@ -2,7 +2,7 @@ import {afterEach,expect,it,vi} from "vitest";
 import {act,fireEvent,render,screen,waitFor} from "@testing-library/preact";
 import userEvent from "@testing-library/user-event";
 import {App} from "../src/app";
-import {watchGroup} from "./fixtures";
+import {sourcePage,watchGroup} from "./fixtures";
 import type {WatchGroup} from "../src/api/contract";
 
 vi.mock("echarts/core",()=>({init:vi.fn(()=>null),use:vi.fn(),default:{init:vi.fn(()=>null),use:vi.fn()}}));
@@ -19,6 +19,8 @@ const api=()=>({
   groups:vi.fn(async()=>ok({groups:[] as WatchGroup[],nextCursor:null,revision:"0"})),
   variables:vi.fn(async()=>ok({items:[{selector:"counter",typeName:"int",kind:"int",byteSize:4,signed:true,encoding:null,qualifiers:[],aliases:[],enumValues:[],elementCount:null,elementKind:null,memberNames:[],group:{id:"cu:1",label:"main.c"}}],nextCursor:null})),
   registers:vi.fn(async()=>ok({items:[],nextCursor:null})),
+  sourceVariables:vi.fn(async()=>ok(sourcePage())),
+  sourceSelection:vi.fn(async()=>failed("MONITOR_SOURCE_SELECTION_UNAVAILABLE")),
   history:vi.fn(async(_query:unknown)=>{void _query;return failed("HISTORY_DOWN");}),
   createGroup:vi.fn(async()=>failed("CREATE_DOWN")),
   importGroups:vi.fn(async()=>failed("IMPORT_DOWN")),
@@ -31,7 +33,8 @@ it("opens the group drawer after a directory add and retains the unsaved draft a
   prepared=api();
   render(<App/>);
   await screen.findByText("Project");
-  expect(screen.getByLabelText("变量与寄存器目录")).toBeTruthy();
+  expect(screen.getByLabelText("源码变量")).toBeTruthy();
+  fireEvent.click(screen.getByRole("tab",{name:"固件变量与寄存器"}));
   fireEvent.click(screen.getByRole("button",{name:"搜索/加载"}));
   fireEvent.click(await screen.findByText("main.c · 已加载 1 项"));
   fireEvent.click(screen.getByRole("button",{name:"加入观测组草稿"}));
@@ -142,6 +145,7 @@ it("allows an acknowledgement-required register into the draft but blocks an uns
   ],nextCursor:null}))} as unknown as ReturnType<typeof api>;
   render(<App/>);
   await screen.findByText("Project");
+  fireEvent.click(screen.getByRole("tab",{name:"固件变量与寄存器"}));
   fireEvent.click(screen.getByRole("tab",{name:"寄存器"}));
   fireEvent.click(screen.getByRole("button",{name:"搜索/加载"}));
   fireEvent.click(await screen.findByText("GPIO · 已加载 2 项"));
@@ -157,6 +161,7 @@ it("keeps a write retry confirmation above diagnostics and Escape cancels only t
   prepared=api();
   render(<App/>);
   await screen.findByText("Project");
+  fireEvent.click(screen.getByRole("tab",{name:"固件变量与寄存器"}));
   fireEvent.click(screen.getByRole("button",{name:"搜索/加载"}));
   fireEvent.click(await screen.findByText("main.c · 已加载 1 项"));
   fireEvent.click(screen.getByRole("button",{name:"加入观测组草稿"}));

@@ -82,7 +82,9 @@ describe("live envelope edge branches",()=>{
     const before={...seeded(),zoom:{start:25,end:75}};
     const next=reduceAcceptedLiveEnvelope(before,{event:stateEvent(2n,1n,5n),subscriberDropped:0n});
     expect(next.live.rows.size).toBe(0);
-    expect(next.catalog).toEqual({variables:null,registers:null});
+    expect(next.catalog.variables).toBeNull();
+    expect(next.catalog.registers).toBeNull();
+    expect(next.catalog.source.page).toBeNull();
     expect(next.zoom).toEqual({start:0,end:100});
     expect(next.notices[0]?.text).toContain("new binding");
     expect(next.transport.needsStatusRefresh).toBe(false);

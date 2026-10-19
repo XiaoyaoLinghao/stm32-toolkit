@@ -2345,6 +2345,69 @@ def test_runtime_lock_rejects_hardlink_redirect_and_descriptor_replacement_witho
         replaced_lock.acquire()
 
 
+def test_source_dispatch_rechecks_same_epoch_binding_and_observation_after_await(tmp_path: Path) -> None:
+    runtime, config, *_ = _protocol_runtime(tmp_path)
+
+    class DelayedProvider:
+        def __init__(self) -> None:
+            self.entered = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def page(self, **_kwargs):
+            self.entered.set()
+            await self.release.wait()
+            return {"catalogId": "c" * 64}
+
+        async def select(self, **_kwargs):
+            self.entered.set()
+            await self.release.wait()
+            return {"catalogId": "c" * 64, "item": {"kind": "variable", "expression": "counter"}}
+
+        def close(self) -> None:
+            self.release.set()
+
+    async def scenario() -> None:
+        await runtime.start(config)
+        binding = SimpleNamespace(probe_id="probe-a", build_id="build")
+        runtime._observation = SimpleNamespace(binding=binding)
+        try:
+            provider = DelayedProvider()
+            runtime._source_provider = provider
+            pending = asyncio.create_task(runtime.dispatch(
+                "monitor.catalog.source.variables", {}, query={"limit": "1"}))
+            await provider.entered.wait()
+            binding.build_id = "replacement"
+            provider.release.set()
+            result = await pending
+            assert not result.ok and result.code == "MONITOR_SOURCE_CONTEXT_CHANGED"
+
+            provider = DelayedProvider()
+            runtime._source_provider = provider
+            pending = asyncio.create_task(runtime.dispatch(
+                "monitor.catalog.source.selection", {},
+                query={"catalogId": "c" * 64, "id": "a" * 64, "selector": "counter"}))
+            await provider.entered.wait()
+            runtime._observation = None
+            provider.release.set()
+            result = await pending
+            assert not result.ok and result.code == "MONITOR_SOURCE_CONTEXT_CHANGED"
+            runtime._observation = SimpleNamespace(binding=SimpleNamespace(probe_id="probe-a"))
+            provider = DelayedProvider()
+            provider.release.set()
+            runtime._source_provider = provider
+            accepted = await runtime.dispatch("monitor.catalog.source.variables", {}, query={"limit": "1"})
+            assert accepted.ok and accepted.operation == "monitor.catalog.source.variables"
+            accepted_selection = await runtime.dispatch(
+                "monitor.catalog.source.selection", {},
+                query={"catalogId": "c" * 64, "id": "a" * 64, "selector": "counter"})
+            assert accepted_selection.ok and accepted_selection.operation == "monitor.catalog.source.selection"
+        finally:
+            runtime._observation = None
+            await runtime.stop()
+
+    asyncio.run(scenario())
+
+
 def test_default_runtime_factories_load_and_existing_lock_content_is_exact(
     tmp_path: Path,
 ) -> None:

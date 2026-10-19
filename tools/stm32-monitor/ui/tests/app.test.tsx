@@ -45,7 +45,7 @@ beforeEach(()=>{
 it("App renders the monitor shell with identity and probe panels after load",async()=>{
   render(<App/>);
   expect(await screen.findByText("Project")).toBeTruthy();
-  expect(screen.getByLabelText("变量与寄存器目录")).toBeTruthy();
+  expect(screen.getByLabelText("源码变量")).toBeTruthy();
   fireEvent.click(screen.getByRole("button",{name:"连接与固件详情"}));
   expect(screen.getByLabelText("探针连接")).toBeTruthy();
   fireEvent.click(screen.getByRole("button",{name:"关闭设备详情"}));

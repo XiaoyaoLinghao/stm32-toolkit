@@ -234,6 +234,126 @@ class _CatalogSymbol:
     location_error: str | None
     type_error: str | None = None
     catalog_group: CatalogGroup | None = None
+    source_file: str | None = None
+    decl_line: int | None = None
+    decl_column: int | None = None
+    function: str | None = None
+    cu_file: str | None = None
+
+
+@dataclass(frozen=True)
+class DwarfSourceSymbol:
+    """Source attribution for one existing DWARF catalog entry.
+
+    This is metadata only: selection and decoding still use ``lookup``.
+    """
+
+    name: str
+    file: str | None
+    line: int | None
+    column: int | None
+    function: str | None
+    compilation_unit: str | None
+    dwarf_type: DwarfType | None
+    address: int | None
+    location_error: str | None
+    type_error: str | None
+
+
+def _project_relative_source(project_root: Path, raw: str) -> str | None:
+    if not raw or len(raw) > 4096 or any(ord(c) < 32 for c in raw):
+        return None
+    try:
+        path = Path(raw)
+        if not path.is_absolute():
+            return None
+        relative = path.resolve(strict=True).relative_to(project_root.resolve(strict=True))
+        result = relative.as_posix()
+        return result if result != "." and len(result) <= 512 else None
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
+def _source_owner(die: object, cu: object, boundaries: frozenset[int]) -> object:
+    """Follow same-CU origin/specification chains without trusting cyclic offsets."""
+    current = die
+    seen: set[int] = set()
+    for _ in range(8):
+        offset = getattr(current, "offset", None)
+        if type(offset) is not int or offset in seen:
+            break
+        seen.add(offset)
+        if "DW_AT_decl_file" in current.attributes and "DW_AT_decl_line" in current.attributes:
+            return current
+        link = next((key for key in ("DW_AT_specification", "DW_AT_abstract_origin")
+                     if key in current.attributes), None)
+        if link is None:
+            break
+        try:
+            target = current.get_DIE_from_attribute(link)
+        except (AttributeError, KeyError, TypeError, ValueError, ElfToolsDwarfError):
+            break
+        if (target is None or getattr(target, "cu", None) is not cu
+                or getattr(target, "offset", None) not in boundaries
+                or getattr(target, "tag", None) != getattr(die, "tag", None)):
+            break
+        current = target
+    return current
+
+
+def _die_source(die: object, cu: object, dwarf: object, project_root: Path,
+                boundaries: frozenset[int]) -> tuple[str | None, int | None, int | None]:
+    owner = _source_owner(die, cu, boundaries)
+    file_index = _integer_attribute(owner, "DW_AT_decl_file")
+    line = _integer_attribute(owner, "DW_AT_decl_line")
+    column = _integer_attribute(owner, "DW_AT_decl_column")
+    if file_index is None or line is None or line < 1:
+        return None, None, None
+    try:
+        program = dwarf.line_program_for_CU(cu)
+        # DWARF 2-4 file and directory references are one-based; DWARF 5
+        # indexes both tables from zero.  A version-5 file zero is valid.
+        version = program.header.version
+        first_index = 0 if version >= 5 else 1
+        files = program.header.file_entry
+        if file_index < first_index or file_index - first_index >= len(files):
+            return None, None, None
+        entry = files[file_index - first_index]
+        name = entry.name.decode("utf-8", "strict") if isinstance(entry.name, bytes) else entry.name
+        if not isinstance(name, str):
+            return None, None, None
+        directory_index = entry.dir_index
+        if not Path(name).is_absolute():
+            if version < 5 and directory_index == 0:
+                directory = cu.get_top_DIE().attributes["DW_AT_comp_dir"].value
+            else:
+                directories = program.header.include_directory
+                directory_offset = directory_index - first_index
+                if directory_offset < 0 or directory_offset >= len(directories):
+                    return None, None, None
+                directory = directories[directory_offset]
+            if isinstance(directory, bytes):
+                directory = directory.decode("utf-8", "strict")
+            if not isinstance(directory, str):
+                return None, None, None
+            name = str(Path(directory) / name)
+        relative = _project_relative_source(project_root, name)
+        return relative, line if relative is not None else None, column if column and column > 0 else None
+    except (AttributeError, KeyError, IndexError, TypeError, ValueError, UnicodeError, OSError,
+            ElfToolsDwarfError):
+        return None, None, None
+
+
+def _die_function(die: object) -> str | None:
+    parent = getattr(die, "_parent", None)
+    for _ in range(_MAX_DIE_DEPTH):
+        if parent is None:
+            return None
+        if getattr(parent, "tag", None) == "DW_TAG_subprogram":
+            name = _name(parent, "")
+            return name if _IDENTIFIER.fullmatch(name) else None
+        parent = getattr(parent, "_parent", None)
+    return None
 
 
 def _cu_catalog_group(cu: object, project_root: Path) -> CatalogGroup:
@@ -773,10 +893,15 @@ class DwarfCatalog:
                     address, location_error = cls._location(
                         die, cu, location_parser, expression_parser
                     )
+                    source_file, decl_line, decl_column = _die_source(
+                        die, cu, dwarf, source.canonical_project_root, frozen_boundaries
+                    )
+                    cu_file = cu_group.label if "/" in cu_group.label else None
                     entries.setdefault(name, []).append(
                         _CatalogSymbol(
                             name, dwarf_type, address, location_error, type_error,
-                            cu_group,
+                            cu_group, source_file, decl_line, decl_column,
+                            _die_function(die), cu_file,
                         )
                     )
             frozen = {name: tuple(values) for name, values in entries.items()}
@@ -1055,6 +1180,18 @@ class DwarfCatalog:
             return None, "DWARF_LOCATION_UNAVAILABLE"
         except (ElfToolsDwarfError, KeyError, TypeError, ValueError, IndexError, OverflowError):
             return None, "DWARF_LOCATION_UNSUPPORTED"
+
+    def source_symbols(self) -> tuple[DwarfSourceSymbol, ...]:
+        """Return bounded immutable attribution metadata without revalidating a probe."""
+        return tuple(
+            DwarfSourceSymbol(
+                symbol.name, symbol.source_file, symbol.decl_line,
+                symbol.decl_column, symbol.function, symbol.cu_file,
+                symbol.dwarf_type, symbol.address, symbol.location_error,
+                symbol.type_error,
+            )
+            for symbols in self._symbols.values() for symbol in symbols
+        )
 
     def lookup(self, expression: str) -> DwarfSelection:
         if not isinstance(expression, str):
