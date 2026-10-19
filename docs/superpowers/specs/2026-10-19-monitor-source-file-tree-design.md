@@ -23,6 +23,8 @@ AST中项目内但不在权威snapshot的文件不能静默加入“已验证输
 
 适配器新增不可变SourceFunction元数据（稳定id、name、file、line/column、translationUnits）；SourceDeclaration追加兼容默认字段function_id。AST遍历FunctionDecl时以真实源位置、名称及声明身份构造稳定词法函数scope id，直接传给其ParmVarDecl/VarDecl，不能凭function字符串反向猜关联，也不能用Clang进程地址id。保留函数声明/定义的源码位置区别，跨TU同一源码作用域可合并并保留translationUnits；函数内部block path原样保留。文件级scope由文件身份独立构造，函数scope ID沿用该真实AST关联。空函数也有scope，空文件不伪造变量。
 
+函数体中包含纳管decls.inc等文件时，局部声明的file可以与FunctionDecl.file不同。provider按`(声明file,真实AST function_id)`投影scope并稳定生成公开scope id，函数名称只取该SourceFunction；空函数在自身文件仍有scope。变量必须归其真实声明文件，不能因为词法函数在main.c而把inc中的变量藏到main.c。文件级global只接受真实无函数的声明；局部/参数缺失有效function_id时显式partial并排除孤儿，不能猜函数或误挂全局。真实离线body-include fixture验证该归属。
+
 仍由一个provider拥有最多两个base/view缓存、同key合并、partial根重试、取消回收和原Windows Job生命周期；不修改通用process.py。昂贵元数据构建/查询离开事件循环，按file/scope键预索引，不新增全量平方匹配。保留原编译器预算和身份复核。
 
 ## 公共合同
