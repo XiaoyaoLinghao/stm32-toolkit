@@ -4,10 +4,22 @@ import {describe,expect,it} from "vitest";
 import {createMonitorApi} from "../src/api/client";
 
 const wire=readFileSync(resolve(process.cwd(),"../tests/fixtures/source_catalog_envelope.json"),"utf8");
+const treeWire=readFileSync(resolve(process.cwd(),"../tests/fixtures/source_tree_envelope.json"),"utf8");
 const origin="http://monitor.test";
 const response=(text:string)=>new Response(text,{headers:{"Content-Type":"application/json"}});
 
 describe("source catalog shared backend wire",()=>{
+  it("parses complete source files from the backend tree envelope",async()=>{
+    let requested="";
+    const api=createMonitorApi(async input=>{requested=String(input);return response(treeWire);},origin);
+    const result=await api.sourceTree("");
+    expect(requested).toContain("/api/v1/catalog/source-tree");
+    expect(result.ok).toBe(true);
+    if(!result.ok)return;
+    expect(result.data.items.map(item=>item.file)).toEqual(["Src/main.c","Src/safe.c","Src/empty.c"]);
+    expect(result.data.items[2]).toMatchObject({kind:"file",variableCount:0,scopeCount:0});
+  });
+
   it("parses the backend-emitted envelope through the real client without a probe",async()=>{
     let requested="";
     const api=createMonitorApi(async input=>{requested=String(input);return response(wire);},origin);

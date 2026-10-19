@@ -32,6 +32,7 @@ if os.name == "nt":
 
 MAX_UNITS = 256
 MAX_DECLARATIONS = 100_000
+MAX_FUNCTIONS = 100_000
 MAX_UNIT_AST_BYTES = 80 * 1024 * 1024
 MAX_UNIT_PREPROCESSED_BYTES = 32 * 1024 * 1024
 MAX_TOTAL_AST_BYTES = 1024 * 1024 * 1024
@@ -78,6 +79,17 @@ class SourceDeclaration:
     function: str | None
     scope_path: tuple[str, ...]
     translation_units: tuple[str, ...]
+    function_id: str | None = None
+
+
+@dataclass(frozen=True)
+class SourceFunction:
+    id: str
+    name: str
+    file: str
+    line: int | None
+    column: int | None
+    translation_units: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -91,6 +103,7 @@ class SourceIndex:
     truncated: bool
     declarations: tuple[SourceDeclaration, ...]
     argument_fingerprint: str
+    functions: tuple[SourceFunction, ...] = ()
 
     @property
     def complete(self) -> bool:
@@ -636,6 +649,7 @@ class ClangSourceAdapter:
             truncated = False
         issues: list[SourceIssue] = []
         declarations: dict[str, SourceDeclaration] = {}
+        functions: dict[str, SourceFunction] = {}
         parsed = 0
         total_bytes = 0
         for source, cwd, command in commands:
@@ -667,7 +681,20 @@ class ClangSourceAdapter:
                 ast = json.loads(raw)
                 if not isinstance(ast, dict):
                     raise ValueError("AST root is invalid")
-                for declaration in _declarations(ast, root, source, content):
+                for entry in _discover(ast, root, source, content):
+                    if isinstance(entry, SourceFunction):
+                        previous_function = functions.get(entry.id)
+                        if previous_function is None:
+                            if len(functions) >= MAX_FUNCTIONS:
+                                truncated = True
+                                raise SourceCatalogError("MONITOR_SOURCE_INDEX_FAILED", "Source function limit was reached")
+                            functions[entry.id] = entry
+                        else:
+                            functions[entry.id] = SourceFunction(
+                                entry.id, entry.name, entry.file, entry.line, entry.column,
+                                tuple(sorted(set(previous_function.translation_units + entry.translation_units))))
+                        continue
+                    declaration = entry
                     previous = declarations.get(declaration.id)
                     if previous is None:
                         if len(declarations) >= MAX_DECLARATIONS:
@@ -679,7 +706,8 @@ class ClangSourceAdapter:
                         declarations[declaration.id] = SourceDeclaration(
                             previous.id, previous.entity_id, previous.name, previous.type_name, previous.file,
                             previous.line, previous.column, previous.storage,
-                            previous.scope_kind, previous.function, previous.scope_path, units)
+                            previous.scope_kind, previous.function, previous.scope_path, units,
+                            previous.function_id)
                 parsed += 1
             except (OSError, UnicodeError, TypeError, ValueError, SourceCatalogError, json.JSONDecodeError):
                 issues.append(SourceIssue(source, "MONITOR_SOURCE_INDEX_FAILED", "Compilation unit could not be indexed within the source policy"))
@@ -687,8 +715,9 @@ class ClangSourceAdapter:
                     truncated = True
                     break
         ordered = tuple(sorted(declarations.values(), key=lambda x: (x.file.casefold(), x.line or 0, x.column or 0, x.name, x.id)))
+        ordered_functions = tuple(sorted(functions.values(), key=lambda x: (x.file.casefold(), x.line or 0, x.column or 0, x.name, x.id)))
         return SourceIndex("GNU Arm GCC + Clang", plan.engine_version, input_kind, total_units, parsed,
-                           tuple(issues), truncated, ordered, plan.fingerprint)
+                           tuple(issues), truncated, ordered, plan.fingerprint, ordered_functions)
 
 
 def _line_map(preprocessed: bytes) -> tuple[tuple[int, ...], tuple[tuple[str | None, int | None], ...]]:
@@ -717,16 +746,16 @@ def _line_map(preprocessed: bytes) -> tuple[tuple[int, ...], tuple[tuple[str | N
     return tuple(starts), tuple(locations)
 
 
-def _declarations(ast: dict[str, object], root: Path, unit: str,
-                  preprocessed: bytes) -> Iterable[SourceDeclaration]:
+def _discover(ast: dict[str, object], root: Path, unit: str,
+              preprocessed: bytes) -> Iterable[SourceDeclaration | SourceFunction]:
     starts, locations = _line_map(preprocessed)
     file_cache: dict[str, tuple[bytes, tuple[int, ...]]] = {}
     entities: dict[str, str] = {}
     # Clang omits repeated presumedFile/presumedLine. GCC line markers map each
     # AST byte offset back to the active source file and source line.
-    stack: list[tuple[dict[str, object], str | None, tuple[str, ...]]] = [(ast, None, ())]
+    stack: list[tuple[dict[str, object], str | None, str | None, tuple[str, ...]]] = [(ast, None, None, ())]
     while stack:
-        node, function, scope = stack.pop()
+        node, function, function_id, scope = stack.pop()
         kind = node.get("kind")
         location = node.get("loc")
         loc = location if isinstance(location, dict) else {}
@@ -737,9 +766,32 @@ def _declarations(ast: dict[str, object], root: Path, unit: str,
         mapped_file, mapped_line = locations[position] if position >= 0 else (None, None)
         raw_file = point.get("presumedFile") or mapped_file
         raw_line = point.get("presumedLine") or mapped_line
-        if kind == "FunctionDecl" and isinstance(node.get("name"), str):
-            function = node["name"]
+        if kind == "FunctionDecl" and node.get("isImplicit") is not True:
+            name = node.get("name")
+            if (not isinstance(name, str) or not name or len(name) > 256
+                    or any(ord(character) < 32 for character in name)):
+                raise SourceCatalogError("MONITOR_SOURCE_INDEX_FAILED", "A function name exceeds the source catalog policy")
+            function = name
+            function_id = None
             scope = ()
+            if isinstance(raw_file, str) and not (raw_file.startswith("<") and raw_file.endswith(">")):
+                candidate = Path(raw_file)
+                external = False
+                if candidate.is_absolute():
+                    try:
+                        candidate.relative_to(root)
+                    except ValueError:
+                        external = True
+                if not external:
+                    _, relative = _safe_path(root, candidate)
+                    line = raw_line if type(raw_line) is int and raw_line > 0 else None
+                    column = point.get("col") if type(point.get("col")) is int and point["col"] > 0 else None
+                    identity = ["function", relative, line, column, function]
+                    if line is None or column is None:
+                        identity.extend((unit, offset))
+                    function_id = hashlib.sha256(json.dumps(
+                        identity, ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
+                    yield SourceFunction(function_id, function, relative, line, column, (unit,))
         elif kind in ("CompoundStmt", "ForStmt", "WhileStmt", "DoStmt", "SwitchStmt") and function is not None:
             begin = node.get("range")
             begin = begin.get("begin") if isinstance(begin, dict) else {}
@@ -803,9 +855,15 @@ def _declarations(ast: dict[str, object], root: Path, unit: str,
                 if isinstance(ast_id, str):
                     entities[ast_id] = entity
                 yield SourceDeclaration(key, entity, name, type_name, relative, line, column,
-                                        storage, scope_kind, function, scope, (unit,))
+                                        storage, scope_kind, function, scope, (unit,), function_id)
         children = node.get("inner")
         if isinstance(children, list):
             for child in reversed(children):
                 if isinstance(child, dict):
-                    stack.append((child, function, scope))
+                    stack.append((child, function, function_id, scope))
+
+
+def _declarations(ast: dict[str, object], root: Path, unit: str,
+                  preprocessed: bytes) -> Iterable[SourceDeclaration]:
+    return (item for item in _discover(ast, root, unit, preprocessed)
+            if isinstance(item, SourceDeclaration))

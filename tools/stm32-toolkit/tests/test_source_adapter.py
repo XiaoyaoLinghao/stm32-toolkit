@@ -64,6 +64,47 @@ def test_installed_gcc_preprocessing_preserves_real_conditional_branches_and_ast
     assert len({decl.entity_id for decl in shared if "Src/a.c" in decl.translation_units}) == 1
 
 
+def test_real_function_scope_identity_survives_body_include(tmp_path: Path) -> None:
+    adapter = ClangSourceAdapter()
+    if adapter.preprocessor is None or adapter.compiler is None:
+        pytest.skip("installed GNU Arm GCC and Clang required")
+    (tmp_path / "Src").mkdir()
+    (tmp_path / "Inc").mkdir()
+    (tmp_path / "Inc" / "decls.inc").write_text("int local_from_include = 7;\n", encoding="utf-8")
+    (tmp_path / "Src" / "main.c").write_text(
+        'int main(void) {\n#include "decls.inc"\nreturn local_from_include;\n}\n'
+        'void empty(void) {}\n', encoding="utf-8")
+    try:
+        index = adapter.index(_model(tmp_path, ("Src/main.c",)))
+    finally:
+        adapter.close()
+    assert index.complete, index.issues
+    main = next(function for function in index.functions if function.name == "main")
+    assert any(function.name == "empty" and function.file == "Src/main.c" for function in index.functions)
+    local = next(declaration for declaration in index.declarations if declaration.name == "local_from_include")
+    assert local.file == "Inc/decls.inc" and local.function_id == main.id
+    assert local.function == "main" and local.scope_kind == "local"
+
+
+def test_real_ucn_function_keeps_ascii_local_out_of_global_scope(tmp_path: Path) -> None:
+    adapter = ClangSourceAdapter()
+    if adapter.preprocessor is None or adapter.compiler is None:
+        pytest.skip("installed GNU Arm GCC and Clang required")
+    (tmp_path / "Src").mkdir()
+    (tmp_path / "Inc").mkdir()
+    (tmp_path / "Src" / "main.c").write_text(
+        "void \\u51fd\\u6570(void) { int local = 0; }\n", encoding="utf-8")
+    try:
+        index = adapter.index(_model(tmp_path, ("Src/main.c",)))
+    finally:
+        adapter.close()
+    assert index.complete, index.issues
+    function = next(entry for entry in index.functions if entry.name == "函数")
+    local = next(entry for entry in index.declarations if entry.name == "local")
+    assert local.function_id == function.id
+    assert local.function == "函数" and local.scope_kind == "local"
+
+
 def test_dwarf_line_tables_v4_and_v5_use_their_own_file_and_directory_indexes(tmp_path: Path) -> None:
     adapter = ClangSourceAdapter()
     if adapter.preprocessor is None or adapter.compiler is None:

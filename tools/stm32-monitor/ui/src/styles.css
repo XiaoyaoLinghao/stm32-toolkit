@@ -125,8 +125,13 @@ td code{white-space:normal;}
 .source-coverage{display:grid;gap:3px;margin:7px 0;padding:8px;border:1px solid #e2bf83;border-radius:5px;background:var(--warn-bg);font-size:11px;overflow-wrap:anywhere;}
 .source-coverage button{justify-self:start;}
 .source-tree{max-height:50vh;overflow:auto;border:1px solid var(--border);border-radius:5px;padding:5px;}
-.source-tree details{min-width:0;margin:2px 0 2px 5px;}
-.source-tree summary{cursor:pointer;overflow-wrap:anywhere;font-size:11px;font-weight:600;padding:3px;}
+.source-tree>ul{margin:0;}
+.source-folder,.source-file,.source-scope{min-width:0;margin:2px 0;}
+.source-folder>button,.source-file>button,.source-scope>button{display:block;width:100%;text-align:left;overflow-wrap:anywhere;font-size:11px;font-weight:600;padding:4px 6px;border:0;background:transparent;color:var(--ink);}
+.source-folder>button:hover,.source-file>button:hover,.source-scope>button:hover{background:#eaf2ff;}
+.source-folder>button:focus-visible,.source-file>button:focus-visible,.source-scope>button:focus-visible{outline:2px solid var(--signal);outline-offset:-2px;}
+.source-file>button{color:var(--signal-dark);}
+.source-scope>button{font-weight:500;}
 .source-tree ul,.source-children ul{list-style:none;padding:0;margin:0;}
 .source-item{min-width:0;padding:3px 0;border-top:1px solid var(--border);}
 .source-item-line{display:flex;align-items:start;gap:4px;min-width:0;}

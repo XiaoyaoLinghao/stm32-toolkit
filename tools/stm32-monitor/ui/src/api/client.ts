@@ -1,5 +1,5 @@
 import {encodeJson} from "./wire";
-import {debugFirmwareBindingGuard,deletedGroupGuard,exportArtifactGuard,groupPageGuard,historyPageGuard,monitorStatusGuard,parseEnvelope,pausedGuard,probesGuard,registersGuard,releasedGuard,resumedGuard,samplerStartGuard,sourceCatalogPageGuard,sourceSelectionGuard,stoppedGuard,variablesGuard,watchGroupGuard,watchGroupsGuard,type ApiResult,type DataGuard,type DownloadResult,type GroupImportDocument,type HistoryQuery,type MonitorApi} from "./contract";
+import {debugFirmwareBindingGuard,deletedGroupGuard,exportArtifactGuard,groupPageGuard,historyPageGuard,monitorStatusGuard,parseEnvelope,pausedGuard,probesGuard,registersGuard,releasedGuard,resumedGuard,samplerStartGuard,sourceCatalogPageGuard,sourceSelectionGuard,sourceTreePageGuard,stoppedGuard,variablesGuard,watchGroupGuard,watchGroupsGuard,type ApiResult,type DataGuard,type DownloadResult,type GroupImportDocument,type HistoryQuery,type MonitorApi} from "./contract";
 
 type FetchLike=(input:RequestInfo|URL,init?:RequestInit)=>Promise<Response>;
 const pathSegment=(value:string)=>encodeURIComponent(value);
@@ -16,8 +16,14 @@ export function createMonitorApi(fetchImpl:FetchLike,origin:string):MonitorApi{
     probes:()=>call("GET","api/v1/probes","monitor.probes.list",probesGuard),
     variables:(value,cursor)=>call("GET","api/v1/catalog/variables"+query([["query",value],["limit","100"],["cursor",cursor]]),"monitor.catalog.variables",variablesGuard),
     registers:(value,cursor)=>call("GET","api/v1/catalog/registers"+query([["query",value],["limit","100"],["cursor",cursor]]),"monitor.catalog.registers",registersGuard),
-    sourceVariables:async(value,cursor,parentId,catalogId)=>{
-      const result=await call("GET","api/v1/catalog/source-variables"+query([["query",value],["limit","100"],["cursor",cursor],["parentId",parentId],["catalogId",catalogId]]),"monitor.catalog.source.variables",sourceCatalogPageGuard);
+    sourceTree:async(value,cursor,parentId,catalogId)=>{
+      const result=await call("GET","api/v1/catalog/source-tree"+query([["query",value],["limit","1000"],["cursor",cursor],["parentId",parentId],["catalogId",catalogId]]),"monitor.catalog.source.tree",sourceTreePageGuard);
+      return result.ok&&(catalogId!==undefined&&result.data.catalogId!==catalogId||
+        result.data.items.some(item=>item.parentId!==(parentId??null)||item.kind!==(parentId===undefined?"file":"scope")))
+        ?{ok:false,code:"MONITOR_RESPONSE_INVALID",message:"Monitor response is invalid"}:result;
+    },
+    sourceVariables:async(value,cursor,parentId,catalogId,scopeId)=>{
+      const result=await call("GET","api/v1/catalog/source-variables"+query([["query",value],["limit","100"],["cursor",cursor],["parentId",parentId],["scopeId",scopeId],["catalogId",catalogId]]),"monitor.catalog.source.variables",sourceCatalogPageGuard);
       return result.ok&&(catalogId!==undefined&&result.data.catalogId!==catalogId||
         result.data.items.some(item=>item.parentId!==(parentId??null)))
         ?{ok:false,code:"MONITOR_RESPONSE_INVALID",message:"Monitor response is invalid"}:result;

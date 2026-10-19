@@ -84,7 +84,7 @@ describe("live envelope edge branches",()=>{
     expect(next.live.rows.size).toBe(0);
     expect(next.catalog.variables).toBeNull();
     expect(next.catalog.registers).toBeNull();
-    expect(next.catalog.source.page).toBeNull();
+    expect(next.catalog.source.tree).toBeNull();
     expect(next.zoom).toEqual({start:0,end:100});
     expect(next.notices[0]?.text).toContain("new binding");
     expect(next.transport.needsStatusRefresh).toBe(false);

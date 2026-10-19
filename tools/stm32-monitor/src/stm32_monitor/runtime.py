@@ -955,7 +955,7 @@ class MonitorRuntime:
             if operation == "monitor.probes.list":
                 _exact(payload, set())
                 return await self._list_probes(operation, config, failure, success)
-            if operation in {"monitor.catalog.source.variables", "monitor.catalog.source.selection"}:
+            if operation in {"monitor.catalog.source.tree", "monitor.catalog.source.variables", "monitor.catalog.source.selection"}:
                 from .source_catalog import SourceCatalogFailure, SourceCatalogProvider, _binding_signature
                 from stm32_toolkit.debug.source import SourceCatalogError
 
@@ -972,18 +972,25 @@ class MonitorRuntime:
                 binding_epoch = self._binding_epoch
                 binding_signature = _binding_signature(binding)
                 try:
-                    if operation == "monitor.catalog.source.variables":
-                        if set(query) - {"query", "cursor", "limit", "parentId", "catalogId"}:
+                    if operation in {"monitor.catalog.source.tree", "monitor.catalog.source.variables"}:
+                        tree = operation == "monitor.catalog.source.tree"
+                        allowed = ({"query", "cursor", "limit", "parentId", "catalogId"} if tree else
+                                   {"query", "cursor", "limit", "parentId", "scopeId", "catalogId"})
+                        if set(query) - allowed:
                             raise SourceCatalogFailure("MONITOR_SOURCE_INDEX_FAILED", "Source catalog query is invalid")
-                        limit_text = query.get("limit", "100")
-                        if not limit_text.isascii() or not limit_text.isdigit() or len(limit_text) > 3:
+                        limit_text = query.get("limit", "1000" if tree else "100")
+                        if not limit_text.isascii() or not limit_text.isdigit() or len(limit_text) > (4 if tree else 3):
                             raise SourceCatalogFailure("MONITOR_SOURCE_INDEX_FAILED", "Source catalog limit is invalid")
-                        data = await provider.page(
+                        method = provider.tree if tree else provider.page
+                        parameters = dict(
                             query=query.get("query", ""), cursor=query.get("cursor"),
                             limit=int(limit_text), parent_id=query.get("parentId"),
                             catalog_id=query.get("catalogId"), binding=binding,
                             binding_epoch=binding_epoch,
                         )
+                        if not tree:
+                            parameters["scope_id"] = query.get("scopeId")
+                        data = await method(**parameters)
                     else:
                         if set(query) != {"catalogId", "id", "selector"}:
                             raise SourceCatalogFailure("MONITOR_SOURCE_SELECTION_UNAVAILABLE", "Source selection is invalid")

@@ -13,7 +13,7 @@ from types import SimpleNamespace
 import pytest
 
 import stm32_monitor.source_catalog as module
-from stm32_toolkit.debug.source import ClangSourceAdapter, SourceDeclaration, SourceIndex, SourceIssue, SourcePlan
+from stm32_toolkit.debug.source import ClangSourceAdapter, SourceDeclaration, SourceFunction, SourceIndex, SourceIssue, SourcePlan
 from stm32_toolkit.debug.types import DwarfMember, DwarfType
 from stm32_toolkit.debug.dwarf import DwarfSourceSymbol
 
@@ -26,6 +26,24 @@ def test_shared_wire_fixture_uses_backend_item_serializer() -> None:
     assert fixture["operation"] == "monitor.catalog.source.variables"
     assert fixture["data"]["items"] == [item.to_dict()]
     assert fixture["data"]["identity"]["bindingEpoch"] == 0
+
+
+def test_shared_tree_wire_fixture_uses_backend_page_serializer() -> None:
+    fixture = json.loads((Path(__file__).parent / "fixtures" / "source_tree_envelope.json").read_text(encoding="utf-8"))
+    assert fixture["operation"] == "monitor.catalog.source.tree"
+    index = SourceIndex("GNU Arm GCC + Clang", "gcc:14.3.1;clang:21.1.1", "compdb", 1, 1,
+                        (), False, (), "f" * 64)
+    view = module._View("a" * 64, fixture["data"]["identity"], index,
+                        None, (), {}, None, False, {})
+    items = (
+        {"kind": "file", "id": "d" * 64, "parentId": None, "file": "Src/main.c", "name": "main.c",
+         "variableCount": 120, "scopeCount": 2},
+        {"kind": "file", "id": "e" * 64, "parentId": None, "file": "Src/safe.c", "name": "safe.c",
+         "variableCount": 1, "scopeCount": 1},
+        {"kind": "file", "id": "f" * 64, "parentId": None, "file": "Src/empty.c", "name": "empty.c",
+         "variableCount": 0, "scopeCount": 0},
+    )
+    assert fixture["data"] == module._metadata_page_payload(view, items, "", None, 1000, None)
 
 
 class _Adapter:
@@ -430,6 +448,148 @@ def test_legal_long_translation_units_fit_page_budget_with_actual_cursor() -> No
     assert len(json.dumps(first, ensure_ascii=False, separators=(",", ":")).encode("utf-8")) < 1024 * 1024
     second = module._page_payload(view, items, 100, "", first["nextCursor"], 100, None)
     assert second["items"][0]["id"] == items[len(first["items"])].id
+
+
+def test_tree_real_ast_files_scopes_and_independent_variable_pages(
+        monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    adapter = ClangSourceAdapter()
+    if adapter.preprocessor is None or adapter.compiler is None:
+        pytest.skip("installed GNU Arm GCC and Clang required")
+    (tmp_path / "Src").mkdir()
+    (tmp_path / "Inc").mkdir()
+    (tmp_path / "Inc" / "decls.inc").write_text("int included_local = 7;\n", encoding="utf-8")
+    (tmp_path / "Inc" / "header.h").write_text("extern int header_value;\n", encoding="utf-8")
+    (tmp_path / "Src" / "main.c").write_text(
+        '#include "header.h"\n' + "".join(f"int main_{number};\n" for number in range(120)) +
+        'int main(void) {\n#include "decls.inc"\nreturn included_local;\n}\n'
+        'void empty_function(void) {}\n', encoding="utf-8")
+    (tmp_path / "Src" / "safe.c").write_text("int safe_value;\n", encoding="utf-8")
+    (tmp_path / "Src" / "empty.c").write_text("/* no declarations */\n", encoding="utf-8")
+    model = SimpleNamespace(project_root=tmp_path, logical_project_id="project",
+                            target=SimpleNamespace(device="STM32F407VG"),
+                            build=SimpleNamespace(sources=("Src/main.c", "Src/safe.c", "Src/empty.c"),
+                                                  include_paths=("Inc",), defines=(), compile_options=(), presets=()))
+    paths = ("Src/main.c", "Src/safe.c", "Src/empty.c", "Inc/header.h", "Inc/decls.inc")
+    facts = module._Facts(model, "b" * 64, None, None, None, None,
+                          tuple(path for path in paths if path.endswith((".c", ".h"))), paths)
+    monkeypatch.setattr(module, "_offline_facts", lambda _root: facts)
+    provider = module.SourceCatalogProvider(tmp_path, "workspace", "session", adapter)
+
+    async def scenario() -> None:
+        first = await provider.tree(query="", cursor=None, limit=1, parent_id=None, catalog_id=None,
+                                    binding=None, binding_epoch=0)
+        files = list(first["items"])
+        cursor = first["nextCursor"]
+        while cursor is not None:
+            page = await provider.tree(query="", cursor=cursor, limit=1, parent_id=None,
+                                       catalog_id=first["catalogId"], binding=None, binding_epoch=0)
+            files.extend(page["items"])
+            cursor = page["nextCursor"]
+        by_path = {item["file"]: item for item in files}
+        assert set(paths) == set(by_path)
+        assert by_path["Src/empty.c"]["variableCount"] == 0
+        assert by_path["Src/safe.c"]["variableCount"] == 1
+        main_id = by_path["Src/main.c"]["id"]
+        main_scopes = await provider.tree(query="", cursor=None, limit=1000, parent_id=main_id,
+                                          catalog_id=first["catalogId"], binding=None, binding_epoch=0)
+        assert any(scope["function"] == "empty_function" and scope["variableCount"] == 0
+                   for scope in main_scopes["items"])
+        global_scope = next(scope for scope in main_scopes["items"] if scope["function"] is None)
+        first_vars = await provider.page(query="", cursor=None, limit=100, parent_id=None,
+                                         scope_id=global_scope["id"], catalog_id=first["catalogId"],
+                                         binding=None, binding_epoch=0)
+        assert first_vars["total"] == 120 and len(first_vars["items"]) == 100
+        second_vars = await provider.page(query="", cursor=first_vars["nextCursor"], limit=100,
+                                          parent_id=None, scope_id=global_scope["id"],
+                                          catalog_id=first["catalogId"], binding=None, binding_epoch=0)
+        assert len(second_vars["items"]) == 20
+        included = await provider.tree(query="", cursor=None, limit=1000,
+                                       parent_id=by_path["Inc/decls.inc"]["id"],
+                                       catalog_id=first["catalogId"], binding=None, binding_epoch=0)
+        projected = next(scope for scope in included["items"] if scope["function"] == "main")
+        assert projected["line"] is None and projected["file"] == "Inc/decls.inc"
+        local = await provider.page(query="", cursor=None, limit=100, parent_id=None,
+                                    scope_id=projected["id"], catalog_id=first["catalogId"],
+                                    binding=None, binding_epoch=0)
+        assert [(item["name"], item["file"]) for item in local["items"]] == [("included_local", "Inc/decls.inc")]
+        assert next(function for function in provider._views[first["catalogId"]].index.functions
+                    if function.name == "main").id == next(declaration.function_id
+                    for declaration in provider._views[first["catalogId"]].index.declarations
+                    if declaration.name == "included_local")
+        with pytest.raises(module.SourceCatalogFailure) as wrong_domain:
+            await provider.tree(query="", cursor=first_vars["nextCursor"], limit=1, parent_id=None,
+                                catalog_id=first["catalogId"], binding=None, binding_epoch=0)
+        assert wrong_domain.value.code == "MONITOR_SOURCE_CONTEXT_CHANGED"
+        with pytest.raises(module.SourceCatalogFailure) as wrong_scope:
+            await provider.page(query="", cursor=first_vars["nextCursor"], limit=100, parent_id=None,
+                                scope_id=projected["id"], catalog_id=first["catalogId"],
+                                binding=None, binding_epoch=0)
+        assert wrong_scope.value.code == "MONITOR_SOURCE_CONTEXT_CHANGED"
+        provider.close()
+
+    try:
+        asyncio.run(scenario())
+    finally:
+        provider.close()
+
+
+def test_long_unicode_query_cursors_work_across_public_tree_and_variable_pages(
+        monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    provider, facts, binding = _setup(monkeypatch, tmp_path)
+    query = "中" * 128
+    files = (f"Src/{query}a.c", f"Src/{query}b.c")
+    declarations = tuple(SourceDeclaration(f"{number:064x}", f"{number:064x}", query, "int", file, 1, 1,
+                                           "none", "global", None, (), (file,))
+                         for number, file in enumerate(files, 1))
+    index = SourceIndex("engine", "version", "compdb", 1, 1, (), False, declarations, "f" * 64)
+    monkeypatch.setattr(module, "_load_base", lambda *_args: module._Base(index, _Dwarf(), files))
+    facts[0] = replace(facts[0], source_files=files, snapshot_paths=files)
+
+    async def scenario() -> None:
+        first_tree = await provider.tree(query=query, cursor=None, limit=1, parent_id=None,
+                                         catalog_id=None, binding=binding, binding_epoch=0)
+        assert len(first_tree["nextCursor"]) > 512
+        second_tree = await provider.tree(query=query, cursor=first_tree["nextCursor"], limit=1,
+                                          parent_id=None, catalog_id=first_tree["catalogId"],
+                                          binding=binding, binding_epoch=0)
+        assert second_tree["items"][0]["file"] == files[1]
+        first_vars = await provider.page(query=query, cursor=None, limit=1, parent_id=None,
+                                         catalog_id=first_tree["catalogId"], binding=binding, binding_epoch=0)
+        assert len(first_vars["nextCursor"]) > 512
+        second_vars = await provider.page(query=query, cursor=first_vars["nextCursor"], limit=1,
+                                          parent_id=None, catalog_id=first_tree["catalogId"],
+                                          binding=binding, binding_epoch=0)
+        assert second_vars["items"][0]["file"] == files[1]
+        provider.close()
+
+    asyncio.run(scenario())
+
+
+def test_untracked_ast_file_and_unbound_local_are_partial_not_tree_facts(
+        monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    model = SimpleNamespace(project_root=tmp_path)
+    facts = module._Facts(model, "b" * 64, None, None, None, None,
+                          ("Src/main.c",), ("Src/main.c",))
+    main = SourceDeclaration("1" * 64, "1" * 64, "valid", "int", "Src/main.c", 1, 1,
+                             "none", "global", None, (), ("Src/main.c",))
+    rogue = replace(main, id="2" * 64, file="Src/rogue.c", name="rogue")
+    unbound = replace(main, id="3" * 64, name="orphan", function="work",
+                      scope_kind="local", function_id="4" * 64)
+    unnamed = replace(main, id="6" * 64, name="unnamed", function=None,
+                      scope_kind="parameter", function_id=None)
+    function = SourceFunction("5" * 64, "other", "Src/rogue.c", 1, 1, ("Src/main.c",))
+    index = SourceIndex("engine", "version", "manifest", 1, 1, (), False,
+                        (main, rogue, unbound, unnamed), "f" * 64, (function,))
+    monkeypatch.setattr(module, "_offline_facts", lambda _root: facts)
+    adapter = SimpleNamespace(index=lambda *_args: index)
+    base = module._load_base(adapter, facts, SourcePlan((), "manifest", "version", "f" * 64))
+    assert not base.index.complete
+    assert [declaration.name for declaration in base.index.declarations] == ["valid"]
+    assert base.index.functions == ()
+    assert base.source_files == ("Src/main.c",)
+    assert {issue.code for issue in base.index.issues} == {
+        "MONITOR_SOURCE_UNTRACKED_AST", "MONITOR_SOURCE_FUNCTION_UNBOUND"}
+    assert all(issue.unit is None and "rogue.c" not in issue.message for issue in base.index.issues)
 
 
 def test_provider_slow_offline_facts_index_and_view_leave_event_loop_responsive(

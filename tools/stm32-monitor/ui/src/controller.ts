@@ -2,7 +2,7 @@ import {
   groupImportGuard,
   type ApiFailure,type ApiResult,type GroupDraft,type GroupImportDocument,type MonitorStatus,
   type HistoryQuery,type MonitorApi,type WatchGroup,type WatchItem,type VariableCatalogItem,type RegisterCatalogItem,
-  type SourceCatalogItem,
+  type SourceCatalogItem,type SourceTreePage,
 } from "./api/contract";
 import {encodeJson,parseLossless} from "./api/wire";
 import {openLive} from "./api/live";
@@ -234,49 +234,102 @@ export function createController(api:MonitorApi,dispatch:(action:MonitorAction)=
       data=>({type:"catalog.loaded",catalog:"registers",query,bindingKey,cursor:cursor??null,items:data.items,nextCursor:data.nextCursor}),
       ()=>key(getState())===bindingKey);
   };
+  const invalidSourcePage=():ApiFailure=>({ok:false,code:"MONITOR_RESPONSE_INVALID",message:"Source catalog page is inconsistent"});
+  const sourceTreePages=async(query:string,parentId:string|null,catalogId:string|undefined,
+      valid:()=>boolean,expectedFile?:string,expectedCount?:number):Promise<ApiResult<SourceTreePage>>=>{
+    let cursor:string|undefined,first:SourceTreePage|undefined;
+    const items:SourceTreePage["items"][number][]=[];
+    const ids=new Set<string>(),cursors=new Set<string>();
+    while(true){
+      if(!valid())return{ok:false,code:"MONITOR_REQUEST_SUPERSEDED",message:"Source request superseded"};
+      const result=await api.sourceTree(query,cursor,parentId??undefined,catalogId);
+      if(!result.ok)return result;
+      const page=result.data;
+      const status=getState().status;
+      if(!valid()||status===null||page.identity.workspaceId!==status.workspaceId||
+          page.identity.sessionId!==status.sessionId||page.identity.logicalProjectId!==status.project.logicalProjectId||
+          page.identity.targetDevice!==status.project.targetDevice||
+          page.identity.bindingEpoch!==status.sampling.bindingEpoch||
+          catalogId!==undefined&&page.catalogId!==catalogId||
+          page.total>(parentId===null?10_000:100_001)||
+          expectedCount!==undefined&&page.total!==expectedCount||
+          new Set(page.items.map(item=>item.id)).size!==page.items.length||
+          page.items.some(item=>item.parentId!==parentId||
+            item.kind!==(parentId===null?"file":"scope")||ids.has(item.id)||
+            expectedFile!==undefined&&item.file!==expectedFile))return invalidSourcePage();
+      if(first===undefined)first=page;
+      else if(page.catalogId!==first.catalogId||page.total!==first.total||
+          encodeJson(page.identity)!==encodeJson(first.identity)||
+          encodeJson(page.engine)!==encodeJson(first.engine)||
+          encodeJson(page.coverage)!==encodeJson(first.coverage))return invalidSourcePage();
+      for(const item of page.items){ids.add(item.id);items.push(item);}
+      if(items.length>page.total||items.length>(parentId===null?10_000:100_001))return invalidSourcePage();
+      if(page.nextCursor===null){
+        return items.length===page.total?{ok:true,data:{...first,items,nextCursor:null}}:invalidSourcePage();
+      }
+      if(page.items.length===0||cursors.has(page.nextCursor)||page.nextCursor===cursor)return invalidSourcePage();
+      cursors.add(page.nextCursor);cursor=page.nextCursor;catalogId=page.catalogId;
+    }
+  };
+  const retireSourceRequests=():void=>{
+    for(const scope of new Set([...active.keys(),...retries.keys()])){
+      if(scope!=="catalog.source"&&scope!=="catalog.source-selection"&&!scope.startsWith("catalog.source-node."))continue;
+      const id=active.get(scope)??retries.get(scope)?.requestId;
+      if(id!==undefined)retire(scope,id);
+    }
+  };
   const sourceSearch=async(queryInput:string):Promise<void>=>{
     const status=getState().status;if(status===null)return;
     const query=queryInput.trim().slice(0,128),contextKey=sourceContextKey(status);
     const adoptedGeneration=getState().catalog.source.generation;
     const generation=(sourceRequestEpoch>adoptedGeneration?sourceRequestEpoch:adoptedGeneration)+1n;
     sourceRequestEpoch=generation;
-    for(const scope of ["catalog.source-child","catalog.source-selection"] as const){const id=active.get(scope);if(id!==undefined)retire(scope,id);}
+    retireSourceRequests();
     dispatch({type:"source.started",query,contextKey,generation});
     const valid=()=>getState().status!==null&&sourceContextKey(getState().status!)===contextKey&&sourceRequestEpoch===generation;
-    await read("catalog.source",operationSummary("catalog.source",query),()=>api.sourceVariables(query),
-      page=>({type:"source.loaded",query,contextKey,generation,cursor:null,parentId:null,page}),valid,()=>sourceSearch(query));
-  };
-  const sourcePage=async(parentId:string|null,cursor:string):Promise<void>=>{
-    const state=getState(),source=state.catalog.source,root=source.page;
-    if(state.status===null||root===null||source.contextKey!==sourceContextKey(state.status))return;
-    const prior=parentId===null?root:source.children[parentId],scope:RequestScope=parentId===null?"catalog.source":"catalog.source-child";
-    if(prior===undefined||prior.nextCursor!==cursor)return;
-    const contextKey=source.contextKey,generation=source.generation,catalogId=root.catalogId,query=source.query;
-    const valid=()=>{const current=getState(),catalog=current.catalog.source;return current.status!==null&&sourceContextKey(current.status)===contextKey&&catalog.generation===generation&&catalog.page?.catalogId===catalogId;};
-    await read(scope,operationSummary(scope,query,cursor),()=>api.sourceVariables(parentId===null?query:"",cursor,parentId??undefined,catalogId),
-      page=>({type:"source.loaded",query,contextKey,generation,cursor,parentId,page}),valid,
-      ()=>sourcePage(parentId,cursor));
+    await read("catalog.source",operationSummary("catalog.source",query),()=>sourceTreePages(query,null,undefined,valid),
+      page=>({type:"source.tree.loaded",query,contextKey,generation,parentId:null,page}),valid,()=>sourceSearch(query));
   };
   const sourceChildren=async(parentId:string,next=false):Promise<void>=>{
-    const state=getState(),source=state.catalog.source,root=source.page;
-    if(state.status===null||root===null||source.contextKey!==sourceContextKey(state.status))return;
-    const prior=source.children[parentId];
-    if(next&&prior?.nextCursor!==null&&prior?.nextCursor!==undefined)return sourcePage(parentId,prior.nextCursor);
-    if(next||prior!==undefined||!root.items.some(item=>item.id===parentId&&item.expandable)&&
-      !Object.values(source.children).some(page=>page.items.some(item=>item.id===parentId&&item.expandable)))return;
-    const contextKey=source.contextKey,generation=source.generation,catalogId=root.catalogId,query=source.query;
-    const valid=()=>{const current=getState();return current.status!==null&&sourceContextKey(current.status)===contextKey&&current.catalog.source.generation===generation&&current.catalog.source.page?.catalogId===catalogId;};
-    await read("catalog.source-child",operationSummary("catalog.source-child",parentId),()=>api.sourceVariables("",undefined,parentId,catalogId),
-      page=>({type:"source.loaded",query,contextKey,generation,cursor:null,parentId,page}),valid,()=>sourceChildren(parentId));
+    const state=getState(),source=state.catalog.source,tree=source.tree;
+    if(state.status===null||tree===null||source.contextKey!==sourceContextKey(state.status))return;
+    const file=tree.items.find(item=>item.id===parentId);
+    const scopeNode=Object.values(source.branches).flatMap(branch=>branch.items).find(item=>item.id===parentId);
+    const aggregate=Object.values(source.scopePages).flatMap(page=>page.items).find(item=>item.id===parentId)??
+      Object.values(source.children).flatMap(page=>page.items).find(item=>item.id===parentId);
+    const prior=scopeNode===undefined?source.children[parentId]:source.scopePages[parentId];
+    if(file!==undefined&&next||file!==undefined&&source.branches[parentId]!==undefined||
+      scopeNode!==undefined&&(!next&&prior!==undefined||next&&prior?.nextCursor==null)||
+      aggregate!==undefined&&(!aggregate.expandable||!next&&prior!==undefined||next&&prior?.nextCursor==null)||
+      file===undefined&&scopeNode===undefined&&aggregate===undefined)return;
+    const contextKey=source.contextKey,generation=source.generation,catalogId=tree.catalogId,query=source.query;
+    const valid=()=>{const current=getState(),catalog=current.catalog.source;return current.status!==null&&
+      sourceContextKey(current.status)===contextKey&&catalog.generation===generation&&catalog.tree?.catalogId===catalogId;};
+    const requestScope:RequestScope=`catalog.source-node.${parentId}`;
+    if(file!==undefined){
+      await read(requestScope,operationSummary(requestScope,file.file),()=>sourceTreePages(query,parentId,catalogId,valid,file.file,file.scopeCount),
+        page=>({type:"source.tree.loaded",query,contextKey,generation,parentId,page}),valid,()=>sourceChildren(parentId));
+    }else{
+      const cursor=next?prior?.nextCursor??undefined:undefined;
+      await read(requestScope,operationSummary(requestScope,scopeNode?.name??aggregate?.name),
+        ()=>api.sourceVariables(scopeNode===undefined?"":query,cursor,aggregate===undefined?undefined:parentId,
+          catalogId,scopeNode===undefined?undefined:parentId),
+        page=>({type:"source.variables.loaded",query,contextKey,generation,cursor:cursor??null,
+          scopeId:scopeNode===undefined?null:parentId,parentId:aggregate===undefined?null:parentId,page}),
+        valid,()=>sourceChildren(parentId,next));
+    }
   };
   const sourceSelect=async(item:SourceCatalogItem):Promise<void>=>{
     const state=getState(),source=state.catalog.source,selector=item.selector;
-    if(state.status===null||source.page===null||source.contextKey!==sourceContextKey(state.status)||
+    if(state.status===null||source.tree===null||source.contextKey!==sourceContextKey(state.status)||
       !item.canAdd||selector===null||state.groupNavigation!==null||state.groupWriteBusy)return;
-    const catalogId=source.page.catalogId,contextKey=source.contextKey,generation=source.generation,
+    const listed=Object.values(source.scopePages).flatMap(page=>page.items).find(found=>found.id===item.id)??
+      Object.values(source.children).flatMap(page=>page.items).find(found=>found.id===item.id);
+    if(listed===undefined||!listed.canAdd||listed.selector!==selector)return;
+    const catalogId=source.tree.catalogId,contextKey=source.contextKey,generation=source.generation,
       groupGeneration=state.groupGeneration;
     const valid=()=>{const current=getState();return current.status!==null&&sourceContextKey(current.status)===contextKey&&
-      current.catalog.source.generation===generation&&current.catalog.source.page?.catalogId===catalogId&&
+      current.catalog.source.generation===generation&&current.catalog.source.tree?.catalogId===catalogId&&
       current.groupGeneration===groupGeneration&&current.groupNavigation===null;};
     await read("catalog.source-selection",operationSummary("catalog.source-selection",item.name),
       ()=>api.sourceSelection(catalogId,item.id,selector),selection=>selection.catalogId===catalogId&&
@@ -451,8 +504,7 @@ export function createController(api:MonitorApi,dispatch:(action:MonitorAction)=
         ?Promise.resolve():catalog(kind,prior.query,prior.nextCursor,bindingKey);
     },
     searchSource:sourceSearch,
-    nextSource:()=>{const source=getState().catalog.source;return source.page?.nextCursor===null||source.page===null
-      ?Promise.resolve():sourcePage(null,source.page.nextCursor);},
+    nextSource:()=>Promise.resolve(),
     sourceChildren,selectSource:sourceSelect,
     createGroup:()=>getState().groupDraft.sourceGroupId===null?saveGroup(getState().groupDraft):Promise.resolve(),
     saveGroup,

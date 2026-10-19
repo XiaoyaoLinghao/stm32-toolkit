@@ -2,7 +2,7 @@ import {afterEach,expect,it,vi} from "vitest";
 import {act,fireEvent,render,screen,waitFor} from "@testing-library/preact";
 import userEvent from "@testing-library/user-event";
 import {App} from "../src/app";
-import {sourcePage,watchGroup} from "./fixtures";
+import {sourcePage,sourceTreePage,watchGroup} from "./fixtures";
 import type {WatchGroup} from "../src/api/contract";
 
 vi.mock("echarts/core",()=>({init:vi.fn(()=>null),use:vi.fn(),default:{init:vi.fn(()=>null),use:vi.fn()}}));
@@ -19,6 +19,7 @@ const api=()=>({
   groups:vi.fn(async()=>ok({groups:[] as WatchGroup[],nextCursor:null,revision:"0"})),
   variables:vi.fn(async()=>ok({items:[{selector:"counter",typeName:"int",kind:"int",byteSize:4,signed:true,encoding:null,qualifiers:[],aliases:[],enumValues:[],elementCount:null,elementKind:null,memberNames:[],group:{id:"cu:1",label:"main.c"}}],nextCursor:null})),
   registers:vi.fn(async()=>ok({items:[],nextCursor:null})),
+  sourceTree:vi.fn(async()=>ok(sourceTreePage())),
   sourceVariables:vi.fn(async()=>ok(sourcePage())),
   sourceSelection:vi.fn(async()=>failed("MONITOR_SOURCE_SELECTION_UNAVAILABLE")),
   history:vi.fn(async(_query:unknown)=>{void _query;return failed("HISTORY_DOWN");}),
@@ -33,7 +34,7 @@ it("opens the group drawer after a directory add and retains the unsaved draft a
   prepared=api();
   render(<App/>);
   await screen.findByText("Project");
-  expect(screen.getByLabelText("源码变量")).toBeTruthy();
+  expect(screen.getByLabelText("源码目录")).toBeTruthy();
   fireEvent.click(screen.getByRole("tab",{name:"固件变量与寄存器"}));
   fireEvent.click(screen.getByRole("button",{name:"搜索/加载"}));
   fireEvent.click(await screen.findByText("main.c · 已加载 1 项"));

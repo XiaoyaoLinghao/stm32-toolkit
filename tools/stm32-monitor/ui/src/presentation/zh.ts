@@ -15,13 +15,15 @@ export const copy={
   catalogKind:"目录类型",variables:"变量",registers:"寄存器",search:"搜索",
   searchPlaceholder:"输入符号或寄存器前缀",catalogLoad:"搜索/加载",catalogNeedsProbe:"连接探针后可搜索目录。",
   catalogMore:"；还有更多结果，可加载下一页。",
-  sourceTitle:"源码变量",sourceBrowse:"源码变量",firmwareBrowse:"固件变量与寄存器",sourceResults:"源码变量结果",
+  sourceTitle:"源码目录",sourceBrowse:"源码目录",firmwareBrowse:"固件变量与寄存器",sourceResults:"源码目录结果",
   sourceSearchPlaceholder:"搜索名称、文件或函数",sourceRefresh:"刷新源码目录",sourceLoading:"正在离线分析源码…",
   sourceEmptyPrompt:"正在准备源码目录；无需连接探针即可浏览。",sourcePartial:"部分编译单元未解析，当前列表不完整。",
   sourceTruncated:"达到目录上限，仍有未展示内容。",sourceUnknownUnit:"未知编译单元",sourceGlobalScope:"全局／文件作用域",
   sourceCollapse:"收起",sourceExpand:"展开",sourceChildrenLoading:"正在读取成员…",sourceChecking:"正在核对变量与当前固件…",
   sourceExpandPrompt:"可重试展开成员。",sourceIndexFailed:"源码目录加载失败：",sourceChildFailed:"成员加载失败：",
   sourceSelectionFailed:"加入前核对失败：",sourceUseFirmware:"查看固件变量与寄存器",
+  sourceNoVariables:"此作用域没有已解析变量。",sourceNoScopes:"此文件没有已解析作用域。",
+  sourceScopesLabel:"作用域",sourceVariablesLabel:"变量",
   sourceAdded:"已加入组草稿（尚未保存）",sourceUnits:(parsed:number,total:number)=>`已解析 ${parsed} / ${total} 个编译单元`,
   sourceCount:(loaded:number,total:number)=>`已加载 ${loaded} / ${total} 项`,
   registerAccessAcknowledgement:"该寄存器需要现有访问能力确认；添加草稿不会自动授权。",
@@ -96,11 +98,11 @@ export const copy={
   requestInputCorrect:"请检查当前操作的输入后重新提交。",
 } as const;
 
-const operationNames:Record<RequestScope,string>={
+const operationNames:Record<Exclude<RequestScope,`catalog.source-node.${string}`>,string>={
   initial:"初始化读取",status:"状态刷新","live.reconnect":"重新连接实时数据",probes:"探针列表刷新",
   "probe.connect":"连接探针","probe.reconnect":"重新连接探针","probe.release":"释放探针",
   "catalog.variables":"变量目录搜索","catalog.registers":"寄存器目录搜索",
-  "catalog.source":"源码变量目录","catalog.source-child":"源码成员","catalog.source-selection":"源码变量加入前核对",
+  "catalog.source":"源码目录","catalog.source-selection":"源码变量加入前核对",
   "groups.list":"观测组列表刷新","groups.create":"创建观测组","groups.update":"保存观测组",
   "groups.delete":"删除观测组","groups.import":"导入观测组",
   "sampling.start":"开始采样","sampling.pause":"暂停采样","sampling.resume":"继续采样",
@@ -112,7 +114,7 @@ const utcNs=(value:string):string=>{
   catch{return value+" ns";}
 };
 export function operationSummary(scope:RequestScope,...details:(string|undefined)[]):string{
-  const name=operationNames[scope];
+  const name=scope.startsWith("catalog.source-node.")?"源码目录节点":operationNames[scope as Exclude<RequestScope,`catalog.source-node.${string}`>];
   if(scope==="export.create")return name+" · "+(details[0]??"").toUpperCase()+" · "+utcNs(details[1]??"0")+" 至 "+utcNs(details[2]??"0");
   if(scope==="history")return name+" · "+utcNs(details[0]??"0")+" 至 "+utcNs(details[1]??"0")+(details[2]===undefined?"":" · 翻页");
   if(scope==="catalog.variables"||scope==="catalog.registers")return name+" · "+(details[0]??"")+(details[1]===undefined?"":" · 下一页");

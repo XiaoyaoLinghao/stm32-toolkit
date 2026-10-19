@@ -2358,6 +2358,9 @@ def test_source_dispatch_rechecks_same_epoch_binding_and_observation_after_await
             await self.release.wait()
             return {"catalogId": "c" * 64}
 
+        async def tree(self, **kwargs):
+            return await self.page(**kwargs)
+
         async def select(self, **_kwargs):
             self.entered.set()
             await self.release.wait()
@@ -2371,6 +2374,16 @@ def test_source_dispatch_rechecks_same_epoch_binding_and_observation_after_await
         binding = SimpleNamespace(probe_id="probe-a", build_id="build")
         runtime._observation = SimpleNamespace(binding=binding)
         try:
+            provider = DelayedProvider()
+            runtime._source_provider = provider
+            pending = asyncio.create_task(runtime.dispatch(
+                "monitor.catalog.source.tree", {}, query={"limit": "1"}))
+            await provider.entered.wait()
+            binding.build_id = "replacement-tree"
+            provider.release.set()
+            result = await pending
+            assert not result.ok and result.code == "MONITOR_SOURCE_CONTEXT_CHANGED"
+
             provider = DelayedProvider()
             runtime._source_provider = provider
             pending = asyncio.create_task(runtime.dispatch(
@@ -2397,6 +2410,8 @@ def test_source_dispatch_rechecks_same_epoch_binding_and_observation_after_await
             runtime._source_provider = provider
             accepted = await runtime.dispatch("monitor.catalog.source.variables", {}, query={"limit": "1"})
             assert accepted.ok and accepted.operation == "monitor.catalog.source.variables"
+            accepted_tree = await runtime.dispatch("monitor.catalog.source.tree", {}, query={"limit": "1000"})
+            assert accepted_tree.ok and accepted_tree.operation == "monitor.catalog.source.tree"
             accepted_selection = await runtime.dispatch(
                 "monitor.catalog.source.selection", {},
                 query={"catalogId": "c" * 64, "id": "a" * 64, "selector": "counter"})

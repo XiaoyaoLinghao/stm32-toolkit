@@ -18,6 +18,10 @@ export type RegisterCatalogItem=RegisterDescriptor&{group:CatalogGroup};
 export type SourceReason="probe_required"|"source_mismatch"|"firmware_unavailable"|"frame_required"|"debug_entry_missing"|"ambiguous_symbol"|"unsupported_type"|"unsupported_location"|"read_range_denied"|"aggregate"|"coverage_incomplete"|"limit_reached"|"source_attribution_unproven";
 export type SourceCatalogItem={id:string;parentId:string|null;name:string;typeName:string;file:string;line:number|null;column:number|null;scope:{kind:"global"|"file_static"|"static_local"|"local"|"parameter"|"member"|"element";function:string|null;path:readonly string[]};storage:"none"|"static"|"extern"|"register"|"thread_local";translationUnits:readonly string[];selector:string|null;canAdd:boolean;reason:SourceReason|null;expandable:boolean;truncated:boolean};
 export type SourceCatalogPage={schemaVersion:1;catalogId:string;identity:{workspaceId:string;sessionId:string;logicalProjectId:string;targetDevice:string;sourceSnapshotSha256:string;buildId:string|null;elfSha256:string|null;bindingEpoch:I64};engine:{name:string;version:string;inputKind:"compdb"|"manifest"};coverage:{complete:boolean;totalUnits:number;parsedUnits:number;issues:readonly {unit:string|null;code:string;message:string}[];truncated:boolean};total:number;items:readonly SourceCatalogItem[];nextCursor:string|null};
+export type SourceFileNode={kind:"file";id:string;parentId:null;file:string;name:string;variableCount:number;scopeCount:number};
+export type SourceScopeNode={kind:"scope";id:string;parentId:string;file:string;name:string;function:string|null;line:number|null;variableCount:number};
+export type SourceTreeNode=SourceFileNode|SourceScopeNode;
+export type SourceTreePage=Omit<SourceCatalogPage,"items">&{items:readonly SourceTreeNode[]};
 export type SourceSelection={catalogId:string;item:VariableWatch};
 export type VariableWatch={kind:"variable";expression:string};
 export type RegisterWatch={kind:"register";registerPath:string};
@@ -46,7 +50,8 @@ export type SamplerStartResult={groupId:string;groupRevision:I64;runId:string;in
 export type DownloadResult=ApiFailure|{ok:true;blob:Blob;filename:string;contentType:string};
 export interface MonitorApi{status():Promise<ApiResult<MonitorStatus>>;probes():Promise<ApiResult<{probes:readonly ProbeInfo[]}>>;
  variables(query:string,cursor?:string):Promise<ApiResult<{items:readonly VariableCatalogItem[];nextCursor:string|null}>>;registers(query:string,cursor?:string):Promise<ApiResult<{items:readonly RegisterCatalogItem[];nextCursor:string|null}>>;
- sourceVariables(query:string,cursor?:string,parentId?:string,catalogId?:string):Promise<ApiResult<SourceCatalogPage>>;sourceSelection(catalogId:string,id:string,selector:string):Promise<ApiResult<SourceSelection>>;
+ sourceTree(query:string,cursor?:string,parentId?:string,catalogId?:string):Promise<ApiResult<SourceTreePage>>;
+ sourceVariables(query:string,cursor?:string,parentId?:string,catalogId?:string,scopeId?:string):Promise<ApiResult<SourceCatalogPage>>;sourceSelection(catalogId:string,id:string,selector:string):Promise<ApiResult<SourceSelection>>;
  groups(cursor?:string):Promise<ApiResult<GroupPage>>;createGroup(request:CreateGroupRequest):Promise<ApiResult<WatchGroup>>;updateGroup(groupId:string,request:UpdateGroupRequest):Promise<ApiResult<WatchGroup>>;deleteGroup(groupId:string,request:DeleteGroupRequest):Promise<ApiResult<{groupId:string;deleted:true}>>;importGroups(document:GroupImportDocument):Promise<ApiResult<readonly WatchGroup[]>>;
  connect(probeId:string):Promise<ApiResult<DebugFirmwareBinding>>;reconnect():Promise<ApiResult<DebugFirmwareBinding>>;release():Promise<ApiResult<{released:boolean}>>;
  start(groupId:string,expectedRevision:I64):Promise<ApiResult<SamplerStartResult>>;pause():Promise<ApiResult<{paused:boolean}>>;resume():Promise<ApiResult<{resumed:boolean}>>;stop():Promise<ApiResult<{stopped:boolean}>>;
@@ -102,6 +107,7 @@ const sha256=(value:unknown):string=>{const result=string(value);if(!/^[0-9a-f]{
 const relativeFile=(value:unknown):string=>{const result=string(value);if(!result||result.length>512||result.startsWith("/")||result.startsWith("\\")||/^[A-Za-z]:/.test(result)||result.split(/[\\/]/).some(part=>!part||part==="."||part==="..")||[...result].some(char=>char.charCodeAt(0)<32))throw new Error("invalid source path");return result;};
 const positive=(value:unknown):number=>{const result=boundedInteger(value);if(result<1)throw new Error("expected positive integer");return result;};
 const nonnegative=(value:unknown):number=>{const result=boundedInteger(value);if(result<0)throw new Error("expected nonnegative integer");return result;};
+const sourceCursor=(value:unknown):string=>{const result=string(value);if(!result||result.length>2048)throw new Error("invalid source cursor");return result;};
 const reasonValues=["probe_required","source_mismatch","firmware_unavailable","frame_required","debug_entry_missing","ambiguous_symbol","unsupported_type","unsupported_location","read_range_denied","aggregate","coverage_incomplete","limit_reached","source_attribution_unproven"] as const;
 export const sourceCatalogItemGuard:DataGuard<SourceCatalogItem>=(value)=>{
  const v=object(value);exact(v,["id","parentId","name","typeName","file","line","column","scope","storage","translationUnits","selector","canAdd","reason","expandable","truncated"]);
@@ -118,7 +124,32 @@ export const sourceCatalogPageGuard:DataGuard<SourceCatalogPage>=(value)=>{
  const items=array(v.items,sourceCatalogItemGuard),ids=new Set<string>();for(const item of items){if(ids.has(item.id))throw new Error("duplicate source id");ids.add(item.id);}
  const total=nonnegative(v.total),totalUnits=nonnegative(c.totalUnits),parsedUnits=nonnegative(c.parsedUnits);
  if(items.length>100||total<items.length||parsedUnits>totalUnits||Boolean(c.complete)&&Boolean(c.truncated)||!string(e.name)||!string(e.version))throw new Error("invalid source page");
- return{schemaVersion:literal(1)(v.schemaVersion),catalogId:sha256(v.catalogId),identity:{workspaceId:string(i.workspaceId),sessionId:string(i.sessionId),logicalProjectId:string(i.logicalProjectId),targetDevice:string(i.targetDevice),sourceSnapshotSha256:sha256(i.sourceSnapshotSha256),buildId:nullable(i.buildId,string),elfSha256:nullable(i.elfSha256,sha256),bindingEpoch:i64(i.bindingEpoch)},engine:{name:string(e.name),version:string(e.version),inputKind:enumValue(["compdb","manifest"],e.inputKind)},coverage:{complete:boolean(c.complete),totalUnits,parsedUnits,issues:array(c.issues,item=>{const issue=object(item);exact(issue,["unit","code","message"]);return{unit:nullable(issue.unit,relativeFile),code:string(issue.code),message:string(issue.message)};}),truncated:boolean(c.truncated)},total,items,nextCursor:nullable(v.nextCursor,string)};
+ return{schemaVersion:literal(1)(v.schemaVersion),catalogId:sha256(v.catalogId),identity:{workspaceId:string(i.workspaceId),sessionId:string(i.sessionId),logicalProjectId:string(i.logicalProjectId),targetDevice:string(i.targetDevice),sourceSnapshotSha256:sha256(i.sourceSnapshotSha256),buildId:nullable(i.buildId,string),elfSha256:nullable(i.elfSha256,sha256),bindingEpoch:i64(i.bindingEpoch)},engine:{name:string(e.name),version:string(e.version),inputKind:enumValue(["compdb","manifest"],e.inputKind)},coverage:{complete:boolean(c.complete),totalUnits,parsedUnits,issues:array(c.issues,item=>{const issue=object(item);exact(issue,["unit","code","message"]);return{unit:nullable(issue.unit,relativeFile),code:string(issue.code),message:string(issue.message)};}),truncated:boolean(c.truncated)},total,items,nextCursor:nullable(v.nextCursor,sourceCursor)};
+};
+export const sourceTreeNodeGuard:DataGuard<SourceTreeNode>=(value)=>{
+ const v=object(value),kind=string(v.kind),name=string(v.name),file=relativeFile(v.file);
+ if(!name||name.length>256)throw new Error("invalid source tree name");
+ if(kind==="file"){
+  exact(v,["kind","id","parentId","file","name","variableCount","scopeCount"]);
+  if(v.parentId!==null||name!==file.split("/").at(-1))throw new Error("invalid source file node");
+  return{kind:"file",id:sha256(v.id),parentId:null,file,name,
+    variableCount:nonnegative(v.variableCount),scopeCount:nonnegative(v.scopeCount)};
+ }
+ if(kind==="scope"){
+  exact(v,["kind","id","parentId","file","name","function","line","variableCount"]);
+  const functionName=nullable(v.function,string),line=nullable(v.line,positive);
+  if(functionName===null?name!=="global"||line!==null:name!==functionName)throw new Error("invalid source scope node");
+  return{kind:"scope",id:sha256(v.id),parentId:sha256(v.parentId),file,name,function:functionName,line,
+    variableCount:nonnegative(v.variableCount)};
+ }
+ throw new Error("invalid source tree kind");
+};
+export const sourceTreePageGuard:DataGuard<SourceTreePage>=(value)=>{
+ const v=object(value),base=sourceCatalogPageGuard({...v,items:[]});
+ const items=array(v.items,sourceTreeNodeGuard),seen=new Set<string>();
+ if(items.length>1000||base.total<items.length)throw new Error("invalid source tree page");
+ for(const item of items){if(seen.has(item.id))throw new Error("duplicate source tree id");seen.add(item.id);}
+ return{...base,items};
 };
 export const sourceSelectionGuard:DataGuard<SourceSelection>=(value)=>{const v=object(value);exact(v,["catalogId","item"]);const item=watchItemGuard(v.item);if(item.kind!=="variable")throw new Error("source selection must be variable");return{catalogId:sha256(v.catalogId),item};};
 function catalogItems<T extends {selector:string;group:CatalogGroup}>(value:unknown,guard:DataGuard<T>):readonly T[]{

@@ -228,15 +228,10 @@ export function App():JSX.Element{
             <button type="button" role="tab" aria-selected={catalogView==="firmware"} onClick={()=>setCatalogView("firmware")}>{copy.firmwareBrowse}</button>
           </div>
           {catalogView==="source"?<SourceCatalogPanel source={state.catalog.source}
-            pending={state.pending["catalog.source"]!==undefined}
-            childPending={state.pending["catalog.source-child"]!==undefined}
-            selectionPending={state.pending["catalog.source-selection"]!==undefined}
-            failures={{"catalog.source":state.failures["catalog.source"],
-              "catalog.source-child":state.failures["catalog.source-child"],
-              "catalog.source-selection":state.failures["catalog.source-selection"]}}
+            pending={state.pending} failures={state.failures}
             editBusy={busyGroups||state.groupNavigation!==null}
             onRetry={(scope,id)=>controller.retry(scope,id)} onFirmware={()=>setCatalogView("firmware")}
-            onSearch={query=>controller.searchSource(query)} onNext={()=>controller.nextSource()}
+            onSearch={query=>controller.searchSource(query)}
             onChildren={(parentId,next)=>controller.sourceChildren(parentId,next)} onSelect={item=>controller.selectSource(item)}/>
           :<CatalogPanel connected={status.probeConnected} bindingEpoch={status.sampling.bindingEpoch}
             bindingKey={status.workspaceId+"/"+status.sessionId+"/"+status.project.logicalProjectId+"/"+status.sampling.bindingEpoch}

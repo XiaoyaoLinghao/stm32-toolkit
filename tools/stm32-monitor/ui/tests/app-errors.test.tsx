@@ -1,7 +1,7 @@
 import {afterEach,expect,it,vi} from "vitest";
 import {render,screen,fireEvent,waitFor} from "@testing-library/preact";
 import {App} from "../src/app";
-import {sourcePage,watchGroup} from "./fixtures";
+import {sourcePage,sourceTreePage,watchGroup} from "./fixtures";
 
 vi.mock("echarts/core",()=>({init:vi.fn(()=>null),use:vi.fn(),default:{init:vi.fn(()=>null),use:vi.fn()}}));
 vi.mock("echarts/charts",()=>({LineChart:class{}}));
@@ -18,6 +18,7 @@ function apiOverrides(){
     groups:vi.fn(async()=>ok({groups:[],nextCursor:null,revision:"0"})),
     variables:vi.fn(async()=>ok({items:[{selector:"counter",typeName:"int",kind:"int",byteSize:4,signed:true,encoding:null,qualifiers:[],aliases:[],enumValues:[],elementCount:null,elementKind:null,memberNames:[],group:{id:"cu:1",label:"main.c"}}],nextCursor:null})),
     registers:vi.fn(async()=>ok({items:[],nextCursor:null})),
+    sourceTree:vi.fn(async()=>ok(sourceTreePage())),
     sourceVariables:vi.fn(async()=>ok(sourcePage())),
     sourceSelection:vi.fn(async()=>err("MONITOR_SOURCE_SELECTION_UNAVAILABLE","not configured")),
     createGroup:vi.fn(async()=>err("UNAVAILABLE","not configured")),

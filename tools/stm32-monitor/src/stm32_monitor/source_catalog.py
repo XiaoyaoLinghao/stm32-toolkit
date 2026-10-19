@@ -18,7 +18,7 @@ from typing import Mapping
 
 from stm32_toolkit.build.identity import snapshot_project_inputs
 from stm32_toolkit.debug.dwarf import DwarfCatalog, DwarfSourceSymbol
-from stm32_toolkit.debug.source import ClangSourceAdapter, SourceCatalogError, SourceDeclaration, SourceIndex, SourcePlan
+from stm32_toolkit.debug.source import ClangSourceAdapter, SourceCatalogError, SourceDeclaration, SourceFunction, SourceIndex, SourceIssue, SourcePlan
 from stm32_toolkit.debug.types import DwarfError, DwarfType
 from stm32_toolkit.probe.flash import load_fresh_firmware_facts
 from stm32_toolkit.probe.protocol import MAX_READ_BYTES
@@ -30,6 +30,7 @@ _EXPRESSION = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 _SCALAR = frozenset({"integer", "boolean", "float", "enum", "pointer"})
 _CURSOR_KEY = secrets.token_bytes(32)
 _PAGE_DATA_BUDGET = 900 * 1024  # Leave envelope/error metadata below the service's 1 MiB cap.
+_MAX_CURSOR_LENGTH = 2048
 
 
 class SourceCatalogFailure(Exception):
@@ -47,12 +48,15 @@ class _Facts:
     elf_sha: str | None
     elf_path: str | None
     elf_size: int | None
+    source_files: tuple[str, ...] = ()
+    snapshot_paths: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
 class _Base:
     index: SourceIndex
     dwarf: DwarfCatalog | None
+    source_files: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -108,11 +112,21 @@ class _View:
     binding_ok: bool
     children_cache: dict[str, tuple[tuple[SourceItem, ...], int]]
     binding_signature: tuple[object, ...] = ()
+    source_files: tuple[str, ...] = ()
+    file_nodes: tuple[dict[str, object], ...] = ()
+    scopes_by_file: dict[str, tuple[dict[str, object], ...]] | None = None
+    roots_by_scope: dict[str, tuple[SourceItem, ...]] | None = None
+    file_by_id: dict[str, str] | None = None
+    scope_by_id: dict[str, dict[str, object]] | None = None
 
 
 def _offline_facts(root: Path) -> _Facts:
     model = load_project_model(root)
-    source_sha = snapshot_project_inputs(model).sha256
+    snapshot = snapshot_project_inputs(model)
+    source_sha = snapshot.sha256
+    declared = set(model.build.sources) | set(model.build.assembly_sources)
+    source_files = tuple(entry.path for entry in snapshot.entries
+                         if entry.path in declared or entry.path.lower().endswith((".c", ".h")))
     build_id = elf_sha = elf_path = None
     elf_size = None
     try:
@@ -122,7 +136,8 @@ def _offline_facts(root: Path) -> _Facts:
             elf_size = (root / elf_path).stat().st_size
     except Exception:
         pass
-    return _Facts(model, source_sha, build_id, elf_sha, elf_path, elf_size)
+    return _Facts(model, source_sha, build_id, elf_sha, elf_path, elf_size, source_files,
+                  tuple(entry.path for entry in snapshot.entries))
 
 
 def _readable_regions(model: ProjectModel) -> tuple[tuple[int, int], ...]:
@@ -132,6 +147,32 @@ def _readable_regions(model: ProjectModel) -> tuple[tuple[int, int], ...]:
 
 def _load_base(adapter: ClangSourceAdapter, facts: _Facts, plan: SourcePlan) -> _Base:
     index = adapter.index(facts.model, plan)
+    verified = set(facts.source_files)
+    # Source/assembly declarations and snapshot C headers are authoritative.
+    # Other extensions join the tree only when the same snapshot contains AST facts.
+    snapshot_files = set(facts.snapshot_paths)
+    untracked = {entry.file for entry in (*index.declarations, *index.functions)
+                 if entry.file not in snapshot_files}
+    if untracked and facts.snapshot_paths:
+        index = replace(index,
+                        declarations=tuple(entry for entry in index.declarations if entry.file not in untracked),
+                        functions=tuple(entry for entry in index.functions if entry.file not in untracked),
+                        issues=(*index.issues, SourceIssue(None, "MONITOR_SOURCE_UNTRACKED_AST",
+                                                          f"{len(untracked)} AST source file(s) were outside the verified snapshot")))
+    functions = {function.id for function in index.functions}
+    unbound = tuple(entry for entry in index.declarations
+                    if (entry.function is not None or entry.scope_kind in {"local", "static_local", "parameter"})
+                    and entry.function_id not in functions)
+    if unbound and facts.snapshot_paths:
+        unbound_ids = {entry.id for entry in unbound}
+        index = replace(index,
+                        declarations=tuple(entry for entry in index.declarations if entry.id not in unbound_ids),
+                        issues=(*index.issues, SourceIssue(None, "MONITOR_SOURCE_FUNCTION_UNBOUND",
+                                                          f"{len(unbound)} local declaration(s) had no verified function scope")))
+    verified.update(entry.file for entry in (*index.declarations, *index.functions)
+                    if not facts.snapshot_paths or entry.file in snapshot_files)
+    if len(verified) > 10_000:
+        raise SourceCatalogFailure("MONITOR_SOURCE_INDEX_FAILED", "Source file limit was reached")
     dwarf = None
     if facts.elf_path is not None and facts.elf_sha is not None and facts.elf_size is not None:
         try:
@@ -145,7 +186,7 @@ def _load_base(adapter: ClangSourceAdapter, facts: _Facts, plan: SourcePlan) -> 
     after = _offline_facts(facts.model.project_root)
     if (after.source_sha, after.build_id, after.elf_sha) != (facts.source_sha, facts.build_id, facts.elf_sha):
         raise SourceCatalogFailure("MONITOR_SOURCE_CONTEXT_CHANGED", "Source or firmware changed while indexing")
-    return _Base(index, dwarf)
+    return _Base(index, dwarf, tuple(sorted(verified, key=lambda path: (path.casefold(), path))))
 
 
 def _binding_signature(binding: object | None) -> tuple[object, ...]:
@@ -329,12 +370,108 @@ def _materialize(index: SourceIndex, dwarf: DwarfCatalog | None,
     return tuple(roots), nodes
 
 
+def _source_id(kind: str, file: str) -> str:
+    return hashlib.sha256((kind + "\0" + file).encode("utf-8")).hexdigest()
+
+
+def _tree_index(view: _View) -> None:
+    by_file: dict[str, list[dict[str, object]]] = {file: [] for file in view.source_files}
+    roots_by_scope: dict[str, list[SourceItem]] = {}
+    functions: dict[str, SourceFunction] = {function.id: function for function in view.index.functions}
+    projected: set[str] = set()
+    def add_function_scope(file: str, function: SourceFunction) -> str:
+        scope_id = _source_id("function", file + "\0" + function.id)
+        if scope_id not in projected:
+            projected.add(scope_id)
+            by_file[file].append({
+                "kind": "scope", "id": scope_id, "parentId": _source_id("file", file),
+                "file": file, "name": function.name, "function": function.name,
+                "line": function.line if file == function.file else None, "variableCount": 0,
+            })
+            roots_by_scope[scope_id] = []
+        return scope_id
+    for function in view.index.functions:
+        if function.file in by_file:
+            add_function_scope(function.file, function)
+    for declaration, item in zip(view.index.declarations, view.roots):
+        if declaration.file not in by_file:
+            continue
+        if declaration.function is not None or declaration.scope_kind in {"local", "static_local", "parameter"}:
+            function = functions.get(declaration.function_id or "")
+            if function is None:
+                continue
+            scope_id = add_function_scope(declaration.file, function)
+        else:
+            scope_id = _source_id("global", declaration.file)
+        roots_by_scope.setdefault(scope_id, []).append(item)
+    for file in view.source_files:
+        global_id = _source_id("global", file)
+        if roots_by_scope.get(global_id):
+            by_file[file].append({
+                "kind": "scope", "id": global_id, "parentId": _source_id("file", file),
+                "file": file, "name": "global", "function": None, "line": None,
+                "variableCount": 0,
+            })
+        by_file[file].sort(key=lambda scope: (scope["line"] is not None,
+                                                scope["line"] or 0, str(scope["name"]).casefold(), str(scope["id"])))
+    view.file_nodes = tuple({
+        "kind": "file", "id": _source_id("file", file), "parentId": None,
+        "file": file, "name": file.rsplit("/", 1)[-1], "variableCount": 0, "scopeCount": 0,
+    } for file in view.source_files)
+    view.scopes_by_file = {file: tuple(scopes) for file, scopes in by_file.items()}
+    view.roots_by_scope = {scope: tuple(items) for scope, items in roots_by_scope.items()}
+    view.file_by_id = {str(node["id"]): str(node["file"]) for node in view.file_nodes}
+    view.scope_by_id = {str(scope["id"]): scope for scopes in by_file.values() for scope in scopes}
+
+
+def _matches(query: str, value: str) -> bool:
+    return query in unicodedata.normalize("NFC", value).casefold()
+
+
+def _matching_scopes(view: _View, file: str, query: str) -> tuple[tuple[dict[str, object], ...], dict[str, tuple[SourceItem, ...]]]:
+    scopes = () if view.scopes_by_file is None else view.scopes_by_file.get(file, ())
+    roots = view.roots_by_scope or {}
+    file_hit = bool(query and _matches(query, file))
+    included: list[dict[str, object]] = []
+    matches: dict[str, tuple[SourceItem, ...]] = {}
+    for scope in scopes:
+        scope_id = str(scope["id"])
+        function = scope["function"]
+        function_hit = bool(query and isinstance(function, str) and _matches(query, function))
+        scoped = roots.get(scope_id, ())
+        filtered = (scoped if not query or file_hit or function_hit else
+                    tuple(item for item in scoped if _matches(query, item.name)))
+        if not query or file_hit or function_hit or filtered:
+            included.append({**scope, "variableCount": len(filtered)})
+            matches[scope_id] = filtered
+    return tuple(included), matches
+
+
+def _tree_items(view: _View, query: str, parent_id: str | None) -> tuple[dict[str, object], ...]:
+    if parent_id is None:
+        files: list[dict[str, object]] = []
+        for file_node in view.file_nodes:
+            file = str(file_node["file"])
+            scopes, matches = _matching_scopes(view, file, query)
+            if not query or _matches(query, file) or scopes:
+                files.append({**file_node, "scopeCount": len(scopes),
+                              "variableCount": sum(len(items) for items in matches.values())})
+        return tuple(files)
+    file = (view.file_by_id or {}).get(parent_id)
+    if file is None:
+        raise SourceCatalogFailure("MONITOR_SOURCE_CONTEXT_CHANGED", "Source tree parent changed")
+    scopes, _ = _matching_scopes(view, file, query)
+    return scopes
+
+
 def _catalog_id(identity: Mapping[str, object], signature: tuple[object, ...],
-                index: SourceIndex) -> str:
+                index: SourceIndex, source_files: tuple[str, ...] = ()) -> str:
     results = hashlib.sha256(json.dumps(
         [index.parsed_units, index.total_units, index.truncated,
          [[issue.unit, issue.code, issue.message] for issue in index.issues],
-         [[decl.id, decl.entity_id, decl.translation_units] for decl in index.declarations]],
+         [[decl.id, decl.entity_id, decl.function_id, decl.translation_units] for decl in index.declarations],
+         [[function.id, function.name, function.file, function.line, function.column,
+           function.translation_units] for function in index.functions], source_files],
         separators=(",", ":"), ensure_ascii=False).encode("utf-8")).hexdigest()
     payload = json.dumps([identity, signature, index.engine_name, index.engine_version,
                           index.input_kind, index.argument_fingerprint, index.complete, results], sort_keys=True,
@@ -344,12 +481,12 @@ def _catalog_id(identity: Mapping[str, object], signature: tuple[object, ...],
 
 def _page_payload(view: _View, items: tuple[SourceItem, ...], actual_total: int,
                   normalized: str, cursor: str | None, limit: int,
-                  parent_id: str | None) -> dict[str, object]:
-    if normalized:
-        items = tuple(item for item in items if normalized in item.name.casefold()
-                      or normalized in item.file.casefold()
-                      or normalized in (item.function or "").casefold())
-    offset = _offset(cursor, view.catalog_id, normalized, parent_id)
+                  parent_id: str | None, scope_id: str | None = None) -> dict[str, object]:
+    if normalized and scope_id is None:
+        items = tuple(item for item in items if _matches(normalized, item.name)
+                      or _matches(normalized, item.file)
+                      or _matches(normalized, item.function or ""))
+    offset = _offset(cursor, view.catalog_id, normalized, parent_id, scope_id, "variables")
     if offset > len(items):
         raise SourceCatalogFailure("MONITOR_SOURCE_CONTEXT_CHANGED", "Source catalog cursor changed")
     data: dict[str, object] = {
@@ -359,13 +496,13 @@ def _page_payload(view: _View, items: tuple[SourceItem, ...], actual_total: int,
         "coverage": {"complete": view.index.complete,
                      "totalUnits": view.index.total_units,
                      "parsedUnits": view.index.parsed_units,
-                     "issues": [issue.to_dict() for issue in view.index.issues],
+                     "issues": _issue_summary(view.index),
                      "truncated": view.index.truncated},
         "total": actual_total if parent_id is not None and not normalized else len(items),
         "items": [], "nextCursor": None,
     }
     base_bytes = len(json.dumps(data, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
-    budget = _PAGE_DATA_BUDGET - base_bytes - 512  # cursor and transport metadata margin
+    budget = _PAGE_DATA_BUDGET - base_bytes - _MAX_CURSOR_LENGTH
     selected: list[dict[str, object]] = []
     for item in items[offset:offset + limit]:
         serialized = item.to_dict()
@@ -378,21 +515,63 @@ def _page_payload(view: _View, items: tuple[SourceItem, ...], actual_total: int,
         budget -= length
     next_offset = offset + len(selected)
     data["items"] = selected
-    data["nextCursor"] = (_cursor(view.catalog_id, normalized, parent_id, next_offset)
+    data["nextCursor"] = (_cursor(view.catalog_id, normalized, parent_id, next_offset, scope_id, "variables")
                           if next_offset < len(items) else None)
     return data
 
 
-def _cursor(catalog: str, query: str, parent: str | None, offset: int) -> str:
-    raw = json.dumps([catalog, query, parent, offset], separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+def _issue_summary(index: SourceIndex) -> list[dict[str, object]]:
+    listed = [issue.to_dict() for issue in index.issues[:5]]
+    if len(index.issues) > 5:
+        listed.append({"unit": None, "code": "MONITOR_SOURCE_INDEX_FAILED",
+                       "message": f"{len(index.issues) - 5} additional source issues"})
+    return listed
+
+
+def _metadata_page_payload(view: _View, items: tuple[dict[str, object], ...], query: str,
+                           cursor: str | None, limit: int, parent_id: str | None) -> dict[str, object]:
+    offset = _offset(cursor, view.catalog_id, query, parent_id, None, "tree")
+    if offset > len(items):
+        raise SourceCatalogFailure("MONITOR_SOURCE_CONTEXT_CHANGED", "Source tree cursor changed")
+    data: dict[str, object] = {
+        "schemaVersion": 1, "catalogId": view.catalog_id, "identity": view.identity,
+        "engine": {"name": view.index.engine_name, "version": view.index.engine_version,
+                   "inputKind": view.index.input_kind},
+        "coverage": {"complete": view.index.complete, "totalUnits": view.index.total_units,
+                     "parsedUnits": view.index.parsed_units, "issues": _issue_summary(view.index),
+                     "truncated": view.index.truncated},
+        "total": len(items), "items": [], "nextCursor": None,
+    }
+    base_bytes = len(json.dumps(data, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+    budget = _PAGE_DATA_BUDGET - base_bytes - _MAX_CURSOR_LENGTH
+    selected: list[dict[str, object]] = []
+    for item in items[offset:offset + limit]:
+        length = len(json.dumps(item, ensure_ascii=False, separators=(",", ":")).encode("utf-8")) + 1
+        if length > budget:
+            if not selected:
+                raise SourceCatalogFailure("MONITOR_SOURCE_INDEX_FAILED", "Source tree item exceeds its page budget")
+            break
+        selected.append(item)
+        budget -= length
+    next_offset = offset + len(selected)
+    data["items"] = selected
+    data["nextCursor"] = (_cursor(view.catalog_id, query, parent_id, next_offset, None, "tree")
+                          if next_offset < len(items) else None)
+    return data
+
+
+def _cursor(catalog: str, query: str, parent: str | None, offset: int,
+            scope: str | None = None, domain: str = "variables") -> str:
+    raw = json.dumps([catalog, query, parent, scope, domain, offset], separators=(",", ":"), ensure_ascii=False).encode("utf-8")
     mac = hmac.new(_CURSOR_KEY, raw, "sha256").digest()
     return base64.urlsafe_b64encode(raw + mac).rstrip(b"=").decode("ascii")
 
 
-def _offset(cursor: str | None, catalog: str, query: str, parent: str | None) -> int:
+def _offset(cursor: str | None, catalog: str, query: str, parent: str | None,
+            scope: str | None = None, domain: str = "variables") -> int:
     if cursor is None:
         return 0
-    if not isinstance(cursor, str) or len(cursor) > 512:
+    if not isinstance(cursor, str) or len(cursor) > _MAX_CURSOR_LENGTH:
         raise SourceCatalogFailure("MONITOR_SOURCE_CONTEXT_CHANGED", "Source catalog cursor is invalid")
     try:
         encoded = cursor.encode("ascii")
@@ -403,11 +582,11 @@ def _offset(cursor: str | None, catalog: str, query: str, parent: str | None) ->
         if not hmac.compare_digest(mac, hmac.new(_CURSOR_KEY, raw, "sha256").digest()):
             raise ValueError
         document = json.loads(raw)
-        if (not isinstance(document, list) or len(document) != 4
-                or document[:3] != [catalog, query, parent]
-                or type(document[3]) is not int or document[3] < 1):
+        if (not isinstance(document, list) or len(document) != 6
+                or document[:5] != [catalog, query, parent, scope, domain]
+                or type(document[5]) is not int or document[5] < 1):
             raise ValueError
-        return document[3]
+        return document[5]
     except (UnicodeError, binascii.Error, ValueError, json.JSONDecodeError):
         raise SourceCatalogFailure("MONITOR_SOURCE_CONTEXT_CHANGED", "Source catalog cursor is invalid") from None
 
@@ -502,7 +681,7 @@ class SourceCatalogProvider:
         current = await asyncio.to_thread(_offline_facts, self.root)
         if (facts.source_sha, facts.build_id, facts.elf_sha) != (current.source_sha, current.build_id, current.elf_sha):
             raise SourceCatalogFailure("MONITOR_SOURCE_CONTEXT_CHANGED", "Source or firmware changed while indexing")
-        catalog = await asyncio.to_thread(_catalog_id, identity, signature, base.index)
+        catalog = await asyncio.to_thread(_catalog_id, identity, signature, base.index, base.source_files)
         async with self._lock:
             saved = self._views.get(catalog)
             if saved is not None:
@@ -514,7 +693,8 @@ class SourceCatalogProvider:
             context = "firmware_unavailable"
         roots, nodes = await asyncio.to_thread(_materialize, base.index, base.dwarf, context, binding)
         view = _View(catalog, identity, base.index, base.dwarf, roots, nodes,
-                     binding, binding_ok, {}, signature)
+                     binding, binding_ok, {}, signature, base.source_files)
+        await asyncio.to_thread(_tree_index, view)
         async with self._lock:
             if self._closed:
                 raise SourceCatalogFailure("MONITOR_SOURCE_CONTEXT_CHANGED", "Source catalog was closed")
@@ -589,17 +769,29 @@ class SourceCatalogProvider:
 
     async def page(self, *, query: str, cursor: str | None, limit: int,
                    parent_id: str | None, catalog_id: str | None,
-                   binding: object | None, binding_epoch: int) -> dict[str, object]:
+                   binding: object | None, binding_epoch: int,
+                   scope_id: str | None = None) -> dict[str, object]:
         if (type(query) is not str or len(query) > 128 or any(ord(c) < 32 for c in query)
                 or type(limit) is not int or not 1 <= limit <= 100
                 or parent_id is not None and (not isinstance(parent_id, str) or not _ID.fullmatch(parent_id))
+                or scope_id is not None and (not isinstance(scope_id, str) or not _ID.fullmatch(scope_id))
+                or scope_id is not None and (parent_id is not None or catalog_id is None)
                 or catalog_id is not None and (not isinstance(catalog_id, str) or not _ID.fullmatch(catalog_id))):
             raise SourceCatalogFailure("MONITOR_SOURCE_INDEX_FAILED", "Source catalog query is invalid")
         normalized = unicodedata.normalize("NFC", query.strip()).casefold()
         view = await self._view(binding, binding_epoch, catalog_id)
         if catalog_id is not None and catalog_id != view.catalog_id:
             raise SourceCatalogFailure("MONITOR_SOURCE_CONTEXT_CHANGED", "Source catalog identity changed")
-        if parent_id is not None:
+        if scope_id is not None:
+            scope = (view.scope_by_id or {}).get(scope_id)
+            if scope is None:
+                raise SourceCatalogFailure("MONITOR_SOURCE_CONTEXT_CHANGED", "Source scope changed")
+            _, matches = await asyncio.to_thread(_matching_scopes, view, str(scope["file"]), normalized)
+            if scope_id not in matches:
+                raise SourceCatalogFailure("MONITOR_SOURCE_CONTEXT_CHANGED", "Source scope changed")
+            items = matches[scope_id]
+            actual_total = len(items)
+        elif parent_id is not None:
             if catalog_id is None or parent_id not in view.nodes:
                 raise SourceCatalogFailure("MONITOR_SOURCE_CONTEXT_CHANGED", "Source catalog parent changed")
             async with self._lock:
@@ -608,11 +800,34 @@ class SourceCatalogProvider:
             items = view.roots
             actual_total = len(items)
         result = await asyncio.to_thread(_page_payload, view, items, actual_total,
-                                         normalized, cursor, limit, parent_id)
+                                         normalized, cursor, limit, parent_id, scope_id)
         current = await asyncio.to_thread(_offline_facts, self.root)
         if (current.source_sha, current.build_id, current.elf_sha) != (
                 view.identity["sourceSnapshotSha256"], view.identity["buildId"], view.identity["elfSha256"]):
             raise SourceCatalogFailure("MONITOR_SOURCE_CONTEXT_CHANGED", "Source or firmware changed during page")
+        return result
+
+    async def tree(self, *, query: str, cursor: str | None, limit: int,
+                   parent_id: str | None, catalog_id: str | None,
+                   binding: object | None, binding_epoch: int) -> dict[str, object]:
+        if (type(query) is not str or len(query) > 128 or any(ord(c) < 32 for c in query)
+                or type(limit) is not int or not 1 <= limit <= 1000
+                or parent_id is not None and (not isinstance(parent_id, str) or not _ID.fullmatch(parent_id)
+                                              or catalog_id is None)
+                or cursor is not None and catalog_id is None
+                or catalog_id is not None and (not isinstance(catalog_id, str) or not _ID.fullmatch(catalog_id))):
+            raise SourceCatalogFailure("MONITOR_SOURCE_INDEX_FAILED", "Source tree query is invalid")
+        normalized = unicodedata.normalize("NFC", query.strip()).casefold()
+        view = await self._view(binding, binding_epoch, catalog_id)
+        if catalog_id is not None and catalog_id != view.catalog_id:
+            raise SourceCatalogFailure("MONITOR_SOURCE_CONTEXT_CHANGED", "Source catalog identity changed")
+        items = await asyncio.to_thread(_tree_items, view, normalized, parent_id)
+        result = await asyncio.to_thread(_metadata_page_payload, view, items, normalized,
+                                         cursor, limit, parent_id)
+        current = await asyncio.to_thread(_offline_facts, self.root)
+        if (current.source_sha, current.build_id, current.elf_sha) != (
+                view.identity["sourceSnapshotSha256"], view.identity["buildId"], view.identity["elfSha256"]):
+            raise SourceCatalogFailure("MONITOR_SOURCE_CONTEXT_CHANGED", "Source or firmware changed during tree page")
         return result
 
     async def select(self, *, catalog_id: str, item_id: str, selector: str,

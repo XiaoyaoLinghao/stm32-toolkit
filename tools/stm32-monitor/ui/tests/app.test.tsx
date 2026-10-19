@@ -1,6 +1,7 @@
 import {expect,it,vi,beforeEach} from "vitest";
 import {fireEvent,render,screen} from "@testing-library/preact";
 import {App} from "../src/app";
+import {sourceTreePage} from "./fixtures";
 
 vi.mock("echarts/core",()=>({init:vi.fn(()=>null),use:vi.fn(),default:{init:vi.fn(()=>null),use:vi.fn()}}));
 vi.mock("echarts/charts",()=>({LineChart:class{}}));
@@ -15,6 +16,7 @@ vi.mock("../src/api/client",()=>({
       groups:vi.fn(async()=>({ok:true,data:{groups:[],nextCursor:null,revision:"0"}})),
       variables:vi.fn(async()=>({ok:true,data:{items:[],nextCursor:null}})),
       registers:vi.fn(async()=>({ok:true,data:{items:[],nextCursor:null}})),
+      sourceTree:vi.fn(async()=>({ok:true,data:sourceTreePage()})),
       createGroup:vi.fn(async()=>({ok:false,code:"UNAVAILABLE",message:"not configured"})),
       updateGroup:vi.fn(async()=>({ok:false,code:"UNAVAILABLE",message:"not configured"})),
       deleteGroup:vi.fn(async()=>({ok:false,code:"UNAVAILABLE",message:"not configured"})),
@@ -45,7 +47,7 @@ beforeEach(()=>{
 it("App renders the monitor shell with identity and probe panels after load",async()=>{
   render(<App/>);
   expect(await screen.findByText("Project")).toBeTruthy();
-  expect(screen.getByLabelText("源码变量")).toBeTruthy();
+  expect(screen.getByLabelText("源码目录")).toBeTruthy();
   fireEvent.click(screen.getByRole("button",{name:"连接与固件详情"}));
   expect(screen.getByLabelText("探针连接")).toBeTruthy();
   fireEvent.click(screen.getByRole("button",{name:"关闭设备详情"}));

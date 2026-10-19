@@ -1,103 +1,68 @@
 import {expect,it,vi} from "vitest";
-import {fireEvent,render,screen} from "@testing-library/preact";
+import {fireEvent,render,screen,within} from "@testing-library/preact";
 import {SourceCatalogPanel} from "../src/components/SourceCatalogPanel";
-import type {SourceCatalogItem} from "../src/api/contract";
+import type {SourceCatalogItem,SourceFileNode,SourceScopeNode} from "../src/api/contract";
 import type {SourceCatalogState} from "../src/state/model";
-import {sourcePage} from "./fixtures";
+import {sourcePage,sourceTreePage} from "./fixtures";
 
-const leaf=(id:string,name:string,reason:SourceCatalogItem["reason"],kind:SourceCatalogItem["scope"]["kind"]):SourceCatalogItem=>({
- id:id.repeat(64),parentId:null,name,typeName:"int",file:"Src/main.c",line:8,column:3,
- scope:{kind,function:kind==="local"?"sample":null,path:kind==="local"?["block@1"]:[]},
- storage:"none",translationUnits:["Src/main.c"],selector:reason===null?name:null,
- canAdd:reason===null,reason,expandable:false,truncated:false,
-});
-const source=(items:readonly SourceCatalogItem[],nextCursor:string|null=null):SourceCatalogState=>({
- query:"",initialized:true,generation:1n,contextKey:"context",page:{...sourcePage(),items,total:items.length,nextCursor,cursor:null},
- children:{},lastAddedId:null,
-});
+const file=(id:string,name:string):SourceFileNode=>({kind:"file",id:id.repeat(64),parentId:null,
+ file:`Src/${name}`,name,scopeCount:name==="empty.c"?0:1,variableCount:name==="empty.c"?0:1});
+const main=file("1","main.c"),safe=file("2","safe.c"),empty=file("3","empty.c");
+const scope:SourceScopeNode={kind:"scope",id:"4".repeat(64),parentId:main.id,file:main.file,
+ name:"global",function:null,line:null,variableCount:1};
+const leaf:SourceCatalogItem={id:"5".repeat(64),parentId:null,name:"counter",typeName:"int",file:main.file,
+ line:8,column:3,scope:{kind:"global",function:null,path:[]},storage:"none",translationUnits:[main.file],
+ selector:"counter",canAdd:true,reason:null,expandable:false,truncated:false};
+const source=():SourceCatalogState=>({query:"",initialized:true,generation:1n,contextKey:"context",
+ tree:{...sourceTreePage(),total:3,items:[main,safe,empty],nextCursor:null},branches:{
+  [main.id]:{...sourceTreePage(),total:1,items:[scope],nextCursor:null}},
+ scopePages:{[scope.id]:{...sourcePage(),total:1,items:[leaf],cursor:null}},children:{},lastAddedId:null});
+const base=()=>({pending:{},failures:{},editBusy:false,onRetry:vi.fn(),onFirmware:vi.fn(),
+ onSearch:vi.fn(),onChildren:vi.fn(),onSelect:vi.fn()});
 
-it("browses source files and functions without a probe, with reasoned disabled rows and search",()=>{
- const search=vi.fn(),select=vi.fn(),local=leaf("c","gpio","frame_required","local"),global=leaf("d","counter",null,"global");
- render(<SourceCatalogPanel source={source([local,global],"next")} pending={false} childPending={false} selectionPending={false}
-   failures={{}} onRetry={vi.fn()} onFirmware={vi.fn()}
-   editBusy={false} onSearch={search} onNext={vi.fn()} onChildren={vi.fn()} onSelect={select}/>);
- expect(screen.getByText("已加载 2 / 2 项 · 已解析 1 / 1 个编译单元")).toBeTruthy();
- fireEvent.click(screen.getByText(/Src\/main.c · 已加载/));
- fireEvent.click(screen.getByText(/sample · 1/));
- const disabled=screen.getByRole("button",{name:"加入观测组草稿 gpio"}) as HTMLButtonElement;
- expect(disabled.disabled).toBe(true);
- expect(screen.getByText("局部变量需要运行栈帧")).toBeTruthy();
- fireEvent.click(screen.getByText(/全局／文件作用域 · 1/));
- fireEvent.click(screen.getByRole("button",{name:"加入观测组草稿 counter"}));
- expect(select).toHaveBeenCalledWith(global);
- fireEvent.input(screen.getByPlaceholderText("搜索名称、文件或函数"),{target:{value:"gpio"}});
+it("lists all source files before loading leaves, then expands only the requested scope",()=>{
+ const props=base();render(<SourceCatalogPanel source={source()} {...props}/>);
+ const region=screen.getByRole("region",{name:"源码目录结果"});
+ expect(within(region).getByRole("button",{name:/main\.c/})).toBeVisible();
+ expect(within(region).getByRole("button",{name:/safe\.c/})).toBeVisible();
+ expect(within(region).getByRole("button",{name:/empty\.c/})).toBeVisible();
+ expect(within(region).queryByRole("button",{name:"加入观测组草稿 counter"})).toBeNull();
+ fireEvent.click(within(region).getByRole("button",{name:"展开 Src/main.c"}));
+ fireEvent.click(within(region).getByRole("button",{name:"展开 global"}));
+ fireEvent.click(within(region).getByRole("button",{name:"加入观测组草稿 counter"}));
+ expect(props.onSelect).toHaveBeenCalledWith(leaf);
+ fireEvent.input(screen.getByPlaceholderText("搜索名称、文件或函数"),{target:{value:"safe"}});
  fireEvent.click(screen.getByRole("button",{name:"搜索"}));
- expect(search).toHaveBeenCalledWith("gpio");
+ expect(props.onSearch).toHaveBeenCalledWith("safe");
 });
 
-it("shows partial coverage, bounded children, and an explicit local retry",()=>{
- const aggregate={...leaf("e","samples","aggregate","global"),selector:"samples",expandable:true,truncated:true};
- const base=source([aggregate]);
- const state:SourceCatalogState={...base,page:{...base.page!,coverage:{complete:false,totalUnits:3,parsedUnits:2,
-   issues:[{unit:"Src/broken.c",code:"MONITOR_SOURCE_INDEX_FAILED",message:"failed"}],truncated:true}}};
- const search=vi.fn(),children=vi.fn();
- render(<SourceCatalogPanel source={state} pending={false} childPending={false} selectionPending={false} editBusy={false}
-   failures={{}} onRetry={vi.fn()} onFirmware={vi.fn()}
-   onSearch={search} onNext={vi.fn()} onChildren={children} onSelect={vi.fn()}/>);
- expect(screen.getByText("部分编译单元未解析，当前列表不完整。")).toBeTruthy();
- fireEvent.click(screen.getByRole("button",{name:"重试上次操作"}));
- expect(search).toHaveBeenCalledWith("");
- fireEvent.click(screen.getByText(/Src\/main.c · 已加载/));
- fireEvent.click(screen.getByText(/全局／文件作用域 · 1/));
- fireEvent.click(screen.getByRole("button",{name:"展开 samples"}));
- expect(children).toHaveBeenCalledWith(aggregate.id);
+it("keeps branch failure and retry local while another file remains available",()=>{
+ const props=base(),current=source(),node=`catalog.source-node.${safe.id}` as const;
+ render(<SourceCatalogPanel source={current} {...props} failures={{[node]:{ok:false,code:"MONITOR_SOURCE_CONTEXT_CHANGED",
+  message:"changed",requestId:6n,recovery:"read-retry",summary:"safe"}}}/>);
+ const region=screen.getByRole("region",{name:"源码目录结果"});
+ fireEvent.click(within(region).getByRole("button",{name:"展开 Src/main.c"}));
+ fireEvent.click(within(region).getByRole("button",{name:"展开 Src/safe.c"}));
+ expect(within(region).getByRole("alert").textContent).toContain("MONITOR_SOURCE_CONTEXT_CHANGED");
+ expect(within(region).getByRole("button",{name:"展开 global"})).toBeVisible();
+ fireEvent.click(within(region).getByRole("button",{name:"重试上次操作"}));
+ expect(props.onRetry).toHaveBeenCalledWith(node,6n);
 });
 
-it("shows a missing-engine failure and an in-place retry with firmware fallback",()=>{
- const retry=vi.fn(),firmware=vi.fn(),empty:SourceCatalogState={...source([]),page:null};
- render(<SourceCatalogPanel source={empty} pending={false} childPending={false} selectionPending={false}
-   editBusy={false} failures={{"catalog.source":{ok:false,code:"MONITOR_SOURCE_ENGINE_MISSING",message:"missing",
-     requestId:5n,recovery:"read-retry",summary:"source"}}} onRetry={retry} onFirmware={firmware}
-   onSearch={vi.fn()} onNext={vi.fn()} onChildren={vi.fn()} onSelect={vi.fn()}/>);
+it("resets expansion with a new directory generation",()=>{
+ const props=base(),current=source();const {rerender}=render(<SourceCatalogPanel source={current} {...props}/>);
+ const region=screen.getByRole("region",{name:"源码目录结果"});
+ fireEvent.click(within(region).getByRole("button",{name:"展开 Src/main.c"}));
+ expect(within(region).getByRole("button",{name:"展开 global"})).toBeVisible();
+ rerender(<SourceCatalogPanel source={{...current,generation:2n}} {...props}/>);
+ expect(within(screen.getByRole("region",{name:"源码目录结果"})).queryByRole("button",{name:"展开 global"})).toBeNull();
+});
+
+it("shows a root failure with an in-place retry",()=>{
+ const props=base();render(<SourceCatalogPanel source={{...source(),tree:null}} {...props}
+  failures={{"catalog.source":{ok:false,code:"MONITOR_SOURCE_ENGINE_MISSING",message:"missing",
+   requestId:5n,recovery:"read-retry",summary:"source"}}}/>);
  expect(screen.getByRole("alert").textContent).toContain("MONITOR_SOURCE_ENGINE_MISSING");
  fireEvent.click(screen.getByRole("button",{name:"重试上次操作"}));
- expect(retry).toHaveBeenCalledWith("catalog.source",5n);
- fireEvent.click(screen.getByRole("button",{name:"查看固件变量与寄存器"}));
- expect(firmware).toHaveBeenCalled();
-});
-
-it("shows a child-page failure without leaving an endless loading message",()=>{
- const aggregate={...leaf("e","samples","aggregate","global"),selector:"samples",expandable:true};
- const retry=vi.fn();
- render(<SourceCatalogPanel source={source([aggregate])} pending={false} childPending={false} selectionPending={false}
-   editBusy={false} failures={{"catalog.source-child":{ok:false,code:"MONITOR_SOURCE_CONTEXT_CHANGED",message:"changed",
-     requestId:6n,recovery:"read-retry",summary:"children"}}} onRetry={retry} onFirmware={vi.fn()}
-   onSearch={vi.fn()} onNext={vi.fn()} onChildren={vi.fn()} onSelect={vi.fn()}/>);
- fireEvent.click(screen.getByText(/Src\/main.c · 已加载/));
- fireEvent.click(screen.getByText(/全局／文件作用域 · 1/));
- fireEvent.click(screen.getByRole("button",{name:"展开 samples"}));
- expect(screen.getByRole("alert").textContent).toContain("MONITOR_SOURCE_CONTEXT_CHANGED");
- fireEvent.click(screen.getByRole("button",{name:"重试上次操作"}));
- expect(retry).toHaveBeenCalledWith("catalog.source-child",6n);
-});
-
-it("shows one child failure and one retry when another aggregate is also open",()=>{
- const first={...leaf("e","first","aggregate","global"),selector:"first",expandable:true};
- const second={...leaf("f","second","aggregate","global"),selector:"second",expandable:true};
- const retry=vi.fn(),children=vi.fn();
- render(<SourceCatalogPanel source={source([first,second])} pending={false} childPending={false}
-   selectionPending={false} editBusy={false} failures={{"catalog.source-child":{
-     ok:false,code:"MONITOR_SOURCE_CONTEXT_CHANGED",message:"changed",requestId:9n,
-     recovery:"read-retry",summary:"first"}}} onRetry={retry} onFirmware={vi.fn()}
-   onSearch={vi.fn()} onNext={vi.fn()} onChildren={children} onSelect={vi.fn()}/>);
- fireEvent.click(screen.getByText(/Src\/main.c · 已加载/));
- fireEvent.click(screen.getByText(/全局／文件作用域 · 2/));
- fireEvent.click(screen.getByRole("button",{name:"展开 first"}));
- fireEvent.click(screen.getByRole("button",{name:"展开 second"}));
- expect(children).toHaveBeenCalledWith(first.id);
- expect(children).toHaveBeenCalledWith(second.id);
- expect(screen.getAllByRole("alert")).toHaveLength(1);
- fireEvent.click(screen.getByRole("button",{name:"重试上次操作"}));
- expect(retry).toHaveBeenCalledOnce();
- expect(retry).toHaveBeenCalledWith("catalog.source-child",9n);
+ expect(props.onRetry).toHaveBeenCalledWith("catalog.source",5n);
 });

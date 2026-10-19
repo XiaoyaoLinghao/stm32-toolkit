@@ -763,19 +763,25 @@ def test_source_catalog_routes_share_auth_and_exact_query_grammar() -> None:
         auth = {"Authorization": f"Bearer {TOKEN_BYTES.hex()}", "Origin": endpoint.url}
         async with aiohttp.ClientSession() as client:
             denied = await client.get(endpoint.url + "/api/v1/catalog/source-variables")
+            denied_tree = await client.get(endpoint.url + "/api/v1/catalog/source-tree")
+            tree = await client.get(endpoint.url + "/api/v1/catalog/source-tree?query=main&limit=1000", headers=auth)
             page = await client.get(endpoint.url + "/api/v1/catalog/source-variables?query=counter&limit=20", headers=auth)
+            scoped = await client.get(endpoint.url + "/api/v1/catalog/source-variables?scopeId=scope&catalogId=cat", headers=auth)
             selection = await client.get(endpoint.url + "/api/v1/catalog/source-selection?catalogId=cat&id=item&selector=counter", headers=auth)
             before_invalid = len(runtime.calls)
             unknown = await client.get(endpoint.url + "/api/v1/catalog/source-variables?plugin=run", headers=auth)
+            unknown_tree = await client.get(endpoint.url + "/api/v1/catalog/source-tree?path=Src%2Fmain.c", headers=auth)
             repeated = await client.get(endpoint.url + "/api/v1/catalog/source-selection?id=a&id=b", headers=auth)
             wrong_method = await client.post(endpoint.url + "/api/v1/catalog/source-selection", headers=auth)
-        assert denied.status == 401
-        assert page.status == selection.status == 200
+        assert denied.status == denied_tree.status == 401
+        assert tree.status == page.status == scoped.status == selection.status == 200
         assert runtime.calls == [
+            ("monitor.catalog.source.tree", {}, None, {"query": "main", "limit": "1000"}),
             ("monitor.catalog.source.variables", {}, None, {"query": "counter", "limit": "20"}),
+            ("monitor.catalog.source.variables", {}, None, {"scopeId": "scope", "catalogId": "cat"}),
             ("monitor.catalog.source.selection", {}, None, {"catalogId": "cat", "id": "item", "selector": "counter"}),
         ]
-        assert [unknown.status, repeated.status, wrong_method.status] == [400, 400, 405]
+        assert [unknown.status, unknown_tree.status, repeated.status, wrong_method.status] == [400, 400, 400, 405]
         assert len(runtime.calls) == before_invalid
 
     asyncio.run(_with_service(scenario))

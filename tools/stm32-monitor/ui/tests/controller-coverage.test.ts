@@ -1,7 +1,7 @@
 import {describe,expect,it,vi} from "vitest";
 import {createController} from "../src/controller";
 import {initialState,reducer} from "../src/state/reducer";
-import {sourcePage,statusResult,watchGroup} from "./fixtures";
+import {sourcePage,sourceTreePage,statusResult,watchGroup} from "./fixtures";
 import type {MonitorAction,MonitorState} from "../src/state/model";
 import type {MonitorApi} from "../src/api/contract";
 
@@ -15,6 +15,7 @@ function makeApi(overrides:Partial<MonitorApi>={}):MonitorApi{
     probes:vi.fn(async()=>ok({probes:[]})),
     variables:vi.fn(async()=>ok({items:[],nextCursor:null})),
     registers:vi.fn(async()=>ok({items:[],nextCursor:null})),
+    sourceTree:vi.fn(async()=>ok(sourceTreePage())),
     sourceVariables:vi.fn(async()=>ok(sourcePage())),
     sourceSelection:vi.fn(async()=>err("MONITOR_SOURCE_SELECTION_UNAVAILABLE","not configured")),
     groups:vi.fn(async()=>ok({groups:[group],nextCursor:null,revision:"0"})),

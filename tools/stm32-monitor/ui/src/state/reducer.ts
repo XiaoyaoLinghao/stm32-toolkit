@@ -1,4 +1,4 @@
-import type {MonitorStatus,ObservationBinding,ParsedLiveEnvelope} from "../api/contract";
+import type {MonitorStatus,ObservationBinding,ParsedLiveEnvelope,SourceFileNode,SourceScopeNode} from "../api/contract";
 import {appendAuthoritativeSample,appendContinuityGap,emptyLive,addSampleDropDeltas,watchKey,projectHistoryPage} from "../chart/series";
 import {initialZoom,zoomReducer} from "../chart/zoom";
 import {draftFromGroup,emptyDraft,groupDirty,groupWorkflowBusy,sameGroupContent,sourceContextKey,type DropTotals,type GroupNavigation,type LiveState,type MonitorAction,type MonitorState,type RequestScope,type SourceCatalogState} from "./model";
@@ -7,7 +7,7 @@ const zeroDrops=():DropTotals=>({subscriber:0n,history:0n,deadline:0n,service:0n
 const dropsFrom=(status:MonitorStatus):DropTotals=>({subscriber:status.sampling.subscriberDrops,history:status.sampling.historyDrops,deadline:status.sampling.deadlineDrops,service:status.sampling.serviceDrops});
 const liveForStatus=(status:MonitorStatus,selected:ReadonlySet<string>):LiveState=>({...emptyLive(),selectedSeries:new Set([...selected].slice(0,8)),bindingEpoch:status.sampling.bindingEpoch,runId:status.sampling.runId,authoritativeDrops:dropsFrom(status)});
 const emptyProjection={rows:[],series:new Map()};
-const emptySource=(generation=0n):SourceCatalogState=>({query:"",initialized:false,generation,contextKey:"",page:null,children:{},lastAddedId:null});
+const emptySource=(generation=0n):SourceCatalogState=>({query:"",initialized:false,generation,contextKey:"",tree:null,branches:{},scopePages:{},children:{},lastAddedId:null});
 export const initialState:MonitorState={status:null,probes:[],groups:[],selectedGroupId:null,groupDraft:emptyDraft,groupBaseline:emptyDraft,groupGeneration:0n,groupNavigation:null,groupNavigationMissing:false,groupNameReviewRequired:false,groupWriteBusy:false,groupsNeedRefresh:false,stateRevision:-1n,lastAcceptedEventId:null,pending:{},reconciling:{},failures:{},catalog:{variables:null,registers:null,source:emptySource()},selectedSeries:new Set(),live:emptyLive(),zoom:initialZoom,transport:{phase:"idle",open:false,stale:true,needsStatusRefresh:false,gapRevision:0n},history:{query:null,page:null,projection:emptyProjection,cursorIndex:0,cursorStack:[],nextCursor:null,inFlight:null},exports:{artifact:null,submitted:null},notices:[],blockingError:null};
 const sameBinding=(a:ObservationBinding,b:ObservationBinding):boolean=>a.workspaceId===b.workspaceId&&a.sessionId===b.sessionId&&a.logicalProjectId===b.logicalProjectId&&a.probeId===b.probeId&&a.targetDevice===b.targetDevice&&a.physicalTarget===b.physicalTarget&&a.buildId===b.buildId&&a.elfSha256===b.elfSha256&&a.inputSnapshotSha256===b.inputSnapshotSha256&&a.gitHead===b.gitHead&&a.gitDirty===b.gitDirty&&a.flashSessionId===b.flashSessionId&&a.leaseId===b.leaseId&&a.dwarfSha256===b.dwarfSha256&&a.svdSha256===b.svdSha256;
 const statusMatches=(status:MonitorStatus,binding:ObservationBinding):boolean=>status.workspaceId===binding.workspaceId&&status.sessionId===binding.sessionId&&status.project.logicalProjectId===binding.logicalProjectId&&status.project.targetDevice===binding.targetDevice&&status.probe.connected&&status.probe.probeId===binding.probeId&&status.firmware!==null&&status.firmware.buildId===binding.buildId&&status.firmware.elfSha256===binding.elfSha256&&status.firmware.inputSnapshotSha256===binding.inputSnapshotSha256&&status.firmware.gitHead===binding.gitHead&&status.firmware.gitDirty===binding.gitDirty&&status.firmware.targetDevice===binding.targetDevice;
@@ -39,9 +39,12 @@ function navigate(state:MonitorState,target:GroupNavigation):MonitorState{
     groupGeneration:state.groupGeneration+1n,groupNavigation:null,groupNavigationMissing:false,groupNameReviewRequired:false});
 }
 const catalogScopes=["catalog.variables","catalog.registers"] as const;
-const sourceScopes=["catalog.source","catalog.source-child","catalog.source-selection"] as const;
+const sourceScopes=["catalog.source","catalog.source-selection"] as const;
+const sourceScopeKeys=(state:MonitorState):RequestScope[]=>[...new Set([
+ ...Object.keys(state.pending),...Object.keys(state.failures),...Object.keys(state.reconciling),
+].filter((scope):scope is RequestScope=>scope.startsWith("catalog.source-node.")))];
 function retireSource(state:MonitorState):MonitorState{
- const retired=retireScopes(state,sourceScopes);
+ const retired=retireScopes(state,[...sourceScopes,...sourceScopeKeys(state)]);
  return{...retired,catalog:{...retired.catalog,source:emptySource(retired.catalog.source.generation+1n)}};
 }
 function retireScopes(state:MonitorState,scopes:readonly RequestScope[]):MonitorState{
@@ -147,35 +150,58 @@ export function reducer(state:MonitorState,action:MonitorAction):MonitorState{
  if(action.type==="source.started"){
   if(state.status===null||sourceContextKey(state.status)!==action.contextKey||
     action.generation<=state.catalog.source.generation)return state;
-  return {...state,catalog:{...state.catalog,source:{query:action.query,initialized:true,
-    generation:action.generation,contextKey:action.contextKey,page:null,children:{},lastAddedId:null}}};
+  const retired=retireScopes(state,[...sourceScopes,...sourceScopeKeys(state)]);
+  return {...retired,catalog:{...retired.catalog,source:{query:action.query,initialized:true,
+    generation:action.generation,contextKey:action.contextKey,tree:null,branches:{},scopePages:{},children:{},lastAddedId:null}}};
  }
- if(action.type==="source.loaded"){
-  const source=state.catalog.source,page=action.page;
+ if(action.type==="source.tree.loaded"||action.type==="source.variables.loaded"){
+  const source=state.catalog.source,envelope=action.page;
   if(state.status===null||sourceContextKey(state.status)!==action.contextKey||
     source.contextKey!==action.contextKey||source.generation!==action.generation||source.query!==action.query||
-    page.identity.workspaceId!==state.status.workspaceId||page.identity.sessionId!==state.status.sessionId||
-    page.identity.logicalProjectId!==state.status.project.logicalProjectId||
-    page.identity.targetDevice!==state.status.project.targetDevice||
-    page.identity.bindingEpoch!==state.status.sampling.bindingEpoch)return state;
+    envelope.identity.workspaceId!==state.status.workspaceId||envelope.identity.sessionId!==state.status.sessionId||
+    envelope.identity.logicalProjectId!==state.status.project.logicalProjectId||
+    envelope.identity.targetDevice!==state.status.project.targetDevice||
+    envelope.identity.bindingEpoch!==state.status.sampling.bindingEpoch)return state;
+  if(action.type==="source.tree.loaded"){
+   const page=action.page;
+   if(page.nextCursor!==null||page.items.length!==page.total||
+      new Set(page.items.map(item=>item.id)).size!==page.items.length)return state;
+   if(action.parentId===null){
+    if(page.items.some(item=>item.kind!=="file"||item.parentId!==null)||page.total>10_000)return state;
+    return {...state,catalog:{...state.catalog,source:{...source,
+      tree:{...page,items:page.items as readonly SourceFileNode[],nextCursor:null},
+      branches:{},scopePages:{},children:{},lastAddedId:null}}};
+   }
+   const tree=source.tree,file=tree?.items.find(item=>item.id===action.parentId);
+   if(tree===null||file===undefined||tree.catalogId!==page.catalogId||
+      page.items.some(item=>item.kind!=="scope"||item.parentId!==file.id||item.file!==file.file)||
+      page.items.length!==file.scopeCount)return state;
+   return {...state,catalog:{...state.catalog,source:{...source,
+     branches:{...source.branches,[file.id]:{...page,items:page.items as readonly SourceScopeNode[],nextCursor:null}}}}};
+  }
+  const page=action.page;
+  if(source.tree===null||source.tree.catalogId!==page.catalogId)return state;
   const statusFirmware=state.status.firmware;
   const firmwareMatches=statusFirmware!==null&&page.identity.buildId!==null&&page.identity.elfSha256!==null&&
     page.identity.buildId===statusFirmware.buildId&&page.identity.elfSha256===statusFirmware.elfSha256&&
     page.identity.sourceSnapshotSha256===statusFirmware.inputSnapshotSha256;
   const safePage=firmwareMatches?page:{...page,items:page.items.map(item=>item.canAdd?
     {...item,canAdd:false,reason:"source_mismatch" as const}:item)};
-  if(action.parentId===null){
-   const prior=source.page;
-   if(action.cursor!==null&&(prior===null||prior.nextCursor!==action.cursor||prior.catalogId!==safePage.catalogId))return state;
+  if(action.scopeId!==null){
+   const scope=Object.values(source.branches).flatMap(branch=>branch.items).find(item=>item.id===action.scopeId);
+   if(scope===undefined||safePage.items.some(item=>item.parentId!==null||item.file!==scope.file||
+      item.scope.function!==scope.function)||safePage.total!==scope.variableCount)return state;
+   const prior=source.scopePages[action.scopeId];
+   if(action.cursor!==null&&(prior===undefined||prior.nextCursor!==action.cursor))return state;
    const seen=new Set(prior?.items.map(item=>item.id)??[]);
-   if(action.cursor!==null&&safePage.items.some(item=>seen.has(item.id))||safePage.items.some(item=>item.parentId!==null))return state;
+   if(action.cursor!==null&&safePage.items.some(item=>seen.has(item.id)))return state;
    const merged={...safePage,cursor:action.cursor,items:action.cursor===null?safePage.items:[...prior!.items,...safePage.items]};
-   return {...state,catalog:{...state.catalog,source:{...source,page:merged,
-     children:action.cursor===null?{}:source.children,lastAddedId:null}}};
+   return {...state,catalog:{...state.catalog,source:{...source,
+     scopePages:{...source.scopePages,[action.scopeId]:merged},lastAddedId:null}}};
   }
-  const root=source.page,parent=root?.items.find(item=>item.id===action.parentId)??
+  const parent=Object.values(source.scopePages).flatMap(child=>child.items).find(item=>item.id===action.parentId)??
     Object.values(source.children).flatMap(child=>child.items).find(item=>item.id===action.parentId);
-  if(root===null||parent===undefined||!parent.expandable||root.catalogId!==safePage.catalogId||
+  if(action.parentId===null||parent===undefined||!parent.expandable||
     safePage.items.some(item=>item.parentId!==action.parentId))return state;
   const prior=source.children[action.parentId];
   if(action.cursor!==null&&(prior===undefined||prior.nextCursor!==action.cursor))return state;
@@ -189,9 +215,9 @@ export function reducer(state:MonitorState,action:MonitorAction):MonitorState{
   if(state.status===null||sourceContextKey(state.status)!==action.contextKey||
     source.contextKey!==action.contextKey||source.generation!==action.generation||
     state.groupGeneration!==action.groupGeneration||state.groupNavigation!==null||groupWorkflowBusy(state)||
-    source.page?.catalogId!==action.catalogId||action.watch.kind!=="variable"||
+    source.tree?.catalogId!==action.catalogId||action.watch.kind!=="variable"||
     action.watch.expression!==action.selector)return state;
-  const item=source.page.items.find(item=>item.id===action.itemId)??
+  const item=Object.values(source.scopePages).flatMap(child=>child.items).find(item=>item.id===action.itemId)??
     Object.values(source.children).flatMap(child=>child.items).find(item=>item.id===action.itemId);
   if(item===undefined||!item.canAdd||item.selector!==action.selector||
     state.groupDraft.items.some(watch=>watchKey(watch)===watchKey(action.watch)))return state;

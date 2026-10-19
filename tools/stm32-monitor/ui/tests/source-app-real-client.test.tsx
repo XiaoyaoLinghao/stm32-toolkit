@@ -27,15 +27,22 @@ const catalog=(status:MonitorStatus)=>({...wire,data:{...wire.data,
   identity:{...wire.data.identity,buildId:status.firmware?.buildId??null,elfSha256:status.firmware?.elfSha256??null},
   items:wire.data.items.map((item:Record<string,unknown>)=>({...item,canAdd:status.probe.connected,
     reason:status.probe.connected?null:"probe_required"}))}});
+const fileId="1".repeat(64),scopeId="2".repeat(64);
+const sourceTree=(status:MonitorStatus,parent:string|null)=>envelope("monitor.catalog.source.tree",{
+ ...catalog(status).data,total:1,nextCursor:null,items:parent===null?
+  [{kind:"file",id:fileId,parentId:null,file:"Src/main.c",name:"main.c",variableCount:1,scopeCount:1}]:
+  [{kind:"scope",id:scopeId,parentId:fileId,file:"Src/main.c",name:"global",function:null,line:null,variableCount:1}],
+});
 const deferred=<T,>()=>{let resolve!:(value:T)=>void;const promise=new Promise<T>(done=>{resolve=done;});return{promise,resolve};};
 
 function installFetch(status:MonitorStatus,selection?:Promise<Response>){
   const calls:string[]=[];
   const fetchMock=vi.fn((input:RequestInfo|URL):Promise<Response>=>{
-    const path=new URL(String(input)).pathname;calls.push(path);
+    const request=new URL(String(input)),path=request.pathname;calls.push(path);
     if(path==="/api/v1/status")return Promise.resolve(response(envelope("monitor.status",status)));
     if(path==="/api/v1/probes")return Promise.resolve(response(envelope("monitor.probes.list",{probes:[]})));
     if(path==="/api/v1/groups")return Promise.resolve(response(envelope("monitor.groups.list",{groups:[],nextCursor:null,revision:"0"})));
+    if(path==="/api/v1/catalog/source-tree")return Promise.resolve(response(sourceTree(status,request.searchParams.get("parentId"))));
     if(path==="/api/v1/catalog/source-variables")return Promise.resolve(response(catalog(status)));
     if(path==="/api/v1/catalog/source-selection")return selection??Promise.resolve(response(envelope(
       "monitor.catalog.source.selection",{catalogId:wire.data.catalogId,item:{kind:"variable",expression:"counter"}})));
@@ -55,22 +62,22 @@ afterEach(()=>{vi.clearAllMocks();vi.unstubAllGlobals();});
 it("autoloads the shared source wire page without a probe and expands file and scope",async()=>{
   const calls=installFetch(statusResult());render(<App/>);
   expect(await screen.findByText("已加载 1 / 1 项",{exact:false})).toBeVisible();
-  expect(calls).toContain("/api/v1/catalog/source-variables");
-  const region=screen.getByRole("region",{name:"源码变量结果"});
-  fireEvent.click(within(region).getByText(/Src\/main\.c · 已加载 1 项/));
-  fireEvent.click(within(region).getByText(/全局／文件作用域 · 1/));
-  expect(within(region).getByText("counter")).toBeVisible();
+  expect(calls).toContain("/api/v1/catalog/source-tree");
+  const region=screen.getByRole("region",{name:"源码目录结果"});
+  fireEvent.click(within(region).getByRole("button",{name:"展开 Src/main.c"}));
+  fireEvent.click(await within(region).findByRole("button",{name:"展开 global"}));
+  expect(await within(region).findByText("counter")).toBeVisible();
   expect(within(region).getByRole("button",{name:"加入观测组草稿 counter"})).toBeDisabled();
 });
 
 it("uses a fresh real-client selection ACK for the draft and never reopens a drawer after a view switch",async()=>{
   const status=connected(),late=deferred<Response>(),calls=installFetch(status,late.promise);
   render(<App/>);
-  const region=await screen.findByRole("region",{name:"源码变量结果"});
-  await waitFor(()=>expect(within(region).getByText(/Src\/main\.c · 已加载 1 项/)).toBeVisible());
-  fireEvent.click(within(region).getByText(/Src\/main\.c · 已加载 1 项/));
-  fireEvent.click(within(region).getByText(/全局／文件作用域 · 1/));
-  const add=within(region).getByRole("button",{name:"加入观测组草稿 counter"});
+  const region=await screen.findByRole("region",{name:"源码目录结果"});
+  await waitFor(()=>expect(within(region).getByRole("button",{name:"展开 Src/main.c"})).toBeVisible());
+  fireEvent.click(within(region).getByRole("button",{name:"展开 Src/main.c"}));
+  fireEvent.click(await within(region).findByRole("button",{name:"展开 global"}));
+  const add=await within(region).findByRole("button",{name:"加入观测组草稿 counter"});
   expect(add).toBeEnabled();
   fireEvent.click(add);
   await waitFor(()=>expect(calls).toContain("/api/v1/catalog/source-selection"));

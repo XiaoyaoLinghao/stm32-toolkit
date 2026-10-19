@@ -1,128 +1,114 @@
 import {describe,expect,it} from "vitest";
 import {createController} from "../src/controller";
-import type {MonitorApi,MonitorStatus,SourceCatalogItem,SourceCatalogPage} from "../src/api/contract";
+import type {MonitorApi,MonitorStatus,SourceCatalogItem,SourceFileNode,SourceScopeNode,SourceTreePage} from "../src/api/contract";
 import {initialState,reducer} from "../src/state/reducer";
 import {sourceContextKey,type MonitorAction,type MonitorState} from "../src/state/model";
-import {recordingApi,sourcePage,statusResult} from "./fixtures";
+import {recordingApi,sourcePage,sourceTreePage,statusResult} from "./fixtures";
 
-const item:SourceCatalogItem={id:"c".repeat(64),parentId:null,name:"counter",typeName:"int",file:"Src/main.c",line:1,column:5,
-  scope:{kind:"global",function:null,path:[]},storage:"none",translationUnits:["Src/main.c"],selector:"counter",
-  canAdd:true,reason:null,expandable:false,truncated:false};
+const file=(letter:string,name:string):SourceFileNode=>({kind:"file",id:letter.repeat(64),parentId:null,
+ file:`Src/${name}`,name,scopeCount:1,variableCount:1});
+const main=file("1","main.c"),safe=file("2","safe.c");
+const scope=(letter:string,parent:SourceFileNode):SourceScopeNode=>({kind:"scope",id:letter.repeat(64),
+ parentId:parent.id,file:parent.file,name:"global",function:null,line:null,variableCount:1});
+const mainScope=scope("3",main),safeScope=scope("4",safe);
+const item:SourceCatalogItem={id:"c".repeat(64),parentId:null,name:"counter",typeName:"int",file:main.file,line:1,column:5,
+ scope:{kind:"global",function:null,path:[]},storage:"none",translationUnits:[main.file],selector:"counter",
+ canAdd:true,reason:null,expandable:false,truncated:false};
 const connected=():MonitorStatus=>{const base=statusResult();return{...base,probe:{connected:true,probeId:"probe"},probeConnected:true,
-  firmware:{buildId:"build",elfSha256:"e".repeat(64),inputSnapshotSha256:"b".repeat(64),gitHead:"g".repeat(40),gitDirty:false,targetDevice:base.project.targetDevice}};};
-const page=(status:MonitorStatus):SourceCatalogPage=>({...sourcePage(status),total:1,items:[item]});
-const loaded=(status:MonitorStatus)=>{
-  let state=reducer(initialState,{type:"initial.loaded",status,probes:[],groups:[]});
-  const contextKey=sourceContextKey(status);
-  state=reducer(state,{type:"source.started",query:"",contextKey,generation:state.catalog.source.generation+1n});
-  state=reducer(state,{type:"source.loaded",query:"",contextKey,generation:state.catalog.source.generation,
-    cursor:null,parentId:null,page:page(status)});
-  return state;
+ firmware:{buildId:"build",elfSha256:"e".repeat(64),inputSnapshotSha256:"b".repeat(64),gitHead:"g".repeat(40),gitDirty:false,targetDevice:base.project.targetDevice}};};
+const tree=(status:MonitorStatus,files:readonly SourceFileNode[]=[main]):SourceTreePage=>({...sourceTreePage(status),total:files.length,items:files});
+const loaded=(status:MonitorStatus):MonitorState=>{
+ let state=reducer(initialState,{type:"initial.loaded",status,probes:[],groups:[]});
+ const contextKey=sourceContextKey(status);
+ state=reducer(state,{type:"source.started",query:"",contextKey,generation:state.catalog.source.generation+1n});
+ state=reducer(state,{type:"source.tree.loaded",query:"",contextKey,generation:state.catalog.source.generation,parentId:null,page:tree(status)});
+ state=reducer(state,{type:"source.tree.loaded",query:"",contextKey,generation:state.catalog.source.generation,parentId:main.id,
+  page:{...tree(status),total:1,items:[mainScope]}});
+ state=reducer(state,{type:"source.variables.loaded",query:"",contextKey,generation:state.catalog.source.generation,
+  cursor:null,parentId:null,scopeId:mainScope.id,page:{...sourcePage(status),total:1,items:[item]}});
+ return state;
 };
 
-describe("source catalog adoption lifecycle",()=>{
-  it("adopts the latest of two searches queued before a render",async()=>{
-    const status=connected();
-    let committed:MonitorState=reducer(initialState,{type:"initial.loaded",status,probes:[],groups:[]});
-    const queued:MonitorAction[]=[];
-    const flush=()=>{for(const action of queued.splice(0))committed=reducer(committed,action);};
-    let resolveFirst!:(value:Awaited<ReturnType<MonitorApi["sourceVariables"]>>)=>void;
-    let resolveSecond!:(value:Awaited<ReturnType<MonitorApi["sourceVariables"]>>)=>void;
-    let resolveThird!:(value:Awaited<ReturnType<MonitorApi["sourceVariables"]>>)=>void;
-    const first=new Promise<Awaited<ReturnType<MonitorApi["sourceVariables"]>>>(done=>{resolveFirst=done;});
-    const second=new Promise<Awaited<ReturnType<MonitorApi["sourceVariables"]>>>(done=>{resolveSecond=done;});
-    const third=new Promise<Awaited<ReturnType<MonitorApi["sourceVariables"]>>>(done=>{resolveThird=done;});
-    const api:MonitorApi={...recordingApi([],status),sourceVariables:query=>query==="first"?first:query==="second"?second:third};
-    const controller=createController(api,action=>queued.push(action),()=>committed);
-    try{
-      const old=controller.searchSource("first"),latest=controller.searchSource("second");
-      flush();
-      resolveSecond({ok:true,data:page(status)});await latest;flush();
-      expect(committed.catalog.source.query).toBe("second");
-      expect(committed.catalog.source.page?.items[0]?.name).toBe("counter");
-      resolveFirst({ok:true,data:page(status)});await old;flush();
-      expect(committed.catalog.source.query).toBe("second");
-      const nextStatus={...status,firmware:{...status.firmware!,buildId:"build-next"}};
-      committed=reducer(committed,{type:"status.loaded",status:nextStatus});
-      const retiredGeneration=committed.catalog.source.generation;
-      expect(committed.catalog.source.page).toBeNull();
-      const afterRetirement=controller.searchSource("third");flush();
-      resolveThird({ok:true,data:page(nextStatus)});await afterRetirement;flush();
-      expect(committed.catalog.source.generation).toBeGreaterThan(retiredGeneration);
-      expect(committed.catalog.source.page?.items[0]?.name).toBe("counter");
-    }finally{controller.close();}
-  });
+describe("source tree lifecycle",()=>{
+ it("collects every metadata page before one adoption, independent of queued reducer state",async()=>{
+  const status=connected(),calls:string[]=[];
+  let committed:MonitorState=reducer(initialState,{type:"initial.loaded",status,probes:[],groups:[]});
+  const queued:MonitorAction[]=[];
+  const api:MonitorApi={...recordingApi([],status),sourceTree:async(_query,cursor,_parent,catalogId)=>{
+   calls.push(`${cursor??"first"}:${catalogId??"none"}`);
+   return{ok:true,data:cursor===undefined?{...tree(status,[main]),total:2,nextCursor:"next"}:{...tree(status,[safe]),total:2}};
+  }};
+  const controller=createController(api,action=>queued.push(action),()=>committed);
+  try{
+   const request=controller.searchSource("");await request;
+   for(const action of queued)committed=reducer(committed,action);
+   expect(calls).toEqual(["first:none",`next:${"a".repeat(64)}`]);
+   expect(committed.catalog.source.tree?.items.map(node=>node.file)).toEqual([main.file,safe.file]);
+  }finally{controller.close();}
+ });
 
-  it("keeps source browsing when disconnected and rejects a late same-epoch page and selection",()=>{
-    const status=connected(),original=loaded(status),contextKey=sourceContextKey(status),generation=original.catalog.source.generation;
-    const disconnected={...status,probe:{connected:false,probeId:null},probeConnected:false};
-    let state=reducer(original,{type:"status.loaded",status:disconnected});
-    expect(state.catalog.source.page).toBeNull();
-    state=reducer(state,{type:"source.loaded",query:"",contextKey,generation,cursor:null,parentId:null,page:page(status)});
-    state=reducer(state,{type:"source.selection.accepted",contextKey,generation,groupGeneration:original.groupGeneration,
-      catalogId:page(status).catalogId,itemId:item.id,selector:"counter",watch:{kind:"variable",expression:"counter"}});
-    expect(state.catalog.source.page).toBeNull();
-    expect(state.groupDraft.items).toEqual([]);
-    expect(state.status?.sampling.bindingEpoch).toBe(0n);
-  });
+ it("keeps two branches independent and retries the failed branch through current admission",async()=>{
+  const status=connected();let state:MonitorState=reducer(initialState,{type:"initial.loaded",status,probes:[],groups:[]});
+  const contextKey=sourceContextKey(status);
+  state=reducer(state,{type:"source.started",query:"",contextKey,generation:state.catalog.source.generation+1n});
+  state=reducer(state,{type:"source.tree.loaded",query:"",contextKey,generation:state.catalog.source.generation,
+   parentId:null,page:tree(status,[main,safe])});
+  let failMain=true;
+  const api:MonitorApi={...recordingApi([],status),sourceTree:async(_query,_cursor,parent)=>{
+   if(parent===main.id&&failMain)return{ok:false,code:"MONITOR_SOURCE_INDEX_FAILED",message:"failed"};
+   return{ok:true,data:{...tree(status),total:1,items:[parent===safe.id?safeScope:mainScope]}};
+  }};
+  const controller=createController(api,action=>{state=reducer(state,action);},()=>state);
+  try{
+   await Promise.all([controller.sourceChildren(main.id),controller.sourceChildren(safe.id)]);
+   expect(state.catalog.source.branches[safe.id]?.items[0]?.id).toBe(safeScope.id);
+   expect(state.failures[`catalog.source-node.${main.id}`]?.code).toBe("MONITOR_SOURCE_INDEX_FAILED");
+   failMain=false;
+   await controller.retry(`catalog.source-node.${main.id}`,state.failures[`catalog.source-node.${main.id}`]!.requestId);
+   expect(state.catalog.source.branches[main.id]?.items[0]?.id).toBe(mainScope.id);
+   expect(state.catalog.source.branches[safe.id]?.items[0]?.id).toBe(safeScope.id);
+  }finally{controller.close();}
+ });
 
-  it("retires a same-epoch firmware change and an old query or child page",()=>{
-    const status=connected(),old=loaded(status),contextKey=sourceContextKey(status),generation=old.catalog.source.generation;
-    const firmware={...status.firmware!,buildId:"next"};
-    let state=reducer(old,{type:"status.loaded",status:{...status,firmware}});
-    expect(state.catalog.source.page).toBeNull();
-    state=reducer(state,{type:"source.loaded",query:"",contextKey,generation,cursor:null,parentId:null,page:page(status)});
-    expect(state.catalog.source.page).toBeNull();
-    state=reducer(state,{type:"source.started",query:"gpio",contextKey:sourceContextKey(state.status!),
-      generation:state.catalog.source.generation+1n});
-    expect(state.catalog.source.generation).toBeGreaterThan(generation);
-    state=reducer(state,{type:"source.loaded",query:"",contextKey,generation,cursor:null,parentId:null,page:page(status)});
-    expect(state.catalog.source.page).toBeNull();
-  });
+ it("retires tree, branches, pages and late selection after a context change",()=>{
+  const status=connected(),before=loaded(status),contextKey=sourceContextKey(status),generation=before.catalog.source.generation;
+  const changed={...status,firmware:{...status.firmware!,buildId:"next"}};
+  let state=reducer(before,{type:"status.loaded",status:changed});
+  expect(state.catalog.source.tree).toBeNull();
+  expect(state.catalog.source.branches).toEqual({});
+  expect(state.catalog.source.scopePages).toEqual({});
+  state=reducer(state,{type:"source.tree.loaded",query:"",contextKey,generation,parentId:null,page:tree(status)});
+  state=reducer(state,{type:"source.selection.accepted",contextKey,generation,groupGeneration:before.groupGeneration,
+   catalogId:tree(status).catalogId,itemId:item.id,selector:"counter",watch:{kind:"variable",expression:"counter"}});
+  expect(state.catalog.source.tree).toBeNull();
+  expect(state.groupDraft.items).toEqual([]);
+ });
 
-  it("keeps a fresh readonly source page when status firmware lags, without enabling Add",()=>{
-    const status=connected(),contextKey=sourceContextKey(status);
-    let state=reducer(initialState,{type:"initial.loaded",status,probes:[],groups:[]});
-    state=reducer(state,{type:"source.started",query:"",contextKey,generation:state.catalog.source.generation+1n});
-    const fresh={...page(status),identity:{...page(status).identity,buildId:"new-build",elfSha256:"f".repeat(64)}};
-    state=reducer(state,{type:"source.loaded",query:"",contextKey,generation:state.catalog.source.generation,
-      cursor:null,parentId:null,page:fresh});
-    expect(state.catalog.source.page?.items[0]?.canAdd).toBe(false);
-    expect(state.catalog.source.page?.items[0]?.reason).toBe("source_mismatch");
-    state=reducer(state,{type:"source.selection.accepted",contextKey,generation:state.catalog.source.generation,
-      groupGeneration:state.groupGeneration,catalogId:fresh.catalogId,itemId:item.id,selector:"counter",
-      watch:{kind:"variable",expression:"counter"}});
-    expect(state.groupDraft.items).toEqual([]);
-  });
+ it("keeps stale firmware leaves readonly and gates an ACK by group generation",()=>{
+  const status=connected(),contextKey=sourceContextKey(status);let state=loaded(status);
+  state=reducer(state,{type:"source.started",query:"",contextKey,generation:state.catalog.source.generation+1n});
+  const stale={...sourcePage(status),identity:{...sourcePage(status).identity,buildId:"new-build"},total:1,items:[item]};
+  state=reducer(state,{type:"source.tree.loaded",query:"",contextKey,generation:state.catalog.source.generation,
+   parentId:null,page:tree(status)});
+  state=reducer(state,{type:"source.tree.loaded",query:"",contextKey,generation:state.catalog.source.generation,
+   parentId:main.id,page:{...tree(status),total:1,items:[mainScope]}});
+  state=reducer(state,{type:"source.variables.loaded",query:"",contextKey,generation:state.catalog.source.generation,
+   cursor:null,parentId:null,scopeId:mainScope.id,page:stale});
+  expect(state.catalog.source.scopePages[mainScope.id]?.items[0]?.canAdd).toBe(false);
+  const oldGeneration=state.groupGeneration;
+  state=reducer(state,{type:"group.navigation.requested",target:{kind:"new"}});
+  state=reducer(state,{type:"source.selection.accepted",contextKey,generation:state.catalog.source.generation,
+   groupGeneration:oldGeneration,catalogId:tree(status).catalogId,itemId:item.id,selector:"counter",
+   watch:{kind:"variable",expression:"counter"}});
+  expect(state.groupDraft.items).toEqual([]);
+ });
 
-  it("requires the original group generation when an async selection ACK arrives",async()=>{
-    const status=connected();let state:MonitorState=loaded(status);
-    let resolve!:(result:Awaited<ReturnType<MonitorApi["sourceSelection"]>>)=>void;
-    const pending=new Promise<Awaited<ReturnType<MonitorApi["sourceSelection"]>>>(done=>{resolve=done;});
-    const api:MonitorApi={...recordingApi([],status),sourceSelection:()=>pending};
-    const dispatch=(action:MonitorAction)=>{state=reducer(state,action);};
-    const controller=createController(api,dispatch,()=>state);
-    const selecting=controller.selectSource(item);
-    expect(state.pending["catalog.source-selection"]).toBeDefined();
-    state=reducer(state,{type:"group.navigation.requested",target:{kind:"new"}});
-    resolve({ok:true,data:{catalogId:page(status).catalogId,item:{kind:"variable",expression:"counter"}}});
-    await selecting;
-    expect(state.groupDraft.items).toEqual([]);
-    expect(state.catalog.source.lastAddedId).toBeNull();
-    controller.close();
-  });
-
-  it("adds a validated current leaf only to the active draft",()=>{
-    const status=connected(),contextKey=sourceContextKey(status);
-    let state=loaded(status);
-    state=reducer(state,{type:"source.selection.accepted",contextKey,generation:state.catalog.source.generation,
-      groupGeneration:state.groupGeneration,catalogId:page(status).catalogId,itemId:item.id,selector:"counter",
-      watch:{kind:"variable",expression:"counter"}});
-    expect(state.groupDraft.items).toEqual([{kind:"variable",expression:"counter"}]);
-    expect(state.catalog.source.lastAddedId).toBe(item.id);
-    const again=reducer(state,{type:"source.selection.accepted",contextKey,generation:state.catalog.source.generation,
-      groupGeneration:state.groupGeneration,catalogId:page(status).catalogId,itemId:item.id,selector:"counter",
-      watch:{kind:"variable",expression:"counter"}});
-    expect(again).toBe(state);
-  });
+ it("adds only a listed eligible leaf to the current draft",()=>{
+  const status=connected(),contextKey=sourceContextKey(status);let state=loaded(status);
+  state=reducer(state,{type:"source.selection.accepted",contextKey,generation:state.catalog.source.generation,
+   groupGeneration:state.groupGeneration,catalogId:tree(status).catalogId,itemId:item.id,selector:"counter",
+   watch:{kind:"variable",expression:"counter"}});
+  expect(state.groupDraft.items).toEqual([{kind:"variable",expression:"counter"}]);
+  expect(state.catalog.source.lastAddedId).toBe(item.id);
+ });
 });

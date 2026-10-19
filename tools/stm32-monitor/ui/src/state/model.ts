@@ -1,9 +1,9 @@
-import type {ApiFailure,ExportArtifact,GroupDraft,HistoryPage,HistoryQuery,MonitorStatus,ObservationBinding,ProbeInfo,SampleValue,SourceCatalogPage,VariableCatalogItem,RegisterCatalogItem,WatchGroup,WatchItem} from "../api/contract";
+import type {ApiFailure,ExportArtifact,GroupDraft,HistoryPage,HistoryQuery,MonitorStatus,ObservationBinding,ProbeInfo,SampleValue,SourceCatalogPage,SourceFileNode,SourceScopeNode,SourceTreePage,VariableCatalogItem,RegisterCatalogItem,WatchGroup,WatchItem} from "../api/contract";
 import type {ChartPoint,LiveRow} from "../chart/series";
 import type {ZoomRange} from "../chart/zoom";
 
 export type DropTotals={subscriber:bigint;history:bigint;deadline:bigint;service:bigint};
-export type RequestScope="initial"|"status"|"live.reconnect"|"probes"|"probe.connect"|"probe.reconnect"|"probe.release"|"catalog.variables"|"catalog.registers"|"catalog.source"|"catalog.source-child"|"catalog.source-selection"|"groups.list"|"groups.create"|"groups.update"|"groups.delete"|"groups.import"|"sampling.start"|"sampling.pause"|"sampling.resume"|"sampling.stop"|"history"|"export.create"|"export.status"|"export.download";
+export type RequestScope="initial"|"status"|"live.reconnect"|"probes"|"probe.connect"|"probe.reconnect"|"probe.release"|"catalog.variables"|"catalog.registers"|"catalog.source"|`catalog.source-node.${string}`|"catalog.source-selection"|"groups.list"|"groups.create"|"groups.update"|"groups.delete"|"groups.import"|"sampling.start"|"sampling.pause"|"sampling.resume"|"sampling.stop"|"history"|"export.create"|"export.status"|"export.download";
 export type PendingRequest={requestId:bigint};
 export type RecoveryKind="read-retry"|"write-confirm"|"reconcile"|"groups-refresh"|"input"|"none";
 export type OperationFailure=ApiFailure&{requestId:bigint;recovery:RecoveryKind;summary:string};
@@ -11,7 +11,9 @@ export type CatalogKind="variables"|"registers";
 export type VariableCatalog={kind:"variables";query:string;bindingKey:string;cursor:string|null;items:readonly VariableCatalogItem[];nextCursor:string|null};
 export type RegisterCatalog={kind:"registers";query:string;bindingKey:string;cursor:string|null;items:readonly RegisterCatalogItem[];nextCursor:string|null};
 export type SourcePageState=SourceCatalogPage&{cursor:string|null};
-export type SourceCatalogState={query:string;initialized:boolean;generation:bigint;contextKey:string;page:SourcePageState|null;children:Readonly<Record<string,SourcePageState>>;lastAddedId:string|null};
+export type SourceTreeState=Omit<SourceTreePage,"items"|"nextCursor">&{items:readonly SourceFileNode[];nextCursor:null};
+export type SourceBranchState=Omit<SourceTreePage,"items"|"nextCursor">&{items:readonly SourceScopeNode[];nextCursor:null};
+export type SourceCatalogState={query:string;initialized:boolean;generation:bigint;contextKey:string;tree:SourceTreeState|null;branches:Readonly<Record<string,SourceBranchState>>;scopePages:Readonly<Record<string,SourcePageState>>;children:Readonly<Record<string,SourcePageState>>;lastAddedId:string|null};
 export const sourceContextKey=(status:MonitorStatus):string=>JSON.stringify([status.workspaceId,status.sessionId,status.project.logicalProjectId,status.project.targetDevice,status.probe.connected,status.probe.probeId,status.sampling.bindingEpoch.toString(),status.firmware?.buildId??null,status.firmware?.elfSha256??null,status.firmware?.inputSnapshotSha256??null,status.firmware?.gitHead??null,status.firmware?.gitDirty??null,status.firmware?.targetDevice??null]);
 export type HistoryRow={runId:string;sequence:bigint;startOrdinal:bigint;batchValueCount:bigint;capturedAtUtc:string;values:readonly SampleValue[]};
 export type HistoryProjection={rows:readonly HistoryRow[];series:ReadonlyMap<string,readonly ChartPoint[]>};
@@ -33,7 +35,8 @@ export type LoadedAction=
  | {type:"catalog.loaded";catalog:"variables";query:string;bindingKey:string;cursor:string|null;items:readonly VariableCatalogItem[];nextCursor:string|null}
  | {type:"catalog.loaded";catalog:"registers";query:string;bindingKey:string;cursor:string|null;items:readonly RegisterCatalogItem[];nextCursor:string|null}
  | {type:"source.started";query:string;contextKey:string;generation:bigint}
- | {type:"source.loaded";query:string;contextKey:string;generation:bigint;cursor:string|null;parentId:string|null;page:SourceCatalogPage}
+ | {type:"source.tree.loaded";query:string;contextKey:string;generation:bigint;parentId:string|null;page:SourceTreePage}
+ | {type:"source.variables.loaded";query:string;contextKey:string;generation:bigint;cursor:string|null;scopeId:string|null;parentId:string|null;page:SourceCatalogPage}
  | {type:"source.selection.accepted";contextKey:string;generation:bigint;groupGeneration:bigint;catalogId:string;itemId:string;selector:string;watch:WatchItem}
  | {type:"group.selected";groupId:string|null}
  | {type:"group.navigation.requested";target:GroupNavigation}
