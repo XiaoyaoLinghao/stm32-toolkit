@@ -43,9 +43,9 @@ DWARF增加不可变的源码归属投影，解析decl_file/line/column、CU及�
 
 保持旧`/api/v1/catalog/variables`、`/registers`、Toolkit CatalogPage/VariableDescriptor及WatchItem不变，新增同一鉴权/查询白名单下的只读接口：
 
-- `GET /api/v1/catalog/source-variables`，operation `monitor.catalog.source_variables`；query为`query`、`cursor`、`limit`（1..100，默认100）、可选`parentId`和该展开所属`catalogId`。初页以声明为根，子页返回同一目录下该聚合对象的子项；游标绑定catalogId/query/parent。
+- `GET /api/v1/catalog/source-variables`，operation `monitor.catalog.source.variables`；query为`query`、`cursor`、`limit`（1..100，默认100）、可选`parentId`和该展开所属`catalogId`。初页以声明为根，子页返回同一目录下该聚合对象的子项；游标绑定catalogId/query/parent。
 - data包含`schemaVersion:1`、`catalogId`、`identity`（workspace/session/logicalProject/target、sourceSnapshotSha256、可空buildId/elfSha256、bindingEpoch）、`engine`（名称/版本/输入来源）、`coverage`（complete、totalUnits、parsedUnits、问题列表和truncated）、`total`、`items`、`nextCursor`。各条包含稳定`id`/`parentId`、`name`、`typeName`、相对`file`、`line`/`column`、`scope`及storage、translationUnits、可空`selector`、`canAdd`、`reason`、`expandable`及截断信息。类型中明确nullable与枚举，UI严格校验，不把声明ID放进selector。
-- `GET /api/v1/catalog/source-selection`，operation `monitor.catalog.source_selection`，query为`catalogId`、`id`、`selector`；离线重新核对输入/构建/活动binding和该条可用性，成功返回`{catalogId,item:WatchItem}`，否则返回可重试的目录身份变化/不可用错误。UI只有此成功且当前目录仍匹配才加入原草稿；不得借此访问硬件或自动保存。
+- `GET /api/v1/catalog/source-selection`，operation `monitor.catalog.source.selection`，query为`catalogId`、`id`、`selector`；离线重新核对输入/构建/活动binding和该条可用性，成功返回`{catalogId,item:WatchItem}`，否则返回可重试的目录身份变化/不可用错误。UI只有此成功且当前目录仍匹配才加入原草稿；不得借此访问硬件或自动保存。
 
 字段精确化：identity使用`workspaceId/sessionId/logicalProjectId/targetDevice/sourceSnapshotSha256/buildId/elfSha256/bindingEpoch`，后者沿用十进制wire bigint；engine为`{name,version,inputKind:"compdb"|"manifest"}`。coverage为`{complete,totalUnits,parsedUnits,issues:[{unit:string|null,code,message}],truncated}`，total为当前query/parent下的条目总数。条目`scope`为`{kind:"global"|"file_static"|"static_local"|"local"|"parameter"|"member"|"element",function:string|null,path:string[]}`，storage为`"none"|"static"|"extern"|"register"|"thread_local"`；line/column为正整数或null（未知位置不得获得源码归属证明），file为经过校验的项目相对路径。reason为null或`probe_required/source_mismatch/firmware_unavailable/frame_required/debug_entry_missing/ambiguous_symbol/unsupported_type/unsupported_location/read_range_denied/aggregate/coverage_incomplete/limit_reached/source_attribution_unproven`之一。selector为既有Watch语法字符串或null，不能由id替代。expandable/truncated/canAdd均为boolean。字段上下界和可空性两端共用同一fixture，拒绝重复id、坏父子关系和不匹配catalogId。
 
@@ -75,3 +75,5 @@ UI验证未连接自动发现、文件/作用域搜索/收纳、分页、展开�
 - **响应预算**：limit是最多条数。页面按序列化字节预算缩小items并以实际返回数推进游标，保留真实total、完整translationUnits和截断事实；不能让合法100项页超过既有1MiB封套上限而产生普通500。测试覆盖长路径/多TU的合法最坏页。
 
 上述修正及直接AST→真实离线ELF→旧lookup/read限制的测试属于本轮首次完整预审反馈；实现者完成后冻结CodeHead，独立审查仍以完整accepted-base差异为准。
+
+封套operation命名核对：既有协议只允许点分隔的字母数字段，故两个新operation最终固定为`monitor.catalog.source.variables`和`monitor.catalog.source.selection`；HTTP路径、DTO和查询不变，不扩展旧协议语法。先前草案中的下划线写法不兼容，已由主代理更正，真实runtime成功/失败封套均须验证。
