@@ -10,6 +10,8 @@
 
 本轮复用reducer/controller既有合同，数值固定在波形上方；按selectedSeries决定波形是否占位；仅设备抽屉自己的写入ACK成功并经reducer采用才自动返回。共享App/CSS风险由最终UI unit/a11y、两项类型检查、lint、build和dist一致性覆盖；主代理在精确CodeHead干净树进行精选集成和完整差异审查。上一轮CodeHead `8649c494721e8cb631c84855a204dc271e09df00`的438项既有全量及主代理34项UI/29项静态测试证据见[既有验收](../codex/returns/MONITOR-WORKBENCH-REFACTOR/review.md)，不替代本轮受影响验证。服务验收只核对源码、资源和OS进程监听，浏览器及新版硬件仍DEFERRED。
 
+2026-10-19本切片软件已ACCEPTED：CodeHead `543741b2d42c2e51ddcc8ae41b3b3100ea5eaad3`，实现者454项UI/a11y及静态门禁通过，主代理精确Head的49项关键UI、29项静态资产及7文件重建一致性通过，独立完整差异审查NO BLOCKERS。[验收与部署](../codex/returns/MONITOR-VALUES-FIRST/review.md)记录新8765源`D:\codex-tmp\mv1019\review`、PID17680、exec87113和最新运维卡`D:\codex-tmp\mv1019\service.json`。旧PID19020已正常停止；使用原project/data/session公开open入口更新，无新增硬件或浏览器PASS。源码目录完整性仍是单独待冻结能力。
+
 先记录实际工作树、分支、完整 accepted base/CodeHead、设计/实现/审查者、部署 source、project/data/runtime 路径、授权、有效证据和剩余场景。检查 tracked/untracked、已提交/未提交、已推送/未推送状态；保留无关改动。使用精确 CodeHead 的干净隔离工作树审查完整差异。
 
 状态含义：PASS 为证据满足条款；READY 为前置成立但未执行；PENDING 为尚缺结果；BLOCKED 为已知前置缺口；TERMINAL_STOPPED 为本次执行结束。REUSED 必须附原证据及适用性；N/A 不能代替缺失、失败或不可用硬件。文档变化本身不触发重测；相关产品字节、环境、依赖或身份变更只使对应证据需要重新核对。
