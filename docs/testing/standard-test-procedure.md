@@ -4,7 +4,7 @@
 
 ## 1. 当前断点与证据
 
-2026-10-19当前新切片为[完整源文件目录树规格](../superpowers/specs/2026-10-19-monitor-source-file-tree-design.md)与[实施计划](../superpowers/plans/2026-10-19-monitor-source-file-tree-plan.md)：accepted base `3c4e2594bafc8d7ca2f1b00c1efe6683639cf05c`，分支`codex/monitor-source-file-tree`，file_tree_impl唯一实现、file_tree_review_sol（显式gpt-6-sol/max）独立审查、主代理验收部署。文件/函数metadata与变量分页分离；无冻结CodeHead或新软件接受结论之前，现8765继续运行下面记录的已接受源码目录版本。浏览器、实际认证HTTP和新硬件仍DEFERRED，无远端/版本/安装权限变化。
+2026-10-19完整源文件目录树的软件与本机服务更新已ACCEPTED，依据[规格](../superpowers/specs/2026-10-19-monitor-source-file-tree-design.md)、[实施计划](../superpowers/plans/2026-10-19-monitor-source-file-tree-plan.md)及[最终审查与部署](../codex/returns/MONITOR-SOURCE-FILE-TREE/review.md)。Accepted base `3c4e2594bafc8d7ca2f1b00c1efe6683639cf05c`，CodeHead `41b5cc37f60d26da2ed323dd7b934fc980b3df61`，实施报告head `f6ba4cbb21e2b8ceb3577a95a46bbdccaaaaec87`；分支`codex/monitor-source-file-tree`，file_tree_impl唯一实现、file_tree_review_sol（显式gpt-6-sol/max）独立完整差异审查NO BLOCKERS，主代理独立复核、验收并部署。实现者143项Python/474项UI、类型/lint/build/dist通过；主代理精确干净CodeHead的72项UI、119项源码集成、29项静态资产和7文件重建一致性通过。8765已从`D:\codex-tmp\st1019\review`运行该CodeHead，PID22740/exec27630，运维卡`D:\codex-tmp\st1019\service.json`。文件/函数metadata与变量分页分离，空文件/函数保留，变量按scope懒加载；当前工程离线21/21单元、184文件、0 issue。版本保持1.1.2。浏览器、实际认证HTTP和新硬件仍DEFERRED，无远端/安装权限变化。此前源码目录验收记录作为历史保留如下。
 
 已发布 v1.0.0/v1.0.1 的固定身份、一次性覆盖率例外和限制见[发布状态](../release-status.md)。旧例外不自动延续至新版本；2026-10-10 用户为 v1.0.1 批准的“不低于 v1.0.0”条件与已完成测量保留在[发布资格](release-qualification.md)和[执行记录](../codex/returns/STM32TK-101/execution.md)，分母、成员和永久门槛不改。
 
