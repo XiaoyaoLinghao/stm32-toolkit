@@ -4,9 +4,9 @@ import {createMonitorApi} from "./api/client";
 import {createController,type Controller} from "./controller";
 import {initialState,reducer} from "./state/reducer";
 import {activeGroup,chartSeries,liveRows,selectedGroup} from "./state/selectors";
-import {groupDirty,groupSourceProblem,groupWorkflowBusy,type MonitorAction,type MonitorState,type RequestScope} from "./state/model";
+import {groupDirty,groupSourceProblem,groupWorkflowBusy,type MonitorAction,type MonitorState,type OperationFailure,type RequestScope} from "./state/model";
 import {displayDropTotals} from "./chart/series";
-import {copy,formatCopy} from "./presentation/zh";
+import {copy,formatCopy,operationSummary} from "./presentation/zh";
 import {IdentityBar} from "./components/IdentityBar";
 import {ProbePanel} from "./components/ProbePanel";
 import {CatalogPanel} from "./components/CatalogPanel";
@@ -27,10 +27,14 @@ import {useDialogFocus} from "./components/dialog-focus";
 type Drawer="device"|"group"|"diagnostics"|null;
 type ProbeScope="probe.connect"|"probe.reconnect"|"probe.release";
 type ProbeReceipt={scope:ProbeScope;requestId:bigint};
+type ProbeActivity={scope:ProbeScope;requestId:bigint;kind:"pending"}|{scope:ProbeScope;requestId:bigint;kind:"failure";failure:OperationFailure};
 type AppSnapshot={monitor:MonitorState;probeReceipt:ProbeReceipt|null};
 type DeviceIntent={scope:ProbeScope;requestId:bigint|null;epoch:number};
 const probeScope=(scope:RequestScope):scope is ProbeScope=>
   scope==="probe.connect"||scope==="probe.reconnect"||scope==="probe.release";
+const probeScopes:readonly ProbeScope[]=["probe.connect","probe.reconnect","probe.release"];
+const probeSuccessText=(scope:ProbeScope):string=>scope==="probe.connect"?copy.probeConnectSuccess:
+  scope==="probe.reconnect"?copy.probeReconnectSuccess:copy.probeReleaseSuccess;
 
 // The existing reducer is called exactly once for each original action. This
 // presentation receipt exists only when it adopted the matching write ACK.
@@ -55,6 +59,7 @@ export function App():JSX.Element{
   const [directoryOpen,setDirectoryOpen]=useState(true);
   const [chartEmphasized,setChartEmphasized]=useState(false);
   const [activeDrawer,setActiveDrawer]=useState<Drawer>(null);
+  const [dismissedReceipt,setDismissedReceipt]=useState<ProbeReceipt|null>(null);
   const groupEntryRef=useRef<HTMLButtonElement>(null);
   const directoryToggleRef=useRef<HTMLButtonElement>(null);
   const headerDeviceRef=useRef<HTMLButtonElement>(null);
@@ -115,6 +120,14 @@ export function App():JSX.Element{
     if(deviceIntentRef.current===intent&&intent.requestId===null)deviceIntentRef.current=null;
     return operation;
   };
+  const receipt=snapshot.probeReceipt;
+  const successVisible=receipt!==null&&(dismissedReceipt?.scope!==receipt.scope||dismissedReceipt.requestId!==receipt.requestId);
+  const probeActivity=probeScopes.flatMap<ProbeActivity>(scope=>{
+    const pending=state.pending[scope],failure=state.failures[scope];
+    return pending!==undefined?[{scope,requestId:pending.requestId,kind:"pending" as const}]:
+      failure!==undefined?[{scope,requestId:failure.requestId,kind:"failure" as const,failure}]:[];
+  }).sort((left,right)=>left.requestId>right.requestId?-1:left.requestId<right.requestId?1:0)[0];
+  const visibleProbeActivity=probeActivity!==undefined&&(receipt===null||probeActivity.requestId>receipt.requestId)?probeActivity:null;
 
   useLayoutEffect(()=>{
     const receipt=snapshot.probeReceipt,intent=deviceIntentRef.current;
@@ -190,6 +203,10 @@ export function App():JSX.Element{
       <button ref={headerDeviceRef} type="button" className="header-device" aria-label={copy.device} aria-expanded={activeDrawer==="device"} aria-controls="device-details"
         onClick={event=>openDrawer("device",event.currentTarget)}>{copy.device}</button>
     </header>
+    {successVisible&&receipt!==null&&<div className="probe-feedback" role="status" aria-live="polite" aria-label={copy.probeOperationResult}>
+      <span>{probeSuccessText(receipt.scope)}</span>
+      <button type="button" aria-label={copy.probeResultClose} onClick={()=>setDismissedReceipt(receipt)}>{copy.close}</button>
+    </div>}
 
     <div className="workbench-body">
       <div className={"workspace live-workspace "+(!directoryOpen?"directory-closed ":"")+(chartEmphasisActive?"chart-emphasized":"")} hidden={!liveView}>
@@ -263,6 +280,15 @@ export function App():JSX.Element{
         <button type="button" aria-label={copy.closeDevice} onClick={closeDrawer}>{copy.close}</button></div>
         <IdentityBar project={status.project} firmware={status.firmware}
           onCopy={()=>{void navigator.clipboard?.writeText(JSON.stringify({workspaceId:status.workspaceId,sessionId:status.sessionId}));}}/>
+        {visibleProbeActivity?.kind==="pending"&&<p className="probe-operation-inline" role="status">
+          <strong>{operationSummary(visibleProbeActivity.scope)}</strong>：{copy.probePending}
+        </p>}
+        {visibleProbeActivity?.kind==="failure"&&<div className="probe-operation-inline" role="alert">
+          <strong>{operationSummary(visibleProbeActivity.scope)}</strong>：
+          {visibleProbeActivity.failure.recovery==="reconcile"?copy.probeUnconfirmed:copy.probeFailed}
+          <code>{visibleProbeActivity.failure.code}</code>
+          <button type="button" onClick={event=>openDrawer("diagnostics",diagnosticEntryRef.current??event.currentTarget)}>{copy.probeOpenDiagnostics}</button>
+        </div>}
         <ProbePanel probes={state.probes} connectedProbeId={status.probe.probeId} canReconnect={status.probe.connected} busy={busyProbe}
           leaseReason={null} onRefresh={()=>controller.refreshProbes()} onConnect={(id)=>runDeviceOperation("probe.connect",()=>controller.connectProbe(id))}
           onReconnect={()=>runDeviceOperation("probe.reconnect",()=>controller.reconnectProbe())}

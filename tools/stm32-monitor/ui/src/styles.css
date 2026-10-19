@@ -138,6 +138,11 @@ td code{white-space:normal;}
 .problem-entry.has-problems{color:var(--warn);font-weight:700;}
 .stale-label{color:var(--warn)!important;background:var(--warn-bg);padding:2px 5px;border-radius:4px;}
 .workbench-drawer{position:fixed;inset:0;z-index:30;display:flex;justify-content:flex-end;background:#15243b70;}
+.probe-feedback{position:fixed;right:14px;bottom:38px;z-index:25;display:flex;align-items:center;gap:12px;max-width:calc(100vw - 28px);padding:8px 10px;border:1px solid #8ab99b;border-radius:6px;background:#e9f7ec;color:#174f2c;box-shadow:0 6px 20px #15243b26;}
+.probe-feedback button{min-height:24px;padding:1px 6px;}
+.probe-operation-inline{display:flex;align-items:center;gap:5px;flex-wrap:wrap;margin-bottom:10px;padding:8px;border:1px solid #e2bf83;border-radius:5px;background:var(--warn-bg);color:#5f3905;overflow-wrap:anywhere;}
+.probe-operation-inline code{font-weight:700;}
+.probe-operation-inline button{margin-left:auto;}
 .drawer-content{width:min(460px,100vw);height:100%;overflow:auto;padding:12px;background:var(--surface);box-shadow:-10px 0 28px #15243b22;}
 .drawer-heading{position:sticky;top:-12px;z-index:1;margin:-12px -12px 10px;padding:10px 12px;background:white;border-bottom:1px solid var(--border);}
 .drawer-heading h2{font-size:15px;}
