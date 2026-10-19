@@ -6,15 +6,15 @@
 
 已发布 v1.0.0/v1.0.1 的固定身份、一次性覆盖率例外和限制见[发布状态](../release-status.md)。旧例外不自动延续至新版本；2026-10-10 用户为 v1.0.1 批准的“不低于 v1.0.0”条件与已完成测量保留在[发布资格](release-qualification.md)和[执行记录](../codex/returns/STM32TK-101/execution.md)，分母、成员和永久门槛不改。
 
-2026-10-19用户继续要求完成源码变量目录，并报告探针操作无成功反馈/自动返回的实测观感。当前源码切片以[规格](../superpowers/specs/2026-10-19-monitor-source-catalog-design.md)和[计划](../superpowers/plans/2026-10-19-monitor-source-catalog-plan.md)为入口，accepted base `1c320d9dc102ca11a280b97e210517ac5a852b63`，`source_catalog_impl`唯一实现、`source_catalog_review`独立审查，主代理负责集成验收和部署。探针反馈修复在mc1019独立树由原实现者修复、原独立审查者复核，接受后由源码实现者合入；最终验证覆盖集成后的全部行为。浏览器、认证HTTP、新硬件和远端动作仍暂缓。已有演示工程和历史样本保持原身份，不据此宣称新UI物理PASS。
+2026-10-19源码变量目录及已集成探针反馈的软件已ACCEPTED。入口为[规格](../superpowers/specs/2026-10-19-monitor-source-catalog-design.md)、[计划](../superpowers/plans/2026-10-19-monitor-source-catalog-plan.md)和[最终验收与部署](../codex/returns/MONITOR-SOURCE-CATALOG/review.md)。Accepted base `1c320d9dc102ca11a280b97e210517ac5a852b63`，CodeHead `423dc766e60233e4e79bd1ed5306e6631c1d3daa`，报告head `983540580f9e70f04e9e4770b9a16858fc4cd476`。唯一实现者source_catalog_impl、独立审查者source_catalog_review，主代理负责集成验收和部署。实现者266项Python/475项UI及类型/lint/build/dist通过；主代理精确干净Head的72项UI、113项Python集成、29项静态资产和7文件重建一致性通过，独立完整差异审查NO BLOCKERS。
 
-2026-10-19当前断点补充：探针反馈软件已接受，CodeHead `838b5bcd5dd55d5c87f79478d0a2a1b17b3e5c60`，验收/证据见[探针反馈报告](../codex/returns/MONITOR-PROBE-FEEDBACK/review.md)，并已在源码切片本地集成。源码目录仍为首次完整预审修正阶段，合同澄清见规格末节（`d838e078f35ed79dfafff167731738c69bdce88c`）：partial重试/身份、异步绑定复核、DWARF归属、事件循环/进程预算、compdb来源和封套大小。尚无冻结源码CodeHead或源码软件接受结论；8765仍运行 `543741b2d42c2e51ddcc8ae41b3b3100ea5eaad3`，不得把候选代码或离线AST结果当作已部署或物理PASS。
+8765已从上述CodeHead干净树`D:\codex-tmp\sc1019\review`通过原project/data/session公开open更新，当前PID10792、exec33017，运维卡`D:\codex-tmp\sc1019\service.json`；旧PID17680已正常停止。版本保持1.1.2，无远端动作。浏览器、实际认证HTTP、关闭重开及新硬件验证仍由用户暂缓；当前21/21编译单元只读AST证据不构成实机采样PASS，历史样本保留原身份。
 
 本轮复用reducer/controller既有合同，数值固定在波形上方；按selectedSeries决定波形是否占位；仅设备抽屉自己的写入ACK成功并经reducer采用才自动返回。共享App/CSS风险由最终UI unit/a11y、两项类型检查、lint、build和dist一致性覆盖；主代理在精确CodeHead干净树进行精选集成和完整差异审查。上一轮CodeHead `8649c494721e8cb631c84855a204dc271e09df00`的438项既有全量及主代理34项UI/29项静态测试证据见[既有验收](../codex/returns/MONITOR-WORKBENCH-REFACTOR/review.md)，不替代本轮受影响验证。服务验收只核对源码、资源和OS进程监听，浏览器及新版硬件仍DEFERRED。
 
-2026-10-19本切片软件已ACCEPTED：CodeHead `543741b2d42c2e51ddcc8ae41b3b3100ea5eaad3`，实现者454项UI/a11y及静态门禁通过，主代理精确Head的49项关键UI、29项静态资产及7文件重建一致性通过，独立完整差异审查NO BLOCKERS。[验收与部署](../codex/returns/MONITOR-VALUES-FIRST/review.md)记录新8765源`D:\codex-tmp\mv1019\review`、PID17680、exec87113和最新运维卡`D:\codex-tmp\mv1019\service.json`。旧PID19020已正常停止；使用原project/data/session公开open入口更新，无新增硬件或浏览器PASS。源码目录完整性仍是单独待冻结能力。
+先前数值优先CodeHead `543741b2d42c2e51ddcc8ae41b3b3100ea5eaad3`的证据见[数值优先验收](../codex/returns/MONITOR-VALUES-FIRST/review.md)，探针反馈CodeHead `838b5bcd5dd55d5c87f79478d0a2a1b17b3e5c60`见[探针反馈验收](../codex/returns/MONITOR-PROBE-FEEDBACK/review.md)。它们已在本地集成并由最终回归覆盖，旧部署卡仅为历史记录，不再代表当前监听。
 
-上段是上一轮软件证据，用户本次实际操作的HTTP ACK及页面资源未观察，不能据此认定根因已知或实机场景通过。当前已确认缺少可见成功提示及设备区失败详情。源码索引已发现本机ST Arm Clang21.1.1，可离线解析21/21编译单元，无需安装；只读能力证据不替代实现验证。当前8765仍为上述已接受源，待探针修复及源码完整差异的软件接受后统一更新。
+成功反馈只由本次有效且经reducer采用的写入ACK触发；实际用户HTTP响应仍未观察，不能据软件修复声称原现场根因已被证实。部分目录、身份/代次失效、取消及Windows自有编译器子树的回收均已有回归；清理临时目录被自动策略拒绝的精确清单见最终报告，未重试或绕过。
 
 先记录实际工作树、分支、完整 accepted base/CodeHead、设计/实现/审查者、部署 source、project/data/runtime 路径、授权、有效证据和剩余场景。检查 tracked/untracked、已提交/未提交、已推送/未推送状态；保留无关改动。使用精确 CodeHead 的干净隔离工作树审查完整差异。
 
