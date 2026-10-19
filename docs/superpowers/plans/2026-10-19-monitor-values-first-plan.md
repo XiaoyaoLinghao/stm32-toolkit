@@ -8,6 +8,8 @@ Accepted base：`1a9cadb42f9eace2fa173bdd9d5a42e9a4d20742`；[已批准规格](.
 
 不修改controller/reducer/API/schema/后端/ELF解析/依赖/版本；若薄dispatch观察器无法在冻结合同内证明准确成功，先报告具体反例，由主代理修订设计，不由实现者猜测成功。源码索引只保留独立调查/架构任务，不归本UI实现者写入。
 
+2026-10-19集成澄清：同批次请求的采用证明由App局部纯reducer外壳提供，只保留一个MonitorState并每动作调用既有reducer一次，附加scope/id临时展示回执；不重放reducer、不在reducer写ref/触发副作用、不改公共模型。独立审查覆盖纯度、失效顺序和回执不能跨抽屉代次关闭的约束。
+
 先按三场景补App级交互回归，再实现值表优先、无曲线释放空间和设备按钮的逐请求返回凭据。保留现有业务状态和稳定挂载；不得用Promise resolve或pending消失替代成功，不能把诊断GET核对当写入成功。
 
 ## 证据与交付

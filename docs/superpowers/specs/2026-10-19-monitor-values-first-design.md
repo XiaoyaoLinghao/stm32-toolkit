@@ -34,6 +34,8 @@ App拥有临时展示凭据：抽屉开合代次、抽屉种类、操作scope、
 
 在既有createController的dispatch边界增加薄观察器：所有MonitorAction原样传给唯一reducer；同步把由当前设备按钮启动的request.started绑定到该意图，观察明确的成功/失败/作废，不重写controller操作或新增结果状态。没有request.started的门禁拒绝不获得成功凭据。自动隐藏在reducer采用动作后进行，要求同scope/id、同抽屉代次、仍为设备抽屉、无阻断状态。失败、retired、access.blocked撤销该次凭据；迟到成功、诊断重试/核对及其他页面操作不能关闭设备抽屉。
 
+为覆盖同一渲染批次的started/succeeded，App可使用纯reducer展示外壳：仅保存一份权威MonitorState，每个原动作恰好调用一次既有reducer；只有该调用实际消耗匹配probe pending且无阻断时附加scope/id展示回执。此回执不是API结果或第二份业务状态；reducer中不写ref、不调用回调或副作用。回执与按钮意图、抽屉代次在提交后共同判断自动关闭，过期/失败/新请求不能复用旧回执。既有reducer.ts及公共状态模型不变。
+
 现有GroupPanel、CatalogPanel、HistoryPanel、ExportPanel和OperationRegion稳定挂载，普通展示切换不丢草稿/预览/范围。嵌套确认仍由最上层处理Escape/Tab；关闭后的焦点回到仍可见可用的触发按钮，否则回到顶栏设备或底栏诊断入口。
 
 ## 验证与边界
