@@ -151,13 +151,59 @@ def test_compile_options_refuse_response_files_and_plugins(tmp_path: Path) -> No
     (tmp_path / "Src" / "a.c").write_text("int value;\n", encoding="utf-8")
     adapter = ClangSourceAdapter(compiler=Path(sys.executable), preprocessor=Path(sys.executable))
     try:
-        for option in ("@outside.rsp", "-fplugin=payload.so", "-Xclang", "-include", "-o"):
+        for option in (
+            "@outside.rsp", "-fplugin=payload.so", "-ffreestanding-extra",
+            "-fcommon=unexpected", "-funknown-declaration-mode", "-Xclang", "-include", "-o",
+        ):
             model = _model(tmp_path, ("Src/a.c",))
             model.build.compile_options = (option,)
             with pytest.raises((ValueError, SourceCatalogError)):
                 adapter._flags(model, "Src/a.c", tmp_path, None)
     finally:
         adapter.close()
+
+
+def test_manifest_freestanding_and_common_flags_preserve_real_source_semantics(tmp_path: Path) -> None:
+    adapter = ClangSourceAdapter()
+    if adapter.preprocessor is None or adapter.compiler is None:
+        pytest.skip("installed GNU Arm GCC and Clang required")
+    (tmp_path / "Src").mkdir()
+    (tmp_path / "Inc").mkdir()
+    (tmp_path / "Src" / "a.c").write_text(
+        "#if __STDC_HOSTED__ == 0\nint freestanding_selected;\n"
+        "#else\nint hosted_selected;\n#endif\nint common_tentative;\n",
+        encoding="utf-8",
+    )
+    model = _model(tmp_path, ("Src/a.c",))
+    model.build.compile_options = ("-ffreestanding", "-fcommon")
+    hosted_model = _model(tmp_path, ("Src/a.c",))
+    hosted_model.build.compile_options = ("-fcommon",)
+    calls: list[tuple[str, ...]] = []
+    original_run = adapter._run
+
+    def record_run(args, root, output_limit, timeout):
+        calls.append(tuple(str(arg) for arg in args))
+        return original_run(args, root, output_limit, timeout)
+
+    try:
+        flags = adapter._flags(model, "Src/a.c", tmp_path, None)
+        assert "-ffreestanding" in flags
+        assert "-fcommon" not in flags  # code-generation policy does not affect declaration parsing
+        plan = adapter.plan(model)
+        assert plan.input_kind == "manifest"
+        assert plan.fingerprint != adapter.plan(hosted_model).fingerprint
+        adapter._run = record_run
+        index = adapter.index(model, plan)
+    finally:
+        adapter.close()
+    assert index.complete and index.parsed_units == 1, index.issues
+    names = {declaration.name for declaration in index.declarations}
+    assert {"freestanding_selected", "common_tentative"} <= names
+    assert "hosted_selected" not in names
+    assert any("-E" in args for args in calls)
+    assert any("-fsyntax-only" in args for args in calls)
+    assert all("-ffreestanding" in args for args in calls if "-E" in args or "-fsyntax-only" in args)
+    assert not any("-fcommon" in args for args in calls)
 
 
 def test_current_ninja_compdb_requires_model_provenance_and_marks_unknown_unit_partial(tmp_path: Path) -> None:
@@ -183,17 +229,24 @@ def test_current_ninja_compdb_requires_model_provenance_and_marks_unknown_unit_p
     ninja = ("rule C_COMPILER__demo_Debug\n"
              f'  command = "{compiler}" -mcpu=cortex-m4 -mthumb -Og -I{(tmp_path / "Inc").as_posix()} $FLAGS -c $in -o $out\n'
              f"build good.o: C_COMPILER__demo_Debug {good}\n"
-             "  FLAGS =\n"
+             "  FLAGS = -ffreestanding -fcommon\n"
              f"build bad.o: C_COMPILER__demo_Debug {bad}\n"
-             "  FLAGS = -funknown-declaration-mode\n")
+             "  FLAGS = -ffreestanding -fcommon -funknown-declaration-mode\n")
     (build / "build.ninja").write_text(ninja, encoding="utf-8")
     model = _model(tmp_path, ("Src/good.c", "Src/bad.c"))
     model.build.presets = ("arm-debug",)
+    model.build.compile_options = ("-ffreestanding", "-fcommon")
     model.build.elf = "build/arm-debug/firmware.elf"
     model.target = SimpleNamespace(core="cortex-m4", fpu=None, float_abi=None)
     try:
         plan = adapter.plan(model)
         assert plan.input_kind == "compdb" and len(plan.commands) == 2
+        assert "-ffreestanding" in adapter._flags(model, "Src/good.c", build, list(plan.commands[0][2]))
+        model.build.compile_options = ("-fcommon",)
+        mismatch = adapter.plan(model)
+        assert mismatch.fingerprint != plan.fingerprint
+        assert mismatch.commands[0][2][0] == "unsupported-semantic-command"
+        model.build.compile_options = ("-ffreestanding", "-fcommon")
         index = adapter.index(model, plan)
         assert index.parsed_units == 1 and index.total_units == 2 and not index.complete
         assert any(issue.unit == "Src/bad.c" for issue in index.issues)

@@ -20,6 +20,16 @@ RAM = MemoryRegion(name="RAM", origin=0x20000000, length=0x20000, attributes="rw
 CCM = MemoryRegion(name="CCM", origin=0x10000000, length=0x10000, attributes="rw")
 
 DEFAULT_REGIONS = (FLASH, RAM)
+COMMON_SYMBOL_PREAMBLE = (
+    "Allocating common symbols\n"
+    "\n"
+    "Common symbol       size              file\n"
+    "\n"
+    "long_common_symbol_name\n"
+    "                    0x4               build/generic_a.o\n"
+    "short_common        0x2               build/generic_b.o\n"
+    "\n"
+)
 
 
 def parse(text: str, regions=DEFAULT_REGIONS, **kwargs):
@@ -239,6 +249,103 @@ def test_map_without_memory_configuration_is_rejected():
     with pytest.raises(MapError) as error:
         parse("Linker script and memory map\n\n.text 0x0000000008000000 0x40\n")
     assert error.value.details == {"rule": "regions"}
+
+
+@pytest.mark.parametrize(
+    "heading",
+    ["Discarded input sections", "Memory Configuration", "Linker script and memory map"],
+)
+def test_common_symbol_preamble_resumes_at_gnu_heading(heading: str):
+    map_text = build_map_text()
+    if heading == "Memory Configuration":
+        map_text = map_text.removeprefix("Memory Configuration\n")
+    text = COMMON_SYMBOL_PREAMBLE + heading + "\n\n" + map_text
+
+    flash, ram = parse(
+        text,
+        elf_sections=evidence(
+            (".isr_vector", 0x08000000, 0x40, True),
+            (".text", 0x08000040, 0x100, True),
+            (".data", 0x20000000, 0x100, True),
+            (".bss", 0x20000100, 0x400, True),
+        ),
+    )
+
+    assert flash.used == 0x240
+    assert ram.used == 0x500
+
+
+def test_common_symbol_preamble_does_not_hide_wrapped_output_section():
+    name = ".stm32tk.abs.20000000"
+    map_text = build_map_text(sections=((name, 0x20000000, 0x4, None),))
+    map_text = map_text.replace(
+        f"{name:<16} 0x0000000020000000 0x4",
+        f"{name}\n                0x0000000020000000 0x4",
+    )
+    text = COMMON_SYMBOL_PREAMBLE + "Discarded input sections\n\n" + map_text
+
+    _, ram = parse(text, elf_sections=evidence((name, 0x20000000, 0x4, True)))
+    assert ram.used == 0x4
+
+
+@pytest.mark.parametrize(
+    "bad_row",
+    [
+        ".text 0x0000000008000000 0x4",
+        "bad! 0x0000000008000000 0x4",
+        ".stm32tk.abs.20000000\n                0x0000000020000000 0x4",
+    ],
+)
+def test_common_symbol_preamble_cannot_hide_output_rows(bad_row: str):
+    text = (
+        COMMON_SYMBOL_PREAMBLE
+        + bad_row
+        + "\nDiscarded input sections\n\n"
+        + build_map_text()
+    )
+    with pytest.raises(MapError) as error:
+        parse(text)
+    assert error.value.details == {"rule": "ambiguous"}
+
+
+@pytest.mark.parametrize("placement", ["after_header", "after_regions", "after_section"])
+def test_misplaced_common_symbol_header_is_rejected(placement: str):
+    map_text = build_map_text()
+    if placement == "after_header":
+        text = map_text.replace("Memory Configuration\n", "Memory Configuration\nAllocating common symbols\n", 1)
+    elif placement == "after_regions":
+        text = map_text.replace(
+            "Linker script and memory map\n",
+            "Allocating common symbols\nLinker script and memory map\n",
+            1,
+        )
+    else:
+        text = map_text + "Allocating common symbols\n"
+    with pytest.raises(MapError) as error:
+        parse(text)
+    assert error.value.details == {"rule": "ambiguous"}
+
+
+def test_pending_wrapped_section_cannot_enter_common_symbol_preamble():
+    text = (
+        build_map_text(sections=())
+        + ".stm32tk.abs.20000000\n"
+        + COMMON_SYMBOL_PREAMBLE
+    )
+    with pytest.raises(MapError) as error:
+        parse(text)
+    assert error.value.details == {"rule": "ambiguous"}
+
+
+def test_common_symbol_preamble_keeps_duplicate_output_rejection():
+    text = (
+        COMMON_SYMBOL_PREAMBLE
+        + "Discarded input sections\n\n"
+        + build_map_text(sections=((".text", 0x08000040, 0x4, None),) * 2)
+    )
+    with pytest.raises(MapError) as error:
+        parse(text)
+    assert error.value.details == {"rule": "duplicateSection"}
 
 
 def test_memory_usage_is_frozen_and_json_safe():

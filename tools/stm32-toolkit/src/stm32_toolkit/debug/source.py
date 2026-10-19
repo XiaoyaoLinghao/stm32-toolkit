@@ -43,8 +43,8 @@ _REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 _COMPILER_RULE = re.compile(r"^build [^\r\n]+?: (C_COMPILER__[^\s:]+)", re.M)
 _LINE_MARKER = re.compile(rb'^#\s+(\d+)\s+"((?:[^"\\]|\\.)*)"')
-_KEEP_EXACT = frozenset({"-mthumb", "-mno-thumb", "-fshort-enums", "-funsigned-char", "-fsigned-char"})
-_DROP_EXACT = frozenset({"-c", "-MD", "-MMD", "-MP", "-g", "-g0", "-g1", "-g2", "-g3", "-Og", "-O0", "-O1", "-O2", "-O3", "-Os", "-Oz", "-ffunction-sections", "-fdata-sections", "-fno-common", "-fno-builtin", "-fstack-usage"})
+_KEEP_EXACT = frozenset({"-mthumb", "-mno-thumb", "-fshort-enums", "-funsigned-char", "-fsigned-char", "-ffreestanding"})
+_DROP_EXACT = frozenset({"-c", "-MD", "-MMD", "-MP", "-g", "-g0", "-g1", "-g2", "-g3", "-Og", "-O0", "-O1", "-O2", "-O3", "-Os", "-Oz", "-ffunction-sections", "-fdata-sections", "-fcommon", "-fno-common", "-fno-builtin", "-fstack-usage"})
 _KEEP_PREFIX = ("-std=", "-mcpu=", "-march=", "-mfpu=", "-mfloat-abi=", "-mabi=", "-fpack-struct=")
 
 

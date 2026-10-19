@@ -58,6 +58,11 @@ _WRAPPED_SECTION_VALUE_RE = re.compile(
 #: rows whose second/third tokens start with ``0x`` but are not valid hex).
 _AMBIGUOUS_ROW_RE = re.compile(r"^(\S+)\s+0x\S+\s+0x\S+")
 
+_COMMON_SYMBOL_HEADER = "Allocating common symbols"
+_COMMON_PREAMBLE_END_HEADINGS = frozenset(
+    {"Discarded input sections", "Memory Configuration", "Linker script and memory map"}
+)
+
 _MAX_64_BIT = 0xFFFFFFFFFFFFFFFF
 _DEFAULT_REGION = "*default*"
 
@@ -148,6 +153,8 @@ def _parse_rows(
     seen_regions: set[str] = set()
     seen_sections: set[str] = set()
     pending_section: str | None = None
+    memory_configuration_seen = False
+    in_common_preamble = False
 
     def append_section(
         name: str,
@@ -188,6 +195,26 @@ def _parse_rows(
             )
             pending_section = None
             continue
+        if line == _COMMON_SYMBOL_HEADER:
+            if in_common_preamble or memory_configuration_seen or declared or sections:
+                raise map_error("ambiguous", path)
+            in_common_preamble = True
+            continue
+        if in_common_preamble:
+            if line not in _COMMON_PREAMBLE_END_HEADINGS:
+                # Common sizes have an object path, never an output-section
+                # address/size pair or a declared memory-region row.
+                if (
+                    _REGION_ROW_RE.match(line)
+                    or _SECTION_ROW_RE.match(line)
+                    or _AMBIGUOUS_ROW_RE.match(line)
+                    or _WRAPPED_SECTION_VALUE_RE.match(line)
+                ):
+                    raise map_error("ambiguous", path)
+                continue
+            in_common_preamble = False
+        if line == "Memory Configuration":
+            memory_configuration_seen = True
         first = line[0]
         if first not in _SECTION_START:
             if _AMBIGUOUS_ROW_RE.match(line):
