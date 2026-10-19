@@ -22,7 +22,7 @@
 | 一个成员加载错误在多个展开行重复显示 | 源码面板只显示一个作用域清楚的成员错误和对应重试；双展开行 UI 测试先红后绿。 |
 | 取消等待者会使完成的同 key 索引任务残留 | 拥有者任务在自身 `finally` 清除 inflight，并独立发布完整缓存/消费后台异常；取消后部分结果重试测试先红后绿。 |
 | 多个匿名或同名 DWARF 成员共享 ID | 子 ID 纳入稳定成员序位，重复名或无效成员保持不可加入；真实子页 fixture 先红后绿。 |
-| 编译器根进程先退出、后代仍持有管道时关闭不完整 | 适配器私有 `source_windows.py` 以 suspended→Job assign→唯一初始线程 resume 建立拥有关系，`TerminateJobObject` 与 `KILL_ON_JOB_CLOSE` 清理已退出根进程的后代；枚举错误/关闭失败封闭适配器且保留未关闭 Job，仍回收本次 suspended 根。根先退出的 timeout/close、原生故障及重叠索引测试通过。 |
+| 编译器根进程先退出、后代仍持有管道时关闭不完整 | 适配器私有 `source_windows.py` 以 suspended→Job assign→唯一初始线程 resume 建立拥有关系，`TerminateJobObject` 与 `KILL_ON_JOB_CLOSE` 清理已退出根进程的后代；枚举错误在恢复线程前失败，Job 关闭失败则封闭适配器并保留未关闭 Job，仍回收本次 suspended 根。根先退出的 timeout/close、原生故障及重叠索引测试通过。 |
 
 另补真实 App + `createMonitorApi` 的 fetch 封套测试，证明无探针自动加载共享后端页、文件/作用域展开、已连接的新鲜选择 ACK 加入草稿及历史页切换后不重开抽屉。同一渲染前连续搜索的失败 fixture 证明旧代次算法会丢弃最新页；现由 controller 同步签发单调 bigint 请求代次，reducer 只采用更高代次，并覆盖旧应答及固件身份失效后的下一次搜索。公共 Watch 语法、旧目录 API、读/采样门禁、依赖锁及版本未修改。
 
