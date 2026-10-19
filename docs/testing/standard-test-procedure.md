@@ -4,7 +4,7 @@
 
 ## 1. 当前断点与证据
 
-2026-10-19当前新切片为[完整源文件目录树规格](../superpowers/specs/2026-10-19-monitor-source-file-tree-design.md)与[实施计划](../superpowers/plans/2026-10-19-monitor-source-file-tree-plan.md)：accepted base `3c4e2594bafc8d7ca2f1b00c1efe6683639cf05c`，分支`codex/monitor-source-file-tree`，file_tree_impl唯一实现、file_tree_review独立审查、主代理验收部署。文件/函数metadata与变量分页分离；无冻结CodeHead或新软件接受结论之前，现8765继续运行下面记录的已接受源码目录版本。浏览器、实际认证HTTP和新硬件仍DEFERRED，无远端/版本/安装权限变化。
+2026-10-19当前新切片为[完整源文件目录树规格](../superpowers/specs/2026-10-19-monitor-source-file-tree-design.md)与[实施计划](../superpowers/plans/2026-10-19-monitor-source-file-tree-plan.md)：accepted base `3c4e2594bafc8d7ca2f1b00c1efe6683639cf05c`，分支`codex/monitor-source-file-tree`，file_tree_impl唯一实现、file_tree_review_sol（显式gpt-6-sol/max）独立审查、主代理验收部署。文件/函数metadata与变量分页分离；无冻结CodeHead或新软件接受结论之前，现8765继续运行下面记录的已接受源码目录版本。浏览器、实际认证HTTP和新硬件仍DEFERRED，无远端/版本/安装权限变化。
 
 已发布 v1.0.0/v1.0.1 的固定身份、一次性覆盖率例外和限制见[发布状态](../release-status.md)。旧例外不自动延续至新版本；2026-10-10 用户为 v1.0.1 批准的“不低于 v1.0.0”条件与已完成测量保留在[发布资格](release-qualification.md)和[执行记录](../codex/returns/STM32TK-101/execution.md)，分母、成员和永久门槛不改。
 
