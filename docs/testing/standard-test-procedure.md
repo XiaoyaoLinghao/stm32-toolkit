@@ -4,6 +4,8 @@
 
 ## 1. 当前断点与证据
 
+2026-10-19当前新切片为[完整源文件目录树规格](../superpowers/specs/2026-10-19-monitor-source-file-tree-design.md)与[实施计划](../superpowers/plans/2026-10-19-monitor-source-file-tree-plan.md)：accepted base `3c4e2594bafc8d7ca2f1b00c1efe6683639cf05c`，分支`codex/monitor-source-file-tree`，file_tree_impl唯一实现、file_tree_review独立审查、主代理验收部署。文件/函数metadata与变量分页分离；无冻结CodeHead或新软件接受结论之前，现8765继续运行下面记录的已接受源码目录版本。浏览器、实际认证HTTP和新硬件仍DEFERRED，无远端/版本/安装权限变化。
+
 已发布 v1.0.0/v1.0.1 的固定身份、一次性覆盖率例外和限制见[发布状态](../release-status.md)。旧例外不自动延续至新版本；2026-10-10 用户为 v1.0.1 批准的“不低于 v1.0.0”条件与已完成测量保留在[发布资格](release-qualification.md)和[执行记录](../codex/returns/STM32TK-101/execution.md)，分母、成员和永久门槛不改。
 
 2026-10-19源码变量目录及已集成探针反馈的软件已ACCEPTED。入口为[规格](../superpowers/specs/2026-10-19-monitor-source-catalog-design.md)、[计划](../superpowers/plans/2026-10-19-monitor-source-catalog-plan.md)和[最终验收与部署](../codex/returns/MONITOR-SOURCE-CATALOG/review.md)。Accepted base `1c320d9dc102ca11a280b97e210517ac5a852b63`，CodeHead `423dc766e60233e4e79bd1ed5306e6631c1d3daa`，报告head `983540580f9e70f04e9e4770b9a16858fc4cd476`。唯一实现者source_catalog_impl、独立审查者source_catalog_review，主代理负责集成验收和部署。实现者266项Python/475项UI及类型/lint/build/dist通过；主代理精确干净Head的72项UI、113项Python集成、29项静态资产和7文件重建一致性通过，独立完整差异审查NO BLOCKERS。
