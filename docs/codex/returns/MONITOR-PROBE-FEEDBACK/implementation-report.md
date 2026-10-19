@@ -3,7 +3,7 @@
 ## 身份与范围
 
 - Accepted base：`1c320d9dc102ca11a280b97e210517ac5a852b63`。
-- 产品、测试、发布资产 CodeHead：`abcf1b488a0bbc72f5efc1e2352a1b30991a5a13`。
+- 最终产品、测试、发布资产 CodeHead：`838b5bcd5dd55d5c87f79478d0a2a1b17b3e5c60`。此前功能头 `abcf1b488a0bbc72f5efc1e2352a1b30991a5a13` 通过全量后，仅按主代理限定决定调整两条中文展示文案并重建资产；业务逻辑与测试源码未变。
 - 分支：`codex/monitor-connect-feedback`；实现树：`D:\codex-tmp\mc1019\fix`。规格/计划基于文档头 `886acbc377ad66a10c1136f0dcac629c0d71a6de`。实现者负责产品、实现测试及本报告；主代理和独立审查者负责复核及接受，本报告不自行给出接受结论。
 - 只修改 App 展示层、中文词条、样式、真实 HTTP 适配器 App 回归及生成 `ui_dist`。controller、公共 reducer/model、API 协议、后端、依赖、版本、固件均未改。无 push、PR、merge、tag、release、安装、浏览器自动化、认证 HTTP 或新增硬件操作。
 
@@ -19,14 +19,16 @@
 
 | 检查 | 精确命令主体 | 结果 |
 | --- | --- | --- |
-| 聚焦回归 | `node node_modules/vitest/vitest.mjs run tests/probe-feedback-app.test.tsx tests/values-first-app.test.tsx --maxWorkers 4 --testTimeout 15000 --no-cache --configLoader runner` | `focused-green4`：2 文件、21 项通过，exit 0；其中 6 项新测试使用真实 `createMonitorApi` 和 fetch 协议封套。 |
-| 最终 UI unit/a11y | `node node_modules/vitest/vitest.mjs run --maxWorkers 4 --testTimeout 15000 --no-cache --configLoader runner` | `full-ui`：53 文件、460 项通过，exit 0。jsdom 输出既有 navigation advisory；未将其作浏览器 PASS。 |
-| 类型 | `node node_modules/typescript/bin/tsc -p tsconfig.json`、`node node_modules/typescript/bin/tsc -p tsconfig.e2e.json` | `typecheck2`、`typecheck-e2e2` 均 exit 0；未启动浏览器。 |
-| Lint | `node node_modules/eslint/bin/eslint.js src tests` | `lint-final`：exit 0。 |
-| 生成资产 | `node node_modules/vite/bin/vite.js build --configLoader runner`、`node scripts/verify-dist.mjs` | `build`、`verify-dist` 均 exit 0；7 文件逐字节一致。 |
-| 差异 | `git diff --cached --check` | exit 0；只暂存归属路径，随后冻结上述 CodeHead。 |
+| 聚焦回归 | `node node_modules/vitest/vitest.mjs run tests/probe-feedback-app.test.tsx tests/values-first-app.test.tsx --maxWorkers 4 --testTimeout 15000 --no-cache --configLoader runner` | 功能头 `focused-green4` 与最终头 `wording-targeted` 均 2 文件、21 项通过，exit 0；其中 6 项新测试使用真实 `createMonitorApi` 和 fetch 协议封套。 |
+| UI unit/a11y | `node node_modules/vitest/vitest.mjs run --maxWorkers 4 --testTimeout 15000 --no-cache --configLoader runner` | 功能头 `abcf1b488a0bbc72f5efc1e2352a1b30991a5a13` 的 `full-ui`：53 文件、460 项通过，exit 0。最终头仅文案及由此变化的生成资产，未重跑全量；jsdom navigation advisory 不作浏览器 PASS。 |
+| 类型 | `node node_modules/typescript/bin/tsc -p tsconfig.json`、`node node_modules/typescript/bin/tsc -p tsconfig.e2e.json` | 功能头的 `typecheck2`、`typecheck-e2e2` 均 exit 0；最终头仅文案及资产，未重跑类型检查。 |
+| Lint | `node node_modules/eslint/bin/eslint.js src tests` | 功能头的 `lint-final`：exit 0；最终头仅文案及资产，未重跑。 |
+| 生成资产 | `node node_modules/vite/bin/vite.js build --configLoader runner`、`node scripts/verify-dist.mjs` | 功能头 `build`/`verify-dist` 与最终头 `wording-build`/`wording-verify` 均 exit 0；最终头 7 文件逐字节一致。 |
+| 差异 | `git diff --cached --check` | 功能头及文案修订头均 exit 0；各自只暂存归属路径。 |
 
 新测试覆盖 live 已连接先于有效 ACK、无效绑定封套、传输失败、连接/重连/释放三种有效 ACK 的成功提示与焦点、独立 status 失败、较新探针操作替换旧结果。原 15 项 values-first App 回归共同通过。测试的封套来自本地 Python wire fixture 与离线模拟 fetch/live；不是本次真实浏览器、用户实际 HTTP 响应或物理探针结果。
+
+主代理限定文案修订把普通处理中提示改为“正在处理，请稍候。”，未确认提示改为“操作结果未确认，请查看诊断或刷新核对。”；原错误码、ACK 自动返回条件、诊断重试入口均不变。最终头聚焦 21 项及重建/资产一致性通过，上述功能头全量证据仍对应其原始字节，不冒称最终头重跑全量。
 
 初次红测 `focused-red` 因测试读取 fixture 使用了非 file URL 而在收集阶段失败，归类 INFRASTRUCTURE，修正为现有 `STM32_MONITOR_WIRE_FIXTURE` 入口；`focused-red2` 的 5 项失败包含预期缺失反馈以及测试查询时序/拆分文本断言，后者已修正。实现后早期类型检查发现本地 `flatMap` 联合类型推断错误，归类 PRODUCT 编译错误，改为显式展示类型；最终类型检查与全量均通过。保留各次日志，不把红测或中间失败归为最终通过。
 
@@ -34,4 +36,4 @@
 
 本次未读取用户那次连接的 HTTP ACK 或已打开页面资源，不能断言先前未自动返回的根因；真实浏览器布局、认证路径和新增硬件均按规格 DEFERRED。主代理需在精确 CodeHead 的干净树中审完整 accepted-base 差异、运行其指定精选复核并决定接受与更新 8765。
 
-测试后对本轮 `fix-check` 下明确列出的独占 `tmp` 目录做了路径归属与 reparse 预检；唯一一次原生 PowerShell `Remove-Item -LiteralPath -Recurse -Force` 清理命令在执行前被自动策略拒绝（`blocked by policy`）。没有重试、绕过或触及旧轮被拒绝的目录；日志、退出码及尚存 tmp 路径保留，见 `D:\codex-tmp\mc1019\fix-check\cleanup.txt`。
+测试后对本轮 `fix-check` 下明确列出的独占 `tmp` 目录做了路径归属与 reparse 预检；唯一一次原生 PowerShell `Remove-Item -LiteralPath -Recurse -Force` 清理命令在执行前被自动策略拒绝（`blocked by policy`）。文案修订验证未重试清理、绕过或触及旧轮被拒绝的目录；日志、退出码及尚存 tmp 路径保留，见 `D:\codex-tmp\mc1019\fix-check\cleanup.txt`，文案修订三次运行另在同根独占 `wording-*` 子目录留证。
