@@ -19,6 +19,8 @@
 
 命令采用直接argv，无shell；Windows命令拆分使用系统命令行规则。丢弃对象输出、依赖输出、链接、插件、响应文件和其他可能写入/执行扩展的参数；仅明确允许的语言/目标/ABI/宏/包含路径及解析有关选项传给Clang，显式`-fsyntax-only -Xclang -ast-dump=json`。未知会影响声明语义的选项不得静默忽略，记录该单元不支持。所有源/包含/命令目录经现有project边界校验；不能执行CMake配置、构建或项目脚本。
 
+编译器条件集成澄清：主代理实测实际GCC的`__GNUC__=14`，ST Clang为4并定义`__clang__`，因此直接由Clang预处理不能证明实际GCC分支。对于本支持集，适配器必须先用受信任的现有GNU Arm GCC按有效命令执行有界`-E`，保留line markers（禁止`-P`），再将预处理C交Clang只做语法树解析；两阶段各有唯一职责，不伪造内建宏、不剥除C语法。AST的presumedLoc/line-marker映射回真实项目文件，不能把临时预处理文件当用户源位置。两阶段都受上述选项/时间/输出总预算约束，预处理单元额外上限32MiB。测试须包含`__GNUC__`/`__clang__`条件分支，原直接Clang的21单元能力证据不替代此保真检查。
+
 AST逐单元处理，stdout增量有界读取，不能先无限capture再检查：每单元最多80MiB、单元30s、总120s/1GiB、最多256个C单元、100000条声明。超过预算明确失败/覆盖不完整。临时输出仅在本轮独占根，完成后清理。子进程取消/关闭只收回自己拥有的子进程；运行在非事件循环线程，不能阻塞采样/状态服务。索引缓存只有一个所有者、最多两个输入版本；同输入并发请求合并，完整索引原子发布，取消后仍受固定预算且关闭可终止自己子进程。
 
 Clang位置字段会省略重复file/line，适配器必须跟踪输出文件上下文并由源字节offset映射行列，处理spelling/expansion位置；不能把上一文件或编译单元当成每个局部的声明文件。只纳入项目内源/头文件的非隐式VarDecl/ParmVarDecl。记录文件、位置、名称、类型、storage、函数及词法作用域；声明ID由这些稳定身份构造，禁止使用Clang进程地址id。跨单元相同声明可合并并保留translationUnits，头文件static/类型变体不能误标为一个唯一可读实例。
@@ -28,6 +30,8 @@ Clang位置字段会省略重复file/line，适配器必须跟踪输出文件上
 源码身份复用`load_project_model`和`snapshot_project_inputs`。离线构建身份复用`load_fresh_firmware_facts`，ELF读取复用`DwarfCatalog.from_elf`及预期size/SHA和模型可读区域；本端点不调用Observation.revalidate/list_variables或任何探针API。可比较活动observation的内存binding，但这不是新物理核对。
 
 DWARF增加不可变的源码归属投影，解析decl_file/line/column、CU及函数/作用域，按现有规范处理specification/abstract_origin并有界防循环。原lookup、bare-name冲突规则和公共Watch语法不变。仅名称相同或CU相同不能启用加入；无法唯一证明源声明对应调试对象时给未匹配/歧义原因。未找到条目不能一概声称“被优化掉”。
+
+如果DWARF定位到头文件extern声明而定义在C文件，允许用Clang明确的previousDecl/redeclaration链证明它们是同一实体，再与一个唯一源码归属的DWARF实体关联；不能只按裸名把不同文件static或阴影局部合并。缺少该证明时仍显示准确不可用原因。
 
 可采样叶须唯一源归属、稳定地址、已有标量decode类型、原lookup和读范围/大小限制；结构体成员和常量数组下标仅用原`.member`/`[index]`语法，拒绝位域、未知/越界和不支持类型。聚合展开最大深度6、每次分页最多100、单根最多4096个后代；达到界限显式标记还有/截断，不能宣称已展示全部叶。
 

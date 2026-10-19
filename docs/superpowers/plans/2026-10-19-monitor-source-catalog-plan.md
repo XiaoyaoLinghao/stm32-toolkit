@@ -14,6 +14,8 @@ Accepted base `1c320d9dc102ca11a280b97e210517ac5a852b63`；实施依据[冻结�
 
 1. 读取AGENTS、标准测试流程和最新验收、工程经验匹配项；核对干净base与已安装ST Clang/Ninja/GNU工具。所有测试输入/缓存/TEMP/TMP/TMPDIR/日志只在`D:\codex-tmp\sc1019`各自独占根，无安装、用户工程写入、构建/烧录或探针访问。
 2. 先冻结代码内不可变DTO与v1封套fixture，再实现有界Clang适配器、源位置/作用域与DWARF归属/叶判断；使用真实离线编译器fixture及当前工程读取进行验证。复用唯一provider缓存和既有输入/ELF身份校验，不创建第二采样或认证引擎。
+
+   主代理集成澄清：实际GNU Arm GCC先有界预处理并保留line markers，再由Clang解析预处理C；两者内建宏不同，直接Clang替换GCC不能证明实际条件分支。先验证编译器宏条件fixture及当前21单元两阶段管线，再把该路径作为目录完整性证据。必要的extern/定义归属使用显式AST redeclaration链，不按裸名猜测。
 3. 打通新GET列表/子页/选择校验→真实client解析→controller/reducer身份退休→SourceCatalogPanel→原group草稿，随后保留旧变量/寄存器切换与现有工作台状态。接口有任何未明确选择先回主代理，不拆给并行模块猜测。
 4. 先针对变化的Python及UI聚焦验证，清理每次不再需要的run工件。合入已接受探针修复后，最终一次全UI unit/a11y（maxWorkers4/testTimeout15000）、两个typecheck、lint、build、verify:dist及受影响Python全选；命令/环境/exit归实际运行者。可复用复制已有node_modules，不写借用缓存。
 5. 产品/测试/dist提交冻结完整CodeHead并立即回报；实现报告单独提交、记录base与报告前CodeHead，不能包含自己的报告提交SHA。主代理在精确CodeHead干净review树审完整base差异和必要精选集成，独立审查同一差异。两轮同问题不收敛则回设计。
