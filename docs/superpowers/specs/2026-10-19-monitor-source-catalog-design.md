@@ -53,6 +53,8 @@ DWARF增加不可变的源码归属投影，解析decl_file/line/column、CU及�
 
 Runtime/源码索引提供者拥有索引和快照/归属事实；reducer拥有页面、已接受目录身份、子页、pending/failure和草稿，controller拥有请求id/退休/安全重试。App只有展示选择。新source状态不重用要求连接的旧catalog binding key；用状态中的workspace/session/project/bindingEpoch上下文封口，响应再携带完整catalogId。上下文改变退休旧source/children/selection请求并清空旧加入资格，旧响应不可重新启用按钮。source选择成功还须复核当前目录代次及当前草稿仍允许添加。
 
+上述客户端上下文必须包含完整可见身份：连接布尔值、probeId、firmware的build/ELF/input/git/target身份以及workspace/session/project/epoch，不能只用四段key。即使epoch未变，断开或替换固件也必须拒绝迟到page/children/selection；controller门禁与reducer采用均检查该上下文。异步加入还携带开始时的groupGeneration，消费者拒绝已切换/重载到另一草稿的旧成功；单纯同草稿名称编辑不丢弃。展示回调另有上下文代次，不能因迟到加入打开新的历史/寄存器界面上的旧抽屉。
+
 默认变量页展示源码目录并自动加载首个有界页面，加载期间只本区域等待，不阻断实时工作台；提供手动刷新、文件/作用域折叠、查询和清晰分页计数。保留“固件可采样变量”旧目录作为显式切换及无Clang时的可用入口。寄存器仍按外设分组。切换视图保留组草稿/导入/历史/导出；暂时离开不能造成旧source请求覆盖新上下文。
 
 ## 验收与集成
