@@ -1,0 +1,12 @@
+# GNU common-symbol MAP compatibility plan
+
+Accepted base `c97d3e8753537809e9458ec050076220dcfa7243`. Follow the frozen same-date specification. No additional user approval gate; this fixes an observed product blocker to the explicitly requested current Toolkit workflow.
+
+1. One gpt-6-sol/max implementer owns `tools/stm32-toolkit/src/stm32_toolkit/build/map_file.py`, `tools/stm32-toolkit/tests/test_build_map.py` and at most a generic small test fixture. Primary already created the isolated codex/monitor-mr-map-compat tree. Other product files are read-only; new scope returns to primary.
+2. Reproduce the common-table wrapped-symbol failure with a minimal generic regression. Add the narrow recognized-preamble state with correct retirement at structural headings and rejection after authoritative parsing has started. Cover real wrapped output sections and malicious/malformed misplaced headers without weakening any existing validation.
+3. Run focused MAP, affected ELF/build-runner checks and current MR artifact replay, preserving initial failure and final commands/results. Use fresh `mr1019\map-check` subroots, no global cache/temp or install. Do not run a full UI/firmware/hardware release matrix.
+4. Commit product/tests and freeze CodeHead. Send primary exact head immediately; report at `docs/codex/returns/MONITOR-MR-COMMON-MAP/implementation.md` in a later report-only commit, containing accepted base and code head before report but not its own SHA. No self-acceptance or hardware.
+5. Primary creates a clean detached exact-head `mr1019\toolkit-review` worktree, independently runs appropriate focused validation, and has mr_gnu_review independently inspect the complete base-to-head diff and report. Return correctable findings to the same implementer; two failed rounds on the same issue reopen design.
+6. On acceptance, primary updates run-owned MR spec/ops pins to accepted Toolkit root/head. Firmware owner final-commits MR inputs and runs final public configure/build on that code; script owner makes one restricted root/head update with focused offline checks. All physical activity still waits for combined firmware/scripts acceptance. Version remains 1.1.2 and no remote publication occurs.
+
+Primary owns spec/plan/SOP/final review and review-check cleanup. Implementer owns product/tests/report and map-check cleanup. Existing service/source trees, original MR stable, all old denied targets and actual user data stay preserved.
