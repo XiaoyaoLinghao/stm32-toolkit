@@ -26,6 +26,9 @@ from stm32_toolkit.project_model import ProjectModel
 from stm32_toolkit.generation.managed_files import CORE_CPU_FLAGS
 from stm32_toolkit.process import _terminate_tree
 
+if os.name == "nt":
+    from stm32_toolkit.debug.source_windows import OwnedWindowsJob
+
 
 MAX_UNITS = 256
 MAX_DECLARATIONS = 100_000
@@ -247,28 +250,119 @@ class ClangSourceAdapter:
         self._run_lock = threading.Lock()
         self._index_lock = threading.Lock()
         self._child: subprocess.Popen[bytes] | None = None
+        self._job = None
 
     def close(self) -> None:
         self._closed.set()
         with self._child_lock:
             child = self._child
-        if child is not None and child.poll() is None:
-            _terminate_tree(child)
+            job = self._job
+            try:
+                if job is not None:
+                    job.close()
+            finally:
+                try:
+                    if child is not None:
+                        if job is None and child.poll() is None:
+                            _terminate_tree(child)
+                        else:
+                            self._reap_root(child)
+                finally:
+                    if child is not None and child.poll() is not None and self._child is child:
+                        self._child = None
+                    if job is not None and job.closed and self._job is job:
+                        self._job = None
+
+    @staticmethod
+    def _reap_root(child: subprocess.Popen[bytes]) -> None:
+        if child.poll() is None:
+            try:
+                child.kill()
+            except OSError:
+                pass
+        try:
+            child.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            child.kill()
+            child.wait(timeout=1)
+
+    def _start_child(self, argv: list[str], cwd: Path):
+        job = None
+        child: subprocess.Popen[bytes] | None = None
+        try:
+            # Publish, assign and resume as one owned transition. close() sets
+            # the event before entering this lock, and is checked before resume.
+            with self._child_lock:
+                if self._closed.is_set():
+                    raise SourceCatalogError("MONITOR_SOURCE_INDEX_FAILED", "Source parser was closed")
+                job = OwnedWindowsJob() if os.name == "nt" else None
+                self._job = job
+                child = subprocess.Popen(argv, cwd=cwd, stdout=subprocess.PIPE,
+                                         stderr=subprocess.PIPE, stdin=subprocess.DEVNULL, shell=False,
+                                         **({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | 0x00000004}
+                                            if os.name == "nt" else {"start_new_session": True}))
+                self._child = child
+                self._job = job
+                if job is not None:
+                    job.assign(int(child._handle))
+                    if self._closed.is_set():
+                        raise SourceCatalogError("MONITOR_SOURCE_INDEX_FAILED", "Source parser was closed")
+                    job.resume_initial_thread(child.pid)
+            return child, job
+        except BaseException:
+            cleanup_error: BaseException | None = None
+            if job is not None:
+                try:
+                    job.close()
+                except BaseException as error:
+                    self._closed.set()
+                    cleanup_error = error
+            try:
+                if child is not None:
+                    try:
+                        self._reap_root(child)
+                    finally:
+                        if child.stdout is not None:
+                            child.stdout.close()
+                        if child.stderr is not None:
+                            child.stderr.close()
+            except BaseException as error:
+                self._closed.set()
+                if cleanup_error is None:
+                    cleanup_error = error
+            finally:
+                with self._child_lock:
+                    if self._child is child:
+                        self._child = None
+                    if self._job is job and (job is None or job.closed):
+                        self._job = None
+            if cleanup_error is not None:
+                raise cleanup_error
+            raise
 
     def _run(self, argv: list[str], cwd: Path, byte_limit: int, seconds: float) -> bytes:
         # Dedicated bounded drains enforce limits as bytes arrive, including
         # stderr.  No compiler output is ever spooled or captured without a cap.
         if byte_limit < 1 or seconds <= 0:
             raise SourceCatalogError("MONITOR_SOURCE_INDEX_FAILED", "Source parser budget was exhausted")
-        with self._run_lock:
+        deadline = time.monotonic() + seconds
+        while True:
             if self._closed.is_set():
                 raise SourceCatalogError("MONITOR_SOURCE_INDEX_FAILED", "Source parser was closed")
-            child = subprocess.Popen(argv, cwd=cwd, stdout=subprocess.PIPE,
-                                     stderr=subprocess.PIPE, stdin=subprocess.DEVNULL, shell=False,
-                                     **({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
-                                        if os.name == "nt" else {"start_new_session": True}))
-            with self._child_lock:
-                self._child = child
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise SourceCatalogError("MONITOR_SOURCE_INDEX_FAILED", "Source parser budget was exhausted")
+            if self._run_lock.acquire(timeout=min(remaining, 0.05)):
+                break
+        try:
+            if self._closed.is_set():
+                raise SourceCatalogError("MONITOR_SOURCE_INDEX_FAILED", "Source parser was closed")
+            if time.monotonic() >= deadline:
+                raise SourceCatalogError("MONITOR_SOURCE_INDEX_FAILED", "Source parser budget was exhausted")
+            try:
+                child, job = self._start_child(argv, cwd)
+            except (OSError, subprocess.SubprocessError):
+                raise SourceCatalogError("MONITOR_SOURCE_INDEX_FAILED", "Source parser could not start within policy") from None
             output = bytearray()
             errors = bytearray()
             exceeded = threading.Event()
@@ -295,13 +389,15 @@ class ClangSourceAdapter:
             stderr_thread = threading.Thread(target=drain, args=(child.stderr, errors, 256 * 1024, finished[1]), daemon=True)
             stdout_thread.start()
             stderr_thread.start()
-            deadline = time.monotonic() + seconds
             failed = False
             try:
                 while True:
                     if self._closed.is_set() or exceeded.is_set() or time.monotonic() >= deadline:
                         failed = True
-                        _terminate_tree(child)
+                        if job is not None:
+                            job.close()
+                        else:
+                            _terminate_tree(child)
                         break
                     if child.poll() is not None and all(done.is_set() for done in finished):
                         break
@@ -313,13 +409,39 @@ class ClangSourceAdapter:
                     raise SourceCatalogError("MONITOR_SOURCE_INDEX_FAILED", "Source parser exceeded a fixed limit or could not process a compilation unit")
                 return bytes(output)
             finally:
-                if child.poll() is None:
-                    _terminate_tree(child)
-                child.stdout.close()
-                child.stderr.close()
+                cleanup_error: BaseException | None = None
+                try:
+                    if job is not None:
+                        job.close()
+                    elif child.poll() is None:
+                        _terminate_tree(child)
+                except BaseException as error:
+                    cleanup_error = error
+                    self._closed.set()
+                try:
+                    self._reap_root(child)
+                except BaseException as error:
+                    if cleanup_error is None:
+                        cleanup_error = error
+                    self._closed.set()
+                for stream in (child.stdout, child.stderr):
+                    try:
+                        stream.close()
+                    except BaseException as error:
+                        if cleanup_error is None:
+                            cleanup_error = error
+                        self._closed.set()
                 with self._child_lock:
                     if self._child is child:
                         self._child = None
+                    if self._job is job and (job is None or job.closed):
+                        self._job = None
+                if cleanup_error is not None:
+                    raise cleanup_error
+        except (OSError, subprocess.SubprocessError):
+            raise SourceCatalogError("MONITOR_SOURCE_INDEX_FAILED", "Source parser cleanup failed within policy") from None
+        finally:
+            self._run_lock.release()
 
     def _version(self, root: Path) -> str:
         if self.compiler is None or self.preprocessor is None:

@@ -14,13 +14,45 @@ const page=(status:MonitorStatus):SourceCatalogPage=>({...sourcePage(status),tot
 const loaded=(status:MonitorStatus)=>{
   let state=reducer(initialState,{type:"initial.loaded",status,probes:[],groups:[]});
   const contextKey=sourceContextKey(status);
-  state=reducer(state,{type:"source.started",query:"",contextKey});
+  state=reducer(state,{type:"source.started",query:"",contextKey,generation:state.catalog.source.generation+1n});
   state=reducer(state,{type:"source.loaded",query:"",contextKey,generation:state.catalog.source.generation,
     cursor:null,parentId:null,page:page(status)});
   return state;
 };
 
 describe("source catalog adoption lifecycle",()=>{
+  it("adopts the latest of two searches queued before a render",async()=>{
+    const status=connected();
+    let committed:MonitorState=reducer(initialState,{type:"initial.loaded",status,probes:[],groups:[]});
+    const queued:MonitorAction[]=[];
+    const flush=()=>{for(const action of queued.splice(0))committed=reducer(committed,action);};
+    let resolveFirst!:(value:Awaited<ReturnType<MonitorApi["sourceVariables"]>>)=>void;
+    let resolveSecond!:(value:Awaited<ReturnType<MonitorApi["sourceVariables"]>>)=>void;
+    let resolveThird!:(value:Awaited<ReturnType<MonitorApi["sourceVariables"]>>)=>void;
+    const first=new Promise<Awaited<ReturnType<MonitorApi["sourceVariables"]>>>(done=>{resolveFirst=done;});
+    const second=new Promise<Awaited<ReturnType<MonitorApi["sourceVariables"]>>>(done=>{resolveSecond=done;});
+    const third=new Promise<Awaited<ReturnType<MonitorApi["sourceVariables"]>>>(done=>{resolveThird=done;});
+    const api:MonitorApi={...recordingApi([],status),sourceVariables:query=>query==="first"?first:query==="second"?second:third};
+    const controller=createController(api,action=>queued.push(action),()=>committed);
+    try{
+      const old=controller.searchSource("first"),latest=controller.searchSource("second");
+      flush();
+      resolveSecond({ok:true,data:page(status)});await latest;flush();
+      expect(committed.catalog.source.query).toBe("second");
+      expect(committed.catalog.source.page?.items[0]?.name).toBe("counter");
+      resolveFirst({ok:true,data:page(status)});await old;flush();
+      expect(committed.catalog.source.query).toBe("second");
+      const nextStatus={...status,firmware:{...status.firmware!,buildId:"build-next"}};
+      committed=reducer(committed,{type:"status.loaded",status:nextStatus});
+      const retiredGeneration=committed.catalog.source.generation;
+      expect(committed.catalog.source.page).toBeNull();
+      const afterRetirement=controller.searchSource("third");flush();
+      resolveThird({ok:true,data:page(nextStatus)});await afterRetirement;flush();
+      expect(committed.catalog.source.generation).toBeGreaterThan(retiredGeneration);
+      expect(committed.catalog.source.page?.items[0]?.name).toBe("counter");
+    }finally{controller.close();}
+  });
+
   it("keeps source browsing when disconnected and rejects a late same-epoch page and selection",()=>{
     const status=connected(),original=loaded(status),contextKey=sourceContextKey(status),generation=original.catalog.source.generation;
     const disconnected={...status,probe:{connected:false,probeId:null},probeConnected:false};
@@ -41,7 +73,8 @@ describe("source catalog adoption lifecycle",()=>{
     expect(state.catalog.source.page).toBeNull();
     state=reducer(state,{type:"source.loaded",query:"",contextKey,generation,cursor:null,parentId:null,page:page(status)});
     expect(state.catalog.source.page).toBeNull();
-    state=reducer(state,{type:"source.started",query:"gpio",contextKey:sourceContextKey(state.status!)});
+    state=reducer(state,{type:"source.started",query:"gpio",contextKey:sourceContextKey(state.status!),
+      generation:state.catalog.source.generation+1n});
     expect(state.catalog.source.generation).toBeGreaterThan(generation);
     state=reducer(state,{type:"source.loaded",query:"",contextKey,generation,cursor:null,parentId:null,page:page(status)});
     expect(state.catalog.source.page).toBeNull();
@@ -50,7 +83,7 @@ describe("source catalog adoption lifecycle",()=>{
   it("keeps a fresh readonly source page when status firmware lags, without enabling Add",()=>{
     const status=connected(),contextKey=sourceContextKey(status);
     let state=reducer(initialState,{type:"initial.loaded",status,probes:[],groups:[]});
-    state=reducer(state,{type:"source.started",query:"",contextKey});
+    state=reducer(state,{type:"source.started",query:"",contextKey,generation:state.catalog.source.generation+1n});
     const fresh={...page(status),identity:{...page(status).identity,buildId:"new-build",elfSha256:"f".repeat(64)}};
     state=reducer(state,{type:"source.loaded",query:"",contextKey,generation:state.catalog.source.generation,
       cursor:null,parentId:null,page:fresh});

@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import subprocess
+import threading
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -13,7 +14,7 @@ import pytest
 
 import stm32_monitor.source_catalog as module
 from stm32_toolkit.debug.source import ClangSourceAdapter, SourceDeclaration, SourceIndex, SourceIssue, SourcePlan
-from stm32_toolkit.debug.types import DwarfType
+from stm32_toolkit.debug.types import DwarfMember, DwarfType
 from stm32_toolkit.debug.dwarf import DwarfSourceSymbol
 
 
@@ -112,6 +113,145 @@ def test_aggregate_descendants_stop_at_root_budget(monkeypatch: pytest.MonkeyPat
                                         catalog_id=root["catalogId"], binding=binding, binding_epoch=0)
             count += len(child["items"])
         assert count == 4096 and child["nextCursor"] is None
+        provider.close()
+
+    asyncio.run(scenario())
+
+
+def test_partial_catalog_keeps_nested_navigation_but_root_retry_reindexes(
+        monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    provider, _, binding = _setup(monkeypatch, tmp_path, aggregate=True)
+    scalar = DwarfType("integer", "int", 4)
+    nested = DwarfType("structure", "Nested", 4, members=(DwarfMember("value", 0, scalar),))
+    outer = DwarfType("structure", "Outer", 4, members=(DwarfMember("nested", 0, nested),))
+    declaration = SourceDeclaration("c" * 64, "c" * 64, "record", "Outer", "Src/main.c", 1,
+                                    1, "none", "global", None, (), ("Src/main.c",))
+    partial = SourceIndex("engine", "gcc:14.3.1;clang:21.1.1", "compdb", 2, 1,
+                          (SourceIssue("Src/other.c", "MONITOR_SOURCE_INDEX_FAILED", "failed"),),
+                          False, (declaration,), "f" * 64)
+    loads = [0]
+
+    def load(_adapter, _facts, _plan):
+        loads[0] += 1
+        return module._Base(partial, _Dwarf())
+
+    monkeypatch.setattr(module, "_load_base", load)
+    monkeypatch.setattr(module, "_item_for_declaration", lambda decl, *_args: (
+        module.SourceItem(decl.id, None, decl.name, decl.type_name, decl.file, decl.line,
+                          decl.column, "global", None, (), "none", decl.translation_units,
+                          "record", False, "aggregate", True, False), outer))
+
+    async def scenario() -> None:
+        root = await provider.page(query="", cursor=None, limit=100, parent_id=None,
+                                   catalog_id=None, binding=binding, binding_epoch=0)
+        assert not root["coverage"]["complete"] and loads == [1]
+        child = await provider.page(query="", cursor=None, limit=100, parent_id=root["items"][0]["id"],
+                                    catalog_id=root["catalogId"], binding=binding, binding_epoch=0)
+        assert child["items"][0]["name"] == "nested"
+        grandchild = await provider.page(query="", cursor=None, limit=100, parent_id=child["items"][0]["id"],
+                                         catalog_id=root["catalogId"], binding=binding, binding_epoch=0)
+        assert grandchild["items"][0]["name"] == "value"
+        assert loads == [1]
+        retry = await provider.page(query="", cursor=None, limit=100, parent_id=None,
+                                    catalog_id=None, binding=binding, binding_epoch=0)
+        assert retry["catalogId"] == root["catalogId"] and loads == [2]
+        provider.close()
+
+    asyncio.run(scenario())
+
+
+def test_depth_limit_marks_unexpanded_aggregate_as_truncated(
+        monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    provider, _, binding = _setup(monkeypatch, tmp_path, aggregate=True)
+    dtype = DwarfType("integer", "int", 4)
+    for depth in range(7):
+        dtype = DwarfType("structure", f"Nested{depth}", 4,
+                          members=(DwarfMember("next", 0, dtype),))
+    monkeypatch.setattr(module, "_item_for_declaration", lambda decl, *_args: (
+        module.SourceItem(decl.id, None, decl.name, decl.type_name, decl.file, decl.line,
+                          decl.column, "global", None, (), "none", decl.translation_units,
+                          "array", False, "aggregate", True, False), dtype))
+
+    async def scenario() -> None:
+        root = await provider.page(query="", cursor=None, limit=100, parent_id=None,
+                                   catalog_id=None, binding=binding, binding_epoch=0)
+        current = root["items"][0]
+        for _ in range(6):
+            children = await provider.page(query="", cursor=None, limit=100, parent_id=current["id"],
+                                           catalog_id=root["catalogId"], binding=binding, binding_epoch=0)
+            current = children["items"][0]
+        assert current["reason"] == "limit_reached"
+        assert current["truncated"] and not current["expandable"] and not current["canAdd"]
+        provider.close()
+
+    asyncio.run(scenario())
+
+
+def test_cancelled_waiter_cannot_pin_a_completed_partial_index(
+        monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    provider, _, binding = _setup(monkeypatch, tmp_path)
+    declaration = SourceDeclaration("c" * 64, "c" * 64, "counter", "int", "Src/main.c", 1,
+                                    1, "none", "global", None, (), ("Src/main.c",))
+    complete = SourceIndex("engine", "version", "compdb", 1, 1, (), False,
+                           (declaration,), "f" * 64)
+    partial = replace(complete, parsed_units=0,
+                      issues=(SourceIssue("Src/main.c", "MONITOR_SOURCE_INDEX_FAILED", "failed"),))
+    entered = threading.Event()
+    release = threading.Event()
+    loads = [0]
+
+    def load(_adapter, _facts, _plan):
+        loads[0] += 1
+        if loads[0] == 1:
+            entered.set()
+            assert release.wait(timeout=5)
+            return module._Base(partial, _Dwarf())
+        return module._Base(complete, _Dwarf())
+
+    monkeypatch.setattr(module, "_load_base", load)
+
+    async def scenario() -> None:
+        first = asyncio.create_task(provider.page(query="", cursor=None, limit=100, parent_id=None,
+                                                 catalog_id=None, binding=binding, binding_epoch=0))
+        try:
+            assert await asyncio.to_thread(entered.wait, 2)
+            first.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await first
+        finally:
+            release.set()
+        await asyncio.sleep(0.05)
+        retry = await provider.page(query="", cursor=None, limit=100, parent_id=None,
+                                    catalog_id=None, binding=binding, binding_epoch=0)
+        assert loads == [2] and retry["coverage"]["complete"]
+        assert not provider._inflight
+        provider.close()
+
+    asyncio.run(scenario())
+
+
+def test_duplicate_and_unnamed_members_have_unique_disabled_rows(
+        monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    provider, _, binding = _setup(monkeypatch, tmp_path, aggregate=True)
+    scalar = DwarfType("integer", "int", 4)
+    dtype = DwarfType("structure", "Members", 16, members=(
+        DwarfMember("", 0, scalar), DwarfMember("", 4, scalar),
+        DwarfMember("same", 8, scalar), DwarfMember("same", 12, scalar)))
+    monkeypatch.setattr(module, "_item_for_declaration", lambda decl, *_args: (
+        module.SourceItem(decl.id, None, decl.name, decl.type_name, decl.file, decl.line,
+                          decl.column, "global", None, (), "none", decl.translation_units,
+                          "array", False, "aggregate", True, False), dtype))
+
+    async def scenario() -> None:
+        root = await provider.page(query="", cursor=None, limit=100, parent_id=None,
+                                   catalog_id=None, binding=binding, binding_epoch=0)
+        children = await provider.page(query="", cursor=None, limit=100, parent_id=root["items"][0]["id"],
+                                       catalog_id=root["catalogId"], binding=binding, binding_epoch=0)
+        items = children["items"]
+        assert len(items) == len({item["id"] for item in items}) == 4
+        assert all(not item["canAdd"] and item["selector"] is None for item in items)
+        assert [item["reason"] for item in items] == ["unsupported_type", "unsupported_type",
+                                                     "ambiguous_symbol", "ambiguous_symbol"]
         provider.close()
 
     asyncio.run(scenario())

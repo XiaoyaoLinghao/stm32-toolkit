@@ -32,7 +32,7 @@ export type LoadedAction=
  | {type:"groups.imported";groups:readonly WatchGroup[]}
  | {type:"catalog.loaded";catalog:"variables";query:string;bindingKey:string;cursor:string|null;items:readonly VariableCatalogItem[];nextCursor:string|null}
  | {type:"catalog.loaded";catalog:"registers";query:string;bindingKey:string;cursor:string|null;items:readonly RegisterCatalogItem[];nextCursor:string|null}
- | {type:"source.started";query:string;contextKey:string}
+ | {type:"source.started";query:string;contextKey:string;generation:bigint}
  | {type:"source.loaded";query:string;contextKey:string;generation:bigint;cursor:string|null;parentId:string|null;page:SourceCatalogPage}
  | {type:"source.selection.accepted";contextKey:string;generation:bigint;groupGeneration:bigint;catalogId:string;itemId:string;selector:string;watch:WatchItem}
  | {type:"group.selected";groupId:string|null}

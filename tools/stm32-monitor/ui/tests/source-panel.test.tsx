@@ -80,3 +80,24 @@ it("shows a child-page failure without leaving an endless loading message",()=>{
  fireEvent.click(screen.getByRole("button",{name:"重试上次操作"}));
  expect(retry).toHaveBeenCalledWith("catalog.source-child",6n);
 });
+
+it("shows one child failure and one retry when another aggregate is also open",()=>{
+ const first={...leaf("e","first","aggregate","global"),selector:"first",expandable:true};
+ const second={...leaf("f","second","aggregate","global"),selector:"second",expandable:true};
+ const retry=vi.fn(),children=vi.fn();
+ render(<SourceCatalogPanel source={source([first,second])} pending={false} childPending={false}
+   selectionPending={false} editBusy={false} failures={{"catalog.source-child":{
+     ok:false,code:"MONITOR_SOURCE_CONTEXT_CHANGED",message:"changed",requestId:9n,
+     recovery:"read-retry",summary:"first"}}} onRetry={retry} onFirmware={vi.fn()}
+   onSearch={vi.fn()} onNext={vi.fn()} onChildren={children} onSelect={vi.fn()}/>);
+ fireEvent.click(screen.getByText(/Src\/main.c · 已加载/));
+ fireEvent.click(screen.getByText(/全局／文件作用域 · 2/));
+ fireEvent.click(screen.getByRole("button",{name:"展开 first"}));
+ fireEvent.click(screen.getByRole("button",{name:"展开 second"}));
+ expect(children).toHaveBeenCalledWith(first.id);
+ expect(children).toHaveBeenCalledWith(second.id);
+ expect(screen.getAllByRole("alert")).toHaveLength(1);
+ fireEvent.click(screen.getByRole("button",{name:"重试上次操作"}));
+ expect(retry).toHaveBeenCalledOnce();
+ expect(retry).toHaveBeenCalledWith("catalog.source-child",9n);
+});

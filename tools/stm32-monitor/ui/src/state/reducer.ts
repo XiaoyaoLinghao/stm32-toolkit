@@ -145,9 +145,10 @@ export function reducer(state:MonitorState,action:MonitorAction):MonitorState{
   return {...state,groups};
  }
  if(action.type==="source.started"){
-  if(state.status===null||sourceContextKey(state.status)!==action.contextKey)return state;
+  if(state.status===null||sourceContextKey(state.status)!==action.contextKey||
+    action.generation<=state.catalog.source.generation)return state;
   return {...state,catalog:{...state.catalog,source:{query:action.query,initialized:true,
-    generation:state.catalog.source.generation+1n,contextKey:action.contextKey,page:null,children:{},lastAddedId:null}}};
+    generation:action.generation,contextKey:action.contextKey,page:null,children:{},lastAddedId:null}}};
  }
  if(action.type==="source.loaded"){
   const source=state.catalog.source,page=action.page;

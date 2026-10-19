@@ -10,7 +10,7 @@ export type SourceCatalogPanelProps={source:SourceCatalogState;pending:boolean;c
  onSearch:(query:string)=>void|Promise<void>;onNext:()=>void|Promise<void>;
  onChildren:(parentId:string,next?:boolean)=>void|Promise<void>;onSelect:(item:SourceCatalogItem)=>void|Promise<void>};
 
-function SourceRow({item,source,editBusy,selectionPending,childPending,childFailure,onRetry,onChildren,onSelect,depth=0}:Pick<SourceCatalogPanelProps,"source"|"editBusy"|"selectionPending"|"childPending"|"onRetry"|"onChildren"|"onSelect">&{item:SourceCatalogItem;childFailure:OperationFailure|undefined;depth?:number}):JSX.Element{
+function SourceRow({item,source,editBusy,selectionPending,childPending,onChildren,onSelect,depth=0}:Pick<SourceCatalogPanelProps,"source"|"editBusy"|"selectionPending"|"childPending"|"onChildren"|"onSelect">&{item:SourceCatalogItem;depth?:number}):JSX.Element{
  const [open,setOpen]=useState(false),children=source.children[item.id];
  const toggle=()=>{const next=!open;setOpen(next);if(next&&children===undefined)void onChildren(item.id);};
  return<li className="source-item" data-depth={depth}>
@@ -27,12 +27,9 @@ function SourceRow({item,source,editBusy,selectionPending,childPending,childFail
        disabled={!item.canAdd||editBusy||selectionPending} onClick={()=>void onSelect(item)}>+</button>
    </div>
    {open&&<div className="source-children">
-     {children===undefined?<p role={childFailure!==undefined?"alert":"status"}>{childFailure!==undefined?<>
-       {copy.sourceChildFailed} <code>{childFailure.code}</code>
-       <button type="button" onClick={()=>onRetry("catalog.source-child",childFailure.requestId)}>{copy.retry}</button>
-     </>:childPending?copy.sourceChildrenLoading:copy.sourceExpandPrompt}</p>:<>
+     {children===undefined?<p role="status">{childPending?copy.sourceChildrenLoading:copy.sourceExpandPrompt}</p>:<>
        <ul>{children.items.map(child=><SourceRow key={child.id} item={child} source={source} editBusy={editBusy}
-         selectionPending={selectionPending} childPending={childPending} childFailure={childFailure} onRetry={onRetry}
+         selectionPending={selectionPending} childPending={childPending}
          onChildren={onChildren} onSelect={onSelect} depth={depth+1}/>)}</ul>
        <p>{copy.sourceCount(children.items.length,children.total)}</p>
        {children.nextCursor===null&&children.items.length<children.total&&<small className="source-reason">{copy.sourceTruncated}</small>}
@@ -82,13 +79,15 @@ export function SourceCatalogPanel(p:SourceCatalogPanelProps):JSX.Element{
          {[...group.functions].map(([name,items])=><details key={name} open={p.source.query!==""}>
            <summary>{name} · {items.length}</summary>
            <ul>{items.map(item=><SourceRow key={item.id} item={item} source={p.source} editBusy={p.editBusy}
-             selectionPending={p.selectionPending} childPending={p.childPending} childFailure={p.failures["catalog.source-child"]}
-             onRetry={p.onRetry} onChildren={p.onChildren} onSelect={p.onSelect}/>)}</ul>
+             selectionPending={p.selectionPending} childPending={p.childPending}
+             onChildren={p.onChildren} onSelect={p.onSelect}/>)}</ul>
          </details>)}
        </details>)}
      </div>
      {page.nextCursor!==null&&<button type="button" disabled={p.pending} onClick={()=>void p.onNext()}>{copy.nextPage}</button>}
      {p.childPending&&<p role="status">{copy.sourceChildrenLoading}</p>}
+     {p.failures["catalog.source-child"]!==undefined&&<p role="alert">{copy.sourceChildFailed} <code>{p.failures["catalog.source-child"].code}</code>
+       <button type="button" onClick={()=>p.onRetry("catalog.source-child",p.failures["catalog.source-child"]!.requestId)}>{copy.retry}</button></p>}
      {p.selectionPending&&<p role="status">{copy.sourceChecking}</p>}
      {p.failures["catalog.source-selection"]!==undefined&&<p role="alert">{copy.sourceSelectionFailed} <code>{p.failures["catalog.source-selection"].code}</code>
        <button type="button" onClick={()=>p.onRetry("catalog.source-selection",p.failures["catalog.source-selection"]!.requestId)}>{copy.retry}</button></p>}

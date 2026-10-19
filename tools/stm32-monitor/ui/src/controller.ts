@@ -69,7 +69,7 @@ export function createController(api:MonitorApi,dispatch:(action:MonitorAction)=
   const writing=new Set<Family>();
   const reconciling=new Set<RequestScope>();
   let groupRefreshFence:{refreshedGroups:readonly WatchGroup[]|null}|null=null;
-  let sourceRequestEpoch=0;
+  let sourceRequestEpoch=0n;
   const groupWriteAllowed=():boolean=>{
     const state=getState(),refreshed=groupRefreshFence?.refreshedGroups;
     if(groupRefreshFence===null)return !state.groupsNeedRefresh;
@@ -237,10 +237,12 @@ export function createController(api:MonitorApi,dispatch:(action:MonitorAction)=
   const sourceSearch=async(queryInput:string):Promise<void>=>{
     const status=getState().status;if(status===null)return;
     const query=queryInput.trim().slice(0,128),contextKey=sourceContextKey(status);
-    const generation=getState().catalog.source.generation+1n,epoch=++sourceRequestEpoch;
+    const adoptedGeneration=getState().catalog.source.generation;
+    const generation=(sourceRequestEpoch>adoptedGeneration?sourceRequestEpoch:adoptedGeneration)+1n;
+    sourceRequestEpoch=generation;
     for(const scope of ["catalog.source-child","catalog.source-selection"] as const){const id=active.get(scope);if(id!==undefined)retire(scope,id);}
-    dispatch({type:"source.started",query,contextKey});
-    const valid=()=>getState().status!==null&&sourceContextKey(getState().status!)===contextKey&&sourceRequestEpoch===epoch;
+    dispatch({type:"source.started",query,contextKey,generation});
+    const valid=()=>getState().status!==null&&sourceContextKey(getState().status!)===contextKey&&sourceRequestEpoch===generation;
     await read("catalog.source",operationSummary("catalog.source",query),()=>api.sourceVariables(query),
       page=>({type:"source.loaded",query,contextKey,generation,cursor:null,parentId:null,page}),valid,()=>sourceSearch(query));
   };

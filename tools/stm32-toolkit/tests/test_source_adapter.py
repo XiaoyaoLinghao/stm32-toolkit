@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ctypes
 import os
 import subprocess
 import sys
@@ -238,6 +239,34 @@ def test_two_index_keys_serialize_and_close_prevents_queued_compiler(tmp_path: P
         adapter.close()
 
 
+def test_run_queue_wait_expires_without_starting_a_compiler(tmp_path: Path) -> None:
+    marker = tmp_path / "started.txt"
+    adapter = ClangSourceAdapter(compiler=Path(sys.executable), preprocessor=Path(sys.executable))
+    entered = threading.Event()
+    adapter._run_lock.acquire()
+    try:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            def queued() -> bytes:
+                entered.set()
+                return adapter._run([sys.executable, "-c",
+                                     "from pathlib import Path; import sys; Path(sys.argv[1]).write_text('started')",
+                                     str(marker)], tmp_path, 4096, 0.12)
+
+            future = pool.submit(queued)
+            try:
+                assert entered.wait(timeout=2)
+                time.sleep(0.22)
+            finally:
+                adapter._run_lock.release()
+            with pytest.raises(SourceCatalogError):
+                future.result(timeout=2)
+        assert not marker.exists()
+    finally:
+        if adapter._run_lock.locked():
+            adapter._run_lock.release()
+        adapter.close()
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Windows child-tree regression")
 def test_timeout_reaps_only_owned_compiler_child_tree(tmp_path: Path) -> None:
     pid_path = tmp_path / "child.pid"
@@ -266,3 +295,159 @@ def test_timeout_reaps_only_owned_compiler_child_tree(tmp_path: Path) -> None:
             pytest.fail("owned compiler child survived timeout")
     finally:
         adapter.close()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows child-tree regression")
+@pytest.mark.parametrize("stop_mode", ["timeout", "close"])
+def test_root_exits_first_but_owned_descendant_is_reaped(tmp_path: Path, stop_mode: str) -> None:
+    pid_path = tmp_path / "descendant.pid"
+    root_pid_path = tmp_path / "root.pid"
+    script = tmp_path / "exiting_driver.py"
+    script.write_text(
+        "import os,subprocess,sys\n"
+        "open(sys.argv[2],'w',encoding='ascii').write(str(os.getpid()))\n"
+        "child=subprocess.Popen([sys.executable,'-c','import time; time.sleep(10)'],"
+        "stdout=sys.stdout,stderr=sys.stderr,creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)\n"
+        "open(sys.argv[1],'w',encoding='ascii').write(str(child.pid))\n"
+        "os._exit(0)\n",
+        encoding="utf-8")
+    adapter = ClangSourceAdapter(compiler=Path(sys.executable), preprocessor=Path(sys.executable))
+    descendant_pid: int | None = None
+
+    def alive(pid: int) -> bool:
+        listing = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+                                 capture_output=True, text=True, timeout=5)
+        return f'"{pid}"' in listing.stdout
+
+    try:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            started = time.monotonic()
+            future = pool.submit(adapter._run,
+                                 [sys.executable, str(script), str(pid_path), str(root_pid_path)],
+                                 tmp_path, 4096, 1.0 if stop_mode == "timeout" else 30.0)
+            try:
+                for _ in range(100):
+                    if (pid_path.is_file() and root_pid_path.is_file()
+                            and pid_path.read_text(encoding="ascii").isdigit()
+                            and root_pid_path.read_text(encoding="ascii").isdigit()):
+                        break
+                    time.sleep(0.02)
+                assert pid_path.is_file() and root_pid_path.is_file()
+                descendant_pid = int(pid_path.read_text(encoding="ascii"))
+                root_pid = int(root_pid_path.read_text(encoding="ascii"))
+                for _ in range(50):
+                    if not alive(root_pid):
+                        break
+                    time.sleep(0.02)
+                assert not alive(root_pid) and alive(descendant_pid)
+                if stop_mode == "close":
+                    started = time.monotonic()
+                    adapter.close()
+                with pytest.raises(SourceCatalogError):
+                    future.result(timeout=12)
+                assert time.monotonic() - started < 3.0
+                assert not alive(descendant_pid)
+            finally:
+                adapter.close()
+    finally:
+        adapter.close()
+        if descendant_pid is None and pid_path.is_file():
+            text = pid_path.read_text(encoding="ascii")
+            descendant_pid = int(text) if text.isdigit() else None
+        if descendant_pid is not None and alive(descendant_pid):
+            subprocess.run(["taskkill", "/PID", str(descendant_pid), "/T", "/F"],
+                           capture_output=True, timeout=5)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows native ownership contract")
+def test_native_thread_enumeration_error_fails_before_resume(monkeypatch: pytest.MonkeyPatch) -> None:
+    from stm32_toolkit.debug import source_windows
+
+    closed: list[int] = []
+
+    def first(_snapshot: int, pointer: object) -> bool:
+        entry = ctypes.cast(pointer, ctypes.POINTER(source_windows._ThreadEntry)).contents
+        entry.th32OwnerProcessID = 1234
+        entry.th32ThreadID = 5678
+        return True
+
+    def next_error(_snapshot: int, _pointer: object) -> bool:
+        ctypes.set_last_error(5)
+        return False
+
+    monkeypatch.setattr(source_windows, "_SNAPSHOT", lambda _flags, _pid: 42)
+    monkeypatch.setattr(source_windows, "_THREAD_FIRST", first)
+    monkeypatch.setattr(source_windows, "_THREAD_NEXT", next_error)
+    monkeypatch.setattr(source_windows, "_CLOSE_HANDLE", lambda handle: closed.append(handle) or True)
+    monkeypatch.setattr(source_windows, "_OPEN_THREAD", lambda *_args: pytest.fail("opened a thread after enumeration failed"))
+    with pytest.raises(OSError, match="enumerate initial thread"):
+        source_windows._initial_thread(1234)
+    assert closed == [42]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows native ownership contract")
+def test_native_job_close_failure_retains_owned_handle(monkeypatch: pytest.MonkeyPatch) -> None:
+    from stm32_toolkit.debug import source_windows
+
+    job = source_windows.OwnedWindowsJob()
+    handle = job._handle
+    close_native = source_windows._CLOSE_HANDLE
+    try:
+        monkeypatch.setattr(source_windows, "_CLOSE_HANDLE", lambda _handle: False)
+        with pytest.raises(OSError, match="close job"):
+            job.close()
+        assert job._handle == handle
+    finally:
+        monkeypatch.setattr(source_windows, "_CLOSE_HANDLE", close_native)
+        job.close()
+    assert job._handle is None
+    job.close()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows native ownership contract")
+def test_adapter_failed_job_cleanup_reaps_suspended_root_and_seals_reuse(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    from stm32_toolkit.debug import source as source_module
+
+    created: list[object] = []
+    real_popen = subprocess.Popen
+    roots: list[subprocess.Popen[bytes]] = []
+
+    class FailingJob:
+        closed = False
+        fail_close = True
+
+        def __init__(self) -> None:
+            created.append(self)
+
+        def assign(self, _handle: int) -> None:
+            raise OSError("injected assignment failure")
+
+        def close(self) -> None:
+            if self.fail_close:
+                raise OSError("injected job close failure")
+            self.closed = True
+
+    def capture_popen(*args: object, **kwargs: object) -> subprocess.Popen[bytes]:
+        child = real_popen(*args, **kwargs)
+        roots.append(child)
+        return child
+
+    monkeypatch.setattr(source_module, "OwnedWindowsJob", FailingJob)
+    monkeypatch.setattr(source_module.subprocess, "Popen", capture_popen)
+    adapter = ClangSourceAdapter(compiler=Path(sys.executable), preprocessor=Path(sys.executable))
+    try:
+        with pytest.raises(OSError, match="injected job close failure"):
+            adapter._start_child([sys.executable, "-c", "import time;time.sleep(60)"], tmp_path)
+        assert adapter._closed.is_set()
+        assert len(roots) == 1 and roots[0].poll() is not None
+        assert adapter._job is created[0]
+        with pytest.raises(SourceCatalogError, match="closed"):
+            adapter._run([sys.executable, "-c", "print('unexpected')"], tmp_path, 4096, 1.0)
+        assert len(roots) == 1
+    finally:
+        if created:
+            created[0].fail_close = False
+        adapter.close()
+    assert adapter._job is None

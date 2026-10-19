@@ -11,7 +11,7 @@ import json
 import re
 import secrets
 import unicodedata
-from collections import OrderedDict
+from collections import Counter, OrderedDict
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Mapping
@@ -107,6 +107,7 @@ class _View:
     binding: object | None
     binding_ok: bool
     children_cache: dict[str, tuple[tuple[SourceItem, ...], int]]
+    binding_signature: tuple[object, ...] = ()
 
 
 def _offline_facts(root: Path) -> _Facts:
@@ -430,46 +431,54 @@ class SourceCatalogProvider:
         for task in self._inflight.values():
             task.cancel()
 
+    async def _load_base_job(self, key: tuple[str, str | None, str],
+                             facts: _Facts, plan: SourcePlan) -> _Base:
+        try:
+            base = await asyncio.to_thread(_load_base, self.adapter, facts, plan)
+            async with self._lock:
+                if not self._closed and base.index.complete:
+                    self._bases[key] = base
+                    self._bases.move_to_end(key)
+                    while len(self._bases) > 2:
+                        self._bases.popitem(last=False)
+            return base
+        finally:
+            async with self._lock:
+                if self._inflight.get(key) is asyncio.current_task():
+                    self._inflight.pop(key)
+
+    @staticmethod
+    def _consume_background_failure(task: asyncio.Task[_Base]) -> None:
+        # A canceled page waiter does not own the coalesced indexing job.
+        if not task.cancelled():
+            task.exception()
+
     async def _base(self, facts: _Facts, plan: SourcePlan) -> _Base:
         key = facts.source_sha, facts.elf_sha, plan.fingerprint
         async with self._lock:
+            if self._closed:
+                raise SourceCatalogFailure("MONITOR_SOURCE_CONTEXT_CHANGED", "Source catalog was closed")
             if key in self._bases:
                 self._bases.move_to_end(key)
                 return self._bases[key]
             task = self._inflight.get(key)
             if task is None:
-                task = asyncio.create_task(asyncio.to_thread(_load_base, self.adapter, facts, plan))
+                task = asyncio.create_task(self._load_base_job(key, facts, plan))
+                task.add_done_callback(self._consume_background_failure)
                 self._inflight[key] = task
-        try:
-            base = await asyncio.shield(task)
-        finally:
-            if task.done():
-                async with self._lock:
-                    if self._inflight.get(key) is task:
-                        self._inflight.pop(key)
-        async with self._lock:
-            if self._closed:
-                raise SourceCatalogFailure("MONITOR_SOURCE_CONTEXT_CHANGED", "Source catalog was closed")
-            # A partial index is retryable with unchanged inputs.  Retaining it
-            # here would turn the UI retry into a permanent cached failure.
-            if base.index.complete:
-                self._bases[key] = base
-                self._bases.move_to_end(key)
-                while len(self._bases) > 2:
-                    self._bases.popitem(last=False)
+        base = await asyncio.shield(task)
+        if self._closed:
+            raise SourceCatalogFailure("MONITOR_SOURCE_CONTEXT_CHANGED", "Source catalog was closed")
         return base
 
-    async def _view(self, binding: object | None, binding_epoch: int) -> _View:
+    async def _view(self, binding: object | None, binding_epoch: int,
+                    requested_catalog_id: str | None = None) -> _View:
         if self._closed:
             raise SourceCatalogFailure("MONITOR_SOURCE_CONTEXT_CHANGED", "Source catalog was closed")
         facts = await asyncio.to_thread(_offline_facts, self.root)
         if type(binding_epoch) is not int or binding_epoch < 0:
             raise SourceCatalogFailure("MONITOR_SOURCE_CONTEXT_CHANGED", "Source catalog context is invalid")
         plan = await asyncio.to_thread(self.adapter.plan, facts.model)
-        base = await self._base(facts, plan)
-        current = await asyncio.to_thread(_offline_facts, self.root)
-        if (facts.source_sha, facts.build_id, facts.elf_sha) != (current.source_sha, current.build_id, current.elf_sha):
-            raise SourceCatalogFailure("MONITOR_SOURCE_CONTEXT_CHANGED", "Source or firmware changed while indexing")
         identity: dict[str, object] = {
             "workspaceId": self.workspace_id, "sessionId": self.session_id,
             "logicalProjectId": str(facts.model.logical_project_id),
@@ -479,6 +488,20 @@ class SourceCatalogProvider:
             "bindingEpoch": binding_epoch,
         }
         signature = _binding_signature(binding)
+        if requested_catalog_id is not None:
+            async with self._lock:
+                saved = self._views.get(requested_catalog_id)
+                if (saved is not None and saved.identity == identity
+                        and saved.binding_signature == signature
+                        and saved.index.argument_fingerprint == plan.fingerprint
+                        and saved.index.engine_version == plan.engine_version
+                        and saved.index.input_kind == plan.input_kind):
+                    self._views.move_to_end(requested_catalog_id)
+                    return saved
+        base = await self._base(facts, plan)
+        current = await asyncio.to_thread(_offline_facts, self.root)
+        if (facts.source_sha, facts.build_id, facts.elf_sha) != (current.source_sha, current.build_id, current.elf_sha):
+            raise SourceCatalogFailure("MONITOR_SOURCE_CONTEXT_CHANGED", "Source or firmware changed while indexing")
         catalog = await asyncio.to_thread(_catalog_id, identity, signature, base.index)
         async with self._lock:
             saved = self._views.get(catalog)
@@ -490,15 +513,17 @@ class SourceCatalogProvider:
         if base.dwarf is None and context not in {"coverage_incomplete", "source_mismatch"}:
             context = "firmware_unavailable"
         roots, nodes = await asyncio.to_thread(_materialize, base.index, base.dwarf, context, binding)
-        view = _View(catalog, identity, base.index, base.dwarf, roots, nodes, binding, binding_ok, {})
+        view = _View(catalog, identity, base.index, base.dwarf, roots, nodes,
+                     binding, binding_ok, {}, signature)
         async with self._lock:
             if self._closed:
                 raise SourceCatalogFailure("MONITOR_SOURCE_CONTEXT_CHANGED", "Source catalog was closed")
-            if base.index.complete:
-                self._views[catalog] = view
-                self._views.move_to_end(catalog)
-                while len(self._views) > 2:
-                    self._views.popitem(last=False)
+            # Partial navigation is stable for this result digest, while a
+            # root refresh without catalogId still reindexes the uncached base.
+            self._views[catalog] = view
+            self._views.move_to_end(catalog)
+            while len(self._views) > 2:
+                self._views.popitem(last=False)
         return view
 
     def _children(self, view: _View, parent: _Node) -> tuple[tuple[SourceItem, ...], int]:
@@ -514,9 +539,11 @@ class SourceCatalogProvider:
             root = view.nodes[root.item.parent_id]
         remaining = max(0, 4096 - root.descendants)
         members: list[tuple[str, DwarfType | None, str | None]] = []
+        member_name_counts: Counter[str] = Counter()
         actual_total = 0
         if dtype.kind in {"structure", "union"}:
             actual_total = len(dtype.members)
+            member_name_counts = Counter(member.name for member in dtype.members)
             members = [(member.name, member.type, None if member.bit_size is None else "unsupported_type")
                        for member in dtype.members[:remaining]]
         elif dtype.kind == "array" and dtype.element_type is not None and dtype.element_count is not None:
@@ -527,15 +554,23 @@ class SourceCatalogProvider:
         context = None if view.binding_ok and view.index.complete else (
             "coverage_incomplete" if not view.index.complete else
             "probe_required" if view.binding is None else "source_mismatch")
-        for name, child_type, intrinsic in members:
+        for ordinal, (name, child_type, intrinsic) in enumerate(members):
             kind = "element" if dtype.kind == "array" else "member"
             selector = f"{item.selector}[{name}]" if kind == "element" else f"{item.selector}.{name}"
-            if kind == "member" and not _EXPRESSION.fullmatch(name):
-                intrinsic = "unsupported_type"
-            identifier = hashlib.sha256((item.id + "\0" + selector).encode("utf-8")).hexdigest()
-            expandable = bool(child_type is not None and child_type.kind in {"structure", "union", "array"}
-                              and parent.depth + 1 < 6)
-            reason = intrinsic or ("aggregate" if expandable else _eligible_leaf(selector, view.dwarf, view.binding))
+            if kind == "member":
+                if not _EXPRESSION.fullmatch(name):
+                    intrinsic = "unsupported_type"
+                elif member_name_counts[name] > 1 and intrinsic is None:
+                    intrinsic = "ambiguous_symbol"
+            identifier = hashlib.sha256((item.id + "\0" + str(ordinal) + "\0" + selector).encode("utf-8")).hexdigest()
+            aggregate = child_type is not None and child_type.kind in {"structure", "union", "array"}
+            has_descendants = bool(child_type is not None and (
+                child_type.kind in {"structure", "union"} and child_type.members or
+                child_type.kind == "array" and child_type.element_count is not None and child_type.element_count > 0))
+            depth_limited = bool(aggregate and has_descendants and parent.depth + 1 >= 6)
+            expandable = bool(aggregate and has_descendants and not depth_limited)
+            reason = ("limit_reached" if depth_limited else intrinsic or
+                      ("aggregate" if expandable else _eligible_leaf(selector, view.dwarf, view.binding)))
             if reason is None:
                 reason = context
             child = SourceItem(identifier, item.id, name, child_type.name if child_type else "<unknown>",
@@ -543,7 +578,7 @@ class SourceCatalogProvider:
                                (*item.scope_path, item.name), item.storage, item.translation_units,
                                selector if intrinsic is None else None,
                                reason is None, reason, expandable,
-                               bool(child_type is not None and child_type.kind == "array" and
+                               bool(depth_limited or child_type is not None and child_type.kind == "array" and
                                     child_type.element_count is not None and child_type.element_count > 4096))
             children.append(child)
             view.nodes[identifier] = _Node(child, child_type if expandable else None,
@@ -561,7 +596,7 @@ class SourceCatalogProvider:
                 or catalog_id is not None and (not isinstance(catalog_id, str) or not _ID.fullmatch(catalog_id))):
             raise SourceCatalogFailure("MONITOR_SOURCE_INDEX_FAILED", "Source catalog query is invalid")
         normalized = unicodedata.normalize("NFC", query.strip()).casefold()
-        view = await self._view(binding, binding_epoch)
+        view = await self._view(binding, binding_epoch, catalog_id)
         if catalog_id is not None and catalog_id != view.catalog_id:
             raise SourceCatalogFailure("MONITOR_SOURCE_CONTEXT_CHANGED", "Source catalog identity changed")
         if parent_id is not None:
@@ -586,7 +621,7 @@ class SourceCatalogProvider:
                 or not isinstance(item_id, str) or not _ID.fullmatch(item_id)
                 or not isinstance(selector, str) or len(selector) > 256):
             raise SourceCatalogFailure("MONITOR_SOURCE_SELECTION_UNAVAILABLE", "Source selection is invalid")
-        view = await self._view(binding, binding_epoch)
+        view = await self._view(binding, binding_epoch, catalog_id)
         if view.catalog_id != catalog_id:
             raise SourceCatalogFailure("MONITOR_SOURCE_CONTEXT_CHANGED", "Source catalog identity changed")
         node = view.nodes.get(item_id)
