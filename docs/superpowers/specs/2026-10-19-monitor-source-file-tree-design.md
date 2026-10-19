@@ -38,6 +38,8 @@ ID均为64位小写hex；line为正整数或null；路径<=512、名称<=256、�
 
 原`GET /api/v1/catalog/source-variables`/`monitor.catalog.source.variables`新增可选scopeId，必须伴随catalogId且与aggregate parentId互斥。无scopeId保持旧公开行为；有scopeId只返回该scope的声明根，变量仍limit1..100，返回原SourceCatalogPage。成员继续使用旧parentId+catalogId展开。新scopeId与旧parentId、query、catalogId及tree/variables域标识一并进入HMAC cursor绑定，禁止跨scope、跨域及跨query复用游标。source-selection合同及旧Watch语法保持不变。
 
+游标上下界按有效输入计算，不能继续用不足以容纳128字符Unicode query及新scope/domain的旧512字符限制。两端统一有限上限2048字符，页面预算预留该游标空间，保证自己生成的合法中文query游标能被下一页接受；用公开metadata/作用域页跨页测试证明。
+
 搜索语义统一NFC/casefold：变量匹配原name/file/function；函数节点也按真实file/function匹配，空函数可被搜到；文件名命中则保留文件所有scope，函数名命中则保留该scope全部变量，变量名命中则只保留匹配路径。query为空保留全部纳管文件和真实函数，文件级scope只在有对应变量时存在。部分解析的计数仅代表已解析声明，必须配coverage提示。
 
 ## 前端状态、请求和重试
