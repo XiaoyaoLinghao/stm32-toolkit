@@ -158,11 +158,11 @@ def _project_transition_context(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
             {"build": {"elfFresh": True, "preset": "arm-debug", "buildId": "b" * 64, "elfSha256": "e" * 64}},
         ),
     )
-    monkeypatch.setattr(
-        recovery_workflows,
-        "snapshot_project_inputs",
-        lambda _model: SimpleNamespace(sha256="d" * 64),
-    )
+    def snapshot(_model: object, *, policy: str) -> SimpleNamespace:
+        assert policy == "legacy"
+        return SimpleNamespace(sha256="d" * 64)
+
+    monkeypatch.setattr(recovery_workflows, "snapshot_project_inputs", snapshot)
     return project, data, AcceptanceRecoveryContext(project, data, "session-a", clock=clock)
 
 

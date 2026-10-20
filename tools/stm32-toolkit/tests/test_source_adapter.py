@@ -239,9 +239,10 @@ def test_installed_gcc_preprocessing_preserves_real_conditional_branches_and_ast
     assert any(decl.file == "Src/a.c" for decl in shared)
     assert len({decl.entity_id for decl in shared if "Src/a.c" in decl.translation_units}) == 1
     header_decl = next(decl for decl in shared if decl.file == "Inc/shared.h")
-    source_def = next(decl for decl in shared if decl.file == "Src/a.c")
-    assert not header_decl.is_definition and source_def.is_definition
-    assert dict(header_decl.entity_by_unit)["Src/a.c"] == dict(source_def.entity_by_unit)["Src/a.c"]
+    source_tentative = next(decl for decl in shared if decl.file == "Src/a.c")
+    assert not header_decl.is_definition and not source_tentative.is_definition
+    assert source_tentative.storage == "none" and source_tentative.scope_kind == "global"
+    assert dict(header_decl.entity_by_unit)["Src/a.c"] == dict(source_tentative.entity_by_unit)["Src/a.c"]
     assert set(dict(header_decl.entity_by_unit)) == {"Src/a.c", "Src/b.c"}
 
 
@@ -460,6 +461,36 @@ def test_manifest_freestanding_and_common_flags_preserve_real_source_semantics(t
     assert any("-fsyntax-only" in args for args in calls)
     assert all("-ffreestanding" in args for args in calls if "-E" in args or "-fsyntax-only" in args)
     assert not any("-fcommon" in args for args in calls)
+
+
+def test_real_clang_redeclaration_chain_marks_only_initialized_source_definition(tmp_path: Path) -> None:
+    adapter = ClangSourceAdapter()
+    if adapter.preprocessor is None or adapter.compiler is None:
+        pytest.skip("installed GNU Arm GCC and Clang required")
+    (tmp_path / "Src").mkdir()
+    (tmp_path / "Inc").mkdir()
+    (tmp_path / "Src" / "a.c").write_text(
+        "extern int x;\nint x;\nint x;\nint x = 1;\n"
+        "static int y;\nstatic int y = 2;\nextern int z = 3;\n"
+        "void work(void) { static int local_static; (void)local_static; }\n",
+        encoding="ascii",
+    )
+    try:
+        index = adapter.index(_model(tmp_path, ("Src/a.c",)))
+    finally:
+        adapter.close()
+    assert index.complete and index.parsed_units == 1, index.issues
+    x = sorted((item for item in index.declarations if item.name == "x"), key=lambda item: item.line or 0)
+    y = sorted((item for item in index.declarations if item.name == "y"), key=lambda item: item.line or 0)
+    z = [item for item in index.declarations if item.name == "z"]
+    local_static = [item for item in index.declarations if item.name == "local_static"]
+    assert [(item.line, item.is_definition) for item in x] == [(1, False), (2, False), (3, False), (4, True)]
+    assert [(item.line, item.is_definition) for item in y] == [(5, False), (6, True)]
+    assert len({item.entity_by_unit for item in x}) == 1
+    assert len({item.entity_by_unit for item in y}) == 1
+    assert len(z) == 1 and z[0].storage == "extern" and z[0].is_definition
+    assert len(local_static) == 1 and local_static[0].scope_kind == "static_local"
+    assert not local_static[0].is_definition
 
 
 def test_current_ninja_compdb_requires_model_provenance_and_marks_unknown_unit_partial(tmp_path: Path) -> None:

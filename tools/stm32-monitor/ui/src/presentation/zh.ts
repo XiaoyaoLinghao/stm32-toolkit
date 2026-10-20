@@ -34,6 +34,7 @@ export const copy={
   sourceScopeCount:(loaded:number,total:number)=>`已加载 ${loaded} / ${total} 个作用域`,
   sourceDeclarationCount:(loaded:number,total:number)=>`已加载 ${loaded} / ${total} 条声明`,
   sourceUntrackedHeader:(path:string)=>`${path}：旧构建快照未收录；请执行一次干净的完整固件重建。`,
+  sourceOutsideSnapshotPolicy:(path:string)=>`${path}：当前源码快照未收录；请核对工程声明和包含目录，补齐后干净重建。`,
   sourceDeclaration:"声明",sourceDefinition:"对应定义",sourceOwnership:"归属",sourceMemberPath:"成员路径",
   sourceSampleable:"可采样",sourceNeedsProbe:"需连接探针",sourceBrowseOnly:"仅浏览",sourceExpandMembers:"展开成员",
   registerAccessAcknowledgement:"该寄存器需要现有访问能力确认；添加草稿不会自动授权。",

@@ -153,7 +153,9 @@ export function SourceCatalogPanel(p:SourceCatalogPanelProps):JSX.Element{
        {tree.coverage.issues.length>0&&<details><summary>{copy.sourceIssues}</summary>
          {tree.coverage.issues.map((issue,index)=><small key={`${issue.code}-${index}`}>
            {issue.code==="MONITOR_SOURCE_UNTRACKED_AST"&&issue.unit!==null?
-             copy.sourceUntrackedHeader(issue.unit):`${issue.unit??copy.sourceUnknownUnit} · ${issue.message}`}</small>)}
+             copy.sourceUntrackedHeader(issue.unit):
+            issue.code==="MONITOR_SOURCE_OUTSIDE_SNAPSHOT_POLICY"&&issue.unit!==null?
+             copy.sourceOutsideSnapshotPolicy(issue.unit):`${issue.unit??copy.sourceUnknownUnit} · ${issue.message}`}</small>)}
        </details>}
        <button type="button" disabled={p.pending["catalog.source"]!==undefined}
          onClick={()=>void p.onSearch(p.source.query,true)}>{copy.retry}</button>

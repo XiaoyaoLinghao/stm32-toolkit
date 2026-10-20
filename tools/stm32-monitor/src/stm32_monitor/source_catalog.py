@@ -17,7 +17,7 @@ from itertools import chain
 from pathlib import Path
 from typing import Mapping
 
-from stm32_toolkit.build.identity import snapshot_project_inputs, SOURCE_LOCAL_HEADERS_POLICY
+from stm32_toolkit.build.identity import snapshot_project_inputs, LEGACY_INPUT_DISCOVERY_POLICY, SOURCE_LOCAL_HEADERS_POLICY
 from stm32_toolkit.debug.dwarf import DwarfCatalog, DwarfSourceFunction, DwarfSourceSymbol
 from stm32_toolkit.debug.source import ClangSourceAdapter, SourceCatalogError, SourceDeclaration, SourceFunction, SourceIndex, SourceIssue, SourcePlan
 from stm32_toolkit.debug.types import DwarfError, DwarfType
@@ -169,8 +169,16 @@ def _load_base(adapter: ClangSourceAdapter, facts: _Facts, plan: SourcePlan) -> 
     untracked = {entry.file for entry in (*index.declarations, *index.functions)
                  if entry.file not in snapshot_files}
     if untracked:
-        warnings = tuple(SourceIssue(path, "MONITOR_SOURCE_UNTRACKED_AST",
-                                     f"{path} is outside the verified {facts.policy} build snapshot; a clean firmware rebuild is needed to include this header")
+        if facts.policy == LEGACY_INPUT_DISCOVERY_POLICY:
+            code = "MONITOR_SOURCE_UNTRACKED_AST"
+            message = lambda path: (f"{path} is outside the verified legacy build snapshot; "
+                                    "perform a clean firmware rebuild to include this header")
+        else:
+            code = "MONITOR_SOURCE_OUTSIDE_SNAPSHOT_POLICY"
+            message = lambda path: (f"{path} is outside the verified {facts.policy} build snapshot; "
+                                    "verify project source and include-directory declarations, "
+                                    "then perform a clean firmware rebuild")
+        warnings = tuple(SourceIssue(path, code, message(path))
                          for path in sorted(untracked, key=lambda value: (value.casefold(), value)))
         index = replace(index,
                         declarations=tuple(entry for entry in index.declarations if entry.file not in untracked),
@@ -332,10 +340,6 @@ def _match(decl: SourceDeclaration,
         return None, "unsupported_location", None
     if _role(decl) == "extern_declaration":
         direct = ()  # A declaration alone never proves an external definition.
-    if len(direct) == 1:
-        site = (decl.file, decl.line) if decl.is_definition or _role(decl) in {
-            "global_definition", "file_static", "static_local"} else None
-        return direct[0], None, site
     if len(direct) > 1:
         return None, "ambiguous_symbol", None
     # A declaration can be proved by a Clang previousDecl chain to an exact
@@ -355,9 +359,15 @@ def _match(decl: SourceDeclaration,
                   for definition, symbol in proved.values()}
         if len(unique) == 1:
             definition, symbol = next(iter(proved.values()))
+            if direct and direct[0] != symbol:
+                return None, "ambiguous_symbol", None
             return symbol, None, (definition.file, definition.line)
         if len(unique) > 1:
             return None, "ambiguous_symbol", None
+    if len(direct) == 1:
+        site = (decl.file, decl.line) if decl.is_definition or _role(decl) in {
+            "global_definition", "file_static", "static_local"} else None
+        return direct[0], None, site
     if len(same_name) > 1:
         return None, "ambiguous_symbol", None
     return None, "source_attribution_unproven", None
@@ -527,19 +537,36 @@ def _materialize(index: SourceIndex, dwarf: DwarfCatalog | None,
     chains: dict[tuple[str, str], tuple[tuple[SourceDeclaration, DwarfSourceSymbol], ...]] = {}
     for pair, members in group.items():
         direct_members = anchors.get(pair, [])
-        definitions = {member.id: member for member in members if
-                       member.is_definition or member.storage == "none" and
-                       member.scope_kind == "global"}
-        # Legacy manually constructed indexes carry no is_definition bit.
-        for member, _symbol in direct_members:
-            if _role(member) in {"file_static", "static_local"}:
-                definitions.setdefault(member.id, member)
-        if len(definitions) != 1:
+        initialized = {member.id: member for member in members if member.is_definition}
+        if len(initialized) > 1:
             continue
-        definition = next(iter(definitions.values()))
-        chains[pair] = tuple((definition, symbol) for member, symbol in direct_members
-                             if _chain_compatible(member, definition, symbol) and
-                             _chain_compatible(definition, definition, symbol))
+        if initialized:
+            definition = next(iter(initialized.values()))
+        else:
+            tentative = {member.id: member for member in members if
+                         member.storage == "none" and member.scope_kind == "global"}
+            # A static declaration may also be tentative. It is a source
+            # anchor only when one exact same-CU DWARF declaration proves it.
+            tentative.update({member.id: member for member, symbol in direct_members
+                              if _role(member) in {"file_static", "static_local"} and
+                              _chain_compatible(member, member, symbol)})
+            if len(tentative) == 1:
+                definition = next(iter(tentative.values()))
+            else:
+                anchored = {member.id: member for member, symbol in direct_members
+                            if member.id in tentative and
+                            _chain_compatible(member, member, symbol)}
+                if len(anchored) != 1:
+                    continue
+                definition = next(iter(anchored.values()))
+        compatible = tuple((definition, symbol) for member, symbol in direct_members
+                           if _chain_compatible(member, definition, symbol) and
+                           _chain_compatible(definition, definition, symbol))
+        concrete = {(symbol.compilation_unit, symbol.cu_offset, symbol.die_offset)
+                    for _source, symbol in compatible}
+        if len(concrete) != 1:
+            continue
+        chains[pair] = compatible
     entity_proofs = chains
     attributed_entities: dict[int, set[str]] = {}
     for declaration in index.declarations:
@@ -554,13 +581,10 @@ def _materialize(index: SourceIndex, dwarf: DwarfCatalog | None,
         if (symbol.file is None or symbol.cu_offset is None or symbol.die_offset is None
                 or allowed is not None and symbol.file not in allowed):
             continue
-        source_declarations = decorations.get(id(symbol), ())
-        role_source = source_declarations[0] if len(source_declarations) == 1 else None
-        proof_site = None
-        if role_source is not None:
-            proved_symbol, _, proof_site = _match(role_source, frozen_symbols, entity_proofs)
-            if proved_symbol is not symbol:
-                proof_site = None
+        verified = [(declaration, site) for declaration in decorations.get(id(symbol), ())
+                    for proved_symbol, _, site in (_match(declaration, frozen_symbols, entity_proofs),)
+                    if proved_symbol is symbol]
+        role_source, proof_site = verified[0] if len(verified) == 1 else (None, None)
         item, dtype = _item_for_dwarf(symbol, dwarf, context, binding, role_source, proof_site)
         if item.id in nodes or len(roots) >= max_declarations:
             raise SourceCatalogFailure("MONITOR_SOURCE_INDEX_FAILED", "Merged source declaration limit was reached")

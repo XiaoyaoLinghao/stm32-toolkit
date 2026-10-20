@@ -102,6 +102,17 @@ it("shows a proved extern definition and a named rebuild warning without extra n
  expect(screen.getByText(/Inc\/timer.h：旧构建快照未收录/)).toBeVisible();
 });
 
+it("explains a new-policy outside-snapshot path requires project declarations before rebuilding",()=>{
+ const props=base(),current=source();
+ const tree={...current.tree!,coverage:{...current.tree!.coverage,complete:false,
+  issues:[{unit:"Extra/more.h",code:"MONITOR_SOURCE_OUTSIDE_SNAPSHOT_POLICY",message:"outside policy"}]}};
+ render(<SourceCatalogPanel source={{...current,tree}} {...props}/>);
+ fireEvent.click(screen.getByText("目录覆盖与解析详情"));
+ expect(screen.getByText("Extra/more.h：当前源码快照未收录；请核对工程声明和包含目录，补齐后干净重建。"))
+  .toBeVisible();
+ expect(screen.queryByText(/旧构建快照未收录/)).toBeNull();
+});
+
 it("does not call an incomplete empty file tree proof that source has no variables",()=>{
  const props=base(),current=source();
  const tree={...current.tree!,total:1,items:[empty],coverage:{...current.tree!.coverage,

@@ -82,7 +82,7 @@ class SourceDeclaration:
     translation_units: tuple[str, ...]
     function_id: str | None = None
     entity_by_unit: tuple[tuple[str, str], ...] = ()
-    is_definition: bool = False
+    is_definition: bool = False  # Initialized source definition; C tentative declarations stay False.
 
 
 @dataclass(frozen=True)
@@ -883,9 +883,11 @@ def _discover(ast: dict[str, object], root: Path, unit: str,
                 ast_id = node.get("id")
                 if isinstance(ast_id, str):
                     entities[ast_id] = entity
-                is_definition = (kind == "VarDecl" and
-                                 (function is None or scope_kind == "static_local") and
-                                 (storage != "extern" or node.get("init") is not None))
+                # A file-scope declaration without an initializer can be a C
+                # tentative definition, but a later initialized redeclaration
+                # is the unique concrete source definition for this entity.
+                is_definition = (kind == "VarDecl" and node.get("init") is not None and
+                                 (function is None or scope_kind == "static_local"))
                 yield SourceDeclaration(key, entity, name, type_name, relative, line, column,
                                         storage, scope_kind, function, scope, (unit,), function_id,
                                         ((unit, entity),), is_definition)

@@ -730,6 +730,114 @@ def test_header_extern_uses_its_own_tu_definition_and_reports_source_site() -> N
     assert not tls_row.can_add and tls_row.reason == "unsupported_location"
 
 
+def test_tentative_redeclarations_use_unique_initialized_definition_site() -> None:
+    dtype = DwarfType("integer", "int", 4)
+    unit = "Src/main.c"
+    header = SourceDeclaration("a" * 64, "x" * 64, "x", "int", "Inc/vars.h", 1, 12,
+                               "extern", "global", None, (), (unit,),
+                               entity_by_unit=((unit, "x" * 64),))
+    x_tentative = tuple(SourceDeclaration(char * 64, "x" * 64, "x", "int", unit, line, 5,
+                                          "none", "global", None, (), (unit,),
+                                          entity_by_unit=((unit, "x" * 64),))
+                        for char, line in (("b", 2), ("c", 3)))
+    x_initialized = SourceDeclaration("d" * 64, "x" * 64, "x", "int", unit, 4, 5,
+                                      "none", "global", None, (), (unit,),
+                                      entity_by_unit=((unit, "x" * 64),), is_definition=True)
+    y_tentative = SourceDeclaration("e" * 64, "y" * 64, "y", "int", unit, 5, 12,
+                                    "static", "file_static", None, (), (unit,),
+                                    entity_by_unit=((unit, "y" * 64),))
+    y_initialized = replace(y_tentative, id="f" * 64, line=6, is_definition=True)
+    x_symbol = DwarfSourceSymbol("x", "Inc/vars.h", 1, None, None, unit, dtype,
+                                 0x20000000, None, None, cu_offset=1, die_offset=2,
+                                 storage="none", scope_kind="global")
+    y_symbol = DwarfSourceSymbol("y", unit, 5, None, None, unit, dtype,
+                                 0x20000004, None, None, cu_offset=1, die_offset=3,
+                                 storage="static", scope_kind="file_static")
+
+    class Catalog:
+        elf_sha256 = "e" * 64
+        def source_declarations(self):
+            return (x_symbol, y_symbol)
+        def lookup(self, name):
+            address = 0x20000000 if name == "x" else 0x20000004
+            return SimpleNamespace(type=dtype, byte_size=4, address=address)
+
+    index = SourceIndex("engine", "version", "manifest", 1, 1, (), True,
+                        (header, *x_tentative, x_initialized, y_tentative, y_initialized),
+                        "f" * 64)
+    binding = SimpleNamespace(memory_regions=(SimpleNamespace(origin=0x20000000,
+        length=0x1000, attributes="rw"),))
+    rows, _ = module._materialize(index, Catalog(), None, binding,
+                                   source_files=("Inc/vars.h", unit))
+    by_id = {row.id: row for row in rows}
+    # The exact DIE location deduplicates its AST declaration, but receives
+    # that declaration's proved role and the later initialized source site.
+    dwarf_header = next(row for row in rows if row.file == "Inc/vars.h")
+    assert dwarf_header.can_add and dwarf_header.declaration_kind == "extern_declaration"
+    assert dwarf_header.definition_site == (unit, 4)
+    assert by_id[x_tentative[0].id].can_add
+    assert by_id[x_tentative[0].id].definition_site == (unit, 4)
+    dwarf_static = next(row for row in rows if row.name == "y" and row.id != y_initialized.id)
+    assert dwarf_static.can_add and dwarf_static.declaration_kind == "file_static"
+    assert dwarf_static.definition_site == (unit, 6)
+
+    # C can also end with tentative definitions only. One concrete DIE at an
+    # exact tentative site proves that site; neither list order nor the first
+    # header declaration chooses it.
+    tentative_symbol = replace(x_symbol, file=unit, line=3)
+    tentative_catalog = Catalog()
+    tentative_catalog.source_declarations = lambda: (tentative_symbol,)
+    tentative_index = replace(index, declarations=(header, *x_tentative))
+    tentative_rows, _ = module._materialize(tentative_index, tentative_catalog, None, binding,
+                                             source_files=("Inc/vars.h", unit))
+    tentative_header = next(row for row in tentative_rows if row.id == header.id)
+    assert tentative_header.can_add and tentative_header.definition_site == (unit, 3)
+
+
+def test_unproved_extern_never_decorates_dwarf_fallback_and_distinct_dies_conflict() -> None:
+    dtype = DwarfType("integer", "int", 4)
+    unit = "Src/main.c"
+    header = SourceDeclaration("a" * 64, "x" * 64, "x", "int", "Inc/vars.h", 1, 12,
+                               "extern", "global", None, (), (unit,),
+                               entity_by_unit=((unit, "x" * 64),))
+    definition = SourceDeclaration("b" * 64, "x" * 64, "x", "int", unit, 2, 5,
+                                   "none", "global", None, (), (unit,),
+                                   entity_by_unit=((unit, "x" * 64),), is_definition=True)
+    header_symbol = DwarfSourceSymbol("x", "Inc/vars.h", 1, None, None, unit,
+                                      dtype, 0x20000000, None, None, cu_offset=1,
+                                      die_offset=2, storage="none", scope_kind="global")
+    source_symbol = replace(header_symbol, file=unit, line=2, die_offset=3)
+
+    class Catalog:
+        elf_sha256 = "e" * 64
+        def __init__(self, symbols):
+            self.symbols = symbols
+        def source_declarations(self):
+            return self.symbols
+        def lookup(self, _name):
+            return SimpleNamespace(type=dtype, byte_size=4, address=0x20000000)
+
+    binding = SimpleNamespace(memory_regions=(SimpleNamespace(origin=0x20000000,
+        length=0x1000, attributes="rw"),))
+    def rows(*declarations, symbols):
+        index = SourceIndex("engine", "version", "manifest", 1, 1, (), True,
+                            declarations, "f" * 64)
+        return module._materialize(index, Catalog(symbols), None, binding,
+                                    source_files=("Inc/vars.h", unit))[0]
+
+    unproved = rows(header, symbols=(header_symbol,))
+    assert not next(row for row in unproved if row.id == header.id).can_add
+    fallback = next(row for row in unproved if row.id != header.id)
+    assert fallback.declaration_kind == "unknown" and fallback.definition_site is None
+
+    conflicting = rows(header, definition, symbols=(header_symbol, source_symbol))
+    header_row = next(row for row in conflicting if row.id == header.id)
+    assert not header_row.can_add and header_row.reason == "ambiguous_symbol"
+    assert header_row.definition_site is None
+    header_fallback = next(row for row in conflicting if row.file == "Inc/vars.h" and row.id != header.id)
+    assert header_fallback.declaration_kind == "unknown" and header_fallback.definition_site is None
+
+
 def test_legal_long_translation_units_fit_page_budget_with_actual_cursor() -> None:
     item = module.SourceItem("0" * 64, None, "wide", "int", "Src/main.c", 1, 1,
                              "global", None, (), "none", ("a" * 512,) * 256,
@@ -861,11 +969,18 @@ def test_long_unicode_query_cursors_work_across_public_tree_and_variable_pages(
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize("policy,expected_code,expected_guidance", [
+    (module.LEGACY_INPUT_DISCOVERY_POLICY, "MONITOR_SOURCE_UNTRACKED_AST",
+     "clean firmware rebuild"),
+    (module.SOURCE_LOCAL_HEADERS_POLICY, "MONITOR_SOURCE_OUTSIDE_SNAPSHOT_POLICY",
+     "verify project source and include-directory declarations"),
+])
 def test_untracked_ast_file_and_unbound_local_are_partial_not_tree_facts(
-        monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        monkeypatch: pytest.MonkeyPatch, tmp_path: Path, policy: str,
+        expected_code: str, expected_guidance: str) -> None:
     model = SimpleNamespace(project_root=tmp_path)
     facts = module._Facts(model, "b" * 64, None, None, None, None,
-                          ("Src/main.c",), ("Src/main.c",))
+                          ("Src/main.c",), ("Src/main.c",), policy)
     main = SourceDeclaration("1" * 64, "1" * 64, "valid", "int", "Src/main.c", 1, 1,
                              "none", "global", None, (), ("Src/main.c",))
     rogue = replace(main, id="2" * 64, file="Src/rogue.c", name="rogue")
@@ -884,12 +999,14 @@ def test_untracked_ast_file_and_unbound_local_are_partial_not_tree_facts(
     assert base.index.functions == ()
     assert base.source_files == ("Src/main.c",)
     assert {issue.code for issue in base.index.issues} == {
-        "MONITOR_SOURCE_UNTRACKED_AST", "MONITOR_SOURCE_FUNCTION_UNBOUND"}
+        expected_code, "MONITOR_SOURCE_FUNCTION_UNBOUND"}
     untracked_issue = next(issue for issue in base.index.issues
-                           if issue.code == "MONITOR_SOURCE_UNTRACKED_AST")
+                           if issue.code == expected_code)
     assert untracked_issue.unit == "Src/rogue.c"
     assert "Src/rogue.c" in untracked_issue.message
-    assert "clean firmware rebuild" in untracked_issue.message
+    assert expected_guidance in untracked_issue.message
+    if policy == module.SOURCE_LOCAL_HEADERS_POLICY:
+        assert "rebuild is needed to include this header" not in untracked_issue.message
 
 
 def test_public_provider_treats_empty_snapshot_as_authoritative(
@@ -916,7 +1033,7 @@ def test_public_provider_treats_empty_snapshot_as_authoritative(
         assert tree["total"] == page["total"] == 0
         assert tree["items"] == page["items"] == []
         assert tree["coverage"]["complete"] is False
-        assert {issue["code"] for issue in tree["coverage"]["issues"]} == {"MONITOR_SOURCE_UNTRACKED_AST"}
+        assert {issue["code"] for issue in tree["coverage"]["issues"]} == {"MONITOR_SOURCE_OUTSIDE_SNAPSHOT_POLICY"}
     try:
         asyncio.run(scenario())
     finally:
