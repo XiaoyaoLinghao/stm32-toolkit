@@ -531,6 +531,60 @@ def test_one_debug_symbol_cannot_authorize_two_distinct_source_entities() -> Non
     assert all(item.reason == "probe_required" for item in chained)
 
 
+def test_concrete_die_only_coalesces_a_unique_ast_entity() -> None:
+    dtype = DwarfType("integer", "int", 4)
+    symbol = DwarfSourceSymbol("value", "Src/main.c", 9, None, "work", "Src/main.c",
+                               dtype, 0x20000000, None, None, cu_offset=0, die_offset=10,
+                               function_die_offset=8, scope_path=("block@1",),
+                               storage="static", scope_kind="static_local")
+    first = SourceDeclaration("a" * 64, "a" * 64, "value", "int", "Src/main.c", 9, 5,
+                              "static", "static_local", "work", ("block@1",), ("Src/main.c",),
+                              function_id="f" * 64)
+    second = replace(first, id="b" * 64, entity_id="b" * 64,
+                     column=20, scope_path=("block@2",))
+    binding = SimpleNamespace(memory_regions=(SimpleNamespace(origin=0x20000000,
+        length=0x1000, attributes="rw"),))
+
+    class Catalog:
+        elf_sha256 = "e" * 64
+        def source_declarations(self):
+            return (symbol,)
+        def lookup(self, _selector):
+            return SimpleNamespace(type=dtype, byte_size=4, address=0x20000000)
+
+    def materialize(*declarations):
+        index = SourceIndex("engine", "version", "manifest", 1, 1, (), True,
+                            declarations, "f" * 64)
+        roots, _ = module._materialize(index, Catalog(), None, binding,
+                                       source_files=("Src/main.c",))
+        return roots
+
+    shared_die, first_ast, second_ast = materialize(first, second)
+    assert shared_die.id not in {first.id, second.id}
+    assert shared_die.can_add and shared_die.selector == "value"
+    assert all(not item.can_add and item.selector is None and item.reason == "ambiguous_symbol"
+               for item in (first_ast, second_ast))
+    assert {first_ast.id, second_ast.id} == {first.id, second.id}
+    assert len(materialize(first)) == 1
+    assert len(materialize(first, replace(second, entity_id=first.entity_id))) == 1
+
+    global_symbol = replace(symbol, function=None, function_die_offset=None, scope_path=(),
+                            scope_kind="global", storage="none")
+    definition = replace(first, function=None, function_id=None, scope_path=(),
+                         scope_kind="global", storage="none")
+    previous = replace(definition, id="c" * 64, file="Inc/header.h", line=2, column=4,
+                       storage="extern", entity_id=definition.entity_id)
+    class GlobalCatalog(Catalog):
+        def source_declarations(self):
+            return (global_symbol,)
+    index = SourceIndex("engine", "version", "manifest", 1, 1, (), True,
+                        (definition, previous), "f" * 64)
+    roots, _ = module._materialize(index, GlobalCatalog(), None, binding,
+                                   source_files=("Src/main.c", "Inc/header.h"))
+    assert len(roots) == 2
+    assert roots[0].can_add and roots[1].id == previous.id and roots[1].can_add
+
+
 def test_legal_long_translation_units_fit_page_budget_with_actual_cursor() -> None:
     item = module.SourceItem("0" * 64, None, "wide", "int", "Src/main.c", 1, 1,
                              "global", None, (), "none", ("a" * 512,) * 256,

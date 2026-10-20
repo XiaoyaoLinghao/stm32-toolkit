@@ -445,11 +445,11 @@ def _materialize(index: SourceIndex, dwarf: DwarfCatalog | None,
         item, dtype = _item_for_declaration(declaration, frozen_symbols, entity_proofs,
                                             dwarf, context, binding)
         matched, _ = _match(declaration, frozen_symbols, entity_proofs)
-        if matched is not None and _direct_match(declaration, matched) and matched.die_offset is not None:
-            continue  # The concrete DIE already supplies this exact source declaration.
         if matched is not None and len(attributed_entities[id(matched)]) > 1:
             item = replace(item, selector=None, can_add=False, reason="ambiguous_symbol", expandable=False)
             dtype = None
+        elif matched is not None and _direct_match(declaration, matched) and matched.die_offset is not None:
+            continue  # Only one AST entity belongs to this concrete DIE.
         if item.id in nodes or len(roots) >= max_declarations:
             raise SourceCatalogFailure("MONITOR_SOURCE_INDEX_FAILED", "Merged source declaration limit was reached")
         roots.append(item)
