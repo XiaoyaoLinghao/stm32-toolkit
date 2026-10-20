@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 
 
-POLICY_VERSION = "gnu-asm-vfpcc-clobber-v1"
+POLICY_VERSION = "gnu-asm-vfpcc-clobber-v2"
 
 _ASM = frozenset((b"asm", b"__asm", b"__asm__"))
 _QUALIFIERS = {
@@ -54,10 +54,14 @@ def _quoted_end(data: bytes, start: int) -> int:
     raise _LexError
 
 
-def _tokens(data: bytes, start: int = 0, line_start: bool = True) -> Iterator[tuple[str, int, int]]:
+type _Token = tuple[str, int, int]
+
+
+def _tokens(data: bytes) -> Iterator[_Token]:
     """Yield significant C tokens; directives and comments provide no delimiters."""
-    index = start
+    index = 0
     length = len(data)
+    line_start = True
     while index < length:
         byte = data[index]
         if byte in (32, 9, 11, 12, 13):
@@ -67,31 +71,18 @@ def _tokens(data: bytes, start: int = 0, line_start: bool = True) -> Iterator[tu
             line_start = True
             index += 1
             continue
-        if byte == 92 and data[index + 1:index + 2] in (b"\n", b"\r"):
-            index += 2
-            if data[index - 1:index] == b"\r" and data[index:index + 1] == b"\n":
-                index += 1
-            continue
         if byte == 35 and line_start:  # preprocessor line marker/directive
-            while index < length:
-                end = data.find(b"\n", index)
-                if end < 0:
-                    return
-                continued = end > index and data[end - 1] == 92
-                index = end + 1
-                if not continued:
-                    break
+            end = data.find(b"\n", index)
+            if end < 0:
+                return
+            index = end + 1
             line_start = True
             continue
         if data[index:index + 2] == b"//":
-            while True:
-                end = data.find(b"\n", index + 2)
-                if end < 0:
-                    return
-                continued = end > index and data[end - 1] == 92
-                index = end + 1
-                if not continued:
-                    break
+            end = data.find(b"\n", index + 2)
+            if end < 0:
+                return
+            index = end + 1
             line_start = True
             continue
         if data[index:index + 2] == b"/*":
@@ -120,63 +111,82 @@ def _tokens(data: bytes, start: int = 0, line_start: bool = True) -> Iterator[tu
             yield chr(byte), token_start, index
 
 
-def _asm_spans(data: bytes, after_keyword: int) -> tuple[list[tuple[int, int]], bool]:
-    tokens = iter(_tokens(data, after_keyword, False))
+def _asm_spans(data: bytes, tokens: Iterator[_Token]) -> tuple[list[tuple[int, int]], bool, _Token | None]:
+    """Consume one candidate from the shared token stream without rescanning it."""
     qualifiers: set[str] = set()
     token = next(tokens, None)
     while token is not None and token[0] == "identifier" and data[token[1]:token[2]] in _QUALIFIERS:
         qualifier = _QUALIFIERS[data[token[1]:token[2]]]
         if qualifier in qualifiers:
-            return [], False
+            return [], False, None
         qualifiers.add(qualifier)
         token = next(tokens, None)
     if token is None or token[0] != "(":
-        return [], False
+        return [], False, token
 
     expected = [")"]
-    sections: list[list[tuple[str, int, int]]] = [[]]
+    section = 0
+    template_count = 0
+    template_valid = True
+    clobber_count = 0
+    clobber_valid = True
+    spans: list[tuple[int, int]] = []
+    nested_asm = False
     for token in tokens:
-        kind = token[0]
+        kind, start, end = token
         if kind in _OPEN:
             expected.append(_OPEN[kind])
         elif kind in _CLOSE:
             if kind != expected[-1]:
-                return [], True
+                return [], True, None
             expected.pop()
             if not expected:
                 break
         elif kind == ":" and len(expected) == 1:
-            sections.append([])
-            if len(sections) > 5:
-                return [], True
+            section += 1
+            if section > 4:
+                return [], True, None
             continue
-        sections[-1].append(token)
+        if kind == "identifier" and data[start:end] in _ASM:
+            nested_asm = True
+        if section == 0:
+            template_count += 1
+            template_valid = template_valid and kind == "string"
+        elif section == 3:
+            clobber_valid = clobber_valid and kind == ("string" if clobber_count % 2 == 0 else ",")
+            clobber_count += 1
+            if kind == "string" and data[start:end] == _OLD:
+                spans.append((start, end))
     else:
-        return [], True
+        return [], True, None
 
     # GNU extended asm starts with a (possibly concatenated) string template.
     # The fourth section is the comma-separated clobber list.  A fourth colon
     # begins asm-goto labels and ends clobber eligibility.
-    if (len(sections) not in (4, 5) or not sections[0]
-            or any(token[0] != "string" for token in sections[0])):
-        return [], False
-    clobbers = sections[3]
-    if not clobbers or len(clobbers) % 2 == 0:
-        return [], False
-    if any(token[0] != ("string" if index % 2 == 0 else ",")
-           for index, token in enumerate(clobbers)):
-        return [], False
-    return [(start, end) for kind, start, end in clobbers[::2]
-            if data[start:end] == _OLD], False
+    if (nested_asm or section not in (3, 4) or not template_count or not template_valid
+            or not clobber_count or clobber_count % 2 == 0 or not clobber_valid):
+        return [], False, None
+    return spans, False, None
 
 
 def normalize_gnu_asm_clobbers(preprocessed: bytes) -> bytes:
     """Replace only proved standalone ``"vfpcc"`` clobber tokens in parser input."""
+    # Physical line splicing changes token boundaries before C lexing.  GCC -E
+    # normally removes it; retaining any splice makes this input unproved.
+    if b"\\\n" in preprocessed or b"\\\r" in preprocessed:
+        return preprocessed
     spans: list[tuple[int, int]] = []
     try:
-        for kind, start, end in _tokens(preprocessed):
+        tokens = iter(_tokens(preprocessed))
+        pending: _Token | None = None
+        while True:
+            token = pending if pending is not None else next(tokens, None)
+            pending = None
+            if token is None:
+                break
+            kind, start, end = token
             if kind == "identifier" and preprocessed[start:end] in _ASM:
-                additions, malformed = _asm_spans(preprocessed, end)
+                additions, malformed, pending = _asm_spans(preprocessed, tokens)
                 if malformed:
                     return preprocessed
                 spans.extend(additions)

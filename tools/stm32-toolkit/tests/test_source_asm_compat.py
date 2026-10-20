@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from stm32_toolkit.debug import source_asm_compat
 from stm32_toolkit.debug.source_asm_compat import normalize_gnu_asm_clobbers
 
 
@@ -55,3 +56,36 @@ def test_unterminated_or_unbalanced_asm_cannot_transform() -> None:
                     b'asm volatile ("x" : : : "vfpcc" /*',
                     b'asm volatile ("x" : : : "vfpcc" ]);'):
         assert normalize_gnu_asm_clobbers(content) == content
+
+
+@pytest.mark.parametrize("content", [
+    b'//\\\r\nasm volatile ("x" : : : "vfpcc");\r\n',
+    b'#define X \\\r\nasm volatile ("x" : : : "vfpcc");\r\n',
+    b'asm\\\nvolatile ("x" : : : "vfpcc");\n',
+    b'asm\\\rvolatile ("x" : : : "vfpcc");\r',
+    b'asm volatile ("x" : : : "vfpcc");\\\n',
+])
+def test_raw_physical_line_splice_fails_closed_for_entire_input(content: bytes) -> None:
+    assert normalize_gnu_asm_clobbers(content) == content
+
+
+def test_nested_asm_uses_one_nonoverlapping_token_stream(monkeypatch: pytest.MonkeyPatch) -> None:
+    nested = b'asm(' * 1000 + b'"x" : : : "vfpcc"' + b')' * 1000
+    standalone = b'; asm volatile ("x" : : : "vfpcc");'
+    content = nested + standalone
+    expected = nested + standalone.replace(b'"vfpcc"', b'"cc"   ')
+    original_tokens = source_asm_compat._tokens
+    calls = 0
+    yielded = 0
+
+    def counted_tokens(data: bytes, *args, **kwargs):
+        nonlocal calls, yielded
+        calls += 1
+        for token in original_tokens(data, *args, **kwargs):
+            yielded += 1
+            yield token
+
+    monkeypatch.setattr(source_asm_compat, "_tokens", counted_tokens)
+    assert normalize_gnu_asm_clobbers(content) == expected
+    assert calls == 1
+    assert yielded <= len(content)
