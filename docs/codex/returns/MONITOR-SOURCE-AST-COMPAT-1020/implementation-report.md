@@ -1,0 +1,31 @@
+# Monitor GNU source AST compatibility: implementation return
+
+## Identity and boundary
+
+- Accepted full base: `f6495c0bd6e00619ba07793e991614ef19fab295`.
+- Product and test CodeHead before this report: `c6fbf18c29535964ab08471cb51497bd0e704daa`, branch `codex/monitor-source-ast-coverage`. The primary owns the specification, integration, full-diff review and acceptance; the implementer does not accept its own change.
+- The change is confined to `debug/source.py`, one source-only GNU asm helper, and focused Toolkit/Monitor tests. No project source, build graph, ELF, firmware, public protocol, DWARF authority, UI, sampler, dependency or limit changed. No remote, installation, hardware, browser, HTTP, or old 8765 service action was performed by the implementer.
+
+## Connected behavior
+
+GNU Arm GCC still preprocesses each verified compilation unit with its original flags, macros and branch selection. A bounded lexer proves an exact standalone ordinary `"vfpcc"` token is in the third-colon GNU extended-asm clobber section, then writes only the seven-byte `"cc"   ` replacement to the temporary `.i` passed to zero-exit Clang declaration discovery. It leaves all other bytes, line markers, newline positions, source files and GCC build inputs intact. Unproved asm, prefixes, escapes, concatenations and other clobbers remain normal Clang failures. The one policy version is present in both plan fingerprint input and `engine_version`.
+
+Each `_discover` call memoizes successful path checks by exact root/candidate spelling and revalidates every cached path before the unit can be adopted. The adapter stages all function/declaration facts and duplicate translation-unit merges, checks the existing entry/deadline/closed-state rules, then commits the entire unit with `parsedUnits`. A late discovery failure publishes no prefix facts. Existing size, unit and time limits, DWARF lookup/address/CU rules, selection grammar and provider snapshot/binding checks remain authoritative.
+
+## Implementer verification
+
+All test-generated files, temporary parser inputs and logs were placed under `D:\codex-tmp\mp1020\impl-checks`, with `TEMP`/`TMP`/`TMPDIR`, explicit Toolkit/Monitor/Toolkit-tests `PYTHONPATH`, `PYTHONDONTWRITEBYTECODE=1`, and run-owned pytest `--basetemp`/cache paths. The primary is the designated cleanup owner for this root.
+
+| Check and retained evidence | Result |
+| --- | --- |
+| RED helper and failed-unit-prefix tests (`red` run roots) | Helper import failed before implementation; the old index leaked the failed unit's declaration and duplicate translation-unit merge. Both conditions are now covered. |
+| Focused helper/source tests after the final memo-key edit: `postkey/pytest.txt` | 48 passed, exit 0. Includes exact byte/line preservation, lexical negatives, real GNU branch and source/CU attribution, unknown-clobber failure, atomic late failure, function/declaration limits, deadline/close checks, per-discovery path cache and final revalidation, and policy identity. |
+| Full Monitor source-catalog tests on the frozen CodeHead: `final-provider-tests/pytest.txt` | 24 passed, exit 0. Includes old selection/cursor rejection when the parser policy changes. |
+| Affected Toolkit source/DWARF/read and Monitor provider regression run: `affected/pytest.txt` | 260 passed, exit 0. This run began before the final memo-key spelling edit; the affected source path and provider policy checks were rerun on the frozen bytes above. |
+| Real MR production adapter: `full1/result.json` and final provider's recorded adapter output in `provider-real4/stderr.txt` | Unchanged project at `3babf285f372b3ed6ef3caea71887fa8faa46997`: 53/53 AST units parsed, no adapter issues or truncation, within the unchanged 120-second adapter budget. The first direct candidate run before the final memo-key edit took 56.359 s for plan+index and found 6,727 declarations and 1,722 functions; the final-byte provider reached its first tree in 59.938 s and again recorded adapter 53/53 with no issues. Main `main` and its four locals, BDSAFE functions and globals have source line/column and unit attribution. |
+| Real MR offline public tree/page/select: `provider-real4/result.json` | 53/53 parsed, no truncation, compiled DWARF available (1,862 variable facts, 463 function facts, 47 files), 154 verified tree files and stable repeated catalog ID. Main locals `TEST`, `cyc_count`, `CAN1_mode`, `CAN2_mode` are displayed at lines 40–43 and remain `unsupported_location`/not addable. `BDSAFE/BDsafe.c:ALLsafe_application` and 11 `BDsafe_app.c` scopes are present; line-15 `SPEED_PERCENT_SAFE_FB` is selectable with the offline matching binding. Invalid build binding yields `source_mismatch`, unknown query yields no items. The `testtime` page item is addable and a separate DWARF lookup against the same ELF returns `0x20000408`. The matching binding was constructed offline and proves no physical transport or sampling. |
+| Original MR manifest, CMake, header, Main/BDSAFE source and ELF hashes: `provider-real4/result.json` | All before/after SHA-256 values are identical. `git diff --check` passed; product CodeHead worktree was clean before this report. |
+
+The public provider truthfully reports `coverage.complete=false` with exactly one `MONITOR_SOURCE_UNTRACKED_AST` issue. `Main/stm32f4xx_it.c` includes same-directory `Main/stm32f4xx_it.h`, but the unchanged project input snapshot contains 169 paths and omits that header because `Main` is absent from declared include paths. The adapter parses all 53 units; the provider filters the header's unverified AST facts and retains the warning. This pre-existing build-input coverage limit is separate from AST parser completion. No new issue or unverified header fact was adopted, and this report does not claim public catalog completeness.
+
+The first public-provider assertion expected complete coverage and failed on that documented header issue (`provider-real2/stderr.txt`); an instrumented run identified the exact path (`provider-real3/stderr.txt`). The primary corrected the frozen integration expectation before the final successful `provider-real4` check. These failed diagnostic runs are retained as evidence, not counted as successful acceptance. Independent exact-head review and local 8765 update remain primary-owned.
