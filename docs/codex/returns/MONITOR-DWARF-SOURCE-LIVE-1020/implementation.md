@@ -2,7 +2,7 @@
 
 Accepted base: `60079d49ab85adb7166ffbc60ebf2c8c61495536`.
 Specification/plan input head: `62d050c65492a4bce8d9a9b2492e9fc083f71f25`.
-Code head before this report: `ed7e7c304d12846b82542059bd39c765c5944934` on `codex/monitor-dwarf-source-live`.
+Code head before this report: `4d69bf64237d92281e27a4cc4f385db18093165d` on `codex/monitor-dwarf-source-live`.
 Owner: the one bounded implementation agent. The primary owns integration, independent review, physical execution and acceptance. This return does not assert acceptance.
 
 ## Delivered behavior
@@ -11,6 +11,7 @@ Owner: the one bounded implementation agent. The primary owns integration, indep
 - `coverage.compiledDebug` is optional and closed in the strict client. Incomplete AST augmentation remains visibly incomplete, while positive compiled metadata is cached under source/build/ELF/engine identity. An explicit root-only `refresh=1` retries indexing; normal search and child pagination reuse the partial compiled directory. Invalid refresh values and combinations are rejected. Empty authoritative source-file sets filter every declaration.
 - Live state keeps numeric points for the actual batch group/revision, up to 256 watches × 600 points, independently of the eight visible curves. Late selection and hide/reselection draw retained current-run points. A stopped display survives only a matching accepted stop and authoritative terminal state; failed/pending stop, new run, changed identity/binding, changed/deleted group and disconnect cannot publish it as fresh. Sampling/history/export protocols were not changed.
 - The review correction preserves the old variable-only lookup and its budget: abstract-origin names enrich only auxiliary source metadata. Auxiliary variables, parameters and functions have independent limits; a truncated auxiliary directory is rejected by the source provider while legacy lookup remains usable. Structural subprogram and inline parents without a proven concrete function cannot be presented as global or attributed to an outer function. Merged declarations and canonical functions are bounded before public pages. An empty input snapshot remains authoritative. Function joins use a file/name/line/CU/column preindex. The generated manifest uses portable `node_modules/...` identities with an external run-owned dependency junction. Zero-sample stop retains only authoritative run/group display metadata after both stop ACK and IDLE, without inventing a binding, value or curve.
+- A second review correction keeps distinct AST entities when one concrete DIE matches both: each AST declaration remains visible but disabled as ambiguous, while the positive DIE entry retains its own eligibility. Only a unique AST entity is coalesced into that DIE. Static/internal direct and `previousDecl` attribution now share a CU check: absent or mismatched concrete CU cannot authorize an AST address; known-CU and qualified external-global attribution retain their earlier behavior.
 
 ## Verification run from this code head
 
@@ -19,12 +20,13 @@ The run root was `D:\codex-tmp\mr1020\impl-checks`. PowerShell 7 was used; Pytho
 | Command from `D:\codex-tmp\mr1020\impl` unless noted | Result |
 | --- | --- |
 | `python -m pytest -q -o 'addopts=' --basetemp D:\codex-tmp\mr1020\impl-checks\pytest-revision-final tools/stm32-monitor/tests/test_source_catalog.py tools/stm32-toolkit/tests/test_dwarf.py` | 114 passed, including small-budget real ELF, public empty snapshot, join and merged limits, and synthetic unknown/inline parent regressions |
+| `python -m pytest -q -o 'addopts=' --basetemp D:\codex-tmp\mr1020\impl-checks\pytest-round2-cu tools/stm32-monitor/tests/test_source_catalog.py` | 23 passed after concrete-DIE entity and static-CU attribution regressions; this is the source-catalog check against the new code head |
 | `python -m pytest -q -o 'addopts=' --basetemp D:\codex-tmp\mr1020\impl-checks\pytest-revision-runtime tools/stm32-monitor/tests/test_runtime.py tools/stm32-monitor/tests/test_service.py` | 111 passed; one existing aiohttp deprecation warning |
 | `npm test -- --run --maxWorkers=2` from `tools/stm32-monitor/ui`, with `MONITOR_REAL_BATCHES_JSONL=D:\codex-tmp\mr1020\impl-checks\today_293_sanitized.jsonl` | 58 files / 487 tests passed, including all 293 recorded batches |
 | `npm test -- --run tests/mr1020-real-batch-app.test.tsx tests/ui06-live-freshness.test.tsx --maxWorkers=2` without the optional full audit path | 13 passed, one optional 293-record replay skipped; same replay passed in the full run |
 | `npm run typecheck`; `npm run lint`; `npm run build`; `npm run verify:dist` from that UI directory | All passed; dist verification: 7 files byte-identical |
 | `python D:\codex-tmp\mr1020\impl-checks\provider_real.py` with the same bounded Python environment, output in `impl-checks\provider_real_revision.txt` | Completed read-only: AST 2/53; Main/timer/SAFE positive paths and selection; base/view 1/1; stable repeated catalog identity |
-| `git diff --cached --check` before code commit | Passed |
+| `git diff --cached --check` before each code commit | Passed |
 
 The first default-parallel UI run had one five-second `values-first-app` timeout, while that file passed 15/15 alone and the complete suite passed with two workers, so it was classified as test scheduling contention rather than changed product behavior. A later source test run found five old mock-base fixtures omitted the authoritative source-file list; those fixtures were corrected to explicitly name their simulated compiled file, retaining their original assertions. The correction's first App run had a product-independent test expectation for the zero-sample table placeholder; it expected prose where the table renders `--`. The assertion was corrected and the focused and full suites passed. No timeout was increased. Normal physical `ui/node_modules` build comparison is assigned to primary independent verification; this implementation run verified the external run-owned junction layout and portable manifest.
 
