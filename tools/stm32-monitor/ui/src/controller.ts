@@ -26,7 +26,7 @@ export type Controller={
   connectProbe:(probeId:string)=>Promise<void>;reconnectProbe:()=>Promise<void>;releaseProbe:()=>Promise<void>;
   searchCatalog:(kind:"variables"|"registers",query:string)=>Promise<void>;
   nextCatalog:(kind:"variables"|"registers")=>Promise<void>;
-  searchSource:(query:string)=>Promise<void>;nextSource:()=>Promise<void>;sourceChildren:(parentId:string,next?:boolean)=>Promise<void>;selectSource:(item:SourceCatalogItem)=>Promise<void>;
+  searchSource:(query:string,refresh?:boolean)=>Promise<void>;nextSource:()=>Promise<void>;sourceChildren:(parentId:string,next?:boolean)=>Promise<void>;selectSource:(item:SourceCatalogItem)=>Promise<void>;
   createGroup:()=>Promise<void>;saveGroup:(draft:GroupDraft)=>Promise<void>;deleteGroup:(groupId:string,expectedRevision?:bigint,editorGeneration?:bigint)=>Promise<void>;
   importGroups:(value:unknown)=>Promise<void>;
   startSampling:(groupId:string,expectedRevision:bigint)=>Promise<void>;
@@ -236,13 +236,14 @@ export function createController(api:MonitorApi,dispatch:(action:MonitorAction)=
   };
   const invalidSourcePage=():ApiFailure=>({ok:false,code:"MONITOR_RESPONSE_INVALID",message:"Source catalog page is inconsistent"});
   const sourceTreePages=async(query:string,parentId:string|null,catalogId:string|undefined,
-      valid:()=>boolean,expectedFile?:string,expectedCount?:number):Promise<ApiResult<SourceTreePage>>=>{
+      valid:()=>boolean,expectedFile?:string,expectedCount?:number,refresh=false):Promise<ApiResult<SourceTreePage>>=>{
     let cursor:string|undefined,first:SourceTreePage|undefined;
     const items:SourceTreePage["items"][number][]=[];
     const ids=new Set<string>(),cursors=new Set<string>();
     while(true){
       if(!valid())return{ok:false,code:"MONITOR_REQUEST_SUPERSEDED",message:"Source request superseded"};
-      const result=await api.sourceTree(query,cursor,parentId??undefined,catalogId);
+      const result=await api.sourceTree(query,cursor,parentId??undefined,catalogId,
+                                        cursor===undefined&&refresh);
       if(!result.ok)return result;
       const page=result.data;
       const status=getState().status;
@@ -278,7 +279,7 @@ export function createController(api:MonitorApi,dispatch:(action:MonitorAction)=
       if(id!==undefined)retire(scope,id);
     }
   };
-  const sourceSearch=async(queryInput:string):Promise<void>=>{
+  const sourceSearch=async(queryInput:string,refresh=false):Promise<void>=>{
     const status=getState().status;if(status===null)return;
     const query=queryInput.trim().slice(0,128),contextKey=sourceContextKey(status);
     const adoptedGeneration=getState().catalog.source.generation;
@@ -287,8 +288,8 @@ export function createController(api:MonitorApi,dispatch:(action:MonitorAction)=
     retireSourceRequests();
     dispatch({type:"source.started",query,contextKey,generation});
     const valid=()=>getState().status!==null&&sourceContextKey(getState().status!)===contextKey&&sourceRequestEpoch===generation;
-    await read("catalog.source",operationSummary("catalog.source",query),()=>sourceTreePages(query,null,undefined,valid),
-      page=>({type:"source.tree.loaded",query,contextKey,generation,parentId:null,page}),valid,()=>sourceSearch(query));
+    await read("catalog.source",operationSummary("catalog.source",query),()=>sourceTreePages(query,null,undefined,valid,undefined,undefined,refresh),
+      page=>({type:"source.tree.loaded",query,contextKey,generation,parentId:null,page}),valid,()=>sourceSearch(query,refresh));
   };
   const sourceChildren=async(parentId:string,next=false):Promise<void>=>{
     const state=getState(),source=state.catalog.source,tree=source.tree;
@@ -541,9 +542,15 @@ export function createController(api:MonitorApi,dispatch:(action:MonitorAction)=
     resumeSampling:()=>write("sampling.resume","sampling",
       operationSummary("sampling.resume",getState().status?.sampling.groupId??undefined,getState().status?.sampling.runId??undefined,getState().status?.probe.probeId??undefined),
       ()=>api.resume(),noAction,refreshStatus,refreshStatus,targetValid(true)),
-    stopSampling:()=>write("sampling.stop","sampling",
-      operationSummary("sampling.stop",getState().status?.sampling.groupId??undefined,getState().status?.sampling.runId??undefined,getState().status?.probe.probeId??undefined),
-      ()=>api.stop(),noAction,refreshStatus,refreshStatus,targetValid(true)),
+    stopSampling:()=>{
+      const sampling=getState().status?.sampling;
+      return write("sampling.stop","sampling",
+        operationSummary("sampling.stop",sampling?.groupId??undefined,sampling?.runId??undefined,getState().status?.probe.probeId??undefined),
+        ()=>api.stop(),result=>({type:"sampling.stop.accepted",stopped:result.stopped,
+          runId:sampling?.runId??null,groupId:sampling?.groupId??null,
+          groupRevision:sampling?.groupRevision??null,bindingEpoch:sampling?.bindingEpoch??null}),
+        refreshStatus,refreshStatus,targetValid(true));
+    },
     loadHistory:query=>history(query,"replace"),
     nextHistory:cursor=>{
       const currentPage=getState().history;

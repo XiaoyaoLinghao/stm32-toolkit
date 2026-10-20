@@ -19,7 +19,7 @@ const group:WatchGroup={groupId:"g",name:"Old",description:"",intervalMs:250,ite
 const batch:SampleBatch={binding,groupId:"g",groupRevision:1n,runId:"run",sequence:1n,scheduledUnixNs:1n,scheduledAtUtc:"earlier",capturedUnixNs:2n,capturedAtUtc:at,latencyNs:2_500_000n,actualRateHz:4,subscriberDrops:0n,historyDrops:0n,deadlineDrops:0n,values:[{watch:{kind:"variable",expression:"x"},status:"OK",typedValue:{expression:"x",typeName:"float",value:12.5,rawHex:"0x1",bitWidth:32},code:null,definition:null}]};
 const ok=<T,>(data:T)=>({ok:true,data} as const);
 
-it("immediately marks old run samples nonfresh after a group revision ACK and keeps source identity honest",async()=>{
+it("immediately clears old run samples after a group revision ACK and keeps source identity honest",async()=>{
   controls.sockets.length=0;
   let finishGroups!:(value:ReturnType<typeof ok<{groups:WatchGroup[];nextCursor:null;revision:string}>>)=>void;
   const followup=new Promise<ReturnType<typeof ok<{groups:WatchGroup[];nextCursor:null;revision:string}>>>(resolve=>{finishGroups=resolve;});
@@ -44,21 +44,20 @@ it("immediately marks old run samples nonfresh after a group revision ACK and ke
   fireEvent.click(screen.getByRole("button",{name:"保存观测组"}));
   await waitFor(()=>expect(groups).toHaveBeenCalledTimes(2));
   fireEvent.click(screen.getByRole("button",{name:"关闭观测组"}));
-  expect(screen.getByText(/上次样本（UTC）/)).toHaveTextContent(at);
-  expect(screen.getByText(/运行组版本未在列表中核对/)).toBeTruthy();
+  expect(screen.queryByText(/上次样本（UTC）/)).toBeNull();
+  expect(screen.getByText(/运行组版本未在列表中核对；尚未收到样本/)).toBeTruthy();
   expect(screen.getByText(/当前运行：/)).toHaveTextContent("g");
   expect(screen.getByText(/当前运行：/)).not.toHaveTextContent("New version");
-  expect(screen.getByText("12.5")).toBeTruthy();
+  expect(screen.queryByText("12.5")).toBeNull();
   const summary=footer.getByRole("region",{name:"采样状态汇总"});
   expect(summary).toHaveTextContent("运行组 未核对组 · 版本 1");
-  expect(summary).toHaveTextContent("上次样本轮次");
+  expect(summary).toHaveTextContent("等待本轮样本");
   expect(summary).not.toHaveTextContent("New version");
   fireEvent.click(screen.getByRole("button",{name:"操作问题 0"}));
   const diagnostics=screen.getByRole("dialog",{name:"诊断详情"});
   const stats=within(diagnostics).getByRole("region",{name:"采样状态汇总"});
-  expect(stats).toHaveTextContent("4.00 Hz");
-  expect(stats).toHaveTextContent("2.50 ms");
-  expect(stats).toHaveTextContent("2500000 ns");
+  expect(stats).toHaveTextContent("尚未收到样本");
+  expect(stats).not.toHaveTextContent("2500000 ns");
   expect(stats).toHaveTextContent("丢弃：订阅者 1 · 历史 2 · 截止时间 3 · 服务 4");
   expect(stats).toHaveTextContent("运行组 未核对组 · 版本 1");
   finishGroups(ok({groups:[revised],nextCursor:null,revision:"1"}));

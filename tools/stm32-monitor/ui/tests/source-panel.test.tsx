@@ -66,3 +66,27 @@ it("shows a root failure with an in-place retry",()=>{
  fireEvent.click(screen.getByRole("button",{name:"重试上次操作"}));
  expect(props.onRetry).toHaveBeenCalledWith("catalog.source",5n);
 });
+
+it("labels compiled debug facts ahead of incomplete AST details and refreshes explicitly",()=>{
+ const props=base(),current=source();
+ const tree={...current.tree!,coverage:{...current.tree!.coverage,complete:false,totalUnits:53,parsedUnits:2,
+  issues:[{unit:"Main/Main.c",code:"MONITOR_SOURCE_INDEX_FAILED",message:"Clang failed"}],
+  compiledDebug:{available:true,variableCount:1169,functionCount:463,fileCount:47}}};
+ render(<SourceCatalogPanel source={{...current,tree}} {...props}/>);
+ const status=screen.getAllByRole("status").map(item=>item.textContent??"");
+ expect(status[0]).toContain("已按当前固件调试信息列出变量");
+ expect(status[1]).toContain("源码补充解析 2 / 53");
+ expect(screen.getByText("源码补充解析不完整，部分声明尚未收录。")).toBeVisible();
+ expect(screen.getByText("解析问题详情")).toBeVisible();
+ fireEvent.click(screen.getByRole("button",{name:"刷新源码目录"}));
+ expect(props.onSearch).toHaveBeenCalledWith("",true);
+});
+
+it("does not call an incomplete empty file tree proof that source has no variables",()=>{
+ const props=base(),current=source();
+ const tree={...current.tree!,total:1,items:[empty],coverage:{...current.tree!.coverage,
+  complete:false,totalUnits:53,parsedUnits:2,issues:[],
+  compiledDebug:{available:false,variableCount:0,functionCount:0,fileCount:0}}};
+ render(<SourceCatalogPanel source={{...current,tree}} {...props}/>);
+ expect(screen.getByText("暂无可用解析信息；不能据此断定源码没有变量。")).toBeVisible();
+});

@@ -8,7 +8,7 @@ export type SourceCatalogPanelProps={source:SourceCatalogState;
  pending:Readonly<Partial<Record<RequestScope,PendingRequest>>>;
  failures:Readonly<Partial<Record<RequestScope,OperationFailure>>>;
  editBusy:boolean;onRetry:(scope:RequestScope,id:bigint)=>void;onFirmware:()=>void;
- onSearch:(query:string)=>void|Promise<void>;
+ onSearch:(query:string,refresh?:boolean)=>void|Promise<void>;
  onChildren:(parentId:string,next?:boolean)=>void|Promise<void>;
  onSelect:(item:SourceCatalogItem)=>void|Promise<void>};
 const nodeScope=(id:string):RequestScope=>`catalog.source-node.${id}`;
@@ -81,7 +81,7 @@ function TreeContent(p:NodeProps):JSX.Element{
     {open&&<div className="source-children">
       <NodeFeedback id={scope.id} pending={p.pending} failures={p.failures} onRetry={p.onRetry}/>
       {page!==undefined&&<><ul>{page.items.map(item=><SourceRow key={item.id} item={item} {...p}/>)}</ul>
-        {page.items.length===0&&<p>{copy.sourceNoVariables}</p>}
+        {page.items.length===0&&<p>{tree.coverage.complete?copy.sourceNoVariables:copy.sourceInfoUnavailable}</p>}
         {page.nextCursor!==null&&<button type="button" disabled={p.pending[scopeKey]!==undefined}
           onClick={()=>void p.onChildren(scope.id,true)}>{copy.nextPage}</button>}</>}
     </div>}
@@ -96,7 +96,7 @@ function TreeContent(p:NodeProps):JSX.Element{
     {open&&<div className="source-children">
       <NodeFeedback id={file.id} pending={p.pending} failures={p.failures} onRetry={p.onRetry}/>
       {branch!==undefined&&<ul>{branch.items.map(scopeRow)}</ul>}
-      {branch!==undefined&&branch.items.length===0&&<p>{copy.sourceNoScopes}</p>}
+      {branch!==undefined&&branch.items.length===0&&<p>{tree.coverage.complete?copy.sourceNoScopes:copy.sourceInfoUnavailable}</p>}
     </div>}
    </li>;
  };
@@ -123,7 +123,7 @@ export function SourceCatalogPanel(p:SourceCatalogPanelProps):JSX.Element{
    <div className="source-actions"><button type="button" disabled={p.pending["catalog.source"]!==undefined}
      onClick={()=>void p.onSearch(query.trim())}>{copy.search}</button>
      <button type="button" disabled={p.pending["catalog.source"]!==undefined}
-       onClick={()=>void p.onSearch(p.source.query)}>{copy.sourceRefresh}</button></div>
+       onClick={()=>void p.onSearch(p.source.query,true)}>{copy.sourceRefresh}</button></div>
    {p.pending["catalog.source"]!==undefined&&<p role="status">{copy.sourceLoading}</p>}
    {rootFailure!==undefined&&<p role="alert">{copy.sourceIndexFailed} <code>{rootFailure.code}</code>
      <button type="button" onClick={()=>p.onRetry("catalog.source",rootFailure.requestId)}>{copy.retry}</button>
@@ -131,14 +131,22 @@ export function SourceCatalogPanel(p:SourceCatalogPanelProps):JSX.Element{
    {tree===null&&p.pending["catalog.source"]===undefined&&rootFailure===undefined&&<p>{copy.sourceEmptyPrompt}</p>}
    {tree!==null&&<>
      {previous&&<p role="status">{copy.previousCatalog}</p>}
+     {tree.coverage.compiledDebug?.available&&<p role="status">{copy.sourceCompiled(tree.coverage.compiledDebug.variableCount,
+       tree.coverage.compiledDebug.functionCount,tree.coverage.compiledDebug.fileCount)}</p>}
      <p role="status">{copy.sourceCount(tree.items.length,tree.total)} · {copy.sourceUnits(tree.coverage.parsedUnits,tree.coverage.totalUnits)}</p>
      {!tree.coverage.complete&&<div className="source-coverage" role="status">
        <strong>{copy.sourcePartial}</strong>
        {tree.coverage.truncated&&<span>{copy.sourceTruncated}</span>}
-       {tree.coverage.issues.map((issue,index)=><small key={`${issue.code}-${index}`}>{issue.unit??copy.sourceUnknownUnit} · {issue.code}</small>)}
+       {tree.coverage.issues.length>0&&<details><summary>{copy.sourceIssues}</summary>
+         {tree.coverage.issues.map((issue,index)=><small key={`${issue.code}-${index}`}>{issue.unit??copy.sourceUnknownUnit} · {issue.code}</small>)}
+       </details>}
        <button type="button" disabled={p.pending["catalog.source"]!==undefined}
-         onClick={()=>void p.onSearch(p.source.query)}>{copy.retry}</button>
+         onClick={()=>void p.onSearch(p.source.query,true)}>{copy.retry}</button>
      </div>}
+     {!tree.coverage.complete&&tree.items.every(file=>file.scopeCount===0)&&
+       (tree.coverage.compiledDebug?.variableCount??0)===0&&
+       (tree.coverage.compiledDebug?.functionCount??0)===0&&
+       <p role="status">{copy.sourceInfoUnavailable}</p>}
      <TreeContent key={p.source.generation.toString()} {...p}/>
      {p.pending["catalog.source-selection"]!==undefined&&<p role="status">{copy.sourceChecking}</p>}
      {selectionFailure!==undefined&&<p role="alert">{copy.sourceSelectionFailed} <code>{selectionFailure.code}</code>

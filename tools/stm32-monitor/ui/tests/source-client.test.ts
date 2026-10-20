@@ -20,6 +20,20 @@ describe("source catalog shared backend wire",()=>{
     expect(result.data.items[2]).toMatchObject({kind:"file",variableCount:0,scopeCount:0});
   });
 
+  it("accepts only the closed optional compiled-debug coverage and sends explicit refresh",async()=>{
+    const document=JSON.parse(treeWire) as Record<string,unknown>;
+    const data=document.data as {coverage:Record<string,unknown>};
+    data.coverage={...data.coverage,compiledDebug:{available:true,variableCount:9,functionCount:2,fileCount:1}};
+    let requested="";
+    const api=createMonitorApi(async input=>{requested=String(input);return response(JSON.stringify(document));},origin);
+    const result=await api.sourceTree("",undefined,undefined,undefined,true);
+    expect(requested).toContain("refresh=1");
+    expect(result.ok).toBe(true);
+    if(result.ok)expect(result.data.coverage.compiledDebug).toEqual({available:true,variableCount:9,functionCount:2,fileCount:1});
+    (data.coverage.compiledDebug as Record<string,unknown>).unrecognized=1;
+    expect((await api.sourceTree("")).ok).toBe(false);
+  });
+
   it("parses the backend-emitted envelope through the real client without a probe",async()=>{
     let requested="";
     const api=createMonitorApi(async input=>{requested=String(input);return response(wire);},origin);

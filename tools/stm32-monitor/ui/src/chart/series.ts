@@ -7,20 +7,23 @@ const zeroDrops=():DropTotals=>({subscriber:0n,history:0n,deadline:0n,service:0n
 export const watchKey=(watch:WatchItem):string=>watch.kind==="variable"?`variable:${watch.expression}`:`register:${watch.registerPath}`;
 const format=(value:JsonValue):string=>typeof value==="bigint"?value.toString(10):typeof value==="string"?value:typeof value==="number"||typeof value==="boolean"||value===null?String(value):JSON.stringify(value,(_key,item)=>typeof item==="bigint"?item.toString(10):item);
 export const emptyRow=(watch:WatchItem):LiveRow=>({watch,displayValue:"",rawHex:null,typeName:null,capturedAtUtc:"",trend:"none",errorCode:null,numericValue:null});
-export const emptyLive=():LiveState=>({rows:new Map(),series:new Map(),selectedSeries:new Set(),binding:null,bindingEpoch:null,runId:null,segment:0n,lastSequence:null,lastSampleCapturedAtUtc:null,actualRateHz:0,latencyNs:0n,authoritativeDrops:zeroDrops(),pendingDropDeltas:zeroDrops()});
+export const emptyLive=():LiveState=>({rows:new Map(),series:new Map(),selectedSeries:new Set(),binding:null,bindingEpoch:null,runId:null,groupId:null,groupRevision:null,stopPending:false,stopAccepted:false,retained:false,segment:0n,lastSequence:null,lastSampleCapturedAtUtc:null,actualRateHz:0,latencyNs:0n,authoritativeDrops:zeroDrops(),pendingDropDeltas:zeroDrops()});
 const typedNumeric=(value:SampleValue):number|null=>{if(value.status!=="OK")return null;const known=knownTypedValue(value.typedValue);return known!==null&&typeof known.value==="number"&&Number.isFinite(known.value)?known.value:null;};
 const rowFromOk=(value:Extract<SampleValue,{status:"OK"}>,capturedAtUtc:string,previous:LiveRow|undefined):LiveRow=>{const known=knownTypedValue(value.typedValue);const numeric=typedNumeric(value);const before=previous?.numericValue??null;return{watch:value.watch,displayValue:known===null?format(value.typedValue):format(known.value),rawHex:known?.rawHex??null,typeName:known?.typeName??null,capturedAtUtc,trend:numeric===null||before===null?"none":numeric>before?"up":numeric<before?"down":"flat",errorCode:null,numericValue:numeric};};
 export function appendAuthoritativeSample(live:LiveState,batch:SampleBatch,group:WatchGroup,selected:ReadonlySet<string>):LiveState{
  const incoming=new Map(batch.values.map(value=>[watchKey(value.watch),value]));const rows=new Map(live.rows),series=new Map(live.series);const chosen=new Set([...selected].slice(0,8));
- for(const watch of group.items){const key=watchKey(watch),value=incoming.get(key),previous=rows.get(key);
+ for(const watch of group.items.slice(0,256)){const key=watchKey(watch),value=incoming.get(key),previous=rows.get(key);
   if(value?.status==="OK")rows.set(key,rowFromOk(value,batch.capturedAtUtc,previous));
   else if(value?.status==="ERROR")rows.set(key,{...(previous??emptyRow(watch)),capturedAtUtc:batch.capturedAtUtc,errorCode:value.code,trend:"none",numericValue:null});
-  if(chosen.has(key)){const numeric=value===undefined?null:typedNumeric(value);const points=[...(series.get(key)??[]),{capturedAtUtc:batch.capturedAtUtc,capturedUnixNs:batch.capturedUnixNs,value:numeric,segment:live.segment}];series.set(key,points.slice(-600));}
+  const numeric=value===undefined?null:typedNumeric(value);
+  const points=[...(series.get(key)??[]),{capturedAtUtc:batch.capturedAtUtc,capturedUnixNs:batch.capturedUnixNs,value:numeric,segment:live.segment}];
+  series.set(key,points.slice(-600));
  }
- for(const key of [...series.keys()])if(!chosen.has(key))series.delete(key);
- return {...live,rows,series,selectedSeries:chosen,binding:batch.binding,runId:batch.runId,lastSequence:batch.sequence,lastSampleCapturedAtUtc:batch.capturedAtUtc,actualRateHz:batch.actualRateHz,latencyNs:batch.latencyNs};
+ return {...live,rows,series,selectedSeries:chosen,binding:batch.binding,runId:batch.runId,
+  groupId:batch.groupId,groupRevision:batch.groupRevision,retained:false,lastSequence:batch.sequence,
+  lastSampleCapturedAtUtc:batch.capturedAtUtc,actualRateHz:batch.actualRateHz,latencyNs:batch.latencyNs};
 }
-export function appendContinuityGap(live:LiveState):LiveState{const series=new Map(live.series);for(const key of live.selectedSeries){const points=series.get(key)??[];series.set(key,[...points,{capturedAtUtc:"",capturedUnixNs:0n,value:null,segment:live.segment+1n}].slice(-600));}return {...live,series,segment:live.segment+1n,rows:new Map([...live.rows].map(([key,row])=>[key,{...row,trend:"none",numericValue:null}]))};}
+export function appendContinuityGap(live:LiveState):LiveState{const series=new Map(live.series);for(const [key,points] of live.series){series.set(key,[...points,{capturedAtUtc:"",capturedUnixNs:0n,value:null,segment:live.segment+1n}].slice(-600));}return {...live,series,segment:live.segment+1n,rows:new Map([...live.rows].map(([key,row])=>[key,{...row,trend:"none",numericValue:null}]))};}
 const add=(current:bigint,delta:bigint)=>delta>0n?current+delta:current;
 export const addSampleDropDeltas=(live:LiveState,batch:SampleBatch,service:bigint):LiveState=>({...live,pendingDropDeltas:{subscriber:add(live.pendingDropDeltas.subscriber,batch.subscriberDrops),history:add(live.pendingDropDeltas.history,batch.historyDrops),deadline:add(live.pendingDropDeltas.deadline,batch.deadlineDrops),service:add(live.pendingDropDeltas.service,service)}});
 export const displayDropTotals=(live:LiveState):DropTotals=>({subscriber:live.authoritativeDrops.subscriber+live.pendingDropDeltas.subscriber,history:live.authoritativeDrops.history+live.pendingDropDeltas.history,deadline:live.authoritativeDrops.deadline+live.pendingDropDeltas.deadline,service:live.authoritativeDrops.service+live.pendingDropDeltas.service});

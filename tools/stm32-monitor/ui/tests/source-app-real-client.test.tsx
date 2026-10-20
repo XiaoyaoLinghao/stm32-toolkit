@@ -70,6 +70,18 @@ it("autoloads the shared source wire page without a probe and expands file and s
   expect(within(region).getByRole("button",{name:"加入观测组草稿 counter"})).toBeDisabled();
 });
 
+it("sends an explicit root refresh through App, controller, and the real client",async()=>{
+  installFetch(statusResult());render(<App/>);
+  await screen.findByRole("region",{name:"源码目录结果"});
+  fireEvent.click(screen.getByRole("button",{name:"刷新源码目录"}));
+  await waitFor(()=>expect(vi.mocked(fetch).mock.calls.some(([input])=>{
+    const request=new URL(String(input));
+    return request.pathname==="/api/v1/catalog/source-tree"&&request.searchParams.get("refresh")==="1"&&
+      !request.searchParams.has("catalogId")&&!request.searchParams.has("cursor")&&
+      !request.searchParams.has("parentId");
+  })).toBe(true));
+});
+
 it("uses a fresh real-client selection ACK for the draft and never reopens a drawer after a view switch",async()=>{
   const status=connected(),late=deferred<Response>(),calls=installFetch(status,late.promise);
   render(<App/>);

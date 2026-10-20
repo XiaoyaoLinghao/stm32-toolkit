@@ -71,7 +71,8 @@ def _setup(monkeypatch: pytest.MonkeyPatch, root: Path, *, aggregate: bool = Fal
                         (), False, declarations, "f" * 64)
     dwarf = _Dwarf()
     monkeypatch.setattr(module, "_offline_facts", lambda _root: facts[0])
-    monkeypatch.setattr(module, "_load_base", lambda _adapter, _facts, _plan: module._Base(index, dwarf))
+    monkeypatch.setattr(module, "_load_base", lambda _adapter, _facts, _plan:
+                        module._Base(index, dwarf, ("Src/main.c",)))
     dtype = DwarfType("array", "int[5000]", 20_000, element_type=DwarfType("integer", "int", 4), element_count=5000)
     def item_for(decl, *_args):
         return module.SourceItem(decl.id, None, decl.name, decl.type_name, decl.file, decl.line,
@@ -151,7 +152,7 @@ def test_partial_catalog_keeps_nested_navigation_but_root_retry_reindexes(
 
     def load(_adapter, _facts, _plan):
         loads[0] += 1
-        return module._Base(partial, _Dwarf())
+        return module._Base(partial, _Dwarf(), ("Src/main.c",))
 
     monkeypatch.setattr(module, "_load_base", load)
     monkeypatch.setattr(module, "_item_for_declaration", lambda decl, *_args: (
@@ -171,8 +172,14 @@ def test_partial_catalog_keeps_nested_navigation_but_root_retry_reindexes(
         assert grandchild["items"][0]["name"] == "value"
         assert loads == [1]
         retry = await provider.page(query="", cursor=None, limit=100, parent_id=None,
-                                    catalog_id=None, binding=binding, binding_epoch=0)
+                                    catalog_id=None, binding=binding, binding_epoch=0,
+                                    refresh=True)
         assert retry["catalogId"] == root["catalogId"] and loads == [2]
+        with pytest.raises(module.SourceCatalogFailure) as invalid:
+            await provider.page(query="", cursor=None, limit=100, parent_id=None,
+                                scope_id="a" * 64, catalog_id=None, binding=binding,
+                                binding_epoch=0, refresh=True)
+        assert invalid.value.code == "MONITOR_SOURCE_INDEX_FAILED"
         provider.close()
 
     asyncio.run(scenario())
@@ -223,8 +230,8 @@ def test_cancelled_waiter_cannot_pin_a_completed_partial_index(
         if loads[0] == 1:
             entered.set()
             assert release.wait(timeout=5)
-            return module._Base(partial, _Dwarf())
-        return module._Base(complete, _Dwarf())
+            return module._Base(partial, _Dwarf(), ("Src/main.c",))
+        return module._Base(complete, _Dwarf(), ("Src/main.c",))
 
     monkeypatch.setattr(module, "_load_base", load)
 
@@ -240,7 +247,8 @@ def test_cancelled_waiter_cannot_pin_a_completed_partial_index(
             release.set()
         await asyncio.sleep(0.05)
         retry = await provider.page(query="", cursor=None, limit=100, parent_id=None,
-                                    catalog_id=None, binding=binding, binding_epoch=0)
+                                    catalog_id=None, binding=binding, binding_epoch=0,
+                                    refresh=True)
         assert loads == [2] and retry["coverage"]["complete"]
         assert not provider._inflight
         provider.close()
@@ -312,7 +320,9 @@ def real_source_project(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
                               defines=(), compile_options=(), presets=(), elf="firmware.elf"))
     data = elf.read_bytes()
     facts = [module._Facts(model, "b" * 64, "build", hashlib.sha256(data).hexdigest(),
-                           "firmware.elf", len(data))]
+                           "firmware.elf", len(data),
+                           ("Inc/defs.h", "Src/main.c", "Src/other.c"),
+                           ("Inc/defs.h", "Src/main.c", "Src/other.c"))]
     monkeypatch.setattr(module, "_offline_facts", lambda _root: facts[0])
     binding = SimpleNamespace(
         project_root=root, workspace_id="workspace", observation_session_id="session",
@@ -341,8 +351,10 @@ def test_real_ast_elf_attribution_leaf_children_and_binding_rechecks(real_source
             assert all(item["reason"] == "ambiguous_symbol" and not item["canAdd"]
                        for item in rows if item["name"] == name)
         for name in ("parameter", "local"):
-            assert all(item["reason"] == "frame_required" and not item["canAdd"]
-                       for item in rows if item["name"] == name)
+            assert all(item["reason"] in {"frame_required", "unsupported_location"}
+                       and not item["canAdd"] for item in rows if item["name"] == name), [
+                           (item["name"], item["reason"], item["scope"])
+                           for item in rows if item["name"] in {"parameter", "local"}]
         for name, child_name, selector in (("packet", "a", "packet.a"),
                                            ("values", "0", "values[0]")):
             root = next(item for item in rows if item["name"] == name)
@@ -398,10 +410,13 @@ def test_real_provider_partial_retry_reindexes_same_inputs(real_source_project) 
         partial = await provider.page(query="counter", cursor=None, limit=100, parent_id=None,
                                       catalog_id=None, binding=binding, binding_epoch=0)
         assert not partial["coverage"]["complete"]
-        assert all(not item["canAdd"] and item["reason"] == "coverage_incomplete"
-                   for item in partial["items"])
+        assert any(item["canAdd"] for item in partial["items"])
+        cached = await provider.page(query="counter", cursor=None, limit=100, parent_id=None,
+                                     catalog_id=None, binding=binding, binding_epoch=0)
+        assert cached["catalogId"] == partial["catalogId"] and attempts == [1]
         complete = await provider.page(query="counter", cursor=None, limit=100, parent_id=None,
-                                       catalog_id=None, binding=binding, binding_epoch=0)
+                                       catalog_id=None, binding=binding, binding_epoch=0,
+                                       refresh=True)
         assert complete["coverage"]["complete"] and attempts == [2]
         assert complete["catalogId"] != partial["catalogId"]
         assert any(item["canAdd"] for item in complete["items"])
@@ -409,10 +424,90 @@ def test_real_provider_partial_retry_reindexes_same_inputs(real_source_project) 
     asyncio.run(scenario())
 
 
+def test_partial_ast_still_exposes_compiled_functions_parameters_and_selection(real_source_project) -> None:
+    provider, _, binding = real_source_project
+    original = provider.adapter.index
+
+    def missing_main_ast(model, plan):
+        result = original(model, plan)
+        source_only = SourceDeclaration("a" * 64, "a" * 64, "phantom", "int", "Src/other.c", 2,
+                                        1, "none", "global", None, (), ("Src/other.c",))
+        return replace(result, parsed_units=result.parsed_units - 1,
+                       declarations=tuple(entry for entry in result.declarations
+                                          if "Src/main.c" not in entry.translation_units) + (source_only,),
+                       functions=tuple(entry for entry in result.functions
+                                       if "Src/main.c" not in entry.translation_units),
+                       issues=(SourceIssue("Src/main.c", "MONITOR_SOURCE_INDEX_FAILED", "Clang failed"),))
+
+    provider.adapter.index = missing_main_ast
+
+    async def scenario() -> None:
+        tree = await provider.tree(query="", cursor=None, limit=1000, parent_id=None,
+                                   catalog_id=None, binding=binding, binding_epoch=0)
+        assert not tree["coverage"]["complete"]
+        assert tree["coverage"]["compiledDebug"]["available"]
+        main = next(item for item in tree["items"] if item["file"] == "Src/main.c")
+        assert main["variableCount"] > 0 and main["scopeCount"] > 0
+        scopes = await provider.tree(query="", cursor=None, limit=1000, parent_id=main["id"],
+                                     catalog_id=tree["catalogId"], binding=binding, binding_epoch=0)
+        sample = next(item for item in scopes["items"] if item["function"] == "sample")
+        assert sample["variableCount"] >= 3
+        variables = await provider.page(query="", cursor=None, limit=100, parent_id=None,
+                                        scope_id=sample["id"], catalog_id=tree["catalogId"],
+                                        binding=binding, binding_epoch=0)
+        assert any(item["name"] == "parameter" and item["reason"] == "frame_required"
+                   for item in variables["items"])
+        assert any(item["name"] == "local" and item["reason"] == "frame_required"
+                   for item in variables["items"])
+        global_scope = next(item for item in scopes["items"] if item["function"] is None)
+        globals_page = await provider.page(query="", cursor=None, limit=100, parent_id=None,
+                                           scope_id=global_scope["id"], catalog_id=tree["catalogId"],
+                                           binding=binding, binding_epoch=0)
+        counter = next(item for item in globals_page["items"] if item["name"] == "counter")
+        assert counter["canAdd"] and counter["selector"] == "counter"
+        assert (await provider.select(catalog_id=tree["catalogId"], item_id=counter["id"],
+                                      selector="counter", binding=binding, binding_epoch=0))["item"]["expression"] == "counter"
+        for name, child_name, selector in (("packet", "a", "packet.a"),
+                                           ("values", "0", "values[0]")):
+            root = next(item for item in globals_page["items"] if item["name"] == name)
+            assert root["expandable"] and root["reason"] == "aggregate"
+            children = await provider.page(query="", cursor=None, limit=100, parent_id=root["id"],
+                                           catalog_id=tree["catalogId"], binding=binding, binding_epoch=0)
+            child = next(item for item in children["items"] if item["name"] == child_name)
+            assert child["canAdd"] and child["selector"] == selector
+            assert (await provider.select(catalog_id=tree["catalogId"], item_id=child["id"],
+                                          selector=selector, binding=binding, binding_epoch=0))["item"]["expression"] == selector
+        other = await provider.page(query="phantom", cursor=None, limit=100, parent_id=None,
+                                    catalog_id=tree["catalogId"], binding=binding, binding_epoch=0)
+        assert len(other["items"]) == 1 and other["items"][0]["reason"] == "debug_entry_missing"
+        assert not other["items"][0]["canAdd"]
+
+    asyncio.run(scenario())
+
+
+def test_compiled_local_reason_only_promises_frame_for_frame_or_register_location() -> None:
+    dtype = DwarfType("integer", "int", 4)
+    base = DwarfSourceSymbol("local", "Src/main.c", 5, 3, "main", "Src/main.c",
+                             dtype, None, "DWARF_LOCATION_OPTIMIZED_OUT", None,
+                             0, 10, 8, (), "none", "local", "variable", "unavailable")
+    dwarf = SimpleNamespace(elf_sha256="e" * 64)
+    optimized, _ = module._item_for_dwarf(base, dwarf, None, None)
+    frame, _ = module._item_for_dwarf(replace(base, die_offset=11,
+                                              location_error="DWARF_LOCATION_UNAVAILABLE",
+                                              location_kind="frame"), dwarf, None, None)
+    register, _ = module._item_for_dwarf(replace(base, die_offset=12,
+                                                 location_error="DWARF_LOCATION_REGISTER_ONLY",
+                                                 location_kind="register"), dwarf, None, None)
+    assert optimized.reason == "unsupported_location"
+    assert frame.reason == register.reason == "frame_required"
+    assert not any(item.can_add for item in (optimized, frame, register))
+
+
 def test_one_debug_symbol_cannot_authorize_two_distinct_source_entities() -> None:
     dtype = DwarfType("integer", "int", 4)
     symbol = DwarfSourceSymbol("value", "Src/main.c", 1, None, None,
-                               "Src/main.c", dtype, 0x20000000, None, None)
+                               "Src/main.c", dtype, 0x20000000, None, None,
+                               storage="static", scope_kind="file_static")
     first = SourceDeclaration("a" * 64, "a" * 64, "value", "int", "Src/main.c", 1, 5,
                               "static", "file_static", None, (), ("Src/main.c",))
     second = replace(first, id="b" * 64, entity_id="b" * 64, column=20)
@@ -429,6 +524,8 @@ def test_one_debug_symbol_cannot_authorize_two_distinct_source_entities() -> Non
 
     roots, _ = module._materialize(index, Catalog(), "probe_required", None)
     assert all(item.reason == "ambiguous_symbol" and not item.can_add for item in roots)
+    excluded, _ = module._materialize(index, Catalog(), "probe_required", None, source_files=())
+    assert excluded == ()
     chained, _ = module._materialize(replace(index, declarations=(first, same_entity)),
                                      Catalog(), "probe_required", None)
     assert all(item.reason == "probe_required" for item in chained)

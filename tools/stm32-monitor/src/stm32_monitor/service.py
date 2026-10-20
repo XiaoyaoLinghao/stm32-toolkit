@@ -273,12 +273,12 @@ class MonitorService:
         application.router.add_get(
             "/api/v1/catalog/source-tree",
             self._route("monitor.catalog.source.tree", query=True,
-                        query_fields=frozenset({"query", "cursor", "limit", "parentId", "catalogId"})),
+                        query_fields=frozenset({"query", "cursor", "limit", "parentId", "catalogId", "refresh"})),
         )
         application.router.add_get(
             "/api/v1/catalog/source-variables",
             self._route("monitor.catalog.source.variables", query=True,
-                        query_fields=frozenset({"query", "cursor", "limit", "parentId", "scopeId", "catalogId"})),
+                        query_fields=frozenset({"query", "cursor", "limit", "parentId", "scopeId", "catalogId", "refresh"})),
         )
         application.router.add_get(
             "/api/v1/catalog/source-selection",

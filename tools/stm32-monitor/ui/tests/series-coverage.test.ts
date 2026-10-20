@@ -54,12 +54,13 @@ describe("appendAuthoritativeSample row trends",()=>{
     expect(live.series.get("register:r")?.[0]?.value).toBeNull();
     expect(live.series.get("variable:x")?.[0]?.value).toBe(1);
   });
-  it("drops series that are no longer selected while keeping the remaining ones",()=>{
+  it("keeps hidden watch points for later selection while recording a missing-value gap",()=>{
     const g=group();
     let live=appendAuthoritativeSample(emptyLive(),batch(1n,[okValue(item("variable","x"),1),okValue(item("register","r"),2)]),g,new Set(["variable:x","register:r"]));
     expect(live.series.has("register:r")).toBe(true);
     live=appendAuthoritativeSample(live,batch(2n,[okValue(item("variable","x"),3)]),g,new Set(["variable:x"]));
-    expect(live.series.has("register:r")).toBe(false);
+    expect(live.series.has("register:r")).toBe(true);
+    expect(live.series.get("register:r")?.map(point=>point.value)).toEqual([2,null]);
     expect(live.series.has("variable:x")).toBe(true);
   });
 });
@@ -88,9 +89,9 @@ describe("drop accounting",()=>{
     expect(live.segment).toBe(1n);
     expect(live.series.get("variable:x")?.at(-1)?.value).toBeNull();
   });
-  it("starts a gap with an empty point list when a selected series has no points yet",()=>{
+  it("does not create a watch buffer for a selection before any accepted batch",()=>{
     const live=appendContinuityGap({...emptyLive(),selectedSeries:new Set(["variable:x"])});
-    expect(live.series.get("variable:x")?.[0]?.value).toBeNull();
+    expect(live.series.size).toBe(0);
     expect(live.segment).toBe(1n);
   });
   it("accumulates positive drop deltas and ignores zero or negative deltas",()=>{

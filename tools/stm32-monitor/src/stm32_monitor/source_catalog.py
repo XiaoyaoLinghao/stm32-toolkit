@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Mapping
 
 from stm32_toolkit.build.identity import snapshot_project_inputs
-from stm32_toolkit.debug.dwarf import DwarfCatalog, DwarfSourceSymbol
+from stm32_toolkit.debug.dwarf import DwarfCatalog, DwarfSourceFunction, DwarfSourceSymbol
 from stm32_toolkit.debug.source import ClangSourceAdapter, SourceCatalogError, SourceDeclaration, SourceFunction, SourceIndex, SourceIssue, SourcePlan
 from stm32_toolkit.debug.types import DwarfError, DwarfType
 from stm32_toolkit.probe.flash import load_fresh_firmware_facts
@@ -78,6 +78,7 @@ class SourceItem:
     reason: str | None
     expandable: bool
     truncated: bool
+    function_id: str | None = None  # Private tree ownership; not part of the wire item.
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -118,6 +119,7 @@ class _View:
     roots_by_scope: dict[str, tuple[SourceItem, ...]] | None = None
     file_by_id: dict[str, str] | None = None
     scope_by_id: dict[str, dict[str, object]] | None = None
+    compiled_debug: dict[str, object] | None = None
 
 
 def _offline_facts(root: Path) -> _Facts:
@@ -238,6 +240,9 @@ def _direct_match(candidate: SourceDeclaration, symbol: DwarfSourceSymbol) -> bo
             and candidate.line is not None and candidate.line == symbol.line
             and candidate.function == symbol.function
             and (symbol.column is None or candidate.column == symbol.column)
+            and candidate.scope_kind == symbol.scope_kind
+            and (candidate.storage == symbol.storage or
+                 candidate.storage == "extern" and symbol.storage == "none")
             and _compatible(candidate, symbol.dwarf_type)
             and (symbol.compilation_unit is None or symbol.compilation_unit in candidate.translation_units))
 
@@ -250,23 +255,26 @@ def _match(decl: SourceDeclaration,
     same_name = symbols_by_name.get(decl.name, ())
     if not same_name:
         return None, "debug_entry_missing"
-    if len(same_name) != 1:
+    direct = tuple(symbol for symbol in same_name if _direct_match(decl, symbol))
+    if len(direct) == 1:
+        return direct[0], None
+    if len(direct) > 1:
         return None, "ambiguous_symbol"
-    symbol = same_name[0]
-    if _direct_match(decl, symbol):
-        return symbol, None
     # A definition can be proved by a Clang previousDecl chain to the exact
     # DWARF declaration.  Name/CU proximity alone never admits it.
     proof = entity_proofs.get(decl.entity_id)
     if (decl.entity_id != decl.id and proof is not None and proof[0] != decl.id
-            and proof[1] == symbol
-            and (symbol.compilation_unit is None or symbol.compilation_unit in decl.translation_units)
-            and _compatible(decl, symbol.dwarf_type)):
-        return symbol, None
+            and proof[1] in same_name
+            and (proof[1].compilation_unit is None or proof[1].compilation_unit in decl.translation_units)
+            and _compatible(decl, proof[1].dwarf_type)):
+        return proof[1], None
+    if len(same_name) > 1:
+        return None, "ambiguous_symbol"
     return None, "source_attribution_unproven"
 
 
-def _eligible_leaf(selector: str, dwarf: DwarfCatalog | None, binding: object | None) -> str | None:
+def _eligible_leaf(selector: str, dwarf: DwarfCatalog | None, binding: object | None,
+                   expected: DwarfSourceSymbol | None = None) -> str | None:
     if dwarf is None:
         return "firmware_unavailable"
     try:
@@ -274,11 +282,16 @@ def _eligible_leaf(selector: str, dwarf: DwarfCatalog | None, binding: object | 
     except DwarfError as error:
         if error.code == "DWARF_SYMBOL_AMBIGUOUS":
             return "ambiguous_symbol"
+        if error.code == "DWARF_SYMBOL_NOT_FOUND":
+            return "debug_entry_missing"
         if error.code == "DWARF_ADDRESS_OUTSIDE_READABLE_MEMORY":
             return "read_range_denied"
         if error.code.startswith("DWARF_TYPE") or error.code in {"DWARF_BITFIELD_UNSUPPORTED", "DWARF_ARRAY_INDEX_OUT_OF_RANGE"}:
             return "unsupported_type"
         return "unsupported_location"
+    if expected is not None and (expected.address is None or selected.address != expected.address
+                                 or expected.dwarf_type != selected.type):
+        return "source_attribution_unproven"
     if selected.type.kind not in _SCALAR or selected.byte_size > MAX_READ_BYTES:
         return "unsupported_type"
     if binding is None:
@@ -294,8 +307,6 @@ def _eligible_leaf(selector: str, dwarf: DwarfCatalog | None, binding: object | 
 
 def _context_reason(index: SourceIndex, facts: _Facts, binding: object | None,
                     binding_ok: bool) -> str | None:
-    if not index.complete:
-        return "coverage_incomplete"
     if facts.build_id is None:
         return "firmware_unavailable"
     if binding is None:
@@ -314,9 +325,11 @@ def _item_for_declaration(decl: SourceDeclaration,
     dtype = symbol.dwarf_type if symbol is not None else None
     selector = decl.name if symbol is not None and _EXPRESSION.fullmatch(decl.name) else None
     if decl.scope_kind in {"local", "parameter"}:
-        reason = "frame_required"
+        if symbol is not None:
+            reason = ("frame_required" if symbol.location_kind in {"frame", "register"}
+                      else "unsupported_location")
         selector = None
-    elif context_reason in {"coverage_incomplete", "firmware_unavailable", "source_mismatch"}:
+    elif context_reason in {"firmware_unavailable", "source_mismatch"}:
         reason = context_reason
     elif symbol is not None:
         if symbol.type_error is not None or dtype is None:
@@ -326,7 +339,7 @@ def _item_for_declaration(decl: SourceDeclaration,
         elif dtype.kind in {"structure", "union", "array"}:
             reason = "aggregate"
         else:
-            reason = _eligible_leaf(decl.name, dwarf, binding)
+            reason = _eligible_leaf(decl.name, dwarf, binding, symbol)
     if reason is None:
         reason = context_reason
     expandable = bool(symbol is not None and selector is not None and dtype is not None
@@ -337,20 +350,70 @@ def _item_for_declaration(decl: SourceDeclaration,
     return SourceItem(decl.id, None, decl.name, decl.type_name, decl.file, decl.line,
                       decl.column, decl.scope_kind, decl.function, decl.scope_path,
                       decl.storage, decl.translation_units, selector, reason is None,
-                      reason, expandable, aggregate_size is not None and aggregate_size > 4096), dtype if expandable else None
+                      reason, expandable, aggregate_size is not None and aggregate_size > 4096,
+                      decl.function_id), dtype if expandable else None
+
+
+def _dwarf_function_id(cu_offset: int, die_offset: int) -> str:
+    return f"dwarf:{cu_offset:x}:{die_offset:x}"
+
+
+def _item_for_dwarf(symbol: DwarfSourceSymbol, dwarf: DwarfCatalog,
+                    context_reason: str | None, binding: object | None) -> tuple[SourceItem, DwarfType | None]:
+    assert symbol.file is not None and symbol.cu_offset is not None and symbol.die_offset is not None
+    dtype = symbol.dwarf_type
+    type_name = dtype.name if dtype is not None and len(dtype.name) <= 512 else "<unknown>"
+    selector = symbol.name if symbol.kind == "variable" and _EXPRESSION.fullmatch(symbol.name) else None
+    if symbol.scope_kind in {"local", "parameter"}:
+        reason = ("frame_required" if symbol.location_kind in {"frame", "register"}
+                  else "unsupported_location")
+    elif context_reason in {"firmware_unavailable", "source_mismatch"}:
+        reason = context_reason
+    elif symbol.type_error is not None or dtype is None or type_name == "<unknown>":
+        reason = "unsupported_type"
+    elif symbol.address is None or symbol.location_error is not None:
+        reason = "unsupported_location"
+    elif dtype.kind in {"structure", "union", "array"}:
+        reason = "aggregate"
+    else:
+        reason = _eligible_leaf(symbol.name, dwarf, binding, symbol)
+    if reason is None:
+        reason = context_reason
+    expandable = bool(selector is not None and dtype is not None
+                      and dtype.kind in {"structure", "union", "array"}
+                      and symbol.address is not None and symbol.location_error is None
+                      and symbol.scope_kind not in {"local", "parameter"})
+    aggregate_size = (dtype.element_count if dtype.kind == "array" else len(dtype.members)) if expandable and dtype is not None else 0
+    identifier = _source_id("dwarf", f"{dwarf.elf_sha256}:{symbol.cu_offset:x}:{symbol.die_offset:x}")
+    function_id = (_dwarf_function_id(symbol.cu_offset, symbol.function_die_offset)
+                   if symbol.function_die_offset is not None else None)
+    item = SourceItem(identifier, None, symbol.name, type_name, symbol.file, symbol.line,
+                      symbol.column, symbol.scope_kind, symbol.function, symbol.scope_path,
+                      symbol.storage, (symbol.compilation_unit or symbol.file,), selector,
+                      reason is None, reason, expandable,
+                      aggregate_size is not None and aggregate_size > 4096, function_id)
+    return item, dtype if expandable else None
 
 
 def _materialize(index: SourceIndex, dwarf: DwarfCatalog | None,
-                 context: str | None, binding: object | None) -> tuple[tuple[SourceItem, ...], dict[str, _Node]]:
+                 context: str | None, binding: object | None,
+                 source_files: tuple[str, ...] | None = None) -> tuple[tuple[SourceItem, ...], dict[str, _Node]]:
+    allowed = set(source_files) if source_files is not None else None
     symbols_by_name: dict[str, list[DwarfSourceSymbol]] = {}
-    for symbol in dwarf.source_symbols() if dwarf is not None else ():
+    declarations = (dwarf.source_declarations() if dwarf is not None and
+                    hasattr(dwarf, "source_declarations") else
+                    dwarf.source_symbols() if dwarf is not None else ())
+    for symbol in declarations:
+        if allowed is not None and symbol.file not in allowed:
+            continue
         symbols_by_name.setdefault(symbol.name, []).append(symbol)
     frozen_symbols = {name: tuple(group) for name, group in symbols_by_name.items()}
     entity_proofs: dict[str, tuple[str, DwarfSourceSymbol]] = {}
     for declaration in index.declarations:
         candidates = frozen_symbols.get(declaration.name, ())
-        if len(candidates) == 1 and _direct_match(declaration, candidates[0]):
-            entity_proofs.setdefault(declaration.entity_id, (declaration.id, candidates[0]))
+        direct = [symbol for symbol in candidates if _direct_match(declaration, symbol)]
+        if len(direct) == 1:
+            entity_proofs.setdefault(declaration.entity_id, (declaration.id, direct[0]))
     attributed_entities: dict[int, set[str]] = {}
     for declaration in index.declarations:
         matched, _ = _match(declaration, frozen_symbols, entity_proofs)
@@ -358,10 +421,23 @@ def _materialize(index: SourceIndex, dwarf: DwarfCatalog | None,
             attributed_entities.setdefault(id(matched), set()).add(declaration.entity_id)
     nodes: dict[str, _Node] = {}
     roots: list[SourceItem] = []
+    compiled = (dwarf.source_declarations() if dwarf is not None and
+                hasattr(dwarf, "source_declarations") else ())
+    for symbol in compiled:
+        if (symbol.file is None or symbol.cu_offset is None or symbol.die_offset is None
+                or allowed is not None and symbol.file not in allowed):
+            continue
+        item, dtype = _item_for_dwarf(symbol, dwarf, context, binding)
+        roots.append(item)
+        nodes[item.id] = _Node(item, dtype, 0, 0)
     for declaration in index.declarations:
+        if allowed is not None and declaration.file not in allowed:
+            continue
         item, dtype = _item_for_declaration(declaration, frozen_symbols, entity_proofs,
                                             dwarf, context, binding)
         matched, _ = _match(declaration, frozen_symbols, entity_proofs)
+        if matched is not None and _direct_match(declaration, matched) and matched.die_offset is not None:
+            continue  # The concrete DIE already supplies this exact source declaration.
         if matched is not None and len(attributed_entities[id(matched)]) > 1:
             item = replace(item, selector=None, can_add=False, reason="ambiguous_symbol", expandable=False)
             dtype = None
@@ -377,32 +453,59 @@ def _source_id(kind: str, file: str) -> str:
 def _tree_index(view: _View) -> None:
     by_file: dict[str, list[dict[str, object]]] = {file: [] for file in view.source_files}
     roots_by_scope: dict[str, list[SourceItem]] = {}
-    functions: dict[str, SourceFunction] = {function.id: function for function in view.index.functions}
+    compiled_functions: tuple[DwarfSourceFunction, ...] = (
+        view.dwarf.source_functions() if view.dwarf is not None and hasattr(view.dwarf, "source_functions") else ()
+    )
+    functions: dict[str, tuple[str, str, int | None, int | None, str | None]] = {}
+    for function in compiled_functions:
+        if function.file in by_file:
+            functions[_dwarf_function_id(function.cu_offset, function.die_offset)] = (
+                function.name, function.file, function.line, function.column, function.compilation_unit
+            )
+    for function in view.index.functions:
+        if function.file not in by_file:
+            continue
+        matches = [key for key, entry in functions.items()
+                   if entry[0] == function.name and entry[1] == function.file
+                   and entry[2] == function.line
+                   and (entry[3] is None or function.column is None or entry[3] == function.column)
+                   and (entry[4] is None or entry[4] in function.translation_units)]
+        functions[function.id] = (functions[matches[0]] if len(matches) == 1 else
+                                  (function.name, function.file, function.line, function.column,
+                                   function.translation_units[0] if function.translation_units else None))
+    canonical_function: dict[str, str] = {}
+    for function in view.index.functions:
+        entry = functions.get(function.id)
+        if entry is None:
+            continue
+        matches = [key for key in functions if key.startswith("dwarf:") and functions[key] == entry]
+        canonical_function[function.id] = matches[0] if len(matches) == 1 else function.id
     projected: set[str] = set()
-    def add_function_scope(file: str, function: SourceFunction) -> str:
-        scope_id = _source_id("function", file + "\0" + function.id)
+    def add_function_scope(file: str, key: str) -> str:
+        name, definition_file, line, _, _ = functions[key]
+        scope_id = _source_id("function", file + "\0" + key)
         if scope_id not in projected:
             projected.add(scope_id)
             by_file[file].append({
                 "kind": "scope", "id": scope_id, "parentId": _source_id("file", file),
-                "file": file, "name": function.name, "function": function.name,
-                "line": function.line if file == function.file else None, "variableCount": 0,
+                "file": file, "name": name, "function": name,
+                "line": line if file == definition_file else None, "variableCount": 0,
             })
             roots_by_scope[scope_id] = []
         return scope_id
-    for function in view.index.functions:
-        if function.file in by_file:
-            add_function_scope(function.file, function)
-    for declaration, item in zip(view.index.declarations, view.roots):
-        if declaration.file not in by_file:
+    for key, function in functions.items():
+        if key not in canonical_function or canonical_function[key] == key:
+            add_function_scope(function[1], key)
+    for item in view.roots:
+        if item.file not in by_file:
             continue
-        if declaration.function is not None or declaration.scope_kind in {"local", "static_local", "parameter"}:
-            function = functions.get(declaration.function_id or "")
-            if function is None:
+        if item.function is not None or item.scope_kind in {"local", "static_local", "parameter"}:
+            key = canonical_function.get(item.function_id or "", item.function_id or "")
+            if key not in functions:
                 continue
-            scope_id = add_function_scope(declaration.file, function)
+            scope_id = add_function_scope(item.file, key)
         else:
-            scope_id = _source_id("global", declaration.file)
+            scope_id = _source_id("global", item.file)
         roots_by_scope.setdefault(scope_id, []).append(item)
     for file in view.source_files:
         global_id = _source_id("global", file)
@@ -479,6 +582,38 @@ def _catalog_id(identity: Mapping[str, object], signature: tuple[object, ...],
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def _engine(view: _View) -> dict[str, object]:
+    index = view.index
+    return {"name": ("ELF DWARF + " if view.dwarf is not None else "") + index.engine_name,
+            "version": index.engine_version + (";dwarf-directory:1" if view.dwarf is not None else ""),
+            "inputKind": index.input_kind}
+
+
+def _coverage(view: _View) -> dict[str, object]:
+    result: dict[str, object] = {
+        "complete": view.index.complete, "totalUnits": view.index.total_units,
+        "parsedUnits": view.index.parsed_units, "issues": _issue_summary(view.index),
+        "truncated": view.index.truncated,
+    }
+    if view.compiled_debug is not None:
+        result["compiledDebug"] = view.compiled_debug
+    return result
+
+
+def _compiled_debug(dwarf: DwarfCatalog | None, source_files: tuple[str, ...]) -> dict[str, object]:
+    if dwarf is None or not hasattr(dwarf, "source_declarations") or not hasattr(dwarf, "source_functions"):
+        return {"available": False, "variableCount": 0, "functionCount": 0, "fileCount": 0}
+    allowed = set(source_files)
+    declarations = tuple(symbol for symbol in dwarf.source_declarations()
+                         if symbol.file in allowed)
+    functions = tuple(function for function in dwarf.source_functions()
+                      if function.file in allowed)
+    files = {symbol.file for symbol in declarations} | {function.file for function in functions}
+    return {"available": True,
+            "variableCount": len(declarations),
+            "functionCount": len(functions), "fileCount": len(files)}
+
+
 def _page_payload(view: _View, items: tuple[SourceItem, ...], actual_total: int,
                   normalized: str, cursor: str | None, limit: int,
                   parent_id: str | None, scope_id: str | None = None) -> dict[str, object]:
@@ -491,13 +626,8 @@ def _page_payload(view: _View, items: tuple[SourceItem, ...], actual_total: int,
         raise SourceCatalogFailure("MONITOR_SOURCE_CONTEXT_CHANGED", "Source catalog cursor changed")
     data: dict[str, object] = {
         "schemaVersion": 1, "catalogId": view.catalog_id, "identity": view.identity,
-        "engine": {"name": view.index.engine_name, "version": view.index.engine_version,
-                   "inputKind": view.index.input_kind},
-        "coverage": {"complete": view.index.complete,
-                     "totalUnits": view.index.total_units,
-                     "parsedUnits": view.index.parsed_units,
-                     "issues": _issue_summary(view.index),
-                     "truncated": view.index.truncated},
+        "engine": _engine(view),
+        "coverage": _coverage(view),
         "total": actual_total if parent_id is not None and not normalized else len(items),
         "items": [], "nextCursor": None,
     }
@@ -535,11 +665,8 @@ def _metadata_page_payload(view: _View, items: tuple[dict[str, object], ...], qu
         raise SourceCatalogFailure("MONITOR_SOURCE_CONTEXT_CHANGED", "Source tree cursor changed")
     data: dict[str, object] = {
         "schemaVersion": 1, "catalogId": view.catalog_id, "identity": view.identity,
-        "engine": {"name": view.index.engine_name, "version": view.index.engine_version,
-                   "inputKind": view.index.input_kind},
-        "coverage": {"complete": view.index.complete, "totalUnits": view.index.total_units,
-                     "parsedUnits": view.index.parsed_units, "issues": _issue_summary(view.index),
-                     "truncated": view.index.truncated},
+        "engine": _engine(view),
+        "coverage": _coverage(view),
         "total": len(items), "items": [], "nextCursor": None,
     }
     base_bytes = len(json.dumps(data, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
@@ -598,8 +725,8 @@ class SourceCatalogProvider:
         self.workspace_id = workspace_id
         self.session_id = session_id
         self.adapter = adapter or ClangSourceAdapter()
-        self._bases: OrderedDict[tuple[str, str | None, str], _Base] = OrderedDict()
-        self._inflight: dict[tuple[str, str | None, str], asyncio.Task[_Base]] = {}
+        self._bases: OrderedDict[tuple[object, ...], _Base] = OrderedDict()
+        self._inflight: dict[tuple[object, ...], asyncio.Task[_Base]] = {}
         self._views: OrderedDict[str, _View] = OrderedDict()
         self._lock = asyncio.Lock()
         self._closed = False
@@ -610,12 +737,12 @@ class SourceCatalogProvider:
         for task in self._inflight.values():
             task.cancel()
 
-    async def _load_base_job(self, key: tuple[str, str | None, str],
+    async def _load_base_job(self, key: tuple[object, ...],
                              facts: _Facts, plan: SourcePlan) -> _Base:
         try:
             base = await asyncio.to_thread(_load_base, self.adapter, facts, plan)
             async with self._lock:
-                if not self._closed and base.index.complete:
+                if not self._closed and (base.index.complete or base.dwarf is not None):
                     self._bases[key] = base
                     self._bases.move_to_end(key)
                     while len(self._bases) > 2:
@@ -632,11 +759,14 @@ class SourceCatalogProvider:
         if not task.cancelled():
             task.exception()
 
-    async def _base(self, facts: _Facts, plan: SourcePlan) -> _Base:
-        key = facts.source_sha, facts.elf_sha, plan.fingerprint
+    async def _base(self, facts: _Facts, plan: SourcePlan, refresh: bool = False) -> _Base:
+        key = (facts.source_sha, facts.build_id, facts.elf_sha, facts.elf_path,
+               facts.elf_size, plan.fingerprint, plan.engine_version, plan.input_kind)
         async with self._lock:
             if self._closed:
                 raise SourceCatalogFailure("MONITOR_SOURCE_CONTEXT_CHANGED", "Source catalog was closed")
+            if refresh:
+                self._bases.pop(key, None)
             if key in self._bases:
                 self._bases.move_to_end(key)
                 return self._bases[key]
@@ -651,7 +781,7 @@ class SourceCatalogProvider:
         return base
 
     async def _view(self, binding: object | None, binding_epoch: int,
-                    requested_catalog_id: str | None = None) -> _View:
+                    requested_catalog_id: str | None = None, refresh: bool = False) -> _View:
         if self._closed:
             raise SourceCatalogFailure("MONITOR_SOURCE_CONTEXT_CHANGED", "Source catalog was closed")
         facts = await asyncio.to_thread(_offline_facts, self.root)
@@ -677,7 +807,7 @@ class SourceCatalogProvider:
                         and saved.index.input_kind == plan.input_kind):
                     self._views.move_to_end(requested_catalog_id)
                     return saved
-        base = await self._base(facts, plan)
+        base = await self._base(facts, plan, refresh)
         current = await asyncio.to_thread(_offline_facts, self.root)
         if (facts.source_sha, facts.build_id, facts.elf_sha) != (current.source_sha, current.build_id, current.elf_sha):
             raise SourceCatalogFailure("MONITOR_SOURCE_CONTEXT_CHANGED", "Source or firmware changed while indexing")
@@ -689,11 +819,13 @@ class SourceCatalogProvider:
                 return saved
         binding_ok = _binding_matches(binding, facts, self.workspace_id, self.session_id)
         context = _context_reason(base.index, facts, binding, binding_ok)
-        if base.dwarf is None and context not in {"coverage_incomplete", "source_mismatch"}:
+        if base.dwarf is None and context != "source_mismatch":
             context = "firmware_unavailable"
-        roots, nodes = await asyncio.to_thread(_materialize, base.index, base.dwarf, context, binding)
+        roots, nodes = await asyncio.to_thread(_materialize, base.index, base.dwarf, context,
+                                               binding, base.source_files)
         view = _View(catalog, identity, base.index, base.dwarf, roots, nodes,
                      binding, binding_ok, {}, signature, base.source_files)
+        view.compiled_debug = _compiled_debug(base.dwarf, base.source_files)
         await asyncio.to_thread(_tree_index, view)
         async with self._lock:
             if self._closed:
@@ -731,8 +863,7 @@ class SourceCatalogProvider:
             members = [(str(index), dtype.element_type, None) for index in range(min(dtype.element_count, remaining))]
         root.descendants += len(members)
         children: list[SourceItem] = []
-        context = None if view.binding_ok and view.index.complete else (
-            "coverage_incomplete" if not view.index.complete else
+        context = None if view.binding_ok else (
             "probe_required" if view.binding is None else "source_mismatch")
         for ordinal, (name, child_type, intrinsic) in enumerate(members):
             kind = "element" if dtype.kind == "array" else "member"
@@ -770,16 +901,18 @@ class SourceCatalogProvider:
     async def page(self, *, query: str, cursor: str | None, limit: int,
                    parent_id: str | None, catalog_id: str | None,
                    binding: object | None, binding_epoch: int,
-                   scope_id: str | None = None) -> dict[str, object]:
+                   scope_id: str | None = None, refresh: bool = False) -> dict[str, object]:
         if (type(query) is not str or len(query) > 128 or any(ord(c) < 32 for c in query)
                 or type(limit) is not int or not 1 <= limit <= 100
+                or type(refresh) is not bool or refresh and (parent_id is not None or scope_id is not None
+                                                              or catalog_id is not None or cursor is not None)
                 or parent_id is not None and (not isinstance(parent_id, str) or not _ID.fullmatch(parent_id))
                 or scope_id is not None and (not isinstance(scope_id, str) or not _ID.fullmatch(scope_id))
                 or scope_id is not None and (parent_id is not None or catalog_id is None)
                 or catalog_id is not None and (not isinstance(catalog_id, str) or not _ID.fullmatch(catalog_id))):
             raise SourceCatalogFailure("MONITOR_SOURCE_INDEX_FAILED", "Source catalog query is invalid")
         normalized = unicodedata.normalize("NFC", query.strip()).casefold()
-        view = await self._view(binding, binding_epoch, catalog_id)
+        view = await self._view(binding, binding_epoch, catalog_id, refresh)
         if catalog_id is not None and catalog_id != view.catalog_id:
             raise SourceCatalogFailure("MONITOR_SOURCE_CONTEXT_CHANGED", "Source catalog identity changed")
         if scope_id is not None:
@@ -809,16 +942,19 @@ class SourceCatalogProvider:
 
     async def tree(self, *, query: str, cursor: str | None, limit: int,
                    parent_id: str | None, catalog_id: str | None,
-                   binding: object | None, binding_epoch: int) -> dict[str, object]:
+                   binding: object | None, binding_epoch: int,
+                   refresh: bool = False) -> dict[str, object]:
         if (type(query) is not str or len(query) > 128 or any(ord(c) < 32 for c in query)
                 or type(limit) is not int or not 1 <= limit <= 1000
+                or type(refresh) is not bool or refresh and (parent_id is not None
+                                                              or catalog_id is not None or cursor is not None)
                 or parent_id is not None and (not isinstance(parent_id, str) or not _ID.fullmatch(parent_id)
                                               or catalog_id is None)
                 or cursor is not None and catalog_id is None
                 or catalog_id is not None and (not isinstance(catalog_id, str) or not _ID.fullmatch(catalog_id))):
             raise SourceCatalogFailure("MONITOR_SOURCE_INDEX_FAILED", "Source tree query is invalid")
         normalized = unicodedata.normalize("NFC", query.strip()).casefold()
-        view = await self._view(binding, binding_epoch, catalog_id)
+        view = await self._view(binding, binding_epoch, catalog_id, refresh)
         if catalog_id is not None and catalog_id != view.catalog_id:
             raise SourceCatalogFailure("MONITOR_SOURCE_CONTEXT_CHANGED", "Source catalog identity changed")
         items = await asyncio.to_thread(_tree_items, view, normalized, parent_id)
@@ -841,7 +977,7 @@ class SourceCatalogProvider:
             raise SourceCatalogFailure("MONITOR_SOURCE_CONTEXT_CHANGED", "Source catalog identity changed")
         node = view.nodes.get(item_id)
         if (node is None or not node.item.can_add or node.item.selector != selector
-                or not view.binding_ok or not view.index.complete):
+                or not view.binding_ok):
             raise SourceCatalogFailure("MONITOR_SOURCE_SELECTION_UNAVAILABLE", "Source selection is unavailable")
         if await asyncio.to_thread(_eligible_leaf, selector, view.dwarf, binding) is not None:
             raise SourceCatalogFailure("MONITOR_SOURCE_SELECTION_UNAVAILABLE", "Source selection is unavailable")

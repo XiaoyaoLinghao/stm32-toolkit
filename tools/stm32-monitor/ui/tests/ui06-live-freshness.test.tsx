@@ -4,11 +4,11 @@ import type {MonitorStatus,ObservationBinding,SampleBatch,WatchGroup} from "../s
 import {LiveTable} from "../src/components/LiveTable";
 import {StatusStrip} from "../src/components/StatusStrip";
 import {initialState,reducer} from "../src/state/reducer";
-import {activeGroup,liveRows,selectedGroup} from "../src/state/selectors";
+import {activeGroup,chartSeries,liveRows,selectedGroup} from "../src/state/selectors";
 
 const at="2026-08-10T00:00:01.123Z";
 const binding:ObservationBinding={workspaceId:"w",logicalProjectId:"p",sessionId:"s",probeId:"probe",targetDevice:"STM32",physicalTarget:"target",buildId:"build",elfSha256:"elf",inputSnapshotSha256:"snapshot",gitHead:"head",gitDirty:false,flashSessionId:"flash",leaseId:"lease",dwarfSha256:"dwarf",svdSha256:null};
-const status=(runId="run",bindingEpoch=4n):MonitorStatus=>({workspaceId:"w",sessionId:"s",project:{logicalProjectId:"p",name:"Project",targetDevice:"STM32"},firmware:{buildId:"build",elfSha256:"elf",inputSnapshotSha256:"snapshot",gitHead:"head",gitDirty:false,targetDevice:"STM32"},probe:{connected:true,probeId:"probe"},sampling:{state:"RUNNING",active:true,blockedCode:null,groupId:"g",groupRevision:1n,runId,lastSequence:null,bindingEpoch,subscriberDrops:0n,historyDrops:0n,deadlineDrops:0n,serviceDrops:0n},probeConnected:true,samplingActive:true});
+const status=(runId:string|null="run",bindingEpoch=4n):MonitorStatus=>({workspaceId:"w",sessionId:"s",project:{logicalProjectId:"p",name:"Project",targetDevice:"STM32"},firmware:{buildId:"build",elfSha256:"elf",inputSnapshotSha256:"snapshot",gitHead:"head",gitDirty:false,targetDevice:"STM32"},probe:{connected:true,probeId:"probe"},sampling:{state:"RUNNING",active:true,blockedCode:null,groupId:"g",groupRevision:1n,runId,lastSequence:null,bindingEpoch,subscriberDrops:0n,historyDrops:0n,deadlineDrops:0n,serviceDrops:0n},probeConnected:true,samplingActive:true});
 const group:WatchGroup={groupId:"g",name:"Group",description:"",intervalMs:250,items:[{kind:"variable",expression:"x"}],revision:1n,createdAtUtc:"now",updatedAtUtc:"now"};
 const batch:SampleBatch={binding,groupId:"g",groupRevision:1n,runId:"run",sequence:1n,scheduledUnixNs:1n,scheduledAtUtc:"earlier",capturedUnixNs:2n,capturedAtUtc:at,latencyNs:2_500_000n,actualRateHz:4,subscriberDrops:0n,historyDrops:0n,deadlineDrops:0n,values:[{watch:{kind:"variable",expression:"x"},status:"OK",typedValue:{expression:"x",typeName:"float",value:12.5,rawHex:"0x1",bitWidth:32},code:null,definition:null}]};
 const ready=()=>reducer(initialState,{type:"initial.loaded",status:status(),probes:[],groups:[group]});
@@ -63,15 +63,15 @@ it("keeps the live table tied to the running group when the next editing target 
   expect(liveRows(state)[0]?.displayValue).toBe("12.5");
 });
 
-it("after revision change or deletion shows only accepted same-run rows, never a new revision's items",()=>{
+it("invalidates accepted rows immediately when the running group revision changes or is deleted",()=>{
   const revised:WatchGroup={...group,revision:2n,name:"New version",items:[{kind:"variable",expression:"y"}]};
   const changed=reducer(sample(),{type:"groups.loaded",groups:[revised]});
   expect(activeGroup(changed)).toBeNull();
-  expect(changed.live.lastSampleCapturedAtUtc).toBe(at);
-  expect(liveRows(changed).map(row=>row.watch)).toEqual(group.items);
+  expect(changed.live.lastSampleCapturedAtUtc).toBeNull();
+  expect(liveRows(changed)).toEqual([]);
   const removed=reducer(changed,{type:"group.deleted",groupId:"g"});
-  expect(liveRows(removed).map(row=>row.watch)).toEqual(group.items);
-  expect(removed.live.lastSampleCapturedAtUtc).toBe(at);
+  expect(liveRows(removed)).toEqual([]);
+  expect(removed.live.lastSampleCapturedAtUtc).toBeNull();
   const wrongRun={...removed,live:{...removed.live,runId:"prior-run"}};
   expect(liveRows(wrongRun)).toEqual([]);
 });
@@ -86,4 +86,47 @@ it("uses empty placeholders when the live run differs and only previews the sele
   expect(activeGroup(noRun)).toBeNull();
   expect(liveRows(noRun)).toHaveLength(1);
   expect(liveRows(noRun)[0]?.displayValue).toBe("");
+});
+
+it("holds the old run hidden until matching stop ACK and IDLE agree, then retains a stale snapshot",()=>{
+  const accepted=reducer(sample(),{type:"series.toggled",key:"variable:x"});
+  const pending=reducer(accepted,{type:"request.started",scope:"sampling.stop",requestId:8n});
+  const idle={...status(null),sampling:{...status(null).sampling,state:"IDLE" as const,active:false,
+    groupId:null,groupRevision:null},samplingActive:false};
+  const earlyIdle=reducer(pending,{type:"status.loaded",status:idle});
+  expect(earlyIdle.live.retained).toBe(false);
+  expect(liveRows(earlyIdle)[0]?.displayValue).toBe("");
+  expect(chartSeries(earlyIdle)[0]?.points).toEqual([]);
+  const stopped=reducer(earlyIdle,{type:"sampling.stop.accepted",stopped:true,runId:"run",
+    groupId:"g",groupRevision:1n,bindingEpoch:4n});
+  expect(stopped.live.retained).toBe(true);
+  expect(liveRows(stopped)[0]?.displayValue).toBe("12.5");
+  expect(chartSeries(stopped)[0]?.points.map(point=>point.value)).toEqual([12.5]);
+  const oldBatch=reducer(stopped,{type:"live.envelope",value:{event:{eventId:2n,type:"sample",
+    data:{batch:{...batch,sequence:2n,values:[{watch:{kind:"variable",expression:"x"},status:"OK",
+      typedValue:{expression:"x",typeName:"float",value:999,rawHex:"0x1",bitWidth:32},code:null,definition:null}]},serviceSubscriberDrops:0n}},subscriberDropped:0n}});
+  expect(liveRows(oldBatch)[0]?.displayValue).toBe("12.5");
+  const revised=reducer(stopped,{type:"groups.loaded",groups:[{...group,revision:2n}]});
+  expect(revised.live.retained).toBe(false);
+  expect(chartSeries(revised)[0]?.points).toEqual([]);
+});
+
+it("does not retain an unacknowledged, failed, or obsolete stop",()=>{
+  const accepted=reducer(sample(),{type:"series.toggled",key:"variable:x"});
+  const pending=reducer(accepted,{type:"request.started",scope:"sampling.stop",requestId:8n});
+  const idle={...status(null),sampling:{...status(null).sampling,state:"IDLE" as const,active:false,
+    groupId:null,groupRevision:null},samplingActive:false};
+  const earlyIdle=reducer(pending,{type:"status.loaded",status:idle});
+  const refused=reducer(earlyIdle,{type:"sampling.stop.accepted",stopped:false,runId:"run",
+    groupId:"g",groupRevision:1n,bindingEpoch:4n});
+  expect(refused.live.retained).toBe(false);
+  expect(refused.live.lastSampleCapturedAtUtc).toBeNull();
+  const failed=reducer(pending,{type:"request.failed",scope:"sampling.stop",requestId:8n,
+    code:"UNAVAILABLE",message:"failed"});
+  expect(failed.live.stopPending).toBe(false);
+  const nextRun=reducer(pending,{type:"status.loaded",status:status("next",5n)});
+  const lateAck=reducer(nextRun,{type:"sampling.stop.accepted",stopped:true,runId:"run",
+    groupId:"g",groupRevision:1n,bindingEpoch:4n});
+  expect(lateAck.live.retained).toBe(false);
+  expect(lateAck.live.lastSampleCapturedAtUtc).toBeNull();
 });

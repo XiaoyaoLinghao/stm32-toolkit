@@ -9,10 +9,21 @@ export const activeGroup=(state:MonitorState):WatchGroup|null=>{
 };
 export const liveRows=(state:MonitorState):readonly LiveRow[]=>{
  const runId=state.status?.sampling.runId;
- if(runId===null||runId===undefined){const group=selectedGroup(state);return group===null?[]:group.items.map(emptyRow);}
+ if(runId===null||runId===undefined){
+  if(state.live.retained&&state.live.groupId!==null){
+   const group=state.groups.find(item=>item.groupId===state.live.groupId&&item.revision===state.live.groupRevision);
+   return group===undefined?[]:group.items.map(watch=>state.live.rows.get(watchKey(watch))??emptyRow(watch));
+  }
+  const group=selectedGroup(state);return group===null?[]:group.items.map(emptyRow);
+ }
  const group=activeGroup(state);
  if(state.live.runId!==runId)return group===null?[]:group.items.map(emptyRow);
  return group===null?[...state.live.rows.values()].filter(row=>row.capturedAtUtc!==""):
   group.items.map(watch=>state.live.rows.get(watchKey(watch))??emptyRow(watch));
 };
-export const chartSeries=(state:MonitorState):readonly DisplaySeries[]=>[...state.selectedSeries].slice(0,8).map(key=>({key,label:key,points:state.live.series.get(key)??[]}));
+export const chartSeries=(state:MonitorState):readonly DisplaySeries[]=>{
+ const visible=state.live.retained?state.status?.sampling.runId===null:
+  state.status?.sampling.runId!==null&&state.status?.sampling.runId===state.live.runId;
+ return [...state.selectedSeries].slice(0,8).map(key=>({key,label:key,
+  points:visible?state.live.series.get(key)??[]:[]}));
+};

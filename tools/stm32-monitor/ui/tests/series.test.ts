@@ -13,14 +13,22 @@ it("preserves prior row and appends a null chart gap for ERROR",()=>{
   expect(two.series.get("variable:x0")?.map(point=>point.value)).toEqual([12.5,null]);
 });
 
-it("resets trends after an error and bounds selected chart series to eight by six hundred",()=>{
+it("retains nine watch buffers at six hundred points while only eight remain selected",()=>{
   let live=emptyLive();
   const selected=new Set(watches.map(watchKey));
   for(let i=1n;i<=601n;i++)live=appendAuthoritativeSample(live,batch(i),group,selected);
-  expect(live.series.size).toBe(8);
+  expect(live.series.size).toBe(9);
+  expect(live.selectedSeries.size).toBe(8);
   for(const points of live.series.values())expect(points).toHaveLength(600);
   const error=appendAuthoritativeSample(live,batch(602n,"ERROR"),group,selected);
   expect(error.rows.get("variable:x0")?.trend).toBe("none");
+});
+
+it("caps all numeric watch buffers at 256 even if a group has more items",()=>{
+  const many={...group,items:Array.from({length:257},(_,index)=>({kind:"variable" as const,expression:`item${index}`}))};
+  const live=appendAuthoritativeSample(emptyLive(),batch(1n),many,new Set());
+  expect(live.series.size).toBe(256);
+  expect(live.series.has("variable:item256")).toBe(false);
 });
 
 it("turns null, bigint, nonnumeric, and nonfinite typed values into chart gaps",()=>{

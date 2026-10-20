@@ -515,10 +515,11 @@ def test_location_parser_failures_never_become_addresses() -> None:
     assert DwarfCatalog._location(die, cu, _Parser([]), _ExpressionParser(()))[1] == (
         "DWARF_LOCATION_OPTIMIZED_OUT"
     )
-    for names, code in [
-        (("DW_OP_fbreg",), "DWARF_LOCATION_UNAVAILABLE"),
-        (("DW_OP_implicit_value",), "DWARF_LOCATION_OPTIMIZED_OUT"),
-        (("DW_OP_piece",), "DWARF_LOCATION_UNSUPPORTED"),
+    for names, code, kind in [
+        (("DW_OP_fbreg",), "DWARF_LOCATION_UNAVAILABLE", "frame"),
+        (("DW_OP_reg0",), "DWARF_LOCATION_REGISTER_ONLY", "register"),
+        (("DW_OP_implicit_value",), "DWARF_LOCATION_OPTIMIZED_OUT", "unavailable"),
+        (("DW_OP_piece",), "DWARF_LOCATION_UNSUPPORTED", "unavailable"),
     ]:
         assert DwarfCatalog._location(
             die,
@@ -526,6 +527,9 @@ def test_location_parser_failures_never_become_addresses() -> None:
             _Parser(LocationExpr([1])),
             _ExpressionParser(names),
         )[1] == code
+        assert DwarfCatalog._location_details(
+            die, cu, _Parser(LocationExpr([1])), _ExpressionParser(names),
+        )[2] == kind
 
 
 def test_all_caller_limits_are_clamped_to_hard_caps() -> None:

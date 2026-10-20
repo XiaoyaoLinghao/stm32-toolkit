@@ -2352,8 +2352,10 @@ def test_source_dispatch_rechecks_same_epoch_binding_and_observation_after_await
         def __init__(self) -> None:
             self.entered = asyncio.Event()
             self.release = asyncio.Event()
+            self.queries = []
 
-        async def page(self, **_kwargs):
+        async def page(self, **kwargs):
+            self.queries.append(kwargs)
             self.entered.set()
             await self.release.wait()
             return {"catalogId": "c" * 64}
@@ -2412,6 +2414,20 @@ def test_source_dispatch_rechecks_same_epoch_binding_and_observation_after_await
             assert accepted.ok and accepted.operation == "monitor.catalog.source.variables"
             accepted_tree = await runtime.dispatch("monitor.catalog.source.tree", {}, query={"limit": "1000"})
             assert accepted_tree.ok and accepted_tree.operation == "monitor.catalog.source.tree"
+            refreshed = await runtime.dispatch(
+                "monitor.catalog.source.variables", {}, query={"limit": "1", "refresh": "1"})
+            assert refreshed.ok and provider.queries[-1]["refresh"] is True
+            normal = await runtime.dispatch("monitor.catalog.source.tree", {}, query={"limit": "1"})
+            assert normal.ok and provider.queries[-1]["refresh"] is False
+            for operation, query in (
+                ("monitor.catalog.source.variables", {"refresh": "2"}),
+                ("monitor.catalog.source.variables", {"refresh": "1", "scopeId": "a" * 64}),
+                ("monitor.catalog.source.tree", {"refresh": "1", "catalogId": "c" * 64}),
+                ("monitor.catalog.source.tree", {"refresh": "1", "cursor": "cursor"}),
+                ("monitor.catalog.source.tree", {"refresh": "1", "parentId": "a" * 64}),
+            ):
+                invalid = await runtime.dispatch(operation, {}, query=query)
+                assert not invalid.ok and invalid.code == "MONITOR_SOURCE_INDEX_FAILED"
             accepted_selection = await runtime.dispatch(
                 "monitor.catalog.source.selection", {},
                 query={"catalogId": "c" * 64, "id": "a" * 64, "selector": "counter"})

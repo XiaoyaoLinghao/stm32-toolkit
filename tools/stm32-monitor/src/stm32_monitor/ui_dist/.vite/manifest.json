@@ -1,38 +1,38 @@
 {
-  "_zh-BjOCh8R_.js": {
-    "file": "assets/zh-BjOCh8R_.js",
+  "../../../../impl-checks/node_modules/preact/dist/preact.module.js": {
+    "file": "assets/preact.module-ZOr5Neeu.js",
+    "name": "preact.module",
+    "src": "../../../../impl-checks/node_modules/preact/dist/preact.module.js",
+    "isDynamicEntry": true
+  },
+  "_zh-CZVimP2v.js": {
+    "file": "assets/zh-CZVimP2v.js",
     "name": "zh"
   },
   "index.html": {
-    "file": "assets/index-BO5gVcS-.js",
+    "file": "assets/index-DlFoqW9Y.js",
     "name": "index",
     "src": "index.html",
     "isEntry": true,
     "imports": [
-      "_zh-BjOCh8R_.js"
+      "_zh-CZVimP2v.js"
     ],
     "dynamicImports": [
-      "node_modules/preact/dist/preact.module.js",
+      "../../../../impl-checks/node_modules/preact/dist/preact.module.js",
       "src/app.tsx"
     ],
     "css": [
       "assets/index-C5UbzK5f.css"
     ]
   },
-  "node_modules/preact/dist/preact.module.js": {
-    "file": "assets/preact.module-ZOr5Neeu.js",
-    "name": "preact.module",
-    "src": "node_modules/preact/dist/preact.module.js",
-    "isDynamicEntry": true
-  },
   "src/app.tsx": {
-    "file": "assets/app-CPgkPS0O.js",
+    "file": "assets/app-CFxxuojd.js",
     "name": "app",
     "src": "src/app.tsx",
     "isDynamicEntry": true,
     "imports": [
-      "node_modules/preact/dist/preact.module.js",
-      "_zh-BjOCh8R_.js"
+      "../../../../impl-checks/node_modules/preact/dist/preact.module.js",
+      "_zh-CZVimP2v.js"
     ]
   }
 }

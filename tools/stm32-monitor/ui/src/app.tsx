@@ -190,9 +190,10 @@ export function App():JSX.Element{
   const chartEmphasisActive=hasCurves&&chartEmphasized;
   const selected=selectedGroup(state);
   const groupName=state.groupDraft.name||selected?.name||copy.samplingNoGroup;
-  const sourceLabel=runId===null?copy.liveSourcePreview:
-    `${copy.liveSourceGroup} ${runningGroup?.name??copy.liveSourceUnknownGroup} · ${copy.liveSourceRevision} ${status.sampling.groupRevision?.toString()??"-"}`;
-  const sourceFreshness=runId===null?undefined:state.live.lastSampleCapturedAtUtc===null?copy.liveSourceAwaiting:
+  const retainedGroup=state.live.retained?state.groups.find(group=>group.groupId===state.live.groupId&&group.revision===state.live.groupRevision)??null:null;
+  const sourceLabel=runId===null&&!state.live.retained?copy.liveSourcePreview:
+    `${copy.liveSourceGroup} ${(retainedGroup??runningGroup)?.name??copy.liveSourceUnknownGroup} · ${copy.liveSourceRevision} ${(state.live.retained?state.live.groupRevision:status.sampling.groupRevision)?.toString()??"-"}`;
+  const sourceFreshness=state.live.retained?copy.liveSourceStopped:runId===null?undefined:state.live.lastSampleCapturedAtUtc===null?copy.liveSourceAwaiting:
     fresh?copy.liveSourceCurrent:copy.liveSourcePrevious;
   const drops=displayDropTotals(state.live);
 
@@ -231,7 +232,7 @@ export function App():JSX.Element{
             pending={state.pending} failures={state.failures}
             editBusy={busyGroups||state.groupNavigation!==null}
             onRetry={(scope,id)=>controller.retry(scope,id)} onFirmware={()=>setCatalogView("firmware")}
-            onSearch={query=>controller.searchSource(query)}
+            onSearch={(query,refresh)=>controller.searchSource(query,refresh)}
             onChildren={(parentId,next)=>controller.sourceChildren(parentId,next)} onSelect={item=>controller.selectSource(item)}/>
           :<CatalogPanel connected={status.probeConnected} bindingEpoch={status.sampling.bindingEpoch}
             bindingKey={status.workspaceId+"/"+status.sessionId+"/"+status.project.logicalProjectId+"/"+status.sampling.bindingEpoch}
@@ -255,9 +256,10 @@ export function App():JSX.Element{
             <button type="button" className="toolbar-detail" aria-label={copy.toolbarDevice} onClick={event=>openDrawer("device",event.currentTarget)}>ⓘ</button>
           </div>
           <div className="live-source" aria-label={copy.liveSource}>
-            {runId===null?<span>{sourceLabel}</span>:<>
+            {runId===null&&!state.live.retained?<span>{sourceLabel}</span>:<>
               <span>{sourceFreshness}：{sourceLabel}</span>
-              {runningGroup===null&&<span className="stale-label">{state.live.lastSampleCapturedAtUtc===null?copy.liveSourceUnverifiedEmpty:copy.liveSourceUnverified}</span>}
+              {state.live.retained&&<span className="stale-label">{copy.liveSourceStoppedRun}：{state.live.runId}</span>}
+              {!state.live.retained&&runningGroup===null&&<span className="stale-label">{state.live.lastSampleCapturedAtUtc===null?copy.liveSourceUnverifiedEmpty:copy.liveSourceUnverified}</span>}
             </>}
           </div>
           <div className="values-region">

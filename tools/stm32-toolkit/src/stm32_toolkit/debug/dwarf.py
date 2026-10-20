@@ -239,6 +239,7 @@ class _CatalogSymbol:
     decl_column: int | None = None
     function: str | None = None
     cu_file: str | None = None
+    source: DwarfSourceSymbol | None = None
 
 
 @dataclass(frozen=True)
@@ -258,6 +259,77 @@ class DwarfSourceSymbol:
     address: int | None
     location_error: str | None
     type_error: str | None
+    cu_offset: int | None = None
+    die_offset: int | None = None
+    function_die_offset: int | None = None
+    scope_path: tuple[str, ...] = ()
+    storage: str = "none"
+    scope_kind: str = "global"
+    kind: str = "variable"
+    location_kind: str = "unknown"
+
+
+@dataclass(frozen=True)
+class DwarfSourceFunction:
+    """One concrete function DIE, independent of source AST availability."""
+
+    name: str
+    file: str
+    line: int | None
+    column: int | None
+    compilation_unit: str | None
+    cu_offset: int
+    die_offset: int
+
+
+def _in_cu_owner(die: object, cu: object, boundaries: frozenset[int],
+                 attribute: str) -> object | None:
+    """Resolve a metadata owner only through bounded, same-CU, same-tag links."""
+    current = die
+    seen: set[int] = set()
+    for _ in range(8):
+        offset = getattr(current, "offset", None)
+        if type(offset) is not int or offset in seen or offset not in boundaries:
+            return None
+        seen.add(offset)
+        if attribute in getattr(current, "attributes", {}):
+            return current
+        link = next((key for key in ("DW_AT_specification", "DW_AT_abstract_origin")
+                     if key in current.attributes), None)
+        if link is None:
+            return None
+        try:
+            target = current.get_DIE_from_attribute(link)
+        except (AttributeError, KeyError, TypeError, ValueError, ElfToolsDwarfError):
+            return None
+        if (target is None or getattr(target, "cu", None) is not cu
+                or getattr(target, "tag", None) != getattr(die, "tag", None)):
+            return None
+        current = target
+    return None
+
+
+def _source_name(die: object, cu: object, boundaries: frozenset[int]) -> str:
+    owner = _in_cu_owner(die, cu, boundaries, "DW_AT_name")
+    return _name(owner, "") if owner is not None else ""
+
+
+def _scope_metadata(die: object, functions: Mapping[int, DwarfSourceFunction],
+                    max_depth: int) -> tuple[DwarfSourceFunction | None, tuple[str, ...]]:
+    function = None
+    blocks: list[str] = []
+    parent = getattr(die, "_parent", None)
+    for _ in range(max_depth):
+        if parent is None:
+            break
+        offset = getattr(parent, "offset", None)
+        if getattr(parent, "tag", None) == "DW_TAG_subprogram":
+            function = functions.get(offset)
+            break
+        if getattr(parent, "tag", None) == "DW_TAG_lexical_block" and type(offset) is int:
+            blocks.append(f"block@{offset:x}")
+        parent = getattr(parent, "_parent", None)
+    return function, tuple(reversed(blocks))
 
 
 def _project_relative_source(project_root: Path, raw: str) -> str | None:
@@ -705,6 +777,8 @@ class DwarfCatalog:
     _canonical_project_root: Path = field(repr=False)
     _canonical_path: Path = field(repr=False)
     _source_identity: tuple[int, int] = field(repr=False)
+    _source_declarations: tuple[DwarfSourceSymbol, ...] = field(repr=False)
+    _source_functions: tuple[DwarfSourceFunction, ...] = field(repr=False)
 
     @classmethod
     def _create(
@@ -715,6 +789,8 @@ class DwarfCatalog:
         limits: DwarfLimits,
         symbols: Mapping[str, tuple[_CatalogSymbol, ...]],
         little_endian: bool,
+        source_declarations: tuple[DwarfSourceSymbol, ...],
+        source_functions: tuple[DwarfSourceFunction, ...],
     ) -> "DwarfCatalog":
         instance = object.__new__(cls)
         values = (
@@ -728,6 +804,8 @@ class DwarfCatalog:
             ("_canonical_project_root", source.canonical_project_root),
             ("_canonical_path", source.canonical_path),
             ("_source_identity", source.source_identity),
+            ("_source_declarations", source_declarations),
+            ("_source_functions", source_functions),
         )
         for name, value in values:
             object.__setattr__(instance, name, value)
@@ -832,6 +910,8 @@ class DwarfCatalog:
             expression_parser = DWARFExprParser(dwarf.structs)
             location_parser = LocationParser(dwarf.location_lists())
             entries: dict[str, list[_CatalogSymbol]] = {}
+            source_declarations: list[DwarfSourceSymbol] = []
+            source_functions: list[DwarfSourceFunction] = []
             die_count = 0
             catalog_count = 0
             for cu in dwarf.iter_CUs():
@@ -857,23 +937,44 @@ class DwarfCatalog:
                     if type(offset) is int:
                         boundary_offsets.add(offset)
                 frozen_boundaries = frozenset(boundary_offsets)
+                functions_by_offset: dict[int, DwarfSourceFunction] = {}
+                cu_file = cu_group.label if "/" in cu_group.label else None
                 for die in dies:
-                    if die.tag != "DW_TAG_variable":
+                    if (die.tag != "DW_TAG_subprogram" or _is_declaration(die)
+                            or "DW_AT_low_pc" not in die.attributes
+                            and "DW_AT_ranges" not in die.attributes):
+                        continue
+                    name = _source_name(die, cu, frozen_boundaries)
+                    if not _IDENTIFIER.fullmatch(name):
+                        continue
+                    file, line, column = _die_source(
+                        die, cu, dwarf, source.canonical_project_root, frozen_boundaries
+                    )
+                    if file is None:
+                        continue
+                    function = DwarfSourceFunction(
+                        name, file, line, column, cu_file, cu.cu_offset, die.offset
+                    )
+                    functions_by_offset[die.offset] = function
+                    source_functions.append(function)
+                for die in dies:
+                    if die.tag not in {"DW_TAG_variable", "DW_TAG_formal_parameter"}:
                         continue
                     if _is_declaration(die):
                         continue
-                    specification = _validated_variable_specification(
+                    parameter = die.tag == "DW_TAG_formal_parameter"
+                    specification = (None if parameter else _validated_variable_specification(
                         die, cu, frozen_boundaries
-                    )
+                    ))
                     name_owner = (
                         die
                         if "DW_AT_name" in die.attributes
-                        else specification or die
+                        else specification or _in_cu_owner(die, cu, frozen_boundaries, "DW_AT_name") or die
                     )
                     type_owner = (
                         die
                         if "DW_AT_type" in die.attributes
-                        else specification or die
+                        else specification or _in_cu_owner(die, cu, frozen_boundaries, "DW_AT_type") or die
                     )
                     name = _name(name_owner, "")
                     if not _IDENTIFIER.fullmatch(name):
@@ -890,20 +991,43 @@ class DwarfCatalog:
                     except DwarfError as exc:
                         dwarf_type = None
                         type_error = exc.code
-                    address, location_error = cls._location(
+                    address, location_error, location_kind = cls._location_details(
                         die, cu, location_parser, expression_parser
                     )
                     source_file, decl_line, decl_column = _die_source(
                         die, cu, dwarf, source.canonical_project_root, frozen_boundaries
                     )
-                    cu_file = cu_group.label if "/" in cu_group.label else None
-                    entries.setdefault(name, []).append(
-                        _CatalogSymbol(
-                            name, dwarf_type, address, location_error, type_error,
-                            cu_group, source_file, decl_line, decl_column,
-                            _die_function(die), cu_file,
+                    parent_function, blocks = _scope_metadata(die, functions_by_offset, max_die_depth)
+                    if parameter:
+                        scope_kind, storage = "parameter", "none"
+                    elif parent_function is not None:
+                        scope_kind = "static_local" if address is not None else "local"
+                        storage = "static" if scope_kind == "static_local" else "none"
+                    else:
+                        external = die.attributes.get("DW_AT_external") or (
+                            specification.attributes.get("DW_AT_external") if specification is not None else None
                         )
+                        scope_kind = "global" if external is not None and bool(external.value) else "file_static"
+                        storage = "none" if scope_kind == "global" else "static"
+                    source_symbol = DwarfSourceSymbol(
+                        name, source_file, decl_line, decl_column,
+                        parent_function.name if parent_function is not None else None,
+                        cu_file, dwarf_type, address, location_error, type_error,
+                        cu.cu_offset, die.offset,
+                        parent_function.die_offset if parent_function is not None else None,
+                        blocks, storage, scope_kind,
+                        "parameter" if parameter else "variable",
+                        location_kind,
                     )
+                    source_declarations.append(source_symbol)
+                    if not parameter:
+                        entries.setdefault(name, []).append(
+                            _CatalogSymbol(
+                                name, dwarf_type, address, location_error, type_error,
+                                cu_group, source_file, decl_line, decl_column,
+                                source_symbol.function, cu_file, source_symbol,
+                            )
+                        )
             frozen = {name: tuple(values) for name, values in entries.items()}
             return cls._create(
                 source=source,
@@ -911,6 +1035,8 @@ class DwarfCatalog:
                 limits=limits,
                 symbols=frozen,
                 little_endian=bool(elf.little_endian),
+                source_declarations=tuple(source_declarations),
+                source_functions=tuple(source_functions),
             )
         except DwarfError:
             raise
@@ -1134,11 +1260,16 @@ class DwarfCatalog:
 
     @staticmethod
     def _location(die, cu, parser: LocationParser, expression_parser: DWARFExprParser):
+        address, error, _ = DwarfCatalog._location_details(die, cu, parser, expression_parser)
+        return address, error
+
+    @staticmethod
+    def _location_details(die, cu, parser: LocationParser, expression_parser: DWARFExprParser):
         attribute = die.attributes.get("DW_AT_location")
         if attribute is None:
             if "DW_AT_const_value" in die.attributes:
-                return None, "DWARF_LOCATION_OPTIMIZED_OUT"
-            return None, "DWARF_LOCATION_UNAVAILABLE"
+                return None, "DWARF_LOCATION_OPTIMIZED_OUT", "unavailable"
+            return None, "DWARF_LOCATION_UNAVAILABLE", "unavailable"
         try:
             parsed = parser.parse_from_attribute(attribute, cu["version"], die)
             if isinstance(parsed, LocationExpr):
@@ -1149,18 +1280,19 @@ class DwarfCatalog:
                     if not hasattr(entry, "loc_expr"):
                         continue
                     if len(expressions) >= _MAX_LOCATION_LIST_ENTRIES:
-                        return None, "DWARF_LOCATION_LIST_LIMIT_EXCEEDED"
+                        return None, "DWARF_LOCATION_LIST_LIMIT_EXCEEDED", "unavailable"
                     expressions.append(entry.loc_expr)
             if not expressions:
-                return None, "DWARF_LOCATION_OPTIMIZED_OUT"
+                return None, "DWARF_LOCATION_OPTIMIZED_OUT", "unavailable"
             addresses: set[int] = set()
             failures: set[str] = set()
+            frame_location = False
             for expression in expressions:
                 if len(expression) > _MAX_LOCATION_EXPRESSION_BYTES:
-                    return None, "DWARF_LOCATION_EXPRESSION_TOO_LARGE"
+                    return None, "DWARF_LOCATION_EXPRESSION_TOO_LARGE", "unavailable"
                 operations = expression_parser.parse_expr(expression)
                 if len(operations) > _MAX_LOCATION_OPERATIONS:
-                    return None, "DWARF_LOCATION_OPERATION_LIMIT_EXCEEDED"
+                    return None, "DWARF_LOCATION_OPERATION_LIMIT_EXCEEDED", "unavailable"
                 if len(operations) == 1 and operations[0].op_name == "DW_OP_addr":
                     addresses.add(int(operations[0].args[0]))
                     continue
@@ -1171,20 +1303,24 @@ class DwarfCatalog:
                     failures.add("DWARF_LOCATION_OPTIMIZED_OUT")
                 elif "DW_OP_fbreg" in names:
                     failures.add("DWARF_LOCATION_UNAVAILABLE")
+                    frame_location = True
                 else:
                     failures.add("DWARF_LOCATION_UNSUPPORTED")
             if addresses and not failures and len(addresses) == 1:
-                return next(iter(addresses)), None
+                return next(iter(addresses)), None, "fixed"
             if len(failures) == 1:
-                return None, next(iter(failures))
-            return None, "DWARF_LOCATION_UNAVAILABLE"
+                only = next(iter(failures))
+                return None, only, ("register" if only == "DWARF_LOCATION_REGISTER_ONLY" else
+                                    "frame" if only == "DWARF_LOCATION_UNAVAILABLE"
+                                    and frame_location else "unavailable")
+            return None, "DWARF_LOCATION_UNAVAILABLE", "unavailable"
         except (ElfToolsDwarfError, KeyError, TypeError, ValueError, IndexError, OverflowError):
-            return None, "DWARF_LOCATION_UNSUPPORTED"
+            return None, "DWARF_LOCATION_UNSUPPORTED", "unavailable"
 
     def source_symbols(self) -> tuple[DwarfSourceSymbol, ...]:
         """Return bounded immutable attribution metadata without revalidating a probe."""
         return tuple(
-            DwarfSourceSymbol(
+            symbol.source if symbol.source is not None else DwarfSourceSymbol(
                 symbol.name, symbol.source_file, symbol.decl_line,
                 symbol.decl_column, symbol.function, symbol.cu_file,
                 symbol.dwarf_type, symbol.address, symbol.location_error,
@@ -1192,6 +1328,14 @@ class DwarfCatalog:
             )
             for symbols in self._symbols.values() for symbol in symbols
         )
+
+    def source_declarations(self) -> tuple[DwarfSourceSymbol, ...]:
+        """Concrete variable and parameter DIEs, including unreadable locations."""
+        return self._source_declarations
+
+    def source_functions(self) -> tuple[DwarfSourceFunction, ...]:
+        """Concrete subprogram DIEs with verified project source locations."""
+        return self._source_functions
 
     def lookup(self, expression: str) -> DwarfSelection:
         if not isinstance(expression, str):

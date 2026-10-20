@@ -766,6 +766,7 @@ def test_source_catalog_routes_share_auth_and_exact_query_grammar() -> None:
             denied_tree = await client.get(endpoint.url + "/api/v1/catalog/source-tree")
             tree = await client.get(endpoint.url + "/api/v1/catalog/source-tree?query=main&limit=1000", headers=auth)
             page = await client.get(endpoint.url + "/api/v1/catalog/source-variables?query=counter&limit=20", headers=auth)
+            refreshed = await client.get(endpoint.url + "/api/v1/catalog/source-tree?refresh=1", headers=auth)
             scoped = await client.get(endpoint.url + "/api/v1/catalog/source-variables?scopeId=scope&catalogId=cat", headers=auth)
             selection = await client.get(endpoint.url + "/api/v1/catalog/source-selection?catalogId=cat&id=item&selector=counter", headers=auth)
             before_invalid = len(runtime.calls)
@@ -774,10 +775,11 @@ def test_source_catalog_routes_share_auth_and_exact_query_grammar() -> None:
             repeated = await client.get(endpoint.url + "/api/v1/catalog/source-selection?id=a&id=b", headers=auth)
             wrong_method = await client.post(endpoint.url + "/api/v1/catalog/source-selection", headers=auth)
         assert denied.status == denied_tree.status == 401
-        assert tree.status == page.status == scoped.status == selection.status == 200
+        assert tree.status == page.status == refreshed.status == scoped.status == selection.status == 200
         assert runtime.calls == [
             ("monitor.catalog.source.tree", {}, None, {"query": "main", "limit": "1000"}),
             ("monitor.catalog.source.variables", {}, None, {"query": "counter", "limit": "20"}),
+            ("monitor.catalog.source.tree", {}, None, {"refresh": "1"}),
             ("monitor.catalog.source.variables", {}, None, {"scopeId": "scope", "catalogId": "cat"}),
             ("monitor.catalog.source.selection", {}, None, {"catalogId": "cat", "id": "item", "selector": "counter"}),
         ]

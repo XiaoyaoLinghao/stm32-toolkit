@@ -19,7 +19,7 @@ export type HistoryRow={runId:string;sequence:bigint;startOrdinal:bigint;batchVa
 export type HistoryProjection={rows:readonly HistoryRow[];series:ReadonlyMap<string,readonly ChartPoint[]>};
 export type HistoryInFlight={requestId:bigint;query:HistoryQuery;navigation:"replace"|"next"|"previous"};
 export type DisplaySeries={key:string;label:string;points:readonly ChartPoint[]};
-export type LiveState={rows:ReadonlyMap<string,LiveRow>;series:ReadonlyMap<string,readonly ChartPoint[]>;selectedSeries:ReadonlySet<string>;binding:ObservationBinding|null;bindingEpoch:bigint|null;runId:string|null;segment:bigint;lastSequence:bigint|null;lastSampleCapturedAtUtc:string|null;actualRateHz:number;latencyNs:bigint;authoritativeDrops:DropTotals;pendingDropDeltas:DropTotals};
+export type LiveState={rows:ReadonlyMap<string,LiveRow>;series:ReadonlyMap<string,readonly ChartPoint[]>;selectedSeries:ReadonlySet<string>;binding:ObservationBinding|null;bindingEpoch:bigint|null;runId:string|null;groupId:string|null;groupRevision:bigint|null;stopPending:boolean;stopAccepted:boolean;retained:boolean;segment:bigint;lastSequence:bigint|null;lastSampleCapturedAtUtc:string|null;actualRateHz:number;latencyNs:bigint;authoritativeDrops:DropTotals;pendingDropDeltas:DropTotals};
 export type Notice={id:string;kind:"view-reset"|"drop";text:string};
 export type GroupNavigation={kind:"new"}|{kind:"group"|"reload";groupId:string};
 export type MonitorState={status:MonitorStatus|null;probes:readonly ProbeInfo[];groups:readonly WatchGroup[];selectedGroupId:string|null;groupDraft:GroupDraft;groupBaseline:GroupDraft;groupGeneration:bigint;groupNavigation:GroupNavigation|null;groupNavigationMissing:boolean;groupNameReviewRequired:boolean;groupWriteBusy:boolean;groupsNeedRefresh:boolean;stateRevision:bigint;lastAcceptedEventId:bigint|null;pending:Readonly<Partial<Record<RequestScope,PendingRequest>>>;reconciling:Readonly<Partial<Record<RequestScope,bigint>>>;failures:Readonly<Partial<Record<RequestScope,OperationFailure>>>;catalog:{variables:VariableCatalog|null;registers:RegisterCatalog|null;source:SourceCatalogState};selectedSeries:ReadonlySet<string>;live:LiveState;zoom:ZoomRange;transport:{phase:"idle"|"checking"|"connecting"|"open"|"disconnected";open:boolean;stale:boolean;needsStatusRefresh:boolean;gapRevision:bigint};history:{query:HistoryQuery|null;page:HistoryPage|null;projection:HistoryProjection;cursorIndex:number;cursorStack:readonly (string|undefined)[];nextCursor:string|null;inFlight:HistoryInFlight|null};exports:{artifact:ExportArtifact|null;submitted:{exportId:string;startNs:bigint;endNs:bigint;format:"csv"|"jsonl"}|null};notices:readonly Notice[];blockingError:ApiFailure|null};
@@ -48,6 +48,7 @@ export type LoadedAction=
  | {type:"group.watch.added";watch:WatchItem}
  | {type:"group.watch.removed";key:string}
  | {type:"series.toggled";key:string}
+ | {type:"sampling.stop.accepted";stopped:boolean;runId:string|null;groupId:string|null;groupRevision:bigint|null;bindingEpoch:bigint|null}
  | {type:"zoom.changed";action:import("../chart/zoom").ZoomAction}
  | {type:"zoom.reset"}
  | {type:"history.loaded";page:HistoryPage;query:HistoryQuery;navigation?:"replace"|"next"|"previous"}

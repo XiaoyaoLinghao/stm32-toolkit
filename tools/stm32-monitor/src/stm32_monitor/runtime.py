@@ -974,10 +974,15 @@ class MonitorRuntime:
                 try:
                     if operation in {"monitor.catalog.source.tree", "monitor.catalog.source.variables"}:
                         tree = operation == "monitor.catalog.source.tree"
-                        allowed = ({"query", "cursor", "limit", "parentId", "catalogId"} if tree else
-                                   {"query", "cursor", "limit", "parentId", "scopeId", "catalogId"})
+                        allowed = ({"query", "cursor", "limit", "parentId", "catalogId", "refresh"} if tree else
+                                   {"query", "cursor", "limit", "parentId", "scopeId", "catalogId", "refresh"})
                         if set(query) - allowed:
                             raise SourceCatalogFailure("MONITOR_SOURCE_INDEX_FAILED", "Source catalog query is invalid")
+                        refresh_text = query.get("refresh")
+                        if refresh_text is not None and (refresh_text != "1" or query.get("catalogId") is not None
+                                                         or query.get("cursor") is not None or query.get("parentId") is not None
+                                                         or query.get("scopeId") is not None):
+                            raise SourceCatalogFailure("MONITOR_SOURCE_INDEX_FAILED", "Source catalog refresh is invalid")
                         limit_text = query.get("limit", "1000" if tree else "100")
                         if not limit_text.isascii() or not limit_text.isdigit() or len(limit_text) > (4 if tree else 3):
                             raise SourceCatalogFailure("MONITOR_SOURCE_INDEX_FAILED", "Source catalog limit is invalid")
@@ -986,7 +991,7 @@ class MonitorRuntime:
                             query=query.get("query", ""), cursor=query.get("cursor"),
                             limit=int(limit_text), parent_id=query.get("parentId"),
                             catalog_id=query.get("catalogId"), binding=binding,
-                            binding_epoch=binding_epoch,
+                            binding_epoch=binding_epoch, refresh=refresh_text == "1",
                         )
                         if not tree:
                             parameters["scope_id"] = query.get("scopeId")
