@@ -1,5 +1,5 @@
 import {expect,it,vi} from "vitest";
-import {bootstrapFromFragment,renderStartupError,takeFragmentToken} from "../src/bootstrap";
+import {bootstrapFromFragment,createStartupSession,renderStartupError,takeFragmentToken} from "../src/bootstrap";
 import {encodeJson} from "../src/api/wire";
 import {statusResult} from "./fixtures";
 
@@ -33,14 +33,34 @@ it.each(["/?","/#","/other",`/?x=1#token=${TOKEN}`,`/#token=${TOKEN}&other=1`])(
     expect(fetchLike).not.toHaveBeenCalled();
   });
 
-it.each([401,403])("shows fixed session recovery for plain-root HTTP %i",async status=>{
+it("never reclassifies a scrubbed invalid or rejected fragment as a plain-root session",async()=>{
+  window.history.replaceState(null,"",`/#token=${TOKEN}&extra=1`);
+  const invalidFetch=vi.fn();
+  const invalid=createStartupSession(window,invalidFetch);
+  expect(invalid.canRecheckSession).toBe(false);
+  expect((await invalid.check()).ok).toBe(false);
+  expect((await invalid.check()).ok).toBe(false);
+  expect(invalidFetch).not.toHaveBeenCalled();
+
+  window.history.replaceState(null,"",`/#token=${TOKEN}`);
+  const rejectedFetch=vi.fn().mockResolvedValue(new Response("private",{status:403}));
+  const rejected=createStartupSession(window,rejectedFetch);
+  expect(rejected.canRecheckSession).toBe(false);
+  expect(await rejected.check()).toMatchObject({ok:false,code:"MONITOR_ACCESS_REJECTED"});
+  expect(await rejected.check()).toMatchObject({ok:false,code:"MONITOR_ACCESS_LINK_INVALID"});
+  expect(rejectedFetch).toHaveBeenCalledOnce();
+  expect(rejectedFetch.mock.calls[0]?.[0]).toBe("/api/v1/auth/bootstrap");
+});
+
+it.each([[401,"MONITOR_SESSION_EXPIRED","当前会话已失效"],
+  [403,"MONITOR_ACCESS_REJECTED","访问被拒绝"]] as const)(
+  "classifies plain-root HTTP %i without exposing response data",async(status,code,title)=>{
   window.history.replaceState(null,"","/");
   const fetchLike=vi.fn().mockResolvedValue(new Response(`private ${TOKEN}`,{status}));
   const result=await bootstrapFromFragment(window,fetchLike);
-  expect(result).toMatchObject({ok:false,code:"MONITOR_SESSION_EXPIRED"});
+  expect(result).toMatchObject({ok:false,code});
   renderStartupError(document,result.ok?"":result.code);
-  expect(document.body.textContent).toContain("当前会话已失效");
-  expect(document.body.textContent).toContain("相同 open ... --port ... 命令");
+  expect(document.body.textContent).toContain(title);
   expect(document.body.textContent).not.toContain(TOKEN);
   expect(fetchLike).toHaveBeenCalledOnce();
 });
@@ -127,13 +147,12 @@ it("renders fixed recovery for a valid rejected bootstrap envelope without expos
     data:null,details:{diagnostic:privateDetail,token:TOKEN},
   }),{status:200});
   const result=await bootstrapFromFragment(window,vi.fn().mockResolvedValue(response));
-  expect(result).toEqual({ok:false,code:"MONITOR_ACCESS_REJECTED",
-    message:"授权链接被拒绝。若服务仍在运行，请先在所属 Monitor 终端按 Ctrl-C 结束，再运行 open 打开新的授权页面。"});
+  expect(result).toMatchObject({ok:false,code:"MONITOR_ACCESS_REJECTED"});
   expect(JSON.stringify(result)).not.toContain(TOKEN);
   expect(JSON.stringify(result)).not.toContain(privateMessage);
   expect(JSON.stringify(result)).not.toContain(privateDetail);
   renderStartupError(document,result.ok?"":result.code);
-  expect(document.querySelector('[role="alert"]')).toHaveTextContent("授权链接被拒绝");
+  expect(document.querySelector('[role="alert"]')).toHaveTextContent("访问被拒绝");
   expect(document.body.textContent).not.toContain(TOKEN);
   expect(document.body.textContent).not.toContain(privateMessage);
   expect(document.body.textContent).not.toContain(privateDetail);
@@ -158,7 +177,7 @@ it.each([
   expect(text).not.toContain(TOKEN);
   expect(text).not.toContain("private server body");
   if(expectedCode==="MONITOR_BOOTSTRAP_SERVICE_FAILED")
-    expect(text).not.toContain("授权链接被拒绝");
+    expect(text).not.toContain("访问被拒绝");
   expect(window.location.hash).toBe("");
 });
 

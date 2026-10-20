@@ -7,6 +7,7 @@ import asyncio
 import contextlib
 import errno
 import json
+import os
 import re
 import secrets
 import sys
@@ -190,24 +191,97 @@ async def _open(
     runtime: object,
     browser_open: Callable[[str], bool],
     stdout: TextIO,
+    stdin: TextIO,
+    stderr: TextIO,
 ) -> int:
     endpoint = await runtime.start(config)
+    terminal_task: asyncio.Task[None] | None = None
     try:
         access_url = getattr(endpoint, "access_url", None)
         if not isinstance(access_url, str) or not access_url:
             raise MonitorRuntimeError(
                 "MONITOR_SERVICE_UNAVAILABLE", "Monitor Service is unavailable"
             )
-        if browser_open(access_url) is not True:
+        try:
+            delivered = browser_open(access_url) is True
+        except Exception:
+            delivered = False
+        if not delivered:
             raise MonitorRuntimeError(
                 "MONITOR_BROWSER_FAILED", "Monitor browser handoff failed"
             )
         stdout.write(endpoint.url + "/\n")
         stdout.flush()
+        if _is_interactive_terminal(stdin):
+            terminal_task = asyncio.create_task(
+                _redeliver_on_enter(access_url, browser_open, stdin, stderr),
+                name="stm32-monitor-open-enter",
+            )
         await runtime.wait_closed()
         return 0
     finally:
-        await runtime.stop()
+        try:
+            if terminal_task is not None:
+                terminal_task.cancel()
+                await asyncio.gather(terminal_task, return_exceptions=True)
+        finally:
+            await runtime.stop()
+
+
+def _is_interactive_terminal(stdin: TextIO) -> bool:
+    try:
+        return stdin.isatty()
+    except (OSError, ValueError):
+        return False
+
+
+def _poll_terminal_enter(stdin: TextIO) -> bool | None:
+    """Poll a real TTY once; None means input is unavailable or closed."""
+    if os.name == "nt":
+        import msvcrt
+
+        if not msvcrt.kbhit():
+            return False
+        return msvcrt.getwch() in ("\r", "\n")
+
+    import select
+    import termios
+
+    fd = stdin.fileno()
+    if not termios.tcgetattr(fd)[3] & termios.ICANON:
+        return None
+    if not select.select([fd], [], [], 0)[0]:
+        return False
+    data = os.read(fd, 4096)
+    return None if not data else b"\n" in data or b"\r" in data
+
+
+async def _redeliver_on_enter(
+    access_url: str,
+    browser_open: Callable[[str], bool],
+    stdin: TextIO,
+    stderr: TextIO,
+) -> None:
+    stderr.write("Press Enter in this terminal to reopen Monitor in the default browser.\n")
+    stderr.flush()
+    while True:
+        try:
+            enter = _poll_terminal_enter(stdin)
+        except (OSError, ValueError, AttributeError):
+            return
+        if enter is None:
+            return
+        if enter:
+            try:
+                delivered = browser_open(access_url) is True
+            except Exception:
+                delivered = False
+            stderr.write(
+                "Monitor browser handoff requested.\n"
+                if delivered else "Monitor browser handoff failed; press Enter to retry.\n"
+            )
+            stderr.flush()
+        await asyncio.sleep(0.1)
 
 
 def main(
@@ -215,6 +289,7 @@ def main(
     *,
     _runtime_factory: Callable[..., object] = MonitorRuntime,
     _browser_open: Callable[[str], bool] = lambda url: webbrowser.open(url),
+    _stdin: TextIO = sys.stdin,
     _stdout: TextIO = sys.stdout,
     _stderr: TextIO = sys.stderr,
 ) -> int:
@@ -257,7 +332,7 @@ def main(
             runtime = _runtime_factory()
         if arguments.command == "serve":
             return asyncio.run(_serve(config, runtime, _stdout))
-        return asyncio.run(_open(config, runtime, _browser_open, _stdout))
+        return asyncio.run(_open(config, runtime, _browser_open, _stdout, _stdin, _stderr))
     except KeyboardInterrupt:
         return 130
     except MonitorRuntimeError as error:

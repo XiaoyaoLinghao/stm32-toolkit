@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 from dataclasses import dataclass, field
@@ -55,6 +56,11 @@ class FakeRuntime:
 
     async def stop(self) -> None:
         self.stopped = True
+
+
+class InteractiveInput(io.StringIO):
+    def isatty(self) -> bool:
+        return True
 
 
 def test_version_command_reports_the_package_version() -> None:
@@ -463,3 +469,104 @@ def test_open_keyboard_interrupt_returns_130_and_cleans_up(tmp_path: Path) -> No
     )
     assert code == 130
     assert runtime.stopped is True
+
+
+def test_open_enter_redelivers_same_endpoint_without_restart_and_sanitizes_failures(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from stm32_monitor import cli
+
+    project = tmp_path / "project"
+    project.mkdir()
+    events: list[str] = []
+    urls: list[str] = []
+    stdin = InteractiveInput()
+    stdout, stderr = io.StringIO(), io.StringIO()
+    enters = iter([True, True, True])
+    monkeypatch.setattr(cli, "_poll_terminal_enter", lambda stream: next(enters, False))
+
+    class WaitingRuntime(RecordingRuntime):
+        closed = asyncio.Event()
+
+        async def wait_closed(self) -> None:
+            events.append("wait")
+            await self.closed.wait()
+
+    runtime = WaitingRuntime(events)
+
+    def opener(url: str) -> bool:
+        urls.append(url)
+        if len(urls) == 2:
+            return False
+        if len(urls) == 3:
+            raise ValueError("private " + url)
+        if len(urls) == 4:
+            runtime.closed.set()
+        return True
+
+    code = cli.main(
+        ["open", "--project", str(project), "--data-root", str(tmp_path / "data")],
+        _runtime_factory=lambda: runtime, _browser_open=opener,
+        _stdin=stdin, _stdout=stdout, _stderr=stderr,
+    )
+    assert code == 0
+    assert events == ["start", "wait", "stop"]
+    assert len(urls) == 4 and len(set(urls)) == 1
+    assert stdout.getvalue() == "http://127.0.0.1:45678/\n"
+    assert "token" not in stdout.getvalue() + stderr.getvalue()
+    assert urls[0] not in stdout.getvalue() + stderr.getvalue()
+    assert "private" not in stderr.getvalue()
+    assert stderr.getvalue().count("failed") == 2
+
+
+def test_open_non_tty_does_not_poll_or_read_stdin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from stm32_monitor import cli
+
+    class NonTtyInput(io.StringIO):
+        def read(self, *args):
+            raise AssertionError("stdin read")
+
+    monkeypatch.setattr(cli, "_poll_terminal_enter", lambda stream: pytest.fail("poll"))
+    project = tmp_path / "project"
+    project.mkdir()
+    output = io.StringIO()
+    code = cli.main(
+        ["open", "--project", str(project), "--data-root", str(tmp_path / "data")],
+        _runtime_factory=lambda: RecordingRuntime([]), _browser_open=lambda url: True,
+        _stdin=NonTtyInput(), _stdout=output,
+    )
+    assert code == 0
+    assert output.getvalue() == "http://127.0.0.1:45678/\n"
+
+
+def test_open_cancellation_stops_runtime_before_wait_closed_settles(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from stm32_monitor import cli
+
+    monkeypatch.setattr(cli, "_poll_terminal_enter", lambda stream: False)
+    project = tmp_path / "project"
+    project.mkdir()
+    runtime = FakeRuntime()
+    started = asyncio.Event()
+
+    async def never_closed() -> None:
+        started.set()
+        await asyncio.Event().wait()
+
+    runtime.wait_closed = never_closed  # type: ignore[method-assign]
+
+    async def run() -> None:
+        task = asyncio.create_task(cli._open(
+            cli.MonitorConfig(project, tmp_path / "data", "session-a"), runtime,
+            lambda url: True, io.StringIO(), InteractiveInput(), io.StringIO(),
+        ))
+        await asyncio.wait_for(started.wait(), 1)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, 1)
+        assert runtime.stopped
+
+    asyncio.run(run())

@@ -1,4 +1,5 @@
 import {beforeEach,expect,it,vi} from "vitest";
+import {waitFor} from "@testing-library/preact";
 import {encodeJson} from "../src/api/wire";
 import {statusResult} from "./fixtures";
 
@@ -32,10 +33,11 @@ it("renders a rejected access link without exposing the fragment or response bod
   window.history.replaceState(null,"",`/#token=${TOKEN}`);
   vi.stubGlobal("fetch",vi.fn().mockResolvedValue(new Response(`private ${TOKEN}`,{status:403})));
   await import("../src/main");
-  expect(document.querySelector('[role="alert"]')).toHaveTextContent("授权链接被拒绝");
+  expect(document.querySelector('[role="alert"]')).toHaveTextContent("访问被拒绝");
   expect(document.body.innerHTML).not.toContain(TOKEN);
   expect(document.body.innerHTML).not.toContain("private");
   expect(window.location.hash).toBe("");
+  expect(document.querySelector("button[data-startup-retry]")).toBeNull();
   expect(render).not.toHaveBeenCalled();
 });
 
@@ -70,5 +72,62 @@ it("does not mount the app after a plain-root session expires",async()=>{
   await import("../src/main");
   expect(document.querySelector('[role="alert"]')).toHaveTextContent("当前会话已失效");
   expect(document.body.textContent).not.toContain("private body");
+  expect(render).not.toHaveBeenCalled();
+});
+
+it("rechecks only a plain-root expired session and mounts once after authentication",async()=>{
+  window.history.replaceState(null,"","/");
+  let resolveRetry:(response:Response)=>void=()=>{};
+  const pending=new Promise<Response>(resolve=>{resolveRetry=resolve;});
+  const fetchLike=vi.fn().mockResolvedValueOnce(new Response("private",{status:401}))
+    .mockReturnValueOnce(pending);
+  vi.stubGlobal("fetch",fetchLike);
+  await import("../src/main");
+  const retry=document.querySelector<HTMLButtonElement>("button[data-startup-retry]");
+  expect(retry).not.toBeNull();
+  retry!.click();
+  retry!.click();
+  expect(fetchLike).toHaveBeenCalledTimes(2);
+  expect(render).not.toHaveBeenCalled();
+  resolveRetry(new Response(STATUS));
+  await waitFor(()=>expect(render).toHaveBeenCalledTimes(1));
+  retry!.click();
+  expect(fetchLike).toHaveBeenCalledTimes(2);
+  expect(h).toHaveBeenCalledTimes(1);
+});
+
+it("keeps a failed plain-root recheck retryable but never offers fallback for scrubbed fragments",async()=>{
+  window.history.replaceState(null,"","/");
+  const fetchLike=vi.fn().mockResolvedValueOnce(new Response("private",{status:401}))
+    .mockResolvedValueOnce(new Response("private",{status:401}))
+    .mockResolvedValueOnce(new Response(STATUS));
+  vi.stubGlobal("fetch",fetchLike);
+  await import("../src/main");
+  document.querySelector<HTMLButtonElement>("button[data-startup-retry]")!.click();
+  await waitFor(()=>expect(fetchLike).toHaveBeenCalledTimes(2));
+  await waitFor(()=>expect(document.querySelector<HTMLButtonElement>("button[data-startup-retry]")?.disabled)
+    .toBe(false));
+  document.querySelector<HTMLButtonElement>("button[data-startup-retry]")!.click();
+  await waitFor(()=>expect(render).toHaveBeenCalledTimes(1));
+
+  vi.resetModules();
+  vi.clearAllMocks();
+  document.body.innerHTML='<div id="app"></div>';
+  window.history.replaceState(null,"",`/#token=${TOKEN}&other=1`);
+  const invalidFetch=vi.fn();
+  vi.stubGlobal("fetch",invalidFetch);
+  await import("../src/main");
+  expect(window.location.hash).toBe("");
+  expect(document.querySelector("button[data-startup-retry]")).toBeNull();
+  expect(invalidFetch).not.toHaveBeenCalled();
+  expect(render).not.toHaveBeenCalled();
+});
+
+it("shows plain-root 403 as access rejected with no session retry",async()=>{
+  window.history.replaceState(null,"","/");
+  vi.stubGlobal("fetch",vi.fn().mockResolvedValue(new Response("private",{status:403})));
+  await import("../src/main");
+  expect(document.querySelector('[role="alert"]')).toHaveTextContent("访问被拒绝");
+  expect(document.querySelector("button[data-startup-retry]")).toBeNull();
   expect(render).not.toHaveBeenCalled();
 });

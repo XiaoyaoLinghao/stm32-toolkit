@@ -4,7 +4,9 @@ import type {RequestScope,RecoveryKind} from "../state/model";
 /** Product copy stays here; wire codes and user data remain unchanged. */
 export const copy={
   app:"STM32 监视器",loading:"正在读取监视状态…",live:"实时监视",history:"历史记录",
-  device:"连接与固件详情",toolbarDevice:"查看采样设备详情",close:"关闭",diagnostics:"诊断详情",retryOpen:"若服务仍在运行，请先在所属 Monitor 终端按 Ctrl-C 结束，再运行 open 打开新的授权页面。",
+  device:"连接与固件详情",toolbarDevice:"查看采样设备详情",close:"关闭",diagnostics:"诊断详情",
+  retryOpen:"若服务仍在运行，请在原 Monitor 终端按 Enter，将授权页面重新交付系统默认浏览器；非交互启动需由启动方重新交付。不同浏览器配置不共享会话。",
+  recheckSession:"重新检查会话",
   invalidRange:"请填写有效的 UTC 起止时间，且结束时间晚于开始时间。",
   historyInvalidRange:"请填写有效的 UTC 起止时间：起点不得早于 1970 年，终点须晚于起点且不超过可查询范围。",
   probeConnected:"探针已连接",probeDisconnected:"探针未连接",mainNav:"主导航",watchConfig:"观测对象配置",
@@ -173,9 +175,9 @@ const states:Record<SamplingStatus["state"],string>={
 export function samplingState(value:string):string{return states[value as SamplingStatus["state"]]??"状态未知";}
 
 const knownErrors:Record<string,{title:string;action:string}>={
-  MONITOR_ACCESS_LINK_INVALID:{title:"授权链接无效",action:copy.retryOpen},
-  MONITOR_ACCESS_REJECTED:{title:"授权链接被拒绝",action:copy.retryOpen},
-  MONITOR_SESSION_EXPIRED:{title:"当前会话已失效",action:"如果服务仍在运行，先在启动终端按 Ctrl+C 停止，再用相同 open ... --port ... 命令重新启动并自动认证。"},
+  MONITOR_ACCESS_LINK_INVALID:{title:"授权链接无效",action:`此地址不能使用会话凭据恢复。${copy.retryOpen}`},
+  MONITOR_ACCESS_REJECTED:{title:"访问被拒绝",action:`请检查入口与请求来源；服务不会自动放宽访问限制。${copy.retryOpen}`},
+  MONITOR_SESSION_EXPIRED:{title:"当前会话已失效",action:`${copy.retryOpen}完成认证后点击“${copy.recheckSession}”。`},
   MONITOR_BOOTSTRAP_SERVICE_FAILED:{title:"监视器启动失败",action:copy.retryOpen},
   MONITOR_BOOTSTRAP_RESPONSE_INVALID:{title:"启动响应无效",action:copy.retryOpen},
   MONITOR_BOOTSTRAP_REQUEST_FAILED:{title:"启动请求未完成",action:copy.retryOpen},

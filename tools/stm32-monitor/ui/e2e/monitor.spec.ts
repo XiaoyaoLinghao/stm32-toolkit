@@ -52,7 +52,7 @@ test.describe("STM32 Monitor end-to-end",()=>{
     expect(request.headers()["authorization"]??"").toMatch(/^Bearer [0-9a-f]{64}$/);
     expect(request.headers()["origin"]).toBeUndefined();
     const cookies=await context.cookies();
-    const monitorCookie=cookies.find(cookie=>cookie.name==="stm32_monitor_session");
+    const monitorCookie=cookies.find(cookie=>cookie.name===`stm32_monitor_session_${new URL(monitor.url).port||"80"}`);
     expect(monitorCookie).toBeDefined();
     if(monitorCookie!==undefined){
       expect(monitorCookie.httpOnly).toBe(true);
