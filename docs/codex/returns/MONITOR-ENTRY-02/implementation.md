@@ -1,0 +1,26 @@
+# Monitor ENTRY02 implementation return
+
+- Accepted full base: `095a81e48e5e0cf698b23da12cd02dbe71a3f9a1`.
+- Frozen specification and plan commit: `7837a0a5da2cbfbd9092a377adf45817dc67ef88`.
+- Product, tests, guide, and deterministic UI bundle CodeHead before this report: `21ca3e656d6341965ece69c6bf14ac9db72708c7`.
+- Implementation owner: the bounded `gpt-6-sol/max` ENTRY02 agent. Independent complete-diff review and acceptance belong to the primary/reviewer; this report is not self-approval.
+
+The original foreground `open` process now polls Enter only for an interactive terminal and re-delivers its existing endpoint access URL through the system default browser opener. It does not restart or rebind the service, mint another credential, add IPC, or replay an operation. The listener is cancellable and owned by `open`; its shutdown settles before `runtime.stop()`, while `wait_closed()` is never awaited again on the cancellation path. Later browser-handoff failures leave the service and Enter retry available. New terminal output is fixed stderr text; stdout still emits only the initial token-free short URL. Non-TTY input remains unread.
+
+The UI captures the original entry classification before scrubbing. Exact plain-root HTTP 401 now presents session expiry and permits one typed same-origin status recheck at a time; a successful check mounts App once. Plain-root HTTP 403 presents independent `MONITOR_ACCESS_REJECTED` copy without the session retry control. Invalid or rejected fragments remain ineligible for cookie fallback after scrub. The user guide explains original-terminal Enter, default-browser profile scope, safe recheck, non-interactive delivery, and the separate 403 meaning. The Playwright cookie-name assertion now follows the actual endpoint port. Backend auth, runtime, service, controllers, lockfile, protocol and source parser are unchanged.
+
+Evidence from `D:\codex-tmp\ma1020\impl-checks`, using PowerShell 7, Python 3.12, Node 24, explicit same-worktree Python source roots and run-owned temp/cache locations:
+
+| Layer | Owner-run result on the bytes frozen as CodeHead |
+| --- | --- |
+| RED | Before product edits, focused Python CLI: 3 expected missing-terminal-path failures. Focused UI bootstrap/main: 4 expected classification/retry failures. |
+| Python CLI/auth/service | `pytest -o addopts='' -p no:cacheprovider -q test_cli.py test_auth.py test_service.py`: 113 passed; one existing aiohttp `filter_cookies(str)` deprecation warning. Tests used their own temporary fixtures and ports, not the owned 8765 process. |
+| UI startup | Vitest bootstrap/main: 39 passed before one additional no-fragment-fallback case was added; that case is included in the later full-suite result. |
+| UI regression | Full Vitest with `--maxWorkers=2`: 490 passed, 1 existing skip, 58 files. Initial unconstrained run had 489 passed, 1 unrelated chart-interaction timeout; the affected file then passed 15/15 in isolation and the bounded full rerun passed. Classified **INFRASTRUCTURE / load-sensitive test timeout**, with no related product edit. |
+| Static/build | UI typecheck, E2E source typecheck, and lint passed. Vite build passed; deterministic `verify:dist` found 7 byte-identical files. Python `test_ui_dist.py`: 9 passed. Existing Vite large-chunk advisory remains. |
+
+The dependency tree reused read-only from the dirty main checkout was copied to `D:\codex-tmp\ma1020\impl-checks\node_modules`; no package install or lockfile mutation occurred. Frozen `package-lock.json` SHA-256 is `ea6361bb0d67e647a101c3c167c46fa2bb0c488a441cbf18a6403a3a471f794d`. All 383 installed hidden-lock entries matched the frozen lock by package version and integrity; the 51 absent lock entries are optional packages for other operating systems or CPU architectures. The implementation UI resolves an ignored junction to that owned copy.
+
+Actual browser/Playwright close-reopen, cross-profile, authenticated page, and manual foreground terminal interaction remain **DEFERRED**; no browser or current-service HTTP access was used here. Successful default-browser handoff alone does not prove authentication, and a Codex built-in browser with another profile has no shared cookie from this delivery. The existing 8765 service, original project/data/session, hardware, and dirty main checkout remain untouched. Local service replacement is a later primary-owned step after independent acceptance. No remote action was taken.
+
+Cleanup note: a request to remove the ignored run-generated `tools/stm32-monitor/.pytest_cache` inside the isolated implementation tree was rejected by automatic policy review before execution. The cache remains outside tracked product content; no alternate deletion was attempted. The primary cleanup owner should treat that exact path as a held disposable artifact.
