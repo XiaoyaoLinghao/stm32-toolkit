@@ -13,13 +13,189 @@ from types import SimpleNamespace
 import pytest
 from elftools.elf.elffile import ELFFile
 
-from stm32_toolkit.debug.source import ClangSourceAdapter, SourceCatalogError, SourcePlan, _declarations
+from stm32_toolkit.debug.source import (ClangSourceAdapter, SourceCatalogError,
+                                        SourceDeclaration, SourceFunction, SourcePlan,
+                                        _declarations, _discover)
 from stm32_toolkit.debug.dwarf import _die_source
 
 
 def _model(root: Path, sources: tuple[str, ...]) -> SimpleNamespace:
     return SimpleNamespace(project_root=root, build=SimpleNamespace(
         sources=sources, include_paths=("Inc",), defines=(), compile_options=(), presets=()))
+
+
+def test_failed_unit_leaks_no_prefix_or_duplicate_translation_unit(monkeypatch: pytest.MonkeyPatch,
+                                                                   tmp_path: Path) -> None:
+    import stm32_toolkit.debug.source as source_module
+
+    (tmp_path / "Src").mkdir()
+    (tmp_path / "Inc").mkdir()
+    for name in ("good", "bad"):
+        (tmp_path / "Src" / f"{name}.c").write_text("int shared;\n", encoding="ascii")
+    model = _model(tmp_path, ("Src/good.c", "Src/bad.c"))
+    plan = SourcePlan(tuple((name, tmp_path, (name,)) for name in model.build.sources),
+                      "manifest", "test-engine", "test-fingerprint")
+    shared = SourceDeclaration("shared-id", "shared-id", "shared", "int", "Src/good.c", 1, 5,
+                               "none", "global", None, (), ("Src/good.c",))
+    good_function = SourceFunction("function-id", "good", "Src/good.c", 1, 1, ("Src/good.c",))
+    leaked = SourceDeclaration("leaked-id", "leaked-id", "leaked", "int", "Src/bad.c", 1, 5,
+                               "none", "global", None, (), ("Src/bad.c",))
+
+    def discover(_ast, _root, unit, _content):
+        if unit == "Src/good.c":
+            yield good_function
+            yield shared
+        else:
+            yield SourceFunction("function-id", "good", "Src/good.c", 1, 1, (unit,))
+            yield SourceDeclaration(**{**vars(shared), "translation_units": (unit,)})
+            yield leaked
+            raise SourceCatalogError("MONITOR_SOURCE_INDEX_FAILED", "late path failure")
+
+    adapter = ClangSourceAdapter()
+    monkeypatch.setattr(source_module, "_discover", discover)
+    monkeypatch.setattr(adapter, "_run", lambda argv, *_: b'# 1 "Src/good.c"\nint shared;\n'
+                        if "-E" in argv else b'{"kind":"TranslationUnitDecl"}')
+    try:
+        index = adapter.index(model, plan)
+    finally:
+        adapter.close()
+    assert index.parsed_units == 1 and not index.complete
+    assert tuple(issue.unit for issue in index.issues) == ("Src/bad.c",)
+    assert index.declarations == (shared,)
+    assert index.functions == (good_function,)
+
+
+@pytest.mark.parametrize("limit_kind", ["declaration", "function"])
+def test_entry_limit_stages_duplicate_merge_before_rejecting_new_entry(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, limit_kind: str,
+) -> None:
+    import stm32_toolkit.debug.source as source_module
+
+    (tmp_path / "Src").mkdir()
+    (tmp_path / "Inc").mkdir()
+    for name in ("good", "bad"):
+        (tmp_path / "Src" / f"{name}.c").write_text("int x;\n", encoding="ascii")
+    model = _model(tmp_path, ("Src/good.c", "Src/bad.c"))
+    plan = SourcePlan(tuple((name, tmp_path, (name,)) for name in model.build.sources),
+                      "manifest", "test-engine", "test-fingerprint")
+    good_decl = SourceDeclaration("same", "same", "x", "int", "Src/good.c", 1, 5,
+                                  "none", "global", None, (), ("Src/good.c",))
+    good_func = SourceFunction("same", "func", "Src/good.c", 1, 1, ("Src/good.c",))
+
+    def discover(_ast, _root, unit, _content):
+        if unit == "Src/good.c":
+            yield good_decl
+            yield good_func
+        else:
+            yield SourceDeclaration(**{**vars(good_decl), "translation_units": (unit,)})
+            yield SourceFunction(**{**vars(good_func), "translation_units": (unit,)})
+            if limit_kind == "declaration":
+                yield SourceDeclaration(**{**vars(good_decl), "id": "new", "translation_units": (unit,)})
+            else:
+                yield SourceFunction(**{**vars(good_func), "id": "new", "translation_units": (unit,)})
+
+    monkeypatch.setattr(source_module, "_discover", discover)
+    monkeypatch.setattr(source_module, "MAX_DECLARATIONS", 1)
+    monkeypatch.setattr(source_module, "MAX_FUNCTIONS", 1)
+    adapter = ClangSourceAdapter()
+    monkeypatch.setattr(adapter, "_run", lambda argv, *_: b'int x;\n' if "-E" in argv else b'{}')
+    try:
+        index = adapter.index(model, plan)
+    finally:
+        adapter.close()
+    assert index.parsed_units == 1 and index.truncated and len(index.issues) == 1
+    assert index.declarations == (good_decl,)
+    assert index.functions == (good_func,)
+
+
+@pytest.mark.parametrize("failure", ["deadline", "closed"])
+def test_unit_readiness_check_prevents_late_adoption(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, failure: str,
+) -> None:
+    import stm32_toolkit.debug.source as source_module
+
+    (tmp_path / "Src").mkdir()
+    (tmp_path / "Inc").mkdir()
+    (tmp_path / "Src" / "a.c").write_text("int x;\n", encoding="ascii")
+    model = _model(tmp_path, ("Src/a.c",))
+    plan = SourcePlan((("Src/a.c", tmp_path, ("Src/a.c",)),),
+                      "manifest", "test-engine", "test-fingerprint")
+    entry = SourceDeclaration("x", "x", "x", "int", "Src/a.c", 1, 5,
+                              "none", "global", None, (), ("Src/a.c",))
+    adapter = ClangSourceAdapter()
+
+    def discover(*_args):
+        yield entry
+        if failure == "deadline":
+            time.sleep(0.02)
+        else:
+            adapter._closed.set()
+
+    monkeypatch.setattr(source_module, "_discover", discover)
+    if failure == "deadline":
+        monkeypatch.setattr(source_module, "MAX_UNIT_SECONDS", 0.005)
+    monkeypatch.setattr(adapter, "_run", lambda argv, *_: b'int x;\n' if "-E" in argv else b'{}')
+    try:
+        index = adapter.index(model, plan)
+    finally:
+        adapter.close()
+    assert index.parsed_units == 0 and index.declarations == ()
+    assert len(index.issues) == 1 and index.issues[0].unit == "Src/a.c"
+
+
+def test_discovery_memo_revalidates_each_unique_path_and_resets_per_call(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    import stm32_toolkit.debug.source as source_module
+
+    (tmp_path / "Src").mkdir()
+    original = b"int a;\nint b;\n"
+    (tmp_path / "Src" / "a.c").write_bytes(original)
+    preprocessed = b'# 1 "Src/a.c"\n' + original
+    ast = {"kind": "TranslationUnitDecl", "inner": [
+        {"kind": "VarDecl", "name": name, "type": {"qualType": "int"},
+         "loc": {"offset": preprocessed.index(b" " + name.encode() + b";", 15) + 1,
+                 "col": 5}}
+        for name in ("a", "b")
+    ]}
+    original_safe_path = source_module._safe_path
+    calls: list[Path] = []
+
+    def counting_safe_path(root, candidate, *, directory=False):
+        calls.append(candidate)
+        return original_safe_path(root, candidate, directory=directory)
+
+    monkeypatch.setattr(source_module, "_safe_path", counting_safe_path)
+    first = tuple(_discover(ast, tmp_path, "Src/a.c", preprocessed))
+    second = tuple(_discover(ast, tmp_path, "Src/a.c", preprocessed))
+    assert first == second and {item.name for item in first} == {"a", "b"}
+    assert len(calls) == 4  # first use and final revalidation, anew for each unit
+
+
+def test_discovery_final_revalidation_rejects_changed_mapping(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    import stm32_toolkit.debug.source as source_module
+
+    (tmp_path / "Src").mkdir()
+    (tmp_path / "Src" / "a.c").write_text("int a;\n", encoding="ascii")
+    preprocessed = b'# 1 "Src/a.c"\nint a;\n'
+    ast = {"kind": "TranslationUnitDecl", "inner": [
+        {"kind": "VarDecl", "name": "a", "type": {"qualType": "int"},
+         "loc": {"offset": preprocessed.index(b" a;") + 1, "col": 5}},
+    ]}
+    original_safe_path = source_module._safe_path
+    calls = [0]
+
+    def changing_safe_path(root, candidate, *, directory=False):
+        calls[0] += 1
+        resolved, relative = original_safe_path(root, candidate, directory=directory)
+        return (resolved, relative if calls[0] == 1 else "Src/changed.c")
+
+    monkeypatch.setattr(source_module, "_safe_path", changing_safe_path)
+    with pytest.raises(SourceCatalogError, match="changed during discovery"):
+        tuple(_discover(ast, tmp_path, "Src/a.c", preprocessed))
+    assert calls == [2]
 
 
 def test_installed_gcc_preprocessing_preserves_real_conditional_branches_and_ast_locations(tmp_path: Path) -> None:
@@ -62,6 +238,81 @@ def test_installed_gcc_preprocessing_preserves_real_conditional_branches_and_ast
     assert any(decl.file == "Inc/shared.h" for decl in shared)
     assert any(decl.file == "Src/a.c" for decl in shared)
     assert len({decl.entity_id for decl in shared if "Src/a.c" in decl.translation_units}) == 1
+
+
+def test_real_gnu_asm_compatibility_keeps_gcc_branch_locations_and_failed_unit_isolation(
+    tmp_path: Path,
+) -> None:
+    adapter = ClangSourceAdapter()
+    if adapter.preprocessor is None or adapter.compiler is None:
+        pytest.skip("installed GNU Arm GCC and Clang required")
+    (tmp_path / "Src").mkdir()
+    (tmp_path / "Inc").mkdir()
+    header = tmp_path / "Inc" / "legacy.h"
+    header.write_text(
+        'static int from_header;\n'
+        'static inline void set_fpscr(unsigned fpscr) {\n'
+        '  __asm volatile ("VMSR fpscr, %0" : : "r" (fpscr) : "vfpcc");\n'
+        '}\n', encoding="ascii")
+    good = tmp_path / "Src" / "good.c"
+    good.write_text(
+        '#include "legacy.h"\n'
+        '#ifdef __clang__\nint clang_branch;\n#else\nint gnu_branch;\n#endif\n'
+        'int run(void) {\n'
+        '  int local = gnu_branch;\n'
+        '  set_fpscr((unsigned)local);\n'
+        '  return local;\n'
+        '}\n', encoding="ascii")
+    bad = tmp_path / "Src" / "bad.c"
+    bad.write_text(
+        '#include "legacy.h"\n'
+        '__asm volatile ("" : : : "unknown_clobber_xyz");\n'
+        'int rejected;\n', encoding="ascii")
+    original = {path: path.read_bytes() for path in (header, good, bad)}
+    model = _model(tmp_path, ("Src/good.c", "Src/bad.c"))
+    try:
+        index = adapter.index(model)
+    finally:
+        adapter.close()
+    assert index.parsed_units == 1 and index.total_units == 2 and not index.complete
+    assert not index.truncated and tuple(issue.unit for issue in index.issues) == ("Src/bad.c",)
+    assert {entry.name for entry in index.declarations}.isdisjoint({"clang_branch", "rejected"})
+    branch = next(entry for entry in index.declarations if entry.name == "gnu_branch")
+    assert (branch.file, branch.line, branch.column, branch.translation_units) == (
+        "Src/good.c", 5, 5, ("Src/good.c",))
+    function = next(entry for entry in index.functions if entry.name == "run")
+    assert (function.file, function.line, function.column, function.translation_units) == (
+        "Src/good.c", 7, 5, ("Src/good.c",))
+    local = next(entry for entry in index.declarations if entry.name == "local")
+    assert (local.file, local.line, local.column, local.function_id, local.scope_kind) == (
+        "Src/good.c", 8, 7, function.id, "local")
+    shared = next(entry for entry in index.declarations if entry.name == "from_header")
+    assert (shared.file, shared.line, shared.translation_units) == (
+        "Inc/legacy.h", 1, ("Src/good.c",))
+    assert all(path.read_bytes() == contents for path, contents in original.items())
+
+
+def test_parser_compatibility_revision_changes_engine_and_plan_identity(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    from stm32_toolkit.debug import source_asm_compat
+
+    adapter = ClangSourceAdapter()
+    if adapter.preprocessor is None or adapter.compiler is None:
+        pytest.skip("installed GNU Arm GCC and Clang required")
+    (tmp_path / "Src").mkdir()
+    (tmp_path / "Inc").mkdir()
+    (tmp_path / "Src" / "a.c").write_text("int a;\n", encoding="ascii")
+    try:
+        model = _model(tmp_path, ("Src/a.c",))
+        original = adapter.plan(model)
+        monkeypatch.setattr(source_asm_compat, "POLICY_VERSION", source_asm_compat.POLICY_VERSION + "-next")
+        revised = adapter.plan(model)
+    finally:
+        adapter.close()
+    assert original.fingerprint != revised.fingerprint
+    assert original.engine_version != revised.engine_version
+    assert revised.engine_version.endswith(source_asm_compat.POLICY_VERSION)
 
 
 def test_real_function_scope_identity_survives_body_include(tmp_path: Path) -> None:

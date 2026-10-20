@@ -25,6 +25,7 @@ from typing import Iterable
 from stm32_toolkit.project_model import ProjectModel
 from stm32_toolkit.generation.managed_files import CORE_CPU_FLAGS
 from stm32_toolkit.process import _terminate_tree
+from stm32_toolkit.debug import source_asm_compat
 
 if os.name == "nt":
     from stm32_toolkit.debug.source_windows import OwnedWindowsJob
@@ -622,12 +623,13 @@ class ClangSourceAdapter:
                                ["clang", *parser, "-fsyntax-only", "-Xclang", "-ast-dump=json", "unit.i"]])
             except (OSError, ValueError, SourceCatalogError):
                 stages.append([source, str(cwd), command, "unsupported"])
-        raw = json.dumps(["gcc-e-line-markers-clang-i-v1", str(self.preprocessor), str(self.compiler), version, input_kind,
+        raw = json.dumps(["gcc-e-line-markers-clang-i", source_asm_compat.POLICY_VERSION,
+                          str(self.preprocessor), str(self.compiler), version, input_kind,
                           stages],
                          ensure_ascii=False, separators=(",", ":"))
         fingerprint = hashlib.sha256(raw.encode("utf-8")).hexdigest()
         return SourcePlan(tuple((source, cwd, tuple(command)) for source, cwd, command in commands),
-                          input_kind, version, fingerprint)
+                          input_kind, f"{version};source-policy:{source_asm_compat.POLICY_VERSION}", fingerprint)
 
     def index(self, model: ProjectModel, plan: SourcePlan | None = None) -> SourceIndex:
         with self._index_lock:
@@ -668,7 +670,7 @@ class ClangSourceAdapter:
                                         cwd, min(MAX_UNIT_PREPROCESSED_BYTES, MAX_TOTAL_AST_BYTES - total_bytes),
                                         min(unit_deadline - time.monotonic(), deadline - time.monotonic()))
                     total_bytes += len(content)
-                    preprocessed.write_bytes(content)
+                    preprocessed.write_bytes(source_asm_compat.normalize_gnu_asm_clobbers(content))
                     parser_flags = [flag for flag in flags if flag in _KEEP_EXACT
                                     or flag.startswith(_KEEP_PREFIX)]
                     remaining = min(unit_deadline - time.monotonic(), deadline - time.monotonic())
@@ -681,33 +683,45 @@ class ClangSourceAdapter:
                 ast = json.loads(raw)
                 if not isinstance(ast, dict):
                     raise ValueError("AST root is invalid")
+                staged_functions: dict[str, SourceFunction] = {}
+                staged_declarations: dict[str, SourceDeclaration] = {}
+                new_functions = 0
+                new_declarations = 0
                 for entry in _discover(ast, root, source, content):
                     if isinstance(entry, SourceFunction):
-                        previous_function = functions.get(entry.id)
+                        previous_function = staged_functions.get(entry.id) or functions.get(entry.id)
                         if previous_function is None:
-                            if len(functions) >= MAX_FUNCTIONS:
+                            new_functions += 1
+                            if len(functions) + new_functions > MAX_FUNCTIONS:
                                 truncated = True
                                 raise SourceCatalogError("MONITOR_SOURCE_INDEX_FAILED", "Source function limit was reached")
-                            functions[entry.id] = entry
+                            staged_functions[entry.id] = entry
                         else:
-                            functions[entry.id] = SourceFunction(
+                            staged_functions[entry.id] = SourceFunction(
                                 entry.id, entry.name, entry.file, entry.line, entry.column,
                                 tuple(sorted(set(previous_function.translation_units + entry.translation_units))))
                         continue
                     declaration = entry
-                    previous = declarations.get(declaration.id)
+                    previous = staged_declarations.get(declaration.id) or declarations.get(declaration.id)
                     if previous is None:
-                        if len(declarations) >= MAX_DECLARATIONS:
+                        new_declarations += 1
+                        if len(declarations) + new_declarations > MAX_DECLARATIONS:
                             truncated = True
                             raise SourceCatalogError("MONITOR_SOURCE_INDEX_FAILED", "Source declaration limit was reached")
-                        declarations[declaration.id] = declaration
+                        staged_declarations[declaration.id] = declaration
                     else:
                         units = tuple(sorted(set(previous.translation_units + declaration.translation_units)))
-                        declarations[declaration.id] = SourceDeclaration(
+                        staged_declarations[declaration.id] = SourceDeclaration(
                             previous.id, previous.entity_id, previous.name, previous.type_name, previous.file,
                             previous.line, previous.column, previous.storage,
                             previous.scope_kind, previous.function, previous.scope_path, units,
                             previous.function_id)
+                if self._closed.is_set():
+                    raise SourceCatalogError("MONITOR_SOURCE_INDEX_FAILED", "Source index was closed")
+                if time.monotonic() >= unit_deadline or time.monotonic() >= deadline:
+                    raise SourceCatalogError("MONITOR_SOURCE_INDEX_FAILED", "Source index exceeded its discovery budget")
+                declarations.update(staged_declarations)
+                functions.update(staged_functions)
                 parsed += 1
             except (OSError, UnicodeError, TypeError, ValueError, SourceCatalogError, json.JSONDecodeError):
                 issues.append(SourceIssue(source, "MONITOR_SOURCE_INDEX_FAILED", "Compilation unit could not be indexed within the source policy"))
@@ -750,7 +764,18 @@ def _discover(ast: dict[str, object], root: Path, unit: str,
               preprocessed: bytes) -> Iterable[SourceDeclaration | SourceFunction]:
     starts, locations = _line_map(preprocessed)
     file_cache: dict[str, tuple[bytes, tuple[int, ...]]] = {}
+    path_cache: dict[tuple[str, str], tuple[Path, tuple[Path, str]]] = {}
     entities: dict[str, str] = {}
+
+    def verified_path(candidate: Path) -> tuple[Path, str]:
+        key = (os.fspath(root), os.fspath(candidate))
+        previous = path_cache.get(key)
+        if previous is not None:
+            return previous[1]
+        result = _safe_path(root, candidate)
+        path_cache[key] = (candidate, result)
+        return result
+
     # Clang omits repeated presumedFile/presumedLine. GCC line markers map each
     # AST byte offset back to the active source file and source line.
     stack: list[tuple[dict[str, object], str | None, str | None, tuple[str, ...]]] = [(ast, None, None, ())]
@@ -783,7 +808,7 @@ def _discover(ast: dict[str, object], root: Path, unit: str,
                     except ValueError:
                         external = True
                 if not external:
-                    _, relative = _safe_path(root, candidate)
+                    _, relative = verified_path(candidate)
                     line = raw_line if type(raw_line) is int and raw_line > 0 else None
                     column = point.get("col") if type(point.get("col")) is int and point["col"] > 0 else None
                     identity = ["function", relative, line, column, function]
@@ -810,7 +835,7 @@ def _discover(ast: dict[str, object], root: Path, unit: str,
                         candidate.relative_to(root)
                     except ValueError:
                         continue  # verified external system header
-                absolute, relative = _safe_path(root, candidate)
+                absolute, relative = verified_path(candidate)
                 if relative not in file_cache:
                     data = absolute.read_bytes()
                     file_starts = [0]
@@ -861,6 +886,11 @@ def _discover(ast: dict[str, object], root: Path, unit: str,
             for child in reversed(children):
                 if isinstance(child, dict):
                     stack.append((child, function, function_id, scope))
+    # Cached successes are provisional.  This final pass catches replaced,
+    # removed or newly redirected paths before the caller adopts unit facts.
+    for candidate, result in path_cache.values():
+        if _safe_path(root, candidate) != result:
+            raise SourceCatalogError("MONITOR_SOURCE_INDEX_FAILED", "Source path changed during discovery")
 
 
 def _declarations(ast: dict[str, object], root: Path, unit: str,

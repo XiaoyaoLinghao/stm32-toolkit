@@ -424,6 +424,36 @@ def test_real_provider_partial_retry_reindexes_same_inputs(real_source_project) 
     asyncio.run(scenario())
 
 
+def test_real_provider_policy_revision_rejects_old_selection_and_cursor(
+    real_source_project, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from stm32_toolkit.debug import source_asm_compat
+
+    provider, _, binding = real_source_project
+
+    async def scenario() -> None:
+        first = await provider.page(query="counter", cursor=None, limit=100, parent_id=None,
+                                    catalog_id=None, binding=binding, binding_epoch=0)
+        old_item = next(item for item in first["items"] if item["canAdd"])
+        first_page = await provider.page(query="", cursor=None, limit=1, parent_id=None,
+                                         catalog_id=None, binding=binding, binding_epoch=0)
+        assert first_page["nextCursor"] is not None
+        monkeypatch.setattr(source_asm_compat, "POLICY_VERSION", source_asm_compat.POLICY_VERSION + "-next")
+        revised = await provider.page(query="counter", cursor=None, limit=100, parent_id=None,
+                                      catalog_id=None, binding=binding, binding_epoch=0)
+        assert revised["coverage"]["complete"] and revised["catalogId"] != first["catalogId"]
+        with pytest.raises(module.SourceCatalogFailure) as stale_selection:
+            await provider.select(catalog_id=first["catalogId"], item_id=old_item["id"],
+                                  selector=old_item["selector"], binding=binding, binding_epoch=0)
+        assert stale_selection.value.code == "MONITOR_SOURCE_CONTEXT_CHANGED"
+        with pytest.raises(module.SourceCatalogFailure) as stale_cursor:
+            await provider.page(query="", cursor=first_page["nextCursor"], limit=1, parent_id=None,
+                                catalog_id=first_page["catalogId"], binding=binding, binding_epoch=0)
+        assert stale_cursor.value.code == "MONITOR_SOURCE_CONTEXT_CHANGED"
+
+    asyncio.run(scenario())
+
+
 def test_partial_ast_still_exposes_compiled_functions_parameters_and_selection(real_source_project) -> None:
     provider, _, binding = real_source_project
     original = provider.adapter.index
