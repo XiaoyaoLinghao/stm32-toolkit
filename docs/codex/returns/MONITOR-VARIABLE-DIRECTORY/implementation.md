@@ -1,0 +1,57 @@
+# Monitor variable directory implementation return
+
+## Identity and ownership
+
+- Accepted full base: `34256353d3b7ab0f8eacaa9b8065759299855933`. Frozen product CodeHead before this report: `9a8080b0aa9a3cf848e1115c8590e60dd0452823`, branch `codex/monitor-variable-directory`, implementation checkout `D:\codex-tmp\mv1020\impl`.
+- Governing design and plan: `docs/superpowers/specs/2026-10-20-monitor-variable-directory-design.md` and `docs/superpowers/plans/2026-10-20-monitor-variable-directory-plan.md`. This implementer owns product/tests/generated UI assets. Primary and a separate reviewer own complete-diff review, acceptance, and service operation. This report does not record its own commit SHA or claim acceptance.
+- No remote mutation, dependency installation, browser/HTTP access, probe, flash, sampling or hardware operation was performed. The current live MR project `D:\codex-tmp\mr1019\p` and its legacy build/receipt were read only. The new build ran in a separate local clone `D:\codex-tmp\mv1020\mr-new` at MR source head `3babf285f372b3ed6ef3caea71887fa8faa46997`.
+
+## Delivered behavior
+
+1. Clang source discovery preserves `previousDecl` entity evidence per translation unit and distinguishes initialized definitions from valid C tentative declarations. The catalog relates a header extern only to one compatible external definition and concrete DWARF object in the same verified TU, including `extern int x; int x; int x=1;` and static tentative/initialized chains. Type, scope, linkage, function, static/internal, TLS, unknown-CU and conflicting-object negatives fail closed. Positive DWARF rows receive proved AST role evidence before duplicate AST rows are suppressed; unproved extern attribution never decorates a DWARF fallback. DWARF lookup, address, range, location and current binding remain the selection authority.
+2. Source rows carry optional schema-1 `declaration:{kind,definitionSite}` metadata, with strict nested validation and omitted-field legacy compatibility. The sidebar displays folder/file/scope/root/member ownership, distinct declaration-role and current-eligibility badges, proved extern definition sites, bounded loaded/total counts, and one full-height scroll region. Search, lazy pagination, existing watch expressions and admission paths remain in place.
+3. New builds hash immediate `.h` siblings of declared source/assembly files under existing path, count and byte limits, and record only `inputDiscoveryPolicy:source-local-headers-v1`. Omitted marker retains the exact legacy snapshot/hash. Context, flash, Monitor and applicable recovery comparisons reproduce the validated recorded policy; prior no-op output reuse requires exact policy. Old attempts keep their original canonical stage-output shape, while new attempts freeze a distinct before-policy field and reject policy crossing before physical authorization or continuation.
+4. Legacy omitted-header coverage remains an explicit per-path warning with a clean-rebuild remedy. A path outside the **new** snapshot policy has a separate coverage code and named guidance to verify project source/include declarations, then cleanly rebuild; rebuilding alone cannot repair an undeclared outside-directory header. The new MR copy includes both `Main/stm32f4xx_it.h` and `Main/string.h` and reports complete coverage in the pre-repair provider run after a genuine offline build. No compiler dependency closure is claimed.
+
+## Implementer verification
+
+All owner commands used the absolute Python 3.12 or Node runtime in the task instructions, with `PYTHONPATH` set to this implementation checkout's Toolkit and Monitor `src` roots, `PYTHONDONTWRITEBYTECODE=1`, and `TEMP/TMP/TMPDIR`, pytest base/cache, and Node cache inside per-run directories under `D:\codex-tmp\mv1020\impl-checks`. Full stdout/stderr and proof JSON are preserved there. UI dependencies are the pre-existing locked package copy under `D:\codex-tmp\mv1020\deps`; no package install was run.
+
+| Check | Exact invocation after environment binding | Result and evidence subdirectory |
+| --- | --- | --- |
+| Firmware identity/schema suite | `python -m pytest -o addopts='' -q --basetemp <run>/basetemp -o cache_dir=<run>/cache tools/stm32-toolkit/tests/test_firmware_identity.py` | exit 0, 101 passed, `identity-canonical/result.log` (see checkout line-ending note below) |
+| Broad affected Python regression | `python -m pytest -o addopts='' -q --basetemp <run>/basetemp -o cache_dir=<run>/cache` with the 16 explicit files recorded in `py-broad/command.txt` | 592 passed, 7 failed on an old replay fake signature after the new policy keyword; `py-broad/result.log`. No full repeat after the test-only correction. |
+| Final-head changed Python files | Same bounded pytest invocation with `tools/stm32-toolkit/tests/test_source_adapter.py tools/stm32-monitor/tests/test_source_catalog.py`; separately with `tools/stm32-toolkit/tests/test_acceptance_recovery_workflows.py` | exit 0, 55 passed and 49 passed respectively; `source-after-review-fixed/result.log`, `recovery-final/result.log` |
+| Full bounded UI suite | `npm test -- --maxWorkers=2` | exit 0, 58 files, 493 passed, 1 skipped against CodeHead; `ui-full-final/result.log` |
+| UI type checks | `npm run typecheck` and `npm run typecheck:e2e` | both exit 0; `ui-after-review/typecheck.log`, `ui-after-review/typecheck-e2e.log` |
+| UI lint | `npm run lint` | exit 0; `ui-after-review/lint.log` |
+| UI build and packaged bytes | `npm run build`; `npm run verify:dist` | both exit 0; 7 packaged files byte-identical; `ui-after-review/build.log`, `ui-after-review/verify-dist.log` |
+| Staged product diff | `git diff --cached --check` | exit 0 before CodeHead; generated dist and tests committed with code |
+
+The broad Python failures were isolated to a test fake that rejected the new `policy=` keyword. The fixture now explicitly asserts the legacy policy, preserving every existing negative-code and canonical-chain expectation; the complete affected replay file passed 49/49 at final CodeHead. A pre-final source run had one stale assertion treating `int shared;` as initialized; after checking its preserved per-TU entity chain and tentative storage semantics, the corrected full source suite passed 55/55 (`source-after-review/result.log`, then `source-after-review-fixed/result.log`). No failed run was relabeled as PASS. The initial full UI run failed one stale generic count assertion (`ui-full/result.log`: 491 passed, 1 failed, 1 skipped); corrected UI and final-head full suite passed. Earlier focused static/physical failures and fixes remain in `py-focused`, `static-proof`, `proof4`, `physical-focused`, and `physical-policy` logs.
+
+The first firmware identity suite run passed 100 tests and failed one pre-existing byte comparison in `test_real_linked_toolkit_template_stack_symbols`: Windows `core.autocrlf=true` checked `template-rendered.ld` out with 74 CRLF (1118 bytes), while its committed blob is LF (1044 bytes) and the generator emits LF. This is **ENVIRONMENT**, not a product failure (`identity-focused/result.log`). In this isolated checkout I temporarily wrote exactly the index blob to that single unchanged fixture, reran the entire suite to 101/101 pass, then restored its exact original CRLF checkout bytes and confirmed the fixture is clean in Git. No fixture or assertion was committed.
+
+## Real MR offline proofs and applicability
+
+The owner ran the following offline build, snapshot, adapter, DWARF and provider checks before the bounded redeclaration/warning repair, at initial CodeHead `dce272e3c387638928ab84fce20ae6adb075bc49`. Toolkit build/snapshot and their input/output identity bytes did not change in the repair, so the real build, legacy/new snapshot counts, receipt, and standalone adapter/DWARF observations remain applicable. **Provider semantic observations in this table are pre-repair evidence, not a final-head provider PASS.** The primary owns independent exact-`9a8080b0` legacy/new provider and public build/freshness integration before acceptance.
+
+| Evidence | Current legacy MR, read only | Separate new-policy MR copy |
+| --- | --- | --- |
+| Validated policy and input count | absent marker = legacy; 169 | `source-local-headers-v1`; 171 including both Main headers |
+| Input snapshot SHA-256 | `ad9beeb0e3370801579e0af976bb436e25b07e86505bc19723df52c2d1dfacc4` | `241393568454f5712b3d6847a59ea4eaa132c9e329cf5bb429c85e77f48507c1` |
+| Build ID | `d1518c08faccd8426539bd5aa84fb01e66b4c464e11b06958e57d3ec38218989` | `858b7de518c4f06b7db583cd4c5483e6a6e84043340d9f928bba8094e6a02218` |
+| ELF SHA-256 | `543ef137d06e89945df68b0ed1d29f60c31ae31b877200db26eb6f5b44a42cc8` | `5f3e686baed1509223e6505b32a16b41c4e762a517e765b12a0b4b0c0b1095f6` |
+| Provider tree/page/select | 53/53 AST units; incomplete only for named untracked `Main/stm32f4xx_it.h`; header `testtime` extern selects via proved `USER/TIMER/timer.c:8` | 53/53 AST units; complete, zero issues; same proved extern and selection; `Main/Main.c:40` TEST remains unavailable automatic local |
+| Adapter `index()` elapsed | 50.172 seconds in standalone read-only run (plan 5.110 seconds); unchanged 120-second budget | 50.266 seconds (full provider 172.531 seconds); unchanged 120-second budget |
+| Validated ELF/DWARF `testtime` | `0x20000408` | `0x20000408` |
+
+Legacy provider proof: `legacy-mr/proof.json` and `provider.log`; separate legacy adapter timing: `legacy-adapter/proof.json`; new provider proof: `new-mr-provider/proof.json` and `provider.log`; address lookup: `dwarf-address/{legacy,new}.json`. Bindings in provider checks were explicit synthetic matches only for offline admission; they are not a physical observation.
+
+The new MR build was invoked once via `python D:\codex-tmp\mv1020\impl-checks\offline_build.py D:\codex-tmp\mv1020\mr-new <run>/proof.json`, calling public `run_build(BuildRequest(project_root=..., preset="arm-debug"))` with installed local CMake/Ninja/ARM tools. The build succeeded and published `artifacts/migration/build-result.json` with status `success`, code `OK`, duration 12,578 ms, and new-policy firmware identity. The owned proof script then exited 1 while JSON-serializing a `mappingproxy` in its summary; this **REPORT** error is retained in `new-mr-build/build.log`, and no build was repeated to mask it. Independent read-only durable-receipt verification passed (`new-mr-receipt/proof.json`), confirming 171-path source hash, build ID, ELF hash, marker and fresh firmware facts against the published files.
+
+## Remaining ownership and cleanup
+
+Independent accepted-base-to-final-head review, verdict and local 8765 service transition belong to primary. Real browser/viewport/axe, HTTP/WebSocket, service restart and physical sampling/flash evidence remain deferred to their named owners; this offline work does not claim them. The current old MR service remains on its valid legacy firmware and retains its actionable omitted-header warning until a separate clean firmware rebuild; a Ninja no-op cannot upgrade the identity.
+
+Primary is cleanup owner for `D:\codex-tmp\mv1020`. Preserve `impl-checks` minimal pass/failure logs and proof JSON, the owned `mr-new` build copy, locked dependency copy, and review artifacts until independent review is reconciled. Generated basetemps and caches are run-scoped and may be removed later only after verifying exact owned paths; this implementer did not retry any prior cleanup hold.
