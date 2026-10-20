@@ -599,9 +599,13 @@ def test_validate_elf_missing_file(tmp_path: Path):
 # ---------------------------------------------------------------------------
 
 
-def _identity_document(root: Path, preset: str = "arm-debug", built_at_utc: str = "2026-08-06T08:00:00.000000Z") -> dict:
+def _identity_document(
+    root: Path, preset: str = "arm-debug",
+    built_at_utc: str = "2026-08-06T08:00:00.000000Z",
+    policy: str = "source-local-headers-v1",
+) -> dict:
     model = model_for(root)
-    snapshot = snapshot_project_inputs(model)
+    snapshot = snapshot_project_inputs(model, policy=policy)
     evidence = git_evidence(root)
     elf_path = root / "build" / preset / "firmware.elf"
     elf_path.parent.mkdir(parents=True, exist_ok=True)
@@ -644,6 +648,7 @@ def test_identity_document_key_order_and_fields(tmp_path: Path):
         "vectorAddress",
         "resetHandlerAddress",
         "builtAtUtc",
+        "inputDiscoveryPolicy",
     ]
     assert document["schemaVersion"] == 1
     assert document["toolkitVersion"] == __version__
@@ -652,6 +657,18 @@ def test_identity_document_key_order_and_fields(tmp_path: Path):
     assert document["elfPath"] == "build/arm-debug/firmware.elf"
     assert document["mapPath"] == "build/arm-debug/firmware.map"
     assert document["newestInputMtimeNs"] >= 0
+    assert document["inputDiscoveryPolicy"] == "source-local-headers-v1"
+    validate_identity_document(document)
+
+
+def test_legacy_identity_keeps_absent_policy_and_exact_previous_build_id(tmp_path: Path):
+    root = prepare_project(tmp_path)
+    document = _identity_document(root, policy="legacy")
+    assert "inputDiscoveryPolicy" not in document
+    assert identity_mod.identity_discovery_policy(document) == "legacy"
+    assert compute_build_id(document) == document["buildId"]
+    updated = {**document, "inputDiscoveryPolicy": "source-local-headers-v1"}
+    assert compute_build_id(updated) != document["buildId"]
     validate_identity_document(document)
 
 
@@ -693,6 +710,9 @@ def test_identity_release_preset_uses_release_paths(tmp_path: Path):
         lambda doc: doc.__setitem__("builtAtUtc", "2026-08-06T08:00:00"),
         lambda doc: doc.__setitem__("newestInputMtimeNs", -1),
         lambda doc: doc.__setitem__("gitDirty", 1),
+        lambda doc: doc.__setitem__("inputDiscoveryPolicy", None),
+        lambda doc: doc.__setitem__("inputDiscoveryPolicy", "legacy"),
+        lambda doc: doc.__setitem__("inputDiscoveryPolicy", "future-policy"),
     ],
 )
 def test_schema_rejects_invalid_documents(tmp_path: Path, mutator):

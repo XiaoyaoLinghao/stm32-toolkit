@@ -120,25 +120,35 @@ td code{white-space:normal;}
 .history-workspace{height:100%;min-width:0;overflow:auto;display:flex;flex-direction:column;gap:12px;max-width:1200px;margin:auto;}
 .source-view-tabs,.source-actions{display:flex;gap:5px;flex-wrap:wrap;margin:7px 0;}
 .source-view-tabs button[aria-selected="true"]{background:#eaf2ff;border-color:var(--signal);color:var(--signal-dark);font-weight:700;}
-.source-catalog-panel{min-width:0;}
+.source-catalog-panel{flex:1;min-height:0;min-width:0;display:flex;flex-direction:column;overflow:hidden;border:0;border-radius:0;}
+.source-catalog-panel>h2,.source-catalog-panel>label,.source-catalog-panel>.source-actions,.source-catalog-panel>p,.source-catalog-panel>.source-coverage{flex:none;}
 .source-catalog-panel label{display:flex;flex-direction:column;gap:3px;}
 .source-catalog-panel input{width:100%;min-width:0;}
 .source-catalog-panel>p{font-size:11px;color:var(--muted);margin:7px 0;}
 .source-coverage{display:grid;gap:3px;margin:7px 0;padding:8px;border:1px solid #e2bf83;border-radius:5px;background:var(--warn-bg);font-size:11px;overflow-wrap:anywhere;}
 .source-coverage button{justify-self:start;}
-.source-tree{max-height:50vh;overflow:auto;border:1px solid var(--border);border-radius:5px;padding:5px;}
+.source-tree{flex:1;min-height:0;overflow:auto;border:1px solid var(--border);border-radius:5px;padding:5px;}
 .source-tree>ul{margin:0;}
 .source-folder,.source-file,.source-scope{min-width:0;margin:2px 0;}
 .source-folder>button,.source-file>button,.source-scope>button{display:block;width:100%;text-align:left;overflow-wrap:anywhere;font-size:11px;font-weight:600;padding:4px 6px;border:0;background:transparent;color:var(--ink);}
+.source-folder>button{color:var(--muted);font-weight:500;}
 .source-folder>button:hover,.source-file>button:hover,.source-scope>button:hover{background:#eaf2ff;}
 .source-folder>button:focus-visible,.source-file>button:focus-visible,.source-scope>button:focus-visible{outline:2px solid var(--signal);outline-offset:-2px;}
-.source-file>button{color:var(--signal-dark);}
-.source-scope>button{font-weight:500;}
+.source-file>button{color:var(--signal-dark);background:#eaf2ff;border-left:3px solid var(--signal);padding:6px;}
+.source-file-path{display:block;font-weight:700;}
+.source-file>button small{display:block;color:var(--muted);font-weight:400;}
+.source-scope>button{font-weight:600;background:#f4f6f9;border-left:2px solid #aeb8c5;}
 .source-tree ul,.source-children ul{list-style:none;padding:0;margin:0;}
-.source-item{min-width:0;padding:3px 0;border-top:1px solid var(--border);}
+.source-item{min-width:0;padding:5px 0 5px 8px;border-top:1px solid var(--border);border-left:2px solid #d9e1eb;}
 .source-item-line{display:flex;align-items:start;gap:4px;min-width:0;}
 .source-item-label{min-width:0;flex:1;display:flex;flex-direction:column;gap:2px;overflow-wrap:anywhere;font-size:11px;}
 .source-item-label code{font-weight:650;}
+.source-item-heading{display:flex;align-items:start;gap:4px;flex-wrap:wrap;}
+.source-role-badge,.source-status-badge{display:inline-block;width:fit-content;border:1px solid #c6d2e2;border-radius:4px;padding:1px 4px;background:#f4f6f9;color:#40526b;font-size:10px;line-height:1.3;}
+.source-status-badge{border-color:#d7b572;background:#fff8e9;color:#74501d;}
+.source-status-ready{border-color:#77ab87;background:#e9f6ec;color:#245b31;}
+.source-item-label .source-definition{color:var(--signal-dark);font-weight:600;}
+.source-item-label .source-owner{color:var(--muted);}
 .source-item-label small{color:var(--muted);}
 .source-item-label .source-reason{color:var(--warn);}
 .source-expand,.source-expand-placeholder{flex:none;width:22px;min-height:22px;padding:0;text-align:center;}
@@ -146,6 +156,7 @@ td code{white-space:normal;}
 .source-item-line>button:last-child{flex:none;min-height:22px;padding:0 6px;}
 .source-children{margin-left:14px;padding-left:6px;border-left:1px solid var(--border);}
 .source-children>p{font-size:10px;color:var(--muted);}
+.source-page-count{margin:4px 0;color:var(--muted);font-size:10px;}
 .history-panel,.export-panel{flex:none;}
 .history-panel label,.export-panel label,.group-editor label{display:flex;flex-direction:column;gap:4px;margin:7px 0;}
 .history-panel label,.export-panel label{min-width:220px;}

@@ -24,7 +24,10 @@ from stm32_toolkit.acceptance.model import (
     REQUIRED_STAGES,
     describe_scenario,
 )
-from stm32_toolkit.build.identity import git_evidence, snapshot_project_inputs
+from stm32_toolkit.build.identity import (
+    LEGACY_INPUT_DISCOVERY_POLICY, SOURCE_LOCAL_HEADERS_POLICY,
+    git_evidence, snapshot_project_inputs,
+)
 from stm32_toolkit.context import build_project_context
 from stm32_toolkit.diagnostic_workflows import (
     DiagnosticWorkflowContext,
@@ -352,7 +355,10 @@ def _build_data(
     if not isinstance(elf_sha, str) or _HASH_PATTERN.fullmatch(elf_sha) is None:
         raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_OUTPUT_INVALID")
     try:
-        input_snapshot = snapshot_project_inputs(model).sha256
+        policy = build.get("inputDiscoveryPolicy", LEGACY_INPUT_DISCOVERY_POLICY)
+        if policy not in (LEGACY_INPUT_DISCOVERY_POLICY, SOURCE_LOCAL_HEADERS_POLICY):
+            raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_OUTPUT_INVALID")
+        input_snapshot = snapshot_project_inputs(model, policy=cast(str, policy)).sha256
     except Exception as error:
         raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_OUTPUT_INVALID") from error
     _canonical_hash("beforeInputSnapshotSha256", input_snapshot)
@@ -393,7 +399,8 @@ def _physical_build_data(
     ):
         raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_OUTPUT_INVALID")
     try:
-        snapshot = snapshot_project_inputs(model)
+        policy = getattr(facts, "input_discovery_policy", LEGACY_INPUT_DISCOVERY_POLICY)
+        snapshot = snapshot_project_inputs(model, policy=policy)
     except Exception as error:
         raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_OUTPUT_INVALID") from error
     snapshot_sha256 = getattr(snapshot, "sha256", None)
@@ -406,6 +413,7 @@ def _physical_build_data(
             "buildId": build_id,
             "elfSha256": elf_sha256,
             "inputSnapshotSha256": facts_snapshot_sha256,
+            "inputDiscoveryPolicy": policy,
         },
         snapshot,
     )
@@ -1734,6 +1742,8 @@ def _validate_physical_chain_semantics(
                 raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED")
             if previous.deadline_at_utc is None or _timestamp(attempt.updated_at_utc) > _timestamp(previous.deadline_at_utc):
                 raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED")
+            if set(attempt.stage_outputs) != set(previous.stage_outputs):
+                raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED")
             for key, value in previous.stage_outputs.items():
                 if value is not None and attempt.stage_outputs.get(key) != value:
                     raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED")
@@ -1897,6 +1907,7 @@ def _validate_physical_build_after_publication(
     expected = candidate.stage_outputs
     if (
         build.get("buildId") != expected.get("afterBuildId")
+        or build.get("inputDiscoveryPolicy") != _frozen_physical_policy(candidate)
         or build.get("elfSha256") != expected.get("afterElfSha256")
         or build.get("inputSnapshotSha256") != expected.get("afterInputSnapshotSha256")
         or getattr(snapshot, "sha256", None)
@@ -1936,6 +1947,7 @@ def _physical_base_snapshot(
         profile = physical_acceptance_profile_for_schema(PHYSICAL_ATTEMPT_SCHEMA)
     if outputs is None:
         outputs = {key: None for key in PHYSICAL_STAGE_OUTPUT_KEYS}
+        outputs["beforeInputDiscoveryPolicy"] = None
     payload: dict[str, object] = {
         "schema": profile.attempt_schema,
         "attemptId": attempt_id,
@@ -2096,6 +2108,18 @@ def _derive_physical_intent(
     )
 
 
+def _frozen_physical_policy(attempt: PhysicalAcceptanceAttempt) -> str:
+    policy = attempt.stage_outputs.get("beforeInputDiscoveryPolicy", LEGACY_INPUT_DISCOVERY_POLICY)
+    if policy not in (LEGACY_INPUT_DISCOVERY_POLICY, SOURCE_LOCAL_HEADERS_POLICY):
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH")
+    return cast(str, policy)
+
+
+def _require_physical_policy(attempt: PhysicalAcceptanceAttempt, current: object) -> None:
+    if _frozen_physical_policy(attempt) != current:
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH")
+
+
 def _validate_physical_authorization_source(
     model: object,
     attempt: PhysicalAcceptanceAttempt,
@@ -2107,7 +2131,13 @@ def _validate_physical_authorization_source(
     if intent.before_input_snapshot_sha256 != expected_before:
         raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH")
     try:
-        snapshot = snapshot_project_inputs(model)
+        facts = _load_fresh_firmware_facts(cast(Path, getattr(model, "project_root")))
+        _require_physical_policy(attempt, getattr(facts, "input_discovery_policy", LEGACY_INPUT_DISCOVERY_POLICY))
+        if (getattr(facts, "build_id", None) != attempt.stage_outputs.get("beforeBuildId")
+                or getattr(facts, "elf_sha256", None) != attempt.stage_outputs.get("beforeElfSha256")
+                or getattr(facts, "input_snapshot_sha256", None) != expected_before):
+            raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH")
+        snapshot = snapshot_project_inputs(model, policy=_frozen_physical_policy(attempt))
         refreshed = _derive_physical_intent(
             model,
             intent,
@@ -2118,6 +2148,8 @@ def _validate_physical_authorization_source(
         raise
     except AcceptanceRecoveryValidationError as error:
         raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_OUTPUT_INVALID") from error
+    except Exception as error:
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH") from error
     if refreshed != intent:
         raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH")
     return refreshed
@@ -2352,9 +2384,14 @@ def _physical_build_transition(
         outputs["projectModelDigest"] = _project_model_digest(model)
     elif stage == "firmware-built-before":
         build, _snapshot = _physical_build_data(context, model)
+        if ("beforeInputDiscoveryPolicy" not in outputs
+                and build["inputDiscoveryPolicy"] != LEGACY_INPUT_DISCOVERY_POLICY):
+            raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH")
         outputs["beforeBuildId"] = build["buildId"]
         outputs["beforeElfSha256"] = build["elfSha256"]
         outputs["beforeInputSnapshotSha256"] = build["inputSnapshotSha256"]
+        if "beforeInputDiscoveryPolicy" in outputs:
+            outputs["beforeInputDiscoveryPolicy"] = build["inputDiscoveryPolicy"]
     elif stage == "target-failure-observed":
         assert test_run_id is not None
         published = _load_physical_test_run(
@@ -2387,6 +2424,7 @@ def _physical_build_transition(
             before_build["buildId"] != attempt.stage_outputs.get("beforeBuildId")
             or before_build["elfSha256"] != attempt.stage_outputs.get("beforeElfSha256")
             or before_build["inputSnapshotSha256"] != attempt.stage_outputs.get("beforeInputSnapshotSha256")
+            or before_build["inputDiscoveryPolicy"] != _frozen_physical_policy(attempt)
         ):
             raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH")
         try:
@@ -2407,6 +2445,7 @@ def _physical_build_transition(
         if attempt.source_change_authorization is None or attempt.source_change_intent is None:
             raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_AUTHORIZATION_REQUIRED")
         build, _snapshot = _physical_build_data(context, model)
+        _require_physical_policy(attempt, build["inputDiscoveryPolicy"])
         if build["buildId"] == attempt.stage_outputs.get("beforeBuildId"):
             raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_OUTPUT_INVALID")
         if build["inputSnapshotSha256"] != attempt.source_change_intent.expected_after_input_snapshot_sha256:

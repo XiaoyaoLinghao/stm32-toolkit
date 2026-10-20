@@ -12,7 +12,8 @@ const scope:SourceScopeNode={kind:"scope",id:"4".repeat(64),parentId:main.id,fil
  name:"global",function:null,line:null,variableCount:1};
 const leaf:SourceCatalogItem={id:"5".repeat(64),parentId:null,name:"counter",typeName:"int",file:main.file,
  line:8,column:3,scope:{kind:"global",function:null,path:[]},storage:"none",translationUnits:[main.file],
- selector:"counter",canAdd:true,reason:null,expandable:false,truncated:false};
+ selector:"counter",canAdd:true,reason:null,expandable:false,truncated:false,
+ declaration:{kind:"global_definition",definitionSite:{file:main.file,line:8}}};
 const source=():SourceCatalogState=>({query:"",initialized:true,generation:1n,contextKey:"context",
  tree:{...sourceTreePage(),total:3,items:[main,safe,empty],nextCursor:null},branches:{
   [main.id]:{...sourceTreePage(),total:1,items:[scope],nextCursor:null}},
@@ -29,6 +30,9 @@ it("lists all source files before loading leaves, then expands only the requeste
  expect(within(region).queryByRole("button",{name:"加入观测组草稿 counter"})).toBeNull();
  fireEvent.click(within(region).getByRole("button",{name:"展开 Src/main.c"}));
  fireEvent.click(within(region).getByRole("button",{name:"展开 global"}));
+ expect(within(region).getByText("全局定义")).toBeVisible();
+ expect(within(region).getByText("可采样")).toBeVisible();
+ expect(within(region).getByText("已加载 1 / 1 条声明")).toBeVisible();
  fireEvent.click(within(region).getByRole("button",{name:"加入观测组草稿 counter"}));
  expect(props.onSelect).toHaveBeenCalledWith(leaf);
  fireEvent.input(screen.getByPlaceholderText("搜索名称、文件或函数"),{target:{value:"safe"}});
@@ -76,10 +80,26 @@ it("labels compiled debug facts ahead of incomplete AST details and refreshes ex
  const status=screen.getAllByRole("status").map(item=>item.textContent??"");
  expect(status[0]).toContain("已按当前固件调试信息列出变量");
  expect(status[1]).toContain("源码补充解析 2 / 53");
- expect(screen.getByText("源码补充解析不完整，部分声明尚未收录。")).toBeVisible();
- expect(screen.getByText("解析问题详情")).toBeVisible();
+ expect(screen.getByText("源码目录覆盖不完整，部分声明尚未收录。")).toBeVisible();
+ expect(screen.getByText("目录覆盖与解析详情")).toBeVisible();
  fireEvent.click(screen.getByRole("button",{name:"刷新源码目录"}));
  expect(props.onSearch).toHaveBeenCalledWith("",true);
+});
+
+it("shows a proved extern definition and a named rebuild warning without extra navigation",()=>{
+ const props=base(),current=source(),extern={...leaf,name:"testtime",storage:"extern" as const,
+  declaration:{kind:"extern_declaration" as const,definitionSite:{file:"Src/timer.c",line:7}}};
+ const tree={...current.tree!,coverage:{...current.tree!.coverage,complete:false,
+  issues:[{unit:"Inc/timer.h",code:"MONITOR_SOURCE_UNTRACKED_AST",message:"legacy snapshot omitted header"}]}};
+ const scopePages={[scope.id]:{...sourcePage(),total:1,items:[extern],cursor:null}};
+ render(<SourceCatalogPanel source={{...current,tree,scopePages}} {...props}/>);
+ const region=screen.getByRole("region",{name:"源码目录结果"});
+ fireEvent.click(within(region).getByRole("button",{name:"展开 Src/main.c"}));
+ fireEvent.click(within(region).getByRole("button",{name:"展开 global"}));
+ expect(within(region).getByText("外部声明")).toBeVisible();
+ expect(within(region).getByText("对应定义 Src/timer.c:7")).toBeVisible();
+ fireEvent.click(screen.getByText("目录覆盖与解析详情"));
+ expect(screen.getByText(/Inc\/timer.h：旧构建快照未收录/)).toBeVisible();
 });
 
 it("does not call an incomplete empty file tree proof that source has no variables",()=>{
@@ -88,5 +108,5 @@ it("does not call an incomplete empty file tree proof that source has no variabl
   complete:false,totalUnits:53,parsedUnits:2,issues:[],
   compiledDebug:{available:false,variableCount:0,functionCount:0,fileCount:0}}};
  render(<SourceCatalogPanel source={{...current,tree}} {...props}/>);
- expect(screen.getByText("暂无可用解析信息；不能据此断定源码没有变量。")).toBeVisible();
+ expect(screen.getByText("暂无可用源码信息；不能据此断定源码没有变量。")).toBeVisible();
 });

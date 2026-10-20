@@ -69,6 +69,8 @@ _ELF_LIMIT_BYTES = 64 * 1024 * 1024
 _MAP_LIMIT_BYTES = 32 * 1024 * 1024
 _EVIDENCE_LIMIT_BYTES = 8 * 1024 * 1024
 _MAX_WALK_DEPTH = 64
+LEGACY_INPUT_DISCOVERY_POLICY = "legacy"
+SOURCE_LOCAL_HEADERS_POLICY = "source-local-headers-v1"
 
 _FULL_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 _FIXED_SECTION_RE = re.compile(r"^\.stm32tk\.abs\.([0-9A-Fa-f]{8})$")
@@ -91,6 +93,7 @@ def _default_sync_directory(path: Path) -> None:
 #: Module seams (tests inject failures; Windows never touches missing APIs).
 _lstat = os.lstat
 _listdir = os.listdir
+_scandir = os.scandir
 _fsync_file = os.fsync
 _replace = os.replace
 _sync_directory = _default_sync_directory
@@ -176,6 +179,7 @@ class InputSnapshot:
     entries: tuple[SnapshotEntry, ...]
     sha256: str
     newest_mtime_ns: int
+    policy: str = LEGACY_INPUT_DISCOVERY_POLICY
 
 
 def _input_invalid(path: str, rule: str) -> BuildError:
@@ -188,8 +192,10 @@ def _input_invalid_rule(rule: str) -> BuildError:
     return build_error(BUILD_INPUT_INVALID, "build input is invalid", {"rule": rule})
 
 
-def snapshot_project_inputs(model: ProjectModel) -> InputSnapshot:
-    """Hash exact bytes for every declared input and owned generated file.
+def snapshot_project_inputs(
+    model: ProjectModel, *, policy: str = SOURCE_LOCAL_HEADERS_POLICY
+) -> InputSnapshot:
+    """Hash declared inputs and the selected policy's discovered inputs.
 
     A regular file reached by both an explicit source declaration and
     include-directory traversal is counted exactly once (STM32TK-0306
@@ -198,8 +204,11 @@ def snapshot_project_inputs(model: ProjectModel) -> InputSnapshot:
     declarations of the same canonical file, Unicode casefold conflicts,
     and redirect/reparse escapes fail closed; include-only overlaps (for
     example two case-variant names for one file) remain distinct so the
-    casefold collision check still fails closed.
+    casefold collision check still fails closed. The new policy also scans
+    immediate header siblings of declared sources under the same input limits.
     """
+    if policy not in (LEGACY_INPUT_DISCOVERY_POLICY, SOURCE_LOCAL_HEADERS_POLICY):
+        raise _input_invalid_rule("discoveryPolicy")
     root = model.project_root
     paths: list[str] = []
     declared_identities: dict[tuple[int, int], str] = {}
@@ -236,6 +245,8 @@ def snapshot_project_inputs(model: ProjectModel) -> InputSnapshot:
         ) from None
     for record in records:
         _require_input_path(root, record.path, paths, declared_identities)
+    if policy == SOURCE_LOCAL_HEADERS_POLICY:
+        _add_source_local_headers(model, paths, declared_identities)
     walked: set[str] = set()
     explicitly_walked: set[str] = set()
     for include in model.build.include_paths:
@@ -299,7 +310,74 @@ def snapshot_project_inputs(model: ProjectModel) -> InputSnapshot:
     ]
     digest = sha256_hex(canonical_json_bytes(payload))
     newest = max((entry.mtime_ns for entry in entries), default=0)
-    return InputSnapshot(entries=tuple(entries), sha256=digest, newest_mtime_ns=newest)
+    return InputSnapshot(entries=tuple(entries), sha256=digest, newest_mtime_ns=newest,
+                         policy=policy)
+
+
+def _add_source_local_headers(
+    model: ProjectModel, paths: list[str], declared_identities: dict[tuple[int, int], str]
+) -> None:
+    """Inspect only immediate siblings of declared source and assembly files."""
+    root = model.project_root
+    parents = sorted({str(Path(source).parent).replace("\\", "/")
+                      for source in (*model.build.sources, *model.build.assembly_sources)},
+                     key=portable_sort_key)
+    inspected = 0
+    declared_at_start = set(declared_identities)
+    by_casefold = {path.casefold(): path for path in paths}
+    for parent in parents:
+        if parent != "." and portable_path_error(parent) is not None:
+            raise _input_invalid(parent, "portable")
+        directory = root if parent == "." else root.joinpath(*parent.split("/"))
+        try:
+            resolved = directory.resolve(strict=True)
+            resolved.relative_to(root)
+            if not resolved.is_dir():
+                raise ValueError
+            names = []
+            with _scandir(directory) as entries:
+                for entry in entries:
+                    inspected += 1
+                    if inspected > _FILE_LIMIT_COUNT:
+                        raise _input_invalid_rule("siblingCount")
+                    names.append(entry.name)
+            names.sort(key=portable_sort_key)
+        except (OSError, RuntimeError, ValueError):
+            raise _input_invalid(parent, "inspection") from None
+        for name in names:
+            if not name.lower().endswith(".h"):
+                continue
+            rel = name if parent == "." else f"{parent}/{name}"
+            if rel in paths:
+                continue
+            prior = by_casefold.get(rel.casefold())
+            if prior is not None and prior != rel:
+                raise _input_invalid(rel, "collision")
+            if portable_path_error(rel) is not None:
+                raise _input_invalid(rel, "portable")
+            absolute = directory / name
+            try:
+                lst = _lstat(absolute)
+            except OSError:
+                raise _input_invalid(rel, "inspection") from None
+            if not stat.S_ISREG(lst.st_mode):
+                raise _input_invalid(rel, "regularFile")
+            identity = _canonical_identity(absolute, lst, root, rel)
+            if identity is not None and identity in declared_at_start:
+                continue
+            _require_input_path(root, rel, paths, declared_identities)
+            by_casefold[rel.casefold()] = rel
+
+
+def identity_discovery_policy(document: dict[str, object]) -> str:
+    """Read the policy from an already validated firmware identity document."""
+    marker = document.get("inputDiscoveryPolicy")
+    if marker is None and "inputDiscoveryPolicy" not in document:
+        return LEGACY_INPUT_DISCOVERY_POLICY
+    if marker != SOURCE_LOCAL_HEADERS_POLICY:
+        raise build_error(BUILD_EVIDENCE_FAILED, "identity evidence is invalid",
+                          {"phase": "identity"})
+    return SOURCE_LOCAL_HEADERS_POLICY
 
 
 def _require_input_path(
@@ -762,6 +840,8 @@ def build_identity_document(
         "resetHandlerAddress": elf.reset_handler_address,
         "builtAtUtc": built_at_utc,
     }
+    if snapshot.policy == SOURCE_LOCAL_HEADERS_POLICY:
+        document["inputDiscoveryPolicy"] = SOURCE_LOCAL_HEADERS_POLICY
     document["buildId"] = compute_build_id(document)
     return document
 

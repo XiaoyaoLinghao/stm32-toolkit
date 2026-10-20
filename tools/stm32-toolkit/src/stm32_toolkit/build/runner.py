@@ -30,11 +30,13 @@ from stm32_toolkit.build.identity import (
     _FILE_LIMIT_BYTES,
     _MAP_LIMIT_BYTES,
     GitEvidence,
+    SOURCE_LOCAL_HEADERS_POLICY,
     atomic_write_json,
     atomic_write_text,
     build_identity_document,
     compute_build_id,
     git_evidence,
+    identity_discovery_policy,
     hash_artifact,
     model_artifact_paths,
     read_bounded,
@@ -521,6 +523,8 @@ def _prior_evidence_matches(
         return False
     if identity_doc.get("inputSnapshotSha256") != snapshot.sha256:
         return False
+    if identity_discovery_policy(identity_doc) != snapshot.policy:
+        return False
     if identity_doc.get("gitHead") != git.head:
         return False
     if identity_doc.get("elfPath") != elf_rel or identity_doc.get("mapPath") != map_rel:
@@ -757,7 +761,7 @@ def _run_locked(
     sections: list[dict] = []
 
     try:
-        snapshot = snapshot_project_inputs(model)
+        snapshot = snapshot_project_inputs(model, policy=SOURCE_LOCAL_HEADERS_POLICY)
     except BuildError as error:
         return _publish_failure(
             error, root, model, preset, "snapshot", started_at, started_mono, sections
@@ -769,7 +773,7 @@ def _run_locked(
             error, root, model, preset, "git", started_at, started_mono, sections
         )
     try:
-        second = snapshot_project_inputs(model)
+        second = snapshot_project_inputs(model, policy=SOURCE_LOCAL_HEADERS_POLICY)
     except BuildError as error:
         return _publish_failure(
             error, root, model, preset, "snapshot", started_at, started_mono, sections
@@ -798,7 +802,7 @@ def _run_locked(
         )
 
     try:
-        post_snapshot = snapshot_project_inputs(model)
+        post_snapshot = snapshot_project_inputs(model, policy=SOURCE_LOCAL_HEADERS_POLICY)
     except BuildError as error:
         return _publish_failure(
             error, root, model, preset, "validate", started_at, started_mono, sections
@@ -942,6 +946,7 @@ def _run_locked(
             vector_address=int(identity_doc["vectorAddress"]),
             reset_handler_address=int(identity_doc["resetHandlerAddress"]),
             built_at_utc=str(identity_doc["builtAtUtc"]),
+            input_discovery_policy=identity_discovery_policy(identity_doc),
         ),
         memory=usages,
         warnings=(),

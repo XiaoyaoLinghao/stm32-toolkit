@@ -81,6 +81,8 @@ class SourceDeclaration:
     scope_path: tuple[str, ...]
     translation_units: tuple[str, ...]
     function_id: str | None = None
+    entity_by_unit: tuple[tuple[str, str], ...] = ()
+    is_definition: bool = False
 
 
 @dataclass(frozen=True)
@@ -715,7 +717,9 @@ class ClangSourceAdapter:
                             previous.id, previous.entity_id, previous.name, previous.type_name, previous.file,
                             previous.line, previous.column, previous.storage,
                             previous.scope_kind, previous.function, previous.scope_path, units,
-                            previous.function_id)
+                            previous.function_id,
+                            tuple(sorted(set(previous.entity_by_unit + declaration.entity_by_unit))),
+                            previous.is_definition or declaration.is_definition)
                 if self._closed.is_set():
                     raise SourceCatalogError("MONITOR_SOURCE_INDEX_FAILED", "Source index was closed")
                 if time.monotonic() >= unit_deadline or time.monotonic() >= deadline:
@@ -879,8 +883,12 @@ def _discover(ast: dict[str, object], root: Path, unit: str,
                 ast_id = node.get("id")
                 if isinstance(ast_id, str):
                     entities[ast_id] = entity
+                is_definition = (kind == "VarDecl" and
+                                 (function is None or scope_kind == "static_local") and
+                                 (storage != "extern" or node.get("init") is not None))
                 yield SourceDeclaration(key, entity, name, type_name, relative, line, column,
-                                        storage, scope_kind, function, scope, (unit,), function_id)
+                                        storage, scope_kind, function, scope, (unit,), function_id,
+                                        ((unit, entity),), is_definition)
         children = node.get("inner")
         if isinstance(children, list):
             for child in reversed(children):

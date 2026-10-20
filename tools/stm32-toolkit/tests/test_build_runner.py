@@ -26,12 +26,15 @@ import struct
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from stm32_toolkit.build import BuildReport, BuildRequest, FirmwareIdentity, MemoryUsage, run_build
 from stm32_toolkit.build import identity as identity_mod
-from stm32_toolkit.build.identity import snapshot_project_inputs
+from stm32_toolkit.build.identity import (
+    LEGACY_INPUT_DISCOVERY_POLICY, SOURCE_LOCAL_HEADERS_POLICY, snapshot_project_inputs,
+)
 from stm32_toolkit.generation import apply_project_configuration, plan_project_configuration
 from stm32_toolkit.project_model import load_project_model
 
@@ -721,6 +724,99 @@ def snapshot_for(root: Path):
     return snapshot_project_inputs(load_project_model(root))
 
 
+def test_source_local_header_policy_tracks_only_immediate_source_siblings(tmp_path: Path):
+    root = prepare_project(tmp_path, git_repo=False)
+    model = load_project_model(root)
+    sibling = root / "Src" / "local.h"
+    sibling.write_bytes(b"extern int local;\n")
+    nested = root / "Src" / "nested"
+    nested.mkdir()
+    (nested / "deep.h").write_bytes(b"int deep;\n")
+    unrelated = root / "outside.h"
+    unrelated.write_bytes(b"int outside;\n")
+    old = snapshot_project_inputs(model, policy=LEGACY_INPUT_DISCOVERY_POLICY)
+    new = snapshot_project_inputs(model, policy=SOURCE_LOCAL_HEADERS_POLICY)
+    assert old.policy == LEGACY_INPUT_DISCOVERY_POLICY and new.policy == SOURCE_LOCAL_HEADERS_POLICY
+    assert "Src/local.h" not in {entry.path for entry in old.entries}
+    assert "Src/local.h" in {entry.path for entry in new.entries}
+    assert "Src/nested/deep.h" not in {entry.path for entry in new.entries}
+    assert "outside.h" not in {entry.path for entry in new.entries}
+    before = new.sha256
+    sibling.write_bytes(b"extern long local;\n")
+    assert snapshot_project_inputs(model).sha256 != before
+    assert snapshot_project_inputs(model, policy=LEGACY_INPUT_DISCOVERY_POLICY).sha256 == old.sha256
+    sibling.unlink()
+    assert snapshot_project_inputs(model).sha256 != before
+
+
+def test_source_local_header_enumeration_counts_nonheaders_and_root_source_parent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    root = prepare_project(tmp_path, git_repo=False)
+    model = load_project_model(root)
+    (root / "root.h").write_bytes(b"int root_header;\n")
+    (root / "main.c").write_bytes(b"int root_source;\n")
+    from dataclasses import replace
+    root_model = replace(model, build=replace(model.build, sources=("main.c",)))
+    assert "root.h" in {entry.path for entry in snapshot_project_inputs(root_model).entries}
+    for index in range(3):
+        (root / "Src" / f"unrelated-{index}.txt").write_bytes(b"x")
+    monkeypatch.setattr(identity_mod, "_FILE_LIMIT_COUNT", 2)
+    with pytest.raises(Exception) as error:
+        snapshot_project_inputs(model)
+    assert getattr(error.value, "details", {}).get("rule") == "siblingCount"
+
+
+def test_source_local_header_sibling_scan_stops_at_the_name_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    (tmp_path / "Src").mkdir()
+    model = SimpleNamespace(project_root=tmp_path,
+                            build=SimpleNamespace(sources=("Src/main.c",), assembly_sources=()))
+    scanned = []
+    class Entries:
+        def __enter__(self):
+            return self
+        def __exit__(self, *_args):
+            return None
+        def __iter__(self):
+            for index in range(100):
+                scanned.append(index)
+                if len(scanned) > 3:
+                    raise AssertionError("sibling scan exceeded its budget")
+                yield SimpleNamespace(name=f"unrelated-{index}.txt")
+    monkeypatch.setattr(identity_mod, "_scandir", lambda _path: Entries())
+    monkeypatch.setattr(identity_mod, "_FILE_LIMIT_COUNT", 2)
+    with pytest.raises(Exception) as error:
+        identity_mod._add_source_local_headers(model, [], {})
+    assert getattr(error.value, "details", {}).get("rule") == "siblingCount"
+    assert scanned == [0, 1, 2]
+
+
+def test_source_local_headers_reject_casefold_alias_instead_of_silently_deduplicating(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    root = prepare_project(tmp_path, git_repo=False)
+    lower = root / "Src" / "collision.h"
+    lower.write_bytes(b"int collision;\n")
+    upper = root / "Src" / "COLLISION.h"
+    upper.write_bytes(b"int collision;\n")
+    real_scandir = identity_mod._scandir
+    class Entries:
+        def __enter__(self):
+            return self
+        def __exit__(self, *_args):
+            return None
+        def __iter__(self):
+            return iter((SimpleNamespace(name="collision.h"),
+                         SimpleNamespace(name="COLLISION.h")))
+    monkeypatch.setattr(identity_mod, "_scandir",
+                        lambda directory: Entries() if directory.name == "Src" else real_scandir(directory))
+    with pytest.raises(Exception) as error:
+        snapshot_project_inputs(load_project_model(root))
+    assert getattr(error.value, "details", {}).get("rule") == "collision"
+
+
 def identity_path_for(root: Path, preset: str = "arm-debug") -> Path:
     return root / "build" / preset / "firmware-identity.json"
 
@@ -1165,6 +1261,33 @@ def test_legitimate_noop_rebuild_shares_build_id(
     second_doc = read_json(result_path_for(root))
     assert second_doc["status"] == "success"
     assert second_doc["buildId"] == first_id
+
+
+def test_legacy_prior_output_cannot_be_reused_across_policy_upgrade_with_same_digest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    root = prepare_project(tmp_path)
+    install_fake_cmake(monkeypatch, tmp_path)
+    first = run_build(BuildRequest(project_root=root, preset="arm-debug"))
+    assert first.ok and first.data.identity.input_discovery_policy == SOURCE_LOCAL_HEADERS_POLICY
+    model = load_project_model(root)
+    assert (snapshot_project_inputs(model, policy=LEGACY_INPUT_DISCOVERY_POLICY).sha256
+            == snapshot_project_inputs(model, policy=SOURCE_LOCAL_HEADERS_POLICY).sha256)
+    identity_path = identity_path_for(root)
+    old_identity = read_json(identity_path)
+    old_identity.pop("inputDiscoveryPolicy")
+    old_identity["buildId"] = identity_mod.compute_build_id(old_identity)
+    identity_path.write_text(json.dumps(old_identity) + "\n", encoding="utf-8")
+    result_path = result_path_for(root)
+    old_result = read_json(result_path)
+    old_result["buildId"] = old_identity["buildId"]
+    result_path.write_text(json.dumps(old_result) + "\n", encoding="utf-8")
+    old_bytes = identity_path.read_bytes()
+    monkeypatch.setenv("FAKE_CMAKE_NO_OUTPUT", "1")
+    second = run_build(BuildRequest(project_root=root, preset="arm-debug"))
+    assert not second.ok and second.code == "BUILD_OUTPUT_STALE"
+    assert second.details == {"path": "build/arm-debug/firmware.elf", "rule": "unverifiable"}
+    assert identity_path.read_bytes() == old_bytes
 
 
 def test_changed_outputs_are_accepted_with_new_build_id(

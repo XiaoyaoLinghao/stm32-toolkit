@@ -43,7 +43,30 @@ describe("source catalog shared backend wire",()=>{
     if(!result.ok)return;
     expect(result.data.coverage).toMatchObject({complete:true,totalUnits:1,parsedUnits:1});
     expect(result.data.identity.bindingEpoch).toBe(0n);
-    expect(result.data.items[0]).toMatchObject({name:"counter",file:"Src/main.c",canAdd:false,reason:"probe_required"});
+    expect(result.data.items[0]).toMatchObject({name:"counter",file:"Src/main.c",canAdd:false,reason:"probe_required",
+      declaration:{kind:"unknown",definitionSite:null}});
+  });
+
+  it("accepts legacy omitted declaration metadata and rejects forged roles or definition paths",async()=>{
+    const base=JSON.parse(wire) as {data:{items:Record<string,unknown>[]}};
+    const accept=async(document:typeof base)=>createMonitorApi(async()=>response(JSON.stringify(document)),origin).sourceVariables("");
+    const old=structuredClone(base);delete old.data.items[0]!.declaration;
+    expect((await accept(old)).ok).toBe(true);
+    const proved=structuredClone(base);
+    proved.data.items[0]!.declaration={kind:"extern_declaration",definitionSite:{file:"Src/timer.c",line:7}};
+    const result=await accept(proved);
+    expect(result.ok).toBe(true);
+    if(result.ok)expect(result.data.items[0]?.declaration?.definitionSite).toEqual({file:"Src/timer.c",line:7});
+    for(const declaration of [
+      {kind:"invented",definitionSite:null},
+      {kind:"extern_declaration",definitionSite:{file:"../secret.c",line:7}},
+      {kind:"extern_declaration",definitionSite:{file:"C:/secret.c",line:7}},
+      {kind:"extern_declaration",definitionSite:{file:"Src/timer.c",line:0}},
+      {kind:"extern_declaration",definitionSite:null,extra:1},
+    ]){
+      const invalid=structuredClone(base);invalid.data.items[0]!.declaration=declaration;
+      expect((await accept(invalid)).ok).toBe(false);
+    }
   });
 
   it("rejects duplicate IDs, bad parent and catalog, and invalid selection acknowledgement",async()=>{

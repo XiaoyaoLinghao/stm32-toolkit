@@ -1035,11 +1035,21 @@ def _physical_required_output_keys(revision: int) -> frozenset[str]:
 
 def _validate_physical_stage_outputs(value: object, revision: int) -> dict[str, object]:
     _reject_tuples(value)
-    if not isinstance(value, Mapping) or set(value) != set(PHYSICAL_STAGE_OUTPUT_KEYS):
+    old_keys = set(PHYSICAL_STAGE_OUTPUT_KEYS)
+    if not isinstance(value, Mapping) or set(value) not in (old_keys, old_keys | {"beforeInputDiscoveryPolicy"}):
         raise AcceptanceRecoveryValidationError("stageOutputs fields are not closed")
     outputs = {key: value[key] for key in PHYSICAL_STAGE_OUTPUT_KEYS}
+    if "beforeInputDiscoveryPolicy" in value:
+        policy = value["beforeInputDiscoveryPolicy"]
+        if policy is not None and policy not in ("legacy", "source-local-headers-v1"):
+            raise AcceptanceRecoveryValidationError("beforeInputDiscoveryPolicy is unsupported")
+        if (revision >= 2) != (policy is not None):
+            raise AcceptanceRecoveryValidationError("beforeInputDiscoveryPolicy has the wrong revision")
+        outputs["beforeInputDiscoveryPolicy"] = policy
     required = _physical_required_output_keys(revision)
     for key, item in outputs.items():
+        if key == "beforeInputDiscoveryPolicy":
+            continue  # Validated against the revision and exact enum above.
         if key == "diagnosticRevision":
             if item is not None and (type(item) is not int or item < 0):
                 raise AcceptanceRecoveryValidationError("diagnosticRevision must be a non-negative integer or null")

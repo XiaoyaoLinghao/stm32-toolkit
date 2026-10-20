@@ -431,6 +431,165 @@ def test_native_target_run_id_round_trips_in_physical_outputs():
     assert decoded.physical_transport_evidence is True
 
 
+def _policy_attempt(*, revision: int, policy: str | None) -> object:
+    outputs = {key: None for key in PHYSICAL_STAGE_OUTPUT_KEYS}
+    outputs["projectModelDigest"] = "1" * 64
+    if revision >= 2:
+        outputs.update(beforeBuildId="2" * 64, beforeElfSha256="3" * 64,
+                       beforeInputSnapshotSha256="3" * 64)
+    if revision >= 3:
+        outputs.update(failedBeforeTestRunId="target-v2-failed",
+                       failedBeforeEvidenceId="4" * 64)
+    if revision >= 4:
+        outputs.update(diagnosticSessionId="5" * 32, diagnosticRevision=1,
+                       diagnosticEventHead="6" * 64)
+    if revision >= 6:
+        outputs.update(afterBuildId="7" * 64, afterElfSha256="8" * 64,
+                       afterInputSnapshotSha256="4" * 64, sourceChangeDeclarationId="9" * 64)
+    if policy is not None:
+        outputs["beforeInputDiscoveryPolicy"] = policy if revision >= 2 else None
+    authorization = None
+    if revision >= 5:
+        authorization = {"action":"source-change","actionDigest":"a" * 64,"authorized":True,
+                         "authorizedAtUtc":"2026-09-10T00:00:00.000000Z",
+                         "diagnosticSessionId":"5" * 32,"diagnosticRevision":1,
+                         "diagnosticEventHead":"6" * 64}
+    return recovery_workflows._physical_base_snapshot(
+        attempt_id=ATTEMPT_ID, opened_at="2026-09-10T00:00:00.000000Z",
+        updated_at="2026-09-10T00:00:00.000000Z", workspace_id=WORKSPACE_ID,
+        logical_project_id=PROJECT_ID, revision=revision,
+        previous_checkpoint_id=None if revision == 0 else "b" * 64,
+        outputs=outputs, authorization=authorization,
+        intent=_intent() if revision >= 4 else None,
+        deadline_at=recovery_workflows._physical_deadline(
+            "2026-09-10T00:00:00.000000Z",
+            recovery_workflows.PHYSICAL_STAGES[min(0 if revision == 0 else
+                revision if revision <= 4 else revision - 1,
+                len(recovery_workflows.PHYSICAL_STAGES) - 1)]) if revision < 7 else None,
+        status="COMPLETED" if revision == 7 else "ACTIVE",
+    )
+
+
+def test_new_physical_factory_is_new_shape_but_old_chain_shape_cannot_change():
+    first = recovery_workflows._physical_base_snapshot(
+        attempt_id=ATTEMPT_ID, opened_at="2026-09-10T00:00:00.000000Z",
+        updated_at="2026-09-10T00:00:00.000000Z", workspace_id=WORKSPACE_ID,
+        logical_project_id=PROJECT_ID,
+        deadline_at=recovery_workflows._physical_deadline(
+            "2026-09-10T00:00:00.000000Z", recovery_workflows.PHYSICAL_STAGES[0]))
+    assert first.stage_outputs["beforeInputDiscoveryPolicy"] is None
+    second = _policy_attempt(revision=1, policy=None)
+    envelope0 = SimpleNamespace(parents=(), artifacts=(), produced_at_utc=first.updated_at_utc,
+                                evidence_id="c" * 64)
+    envelope1 = SimpleNamespace(parents=("c" * 64,), artifacts=(),
+                                produced_at_utc=second.updated_at_utc, evidence_id="d" * 64)
+    with pytest.raises(recovery_workflows._RecoveryFailure) as error:
+        recovery_workflows._validate_physical_chain_semantics(
+            [(first, envelope0), (second, envelope1)])
+    assert error.value.code == "ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED"
+
+
+@pytest.mark.parametrize(("frozen", "current", "allowed"), [
+    (None, "legacy", True), (None, "source-local-headers-v1", False),
+    ("legacy", "legacy", True), ("legacy", "source-local-headers-v1", False),
+    ("source-local-headers-v1", "source-local-headers-v1", True),
+    ("source-local-headers-v1", "legacy", False),
+])
+def test_authorization_source_requires_frozen_policy_even_with_identical_input_digest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, frozen: str | None,
+    current: str, allowed: bool,
+):
+    attempt = _policy_attempt(revision=5, policy=frozen)
+    model = SimpleNamespace(project_root=tmp_path)
+    facts = SimpleNamespace(input_discovery_policy=current, build_id="2" * 64,
+                            elf_sha256="3" * 64, input_snapshot_sha256="3" * 64)
+    calls: list[str] = []
+    monkeypatch.setattr(recovery_workflows, "_load_fresh_firmware_facts", lambda _root: facts)
+    def snapshot(_model, *, policy):
+        calls.append(policy)
+        return SimpleNamespace(sha256="3" * 64, entries=())
+    monkeypatch.setattr(recovery_workflows, "snapshot_project_inputs", snapshot)
+    monkeypatch.setattr(recovery_workflows, "_derive_physical_intent",
+                        lambda *_args, **_kwargs: attempt.source_change_intent)
+    if allowed:
+        assert recovery_workflows._validate_physical_authorization_source(model, attempt) == attempt.source_change_intent
+        assert calls == [current]
+    else:
+        with pytest.raises(recovery_workflows._RecoveryFailure) as error:
+            recovery_workflows._validate_physical_authorization_source(model, attempt)
+        assert error.value.code == "ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH"
+        assert calls == []  # Rejected before a source action can be derived.
+
+
+def test_before_build_capture_refuses_old_shape_policy_upgrade_and_new_shape_records_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    build = {"buildId":"2" * 64,"elfSha256":"3" * 64,
+             "inputSnapshotSha256":"3" * 64,"inputDiscoveryPolicy":"source-local-headers-v1"}
+    monkeypatch.setattr(recovery_workflows, "_physical_build_data",
+                        lambda *_args: (build, SimpleNamespace(sha256="3" * 64)))
+    context = AcceptanceRecoveryContext(tmp_path, tmp_path / "data", "session-a")
+    workspace = SimpleNamespace(workspace_id=WORKSPACE_ID, workspace_root=tmp_path)
+    old = _policy_attempt(revision=1, policy=None)
+    with pytest.raises(recovery_workflows._RecoveryFailure) as error:
+        recovery_workflows._physical_build_transition(
+            context, object(), workspace, old, "firmware-built-before",
+            test_run_id=None, diagnostic_session_id=None, fix_verification_id=None,
+            source_change_intent=None)
+    assert error.value.code == "ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH"
+    assert old.stage_outputs["beforeBuildId"] is None
+    new = _policy_attempt(revision=1, policy="source-local-headers-v1")
+    outputs, _ = recovery_workflows._physical_build_transition(
+        context, object(), workspace, new, "firmware-built-before",
+        test_run_id=None, diagnostic_session_id=None, fix_verification_id=None,
+        source_change_intent=None)
+    assert outputs["beforeInputDiscoveryPolicy"] == "source-local-headers-v1"
+
+
+@pytest.mark.parametrize(("revision", "stage"), [
+    (3, "diagnosis-completed"), (5, "firmware-built-after"),
+])
+def test_physical_continuation_rejects_policy_crossing_before_source_action(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, revision: int, stage: str,
+):
+    attempt = _policy_attempt(revision=revision, policy=None)
+    context = AcceptanceRecoveryContext(tmp_path, tmp_path / "data", "session-a")
+    workspace = SimpleNamespace(workspace_id=WORKSPACE_ID, workspace_root=tmp_path)
+    model = SimpleNamespace(project_root=tmp_path)
+    monkeypatch.setattr(recovery_workflows, "_physical_build_data", lambda *_args: (
+        {"buildId":"2" * 64,"elfSha256":"3" * 64,
+         "inputSnapshotSha256":"3" * 64,"inputDiscoveryPolicy":"source-local-headers-v1"},
+        SimpleNamespace(sha256="3" * 64)))
+    monkeypatch.setattr(recovery_workflows, "_physical_diagnostic_data",
+                        lambda *_args: SimpleNamespace(revision=1, event_head="6" * 64))
+    monkeypatch.setattr(recovery_workflows, "_validate_physical_diagnostic_session",
+                        lambda *_args, **_kwargs: None)
+    derived = []
+    monkeypatch.setattr(recovery_workflows, "_derive_physical_intent",
+                        lambda *_args, **_kwargs: derived.append(True))
+    with pytest.raises(recovery_workflows._RecoveryFailure) as error:
+        recovery_workflows._physical_build_transition(
+            context, model, workspace, attempt, stage,
+            test_run_id=None, diagnostic_session_id="5" * 32 if revision == 3 else None,
+            fix_verification_id=None, source_change_intent=_intent() if revision == 3 else None)
+    assert error.value.code == "ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH"
+    assert derived == []
+
+
+def test_rev6_post_envelope_recheck_rejects_policy_crossing_with_same_digest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    candidate = _policy_attempt(revision=6, policy=None)
+    context = AcceptanceRecoveryContext(tmp_path, tmp_path / "data", "session-a")
+    monkeypatch.setattr(recovery_workflows, "_physical_build_data", lambda *_args: (
+        {"buildId":"7" * 64,"elfSha256":"8" * 64,
+         "inputSnapshotSha256":"4" * 64,"inputDiscoveryPolicy":"source-local-headers-v1"},
+        SimpleNamespace(sha256="4" * 64)))
+    with pytest.raises(recovery_workflows._RecoveryFailure) as error:
+        recovery_workflows._validate_physical_build_after_publication(context, object(), candidate)
+    assert error.value.code == "ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH"
+
+
 def test_source_intent_uses_the_complete_before_snapshot_and_rejects_undeclared_paths():
     model = SimpleNamespace(
         build=SimpleNamespace(sources=("src/main.c",), assembly_sources=()),
@@ -642,7 +801,7 @@ def test_physical_build_authority_rejects_snapshot_mutated_after_fresh_facts(
     monkeypatch.setattr(
         recovery_workflows,
         "snapshot_project_inputs",
-        lambda _model: SimpleNamespace(sha256="2" * 64, entries=()),
+        lambda _model, *, policy: SimpleNamespace(sha256="2" * 64, entries=(), policy=policy),
     )
     with pytest.raises(recovery_workflows._RecoveryFailure) as error:
         recovery_workflows._physical_build_data(context, model)

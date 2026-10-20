@@ -238,6 +238,11 @@ def test_installed_gcc_preprocessing_preserves_real_conditional_branches_and_ast
     assert any(decl.file == "Inc/shared.h" for decl in shared)
     assert any(decl.file == "Src/a.c" for decl in shared)
     assert len({decl.entity_id for decl in shared if "Src/a.c" in decl.translation_units}) == 1
+    header_decl = next(decl for decl in shared if decl.file == "Inc/shared.h")
+    source_def = next(decl for decl in shared if decl.file == "Src/a.c")
+    assert not header_decl.is_definition and source_def.is_definition
+    assert dict(header_decl.entity_by_unit)["Src/a.c"] == dict(source_def.entity_by_unit)["Src/a.c"]
+    assert set(dict(header_decl.entity_by_unit)) == {"Src/a.c", "Src/b.c"}
 
 
 def test_real_gnu_asm_compatibility_keeps_gcc_branch_locations_and_failed_unit_isolation(

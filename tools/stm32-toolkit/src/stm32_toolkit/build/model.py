@@ -93,9 +93,10 @@ class FirmwareIdentity:
     vector_address: int
     reset_handler_address: int
     built_at_utc: str
+    input_discovery_policy: str = "legacy"
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        result = {
             "schemaVersion": self.schema_version,
             "buildId": self.build_id,
             "logicalProjectId": self.logical_project_id,
@@ -116,6 +117,9 @@ class FirmwareIdentity:
             "resetHandlerAddress": self.reset_handler_address,
             "builtAtUtc": self.built_at_utc,
         }
+        if self.input_discovery_policy == "source-local-headers-v1":
+            result["inputDiscoveryPolicy"] = self.input_discovery_policy
+        return result
 
 
 @dataclass(frozen=True)

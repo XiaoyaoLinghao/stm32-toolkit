@@ -1,4 +1,4 @@
-import type {ApiFailure,SamplingStatus,SourceReason} from "../api/contract";
+import type {ApiFailure,SamplingStatus,SourceReason,SourceDeclarationKind} from "../api/contract";
 import type {RequestScope,RecoveryKind} from "../state/model";
 
 /** Product copy stays here; wire codes and user data remain unchanged. */
@@ -19,9 +19,9 @@ export const copy={
   catalogMore:"；还有更多结果，可加载下一页。",
   sourceTitle:"源码目录",sourceBrowse:"源码目录",firmwareBrowse:"固件变量与寄存器",sourceResults:"源码目录结果",
   sourceSearchPlaceholder:"搜索名称、文件或函数",sourceRefresh:"刷新源码目录",sourceLoading:"正在离线分析源码…",
-  sourceEmptyPrompt:"正在准备源码目录；无需连接探针即可浏览。",sourcePartial:"源码补充解析不完整，部分声明尚未收录。",
+  sourceEmptyPrompt:"正在准备源码目录；无需连接探针即可浏览。",sourcePartial:"源码目录覆盖不完整，部分声明尚未收录。",
   sourceCompiled:(variables:number,functions:number,files:number)=>`已按当前固件调试信息列出变量：${variables} 个变量及参数声明、${functions} 个函数、${files} 个文件`,
-  sourceIssues:"解析问题详情",sourceInfoUnavailable:"暂无可用解析信息；不能据此断定源码没有变量。",
+  sourceIssues:"目录覆盖与解析详情",sourceInfoUnavailable:"暂无可用源码信息；不能据此断定源码没有变量。",
   sourceTruncated:"达到目录上限，仍有未展示内容。",sourceUnknownUnit:"未知编译单元",sourceGlobalScope:"全局／文件作用域",
   sourceCollapse:"收起",sourceExpand:"展开",sourceChildrenLoading:"正在读取成员…",sourceChecking:"正在核对变量与当前固件…",
   sourceExpandPrompt:"可重试展开成员。",sourceIndexFailed:"源码目录加载失败：",sourceChildFailed:"成员加载失败：",
@@ -30,6 +30,12 @@ export const copy={
   sourceScopesLabel:"作用域",sourceVariablesLabel:"变量",
   sourceAdded:"已加入组草稿（尚未保存）",sourceUnits:(parsed:number,total:number)=>`源码补充解析 ${parsed} / ${total} 个编译单元`,
   sourceCount:(loaded:number,total:number)=>`已加载 ${loaded} / ${total} 项`,
+  sourceFileCount:(loaded:number,total:number)=>`搜索结果：已加载 ${loaded} / ${total} 个文件`,
+  sourceScopeCount:(loaded:number,total:number)=>`已加载 ${loaded} / ${total} 个作用域`,
+  sourceDeclarationCount:(loaded:number,total:number)=>`已加载 ${loaded} / ${total} 条声明`,
+  sourceUntrackedHeader:(path:string)=>`${path}：旧构建快照未收录；请执行一次干净的完整固件重建。`,
+  sourceDeclaration:"声明",sourceDefinition:"对应定义",sourceOwnership:"归属",sourceMemberPath:"成员路径",
+  sourceSampleable:"可采样",sourceNeedsProbe:"需连接探针",sourceBrowseOnly:"仅浏览",sourceExpandMembers:"展开成员",
   registerAccessAcknowledgement:"该寄存器需要现有访问能力确认；添加草稿不会自动授权。",
   selector:"选择器",type:"类型",action:"操作",addDraft:"加入观测组草稿",nextPage:"下一页",
   zoomTitle:"图表缩放",zoomRange:"显示范围：",zoomIn:"放大",zoomOut:"缩小",zoomReset:"重置缩放",
@@ -153,6 +159,8 @@ const sourceReasons:Record<SourceReason,string>={
   source_attribution_unproven:"无法唯一证明源码声明与调试对象对应",
 };
 export const sourceReasonText=(reason:SourceReason):string=>sourceReasons[reason];
+const sourceRoles:Record<SourceDeclarationKind,string>={global_definition:"全局定义",file_static:"文件静态",static_local:"静态局部",automatic_local:"自动局部",parameter:"参数",extern_declaration:"外部声明",member:"成员",element:"数组元素",unknown:"未证实角色"};
+export const sourceRoleText=(role:SourceDeclarationKind):string=>sourceRoles[role];
 
 export const formatCopy={
   catalogLoaded:(count:number)=>`已加载 ${count} 项`,

@@ -22,6 +22,7 @@ from stm32_toolkit.build.identity import (
     atomic_write_json,
     compute_build_id,
     git_evidence,
+    identity_discovery_policy,
     model_artifact_paths,
     snapshot_project_inputs,
     utc_now_rfc3339,
@@ -143,6 +144,7 @@ class FreshFirmwareFacts:
     git_commit: str
     git_dirty: bool
     target_device: str
+    input_discovery_policy: str = "legacy"
 
 
 class _FlashFailure(Exception):
@@ -398,7 +400,7 @@ def _load_fresh_firmware(root: Path) -> _FreshFirmware:
         raise _fail("FIRMWARE_IDENTITY_MISMATCH", "Firmware target does not match the project", field="targetDevice", rule="project")
 
     try:
-        snapshot = snapshot_project_inputs(model)
+        snapshot = snapshot_project_inputs(model, policy=identity_discovery_policy(identity))
         git = git_evidence(root)
     except BuildError:
         raise _fail("FIRMWARE_EVIDENCE_INVALID", "Current source evidence is unavailable", path=".stm32-project.json", rule="freshness") from None
@@ -484,6 +486,7 @@ def load_fresh_firmware_facts(project_root: Path) -> FreshFirmwareFacts:
         str(identity["gitHead"]),
         bool(identity["gitDirty"]),
         str(identity["targetDevice"]),
+        identity_discovery_policy(dict(identity)),
     )
 
 

@@ -778,6 +778,36 @@ def _valid_physical_wire(revision: int) -> dict[str, object]:
     return _with_checkpoint(payload)
 
 
+@pytest.mark.parametrize("revision", [0, 1, 2, 4, 5, 6, 7])
+def test_physical_policy_stage_output_shapes_preserve_historical_checkpoint_bytes(revision: int):
+    old = _valid_physical_wire(revision)
+    old_bytes = canonical_json_bytes(old)
+    parsed_old = PhysicalAcceptanceAttempt.from_value(deepcopy(old))
+    assert canonical_json_bytes(parsed_old.to_dict()) == old_bytes
+    assert "beforeInputDiscoveryPolicy" not in parsed_old.stage_outputs
+
+    new = deepcopy(old)
+    new["stageOutputs"]["beforeInputDiscoveryPolicy"] = (
+        None if revision < 2 else "source-local-headers-v1")
+    new = _with_checkpoint(new)
+    parsed_new = PhysicalAcceptanceAttempt.from_value(deepcopy(new))
+    assert parsed_new.to_dict() == new
+    assert parsed_new.stage_outputs["beforeInputDiscoveryPolicy"] == (
+        None if revision < 2 else "source-local-headers-v1")
+
+
+@pytest.mark.parametrize("policy", [None, "legacy", "source-local-headers-v1", "unknown", ""])
+def test_physical_policy_stage_output_revision_and_enum_are_closed(policy: str | None):
+    payload = _valid_physical_wire(2)
+    payload["stageOutputs"]["beforeInputDiscoveryPolicy"] = policy
+    payload = _with_checkpoint(payload)
+    if policy in {"legacy", "source-local-headers-v1"}:
+        assert PhysicalAcceptanceAttempt.from_value(payload).stage_outputs["beforeInputDiscoveryPolicy"] == policy
+    else:
+        with pytest.raises(AcceptanceRecoveryValidationError):
+            PhysicalAcceptanceAttempt.from_value(payload)
+
+
 def _assert_recovery_refusal(callable_input, value: object, expected: str) -> None:
     before = deepcopy(value)
     with pytest.raises(AcceptanceRecoveryValidationError) as error:

@@ -657,13 +657,77 @@ def test_internal_cu_must_be_proven_for_direct_and_previous_decl_attribution() -
     class GlobalCatalog:
         elf_sha256 = "e" * 64
         def source_declarations(self):
-            return (replace(symbol, scope_kind="global", storage="none"),)
+            return (replace(symbol, scope_kind="global", storage="none",
+                            compilation_unit="Src/a.c"),)
         def lookup(self, _selector):
             return SimpleNamespace(type=dtype, byte_size=4, address=0x20000000)
     roots, _ = module._materialize(global_index, GlobalCatalog(), None, binding,
                                    source_files=("Inc/header.h", "Inc/forward.h"))
     assert len(roots) == 2
     assert roots[0].can_add and roots[1].id == previous.id and roots[1].can_add
+    class UnknownCuCatalog(GlobalCatalog):
+        def source_declarations(self):
+            return (replace(symbol, scope_kind="global", storage="none"),)
+    unknown, _ = module._materialize(global_index, UnknownCuCatalog(), None, binding,
+                                     source_files=("Inc/header.h", "Inc/forward.h"))
+    assert unknown[1].id == previous.id
+    assert not unknown[1].can_add and unknown[1].reason == "source_attribution_unproven"
+
+
+def test_header_extern_uses_its_own_tu_definition_and_reports_source_site() -> None:
+    dtype = DwarfType("integer", "int", 4)
+    symbol = DwarfSourceSymbol("testtime", "Inc/timer.h", 1, None, None, "Src/timer.c",
+                               dtype, 0x20000408, None, None, cu_offset=1, die_offset=2,
+                               storage="none", scope_kind="global")
+    header = SourceDeclaration("a" * 64, "x" * 64, "testtime", "int", "Inc/timer.h", 1, 12,
+                               "extern", "global", None, (), ("Src/timer.c",),
+                               entity_by_unit=(("Src/timer.c", "x" * 64),))
+    definition = SourceDeclaration("b" * 64, "x" * 64, "testtime", "int", "Src/timer.c", 7, 5,
+                                   "none", "global", None, (), ("Src/timer.c",),
+                                   entity_by_unit=(("Src/timer.c", "x" * 64),), is_definition=True)
+    binding = SimpleNamespace(memory_regions=(SimpleNamespace(origin=0x20000000,
+        length=0x1000, attributes="rw"),))
+
+    class Catalog:
+        elf_sha256 = "e" * 64
+        def source_declarations(self):
+            return (symbol,)
+        def lookup(self, _selector):
+            return SimpleNamespace(type=dtype, byte_size=4, address=0x20000408)
+
+    def materialize(*declarations: SourceDeclaration, debug_symbol=symbol):
+        catalog = Catalog()
+        catalog.source_declarations = lambda: (debug_symbol,)
+        index = SourceIndex("engine", "version", "manifest", 1, 1, (), True,
+                            declarations, "f" * 64)
+        roots, _ = module._materialize(index, catalog, None, binding,
+                                       source_files=("Inc/timer.h", "Src/timer.c"))
+        return roots
+
+    roots = materialize(header, definition)
+    dwarf_row = next(item for item in roots if item.id not in {header.id, definition.id})
+    assert dwarf_row.declaration_kind == "extern_declaration" and dwarf_row.can_add
+    assert dwarf_row.definition_site == ("Src/timer.c", 7)
+    actual_definition = next(item for item in roots if item.id == definition.id)
+    assert actual_definition.can_add and actual_definition.declaration_kind == "global_definition"
+    assert actual_definition.definition_site == ("Src/timer.c", 7)
+
+    mismatches = (
+        ("homonym", replace(definition, entity_id="y" * 64,
+                            entity_by_unit=(("Src/timer.c", "y" * 64),)), symbol),
+        ("wrong-cu", definition, replace(symbol, compilation_unit="Src/other.c")),
+        ("wrong-type", replace(definition, type_name="long"), symbol),
+        ("internal", replace(definition, storage="static", scope_kind="file_static"), symbol),
+        ("local", replace(definition, scope_kind="local", function="work"), symbol),
+    )
+    for _case, other, debug_symbol in mismatches:
+        candidates = materialize(header, other, debug_symbol=debug_symbol)
+        header_row = next(item for item in candidates if item.id == header.id)
+        assert not header_row.can_add and header_row.reason == "source_attribution_unproven", _case
+        assert header_row.definition_site is None, _case
+    tls = replace(header, storage="thread_local")
+    tls_row = next(item for item in materialize(tls, definition) if item.id == tls.id)
+    assert not tls_row.can_add and tls_row.reason == "unsupported_location"
 
 
 def test_legal_long_translation_units_fit_page_budget_with_actual_cursor() -> None:
@@ -821,7 +885,11 @@ def test_untracked_ast_file_and_unbound_local_are_partial_not_tree_facts(
     assert base.source_files == ("Src/main.c",)
     assert {issue.code for issue in base.index.issues} == {
         "MONITOR_SOURCE_UNTRACKED_AST", "MONITOR_SOURCE_FUNCTION_UNBOUND"}
-    assert all(issue.unit is None and "rogue.c" not in issue.message for issue in base.index.issues)
+    untracked_issue = next(issue for issue in base.index.issues
+                           if issue.code == "MONITOR_SOURCE_UNTRACKED_AST")
+    assert untracked_issue.unit == "Src/rogue.c"
+    assert "Src/rogue.c" in untracked_issue.message
+    assert "clean firmware rebuild" in untracked_issue.message
 
 
 def test_public_provider_treats_empty_snapshot_as_authoritative(

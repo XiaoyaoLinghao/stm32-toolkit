@@ -61,7 +61,7 @@ afterEach(()=>{vi.clearAllMocks();vi.unstubAllGlobals();});
 
 it("autoloads the shared source wire page without a probe and expands file and scope",async()=>{
   const calls=installFetch(statusResult());render(<App/>);
-  expect(await screen.findByText("已加载 1 / 1 项",{exact:false})).toBeVisible();
+  expect(await screen.findByText("已加载 1 / 1 个文件",{exact:false})).toBeVisible();
   expect(calls).toContain("/api/v1/catalog/source-tree");
   const region=screen.getByRole("region",{name:"源码目录结果"});
   fireEvent.click(within(region).getByRole("button",{name:"展开 Src/main.c"}));

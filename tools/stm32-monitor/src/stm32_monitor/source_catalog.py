@@ -17,7 +17,7 @@ from itertools import chain
 from pathlib import Path
 from typing import Mapping
 
-from stm32_toolkit.build.identity import snapshot_project_inputs
+from stm32_toolkit.build.identity import snapshot_project_inputs, SOURCE_LOCAL_HEADERS_POLICY
 from stm32_toolkit.debug.dwarf import DwarfCatalog, DwarfSourceFunction, DwarfSourceSymbol
 from stm32_toolkit.debug.source import ClangSourceAdapter, SourceCatalogError, SourceDeclaration, SourceFunction, SourceIndex, SourceIssue, SourcePlan
 from stm32_toolkit.debug.types import DwarfError, DwarfType
@@ -53,6 +53,7 @@ class _Facts:
     elf_size: int | None
     source_files: tuple[str, ...] = ()
     snapshot_paths: tuple[str, ...] = ()
+    policy: str = SOURCE_LOCAL_HEADERS_POLICY
 
 
 @dataclass(frozen=True)
@@ -82,6 +83,8 @@ class SourceItem:
     expandable: bool
     truncated: bool
     function_id: str | None = None  # Private tree ownership; not part of the wire item.
+    declaration_kind: str = "unknown"
+    definition_site: tuple[str, int] | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -93,6 +96,10 @@ class SourceItem:
             "storage": self.storage, "translationUnits": list(self.translation_units),
             "selector": self.selector, "canAdd": self.can_add, "reason": self.reason,
             "expandable": self.expandable, "truncated": self.truncated,
+            "declaration": {"kind": self.declaration_kind,
+                            "definitionSite": ({"file": self.definition_site[0],
+                                                "line": self.definition_site[1]}
+                                               if self.definition_site is not None else None)},
         }
 
 
@@ -123,26 +130,29 @@ class _View:
     file_by_id: dict[str, str] | None = None
     scope_by_id: dict[str, dict[str, object]] | None = None
     compiled_debug: dict[str, object] | None = None
+    policy: str = SOURCE_LOCAL_HEADERS_POLICY
 
 
 def _offline_facts(root: Path) -> _Facts:
     model = load_project_model(root)
-    snapshot = snapshot_project_inputs(model)
+    firmware = None
+    try:
+        firmware = load_fresh_firmware_facts(root)
+    except Exception:
+        pass
+    policy = firmware.input_discovery_policy if firmware is not None else SOURCE_LOCAL_HEADERS_POLICY
+    snapshot = snapshot_project_inputs(model, policy=policy)
     source_sha = snapshot.sha256
     declared = set(model.build.sources) | set(model.build.assembly_sources)
     source_files = tuple(entry.path for entry in snapshot.entries
                          if entry.path in declared or entry.path.lower().endswith((".c", ".h")))
     build_id = elf_sha = elf_path = None
     elf_size = None
-    try:
-        firmware = load_fresh_firmware_facts(root)
-        if firmware.input_snapshot_sha256 == source_sha:
-            build_id, elf_sha, elf_path = firmware.build_id, firmware.elf_sha256, firmware.elf_path
-            elf_size = (root / elf_path).stat().st_size
-    except Exception:
-        pass
+    if firmware is not None and firmware.input_snapshot_sha256 == source_sha:
+        build_id, elf_sha, elf_path = firmware.build_id, firmware.elf_sha256, firmware.elf_path
+        elf_size = (root / elf_path).stat().st_size
     return _Facts(model, source_sha, build_id, elf_sha, elf_path, elf_size, source_files,
-                  tuple(entry.path for entry in snapshot.entries))
+                  tuple(entry.path for entry in snapshot.entries), policy)
 
 
 def _readable_regions(model: ProjectModel) -> tuple[tuple[int, int], ...]:
@@ -159,11 +169,13 @@ def _load_base(adapter: ClangSourceAdapter, facts: _Facts, plan: SourcePlan) -> 
     untracked = {entry.file for entry in (*index.declarations, *index.functions)
                  if entry.file not in snapshot_files}
     if untracked:
+        warnings = tuple(SourceIssue(path, "MONITOR_SOURCE_UNTRACKED_AST",
+                                     f"{path} is outside the verified {facts.policy} build snapshot; a clean firmware rebuild is needed to include this header")
+                         for path in sorted(untracked, key=lambda value: (value.casefold(), value)))
         index = replace(index,
                         declarations=tuple(entry for entry in index.declarations if entry.file not in untracked),
                         functions=tuple(entry for entry in index.functions if entry.file not in untracked),
-                        issues=(*index.issues, SourceIssue(None, "MONITOR_SOURCE_UNTRACKED_AST",
-                                                          f"{len(untracked)} AST source file(s) were outside the verified snapshot")))
+                        issues=(*index.issues, *warnings))
     functions = {function.id for function in index.functions}
     unbound = tuple(entry for entry in index.declarations
                     if (entry.function is not None or entry.scope_kind in {"local", "static_local", "parameter"})
@@ -192,7 +204,7 @@ def _load_base(adapter: ClangSourceAdapter, facts: _Facts, plan: SourcePlan) -> 
             if error.code == "DWARF_CATALOG_LIMIT_EXCEEDED":
                 raise SourceCatalogFailure("MONITOR_SOURCE_INDEX_FAILED", "Compiled debug directory limit was reached") from error
     after = _offline_facts(facts.model.project_root)
-    if (after.source_sha, after.build_id, after.elf_sha) != (facts.source_sha, facts.build_id, facts.elf_sha):
+    if (after.policy, after.source_sha, after.build_id, after.elf_sha) != (facts.policy, facts.source_sha, facts.build_id, facts.elf_sha):
         raise SourceCatalogFailure("MONITOR_SOURCE_CONTEXT_CHANGED", "Source or firmware changed while indexing")
     return _Base(index, dwarf, tuple(sorted(verified, key=lambda path: (path.casefold(), path))))
 
@@ -265,30 +277,90 @@ def _direct_match(candidate: SourceDeclaration, symbol: DwarfSourceSymbol) -> bo
             and _compatible_cu(candidate, symbol))
 
 
+def _role(decl: SourceDeclaration) -> str:
+    if decl.storage == "thread_local":
+        return "unknown"
+    if decl.scope_kind == "parameter":
+        return "parameter"
+    if decl.scope_kind == "local":
+        return "automatic_local"
+    if decl.scope_kind == "static_local":
+        return "static_local"
+    if decl.scope_kind == "file_static":
+        return "file_static"
+    if decl.storage == "extern" and not decl.is_definition:
+        return "extern_declaration"
+    return "global_definition" if decl.is_definition or decl.storage == "none" else "unknown"
+
+
+def _chain_compatible(decl: SourceDeclaration, definition: SourceDeclaration,
+                      symbol: DwarfSourceSymbol) -> bool:
+    """A previousDecl link must preserve linkage, scope and the exact TU."""
+    role = _role(decl)
+    if (decl.name != definition.name or
+            _normalized_type(decl.type_name) != _normalized_type(definition.type_name) or
+            not _compatible(decl, symbol.dwarf_type) or
+            symbol.kind != "variable"):
+        return False
+    if role in {"extern_declaration", "global_definition"}:
+        return (_role(definition) == "global_definition" and
+                definition.scope_kind == decl.scope_kind == symbol.scope_kind == "global" and
+                definition.storage in {"none", "extern"} and
+                symbol.storage in {"none", "extern"} and
+                definition.function is decl.function is symbol.function is None and
+                not definition.scope_path and not decl.scope_path and not symbol.scope_path)
+    if role in {"file_static", "static_local"}:
+        return (_role(definition) == role and
+                definition.scope_kind == decl.scope_kind == symbol.scope_kind and
+                definition.storage == decl.storage == symbol.storage == "static" and
+                definition.function == decl.function == symbol.function and
+                definition.scope_path == decl.scope_path == symbol.scope_path and
+                definition.function_id == decl.function_id)
+    return False
+
+
 def _match(decl: SourceDeclaration,
            symbols_by_name: Mapping[str, tuple[DwarfSourceSymbol, ...]],
-           entity_proofs: Mapping[str, tuple[str, DwarfSourceSymbol]]) -> tuple[DwarfSourceSymbol | None, str | None]:
+           entity_proofs: Mapping[tuple[str, str], tuple[tuple[SourceDeclaration, DwarfSourceSymbol], ...]]) -> tuple[DwarfSourceSymbol | None, str | None, tuple[str, int] | None]:
     if decl.line is None or decl.column is None:
-        return None, "source_attribution_unproven"
+        return None, "source_attribution_unproven", None
     same_name = symbols_by_name.get(decl.name, ())
     if not same_name:
-        return None, "debug_entry_missing"
+        return None, "debug_entry_missing", None
     direct = tuple(symbol for symbol in same_name if _direct_match(decl, symbol))
+    if decl.storage == "thread_local":
+        return None, "unsupported_location", None
+    if _role(decl) == "extern_declaration":
+        direct = ()  # A declaration alone never proves an external definition.
     if len(direct) == 1:
-        return direct[0], None
+        site = (decl.file, decl.line) if decl.is_definition or _role(decl) in {
+            "global_definition", "file_static", "static_local"} else None
+        return direct[0], None, site
     if len(direct) > 1:
-        return None, "ambiguous_symbol"
-    # A definition can be proved by a Clang previousDecl chain to the exact
-    # DWARF declaration.  Name/CU proximity alone never admits it.
-    proof = entity_proofs.get(decl.entity_id)
-    if (decl.entity_id != decl.id and proof is not None and proof[0] != decl.id
-            and proof[1] in same_name
-            and _compatible_cu(decl, proof[1])
-            and _compatible(decl, proof[1].dwarf_type)):
-        return proof[1], None
+        return None, "ambiguous_symbol", None
+    # A declaration can be proved by a Clang previousDecl chain to an exact
+    # DWARF anchor in the same TU. Name/CU proximity alone never admits it.
+    if _role(decl) in {"extern_declaration", "global_definition", "file_static", "static_local"}:
+        proved: dict[tuple[str, int, int], tuple[SourceDeclaration, DwarfSourceSymbol]] = {}
+        for unit, entity in decl.entity_by_unit or tuple((unit, decl.entity_id) for unit in decl.translation_units):
+            for definition, symbol in entity_proofs.get((unit, entity), ()):
+                if (symbol not in same_name or symbol.compilation_unit != unit
+                        or not _chain_compatible(decl, definition, symbol)):
+                    continue
+                if symbol.cu_offset is None or symbol.die_offset is None:
+                    continue
+                proved[(unit, symbol.cu_offset, symbol.die_offset)] = definition, symbol
+        unique = {(definition.file, definition.line, symbol.address,
+                   symbol.cu_offset, symbol.die_offset)
+                  for definition, symbol in proved.values()}
+        if len(unique) == 1:
+            definition, symbol = next(iter(proved.values()))
+            return symbol, None, (definition.file, definition.line)
+        if len(unique) > 1:
+            return None, "ambiguous_symbol", None
     if len(same_name) > 1:
-        return None, "ambiguous_symbol"
-    return None, "source_attribution_unproven"
+        return None, "ambiguous_symbol", None
+    return None, "source_attribution_unproven", None
 
 
 def _eligible_leaf(selector: str, dwarf: DwarfCatalog | None, binding: object | None,
@@ -336,10 +408,10 @@ def _context_reason(index: SourceIndex, facts: _Facts, binding: object | None,
 
 def _item_for_declaration(decl: SourceDeclaration,
                           symbols_by_name: Mapping[str, tuple[DwarfSourceSymbol, ...]],
-                          entity_proofs: Mapping[str, tuple[str, DwarfSourceSymbol]],
+                          entity_proofs: Mapping[tuple[str, str], tuple[tuple[SourceDeclaration, DwarfSourceSymbol], ...]],
                           dwarf: DwarfCatalog | None,
                           context_reason: str | None, binding: object | None) -> tuple[SourceItem, DwarfType | None]:
-    symbol, reason = _match(decl, symbols_by_name, entity_proofs)
+    symbol, reason, definition_site = _match(decl, symbols_by_name, entity_proofs)
     dtype = symbol.dwarf_type if symbol is not None else None
     selector = decl.name if symbol is not None and _EXPRESSION.fullmatch(decl.name) else None
     if decl.scope_kind in {"local", "parameter"}:
@@ -369,7 +441,7 @@ def _item_for_declaration(decl: SourceDeclaration,
                       decl.column, decl.scope_kind, decl.function, decl.scope_path,
                       decl.storage, decl.translation_units, selector, reason is None,
                       reason, expandable, aggregate_size is not None and aggregate_size > 4096,
-                      decl.function_id), dtype if expandable else None
+                      decl.function_id, _role(decl), definition_site), dtype if expandable else None
 
 
 def _dwarf_function_id(cu_offset: int, die_offset: int) -> str:
@@ -377,7 +449,9 @@ def _dwarf_function_id(cu_offset: int, die_offset: int) -> str:
 
 
 def _item_for_dwarf(symbol: DwarfSourceSymbol, dwarf: DwarfCatalog,
-                    context_reason: str | None, binding: object | None) -> tuple[SourceItem, DwarfType | None]:
+                    context_reason: str | None, binding: object | None,
+                    source_decl: SourceDeclaration | None = None,
+                    proved_definition_site: tuple[str, int] | None = None) -> tuple[SourceItem, DwarfType | None]:
     assert symbol.file is not None and symbol.cu_offset is not None and symbol.die_offset is not None
     dtype = symbol.dwarf_type
     type_name = dtype.name if dtype is not None and len(dtype.name) <= 512 else "<unknown>"
@@ -405,11 +479,16 @@ def _item_for_dwarf(symbol: DwarfSourceSymbol, dwarf: DwarfCatalog,
     identifier = _source_id("dwarf", f"{dwarf.elf_sha256}:{symbol.cu_offset:x}:{symbol.die_offset:x}")
     function_id = (_dwarf_function_id(symbol.cu_offset, symbol.function_die_offset)
                    if symbol.function_die_offset is not None else None)
+    role = _role(source_decl) if source_decl is not None else "unknown"
+    definition_site = proved_definition_site or ((source_decl.file, source_decl.line) if source_decl is not None and (
+        source_decl.is_definition or role in {"global_definition", "file_static", "static_local"}
+    ) and source_decl.line is not None else None)
     item = SourceItem(identifier, None, symbol.name, type_name, symbol.file, symbol.line,
                       symbol.column, symbol.scope_kind, symbol.function, symbol.scope_path,
                       symbol.storage, (symbol.compilation_unit or symbol.file,), selector,
                       reason is None, reason, expandable,
-                      aggregate_size is not None and aggregate_size > 4096, function_id)
+                      aggregate_size is not None and aggregate_size > 4096, function_id,
+                      role, definition_site)
     return item, dtype if expandable else None
 
 
@@ -427,15 +506,44 @@ def _materialize(index: SourceIndex, dwarf: DwarfCatalog | None,
             continue
         symbols_by_name.setdefault(symbol.name, []).append(symbol)
     frozen_symbols = {name: tuple(group) for name, group in symbols_by_name.items()}
-    entity_proofs: dict[str, tuple[str, DwarfSourceSymbol]] = {}
+    group: dict[tuple[str, str], list[SourceDeclaration]] = {}
+    anchors: dict[tuple[str, str], list[tuple[SourceDeclaration, DwarfSourceSymbol]]] = {}
+    decorations: dict[int, list[SourceDeclaration]] = {}
     for declaration in index.declarations:
+        pairs = declaration.entity_by_unit or tuple(
+            (unit, declaration.entity_id) for unit in declaration.translation_units)
+        for pair in pairs:
+            group.setdefault(pair, []).append(declaration)
         candidates = frozen_symbols.get(declaration.name, ())
         direct = [symbol for symbol in candidates if _direct_match(declaration, symbol)]
         if len(direct) == 1:
-            entity_proofs.setdefault(declaration.entity_id, (declaration.id, direct[0]))
+            decorations.setdefault(id(direct[0]), []).append(declaration)
+            if (direct[0].compilation_unit is not None and direct[0].file is not None
+                    and direct[0].line is not None and direct[0].address is not None
+                    and direct[0].cu_offset is not None and direct[0].die_offset is not None):
+                for unit, entity in pairs:
+                    if direct[0].compilation_unit == unit:
+                        anchors.setdefault((unit, entity), []).append((declaration, direct[0]))
+    chains: dict[tuple[str, str], tuple[tuple[SourceDeclaration, DwarfSourceSymbol], ...]] = {}
+    for pair, members in group.items():
+        direct_members = anchors.get(pair, [])
+        definitions = {member.id: member for member in members if
+                       member.is_definition or member.storage == "none" and
+                       member.scope_kind == "global"}
+        # Legacy manually constructed indexes carry no is_definition bit.
+        for member, _symbol in direct_members:
+            if _role(member) in {"file_static", "static_local"}:
+                definitions.setdefault(member.id, member)
+        if len(definitions) != 1:
+            continue
+        definition = next(iter(definitions.values()))
+        chains[pair] = tuple((definition, symbol) for member, symbol in direct_members
+                             if _chain_compatible(member, definition, symbol) and
+                             _chain_compatible(definition, definition, symbol))
+    entity_proofs = chains
     attributed_entities: dict[int, set[str]] = {}
     for declaration in index.declarations:
-        matched, _ = _match(declaration, frozen_symbols, entity_proofs)
+        matched, _, _ = _match(declaration, frozen_symbols, entity_proofs)
         if matched is not None:
             attributed_entities.setdefault(id(matched), set()).add(declaration.entity_id)
     nodes: dict[str, _Node] = {}
@@ -446,7 +554,14 @@ def _materialize(index: SourceIndex, dwarf: DwarfCatalog | None,
         if (symbol.file is None or symbol.cu_offset is None or symbol.die_offset is None
                 or allowed is not None and symbol.file not in allowed):
             continue
-        item, dtype = _item_for_dwarf(symbol, dwarf, context, binding)
+        source_declarations = decorations.get(id(symbol), ())
+        role_source = source_declarations[0] if len(source_declarations) == 1 else None
+        proof_site = None
+        if role_source is not None:
+            proved_symbol, _, proof_site = _match(role_source, frozen_symbols, entity_proofs)
+            if proved_symbol is not symbol:
+                proof_site = None
+        item, dtype = _item_for_dwarf(symbol, dwarf, context, binding, role_source, proof_site)
         if item.id in nodes or len(roots) >= max_declarations:
             raise SourceCatalogFailure("MONITOR_SOURCE_INDEX_FAILED", "Merged source declaration limit was reached")
         roots.append(item)
@@ -456,7 +571,7 @@ def _materialize(index: SourceIndex, dwarf: DwarfCatalog | None,
             continue
         item, dtype = _item_for_declaration(declaration, frozen_symbols, entity_proofs,
                                             dwarf, context, binding)
-        matched, _ = _match(declaration, frozen_symbols, entity_proofs)
+        matched, _, _ = _match(declaration, frozen_symbols, entity_proofs)
         if matched is not None and len(attributed_entities[id(matched)]) > 1:
             item = replace(item, selector=None, can_add=False, reason="ambiguous_symbol", expandable=False)
             dtype = None
@@ -606,11 +721,13 @@ def _tree_items(view: _View, query: str, parent_id: str | None) -> tuple[dict[st
 
 
 def _catalog_id(identity: Mapping[str, object], signature: tuple[object, ...],
-                index: SourceIndex, source_files: tuple[str, ...] = ()) -> str:
+                index: SourceIndex, source_files: tuple[str, ...] = (),
+                policy: str = SOURCE_LOCAL_HEADERS_POLICY) -> str:
     results = hashlib.sha256(json.dumps(
-        [index.parsed_units, index.total_units, index.truncated,
+        ["source-declaration-role-v1", policy, index.parsed_units, index.total_units, index.truncated,
          [[issue.unit, issue.code, issue.message] for issue in index.issues],
-         [[decl.id, decl.entity_id, decl.function_id, decl.translation_units] for decl in index.declarations],
+         [[decl.id, decl.entity_id, decl.entity_by_unit, decl.is_definition,
+           decl.function_id, decl.translation_units] for decl in index.declarations],
          [[function.id, function.name, function.file, function.line, function.column,
            function.translation_units] for function in index.functions], source_files],
         separators=(",", ":"), ensure_ascii=False).encode("utf-8")).hexdigest()
@@ -798,7 +915,7 @@ class SourceCatalogProvider:
             task.exception()
 
     async def _base(self, facts: _Facts, plan: SourcePlan, refresh: bool = False) -> _Base:
-        key = (facts.source_sha, facts.build_id, facts.elf_sha, facts.elf_path,
+        key = (facts.policy, facts.source_sha, facts.build_id, facts.elf_sha, facts.elf_path,
                facts.elf_size, plan.fingerprint, plan.engine_version, plan.input_kind)
         async with self._lock:
             if self._closed:
@@ -838,7 +955,7 @@ class SourceCatalogProvider:
         if requested_catalog_id is not None:
             async with self._lock:
                 saved = self._views.get(requested_catalog_id)
-                if (saved is not None and saved.identity == identity
+                if (saved is not None and saved.identity == identity and saved.policy == facts.policy
                         and saved.binding_signature == signature
                         and saved.index.argument_fingerprint == plan.fingerprint
                         and saved.index.engine_version == plan.engine_version
@@ -847,9 +964,9 @@ class SourceCatalogProvider:
                     return saved
         base = await self._base(facts, plan, refresh)
         current = await asyncio.to_thread(_offline_facts, self.root)
-        if (facts.source_sha, facts.build_id, facts.elf_sha) != (current.source_sha, current.build_id, current.elf_sha):
+        if (facts.policy, facts.source_sha, facts.build_id, facts.elf_sha) != (current.policy, current.source_sha, current.build_id, current.elf_sha):
             raise SourceCatalogFailure("MONITOR_SOURCE_CONTEXT_CHANGED", "Source or firmware changed while indexing")
-        catalog = await asyncio.to_thread(_catalog_id, identity, signature, base.index, base.source_files)
+        catalog = await asyncio.to_thread(_catalog_id, identity, signature, base.index, base.source_files, facts.policy)
         async with self._lock:
             saved = self._views.get(catalog)
             if saved is not None:
@@ -862,7 +979,7 @@ class SourceCatalogProvider:
         roots, nodes = await asyncio.to_thread(_materialize, base.index, base.dwarf, context,
                                                binding, base.source_files)
         view = _View(catalog, identity, base.index, base.dwarf, roots, nodes,
-                     binding, binding_ok, {}, signature, base.source_files)
+                     binding, binding_ok, {}, signature, base.source_files, policy=facts.policy)
         view.compiled_debug = _compiled_debug(base.dwarf, base.source_files)
         await asyncio.to_thread(_tree_index, view)
         async with self._lock:
@@ -928,7 +1045,8 @@ class SourceCatalogProvider:
                                selector if intrinsic is None else None,
                                reason is None, reason, expandable,
                                bool(depth_limited or child_type is not None and child_type.kind == "array" and
-                                    child_type.element_count is not None and child_type.element_count > 4096))
+                                    child_type.element_count is not None and child_type.element_count > 4096),
+                               None, kind, item.definition_site)
             children.append(child)
             view.nodes[identifier] = _Node(child, child_type if expandable else None,
                                            parent.depth + 1, 0)
@@ -973,8 +1091,9 @@ class SourceCatalogProvider:
         result = await asyncio.to_thread(_page_payload, view, items, actual_total,
                                          normalized, cursor, limit, parent_id, scope_id)
         current = await asyncio.to_thread(_offline_facts, self.root)
-        if (current.source_sha, current.build_id, current.elf_sha) != (
-                view.identity["sourceSnapshotSha256"], view.identity["buildId"], view.identity["elfSha256"]):
+        if (current.policy, current.source_sha, current.build_id, current.elf_sha) != (
+                view.policy, view.identity["sourceSnapshotSha256"],
+                view.identity["buildId"], view.identity["elfSha256"]):
             raise SourceCatalogFailure("MONITOR_SOURCE_CONTEXT_CHANGED", "Source or firmware changed during page")
         return result
 
@@ -999,8 +1118,9 @@ class SourceCatalogProvider:
         result = await asyncio.to_thread(_metadata_page_payload, view, items, normalized,
                                          cursor, limit, parent_id)
         current = await asyncio.to_thread(_offline_facts, self.root)
-        if (current.source_sha, current.build_id, current.elf_sha) != (
-                view.identity["sourceSnapshotSha256"], view.identity["buildId"], view.identity["elfSha256"]):
+        if (current.policy, current.source_sha, current.build_id, current.elf_sha) != (
+                view.policy, view.identity["sourceSnapshotSha256"],
+                view.identity["buildId"], view.identity["elfSha256"]):
             raise SourceCatalogFailure("MONITOR_SOURCE_CONTEXT_CHANGED", "Source or firmware changed during tree page")
         return result
 
@@ -1020,7 +1140,8 @@ class SourceCatalogProvider:
         if await asyncio.to_thread(_eligible_leaf, selector, view.dwarf, binding) is not None:
             raise SourceCatalogFailure("MONITOR_SOURCE_SELECTION_UNAVAILABLE", "Source selection is unavailable")
         current = await asyncio.to_thread(_offline_facts, self.root)
-        if (current.source_sha, current.build_id, current.elf_sha) != (
-                view.identity["sourceSnapshotSha256"], view.identity["buildId"], view.identity["elfSha256"]):
+        if (current.policy, current.source_sha, current.build_id, current.elf_sha) != (
+                view.policy, view.identity["sourceSnapshotSha256"],
+                view.identity["buildId"], view.identity["elfSha256"]):
             raise SourceCatalogFailure("MONITOR_SOURCE_CONTEXT_CHANGED", "Source or firmware changed during selection")
         return {"catalogId": catalog_id, "item": {"kind": "variable", "expression": selector}}

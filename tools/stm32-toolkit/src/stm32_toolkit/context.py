@@ -8,6 +8,7 @@ from stm32_toolkit.build.identity import (
     BuildError,
     compute_build_id,
     git_evidence,
+    identity_discovery_policy,
     read_bounded,
     read_evidence_json,
     snapshot_project_inputs,
@@ -403,7 +404,7 @@ def _evidence_fresh(manifest: ProjectManifest, root: Path) -> dict[str, object] 
         if identity_doc.get("elfPath") != elf_rel or identity_doc.get("mapPath") != map_rel:
             return None
 
-        snapshot = snapshot_project_inputs(model)
+        snapshot = snapshot_project_inputs(model, policy=identity_discovery_policy(identity_doc))
         if snapshot.sha256 != identity_doc.get("inputSnapshotSha256"):
             return None
         git = git_evidence(root)
@@ -423,6 +424,7 @@ def _evidence_fresh(manifest: ProjectManifest, root: Path) -> dict[str, object] 
             return None
         return {
             "buildId": identity_doc["buildId"],
+            "inputDiscoveryPolicy": identity_discovery_policy(identity_doc),
             "elfSha256": identity_doc["elfSha256"],
             "preset": "arm-debug",
             "gitHead": identity_doc["gitHead"],
