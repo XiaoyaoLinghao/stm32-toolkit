@@ -1,0 +1,34 @@
+# Monitor compiled source directory and live curves — implementation return
+
+Accepted base: `60079d49ab85adb7166ffbc60ebf2c8c61495536`.
+Specification/plan input head: `62d050c65492a4bce8d9a9b2492e9fc083f71f25`.
+Code head before this report: `5298e18dbf302ce0dd14bb08a3445ca6f7faf366` on `codex/monitor-dwarf-source-live`.
+Owner: the one bounded implementation agent. The primary owns integration, independent review, physical execution and acceptance. This return does not assert acceptance.
+
+## Delivered behavior
+
+- The existing bounded DWARF pass now exposes concrete project-file function, variable and parameter DIE metadata, with CU/DIE identity, lexical ownership, storage and location classification. The source provider shows positive compiled metadata first and merges successful AST declarations only with compatible unique source identity. Selection still rechecks the existing DWARF lookup, type, readable range, exact source/ELF/binding and ambiguity. Parameters and frame/register locations remain unselectable; optimized or unavailable locations are not mislabeled as recoverable frame values. Aggregate members and array elements from a positive debug root remain eligible where the existing selector can read them.
+- `coverage.compiledDebug` is optional and closed in the strict client. Incomplete AST augmentation remains visibly incomplete, while positive compiled metadata is cached under source/build/ELF/engine identity. An explicit root-only `refresh=1` retries indexing; normal search and child pagination reuse the partial compiled directory. Invalid refresh values and combinations are rejected. Empty authoritative source-file sets filter every declaration.
+- Live state keeps numeric points for the actual batch group/revision, up to 256 watches × 600 points, independently of the eight visible curves. Late selection and hide/reselection draw retained current-run points. A stopped display survives only a matching accepted stop and authoritative terminal state; failed/pending stop, new run, changed identity/binding, changed/deleted group and disconnect cannot publish it as fresh. Sampling/history/export protocols were not changed.
+
+## Verification run from this code head
+
+The run root was `D:\codex-tmp\mr1020\impl-checks`. PowerShell 7 was used; Python was `C:\Users\ZhangYang\AppData\Local\Programs\Python\Python312\python.exe`. For Python, `TEMP`, `TMP`, `TMPDIR` pointed to `impl-checks\temp`, `PYTHONPYCACHEPREFIX` to `impl-checks\cache\py`, `PYTEST_ADDOPTS=''`, and `PYTHONPATH` contained both implementation `tools\stm32-toolkit\src` and `tools\stm32-monitor\src` plus `tools\stm32-toolkit\tests`. Every pytest command used `-o 'addopts='` and a unique `--basetemp` child of the run root.
+
+| Command from `D:\codex-tmp\mr1020\impl` unless noted | Result |
+| --- | --- |
+| `python -m pytest tools/stm32-toolkit/tests/test_dwarf.py tools/stm32-toolkit/tests/test_dwarf_declarations.py tools/stm32-monitor/tests/test_source_catalog.py -o 'addopts=' --basetemp D:\codex-tmp\mr1020\impl-checks\pytest-source-dwarf-final -q` | 147 passed |
+| `python -m pytest tools/stm32-monitor/tests/test_runtime.py tools/stm32-monitor/tests/test_service.py -o 'addopts=' --basetemp D:\codex-tmp\mr1020\impl-checks\pytest-runtime-service-final -q` | 111 passed; one existing aiohttp deprecation warning |
+| `python -m pytest tools/stm32-monitor/tests/test_runtime.py::test_source_dispatch_rechecks_same_epoch_binding_and_observation_after_await tools/stm32-monitor/tests/test_service.py::test_source_catalog_routes_share_auth_and_exact_query_grammar tools/stm32-monitor/tests/test_source_catalog.py -o 'addopts=' --basetemp D:\codex-tmp\mr1020\impl-checks\pytest-refresh-final -q` | 20 passed after root refresh contract tests |
+| `python -m pytest tools/stm32-monitor/tests/test_source_catalog.py -o 'addopts=' --basetemp D:\codex-tmp\mr1020\impl-checks\pytest-source-filter-final2 -q` | 18 passed after empty snapshot filtering fix and fixture correction |
+| `npm test -- --maxWorkers=2 --reporter=dot` from `tools/stm32-monitor/ui`, with `MONITOR_REAL_BATCHES_JSONL=D:\codex-tmp\mr1020\impl-checks\today_293_sanitized.jsonl` | 58 files / 483 tests passed, including all 293 recorded batches |
+| `npm run typecheck`; `npm run lint`; `npm run build`; `npm run verify:dist` from that UI directory | All passed; dist verification: 7 files byte-identical |
+| `git diff --cached --check` before code commit | Passed |
+
+The first default-parallel UI run had one five-second `values-first-app` timeout, while that file passed 15/15 alone and the complete suite passed with two workers, so it was classified as test scheduling contention rather than changed product behavior. A later source test run found five old mock-base fixtures omitted the authoritative source-file list; those fixtures were corrected to explicitly name their simulated compiled file, retaining their original assertions. The final targeted run passed 18/18. No timeout was increased.
+
+## Reproduced offline MR evidence
+
+Read-only project: `D:\codex-tmp\mr1019\p`; no source, firmware, build, probe or existing service was changed. `D:\codex-tmp\mr1020\impl-checks\provider_real_final.txt` records a fresh provider run using the unchanged ELF and an explicitly fabricated matching offline binding. AST augmentation was 2/53 units. Its authoritative compiled directory reported 1,877 visible variable/parameter declarations, 463 functions and 47 files; the root file tree had 154 snapshot files. `Main/Main.c` showed `main` with four unselectable locals; `USER/TIMER/timer.c` showed seven scopes and 53 entries (41 global, 12 local/parameter). `testtime` selected successfully; independent DWARF lookup placed the `uint32` at `0x20000408`. `BDSAFE/BDsafe_app.c` showed 103 variables and 11 scopes, and `SPEED_PERCENT_SAFE_FB` selected; `BDSAFE/BDsafe.c` accurately showed one function and zero variables. `SAFE_APP/safe_app.c` was not in the verified compiled snapshot, so this run makes no zero-variable claim about it. One provider base and one view were retained, and a repeated root request returned the same catalog identity.
+
+The real-client App replay uses a three-record tracked sanitized JSONL fixture, with an optional full 293-record read-only audit copy only under the run root. `D:\codex-tmp\mr1020\impl-checks\baseline-red.log` records the prior code drawing zero points after late selection where two and 292 current-run points were expected. The new test routes recorded batch JSON through the real live envelope parser, API client, controller and App, while stubbing transport and chart rendering. Recorded RUNNING values were already valid; no transport parser fix is claimed. The original browser blank report remains unconfirmed. This replay is non-physical evidence. Physical OBSERVE/CSV and 8765 operation belong to the primary after independent software acceptance; browser/HTTP verification remains deferred.
