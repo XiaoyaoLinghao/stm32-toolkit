@@ -241,6 +241,18 @@ def _compatible(source: SourceDeclaration, dwarf_type: DwarfType | None) -> bool
     return text in {_normalized_type(name) for name in names}
 
 
+def _compatible_cu(candidate: SourceDeclaration, symbol: DwarfSourceSymbol) -> bool:
+    internal = (candidate.scope_kind in {"file_static", "static_local"}
+                or candidate.storage == "static"
+                or symbol.scope_kind in {"file_static", "static_local"}
+                or symbol.storage == "static")
+    if internal:
+        return (symbol.compilation_unit is not None
+                and symbol.compilation_unit in candidate.translation_units)
+    return (symbol.compilation_unit is None
+            or symbol.compilation_unit in candidate.translation_units)
+
+
 def _direct_match(candidate: SourceDeclaration, symbol: DwarfSourceSymbol) -> bool:
     return (candidate.name == symbol.name and candidate.file == symbol.file
             and candidate.line is not None and candidate.line == symbol.line
@@ -250,7 +262,7 @@ def _direct_match(candidate: SourceDeclaration, symbol: DwarfSourceSymbol) -> bo
             and (candidate.storage == symbol.storage or
                  candidate.storage == "extern" and symbol.storage == "none")
             and _compatible(candidate, symbol.dwarf_type)
-            and (symbol.compilation_unit is None or symbol.compilation_unit in candidate.translation_units))
+            and _compatible_cu(candidate, symbol))
 
 
 def _match(decl: SourceDeclaration,
@@ -271,7 +283,7 @@ def _match(decl: SourceDeclaration,
     proof = entity_proofs.get(decl.entity_id)
     if (decl.entity_id != decl.id and proof is not None and proof[0] != decl.id
             and proof[1] in same_name
-            and (proof[1].compilation_unit is None or proof[1].compilation_unit in decl.translation_units)
+            and _compatible_cu(decl, proof[1])
             and _compatible(decl, proof[1].dwarf_type)):
         return proof[1], None
     if len(same_name) > 1:

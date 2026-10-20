@@ -585,6 +585,57 @@ def test_concrete_die_only_coalesces_a_unique_ast_entity() -> None:
     assert roots[0].can_add and roots[1].id == previous.id and roots[1].can_add
 
 
+def test_internal_cu_must_be_proven_for_direct_and_previous_decl_attribution() -> None:
+    dtype = DwarfType("integer", "int", 4)
+    symbol = DwarfSourceSymbol("internal", "Inc/header.h", 3, None, None, None,
+                               dtype, 0x20000000, None, None, cu_offset=0, die_offset=10,
+                               storage="static", scope_kind="file_static")
+    definition = SourceDeclaration("a" * 64, "a" * 64, "internal", "int", "Inc/header.h", 3, 5,
+                                   "static", "file_static", None, (), ("Src/a.c",))
+    previous = replace(definition, id="b" * 64, file="Inc/forward.h", line=1)
+    index = SourceIndex("engine", "version", "manifest", 1, 1, (), True,
+                        (definition, previous), "f" * 64)
+    binding = SimpleNamespace(memory_regions=(SimpleNamespace(origin=0x20000000,
+        length=0x1000, attributes="rw"),))
+
+    def materialize(debug_symbol):
+        class Catalog:
+            elf_sha256 = "e" * 64
+            def source_declarations(self):
+                return (debug_symbol,)
+            def lookup(self, _selector):
+                return SimpleNamespace(type=dtype, byte_size=4, address=0x20000000)
+        roots, _ = module._materialize(index, Catalog(), None, binding,
+                                       source_files=("Inc/header.h", "Inc/forward.h"))
+        return roots
+
+    for unproven in (symbol, replace(symbol, compilation_unit="Src/b.c")):
+        positive_die, direct_ast, previous_ast = materialize(unproven)
+        assert positive_die.can_add
+        assert [item.id for item in (direct_ast, previous_ast)] == [definition.id, previous.id]
+        assert all(item.selector is None and not item.can_add
+                   and item.reason == "source_attribution_unproven"
+                   for item in (direct_ast, previous_ast))
+
+    known = materialize(replace(symbol, compilation_unit="Src/a.c"))
+    assert len(known) == 2  # The direct declaration coalesces into the positive DIE.
+    assert known[0].can_add and known[1].id == previous.id and known[1].can_add
+
+    global_definition = replace(definition, scope_kind="global", storage="none")
+    global_previous = replace(previous, scope_kind="global", storage="extern")
+    global_index = replace(index, declarations=(global_definition, global_previous))
+    class GlobalCatalog:
+        elf_sha256 = "e" * 64
+        def source_declarations(self):
+            return (replace(symbol, scope_kind="global", storage="none"),)
+        def lookup(self, _selector):
+            return SimpleNamespace(type=dtype, byte_size=4, address=0x20000000)
+    roots, _ = module._materialize(global_index, GlobalCatalog(), None, binding,
+                                   source_files=("Inc/header.h", "Inc/forward.h"))
+    assert len(roots) == 2
+    assert roots[0].can_add and roots[1].id == previous.id and roots[1].can_add
+
+
 def test_legal_long_translation_units_fit_page_budget_with_actual_cursor() -> None:
     item = module.SourceItem("0" * 64, None, "wide", "int", "Src/main.c", 1, 1,
                              "global", None, (), "none", ("a" * 512,) * 256,
