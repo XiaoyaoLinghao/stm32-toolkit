@@ -239,7 +239,6 @@ class _CatalogSymbol:
     decl_column: int | None = None
     function: str | None = None
     cu_file: str | None = None
-    source: DwarfSourceSymbol | None = None
 
 
 @dataclass(frozen=True)
@@ -315,7 +314,7 @@ def _source_name(die: object, cu: object, boundaries: frozenset[int]) -> str:
 
 
 def _scope_metadata(die: object, functions: Mapping[int, DwarfSourceFunction],
-                    max_depth: int) -> tuple[DwarfSourceFunction | None, tuple[str, ...]]:
+                    max_depth: int) -> tuple[DwarfSourceFunction | None, tuple[str, ...], bool]:
     function = None
     blocks: list[str] = []
     parent = getattr(die, "_parent", None)
@@ -323,13 +322,15 @@ def _scope_metadata(die: object, functions: Mapping[int, DwarfSourceFunction],
         if parent is None:
             break
         offset = getattr(parent, "offset", None)
+        if getattr(parent, "tag", None) == "DW_TAG_inlined_subroutine":
+            return None, tuple(reversed(blocks)), True
         if getattr(parent, "tag", None) == "DW_TAG_subprogram":
             function = functions.get(offset)
-            break
+            return function, tuple(reversed(blocks)), True
         if getattr(parent, "tag", None) == "DW_TAG_lexical_block" and type(offset) is int:
             blocks.append(f"block@{offset:x}")
         parent = getattr(parent, "_parent", None)
-    return function, tuple(reversed(blocks))
+    return function, tuple(reversed(blocks)), False
 
 
 def _project_relative_source(project_root: Path, raw: str) -> str | None:
@@ -779,6 +780,7 @@ class DwarfCatalog:
     _source_identity: tuple[int, int] = field(repr=False)
     _source_declarations: tuple[DwarfSourceSymbol, ...] = field(repr=False)
     _source_functions: tuple[DwarfSourceFunction, ...] = field(repr=False)
+    _source_metadata_truncated: bool = field(repr=False)
 
     @classmethod
     def _create(
@@ -791,6 +793,7 @@ class DwarfCatalog:
         little_endian: bool,
         source_declarations: tuple[DwarfSourceSymbol, ...],
         source_functions: tuple[DwarfSourceFunction, ...],
+        source_metadata_truncated: bool,
     ) -> "DwarfCatalog":
         instance = object.__new__(cls)
         values = (
@@ -806,6 +809,7 @@ class DwarfCatalog:
             ("_source_identity", source.source_identity),
             ("_source_declarations", source_declarations),
             ("_source_functions", source_functions),
+            ("_source_metadata_truncated", source_metadata_truncated),
         )
         for name, value in values:
             object.__setattr__(instance, name, value)
@@ -914,6 +918,9 @@ class DwarfCatalog:
             source_functions: list[DwarfSourceFunction] = []
             die_count = 0
             catalog_count = 0
+            source_variable_count = 0
+            parameter_count = 0
+            source_metadata_truncated = False
             for cu in dwarf.iter_CUs():
                 cu_group = _cu_catalog_group(cu, source.canonical_project_root)
                 dies = []
@@ -952,6 +959,9 @@ class DwarfCatalog:
                     )
                     if file is None:
                         continue
+                    if len(source_functions) >= max_catalog_entries:
+                        source_metadata_truncated = True
+                        continue
                     function = DwarfSourceFunction(
                         name, file, line, column, cu_file, cu.cu_offset, die.offset
                     )
@@ -966,39 +976,71 @@ class DwarfCatalog:
                     specification = (None if parameter else _validated_variable_specification(
                         die, cu, frozen_boundaries
                     ))
-                    name_owner = (
+                    legacy_name_owner = (
                         die
                         if "DW_AT_name" in die.attributes
-                        else specification or _in_cu_owner(die, cu, frozen_boundaries, "DW_AT_name") or die
+                        else specification or die
                     )
-                    type_owner = (
+                    legacy_type_owner = (
                         die
                         if "DW_AT_type" in die.attributes
-                        else specification or _in_cu_owner(die, cu, frozen_boundaries, "DW_AT_type") or die
+                        else specification or die
                     )
-                    name = _name(name_owner, "")
-                    if not _IDENTIFIER.fullmatch(name):
+                    legacy_name = _name(legacy_name_owner, "") if not parameter else ""
+                    legacy_valid = not parameter and bool(_IDENTIFIER.fullmatch(legacy_name))
+                    if legacy_valid:
+                        catalog_count += 1
+                        if catalog_count > max_catalog_entries:
+                            raise _fail(
+                                "DWARF_CATALOG_LIMIT_EXCEEDED",
+                                "DWARF catalog entry count exceeds its limit",
+                            )
+                    source_name_owner = _in_cu_owner(die, cu, frozen_boundaries, "DW_AT_name") or die
+                    source_type_owner = _in_cu_owner(die, cu, frozen_boundaries, "DW_AT_type") or die
+                    source_name = _name(source_name_owner, "")
+                    source_valid = bool(_IDENTIFIER.fullmatch(source_name))
+                    if not legacy_valid and not source_valid:
                         continue
-                    catalog_count += 1
-                    if catalog_count > max_catalog_entries:
-                        raise _fail(
-                            "DWARF_CATALOG_LIMIT_EXCEEDED",
-                            "DWARF catalog entry count exceeds its limit",
-                        )
-                    try:
-                        dwarf_type = type_graph.resolve_attribute(type_owner)
-                        type_error = None
-                    except DwarfError as exc:
-                        dwarf_type = None
-                        type_error = exc.code
+                    if legacy_valid:
+                        try:
+                            legacy_type = type_graph.resolve_attribute(legacy_type_owner)
+                            legacy_type_error = None
+                        except DwarfError as exc:
+                            legacy_type = None
+                            legacy_type_error = exc.code
                     address, location_error, location_kind = cls._location_details(
                         die, cu, location_parser, expression_parser
                     )
                     source_file, decl_line, decl_column = _die_source(
                         die, cu, dwarf, source.canonical_project_root, frozen_boundaries
                     )
-                    parent_function, blocks = _scope_metadata(die, functions_by_offset, max_die_depth)
+                    if legacy_valid:
+                        entries.setdefault(legacy_name, []).append(
+                            _CatalogSymbol(
+                                legacy_name, legacy_type, address, location_error,
+                                legacy_type_error, cu_group, source_file, decl_line,
+                                decl_column, _die_function(die), cu_file,
+                            )
+                        )
+                    if not source_valid or source_file is None:
+                        continue
+                    parent_function, blocks, has_function_parent = _scope_metadata(
+                        die, functions_by_offset, max_die_depth
+                    )
+                    if has_function_parent and parent_function is None:
+                        continue
+                    if not parameter:
+                        if source_variable_count >= max_catalog_entries:
+                            source_metadata_truncated = True
+                            continue
+                        source_variable_count += 1
                     if parameter:
+                        if parent_function is None:
+                            continue
+                        if parameter_count >= max_catalog_entries:
+                            source_metadata_truncated = True
+                            continue
+                        parameter_count += 1
                         scope_kind, storage = "parameter", "none"
                     elif parent_function is not None:
                         scope_kind = "static_local" if address is not None else "local"
@@ -1009,10 +1051,19 @@ class DwarfCatalog:
                         )
                         scope_kind = "global" if external is not None and bool(external.value) else "file_static"
                         storage = "none" if scope_kind == "global" else "static"
+                    if legacy_valid and source_type_owner is legacy_type_owner:
+                        source_type, source_type_error = legacy_type, legacy_type_error
+                    else:
+                        try:
+                            source_type = type_graph.resolve_attribute(source_type_owner)
+                            source_type_error = None
+                        except DwarfError as exc:
+                            source_type = None
+                            source_type_error = exc.code
                     source_symbol = DwarfSourceSymbol(
-                        name, source_file, decl_line, decl_column,
+                        source_name, source_file, decl_line, decl_column,
                         parent_function.name if parent_function is not None else None,
-                        cu_file, dwarf_type, address, location_error, type_error,
+                        cu_file, source_type, address, location_error, source_type_error,
                         cu.cu_offset, die.offset,
                         parent_function.die_offset if parent_function is not None else None,
                         blocks, storage, scope_kind,
@@ -1020,14 +1071,6 @@ class DwarfCatalog:
                         location_kind,
                     )
                     source_declarations.append(source_symbol)
-                    if not parameter:
-                        entries.setdefault(name, []).append(
-                            _CatalogSymbol(
-                                name, dwarf_type, address, location_error, type_error,
-                                cu_group, source_file, decl_line, decl_column,
-                                source_symbol.function, cu_file, source_symbol,
-                            )
-                        )
             frozen = {name: tuple(values) for name, values in entries.items()}
             return cls._create(
                 source=source,
@@ -1037,6 +1080,7 @@ class DwarfCatalog:
                 little_endian=bool(elf.little_endian),
                 source_declarations=tuple(source_declarations),
                 source_functions=tuple(source_functions),
+                source_metadata_truncated=source_metadata_truncated,
             )
         except DwarfError:
             raise
@@ -1320,7 +1364,7 @@ class DwarfCatalog:
     def source_symbols(self) -> tuple[DwarfSourceSymbol, ...]:
         """Return bounded immutable attribution metadata without revalidating a probe."""
         return tuple(
-            symbol.source if symbol.source is not None else DwarfSourceSymbol(
+            DwarfSourceSymbol(
                 symbol.name, symbol.source_file, symbol.decl_line,
                 symbol.decl_column, symbol.function, symbol.cu_file,
                 symbol.dwarf_type, symbol.address, symbol.location_error,
@@ -1336,6 +1380,11 @@ class DwarfCatalog:
     def source_functions(self) -> tuple[DwarfSourceFunction, ...]:
         """Concrete subprogram DIEs with verified project source locations."""
         return self._source_functions
+
+    @property
+    def source_metadata_truncated(self) -> bool:
+        """Auxiliary source metadata hit its independent bounded budget."""
+        return self._source_metadata_truncated
 
     def lookup(self, expression: str) -> DwarfSelection:
         if not isinstance(expression, str):

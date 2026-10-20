@@ -15,7 +15,7 @@ import pytest
 import stm32_monitor.source_catalog as module
 from stm32_toolkit.debug.source import ClangSourceAdapter, SourceDeclaration, SourceFunction, SourceIndex, SourceIssue, SourcePlan
 from stm32_toolkit.debug.types import DwarfMember, DwarfType
-from stm32_toolkit.debug.dwarf import DwarfSourceSymbol
+from stm32_toolkit.debug.dwarf import DwarfCatalog, DwarfSourceFunction, DwarfSourceSymbol
 
 
 def test_shared_wire_fixture_uses_backend_item_serializer() -> None:
@@ -687,6 +687,127 @@ def test_untracked_ast_file_and_unbound_local_are_partial_not_tree_facts(
     assert {issue.code for issue in base.index.issues} == {
         "MONITOR_SOURCE_UNTRACKED_AST", "MONITOR_SOURCE_FUNCTION_UNBOUND"}
     assert all(issue.unit is None and "rogue.c" not in issue.message for issue in base.index.issues)
+
+
+def test_public_provider_treats_empty_snapshot_as_authoritative(
+        monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    model = SimpleNamespace(project_root=tmp_path, logical_project_id="project",
+                            target=SimpleNamespace(device="STM32F407VG"))
+    facts = module._Facts(model, "b" * 64, None, None, None, None, (), ())
+    declaration = SourceDeclaration("1" * 64, "1" * 64, "rogue", "int", "Src/rogue.c", 1, 1,
+                                    "none", "global", None, (), ("Src/rogue.c",))
+    index = SourceIndex("engine", "version", "manifest", 1, 1, (), True,
+                        (declaration,), "f" * 64)
+    class Adapter(_Adapter):
+        def plan(self, _model: object) -> SourcePlan:
+            return SourcePlan((), "manifest", "version", "f" * 64)
+        def index(self, _model: object, _plan: SourcePlan) -> SourceIndex:
+            return index
+    monkeypatch.setattr(module, "_offline_facts", lambda _root: facts)
+    provider = module.SourceCatalogProvider(tmp_path, "workspace", "session", Adapter())
+    async def scenario() -> None:
+        tree = await provider.tree(query="", cursor=None, limit=100, parent_id=None,
+                                   catalog_id=None, binding=None, binding_epoch=0)
+        page = await provider.page(query="", cursor=None, limit=100, parent_id=None,
+                                   catalog_id=tree["catalogId"], binding=None, binding_epoch=0)
+        assert tree["total"] == page["total"] == 0
+        assert tree["items"] == page["items"] == []
+        assert tree["coverage"]["complete"] is False
+        assert {issue["code"] for issue in tree["coverage"]["issues"]} == {"MONITOR_SOURCE_UNTRACKED_AST"}
+    try:
+        asyncio.run(scenario())
+    finally:
+        provider.close()
+
+
+def test_merged_declaration_and_normalized_function_budgets_reject_before_pages() -> None:
+    first = SourceDeclaration("1" * 64, "1" * 64, "first", "int", "Src/main.c", 1, 1,
+                              "none", "global", None, (), ("Src/main.c",))
+    second = replace(first, id="2" * 64, entity_id="2" * 64, name="second")
+    index = SourceIndex("engine", "version", "manifest", 1, 1, (), True,
+                        (first, second), "f" * 64)
+    with pytest.raises(module.SourceCatalogFailure) as declarations:
+        module._materialize(index, None, None, None, ("Src/main.c",), max_declarations=1)
+    assert declarations.value.code == "MONITOR_SOURCE_INDEX_FAILED"
+
+    dwarf_function = DwarfSourceFunction("work", "Src/main.c", 4, 2, "Src/main.c", 1, 10)
+    matching = SourceFunction("3" * 64, "work", "Src/main.c", 4, 2, ("Src/main.c",))
+    distinct = replace(matching, id="4" * 64, line=5)
+    class Functions:
+        def source_functions(self):
+            return (dwarf_function,)
+    function_index = replace(index, declarations=(), functions=(matching, distinct))
+    view = module._View("a" * 64, {}, function_index, Functions(), (), {}, None, False, {},
+                        source_files=("Src/main.c",))
+    with pytest.raises(module.SourceCatalogFailure) as functions:
+        module._tree_index(view, max_functions=1)
+    assert functions.value.code == "MONITOR_SOURCE_INDEX_FAILED"
+    module._tree_index(view, max_functions=2)
+    assert len(view.scopes_by_file["Src/main.c"]) == 2
+    ambiguous = replace(function_index, functions=(matching,))
+    class AmbiguousFunctions:
+        def source_functions(self):
+            return (dwarf_function, replace(dwarf_function, die_offset=11))
+    view.index = ambiguous
+    view.dwarf = AmbiguousFunctions()
+    module._tree_index(view, max_functions=3)
+    assert len(view.scopes_by_file["Src/main.c"]) == 3
+
+
+def test_auxiliary_debug_budget_does_not_break_legacy_lookup(
+        monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    adapter = ClangSourceAdapter(ninja=None)
+    if adapter.preprocessor is None or adapter.compiler is None:
+        pytest.skip("installed GNU Arm GCC and Clang required")
+    root = tmp_path / "budget-project"
+    (root / "Src").mkdir(parents=True)
+    (root / "Src" / "main.c").write_text(
+        "volatile int counter = 3;\n"
+        "int first(int a) { return counter + a; }\n"
+        "int second(int b) { return counter + b; }\n"
+        "int third(int c) { return counter + c; }\n", encoding="utf-8")
+    elf = root / "firmware.elf"
+    command = [str(adapter.preprocessor), "-gdwarf-4", "-O0", "-mcpu=cortex-m4", "-mthumb",
+               "-nostdlib", "-Wl,-Ttext=0x08000000", "-Wl,-Tdata=0x20000000", "-Wl,-e,0",
+               "-o", str(elf), str(root / "Src" / "main.c")]
+    result = subprocess.run(command, cwd=root, capture_output=True, timeout=20)
+    assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
+    ram = SimpleNamespace(name="RAM", origin=0x20000000, length=0x10000, attributes="rw")
+    flash = SimpleNamespace(name="FLASH", origin=0x08000000, length=0x10000, attributes="rx")
+    limited = DwarfCatalog.from_elf(elf, project_root=root, max_catalog_entries=1,
+                                    readable_regions=((ram.origin, ram.origin + ram.length),
+                                                      (flash.origin, flash.origin + flash.length)))
+    assert limited.lookup("counter").expression == "counter"
+    assert limited.source_metadata_truncated
+    assert len(limited.source_functions()) == 1
+    assert len(limited.source_declarations()) <= 2  # one variable and one parameter
+    positive_functions = {function.die_offset for function in limited.source_functions()}
+    assert all(symbol.scope_kind != "global" and symbol.function_die_offset in positive_functions
+               for symbol in limited.source_declarations() if symbol.kind == "parameter")
+    assert not any(symbol.name in {"a", "b", "c"} and symbol.scope_kind == "global"
+                   for symbol in limited.source_declarations())
+
+    data = elf.read_bytes()
+    model = SimpleNamespace(project_root=root, logical_project_id="project",
+        target=SimpleNamespace(device="STM32F407VG"), memory=SimpleNamespace(regions=(ram, flash)),
+        build=SimpleNamespace(sources=("Src/main.c",), include_paths=(), defines=(),
+                              compile_options=(), presets=(), elf="firmware.elf"))
+    facts = module._Facts(model, "b" * 64, "build", hashlib.sha256(data).hexdigest(),
+                          "firmware.elf", len(data), ("Src/main.c",), ("Src/main.c",))
+    monkeypatch.setattr(module, "_offline_facts", lambda _root: facts)
+    original = module.DwarfCatalog.from_elf
+    monkeypatch.setattr(module.DwarfCatalog, "from_elf", staticmethod(
+        lambda *args, **kwargs: original(*args, **kwargs, max_catalog_entries=1)))
+    provider = module.SourceCatalogProvider(root, "workspace", "session", adapter)
+    async def scenario() -> None:
+        with pytest.raises(module.SourceCatalogFailure) as raised:
+            await provider.tree(query="", cursor=None, limit=100, parent_id=None,
+                                catalog_id=None, binding=None, binding_epoch=0)
+        assert raised.value.code == "MONITOR_SOURCE_INDEX_FAILED"
+    try:
+        asyncio.run(scenario())
+    finally:
+        provider.close()
 
 
 def test_provider_slow_offline_facts_index_and_view_leave_event_loop_responsive(

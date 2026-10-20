@@ -5,7 +5,7 @@ import {draftFromGroup,emptyDraft,groupDirty,groupWorkflowBusy,sameGroupContent,
 
 const zeroDrops=():DropTotals=>({subscriber:0n,history:0n,deadline:0n,service:0n});
 const dropsFrom=(status:MonitorStatus):DropTotals=>({subscriber:status.sampling.subscriberDrops,history:status.sampling.historyDrops,deadline:status.sampling.deadlineDrops,service:status.sampling.serviceDrops});
-const liveForStatus=(status:MonitorStatus,selected:ReadonlySet<string>):LiveState=>({...emptyLive(),selectedSeries:new Set([...selected].slice(0,8)),bindingEpoch:status.sampling.bindingEpoch,runId:status.sampling.runId,authoritativeDrops:dropsFrom(status)});
+const liveForStatus=(status:MonitorStatus,selected:ReadonlySet<string>):LiveState=>({...emptyLive(),selectedSeries:new Set([...selected].slice(0,8)),bindingEpoch:status.sampling.bindingEpoch,runId:status.sampling.runId,groupId:status.sampling.groupId,groupRevision:status.sampling.groupRevision,authoritativeDrops:dropsFrom(status)});
 const emptyProjection={rows:[],series:new Map()};
 const emptySource=(generation=0n):SourceCatalogState=>({query:"",initialized:false,generation,contextKey:"",tree:null,branches:{},scopePages:{},children:{},lastAddedId:null});
 export const initialState:MonitorState={status:null,probes:[],groups:[],selectedGroupId:null,groupDraft:emptyDraft,groupBaseline:emptyDraft,groupGeneration:0n,groupNavigation:null,groupNavigationMissing:false,groupNameReviewRequired:false,groupWriteBusy:false,groupsNeedRefresh:false,stateRevision:-1n,lastAcceptedEventId:null,pending:{},reconciling:{},failures:{},catalog:{variables:null,registers:null,source:emptySource()},selectedSeries:new Set(),live:emptyLive(),zoom:initialZoom,transport:{phase:"idle",open:false,stale:true,needsStatusRefresh:false,gapRevision:0n},history:{query:null,page:null,projection:emptyProjection,cursorIndex:0,cursorStack:[],nextCursor:null,inFlight:null},exports:{artifact:null,submitted:null},notices:[],blockingError:null};
@@ -27,14 +27,14 @@ const stoppedTransition=(state:MonitorState,status:MonitorStatus):boolean=>{
  return prior!==null&&prior.sampling.runId!==null&&prior.sampling.runId===live.runId&&
   status.sampling.state==="IDLE"&&status.sampling.runId===null&&
   status.sampling.bindingEpoch===live.bindingEpoch&&sourceContextKey(prior)===sourceContextKey(status)&&
-  live.binding!==null&&statusMatches(status,live.binding)&&
+  (live.binding===null?live.lastSampleCapturedAtUtc===null:statusMatches(status,live.binding))&&
   live.groupId!==null&&live.groupId===prior.sampling.groupId&&
   live.groupRevision!==null&&live.groupRevision===prior.sampling.groupRevision&&
   (live.stopPending||live.stopAccepted);
 };
 const liveAfterStatus=(state:MonitorState,status:MonitorStatus):LiveState=>{
  if(stoppedTransition(state,status))return {...rebased(state.live,status),
-   retained:state.live.stopAccepted&&state.live.lastSampleCapturedAtUtc!==null,
+   retained:state.live.stopAccepted,
    stopPending:state.live.stopPending};
  return resetForStatus(state,status)?liveForStatus(status,state.selectedSeries):rebased(state.live,status);
 };
@@ -307,7 +307,7 @@ export function reducer(state:MonitorState,action:MonitorAction):MonitorState{
   if(!action.stopped)return cancelStop(state);
   const idle=status.sampling.state==="IDLE"&&status.sampling.runId===null;
   if(!idle&&status.sampling.runId!==action.runId)return cancelStop(state);
-  return {...state,live:{...live,stopAccepted:true,retained:idle&&live.lastSampleCapturedAtUtc!==null}};
+  return {...state,live:{...live,stopAccepted:true,retained:idle}};
  }
  if(action.type==="series.toggled"){const selected=new Set(state.selectedSeries);if(selected.has(action.key))selected.delete(action.key);else if(selected.size<8)selected.add(action.key);else return state;return {...state,selectedSeries:selected,live:{...state.live,selectedSeries:selected}};}
  if(action.type==="zoom.changed"){
@@ -336,8 +336,10 @@ export function reducer(state:MonitorState,action:MonitorAction):MonitorState{
   const history=action.scope==="history"?{...state.history,inFlight:action.historyContext===undefined?null:
     {requestId:action.requestId,query:{...action.historyContext.query},navigation:action.historyContext.navigation}}:state.history;
   const updated={...state,pending:{...state.pending,[action.scope]:{requestId:action.requestId}},failures,reconciling,history};
-  return action.scope==="sampling.stop"&&state.status?.sampling.runId===state.live.runId&&
-    state.live.groupId!==null&&state.live.lastSampleCapturedAtUtc!==null
+  return action.scope==="sampling.stop"&&state.status?.sampling.runId!==null&&
+    state.status?.sampling.runId===state.live.runId&&
+    state.status.sampling.groupId!==null&&state.status.sampling.groupId===state.live.groupId&&
+    state.status.sampling.groupRevision!==null&&state.status.sampling.groupRevision===state.live.groupRevision
     ?{...updated,live:{...state.live,stopPending:true,stopAccepted:false,retained:false}}:updated;
  }
  if(action.type==="request.cleared"){const pending=state.pending[action.scope];if(pending===undefined||pending.requestId!==action.requestId)return state;const copy={...state.pending};delete copy[action.scope];return {...state,pending:copy,history:settledHistory(state,action.scope,action.requestId)};}

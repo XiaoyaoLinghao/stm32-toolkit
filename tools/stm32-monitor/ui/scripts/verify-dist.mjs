@@ -16,8 +16,19 @@ if(!existsSync(join(committed,"index.html"))||!existsSync(join(committed,".vite/
 const collect=dir=>{const names=[];const walk=current=>{for(const name of readdirSync(current)){const path=join(current,name),info=statSync(path);if(info.isDirectory())walk(path);else names.push(relative(dir,path).split("\\").join("/"));}};walk(dir);return names.sort();};
 const committedFiles=collect(committed);
 const manifest=JSON.parse(readFileSync(join(committed,".vite/manifest.json"),"utf8"));
-for(const record of Object.values(manifest)){
+const checkModuleId=value=>{
+  if(typeof value!=="string")return;
+  const parts=value.replaceAll("\\","/").split("/");
+  if(value.includes("\\")||parts.includes("..")||value.startsWith("/")||
+     (parts.includes("node_modules")&&!value.startsWith("node_modules/")))
+    throw new Error(`manifest contains nonportable module path ${value}`);
+};
+for(const [id,record] of Object.entries(manifest)){
+  checkModuleId(id);
   if(typeof record!=="object")continue;
+  checkModuleId(record.src);
+  for(const field of ["imports","dynamicImports"])
+    if(Array.isArray(record[field]))for(const value of record[field])checkModuleId(value);
   for(const field of ["file","css"]){
     const value=record[field];
     if(typeof value==="string"&&!committedFiles.includes(value))throw new Error(`manifest references missing ${value}`);

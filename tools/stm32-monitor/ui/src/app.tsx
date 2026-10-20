@@ -193,7 +193,7 @@ export function App():JSX.Element{
   const retainedGroup=state.live.retained?state.groups.find(group=>group.groupId===state.live.groupId&&group.revision===state.live.groupRevision)??null:null;
   const sourceLabel=runId===null&&!state.live.retained?copy.liveSourcePreview:
     `${copy.liveSourceGroup} ${(retainedGroup??runningGroup)?.name??copy.liveSourceUnknownGroup} · ${copy.liveSourceRevision} ${(state.live.retained?state.live.groupRevision:status.sampling.groupRevision)?.toString()??"-"}`;
-  const sourceFreshness=state.live.retained?copy.liveSourceStopped:runId===null?undefined:state.live.lastSampleCapturedAtUtc===null?copy.liveSourceAwaiting:
+  const sourceFreshness=state.live.retained?(state.live.lastSampleCapturedAtUtc===null?copy.liveSourceStoppedEmpty:copy.liveSourceStopped):runId===null?undefined:state.live.lastSampleCapturedAtUtc===null?copy.liveSourceAwaiting:
     fresh?copy.liveSourceCurrent:copy.liveSourcePrevious;
   const drops=displayDropTotals(state.live);
 

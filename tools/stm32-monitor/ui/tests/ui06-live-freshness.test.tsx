@@ -130,3 +130,35 @@ it("does not retain an unacknowledged, failed, or obsolete stop",()=>{
   expect(lateAck.live.retained).toBe(false);
   expect(lateAck.live.lastSampleCapturedAtUtc).toBeNull();
 });
+
+it("retains only the metadata of a zero-sample run after matching stop ACK and IDLE",()=>{
+  const initial=ready();
+  expect(initial.live.groupId).toBe("g");
+  expect(initial.live.groupRevision).toBe(1n);
+  expect(initial.live.binding).toBeNull();
+  const pending=reducer(initial,{type:"request.started",scope:"sampling.stop",requestId:9n});
+  expect(pending.live.stopPending).toBe(true);
+  const idle={...status(null),sampling:{...status(null).sampling,state:"IDLE" as const,active:false,
+    groupId:null,groupRevision:null},samplingActive:false};
+  const earlyIdle=reducer(pending,{type:"status.loaded",status:idle});
+  expect(earlyIdle.live.retained).toBe(false);
+  const stopped=reducer(earlyIdle,{type:"sampling.stop.accepted",stopped:true,runId:"run",
+    groupId:"g",groupRevision:1n,bindingEpoch:4n});
+  expect(stopped.live.retained).toBe(true);
+  expect(stopped.live.binding).toBeNull();
+  expect(stopped.live.rows.size).toBe(0);
+  expect(stopped.live.series.size).toBe(0);
+  expect(liveRows(stopped)[0]?.displayValue).toBe("");
+  const refused=reducer(earlyIdle,{type:"sampling.stop.accepted",stopped:false,runId:"run",
+    groupId:"g",groupRevision:1n,bindingEpoch:4n});
+  expect(refused.live.retained).toBe(false);
+  const changedIdentity=reducer(pending,{type:"status.loaded",status:{...idle,
+    firmware:{...idle.firmware!,elfSha256:"different"}}});
+  expect(changedIdentity.live.stopPending).toBe(false);
+  const wrongAck=reducer(changedIdentity,{type:"sampling.stop.accepted",stopped:true,runId:"run",
+    groupId:"g",groupRevision:1n,bindingEpoch:4n});
+  expect(wrongAck.live.retained).toBe(false);
+  const newRun=reducer(pending,{type:"status.loaded",status:status("new-run")});
+  expect(reducer(newRun,{type:"sampling.stop.accepted",stopped:true,runId:"run",
+    groupId:"g",groupRevision:1n,bindingEpoch:4n}).live.retained).toBe(false);
+});

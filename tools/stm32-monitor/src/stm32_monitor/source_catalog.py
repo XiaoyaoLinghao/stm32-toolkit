@@ -13,6 +13,7 @@ import secrets
 import unicodedata
 from collections import Counter, OrderedDict
 from dataclasses import dataclass, replace
+from itertools import chain
 from pathlib import Path
 from typing import Mapping
 
@@ -31,6 +32,8 @@ _SCALAR = frozenset({"integer", "boolean", "float", "enum", "pointer"})
 _CURSOR_KEY = secrets.token_bytes(32)
 _PAGE_DATA_BUDGET = 900 * 1024  # Leave envelope/error metadata below the service's 1 MiB cap.
 _MAX_CURSOR_LENGTH = 2048
+_MAX_MERGED_DECLARATIONS = 100_000
+_MAX_NORMALIZED_FUNCTIONS = 100_000
 
 
 class SourceCatalogFailure(Exception):
@@ -155,7 +158,7 @@ def _load_base(adapter: ClangSourceAdapter, facts: _Facts, plan: SourcePlan) -> 
     snapshot_files = set(facts.snapshot_paths)
     untracked = {entry.file for entry in (*index.declarations, *index.functions)
                  if entry.file not in snapshot_files}
-    if untracked and facts.snapshot_paths:
+    if untracked:
         index = replace(index,
                         declarations=tuple(entry for entry in index.declarations if entry.file not in untracked),
                         functions=tuple(entry for entry in index.functions if entry.file not in untracked),
@@ -165,14 +168,14 @@ def _load_base(adapter: ClangSourceAdapter, facts: _Facts, plan: SourcePlan) -> 
     unbound = tuple(entry for entry in index.declarations
                     if (entry.function is not None or entry.scope_kind in {"local", "static_local", "parameter"})
                     and entry.function_id not in functions)
-    if unbound and facts.snapshot_paths:
+    if unbound:
         unbound_ids = {entry.id for entry in unbound}
         index = replace(index,
                         declarations=tuple(entry for entry in index.declarations if entry.id not in unbound_ids),
                         issues=(*index.issues, SourceIssue(None, "MONITOR_SOURCE_FUNCTION_UNBOUND",
                                                           f"{len(unbound)} local declaration(s) had no verified function scope")))
     verified.update(entry.file for entry in (*index.declarations, *index.functions)
-                    if not facts.snapshot_paths or entry.file in snapshot_files)
+                    if entry.file in snapshot_files)
     if len(verified) > 10_000:
         raise SourceCatalogFailure("MONITOR_SOURCE_INDEX_FAILED", "Source file limit was reached")
     dwarf = None
@@ -183,8 +186,11 @@ def _load_base(adapter: ClangSourceAdapter, facts: _Facts, plan: SourcePlan) -> 
                 expected_elf_size=facts.elf_size, expected_elf_sha256=facts.elf_sha,
                 readable_regions=_readable_regions(facts.model),
             )
-        except DwarfError:
-            pass
+            if dwarf.source_metadata_truncated:
+                raise SourceCatalogFailure("MONITOR_SOURCE_INDEX_FAILED", "Compiled source metadata limit was reached")
+        except DwarfError as error:
+            if error.code == "DWARF_CATALOG_LIMIT_EXCEEDED":
+                raise SourceCatalogFailure("MONITOR_SOURCE_INDEX_FAILED", "Compiled debug directory limit was reached") from error
     after = _offline_facts(facts.model.project_root)
     if (after.source_sha, after.build_id, after.elf_sha) != (facts.source_sha, facts.build_id, facts.elf_sha):
         raise SourceCatalogFailure("MONITOR_SOURCE_CONTEXT_CHANGED", "Source or firmware changed while indexing")
@@ -397,7 +403,8 @@ def _item_for_dwarf(symbol: DwarfSourceSymbol, dwarf: DwarfCatalog,
 
 def _materialize(index: SourceIndex, dwarf: DwarfCatalog | None,
                  context: str | None, binding: object | None,
-                 source_files: tuple[str, ...] | None = None) -> tuple[tuple[SourceItem, ...], dict[str, _Node]]:
+                 source_files: tuple[str, ...] | None = None,
+                 max_declarations: int = _MAX_MERGED_DECLARATIONS) -> tuple[tuple[SourceItem, ...], dict[str, _Node]]:
     allowed = set(source_files) if source_files is not None else None
     symbols_by_name: dict[str, list[DwarfSourceSymbol]] = {}
     declarations = (dwarf.source_declarations() if dwarf is not None and
@@ -428,6 +435,8 @@ def _materialize(index: SourceIndex, dwarf: DwarfCatalog | None,
                 or allowed is not None and symbol.file not in allowed):
             continue
         item, dtype = _item_for_dwarf(symbol, dwarf, context, binding)
+        if item.id in nodes or len(roots) >= max_declarations:
+            raise SourceCatalogFailure("MONITOR_SOURCE_INDEX_FAILED", "Merged source declaration limit was reached")
         roots.append(item)
         nodes[item.id] = _Node(item, dtype, 0, 0)
     for declaration in index.declarations:
@@ -441,6 +450,8 @@ def _materialize(index: SourceIndex, dwarf: DwarfCatalog | None,
         if matched is not None and len(attributed_entities[id(matched)]) > 1:
             item = replace(item, selector=None, can_add=False, reason="ambiguous_symbol", expandable=False)
             dtype = None
+        if item.id in nodes or len(roots) >= max_declarations:
+            raise SourceCatalogFailure("MONITOR_SOURCE_INDEX_FAILED", "Merged source declaration limit was reached")
         roots.append(item)
         nodes[item.id] = _Node(item, dtype, 0, 0)
     return tuple(roots), nodes
@@ -450,36 +461,51 @@ def _source_id(kind: str, file: str) -> str:
     return hashlib.sha256((kind + "\0" + file).encode("utf-8")).hexdigest()
 
 
-def _tree_index(view: _View) -> None:
+def _tree_index(view: _View, max_functions: int = _MAX_NORMALIZED_FUNCTIONS) -> None:
     by_file: dict[str, list[dict[str, object]]] = {file: [] for file in view.source_files}
     roots_by_scope: dict[str, list[SourceItem]] = {}
     compiled_functions: tuple[DwarfSourceFunction, ...] = (
         view.dwarf.source_functions() if view.dwarf is not None and hasattr(view.dwarf, "source_functions") else ()
     )
     functions: dict[str, tuple[str, str, int | None, int | None, str | None]] = {}
+    dwarf_by_site_cu: dict[tuple[str, str, int | None, str | None], list[str]] = {}
+    dwarf_by_site_cu_column: dict[tuple[str, str, int | None, str | None, int | None], list[str]] = {}
     for function in compiled_functions:
         if function.file in by_file:
-            functions[_dwarf_function_id(function.cu_offset, function.die_offset)] = (
+            key = _dwarf_function_id(function.cu_offset, function.die_offset)
+            functions[key] = (
                 function.name, function.file, function.line, function.column, function.compilation_unit
             )
+            site_cu = (function.file, function.name, function.line, function.compilation_unit)
+            dwarf_by_site_cu.setdefault(site_cu, []).append(key)
+            dwarf_by_site_cu_column.setdefault((*site_cu, function.column), []).append(key)
+    if len(functions) > max_functions:
+        raise SourceCatalogFailure("MONITOR_SOURCE_INDEX_FAILED", "Normalized source function limit was reached")
+    canonical_function: dict[str, str] = {}
+    normalized_count = len(functions)
     for function in view.index.functions:
         if function.file not in by_file:
             continue
-        matches = [key for key, entry in functions.items()
-                   if entry[0] == function.name and entry[1] == function.file
-                   and entry[2] == function.line
-                   and (entry[3] is None or function.column is None or entry[3] == function.column)
-                   and (entry[4] is None or entry[4] in function.translation_units)]
+        matches: list[str] = []
+        for cu in (None, *dict.fromkeys(function.translation_units)):
+            site_cu = (function.file, function.name, function.line, cu)
+            candidates = (dwarf_by_site_cu.get(site_cu, ()) if function.column is None else
+                          chain(dwarf_by_site_cu_column.get((*site_cu, function.column), ()),
+                                dwarf_by_site_cu_column.get((*site_cu, None), ())))
+            for key in candidates:
+                matches.append(key)
+                if len(matches) > 1:
+                    break
+            if len(matches) > 1:
+                break
+        canonical_function[function.id] = matches[0] if len(matches) == 1 else function.id
+        if function.id not in functions and len(matches) != 1:
+            normalized_count += 1
+            if normalized_count > max_functions:
+                raise SourceCatalogFailure("MONITOR_SOURCE_INDEX_FAILED", "Normalized source function limit was reached")
         functions[function.id] = (functions[matches[0]] if len(matches) == 1 else
                                   (function.name, function.file, function.line, function.column,
                                    function.translation_units[0] if function.translation_units else None))
-    canonical_function: dict[str, str] = {}
-    for function in view.index.functions:
-        entry = functions.get(function.id)
-        if entry is None:
-            continue
-        matches = [key for key in functions if key.startswith("dwarf:") and functions[key] == entry]
-        canonical_function[function.id] = matches[0] if len(matches) == 1 else function.id
     projected: set[str] = set()
     def add_function_scope(file: str, key: str) -> str:
         name, definition_file, line, _, _ = functions[key]

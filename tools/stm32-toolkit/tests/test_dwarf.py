@@ -19,8 +19,10 @@ from elftools.elf.elffile import ELFFile
 from stm32_toolkit.debug.dwarf import (
     DwarfCatalog,
     _TypeGraph,
+    _in_cu_owner,
     _integer_attribute,
     _name,
+    _scope_metadata,
 )
 from stm32_toolkit.debug import dwarf as dwarf_module
 from stm32_toolkit.debug.model import DebugFirmwareBinding, MemoryRegionBinding
@@ -39,6 +41,24 @@ FIXTURE = Path(__file__).parent / "fixtures" / "dwarf" / "typed.elf"
 READABLE = ((0x08000000, 0x08100000), (0x20000000, 0x20100000))
 TOOL_ROOT = Path(__file__).parents[1]
 FIXTURE_RELATIVE = "tests/fixtures/dwarf/typed.elf"
+
+
+def test_origin_only_variable_is_auxiliary_and_unknown_function_parent_is_not_global() -> None:
+    cu = object()
+    origin = SimpleNamespace(offset=2, cu=cu, tag="DW_TAG_variable",
+                             attributes={"DW_AT_name": SimpleNamespace(value=b"origin_only")})
+    parent = SimpleNamespace(offset=3, tag="DW_TAG_subprogram", _parent=None)
+    concrete = SimpleNamespace(offset=1, cu=cu, tag="DW_TAG_variable",
+                               attributes={"DW_AT_abstract_origin": SimpleNamespace(value=2)},
+                               _parent=parent,
+                               get_DIE_from_attribute=lambda attribute: origin)
+    assert _name(concrete, "") == ""  # Legacy catalog eligibility remains unchanged.
+    assert _name(_in_cu_owner(concrete, cu, frozenset({1, 2, 3}), "DW_AT_name"), "") == "origin_only"
+    assert _scope_metadata(concrete, {}, 8) == (None, (), True)
+    outer = SimpleNamespace(offset=4, tag="DW_TAG_subprogram", _parent=None)
+    inlined = SimpleNamespace(offset=5, tag="DW_TAG_inlined_subroutine", _parent=outer)
+    concrete._parent = inlined
+    assert _scope_metadata(concrete, {4: SimpleNamespace(name="outer")}, 8) == (None, (), True)
 
 
 @pytest.fixture(scope="module")
