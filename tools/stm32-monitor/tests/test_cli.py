@@ -541,6 +541,57 @@ def test_open_non_tty_does_not_poll_or_read_stdin(
     assert output.getvalue() == "http://127.0.0.1:45678/\n"
 
 
+def test_open_unavailable_stdin_waits_and_stops_without_polling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from stm32_monitor import cli
+
+    monkeypatch.setattr(cli, "_poll_terminal_enter", lambda stream: pytest.fail("poll"))
+    project = tmp_path / "project"
+    project.mkdir()
+    events: list[str] = []
+    opened: list[str] = []
+    stdout, stderr = io.StringIO(), io.StringIO()
+    code = cli.main(
+        ["open", "--project", str(project), "--data-root", str(tmp_path / "data")],
+        _runtime_factory=lambda: RecordingRuntime(events),
+        _browser_open=lambda url: opened.append(url) or True,
+        _stdin=None, _stdout=stdout, _stderr=stderr,
+    )
+    assert code == 0
+    assert events == ["start", "wait", "stop"]
+    assert opened == [FakeEndpoint().access_url]
+    assert stdout.getvalue() == "http://127.0.0.1:45678/\n"
+    assert stderr.getvalue() == ""
+    assert "token" not in stdout.getvalue() + stderr.getvalue()
+
+
+@pytest.mark.parametrize("probe_error", [AttributeError, TypeError])
+def test_open_unusable_stdin_probe_is_non_interactive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, probe_error: type[Exception]
+) -> None:
+    from stm32_monitor import cli
+
+    class UnusableInput(io.StringIO):
+        def isatty(self) -> bool:
+            raise probe_error("private terminal detail")
+
+    monkeypatch.setattr(cli, "_poll_terminal_enter", lambda stream: pytest.fail("poll"))
+    project = tmp_path / "project"
+    project.mkdir()
+    events: list[str] = []
+    stdout, stderr = io.StringIO(), io.StringIO()
+    code = cli.main(
+        ["open", "--project", str(project), "--data-root", str(tmp_path / "data")],
+        _runtime_factory=lambda: RecordingRuntime(events), _browser_open=lambda url: True,
+        _stdin=UnusableInput(), _stdout=stdout, _stderr=stderr,
+    )
+    assert code == 0
+    assert events == ["start", "wait", "stop"]
+    assert stdout.getvalue() == "http://127.0.0.1:45678/\n"
+    assert stderr.getvalue() == ""
+
+
 def test_open_cancellation_stops_runtime_before_wait_closed_settles(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

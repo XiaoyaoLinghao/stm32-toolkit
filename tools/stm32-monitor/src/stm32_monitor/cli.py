@@ -14,7 +14,7 @@ import sys
 import webbrowser
 from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import TextIO
+from typing import TextIO, TypeGuard
 
 from stm32_toolkit.diagnostics import SourceChangeDeclaration
 from stm32_toolkit.evidence import EvidenceValidationError
@@ -191,7 +191,7 @@ async def _open(
     runtime: object,
     browser_open: Callable[[str], bool],
     stdout: TextIO,
-    stdin: TextIO,
+    stdin: TextIO | None,
     stderr: TextIO,
 ) -> int:
     endpoint = await runtime.start(config)
@@ -228,10 +228,12 @@ async def _open(
             await runtime.stop()
 
 
-def _is_interactive_terminal(stdin: TextIO) -> bool:
+def _is_interactive_terminal(stdin: TextIO | None) -> TypeGuard[TextIO]:
+    if stdin is None:
+        return False
     try:
-        return stdin.isatty()
-    except (OSError, ValueError):
+        return bool(stdin.isatty())
+    except (AttributeError, TypeError, OSError, ValueError):
         return False
 
 
@@ -289,7 +291,7 @@ def main(
     *,
     _runtime_factory: Callable[..., object] = MonitorRuntime,
     _browser_open: Callable[[str], bool] = lambda url: webbrowser.open(url),
-    _stdin: TextIO = sys.stdin,
+    _stdin: TextIO | None = sys.stdin,
     _stdout: TextIO = sys.stdout,
     _stderr: TextIO = sys.stderr,
 ) -> int:
