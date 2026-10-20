@@ -273,9 +273,15 @@ def _compatible_cu(candidate: SourceDeclaration, symbol: DwarfSourceSymbol) -> b
             or symbol.compilation_unit in candidate.translation_units)
 
 
+def _usable_source_site(candidate: SourceDeclaration) -> bool:
+    return (type(candidate.line) is int and candidate.line > 0 and
+            type(candidate.column) is int and candidate.column > 0)
+
+
 def _direct_match(candidate: SourceDeclaration, symbol: DwarfSourceSymbol) -> bool:
-    return (candidate.name == symbol.name and candidate.file == symbol.file
-            and candidate.line is not None and candidate.line == symbol.line
+    return (_usable_source_site(candidate) and
+            candidate.name == symbol.name and candidate.file == symbol.file
+            and candidate.line == symbol.line
             and candidate.function == symbol.function
             and (symbol.column is None or candidate.column == symbol.column)
             and candidate.scope_kind == symbol.scope_kind
@@ -330,7 +336,7 @@ def _chain_compatible(decl: SourceDeclaration, definition: SourceDeclaration,
 def _match(decl: SourceDeclaration,
            symbols_by_name: Mapping[str, tuple[DwarfSourceSymbol, ...]],
            entity_proofs: Mapping[tuple[str, str], tuple[tuple[SourceDeclaration, DwarfSourceSymbol], ...]]) -> tuple[DwarfSourceSymbol | None, str | None, tuple[str, int] | None]:
-    if decl.line is None or decl.column is None:
+    if not _usable_source_site(decl):
         return None, "source_attribution_unproven", None
     same_name = symbols_by_name.get(decl.name, ())
     if not same_name:
@@ -559,6 +565,11 @@ def _materialize(index: SourceIndex, dwarf: DwarfCatalog | None,
                 if len(anchored) != 1:
                     continue
                 definition = next(iter(anchored.values()))
+        # An initialized redeclaration with an unmapped Clang location cannot
+        # prove a source definition site, even when its entity and DIE match.
+        # Do not replace it with an earlier tentative declaration.
+        if not _usable_source_site(definition):
+            continue
         compatible = tuple((definition, symbol) for member, symbol in direct_members
                            if _chain_compatible(member, definition, symbol) and
                            _chain_compatible(definition, definition, symbol))

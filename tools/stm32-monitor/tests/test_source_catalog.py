@@ -794,6 +794,67 @@ def test_tentative_redeclarations_use_unique_initialized_definition_site() -> No
     assert tentative_header.can_add and tentative_header.definition_site == (unit, 3)
 
 
+@pytest.mark.parametrize("missing_site", ["line", "column", "zero_line", "bool_column"])
+def test_real_clang_unmapped_definition_site_cannot_prove_extern_chain(
+        tmp_path: Path, missing_site: str) -> None:
+    (tmp_path / "Src").mkdir()
+    (tmp_path / "Inc").mkdir()
+    (tmp_path / "Inc" / "a.h").write_text("extern int x;\n", encoding="ascii")
+    body = ('#line 1000 "Src/a.c"\n' if missing_site == "line" else "") + "int x = 1;\n"
+    (tmp_path / "Src" / "a.c").write_text('#include "a.h"\nint x;\n' + body, encoding="ascii")
+    model = SimpleNamespace(project_root=tmp_path, build=SimpleNamespace(
+        sources=("Src/a.c",), include_paths=("Inc",), defines=(),
+        compile_options=(), presets=()))
+    adapter = ClangSourceAdapter()
+    if adapter.preprocessor is None or adapter.compiler is None:
+        adapter.close()
+        pytest.skip("installed GNU Arm GCC and Clang required")
+    try:
+        index = adapter.index(model)
+    finally:
+        adapter.close()
+    assert index.complete and not index.issues
+    header = next(row for row in index.declarations if row.name == "x" and row.file == "Inc/a.h")
+    tentative = next(row for row in index.declarations if row.name == "x" and
+                     row.file == "Src/a.c" and not row.is_definition)
+    definition = next(row for row in index.declarations if row.name == "x" and
+                      row.file == "Src/a.c" and row.is_definition)
+    assert definition.is_definition
+    assert dict(header.entity_by_unit)["Src/a.c"] == dict(definition.entity_by_unit)["Src/a.c"]
+    assert dict(tentative.entity_by_unit)["Src/a.c"] == dict(definition.entity_by_unit)["Src/a.c"]
+    assert tentative.line is not None and tentative.column is not None
+    if missing_site == "line":
+        assert definition.line is None and definition.column is None
+    else:
+        assert definition.line is not None and definition.column is not None
+        bad = (replace(definition, column=None) if missing_site == "column" else
+               replace(definition, line=0) if missing_site == "zero_line" else
+               replace(definition, column=True))
+        index = replace(index, declarations=tuple(
+            bad if row.id == definition.id else row for row in index.declarations))
+
+    dtype = DwarfType("integer", "int", 4)
+    symbol = DwarfSourceSymbol("x", "Inc/a.h", 1, None, None, "Src/a.c", dtype,
+                               0x20000000, None, None, cu_offset=1, die_offset=2,
+                               storage="none", scope_kind="global")
+    class Catalog:
+        elf_sha256 = "e" * 64
+        def source_declarations(self):
+            return (symbol,)
+        def lookup(self, _name):
+            return SimpleNamespace(type=dtype, byte_size=4, address=0x20000000)
+    binding = SimpleNamespace(memory_regions=(SimpleNamespace(origin=0x20000000,
+        length=0x1000, attributes="rw"),))
+    rows, _ = module._materialize(index, Catalog(), None, binding,
+                                   source_files=("Inc/a.h", "Src/a.c"))
+    by_id = {row.id: row for row in rows}
+    for declaration in (header, tentative, definition):
+        item = by_id[declaration.id]
+        assert not item.can_add and item.reason == "source_attribution_unproven"
+        assert item.definition_site is None
+    assert all(row.to_dict()["declaration"]["definitionSite"] is None for row in rows)
+
+
 def test_unproved_extern_never_decorates_dwarf_fallback_and_distinct_dies_conflict() -> None:
     dtype = DwarfType("integer", "int", 4)
     unit = "Src/main.c"
