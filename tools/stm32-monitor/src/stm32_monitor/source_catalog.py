@@ -110,6 +110,8 @@ class _Node:
     depth: int
     descendants: int
     address: int | None = None
+    reserved_descendants: int = 0
+    path_reservation: int = 0
 
 
 @dataclass
@@ -381,7 +383,7 @@ def _match(decl: SourceDeclaration,
 
 
 def _eligible_leaf(selector: str, dwarf: DwarfCatalog | None, binding: object | None,
-                   expected: DwarfSourceSymbol | None = None) -> str | None:
+                   expected: DwarfSourceSymbol | tuple[int | None, DwarfType | None] | None = None) -> str | None:
     if dwarf is None:
         return "firmware_unavailable"
     try:
@@ -396,9 +398,12 @@ def _eligible_leaf(selector: str, dwarf: DwarfCatalog | None, binding: object | 
         if error.code.startswith("DWARF_TYPE") or error.code in {"DWARF_BITFIELD_UNSUPPORTED", "DWARF_ARRAY_INDEX_OUT_OF_RANGE"}:
             return "unsupported_type"
         return "unsupported_location"
-    if expected is not None and (expected.address is None or selected.address != expected.address
-                                 or expected.dwarf_type != selected.type):
-        return "source_attribution_unproven"
+    if expected is not None:
+        expected_address, expected_type = ((expected.address, expected.dwarf_type)
+                                           if isinstance(expected, DwarfSourceSymbol) else expected)
+        if (expected_address is None or expected_type is None or
+                selected.address != expected_address or selected.type != expected_type):
+            return "source_attribution_unproven"
     if selected.type.kind not in _SCALAR or selected.byte_size > MAX_READ_BYTES:
         return "unsupported_type"
     if binding is None:
@@ -432,7 +437,7 @@ def _array_candidate_indices(dwarf: DwarfCatalog, address: int,
                              stride: int, admitted: int):
     """Visit only array elements intersecting project-readable memory."""
     intervals = getattr(dwarf, "readable_regions", None)
-    if not intervals:
+    if intervals is None:
         yield from range(admitted)
         return
     last = -1
@@ -444,54 +449,79 @@ def _array_candidate_indices(dwarf: DwarfCatalog, address: int,
             last = high
 
 
-def _observable_descendant(selector: str, dtype: DwarfType, dwarf: DwarfCatalog | None,
-                           address: int | None, depth: int, budget: list[int]) -> bool:
-    """Find a reader-proved scalar within the finite expansion envelope."""
+def _array_has_candidate_from(dwarf: DwarfCatalog, address: int, stride: int,
+                              first: int, count: int) -> bool:
+    """Decide without enumeration whether an unscanned array suffix may overlap readable memory."""
+    intervals = getattr(dwarf, "readable_regions", None)
+    if intervals is None:
+        return first < count
+    return any(max(first, (start - address - stride + 1) // stride) <=
+               min(count - 1, (end - address - 1) // stride)
+               for start, end in intervals)
+
+
+def _scalar_path_length(selector: str, dtype: DwarfType, dwarf: DwarfCatalog | None,
+                        address: int | None, depth: int, budget: list[int]) -> int | None:
+    """Return a reader-proved path length to one scalar within the finite expansion envelope."""
     if dwarf is None or address is None or not _possible_scalar(dtype, depth):
-        return False
+        return None
     if dtype.kind in _SCALAR:
         if budget[0] <= 0:
             raise SourceCatalogFailure("MONITOR_SOURCE_INDEX_FAILED", "Observable directory scan reached its bound")
         budget[0] -= 1
-        return _eligible_leaf(selector, dwarf, None) == "probe_required"
+        return (0 if _eligible_leaf(selector, dwarf, None, (address, dtype)) == "probe_required"
+                else None)
     if depth >= 6:
-        return False
+        return None
     if dtype.kind in {"structure", "union"}:
         names = Counter(member.name for member in dtype.members)
         for member in dtype.members[:4096]:
             if (member.bit_size is not None or not _EXPRESSION.fullmatch(member.name)
                     or names[member.name] != 1):
                 continue
-            if _observable_descendant(f"{selector}.{member.name}", member.type, dwarf,
-                                      address + member.offset, depth + 1, budget):
-                return True
+            path = _scalar_path_length(f"{selector}.{member.name}", member.type, dwarf,
+                                       address + member.offset, depth + 1, budget)
+            if path is not None:
+                return path + 1
         if len(dtype.members) > 4096:
             raise SourceCatalogFailure("MONITOR_SOURCE_INDEX_FAILED", "Observable directory scan reached its bound")
-        return False
+        return None
     element = dtype.element_type
     count = dtype.element_count
     if dtype.kind != "array" or element is None or count is None or element.byte_size <= 0:
-        return False
+        return None
     admitted = min(count, 4096)
     for index in _array_candidate_indices(dwarf, address, element.byte_size, admitted):
-        if _observable_descendant(f"{selector}[{index}]", element, dwarf,
-                                  address + index * element.byte_size,
-                                  depth + 1, budget):
-            return True
-    if count > admitted:
+        path = _scalar_path_length(f"{selector}[{index}]", element, dwarf,
+                                   address + index * element.byte_size,
+                                   depth + 1, budget)
+        if path is not None:
+            return path + 1
+    if count > admitted and _array_has_candidate_from(dwarf, address, element.byte_size,
+                                                       admitted, count):
         raise SourceCatalogFailure("MONITOR_SOURCE_INDEX_FAILED", "Observable directory scan reached its bound")
-    return False
+    return None
+
+
+def _observable_descendant(selector: str, dtype: DwarfType, dwarf: DwarfCatalog | None,
+                           address: int | None, depth: int, budget: list[int]) -> bool:
+    return _scalar_path_length(selector, dtype, dwarf, address, depth, budget) is not None
+
+
+def _root_path_length(item: SourceItem, dtype: DwarfType | None,
+                      dwarf: DwarfCatalog | None, symbol: DwarfSourceSymbol | None) -> int | None:
+    if (item.selector is None or item.scope_kind in {"local", "parameter"}
+            or dwarf is None or symbol is None or symbol.address is None
+            or symbol.location_error is not None or symbol.type_error is not None):
+        return None
+    if dtype is None:
+        return 0 if _eligible_leaf(item.selector, dwarf, None, symbol) == "probe_required" else None
+    return _scalar_path_length(item.selector, dtype, dwarf, symbol.address, 0, [4096])
 
 
 def _root_observable(item: SourceItem, dtype: DwarfType | None,
                      dwarf: DwarfCatalog | None, symbol: DwarfSourceSymbol | None) -> bool:
-    if (item.selector is None or item.scope_kind in {"local", "parameter"}
-            or dwarf is None or symbol is None or symbol.address is None
-            or symbol.location_error is not None or symbol.type_error is not None):
-        return False
-    if dtype is None:
-        return _eligible_leaf(item.selector, dwarf, None, symbol) == "probe_required"
-    return _observable_descendant(item.selector, dtype, dwarf, symbol.address, 0, [4096])
+    return _root_path_length(item, dtype, dwarf, symbol) is not None
 
 
 def _context_reason(index: SourceIndex, facts: _Facts, binding: object | None,
@@ -680,12 +710,14 @@ def _materialize(index: SourceIndex, dwarf: DwarfCatalog | None,
                     if proved_symbol is symbol]
         role_source, proof_site = verified[0] if len(verified) == 1 else (None, None)
         item, dtype = _item_for_dwarf(symbol, dwarf, context, binding, role_source, proof_site)
-        if not _root_observable(item, dtype, dwarf, symbol):
+        path_length = _root_path_length(item, dtype, dwarf, symbol)
+        if path_length is None:
             continue
         if item.id in nodes or len(roots) >= max_declarations:
             raise SourceCatalogFailure("MONITOR_SOURCE_INDEX_FAILED", "Merged source declaration limit was reached")
         roots.append(item)
-        nodes[item.id] = _Node(item, dtype, 0, 0, symbol.address)
+        nodes[item.id] = _Node(item, symbol.dwarf_type, 0, 0, symbol.address,
+                               path_length, path_length)
     for declaration in index.declarations:
         if allowed is not None and declaration.file not in allowed:
             continue
@@ -697,12 +729,15 @@ def _materialize(index: SourceIndex, dwarf: DwarfCatalog | None,
             dtype = None
         elif matched is not None and _direct_match(declaration, matched) and matched.die_offset is not None:
             continue  # Only one AST entity belongs to this concrete DIE.
-        if not _root_observable(item, dtype, dwarf, matched):
+        path_length = _root_path_length(item, dtype, dwarf, matched)
+        if path_length is None:
             continue
         if item.id in nodes or len(roots) >= max_declarations:
             raise SourceCatalogFailure("MONITOR_SOURCE_INDEX_FAILED", "Merged source declaration limit was reached")
         roots.append(item)
-        nodes[item.id] = _Node(item, dtype, 0, 0, matched.address if matched is not None else None)
+        nodes[item.id] = _Node(item, matched.dwarf_type if matched is not None else None,
+                               0, 0, matched.address if matched is not None else None,
+                               path_length, path_length)
     return tuple(roots), nodes
 
 
@@ -1128,21 +1163,19 @@ class SourceCatalogProvider:
         root = parent
         while root.item.parent_id is not None:
             root = view.nodes[root.item.parent_id]
-        remaining = max(0, 4096 - root.descendants)
-        if remaining == 0:
+        # Reclaim the path promised to this parent, then charge every admitted
+        # child for its node and the still-unmaterialized path to a scalar.
+        available = 4096 - root.descendants - root.reserved_descendants + parent.path_reservation
+        if available <= 0:
             raise SourceCatalogFailure("MONITOR_SOURCE_INDEX_FAILED", "Observable directory expansion reached its bound")
         members: list[tuple[int, str, DwarfType | None, str | None, int | None]] = []
         member_name_counts: Counter[str] = Counter()
         if dtype.kind in {"structure", "union"}:
-            capacity = remaining
             member_name_counts = Counter(member.name for member in dtype.members)
             members = [(ordinal, member.name, member.type, None if member.bit_size is None else "unsupported_type",
                         None if parent.address is None else parent.address + member.offset)
                        for ordinal, member in enumerate(dtype.members[:4096])]
         elif dtype.kind == "array" and dtype.element_type is not None and dtype.element_count is not None:
-            # Leave room for a proved scalar path below each aggregate element.
-            capacity = (remaining if dtype.element_type.kind in _SCALAR else
-                        max(1, remaining // (7 - parent.depth)) if remaining else 0)
             admitted = min(dtype.element_count, 4096)
             indices = (_array_candidate_indices(view.dwarf, parent.address,
                                                  dtype.element_type.byte_size, admitted)
@@ -1151,13 +1184,13 @@ class SourceCatalogProvider:
             members = [(index, str(index), dtype.element_type, None,
                         None if parent.address is None else parent.address + index * dtype.element_type.byte_size)
                        for index in indices]
-        else:
-            capacity = remaining
         children: list[SourceItem] = []
+        staged_nodes: dict[str, _Node] = {}
         context = None if view.binding_ok else (
             "probe_required" if view.binding is None else "source_mismatch")
         proof_budget = [4096]
         omitted_visible = False
+        charged = 0
         for ordinal, name, child_type, intrinsic, address in members:
             kind = "element" if dtype.kind == "array" else "member"
             selector = f"{item.selector}[{name}]" if kind == "element" else f"{item.selector}.{name}"
@@ -1166,13 +1199,16 @@ class SourceCatalogProvider:
                     intrinsic = "unsupported_type"
                 elif member_name_counts[name] > 1 and intrinsic is None:
                     intrinsic = "ambiguous_symbol"
-            if (intrinsic is not None or child_type is None or
-                    not _observable_descendant(selector, child_type, view.dwarf,
-                                               address, parent.depth + 1, proof_budget)):
+            if intrinsic is not None or child_type is None:
                 continue
-            if len(children) >= capacity:
+            path_length = _scalar_path_length(selector, child_type, view.dwarf,
+                                              address, parent.depth + 1, proof_budget)
+            if path_length is None:
+                continue
+            cost = 1 + path_length
+            if charged + cost > available:
                 omitted_visible = True
-                break
+                continue
             identifier = hashlib.sha256((item.id + "\0" + str(ordinal) + "\0" + selector).encode("utf-8")).hexdigest()
             aggregate = child_type is not None and child_type.kind in {"structure", "union", "array"}
             has_descendants = bool(child_type is not None and (
@@ -1181,7 +1217,8 @@ class SourceCatalogProvider:
             depth_limited = bool(aggregate and has_descendants and parent.depth + 1 >= 6)
             expandable = bool(aggregate and has_descendants and not depth_limited)
             reason = ("limit_reached" if depth_limited else intrinsic or
-                      ("aggregate" if expandable else _eligible_leaf(selector, view.dwarf, view.binding)))
+                      ("aggregate" if expandable else _eligible_leaf(
+                          selector, view.dwarf, view.binding, (address, child_type))))
             if reason is None:
                 reason = context
             child = SourceItem(identifier, item.id, name, child_type.name if child_type else "<unknown>",
@@ -1189,17 +1226,23 @@ class SourceCatalogProvider:
                                (*item.scope_path, item.name), item.storage, item.translation_units,
                                selector if intrinsic is None else None,
                                reason is None, reason, expandable,
-                               bool(depth_limited or
-                                    child_type is not None and child_type.kind == "array" and
-                                    child_type.element_count is not None and child_type.element_count > 4096),
+                               bool(depth_limited or child_type.kind == "array" and
+                                    child_type.element_count is not None and child_type.element_count > 4096 or
+                                    child_type.kind in {"structure", "union"} and len(child_type.members) > 4096),
                                None, kind, item.definition_site)
             children.append(child)
-            view.nodes[identifier] = _Node(child, child_type if expandable else None,
-                                           parent.depth + 1, 0, address)
+            staged_nodes[identifier] = _Node(child, child_type, parent.depth + 1, 0,
+                                             address, 0, path_length if expandable else 0)
+            charged += cost
+        if omitted_visible and not children:
+            raise SourceCatalogFailure("MONITOR_SOURCE_INDEX_FAILED", "Observable directory expansion reached its bound")
         if omitted_visible and children:
             children[-1] = replace(children[-1], truncated=True)
-            view.nodes[children[-1].id].item = children[-1]
+            staged_nodes[children[-1].id].item = children[-1]
+        view.nodes.update(staged_nodes)
         root.descendants += len(children)
+        root.reserved_descendants += sum(node.path_reservation for node in staged_nodes.values()) - parent.path_reservation
+        parent.path_reservation = 0
         result = tuple(children), len(children)
         view.children_cache[item.id] = result
         return result
@@ -1287,7 +1330,8 @@ class SourceCatalogProvider:
         if (node is None or not node.item.can_add or node.item.selector != selector
                 or not view.binding_ok):
             raise SourceCatalogFailure("MONITOR_SOURCE_SELECTION_UNAVAILABLE", "Source selection is unavailable")
-        if await asyncio.to_thread(_eligible_leaf, selector, view.dwarf, binding) is not None:
+        if await asyncio.to_thread(_eligible_leaf, selector, view.dwarf, binding,
+                                   (node.address, node.dwarf_type)) is not None:
             raise SourceCatalogFailure("MONITOR_SOURCE_SELECTION_UNAVAILABLE", "Source selection is unavailable")
         current = await asyncio.to_thread(_offline_facts, self.root)
         if (current.policy, current.source_sha, current.build_id, current.elf_sha) != (

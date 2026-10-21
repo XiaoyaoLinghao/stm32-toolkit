@@ -83,11 +83,11 @@ def _setup(monkeypatch: pytest.MonkeyPatch, root: Path, *, aggregate: bool = Fal
                          for index, (char, name) in enumerate(zip("cd", names)))
     index = SourceIndex("GNU Arm GCC + Clang", "gcc:14.3.1;clang:21.1.1", "compdb", 1, 1,
                         (), False, declarations, "f" * 64)
-    dwarf = _Dwarf(declarations)
+    dtype = DwarfType("array", "int[5000]", 20_000, element_type=DwarfType("integer", "int", 4), element_count=5000)
+    dwarf = _Dwarf(declarations, dtype if aggregate else None)
     monkeypatch.setattr(module, "_offline_facts", lambda _root: facts[0])
     monkeypatch.setattr(module, "_load_base", lambda _adapter, _facts, _plan:
                         module._Base(index, dwarf, ("Src/main.c",)))
-    dtype = DwarfType("array", "int[5000]", 20_000, element_type=DwarfType("integer", "int", 4), element_count=5000)
     def item_for(decl, *_args):
         return module.SourceItem(decl.id, None, decl.name, decl.type_name, decl.file, decl.line,
                                  decl.column, "global", None, (), "none", decl.translation_units,
@@ -159,8 +159,8 @@ def test_sparse_aggregate_array_retains_late_readable_element_beyond_page_capaci
     scalar = DwarfType("integer", "int", 4)
     element = DwarfType("structure", "Element", 4,
                         members=(DwarfMember("value", 0, scalar),))
-    dtype = DwarfType("array", "Element[2000]", 8000,
-                      element_type=element, element_count=2000)
+    dtype = DwarfType("array", "Element[5000]", 20_000,
+                      element_type=element, element_count=5000)
     base = 0x20000000
     readable = base + 1000 * element.byte_size
     dwarf = SimpleNamespace(readable_regions=((readable, readable + 4),))
@@ -188,12 +188,152 @@ def test_sparse_aggregate_array_retains_late_readable_element_beyond_page_capaci
         full_view = module._View("b" * 64, {}, index, full, (root,),
                                  {root.id: full_root}, None, False, {})
         bounded, bounded_total = provider._children(full_view, full_root)
-        assert bounded_total == 4096 // 7
+        assert bounded_total == 4096 // 2
         assert bounded[0].truncated is False and bounded[-1].truncated is True
         final_leaf, final_count = provider._children(full_view, full_view.nodes[bounded[-1].id])
         assert final_count == 1 and final_leaf[0].selector == f"{bounded[-1].selector}.value"
     finally:
         provider.close()
+
+
+@pytest.mark.parametrize("array_root", [False, True])
+def test_budget_does_not_expose_an_aggregate_without_room_for_its_scalar(
+        array_root: bool) -> None:
+    scalar = DwarfType("integer", "int", 4)
+    inner = DwarfType("structure", "Inner", 4, members=(DwarfMember("value", 0, scalar),))
+    dtype = (DwarfType("array", "Inner[1]", 4, element_type=inner, element_count=1)
+             if array_root else DwarfType("structure", "Root", 4,
+                                          members=(DwarfMember("inner", 0, inner),)))
+    base = 0x20000000
+    class Catalog:
+        readable_regions = ((base, base + 4),)
+        def lookup(self, selector: str) -> DwarfSelection:
+            return DwarfSelection(selector, base, scalar)
+    root = module.SourceItem("c" * 64, None, "root", dtype.name, "Src/main.c", 1, 1,
+                             "global", None, (), "none", ("Src/main.c",), "root",
+                             False, "aggregate", True, False)
+    node = module._Node(root, dtype, 0, 4095, base)
+    index = SourceIndex("engine", "version", "manifest", 1, 1, (), True, (), "f" * 64)
+    view = module._View("a" * 64, {}, index, Catalog(), (root,), {root.id: node}, None, False, {})
+    provider = module.SourceCatalogProvider(Path("."), "workspace", "session", _Adapter())
+    try:
+        with pytest.raises(module.SourceCatalogFailure, match="reached its bound") as failure:
+            provider._children(view, node)
+        assert failure.value.code == "MONITOR_SOURCE_INDEX_FAILED"
+        assert view.nodes == {root.id: node}
+        assert node.descendants == 4095 and node.reserved_descendants == 0
+    finally:
+        provider.close()
+
+
+def test_aggregate_reservations_survive_sibling_expansion_order() -> None:
+    scalar = DwarfType("integer", "int", 4)
+    inner = DwarfType("structure", "Inner", 4, members=(DwarfMember("value", 0, scalar),))
+    members = (DwarfMember("first", 0, inner), DwarfMember("second", 4, inner),
+               *(DwarfMember(f"leaf{index}", 8 + index * 4, scalar) for index in range(4094)))
+    dtype = DwarfType("structure", "Root", len(members) * 4, members=members)
+    base = 0x20000000
+    addresses = {f"root.{member.name}.value" if member.type is inner else f"root.{member.name}":
+                 base + member.offset for member in members}
+    class Catalog:
+        readable_regions = ((base, base + dtype.byte_size),)
+        def lookup(self, selector: str) -> DwarfSelection:
+            return DwarfSelection(selector, addresses[selector], scalar)
+    root = module.SourceItem("c" * 64, None, "root", dtype.name, "Src/main.c", 1, 1,
+                             "global", None, (), "none", ("Src/main.c",), "root",
+                             False, "aggregate", True, False)
+    # The root's first proved path contains two descendant nodes.
+    node = module._Node(root, dtype, 0, 0, base, 2, 2)
+    index = SourceIndex("engine", "version", "manifest", 1, 1, (), True, (), "f" * 64)
+    view = module._View("a" * 64, {}, index, Catalog(), (root,), {root.id: node}, None, False, {})
+    provider = module.SourceCatalogProvider(Path("."), "workspace", "session", _Adapter())
+    try:
+        children, total = provider._children(view, node)
+        assert total == 4094 and children[-1].truncated
+        assert node.descendants == 4094 and node.reserved_descendants == 2
+        second, first = children[1], children[0]
+        for item in (second, first):
+            leaves, count = provider._children(view, view.nodes[item.id])
+            assert count == 1 and leaves[0].selector == f"{item.selector}.value"
+        assert node.descendants == 4096 and node.reserved_descendants == 0
+    finally:
+        provider.close()
+
+
+@pytest.mark.parametrize("wrong_type", [False, True])
+def test_aggregate_leaf_requires_exact_source_address_and_type_at_proof_and_selection(
+        monkeypatch: pytest.MonkeyPatch, wrong_type: bool) -> None:
+    scalar = DwarfType("integer", "int", 4)
+    other_type = DwarfType("float", "float", 4)
+    aggregate = DwarfType("structure", "Box", 4, members=(DwarfMember("value", 0, scalar),))
+    base = 0x20000000
+    class Catalog:
+        readable_regions = ((base, base + 4), (base + 0x1000, base + 0x1004))
+        def __init__(self) -> None:
+            self.mismatch = True
+        def lookup(self, selector: str) -> DwarfSelection:
+            assert selector == "box.value"
+            return DwarfSelection(selector, base if wrong_type or not self.mismatch else base + 0x1000,
+                                  other_type if wrong_type and self.mismatch else scalar)
+    dwarf = Catalog()
+    symbol = DwarfSourceSymbol("box", "Src/a.c", 1, 1, None, "Src/a.c", aggregate,
+                               base, None, None, cu_offset=0, die_offset=1)
+    root = module.SourceItem("c" * 64, None, "box", "Box", "Src/a.c", 1, 1,
+                             "global", None, (), "none", ("Src/a.c",), "box",
+                             False, "aggregate", True, False)
+    assert not module._root_observable(root, aggregate, dwarf, symbol)
+    dwarf.mismatch = False
+    assert module._root_observable(root, aggregate, dwarf, symbol)
+    node = module._Node(root, aggregate, 0, 0, base, 1, 1)
+    region = SimpleNamespace(origin=base, length=4, attributes="rw")
+    binding = SimpleNamespace(memory_regions=(region,))
+    index = SourceIndex("engine", "version", "manifest", 1, 1, (), True, (), "f" * 64)
+    view = module._View("a" * 64, {}, index, dwarf, (root,), {root.id: node}, binding, True, {})
+    provider = module.SourceCatalogProvider(Path("."), "workspace", "session", _Adapter())
+    try:
+        children, total = provider._children(view, node)
+        assert total == 1 and children[0].can_add
+        dwarf.mismatch = True
+        async def saved_view(*_args: object) -> module._View:
+            return view
+        monkeypatch.setattr(provider, "_view", saved_view)
+        async def scenario() -> None:
+            with pytest.raises(module.SourceCatalogFailure) as failure:
+                await provider.select(catalog_id=view.catalog_id, item_id=children[0].id,
+                                      selector="box.value", binding=binding, binding_epoch=0)
+            assert failure.value.code == "MONITOR_SOURCE_SELECTION_UNAVAILABLE"
+        asyncio.run(scenario())
+    finally:
+        provider.close()
+
+
+def test_unreadable_large_array_is_pruned_without_hiding_safe_sibling() -> None:
+    scalar = DwarfType("integer", "int", 4)
+    large = DwarfType("array", "int[5000]", 20_000, element_type=scalar, element_count=5000)
+    safe = DwarfSourceSymbol("safe", "Src/safe.c", 1, 1, None, "Src/safe.c", scalar,
+                             0x20010000, None, None, cu_offset=0, die_offset=1)
+    unreadable = DwarfSourceSymbol("unreadable", "Src/unreadable.c", 1, 1, None,
+                                   "Src/unreadable.c", large, 0x20000000,
+                                   None, None, cu_offset=0, die_offset=2)
+    class Catalog:
+        elf_sha256 = "e" * 64
+        readable_regions = ((0x20010000, 0x20010004),)
+        def source_declarations(self) -> tuple[DwarfSourceSymbol, ...]:
+            return safe, unreadable
+        def lookup(self, selector: str) -> DwarfSelection:
+            assert selector == "safe"
+            return DwarfSelection(selector, safe.address, scalar)
+    index = SourceIndex("engine", "version", "manifest", 1, 1, (), True, (), "f" * 64)
+    roots, _ = module._materialize(index, Catalog(), None, None,
+                                   ("Src/safe.c", "Src/unreadable.c"))
+    assert [item.name for item in roots] == ["safe"]
+    catalog = Catalog()
+    catalog.readable_regions = ((unreadable.address + 4500 * 4,
+                                 unreadable.address + 4501 * 4),)
+    with pytest.raises(module.SourceCatalogFailure, match="scan reached its bound") as failure:
+        module._materialize(index, catalog, None, None,
+                            ("Src/safe.c", "Src/unreadable.c"))
+    assert failure.value.code == "MONITOR_SOURCE_INDEX_FAILED"
 
 
 def test_partial_catalog_keeps_nested_navigation_but_root_retry_reindexes(
@@ -1043,6 +1183,103 @@ def test_tree_real_ast_files_scopes_and_independent_variable_pages(
         assert any(declaration.name == "included_local" for declaration in index.declarations)
         assert any(function.name == "main" for function in index.functions)
         provider.close()
+
+    try:
+        asyncio.run(scenario())
+    finally:
+        provider.close()
+
+
+def test_eligible_real_ast_scope_paginates_after_filtering_and_keeps_cursor_domains(
+        monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    adapter = ClangSourceAdapter()
+    if adapter.preprocessor is None or adapter.compiler is None:
+        pytest.skip("installed GNU Arm GCC and Clang required")
+    (tmp_path / "Src").mkdir()
+    (tmp_path / "Inc").mkdir()
+    (tmp_path / "Inc" / "header.h").write_text("extern int header_only;\n", encoding="utf-8")
+    (tmp_path / "Src" / "main.c").write_text(
+        '#include "header.h"\n' + "".join(f"int main_{number};\n" for number in range(120)) +
+        "int main(void) { int automatic = 1; return automatic; }\n",
+        encoding="utf-8")
+    (tmp_path / "Src" / "safe.c").write_text("int safe_value;\n", encoding="utf-8")
+    (tmp_path / "Src" / "empty.c").write_text("/* no declarations */\n", encoding="utf-8")
+    model = SimpleNamespace(project_root=tmp_path, logical_project_id="project",
+                            target=SimpleNamespace(device="STM32F407VG"),
+                            build=SimpleNamespace(sources=("Src/main.c", "Src/safe.c", "Src/empty.c"),
+                                                  include_paths=("Inc",), defines=(), compile_options=(), presets=()))
+    plan = adapter.plan(model)
+    index = adapter.index(model, plan)
+    eligible = tuple(declaration for declaration in index.declarations
+                     if declaration.name.startswith("main_") or declaration.name == "safe_value")
+    assert len(eligible) == 121
+    scalar = DwarfType("integer", "int", 4)
+    symbols = tuple(DwarfSourceSymbol(
+        declaration.name, declaration.file, declaration.line, declaration.column,
+        declaration.function, declaration.translation_units[0], scalar,
+        0x20000000 + ordinal * 4, None, None, cu_offset=0, die_offset=ordinal + 1,
+        storage=declaration.storage, scope_kind=declaration.scope_kind)
+        for ordinal, declaration in enumerate(eligible))
+    by_name = {symbol.name: symbol for symbol in symbols}
+    class Catalog:
+        elf_sha256 = "e" * 64
+        readable_regions = ((0x20000000, 0x20001000),)
+        def source_declarations(self) -> tuple[DwarfSourceSymbol, ...]:
+            return symbols
+        def source_functions(self) -> tuple[()]:
+            return ()
+        def lookup(self, selector: str) -> DwarfSelection:
+            symbol = by_name[selector]
+            return DwarfSelection(selector, symbol.address, scalar)
+    paths = ("Src/main.c", "Src/safe.c", "Src/empty.c", "Inc/header.h")
+    facts = module._Facts(model, "b" * 64, "build", "e" * 64, None, None, paths, paths)
+    monkeypatch.setattr(module, "_offline_facts", lambda _root: facts)
+    monkeypatch.setattr(module, "_load_base", lambda *_args: module._Base(index, Catalog(), paths))
+    provider = module.SourceCatalogProvider(tmp_path, "workspace", "session", adapter)
+
+    async def scenario() -> None:
+        tree = await provider.tree(query="", cursor=None, limit=100, parent_id=None,
+                                   catalog_id=None, binding=None, binding_epoch=0)
+        assert tree["total"] == 2
+        assert {item["file"] for item in tree["items"]} == {"Src/main.c", "Src/safe.c"}
+        main = next(item for item in tree["items"] if item["file"] == "Src/main.c")
+        assert main["scopeCount"] == 1 and main["variableCount"] == 120
+        scopes = await provider.tree(query="", cursor=None, limit=100, parent_id=main["id"],
+                                     catalog_id=tree["catalogId"], binding=None, binding_epoch=0)
+        assert scopes["total"] == 1 and scopes["items"][0]["variableCount"] == 120
+        scope_id = scopes["items"][0]["id"]
+        first = await provider.page(query="", cursor=None, limit=100, parent_id=None,
+                                    scope_id=scope_id, catalog_id=tree["catalogId"],
+                                    binding=None, binding_epoch=0)
+        assert first["total"] == 120 and len(first["items"]) == 100 and first["nextCursor"]
+        second = await provider.page(query="", cursor=first["nextCursor"], limit=100,
+                                     parent_id=None, scope_id=scope_id,
+                                     catalog_id=tree["catalogId"], binding=None, binding_epoch=0)
+        assert second["total"] == 120 and len(second["items"]) == 20 and second["nextCursor"] is None
+        assert {item["name"] for item in (*first["items"], *second["items"])} == {
+            f"main_{number}" for number in range(120)}
+        assert all(item["reason"] == "probe_required" for item in (*first["items"], *second["items"]))
+        with pytest.raises(module.SourceCatalogFailure) as wrong_domain:
+            await provider.tree(query="", cursor=first["nextCursor"], limit=100,
+                                parent_id=main["id"], catalog_id=tree["catalogId"],
+                                binding=None, binding_epoch=0)
+        assert wrong_domain.value.code == "MONITOR_SOURCE_CONTEXT_CHANGED"
+        safe = next(item for item in tree["items"] if item["file"] == "Src/safe.c")
+        safe_scopes = await provider.tree(query="", cursor=None, limit=100, parent_id=safe["id"],
+                                          catalog_id=tree["catalogId"], binding=None, binding_epoch=0)
+        with pytest.raises(module.SourceCatalogFailure) as wrong_scope:
+            await provider.page(query="", cursor=first["nextCursor"], limit=100,
+                                parent_id=None, scope_id=safe_scopes["items"][0]["id"],
+                                catalog_id=tree["catalogId"], binding=None, binding_epoch=0)
+        assert wrong_scope.value.code == "MONITOR_SOURCE_CONTEXT_CHANGED"
+        filtered = await provider.tree(query="main_1", cursor=None, limit=100,
+                                       parent_id=None, catalog_id=tree["catalogId"],
+                                       binding=None, binding_epoch=0)
+        assert filtered["total"] == 1 and filtered["items"][0]["variableCount"] == 31
+        filtered_page = await provider.page(query="main_1", cursor=None, limit=100,
+                                            parent_id=None, scope_id=scope_id,
+                                            catalog_id=tree["catalogId"], binding=None, binding_epoch=0)
+        assert filtered_page["total"] == len(filtered_page["items"]) == 31
 
     try:
         asyncio.run(scenario())

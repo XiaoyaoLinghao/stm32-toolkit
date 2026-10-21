@@ -148,8 +148,8 @@ export function SourceCatalogPanel(p:SourceCatalogPanelProps):JSX.Element{
      {tree.coverage.compiledDebug?.available&&<p role="status">{copy.sourceCompiled(tree.coverage.compiledDebug.variableCount,
        tree.coverage.compiledDebug.functionCount,tree.coverage.compiledDebug.fileCount)}</p>}
      <p role="status">{copy.sourceFileCount(tree.items.length,tree.total)} · {copy.sourceUnits(tree.coverage.parsedUnits,tree.coverage.totalUnits)}</p>
-     {tree.items.length===0&&<p role="status">{p.source.query?copy.sourceNoMatch:
-       tree.identity.buildId===null?copy.sourceInfoUnavailable:copy.sourceNoObservable}</p>}
+     {tree.items.length===0&&<p role="status">{tree.identity.buildId===null?copy.sourceInfoUnavailable:
+       p.source.query?copy.sourceNoMatch:copy.sourceNoObservable}</p>}
      {!tree.coverage.complete&&<div className="source-coverage" role="status">
        <strong>{copy.sourcePartial}</strong>
        {tree.coverage.truncated&&<span>{copy.sourceTruncated}</span>}

@@ -78,7 +78,7 @@ it("labels compiled debug facts ahead of incomplete AST details and refreshes ex
   compiledDebug:{available:true,variableCount:1169,functionCount:463,fileCount:47}}};
  render(<SourceCatalogPanel source={{...current,tree}} {...props}/>);
  const status=screen.getAllByRole("status").map(item=>item.textContent??"");
- expect(status[0]).toContain("已按当前固件调试信息列出变量");
+ expect(status[0]).toContain("固件调试元数据统计（不代表当前目录可观测条目）：1169 个变量及参数声明、463 个函数、47 个文件");
  expect(status[1]).toContain("源码补充解析 2 / 53");
  expect(screen.getByText("源码目录覆盖不完整，部分声明尚未收录。")).toBeVisible();
  expect(screen.getByText("目录覆盖与解析详情")).toBeVisible();
@@ -120,6 +120,15 @@ it("does not call an incomplete empty result proof that source has no variables"
   compiledDebug:{available:false,variableCount:0,functionCount:0,fileCount:0}}};
  render(<SourceCatalogPanel source={{...current,tree}} {...props}/>);
  expect(screen.getAllByText("暂无可用源码信息；不能据此断定源码没有变量。").length).toBeGreaterThan(0);
+});
+
+it("explains missing firmware before a search miss even with complete source parsing",()=>{
+ const props=base(),current=source();
+ const tree={...current.tree!,total:0,items:[],identity:{...current.tree!.identity,buildId:null},
+  coverage:{...current.tree!.coverage,complete:true,totalUnits:1,parsedUnits:1,issues:[]}};
+ render(<SourceCatalogPanel source={{...current,query:"counter",tree}} {...props}/>);
+ expect(screen.getAllByText("暂无可用源码信息；不能据此断定源码没有变量。").length).toBeGreaterThan(0);
+ expect(screen.queryByText("没有符合搜索条件的可观测变量条目。")).toBeNull();
 });
 
 it("explains offline eligibility and distinguishes empty directory from search miss",()=>{

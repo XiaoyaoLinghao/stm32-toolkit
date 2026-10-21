@@ -23,7 +23,7 @@ export const copy={
   sourceNoObservable:"当前固件与源码未证明可观测变量条目；这不表示程序没有变量。",
   sourceSearchPlaceholder:"搜索名称、文件或函数",sourceRefresh:"刷新源码目录",sourceLoading:"正在离线分析源码…",
   sourceEmptyPrompt:"正在准备源码目录；无需连接探针即可浏览。",sourcePartial:"源码目录覆盖不完整，部分声明尚未收录。",
-  sourceCompiled:(variables:number,functions:number,files:number)=>`已按当前固件调试信息列出变量：${variables} 个变量及参数声明、${functions} 个函数、${files} 个文件`,
+  sourceCompiled:(variables:number,functions:number,files:number)=>`固件调试元数据统计（不代表当前目录可观测条目）：${variables} 个变量及参数声明、${functions} 个函数、${files} 个文件`,
   sourceIssues:"目录覆盖与解析详情",sourceInfoUnavailable:"暂无可用源码信息；不能据此断定源码没有变量。",
   sourceTruncated:"达到目录上限，仍有未展示内容。",sourceUnknownUnit:"未知编译单元",sourceGlobalScope:"全局／文件作用域",
   sourceCollapse:"收起",sourceExpand:"展开",sourceChildrenLoading:"正在读取成员…",sourceChecking:"正在核对变量与当前固件…",
