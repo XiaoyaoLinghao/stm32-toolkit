@@ -1,0 +1,34 @@
+# Monitor UI clarity implementation return
+
+- Accepted full base: `c9651203b6bab44feca192868846c67b8f7581b3`.
+- Product, test and generated-asset CodeHead before this report: `9f0c584bbcb8ed5701e7b922f0386277bf231d7c` on `codex/monitor-ui-clarity` in `D:\codex-tmp\uc1021\impl`.
+- The primary owns the approved specification and plan, complete-diff review, acceptance, standard test procedure, and the local 8765 service. This implementer owns only the UI, affected tests, generated `ui_dist`, and this return. I have not accepted my own diff. No backend, API, controller, reducer, parsing, hardware, browser, HTTP, service, dependency-installation, or remote action occurred.
+
+## Delivered behavior
+
+The source directory starts with folders, files, and scopes closed for an empty query. A nonempty search opens matching folder paths while leaving files and scopes lazy; manual folder choices persist within the result generation and reset on the next generation. File rows display the basename and compact variable-entry count, retain the full path in the accessible label and title, and keep file/scope/member identity and the existing selection callback. Search and refresh remain explicit. Rules, raw debug counts, parsed-unit coverage, truncation, and named coverage issues live in a closed `说明与诊断` region. Its summary counts explicit issues or truthfully says coverage is incomplete without an issue count. The diagnosis can scroll and shrink so the directory tree retains its own scroll area. Root, branch, and selection failures still appear outside that fold with the original scope/requestId retry; a coverage notice has no misleading retry button.
+
+Sampling actions now follow the authoritative six states: Start only in connected IDLE, Stop in every non-IDLE state, Pause only in RUNNING, and Resume only in PAUSED. Disconnected non-IDLE states may also offer connection. Busy disables each displayed write. STOPPING and PAUSED_BLOCKED retain Stop even with `active=false`; the blocked status and code remain visible. The controller still decides admission.
+
+Only `runId===null && !state.live.retained` is an idle preview. Its empty rows say `等待连接` or `等待开始`; it has no non-latest badge or compact footer metrics. The full diagnostic metrics and a plain zero-problem diagnostics entry remain available. Active-run and retained rows, values, capture times, rate/latency/drop metrics, source identity, curve controls, groups, history, and CSV keep their existing paths and truthful state. Nonzero failures retain the counted diagnostics entry and recovery workflow.
+
+## Implementer verification
+
+UI commands ran from `tools/stm32-monitor/ui` with `TEMP`, `TMP`, and `TMPDIR` set to `D:\codex-tmp\uc1021\impl-checks`. Installed Node was `C:\Program Files\nodejs\node.exe`; PowerShell was 7.6.7. The ignored implementation `node_modules` was copied from `D:\codex-tmp\mo1021\review\tools\stm32-monitor\ui\node_modules` without installation or shared-cache changes. Logs and temporary compiler cache are under the single run root `D:\codex-tmp\uc1021\impl-checks`.
+
+| Check and exact command | Result and evidence |
+| --- | --- |
+| `node_modules\.bin\vitest.cmd run tests/source-panel.test.tsx tests/sampling-controls.test.tsx tests/live-table-interaction.test.tsx tests/values-first-app.test.tsx tests/mr1020-real-batch-app.test.tsx tests/presentation-workbench.test.tsx tests/ui03-recovery-ui.test.tsx tests/ui06-app-live.test.tsx --maxWorkers=2` | Final behavior correction: 8 files, 52 passed, 1 existing skip; `focused-ui-r2.log`. Covers directory retry, source aliases, six states, live preview, retained samples and recovery. |
+| `node_modules\.bin\vitest.cmd run --maxWorkers=2` | 58 files, 498 passed, 1 existing skip; `full-ui-r2.log`. This run preceded the one-line optional TypeScript property correction and final CSS scroll/spacing refinement; no runtime TypeScript logic changed afterward. This is reused broad evidence, not an exact-CodeHead full-suite claim. The conditional skip requires `MONITOR_REAL_BATCHES_JSONL` to point to the optional 293-batch file; the checked-in sanitized replay test passed. |
+| `node_modules\.bin\vitest.cmd run tests/live-table-interaction.test.tsx tests/values-first-app.test.tsx tests/mr1020-real-batch-app.test.tsx tests/app.test.tsx --maxWorkers=2` | 4 files, 25 passed, 1 existing skip after the TypeScript correction; `focused-ui-final.log`. |
+| `node_modules\.bin\vitest.cmd run tests/source-panel.test.tsx tests/sampling-controls.test.tsx tests/live-table-interaction.test.tsx tests/values-first-app.test.tsx --maxWorkers=2` | 4 files, 41 passed against the final UI/CSS source bytes; `focused-ui-freeze.log`. |
+| `node_modules\.bin\tsc.cmd -p tsconfig.json` and `node_modules\.bin\tsc.cmd -p tsconfig.e2e.json` | Both exit 0 after the type correction; `typecheck-r2.log`, `typecheck-e2e-r2.log`. The later change was CSS only. |
+| `node_modules\.bin\eslint.cmd src tests` | Exit 0 after the type correction; `lint-final.log`. The later change was CSS only. |
+| `node_modules\.bin\vite.cmd build`; `node scripts\verify-dist.mjs` | Both exit 0 with the final source bytes; `build-freeze.log`, `verify-dist-freeze.log`. The seven generated files are byte-identical to a fresh rebuild and included in CodeHead. Vite emitted its existing large-chunk advisory, with no build failure. |
+| `git diff --cached --check` before the product commit | Exit 0. The implementation worktree was clean at CodeHead before adding this report. |
+
+The first focused run (`focused-ui.log`) had three PRODUCT display failures caused by missing preview stale suppression and the omitted active-run footer source, plus two TEST locator failures on duplicate counts and a node replaced after generation change. The corrected focused run passed. The first full run (`full-ui.log`) had three TEST expectations for the former always-visible footer and initially expanded folders; their real-client request, selection ACK, and callback assertions stayed intact and the next full run passed. Initial `tsc` commands (`typecheck.log`, `typecheck-e2e.log`) found one PRODUCT TypeScript `exactOptionalPropertyTypes` incompatibility; the explicit `undefined` union fixed it and both checks passed. No failure was classified as hardware or physical evidence.
+
+## Handoff and limits
+
+The full accepted-base-to-CodeHead diff, exact-head integration and Python UI asset checks belong to the primary and independent reviewer. DOM tests, static checks and a reproducible build do not establish real-browser layout, authenticated HTTP, or physical sampling behavior; those remain deferred. The primary is cleanup owner for `D:\codex-tmp\uc1021\impl-checks` and the ignored implementation dependency copy after review, retaining the smallest useful logs until evidence reconciliation. No prior run root or live service was touched.
