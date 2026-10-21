@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -95,6 +96,104 @@ def backend_with_probes(*probe_ids: str) -> tuple[PyOCDBackend, FakePyOCDDriver]
         tuple(FakePyOCDProbe(probe_id) for probe_id in probe_ids)
     )
     return PyOCDBackend(driver), driver
+
+
+def test_preserve_session_clears_real_pyocd_pack_delegate_before_generic_dp_connect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """pyOCD 0.45.1 still reports a disabled sequence as present."""
+    from pyocd.coresight import dap
+    from pyocd.coresight.coresight_target import CoreSightTarget
+    from pyocd.target.pack.pack_target import PackDebugSequenceDelegate
+
+    target = CoreSightTarget.__new__(CoreSightTarget)
+    pack = PackDebugSequenceDelegate.__new__(PackDebugSequenceDelegate)
+    pack._specific_map_by_pname = {"cpu": {"DebugPortSetup": object()}}
+    pack._generic_map = {}
+    pack._pack_device = SimpleNamespace(
+        processors_ap_map={0: SimpleNamespace(name="cpu", ap_address=0)}
+    )
+    pack._session = SimpleNamespace(
+        options=SimpleNamespace(get=lambda name: False)
+    )
+    pack._functions = SimpleNamespace(restore_temp_ap_csw=lambda: None)
+    target._session = pack._session
+    target.debug_sequence_delegate = pack
+    assert target.has_debug_sequence("DebugPortSetup", pname="cpu") is True
+    assert pack.run_sequence("DebugPortSetup", pname="cpu") is None
+    assert target.call_pre_discovery_debug_sequence("DebugPortSetup") is True
+
+    session = SimpleNamespace(board=SimpleNamespace(target=target))
+    driver = _DefaultPyOCDDriver()
+    monkeypatch.setattr(driver, "_session_type", lambda *_args, **_kwargs: session)
+    assert driver.create_session(
+        object(), options={"connect_mode": "attach", "pack.debug_sequences.enable": False}
+    ) is session
+    assert target.debug_sequence_delegate is None
+    assert target.has_debug_sequence("DebugPortSetup", pname="cpu") is False
+    assert target.call_pre_discovery_debug_sequence("DebugPortSetup") is False
+
+    calls: list[str] = []
+    probe = object()
+    session.target = target
+    class ProbeConnector:
+        def __init__(self, selected_probe: object) -> None:
+            assert selected_probe is probe
+        def connect(self, protocol: object) -> None:
+            calls.append("wire")
+    class DPConnector:
+        def __init__(self, selected_probe: object) -> None:
+            assert selected_probe is probe
+            self.idr = SimpleNamespace(idr=1, version=5, mindp=False, revision=0)
+        def connect(self) -> None:
+            calls.append("generic-adi")
+        def read_idr(self) -> object:
+            raise AssertionError("pack sequence must not replace generic ADI")
+    monkeypatch.setattr(dap, "ProbeConnector", ProbeConnector)
+    monkeypatch.setattr(dap, "DPConnector", DPConnector)
+    port = dap.DebugPort.__new__(dap.DebugPort)
+    port._probe = probe
+    port._session = session
+    port._protocol = None
+    port._log_dp_info = False
+    port._connect()
+    assert calls == ["wire", "generic-adi"]
+    actions: list[str] = []
+    session.options = SimpleNamespace(get=lambda name: {
+        "connect_mode": "attach", "resume_on_disconnect": False,
+    }.get(name))
+    target._session = session
+    target._cores = {0: SimpleNamespace(halt=lambda: actions.append("halt"))}
+    target.dp = SimpleNamespace(
+        reset=lambda: actions.append("reset"),
+        assert_reset=lambda *_args: actions.append("assert-reset"),
+    )
+    target.pre_connect()
+    target.perform_halt_on_connect()
+    target.post_connect()
+    assert actions == []
+    from pyocd.board.board import Board
+    board = Board.__new__(Board)
+    board._inited = True
+    board._session = session
+    board.target = SimpleNamespace(disconnect=lambda resume: actions.append(f"disconnect:{resume}"))
+    board.uninit()
+    assert actions == ["disconnect:False"]
+
+
+def test_preserve_session_fails_closed_without_public_target_delegate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    driver = _DefaultPyOCDDriver()
+    monkeypatch.setattr(
+        driver, "_session_type", lambda *_args, **_kwargs:
+        SimpleNamespace(board=SimpleNamespace(target=object())),
+    )
+    with pytest.raises(ProbeBackendError) as caught:
+        driver.create_session(
+            object(), options={"connect_mode": "attach", "pack.debug_sequences.enable": False}
+        )
+    assert caught.value.code == "PROBE_BACKEND_ERROR"
 
 
 class ConnectionPolicyTarget(FakePyOCDTarget):
@@ -717,6 +816,75 @@ def test_observation_attach_uses_pinned_halt_policy_then_returns_running():
         "resolvedPartNumber": "stm32f407vg",
         "coreCount": 1,
     }
+
+
+@pytest.mark.parametrize("state", ("running", "halted"))
+def test_preserve_observation_attach_and_close_have_no_cpu_control_calls(state: str) -> None:
+    target = ConnectionPolicyTarget(state=state)
+    driver = FakePyOCDDriver((FakePyOCDProbe("probe-a"),), target=target)
+    backend = PyOCDBackend(driver, frequency_hz=100_000, connection_policy="observe-preserve")
+
+    evidence = backend.open_attach("probe-a", "stm32f407vg")
+    assert evidence.core_count == 1
+    session = driver.created_sessions[0]
+    assert session.options == {
+        "auto_unlock": False,
+        "connect_mode": "attach",
+        "dap_protocol": "swd",
+        "frequency": 100_000,
+        "no_config": True,
+        "pack.debug_sequences.enable": False,
+        "primary_core": 0,
+        "project_dir": os.getcwd(),
+        "resume_on_disconnect": False,
+        "target_override": "stm32f407vg",
+        "user_script": os.devnull,
+    }
+    assert target.calls == []
+    assert target.state == state
+    backend.close()
+    assert target.calls == []
+    assert target.state == state
+    assert session.close_count == 1
+
+
+@pytest.mark.parametrize("failure", ("session-open", "identity", "timeout", "close"))
+def test_preserve_observation_failures_close_without_cpu_control(failure: str) -> None:
+    target = ConnectionPolicyTarget(part_number=None if failure == "identity" else "stm32f407vg")
+    probe = FakePyOCDProbe("probe-a")
+    driver = FakePyOCDDriver((probe,), target=target)
+    if failure in {"session-open", "timeout"}:
+        driver.session_open_error = (
+            TimeoutError("private timeout") if failure == "timeout" else RuntimeError("private open")
+        )
+    if failure == "close":
+        driver.session_close_error = RuntimeError("private close")
+    backend = PyOCDBackend(driver, frequency_hz=100_000, connection_policy="observe-preserve")
+
+    if failure == "close":
+        backend.open_attach("probe-a", "stm32f407vg")
+        with pytest.raises(ProbeBackendError) as caught:
+            backend.close()
+        assert caught.value.code == "PROBE_CLOSE_FAILED"
+    else:
+        with pytest.raises(ProbeBackendError) as caught:
+            backend.open_attach("probe-a", "stm32f407vg")
+        assert caught.value.code == (
+            "PROBE_TARGET_IDENTITY_UNAVAILABLE" if failure == "identity" else "PROBE_ATTACH_FAILED"
+        )
+    assert target.calls == []
+    assert driver.created_sessions[0].close_count == 1
+    assert probe.is_open is False
+
+
+def test_preserve_halt_request_fails_before_probe_enumeration() -> None:
+    driver = FakePyOCDDriver((FakePyOCDProbe("probe-a"),))
+    driver.list_error = AssertionError("probe enumeration is forbidden")
+    backend = PyOCDBackend(driver, frequency_hz=100_000, connection_policy="observe-preserve")
+    with pytest.raises(ProbeBackendError) as caught:
+        backend.open_attach("probe-a", "stm32f407vg", halt_on_connect=True)
+    assert caught.value.code == "PROBE_OPERATION_UNAVAILABLE"
+    assert driver.created_sessions == []
 
 
 def test_modify_recovery_attach_uses_only_under_reset_at_100khz_and_stays_halted():

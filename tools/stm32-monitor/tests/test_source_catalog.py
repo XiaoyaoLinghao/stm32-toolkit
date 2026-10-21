@@ -14,7 +14,7 @@ import pytest
 
 import stm32_monitor.source_catalog as module
 from stm32_toolkit.debug.source import ClangSourceAdapter, SourceDeclaration, SourceFunction, SourceIndex, SourceIssue, SourcePlan
-from stm32_toolkit.debug.types import DwarfMember, DwarfType
+from stm32_toolkit.debug.types import DwarfMember, DwarfSelection, DwarfType
 from stm32_toolkit.debug.dwarf import DwarfCatalog, DwarfSourceFunction, DwarfSourceSymbol
 
 
@@ -55,8 +55,22 @@ class _Adapter:
 
 
 class _Dwarf:
-    def source_symbols(self) -> tuple[()]:
-        return ()
+    def __init__(self, declarations: tuple[SourceDeclaration, ...] = (),
+                 dtype: DwarfType | None = None) -> None:
+        scalar = dtype or DwarfType("integer", "int", 4)
+        self.symbols = tuple(DwarfSourceSymbol(
+            decl.name, decl.file, decl.line, None, decl.function,
+            decl.translation_units[0], scalar, 0x20000000 + 4 * index,
+            None, None, storage=decl.storage, scope_kind=decl.scope_kind,
+        ) for index, decl in enumerate(declarations))
+
+    def source_symbols(self) -> tuple[DwarfSourceSymbol, ...]:
+        return self.symbols
+
+    def lookup(self, selector: str) -> DwarfSelection:
+        symbol = next(item for item in self.symbols if item.name == selector)
+        assert symbol.address is not None and symbol.dwarf_type is not None
+        return DwarfSelection(selector, symbol.address, symbol.dwarf_type)
 
 
 def _setup(monkeypatch: pytest.MonkeyPatch, root: Path, *, aggregate: bool = False):
@@ -69,7 +83,7 @@ def _setup(monkeypatch: pytest.MonkeyPatch, root: Path, *, aggregate: bool = Fal
                          for index, (char, name) in enumerate(zip("cd", names)))
     index = SourceIndex("GNU Arm GCC + Clang", "gcc:14.3.1;clang:21.1.1", "compdb", 1, 1,
                         (), False, declarations, "f" * 64)
-    dwarf = _Dwarf()
+    dwarf = _Dwarf(declarations)
     monkeypatch.setattr(module, "_offline_facts", lambda _root: facts[0])
     monkeypatch.setattr(module, "_load_base", lambda _adapter, _facts, _plan:
                         module._Base(index, dwarf, ("Src/main.c",)))
@@ -80,7 +94,9 @@ def _setup(monkeypatch: pytest.MonkeyPatch, root: Path, *, aggregate: bool = Fal
                                  decl.name, False if aggregate else True,
                                  "aggregate" if aggregate else None, aggregate, aggregate), dtype if aggregate else None
     monkeypatch.setattr(module, "_item_for_declaration", item_for)
-    monkeypatch.setattr(module, "_eligible_leaf", lambda *_args: None)
+    monkeypatch.setattr(module, "_eligible_leaf",
+                        lambda _selector, _dwarf, current_binding, *_args:
+                        "probe_required" if current_binding is None else None)
     binding = SimpleNamespace(project_root=root, workspace_id="workspace", observation_session_id="session",
                               logical_project_id="project", target_device="STM32F407VG", build_id="build",
                               elf_sha256="e" * 64, input_snapshot_sha256="b" * 64, probe_id="probe", lease_id="lease")
@@ -125,7 +141,7 @@ def test_aggregate_descendants_stop_at_root_budget(monkeypatch: pytest.MonkeyPat
         parent_id = root["items"][0]["id"]
         child = await provider.page(query="", cursor=None, limit=100, parent_id=parent_id,
                                     catalog_id=root["catalogId"], binding=binding, binding_epoch=0)
-        assert child["total"] == 5000 and len(child["items"]) == 100
+        assert child["total"] == 4096 and len(child["items"]) == 100
         count = 100
         while child["nextCursor"] is not None:
             child = await provider.page(query="", cursor=child["nextCursor"], limit=100, parent_id=parent_id,
@@ -135,6 +151,49 @@ def test_aggregate_descendants_stop_at_root_budget(monkeypatch: pytest.MonkeyPat
         provider.close()
 
     asyncio.run(scenario())
+
+
+def test_sparse_aggregate_array_retains_late_readable_element_beyond_page_capacity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scalar = DwarfType("integer", "int", 4)
+    element = DwarfType("structure", "Element", 4,
+                        members=(DwarfMember("value", 0, scalar),))
+    dtype = DwarfType("array", "Element[2000]", 8000,
+                      element_type=element, element_count=2000)
+    base = 0x20000000
+    readable = base + 1000 * element.byte_size
+    dwarf = SimpleNamespace(readable_regions=((readable, readable + 4),))
+    monkeypatch.setattr(module, "_eligible_leaf", lambda selector, *_args:
+                        "probe_required" if "[1000]" in selector else "read_range_denied")
+    root = module.SourceItem("c" * 64, None, "records", dtype.name, "Src/main.c", 1, 1,
+                             "global", None, (), "none", ("Src/main.c",), "records",
+                             False, "aggregate", True, False)
+    node = module._Node(root, dtype, 0, 0, base)
+    index = SourceIndex("engine", "version", "manifest", 1, 1, (), True, (), "f" * 64)
+    view = module._View("a" * 64, {}, index, dwarf, (root,), {root.id: node},
+                        None, False, {})
+    assert module._observable_descendant("records", dtype, dwarf, base, 0, [4096])
+    provider = module.SourceCatalogProvider(Path("."), "workspace", "session", _Adapter())
+    try:
+        children, total = provider._children(view, node)
+        assert total == 1
+        assert [item.selector for item in children] == ["records[1000]"]
+        leaves, count = provider._children(view, view.nodes[children[0].id])
+        assert count == 1 and leaves[0].selector == "records[1000].value"
+        assert leaves[0].reason == "probe_required"
+        monkeypatch.setattr(module, "_eligible_leaf", lambda *_args: "probe_required")
+        full = SimpleNamespace(readable_regions=((base, base + dtype.byte_size),))
+        full_root = module._Node(root, dtype, 0, 0, base)
+        full_view = module._View("b" * 64, {}, index, full, (root,),
+                                 {root.id: full_root}, None, False, {})
+        bounded, bounded_total = provider._children(full_view, full_root)
+        assert bounded_total == 4096 // 7
+        assert bounded[0].truncated is False and bounded[-1].truncated is True
+        final_leaf, final_count = provider._children(full_view, full_view.nodes[bounded[-1].id])
+        assert final_count == 1 and final_leaf[0].selector == f"{bounded[-1].selector}.value"
+    finally:
+        provider.close()
 
 
 def test_partial_catalog_keeps_nested_navigation_but_root_retry_reindexes(
@@ -152,7 +211,7 @@ def test_partial_catalog_keeps_nested_navigation_but_root_retry_reindexes(
 
     def load(_adapter, _facts, _plan):
         loads[0] += 1
-        return module._Base(partial, _Dwarf(), ("Src/main.c",))
+        return module._Base(partial, _Dwarf((declaration,), outer), ("Src/main.c",))
 
     monkeypatch.setattr(module, "_load_base", load)
     monkeypatch.setattr(module, "_item_for_declaration", lambda decl, *_args: (
@@ -185,7 +244,7 @@ def test_partial_catalog_keeps_nested_navigation_but_root_retry_reindexes(
     asyncio.run(scenario())
 
 
-def test_depth_limit_marks_unexpanded_aggregate_as_truncated(
+def test_depth_limit_prunes_aggregate_without_reachable_scalar(
         monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     provider, _, binding = _setup(monkeypatch, tmp_path, aggregate=True)
     dtype = DwarfType("integer", "int", 4)
@@ -200,13 +259,10 @@ def test_depth_limit_marks_unexpanded_aggregate_as_truncated(
     async def scenario() -> None:
         root = await provider.page(query="", cursor=None, limit=100, parent_id=None,
                                    catalog_id=None, binding=binding, binding_epoch=0)
-        current = root["items"][0]
-        for _ in range(6):
-            children = await provider.page(query="", cursor=None, limit=100, parent_id=current["id"],
-                                           catalog_id=root["catalogId"], binding=binding, binding_epoch=0)
-            current = children["items"][0]
-        assert current["reason"] == "limit_reached"
-        assert current["truncated"] and not current["expandable"] and not current["canAdd"]
+        assert root["total"] == 0 and root["items"] == []
+        tree = await provider.tree(query="", cursor=None, limit=100, parent_id=None,
+                                   catalog_id=root["catalogId"], binding=binding, binding_epoch=0)
+        assert tree["items"] == []
         provider.close()
 
     asyncio.run(scenario())
@@ -256,7 +312,7 @@ def test_cancelled_waiter_cannot_pin_a_completed_partial_index(
     asyncio.run(scenario())
 
 
-def test_duplicate_and_unnamed_members_have_unique_disabled_rows(
+def test_duplicate_and_unnamed_members_prune_empty_aggregate(
         monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     provider, _, binding = _setup(monkeypatch, tmp_path, aggregate=True)
     scalar = DwarfType("integer", "int", 4)
@@ -271,13 +327,7 @@ def test_duplicate_and_unnamed_members_have_unique_disabled_rows(
     async def scenario() -> None:
         root = await provider.page(query="", cursor=None, limit=100, parent_id=None,
                                    catalog_id=None, binding=binding, binding_epoch=0)
-        children = await provider.page(query="", cursor=None, limit=100, parent_id=root["items"][0]["id"],
-                                       catalog_id=root["catalogId"], binding=binding, binding_epoch=0)
-        items = children["items"]
-        assert len(items) == len({item["id"] for item in items}) == 4
-        assert all(not item["canAdd"] and item["selector"] is None for item in items)
-        assert [item["reason"] for item in items] == ["unsupported_type", "unsupported_type",
-                                                     "ambiguous_symbol", "ambiguous_symbol"]
+        assert root["total"] == 0 and root["items"] == []
         provider.close()
 
     asyncio.run(scenario())
@@ -347,14 +397,17 @@ def test_real_ast_elf_attribution_leaf_children_and_binding_rechecks(real_source
                    for item in counter), counter
         assert any(item["file"] == "Inc/defs.h" and item["scope"]["kind"] == "global"
                    for item in counter)
+        assert any(item["name"] == "retained" and item["scope"]["kind"] == "static_local"
+                   and item["scope"]["function"] == "sample" and item["canAdd"]
+                   and item["selector"] == "retained" for item in rows)
         for name in ("duplicate", "header_static"):
-            assert all(item["reason"] == "ambiguous_symbol" and not item["canAdd"]
-                       for item in rows if item["name"] == name)
+            assert not any(item["name"] == name for item in rows)
         for name in ("parameter", "local"):
-            assert all(item["reason"] in {"frame_required", "unsupported_location"}
-                       and not item["canAdd"] for item in rows if item["name"] == name), [
-                           (item["name"], item["reason"], item["scope"])
-                           for item in rows if item["name"] in {"parameter", "local"}]
+            assert not any(item["name"] == name for item in rows)
+        detached = await provider.page(query="counter", cursor=None, limit=100, parent_id=None,
+                                       catalog_id=None, binding=None, binding_epoch=1)
+        assert detached["items"] and all(item["reason"] == "probe_required" and not item["canAdd"]
+                                         for item in detached["items"])
         for name, child_name, selector in (("packet", "a", "packet.a"),
                                            ("values", "0", "values[0]")):
             root = next(item for item in rows if item["name"] == name)
@@ -380,13 +433,70 @@ def test_real_ast_elf_attribution_leaf_children_and_binding_rechecks(real_source
         facts[0] = no_elf
         unavailable = await provider.page(query="counter", cursor=None, limit=100, parent_id=None,
                                           catalog_id=None, binding=binding, binding_epoch=0)
-        assert all(item["reason"] == "firmware_unavailable" for item in unavailable["items"])
+        assert unavailable["total"] == 0 and unavailable["items"] == []
         denied = replace(facts[0], elf_sha="0" * 64)
         facts[0] = denied
         with pytest.raises(module.SourceCatalogFailure) as changed:
             await provider.select(catalog_id=page["catalogId"], item_id=counter[0]["id"],
                                   selector="counter", binding=binding, binding_epoch=0)
         assert changed.value.code == "MONITOR_SOURCE_CONTEXT_CHANGED"
+
+    asyncio.run(scenario())
+
+
+def test_aggregate_root_crossing_readable_boundary_keeps_proved_member(
+    real_source_project,
+) -> None:
+    provider, facts, binding = real_source_project
+    full = DwarfCatalog.from_elf(
+        facts[0].elf_path, project_root=facts[0].model.project_root,
+        readable_regions=((0x20000000, 0x20010000), (0x08000000, 0x08010000)),
+    )
+    member = full.lookup("packet.b")
+    limited = SimpleNamespace(name="RAM", origin=member.address,
+                              length=member.byte_size, attributes="rw")
+    flash = binding.memory_regions[1]
+    facts[0] = replace(facts[0], model=SimpleNamespace(
+        **{**vars(facts[0].model), "memory": SimpleNamespace(regions=(limited, flash))}
+    ))
+    narrowed = SimpleNamespace(**{**vars(binding), "memory_regions": (limited, flash)})
+    restricted = DwarfCatalog.from_elf(
+        facts[0].elf_path, project_root=facts[0].model.project_root,
+        readable_regions=((limited.origin, limited.origin + limited.length),
+                          (flash.origin, flash.origin + flash.length)),
+    )
+    from stm32_toolkit.debug.dwarf import DwarfError
+    with pytest.raises(DwarfError) as root_error:
+        restricted.lookup("packet")
+    assert root_error.value.code == "DWARF_ADDRESS_OUTSIDE_READABLE_MEMORY"
+    assert restricted.lookup("packet.b").address == member.address
+
+    async def scenario() -> None:
+        offline = await provider.page(query="packet", cursor=None, limit=100,
+                                      parent_id=None, catalog_id=None,
+                                      binding=None, binding_epoch=0)
+        root = next(item for item in offline["items"] if item["name"] == "packet")
+        assert root["reason"] == "aggregate"
+        children = await provider.page(query="", cursor=None, limit=100,
+                                       parent_id=root["id"], catalog_id=offline["catalogId"],
+                                       binding=None, binding_epoch=0)
+        assert [item["selector"] for item in children["items"]] == ["packet.b"]
+        assert children["total"] == 1
+        assert children["items"][0]["reason"] == "probe_required"
+        connected = await provider.page(query="packet", cursor=None, limit=100,
+                                        parent_id=None, catalog_id=None,
+                                        binding=narrowed, binding_epoch=1)
+        connected_root = next(item for item in connected["items"] if item["name"] == "packet")
+        connected_children = await provider.page(query="", cursor=None, limit=100,
+                                                 parent_id=connected_root["id"],
+                                                 catalog_id=connected["catalogId"],
+                                                 binding=narrowed, binding_epoch=1)
+        leaf = connected_children["items"][0]
+        assert leaf["canAdd"] and leaf["selector"] == "packet.b"
+        selected = await provider.select(catalog_id=connected["catalogId"],
+                                         item_id=leaf["id"], selector="packet.b",
+                                         binding=narrowed, binding_epoch=1)
+        assert selected["item"]["expression"] == "packet.b"
 
     asyncio.run(scenario())
 
@@ -481,14 +591,11 @@ def test_partial_ast_still_exposes_compiled_functions_parameters_and_selection(r
         scopes = await provider.tree(query="", cursor=None, limit=1000, parent_id=main["id"],
                                      catalog_id=tree["catalogId"], binding=binding, binding_epoch=0)
         sample = next(item for item in scopes["items"] if item["function"] == "sample")
-        assert sample["variableCount"] >= 3
+        assert sample["variableCount"] == 1
         variables = await provider.page(query="", cursor=None, limit=100, parent_id=None,
                                         scope_id=sample["id"], catalog_id=tree["catalogId"],
                                         binding=binding, binding_epoch=0)
-        assert any(item["name"] == "parameter" and item["reason"] == "frame_required"
-                   for item in variables["items"])
-        assert any(item["name"] == "local" and item["reason"] == "frame_required"
-                   for item in variables["items"])
+        assert [item["name"] for item in variables["items"]] == ["retained"]
         global_scope = next(item for item in scopes["items"] if item["function"] is None)
         globals_page = await provider.page(query="", cursor=None, limit=100, parent_id=None,
                                            scope_id=global_scope["id"], catalog_id=tree["catalogId"],
@@ -509,8 +616,7 @@ def test_partial_ast_still_exposes_compiled_functions_parameters_and_selection(r
                                           selector=selector, binding=binding, binding_epoch=0))["item"]["expression"] == selector
         other = await provider.page(query="phantom", cursor=None, limit=100, parent_id=None,
                                     catalog_id=tree["catalogId"], binding=binding, binding_epoch=0)
-        assert len(other["items"]) == 1 and other["items"][0]["reason"] == "debug_entry_missing"
-        assert not other["items"][0]["canAdd"]
+        assert other["total"] == 0 and other["items"] == []
 
     asyncio.run(scenario())
 
@@ -589,12 +695,9 @@ def test_concrete_die_only_coalesces_a_unique_ast_entity() -> None:
                                        source_files=("Src/main.c",))
         return roots
 
-    shared_die, first_ast, second_ast = materialize(first, second)
+    (shared_die,) = materialize(first, second)
     assert shared_die.id not in {first.id, second.id}
     assert shared_die.can_add and shared_die.selector == "value"
-    assert all(not item.can_add and item.selector is None and item.reason == "ambiguous_symbol"
-               for item in (first_ast, second_ast))
-    assert {first_ast.id, second_ast.id} == {first.id, second.id}
     assert len(materialize(first)) == 1
     assert len(materialize(first, replace(second, entity_id=first.entity_id))) == 1
 
@@ -640,12 +743,8 @@ def test_internal_cu_must_be_proven_for_direct_and_previous_decl_attribution() -
         return roots
 
     for unproven in (symbol, replace(symbol, compilation_unit="Src/b.c")):
-        positive_die, direct_ast, previous_ast = materialize(unproven)
+        (positive_die,) = materialize(unproven)
         assert positive_die.can_add
-        assert [item.id for item in (direct_ast, previous_ast)] == [definition.id, previous.id]
-        assert all(item.selector is None and not item.can_add
-                   and item.reason == "source_attribution_unproven"
-                   for item in (direct_ast, previous_ast))
 
     known = materialize(replace(symbol, compilation_unit="Src/a.c"))
     assert len(known) == 2  # The direct declaration coalesces into the positive DIE.
@@ -670,8 +769,7 @@ def test_internal_cu_must_be_proven_for_direct_and_previous_decl_attribution() -
             return (replace(symbol, scope_kind="global", storage="none"),)
     unknown, _ = module._materialize(global_index, UnknownCuCatalog(), None, binding,
                                      source_files=("Inc/header.h", "Inc/forward.h"))
-    assert unknown[1].id == previous.id
-    assert not unknown[1].can_add and unknown[1].reason == "source_attribution_unproven"
+    assert len(unknown) == 1 and unknown[0].can_add
 
 
 def test_header_extern_uses_its_own_tu_definition_and_reports_source_site() -> None:
@@ -722,12 +820,9 @@ def test_header_extern_uses_its_own_tu_definition_and_reports_source_site() -> N
     )
     for _case, other, debug_symbol in mismatches:
         candidates = materialize(header, other, debug_symbol=debug_symbol)
-        header_row = next(item for item in candidates if item.id == header.id)
-        assert not header_row.can_add and header_row.reason == "source_attribution_unproven", _case
-        assert header_row.definition_site is None, _case
+        assert all(item.id != header.id for item in candidates), _case
     tls = replace(header, storage="thread_local")
-    tls_row = next(item for item in materialize(tls, definition) if item.id == tls.id)
-    assert not tls_row.can_add and tls_row.reason == "unsupported_location"
+    assert all(item.id != tls.id for item in materialize(tls, definition))
 
 
 def test_tentative_redeclarations_use_unique_initialized_definition_site() -> None:
@@ -847,11 +942,7 @@ def test_real_clang_unmapped_definition_site_cannot_prove_extern_chain(
         length=0x1000, attributes="rw"),))
     rows, _ = module._materialize(index, Catalog(), None, binding,
                                    source_files=("Inc/a.h", "Src/a.c"))
-    by_id = {row.id: row for row in rows}
-    for declaration in (header, tentative, definition):
-        item = by_id[declaration.id]
-        assert not item.can_add and item.reason == "source_attribution_unproven"
-        assert item.definition_site is None
+    assert all(row.id not in {header.id, tentative.id, definition.id} for row in rows)
     assert all(row.to_dict()["declaration"]["definitionSite"] is None for row in rows)
 
 
@@ -876,6 +967,8 @@ def test_unproved_extern_never_decorates_dwarf_fallback_and_distinct_dies_confli
         def source_declarations(self):
             return self.symbols
         def lookup(self, _name):
+            if len(self.symbols) != 1:
+                raise module.DwarfError("DWARF_SYMBOL_AMBIGUOUS", "duplicate")
             return SimpleNamespace(type=dtype, byte_size=4, address=0x20000000)
 
     binding = SimpleNamespace(memory_regions=(SimpleNamespace(origin=0x20000000,
@@ -887,16 +980,12 @@ def test_unproved_extern_never_decorates_dwarf_fallback_and_distinct_dies_confli
                                     source_files=("Inc/vars.h", unit))[0]
 
     unproved = rows(header, symbols=(header_symbol,))
-    assert not next(row for row in unproved if row.id == header.id).can_add
-    fallback = next(row for row in unproved if row.id != header.id)
+    assert all(row.id != header.id for row in unproved)
+    fallback = next(row for row in unproved)
     assert fallback.declaration_kind == "unknown" and fallback.definition_site is None
 
     conflicting = rows(header, definition, symbols=(header_symbol, source_symbol))
-    header_row = next(row for row in conflicting if row.id == header.id)
-    assert not header_row.can_add and header_row.reason == "ambiguous_symbol"
-    assert header_row.definition_site is None
-    header_fallback = next(row for row in conflicting if row.file == "Inc/vars.h" and row.id != header.id)
-    assert header_fallback.declaration_kind == "unknown" and header_fallback.definition_site is None
+    assert conflicting == ()
 
 
 def test_legal_long_translation_units_fit_page_budget_with_actual_cursor() -> None:
@@ -943,53 +1032,16 @@ def test_tree_real_ast_files_scopes_and_independent_variable_pages(
     async def scenario() -> None:
         first = await provider.tree(query="", cursor=None, limit=1, parent_id=None, catalog_id=None,
                                     binding=None, binding_epoch=0)
-        files = list(first["items"])
-        cursor = first["nextCursor"]
-        while cursor is not None:
-            page = await provider.tree(query="", cursor=cursor, limit=1, parent_id=None,
-                                       catalog_id=first["catalogId"], binding=None, binding_epoch=0)
-            files.extend(page["items"])
-            cursor = page["nextCursor"]
-        by_path = {item["file"]: item for item in files}
-        assert set(paths) == set(by_path)
-        assert by_path["Src/empty.c"]["variableCount"] == 0
-        assert by_path["Src/safe.c"]["variableCount"] == 1
-        main_id = by_path["Src/main.c"]["id"]
-        main_scopes = await provider.tree(query="", cursor=None, limit=1000, parent_id=main_id,
-                                          catalog_id=first["catalogId"], binding=None, binding_epoch=0)
-        assert any(scope["function"] == "empty_function" and scope["variableCount"] == 0
-                   for scope in main_scopes["items"])
-        global_scope = next(scope for scope in main_scopes["items"] if scope["function"] is None)
-        first_vars = await provider.page(query="", cursor=None, limit=100, parent_id=None,
-                                         scope_id=global_scope["id"], catalog_id=first["catalogId"],
-                                         binding=None, binding_epoch=0)
-        assert first_vars["total"] == 120 and len(first_vars["items"]) == 100
-        second_vars = await provider.page(query="", cursor=first_vars["nextCursor"], limit=100,
-                                          parent_id=None, scope_id=global_scope["id"],
-                                          catalog_id=first["catalogId"], binding=None, binding_epoch=0)
-        assert len(second_vars["items"]) == 20
-        included = await provider.tree(query="", cursor=None, limit=1000,
-                                       parent_id=by_path["Inc/decls.inc"]["id"],
-                                       catalog_id=first["catalogId"], binding=None, binding_epoch=0)
-        projected = next(scope for scope in included["items"] if scope["function"] == "main")
-        assert projected["line"] is None and projected["file"] == "Inc/decls.inc"
-        local = await provider.page(query="", cursor=None, limit=100, parent_id=None,
-                                    scope_id=projected["id"], catalog_id=first["catalogId"],
-                                    binding=None, binding_epoch=0)
-        assert [(item["name"], item["file"]) for item in local["items"]] == [("included_local", "Inc/decls.inc")]
-        assert next(function for function in provider._views[first["catalogId"]].index.functions
-                    if function.name == "main").id == next(declaration.function_id
-                    for declaration in provider._views[first["catalogId"]].index.declarations
-                    if declaration.name == "included_local")
-        with pytest.raises(module.SourceCatalogFailure) as wrong_domain:
-            await provider.tree(query="", cursor=first_vars["nextCursor"], limit=1, parent_id=None,
-                                catalog_id=first["catalogId"], binding=None, binding_epoch=0)
-        assert wrong_domain.value.code == "MONITOR_SOURCE_CONTEXT_CHANGED"
-        with pytest.raises(module.SourceCatalogFailure) as wrong_scope:
-            await provider.page(query="", cursor=first_vars["nextCursor"], limit=100, parent_id=None,
-                                scope_id=projected["id"], catalog_id=first["catalogId"],
-                                binding=None, binding_epoch=0)
-        assert wrong_scope.value.code == "MONITOR_SOURCE_CONTEXT_CHANGED"
+        page = await provider.page(query="", cursor=None, limit=100, parent_id=None,
+                                   catalog_id=first["catalogId"], binding=None, binding_epoch=0)
+        assert first["total"] == page["total"] == 0
+        assert first["items"] == page["items"] == []
+        assert first["coverage"]["compiledDebug"]["available"] is False
+        assert first["coverage"]["parsedUnits"] == first["coverage"]["totalUnits"]
+        # AST coverage remains diagnostic even when no ELF can prove a leaf.
+        index = provider._views[first["catalogId"]].index
+        assert any(declaration.name == "included_local" for declaration in index.declarations)
+        assert any(function.name == "main" for function in index.functions)
         provider.close()
 
     try:
@@ -1003,11 +1055,11 @@ def test_long_unicode_query_cursors_work_across_public_tree_and_variable_pages(
     provider, facts, binding = _setup(monkeypatch, tmp_path)
     query = "中" * 128
     files = (f"Src/{query}a.c", f"Src/{query}b.c")
-    declarations = tuple(SourceDeclaration(f"{number:064x}", f"{number:064x}", query, "int", file, 1, 1,
+    declarations = tuple(SourceDeclaration(f"{number:064x}", f"{number:064x}", f"visible_{number}", "int", file, 1, 1,
                                            "none", "global", None, (), (file,))
                          for number, file in enumerate(files, 1))
     index = SourceIndex("engine", "version", "compdb", 1, 1, (), False, declarations, "f" * 64)
-    monkeypatch.setattr(module, "_load_base", lambda *_args: module._Base(index, _Dwarf(), files))
+    monkeypatch.setattr(module, "_load_base", lambda *_args: module._Base(index, _Dwarf(declarations), files))
     facts[0] = replace(facts[0], source_files=files, snapshot_paths=files)
 
     async def scenario() -> None:
@@ -1108,7 +1160,8 @@ def test_merged_declaration_and_normalized_function_budgets_reject_before_pages(
     index = SourceIndex("engine", "version", "manifest", 1, 1, (), True,
                         (first, second), "f" * 64)
     with pytest.raises(module.SourceCatalogFailure) as declarations:
-        module._materialize(index, None, None, None, ("Src/main.c",), max_declarations=1)
+        module._materialize(index, _Dwarf((first, second)), None, None,
+                            ("Src/main.c",), max_declarations=1)
     assert declarations.value.code == "MONITOR_SOURCE_INDEX_FAILED"
 
     dwarf_function = DwarfSourceFunction("work", "Src/main.c", 4, 2, "Src/main.c", 1, 10)
@@ -1118,13 +1171,16 @@ def test_merged_declaration_and_normalized_function_budgets_reject_before_pages(
         def source_functions(self):
             return (dwarf_function,)
     function_index = replace(index, declarations=(), functions=(matching, distinct))
-    view = module._View("a" * 64, {}, function_index, Functions(), (), {}, None, False, {},
+    visible = module.SourceItem("e" * 64, None, "retained", "int", "Src/main.c", 4, 2,
+                                "static_local", "work", (), "static", ("Src/main.c",),
+                                "retained", True, None, False, False, matching.id)
+    view = module._View("a" * 64, {}, function_index, Functions(), (visible,), {}, None, False, {},
                         source_files=("Src/main.c",))
     with pytest.raises(module.SourceCatalogFailure) as functions:
         module._tree_index(view, max_functions=1)
     assert functions.value.code == "MONITOR_SOURCE_INDEX_FAILED"
     module._tree_index(view, max_functions=2)
-    assert len(view.scopes_by_file["Src/main.c"]) == 2
+    assert len(view.scopes_by_file["Src/main.c"]) == 1
     ambiguous = replace(function_index, functions=(matching,))
     class AmbiguousFunctions:
         def source_functions(self):
@@ -1132,7 +1188,7 @@ def test_merged_declaration_and_normalized_function_budgets_reject_before_pages(
     view.index = ambiguous
     view.dwarf = AmbiguousFunctions()
     module._tree_index(view, max_functions=3)
-    assert len(view.scopes_by_file["Src/main.c"]) == 3
+    assert len(view.scopes_by_file["Src/main.c"]) == 1
 
 
 def test_auxiliary_debug_budget_does_not_break_legacy_lookup(

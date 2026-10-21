@@ -154,10 +154,10 @@ def test_monitor_closed_worker_selection_and_path_identity_boundaries(
     with pytest.raises(MonitorObservationError): module._endpoint(object(), paths, "probe-a")
 
 
-def test_monitor_production_supervisor_uses_normal_observation_profile(
+def test_monitor_production_supervisor_uses_preserve_observation_profile(
     debug_env: DebugEnv, tmp_path: Path
 ) -> None:
-    from stm32_toolkit.probe.worker import NORMAL_CONNECTION_POLICY, ProbeWorkerConfig
+    from stm32_toolkit.probe.worker import OBSERVE_PRESERVE_CONNECTION_POLICY, ProbeWorkerConfig
 
     profile = {
         "backend": "pyocd",
@@ -189,7 +189,7 @@ def test_monitor_production_supervisor_uses_normal_observation_profile(
         observation = captured[0]
         assert type(observation) is ProbeWorkerConfig
         assert observation.frequency_hz == 100_000
-        assert observation.connection_policy == NORMAL_CONNECTION_POLICY
+        assert observation.connection_policy == OBSERVE_PRESERVE_CONNECTION_POLICY
         assert observation.target_profile() == profile
         assert observation.transport_provider == base.transport_provider
     finally:

@@ -131,6 +131,7 @@ export function SourceCatalogPanel(p:SourceCatalogPanelProps):JSX.Element{
  const rootFailure=p.failures["catalog.source"],selectionFailure=p.failures["catalog.source-selection"];
  return<section className="panel source-catalog-panel" aria-label={copy.sourceTitle}>
    <h2>{copy.sourceTitle}</h2>
+   <p className="source-rules">{copy.sourceRules}</p>
    <label>{copy.search} <input value={query} placeholder={copy.sourceSearchPlaceholder} maxLength={128}
      onInput={event=>setQuery(event.currentTarget.value)} onKeyDown={event=>{if(event.key==="Enter")void p.onSearch(query.trim());}}/></label>
    <div className="source-actions"><button type="button" disabled={p.pending["catalog.source"]!==undefined}
@@ -147,6 +148,8 @@ export function SourceCatalogPanel(p:SourceCatalogPanelProps):JSX.Element{
      {tree.coverage.compiledDebug?.available&&<p role="status">{copy.sourceCompiled(tree.coverage.compiledDebug.variableCount,
        tree.coverage.compiledDebug.functionCount,tree.coverage.compiledDebug.fileCount)}</p>}
      <p role="status">{copy.sourceFileCount(tree.items.length,tree.total)} · {copy.sourceUnits(tree.coverage.parsedUnits,tree.coverage.totalUnits)}</p>
+     {tree.items.length===0&&<p role="status">{p.source.query?copy.sourceNoMatch:
+       tree.identity.buildId===null?copy.sourceInfoUnavailable:copy.sourceNoObservable}</p>}
      {!tree.coverage.complete&&<div className="source-coverage" role="status">
        <strong>{copy.sourcePartial}</strong>
        {tree.coverage.truncated&&<span>{copy.sourceTruncated}</span>}

@@ -109,6 +109,7 @@ class _Node:
     dwarf_type: DwarfType | None
     depth: int
     descendants: int
+    address: int | None = None
 
 
 @dataclass
@@ -411,6 +412,88 @@ def _eligible_leaf(selector: str, dwarf: DwarfCatalog | None, binding: object | 
     return None
 
 
+def _possible_scalar(dtype: DwarfType, depth: int) -> bool:
+    if depth > 6:
+        return False
+    if dtype.kind in _SCALAR:
+        return 0 < dtype.byte_size <= MAX_READ_BYTES
+    if dtype.kind == "array":
+        return (dtype.element_type is not None and dtype.element_count is not None
+                and dtype.element_count > 0 and _possible_scalar(dtype.element_type, depth + 1))
+    if dtype.kind in {"structure", "union"}:
+        names = Counter(member.name for member in dtype.members)
+        return any(member.bit_size is None and _EXPRESSION.fullmatch(member.name)
+                   and names[member.name] == 1 and _possible_scalar(member.type, depth + 1)
+                   for member in dtype.members)
+    return False
+
+
+def _array_candidate_indices(dwarf: DwarfCatalog, address: int,
+                             stride: int, admitted: int):
+    """Visit only array elements intersecting project-readable memory."""
+    intervals = getattr(dwarf, "readable_regions", None)
+    if not intervals:
+        yield from range(admitted)
+        return
+    last = -1
+    for start, end in intervals:
+        low = max(last + 1, 0, (start - address - stride + 1) // stride)
+        high = min(admitted - 1, (end - address - 1) // stride)
+        if low <= high:
+            yield from range(low, high + 1)
+            last = high
+
+
+def _observable_descendant(selector: str, dtype: DwarfType, dwarf: DwarfCatalog | None,
+                           address: int | None, depth: int, budget: list[int]) -> bool:
+    """Find a reader-proved scalar within the finite expansion envelope."""
+    if dwarf is None or address is None or not _possible_scalar(dtype, depth):
+        return False
+    if dtype.kind in _SCALAR:
+        if budget[0] <= 0:
+            raise SourceCatalogFailure("MONITOR_SOURCE_INDEX_FAILED", "Observable directory scan reached its bound")
+        budget[0] -= 1
+        return _eligible_leaf(selector, dwarf, None) == "probe_required"
+    if depth >= 6:
+        return False
+    if dtype.kind in {"structure", "union"}:
+        names = Counter(member.name for member in dtype.members)
+        for member in dtype.members[:4096]:
+            if (member.bit_size is not None or not _EXPRESSION.fullmatch(member.name)
+                    or names[member.name] != 1):
+                continue
+            if _observable_descendant(f"{selector}.{member.name}", member.type, dwarf,
+                                      address + member.offset, depth + 1, budget):
+                return True
+        if len(dtype.members) > 4096:
+            raise SourceCatalogFailure("MONITOR_SOURCE_INDEX_FAILED", "Observable directory scan reached its bound")
+        return False
+    element = dtype.element_type
+    count = dtype.element_count
+    if dtype.kind != "array" or element is None or count is None or element.byte_size <= 0:
+        return False
+    admitted = min(count, 4096)
+    for index in _array_candidate_indices(dwarf, address, element.byte_size, admitted):
+        if _observable_descendant(f"{selector}[{index}]", element, dwarf,
+                                  address + index * element.byte_size,
+                                  depth + 1, budget):
+            return True
+    if count > admitted:
+        raise SourceCatalogFailure("MONITOR_SOURCE_INDEX_FAILED", "Observable directory scan reached its bound")
+    return False
+
+
+def _root_observable(item: SourceItem, dtype: DwarfType | None,
+                     dwarf: DwarfCatalog | None, symbol: DwarfSourceSymbol | None) -> bool:
+    if (item.selector is None or item.scope_kind in {"local", "parameter"}
+            or dwarf is None or symbol is None or symbol.address is None
+            or symbol.location_error is not None or symbol.type_error is not None):
+        return False
+    if dtype is None:
+        return _eligible_leaf(item.selector, dwarf, None, symbol) == "probe_required"
+    return _observable_descendant(item.selector, dtype, dwarf, symbol.address, 0, [4096])
+
+
 def _context_reason(index: SourceIndex, facts: _Facts, binding: object | None,
                     binding_ok: bool) -> str | None:
     if facts.build_id is None:
@@ -597,10 +680,12 @@ def _materialize(index: SourceIndex, dwarf: DwarfCatalog | None,
                     if proved_symbol is symbol]
         role_source, proof_site = verified[0] if len(verified) == 1 else (None, None)
         item, dtype = _item_for_dwarf(symbol, dwarf, context, binding, role_source, proof_site)
+        if not _root_observable(item, dtype, dwarf, symbol):
+            continue
         if item.id in nodes or len(roots) >= max_declarations:
             raise SourceCatalogFailure("MONITOR_SOURCE_INDEX_FAILED", "Merged source declaration limit was reached")
         roots.append(item)
-        nodes[item.id] = _Node(item, dtype, 0, 0)
+        nodes[item.id] = _Node(item, dtype, 0, 0, symbol.address)
     for declaration in index.declarations:
         if allowed is not None and declaration.file not in allowed:
             continue
@@ -612,10 +697,12 @@ def _materialize(index: SourceIndex, dwarf: DwarfCatalog | None,
             dtype = None
         elif matched is not None and _direct_match(declaration, matched) and matched.die_offset is not None:
             continue  # Only one AST entity belongs to this concrete DIE.
+        if not _root_observable(item, dtype, dwarf, matched):
+            continue
         if item.id in nodes or len(roots) >= max_declarations:
             raise SourceCatalogFailure("MONITOR_SOURCE_INDEX_FAILED", "Merged source declaration limit was reached")
         roots.append(item)
-        nodes[item.id] = _Node(item, dtype, 0, 0)
+        nodes[item.id] = _Node(item, dtype, 0, 0, matched.address if matched is not None else None)
     return tuple(roots), nodes
 
 
@@ -624,7 +711,10 @@ def _source_id(kind: str, file: str) -> str:
 
 
 def _tree_index(view: _View, max_functions: int = _MAX_NORMALIZED_FUNCTIONS) -> None:
-    by_file: dict[str, list[dict[str, object]]] = {file: [] for file in view.source_files}
+    visible_files = {item.file for item in view.roots}
+    by_file: dict[str, list[dict[str, object]]] = {
+        file: [] for file in view.source_files if file in visible_files
+    }
     roots_by_scope: dict[str, list[SourceItem]] = {}
     compiled_functions: tuple[DwarfSourceFunction, ...] = (
         view.dwarf.source_functions() if view.dwarf is not None and hasattr(view.dwarf, "source_functions") else ()
@@ -681,9 +771,6 @@ def _tree_index(view: _View, max_functions: int = _MAX_NORMALIZED_FUNCTIONS) -> 
             })
             roots_by_scope[scope_id] = []
         return scope_id
-    for key, function in functions.items():
-        if key not in canonical_function or canonical_function[key] == key:
-            add_function_scope(function[1], key)
     for item in view.roots:
         if item.file not in by_file:
             continue
@@ -695,7 +782,7 @@ def _tree_index(view: _View, max_functions: int = _MAX_NORMALIZED_FUNCTIONS) -> 
         else:
             scope_id = _source_id("global", item.file)
         roots_by_scope.setdefault(scope_id, []).append(item)
-    for file in view.source_files:
+    for file in by_file:
         global_id = _source_id("global", file)
         if roots_by_scope.get(global_id):
             by_file[file].append({
@@ -703,12 +790,14 @@ def _tree_index(view: _View, max_functions: int = _MAX_NORMALIZED_FUNCTIONS) -> 
                 "file": file, "name": "global", "function": None, "line": None,
                 "variableCount": 0,
             })
+        by_file[file] = [scope for scope in by_file[file]
+                         if roots_by_scope.get(str(scope["id"]))]
         by_file[file].sort(key=lambda scope: (scope["line"] is not None,
                                                 scope["line"] or 0, str(scope["name"]).casefold(), str(scope["id"])))
     view.file_nodes = tuple({
         "kind": "file", "id": _source_id("file", file), "parentId": None,
         "file": file, "name": file.rsplit("/", 1)[-1], "variableCount": 0, "scopeCount": 0,
-    } for file in view.source_files)
+    } for file in view.source_files if file in visible_files)
     view.scopes_by_file = {file: tuple(scopes) for file, scopes in by_file.items()}
     view.roots_by_scope = {scope: tuple(items) for scope, items in roots_by_scope.items()}
     view.file_by_id = {str(node["id"]): str(node["file"]) for node in view.file_nodes}
@@ -732,7 +821,7 @@ def _matching_scopes(view: _View, file: str, query: str) -> tuple[tuple[dict[str
         scoped = roots.get(scope_id, ())
         filtered = (scoped if not query or file_hit or function_hit else
                     tuple(item for item in scoped if _matches(query, item.name)))
-        if not query or file_hit or function_hit or filtered:
+        if filtered:
             included.append({**scope, "variableCount": len(filtered)})
             matches[scope_id] = filtered
     return tuple(included), matches
@@ -744,7 +833,7 @@ def _tree_items(view: _View, query: str, parent_id: str | None) -> tuple[dict[st
         for file_node in view.file_nodes:
             file = str(file_node["file"])
             scopes, matches = _matching_scopes(view, file, query)
-            if not query or _matches(query, file) or scopes:
+            if scopes:
                 files.append({**file_node, "scopeCount": len(scopes),
                               "variableCount": sum(len(items) for items in matches.values())})
         return tuple(files)
@@ -759,7 +848,7 @@ def _catalog_id(identity: Mapping[str, object], signature: tuple[object, ...],
                 index: SourceIndex, source_files: tuple[str, ...] = (),
                 policy: str = SOURCE_LOCAL_HEADERS_POLICY) -> str:
     results = hashlib.sha256(json.dumps(
-        ["source-declaration-role-v1", policy, index.parsed_units, index.total_units, index.truncated,
+        ["source-observable-v1", policy, index.parsed_units, index.total_units, index.truncated,
          [[issue.unit, issue.code, issue.message] for issue in index.issues],
          [[decl.id, decl.entity_id, decl.entity_by_unit, decl.is_definition,
            decl.function_id, decl.translation_units] for decl in index.declarations],
@@ -818,7 +907,7 @@ def _page_payload(view: _View, items: tuple[SourceItem, ...], actual_total: int,
         "schemaVersion": 1, "catalogId": view.catalog_id, "identity": view.identity,
         "engine": _engine(view),
         "coverage": _coverage(view),
-        "total": actual_total if parent_id is not None and not normalized else len(items),
+        "total": len(items),
         "items": [], "nextCursor": None,
     }
     base_bytes = len(json.dumps(data, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
@@ -1040,22 +1129,36 @@ class SourceCatalogProvider:
         while root.item.parent_id is not None:
             root = view.nodes[root.item.parent_id]
         remaining = max(0, 4096 - root.descendants)
-        members: list[tuple[str, DwarfType | None, str | None]] = []
+        if remaining == 0:
+            raise SourceCatalogFailure("MONITOR_SOURCE_INDEX_FAILED", "Observable directory expansion reached its bound")
+        members: list[tuple[int, str, DwarfType | None, str | None, int | None]] = []
         member_name_counts: Counter[str] = Counter()
-        actual_total = 0
         if dtype.kind in {"structure", "union"}:
-            actual_total = len(dtype.members)
+            capacity = remaining
             member_name_counts = Counter(member.name for member in dtype.members)
-            members = [(member.name, member.type, None if member.bit_size is None else "unsupported_type")
-                       for member in dtype.members[:remaining]]
+            members = [(ordinal, member.name, member.type, None if member.bit_size is None else "unsupported_type",
+                        None if parent.address is None else parent.address + member.offset)
+                       for ordinal, member in enumerate(dtype.members[:4096])]
         elif dtype.kind == "array" and dtype.element_type is not None and dtype.element_count is not None:
-            actual_total = dtype.element_count
-            members = [(str(index), dtype.element_type, None) for index in range(min(dtype.element_count, remaining))]
-        root.descendants += len(members)
+            # Leave room for a proved scalar path below each aggregate element.
+            capacity = (remaining if dtype.element_type.kind in _SCALAR else
+                        max(1, remaining // (7 - parent.depth)) if remaining else 0)
+            admitted = min(dtype.element_count, 4096)
+            indices = (_array_candidate_indices(view.dwarf, parent.address,
+                                                 dtype.element_type.byte_size, admitted)
+                       if view.dwarf is not None and parent.address is not None
+                       and dtype.element_type.byte_size > 0 else ())
+            members = [(index, str(index), dtype.element_type, None,
+                        None if parent.address is None else parent.address + index * dtype.element_type.byte_size)
+                       for index in indices]
+        else:
+            capacity = remaining
         children: list[SourceItem] = []
         context = None if view.binding_ok else (
             "probe_required" if view.binding is None else "source_mismatch")
-        for ordinal, (name, child_type, intrinsic) in enumerate(members):
+        proof_budget = [4096]
+        omitted_visible = False
+        for ordinal, name, child_type, intrinsic, address in members:
             kind = "element" if dtype.kind == "array" else "member"
             selector = f"{item.selector}[{name}]" if kind == "element" else f"{item.selector}.{name}"
             if kind == "member":
@@ -1063,6 +1166,13 @@ class SourceCatalogProvider:
                     intrinsic = "unsupported_type"
                 elif member_name_counts[name] > 1 and intrinsic is None:
                     intrinsic = "ambiguous_symbol"
+            if (intrinsic is not None or child_type is None or
+                    not _observable_descendant(selector, child_type, view.dwarf,
+                                               address, parent.depth + 1, proof_budget)):
+                continue
+            if len(children) >= capacity:
+                omitted_visible = True
+                break
             identifier = hashlib.sha256((item.id + "\0" + str(ordinal) + "\0" + selector).encode("utf-8")).hexdigest()
             aggregate = child_type is not None and child_type.kind in {"structure", "union", "array"}
             has_descendants = bool(child_type is not None and (
@@ -1079,13 +1189,18 @@ class SourceCatalogProvider:
                                (*item.scope_path, item.name), item.storage, item.translation_units,
                                selector if intrinsic is None else None,
                                reason is None, reason, expandable,
-                               bool(depth_limited or child_type is not None and child_type.kind == "array" and
+                               bool(depth_limited or
+                                    child_type is not None and child_type.kind == "array" and
                                     child_type.element_count is not None and child_type.element_count > 4096),
                                None, kind, item.definition_site)
             children.append(child)
             view.nodes[identifier] = _Node(child, child_type if expandable else None,
-                                           parent.depth + 1, 0)
-        result = tuple(children), actual_total
+                                           parent.depth + 1, 0, address)
+        if omitted_visible and children:
+            children[-1] = replace(children[-1], truncated=True)
+            view.nodes[children[-1].id].item = children[-1]
+        root.descendants += len(children)
+        result = tuple(children), len(children)
         view.children_cache[item.id] = result
         return result
 

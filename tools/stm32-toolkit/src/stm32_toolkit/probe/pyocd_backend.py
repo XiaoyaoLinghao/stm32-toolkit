@@ -28,7 +28,8 @@ from .attach_diagnostics import (
     make_primary,
     SOURCE_CODES,
 )
-from .worker import NORMAL_CONNECTION_POLICY, UNDER_RESET_RECOVERY_CONNECTION_POLICY
+from .worker import (NORMAL_CONNECTION_POLICY, UNDER_RESET_RECOVERY_CONNECTION_POLICY,
+                     OBSERVE_PRESERVE_CONNECTION_POLICY)
 from .selector import (
     probe_fingerprint as calculate_probe_fingerprint,
     public_probe_selector,
@@ -171,11 +172,23 @@ class _DefaultPyOCDDriver:
     def create_session(
         self, probe: object, *, options: Mapping[str, object]
     ) -> object:
-        return self._session_type(
+        session = self._session_type(
             probe,
             auto_open=False,
             options=dict(options),
         )
+        if (options.get("connect_mode") == "attach"
+                and options.get("pack.debug_sequences.enable") is False):
+            # In pyOCD 0.45.1 the disabled pack sequence can still appear
+            # present and suppress generic ADI/CortexM initialization.
+            board = getattr(session, "board", None)
+            target = None if board is None else getattr(board, "target", None)
+            if target is None or not hasattr(target, "debug_sequence_delegate"):
+                raise ProbeBackendError("PROBE_BACKEND_ERROR", "Target debug sequence contract is unavailable")
+            target.debug_sequence_delegate = None
+            if target.debug_sequence_delegate is not None:
+                raise ProbeBackendError("PROBE_BACKEND_ERROR", "Target debug sequence contract is unavailable")
+        return session
 
     def program_file(
         self, session: object, image: bytes, *, options: Mapping[str, object]
@@ -400,10 +413,12 @@ class PyOCDBackend:
         if type(connection_policy) is not str or connection_policy not in {
             NORMAL_CONNECTION_POLICY,
             UNDER_RESET_RECOVERY_CONNECTION_POLICY,
+            OBSERVE_PRESERVE_CONNECTION_POLICY,
         }:
             raise ValueError("PyOCD connection policy is invalid")
         if (
-            connection_policy == UNDER_RESET_RECOVERY_CONNECTION_POLICY
+            connection_policy in {UNDER_RESET_RECOVERY_CONNECTION_POLICY,
+                                  OBSERVE_PRESERVE_CONNECTION_POLICY}
             and frequency_hz != 100_000
         ):
             raise ValueError("PyOCD connection policy requires 100 kHz")
@@ -924,6 +939,9 @@ class PyOCDBackend:
     def open_attach(
         self, probe_id: str, target: str, *, halt_on_connect: bool = False
     ) -> ProbeAttachmentEvidence:
+        preserve = self._connection_policy == OBSERVE_PRESERVE_CONNECTION_POLICY
+        if preserve and halt_on_connect:
+            raise ProbeBackendError("PROBE_OPERATION_UNAVAILABLE", "Preserve connection cannot request a halt")
         if not _valid_identifier(probe_id):
             raise ProbeBackendError(
                 "PROBE_SELECTION_REQUIRED", "An exact probe identifier is required"
@@ -962,12 +980,12 @@ class PyOCDBackend:
             "connect_mode": (
                 "under-reset"
                 if self._connection_policy == UNDER_RESET_RECOVERY_CONNECTION_POLICY
-                else "halt"
+                else "attach" if preserve else "halt"
             ),
             "dap_protocol": "swd",
             "frequency": self._frequency_hz,
             "no_config": True,
-            "pack.debug_sequences.enable": True,
+            "pack.debug_sequences.enable": not preserve,
             "primary_core": 0,
             "project_dir": os.getcwd(),
             "resume_on_disconnect": False,
@@ -1026,7 +1044,7 @@ class PyOCDBackend:
                     raise ProbeBackendError(
                         "PROBE_BACKEND_ERROR", "Target halt state is unavailable"
                     )
-            else:
+            elif not preserve:
                 attach_stage = "resume"
                 getattr(session_target, "resume")()
                 attach_stage = "resume-verify"
@@ -1062,7 +1080,7 @@ class PyOCDBackend:
             restoration_error: ProbeBackendError | None = None
             close_error: ProbeBackendError | None = None
             if session is not None:
-                if session_opened or session_target is not None:
+                if not preserve and (session_opened or session_target is not None):
                     restoration_error, close_error = self._restore_candidate_and_close(
                         session,
                         probe,

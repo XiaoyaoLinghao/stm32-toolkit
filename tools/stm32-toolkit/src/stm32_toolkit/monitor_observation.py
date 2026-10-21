@@ -1201,7 +1201,7 @@ class MonitorObservationSession:
             )
         try:
             page = self.catalog.variable_descriptors(
-                self.binding, query=query, cursor=cursor, limit=limit
+                self.binding, query=query, cursor=cursor, limit=limit, scalar_only=True
             )
         except DwarfError as error:
             return OperationResult.failure(
@@ -1461,7 +1461,7 @@ async def open_monitor_observation(
                 root_guard, _seams._test_backend_factory
             )
         else:
-            backend_contract = _seams.worker_config.for_observation()
+            backend_contract = _seams.worker_config.for_observation(preserve_target_state=True)
         supervisor = _seams.supervisor_factory(config, lease_manager, backend_contract)
         _verify_root_guard(root_guard)
         endpoint = await supervisor.start()

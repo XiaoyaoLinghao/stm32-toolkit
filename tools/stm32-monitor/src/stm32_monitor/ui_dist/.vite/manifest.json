@@ -1,15 +1,15 @@
 {
-  "_zh-BgbceqWt.js": {
-    "file": "assets/zh-BgbceqWt.js",
+  "_zh-C-fYD4hg.js": {
+    "file": "assets/zh-C-fYD4hg.js",
     "name": "zh"
   },
   "index.html": {
-    "file": "assets/index-CVOFfGiJ.js",
+    "file": "assets/index-D2-adn_x.js",
     "name": "index",
     "src": "index.html",
     "isEntry": true,
     "imports": [
-      "_zh-BgbceqWt.js"
+      "_zh-C-fYD4hg.js"
     ],
     "dynamicImports": [
       "node_modules/preact/dist/preact.module.js",
@@ -26,13 +26,13 @@
     "isDynamicEntry": true
   },
   "src/app.tsx": {
-    "file": "assets/app-Cw6Xv6Q_.js",
+    "file": "assets/app-CY8y_3H2.js",
     "name": "app",
     "src": "src/app.tsx",
     "isDynamicEntry": true,
     "imports": [
       "node_modules/preact/dist/preact.module.js",
-      "_zh-BgbceqWt.js"
+      "_zh-C-fYD4hg.js"
     ]
   }
 }

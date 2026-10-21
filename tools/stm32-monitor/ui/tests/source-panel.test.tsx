@@ -7,7 +7,7 @@ import {sourcePage,sourceTreePage} from "./fixtures";
 
 const file=(id:string,name:string):SourceFileNode=>({kind:"file",id:id.repeat(64),parentId:null,
  file:`Src/${name}`,name,scopeCount:name==="empty.c"?0:1,variableCount:name==="empty.c"?0:1});
-const main=file("1","main.c"),safe=file("2","safe.c"),empty=file("3","empty.c");
+const main=file("1","main.c"),safe=file("2","safe.c");
 const scope:SourceScopeNode={kind:"scope",id:"4".repeat(64),parentId:main.id,file:main.file,
  name:"global",function:null,line:null,variableCount:1};
 const leaf:SourceCatalogItem={id:"5".repeat(64),parentId:null,name:"counter",typeName:"int",file:main.file,
@@ -15,24 +15,24 @@ const leaf:SourceCatalogItem={id:"5".repeat(64),parentId:null,name:"counter",typ
  selector:"counter",canAdd:true,reason:null,expandable:false,truncated:false,
  declaration:{kind:"global_definition",definitionSite:{file:main.file,line:8}}};
 const source=():SourceCatalogState=>({query:"",initialized:true,generation:1n,contextKey:"context",
- tree:{...sourceTreePage(),total:3,items:[main,safe,empty],nextCursor:null},branches:{
+ tree:{...sourceTreePage(),total:2,items:[main,safe],nextCursor:null},branches:{
   [main.id]:{...sourceTreePage(),total:1,items:[scope],nextCursor:null}},
  scopePages:{[scope.id]:{...sourcePage(),total:1,items:[leaf],cursor:null}},children:{},lastAddedId:null});
 const base=()=>({pending:{},failures:{},editBusy:false,onRetry:vi.fn(),onFirmware:vi.fn(),
  onSearch:vi.fn(),onChildren:vi.fn(),onSelect:vi.fn()});
 
-it("lists all source files before loading leaves, then expands only the requested scope",()=>{
+it("lists only files with eligible rows before loading leaves, then expands one scope",()=>{
  const props=base();render(<SourceCatalogPanel source={source()} {...props}/>);
  const region=screen.getByRole("region",{name:"源码目录结果"});
  expect(within(region).getByRole("button",{name:/main\.c/})).toBeVisible();
  expect(within(region).getByRole("button",{name:/safe\.c/})).toBeVisible();
- expect(within(region).getByRole("button",{name:/empty\.c/})).toBeVisible();
+ expect(within(region).queryByRole("button",{name:/empty\.c/})).toBeNull();
  expect(within(region).queryByRole("button",{name:"加入观测组草稿 counter"})).toBeNull();
  fireEvent.click(within(region).getByRole("button",{name:"展开 Src/main.c"}));
  fireEvent.click(within(region).getByRole("button",{name:"展开 global"}));
  expect(within(region).getByText("全局定义")).toBeVisible();
  expect(within(region).getByText("可采样")).toBeVisible();
- expect(within(region).getByText("已加载 1 / 1 条声明")).toBeVisible();
+ expect(within(region).getByText("已加载 1 / 1 个变量条目")).toBeVisible();
  fireEvent.click(within(region).getByRole("button",{name:"加入观测组草稿 counter"}));
  expect(props.onSelect).toHaveBeenCalledWith(leaf);
  fireEvent.input(screen.getByPlaceholderText("搜索名称、文件或函数"),{target:{value:"safe"}});
@@ -113,11 +113,29 @@ it("explains a new-policy outside-snapshot path requires project declarations be
  expect(screen.queryByText(/旧构建快照未收录/)).toBeNull();
 });
 
-it("does not call an incomplete empty file tree proof that source has no variables",()=>{
+it("does not call an incomplete empty result proof that source has no variables",()=>{
  const props=base(),current=source();
- const tree={...current.tree!,total:1,items:[empty],coverage:{...current.tree!.coverage,
+ const tree={...current.tree!,total:0,items:[],coverage:{...current.tree!.coverage,
   complete:false,totalUnits:53,parsedUnits:2,issues:[],
   compiledDebug:{available:false,variableCount:0,functionCount:0,fileCount:0}}};
  render(<SourceCatalogPanel source={{...current,tree}} {...props}/>);
- expect(screen.getByText("暂无可用源码信息；不能据此断定源码没有变量。")).toBeVisible();
+ expect(screen.getAllByText("暂无可用源码信息；不能据此断定源码没有变量。").length).toBeGreaterThan(0);
+});
+
+it("explains offline eligibility and distinguishes empty directory from search miss",()=>{
+ const props=base(),current=source(),pending={...leaf,canAdd:false,reason:"probe_required" as const};
+ const scopePages={[scope.id]:{...sourcePage(),total:1,items:[pending],cursor:null}};
+ const {rerender}=render(<SourceCatalogPanel source={{...current,scopePages}} {...props}/>);
+ const region=screen.getByRole("region",{name:"源码目录结果"});
+ fireEvent.click(within(region).getByRole("button",{name:"展开 Src/main.c"}));
+ fireEvent.click(within(region).getByRole("button",{name:"展开 global"}));
+ expect(within(region).getByText("待连接")).toBeVisible();
+ expect(within(region).getByRole("button",{name:"加入观测组草稿 counter"})).toBeDisabled();
+ expect(screen.getByText(/仅列出固定地址的全局／静态变量及可读成员/)).toBeVisible();
+ const emptyTree={...current.tree!,items:[],total:0,
+  identity:{...current.tree!.identity,buildId:"build"}};
+ rerender(<SourceCatalogPanel source={{...current,tree:emptyTree}} {...props}/>);
+ expect(screen.getByText("当前固件与源码未证明可观测变量条目；这不表示程序没有变量。")).toBeVisible();
+ rerender(<SourceCatalogPanel source={{...current,query:"none",tree:emptyTree}} {...props}/>);
+ expect(screen.getByText("没有符合搜索条件的可观测变量条目。")).toBeVisible();
 });

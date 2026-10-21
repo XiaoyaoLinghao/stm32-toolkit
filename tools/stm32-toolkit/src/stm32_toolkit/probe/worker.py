@@ -36,6 +36,7 @@ from .attach_diagnostics import (
 _VERSION = "stm32-toolkit-probe-worker/1"
 NORMAL_CONNECTION_POLICY = "normal"
 UNDER_RESET_RECOVERY_CONNECTION_POLICY = "under-reset-recovery"
+OBSERVE_PRESERVE_CONNECTION_POLICY = "observe-preserve"
 # 64 MiB is the frozen PyOCD flash-image bound; canonical base64 expansion plus
 # the closed envelope remains below this fixed IPC ceiling.
 _MAX_MESSAGE_BYTES = 96 * 1024 * 1024
@@ -86,9 +87,11 @@ class ProbeWorkerConfig:
             or not isinstance(profile_input, Mapping)
             or type(connection_policy) is not str
             or connection_policy
-            not in {NORMAL_CONNECTION_POLICY, UNDER_RESET_RECOVERY_CONNECTION_POLICY}
+            not in {NORMAL_CONNECTION_POLICY, UNDER_RESET_RECOVERY_CONNECTION_POLICY,
+                    OBSERVE_PRESERVE_CONNECTION_POLICY}
             or (
-                connection_policy == UNDER_RESET_RECOVERY_CONNECTION_POLICY
+                connection_policy in {UNDER_RESET_RECOVERY_CONNECTION_POLICY,
+                                      OBSERVE_PRESERVE_CONNECTION_POLICY}
                 and frequency_hz != 100_000
             )
         ):
@@ -111,12 +114,15 @@ class ProbeWorkerConfig:
             raise ProbeWorkerError("PROBE_PROTOCOL_INVALID", "Probe worker configuration is invalid")
         return value
 
-    def for_observation(self) -> "ProbeWorkerConfig":
+    def for_observation(self, *, preserve_target_state: bool = False) -> "ProbeWorkerConfig":
+        if type(preserve_target_state) is not bool:
+            raise TypeError("Probe worker observation policy is invalid")
         return ProbeWorkerConfig(
             frequency_hz=100_000,
             target_profile=self.target_profile(),
             transport_provider=self.transport_provider,
-            connection_policy=NORMAL_CONNECTION_POLICY,
+            connection_policy=(OBSERVE_PRESERVE_CONNECTION_POLICY if preserve_target_state
+                               else NORMAL_CONNECTION_POLICY),
         )
 
     def for_under_reset_recovery(self) -> "ProbeWorkerConfig":

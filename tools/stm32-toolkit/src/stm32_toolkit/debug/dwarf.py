@@ -1177,14 +1177,18 @@ class DwarfCatalog:
         query: str = "",
         cursor: str | None = None,
         limit: int = 100,
+        scalar_only: bool = False,
     ) -> CatalogPage:
         """Return one revalidated page of display-only variable metadata."""
 
+        if type(scalar_only) is not bool:
+            raise _fail("DWARF_QUERY_INVALID", "DWARF catalog policy is invalid")
         self.revalidate(binding)
         normalized = _catalog_query(query)
         page_limit = _catalog_limit(limit)
         offset = 0 if cursor is None else _decode_cursor(
-            cursor, "variables", self.elf_sha256, normalized
+            cursor, "variables-scalar" if scalar_only else "variables",
+            self.elf_sha256, normalized
         )
         descriptors: list[VariableDescriptor] = []
         for selector in sorted(self._symbols):
@@ -1206,6 +1210,9 @@ class DwarfCatalog:
             except DwarfError:
                 continue
             dwarf_type = selected.type
+            if scalar_only and (dwarf_type.kind not in {"integer", "boolean", "float", "enum", "pointer"}
+                                or selected.byte_size > 65_536):
+                continue
             descriptors.append(
                 VariableDescriptor(
                     selector=selector,
@@ -1232,7 +1239,8 @@ class DwarfCatalog:
         items = tuple(descriptors[offset : offset + page_limit])
         next_offset = offset + len(items)
         next_cursor = (
-            _encode_cursor("variables", self.elf_sha256, normalized, next_offset)
+            _encode_cursor("variables-scalar" if scalar_only else "variables",
+                           self.elf_sha256, normalized, next_offset)
             if next_offset < len(descriptors)
             else None
         )

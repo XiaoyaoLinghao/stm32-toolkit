@@ -746,6 +746,36 @@ def test_variable_catalog_describes_arrays_and_structures_without_capabilities()
         assert not hasattr(descriptor, "catalog")
 
 
+def test_monitor_scalar_descriptor_policy_filters_before_pages_and_binds_cursors() -> None:
+    binding = _firmware_binding(project_root=TOOL_ROOT)
+    current = DwarfCatalog.from_binding(binding, TOOL_ROOT)
+    generic = current.variable_descriptors(binding, limit=256)
+    scalar = current.variable_descriptors(binding, limit=256, scalar_only=True)
+    assert {item.selector for item in generic.items} - {item.selector for item in scalar.items} >= {
+        "values", "packet"
+    }
+    assert all(item.kind in {"integer", "boolean", "float", "enum", "pointer"}
+               for item in scalar.items)
+    first = current.variable_descriptors(binding, limit=1, scalar_only=True)
+    assert first.items == scalar.items[:1]
+    assert first.next_cursor is not None
+    with pytest.raises(DwarfError) as mismatched:
+        current.variable_descriptors(binding, cursor=first.next_cursor, limit=1)
+    assert mismatched.value.code == "DWARF_CURSOR_INVALID"
+    second = current.variable_descriptors(binding, cursor=first.next_cursor,
+                                          limit=256, scalar_only=True)
+    assert first.items + second.items == scalar.items
+    generic_first = current.variable_descriptors(binding, limit=1)
+    assert generic_first.next_cursor is not None
+    with pytest.raises(DwarfError) as reverse:
+        current.variable_descriptors(binding, cursor=generic_first.next_cursor,
+                                     limit=1, scalar_only=True)
+    assert reverse.value.code == "DWARF_CURSOR_INVALID"
+    with pytest.raises(DwarfError) as invalid:
+        current.variable_descriptors(binding, scalar_only=1)  # type: ignore[arg-type]
+    assert invalid.value.code == "DWARF_QUERY_INVALID"
+
+
 def test_variable_catalog_cursor_is_digest_and_query_bound_and_limits_are_strict() -> None:
     binding = _firmware_binding(project_root=TOOL_ROOT)
     current = DwarfCatalog.from_binding(binding, TOOL_ROOT)

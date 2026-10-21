@@ -652,6 +652,53 @@ def test_worker_config_derives_normal_observation_profile_without_recovery_mecha
     assert recovery_observation.transport_provider == "task8"
 
 
+def test_worker_config_preserve_observation_is_explicit_closed_and_reaches_child(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from stm32_toolkit.probe import worker as module
+
+    base = module.ProbeWorkerConfig(
+        target_profile={"backend": "pyocd", "mcu": "stm32f407vg"}
+    )
+    preserved = base.for_observation(preserve_target_state=True)
+    assert preserved.frequency_hz == 100_000
+    assert preserved.connection_policy == module.OBSERVE_PRESERVE_CONNECTION_POLICY
+    assert preserved.target_profile() == base.target_profile()
+    assert base.for_observation(preserve_target_state=False).connection_policy == (
+        module.NORMAL_CONNECTION_POLICY
+    )
+    for invalid in (0, 1, None, "true"):
+        with pytest.raises(TypeError):
+            base.for_observation(preserve_target_state=invalid)  # type: ignore[arg-type]
+    with pytest.raises(TypeError):
+        module.ProbeWorkerConfig(
+            connection_policy=module.OBSERVE_PRESERVE_CONNECTION_POLICY,
+            frequency_hz=1_000_000,
+        )
+
+    captured: list[tuple[int, str]] = []
+    class ChildBackend:
+        def __init__(self, driver=None, *, frequency_hz, connection_policy, **_kwargs):
+            captured.append((frequency_hz, connection_policy))
+        def close(self):
+            pass
+    class EofConnection:
+        def __init__(self):
+            self.sent = []
+        def send_bytes(self, payload):
+            self.sent.append(module._decode_message(payload))
+        def recv_bytes(self, maximum):
+            raise EOFError
+        def close(self):
+            pass
+    from stm32_toolkit.probe import pyocd_backend
+    monkeypatch.setattr(pyocd_backend, "PyOCDBackend", ChildBackend)
+    connection = EofConnection()
+    module._worker_main(connection, preserved, None)
+    assert connection.sent[0]["ok"] is True
+    assert captured == [(100_000, module.OBSERVE_PRESERVE_CONNECTION_POLICY)]
+
+
 def test_worker_config_and_direct_production_child_fail_closed() -> None:
     from stm32_toolkit.probe import worker as module
 
