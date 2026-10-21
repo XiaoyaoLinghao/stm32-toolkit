@@ -10,7 +10,7 @@ import {copy,formatCopy,operationSummary} from "./presentation/zh";
 import {IdentityBar} from "./components/IdentityBar";
 import {ProbePanel} from "./components/ProbePanel";
 import {CatalogPanel} from "./components/CatalogPanel";
-import {SourceCatalogPanel} from "./components/SourceCatalogPanel";
+import {SourceCatalogPanel,SourceDiagnostics} from "./components/SourceCatalogPanel";
 import {GroupPanel} from "./components/GroupPanel";
 import {SamplingControls} from "./components/SamplingControls";
 import {LiveTable} from "./components/LiveTable";
@@ -351,6 +351,7 @@ export function App():JSX.Element{
         </div>}
         <OperationRegion failures={state.failures} pending={state.pending} reconciling={state.reconciling} retryDisabledScopes={retryDisabledScopes}
           onRetry={(scope,id)=>controller.retry(scope,id)} onDismiss={(scope,id)=>controller.dismiss(scope,id)}/>
+        <SourceDiagnostics source={state.catalog.source}/>
         <section className="runtime-identity" aria-label={copy.runtimeIdentity}><h3>{copy.runtimeIdentity}</h3>
           <p>{copy.historyRun}：<code>{runId??"-"}</code></p>
           <p>{copy.liveSourceGroup}：<code>{status.sampling.groupId??"-"}</code></p>

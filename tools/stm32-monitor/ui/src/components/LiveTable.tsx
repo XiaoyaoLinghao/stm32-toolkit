@@ -1,6 +1,7 @@
 import type {JSX} from "preact";
 import type {LiveRow} from "../chart/series";
 import {copy,formatCopy,trendText} from "../presentation/zh";
+import {watchFullLabel,watchKey,watchLabel,watchLabelFromKey} from "../state/watch";
 
 export type LiveTableProps={
   rows:readonly LiveRow[];
@@ -11,10 +12,6 @@ export type LiveTableProps={
   waiting?:"connection"|"start"|undefined;
 };
 
-function watchLabel(row:LiveRow):string{
-  return row.watch.kind==="variable"?row.watch.expression:row.watch.registerPath;
-}
-
 export function LiveTable({rows,selectedSeries,onSeriesToggle,fresh=true,collapsed=false,waiting}:LiveTableProps):JSX.Element{
   const full=selectedSeries.length>=8;
   return<section className={`panel values-panel ${collapsed?"collapsed":""}`} aria-label={copy.valuesTitle}>
@@ -22,8 +19,8 @@ export function LiveTable({rows,selectedSeries,onSeriesToggle,fresh=true,collaps
       {selectedSeries.length>0&&<details className="selected-curves" hidden={collapsed}>
       <summary>{copy.selectedCurves}</summary><div className="selected-curves-popover">
       {selectedSeries.length>0&&<ul>{selectedSeries.map(key=>{
-        const label=key.startsWith("variable:")?`${copy.variables} ${key.slice(9)}`
-          :key.startsWith("register:")?`${copy.registers} ${key.slice(9)}`:key;
+        const label=key.startsWith("variable:")?`${copy.variables} ${watchLabelFromKey(key)}`:
+          key.startsWith("register:")?`${copy.registers} ${watchLabelFromKey(key)}`:watchLabelFromKey(key);
         return<li key={key}><code>{label}</code><button type="button" aria-label={`${copy.removeCurve}：${label}`}
           onClick={()=>void onSeriesToggle(key)}>{copy.removeCurve}</button></li>;
       })}</ul>}
@@ -32,10 +29,10 @@ export function LiveTable({rows,selectedSeries,onSeriesToggle,fresh=true,collaps
       {!fresh&&waiting===undefined&&rows.length>0&&<span className="stale-label">{copy.valuesStale}</span>}</div>
     <div className="table-scroll" hidden={collapsed}><table><thead><tr><th>{copy.watch}</th><th>{copy.value}</th><th>{copy.historyCaptured}</th><th>{copy.type}</th><th>{copy.trend}</th><th>{copy.curve}</th></tr></thead>
       <tbody>{rows.map(row=>{
-        const key=row.watch.kind==="variable"?`variable:${row.watch.expression}`:`register:${row.watch.registerPath}`;
+        const key=watchKey(row.watch);
         const selected=selectedSeries.includes(key);
         return<tr key={key}>
-          <td><code>{watchLabel(row)}</code></td>
+          <td><code title={watchFullLabel(row.watch)} aria-label={watchFullLabel(row.watch)}>{watchLabel(row.watch)}</code></td>
           <td>{row.errorCode!==null?<span>{copy.readFailed} <details><summary>{copy.diagnostics}</summary><code>{row.errorCode}</code></details></span>:
             waiting!==undefined&&row.displayValue===""&&row.capturedAtUtc===""?waiting==="connection"?copy.valuesAwaitConnection:copy.valuesAwaitStart:row.displayValue}</td>
           <td><time>{row.capturedAtUtc||"-"}</time></td>

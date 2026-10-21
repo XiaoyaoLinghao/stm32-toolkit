@@ -20,7 +20,7 @@ from stm32_toolkit.paths import WorkspacePaths
 LOGICAL_ID = UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
 
 
-def test_fresh_database_uses_normalized_history_schema_v2(tmp_path: Path) -> None:
+def test_fresh_database_uses_normalized_history_schema_v3(tmp_path: Path) -> None:
     database = MonitorDatabase(_paths(tmp_path))
     try:
         version, batch_columns, value_columns = database.write(
@@ -33,7 +33,7 @@ def test_fresh_database_uses_normalized_history_schema_v2(tmp_path: Path) -> Non
     finally:
         database.close()
 
-    assert version == 2
+    assert version == 3
     assert batch_columns == [
         "batch_id", "session_id", "run_id", "sequence", "captured_ns",
         "payload_json", "payload_bytes", "payload_sha256", "value_count",
@@ -1938,3 +1938,27 @@ def test_invalid_history_accounting_is_storage_corrupt(tmp_path: Path, malformat
         assert corrupt.value.code == "MONITOR_STORAGE_CORRUPT"
     finally:
         database.close()
+def test_v2_storage_upgrades_metadata_only_and_preserves_group_rows(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    store = GroupStore(paths)
+    try:
+        created = store.create_group("Saved", "", 250, (WatchItem.variable("counter"),), authorized=True)
+        assert created.ok
+    finally:
+        store.close()
+    path = paths.monitor_root / "monitor.sqlite3"
+    with sqlite3.connect(path) as connection:
+        before = (connection.execute("SELECT * FROM watch_groups").fetchall(), connection.execute("SELECT * FROM group_items").fetchall())
+        connection.execute("UPDATE monitor_metadata SET schema_version = 2")
+        connection.execute("PRAGMA user_version = 2")
+    reopened = GroupStore(paths)
+    try:
+        reopened._database.write(lambda connection: None)
+        loaded = reopened.get_group(created.data.group_id)
+        assert loaded.ok and loaded.data == created.data
+    finally:
+        reopened.close()
+    with sqlite3.connect(path) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert connection.execute("SELECT schema_version FROM monitor_metadata").fetchone()[0] == 3
+        assert (connection.execute("SELECT * FROM watch_groups").fetchall(), connection.execute("SELECT * FROM group_items").fetchall()) == before

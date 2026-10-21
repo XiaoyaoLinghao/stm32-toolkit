@@ -9,9 +9,9 @@ from uuid import UUID
 
 import pytest
 
-from stm32_monitor.models import WatchGroup, WatchItem
+from stm32_monitor.models import SampleValue, WatchGroup, WatchItem
 from stm32_monitor.protocol import failure, success
-from stm32_monitor.sampler import MonitorSampler, SamplerState
+from stm32_monitor.sampler import MonitorSampler, SamplerState, _output_values, _read_dependencies
 from stm32_toolkit.debug import (
     DebugFirmwareBinding,
     DebugReadItem,
@@ -1604,4 +1604,75 @@ def test_subscriber_drop_evidence_survives_eviction_without_affecting_fast_subsc
             await fast.aclose()
             await sampler.close()
 
+    asyncio.run(scenario())
+def test_u16_output_uses_one_batch_and_rejects_unavailable_or_invalid_bytes() -> None:
+    raw = WatchItem.variable("PC_send2[53]")
+    high = WatchItem.variable("PC_send2[54]")
+    combined = WatchItem.u16le(raw.selector, high.selector)
+    output = (raw, combined, high)
+    dependencies = _read_dependencies(output)
+    assert dependencies == (raw, high)
+    low_value = SampleValue(raw, "OK", typed_value={"expression": raw.selector, "typeName": "uint8_t", "value": 192, "rawHex": "0xc0", "bitWidth": 8})
+    high_value = SampleValue(high, "OK", typed_value={"expression": high.selector, "typeName": "uint8_t", "value": 20, "rawHex": "0x14", "bitWidth": 8})
+    values = _output_values(output, dependencies, (low_value, high_value))
+    assert [value.watch for value in values] == list(output)
+    assert values[0] is low_value and values[2] is high_value
+    assert values[1].typed_value == {"expression": "u16le(PC_send2[53], PC_send2[54])", "typeName": "uint16_t", "value": 5312, "rawHex": "0x14c0", "bitWidth": 16}
+    assert values[1].definition == {"kind": "u16le", "lowExpression": raw.selector, "highExpression": high.selector}
+    unavailable = _output_values((combined,), dependencies, (low_value, SampleValue(high, "ERROR", code="READ_FAILED"),))[0]
+    assert unavailable.status == "ERROR" and unavailable.code == "MONITOR_DERIVED_INPUT_UNAVAILABLE" and unavailable.typed_value is None
+    for malformed in (True, 256, -1, 20):
+        invalid = SampleValue(high, "OK", typed_value={"value": malformed, "rawHex": "0x14", "bitWidth": 8})
+        result = _output_values((combined,), dependencies, (low_value, invalid))[0]
+        if malformed == 20:
+            assert result.status == "OK"
+        else:
+            assert result.status == "ERROR" and result.code == "MONITOR_DERIVED_INPUT_INVALID"
+    mismatch = SampleValue(high, "OK", typed_value={"value": 20, "rawHex": "0x15", "bitWidth": 8})
+    assert _output_values((combined,), dependencies, (low_value, mismatch))[0].code == "MONITOR_DERIVED_INPUT_INVALID"
+
+
+def test_u16_expansion_limit_precedes_probe_admission(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        project = tmp_path / "project"
+        project.mkdir()
+        observation = FakeObservation(_binding(project))
+        watches = tuple(WatchItem.u16le(f"low_{index}", f"high_{index}") for index in range(129))
+        sampler = MonitorSampler(observation, FakeGroups(_group(items=watches)), FakeHistory())
+        result = await sampler.start(GROUP_ID, expected_revision=1)
+        assert not result.ok and result.code == "MONITOR_GROUP_LIMIT_EXCEEDED"
+        assert observation.revalidate_calls == 0 and observation.prepare_calls == 0
+        await sampler.close()
+    asyncio.run(scenario())
+
+
+def test_u16_sampler_reads_unique_dependencies_and_emits_only_saved_order(tmp_path: Path) -> None:
+    class ByteObservation(FakeObservation):
+        async def read_variables(self, expressions: tuple[str, ...]):
+            self.calls += 1
+            numbers = {"PC_send2[53]": 192, "PC_send2[54]": 20}
+            return OperationResult.success("read", DebugReadReport(self.binding, tuple(
+                DebugReadItem(expression, "ok", TypedValue(expression, "uint8_t", numbers[expression], f"0x{numbers[expression]:02x}", 8))
+                for expression in expressions
+            ), "2026-08-08T01:02:04.000000Z"))
+    async def scenario() -> None:
+        project = tmp_path / "project"
+        project.mkdir()
+        observation = ByteObservation(_binding(project))
+        low = WatchItem.variable("PC_send2[53]")
+        combined = WatchItem.u16le("PC_send2[53]", "PC_send2[54]")
+        history = FakeHistory()
+        sampler = MonitorSampler(observation, FakeGroups(_group(items=(low, combined))), history)
+        stream = sampler.subscribe()
+        try:
+            assert (await sampler.start(GROUP_ID, expected_revision=1)).ok
+            batch = await _next(stream)
+            assert observation.batch_args[0] == (("PC_send2[53]", "PC_send2[54]"), ())
+            assert tuple(value.watch for value in batch.values) == (low, combined)
+            assert batch.values[1].typed_value["value"] == 5312
+            assert (await sampler.stop()).ok
+            assert history.batches and history.batches[0].values[1].watch == combined
+        finally:
+            await stream.aclose()
+            await sampler.close()
     asyncio.run(scenario())

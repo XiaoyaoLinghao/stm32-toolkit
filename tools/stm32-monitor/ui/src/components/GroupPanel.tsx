@@ -1,6 +1,6 @@
 import type {JSX} from "preact";
 import {useCallback,useEffect,useRef,useState} from "preact/hooks";
-import type {ApiFailure,GroupDraft,GroupImportDocument,WatchGroup,WatchItem} from "../api/contract";
+import type {ApiFailure,GroupDraft,GroupImportDocument,WatchGroup} from "../api/contract";
 import {
   parseGroupImportDocument,
   previewGroupImport,
@@ -11,6 +11,7 @@ import type {GroupNavigation} from "../state/model";
 import {copy,errorText,formatCopy} from "../presentation/zh";
 import {FailureMessage} from "./FailureMessage";
 import {useDialogFocus} from "./dialog-focus";
+import {watchFullLabel,watchKey,watchLabel} from "../state/watch";
 
 export type GroupPanelProps={
   groups:readonly WatchGroup[];
@@ -43,10 +44,6 @@ export type GroupPanelProps={
   editorOpen?:boolean;
 };
 
-function watchKey(watch:WatchItem):string{
-  return watch.kind==="variable"?`variable:${watch.expression}`:`register:${watch.registerPath}`;
-}
-
 type ImportState=
   |{kind:"closed"}
   |{kind:"selecting"}
@@ -59,6 +56,9 @@ export function GroupPanel(p:GroupPanelProps):JSX.Element{
   const deleteConfirmation=useRef<{groupId:string;revision:bigint;generation:bigint}|null>(null);
   const [importState,setImportState]=useState<ImportState>({kind:"closed"});
   const [localEditorOpen,setLocalEditorOpen]=useState(!p.compact);
+  const [combineOpen,setCombineOpen]=useState(false);
+  const [lowExpression,setLowExpression]=useState("");
+  const [highExpression,setHighExpression]=useState("");
   const editorOpen=p.editorOpen??localEditorOpen;
   const fileRef=useRef<HTMLInputElement>(null);
   const importGeneration=useRef(0);
@@ -71,6 +71,7 @@ export function GroupPanel(p:GroupPanelProps):JSX.Element{
     mounted.current=true;
     return()=>{mounted.current=false;importGeneration.current+=1;};
   },[]);
+  useEffect(()=>{setCombineOpen(false);setLowExpression("");setHighExpression("");},[p.editorGeneration,p.draft.sourceGroupId]);
   useEffect(()=>{
     if(confirmDelete===null)return;
     const current=p.groups.find(group=>group.groupId===confirmDelete.groupId);
@@ -78,6 +79,12 @@ export function GroupPanel(p:GroupPanelProps):JSX.Element{
       clearDelete();
   },[confirmDelete,p.groups,p.editorGeneration,clearDelete]);
   const isNew=p.draft.sourceGroupId===null;
+  const variables=[...new Set(p.draft.items.filter(item=>item.kind==="variable").map(item=>item.expression))];
+  const low=variables.includes(lowExpression)?lowExpression:variables[0]??"";
+  const high=variables.includes(highExpression)?highExpression:variables.find(item=>item!==low)??"";
+  const combination={kind:"u16le" as const,lowExpression:low,highExpression:high};
+  const canCombine=variables.length>=2&&low!==high&&high!==""&&p.draft.items.length<256&&
+    !p.draft.items.some(item=>watchKey(item)===watchKey(combination));
   const exportDoc=toGroupImportDocument(p.groups);
   const exportBlob=()=>{
     const blob=new Blob([JSON.stringify(exportDoc,null,2)],{type:"application/json"});
@@ -210,8 +217,23 @@ export function GroupPanel(p:GroupPanelProps):JSX.Element{
     <table><thead><tr><th>{copy.watch}</th><th>{copy.action}</th></tr></thead>
       <tbody>{p.draft.items.map(item=>{
         const key=watchKey(item);
-        return<tr key={key}><td><code>{item.kind==="variable"?item.expression:item.registerPath}</code></td>
+        return<tr key={key}><td><code title={watchFullLabel(item)} aria-label={watchFullLabel(item)}>{watchLabel(item)}</code></td>
           <td><button type="button" disabled={locked} onClick={()=>void p.onRemove(key)}>{copy.remove}</button></td></tr>;})}</tbody></table>
+    <div className="group-combine">
+      <button type="button" aria-expanded={combineOpen} onClick={()=>setCombineOpen(value=>!value)}>{copy.combineU16}</button>
+      {combineOpen&&<div className="group-combine-controls">
+        {variables.length<2?<p className="hint">{copy.combineNeedVariables}</p>:<>
+          <label>{copy.combineLow} <select value={low} disabled={locked} onChange={event=>setLowExpression(event.currentTarget.value)}>
+            {variables.map(expression=><option key={expression} value={expression}>{expression}</option>)}
+          </select></label>
+          <label>{copy.combineHigh} <select value={high} disabled={locked} onChange={event=>setHighExpression(event.currentTarget.value)}>
+            {variables.map(expression=><option key={expression} value={expression}>{expression}</option>)}
+          </select></label>
+          <button type="button" disabled={locked||p.needsRefresh||p.nameReviewRequired||p.sourceProblem!==null&&p.sourceProblem!==undefined||!canCombine}
+            onClick={()=>void p.onDraftChange({...p.draft,items:[...p.draft.items,combination]})}>{copy.combineAdd}</button>
+        </>}
+      </div>}
+    </div>
     {p.failure!==null&&<FailureMessage failure={p.failure}/>}
     <button type="button" onClick={()=>void p.onSave()} disabled={p.draft.name===""||p.draft.items.length===0||locked||p.needsRefresh||p.nameReviewRequired||p.sourceProblem!==null&&p.sourceProblem!==undefined}>
       {isNew?copy.groupCreate:copy.groupSave}

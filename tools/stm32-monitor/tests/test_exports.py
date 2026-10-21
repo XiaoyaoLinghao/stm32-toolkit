@@ -2316,3 +2316,35 @@ def test_pending_rowid_zero_recovery_keeps_regular_marker(tmp_path: Path) -> Non
             exporter.close()
         if history is not None:
             history.close()
+def test_u16_batch_round_trips_history_and_csv_with_source_expressions(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    history = HistoryStore(paths)
+    exporter = HistoryExporter(paths, history)
+    low = WatchItem.variable("PC_send2[53]")
+    combined = WatchItem.u16le("PC_send2[53]", "PC_send2[54]")
+    batch = SampleBatch(
+        binding=_binding(paths), group_id=GROUP_ID, group_revision=1, run_id=RUN_ID,
+        sequence=1, scheduled_unix_ns=100, captured_unix_ns=200, latency_ns=100,
+        actual_rate_hz=1.0, subscriber_drops=0, history_drops=0, deadline_drops=0,
+        values=(
+            SampleValue(low, "OK", typed_value={"expression": low.selector, "typeName": "uint8_t", "value": 192, "rawHex": "0xc0", "bitWidth": 8}),
+            SampleValue(combined, "OK", typed_value={"expression": "u16le(PC_send2[53], PC_send2[54])", "typeName": "uint16_t", "value": 5312, "rawHex": "0x14c0", "bitWidth": 16},
+                definition={"kind": "u16le", "lowExpression": "PC_send2[53]", "highExpression": "PC_send2[54]"}),
+        ),
+    )
+    try:
+        assert history.append_batch(batch).ok
+        page = history.query_history(HistoryQuery("monitor-1", 0, 1_000))
+        assert page.ok and page.data.batches[0].values[1].watch == combined
+        assert page.data.batches[0].values[1].typed_value["value"] == 5312
+        artifact = exporter.create_export(ExportRequest("monitor-1", 0, 1_000, "csv"), authorized=True)
+        assert artifact.ok
+        with artifact.data.data_path.open(encoding="utf-8", newline="") as stream:
+            rows = list(csv.DictReader(stream))
+        assert len(rows) == 2
+        assert json.loads(rows[1]["watch"]) == combined.to_dict()
+        assert json.loads(rows[1]["typedValue"])["value"] == 5312
+        assert json.loads(rows[1]["definition"])["highExpression"] == "PC_send2[54]"
+    finally:
+        exporter.close()
+        history.close()

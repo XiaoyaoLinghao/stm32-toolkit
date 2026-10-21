@@ -1377,3 +1377,18 @@ def test_models_live_batch_rejects_scalar_definition_without_mutation() -> None:
         LiveEvent(1, "sample", payload)
 
     assert payload == before
+def test_u16_watch_has_canonical_ordered_unicode_identity_and_strict_wire_shape() -> None:
+    long = "😀" * 512
+    watch = WatchItem.u16le(long, "PC_send2[54]")
+    assert len(watch.selector) == 512 * 12 + len(json.dumps(["", "PC_send2[54]"], separators=(",", ":")))
+    assert WatchItem(watch.kind, watch.selector) == watch
+    assert WatchItem.from_dict(watch.to_dict()) == watch
+    assert WatchItem.from_dict({"kind": "u16le", "lowExpression": " PC_send2[53] ", "highExpression": "PC_send2[54]"}).operands == ("PC_send2[53]", "PC_send2[54]")
+    assert WatchItem.u16le("a", "b") != WatchItem.u16le("b", "a")
+    for invalid in ("a\n", "", "x" * 513):
+        with pytest.raises(ValueError):
+            WatchItem.u16le(invalid, "b")
+    with pytest.raises(ValueError):
+        WatchItem("u16le", '["a", "b"]')
+    with pytest.raises(ValueError):
+        WatchItem.from_dict({"kind": "u16le", "lowExpression": "a", "highExpression": "b", "extra": 1})

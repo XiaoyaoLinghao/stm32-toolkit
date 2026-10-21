@@ -38,7 +38,9 @@ export type Controller={
   close:()=>void;
 };
 const cloneWatch=(item:WatchItem):WatchItem=>item.kind==="variable"
-  ?{kind:"variable",expression:item.expression}:{kind:"register",registerPath:item.registerPath};
+  ?{kind:"variable",expression:item.expression}:item.kind==="register"
+    ?{kind:"register",registerPath:item.registerPath}
+    :{kind:"u16le",lowExpression:item.lowExpression,highExpression:item.highExpression};
 const cloneDraft=(draft:GroupDraft):GroupDraft=>({...draft,items:draft.items.map(cloneWatch)});
 const sameDraft=(left:GroupDraft,right:GroupDraft):boolean=>left.sourceGroupId===right.sourceGroupId&&left.expectedRevision===right.expectedRevision&&sameGroupContent(left,right);
 const cloneImport=(doc:GroupImportDocument):GroupImportDocument=>({schemaVersion:1,

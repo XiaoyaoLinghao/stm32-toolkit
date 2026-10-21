@@ -1,9 +1,10 @@
 import type {JSX} from "preact";
 import {useEffect,useRef,useState} from "preact/hooks";
-import type {ApiFailure,HistoryPage,HistoryQuery,SampleValue,WatchItem} from "../api/contract";
+import type {ApiFailure,HistoryPage,HistoryQuery,SampleValue} from "../api/contract";
 import {copy} from "../presentation/zh";
 import type {HistoryInFlight} from "../state/model";
 import {FailureMessage} from "./FailureMessage";
+import {watchFullLabel,watchLabel} from "../state/watch";
 
 export type FlattenedHistoryRow={runId:string;sequence:bigint;startOrdinal:bigint;batchValueCount:bigint;capturedAtUtc:string;valueOrdinal:bigint;value:SampleValue;};
 
@@ -42,10 +43,6 @@ export const historyRowKey=(row:FlattenedHistoryRow):string=>`${row.runId}:${row
 const maxHistoryNs=9_223_372_036_854_775_807n;
 const utc=(ns:bigint):string=>new Date(Number(ns/1_000_000n)).toISOString();
 const range=(query:HistoryQuery):string=>`${utc(query.startNs)} 至 ${utc(query.endNs)}`;
-
-function watchLabel(watch:WatchItem):string{
-  return watch.kind==="variable"?watch.expression:watch.registerPath;
-}
 
 export function HistoryPanel({query,page,inFlight=null,failure,cursorStack=[],busy=false,onLoad,onPage}:HistoryPanelProps):JSX.Element{
   const [start,setStart]=useState(()=>query===null?"":historyInput(query.startNs));
@@ -99,7 +96,7 @@ export function HistoryPanel({query,page,inFlight=null,failure,cursorStack=[],bu
         const value=row.value;
         return<tr key={historyRowKey(row)}>
           <td>{row.capturedAtUtc}</td>
-          <td><code>{watchLabel(value.watch)}</code></td>
+          <td><code title={watchFullLabel(value.watch)} aria-label={watchFullLabel(value.watch)}>{watchLabel(value.watch)}</code></td>
           <td>{value.status==="OK"?JSON.stringify(value.typedValue,(_k,v)=>typeof v==="bigint"?v.toString():v):<span>{copy.readFailed} <details><summary>{copy.diagnostics}</summary><code>{value.code}</code></details></span>}</td>
           <td><span>{copy.historyRun}：<code>{row.runId}</code></span> · <span>{copy.historySequence}：{row.sequence.toString()}</span> · <span>{copy.historyOrdinal}：{row.valueOrdinal.toString()}</span></td>
         </tr>;

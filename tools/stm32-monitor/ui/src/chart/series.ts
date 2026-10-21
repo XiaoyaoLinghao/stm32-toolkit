@@ -1,10 +1,11 @@
 import {knownTypedValue,type HistoryPage,type JsonValue,type SampleBatch,type SampleValue,type WatchGroup,type WatchItem} from "../api/contract";
 import type {DropTotals,HistoryProjection,HistoryRow,LiveState} from "../state/model";
+import {watchKey} from "../state/watch";
+export {watchKey} from "../state/watch";
 
 export type ChartPoint={capturedAtUtc:string;capturedUnixNs:bigint;value:number|null;segment:bigint};
 export type LiveRow={watch:WatchItem;displayValue:string;rawHex:string|null;typeName:string|null;capturedAtUtc:string;trend:"up"|"down"|"flat"|"none";errorCode:string|null;numericValue:number|null};
 const zeroDrops=():DropTotals=>({subscriber:0n,history:0n,deadline:0n,service:0n});
-export const watchKey=(watch:WatchItem):string=>watch.kind==="variable"?`variable:${watch.expression}`:`register:${watch.registerPath}`;
 const format=(value:JsonValue):string=>typeof value==="bigint"?value.toString(10):typeof value==="string"?value:typeof value==="number"||typeof value==="boolean"||value===null?String(value):JSON.stringify(value,(_key,item)=>typeof item==="bigint"?item.toString(10):item);
 export const emptyRow=(watch:WatchItem):LiveRow=>({watch,displayValue:"",rawHex:null,typeName:null,capturedAtUtc:"",trend:"none",errorCode:null,numericValue:null});
 export const emptyLive=():LiveState=>({rows:new Map(),series:new Map(),selectedSeries:new Set(),binding:null,bindingEpoch:null,runId:null,groupId:null,groupRevision:null,stopPending:false,stopAccepted:false,retained:false,segment:0n,lastSequence:null,lastSampleCapturedAtUtc:null,actualRateHz:0,latencyNs:0n,authoritativeDrops:zeroDrops(),pendingDropDeltas:zeroDrops()});

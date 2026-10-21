@@ -59,16 +59,16 @@ beforeEach(()=>{
 });
 afterEach(()=>{vi.clearAllMocks();vi.unstubAllGlobals();});
 
-it("autoloads the shared source wire page without a probe and expands file and scope",async()=>{
+it("autoloads the shared source wire page without a probe and expands one file's globals",async()=>{
   const calls=installFetch(statusResult());render(<App/>);
-  expect(await screen.findByText("已加载 1 / 1 个文件",{exact:false})).toBeVisible();
+  expect(await screen.findByRole("button",{name:"展开 Src"})).toBeVisible();
   expect(calls).toContain("/api/v1/catalog/source-tree");
   const region=screen.getByRole("region",{name:"源码目录结果"});
   fireEvent.click(within(region).getByRole("button",{name:"展开 Src"}));
   fireEvent.click(within(region).getByRole("button",{name:"展开 Src/main.c"}));
-  fireEvent.click(await within(region).findByRole("button",{name:"展开 global"}));
-  expect(await within(region).findByText("counter")).toBeVisible();
-  expect(within(region).getByRole("button",{name:"加入观测组草稿 counter"})).toBeDisabled();
+  expect(await within(region).findByText("counter",{selector:"code"})).toBeVisible();
+  expect(within(region).getByText("待连接")).toBeVisible();
+  expect(within(region).queryByRole("button",{name:"加入观测组草稿 counter"})).toBeNull();
 });
 
 it("sends an explicit root refresh through App, controller, and the real client",async()=>{
@@ -90,7 +90,6 @@ it("uses a fresh real-client selection ACK for the draft and never reopens a dra
   fireEvent.click(within(region).getByRole("button",{name:"展开 Src"}));
   await waitFor(()=>expect(within(region).getByRole("button",{name:"展开 Src/main.c"})).toBeVisible());
   fireEvent.click(within(region).getByRole("button",{name:"展开 Src/main.c"}));
-  fireEvent.click(await within(region).findByRole("button",{name:"展开 global"}));
   const add=await within(region).findByRole("button",{name:"加入观测组草稿 counter"});
   expect(add).toBeEnabled();
   fireEvent.click(add);

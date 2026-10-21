@@ -750,18 +750,14 @@ def _decode_history_batch(
             watch = value["watch"]
             if type(watch) is not dict:
                 raise TypeError("history watch payload is invalid")
-            if set(watch) == {"kind", "expression"} and watch.get("kind") == "variable":
-                watch_key = ("variable", cast(str, watch["expression"]))
-            elif set(watch) == {"kind", "registerPath"} and watch.get("kind") == "register":
-                watch_key = ("register", cast(str, watch["registerPath"]))
-            else:
-                raise ValueError("history watch payload is invalid")
+            canonical_watch = WatchItem.from_dict(watch)
+            watch_key = (canonical_watch.kind, canonical_watch.selector)
             sample_watch = None if watch_cache is None else watch_cache.get(watch_key)
             if sample_watch is None:
-                sample_watch = WatchItem.from_dict(watch)
+                sample_watch = canonical_watch
                 if watch_cache is not None:
                     watch_cache[watch_key] = sample_watch
-            elif watch != sample_watch.to_dict():
+            if watch != sample_watch.to_dict():
                 raise ValueError("history watch payload is not canonical")
             sample = SampleValue(
                 sample_watch,
@@ -770,12 +766,8 @@ def _decode_history_batch(
                 code=cast(str | None, value["code"]),
                 definition=cast(Mapping[str, object] | None, value["definition"]),
             )
-            selector_field = (
-                "expression" if sample.watch.kind == "variable" else "registerPath"
-            )
             if (
-                watch.get(selector_field) != sample.watch.selector
-                or value["status"] != sample.status
+                value["status"] != sample.status
                 or value["code"] != sample.code
             ):
                 raise ValueError("history value is not canonical")

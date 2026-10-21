@@ -227,8 +227,15 @@ class GroupStore:
             ((str(group.group_id), ordinal, item.kind, item.selector) for ordinal, item in enumerate(group.items)),
         )
 
-    @staticmethod
-    def _check_limits(connection: sqlite3.Connection, new_groups: Iterable[WatchGroup]) -> None:
+    def _require_group_response_bound(self, group: WatchGroup) -> None:
+        if not any(item.kind == "u16le" for item in group.items):
+            return
+        cursor = self._encode_cursor("0" * 64, MAX_GROUPS)
+        page = GroupPage((group,), cursor, "0" * 64)
+        if len(_json_bytes(page.to_dict())) > MAX_GROUP_PAGE_BYTES:
+            raise StorageFailure("MONITOR_GROUP_LIMIT_EXCEEDED", "watch group exceeds the response limit")
+
+    def _check_limits(self, connection: sqlite3.Connection, new_groups: Iterable[WatchGroup]) -> None:
         additions = tuple(new_groups)
         group_count = connection.execute("SELECT COUNT(*) FROM watch_groups").fetchone()[0]
         item_count = connection.execute("SELECT COUNT(*) FROM group_items").fetchone()[0]
@@ -238,6 +245,8 @@ class GroupStore:
             raise StorageFailure("MONITOR_GROUP_LIMIT_EXCEEDED", "watch item limit was exceeded")
         if item_count + sum(len(group.items) for group in additions) > MAX_TOTAL_ITEMS:
             raise StorageFailure("MONITOR_GROUP_LIMIT_EXCEEDED", "workspace watch item limit was exceeded")
+        for group in additions:
+            self._require_group_response_bound(group)
 
     def create_group(
         self,
@@ -320,6 +329,7 @@ class GroupStore:
                 total_without = connection.execute("SELECT COUNT(*) FROM group_items WHERE group_id <> ?", (str(group_id),)).fetchone()[0]
                 if total_without + len(updated.items) > MAX_TOTAL_ITEMS:
                     raise StorageFailure("MONITOR_GROUP_LIMIT_EXCEEDED", "workspace watch item limit was exceeded")
+                self._require_group_response_bound(updated)
                 payload = updated.to_dict()
                 cursor = connection.execute(
                     "UPDATE watch_groups SET name=?,name_key=?,description=?,interval_ms=?,revision=?,updated_at_utc=? WHERE group_id=? AND revision=?",

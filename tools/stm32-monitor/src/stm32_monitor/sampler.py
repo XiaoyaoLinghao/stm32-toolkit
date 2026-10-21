@@ -9,7 +9,7 @@ from enum import Enum
 from typing import TypeVar
 from uuid import UUID, uuid4
 
-from .models import SampleBatch, WatchGroup, WatchItem
+from .models import SampleBatch, SampleValue, WatchGroup, WatchItem
 from .probe_session import ProbeSession
 from .protocol import ProtocolResult, failure, success
 
@@ -20,6 +20,70 @@ HISTORY_QUEUE_BYTES = 8 * 1024 * 1024
 _STREAM_END = object()
 _HISTORY_END = object()
 _T = TypeVar("_T")
+
+
+def _read_dependencies(watches: tuple[WatchItem, ...]) -> tuple[WatchItem, ...]:
+    dependencies: list[WatchItem] = []
+    seen: set[WatchItem] = set()
+    for watch in watches:
+        ordinary = (
+            tuple(WatchItem.variable(expression) for expression in watch.operands)
+            if watch.kind == "u16le" else (watch,)
+        )
+        for item in ordinary:
+            if item not in seen:
+                seen.add(item)
+                dependencies.append(item)
+    return tuple(dependencies)
+
+
+def _byte_value(sample: SampleValue | None) -> int | None:
+    if sample is None or sample.status != "OK":
+        return None
+    value = sample.typed_value
+    if not isinstance(value, dict) and not hasattr(value, "get"):
+        return None
+    number = value.get("value")
+    raw = value.get("rawHex")
+    if (
+        type(number) is not int or not 0 <= number <= 255
+        or type(value.get("bitWidth")) is not int or value.get("bitWidth") != 8
+        or type(raw) is not str or len(raw) != 4 or not raw.startswith("0x")
+    ):
+        return None
+    try:
+        return number if int(raw[2:], 16) == number else None
+    except ValueError:
+        return None
+
+
+def _output_values(
+    watches: tuple[WatchItem, ...], dependencies: tuple[WatchItem, ...],
+    values: tuple[SampleValue, ...],
+) -> tuple[SampleValue, ...]:
+    by_watch = dict(zip(dependencies, values))
+    output: list[SampleValue] = []
+    for watch in watches:
+        if watch.kind != "u16le":
+            output.append(by_watch[watch])
+            continue
+        low_expression, high_expression = watch.operands
+        low = by_watch.get(WatchItem.variable(low_expression))
+        high = by_watch.get(WatchItem.variable(high_expression))
+        definition = {"kind": "u16le", "lowExpression": low_expression, "highExpression": high_expression}
+        if low is None or high is None or low.status != "OK" or high.status != "OK":
+            output.append(SampleValue(watch, "ERROR", code="MONITOR_DERIVED_INPUT_UNAVAILABLE", definition=definition))
+            continue
+        low_byte, high_byte = _byte_value(low), _byte_value(high)
+        if low_byte is None or high_byte is None:
+            output.append(SampleValue(watch, "ERROR", code="MONITOR_DERIVED_INPUT_INVALID", definition=definition))
+            continue
+        combined = low_byte + 256 * high_byte
+        output.append(SampleValue(watch, "OK", typed_value={
+            "expression": f"u16le({low_expression}, {high_expression})",
+            "typeName": "uint16_t", "value": combined, "rawHex": f"0x{combined:04x}", "bitWidth": 16,
+        }, definition=definition))
+    return tuple(output)
 
 
 @dataclass(frozen=True)
@@ -117,6 +181,7 @@ class MonitorSampler:
         self._subscribers: dict[asyncio.Queue[object], int] = {}
         self._group: WatchGroup | None = None
         self._watches: tuple[WatchItem, ...] = ()
+        self._dependencies: tuple[WatchItem, ...] = ()
         self._run_id: UUID | None = None
         self._epoch = 0
         self._sequence = 0
@@ -216,18 +281,22 @@ class MonitorSampler:
                     watches.append(watch)
             if len(watches) > 256:
                 return failure(operation, "MONITOR_GROUP_LIMIT_EXCEEDED", "active watch limit was exceeded")
+            dependencies = _read_dependencies(tuple(watches))
+            if len(dependencies) > 256:
+                return failure(operation, "MONITOR_GROUP_LIMIT_EXCEEDED", "active read dependency limit was exceeded")
             self._probe.invalidate_read_plan()
             admission = await self._probe.revalidate()
             if not admission.ok:
                 return failure(operation, admission.code, "sampling cannot be started", {})
             self._invalidate_epoch()
-            prepared = await self._probe.prepare_read_plan(tuple(watches))
+            prepared = await self._probe.prepare_read_plan(dependencies)
             if not prepared.ok:
                 self._probe.invalidate_read_plan()
                 return failure(operation, prepared.code, "sampling cannot be started", {})
             self._set_state(SamplerState.STARTING)
             self._group = group
             self._watches = tuple(watches)
+            self._dependencies = dependencies
             self._run_id = uuid4()
             self._sequence = 0
             self._last_capture_monotonic_ns = None
@@ -360,7 +429,7 @@ class MonitorSampler:
                     continue
                 started = time.perf_counter_ns()
                 scheduled_unix_ns = max(0, time.time_ns() - max(0, started - next_deadline))
-                outcome = await self._probe.read(self._watches)
+                outcome = await self._probe.read(self._dependencies)
                 if self._epoch != epoch or self.state is not SamplerState.RUNNING:
                     continue
                 if outcome.blocked_code is not None:
@@ -393,7 +462,7 @@ class MonitorSampler:
                     subscriber_drops=subscriber_drops,
                     history_drops=history_drops,
                     deadline_drops=deadline_drops,
-                    values=outcome.values,
+                    values=_output_values(self._watches, self._dependencies, outcome.values),
                 )
                 self._sequence += 1
                 self._enqueue_history(batch)
@@ -513,7 +582,7 @@ class MonitorSampler:
                 self._block(admission.code)
                 return failure(operation, admission.code, "sampling cannot be resumed", {})
             self._invalidate_epoch()
-            prepared = await self._probe.prepare_read_plan(self._watches)
+            prepared = await self._probe.prepare_read_plan(self._dependencies)
             if not prepared.ok:
                 self._block(prepared.code)
                 return failure(operation, prepared.code, "sampling cannot be resumed", {})
@@ -551,6 +620,7 @@ class MonitorSampler:
         self._run_gate = None
         self._group = None
         self._watches = ()
+        self._dependencies = ()
         self._run_id = None
         self._sequence = 0
         self._last_capture_monotonic_ns = None

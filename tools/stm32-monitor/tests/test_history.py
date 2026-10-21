@@ -460,7 +460,7 @@ def _rewrite_v1_payloads(connection: sqlite3.Connection, corruption: str) -> Non
         )
 
 
-def test_v1_history_migrates_to_normalized_v2_without_changing_flattened_semantics(
+def test_v1_history_migrates_through_v2_to_v3_without_changing_flattened_semantics(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -495,10 +495,10 @@ def test_v1_history_migrates_to_normalized_v2_without_changing_flattened_semanti
 
     connection = sqlite3.connect(database)
     try:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
         assert connection.execute(
             "SELECT schema_version FROM monitor_metadata"
-        ).fetchone()[0] == 2
+        ).fetchone()[0] == 3
         assert [row[1] for row in connection.execute("PRAGMA table_info(history_batches)")] == [
             "batch_id", "session_id", "run_id", "sequence", "captured_ns",
             "payload_json", "payload_bytes", "payload_sha256", "value_count",

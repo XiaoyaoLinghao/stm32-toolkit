@@ -1,5 +1,5 @@
 import type {JSX} from "preact";
-import {useState} from "preact/hooks";
+import {useEffect,useRef,useState} from "preact/hooks";
 import type {SourceCatalogItem,SourceFileNode,SourceScopeNode} from "../api/contract";
 import type {OperationFailure,PendingRequest,RequestScope,SourceCatalogState} from "../state/model";
 import {copy,sourceReasonText,sourceRoleText} from "../presentation/zh";
@@ -24,36 +24,36 @@ function SourceRow({item,source,pending,failures,editBusy,onRetry,onChildren,onS
  {item:SourceCatalogItem;depth?:number}):JSX.Element{
  const [open,setOpen]=useState(false),children=source.children[item.id],scope=nodeScope(item.id);
  const role=item.declaration?.kind??"unknown",definition=item.declaration?.definitionSite;
- const status=item.canAdd?copy.sourceSampleable:item.reason==="probe_required"?copy.sourceNeedsProbe:
-   item.expandable?copy.sourceExpandMembers:copy.sourceBrowseOnly;
+ const label=item.scope.kind==="element"?item.name.startsWith("[")?item.name:`[${item.name}]`:item.name;
+ const full=item.selector??`${item.file}${item.line===null?"":`:${item.line}`} / ${label}`;
  const owner=[item.file+(item.line===null?"":`:${item.line}`),item.scope.function??copy.sourceGlobalScope,
    ...item.scope.path].join(" / ");
  return<li className="source-item" data-depth={depth}>
    <div className="source-item-line">
      {item.expandable?<button type="button" className="source-expand" aria-expanded={open}
-       aria-label={`${open?copy.sourceCollapse:copy.sourceExpand} ${item.name}`}
+       aria-label={`${open?copy.sourceCollapse:copy.sourceExpand} ${full}`}
        onClick={()=>{setOpen(!open);if(!open&&children===undefined)void onChildren(item.id);}}>{open?"▾":"▸"}</button>
        :<span className="source-expand-placeholder" aria-hidden="true"/>}
-     <span className="source-item-label"><span className="source-item-heading"><code>{item.name}</code>
-       <span className="source-role-badge">{sourceRoleText(role)}</span>
-       <span className={`source-status-badge ${item.canAdd?"source-status-ready":""}`}>{status}</span></span>
-       <small className="source-owner">{item.typeName} · {copy.sourceOwnership} {owner}
-         {item.parentId!==null&&<> · {copy.sourceMemberPath} {[...item.scope.path,item.name].join(".")}</>}</small>
-       {role==="extern_declaration"&&definition!==null&&definition!==undefined&&
-         <small className="source-definition">{copy.sourceDefinition} {definition.file}:{definition.line}</small>}
-       {item.reason!==null&&<small className="source-reason">{sourceReasonText(item.reason)}</small>}
-       {item.truncated&&<small className="source-reason">{copy.sourceTruncated}</small>}
+     <span className="source-item-label"><span className="source-item-heading"><code title={full} aria-label={full}>{label}</code>
+       {item.reason==="probe_required"&&<span className="source-status-badge">{copy.sourceNeedsProbe}</span>}</span>
        {source.lastAddedId===item.id&&<small role="status">{copy.sourceAdded}</small>}
      </span>
-     <button type="button" aria-label={`${copy.addDraft} ${item.name}`} title={item.reason===null?copy.addDraft:sourceReasonText(item.reason)}
-       disabled={!item.canAdd||editBusy||pending["catalog.source-selection"]!==undefined} onClick={()=>void onSelect(item)}>+</button>
+     <details className="source-row-detail"><summary aria-label={`${copy.diagnostics} ${full}`}>ⓘ</summary>
+       <small>{item.typeName} · {sourceRoleText(role)}</small>
+       <small>{copy.sourceOwnership} {owner}</small>
+       {item.selector!==null&&<small>{item.selector}</small>}
+       {definition!==null&&definition!==undefined&&<small>{copy.sourceDefinition} {definition.file}:{definition.line}</small>}
+       {item.reason!==null&&<small>{sourceReasonText(item.reason)}</small>}
+       {item.truncated&&<small>{copy.sourceTruncated}</small>}
+     </details>
+     {item.canAdd&&<button type="button" aria-label={`${copy.addDraft} ${full}`} title={copy.addDraft}
+       disabled={editBusy||pending["catalog.source-selection"]!==undefined} onClick={()=>void onSelect(item)}>+</button>}
    </div>
    {open&&<div className="source-children">
      <NodeFeedback id={item.id} pending={pending} failures={failures} onRetry={onRetry}/>
      {children!==undefined&&<>
        <ul>{children.items.map(child=><SourceRow key={child.id} item={child} source={source} pending={pending}
          failures={failures} editBusy={editBusy} onRetry={onRetry} onChildren={onChildren} onSelect={onSelect} depth={depth+1}/>)}</ul>
-       <p>{copy.sourceDeclarationCount(children.items.length,children.total)}</p>
        {children.nextCursor===null&&children.items.length<children.total&&<small className="source-reason">{copy.sourceTruncated}</small>}
        {children.nextCursor!==null&&<button type="button" disabled={pending[scope]!==undefined}
          onClick={()=>void onChildren(item.id,true)}>{copy.nextPage}</button>}
@@ -75,10 +75,22 @@ const ordered=<T extends {name:string}>(items:Iterable<T>):T[]=>[...items].sort(
 function TreeContent(p:NodeProps):JSX.Element{
  type Expansion={generation:bigint;folderChoices:ReadonlyMap<string,boolean>;openFiles:ReadonlySet<string>;openScopes:ReadonlySet<string>};
  const [saved,setSaved]=useState<Expansion>({generation:p.source.generation,folderChoices:new Map(),openFiles:new Set(),openScopes:new Set()});
+ const autoGlobals=useRef(new Set<string>());
  const current:Expansion=saved.generation===p.source.generation?saved:{generation:p.source.generation,
   folderChoices:new Map(),openFiles:new Set(),openScopes:new Set()};
  const {folderChoices,openFiles,openScopes}=current;
  const tree=p.source.tree!,root=fileFolders(tree.items);
+ useEffect(()=>{
+  for(const fileId of openFiles){
+   const branch=p.source.branches[fileId];
+   if(branch===undefined)continue;
+   for(const scope of branch.items){
+    if(scope.function!==null||p.source.scopePages[scope.id]!==undefined||autoGlobals.current.has(scope.id))continue;
+    autoGlobals.current.add(scope.id);
+    void p.onChildren(scope.id);
+   }
+  }
+ },[openFiles,p.source.branches,p.source.scopePages,p.onChildren]);
  const toggle=(field:"openFiles"|"openScopes",id:string)=>{
   const next=new Set(current[field]);if(next.has(id))next.delete(id);else next.add(id);
   setSaved({...current,[field]:next});};
@@ -89,16 +101,24 @@ function TreeContent(p:NodeProps):JSX.Element{
   return<li key={scope.id} className="source-scope">
     <button type="button" aria-expanded={open} aria-label={`${open?copy.sourceCollapse:copy.sourceExpand} ${scope.name}`}
       onClick={()=>{toggle("openScopes",scope.id);if(!open&&page===undefined)void p.onChildren(scope.id);}}>
-      {open?"▾":"▸"} {scope.function??copy.sourceGlobalScope}{scope.line===null?"":`:${scope.line}`} · {scope.variableCount} {copy.sourceDeclaration}</button>
+      {open?"▾":"▸"} {scope.function??copy.sourceGlobalScope}</button>
     {open&&<div className="source-children">
       <NodeFeedback id={scope.id} pending={p.pending} failures={p.failures} onRetry={p.onRetry}/>
       {page!==undefined&&<><ul>{page.items.map(item=><SourceRow key={item.id} item={item} {...p}/>)}</ul>
-        <p className="source-page-count">{copy.sourceDeclarationCount(page.items.length,page.total)}</p>
         {page.items.length===0&&<p>{tree.coverage.complete?copy.sourceNoVariables:copy.sourceInfoUnavailable}</p>}
         {page.nextCursor!==null&&<button type="button" disabled={p.pending[scopeKey]!==undefined}
           onClick={()=>void p.onChildren(scope.id,true)}>{copy.nextPage}</button>}</>}
     </div>}
    </li>;
+ };
+ const globalScopeRow=(scope:SourceScopeNode):JSX.Element=>{
+  const page=p.source.scopePages[scope.id],scopeKey=nodeScope(scope.id);
+  return<li key={scope.id} className="source-global" aria-label={`${scope.file} ${scope.name}`}>
+   <NodeFeedback id={scope.id} pending={p.pending} failures={p.failures} onRetry={p.onRetry}/>
+   {page!==undefined&&<><ul>{page.items.map(item=><SourceRow key={item.id} item={item} {...p}/>)}</ul>
+    {page.nextCursor!==null&&<button type="button" disabled={p.pending[scopeKey]!==undefined}
+      onClick={()=>void p.onChildren(scope.id,true)}>{copy.nextPage}</button>}</>}
+  </li>;
  };
  const fileRow=(file:SourceFileNode):JSX.Element=>{
   const open=openFiles.has(file.id),branch=p.source.branches[file.id];
@@ -106,12 +126,10 @@ function TreeContent(p:NodeProps):JSX.Element{
     <button type="button" aria-expanded={open} aria-label={`${open?copy.sourceCollapse:copy.sourceExpand} ${file.file}`}
       title={file.file}
       onClick={()=>{toggle("openFiles",file.id);if(!open&&branch===undefined)void p.onChildren(file.id);}}>
-      {open?"▾":"▸"} <span className="source-file-path">{file.name}</span>
-      <small>{file.variableCount} {copy.sourceDeclaration}</small></button>
+      {open?"▾":"▸"} <span className="source-file-path">{file.name}</span></button>
     {open&&<div className="source-children">
       <NodeFeedback id={file.id} pending={p.pending} failures={p.failures} onRetry={p.onRetry}/>
-      {branch!==undefined&&<><ul>{branch.items.map(scopeRow)}</ul>
-        <p className="source-page-count">{copy.sourceScopeCount(branch.items.length,branch.total)}</p></>}
+      {branch!==undefined&&<ul>{branch.items.map(scope=>scope.function===null?globalScopeRow(scope):scopeRow(scope))}</ul>}
       {branch!==undefined&&branch.items.length===0&&<p>{tree.coverage.complete?copy.sourceNoScopes:copy.sourceInfoUnavailable}</p>}
     </div>}
    </li>;
@@ -147,25 +165,8 @@ export function SourceCatalogPanel(p:SourceCatalogPanelProps):JSX.Element{
    {tree===null&&p.pending["catalog.source"]===undefined&&rootFailure===undefined&&<p>{copy.sourceEmptyPrompt}</p>}
    {tree!==null&&<>
      {previous&&<p role="status">{copy.previousCatalog}</p>}
-     <p role="status">{copy.sourceFileCount(tree.items.length,tree.total)}</p>
      {tree.items.length===0&&<p role="status">{tree.identity.buildId===null?copy.sourceInfoUnavailable:
        p.source.query?copy.sourceNoMatch:copy.sourceNoObservable}</p>}
-     <details className="source-diagnostics"><summary>{copy.sourceIssues(tree.coverage.issues.length,
-       !tree.coverage.complete||tree.coverage.truncated)}</summary>
-       <div className="source-diagnostics-body">
-         <p>{copy.sourceRules}</p>
-         <p>{copy.sourceUnits(tree.coverage.parsedUnits,tree.coverage.totalUnits)}</p>
-         {tree.coverage.compiledDebug?.available&&<p>{copy.sourceCompiled(tree.coverage.compiledDebug.variableCount,
-           tree.coverage.compiledDebug.functionCount,tree.coverage.compiledDebug.fileCount)}</p>}
-         {!tree.coverage.complete&&<p>{copy.sourcePartial}</p>}
-         {tree.coverage.truncated&&<p>{copy.sourceTruncated}</p>}
-         {tree.coverage.issues.length>0&&<ul>{tree.coverage.issues.map((issue,index)=><li key={`${issue.code}-${index}`}>
-           {issue.code==="MONITOR_SOURCE_UNTRACKED_AST"&&issue.unit!==null?
-             copy.sourceUntrackedHeader(issue.unit):
-            issue.code==="MONITOR_SOURCE_OUTSIDE_SNAPSHOT_POLICY"&&issue.unit!==null?
-             copy.sourceOutsideSnapshotPolicy(issue.unit):`${issue.unit??copy.sourceUnknownUnit} · ${issue.message}`}</li>)}</ul>}
-       </div>
-     </details>
      {!tree.coverage.complete&&tree.items.every(file=>file.scopeCount===0)&&
        (tree.coverage.compiledDebug?.variableCount??0)===0&&
        (tree.coverage.compiledDebug?.functionCount??0)===0&&
@@ -175,5 +176,26 @@ export function SourceCatalogPanel(p:SourceCatalogPanelProps):JSX.Element{
      {selectionFailure!==undefined&&<p role="alert">{copy.sourceSelectionFailed} <code>{selectionFailure.code}</code>
        <button type="button" onClick={()=>p.onRetry("catalog.source-selection",selectionFailure.requestId)}>{copy.retry}</button></p>}
    </>}
+ </section>;
+}
+
+export function SourceDiagnostics({source}:{source:SourceCatalogState}):JSX.Element|null{
+ const tree=source.tree;
+ if(tree===null)return null;
+ return<section className="source-diagnostics" aria-label={copy.sourceTitle}>
+  <h3>{copy.sourceTitle}</h3>
+  <p>{copy.sourceFileCount(tree.items.length,tree.total)}</p>
+  <p>{copy.sourceRules}</p>
+  <p>{copy.sourceUnits(tree.coverage.parsedUnits,tree.coverage.totalUnits)}</p>
+  {tree.coverage.compiledDebug?.available&&<p>{copy.sourceCompiled(tree.coverage.compiledDebug.variableCount,
+    tree.coverage.compiledDebug.functionCount,tree.coverage.compiledDebug.fileCount)}</p>}
+  {!tree.coverage.complete&&<p>{copy.sourcePartial}</p>}
+  {tree.coverage.truncated&&<p>{copy.sourceTruncated}</p>}
+  {tree.coverage.issues.length>0&&<><h4>{copy.sourceIssues(tree.coverage.issues.length,
+    !tree.coverage.complete||tree.coverage.truncated)}</h4><ul>{tree.coverage.issues.map((issue,index)=><li key={`${issue.code}-${index}`}>
+      {issue.code==="MONITOR_SOURCE_UNTRACKED_AST"&&issue.unit!==null?
+        copy.sourceUntrackedHeader(issue.unit):
+        issue.code==="MONITOR_SOURCE_OUTSIDE_SNAPSHOT_POLICY"&&issue.unit!==null?
+        copy.sourceOutsideSnapshotPolicy(issue.unit):`${issue.unit??copy.sourceUnknownUnit} · ${issue.message}`}</li>)}</ul></>}
  </section>;
 }

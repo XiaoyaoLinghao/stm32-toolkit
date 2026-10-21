@@ -26,7 +26,8 @@ export type SourceTreePage=Omit<SourceCatalogPage,"items">&{items:readonly Sourc
 export type SourceSelection={catalogId:string;item:VariableWatch};
 export type VariableWatch={kind:"variable";expression:string};
 export type RegisterWatch={kind:"register";registerPath:string};
-export type WatchItem=VariableWatch|RegisterWatch;
+export type U16Watch={kind:"u16le";lowExpression:string;highExpression:string};
+export type WatchItem=VariableWatch|RegisterWatch|U16Watch;
 export type WatchGroup={groupId:string;name:string;description:string;intervalMs:number;items:readonly WatchItem[];revision:I64;createdAtUtc:string;updatedAtUtc:string};
 export type GroupPage={groups:readonly WatchGroup[];nextCursor:string|null;revision:string};
 export type GroupTransfer={name:string;description:string;intervalMs:number;items:readonly WatchItem[]};
@@ -169,7 +170,8 @@ function catalogItems<T extends {selector:string;group:CatalogGroup}>(value:unkn
   }
   return items;
 }
-export const watchItemGuard:DataGuard<WatchItem>=(value)=>{const v=object(value),kind=string(v.kind);if(kind==="variable"){exact(v,["kind","expression"]);return{kind:"variable",expression:string(v.expression)};}if(kind==="register"){exact(v,["kind","registerPath"]);return{kind:"register",registerPath:string(v.registerPath)};}throw new Error("unknown watch kind");};
+const u16Expression=(value:unknown):string=>{const text=string(value);if([...text].some(character=>character.charCodeAt(0)<32))throw new Error("invalid u16 expression");const normalized=text.trim().normalize("NFC");if(!normalized||[...normalized].length>512)throw new Error("invalid u16 expression");return normalized;};
+export const watchItemGuard:DataGuard<WatchItem>=(value)=>{const v=object(value),kind=string(v.kind);if(kind==="variable"){exact(v,["kind","expression"]);return{kind:"variable",expression:string(v.expression)};}if(kind==="register"){exact(v,["kind","registerPath"]);return{kind:"register",registerPath:string(v.registerPath)};}if(kind==="u16le"){exact(v,["kind","lowExpression","highExpression"]);return{kind:"u16le",lowExpression:u16Expression(v.lowExpression),highExpression:u16Expression(v.highExpression)};}throw new Error("unknown watch kind");};
 export const watchGroupGuard:DataGuard<WatchGroup>=(value)=>{const v=object(value);exact(v,["groupId","name","description","intervalMs","items","revision","createdAtUtc","updatedAtUtc"]);return{groupId:string(v.groupId),name:string(v.name),description:string(v.description),intervalMs:boundedInteger(v.intervalMs),items:array(v.items,watchItemGuard),revision:i64(v.revision),createdAtUtc:string(v.createdAtUtc),updatedAtUtc:string(v.updatedAtUtc)};};
 export const groupPageGuard:DataGuard<GroupPage>=(value)=>{const v=object(value);exact(v,["groups","nextCursor","revision"]);return{groups:array(v.groups,watchGroupGuard),nextCursor:nullable(v.nextCursor,string),revision:string(v.revision)};};
 export const groupTransferGuard:DataGuard<GroupTransfer>=(value)=>{const v=object(value);exact(v,["name","description","intervalMs","items"]);return{name:string(v.name),description:string(v.description),intervalMs:boundedInteger(v.intervalMs),items:array(v.items,watchItemGuard)};};

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import math
+import json
 import unicodedata
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -15,6 +16,7 @@ from stm32_toolkit.paths import require_safe_session_id
 
 
 MAX_SELECTOR_CHARS = 512
+MAX_U16_SELECTOR_CHARS = 2 * MAX_SELECTOR_CHARS * 12 + 7
 MAX_GROUP_NAME_CHARS = 128
 MAX_DESCRIPTION_CHARS = 1024
 MIN_INTERVAL_MS = 100
@@ -266,9 +268,39 @@ class WatchItem:
     selector: str
 
     def __post_init__(self) -> None:
-        if self.kind not in {"variable", "register"}:
+        if self.kind not in {"variable", "register", "u16le"}:
             raise ValueError("watch kind is invalid")
-        object.__setattr__(self, "selector", _require_text(self.selector, "watch selector", MAX_SELECTOR_CHARS))
+        if self.kind == "u16le":
+            selector = _require_text(self.selector, "watch selector", MAX_U16_SELECTOR_CHARS)
+            try:
+                operands = json.loads(selector)
+                if type(operands) is not list or len(operands) != 2:
+                    raise ValueError("watch selector is invalid")
+                canonical = self._u16_selector(*operands)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                raise ValueError("watch selector is invalid") from None
+            if selector != canonical:
+                raise ValueError("watch selector is not canonical")
+        else:
+            selector = _require_text(self.selector, "watch selector", MAX_SELECTOR_CHARS)
+        object.__setattr__(self, "selector", selector)
+
+    @staticmethod
+    def _u16_selector(low_expression: str, high_expression: str) -> str:
+        low = _require_text(low_expression, "low expression", MAX_SELECTOR_CHARS)
+        high = _require_text(high_expression, "high expression", MAX_SELECTOR_CHARS)
+        return json.dumps([low, high], ensure_ascii=True, separators=(",", ":"))
+
+    @classmethod
+    def u16le(cls, low_expression: str, high_expression: str) -> "WatchItem":
+        return cls("u16le", cls._u16_selector(low_expression, high_expression))
+
+    @property
+    def operands(self) -> tuple[str, str]:
+        if self.kind != "u16le":
+            raise ValueError("watch has no byte operands")
+        low, high = json.loads(self.selector)
+        return low, high
 
     @classmethod
     def variable(cls, expression: str) -> "WatchItem":
@@ -284,9 +316,14 @@ class WatchItem:
             return cls.variable(cast(str, value["expression"]))
         if set(value) == {"kind", "registerPath"} and value.get("kind") == "register":
             return cls.register(cast(str, value["registerPath"]))
+        if set(value) == {"kind", "lowExpression", "highExpression"} and value.get("kind") == "u16le":
+            return cls.u16le(cast(str, value["lowExpression"]), cast(str, value["highExpression"]))
         raise ValueError("watch item is invalid")
 
     def to_dict(self) -> dict[str, object]:
+        if self.kind == "u16le":
+            low, high = self.operands
+            return {"kind": "u16le", "lowExpression": low, "highExpression": high}
         field_name = "expression" if self.kind == "variable" else "registerPath"
         return {"kind": self.kind, field_name: self.selector}
 

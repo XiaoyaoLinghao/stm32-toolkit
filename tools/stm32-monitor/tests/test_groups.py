@@ -858,3 +858,21 @@ def test_groups_import_workspace_mismatch_preserves_persisted_state(tmp_path: Pa
             assert _storage_snapshot(paths, observer) == before
     finally:
         reopened.close()
+def test_u16_max_unicode_group_is_bounded_before_create_or_update_commit(tmp_path: Path) -> None:
+    store = GroupStore(_paths(tmp_path))
+    emoji = "😀"
+    pair = WatchItem.u16le(emoji * 512, "high")
+    wide = tuple(WatchItem.u16le(emoji * 507 + f"L{i:04d}", emoji * 507 + f"H{i:04d}") for i in range(256))
+    try:
+        created = store.create_group("Small", "", 250, (pair,), authorized=True)
+        assert created.ok and store.list_group_page(limit=1).ok
+        rejected_create = store.create_group("Too wide", "", 250, wide, authorized=True)
+        assert not rejected_create.ok and rejected_create.code == "MONITOR_GROUP_LIMIT_EXCEEDED"
+        original = store.get_group(created.data.group_id).data
+        rejected_update = store.update_group(original.group_id, expected_revision=original.revision, items=wide, authorized=True)
+        assert not rejected_update.ok and rejected_update.code == "MONITOR_GROUP_LIMIT_EXCEEDED"
+        assert store.get_group(original.group_id).data == original
+        listed = store.list_group_page(limit=1)
+        assert listed.ok and listed.data.groups == (original,)
+    finally:
+        store.close()

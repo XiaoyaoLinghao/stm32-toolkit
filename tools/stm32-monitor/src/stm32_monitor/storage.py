@@ -14,7 +14,7 @@ from stm32_toolkit.paths import WorkspacePaths
 
 
 APPLICATION_ID = 0x53544D4D
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 BUSY_TIMEOUT_MS = 250
 MAX_DATABASE_BYTES = 512 * 1024 * 1024
 _T = TypeVar("_T")
@@ -647,21 +647,24 @@ class MonitorDatabase:
                     (SELECT application_id FROM pragma_application_id),
                     (SELECT user_version FROM pragma_user_version),
                     (SELECT workspace_id FROM monitor_metadata WHERE singleton = 1),
+                    (SELECT schema_version FROM monitor_metadata WHERE singleton = 1),
                     (SELECT logical_bytes FROM monitor_history_accounting WHERE singleton = 1)
                 """
             ).fetchone()
-            if validation is None or len(validation) != 4:
+            if validation is None or len(validation) != 5:
                 raise StorageFailure(
                     "MONITOR_STORAGE_CORRUPT",
                     "monitor storage validation is incomplete",
                 )
-            application_id, version, workspace_id, logical_bytes = validation
+            application_id, version, workspace_id, metadata_version, logical_bytes = validation
             if application_id != APPLICATION_ID:
                 raise StorageFailure("MONITOR_STORAGE_INVALID", "monitor storage identity is invalid")
             if version > SCHEMA_VERSION:
                 raise StorageFailure("MONITOR_STORAGE_VERSION_UNSUPPORTED", "monitor storage version is unsupported")
             if version != SCHEMA_VERSION:
                 raise StorageFailure("MONITOR_STORAGE_INVALID", "monitor storage schema is invalid")
+            if metadata_version != SCHEMA_VERSION:
+                raise StorageFailure("MONITOR_STORAGE_CORRUPT", "monitor storage metadata version is invalid")
             if workspace_id != self.paths.workspace_id:
                 raise StorageFailure("MONITOR_WORKSPACE_MISMATCH", "monitor storage belongs to another workspace")
             if (
@@ -829,6 +832,17 @@ class MonitorDatabase:
         )
         connection.execute("PRAGMA user_version = 2")
 
+    def _migrate_v2(self, connection: sqlite3.Connection) -> None:
+        metadata = connection.execute(
+            "SELECT workspace_id, schema_version FROM monitor_metadata WHERE singleton = 1"
+        ).fetchone()
+        if metadata != (self.paths.workspace_id, 2):
+            if metadata is not None and metadata[0] != self.paths.workspace_id:
+                raise StorageFailure("MONITOR_WORKSPACE_MISMATCH", "monitor storage belongs to another workspace")
+            raise StorageFailure("MONITOR_STORAGE_CORRUPT", "monitor storage is corrupt")
+        connection.execute("UPDATE monitor_metadata SET schema_version = 3 WHERE singleton = 1")
+        connection.execute("PRAGMA user_version = 3")
+
     def _initialize(self, connection: sqlite3.Connection) -> None:
         connection.execute("BEGIN EXCLUSIVE")
         try:
@@ -851,6 +865,11 @@ class MonitorDatabase:
                 if application_id != APPLICATION_ID:
                     raise StorageFailure("MONITOR_STORAGE_INVALID", "monitor storage identity is invalid")
                 self._migrate_v1(connection)
+                self._migrate_v2(connection)
+            elif version == 2:
+                if application_id != APPLICATION_ID:
+                    raise StorageFailure("MONITOR_STORAGE_INVALID", "monitor storage identity is invalid")
+                self._migrate_v2(connection)
             connection.commit()
         except BaseException:
             if connection.in_transaction:
@@ -939,7 +958,7 @@ class MonitorDatabase:
         try:
             with self._integrity_lock:
                 version = connection.execute("PRAGMA user_version").fetchone()[0]
-                if allow_v1 and version == 1:
+                if allow_v1 and version in (1, 2):
                     if full_integrity:
                         row = connection.execute("PRAGMA quick_check(1)").fetchone()
                         if row is None or row[0] != "ok":
@@ -1068,7 +1087,7 @@ class MonitorDatabase:
             if _identity(self.path)[:2] != before[:2]:
                 raise StorageFailure("MONITOR_STORAGE_INVALID", "monitor storage changed while it was opened")
             stored_version = connection.execute("PRAGMA user_version").fetchone()[0]
-            initialized = not existed or stored_version == 1
+            initialized = not existed or stored_version in (1, 2)
             if initialized:
                 self._initialize(connection)
                 before = _identity(self.path)

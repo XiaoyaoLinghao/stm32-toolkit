@@ -65,6 +65,7 @@ export const copy={
   groupReviewName:"请检查新组名称；名称冲突仍以服务端核对为准。",groupConfirmName:"确认使用此名称",
   groupImportItems:"个对象",groupImportNoOverwrite:"导入不会覆盖已有组；名称冲突由服务端检查，失败时保留当前草稿。",
   name:"名称",description:"描述",interval:"采样间隔（ms）",watch:"观测对象",remove:"移除",
+  combineU16:"合并16位",combineLow:"低字节",combineHigh:"高字节",combineAdd:"添加组合",combineNeedVariables:"先在草稿中添加两个不同的变量。",
   groupCreate:"创建观测组",groupSave:"保存观测组",importReading:"正在读取导入文件…",importJsonInvalid:"导入文件不是有效的 JSON。",
   importReadFailed:"无法读取导入文件，请重新选择。",
   historyTitle:"历史查询",historyHint:"起止时间均按 UTC 解释；查询不会自动覆盖全部历史。",

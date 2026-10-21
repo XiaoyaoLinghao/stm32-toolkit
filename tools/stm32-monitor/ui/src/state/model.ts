@@ -1,6 +1,7 @@
 import type {ApiFailure,ExportArtifact,GroupDraft,HistoryPage,HistoryQuery,MonitorStatus,ObservationBinding,ProbeInfo,SampleValue,SourceCatalogPage,SourceFileNode,SourceScopeNode,SourceTreePage,VariableCatalogItem,RegisterCatalogItem,WatchGroup,WatchItem} from "../api/contract";
 import type {ChartPoint,LiveRow} from "../chart/series";
 import type {ZoomRange} from "../chart/zoom";
+import {watchKey} from "./watch";
 
 export type DropTotals={subscriber:bigint;history:bigint;deadline:bigint;service:bigint};
 export type RequestScope="initial"|"status"|"live.reconnect"|"probes"|"probe.connect"|"probe.reconnect"|"probe.release"|"catalog.variables"|"catalog.registers"|"catalog.source"|`catalog.source-node.${string}`|"catalog.source-selection"|"groups.list"|"groups.create"|"groups.update"|"groups.delete"|"groups.import"|"sampling.start"|"sampling.pause"|"sampling.resume"|"sampling.stop"|"history"|"export.create"|"export.status"|"export.download";
@@ -69,7 +70,7 @@ export type MonitorAction=LoadedAction
 
 export const emptyDraft:GroupDraft={sourceGroupId:null,expectedRevision:null,name:"",description:"",intervalMs:250,items:[]};
 export const draftFromGroup=(group:WatchGroup):GroupDraft=>({sourceGroupId:group.groupId,expectedRevision:group.revision,name:group.name,description:group.description,intervalMs:group.intervalMs,items:[...group.items]});
-const key=(item:WatchItem):string=>item.kind==="variable"?`variable:${item.expression}`:`register:${item.registerPath}`;
+const key=watchKey;
 export const sameGroupContent=(left:GroupDraft,right:GroupDraft):boolean=>left.name===right.name&&left.description===right.description&&left.intervalMs===right.intervalMs&&left.items.length===right.items.length&&left.items.every((item,index)=>key(item)===key(right.items[index]!));
 export const groupDirty=(state:MonitorState):boolean=>!sameGroupContent(state.groupDraft,state.groupBaseline);
 export const groupWorkflowBusy=(state:MonitorState):boolean=>state.groupWriteBusy||
