@@ -6,7 +6,7 @@ import type {SamplingStatus} from "../src/api/contract";
 import {watchGroup} from "./fixtures";
 
 function sampling(state:SamplingStatus["state"]):SamplingStatus{
-  const running=["STARTING","RUNNING","PAUSED"].includes(state);
+  const running=state==="RUNNING"||state==="PAUSED";
   return{
     state,active:running,blockedCode:state==="PAUSED_BLOCKED"?"MONITOR_PROBE_BUSY":null,
     groupId:state==="IDLE"?null:"group",groupRevision:state==="IDLE"?null:1n,
@@ -54,6 +54,7 @@ it.each([
     expect(within(panel).getByText("MONITOR_PROBE_BUSY")).toBeTruthy();
     expect(p.status.active).toBe(false);
   }
+  if(state==="STARTING")expect(p.status.active).toBe(false);
   if(state==="STOPPING")expect(p.status.active).toBe(false);
 });
 
