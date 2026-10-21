@@ -1,6 +1,6 @@
 # Windows 部署与 IDE 调试前置核对
 
-本文件面向 Windows x86_64、CPython 3.12 的发行包部署。最新已发布版本是 v1.0.1；当前源码候选标识为 v1.1.2，相关 Monitor 功能已进入代码，但未构建发行包或安装；当前候选范围见[源码交付规范](../superpowers/specs/2026-10-16-monitor-v112-source-delivery-design.md)，旧版资格事实见[发布状态](../release-status.md)及[v1.0.1 执行记录](../codex/returns/STM32TK-101/execution.md)。实际执行顺序、授权、留证和首错停止以[标准测试流程](standard-test-procedure.md)为准；已知限制见[发布状态](../release-status.md)，常见工程错误见[用户指南](../user-guide.md)。软件安装或离线参数检查不等于真实 IDE/探针验收。
+本文件面向 Windows x86_64、CPython 3.12 的发行包部署。最新已发布版本是 v1.0.1；当前源码候选标识为 v1.2.0，相关 Monitor 功能已进入代码，但未构建发行包或安装；当前候选范围见[源码交付规范](../superpowers/specs/2026-10-21-monitor-v120-delivery-design.md)，旧版资格事实见[发布状态](../release-status.md)及[v1.0.1 执行记录](../codex/returns/STM32TK-101/execution.md)。实际执行顺序、授权、留证和首错停止以[标准测试流程](standard-test-procedure.md)为准；已知限制见[发布状态](../release-status.md)，常见工程错误见[用户指南](../user-guide.md)。软件安装或离线参数检查不等于真实 IDE/探针验收。
 
 ## 固定发行与本机输入
 
@@ -22,7 +22,7 @@ if ($LASTEXITCODE -ne 0) { throw 'PyOCD module failed' }
 if ($LASTEXITCODE -ne 0) { throw 'PyOCD executable failed' }
 ```
 
-发行策略当前固定 PyOCD 0.45.1；1.1.2 候选未来若构建发行包并经另行授权的 Repair 成功，应检查 `DataRoot/runtime/1.1.2/Scripts/pyocd.exe`。最终 launcher 应报告与已验证模块一致的版本且绑定最终解释器。`import pyocd`、模块入口成功、文件存在或 Toolkit 版本成功，都不能单独证明 `pyocd.exe` 可供 IDE 使用。安装/Repair 失败时记录原状态与 rollback 证据；旧版 runtime 先隔离，既有事务可恢复分支按规则回滚，原工程及用户数据不改写。旧版回滚已验证范围见[发布状态](../release-status.md)，本候选不继承该发布资格。
+发行策略当前固定 PyOCD 0.45.1；1.2.0 候选未来若构建发行包并经另行授权的 Repair 成功，应检查 `DataRoot/runtime/1.2.0/Scripts/pyocd.exe`。最终 launcher 应报告与已验证模块一致的版本且绑定最终解释器。`import pyocd`、模块入口成功、文件存在或 Toolkit 版本成功，都不能单独证明 `pyocd.exe` 可供 IDE 使用。安装/Repair 失败时记录原状态与 rollback 证据；旧版 runtime 先隔离，既有事务可恢复分支按规则回滚，原工程及用户数据不改写。旧版回滚已验证范围见[发布状态](../release-status.md)，本候选不继承该发布资格。
 
 ## IDE 配置离线核对
 

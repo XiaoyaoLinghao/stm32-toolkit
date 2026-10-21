@@ -4,14 +4,14 @@
 
 STM32 Toolkit 是面向 STM32 工程的本地工具。CLI 与 stdio MCP 共用工程、构建、Probe Service、测试和 Monitor 合同；八个 Claude Code Skill 只是这些公开入口的适配层，产品核心不依赖特定 Agent 宿主。
 
-**版本状态：**[v1.0.1 已发布](docs/release-status.md)；当前源码候选标识为 **v1.1.2**，包含已验收的 Monitor 工作台更新，未发布、未安装。本轮仅交付源码分支，不代表新发行包或实机资格；状态见[发布状态](docs/release-status.md)。已安装使用请选已核验发行包及其匹配的 DataRoot。发行支持范围为 Windows x86_64、CPython `>=3.12,<3.13`。历史资格限制见[发布状态](docs/release-status.md)。
+**版本状态：**[v1.0.1 已发布](docs/release-status.md)；当前源码候选标识为 **v1.2.0**，包含已验收的 Monitor 工作台、源码目录、保留状态连接、u16 组合与一致读取更新，未发布、未安装。本轮仅交付源码分支，不代表新发行包或实机资格；状态见[发布状态](docs/release-status.md)。已安装使用请选已核验发行包及其匹配的 DataRoot。发行支持范围为 Windows x86_64、CPython `>=3.12,<3.13`。历史资格限制见[发布状态](docs/release-status.md)。
 
 ## 从已核验 runtime 开始
 
-将已核验发行包解压到稳定的 ToolkitRoot。DataRoot 要长期保留，并与工程、一次性测试目录分开。setup 的 `Check` 只读；审阅结果后，仅在缺少 runtime 时选择已授权的 `Bootstrap`，或在受控升级/修复时选择已授权的 `Repair`，然后再次运行 `Check`。本候选的 CLI/MCP 预期 `DATA_ROOT/runtime/1.1.2`；已发布 v1.0.1 包使用 `runtime/1.0.1`，均不回退到系统 Python。已有 v1.0.1 及更早获批 runtime 只能经获授权的 Repair 进入新候选，旧目录按既有事务规则隔离；恢复保证以[已记录的回滚范围](docs/release-status.md)为限。
+将已核验发行包解压到稳定的 ToolkitRoot。DataRoot 要长期保留，并与工程、一次性测试目录分开。setup 的 `Check` 只读；审阅结果后，仅在缺少 runtime 时选择已授权的 `Bootstrap`，或在受控升级/修复时选择已授权的 `Repair`，然后再次运行 `Check`。本候选的 CLI/MCP 预期 `DATA_ROOT/runtime/1.2.0`；已发布 v1.0.1 包使用 `runtime/1.0.1`，均不回退到系统 Python。已有 v1.1.2、v1.0.1 及更早获批 runtime 只能经获授权的 Repair 进入新候选，旧目录按既有事务规则隔离；恢复保证以[已记录的回滚范围](docs/release-status.md)为限。
 
 ```powershell
-$ToolkitRoot = 'C:\tools\stm32-toolkit-1.1.2'
+$ToolkitRoot = 'C:\tools\stm32-toolkit-1.2.0'
 $DataRoot = 'C:\data\stm32-toolkit'
 $ProjectRoot = 'C:\work\blinky'
 $SetupScript = Join-Path $ToolkitRoot 'bin\setup-stm32-env.ps1'
@@ -57,6 +57,6 @@ Monitor 是观测 UI：组由用户创建，不自动连接探针。应从已核
 - [用户指南与排障](docs/user-guide.md)：迁移、配置、构建、Probe Service、Monitor 和升级。
 - [Windows 部署与 IDE 前置核对](docs/testing/windows-deployment-and-ide-preflight.md)：最终 runtime 与调试器检查。
 - [架构](docs/architecture.md)、[开发](docs/development.md)、[标准测试流程](docs/testing/standard-test-procedure.md)及[发布资格](docs/testing/release-qualification.md)。
-- [变更记录](CHANGELOG.md)及[v1.1.2 源码交付规范](docs/superpowers/specs/2026-10-16-monitor-v112-source-delivery-design.md)。[v1.0.1 执行记录](docs/codex/returns/STM32TK-101/execution.md)保留其已发布资格事实。
+- [变更记录](CHANGELOG.md)及[v1.2.0 源码交付规范](docs/superpowers/specs/2026-10-21-monitor-v120-delivery-design.md)。[v1.0.1 执行记录](docs/codex/returns/STM32TK-101/execution.md)保留其已发布资格事实。
 
 MCP inventory 有全部 48 个公开名称，覆盖工程、构建、探针、诊断、测试、验收。`VS09-B` 的当前发行构建仍使用 `tools/release/build_0900_artifacts.py` 和固定的 `release_0900_policy.json`；历史文件名不表示当前另有 0.9 runtime。退出当前树的旧计划与报告仍可用 `git show 694c825d29a55a53052a148efa4cc6720c315a04:<path>` 查阅。

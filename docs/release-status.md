@@ -118,14 +118,31 @@ The exact authorized baseline fractions and unchanged collection rules are in
 [release qualification](testing/release-qualification.md). Numerical acceptance uses exact fractions
 before rounding and is bound to the measured candidate source.
 
-## v1.1.2 source candidate (not released)
+## v1.2.0 source candidate (not released)
 
-The accepted Monitor workbench update is being aligned to a v1.1.2 source-branch delivery. The
-latest published release remains v1.0.1; this candidate has no v1.1.2 bundle, installation,
+The current source candidate unifies Toolkit, Monitor, UI, plugin, launchers and release metadata
+at v1.2.0. It includes the accepted Monitor workbench, source catalog, preserved-state connection,
+u16 composition and consistent-read behavior. This source delivery has no v1.2.0 bundle,
+installation, tag, GitHub Release, browser qualification or physical-device qualification. The
+latest published release remains v1.0.1, and its coverage exception and release evidence do not
+transfer to v1.2.0.
+
+An existing v1.1.2 managed runtime is recognized as legacy during read-only `Check`; only an
+explicitly authorized `Repair` enters the existing upgrade transaction. Existing v1.1.2-generated
+projects remain readable with their original `generatedBy` value, and explicit configure still
+protects user-edited managed files and preserves eligible unowned editor files. Older supported
+versions retain their existing rules. Existing exports remain bound to their exact Toolkit and
+Monitor versions, so old exports require their original reader or a new export under v1.2.0.
+
+## v1.1.2 source delivery (not released)
+
+The accepted Monitor workbench update was recorded as a v1.1.2 source-branch delivery at
+`dcd0a21f605782929051c26773a01e18c02ff55f`. The latest published release remains v1.0.1;
+that candidate had no v1.1.2 bundle, installation,
 tag, GitHub Release, browser qualification or physical-device qualification. The v1.0.1 coverage
 exception and release evidence do not transfer to a future v1.1.2 release decision.
 
-The candidate recognizes an existing v1.0.1 managed runtime as legacy during read-only `Check`.
+The v1.1.2 candidate recognized an existing v1.0.1 managed runtime as legacy during read-only `Check`.
 Only an explicit, separately authorized `Repair` enters the existing upgrade transaction. It can
 read v1.0.1-generated projects without rewriting their historical `generatedBy` identity; an
 explicit configure still protects user-edited managed files. Existing history, group data and

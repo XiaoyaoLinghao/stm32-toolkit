@@ -774,7 +774,7 @@ def test_generation_spec_validation(tmp_path, field, rule):
 
 
 @pytest.mark.parametrize("schema_version", [2, 3])
-@pytest.mark.parametrize("producer_version", ["1.0.1", "1.0.0", "0.9.0"])
+@pytest.mark.parametrize("producer_version", ["1.1.2", "1.0.1", "1.0.0", "0.9.0"])
 def test_legacy_generation_producer_plans_and_emits_current_managed_manifest(
     tmp_path: Path, schema_version: int, producer_version: str
 ):
@@ -782,11 +782,16 @@ def test_legacy_generation_producer_plans_and_emits_current_managed_manifest(
     payload["schemaVersion"] = schema_version
     payload["generatedBy"] = {"tool": "stm32-toolkit", "version": producer_version}
     root = write_project(tmp_path / f"schema-{schema_version}-{producer_version}", payload)
+    user_settings = root / ".vscode" / "settings.json"
+    user_settings.parent.mkdir(exist_ok=True)
+    user_settings.write_bytes(b"user settings from an older project\n")
 
     plan = plan_for(root)
     assert plan.model.generation.version == producer_version
+    assert next(entry for entry in plan.files if entry.path == ".vscode/settings.json").status == "preserved-unowned"
     applied = apply_project_configuration(plan)
     assert applied.ok is True
+    assert user_settings.read_bytes() == b"user settings from an older project\n"
 
     project = json.loads((root / ".stm32-project.json").read_text(encoding="utf-8"))
     manifest = json.loads(
@@ -794,6 +799,7 @@ def test_legacy_generation_producer_plans_and_emits_current_managed_manifest(
     )
     assert project["generatedBy"]["version"] == producer_version
     assert manifest["toolVersion"] == __version__
+    assert ".vscode/settings.json" not in {item["path"] for item in manifest["files"]}
 
     # Historical producer and managed identity remain truthful; an explicit
     # configure plan emits the current managed manifest without rewriting the project.
@@ -815,6 +821,7 @@ def test_legacy_generation_producer_plans_and_emits_current_managed_manifest(
 
 def test_generation_producer_allowlist_is_exact_and_type_safe(tmp_path: Path):
     assert is_supported_generation_producer("stm32-toolkit", __version__)
+    assert is_supported_generation_producer("stm32-toolkit", "1.1.2")
     assert is_supported_generation_producer("stm32-toolkit", "1.0.1")
     assert is_supported_generation_producer("stm32-toolkit", "1.0.0")
     assert is_supported_generation_producer("stm32-toolkit", "0.9.0")

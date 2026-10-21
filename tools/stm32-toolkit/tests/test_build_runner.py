@@ -950,7 +950,7 @@ def test_run_build_accepts_legacy_0_9_producer_and_publishes_current_identity(
     assert result.ok is True, result
     identity = read_json(identity_path_for(root))
     project = read_json(root / ".stm32-project.json")
-    assert identity["toolkitVersion"] == "1.1.2"
+    assert identity["toolkitVersion"] == "1.2.0"
     assert project["generatedBy"]["version"] == "0.9.0"
     assert json.loads(manifest_path.read_text(encoding="utf-8"))["toolVersion"] == "0.9.0"
 
@@ -1064,7 +1064,7 @@ def test_run_build_success_debug_publishes_exact_evidence(
     assert identity_doc["mapPath"] == "build/arm-debug/firmware.map"
     assert identity_doc["targetDevice"] == "STM32F407VGTx"
     assert identity_doc["logicalProjectId"] == "12345678-1234-5678-1234-567812345678"
-    assert identity_doc["toolkitVersion"] == "1.1.2"
+    assert identity_doc["toolkitVersion"] == "1.2.0"
     assert identity_doc["buildId"] == report.identity.build_id
     assert len(identity_doc["gitHead"]) == 40
     assert identity_doc["entryPoint"] == 0x08000011

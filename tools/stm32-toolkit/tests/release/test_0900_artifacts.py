@@ -1,4 +1,4 @@
-"""Contract tests for the 1.1.2 offline release utility.
+"""Contract tests for the 1.2.0 offline release utility.
 
 The fixtures in this file are deliberately tiny and local.  They exercise the
 builder boundary without pretending that a fake wheelhouse is a real release
@@ -183,9 +183,9 @@ def test_bootstrap_anchor_binds_git_archive_bytes_not_worktree_filter_bytes():
     epoch = module._git_epoch(REPO_ROOT, head)
     source_archive = module._git_archive(REPO_ROOT, head, epoch)
     members = module._zip_members(source_archive)
-    setup = members["stm32-toolkit-1.1.2/bin/setup-stm32-env.ps1"].decode("utf-8")
-    utility = members["stm32-toolkit-1.1.2/tools/release/build_0900_artifacts.py"]
-    policy = members["stm32-toolkit-1.1.2/tools/release/release_0900_policy.json"]
+    setup = members["stm32-toolkit-1.2.0/bin/setup-stm32-env.ps1"].decode("utf-8")
+    utility = members["stm32-toolkit-1.2.0/tools/release/build_0900_artifacts.py"]
+    policy = members["stm32-toolkit-1.2.0/tools/release/release_0900_policy.json"]
     utility_match = re.search(r'(?m)^\$ReleaseUtilitySha256\s*=\s*"([0-9a-f]{64})"\s*$', setup)
     policy_match = re.search(r'(?m)^\$ReleasePolicySha256\s*=\s*"([0-9a-f]{64})"\s*$', setup)
     assert utility_match and policy_match
@@ -227,13 +227,13 @@ def _write_manifest_tree(root: Path) -> None:
     _write_wheel(wheel)
     payload = {
         "schema": "stm32-toolkit-release/1",
-        "productVersion": "1.1.2",
+        "productVersion": "1.2.0",
         "requiredPython": ">=3.12,<3.13",
         "platform": {"os": "windows", "architecture": "x86_64", "python": "cp312"},
         "source": {
             "repository": "https://github.com/XiaoyaoLinghao/stm32-toolkit.git",
             "commit": "a" * 40,
-            "archive": "stm32-toolkit-1.1.2-source.zip",
+            "archive": "stm32-toolkit-1.2.0-source.zip",
             "sha256": "b" * 64,
         },
         "runtimeStateSchema": "stm32-toolkit-runtime-state/1",
@@ -269,7 +269,7 @@ def test_policy_schema_and_license_authority_are_present():
     assert (REPO_ROOT / "LICENSE").is_file()
     policy = json.loads(POLICY.read_text(encoding="utf-8"))
     assert policy["repository"] == "https://github.com/XiaoyaoLinghao/stm32-toolkit.git"
-    assert policy["version"] == "1.1.2"
+    assert policy["version"] == "1.2.0"
     assert policy["directPins"]["jsonschema"] == "4.26.0"
 
 
@@ -283,10 +283,10 @@ def test_current_release_identity_is_consistent_across_builder_policy_and_schema
     policy = json.loads(POLICY.read_text(encoding="utf-8"))
     schema = json.loads(SCHEMA.read_text(encoding="utf-8"))
 
-    assert module.VERSION == "1.1.2"
+    assert module.VERSION == "1.2.0"
     assert policy["version"] == module.VERSION
     assert schema["properties"]["productVersion"]["const"] == module.VERSION
-    assert module.SOURCE_PREFIX == "stm32-toolkit-1.1.2/"
+    assert module.SOURCE_PREFIX == "stm32-toolkit-1.2.0/"
 
 
 def test_current_troubleshooting_points_to_the_candidate_runtime_and_source_archive():
@@ -298,9 +298,9 @@ def test_current_troubleshooting_points_to_the_candidate_runtime_and_source_arch
     spec.loader.exec_module(module)
 
     guide = module._troubleshooting().decode("utf-8")
-    assert "runtime/1.1.2/Scripts/pyocd.exe" in guide
-    assert "stm32-toolkit-1.1.2-source.zip" in guide
-    assert "stm32-toolkit-1.1.2/docs/testing/windows-deployment-and-ide-preflight.md" in guide
+    assert "runtime/1.2.0/Scripts/pyocd.exe" in guide
+    assert "stm32-toolkit-1.2.0-source.zip" in guide
+    assert "stm32-toolkit-1.2.0/docs/testing/windows-deployment-and-ide-preflight.md" in guide
     assert "runtime/1.0.0/" not in guide
 
 
@@ -383,9 +383,9 @@ def test_verify_bundle_rejects_hash_or_size_mismatch_before_mutation(tmp_path: P
 
 
 def _write_source_archive(root: Path, *, source_text: bytes = b"source\n") -> None:
-    archive = root / "stm32-toolkit-1.1.2-source.zip"
+    archive = root / "stm32-toolkit-1.2.0-source.zip"
     with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_STORED) as zf:
-        zf.writestr("stm32-toolkit-1.1.2/bin/setup-stm32-env.ps1", source_text)
+        zf.writestr("stm32-toolkit-1.2.0/bin/setup-stm32-env.ps1", source_text)
     manifest_path = root / "release" / "release-manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest["source"]["sha256"] = _sha(archive)
@@ -464,8 +464,8 @@ def _write_canonical_state_manifest(path: Path) -> None:
         wheels.append(
             {
                 "name": name,
-                "version": "1.1.2" if name.startswith("stm32-") else resolved[name],
-                "file": f"release/wheels/{name.replace('-', '_')}-{'1.1.2' if name.startswith('stm32-') else resolved[name]}-py3-none-any.whl",
+                "version": "1.2.0" if name.startswith("stm32-") else resolved[name],
+                "file": f"release/wheels/{name.replace('-', '_')}-{'1.2.0' if name.startswith('stm32-') else resolved[name]}-py3-none-any.whl",
                 "sha256": "b" * 64,
                 "size": 1,
                 "direct": name in direct or name.startswith("stm32-"),
@@ -485,13 +485,13 @@ def _write_canonical_state_manifest(path: Path) -> None:
     ]
     manifest = {
         "schema": "stm32-toolkit-release/1",
-        "productVersion": "1.1.2",
+        "productVersion": "1.2.0",
         "requiredPython": ">=3.12,<3.13",
         "platform": {"os": "windows", "architecture": "x86_64", "python": "cp312"},
         "source": {
             "repository": "https://github.com/XiaoyaoLinghao/stm32-toolkit.git",
             "commit": "a" * 40,
-            "archive": "stm32-toolkit-1.1.2-source.zip",
+            "archive": "stm32-toolkit-1.2.0-source.zip",
             "sha256": "d" * 64,
         },
         "runtimeStateSchema": "stm32-toolkit-runtime-state/1",
@@ -510,8 +510,8 @@ def test_runtime_state_verifier_accepts_canonical_state(tmp_path: Path):
         json.dumps(
             {
                 "schema": "stm32-toolkit-runtime-state/1",
-                "activeVersion": "1.1.2",
-                "highestInstalledVersion": "1.1.2",
+                "activeVersion": "1.2.0",
+                "highestInstalledVersion": "1.2.0",
                 "releaseManifestSha256": _sha(manifest),
                 "sourceCommit": "a" * 40,
                 "installGeneration": 1,
@@ -530,10 +530,11 @@ def test_runtime_state_verifier_accepts_canonical_state(tmp_path: Path):
 @pytest.mark.parametrize(
     ("active", "highest", "manifest_hash", "source_commit", "expected"),
     [
+        ("1.1.2", "1.1.2", "b" * 64, "b" * 40, "repairable"),
         ("1.0.1", "1.0.1", "b" * 64, "b" * 40, "repairable"),
         ("1.0.0", "1.0.0", "b" * 64, "b" * 40, "repairable"),
-        ("1.1.2", "1.1.2", "b" * 64, "b" * 40, "source-conflict"),
-        ("1.1.2", "1.1.3", "b" * 64, "b" * 40, "downgrade-refused"),
+        ("1.2.0", "1.2.0", "b" * 64, "b" * 40, "source-conflict"),
+        ("1.2.0", "1.2.1", "b" * 64, "b" * 40, "downgrade-refused"),
     ],
 )
 def test_runtime_state_upgrade_and_refusal_boundaries(
@@ -731,10 +732,10 @@ def test_sbom_has_closed_runtime_and_ui_relationships_and_unique_authority(tmp_p
         ("py3", "none", "any"), {"home-page": "https://example.invalid", "author": "Example", "license-expression": "MIT"},
         (), {}, "MIT",
     )
-    toolkit_path = tmp_path / "stm32_toolkit-1.1.2-py3-none-any.whl"
-    monitor_path = tmp_path / "stm32_monitor-1.1.2-py3-none-any.whl"
-    _write_wheel(toolkit_path, "stm32-toolkit", "1.1.2", ("example>=1.0.0",))
-    _write_wheel(monitor_path, "stm32-monitor", "1.1.2")
+    toolkit_path = tmp_path / "stm32_toolkit-1.2.0-py3-none-any.whl"
+    monitor_path = tmp_path / "stm32_monitor-1.2.0-py3-none-any.whl"
+    _write_wheel(toolkit_path, "stm32-toolkit", "1.2.0", ("example>=1.0.0",))
+    _write_wheel(monitor_path, "stm32-monitor", "1.2.0")
     document = module._spdx(
         {"example": info},
         {"stm32-toolkit": toolkit_path.read_bytes(), "stm32-monitor": monitor_path.read_bytes()},
@@ -776,9 +777,9 @@ def test_windows_bundle_keeps_release_members_available_below_source_prefix():
     # The contract is represented by the fixed archive member layout; the
     # real candidate build asserts the same closure before activation.
     members = {
-        "stm32-toolkit-1.1.2/tools/release/build_0900_artifacts.py",
-        "stm32-toolkit-1.1.2/release/release-manifest.json",
-        "stm32-toolkit-1.1.2/stm32-toolkit-1.1.2-source.zip",
+        "stm32-toolkit-1.2.0/tools/release/build_0900_artifacts.py",
+        "stm32-toolkit-1.2.0/release/release-manifest.json",
+        "stm32-toolkit-1.2.0/stm32-toolkit-1.2.0-source.zip",
     }
-    assert "stm32-toolkit-1.1.2/release/release-manifest.json" in members
-    assert "stm32-toolkit-1.1.2/stm32-toolkit-1.1.2-source.zip" in members
+    assert "stm32-toolkit-1.2.0/release/release-manifest.json" in members
+    assert "stm32-toolkit-1.2.0/stm32-toolkit-1.2.0-source.zip" in members
