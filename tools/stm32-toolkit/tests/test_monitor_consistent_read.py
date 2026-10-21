@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.util
+import json
+import subprocess
+import sys
 from dataclasses import replace
 
 import pytest
@@ -274,27 +278,39 @@ def test_dwarf_type_facts_control_private_unsigned_byte_qualification(
 
 
 def test_installed_pyocd_odd_two_bytes_split_but_aligned_word_is_one_access() -> None:
-    memory_module = pytest.importorskip("pyocd.core.memory_interface")
+    if importlib.util.find_spec("pyocd") is None:
+        pytest.skip("optional PyOCD is not installed")
+    # Keep optional PyOCD out of this pytest process: other regressions prove
+    # public Toolkit debug imports stay lazy within their shared interpreter.
+    script = """
+import json
+from pyocd.core.memory_interface import MemoryInterface
 
-    class OfflineMemory(memory_module.MemoryInterface):
-        def __init__(self) -> None:
-            self.calls = []
+class OfflineMemory(MemoryInterface):
+    def __init__(self):
+        self.calls = []
+    def read8(self, address, **kwargs):
+        self.calls.append((8, address))
+        return 0
+    def read16(self, address, **kwargs):
+        self.calls.append((16, address))
+        return 0
+    def read_memory_block32(self, address, size):
+        self.calls.append((32, address, size))
+        return [0x00010000] * size
 
-        def read8(self, address: int, **_kwargs: object) -> int:
-            self.calls.append((8, address))
-            return 0
-
-        def read16(self, address: int, **_kwargs: object) -> int:
-            self.calls.append((16, address))
-            return 0
-
-        def read_memory_block32(self, address: int, size: int) -> list[int]:
-            self.calls.append((32, address, size))
-            return [0x00010000] * size
-
-    reader = OfflineMemory()
-    assert reader.read_memory_block8(0x2001DC29, 2) == [0, 0]
-    assert reader.calls == [(8, 0x2001DC29), (8, 0x2001DC2A)]
-    reader.calls.clear()
-    assert reader.read_memory_block8(0x2001DC28, 4) == [0, 0, 1, 0]
-    assert reader.calls == [(32, 0x2001DC28, 1)]
+reader = OfflineMemory()
+odd = reader.read_memory_block8(0x2001DC29, 2)
+odd_calls = reader.calls[:]
+reader.calls.clear()
+word = reader.read_memory_block8(0x2001DC28, 4)
+print(json.dumps([odd, odd_calls, word, reader.calls]))
+"""
+    completed = subprocess.run(
+        [sys.executable, "-B", "-c", script],
+        capture_output=True, text=True, timeout=20, check=True,
+    )
+    assert json.loads(completed.stdout) == [
+        [0, 0], [[8, 0x2001DC29], [8, 0x2001DC2A]],
+        [0, 0, 1, 0], [[32, 0x2001DC28, 1]],
+    ]
