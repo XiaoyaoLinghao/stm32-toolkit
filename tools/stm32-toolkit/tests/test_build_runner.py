@@ -929,19 +929,21 @@ def test_run_build_accepts_schema_v3_managed_configuration(tmp_path: Path, monke
 
 
 @pytest.mark.parametrize("schema_version", [2, 3])
-def test_run_build_accepts_legacy_0_9_producer_and_publishes_current_identity(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, schema_version: int
+@pytest.mark.parametrize("producer_version", ["1.1.2", "0.9.0"])
+def test_run_build_accepts_legacy_producer_and_publishes_current_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, schema_version: int,
+    producer_version: str,
 ):
     root = prepare_project(
         tmp_path,
         overrides={
             "schemaVersion": schema_version,
-            "generatedBy": {"tool": "stm32-toolkit", "version": "0.9.0"},
+            "generatedBy": {"tool": "stm32-toolkit", "version": producer_version},
         },
     )
     manifest_path = root / ".stm32-toolkit" / "generated-files.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    manifest["toolVersion"] = "0.9.0"
+    manifest["toolVersion"] = producer_version
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     install_fake_cmake(monkeypatch, tmp_path)
 
@@ -951,8 +953,8 @@ def test_run_build_accepts_legacy_0_9_producer_and_publishes_current_identity(
     identity = read_json(identity_path_for(root))
     project = read_json(root / ".stm32-project.json")
     assert identity["toolkitVersion"] == "1.2.0"
-    assert project["generatedBy"]["version"] == "0.9.0"
-    assert json.loads(manifest_path.read_text(encoding="utf-8"))["toolVersion"] == "0.9.0"
+    assert project["generatedBy"]["version"] == producer_version
+    assert json.loads(manifest_path.read_text(encoding="utf-8"))["toolVersion"] == producer_version
 
 
 def test_run_build_rejects_drifted_generated_file(tmp_path: Path):
