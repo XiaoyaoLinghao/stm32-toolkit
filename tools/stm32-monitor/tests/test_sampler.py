@@ -25,6 +25,14 @@ from stm32_toolkit.debug import (
     MemoryRegionBinding,
     TypedValue,
 )
+from stm32_toolkit.debug.types import DwarfSelection, DwarfType
+from stm32_toolkit.monitor_observation import (
+    MonitorObservationSeams, MonitorObservationSession, _ReadPlanAdmission,
+)
+from stm32_toolkit.probe.model import OperationLevel
+from stm32_toolkit.probe.protocol import PROBE_PROTOCOL_VERSION
+from stm32_toolkit.probe.service import ProbeEndpoint
+from stm32_toolkit import __version__
 from stm32_toolkit.result import OperationResult
 from stm32_toolkit.paths import WorkspacePaths
 
@@ -75,6 +83,7 @@ class FakeObservation:
         self._admission_token = None
         self.plan_invalidations = 0
         self.prepare_calls = 0
+        self.prepare_pairs: list[tuple[tuple[str, str], ...]] = []
 
     def _invalidate_read_plan(self) -> None:
         self._admission_token = None
@@ -89,6 +98,7 @@ class FakeObservation:
         registers: tuple[str, ...],
         *,
         admission_token=None,
+        u16_pairs: tuple[tuple[str, str], ...] = (),
     ):
         token = self._admission_token if admission_token is None else admission_token
         if token is None or token is not self._admission_token:
@@ -96,6 +106,7 @@ class FakeObservation:
                 "prepare", "MONITOR_PROVENANCE_CHANGED", "changed", {}
             )
         self.prepare_calls += 1
+        self.prepare_pairs.append(u16_pairs)
         return OperationResult.success(
             "prepare", SimpleNamespace(variables=variables, registers=registers)
         )
@@ -1675,8 +1686,16 @@ def test_u16_sampler_reads_unique_dependencies_and_emits_only_saved_order(tmp_pa
             assert (await sampler.start(GROUP_ID, expected_revision=1)).ok
             batch = await _next(stream)
             assert observation.batch_args[0] == (("PC_send2[53]", "PC_send2[54]"), ())
+            assert observation.prepare_pairs == [(("PC_send2[53]", "PC_send2[54]"),)]
             assert tuple(value.watch for value in batch.values) == (low, combined)
             assert batch.values[1].typed_value["value"] == 5312
+            assert (await sampler.pause()).ok
+            assert (await sampler.resume()).ok
+            assert observation.prepare_pairs == [
+                (("PC_send2[53]", "PC_send2[54]"),),
+                (("PC_send2[53]", "PC_send2[54]"),),
+            ]
+            assert (await _next(stream)).values[1].typed_value["value"] == 5312
             assert (await sampler.stop()).ok
             assert history.batches and history.batches[0].values[1].watch == combined
         finally:
@@ -1715,30 +1734,95 @@ def test_u16_saved_imported_group_samples_history_and_csv_without_stale_bytes(tm
         assert group.items == (low, combined)
         assert groups.list_group_page().data.groups == (group,)
 
-        class ByteObservation(FakeObservation):
-            async def read_variables(self, expressions: tuple[str, ...]):
-                self.calls += 1
-                pair = (0, 0) if self.calls == 1 else (255, 255)
-                items = []
-                for index, expression in enumerate(expressions):
-                    if self.calls >= 3 and index == 1:
-                        items.append(DebugReadItem(expression, "error", code="DEBUG_VALUE_UNAVAILABLE"))
-                    else:
-                        number = pair[index]
-                        items.append(DebugReadItem(expression, "ok", TypedValue(
-                            expression, "uint8_t", number, f"0x{number:02x}", 8)))
-                return OperationResult.success("read", DebugReadReport(
-                    self.binding, tuple(items), "2026-08-08T01:02:04.000000Z"))
+        # Exercise the real private preparation and protected read path with an
+        # offline word reader. Only firmware admission and transport are faked.
+        binding = replace(
+            _binding(project), workspace_id=paths.workspace_id,
+            svd_readable_regions=(MemoryRegionBinding("PERIPH", 0x40000000, 0x100, "r--"),),
+        )
+        endpoint = ProbeEndpoint(
+            protocol=PROBE_PROTOCOL_VERSION, toolkit_version=__version__,
+            host="127.0.0.1", port=43123, token="1" * 64,
+            workspace_id=binding.workspace_id,
+            session_id=binding.observation_session_id,
+            lease_id=binding.lease_id, probe_id=binding.probe_id,
+            operation_level=OperationLevel.OBSERVE,
+        )
+
+        class Catalog:
+            elf_sha256 = binding.elf_sha256
+
+            def lookup(self, expression: str) -> DwarfSelection:
+                address = {low.selector: 0x20000001, high.selector: 0x20000002}[expression]
+                return DwarfSelection(
+                    expression, address,
+                    DwarfType("integer", "uint8_t", 1, signed=False, encoding="unsigned"),
+                )
+
+        class RootGuard:
+            def verify(self) -> None:
+                pass
+
+            def close(self) -> None:
+                pass
+
+        class Supervisor:
+            async def stop(self) -> None:
+                pass
+
+        class WordClient:
+            def __init__(self) -> None:
+                self.endpoint = endpoint
+                self.calls: list[tuple[int, int]] = []
+                self.words = iter((
+                    b"\x11\x00\x00\x22", b"\x11\x00\x00\x22",
+                    b"\x11\x00\x00\x22",
+                    b"\x11\xff\xff\x22", b"\x11\xff\xff\x22",
+                    b"\x11\x00\x00\x22", b"\x11\x01\x02\x22", b"\x11\x02\x03\x22",
+                ))
+
+            async def attach(self, probe_id: str, target: str):
+                return SimpleNamespace(
+                    probe_id=probe_id, requested_target=target,
+                    resolved_part_number="STM32F407VG", core_count=1,
+                )
+
+            async def read_memory(self, address: int, size: int) -> bytes:
+                self.calls.append((address, size))
+                assert (address, size) == (0x20000000, 4)
+                return next(self.words, b"\x11\x02\x03\x22")
+
+            async def close(self) -> None:
+                pass
 
         async def scenario():
-            observation = ByteObservation(replace(_binding(project), workspace_id=paths.workspace_id))
+            client = WordClient()
+            observation = MonitorObservationSession(
+                binding=binding, catalog=Catalog(), svd=None,
+                endpoint=endpoint, client=client, supervisor=Supervisor(),
+                root_guard=RootGuard(), model=object(), paths=paths,
+                seams=MonitorObservationSeams(),
+            )
+
+            async def admit():
+                observation._admission_generation += 1
+                observation._admission = _ReadPlanAdmission(
+                    observation._admission_generation, observation.binding
+                )
+                return OperationResult.success("admit", observation.binding)
+
+            observation.revalidate = admit
             sampler = MonitorSampler(observation, groups, history)
             stream = sampler.subscribe()
             try:
                 assert (await sampler.start(group.group_id, expected_revision=group.revision)).ok
+                assert len(observation._plan.prepared.protected_words) == 1
                 batches = [await _next(stream, 3) for _ in range(3)]
-                assert observation.batch_args[:3] == [((low.selector, high.selector), ())] * 3
+                assert client.calls[:8] == [(0x20000000, 4)] * 8
                 assert all(tuple(value.watch for value in batch.values) == (low, combined) for batch in batches)
+                assert [batch.values[0].typed_value["value"] if batch.values[0].status == "OK" else None
+                    for batch in batches] == [0, 255, None]
+                assert batches[2].values[0].code == "DEBUG_READ_UNSTABLE"
                 assert [batch.values[1].typed_value["value"] if batch.values[1].status == "OK" else None
                     for batch in batches] == [0, 65535, None]
                 assert [batch.values[1].code for batch in batches] == [None, None,
@@ -1747,6 +1831,7 @@ def test_u16_saved_imported_group_samples_history_and_csv_without_stale_bytes(tm
             finally:
                 await stream.aclose()
                 await sampler.close()
+                await observation.close()
         asyncio.run(scenario())
     finally:
         groups.close()

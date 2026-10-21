@@ -64,6 +64,14 @@ class _Resolved:
     size: int
     region: MemoryRegionBinding
     decode: Callable[[bytes], TypedValue]
+    unsigned_byte: bool = False
+
+
+@dataclass(frozen=True)
+class _ProtectedWord:
+    address: int
+    offsets: tuple[int, ...]
+    members: tuple[tuple[int, _Resolved], ...]
 
 
 @dataclass(frozen=True)
@@ -73,6 +81,7 @@ class _PreparedReadPlan:
         tuple[tuple[tuple[int, _Resolved], ...], ...], ...
     ]
     initial_items: tuple[DebugReadItem | None, ...]
+    protected_words: tuple[_ProtectedWord, ...] = ()
 
 
 def _fail(
@@ -347,7 +356,16 @@ def _variable(
         except Exception:
             raise _fail("DWARF_DECODE_FAILED", "DWARF variable cannot be decoded") from None
 
-    return _Resolved(expression, selected.address, selected.byte_size, region, decode)
+    unsigned_byte = (
+        selected.type.kind == "integer"
+        and selected.type.byte_size == 1
+        and selected.type.signed is False
+        and selected.type.encoding == "unsigned"
+    )
+    return _Resolved(
+        expression, selected.address, selected.byte_size, region, decode,
+        unsigned_byte=unsigned_byte,
+    )
 
 
 def _register(
@@ -495,16 +513,145 @@ def _resolve_items(
     return resolved, output
 
 
+def _u16_pairs(value: object, variables: tuple[str, ...]) -> tuple[tuple[str, str], ...]:
+    if (
+        type(value) is not tuple
+        or len(value) > MAX_BATCH_ITEMS
+        or any(
+            type(pair) is not tuple
+            or len(pair) != 2
+            or any(type(expression) is not str or expression not in variables for expression in pair)
+            for pair in value
+        )
+        or len(set(value)) != len(value)
+    ):
+        raise _fail("DEBUG_REQUEST_INVALID", "Debug read pair constraints are invalid")
+    return value
+
+
+def _protected_words(
+    binding: DebugFirmwareBinding,
+    resolved: list[tuple[int, _Resolved]],
+    pairs: tuple[tuple[str, str], ...],
+) -> tuple[_ProtectedWord, ...]:
+    by_expression = {item.expression: (index, item) for index, item in resolved}
+    words: dict[tuple[MemoryRegionBinding, int], dict[int, tuple[int, _Resolved]]] = {}
+    for low_expression, high_expression in pairs:
+        if low_expression not in by_expression or high_expression not in by_expression:
+            continue
+        low_index, low = by_expression[low_expression]
+        high_index, high = by_expression[high_expression]
+        if (
+            not low.unsigned_byte or not high.unsigned_byte
+            or low.address == high.address
+            or abs(low.address - high.address) != 1
+            or low.region != high.region
+        ):
+            continue
+        word_address = low.address & ~3
+        if high.address & ~3 != word_address or not (
+            0x20000000 <= word_address and word_address + 4 <= 0x22000000
+        ):
+            continue
+        intersecting = tuple(
+            region for region in binding.memory_regions
+            if region.origin < word_address + 4
+            and word_address < region.origin + region.length
+        )
+        if (
+            len(intersecting) != 1
+            or intersecting[0] != low.region
+            or intersecting[0].origin > word_address
+            or intersecting[0].origin + intersecting[0].length < word_address + 4
+            or "r" not in intersecting[0].attributes
+            or "w" not in intersecting[0].attributes
+            or any(
+                region.origin < word_address + 4
+                and word_address < region.origin + region.length
+                for region in binding.svd_readable_regions
+            )
+        ):
+            continue
+        members = words.setdefault((intersecting[0], word_address), {})
+        members[low_index] = (low_index, low)
+        members[high_index] = (high_index, high)
+    return tuple(
+        _ProtectedWord(
+            address,
+            tuple(sorted({item.address - address for _, item in members.values()})),
+            tuple(sorted(members.values(), key=lambda entry: entry[0])),
+        )
+        for (_, address), members in words.items()
+    )
+
+
 def _freeze_prepared_plan(
     expressions: tuple[str, ...],
     prepared_groups: tuple[list[tuple[int, _Resolved]], ...],
     initial_items: list[DebugReadItem | None],
+    *,
+    binding: DebugFirmwareBinding | None = None,
+    u16_pairs: tuple[tuple[str, str], ...] = (),
 ) -> _PreparedReadPlan:
+    if u16_pairs and binding is None:
+        raise _fail("DEBUG_REQUEST_INVALID", "Debug read pair constraints are invalid")
+    pairs = _u16_pairs(u16_pairs, expressions)
+    protected = (
+        _protected_words(binding, prepared_groups[0], pairs)
+        if pairs and binding is not None else ()
+    )
+    protected_indices = {
+        index for word in protected for index, _ in word.members
+    }
     groups = tuple(
-        tuple(tuple(group) for group in _groups(prepared))
+        tuple(tuple(group) for group in _groups([
+            entry for entry in prepared if entry[0] not in protected_indices
+        ]))
         for prepared in prepared_groups
     )
-    return _PreparedReadPlan(expressions, groups, tuple(initial_items))
+    return _PreparedReadPlan(expressions, groups, tuple(initial_items), protected)
+
+
+async def _read_protected_word(
+    raw_read: Callable[[int, int], Awaitable[bytes]],
+    word: _ProtectedWord,
+) -> list[tuple[int, DebugReadItem]]:
+    previous: bytes | None = None
+    accepted: bytes | None = None
+    error_code = "DEBUG_READ_UNSTABLE"
+    for _ in range(3):
+        try:
+            snapshot = await raw_read(word.address, 4)
+        except asyncio.CancelledError:
+            raise
+        except _ReadFailure:
+            raise
+        except Exception:
+            error_code = "DEBUG_READ_UNAVAILABLE"
+            break
+        if type(snapshot) is not bytes or len(snapshot) != 4:
+            error_code = "DEBUG_PARTIAL_READ"
+            break
+        if previous is not None and all(
+            previous[offset] == snapshot[offset] for offset in word.offsets
+        ):
+            accepted = snapshot
+            break
+        previous = snapshot
+    if accepted is None:
+        return [
+            (index, DebugReadItem(item.expression, "error", code=error_code))
+            for index, item in word.members
+        ]
+    results = []
+    for index, item in word.members:
+        offset = item.address - word.address
+        try:
+            value = item.decode(accepted[offset : offset + 1])
+            results.append((index, DebugReadItem(item.expression, "ok", value=value)))
+        except _ReadFailure as error:
+            results.append((index, DebugReadItem(item.expression, "error", code=error.code)))
+    return results
 
 
 async def _execute_prepared(
@@ -520,6 +667,9 @@ async def _execute_prepared(
 
     try:
         output = list(plan.initial_items)
+        for word in plan.protected_words:
+            for index, result in await _read_protected_word(raw_read, word):
+                output[index] = result
         for prepared in plan.groups:
             for group in prepared:
                 for index, result in await _read_group(raw_read, list(group)):

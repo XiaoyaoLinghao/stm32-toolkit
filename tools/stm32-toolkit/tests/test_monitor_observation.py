@@ -1801,6 +1801,42 @@ def test_catalog_revalidation_preserves_active_private_read_plan(
     asyncio.run(exercise())
 
 
+def test_private_prepare_rejects_invalid_pair_constraints_and_clears_admission(
+    debug_env: DebugEnv, tmp_path: Path,
+) -> None:
+    harness = Harness(debug_env)
+
+    async def exercise() -> None:
+        opened = await open_monitor_observation(
+            request(debug_env, tmp_path / "data"), _seams=harness.seams()
+        )
+        assert opened.ok
+        session = opened.data
+        try:
+            before_admission = await session._prepare_read_plan(
+                ("signed32",), (), u16_pairs=(("signed32", "missing"),)
+            )
+            assert before_admission.code == "MONITOR_REQUEST_INVALID"
+            invalid_pairs = (
+                (("signed32", "missing"),),
+                (["signed32", "signed32"],),
+                (("signed32", "signed32"), ("signed32", "signed32")),
+            )
+            for pairs in invalid_pairs:
+                assert (await session.revalidate()).ok
+                result = await session._prepare_read_plan(
+                    ("signed32",), (), u16_pairs=pairs
+                )
+                assert result.code == "MONITOR_REQUEST_INVALID"
+                assert session._plan is None
+                assert session._read_plan_admission() is None
+            assert harness.clients[0].calls == []
+        finally:
+            await session.close()
+
+    asyncio.run(exercise())
+
+
 @pytest.mark.parametrize("drift", ["pre", "post"])
 def test_private_read_plan_discards_on_guard_drift(
     debug_env: DebugEnv,

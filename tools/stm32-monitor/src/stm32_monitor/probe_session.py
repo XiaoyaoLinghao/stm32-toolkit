@@ -223,7 +223,8 @@ class ProbeSession:
             method()
 
     async def prepare_read_plan(
-        self, watches: Iterable[WatchItem]
+        self, watches: Iterable[WatchItem], *,
+        u16_pairs: tuple[tuple[str, str], ...] = (),
     ) -> ProtocolResult[dict[str, object]]:
         operation = "sampling.prepare"
         items = tuple(watches)
@@ -236,6 +237,19 @@ class ProbeSession:
             return failure(operation, "MONITOR_REQUEST_INVALID", "Monitor watch set is invalid")
         variables = tuple(item for item in items if item.kind == "variable")
         registers = tuple(item for item in items if item.kind == "register")
+        variable_selectors = {item.selector for item in variables}
+        if (
+            type(u16_pairs) is not tuple
+            or len(u16_pairs) > 256
+            or any(
+                type(pair) is not tuple or len(pair) != 2
+                or any(type(value) is not str or value not in variable_selectors for value in pair)
+                for pair in u16_pairs
+            )
+            or len(set(u16_pairs)) != len(u16_pairs)
+        ):
+            self.invalidate_read_plan()
+            return failure(operation, "MONITOR_REQUEST_INVALID", "Monitor pair constraints are invalid")
         report_watches = variables + registers
         self._read_plan = None
         self._plan_watches = ()
@@ -254,10 +268,13 @@ class ProbeSession:
                 "Monitor read plan could not be prepared",
             )
         try:
+            kwargs = {"admission_token": admission_token}
+            if u16_pairs:
+                kwargs["u16_pairs"] = u16_pairs
             result = await self._observation._prepare_read_plan(
                 tuple(item.selector for item in variables),
                 tuple(item.selector for item in registers),
-                admission_token=admission_token,
+                **kwargs,
             )
         except asyncio.CancelledError:
             invalidate_failed_prepare()

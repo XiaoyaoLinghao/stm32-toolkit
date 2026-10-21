@@ -37,6 +37,12 @@ def _read_dependencies(watches: tuple[WatchItem, ...]) -> tuple[WatchItem, ...]:
     return tuple(dependencies)
 
 
+def _u16_pairs(watches: tuple[WatchItem, ...]) -> tuple[tuple[str, str], ...]:
+    return tuple(dict.fromkeys(
+        watch.operands for watch in watches if watch.kind == "u16le"
+    ))
+
+
 def _byte_value(sample: SampleValue | None) -> int | None:
     if sample is None or sample.status != "OK":
         return None
@@ -289,7 +295,9 @@ class MonitorSampler:
             if not admission.ok:
                 return failure(operation, admission.code, "sampling cannot be started", {})
             self._invalidate_epoch()
-            prepared = await self._probe.prepare_read_plan(dependencies)
+            prepared = await self._probe.prepare_read_plan(
+                dependencies, u16_pairs=_u16_pairs(tuple(watches))
+            )
             if not prepared.ok:
                 self._probe.invalidate_read_plan()
                 return failure(operation, prepared.code, "sampling cannot be started", {})
@@ -582,7 +590,9 @@ class MonitorSampler:
                 self._block(admission.code)
                 return failure(operation, admission.code, "sampling cannot be resumed", {})
             self._invalidate_epoch()
-            prepared = await self._probe.prepare_read_plan(self._dependencies)
+            prepared = await self._probe.prepare_read_plan(
+                self._dependencies, u16_pairs=_u16_pairs(self._watches)
+            )
             if not prepared.ok:
                 self._block(prepared.code)
                 return failure(operation, prepared.code, "sampling cannot be resumed", {})

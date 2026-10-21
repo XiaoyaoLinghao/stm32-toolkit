@@ -91,6 +91,7 @@ class FakeObservation:
         registers: tuple[str, ...],
         *,
         admission_token=None,
+        u16_pairs: tuple[tuple[str, str], ...] = (),
     ):
         token = self._admission_token if admission_token is None else admission_token
         if token is None or token is not self._admission_token:
@@ -415,6 +416,32 @@ def test_probe_session_rejects_invalid_prepare_and_changed_watch_plan(
         assert changed.values == ()
         assert changed.blocked_code == "MONITOR_PROVENANCE_CHANGED"
         assert observation.variable_calls == []
+
+    asyncio.run(scenario())
+
+
+def test_probe_session_rejects_malformed_or_unbound_pair_constraints(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        project = tmp_path / "project"
+        project.mkdir()
+        observation = FakeObservation(_binding(project))
+        session = ProbeSession(observation)
+        watches = (WatchItem.variable("low"), WatchItem.variable("high"))
+        invalid_pairs = (
+            (("low", "missing"),),
+            (["low", "high"],),
+            (("low", "high"), ("low", "high")),
+            (("low", 4),),
+        )
+        for pairs in invalid_pairs:
+            assert (await session.revalidate()).ok
+            result = await session.prepare_read_plan(watches, u16_pairs=pairs)
+            assert result.code == "MONITOR_REQUEST_INVALID"
+            assert session._read_plan is None
+            assert observation._read_plan_admission() is None
+        assert observation.prepare_calls == 0
 
     asyncio.run(scenario())
 

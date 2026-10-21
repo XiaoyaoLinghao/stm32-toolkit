@@ -37,6 +37,7 @@ from stm32_toolkit.debug.read import (
     _freeze_prepared_plan,
     _prepared_guard,
     _resolve_items,
+    _u16_pairs,
     _variable,
 )
 from stm32_toolkit.debug.sampling import _sampled_register
@@ -915,6 +916,7 @@ class MonitorObservationSession:
         registers: tuple[str, ...],
         *,
         admission_token: object | None = None,
+        u16_pairs: tuple[tuple[str, str], ...] = (),
     ) -> OperationResult[_MonitorReadPlan]:
         """Compile immutable typed read metadata after full admission."""
 
@@ -946,6 +948,7 @@ class MonitorObservationSession:
                 raise MonitorObservationError(
                     "MONITOR_REQUEST_INVALID", "Monitor read plan is invalid"
                 )
+            checked_pairs = _u16_pairs(u16_pairs, variables)
             admission = self._verify_admission(
                 self._admission if admission_token is None else admission_token
             )
@@ -989,6 +992,8 @@ class MonitorObservationSession:
                 expressions,
                 (variable_resolved, prepared_registers),
                 [*variable_output, *register_output],
+                binding=self.binding,
+                u16_pairs=checked_pairs,
             )
             self._verify_admission(admission)
             _verify_root_guard(self._root_guard)
