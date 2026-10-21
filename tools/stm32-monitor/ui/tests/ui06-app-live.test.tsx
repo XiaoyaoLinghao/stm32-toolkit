@@ -53,7 +53,7 @@ it("immediately clears old run samples after a group revision ACK and keeps sour
   expect(summary).toHaveTextContent("运行组 未核对组 · 版本 1");
   expect(summary).toHaveTextContent("等待本轮样本");
   expect(summary).not.toHaveTextContent("New version");
-  fireEvent.click(screen.getByRole("button",{name:"操作问题 0"}));
+  fireEvent.click(screen.getByRole("button",{name:"诊断详情"}));
   const diagnostics=screen.getByRole("dialog",{name:"诊断详情"});
   const stats=within(diagnostics).getByRole("region",{name:"采样状态汇总"});
   expect(stats).toHaveTextContent("尚未收到样本");

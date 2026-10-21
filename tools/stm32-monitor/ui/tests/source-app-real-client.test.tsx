@@ -64,6 +64,7 @@ it("autoloads the shared source wire page without a probe and expands file and s
   expect(await screen.findByText("已加载 1 / 1 个文件",{exact:false})).toBeVisible();
   expect(calls).toContain("/api/v1/catalog/source-tree");
   const region=screen.getByRole("region",{name:"源码目录结果"});
+  fireEvent.click(within(region).getByRole("button",{name:"展开 Src"}));
   fireEvent.click(within(region).getByRole("button",{name:"展开 Src/main.c"}));
   fireEvent.click(await within(region).findByRole("button",{name:"展开 global"}));
   expect(await within(region).findByText("counter")).toBeVisible();
@@ -86,6 +87,7 @@ it("uses a fresh real-client selection ACK for the draft and never reopens a dra
   const status=connected(),late=deferred<Response>(),calls=installFetch(status,late.promise);
   render(<App/>);
   const region=await screen.findByRole("region",{name:"源码目录结果"});
+  fireEvent.click(within(region).getByRole("button",{name:"展开 Src"}));
   await waitFor(()=>expect(within(region).getByRole("button",{name:"展开 Src/main.c"})).toBeVisible());
   fireEvent.click(within(region).getByRole("button",{name:"展开 Src/main.c"}));
   fireEvent.click(await within(region).findByRole("button",{name:"展开 global"}));

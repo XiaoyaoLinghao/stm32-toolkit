@@ -20,23 +20,23 @@ export type SamplingControlsProps={
 
 export function SamplingControls(p:SamplingControlsProps):JSX.Element{
   const state=p.status.state;
-  const canStart=state==="IDLE"||state==="STOPPING";
+  const showConnection=p.probeConnected===false&&p.onConnectRequest!==undefined;
   return<section className="panel sampling-controls" aria-label={copy.samplingControls}>
     <div className="sampling-heading"><h2>{copy.samplingTitle}</h2><p role="status" aria-live="polite">{samplingState(state)}{p.status.blockedCode!==null?copy.samplingBlocked:""}</p></div>
     <p>{copy.samplingGroup}{p.group===null?copy.samplingNoGroup:p.group.name}</p>
     {p.status.groupId!==null&&<p>{copy.samplingActiveGroup}{p.activeGroupName??p.status.groupId}</p>}
-    {p.probeConnected===false&&p.onConnectRequest!==undefined
-      ?<button type="button" disabled={p.busy} onClick={event=>p.onConnectRequest?.(event.currentTarget)}>{copy.connectProbe}</button>
-      :<button type="button" disabled={p.group===null||!canStart||p.busy}
+    {showConnection&&<button type="button" disabled={p.busy} onClick={event=>p.onConnectRequest?.(event.currentTarget)}>{copy.connectProbe}</button>}
+    {state==="IDLE"&&p.probeConnected!==false&&
+      <button type="button" disabled={p.group===null||p.busy}
         onClick={()=>{if(p.group!==null)void p.onStart(p.group.groupId,p.group.revision);}}>
         {copy.samplingStart}
       </button>}
-    <button type="button" disabled={state!=="RUNNING"||p.busy}
-      onClick={()=>void p.onPause()}>{copy.samplingPause}</button>
-    <button type="button" disabled={state!=="PAUSED"&&state!=="PAUSED_BLOCKED"||p.busy}
-      onClick={()=>void p.onResume()}>{copy.samplingResume}</button>
-    <button type="button" disabled={!p.status.active&&state==="IDLE"||p.busy}
-      onClick={()=>void p.onStop()}>{copy.samplingStop}</button>
+    {state==="RUNNING"&&<button type="button" disabled={p.busy}
+      onClick={()=>void p.onPause()}>{copy.samplingPause}</button>}
+    {state==="PAUSED"&&<button type="button" disabled={p.busy}
+      onClick={()=>void p.onResume()}>{copy.samplingResume}</button>}
+    {state!=="IDLE"&&<button type="button" disabled={p.busy}
+      onClick={()=>void p.onStop()}>{copy.samplingStop}</button>}
     {p.status.blockedCode!==null&&<details><summary>{copy.diagnostics}</summary><code>{p.status.blockedCode}</code></details>}
     {p.failure!==null&&<FailureMessage failure={p.failure}/>}
   </section>;

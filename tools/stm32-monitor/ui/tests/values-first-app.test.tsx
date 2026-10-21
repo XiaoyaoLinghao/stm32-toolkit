@@ -62,6 +62,10 @@ it("puts source and always reachable values above a chart that occupies no row u
   expect(main.className).toContain("without-curves");
   expect(chartRegion()).not.toBeVisible();
   expect(screen.getByRole("region",{name:"最新数值"})).toBeVisible();
+  expect(screen.getAllByText("等待开始")).toHaveLength(2);
+  expect(screen.getByRole("button",{name:"诊断详情"})).toBeVisible();
+  expect(document.querySelector(".workbench-footer .status-strip")).toBeNull();
+  expect(screen.getByRole("region",{name:"最新数值"})).not.toHaveTextContent("非最新数据");
   expect(main.querySelector(".live-source")!.compareDocumentPosition(main.querySelector(".values-region")!)&Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   expect(main.querySelector(".values-region")!.compareDocumentPosition(chartRegion())&Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   await waitFor(()=>expect(chart.init).toHaveBeenCalledTimes(1));
@@ -84,6 +88,18 @@ it("puts source and always reachable values above a chart that occupies no row u
   expect(chart.init).toHaveBeenCalledTimes(1);
   expect(chart.dispose).not.toHaveBeenCalled();
   expect(chart.resize).toHaveBeenCalled();
+});
+
+it("shows connection as the next action for an empty disconnected preview",async()=>{
+  prepared=api(withProbe(false),[group([{kind:"variable",expression:"counter"}])]);
+  render(<App/>);
+  await screen.findByText("Project");
+  expect(screen.getByRole("button",{name:"连接探针"})).toBeVisible();
+  expect(screen.queryByRole("button",{name:"开始采样"})).toBeNull();
+  expect(screen.getByText("等待连接")).toBeVisible();
+  expect(document.querySelector(".workbench-footer .status-strip")).toBeNull();
+  fireEvent.click(screen.getByRole("button",{name:"诊断详情"}));
+  expect(within(screen.getByRole("dialog",{name:"诊断详情"})).getByRole("region",{name:"采样状态汇总"})).toHaveTextContent("尚未收到样本");
 });
 
 it("keeps the eight-curve cap and selected-curve removal available in the enlarged layout",async()=>{
@@ -174,7 +190,7 @@ it("does not let a late ACK close a device drawer opened after switching through
   await screen.findByText("Project");
   openDevice();
   fireEvent.click(within(device()).getByRole("button",{name:"连接"}));
-  fireEvent.click(screen.getByRole("button",{name:"操作问题 0"}));
+  fireEvent.click(screen.getByRole("button",{name:"诊断详情"}));
   expect(screen.getByRole("dialog",{name:"诊断详情"})).toBeVisible();
   openDevice();
   await act(async()=>write.resolve(ok({connected:true})));
@@ -212,7 +228,7 @@ it("does not treat a diagnostic retry success as a new device-button success",as
   fireEvent.click(screen.getByRole("button",{name:"重试上次操作"}));
   fireEvent.click(screen.getByRole("button",{name:"确认重试上次写入"}));
   await waitFor(()=>expect(prepared!.connect).toHaveBeenCalledTimes(2));
-  await waitFor(()=>expect(screen.getByRole("button",{name:"操作问题 0"})).toBeVisible());
+  await waitFor(()=>expect(screen.getByRole("button",{name:"诊断详情"})).toBeVisible());
   openDevice();
   expect(device()).toBeVisible();
 });
@@ -231,7 +247,7 @@ it("retires a stale diagnostic retry without closing the device drawer or resend
   fireEvent.click(screen.getByRole("button",{name:"操作问题 1"}));
   fireEvent.click(screen.getByRole("button",{name:"重试上次操作"}));
   fireEvent.click(screen.getByRole("button",{name:"确认重试上次写入"}));
-  await waitFor(()=>expect(screen.getByRole("button",{name:"操作问题 0"})).toBeVisible());
+  await waitFor(()=>expect(screen.getByRole("button",{name:"诊断详情"})).toBeVisible());
   expect(prepared.connect).toHaveBeenCalledTimes(1);
   openDevice();
   expect(device()).toBeVisible();

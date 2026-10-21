@@ -24,9 +24,16 @@ const base=()=>({pending:{},failures:{},editBusy:false,onRetry:vi.fn(),onFirmwar
 it("lists only files with eligible rows before loading leaves, then expands one scope",()=>{
  const props=base();render(<SourceCatalogPanel source={source()} {...props}/>);
  const region=screen.getByRole("region",{name:"源码目录结果"});
+ expect(within(region).getByRole("button",{name:"展开 Src"})).toHaveAttribute("aria-expanded","false");
+ expect(within(region).queryByRole("button",{name:/main\.c/})).toBeNull();
+ fireEvent.click(within(region).getByRole("button",{name:"展开 Src"}));
  expect(within(region).getByRole("button",{name:/main\.c/})).toBeVisible();
  expect(within(region).getByRole("button",{name:/safe\.c/})).toBeVisible();
  expect(within(region).queryByRole("button",{name:/empty\.c/})).toBeNull();
+ expect(within(region).getByRole("button",{name:"展开 Src/main.c"})).toHaveAttribute("title","Src/main.c");
+ expect(within(region).getByText("main.c")).toBeVisible();
+ expect(within(within(region).getByRole("button",{name:"展开 Src/main.c"})).getByText("1 变量条目")).toBeVisible();
+ expect(within(region).queryByText("1 作用域")).toBeNull();
  expect(within(region).queryByRole("button",{name:"加入观测组草稿 counter"})).toBeNull();
  fireEvent.click(within(region).getByRole("button",{name:"展开 Src/main.c"}));
  fireEvent.click(within(region).getByRole("button",{name:"展开 global"}));
@@ -45,6 +52,7 @@ it("keeps branch failure and retry local while another file remains available",(
  render(<SourceCatalogPanel source={current} {...props} failures={{[node]:{ok:false,code:"MONITOR_SOURCE_CONTEXT_CHANGED",
   message:"changed",requestId:6n,recovery:"read-retry",summary:"safe"}}}/>);
  const region=screen.getByRole("region",{name:"源码目录结果"});
+ fireEvent.click(within(region).getByRole("button",{name:"展开 Src"}));
  fireEvent.click(within(region).getByRole("button",{name:"展开 Src/main.c"}));
  fireEvent.click(within(region).getByRole("button",{name:"展开 Src/safe.c"}));
  expect(within(region).getByRole("alert").textContent).toContain("MONITOR_SOURCE_CONTEXT_CHANGED");
@@ -56,10 +64,30 @@ it("keeps branch failure and retry local while another file remains available",(
 it("resets expansion with a new directory generation",()=>{
  const props=base(),current=source();const {rerender}=render(<SourceCatalogPanel source={current} {...props}/>);
  const region=screen.getByRole("region",{name:"源码目录结果"});
+ fireEvent.click(within(region).getByRole("button",{name:"展开 Src"}));
  fireEvent.click(within(region).getByRole("button",{name:"展开 Src/main.c"}));
  expect(within(region).getByRole("button",{name:"展开 global"})).toBeVisible();
  rerender(<SourceCatalogPanel source={{...current,generation:2n}} {...props}/>);
  expect(within(screen.getByRole("region",{name:"源码目录结果"})).queryByRole("button",{name:"展开 global"})).toBeNull();
+ expect(within(screen.getByRole("region",{name:"源码目录结果"})).getByRole("button",{name:"展开 Src"})).toHaveAttribute("aria-expanded","false");
+});
+
+it("reveals matching folder paths for a search, keeps manual choices, and resets on the next result context",()=>{
+ const props=base(),current=source();
+ const found={...current,query:"testtime",generation:2n};
+ const {rerender}=render(<SourceCatalogPanel source={found} {...props}/>);
+ const region=screen.getByRole("region",{name:"源码目录结果"});
+ expect(within(region).getByRole("button",{name:"收起 Src"})).toHaveAttribute("aria-expanded","true");
+ expect(within(region).getByRole("button",{name:"展开 Src/main.c"})).toHaveAttribute("aria-expanded","false");
+ expect(props.onChildren).not.toHaveBeenCalled();
+ fireEvent.click(within(region).getByRole("button",{name:"收起 Src"}));
+ expect(within(region).getByRole("button",{name:"展开 Src"})).toHaveAttribute("aria-expanded","false");
+ rerender(<SourceCatalogPanel source={{...found,tree:{...found.tree!,total:3}}} {...props}/>);
+ expect(within(region).getByRole("button",{name:"展开 Src"})).toHaveAttribute("aria-expanded","false");
+ rerender(<SourceCatalogPanel source={{...found,generation:3n}} {...props}/>);
+ expect(within(screen.getByRole("region",{name:"源码目录结果"})).getByRole("button",{name:"收起 Src"})).toHaveAttribute("aria-expanded","true");
+ rerender(<SourceCatalogPanel source={{...current,generation:4n}} {...props}/>);
+ expect(within(screen.getByRole("region",{name:"源码目录结果"})).getByRole("button",{name:"展开 Src"})).toHaveAttribute("aria-expanded","false");
 });
 
 it("shows a root failure with an in-place retry",()=>{
@@ -77,11 +105,16 @@ it("labels compiled debug facts ahead of incomplete AST details and refreshes ex
   issues:[{unit:"Main/Main.c",code:"MONITOR_SOURCE_INDEX_FAILED",message:"Clang failed"}],
   compiledDebug:{available:true,variableCount:1169,functionCount:463,fileCount:47}}};
  render(<SourceCatalogPanel source={{...current,tree}} {...props}/>);
- const status=screen.getAllByRole("status").map(item=>item.textContent??"");
- expect(status[0]).toContain("固件调试元数据统计（不代表当前目录可观测条目）：1169 个变量及参数声明、463 个函数、47 个文件");
- expect(status[1]).toContain("源码补充解析 2 / 53");
- expect(screen.getByText("源码目录覆盖不完整，部分声明尚未收录。")).toBeVisible();
- expect(screen.getByText("目录覆盖与解析详情")).toBeVisible();
+ const details=screen.getByText("说明与诊断 · 1 项目录提示").closest("details")!;
+ expect(details).not.toHaveAttribute("open");
+ expect(screen.getByText("已加载 2 / 2 个文件")).toBeVisible();
+ expect(screen.queryByText(/搜索结果：/)).toBeNull();
+ expect(details).toHaveTextContent("固件调试元数据统计（不代表当前目录可观测条目）：1169 个变量及参数声明、463 个函数、47 个文件");
+ expect(details).toHaveTextContent("源码补充解析 2 / 53");
+ expect(details).toHaveTextContent("源码目录覆盖不完整，部分声明尚未收录。");
+ fireEvent.click(screen.getByText("说明与诊断 · 1 项目录提示"));
+ expect(details).toHaveAttribute("open");
+ expect(details.querySelectorAll("li")).toHaveLength(1);
  fireEvent.click(screen.getByRole("button",{name:"刷新源码目录"}));
  expect(props.onSearch).toHaveBeenCalledWith("",true);
 });
@@ -94,11 +127,12 @@ it("shows a proved extern definition and a named rebuild warning without extra n
  const scopePages={[scope.id]:{...sourcePage(),total:1,items:[extern],cursor:null}};
  render(<SourceCatalogPanel source={{...current,tree,scopePages}} {...props}/>);
  const region=screen.getByRole("region",{name:"源码目录结果"});
+ fireEvent.click(within(region).getByRole("button",{name:"展开 Src"}));
  fireEvent.click(within(region).getByRole("button",{name:"展开 Src/main.c"}));
  fireEvent.click(within(region).getByRole("button",{name:"展开 global"}));
  expect(within(region).getByText("外部声明")).toBeVisible();
  expect(within(region).getByText("对应定义 Src/timer.c:7")).toBeVisible();
- fireEvent.click(screen.getByText("目录覆盖与解析详情"));
+ fireEvent.click(screen.getByText("说明与诊断 · 1 项目录提示"));
  expect(screen.getByText(/Inc\/timer.h：旧构建快照未收录/)).toBeVisible();
 });
 
@@ -107,7 +141,7 @@ it("explains a new-policy outside-snapshot path requires project declarations be
  const tree={...current.tree!,coverage:{...current.tree!.coverage,complete:false,
   issues:[{unit:"Extra/more.h",code:"MONITOR_SOURCE_OUTSIDE_SNAPSHOT_POLICY",message:"outside policy"}]}};
  render(<SourceCatalogPanel source={{...current,tree}} {...props}/>);
- fireEvent.click(screen.getByText("目录覆盖与解析详情"));
+ fireEvent.click(screen.getByText("说明与诊断 · 1 项目录提示"));
  expect(screen.getByText("Extra/more.h：当前源码快照未收录；请核对工程声明和包含目录，补齐后干净重建。"))
   .toBeVisible();
  expect(screen.queryByText(/旧构建快照未收录/)).toBeNull();
@@ -120,6 +154,7 @@ it("does not call an incomplete empty result proof that source has no variables"
   compiledDebug:{available:false,variableCount:0,functionCount:0,fileCount:0}}};
  render(<SourceCatalogPanel source={{...current,tree}} {...props}/>);
  expect(screen.getAllByText("暂无可用源码信息；不能据此断定源码没有变量。").length).toBeGreaterThan(0);
+ expect(screen.getByText("说明与诊断 · 目录覆盖未完成")).toBeVisible();
 });
 
 it("explains missing firmware before a search miss even with complete source parsing",()=>{
@@ -136,10 +171,12 @@ it("explains offline eligibility and distinguishes empty directory from search m
  const scopePages={[scope.id]:{...sourcePage(),total:1,items:[pending],cursor:null}};
  const {rerender}=render(<SourceCatalogPanel source={{...current,scopePages}} {...props}/>);
  const region=screen.getByRole("region",{name:"源码目录结果"});
+ fireEvent.click(within(region).getByRole("button",{name:"展开 Src"}));
  fireEvent.click(within(region).getByRole("button",{name:"展开 Src/main.c"}));
  fireEvent.click(within(region).getByRole("button",{name:"展开 global"}));
  expect(within(region).getByText("待连接")).toBeVisible();
  expect(within(region).getByRole("button",{name:"加入观测组草稿 counter"})).toBeDisabled();
+ fireEvent.click(screen.getByText("说明与诊断"));
  expect(screen.getByText(/仅列出固定地址的全局／静态变量及可读成员/)).toBeVisible();
  const emptyTree={...current.tree!,items:[],total:0,
   identity:{...current.tree!.identity,buildId:"build"}};

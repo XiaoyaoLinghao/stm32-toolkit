@@ -111,6 +111,8 @@ async function replay(raw:readonly string[]){
   await waitFor(()=>expect(document.querySelector(".live-source")).toHaveTextContent("已停止 · 上次采样（非最新）"));
   expect(document.querySelector(".live-source")).toHaveTextContent(first.runId);
   expect(screen.getByRole("region",{name:"最新数值"})).toHaveTextContent(String(last.values[0].typedValue.value));
+  expect(document.querySelector(".workbench-footer .status-strip")).not.toBeNull();
+  expect(screen.getByRole("region",{name:"最新数值"})).not.toHaveTextContent("等待开始");
   expect(chartHost).toHaveAttribute("data-chart-realized-points",String(raw.length));
 }
 
@@ -152,6 +154,8 @@ it("shows an acknowledged zero-sample stop using the authoritative run group",as
   await waitFor(()=>expect(document.querySelector(".live-source")).toHaveTextContent("已停止 · 本轮未收到样本"));
   expect(document.querySelector(".live-source")).toHaveTextContent("Today's testtime");
   expect(screen.getByRole("region",{name:"最新数值"})).toHaveTextContent("testtime--");
+  expect(document.querySelector(".workbench-footer .status-strip")).not.toBeNull();
+  expect(screen.getByRole("region",{name:"最新数值"})).not.toHaveTextContent("等待开始");
   expect(document.querySelector(".chart-region")).not.toBeVisible();
 });
 

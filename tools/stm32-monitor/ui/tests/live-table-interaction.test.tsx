@@ -49,3 +49,19 @@ it("keeps an already-selected curve removable after its row leaves the current g
   await userEvent.click(screen.getByRole("button",{name:/移除曲线.*orphan/}));
   expect(toggle).toHaveBeenCalledExactlyOnceWith("variable:orphan");
 });
+
+it("labels only empty no-run preview cells while preserving errors and sampled values",()=>{
+  const watch={kind:"variable" as const,expression:"counter"};
+  const empty={watch,displayValue:"",rawHex:null,typeName:null,capturedAtUtc:"",trend:"none" as const,errorCode:null,numericValue:null};
+  const sampled={...empty,watch:{kind:"variable" as const,expression:"sampled"},displayValue:"42",capturedAtUtc:"2026-10-21T00:00:00Z"};
+  const error={...empty,watch:{kind:"variable" as const,expression:"bad"},errorCode:"READ_FAILED"};
+  const view=render(<LiveTable rows={[empty,sampled,error]} selectedSeries={[]} waiting="connection" fresh={false} onSeriesToggle={vi.fn()}/>);
+  expect(screen.getByRole("region",{name:"最新数值"})).toHaveTextContent("等待连接");
+  expect(screen.getByText("42")).toBeVisible();
+  expect(screen.getByText("READ_FAILED")).toBeTruthy();
+  expect(screen.queryByText("非最新数据")).toBeNull();
+  view.rerender(<LiveTable rows={[empty]} selectedSeries={[]} waiting="start" onSeriesToggle={vi.fn()}/>);
+  expect(screen.getByText("等待开始")).toBeVisible();
+  view.rerender(<LiveTable rows={[empty]} selectedSeries={[]} fresh={false} onSeriesToggle={vi.fn()}/>);
+  expect(screen.queryByText("等待开始")).toBeNull();
+});

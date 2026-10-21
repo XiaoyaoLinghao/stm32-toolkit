@@ -172,6 +172,7 @@ export function App():JSX.Element{
 
   const currentExportRange=state.history.query===null?null:{startNs:state.history.query.startNs,endNs:state.history.query.endNs};
   const runningGroup=activeGroup(state),runId=status.sampling.runId;
+  const noRunPreview=runId===null&&!state.live.retained;
   const fresh=status.sampling.state==="RUNNING"&&state.transport.open&&!state.transport.stale&&!state.transport.needsStatusRefresh&&
     runningGroup!==null&&state.live.runId===runId;
   const liveView=view==="live";
@@ -191,7 +192,7 @@ export function App():JSX.Element{
   const selected=selectedGroup(state);
   const groupName=state.groupDraft.name||selected?.name||copy.samplingNoGroup;
   const retainedGroup=state.live.retained?state.groups.find(group=>group.groupId===state.live.groupId&&group.revision===state.live.groupRevision)??null:null;
-  const sourceLabel=runId===null&&!state.live.retained?copy.liveSourcePreview:
+  const sourceLabel=noRunPreview?copy.liveSourcePreview:
     `${copy.liveSourceGroup} ${(retainedGroup??runningGroup)?.name??copy.liveSourceUnknownGroup} · ${copy.liveSourceRevision} ${(state.live.retained?state.live.groupRevision:status.sampling.groupRevision)?.toString()??"-"}`;
   const sourceFreshness=state.live.retained?(state.live.lastSampleCapturedAtUtc===null?copy.liveSourceStoppedEmpty:copy.liveSourceStopped):runId===null?undefined:state.live.lastSampleCapturedAtUtc===null?copy.liveSourceAwaiting:
     fresh?copy.liveSourceCurrent:copy.liveSourcePrevious;
@@ -256,7 +257,7 @@ export function App():JSX.Element{
             <button type="button" className="toolbar-detail" aria-label={copy.toolbarDevice} onClick={event=>openDrawer("device",event.currentTarget)}>ⓘ</button>
           </div>
           <div className="live-source" aria-label={copy.liveSource}>
-            {runId===null&&!state.live.retained?<span>{sourceLabel}</span>:<>
+            {noRunPreview?<span>{sourceLabel}</span>:<>
               <span>{sourceFreshness}：{sourceLabel}</span>
               {state.live.retained&&<span className="stale-label">{copy.liveSourceStoppedRun}：{state.live.runId}</span>}
               {!state.live.retained&&runningGroup===null&&<span className="stale-label">{state.live.lastSampleCapturedAtUtc===null?copy.liveSourceUnverifiedEmpty:copy.liveSourceUnverified}</span>}
@@ -264,6 +265,7 @@ export function App():JSX.Element{
           </div>
           <div className="values-region">
             <LiveTable rows={rows} selectedSeries={[...state.selectedSeries]} fresh={fresh}
+              waiting={noRunPreview?status.probe.connected?"start":"connection":undefined}
               onSeriesToggle={(key)=>{
                 if(stateRef.current.selectedSeries.size===1&&stateRef.current.selectedSeries.has(key))setChartEmphasized(false);
                 dispatch({type:"series.toggled",key});
@@ -360,10 +362,10 @@ export function App():JSX.Element{
         <NoticeRegion notices={state.notices}/>
       </div>
     </aside>
-    <div className="workbench-footer"><StatusStrip compact actualRateHz={state.live.actualRateHz} latencyNs={state.live.latencyNs}
+    <div className="workbench-footer">{!noRunPreview&&<StatusStrip compact actualRateHz={state.live.actualRateHz} latencyNs={state.live.latencyNs}
       lastSampleCapturedAtUtc={state.live.lastSampleCapturedAtUtc} fresh={fresh} drops={drops}
-      sourceLabel={sourceLabel} sourceFreshness={sourceFreshness}/>
-      <button ref={diagnosticEntryRef} type="button" className={failureCount>0?"problem-entry has-problems":"problem-entry"} aria-label={formatCopy.problemCount(failureCount)}
-        onClick={event=>openDrawer("diagnostics",event.currentTarget)}>{formatCopy.problemCount(failureCount)}</button></div>
+      sourceLabel={sourceLabel} sourceFreshness={sourceFreshness}/>}
+      <button ref={diagnosticEntryRef} type="button" className={failureCount>0?"problem-entry has-problems":"problem-entry"} aria-label={failureCount>0?formatCopy.problemCount(failureCount):copy.diagnostics}
+        onClick={event=>openDrawer("diagnostics",event.currentTarget)}>{failureCount>0?formatCopy.problemCount(failureCount):copy.diagnostics}</button></div>
   </main>;
 }

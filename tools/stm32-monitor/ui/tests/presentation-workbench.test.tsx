@@ -53,8 +53,9 @@ it("shows interrupted values as stale, and exposes a blocked sampling state with
   const blocked={...running.sampling,state:"PAUSED_BLOCKED" as const,blockedCode:"MONITOR_PROBE_BUSY"};
   render(<SamplingControls status={blocked} group={null} failure={null} onStart={vi.fn()} onPause={vi.fn()} onResume={vi.fn()} onStop={vi.fn()}/>);
   expect(screen.getByRole("status")).toHaveTextContent("采样受阻");
-  expect(screen.getByRole("button",{name:"继续采样"})).toBeEnabled();
-  expect(screen.getByRole("button",{name:"开始采样"})).toBeDisabled();
+  expect(screen.queryByRole("button",{name:"继续采样"})).toBeNull();
+  expect(screen.queryByRole("button",{name:"开始采样"})).toBeNull();
+  expect(screen.getByRole("button",{name:"停止采样"})).toBeEnabled();
 });
 
 it("translates binding changes while preserving raw notices and request failures in details",()=>{

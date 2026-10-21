@@ -55,5 +55,7 @@ it("App renders the monitor shell with identity and probe panels after load",asy
   expect(screen.getByRole("dialog",{name:"观测组"})).toBeTruthy();
   fireEvent.click(screen.getByRole("button",{name:"关闭观测组"}));
   expect(screen.getByLabelText("最新数值")).toBeTruthy();
+  expect(document.querySelector(".workbench-footer .status-strip")).toBeNull();
+  fireEvent.click(screen.getByRole("button",{name:"诊断详情"}));
   expect(screen.getByRole("region",{name:"采样状态汇总"})).toBeTruthy();
 });

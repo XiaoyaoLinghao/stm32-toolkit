@@ -1,113 +1,89 @@
 import {expect,it,vi} from "vitest";
-import {render,screen} from "@testing-library/preact";
+import {render,screen,within} from "@testing-library/preact";
 import userEvent from "@testing-library/user-event";
 import {SamplingControls} from "../src/components/SamplingControls";
 import type {SamplingStatus} from "../src/api/contract";
 import {watchGroup} from "./fixtures";
 
-function sampling(state:SamplingStatus["state"],overrides:Partial<SamplingStatus>={}):SamplingStatus{
+function sampling(state:SamplingStatus["state"]):SamplingStatus{
+  const running=["STARTING","RUNNING","PAUSED"].includes(state);
   return{
-    state,active:false,blockedCode:null,groupId:null,groupRevision:null,runId:null,lastSequence:null,
+    state,active:running,blockedCode:state==="PAUSED_BLOCKED"?"MONITOR_PROBE_BUSY":null,
+    groupId:state==="IDLE"?null:"group",groupRevision:state==="IDLE"?null:1n,
+    runId:state==="IDLE"?null:"run",lastSequence:null,
     bindingEpoch:0n,subscriberDrops:0n,historyDrops:0n,deadlineDrops:0n,serviceDrops:0n,
-    ...overrides,
   };
 }
 
-function props(overrides:Record<string,unknown>={}){
+function props(state:SamplingStatus["state"]="IDLE"){
   return{
-    status:sampling("IDLE"),
-    group:watchGroup(),
-    onStart:vi.fn(),
-    onPause:vi.fn(),
-    onResume:vi.fn(),
-    onStop:vi.fn(),
+    status:sampling(state),group:watchGroup(),probeConnected:true,
+    onConnectRequest:vi.fn(),onStart:vi.fn(),onPause:vi.fn(),onResume:vi.fn(),onStop:vi.fn(),
     failure:null,
-    ...overrides,
   };
 }
 
-it("starts sampling with the selected group id and expected revision",async()=>{
-  const start=vi.fn();
-  render(<SamplingControls {...props({onStart:start})}/>);
+it("starts only an idle connected selected group with its expected revision",async()=>{
+  const p=props();
+  const view=render(<SamplingControls {...p}/>);
   await userEvent.click(screen.getByRole("button",{name:"开始采样"}));
-  expect(start).toHaveBeenCalledWith("group",1n);
-});
-
-it("disables start without a selected group",()=>{
-  render(<SamplingControls {...props({group:null})}/>);
+  expect(p.onStart).toHaveBeenCalledExactlyOnceWith("group",1n);
+  view.rerender(<SamplingControls {...p} group={null}/>);
   expect(screen.getByRole("button",{name:"开始采样"})).toBeDisabled();
 });
 
-it("disables start while sampling is running or paused",()=>{
-  const first=render(<SamplingControls {...props({status:sampling("RUNNING",{active:true})})}/>);
-  expect(screen.getByRole("button",{name:"开始采样"})).toBeDisabled();
-  first.unmount();
-  render(<SamplingControls {...props({status:sampling("PAUSED",{active:true})})}/>);
-  expect(screen.getByRole("button",{name:"开始采样"})).toBeDisabled();
+it.each([
+  ["IDLE",["开始采样"]],
+  ["STARTING",["停止采样"]],
+  ["RUNNING",["暂停采样","停止采样"]],
+  ["PAUSED",["继续采样","停止采样"]],
+  ["PAUSED_BLOCKED",["停止采样"]],
+  ["STOPPING",["停止采样"]],
+] as const)("shows the state actions for %s and invokes the existing callbacks",async(state,expected)=>{
+  const p=props(state);
+  render(<SamplingControls {...p}/>);
+  const panel=screen.getByRole("region",{name:"采样控制"});
+  expect(within(panel).getAllByRole("button").map(button=>button.textContent)).toEqual([...expected]);
+  for(const action of expected)await userEvent.click(within(panel).getByRole("button",{name:action}));
+  expect(p.onStart).toHaveBeenCalledTimes(state==="IDLE"?1:0);
+  expect(p.onPause).toHaveBeenCalledTimes(state==="RUNNING"?1:0);
+  expect(p.onResume).toHaveBeenCalledTimes(state==="PAUSED"?1:0);
+  expect(p.onStop).toHaveBeenCalledTimes(state==="IDLE"?0:1);
+  if(state==="PAUSED_BLOCKED"){
+    expect(panel).toHaveTextContent("采样受阻");
+    expect(within(panel).getByText("MONITOR_PROBE_BUSY")).toBeTruthy();
+    expect(p.status.active).toBe(false);
+  }
+  if(state==="STOPPING")expect(p.status.active).toBe(false);
 });
 
-it("allows start again from STOPPING",()=>{
-  render(<SamplingControls {...props({status:sampling("STOPPING",{active:true})})}/>);
-  expect(screen.getByRole("button",{name:"开始采样"})).toBeEnabled();
-});
-
-it("pauses only while running",async()=>{
-  const pause=vi.fn();
-  const running=render(<SamplingControls {...props({status:sampling("RUNNING",{active:true}),onPause:pause})}/>);
-  await userEvent.click(screen.getByRole("button",{name:"暂停采样"}));
-  expect(pause).toHaveBeenCalled();
-  running.unmount();
-  const idle=vi.fn();
-  render(<SamplingControls {...props({onPause:idle})}/>);
-  expect(screen.getByRole("button",{name:"暂停采样"})).toBeDisabled();
-  expect(idle).not.toHaveBeenCalled();
-});
-
-it("resumes only while paused or paused-blocked",async()=>{
-  const resume=vi.fn();
-  const paused=render(<SamplingControls {...props({status:sampling("PAUSED",{active:true}),onResume:resume})}/>);
-  await userEvent.click(screen.getByRole("button",{name:"继续采样"}));
-  expect(resume).toHaveBeenCalled();
-  paused.unmount();
-  const blocked=vi.fn();
-  const blockedRender=render(<SamplingControls {...props({status:sampling("PAUSED_BLOCKED",{active:true,blockedCode:"MONITOR_PROBE_BUSY"}),onResume:blocked})}/>);
-  await userEvent.click(screen.getByRole("button",{name:"继续采样"}));
-  expect(blocked).toHaveBeenCalled();
-  blockedRender.unmount();
-  render(<SamplingControls {...props({status:sampling("IDLE"),onResume:resume})}/>);
-  expect(screen.getByRole("button",{name:"继续采样"})).toBeDisabled();
-});
-
-it("stops only when sampling is active",async()=>{
-  const stop=vi.fn();
-  const running=render(<SamplingControls {...props({status:sampling("RUNNING",{active:true}),onStop:stop})}/>);
-  await userEvent.click(screen.getByRole("button",{name:"停止采样"}));
-  expect(stop).toHaveBeenCalled();
-  running.unmount();
-  render(<SamplingControls {...props({status:sampling("IDLE"),onStop:stop})}/>);
-  expect(screen.getByRole("button",{name:"停止采样"})).toBeDisabled();
-  expect(stop).toHaveBeenCalledTimes(1);
-});
-
-it("offers the device chooser while disconnected and still permits Stop for an active run",async()=>{
-  const choose=vi.fn(),stop=vi.fn(),start=vi.fn();
-  render(<SamplingControls {...props({status:sampling("RUNNING",{active:true}),probeConnected:false,
-    onConnectRequest:choose,onStart:start,onStop:stop})}/>);
+it("offers connection while disconnected and keeps blocked cleanup even with active=false",async()=>{
+  const idle=props();
+  const view=render(<SamplingControls {...idle} probeConnected={false}/>);
   expect(screen.queryByRole("button",{name:"开始采样"})).toBeNull();
   await userEvent.click(screen.getByRole("button",{name:"连接探针"}));
-  expect(choose).toHaveBeenCalledOnce();
+  expect(idle.onConnectRequest).toHaveBeenCalledOnce();
+  expect(idle.onStart).not.toHaveBeenCalled();
+
+  const blocked=props("PAUSED_BLOCKED");
+  view.rerender(<SamplingControls {...blocked} probeConnected={false}/>);
+  expect(screen.getByRole("button",{name:"连接探针"})).toBeEnabled();
+  expect(screen.queryByRole("button",{name:"继续采样"})).toBeNull();
   await userEvent.click(screen.getByRole("button",{name:"停止采样"}));
-  expect(stop).toHaveBeenCalledOnce();
-  expect(start).not.toHaveBeenCalled();
+  expect(blocked.onStop).toHaveBeenCalledOnce();
 });
 
-it("shows the authoritative state and current group",()=>{
-  render(<SamplingControls {...props({status:sampling("PAUSED",{active:true})})}/>);
-  expect(screen.getByRole("status")).toHaveTextContent("已暂停");
-  expect(screen.getByText("Group",{exact:false})).toBeTruthy();
+it("disables every displayed write action while busy without hiding cleanup",()=>{
+  const p=props("RUNNING");
+  const view=render(<SamplingControls {...p} busy/>);
+  expect(screen.getByRole("button",{name:"暂停采样"})).toBeDisabled();
+  expect(screen.getByRole("button",{name:"停止采样"})).toBeDisabled();
+  view.rerender(<SamplingControls {...props("STOPPING")} probeConnected={false} busy/>);
+  expect(screen.getByRole("button",{name:"连接探针"})).toBeDisabled();
+  expect(screen.getByRole("button",{name:"停止采样"})).toBeDisabled();
 });
 
-it("renders the sampling failure alert",()=>{
-  render(<SamplingControls {...props({failure:{ok:false,code:"SAMPLING_FAILED",message:"cannot start"}})}/>);
+it("keeps an operation failure in the controls",()=>{
+  render(<SamplingControls {...props()} failure={{ok:false,code:"SAMPLING_FAILED",message:"cannot start"}}/>);
   expect(screen.getByRole("alert")).toHaveTextContent("SAMPLING_FAILED");
 });

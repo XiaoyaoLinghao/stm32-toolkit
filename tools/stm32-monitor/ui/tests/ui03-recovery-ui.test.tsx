@@ -39,7 +39,7 @@ it("shows connection and gap actions while preserving a draft and history naviga
   fireEvent.click(screen.getByRole("button",{name:"编辑并保存"}));
   expect(screen.getByLabelText("名称")).toHaveValue("未保存的草稿");
   fireEvent.click(screen.getByRole("button",{name:"关闭观测组"}));
-  fireEvent.click(screen.getByRole("button",{name:"操作问题 0"}));
+  fireEvent.click(screen.getByRole("button",{name:"诊断详情"}));
   fireEvent.click(screen.getByRole("button",{name:"重新连接实时数据"}));
   await waitFor(()=>expect(controls.sockets).toHaveLength(2));
   expect(screen.getByRole("button",{name:"取消连接"})).toBeEnabled();
