@@ -4,6 +4,8 @@
 
 ## 1. 当前断点与证据
 
+2026-10-21 Monitor 默认可观测目录与保留目标状态的连接软件切片已ACCEPTED，依据[规格](../superpowers/specs/2026-10-21-monitor-observable-running-design.md)、[计划](../superpowers/plans/2026-10-21-monitor-observable-running-plan.md)及[验收记录](../codex/returns/MONITOR-OBSERVABLE-RUNNING/review.md)。Accepted base `e125bc5ae362abb84ffa3d71b251681aeb7e0d48`，CodeHead `4e1e0bd4864ae337ff95fe06e39c9cbdc32ff0a9`，实施报告head `fef2f22355372296efee7013db7cc8c28b924f84`，分支 `codex/monitor-observable-running`。主代理负责规格/集成/完整差异复核/验收/运维，`observable_running_impl`唯一实现、`variable_directory_review`独立审查，均为gpt-6-sol/max。最终主代理70项Python、23项UI、7文件重建一致性与真实MR离线tree/page/select通过；独立审查9项定向检查通过，完整差异无剩余阻断。实现者最终41项源码、10项UI及类型/lint/build/dist通过；早期494项完整UI及未变连接/分组/导出回归按字节复用，详见验收记录。当前MR53/53单元、43可见文件、808根条目；无探针时为“待连接”，普通局部/参数不显示，保留timer.h的testtime映射及旧快照一处头文件遗漏。默认空文件/作用域裁剪取代先前全文件展示要求。8765切换后的最终干净source/PID/exec/默认浏览器交付结果以 `D:\codex-tmp\mo1021\service.json` 为准；成功卡生成前mv1020仍为旧服务。版本1.1.2、原固件/数据不变，浏览器/认证HTTP/物理状态仍DEFERRED，无远端动作。
+
 2026-10-20 Monitor 变量角色、extern 映射、版本化源码快照与目录层级的软件切片已ACCEPTED，依据[规格](../superpowers/specs/2026-10-20-monitor-variable-directory-design.md)、[计划](../superpowers/plans/2026-10-20-monitor-variable-directory-plan.md)及[验收记录](../codex/returns/MONITOR-VARIABLE-DIRECTORY/review.md)。Accepted base `34256353d3b7ab0f8eacaa9b8065759299855933`，CodeHead `c355d030cf2bd711410a846041dc0c4a3f0cfdc4`，实施报告head `ba8552fbdffbbd0d5bf2e83a2eb94cfd92112743`，分支 `codex/monitor-variable-directory`。主代理负责规格/集成/完整差异复核/验收/运维，`variable_directory_impl` 唯一实现、`variable_directory_review` 独立审查，均为gpt-6-sol/max。实现者59项源码、49项恢复流程、493项UI（另1项既有跳过）及类型/lint/build/dist通过；主代理最终CodeHead的32项源码目录、独立真实工程新旧两条53/53-unit tree/page/select路径通过，另252项Python、22项UI及资源重建一致性证据按未变字节复用。独立审查定位并验证三项修复，最终10项定向检查通过，无剩余产品问题。8765授权更新的实际PID/exec/最终干净source head和默认浏览器交付结果以 `D:\codex-tmp\mv1020\service.json` 为准；卡记录成功切换前，ma1020的PID20004/exec77714仍是旧服务。当前MR旧构建/ELF/169路径快照及收据不变，保留一处具名旧快照遗漏；独立新构建171路径、53/53解析、0 issue，未烧录。浏览器/认证HTTP/新硬件继续暂缓，无远端权限变化。清理hold与本轮根见验收记录；下方既有验收作为历史保留。
 
 2026-10-19完整源文件目录树的软件与本机服务更新已ACCEPTED，依据[规格](../superpowers/specs/2026-10-19-monitor-source-file-tree-design.md)、[实施计划](../superpowers/plans/2026-10-19-monitor-source-file-tree-plan.md)及[最终审查与部署](../codex/returns/MONITOR-SOURCE-FILE-TREE/review.md)。Accepted base `3c4e2594bafc8d7ca2f1b00c1efe6683639cf05c`，CodeHead `41b5cc37f60d26da2ed323dd7b934fc980b3df61`，实施报告head `f6ba4cbb21e2b8ceb3577a95a46bbdccaaaaec87`；分支`codex/monitor-source-file-tree`，file_tree_impl唯一实现、file_tree_review_sol（显式gpt-6-sol/max）独立完整差异审查NO BLOCKERS，主代理独立复核、验收并部署。实现者143项Python/474项UI、类型/lint/build/dist通过；主代理精确干净CodeHead的72项UI、119项源码集成、29项静态资产和7文件重建一致性通过。8765已从`D:\codex-tmp\st1019\review`运行该CodeHead，PID22740/exec27630，运维卡`D:\codex-tmp\st1019\service.json`。文件/函数metadata与变量分页分离，空文件/函数保留，变量按scope懒加载；当前工程离线21/21单元、184文件、0 issue。版本保持1.1.2。浏览器、实际认证HTTP和新硬件仍DEFERRED，无远端/安装权限变化。此前源码目录验收记录作为历史保留如下。
@@ -60,10 +62,11 @@ SVD 场景在首次硬件操作前以实际 project/target/device、完整 SVD �
 | 入口 | 前置和结果边界 |
 | --- | --- |
 | 正常 Target prepare | OBSERVE 连接，可能短暂停核，再恢复并验证 running；授权持久化前的失败不能视作可 execute |
+| Monitor 普通连接/释放 | 专用 observe-preserve、100kHz attach；不主动 halt/resume/reset，失败清理同样不补偿恢复。原来 running 或 halted 均保持其状态；禁用 pack/config/user 调试序列，使用已验证的 pyOCD 通用初始化路径。软件路径通过不等于板上无瞬时影响已实测 |
 | 正常 Target execute | 使用匹配的新 MODIFY action；flash/readback 后按既有流程 reset、必要 resume、启动 transport；须有真实 TestRun |
 | Target recovery-under-reset | prepare 只做静态检查；execute 从该新 action 派生 100kHz SWD/under-reset MODIFY，先核对真实身份；sector erase、keepUnwritten=true、auto_unlock=false，保留既有 readback/reset/条件 resume/transport/cleanup |
 | 普通 flash / recovery flash | 与 Target 测试流程不同；成功编程或 receipt 不证明运行态。恢复烧录保持既有 halted 后置，不擅自 reset/run |
-| 变量/SVD/有限采样 | memory.read 不要求 halted；OBSERVE attach 的瞬时停核与后续持续采样分别留证，采样不得隐式 halt/reset/resume |
+| 变量/SVD/有限采样 | memory.read 不要求 halted；按实际入口区分 Monitor 的 observe-preserve 与其他保留原合同的普通 OBSERVE。连接阶段和后续持续采样分别留证，采样不得隐式 halt/reset/resume |
 | 完整 Fault | 核心寄存器必须 halted 且稳定；默认 running OBSERVE 不能满足该前置。显式 halt-for-analysis 使用受控 CONTROL、独立授权、身份校验及 bounded resume/cleanup |
 | IDE handoff | begin 后 IDE 独占；正常 detach、原 ticket end 和成功回收后 Toolkit 才能访问 |
 
