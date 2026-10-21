@@ -24,6 +24,7 @@ from stm32_toolkit.project_model import load_project_model
 from stm32_toolkit.debug.types import CatalogGroup, CatalogPage, RegisterDescriptor, VariableDescriptor
 
 from .service import MONITOR_PROTOCOL_VERSION, MONITOR_VERSION, MonitorEndpoint, MonitorService
+from .storage import StorageFailure
 
 _LIVE_END = object()
 _REPLAY_EVENTS = 256
@@ -567,6 +568,13 @@ class MonitorRuntime:
         try:
             groups = self._group_store_factory(paths)
             history = self._history_store_factory(paths)
+            initialize_storage = getattr(groups, "initialize_storage", None)
+            if callable(initialize_storage):
+                try:
+                    initialize_storage()
+                except StorageFailure as error:
+                    raise _fail(error.code, error.public_message) from None
+                await asyncio.sleep(0)
             exporter = self._exporter_factory(paths, history)
             service = self._service_factory(
                 self,

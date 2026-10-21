@@ -1,6 +1,7 @@
 import type {WatchGroup} from "../api/contract";
 import {emptyRow,watchKey,type LiveRow} from "../chart/series";
 import type {DisplaySeries,MonitorState} from "./model";
+import {watchLabelFromKey} from "./watch";
 export const selectedGroup=(state:MonitorState):WatchGroup|null=>state.selectedGroupId===null?null:state.groups.find(group=>group.groupId===state.selectedGroupId)??null;
 export const activeGroup=(state:MonitorState):WatchGroup|null=>{
  const sampling=state.status?.sampling;
@@ -24,6 +25,6 @@ export const liveRows=(state:MonitorState):readonly LiveRow[]=>{
 export const chartSeries=(state:MonitorState):readonly DisplaySeries[]=>{
  const visible=state.live.retained?state.status?.sampling.runId===null:
   state.status?.sampling.runId!==null&&state.status?.sampling.runId===state.live.runId;
- return [...state.selectedSeries].slice(0,8).map(key=>({key,label:key,
+ return [...state.selectedSeries].slice(0,8).map(key=>({key,label:watchLabelFromKey(key),
   points:visible?state.live.series.get(key)??[]:[]}));
 };

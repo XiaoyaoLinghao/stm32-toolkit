@@ -1,6 +1,8 @@
 import {expect,it} from "vitest";
 import {initialState,reducer} from "../src/state/reducer";
 import {chartSeries,liveRows,selectedGroup} from "../src/state/selectors";
+import {buildChartOption} from "../src/chart/echarts";
+import {watchKey} from "../src/state/watch";
 import type {MonitorState,MonitorAction} from "../src/state/model";
 import {statusResult,watchGroup} from "./fixtures";
 
@@ -40,4 +42,15 @@ it("chartSeries returns only selected series up to eight",()=>{
   const series=chartSeries(state);
   expect(series.length).toBe(1);
   expect(series[0]?.key).toBe("variable:counter");
+});
+
+it("labels a combined chart series without changing its ordered identity",()=>{
+  const watch={kind:"u16le" as const,lowExpression:"PC_send2[53]",highExpression:"PC_send2[54]"};
+  const key=watchKey(watch);
+  const state=stateWith([{type:"series.toggled",key}]);
+  const series=chartSeries(state);
+  expect(series).toEqual([{key,label:"PC_send2[53,54] (16位)",points:[]}]);
+  const option=buildChartOption(series,{start:0,end:100});
+  expect(option.series).toEqual([{id:key,name:"PC_send2[53,54] (16位)",type:"line",
+    showSymbol:false,connectNulls:false,data:[]}]);
 });

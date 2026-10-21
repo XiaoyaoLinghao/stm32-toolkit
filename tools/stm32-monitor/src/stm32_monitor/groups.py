@@ -51,6 +51,10 @@ class GroupStore:
         self._database = MonitorDatabase(paths)
         self._cursor_key = secrets.token_bytes(32)
 
+    def initialize_storage(self) -> None:
+        """Finish a pending schema migration before runtime publishes a listener."""
+        self._database.write(lambda _connection: None)
+
     @staticmethod
     def _revision(groups: tuple[WatchGroup, ...]) -> str:
         payload = json.dumps(

@@ -85,12 +85,14 @@ function TreeContent(p:NodeProps):JSX.Element{
    const branch=p.source.branches[fileId];
    if(branch===undefined)continue;
    for(const scope of branch.items){
-    if(scope.function!==null||p.source.scopePages[scope.id]!==undefined||autoGlobals.current.has(scope.id))continue;
+    const requestScope=nodeScope(scope.id);
+    if(scope.function!==null||p.source.scopePages[scope.id]!==undefined||autoGlobals.current.has(scope.id)||
+      p.pending[requestScope]!==undefined||p.failures[requestScope]!==undefined)continue;
     autoGlobals.current.add(scope.id);
     void p.onChildren(scope.id);
    }
   }
- },[openFiles,p.source.branches,p.source.scopePages,p.onChildren]);
+ },[openFiles,p.source.branches,p.source.scopePages,p.pending,p.failures,p.onChildren]);
  const toggle=(field:"openFiles"|"openScopes",id:string)=>{
   const next=new Set(current[field]);if(next.has(id))next.delete(id);else next.add(id);
   setSaved({...current,[field]:next});};

@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import os
+import sqlite3
 import stat
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -2840,4 +2841,151 @@ def test_heartbeat_exits_when_paths_cleared_and_recovers_when_publish_lags(
         await asyncio.sleep(0.05)
         await caught_up.stop()
 
+    asyncio.run(scenario())
+
+
+def _seed_v2_group_and_history(tmp_path: Path):
+    from stm32_monitor.groups import GroupStore
+    from stm32_monitor.history import HistoryStore
+    from stm32_monitor.models import ObservationBinding, SampleBatch, SampleValue, WatchItem
+    from stm32_toolkit.paths import WorkspacePaths
+
+    project = _project(tmp_path)
+    logical_id = UUID(MANIFEST["logicalProjectId"])
+    paths = WorkspacePaths.from_roots(tmp_path / "data", project, logical_id, "session-a")
+    groups, history = GroupStore(paths), HistoryStore(paths)
+    try:
+        created = groups.create_group("Saved", "", 250, (WatchItem.variable("counter"),), authorized=True)
+        assert created.ok
+        binding = ObservationBinding(
+            workspace_id=paths.workspace_id, logical_project_id=str(logical_id), session_id="session-a",
+            probe_id="probe-a", target_device="STM32F407VGTx", physical_target="stm32f407vg",
+            build_id="b" * 64, elf_sha256="e" * 64, input_snapshot_sha256="f" * 64,
+            git_head="c" * 40, git_dirty=False, flash_session_id="flash-1", lease_id="lease-1",
+            dwarf_sha256="d" * 64, svd_sha256=None,
+        )
+        batch = SampleBatch(
+            binding, created.data.group_id, created.data.revision,
+            UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"), 0, 100, 200, 100, 4.0,
+            0, 0, 0, (SampleValue(WatchItem.variable("counter"), "OK", typed_value={"value": 7}),),
+        )
+        assert history.append_batch(batch).ok
+    finally:
+        history.close()
+        groups.close()
+    database = paths.monitor_root / "monitor.sqlite3"
+    with sqlite3.connect(database) as connection:
+        original_rows = (
+            connection.execute("SELECT * FROM watch_groups").fetchall(),
+            connection.execute("SELECT * FROM group_items").fetchall(),
+            connection.execute("SELECT payload_json,payload_sha256 FROM history_batches").fetchall(),
+            connection.execute("SELECT selector_kind,selector,value_json,value_sha256 FROM history_values").fetchall(),
+        )
+        connection.execute("UPDATE monitor_metadata SET schema_version = 2")
+        connection.execute("PRAGMA user_version = 2")
+    return project, paths, created.data, original_rows
+
+
+def test_runtime_migrates_v2_before_first_public_group_and_history_reads(tmp_path: Path) -> None:
+    from stm32_monitor.models import MonitorConfig
+    from stm32_monitor.runtime import MonitorRuntime
+
+    project, paths, group, original_rows = _seed_v2_group_and_history(tmp_path)
+    runtime = MonitorRuntime(service_factory=lambda *args, **kwargs: _ready_service(*args, **kwargs))
+
+    async def scenario() -> None:
+        await runtime.start(MonitorConfig(project, (tmp_path / "data").resolve(), "session-a"))
+        try:
+            with sqlite3.connect(paths.monitor_root / "monitor.sqlite3") as connection:
+                assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
+                assert connection.execute("SELECT schema_version FROM monitor_metadata").fetchone()[0] == 3
+            listed = await runtime.dispatch("monitor.groups.list", {})
+            assert listed.ok and listed.data.groups == (group,)
+            history = await runtime.dispatch("monitor.history.query", {}, query={"startNs": "0", "endNs": "1000"})
+            assert history.ok and len(history.data.batches) == 1
+            assert history.data.batches[0].values[0].watch.to_dict() == {"kind": "variable", "expression": "counter"}
+            assert history.data.batches[0].values[0].typed_value["value"] == 7
+        finally:
+            await runtime.stop()
+    asyncio.run(scenario())
+
+    with sqlite3.connect(paths.monitor_root / "monitor.sqlite3") as connection:
+        assert (
+            connection.execute("SELECT * FROM watch_groups").fetchall(),
+            connection.execute("SELECT * FROM group_items").fetchall(),
+            connection.execute("SELECT payload_json,payload_sha256 FROM history_batches").fetchall(),
+            connection.execute("SELECT selector_kind,selector,value_json,value_sha256 FROM history_values").fetchall(),
+        ) == original_rows
+
+
+def test_runtime_refuses_corrupt_v2_before_listener_and_releases_lock(tmp_path: Path) -> None:
+    from stm32_monitor.models import MonitorConfig
+    from stm32_monitor.runtime import MonitorRuntime, MonitorRuntimeError
+
+    project, paths, _, _ = _seed_v2_group_and_history(tmp_path)
+    database = paths.monitor_root / "monitor.sqlite3"
+    with sqlite3.connect(database) as connection:
+        connection.execute("UPDATE monitor_metadata SET schema_version = 1")
+    services: list[FakeService] = []
+
+    def service_factory(*args, **kwargs):
+        service = _ready_service(*args, **kwargs)
+        services.append(service)
+        return service
+
+    config = MonitorConfig(project, (tmp_path / "data").resolve(), "session-a")
+
+    async def scenario() -> None:
+        runtime = MonitorRuntime(service_factory=service_factory)
+        with pytest.raises(MonitorRuntimeError) as caught:
+            await runtime.start(config)
+        assert caught.value.code == "MONITOR_STORAGE_CORRUPT"
+        assert services == []
+        assert not (paths.session_root / "monitor-runtime.json").exists()
+        with sqlite3.connect(database) as connection:
+            assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
+        with sqlite3.connect(database) as connection:
+            connection.execute("UPDATE monitor_metadata SET schema_version = 2")
+        replacement = MonitorRuntime(service_factory=service_factory)
+        await replacement.start(config)
+        try:
+            assert len(services) == 1
+            assert (await replacement.dispatch("monitor.groups.list", {})).ok
+        finally:
+            await replacement.stop()
+    asyncio.run(scenario())
+
+
+def test_runtime_cancellation_after_v2_initialization_releases_owned_start(tmp_path: Path) -> None:
+    from stm32_monitor.groups import GroupStore
+    from stm32_monitor.models import MonitorConfig
+    from stm32_monitor.runtime import MonitorRuntime
+
+    project, paths, group, _ = _seed_v2_group_and_history(tmp_path)
+    config = MonitorConfig(project, (tmp_path / "data").resolve(), "session-a")
+
+    class CancellingGroupStore(GroupStore):
+        def initialize_storage(self) -> None:
+            super().initialize_storage()
+            task = asyncio.current_task()
+            assert task is not None
+            task.cancel()
+
+    async def scenario() -> None:
+        interrupted = MonitorRuntime(
+            group_store_factory=CancellingGroupStore,
+            service_factory=lambda *args, **kwargs: _ready_service(*args, **kwargs),
+        )
+        with pytest.raises(asyncio.CancelledError):
+            await interrupted.start(config)
+        with sqlite3.connect(paths.monitor_root / "monitor.sqlite3") as connection:
+            assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert not (paths.session_root / "monitor-runtime.json").exists()
+        replacement = MonitorRuntime(service_factory=lambda *args, **kwargs: _ready_service(*args, **kwargs))
+        await replacement.start(config)
+        try:
+            listed = await replacement.dispatch("monitor.groups.list", {})
+            assert listed.ok and listed.data.groups == (group,)
+        finally:
+            await replacement.stop()
     asyncio.run(scenario())

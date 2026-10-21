@@ -69,6 +69,23 @@ it("loads only an opened file's globals once and leaves function scopes lazy",()
  expect(props.onChildren).toHaveBeenCalledTimes(3);
 });
 
+it.each(["pending","failure"] as const)("does not auto-retry a global scope with a retained %s",kind=>{
+ const props=base(),current=source(),requestScope=`catalog.source-node.${scope.id}` as const;
+ const pending=kind==="pending"?{[requestScope]:{requestId:2n,scope:requestScope,summary:"global"}}:{};
+ const failures=kind==="failure"?{[requestScope]:{ok:false as const,code:"MONITOR_SOURCE_CONTEXT_CHANGED",
+   message:"changed",requestId:2n,recovery:"read-retry" as const,summary:"global"}}:{};
+ render(<SourceCatalogPanel source={{...current,scopePages:{}}} {...props} pending={pending} failures={failures}/>);
+ const region=screen.getByRole("region",{name:"源码目录结果"});
+ fireEvent.click(within(region).getByRole("button",{name:"展开 Src"}));
+ fireEvent.click(within(region).getByRole("button",{name:"展开 Src/main.c"}));
+ expect(props.onChildren).not.toHaveBeenCalled();
+ if(kind==="failure"){
+   expect(within(region).getByRole("alert")).toHaveTextContent("MONITOR_SOURCE_CONTEXT_CHANGED");
+   fireEvent.click(within(region).getByRole("button",{name:"重试上次操作"}));
+   expect(props.onRetry).toHaveBeenCalledWith(requestScope,2n);
+ }
+});
+
 it("shows indexed elements with full selectors and keeps container actions out of the row",()=>{
  const props=base(),current=source();
  const array:SourceCatalogItem={...leaf,id:"7".repeat(64),name:"PC_send2",selector:null,

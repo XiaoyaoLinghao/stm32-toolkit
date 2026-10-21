@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import csv
+import json
 import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import UUID
@@ -10,6 +13,9 @@ from uuid import UUID
 import pytest
 
 from stm32_monitor.models import SampleValue, WatchGroup, WatchItem
+from stm32_monitor.groups import GroupStore
+from stm32_monitor.history import HistoryQuery, HistoryStore
+from stm32_monitor.exports import ExportRequest, HistoryExporter
 from stm32_monitor.protocol import failure, success
 from stm32_monitor.sampler import MonitorSampler, SamplerState, _output_values, _read_dependencies
 from stm32_toolkit.debug import (
@@ -20,6 +26,7 @@ from stm32_toolkit.debug import (
     TypedValue,
 )
 from stm32_toolkit.result import OperationResult
+from stm32_toolkit.paths import WorkspacePaths
 
 
 GROUP_ID = UUID("11111111-1111-4111-8111-111111111111")
@@ -1676,3 +1683,98 @@ def test_u16_sampler_reads_unique_dependencies_and_emits_only_saved_order(tmp_pa
             await stream.aclose()
             await sampler.close()
     asyncio.run(scenario())
+
+
+def test_u16_saved_imported_group_samples_history_and_csv_without_stale_bytes(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    logical_id = UUID("22222222-2222-4222-8222-222222222222")
+    source_paths = WorkspacePaths.from_roots(tmp_path / "source-state", project, logical_id, "monitor-1")
+    paths = WorkspacePaths.from_roots(tmp_path / "target-state", project, logical_id, "monitor-1")
+    low = WatchItem.variable("PC_send2[53]")
+    high = WatchItem.variable("PC_send2[54]")
+    combined = WatchItem.u16le(low.selector, high.selector)
+    source = GroupStore(source_paths)
+    try:
+        created = source.create_group("Bytes", "", 100, (low, combined), authorized=True)
+        assert created.ok
+        saved = source.get_group(created.data.group_id)
+        assert saved.ok and saved.data.items == (low, combined)
+        transfer = {"schemaVersion": 1, "groups": [{"name": saved.data.name,
+            "description": saved.data.description, "intervalMs": saved.data.interval_ms,
+            "items": [item.to_dict() for item in saved.data.items]}]}
+    finally:
+        source.close()
+
+    groups = GroupStore(paths)
+    history = HistoryStore(paths)
+    try:
+        imported = groups.import_groups(json.dumps(transfer).encode("utf-8"), authorized=True)
+        assert imported.ok and len(imported.data) == 1
+        group = imported.data[0]
+        assert group.items == (low, combined)
+        assert groups.list_group_page().data.groups == (group,)
+
+        class ByteObservation(FakeObservation):
+            async def read_variables(self, expressions: tuple[str, ...]):
+                self.calls += 1
+                pair = (0, 0) if self.calls == 1 else (255, 255)
+                items = []
+                for index, expression in enumerate(expressions):
+                    if self.calls >= 3 and index == 1:
+                        items.append(DebugReadItem(expression, "error", code="DEBUG_VALUE_UNAVAILABLE"))
+                    else:
+                        number = pair[index]
+                        items.append(DebugReadItem(expression, "ok", TypedValue(
+                            expression, "uint8_t", number, f"0x{number:02x}", 8)))
+                return OperationResult.success("read", DebugReadReport(
+                    self.binding, tuple(items), "2026-08-08T01:02:04.000000Z"))
+
+        async def scenario():
+            observation = ByteObservation(replace(_binding(project), workspace_id=paths.workspace_id))
+            sampler = MonitorSampler(observation, groups, history)
+            stream = sampler.subscribe()
+            try:
+                assert (await sampler.start(group.group_id, expected_revision=group.revision)).ok
+                batches = [await _next(stream, 3) for _ in range(3)]
+                assert observation.batch_args[:3] == [((low.selector, high.selector), ())] * 3
+                assert all(tuple(value.watch for value in batch.values) == (low, combined) for batch in batches)
+                assert [batch.values[1].typed_value["value"] if batch.values[1].status == "OK" else None
+                    for batch in batches] == [0, 65535, None]
+                assert [batch.values[1].code for batch in batches] == [None, None,
+                    "MONITOR_DERIVED_INPUT_UNAVAILABLE"]
+                assert (await sampler.stop()).ok
+            finally:
+                await stream.aclose()
+                await sampler.close()
+        asyncio.run(scenario())
+    finally:
+        groups.close()
+        history.close()
+
+    reopened_groups = GroupStore(paths)
+    reopened_history = HistoryStore(paths)
+    exporter = HistoryExporter(paths, reopened_history)
+    try:
+        reloaded = reopened_groups.get_group(group.group_id)
+        assert reloaded.ok and reloaded.data.items == (low, combined)
+        page = reopened_history.query_history(HistoryQuery("monitor-1", 0, 2**63 - 1))
+        assert page.ok and len(page.data.batches) >= 3
+        retained = [batch.values[1] for batch in page.data.batches[:3]]
+        assert [value.typed_value["value"] if value.status == "OK" else None
+            for value in retained] == [0, 65535, None]
+        assert retained[2].code == "MONITOR_DERIVED_INPUT_UNAVAILABLE"
+        artifact = exporter.create_export(ExportRequest("monitor-1", 0, 2**63 - 1, "csv"), authorized=True)
+        assert artifact.ok
+        with artifact.data.data_path.open(encoding="utf-8", newline="") as stream:
+            rows = list(csv.DictReader(stream))
+        combined_rows = [row for row in rows if json.loads(row["watch"])["kind"] == "u16le"]
+        assert len(combined_rows) >= 3
+        assert [json.loads(row["typedValue"])["value"] for row in combined_rows[:2]] == [0, 65535]
+        assert json.loads(combined_rows[2]["status"]) == "ERROR"
+        assert json.loads(combined_rows[2]["code"]) == "MONITOR_DERIVED_INPUT_UNAVAILABLE"
+        assert all(json.loads(row["watch"]) == combined.to_dict() for row in combined_rows[:3])
+    finally:
+        exporter.close()
+        reopened_history.close()
+        reopened_groups.close()
