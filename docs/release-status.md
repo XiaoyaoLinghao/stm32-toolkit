@@ -133,6 +133,11 @@ projects remain readable with their original `generatedBy` value, and explicit c
 protects user-edited managed files and preserves eligible unowned editor files. Older supported
 versions retain their existing rules. Existing exports remain bound to their exact Toolkit and
 Monitor versions, so old exports require their original reader or a new export under v1.2.0.
+Producer compatibility does not admit a v1.1.2 build or flash receipt into v1.2.0 physical
+observation: the existing flash identity contract requires the build's Toolkit version to match
+the current runtime exactly and rejects that old build with `FIRMWARE_IDENTITY_MISMATCH`.
+Rebuilding and flashing under a later hardware authorization is required for a new v1.2.0
+observation identity; this source delivery supplies no such physical evidence.
 
 ## v1.1.2 source delivery (not released)
 
