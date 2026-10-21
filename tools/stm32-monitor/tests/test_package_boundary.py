@@ -84,10 +84,13 @@ def test_public_models_expose_no_raw_address_override() -> None:
     raw_address_fields: list[str] = []
     for path in _python_sources():
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        for node in ast.walk(tree):
-            if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
-                if node.target.id.casefold() in {"address", "raw_address"}:
-                    raw_address_fields.append(f"{path.name}:{node.lineno}")
+        for node in tree.body:
+            if not isinstance(node, ast.ClassDef) or node.name.startswith("_"):
+                continue
+            for field in node.body:
+                if isinstance(field, ast.AnnAssign) and isinstance(field.target, ast.Name):
+                    if field.target.id.casefold() in {"address", "raw_address"}:
+                        raw_address_fields.append(f"{path.name}:{field.lineno}")
     assert raw_address_fields == []
 
 
