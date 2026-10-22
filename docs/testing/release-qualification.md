@@ -6,6 +6,12 @@ The [standard procedure](standard-test-procedure.md) governs execution and autho
 Historical measurements and one-time exceptions do not transfer automatically to a later release.
 The user's explicit v1.0.1 conditional exception is recorded below, separately from permanent gates.
 
+## v1.2.0-only exception authorized on 2026-10-23
+
+The user explicitly approved **USER_APPROVED_EXCEPTION** for only the frozen Windows x86_64 / CPython 3.12 v1.2.0 package and `v1.2.0` tag source `99e7f000e3ceb773071037f8b8e30f05091ba6fb` (tree `a5cbe6a0c318fad1d7fe3c48c547d88a2ef679bb`), with the limits below disclosed, and authorized its publication as Latest. The public [v1.2.0 Release](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.2.0) contains the verified 13-asset delivery and limitations; the [v1.2.0 execution record](../codex/returns/STM32TK-120/execution.md) identifies the decision, evidence owners and remote verification. This one-version delivery decision does not amend the permanent 90% Toolkit overall/risk-core-v2 and 95% Monitor risk-core-v2 floors below, transfer to another version or source, or grant hardware authorization.
+
+The accepted limits are: Toolkit native overall/broad-core-v1 12,653/14,336 = 88.2603% and risk-core-v2 11,756/13,202 = 89.0471% below 90%; Monitor risk-core-v2 3,161/3,488 = 90.625% below 95%; and the original complete 6,476-node Toolkit matrix with 12 failures and 3 errors. Later 10 corrected tests, 3 fixture nodes and 2 quiet timing nodes passed focused checks, with no complete post-correction matrix. Monitor's original 118.805 ms p95 performance failure and 51.0939 ms quiet repeat PASS remain separate evidence. Interactive browser, IDE/probe and new physical-target qualification have no new v1.2.0 PASS. No original failure is rewritten as PASS; the older v1.0.1 exception remains independent.
+
 ## v1.0.1 conditional exception authorized on 2026-10-10
 
 The user explicitly approved an exception for v1.0.1 on condition that coverage is no lower than
