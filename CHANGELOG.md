@@ -1,16 +1,16 @@
 # Changelog
 
-## [Unreleased] — v1.2.0 source candidate
+## [v1.2.0]
 
 - Align Toolkit, Monitor, UI, plugin, launchers and release metadata to 1.2.0. Recognize 1.1.2 managed runtimes and generated projects as legacy inputs while preserving older supported inputs, user-edited files, and exact-version export checks. An explicit Repair or configure transaction is required to advance current artifacts.
 - Include the accepted Monitor workbench, source catalog, preserved-state connection, u16 composition and consistent-read behavior, including the accepted schema 3 observation-group storage migration. This version-alignment change introduces no further protocol, storage-schema or wire-schema change.
-- This is source delivery only. No 1.2.0 bundle, installation, browser or hardware qualification, tag, or GitHub Release is implied. The latest published release remains v1.0.1.
+- The [release status](docs/release-status.md) preserves a dated pre-freeze qualification checkpoint. Consult the [v1.2.0 Release](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.2.0) for asset availability, final qualification and limitations.
 
 ## [v1.1.2 source delivery]
 
 - Deliver the accepted Monitor workbench source update: fixed local entry and session recovery, Chinese interface and accessible group workflow, live connection and data freshness, shared-time chart inspection, and history/export range clarity. Preserve the existing API, protocol and data schema versions.
 - Align Toolkit, Monitor, UI, plugin, launchers and release metadata to 1.1.2. The published 1.0.1 runtime and generated projects remain identifiable as legacy inputs; only an explicit Repair or configure transaction advances current artifacts. Existing export manifests still require exact runtime versions, so create a new export under 1.1.2 rather than reusing a 1.0.1 export as a current artifact.
-- This entry records the earlier source-branch delivery only. No 1.1.2 bundle, installation, browser or hardware qualification, tag, or GitHub Release was implied. The latest published release remains v1.0.1.
+- This entry records the earlier source-branch delivery only. No 1.1.2 bundle, installation, browser or hardware qualification, tag, or GitHub Release was implied. At that source delivery, the latest published release was v1.0.1.
 
 ## [v1.0.1] — 2026-10-10
 

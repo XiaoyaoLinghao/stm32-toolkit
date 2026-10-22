@@ -1,10 +1,12 @@
 # STM32 Toolkit 用户指南与排障
 
-本指南同时说明已发布 **v1.0.1** 与当前源码 **v1.2.0 候选**。v1.0.1 补丁的历史资格见[发布状态](release-status.md)及[执行记录](codex/returns/STM32TK-101/execution.md)；当前 Monitor 工作台与源码目录等行为按[v1.2.0 源码交付规范](superpowers/specs/2026-10-21-monitor-v120-delivery-design.md)交付，未打包、安装或取得新实机资格。版本号和本文不代表 v1.2.0 已发布。本文对应用户报告的 1–22 项；报告是核查输入，不是本机新的实机证据。
+本指南面向 **v1.2.0**，说明已验收源码的操作合同。v1.2.0 资产是否可用、最终资格与限制以 [Release 页面](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.2.0)为准；[发布状态](release-status.md)保留源冻结前有日期的资格断点。Monitor 工作台与源码目录等行为见[源码规范](superpowers/specs/2026-10-21-monitor-v120-delivery-design.md)；v1.0.1 的历史资格见[执行记录](codex/returns/STM32TK-101/execution.md)。本文对应用户报告的 1–22 项；报告是核查输入，不是接收者机器的安装或实机证据。
 
 ## 路径、版本和安全入口
 
-使用[双语 README](../README_zh-CN.md) 中的 `Check` 确认 ToolkitRoot、持久 DataRoot、工程根、发行包及受管 runtime。`Bootstrap`/`Repair` 修改 runtime，先审阅 `Check` 结果和对应发行包，再只执行获准的一种动作。Claude Code 的入口为 [skills/setup-stm32-env/SKILL.md](../skills/setup-stm32-env/SKILL.md)；其它 MCP 宿主使用绝对 launcher、显式 project/data root 和 `STM32_TOOLKIT_DATA_ROOT`。`.stm32-project.json` 属于工程，DataRoot 保存机器状态和证据，不能把一次性测试目录当作长期 DataRoot。
+安装前先在 [v1.2.0 Release](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.2.0) 页面确认同版 ZIP 与 `CHECKSUMS.sha256` 均已列出，再按[双语 README](../README_zh-CN.md) 下载并核对哈希；缺少任一资产就停止。之后用包内 `Check` 确认 ToolkitRoot、持久 DataRoot、工程根、发行包及受管 runtime。`Bootstrap`/`Repair` 修改 runtime，先审阅 `Check` 结果和对应发行包，再只执行获准的一种动作，完成后复查到 healthy。Claude Code 的入口为 [skills/setup-stm32-env/SKILL.md](../skills/setup-stm32-env/SKILL.md)；其它 MCP 宿主使用绝对 launcher、显式 project/data root 和 `STM32_TOOLKIT_DATA_ROOT`。`.stm32-project.json` 属于工程，DataRoot 保存机器状态和证据，不能把一次性测试目录当作长期 DataRoot。
+
+解压使用全新、每版专用的 `C:\tools\stm32-toolkit-1.2.0-bundle` 作为 BundleRoot；路径已存在就另选新目录，不覆盖或删除。ZIP 中的 `stm32-toolkit-1.2.0/` 与外层 `release/` 在 BundleRoot 下并列；ToolkitRoot 为 `C:\tools\stm32-toolkit-1.2.0-bundle\stm32-toolkit-1.2.0`，其内部另有供 setup 使用的 `release/`。长期 DataRoot 在 `C:\data\stm32-toolkit`，与 BundleRoot 分离。
 
 ## 通用 MCP 配置与公开入口
 
@@ -14,7 +16,7 @@
 {
   "mcpServers": {
     "stm32-toolkit": {
-      "command": "C:\\tools\\stm32-toolkit-1.2.0\\bin\\stm32-toolkit-mcp.cmd",
+      "command": "C:\\tools\\stm32-toolkit-1.2.0-bundle\\stm32-toolkit-1.2.0\\bin\\stm32-toolkit-mcp.cmd",
       "args": [
         "--project-root", "C:\\work\\blinky",
         "--data-root", "C:\\data\\stm32-toolkit"
@@ -29,15 +31,18 @@
 
 八个 Claude Code Skill 均调用相同的公开合同：[setup-stm32-env](../skills/setup-stm32-env/SKILL.md)、[migrate-keil](../skills/migrate-keil/SKILL.md)、[configure-stm32-project](../skills/configure-stm32-project/SKILL.md)、[build-firmware](../skills/build-firmware/SKILL.md)、[flash-firmware](../skills/flash-firmware/SKILL.md)、[debug-firmware](../skills/debug-firmware/SKILL.md)、[read-var](../skills/read-var/SKILL.md)、[stm32-monitor](../skills/stm32-monitor/SKILL.md)。48 个 MCP 工具名称及八个 Skill 的当前权威清单在 [public_inventory.py](../tools/stm32-toolkit/src/stm32_toolkit/public_inventory.py)；宿主应以实际已安装版本为准。
 
-以下命令中的路径均为示例，须替换为本机真实绝对路径。CLI 工程命令需显式 `--project-root`；`--json` 命令返回结构化 code/details。`--dry-run` 只产生计划，`--apply --plan-id ... --authorized` 是独立写操作，不要直接套用示例 plan ID。
+以下命令中的路径均为示例，须替换为本机真实绝对路径，并在 v1.2.0 runtime `Check` 返回 healthy 后使用其已安装的 CLI。CLI 工程命令需显式 `--project-root`；`--json` 命令返回结构化 code/details。`--dry-run` 只产生计划，`--apply --plan-id ... --authorized` 是独立写操作，不要直接套用示例 plan ID。
 
 ```powershell
-stm32-toolkit --project-root C:\work\blinky doctor --json
-stm32-toolkit --project-root C:\work\blinky project detect --json
-stm32-toolkit --project-root C:\work\blinky keil inspect --uvprojx Project\blinky.uvprojx --target-name Debug --json
-stm32-toolkit --project-root C:\work\blinky keil convert --uvprojx Project\blinky.uvprojx --target-name Debug --dry-run --json
-stm32-toolkit --project-root C:\work\blinky project configure --dry-run --json
-stm32-toolkit --project-root C:\work\blinky build --preset arm-debug --json
+$DataRoot = 'C:\data\stm32-toolkit'
+$ProjectRoot = 'C:\work\blinky'
+$Cli = Join-Path $DataRoot 'runtime\1.2.0\Scripts\stm32-toolkit.exe'
+& $Cli --project-root $ProjectRoot doctor --json
+& $Cli --project-root $ProjectRoot project detect --json
+& $Cli --project-root $ProjectRoot keil inspect --uvprojx Project\blinky.uvprojx --target-name Debug --json
+& $Cli --project-root $ProjectRoot keil convert --uvprojx Project\blinky.uvprojx --target-name Debug --dry-run --json
+& $Cli --project-root $ProjectRoot project configure --dry-run --json
+& $Cli --project-root $ProjectRoot build --preset arm-debug --json
 ```
 
 Keil `inspect`/`convert` 必须指向同一 `uvprojx` 和 `target-name`。确认 plan 无 blocker、diff/路径均符合预期后，以返回的真实 plan ID 调用同一参数链的 `convert --apply --plan-id <plan-id> --authorized --json`。`configure` 同样先 `--dry-run` 再用该次 plan ID `--apply --plan-id <plan-id> --authorized --json`；应用前会重新检查输入与改动。构建报告 `BUILD_OUTPUT_STALE` 时，先判定是哪项输入或身份改变，再根据实际计划决定是否 `build --preset arm-debug --clean --json`；不能靠修改旧 receipt 让产物看似有效。
@@ -59,7 +64,7 @@ Keil `inspect`/`convert` 必须指向同一 `uvprojx` 和 `target-name`。确认
 
 ## 迁移和构建：报告项 1–4、9–10、12–13、15、17、20–22
 
-| # | 看见什么 | 当前候选行为与处置 |
+| # | 看见什么 | 本版行为与处置 |
 | --- | --- | --- |
 | 1 | 子目录 `.uvprojx` 报 `KEIL_PROJECT_NOT_FOUND` | v1.0.0 可用 `--uvprojx Project\xxx.uvprojx` 指明根内路径；自 v1.0.1 起在工程根内安全递归发现，多候选要求显式选择。目录不可枚举返回发现不完整，不能冒充“无工程”。 |
 | 2 | `ARMCC_SOURCE_ENCODING_UNSUPPORTED` | 先确认原始编码与版本控制状态，工程负责人决定转换副本/源码；Toolkit 不猜 GB2312/GB18030，也不自动转码。字节保真是项目责任。 |
@@ -75,7 +80,7 @@ Keil `inspect`/`convert` 必须指向同一 `uvprojx` 和 `target-name`。确认
 
 ## Doctor、context、Probe 与运行态：报告项 5–8、11、14、16
 
-| # | 看见什么 | 当前候选行为与处置 |
+| # | 看见什么 | 本版行为与处置 |
 | --- | --- | --- |
 | 5, 16 | flash 成功后 OBSERVE attach 拒绝 `halted` | flash 的编程/回读 receipt 不证明固件正在运行。核对当前目标状态与原因；如需 reset/resume，应走独立、明确授权的控制流程，不能在观察失败后自动恢复。`--recovery-under-reset` 是受控烧录选项，不是所有旧固件必需；它的 halted 后置不改变此结论。 |
 | 6 | `SVD_SELECTION_REQUIRED` / `SVD_ADDRESS_OUT_OF_RANGE` | 将正确设备 SVD 放在工程根，配置 `debug.svd`、设备与可信区域；逐项核对候选返回的首个失败寄存器路径、地址、宽度和区域。不要只放宽为全地址可读。 |
@@ -90,7 +95,7 @@ Keil `inspect`/`convert` 必须指向同一 `uvprojx` 和 `target-name`。确认
 
 Target-frame v1 继续兼容已有工程的 v1 fixture、字节和 replay；回放不等于新物理证据。v2 由工程根内的 `testing.target.protocol` 显式选择，host 将工程、固件、Probe、target、session、revision 和 case-inventory digest 绑定。只有受控 flash、readback 与 transport 身份检查通过后，才可按真实结果发布物理 TestRun；CLI/MCP 的 target prepare/execute 从工程配置读取身份，不允许调用方注入另一 ELF、target 或地址。
 
-VS10-A 在具名参考硬件上只有 `memory-mailbox` transport 取得实体资格证据。RTT、UART、semihosting 仍有软件 adapter 和 replay 兼容路径，但不据此称为同一参考硬件上的物理 PASS。新增设备、transport 或当前候选的实体结论都须按[发布资格](testing/release-qualification.md)与[标准测试流程](testing/standard-test-procedure.md)重新取证。
+VS10-A 在具名参考硬件上只有 `memory-mailbox` transport 取得实体资格证据。RTT、UART、semihosting 仍有软件 adapter 和 replay 兼容路径，但不据此称为同一参考硬件上的物理 PASS。新增设备、transport 或本版的实体结论都须按[发布资格](testing/release-qualification.md)与[标准测试流程](testing/standard-test-procedure.md)重新取证。
 
 ## Monitor：报告项 18–19
 
@@ -108,47 +113,32 @@ Monitor 工作台默认使用简体中文和浅色界面。打开授权标签后
 
 实时数值每行显示自己的 UTC 采集时间。图表与数值表上方标明当前或上次采样的轮次、运行组和版本；切换左侧的编辑组不会将另一组的对象误标为当前运行组。运行组版本尚未从列表核对时，只保留同一轮次已接受的旧值并标明其来源。尚未收到样本时，状态栏的速率和延迟会显示“尚未收到样本”；暂停、断流、状态待核对或运行组版本变化时，既有速率和延迟标为“上次样本”并显示其 UTC 时间。丢弃计数仍是单独的累计数据。观测绑定或采样轮次变化后，上轮样本时间会清除。
 
-以下 UI02/UI03 就地恢复、固定端口、书签与会话恢复行为适用于 v1.2.0 未发布源码候选；已安装的 v1.0.1 发布包不支持 `--port`，也不包含这些就地恢复操作。
+以下 UI02/UI03 就地恢复、固定端口、书签与会话恢复行为属于 v1.2.0 已验收源码；取得并核验 v1.2.0 发行包、安装且 `Check` 确认 healthy 后，才能按本版启动器使用。v1.0.1 发布包不支持 `--port`，也不包含这些就地恢复操作。
 
 已打开的工作台内，普通操作失败会在导航下方的“操作提示”就地显示原因；多个提示可分别查看、关闭或按提示重试，当前页面、最后成功的数据和未保存草稿保留。读取重试使用失败时的原查询、页游标或导出任务 ID。除上述组冲突外，写入被明确拒绝时，须先核对原目标和内容并确认，才会重试上次操作；编辑按钮仍提交当前草稿。写入结果未知时不盲目重复提交：能核对的操作只刷新状态或列表，导出创建若没有任务 ID 则说明结果未知。若写入已成功而随后刷新失败，只重试读取，不重复写入。无效的导入文件须重新选择。初次读取普通失败可重试初始化；真正的认证或访问失效仍整页阻断，按提示重新打开授权标签。
 
 `open --port 8765` 成功后，终端显示不带 token 的 `http://127.0.0.1:8765/`，可将这个短地址加入书签。服务保持运行、同一浏览器配置的会话 cookie 有效时，关闭标签页后打开书签可回到工作台。关闭整个浏览器后是否保留会话取决于浏览器配置；新浏览器配置不会自动继承原会话。若短地址提示“当前会话已失效”，在**原 `open` 前台交互终端**按 Enter，启动器会把同一服务的授权页面再次交付系统默认浏览器。该浏览器配置完成认证后，在原短地址页面点“重新检查会话”；只有状态核对成功才进入工作台。交付请求本身不证明浏览器已完成认证。非交互启动时，须由启动方重新交付授权页面；不要保存或手输包含 fragment token 的授权链接。403“访问被拒绝”须检查入口、请求来源与浏览器配置，不能当作会话过期处理或放宽访问限制。
 
-`bin/stm32-monitor.cmd` 先用 `STM32_TOOLKIT_DATA_ROOT` 定位相同版本的受管 Python；单给 `--data-root` 不能启动 cmd。Python CLI 启动后才读取 `open --data-root`，两处须指向同一 DataRoot。v1.2.0 启动器预期 `runtime/1.2.0`，不能靠更换 `$ToolkitRoot` 自动加载未安装的候选源码。以下仅为未发布本地源码的测试示例：暂将 Monitor 与 Toolkit 的 `src` 放在 `PYTHONPATH` 首位，显式借用已发布 `runtime/1.0.1` 的 Python 及依赖，不安装或改写已发布的包；`Repair` 也不能将发布包替换为候选源码。命令打开服务和新浏览器标签、前台保持运行，并在退出时恢复原环境；当前候选不新增后台 daemon/stop 协议。
+`bin/stm32-monitor.cmd` 先用 `STM32_TOOLKIT_DATA_ROOT` 定位相同版本的受管 Python；单给 `--data-root` 不能启动 cmd。Monitor 入口启动后才读取 `open --data-root`，两处须指向同一 DataRoot。v1.2.0 启动器只使用已安装的 `runtime/1.2.0`；不要把另一版本的解释器、`PYTHONPATH` 源码覆盖或不同版 wheel 混入。以下命令要求**本版发行包已核验、安装且 Check 为 healthy**：它打开服务和新浏览器标签，并在前台保持运行；用该终端的 Ctrl-C 正常结束，不存在通用后台 daemon/stop 协议。
 
 ```powershell
-$ToolkitRoot = 'C:\work\stm32-toolkit-candidate'
+$BundleRoot = 'C:\tools\stm32-toolkit-1.2.0-bundle'
+$ToolkitRoot = Join-Path $BundleRoot 'stm32-toolkit-1.2.0'
 $DataRoot = 'C:\data\stm32-toolkit'
 $ProjectRoot = 'C:\work\blinky'
-$monitorSource = Join-Path $ToolkitRoot 'tools\stm32-monitor\src'
-$toolkitSource = Join-Path $ToolkitRoot 'tools\stm32-toolkit\src'
-$previousDataRoot = [Environment]::GetEnvironmentVariable('STM32_TOOLKIT_DATA_ROOT', 'Process')
-$previousPythonPath = [Environment]::GetEnvironmentVariable('PYTHONPATH', 'Process')
-try {
-  if (-not (Test-Path -LiteralPath (Join-Path $monitorSource 'stm32_monitor') -PathType Container) -or
-      -not (Test-Path -LiteralPath (Join-Path $toolkitSource 'stm32_toolkit') -PathType Container)) {
-    throw 'Local candidate source is missing.'
-  }
-  $sourcePaths = @($monitorSource, $toolkitSource)
-  if ($previousPythonPath) { $sourcePaths += $previousPythonPath }
-  [Environment]::SetEnvironmentVariable('STM32_TOOLKIT_DATA_ROOT', $DataRoot, 'Process')
-  [Environment]::SetEnvironmentVariable('PYTHONPATH', ($sourcePaths -join [IO.Path]::PathSeparator), 'Process')
-  & (Join-Path $DataRoot 'runtime\1.0.1\Scripts\python.exe') -m stm32_monitor open --project $ProjectRoot --data-root $DataRoot --port 8765
-} finally {
-  [Environment]::SetEnvironmentVariable('PYTHONPATH', $previousPythonPath, 'Process')
-  [Environment]::SetEnvironmentVariable('STM32_TOOLKIT_DATA_ROOT', $previousDataRoot, 'Process')
-}
+$env:STM32_TOOLKIT_DATA_ROOT = $DataRoot
+& (Join-Path $ToolkitRoot 'bin\stm32-monitor.cmd') open --project $ProjectRoot --data-root $DataRoot --port 8765
 ```
 
 | # | 看见什么 | 处置 |
 | --- | --- | --- |
-| 18 | 启动器报缺少 `STM32_TOOLKIT_DATA_ROOT`、调用超时、想重启 | 先运行只读 `Check` 并确认同一 Toolkit 根目录与 DataRoot；按上例暂设环境变量并向 Python CLI 传相同的 `--data-root`。在可保持运行的终端前台调用 `open`，完成后用该前台的 Ctrl-C 正常结束。受限自动化终端超时不能证明服务损坏；没有通用 stop/restart 子命令。 |
+| 18 | 启动器报缺少 `STM32_TOOLKIT_DATA_ROOT`、调用超时、想重启 | 先运行只读 `Check` 并确认同一 Toolkit 根目录与 DataRoot；按上例向已安装 v1.2.0 启动器同时提供相同的环境变量和 `--data-root`。在可保持运行的终端前台调用 `open`，完成后用该前台的 Ctrl-C 正常结束。受限自动化终端超时不能证明服务损坏；没有通用 stop/restart 子命令。 |
 | 19 | 手输 `localhost` 得 403、书签会话失效，或端口已占用 | 只使用终端显示的 `127.0.0.1` 短地址作为书签；不要改成 `localhost` 或放宽 Host/Origin。会话失效时，在原交互 `open` 终端按 Enter，再在完成认证的同一浏览器配置中点“重新检查会话”。403 为访问拒绝，应先检查入口与来源。端口占用不会静默改用随机端口，检查并分配各工程独立端口。短书签指向该端口当前服务，重新分配给另一工程后应在工作台顶栏核对工程身份。不要打印、复制、保存完整 fragment URL。 |
 
 省略 `--port` 时继续由系统分配临时端口；`serve --json` 也可指定 `--port`，其 JSON 字段保持不变。服务停止后，短书签不能自行启动服务；重复执行第二个 `open` 也不能重新打开已经运行的同一工作区服务。Enter 恢复只属于仍在运行的原 `open` 进程，不提供跨进程命令或跨浏览器配置的会话共享。
 
 ## 升级与历史材料
 
-已发布 v1.0.0/v1.0.1 的标签、发行资产、凭据和数据边界不变。当前候选的 Toolkit、Monitor、UI、插件、启动器与发行身份统一为 1.2.0；已有 1.1.2、1.0.1 及更早获批 runtime 经 `Check` 后只能以获授权的 `Repair` 事务升级，旧目录进入隔离区；只有既有事务可恢复分支才按其规则回滚旧 runtime 和状态，具体证据范围见[发布状态](release-status.md)。多旧版、未知未来目录、同版本不同来源、降级和锁定提升继续拒绝；不要手动移走状态文件。现有工程 `generatedBy` 保留真实旧版本；1.1.2/1.0.1/1.0.0/0.9.0 工程可计划和应用，只有显式 configure 事务刷新未改动的托管模板与记账，用户改动仍阻断。新 build 生成实际 1.2.0 身份，旧 flash receipt/evidence 不改写。工程 producer 可读不代表旧固件身份可供新版观测：现有 flash 合同要求 build 的 Toolkit 版本与当前 1.2.0 精确一致，1.1.2 build/flash receipt 不能直接绑定 1.2.0 运行观测，旧 build 会以 `FIRMWARE_IDENTITY_MISMATCH` 被拒绝；后续须经授权重建、烧录并建立新观测身份。旧 1.1.2/1.0.1 导出清单的 Toolkit/Monitor 版本不符合 1.2.0 精确校验；需使用原版本读取旧导出，或在新版本重新创建，不自动迁移或重签。改变 debug 元数据后，完整输入身份合同可能要求重新 configure、clean build 和必要的新烧录；运行观测仍按原完整身份与具名硬件授权，不提供内容等价 rebind。本候选未发布、未安装，也没有新实机资格结论；v1.0.1 的资格事实见[执行记录](codex/returns/STM32TK-101/execution.md)与[发布状态](release-status.md)。
+已发布 v1.0.0/v1.0.1 的标签、发行资产、凭据和数据边界不变。v1.2.0 源码的 Toolkit、Monitor、UI、插件、启动器与发行身份统一为 1.2.0；已有 1.1.2、1.0.1 及更早获批 runtime 经 `Check` 后只能以获授权的 `Repair` 事务升级，旧目录进入隔离区；只有既有事务可恢复分支才按其规则回滚旧 runtime 和状态，具体证据范围见[发布状态](release-status.md)。多旧版、未知未来目录、同版本不同来源、降级和锁定提升继续拒绝；不要手动移走状态文件。现有工程 `generatedBy` 保留真实旧版本；1.1.2/1.0.1/1.0.0/0.9.0 工程可计划和应用，只有显式 configure 事务刷新未改动的托管模板与记账，用户改动仍阻断。新 build 生成实际 1.2.0 身份，旧 flash receipt/evidence 不改写。工程 producer 可读不代表旧固件身份可供新版观测：现有 flash 合同要求 build 的 Toolkit 版本与当前 1.2.0 精确一致，1.1.2 build/flash receipt 不能直接绑定 1.2.0 运行观测，旧 build 会以 `FIRMWARE_IDENTITY_MISMATCH` 被拒绝；后续须经授权重建、烧录并建立新观测身份。旧 1.1.2/1.0.1 导出清单的 Toolkit/Monitor 版本不符合 1.2.0 精确校验；需使用原版本读取旧导出，或在新版本重新创建，不自动迁移或重签。改变 debug 元数据后，完整输入身份合同可能要求重新 configure、clean build 和必要的新烧录；运行观测仍按原完整身份与具名硬件授权，不提供内容等价 rebind。本指南不代替本版 Release notes 的最终资格结论；源冻结前断点没有新的实机资格证据；v1.0.1 的历史资格事实见[执行记录](codex/returns/STM32TK-101/execution.md)与[发布状态](release-status.md)。
 
 当前源树已退役旧阶段计划、报告、资格工具及其专属测试。需要审计原文时使用 `git show 694c825d29a55a53052a148efa4cc6720c315a04:<path>`，不要重建旧机器本地路径。发行构建仍使用现行 `tools/release/build_0900_artifacts.py`、`tools/release/release_0900_policy.json`、许可证和当前测试。部署/IDE 另见 [Windows 前置核对](testing/windows-deployment-and-ide-preflight.md)。

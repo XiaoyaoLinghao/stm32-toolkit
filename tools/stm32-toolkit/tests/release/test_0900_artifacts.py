@@ -44,7 +44,13 @@ def _sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _capture_build_wheel_processes(monkeypatch, tmp_path: Path, *, caller_temp: dict[str, str]):
+def _capture_build_wheel_processes(
+    monkeypatch,
+    tmp_path: Path,
+    *,
+    caller_temp: dict[str, str],
+    caller_system_root: tuple[str, str] | None = None,
+):
     from importlib.util import module_from_spec, spec_from_file_location
 
     spec = spec_from_file_location("build_0900_artifacts_wheel_environment", UTILITY)
@@ -55,6 +61,9 @@ def _capture_build_wheel_processes(monkeypatch, tmp_path: Path, *, caller_temp: 
         monkeypatch.delenv(name, raising=False)
     for name, value in caller_temp.items():
         monkeypatch.setenv(name, value)
+    monkeypatch.delenv("SystemRoot", raising=False)
+    if caller_system_root is not None:
+        monkeypatch.setenv(*caller_system_root)
 
     temporary_root = tmp_path / "build-temp"
 
@@ -143,6 +152,8 @@ def test_build_wheel_passes_present_caller_temp_environment_to_wheel_child(monke
 
 
 def test_build_wheel_does_not_invent_absent_caller_temp_environment(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("PYTHONPATH", str(tmp_path / "untrusted-python"))
+    monkeypatch.setenv("PIP_CONFIG_FILE", str(tmp_path / "untrusted-pip.conf"))
     wheel, calls, output = _capture_build_wheel_processes(
         monkeypatch,
         tmp_path,
@@ -156,6 +167,28 @@ def test_build_wheel_does_not_invent_absent_caller_temp_environment(monkeypatch,
         "SOURCE_DATE_EPOCH": "315532800",
     }
     assert not {"TEMP", "TMP", "TMPDIR"} & set(calls[2]["env"])
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows environment keys are case-insensitive")
+@pytest.mark.parametrize("system_root_name", ["SystemRoot", "SYSTEMROOT"])
+def test_build_wheel_passes_only_caller_system_root_on_windows(monkeypatch, tmp_path: Path, system_root_name: str):
+    system_root = str(tmp_path / "windows-root")
+    monkeypatch.setenv("PYTHONPATH", str(tmp_path / "untrusted-python"))
+    monkeypatch.setenv("PIP_CONFIG_FILE", str(tmp_path / "untrusted-pip.conf"))
+    wheel, calls, output = _capture_build_wheel_processes(
+        monkeypatch,
+        tmp_path,
+        caller_temp={},
+        caller_system_root=(system_root_name, system_root),
+    )
+    _assert_build_wheel_call_shape(calls, output)
+    assert wheel == output / "example-1.0.0-py3-none-any.whl"
+    assert calls[2]["env"] == {
+        "PATH": os.environ.get("PATH", ""),
+        "PYTHONNOUSERSITE": "1",
+        "SOURCE_DATE_EPOCH": "315532800",
+        "SystemRoot": system_root,
+    }
 
 
 def test_build_wheel_disables_persistent_pip_cache_even_when_caller_has_one(monkeypatch, tmp_path: Path):

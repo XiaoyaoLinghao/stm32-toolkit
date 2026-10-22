@@ -1,10 +1,10 @@
 # Windows 部署与 IDE 调试前置核对
 
-本文件面向 Windows x86_64、CPython 3.12 的发行包部署。最新已发布版本是 v1.0.1；当前源码候选标识为 v1.2.0，相关 Monitor 功能已进入代码，但未构建发行包或安装；当前候选范围见[源码交付规范](../superpowers/specs/2026-10-21-monitor-v120-delivery-design.md)，旧版资格事实见[发布状态](../release-status.md)及[v1.0.1 执行记录](../codex/returns/STM32TK-101/execution.md)。实际执行顺序、授权、留证和首错停止以[标准测试流程](standard-test-procedure.md)为准；已知限制见[发布状态](../release-status.md)，常见工程错误见[用户指南](../user-guide.md)。软件安装或离线参数检查不等于真实 IDE/探针验收。
+本文件面向 v1.2.0 的 Windows x86_64、CPython 3.12 发行包部署。资产可用性、最终发行资格与限制以 [v1.2.0 Release](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.2.0) 为准；[发布状态](../release-status.md)保留源冻结前有日期的资格断点。当前范围见[源码交付规范](../superpowers/specs/2026-10-21-monitor-v120-delivery-design.md)，旧版资格事实见[v1.0.1 执行记录](../codex/returns/STM32TK-101/execution.md)。实际执行顺序、授权、留证和首错停止以[标准测试流程](standard-test-procedure.md)为准；常见工程错误见[用户指南](../user-guide.md)。软件安装或 loopback HTTP 检查不等于真实交互浏览器、IDE/探针验收。
 
 ## 固定发行与本机输入
 
-先记录经过审查的完整 source commit、发行 manifest 和 bundle SHA256、CPython 版本，以及真实的 ToolkitRoot、长期 DataRoot、ProjectRoot。仅使用与该 source/manifest 匹配的完整离线 wheelhouse，不能混用另一版 setup、wheel 或状态文件。DataRoot 保留 runtime、工程身份、会话和证据，不用可清理的测试临时目录；移动机器或磁盘后重新核对路径和当前绑定，不能复制旧探针 selector、ticket、已消费 action 作为新会话状态。
+先确认 [v1.2.0 Release](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.2.0) 页面同时列出 `stm32-toolkit-1.2.0-windows-x86_64.zip` 与 `CHECKSUMS.sha256`，再从同一页面下载；缺少任一资产就停止，不以旧版包代替。依[README 的校验命令](../../README_zh-CN.md)核对 ZIP SHA256 后解压到全新、每版独立的 BundleRoot；若目录已存在，另选新目录，不覆盖或删除。ZIP 的 `stm32-toolkit-1.2.0/` ToolkitRoot 与外层 `release/` 在 BundleRoot 下并列；ToolkitRoot 内另有供 setup 使用的 `release/release-manifest.json`。不要将 GitHub 自动生成的源码归档当作离线包。先记录经过审查的完整 source commit、包内 manifest、bundle SHA256、CPython 版本，以及真实的 ToolkitRoot、长期 DataRoot、ProjectRoot。仅使用与该 source/manifest 匹配的完整离线 wheelhouse，不能混用另一版 setup、wheel 或状态文件。DataRoot 保留 runtime、工程身份、会话和证据，不用可清理的测试临时目录；移动机器或磁盘后重新核对路径和当前绑定，不能复制旧探针 selector、ticket、已消费 action 作为新会话状态。
 
 发行构建所用的专用干净工作树应保证 checkout 与 `git archive` 的实际字节一致。若使用 LF 归档，在创建工作树前确定进程/工作树 Git 配置；仅一次 `git -c core.autocrlf=false worktree add` 不保证后续 builder 沿用。核对 `git ls-files --eol`，不改用户全局 Git 配置。构建 wheelhouse 须包含发行策略固定的 build backend（当前 setuptools 84.0.0、wheel 0.48.0），runtime wheels 本身不构成完整构建输入。现行工具是 `tools/release/build_0900_artifacts.py` 与 `tools/release/release_0900_policy.json`；文件名是历史延续，不表示应安装 0.9.0。
 
@@ -12,17 +12,17 @@
 
 对已核验 bundle 使用 `bin/setup-stm32-env.ps1 -Mode Check`。`Check` 只读；`missing` 只在获准安装时进入 Bootstrap，`repairable`/`broken` 只在获准修复时进入 Repair。成功动作后再 `Check`。同版本不同 source/manifest 返回 source-conflict，记录过更高版本或未知状态按原拒绝处理；不要删除 `runtime-state.json`、降级或手修 EXE 绕过。
 
-最终目录的验证包括：发行包 hash 与闭合 wheel 集、最终位置的 Toolkit/Monitor/PyOCD wheel、`pip check`、console launcher 绑定及版本。staging 内成功并非最终位置成功。对已有 v1.0.1 runtime，先以 `Check` 为准，再可只读核对以下两个 PyOCD 入口；把路径换成实际 DataRoot，不访问板子：
+最终目录的验证包括：发行包 hash 与闭合 wheel 集、最终位置的 Toolkit/Monitor/PyOCD wheel、`pip check`、console launcher 绑定及版本。staging 内成功并非最终位置成功。v1.2.0 的 `Check` 确认 healthy 后，可只读核对以下两个 PyOCD 入口；把路径换成实际 DataRoot，不访问板子：
 
 ```powershell
-$runtimeRoot = 'C:\data\stm32-toolkit\runtime\1.0.1'
+$runtimeRoot = 'C:\data\stm32-toolkit\runtime\1.2.0'
 & "$runtimeRoot\Scripts\python.exe" -I -m pyocd --version
 if ($LASTEXITCODE -ne 0) { throw 'PyOCD module failed' }
 & "$runtimeRoot\Scripts\pyocd.exe" --version
 if ($LASTEXITCODE -ne 0) { throw 'PyOCD executable failed' }
 ```
 
-发行策略当前固定 PyOCD 0.45.1；1.2.0 候选未来若构建发行包并经另行授权的 Repair 成功，应检查 `DataRoot/runtime/1.2.0/Scripts/pyocd.exe`。最终 launcher 应报告与已验证模块一致的版本且绑定最终解释器。`import pyocd`、模块入口成功、文件存在或 Toolkit 版本成功，都不能单独证明 `pyocd.exe` 可供 IDE 使用。安装/Repair 失败时记录原状态与 rollback 证据；旧版 runtime 先隔离，既有事务可恢复分支按规则回滚，原工程及用户数据不改写。旧版回滚已验证范围见[发布状态](../release-status.md)，本候选不继承该发布资格。
+发行策略当前固定 PyOCD 0.45.1；最终 launcher 应报告与已验证模块一致的版本且绑定最终解释器。`import pyocd`、模块入口成功、文件存在或 Toolkit 版本成功，都不能单独证明 `pyocd.exe` 可供 IDE 使用。安装/Repair 失败时记录原状态与 rollback 证据；旧版 runtime 先隔离，既有事务可恢复分支按规则回滚，原工程及用户数据不改写。旧版回滚已验证范围见[发布状态](../release-status.md)，不能将该历史结果当作 v1.2.0 当前安装资格。
 
 ## IDE 配置离线核对
 

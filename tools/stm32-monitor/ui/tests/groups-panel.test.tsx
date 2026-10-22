@@ -228,3 +228,57 @@ it("closes the import preview when toggling the import button again",async()=>{
   expect(screen.queryByRole("button",{name:"确认导入"})).toBeNull();
   expect(importFn).not.toHaveBeenCalled();
 });
+
+it("lets an editor choose a different adjacent pair without changing existing watches",async()=>{
+  const change=vi.fn();
+  const items=[{kind:"variable" as const,expression:"bytes[0]"},{kind:"variable" as const,expression:"bytes[1]"},
+    {kind:"variable" as const,expression:"bytes[2]"}];
+  const draft={sourceGroupId:"group",expectedRevision:1n,name:"Group",description:"",intervalMs:250,items};
+  render(<GroupPanel {...props({draft,onDraftChange:change})}/>);
+  await userEvent.click(screen.getByRole("button",{name:"合并16位"}));
+  await userEvent.selectOptions(screen.getByLabelText("低字节"),"bytes[1]");
+  await userEvent.selectOptions(screen.getByLabelText("高字节"),"bytes[2]");
+  await userEvent.click(screen.getByRole("button",{name:"添加组合"}));
+  expect(change).toHaveBeenCalledWith({...draft,items:[...items,
+    {kind:"u16le",lowExpression:"bytes[1]",highExpression:"bytes[2]"}]});
+});
+
+it("invalidates a delete confirmation after the selected revision changes",async()=>{
+  const del=vi.fn();
+  const view=render(<GroupPanel {...props({onDelete:del,editorGeneration:1n})}/>);
+  await userEvent.click(screen.getByRole("button",{name:"删除"}));
+  expect(screen.getByRole("button",{name:"确认删除"})).toBeEnabled();
+  view.rerender(<GroupPanel {...props({groups:[{...group,revision:2n}],onDelete:del,editorGeneration:1n})}/>);
+  expect(screen.queryByRole("button",{name:"确认删除"})).toBeNull();
+  expect(del).not.toHaveBeenCalled();
+});
+
+it("reports a local file read failure and leaves the import unsent",async()=>{
+  const importFn=vi.fn();
+  const read=vi.spyOn(FileReader.prototype,"readAsText").mockImplementation(function(this:FileReader){
+    queueMicrotask(()=>this.dispatchEvent(new ProgressEvent("error")));
+  });
+  try{
+    render(<GroupPanel {...props({onImport:importFn})}/>);
+    await userEvent.click(screen.getByRole("button",{name:"导入观测组"}));
+    await userEvent.upload(screen.getByTestId("group-import-file"),new File(["{}"],"groups.json",{type:"application/json"}));
+    expect(await screen.findByRole("alert")).toHaveTextContent("无法读取导入文件，请重新选择。");
+    expect(screen.queryByRole("button",{name:"确认导入"})).toBeNull();
+    expect(importFn).not.toHaveBeenCalled();
+  }finally{read.mockRestore();}
+});
+
+it("keeps a conflicted draft available for reload or saving as a new group",async()=>{
+  const reload=vi.fn(),saveAsNew=vi.fn(),reviewed=vi.fn(),save=vi.fn();
+  render(<GroupPanel {...props({sourceProblem:"changed",onReload:reload,onSaveAsNew:saveAsNew,
+    nameReviewRequired:true,onNameReviewed:reviewed,onSave:save})}/>);
+  expect(screen.getByRole("alert")).toHaveTextContent("原组版本已变化");
+  expect(screen.getByRole("button",{name:"保存观测组"})).toBeDisabled();
+  await userEvent.click(screen.getByRole("button",{name:"确认使用此名称"}));
+  expect(reviewed).toHaveBeenCalledOnce();
+  await userEvent.click(screen.getByRole("button",{name:"保留为新组"}));
+  expect(saveAsNew).toHaveBeenCalledOnce();
+  await userEvent.click(screen.getByRole("button",{name:"放弃草稿并载入最新版本"}));
+  expect(reload).toHaveBeenCalledOnce();
+  expect(save).not.toHaveBeenCalled();
+});

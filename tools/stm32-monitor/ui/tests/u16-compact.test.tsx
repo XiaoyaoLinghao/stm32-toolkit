@@ -4,7 +4,7 @@ import {GroupPanel} from "../src/components/GroupPanel";
 import {LiveTable} from "../src/components/LiveTable";
 import {watchItemGuard,type GroupDraft,type HistoryPage,type ObservationBinding,type SampleBatch,type WatchGroup} from "../src/api/contract";
 import {appendAuthoritativeSample,emptyLive,projectHistoryPage} from "../src/chart/series";
-import {watchFullLabel,watchKey,watchLabel} from "../src/state/watch";
+import {watchFullLabel,watchKey,watchLabel,watchLabelFromKey} from "../src/state/watch";
 
 const low={kind:"variable" as const,expression:"PC_send2[53]"};
 const high={kind:"variable" as const,expression:"PC_send2[54]"};
@@ -20,6 +20,13 @@ it("validates the fixed pair, preserves ordered identity and shortens adjacent a
   expect(watchKey(combined)).not.toBe(watchKey({kind:"u16le",lowExpression:high.expression,highExpression:low.expression}));
   expect(watchLabel(combined)).toBe("PC_send2[53,54] (16位)");
   expect(watchFullLabel(combined)).toBe("u16(PC_send2[53], PC_send2[54])");
+});
+
+it("keeps nonadjacent pairs explicit and leaves an unreadable saved key visible",()=>{
+  const nonadjacent={kind:"u16le" as const,lowExpression:"PC_send2[53]",highExpression:"PC_send2[55]"};
+  expect(watchLabel(nonadjacent)).toBe("u16(PC_send2[53], PC_send2[55])");
+  expect(watchLabelFromKey(watchKey(nonadjacent))).toBe(watchFullLabel(nonadjacent));
+  expect(watchLabelFromKey("u16le:[broken")).toBe("u16le:[broken");
 });
 
 it("adds one combination through the existing draft callback and retains its saved label",()=>{

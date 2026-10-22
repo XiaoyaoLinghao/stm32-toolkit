@@ -8,6 +8,23 @@ import type {MonitorState} from "../src/state/model";
 const failure=(requestId:bigint,code:string,recovery:"read-retry"|"write-confirm"|"reconcile",summary:string)=>({
   ok:false as const,requestId,code,message:"raw diagnostic",recovery,summary,
 });
+it("does not reserve error space when every operation has recovered",()=>{
+  render(<OperationRegion failures={{}} pending={{}} onRetry={vi.fn()} onDismiss={vi.fn()}/>);
+  expect(screen.queryByRole("region",{name:"操作问题"})).toBeNull();
+});
+it("drops a write confirmation when its failure is replaced",async()=>{
+  const retry=vi.fn(),dismiss=vi.fn();
+  const view=render(<OperationRegion failures={{"groups.create":failure(9n,"DOWN","write-confirm","old draft")}}
+    pending={{}} onRetry={retry} onDismiss={dismiss}/>);
+  await userEvent.click(screen.getByRole("button",{name:"重试上次操作"}));
+  expect(screen.getByRole("dialog",{name:"确认重试上次写入"})).toHaveTextContent("old draft");
+  view.rerender(<OperationRegion failures={{"groups.create":failure(10n,"DOWN","write-confirm","new draft")}}
+    pending={{}} onRetry={retry} onDismiss={dismiss}/>);
+  expect(screen.queryByRole("dialog",{name:"确认重试上次写入"})).toBeNull();
+  await userEvent.click(screen.getByRole("button",{name:"关闭"}));
+  expect(dismiss).toHaveBeenCalledExactlyOnceWith("groups.create",10n);
+  expect(retry).not.toHaveBeenCalled();
+});
 it("shows every operation failure and dismisses only its exact record",async()=>{
   const retry=vi.fn(),dismiss=vi.fn();
   render(<OperationRegion failures={{history:failure(1n,"HISTORY_DOWN","read-retry","历史查询 · c2"),

@@ -1,5 +1,63 @@
 # Release status and retained limitations
 
+## v1.2.0 pre-freeze qualification checkpoint — 2026-10-22
+
+At this 2026-10-22 checkpoint, local prequalification of the Windows x86_64 / CPython
+3.12 offline v1.2.0 candidate had produced repeatable artifacts and isolated installation
+evidence. The preparation accepted base was `b80a712e1738ae6900f42bffc3ab6c80198654d1`.
+These checks used a provisional source commit, before the final integrated package source,
+manifest and downloadable asset hashes were frozen. This section is a historical checkpoint,
+not a current Release listing or final qualification verdict. For asset availability, final
+package identity, later results, any explicitly approved exception and the release decision,
+consult the actual [v1.2.0 Release](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.2.0)
+and any subsequent master qualification record.
+
+The candidate unified Toolkit, Monitor, UI, plugin, launchers and release metadata at v1.2.0.
+It includes the accepted Monitor workbench, source catalog, preserved-state connection,
+u16 composition and consistent-read behavior. Evidence at this checkpoint was bounded as follows;
+`PASS` identifies the owner who ran a check against the stated candidate, not a
+final integrated build:
+
+| Owner and candidate | Local prequalification result |
+| --- | --- |
+| `fix_windows_build`, `d2c25706f87fc0c132e8cd1eeb774a32b6d9ebfa` | Corrected the official builder's sanitized Windows child environment to retain `SystemRoot`; 76 release/security tests passed. |
+| `build_v120`, same provisional commit | Two official clean builds produced 13 byte-identical assets; checksum, archive, bundle, 64-wheel closure, license and SBOM checks passed. This is not the final downloadable asset set. |
+| `build_v120`, isolated fresh installation from that candidate | `Check` missing → `Bootstrap` → healthy generation 1; `pip check`, Toolkit/Monitor 1.2.0 launchers and PyOCD module/executable 0.45.1 passed. |
+| `build_v120`, isolated upgrade from the verified v1.0.1 Windows ZIP (SHA256 `ed51a0e9773acc26010bfadae595fddbf99ba298080784a3d600509d861f1f8b`) | v1.0.1 Bootstrap → v1.2.0 `Check` repairable → authorized `Repair` → healthy generation 2; user marker hashes were retained and the old runtime was quarantined. |
+| `build_v120`, installed candidate loopback HTTP smoke | Authenticated API and UI root returned 200; unauthenticated returned 401, wrong Host 403; the service record and port cleared after stop. No probe operation was requested. This does not establish interactive browser or hardware qualification. |
+| `verify_v120`, accepted Monitor product source | Full run: 1167 passed, 12 skipped, one performance failure. History query p95 was 118.805 ms against a strict 100 ms bound under concurrent load; a quiet-environment repeat is pending. Native Monitor overall/risk-core-v2 branch coverage was 3161/3488 = 90.625%; the 95% risk-core floor is **UNMET**. |
+| `ui_release_tests`, test-only `9d225d1519e41eee1ce4243497cb95769366bf9d` | Exact-commit full UI run: 523 passed, one skipped; native branch coverage 2861/3068, with all 34 positive-denominator source files at or above 90%. Type checks, lint, build and distribution verification passed. Primary reviewed the complete seven-file diff in a clean exact-head worktree and ran 71 focused tests (15.82 s), all passing. Final integrated release checks remain pending. |
+| `verify_v120`, Toolkit full software suite | The original full attempt was **INCOMPLETE** with seven observed failures and no final JUnit or parent coverage. Five long-path cases and one CRLF case passed focused reruns after short-path/LF preflight; `in_memory_configure_and_build_fail_closed` remained unclassified. A corrected three-shard full matrix (6,476 nodes) on `8c4760d670e448edc6adb13f4cc0c5347c87486b` started at 23:17 local time and was pending; no full-suite PASS or coverage conclusion was assigned. |
+
+At this checkpoint, release acceptance was **not established**: the Monitor risk-core
+threshold was numerically unmet, the performance failure had not been resolved, and
+Toolkit/final-head checks remained open. No v1.2.0 coverage exception had been approved.
+The v1.0.1 exception and physical evidence did not transfer to this candidate. No new
+IDE or physical-device verification was established at this checkpoint.
+The [standard test procedure](testing/standard-test-procedure.md) remains the execution
+authority for any later deployment or hardware work.
+
+To install v1.2.0, recipients should confirm that the [Release page](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.2.0)
+lists both the Windows ZIP and `CHECKSUMS.sha256`, obtain them from that same page,
+verify the ZIP SHA256 before extraction, use its matching
+`release/release-manifest.json` and offline wheels, then run the included setup `Check`.
+Only a missing runtime calls for an explicitly chosen `Bootstrap`; an authorized upgrade
+or repair calls for `Repair`, followed by another `Check`. See the
+[English](../README.md) or [Chinese](../README_zh-CN.md) quick start and the
+[Windows deployment preflight](testing/windows-deployment-and-ide-preflight.md).
+
+An existing v1.1.2 managed runtime is recognized as legacy during read-only `Check`; only an
+explicitly authorized `Repair` enters the existing upgrade transaction. Existing v1.1.2-generated
+projects remain readable with their original `generatedBy` value, and explicit configure still
+protects user-edited managed files and preserves eligible unowned editor files. Older supported
+versions retain their existing rules. Existing exports remain bound to their exact Toolkit and
+Monitor versions, so old exports require their original reader or a new export under v1.2.0.
+Producer compatibility does not admit a v1.1.2 build or flash receipt into v1.2.0 physical
+observation: the existing flash identity contract requires the build's Toolkit version to match
+the current runtime exactly and rejects that old build with `FIRMWARE_IDENTITY_MISMATCH`.
+Rebuilding and flashing under a later hardware authorization is required for a new v1.2.0
+observation identity; this pre-freeze checkpoint supplies no such physical evidence.
+
 ## Published v1.0.0
 
 GitHub [v1.0.0](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.0.0) was published
@@ -79,7 +137,7 @@ membership and native denominators were not lowered. Changed Python files use co
 native data; only unchanged Git blobs reuse accepted U64 data. Earlier measurements remain retained.
 
 GitHub [v1.0.1](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.0.1) was published
-on 2026-10-10 at 11:03:42 UTC and is marked Latest. All 13 uploaded assets were downloaded and
+on 2026-10-10 at 11:03:42 UTC and was marked Latest at publication. All 13 uploaded assets were downloaded and
 independently matched by name, size and SHA256 against the frozen local artifacts and GitHub digests.
 The annotated tag `080cec43a36401f1bf8824e779d423c0e8e54a36` resolves to the fixed package source
 `0f06c659f5e04aa1f8e53022eae9b5e964da2b4b`. The v1.0.0 tag and 13 assets remain intact.
@@ -118,32 +176,11 @@ The exact authorized baseline fractions and unchanged collection rules are in
 [release qualification](testing/release-qualification.md). Numerical acceptance uses exact fractions
 before rounding and is bound to the measured candidate source.
 
-## v1.2.0 source candidate (not released)
-
-The current source candidate unifies Toolkit, Monitor, UI, plugin, launchers and release metadata
-at v1.2.0. It includes the accepted Monitor workbench, source catalog, preserved-state connection,
-u16 composition and consistent-read behavior. This source delivery has no v1.2.0 bundle,
-installation, tag, GitHub Release, browser qualification or physical-device qualification. The
-latest published release remains v1.0.1, and its coverage exception and release evidence do not
-transfer to v1.2.0.
-
-An existing v1.1.2 managed runtime is recognized as legacy during read-only `Check`; only an
-explicitly authorized `Repair` enters the existing upgrade transaction. Existing v1.1.2-generated
-projects remain readable with their original `generatedBy` value, and explicit configure still
-protects user-edited managed files and preserves eligible unowned editor files. Older supported
-versions retain their existing rules. Existing exports remain bound to their exact Toolkit and
-Monitor versions, so old exports require their original reader or a new export under v1.2.0.
-Producer compatibility does not admit a v1.1.2 build or flash receipt into v1.2.0 physical
-observation: the existing flash identity contract requires the build's Toolkit version to match
-the current runtime exactly and rejects that old build with `FIRMWARE_IDENTITY_MISMATCH`.
-Rebuilding and flashing under a later hardware authorization is required for a new v1.2.0
-observation identity; this source delivery supplies no such physical evidence.
-
 ## v1.1.2 source delivery (not released)
 
 The accepted Monitor workbench update was recorded as a v1.1.2 source-branch delivery at
-`dcd0a21f605782929051c26773a01e18c02ff55f`. The latest published release remains v1.0.1;
-that candidate had no v1.1.2 bundle, installation,
+`dcd0a21f605782929051c26773a01e18c02ff55f`. At that delivery, the latest published
+release was v1.0.1; that candidate had no v1.1.2 bundle, installation,
 tag, GitHub Release, browser qualification or physical-device qualification. The v1.0.1 coverage
 exception and release evidence do not transfer to a future v1.1.2 release decision.
 

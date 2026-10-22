@@ -7,7 +7,7 @@ import {SamplingControls} from "../src/components/SamplingControls";
 import {NoticeRegion} from "../src/components/NoticeRegion";
 import {FailureMessage} from "../src/components/FailureMessage";
 import {TransportStatus} from "../src/components/TransportStatus";
-import {errorText,latencyText,noticeText,recoveryText,samplingState} from "../src/presentation/zh";
+import {copy,errorText,formatCopy,latencyText,noticeText,operationSummary,recoveryAction,recoveryText,samplingState} from "../src/presentation/zh";
 
 it("keeps large and signed latency values exact and gives unknown codes a neutral explanation",()=>{
   expect(latencyText(1_234_567_890_123_456_789_123n)).toBe("1234567890123.45 s");
@@ -23,6 +23,28 @@ it("does not attribute a shared invalid-request code to group editing",()=>{
   expect(guidance.action).toBe("请检查当前操作的输入后重新提交。");
   expect(recoveryText("input","groups.update")).toBe("请修改草稿或观测对象后重新提交。");
   expect(recoveryText("input","export.create")).toBe(guidance.action);
+});
+
+it("names a failed operation with its submitted page and identity for safe retry",()=>{
+  expect(operationSummary("catalog.variables","counter","next-cursor")).toBe("变量目录搜索 · counter · 下一页");
+  expect(operationSummary("history","0","1000000000","next-cursor")).toContain("翻页");
+  expect(operationSummary("groups.import","2")).toBe("导入观测组 · 2 组");
+  expect(operationSummary("sampling.start","g1","probe-1","run-1")).toContain("轮次 run-1");
+  expect(operationSummary("probe.release")).toContain("探针 未知");
+  expect(operationSummary("export.create","csv","0","1000000000")).toContain("CSV");
+  expect(recoveryText("input","groups.import")).toBe("请检查导入文件内容或数量，再重新选择文件。");
+  expect(recoveryText("read-retry","initial")).toBe(recoveryAction("read-retry","initial"));
+});
+
+it("labels missing operation context and incomplete source facts without invented identities",()=>{
+  expect(operationSummary("export.create")).toContain("1970-01-01T00:00:00.000Z");
+  expect(operationSummary("history")).not.toContain("翻页");
+  expect(operationSummary("catalog.registers")).not.toContain("下一页");
+  expect(operationSummary("sampling.start")).toContain("观测组 未知 · 探针 未知 · 轮次 未开始");
+  expect(formatCopy.registerUnavailable(null,null)).toContain("access: 未知；readAction: 未知");
+  expect(copy.sourceIssues(0,true)).toBe("说明与诊断 · 目录覆盖未完成");
+  expect(copy.sourceIssues(0,false)).toBe("说明与诊断");
+  expect(recoveryText("none","export.create")).toBe(copy.unknownExport);
 });
 
 it("shows probe timeout as a recoverable probe request failure",()=>{

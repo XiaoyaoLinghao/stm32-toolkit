@@ -83,3 +83,30 @@ it("shows each original UTC and nanosecond value as text in the tooltip",()=>{
   expect(content.textContent).toContain("42");
   expect(content.querySelector("img")).toBeNull();
 });
+
+it("omits gap and malformed tooltip entries while describing a sampled missing value",()=>{
+  const option=buildChartOption([{key:"variable:x",label:"x",points:[
+    {capturedUnixNs:1_000_000n,capturedAtUtc:"2026-10-15T00:00:00Z",value:null,segment:0n},
+    {capturedUnixNs:2_000_000n,capturedAtUtc:"",value:null,segment:0n},
+  ]}],{start:0,end:100});
+  const formatter=(option.tooltip as {formatter:(params:unknown)=>HTMLElement}).formatter;
+  const first=(option.series as readonly {data:readonly unknown[]}[])[0]!.data[0];
+  const content=formatter([{seriesName:"x",data:null},{seriesName:"x",data:{value:[1,null],capturedAtUtc:"",capturedUnixNs:""}},
+    {seriesName:"x",data:first}]);
+  expect(content.textContent).toContain("读取空缺");
+  expect(content.textContent).toContain("2026-10-15T00:00:00Z");
+  expect(content.children).toHaveLength(1);
+});
+
+it("ignores malformed chart gestures and accepts a later valid batch gesture",()=>{
+  const onZoom=vi.fn();
+  const view=render(<LiveChart series={[]} range={{start:0,end:100}} onZoom={onZoom}/>);
+  const emit=chart.on.mock.calls.find(call=>call[0]==="datazoom")![1] as (event:unknown)=>void;
+  emit(null);
+  emit({start:"10",end:50});
+  emit({batch:[null,{start:"30",end:70}]});
+  expect(onZoom).not.toHaveBeenCalled();
+  emit({batch:[null,{start:15,end:75}]});
+  expect(onZoom).toHaveBeenCalledExactlyOnceWith({start:15,end:75});
+  view.unmount();
+});

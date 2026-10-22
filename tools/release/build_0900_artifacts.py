@@ -656,6 +656,9 @@ def _build_wheel(repo_root: Path, package_path: str, wheelhouse: Path, output: P
             "PYTHONNOUSERSITE": "1",
             "SOURCE_DATE_EPOCH": str(epoch),
         }
+        if os.name == "nt" and "SystemRoot" in os.environ:
+            # pip imports SSL on Windows, which needs the caller's system root.
+            env["SystemRoot"] = os.environ["SystemRoot"]
         for name in ("TEMP", "TMP", "TMPDIR"):
             if name in os.environ:
                 env[name] = os.environ[name]

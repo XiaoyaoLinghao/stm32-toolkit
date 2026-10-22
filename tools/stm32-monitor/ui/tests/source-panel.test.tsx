@@ -239,3 +239,72 @@ it("explains offline eligibility and distinguishes empty directory from search m
  rerender(<SourceCatalogPanel source={{...current,query:"none",tree:emptyTree}} {...props}/>);
  expect(screen.getByText("没有符合搜索条件的可观测变量条目。")).toBeVisible();
 });
+
+it("pages an expanded member list while keeping a local pending request visible",()=>{
+ const props=base(),current=source();
+ const array:SourceCatalogItem={...leaf,id:"7".repeat(64),name:"samples",selector:null,canAdd:false,expandable:true,
+  typeName:"uint8_t[4]",reason:"aggregate"};
+ const element:SourceCatalogItem={...leaf,id:"8".repeat(64),parentId:array.id,name:"0",selector:"samples[0]",
+  scope:{kind:"element",function:null,path:["samples","0"]}};
+ const paged={...sourcePage(),items:[element],total:3,nextCursor:"next-elements",cursor:null};
+ const sourceState={...current,scopePages:{[scope.id]:{...sourcePage(),items:[array],total:1,cursor:null}},
+  children:{[array.id]:paged}};
+ const {rerender}=render(<SourceCatalogPanel source={sourceState} {...props}/>);
+ const region=screen.getByRole("region",{name:"源码目录结果"});
+ fireEvent.click(within(region).getByRole("button",{name:"展开 Src"}));
+ fireEvent.click(within(region).getByRole("button",{name:"展开 Src/main.c"}));
+ fireEvent.click(within(region).getByRole("button",{name:"展开 Src/main.c:8 / samples"}));
+ expect(within(region).getByText("[0]",{selector:"code"})).toBeVisible();
+ fireEvent.click(within(region).getByRole("button",{name:"下一页"}));
+ expect(props.onChildren).toHaveBeenCalledWith(array.id,true);
+ const requestScope=`catalog.source-node.${array.id}` as const;
+ rerender(<SourceCatalogPanel source={sourceState} {...props}
+  pending={{[requestScope]:{requestId:3n}}}/>);
+ expect(within(region).getByRole("button",{name:"下一页"})).toBeDisabled();
+ expect(within(region).getByRole("status")).toHaveTextContent("正在读取成员");
+});
+
+it("explains an empty function scope according to source completeness and allows paging",()=>{
+ const props=base(),current=source();
+ const local:SourceScopeNode={...scope,id:"6".repeat(64),name:"tick",function:"tick"};
+ const branches={[main.id]:{...sourceTreePage(),items:[local],total:1,nextCursor:null}};
+ const scopePages={[local.id]:{...sourcePage(),items:[],total:0,nextCursor:null,cursor:null}};
+ const complete={...current,branches,scopePages};
+ const {rerender}=render(<SourceCatalogPanel source={complete} {...props}/>);
+ const region=screen.getByRole("region",{name:"源码目录结果"});
+ fireEvent.click(within(region).getByRole("button",{name:"展开 Src"}));
+ fireEvent.click(within(region).getByRole("button",{name:"展开 Src/main.c"}));
+ fireEvent.click(within(region).getByRole("button",{name:"展开 tick"}));
+ expect(within(region).getByText("此作用域没有可观测变量条目。")).toBeVisible();
+ const incomplete={...complete,tree:{...complete.tree!,coverage:{...complete.tree!.coverage,complete:false}}};
+ rerender(<SourceCatalogPanel source={incomplete} {...props}/>);
+ expect(within(region).getByText("暂无可用源码信息；不能据此断定源码没有变量。")).toBeVisible();
+ rerender(<SourceCatalogPanel source={{...complete,scopePages:{[local.id]:{...sourcePage(),items:[leaf],total:2,nextCursor:"next",cursor:null}}}} {...props}/>);
+ fireEvent.click(within(region).getByRole("button",{name:"下一页"}));
+ expect(props.onChildren).toHaveBeenCalledWith(local.id,true);
+});
+
+it("keeps unknown source-index issues and truncation visible in diagnostics",()=>{
+ const current=source();
+ const tree={...current.tree!,coverage:{...current.tree!.coverage,complete:false,truncated:true,
+  issues:[{unit:null,code:"MONITOR_SOURCE_INDEX_FAILED",message:"Cannot parse unit"}]}};
+ render(<SourceDiagnostics source={{...current,tree}}/>);
+ const diagnostics=screen.getByRole("region",{name:"源码目录"});
+ expect(diagnostics).toHaveTextContent("达到目录上限，仍有未展示内容。");
+ expect(diagnostics).toHaveTextContent("未知编译单元 · Cannot parse unit");
+});
+
+it("distinguishes a proved empty file from a file whose source analysis is incomplete",()=>{
+ const props=base(),current=source(),empty=file("9","empty.c");
+ const branch={...sourceTreePage(),items:[],total:0,nextCursor:null};
+ const withEmpty:SourceCatalogState={...current,tree:{...current.tree!,items:[empty],total:1},
+  branches:{[empty.id]:branch},scopePages:{}};
+ const {rerender}=render(<SourceCatalogPanel source={withEmpty} {...props}/>);
+ const region=screen.getByRole("region",{name:"源码目录结果"});
+ fireEvent.click(within(region).getByRole("button",{name:"展开 Src"}));
+ fireEvent.click(within(region).getByRole("button",{name:"展开 Src/empty.c"}));
+ expect(within(region).getByText("此文件没有可观测变量作用域。")).toBeVisible();
+ rerender(<SourceCatalogPanel source={{...withEmpty,tree:{...withEmpty.tree!,
+  coverage:{...withEmpty.tree!.coverage,complete:false}}}} {...props}/>);
+ expect(within(region).getByText("暂无可用源码信息；不能据此断定源码没有变量。")).toBeVisible();
+});
