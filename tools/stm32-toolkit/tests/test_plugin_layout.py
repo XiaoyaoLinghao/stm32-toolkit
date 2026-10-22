@@ -478,12 +478,45 @@ def test_readme_links_current_user_guidance_and_release_boundaries():
     readme = README.read_text(encoding="utf-8")
     readme_zh = (REPO_ROOT / "README_zh-CN.md").read_text(encoding="utf-8")
 
-    assert "v1.0.1 is published" in readme
-    assert "source candidate identifies as **v1.2.0**" in readme
-    assert "has not been released or installed" in readme
-    assert "v1.0.1 已发布" in readme_zh
-    assert "源码候选标识为 **v1.2.0**" in readme_zh
-    assert "未发布、未安装" in readme_zh
+    assert "**Current version: v1.2.0.**" in readme
+    assert "**当前版本：v1.2.0。**" in readme_zh
+    release_url = "https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.2.0"
+    for guide in (readme, readme_zh):
+        assert release_url in guide
+        assert "stm32-toolkit-1.2.0-windows-x86_64.zip" in guide
+        assert "CHECKSUMS.sha256" in guide
+        assert "if ($ExpectedLine.Count -ne 1) { throw" in guide
+        assert "if ($Actual -ne $Expected) { throw" in guide
+        assert "if (Test-Path -LiteralPath $BundleRoot) { throw" in guide
+        assert "$ToolkitRoot = Join-Path $BundleRoot 'stm32-toolkit-1.2.0'" in guide
+        assert "$DataRoot = 'C:\\data\\stm32-toolkit'" in guide
+        assert "$Cli = Join-Path $DataRoot 'runtime\\1.2.0\\Scripts\\stm32-toolkit.exe'" in guide
+        assert "& $Cli --project-root $ProjectRoot build --preset arm-debug --json" in guide
+        assert "$env:STM32_TOOLKIT_DATA_ROOT = $DataRoot" in guide
+        assert "bin\\stm32-monitor.cmd" in guide
+        for mode in ("Check", "Bootstrap", "Repair"):
+            assert f"-Mode {mode}" in guide
+    assert "same page" in readme
+    assert "同一页面" in readme_zh
+    assert "Keep DataRoot durable and separate from BundleRoot" in readme
+    assert "DataRoot 要长期保留，并与 BundleRoot" in readme_zh
+    assert "after a healthy `Check`" in readme
+    assert "`Check` 确认 healthy 后" in readme_zh
+    assert "has no system-Python fallback" in readme
+    assert "不回退到系统 Python" in readme_zh
+    assert "Run at most one mutation command" in readme
+    assert "每次至多执行一个修改动作" in readme_zh
+    for stale_claim in (
+        "v1.0.1 is published",
+        "source candidate identifies as **v1.2.0**",
+        "has not been released or installed",
+    ):
+        assert stale_claim not in readme
+    for stale_claim in ("v1.0.1 已发布", "源码候选标识为 **v1.2.0**", "未发布、未安装"):
+        assert stale_claim not in readme_zh
+    old_bare_build = "stm32-toolkit --project-root C:\\work\\blinky build --preset arm-debug --json"
+    assert old_bare_build not in readme
+    assert old_bare_build not in readme_zh
     assert "CPython `>=3.12,<3.13`" in readme
     assert "docs/user-guide.md" in readme
     assert "docs/user-guide.md" in readme_zh
@@ -492,9 +525,6 @@ def test_readme_links_current_user_guidance_and_release_boundaries():
     assert "-Mode Check" in readme and "-Mode Repair" in readme
     assert "STM32_TOOLKIT_DATA_ROOT" in readme
     assert "absolute launcher" in readme
-    expected_build = "stm32-toolkit --project-root C:\\work\\blinky build --preset arm-debug --json"
-    assert expected_build in readme
-    assert expected_build in readme_zh
     for phrase in (
         "/stm32-toolkit:setup-stm32-env",
         "${CLAUDE_PROJECT_DIR}",

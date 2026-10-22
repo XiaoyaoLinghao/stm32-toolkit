@@ -6,6 +6,7 @@ from pathlib import Path
 import jsonschema
 import pytest
 
+from stm32_toolkit import __version__ as CURRENT_TOOLKIT_VERSION
 from stm32_toolkit.probe.model import (
     OperationLevel,
     ProbeOwnerEvidence,
@@ -360,7 +361,7 @@ def test_response_encoding_is_deterministic_and_snapshots_payload():
         b'{"code":"OK","data":{"values":[{"address":536870912,"value":"0102"}]},'
         b'"details":{},"message":"","ok":true,"operation":"memory.read",'
         b'"protocol":"stm32-toolkit-probe/2","requestId":"request-123",'
-        b'"toolkitVersion":"1.0.0"}'
+        b'"toolkitVersion":"' + CURRENT_TOOLKIT_VERSION.encode("ascii") + b'"}'
     )
 
 

@@ -27,6 +27,7 @@ from stm32_toolkit.acceptance.recovery_workflows import (
     checkpoint_acceptance_attempt,
     resume_acceptance_attempt,
 )
+from stm32_toolkit.build.identity import LEGACY_INPUT_DISCOVERY_POLICY
 from stm32_toolkit.diagnostic_workflows import (
     DiagnosticWorkflowContext,
     diagnostic_add_hypothesis,
@@ -175,10 +176,15 @@ def _fake_authorities(monkeypatch: pytest.MonkeyPatch, *, origin: str = "keil") 
         target_device="STM32F429ZITx",
     )
     monkeypatch.setattr(recovery_workflows, "_load_project_model", lambda _root: model)
+
+    def snapshot_provider(_model: object, *, policy: str) -> SimpleNamespace:
+        assert policy == LEGACY_INPUT_DISCOVERY_POLICY
+        return SimpleNamespace(sha256="c" * 64)
+
     monkeypatch.setattr(
         recovery_workflows,
         "snapshot_project_inputs",
-        lambda _model: SimpleNamespace(sha256="c" * 64),
+        snapshot_provider,
     )
     monkeypatch.setattr(
         recovery_workflows,
@@ -301,12 +307,17 @@ def test_real_replay_diagnostic_acceptance_chain_reaches_revision_seven(
         )
 
     monkeypatch.setattr(recovery_workflows, "_build_project_context", build_context)
+
+    def snapshot_provider(_model: object, *, policy: str) -> SimpleNamespace:
+        assert policy == LEGACY_INPUT_DISCOVERY_POLICY
+        return SimpleNamespace(
+            sha256=before["inputSnapshotSha256"] if build_calls <= 1 else after["inputSnapshotSha256"]
+        )
+
     monkeypatch.setattr(
         recovery_workflows,
         "snapshot_project_inputs",
-        lambda _model: SimpleNamespace(
-            sha256=before["inputSnapshotSha256"] if build_calls <= 1 else after["inputSnapshotSha256"]
-        ),
+        snapshot_provider,
     )
     clock = lambda: "2026-08-24T00:00:00.000000Z"
     context = AcceptanceRecoveryContext(project_root, data_root, f"vs08a-{origin}-session", clock=clock)

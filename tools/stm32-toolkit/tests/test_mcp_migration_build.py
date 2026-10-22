@@ -370,6 +370,9 @@ def test_in_memory_configure_and_build_fail_closed(tmp_path: Path, monkeypatch):
     root = prepare_project(tmp_path)
     hit_file = install_fake_cmake(monkeypatch, tmp_path)
     server = create_server(root, tmp_path / "plugin-data", "session-a")
+    startup_hits = hit_file.read_bytes()
+    assert startup_hits
+    assert all(json.loads(line)["argv"] == ["--version"] for line in startup_hits.splitlines())
 
     no_auth = asyncio.run(
         _call(server, "stm32_build", {"preset": "arm-debug"})
@@ -377,7 +380,7 @@ def test_in_memory_configure_and_build_fail_closed(tmp_path: Path, monkeypatch):
     assert no_auth["ok"] is False
     assert no_auth["code"] == "AUTHORIZATION_REQUIRED"
     assert no_auth["operation"] == "build"
-    assert not hit_file.exists() or hit_file.read_text(encoding="utf-8") == ""
+    assert hit_file.read_bytes() == startup_hits
 
     # The tool schema rejects an out-of-enum preset before adapter work.
     with pytest.raises(Exception):
@@ -388,9 +391,17 @@ def test_in_memory_configure_and_build_fail_closed(tmp_path: Path, monkeypatch):
                 {"preset": "arm-fast", "authorized": True},
             )
         )
+    assert hit_file.read_bytes() == startup_hits
     # The direct helper enforces the same workflow validation.
+    direct_runtime = ServerRuntime.create(root, tmp_path / "plugin-data", "session-a")
+    direct_startup_hits = hit_file.read_bytes()
+    assert direct_startup_hits.startswith(startup_hits)
+    assert all(
+        json.loads(line)["argv"] == ["--version"]
+        for line in direct_startup_hits[len(startup_hits):].splitlines()
+    )
     bad_preset = mcp_mod.tool_build(
-        ServerRuntime.create(root, tmp_path / "plugin-data", "session-a"),
+        direct_runtime,
         preset="arm-fast",
         authorized=True,
     )
@@ -401,6 +412,7 @@ def test_in_memory_configure_and_build_fail_closed(tmp_path: Path, monkeypatch):
         "rule": "value",
         "allowed": "arm-debug|arm-release",
     }
+    assert hit_file.read_bytes() == direct_startup_hits
 
     built = asyncio.run(
         _call(
@@ -411,6 +423,7 @@ def test_in_memory_configure_and_build_fail_closed(tmp_path: Path, monkeypatch):
     )
     assert built["ok"] is True
     assert built["operation"] == "build"
+    assert hit_file.read_bytes() != direct_startup_hits
 
     plan = asyncio.run(
         _call(server, "stm32_project_configure", {"authorized": False})

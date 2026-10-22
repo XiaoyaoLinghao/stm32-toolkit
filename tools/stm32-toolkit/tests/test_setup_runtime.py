@@ -1128,12 +1128,14 @@ def test_setup_contract_uses_namespaced_skill_and_ignores_coverage_data():
     assert "CLAUDE_PLUGIN_DATA" not in launcher
     assert "`/setup-stm32-env`" not in readme
     assert "Run /setup-stm32-env" not in readme
-    for variable in ("ToolkitRoot", "DataRoot", "ProjectRoot"):
+    for variable in ("BundleRoot", "DataRoot", "ProjectRoot"):
         assert re.search(
             rf"^\${variable}\s*=\s*'[A-Za-z]:[\\/][^'\r\n]+'[ \t]*$",
             readme,
             flags=re.MULTILINE,
         )
+    assert "if (Test-Path -LiteralPath $BundleRoot) { throw 'BundleRoot exists; choose a new path' }" in readme
+    assert "$ToolkitRoot = Join-Path $BundleRoot 'stm32-toolkit-1.2.0'" in readme
     assert "$SetupScript = Join-Path $ToolkitRoot 'bin\\setup-stm32-env.ps1'" in readme
     for argument in (
         "-ToolkitRoot $ToolkitRoot",

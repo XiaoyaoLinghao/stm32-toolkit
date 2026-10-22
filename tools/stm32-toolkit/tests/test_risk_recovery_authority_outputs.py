@@ -20,6 +20,7 @@ from stm32_toolkit.acceptance.recovery_workflows import (
     checkpoint_acceptance_attempt,
     resume_acceptance_attempt,
 )
+from stm32_toolkit.build.identity import LEGACY_INPUT_DISCOVERY_POLICY
 from stm32_toolkit.diagnostic_workflows import (
     DiagnosticWorkflowContext,
     diagnostic_declare_source_change,
@@ -186,7 +187,8 @@ def _install_build_seam(
             },
         )
 
-    def snapshot_provider(_model: object) -> object:
+    def snapshot_provider(_model: object, *, policy: str) -> object:
+        assert policy == LEGACY_INPUT_DISCOVERY_POLICY
         index = max(0, len(build_calls) - 1)
         value = build_snapshots[index]
         snapshot_calls.append(value)
