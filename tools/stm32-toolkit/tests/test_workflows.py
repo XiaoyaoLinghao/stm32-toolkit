@@ -706,7 +706,7 @@ def test_convert_workflow_translates_stable_inspection_and_plan_errors(
     assert missing.code == "KEIL_PROJECT_NOT_FOUND"
     assert missing.operation == "keil-conversion-plan"
 
-    def plan_failure(root_path, inspection, *, startup_options=None):
+    def plan_failure(root_path, inspection, *, startup_options=None, memory_layout=None):
         raise MigrationPlanError(
             "MIGRATION_GIT_UNAVAILABLE", "git is unavailable", {"rule": "unavailable"}
         )

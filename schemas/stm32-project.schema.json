@@ -131,6 +131,18 @@
           "maximum": 4294967295,
           "multipleOf": 8
         },
+        "layout": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["flash", "data", "bss", "heap", "stack"],
+          "properties": {
+            "flash": {"type": "string", "minLength": 1},
+            "data": {"type": "string", "minLength": 1},
+            "bss": {"type": "string", "minLength": 1},
+            "heap": {"type": "string", "minLength": 1},
+            "stack": {"type": "string", "minLength": 1}
+          }
+        },
         "regions": {
           "type": "array",
           "items": {

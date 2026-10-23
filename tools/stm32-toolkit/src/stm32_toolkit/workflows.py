@@ -34,6 +34,10 @@ from stm32_toolkit.migration import (
     plan_keil_conversion,
     preflight_keil_conversion,
 )
+from stm32_toolkit.memory_layout import (
+    MemoryLayoutError,
+    normalize_memory_layout_option,
+)
 from stm32_toolkit.migration.model import portable_path_error
 from stm32_toolkit.migration.startup import normalize_startup_options
 from stm32_toolkit.project_model import ProjectManifestError, load_project_model
@@ -206,6 +210,7 @@ def preflight_keil_workflow(
     target_name: str | None = None,
     startup_strategy: str | None = None,
     startup_source: str | None = None,
+    memory_layout: object = None,
 ) -> OperationResult[dict[str, object]]:
     """Read-only migration preflight; analysis succeeds without Git.
 
@@ -220,6 +225,7 @@ def preflight_keil_workflow(
         strategy = _optional_name(startup_strategy, "startupStrategy")
         source = _optional_name(startup_source, "startupSource")
         startup_options = normalize_startup_options(strategy, source)
+        layout = normalize_memory_layout_option(memory_layout)
     except _InputInvalid as error:
         return _failure(
             operation,
@@ -229,11 +235,16 @@ def preflight_keil_workflow(
         )
     except MigrationPlanError as error:
         return _failure(operation, error.code, error.message, error.details)
+    except MemoryLayoutError as error:
+        return _failure(operation, error.code, error.message, error.details)
 
     try:
         inspection = inspect_keil(root, uvprojx_path, target)
         data = preflight_keil_conversion(
-            root, inspection, startup_options=startup_options
+            root,
+            inspection,
+            startup_options=startup_options,
+            memory_layout=layout,
         )
     except KeilInspectionError as error:
         return _failure(operation, error.code, error.message, error.details)
@@ -271,12 +282,14 @@ def convert_keil_workflow(
     authorized: bool = False,
     startup_strategy: str | None = None,
     startup_source: str | None = None,
+    memory_layout: object = None,
 ) -> OperationResult[dict[str, object]]:
     """Read-only conversion plan, or apply only with the exact plan ID.
 
-    The startup options are part of the plan identity.  Apply re-runs the
-    deterministic plan with the request options and refuses a stale plan ID,
-    so a caller-edited strategy/source cannot be accepted after review.
+    The startup and memory-layout options are part of the plan identity.
+    Apply re-runs the deterministic plan with the request options and refuses
+    a stale plan ID, so a caller-edited strategy/source/layout cannot be
+    accepted after review.
     """
     operation = "keil-conversion-apply" if _apply_intent(plan_id, authorized) else "keil-conversion-plan"
     try:
@@ -286,6 +299,7 @@ def convert_keil_workflow(
         strategy = _optional_name(startup_strategy, "startupStrategy")
         source = _optional_name(startup_source, "startupSource")
         startup_options = normalize_startup_options(strategy, source)
+        layout = normalize_memory_layout_option(memory_layout)
     except _InputInvalid as error:
         return _failure(
             operation,
@@ -294,6 +308,8 @@ def convert_keil_workflow(
             error.details,
         )
     except MigrationPlanError as error:
+        return _failure(operation, error.code, error.message, error.details)
+    except MemoryLayoutError as error:
         return _failure(operation, error.code, error.message, error.details)
 
     closed = _authorization_failure(operation, authorized)
@@ -310,7 +326,10 @@ def convert_keil_workflow(
     try:
         inspection = inspect_keil(root, uvprojx_path, target)
         plan = plan_keil_conversion(
-            root, inspection, startup_options=startup_options
+            root,
+            inspection,
+            startup_options=startup_options,
+            memory_layout=layout,
         )
     except KeilInspectionError as error:
         return _failure(operation, error.code, error.message, error.details)

@@ -378,6 +378,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "--startup-source",
         help="Exact project-relative included ARMCC startup source; required when the choice is ambiguous",
     )
+    preflight.add_argument(
+        "--memory-layout",
+        action=_RejectDuplicate,
+        help="Exact JSON object mapping flash,data,bss,heap,stack to existing region names",
+    )
 
     convert = keil_commands.add_parser("convert")
     _add_workflow_root(convert)
@@ -391,6 +396,11 @@ def _build_parser() -> argparse.ArgumentParser:
     convert.add_argument(
         "--startup-source",
         help="Exact project-relative included ARMCC startup source; required when the choice is ambiguous",
+    )
+    convert.add_argument(
+        "--memory-layout",
+        action=_RejectDuplicate,
+        help="Exact JSON object mapping flash,data,bss,heap,stack to existing region names",
     )
     _add_dry_run_apply(convert)
     convert.add_argument("--plan-id")
@@ -1297,6 +1307,7 @@ def _operation_result(
                 target_name=args.target_name,
                 startup_strategy=getattr(args, "startup_strategy", None),
                 startup_source=getattr(args, "startup_source", None),
+                memory_layout=getattr(args, "memory_layout", None),
             )
         return convert_keil_workflow(
             project_root,
@@ -1306,6 +1317,7 @@ def _operation_result(
             authorized=args.authorized,
             startup_strategy=getattr(args, "startup_strategy", None),
             startup_source=getattr(args, "startup_source", None),
+            memory_layout=getattr(args, "memory_layout", None),
         )
     if args.command == "project":
         if args.project_command == "detect":

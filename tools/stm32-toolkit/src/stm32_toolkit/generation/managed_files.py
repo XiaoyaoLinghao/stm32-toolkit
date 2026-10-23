@@ -268,6 +268,8 @@ def _model_payload(model: ProjectModel) -> dict[str, object]:
         memory_payload["stack_size"] = model.memory.stack_size
     if model.memory.heap_size is not None:
         memory_payload["heap_size"] = model.memory.heap_size
+    if model.memory.layout is not None:
+        memory_payload["layout"] = model.memory.layout.to_dict()
     generation_payload: dict[str, object] = {
         "tool": model.generation.tool,
         "version": model.generation.version,

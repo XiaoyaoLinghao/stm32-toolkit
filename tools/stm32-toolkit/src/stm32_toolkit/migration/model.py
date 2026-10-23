@@ -18,6 +18,7 @@ from pathlib import Path
 
 from stm32_toolkit import __version__
 from stm32_toolkit.keil import KeilInspection
+from stm32_toolkit.memory_layout import MemoryLayout, MemoryLayoutResolution
 
 _PLAN_LIMIT_BYTES = 64 * 1024 * 1024
 
@@ -288,6 +289,12 @@ class MigrationPlan:
     blockers: tuple[MigrationBlocker, ...]
     startup: StartupAnalysis | None = None
     startup_options: StartupOptions | None = None
+    #: The explicit reviewed layout request; ``None`` keeps the implicit
+    #: single-Flash/single-RAM behavior (or a selection requirement).
+    memory_layout: MemoryLayout | None = None
+    #: Decision evidence exposed to preflight/plan consumers.  Only the
+    #: explicit request itself participates in the plan identity.
+    memory_layout_resolution: MemoryLayoutResolution | None = None
 
     def __post_init__(self) -> None:
         # Ignored-compatible observations are carried privately; they are not
@@ -310,6 +317,8 @@ class MigrationPlan:
             payload["startup"] = self.startup.to_dict()
         if self.startup_options is not None:
             payload["startup_options"] = self.startup_options.to_dict()
+        if self.memory_layout_resolution is not None:
+            payload["memory_layout"] = self.memory_layout_resolution.to_dict()
         return payload
 
 
@@ -364,6 +373,10 @@ def _plan_id_payload(plan: MigrationPlan) -> dict[str, object]:
         payload["startup"] = plan.startup.to_dict()
     if plan.startup_options is not None:
         payload["startup_options"] = plan.startup_options.to_dict()
+    # An omitted layout is not added, so implicit single-region plans keep
+    # their historical identity payload.
+    if plan.memory_layout is not None:
+        payload["memory_layout"] = plan.memory_layout.to_dict()
     return payload
 
 

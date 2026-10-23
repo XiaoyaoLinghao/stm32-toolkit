@@ -24,6 +24,12 @@ from pathlib import Path
 
 from stm32_toolkit import __version__
 from stm32_toolkit.keil import KeilInspection, KeilInspectionError, KeilInputDigest, inspect_keil
+from stm32_toolkit.memory_layout import (
+    MemoryLayout,
+    MemoryLayoutError,
+    MemoryLayoutResolution,
+    resolve_memory_layout,
+)
 from stm32_toolkit.project_model import ProjectManifestError, first_schema_error, validate_model_document
 
 from stm32_toolkit.migration import git_guard
@@ -538,6 +544,7 @@ def _manifest_proposal(
     root: Path,
     inspection: KeilInspection,
     startup: StartupOutcome | None = None,
+    memory_layout: MemoryLayout | None = None,
 ) -> dict | None:
     """Deterministic Schema v3 proposal; ``None`` when framework selection is blocked."""
     if inspection.framework not in _ALLOWED_FRAMEWORKS:
@@ -591,6 +598,11 @@ def _manifest_proposal(
         memory_payload["stackSize"] = analysis.stack_size
         memory_payload["heapSize"] = analysis.heap_size
         generation_payload["runtimeInitialization"] = RUNTIME_INITIALIZATION
+    if memory_layout is not None:
+        # Only a reviewed explicit choice enters the manifest.  An implicit
+        # single-Flash/single-RAM proposal stays byte-identical to the
+        # historical output and keeps its model hash.
+        memory_payload["layout"] = memory_layout.to_dict()
     payload: dict = {
         "schemaVersion": 3,
         "logicalProjectId": str(
@@ -653,6 +665,7 @@ class ConversionAnalysis:
     blockers: tuple[MigrationBlocker, ...]
     ignored: tuple[IgnoredObservation, ...]
     startup: StartupAnalysis | None = None
+    memory_layout: MemoryLayoutResolution | None = None
 
 
 def _bind_analysis_root(root: object, inspection: object) -> Path:
@@ -707,12 +720,29 @@ def _validate_startup_options(options: object) -> StartupOptions | None:
     return options
 
 
+def _validate_memory_layout(layout: object) -> MemoryLayout | None:
+    if layout is None:
+        return None
+    if type(layout) is not MemoryLayout:
+        raise _raise(
+            "MEMORY_LAYOUT_INVALID",
+            "memoryLayout must be an explicit layout object",
+            {
+                "field": "memoryLayout",
+                "rule": "type",
+                "remediation": "Pass the five-role memoryLayout object.",
+            },
+        )
+    return layout
+
+
 def analyze_keil_conversion(
     root: Path,
     inspection: KeilInspection,
     *,
     block_source: Callable[[Path], tuple[MigrationBlocker, ...]] | None = None,
     startup_options: StartupOptions | None = None,
+    memory_layout: MemoryLayout | None = None,
 ) -> ConversionAnalysis:
     """Run the single shared technical analysis used by preflight and plan.
 
@@ -723,6 +753,7 @@ def analyze_keil_conversion(
     the existing assembly blockers byte-for-byte.
     """
     options = _validate_startup_options(startup_options)
+    layout_option = _validate_memory_layout(memory_layout)
     canonical = _bind_analysis_root(root, inspection)
     exact_bytes = _revalidate_inputs(canonical, inspection.inputs)
     extra_blockers = block_source(canonical) if block_source is not None else ()
@@ -745,6 +776,13 @@ def analyze_keil_conversion(
             "fresh inspection does not match the supplied inspection",
             {"field": "inspection", "rule": "freshInspection"},
         )
+
+    try:
+        layout_resolution = resolve_memory_layout(
+            inspection.memory_regions, layout_option
+        )
+    except MemoryLayoutError as error:
+        raise _raise(error.code, error.message, error.details)
 
     startup_outcome = (
         analyze_startup(canonical, inspection, options, exact_bytes)
@@ -806,7 +844,22 @@ def analyze_keil_conversion(
             )
         )
 
-    proposal = _manifest_proposal(canonical, inspection, startup_outcome)
+    if layout_resolution.requires_selection:
+        blockers.append(
+            MigrationBlocker(
+                "MEMORY_LAYOUT_REQUIRED",
+                "MEMORY_LAYOUT_REQUIRED",
+                "",
+                0,
+                0,
+                ",".join(layout_resolution.unresolved_roles),
+                layout_resolution.remediation(),
+            )
+        )
+
+    proposal = _manifest_proposal(
+        canonical, inspection, startup_outcome, layout_option
+    )
     proposal_bytes = _canonical_manifest_bytes(proposal) if proposal is not None else None
 
     inputs = [MigrationInput(digest.path, digest.sha256, digest.size) for digest in inspection.inputs]
@@ -964,6 +1017,7 @@ def analyze_keil_conversion(
         blockers=ordered_blockers,
         ignored=tuple(sorted(ignored, key=lambda o: (o.path, o.line, o.column, o.rule_id))),
         startup=startup_outcome.analysis if startup_outcome is not None else None,
+        memory_layout=layout_resolution,
     )
 
 
@@ -997,9 +1051,11 @@ def plan_keil_conversion(
     inspection: KeilInspection,
     *,
     startup_options: StartupOptions | None = None,
+    memory_layout: MemoryLayout | None = None,
 ) -> MigrationPlan:
     """Produce the deterministic, read-only conversion plan."""
     options = _validate_startup_options(startup_options)
+    layout_option = _validate_memory_layout(memory_layout)
     canonical = _bind_analysis_root(root, inspection)
 
     toplevel = git_guard.git_toplevel(canonical)
@@ -1022,6 +1078,7 @@ def plan_keil_conversion(
         inspection,
         block_source=block_source,
         startup_options=options,
+        memory_layout=layout_option,
     )
 
     plan = MigrationPlan(
@@ -1037,6 +1094,8 @@ def plan_keil_conversion(
         blockers=analysis.blockers,
         startup=analysis.startup,
         startup_options=options,
+        memory_layout=layout_option,
+        memory_layout_resolution=analysis.memory_layout,
     )
     object.__setattr__(plan, "_ignored", analysis.ignored)
     plan = replace(plan, plan_id=plan_id_for(plan))

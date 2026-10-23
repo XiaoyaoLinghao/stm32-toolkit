@@ -1064,34 +1064,73 @@ def test_no_writable_region_is_rejected(tmp_path):
     assert error.value.details == {"field": "memory.regions", "rule": "writable"}
 
 
-def test_generic_memory_order_keeps_first_executable_and_writable_by_order(tmp_path):
+def test_generic_multi_ram_order_requires_a_reviewed_layout(tmp_path):
     payload = standard_payload()
     payload["memory"]["regions"] = [
         {"name": "RAM", "origin": 0x20000000, "length": 0x30000, "attributes": "rwx"},
         {"name": "CCMRAM", "origin": 0x10000000, "length": 0x10000, "attributes": "rwx"},
         {"name": "FLASH", "origin": 0x08000000, "length": 0x200000, "attributes": "r-x"},
     ]
+    root = write_project(tmp_path / "proj", payload)
+    with pytest.raises(GenerationError) as error:
+        plan_for(root)
+    assert error.value.code == "MEMORY_LAYOUT_REQUIRED"
+    assert error.value.details["unresolvedRoles"] == [
+        "data",
+        "bss",
+        "heap",
+        "stack",
+    ]
+    candidates = error.value.details["candidates"]
+    assert [entry["name"] for entry in candidates["flash"]] == ["FLASH"]
+    assert [entry["name"] for entry in candidates["ram"]] == ["RAM", "CCMRAM"]
+
+
+def test_generic_multi_ram_explicit_all_main_ram_layout_leaves_ccm_unused(tmp_path):
+    payload = standard_payload()
+    payload["memory"]["regions"] = [
+        {"name": "RAM", "origin": 0x20000000, "length": 0x30000, "attributes": "rwx"},
+        {"name": "CCMRAM", "origin": 0x10000000, "length": 0x10000, "attributes": "rwx"},
+        {"name": "FLASH", "origin": 0x08000000, "length": 0x200000, "attributes": "r-x"},
+    ]
+    payload["memory"]["layout"] = {
+        "flash": "FLASH",
+        "data": "RAM",
+        "bss": "RAM",
+        "heap": "RAM",
+        "stack": "RAM",
+    }
     root = write_project(tmp_path / "proj", payload)
     plan = plan_for(root)
     linker = next(entry for entry in plan.files if entry.path == "linker/stm32tk.ld")
     text = linker.after_bytes.decode("utf-8")
-    assert "_estack" not in text
-    assert "  } > RAM\n\n  .text" in text
-    assert "  } > RAM\n\n  .ARM.extab" in text
-    assert "  } > RAM\n\n  .ARM.exidx" in text
-    assert "  } > RAM AT> RAM" in text
+    assert "  } > FLASH\n\n  .data" in text
+    assert "  } > RAM AT> FLASH" in text
+    assert "  } > RAM\n\n  .heap" in text
+    assert "  } > RAM\n\n  .stack" in text
+    assert "> CCMRAM" not in text
 
 
-def test_generic_memory_roles_use_first_executable_and_writable_regions(tmp_path):
+def test_generic_memory_roles_resolve_explicit_all_main_ram(tmp_path):
     payload = standard_payload()
     payload["memory"]["regions"] = [
         {"name": "RAM", "origin": 0x20000000, "length": 0x30000, "attributes": "rwx"},
         {"name": "CCMRAM", "origin": 0x10000000, "length": 0x10000, "attributes": "rwx"},
         {"name": "FLASH", "origin": 0x08000000, "length": 0x200000, "attributes": "r-x"},
     ]
+    payload["memory"]["layout"] = {
+        "flash": "FLASH",
+        "data": "RAM",
+        "bss": "RAM",
+        "heap": "RAM",
+        "stack": "RAM",
+    }
     root = write_project(tmp_path / "proj", payload)
     model = load_project_model(root)
-    assert configure_mod._memory_region_roles(model) == ("RAM", "RAM")
+    resolution = configure_mod._memory_layout_resolution(model)
+    assert resolution.status == "explicit"
+    assert resolution.layout is not None
+    assert resolution.layout.to_dict() == payload["memory"]["layout"]
 
 
 @pytest.mark.parametrize(
@@ -1619,6 +1658,13 @@ def test_linker_snapshot_with_ccm_region_preserves_order(tmp_path):
         {"name": "RAM", "origin": 0x20000000, "length": 0x20000, "attributes": "rwx"},
         {"name": "CCM", "origin": 0x10000000, "length": 0x10000, "attributes": "rwx"},
     ]
+    payload["memory"]["layout"] = {
+        "flash": "FLASH",
+        "data": "RAM",
+        "bss": "RAM",
+        "heap": "RAM",
+        "stack": "RAM",
+    }
     root = write_project(tmp_path / "proj", payload)
     plan = plan_for(root)
     entry = next(entry for entry in plan.files if entry.path == "linker/stm32tk.ld")
@@ -1658,6 +1704,13 @@ def test_linker_memory_attributes_normalized_for_gnu_ld(tmp_path, attrs, expecte
         {"name": "RAM", "origin": 0x20000000, "length": 0x20000, "attributes": "rwx"},
         {"name": "CODE", "origin": 0x09000000, "length": 0x100000, "attributes": "r-x"},
     ]
+    payload["memory"]["layout"] = {
+        "flash": "CODE",
+        "data": "RAM",
+        "bss": "RAM",
+        "heap": "RAM",
+        "stack": "RAM",
+    }
     root = write_project(tmp_path / "proj", payload)
     plan = plan_for(root)
     entry = next(entry for entry in plan.files if entry.path == "linker/stm32tk.ld")

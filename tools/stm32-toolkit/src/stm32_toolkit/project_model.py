@@ -27,6 +27,12 @@ from jsonschema.exceptions import ValidationError
 
 from stm32_toolkit import __version__
 from stm32_toolkit.identity import canonical_project_root
+from stm32_toolkit.memory_layout import (
+    MemoryLayout,
+    MemoryLayoutError,
+    normalize_memory_layout,
+    validate_memory_layout_regions,
+)
 
 _MANIFEST_NAME = ".stm32-project.json"
 _SCHEMA_V1_NAME = "stm32-project-v1.schema.json"
@@ -109,6 +115,7 @@ class MemorySpec:
     regions: tuple[MemoryRegion, ...]
     stack_size: int | None = None
     heap_size: int | None = None
+    layout: MemoryLayout | None = None
 
 
 @dataclass(frozen=True)
@@ -470,6 +477,10 @@ def validate_model_document(root: Path, payload: dict, version: int) -> None:
                 {"field": "generation.runtimeInitialization", "rule": "value"},
             )
         _validate_unique_region_names(payload["memory"]["regions"])
+        _validate_memory_layout_document(
+            payload["memory"],
+            generation.get("nativeLinkerScript"),
+        )
     if version == 3 and isinstance(payload.get("testing"), dict):
         _validate_testing_document(root, payload["testing"], cache)
 
@@ -812,6 +823,46 @@ def _validate_unique_region_names(regions: object) -> None:
         )
 
 
+def _validate_memory_layout_document(
+    memory: object, native_linker_script: object
+) -> None:
+    """Validate an explicit managed layout, or accept its deliberate absence.
+
+    An omitted layout is structurally valid so migration preflight and
+    configuration analysis can aggregate a ``MEMORY_LAYOUT_REQUIRED`` decision
+    alongside every other blocker.  An explicit mapping must name existing
+    regions with the required access and may not coexist with a native
+    linker-script ownership claim.
+    """
+    if not isinstance(memory, dict):
+        return
+    layout_value = memory.get("layout")
+    if layout_value is None:
+        return
+    try:
+        layout = normalize_memory_layout(layout_value)
+        regions = memory.get("regions")
+        validate_memory_layout_regions(
+            layout, regions if isinstance(regions, list) else ()
+        )
+    except MemoryLayoutError as error:
+        raise ProjectManifestError(error.code, error.message, error.details) from None
+    if native_linker_script is not None:
+        raise ProjectManifestError(
+            "MEMORY_LAYOUT_INVALID",
+            "An explicit memory layout cannot be combined with a native linker script",
+            {
+                "field": "memory.layout",
+                "rule": "nativeLinkerOwned",
+                "remediation": (
+                    "Remove memory.layout and keep the native linker script "
+                    "user-owned, or remove generation.nativeLinkerScript so the "
+                    "managed linker template owns the explicit layout."
+                ),
+            },
+        )
+
+
 def _build_model(root: Path, payload: dict, version: int) -> ProjectModel:
     validate_model_document(root, payload, version)
 
@@ -860,6 +911,7 @@ def _build_model(root: Path, payload: dict, version: int) -> ProjectModel:
         )
     else:
         memory_data = payload["memory"]
+        layout_value = memory_data.get("layout")
         memory = MemorySpec(
             source=memory_data["source"],
             regions=tuple(
@@ -873,6 +925,11 @@ def _build_model(root: Path, payload: dict, version: int) -> ProjectModel:
             ),
             stack_size=memory_data.get("stackSize"),
             heap_size=memory_data.get("heapSize"),
+            layout=(
+                normalize_memory_layout(layout_value)
+                if layout_value is not None
+                else None
+            ),
         )
         generation_data = payload["generation"]
         generated_by = payload["generatedBy"]

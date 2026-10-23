@@ -76,7 +76,7 @@ SECTIONS
     *(.data*)
     . = ALIGN(4);
     _edata = .;
-  } > {{ ram_region }} AT> {{ flash_region }}
+  } > {{ data_region }} AT> {{ flash_region }}
   _sidata = LOADADDR(.data);
 
   .bss :
@@ -89,7 +89,7 @@ SECTIONS
     *(COMMON)
     . = ALIGN(4);
     _ebss = .;
-  } > {{ ram_region }}
+  } > {{ bss_region }}
 
   .heap (NOLOAD) :
   {
@@ -99,7 +99,7 @@ SECTIONS
     __HeapBase = .;
     . += _Min_Heap_Size;
     __HeapLimit = .;
-  } > {{ ram_region }}
+  } > {{ heap_region }}
 
   .stack (NOLOAD) :
   {
@@ -112,7 +112,7 @@ SECTIONS
     __heap_base = __HeapBase;
     __heap_limit = __HeapLimit;
 {%- endif %}
-  } > {{ ram_region }}
+  } > {{ stack_region }}
 }
 {%- if runtime_initialization %}
 

@@ -30,6 +30,12 @@ from pathlib import Path
 from jinja2 import Environment, StrictUndefined, UndefinedError
 
 from stm32_toolkit import __version__
+from stm32_toolkit.memory_layout import (
+    MemoryLayoutError,
+    MemoryLayoutResolution,
+    resolve_memory_layout,
+    validate_memory_layout_regions,
+)
 from stm32_toolkit.project_upgrade import ProjectMutationLockError
 from stm32_toolkit.project_model import ProjectManifestError, ProjectModel, load_project_model
 from stm32_toolkit.result import OperationResult
@@ -168,12 +174,17 @@ def _plan(model: ProjectModel) -> GenerationPlan:
     _validate_generation_spec(model)
     options = _validate_options(model)
     _validate_memory(model)
+    layout = (
+        None
+        if model.generation.native_linker_script is not None
+        else _memory_layout_resolution(model)
+    )
     report, report_sha = _read_conversion_report(root)
     fixed_sections = _validate_fixed_sections(report, model)
     prior_data = _read_prior_manifest(root)
     prior = parse_managed_manifest(prior_data) if prior_data is not None else ()
     inputs = _collect_inputs(root, model, prior_data, report_sha)
-    rendered = _render_targets(model, options, fixed_sections)
+    rendered = _render_targets(model, options, fixed_sections, layout)
     files = _classify_targets(root, rendered, prior)
     blockers = _collect_blockers(prior, files)
     model_sha256 = model_sha256_for(model)
@@ -296,6 +307,23 @@ def _validate_generation_spec(model: ProjectModel) -> None:
             "GENERATION_MODEL_INVALID",
             "runtime initialization contract requires the managed linker template",
             {"field": "generation.runtimeInitialization", "rule": "managedLinker"},
+        )
+    if (
+        model.memory.layout is not None
+        and model.generation.native_linker_script is not None
+    ):
+        raise _raise_error(
+            "MEMORY_LAYOUT_INVALID",
+            "an explicit memory layout cannot be combined with a native linker script",
+            {
+                "field": "memory.layout",
+                "rule": "nativeLinkerOwned",
+                "remediation": (
+                    "Remove memory.layout and keep the native linker script "
+                    "user-owned, or remove generation.nativeLinkerScript so the "
+                    "managed linker template owns the explicit layout."
+                ),
+            },
         )
 
 
@@ -468,38 +496,24 @@ def _validate_memory(model: ProjectModel) -> None:
             "at least one writable memory region is required",
             {"field": "memory.regions", "rule": "writable"},
         )
+    if model.memory.layout is not None:
+        try:
+            validate_memory_layout_regions(model.memory.layout, model.memory.regions)
+        except MemoryLayoutError as error:
+            raise _raise_error(error.code, error.message, error.details) from None
 
 
-def _memory_region_roles(model: ProjectModel) -> tuple[str, str]:
-    flash = next(
-        (
-            region.name
-            for region in model.memory.regions
-            if "x" in region.attributes
-        ),
-        None,
-    )
-    if flash is None:
+def _memory_layout_resolution(model: ProjectModel) -> MemoryLayoutResolution:
+    """Resolve the explicit or unambiguous implicit managed section layout."""
+    resolution = resolve_memory_layout(model.memory.regions, model.memory.layout)
+    if resolution.requires_selection:
         raise _raise_error(
-            "GENERATION_MODEL_INVALID",
-            "an executable non-writable memory region is required for Flash",
-            {"field": "memory.regions", "rule": "flashRole"},
+            "MEMORY_LAYOUT_REQUIRED",
+            "an explicit memory layout is required for multiple managed memory roles",
+            resolution.blocker_details(),
         )
-    ram = next(
-        (
-            region.name
-            for region in model.memory.regions
-            if "w" in region.attributes
-        ),
-        None,
-    )
-    if ram is None:
-        raise _raise_error(
-            "GENERATION_MODEL_INVALID",
-            "a writable memory region is required for RAM",
-            {"field": "memory.regions", "rule": "ramRole"},
-        )
-    return flash, ram
+    assert resolution.layout is not None
+    return resolution
 
 
 def _resolve_contained(absolute: Path, root: Path, path: str) -> Path:
@@ -944,8 +958,9 @@ def _render_targets(
     model: ProjectModel,
     options: dict[str, object],
     fixed_sections: tuple[tuple[str, int, str], ...],
+    layout: MemoryLayoutResolution | None,
 ) -> dict[str, tuple[str, bytes]]:
-    contexts = _build_contexts(model, options, fixed_sections)
+    contexts = _build_contexts(model, options, fixed_sections, layout)
     rendered: dict[str, tuple[str, bytes]] = {}
     for target in _targets_for_model(model):
         template_name = _target_template(target)
@@ -983,15 +998,21 @@ def _build_contexts(
     model: ProjectModel,
     options: dict[str, object],
     fixed_sections: tuple[tuple[str, int, str], ...],
+    layout: MemoryLayoutResolution | None,
 ) -> dict[str, dict[str, object]]:
     project_name = sanitize_cmake_identifier(model.project.name)
     basename = model.build.elf[len("build/arm-debug/") :]
     stem = basename[: -len(".elf")]
     target_name = sanitize_cmake_identifier(stem)
-    if model.generation.native_linker_script is None:
-        flash_region, ram_region = _memory_region_roles(model)
+    if layout is not None and layout.layout is not None:
+        roles = layout.layout
+        flash_region = roles.flash
+        data_region = roles.data
+        bss_region = roles.bss
+        heap_region = roles.heap
+        stack_region = roles.stack
     else:
-        flash_region = ram_region = None
+        flash_region = data_region = bss_region = heap_region = stack_region = None
     cmake = {
         "project_name": project_name,
         "target_name": target_name,
@@ -1034,7 +1055,10 @@ def _build_contexts(
         "runtime_initialization": model.generation.runtime_initialization
         == "cmsis-gcc-v1",
         "flash_region": flash_region,
-        "ram_region": ram_region,
+        "data_region": data_region,
+        "bss_region": bss_region,
+        "heap_region": heap_region,
+        "stack_region": stack_region,
         "fixed_sections": [
             {
                 "name": section,

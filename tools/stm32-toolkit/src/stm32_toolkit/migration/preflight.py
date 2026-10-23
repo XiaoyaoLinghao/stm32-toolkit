@@ -14,6 +14,7 @@ import json
 from pathlib import Path
 
 from stm32_toolkit.keil import KeilInspection
+from stm32_toolkit.memory_layout import MemoryLayout
 from stm32_toolkit.migration import git_guard
 from stm32_toolkit.migration.model import (
     MigrationPlanError,
@@ -185,10 +186,23 @@ def _startup_option_guidance(options: StartupOptions | None) -> str:
     )
 
 
+def _memory_layout_option_guidance(layout: MemoryLayout | None) -> str:
+    """Return the exact reviewed layout choice the plan/apply must retain."""
+    if layout is None:
+        return ""
+    return (
+        " Retain memoryLayout="
+        + json.dumps(layout.to_dict(), sort_keys=True, separators=(",", ":"))
+        + " for the PLAN and apply requests; a different or omitted mapping is "
+        "a different reviewed choice and is never accepted against this plan."
+    )
+
+
 def _plan_readiness(
     git: dict[str, object],
     blocker_total: int,
     startup_options: StartupOptions | None = None,
+    memory_layout: MemoryLayout | None = None,
 ) -> dict[str, object]:
     """Whether the technical/Git prerequisites for obtaining a plan are met.
 
@@ -267,7 +281,9 @@ def _plan_readiness(
             "Inspect data.git.worktree.error and confirm Git status access; do not assume the worktree is dirty or clean."
         )
     if ready:
-        guidance = _startup_option_guidance(startup_options)
+        guidance = _startup_option_guidance(
+            startup_options
+        ) + _memory_layout_option_guidance(memory_layout)
         next_steps.append(
             "Call stm32_keil_convert (CLI: keil convert --dry-run) with the same uvprojx and targetName and no planId; the read-only PLAN response returns the exact identifier as data.plan_id and the complete diff as data.patches[].unified_diff."
             + guidance
@@ -289,6 +305,7 @@ def _plan_readiness(
 def _apply_readiness(
     plan_readiness: dict[str, object],
     startup_options: StartupOptions | None = None,
+    memory_layout: MemoryLayout | None = None,
 ) -> dict[str, object]:
     """Apply is never ready from preflight, regardless of plan prerequisites."""
     prerequisites = plan_readiness["prerequisites"]
@@ -298,7 +315,9 @@ def _apply_readiness(
         for item in prerequisites
         if isinstance(item, dict) and item.get("satisfied") is not True
     ]
-    guidance = _startup_option_guidance(startup_options)
+    guidance = _startup_option_guidance(
+        startup_options
+    ) + _memory_layout_option_guidance(memory_layout)
     if plan_readiness["ready"] is True:
         next_steps = [
             "Call stm32_keil_convert with the same uvprojx and targetName and no planId to obtain the read-only PLAN response; read data.plan_id and data.patches[].unified_diff."
@@ -338,6 +357,7 @@ def preflight_keil_conversion(
     inspection: KeilInspection,
     *,
     startup_options: StartupOptions | None = None,
+    memory_layout: MemoryLayout | None = None,
 ) -> dict[str, object]:
     """Analyze one inspected Keil target without Git and without mutation.
 
@@ -346,7 +366,10 @@ def preflight_keil_conversion(
     result, independently of apply readiness.
     """
     analysis = analyze_keil_conversion(
-        root, inspection, startup_options=startup_options
+        root,
+        inspection,
+        startup_options=startup_options,
+        memory_layout=memory_layout,
     )
     git = _git_state(analysis.project_root)
 
@@ -356,7 +379,7 @@ def preflight_keil_conversion(
 
     fresh = analysis.inspection
     plan_readiness = _plan_readiness(
-        git, len(analysis.blockers), startup_options
+        git, len(analysis.blockers), startup_options, memory_layout
     )
     payload = {
         "analysis": {
@@ -383,10 +406,17 @@ def preflight_keil_conversion(
             "fixedSections": [
                 section.to_dict() for section in analysis.fixed_sections
             ],
+            "memoryLayout": (
+                analysis.memory_layout.to_dict()
+                if analysis.memory_layout is not None
+                else None
+            ),
         },
         "git": git,
         "planReadiness": plan_readiness,
-        "applyReadiness": _apply_readiness(plan_readiness, startup_options),
+        "applyReadiness": _apply_readiness(
+            plan_readiness, startup_options, memory_layout
+        ),
     }
     if analysis.startup is not None:
         payload["analysis"]["startup"] = analysis.startup.to_dict()

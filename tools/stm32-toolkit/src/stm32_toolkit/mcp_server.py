@@ -972,6 +972,7 @@ def tool_keil_preflight(
     target_name: str | None = None,
     startup_strategy: str | None = None,
     startup_source: str | None = None,
+    memory_layout: object = None,
 ) -> dict[str, object]:
     """Return read-only migration analysis without requiring Git.
 
@@ -985,6 +986,7 @@ def tool_keil_preflight(
         target_name=target_name,
         startup_strategy=startup_strategy,
         startup_source=startup_source,
+        memory_layout=memory_layout,
     ).to_dict()
 
 
@@ -996,6 +998,7 @@ def tool_keil_convert(
     authorized: bool = False,
     startup_strategy: str | None = None,
     startup_source: str | None = None,
+    memory_layout: object = None,
 ) -> dict[str, object]:
     """Read-only conversion plan, or apply with the exact plan ID plus
     ``authorized=true``."""
@@ -1007,6 +1010,7 @@ def tool_keil_convert(
         authorized=authorized,
         startup_strategy=startup_strategy,
         startup_source=startup_source,
+        memory_layout=memory_layout,
     ).to_dict()
 
 
@@ -1168,12 +1172,18 @@ async def tool_keil_preflight_for_request(
     target_name: str | None = None,
     startup_strategy: str | None = None,
     startup_source: str | None = None,
+    memory_layout: object = None,
 ) -> dict[str, object]:
     failure = await _client_roots_failure(runtime, context, "keil-preflight")
     if failure is not None:
         return failure
     return tool_keil_preflight(
-        runtime, uvprojx, target_name, startup_strategy, startup_source
+        runtime,
+        uvprojx,
+        target_name,
+        startup_strategy,
+        startup_source,
+        memory_layout,
     )
 
 
@@ -1186,6 +1196,7 @@ async def tool_keil_convert_for_request(
     authorized: bool = False,
     startup_strategy: str | None = None,
     startup_source: str | None = None,
+    memory_layout: object = None,
 ) -> dict[str, object]:
     operation = (
         "keil-conversion-apply"
@@ -1203,6 +1214,7 @@ async def tool_keil_convert_for_request(
         authorized,
         startup_strategy,
         startup_source,
+        memory_layout,
     )
 
 
@@ -2365,6 +2377,7 @@ def create_server(
         targetName: str | None = None,
         startupStrategy: str | None = None,
         startupSource: str | None = None,
+        memoryLayout: dict[str, str] | None = None,
     ) -> dict[str, object]:
         """Run read-only Keil migration preflight without requiring Git.
 
@@ -2393,6 +2406,23 @@ def create_server(
         source hash, vectors, reserved slots, stack/heap bytes, diagnostics
         and generated digest.  This is a reviewed migration patch, not ARMCC
         or Microlib equivalence.
+        Managed multi-RAM memory requires a reviewed choice.  Read
+        analysis.memoryLayout (status, resolved layout or null, and the actual
+        flash/ram candidates).  status=requires-selection accompanies a
+        MEMORY_LAYOUT_REQUIRED blocker while every other blocker is still
+        returned; pass memoryLayout with exactly flash, data, bss, heap and
+        stack keys, each naming an existing region.  memoryLayout is an
+        object parameter: a JSON string or other non-object is rejected by the
+        registered MCP input schema before this tool runs, while an object with
+        unknown/incomplete roles or invalid region access returns the
+        structured MEMORY_LAYOUT_INVALID field/rule/remediation.  Flash must be
+        readable, executable and non-writable; data/bss/heap/stack must be
+        readable and writable.  A writable executable RAM is never inferred as
+        Flash, and CCM/external RAM is never selected automatically.  Use the
+        same memoryLayout for preflight, the PLAN call and apply; an omitted
+        mapping and an explicit all-main-RAM choice are different reviewed
+        requests.  A native linker-script project keeps its own layout and
+        cannot also declare memoryLayout.
         When analysis is complete and no blockers remain, establish any Git
         prerequisite as an explicit project-owner decision, then call
         stm32_keil_convert with no planId to obtain a PLAN response.  Read
@@ -2401,7 +2431,13 @@ def create_server(
         authorized=true.
         """
         return await tool_keil_preflight_for_request(
-            runtime, ctx, uvprojx, targetName, startupStrategy, startupSource
+            runtime,
+            ctx,
+            uvprojx,
+            targetName,
+            startupStrategy,
+            startupSource,
+            memoryLayout,
         )
 
     @mcp.tool(name=MCP_TOOL_NAMES["keil_convert"])
@@ -2413,6 +2449,7 @@ def create_server(
         authorized: bool = False,
         startupStrategy: str | None = None,
         startupSource: str | None = None,
+        memoryLayout: dict[str, str] | None = None,
     ) -> dict[str, object]:
         """Plan or explicitly apply one Keil-to-GCC migration.
 
@@ -2436,6 +2473,15 @@ def create_server(
         data.startup with source/generated hashes, vectors and review
         warnings.  Review that evidence and the generated reset path; this is
         not ARMCC, ABI or Microlib behavioral equivalence.
+        Pass the same memoryLayout object used for preflight when a managed
+        multi-RAM layout is required.  The PLAN response exposes
+        data.memory_layout (status, resolved layout or null, and actual
+        candidates) and binds the exact explicit mapping into data.plan_id; an
+        omitted mapping is a different reviewed choice, and apply refuses a
+        changed or omitted mapping.  The generated linker places .data/.bss/
+        heap/stack in their selected regions with the .data load address in
+        the selected Flash.  This is offline placement evidence, not proof of
+        CCM/external-RAM or board runtime behavior.
         The core replans and rechecks digest, Git, and drift guards before its
         first write.  Never run git init, transcode source text, replace ARMCC
         startup blindly, or reuse a stale plan ID; a missing Git repository is
@@ -2450,6 +2496,7 @@ def create_server(
             authorized,
             startupStrategy,
             startupSource,
+            memoryLayout,
         )
 
     @mcp.tool(name=MCP_TOOL_NAMES["project_configure"])

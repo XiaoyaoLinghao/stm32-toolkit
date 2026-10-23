@@ -45,7 +45,7 @@ $Cli = Join-Path $DataRoot 'runtime\1.2.0\Scripts\stm32-toolkit.exe'
 & $Cli --project-root $ProjectRoot build --preset arm-debug --json
 ```
 
-**仅当前源码/候选切片（未随 v1.2.0 发行）：** 已发布 v1.2.0 安装包（48 个工具）没有 `keil preflight`/`stm32_keil_preflight`，也不接受 `--startup-strategy`/`--startup-source`（MCP `startupStrategy`/`startupSource`）。下列入口与 startup 选项属于当前源码或候选构建的未发布行为，不要对已安装 runtime 使用或宣称支持。
+**仅当前源码/候选切片（未随 v1.2.0 发行）：** 已发布 v1.2.0 安装包（48 个工具）没有 `keil preflight`/`stm32_keil_preflight`，也不接受 `--startup-strategy`/`--startup-source`/`--memory-layout`（MCP `startupStrategy`/`startupSource`/`memoryLayout`）。下列入口、startup 与显式内存布局选项属于当前源码或候选构建的未发布行为，不要对已安装 runtime 使用或宣称支持。
 
 ```powershell
 $CandidateCli = '<current-source-or-candidate stm32-toolkit CLI>'
@@ -71,7 +71,24 @@ VS Code / MCP 客户端的审查路径：
 1. `stm32_keil_preflight(uvprojx, targetName, startupStrategy="generate-cmsis-gcc", startupSource="<path-or-omitted>")`，读取 `data.analysis.startup`：`source_path`/`source_sha256`、`vectors`（含 `reserved` 索引）、`stack_size`/`heap_size`、`reset_pattern`、`generated_path`/`generated_sha256`、`warnings`、`diagnostics`。任何诊断都应先处理，不能靠改写规则通过。
 2. 用完全相同的两个参数调用 `stm32_keil_convert(..., startupStrategy=..., startupSource=...)` 取得 PLAN 响应；核对 `data.plan_id`、`data.startup`、`data.patches[].unified_diff`，特别是向量顺序/保留零槽、weak handler/alias、`SystemInit` → `.data/.bss` → `__libc_init_array` → `main` 的 reset 路径，以及 manifest 中 `memory.stackSize`、`memory.heapSize`、`generation.runtimeInitialization="cmsis-gcc-v1"` 和 `build.assemblySources` 只替换选中项。
 3. 用户显式授权该精确 `data.plan_id` 后，以同一组参数传 `planId` 和 `authorized=true`。apply 会用同一选项重规划并核对 Git/digest/输入漂移，失败不写文件。
-4. apply 后按常规 `stm32_project_configure`（先 PLAN 再授权 apply）与 `stm32_build` 流程构建；托管 linker 会使用记录的精确 stack/heap 字节并保留构造数组。GCC/newlib 运行时替换不是 ARMCC、ABI 或 Microlib 等价，仍须自行审查向量表、RAM 假设和实际运行行为。多 RAM 区域及任意额外节复制/清零不在本切片范围。
+4. apply 后按常规 `stm32_project_configure`（先 PLAN 再授权 apply）与 `stm32_build` 流程构建；托管 linker 会使用记录的精确 stack/heap 字节并保留构造数组。GCC/newlib 运行时替换不是 ARMCC、ABI 或 Microlib 等价，仍须自行审查向量表、RAM 假设和实际运行行为。显式多 RAM 分区见下一节；任意额外初始化/清零节仍需独立 startup 表契约，不在本切片范围。
+
+### 显式多 RAM 内存布局（当前源码/候选切片）
+
+托管生成的 `.data`/`.bss`/`.heap`/`.stack` 可以显式分配到不同 RAM 区域。参数属于**当前源码/候选切片的未发布行为**：已发布 v1.2.0 runtime 不接受它们，使用前必须检查所连 MCP 服务器的真实工具与 input schema（`memoryLayout`/`--memory-layout`）。
+
+| 操作 | MCP 参数 | CLI 参数 | 值 |
+| --- | --- | --- | --- |
+| 预检/计划/应用 | `memoryLayout` | `--memory-layout '<json>'` | 恰好含 `flash`、`data`、`bss`、`heap`、`stack` 五个字符串键，每个值必须是已声明区域名 |
+
+规则：
+
+- `flash` 区域必须可读、可执行且不可写（如 `r-x`）；`data`/`bss`/`heap`/`stack` 必须可读可写（如 `rw-`/`rwx`）。可写且可执行的 RAM 绝不会被推断为 Flash；CCM/外部 SRAM 不会被自动选用，也不推断 DMA 可达性。
+- 不传 `memoryLayout` 时，仅当恰好存在一个非可写可执行 Flash 与一个可读可写 RAM 时按旧行为解析（`status=implicit`），并保持历史生成字节与 model hash。存在多个 RAM（如 IRAM1 + IRAM2/CCM）时：preflight 在 `data.analysis.memoryLayout` 返回 `status=requires-selection`、`layout=null` 和实际的 `candidates.flash`/`candidates.ram`（名称/起始/长度/属性）；PLAN 在 `data.memory_layout` 返回同样的决定证据。两者都会附带普通 `MEMORY_LAYOUT_REQUIRED` blocker 以及其它 blocker。configure 在缺少布局时失败，不会默认选择第一个 RAM。
+- 显式映射必须完全相同地传给 preflight、PLAN 与 apply。省略与“显式把所有节放在主 RAM、故意不用 CCM”是两种不同的 reviewed 选择；它们产生不同 `data.plan_id`，apply 会返回 `PLAN_CHANGED`。`status=explicit` 的计划会把映射写入 `memory.layout` 并纳入计划身份。
+- CLI `--memory-layout` 接收一个 JSON 对象字符串：语法错误、重复键（如两个 `flash`）、未知/缺失角色、非字符串或空值都会在 inspect/plan 之前以 `MEMORY_LAYOUT_INVALID` 的 `field`/`rule`/`remediation` 失败；重复 `--memory-layout` 属于参数语法错误。MCP 的 `memoryLayout` 是对象参数（不是 JSON 字符串）：注册工具的 input schema 会先拒绝字符串、数组等非对象值；对象内的未知/缺失角色、坏类型或区域/权限错误才由 Toolkit 返回 `MEMORY_LAYOUT_INVALID`。不要把每个 MCP 类型错误都描述成 Toolkit 的结构化结果。
+- `generation.nativeLinkerScript` 存在时布局由用户原生脚本拥有：不允许同时声明显式布局（拒绝而非忽略）。固定地址节仍按原地址以 `NOLOAD` 放入所属区域或保留原有 blocker，不会被当作初始化数据复制/清零。
+- 托管 linker 将 `.data` 的 VMA 放入所选 RAM、LMA 放入所选 Flash，并保持 `_sidata`/`_sdata`/`_edata`/`_sbss`/`_ebss` 与 `cmsis-gcc-v1` 断言；stack/heap 精确字节与 8 字节栈对齐保持不变。区域越界、重叠或过小由实际链接失败暴露。成功链接只是离线镜像证据，不证明 CCM/外部 SRAM 或真实板卡运行时行为。
 
 `stm32_project_context` 的旧 `capabilities.*` 布尔值继续保留为保守兼容字段；新增 `capabilityDetails` 逐项给出 `available`、`blocked` 或 `not-evaluated` 及原因/下一步。`flash`、`targetTest`、`monitor`、`breakpointDebug` 的旧布尔 `false` 本身不区分“未探测硬件”与“已知 snapshot provenance 阻断”，必须读 `capabilityDetails`；它也不代表工具不存在。需要探针事实时单独调用只读 `probe list` / `stm32_probe_list`。仅询问已连接探针时，不需要 manifest、构建、debug backend、target 或 SVD；发现结果不授予改板权限，也不证明 target 身份或可烧录。有效工程保留 `workspaceId`，缺失或无效 manifest 时返回 `workspaceId: null` 与明确 `discovery.status=unbound`，不要伪造工程 ID。
 
@@ -84,7 +101,7 @@ MCP 客户端即使从不加载 `SKILL.md`，也可按工具描述和真实返�
 1. **上下文与选择。** 调用 `stm32_project_context()`。读取 `data.project.kind`；Keil 工程从 `data.project.files` 选择项目根相对 `.uvprojx`（使用 `/`）。context **不列出 target 名称**；多项目候选时要求用户选择，不要猜。读取 `data.capabilityDetails` 的 `status`/`reason`/`nextSteps`，不要只看旧布尔值。
 2. **检查与预检。** 若 target 未知，先调用 `stm32_keil_inspect(uvprojx)` 并省略 `targetName`；若返回 `KEIL_TARGET_SELECTION_REQUIRED`，把 `details.targets` 交给用户选择，再用该精确值调用 inspect。成功结果的 `data.inspection.target_name` 是后续必须保留的精确 targetName。然后用同一 `uvprojx`/`targetName` 调用 `stm32_keil_preflight(uvprojx, targetName)`。预检成功只表示 `data.analysis.complete=true`；逐项处理 `data.analysis.blockers`，并读取 `data.planReadiness.status`（`ready-for-plan`/`blocked`）、`ready` 与 `prerequisites`。`data.applyReadiness.status` 始终是 `requires-reviewed-plan`，`ready=false`、`planId=null`；预检不授权任何写入。
 3. **不可绕过的修复。** 对 encoding、assembly、scoped option、scatter/memory、manifest 冲突按 blocker 的 `code`、路径和消息处理；不要转码、替换 startup、删除未跟踪文件或伪造 manifest/工程 ID。Git 缺失、unborn HEAD、非 toplevel 或 dirty 工作区只阻塞计划，由工程负责人决定基线；不要让客户端自动 `git init`/commit/stash。
-4. **计划与授权。** `planReadiness.ready=true` 后调用 `stm32_keil_convert(uvprojx, targetName)`（无 `planId`、无 `authorized`）取得 PLAN 响应；检查 `data.blockers`、`data.plan_id` 和 `data.patches[].unified_diff`。若使用受支持的 CMSIS startup 路线，在 preflight、plan、apply 三次调用中传相同的 `startupStrategy="generate-cmsis-gcc"` 与 `startupSource="<精确工程相对 .s 路径>"`（单候选时可省略 source），并额外检查 `data.startup`、`Startup/stm32tk_startup_gcc.S`、`memory.stackSize`/`memory.heapSize` 和 `generation.runtimeInitialization`。只有用户显式授权该精确计划后，才调用 `stm32_keil_convert(uvprojx, targetName, planId=<data.plan_id>, authorized=true, startupStrategy=<同值>, startupSource=<同值>)`。PLAN 响应字段是 `data.plan_id`，APPLY 请求参数是 `planId`；省略或改动 startup 选项不会被接受，合法但不同的值返回 `PLAN_CHANGED`，非法的选项值返回结构化校验错误。startup 补丁与常规 manifest/源码补丁一起出现在 `data.patches` 中，而不是唯一输出文件。
+4. **计划与授权。** `planReadiness.ready=true` 后调用 `stm32_keil_convert(uvprojx, targetName)`（无 `planId`、无 `authorized`）取得 PLAN 响应；检查 `data.blockers`、`data.plan_id` 和 `data.patches[].unified_diff`。若使用受支持的 CMSIS startup 路线，在 preflight、plan、apply 三次调用中传相同的 `startupStrategy="generate-cmsis-gcc"` 与 `startupSource="<精确工程相对 .s 路径>"`（单候选时可省略 source），并额外检查 `data.startup`、`Startup/stm32tk_startup_gcc.S`、`memory.stackSize`/`memory.heapSize` 和 `generation.runtimeInitialization`。只有用户显式授权该精确计划后，才调用 `stm32_keil_convert(uvprojx, targetName, planId=<data.plan_id>, authorized=true, startupStrategy=<同值>, startupSource=<同值>)`。PLAN 响应字段是 `data.plan_id`，APPLY 请求参数是 `planId`；省略或改动 startup 选项不会被接受，合法但不同的值返回 `PLAN_CHANGED`，非法的选项值返回结构化校验错误。startup 补丁与常规 manifest/源码补丁一起出现在 `data.patches` 中，而不是唯一输出文件。若 `data.analysis.memoryLayout.status=requires-selection`，先按 `candidates` 让用户选择布局，再把同一 `memoryLayout` 对象传入 preflight、PLAN 和 apply；plan 响应中的 `data.memory_layout` 显示 `status`、解析后的五角色布局（或 `null`）与实际候选。
 5. **配置、构建、烧录。** `stm32_project_configure()` 的 PLAN 响应同样用 `data.plan_id`，APPLY 传 `planId` 与 `authorized=true`。构建前读 `capabilityDetails.build.status`；`stm32_build(preset, clean, timeoutSeconds, authorized=true)` 才执行。烧录使用 `stm32_probe_list()` 返回的精确 `probeId`，以及 context 的 `data.build.buildId`/`data.build.elfSha256` 作为 `expectedBuildId`/`expectedElfSha256`，且仅在显式授权后传 `authorized=true`；不要复用旧 pin。
 6. **仅发现探针。** 用户只问“有哪些探针”时直接调用 `stm32_probe_list()`，读取 `data.probes`、`data.workspaceId` 和 `data.discovery`。该调用不需要 manifest、构建、backend、target 或 SVD，也不得继续执行 flash；若 `data.workspaceId=null` 且 `data.discovery.status="unbound"`，如实说明 discovery-only，绝不伪造 workspace ID。发现结果不证明 target 身份或烧录就绪。
 7. **VS Code 集成。** 生成的 `.vscode/tasks.json`/`launch.json` 只是配置目标；在真实 VS Code、扩展版本和实际调试会话中运行前，不得声称 IDE 路径已验收或部署完成。

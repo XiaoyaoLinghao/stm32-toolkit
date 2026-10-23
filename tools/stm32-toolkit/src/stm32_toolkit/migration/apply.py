@@ -20,6 +20,12 @@ import stat
 from pathlib import Path
 
 from stm32_toolkit import __version__
+from stm32_toolkit.memory_layout import (
+    MemoryLayout,
+    MemoryLayoutError,
+    MemoryLayoutResolution,
+    validate_memory_layout_regions,
+)
 from stm32_toolkit.project_upgrade import ProjectMutationLockError
 from stm32_toolkit.keil import KeilInspection
 from stm32_toolkit.result import OperationResult
@@ -194,6 +200,37 @@ def _validate_plan(plan: object) -> None:
             raise _plan_invalid("startupOptions")
         if plan.startup.generated_path not in (None, STARTUP_GENERATED_PATH):
             raise _plan_invalid("startupOptions")
+    if plan.memory_layout is not None and type(plan.memory_layout) is not MemoryLayout:
+        raise _plan_invalid("memoryLayout")
+    if (
+        plan.memory_layout_resolution is not None
+        and type(plan.memory_layout_resolution) is not MemoryLayoutResolution
+    ):
+        raise _plan_invalid("memoryLayout")
+    resolution = plan.memory_layout_resolution
+    if resolution is None:
+        raise _plan_invalid("memoryLayout")
+    if resolution.status not in ("implicit", "explicit", "requires-selection"):
+        raise _plan_invalid("memoryLayout")
+    if resolution.status == "explicit":
+        if resolution.layout != plan.memory_layout:
+            raise _plan_invalid("memoryLayout")
+    elif plan.memory_layout is not None:
+        raise _plan_invalid("memoryLayout")
+    elif resolution.status == "implicit" and resolution.layout is None:
+        raise _plan_invalid("memoryLayout")
+    if resolution.status == "requires-selection":
+        if resolution.layout is not None or not any(
+            blocker.code == "MEMORY_LAYOUT_REQUIRED" for blocker in plan.blockers
+        ):
+            raise _plan_invalid("memoryLayout")
+    if plan.memory_layout is not None:
+        try:
+            validate_memory_layout_regions(
+                plan.memory_layout, plan.inspection.memory_regions
+            )
+        except MemoryLayoutError:
+            raise _plan_invalid("memoryLayout") from None
 
     for entry in plan.inputs:
         if portable_path_error(entry.path) is not None:
@@ -436,7 +473,10 @@ def _validate_patch_targets(root: Path, plan: MigrationPlan) -> None:
 def _fresh_plan(root: Path, plan: MigrationPlan) -> MigrationPlan:
     try:
         return plan_keil_conversion(
-            root, plan.inspection, startup_options=plan.startup_options
+            root,
+            plan.inspection,
+            startup_options=plan.startup_options,
+            memory_layout=plan.memory_layout,
         )
     except MigrationPlanError as error:
         if error.code == "MIGRATION_INSPECTION_CHANGED":
