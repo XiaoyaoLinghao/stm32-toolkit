@@ -6,7 +6,7 @@
 - Branch: `codex/keil-readiness`
 - Accepted base: `89f76ee5551dfdc313f3f37d2d9e760af47daac8`
 - Task starting head (approved policy/specification only): `68a1e0e1d849a425cb34a5df78657bc5a10ce618`
-- CodeHead before this report commit: `7e63af70018e228fb3171346e6259cd784e4c14d`
+- Implementation CodeHead before this report commit: `500b328c349c38888d1943d3beca98047ba08419`
 - Reviewer: primary conversation agent (independent). This report is not acceptance and does not self-approve the diff.
 - Authority used: local implementation, focused offline tests and local commits only. No push, PR, merge, tag, release, version bump, packaging, installation, deployment, provider change, physical probe or hardware operation was performed.
 
@@ -66,6 +66,11 @@ Added:
 
 No Monitor/UI, version, packaging policy/schema, installer, or hardware files changed.
 
+Review-correction commit `500b328c349c38888d1943d3beca98047ba08419` modifies only
+`tools/stm32-toolkit/src/stm32_toolkit/migration/preflight.py` and
+`tools/stm32-toolkit/tests/test_keil_preflight.py`. It handles OS-level Git launch/read
+failures as safe stable unavailability evidence and adds the corresponding regressions.
+
 ## Test evidence
 
 All test processes were offline and used the dedicated venv (`D:/codex-tmp/kx23/venv`, CPython 3.12.14), temporary roots under `D:/codex-tmp/kx23`, new pytest basetemp/cache directories per run, and injected/fake probe backends only. Real probe enumeration was never invoked.
@@ -76,7 +81,8 @@ All test processes were offline and used the dedicated venv (`D:/codex-tmp/kx23/
 | Hardware workflows | `python -m pytest tools/stm32-toolkit/tests/test_hardware_workflows.py --basetemp=D:/codex-tmp/kx23/bt-impl-12 -o cache_dir=D:/codex-tmp/kx23/cache-impl-12` | 116 passed |
 | MCP migration/build + plugin/skills | `python -m pytest tools/stm32-toolkit/tests/test_mcp_migration_build.py tools/stm32-toolkit/tests/test_plugin_layout.py --basetemp=D:/codex-tmp/kx23/bt-impl-14 -o cache_dir=D:/codex-tmp/kx23/cache-impl-14` | 39 passed, 1 dependency warning |
 | Context, planned actions, inventory, migration plan/apply, Keil inspect | `python -m pytest tools/stm32-toolkit/tests/test_context.py tools/stm32-toolkit/tests/test_planned_actions.py tools/stm32-toolkit/tests/test_public_inventory.py tools/stm32-toolkit/tests/test_migration_plan.py tools/stm32-toolkit/tests/test_migration_apply.py tools/stm32-toolkit/tests/test_keil_inspect.py --basetemp=D:/codex-tmp/kx23/bt-impl-15 -o cache_dir=D:/codex-tmp/kx23/cache-impl-15` | 323 passed |
-| Final combined relevant suite | `python D:/codex-tmp/kx23/run_final_suite.py` (the script runs the 16-module pytest list with `--basetemp=D:/codex-tmp/kx23/bt-impl-17 -o cache_dir=D:/codex-tmp/kx23/cache-impl-17`) | **801 passed, 2 warnings, exit 0** |
+| Final combined relevant suite (pre-correction bytes) | `python D:/codex-tmp/kx23/run_final_suite.py` (the script runs the 16-module pytest list with `--basetemp=D:/codex-tmp/kx23/bt-impl-17 -o cache_dir=D:/codex-tmp/kx23/cache-impl-17`) | **801 passed, 2 warnings, exit 0** |
+| Review correction: preflight + MCP migration/build | `python -m pytest tools/stm32-toolkit/tests/test_keil_preflight.py tools/stm32-toolkit/tests/test_mcp_migration_build.py --basetemp=D:/codex-tmp/kx23/bt-impl-18 -o cache_dir=D:/codex-tmp/kx23/cache-impl-18` | **39 passed, 1 dependency warning, exit 0** |
 
 Final combined modules: preflight, migration plan, migration apply, Keil inspect, context, planned actions, hardware workflows, MCP migration/build, MCP hardware, MCP roots, MCP server, CLI, CLI hardware, public inventory, plugin layout, workflows.
 
@@ -94,10 +100,11 @@ Durable evidence outside the repository:
 2. **Test-author error in stale-input regression.** The first preflight stale-input attempt changed file size, so the correct existing guard returned `MIGRATION_INPUT_INVALID` rather than `MIGRATION_INSPECTION_CHANGED`. The test was corrected to same-size byte drift; no product behavior changed.
 3. **Earlier CLI tool-selection issue.** Before PowerShell was exposed, the implementation session had no shell tool: Bash was unavailable, so no tests or commits were produced in that phase. After the primary corrected per-invocation tool selection, an allowed PowerShell smoke check and the full test runs above were completed. No unexecuted test was reported as passing.
 4. **MCP-only description regression.** One description assertion failed because the context docstring dropped the explicit `stm32_keil_preflight` name during the target-selection rewrite. The docstring was corrected and the MCP/plugin suite rerun to 39 passed.
+5. **Review finding: OS-level Git launch/read errors escaped preflight.** `_git_state` originally caught only `MigrationPlanError`, so a policy-denied `git` launch (`OSError`/`PermissionError`) escaped through `preflight_keil_workflow` as `KEIL_PREFLIGHT_UNAVAILABLE` and discarded completed technical analysis. The correction maps OS-level repository/HEAD/status failures to safe `MIGRATION_GIT_UNAVAILABLE` evidence with the correct rule, preserves blockers and `ready=false`, and does not expose exception text or host paths. New public-workflow regressions cover both error types in all three phases, a preserved technical blocker under a status failure, technical input drift still raising `MIGRATION_INSPECTION_CHANGED`, and `KeyboardInterrupt` still propagating. The focused required run passed 39 tests with exit 0. No `git_guard`, plan or apply behavior changed.
 
 ## Limitations and pending review
 
-- This report is **not** acceptance. `REVISION_REQUIRED`/`ACCEPTED` remain the primary's decision after independent complete-diff review.
+- This report is **not** acceptance. `REVISION_REQUIRED`/`ACCEPTED` remain the primary's decision after independent complete-diff review. The correction focused run covers the newly changed bytes; the prior 801-test combined result remains valid only for the unchanged surrounding files it exercised.
 - No real probe, attach, flash, reset, halt, IDE/VS Code session, physical target or hardware qualification was performed. Probe discovery tests used injected fake backends only.
 - No packaging, installation, deployment, version bump or remote publication was performed; the published v1.2.0 runtime remains the frozen 48-tool package and does not contain `stm32_keil_preflight`.
 - Preflight output is bounded at 64 MiB; normal complete blocker diagnostics fit within that bound. The plan limit remains unchanged and is not weakened.
