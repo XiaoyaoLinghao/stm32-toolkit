@@ -2353,8 +2353,10 @@ def create_server(
         ID, writes nothing, does not transcode sources, replace startup code,
         or run git init, and never authorizes apply.  A source-encoding
         blocker may be prepared with the separate normalize-source-comments
-        companion skill, which writes only reviewed copies outside the
-        project; preflight itself still writes nothing and does not transcode.
+        companion skill, whose instructions and helper live in its skill
+        directory (there is no normalization MCP tool); that helper writes
+        only reviewed copies outside the project, and preflight itself still
+        writes nothing and does not transcode.
         When analysis is complete and no blockers remain, establish any Git
         prerequisite as an explicit project-owner decision, then call
         stm32_keil_convert with no planId to obtain a PLAN response.  Read

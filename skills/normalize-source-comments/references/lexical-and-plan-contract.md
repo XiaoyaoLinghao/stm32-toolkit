@@ -51,6 +51,16 @@ original physical characters. It then recognizes comments conservatively:
   presentation finding cap. If a blocker is omitted from the displayed list,
   a blocking `FINDINGS_TRUNCATED` diagnostic is emitted, so a file can never
   become ready merely because earlier warnings filled the list.
+- Each lexing pass presents at most `MAX_FINDINGS` findings. The final list is
+  bounded once more at `MAX_PRESENTED_FINDINGS` (`MAX_FINDINGS * 2 + 8`), a
+  conservative bounded allowance shared by derivation and plan validation; some
+  of the contributing error branches cannot occur together, so this is an upper
+  bound rather than a tight count. Because validation enforces the same
+  allowance, a ready preview is always copyable. When findings must be omitted,
+  blockers are kept ahead of warnings: suppressing only warnings yields a
+  warning `FINDINGS_TRUNCATED` marker, while omitting blocking findings yields a
+  blocker `FINDINGS_TRUNCATED` marker. The bound therefore never turns a blocked
+  file into a ready one.
 
 ### Preprocessing and header names
 
@@ -154,6 +164,12 @@ otherwise the preview fails with `PREVIEW_COLLISION`. Existing preview files
 are read through the configured bound, and the plan, preview, and finding lists
 are bounded.
 
+The CLI exits `0` only when every file is ready. Exit code `2` covers both a
+completed preview with at least one blocked file (`status: blocked`) and an
+operational failure (`status: failed`, with a `code` such as `PATH_INVALID`,
+`PREVIEW_COLLISION`, or `IO_FAILURE`). Inspect the JSON status rather than
+treating every exit code `2` as a reviewed blocked plan.
+
 ## Copy
 
 `copy` accepts the reviewed plan path, the exact expected plan ID, and a new
@@ -169,8 +185,11 @@ output directory outside the source root. It:
 4. Writes each selected relative path with exclusive creation, preserving
    layout, and verifies the bytes read back. Existing output is never
    overwritten. `manifest.json`, `manifest.json.partial`, and `INCOMPLETE*.json`
-   are reserved at the output root; a selected first component with one of
-   those names is rejected.
+   are reserved at the output root. A selected first component that matches one
+   of those names under Windows semantics — case-insensitively, or after
+   trailing dots and spaces are ignored — is rejected when the selection is
+   parsed or the plan is validated, before any preview or output path is
+   created.
 5. Re-reads every original, proves its hash is unchanged, builds a final
    `manifest.json` through a verified staging file, and only then removes the
    incomplete marker. If marker removal fails, the newly created manifest is

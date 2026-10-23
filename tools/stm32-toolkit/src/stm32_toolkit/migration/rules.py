@@ -454,7 +454,7 @@ def _scan_file(
             0,
             0,
             "",
-            "source encoding is not UTF-8; convert this file to UTF-8 outside Toolkit (the separate normalize-source-comments skill can preview and copy a reviewed comment-only UTF-8 file set), verify the bytes, then rerun inspect and plan; no file was written",
+            "source encoding is not UTF-8; convert this file to UTF-8 outside Toolkit (the separate normalize-source-comments skill can preview and copy a reviewed comment-only UTF-8 file set), verify the bytes, then rerun inspect -> preflight -> plan after blockers and prerequisites are resolved; no file was written",
         )
         return _FileScan(
             SourceScan(path, language, data, data, (), (), (blocker,), ()),

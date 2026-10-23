@@ -826,6 +826,32 @@ def test_cli_subprocess_preview_copy_and_blocked_exit(
     assert blocked.returncode == 2
     assert json.loads(blocked.stdout)["status"] == "blocked"
 
+    # Exit code 2 also covers an operational failure, which is reported as
+    # status=failed rather than as a reviewed blocked plan.
+    failed = subprocess.run(
+        [
+            sys.executable,
+            str(HELPER_PATH),
+            "preview",
+            "--project-root",
+            str(project),
+            "--preview-dir",
+            str(tmp_path / "preview-failed"),
+            "--file",
+            "../escape.c=gbk",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=120,
+    )
+    assert failed.returncode == 2
+    failed_payload = json.loads(failed.stdout)
+    assert failed_payload["status"] == "failed"
+    assert failed_payload["code"] == "PATH_INVALID"
+    assert not (tmp_path / "preview-failed").exists()
+
 
 def test_skill_frontmatter_and_bundled_quick_validate():
     assert SKILL_PATH.is_file()
@@ -1037,6 +1063,66 @@ def test_blocking_findings_survive_presentation_cap(
     assert trigraph_entry["outputSha256"] is None
 
 
+def test_combined_warning_sources_stay_copyable_and_a_late_blocker_blocks(
+    tmp_path: Path, project: Path
+):
+    # One line contributes one trigraph warning and one DBCS mixed-byte warning,
+    # so both independently bounded presentation lists are full at the same
+    # time.  The resulting ready plan must still pass copy validation.
+    combined = b"// ??( A\x92s\n" * nc.MAX_FINDINGS
+    assert len(combined) < nc.MAX_FILE_BYTES
+    _write(project, "App/combined.c", combined)
+    preview_dir = tmp_path / "preview-combined"
+    result = _preview(project, preview_dir, ["App/combined.c=gb18030"])
+    assert result["status"] == "ready"
+    assert result["warnings"] == nc.MAX_FINDINGS * 2
+    entry = _plan_file(preview_dir, "App/combined.c")
+    codes = _codes(entry)
+    assert codes.count("TRIGRAPH_SEQUENCE_REVIEW") == nc.MAX_FINDINGS
+    assert codes.count("MIXED_SINGLE_BYTE_ARTIFACT") == nc.MAX_FINDINGS
+    assert len(entry["findings"]) == nc.MAX_FINDINGS * 2
+    assert len(entry["findings"]) > nc.MAX_FINDINGS + 8
+    assert len(entry["findings"]) <= nc.MAX_PRESENTED_FINDINGS
+    assert entry["status"] == "ready"
+
+    output = tmp_path / "out-combined"
+    copied = _copy(project, preview_dir, result["planId"], output)
+    assert copied["status"] == "ok"
+    expected_line = "// ??( A" + chr(0x62AF) + "\n"
+    assert _read(output, "App/combined.c") == (
+        expected_line * nc.MAX_FINDINGS
+    ).encode("utf-8")
+
+    # The same warning volume plus a blocker after the scanner's presentation
+    # cap must remain blocked; neither bound may hide the blocking state.
+    late = combined + b"int \xa3B;\n"
+    _write(project, "App/late.c", late)
+    blocked_dir = tmp_path / "preview-late"
+    blocked = _preview(project, blocked_dir, ["App/late.c=gb18030"])
+    assert blocked["status"] == "blocked"
+    late_entry = _plan_file(blocked_dir, "App/late.c")
+    assert late_entry["status"] == "blocked"
+    assert late_entry["outputSha256"] is None
+    assert len(late_entry["findings"]) <= nc.MAX_PRESENTED_FINDINGS
+    blocker_codes = _codes(late_entry, "blocker")
+    assert "FINDINGS_TRUNCATED" in blocker_codes
+    blocked_output = tmp_path / "out-late"
+    with pytest.raises(nc.ToolError) as blocked_copy:
+        _copy(project, blocked_dir, blocked["planId"], blocked_output)
+    assert blocked_copy.value.code == "PLAN_BLOCKED"
+    assert not blocked_output.exists()
+
+
+def test_long_identifier_token_is_scanned_once():
+    source = b"int " + b"a" * 50_000 + b" = 1; // \xd6\xd0\n"
+    analysis = nc.analyze_bytes(source, "gbk", "App/long-token.c")
+    assert analysis.status == "ready"
+    assert analysis.comment_count == 1
+    assert analysis.output == (
+        b"int " + b"a" * 50_000 + b" = 1; // \xe4\xb8\xad\n"
+    )
+
+
 def test_decoded_character_limit_blocks_before_mapping_build(
     tmp_path: Path, project: Path, monkeypatch
 ):
@@ -1079,42 +1165,73 @@ def test_reparse_ancestors_are_rejected(
     tmp_path: Path, project: Path, monkeypatch
 ):
     original = nc._is_reparse
+    redirected_root = tmp_path / "redirected-root"
+    redirected_preview = tmp_path / "redirected-preview"
+    redirected_output = tmp_path / "redirected-output"
+    redirected_plan = tmp_path / "redirected-plan"
 
-    def fake(path):
-        normalized = str(path).replace("\\", "/")
-        if any(part.startswith("redirected-") for part in normalized.split("/")):
+    def identity(path: object) -> str:
+        return os.path.normcase(os.path.abspath(os.fspath(path)))
+
+    redirected = {
+        identity(redirected_root),
+        identity(redirected_preview),
+        identity(redirected_output),
+        identity(redirected_plan),
+    }
+
+    def fake(path: object) -> bool:
+        # Only the exact redirected ancestor directories are reported as
+        # reparse points.  Every descendant stays false, so this test can only
+        # pass if the helper checks an ancestor rather than the leaf.
+        if identity(path) in redirected:
             return True
         return original(path)
 
     monkeypatch.setattr(nc, "_is_reparse", fake)
 
-    redirected_root = tmp_path / "redirected-root"
+    def assert_ancestor(error: nc.ToolError, ancestor: Path) -> None:
+        assert error.details["component"] is not None
+        assert identity(error.details["component"]) == identity(ancestor)
+
     nested_project = redirected_root / "project"
     nested_project.mkdir(parents=True)
     _write(nested_project, "App/a.c", b"int a;\n")
+    assert nc._is_reparse(nested_project) is False
+    assert nc._is_reparse(nested_project / "App") is False
+    assert nc._is_reparse(nested_project / "App" / "a.c") is False
     with pytest.raises(nc.ToolError) as root_reparse:
         _preview(nested_project, tmp_path / "preview-root", ["App/a.c=gbk"])
     assert root_reparse.value.code == "REPARSE_PATH"
-
-    redirected_preview = tmp_path / "redirected-preview"
-    redirected_preview.mkdir()
-    with pytest.raises(nc.ToolError) as preview_reparse:
-        _preview(project, redirected_preview / "preview", ["App/a.c=gbk"])
-    assert preview_reparse.value.code == "REPARSE_PATH"
+    assert_ancestor(root_reparse.value, redirected_root)
+    assert not (tmp_path / "preview-root").exists()
 
     _write(project, "App/a.c", b"int a;\n")
+    redirected_preview.mkdir()
+    preview_leaf = redirected_preview / "preview"
+    assert nc._is_reparse(preview_leaf) is False
+    assert nc._is_reparse(project / "App" / "a.c") is False
+    with pytest.raises(nc.ToolError) as preview_reparse:
+        _preview(project, preview_leaf, ["App/a.c=gbk"])
+    assert preview_reparse.value.code == "REPARSE_PATH"
+    assert_ancestor(preview_reparse.value, redirected_preview)
+    assert not preview_leaf.exists()
+
     ready_dir = tmp_path / "preview-ready"
     ready = _preview(project, ready_dir, ["App/a.c=gbk"])
-    redirected_output = tmp_path / "redirected-output"
     redirected_output.mkdir()
+    output_leaf = redirected_output / "out"
+    assert nc._is_reparse(output_leaf) is False
     with pytest.raises(nc.ToolError) as output_reparse:
-        _copy(project, ready_dir, ready["planId"], redirected_output / "out")
+        _copy(project, ready_dir, ready["planId"], output_leaf)
     assert output_reparse.value.code == "REPARSE_PATH"
+    assert_ancestor(output_reparse.value, redirected_output)
+    assert not output_leaf.exists()
 
-    redirected_plan = tmp_path / "redirected-plan"
     redirected_plan.mkdir()
     plan_copy = redirected_plan / "plan.json"
     plan_copy.write_bytes((ready_dir / "plan.json").read_bytes())
+    assert nc._is_reparse(plan_copy) is False
     with pytest.raises(nc.ToolError) as plan_reparse:
         nc.copy_plan(
             str(project),
@@ -1123,6 +1240,8 @@ def test_reparse_ancestors_are_rejected(
             str(tmp_path / "out-plan"),
         )
     assert plan_reparse.value.code == "REPARSE_PATH"
+    assert_ancestor(plan_reparse.value, redirected_plan)
+    assert not (tmp_path / "out-plan").exists()
 
     real_parent = tmp_path / "real-parent"
     real_parent.mkdir()
@@ -1256,3 +1375,38 @@ def test_incomplete_marker_is_durable_and_reserved_paths_are_rejected(
             str(tmp_path / "out-reserved-plan"),
         )
     assert reserved_plan.value.code == "RESERVED_OUTPUT_PATH"
+
+
+def test_reserved_metadata_aliases_are_rejected_before_output(
+    tmp_path: Path, project: Path
+):
+    _write(project, "App/a.c", b"int a;\n")
+    aliases = (
+        "MANIFEST.JSON/x.c",
+        "Manifest.Json.Partial/x.c",
+        "incomplete.json/x.c",
+        "INCOMPLETE.7.JSON/x.c",
+        "manifest.json./x.c",
+        "INCOMPLETE.json /x.c",
+        "manifest.json.partial. /x.c",
+    )
+    for index, relative in enumerate(aliases):
+        preview_dir = tmp_path / f"preview-alias-{index}"
+        with pytest.raises(nc.ToolError) as alias:
+            _preview(project, preview_dir, [f"{relative}=gbk"])
+        assert alias.value.code == "RESERVED_OUTPUT_PATH", relative
+        assert not preview_dir.exists(), relative
+
+    preview_dir = tmp_path / "preview-base"
+    result = _preview(project, preview_dir, ["App/a.c=gbk"])
+    plan = json.loads((preview_dir / "plan.json").read_text("utf-8"))
+    plan["files"][0]["path"] = "MANIFEST.JSON/x.c"
+    plan["planId"] = nc.compute_plan_id(plan)
+    tampered = tmp_path / "alias-plan.json"
+    tampered.write_text(json.dumps(plan, ensure_ascii=False), "utf-8")
+    output = tmp_path / "out-alias"
+    with pytest.raises(nc.ToolError) as reserved_plan:
+        nc.copy_plan(str(project), str(tampered), plan["planId"], str(output))
+    assert reserved_plan.value.code == "RESERVED_OUTPUT_PATH"
+    assert not output.exists()
+    assert result["status"] == "ready"

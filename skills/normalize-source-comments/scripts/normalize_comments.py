@@ -64,6 +64,15 @@ MAX_TOTAL_OUTPUT_BYTES = 192 * 1024 * 1024
 MAX_PLAN_BYTES = 16 * 1024 * 1024
 MAX_PREVIEW_BYTES = 32 * 1024 * 1024
 MAX_FINDINGS = 200
+# One global presentation bound shared by derivation and plan validation, so a
+# legitimate ready preview is always copyable.  Each of the two lexing passes
+# (trigraph scan, comment scanner) is capped independently at MAX_FINDINGS and
+# can append at most one truncation marker; the NUL/binary check adds one, and
+# the derived-output checks add at most five (per-file bound, UTF-8 validity,
+# stability, outside-comment drift, idempotence).  MAX_FINDINGS * 2 + 8 is the
+# conservative bounded allowance for that combination; several of those error
+# branches cannot occur together, so it is an upper bound, not a tight count.
+MAX_PRESENTED_FINDINGS = MAX_FINDINGS * 2 + 8
 MAX_DIFF_LINES = 4000
 
 TRIGRAPH_CHARS = "=/'()!<>-"
@@ -73,7 +82,22 @@ _RESERVED_OUTPUT_NAMES = {
     "manifest.json.partial",
     "INCOMPLETE.json",
 }
-_INCOMPLETE_NAME_RE = re.compile(r"INCOMPLETE\.\d+\.json")
+
+
+def _portable_name_key(name: str) -> str:
+    """Fold one path component the way a Windows filesystem resolves it.
+
+    Windows compares names case-insensitively and ignores trailing dots and
+    spaces when it creates a file or directory, so ``MANIFEST.JSON``,
+    ``manifest.json.`` and ``manifest.json `` all alias the reserved manifest
+    name.  Folding here rejects the collision before any output is created.
+    """
+
+    return name.rstrip(" .").casefold()
+
+
+_RESERVED_OUTPUT_KEYS = {_portable_name_key(name) for name in _RESERVED_OUTPUT_NAMES}
+_INCOMPLETE_NAME_KEY_RE = re.compile(r"incomplete\.\d+\.json")
 _HEADER_DIRECTIVES = {"include", "include_next", "import", "embed"}
 _HEADER_OPERATORS = {"__has_include", "__has_include_next", "__has_embed", "__has_embed_next"}
 
@@ -342,7 +366,8 @@ def _check_raw_ancestors(path: os.PathLike[str] | str) -> None:
 
 def _check_reserved_output_path(relative: str) -> None:
     first = relative.split("/", 1)[0]
-    if first in _RESERVED_OUTPUT_NAMES or _INCOMPLETE_NAME_RE.fullmatch(first):
+    key = _portable_name_key(first)
+    if key in _RESERVED_OUTPUT_KEYS or _INCOMPLETE_NAME_KEY_RE.fullmatch(key):
         raise ToolError(
             "RESERVED_OUTPUT_PATH",
             "selected path collides with a reserved output manifest or marker name",
@@ -1521,6 +1546,54 @@ def _diff_lines(source: bytes, output: bytes | None, relative: str, charset: str
     return diff
 
 
+def _bound_findings(findings: list[Finding]) -> list[Finding]:
+    """Apply the one global presentation bound without losing blocking state.
+
+    Blocking findings are always preferred over warnings; if even the blockers
+    cannot all be shown, the retained truncation marker is itself a blocker, so
+    the file stays blocked.  The selected findings keep their incoming order
+    and the marker is appended, which keeps re-derivation deterministic.
+    """
+
+    if len(findings) <= MAX_PRESENTED_FINDINGS:
+        return findings
+    blockers = [
+        index
+        for index, finding in enumerate(findings)
+        if finding.severity == "blocker"
+    ]
+    others = [
+        index
+        for index, finding in enumerate(findings)
+        if finding.severity != "blocker"
+    ]
+    if len(blockers) >= MAX_PRESENTED_FINDINGS:
+        keep = set(blockers[: MAX_PRESENTED_FINDINGS - 1])
+        marker = Finding(
+            "FINDINGS_TRUNCATED",
+            "blocker",
+            f"{len(blockers) - len(keep)} additional blocker findings were "
+            "suppressed at the global presentation limit; the file is blocked",
+        )
+    else:
+        room = MAX_PRESENTED_FINDINGS - len(blockers) - 1
+        suppressed = len(others) - room
+        if suppressed <= 0:  # defensive: only reachable if the bound shrinks
+            return findings
+        keep = set(blockers) | set(others[:room])
+        marker = Finding(
+            "FINDINGS_TRUNCATED",
+            "warning",
+            f"{suppressed} additional findings were suppressed at the global "
+            "presentation limit",
+        )
+    bounded = [
+        finding for index, finding in enumerate(findings) if index in keep
+    ]
+    bounded.append(marker)
+    return bounded
+
+
 def analyze_bytes(
     data: bytes,
     charset: str,
@@ -1714,6 +1787,7 @@ def analyze_bytes(
             finding.decoded_text or "",
         )
     )
+    findings = _bound_findings(findings)
     blocked = any(finding.severity == "blocker" for finding in findings) or (
         scanner is not None and scanner.blocker_count > 0
     )
@@ -2240,7 +2314,7 @@ def _validate_plan_inner(plan: dict) -> None:
                 )
         if not isinstance(entry["findings"], list):
             raise ToolError("PLAN_INVALID", "invalid findings list", {"path": relative})
-        finding_limit = MAX_FINDINGS * 2 + 16
+        finding_limit = MAX_PRESENTED_FINDINGS
         if len(entry["findings"]) > finding_limit:
             raise ToolError(
                 "BOUNDS_EXCEEDED",

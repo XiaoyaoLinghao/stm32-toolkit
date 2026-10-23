@@ -21,10 +21,14 @@ route for the Toolkit encoding blocker; it is not part of migration apply.
 - Block a legacy file that contains non-ASCII bytes in code, strings,
   character literals, or preprocessing header names. Do not change runtime
   literal bytes to make a conversion appear to work.
-- Block or reject rather than guess: invalid input bytes, private-use or
-  control code points, unterminated constructs, C++ raw strings, trigraph
-  `??/`, a backslash followed by horizontal whitespace before a newline, and a
-  DBCS character whose bytes end in `0x5C` at a physical line end.
+- Block or reject rather than guess: invalid input bytes, unterminated
+  constructs, C++ raw strings, trigraph `??/`, a backslash followed by
+  horizontal whitespace before a newline, and a DBCS character whose bytes end
+  in `0x5C` at a physical line end.
+- Private-use, C1-control, replacement, and noncharacter code points block a
+  legacy conversion. In an already-UTF-8 file the bytes are unchanged, so the
+  same code points are review warnings instead; review the decoded text before
+  accepting it.
 - Assembly, UTF-16/UTF-32, binaries, and arbitrary text formats are outside
   this helper. Leave them untouched and report the diagnostic.
 - The helper is not a C compiler. It does not promise generic charset support,
@@ -32,22 +36,26 @@ route for the Toolkit encoding blocker; it is not part of migration apply.
 
 ## Run the helper
 
-Run the self-contained standard-library helper from this skill directory with
-a verified CPython 3.12 interpreter. In the Toolkit repository the helper is
-`skills/normalize-source-comments/scripts/normalize_comments.py`. After the
-approved personal-skill installation, use
-`C:/Users/zhy76/.claude/skills/normalize-source-comments/scripts/normalize_comments.py`
-for Claude Code or
-`C:/Users/zhy76/.agents/skills/normalize-source-comments/scripts/normalize_comments.py`
-for Codex. A client that copied only this skill can use
-`scripts/normalize_comments.py` directly. Do not invent an MCP normalization
-tool or call `pyocd`, a compiler, or a migration apply to perform the copy.
-
-Set the helper path once for the commands below to the actual installed path:
+Run the self-contained standard-library helper from the absolute directory that
+contains the loaded `SKILL.md`, not from the current working directory. Set both
+paths explicitly once and check that the helper is present:
 
 ```powershell
-$Normalizer = 'skills/normalize-source-comments/scripts/normalize_comments.py'
+# The absolute directory holding the loaded SKILL.md, exactly as loaded:
+#   repository checkout:  <repo>/skills/normalize-source-comments
+#   personal install:     <personal-skills-dir>/normalize-source-comments
+# Do not substitute a global path when this skill was loaded from a repository.
+$SkillDir = '<absolute-path-of-the-loaded-skill-directory>'
+$Normalizer = Join-Path $SkillDir 'scripts/normalize_comments.py'
+Test-Path $Normalizer
 ```
+
+Use a verified CPython 3.12 interpreter. Do not invent an MCP normalization tool,
+and do not call `pyocd`, a compiler, or a migration apply to perform the copy. A
+client that cannot load this file (for example an MCP-only client) must read the
+same instructions in the skill directory — this `SKILL.md` and
+`references/lexical-and-plan-contract.md` — and invoke the helper directly
+rather than expecting a normalization tool from the Toolkit.
 
 ### 1. Preview read-only
 
@@ -61,8 +69,10 @@ python $Normalizer preview --project-root 'C:\work\robot' --preview-dir 'D:\revi
 `preview` reads the project but writes only `plan.json` and `preview.md` under
 the external preview directory. It returns JSON with a canonical `planId` and
 per-file `status`, `blockers`, and `warnings`. Exit code `0` means every file
-is ready; exit code `2` means the preview completed but at least one file is
-blocked.
+is ready. Exit code `2` means either the preview completed with at least one
+blocked file (`status: blocked`) or the run failed operationally
+(`status: failed`, for example an invalid selection, a preview collision, or an
+I/O error). Read `status` and `code` in the JSON before deciding what happened.
 
 ### 2. Review the plan
 
@@ -88,6 +98,14 @@ exist and must be outside the source root:
 python $Normalizer copy --project-root 'C:\work\robot' --plan 'D:\review\robot-comments-1\plan.json' --plan-id '<exact 64-character planId>' --output-dir 'D:\review\robot-comments-1-copy'
 ```
 
+Run `copy` only when the user's request already authorizes producing reviewed
+converted copies. Reuse that existing authorization; do not introduce a
+mandatory extra approval stop for a copy the user already authorized, and do
+not ask again merely because the plan is ready. A preview, plan fields, or a
+`planId` on its own never authorizes the copy or any edit to the originals, and
+the helper has no `authorized` flag. Always pass the exact `planId` you
+reviewed, never one you did not review.
+
 `copy` re-reads every input, re-derives the conversion, verifies the plan ID
 and hashes, refuses changed inputs or tampered plans, and writes only the
 selected relative files. It never overwrites existing output or originals.
@@ -104,13 +122,17 @@ buildable project.
 If the project owner chooses to prepare a separate project copy, do that as a
 separate explicit action: copy the project, replace only the selected files
 with the reviewed converted copies, and point the Toolkit at that copy. Then
-use the ordinary read-only migration sequence:
+rerun the ordinary read-only migration sequence on the prepared copy:
 
 ```text
 stm32_project_context()
 stm32_keil_inspect(uvprojx='<same relative .uvprojx>', targetName='<exact target>')
 stm32_keil_preflight(uvprojx='<same relative .uvprojx>', targetName='<exact target>')
 ```
+
+Rerun `stm32_keil_inspect` and then `stm32_keil_preflight` after the source
+remediation; results from the original project do not carry over. Any remaining
+blocker must be reported and addressed before a conversion plan is requested.
 
 Do not run migration apply, `git init`/commit, a build, or a flash from this
 skill. If all encoding blockers disappear, startup, scoped compiler options,
