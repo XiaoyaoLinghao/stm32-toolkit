@@ -70,3 +70,5 @@ The tracked implementation report records the accepted base and the CodeHead bef
 - `REWRITE_REQUIRED`: architecture, safety, scope, or coverage requires a replacement implementation.
 
 Every issue cites path, observed behavior, expected behavior, evidence, and verification command. GitHub approval, merge, close, push, tag, or deletion is never implicit.
+
+For delegated Windows calls, the coordinator supplies already verified interpreter/compiler paths and a short list of permitted command forms. The implementer must use those forms directly; do not probe known paths with compound PowerShell pipelines or translate a denied operation into Python, another shell, or another tool. On the first denied/absent command, stop that operation and return its exact command and reason for coordinator repair of the invocation. An allowed Python tool is not permission to retry a denied shell operation. This rule preserves the existing permission boundary and does not change global permission settings.
