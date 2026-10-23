@@ -5,8 +5,8 @@
 - Repository: `C:/Users/zhy76/.codex/worktrees/build-snapshot/STM32-Toolkit`
 - Branch: `codex/build-snapshot`
 - Accepted base: `690f579d4efe1d2616e0c1d9289263c24069134a`
-- Task starting head (approved specification/plan only): `2f594a71`
-- Implementation CodeHead before this report commit: `a3d20144164c4d29f25c9d5193724ad124db7779`
+- Task starting head (approved specification/plan only): `2f594a71`, plus the primary's specification amendment `7f5687f59ee8710533e1f1408fe57c44e01349e3`
+- Implementation CodeHead before this report commit: `61323e58982af27a3784855184cb0c13470f3fa0`
 - Reviewer: primary conversation agent (independent). This report is not acceptance and does not self-approve the diff.
 - Authority used: local implementation, focused offline tests, local commits, and the primary-authorized restoration attempt of one existing byte fixture. No push, PR, merge, tag, release, version bump, packaging, installation, deployment, provider change, real probe enumeration, or hardware operation was performed.
 
@@ -21,9 +21,9 @@
 7. Schema-1 failure records restore their established legacy bytes (`gitHead: null`, `gitDirty: false`) regardless of collected Git details. Schema-2 unavailable-Git failures use null/null with bounded diagnostics at every post-collection failure point, including pre-build snapshot and drift failures.
 8. Updated MCP build/flash and firmware-consuming tool descriptions, both affected skills, `docs/user-guide.md`, and `docs/architecture.md` with the exact fields, no-fake-hash rule, build-only scope, and structured capability blocker.
 
-## Changed files (implementation commit `a3d20144`)
+## Changed files (implementation commits `a3d20144` and `61323e58`)
 
-Modified:
+Modified in `a3d20144`:
 
 - `docs/architecture.md`
 - `docs/user-guide.md`
@@ -45,7 +45,15 @@ Added:
 
 - `tools/stm32-toolkit/tests/test_build_snapshot.py`
 
-No Monitor/UI, version, packaging, installer, migration-write, acceptance-wire, or unrelated product files changed. No test was skipped or weakened to hide a failure.
+Modified in amendment `61323e58`:
+
+- `.gitattributes` (one per-path `eol=lf` rule for the existing LF fixture)
+- `docs/architecture.md`
+- `docs/user-guide.md`
+- `skills/build-firmware/SKILL.md`
+- `tools/stm32-toolkit/src/stm32_toolkit/mcp_server.py`
+
+The existing `tools/stm32-toolkit/tests/fixtures/build-nobits/template-rendered.ld` was materialized from its exact committed Git blob (1044 LF bytes) via the amendment-authorized binary write; its content is identical to HEAD, so it is not part of any commit diff. No Monitor/UI, version, packaging, installer, migration-write, acceptance-wire, or unrelated product files changed. No test was skipped or weakened to hide a failure.
 
 ## Test evidence
 
@@ -56,10 +64,10 @@ All test processes were offline and used the dedicated venv (`python` on PATH), 
 | New snapshot suite (final) | `python -m pytest tools/stm32-toolkit/tests/test_build_snapshot.py --basetemp=D:/codex-tmp/kg23/bt-snap-r2 -o cache_dir=D:/codex-tmp/kg23/cache-snap-r2 -q` | 42 passed |
 | Snapshot + build runner (final corrections A/B and publication order) | `python -m pytest tools/stm32-toolkit/tests/test_build_snapshot.py tools/stm32-toolkit/tests/test_build_runner.py --basetemp=D:/codex-tmp/kg23/bt-corr2-2a -o cache_dir=D:/codex-tmp/kg23/cache-corr2-2a -q` | **146 passed** |
 | Context + flash + debug binding | `python -m pytest tools/stm32-toolkit/tests/test_context.py tools/stm32-toolkit/tests/test_flash.py tools/stm32-toolkit/tests/test_debug_firmware.py --basetemp=D:/codex-tmp/kg23/bt-corr2-2 -o cache_dir=D:/codex-tmp/kg23/cache-corr2-2 -q` | **236 passed** |
-| MCP migration/build, MCP server, plugin layout, public inventory | `python -m pytest tools/stm32-toolkit/tests/test_mcp_migration_build.py tools/stm32-toolkit/tests/test_mcp_server.py tools/stm32-toolkit/tests/test_plugin_layout.py tools/stm32-toolkit/tests/test_public_inventory.py --basetemp=D:/codex-tmp/kg23/bt-adapt-1 -o cache_dir=D:/codex-tmp/kg23/cache-adapt-1 -q` | 61 passed, 1 dependency warning |
+| MCP migration/build, MCP server, plugin layout, public inventory (final, after amendment guidance) | `python -m pytest tools/stm32-toolkit/tests/test_mcp_migration_build.py tools/stm32-toolkit/tests/test_mcp_server.py tools/stm32-toolkit/tests/test_plugin_layout.py tools/stm32-toolkit/tests/test_public_inventory.py --basetemp=D:/codex-tmp/kg23/bt-adapt-final -o cache_dir=D:/codex-tmp/kg23/cache-adapt-final -q` | 61 passed, 1 dependency warning |
 | CLI, workflows, hardware workflows, MCP hardware, debug read | `python -m pytest tools/stm32-toolkit/tests/test_cli.py tools/stm32-toolkit/tests/test_workflows.py tools/stm32-toolkit/tests/test_hardware_workflows.py tools/stm32-toolkit/tests/test_mcp_hardware.py tools/stm32-toolkit/tests/test_debug_read.py --basetemp=D:/codex-tmp/kg23/bt-adapt-2 -o cache_dir=D:/codex-tmp/kg23/cache-adapt-2 -q` | 360 passed, 2 warnings |
-| Firmware identity suite (environment test excluded only from this command) | `python -m pytest tools/stm32-toolkit/tests/test_firmware_identity.py -k "not real_linked_toolkit_template_stack_symbols" --basetemp=D:/codex-tmp/kg23/bt-ident-corr2 -o cache_dir=D:/codex-tmp/kg23/cache-ident-corr2 -q` | 100 passed |
-| Formerly failing fixture test (run alone, not skipped) | `python -m pytest tools/stm32-toolkit/tests/test_firmware_identity.py::test_real_linked_toolkit_template_stack_symbols --basetemp=D:/codex-tmp/kg23/bt-fixture-2 -o cache_dir=D:/codex-tmp/kg23/cache-fixture-2 -q` | **1 failed: ENVIRONMENT** (checkout CRLF fixture; see below) |
+| Formerly failing fixture test (run alone, not skipped) | `python -m pytest tools/stm32-toolkit/tests/test_firmware_identity.py::test_real_linked_toolkit_template_stack_symbols --basetemp=D:/codex-tmp/kg23/bt-fixture-3 -o cache_dir=D:/codex-tmp/kg23/cache-fixture-3 -q` | **1 passed** |
+| Firmware identity suite, full (including the restored fixture test) | `python -m pytest tools/stm32-toolkit/tests/test_firmware_identity.py --basetemp=D:/codex-tmp/kg23/bt-ident-final -o cache_dir=D:/codex-tmp/kg23/cache-ident-final -q` | **101 passed** |
 | Whitespace | `git diff --check` / `git diff --cached --check` | No errors; only Git autocrlf informational notices |
 
 The 146 combined result includes the final guard, legacy-failure, and publication-order changes; earlier passing runs (`bt-snap-r1`, `bt-snap-r2`, `bt-hw-r1`, `bt-corr2-1`, `bt-corr2-2`) are retained in the stream transcript and are not re-run solely for logs.
@@ -75,13 +83,14 @@ The 146 combined result includes the final guard, legacy-failure, and publicatio
 7. **Round-1 finding 5 (bounded collector rule).** Availability rules are limited to the two fixed public phases; an arbitrary detail string cannot enter the identity. Collector and build-path regressions assert the bound.
 8. **Earlier test-author error.** The first cross-mode reuse regression leaked `FAKE_CMAKE_NO_OUTPUT` into the second fixture build, causing a test setup failure. The test now clears that variable; no product behavior changed.
 9. **Approved Git-failure behavior change.** Four legacy `test_git_invalid_*` build-runner tests that expected `BUILD_GIT_INVALID` now assert the approved snapshot success and bounded identity; the strict `git_evidence` rejection remains separately tested.
-10. **Fixture byte failure (ENVIRONMENT, unresolved).** The working `tools/stm32-toolkit/tests/fixtures/build-nobits/template-rendered.ld` is 1118 bytes with 74 CRLF pairs while its committed HEAD blob is 1044 bytes with none (`git ls-files --eol`: `i/lf w/crlf attr/(none)`; `git diff` clean). Before the approved action, the fixture diff was verified clean. The explicitly authorized command `git -c core.autocrlf=false checkout-index -f -- tools/stm32-toolkit/tests/fixtures/build-nobits/template-rendered.ld` executed with exit 0, but the raw bytes were unchanged; the required post-check (`raw bytes == git show HEAD:<path>`) did not pass. Per the correction boundary, no alternate writer or loop was used. The single fixture test therefore still fails at the pre-existing byte comparison between generated LF output and the CRLF working fixture. This is classified ENVIRONMENT, not a product defect; the earlier claim that restoration had succeeded was inaccurate and is retained here as such.
-11. **Earlier tool/environment notes.** `git restore --source=HEAD` was not permitted to me as a single validated PowerShell command, and the approved `checkout-index` action did not change bytes. No global or repository Git configuration was changed.
+10. **Fixture byte failure (ENVIRONMENT, resolved by the approved amendment).** The working `tools/stm32-toolkit/tests/fixtures/build-nobits/template-rendered.ld` was 1118 bytes with 74 CRLF pairs while its committed HEAD blob is 1044 bytes with none (`git ls-files --eol` then reported `i/lf w/crlf attr/(none)`). Before the first approved action, the fixture diff was verified clean. `git -c core.autocrlf=false checkout-index -f -- <fixture>` executed with exit 0 but did not rewrite the clean-filtered file, and the post-check (`raw bytes == git show HEAD:<path>`) failed. Per the correction boundary, no alternate writer or loop was used, and the earlier claim that restoration had succeeded was reported as inaccurate. The primary's 2026-10-23 specification amendment then authorized one per-path `.gitattributes` `text eol=lf` rule plus a binary write of the exact committed blob. Both were applied: the raw file is now 1044 LF bytes, byte-equal to `git show HEAD:<path>`, with no fixture diff; `git ls-files --eol` reports `i/lf w/lf attr/text eol=lf`. No assertion, expected content, global Git setting, or test skip changed. The formerly failing single test now passes, and the full identity suite passes 101 tests.
+11. **Earlier tool/environment notes.** `git restore --source=HEAD` was not permitted to me as a single validated PowerShell command, and the first approved `checkout-index` action did not change bytes. No global or repository Git configuration was changed.
+12. **Amendment guidance corrections.** Public guidance now names the actual `toolkitVersion` field, states that shared firmware admission returns `FIRMWARE_PROVENANCE_UNSUPPORTED` while wrappers may map it (acceptance recovery to `ACCEPTANCE_ATTEMPT_OUTPUT_INVALID`), and describes legacy capability booleans as conservative compatibility fields whose detailed status distinguishes unprobed hardware from a known snapshot-provenance blocker.
 
 ## Limitations and pending review
 
 - This report is **not** acceptance. The primary owns independent complete-diff review and the final verdict after the report commit.
 - No real compiler smoke, probe enumeration, attach, flash, reset, halt, IDE/VS Code session, physical target, packaging, installation, deployment, version bump, or remote publication was performed.
-- The fixture byte mismatch remains an environment-level failing test and is not deferred as product work; a reviewer with the correct checkout environment must confirm it. The rest of the identity suite passes, but the full identity suite was not reported as fully passing.
+- The fixture byte mismatch was an environment-level checkout problem, now resolved by the primary-approved per-path `eol=lf` rule and exact-blob materialization. The fixture content is unchanged from HEAD; the full identity suite passes.
 - Schema-2 snapshot provenance intentionally remains build-only. Flash, debug, Target tests, Monitor, and acceptance still require Git-shaped provenance; broader hardware protocol versioning is a separate future slice.
 - Existing broader release matrices, browser/UI checks, and hardware qualification remain out of scope and were not run.
