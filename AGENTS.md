@@ -2,9 +2,13 @@
 
 ## Model ownership and delegation
 
-Git commits are the only durable source of truth. The primary conversation agent, regardless of its model, owns project-state reconstruction, product architecture, specifications, implementation plans, task boundaries, risk decisions, complete-diff review, and acceptance. It directly owns all task orchestration and subagent dispatch; no particular model is required as an intermediary. Implementation subagents own product implementation and implementation tests.
+Git commits are the only durable source of truth. The primary conversation agent, regardless of its model, owns project-state reconstruction, product architecture, specifications, implementation plans, task boundaries, risk decisions, complete-diff review, and acceptance. It directly owns all task orchestration and Claude Code CLI dispatch. Claude Code implementation agents own product implementation and implementation tests.
 
-All subagents, including implementation, exploration, verification, and independent review, must use model `gpt-6-sol` and reasoning effort `max`, as requested by the user on 2026-10-08. The primary conversation agent must not implement product code, and an implementation agent must not approve its own diff. Any ownership exception requires explicit user authorization naming the files and behavior, and expires after verification.
+The user's global preference from 2026-10-23 replaces the 2026-10-08 Codex subagent model requirement: delegated implementation, code/test changes, fixes, and related delegated exploration or verification run through the local `claude` (Claude Code CLI), using the user's existing Claude configuration. Do not launch Codex-hosted subagents for this work or silently fall back to them when Claude is unavailable. The primary conversation agent must not implement product code and independently reviews Claude's complete diff; an implementation agent must not approve its own diff. Any ownership exception requires explicit user authorization naming the files and behavior, and expires after verification. Primary planning and review still consume the current Codex conversation's usage.
+
+Pass the accepted base, approved specification/plan, allowed scope, applicable `AGENTS.md` instructions, required checks, and action boundaries explicitly to each Claude CLI task. Preserve permission controls and credentials; do not enable permission-bypass flags. Record the returned source state, full diff, commands/results, and remaining limitations. If the CLI or authentication is unavailable, report the problem rather than switching providers.
+
+The user explicitly confirmed on 2026-10-23 that the CLI's current model configuration should be retained after it reported `deepseek-v4.1-flash[1m]`. Claude Code names the execution route; do not force an Anthropic model or claim that the configured provider's output is from an Anthropic Claude model.
 
 The user authorizes every push, PR mutation, merge, closure, tag, and remote branch deletion. “Continue,” urgency, defect size, prior approval, or model availability does not transfer implementation ownership or remote authority.
 
@@ -32,8 +36,8 @@ Never accept, repeat, retain, or commit plaintext credentials. Commit identity i
 
 1. The primary conversation agent reconstructs the ownership ledger and freezes one self-contained vertical-slice specification and implementation plan at a full accepted-base SHA, with public behavior, boundaries, risks, and proportionate evidence requirements.
 2. After the governing specification is approved, the primary agent writes the bounded slice plan. The user has waived a separate approval stop for later written implementation plans; this does not waive product-scope, remote, release, installation, or hardware authorization.
-3. The primary agent creates one `gpt-6-sol` implementation subagent with reasoning effort `max` for that bounded slice.
-4. The implementation agent implements and runs slice-level tests in one clean isolated worktree. It does not push, create or mutate a PR, merge, close, tag, or delete a remote branch without separate user authorization.
+3. The primary agent dispatches the bounded slice directly through the local Claude Code CLI, with explicit repository instructions and no Codex-hosted implementation subagent.
+4. The Claude Code implementation agent implements and runs slice-level tests in one clean isolated worktree. It does not push, create or mutate a PR, merge, close, tag, or delete a remote branch without separate user authorization.
 5. The primary conversation agent independently reviews the complete accepted-base-to-CodeHead diff in a clean worktree, runs only the applicable slice or integration verification, reconciles the evidence, and records one verdict.
 6. Correctable findings remain on the same slice branch and return to the implementation agent. If the same issue does not converge after two rounds, stop local patching and return to the interface or integration design.
 7. Release-level matrices, packaging, hardware, and evidence archival run only at the integration or release layer unless a written risk trigger explicitly moves the affected check forward.
