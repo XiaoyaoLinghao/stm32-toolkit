@@ -2422,8 +2422,9 @@ def create_server(
         with a committed HEAD the identity is schema 1; when Git is missing,
         unborn or unreadable the identity is schema 2 with
         sourceBaseline="input-snapshot-v1", bounded gitEvidence
-        {status:"unavailable", code:"BUILD_GIT_INVALID", rule:"head|status"},
-        and null gitHead/gitDirty.  Never treat null Git fields as clean and
+        {status:"unavailable", code:"BUILD_GIT_INVALID", rule:"head"},
+        and null gitHead/gitDirty.  The gitEvidence rule is either "head" or
+        "status".  Never treat null Git fields as clean and
         never fabricate a commit.  Schema-2 evidence is build-only: flash,
         debug, Target tests, Monitor and acceptance still require Git-shaped
         provenance, and shared firmware admission returns
