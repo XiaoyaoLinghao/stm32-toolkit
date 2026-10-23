@@ -32,6 +32,20 @@ def _error_evidence(error: MigrationPlanError) -> dict[str, object]:
     return evidence
 
 
+def _git_error_evidence(error: BaseException, rule: str) -> dict[str, object]:
+    """Map stable Git errors and OS launch/read failures to safe metadata.
+
+    ``git_guard`` normally raises ``MigrationPlanError``, but an OS policy can
+    deny launching or reading Git and raise ``OSError``/``PermissionError``.
+    Neither exception text nor host paths may enter the public result.
+    """
+    if isinstance(error, MigrationPlanError):
+        evidence = _error_evidence(error)
+        evidence.setdefault("rule", rule)
+        return evidence
+    return {"code": "MIGRATION_GIT_UNAVAILABLE", "rule": rule}
+
+
 def _head_not_evaluated(reason: str) -> dict[str, object]:
     return {
         "available": False,
@@ -65,11 +79,11 @@ def _git_state(canonical: Path) -> dict[str, object]:
     }
     try:
         toplevel = git_guard.git_toplevel(canonical)
-    except MigrationPlanError as error:
+    except (MigrationPlanError, OSError) as error:
         state["repository"] = {
             "available": False,
             "projectRootIsToplevel": None,
-            "error": _error_evidence(error),
+            "error": _git_error_evidence(error, "repository"),
         }
         state["head"] = _head_not_evaluated(
             "HEAD is not inspected because no readable Git repository is available."
@@ -96,13 +110,13 @@ def _git_state(canonical: Path) -> dict[str, object]:
 
     try:
         head = git_guard.git_head(canonical)
-    except MigrationPlanError as error:
+    except (MigrationPlanError, OSError) as error:
         state["head"] = {
             "available": False,
             "commit": None,
             "status": "unavailable",
             "reason": "No committed HEAD is available for the Git-bound plan.",
-            "error": _error_evidence(error),
+            "error": _git_error_evidence(error, "head"),
         }
     else:
         state["head"] = {
@@ -116,12 +130,12 @@ def _git_state(canonical: Path) -> dict[str, object]:
     try:
         status = git_guard.porcelain_status(canonical)
         entries = git_guard.dirty_paths(status)
-    except MigrationPlanError as error:
+    except (MigrationPlanError, OSError) as error:
         state["worktree"] = {
             "status": "unavailable",
             "dirtyPaths": [],
             "reason": "Git worktree status is unavailable.",
-            "error": _error_evidence(error),
+            "error": _git_error_evidence(error, "status"),
         }
     else:
         state["worktree"] = {

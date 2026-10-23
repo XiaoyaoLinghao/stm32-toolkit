@@ -385,6 +385,146 @@ def test_preflight_missing_git_executable_is_reported_not_raised(
     _assert_no_applicable_plan(data)
 
 
+_GIT_PHASE_ATTRS = {
+    "repository": "git_toplevel",
+    "head": "git_head",
+    "status": "porcelain_status",
+}
+_SENSITIVE_GIT_ERROR = "denied-sensitive-token C:/private/secret"
+
+
+@pytest.mark.parametrize("phase", ["repository", "head", "status"])
+@pytest.mark.parametrize(
+    "error_type", [PermissionError, OSError], ids=["permission-error", "os-error"]
+)
+def test_preflight_public_workflow_survives_os_level_git_failures(
+    tmp_path: Path,
+    monkeypatch,
+    phase: str,
+    error_type: type[OSError],
+) -> None:
+    root = standard_repo(tmp_path)
+    before = snapshot_tree(root)
+
+    def failing_git(*_args: object, **_kwargs: object) -> object:
+        raise error_type(_SENSITIVE_GIT_ERROR)
+
+    monkeypatch.setattr(
+        preflight_mod.git_guard, _GIT_PHASE_ATTRS[phase], failing_git
+    )
+    result = preflight_keil_workflow(
+        root, uvprojx="app.uvprojx", target_name="Legacy"
+    )
+
+    assert result.ok is True
+    payload = result.to_dict()
+    data = payload["data"]
+    assert data["analysis"]["complete"] is True
+    assert data["analysis"]["blockers"] == []
+    git = data["git"]
+    expected_error = {"code": "MIGRATION_GIT_UNAVAILABLE", "rule": phase}
+    if phase == "repository":
+        assert git["repository"] == {
+            "available": False,
+            "projectRootIsToplevel": None,
+            "error": expected_error,
+        }
+        assert git["head"]["status"] == "not-evaluated"
+        assert git["worktree"]["status"] == "not-evaluated"
+    elif phase == "head":
+        assert git["repository"]["available"] is True
+        assert git["repository"]["projectRootIsToplevel"] is True
+        assert git["head"]["available"] is False
+        assert git["head"]["status"] == "unavailable"
+        assert git["head"]["error"] == expected_error
+        assert git["worktree"]["status"] == "clean"
+    else:
+        assert git["head"]["available"] is True
+        assert git["worktree"]["status"] == "unavailable"
+        assert git["worktree"]["error"] == expected_error
+    assert data["planReadiness"]["status"] == "blocked"
+    assert data["applyReadiness"]["ready"] is False
+    assert data["applyReadiness"]["status"] == "requires-reviewed-plan"
+    _assert_no_applicable_plan(data)
+    serialized = json.dumps(payload)
+    assert _SENSITIVE_GIT_ERROR not in serialized
+    assert "C:/private/secret" not in serialized
+    assert snapshot_tree(root) == before
+
+
+def test_preflight_git_status_os_error_preserves_technical_blockers(
+    tmp_path: Path, monkeypatch
+) -> None:
+    root = build_repo(
+        tmp_path,
+        files={"Main/main.c": MAIN_C, "Common/common.c": COMMON_C},
+        uvprojx_kwargs={"scatter": "link.sct"},
+    )
+    before = snapshot_tree(root)
+
+    def failing_status(_root: Path) -> bytes:
+        raise PermissionError(_SENSITIVE_GIT_ERROR)
+
+    monkeypatch.setattr(
+        preflight_mod.git_guard, "porcelain_status", failing_status
+    )
+    result = preflight_keil_workflow(
+        root, uvprojx="app.uvprojx", target_name="Legacy"
+    )
+
+    assert result.ok is True
+    payload = result.to_dict()
+    data = payload["data"]
+    assert data["analysis"]["complete"] is True
+    codes = {blocker["code"] for blocker in data["analysis"]["blockers"]}
+    assert "ARMCC_LINKER_CONFIGURATION_UNSUPPORTED" in codes
+    assert data["git"]["worktree"] == {
+        "status": "unavailable",
+        "dirtyPaths": [],
+        "reason": "Git worktree status is unavailable.",
+        "error": {"code": "MIGRATION_GIT_UNAVAILABLE", "rule": "status"},
+    }
+    assert data["planReadiness"]["status"] == "blocked"
+    assert data["applyReadiness"]["ready"] is False
+    _assert_no_applicable_plan(data)
+    assert _SENSITIVE_GIT_ERROR not in json.dumps(payload)
+    assert snapshot_tree(root) == before
+
+
+def test_preflight_git_os_error_does_not_mask_technical_input_failure(
+    tmp_path: Path, monkeypatch
+) -> None:
+    root = standard_repo(tmp_path)
+    inspection = fixture_inspection(root)
+    (root / "Main" / "main.c").write_bytes(
+        MAIN_C.replace("return 0", "return 1").encode("utf-8")
+    )
+
+    def failing_status(_root: Path) -> bytes:
+        raise PermissionError(_SENSITIVE_GIT_ERROR)
+
+    monkeypatch.setattr(
+        preflight_mod.git_guard, "porcelain_status", failing_status
+    )
+    with pytest.raises(MigrationPlanError) as error:
+        preflight_keil_conversion(root, inspection)
+    assert error.value.code == "MIGRATION_INSPECTION_CHANGED"
+
+
+def test_preflight_git_os_error_does_not_swallow_base_exception(
+    tmp_path: Path, monkeypatch
+) -> None:
+    root = standard_repo(tmp_path)
+    inspection = fixture_inspection(root)
+
+    def interrupted(_root: Path) -> Path:
+        raise KeyboardInterrupt("operator stop")
+
+    monkeypatch.setattr(preflight_mod.git_guard, "git_toplevel", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        preflight_keil_conversion(root, inspection)
+
+
 def test_preflight_unreadable_head_and_status_do_not_assert_root_causes(
     tmp_path: Path, monkeypatch
 ) -> None:
