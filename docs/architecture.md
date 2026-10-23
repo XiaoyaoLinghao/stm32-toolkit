@@ -47,8 +47,11 @@ prerequisites stay separate, and preflight never creates a plan ID or mutates st
 unborn HEAD, and dirty work are diagnosable but remain explicit project-owner decisions before a
 Git-bound plan. Only implemented compiler/source rules are supported. Non-UTF-8 sources and
 unsupported ARMCC assembly require explicit project-owned adaptation; the Toolkit does not guess
-encoding, silently transcode, or invent MCU startup/vector initialization. Keep compiler migration
-separate from SPL/HAL conversion.
+encoding, silently transcode, or invent MCU startup/vector initialization. A separate
+`normalize-source-comments` companion skill may produce reviewed comment-only UTF-8 file copies in a
+new external directory with explicit per-file charsets; it is not part of migration apply, never
+edits originals, and does not remove startup, option, scatter/memory, Git, or baseline blockers.
+Keep compiler migration separate from SPL/HAL conversion.
 
 Generation retains prior ownership and hash checks. Existing user files never become writable merely
 because they occupy a generator target or have identical bytes. The implemented v1.0.1

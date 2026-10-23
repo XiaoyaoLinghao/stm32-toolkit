@@ -2351,12 +2351,16 @@ def create_server(
         applyReadiness, which stays ready=false with
         status=requires-reviewed-plan.  Preflight returns no applicable plan
         ID, writes nothing, does not transcode sources, replace startup code,
-        or run git init, and never authorizes apply.  When analysis is
-        complete and no blockers remain, establish any Git prerequisite as an
-        explicit project-owner decision, then call stm32_keil_convert with no
-        planId to obtain a PLAN response.  Read its data.plan_id and
-        data.patches[].unified_diff; only after review and explicit user
-        authorization pass that exact value as planId with authorized=true.
+        or run git init, and never authorizes apply.  A source-encoding
+        blocker may be prepared with the separate normalize-source-comments
+        companion skill, which writes only reviewed copies outside the
+        project; preflight itself still writes nothing and does not transcode.
+        When analysis is complete and no blockers remain, establish any Git
+        prerequisite as an explicit project-owner decision, then call
+        stm32_keil_convert with no planId to obtain a PLAN response.  Read
+        its data.plan_id and data.patches[].unified_diff; only after review
+        and explicit user authorization pass that exact value as planId with
+        authorized=true.
         """
         return await tool_keil_preflight_for_request(
             runtime, ctx, uvprojx, targetName

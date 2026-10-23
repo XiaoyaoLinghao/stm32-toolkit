@@ -90,7 +90,7 @@ MCP 客户端即使从不加载 `SKILL.md`，也可按工具描述和真实返�
 | # | 看见什么 | 本版行为与处置 |
 | --- | --- | --- |
 | 1 | 子目录 `.uvprojx` 报 `KEIL_PROJECT_NOT_FOUND` | v1.0.0 可用 `--uvprojx Project/xxx.uvprojx`（可移植正斜杠）指明根内路径；自 v1.0.1 起在工程根内安全递归发现，多候选要求显式选择。目录不可枚举返回发现不完整，不能冒充“无工程”。 |
-| 2 | `ARMCC_SOURCE_ENCODING_UNSUPPORTED` | 先确认原始编码与版本控制状态，工程负责人决定转换副本/源码；Toolkit 不猜 GB2312/GB18030，也不自动转码。字节保真是项目责任。 |
+| 2 | `ARMCC_SOURCE_ENCODING_UNSUPPORTED` | 先确认原始编码与版本控制状态，工程负责人决定转换副本/源码；Toolkit 不猜 GB2312/GB18030，也不自动转码。需要 UTF-8 副本时走独立 `normalize-source-comments` 技能：逐文件显式声明编码，默认只读预览，再按已审查 plan 复制到项目外新目录；它只转换注释、绝不改写原工程，也不解决 startup、scoped option、scatter/memory、Git/apply、baseline 等其它 blocker。字节保真仍是项目责任。 |
 | 3 | `ARMCC_ASSEMBLY_UNSUPPORTED` | 逐个将 ARMCC 汇编适配为 GNU 汇编或等价 C，并核对指令、段、符号和调用约定；若文件是 startup，还须核对向量表、初始 SP 和运行时初始化。不得强行应用旧语法，也不能从旧产物推断适配已正确。 |
 | 4, 17, 22 | configure 遇 `UNOWNED_COLLISION` 或编辑器设置已存在 | 核对目标路径与 managed manifest。构建必需文件冲突需工程方决定所有权；自 v1.0.1 起只保留上述五个未托管普通编辑器文件，不 merge/adopt。 |
 | 9 | Flash used 似乎含 `.bss`/栈 | 核对原始 ELF/MAP。候选按有内容段的 LMA 计加载容量，NOBITS 只计运行地址预留；没有原始 ELF/MAP 不可宣称复现报告数字。 |

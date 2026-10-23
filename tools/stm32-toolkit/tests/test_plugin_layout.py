@@ -316,7 +316,7 @@ def test_exactly_eight_release_skills_are_discovered():
         path.parent.name
         for path in (REPO_ROOT / "skills").glob("*/SKILL.md")
     }
-    assert discovered == {
+    release_workflows = {
         "setup-stm32-env",
         "migrate-keil",
         "configure-stm32-project",
@@ -326,6 +326,11 @@ def test_exactly_eight_release_skills_are_discovered():
         "read-var",
         "stm32-monitor",
     }
+    assert release_workflows <= discovered
+    # The explicit comment-normalization helper is a companion skill, not a
+    # ninth release workflow; this slice does not change the closed release
+    # public inventory or the release packager.
+    assert discovered - release_workflows == {"normalize-source-comments"}
 
 
 def test_monitor_skill_is_thin_explicit_and_launcher_bound():

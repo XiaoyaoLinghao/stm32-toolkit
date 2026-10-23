@@ -25,7 +25,7 @@ _RULE_MESSAGES = {
     "ARMCC_SCATTER_FILE": "non-empty scatter-file linker setting",
     "ARMCC_CUSTOM_SECTION": "ARMCC custom section",
     "ARMCC_UNSUPPORTED_PRAGMA": "unsupported ARMCC pragma",
-    "ARMCC_SOURCE_ENCODING_UNSUPPORTED": "source encoding is not UTF-8",
+    "ARMCC_SOURCE_ENCODING_UNSUPPORTED": "source encoding is not UTF-8; the separate normalize-source-comments skill can preview a reviewed comment-only UTF-8 copy outside the project",
 }
 
 _INCLUDE_HAL_RE = re.compile(r"stm32.*_hal\.h", re.IGNORECASE)

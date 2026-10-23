@@ -136,7 +136,10 @@ def test_actual_mcp_and_skill_inventory_matches_the_closed_public_inventory(
     assert len(MCP_TOOL_NAMES) == 49
     assert actual == set(MCP_TOOL_NAMES.values())
     assert len(SKILL_NAMES) == 8
-    assert discovered == set(SKILL_NAMES)
+    # normalize-source-comments is a discoverable companion skill.  It is not
+    # a ninth release workflow and does not change the closed public inventory
+    # or the release packager in this slice.
+    assert discovered == set(SKILL_NAMES) | {"normalize-source-comments"}
 
 
 def test_production_inventory_and_server_registration_match_an_independent_oracle(
