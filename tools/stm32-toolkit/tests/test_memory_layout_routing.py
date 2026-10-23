@@ -154,6 +154,7 @@ def test_cli_rejects_oversized_json_integers_before_inspection(tmp_path, capsys)
         TARGET,
         "--memory-layout",
         '{"flash":' + "9" * 5000 + "}",
+        "--dry-run",
         "--json",
     ]
     assert cli_main(arguments) != 0
@@ -189,6 +190,7 @@ def test_cli_rejects_unknown_incomplete_and_nonstring_roles_before_inspection(
             TARGET,
             "--memory-layout",
             json.dumps(payload),
+            "--dry-run",
             "--json",
         ]
         assert cli_main(arguments) != 0
@@ -213,10 +215,13 @@ def test_cli_repeated_memory_layout_argument_fails_as_grammar(tmp_path, capsys):
         json.dumps(ALL_MAIN.to_dict()),
         "--memory-layout",
         json.dumps(ALL_MAIN.to_dict()),
+        "--dry-run",
         "--json",
     ]
     assert cli_main(arguments) == 2
-    assert capsys.readouterr().out == ""
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "argument --memory-layout: repeated option" in captured.err
 
 
 def test_cli_apply_requires_the_same_layout_choice(tmp_path, capsys):
