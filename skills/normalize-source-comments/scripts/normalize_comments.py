@@ -555,7 +555,7 @@ def _write_exclusive(path: Path, data: bytes) -> None:
         raise
 
 
-def _check_collision(path: Path, data: bytes) -> bool:
+def _check_collision(path: Path, data: bytes, limit: int = MAX_PLAN_BYTES) -> bool:
     if not path.exists():
         return False
     if _is_reparse(path):
@@ -571,7 +571,7 @@ def _check_collision(path: Path, data: bytes) -> bool:
             {"path": str(path)},
         )
     try:
-        existing = _read_bytes_limited(path, MAX_PLAN_BYTES, code="PREVIEW_COLLISION")
+        existing = _read_bytes_limited(path, limit, code="PREVIEW_COLLISION")
     except ToolError as error:
         raise ToolError(
             "PREVIEW_COLLISION",
@@ -2240,11 +2240,12 @@ def _validate_plan_inner(plan: dict) -> None:
                 )
         if not isinstance(entry["findings"], list):
             raise ToolError("PLAN_INVALID", "invalid findings list", {"path": relative})
-        if len(entry["findings"]) > MAX_FINDINGS + 8:
+        finding_limit = MAX_FINDINGS * 2 + 16
+        if len(entry["findings"]) > finding_limit:
             raise ToolError(
                 "BOUNDS_EXCEEDED",
                 "plan findings exceed the configured presentation limit",
-                {"path": relative, "limit": MAX_FINDINGS + 8},
+                {"path": relative, "limit": finding_limit},
             )
         for finding in entry["findings"]:
             if not isinstance(finding, dict) or set(finding) != _FINDING_KEYS:
@@ -2421,8 +2422,8 @@ def preview_plan(
     plan_path = preview_root / "plan.json"
     preview_path = preview_root / "preview.md"
 
-    plan_existed = _check_collision(plan_path, plan_bytes)
-    preview_existed = _check_collision(preview_path, preview_bytes)
+    plan_existed = _check_collision(plan_path, plan_bytes, MAX_PLAN_BYTES)
+    preview_existed = _check_collision(preview_path, preview_bytes, MAX_PREVIEW_BYTES)
     if not preview_existed:
         try:
             _write_exclusive(preview_path, preview_bytes)
