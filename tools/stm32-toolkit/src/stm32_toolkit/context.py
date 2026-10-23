@@ -103,6 +103,8 @@ def build_project_context(
     except OSError:
         return _context_unavailable("dataRoot", str(canonical_data_root))
     build = _build_evidence(manifest)
+    build_ready = _build_ready(build)
+    configure_available = _valid_supported_schema(canonical_root)
     return _context_success(
         {
             "project": {
@@ -119,8 +121,13 @@ def build_project_context(
             "build": build,
             "hardware": _hardware_evidence(),
             "capabilities": _capabilities(
-                build_available=_build_ready(build),
-                configure_available=_valid_supported_schema(canonical_root),
+                build_available=build_ready,
+                configure_available=configure_available,
+            ),
+            "capabilityDetails": _configured_capability_details(
+                build=build,
+                build_ready=build_ready,
+                configure_available=configure_available,
             ),
             "recommendedActions": [],
         }
@@ -164,10 +171,33 @@ def _is_project_path(path: Path, project_root: Path) -> bool:
         return False
     return True
 
+_PREFLIGHT_ACTION = {
+    "id": "keil-preflight",
+    "available": True,
+    "explanation": (
+        "Run stm32_keil_preflight with the selected project-relative uvprojx "
+        "and exact targetName. It is read-only, requires no Git, may return "
+        "blockers, and does not authorize conversion."
+    ),
+}
+
+_HARDWARE_NOT_EVALUATED_REASON = (
+    "Project context does not enumerate probes or inspect target state, so "
+    "this hardware capability is not evaluated here; the tool still exists."
+)
+_HARDWARE_NEXT_STEPS = (
+    "Call stm32_probe_list to enumerate connected probes. It requires no "
+    "build, debug backend, target, or SVD and does not modify the board."
+)
+
+
 def _unconfigured_context(
     detection: ProjectDetection, project_root: Path
 ) -> dict[str, object]:
     keil_detected = detection.kind == "keil"
+    recommended = [detection.recommended_action.to_dict()]
+    if keil_detected:
+        recommended.append(dict(_PREFLIGHT_ACTION))
     return {
         "project": {
             "kind": detection.kind,
@@ -181,9 +211,11 @@ def _unconfigured_context(
         "capabilities": _capabilities(
             build_available=False,
             keil_inspect=keil_detected,
+            keil_preflight=keil_detected,
             keil_convert=keil_detected,
         ),
-        "recommendedActions": [detection.recommended_action.to_dict()],
+        "capabilityDetails": _unconfigured_capability_details(detection.kind),
+        "recommendedActions": recommended,
     }
 
 
@@ -249,12 +281,14 @@ def _capabilities(
     *,
     build_available: bool,
     keil_inspect: bool = False,
+    keil_preflight: bool = False,
     keil_convert: bool = False,
     configure_available: bool = False,
 ) -> dict[str, bool]:
     return {
         "build": build_available,
         "keilInspect": keil_inspect,
+        "keilPreflight": keil_preflight,
         "keilConvert": keil_convert,
         "configure": configure_available,
         "flash": False,
@@ -263,6 +297,173 @@ def _capabilities(
         "monitor": False,
         "breakpointDebug": False,
     }
+
+
+def _capability(
+    status: str, reason: str, next_steps: tuple[str, ...]
+) -> dict[str, object]:
+    return {"status": status, "reason": reason, "nextSteps": list(next_steps)}
+
+
+def _hardware_capability_details() -> dict[str, dict[str, object]]:
+    hardware = _capability(
+        "not-evaluated", _HARDWARE_NOT_EVALUATED_REASON, (_HARDWARE_NEXT_STEPS,)
+    )
+    return {
+        "flash": dict(hardware),
+        "targetTest": dict(hardware),
+        "monitor": dict(hardware),
+        "breakpointDebug": dict(hardware),
+    }
+
+
+def _configured_capability_details(
+    *,
+    build: dict[str, object],
+    build_ready: bool,
+    configure_available: bool,
+) -> dict[str, dict[str, object]]:
+    if build_ready:
+        build_reason = "Managed configuration evidence is complete."
+        build_next = (
+            "Call stm32_build with the desired preset and authorized=true after "
+            "explicit user authorization.",
+        )
+    else:
+        if not build["cmakeListsPresent"]:
+            build_reason = "No CMakeLists.txt is present."
+        elif not build["managedManifestPresent"]:
+            build_reason = "The managed configuration manifest is missing."
+        elif not build["managedManifestValid"]:
+            build_reason = (
+                "The managed configuration manifest is invalid or does not "
+                "match the project model."
+            )
+        elif build["managedFilesMissing"]:
+            build_reason = "Managed configuration files are missing."
+        else:
+            build_reason = "Managed configuration files have drifted."
+        build_next = (
+            "Run stm32_project_configure to review and apply managed "
+            "configuration with explicit authorization; do not hand-edit "
+            "generated files.",
+        )
+    no_keil_reason = (
+        "This project root is bound to .stm32-project.json; no Keil project "
+        "is selected for migration."
+    )
+    no_keil_next = (
+        "If this tree also contains a Keil project, start a Toolkit session "
+        "bound to that project root and select its uvprojx.",
+    )
+    details: dict[str, dict[str, object]] = {
+        "build": _capability(
+            "available" if build_ready else "blocked", build_reason, build_next
+        ),
+        "keilInspect": _capability("blocked", no_keil_reason, no_keil_next),
+        "keilPreflight": _capability("blocked", no_keil_reason, no_keil_next),
+        "keilConvert": _capability("blocked", no_keil_reason, no_keil_next),
+        "configure": _capability(
+            "available" if configure_available else "blocked",
+            (
+                "A valid supported Schema v2/v3 project model is available."
+                if configure_available
+                else "No valid supported Schema v2/v3 project model was loaded."
+            ),
+            (
+                "Call stm32_project_configure to review the read-only plan "
+                "before any authorized apply.",
+            ),
+        ),
+        "hostTest": _capability(
+            "not-evaluated",
+            "Project context does not discover or evaluate host tests.",
+            (
+                "Call stm32_test_host_discover to evaluate host-test readiness "
+                "for this configured project.",
+            ),
+        ),
+    }
+    details.update(_hardware_capability_details())
+    return details
+
+
+def _unconfigured_capability_details(kind: str) -> dict[str, dict[str, object]]:
+    keil_detected = kind == "keil"
+    if keil_detected:
+        keil_details = {
+            "keilInspect": _capability(
+                "available",
+                "A Keil .uvprojx entry point exists, but entry availability "
+                "does not establish migration readiness.",
+                (
+                    "Call stm32_keil_inspect with the project-relative uvprojx "
+                    "and exact targetName.",
+                    "Call stm32_keil_preflight with the same selection to "
+                    "receive typed blockers and Git/apply prerequisites.",
+                ),
+            ),
+            "keilPreflight": _capability(
+                "available",
+                "Read-only preflight is available without Git and may still "
+                "return blockers.",
+                (
+                    "Call stm32_keil_preflight with the selected uvprojx and "
+                    "exact targetName, then resolve every reported blocker.",
+                    "Establish any Git baseline as an explicit project-owner "
+                    "decision; preflight never runs git init.",
+                ),
+            ),
+            "keilConvert": _capability(
+                "available",
+                "The conversion entry point exists; a Git-bound plan and "
+                "explicit authorization are still required.",
+                (
+                    "After preflight is complete and blockers are resolved, "
+                    "call stm32_keil_convert without planId for a read-only PLAN response.",
+                    "Read data.plan_id and data.patches[].unified_diff; pass that exact value as the apply request's planId only after explicit user authorization.",
+                ),
+            ),
+        }
+    else:
+        blocked = _capability(
+            "blocked",
+            "No .uvprojx project was detected in this project root.",
+            ("Select or create a Keil project before using Keil workflows.",),
+        )
+        keil_details = {
+            "keilInspect": dict(blocked),
+            "keilPreflight": dict(blocked),
+            "keilConvert": dict(blocked),
+        }
+    details: dict[str, dict[str, object]] = {
+        "build": _capability(
+            "blocked",
+            "No valid supported .stm32-project.json is configured.",
+            (
+                "Create, migrate, or configure a valid project before building.",
+            ),
+        ),
+        **keil_details,
+        "configure": _capability(
+            "blocked",
+            "Configuration requires a valid supported .stm32-project.json.",
+            (
+                "Create a project model or complete Keil migration first; "
+                "configuration has its own read-only plan and authorization.",
+            ),
+        ),
+        "hostTest": _capability(
+            "blocked",
+            "Host tests require a configured project with test metadata.",
+            (
+                "Configure the project first, then call "
+                "stm32_test_host_discover.",
+            ),
+        ),
+    }
+    details.update(_hardware_capability_details())
+    return details
 
 
 def _build_ready(evidence: dict[str, object]) -> bool:

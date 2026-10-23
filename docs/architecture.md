@@ -42,9 +42,13 @@ runtime launchers use the configured managed interpreter, with no system-Python 
 
 Keil inspection is read-only. Keil-to-GCC migration is one-way, uses deterministic plans and
 digest-checked authorized apply, and never rewrites `.uvprojx` or synchronizes two build systems.
-Only implemented compiler/source rules are supported. Non-UTF-8 sources and unsupported ARMCC
-assembly require explicit project-owned adaptation; the Toolkit does not guess encoding or invent
-MCU startup/vector initialization. Keep compiler migration separate from SPL/HAL conversion.
+Preflight runs the same technical analysis as planning without requiring Git; blockers and apply
+prerequisites stay separate, and preflight never creates a plan ID or mutates state. Missing Git,
+unborn HEAD, and dirty work are diagnosable but remain explicit project-owner decisions before a
+Git-bound plan. Only implemented compiler/source rules are supported. Non-UTF-8 sources and
+unsupported ARMCC assembly require explicit project-owned adaptation; the Toolkit does not guess
+encoding, silently transcode, or invent MCU startup/vector initialization. Keep compiler migration
+separate from SPL/HAL conversion.
 
 Generation retains prior ownership and hash checks. Existing user files never become writable merely
 because they occupy a generator target or have identical bytes. The implemented v1.0.1
@@ -62,7 +66,12 @@ Flash accounting, file-backed load ranges and NOBITS runtime ranges must remain 
 
 One physical probe has one owner. All attach/control uses the same Probe Service; no competing
 backend, automatic probe selection, lease stealing, chip erase, Option Bytes or arbitrary writes.
-Operation levels, exact identities and fresh authorization are checked before effects.
+Operation levels, exact identities and fresh authorization are checked before effects. Probe
+enumeration is a separate read-only discovery path: it requires no project manifest, build,
+backend, target, or SVD, creates no lease or project state, and establishes neither target identity
+nor flash readiness. A valid configured project preserves its workspace ID; otherwise discovery is
+explicitly unbound rather than inventing one. Hardware-capability booleans in project context are
+not-evaluated snapshots, not evidence that the tools do not exist.
 
 OBSERVE attach must meet its running-state postcondition. Sampling does not implicitly halt/reset/
 resume the target. Full Fault analysis requires a separately authorized controlled snapshot when

@@ -43,6 +43,7 @@ GITIGNORE = "build/\n.stm32-toolkit/build.lock\n__pycache__/\n*.pyc\n"
 
 WRAPPERS = {
     "stm32_keil_inspect": mcp_mod.tool_keil_inspect_for_request,
+    "stm32_keil_preflight": mcp_mod.tool_keil_preflight_for_request,
     "stm32_keil_convert": mcp_mod.tool_keil_convert_for_request,
     "stm32_project_configure": mcp_mod.tool_project_configure_for_request,
     "stm32_build": mcp_mod.tool_build_for_request,
@@ -129,6 +130,7 @@ def test_nested_keil_public_cli_mcp_inspect_plan_apply_share_selection(
     inspected = mcp_mod.tool_keil_inspect(runtime, selected, "Legacy")
     assert inspected["ok"] is True
     assert inspected["data"]["inspection"]["project_file"] == selected
+    assert inspected["data"]["inspection"]["target_name"] == "Legacy"
     assert inspected["details"]["baselineSemantics"] == "parseable-historical-artifact-only"
     assert cli_main([
         "keil", "inspect", "--project", str(root), "--uvprojx", selected,
@@ -223,7 +225,7 @@ def _registry_server(tmp_path: Path):
     return create_server(project, tmp_path / "plugin-data", "session-a")
 
 
-def test_server_registers_exactly_48_project_bound_tools(tmp_path: Path):
+def test_server_registers_exactly_49_project_bound_tools(tmp_path: Path):
     server = _registry_server(tmp_path)
     tools = asyncio.run(server.list_tools())
 
@@ -246,6 +248,12 @@ def test_new_tool_schemas_expose_only_declared_properties(tmp_path: Path):
     assert "string" in str(inspect["properties"]["targetName"])
     assert inspect["properties"]["includeBaseline"]["type"] == "boolean"
     assert inspect["properties"]["includeBaseline"]["default"] is True
+
+    preflight = schemas["stm32_keil_preflight"]
+    assert set(preflight["properties"]) == {"uvprojx", "targetName"}
+    assert set(preflight.get("required", [])) == set()
+    assert "string" in str(preflight["properties"]["uvprojx"])
+    assert "string" in str(preflight["properties"]["targetName"])
 
     convert = schemas["stm32_keil_convert"]
     assert set(convert["properties"]) == {"uvprojx", "targetName", "planId", "authorized"}
@@ -284,6 +292,97 @@ def test_new_tool_schemas_expose_only_declared_properties(tmp_path: Path):
         assert schemas[name].get("required", []) == []
 
 
+def test_public_tool_descriptions_guide_mcp_only_consumers(tmp_path: Path):
+    server = _registry_server(tmp_path)
+    descriptions = {
+        tool.name: (tool.description or "")
+        for tool in asyncio.run(server.list_tools())
+    }
+
+    context = descriptions["stm32_project_context"]
+    assert "capabilityDetails" in context
+    assert "not evaluated" in context or "not-evaluated" in context
+    assert "stm32_keil_preflight" in context
+
+    inspect = descriptions["stm32_keil_inspect"]
+    for phrase in (
+        "uvprojx",
+        "targetName",
+        "read-only",
+        "omit targetName",
+        "KEIL_TARGET_SELECTION_REQUIRED",
+        "details.targets",
+        "data.inspection.target_name",
+        "Do not guess a target",
+    ):
+        assert phrase in inspect
+    assert "does not list target names" in context
+
+    preflight = descriptions["stm32_keil_preflight"]
+    for phrase in (
+        "uvprojx",
+        "targetName",
+        "without requiring Git",
+        "planReadiness",
+        "applyReadiness",
+        "requires-reviewed-plan",
+        "no applicable plan",
+        "never authorizes apply",
+        "git init",
+    ):
+        assert phrase in preflight
+
+    convert = descriptions["stm32_keil_convert"]
+    for phrase in (
+        "data.plan_id",
+        "data.patches[].unified_diff",
+        "planId",
+        "authorized=true",
+        "same uvprojx",
+        "stale plan",
+    ):
+        assert phrase in convert
+
+    configure = descriptions["stm32_project_configure"]
+    assert "data.plan_id" in configure
+    assert "planId" in configure
+    assert "authorized=true" in configure
+
+    build = descriptions["stm32_build"]
+    assert "capabilityDetails.build" in build
+    assert "authorized=true" in build
+
+    probe = descriptions["stm32_probe_list"]
+    for phrase in (
+        "no Toolkit manifest",
+        "target",
+        "read-only",
+        "does not modify",
+        "workspaceId is null",
+        "never invent one",
+    ):
+        assert phrase in probe
+
+    flash = descriptions["stm32_flash"]
+    for phrase in (
+        "capabilityDetails.flash",
+        "data.build.buildId",
+        "data.build.elfSha256",
+        "expectedBuildId",
+        "expectedElfSha256",
+        "authorized=true",
+        "never fabricate",
+    ):
+        assert phrase in flash
+
+    for name in ("stm32_variable_read", "stm32_variable_sample"):
+        description = descriptions[name]
+        assert "OBSERVE attach may briefly halt" in description
+        assert "not a state-preserving" in description or "not state-preserving" in description
+        assert "never halts" not in description
+        assert "does not halt" not in description
+
+
 def test_no_tool_accepts_a_root_command_or_environment_parameter(tmp_path: Path):
     server = _registry_server(tmp_path)
     tools = asyncio.run(server.list_tools())
@@ -312,6 +411,7 @@ def test_direct_helpers_return_operation_result_envelopes(tmp_path: Path):
     runtime = _keil_runtime(tmp_path)
 
     assert mcp_mod.tool_keil_inspect(runtime)["operation"] == "keil-inspect"
+    assert mcp_mod.tool_keil_preflight(runtime)["operation"] == "keil-preflight"
     assert (
         mcp_mod.tool_keil_convert(runtime)["operation"] == "keil-conversion-plan"
     )
@@ -369,7 +469,29 @@ def test_in_memory_convert_requires_plan_id_and_authorization(tmp_path: Path):
 def test_in_memory_configure_and_build_fail_closed(tmp_path: Path, monkeypatch):
     root = prepare_project(tmp_path)
     hit_file = install_fake_cmake(monkeypatch, tmp_path)
-    server = create_server(root, tmp_path / "plugin-data", "session-a")
+    # Tool discovery prefers CubeCLT/metadata/standard installs before PATH.
+    # Inject explicit profile evidence for the fake CMake so this test never
+    # depends on the host's ambient CubeCLT installation or PATH ordering.
+    from stm32_toolkit.tool_support import SupportProfileRequest
+
+    data_root = tmp_path / "plugin-data"
+    data_root.mkdir()
+    launcher = tmp_path / "fakebin" / ("cmake.cmd" if os.name == "nt" else "cmake")
+    profile = data_root / "support-profile.json"
+    profile.write_text(
+        json.dumps({"cmake": {"path": str(launcher)}}),
+        encoding="utf-8",
+    )
+    real_discover = mcp_mod.discover_tool_support
+
+    def controlled_discover(request=None, *, probe_versions: bool = True):
+        return real_discover(
+            SupportProfileRequest(profile_path=profile, data_root=data_root),
+            probe_versions=probe_versions,
+        )
+
+    monkeypatch.setattr(mcp_mod, "discover_tool_support", controlled_discover)
+    server = create_server(root, data_root, "session-a")
     startup_hits = hit_file.read_bytes()
     assert startup_hits
     assert all(json.loads(line)["argv"] == ["--version"] for line in startup_hits.splitlines())
@@ -441,6 +563,7 @@ def test_in_memory_configure_and_build_fail_closed(tmp_path: Path, monkeypatch):
     ("tool", "arguments", "operation"),
     [
         ("stm32_keil_inspect", {}, "keil-inspect"),
+        ("stm32_keil_preflight", {}, "keil-preflight"),
         ("stm32_keil_convert", {}, "keil-conversion-plan"),
         ("stm32_project_configure", {}, "project-configuration-plan"),
         ("stm32_build", {"preset": "arm-debug"}, "build"),
@@ -469,6 +592,7 @@ def test_every_new_tool_rejects_a_mismatched_single_root(tmp_path: Path):
 
     for tool in (
         "stm32_keil_inspect",
+        "stm32_keil_preflight",
         "stm32_keil_convert",
         "stm32_project_configure",
         "stm32_build",
@@ -484,6 +608,7 @@ def test_every_new_tool_handles_roots_unavailable(tmp_path: Path):
 
     for tool in (
         "stm32_keil_inspect",
+        "stm32_keil_preflight",
         "stm32_keil_convert",
         "stm32_project_configure",
         "stm32_build",

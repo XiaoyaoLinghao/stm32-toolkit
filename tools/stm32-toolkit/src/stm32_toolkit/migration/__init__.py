@@ -16,10 +16,12 @@ from stm32_toolkit.migration.model import (
     MigrationPlanError,
 )
 from stm32_toolkit.migration.planner import plan_keil_conversion
+from stm32_toolkit.migration.preflight import preflight_keil_conversion
 
 __all__ = [
     "apply_keil_conversion",
     "plan_keil_conversion",
+    "preflight_keil_conversion",
     "FilePatch",
     "FixedSectionRequirement",
     "GitBaseline",

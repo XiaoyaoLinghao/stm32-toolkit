@@ -2225,6 +2225,67 @@ def test_invalid_request_or_project_is_rejected_without_hardware(
 
 
 @pytest.mark.parametrize(
+    ("build_pin", "elf_pin", "field", "guidance"),
+    [
+        (
+            None,
+            ELF_SHA,
+            "expected_build_id",
+            "Read data.build.buildId from stm32_project_context and pass it as expectedBuildId",
+        ),
+        (
+            123,
+            ELF_SHA,
+            "expected_build_id",
+            "Read data.build.buildId from stm32_project_context and pass it as expectedBuildId",
+        ),
+        (
+            BUILD_ID,
+            None,
+            "expected_elf_sha256",
+            "Read data.build.elfSha256 from stm32_project_context and pass it as expectedElfSha256",
+        ),
+        (
+            BUILD_ID,
+            123,
+            "expected_elf_sha256",
+            "Read data.build.elfSha256 from stm32_project_context and pass it as expectedElfSha256",
+        ),
+    ],
+)
+def test_non_string_firmware_pins_fail_closed_with_actionable_guidance(
+    tmp_path: Path,
+    build_pin: object,
+    elf_pin: object,
+    field: str,
+    guidance: str,
+) -> None:
+    project = _project(tmp_path / "project")
+    recorder = _Recorder()
+    result = _run(
+        fault_workflow(
+            FaultWorkflowRequest(
+                project,
+                tmp_path / "data",
+                "session-a",
+                "probe-a",
+                build_pin,
+                elf_pin,
+            ),
+            _seams=_seams(recorder),
+        )
+    )
+
+    assert result.ok is False
+    assert result.code == "HARDWARE_INPUT_INVALID"
+    details = result.to_dict()["details"]
+    assert details["field"] == field
+    assert details["rule"] == "sha256"
+    assert guidance in details["guidance"]
+    assert recorder.events == []
+
+
+@pytest.mark.parametrize(
     ("probe_id", "build_id", "elf_sha"),
     [
         ("bad/probe", BUILD_ID, ELF_SHA),
@@ -3074,7 +3135,12 @@ def test_public_workflow_preflight_and_runtime_guard_matrix(tmp_path: Path) -> N
         "code": "HARDWARE_INPUT_INVALID",
         "message": "A Schema-v2 PyOCD target is required",
         "data": None,
-        "details": {},
+        "details": {
+            "field": "debug.backend",
+            "rule": "pyocdRequired",
+            "projectKind": "configured",
+            "guidance": "Configure debug.backend as pyocd through a reviewed project-model change; Toolkit does not select or fall back to another backend.",
+        },
     }
     assert recorder.events == []
     assert recorder.configs == []
@@ -4335,3 +4401,403 @@ def test_public_controlled_fault_timeout_and_recovery_state_matrix(
         "outcome": "failed",
     }
     _remaining_assert_auth(recorder, prepared=2, consumed=2)
+
+
+# ---------------------------------------------------------------------------
+# independent probe discovery and structured hardware diagnostics
+# ---------------------------------------------------------------------------
+
+
+class _EmptyBackend:
+    def __init__(self, recorder: _Recorder) -> None:
+        self._recorder = recorder
+
+    def list_probes(self) -> tuple[()]:
+        self._recorder.events.append("backend.list")
+        return ()
+
+    def close(self) -> None:
+        self._recorder.events.append("backend.close")
+
+
+def test_probe_list_discovery_does_not_require_a_manifest_or_build(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "keil-project"
+    project.mkdir()
+    (project / "legacy.uvprojx").write_text("<Project/>", encoding="utf-8")
+    data_root = tmp_path / "data"
+    recorder = _Recorder()
+    before = _exact_tree_snapshot(project)
+
+    result = _run(
+        probe_list_workflow(
+            ProbeListWorkflowRequest(project, data_root, "session-a"),
+            _seams=_seams(recorder),
+        )
+    )
+
+    assert result.ok is True
+    payload = result.to_dict()["data"]
+    assert payload["workspaceId"] is None
+    assert payload["sessionId"] == "session-a"
+    assert [entry["probeId"] for entry in payload["probes"]] == ["probe-a", "probe-b"]
+    discovery = payload["discovery"]
+    assert discovery["mode"] == "probe-discovery"
+    assert discovery["status"] == "unbound"
+    assert discovery["workspaceId"] is None
+    assert discovery["modelError"]["code"] == "PROJECT_NOT_CONFIGURED"
+    assert discovery["targetIdentity"] == "not-evaluated"
+    assert discovery["flashReadiness"] == "not-evaluated"
+    assert any("never fabricate" in step for step in discovery["nextSteps"])
+    assert recorder.events == ["backend.list", "backend.close"]
+    assert _exact_tree_snapshot(project) == before
+    assert not data_root.exists()
+
+
+def test_probe_list_reports_malformed_or_unsupported_model_as_unbound(
+    tmp_path: Path,
+) -> None:
+    malformed = tmp_path / "malformed"
+    malformed.mkdir()
+    (malformed / ".stm32-project.json").write_bytes(b"{not-json")
+    recorder = _Recorder()
+    malformed_result = _run(
+        probe_list_workflow(
+            ProbeListWorkflowRequest(malformed, tmp_path / "data-a", "session-a"),
+            _seams=_seams(recorder),
+        )
+    )
+    assert malformed_result.ok is True
+    malformed_data = malformed_result.to_dict()["data"]
+    assert malformed_data["workspaceId"] is None
+    assert malformed_data["discovery"]["modelError"]["code"] == "PROJECT_JSON_INVALID"
+    assert {entry["probeId"] for entry in malformed_data["probes"]} == {
+        "probe-a",
+        "probe-b",
+    }
+
+    legacy = _project(tmp_path / "legacy", schema_version=1)
+    legacy_result = _run(
+        probe_list_workflow(
+            ProbeListWorkflowRequest(legacy, tmp_path / "data-b", "session-a"),
+            _seams=_seams(_Recorder()),
+        )
+    )
+    assert legacy_result.ok is True
+    legacy_data = legacy_result.to_dict()["data"]
+    assert legacy_data["workspaceId"] is None
+    assert (
+        legacy_data["discovery"]["modelError"]["code"]
+        == "PROJECT_SCHEMA_VERSION_UNSUPPORTED"
+    )
+
+
+def test_probe_list_preserves_workspace_without_requiring_backend_or_target(
+    tmp_path: Path,
+) -> None:
+    project = _project(tmp_path / "configured")
+    manifest_path = project / ".stm32-project.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["debug"]["backend"] = "openocd"
+    manifest_path.write_bytes((json.dumps(manifest, indent=2) + "\n").encode("utf-8"))
+
+    result = _run(
+        probe_list_workflow(
+            ProbeListWorkflowRequest(project, tmp_path / "data", "session-a"),
+            _seams=_seams(_Recorder()),
+        )
+    )
+
+    assert result.ok is True
+    payload = result.to_dict()["data"]
+    assert payload["workspaceId"] == compute_workspace_id(
+        UUID("12345678-1234-5678-1234-567812345678"), project
+    )
+    assert payload["discovery"]["status"] == "project-bound"
+    assert payload["discovery"]["modelError"] is None
+    assert payload["discovery"]["targetIdentity"] == "not-evaluated"
+
+
+def test_probe_list_zero_probes_is_a_successful_discovery(tmp_path: Path) -> None:
+    project = _project(tmp_path / "configured")
+    recorder = _Recorder()
+
+    result = _run(
+        probe_list_workflow(
+            ProbeListWorkflowRequest(project, tmp_path / "data", "session-a"),
+            _seams=HardwareWorkflowSeams(
+                _test_backend_factory=lambda: _EmptyBackend(recorder)
+            ),
+        )
+    )
+
+    assert result.ok is True
+    assert result.to_dict()["data"]["probes"] == []
+    assert recorder.events == ["backend.list", "backend.close"]
+
+
+def test_probe_list_distinguishes_invalid_session_root_and_data_root(
+    tmp_path: Path,
+) -> None:
+    project = _project(tmp_path / "configured")
+    recorder = _Recorder()
+
+    bad_session = _run(
+        probe_list_workflow(
+            ProbeListWorkflowRequest(project, tmp_path / "data", "unsafe/session"),
+            _seams=_seams(recorder),
+        )
+    )
+    assert bad_session.code == "HARDWARE_INPUT_INVALID"
+    assert bad_session.details == {
+        "field": "session_id",
+        "rule": "format",
+        "guidance": "Use a filesystem-safe session id: lowercase letters, digits, '-' or '_', starting with a letter or digit.",
+    }
+    assert recorder.events == []
+
+    missing = _run(
+        probe_list_workflow(
+            ProbeListWorkflowRequest(
+                tmp_path / "missing", tmp_path / "data", "session-a"
+            ),
+            _seams=_seams(recorder),
+        )
+    )
+    assert missing.details == {
+        "field": "project_root",
+        "rule": "directory",
+        "guidance": "Pass an existing, readable, non-redirected project root; do not create or redirect it implicitly.",
+    }
+
+    inside = _run(
+        probe_list_workflow(
+            ProbeListWorkflowRequest(project, project / "runtime-state", "session-a"),
+            _seams=_seams(recorder),
+        )
+    )
+    assert inside.details == {
+        "field": "data_root",
+        "rule": "outsideProjectRoot",
+        "guidance": "Choose a persistent data root outside the project tree; do not store machine state inside the project.",
+    }
+    assert recorder.events == []
+
+
+def test_non_discovery_workflows_still_require_a_model_and_explain_failures(
+    tmp_path: Path,
+) -> None:
+    unconfigured = tmp_path / "unconfigured"
+    unconfigured.mkdir()
+    recorder = _Recorder()
+    missing = _run(
+        variable_read_workflow(
+            VariableReadWorkflowRequest(
+                unconfigured,
+                tmp_path / "data",
+                "session-a",
+                "probe-a",
+                BUILD_ID,
+                ELF_SHA,
+                ("counter",),
+            ),
+            _seams=_seams(recorder),
+        )
+    )
+    assert missing.code == "HARDWARE_INPUT_INVALID"
+    assert missing.to_dict()["details"] == {
+        "field": "projectModel",
+        "rule": "load",
+        "sourceCode": "PROJECT_NOT_CONFIGURED",
+        "projectKind": "unknown",
+        "expectedSchema": [2, 3],
+        "guidance": "Create or migrate a valid Schema v2/v3 .stm32-project.json with the documented workflows; do not fabricate a manifest or project identity.",
+        "sourcePath": ".stm32-project.json",
+    }
+    assert recorder.events == []
+
+    project = _project(tmp_path / "configured")
+    manifest_path = project / ".stm32-project.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["debug"]["backend"] = "openocd"
+    manifest_path.write_bytes((json.dumps(manifest, indent=2) + "\n").encode("utf-8"))
+    backend = _run(
+        variable_read_workflow(
+            VariableReadWorkflowRequest(
+                project,
+                tmp_path / "data-b",
+                "session-a",
+                "probe-a",
+                BUILD_ID,
+                ELF_SHA,
+                ("counter",),
+            ),
+            _seams=_seams(recorder),
+        )
+    )
+    assert backend.code == "HARDWARE_INPUT_INVALID"
+    assert backend.to_dict()["details"] == {
+        "field": "debug.backend",
+        "rule": "pyocdRequired",
+        "projectKind": "configured",
+        "guidance": "Configure debug.backend as pyocd through a reviewed project-model change; Toolkit does not select or fall back to another backend.",
+    }
+
+    manifest["debug"]["backend"] = "pyocd"
+    manifest["debug"]["target"] = "not a target"
+    manifest_path.write_bytes((json.dumps(manifest, indent=2) + "\n").encode("utf-8"))
+    target = _run(
+        variable_read_workflow(
+            VariableReadWorkflowRequest(
+                project,
+                tmp_path / "data-c",
+                "session-a",
+                "probe-a",
+                BUILD_ID,
+                ELF_SHA,
+                ("counter",),
+            ),
+            _seams=_seams(recorder),
+        )
+    )
+    assert target.to_dict()["details"] == {
+        "field": "debug.target",
+        "rule": "identifierRequired",
+        "projectKind": "configured",
+        "guidance": "Set debug.target to the exact supported target identifier for the device; do not guess or auto-select a target.",
+    }
+
+    manifest["debug"]["target"] = "stm32f407vg"
+    manifest_path.write_bytes((json.dumps(manifest, indent=2) + "\n").encode("utf-8"))
+    pin = _run(
+        variable_read_workflow(
+            VariableReadWorkflowRequest(
+                project,
+                tmp_path / "data-d",
+                "session-a",
+                "probe-a",
+                "BAD",
+                ELF_SHA,
+                ("counter",),
+            ),
+            _seams=_seams(recorder),
+        )
+    )
+    assert pin.to_dict()["details"] == {
+        "field": "expected_build_id",
+        "rule": "sha256",
+        "guidance": "Read data.build.buildId from stm32_project_context and pass it as expectedBuildId; never reuse stale or fabricated pins.",
+    }
+
+    manifest["schemaVersion"] = 1
+    manifest_path.write_bytes((json.dumps(manifest, indent=2) + "\n").encode("utf-8"))
+    schema = _run(
+        variable_read_workflow(
+            VariableReadWorkflowRequest(
+                project,
+                tmp_path / "data-e",
+                "session-a",
+                "probe-a",
+                BUILD_ID,
+                ELF_SHA,
+                ("counter",),
+            ),
+            _seams=_seams(recorder),
+        )
+    )
+    schema_details = schema.to_dict()["details"]
+    assert schema_details["sourceCode"] == "PROJECT_SCHEMA_VERSION_UNSUPPORTED"
+    assert schema_details["projectKind"] == "configured"
+    assert schema_details["expectedSchema"] == [2, 3]
+    assert "do not relabel schemaVersion" in schema_details["guidance"]
+    assert recorder.events == []
+
+
+@pytest.mark.parametrize(
+    ("name", "malformed", "expected_code"),
+    [
+        ("unconfigured", False, "PROJECT_NOT_CONFIGURED"),
+        ("malformed", True, "PROJECT_JSON_INVALID"),
+    ],
+)
+def test_probe_discovery_public_cli_and_mcp_paths_are_unbound_and_read_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys,
+    name: str,
+    malformed: bool,
+    expected_code: str,
+) -> None:
+    import stm32_toolkit.cli as cli_mod
+    import stm32_toolkit.mcp_server as mcp_mod
+    from stm32_toolkit.mcp_server import ServerRuntime
+
+    project = tmp_path / name
+    project.mkdir()
+    (project / "legacy.uvprojx").write_text("<Project/>", encoding="utf-8")
+    if malformed:
+        (project / ".stm32-project.json").write_bytes(b"{not-json")
+    before = _exact_tree_snapshot(project)
+    events: list[str] = []
+
+    class _DiscoveryBackend:
+        def list_probes(self) -> tuple[ProbeDescriptor, ...]:
+            events.append("backend.list")
+            return (ProbeDescriptor("probe-a", "Arm", "CMSIS-DAP", None),)
+
+        def close(self) -> None:
+            events.append("backend.close")
+
+    def seams() -> HardwareWorkflowSeams:
+        return HardwareWorkflowSeams(
+            _test_backend_factory=lambda: _DiscoveryBackend()
+        )
+
+    async def cli_workflow(request: object) -> OperationResult[object]:
+        return await probe_list_workflow(request, _seams=seams())
+
+    monkeypatch.setattr(cli_mod, "probe_list_workflow", cli_workflow)
+    cli_data = tmp_path / f"cli-data-{name}"
+    assert cli_mod.main([
+        "probe", "list",
+        "--project", str(project),
+        "--data-root", str(cli_data),
+        "--session-id", "session-a",
+        "--json",
+    ]) == 0
+    cli_payload = json.loads(capsys.readouterr().out)
+    assert cli_payload["ok"] is True
+    assert cli_payload["operation"] == "stm32_probe_list"
+    cli_result = cli_payload["data"]
+    assert cli_result["workspaceId"] is None
+    assert cli_result["sessionId"] == "session-a"
+    assert cli_result["probes"][0]["probeId"] == "probe-a"
+    assert cli_result["discovery"]["status"] == "unbound"
+    assert cli_result["discovery"]["modelError"]["code"] == expected_code
+    assert events == ["backend.list", "backend.close"]
+    assert not cli_data.exists()
+    assert _exact_tree_snapshot(project) == before
+
+    events.clear()
+
+    async def mcp_workflow(request: object) -> OperationResult[object]:
+        return await probe_list_workflow(request, _seams=seams())
+
+    monkeypatch.setattr(mcp_mod, "probe_list_workflow", mcp_workflow)
+    runtime = ServerRuntime.create(
+        project, tmp_path / f"mcp-data-{name}", "session-a"
+    )
+    mcp_payload = asyncio.run(
+        mcp_mod.tool_probe_list_for_request(runtime, None)
+    )
+    assert mcp_payload["ok"] is True
+    assert mcp_payload["operation"] == "stm32_probe_list"
+    mcp_result = mcp_payload["data"]
+    assert mcp_result["workspaceId"] is None
+    assert mcp_result["probes"][0]["probeId"] == "probe-a"
+    assert mcp_result["discovery"]["status"] == "unbound"
+    assert mcp_result["discovery"]["modelError"]["code"] == expected_code
+    assert events == ["backend.list", "backend.close"]
+    assert not (runtime.data_root / "projects").exists()
+    assert _exact_tree_snapshot(project) == before

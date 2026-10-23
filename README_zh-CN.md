@@ -86,4 +86,4 @@ $env:STM32_TOOLKIT_DATA_ROOT = $DataRoot
 - [架构](docs/architecture.md)、[开发](docs/development.md)、[标准测试流程](docs/testing/standard-test-procedure.md)及[发布资格](docs/testing/release-qualification.md)。
 - [变更记录](CHANGELOG.md)及[v1.2.0 源码交付规范](docs/superpowers/specs/2026-10-21-monitor-v120-delivery-design.md)。[v1.0.1 执行记录](docs/codex/returns/STM32TK-101/execution.md)保留其历史资格事实。
 
-MCP inventory 有全部 48 个公开名称，覆盖工程、构建、探针、诊断、测试、验收。`VS09-B` 的当前发行构建仍使用 `tools/release/build_0900_artifacts.py` 和固定的 `release_0900_policy.json`；历史文件名不表示当前另有 0.9 runtime。退出当前树的旧计划与报告仍可用 `git show 694c825d29a55a53052a148efa4cc6720c315a04:<path>` 查阅。
+当前源码 inventory 有 49 个公开 MCP 名称，包含 `stm32_keil_preflight`，覆盖工程、构建、探针、诊断、测试、验收。已发布的 v1.2.0 runtime 仍是冻结的 48 工具包，不包含该源码切片的新增 preflight 入口。`VS09-B` 的当前发行构建仍使用 `tools/release/build_0900_artifacts.py` 和固定的 `release_0900_policy.json`；历史文件名与冻结策略是现行打包输入，不代表该源码切片已打包或部署。退出当前树的旧计划与报告仍可用 `git show 694c825d29a55a53052a148efa4cc6720c315a04:<path>` 查阅。

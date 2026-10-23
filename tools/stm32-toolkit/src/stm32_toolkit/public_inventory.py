@@ -22,6 +22,7 @@ MCP_TOOL_NAMES = MappingProxyType(
         "project_regenerate_prepare": "stm32_project_regenerate_prepare",
         "project_regenerate_apply": "stm32_project_regenerate_apply",
         "keil_inspect": "stm32_keil_inspect",
+        "keil_preflight": "stm32_keil_preflight",
         "keil_convert": "stm32_keil_convert",
         "project_configure": "stm32_project_configure",
         "build": "stm32_build",

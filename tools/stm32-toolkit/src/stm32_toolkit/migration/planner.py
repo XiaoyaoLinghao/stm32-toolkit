@@ -18,7 +18,8 @@ import os
 import re
 import stat
 import uuid
-from dataclasses import replace
+from collections.abc import Callable
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from stm32_toolkit import __version__
@@ -607,8 +608,26 @@ def _canonical_manifest_bytes(payload: dict) -> bytes:
     return json.dumps(payload, indent=2, ensure_ascii=False).encode("utf-8") + b"\n"
 
 
-def plan_keil_conversion(root: Path, inspection: KeilInspection) -> MigrationPlan:
-    """Produce the deterministic, read-only conversion plan."""
+@dataclass(frozen=True)
+class ConversionAnalysis:
+    """Shared, read-only technical analysis for preflight and planning.
+
+    ``blockers`` contains every technical and manifest blocker under the same
+    rule set used by ``plan_keil_conversion``.  Git evidence is deliberately
+    absent: callers may add their own stable blockers or report it separately.
+    """
+
+    project_root: Path
+    inspection: KeilInspection
+    inputs: tuple[MigrationInput, ...]
+    patches: tuple[FilePatch, ...]
+    fixed_sections: tuple[FixedSectionRequirement, ...]
+    blockers: tuple[MigrationBlocker, ...]
+    ignored: tuple[IgnoredObservation, ...]
+
+
+def _bind_analysis_root(root: object, inspection: object) -> Path:
+    """Validate the inspection object and its exact canonical project root."""
     if not isinstance(inspection, KeilInspection):
         raise _raise(
             "MIGRATION_INSPECTION_INVALID",
@@ -630,18 +649,24 @@ def plan_keil_conversion(root: Path, inspection: KeilInspection) -> MigrationPla
             "root does not match the inspection project root",
             {"field": "inspection", "rule": "rootMatch"},
         )
+    return canonical
 
-    toplevel = git_guard.git_toplevel(canonical)
-    if toplevel != canonical:
-        raise _raise(
-            "MIGRATION_ROOT_INVALID",
-            "root is not the canonical Git worktree toplevel",
-            {"field": "projectRoot", "rule": "canonicalRoot"},
-        )
 
+def analyze_keil_conversion(
+    root: Path,
+    inspection: KeilInspection,
+    *,
+    block_source: Callable[[Path], tuple[MigrationBlocker, ...]] | None = None,
+) -> ConversionAnalysis:
+    """Run the single shared technical analysis used by preflight and plan.
+
+    ``block_source`` runs after input revalidation and before the fresh
+    inspection, preserving the planning error precedence and letting the
+    Git-bound planner contribute its dirty-worktree blockers.
+    """
+    canonical = _bind_analysis_root(root, inspection)
     exact_bytes = _revalidate_inputs(canonical, inspection.inputs)
-    head = git_guard.git_head(canonical)
-    status = git_guard.porcelain_status(canonical)
+    extra_blockers = block_source(canonical) if block_source is not None else ()
 
     try:
         fresh = inspect_keil(
@@ -662,25 +687,8 @@ def plan_keil_conversion(root: Path, inspection: KeilInspection) -> MigrationPla
             {"field": "inspection", "rule": "freshInspection"},
         )
 
-    blockers: list[MigrationBlocker] = []
+    blockers: list[MigrationBlocker] = list(extra_blockers)
     scoped_option_blockers = _scoped_option_blockers(inspection)
-    for category, path in git_guard.dirty_paths(status):
-        next_step = {
-            "index": "Review staged changes and commit or preserve them before replanning.",
-            "tracked": "Review tracked working-tree changes and commit or preserve them before replanning.",
-            "untracked": "Review and intentionally preserve this untracked file before replanning; Toolkit will not delete it.",
-        }[category]
-        blockers.append(
-            MigrationBlocker(
-                "MIGRATION_GIT_DIRTY",
-                f"MIGRATION_GIT_{category.upper()}_DIRTY",
-                path,
-                0,
-                0,
-                category,
-                f"Git {category} path blocks the read-only conversion plan. {next_step}",
-            )
-        )
     blockers.extend(_inspection_blockers(inspection))
 
     scan_entries = [
@@ -829,13 +837,9 @@ def plan_keil_conversion(root: Path, inspection: KeilInspection) -> MigrationPla
         )
     ordered_blockers = tuple(unique_blockers.values()) + tuple(scoped_option_blockers)
 
-    plan = MigrationPlan(
+    return ConversionAnalysis(
         project_root=canonical,
         inspection=fresh,
-        plan_version=1,
-        plan_id="",
-        inspection_sha256=inspection_sha256_for(fresh),
-        git=GitBaseline(head, "."),
         inputs=tuple(inputs),
         patches=tuple(patches),
         fixed_sections=tuple(
@@ -845,11 +849,71 @@ def plan_keil_conversion(root: Path, inspection: KeilInspection) -> MigrationPla
             )
         ),
         blockers=ordered_blockers,
+        ignored=tuple(sorted(ignored, key=lambda o: (o.path, o.line, o.column, o.rule_id))),
     )
-    sorted_ignored = tuple(sorted(ignored, key=lambda o: (o.path, o.line, o.column, o.rule_id)))
-    object.__setattr__(plan, "_ignored", sorted_ignored)
+
+
+def _git_dirty_blockers(canonical: Path) -> tuple[tuple[MigrationBlocker, ...], str]:
+    """Capture read-only Git evidence and map dirty entries to stable blockers."""
+    head = git_guard.git_head(canonical)
+    status = git_guard.porcelain_status(canonical)
+    blockers: list[MigrationBlocker] = []
+    for category, path in git_guard.dirty_paths(status):
+        next_step = {
+            "index": "Review staged changes and commit or preserve them before replanning.",
+            "tracked": "Review tracked working-tree changes and commit or preserve them before replanning.",
+            "untracked": "Review and intentionally preserve this untracked file before replanning; Toolkit will not delete it.",
+        }[category]
+        blockers.append(
+            MigrationBlocker(
+                "MIGRATION_GIT_DIRTY",
+                f"MIGRATION_GIT_{category.upper()}_DIRTY",
+                path,
+                0,
+                0,
+                category,
+                f"Git {category} path blocks the read-only conversion plan. {next_step}",
+            )
+        )
+    return tuple(blockers), head
+
+
+def plan_keil_conversion(root: Path, inspection: KeilInspection) -> MigrationPlan:
+    """Produce the deterministic, read-only conversion plan."""
+    canonical = _bind_analysis_root(root, inspection)
+
+    toplevel = git_guard.git_toplevel(canonical)
+    if toplevel != canonical:
+        raise _raise(
+            "MIGRATION_ROOT_INVALID",
+            "root is not the canonical Git worktree toplevel",
+            {"field": "projectRoot", "rule": "canonicalRoot"},
+        )
+
+    git_evidence: dict[str, str] = {}
+
+    def block_source(root_path: Path) -> tuple[MigrationBlocker, ...]:
+        blockers, head = _git_dirty_blockers(root_path)
+        git_evidence["head"] = head
+        return blockers
+
+    analysis = analyze_keil_conversion(canonical, inspection, block_source=block_source)
+
+    plan = MigrationPlan(
+        project_root=canonical,
+        inspection=analysis.inspection,
+        plan_version=1,
+        plan_id="",
+        inspection_sha256=inspection_sha256_for(analysis.inspection),
+        git=GitBaseline(git_evidence["head"], "."),
+        inputs=analysis.inputs,
+        patches=analysis.patches,
+        fixed_sections=analysis.fixed_sections,
+        blockers=analysis.blockers,
+    )
+    object.__setattr__(plan, "_ignored", analysis.ignored)
     plan = replace(plan, plan_id=plan_id_for(plan))
-    object.__setattr__(plan, "_ignored", sorted_ignored)
+    object.__setattr__(plan, "_ignored", analysis.ignored)
 
     serialized = json.dumps(plan.to_dict(), ensure_ascii=False)
     if len(serialized.encode("utf-8")) > _PLAN_LIMIT_BYTES:

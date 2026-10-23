@@ -389,6 +389,83 @@ def test_hardware_skills_are_thin_project_bound_mcp_workflows():
     ).read_text(encoding="utf-8")
 
 
+def test_skills_explain_preflight_statuses_and_discovery_boundaries():
+    migrate = (
+        REPO_ROOT / "skills" / "migrate-keil" / "SKILL.md"
+    ).read_text(encoding="utf-8")
+    for phrase in (
+        "stm32_keil_preflight",
+        "stm32_keil_inspect",
+        "stm32_keil_convert",
+        "uvprojx",
+        "targetName",
+        "data.plan_id",
+        "planId",
+        "authorized=true",
+        "requires no Git",
+        "Never run `git init`",
+        "does not establish migration readiness",
+        "never silently transcodes",
+        "blindly replaces ARMCC startup",
+    ):
+        assert phrase in migrate
+    assert "PLAN response field is `data.plan_id`" in migrate
+    assert "APPLY request argument is `planId`" in migrate
+    assert "applyReadiness" in migrate
+    assert "planReadiness" in migrate
+    for phrase in (
+        "omit `targetName`",
+        "KEIL_TARGET_SELECTION_REQUIRED",
+        "details.targets",
+        "data.inspection.target_name",
+        "Never guess a target",
+    ):
+        assert phrase in migrate
+    assert "ready to apply" not in migrate.replace(
+        "does **not** mean the project is ready to apply", ""
+    )
+
+    build = (
+        REPO_ROOT / "skills" / "build-firmware" / "SKILL.md"
+    ).read_text(encoding="utf-8")
+    for phrase in (
+        "capabilityDetails.build",
+        "available",
+        "blocked",
+        "not-evaluated",
+        "Never stop solely because a legacy hardware boolean",
+    ):
+        assert phrase in build
+
+    flash = (
+        REPO_ROOT / "skills" / "flash-firmware" / "SKILL.md"
+    ).read_text(encoding="utf-8")
+    for phrase in (
+        "capabilityDetails",
+        "not-evaluated",
+        "requires no manifest, build, target, or SVD",
+        "grants no board-modification permission",
+        "unbound",
+        "never invent a workspace ID",
+        "`expectedBuildId`",
+        "`expectedElfSha256`",
+        "data.build.buildId",
+        "data.build.elfSha256",
+    ):
+        assert phrase in flash
+    discovery = flash.index("**Discovery-only request.**")
+    build_requirement = flash.index("**Flash request.**")
+    assert discovery < build_requirement
+    assert "Finish here." in flash[discovery:build_requirement]
+
+    read_var = (
+        REPO_ROOT / "skills" / "read-var" / "SKILL.md"
+    ).read_text(encoding="utf-8")
+    assert "may briefly halt and then resume the core" in read_var
+    assert "state-preserving attach" in read_var
+    assert "never writes memory, resumes execution" not in read_var
+
+
 @pytest.mark.skipif(os.name != "nt", reason="PowerShell setup helper")
 def test_setup_helper_uses_explicit_paths_without_ambient_environment(tmp_path: Path):
     project = tmp_path / "project"

@@ -33,6 +33,7 @@ from stm32_toolkit.debug import (
     sample_variables,
     select_svd,
 )
+from stm32_toolkit.detection import detect_project
 from stm32_toolkit.debug.firmware import _svd_readable_regions_from_model
 from stm32_toolkit.debug.svd import SvdError
 from stm32_toolkit.paths import WorkspacePaths, require_safe_session_id
@@ -219,29 +220,64 @@ _DEFAULT_SEAMS = HardwareWorkflowSeams()
 
 
 class _WorkflowFailure(Exception):
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        details: dict[str, object] | None = None,
+    ) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
+        self.details = dict(details if details is not None else {})
 
 
-def _fail(code: str, message: str) -> _WorkflowFailure:
-    return _WorkflowFailure(code, message)
+def _fail(
+    code: str,
+    message: str,
+    details: dict[str, object] | None = None,
+) -> _WorkflowFailure:
+    return _WorkflowFailure(code, message, details)
 
 
 def _operation_failure(operation: str, error: _WorkflowFailure) -> OperationResult[None]:
-    return OperationResult.failure(operation, error.code, error.message, {})
+    return OperationResult.failure(operation, error.code, error.message, error.details)
 
 
 def _safe_root(value: object, field: str, *, must_exist: bool) -> Path:
+    normalized_field = field.replace(" ", "_")
     if not isinstance(value, Path):
-        raise _fail("HARDWARE_INPUT_INVALID", f"{field} is invalid")
+        raise _fail(
+            "HARDWARE_INPUT_INVALID",
+            f"{field} is invalid",
+            {
+                "field": normalized_field,
+                "rule": "type",
+                "guidance": "Pass the documented absolute project-root path; do not construct an ad-hoc request object.",
+            },
+        )
     try:
         root = value.expanduser().resolve(strict=must_exist)
     except (OSError, RuntimeError, ValueError):
-        raise _fail("HARDWARE_INPUT_INVALID", f"{field} is invalid") from None
+        raise _fail(
+            "HARDWARE_INPUT_INVALID",
+            f"{field} is invalid",
+            {
+                "field": normalized_field,
+                "rule": "directory",
+                "guidance": "Pass an existing, readable, non-redirected project root; do not create or redirect it implicitly.",
+            },
+        ) from None
     if must_exist and not root.is_dir():
-        raise _fail("HARDWARE_INPUT_INVALID", f"{field} is invalid")
+        raise _fail(
+            "HARDWARE_INPUT_INVALID",
+            f"{field} is invalid",
+            {
+                "field": normalized_field,
+                "rule": "directory",
+                "guidance": "Pass an existing project directory; do not point the workflow at a file or missing path.",
+            },
+        )
     return root
 
 
@@ -249,7 +285,15 @@ def _safe_external_data_root(value: object, project_root: Path) -> Path:
     """Resolve one machine-owned root without following existing redirects."""
 
     if not isinstance(value, Path):
-        raise _fail("HARDWARE_INPUT_INVALID", "data root is invalid")
+        raise _fail(
+            "HARDWARE_INPUT_INVALID",
+            "data root is invalid",
+            {
+                "field": "data_root",
+                "rule": "type",
+                "guidance": "Pass the machine-owned Toolkit data root as a path outside the project root.",
+            },
+        )
     try:
         lexical = value.expanduser().absolute()
         current = Path(lexical.anchor)
@@ -264,7 +308,15 @@ def _safe_external_data_root(value: object, project_root: Path) -> Path:
                 raise OSError("unsafe data root")
         canonical = lexical.resolve(strict=False)
     except (OSError, RuntimeError, ValueError):
-        raise _fail("HARDWARE_INPUT_INVALID", "data root is invalid") from None
+        raise _fail(
+            "HARDWARE_INPUT_INVALID",
+            "data root is invalid",
+            {
+                "field": "data_root",
+                "rule": "externalDirectory",
+                "guidance": "Use a non-redirected data-root directory outside the project; Toolkit creates only its own runtime directories.",
+            },
+        ) from None
     try:
         canonical.relative_to(project_root)
     except ValueError:
@@ -272,7 +324,69 @@ def _safe_external_data_root(value: object, project_root: Path) -> Path:
     raise _fail(
         "HARDWARE_INPUT_INVALID",
         "data root must remain outside the project root",
+        {
+            "field": "data_root",
+            "rule": "outsideProjectRoot",
+            "guidance": "Choose a persistent data root outside the project tree; do not store machine state inside the project.",
+        },
     )
+
+
+def _project_kind(project_root: Path) -> str:
+    try:
+        return detect_project(project_root).kind
+    except Exception:
+        return "unknown"
+
+
+def _safe_source_path(value: object) -> str | None:
+    """Return a bounded portable evidence path; omit host-absolute paths."""
+    if not isinstance(value, str) or not value or len(value) > 128:
+        return None
+    if value.startswith(("/", "\\")) or (len(value) > 1 and value[1] == ":"):
+        return None
+    return value
+
+
+_MODEL_GUIDANCE = {
+    "PROJECT_NOT_CONFIGURED": (
+        "Create or migrate a valid Schema v2/v3 .stm32-project.json with the documented workflows; do not fabricate a manifest or project identity."
+    ),
+    "PROJECT_JSON_INVALID": (
+        "Restore or correct the manifest JSON and its encoding; do not guess fields or rewrite identity."
+    ),
+    "PROJECT_SCHEMA_VERSION_UNSUPPORTED": (
+        "Use the explicit compatibility or upgrade workflow; do not relabel schemaVersion."
+    ),
+    "PROJECT_SCHEMA_INVALID": (
+        "Fix the reported manifest field or restore the file from version control; do not weaken or bypass schema checks."
+    ),
+}
+
+
+def _model_load_details(error: ProjectManifestError, project_root: Path) -> dict[str, object]:
+    """Safe structured model-load diagnostics; never copy exception text."""
+    details: dict[str, object] = {
+        "field": "projectModel",
+        "rule": "load",
+        "sourceCode": error.code,
+        "projectKind": _project_kind(project_root),
+        "expectedSchema": [2, 3],
+        "guidance": _MODEL_GUIDANCE.get(
+            error.code,
+            "Correct the manifest error identified by sourceCode/sourceField/sourceRule; do not fabricate identity or bypass validation.",
+        ),
+    }
+    source_path = _safe_source_path(error.details.get("path"))
+    if source_path is not None:
+        details["sourcePath"] = source_path
+    source_field = error.details.get("field")
+    if isinstance(source_field, str) and 0 < len(source_field) <= 128:
+        details["sourceField"] = source_field
+    source_rule = error.details.get("rule")
+    if isinstance(source_rule, str) and 0 < len(source_rule) <= 128:
+        details["sourceRule"] = source_rule
+    return details
 
 
 def _prepare(
@@ -284,24 +398,101 @@ def _prepare(
     require_svd: bool = False,
 ) -> tuple[object, ProjectModel, WorkspacePaths]:
     if type(request) is not expected_type:
-        raise _fail("HARDWARE_INPUT_INVALID", "Hardware workflow input is invalid")
+        raise _fail(
+            "HARDWARE_INPUT_INVALID",
+            "Hardware workflow input is invalid",
+            {
+                "field": "request",
+                "rule": "type",
+                "guidance": "Call the public workflow or MCP tool with its documented request type; do not construct an ad-hoc object.",
+            },
+        )
     project_root = _safe_root(getattr(request, "project_root", None), "project root", must_exist=True)
     data_root = _safe_external_data_root(
         getattr(request, "data_root", None), project_root
     )
     try:
         session_id = require_safe_session_id(getattr(request, "session_id", None))
+    except (TypeError, ValueError):
+        raise _fail(
+            "HARDWARE_INPUT_INVALID",
+            "Hardware workflow input is invalid",
+            {
+                "field": "session_id",
+                "rule": "format",
+                "guidance": "Use a filesystem-safe session id: lowercase letters, digits, '-' or '_', starting with a letter or digit.",
+            },
+        ) from None
+    try:
         model = load_project_model(project_root)
-    except (ProjectManifestError, TypeError, ValueError):
-        raise _fail("HARDWARE_INPUT_INVALID", "Hardware workflow input is invalid") from None
+    except ProjectManifestError as error:
+        raise _fail(
+            "HARDWARE_INPUT_INVALID",
+            "Hardware workflow input is invalid",
+            _model_load_details(error, project_root),
+        ) from None
+    except (TypeError, ValueError):
+        raise _fail(
+            "HARDWARE_INPUT_INVALID",
+            "Hardware workflow input is invalid",
+            {
+                "field": "projectModel",
+                "rule": "load",
+                "sourceCode": None,
+                "projectKind": _project_kind(project_root),
+                "expectedSchema": [2, 3],
+                "guidance": "Correct the project model through a documented workflow; do not fabricate a manifest or bypass validation.",
+            },
+        ) from None
+    if model.schema_version not in (2, 3):
+        raise _fail(
+            "HARDWARE_INPUT_INVALID",
+            "A Schema-v2 PyOCD target is required",
+            {
+                "field": "projectModel",
+                "rule": "schemaVersion",
+                "projectKind": "configured",
+                "actual": model.schema_version,
+                "supported": [2, 3],
+                "guidance": "Use a Schema v2 or v3 project model produced by a documented workflow; do not relabel or fabricate schemaVersion.",
+            },
+        )
+    if model.project_root != project_root:
+        raise _fail(
+            "HARDWARE_INPUT_INVALID",
+            "A Schema-v2 PyOCD target is required",
+            {
+                "field": "projectModel",
+                "rule": "rootMatch",
+                "projectKind": "configured",
+                "guidance": "Re-bind the workflow to the manifest's canonical project root; do not copy or rewrite project identity.",
+            },
+        )
+    if model.debug.backend != "pyocd":
+        raise _fail(
+            "HARDWARE_INPUT_INVALID",
+            "A Schema-v2 PyOCD target is required",
+            {
+                "field": "debug.backend",
+                "rule": "pyocdRequired",
+                "projectKind": "configured",
+                "guidance": "Configure debug.backend as pyocd through a reviewed project-model change; Toolkit does not select or fall back to another backend.",
+            },
+        )
     if (
-        model.schema_version not in (2, 3)
-        or model.project_root != project_root
-        or model.debug.backend != "pyocd"
-        or not isinstance(model.debug.target, str)
+        not isinstance(model.debug.target, str)
         or _IDENTIFIER.fullmatch(model.debug.target) is None
     ):
-        raise _fail("HARDWARE_INPUT_INVALID", "A Schema-v2 PyOCD target is required")
+        raise _fail(
+            "HARDWARE_INPUT_INVALID",
+            "A Schema-v2 PyOCD target is required",
+            {
+                "field": "debug.target",
+                "rule": "identifierRequired",
+                "projectKind": "configured",
+                "guidance": "Set debug.target to the exact supported target identifier for the device; do not guess or auto-select a target.",
+            },
+        )
     if require_svd and (
         not isinstance(model.debug.svd, str)
         or not model.debug.svd
@@ -310,16 +501,48 @@ def _prepare(
         raise _fail(
             "SVD_SELECTION_REQUIRED",
             "Place the device SVD inside the project root and configure debug.svd",
+            {
+                "field": "debug.svd",
+                "rule": "required",
+                "projectKind": "configured",
+                "guidance": "Place the exact device SVD inside the project root and configure debug.svd; do not widen readable regions or trust all addresses to bypass selection.",
+            },
         )
     if require_probe:
         probe = getattr(request, "probe_id", None)
         if not isinstance(probe, str) or _IDENTIFIER.fullmatch(probe) is None:
-            raise _fail("HARDWARE_INPUT_INVALID", "Probe selector is invalid")
+            raise _fail(
+                "HARDWARE_INPUT_INVALID",
+                "Probe selector is invalid",
+                {
+                    "field": "probe_id",
+                    "rule": "identifier",
+                    "guidance": "Use the exact probeId returned by stm32_probe_list; never construct, hash, or guess a selector.",
+                },
+            )
     if require_pins:
-        if _DIGEST.fullmatch(getattr(request, "expected_build_id", "")) is None or _DIGEST.fullmatch(
-            getattr(request, "expected_elf_sha256", "")
-        ) is None:
-            raise _fail("HARDWARE_INPUT_INVALID", "Firmware identity pins are invalid")
+        build_pin = getattr(request, "expected_build_id", None)
+        if not isinstance(build_pin, str) or _DIGEST.fullmatch(build_pin) is None:
+            raise _fail(
+                "HARDWARE_INPUT_INVALID",
+                "Firmware identity pins are invalid",
+                {
+                    "field": "expected_build_id",
+                    "rule": "sha256",
+                    "guidance": "Read data.build.buildId from stm32_project_context and pass it as expectedBuildId; never reuse stale or fabricated pins.",
+                },
+            )
+        elf_pin = getattr(request, "expected_elf_sha256", None)
+        if not isinstance(elf_pin, str) or _DIGEST.fullmatch(elf_pin) is None:
+            raise _fail(
+                "HARDWARE_INPUT_INVALID",
+                "Firmware identity pins are invalid",
+                {
+                    "field": "expected_elf_sha256",
+                    "rule": "sha256",
+                    "guidance": "Read data.build.elfSha256 from stm32_project_context and pass it as expectedElfSha256; never reuse stale or fabricated pins.",
+                },
+            )
     try:
         paths = WorkspacePaths.from_roots(
             data_root,
@@ -328,7 +551,15 @@ def _prepare(
             session_id,
         )
     except (OSError, RuntimeError, TypeError, ValueError):
-        raise _fail("HARDWARE_INPUT_INVALID", "Hardware workflow roots are invalid") from None
+        raise _fail(
+            "HARDWARE_INPUT_INVALID",
+            "Hardware workflow roots are invalid",
+            {
+                "field": "workspace",
+                "rule": "roots",
+                "guidance": "Use a project root, external data root, and session id that yield a deterministic workspace identity; do not hand-edit workspace state.",
+            },
+        ) from None
     if require_probe:
         component = "probe-" + hashlib.sha256(probe.encode("utf-8")).hexdigest()[:24]
         paths = replace(
@@ -616,6 +847,18 @@ def _sanitize(value: object, roots: tuple[Path, ...]) -> object:
 
 
 def _public_result(result: object, paths: WorkspacePaths) -> OperationResult[object]:
+    roots = (
+        paths.project_root,
+        paths.data_root,
+        paths.workspace_root,
+        paths.session_root,
+    )
+    return _public_result_with_roots(result, roots)
+
+
+def _public_result_with_roots(
+    result: object, roots: tuple[Path, ...]
+) -> OperationResult[object]:
     if not isinstance(result, OperationResult):
         return OperationResult.failure(
             "hardware-workflow",
@@ -624,12 +867,6 @@ def _public_result(result: object, paths: WorkspacePaths) -> OperationResult[obj
             {},
         )
     payload = result.to_dict()
-    roots = (
-        paths.project_root,
-        paths.data_root,
-        paths.workspace_root,
-        paths.session_root,
-    )
     details = _sanitize(payload.get("details", {}), roots)
     if not isinstance(details, Mapping):
         details = {}
@@ -847,6 +1084,178 @@ async def _one_shot(
     return _with_attach_guidance(_public_result(result, paths), requested_target)
 
 
+@dataclass(frozen=True)
+class _ProbeListPreparation:
+    project_root: Path
+    data_root: Path
+    session_id: str
+    workspace_id: str | None
+    paths: WorkspacePaths | None
+    model_error: dict[str, object] | None
+
+
+def _probe_list_unbound(
+    project_root: Path,
+    data_root: Path,
+    session_id: str,
+    code: str,
+    *,
+    field: str | None = None,
+    rule: str | None = None,
+    path: str | None = None,
+) -> _ProbeListPreparation:
+    error: dict[str, object] = {"code": code}
+    if field is not None:
+        error["field"] = field
+    if rule is not None:
+        error["rule"] = rule
+    if path is not None:
+        error["path"] = path
+    return _ProbeListPreparation(
+        project_root, data_root, session_id, None, None, error
+    )
+
+
+def _prepare_probe_list(request: object) -> _ProbeListPreparation:
+    """Validate discovery roots/session and establish optional workspace identity.
+
+    Probe discovery never requires a model, build, backend, target, or SVD.
+    A valid Schema v2/v3 model preserves the existing workspace ID; any
+    missing or unusable model returns an explicit unbound discovery state.
+    No directory, manifest, lease, or project file is created.
+    """
+    if type(request) is not ProbeListWorkflowRequest:
+        raise _fail(
+            "HARDWARE_INPUT_INVALID",
+            "Hardware workflow input is invalid",
+            {
+                "field": "request",
+                "rule": "type",
+                "guidance": "Call probe discovery with the documented project, external data root, and session request.",
+            },
+        )
+    project_root = _safe_root(
+        getattr(request, "project_root", None), "project root", must_exist=True
+    )
+    data_root = _safe_external_data_root(
+        getattr(request, "data_root", None), project_root
+    )
+    try:
+        session_id = require_safe_session_id(getattr(request, "session_id", None))
+    except (TypeError, ValueError):
+        raise _fail(
+            "HARDWARE_INPUT_INVALID",
+            "Hardware workflow input is invalid",
+            {
+                "field": "session_id",
+                "rule": "format",
+                "guidance": "Use a filesystem-safe session id: lowercase letters, digits, '-' or '_', starting with a letter or digit.",
+            },
+        ) from None
+    try:
+        model = load_project_model(project_root)
+    except ProjectManifestError as error:
+        source_path = error.details.get("path")
+        source_field = error.details.get("field")
+        source_rule = error.details.get("rule")
+        return _probe_list_unbound(
+            project_root,
+            data_root,
+            session_id,
+            error.code,
+            field=source_field if isinstance(source_field, str) else None,
+            rule=source_rule if isinstance(source_rule, str) else None,
+            path=_safe_source_path(source_path),
+        )
+    except (TypeError, ValueError):
+        return _probe_list_unbound(
+            project_root, data_root, session_id, "PROJECT_MODEL_INVALID"
+        )
+    except OSError:
+        return _probe_list_unbound(
+            project_root, data_root, session_id, "PROJECT_MODEL_UNAVAILABLE"
+        )
+    if model.schema_version not in (2, 3):
+        return _probe_list_unbound(
+            project_root,
+            data_root,
+            session_id,
+            "PROJECT_SCHEMA_VERSION_UNSUPPORTED",
+            field="projectModel",
+            rule="schemaVersion",
+        )
+    if model.project_root != project_root:
+        return _probe_list_unbound(
+            project_root,
+            data_root,
+            session_id,
+            "PROJECT_ROOT_MISMATCH",
+            field="projectModel",
+            rule="rootMatch",
+        )
+    try:
+        paths = WorkspacePaths.from_roots(
+            data_root,
+            project_root,
+            model.logical_project_id,
+            session_id,
+        )
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return _probe_list_unbound(
+            project_root,
+            data_root,
+            session_id,
+            "WORKSPACE_IDENTITY_UNAVAILABLE",
+            field="workspace",
+            rule="identity",
+        )
+    return _ProbeListPreparation(
+        project_root,
+        data_root,
+        session_id,
+        paths.workspace_id,
+        paths,
+        None,
+    )
+
+
+def _probe_list_discovery(
+    preparation: _ProbeListPreparation,
+) -> dict[str, object]:
+    if preparation.workspace_id is not None:
+        return {
+            "mode": "probe-discovery",
+            "status": "project-bound",
+            "workspaceId": preparation.workspace_id,
+            "reason": (
+                "Workspace identity is available from the valid project model."
+            ),
+            "modelError": None,
+            "targetIdentity": "not-evaluated",
+            "flashReadiness": "not-evaluated",
+            "nextSteps": [
+                "Probe discovery does not verify target identity or flash readiness; use flashing or debugging only with current firmware identity pins and explicit authorization."
+            ],
+        }
+    return {
+        "mode": "probe-discovery",
+        "status": "unbound",
+        "workspaceId": None,
+        "reason": (
+            "No valid Schema v2/v3 project model is available; probe "
+            "enumeration is discovery-only and does not establish a "
+            "workspace, target identity, or flash readiness."
+        ),
+        "modelError": preparation.model_error,
+        "targetIdentity": "not-evaluated",
+        "flashReadiness": "not-evaluated",
+        "nextSteps": [
+            "Continue with probe enumeration; it requires no configured build, debug backend, target, or SVD.",
+            "To bind workspace identity, establish a valid Schema v2/v3 .stm32-project.json in the project root; never fabricate a manifest or workspace ID.",
+        ],
+    }
+
+
 async def probe_list_workflow(
     request: object,
     *,
@@ -854,9 +1263,7 @@ async def probe_list_workflow(
 ) -> OperationResult[object]:
     operation = "stm32_probe_list"
     try:
-        _, _, paths = _prepare(
-            request, ProbeListWorkflowRequest, require_probe=False, require_pins=False
-        )
+        preparation = _prepare_probe_list(request)
     except _WorkflowFailure as error:
         return _operation_failure(operation, error)
     backend: object | None = None
@@ -895,9 +1302,10 @@ async def probe_list_workflow(
             result = OperationResult.success(
                 operation,
                 {
-                    "workspaceId": paths.workspace_id,
-                    "sessionId": paths.session_id,
+                    "workspaceId": preparation.workspace_id,
+                    "sessionId": preparation.session_id,
                     "probes": [item.to_dict() for item in ordered],
+                    "discovery": _probe_list_discovery(preparation),
                 },
             )
     except _WorkflowFailure as error:
@@ -937,7 +1345,17 @@ async def probe_list_workflow(
     if cancelled is not None:
         raise cancelled
     assert result is not None
-    return _public_result(result, paths)
+    roots = (
+        (preparation.project_root, preparation.data_root)
+        if preparation.paths is None
+        else (
+            preparation.paths.project_root,
+            preparation.paths.data_root,
+            preparation.paths.workspace_root,
+            preparation.paths.session_root,
+        )
+    )
+    return _public_result_with_roots(result, roots)
 
 
 async def flash_workflow(

@@ -32,6 +32,7 @@ from stm32_toolkit.migration import (
     MigrationPlanError,
     apply_keil_conversion,
     plan_keil_conversion,
+    preflight_keil_conversion,
 )
 from stm32_toolkit.migration.model import portable_path_error
 from stm32_toolkit.project_model import ProjectManifestError, load_project_model
@@ -43,6 +44,7 @@ AUTHORIZATION_REQUIRED = "AUTHORIZATION_REQUIRED"
 PLAN_CHANGED = "PLAN_CHANGED"
 KEIL_INSPECTION_UNAVAILABLE = "KEIL_INSPECTION_UNAVAILABLE"
 MIGRATION_PLAN_UNAVAILABLE = "MIGRATION_PLAN_UNAVAILABLE"
+KEIL_PREFLIGHT_UNAVAILABLE = "KEIL_PREFLIGHT_UNAVAILABLE"
 CONFIGURATION_PLAN_UNAVAILABLE = "CONFIGURATION_PLAN_UNAVAILABLE"
 
 SUPPORTED_PRESETS = ("arm-debug", "arm-release")
@@ -189,6 +191,60 @@ def inspect_keil_workflow(
             result, details={"baselineSemantics": "parseable-historical-artifact-only"}
         )
     return result
+
+
+# ---------------------------------------------------------------------------
+# preflight
+# ---------------------------------------------------------------------------
+
+
+def preflight_keil_workflow(
+    project_root: Path,
+    *,
+    uvprojx: str | None = None,
+    target_name: str | None = None,
+) -> OperationResult[dict[str, object]]:
+    """Read-only migration preflight; analysis succeeds without Git.
+
+    The result always means "analysis completed", never "apply authorized".
+    Technical blockers and Git/apply prerequisites are reported separately.
+    """
+    operation = "keil-preflight"
+    try:
+        root = _bind_project_root(project_root)
+        uvprojx_path = _optional_portable_path(uvprojx, "uvprojx")
+        target = _optional_name(target_name, "targetName")
+    except _InputInvalid as error:
+        return _failure(
+            operation,
+            WORKFLOW_INPUT_INVALID,
+            "Keil preflight workflow input is invalid",
+            error.details,
+        )
+
+    try:
+        inspection = inspect_keil(root, uvprojx_path, target)
+        data = preflight_keil_conversion(root, inspection)
+    except KeilInspectionError as error:
+        return _failure(operation, error.code, error.message, error.details)
+    except MigrationPlanError as error:
+        return _failure(operation, error.code, error.message, error.details)
+    except (OSError, ValueError):
+        return _failure(
+            operation,
+            KEIL_PREFLIGHT_UNAVAILABLE,
+            "Keil preflight is unavailable",
+            {"field": "preflight", "rule": "unavailable"},
+        )
+
+    return replace(
+        OperationResult.success(operation, data),
+        details={
+            "analysisOnly": True,
+            "grantsApplyAuthorization": False,
+            "hardwareDiscovery": "not-performed",
+        },
+    )
 
 
 # ---------------------------------------------------------------------------

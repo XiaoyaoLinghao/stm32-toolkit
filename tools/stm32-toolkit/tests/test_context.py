@@ -107,6 +107,7 @@ def test_configured_context_reports_evidence_sections_without_build(
             "capabilities": {
                 "build": False,
                 "keilInspect": False,
+                "keilPreflight": False,
                 "keilConvert": False,
                 "configure": True,
                 "flash": False,
@@ -114,6 +115,78 @@ def test_configured_context_reports_evidence_sections_without_build(
                 "targetTest": False,
                 "monitor": False,
                 "breakpointDebug": False,
+            },
+            "capabilityDetails": {
+                "build": {
+                    "status": "blocked",
+                    "reason": "The managed configuration manifest is missing.",
+                    "nextSteps": [
+                        "Run stm32_project_configure to review and apply managed configuration with explicit authorization; do not hand-edit generated files."
+                    ],
+                },
+                "keilInspect": {
+                    "status": "blocked",
+                    "reason": "This project root is bound to .stm32-project.json; no Keil project is selected for migration.",
+                    "nextSteps": [
+                        "If this tree also contains a Keil project, start a Toolkit session bound to that project root and select its uvprojx."
+                    ],
+                },
+                "keilPreflight": {
+                    "status": "blocked",
+                    "reason": "This project root is bound to .stm32-project.json; no Keil project is selected for migration.",
+                    "nextSteps": [
+                        "If this tree also contains a Keil project, start a Toolkit session bound to that project root and select its uvprojx."
+                    ],
+                },
+                "keilConvert": {
+                    "status": "blocked",
+                    "reason": "This project root is bound to .stm32-project.json; no Keil project is selected for migration.",
+                    "nextSteps": [
+                        "If this tree also contains a Keil project, start a Toolkit session bound to that project root and select its uvprojx."
+                    ],
+                },
+                "configure": {
+                    "status": "available",
+                    "reason": "A valid supported Schema v2/v3 project model is available.",
+                    "nextSteps": [
+                        "Call stm32_project_configure to review the read-only plan before any authorized apply."
+                    ],
+                },
+                "hostTest": {
+                    "status": "not-evaluated",
+                    "reason": "Project context does not discover or evaluate host tests.",
+                    "nextSteps": [
+                        "Call stm32_test_host_discover to evaluate host-test readiness for this configured project."
+                    ],
+                },
+                "flash": {
+                    "status": "not-evaluated",
+                    "reason": "Project context does not enumerate probes or inspect target state, so this hardware capability is not evaluated here; the tool still exists.",
+                    "nextSteps": [
+                        "Call stm32_probe_list to enumerate connected probes. It requires no build, debug backend, target, or SVD and does not modify the board."
+                    ],
+                },
+                "targetTest": {
+                    "status": "not-evaluated",
+                    "reason": "Project context does not enumerate probes or inspect target state, so this hardware capability is not evaluated here; the tool still exists.",
+                    "nextSteps": [
+                        "Call stm32_probe_list to enumerate connected probes. It requires no build, debug backend, target, or SVD and does not modify the board."
+                    ],
+                },
+                "monitor": {
+                    "status": "not-evaluated",
+                    "reason": "Project context does not enumerate probes or inspect target state, so this hardware capability is not evaluated here; the tool still exists.",
+                    "nextSteps": [
+                        "Call stm32_probe_list to enumerate connected probes. It requires no build, debug backend, target, or SVD and does not modify the board."
+                    ],
+                },
+                "breakpointDebug": {
+                    "status": "not-evaluated",
+                    "reason": "Project context does not enumerate probes or inspect target state, so this hardware capability is not evaluated here; the tool still exists.",
+                    "nextSteps": [
+                        "Call stm32_probe_list to enumerate connected probes. It requires no build, debug backend, target, or SVD and does not modify the board."
+                    ],
+                },
             },
             "recommendedActions": [],
         },
@@ -171,6 +244,7 @@ def test_keil_context_stays_read_only_and_reports_inspection_capabilities(
         "capabilities": {
             "build": False,
             "keilInspect": True,
+            "keilPreflight": True,
             "keilConvert": True,
             "configure": False,
             "flash": False,
@@ -179,14 +253,100 @@ def test_keil_context_stays_read_only_and_reports_inspection_capabilities(
             "monitor": False,
             "breakpointDebug": False,
         },
-        "recommendedActions": [{
-            "id": "migrate-keil",
-            "available": True,
-            "explanation": (
-                "Inspect the Keil project and convert ARMCC sources to GCC "
-                "with a read-only plan and explicit authorization."
-            ),
-        }],
+        "capabilityDetails": {
+            "build": {
+                "status": "blocked",
+                "reason": "No valid supported .stm32-project.json is configured.",
+                "nextSteps": [
+                    "Create, migrate, or configure a valid project before building."
+                ],
+            },
+            "keilInspect": {
+                "status": "available",
+                "reason": "A Keil .uvprojx entry point exists, but entry availability does not establish migration readiness.",
+                "nextSteps": [
+                    "Call stm32_keil_inspect with the project-relative uvprojx and exact targetName.",
+                    "Call stm32_keil_preflight with the same selection to receive typed blockers and Git/apply prerequisites.",
+                ],
+            },
+            "keilPreflight": {
+                "status": "available",
+                "reason": "Read-only preflight is available without Git and may still return blockers.",
+                "nextSteps": [
+                    "Call stm32_keil_preflight with the selected uvprojx and exact targetName, then resolve every reported blocker.",
+                    "Establish any Git baseline as an explicit project-owner decision; preflight never runs git init.",
+                ],
+            },
+            "keilConvert": {
+                "status": "available",
+                "reason": "The conversion entry point exists; a Git-bound plan and explicit authorization are still required.",
+                "nextSteps": [
+                    "After preflight is complete and blockers are resolved, call stm32_keil_convert without planId for a read-only PLAN response.",
+                    "Read data.plan_id and data.patches[].unified_diff; pass that exact value as the apply request's planId only after explicit user authorization.",
+                ],
+            },
+            "configure": {
+                "status": "blocked",
+                "reason": "Configuration requires a valid supported .stm32-project.json.",
+                "nextSteps": [
+                    "Create a project model or complete Keil migration first; configuration has its own read-only plan and authorization."
+                ],
+            },
+            "hostTest": {
+                "status": "blocked",
+                "reason": "Host tests require a configured project with test metadata.",
+                "nextSteps": [
+                    "Configure the project first, then call stm32_test_host_discover."
+                ],
+            },
+            "flash": {
+                "status": "not-evaluated",
+                "reason": "Project context does not enumerate probes or inspect target state, so this hardware capability is not evaluated here; the tool still exists.",
+                "nextSteps": [
+                    "Call stm32_probe_list to enumerate connected probes. It requires no build, debug backend, target, or SVD and does not modify the board."
+                ],
+            },
+            "targetTest": {
+                "status": "not-evaluated",
+                "reason": "Project context does not enumerate probes or inspect target state, so this hardware capability is not evaluated here; the tool still exists.",
+                "nextSteps": [
+                    "Call stm32_probe_list to enumerate connected probes. It requires no build, debug backend, target, or SVD and does not modify the board."
+                ],
+            },
+            "monitor": {
+                "status": "not-evaluated",
+                "reason": "Project context does not enumerate probes or inspect target state, so this hardware capability is not evaluated here; the tool still exists.",
+                "nextSteps": [
+                    "Call stm32_probe_list to enumerate connected probes. It requires no build, debug backend, target, or SVD and does not modify the board."
+                ],
+            },
+            "breakpointDebug": {
+                "status": "not-evaluated",
+                "reason": "Project context does not enumerate probes or inspect target state, so this hardware capability is not evaluated here; the tool still exists.",
+                "nextSteps": [
+                    "Call stm32_probe_list to enumerate connected probes. It requires no build, debug backend, target, or SVD and does not modify the board."
+                ],
+            },
+        },
+        "recommendedActions": [
+            {
+                "id": "migrate-keil",
+                "available": True,
+                "explanation": (
+                    "Inspect the Keil project and convert ARMCC sources to GCC "
+                    "with a read-only plan and explicit authorization."
+                ),
+            },
+            {
+                "id": "keil-preflight",
+                "available": True,
+                "explanation": (
+                    "Run stm32_keil_preflight with the selected project-relative uvprojx "
+                    "and exact targetName. It is read-only, requires no Git, may return "
+                    "blockers, and does not authorize conversion."
+                ),
+            },
+        ],
     }
     assert not data_root.exists()
     assert result.details == {
@@ -206,7 +366,13 @@ def test_nested_keil_context_reports_readiness_without_probe_access(tmp_path: Pa
     assert result.ok is True
     assert result.data["project"]["files"] == ("Project/legacy.uvprojx",)
     assert result.data["capabilities"]["keilInspect"] is True
+    assert result.data["capabilities"]["keilPreflight"] is True
     assert result.data["capabilities"]["keilConvert"] is True
+    assert result.data["capabilityDetails"]["keilPreflight"]["status"] == "available"
+    assert "stm32_keil_preflight" in " ".join(
+        result.data["capabilityDetails"]["keilPreflight"]["nextSteps"]
+    )
+    assert result.data["capabilityDetails"]["flash"]["status"] == "not-evaluated"
     assert result.data["hardware"] == {"probe": None, "state": "unavailable"}
     assert result.details["hardwareDiscovery"] == "not-performed"
     assert not data_root.exists()
@@ -905,7 +1071,10 @@ def test_unconfigured_kinds_keep_hardware_capabilities_false(tmp_path: Path):
         assert result.ok is True
         capabilities = result.data["capabilities"]
         assert capabilities["keilInspect"] is False
+        assert capabilities["keilPreflight"] is False
         assert capabilities["keilConvert"] is False
         assert capabilities["configure"] is False
         for key in ("flash", "hostTest", "targetTest", "monitor", "breakpointDebug"):
             assert capabilities[key] is False
+        assert result.data["capabilityDetails"]["keilPreflight"]["status"] == "blocked"
+        assert result.data["capabilityDetails"]["build"]["status"] == "blocked"

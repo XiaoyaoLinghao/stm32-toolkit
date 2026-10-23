@@ -116,6 +116,7 @@ from stm32_toolkit.workflows import (
     configure_project_workflow,
     convert_keil_workflow,
     inspect_keil_workflow,
+    preflight_keil_workflow,
 )
 from stm32_toolkit import __version__
 
@@ -363,6 +364,12 @@ def _build_parser() -> argparse.ArgumentParser:
     inspect.add_argument("--uvprojx")
     inspect.add_argument("--target-name")
     inspect.add_argument("--no-baseline", action="store_true")
+
+    preflight = keil_commands.add_parser("preflight")
+    _add_workflow_root(preflight)
+    _add_json(preflight)
+    preflight.add_argument("--uvprojx")
+    preflight.add_argument("--target-name")
 
     convert = keil_commands.add_parser("convert")
     _add_workflow_root(convert)
@@ -1266,6 +1273,12 @@ def _operation_result(
                 uvprojx=args.uvprojx,
                 target_name=args.target_name,
                 include_baseline=not args.no_baseline,
+            )
+        if args.keil_command == "preflight":
+            return preflight_keil_workflow(
+                project_root,
+                uvprojx=args.uvprojx,
+                target_name=args.target_name,
             )
         return convert_keil_workflow(
             project_root,

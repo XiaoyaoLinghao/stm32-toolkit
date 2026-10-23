@@ -29,9 +29,9 @@
 }
 ```
 
-八个 Claude Code Skill 均调用相同的公开合同：[setup-stm32-env](../skills/setup-stm32-env/SKILL.md)、[migrate-keil](../skills/migrate-keil/SKILL.md)、[configure-stm32-project](../skills/configure-stm32-project/SKILL.md)、[build-firmware](../skills/build-firmware/SKILL.md)、[flash-firmware](../skills/flash-firmware/SKILL.md)、[debug-firmware](../skills/debug-firmware/SKILL.md)、[read-var](../skills/read-var/SKILL.md)、[stm32-monitor](../skills/stm32-monitor/SKILL.md)。48 个 MCP 工具名称及八个 Skill 的当前权威清单在 [public_inventory.py](../tools/stm32-toolkit/src/stm32_toolkit/public_inventory.py)；宿主应以实际已安装版本为准。
+八个 Claude Code Skill 均调用相同的公开合同：[setup-stm32-env](../skills/setup-stm32-env/SKILL.md)、[migrate-keil](../skills/migrate-keil/SKILL.md)、[configure-stm32-project](../skills/configure-stm32-project/SKILL.md)、[build-firmware](../skills/build-firmware/SKILL.md)、[flash-firmware](../skills/flash-firmware/SKILL.md)、[debug-firmware](../skills/debug-firmware/SKILL.md)、[read-var](../skills/read-var/SKILL.md)、[stm32-monitor](../skills/stm32-monitor/SKILL.md)。当前源码的 49 个 MCP 工具名称及八个 Skill 权威清单在 [public_inventory.py](../tools/stm32-toolkit/src/stm32_toolkit/public_inventory.py)；已发布的 v1.2.0 安装包仍为 48 个工具，不包含本源码切片的 `stm32_keil_preflight`。宿主应以实际已安装版本为准。
 
-以下命令中的路径均为示例，须替换为本机真实绝对路径，并在 v1.2.0 runtime `Check` 返回 healthy 后使用其已安装的 CLI。CLI 工程命令需显式 `--project-root`；`--json` 命令返回结构化 code/details。`--dry-run` 只产生计划，`--apply --plan-id ... --authorized` 是独立写操作，不要直接套用示例 plan ID。
+以下命令中的路径均为示例，须替换为本机真实绝对路径。**已发布 v1.2.0 runtime（48 个工具）不含 `keil preflight`/`stm32_keil_preflight`**；第一组只列该发行包已有的入口，必须在 `Check` 返回 healthy 后使用。第二组属于当前源码/候选切片，只有实际运行该源码或候选构建时才有这些入口；本文不表示它已打包、安装或部署。CLI 工程命令需显式 `--project-root`；`--json` 命令返回结构化 code/details，`uvprojx` 必须使用正斜杠的可移植相对路径。`--dry-run` 只产生计划，`--apply --plan-id ... --authorized` 是独立写操作，不要直接套用示例 plan ID。
 
 ```powershell
 $DataRoot = 'C:\data\stm32-toolkit'
@@ -39,13 +39,34 @@ $ProjectRoot = 'C:\work\blinky'
 $Cli = Join-Path $DataRoot 'runtime\1.2.0\Scripts\stm32-toolkit.exe'
 & $Cli --project-root $ProjectRoot doctor --json
 & $Cli --project-root $ProjectRoot project detect --json
-& $Cli --project-root $ProjectRoot keil inspect --uvprojx Project\blinky.uvprojx --target-name Debug --json
-& $Cli --project-root $ProjectRoot keil convert --uvprojx Project\blinky.uvprojx --target-name Debug --dry-run --json
+& $Cli --project-root $ProjectRoot keil inspect --uvprojx Project/blinky.uvprojx --target-name Debug --json
+& $Cli --project-root $ProjectRoot keil convert --uvprojx Project/blinky.uvprojx --target-name Debug --dry-run --json
 & $Cli --project-root $ProjectRoot project configure --dry-run --json
 & $Cli --project-root $ProjectRoot build --preset arm-debug --json
 ```
 
-Keil `inspect`/`convert` 必须指向同一 `uvprojx` 和 `target-name`。确认 plan 无 blocker、diff/路径均符合预期后，以返回的真实 plan ID 调用同一参数链的 `convert --apply --plan-id <plan-id> --authorized --json`。`configure` 同样先 `--dry-run` 再用该次 plan ID `--apply --plan-id <plan-id> --authorized --json`；应用前会重新检查输入与改动。构建报告 `BUILD_OUTPUT_STALE` 时，先判定是哪项输入或身份改变，再根据实际计划决定是否 `build --preset arm-debug --clean --json`；不能靠修改旧 receipt 让产物看似有效。
+**仅当前源码/候选切片（未随 v1.2.0 发行）：**
+
+```powershell
+$CandidateCli = '<current-source-or-candidate stm32-toolkit CLI>'
+& $CandidateCli --project-root $ProjectRoot keil preflight --uvprojx Project/blinky.uvprojx --target-name Debug --json
+```
+
+Keil `inspect`、`preflight` 和 `convert` 必须指向同一 `uvprojx` 和 `target-name`。`preflight` 只做技术分析：不要求 Git，可在存在 blocker 时仍成功返回 `analysis.complete=true`，并把 `analysis.blockers`、`planReadiness`（取得计划所需的技术/Git 前置）与 `applyReadiness`（在有 reviewed/authorized plan 前恒为 `requires-reviewed-plan` 且 `ready=false`）分开；它不产生可用 plan ID、不写文件、不会自动 `git init`、转码或替换 ARMCC startup。缺少 Git、unborn HEAD、非 Git toplevel 或 dirty/untracked 工作区会作为计划前置失败列出，由工程负责人决定是否建立干净基线。确认 plan 无 blocker、diff/路径均符合预期后，以 PLAN 响应的 `data.plan_id` 调用同一参数链的 `convert --apply --plan-id <data.plan_id> --authorized --json`。PLAN 响应字段是 `data.plan_id`，APPLY 请求参数是 `planId`/`--plan-id`，不要混用带命令前缀的展示文本。`configure` 同样先 `--dry-run` 再用该次 `data.plan_id` `--apply --plan-id <data.plan_id> --authorized --json`；应用前会重新检查输入与改动。构建报告 `BUILD_OUTPUT_STALE` 时，先判定是哪项输入或身份改变，再根据实际计划决定是否 `build --preset arm-debug --clean --json`；不能靠修改旧 receipt 让产物看似有效。
+
+`stm32_project_context` 的旧 `capabilities.*` 布尔值继续保留；新增 `capabilityDetails` 逐项给出 `available`、`blocked` 或 `not-evaluated` 及原因/下一步。`flash`、`targetTest`、`monitor`、`breakpointDebug` 恒为旧布尔 `false` 只表示 context 未评估，不代表工具不存在；需要探针事实时单独调用只读 `probe list` / `stm32_probe_list`。仅询问已连接探针时，不需要 manifest、构建、debug backend、target 或 SVD；发现结果不授予改板权限，也不证明 target 身份或可烧录。有效工程保留 `workspaceId`，缺失或无效 manifest 时返回 `workspaceId: null` 与明确 `discovery.status=unbound`，不要伪造工程 ID。
+
+### 不安装 Skill 的 MCP/VS Code 客户端路线
+
+MCP 客户端即使从不加载 `SKILL.md`，也可按工具描述和真实返回字段完成同一流程：
+
+1. **上下文与选择。** 调用 `stm32_project_context()`。读取 `data.project.kind`；Keil 工程从 `data.project.files` 选择项目根相对 `.uvprojx`（使用 `/`）。context **不列出 target 名称**；多项目候选时要求用户选择，不要猜。读取 `data.capabilityDetails` 的 `status`/`reason`/`nextSteps`，不要只看旧布尔值。
+2. **检查与预检。** 若 target 未知，先调用 `stm32_keil_inspect(uvprojx)` 并省略 `targetName`；若返回 `KEIL_TARGET_SELECTION_REQUIRED`，把 `details.targets` 交给用户选择，再用该精确值调用 inspect。成功结果的 `data.inspection.target_name` 是后续必须保留的精确 targetName。然后用同一 `uvprojx`/`targetName` 调用 `stm32_keil_preflight(uvprojx, targetName)`。预检成功只表示 `data.analysis.complete=true`；逐项处理 `data.analysis.blockers`，并读取 `data.planReadiness.status`（`ready-for-plan`/`blocked`）、`ready` 与 `prerequisites`。`data.applyReadiness.status` 始终是 `requires-reviewed-plan`，`ready=false`、`planId=null`；预检不授权任何写入。
+3. **不可绕过的修复。** 对 encoding、assembly、scoped option、scatter/memory、manifest 冲突按 blocker 的 `code`、路径和消息处理；不要转码、替换 startup、删除未跟踪文件或伪造 manifest/工程 ID。Git 缺失、unborn HEAD、非 toplevel 或 dirty 工作区只阻塞计划，由工程负责人决定基线；不要让客户端自动 `git init`/commit/stash。
+4. **计划与授权。** `planReadiness.ready=true` 后调用 `stm32_keil_convert(uvprojx, targetName)`（无 `planId`、无 `authorized`）取得 PLAN 响应；检查 `data.blockers`、`data.plan_id` 和 `data.patches[].unified_diff`。只有用户显式授权该精确计划后，才调用 `stm32_keil_convert(uvprojx, targetName, planId=<data.plan_id>, authorized=true)`。PLAN 响应字段是 `data.plan_id`，APPLY 请求参数是 `planId`。
+5. **配置、构建、烧录。** `stm32_project_configure()` 的 PLAN 响应同样用 `data.plan_id`，APPLY 传 `planId` 与 `authorized=true`。构建前读 `capabilityDetails.build.status`；`stm32_build(preset, clean, timeoutSeconds, authorized=true)` 才执行。烧录使用 `stm32_probe_list()` 返回的精确 `probeId`，以及 context 的 `data.build.buildId`/`data.build.elfSha256` 作为 `expectedBuildId`/`expectedElfSha256`，且仅在显式授权后传 `authorized=true`；不要复用旧 pin。
+6. **仅发现探针。** 用户只问“有哪些探针”时直接调用 `stm32_probe_list()`，读取 `data.probes`、`data.workspaceId` 和 `data.discovery`。该调用不需要 manifest、构建、backend、target 或 SVD，也不得继续执行 flash；若 `data.workspaceId=null` 且 `data.discovery.status="unbound"`，如实说明 discovery-only，绝不伪造 workspace ID。发现结果不证明 target 身份或烧录就绪。
+7. **VS Code 集成。** 生成的 `.vscode/tasks.json`/`launch.json` 只是配置目标；在真实 VS Code、扩展版本和实际调试会话中运行前，不得声称 IDE 路径已验收或部署完成。
 
 ## 工程 manifest 的阶段约束
 
@@ -66,7 +87,7 @@ Keil `inspect`/`convert` 必须指向同一 `uvprojx` 和 `target-name`。确认
 
 | # | 看见什么 | 本版行为与处置 |
 | --- | --- | --- |
-| 1 | 子目录 `.uvprojx` 报 `KEIL_PROJECT_NOT_FOUND` | v1.0.0 可用 `--uvprojx Project\xxx.uvprojx` 指明根内路径；自 v1.0.1 起在工程根内安全递归发现，多候选要求显式选择。目录不可枚举返回发现不完整，不能冒充“无工程”。 |
+| 1 | 子目录 `.uvprojx` 报 `KEIL_PROJECT_NOT_FOUND` | v1.0.0 可用 `--uvprojx Project/xxx.uvprojx`（可移植正斜杠）指明根内路径；自 v1.0.1 起在工程根内安全递归发现，多候选要求显式选择。目录不可枚举返回发现不完整，不能冒充“无工程”。 |
 | 2 | `ARMCC_SOURCE_ENCODING_UNSUPPORTED` | 先确认原始编码与版本控制状态，工程负责人决定转换副本/源码；Toolkit 不猜 GB2312/GB18030，也不自动转码。字节保真是项目责任。 |
 | 3 | `ARMCC_ASSEMBLY_UNSUPPORTED` | 逐个将 ARMCC 汇编适配为 GNU 汇编或等价 C，并核对指令、段、符号和调用约定；若文件是 startup，还须核对向量表、初始 SP 和运行时初始化。不得强行应用旧语法，也不能从旧产物推断适配已正确。 |
 | 4, 17, 22 | configure 遇 `UNOWNED_COLLISION` 或编辑器设置已存在 | 核对目标路径与 managed manifest。构建必需文件冲突需工程方决定所有权；自 v1.0.1 起只保留上述五个未托管普通编辑器文件，不 merge/adopt。 |
@@ -74,7 +95,7 @@ Keil `inspect`/`convert` 必须指向同一 `uvprojx` 和 `target-name`。确认
 | 10 | RAM `free=0`，栈处于区域高端 | 报告按 section 实际占用区间并集，而非区域首尾跨度。若 `.stack` section 自身含大空隙/预留，它仍是 linker 分配；不能当成可用 RAM。运行时峰值需另测。 |
 | 12 | `MIGRATION_GIT_DIRTY` 只有 untracked 文件 | 仍是迁移安全阻断。查看 `git status --short`，逐项决定版本控制或项目 `.gitignore`；不要自动删除、stash、忽略或放宽检查。候选 details 区分 index/tracked/untracked。 |
 | 13 | `baseline.available=true` | 只表示找到了可解析的历史 AXF/MAP，不证明本次 GCC/Keil 构建、工具链、授权来源或可比身份；候选在结果中明确这一语义。 |
-| 15 | Skill 在 capability false 后停止，或 apply 丢参数 | 候选可发现受保护根内的子目录工程；inspect/plan/apply 保持同一 target/path 并严格核对 plan ID。capability 表示当前可进入相应阶段，不保证迁移没有 blocker。 |
+| 15 | Skill 在 capability false 后停止，或 apply 丢参数 | 先读 `capabilityDetails`：`available` 只表示入口适用于当前工程，`blocked` 给出具体前置，`not-evaluated` 表示 context 未检查（尤其硬件布尔值）。inspect/preflight/plan/apply 保持同一 `uvprojx` 与 `targetName` 并严格核对 plan ID；入口可用不保证迁移没有 blocker。 |
 | 20 | schema 未写尽跨字段规则 | 以上配置阶段规则是当前合同；不要手工生成错误 manifest 或把 configure 条件升格为 loader 不兼容。根与包内 schema 副本应一致。 |
 | 21 | 默认栈容量/`__StackTop` 语义不符工程 | 候选模板的向下增长栈 Top 在高地址、Limit 在低地址；默认容量不新增配置。需要项目特定大小时用受控 native linker 并核对实际 ELF/MAP。 |
 
@@ -86,7 +107,7 @@ Keil `inspect`/`convert` 必须指向同一 `uvprojx` 和 `target-name`。确认
 | 6 | `SVD_SELECTION_REQUIRED` / `SVD_ADDRESS_OUT_OF_RANGE` | 将正确设备 SVD 放在工程根，配置 `debug.svd`、设备与可信区域；逐项核对候选返回的首个失败寄存器路径、地址、宽度和区域。不要只放宽为全地址可读。 |
 | 7 | `DEBUG_FLASH_MISMATCH` | 比较 workspace/session/build/input/probe/target/receipt 等全部绑定，重新按当前配置 build/flash/授权；旧 receipt 不可 rebind。候选列具体失配字段和经验证读取的 ELF 内容是否相同；ELF 相同也不等于完整身份相同。 |
 | 8 | `PROBE_ATTACH_FAILED`，`target-unsupported` | 核对请求的 `debug.target`、实际器件与已安装 pack/PyOCD 支持列表，记录来源。`probeCore.registry` 是 Probe 租约目录，不是 PyOCD target 注册表；缺失不能推断不支持器件。 |
-| 11 | `capabilities.*` 与当时人工观测不一致 | `capabilities.build` 表示当前可执行准备状态，managed manifest 失效可使其为 false。context 不枚举探针；`hardware` 是未探测快照，需要独立 `probe list` 才能取得当次探针事实。候选显式返回 readiness/未探测语义。 |
+| 11 | `capabilities.*` 与当时人工观测不一致 | 旧布尔值表示当前阶段就绪/兼容语义，`capabilityDetails` 才区分 `available`、`blocked`、`not-evaluated`。context 不枚举探针；`hardware` 是未探测快照，需要独立 `probe list` 才能取得当次探针事实。`probe list` 不要求 manifest/构建/backend/target/SVD；无有效工程时返回 `workspaceId: null` 和 `discovery.status=unbound`。 |
 | 14 | doctor 启动 CubeMX GUI 或扩展显示 missing | 候选对 GUI 工具只读静态版本，取不到标 unknown；VS Code 扩展未实际探测为 `installed=false, version=null, status=not-probed`，不等同“未安装”。在 v1.0.0 现场若 GUI 被启动，先退出/记录，不把该次输出当静态版本证明。 |
 
 `read variable`、`read register`、有限采样与 Fault 有不同前置。OBSERVE 的短暂停核与持续观测需分开记证；完整 Fault 需稳定 halted，不能把 running OBSERVE 偷偷升权。[标准测试流程](testing/standard-test-procedure.md)规定实机前置、首错停止与证据归属。

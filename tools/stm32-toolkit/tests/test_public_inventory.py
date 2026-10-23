@@ -29,6 +29,7 @@ EXPECTED_MCP_TOOL_MAP = {
     "project_regenerate_prepare": "stm32_project_regenerate_prepare",
     "project_regenerate_apply": "stm32_project_regenerate_apply",
     "keil_inspect": "stm32_keil_inspect",
+    "keil_preflight": "stm32_keil_preflight",
     "keil_convert": "stm32_keil_convert",
     "project_configure": "stm32_project_configure",
     "build": "stm32_build",
@@ -132,7 +133,7 @@ def test_actual_mcp_and_skill_inventory_matches_the_closed_public_inventory(
     discovered = {
         path.parent.name for path in (REPO_ROOT / "skills").glob("*/SKILL.md")
     }
-    assert len(MCP_TOOL_NAMES) == 48
+    assert len(MCP_TOOL_NAMES) == 49
     assert actual == set(MCP_TOOL_NAMES.values())
     assert len(SKILL_NAMES) == 8
     assert discovered == set(SKILL_NAMES)

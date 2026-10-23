@@ -104,6 +104,7 @@ from stm32_toolkit.workflows import (
     configure_project_workflow,
     convert_keil_workflow,
     inspect_keil_workflow,
+    preflight_keil_workflow,
 )
 from stm32_toolkit.testing_workflows import (
     TestingWorkflowContext,
@@ -965,6 +966,24 @@ def tool_keil_inspect(
     ).to_dict()
 
 
+def tool_keil_preflight(
+    runtime: ServerRuntime,
+    uvprojx: str | None = None,
+    target_name: str | None = None,
+) -> dict[str, object]:
+    """Return read-only migration analysis without requiring Git.
+
+    A successful result means the technical analysis completed; it may still
+    contain blockers.  Apply prerequisites and the absence of an applicable
+    plan ID are reported separately.  Preflight never authorizes apply.
+    """
+    return preflight_keil_workflow(
+        runtime.project_root,
+        uvprojx=uvprojx,
+        target_name=target_name,
+    ).to_dict()
+
+
 def tool_keil_convert(
     runtime: ServerRuntime,
     uvprojx: str | None = None,
@@ -1132,6 +1151,18 @@ async def tool_keil_inspect_for_request(
     if failure is not None:
         return failure
     return tool_keil_inspect(runtime, uvprojx, target_name, include_baseline)
+
+
+async def tool_keil_preflight_for_request(
+    runtime: ServerRuntime,
+    context: Context | None,
+    uvprojx: str | None = None,
+    target_name: str | None = None,
+) -> dict[str, object]:
+    failure = await _client_roots_failure(runtime, context, "keil-preflight")
+    if failure is not None:
+        return failure
+    return tool_keil_preflight(runtime, uvprojx, target_name)
 
 
 async def tool_keil_convert_for_request(
@@ -2176,14 +2207,41 @@ def create_server(
 
     @mcp.tool(name=MCP_TOOL_NAMES["doctor"])
     async def stm32_doctor(ctx: Context) -> dict[str, object]:
+        """Diagnose the bound project's Toolkit environment.
+
+        Read-only.  Report missing external tools without installing them.
+        probeCore describes the managed runtime and probe lease directory;
+        VS Code extensions are not enumerated here.
+        """
         return await tool_doctor_for_request(runtime, ctx)
 
     @mcp.tool(name=MCP_TOOL_NAMES["project_detect"])
     async def stm32_project_detect(ctx: Context) -> dict[str, object]:
+        """Identify project markers under the bound project root.
+
+        Read-only.  Detection reports files and a recommended action; it does
+        not evaluate migration blockers or hardware readiness.
+        """
         return await tool_project_detect_for_request(runtime, ctx)
 
     @mcp.tool(name=MCP_TOOL_NAMES["project_context"])
     async def stm32_project_context(ctx: Context) -> dict[str, object]:
+        """Return the bound project's current readiness evidence.
+
+        Start every workflow here.  The legacy capability booleans remain for
+        compatibility; read capabilityDetails for per-capability status
+        (available, blocked, or not-evaluated), reasons, and next steps.
+        Constant-false hardware capabilities such as flash, targetTest,
+        monitor, and breakpointDebug mean "not evaluated in context", not that
+        the tools are missing.  Context does not enumerate probes or scan all
+        sources.  For Keil, select the exact project-relative uvprojx from
+        data.project.files; context does not list target names.  Use
+        stm32_keil_inspect with the uvprojx and omit targetName when the exact
+        target is unknown, then keep the returned
+        data.inspection.target_name for stm32_keil_preflight and
+        stm32_keil_convert; entry-point availability does not establish
+        migration readiness.
+        """
         return await tool_project_context_for_request(runtime, ctx)
 
     @mcp.tool(name=MCP_TOOL_NAMES["project_create_plan"])
@@ -2260,8 +2318,48 @@ def create_server(
         targetName: str | None = None,
         includeBaseline: bool = True,
     ) -> dict[str, object]:
+        """Inspect one exact Keil target before migration.
+
+        Call stm32_project_context first and pass its project-root-relative
+        uvprojx.  Context does not list target names.  If the exact target is
+        unknown, omit targetName: a KEIL_TARGET_SELECTION_REQUIRED failure
+        lists the available choices in details.targets.  Let the user choose,
+        then call inspect again with that exact targetName.  A successful
+        inspection returns data.inspection.target_name; preserve that exact
+        value as targetName for preflight and convert.  Do not guess a target.
+        Inspection is read-only: entry-point availability does not establish
+        migration readiness, and baseline.available only means a historical
+        AXF/MAP was parsed.  Next call stm32_keil_preflight with the same
+        uvprojx and targetName.
+        """
         return await tool_keil_inspect_for_request(
             runtime, ctx, uvprojx, targetName, includeBaseline
+        )
+
+    @mcp.tool(name=MCP_TOOL_NAMES["keil_preflight"])
+    async def stm32_keil_preflight(
+        ctx: Context,
+        uvprojx: str | None = None,
+        targetName: str | None = None,
+    ) -> dict[str, object]:
+        """Run read-only Keil migration preflight without requiring Git.
+
+        Use the same project-root-relative uvprojx and exact targetName as
+        inspect.  A successful result means analysis completed; it may still
+        contain typed blockers.  Read analysis.blockers and planReadiness
+        (technical/Git prerequisites for obtaining a plan) separately from
+        applyReadiness, which stays ready=false with
+        status=requires-reviewed-plan.  Preflight returns no applicable plan
+        ID, writes nothing, does not transcode sources, replace startup code,
+        or run git init, and never authorizes apply.  When analysis is
+        complete and no blockers remain, establish any Git prerequisite as an
+        explicit project-owner decision, then call stm32_keil_convert with no
+        planId to obtain a PLAN response.  Read its data.plan_id and
+        data.patches[].unified_diff; only after review and explicit user
+        authorization pass that exact value as planId with authorized=true.
+        """
+        return await tool_keil_preflight_for_request(
+            runtime, ctx, uvprojx, targetName
         )
 
     @mcp.tool(name=MCP_TOOL_NAMES["keil_convert"])
@@ -2272,6 +2370,20 @@ def create_server(
         planId: str | None = None,
         authorized: bool = False,
     ) -> dict[str, object]:
+        """Plan or explicitly apply one Keil-to-GCC migration.
+
+        With no planId and authorized=false this returns a deterministic,
+        Git-bound PLAN response whose identifier is data.plan_id and whose
+        complete diff is data.patches[].unified_diff.  Keep the same uvprojx
+        and exact targetName across every call.  Review every blocker, that
+        exact data.plan_id, and the complete patches/diff before acting.
+        Apply only after the user explicitly authorizes that exact plan: pass
+        its data.plan_id as the apply request's planId with authorized=true.
+        The core replans and rechecks digest, Git, and drift guards before its
+        first write.  Never run git init, transcode source text, replace ARMCC
+        startup blindly, or reuse a stale plan ID; a missing Git repository is
+        an explicit project-owner decision.
+        """
         return await tool_keil_convert_for_request(
             runtime, ctx, uvprojx, targetName, planId, authorized
         )
@@ -2282,6 +2394,15 @@ def create_server(
         planId: str | None = None,
         authorized: bool = False,
     ) -> dict[str, object]:
+        """Plan or explicitly apply managed GCC/CMake and VS Code configuration.
+
+        With no planId and authorized=false this is a read-only PLAN response
+        whose identifier is data.plan_id.  Review blockers, that exact
+        data.plan_id, and the per-file status/diff first.  Apply only by
+        passing that data.plan_id as the planId request argument with
+        authorized=true after explicit user authorization.  Preserved unowned
+        files are not generated or adopted.
+        """
         return await tool_project_configure_for_request(runtime, ctx, planId, authorized)
 
     @mcp.tool(name=MCP_TOOL_NAMES["build"])
@@ -2292,12 +2413,31 @@ def create_server(
         timeoutSeconds: Annotated[int, Field(ge=1, le=3600)] = 300,
         authorized: bool = False,
     ) -> dict[str, object]:
+        """Build one configured preset with explicit authorization.
+
+        Read capabilityDetails.build from stm32_project_context, not only the
+        legacy build boolean: blocked means a concrete prerequisite is
+        missing, while not-evaluated means this context did not check it.
+        The build never runs without authorized=true.  Report the returned
+        identity evidence exactly; a failed build leaves prior artifacts stale.
+        """
         return await tool_build_for_request(
             runtime, ctx, preset, clean, timeoutSeconds, authorized
         )
 
     @mcp.tool(name=MCP_TOOL_NAMES["probe_list"])
     async def stm32_probe_list(ctx: Context) -> dict[str, object]:
+        """Enumerate connected debug probes; read-only discovery only.
+
+        Use this whenever the user only asks which probes are connected.  It
+        requires no Toolkit manifest, configured build, debug backend, target,
+        SVD, or firmware identity, and does not modify the board: it performs
+        no attach, select, reset, halt, flash, lease, or project write.
+        workspaceId is null with an
+        explicit unbound discovery status when no valid project model exists;
+        never invent one.  Discovery grants no board-modification permission
+        and does not establish target identity or flash readiness.
+        """
         return await tool_probe_list_for_request(runtime, ctx)
 
     @mcp.tool(name=MCP_TOOL_NAMES["flash"])
@@ -2309,6 +2449,18 @@ def create_server(
         authorized: StrictBool = False,
         recoveryUnderReset: StrictBool = False,
     ) -> dict[str, object]:
+        """Flash one exact probe with the current firmware identity pins.
+
+        Use the exact probeId returned by stm32_probe_list.  Read the current
+        firmware pins from stm32_project_context as data.build.buildId and
+        data.build.elfSha256 and pass them as expectedBuildId and
+        expectedElfSha256; never fabricate or reuse stale identity.  Read
+        capabilityDetails.flash rather than the legacy context boolean, which
+        is not-evaluated.  This tool modifies the board and runs only with
+        authorized=true after explicit user authorization for this exact
+        operation.  Under-reset recovery is a separate policy, never an
+        automatic retry.
+        """
         return await tool_flash_for_request(
             runtime,
             ctx,
@@ -2328,6 +2480,12 @@ def create_server(
         authorized: StrictBool = False,
         previousWatchSelection: Annotated[list[str], Field(max_length=256)] = [],
     ) -> dict[str, object]:
+        """Begin one authorized debugger handoff for an exact probe.
+
+        Requires the exact probeId and current buildId/ELF SHA-256 and
+        authorized=true after explicit user authorization.  The returned
+        ticket is one-time secret material: do not log or summarize it.
+        """
         return await tool_handoff_begin_for_request(
             runtime,
             ctx,
@@ -2344,6 +2502,12 @@ def create_server(
         probeId: ProbeId,
         ticket: Digest,
     ) -> dict[str, object]:
+        """Reacquire, verify, consume, and release one handoff ticket.
+
+        Call once after the external debugger stops.  Do not expose the
+        ticket, retry automatically, or assume the prior session is still
+        valid.
+        """
         return await tool_handoff_end_for_request(runtime, ctx, probeId, ticket)
 
     @mcp.tool(name=MCP_TOOL_NAMES["variable_read"])
@@ -2354,6 +2518,15 @@ def create_server(
         expectedElfSha256: Digest,
         expressions: Items,
     ) -> dict[str, object]:
+        """Read typed DWARF variables from one exact probe.
+
+        Requires the exact probeId and current buildId/ELF SHA-256.  Supply
+        DWARF expressions only; the Toolkit derives types and locations from
+        the bound ELF.  The read action performs no memory write and no
+        explicit target control.  The shared OBSERVE attach may briefly halt
+        and resume the core while connecting; this is not a state-preserving
+        attach and is not halted-run analysis.
+        """
         return await tool_variable_read_for_request(
             runtime,
             ctx,
@@ -2374,6 +2547,14 @@ def create_server(
         count: Annotated[int | None, Field(ge=1, le=10_000)] = None,
         durationMs: Annotated[int | None, Field(ge=1, le=3_600_000)] = None,
     ) -> dict[str, object]:
+        """Take a finite typed sample series from one exact probe.
+
+        Requires an exact probe and current firmware identity pins plus a
+        bounded count or duration.  Sampling performs no memory write and no
+        explicit target control.  The shared OBSERVE attach may briefly halt
+        and resume the core while connecting; it is not state-preserving and
+        does not make this halted-run analysis.
+        """
         return await tool_variable_sample_for_request(
             runtime,
             ctx,
@@ -2395,6 +2576,13 @@ def create_server(
         paths: Items,
         acknowledgeAccessRisk: StrictBool = False,
     ) -> dict[str, object]:
+        """Read named peripheral registers from the project's exact SVD.
+
+        Requires the exact probe, current firmware identity pins, and the
+        configured project SVD; callers never supply a target, SVD, address,
+        or access size.  acknowledgeAccessRisk confirms the caller reviewed
+        the read-access risk and is not a substitute for target provenance.
+        """
         return await tool_register_read_for_request(
             runtime,
             ctx,
@@ -2413,6 +2601,13 @@ def create_server(
         expectedElfSha256: Digest,
         haltForAnalysis: StrictBool = False,
     ) -> dict[str, object]:
+        """Analyze the current Fault state, optionally with controlled halt.
+
+        haltForAnalysis=true is an explicit CONTROL authorization: it performs
+        one halt, analysis, and one resume with verified running state.  It
+        requires a running target and exact firmware identity.  Do not retry,
+        reconnect, reset, or flash after an unknown/failed recovery.
+        """
         return await tool_fault_analyze_for_request(
             runtime,
             ctx,

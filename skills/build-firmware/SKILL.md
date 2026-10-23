@@ -7,7 +7,7 @@ description: Use when a Claude Code user asks to build STM32 firmware with the m
 
 ## Workflow
 
-1. **Context first.** Call `stm32_project_context` (no arguments). If `capabilities.build` is `false`, report the context evidence and stop.
+1. **Context first.** Call `stm32_project_context` (no arguments). Read `capabilityDetails.build`: `available` means build evidence is complete; `blocked` means the stated prerequisite is missing; `not-evaluated` means context did not check it. If the status is `blocked`, report the evidence and next step and stop. Never stop solely because a legacy hardware boolean is `false`: those booleans mean "not evaluated in context", not "the tool is unavailable".
 2. **Doctor.** Call `stm32_doctor` (no arguments). Show the toolchain evidence: ARM GCC, ARM GDB, CMake, and Ninja availability. Report missing tools and stop when the toolchain is not healthy. CubeMX/VS Code versions come from static metadata; `unknown` is not a verified version. VS Code extensions marked `not-probed` were not enumerated. `probeCore.registry` describes the Probe lease directory; `missing` does not mean PyOCD has no targets and does not change its `safe` result.
 3. **State the invocation.** Show the preset (`arm-debug` or `arm-release`), `clean` (only when the user asked for a clean build), the timeout, and the toolchain evidence for this exact build invocation.
 4. **Authorize.** Ask the user for explicit authorization for this build invocation. `stm32_build` is not a dry run; it never runs without `authorized=true`.
@@ -18,4 +18,5 @@ description: Use when a Claude Code user asks to build STM32 firmware with the m
 
 - Never run CMake, Ninja, or a compiler directly; the Toolkit build is the only build path.
 - Never fabricate success: a failed build returns no fresh identity, and the previous ELF is stale.
+- Distinguish unavailable, blocked, and not-evaluated evidence. A missing managed manifest or drifted managed file is blocked; probe/hardware capabilities are not evaluated by context and do not by themselves prevent a build.
 - Report the returned `OperationResult` exactly as received and finish immediately.
