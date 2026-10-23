@@ -13,8 +13,8 @@ This report is not self-acceptance.
 - Specification/plan head: `d20195c7f1458fdd867aab2401154ceee236be7c`.
 - Agent-guidance head supplied for the resumed work:
   `e62f7b151f82edbad29d9db591b1af0bfab392f0`.
-- Pre-report CodeHead (the code/tests/guidance commit):
-  `0e5cc553a5120013f3ef7a5e6472405ffb51320f`.
+- Pre-report CodeHead (the code/tests/guidance head, including the final
+  bound-alignment correction): `904b21c731a871ec4a67b8e0cf1e623dae76c537`.
 - Branch: `codex/comment-encoding`.
 - Authorized remote action: none performed. No push, PR, merge, tag, remote
   deletion, global skill installation, release, build, flash, or hardware
@@ -137,6 +137,17 @@ rejected rather than guessed.
    `quick_validate` result; actual preview/copy CLI behavior is tested through
    subprocesses.
 
+### Final bound-alignment correction
+
+After the first report draft, a bound-consistency review found that a ready
+plan could carry findings from both the trigraph and scanner presentation caps
+(two independent bounded lists), while plan validation accepted a smaller
+finding limit. That could make a preview-ready plan uncopyable. Plan validation
+now accepts the maximum combined bounded presentation set, and an existing
+preview report is compared using `MAX_PREVIEW_BYTES` rather than the smaller
+plan-file bound. This follow-up changed only the helper. Focused tests at the
+final CodeHead pass, as recorded below.
+
 ## Evidence
 
 All commands ran in this worktree with `python` on PATH
@@ -146,11 +157,11 @@ used at the exact supplied path. No denied discovery command is counted.
 
 | Owner / exact head | Check | Result |
 | --- | --- | --- |
-| Implementer / `0e5cc553a5120013f3ef7a5e6472405ffb51320f` | `python -m pytest tools/stm32-toolkit/tests/test_normalize_source_comments.py --basetemp=D:/codex-tmp/ce23/bt-normalize-precommit -o cache_dir=D:/codex-tmp/ce23/cache-normalize-precommit -ra` | 36 passed in 3.04s; includes the actual ARM GNU object-equivalence probe and bundled `quick_validate` test. |
-| Implementer / same head | `python -m pytest tools/stm32-toolkit/tests/test_plugin_layout.py tools/stm32-toolkit/tests/test_public_inventory.py --basetemp=D:/codex-tmp/ce23/bt-inventory-final -o cache_dir=D:/codex-tmp/ce23/cache-inventory-final -ra` | 24 passed, 1 pre-existing pydantic-settings warning, in 5.69s. |
+| Implementer / `904b21c731a871ec4a67b8e0cf1e623dae76c537` | `python -m pytest tools/stm32-toolkit/tests/test_normalize_source_comments.py --basetemp=D:/codex-tmp/ce23/bt-normalize-final2 -o cache_dir=D:/codex-tmp/ce23/cache-normalize-final2 -ra` | 36 passed in 3.09s; includes the actual ARM GNU object-equivalence probe and bundled `quick_validate` test. |
+| Implementer / inventory-relevant bytes unchanged at final code head | `python -m pytest tools/stm32-toolkit/tests/test_plugin_layout.py tools/stm32-toolkit/tests/test_public_inventory.py --basetemp=D:/codex-tmp/ce23/bt-inventory-final -o cache_dir=D:/codex-tmp/ce23/cache-inventory-final -ra` | 24 passed, 1 pre-existing pydantic-settings warning, in 5.69s. The inventory tests do not import the helper; their relevant skill-discovery/test bytes were unchanged by the final helper correction. |
 | Implementer / relevant message bytes unchanged at final head | `python -m pytest tools/stm32-toolkit/tests/test_migration_plan.py tools/stm32-toolkit/tests/test_keil_preflight.py tools/stm32-toolkit/tests/test_keil_inspect.py --basetemp=D:/codex-tmp/ce23/bt-keil-1 -o cache_dir=D:/codex-tmp/ce23/cache-keil-1 -ra` | 234 passed in 80.10s. Later changes were helper/skill/reference bytes plus a whitespace-only wrap of the preflight docstring; migration/Keil behavior and asserted remediation message text were unchanged. |
-| Implementer / same head | `python -m py_compile skills/normalize-source-comments/scripts/normalize_comments.py tools/stm32-toolkit/tests/test_normalize_source_comments.py tools/stm32-toolkit/src/stm32_toolkit/mcp_server.py tools/stm32-toolkit/src/stm32_toolkit/migration/rules.py tools/stm32-toolkit/src/stm32_toolkit/keil/armcc_scan.py` | Exit 0, no output. |
-| Implementer / same head | `git diff --cached --check` before the code commit | No whitespace errors after removing two trailing blank lines. |
+| Implementer / `904b21c731a871ec4a67b8e0cf1e623dae76c537` | `python -m py_compile skills/normalize-source-comments/scripts/normalize_comments.py` (and the earlier compile of the test, MCP, migration, and scanner files) | Exit 0, no output. |
+| Implementer / same head | `git diff --cached --check` before the code commits | No whitespace errors after removing two trailing blank lines. |
 | Implementer / ARM GCC 14.3.1 at `C:/ST/STM32CubeCLT_1.22.0/GNU-tools-for-STM32/bin/arm-none-eabi-gcc.exe` | Synthetic comment-only before/after object comparison, plus a bounded `-finput-charset` acceptance probe | GB2312, GBK, GB18030, and CP1252 all returned 0; the test compared each legacy object with its converted UTF-8 object and passed. UTF-8 also returned 0. No link, target, or original-project build was performed. |
 | Implementer / bundled base Python and validator | `C:/Users/zhy76/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/python.exe C:/Users/zhy76/.codex/skills/.system/skill-creator/scripts/quick_validate.py skills/normalize-source-comments` via an explicitly scoped subprocess | Return code 0, `Skill is valid!`. The same check is covered by the focused pytest file. |
 
