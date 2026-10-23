@@ -250,15 +250,31 @@ def test_new_tool_schemas_expose_only_declared_properties(tmp_path: Path):
     assert inspect["properties"]["includeBaseline"]["default"] is True
 
     preflight = schemas["stm32_keil_preflight"]
-    assert set(preflight["properties"]) == {"uvprojx", "targetName"}
+    assert set(preflight["properties"]) == {
+        "uvprojx",
+        "targetName",
+        "startupStrategy",
+        "startupSource",
+    }
     assert set(preflight.get("required", [])) == set()
     assert "string" in str(preflight["properties"]["uvprojx"])
     assert "string" in str(preflight["properties"]["targetName"])
+    assert "string" in str(preflight["properties"]["startupStrategy"])
+    assert "string" in str(preflight["properties"]["startupSource"])
 
     convert = schemas["stm32_keil_convert"]
-    assert set(convert["properties"]) == {"uvprojx", "targetName", "planId", "authorized"}
+    assert set(convert["properties"]) == {
+        "uvprojx",
+        "targetName",
+        "planId",
+        "authorized",
+        "startupStrategy",
+        "startupSource",
+    }
     assert set(convert.get("required", [])) == set()
     assert "string" in str(convert["properties"]["planId"])
+    assert "string" in str(convert["properties"]["startupStrategy"])
+    assert "string" in str(convert["properties"]["startupSource"])
     assert convert["properties"]["authorized"]["type"] == "boolean"
     assert convert["properties"]["authorized"]["default"] is False
 
