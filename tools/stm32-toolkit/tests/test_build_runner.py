@@ -1186,6 +1186,31 @@ def test_configure_failure_publishes_failure_record_and_keeps_identity(
     assert str(root) not in log_text
 
 
+def test_schema1_failure_record_keeps_legacy_null_head_false_dirty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Failure records outside the snapshot contract retain schema-1 bytes.
+
+    Git evidence is available and the worktree is dirty here, but no admitted
+    identity exists on failure, so the legacy record remains
+    ``gitHead=null``/``gitDirty=false`` and is not widened to collected
+    provenance details.
+    """
+    root = prepare_project(tmp_path)
+    install_fake_cmake(monkeypatch, tmp_path, env={"FAKE_CMAKE_EXIT": "3"})
+    (root / "Src" / "main.c").write_text(
+        "int main(void) { return 99; }\n", encoding="utf-8"
+    )
+    result = run_build(BuildRequest(project_root=root, preset="arm-debug"))
+    assert result.ok is False
+    assert result.code == "BUILD_CONFIGURE_FAILED"
+    failure = read_json(result_path_for(root))
+    assert failure["schemaVersion"] == 1
+    assert failure["gitHead"] is None
+    assert failure["gitDirty"] is False
+    assert "sourceBaseline" not in failure and "gitEvidence" not in failure
+
+
 def test_build_failure_returns_build_failed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     root = prepare_project(tmp_path)
     install_fake_cmake(
@@ -1319,6 +1344,10 @@ def test_input_changed_during_build_returns_input_changed(
     failure = read_json(result_path_for(root))
     assert failure["status"] == "failure"
     assert failure["code"] == "BUILD_INPUT_CHANGED"
+    # Git-backed changed-input failures keep the existing schema-1 shape.
+    assert failure["schemaVersion"] == 1
+    assert failure["gitHead"] is None
+    assert failure["gitDirty"] is False
 
 
 def test_header_changed_during_build_returns_input_changed(
@@ -1534,21 +1563,37 @@ def test_weak_undefined_symbol_is_allowed(tmp_path: Path, monkeypatch: pytest.Mo
     assert result.ok is True
 
 
-def test_git_invalid_non_repository(tmp_path: Path):
+def _assert_snapshot_identity(root: Path, rule: str = "head") -> None:
+    identity_doc = read_json(identity_path_for(root))
+    assert identity_doc["schemaVersion"] == 2
+    assert identity_doc["sourceBaseline"] == "input-snapshot-v1"
+    assert identity_doc["gitHead"] is None
+    assert identity_doc["gitDirty"] is None
+    assert identity_doc["gitEvidence"] == {
+        "status": "unavailable",
+        "code": "BUILD_GIT_INVALID",
+        "rule": rule,
+    }
+    result_doc = read_json(result_path_for(root))
+    assert result_doc["schemaVersion"] == 2
+    assert result_doc["status"] == "success"
+
+
+def test_non_repository_builds_snapshot_identity(tmp_path: Path):
     root = prepare_project(tmp_path, git_repo=False)
     result = run_build(BuildRequest(project_root=root, preset="arm-debug"))
-    assert result.ok is False
-    assert result.code == "BUILD_GIT_INVALID"
-    assert result.details == {"rule": "head"}
+    assert result.ok is True
+    _assert_snapshot_identity(root)
 
 
-def test_git_invalid_malformed_head(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_malformed_git_head_builds_snapshot_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
     root = prepare_project(tmp_path)
     hit_file, orig_file = install_fake_git(monkeypatch, tmp_path, "malformed")
     result = run_build(BuildRequest(project_root=root, preset="arm-debug"))
-    assert result.ok is False
-    assert result.code == "BUILD_GIT_INVALID"
-    assert result.details == {"rule": "head"}
+    assert result.ok is True
+    _assert_snapshot_identity(root)
     # the narrow seam mapped exactly the product's fixed git argv and the
     # fake script actually ran (status is never reached once head is bad)
     assert orig_argv_records(orig_file) == [["git", "rev-parse", "--verify", "HEAD"]]
@@ -1557,24 +1602,28 @@ def test_git_invalid_malformed_head(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     ]
 
 
-def test_git_invalid_nonzero_exit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_nonzero_git_exit_builds_snapshot_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
     root = prepare_project(tmp_path)
     hit_file, orig_file = install_fake_git(monkeypatch, tmp_path, "exit1")
     result = run_build(BuildRequest(project_root=root, preset="arm-debug"))
-    assert result.ok is False
-    assert result.code == "BUILD_GIT_INVALID"
+    assert result.ok is True
+    _assert_snapshot_identity(root)
     assert orig_argv_records(orig_file) == [["git", "rev-parse", "--verify", "HEAD"]]
     assert [record["argv"] for record in hit_records(hit_file)] == [
         ["rev-parse", "--verify", "HEAD"]
     ]
 
 
-def test_git_invalid_overflow(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_overflow_git_head_builds_snapshot_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
     root = prepare_project(tmp_path)
     hit_file, orig_file = install_fake_git(monkeypatch, tmp_path, "overflow")
     result = run_build(BuildRequest(project_root=root, preset="arm-debug"))
-    assert result.ok is False
-    assert result.code == "BUILD_GIT_INVALID"
+    assert result.ok is True
+    _assert_snapshot_identity(root)
     assert orig_argv_records(orig_file) == [["git", "rev-parse", "--verify", "HEAD"]]
     assert [record["argv"] for record in hit_records(hit_file)] == [
         ["rev-parse", "--verify", "HEAD"]
@@ -1732,24 +1781,42 @@ def test_missing_source_publishes_failure_record(tmp_path: Path, monkeypatch: py
     assert not identity_path_for(root).exists()
 
 
-def test_git_failure_publishes_failure_record(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_git_availability_failure_builds_snapshot_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Git failure alone is not a build failure (BUILD-SNAPSHOT)."""
     root = prepare_project(tmp_path)
     cmake_hit = install_fake_cmake(monkeypatch, tmp_path)
     git_hit, git_orig = install_fake_git(monkeypatch, tmp_path, "exit1")
     result = run_build(BuildRequest(project_root=root, preset="arm-debug"))
-    assert result.ok is False
-    assert result.code == "BUILD_GIT_INVALID"
-    # both seams are installed; git failed before any cmake stage ran
+    assert result.ok is True
+    # The bounded HEAD probe failed; no fake commit was recorded and the
+    # build still ran both exact CMake stages.
     assert orig_argv_records(git_orig) == [["git", "rev-parse", "--verify", "HEAD"]]
     assert [record["argv"] for record in hit_records(git_hit)] == [
         ["rev-parse", "--verify", "HEAD"]
     ]
-    assert hit_records(cmake_hit) == []
-    failure = read_json(result_path_for(root))
-    assert failure["status"] == "failure"
-    assert failure["code"] == "BUILD_GIT_INVALID"
-    assert failure["stage"] == "git"
-    assert not identity_path_for(root).exists()
+    assert [record["argv"] for record in hit_records(cmake_hit)] == [
+        ["--preset", "arm-debug"],
+        ["--build", "--preset", "arm-debug"],
+    ]
+    identity = read_json(identity_path_for(root))
+    assert identity["schemaVersion"] == 2
+    assert identity["gitHead"] is None
+    assert identity["gitDirty"] is None
+    assert identity["sourceBaseline"] == "input-snapshot-v1"
+    assert identity["gitEvidence"] == {
+        "status": "unavailable",
+        "code": "BUILD_GIT_INVALID",
+        "rule": "head",
+    }
+    record = read_json(result_path_for(root))
+    assert record["schemaVersion"] == 2
+    assert record["status"] == "success"
+    assert record["gitHead"] is None
+    assert record["gitDirty"] is None
+    assert record["sourceBaseline"] == "input-snapshot-v1"
+    assert record["gitEvidence"] == identity["gitEvidence"]
 
 
 def test_fake_git_and_cmake_seams_compose(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

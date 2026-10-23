@@ -46,7 +46,10 @@ from stm32_toolkit.build.model import (
     BUILD_MAP_INVALID,
     BUILD_PROJECT_INVALID,
     BUILD_REQUEST_INVALID,
+    GIT_DIAGNOSTIC_UNAVAILABLE,
     IDENTITY_SCHEMA_VERSION,
+    SNAPSHOT_IDENTITY_SCHEMA_VERSION,
+    SOURCE_BASELINE_INPUT_SNAPSHOT,
     SUPPORTED_PRESETS,
     BuildError,
     build_error,
@@ -73,6 +76,31 @@ LEGACY_INPUT_DISCOVERY_POLICY = "legacy"
 SOURCE_LOCAL_HEADERS_POLICY = "source-local-headers-v1"
 
 _FULL_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_GIT_DIAGNOSTIC_RULES = frozenset({"head", "status"})
+#: Exact public artifact inventory of a current schema-2 success record.
+SNAPSHOT_BUILD_RESULT_FIELDS = frozenset(
+    {
+        "schemaVersion",
+        "status",
+        "stage",
+        "code",
+        "buildId",
+        "sourceBaseline",
+        "gitHead",
+        "gitDirty",
+        "gitEvidence",
+        "inputSnapshotSha256",
+        "targetDevice",
+        "preset",
+        "startedAtUtc",
+        "finishedAtUtc",
+        "durationMs",
+        "artifacts",
+        "memory",
+        "warnings",
+    }
+)
 _FIXED_SECTION_RE = re.compile(r"^\.stm32tk\.abs\.([0-9A-Fa-f]{8})$")
 _ARM_MACHINE = "EM_ARM"
 _SHF_ALLOC = 0x2
@@ -572,6 +600,22 @@ class GitEvidence:
     dirty: bool
 
 
+@dataclass(frozen=True)
+class GitUnavailableEvidence:
+    """Bounded, stable Git-unavailability diagnostics for a snapshot build.
+
+    Only fixed public codes and rules are retained; no command output,
+    exception text, or host path can reach the identity document.
+    """
+
+    rule: str
+    status: str = GIT_DIAGNOSTIC_UNAVAILABLE
+    code: str = BUILD_GIT_INVALID
+
+    def to_dict(self) -> dict[str, str]:
+        return {"status": self.status, "code": self.code, "rule": self.rule}
+
+
 def _git_invalid(rule: str) -> BuildError:
     return build_error(BUILD_GIT_INVALID, "git evidence is unavailable", {"rule": rule})
 
@@ -618,6 +662,106 @@ def git_evidence(project_root: Path, timeout_seconds: int = 30) -> GitEvidence:
     if status_result.timed_out or status_result.returncode != 0:
         raise _git_invalid("status")
     return GitEvidence(head=head, dirty=_porcelain_dirty(status_result.stdout))
+
+
+def collect_build_git_evidence(
+    project_root: Path, timeout_seconds: int = 30
+) -> GitEvidence | GitUnavailableEvidence:
+    """Collect Git evidence for a build, tolerating availability failure only.
+
+    The strict :func:`git_evidence` API is unchanged for existing consumers.
+    This build-specific collector maps only its stable availability error to
+    bounded diagnostics; any unexpected exception still propagates.
+    """
+    try:
+        return git_evidence(project_root, timeout_seconds)
+    except BuildError as error:
+        if error.code != BUILD_GIT_INVALID:
+            raise
+        details = getattr(error, "details", None)
+        rule = details.get("rule") if isinstance(details, dict) else None
+        if not isinstance(rule, str) or rule not in _GIT_DIAGNOSTIC_RULES:
+            # The fixed collector only reports these two phases.  Anything
+            # else (including an unhashable JSON object) is treated as the
+            # first unavailable phase so an arbitrary or unsafe detail can
+            # never enter the identity document.
+            rule = "head"
+        return GitUnavailableEvidence(rule=rule)
+
+
+def validate_snapshot_build_result(
+    record: object,
+    *,
+    preset: str,
+    expected_artifact_paths: frozenset[str],
+) -> bool:
+    """Strictly validate one current schema-2 successful build record.
+
+    Missing, extra, mistyped, forged-null, cross-schema, or malformed
+    artifact fields fail closed.  ``dict.get`` alone is insufficient because
+    a removed nullable field would compare equal to JSON null.
+    """
+    if not isinstance(record, dict):
+        return False
+    if set(record) != SNAPSHOT_BUILD_RESULT_FIELDS:
+        return False
+    if type(record["schemaVersion"]) is not int or record["schemaVersion"] != (
+        SNAPSHOT_IDENTITY_SCHEMA_VERSION
+    ):
+        return False
+    if record["status"] != "success" or record["stage"] != "" or record["code"] != "OK":
+        return False
+    if record["sourceBaseline"] != SOURCE_BASELINE_INPUT_SNAPSHOT:
+        return False
+    if record["gitHead"] is not None or record["gitDirty"] is not None:
+        return False
+    evidence = record["gitEvidence"]
+    if not isinstance(evidence, dict) or set(evidence) != {"status", "code", "rule"}:
+        return False
+    if (
+        evidence.get("status") != GIT_DIAGNOSTIC_UNAVAILABLE
+        or evidence.get("code") != BUILD_GIT_INVALID
+    ):
+        return False
+    rule = evidence.get("rule")
+    if not isinstance(rule, str) or rule not in _GIT_DIAGNOSTIC_RULES:
+        # The guard precedes membership: JSON arrays/objects are unhashable
+        # and must produce a stable invalid-record result, never TypeError.
+        return False
+    if not isinstance(record["buildId"], str) or _SHA256_RE.fullmatch(
+        record["buildId"]
+    ) is None:
+        return False
+    if not isinstance(record["inputSnapshotSha256"], str) or _SHA256_RE.fullmatch(
+        record["inputSnapshotSha256"]
+    ) is None:
+        return False
+    target = record["targetDevice"]
+    if not isinstance(target, str) or not 1 <= len(target) <= 128:
+        return False
+    if record["preset"] != preset or preset not in SUPPORTED_PRESETS:
+        return False
+    for field in ("startedAtUtc", "finishedAtUtc"):
+        if not isinstance(record[field], str) or not record[field]:
+            return False
+    if type(record["durationMs"]) is not int or record["durationMs"] < 0:
+        return False
+    artifacts = record["artifacts"]
+    if not isinstance(artifacts, list) or len(artifacts) != 5:
+        return False
+    paths: list[str] = []
+    for item in artifacts:
+        if not isinstance(item, dict) or set(item) != {"path"}:
+            return False
+        path = item["path"]
+        if not isinstance(path, str) or not path:
+            return False
+        paths.append(path)
+    if len(set(paths)) != len(paths) or set(paths) != set(expected_artifact_paths):
+        return False
+    if not isinstance(record["memory"], list) or not isinstance(record["warnings"], list):
+        return False
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -808,7 +952,6 @@ def build_identity_document(
     *,
     model: ProjectModel,
     preset: str,
-    git: GitEvidence,
     snapshot: InputSnapshot,
     elf: ElfEvidence,
     elf_size: int,
@@ -816,30 +959,66 @@ def build_identity_document(
     map_size: int,
     map_sha256: str,
     built_at_utc: str,
+    git: GitEvidence | None = None,
+    git_unavailable: GitUnavailableEvidence | None = None,
 ) -> dict:
-    """Construct the schema-1 firmware identity document in key order."""
+    """Construct a schema-1 Git or schema-2 input-snapshot identity.
+
+    Exactly one provenance source must be supplied.  A Git-backed build keeps
+    the exact schema-1 key order and field bytes; an unavailable Git result
+    emits schema 2 with ``sourceBaseline`` and explicit null Git fields plus
+    bounded diagnostics.  A synthetic commit hash is never produced.
+    """
+    if (git is None) == (git_unavailable is None):
+        raise ValueError("exactly one Git provenance source is required")
     elf_rel, map_rel = model_artifact_paths(model, preset)
-    document = {
-        "schemaVersion": IDENTITY_SCHEMA_VERSION,
-        "buildId": "",
-        "logicalProjectId": str(model.logical_project_id),
-        "toolkitVersion": __version__,
-        "gitHead": git.head,
-        "gitDirty": git.dirty,
-        "inputSnapshotSha256": snapshot.sha256,
-        "newestInputMtimeNs": snapshot.newest_mtime_ns,
-        "targetDevice": model.target.device,
-        "preset": preset,
-        "elfPath": elf_rel,
-        "elfSha256": elf_sha256,
-        "elfSize": elf_size,
-        "mapPath": map_rel,
-        "mapSha256": map_sha256,
-        "entryPoint": elf.entry_point,
-        "vectorAddress": elf.vector_address,
-        "resetHandlerAddress": elf.reset_handler_address,
-        "builtAtUtc": built_at_utc,
-    }
+    if git is not None:
+        document = {
+            "schemaVersion": IDENTITY_SCHEMA_VERSION,
+            "buildId": "",
+            "logicalProjectId": str(model.logical_project_id),
+            "toolkitVersion": __version__,
+            "gitHead": git.head,
+            "gitDirty": git.dirty,
+            "inputSnapshotSha256": snapshot.sha256,
+            "newestInputMtimeNs": snapshot.newest_mtime_ns,
+            "targetDevice": model.target.device,
+            "preset": preset,
+            "elfPath": elf_rel,
+            "elfSha256": elf_sha256,
+            "elfSize": elf_size,
+            "mapPath": map_rel,
+            "mapSha256": map_sha256,
+            "entryPoint": elf.entry_point,
+            "vectorAddress": elf.vector_address,
+            "resetHandlerAddress": elf.reset_handler_address,
+            "builtAtUtc": built_at_utc,
+        }
+    else:
+        assert git_unavailable is not None
+        document = {
+            "schemaVersion": SNAPSHOT_IDENTITY_SCHEMA_VERSION,
+            "buildId": "",
+            "logicalProjectId": str(model.logical_project_id),
+            "toolkitVersion": __version__,
+            "sourceBaseline": SOURCE_BASELINE_INPUT_SNAPSHOT,
+            "gitHead": None,
+            "gitDirty": None,
+            "gitEvidence": git_unavailable.to_dict(),
+            "inputSnapshotSha256": snapshot.sha256,
+            "newestInputMtimeNs": snapshot.newest_mtime_ns,
+            "targetDevice": model.target.device,
+            "preset": preset,
+            "elfPath": elf_rel,
+            "elfSha256": elf_sha256,
+            "elfSize": elf_size,
+            "mapPath": map_rel,
+            "mapSha256": map_sha256,
+            "entryPoint": elf.entry_point,
+            "vectorAddress": elf.vector_address,
+            "resetHandlerAddress": elf.reset_handler_address,
+            "builtAtUtc": built_at_utc,
+        }
     if snapshot.policy == SOURCE_LOCAL_HEADERS_POLICY:
         document["inputDiscoveryPolicy"] = SOURCE_LOCAL_HEADERS_POLICY
     document["buildId"] = compute_build_id(document)

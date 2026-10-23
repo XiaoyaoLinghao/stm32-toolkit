@@ -4,6 +4,7 @@ import json
 from dataclasses import replace
 from pathlib import Path
 
+from stm32_toolkit import __version__
 from stm32_toolkit.build.identity import (
     BuildError,
     compute_build_id,
@@ -13,6 +14,11 @@ from stm32_toolkit.build.identity import (
     read_evidence_json,
     snapshot_project_inputs,
     validate_identity_document,
+    validate_snapshot_build_result,
+)
+from stm32_toolkit.build.model import (
+    SNAPSHOT_IDENTITY_SCHEMA_VERSION,
+    SOURCE_BASELINE_INPUT_SNAPSHOT,
 )
 from stm32_toolkit.detection import ProjectDetection, detect_project
 from stm32_toolkit.generation.managed_files import (
@@ -128,6 +134,11 @@ def build_project_context(
                 build=build,
                 build_ready=build_ready,
                 configure_available=configure_available,
+                snapshot_fresh=(
+                    build.get("elfFresh") is True
+                    and build.get("sourceBaseline")
+                    == SOURCE_BASELINE_INPUT_SNAPSHOT
+                ),
             ),
             "recommendedActions": [],
         }
@@ -189,6 +200,30 @@ _HARDWARE_NEXT_STEPS = (
     "Call stm32_probe_list to enumerate connected probes. It requires no "
     "build, debug backend, target, or SVD and does not modify the board."
 )
+_FLASH_NOT_EVALUATED_REASON = (
+    _HARDWARE_NOT_EVALUATED_REASON
+    + " Hardware operations also require Git-shaped firmware provenance: a"
+    " build from a non-Git input snapshot is build-only and hardware"
+    " admission refuses it with FIRMWARE_PROVENANCE_UNSUPPORTED."
+)
+_FLASH_NEXT_STEPS = (
+    _HARDWARE_NEXT_STEPS,
+    "Build and inspect snapshot firmware without Git; to flash or debug,"
+    " restore a Git repository with a committed HEAD and rebuild. Never"
+    " fabricate a commit or dirty state.",
+)
+_SNAPSHOT_HARDWARE_REASON = (
+    "A current debug build has sourceBaseline input-snapshot-v1 because Git"
+    " provenance was unavailable. Firmware admission refuses this evidence"
+    " with FIRMWARE_PROVENANCE_UNSUPPORTED before any probe, lease, or attach"
+    " effect; no hardware state was evaluated."
+)
+_SNAPSHOT_HARDWARE_NEXT_STEPS = (
+    "Restore a Git repository with a committed HEAD, rebuild, and re-run"
+    " stm32_project_context; never fabricate a commit or dirty state.",
+    "Probe discovery remains independent: stm32_probe_list requires no"
+    " firmware identity and does not modify the board.",
+)
 
 
 def _unconfigured_context(
@@ -239,6 +274,9 @@ def _build_evidence(manifest: ProjectManifest) -> dict[str, object]:
         "elfSha256": None,
         "preset": None,
         "gitHead": None,
+        "gitDirty": None,
+        "sourceBaseline": None,
+        "gitEvidence": None,
         "identityPath": None,
         "buildResultPath": None,
         "buildLogPath": None,
@@ -267,6 +305,9 @@ def _empty_build_evidence() -> dict[str, object]:
         "elfSha256": None,
         "preset": None,
         "gitHead": None,
+        "gitDirty": None,
+        "sourceBaseline": None,
+        "gitEvidence": None,
         "identityPath": None,
         "buildResultPath": None,
         "buildLogPath": None,
@@ -305,12 +346,29 @@ def _capability(
     return {"status": status, "reason": reason, "nextSteps": list(next_steps)}
 
 
-def _hardware_capability_details() -> dict[str, dict[str, object]]:
+def _hardware_capability_details(
+    *, snapshot_fresh: bool = False
+) -> dict[str, dict[str, object]]:
+    if snapshot_fresh:
+        # The current build is known to be refused by firmware admission, so
+        # the affected capabilities are a concrete blocker, not "not
+        # evaluated".  Probe discovery is deliberately not affected.
+        blocked = _capability(
+            "blocked", _SNAPSHOT_HARDWARE_REASON, _SNAPSHOT_HARDWARE_NEXT_STEPS
+        )
+        return {
+            "flash": dict(blocked),
+            "targetTest": dict(blocked),
+            "monitor": dict(blocked),
+            "breakpointDebug": dict(blocked),
+        }
     hardware = _capability(
         "not-evaluated", _HARDWARE_NOT_EVALUATED_REASON, (_HARDWARE_NEXT_STEPS,)
     )
     return {
-        "flash": dict(hardware),
+        "flash": _capability(
+            "not-evaluated", _FLASH_NOT_EVALUATED_REASON, _FLASH_NEXT_STEPS
+        ),
         "targetTest": dict(hardware),
         "monitor": dict(hardware),
         "breakpointDebug": dict(hardware),
@@ -322,6 +380,7 @@ def _configured_capability_details(
     build: dict[str, object],
     build_ready: bool,
     configure_available: bool,
+    snapshot_fresh: bool = False,
 ) -> dict[str, dict[str, object]]:
     if build_ready:
         build_reason = "Managed configuration evidence is complete."
@@ -384,7 +443,7 @@ def _configured_capability_details(
             ),
         ),
     }
-    details.update(_hardware_capability_details())
+    details.update(_hardware_capability_details(snapshot_fresh=snapshot_fresh))
     return details
 
 
@@ -561,10 +620,13 @@ def _evidence_fresh(manifest: ProjectManifest, root: Path) -> dict[str, object] 
 
     ``elfFresh`` requires: build-result status success; a schema-valid
     identity whose build ID recomputes; record and identity agreement on the
-    shared fields; current Git HEAD, target, preset, complete input snapshot,
-    ELF digest, and MAP digest all agreeing; every path contained and
-    regular.  Only the model-selected debug evidence is consulted; another
-    preset's evidence is never accepted.
+    shared fields; target, preset, complete input snapshot, ELF digest, and
+    MAP digest all agreeing; every path contained and regular.  Schema 1
+    additionally requires the current Git HEAD.  Schema 2 is the explicit
+    non-Git input-snapshot baseline: it must carry null Git fields and
+    bounded unavailability evidence, and freshness never spawns Git.  Only
+    the model-selected debug evidence is consulted; another preset's
+    evidence is never accepted.
     """
     try:
         model = load_project_model(root)
@@ -597,9 +659,50 @@ def _evidence_fresh(manifest: ProjectManifest, root: Path) -> dict[str, object] 
         if identity_doc is None:
             return None
         validate_identity_document(identity_doc)
+        identity_schema = identity_doc.get("schemaVersion")
+        if type(identity_schema) is not int:
+            return None
+        if type(record.get("schemaVersion")) is not int:
+            return None
+        if record.get("schemaVersion") != identity_schema:
+            return None
         if compute_build_id(identity_doc) != identity_doc.get("buildId"):
             return None
-        for field in ("buildId", "gitHead", "gitDirty", "inputSnapshotSha256", "targetDevice", "preset"):
+        if identity_schema == SNAPSHOT_IDENTITY_SCHEMA_VERSION:
+            expected_artifacts = frozenset(
+                {log_rel, result_rel, identity_rel, elf_rel, map_rel}
+            )
+            if not validate_snapshot_build_result(
+                record, preset="arm-debug", expected_artifact_paths=expected_artifacts
+            ):
+                return None
+            if identity_doc.get("logicalProjectId") != str(model.logical_project_id):
+                return None
+            if identity_doc.get("toolkitVersion") != __version__:
+                return None
+        if identity_schema == 1:
+            shared_fields = (
+                "buildId",
+                "gitHead",
+                "gitDirty",
+                "inputSnapshotSha256",
+                "targetDevice",
+                "preset",
+            )
+        elif identity_schema == SNAPSHOT_IDENTITY_SCHEMA_VERSION:
+            shared_fields = (
+                "buildId",
+                "sourceBaseline",
+                "gitHead",
+                "gitDirty",
+                "gitEvidence",
+                "inputSnapshotSha256",
+                "targetDevice",
+                "preset",
+            )
+        else:
+            return None
+        for field in shared_fields:
             if record.get(field) != identity_doc.get(field):
                 return None
         if identity_doc.get("elfPath") != elf_rel or identity_doc.get("mapPath") != map_rel:
@@ -608,9 +711,29 @@ def _evidence_fresh(manifest: ProjectManifest, root: Path) -> dict[str, object] 
         snapshot = snapshot_project_inputs(model, policy=identity_discovery_policy(identity_doc))
         if snapshot.sha256 != identity_doc.get("inputSnapshotSha256"):
             return None
-        git = git_evidence(root)
-        if git.head != identity_doc.get("gitHead"):
-            return None
+        if identity_schema == 1:
+            git = git_evidence(root)
+            if git.head != identity_doc.get("gitHead"):
+                return None
+            source_baseline = "git"
+        else:
+            # Snapshot freshness is decided from the exact input snapshot
+            # and artifacts; Git unavailability is evidence, never "clean".
+            if identity_doc.get("sourceBaseline") != SOURCE_BASELINE_INPUT_SNAPSHOT:
+                return None
+            if identity_doc.get("gitHead") is not None:
+                return None
+            if identity_doc.get("gitDirty") is not None:
+                return None
+            evidence = identity_doc.get("gitEvidence")
+            if (
+                not isinstance(evidence, dict)
+                or evidence.get("status") != "unavailable"
+                or not isinstance(evidence.get("code"), str)
+                or not isinstance(evidence.get("rule"), str)
+            ):
+                return None
+            source_baseline = SOURCE_BASELINE_INPUT_SNAPSHOT
         if not _regular_contained(root, elf_rel, "elf"):
             return None
         if not _regular_contained(root, map_rel, "map"):
@@ -629,6 +752,11 @@ def _evidence_fresh(manifest: ProjectManifest, root: Path) -> dict[str, object] 
             "elfSha256": identity_doc["elfSha256"],
             "preset": "arm-debug",
             "gitHead": identity_doc["gitHead"],
+            "gitDirty": identity_doc["gitDirty"],
+            "sourceBaseline": source_baseline,
+            "gitEvidence": (
+                dict(identity_doc["gitEvidence"]) if identity_schema != 1 else None
+            ),
             "identityPath": identity_rel,
             "buildResultPath": result_rel,
             "buildLogPath": log_rel,

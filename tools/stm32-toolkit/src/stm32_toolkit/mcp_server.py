@@ -2418,8 +2418,16 @@ def create_server(
         Read capabilityDetails.build from stm32_project_context, not only the
         legacy build boolean: blocked means a concrete prerequisite is
         missing, while not-evaluated means this context did not check it.
-        The build never runs without authorized=true.  Report the returned
-        identity evidence exactly; a failed build leaves prior artifacts stale.
+        The build never runs without authorized=true.  Git is not required:
+        with a committed HEAD the identity is schema 1; when Git is missing,
+        unborn or unreadable the identity is schema 2 with
+        sourceBaseline="input-snapshot-v1", bounded gitEvidence
+        {status:"unavailable", code:"BUILD_GIT_INVALID", rule:"head|status"},
+        and null gitHead/gitDirty.  Never treat null Git fields as clean and
+        never fabricate a commit.  Schema-2 evidence is build-only: flash,
+        debug, Target tests, Monitor and acceptance refuse it with
+        FIRMWARE_PROVENANCE_UNSUPPORTED.  Report the returned identity
+        evidence exactly; a failed build leaves prior artifacts stale.
         """
         return await tool_build_for_request(
             runtime, ctx, preset, clean, timeoutSeconds, authorized
@@ -2455,11 +2463,15 @@ def create_server(
         firmware pins from stm32_project_context as data.build.buildId and
         data.build.elfSha256 and pass them as expectedBuildId and
         expectedElfSha256; never fabricate or reuse stale identity.  Read
-        capabilityDetails.flash rather than the legacy context boolean, which
-        is not-evaluated.  This tool modifies the board and runs only with
-        authorized=true after explicit user authorization for this exact
-        operation.  Under-reset recovery is a separate policy, never an
-        automatic retry.
+        capabilityDetails.flash rather than the legacy context boolean: a
+        fresh schema-2 input-snapshot build has status=blocked because
+        firmware admission requires Git-shaped provenance and returns
+        FIRMWARE_PROVENANCE_UNSUPPORTED before any probe, lease or attach
+        effect.  Restore a committed Git baseline and rebuild instead of
+        fabricating a commit.  This tool modifies the board and runs only
+        with authorized=true after explicit user authorization for this
+        exact operation.  Under-reset recovery is a separate policy, never
+        an automatic retry.
         """
         return await tool_flash_for_request(
             runtime,
@@ -2525,7 +2537,9 @@ def create_server(
         the bound ELF.  The read action performs no memory write and no
         explicit target control.  The shared OBSERVE attach may briefly halt
         and resume the core while connecting; this is not a state-preserving
-        attach and is not halted-run analysis.
+        attach and is not halted-run analysis.  A schema-2 input-snapshot
+        build is refused by shared firmware admission with
+        FIRMWARE_PROVENANCE_UNSUPPORTED before attach.
         """
         return await tool_variable_read_for_request(
             runtime,
@@ -2553,7 +2567,9 @@ def create_server(
         bounded count or duration.  Sampling performs no memory write and no
         explicit target control.  The shared OBSERVE attach may briefly halt
         and resume the core while connecting; it is not state-preserving and
-        does not make this halted-run analysis.
+        does not make this halted-run analysis.  A schema-2 input-snapshot
+        build is refused by shared firmware admission with
+        FIRMWARE_PROVENANCE_UNSUPPORTED before attach.
         """
         return await tool_variable_sample_for_request(
             runtime,
@@ -2582,6 +2598,8 @@ def create_server(
         configured project SVD; callers never supply a target, SVD, address,
         or access size.  acknowledgeAccessRisk confirms the caller reviewed
         the read-access risk and is not a substitute for target provenance.
+        A schema-2 input-snapshot build is refused by shared firmware
+        admission with FIRMWARE_PROVENANCE_UNSUPPORTED before attach.
         """
         return await tool_register_read_for_request(
             runtime,
@@ -2605,7 +2623,9 @@ def create_server(
 
         haltForAnalysis=true is an explicit CONTROL authorization: it performs
         one halt, analysis, and one resume with verified running state.  It
-        requires a running target and exact firmware identity.  Do not retry,
+        requires a running target and exact firmware identity.  A schema-2
+        input-snapshot build is refused by shared firmware admission with
+        FIRMWARE_PROVENANCE_UNSUPPORTED before attach.  Do not retry,
         reconnect, reset, or flash after an unknown/failed recovery.
         """
         return await tool_fault_analyze_for_request(

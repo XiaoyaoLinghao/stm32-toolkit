@@ -30,12 +30,13 @@ from stm32_toolkit.build.identity import (
     _FILE_LIMIT_BYTES,
     _MAP_LIMIT_BYTES,
     GitEvidence,
+    GitUnavailableEvidence,
     SOURCE_LOCAL_HEADERS_POLICY,
     atomic_write_json,
     atomic_write_text,
     build_identity_document,
+    collect_build_git_evidence,
     compute_build_id,
-    git_evidence,
     identity_discovery_policy,
     hash_artifact,
     model_artifact_paths,
@@ -46,6 +47,7 @@ from stm32_toolkit.build.identity import (
     utc_now_rfc3339,
     validate_identity_document,
     validate_elf,
+    validate_snapshot_build_result,
 )
 from stm32_toolkit.build.map_file import MapError, parse_map
 from stm32_toolkit.build.model import (
@@ -64,6 +66,8 @@ from stm32_toolkit.build.model import (
     BuildReport,
     BuildRequest,
     FirmwareIdentity,
+    SNAPSHOT_IDENTITY_SCHEMA_VERSION,
+    SOURCE_BASELINE_INPUT_SNAPSHOT,
     SUPPORTED_PRESETS,
     build_error,
 )
@@ -494,7 +498,7 @@ def _prior_evidence_matches(
     model: ProjectModel,
     preset: str,
     snapshot,
-    git: GitEvidence,
+    provenance: GitEvidence | GitUnavailableEvidence,
     elf_rel: str,
     map_rel: str,
     post_elf: _ArtifactState,
@@ -508,8 +512,6 @@ def _prior_evidence_matches(
     if record.get("targetDevice") != model.target.device:
         return False
     if record.get("inputSnapshotSha256") != snapshot.sha256:
-        return False
-    if record.get("gitHead") != git.head:
         return False
     try:
         validate_identity_document(identity_doc)
@@ -525,8 +527,6 @@ def _prior_evidence_matches(
         return False
     if identity_discovery_policy(identity_doc) != snapshot.policy:
         return False
-    if identity_doc.get("gitHead") != git.head:
-        return False
     if identity_doc.get("elfPath") != elf_rel or identity_doc.get("mapPath") != map_rel:
         return False
     if (
@@ -536,6 +536,50 @@ def _prior_evidence_matches(
         return False
     if record.get("buildId") != identity_doc.get("buildId"):
         return False
+    if isinstance(provenance, GitEvidence):
+        if record.get("schemaVersion") != 1:
+            return False
+        if identity_doc.get("schemaVersion") != 1:
+            return False
+        if record.get("gitHead") != provenance.head:
+            return False
+        if identity_doc.get("gitHead") != provenance.head:
+            return False
+        if "sourceBaseline" in identity_doc or "gitEvidence" in identity_doc:
+            return False
+    else:
+        expected = provenance.to_dict()
+        expected_artifacts = frozenset(
+            {
+                _LOG_REL,
+                _RESULT_REL,
+                f"build/{preset}/firmware-identity.json",
+                elf_rel,
+                map_rel,
+            }
+        )
+        if not validate_snapshot_build_result(
+            record, preset=preset, expected_artifact_paths=expected_artifacts
+        ):
+            return False
+        if identity_doc.get("schemaVersion") != SNAPSHOT_IDENTITY_SCHEMA_VERSION:
+            return False
+        if identity_doc.get("logicalProjectId") != str(model.logical_project_id):
+            return False
+        if identity_doc.get("toolkitVersion") != __version__:
+            return False
+        if identity_doc.get("sourceBaseline") != SOURCE_BASELINE_INPUT_SNAPSHOT:
+            return False
+        if record.get("sourceBaseline") != SOURCE_BASELINE_INPUT_SNAPSHOT:
+            return False
+        if identity_doc.get("gitHead") is not None or identity_doc.get("gitDirty") is not None:
+            return False
+        if record.get("gitHead") is not None or record.get("gitDirty") is not None:
+            return False
+        if identity_doc.get("gitEvidence") != expected:
+            return False
+        if record.get("gitEvidence") != expected:
+            return False
     return True
 
 
@@ -550,7 +594,7 @@ def _require_fresh_outputs(
     elf_path: Path,
     map_path: Path,
     snapshot,
-    git: GitEvidence,
+    provenance: GitEvidence | GitUnavailableEvidence,
 ) -> None:
     post_elf = _artifact_state(elf_path)
     post_map = _artifact_state(map_path)
@@ -566,7 +610,7 @@ def _require_fresh_outputs(
         return
     prior = _load_prior_evidence(root, preset)
     if prior is None or not _prior_evidence_matches(
-        prior, model, preset, snapshot, git, elf_rel, map_rel, post_elf, post_map
+        prior, model, preset, snapshot, provenance, elf_rel, map_rel, post_elf, post_map
     ):
         raise build_error(
             BUILD_OUTPUT_STALE,
@@ -612,7 +656,7 @@ def build_result_document(
     code: str,
     build_id: str | None,
     git_head: str | None,
-    git_dirty: bool,
+    git_dirty: bool | None,
     input_snapshot_sha256: str | None,
     target_device: str,
     preset: str,
@@ -622,25 +666,37 @@ def build_result_document(
     artifacts: list[dict],
     memory: list[dict],
     warnings: list[str],
+    schema_version: int = 1,
+    source_baseline: str | None = None,
+    git_evidence: dict[str, str] | None = None,
 ) -> dict:
-    return {
-        "schemaVersion": 1,
+    document: dict[str, object] = {
+        "schemaVersion": schema_version,
         "status": status,
         "stage": stage,
         "code": code,
         "buildId": build_id,
-        "gitHead": git_head,
-        "gitDirty": git_dirty,
-        "inputSnapshotSha256": input_snapshot_sha256,
-        "targetDevice": target_device,
-        "preset": preset,
-        "startedAtUtc": started_at_utc,
-        "finishedAtUtc": finished_at_utc,
-        "durationMs": duration_ms,
-        "artifacts": artifacts,
-        "memory": memory,
-        "warnings": warnings,
     }
+    if source_baseline is not None:
+        document["sourceBaseline"] = source_baseline
+    document["gitHead"] = git_head
+    document["gitDirty"] = git_dirty
+    if git_evidence is not None:
+        document["gitEvidence"] = dict(git_evidence)
+    document.update(
+        {
+            "inputSnapshotSha256": input_snapshot_sha256,
+            "targetDevice": target_device,
+            "preset": preset,
+            "startedAtUtc": started_at_utc,
+            "finishedAtUtc": finished_at_utc,
+            "durationMs": duration_ms,
+            "artifacts": artifacts,
+            "memory": memory,
+            "warnings": warnings,
+        }
+    )
+    return document
 
 
 # ---------------------------------------------------------------------------
@@ -661,6 +717,7 @@ def _publish_failure(
     started_at: str,
     started_mono: float,
     sections: list[dict],
+    provenance: GitEvidence | GitUnavailableEvidence | None = None,
 ) -> OperationResult[None]:
     finished_at = utc_now_rfc3339()
     duration_ms = int((time.monotonic() - started_mono) * 1000)
@@ -676,23 +733,50 @@ def _publish_failure(
             },
         ],
     )
-    result_doc = build_result_document(
-        status="failure",
-        stage=stage,
-        code=error.code,
-        build_id=None,
-        git_head=None,
-        git_dirty=False,
-        input_snapshot_sha256=None,
-        target_device=model.target.device,
-        preset=preset,
-        started_at_utc=started_at,
-        finished_at_utc=finished_at,
-        duration_ms=duration_ms,
-        artifacts=[{"path": _LOG_REL}],
-        memory=[],
-        warnings=[],
-    )
+    if isinstance(provenance, GitUnavailableEvidence):
+        # A failed snapshot build never claims a Git state; both fields stay
+        # null and the bounded availability diagnostic is retained.
+        result_doc = build_result_document(
+            status="failure",
+            stage=stage,
+            code=error.code,
+            build_id=None,
+            git_head=None,
+            git_dirty=None,
+            input_snapshot_sha256=None,
+            target_device=model.target.device,
+            preset=preset,
+            started_at_utc=started_at,
+            finished_at_utc=finished_at,
+            duration_ms=duration_ms,
+            artifacts=[{"path": _LOG_REL}],
+            memory=[],
+            warnings=[],
+            schema_version=SNAPSHOT_IDENTITY_SCHEMA_VERSION,
+            source_baseline=SOURCE_BASELINE_INPUT_SNAPSHOT,
+            git_evidence=provenance.to_dict(),
+        )
+    else:
+        # Legacy schema-1 failure records keep their exact established bytes:
+        # no admitted identity exists, so the head is null and dirty is false
+        # regardless of the collected provenance details.
+        result_doc = build_result_document(
+            status="failure",
+            stage=stage,
+            code=error.code,
+            build_id=None,
+            git_head=None,
+            git_dirty=False,
+            input_snapshot_sha256=None,
+            target_device=model.target.device,
+            preset=preset,
+            started_at_utc=started_at,
+            finished_at_utc=finished_at,
+            duration_ms=duration_ms,
+            artifacts=[{"path": _LOG_REL}],
+            memory=[],
+            warnings=[],
+        )
     try:
         atomic_write_text(root.joinpath(*_LOG_REL.split("/")), log_text)
     except OSError:
@@ -766,23 +850,23 @@ def _run_locked(
         return _publish_failure(
             error, root, model, preset, "snapshot", started_at, started_mono, sections
         )
-    try:
-        git = git_evidence(root)
-    except BuildError as error:
-        return _publish_failure(
-            error, root, model, preset, "git", started_at, started_mono, sections
-        )
+    # Git availability never decides build success.  The strict collector
+    # still propagates unexpected errors; only the stable availability error
+    # becomes a bounded snapshot diagnostic.
+    provenance = collect_build_git_evidence(root)
     try:
         second = snapshot_project_inputs(model, policy=SOURCE_LOCAL_HEADERS_POLICY)
     except BuildError as error:
         return _publish_failure(
-            error, root, model, preset, "snapshot", started_at, started_mono, sections
+            error, root, model, preset, "snapshot", started_at, started_mono, sections,
+            provenance,
         )
     changed = _snapshot_difference(snapshot, second)
     if changed is not None:
         error = build_error(BUILD_INPUT_CHANGED, "build inputs changed", {"path": changed})
         return _publish_failure(
-            error, root, model, preset, "snapshot", started_at, started_mono, sections
+            error, root, model, preset, "snapshot", started_at, started_mono, sections,
+            provenance,
         )
 
     configure = _run_stage(
@@ -790,7 +874,8 @@ def _run_locked(
     )
     if configure.error is not None:
         return _publish_failure(
-            configure.error, root, model, preset, "configure", started_at, started_mono, sections
+            configure.error, root, model, preset, "configure", started_at, started_mono,
+            sections, provenance,
         )
     build_argv = ("cmake", "--build", "--preset", preset)
     if request.clean:
@@ -798,20 +883,23 @@ def _run_locked(
     build_outcome = _run_stage("build", build_argv, root, request.timeout_seconds, sections)
     if build_outcome.error is not None:
         return _publish_failure(
-            build_outcome.error, root, model, preset, "build", started_at, started_mono, sections
+            build_outcome.error, root, model, preset, "build", started_at, started_mono,
+            sections, provenance,
         )
 
     try:
         post_snapshot = snapshot_project_inputs(model, policy=SOURCE_LOCAL_HEADERS_POLICY)
     except BuildError as error:
         return _publish_failure(
-            error, root, model, preset, "validate", started_at, started_mono, sections
+            error, root, model, preset, "validate", started_at, started_mono, sections,
+            provenance,
         )
     changed = _snapshot_difference(snapshot, post_snapshot)
     if changed is not None:
         error = build_error(BUILD_INPUT_CHANGED, "build inputs changed", {"path": changed})
         return _publish_failure(
-            error, root, model, preset, "validate", started_at, started_mono, sections
+            error, root, model, preset, "validate", started_at, started_mono, sections,
+            provenance,
         )
 
     try:
@@ -826,7 +914,7 @@ def _run_locked(
             elf_path,
             map_path,
             snapshot,
-            git,
+            provenance,
         )
         # ELF format, security, and section attributes are validated first;
         # its immutable section evidence then classifies every non-zero MAP
@@ -845,13 +933,17 @@ def _run_locked(
         map_size, map_sha = hash_artifact(map_path, map_rel, _MAP_LIMIT_BYTES, BUILD_MAP_INVALID)
     except BuildError as error:
         return _publish_failure(
-            error, root, model, preset, "validate", started_at, started_mono, sections
+            error, root, model, preset, "validate", started_at, started_mono, sections,
+            provenance,
         )
 
     identity_doc = build_identity_document(
         model=model,
         preset=preset,
-        git=git,
+        git=provenance if isinstance(provenance, GitEvidence) else None,
+        git_unavailable=(
+            provenance if isinstance(provenance, GitUnavailableEvidence) else None
+        ),
         snapshot=snapshot,
         elf=elf_evidence,
         elf_size=elf_size,
@@ -864,19 +956,32 @@ def _run_locked(
         validate_identity_document(identity_doc)
     except BuildError as error:
         return _publish_failure(
-            error, root, model, preset, "validate", started_at, started_mono, sections
+            error, root, model, preset, "validate", started_at, started_mono, sections,
+            provenance,
+        )
+    typed_identity = FirmwareIdentity.from_document(identity_doc)
+    if typed_identity.to_dict() != identity_doc:
+        # Typed evidence must round-trip the identity before any success
+        # evidence is published; a mismatch must never leave a fresh success.
+        return _failure(
+            build_error(
+                BUILD_EVIDENCE_FAILED,
+                "evidence publication failed",
+                {"path": f"build/{preset}/firmware-identity.json", "phase": "identity"},
+            )
         )
 
     identity_rel = f"build/{preset}/firmware-identity.json"
     finished_at = utc_now_rfc3339()
     duration_ms = int((time.monotonic() - started_mono) * 1000)
+    snapshot_mode = identity_doc["schemaVersion"] == SNAPSHOT_IDENTITY_SCHEMA_VERSION
     result_doc = build_result_document(
         status="success",
         stage="",
         code="OK",
         build_id=str(identity_doc["buildId"]),
-        git_head=str(identity_doc["gitHead"]),
-        git_dirty=bool(identity_doc["gitDirty"]),
+        git_head=identity_doc["gitHead"],
+        git_dirty=identity_doc["gitDirty"],
         input_snapshot_sha256=str(identity_doc["inputSnapshotSha256"]),
         target_device=str(identity_doc["targetDevice"]),
         preset=preset,
@@ -892,6 +997,15 @@ def _run_locked(
         ],
         memory=[item.to_dict() for item in usages],
         warnings=[],
+        schema_version=(
+            SNAPSHOT_IDENTITY_SCHEMA_VERSION if snapshot_mode else 1
+        ),
+        source_baseline=(
+            SOURCE_BASELINE_INPUT_SNAPSHOT if snapshot_mode else None
+        ),
+        git_evidence=(
+            dict(identity_doc["gitEvidence"]) if snapshot_mode else None
+        ),
     )
     log_text = render_build_log(root, sections)
     try:
@@ -926,28 +1040,7 @@ def _run_locked(
         )
 
     report = BuildReport(
-        identity=FirmwareIdentity(
-            schema_version=int(identity_doc["schemaVersion"]),
-            build_id=str(identity_doc["buildId"]),
-            logical_project_id=str(identity_doc["logicalProjectId"]),
-            toolkit_version=str(identity_doc["toolkitVersion"]),
-            git_head=str(identity_doc["gitHead"]),
-            git_dirty=bool(identity_doc["gitDirty"]),
-            input_snapshot_sha256=str(identity_doc["inputSnapshotSha256"]),
-            newest_input_mtime_ns=int(identity_doc["newestInputMtimeNs"]),
-            target_device=str(identity_doc["targetDevice"]),
-            preset=str(identity_doc["preset"]),
-            elf_path=str(identity_doc["elfPath"]),
-            elf_sha256=str(identity_doc["elfSha256"]),
-            elf_size=int(identity_doc["elfSize"]),
-            map_path=str(identity_doc["mapPath"]),
-            map_sha256=str(identity_doc["mapSha256"]),
-            entry_point=int(identity_doc["entryPoint"]),
-            vector_address=int(identity_doc["vectorAddress"]),
-            reset_handler_address=int(identity_doc["resetHandlerAddress"]),
-            built_at_utc=str(identity_doc["builtAtUtc"]),
-            input_discovery_policy=identity_discovery_policy(identity_doc),
-        ),
+        identity=typed_identity,
         memory=usages,
         warnings=(),
         build_log_path=_LOG_REL,

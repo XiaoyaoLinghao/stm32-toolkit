@@ -49,6 +49,9 @@ EMPTY_FRESHNESS = {
     "elfSha256": None,
     "preset": None,
     "gitHead": None,
+    "gitDirty": None,
+    "sourceBaseline": None,
+    "gitEvidence": None,
     "identityPath": None,
     "buildResultPath": None,
     "buildLogPath": None,
@@ -161,9 +164,10 @@ def test_configured_context_reports_evidence_sections_without_build(
                 },
                 "flash": {
                     "status": "not-evaluated",
-                    "reason": "Project context does not enumerate probes or inspect target state, so this hardware capability is not evaluated here; the tool still exists.",
+                    "reason": "Project context does not enumerate probes or inspect target state, so this hardware capability is not evaluated here; the tool still exists. Hardware operations also require Git-shaped firmware provenance: a build from a non-Git input snapshot is build-only and hardware admission refuses it with FIRMWARE_PROVENANCE_UNSUPPORTED.",
                     "nextSteps": [
-                        "Call stm32_probe_list to enumerate connected probes. It requires no build, debug backend, target, or SVD and does not modify the board."
+                        "Call stm32_probe_list to enumerate connected probes. It requires no build, debug backend, target, or SVD and does not modify the board.",
+                        "Build and inspect snapshot firmware without Git; to flash or debug, restore a Git repository with a committed HEAD and rebuild. Never fabricate a commit or dirty state.",
                     ],
                 },
                 "targetTest": {
@@ -301,9 +305,10 @@ def test_keil_context_stays_read_only_and_reports_inspection_capabilities(
             },
             "flash": {
                 "status": "not-evaluated",
-                "reason": "Project context does not enumerate probes or inspect target state, so this hardware capability is not evaluated here; the tool still exists.",
+                "reason": "Project context does not enumerate probes or inspect target state, so this hardware capability is not evaluated here; the tool still exists. Hardware operations also require Git-shaped firmware provenance: a build from a non-Git input snapshot is build-only and hardware admission refuses it with FIRMWARE_PROVENANCE_UNSUPPORTED.",
                 "nextSteps": [
-                    "Call stm32_probe_list to enumerate connected probes. It requires no build, debug backend, target, or SVD and does not modify the board."
+                    "Call stm32_probe_list to enumerate connected probes. It requires no build, debug backend, target, or SVD and does not modify the board.",
+                    "Build and inspect snapshot firmware without Git; to flash or debug, restore a Git repository with a committed HEAD and rebuild. Never fabricate a commit or dirty state.",
                 ],
             },
             "targetTest": {

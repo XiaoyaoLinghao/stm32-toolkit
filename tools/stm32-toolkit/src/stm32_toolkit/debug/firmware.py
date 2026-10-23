@@ -116,7 +116,18 @@ def _endpoint(
 def _firmware(root: Path, *, changed: bool = False):
     try:
         return _load_fresh_firmware(root)
-    except Exception:
+    except Exception as error:
+        if getattr(error, "code", None) == "FIRMWARE_PROVENANCE_UNSUPPORTED":
+            details = getattr(error, "details", None)
+            raise _fail(
+                "FIRMWARE_PROVENANCE_UNSUPPORTED",
+                getattr(
+                    error,
+                    "message",
+                    "Firmware provenance does not support hardware workflows",
+                ),
+                **(dict(details) if isinstance(details, Mapping) else {}),
+            ) from None
         if changed:
             raise _fail(
                 "DEBUG_FIRMWARE_CHANGED",

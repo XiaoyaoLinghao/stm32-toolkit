@@ -62,6 +62,24 @@ the ELF bytes match. Stale or unverifiable output remains a refusal, not permiss
 Memory reports describe linker allocation/reservation, not runtime high-water usage. For accurate
 Flash accounting, file-backed load ranges and NOBITS runtime ranges must remain distinct.
 
+Git is a provenance source, not a build prerequisite. A committed HEAD produces the unchanged
+schema-1 identity/record and build-ID semantics. When Git is missing, unborn, or unreadable, the
+Toolkit emits schema 2 with `sourceBaseline: "input-snapshot-v1"`, null `gitHead`/`gitDirty`, and
+bounded `gitEvidence` (`status: "unavailable"`, `code: "BUILD_GIT_INVALID"`, rule `head` or
+`status`); it never initializes, commits, or fabricates a hash. Schema-1 validation stays strict and
+does not accept nullable Git fields. Context freshness for schema 2 proves the exact current input
+snapshot, model/target/preset, toolchain version, and ELF/MAP digests without spawning Git, and
+reports `sourceBaseline`, `gitDirty`, and `gitEvidence` explicitly. No-op reuse requires a compatible
+current prior success record in the same provenance mode; unknown, tampered, cross-schema, stale, or
+failed records are refused.
+
+Snapshot provenance is build-only. Flash, debug, Target tests, Monitor, and acceptance protocols
+still require Git-shaped firmware provenance. The shared firmware admission boundary validates the
+snapshot identity and then returns `FIRMWARE_PROVENANCE_UNSUPPORTED` before any probe, lease, or
+attach effect. Context exposes this known blocker as `blocked` in the affected hardware
+`capabilityDetails` for a fresh snapshot build, while read-only probe discovery remains independent.
+Migration planning and apply continue to require their committed Git baseline.
+
 ## Probe, debugging and Monitor
 
 One physical probe has one owner. All attach/control uses the same Probe Service; no competing

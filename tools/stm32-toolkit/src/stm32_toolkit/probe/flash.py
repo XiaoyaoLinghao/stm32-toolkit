@@ -28,6 +28,11 @@ from stm32_toolkit.build.identity import (
     utc_now_rfc3339,
     validate_elf,
     validate_identity_document,
+    validate_snapshot_build_result,
+)
+from stm32_toolkit.build.model import (
+    SNAPSHOT_IDENTITY_SCHEMA_VERSION,
+    SOURCE_BASELINE_INPUT_SNAPSHOT,
 )
 from stm32_toolkit.project_model import ProjectModel, load_project_model
 from stm32_toolkit.result import OperationResult
@@ -68,6 +73,11 @@ _BUILD_RESULT_FIELDS = {
     "memory",
     "warnings",
 }
+_PROVENANCE_UNSUPPORTED_GUIDANCE = (
+    "Builds from a non-Git input snapshot are supported for build and build "
+    "freshness only. Restore a Git repository with a committed HEAD, rebuild, "
+    "and retry; never fabricate a commit or dirty state."
+)
 
 
 @dataclass(frozen=True)
@@ -355,6 +365,14 @@ def _flash_segments(data: bytes, model: ProjectModel, rel: str) -> tuple[FlashSe
 
 
 def _load_fresh_firmware(root: Path) -> _FreshFirmware:
+    """Shared firmware admission for every hardware workflow.
+
+    A schema-1 Git identity keeps the established behaviour.  A structurally
+    valid schema-2 input-snapshot identity is recognized and then refused
+    with ``FIRMWARE_PROVENANCE_UNSUPPORTED`` before any probe, lease, or
+    attach effect.  Malformed or cross-schema evidence stays
+    ``FIRMWARE_EVIDENCE_INVALID``.
+    """
     try:
         model = load_project_model(root)
     except Exception:
@@ -364,12 +382,27 @@ def _load_fresh_firmware(root: Path) -> _FreshFirmware:
 
     identity = _json_document(root, _IDENTITY_REL, _IDENTITY_LIMIT)
     result = _json_document(root, _RESULT_REL, _RESULT_LIMIT)
-    if set(result) != _BUILD_RESULT_FIELDS or result.get("schemaVersion") != 1:
+    if result.get("schemaVersion") == 1:
+        return _load_git_firmware(root, model, identity, result)
+    if result.get("schemaVersion") == SNAPSHOT_IDENTITY_SCHEMA_VERSION:
+        _refuse_snapshot_firmware(root, model, identity, result)
+    raise _fail("FIRMWARE_EVIDENCE_INVALID", "Build result is invalid", path=_RESULT_REL, rule="fields")
+
+
+def _load_git_firmware(
+    root: Path,
+    model: ProjectModel,
+    identity: dict[str, object],
+    result: dict[str, object],
+) -> _FreshFirmware:
+    if set(result) != _BUILD_RESULT_FIELDS:
         raise _fail("FIRMWARE_EVIDENCE_INVALID", "Build result is invalid", path=_RESULT_REL, rule="fields")
     try:
         validate_identity_document(identity)
     except BuildError:
         raise _fail("FIRMWARE_EVIDENCE_INVALID", "Firmware identity is invalid", path=_IDENTITY_REL, rule="schema") from None
+    if identity.get("schemaVersion") != 1:
+        raise _fail("FIRMWARE_EVIDENCE_INVALID", "Firmware identity is invalid", path=_IDENTITY_REL, rule="schema")
     if compute_build_id(identity) != identity.get("buildId"):
         raise _fail("FIRMWARE_EVIDENCE_INVALID", "Firmware identity is invalid", path=_IDENTITY_REL, rule="buildId")
     stage = result.get("stage")
@@ -466,6 +499,151 @@ def _load_fresh_firmware(root: Path) -> _FreshFirmware:
         raise _fail("FIRMWARE_IDENTITY_MISMATCH", "ELF structure disagrees with firmware identity", field="elf", rule="identity")
     segments = _flash_segments(elf_data, model, str(elf_rel))
     return _FreshFirmware(root, model, identity, str(elf_rel), elf_data, segments)
+
+
+def _snapshot_evidence_invalid(rule: str, path: str = _IDENTITY_REL) -> _FlashFailure:
+    return _fail("FIRMWARE_EVIDENCE_INVALID", "Firmware evidence is invalid", path=path, rule=rule)
+
+
+def _refuse_snapshot_firmware(
+    root: Path,
+    model: ProjectModel,
+    identity: dict[str, object],
+    result: dict[str, object],
+) -> None:
+    """Validate one snapshot identity, then refuse hardware admission.
+
+    Validation is intentionally as strict as the Git path so tampered,
+    cross-schema, stale, or malformed evidence cannot be misreported as a
+    provenance policy decision.  A truly valid current snapshot identity is
+    refused with the stable build-only code, after no probe or lease effect.
+    """
+    expected_elf_rel, expected_map_rel = model_artifact_paths(model, "arm-debug")
+    if not validate_snapshot_build_result(
+        result,
+        preset="arm-debug",
+        expected_artifact_paths=frozenset(
+            {_BUILD_LOG_REL, _RESULT_REL, _IDENTITY_REL, expected_elf_rel, expected_map_rel}
+        ),
+    ):
+        raise _snapshot_evidence_invalid("records", _RESULT_REL)
+    try:
+        validate_identity_document(identity)
+    except BuildError:
+        raise _snapshot_evidence_invalid("schema") from None
+    if identity.get("schemaVersion") != SNAPSHOT_IDENTITY_SCHEMA_VERSION:
+        raise _snapshot_evidence_invalid("schema")
+    if compute_build_id(identity) != identity.get("buildId"):
+        raise _snapshot_evidence_invalid("buildId")
+    stage = result.get("stage")
+    if (
+        result.get("status") != "success"
+        or stage not in ("", "complete")
+        or result.get("code") != "OK"
+    ):
+        raise _fail("FIRMWARE_BUILD_REQUIRED", "A current successful debug build is required", path=_RESULT_REL, rule="status")
+    public_artifact_paths = _public_artifact_paths(result) if stage == "" else None
+    if identity.get("preset") != "arm-debug" or result.get("preset") != "arm-debug":
+        raise _fail("FIRMWARE_IDENTITY_MISMATCH", "Firmware preset does not match the debug workflow", field="preset", rule="value")
+    if identity.get("toolkitVersion") != __version__:
+        raise _fail("FIRMWARE_IDENTITY_MISMATCH", "Firmware Toolkit version is incompatible", field="toolkitVersion", rule="current")
+    if identity.get("logicalProjectId") != str(model.logical_project_id):
+        raise _fail("FIRMWARE_IDENTITY_MISMATCH", "Firmware project identity does not match", field="logicalProjectId", rule="project")
+    source_baseline = identity.get("sourceBaseline")
+    if source_baseline != SOURCE_BASELINE_INPUT_SNAPSHOT:
+        raise _snapshot_evidence_invalid("sourceBaseline")
+    if identity.get("gitHead") is not None or identity.get("gitDirty") is not None:
+        raise _snapshot_evidence_invalid("gitFields")
+    if result.get("gitHead") is not None or result.get("gitDirty") is not None:
+        raise _snapshot_evidence_invalid("gitFields", _RESULT_REL)
+    git_evidence_document = identity.get("gitEvidence")
+    if not isinstance(git_evidence_document, dict):
+        raise _snapshot_evidence_invalid("gitEvidence")
+    if result.get("gitEvidence") != git_evidence_document:
+        raise _fail("FIRMWARE_IDENTITY_MISMATCH", "Build result and firmware identity disagree", field="buildResult", rule="identity")
+
+    expected_pairs = (
+        ("buildId", identity.get("buildId")),
+        ("sourceBaseline", source_baseline),
+        ("gitHead", identity.get("gitHead")),
+        ("gitDirty", identity.get("gitDirty")),
+        ("inputSnapshotSha256", identity.get("inputSnapshotSha256")),
+        ("targetDevice", identity.get("targetDevice")),
+    )
+    if any(result.get(field) != expected for field, expected in expected_pairs):
+        raise _fail("FIRMWARE_IDENTITY_MISMATCH", "Build result and firmware identity disagree", field="buildResult", rule="identity")
+    if identity.get("targetDevice") != model.target.device:
+        raise _fail("FIRMWARE_IDENTITY_MISMATCH", "Firmware target does not match the project", field="targetDevice", rule="project")
+
+    try:
+        snapshot = snapshot_project_inputs(model, policy=identity_discovery_policy(identity))
+    except BuildError:
+        raise _fail("FIRMWARE_EVIDENCE_INVALID", "Current source evidence is unavailable", path=".stm32-project.json", rule="freshness") from None
+    if snapshot.sha256 != identity.get("inputSnapshotSha256"):
+        raise _fail("FIRMWARE_INPUT_CHANGED", "Project inputs changed after the selected build", field="inputSnapshotSha256", rule="current")
+
+    expected_elf_rel, expected_map_rel = model_artifact_paths(model, "arm-debug")
+    elf_rel = identity.get("elfPath")
+    map_rel = identity.get("mapPath")
+    if elf_rel != expected_elf_rel or map_rel != expected_map_rel:
+        raise _fail("FIRMWARE_IDENTITY_MISMATCH", "Firmware paths do not match the project", field="elfPath", rule="project")
+    elf_data = _secure_file(root, str(elf_rel), _ELF_LIMIT)
+    map_data = _secure_file(root, map_rel, _MAP_LIMIT)
+    if len(elf_data) != identity.get("elfSize") or sha256(elf_data).hexdigest() != identity.get("elfSha256"):
+        raise _fail("FIRMWARE_INPUT_CHANGED", "ELF changed after the selected build", field="elfSha256", rule="current")
+    if sha256(map_data).hexdigest() != identity.get("mapSha256"):
+        raise _fail("FIRMWARE_INPUT_CHANGED", "MAP changed after the selected build", field="mapSha256", rule="current")
+    if public_artifact_paths is not None:
+        expected_artifact_paths = {
+            _BUILD_LOG_REL,
+            _RESULT_REL,
+            _IDENTITY_REL,
+            str(elf_rel),
+            map_rel,
+        }
+        if set(public_artifact_paths) != expected_artifact_paths:
+            raise _fail(
+                "FIRMWARE_IDENTITY_MISMATCH",
+                "Build artifacts disagree with firmware identity",
+                field="artifacts",
+                rule="identity",
+            )
+    else:
+        elf_record = _artifact_record(result, "elf")
+        map_record = _artifact_record(result, "map")
+        if (
+            elf_record.get("path") != elf_rel
+            or elf_record.get("sha256") != identity.get("elfSha256")
+            or elf_record.get("size") != len(elf_data)
+            or map_record.get("path") != map_rel
+            or map_record.get("sha256") != identity.get("mapSha256")
+            or map_record.get("size") != len(map_data)
+        ):
+            raise _fail(
+                "FIRMWARE_IDENTITY_MISMATCH",
+                "Build artifacts disagree with firmware identity",
+                field="artifacts",
+                rule="identity",
+            )
+    try:
+        elf_evidence = validate_elf(root.joinpath(*str(elf_rel).split("/")), model)
+    except BuildError:
+        raise _fail("FLASH_IMAGE_INVALID", "Firmware ELF is invalid", path=str(elf_rel), rule="format") from None
+    if elf_evidence.sha256 != identity.get("elfSha256"):
+        raise _fail("FIRMWARE_INPUT_CHANGED", "ELF changed after validation", field="elfSha256", rule="current")
+    if (
+        elf_evidence.entry_point != identity.get("entryPoint")
+        or elf_evidence.vector_address != identity.get("vectorAddress")
+        or elf_evidence.reset_handler_address != identity.get("resetHandlerAddress")
+    ):
+        raise _fail("FIRMWARE_IDENTITY_MISMATCH", "ELF structure disagrees with firmware identity", field="elf", rule="identity")
+    raise _fail(
+        "FIRMWARE_PROVENANCE_UNSUPPORTED",
+        "Firmware provenance does not support hardware workflows",
+        field="sourceBaseline",
+        rule=SOURCE_BASELINE_INPUT_SNAPSHOT,
+        guidance=_PROVENANCE_UNSUPPORTED_GUIDANCE,
+    )
 
 
 def load_fresh_firmware_facts(project_root: Path) -> FreshFirmwareFacts:

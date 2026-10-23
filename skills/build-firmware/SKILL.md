@@ -12,11 +12,13 @@ description: Use when a Claude Code user asks to build STM32 firmware with the m
 3. **State the invocation.** Show the preset (`arm-debug` or `arm-release`), `clean` (only when the user asked for a clean build), the timeout, and the toolchain evidence for this exact build invocation.
 4. **Authorize.** Ask the user for explicit authorization for this build invocation. `stm32_build` is not a dry run; it never runs without `authorized=true`.
 5. **Build.** After explicit authorization, call `stm32_build` with the exact preset, clean value, and timeout shown in step 3 and approved in step 4, plus `authorized=true`. Do not substitute a default for an approved clean build.
-6. **Report evidence.** From the returned `build` result, report: the build ID, Git HEAD and dirty state, ELF and MAP SHA-256 hashes, memory usage per region, warnings, and the portable artifact paths (`buildLogPath`, `buildResultPath`, `identityPath`). If the result is a failure (`AUTHORIZATION_REQUIRED`, `BUILD_*`, `RAM_OVERFLOW`, `FLASH_OVERFLOW`, ...), report the exact code and details and stop.
+6. **Report evidence.** From the returned `build` result, report: the build ID, identity `schemaVersion`, provenance (`sourceBaseline`), Git HEAD and dirty state, ELF and MAP SHA-256 hashes, memory usage per region, warnings, and the portable artifact paths (`buildLogPath`, `buildResultPath`, `identityPath`). A schema-1 identity has a 40-character `gitHead` and boolean `gitDirty`. A schema-2 identity means Git was unavailable: `sourceBaseline` is `input-snapshot-v1`, `gitHead` and `gitDirty` are JSON `null`, and `gitEvidence` is bounded to `{status:"unavailable", code:"BUILD_GIT_INVALID", rule:"head"|"status"}`. Never report null as clean and never invent a commit. If the result is a failure (`AUTHORIZATION_REQUIRED`, `BUILD_*`, `RAM_OVERFLOW`, `FLASH_OVERFLOW`, ...), report the exact code and details and stop.
 
 ## Rules
 
 - Never run CMake, Ninja, or a compiler directly; the Toolkit build is the only build path.
 - Never fabricate success: a failed build returns no fresh identity, and the previous ELF is stale.
-- Distinguish unavailable, blocked, and not-evaluated evidence. A missing managed manifest or drifted managed file is blocked; probe/hardware capabilities are not evaluated by context and do not by themselves prevent a build.
+- Git failure alone is not a build failure, but never run `git init`, commit, stash, or otherwise change Git state to make a build pass.
+- A schema-2 snapshot identity is build-only evidence. Do not suggest flash, debug, Target tests, Monitor or acceptance for it; those operations return `FIRMWARE_PROVENANCE_UNSUPPORTED` before any probe effect. To use hardware, restore a Git repository with a committed HEAD and rebuild.
+- Distinguish unavailable, blocked, and not-evaluated evidence. A missing managed manifest or drifted managed file is blocked; probe/hardware capabilities are not evaluated by context and do not by themselves prevent a build. Probe discovery (`stm32_probe_list`) remains independent of firmware provenance.
 - Report the returned `OperationResult` exactly as received and finish immediately.
