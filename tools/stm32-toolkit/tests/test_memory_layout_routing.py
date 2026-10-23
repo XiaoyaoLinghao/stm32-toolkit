@@ -221,7 +221,9 @@ def test_cli_repeated_memory_layout_argument_fails_as_grammar(tmp_path, capsys):
     assert cli_main(arguments) == 2
     captured = capsys.readouterr()
     assert captured.out == ""
-    assert "argument --memory-layout: repeated option" in captured.err
+    # _ArgumentParser.error sanitizes every parser failure to this public text,
+    # so the repeated-option detail never reaches the caller.
+    assert captured.err == "stm32-toolkit: invalid arguments\n"
 
 
 def test_cli_apply_requires_the_same_layout_choice(tmp_path, capsys):
