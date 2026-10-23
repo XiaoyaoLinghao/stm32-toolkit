@@ -68,7 +68,7 @@ Toolkit emits schema 2 with `sourceBaseline: "input-snapshot-v1"`, null `gitHead
 bounded `gitEvidence` (`status: "unavailable"`, `code: "BUILD_GIT_INVALID"`, rule `head` or
 `status`); it never initializes, commits, or fabricates a hash. Schema-1 validation stays strict and
 does not accept nullable Git fields. Context freshness for schema 2 proves the exact current input
-snapshot, model/target/preset, toolchain version, and ELF/MAP digests without spawning Git, and
+snapshot, model/target/preset, the actual `toolkitVersion`, and ELF/MAP digests without spawning Git, and
 reports `sourceBaseline`, `gitDirty`, and `gitEvidence` explicitly. No-op reuse requires a compatible
 current prior success record in the same provenance mode; unknown, tampered, cross-schema, stale, or
 failed records are refused.
@@ -76,9 +76,12 @@ failed records are refused.
 Snapshot provenance is build-only. Flash, debug, Target tests, Monitor, and acceptance protocols
 still require Git-shaped firmware provenance. The shared firmware admission boundary validates the
 snapshot identity and then returns `FIRMWARE_PROVENANCE_UNSUPPORTED` before any probe, lease, or
-attach effect. Context exposes this known blocker as `blocked` in the affected hardware
-`capabilityDetails` for a fresh snapshot build, while read-only probe discovery remains independent.
-Migration planning and apply continue to require their committed Git baseline.
+attach effect; outer wrappers may map that failure under their existing protocol (for example
+acceptance recovery maps admission failure to `ACCEPTANCE_ATTEMPT_OUTPUT_INVALID`), so the same
+externally visible code is not promised from every entry. Context exposes this known blocker as
+`blocked` in the affected hardware `capabilityDetails` for a fresh snapshot build, while legacy
+false capability booleans remain conservative compatibility fields and read-only probe discovery
+stays independent. Migration planning and apply continue to require their committed Git baseline.
 
 ## Probe, debugging and Monitor
 

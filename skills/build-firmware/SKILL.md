@@ -19,6 +19,6 @@ description: Use when a Claude Code user asks to build STM32 firmware with the m
 - Never run CMake, Ninja, or a compiler directly; the Toolkit build is the only build path.
 - Never fabricate success: a failed build returns no fresh identity, and the previous ELF is stale.
 - Git failure alone is not a build failure, but never run `git init`, commit, stash, or otherwise change Git state to make a build pass.
-- A schema-2 snapshot identity is build-only evidence. Do not suggest flash, debug, Target tests, Monitor or acceptance for it; those operations return `FIRMWARE_PROVENANCE_UNSUPPORTED` before any probe effect. To use hardware, restore a Git repository with a committed HEAD and rebuild.
+- A schema-2 snapshot identity is build-only evidence. Do not suggest flash, debug, Target tests, Monitor or acceptance for it; shared firmware admission returns `FIRMWARE_PROVENANCE_UNSUPPORTED` before any probe effect, and wrappers may map it (acceptance recovery maps it to `ACCEPTANCE_ATTEMPT_OUTPUT_INVALID`). To use hardware, restore a Git repository with a committed HEAD and rebuild.
 - Distinguish unavailable, blocked, and not-evaluated evidence. A missing managed manifest or drifted managed file is blocked; probe/hardware capabilities are not evaluated by context and do not by themselves prevent a build. Probe discovery (`stm32_probe_list`) remains independent of firmware provenance.
 - Report the returned `OperationResult` exactly as received and finish immediately.

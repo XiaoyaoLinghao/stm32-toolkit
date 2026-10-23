@@ -12,6 +12,7 @@
 /tools/release/release_0900_policy.json text eol=lf
 /tools/stm32-toolkit/tests/release/fixtures/native-outcomes/** text eol=lf
 /tools/stm32-toolkit/tests/fixtures/component-admission/target-transports/** text eol=lf
+/tools/stm32-toolkit/tests/fixtures/build-nobits/template-rendered.ld text eol=lf
 /tools/stm32-toolkit/tests/fixtures/target-streams/*.json text eol=lf
 /tools/stm32-toolkit/tests/fixtures/target-streams/*.bin -text
 /tools/stm32-toolkit/tests/fixtures/vs03/target/*.json text eol=lf

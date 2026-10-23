@@ -2425,8 +2425,11 @@ def create_server(
         {status:"unavailable", code:"BUILD_GIT_INVALID", rule:"head|status"},
         and null gitHead/gitDirty.  Never treat null Git fields as clean and
         never fabricate a commit.  Schema-2 evidence is build-only: flash,
-        debug, Target tests, Monitor and acceptance refuse it with
-        FIRMWARE_PROVENANCE_UNSUPPORTED.  Report the returned identity
+        debug, Target tests, Monitor and acceptance still require Git-shaped
+        provenance, and shared firmware admission returns
+        FIRMWARE_PROVENANCE_UNSUPPORTED before probe effects; wrappers may map
+        that code under their existing protocol (acceptance recovery maps it
+        to ACCEPTANCE_ATTEMPT_OUTPUT_INVALID).  Report the returned identity
         evidence exactly; a failed build leaves prior artifacts stale.
         """
         return await tool_build_for_request(
@@ -2538,8 +2541,9 @@ def create_server(
         explicit target control.  The shared OBSERVE attach may briefly halt
         and resume the core while connecting; this is not a state-preserving
         attach and is not halted-run analysis.  A schema-2 input-snapshot
-        build is refused by shared firmware admission with
-        FIRMWARE_PROVENANCE_UNSUPPORTED before attach.
+        build is rejected by the shared firmware admission boundary before
+        attach; wrappers may map its stable FIRMWARE_PROVENANCE_UNSUPPORTED
+        code under their existing protocol.
         """
         return await tool_variable_read_for_request(
             runtime,
@@ -2568,8 +2572,9 @@ def create_server(
         explicit target control.  The shared OBSERVE attach may briefly halt
         and resume the core while connecting; it is not state-preserving and
         does not make this halted-run analysis.  A schema-2 input-snapshot
-        build is refused by shared firmware admission with
-        FIRMWARE_PROVENANCE_UNSUPPORTED before attach.
+        build is rejected by the shared firmware admission boundary before
+        attach; wrappers may map its stable FIRMWARE_PROVENANCE_UNSUPPORTED
+        code under their existing protocol.
         """
         return await tool_variable_sample_for_request(
             runtime,
@@ -2598,8 +2603,9 @@ def create_server(
         configured project SVD; callers never supply a target, SVD, address,
         or access size.  acknowledgeAccessRisk confirms the caller reviewed
         the read-access risk and is not a substitute for target provenance.
-        A schema-2 input-snapshot build is refused by shared firmware
-        admission with FIRMWARE_PROVENANCE_UNSUPPORTED before attach.
+        A schema-2 input-snapshot build is rejected by the shared firmware
+        admission boundary before attach; wrappers may map its stable
+        FIRMWARE_PROVENANCE_UNSUPPORTED code under their existing protocol.
         """
         return await tool_register_read_for_request(
             runtime,
@@ -2624,9 +2630,11 @@ def create_server(
         haltForAnalysis=true is an explicit CONTROL authorization: it performs
         one halt, analysis, and one resume with verified running state.  It
         requires a running target and exact firmware identity.  A schema-2
-        input-snapshot build is refused by shared firmware admission with
-        FIRMWARE_PROVENANCE_UNSUPPORTED before attach.  Do not retry,
-        reconnect, reset, or flash after an unknown/failed recovery.
+        input-snapshot build is rejected by the shared firmware admission
+        boundary before attach; wrappers may map its stable
+        FIRMWARE_PROVENANCE_UNSUPPORTED code under their existing protocol.
+        Do not retry, reconnect, reset, or flash after an unknown/failed
+        recovery.
         """
         return await tool_fault_analyze_for_request(
             runtime,
