@@ -107,6 +107,8 @@ class MemoryRegion:
 class MemorySpec:
     source: str
     regions: tuple[MemoryRegion, ...]
+    stack_size: int | None = None
+    heap_size: int | None = None
 
 
 @dataclass(frozen=True)
@@ -134,6 +136,7 @@ class GenerationSpec:
     managed_manifest: str
     generated_directories: tuple[str, ...]
     user_directories: tuple[str, ...]
+    runtime_initialization: str | None = None
 
 
 @dataclass(frozen=True)
@@ -458,6 +461,14 @@ def validate_model_document(root: Path, payload: dict, version: int) -> None:
         _validate_path_field(
             root, "generation.userDirectories", generation.get("userDirectories"), cache
         )
+        _validate_memory_sizes(payload["memory"])
+        runtime_initialization = generation.get("runtimeInitialization")
+        if runtime_initialization is not None and runtime_initialization != "cmsis-gcc-v1":
+            raise ProjectManifestError(
+                "PROJECT_SCHEMA_INVALID",
+                "Project manifest runtime initialization is not supported",
+                {"field": "generation.runtimeInitialization", "rule": "value"},
+            )
         _validate_unique_region_names(payload["memory"]["regions"])
     if version == 3 and isinstance(payload.get("testing"), dict):
         _validate_testing_document(root, payload["testing"], cache)
@@ -763,6 +774,32 @@ def _path_error(field: str) -> ProjectManifestError:
     )
 
 
+def _validate_memory_sizes(memory: dict) -> None:
+    """Validate optional stack/heap byte counts shared by every manifest copy.
+
+    The schema enforces the numeric domain; this model check repeats the exact
+    integer type, unsigned 32-bit bound and 8-byte alignment so an in-memory or
+    upgraded document cannot carry a value the generator would silently
+    exchange with its defaults.
+    """
+
+    for field, minimum in (("stackSize", 1), ("heapSize", 0)):
+        value = memory.get(field)
+        if value is None:
+            continue
+        if (
+            type(value) is not int
+            or value < minimum
+            or value > 0xFFFFFFFF
+            or value % 8 != 0
+        ):
+            raise ProjectManifestError(
+                "PROJECT_SCHEMA_INVALID",
+                "Project manifest memory size is not supported",
+                {"field": f"memory.{field}", "rule": "size"},
+            )
+
+
 def _validate_unique_region_names(regions: object) -> None:
     if not isinstance(regions, list):
         return
@@ -834,6 +871,8 @@ def _build_model(root: Path, payload: dict, version: int) -> ProjectModel:
                 )
                 for region in memory_data["regions"]
             ),
+            stack_size=memory_data.get("stackSize"),
+            heap_size=memory_data.get("heapSize"),
         )
         generation_data = payload["generation"]
         generated_by = payload["generatedBy"]
@@ -845,6 +884,7 @@ def _build_model(root: Path, payload: dict, version: int) -> ProjectModel:
             managed_manifest=generation_data["managedManifest"],
             generated_directories=tuple(generation_data.get("generatedDirectories", ())),
             user_directories=tuple(generation_data.get("userDirectories", ())),
+            runtime_initialization=generation_data.get("runtimeInitialization"),
         )
 
     if version == 3 and (

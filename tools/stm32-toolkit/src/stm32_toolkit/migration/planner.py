@@ -37,9 +37,17 @@ from stm32_toolkit.migration.model import (
     MigrationInput,
     MigrationPlan,
     MigrationPlanError,
+    StartupAnalysis,
+    StartupOptions,
     inspection_sha256_for,
     plan_id_for,
     portable_path_error,
+)
+from stm32_toolkit.migration.startup import (
+    RUNTIME_INITIALIZATION,
+    STARTUP_GENERATED_PATH,
+    StartupOutcome,
+    analyze_startup,
 )
 
 _FILE_LIMIT_BYTES = 8 * 1024 * 1024
@@ -382,7 +390,9 @@ def _scoped_option_blockers(inspection: KeilInspection) -> list[MigrationBlocker
     return blockers
 
 
-def _inspection_blockers(inspection: KeilInspection) -> list[MigrationBlocker]:
+def _inspection_blockers(
+    inspection: KeilInspection, resolved_assembly: str | None = None
+) -> list[MigrationBlocker]:
     blockers: list[MigrationBlocker] = []
     if inspection.compiler != "armcc":
         blockers.append(
@@ -411,6 +421,8 @@ def _inspection_blockers(inspection: KeilInspection) -> list[MigrationBlocker]:
     input_sizes = {digest.path: digest.size for digest in inspection.inputs}
     for source in inspection.sources:
         if source.included and source.language == "asm":
+            if source.path == resolved_assembly:
+                continue
             if input_sizes.get(source.path, 0) > 0:
                 blockers.append(
                     MigrationBlocker(
@@ -522,10 +534,15 @@ def _validate_manifest_payload(root: Path, payload: dict) -> None:
         )
 
 
-def _manifest_proposal(root: Path, inspection: KeilInspection) -> dict | None:
+def _manifest_proposal(
+    root: Path,
+    inspection: KeilInspection,
+    startup: StartupOutcome | None = None,
+) -> dict | None:
     """Deterministic Schema v3 proposal; ``None`` when framework selection is blocked."""
     if inspection.framework not in _ALLOWED_FRAMEWORKS:
         return None
+    startup_ready = startup is not None and startup.ready
     project_name = (inspection.output.output_name or "").strip()
     if not project_name:
         project_name = Path(inspection.project_file).stem
@@ -554,6 +571,26 @@ def _manifest_proposal(root: Path, inspection: KeilInspection) -> dict | None:
         }
         for region in inspection.memory_regions
     ]
+    assembly_sources = [
+        STARTUP_GENERATED_PATH
+        if startup_ready and startup is not None and source.path == startup.selected_source
+        else source.path
+        for source in inspection.sources
+        if source.included and source.language == "asm"
+    ]
+    memory_payload: dict[str, object] = {"source": "keil", "regions": regions}
+    generation_payload: dict[str, object] = {
+        "cubeMxIoc": None,
+        "managedManifest": ".stm32-toolkit/generated-files.json",
+        "generatedDirectories": [],
+        "userDirectories": [],
+    }
+    if startup_ready and startup is not None:
+        analysis = startup.analysis
+        assert analysis.stack_size is not None and analysis.heap_size is not None
+        memory_payload["stackSize"] = analysis.stack_size
+        memory_payload["heapSize"] = analysis.heap_size
+        generation_payload["runtimeInitialization"] = RUNTIME_INITIALIZATION
     payload: dict = {
         "schemaVersion": 3,
         "logicalProjectId": str(
@@ -576,22 +613,13 @@ def _manifest_proposal(root: Path, inspection: KeilInspection) -> dict | None:
             "defines": list(inspection.defines),
             "compileOptions": [],
             "linkStandardMath": True,
-            "assemblySources": [
-                source.path
-                for source in inspection.sources
-                if source.included and source.language == "asm"
-            ],
+            "assemblySources": assembly_sources,
             "presets": ["arm-debug", "arm-release"],
             "elf": f"build/arm-debug/{elf_basename}.elf",
         },
-        "memory": {"source": "keil", "regions": regions},
+        "memory": memory_payload,
         "debug": {},
-        "generation": {
-            "cubeMxIoc": None,
-            "managedManifest": ".stm32-toolkit/generated-files.json",
-            "generatedDirectories": [],
-            "userDirectories": [],
-        },
+        "generation": generation_payload,
     }
     normalized_fpu, normalized_float_abi, _ = _normalize_target_fpu_abi(inspection)
     if normalized_fpu is not None:
@@ -624,6 +652,7 @@ class ConversionAnalysis:
     fixed_sections: tuple[FixedSectionRequirement, ...]
     blockers: tuple[MigrationBlocker, ...]
     ignored: tuple[IgnoredObservation, ...]
+    startup: StartupAnalysis | None = None
 
 
 def _bind_analysis_root(root: object, inspection: object) -> Path:
@@ -652,18 +681,48 @@ def _bind_analysis_root(root: object, inspection: object) -> Path:
     return canonical
 
 
+def _validate_startup_options(options: object) -> StartupOptions | None:
+    if options is None:
+        return None
+    if type(options) is not StartupOptions:
+        raise _raise(
+            "MIGRATION_STARTUP_OPTIONS_INVALID",
+            "startup options are invalid",
+            {"field": "startupOptions", "rule": "type"},
+        )
+    if options.strategy != "generate-cmsis-gcc":
+        raise _raise(
+            "MIGRATION_STARTUP_STRATEGY_UNSUPPORTED",
+            "startupStrategy is not supported",
+            {"field": "startupStrategy", "rule": "unsupported"},
+        )
+    if options.source is not None and (
+        portable_path_error(options.source) is not None or "\\" in options.source
+    ):
+        raise _raise(
+            "MIGRATION_STARTUP_OPTIONS_INVALID",
+            "startupSource is not a portable project-relative path",
+            {"field": "startupSource", "rule": "withinProjectRoot"},
+        )
+    return options
+
+
 def analyze_keil_conversion(
     root: Path,
     inspection: KeilInspection,
     *,
     block_source: Callable[[Path], tuple[MigrationBlocker, ...]] | None = None,
+    startup_options: StartupOptions | None = None,
 ) -> ConversionAnalysis:
     """Run the single shared technical analysis used by preflight and plan.
 
     ``block_source`` runs after input revalidation and before the fresh
     inspection, preserving the planning error precedence and letting the
-    Git-bound planner contribute its dirty-worktree blockers.
+    Git-bound planner contribute its dirty-worktree blockers.  ``startup_options``
+    selects the opt-in CMSIS startup generation route; omitted options preserve
+    the existing assembly blockers byte-for-byte.
     """
+    options = _validate_startup_options(startup_options)
     canonical = _bind_analysis_root(root, inspection)
     exact_bytes = _revalidate_inputs(canonical, inspection.inputs)
     extra_blockers = block_source(canonical) if block_source is not None else ()
@@ -687,9 +746,33 @@ def analyze_keil_conversion(
             {"field": "inspection", "rule": "freshInspection"},
         )
 
+    startup_outcome = (
+        analyze_startup(canonical, inspection, options, exact_bytes)
+        if options is not None
+        else None
+    )
+    resolved_assembly = (
+        startup_outcome.selected_source
+        if startup_outcome is not None and startup_outcome.ready
+        else None
+    )
+
     blockers: list[MigrationBlocker] = list(extra_blockers)
     scoped_option_blockers = _scoped_option_blockers(inspection)
-    blockers.extend(_inspection_blockers(inspection))
+    blockers.extend(_inspection_blockers(inspection, resolved_assembly))
+    if startup_outcome is not None:
+        for diagnostic in startup_outcome.analysis.diagnostics:
+            blockers.append(
+                MigrationBlocker(
+                    diagnostic.code,
+                    diagnostic.code,
+                    diagnostic.path,
+                    diagnostic.line,
+                    diagnostic.column,
+                    diagnostic.evidence,
+                    diagnostic.message,
+                )
+            )
 
     scan_entries = [
         (source.path, exact_bytes[source.path], source.language)
@@ -723,10 +806,18 @@ def analyze_keil_conversion(
             )
         )
 
-    proposal = _manifest_proposal(canonical, inspection)
+    proposal = _manifest_proposal(canonical, inspection, startup_outcome)
     proposal_bytes = _canonical_manifest_bytes(proposal) if proposal is not None else None
 
     inputs = [MigrationInput(digest.path, digest.sha256, digest.size) for digest in inspection.inputs]
+    if startup_outcome is not None and startup_outcome.destination_bytes is not None:
+        inputs.append(
+            MigrationInput(
+                STARTUP_GENERATED_PATH,
+                hashlib.sha256(startup_outcome.destination_bytes).hexdigest(),
+                len(startup_outcome.destination_bytes),
+            )
+        )
     manifest_input: MigrationInput | None = None
     manifest_abs = canonical / _MANIFEST_NAME
     try:
@@ -802,6 +893,28 @@ def analyze_keil_conversion(
                 after_bytes=scan.after,
             )
         )
+    if (
+        startup_outcome is not None
+        and startup_outcome.ready
+        and startup_outcome.generated_bytes is not None
+        and startup_outcome.destination_state == "missing"
+    ):
+        generated_bytes = startup_outcome.generated_bytes
+        patches.append(
+            FilePatch(
+                path=STARTUP_GENERATED_PATH,
+                before_sha256=None,
+                after_sha256=hashlib.sha256(generated_bytes).hexdigest(),
+                before_size=None,
+                after_size=len(generated_bytes),
+                rule_ids=("MIGRATION_STARTUP_GCC",),
+                unified_diff=_unified_diff(
+                    STARTUP_GENERATED_PATH, "", generated_bytes.decode("utf-8")
+                ),
+                before_bytes=None,
+                after_bytes=generated_bytes,
+            )
+        )
     if proposal_bytes is not None and manifest_input is None:
         patches.append(
             FilePatch(
@@ -850,6 +963,7 @@ def analyze_keil_conversion(
         ),
         blockers=ordered_blockers,
         ignored=tuple(sorted(ignored, key=lambda o: (o.path, o.line, o.column, o.rule_id))),
+        startup=startup_outcome.analysis if startup_outcome is not None else None,
     )
 
 
@@ -878,8 +992,14 @@ def _git_dirty_blockers(canonical: Path) -> tuple[tuple[MigrationBlocker, ...], 
     return tuple(blockers), head
 
 
-def plan_keil_conversion(root: Path, inspection: KeilInspection) -> MigrationPlan:
+def plan_keil_conversion(
+    root: Path,
+    inspection: KeilInspection,
+    *,
+    startup_options: StartupOptions | None = None,
+) -> MigrationPlan:
     """Produce the deterministic, read-only conversion plan."""
+    options = _validate_startup_options(startup_options)
     canonical = _bind_analysis_root(root, inspection)
 
     toplevel = git_guard.git_toplevel(canonical)
@@ -897,7 +1017,12 @@ def plan_keil_conversion(root: Path, inspection: KeilInspection) -> MigrationPla
         git_evidence["head"] = head
         return blockers
 
-    analysis = analyze_keil_conversion(canonical, inspection, block_source=block_source)
+    analysis = analyze_keil_conversion(
+        canonical,
+        inspection,
+        block_source=block_source,
+        startup_options=options,
+    )
 
     plan = MigrationPlan(
         project_root=canonical,
@@ -910,6 +1035,8 @@ def plan_keil_conversion(root: Path, inspection: KeilInspection) -> MigrationPla
         patches=analysis.patches,
         fixed_sections=analysis.fixed_sections,
         blockers=analysis.blockers,
+        startup=analysis.startup,
+        startup_options=options,
     )
     object.__setattr__(plan, "_ignored", analysis.ignored)
     plan = replace(plan, plan_id=plan_id_for(plan))

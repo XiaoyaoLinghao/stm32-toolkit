@@ -370,12 +370,28 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_json(preflight)
     preflight.add_argument("--uvprojx")
     preflight.add_argument("--target-name")
+    preflight.add_argument(
+        "--startup-strategy",
+        help="Opt in to reviewed CMSIS startup generation: generate-cmsis-gcc",
+    )
+    preflight.add_argument(
+        "--startup-source",
+        help="Exact project-relative included ARMCC startup source; required when the choice is ambiguous",
+    )
 
     convert = keil_commands.add_parser("convert")
     _add_workflow_root(convert)
     _add_json(convert)
     convert.add_argument("--uvprojx")
     convert.add_argument("--target-name")
+    convert.add_argument(
+        "--startup-strategy",
+        help="Opt in to reviewed CMSIS startup generation: generate-cmsis-gcc",
+    )
+    convert.add_argument(
+        "--startup-source",
+        help="Exact project-relative included ARMCC startup source; required when the choice is ambiguous",
+    )
     _add_dry_run_apply(convert)
     convert.add_argument("--plan-id")
     convert.add_argument("--authorized", action="store_true")
@@ -1279,6 +1295,8 @@ def _operation_result(
                 project_root,
                 uvprojx=args.uvprojx,
                 target_name=args.target_name,
+                startup_strategy=getattr(args, "startup_strategy", None),
+                startup_source=getattr(args, "startup_source", None),
             )
         return convert_keil_workflow(
             project_root,
@@ -1286,6 +1304,8 @@ def _operation_result(
             target_name=args.target_name,
             plan_id=args.plan_id,
             authorized=args.authorized,
+            startup_strategy=getattr(args, "startup_strategy", None),
+            startup_source=getattr(args, "startup_source", None),
         )
     if args.command == "project":
         if args.project_command == "detect":

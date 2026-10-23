@@ -14,6 +14,8 @@ from stm32_toolkit.migration.model import (
     MigrationInput,
     MigrationPlan,
     MigrationPlanError,
+    StartupAnalysis,
+    StartupOptions,
 )
 from stm32_toolkit.migration.planner import plan_keil_conversion
 from stm32_toolkit.migration.preflight import preflight_keil_conversion
@@ -29,4 +31,6 @@ __all__ = [
     "MigrationInput",
     "MigrationPlan",
     "MigrationPlanError",
+    "StartupAnalysis",
+    "StartupOptions",
 ]

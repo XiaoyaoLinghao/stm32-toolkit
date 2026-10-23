@@ -53,6 +53,35 @@ new external directory with explicit per-file charsets; it is not part of migrat
 edits originals, and does not remove startup, option, scatter/memory, Git, or baseline blockers.
 Keep compiler migration separate from SPL/HAL conversion.
 
+One bounded migration opt-in recognizes and generates a GNU replacement for the
+conventional ST/CMSIS Cortex-M3/M4/M7 ARMCC5 startup. It is selected only by
+explicit `startupStrategy: "generate-cmsis-gcc"` plus, when the choice is
+ambiguous, the exact project-relative `startupSource`; omitted options preserve
+the existing arbitrary-assembly blockers. The recognizer validates the whole
+active ARMASM file (including physical line continuations and the conventional
+Microlib/`__user_initial_stackheap` boilerplate), rejects unknown or custom
+logic with portable line diagnostics, and never executes input. Planning emits
+`Startup/stm32tk_startup_gcc.S` as a reviewed create-only patch, never edits or
+deletes the original startup, and binds the selected source and options into
+the plan digest. Apply replans with the plan-bound options, so a caller-edited
+or omitted strategy/source cannot be accepted after review; an existing
+different destination is a collision, never an overwrite.
+
+The generated startup keeps the original vector order and reserved zero slots,
+exports weak core handlers and weak IRQ aliases (strong C definitions override),
+and implements `SystemInit` followed by `.data` copy, `.bss` clear, the newlib
+constructor path and `main`, with a deterministic return loop. It records the
+source-derived `memory.stackSize`/`memory.heapSize` and the sole
+`generation.runtimeInitialization: "cmsis-gcc-v1"` contract. That contract is
+valid only with the managed linker template, which then emits the constructor
+arrays and initial-stack/heap compatibility symbols; a native linker is
+rejected rather than silently ignored. Existing manifests without the optional
+fields keep their model hash and default 4 KiB heap/1 KiB stack bytes. This is a
+reviewed GCC runtime replacement, not ARMCC, ABI or Microlib equivalence; it
+does not claim device/IRQ fabrication, binary equivalence or multi-RAM region
+semantics. Explicit `.data`/`.bss`/heap/stack region roles and extra-section
+copy/zero tables remain a later slice.
+
 Generation retains prior ownership and hash checks. Existing user files never become writable merely
 because they occupy a generator target or have identical bytes. The implemented v1.0.1
 editor-preservation behavior is described in its

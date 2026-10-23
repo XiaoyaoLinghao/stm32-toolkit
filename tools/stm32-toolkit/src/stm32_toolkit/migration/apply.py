@@ -33,6 +33,8 @@ from stm32_toolkit.migration.model import (
     MigrationInput,
     MigrationPlan,
     MigrationPlanError,
+    StartupAnalysis,
+    StartupOptions,
     full_sha_error,
     inspection_sha256_for,
     plan_id_for,
@@ -46,6 +48,7 @@ from stm32_toolkit.migration.planner import (
     _scoped_option_blockers,
     plan_keil_conversion,
 )
+from stm32_toolkit.migration.startup import STARTUP_GENERATED_PATH, STARTUP_STRATEGY
 
 _REPORT_LIMIT_BYTES = 64 * 1024 * 1024
 _PATCH_PATH = "artifacts/migration/conversion.patch"
@@ -170,6 +173,27 @@ def _validate_plan(plan: object) -> None:
         isinstance(blocker, MigrationBlocker) for blocker in plan.blockers
     ):
         raise _plan_invalid("type")
+    if plan.startup is not None and type(plan.startup) is not StartupAnalysis:
+        raise _plan_invalid("type")
+    if plan.startup_options is not None and type(plan.startup_options) is not StartupOptions:
+        raise _plan_invalid("type")
+    if (plan.startup is None) != (plan.startup_options is None):
+        raise _plan_invalid("startupOptions")
+    if plan.startup_options is not None:
+        if plan.startup_options.strategy != STARTUP_STRATEGY:
+            raise _plan_invalid("startupOptions")
+        if (
+            plan.startup_options.source is not None
+            and portable_path_error(plan.startup_options.source) is not None
+        ):
+            raise _plan_invalid("startupOptions")
+        assert plan.startup is not None
+        if plan.startup.strategy != plan.startup_options.strategy:
+            raise _plan_invalid("startupOptions")
+        if plan.startup.source_path == STARTUP_GENERATED_PATH:
+            raise _plan_invalid("startupOptions")
+        if plan.startup.generated_path not in (None, STARTUP_GENERATED_PATH):
+            raise _plan_invalid("startupOptions")
 
     for entry in plan.inputs:
         if portable_path_error(entry.path) is not None:
@@ -411,7 +435,9 @@ def _validate_patch_targets(root: Path, plan: MigrationPlan) -> None:
 
 def _fresh_plan(root: Path, plan: MigrationPlan) -> MigrationPlan:
     try:
-        return plan_keil_conversion(root, plan.inspection)
+        return plan_keil_conversion(
+            root, plan.inspection, startup_options=plan.startup_options
+        )
     except MigrationPlanError as error:
         if error.code == "MIGRATION_INSPECTION_CHANGED":
             raise _fail(
@@ -522,6 +548,8 @@ def _build_report(plan: MigrationPlan, patch_bytes: bytes) -> bytes:
             "report": _REPORT_PATH,
         },
     }
+    if plan.startup is not None:
+        payload["startup"] = plan.startup.to_dict()
     return json.dumps(payload, indent=2, ensure_ascii=False).encode("utf-8") + b"\n"
 
 

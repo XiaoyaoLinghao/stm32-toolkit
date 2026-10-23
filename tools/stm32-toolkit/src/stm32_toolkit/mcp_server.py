@@ -970,6 +970,8 @@ def tool_keil_preflight(
     runtime: ServerRuntime,
     uvprojx: str | None = None,
     target_name: str | None = None,
+    startup_strategy: str | None = None,
+    startup_source: str | None = None,
 ) -> dict[str, object]:
     """Return read-only migration analysis without requiring Git.
 
@@ -981,6 +983,8 @@ def tool_keil_preflight(
         runtime.project_root,
         uvprojx=uvprojx,
         target_name=target_name,
+        startup_strategy=startup_strategy,
+        startup_source=startup_source,
     ).to_dict()
 
 
@@ -990,6 +994,8 @@ def tool_keil_convert(
     target_name: str | None = None,
     plan_id: str | None = None,
     authorized: bool = False,
+    startup_strategy: str | None = None,
+    startup_source: str | None = None,
 ) -> dict[str, object]:
     """Read-only conversion plan, or apply with the exact plan ID plus
     ``authorized=true``."""
@@ -999,6 +1005,8 @@ def tool_keil_convert(
         target_name=target_name,
         plan_id=plan_id,
         authorized=authorized,
+        startup_strategy=startup_strategy,
+        startup_source=startup_source,
     ).to_dict()
 
 
@@ -1158,11 +1166,15 @@ async def tool_keil_preflight_for_request(
     context: Context | None,
     uvprojx: str | None = None,
     target_name: str | None = None,
+    startup_strategy: str | None = None,
+    startup_source: str | None = None,
 ) -> dict[str, object]:
     failure = await _client_roots_failure(runtime, context, "keil-preflight")
     if failure is not None:
         return failure
-    return tool_keil_preflight(runtime, uvprojx, target_name)
+    return tool_keil_preflight(
+        runtime, uvprojx, target_name, startup_strategy, startup_source
+    )
 
 
 async def tool_keil_convert_for_request(
@@ -1172,6 +1184,8 @@ async def tool_keil_convert_for_request(
     target_name: str | None = None,
     plan_id: str | None = None,
     authorized: bool = False,
+    startup_strategy: str | None = None,
+    startup_source: str | None = None,
 ) -> dict[str, object]:
     operation = (
         "keil-conversion-apply"
@@ -1181,7 +1195,15 @@ async def tool_keil_convert_for_request(
     failure = await _client_roots_failure(runtime, context, operation)
     if failure is not None:
         return failure
-    return tool_keil_convert(runtime, uvprojx, target_name, plan_id, authorized)
+    return tool_keil_convert(
+        runtime,
+        uvprojx,
+        target_name,
+        plan_id,
+        authorized,
+        startup_strategy,
+        startup_source,
+    )
 
 
 async def tool_project_configure_for_request(
@@ -2341,6 +2363,8 @@ def create_server(
         ctx: Context,
         uvprojx: str | None = None,
         targetName: str | None = None,
+        startupStrategy: str | None = None,
+        startupSource: str | None = None,
     ) -> dict[str, object]:
         """Run read-only Keil migration preflight without requiring Git.
 
@@ -2357,6 +2381,17 @@ def create_server(
         directory (there is no normalization MCP tool); that helper writes
         only reviewed copies outside the project, and preflight itself still
         writes nothing and does not transcode.
+        To review the supported CMSIS startup route, pass
+        startupStrategy="generate-cmsis-gcc".  Pass startupSource="<exact
+        project-relative included ARMCC .s path>" when more than one included
+        non-empty assembly source exists; without startupSource an ambiguous
+        selection fails with MIGRATION_STARTUP_SELECTION_REQUIRED and
+        details.candidates.  The same two values must be used for convert and
+        apply.  The generated destination is
+        Startup/stm32tk_startup_gcc.S; analysis.startup reports the exact
+        source hash, vectors, reserved slots, stack/heap bytes, diagnostics
+        and generated digest.  This is a reviewed migration patch, not ARMCC
+        or Microlib equivalence.
         When analysis is complete and no blockers remain, establish any Git
         prerequisite as an explicit project-owner decision, then call
         stm32_keil_convert with no planId to obtain a PLAN response.  Read
@@ -2365,7 +2400,7 @@ def create_server(
         authorized=true.
         """
         return await tool_keil_preflight_for_request(
-            runtime, ctx, uvprojx, targetName
+            runtime, ctx, uvprojx, targetName, startupStrategy, startupSource
         )
 
     @mcp.tool(name=MCP_TOOL_NAMES["keil_convert"])
@@ -2375,6 +2410,8 @@ def create_server(
         targetName: str | None = None,
         planId: str | None = None,
         authorized: bool = False,
+        startupStrategy: str | None = None,
+        startupSource: str | None = None,
     ) -> dict[str, object]:
         """Plan or explicitly apply one Keil-to-GCC migration.
 
@@ -2385,13 +2422,31 @@ def create_server(
         exact data.plan_id, and the complete patches/diff before acting.
         Apply only after the user explicitly authorizes that exact plan: pass
         its data.plan_id as the apply request's planId with authorized=true.
+        Pass the same startupStrategy="generate-cmsis-gcc" and
+        startupSource="<exact project-relative source>" values used for
+        preflight and plan; the options are bound into the plan digest, and a
+        changed or omitted choice produces PLAN_CHANGED instead of being
+        silently accepted on apply.  With the startup strategy the plan
+        proposes only Startup/stm32tk_startup_gcc.S as the generated file,
+        preserves the original ARMCC startup, records memory.stackSize,
+        memory.heapSize and generation.runtimeInitialization=cmsis-gcc-v1,
+        and reports data.startup with source/generated hashes, vectors and
+        review warnings.  Review that evidence and the generated reset path;
+        this is not ARMCC, ABI or Microlib behavioral equivalence.
         The core replans and rechecks digest, Git, and drift guards before its
         first write.  Never run git init, transcode source text, replace ARMCC
         startup blindly, or reuse a stale plan ID; a missing Git repository is
         an explicit project-owner decision.
         """
         return await tool_keil_convert_for_request(
-            runtime, ctx, uvprojx, targetName, planId, authorized
+            runtime,
+            ctx,
+            uvprojx,
+            targetName,
+            planId,
+            authorized,
+            startupStrategy,
+            startupSource,
         )
 
     @mcp.tool(name=MCP_TOOL_NAMES["project_configure"])

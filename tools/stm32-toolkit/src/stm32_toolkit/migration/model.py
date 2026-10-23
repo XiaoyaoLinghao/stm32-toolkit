@@ -162,6 +162,119 @@ class IgnoredObservation:
 
 
 @dataclass(frozen=True)
+class StartupOptions:
+    """Immutable, reviewed CMSIS startup-generation request.
+
+    ``strategy`` is either absent or ``generate-cmsis-gcc``.  ``source`` is
+    absent only when exactly one included non-empty ARMCC assembly source is
+    an unambiguous startup candidate.
+    """
+
+    strategy: str
+    source: str | None
+
+    def to_dict(self) -> dict[str, object]:
+        return {"strategy": self.strategy, "source": self.source}
+
+
+@dataclass(frozen=True)
+class StartupVectorEntry:
+    index: int
+    symbol: str | None
+    reserved: bool
+    line: int
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "index": self.index,
+            "symbol": self.symbol,
+            "reserved": self.reserved,
+            "line": self.line,
+        }
+
+
+@dataclass(frozen=True)
+class StartupHandler:
+    name: str
+    kind: str  # reset, individual, or default-alias
+    line: int
+
+    def to_dict(self) -> dict[str, object]:
+        return {"name": self.name, "kind": self.kind, "line": self.line}
+
+
+@dataclass(frozen=True)
+class StartupDiagnostic:
+    code: str
+    path: str
+    line: int
+    column: int
+    evidence: str
+    message: str
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "code": self.code,
+            "path": self.path,
+            "line": self.line,
+            "column": self.column,
+            "evidence": self.evidence,
+            "message": self.message,
+        }
+
+
+@dataclass(frozen=True)
+class StartupAnalysis:
+    """Read-only evidence for one supported ARMCC startup analysis.
+
+    ``status`` is ``ready`` when a GCC startup file may be generated, or
+    ``unsupported`` when one or more portable diagnostics explain why not.
+    Every field is JSON-safe and contains no host paths.
+    """
+
+    strategy: str
+    status: str
+    source_path: str
+    source_sha256: str
+    source_size: int
+    core: str | None
+    stack_size: int | None
+    heap_size: int | None
+    vector_count: int
+    reserved_count: int
+    vectors: tuple[StartupVectorEntry, ...]
+    handlers: tuple[StartupHandler, ...]
+    reset_pattern: str
+    generated_path: str | None
+    generated_sha256: str | None
+    generated_size: int | None
+    warnings: tuple[str, ...]
+    diagnostics: tuple[StartupDiagnostic, ...]
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "strategy": self.strategy,
+            "status": self.status,
+            "source_path": self.source_path,
+            "source_sha256": self.source_sha256,
+            "source_size": self.source_size,
+            "core": self.core,
+            "stack_size": self.stack_size,
+            "heap_size": self.heap_size,
+            "vector_count": self.vector_count,
+            "reserved_count": self.reserved_count,
+            "vectors": [entry.to_dict() for entry in self.vectors],
+            "handlers": [handler.to_dict() for handler in self.handlers],
+            "reset_pattern": self.reset_pattern,
+            "generated_path": self.generated_path,
+            "generated_sha256": self.generated_sha256,
+            "generated_size": self.generated_size,
+            "warnings": list(self.warnings),
+            "diagnostics": [diagnostic.to_dict() for diagnostic in self.diagnostics],
+        }
+
+
+@dataclass(frozen=True)
 class MigrationPlan:
     project_root: Path  # omitted from to_dict()
     inspection: KeilInspection  # omitted from to_dict()
@@ -173,6 +286,8 @@ class MigrationPlan:
     patches: tuple[FilePatch, ...]
     fixed_sections: tuple[FixedSectionRequirement, ...]
     blockers: tuple[MigrationBlocker, ...]
+    startup: StartupAnalysis | None = None
+    startup_options: StartupOptions | None = None
 
     def __post_init__(self) -> None:
         # Ignored-compatible observations are carried privately; they are not
@@ -181,7 +296,7 @@ class MigrationPlan:
         object.__setattr__(self, "_ignored", ())
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        payload: dict[str, object] = {
             "plan_version": self.plan_version,
             "plan_id": self.plan_id,
             "inspection_sha256": self.inspection_sha256,
@@ -191,6 +306,11 @@ class MigrationPlan:
             "fixed_sections": [section.to_dict() for section in self.fixed_sections],
             "blockers": [blocker.to_dict() for blocker in self.blockers],
         }
+        if self.startup is not None:
+            payload["startup"] = self.startup.to_dict()
+        if self.startup_options is not None:
+            payload["startup_options"] = self.startup_options.to_dict()
+        return payload
 
 
 # ---------------------------------------------------------------------------
@@ -219,7 +339,7 @@ def _plan_id_payload(plan: MigrationPlan) -> dict[str, object]:
     concatenated patch content.
     """
     patch_content = b"".join(patch.unified_diff.encode("utf-8") for patch in plan.patches)
-    return {
+    payload: dict[str, object] = {
         "plan_version": plan.plan_version,
         "inspection_sha256": plan.inspection_sha256,
         "git": plan.git.to_dict(),
@@ -240,6 +360,11 @@ def _plan_id_payload(plan: MigrationPlan) -> dict[str, object]:
         "toolkit_version": __version__,
         "patch_content_sha256": hashlib.sha256(patch_content).hexdigest(),
     }
+    if plan.startup is not None:
+        payload["startup"] = plan.startup.to_dict()
+    if plan.startup_options is not None:
+        payload["startup_options"] = plan.startup_options.to_dict()
+    return payload
 
 
 def plan_id_for(plan: MigrationPlan) -> str:

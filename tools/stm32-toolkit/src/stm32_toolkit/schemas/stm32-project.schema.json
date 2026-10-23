@@ -119,6 +119,18 @@
         "source": {
           "enum": ["keil", "cubemx", "manual"]
         },
+        "stackSize": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295,
+          "multipleOf": 8
+        },
+        "heapSize": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295,
+          "multipleOf": 8
+        },
         "regions": {
           "type": "array",
           "items": {
@@ -184,6 +196,7 @@
       "properties": {
         "cubeMxIoc": {"type": ["string", "null"], "minLength": 1},
         "nativeLinkerScript": {"type": ["string", "null"], "minLength": 1},
+        "runtimeInitialization": {"enum": ["cmsis-gcc-v1"]},
         "managedManifest": {"type": "string", "minLength": 1},
         "generatedDirectories": {
           "type": "array",

@@ -15,7 +15,11 @@ from pathlib import Path
 
 from stm32_toolkit.keil import KeilInspection
 from stm32_toolkit.migration import git_guard
-from stm32_toolkit.migration.model import MigrationPlanError, inspection_sha256_for
+from stm32_toolkit.migration.model import (
+    MigrationPlanError,
+    StartupOptions,
+    inspection_sha256_for,
+)
 from stm32_toolkit.migration.planner import analyze_keil_conversion
 
 _ANALYSIS_RULESET = "keil-conversion-technical/1"
@@ -299,7 +303,10 @@ def _apply_readiness(plan_readiness: dict[str, object]) -> dict[str, object]:
 
 
 def preflight_keil_conversion(
-    root: Path, inspection: KeilInspection
+    root: Path,
+    inspection: KeilInspection,
+    *,
+    startup_options: StartupOptions | None = None,
 ) -> dict[str, object]:
     """Analyze one inspected Keil target without Git and without mutation.
 
@@ -307,7 +314,9 @@ def preflight_keil_conversion(
     or ambiguous input; technical blockers are returned in a successful
     result, independently of apply readiness.
     """
-    analysis = analyze_keil_conversion(root, inspection)
+    analysis = analyze_keil_conversion(
+        root, inspection, startup_options=startup_options
+    )
     git = _git_state(analysis.project_root)
 
     by_code: dict[str, int] = {}
@@ -346,6 +355,8 @@ def preflight_keil_conversion(
         "planReadiness": plan_readiness,
         "applyReadiness": _apply_readiness(plan_readiness),
     }
+    if analysis.startup is not None:
+        payload["analysis"]["startup"] = analysis.startup.to_dict()
     serialized = json.dumps(payload, ensure_ascii=False)
     if len(serialized.encode("utf-8")) > _PREFLIGHT_OUTPUT_LIMIT_BYTES:
         raise MigrationPlanError(

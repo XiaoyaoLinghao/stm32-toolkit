@@ -281,6 +281,22 @@ def _validate_generation_spec(model: ProjectModel) -> None:
             "native linker script path is not supported",
             {"field": "generation.nativeLinkerScript", "rule": "withinProjectRoot"},
         )
+    runtime_initialization = model.generation.runtime_initialization
+    if runtime_initialization not in (None, "cmsis-gcc-v1"):
+        raise _raise_error(
+            "GENERATION_MODEL_INVALID",
+            "runtime initialization contract is not supported",
+            {"field": "generation.runtimeInitialization", "rule": "value"},
+        )
+    if (
+        runtime_initialization is not None
+        and model.generation.native_linker_script is not None
+    ):
+        raise _raise_error(
+            "GENERATION_MODEL_INVALID",
+            "runtime initialization contract requires the managed linker template",
+            {"field": "generation.runtimeInitialization", "rule": "managedLinker"},
+        )
 
 
 def _validate_options(model: ProjectModel) -> dict[str, object]:
@@ -386,6 +402,23 @@ def _validate_options(model: ProjectModel) -> dict[str, object]:
 
 
 def _validate_memory(model: ProjectModel) -> None:
+    for field, value, minimum in (
+        ("stackSize", model.memory.stack_size, 1),
+        ("heapSize", model.memory.heap_size, 0),
+    ):
+        if value is None:
+            continue
+        if (
+            type(value) is not int
+            or value < minimum
+            or value > 0xFFFFFFFF
+            or value % 8 != 0
+        ):
+            raise _raise_error(
+                "GENERATION_MODEL_INVALID",
+                "memory size is not supported",
+                {"field": f"memory.{field}", "rule": "size"},
+            )
     regions = model.memory.regions
     executable: list[str] = []
     writable: list[str] = []
@@ -988,6 +1021,18 @@ def _build_contexts(
             }
             for region in model.memory.regions
         ],
+        "heap_size_literal": (
+            "0x%x" % model.memory.heap_size
+            if model.memory.heap_size is not None
+            else "4K"
+        ),
+        "stack_size_literal": (
+            "0x%x" % model.memory.stack_size
+            if model.memory.stack_size is not None
+            else "1K"
+        ),
+        "runtime_initialization": model.generation.runtime_initialization
+        == "cmsis-gcc-v1",
         "flash_region": flash_region,
         "ram_region": ram_region,
         "fixed_sections": [

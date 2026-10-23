@@ -35,6 +35,7 @@ from stm32_toolkit.migration import (
     preflight_keil_conversion,
 )
 from stm32_toolkit.migration.model import portable_path_error
+from stm32_toolkit.migration.startup import normalize_startup_options
 from stm32_toolkit.project_model import ProjectManifestError, load_project_model
 from stm32_toolkit.result import OperationResult
 
@@ -203,6 +204,8 @@ def preflight_keil_workflow(
     *,
     uvprojx: str | None = None,
     target_name: str | None = None,
+    startup_strategy: str | None = None,
+    startup_source: str | None = None,
 ) -> OperationResult[dict[str, object]]:
     """Read-only migration preflight; analysis succeeds without Git.
 
@@ -214,6 +217,9 @@ def preflight_keil_workflow(
         root = _bind_project_root(project_root)
         uvprojx_path = _optional_portable_path(uvprojx, "uvprojx")
         target = _optional_name(target_name, "targetName")
+        strategy = _optional_name(startup_strategy, "startupStrategy")
+        source = _optional_name(startup_source, "startupSource")
+        startup_options = normalize_startup_options(strategy, source)
     except _InputInvalid as error:
         return _failure(
             operation,
@@ -221,10 +227,14 @@ def preflight_keil_workflow(
             "Keil preflight workflow input is invalid",
             error.details,
         )
+    except MigrationPlanError as error:
+        return _failure(operation, error.code, error.message, error.details)
 
     try:
         inspection = inspect_keil(root, uvprojx_path, target)
-        data = preflight_keil_conversion(root, inspection)
+        data = preflight_keil_conversion(
+            root, inspection, startup_options=startup_options
+        )
     except KeilInspectionError as error:
         return _failure(operation, error.code, error.message, error.details)
     except MigrationPlanError as error:
@@ -259,13 +269,23 @@ def convert_keil_workflow(
     target_name: str | None = None,
     plan_id: str | None = None,
     authorized: bool = False,
+    startup_strategy: str | None = None,
+    startup_source: str | None = None,
 ) -> OperationResult[dict[str, object]]:
-    """Read-only conversion plan, or apply only with the exact plan ID."""
+    """Read-only conversion plan, or apply only with the exact plan ID.
+
+    The startup options are part of the plan identity.  Apply re-runs the
+    deterministic plan with the request options and refuses a stale plan ID,
+    so a caller-edited strategy/source cannot be accepted after review.
+    """
     operation = "keil-conversion-apply" if _apply_intent(plan_id, authorized) else "keil-conversion-plan"
     try:
         root = _bind_project_root(project_root)
         uvprojx_path = _optional_portable_path(uvprojx, "uvprojx")
         target = _optional_name(target_name, "targetName")
+        strategy = _optional_name(startup_strategy, "startupStrategy")
+        source = _optional_name(startup_source, "startupSource")
+        startup_options = normalize_startup_options(strategy, source)
     except _InputInvalid as error:
         return _failure(
             operation,
@@ -273,6 +293,8 @@ def convert_keil_workflow(
             "Keil conversion workflow input is invalid",
             error.details,
         )
+    except MigrationPlanError as error:
+        return _failure(operation, error.code, error.message, error.details)
 
     closed = _authorization_failure(operation, authorized)
     if closed is not None:
@@ -287,7 +309,9 @@ def convert_keil_workflow(
 
     try:
         inspection = inspect_keil(root, uvprojx_path, target)
-        plan = plan_keil_conversion(root, inspection)
+        plan = plan_keil_conversion(
+            root, inspection, startup_options=startup_options
+        )
     except KeilInspectionError as error:
         return _failure(operation, error.code, error.message, error.details)
     except MigrationPlanError as error:

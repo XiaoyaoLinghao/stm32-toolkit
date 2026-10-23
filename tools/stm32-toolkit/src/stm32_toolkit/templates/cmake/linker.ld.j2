@@ -1,7 +1,7 @@
 ENTRY(Reset_Handler)
 
-_Min_Heap_Size = 4K;
-_Min_Stack_Size = 1K;
+_Min_Heap_Size = {{ heap_size_literal }};
+_Min_Stack_Size = {{ stack_size_literal }};
 
 MEMORY
 {
@@ -25,6 +25,31 @@ SECTIONS
     . = ALIGN(4);
     _etext = .;
   } > {{ flash_region }}
+{%- if runtime_initialization %}
+
+  .preinit_array :
+  {
+    PROVIDE_HIDDEN(__preinit_array_start = .);
+    KEEP(*(.preinit_array*))
+    PROVIDE_HIDDEN(__preinit_array_end = .);
+  } > {{ flash_region }}
+
+  .init_array :
+  {
+    PROVIDE_HIDDEN(__init_array_start = .);
+    KEEP(*(SORT(.init_array.*)))
+    KEEP(*(.init_array*))
+    PROVIDE_HIDDEN(__init_array_end = .);
+  } > {{ flash_region }}
+
+  .fini_array :
+  {
+    PROVIDE_HIDDEN(__fini_array_start = .);
+    KEEP(*(SORT(.fini_array.*)))
+    KEEP(*(.fini_array*))
+    PROVIDE_HIDDEN(__fini_array_end = .);
+  } > {{ flash_region }}
+{%- endif %}
 
   .ARM.extab :
   {
@@ -76,5 +101,10 @@ SECTIONS
     __StackLimit = .;
     . += _Min_Stack_Size;
     __StackTop = .;
+{%- if runtime_initialization %}
+    __initial_sp = __StackTop;
+    __heap_base = __HeapBase;
+    __heap_limit = __HeapLimit;
+{%- endif %}
   } > {{ ram_region }}
 }
