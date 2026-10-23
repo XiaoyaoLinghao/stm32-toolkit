@@ -70,7 +70,10 @@ different destination is a collision, never an overwrite.
 The generated startup keeps the original vector order and reserved zero slots,
 exports weak core handlers and weak IRQ aliases (strong C definitions override),
 and implements `SystemInit` followed by `.data` copy, `.bss` clear, the newlib
-constructor path and `main`, with a deterministic return loop. It records the
+constructor path and `main`, with a deterministic return loop. The
+`cmsis-gcc-v1` linker contract aligns `_sidata`, `_sdata`, `_edata`, `_sbss`
+and `_ebss` to four bytes and asserts that alignment at link time, because the
+generated copy/clear loop transfers whole words. It records the
 source-derived `memory.stackSize`/`memory.heapSize` and the sole
 `generation.runtimeInitialization: "cmsis-gcc-v1"` contract. That contract is
 valid only with the managed linker template, which then emits the constructor

@@ -48,9 +48,15 @@ _STARTUP_WARNINGS = (
 
 _MAX_EVIDENCE = 200
 _IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-_NUMBER_RE = re.compile(r"^(0[xX][0-9a-fA-F]+|\d+)$")
 _CORE_SPLIT_RE = re.compile(r"[\s_]+")
 _CONTINUATION_RE = re.compile(r"\\[ \t]*$")
+
+#: Decimal digits that still fit an unsigned 32-bit value, and the sentinel
+#: returned for a syntactically numeric value that certainly exceeds it.
+_UNSIGNED32_MAX = 0xFFFFFFFF
+_DECIMAL_DIGITS_FOR_UINT32 = len(str(_UNSIGNED32_MAX))
+_HEX_DIGITS_FOR_UINT32 = 8
+_SIZE_OVERFLOW = _UNSIGNED32_MAX + 1
 
 # Logical statement patterns.  Directives and mnemonics are case-insensitive;
 # symbol names preserve their original spelling.
@@ -204,6 +210,36 @@ def _cap(text: str) -> str:
     return text.strip()[:_MAX_EVIDENCE]
 
 
+def _parse_size_value(raw: str) -> int | None:
+    """Parse an exact unsigned byte count without ``int(..., 0)`` surprises.
+
+    Decimal values may carry leading zeros and hexadecimal values arbitrary
+    leading zeros.  The digit run is bounded *before* conversion so a huge
+    literal cannot raise ``ValueError`` (including CPython's decimal digit
+    limit); a syntactically numeric but oversized value returns the
+    ``_SIZE_OVERFLOW`` sentinel for the normal range diagnostic.  ``None``
+    means the text is not a supported integer literal.  No expression,
+    sign, suffix or non-ASCII digit is accepted, and nothing is evaluated.
+    """
+    text = raw.strip()
+    if not text or not text.isascii():
+        return None
+    if text[:2] in ("0x", "0X"):
+        digits = text[2:]
+        if not digits or any(ch not in "0123456789abcdefABCDEF" for ch in digits):
+            return None
+        significant = digits.lstrip("0")
+        if len(significant) > _HEX_DIGITS_FOR_UINT32:
+            return _SIZE_OVERFLOW
+        return int(significant or "0", 16)
+    if not text.isdigit():
+        return None
+    significant = text.lstrip("0")
+    if len(significant) > _DECIMAL_DIGITS_FOR_UINT32:
+        return _SIZE_OVERFLOW
+    return int(significant or "0", 10)
+
+
 # ---------------------------------------------------------------------------
 # parsed evidence
 # ---------------------------------------------------------------------------
@@ -277,6 +313,11 @@ class _Parser:
         self.proc_stage = 0
         self.proc_start_line = 0
         self.reset_body: list[str] = []
+        # Reset_Handler is recognized separately from the individual weak
+        # handlers: its definition and its *completed* exact body are both
+        # required, and neither is inferred from a partial PROC.
+        self.reset_definition_line: int | None = None
+        self.reset_complete = False
         self.individual_handlers: dict[str, int] = {}
         self.default_handler_line: int | None = None
         self.alias_handlers: dict[str, int] = {}
@@ -339,8 +380,8 @@ class _Parser:
             )
             return
         if name in ("Stack_Size", "Heap_Size"):
-            number = _NUMBER_RE.fullmatch(value.strip())
-            if number is None:
+            parsed = _parse_size_value(value)
+            if parsed is None:
                 self._diag(
                     "MIGRATION_STARTUP_SIZE_INVALID",
                     line,
@@ -348,7 +389,6 @@ class _Parser:
                 )
                 self.equ_values[name] = (None, value, line.line)
                 return
-            parsed = int(value.strip(), 0)
             self.equ_values[name] = (parsed, value, line.line)
             return
         normalized = re.sub(r"\s+", "", value)
@@ -443,6 +483,17 @@ class _Parser:
                         "MIGRATION_STARTUP_CONDITIONAL_UNSUPPORTED",
                         line,
                         "nested startup conditional is not supported",
+                    )
+                    return
+                if self.area != "|.text|" or self.proc is not None:
+                    # The conditional's exports and the
+                    # __user_initial_stackheap helper are active code.  They
+                    # are never accepted, and never silently relocated, from
+                    # STACK/HEAP/RESET or from inside a handler PROC.
+                    self._diag(
+                        "MIGRATION_STARTUP_MICROLIB_UNSUPPORTED",
+                        line,
+                        "the Microlib conditional and its helper are only recognized in AREA |.text|, CODE, READONLY outside a PROC",
                     )
                     return
                 self.microlib_state = "if"
@@ -771,6 +822,8 @@ class _Parser:
         if name == "Reset_Handler":
             self.proc_kind = "reset"
             self.reset_body = []
+            if self.reset_definition_line is None:
+                self.reset_definition_line = line.line
         elif name == "Default_Handler":
             self.proc_kind = "default"
             self.default_handler_line = line.line
@@ -910,7 +963,9 @@ class _Parser:
 
     def _finish_proc(self, line: _LogicalLine) -> None:
         if self.proc_kind == "reset":
-            if tuple(self.reset_body) != _RESET_BODY:
+            if tuple(self.reset_body) == _RESET_BODY:
+                self.reset_complete = True
+            else:
                 self._diag(
                     "MIGRATION_STARTUP_RESET_UNSUPPORTED",
                     line,
@@ -1178,7 +1233,7 @@ class _Parser:
 
         if self.text_area_line is None:
             self._layout_diagnostic(0, "AREA |.text|, CODE, READONLY is required")
-        if "Reset_Handler" not in self.individual_handlers:
+        if self.reset_definition_line is None:
             self.diagnostics.append(
                 StartupDiagnostic(
                     code="MIGRATION_STARTUP_RESET_UNSUPPORTED",
@@ -1187,6 +1242,20 @@ class _Parser:
                     column=0,
                     evidence="",
                     message="the conventional Reset_Handler PROC is required",
+                )
+            )
+        elif not self.reset_complete and not any(
+            diagnostic.code == "MIGRATION_STARTUP_RESET_UNSUPPORTED"
+            for diagnostic in self.diagnostics
+        ):
+            self.diagnostics.append(
+                StartupDiagnostic(
+                    code="MIGRATION_STARTUP_RESET_UNSUPPORTED",
+                    path=self.path,
+                    line=self.reset_definition_line,
+                    column=0,
+                    evidence="",
+                    message="Reset_Handler PROC is incomplete; the exact SystemInit -> __main body with ENDP is required",
                 )
             )
 
@@ -1248,7 +1317,7 @@ class _Parser:
         minimum = 1 if positive else 0
         if (
             value < minimum
-            or value > 0xFFFFFFFF
+            or value > _UNSIGNED32_MAX
             or value % STARTUP_ALIGNMENT != 0
         ):
             self.diagnostics.append(
@@ -1412,7 +1481,7 @@ class _Parser:
             seen.add(symbol)
             if symbol == "Reset_Handler":
                 kind = "reset"
-                definition_line = self.individual_handlers.get(symbol, entry.line)
+                definition_line = self.reset_definition_line or entry.line
             elif symbol in self.individual_handlers:
                 kind = "individual"
                 definition_line = self.individual_handlers[symbol]
@@ -1486,6 +1555,28 @@ def _select_source(
     return candidates[0]
 
 
+def _destination_parent_is_blocked(path: Path) -> bool:
+    """Whether an existing non-directory component occupies the parent chain.
+
+    Windows may report a file in an intermediate path component as
+    ``FileNotFoundError`` rather than ``NotADirectoryError``.  Treat both as
+    the same collision so analysis never mistakes a blocked destination for a
+    writable missing path.
+    """
+    current = path.parent
+    while True:
+        try:
+            listing = os.lstat(current)
+        except FileNotFoundError:
+            if current.parent == current:
+                return False
+            current = current.parent
+            continue
+        except OSError:
+            return True
+        return not stat.S_ISDIR(listing.st_mode)
+
+
 def _read_destination(root: Path) -> tuple[str, bytes | None]:
     """Return (missing|identical-base-state, bytes); collisions classify later."""
     path = STARTUP_GENERATED_PATH
@@ -1498,9 +1589,11 @@ def _read_destination(root: Path) -> tuple[str, bytes | None]:
     try:
         listing = os.lstat(resolved)
     except FileNotFoundError:
+        if _destination_parent_is_blocked(resolved):
+            return "collision", None
         return "missing", None
     except NotADirectoryError:
-        return "missing", None
+        return "collision", None
     except OSError:
         return "collision", None
     if not stat.S_ISREG(listing.st_mode):
@@ -1689,6 +1782,26 @@ def _word(entry: StartupVectorEntry) -> str:
     return ".word 0" if entry.reserved else f".word {entry.symbol}"
 
 
+def _comment_literal(value: str) -> str:
+    """Escape one metadata value for a single C-style assembly comment.
+
+    ``*`` and ``\\`` are never emitted raw, so no interpolated value can
+    close the comment or start an escape sequence; control and non-ASCII
+    characters become explicit ``\\x``/``\\u`` text.  The analysis metadata
+    keeps the original spelling because only the rendered comment is escaped.
+    """
+    result: list[str] = []
+    for character in value:
+        code = ord(character)
+        if 0x20 <= code <= 0x7E and character not in "*\\":
+            result.append(character)
+        elif code <= 0xFF:
+            result.append(f"\\x{code:02x}")
+        else:
+            result.append(f"\\u{code:04x}")
+    return "".join(result)
+
+
 def render_startup(
     *,
     source_path: str,
@@ -1703,8 +1816,8 @@ def render_startup(
 
     lines: list[str] = [
         "/* Generated by STM32 Toolkit from a recognized ARMCC CMSIS startup. */",
-        f"/* Source: {source_path} */",
-        f"/* Source SHA-256: {source_sha256} */",
+        f"/* Source: {_comment_literal(source_path)} */",
+        f"/* Source SHA-256: {_comment_literal(source_sha256)} */",
         "/* REVIEW REQUIRED: this GNU runtime initialization is not binary, ABI or",
         " * behavioral equivalence with ARMCC or Microlib. Review the vector table,",
         " * stack/heap reservations and constructor path before applying it. */",

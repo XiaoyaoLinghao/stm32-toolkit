@@ -2387,7 +2387,8 @@ def create_server(
         non-empty assembly source exists; without startupSource an ambiguous
         selection fails with MIGRATION_STARTUP_SELECTION_REQUIRED and
         details.candidates.  The same two values must be used for convert and
-        apply.  The generated destination is
+        apply; planReadiness.nextSteps repeats the exact startup choice to
+        retain when the option is present.  The generated destination is
         Startup/stm32tk_startup_gcc.S; analysis.startup reports the exact
         source hash, vectors, reserved slots, stack/heap bytes, diagnostics
         and generated digest.  This is a reviewed migration patch, not ARMCC
@@ -2425,14 +2426,16 @@ def create_server(
         Pass the same startupStrategy="generate-cmsis-gcc" and
         startupSource="<exact project-relative source>" values used for
         preflight and plan; the options are bound into the plan digest, and a
-        changed or omitted choice produces PLAN_CHANGED instead of being
-        silently accepted on apply.  With the startup strategy the plan
-        proposes only Startup/stm32tk_startup_gcc.S as the generated file,
-        preserves the original ARMCC startup, records memory.stackSize,
-        memory.heapSize and generation.runtimeInitialization=cmsis-gcc-v1,
-        and reports data.startup with source/generated hashes, vectors and
-        review warnings.  Review that evidence and the generated reset path;
-        this is not ARMCC, ABI or Microlib behavioral equivalence.
+        changed or omitted choice is never silently accepted on apply: the
+        request fails with a structured validation error or PLAN_CHANGED.
+        With the startup strategy the normal manifest/source patches are
+        accompanied by a create-only startup patch for
+        Startup/stm32tk_startup_gcc.S; the original ARMCC startup is
+        preserved, and the plan records memory.stackSize, memory.heapSize and
+        generation.runtimeInitialization=cmsis-gcc-v1 and reports
+        data.startup with source/generated hashes, vectors and review
+        warnings.  Review that evidence and the generated reset path; this is
+        not ARMCC, ABI or Microlib behavioral equivalence.
         The core replans and rechecks digest, Git, and drift guards before its
         first write.  Never run git init, transcode source text, replace ARMCC
         startup blindly, or reuse a stale plan ID; a missing Git repository is

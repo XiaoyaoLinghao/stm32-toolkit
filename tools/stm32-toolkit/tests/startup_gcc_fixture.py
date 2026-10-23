@@ -179,12 +179,15 @@ OTHER_ASM = (
 )
 
 MAIN_C = (
+    "/* Synthetic runtime fixture: no vendor code. */\n"
     "void SystemInit(void)\n"
     "{\n"
     "}\n"
     "\n"
-    "volatile unsigned int initialized_value = 0x12345678u;\n"
-    "volatile unsigned int zeroed_value;\n"
+    "/* Byte alignment forces the linker to align the .data/.bss output\n"
+    " * sections for the generated word-wise copy and clear loop. */\n"
+    "__attribute__((aligned(1))) volatile unsigned int initialized_value = 0x12345678u;\n"
+    "__attribute__((aligned(1))) volatile unsigned int zeroed_value;\n"
     "\n"
     "__attribute__((constructor)) static void synthetic_constructor(void)\n"
     "{\n"
@@ -202,7 +205,10 @@ MAIN_C = (
     "\n"
     "int main(void)\n"
     "{\n"
-    "    return 0;\n"
+    "    /* Keep BSS nonempty and actually used so --gc-sections cannot\n"
+    "     * discard the clear-loop target. */\n"
+    "    zeroed_value += initialized_value;\n"
+    "    return (int)(zeroed_value & 0x1u);\n"
     "}\n"
 )
 

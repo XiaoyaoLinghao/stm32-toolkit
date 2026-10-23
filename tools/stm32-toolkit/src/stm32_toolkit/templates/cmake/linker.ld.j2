@@ -69,6 +69,9 @@ SECTIONS
 
   .data :
   {
+{%- if runtime_initialization %}
+    . = ALIGN(4);
+{%- endif %}
     _sdata = .;
     *(.data*)
     . = ALIGN(4);
@@ -78,6 +81,9 @@ SECTIONS
 
   .bss :
   {
+{%- if runtime_initialization %}
+    . = ALIGN(4);
+{%- endif %}
     _sbss = .;
     *(.bss*)
     *(COMMON)
@@ -108,3 +114,14 @@ SECTIONS
 {%- endif %}
   } > {{ ram_region }}
 }
+{%- if runtime_initialization %}
+
+/* cmsis-gcc-v1 copies .data and clears .bss in four-byte words. */
+ASSERT((_sidata & 3) == 0, "cmsis-gcc-v1 requires a 4-byte-aligned .data load address")
+ASSERT((_sdata & 3) == 0, "cmsis-gcc-v1 requires a 4-byte-aligned .data start")
+ASSERT((_edata & 3) == 0, "cmsis-gcc-v1 requires a 4-byte-aligned .data end")
+ASSERT((_sbss & 3) == 0, "cmsis-gcc-v1 requires a 4-byte-aligned .bss start")
+ASSERT((_ebss & 3) == 0, "cmsis-gcc-v1 requires a 4-byte-aligned .bss end")
+ASSERT(ADDR(.data) == _sdata, "cmsis-gcc-v1 requires the .data copy source to start at _sdata")
+ASSERT(SIZEOF(.data) == _edata - _sdata, "cmsis-gcc-v1 requires the .data copy size to match _sdata.._edata")
+{%- endif %}

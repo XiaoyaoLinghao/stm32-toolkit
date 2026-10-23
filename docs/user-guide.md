@@ -41,30 +41,30 @@ $Cli = Join-Path $DataRoot 'runtime\1.2.0\Scripts\stm32-toolkit.exe'
 & $Cli --project-root $ProjectRoot project detect --json
 & $Cli --project-root $ProjectRoot keil inspect --uvprojx Project/blinky.uvprojx --target-name Debug --json
 & $Cli --project-root $ProjectRoot keil convert --uvprojx Project/blinky.uvprojx --target-name Debug --dry-run --json
-& $Cli --project-root $ProjectRoot keil convert --uvprojx Project/blinky.uvprojx --target-name Debug --startup-strategy generate-cmsis-gcc --startup-source Startup/startup_stm32f429_439xx.s --dry-run --json
 & $Cli --project-root $ProjectRoot project configure --dry-run --json
 & $Cli --project-root $ProjectRoot build --preset arm-debug --json
 ```
 
-**仅当前源码/候选切片（未随 v1.2.0 发行）：**
+**仅当前源码/候选切片（未随 v1.2.0 发行）：** 已发布 v1.2.0 安装包（48 个工具）没有 `keil preflight`/`stm32_keil_preflight`，也不接受 `--startup-strategy`/`--startup-source`（MCP `startupStrategy`/`startupSource`）。下列入口与 startup 选项属于当前源码或候选构建的未发布行为，不要对已安装 runtime 使用或宣称支持。
 
 ```powershell
 $CandidateCli = '<current-source-or-candidate stm32-toolkit CLI>'
 & $CandidateCli --project-root $ProjectRoot keil preflight --uvprojx Project/blinky.uvprojx --target-name Debug --json
+& $CandidateCli --project-root $ProjectRoot keil convert --uvprojx Project/blinky.uvprojx --target-name Debug --startup-strategy generate-cmsis-gcc --startup-source Startup/startup_stm32f429_439xx.s --dry-run --json
 ```
 
 Keil `inspect`、`preflight` 和 `convert` 必须指向同一 `uvprojx` 和 `target-name`。`preflight` 只做技术分析：不要求 Git，可在存在 blocker 时仍成功返回 `analysis.complete=true`，并把 `analysis.blockers`、`planReadiness`（取得计划所需的技术/Git 前置）与 `applyReadiness`（在有 reviewed/authorized plan 前恒为 `requires-reviewed-plan` 且 `ready=false`）分开；它不产生可用 plan ID、不写文件、不会自动 `git init`、转码或替换 ARMCC startup。缺少 Git、unborn HEAD、非 Git toplevel 或 dirty/untracked 工作区会作为计划前置失败列出，由工程负责人决定是否建立干净基线。确认 plan 无 blocker、diff/路径均符合预期后，以 PLAN 响应的 `data.plan_id` 调用同一参数链的 `convert --apply --plan-id <data.plan_id> --authorized --json`。PLAN 响应字段是 `data.plan_id`，APPLY 请求参数是 `planId`/`--plan-id`，不要混用带命令前缀的展示文本。`configure` 同样先 `--dry-run` 再用该次 `data.plan_id` `--apply --plan-id <data.plan_id> --authorized --json`；应用前会重新检查输入与改动。构建报告 `BUILD_OUTPUT_STALE` 时，先判定是哪项输入或身份改变，再根据实际计划决定是否 `build --preset arm-debug --clean --json`；不能靠修改旧 receipt 让产物看似有效。
 
 ### 受支持的 CMSIS startup 生成（显式 opt-in）
 
-仅有常规 ST/CMSIS Cortex-M3/M4/M7 ARMCC5 startup 可走此路线；其它 ARMCC 汇编仍然阻断。公开参数名固定为：
+仅有常规 ST/CMSIS Cortex-M3/M4/M7 ARMCC5 startup 可走此路线；其它 ARMCC 汇编仍然阻断。本节参数属于**当前源码/候选切片的未发布行为**：已发布 v1.2.0 安装包（48 个工具）不含 `stm32_keil_preflight` 及这两个选项，须以宿主实际安装版本为准。公开参数名固定为：
 
 | 操作 | MCP 参数 | CLI 参数 | 值 |
 | --- | --- | --- | --- |
 | 预检/计划/应用 | `startupStrategy` | `--startup-strategy` | 唯一支持值 `generate-cmsis-gcc`；省略表示保留现有 dispatch |
 | 预检/计划/应用 | `startupSource` | `--startup-source` | 精确的工程相对、已包含、非空 `.s` 路径，使用 `/`；仅当只有一个非空候选时可省略 |
 
-同一组 `startupStrategy`/`startupSource` 必须用于 `stm32_keil_preflight`、`stm32_keil_convert`（PLAN）和最终 `stm32_keil_convert`（`planId` + `authorized=true`）；省略或改动会让 apply 的新计划摘要不同并返回 `PLAN_CHANGED`，不会接受调用方临时改写的策略。若省略 `startupSource` 且存在多个候选，会返回 `MIGRATION_STARTUP_SELECTION_REQUIRED`，从 `details.candidates` 让用户选择。托管生成目标固定为 `Startup/stm32tk_startup_gcc.S`；原 ARMCC 文件不改不删；目标已存在且字节不同则返回 `MIGRATION_STARTUP_TARGET_COLLISION`，不覆盖用户文件。
+同一组 `startupStrategy`/`startupSource` 必须用于 `stm32_keil_preflight`、`stm32_keil_convert`（PLAN）和最终 `stm32_keil_convert`（`planId` + `authorized=true`）；省略或改动不会被 apply 接受：合法但不同的值会使新计划摘要不同并返回 `PLAN_CHANGED`，而格式或策略本身非法时返回结构化校验错误（如 `MIGRATION_STARTUP_OPTIONS_INVALID`、`MIGRATION_STARTUP_STRATEGY_UNSUPPORTED`）。preflight 的 `planReadiness.nextSteps` 会重复需要保留的精确 startup 选项。若省略 `startupSource` 且存在多个候选，会返回 `MIGRATION_STARTUP_SELECTION_REQUIRED`，从 `details.candidates` 让用户选择。托管生成目标固定为 `Startup/stm32tk_startup_gcc.S`；原 ARMCC 文件不改不删；目标已存在且字节不同则返回 `MIGRATION_STARTUP_TARGET_COLLISION`，不覆盖用户文件。
 
 VS Code / MCP 客户端的审查路径：
 
@@ -84,7 +84,7 @@ MCP 客户端即使从不加载 `SKILL.md`，也可按工具描述和真实返�
 1. **上下文与选择。** 调用 `stm32_project_context()`。读取 `data.project.kind`；Keil 工程从 `data.project.files` 选择项目根相对 `.uvprojx`（使用 `/`）。context **不列出 target 名称**；多项目候选时要求用户选择，不要猜。读取 `data.capabilityDetails` 的 `status`/`reason`/`nextSteps`，不要只看旧布尔值。
 2. **检查与预检。** 若 target 未知，先调用 `stm32_keil_inspect(uvprojx)` 并省略 `targetName`；若返回 `KEIL_TARGET_SELECTION_REQUIRED`，把 `details.targets` 交给用户选择，再用该精确值调用 inspect。成功结果的 `data.inspection.target_name` 是后续必须保留的精确 targetName。然后用同一 `uvprojx`/`targetName` 调用 `stm32_keil_preflight(uvprojx, targetName)`。预检成功只表示 `data.analysis.complete=true`；逐项处理 `data.analysis.blockers`，并读取 `data.planReadiness.status`（`ready-for-plan`/`blocked`）、`ready` 与 `prerequisites`。`data.applyReadiness.status` 始终是 `requires-reviewed-plan`，`ready=false`、`planId=null`；预检不授权任何写入。
 3. **不可绕过的修复。** 对 encoding、assembly、scoped option、scatter/memory、manifest 冲突按 blocker 的 `code`、路径和消息处理；不要转码、替换 startup、删除未跟踪文件或伪造 manifest/工程 ID。Git 缺失、unborn HEAD、非 toplevel 或 dirty 工作区只阻塞计划，由工程负责人决定基线；不要让客户端自动 `git init`/commit/stash。
-4. **计划与授权。** `planReadiness.ready=true` 后调用 `stm32_keil_convert(uvprojx, targetName)`（无 `planId`、无 `authorized`）取得 PLAN 响应；检查 `data.blockers`、`data.plan_id` 和 `data.patches[].unified_diff`。若使用受支持的 CMSIS startup 路线，在 preflight、plan、apply 三次调用中传相同的 `startupStrategy="generate-cmsis-gcc"` 与 `startupSource="<精确工程相对 .s 路径>"`（单候选时可省略 source），并额外检查 `data.startup`、`Startup/stm32tk_startup_gcc.S`、`memory.stackSize`/`memory.heapSize` 和 `generation.runtimeInitialization`。只有用户显式授权该精确计划后，才调用 `stm32_keil_convert(uvprojx, targetName, planId=<data.plan_id>, authorized=true, startupStrategy=<同值>, startupSource=<同值>)`。PLAN 响应字段是 `data.plan_id`，APPLY 请求参数是 `planId`；省略或改动 startup 选项会返回 `PLAN_CHANGED`。
+4. **计划与授权。** `planReadiness.ready=true` 后调用 `stm32_keil_convert(uvprojx, targetName)`（无 `planId`、无 `authorized`）取得 PLAN 响应；检查 `data.blockers`、`data.plan_id` 和 `data.patches[].unified_diff`。若使用受支持的 CMSIS startup 路线，在 preflight、plan、apply 三次调用中传相同的 `startupStrategy="generate-cmsis-gcc"` 与 `startupSource="<精确工程相对 .s 路径>"`（单候选时可省略 source），并额外检查 `data.startup`、`Startup/stm32tk_startup_gcc.S`、`memory.stackSize`/`memory.heapSize` 和 `generation.runtimeInitialization`。只有用户显式授权该精确计划后，才调用 `stm32_keil_convert(uvprojx, targetName, planId=<data.plan_id>, authorized=true, startupStrategy=<同值>, startupSource=<同值>)`。PLAN 响应字段是 `data.plan_id`，APPLY 请求参数是 `planId`；省略或改动 startup 选项不会被接受，合法但不同的值返回 `PLAN_CHANGED`，非法的选项值返回结构化校验错误。startup 补丁与常规 manifest/源码补丁一起出现在 `data.patches` 中，而不是唯一输出文件。
 5. **配置、构建、烧录。** `stm32_project_configure()` 的 PLAN 响应同样用 `data.plan_id`，APPLY 传 `planId` 与 `authorized=true`。构建前读 `capabilityDetails.build.status`；`stm32_build(preset, clean, timeoutSeconds, authorized=true)` 才执行。烧录使用 `stm32_probe_list()` 返回的精确 `probeId`，以及 context 的 `data.build.buildId`/`data.build.elfSha256` 作为 `expectedBuildId`/`expectedElfSha256`，且仅在显式授权后传 `authorized=true`；不要复用旧 pin。
 6. **仅发现探针。** 用户只问“有哪些探针”时直接调用 `stm32_probe_list()`，读取 `data.probes`、`data.workspaceId` 和 `data.discovery`。该调用不需要 manifest、构建、backend、target 或 SVD，也不得继续执行 flash；若 `data.workspaceId=null` 且 `data.discovery.status="unbound"`，如实说明 discovery-only，绝不伪造 workspace ID。发现结果不证明 target 身份或烧录就绪。
 7. **VS Code 集成。** 生成的 `.vscode/tasks.json`/`launch.json` 只是配置目标；在真实 VS Code、扩展版本和实际调试会话中运行前，不得声称 IDE 路径已验收或部署完成。
@@ -110,7 +110,7 @@ MCP 客户端即使从不加载 `SKILL.md`，也可按工具描述和真实返�
 | --- | --- | --- |
 | 1 | 子目录 `.uvprojx` 报 `KEIL_PROJECT_NOT_FOUND` | v1.0.0 可用 `--uvprojx Project/xxx.uvprojx`（可移植正斜杠）指明根内路径；自 v1.0.1 起在工程根内安全递归发现，多候选要求显式选择。目录不可枚举返回发现不完整，不能冒充“无工程”。 |
 | 2 | `ARMCC_SOURCE_ENCODING_UNSUPPORTED` | 先确认原始编码与版本控制状态，工程负责人决定转换副本/源码；Toolkit 不猜 GB2312/GB18030，也不自动转码。需要 UTF-8 副本时走独立 `normalize-source-comments` 技能：逐文件显式声明编码，默认只读预览，再按已审查 plan 复制到项目外新目录；它只转换注释、绝不改写原工程，也不解决 startup、scoped option、scatter/memory、Git/apply、baseline 等其它 blocker。字节保真仍是项目责任。该技能说明与 helper 位于仓库 `skills/normalize-source-comments/`（安装后为对应个人技能目录，含 `SKILL.md`、`references/lexical-and-plan-contract.md` 和 `scripts/normalize_comments.py`）；MCP 客户端没有、也不应臆造规范化工具，应直接按该目录说明用已验证的 Python 调用 helper。 |
-| 3 | `ARMCC_ASSEMBLY_UNSUPPORTED` | 默认仍阻断任意 ARMCC 汇编。仅当文件是受支持的常规 ST/CMSIS Cortex-M3/M4/M7 startup 时，可显式使用 `startupStrategy="generate-cmsis-gcc"`（CLI `--startup-strategy generate-cmsis-gcc`）并通常配合 `startupSource="<工程相对 .s 路径>"`（CLI `--startup-source`）；工具生成并审查 `Startup/stm32tk_startup_gcc.S`，保留原文件，只替换 `build.assemblySources` 中选中的那一项。其它 `.s` 仍逐个阻断。识别器整文件校验语法，不执行代码、不猜测未知指令/宏/条件分支/自定义 reset 或 handler；返回 `analysis.startup`/`data.startup` 的源哈希、有序向量与保留槽、stack/heap 字节、reset 模式、生成摘要、警告和诊断。preflight、plan、apply 必须使用相同选项（或都省略），apply 重规划并以 `PLAN_CHANGED` 拒绝被改动的 strategy/source；目标已存在且字节不同时报告 `MIGRATION_STARTUP_TARGET_COLLISION`，绝不覆盖。生成的是经审查的 GCC 迁移补丁，不是 ARMCC、ABI 或 Microlib 的二进制/行为等价物。 |
+| 3 | `ARMCC_ASSEMBLY_UNSUPPORTED` | 默认仍阻断任意 ARMCC 汇编。仅当文件是受支持的常规 ST/CMSIS Cortex-M3/M4/M7 startup 时，可显式使用 `startupStrategy="generate-cmsis-gcc"`（CLI `--startup-strategy generate-cmsis-gcc`）并通常配合 `startupSource="<工程相对 .s 路径>"`（CLI `--startup-source`）；工具生成并审查 `Startup/stm32tk_startup_gcc.S`，保留原文件，只替换 `build.assemblySources` 中选中的那一项。其它 `.s` 仍逐个阻断。识别器整文件校验语法，不执行代码、不猜测未知指令/宏/条件分支/自定义 reset 或 handler；返回 `analysis.startup`/`data.startup` 的源哈希、有序向量与保留槽、stack/heap 字节、reset 模式、生成摘要、警告和诊断。preflight、plan、apply 必须使用相同选项（或都省略），apply 重规划并拒绝被改动的 strategy/source：合法但不同的值返回 `PLAN_CHANGED`，非法的选项值返回结构化校验错误；目标已存在且字节不同时报告 `MIGRATION_STARTUP_TARGET_COLLISION`，绝不覆盖。生成的是经审查的 GCC 迁移补丁，不是 ARMCC、ABI 或 Microlib 的二进制/行为等价物。 |
 | 4, 17, 22 | configure 遇 `UNOWNED_COLLISION` 或编辑器设置已存在 | 核对目标路径与 managed manifest。构建必需文件冲突需工程方决定所有权；自 v1.0.1 起只保留上述五个未托管普通编辑器文件，不 merge/adopt。 |
 | 9 | Flash used 似乎含 `.bss`/栈 | 核对原始 ELF/MAP。候选按有内容段的 LMA 计加载容量，NOBITS 只计运行地址预留；没有原始 ELF/MAP 不可宣称复现报告数字。 |
 | 10 | RAM `free=0`，栈处于区域高端 | 报告按 section 实际占用区间并集，而非区域首尾跨度。若 `.stack` section 自身含大空隙/预留，它仍是 linker 分配；不能当成可用 RAM。运行时峰值需另测。 |

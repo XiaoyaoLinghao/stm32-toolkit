@@ -72,6 +72,9 @@ def test_absent_optional_fields_keep_the_default_linker_bytes_exactly(tmp_path):
     assert ".preinit_array" not in text
     assert ".init_array" not in text
     assert "__initial_sp = __StackTop;" not in text
+    assert "ASSERT((" not in text
+    assert "  .data :\n  {\n    _sdata = .;" in text
+    assert "  .bss :\n  {\n    _sbss = .;" in text
 
 
 def test_runtime_contract_emits_exact_sizes_constructor_sections_and_aliases(tmp_path):
@@ -91,6 +94,18 @@ def test_runtime_contract_emits_exact_sizes_constructor_sections_and_aliases(tmp
     assert "__initial_sp = __StackTop;" in text
     assert "__heap_base = __HeapBase;" in text
     assert "__heap_limit = __HeapLimit;" in text
+
+    # The generated startup copies/zeroes whole words, so the runtime contract
+    # must align both ends of .data/.bss and the .data load address.
+    assert "  .data :\n  {\n    . = ALIGN(4);\n    _sdata = .;" in text
+    assert "  .bss :\n  {\n    . = ALIGN(4);\n    _sbss = .;" in text
+    for symbol in ("_sidata", "_sdata", "_edata", "_sbss", "_ebss"):
+        assert f"ASSERT(({symbol} & 3) == 0" in text
+    # Endpoint alignment alone is insufficient: an unaligned RAM origin makes
+    # ld pad the start of .data, so LOADADDR(.data) would no longer match
+    # _sdata.  The runtime contract refuses that layout instead of copying it.
+    assert 'ASSERT(ADDR(.data) == _sdata, "cmsis-gcc-v1 requires the .data copy source to start at _sdata")' in text
+    assert 'ASSERT(SIZEOF(.data) == _edata - _sdata, "cmsis-gcc-v1 requires the .data copy size to match _sdata.._edata")' in text
 
 
 def test_zero_heap_is_rendered_as_an_exact_zero_byte_reservation(tmp_path):

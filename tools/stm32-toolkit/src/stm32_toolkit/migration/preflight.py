@@ -167,8 +167,28 @@ def _prerequisite(
     }
 
 
+def _startup_option_guidance(options: StartupOptions | None) -> str:
+    """Return the exact startup choice the reviewed plan/apply must retain."""
+    if options is None:
+        return ""
+    if options.source is not None:
+        return (
+            " Retain startupStrategy=generate-cmsis-gcc and "
+            f"startupSource={options.source} for the PLAN and apply requests; "
+            "omitting or changing either value is never accepted against this plan."
+        )
+    return (
+        " Retain startupStrategy=generate-cmsis-gcc and the same startupSource "
+        "selection for the PLAN and apply requests (startupSource may be omitted "
+        "only while exactly one included ARMCC assembly candidate remains); "
+        "omitting or changing either value is never accepted against this plan."
+    )
+
+
 def _plan_readiness(
-    git: dict[str, object], blocker_total: int
+    git: dict[str, object],
+    blocker_total: int,
+    startup_options: StartupOptions | None = None,
 ) -> dict[str, object]:
     """Whether the technical/Git prerequisites for obtaining a plan are met.
 
@@ -247,11 +267,14 @@ def _plan_readiness(
             "Inspect data.git.worktree.error and confirm Git status access; do not assume the worktree is dirty or clean."
         )
     if ready:
+        guidance = _startup_option_guidance(startup_options)
         next_steps.append(
             "Call stm32_keil_convert (CLI: keil convert --dry-run) with the same uvprojx and targetName and no planId; the read-only PLAN response returns the exact identifier as data.plan_id and the complete diff as data.patches[].unified_diff."
+            + guidance
         )
         next_steps.append(
             "Review that plan, then pass its exact data.plan_id as the apply request's planId together with authorized=true only after explicit user authorization."
+            + guidance
         )
     return {
         "ready": ready,
@@ -263,7 +286,10 @@ def _plan_readiness(
     }
 
 
-def _apply_readiness(plan_readiness: dict[str, object]) -> dict[str, object]:
+def _apply_readiness(
+    plan_readiness: dict[str, object],
+    startup_options: StartupOptions | None = None,
+) -> dict[str, object]:
     """Apply is never ready from preflight, regardless of plan prerequisites."""
     prerequisites = plan_readiness["prerequisites"]
     assert isinstance(prerequisites, (list, tuple))
@@ -272,10 +298,13 @@ def _apply_readiness(plan_readiness: dict[str, object]) -> dict[str, object]:
         for item in prerequisites
         if isinstance(item, dict) and item.get("satisfied") is not True
     ]
+    guidance = _startup_option_guidance(startup_options)
     if plan_readiness["ready"] is True:
         next_steps = [
-            "Call stm32_keil_convert with the same uvprojx and targetName and no planId to obtain the read-only PLAN response; read data.plan_id and data.patches[].unified_diff.",
-            "Only after reviewing that exact plan and obtaining explicit user authorization, call stm32_keil_convert with planId set to the reviewed data.plan_id and authorized=true.",
+            "Call stm32_keil_convert with the same uvprojx and targetName and no planId to obtain the read-only PLAN response; read data.plan_id and data.patches[].unified_diff."
+            + guidance,
+            "Only after reviewing that exact plan and obtaining explicit user authorization, call stm32_keil_convert with planId set to the reviewed data.plan_id and authorized=true."
+            + guidance,
         ]
     else:
         blockers = (
@@ -285,8 +314,10 @@ def _apply_readiness(plan_readiness: dict[str, object]) -> dict[str, object]:
         )
         next_steps = [
             blockers.strip(),
-            "After planReadiness.status becomes ready-for-plan, call stm32_keil_convert with the same uvprojx and targetName and no planId to obtain the read-only PLAN response; read data.plan_id and data.patches[].unified_diff.",
-            "Only after reviewing that exact plan and obtaining explicit user authorization, call stm32_keil_convert with planId set to the reviewed data.plan_id and authorized=true.",
+            "After planReadiness.status becomes ready-for-plan, call stm32_keil_convert with the same uvprojx and targetName and no planId to obtain the read-only PLAN response; read data.plan_id and data.patches[].unified_diff."
+            + guidance,
+            "Only after reviewing that exact plan and obtaining explicit user authorization, call stm32_keil_convert with planId set to the reviewed data.plan_id and authorized=true."
+            + guidance,
         ]
     return {
         "ready": False,
@@ -324,7 +355,9 @@ def preflight_keil_conversion(
         by_code[blocker.code] = by_code.get(blocker.code, 0) + 1
 
     fresh = analysis.inspection
-    plan_readiness = _plan_readiness(git, len(analysis.blockers))
+    plan_readiness = _plan_readiness(
+        git, len(analysis.blockers), startup_options
+    )
     payload = {
         "analysis": {
             "complete": True,
@@ -353,7 +386,7 @@ def preflight_keil_conversion(
         },
         "git": git,
         "planReadiness": plan_readiness,
-        "applyReadiness": _apply_readiness(plan_readiness),
+        "applyReadiness": _apply_readiness(plan_readiness, startup_options),
     }
     if analysis.startup is not None:
         payload["analysis"]["startup"] = analysis.startup.to_dict()

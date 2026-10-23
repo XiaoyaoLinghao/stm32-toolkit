@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 import pytest
@@ -232,6 +233,69 @@ def test_mcp_preflight_and_convert_route_the_camel_case_options(tmp_path):
         True,
         startup_strategy="generate-cmsis-gcc",
         startup_source=STARTUP_SOURCE,
+    )
+    assert applied["ok"] is True
+    assert (repo / GENERATED_SOURCE).is_file()
+
+
+def test_registered_mcp_tools_bind_the_public_camel_case_startup_options(tmp_path):
+    """The real registered server, not the snake-case helpers, owns the options."""
+    repo = startup_repo(tmp_path, name="mcp-registered-startup")
+    server = mcp_mod.create_server(repo, tmp_path / "data", "session-startup-server")
+
+    tools = {tool.name: tool for tool in asyncio.run(server.list_tools())}
+    for tool_name in ("stm32_keil_preflight", "stm32_keil_convert"):
+        properties = tools[tool_name].inputSchema["properties"]
+        assert "startupStrategy" in properties
+        assert "startupSource" in properties
+        assert "startup_strategy" not in properties
+        assert "startup_source" not in properties
+
+    def call(tool_name: str, arguments: dict[str, object]) -> dict[str, object]:
+        _, structured = asyncio.run(server.call_tool(tool_name, arguments))
+        assert structured is not None
+        return structured
+
+    selection = {"uvprojx": UVPROJX, "targetName": TARGET}
+    startup = {"startupStrategy": "generate-cmsis-gcc", "startupSource": STARTUP_SOURCE}
+
+    preflight = call("stm32_keil_preflight", {**selection, **startup})
+    assert preflight["ok"] is True
+    assert preflight["data"]["analysis"]["startup"]["source_path"] == STARTUP_SOURCE
+
+    planned = call("stm32_keil_convert", {**selection, **startup})
+    assert planned["ok"] is True
+    assert planned["data"]["startup"]["status"] == "ready"
+    plan_id = planned["data"]["plan_id"]
+
+    # With this single candidate, omitting startupSource still resolves to the
+    # same file but is a different reviewed option set (and therefore a
+    # different plan identity).  Neither that nor omitting both options may
+    # apply the reviewed plan.
+    changed = call(
+        "stm32_keil_convert",
+        {
+            **selection,
+            "planId": plan_id,
+            "authorized": True,
+            "startupStrategy": "generate-cmsis-gcc",
+        },
+    )
+    assert changed["ok"] is False
+    assert changed["code"] == "PLAN_CHANGED"
+    assert not (repo / GENERATED_SOURCE).exists()
+
+    omitted = call(
+        "stm32_keil_convert",
+        {**selection, "planId": plan_id, "authorized": True},
+    )
+    assert omitted["ok"] is False
+    assert omitted["code"] == "PLAN_CHANGED"
+    assert not (repo / GENERATED_SOURCE).exists()
+
+    applied = call(
+        "stm32_keil_convert",
+        {**selection, **startup, "planId": plan_id, "authorized": True},
     )
     assert applied["ok"] is True
     assert (repo / GENERATED_SOURCE).is_file()

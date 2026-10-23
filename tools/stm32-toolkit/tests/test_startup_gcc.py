@@ -26,15 +26,18 @@ from stm32_toolkit.workflows import convert_keil_workflow, preflight_keil_workfl
 
 from startup_gcc_fixture import (
     GENERATED_SOURCE,
+    MAIN_C,
     STARTUP_SOURCE,
     SYNTHETIC_STARTUP,
     TARGET,
     UVPROJX,
+    cpu_setting,
     git_init,
     snapshot_tree,
     startup_repo,
     two_assembly_repo,
 )
+from test_migration_plan import build_repo
 
 
 def parse(text: str, core: str = "Cortex-M4"):
@@ -76,6 +79,13 @@ def test_synthetic_startup_is_fully_recognized_with_vectors_and_sizes():
 
     kinds = {handler.name: handler.kind for handler in parsed.handlers}
     assert kinds["Reset_Handler"] == "reset"
+    reset_handler = next(
+        handler for handler in parsed.handlers if handler.name == "Reset_Handler"
+    )
+    assert reset_handler.line == (
+        SYNTHETIC_STARTUP[: SYNTHETIC_STARTUP.index("Reset_Handler    PROC")].count("\n")
+        + 1
+    )
     for name in (
         "NMI_Handler",
         "HardFault_Handler",
@@ -141,6 +151,51 @@ def test_generated_startup_is_deterministic_and_preserves_the_vector_order():
     # Vector table boundary comes after all 24 preserved words.
     vector_section = text.split("__Vectors:", 1)[1].split("__Vectors_End:", 1)[0]
     assert vector_section.count(".word ") == 24
+
+
+def test_rendered_source_metadata_cannot_escape_the_assembly_comment():
+    """Pure synthetic input: no unsafe host filename is ever created."""
+    parsed = parse(SYNTHETIC_STARTUP)
+    hostile_paths = (
+        "Startup/evil*/handler.s",
+        "Startup/line\nbreak.s",
+        "Startup/tab\tname.s",
+        "Startup/back\\slash.s",
+    )
+    for hostile in hostile_paths:
+        rendered = startup_mod.render_startup(
+            source_path=hostile,
+            source_sha256=hashlib.sha256(SYNTHETIC_STARTUP.encode()).hexdigest(),
+            parsed=parsed,
+        ).decode("utf-8")
+        source_lines = [
+            line for line in rendered.splitlines() if line.startswith("/* Source: ")
+        ]
+        assert len(source_lines) == 1
+        source_line = source_lines[0]
+        opener, terminator = "/* Source: ", " */"
+        assert source_line.startswith(opener)
+        assert source_line.endswith(terminator)
+        # Only the template's own opener and terminator carry comment syntax;
+        # the interpolated payload can never close the comment or inject raw
+        # assembly, control or separator bytes.
+        payload = source_line[len(opener) : -len(terminator)]
+        assert "*" not in payload
+        assert "*/" not in payload
+        assert "\n" not in payload and "\t" not in payload
+        assert all(0x20 <= ord(character) <= 0x7E for character in payload), payload
+    escaped_terminator = startup_mod.render_startup(
+        source_path="Startup/evil*/handler.s",
+        source_sha256="0" * 64,
+        parsed=parsed,
+    ).decode("utf-8")
+    assert "evil\\x2a/handler.s" in escaped_terminator
+    escaped_newline = startup_mod.render_startup(
+        source_path="Startup/line\nbreak.s",
+        source_sha256="0" * 64,
+        parsed=parsed,
+    ).decode("utf-8")
+    assert "line\\x0abreak.s" in escaped_newline
 
 
 # ---------------------------------------------------------------------------
@@ -232,12 +287,201 @@ def test_generated_startup_is_deterministic_and_preserves_the_vector_order():
             mutate("Stack_Size      EQU     0x00001000", "Stack_Size EQU Stack_Mem + 4"),
             "MIGRATION_STARTUP_SIZE_INVALID",
         ),
+        (
+            mutate(
+                "                 EXPORT  Reset_Handler             [WEAK]",
+                "                 EXPORT  Reset_Handler",
+            ),
+            "MIGRATION_STARTUP_RESET_UNSUPPORTED",
+        ),
+        (
+            mutate(
+                "                EXPORT  ADC1_IRQHandler            [WEAK]\n",
+                "",
+            ),
+            "MIGRATION_STARTUP_HANDLER_EXPORT_UNSUPPORTED",
+        ),
+        (
+            mutate(
+                "                EXPORT  ADC1_IRQHandler            [WEAK]",
+                "                EXPORT  ADC1_IRQHandler",
+            ),
+            "MIGRATION_STARTUP_HANDLER_EXPORT_UNSUPPORTED",
+        ),
+        (
+            mutate(
+                "                EXPORT  NMI_Handler                [WEAK]\n",
+                "",
+            ),
+            "MIGRATION_STARTUP_CUSTOM_HANDLER_UNSUPPORTED",
+        ),
+        (
+            mutate(
+                "                 LDR     R2, = (Heap_Mem +  Heap_Size)\n",
+                "",
+            ),
+            "MIGRATION_STARTUP_MICROLIB_UNSUPPORTED",
+        ),
+        (
+            mutate(
+                "                 LDR     R1, =(Stack_Mem + Stack_Size)\n",
+                "                 LDR     R1, =(Stack_Mem + Stack_Size)\n"
+                "                 LDR     R0, =  Heap_Mem\n",
+            ),
+            "MIGRATION_STARTUP_MICROLIB_UNSUPPORTED",
+        ),
+        (
+            mutate(
+                "                 LDR     R0, =  Heap_Mem\n"
+                "                 LDR     R1, =(Stack_Mem + Stack_Size)\n",
+                "                 LDR     R1, =(Stack_Mem + Stack_Size)\n"
+                "                 LDR     R0, =  Heap_Mem\n",
+            ),
+            "MIGRATION_STARTUP_MICROLIB_UNSUPPORTED",
+        ),
     ],
 )
 def test_unsupported_and_custom_constructs_are_rejected(text: str, expected: str):
     parsed = parse(text)
     assert parsed.status == "unsupported"
     assert expected in codes(parsed)
+
+
+def test_missing_or_incomplete_reset_handler_is_rejected():
+    reset_block = (
+        "Reset_Handler    PROC\n"
+        "                 EXPORT  Reset_Handler             [WEAK]\n"
+        "        IMPORT  SystemInit\n"
+        "        IMPORT  __main\n"
+        "\n"
+        "                 LDR     R0, =SystemInit\n"
+        "                 BLX     R0\n"
+        "                 LDR     R0, =__main\n"
+        "                 BX      R0\n"
+        "                 ENDP\n"
+    )
+    missing = parse(SYNTHETIC_STARTUP.replace(reset_block, "", 1))
+    assert missing.status == "unsupported"
+    assert "MIGRATION_STARTUP_RESET_UNSUPPORTED" in codes(missing)
+
+    incomplete_text = SYNTHETIC_STARTUP.replace(
+        "                 ENDP\n"
+        "\n"
+        "NMI_Handler     PROC\n",
+        "\n"
+        "NMI_Handler     PROC\n",
+        1,
+    )
+    incomplete = parse(incomplete_text)
+    assert incomplete.status == "unsupported"
+    assert "MIGRATION_STARTUP_RESET_UNSUPPORTED" in codes(incomplete)
+
+    # Completed reset evidence is required separately from the weak
+    # individual handler PROCs; the valid fixture still reports it once.
+    ready = parse(SYNTHETIC_STARTUP)
+    assert ready.status == "ready"
+    assert [
+        handler.name for handler in ready.handlers if handler.kind == "reset"
+    ] == ["Reset_Handler"]
+
+
+def test_microlib_block_is_only_recognized_inside_the_code_area():
+    """Active code is never normalized silently from a non-code AREA."""
+    block_start = SYNTHETIC_STARTUP.index("                 IF      :DEF:__MICROLIB")
+    block_end = SYNTHETIC_STARTUP.index("                 ENDIF\n") + len(
+        "                 ENDIF\n"
+    )
+    block = SYNTHETIC_STARTUP[block_start:block_end]
+    assert block.startswith("                 IF      :DEF:__MICROLIB\n")
+    without = SYNTHETIC_STARTUP[:block_start] + SYNTHETIC_STARTUP[block_end:]
+    assert block not in without
+
+    # The same, otherwise valid block moved after __heap_limit stays in HEAP.
+    heap_variant = without.replace(
+        "                PRESERVE8\n",
+        block + "                PRESERVE8\n",
+        1,
+    )
+    # ... and moved directly after the RESET AREA stays in RESET.
+    reset_variant = without.replace(
+        "                AREA    RESET, DATA, READONLY\n",
+        "                AREA    RESET, DATA, READONLY\n" + block,
+        1,
+    )
+    # ... or moved inside a recognized handler PROC.
+    proc_variant = without.replace(
+        "Reset_Handler    PROC\n",
+        "Reset_Handler    PROC\n" + block,
+        1,
+    )
+    for text in (heap_variant, reset_variant, proc_variant):
+        parsed = parse(text)
+        assert parsed.status == "unsupported"
+        assert "MIGRATION_STARTUP_MICROLIB_UNSUPPORTED" in codes(parsed), [
+            diagnostic.to_dict() for diagnostic in parsed.diagnostics
+        ]
+
+    # The supported text-area grammar is unchanged.
+    assert parse(SYNTHETIC_STARTUP).status == "ready"
+
+
+def test_numeric_sizes_accept_leading_zeros_and_reject_oversized_literals():
+    leading_zero_decimal = parse(
+        mutate("Stack_Size      EQU     0x00001000", "Stack_Size EQU 000004096")
+    )
+    assert leading_zero_decimal.status == "ready", [
+        diagnostic.to_dict() for diagnostic in leading_zero_decimal.diagnostics
+    ]
+    assert leading_zero_decimal.stack_size == 4096
+
+    leading_zero_hex = parse(
+        mutate("Heap_Size       EQU     0x00000400", "Heap_Size EQU 0x000000000400")
+    )
+    assert leading_zero_hex.status == "ready"
+    assert leading_zero_hex.heap_size == 1024
+
+    zero_heap_decimal = parse(
+        mutate("Heap_Size       EQU     0x00000400", "Heap_Size EQU 0000000000")
+    )
+    assert zero_heap_decimal.status == "ready"
+    assert zero_heap_decimal.heap_size == 0
+
+    huge_decimal = parse(
+        mutate("Stack_Size      EQU     0x00001000", "Stack_Size EQU " + "9" * 5000)
+    )
+    assert huge_decimal.status == "unsupported"
+    assert "MIGRATION_STARTUP_SIZE_INVALID" in codes(huge_decimal)
+    assert huge_decimal.stack_size is not None
+    assert huge_decimal.stack_size > 0xFFFFFFFF
+
+    huge_hex = parse(
+        mutate("Stack_Size      EQU     0x00001000", "Stack_Size EQU 0x" + "f" * 5000)
+    )
+    assert huge_hex.status == "unsupported"
+    assert "MIGRATION_STARTUP_SIZE_INVALID" in codes(huge_hex)
+    assert huge_hex.stack_size is not None
+    assert huge_hex.stack_size > 0xFFFFFFFF
+
+    decimal_overflow = parse(
+        mutate("Stack_Size      EQU     0x00001000", "Stack_Size EQU 4294967296")
+    )
+    assert decimal_overflow.status == "unsupported"
+    assert "MIGRATION_STARTUP_SIZE_INVALID" in codes(decimal_overflow)
+
+    hex_overflow = parse(
+        mutate(
+            "Heap_Size       EQU     0x00000400",
+            "Heap_Size EQU 0x0000000100000000",
+        )
+    )
+    assert hex_overflow.status == "unsupported"
+    assert "MIGRATION_STARTUP_SIZE_INVALID" in codes(hex_overflow)
+
+    unaligned = parse(
+        mutate("Stack_Size      EQU     0x00001000", "Stack_Size EQU 4294967295")
+    )
+    assert unaligned.status == "unsupported"
+    assert "MIGRATION_STARTUP_SIZE_INVALID" in codes(unaligned)
 
 
 def test_zero_heap_is_permitted_and_represented_consistently():
@@ -484,6 +728,22 @@ def test_preflight_returns_startup_evidence_without_mutation(tmp_path):
     assert data["applyReadiness"]["ready"] is False
     assert data["planReadiness"]["planId"] is None
 
+    apply_steps = " ".join(data["applyReadiness"]["nextSteps"])
+    assert "startupStrategy=generate-cmsis-gcc" in apply_steps
+    assert f"startupSource={STARTUP_SOURCE}" in apply_steps
+    plan_steps = " ".join(data["planReadiness"]["nextSteps"])
+    if data["planReadiness"]["ready"]:
+        assert "startupStrategy=generate-cmsis-gcc" in plan_steps
+        assert f"startupSource={STARTUP_SOURCE}" in plan_steps
+
+    default_data = preflight_keil_conversion(repo, inspection)
+    assert "startupStrategy" not in " ".join(
+        default_data["planReadiness"]["nextSteps"]
+    )
+    assert "startupStrategy" not in " ".join(
+        default_data["applyReadiness"]["nextSteps"]
+    )
+
 
 def test_apply_generates_only_the_new_assembly_and_records_model_fields(tmp_path):
     repo = startup_repo(tmp_path)
@@ -533,6 +793,50 @@ def test_existing_different_generated_target_is_a_blocked_collision(tmp_path):
     assert result.code == "MIGRATION_BLOCKED"
     assert snapshot_tree(repo) == before
     assert generated.read_bytes() == b"/* user owned file */\n"
+
+
+def test_file_occupying_the_generated_parent_is_a_blocked_collision(tmp_path):
+    source = "Config/startup_synthetic.s"
+    repo = build_repo(
+        tmp_path,
+        name="startup-parent-file",
+        files={"Main/main.c": MAIN_C, source: SYNTHETIC_STARTUP},
+        uvprojx_kwargs={
+            "cpu": cpu_setting(),
+            "fpu": None,
+            "groups": (
+                ("Main", (("main.c", "1", "Main/main.c"),)),
+                ("Config", (("startup_synthetic.s", "2", source),)),
+            ),
+            "includes": "Main;Libraries/STM32F4xx_StdPeriph_Driver",
+        },
+        commit=False,
+    )
+    # A regular file, not a directory, occupies Startup/ where the generated
+    # target's parent would be.  Analysis must classify this as a collision
+    # instead of a writable missing destination.
+    (repo / "Startup").write_text("user owned file\n", encoding="utf-8")
+    git_init(repo)
+    inspection = inspect_keil(repo)
+
+    plan = plan_keil_conversion(
+        repo,
+        inspection,
+        startup_options=StartupOptions("generate-cmsis-gcc", source),
+    )
+    assert any(
+        blocker.code == "MIGRATION_STARTUP_TARGET_COLLISION"
+        for blocker in plan.blockers
+    )
+    assert not any(patch.path == GENERATED_SOURCE for patch in plan.patches)
+
+    before = snapshot_tree(repo)
+    result = apply_keil_conversion(plan)
+    assert result.ok is False
+    assert result.code == "MIGRATION_BLOCKED"
+    assert snapshot_tree(repo) == before
+    assert (repo / "Startup").read_text("utf-8") == "user owned file\n"
+    assert not (repo / "Startup" / "stm32tk_startup_gcc.S").exists()
 
 
 def test_existing_identical_generated_target_is_reused_without_overwrite(tmp_path):
