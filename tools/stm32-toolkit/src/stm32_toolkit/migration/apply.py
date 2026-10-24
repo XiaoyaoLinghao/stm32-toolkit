@@ -35,6 +35,7 @@ from stm32_toolkit.migration.model import (
     FilePatch,
     FixedSectionRequirement,
     GitBaseline,
+    IncludeMerge,
     MigrationBlocker,
     MigrationInput,
     MigrationPlan,
@@ -231,6 +232,30 @@ def _validate_plan(plan: object) -> None:
             )
         except MemoryLayoutError:
             raise _plan_invalid("memoryLayout") from None
+
+    if not isinstance(plan.include_merges, tuple) or not all(
+        isinstance(merge, IncludeMerge) for merge in plan.include_merges
+    ):
+        raise _plan_invalid("includeMerge")
+    for merge in plan.include_merges:
+        if merge.scope not in ("group", "file"):
+            raise _plan_invalid("includeMerge")
+        if not isinstance(merge.owner, str) or not isinstance(merge.path, str):
+            raise _plan_invalid("includeMerge")
+        if merge.path != "." and portable_path_error(merge.path) is not None:
+            raise _plan_invalid("includeMerge")
+        if merge.scope == "file" and portable_path_error(merge.owner) is not None:
+            raise _plan_invalid("includeMerge")
+        if merge.decision == "added":
+            if sha256_error(merge.inventory_sha256) is not None:
+                raise _plan_invalid("includeMerge")
+            if not isinstance(merge.inventory_files, int) or merge.inventory_files < 0:
+                raise _plan_invalid("includeMerge")
+        elif merge.decision == "already-present":
+            if merge.inventory_sha256 is not None or merge.inventory_files is not None:
+                raise _plan_invalid("includeMerge")
+        else:
+            raise _plan_invalid("includeMerge")
 
     for entry in plan.inputs:
         if portable_path_error(entry.path) is not None:
@@ -588,6 +613,12 @@ def _build_report(plan: MigrationPlan, patch_bytes: bytes) -> bytes:
             "report": _REPORT_PATH,
         },
     }
+    if plan.include_merges:
+        # Additive reviewed evidence: the exact merge decisions the plan bound
+        # into its identity.  Absent for historical plans without a scope.
+        payload["includeMerges"] = [
+            merge.to_report_dict() for merge in plan.include_merges
+        ]
     if plan.startup is not None:
         payload["startup"] = plan.startup.to_dict()
     return json.dumps(payload, indent=2, ensure_ascii=False).encode("utf-8") + b"\n"

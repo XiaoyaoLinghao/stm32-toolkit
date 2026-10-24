@@ -500,6 +500,79 @@ _KNOWN_REMEDIATION: dict[
         None,
         (),
     ),
+    "MIGRATION_INCLUDE_PATH_MISSING": (
+        _UNSUPPORTED,
+        "The scoped include directory does not exist. Inspect the group/file"
+        " IncludePath evidence, retain the intended scope, and resolve the"
+        " missing directory or scope as a project-owned change; Toolkit never"
+        " invents, creates, or silently drops a search directory.",
+        None,
+        None,
+        (),
+    ),
+    "MIGRATION_INCLUDE_PATH_NOT_DIRECTORY": (
+        _UNSUPPORTED,
+        "The scoped include path is not a directory. Inspect the group/file"
+        " IncludePath evidence, retain the intended scope, and resolve the"
+        " path as a project-owned change; Toolkit never substitutes a"
+        " directory or drops the scope.",
+        None,
+        None,
+        (),
+    ),
+    "MIGRATION_INCLUDE_PATH_ESCAPES": (
+        _UNSUPPORTED,
+        "The scoped include path leaves the canonical project root. Inspect"
+        " the group/file IncludePath evidence and keep every search directory"
+        " inside the project as a project-owned change; Toolkit never follows"
+        " an out-of-root search path.",
+        None,
+        None,
+        (),
+    ),
+    "MIGRATION_INCLUDE_PATH_UNREADABLE": (
+        _UNSUPPORTED,
+        "The scoped include directory or its inventory cannot be read."
+        " Inspect the actual filesystem access, retain the intended scope, and"
+        " resolve readability as a project-owned change; Toolkit never"
+        " assumes an unreadable directory is empty.",
+        None,
+        None,
+        (),
+    ),
+    "MIGRATION_INCLUDE_REDIRECT_UNSUPPORTED": (
+        _UNSUPPORTED,
+        "A symlink or reparse entry is involved in the scoped include path or"
+        " its inventory. Inspect the actual redirect target, retain the"
+        " intended scope, and use a project-owned directory layout; Toolkit"
+        " does not follow redirects when deciding header conflicts.",
+        None,
+        None,
+        (),
+    ),
+    "MIGRATION_INCLUDE_LIMIT_EXCEEDED": (
+        _UNSUPPORTED,
+        "The scoped include inventory exceeds the aggregate bounded traversal"
+        " or hash budget. Inspect the actual directory contents and reduce or"
+        " relocate the scope as a project-owned change; Toolkit never samples"
+        " a partial inventory for a conflict decision.",
+        None,
+        None,
+        (),
+    ),
+    "MIGRATION_INCLUDE_COLLISION": (
+        _UNSUPPORTED,
+        "One case-insensitive include-relative key resolves to different"
+        " files in two search directories, so translated header resolution"
+        " would be ambiguous. Inspect the reported key and files, decide which"
+        " header the build must use, and remove the ambiguity as a"
+        " project-owned change; Toolkit never guesses precedence or edits"
+        " headers. Overlapping directories that expose the same physical files"
+        " are not a conflict.",
+        None,
+        None,
+        (),
+    ),
     "ARMCC_PRAGMA_UNSUPPORTED": (
         _UNSUPPORTED,
         "This ARMCC pragma has no supported automatic translation. Review the"
@@ -654,6 +727,12 @@ def preflight_keil_conversion(
     }
     if analysis.startup is not None:
         payload["analysis"]["startup"] = analysis.startup.to_dict()
+    if analysis.include_merges:
+        # Additive reviewed evidence: absent when no include-only scope was
+        # analyzed, so historical preflight payloads are unchanged.
+        payload["analysis"]["includeMerges"] = [
+            merge.to_report_dict() for merge in analysis.include_merges
+        ]
     serialized = json.dumps(payload, ensure_ascii=False)
     if len(serialized.encode("utf-8")) > _PREFLIGHT_OUTPUT_LIMIT_BYTES:
         raise MigrationPlanError(

@@ -1508,10 +1508,13 @@ def test_option_unsupported_blocker(tmp_path):
     assert any(b.code == "ARMCC_OPTION_UNSUPPORTED" for b in plan.blockers)
 
 
-def test_group_include_only_option_is_one_scoped_blocker(tmp_path):
+def test_group_include_only_option_is_merged_not_blocked(tmp_path):
     repo = build_repo(
         tmp_path,
-        files={"Main/main.c": "int main(void) { return 0; }\n"},
+        files={
+            "Main/main.c": "int main(void) { return 0; }\n",
+            "GroupOnly/group_only.h": "#pragma once\n",
+        },
         commit=False,
     )
     _add_group_scoped_controls(repo, "Main", include_paths="GroupOnly")
@@ -1519,12 +1522,17 @@ def test_group_include_only_option_is_one_scoped_blocker(tmp_path):
 
     plan = plan_keil_conversion(repo, fixture_inspection(repo))
 
-    scoped = [b for b in plan.blockers if b.code == "ARMCC_OPTION_UNSUPPORTED"]
-    assert len(scoped) == 1
-    assert scoped[0].path == ""
-    assert scoped[0].line == 0
-    assert scoped[0].column == 0
-    assert scoped[0].evidence == "group:Main"
+    assert not any(b.code == "ARMCC_OPTION_UNSUPPORTED" for b in plan.blockers)
+    assert [(merge.scope, merge.owner, merge.path, merge.decision) for merge in plan.include_merges] == [
+        ("group", "Main", "GroupOnly", "added")
+    ]
+    manifest = manifest_json(next(p for p in plan.patches if p.path == ".stm32-project.json"))
+    assert manifest["build"]["includePaths"] == [
+        "Main",
+        "Common",
+        FRAMEWORK_INCLUDE,
+        "GroupOnly",
+    ]
 
 
 def test_file_define_only_option_is_one_file_scoped_blocker(tmp_path):
@@ -1584,7 +1592,7 @@ def test_group_scoped_blockers_preserve_authored_order_and_owner_evidence(tmp_pa
         commit=False,
     )
     _add_group_scoped_controls(repo, "First", defines="FIRST")
-    _add_group_scoped_controls(repo, "Second", include_paths="SECOND")
+    _add_group_scoped_controls(repo, "Second", defines="SECOND")
     _commit_scoped_project(repo)
 
     plan = plan_keil_conversion(repo, fixture_inspection(repo))
@@ -1632,7 +1640,7 @@ def test_long_group_owner_evidence_is_unicode_bounded_with_prefix(tmp_path):
         uvprojx_kwargs={"groups": groups},
         commit=False,
     )
-    _add_group_scoped_controls(repo, owner, include_paths="LONG")
+    _add_group_scoped_controls(repo, owner, misc_controls="--long-misc")
     _commit_scoped_project(repo)
 
     plan = plan_keil_conversion(repo, fixture_inspection(repo))
@@ -1644,12 +1652,14 @@ def test_long_group_owner_evidence_is_unicode_bounded_with_prefix(tmp_path):
     assert scoped[0].evidence.startswith("group:")
 
 
-def test_excluded_file_scoped_option_still_blocks(tmp_path):
+def test_excluded_file_include_scope_does_not_broaden_the_search_path(tmp_path):
     repo = build_repo(
         tmp_path,
         files={"Main/main.c": "int main(void) { return 0; }\n"},
         commit=False,
     )
+    # The referenced directory does not exist: an inactive file scope is never
+    # validated, never blocked, and never merged.
     _add_file_scoped_controls(
         repo,
         "Main/main.c",
@@ -1660,9 +1670,14 @@ def test_excluded_file_scoped_option_still_blocks(tmp_path):
 
     plan = plan_keil_conversion(repo, fixture_inspection(repo))
 
-    scoped = [b for b in plan.blockers if b.code == "ARMCC_OPTION_UNSUPPORTED"]
-    assert [(b.path, b.evidence) for b in scoped] == [
-        ("Main/main.c", "file:Main/main.c")
+    assert not any(b.code.startswith("MIGRATION_INCLUDE_") for b in plan.blockers)
+    assert not any(b.code == "ARMCC_OPTION_UNSUPPORTED" for b in plan.blockers)
+    assert plan.include_merges == ()
+    manifest = manifest_json(next(p for p in plan.patches if p.path == ".stm32-project.json"))
+    assert manifest["build"]["includePaths"] == [
+        "Main",
+        "Common",
+        FRAMEWORK_INCLUDE,
     ]
 
 

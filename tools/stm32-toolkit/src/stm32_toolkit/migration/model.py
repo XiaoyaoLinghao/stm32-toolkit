@@ -130,6 +130,48 @@ class FilePatch:
 
 
 @dataclass(frozen=True)
+class IncludeMerge:
+    """Reviewed evidence for one group/file include-only scope directory.
+
+    ``decision`` is ``added`` when the directory is newly appended to the
+    target include search list, or ``already-present`` when the same physical
+    directory is already exposed (the original spelling is retained).
+    ``inventory_sha256``/``inventory_files`` record the bounded directory
+    inventory for an added directory so a fresh apply replan detects any
+    content, addition, or removal that could invalidate the conflict decision;
+    they are ``None`` for an already-present directory.
+    """
+
+    scope: str  # group or file
+    owner: str  # group name or root-relative source path
+    path: str  # normalized root-relative directory ("." for the root)
+    decision: str  # added or already-present
+    inventory_sha256: str | None
+    inventory_files: int | None
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "scope": self.scope,
+            "owner": self.owner,
+            "path": self.path,
+            "decision": self.decision,
+            "inventory_sha256": self.inventory_sha256,
+            "inventory_files": self.inventory_files,
+        }
+
+    def to_report_dict(self) -> dict[str, object]:
+        """Camel-case presentation used by preflight analysis and the report."""
+        return {
+            "scope": self.scope,
+            "owner": self.owner,
+            "path": self.path,
+            "decision": self.decision,
+            "inventorySha256": self.inventory_sha256,
+            "inventoryFiles": self.inventory_files,
+        }
+
+
+@dataclass(frozen=True)
 class GitBaseline:
     head: str
     root_marker: str  # always "."
@@ -295,6 +337,9 @@ class MigrationPlan:
     #: Decision evidence exposed to preflight/plan consumers.  Only the
     #: explicit request itself participates in the plan identity.
     memory_layout_resolution: MemoryLayoutResolution | None = None
+    #: Reviewed include-only scope merges.  Empty for plans without a merged
+    #: scoped directory, so historical plan identities stay byte-identical.
+    include_merges: tuple[IncludeMerge, ...] = ()
 
     def __post_init__(self) -> None:
         # Ignored-compatible observations are carried privately; they are not
@@ -319,6 +364,8 @@ class MigrationPlan:
             payload["startup_options"] = self.startup_options.to_dict()
         if self.memory_layout_resolution is not None:
             payload["memory_layout"] = self.memory_layout_resolution.to_dict()
+        if self.include_merges:
+            payload["include_merges"] = [merge.to_dict() for merge in self.include_merges]
         return payload
 
 
@@ -377,6 +424,10 @@ def _plan_id_payload(plan: MigrationPlan) -> dict[str, object]:
     # their historical identity payload.
     if plan.memory_layout is not None:
         payload["memory_layout"] = plan.memory_layout.to_dict()
+    # Scope evidence participates only when a scoped include directory was
+    # actually analyzed, so no-scope plans keep their historical identity.
+    if plan.include_merges:
+        payload["include_merges"] = [merge.to_dict() for merge in plan.include_merges]
     return payload
 
 

@@ -39,6 +39,7 @@ from stm32_toolkit.migration.model import (
     FixedSectionRequirement,
     GitBaseline,
     IgnoredObservation,
+    IncludeMerge,
     MigrationBlocker,
     MigrationInput,
     MigrationPlan,
@@ -48,6 +49,10 @@ from stm32_toolkit.migration.model import (
     inspection_sha256_for,
     plan_id_for,
     portable_path_error,
+)
+from stm32_toolkit.migration.scoped_includes import (
+    analyze_scoped_includes,
+    classify_include_scopes,
 )
 from stm32_toolkit.migration.startup import (
     RUNTIME_INITIALIZATION,
@@ -375,11 +380,30 @@ def _finding_blockers(findings: tuple) -> list[MigrationBlocker]:
 
 
 def _scoped_option_blockers(inspection: KeilInspection) -> list[MigrationBlocker]:
+    """Scoped options that cannot be represented, in authored inspection order.
+
+    Include-only scopes that affect only included C/C++ sources are mergeable
+    and must not receive this generic blocker; include-only scopes that also
+    affect included assembly or an unsupported language keep it so their
+    semantics are never silently dropped.  A scope with defines or misc
+    controls always keeps it, and an excluded-file or no-included-source
+    include scope is inert.
+    """
+    blocked_includes = set(classify_include_scopes(inspection).blocked)
     blockers: list[MigrationBlocker] = []
     for option in inspection.scoped_options:
         if option.scope not in {"group", "file"}:
             continue
         if not (option.defines or option.include_paths or option.misc_controls):
+            continue
+        if option.defines or option.misc_controls:
+            message = "scoped ARMCC compiler options are not representable"
+        elif option in blocked_includes:
+            message = (
+                "scoped include path also affects included ARMCC assembly or"
+                " an unsupported language and is not representable"
+            )
+        else:
             continue
         owner = option.owner if option.scope == "file" else ""
         blockers.append(
@@ -390,7 +414,7 @@ def _scoped_option_blockers(inspection: KeilInspection) -> list[MigrationBlocker
                 0,
                 0,
                 f"{option.scope}:{option.owner}"[:200],
-                "scoped ARMCC compiler options are not representable",
+                message,
             )
         )
     return blockers
@@ -545,8 +569,17 @@ def _manifest_proposal(
     inspection: KeilInspection,
     startup: StartupOutcome | None = None,
     memory_layout: MemoryLayout | None = None,
+    include_paths: tuple[str, ...] | None = None,
 ) -> dict | None:
-    """Deterministic Schema v3 proposal; ``None`` when framework selection is blocked."""
+    """Deterministic Schema v3 proposal; ``None`` when framework selection is blocked.
+
+    ``include_paths`` carries the reviewed target include list (target order
+    plus any validated scoped include-only directories); ``None`` keeps the
+    historical inspection list.
+    """
+    proposed_includes = (
+        tuple(inspection.include_paths) if include_paths is None else include_paths
+    )
     if inspection.framework not in _ALLOWED_FRAMEWORKS:
         return None
     startup_ready = startup is not None and startup.ready
@@ -621,7 +654,7 @@ def _manifest_proposal(
                 for source in inspection.sources
                 if source.included and source.language in ("c", "cxx")
             ],
-            "includePaths": list(inspection.include_paths),
+            "includePaths": list(proposed_includes),
             "defines": list(inspection.defines),
             "compileOptions": [],
             "linkStandardMath": True,
@@ -666,6 +699,10 @@ class ConversionAnalysis:
     ignored: tuple[IgnoredObservation, ...]
     startup: StartupAnalysis | None = None
     memory_layout: MemoryLayoutResolution | None = None
+    #: Reviewed include-only scope evidence and the resulting target include
+    #: list.  Empty merges preserve the historical proposal bytes.
+    include_merges: tuple[IncludeMerge, ...] = ()
+    include_paths: tuple[str, ...] = ()
 
 
 def _bind_analysis_root(root: object, inspection: object) -> Path:
@@ -795,9 +832,15 @@ def analyze_keil_conversion(
         else None
     )
 
+    # One bounded, read-only include analysis feeds both the reviewed manifest
+    # proposal and the blocker set.  Any invalid scope contributes no partial
+    # merge, so the proposal keeps the historical target include list.
+    include_analysis = analyze_scoped_includes(canonical, inspection)
+
     blockers: list[MigrationBlocker] = list(extra_blockers)
     scoped_option_blockers = _scoped_option_blockers(inspection)
     blockers.extend(_inspection_blockers(inspection, resolved_assembly))
+    blockers.extend(include_analysis.blockers)
     if startup_outcome is not None:
         for diagnostic in startup_outcome.analysis.diagnostics:
             blockers.append(
@@ -858,7 +901,11 @@ def analyze_keil_conversion(
         )
 
     proposal = _manifest_proposal(
-        canonical, inspection, startup_outcome, layout_option
+        canonical,
+        inspection,
+        startup_outcome,
+        layout_option,
+        include_analysis.include_paths,
     )
     proposal_bytes = _canonical_manifest_bytes(proposal) if proposal is not None else None
 
@@ -1018,6 +1065,8 @@ def analyze_keil_conversion(
         ignored=tuple(sorted(ignored, key=lambda o: (o.path, o.line, o.column, o.rule_id))),
         startup=startup_outcome.analysis if startup_outcome is not None else None,
         memory_layout=layout_resolution,
+        include_merges=include_analysis.merges,
+        include_paths=include_analysis.include_paths,
     )
 
 
@@ -1096,6 +1145,7 @@ def plan_keil_conversion(
         startup_options=options,
         memory_layout=layout_option,
         memory_layout_resolution=analysis.memory_layout,
+        include_merges=analysis.include_merges,
     )
     object.__setattr__(plan, "_ignored", analysis.ignored)
     plan = replace(plan, plan_id=plan_id_for(plan))
