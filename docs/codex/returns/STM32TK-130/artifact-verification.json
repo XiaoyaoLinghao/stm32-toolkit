@@ -1,0 +1,97 @@
+{
+  "status": "PASS",
+  "sourceHead": "1e6ea849c21fb3786d60dba0254acb375d016a62",
+  "version": "1.3.0",
+  "byteIdenticalBuilds": true,
+  "assets": [
+    {
+      "name": "CHECKSUMS.sha256",
+      "size": 1073,
+      "sha256": "ed632d302dab80ebfcd11bab632ab770426c554d84f472fa1cedcb6aac448576"
+    },
+    {
+      "name": "LICENSE",
+      "size": 1075,
+      "sha256": "55edb314745f2b0d3fe09e512726c3bf67cb20ba99fa3cd66859a64f3e6b6af5"
+    },
+    {
+      "name": "THIRD-PARTY-NOTICES.md",
+      "size": 2615,
+      "sha256": "53e3c4a33785dd02dc8b831c0e295dd97b432ad5e6f7746364ff33bdeefe4f20"
+    },
+    {
+      "name": "compatibility.md",
+      "size": 2014,
+      "sha256": "7d8fcbe6fff9c77e35b130ed2fcde278216edbb83729ff3cc619312562f8cc20"
+    },
+    {
+      "name": "licenses.zip",
+      "size": 413750,
+      "sha256": "f2977e5b81169e40babaa6c56d873384f65b6c0142a2b0c91a90f7a8815f6591"
+    },
+    {
+      "name": "monitor-assets.json",
+      "size": 970,
+      "sha256": "6a4b79814313f3e77fd382d6ba5f7cb92c1d49beab883a1f458f55d5d33462b6"
+    },
+    {
+      "name": "release-manifest.json",
+      "size": 15814,
+      "sha256": "d36d7ef2344c1efd694d8b0573d2d33024f88948a605ddbbb394e4b9ecc1222c"
+    },
+    {
+      "name": "sbom.spdx.json",
+      "size": 191430,
+      "sha256": "558f81ef7d1f9f43b348087fb352ffab93785fca04e5a9548eebd4d3aaa9c55a"
+    },
+    {
+      "name": "stm32-toolkit-1.3.0-source.zip",
+      "size": 15753356,
+      "sha256": "0779c753651026e64c2bde5341b1d75fb7115c43b1bc2ee1b23549d9f411db80"
+    },
+    {
+      "name": "stm32-toolkit-1.3.0-windows-x86_64.zip",
+      "size": 107265436,
+      "sha256": "7f6892a6b0f6eafe65742877e021c347db5d2c98aaf46de49c4f5b42a6782af2"
+    },
+    {
+      "name": "stm32_monitor-1.3.0-py3-none-any.whl",
+      "size": 1519467,
+      "sha256": "dee6e58621962f9762663454714a83ced87604857c5feaf5da4afd2c1ac9c8c3"
+    },
+    {
+      "name": "stm32_toolkit-1.3.0-py3-none-any.whl",
+      "size": 3544529,
+      "sha256": "cc4705fbc1464f4264094ffa68504b1eb7801e3ac25b69eba556bdc9a74cb116"
+    },
+    {
+      "name": "troubleshooting.md",
+      "size": 1737,
+      "sha256": "ae35c97eebf5387761d205e91e4e8fcf54de9f79f25e26919741d896c81a8e10"
+    }
+  ],
+  "sourceFiles": 821,
+  "bundleFiles": 1138,
+  "runtimeWheels": 64,
+  "mcpTools": 52,
+  "skills": 9,
+  "monitorAssets": 7,
+  "checks": [
+    "13 assets and12 checksum entries",
+    "two full builds byte identical",
+    "all ZIP and wheel CRCs",
+    "safe unique members and exact bundle closure",
+    "manifest source SHA and full source correspondence",
+    "64 wheel and6 artifact hashes",
+    "both1.3 wheel metadata and exact Monitor dependency",
+    "every product wheel payload bound to source",
+    "52 tools/9 bundled skills",
+    "plugin Python UI versions",
+    "Monitor asset inventory hashes"
+  ],
+  "extractedToolkitRoot": "D:\\codex-tmp\\fi24\\extracted\\stm32-toolkit-1.3.0",
+  "deliveryRoot": "D:\\WorkSpace\\STM32-Toolkit\\dist\\v1.3.0",
+  "deliveredHashVerification": "PASS",
+  "officialExtractedBundleVerification": "PASS",
+  "manifestSha256": "d36d7ef2344c1efd694d8b0573d2d33024f88948a605ddbbb394e4b9ecc1222c"
+}

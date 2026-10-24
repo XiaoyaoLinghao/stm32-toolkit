@@ -1,0 +1,62 @@
+[
+  {
+    "name": "version",
+    "owner": "Claude Code CLI",
+    "sourceHead": "1e6ea849c21fb3786d60dba0254acb375d016a62",
+    "tests": 755,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "seconds": 453.772,
+    "junit": "D:\\codex-tmp\\fi24\\version.xml",
+    "command": "python -m pytest tools/stm32-toolkit/tests/test_cli.py tools/stm32-toolkit/tests/test_doctor.py tools/stm32-toolkit/tests/test_public_inventory.py tools/stm32-toolkit/tests/test_0900_security.py tools/stm32-toolkit/tests/release/test_0900_artifacts.py tools/stm32-toolkit/tests/test_generation.py tools/stm32-toolkit/tests/test_build_runner.py tools/stm32-toolkit/tests/test_build_snapshot.py tools/stm32-toolkit/tests/test_mcp_migration_build.py tools/stm32-toolkit/tests/test_migration_plan.py tools/stm32-toolkit/tests/test_startup_gcc_generation.py tools/stm32-toolkit/tests/test_startup_gcc_compiler.py tools/stm32-toolkit/tests/test_memory_layout_compiler.py tools/stm32-toolkit/tests/test_vs10a_target_v2_public.py -q --tb=short --basetemp=D:/codex-tmp/fi24/p-version -o cache_dir=D:/codex-tmp/fi24/c-version --junitxml=D:/codex-tmp/fi24/version.xml"
+  },
+  {
+    "name": "setup",
+    "owner": "Claude Code CLI",
+    "sourceHead": "1e6ea849c21fb3786d60dba0254acb375d016a62",
+    "tests": 63,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "seconds": 420.182,
+    "junit": "D:\\codex-tmp\\fi24\\setup.xml",
+    "command": "python -m pytest tools/stm32-toolkit/tests/test_setup_runtime.py tools/stm32-toolkit/tests/test_plugin_layout.py -q --tb=short --basetemp=D:/codex-tmp/fi24/p-setup -o cache_dir=D:/codex-tmp/fi24/c-setup --junitxml=D:/codex-tmp/fi24/setup.xml"
+  },
+  {
+    "name": "feature130",
+    "owner": "Claude Code CLI",
+    "sourceHead": "1e6ea849c21fb3786d60dba0254acb375d016a62",
+    "tests": 1061,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "seconds": 274.079,
+    "junit": "D:\\codex-tmp\\fi24\\feature130.xml",
+    "command": "python -m pytest tools/stm32-toolkit/tests/test_external_firmware.py tools/stm32-toolkit/tests/test_external_firmware_workflow.py tools/stm32-toolkit/tests/test_external_firmware_routing.py tools/stm32-toolkit/tests/test_debug_firmware.py tools/stm32-toolkit/tests/test_flash.py tools/stm32-toolkit/tests/test_hardware_workflows.py tools/stm32-toolkit/tests/test_probe_client.py tools/stm32-toolkit/tests/test_probe_service.py tools/stm32-toolkit/tests/test_probe_worker.py tools/stm32-toolkit/tests/test_probe_backend.py tools/stm32-toolkit/tests/test_probe_protocol.py tools/stm32-toolkit/tests/test_probe_protocol_v2.py tools/stm32-toolkit/tests/test_pyocd_backend.py tools/stm32-toolkit/tests/test_mcp_hardware.py tools/stm32-toolkit/tests/test_cli_hardware.py -q --tb=short --basetemp=D:/codex-tmp/fi24/p-feature130 -o cache_dir=D:/codex-tmp/fi24/c-feature130 --junitxml=D:/codex-tmp/fi24/feature130.xml"
+  },
+  {
+    "name": "monitor",
+    "owner": "Claude Code CLI",
+    "sourceHead": "1e6ea849c21fb3786d60dba0254acb375d016a62",
+    "tests": 288,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "seconds": 50.447,
+    "junit": "D:\\codex-tmp\\fi24\\monitor.xml",
+    "command": "python -m pytest tools/stm32-monitor/tests/test_cli.py tools/stm32-monitor/tests/test_exports.py tools/stm32-monitor/tests/test_models.py tools/stm32-monitor/tests/test_package_boundary.py tools/stm32-monitor/tests/test_runtime.py tools/stm32-monitor/tests/test_service.py -q --tb=short --basetemp=D:/codex-tmp/fi24/p-monitor -o cache_dir=D:/codex-tmp/fi24/c-monitor --junitxml=D:/codex-tmp/fi24/monitor.xml"
+  },
+  {
+    "name": "primary130",
+    "owner": "primary independent review",
+    "sourceHead": "1e6ea849c21fb3786d60dba0254acb375d016a62",
+    "tests": 59,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "seconds": 20.097,
+    "junit": "D:\\codex-tmp\\fi24\\primary130.xml",
+    "command": "D:/codex-tmp/kx23/venv/Scripts/python.exe -m pytest tools/stm32-toolkit/tests/test_external_firmware.py tools/stm32-toolkit/tests/test_external_firmware_workflow.py tools/stm32-toolkit/tests/test_external_firmware_routing.py tools/stm32-toolkit/tests/test_public_inventory.py tools/stm32-toolkit/tests/test_cli.py::test_version_command_writes_only_the_package_version tools/stm32-toolkit/tests/release/test_0900_artifacts.py::test_bootstrap_anchor_binds_git_archive_bytes_not_worktree_filter_bytes tools/stm32-toolkit/tests/release/test_0900_artifacts.py::test_current_release_identity_is_consistent_across_builder_policy_and_schema -q --tb=short --basetemp=D:/codex-tmp/fi24/pp130 -o cache_dir=D:/codex-tmp/fi24/cp130 --junitxml=D:/codex-tmp/fi24/primary130.xml"
+  }
+]
