@@ -623,6 +623,7 @@ def _syntax_repo(tmp_path: Path, name: str = "syntax") -> Path:
         },
         uvprojx_kwargs={
             "groups": (("Main", (("main.c", "1", "Main/main.c"),)),),
+            "includes": f"Main;{FRAMEWORK_INCLUDE}",
         },
     )
 
