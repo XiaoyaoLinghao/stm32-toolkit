@@ -283,6 +283,11 @@ def _model_payload(model: ProjectModel) -> dict[str, object]:
         generation_payload["runtime_initialization"] = (
             model.generation.runtime_initialization
         )
+    # The bounded newlib selection participates in model identity only when it
+    # is non-empty, so absent and empty fields keep the historical digest.
+    newlib_payload: dict[str, object] = {}
+    if model.build.newlib_specs:
+        newlib_payload["newlib_specs"] = list(model.build.newlib_specs)
     return {
         "schema_version": model.schema_version,
         "logical_project_id": str(model.logical_project_id),
@@ -310,6 +315,7 @@ def _model_payload(model: ProjectModel) -> dict[str, object]:
             "presets": list(model.build.presets),
             "elf": model.build.elf,
             "link_standard_math": model.build.link_standard_math,
+            **newlib_payload,
         },
         "memory": memory_payload,
         "debug": {

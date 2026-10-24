@@ -85,6 +85,10 @@ _C_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _FPU_RE = re.compile(r"^[A-Za-z0-9_.+-]+$")
 _FULL_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 _OPTION_FORBIDDEN = re.compile(r"[\s;\"\\$`@]")
+#: The closed allowlist for ``build.newlibSpecs``.  This is a bounded
+#: representation of the reviewed no-semihosting pragma, not a generic linker
+#: customization channel.
+_SUPPORTED_NEWLIB_SPECS = frozenset({"nosys.specs"})
 _PRESERVED_EDITOR_GUIDANCE = (
     "Preserved VS Code files are user-owned; align their IDE settings with the generated build manually."
 )
@@ -375,6 +379,20 @@ def _validate_options(model: ProjectModel) -> dict[str, object]:
                 "GENERATION_MODEL_INVALID",
                 "compile option is not supported",
                 {"field": "build.compileOptions", "rule": "option"},
+            )
+    specs = model.build.newlib_specs
+    if not isinstance(specs, tuple) or len(set(specs)) != len(specs):
+        raise _raise_error(
+            "GENERATION_MODEL_INVALID",
+            "newlib specs are not supported",
+            {"field": "build.newlibSpecs", "rule": "value"},
+        )
+    for spec in specs:
+        if spec not in _SUPPORTED_NEWLIB_SPECS:
+            raise _raise_error(
+                "GENERATION_MODEL_INVALID",
+                "newlib spec is not supported",
+                {"field": "build.newlibSpecs", "rule": "value"},
             )
     if tuple(model.build.presets) != ("arm-debug", "arm-release"):
         raise _raise_error(
@@ -1027,6 +1045,7 @@ def _build_contexts(
         "defines": list(model.build.defines),
         "compile_options": list(model.build.compile_options),
         "link_standard_math": model.build.link_standard_math,
+        "newlib_specs": list(model.build.newlib_specs),
         "map_name": f"{stem}.map",
         "hex_name": f"{stem}.hex",
         "bin_name": f"{stem}.bin",

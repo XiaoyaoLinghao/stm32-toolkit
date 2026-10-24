@@ -489,6 +489,26 @@ _KNOWN_REMEDIATION: dict[
         None,
         (),
     ),
+    "ARMCC_ALIGN_UNSUPPORTED": (
+        _UNSUPPORTED,
+        "This __align form, bound, or declaration grammar is not supported and"
+        " is never rewritten. Keep it project-owned and resolve it explicitly"
+        " outside the conversion; Toolkit never carries an unresolved __align"
+        " into GNU source.",
+        None,
+        None,
+        (),
+    ),
+    "MIGRATION_FIXED_SECTION_OUTSIDE_MEMORY": (
+        _NEEDS_USER_INPUT,
+        "A fixed placement address lies outside every declared memory region."
+        " Review the actual memory map and provide an explicit project-owned"
+        " memory definition before applying; preflight has no parameter to add"
+        " or invent an external memory region.",
+        None,
+        None,
+        (),
+    ),
     "ARMCC_OPTION_UNSUPPORTED": (
         _UNSUPPORTED,
         "Scoped or target ARMCC compiler options are not representable."
@@ -733,6 +753,21 @@ def preflight_keil_conversion(
         payload["analysis"]["includeMerges"] = [
             merge.to_report_dict() for merge in analysis.include_merges
         ]
+    # Concise supported-change evidence: exact rule IDs and the same digests
+    # the PLAN patches carry, so a reviewer can distinguish proposed supported
+    # changes from blockers without reading the full diff.  PLAN keeps the
+    # complete unified diffs; this is presentation only and grants nothing.
+    source_changes = [
+        {
+            "path": patch.path,
+            "ruleIds": list(patch.rule_ids),
+            "beforeSha256": patch.before_sha256,
+            "afterSha256": patch.after_sha256,
+        }
+        for patch in analysis.patches
+    ]
+    if source_changes:
+        payload["analysis"]["sourceChanges"] = source_changes
     serialized = json.dumps(payload, ensure_ascii=False)
     if len(serialized.encode("utf-8")) > _PREFLIGHT_OUTPUT_LIMIT_BYTES:
         raise MigrationPlanError(

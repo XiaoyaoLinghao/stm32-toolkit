@@ -75,6 +75,21 @@ VS Code / MCP 客户端的审查路径：
 3. 用户显式授权该精确 `data.plan_id` 后，以同一组参数传 `planId` 和 `authorized=true`。apply 会用同一选项重规划并核对 Git/digest/输入漂移，失败不写文件。
 4. apply 后按常规 `stm32_project_configure`（先 PLAN 再授权 apply）与 `stm32_build` 流程构建；托管 linker 会使用记录的精确 stack/heap 字节并保留构造数组。GCC/newlib 运行时替换不是 ARMCC、ABI 或 Microlib 等价，仍须自行审查向量表、RAM 假设和实际运行行为。显式多 RAM 分区见下一节；任意额外初始化/清零节仍需独立 startup 表契约，不在本切片范围。
 
+### ARMCC 常用语法迁移（当前源码/候选切片）
+
+本节规则属于当前源码/候选行为，不是通用 ARMCC 转译器，也不证明固件行为等价。全部变换只作用于已包含的 C 源文件（C++ 保留旧有的纯数字绝对地址形式，不新增函数/对齐规则）；注释、字符串、字符字面量、预处理体、BOM 与 CRLF/LF 均保持原字节，未知或不确定形式一律保留 blocker。
+
+| 规则 ID | 触发（只接受精确形式） | 结果与限制 |
+| --- | --- | --- |
+| `ARMCC_NAKED_ASM_FUNCTION` | `__asm void name(void)` 或 `()`，函数体恰为 `WFI`/`CPSID I`/`CPSIE I` 加显式 `BX LR`/`BX R14`；或 `__asm void name(<32 位标量>)`，函数体恰为 `MSR MSP, R0` 加显式 `BX LR`/`BX R14` | 改写为 `__attribute__((naked))` + 单条 GNU basic asm 指令串，不生成普通 C `__set_MSP` 包装，不加栈操作；32 位标量仅接受 `uint32_t`、`u32`、`unsigned int`、`unsigned long`。缺少 `BX`、额外指令、未知/多参数/指针原型、原型内注释一律 blocker。 |
+| `ARMCC_ALIGN_ATTRIBUTE` | 单个未初始化普通对象声明上的 `__align(n)`（前缀或后缀），`n` 为正 2 的幂且不超过 4096，可来自目标 define 或受支持的宏 | 改为 `__attribute__((aligned(n)))`；非法/未解析边界、`extern`/`typedef`、多声明符、零长数组、与未知属性组合一律 blocker，绝不把未识别 `__align` 带入 GNU 源。 |
+| `ARMCC_ABSOLUTE_PLACEMENT` | 单个未初始化标量或固定大小数组、前缀或后缀 `__at(EXPR)`/`__attribute__((at(EXPR)))`，并可与受支持的 `__align` 组合 | `EXPR` 由禁用 `eval` 的有界求值器解析：十进制/十六进制整数与标准后缀、括号、标识符和受限运算符；结果必须为非负 uint32。浮点、八进制样式、`sizeof`、强转、函数宏、未定义/条件/冲突/`#undef` 宏、除零、移位越界、溢出、指针/初始化器/多声明符/函数/位域/混合属性均为 blocker；同一文件任一不支持放置会取消该文件全部放置改写。地址落在所有已声明内存区域之外时报告 `MIGRATION_FIXED_SECTION_OUTSIDE_MEMORY`（`needs-user-input`），绝不臆造外部 SRAM。 |
+| `ARMCC_NO_SEMIHOSTING_PRAGMA` | 精确独立 `#pragma import(__use_no_semihosting)`，可带保留的尾随注释，不允许续行或额外 token | 删除该指令本体（保留尾随注释与 CRLF/LF），并在清单提议中显式加入 `build.newlibSpecs=["nosys.specs"]`；受管 CMake 链接仅额外输出一次 `--specs=nosys.specs`，不隐式加入 `nano.specs`，原生 linker 默认不变。其它 `import`/pragma 仍为 blocker；不添加 I/O stub，也不宣称运行时 I/O 等价。 |
+
+词法边界遵循 C 翻译阶段 2：以反斜杠续行的 `//` 注释拥有其续行，续行中的伪 `#define`/`#include`/`__at`/`__asm` 不会被当作代码或宏证据；嵌套引号包含路径逐级解析，搜索基路径从工程根起的每一级父目录都会检查重解析点，任一级重定向都 fail closed。符号求值只读取显式 target define 与源文件目录/合并 include 路径内可解析的引号包含头文件（支持有界包含链、嵌套相对路径和结构完整的普通 include guard）。被使用的宏若来自条件分支、被重复定义、被 `#undef`、是函数式宏，或包含链中有缺失的引号头文件，都返回保守的不可用证据而不是猜值；未解析被当作未定义/不可用报告。所有实际使用的头文件字节（包括未列入工程的忽略头文件）会作为计划输入绑定摘要，头文件变化或新出现的遮蔽解析会使 apply 的输入复核/重规划失败。
+
+审查路径：preflight 的 `analysis.sourceChanges` 给出每个**计划提议**（尚未写入）的 `path`、精确 `ruleIds` 与 `beforeSha256`/`afterSha256`（仅用于区分已支持变换与 blocker，不授予写权限）；PLAN 仍返回完整 `data.patches[].unified_diff`，`data.blockers` 非空时不得 apply。apply 后按常规 configure 审查：确认 `build.newlibSpecs` 与受管 `CMakeLists.txt` 的 `--specs=nosys.specs` 仅出现一次、固定地址节按审查地址进入 linker 脚本。离线 GCC/objdump/ELF 证据只说明语法与镜像层面符合切片契约，不证明与 ARMCC 构建或真实板卡行为等价。
+
 ### 显式多 RAM 内存布局（当前源码/候选切片）
 
 托管生成的 `.data`/`.bss`/`.heap`/`.stack` 可以显式分配到不同 RAM 区域。参数属于 **v1.3.0 候选的未发布行为**：已发布 v1.2.0 runtime 不接受它们，使用前必须检查所连 MCP 服务器的真实工具与 input schema（`memoryLayout`/`--memory-layout`）。
@@ -220,6 +235,7 @@ stm32_flash_imported(probeId="<user-selected probe>", importId=apply.data.import
 | --- | --- |
 | `build.presets` | configure 要求恰好 `["arm-debug", "arm-release"]`，顺序不变。 |
 | `build.elf` | configure 要求 `build/arm-debug/<name>.elf`，`<name>` 只是一层文件名。 |
+| `build.newlibSpecs` | 可选、有界：当前仅允许 `["nosys.specs"]`（无重复）；缺失时保持历史字节与原生 linker 默认。受管 linker 额外输出一次 `--specs=nosys.specs`，不隐式加入 `nano.specs`，也不是通用 linker 自定义入口。 |
 | `generation.managedManifest` | configure 使用 `.stm32-toolkit/generated-files.json`。已有 managed record 仍按 hash/用户改动保护。 |
 | `build.sources`、`generation.nativeLinkerScript`、`debug.svd` | 路径须在工程根内且安全；SVD 文件应存于工程根，选择其准确设备名。 |
 | `debug.readableRegions` | 只配置经核对的可信范围；选择 SVD 时必须覆盖所选 SVD 中每个解析出的寄存器的完整地址宽度。不要为消除报错而信任所有地址。 |

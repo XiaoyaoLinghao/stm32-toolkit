@@ -243,7 +243,7 @@ def test_implicit_single_ram_keeps_legacy_manifest_bytes_and_identity(tmp_path):
     }
 
 
-def test_macro_absolute_placement_remains_a_blocker_with_explicit_layout(tmp_path):
+def test_macro_absolute_placement_resolves_from_a_source_define(tmp_path):
     main = (
         "#define BASE_ADDRESS 0x20000000\n"
         "__attribute__((at(BASE_ADDRESS + 0x100))) volatile unsigned int fixed_value;\n"
@@ -258,7 +258,12 @@ def test_macro_absolute_placement_remains_a_blocker_with_explicit_layout(tmp_pat
         memory_layout=ALL_MAIN,
     )
     codes = {blocker.code for blocker in plan.blockers}
-    assert "ARMCC_ABSOLUTE_PLACEMENT_UNSUPPORTED" in codes
-    # An explicit region mapping is never a translator for an absolute
-    # address expression.
-    assert plan.fixed_sections == ()
+    assert "ARMCC_ABSOLUTE_PLACEMENT_UNSUPPORTED" not in codes
+    # The bounded evaluator resolves the in-file object-like define; the
+    # fixed address is still constrained by the declared memory regions.
+    assert [section.address for section in plan.fixed_sections] == [0x20000100]
+    patch = next(p for p in plan.patches if p.path == "Main/main.c")
+    assert (
+        b'__attribute__((section(".stm32tk.abs.20000100"), used)) '
+        b"volatile unsigned int fixed_value;" in patch.after_bytes
+    )

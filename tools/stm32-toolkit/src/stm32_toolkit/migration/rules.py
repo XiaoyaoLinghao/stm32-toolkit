@@ -15,6 +15,11 @@ import hashlib
 import re
 from dataclasses import dataclass
 
+from stm32_toolkit.migration.constant_context import (
+    MAX_UINT32,
+    ConstantResolutionError,
+    evaluate_integer,
+)
 from stm32_toolkit.migration.model import (
     FixedSectionRequirement,
     IgnoredObservation,
@@ -25,24 +30,50 @@ from stm32_toolkit.migration.model import (
 SCAN_FILE_LIMIT = 8 * 1024 * 1024
 SCAN_TOTAL_LIMIT = 64 * 1024 * 1024
 MAX_EVIDENCE_CODEPOINTS = 200
+MAX_ALIGNMENT = 4096
 
 _SUPPORTED_LANGUAGES = ("c", "cxx")
 _HWS = " \t"
 _NEWLINE_SKIP = " \t\r\n"
 
-_ADDRESS_RE = re.compile(r"^(0[xX][0-9a-fA-F]+|\d+)$")
-# <type-and-qualifiers> <identifier>[<decimal-count>]? ; with only horizontal
-# whitespace and an optional trailing comment after the semicolon.
-_DECLARATION_RE = re.compile(
+#: ``<type-and-qualifiers> <identifier>[<bounded expression>]`` with no
+#: pointer, initializer, function declarator, bit-field, or extra declarator.
+_OBJECT_BODY_RE = re.compile(
     r"^[ \t]*((?:[A-Za-z_][A-Za-z0-9_]*[ \t]+)+)"
     r"([A-Za-z_][A-Za-z0-9_]*)[ \t]*"
-    r"(?:\[[ \t]*([0-9]+)[ \t]*\])?[ \t]*;[ \t]*"
-    r"(?:(?://[^\r\n]*)|(?:/\*.*?\*/)[ \t]*)*$"
-)
-_AT_ATTRIBUTE_RE = re.compile(
-    r"^[ \t]*\([ \t]*at[ \t]*\([ \t]*([0-9a-fA-FxX]+)[ \t]*\)[ \t]*\)[ \t]*$"
+    r"(?:\[[ \t]*([^\[\]\r\n]+)[ \t]*\])?[ \t]*$"
 )
 _PRAGMA_RE = re.compile(r"#\s*pragma\s+([A-Za-z_][A-Za-z0-9_]*)")
+#: The single supported ARMCC pragma: exact standalone form, no continuation,
+#: optional preserved trailing comment, no extra tokens.
+_NO_SEMIHOSTING_CORE_RE = re.compile(
+    r"#[ \t]*pragma[ \t]+import[ \t]*\([ \t]*__use_no_semihosting[ \t]*\)"
+)
+_NO_SEMIHOSTING_RE = re.compile(
+    r"#[ \t]*pragma[ \t]+import[ \t]*\([ \t]*__use_no_semihosting[ \t]*\)"
+    r"[ \t]*(?:(?://[^\r\n]*)|(?:/\*.*?\*/[ \t]*))*"
+)
+_NO_SEMIHOSTING_SPEC = "nosys.specs"
+
+#: Storage/declaration forms that never describe a placed or aligned object.
+_FORBIDDEN_DECLARATION_WORDS = frozenset({"extern", "typedef", "register", "auto"})
+#: Known 32-bit scalar prototypes for the MSP setter (ARM AAPCS r0).  Any
+#: other spelling (float, double, a struct/pointer typedef, unknown alias)
+#: stays an explicit blocker instead of an assumed width.
+_MSP_PARAMETER_RE = re.compile(
+    r"[ \t]*(uint32_t|u32|unsigned[ \t]+int|unsigned[ \t]+long)"
+    r"[ \t]+([A-Za-z_][A-Za-z0-9_]*)[ \t]*"
+)
+
+
+def pragma_is_supported(evidence: str) -> bool:
+    """Whether inspection evidence is the one supported no-semihosting pragma.
+
+    The planner uses this to reconcile the inspection's unconditional
+    ``ARMCC_UNSUPPORTED_PRAGMA`` finding with the exact directive the
+    token-aware rule rewrites; every other import/pragma keeps its blocker.
+    """
+    return _NO_SEMIHOSTING_RE.fullmatch(evidence.strip()) is not None
 
 
 @dataclass(frozen=True)
@@ -57,6 +88,11 @@ class SourceScan:
     fixed_sections: tuple[FixedSectionRequirement, ...]
     blockers: tuple[MigrationBlocker, ...]
     ignored: tuple[IgnoredObservation, ...]
+    #: Exact bytes of quoted-include dependencies used for symbolic values:
+    #: ``(portable path, sha256, size)``.  Empty when no rule needed a macro.
+    dependencies: tuple[tuple[str, str, int], ...] = ()
+    #: Explicit linker specs requested by a rewritten directive.
+    link_specs: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -99,11 +135,12 @@ def _line_text(text: str, position: int) -> str:
 class _Scanner:
     """Single-pass lexical scanner producing rewrites, blockers, and placements."""
 
-    def __init__(self, text: str, path: str, language: str) -> None:
+    def __init__(self, text: str, path: str, language: str, symbols=None) -> None:
         self.text = text
         self.n = len(text)
         self.path = path
         self.language = language
+        self.symbols = symbols
         self.i = 0
         self.line = 1
         self.column = 1
@@ -111,6 +148,7 @@ class _Scanner:
         self.blockers: list[MigrationBlocker] = []
         self.ignored: list[IgnoredObservation] = []
         self.placements: list[dict] = []  # raw candidates
+        self.link_specs: list[str] = []
 
     # -- position bookkeeping -------------------------------------------------
 
@@ -138,19 +176,11 @@ class _Scanner:
         return self.text[index] if index < self.n else ""
 
     def _balanced_end(self, open_index: int) -> int:
-        """Index just past the balanced ``(`` group starting at ``open_index``."""
-        depth = 0
-        index = open_index
-        while index < self.n:
-            char = self.text[index]
-            if char == "(":
-                depth += 1
-            elif char == ")":
-                depth -= 1
-                if depth == 0:
-                    return index + 1
-            index += 1
-        return -1
+        """Index just past the balanced ``(`` group, ignoring comments/strings."""
+        return _balanced_lexical(self.text, open_index, self.n, "(", ")")
+
+    def _balanced_braces(self, open_index: int) -> int:
+        return _balanced_lexical(self.text, open_index, self.n, "{", "}")
 
     def _blocker(self, code: str, position: int, message: str) -> None:
         self.blockers.append(
@@ -204,8 +234,25 @@ class _Scanner:
 
     def _skip_comment(self) -> None:
         if self.text[self.i + 1] == "/":
-            end = self.text.find("\n", self.i + 2)
-            self._advance(self.n - self.i if end == -1 else end - self.i)
+            # A backslash-spliced // comment owns every continuation line;
+            # otherwise a fake #define/__at on the next line would be treated
+            # as code.
+            end = self.i + 2
+            while True:
+                newline = self.text.find("\n", end)
+                if newline == -1:
+                    end = self.n
+                    break
+                if self.text[newline - 1] == "\\" or (
+                    newline > 1
+                    and self.text[newline - 1] == "\r"
+                    and self.text[newline - 2] == "\\"
+                ):
+                    end = newline + 1
+                    continue
+                end = newline
+                break
+            self._advance(end - self.i)
         else:
             end = self.text.find("*/", self.i + 2)
             self._advance(self.n - self.i if end == -1 else end + 2 - self.i)
@@ -250,15 +297,43 @@ class _Scanner:
         line_end = self.text.find("\n", self.i)
         if line_end == -1:
             line_end = self.n
+        directive_end = line_end
+        if line_end > self.i and self.text[line_end - 1] == "\r":
+            directive_end = line_end - 1
         match = _PRAGMA_RE.match(self.text, self.i, line_end)
         if match is not None:
             token = match.group(1)
             rest = self.text[match.end() : line_end].lstrip(" \t")
             rest_token = rest.split(None, 1)[0] if rest else ""
-            if (token == "arm" and rest_token == "section") or token.startswith(
-                "import"
-            ) or token.startswith("O"):
-                self._blocker("ARMCC_PRAGMA_UNSUPPORTED", position, "unsupported ARMCC pragma")
+            first_line = self.text[self.i : directive_end]
+            continued = first_line.rstrip().endswith("\\")
+            if token.startswith("import"):
+                if (
+                    not continued
+                    and _NO_SEMIHOSTING_RE.fullmatch(first_line) is not None
+                ):
+                    # Remove exactly the directive span: a preserved trailing
+                    # comment, the CR of a CRLF pair, and the newline all stay,
+                    # so diagnostics keep their original line and bytes.
+                    core = _NO_SEMIHOSTING_CORE_RE.match(
+                        self.text, self.i, directive_end
+                    )
+                    assert core is not None
+                    self.rewrites.append(
+                        (self.i, core.end(), "", "ARMCC_NO_SEMIHOSTING_PRAGMA")
+                    )
+                    if _NO_SEMIHOSTING_SPEC not in self.link_specs:
+                        self.link_specs.append(_NO_SEMIHOSTING_SPEC)
+                else:
+                    self._blocker(
+                        "ARMCC_PRAGMA_UNSUPPORTED",
+                        position,
+                        "unsupported ARMCC pragma",
+                    )
+            elif (token == "arm" and rest_token == "section") or token.startswith("O"):
+                self._blocker(
+                    "ARMCC_PRAGMA_UNSUPPORTED", position, "unsupported ARMCC pragma"
+                )
         # Skip the whole directive including line continuations.
         index = self.i
         while index < self.n:
@@ -291,6 +366,8 @@ class _Scanner:
             self._classify_asm(start)
         elif token == "__at":
             self._maybe_at_placement(start)
+        elif token == "__align":
+            self._classify_align(start)
         elif token == "__attribute__":
             self._classify_attribute(start)
         elif token == "R" and self.language == "cxx" and self.i < self.n and self.text[self.i] == '"':
@@ -302,6 +379,8 @@ class _Scanner:
             index += 1
         if index < self.n and self.text[index] == "(":
             self.rewrites.append((start, self.i, replacement, rule))
+
+    # -- inline/naked assembly ------------------------------------------------
 
     def _classify_asm(self, start: int) -> None:
         next_char = self._peek_non_ws()
@@ -324,9 +403,128 @@ class _Scanner:
                 "inline assembly statement expression",
             )
             return
-        self._blocker(
-            "ARMCC_INLINE_ASSEMBLY_UNSUPPORTED", start, "ARMCC __asm function declaration or body"
+        prefix = self.text[self.text.rfind("\n", 0, start) + 1 : start]
+        if self.language != "c" or prefix.strip(" \t"):
+            # Only a plain file-scope ``__asm void ...`` definition is a
+            # supported wrapper; storage classes or same-line prefixes stay
+            # explicit blockers rather than being silently dropped.
+            self._blocker(
+                "ARMCC_INLINE_ASSEMBLY_UNSUPPORTED",
+                start,
+                "ARMCC __asm function declaration or body",
+            )
+            return
+        parsed = self._parse_naked_function(self.i)
+        if parsed is None:
+            self._blocker(
+                "ARMCC_INLINE_ASSEMBLY_UNSUPPORTED",
+                start,
+                "ARMCC __asm function declaration or body",
+            )
+            return
+        end, replacement = parsed
+        self.rewrites.append((start, end, replacement, "ARMCC_NAKED_ASM_FUNCTION"))
+        self._advance(end - self.i)
+
+    def _skip_ws(self, index: int) -> int:
+        while index < self.n and self.text[index] in _NEWLINE_SKIP:
+            index += 1
+        return index
+
+    def _read_identifier(self, index: int) -> tuple[str, int] | None:
+        if index >= self.n or not (self.text[index].isalpha() or self.text[index] == "_"):
+            return None
+        cursor = index + 1
+        while cursor < self.n and (
+            self.text[cursor].isalnum() or self.text[cursor] == "_"
+        ):
+            cursor += 1
+        return self.text[index:cursor], cursor
+
+    def _parse_naked_function(self, index: int) -> tuple[int, str] | None:
+        """Parse one exact supported ``__asm void`` wrapper, else ``None``.
+
+        Only ``void name(void)``/``void name()`` with ``WFI``/``CPSID I``/
+        ``CPSIE I`` plus an explicit ``BX LR``/``BX R14``, and
+        ``void name(<known 32-bit scalar>)`` with ``MSR MSP, R0`` plus the same
+        explicit return, are supported.  Comments between prototype tokens are
+        ambiguous and rejected; body comments are preserved verbatim.
+        """
+        cursor = self._skip_ws(index)
+        word = self._read_identifier(cursor)
+        if word is None or word[0] != "void":
+            return None
+        cursor = self._skip_ws(word[1])
+        name = self._read_identifier(cursor)
+        if name is None:
+            return None
+        function_name, cursor = name
+        cursor = self._skip_ws(cursor)
+        if cursor >= self.n or self.text[cursor] != "(":
+            return None
+        params_end = self._balanced_end(cursor)
+        if params_end == -1:
+            return None
+        params = self.text[cursor + 1 : params_end - 1]
+        if "\n" in params or "\r" in params:
+            return None
+        stripped = params.strip()
+        if stripped in ("", "void"):
+            needs_parameter = False
+        elif _MSP_PARAMETER_RE.fullmatch(params) is not None:
+            needs_parameter = True
+        else:
+            return None
+        cursor = self._skip_ws(params_end)
+        if cursor >= self.n or self.text[cursor] != "{":
+            return None
+        body_end = self._balanced_braces(cursor)
+        if body_end == -1:
+            return None
+        body = self.text[cursor + 1 : body_end - 1]
+        parsed = _naked_instructions(body, needs_parameter)
+        if parsed is None:
+            return None
+        instructions, comments = parsed
+        if not self._line_tail_is_trivia(body_end):
+            return None
+        newline = (
+            "\r\n"
+            if "\r\n" in self.text[index:body_end]
+            or self.text[body_end : body_end + 2] == "\r\n"
+            else "\n"
         )
+        lines = [
+            f"__attribute__((naked)) void {function_name}({params.strip()})",
+            "{",
+            f'    __asm volatile ("{instructions}");',
+        ]
+        for comment in comments:
+            for line in comment.splitlines() or [""]:
+                lines.append("    " + line.rstrip("\r"))
+        lines.append("}")
+        return body_end, newline.join(lines)
+
+    def _line_tail_is_trivia(self, index: int) -> bool:
+        """Whether only whitespace/comments remain on the closing-brace line."""
+        while index < self.n:
+            char = self.text[index]
+            if char in " \t\r":
+                index += 1
+            elif char == "\n":
+                return True
+            elif char == "/" and self.text[index + 1 : index + 2] == "/":
+                return True
+            elif char == "/" and self.text[index + 1 : index + 2] == "*":
+                end = self.text.find("*/", index + 2)
+                if end == -1:
+                    return False
+                index = end + 2
+            else:
+                return False
+        return True
+
+    # -- absolute placement and alignment -------------------------------------
 
     def _maybe_at_placement(self, start: int) -> None:
         index = self.i
@@ -337,12 +535,11 @@ class _Scanner:
         end = self._balanced_end(index)
         if end == -1:
             return
-        raw = self.text[index + 1 : end - 1].strip()
         self.placements.append(
             {
                 "start": start,
                 "end": end,
-                "raw_address": raw,
+                "expr": self.text[index + 1 : end - 1].strip(),
                 "position": start,
                 "kind": "at",
             }
@@ -358,20 +555,84 @@ class _Scanner:
         if end == -1:
             return
         content = self.text[index + 1 : end - 1]
-        if "at(" not in content:
+        if re.search(r"(?<![A-Za-z0-9_])at[ \t]*\(", content) is None:
             if "section(" in content:
                 self._ignored_obs("ARMCC_GCC_SECTION_ATTRIBUTE", start)
             return
-        match = _AT_ATTRIBUTE_RE.match(content)
+        expression = _extract_at_expression(content)
         self.placements.append(
             {
                 "start": start,
                 "end": end,
-                "raw_address": match.group(1) if match is not None else None,
+                "expr": expression,
                 "position": start,
                 "kind": "attribute",
             }
         )
+
+    def _classify_align(self, start: int) -> None:
+        if self.language != "c":
+            self._align_blocker(start, "ARMCC __align is supported only in C sources")
+            return
+        index = self.i
+        while index < self.n and self.text[index] in _HWS:
+            index += 1
+        if index >= self.n or self.text[index] != "(":
+            self._align_blocker(start, "uncertain __align grammar")
+            return
+        end = self._balanced_end(index)
+        if end == -1:
+            self._align_blocker(start, "uncertain __align grammar")
+            return
+        expression = self.text[index + 1 : end - 1].strip()
+        if "\n" in expression or "\r" in expression:
+            self._align_blocker(start, "uncertain __align grammar")
+            return
+        value, error = _evaluate(self.symbols, expression)
+        if (
+            error is not None
+            or value is None
+            or value < 1
+            or value > MAX_ALIGNMENT
+            or value & (value - 1)
+        ):
+            self._align_blocker(start, "unsupported or unresolved __align bound")
+            return
+        line_start = self.text.rfind("\n", 0, start) + 1
+        line_end = self.text.find("\n", start)
+        if line_end == -1:
+            line_end = self.n
+        spans = _line_attribute_spans(self.text, line_start, line_end)
+        aligns = [span for span in spans if span[0] == "__align"]
+        ats = [span for span in spans if span[0] == "__at" or (
+            span[0] == "__attribute__"
+            and _extract_at_expression(
+                self.text[span[1] + len("__attribute__") : span[2]]
+            )
+            is not None
+        )]
+        if len(aligns) != 1 or len(ats) > 1:
+            self._align_blocker(start, "conflicting alignment placement attributes")
+            return
+        view = _blank_spans(
+            self.text,
+            line_start,
+            line_end,
+            [s[1:] for s in spans if s[0] == "__align" or s in ats],
+        )
+        if "__attribute__" in view or "__at" in view or "__align" in view:
+            self._align_blocker(start, "conflicting or unknown attribute combination")
+            return
+        declaration = _parse_declaration(view, self.symbols)
+        if declaration is None:
+            self._align_blocker(start, "unsupported __align declaration grammar")
+            return
+        self.rewrites.append(
+            (start, end, f"__attribute__((aligned({value})))", "ARMCC_ALIGN_ATTRIBUTE")
+        )
+
+    def _align_blocker(self, position: int, message: str) -> None:
+        self._blocker("ARMCC_ALIGN_UNSUPPORTED", position, message)
 
 
 # ---------------------------------------------------------------------------
@@ -379,28 +640,326 @@ class _Scanner:
 # ---------------------------------------------------------------------------
 
 
-def _parse_placement(candidate: dict, text: str) -> dict:
+@dataclass(frozen=True)
+class _Declaration:
+    symbol: str
+    array_expression: str | None
+
+
+def _undefined_lookup(name: str) -> int:
+    raise ConstantResolutionError("undefined", "no symbol context")
+
+
+def _evaluate(symbols, expression: str) -> tuple[int | None, str | None]:
+    """Evaluate one bounded expression; ``symbols`` may be absent (literals only)."""
+    if symbols is not None:
+        return symbols.evaluate(expression)
+    try:
+        return evaluate_integer(expression, _undefined_lookup), None
+    except ConstantResolutionError as error:
+        return None, error.code
+
+
+def _strip_declaration_comment(text: str) -> str:
+    text = text.rstrip()
+    while text.endswith("*/"):
+        start = text.rfind("/*")
+        if start == -1:
+            return text
+        text = text[:start].rstrip()
+    marker = text.find("//")
+    if marker != -1:
+        text = text[:marker].rstrip()
+    return text
+
+
+_DECIMAL_LITERAL_RE = re.compile(r"^[0-9]+$")
+_LITERAL_ADDRESS_RE = re.compile(r"^(?:0[xX][0-9a-fA-F]+|[0-9]+)$")
+
+
+def _parse_declaration(
+    text: str, symbols, *, literal_bounds: bool = False
+) -> _Declaration | None:
+    """Parse a plain uninitialized object declaration; anything else is ``None``.
+
+    Storage classes that never define the placed/aligned object (``extern``,
+    ``typedef``, ...), zero-length arrays, pointers, initializers, functions,
+    bit-fields, and multiple declarators are rejected.
+    """
+    cleaned = _strip_declaration_comment(text)
+    if not cleaned.endswith(";"):
+        return None
+    cleaned = cleaned[:-1]
+    match = _OBJECT_BODY_RE.match(cleaned)
+    if match is None:
+        return None
+    words = match.group(1).split()
+    if any(word in _FORBIDDEN_DECLARATION_WORDS for word in words):
+        return None
+    array_expression = match.group(3)
+    if array_expression is not None:
+        if literal_bounds:
+            if _DECIMAL_LITERAL_RE.fullmatch(array_expression.strip()) is None:
+                return None
+        value, error = _evaluate(symbols, array_expression)
+        if error is not None or value is None or value < 1 or value > MAX_UINT32:
+            return None
+    return _Declaration(match.group(2), array_expression)
+
+
+def _extract_at_expression(content: str) -> str | None:
+    """Return the expression of an exact ``((at(EXPR)))`` attribute body.
+
+    ``content`` is the inside of the attribute's outer parentheses, so a
+    canonical ``__attribute__((at(EXPR)))`` yields ``"(at(EXPR))"``.  Exactly
+    one outer group and one ``at`` attribute are accepted; mixed attributes,
+    extra tokens, and nested junk are never accepted.
+    """
+    text = content.strip()
+    while text.startswith("("):
+        end = _balanced_lexical(text, 0, len(text), "(", ")")
+        if end == -1 or text[end:].strip():
+            return None
+        text = text[1 : end - 1].strip()
+    if not text.startswith("at"):
+        return None
+    index = 2
+    while index < len(text) and text[index] in _HWS:
+        index += 1
+    if index >= len(text) or text[index] != "(":
+        return None
+    end = _balanced_lexical(text, index, len(text), "(", ")")
+    if end == -1 or text[end:].strip():
+        return None
+    expression = text[index + 1 : end - 1].strip()
+    if not expression or "\n" in expression or "\r" in expression:
+        return None
+    return expression
+
+
+def _balanced_lexical(
+    text: str, index: int, limit: int, open_char: str, close_char: str
+) -> int:
+    """Index just past a balanced group, ignoring comments and strings."""
+    depth = 0
+    cursor = index
+    while cursor < limit:
+        char = text[cursor]
+        if char in ('"', "'"):
+            quote = char
+            cursor += 1
+            while cursor < limit:
+                if text[cursor] == "\\":
+                    cursor += 2
+                    continue
+                if text[cursor] == quote:
+                    cursor += 1
+                    break
+                cursor += 1
+            continue
+        if char == "/" and text[cursor + 1 : cursor + 2] in ("/", "*"):
+            if text[cursor + 1 : cursor + 2] == "/":
+                end = text.find("\n", cursor + 2)
+                cursor = limit if end == -1 or end > limit else end
+            else:
+                end = text.find("*/", cursor + 2)
+                cursor = limit if end == -1 or end + 2 > limit else end + 2
+            continue
+        if char == open_char:
+            depth += 1
+        elif char == close_char:
+            depth -= 1
+            if depth == 0:
+                return cursor + 1
+        cursor += 1
+    return -1
+
+
+def _line_attribute_spans(
+    text: str, line_start: int, line_end: int
+) -> list[tuple[str, int, int]]:
+    """Lexically find ``__attribute__``/``__at``/``__align`` spans on one line."""
+    spans: list[tuple[str, int, int]] = []
+    index = line_start
+    while index < line_end:
+        char = text[index]
+        if char in ('"', "'"):
+            quote = char
+            index += 1
+            while index < line_end:
+                if text[index] == "\\":
+                    index += 2
+                    continue
+                if text[index] == quote:
+                    index += 1
+                    break
+                index += 1
+            continue
+        if char == "/" and text[index + 1 : index + 2] == "/":
+            break
+        if char == "/" and text[index + 1 : index + 2] == "*":
+            end = text.find("*/", index + 2)
+            if end == -1 or end + 2 > line_end:
+                break
+            index = end + 2
+            continue
+        if char.isalpha() or char == "_":
+            cursor = index + 1
+            while cursor < line_end and (
+                text[cursor].isalnum() or text[cursor] == "_"
+            ):
+                cursor += 1
+            token = text[index:cursor]
+            if token in ("__attribute__", "__at", "__align"):
+                probe = cursor
+                while probe < line_end and text[probe] in _HWS:
+                    probe += 1
+                if probe < line_end and text[probe] == "(":
+                    close = _balanced_lexical(text, probe, line_end, "(", ")")
+                    if close != -1:
+                        spans.append((token, index, close))
+                        index = close
+                        continue
+            index = cursor
+            continue
+        index += 1
+    return spans
+
+
+def _blank_spans(
+    text: str, line_start: int, line_end: int, spans: list[tuple[int, int]]
+) -> str:
+    """Return the line text with the given spans replaced by spaces."""
+    chars = list(text[line_start:line_end])
+    for start, end in spans:
+        for position in range(max(start, line_start) - line_start, min(end, line_end) - line_start):
+            chars[position] = " "
+    return "".join(chars)
+
+
+def _naked_instructions(body: str, needs_parameter: bool) -> tuple[str, list[str]] | None:
+    """Return exact GNU basic-asm text for one supported wrapper body.
+
+    Every supported form is the explicit instruction followed by an explicit
+    ``BX LR``/``BX R14``; Toolkit never invents a return the ARMCC source did
+    not contain.  Comments are collected verbatim; anything else is a blocker.
+    """
+    tokens: list[str] = []
+    comments: list[str] = []
+    index = 0
+    length = len(body)
+    while index < length:
+        char = body[index]
+        if char in _NEWLINE_SKIP:
+            index += 1
+            continue
+        if char == "/" and body[index + 1 : index + 2] == "/":
+            end = body.find("\n", index + 2)
+            end = length if end == -1 else end
+            if end < length and (
+                body[end - 1] == "\\"
+                or (end > 1 and body[end - 1] == "\r" and body[end - 2] == "\\")
+            ):
+                # A spliced line comment owns the next physical line; the
+                # bounds of this body would be ambiguous, so never rewrite it.
+                return None
+            comments.append(body[index:end].strip())
+            index = end
+            continue
+        if char == "/" and body[index + 1 : index + 2] == "*":
+            end = body.find("*/", index + 2)
+            if end == -1:
+                return None
+            comments.append(body[index : end + 2].strip())
+            index = end + 2
+            continue
+        if char.isalnum() or char == "_":
+            cursor = index + 1
+            while cursor < length and (
+                body[cursor].isalnum() or body[cursor] == "_"
+            ):
+                cursor += 1
+            tokens.append(body[index:cursor].upper())
+            index = cursor
+            continue
+        if char == ",":
+            index += 1
+            continue
+        return None
+    upper = tokens
+    returns = (
+        ["BX", "LR"],
+        ["BX", "R14"],
+    )
+    if not needs_parameter:
+        if upper in (["WFI", *returns[0]], ["WFI", *returns[1]]):
+            return "wfi\\n\\tbx lr", comments
+        if upper in (["CPSID", "I", *returns[0]], ["CPSID", "I", *returns[1]]):
+            return "cpsid i\\n\\tbx lr", comments
+        if upper in (["CPSIE", "I", *returns[0]], ["CPSIE", "I", *returns[1]]):
+            return "cpsie i\\n\\tbx lr", comments
+        return None
+    if upper in (
+        ["MSR", "MSP", "R0", *returns[0]],
+        ["MSR", "MSP", "R0", *returns[1]],
+    ):
+        return "msr msp, r0\\n\\tbx lr", comments
+    return None
+
+
+def _parse_placement(
+    candidate: dict, text: str, symbols=None, language: str = "c"
+) -> dict:
     """Validate one candidate and attach ``valid``/``symbol``/``address``/``section``."""
-    raw = candidate["raw_address"]
-    if raw is None or _ADDRESS_RE.match(raw) is None:
+    expression = candidate["expr"]
+    if expression is None:
         return {**candidate, "valid": False, "reason": "address"}
-    address = int(raw, 16) if raw.lower().startswith("0x") else int(raw, 10)
-    if address > 0xFFFFFFFF:
+    if language != "c" and _LITERAL_ADDRESS_RE.match(expression) is None:
+        # C++ keeps only the historically reviewed numeric literal form; new
+        # symbolic forms are C-only.
         return {**candidate, "valid": False, "reason": "address"}
+    address, error = _evaluate(symbols, expression)
+    if error is not None or address is None or address > MAX_UINT32:
+        return {**candidate, "valid": False, "reason": "address"}
+    line_start = text.rfind("\n", 0, candidate["start"]) + 1
     line_end = text.find("\n", candidate["start"])
     if line_end == -1:
         line_end = len(text)
     if line_end < candidate["end"]:
         return {**candidate, "valid": False, "reason": "line"}
-    rest = text[candidate["end"] : line_end].rstrip("\r")
-    match = _DECLARATION_RE.match(rest)
-    if match is None:
+    spans = _line_attribute_spans(text, line_start, line_end)
+    at_spans = [
+        span
+        for span in spans
+        if span[0] == "__at"
+        or (
+            span[0] == "__attribute__"
+            and _extract_at_expression(
+                text[span[1] + len("__attribute__") : span[2]]
+            )
+            is not None
+        )
+    ]
+    if len(at_spans) != 1:
         return {**candidate, "valid": False, "reason": "declaration"}
-    symbol = match.group(2)
+    view = _blank_spans(
+        text,
+        line_start,
+        line_end,
+        [span[1:] for span in spans if span in at_spans]
+        + [span[1:] for span in spans if span[0] == "__align"],
+    )
+    if "__attribute__" in view or "__at" in view or "__align" in view:
+        return {**candidate, "valid": False, "reason": "declaration"}
+    declaration = _parse_declaration(
+        view, symbols, literal_bounds=language != "c"
+    )
+    if declaration is None:
+        return {**candidate, "valid": False, "reason": "declaration"}
     return {
         **candidate,
         "valid": True,
-        "symbol": symbol,
+        "symbol": declaration.symbol,
         "address": address,
         "section": f".stm32tk.abs.{address:08x}",
     }
@@ -436,6 +995,7 @@ def _scan_file(
     data: bytes,
     language: str,
     placements_enabled: bool = True,
+    symbols=None,
 ) -> _FileScan:
     """Scan one source; ``placements_enabled=False`` drops every placement rewrite.
 
@@ -461,7 +1021,8 @@ def _scan_file(
             (),
         )
 
-    scanner = _Scanner(text, path, language)
+    provider = symbols.for_source(path, text) if symbols is not None else None
+    scanner = _Scanner(text, path, language, provider)
     scanner.run()
 
     placements: list[_Placement] = []
@@ -472,7 +1033,7 @@ def _scan_file(
         candidate["path"] = path
         candidate["line"] = scanner._line_of(candidate["position"])
         candidate["column"] = scanner._column_of(candidate["position"])
-        parsed = _parse_placement(candidate, text)
+        parsed = _parse_placement(candidate, text, provider, language)
         if not parsed["valid"]:
             invalid.append(parsed)
             continue
@@ -550,11 +1111,13 @@ def _scan_file(
         tuple(sorted(fixed_sections, key=lambda s: (s.address, s.section, s.source_path, s.line, s.symbol))),
         tuple(sorted(scanner.blockers, key=lambda b: (b.path, b.line, b.column, b.code, b.rule_id))),
         tuple(sorted(scanner.ignored, key=lambda o: (o.path, o.line, o.column, o.rule_id))),
+        tuple(provider.dependencies()) if provider is not None else (),
+        tuple(scanner.link_specs),
     )
     return _FileScan(scan, tuple(placements))
 
 
-def scan_sources(entries: list[tuple[str, bytes, str]]) -> tuple[SourceScan, ...]:
+def scan_sources(entries: list[tuple[str, bytes, str]], symbols=None) -> tuple[SourceScan, ...]:
     """Scan included C/C++ sources and enforce cross-file placement uniqueness.
 
     A section address reused by declarations in different files blocks the
@@ -577,7 +1140,10 @@ def scan_sources(entries: list[tuple[str, bytes, str]]) -> tuple[SourceScan, ...
                 {"scope": "aggregate", "limitBytes": SCAN_TOTAL_LIMIT},
             )
 
-    results = [_scan_file(path, data, language) for path, data, language in entries]
+    results = [
+        _scan_file(path, data, language, symbols=symbols)
+        for path, data, language in entries
+    ]
 
     placements: list[tuple[int, str, int, int]] = []
     for index, result in enumerate(results):
@@ -602,7 +1168,9 @@ def scan_sources(entries: list[tuple[str, bytes, str]]) -> tuple[SourceScan, ...
     if offenders:
         for index in sorted(offenders):
             path, data, language = entries[index]
-            rescanned = _scan_file(path, data, language, placements_enabled=False)
+            rescanned = _scan_file(
+                path, data, language, placements_enabled=False, symbols=symbols
+            )
             results[index] = rescanned
 
     return tuple(result.scan for result in results)

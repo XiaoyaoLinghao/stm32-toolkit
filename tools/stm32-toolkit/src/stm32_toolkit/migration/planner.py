@@ -34,6 +34,7 @@ from stm32_toolkit.project_model import ProjectManifestError, first_schema_error
 
 from stm32_toolkit.migration import git_guard
 from stm32_toolkit.migration import rules
+from stm32_toolkit.migration.constant_context import SymbolSource
 from stm32_toolkit.migration.model import (
     FilePatch,
     FixedSectionRequirement,
@@ -341,6 +342,10 @@ def _finding_blockers(findings: tuple) -> list[MigrationBlocker]:
     for finding in findings:
         if finding.severity == "blocker":
             if finding.rule_id == "ARMCC_UNSUPPORTED_PRAGMA":
+                if rules.pragma_is_supported(finding.evidence):
+                    # The token-aware rule rewrites exactly this directive;
+                    # every other import/pragma keeps its blocker.
+                    continue
                 blockers.append(
                     MigrationBlocker(
                         "ARMCC_PRAGMA_UNSUPPORTED",
@@ -571,12 +576,14 @@ def _manifest_proposal(
     startup: StartupOutcome | None = None,
     memory_layout: MemoryLayout | None = None,
     include_paths: tuple[str, ...] | None = None,
+    newlib_specs: tuple[str, ...] = (),
 ) -> dict | None:
     """Deterministic Schema v3 proposal; ``None`` when framework selection is blocked.
 
     ``include_paths`` carries the reviewed target include list (target order
     plus any validated scoped include-only directories); ``None`` keeps the
-    historical inspection list.
+    historical inspection list.  ``newlib_specs`` is added only when a written
+    source directive requires it, so other proposals keep their exact bytes.
     """
     proposed_includes = (
         tuple(inspection.include_paths) if include_paths is None else include_paths
@@ -667,6 +674,8 @@ def _manifest_proposal(
         "debug": {},
         "generation": generation_payload,
     }
+    if newlib_specs:
+        payload["build"]["newlibSpecs"] = list(newlib_specs)
     normalized_fpu, normalized_float_abi, _ = _normalize_target_fpu_abi(inspection)
     if normalized_fpu is not None:
         payload["target"]["fpu"] = normalized_fpu
@@ -863,16 +872,53 @@ def analyze_keil_conversion(
         and source.language in _SCANNED_LANGUAGES
         and source.path in exact_bytes
     ]
-    scans = rules.scan_sources(scan_entries)
+    # Symbolic rule values (placements, alignment) resolve only from explicit
+    # target defines and contained quoted includes under the reviewed include
+    # search list.  The macro index is built lazily per source, so files with
+    # literal-only values never read a header.
+    symbols = SymbolSource(
+        canonical, include_analysis.include_paths, inspection.defines
+    )
+    scans = rules.scan_sources(scan_entries, symbols=symbols)
 
     fixed_sections: list[FixedSectionRequirement] = []
     ignored: list[IgnoredObservation] = []
+    link_specs: list[str] = []
+    dependencies: dict[str, tuple[str, int]] = {}
     for scan in scans:
         fixed_sections.extend(scan.fixed_sections)
         ignored.extend(scan.ignored)
         blockers.extend(scan.blockers)
+        for spec in scan.link_specs:
+            if spec not in link_specs:
+                link_specs.append(spec)
+        for path, digest, size in scan.dependencies:
+            dependencies.setdefault(path, (digest, size))
 
     memory_regions = inspection.memory_regions
+    # A fixed address outside every declared region is a memory-definition
+    # decision for the project owner.  Toolkit never invents external SRAM.
+    for section in sorted(
+        fixed_sections, key=lambda s: (s.address, s.section, s.source_path, s.line, s.symbol)
+    ):
+        if any(
+            region.origin <= section.address < region.origin + region.length
+            for region in memory_regions
+        ):
+            continue
+        blockers.append(
+            MigrationBlocker(
+                "MIGRATION_FIXED_SECTION_OUTSIDE_MEMORY",
+                "MIGRATION_FIXED_SECTION_OUTSIDE_MEMORY",
+                section.source_path,
+                section.line,
+                0,
+                f"{section.section} at 0x{section.address:08x}"[:200],
+                "fixed placement address is outside every declared memory region;"
+                " provide an explicit project-owned memory definition before"
+                " applying (Toolkit never invents an external memory region)",
+            )
+        )
     if not any("x" in region.attributes for region in memory_regions) or not any(
         "w" in region.attributes for region in memory_regions
     ):
@@ -907,6 +953,7 @@ def analyze_keil_conversion(
         startup_outcome,
         layout_option,
         include_analysis.include_paths,
+        tuple(sorted(set(link_specs))),
     )
     proposal_bytes = _canonical_manifest_bytes(proposal) if proposal is not None else None
 
@@ -919,6 +966,33 @@ def analyze_keil_conversion(
                 len(startup_outcome.destination_bytes),
             )
         )
+    # Every quoted header that supplied a symbolic value is bound byte-for-
+    # byte, including headers no project source lists.  A changed, added, or
+    # newly shadowing header therefore fails apply revalidation or the fresh
+    # replan instead of silently changing an approved placement.
+    known_inputs = {entry.path: entry for entry in inputs}
+    folded_inputs = {entry.path.casefold(): entry.path for entry in inputs}
+    for path, (digest, size) in sorted(dependencies.items()):
+        existing = known_inputs.get(path)
+        if existing is not None:
+            if existing.sha256 != digest or existing.size != size:
+                raise _raise(
+                    "MIGRATION_INSPECTION_CHANGED",
+                    "symbol dependency bytes changed",
+                    {"path": path},
+                )
+            continue
+        collision = folded_inputs.get(path.casefold())
+        if collision is not None:
+            raise _raise(
+                "MIGRATION_INPUT_INVALID",
+                "symbol dependency path collides with a recorded input",
+                {"path": path, "rule": "casefoldCollision"},
+            )
+        entry = MigrationInput(path, digest, size)
+        inputs.append(entry)
+        known_inputs[path] = entry
+        folded_inputs[path.casefold()] = path
     manifest_input: MigrationInput | None = None
     manifest_abs = canonical / _MANIFEST_NAME
     try:

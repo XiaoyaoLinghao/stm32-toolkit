@@ -99,6 +99,8 @@ class BuildSpec:
     presets: tuple[str, ...]
     elf: str | None
     link_standard_math: bool = False
+    #: Optional explicit newlib specs.  Empty keeps the historical output.
+    newlib_specs: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -893,6 +895,7 @@ def _build_model(root: Path, payload: dict, version: int) -> ProjectModel:
         presets=tuple(build_data.get("presets", ())) if version in (2, 3) else (),
         elf=build_data.get("elf"),
         link_standard_math=build_data.get("linkStandardMath", False),
+        newlib_specs=tuple(build_data.get("newlibSpecs", ())),
     )
     debug_data = payload.get("debug") or {}
     if version == 1:

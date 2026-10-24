@@ -96,6 +96,11 @@
         "linkStandardMath": {
           "type": "boolean"
         },
+        "newlibSpecs": {
+          "type": "array",
+          "items": {"enum": ["nosys.specs"]},
+          "uniqueItems": true
+        },
         "assemblySources": {
           "type": "array",
           "items": {"type": "string", "minLength": 1}

@@ -1153,7 +1153,6 @@ def test_absolute_placement_unsupported_grammar_blockers(tmp_path):
         "__at(0x20000000) int a, b;\n",  # comma / two declarators
         "__at(0x20000000) int f(void);\n",  # function
         "__at(SOME_MACRO) int x;\n",  # macro-expanded address
-        "__at(0x20000000) int arr[0x40];\n",  # hex array bound
         "__at(0x100000000) int x;\n",  # out of range
         "__at(-1) int x;\n",  # negative
         "__at(0x20000000) int x; trailing_code();\n",  # trailing code
@@ -1466,8 +1465,9 @@ def test_pragma_blockers(tmp_path):
     inspection = fixture_inspection(repo)
     plan = plan_keil_conversion(repo, inspection)
     pragma = [b for b in plan.blockers if b.code == "ARMCC_PRAGMA_UNSUPPORTED"]
-    # arm section, import, O3 each produce one blocker; pack(1) is not flagged.
-    assert len(pragma) == 3
+    # arm section and O3 each produce one blocker; pack(1) is not flagged and
+    # the exact standalone no-semihosting import is now a supported rewrite.
+    assert len(pragma) == 2
 
 
 def test_linker_configuration_blockers(tmp_path):
