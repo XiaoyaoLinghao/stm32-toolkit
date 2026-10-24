@@ -4,6 +4,8 @@
 
 ## 1. 当前断点与证据
 
+2026-10-24 KEIL-SCOPED-INCLUDES 离线迁移切片已 `ACCEPTED_WITH_FIXES`，见[独立验收记录](../codex/returns/KEIL-SCOPED-INCLUDES/review.md)。Accepted base `e9b242ec8f97f30135693ca5b0f3f9d8465a7615`，CodeHead `22bbc94b2343327e6d4ca71764b495806d1d8f0a`。Claude Code CLI 编码及测试，主代理在精确干净工作树完整审核并复核。最终作者与独立各30项新功能通过；320项相关回归和51项独立集成/布局检查按未变字节复用，保留两轮测试代码失败记录，不声称最终全量重跑。安全 group/file include-only 合并、相对路径/冲突/有界清单、PLAN 身份与 APPLY 重检、报告及 VS Code/Skill 指引已接受；defines/misc/汇编等未知编译语义继续阻断。原工程、已安装runtime、全局技能、冻结发行资产及硬件未操作。此补丁仍仅源码，不授予安装、发行或硬件资格；硬件入口合同仍以下方 EXTERNAL-FIRMWARE 等记录为准。
+
 2026-10-24 AI-CALL-GUIDANCE 离线调用引导切片已 `ACCEPTED_WITH_FIXES`，依据[独立验收记录](../codex/returns/AI-CALL-GUIDANCE/review.md)。Accepted base `c6cf5cda7a25e4aa0b1335558ab0ffe16fbb32be`，CodeHead `e02365f4ba7ec3c3bcaef3efae6d473215d6f7e6`。Claude Code CLI 编码与测试，主代理独立完整差异审核；最终80项定向通过，189项未变相关回归按记录复用，独立103项及最终33项通过，五个受影响 Skill 格式校验通过。仅完善实际 MCP 版本/绑定证据、完整诊断、managed/imported 分流及 Skill/VS Code 指引，保留原有准入和硬件合同。本补丁尚未进入冻结的1.3.0发行文件或已安装runtime，重启VS Code不等于安装补丁；原工程与硬件未操作。下一次硬件验收仍须按下方执行卡和既有EXTERNAL-FIRMWARE合同核对，不因本次离线接受获得授权。
 
 2026-10-24 EXTERNAL-FIRMWARE 离线软件切片已 `ACCEPTED_WITH_FIXES`，依据[规格](../superpowers/specs/2026-10-23-external-firmware-design.md)、[计划](../superpowers/plans/2026-10-23-external-firmware-plan.md)和[独立验收记录](../codex/returns/EXTERNAL-FIRMWARE/review.md)。Accepted base `6b4c13b6fa76f320503b14679c8eb7bfc712c9af`，CodeHead `4f002cd1479dc98c2dc9c48d7e75dddf896de2f2`。本地 Claude Code CLI 负责实现与测试，主代理独立审查；52项新功能独立通过，最终191项相关回归通过，另924项未变回归按验收记录复用。此断点仅接受离线软件；v1.3.0 本地构建按[交付计划](../superpowers/plans/2026-10-24-v130-local-release-plan.md)留证，不代表全量发行资格。原工程、已安装 runtime 和硬件均未操作；v1.2.0 例外不沿用。后续实机前仍须填写下节执行卡并获得对应授权。

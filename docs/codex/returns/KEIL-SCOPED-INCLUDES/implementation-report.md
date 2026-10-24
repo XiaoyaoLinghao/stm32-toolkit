@@ -7,8 +7,8 @@
 - Branch: `codex/keil-scoped-includes`
 - Accepted base: `e9b242ec8f97f30135693ca5b0f3f9d8465a7615`
 - CodeHead before this report commit: `22bbc94b2343327e6d4ca71764b495806d1d8f0a`
-- Governing specification: [2026-10-24-keil-scoped-includes-design.md](../../superpowers/specs/2026-10-24-keil-scoped-includes-design.md)
-- Approved plan: [2026-10-24-keil-scoped-includes-plan.md](../../superpowers/plans/2026-10-24-keil-scoped-includes-plan.md)
+- Governing specification: [2026-10-24-keil-scoped-includes-design.md](../../../superpowers/specs/2026-10-24-keil-scoped-includes-design.md)
+- Approved plan: [2026-10-24-keil-scoped-includes-plan.md](../../../superpowers/plans/2026-10-24-keil-scoped-includes-plan.md)
 - Independent primary review: `docs/codex/returns/KEIL-SCOPED-INCLUDES/review.md` (written by the primary owner; not part of this report commit)
 
 Ownership follows the repository contract. The primary conversation agent owns the specification, plan, task boundaries, independent complete-diff review, and acceptance. Implementation and implementation tests were authored through the local Claude Code CLI on the existing `deepseek-v4.1-flash[1m]` route; that route authored the product and test bytes and ran the native verification summarized below. This report does not approve its own diff and records no primary verdict.

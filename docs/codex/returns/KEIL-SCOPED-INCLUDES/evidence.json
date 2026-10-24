@@ -1,0 +1,113 @@
+{
+  "module": "KEIL-SCOPED-INCLUDES",
+  "acceptedBase": "e9b242ec8f97f30135693ca5b0f3f9d8465a7615",
+  "codeHead": "22bbc94b2343327e6d4ca71764b495806d1d8f0a",
+  "reviewWorktree": "C:\\Users\\zhy76\\.codex\\worktrees\\build-snapshot-final\\STM32-Toolkit",
+  "diffSha256": "88a55c51717b54e3ec937ba3331fe230b523cabc42fd60a386862aa789740b38",
+  "runs": [
+    {
+      "owner": "Claude CLI",
+      "source": "5a8c652152bbef8e8b61cf34739f7313ef43659d",
+      "junit": "D:\\codex-tmp\\ki24\\author-tests.xml",
+      "sha256": "16ba516a3990ca83371e90607169eeee509ddd98d20360b58d8144a0eac16a40",
+      "tests": 347,
+      "passed": 321,
+      "failures": 26,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "owner": "Claude CLI",
+      "source": "96fc36920dad0a1fa3746d46f210db3459bf805c",
+      "junit": "D:\\codex-tmp\\ki24\\final-tests.xml",
+      "sha256": "da7442c3b5b070040d8e45995d3f1498c518087b0c42d2d1d86bb7d97b7ba7d0",
+      "tests": 350,
+      "passed": 349,
+      "failures": 1,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "owner": "Claude CLI",
+      "source": "22bbc94b2343327e6d4ca71764b495806d1d8f0a",
+      "junit": "D:\\codex-tmp\\ki24\\accept-tests.xml",
+      "sha256": "707ac67837c8ee3af96e9b382b5d3039280f6dda2afbfaace12c8019d26783cb",
+      "tests": 30,
+      "passed": 30,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "owner": "Primary",
+      "source": "96fc36920dad0a1fa3746d46f210db3459bf805c",
+      "junit": "D:\\codex-tmp\\ki24\\review.xml",
+      "sha256": "eb3441422d27e272cba5b49b8d7b70bd6a5ea55f0bef7cab31e5463ca4644c6d",
+      "tests": 81,
+      "passed": 80,
+      "failures": 1,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "owner": "Primary",
+      "source": "22bbc94b2343327e6d4ca71764b495806d1d8f0a",
+      "junit": "D:\\codex-tmp\\ki24\\review-accept.xml",
+      "sha256": "7aaa4b0fdc058f6a45a12259c9fe608327fa6086b341719a4c44686f246a694e",
+      "tests": 30,
+      "passed": 30,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    }
+  ],
+  "logs": [
+    {
+      "path": "D:\\codex-tmp\\ki24\\smoke.jsonl",
+      "sha256": "89585f9651629ad35ffeb3810e71f3894cb2afd628234aa8ccc02b0815b60b8c"
+    },
+    {
+      "path": "D:\\codex-tmp\\ki24\\test-location.jsonl",
+      "sha256": "0a72d5f9da4a45f8c47a5029fa9608780175ce148646a666273d7fe96771ccba"
+    },
+    {
+      "path": "D:\\codex-tmp\\ki24\\author.jsonl",
+      "sha256": "8d581e0b526458c97fc450972a86712c35e1b8269b98b1f8855d1cebceb26fd1"
+    },
+    {
+      "path": "D:\\codex-tmp\\ki24\\fix.jsonl",
+      "sha256": "4890f910841ab4d428300e25b4f2119d65c409a04e278348b5e1147c7133d337"
+    },
+    {
+      "path": "D:\\codex-tmp\\ki24\\test-author.jsonl",
+      "sha256": "edeb0d9543cc763d597c8a6afd52db648df512fa21bcc9df85ed8d2b09bd67b1"
+    },
+    {
+      "path": "D:\\codex-tmp\\ki24\\final-fix.jsonl",
+      "sha256": "971ae76a95ce478802b2c094c1af1422c0db77bbd76f4c74de94887c3ceb57e6"
+    },
+    {
+      "path": "D:\\codex-tmp\\ki24\\test-final.jsonl",
+      "sha256": "3855ce2603d58f27ed5eb807329c9e28a8e6ef1af4a642465449d471f28f6eba"
+    },
+    {
+      "path": "D:\\codex-tmp\\ki24\\tuple-fix.jsonl",
+      "sha256": "c634d741376ca08e9537c0116e3fb179952033f35a69d4af6d848a1770972cb4"
+    },
+    {
+      "path": "D:\\codex-tmp\\ki24\\test-accept.jsonl",
+      "sha256": "df15d41fd74765cd4450a35107c8f82c5b2f1daf374f0ccf3cdfaec708eab5f8"
+    },
+    {
+      "path": "D:\\codex-tmp\\ki24\\review-execution.json",
+      "sha256": "6657e3ee7c278281d8f96282f575ce6987a42be1ed609381200f5e7ff9377b7f"
+    },
+    {
+      "path": "D:\\codex-tmp\\ki24\\review-accept-execution.json",
+      "sha256": "f55fadf456d20c5f424246f6846332773f6b10ff63f2f0e8165b2820db894ae6"
+    }
+  ],
+  "reuse": "320 unchanged regression cases from 96fc3692; final product bytes unchanged, only one test assertion changed. Independent 51 unchanged integration/layout cases reused from the 81-case run.",
+  "remoteAction": null,
+  "hardwareAction": null
+}
