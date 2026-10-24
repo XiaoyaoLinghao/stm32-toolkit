@@ -1,6 +1,6 @@
 """Public migration preflight/PLAN/APPLY behavior for explicit external RAM.
 
-The 0x20040000/0x10000 capacity is a synthetic test value, not a board fact.
+The 0x68000000/0x10000 capacity is a synthetic test value, not a board fact.
 """
 
 from __future__ import annotations
@@ -30,22 +30,29 @@ from test_memory_layout_migration import STARTUP
 from test_migration_plan import FRAMEWORK_INCLUDE, build_repo
 
 CPU = 'IROM(0x08000000,0x100000) IRAM(0x20000000,0x30000) CPUTYPE("Cortex-M4")'
-EXT = ExtraRegion("EXT_SRAM", 0x20040000, 0x10000, "rw-")
+EXT = ExtraRegion("EXT_SRAM", 0x68000000, 0x10000, "rw-")
 EXT_DICT = EXT.to_dict()
 ALL_MAIN = MemoryLayout("IROM1", "IRAM1", "IRAM1", "IRAM1", "IRAM1")
 EXT_LAYOUT = MemoryLayout("IROM1", "IRAM1", "EXT_SRAM", "EXT_SRAM", "EXT_SRAM")
 EXT_BUFFER_C = (
     "/* Synthetic external-RAM fixed buffer: no vendor code. */\n"
-    "__attribute__((at(0x20040010))) volatile unsigned int extra_buffer;\n"
+    "__attribute__((at(0x68000010))) volatile unsigned int extra_buffer;\n"
+    "volatile unsigned int initialized_value = 0x12345678u;\n"
+    "volatile unsigned int zeroed_value;\n"
     "\n"
     "void SystemInit(void) {}\n"
     "\n"
-    "int main(void) { return (int)extra_buffer; }\n"
+    "int main(void)\n"
+    "{\n"
+    "    return (int)(extra_buffer + initialized_value + zeroed_value);\n"
+    "}\n"
 )
 STARTUP_ARGS = ["--startup-strategy", "generate-cmsis-gcc", "--startup-source", STARTUP_SOURCE]
 
 
-def extra_repo(tmp_path, *, name: str = "extra-project"):
+def extra_repo(
+    tmp_path, *, name: str = "extra-project", commit: bool = True
+):
     tmp_path.mkdir(parents=True, exist_ok=True)
     return build_repo(
         tmp_path,
@@ -60,6 +67,7 @@ def extra_repo(tmp_path, *, name: str = "extra-project"):
             ),
             "includes": f"Main;{FRAMEWORK_INCLUDE}",
         },
+        commit=commit,
     )
 
 
@@ -119,8 +127,8 @@ def test_plan_and_apply_accept_a_layout_role_in_external_ram(tmp_path):
     assert report["planId"] == plan.plan_id
     assert report["fixedSections"] == [
         {
-            "section": ".stm32tk.abs.20040010",
-            "address": 0x20040010,
+            "section": ".stm32tk.abs.68000010",
+            "address": 0x68000010,
             "sourcePath": "Main/main.c",
             "line": 2,
             "symbol": "extra_buffer",
@@ -145,6 +153,44 @@ def test_preflight_exposes_extra_regions_and_retains_the_exact_request(tmp_path)
     assert "Retain extraRegions=" in guidance
     assert json.dumps([EXT_DICT], sort_keys=True, separators=(",", ":")) in guidance
     assert "omitting or changing any entry" in guidance
+
+
+def test_git_free_preflight_accepts_the_same_explicit_request(tmp_path):
+    repo = extra_repo(tmp_path / "gitfree", commit=False)
+    assert not (repo / ".git").exists()
+    data = preflight_keil_workflow(
+        repo,
+        uvprojx=UVPROJX,
+        target_name=TARGET,
+        startup_strategy="generate-cmsis-gcc",
+        startup_source=STARTUP_SOURCE,
+        memory_layout=EXT_LAYOUT,
+        extra_regions=[EXT_DICT],
+    ).to_dict()
+    assert data["ok"] is True, data
+    assert data["data"]["analysis"]["extraRegions"] == [EXT_DICT]
+    assert data["data"]["analysis"]["requiresGit"] is False
+    # The fixture itself has no repository; even if an enclosing repository
+    # were discovered, this project root cannot be its toplevel.
+    assert data["data"]["git"]["head"]["available"] is False
+    assert data["data"]["planReadiness"]["status"] == "blocked"
+
+
+def test_omitted_and_explicit_empty_extras_are_the_same_request(tmp_path):
+    repo = extra_repo(tmp_path / "empty-compat")
+    inspection = inspect_keil(repo)
+    omitted = plan_keil_conversion(repo, inspection, startup_options=STARTUP)
+    empty = plan_keil_conversion(
+        repo, inspection, startup_options=STARTUP, extra_regions=()
+    )
+    assert omitted.plan_id == empty.plan_id
+    assert omitted.to_dict() == empty.to_dict()
+    assert _manifest_payload(omitted) == _manifest_payload(empty)
+    assert preflight_keil_conversion(
+        repo, inspection, startup_options=STARTUP
+    ) == preflight_keil_conversion(
+        repo, inspection, startup_options=STARTUP, extra_regions=()
+    )
 
 
 def test_extra_ram_adds_a_candidate_and_never_places_data_implicitly(tmp_path):
@@ -225,7 +271,7 @@ def test_omitted_and_changed_extras_are_never_accepted_against_a_reviewed_plan(
         repo,
         **base,
         extra_regions=[
-            {**EXT_DICT, "origin": 0x20050000, "length": 0x8000}
+            {**EXT_DICT, "origin": 0x68010000, "length": 0x8000}
         ],
     ).to_dict()
     assert changed["ok"] is False and changed["code"] == "PLAN_CHANGED"
@@ -236,7 +282,7 @@ def test_tampered_typed_plan_is_rejected_before_any_write(tmp_path):
     repo = extra_repo(tmp_path / "tampered")
     plan = _plan(repo)
     changed = replace(
-        plan, extra_regions=(ExtraRegion("EXT_SRAM", 0x20040000, 0x8000, "rw-"),)
+        plan, extra_regions=(ExtraRegion("EXT_SRAM", 0x68000000, 0x8000, "rw-"),)
     )
     rejected = apply_keil_conversion(changed)
     assert rejected.ok is False
@@ -265,7 +311,7 @@ def test_invalid_extra_regions_fail_before_planning(tmp_path):
             "type",
         ),
         (
-            (ExtraRegion("EXT_SRAM", 0x20040000, 0x10000, "r-x"),),
+            (ExtraRegion("EXT_SRAM", 0x68000000, 0x10000, "r-x"),),
             "extraRegions[0].attributes",
             "attributes",
         ),
@@ -449,14 +495,15 @@ def test_registered_mcp_schema_and_calls_preserve_raw_scalar_values(tmp_path):
         "startupStrategy": "generate-cmsis-gcc",
         "startupSource": STARTUP_SOURCE,
     }
-    invalid = call(
-        "stm32_keil_preflight",
-        {**selection, "extraRegions": [{**EXT_DICT, "origin": True}]},
-    )
-    assert invalid["ok"] is False
-    assert invalid["code"] == "EXTRA_REGIONS_INVALID"
-    assert invalid["details"]["field"] == "extraRegions[0].origin"
-    assert invalid["details"]["rule"] == "type"
+    for bad_origin in (True, "0x68000000", 1.0):
+        invalid = call(
+            "stm32_keil_preflight",
+            {**selection, "extraRegions": [{**EXT_DICT, "origin": bad_origin}]},
+        )
+        assert invalid["ok"] is False
+        assert invalid["code"] == "EXTRA_REGIONS_INVALID"
+        assert invalid["details"]["field"] == "extraRegions[0].origin"
+        assert invalid["details"]["rule"] == "type"
 
     preflight = call(
         "stm32_keil_preflight",

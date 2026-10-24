@@ -1,18 +1,29 @@
 """Real ARM GNU link evidence for the explicit external-RAM map.
 
-The synthetic 0x20040000/0x10000 region is a test capacity, not a board fact.
+The synthetic 0x68000000/0x10000 region is a test capacity, not a board fact.
 This is offline linked-image evidence only: the owner still has to initialize
 external memory before any access.
 """
 
 from __future__ import annotations
 
-from elftools.elf.elffile import ELFFile
+import io
+import struct
+from dataclasses import replace
 
-from stm32_toolkit.build.map_file import ElfSectionEvidence, parse_map
+from elftools.elf.elffile import ELFFile
+import pytest
+
+from stm32_toolkit.build.identity import BuildError, validate_elf
+from stm32_toolkit.build.map_file import MapError, parse_map
 from stm32_toolkit.generation import plan_project_configuration
 from stm32_toolkit.migration import apply_keil_conversion
-from stm32_toolkit.project_model import load_project_model
+from stm32_toolkit.project_model import (
+    MemoryRegion,
+    MemorySpec,
+    load_project_model,
+)
+import stm32_toolkit.probe.flash as flash_mod
 
 import test_startup_gcc_compiler as compiler
 from test_extra_memory_regions_migration import EXT, _plan, extra_repo
@@ -20,8 +31,8 @@ from test_extra_memory_regions_migration import EXT, _plan, extra_repo
 CPU_FLAG = "-mcpu=cortex-m4"
 FLASH_RANGE = (0x08000000, 0x100000)
 MAIN_RAM_RANGE = (0x20000000, 0x30000)
-EXT_RAM_RANGE = (0x20040000, 0x10000)
-FIXED_ADDRESS = 0x20040010
+EXT_RAM_RANGE = (0x68000000, 0x10000)
+FIXED_ADDRESS = 0x68000010
 
 
 def _within(address: int, size: int, region: tuple[int, int]) -> bool:
@@ -47,7 +58,10 @@ def _migrate_and_render(tmp_path, name: str):
         for entry in configuration.files
         if entry.path == "linker/stm32tk.ld"
     ).after_bytes
-    build = tmp_path / f"build-{name}"
+    # validate_elf requires the artifact to be inside the canonical project
+    # root; the disposable build directory therefore lives in this synthetic
+    # repository, not beside it.
+    build = model.project_root / ".er24-test-build"
     build.mkdir()
     linker = build / "stm32tk.ld"
     linker.write_bytes(linker_bytes)
@@ -60,24 +74,19 @@ def _compile_objects(repo, build):
     )
 
 
-def _elf_evidence(elf) -> tuple[ElfSectionEvidence, ...]:
-    evidence = []
-    with elf.open("rb") as handle:
-        parsed = ELFFile(handle)
-        for section in parsed.iter_sections():
-            size = int(section["sh_size"])
-            if size == 0:
-                continue
-            evidence.append(
-                ElfSectionEvidence(
-                    name=section.name,
-                    address=int(section["sh_addr"]),
-                    size=size,
-                    alloc=bool(int(section["sh_flags"]) & 0x2),
-                    nobits=section["sh_type"] == "SHT_NOBITS",
-                )
-            )
-    return tuple(evidence)
+def _with_regions(model, regions, extra_names=()):
+    """A test-only model view used to prove product guards, not a new loader."""
+    return replace(
+        model,
+        memory=MemorySpec(
+            source=model.memory.source,
+            regions=tuple(regions),
+            stack_size=model.memory.stack_size,
+            heap_size=model.memory.heap_size,
+            layout=model.memory.layout,
+            extra_region_names=tuple(extra_names),
+        ),
+    )
 
 
 def test_external_ram_fixed_noload_buffer_links_and_accounts_in_the_same_map(
@@ -87,7 +96,7 @@ def test_external_ram_fixed_noload_buffer_links_and_accounts_in_the_same_map(
         tmp_path / "split", "ext"
     )
     text = linker_bytes.decode("utf-8")
-    assert "  EXT_SRAM (rw) : ORIGIN = 0x20040000, LENGTH = 0x00010000" in text
+    assert "  EXT_SRAM (rw) : ORIGIN = 0x68000000, LENGTH = 0x00010000" in text
     assert f"  .stm32tk.abs.{FIXED_ADDRESS:08x} 0x{FIXED_ADDRESS:08x} (NOLOAD)" in text
     assert "} > EXT_SRAM" in text
     assert "} > IRAM1 AT> IROM1" in text
@@ -107,17 +116,24 @@ def test_external_ram_fixed_noload_buffer_links_and_accounts_in_the_same_map(
     assert _within(
         sections[".isr_vector"]["address"], sections[".isr_vector"]["size"], FLASH_RANGE
     )
+    assert sections[".data"]["size"] > 0
+    assert sections[".bss"]["size"] > 0
     assert _within(sections[".data"]["address"], sections[".data"]["size"], MAIN_RAM_RANGE)
     for name in (".bss", ".heap", ".stack"):
         assert _within(sections[name]["address"], sections[name]["size"], EXT_RAM_RANGE)
 
+    # The real product ELF guard accepts the combined map, and the real MAP
+    # validator accounts the same ELF section evidence in that same map.
+    evidence = validate_elf(elf, model)
+    assert evidence.sections
+    assert evidence.vector_address == sections[".isr_vector"]["address"]
     usage = {
         entry.name: entry
         for entry in parse_map(
             map_file.read_text("utf-8"),
             model.memory.regions,
             "firmware.map",
-            elf_sections=_elf_evidence(elf),
+            elf_sections=evidence.sections,
         )
     }
     assert set(usage) == {"IROM1", "IRAM1", "EXT_SRAM"}
@@ -129,41 +145,125 @@ def test_external_ram_fixed_noload_buffer_links_and_accounts_in_the_same_map(
     assert usage["EXT_SRAM"].length == EXT_RAM_RANGE[1]
 
 
-def test_removed_or_shortened_extra_region_really_fails_the_link(tmp_path):
-    repo, _model, build, linker, linker_bytes = _migrate_and_render(
+def test_removed_or_shortened_region_is_rejected_by_model_elf_and_map_guards(
+    tmp_path,
+):
+    repo, model, build, linker, linker_bytes = _migrate_and_render(
         tmp_path / "bounds", "bounds"
     )
     text = linker_bytes.decode("utf-8")
     objects = _compile_objects(repo, build)
+    result = compiler._link(build, linker, objects, cpu_flag=CPU_FLAG)
+    assert result.returncode == 0, result.stdout + "\n" + result.stderr
     elf = build / "firmware.elf"
+    map_text = (build / "firmware.map").read_text("utf-8")
+    validate_elf(elf, model)  # the complete map accepts the same real ELF
 
-    removed_text = text.replace(
-        "  EXT_SRAM (rw) : ORIGIN = 0x20040000, LENGTH = 0x00010000\n", ""
+    base_regions = [region for region in model.memory.regions if region.name != "EXT_SRAM"]
+    removed_model = _with_regions(model, base_regions)
+    shortened_ext = MemoryRegion("EXT_SRAM", EXT_RAM_RANGE[0], 0x12, "rw-")
+    shortened_model = _with_regions(
+        model,
+        base_regions + [shortened_ext],
+        ("EXT_SRAM",),
     )
-    assert removed_text != text
-    removed = build / "removed.ld"
-    removed.write_text(removed_text, encoding="utf-8")
-    if elf.exists():
-        elf.unlink()
-    failed_removed = compiler._link(build, removed, objects, cpu_flag=CPU_FLAG)
-    assert failed_removed.returncode != 0
-    assert "EXT_SRAM" in failed_removed.stdout + failed_removed.stderr
-    assert not elf.exists()
+    cross_end_ext = MemoryRegion("EXT_SRAM", EXT_RAM_RANGE[0], 0x14, "rw-")
+    cross_end_model = _with_regions(
+        model,
+        base_regions + [cross_end_ext],
+        ("EXT_SRAM",),
+    )
 
-    # The fixed 4-byte buffer starts inside the shortened region but crosses
-    # its end; the real linker must refuse instead of clipping.
+    for narrowed in (removed_model, shortened_model, cross_end_model):
+        with pytest.raises(BuildError) as caught:
+            validate_elf(elf, narrowed)
+        assert caught.value.code == "BUILD_ARTIFACT_INVALID"
+        assert caught.value.details["rule"] == "sectionOutOfRange"
+
+    # The same ELF/MAP evidence is invalid once the declared map no longer
+    # equals the linker-declared regions; a removed or shortened region is
+    # never silently re-interpreted.
+    for narrowed in (removed_model, shortened_model, cross_end_model):
+        with pytest.raises(MapError) as caught:
+            parse_map(
+                map_text,
+                narrowed.memory.regions,
+                "firmware.map",
+                elf_sections=validate_elf(elf, model).sections,
+            )
+        assert caught.value.details["rule"] == "regions"
+
+    # Genuine linker evidence: the fixed 4-byte buffer starts inside the
+    # shortened region but crosses its end, so the real link overflows instead
+    # of clipping the section.
     shortened_text = text.replace(
-        "  EXT_SRAM (rw) : ORIGIN = 0x20040000, LENGTH = 0x00010000",
-        "  EXT_SRAM (rw) : ORIGIN = 0x20040000, LENGTH = 0x00000012",
+        "  EXT_SRAM (rw) : ORIGIN = 0x68000000, LENGTH = 0x00010000",
+        "  EXT_SRAM (rw) : ORIGIN = 0x68000000, LENGTH = 0x00000012",
         1,
     )
     assert shortened_text != text
-    shortened = build / "shortened.ld"
-    shortened.write_text(shortened_text, encoding="utf-8")
-    if elf.exists():
-        elf.unlink()
-    failed_short = compiler._link(build, shortened, objects, cpu_flag=CPU_FLAG)
+    shortened_linker = build / "shortened.ld"
+    shortened_linker.write_text(shortened_text, encoding="utf-8")
+    elf.unlink()
+    failed_short = compiler._link(build, shortened_linker, objects, cpu_flag=CPU_FLAG)
     assert failed_short.returncode != 0
     output = failed_short.stdout + failed_short.stderr
     assert "EXT_SRAM" in output and "overflow" in output.lower()
     assert not elf.exists()
+
+
+def test_flash_segment_parser_refuses_writable_executable_external_ram(tmp_path):
+    repo, model, build, linker, _linker_bytes = _migrate_and_render(
+        tmp_path / "flash-guard", "flashguard"
+    )
+    objects = _compile_objects(repo, build)
+    result = compiler._link(build, linker, objects, cpu_flag=CPU_FLAG)
+    assert result.returncode == 0, result.stdout + "\n" + result.stderr
+    elf = build / "firmware.elf"
+    data = elf.read_bytes()
+    accepted = flash_mod._flash_segments(data, model, "build/arm-debug/firmware.elf")
+    assert accepted and all(
+        segment.address < FLASH_RANGE[0] + FLASH_RANGE[1] for segment in accepted
+    )
+
+    # Keep the real base Flash and declare the synthetic external range as
+    # writable executable RAM.  The unmodified image (still in base Flash) is
+    # accepted; then one file-backed PT_LOAD destination is retargeted into
+    # that external range in a synthetic copy of the ELF bytes.
+    base_regions = [
+        region for region in model.memory.regions if region.name != "EXT_SRAM"
+    ]
+    external_model = _with_regions(
+        model,
+        base_regions
+        + [MemoryRegion("EXT_RWX", EXT_RAM_RANGE[0], EXT_RAM_RANGE[1], "rwx")],
+        ("EXT_RWX",),
+    )
+    assert flash_mod._flash_segments(
+        data, external_model, "build/arm-debug/firmware.elf"
+    )
+
+    parsed = ELFFile(io.BytesIO(data))
+    header = parsed.header
+    phoff = int(header["e_phoff"])
+    entsize = int(header["e_phentsize"])
+    assert entsize >= 32
+    chosen: int | None = None
+    for index in range(int(header["e_phnum"])):
+        offset = phoff + index * entsize
+        p_type = struct.unpack_from("<I", data, offset)[0]
+        p_filesz = struct.unpack_from("<I", data, offset + 16)[0]
+        if p_type == 1 and p_filesz > 0:  # PT_LOAD, file-backed
+            chosen = offset
+            break
+    assert chosen is not None, "synthetic ELF has no file-backed PT_LOAD"
+    mutated = bytearray(data)
+    # ELF32 little-endian Phdr.p_paddr is at offset 12 in the program header.
+    struct.pack_into("<I", mutated, chosen + 12, EXT_RAM_RANGE[0])
+    assert bytes(mutated) != data
+    with pytest.raises(flash_mod._FlashFailure) as caught:
+        flash_mod._flash_segments(
+            bytes(mutated), external_model, "build/arm-debug/firmware.elf"
+        )
+    assert caught.value.code == "FLASH_IMAGE_INVALID"
+    assert caught.value.details["rule"] == "region"

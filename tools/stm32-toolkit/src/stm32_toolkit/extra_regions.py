@@ -22,6 +22,9 @@ from stm32_toolkit.memory_layout import region_facts
 #: One bounded reviewed request; larger lists are rejected, never sampled.
 MAX_EXTRA_REGIONS = 32
 MAX_EXTRA_REGIONS_JSON_BYTES = 64 * 1024
+#: A valid request is array -> object -> scalar (depth 3); deeper nesting is
+#: rejected deterministically instead of depending on interpreter recursion.
+MAX_EXTRA_REGIONS_JSON_DEPTH = 3
 MAX_EXTRA_REGION_NAME_LENGTH = 64
 EXTRA_REGION_ATTRIBUTES = frozenset({"rw-", "rwx"})
 EXTRA_REGION_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -272,6 +275,20 @@ def _reject_constant(value: str) -> object:
     raise ValueError(value)
 
 
+def _exceeds_json_depth(value: object, limit: int) -> bool:
+    """Iterative depth check; never depends on the interpreter recursion limit."""
+    stack: list[tuple[object, int]] = [(value, 1)]
+    while stack:
+        item, depth = stack.pop()
+        if depth > limit:
+            return True
+        if isinstance(item, Mapping):
+            stack.extend((nested, depth + 1) for nested in item.values())
+        elif isinstance(item, list):
+            stack.extend((nested, depth + 1) for nested in item)
+    return False
+
+
 def parse_extra_regions_json(text: object) -> tuple[ExtraRegion, ...]:
     """Parse the CLI ``--extra-regions`` JSON array with duplicate-key refusal."""
     if not isinstance(text, str):
@@ -312,6 +329,12 @@ def parse_extra_regions_json(text: object) -> tuple[ExtraRegion, ...]:
         raise _fail(
             "extraRegions must be a JSON array", "extraRegions", "type"
         )
+    if _exceeds_json_depth(value, MAX_EXTRA_REGIONS_JSON_DEPTH):
+        raise _fail(
+            "extraRegions nesting exceeds the supported depth",
+            "extraRegions",
+            "nesting",
+        )
     return normalize_extra_regions(value)
 
 
@@ -331,6 +354,7 @@ __all__ = [
     "ExtraRegionError",
     "MAX_EXTRA_REGIONS",
     "MAX_EXTRA_REGIONS_JSON_BYTES",
+    "MAX_EXTRA_REGIONS_JSON_DEPTH",
     "MAX_EXTRA_REGION_NAME_LENGTH",
     "combined_regions",
     "extra_region_names",

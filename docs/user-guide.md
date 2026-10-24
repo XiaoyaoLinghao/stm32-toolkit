@@ -109,7 +109,7 @@ VS Code / MCP 客户端的审查路径：
 
 ### 显式外部 RAM 区域（当前源码/候选切片）
 
-迁移可以显式声明 Keil/设备事实之外的**可写 RAM**（例如外部 SRAM），用于固定地址缓冲或显式内存布局。该输入属于 **v1.3.0 候选的未发布行为**：已发布 v1.2.0 runtime 不接受 `extraRegions`/`--extra-regions`；使用前核对实际绑定的 MCP input schema。
+迁移可以显式声明 Keil/设备事实之外的**可写 RAM**（例如外部 SRAM），用于固定地址缓冲或显式内存布局。该输入属于 **v1.3.0 候选的未发布行为**：已发布 v1.2.0 runtime 不接受 `extraRegions`/`--extra-regions`；**已冻结/已安装的 1.3.0 也不包含本源码补丁**，因此两者都必须先核对实际绑定的 MCP 工具与 input schema，不能仅凭版本号宣称支持。
 
 | 操作 | MCP 参数 | CLI 参数 | 值 |
 | --- | --- | --- | --- |
@@ -128,12 +128,13 @@ VS Code / MCP 客户端的审查路径：
 - CLI `--extra-regions` 接收 JSON 数组字符串：语法错误、重复对象键、深层嵌套、超大 JSON、重复选项（现有 sanitized parser 错误）以及非法字段都在 inspect/plan 之前失败；Toolkit 侧错误使用结构化 `EXTRA_REGIONS_INVALID` 的 `field`/`rule`/`remediation`。MCP 使用真实数组（注册 schema 为 `list[dict[str, Any]]`，保留原始标量类型）：非数组/非对象项由 MCP 框架先行拒绝；schema 可接受但语义非法的值（布尔 origin、越界长度、`r-x`、重叠等）返回 `EXTRA_REGIONS_INVALID`。
 
 ```powershell
-$Extra = '[{"name":"EXT_SRAM","origin":536870912,"length":65536,"attributes":"rw-"}]'
-& $CandidateCli --project-root $ProjectRoot keil preflight --uvprojx Project/blinky.uvprojx --target-name Debug --extra-regions $Extra --json
-& $CandidateCli --project-root $ProjectRoot keil convert --uvprojx Project/blinky.uvprojx --target-name Debug --extra-regions $Extra --memory-layout '{"flash":"IROM1","data":"IRAM1","bss":"EXT_SRAM","heap":"EXT_SRAM","stack":"EXT_SRAM"}' --dry-run --json
+$Extra = '[{"name":"EXT_SRAM","origin":1744830464,"length":65536,"attributes":"rw-"}]'
+$Layout = '{"flash":"IROM1","data":"IRAM1","bss":"EXT_SRAM","heap":"EXT_SRAM","stack":"EXT_SRAM"}'
+& $CandidateCli --project-root $ProjectRoot keil preflight --uvprojx Project/blinky.uvprojx --target-name Debug --extra-regions $Extra --memory-layout $Layout --json
+& $CandidateCli --project-root $ProjectRoot keil convert --uvprojx Project/blinky.uvprojx --target-name Debug --extra-regions $Extra --memory-layout $Layout --dry-run --json
 ```
 
-（示例中的数值只是**审阅示例，非板级事实**；必须按实际器件给出。）
+（示例中的区域名、数值与容量都只是**审阅示例，非板级事实**，也不表示外部存储器已初始化；必须按实际器件和 owner 提供的精确 origin/字节长度给出。）
 
 `stm32_project_context` 的旧 `capabilities.*` 布尔值继续保留为保守兼容字段；新增 `capabilityDetails` 逐项给出 `available`、`blocked` 或 `not-evaluated` 及原因/下一步。`flash`、`targetTest`、`monitor`、`breakpointDebug` 的旧布尔 `false` 本身不区分“未探测硬件”与“已知 snapshot provenance 阻断”，必须读 `capabilityDetails`；它也不代表工具不存在。需要探针事实时单独调用只读 `probe list` / `stm32_probe_list`。仅询问已连接探针时，不需要 manifest、构建、debug backend、target 或 SVD；发现结果不授予改板权限，也不证明 target 身份或可烧录。有效工程保留 `workspaceId`，缺失或无效 manifest 时返回 `workspaceId: null` 与明确 `discovery.status=unbound`，不要伪造工程 ID。
 

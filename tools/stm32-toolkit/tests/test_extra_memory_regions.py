@@ -37,9 +37,10 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 
 FLASH = {"name": "FLASH", "origin": 0x08000000, "length": 0x100000, "attributes": "r-x"}
 RAM = {"name": "RAM", "origin": 0x20000000, "length": 0x30000, "attributes": "rwx"}
+#: Synthetic external-RAM example capacity (not a board fact).
 EXT = {
     "name": "EXT_SRAM",
-    "origin": 0x20040000,
+    "origin": 0x68000000,
     "length": 0x10000,
     "attributes": "rw-",
 }
@@ -75,20 +76,18 @@ def _write_project(root: Path, payload: dict) -> Path:
 
 
 def test_boundary_values_and_adjacency_are_accepted():
-    regions = normalize_extra_regions(
-        [
-            {"name": "TOP", "origin": 0xFFFFFFFF, "length": 1, "attributes": "rw-"},
-            {"name": "WHOLE", "origin": 0, "length": 0x1_0000_0000, "attributes": "rwx"},
-        ]
-    )
-    assert regions == (
-        ExtraRegion("TOP", 0xFFFFFFFF, 1, "rw-"),
-        ExtraRegion("WHOLE", 0, 0x1_0000_0000, "rwx"),
-    )
+    # TOP and WHOLE would overlap if requested together; each boundary is a
+    # separate valid request.
+    assert normalize_extra_regions(
+        [{"name": "TOP", "origin": 0xFFFFFFFF, "length": 1, "attributes": "rw-"}]
+    ) == (ExtraRegion("TOP", 0xFFFFFFFF, 1, "rw-"),)
+    assert normalize_extra_regions(
+        [{"name": "WHOLE", "origin": 0, "length": 0x1_0000_0000, "attributes": "rwx"}]
+    ) == (ExtraRegion("WHOLE", 0, 0x1_0000_0000, "rwx"),)
     adjacent = normalize_extra_regions(
         [
-            {"name": "A", "origin": 0x20040000, "length": 0x100, "attributes": "rw-"},
-            {"name": "B", "origin": 0x20040100, "length": 0x100, "attributes": "rw-"},
+            {"name": "A", "origin": 0x68000000, "length": 0x100, "attributes": "rw-"},
+            {"name": "B", "origin": 0x68000100, "length": 0x100, "attributes": "rw-"},
         ]
     )
     assert [region.name for region in adjacent] == ["A", "B"]
@@ -154,7 +153,7 @@ def test_duplicate_case_collision_overlap_and_count_are_rejected():
                 EXT,
                 {
                     "name": "OVERLAP",
-                    "origin": 0x2004FFFF,
+                    "origin": 0x6800FFFF,
                     "length": 2,
                     "attributes": "rw-",
                 },
@@ -196,7 +195,7 @@ def test_cross_validation_rejects_base_collisions_and_overlap_but_allows_adjacen
     assert validate_extra_regions([EXT], base) == (ExtraRegion(**EXT),)
     with pytest.raises(ExtraRegionError) as caught:
         validate_extra_regions(
-            [{**EXT, "name": "ram", "origin": 0x20050000}], base
+            [{**EXT, "name": "ram", "origin": 0x68010000}], base
         )
     assert caught.value.details["rule"] == "casefoldCollision"
     with pytest.raises(ExtraRegionError) as caught:
@@ -228,13 +227,23 @@ def test_json_transport_is_bounded_and_rejects_duplicate_or_malformed_input():
         ("{", "json"),
         ("null", "type"),
         (json.dumps({"name": "A"}), "type"),
-        ("[" * 2000 + "]" * 2000, "nesting"),
+        (json.dumps([[EXT]]), "nesting"),
         ("[NaN]", "json"),
     ):
         with pytest.raises(ExtraRegionError) as caught:
             parse_extra_regions_json(text)
         assert caught.value.details["rule"] == rule
         assert caught.value.details["field"] == "extraRegions"
+    # Very deep text is rejected either by the explicit depth guard (when the
+    # parser returns) or by the interpreter limit (caught as nesting); the
+    # bounded public contract is a stable rejection, never a raw RecursionError.
+    try:
+        parse_extra_regions_json("[" * 2000 + "]" * 2000)
+    except ExtraRegionError as error:
+        assert error.details["field"] == "extraRegions"
+        assert error.details["rule"] in {"nesting", "type"}
+    else:
+        pytest.fail("deeply nested extraRegions JSON was accepted")
     oversized = " " * (MAX_EXTRA_REGIONS_JSON_BYTES + 1)
     with pytest.raises(ExtraRegionError) as caught:
         parse_extra_regions_json(oversized)
@@ -242,6 +251,10 @@ def test_json_transport_is_bounded_and_rejects_duplicate_or_malformed_input():
 
 
 def test_mcp_style_values_are_never_coerced():
+    # Zero is an explicit valid origin, never treated as an omission.
+    assert normalize_extra_regions_option(
+        [{**EXT, "origin": 0, "length": 1}]
+    ) == (ExtraRegion("EXT_SRAM", 0, 1, "rw-"),)
     for value in (True, "0x20040000", 1.0):
         with pytest.raises(ExtraRegionError) as caught:
             normalize_extra_regions_option([{**EXT, "origin": value}])
@@ -286,7 +299,7 @@ def test_v2_and_v3_models_compose_base_and_extra_once(tmp_path, version):
     ]
     assert model.memory.regions[2] == type(model.memory.regions[2])(
         name="EXT_SRAM",
-        origin=0x20040000,
+        origin=0x68000000,
         length=0x10000,
         attributes="rw-",
     )
@@ -402,9 +415,21 @@ def test_empty_extras_keep_the_historical_model_hash_but_nonempty_changes_it(
             {"source": "manual", "regions": [FLASH, RAM], "extraRegions": [EXT]}
         ),
     )
+    resized = _write_project(
+        tmp_path / "resized",
+        _v2_payload_with(
+            {
+                "source": "manual",
+                "regions": [FLASH, RAM],
+                "extraRegions": [{**EXT, "length": 0x8000}],
+            }
+        ),
+    )
     base_hash = model_sha256_for(load_project_model(without))
+    extra_hash = model_sha256_for(load_project_model(with_extra))
     assert model_sha256_for(load_project_model(empty)) == base_hash
-    assert model_sha256_for(load_project_model(with_extra)) != base_hash
+    assert extra_hash != base_hash
+    assert model_sha256_for(load_project_model(resized)) != extra_hash
 
 
 # ---------------------------------------------------------------------------
@@ -437,7 +462,7 @@ def test_generation_uses_the_complete_map_and_never_implicitly_places_in_ext(
     linker = next(
         entry for entry in plan.files if entry.path == "linker/stm32tk.ld"
     ).after_bytes.decode("utf-8")
-    assert "  EXT_SRAM (rw) : ORIGIN = 0x20040000, LENGTH = 0x00010000" in linker
+    assert "  EXT_SRAM (rw) : ORIGIN = 0x68000000, LENGTH = 0x00010000" in linker
     assert "  .bss :" in linker and "} > EXT_SRAM" in linker
     assert "} > RAM AT> FLASH" in linker
 
@@ -452,6 +477,73 @@ def test_generation_uses_the_complete_map_and_never_implicitly_places_in_ext(
     assert caught.value.code == "MEMORY_LAYOUT_REQUIRED"
     assert "EXT_SRAM" in str(caught.value.details["candidates"]["ram"])
     assert "EXT_SRAM" in str(caught.value.details["remediation"])
+
+
+def test_omitted_and_explicit_empty_extras_render_identical_generation(tmp_path):
+    omitted = _write_project(
+        tmp_path / "cfg-omitted",
+        _v2_payload_with({"source": "manual", "regions": [FLASH, RAM]}),
+    )
+    empty = _write_project(
+        tmp_path / "cfg-empty",
+        _v2_payload_with(
+            {"source": "manual", "regions": [FLASH, RAM], "extraRegions": []}
+        ),
+    )
+    first = plan_project_configuration(load_project_model(omitted))
+    second = plan_project_configuration(load_project_model(empty))
+    # The manifest bytes themselves differ (the empty array is explicit), but
+    # the normalized model identity and every rendered target are identical.
+    assert first.model_sha256 == second.model_sha256
+    assert [(entry.path, entry.after_bytes) for entry in first.files] == [
+        (entry.path, entry.after_bytes) for entry in second.files
+    ]
+
+
+def test_native_linker_is_preserved_and_extras_change_model_identity(tmp_path):
+    payload = _v2_payload_with(
+        {"source": "manual", "regions": [FLASH, RAM], "extraRegions": [EXT]}
+    )
+    payload["generation"]["nativeLinkerScript"] = "linker/user.ld"
+    root = _write_project(tmp_path / "native", payload)
+    native = root / "linker" / "user.ld"
+    native.parent.mkdir(parents=True)
+    native.write_text("/* user-owned */\nMEMORY { }\n", encoding="utf-8")
+    original = native.read_bytes()
+    model = load_project_model(root)
+    plan = plan_project_configuration(model)
+    assert plan.blockers == ()
+    assert all(entry.path != "linker/stm32tk.ld" for entry in plan.files)
+    assert native.read_bytes() == original
+    assert plan.model_sha256 == model_sha256_for(model)
+    assert model.memory.extra_region_names == ("EXT_SRAM",)
+
+    without = _write_project(
+        tmp_path / "native-without",
+        _v2_payload_with({"source": "manual", "regions": [FLASH, RAM]}),
+    )
+    assert model_sha256_for(model) != model_sha256_for(load_project_model(without))
+
+    managed = _v2_payload_with(
+        {
+            "source": "manual",
+            "regions": [FLASH, RAM],
+            "extraRegions": [EXT],
+            "layout": {
+                "flash": "FLASH",
+                "data": "RAM",
+                "bss": "RAM",
+                "heap": "RAM",
+                "stack": "RAM",
+            },
+        }
+    )
+    managed["generation"]["nativeLinkerScript"] = "linker/user.ld"
+    conflicting = _write_project(tmp_path / "native-conflict", managed)
+    with pytest.raises(ProjectManifestError) as caught:
+        load_project_model(conflicting)
+    assert caught.value.code == "MEMORY_LAYOUT_INVALID"
+    assert caught.value.details["rule"] == "nativeLinkerOwned"
 
 
 def test_resolve_memory_layout_never_infers_an_extra_ram_and_excludes_it_as_flash():
