@@ -28,7 +28,7 @@ from stm32_toolkit.migration.constant_context import (
 )
 from stm32_toolkit.project_model import load_project_model
 
-from test_migration_plan import build_repo, fixture_inspection
+from test_migration_plan import FRAMEWORK_INCLUDE, build_repo, fixture_inspection
 
 BOARD_H = (
     "/* synthetic board constants */\n"
@@ -487,7 +487,7 @@ def test_alignment_and_placement_composition_with_macros():
     assert scan.blockers == ()
     after = scan.after.decode("utf-8")
     assert after.startswith(
-        '__attribute__((aligned(32))) unsigned char pool[64] '
+        '__attribute__((aligned(32))) unsigned char pool[SIZE] '
         '__attribute__((section(".stm32tk.abs.20000100"), used));\n'
     )
     assert (
@@ -654,7 +654,7 @@ def test_public_flow_produces_supported_changes_and_nosys_specs(tmp_path):
     assert "__align" not in after
     assert "__at(" not in after
     assert '__asm volatile ("wfi\\n\\tbx lr");' in after
-    assert "__attribute__((aligned(32))) unsigned char pool[64]" in after
+    assert "__attribute__((aligned(32))) unsigned char pool[SIZE]" in after
     assert '__attribute__((section(".stm32tk.abs.20000100"), used));' in after
 
     manifest_patch = next(
