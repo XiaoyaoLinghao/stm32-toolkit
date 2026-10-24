@@ -1,0 +1,418 @@
+{
+  "module": "LINKER-FRAGMENT",
+  "date": "2026-10-24",
+  "acceptedBase": "b7ef2ebf2da37e127bf600d58878789cfbb23eb6",
+  "codeHead": "114b1f2074a9ff39f9dd399fc8b4e51584fa2a3c",
+  "authorBranch": "codex/linker-fragment",
+  "reviewRoot": "C:\\Users\\zhy76\\.codex\\worktrees\\build-snapshot-final\\STM32-Toolkit",
+  "reviewClean": true,
+  "reviewDiff": "D:\\codex-tmp\\lf24\\reviewed.diff",
+  "reviewDiffSha256": "3b261613cd5a5b24516b257c3053256675502bda96f4884388681e98454e2e9a",
+  "changedFiles": [
+    "docs/architecture.md",
+    "docs/superpowers/plans/2026-10-24-linker-fragment-plan.md",
+    "docs/superpowers/specs/2026-10-24-linker-fragment-design.md",
+    "docs/user-guide.md",
+    "schemas/stm32-project.schema.json",
+    "skills/migrate-keil/SKILL.md",
+    "templates/cmake/CMakeLists.txt.j2",
+    "templates/cmake/linker.ld.j2",
+    "tools/stm32-toolkit/src/stm32_toolkit/build/identity.py",
+    "tools/stm32-toolkit/src/stm32_toolkit/build/runner.py",
+    "tools/stm32-toolkit/src/stm32_toolkit/generation/configure.py",
+    "tools/stm32-toolkit/src/stm32_toolkit/generation/managed_files.py",
+    "tools/stm32-toolkit/src/stm32_toolkit/linker_fragment.py",
+    "tools/stm32-toolkit/src/stm32_toolkit/project_model.py",
+    "tools/stm32-toolkit/src/stm32_toolkit/schemas/stm32-project.schema.json",
+    "tools/stm32-toolkit/src/stm32_toolkit/templates/cmake/CMakeLists.txt.j2",
+    "tools/stm32-toolkit/src/stm32_toolkit/templates/cmake/linker.ld.j2",
+    "tools/stm32-toolkit/tests/test_linker_fragment.py",
+    "tools/stm32-toolkit/tests/test_linker_fragment_compiler.py"
+  ],
+  "environment": {
+    "python": "3.12.14",
+    "gnuArmGcc": "14.3.1",
+    "scratchRoot": "D:\\codex-tmp\\lf24",
+    "dependencyDonor": "C:/data/stm32-toolkit/runtime/1.3.0/Lib/site-packages (read-only dependencies, Toolkit/Monitor imported from worktree)"
+  },
+  "checks": {
+    "new": {
+      "owner": "Claude Code CLI",
+      "head": "8e6c7713b70d6404e27bd3490821260cb6028902",
+      "junit": {
+        "tests": 109,
+        "failures": 7,
+        "errors": 0,
+        "skipped": 1,
+        "passed": 101,
+        "seconds": 7.067,
+        "junit": "D:\\codex-tmp\\lf24\\new.xml",
+        "sha256": "6c97d96b3036f460d3408f69e483b6111c5920dde9d35d24c50b69df82aa17af",
+        "skips": [
+          {
+            "case": "tests.test_linker_fragment::test_read_linker_fragment_rejects_a_real_symlinked_file",
+            "reason": "unprivileged Windows file symlinks are unavailable; mocked coverage applies"
+          }
+        ],
+        "failuresList": [
+          "tests.test_linker_fragment::test_parser_rejects_out_of_subset_input[.sram2 (NOLOAD) : { *(.sram2.buf) } > RAM\\n-sections[0].statements[0].selectors-selectorFamily]",
+          "tests.test_linker_fragment::test_parser_rejects_out_of_subset_input[.ARM.exidx (NOLOAD) : { *(.ARM.exidx) } > RAM\\n-sections[0].name-reserved]",
+          "tests.test_linker_fragment::test_parser_rejects_out_of_subset_input[.stm32tk.abs.08000000 (NOLOAD) : { *(.stm32tk.abs.08000000) } > RAM\\n-sections[0].name-reserved]",
+          "tests.test_linker_fragment_compiler::test_fragment_sections_link_with_fixed_sections_and_multiple_rams",
+          "tests.test_linker_fragment_compiler::test_real_elf_rejects_wrong_attributes_address_and_overlap",
+          "tests.test_linker_fragment_compiler::test_narrowed_model_and_linker_capacity_are_refused",
+          "tests.test_linker_fragment_compiler::test_generated_cmake_relinks_after_fragment_regeneration_and_clean_build"
+        ]
+      },
+      "execution": {
+        "path": "D:\\codex-tmp\\lf24\\test-new.jsonl",
+        "sha256": "46aad176cdaea1b10c7ec682412cecc45e5c0e5fe64ebf84c447e3efd3090209",
+        "inventory": [
+          "PowerShell"
+        ],
+        "model": "deepseek-v4.1-flash[1m]",
+        "calls": [
+          {
+            "id": "call_00_carz4awb2tazmwpe8mmztoea",
+            "name": "PowerShell",
+            "input": {
+              "command": "D:/codex-tmp/kx23/venv/Scripts/python.exe -m pytest tools/stm32-toolkit/tests/test_linker_fragment.py tools/stm32-toolkit/tests/test_linker_fragment_compiler.py -q --tb=short --basetemp=D:/codex-tmp/lf24/p-new -o cache_dir=D:/codex-tmp/lf24/c-new --junitxml=D:/codex-tmp/lf24/new.xml",
+              "description": "Run linker fragment test suites at frozen head",
+              "timeout": 600000
+            }
+          }
+        ],
+        "results": [
+          {
+            "id": "call_00_carz4awb2tazmwpe8mmztoea",
+            "isError": true,
+            "content": "Exit code 1\n.....................F....................FF...............s............ [ 66%]\r\n.................................FFFF                                    [100%]\r\n================================== FAILURES ===================================\r\n_ test_parser_rejects_out_of_subset_input[.sram2 (NOLOAD) : { *(.sram2.buf) } > RAM\\n-sections[0].statements[0].selectors-selectorFamily] _\r\ntools\\stm32-toolkit\\tests\\test_linker_fragment.py:381: in test_parser_rejects_out_of_subset_input\r\n    assert caught.value.details[\"rule\"] == rule\r\nE   AssertionError: assert 'selector' == 'selectorFamily'\r\nE     \r\nE     - selectorFamily\r\nE     + selector\r\n_ test_parser_rejects_out_of_subset_input[.ARM.exidx (NOLOAD) : { *(.ARM.exidx) } > RAM\\n-sections[0].name-reserved] _\r\ntools\\stm32-toolkit\\tests\\test_linker_fragment.py:380: in test_parser_rejects_out_of_subset_input\r\n    assert caught.value.details[\"field\"] == field\r\nE   AssertionError: assert 'sections[0]' == 'sections[0].name'\r\nE     \r\nE     - sections[0].name\r\nE     ?            -----\r\nE     + sections[0]\r\n_ test_parser_rejects_out_of_subset_input[.stm32tk.abs.08000000 (NOLOAD) : { *(.stm32tk.abs.08000000) } > RAM\\n-sections[0].name-reserved] _\r\ntools\\stm32-toolkit\\tests\\test_linker_fragment.py:380: in test_parser_rejects_out_of_subset_input\r\n    assert caught.value.details[\"field\"] == field\r\nE   AssertionError: assert 'sections[0]' == 'sections[0].name'\r\nE     \r\nE     - sections[0].name\r\nE     ?            -----\r\nE     + sections[0]\r\n______ test_fragment_sections_link_with_fixed_sections_and_multiple_rams ______\r\ntools\\stm32-toolkit\\tests\\test_linker_fragment_compiler.py:250: in test_fragment_sections_link_with_fixed_sections_and_multiple_rams\r\n    repo = _fragment_repo(tmp_path)\r\n           ^^^^^^^^^^^^^^^^^^^^^^^^\r\ntools\\stm32-toolkit\\tests\\test_linker_fragment_compiler.py:110: in _fragment_repo\r\n    repo = build_repo(\r\ntools\\stm32-toolkit\\tests\\test_migration_plan.py:241: in build_repo\r\n    root.mkdir()\r\n..\\..\\..\\..\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\python\\Lib\\pathlib.py:1311: in mkdir\r\n    os.mkdir(self, mode)\r\nE   FileNotFoundError: [WinError 3] 系统找不到指定的路径。: 'D:\\\\codex-tmp\\\\lf24\\\\p-new\\\\test_fragment_sections_link_wi0\\\\repo\\\\fragment'\r\n_________ test_real_elf_rejects_wrong_attributes_address_and_overlap __________\r\ntools\\stm32-toolkit\\tests\\test_linker_fragment_compiler.py:292: in test_real_elf_rejects_wrong_attributes_address_and_overlap\r\n    repo = _fragment_repo(tmp_path)\r\n           ^^^^^^^^^^^^^^^^^^^^^^^^\r\ntools\\stm32-toolkit\\tests\\test_linker_fragment_compiler.py:110: in _fragment_repo\r\n    repo = build_repo(\r\ntools\\stm32-toolkit\\tests\\test_migration_plan.py:241: in build_repo\r\n    root.mkdir()\r\n..\\..\\..\\..\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\python\\Lib\\pathlib.py:1311: in mkdir\r\n    os.mkdir(self, mode)\r\nE   FileNotFoundError: [WinError 3] 系统找不到指定的路径。: 'D:\\\\codex-tmp\\\\lf24\\\\p-new\\\\test_real_elf_rejects_wrong_at0\\\\repo\\\\fragment'\r\n_____________ test_narrowed_model_and_linker_capacity_are_refused _____________\r\ntools\\stm32-toolkit\\tests\\test_linker_fragment_compiler.py:341: in test_narrowed_model_and_linker_capacity_are_refused\r\n    repo = _fragment_repo(tmp_path)\r\n           ^^^^^^^^^^^^^^^^^^^^^^^^\r\ntools\\stm32-toolkit\\tests\\test_linker_fragment_compiler.py:110: in _fragment_repo\r\n    repo = build_repo(\r\ntools\\stm32-toolkit\\tests\\test_migration_plan.py:241: in build_repo\r\n    root.mkdir()\r\n..\\..\\..\\..\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\python\\Lib\\pathlib.py:1311: in mkdir\r\n    os.mkdir(self, mode)\r\nE   FileNotFoundError: [WinError 3] 系统找不到指定的路径。: 'D:\\\\codex-tmp\\\\lf24\\\\p-new\\\\test_narrowed_model_and_linker0\\\\repo\\\\fragment'\r\n__ test_generated_cmake_relinks_after_fragment_regeneration_and_clean_build ___\r\ntools\\stm32-toolkit\\tests\\test_linker_fragment_compiler.py:393: in test_generated_cmake_relinks_after_fragment_regeneration_and_clean_build\r\n    repo = _fragment_repo(tmp_path)\r\n           ^^^^^^^^^^^^^^^^^^^^^^^^\r\ntools\\stm32-toolkit\\tests\\test_linker_fragment_compiler.py:110: in _fragment_repo\r\n    repo = build_repo(\r\ntools\\stm32-toolkit\\tests\\test_migration_plan.py:241: in build_repo\r\n    root.mkdir()\r\n..\\..\\..\\..\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\python\\Lib\\pathlib.py:1311: in mkdir\r\n    os.mkdir(self, mode)\r\nE   FileNotFoundError: [WinError 3] 系统找不到指定的路径。: 'D:\\\\codex-tmp\\\\lf24\\\\p-new\\\\test_generated_cmake_relinks_a0\\\\repo\\\\fragment'\r\n---------------- generated xml file: D:\\codex-tmp\\lf24\\new.xml ----------------\r\n=========================== short test summary info ===========================\r\nFAILED tools\\stm32-toolkit\\tests\\test_linker_fragment.py::test_parser_rejects_out_of_subset_input[.sram2 (NOLOAD) : { *(.sram2.buf) } > RAM\\n-sections[0].statements[0].selectors-selectorFamily]\r\nFAILED tools\\stm32-toolkit\\tests\\test_linker_fragment.py::test_parser_rejects_out_of_subset_input[.ARM.exidx (NOLOAD) : { *(.ARM.exidx) } > RAM\\n-sections[0].name-reserved]\r\nFAILED tools\\stm32-toolkit\\tests\\test_linker_fragment.py::test_parser_rejects_out_of_subset_input[.stm32tk.abs.08000000 (NOLOAD) : { *(.stm32tk.abs.08000000) } > RAM\\n-sections[0].name-reserved]\r\nFAILED tools\\stm32-toolkit\\tests\\test_linker_fragment_compiler.py::test_fragment_sections_link_with_fixed_sections_and_multiple_rams\r\nFAILED tools\\stm32-toolkit\\tests\\test_linker_fragment_compiler.py::test_real_elf_rejects_wrong_attributes_address_and_overlap\r\nFAILED tools\\stm32-toolkit\\tests\\test_linker_fragment_compiler.py::test_narrowed_model_and_linker_capacity_are_refused\r\nFAILED tools\\stm32-toolkit\\tests\\test_linker_fragment_compiler.py::test_generated_cmake_relinks_after_fragment_regeneration_and_clean_build"
+          }
+        ],
+        "cliExitCode": 0,
+        "nativeSubprocessExitCode": null
+      }
+    },
+    "new2": {
+      "owner": "Claude Code CLI",
+      "head": "114b1f2074a9ff39f9dd399fc8b4e51584fa2a3c",
+      "junit": {
+        "tests": 109,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 1,
+        "passed": 108,
+        "seconds": 19.914,
+        "junit": "D:\\codex-tmp\\lf24\\new2.xml",
+        "sha256": "a18475178cfd4ff4e428482f060448e854d936159a93c177ae18577943f61a4a",
+        "skips": [
+          {
+            "case": "tests.test_linker_fragment::test_read_linker_fragment_rejects_a_real_symlinked_file",
+            "reason": "unprivileged Windows file symlinks are unavailable; mocked coverage applies"
+          }
+        ],
+        "failuresList": []
+      },
+      "execution": {
+        "path": "D:\\codex-tmp\\lf24\\test-new2.jsonl",
+        "sha256": "75453194bfb18dcce72e6e5a12194692ce7a6ff1f032ff0798309a6d583ec56a",
+        "inventory": [
+          "PowerShell"
+        ],
+        "model": "deepseek-v4.1-flash[1m]",
+        "calls": [
+          {
+            "id": "call_00_koksoyd5mnirehv6hvazq3yq",
+            "name": "PowerShell",
+            "input": {
+              "command": "D:/codex-tmp/kx23/venv/Scripts/python.exe -m pytest tools/stm32-toolkit/tests/test_linker_fragment.py tools/stm32-toolkit/tests/test_linker_fragment_compiler.py -q --tb=short --basetemp=D:/codex-tmp/lf24/p-new2 -o cache_dir=D:/codex-tmp/lf24/c-new2 --junitxml=D:/codex-tmp/lf24/new2.xml",
+              "description": "Run linker fragment pytest suites",
+              "timeout": 600000
+            }
+          }
+        ],
+        "results": [
+          {
+            "id": "call_00_koksoyd5mnirehv6hvazq3yq",
+            "isError": false,
+            "content": "...........................................................s............ [ 66%]\r\n.....................................                                    [100%]\r\n--------------- generated xml file: D:\\codex-tmp\\lf24\\new2.xml ----------------"
+          }
+        ],
+        "cliExitCode": 0,
+        "nativeSubprocessExitCode": null
+      }
+    },
+    "author-regression": {
+      "owner": "Claude Code CLI",
+      "head": "114b1f2074a9ff39f9dd399fc8b4e51584fa2a3c",
+      "junit": {
+        "tests": 576,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 2,
+        "passed": 574,
+        "seconds": 177.502,
+        "junit": "D:\\codex-tmp\\lf24\\author-regression.xml",
+        "sha256": "e5c90bd0770504c48e177b900d7d0f5dc2de50dd6430d0b428a9ca2eff671c0a",
+        "skips": [
+          {
+            "case": "tests.test_project_model::test_file_symlink_cannot_escape_project_root",
+            "reason": "symbolic links are unavailable in this test environment"
+          },
+          {
+            "case": "tests.test_project_model::test_directory_symlink_parent_cannot_escape_project_root",
+            "reason": "symbolic links are unavailable in this test environment"
+          }
+        ],
+        "failuresList": []
+      },
+      "execution": {
+        "path": "D:\\codex-tmp\\lf24\\test-author-regression.jsonl",
+        "sha256": "a02944ca1b379190b8689adc3b53767fbb4bc52b1a64cb505ad013148249df3a",
+        "inventory": [
+          "PowerShell"
+        ],
+        "model": "deepseek-v4.1-flash[1m]",
+        "calls": [
+          {
+            "id": "call_00_4ze1p4qrq49ojo2r1xu8rift",
+            "name": "PowerShell",
+            "input": {
+              "command": "D:/codex-tmp/kx23/venv/Scripts/python.exe -m pytest tools/stm32-toolkit/tests/test_project_model.py tools/stm32-toolkit/tests/test_generation.py tools/stm32-toolkit/tests/test_build_runner.py -q --tb=short --basetemp=D:/codex-tmp/lf24/p-author-regression -o cache_dir=D:/codex-tmp/lf24/c-author-regression --junitxml=D:/codex-tmp/lf24/author-regression.xml",
+              "description": "Run frozen-head pytest regression slice",
+              "timeout": 600000
+            }
+          }
+        ],
+        "results": [
+          {
+            "id": "call_00_4ze1p4qrq49ojo2r1xu8rift",
+            "isError": false,
+            "content": "........................................................................ [ 12%]\r\n.......................ss............................................... [ 25%]\r\n........................................................................ [ 37%]\r\n........................................................................ [ 50%]\r\n........................................................................ [ 62%]\r\n........................................................................ [ 75%]\r\n........................................................................ [ 87%]\r\n........................................................................ [100%]\r\n--------- generated xml file: D:\\codex-tmp\\lf24\\author-regression.xml ---------"
+          }
+        ],
+        "cliExitCode": 0,
+        "nativeSubprocessExitCode": null
+      }
+    },
+    "regression": {
+      "owner": "primary Codex",
+      "junit": {
+        "tests": 954,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 3,
+        "passed": 951,
+        "seconds": 481.964,
+        "junit": "D:\\codex-tmp\\lf24\\regression.xml",
+        "sha256": "8fab784ecb34a517bb488fd533758cb791c960a0538bde0ebf30b3bf91e13122",
+        "skips": [
+          {
+            "case": "tests.test_project_model::test_file_symlink_cannot_escape_project_root",
+            "reason": "symbolic links are unavailable in this test environment"
+          },
+          {
+            "case": "tests.test_project_model::test_directory_symlink_parent_cannot_escape_project_root",
+            "reason": "symbolic links are unavailable in this test environment"
+          },
+          {
+            "case": "tests.test_regeneration::test_destination_symlink_is_rejected_before_resolution",
+            "reason": "symlink creation is unavailable"
+          }
+        ],
+        "failuresList": []
+      },
+      "execution": {
+        "head": "8e6c7713b70d6404e27bd3490821260cb6028902",
+        "cwd": "C:\\Users\\zhy76\\.codex\\worktrees\\build-snapshot-final\\STM32-Toolkit",
+        "argv": [
+          "D:/codex-tmp/kx23/venv/Scripts/python.exe",
+          "-m",
+          "pytest",
+          "tools/stm32-toolkit/tests/test_project_model.py",
+          "tools/stm32-toolkit/tests/test_generation.py",
+          "tools/stm32-toolkit/tests/test_context.py",
+          "tools/stm32-toolkit/tests/test_regeneration.py",
+          "tools/stm32-toolkit/tests/test_regeneration_workflows.py",
+          "tools/stm32-toolkit/tests/test_regeneration_cli.py",
+          "tools/stm32-toolkit/tests/test_regeneration_mcp.py",
+          "tools/stm32-toolkit/tests/test_build_runner.py",
+          "tools/stm32-toolkit/tests/test_build_snapshot.py",
+          "tools/stm32-toolkit/tests/test_build_map.py",
+          "tools/stm32-toolkit/tests/test_memory_layout.py",
+          "tools/stm32-toolkit/tests/test_memory_layout_compiler.py",
+          "tools/stm32-toolkit/tests/test_extra_memory_regions.py",
+          "tools/stm32-toolkit/tests/test_extra_memory_regions_migration.py",
+          "tools/stm32-toolkit/tests/test_extra_memory_regions_compiler.py",
+          "tools/stm32-toolkit/tests/test_mcp_migration_build.py",
+          "tools/stm32-toolkit/tests/test_ai_call_guidance.py",
+          "-q",
+          "--tb=short",
+          "--basetemp=D:\\codex-tmp\\lf24\\p-regression",
+          "-o",
+          "cache_dir=D:\\codex-tmp\\lf24\\c-regression",
+          "--junitxml=D:\\codex-tmp\\lf24\\regression.xml"
+        ],
+        "exitCode": 0,
+        "logSha256": "7fcac0ee1de75e6ef03f22e658e80d72f80533cda2ca7a39851fba311c601f4f"
+      }
+    },
+    "final-new": {
+      "owner": "primary Codex",
+      "junit": {
+        "tests": 109,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 1,
+        "passed": 108,
+        "seconds": 16.287,
+        "junit": "D:\\codex-tmp\\lf24\\final-new.xml",
+        "sha256": "69ee91602e783c6bcc6bdc9796c2d24dc1581969ea2d4b9b78e32f89e41d3c64",
+        "skips": [
+          {
+            "case": "tests.test_linker_fragment::test_read_linker_fragment_rejects_a_real_symlinked_file",
+            "reason": "unprivileged Windows file symlinks are unavailable; mocked coverage applies"
+          }
+        ],
+        "failuresList": []
+      },
+      "execution": {
+        "head": "114b1f2074a9ff39f9dd399fc8b4e51584fa2a3c",
+        "cwd": "C:\\Users\\zhy76\\.codex\\worktrees\\build-snapshot-final\\STM32-Toolkit",
+        "argv": [
+          "D:/codex-tmp/kx23/venv/Scripts/python.exe",
+          "-m",
+          "pytest",
+          "tools/stm32-toolkit/tests/test_linker_fragment.py",
+          "tools/stm32-toolkit/tests/test_linker_fragment_compiler.py",
+          "-q",
+          "--tb=short",
+          "--basetemp=D:\\codex-tmp\\lf24\\p-final-new",
+          "-o",
+          "cache_dir=D:\\codex-tmp\\lf24\\c-final-new",
+          "--junitxml=D:\\codex-tmp\\lf24\\final-new.xml"
+        ],
+        "exitCode": 0,
+        "logSha256": "d7d898fab43a34867445234ccb87a6ec714095428e73790198deaf53b173f09f"
+      }
+    }
+  },
+  "skillValidation": {
+    "path": "D:\\codex-tmp\\lf24\\valid-skill.jsonl",
+    "sha256": "9c71cec2920a544d216ab17062db931b11a41027c62528d89ec9c69ba19c4fba",
+    "inventory": [
+      "PowerShell"
+    ],
+    "model": "deepseek-v4.1-flash[1m]",
+    "calls": [
+      {
+        "id": "call_00_4yq463fxn00rh6hbblie74xh",
+        "name": "PowerShell",
+        "input": {
+          "command": "D:/codex-tmp/kx23/venv/Scripts/python.exe C:/Users/zhy76/.codex/skills/.system/skill-creator/scripts/quick_validate.py skills/migrate-keil",
+          "description": "Validate migrate-keil skill with quick_validate.py"
+        }
+      }
+    ],
+    "results": [
+      {
+        "id": "call_00_4yq463fxn00rh6hbblie74xh",
+        "isError": false,
+        "content": "Skill is valid!"
+      }
+    ],
+    "cliExitCode": 0,
+    "nativeSubprocessExitCode": null
+  },
+  "pairedResources": [
+    {
+      "rootPath": "schemas/stm32-project.schema.json",
+      "packagedPath": "tools/stm32-toolkit/src/stm32_toolkit/schemas/stm32-project.schema.json",
+      "sha256": "8da231e51fc22c4bf205c98c4c56b62278031f517816846b83cff056dcee2ab6",
+      "identical": true
+    },
+    {
+      "rootPath": "templates/cmake/CMakeLists.txt.j2",
+      "packagedPath": "tools/stm32-toolkit/src/stm32_toolkit/templates/cmake/CMakeLists.txt.j2",
+      "sha256": "34b262f5e3d6e4392b431e7f5b3816973fdc2352f011e50f4149303c6f58da1d",
+      "identical": true
+    },
+    {
+      "rootPath": "templates/cmake/linker.ld.j2",
+      "packagedPath": "tools/stm32-toolkit/src/stm32_toolkit/templates/cmake/linker.ld.j2",
+      "sha256": "78490088e9de5b953defcfeb8468e667965a8107bbf283511422c9e612b1f2b3",
+      "identical": true
+    }
+  ],
+  "regressionReuse": {
+    "earlierHead": "8e6c7713b70d6404e27bd3490821260cb6028902",
+    "laterHead": "114b1f2074a9ff39f9dd399fc8b4e51584fa2a3c",
+    "onlyChangedFiles": [
+      "docs/user-guide.md",
+      "skills/migrate-keil/SKILL.md",
+      "tools/stm32-toolkit/tests/test_linker_fragment.py",
+      "tools/stm32-toolkit/tests/test_linker_fragment_compiler.py"
+    ],
+    "basis": "All product bytes and all 17 historical regression test files are unchanged; final head independently reruns all new tests and author reruns selected legacy model/generation/build tests. Not a combined final-head full matrix."
+  },
+  "uniquePassingCases": 1059,
+  "deferred": {
+    "owner": "primary release qualification",
+    "environment": "symlink-capable Windows/Linux",
+    "reason": "Four real-symlink tests skipped on current Windows; mocked direct and parent reparse checks passed."
+  },
+  "boundaries": {
+    "originalProjectAccess": false,
+    "hardware": false,
+    "installedRuntimeChanged": false,
+    "globalSkillsChanged": false,
+    "frozenReleaseAssetsChanged": false,
+    "remoteActions": false,
+    "releaseQualification": false
+  },
+  "dispatchEvidence": {
+    "shellSmoke": {
+      "path": "D:\\codex-tmp\\lf24\\test-shell.jsonl",
+      "sha256": "dbf762974415e9a5b95e522482060b9d5a4a9e028ad6d4e93ce9f2cc99ba0b19",
+      "inventory": [
+        "PowerShell"
+      ],
+      "model": "deepseek-v4.1-flash[1m]",
+      "calls": [
+        {
+          "id": "call_00_s4eieb2a9ty8xsb6g51wr56n",
+          "name": "PowerShell",
+          "input": {
+            "command": "Get-Location",
+            "description": "Get current location"
+          }
+        }
+      ],
+      "results": [
+        {
+          "id": "call_00_s4eieb2a9ty8xsb6g51wr56n",
+          "isError": false,
+          "content": "Path\r\n----\r\nC:\\Users\\zhy76\\.codex\\worktrees\\build-snapshot-review\\STM32-Toolkit"
+        }
+      ],
+      "cliExitCode": 0,
+      "nativeSubprocessExitCode": null
+    },
+    "inventorySmoke": {
+      "path": "D:\\codex-tmp\\lf24\\smoke.jsonl",
+      "sha256": "2d400669b001af03da5616fe5cacfcbd4e499b5b8a2c4cc9823116052e8fed18"
+    },
+    "anomalyLedger": {
+      "path": "D:\\codex-tmp\\lf24\\invocation-anomalies.txt",
+      "sha256": "c96cd0f42d3607ea206cba8f0224b9f30457f60abbfc4a34037ade245b24ed18",
+      "text": "author: stopped at max65 turns; edits/logs retained.\ncontinue: requested unregistered Bash true; native result No such tool available, Bash disabled. No execution. Coordinator stopped exact claude PID6812/parent5076; file edits/logs retained.\ncomplete: Windows CreateProcess WinError206 before launch; prompt moved to documented text stdin without permission/provider changes.\ncomplete2: fresh file-only invocation exhausted65 turns; edits/logs retained, no shell request.\nfix1: coordinator supplied invalid resume ID0602; CLI rejected before init/execution. Repaired to recorded e4313d81-6eb2-4e57-a898-1c655e547491 in fix1b, with same file-only inventory and permissions.\nfix1b: file-only test-fixture/expectation and product-guidance correction completed; actual native verification followed separately at114b1f2074a9ff39f9dd399fc8b4e51584fa2a3c.\n"
+    },
+    "flags": {
+      "CLAUDE_CODE_USE_POWERSHELL_TOOL": "1",
+      "CLAUDE_CODE_POWERSHELL_RESPECT_EXECUTION_POLICY": "1"
+    },
+    "flagScope": "launching process only; refuse explicit inherited disable/conflict",
+    "mcpConfig": "empty strict MCP configuration",
+    "codeOwnership": "Claude Code CLI implementation; primary complete-diff review and acceptance"
+  }
+}
