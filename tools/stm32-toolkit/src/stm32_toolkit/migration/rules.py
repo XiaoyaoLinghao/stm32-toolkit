@@ -596,7 +596,14 @@ class _Scanner:
             or value > MAX_ALIGNMENT
             or value & (value - 1)
         ):
-            self._align_blocker(start, "unsupported or unresolved __align bound")
+            reason = (
+                f" ({error})"
+                if error is not None and re.search(r"[A-Za-z_]", expression)
+                else ""
+            )
+            self._align_blocker(
+                start, f"unsupported or unresolved __align bound{reason}"
+            )
             return
         line_start = self.text.rfind("\n", 0, start) + 1
         line_end = self.text.find("\n", start)
@@ -919,7 +926,19 @@ def _parse_placement(
         # symbolic forms are C-only.
         return {**candidate, "valid": False, "reason": "address"}
     address, error = _evaluate(symbols, expression)
-    if error is not None or address is None or address > MAX_UINT32:
+    if error is not None:
+        # Keep the bounded, stable resolution reason for symbolic expressions
+        # so the blocker explains conditional/undefined/cycle/unavailable/limit
+        # failures; literal grammar errors keep the legacy generic message.
+        return {
+            **candidate,
+            "valid": False,
+            "reason": "address",
+            "resolution": (
+                error if re.search(r"[A-Za-z_]", expression) else None
+            ),
+        }
+    if address is None or address > MAX_UINT32:
         return {**candidate, "valid": False, "reason": "address"}
     line_start = text.rfind("\n", 0, candidate["start"]) + 1
     line_end = text.find("\n", candidate["start"])
@@ -1007,6 +1026,11 @@ def _placements_blocker(candidate: dict, text: str) -> MigrationBlocker:
             f"satisfy __align({candidate['alignment']}); the address must be a "
             "multiple of the alignment, so adjust the address or alignment; no "
             "placement rewrite was applied for this file"
+        )
+    elif candidate.get("resolution"):
+        message = (
+            "unsupported ARMCC absolute placement grammar: address expression "
+            f"could not be resolved ({candidate['resolution']})"
         )
     else:
         message = "unsupported ARMCC absolute placement grammar"

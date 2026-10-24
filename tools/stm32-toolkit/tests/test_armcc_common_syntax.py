@@ -531,6 +531,17 @@ def test_alignment_must_divide_the_fixed_address():
     assert [section.address for section in supported.fixed_sections] == [0x20000100]
 
 
+def test_unresolved_symbolic_alignment_reports_its_reason():
+    scan = _scan("__align(UNKNOWN_ALIGN) unsigned char pool[8] __at(0x20000100);\n")
+    align = [
+        blocker
+        for blocker in scan.blockers
+        if blocker.code == "ARMCC_ALIGN_UNSUPPORTED"
+    ]
+    assert len(align) == 1
+    assert "(undefined)" in align[0].message
+
+
 def test_alignment_and_placement_negative_forms_remain_blocked():
     align_cases = (
         "__align(3) int x;\n",
@@ -886,3 +897,48 @@ def test_public_flow_blocks_incompatible_alignment_and_fixed_address(tmp_path):
     }
     assert "ARMCC_ABSOLUTE_PLACEMENT" not in changes["Main/main.c"]["ruleIds"]
     assert "ARMCC_ALIGN_ATTRIBUTE" in changes["Main/main.c"]["ruleIds"]
+
+
+def test_public_flow_surfaces_symbolic_placement_resolution_reason(tmp_path):
+    cases = (
+        (
+            "conditional",
+            {
+                "Main/main.c": (
+                    '#include "config.h"\n'
+                    "__at(PLACED) int pinned;\n"
+                    "int main(void) { return (int)pinned; }\n"
+                ),
+                "Main/config.h": (
+                    "#ifdef FEATURE\n#define PLACED 0x20000100\n#endif\n"
+                ),
+            },
+            "conditional",
+        ),
+        (
+            "undefined",
+            {
+                "Main/main.c": (
+                    "__at(UNDEFINED_ADDR) int pinned;\n"
+                    "int main(void) { return (int)pinned; }\n"
+                ),
+            },
+            "undefined",
+        ),
+    )
+    for name, files, reason in cases:
+        repo = build_repo(
+            tmp_path,
+            name=name,
+            files=files,
+            uvprojx_kwargs={
+                "groups": (("Main", (("main.c", "1", "Main/main.c"),)),),
+            },
+        )
+        preflight = preflight_keil_conversion(repo, fixture_inspection(repo))
+        blocker = next(
+            blocker
+            for blocker in preflight["analysis"]["blockers"]
+            if blocker["code"] == "ARMCC_ABSOLUTE_PLACEMENT_UNSUPPORTED"
+        )
+        assert f"({reason})" in blocker["message"]
