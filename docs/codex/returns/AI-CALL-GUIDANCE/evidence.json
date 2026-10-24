@@ -1,0 +1,388 @@
+{
+  "module": "AI-CALL-GUIDANCE",
+  "acceptedBase": "c6cf5cda7a25e4aa0b1335558ab0ffe16fbb32be",
+  "codeHead": "e02365f4ba7ec3c3bcaef3efae6d473215d6f7e6",
+  "reviewedDiffSha256": "5ed766a5f97c0390f9b1311c6972b0da273d0d4717cce81b26df96362a3083be",
+  "runs": {
+    "new": {
+      "source": "d78cd4b18d8966b6e4a1a8094dde0590b6d33f75",
+      "owner": "Claude Code CLI",
+      "xml": "D:\\codex-tmp\\ag24\\new.xml",
+      "sha256": "eb6f27914b7845e07f92d6674f8f870c9077154f5066bc0c34e189fcb08cd0e0",
+      "counts": {
+        "tests": 12,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      }
+    },
+    "regression": {
+      "source": "d78cd4b18d8966b6e4a1a8094dde0590b6d33f75",
+      "owner": "Claude Code CLI",
+      "xml": "D:\\codex-tmp\\ag24\\regression.xml",
+      "sha256": "d6d7b1bc03280a1b4b5bcbe0ace5db276ac614d367ea1057b669315875adf4ca",
+      "counts": {
+        "tests": 257,
+        "failures": 1,
+        "errors": 0,
+        "skipped": 0
+      }
+    },
+    "review": {
+      "source": "d78cd4b18d8966b6e4a1a8094dde0590b6d33f75",
+      "owner": "primary",
+      "xml": "D:\\codex-tmp\\ag24\\review.xml",
+      "sha256": "b2114f4e499ec3f4b6e8f01ae306d3fa0835a9bdace711418a1adaf0e57276c2",
+      "counts": {
+        "tests": 103,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      }
+    },
+    "final": {
+      "source": "e02365f4ba7ec3c3bcaef3efae6d473215d6f7e6",
+      "owner": "Claude Code CLI",
+      "xml": "D:\\codex-tmp\\ag24\\final.xml",
+      "sha256": "e2dc70ea8342a0faf2d39b3104aaecd5c469e424489e577143640d2b4a24ce25",
+      "counts": {
+        "tests": 80,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      }
+    },
+    "review-final": {
+      "source": "e02365f4ba7ec3c3bcaef3efae6d473215d6f7e6",
+      "owner": "primary",
+      "xml": "D:\\codex-tmp\\ag24\\review-final.xml",
+      "sha256": "2e5764111d011d9baf4ebd0c9c920d8b86cfa50ca7d96e64786bf5bf4ce0a00a",
+      "counts": {
+        "tests": 33,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      }
+    }
+  },
+  "cliInvocations": {
+    "inventory": {
+      "log": "D:\\codex-tmp\\ag24\\inventory.jsonl",
+      "sha256": "104ca0870f56310a59d6e80d30bb90847056febfd972611c37ecbe9d3c121924",
+      "commands": [],
+      "toolResults": 0,
+      "tools": [
+        "PowerShell"
+      ],
+      "model": "deepseek-v4.1-flash[1m]",
+      "mcpServers": [],
+      "result": "success",
+      "permissionDenials": []
+    },
+    "shell": {
+      "log": "D:\\codex-tmp\\ag24\\shell.jsonl",
+      "sha256": "82b15b71b3b15eee7b98cbd6342021f6697431053418652674a63964b54120c2",
+      "commands": [
+        {
+          "command": "Get-Location",
+          "description": "Harmless native shell smoke test"
+        }
+      ],
+      "toolResults": 1,
+      "tools": [
+        "PowerShell"
+      ],
+      "model": "deepseek-v4.1-flash[1m]",
+      "mcpServers": [],
+      "result": "success",
+      "permissionDenials": []
+    },
+    "author": {
+      "log": "D:\\codex-tmp\\ag24\\author.jsonl",
+      "sha256": "17bce8ed635a9214838c09243131e63b5879ca324d7eb6bd3613d2ac51518e53",
+      "commands": [],
+      "toolResults": 86,
+      "tools": [
+        "Edit",
+        "Glob",
+        "Grep",
+        "Read",
+        "Write"
+      ],
+      "model": "deepseek-v4.1-flash[1m]",
+      "mcpServers": [],
+      "result": "error_max_turns",
+      "permissionDenials": []
+    },
+    "continue": {
+      "log": "D:\\codex-tmp\\ag24\\continue.jsonl",
+      "sha256": "9eb5953830c509974ed95bb10147a9dc93aacdad69149d464f20c9aaca52bbf1",
+      "commands": [],
+      "toolResults": 95,
+      "tools": [
+        "Edit",
+        "Glob",
+        "Grep",
+        "Read",
+        "Write"
+      ],
+      "model": "deepseek-v4.1-flash[1m]",
+      "mcpServers": [],
+      "result": "error_max_turns",
+      "permissionDenials": []
+    },
+    "fix": {
+      "log": "D:\\codex-tmp\\ag24\\fix.jsonl",
+      "sha256": "c127ce756608e3a95082b51de2dbf2cab863104954f25c5e5caeeb25781a9802",
+      "commands": [],
+      "toolResults": 37,
+      "tools": [
+        "Edit",
+        "Glob",
+        "Grep",
+        "Read",
+        "Write"
+      ],
+      "model": "deepseek-v4.1-flash[1m]",
+      "mcpServers": [],
+      "result": "success",
+      "permissionDenials": []
+    },
+    "docfix": {
+      "log": "D:\\codex-tmp\\ag24\\docfix.jsonl",
+      "sha256": "dce2b374828aa9abcd5caa0f1d0546e07d1de22b356b536b4bc61117d9114db9",
+      "commands": [],
+      "toolResults": 23,
+      "tools": [
+        "Edit",
+        "Glob",
+        "Grep",
+        "Read",
+        "Write"
+      ],
+      "model": "deepseek-v4.1-flash[1m]",
+      "mcpServers": [],
+      "result": "success",
+      "permissionDenials": []
+    },
+    "tests": {
+      "log": "D:\\codex-tmp\\ag24\\tests.jsonl",
+      "sha256": "e1a82792b0f72e862bea1592479dbf216ee3fd03b7e6575ca4aa213c0f67d2dc",
+      "commands": [
+        {
+          "command": "python -m pytest tools/stm32-toolkit/tests/test_ai_call_guidance.py -q --tb=short --basetemp=D:/codex-tmp/ag24/p-new -o cache_dir=D:/codex-tmp/ag24/c-new --junitxml=D:/codex-tmp/ag24/new.xml",
+          "description": "Run AI call guidance pytest suite",
+          "timeout": 600000
+        },
+        {
+          "command": "python -m pytest tools/stm32-toolkit/tests/test_context.py tools/stm32-toolkit/tests/test_doctor.py tools/stm32-toolkit/tests/test_keil_preflight.py tools/stm32-toolkit/tests/test_build_snapshot.py tools/stm32-toolkit/tests/test_mcp_roots.py tools/stm32-toolkit/tests/test_mcp_migration_build.py tools/stm32-toolkit/tests/test_external_firmware_routing.py tools/stm32-toolkit/tests/test_public_inventory.py tools/stm32-toolkit/tests/test_plugin_layout.py -q --tb=short --basetemp=D:/codex-tmp/ag24/p-regression -o cache_dir=D:/codex-tmp/ag24/c-regression --junitxml=D:/codex-tmp/ag24/regression.xml",
+          "description": "Run regression pytest suite",
+          "timeout": 600000
+        }
+      ],
+      "toolResults": 2,
+      "tools": [
+        "PowerShell"
+      ],
+      "model": "deepseek-v4.1-flash[1m]",
+      "mcpServers": [],
+      "result": "success",
+      "permissionDenials": []
+    },
+    "validate": {
+      "log": "D:\\codex-tmp\\ag24\\validate.jsonl",
+      "sha256": "3c746961e00a522409e47acdbc3cf7a472f8d73a325826fb319bfc104c6838ee",
+      "commands": [
+        {
+          "command": "python C:/Users/zhy76/.codex/skills/.system/skill-creator/scripts/quick_validate.py skills/build-firmware",
+          "description": "Validate build-firmware skill frontmatter"
+        },
+        {
+          "command": "python C:/Users/zhy76/.codex/skills/.system/skill-creator/scripts/quick_validate.py skills/debug-firmware",
+          "description": "Validate debug-firmware skill frontmatter"
+        },
+        {
+          "command": "python C:/Users/zhy76/.codex/skills/.system/skill-creator/scripts/quick_validate.py skills/flash-firmware",
+          "description": "Validate flash-firmware skill frontmatter"
+        },
+        {
+          "command": "python C:/Users/zhy76/.codex/skills/.system/skill-creator/scripts/quick_validate.py skills/migrate-keil",
+          "description": "Validate migrate-keil skill frontmatter"
+        },
+        {
+          "command": "python C:/Users/zhy76/.codex/skills/.system/skill-creator/scripts/quick_validate.py skills/setup-stm32-env",
+          "description": "Validate setup-stm32-env skill frontmatter"
+        }
+      ],
+      "toolResults": 5,
+      "tools": [
+        "PowerShell"
+      ],
+      "model": "deepseek-v4.1-flash[1m]",
+      "mcpServers": [],
+      "result": "success",
+      "permissionDenials": []
+    },
+    "test-final": {
+      "log": "D:\\codex-tmp\\ag24\\test-final.jsonl",
+      "sha256": "2228f8aa9fc4da4963a4e68abcccf71b2841e78d8ed9914ebf258c6314778694",
+      "commands": [
+        {
+          "command": "python -m pytest tools/stm32-toolkit/tests/test_ai_call_guidance.py tools/stm32-toolkit/tests/test_context.py tools/stm32-toolkit/tests/test_plugin_layout.py -q --tb=short --basetemp=D:/codex-tmp/ag24/p-final -o cache_dir=D:/codex-tmp/ag24/c-final --junitxml=D:/codex-tmp/ag24/final.xml",
+          "description": "Run the AI call guidance, context, and plugin layout test suites",
+          "timeout": 600000
+        },
+        {
+          "command": "python C:/Users/zhy76/.codex/skills/.system/skill-creator/scripts/quick_validate.py skills/build-firmware",
+          "description": "Validate the build-firmware skill",
+          "timeout": 600000
+        },
+        {
+          "command": "python C:/Users/zhy76/.codex/skills/.system/skill-creator/scripts/quick_validate.py skills/flash-firmware",
+          "description": "Validate the flash-firmware skill",
+          "timeout": 600000
+        },
+        {
+          "command": "python C:/Users/zhy76/.codex/skills/.system/skill-creator/scripts/quick_validate.py skills/migrate-keil",
+          "description": "Validate the migrate-keil skill",
+          "timeout": 600000
+        }
+      ],
+      "toolResults": 4,
+      "tools": [
+        "PowerShell"
+      ],
+      "model": "deepseek-v4.1-flash[1m]",
+      "mcpServers": [],
+      "result": "success",
+      "permissionDenials": []
+    }
+  },
+  "primaryExecution": [
+    {
+      "head": "d78cd4b18d8966b6e4a1a8094dde0590b6d33f75",
+      "cwd": "C:\\Users\\zhy76\\.codex\\worktrees\\build-snapshot-final\\STM32-Toolkit",
+      "argv": [
+        "D:/codex-tmp/kx23/venv/Scripts/python.exe",
+        "-m",
+        "pytest",
+        "tools/stm32-toolkit/tests/test_ai_call_guidance.py",
+        "tools/stm32-toolkit/tests/test_keil_preflight.py",
+        "tools/stm32-toolkit/tests/test_mcp_roots.py",
+        "tools/stm32-toolkit/tests/test_external_firmware_routing.py",
+        "-q",
+        "--tb=short",
+        "--basetemp=D:/codex-tmp/ag24/p-review",
+        "-o",
+        "cache_dir=D:/codex-tmp/ag24/c-review",
+        "--junitxml=D:/codex-tmp/ag24/review.xml"
+      ],
+      "exitCode": 0,
+      "logSha256": "ef3d862248d231ec878e17c8e3b7f37efad09f288e0acc32d9af43eb654655e4"
+    },
+    {
+      "head": "e02365f4ba7ec3c3bcaef3efae6d473215d6f7e6",
+      "cwd": "C:\\Users\\zhy76\\.codex\\worktrees\\build-snapshot-final\\STM32-Toolkit",
+      "argv": [
+        "D:/codex-tmp/kx23/venv/Scripts/python.exe",
+        "-m",
+        "pytest",
+        "tools/stm32-toolkit/tests/test_ai_call_guidance.py",
+        "tools/stm32-toolkit/tests/test_context.py::test_keil_context_stays_read_only_and_reports_inspection_capabilities",
+        "tools/stm32-toolkit/tests/test_plugin_layout.py",
+        "-q",
+        "--tb=short",
+        "--basetemp=D:/codex-tmp/ag24/p-review-final",
+        "-o",
+        "cache_dir=D:/codex-tmp/ag24/c-review-final",
+        "--junitxml=D:/codex-tmp/ag24/review-final.xml"
+      ],
+      "exitCode": 0,
+      "logSha256": "a2f7853953593012ede55e603c1b141b465888d9326decae67b932912826544b"
+    }
+  ],
+  "unchangedProductTrees": {
+    "tools/stm32-toolkit/src": {
+      "d78cd4b18d8966b6e4a1a8094dde0590b6d33f75": "00ee8a53bac0332b4e2509967f029be6034809fd",
+      "e02365f4ba7ec3c3bcaef3efae6d473215d6f7e6": "00ee8a53bac0332b4e2509967f029be6034809fd"
+    },
+    "tools/stm32-monitor": {
+      "d78cd4b18d8966b6e4a1a8094dde0590b6d33f75": "49e19f7d6438bfcdd30065c1a92852b7b2601a66",
+      "e02365f4ba7ec3c3bcaef3efae6d473215d6f7e6": "49e19f7d6438bfcdd30065c1a92852b7b2601a66"
+    }
+  },
+  "preservation": {
+    "baseline": [
+      {
+        "path": "D:\\WorkSpace\\STM32-Toolkit\\dist\\v1.3.0\\CHECKSUMS.sha256",
+        "sha256": "ed632d302dab80ebfcd11bab632ab770426c554d84f472fa1cedcb6aac448576",
+        "unchanged": true
+      },
+      {
+        "path": "D:\\WorkSpace\\STM32-Toolkit\\dist\\v1.3.0\\release-manifest.json",
+        "sha256": "d36d7ef2344c1efd694d8b0573d2d33024f88948a605ddbbb394e4b9ecc1222c",
+        "unchanged": true
+      },
+      {
+        "path": "C:\\data\\stm32-toolkit\\runtime\\runtime-state.json",
+        "sha256": "7c4be8f3ed6b58dacbaaa916005f754fec42c8e37b16a1d93e90541e26768cf5",
+        "unchanged": true
+      }
+    ],
+    "assets": [
+      {
+        "name": "LICENSE",
+        "matches": true
+      },
+      {
+        "name": "THIRD-PARTY-NOTICES.md",
+        "matches": true
+      },
+      {
+        "name": "compatibility.md",
+        "matches": true
+      },
+      {
+        "name": "licenses.zip",
+        "matches": true
+      },
+      {
+        "name": "monitor-assets.json",
+        "matches": true
+      },
+      {
+        "name": "release-manifest.json",
+        "matches": true
+      },
+      {
+        "name": "sbom.spdx.json",
+        "matches": true
+      },
+      {
+        "name": "stm32-toolkit-1.3.0-source.zip",
+        "matches": true
+      },
+      {
+        "name": "stm32-toolkit-1.3.0-windows-x86_64.zip",
+        "matches": true
+      },
+      {
+        "name": "stm32_monitor-1.3.0-py3-none-any.whl",
+        "matches": true
+      },
+      {
+        "name": "stm32_toolkit-1.3.0-py3-none-any.whl",
+        "matches": true
+      },
+      {
+        "name": "troubleshooting.md",
+        "matches": true
+      }
+    ],
+    "assetCountIncludingChecksums": 13
+  },
+  "reusedRegressionCases": 189,
+  "finalAuthorCases": 80,
+  "uniqueScopedCasesWithPassingEvidence": 269,
+  "qualification": "offline-slice-only"
+}

@@ -4,6 +4,8 @@
 
 ## 1. 当前断点与证据
 
+2026-10-24 AI-CALL-GUIDANCE 离线调用引导切片已 `ACCEPTED_WITH_FIXES`，依据[独立验收记录](../codex/returns/AI-CALL-GUIDANCE/review.md)。Accepted base `c6cf5cda7a25e4aa0b1335558ab0ffe16fbb32be`，CodeHead `e02365f4ba7ec3c3bcaef3efae6d473215d6f7e6`。Claude Code CLI 编码与测试，主代理独立完整差异审核；最终80项定向通过，189项未变相关回归按记录复用，独立103项及最终33项通过，五个受影响 Skill 格式校验通过。仅完善实际 MCP 版本/绑定证据、完整诊断、managed/imported 分流及 Skill/VS Code 指引，保留原有准入和硬件合同。本补丁尚未进入冻结的1.3.0发行文件或已安装runtime，重启VS Code不等于安装补丁；原工程与硬件未操作。下一次硬件验收仍须按下方执行卡和既有EXTERNAL-FIRMWARE合同核对，不因本次离线接受获得授权。
+
 2026-10-24 EXTERNAL-FIRMWARE 离线软件切片已 `ACCEPTED_WITH_FIXES`，依据[规格](../superpowers/specs/2026-10-23-external-firmware-design.md)、[计划](../superpowers/plans/2026-10-23-external-firmware-plan.md)和[独立验收记录](../codex/returns/EXTERNAL-FIRMWARE/review.md)。Accepted base `6b4c13b6fa76f320503b14679c8eb7bfc712c9af`，CodeHead `4f002cd1479dc98c2dc9c48d7e75dddf896de2f2`。本地 Claude Code CLI 负责实现与测试，主代理独立审查；52项新功能独立通过，最终191项相关回归通过，另924项未变回归按验收记录复用。此断点仅接受离线软件；v1.3.0 本地构建按[交付计划](../superpowers/plans/2026-10-24-v130-local-release-plan.md)留证，不代表全量发行资格。原工程、已安装 runtime 和硬件均未操作；v1.2.0 例外不沿用。后续实机前仍须填写下节执行卡并获得对应授权。
 
 外部固件入口须先 readonly import PLAN → 原参数与 planId 的授权副本 APPLY → readonly ADMIT。导入副本的授权不授予硬件操作；ADMIT 的 offlineReady 不等于目标已验证。后续另获授权的 flash-imported 绑定 importId、原始 source SHA256、target、声明范围及 probe，使用独立 MODIFY 工作流、芯片 Flash map 校验与完整 readback。成功响应 details.postFlash.targetState=unknown、details.postFlash.runVerified=false（收据同样记录 runVerified=false），不证明固件运行；不能作为受管 debug、Monitor 或 Target 的构建身份。硬件失败后仍遵守首错停止，不因导入成功自动重试或 reset/resume。若开始新的发行覆盖率度量，先将 external_firmware.py 纳入 Toolkit 风险核心范围，保留永久门槛。
