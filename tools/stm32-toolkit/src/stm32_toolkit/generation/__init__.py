@@ -16,6 +16,7 @@ from stm32_toolkit.generation.managed_files import (
     GenerationInput,
     GenerationPlan,
     ManagedFileRecord,
+    ManifestEdit,
 )
 from stm32_toolkit.generation.creation import (
     CreationBlocker,
@@ -33,6 +34,7 @@ __all__ = [
     "GeneratedFile",
     "GenerationBlocker",
     "GenerationPlan",
+    "ManifestEdit",
     "plan_project_configuration",
     "apply_project_configuration",
     "CreationBlocker",

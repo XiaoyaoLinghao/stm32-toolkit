@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from stm32_toolkit import __version__
+from stm32_toolkit.debug_configuration import DebugConfiguration
 from stm32_toolkit.linker_fragment import LinkerFragment
 from stm32_toolkit.project_model import ProjectModel
 
@@ -208,6 +209,39 @@ class GeneratedFile:
 
 
 @dataclass(frozen=True)
+class ManifestEdit:
+    """The planned edit of the user-owned project manifest.
+
+    ``before_bytes`` is the exact source manifest observed on disk and is the
+    before evidence recorded in ``GenerationPlan.inputs``; ``after_bytes`` is
+    the validated candidate and never exists on disk during planning.  Both
+    raw byte images stay private and are omitted from ``to_dict()`` and from
+    the plan ID (their digests participate instead).
+    """
+
+    path: str
+    status: str  # "unchanged" or "update"
+    before_sha256: str
+    after_sha256: str
+    before_size: int
+    after_size: int
+    unified_diff: str
+    before_bytes: bytes  # omitted from to_dict()
+    after_bytes: bytes  # omitted from to_dict()
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "path": self.path,
+            "status": self.status,
+            "before_sha256": self.before_sha256,
+            "after_sha256": self.after_sha256,
+            "before_size": self.before_size,
+            "after_size": self.after_size,
+            "unified_diff": self.unified_diff,
+        }
+
+
+@dataclass(frozen=True)
 class GenerationBlocker:
     code: str
     path: str
@@ -229,9 +263,14 @@ class GenerationPlan:
     blockers: tuple[GenerationBlocker, ...]
     managed_manifest_path: str
     managed_manifest_bytes: bytes  # omitted from to_dict()
+    #: Present only on the explicit paired-configure route.  Both optional
+    #: fields are omitted from ``to_dict()`` and from the plan ID when absent,
+    #: preserving the historical plan shape/hash byte-for-byte.
+    debug_configuration: DebugConfiguration | None = None
+    manifest_edit: ManifestEdit | None = None
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        payload: dict[str, object] = {
             "plan_version": self.plan_version,
             "plan_id": self.plan_id,
             "model_sha256": self.model_sha256,
@@ -240,6 +279,11 @@ class GenerationPlan:
             "blockers": [blocker.to_dict() for blocker in self.blockers],
             "managed_manifest_path": self.managed_manifest_path,
         }
+        if self.debug_configuration is not None:
+            payload["debug_configuration"] = self.debug_configuration.to_dict()
+        if self.manifest_edit is not None:
+            payload["manifest_edit"] = self.manifest_edit.to_dict()
+        return payload
 
 
 # ---------------------------------------------------------------------------
@@ -397,6 +441,21 @@ def plan_id_for(plan: GenerationPlan) -> str:
         "managed_manifest_path": plan.managed_manifest_path,
         "managed_manifest_sha256": sha256_hex(plan.managed_manifest_bytes),
     }
+    # The explicit pair and manifest edit bind identity only when present, so
+    # the legacy no-option plan ID is unchanged.  Raw bytes and the rendered
+    # diff stay private; their digests already bind both sides.
+    if plan.debug_configuration is not None:
+        payload["debug_configuration"] = plan.debug_configuration.to_dict()
+    if plan.manifest_edit is not None:
+        edit = plan.manifest_edit
+        payload["manifest_edit"] = {
+            "path": edit.path,
+            "status": edit.status,
+            "before_sha256": edit.before_sha256,
+            "after_sha256": edit.after_sha256,
+            "before_size": edit.before_size,
+            "after_size": edit.after_size,
+        }
     return sha256_hex(canonical_json_bytes(payload))
 
 

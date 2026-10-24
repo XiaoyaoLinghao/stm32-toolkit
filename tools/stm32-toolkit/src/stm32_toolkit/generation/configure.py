@@ -30,6 +30,11 @@ from pathlib import Path
 from jinja2 import Environment, StrictUndefined, UndefinedError
 
 from stm32_toolkit import __version__
+from stm32_toolkit.debug_configuration import (
+    DebugConfiguration,
+    DebugConfigurationError,
+    normalize_debug_configuration,
+)
 from stm32_toolkit.memory_layout import (
     MemoryLayoutError,
     MemoryLayoutResolution,
@@ -38,7 +43,12 @@ from stm32_toolkit.memory_layout import (
 )
 from stm32_toolkit.linker_fragment import BUILD_REMEDIATION
 from stm32_toolkit.project_upgrade import ProjectMutationLockError
-from stm32_toolkit.project_model import ProjectManifestError, ProjectModel, load_project_model
+from stm32_toolkit.project_model import (
+    ProjectManifestError,
+    ProjectModel,
+    load_project_model,
+    load_project_model_candidate,
+)
 from stm32_toolkit.result import OperationResult
 
 from stm32_toolkit.generation.managed_files import (
@@ -62,6 +72,7 @@ from stm32_toolkit.generation.managed_files import (
     GenerationInput,
     GenerationPlan,
     ManagedFileRecord,
+    ManifestEdit,
     _reject_duplicate_json_keys,
     build_managed_manifest_bytes,
     canonical_json_bytes,
@@ -152,10 +163,25 @@ def _cmake_quote(value: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def plan_project_configuration(model: ProjectModel) -> GenerationPlan:
-    """Produce a deterministic, read-only configuration plan for the model."""
+def plan_project_configuration(
+    model: ProjectModel,
+    *,
+    debug_backend: object = None,
+    debug_target: object = None,
+) -> GenerationPlan:
+    """Produce a deterministic, read-only configuration plan for the model.
+
+    With both keyword arguments omitted the historical build-only planning
+    route and plan shape are unchanged.  Supplying the explicit pair (or only
+    one of them, which is refused) plans a user-owned manifest edit that sets
+    exactly ``debug.backend`` and ``debug.target`` and nothing else.
+    """
     try:
-        return _plan(model)
+        configuration = normalize_debug_configuration(debug_backend, debug_target)
+    except DebugConfigurationError as error:
+        raise _raise_error(error.code, error.message, error.details) from None
+    try:
+        return _plan(model, configuration)
     except GenerationError:
         raise
     except ProjectManifestError:
@@ -166,35 +192,122 @@ def plan_project_configuration(model: ProjectModel) -> GenerationPlan:
         ) from None
 
 
-def _plan(model: ProjectModel) -> GenerationPlan:
+def _plan(
+    model: ProjectModel,
+    configuration: DebugConfiguration | None = None,
+) -> GenerationPlan:
     _validate_model(model)
     root = model.project_root
-    fresh = load_project_model(root)
-    if model_sha256_for(fresh) != model_sha256_for(model):
-        raise _raise_error(
-            "GENERATION_MODEL_INVALID",
-            "project model is stale",
-            {"field": "model", "rule": "stale"},
+    manifest_edit: ManifestEdit | None = None
+    if configuration is None:
+        fresh = load_project_model(root)
+        if model_sha256_for(fresh) != model_sha256_for(model):
+            raise _raise_error(
+                "GENERATION_MODEL_INVALID",
+                "project model is stale",
+                {"field": "model", "rule": "stale"},
+            )
+        effective = model
+    else:
+        # The supplied model is the observed source model; the effective
+        # candidate below is validated from freshly read source bytes and is
+        # never written to disk during planning.
+        source_bytes = _read_source_manifest(root)
+        try:
+            source_model = load_project_model_candidate(root, source_bytes)
+        except ProjectManifestError:
+            raise _raise_error(
+                "GENERATION_MODEL_INVALID",
+                "project model is not available",
+                {"field": "model", "rule": "unavailable"},
+            ) from None
+        if model_sha256_for(source_model) != model_sha256_for(model):
+            raise _raise_error(
+                "GENERATION_MODEL_INVALID",
+                "project model is stale",
+                {"field": "model", "rule": "stale"},
+            )
+        after_bytes, edit_status = _manifest_candidate_bytes(
+            source_bytes, configuration
         )
-    _validate_generation_spec(model)
-    options = _validate_options(model)
-    _validate_memory(model)
+        if len(after_bytes) > FILE_LIMIT_BYTES:
+            raise _raise_error(
+                "GENERATION_INPUT_INVALID",
+                "project manifest exceeds the limit",
+                {"path": _STM32_PROJECT_MANIFEST, "rule": "size"},
+            )
+        try:
+            effective = load_project_model_candidate(root, after_bytes)
+        except ProjectManifestError:
+            raise _raise_error(
+                "GENERATION_MODEL_INVALID",
+                "debug configuration candidate is not a valid project model",
+                {"field": "model", "rule": "candidate"},
+            ) from None
+        if (
+            effective.debug.backend != configuration.backend
+            or effective.debug.target != configuration.target
+        ):
+            raise _raise_error(
+                "GENERATION_MODEL_INVALID",
+                "debug configuration candidate did not retain the requested pair",
+                {"field": "debug.backend", "rule": "value"},
+            )
+        manifest_edit = ManifestEdit(
+            path=_STM32_PROJECT_MANIFEST,
+            status=edit_status,
+            before_sha256=sha256_hex(source_bytes),
+            after_sha256=sha256_hex(after_bytes),
+            before_size=len(source_bytes),
+            after_size=len(after_bytes),
+            unified_diff=(
+                unified_diff(
+                    _STM32_PROJECT_MANIFEST,
+                    source_bytes.decode("utf-8", "replace"),
+                    after_bytes.decode("utf-8", "replace"),
+                )
+                if edit_status == "update"
+                else ""
+            ),
+            before_bytes=source_bytes,
+            after_bytes=after_bytes,
+        )
+    _validate_generation_spec(effective)
+    options = _validate_options(effective)
+    _validate_memory(effective)
     layout = (
         None
-        if model.generation.native_linker_script is not None
-        else _memory_layout_resolution(model)
+        if effective.generation.native_linker_script is not None
+        else _memory_layout_resolution(effective)
     )
     report, report_sha = _read_conversion_report(root)
-    fixed_sections = _validate_fixed_sections(report, model)
+    fixed_sections = _validate_fixed_sections(report, effective)
     prior_data = _read_prior_manifest(root)
     prior = parse_managed_manifest(prior_data) if prior_data is not None else ()
-    inputs = _collect_inputs(root, model, prior_data, report_sha)
-    rendered = _render_targets(model, options, fixed_sections, layout)
+    inputs = _collect_inputs(root, effective, prior_data, report_sha)
+    if manifest_edit is not None:
+        # The manifest input is the observed SOURCE evidence.  A concurrent
+        # rewrite between the two reads is a race, never a new candidate.
+        manifest_input = next(
+            (entry for entry in inputs if entry.path == _STM32_PROJECT_MANIFEST),
+            None,
+        )
+        if (
+            manifest_input is None
+            or manifest_input.sha256 != manifest_edit.before_sha256
+            or manifest_input.size != manifest_edit.before_size
+        ):
+            raise _raise_error(
+                "GENERATION_MODEL_INVALID",
+                "project model changed while configuration was planning",
+                {"field": "model", "rule": "stale"},
+            )
+    rendered = _render_targets(effective, options, fixed_sections, layout)
     files = _classify_targets(root, rendered, prior)
     blockers = _collect_blockers(prior, files)
-    model_sha256 = model_sha256_for(model)
+    model_sha256 = model_sha256_for(effective)
     manifest_bytes = build_managed_manifest_bytes(
-        files, model_sha256, linker_fragment=model.generation.linker_fragment
+        files, model_sha256, linker_fragment=effective.generation.linker_fragment
     )
     if len(manifest_bytes) > TOTAL_LIMIT_BYTES:
         raise _raise_error(
@@ -211,7 +324,7 @@ def _plan(model: ProjectModel) -> GenerationPlan:
         )
     plan = GenerationPlan(
         project_root=root,
-        model=model,
+        model=effective,
         plan_version=PLAN_VERSION,
         plan_id="",
         model_sha256=model_sha256,
@@ -220,6 +333,8 @@ def _plan(model: ProjectModel) -> GenerationPlan:
         blockers=tuple(blockers),
         managed_manifest_path=MANAGED_MANIFEST_PATH,
         managed_manifest_bytes=manifest_bytes,
+        debug_configuration=configuration,
+        manifest_edit=manifest_edit,
     )
     plan = replace(plan, plan_id=plan_id_for(plan))
     if len(canonical_json_bytes(plan.to_dict())) > PLAN_LIMIT_BYTES:
@@ -229,6 +344,116 @@ def _plan(model: ProjectModel) -> GenerationPlan:
             {"rule": "planLimit"},
         )
     return plan
+
+
+def _read_source_manifest(root: Path) -> bytes:
+    """Read the source manifest once under strict editing-route guards."""
+    path = _STM32_PROJECT_MANIFEST
+    absolute = root.joinpath(*path.split("/"))
+    try:
+        lst = os.lstat(absolute)
+    except (FileNotFoundError, NotADirectoryError):
+        raise _raise_error(
+            "GENERATION_MODEL_INVALID",
+            "project manifest is not available",
+            {"field": "model", "rule": "unavailable"},
+        ) from None
+    except OSError:
+        raise _raise_error(
+            "GENERATION_MODEL_INVALID",
+            "project manifest is not available",
+            {"field": "model", "rule": "unavailable"},
+        ) from None
+    if stat.S_ISLNK(lst.st_mode) or bool(
+        getattr(lst, "st_file_attributes", 0)
+        & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    ):
+        raise _raise_error(
+            "GENERATION_INPUT_INVALID",
+            "project manifest must not redirect",
+            {"path": path, "rule": "redirect"},
+        )
+    if not stat.S_ISREG(lst.st_mode):
+        raise _raise_error(
+            "GENERATION_MODEL_INVALID",
+            "project manifest is not a regular file",
+            {"field": "model", "rule": "regularFile"},
+        )
+    resolved = _resolve_contained(absolute, root, path)
+    try:
+        data = _read_limited(resolved, FILE_LIMIT_BYTES)
+    except OSError:
+        raise _raise_error(
+            "GENERATION_MODEL_INVALID",
+            "project manifest is unreadable",
+            {"field": "model", "rule": "unavailable"},
+        ) from None
+    if len(data) > FILE_LIMIT_BYTES:
+        raise _raise_error(
+            "GENERATION_INPUT_INVALID",
+            "project manifest exceeds the limit",
+            {"path": path, "rule": "size"},
+        )
+    return data
+
+
+def _manifest_candidate_bytes(
+    source: bytes, configuration: DebugConfiguration
+) -> tuple[bytes, str]:
+    """Return ``(candidate_bytes, status)`` changing only the debug pair.
+
+    Parsing rejects duplicate keys so the editing route fails closed instead
+    of silently collapsing competing values.  When the requested pair already
+    equals the source values the exact source bytes are returned, preserving
+    the owner's formatting.
+    """
+    try:
+        text = source.decode("utf-8")
+    except UnicodeDecodeError:
+        raise _raise_error(
+            "GENERATION_MODEL_INVALID",
+            "project manifest is not valid UTF-8",
+            {"field": "$", "rule": "encoding"},
+        ) from None
+    try:
+        payload = json.loads(text, object_pairs_hook=_reject_duplicate_json_keys)
+    except json.JSONDecodeError:
+        raise _raise_error(
+            "GENERATION_MODEL_INVALID",
+            "project manifest is not valid JSON",
+            {"field": "$", "rule": "json"},
+        ) from None
+    except ValueError:
+        raise _raise_error(
+            "GENERATION_MODEL_INVALID",
+            "project manifest has duplicate keys",
+            {"field": "$", "rule": "duplicate"},
+        ) from None
+    if not isinstance(payload, dict):
+        raise _raise_error(
+            "GENERATION_MODEL_INVALID",
+            "project manifest is not an object",
+            {"field": "$", "rule": "type"},
+        )
+    debug = payload.get("debug")
+    if debug is None:
+        debug = {}
+        payload["debug"] = debug
+    if not isinstance(debug, dict):
+        raise _raise_error(
+            "GENERATION_MODEL_INVALID",
+            "project manifest debug section is not an object",
+            {"field": "debug", "rule": "type"},
+        )
+    if (
+        debug.get("backend") == configuration.backend
+        and debug.get("target") == configuration.target
+    ):
+        return source, "unchanged"
+    debug["backend"] = configuration.backend
+    debug["target"] = configuration.target
+    after = json.dumps(payload, indent=2, ensure_ascii=False).encode("utf-8") + b"\n"
+    return after, "update"
 
 
 def _validate_model(model: object) -> None:
@@ -1679,6 +1904,27 @@ def _validate_plan(plan: object) -> None:
     ):
         raise _plan_invalid("sortedOrder")
 
+    if (plan.debug_configuration is None) != (plan.manifest_edit is None):
+        raise _plan_invalid("debugConfiguration")
+    if plan.debug_configuration is not None:
+        configuration = plan.debug_configuration
+        if type(configuration) is not DebugConfiguration:
+            raise _plan_invalid("debugConfiguration")
+        try:
+            normalized = normalize_debug_configuration(
+                configuration.backend, configuration.target
+            )
+        except DebugConfigurationError:
+            raise _plan_invalid("debugConfiguration") from None
+        if normalized != configuration:
+            raise _plan_invalid("debugConfiguration")
+        if (
+            plan.model.debug.backend != configuration.backend
+            or plan.model.debug.target != configuration.target
+        ):
+            raise _plan_invalid("debugConfiguration")
+        _validate_manifest_edit(plan, configuration)
+
     fragment = plan.model.generation.linker_fragment
     if fragment is not None:
         matching = [entry for entry in plan.inputs if entry.path == fragment.path]
@@ -1698,6 +1944,93 @@ def _validate_plan(plan: object) -> None:
         raise _plan_invalid("planId")
     if len(canonical_json_bytes(plan.to_dict())) > PLAN_LIMIT_BYTES:
         raise _plan_invalid("planLimit")
+
+
+def _validate_manifest_edit(
+    plan: GenerationPlan, configuration: DebugConfiguration
+) -> None:
+    """Bind the optional manifest edit to the pair and to the plan's model.
+
+    The candidate bytes are recomputed from the recorded source bytes and the
+    requested pair, so a forged edit (even with a recomputed plan ID) cannot
+    introduce changes beyond ``debug.backend`` and ``debug.target``.
+    """
+    edit = plan.manifest_edit
+    if type(edit) is not ManifestEdit:
+        raise _plan_invalid("manifestEdit")
+    if edit.path != _STM32_PROJECT_MANIFEST:
+        raise _plan_invalid("manifestEdit")
+    if edit.status not in ("unchanged", "update"):
+        raise _plan_invalid("manifestEdit")
+    if not isinstance(edit.unified_diff, str):
+        raise _plan_invalid("manifestEdit")
+    if not isinstance(edit.before_bytes, bytes) or not isinstance(
+        edit.after_bytes, bytes
+    ):
+        raise _plan_invalid("manifestEdit")
+    for digest, size, data in (
+        (edit.before_sha256, edit.before_size, edit.before_bytes),
+        (edit.after_sha256, edit.after_size, edit.after_bytes),
+    ):
+        if (
+            sha256_error(digest) is not None
+            or not isinstance(size, int)
+            or size < 0
+            or len(data) != size
+            or sha256_hex(data) != digest
+        ):
+            raise _plan_invalid("manifestEdit")
+    if (
+        len(edit.before_bytes) > FILE_LIMIT_BYTES
+        or len(edit.after_bytes) > FILE_LIMIT_BYTES
+    ):
+        raise _plan_invalid("manifestEdit")
+    if edit.status == "unchanged":
+        if edit.before_bytes != edit.after_bytes or edit.unified_diff != "":
+            raise _plan_invalid("manifestEdit")
+    elif edit.before_bytes == edit.after_bytes or edit.unified_diff == "":
+        raise _plan_invalid("manifestEdit")
+    try:
+        derived_after, derived_status = _manifest_candidate_bytes(
+            edit.before_bytes, configuration
+        )
+    except GenerationError:
+        raise _plan_invalid("manifestEdit") from None
+    if derived_after != edit.after_bytes or derived_status != edit.status:
+        raise _plan_invalid("manifestEdit")
+    expected_diff = (
+        unified_diff(
+            edit.path,
+            edit.before_bytes.decode("utf-8"),
+            edit.after_bytes.decode("utf-8"),
+        )
+        if edit.status == "update"
+        else ""
+    )
+    if edit.unified_diff != expected_diff:
+        raise _plan_invalid("manifestEdit")
+    matching = [entry for entry in plan.inputs if entry.path == edit.path]
+    if (
+        len(matching) != 1
+        or matching[0].sha256 != edit.before_sha256
+        or matching[0].size != edit.before_size
+    ):
+        raise _plan_invalid("manifestEdit")
+    if any(entry.path == edit.path for entry in plan.files):
+        raise _plan_invalid("manifestEdit")
+    try:
+        candidate_model = load_project_model_candidate(
+            plan.project_root, edit.after_bytes
+        )
+    except (ProjectManifestError, OSError):
+        raise _plan_invalid("manifestEdit") from None
+    if model_sha256_for(candidate_model) != plan.model_sha256:
+        raise _plan_invalid("manifestEdit")
+    if (
+        candidate_model.debug.backend != configuration.backend
+        or candidate_model.debug.target != configuration.target
+    ):
+        raise _plan_invalid("manifestEdit")
 
 
 def _canonical_root(root: Path) -> Path:
@@ -1820,6 +2153,58 @@ def _validate_destinations(root: Path, plan: GenerationPlan) -> None:
                 "current target bytes changed",
                 {"path": path},
             )
+    if plan.manifest_edit is not None and plan.manifest_edit.status == "update":
+        _validate_manifest_edit_destination(root, plan.manifest_edit)
+
+
+def _validate_manifest_edit_destination(root: Path, edit: ManifestEdit) -> None:
+    """Recheck the source manifest destination, including a redirect refusal."""
+    path = edit.path
+    lexical = root.joinpath(*path.split("/"))
+    try:
+        lst = os.lstat(lexical)
+    except (FileNotFoundError, NotADirectoryError):
+        raise _fail(
+            "GENERATION_INPUT_CHANGED",
+            "source manifest is missing",
+            {"path": path},
+        ) from None
+    except OSError:
+        raise _fail(
+            "GENERATION_INPUT_CHANGED",
+            "source manifest inspection failed",
+            {"path": path},
+        ) from None
+    if stat.S_ISLNK(lst.st_mode) or bool(
+        getattr(lst, "st_file_attributes", 0)
+        & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    ):
+        raise _fail(
+            "GENERATION_PATH_INVALID",
+            "source manifest must not redirect",
+            {"path": path, "rule": "redirect"},
+        )
+    if not stat.S_ISREG(lst.st_mode):
+        raise _fail(
+            "GENERATION_INPUT_CHANGED",
+            "source manifest is not a regular file",
+            {"path": path},
+        )
+    absolute = _resolve_apply_target(root, path, "GENERATION_PATH_INVALID")
+    try:
+        data = _read_limited(absolute, edit.before_size)
+    except OSError:
+        raise _fail(
+            "GENERATION_INPUT_CHANGED",
+            "source manifest is unreadable",
+            {"path": path},
+        ) from None
+    if len(data) != edit.before_size or sha256_hex(data) != edit.before_sha256:
+        raise _fail(
+            "GENERATION_INPUT_CHANGED",
+            "source manifest bytes changed",
+            {"path": path},
+        )
 
 
 def _validate_preserved_editor(root: Path, path: str) -> None:
@@ -1970,6 +2355,8 @@ def _before_sha_by_path(plan: GenerationPlan) -> dict[str, str | None]:
     for entry in plan.inputs:
         if entry.path == MANAGED_MANIFEST_PATH:
             mapping[MANAGED_MANIFEST_PATH] = entry.sha256
+    if plan.manifest_edit is not None:
+        mapping[plan.manifest_edit.path] = plan.manifest_edit.before_sha256
     return mapping
 
 
@@ -2005,6 +2392,10 @@ def _map_fresh_error(error: GenerationError) -> None:
             "recorded input changed since planning",
             {"path": str(error.details.get("path", ""))},
         )
+    if code == "DEBUG_CONFIGURATION_INVALID":
+        # A validated plan cannot replay an invalid request; treat it as
+        # plan tampering rather than a source change.
+        raise _plan_invalid("debugConfiguration")
     raise _plan_invalid("freshPlan")
 
 
@@ -2063,6 +2454,20 @@ def _fresh_matches(fresh: GenerationPlan, plan: GenerationPlan) -> None:
         raise _plan_invalid("freshPlan")
     if fresh.managed_manifest_bytes != plan.managed_manifest_bytes:
         raise _plan_invalid("freshPlan")
+    if fresh.debug_configuration != plan.debug_configuration:
+        raise _plan_invalid("freshPlan")
+    if fresh.manifest_edit != plan.manifest_edit:
+        if (
+            plan.manifest_edit is not None
+            and fresh.manifest_edit is not None
+            and fresh.manifest_edit.before_bytes != plan.manifest_edit.before_bytes
+        ):
+            raise _fail(
+                "GENERATION_INPUT_CHANGED",
+                "project model changed since planning",
+                {"path": _STM32_PROJECT_MANIFEST},
+            )
+        raise _plan_invalid("freshPlan")
 
 
 def _rollback(
@@ -2106,6 +2511,15 @@ def _rollback(
     _remove_created_dirs(created_dirs, {staging, staging.parent})
 
 
+def _manifest_edit_result(plan: GenerationPlan) -> dict[str, object]:
+    if plan.manifest_edit is None:
+        return {}
+    return {
+        "manifestEditPath": plan.manifest_edit.path,
+        "manifestEditStatus": plan.manifest_edit.status,
+    }
+
+
 def _apply(plan: GenerationPlan) -> dict[str, object]:
     _validate_plan(plan)
 
@@ -2125,14 +2539,35 @@ def _apply(plan: GenerationPlan) -> dict[str, object]:
     _validate_staging_containment(canonical, staging)
 
     try:
-        fresh_model = load_project_model(canonical)
+        fresh_source_model = load_project_model(canonical)
     except ProjectManifestError:
         raise _fail(
             "GENERATION_INPUT_CHANGED",
             "project model is no longer available",
             {"path": _STM32_PROJECT_MANIFEST},
         ) from None
-    if model_sha256_for(fresh_model) != plan.model_sha256:
+    if plan.manifest_edit is None:
+        source_changed = (
+            model_sha256_for(fresh_source_model) != plan.model_sha256
+        )
+    else:
+        # The edit route's plan model is the validated AFTER model, so the
+        # source check must compare the observed source against the recorded
+        # before bytes instead of weakening the comparison.
+        try:
+            before_model = load_project_model_candidate(
+                canonical, plan.manifest_edit.before_bytes
+            )
+        except ProjectManifestError:
+            raise _fail(
+                "GENERATION_INPUT_CHANGED",
+                "project model changed since planning",
+                {"path": _STM32_PROJECT_MANIFEST},
+            ) from None
+        source_changed = model_sha256_for(fresh_source_model) != model_sha256_for(
+            before_model
+        )
+    if source_changed:
         raise _fail(
             "GENERATION_INPUT_CHANGED",
             "project model changed since planning",
@@ -2147,7 +2582,19 @@ def _apply(plan: GenerationPlan) -> dict[str, object]:
     _reject_existing_staging(staging, plan)
 
     try:
-        fresh = plan_project_configuration(fresh_model)
+        fresh = plan_project_configuration(
+            fresh_source_model,
+            debug_backend=(
+                plan.debug_configuration.backend
+                if plan.debug_configuration is not None
+                else None
+            ),
+            debug_target=(
+                plan.debug_configuration.target
+                if plan.debug_configuration is not None
+                else None
+            ),
+        )
     except GenerationError as error:
         _map_fresh_error(error)
     _fresh_matches(fresh, plan)
@@ -2195,6 +2642,13 @@ def _apply(plan: GenerationPlan) -> dict[str, object]:
             ) from None
         if current_manifest != plan.managed_manifest_bytes:
             destinations.append((MANAGED_MANIFEST_PATH, plan.managed_manifest_bytes, True))
+    if plan.manifest_edit is not None and plan.manifest_edit.status == "update":
+        # The user-owned manifest edit joins the same staging/backup/replace/
+        # rollback transaction as every generated output and the managed
+        # manifest.  It is never written in a separate phase.
+        destinations.append(
+            (plan.manifest_edit.path, plan.manifest_edit.after_bytes, True)
+        )
     destinations.sort(key=lambda item: portable_sort_key(item[0]))
 
     if not destinations:
@@ -2218,6 +2672,7 @@ def _apply(plan: GenerationPlan) -> dict[str, object]:
             "managedManifestPath": MANAGED_MANIFEST_PATH,
             "managedManifestSha256": sha256_hex(plan.managed_manifest_bytes),
             "templateVersion": TEMPLATE_VERSION,
+            **_manifest_edit_result(plan),
         }
 
     staging = canonical.joinpath(*STAGING_ROOT.split("/"), plan.plan_id)
@@ -2306,11 +2761,14 @@ def _apply(plan: GenerationPlan) -> dict[str, object]:
             temp_files.append((path, temp))
             os.replace(temp, target)
             temp_files.remove((path, temp))
-            os.chmod(target, mode)
+            # Record the completed replacement before the fallible chmod so a
+            # post-replace failure can still restore every path, including the
+            # user-owned project manifest.
             if existed:
                 replaced.append((path, target, backup_root.joinpath(*path.split("/"))))
             else:
                 created_files.append((path, target))
+            os.chmod(target, mode)
             try:
                 _fsync_dir(target.parent)
             except OSError as error:
@@ -2379,6 +2837,7 @@ def _apply(plan: GenerationPlan) -> dict[str, object]:
         "managedManifestPath": MANAGED_MANIFEST_PATH,
         "managedManifestSha256": sha256_hex(plan.managed_manifest_bytes),
         "templateVersion": TEMPLATE_VERSION,
+        **_manifest_edit_result(plan),
     }
 
 

@@ -272,6 +272,70 @@ def load_project_model(project_root: Path) -> ProjectModel:
     return _build_model(root, payload, version)
 
 
+def load_project_model_candidate(
+    project_root: Path, manifest_bytes: bytes
+) -> ProjectModel:
+    """Validate exact candidate manifest bytes as a Schema v2/v3 model.
+
+    This is a read-only bytes/payload seam: the caller supplies the complete
+    candidate bytes and nothing is written to disk.  It applies the same
+    Schema v2/v3 packaged-schema and post-schema checks as
+    :func:`load_project_model`, and additionally rejects duplicate JSON keys
+    so an editing route can never silently collapse two competing values.
+    """
+    root = _canonical_root(project_root)
+    payload = _decode_manifest_bytes(manifest_bytes)
+    version = _model_schema_version(payload)
+    if version == 1:
+        raise ProjectManifestError(
+            "PROJECT_SCHEMA_VERSION_UNSUPPORTED",
+            "Project manifest schema version requires the explicit compatibility route",
+            {"schemaVersion": 1, "supported": [2, 3]},
+        )
+    _validate_packaged_schema(payload, version)
+    return _build_model(root, payload, version)
+
+
+def _reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate key")
+        result[key] = value
+    return result
+
+
+def _decode_manifest_bytes(data: object) -> object:
+    if not isinstance(data, (bytes, bytearray)):
+        raise ProjectManifestError(
+            "PROJECT_JSON_INVALID",
+            "Project manifest is not valid JSON",
+            {"path": "$", "reason": "type"},
+        )
+    try:
+        text = bytes(data).decode("utf-8")
+    except UnicodeDecodeError:
+        raise ProjectManifestError(
+            "PROJECT_JSON_INVALID",
+            "Project manifest is not valid JSON",
+            {"path": "$", "reason": "invalid_utf8"},
+        ) from None
+    try:
+        return json.loads(text, object_pairs_hook=_reject_duplicate_keys)
+    except json.JSONDecodeError as error:
+        raise ProjectManifestError(
+            "PROJECT_JSON_INVALID",
+            "Project manifest is not valid JSON",
+            {"path": "$", "line": error.lineno, "column": error.colno},
+        ) from None
+    except ValueError:
+        raise ProjectManifestError(
+            "PROJECT_JSON_INVALID",
+            "Project manifest is not valid JSON",
+            {"path": "$", "reason": "duplicate_key"},
+        ) from None
+
+
 def _canonical_root(project_root: Path) -> Path:
     try:
         root = canonical_project_root(project_root)
