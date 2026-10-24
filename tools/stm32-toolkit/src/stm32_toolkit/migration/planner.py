@@ -382,12 +382,13 @@ def _finding_blockers(findings: tuple) -> list[MigrationBlocker]:
 def _scoped_option_blockers(inspection: KeilInspection) -> list[MigrationBlocker]:
     """Scoped options that cannot be represented, in authored inspection order.
 
-    Include-only scopes that affect only included C/C++ sources are mergeable
-    and must not receive this generic blocker; include-only scopes that also
-    affect included assembly or an unsupported language keep it so their
-    semantics are never silently dropped.  A scope with defines or misc
-    controls always keeps it, and an excluded-file or no-included-source
-    include scope is inert.
+    Include-only scopes whose compiled sources are only included C/C++ are
+    mergeable and must not receive this generic blocker; include-only scopes
+    that also compile included assembly or an unknown language keep it so
+    their semantics are never silently dropped.  Listed headers and
+    precompiled libraries are not compiled and do not make a scope blocked.
+    A scope with defines or misc controls always keeps it, and an
+    excluded-file or no-compiled-source include scope is inert.
     """
     blocked_includes = set(classify_include_scopes(inspection).blocked)
     blockers: list[MigrationBlocker] = []
@@ -400,8 +401,8 @@ def _scoped_option_blockers(inspection: KeilInspection) -> list[MigrationBlocker
             message = "scoped ARMCC compiler options are not representable"
         elif option in blocked_includes:
             message = (
-                "scoped include path also affects included ARMCC assembly or"
-                " an unsupported language and is not representable"
+                "scoped include path also applies to included ARMCC assembly"
+                " or an unknown compiled language and is not representable"
             )
         else:
             continue

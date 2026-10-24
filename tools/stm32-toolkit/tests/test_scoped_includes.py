@@ -42,6 +42,10 @@ MAIN_C = "int main(void) { return 0; }\n"
 
 
 def _commit(repo: Path, message: str = "scoped includes") -> None:
+    """Initialize the disposable repository on first use, then commit."""
+    if not (repo / ".git").exists():
+        git_init(repo)
+        return
     subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
     subprocess.run(
         ["git", "-c", "user.name=Scope Test", "-c", "user.email=scope@test.local", "commit", "-q", "-m", message],
@@ -367,6 +371,104 @@ def test_group_scope_without_included_sources_is_ignored(tmp_path):
     assert plan.blockers == ()
     assert plan.include_merges == ()
     assert _manifest(plan)["build"]["includePaths"] == ["Main", FRAMEWORK_INCLUDE]
+
+
+def test_group_with_c_source_and_listed_header_still_merges(tmp_path):
+    repo = _scope_repo(
+        tmp_path,
+        files={
+            "Inc/cfg.h": "#pragma once\n",
+            "Main/main.h": "#pragma once\n",
+        },
+        uvprojx_kwargs={
+            "groups": (
+                (
+                    "Main",
+                    (
+                        ("main.c", "1", "Main/main.c"),
+                        ("main.h", "5", "Main/main.h"),
+                    ),
+                ),
+            )
+        },
+        group_scopes=(("Main", "Inc"),),
+    )
+
+    plan = plan_keil_conversion(repo, fixture_inspection(repo))
+
+    assert plan.blockers == ()
+    assert [(merge.path, merge.decision) for merge in plan.include_merges] == [
+        ("Inc", "added")
+    ]
+    assert _manifest(plan)["build"]["includePaths"] == [
+        "Main",
+        FRAMEWORK_INCLUDE,
+        "Inc",
+    ]
+
+
+def test_header_and_library_only_scopes_have_no_compile_effect(tmp_path):
+    repo = _scope_repo(
+        tmp_path,
+        files={
+            "Main/main.h": "#pragma once\n",
+            "Docs/docs.h": "#pragma once\n",
+            "Libs/libfoo.a": "archive\n",
+        },
+        uvprojx_kwargs={
+            "groups": (
+                (
+                    "Main",
+                    (
+                        ("main.c", "1", "Main/main.c"),
+                        ("main.h", "5", "Main/main.h"),
+                    ),
+                ),
+                ("Docs", (("docs.h", "5", "Docs/docs.h"),)),
+                ("Libs", (("libfoo.a", "4", "Libs/libfoo.a"),)),
+            )
+        },
+        group_scopes=(("Docs", "DoesNotExist"), ("Libs", "AlsoMissing")),
+        file_scopes=(("Docs/docs.h", "AlsoMissingFile", False),),
+    )
+
+    plan = plan_keil_conversion(repo, fixture_inspection(repo))
+
+    # Listed headers and precompiled libraries never invoke the compiler, so
+    # these scopes neither block nor contribute a directory.
+    assert plan.blockers == ()
+    assert plan.include_merges == ()
+    assert _manifest(plan)["build"]["includePaths"] == ["Main", FRAMEWORK_INCLUDE]
+
+
+def test_group_with_c_source_and_included_assembly_stays_blocked(tmp_path):
+    repo = _scope_repo(
+        tmp_path,
+        files={
+            "Mixed/mix.c": "int mix(void) { return 0; }\n",
+            "Mixed/startup.s": "; startup\n",
+            "MixInc/mix.h": "#pragma once\n",
+        },
+        uvprojx_kwargs={
+            "groups": (
+                ("Main", (("main.c", "1", "Main/main.c"),)),
+                (
+                    "Mixed",
+                    (
+                        ("mix.c", "1", "Mixed/mix.c"),
+                        ("startup.s", "2", "Mixed/startup.s"),
+                    ),
+                ),
+            )
+        },
+        group_scopes=(("Mixed", "MixInc"),),
+    )
+
+    plan = plan_keil_conversion(repo, fixture_inspection(repo))
+
+    assert "ARMCC_OPTION_UNSUPPORTED" in _codes(plan)
+    assert not any(code.startswith("MIGRATION_INCLUDE_") for code in _codes(plan))
+    assert plan.include_merges == ()
 
 
 def test_include_only_group_scope_affecting_assembly_stays_blocked(tmp_path):
@@ -702,7 +804,7 @@ def test_apply_writes_the_merged_manifest_and_reports_the_evidence(tmp_path):
         group_scopes=(("Main", "GroupOnly"),),
     )
     plan = plan_keil_conversion(repo, fixture_inspection(repo))
-    assert _codes(plan) == ()
+    assert _codes(plan) == []
 
     result = apply_keil_conversion(plan)
 
@@ -736,7 +838,7 @@ def test_apply_rejects_a_changed_git_ignored_header(tmp_path):
         gitignore="GroupOnly/\n",
     )
     plan = plan_keil_conversion(repo, fixture_inspection(repo))
-    assert _codes(plan) == ()
+    assert _codes(plan) == []
 
     # Git stays clean because the directory is ignored; only the bounded
     # inventory digest can detect the reviewed-decision drift.
@@ -765,7 +867,7 @@ def test_apply_rejects_a_new_colliding_git_ignored_file(tmp_path):
         gitignore="GroupOnly/\n",
     )
     plan = plan_keil_conversion(repo, fixture_inspection(repo))
-    assert _codes(plan) == ()
+    assert _codes(plan) == []
 
     (repo / "GroupOnly" / "settings.h").write_text("#pragma once\n", encoding="utf-8")
 

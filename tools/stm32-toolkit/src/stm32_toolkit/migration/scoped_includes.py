@@ -7,12 +7,14 @@ header because a scope was merged.
 
 This module performs the single analysis shared by preflight and planning:
 
-* Only include-only scopes that affect included C/C++ compilation contribute.
-  A scope that also carries defines or misc controls keeps its existing
-  ``ARMCC_OPTION_UNSUPPORTED`` blocker and is never partially merged.  A scope
-  that also affects included assembly or another unsupported language keeps
-  the same blocker instead of dropping those semantics.  An excluded file
-  scope, or a group with no included source at all, cannot broaden anything
+* Only include-only scopes whose compiled sources are included C/C++ sources
+  contribute.  A scope that also carries defines or misc controls keeps its
+  existing ``ARMCC_OPTION_UNSUPPORTED`` blocker and is never partially merged.
+  A scope that also compiles included assembly or an unknown ``other``
+  language keeps the same blocker instead of dropping those semantics.
+  Listed headers and precompiled libraries do not execute a compiler, so they
+  are ignored for this decision.  An excluded file scope, a header/library-only
+  group or file, or a group with no included source cannot broaden anything
   and is ignored.
 * The inspection-normalized, root-relative path is resolved exactly once
   against the canonical project root.  It is never re-resolved against the
@@ -45,6 +47,10 @@ from stm32_toolkit.keil import KeilInspection, KeilScopedOptions, KeilSource
 from stm32_toolkit.migration.model import IncludeMerge, MigrationBlocker, portable_path_error
 
 _COMPILED_LANGUAGES = ("c", "cxx")
+#: Listed headers and precompiled libraries are project entries, not compiler
+#: invocations: a group or file include path has no compile effect through
+#: them, so they never make a scope "unsupported".
+_NON_COMPILED_LANGUAGES = ("header", "library")
 
 #: One aggregate traversal budget for the whole analysis.  Include directories
 #: and their contents are untrusted input; exceeding a bound is a blocker so a
@@ -120,11 +126,12 @@ class ScopedIncludeAnalysis:
 class IncludeScopeClassification:
     """Include-only scopes split by whether their semantics are representable.
 
-    ``mergeable`` scopes affect only included C/C++ sources and may contribute
+    ``mergeable`` scopes compile only included C/C++ sources and may contribute
     their directories to the target include list.  ``blocked`` scopes also
-    affect included assembly or another unsupported language, so they keep the
-    existing ``ARMCC_OPTION_UNSUPPORTED`` blocker.  Scopes that affect no
-    included source appear in neither tuple and are ignored.
+    compile included assembly or an unknown ``other`` language, so they keep
+    the existing ``ARMCC_OPTION_UNSUPPORTED`` blocker.  Scopes with no compiled
+    source (excluded files, listed headers, precompiled libraries, or a group
+    with no included source) appear in neither tuple and are ignored.
     """
 
     mergeable: tuple[KeilScopedOptions, ...]
@@ -432,12 +439,14 @@ def _blocker_path(rel: str, project_file: str) -> str:
 def classify_include_scopes(inspection: KeilInspection) -> IncludeScopeClassification:
     """Split include-only group/file scopes by representable semantics.
 
-    A group scope covers every included source in that group (group options
-    apply to more than C/C++ compilation); a file scope covers that one file.
-    Only a scope whose covered sources are all included C/C++ may merge its
-    directories.  A scope that covers included assembly or another
-    unsupported language keeps the existing option blocker, and a scope that
-    covers no included source is ignored.
+    A group scope covers every included compiled source in that group (group
+    options apply to more than C/C++ compilation); a file scope covers that
+    one file.  Listed headers and precompiled libraries are not compiled by
+    the C compiler and are ignored for this decision.  Only a scope whose
+    compiled sources are all included C/C++ may merge its directories.  A
+    scope that also compiles included assembly or an unknown ``other``
+    language keeps the existing option blocker, and a scope with no compiled
+    source is ignored.
     """
     included_by_group: dict[str, list[KeilSource]] = {}
     included_by_path: dict[str, KeilSource] = {}
@@ -463,11 +472,20 @@ def classify_include_scopes(inspection: KeilInspection) -> IncludeScopeClassific
             source = included_by_path.get(option.owner)
             if source is None:
                 continue
-            covered = (source,)
+            covered = (
+                ()
+                if source.language in _NON_COMPILED_LANGUAGES
+                else (source,)
+            )
         else:
-            covered = tuple(included_by_group.get(option.owner, ()))
-            if not covered:
-                continue
+            covered = tuple(
+                source
+                for source in included_by_group.get(option.owner, ())
+                if source.language not in _NON_COMPILED_LANGUAGES
+            )
+        if not covered:
+            # No compiler invocation is affected by this include path.
+            continue
         if all(source.language in _COMPILED_LANGUAGES for source in covered):
             mergeable.append(option)
         else:
