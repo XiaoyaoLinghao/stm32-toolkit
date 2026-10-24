@@ -809,8 +809,16 @@ def test_apply_writes_the_merged_manifest_and_reports_the_evidence(tmp_path):
     result = apply_keil_conversion(plan)
 
     assert result.ok is True, result.message
-    assert result.data["changedPaths"] == []
-    assert result.data["createdPaths"] == [
+    # The typed result keeps tuples; the public serialized data is JSON lists.
+    assert result.data["changedPaths"] == ()
+    assert result.data["createdPaths"] == (
+        ".stm32-project.json",
+        "artifacts/migration/conversion-report.json",
+        "artifacts/migration/conversion.patch",
+    )
+    serialized = result.to_dict()["data"]
+    assert serialized["changedPaths"] == []
+    assert serialized["createdPaths"] == [
         ".stm32-project.json",
         "artifacts/migration/conversion-report.json",
         "artifacts/migration/conversion.patch",
