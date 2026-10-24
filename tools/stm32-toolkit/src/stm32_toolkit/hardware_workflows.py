@@ -37,6 +37,7 @@ from stm32_toolkit.detection import detect_project
 from stm32_toolkit.external_firmware import (
     ExternalFirmwareError,
     ImportedFlashRequest,
+    admission_matches,
     external_workspace_paths,
     flash_imported_firmware,
     load_admission,
@@ -1570,6 +1571,34 @@ async def flash_imported_workflow(
             "FIRMWARE_INTERNAL_ERROR",
             "Imported firmware programming failed",
             {},
+        )
+    # Owned cleanup has completed.  Revalidate the immutable store once more
+    # so a close-time mutation cannot be covered by a success receipt.
+    try:
+        settled = load_admission(
+            project_root,
+            data_root,
+            import_id=typed.import_id,
+            expected_sha256=typed.expected_sha256,
+        )
+    except ExternalFirmwareError as error:
+        return _operation_failure(
+            operation, _fail(error.code, error.message, dict(error.details))
+        )
+    if not admission_matches(admission, settled):
+        return OperationResult.failure(
+            operation,
+            "FIRMWARE_INPUT_CHANGED",
+            "Firmware import changed before receipt publication",
+            {
+                "field": "importId",
+                "rule": "current",
+                "guidance": (
+                    "The immutable import changed after programming. Do not "
+                    "publish a success receipt; re-import and re-admit before "
+                    "any further hardware operation."
+                ),
+            },
         )
     try:
         receipt = write_flash_receipt(project_root, data_root, result.data)

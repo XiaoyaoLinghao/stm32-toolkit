@@ -54,8 +54,11 @@ _IMAGE_LIMIT = 64 * 1024 * 1024
 _MAX_SEGMENTS = 1024
 _MAX_REGIONS = 32
 # Bounds the intermediate record list while parsing Intel HEX.  Payload bytes
-# are additionally capped by the normalized-image limit.
+# are additionally capped by the normalized-image limit.  Lines are iterated
+# without materializing the whole file as a Python list of strings.
 _MAX_HEX_RECORDS = 1_048_576
+_MAX_HEX_LINES = _MAX_HEX_RECORDS + 65_536
+_MAX_HEX_LINE_BYTES = 11 + 255 * 2
 _RECORD_LIMIT = 1024 * 1024
 _RECEIPT_LIMIT = 64 * 1024
 _MAX_READ_BYTES = 32_768
@@ -570,34 +573,65 @@ def _parse_elf(data: bytes) -> ParsedImage:
     return ParsedImage(_checked_segments(raw, rule="segments"), entry)
 
 
-def _hex_lines(data: bytes) -> list[str]:
+def _iter_hex_lines(data: bytes):
+    """Yield bounded ASCII Intel HEX lines without a whole-file line list."""
+
     if not data:
         raise _fail(
             "FIRMWARE_IMAGE_INVALID",
             "Intel HEX image is empty",
             rule="hexEmpty",
         )
-    try:
-        text = data.decode("ascii")
-    except UnicodeDecodeError:
-        raise _fail(
-            "FIRMWARE_IMAGE_INVALID",
-            "Intel HEX image is not strict ASCII",
-            rule="hexAscii",
-        ) from None
-    if any(
-        ord(character) < 32 and character not in "\r\n" or ord(character) == 127
-        for character in text
-    ):
-        raise _fail(
-            "FIRMWARE_IMAGE_INVALID",
-            "Intel HEX image contains invalid characters",
-            rule="hexAscii",
-        )
-    lines = text.split("\n")
-    if lines and lines[-1] == "":
-        lines.pop()
-    return [line[:-1] if line.endswith("\r") else line for line in lines]
+    start = 0
+    total = len(data)
+    seen = 0
+    while start <= total:
+        end = data.find(b"\n", start)
+        if end < 0:
+            chunk = data[start:]
+            next_start: int | None = None
+        else:
+            chunk = data[start:end]
+            next_start = end + 1
+        if chunk.endswith(b"\r"):
+            chunk = chunk[:-1]
+        if chunk:
+            if len(chunk) > _MAX_HEX_LINE_BYTES:
+                raise _fail(
+                    "FIRMWARE_IMAGE_INVALID",
+                    "Intel HEX record length is invalid",
+                    rule="hexLength",
+                )
+            try:
+                line = chunk.decode("ascii")
+            except UnicodeDecodeError:
+                raise _fail(
+                    "FIRMWARE_IMAGE_INVALID",
+                    "Intel HEX image is not strict ASCII",
+                    rule="hexAscii",
+                ) from None
+            if any(ord(character) < 32 or ord(character) == 127 for character in line):
+                raise _fail(
+                    "FIRMWARE_IMAGE_INVALID",
+                    "Intel HEX image contains invalid characters",
+                    rule="hexAscii",
+                )
+            seen += 1
+            if seen > _MAX_HEX_LINES:
+                raise _fail(
+                    "FIRMWARE_IMAGE_INVALID",
+                    "Intel HEX image exceeds the record limit",
+                    rule="size",
+                    limit=_MAX_HEX_LINES,
+                )
+            yield line
+        elif next_start is not None:
+            # An internal blank line is not a valid Intel HEX record; let the
+            # record parser reject it with the stable hexRecord diagnostic.
+            yield ""
+        if next_start is None:
+            break
+        start = next_start
 
 
 def _parse_hex(data: bytes) -> ParsedImage:
@@ -606,7 +640,7 @@ def _parse_hex(data: bytes) -> ParsedImage:
     entry: int | None = None
     seen_eof = False
     total = 0
-    for line in _hex_lines(data):
+    for line in _iter_hex_lines(data):
         if seen_eof:
             raise _fail(
                 "FIRMWARE_IMAGE_INVALID",
@@ -743,6 +777,13 @@ def _parse_hex(data: bytes) -> ParsedImage:
                 # Linear-time contiguous accumulation.
                 previous_payload.extend(payload)
                 continue
+        if len(merged) + 1 > _MAX_SEGMENTS:
+            raise _fail(
+                "FIRMWARE_IMAGE_INVALID",
+                "Intel HEX image exceeds the segment limit",
+                rule="size",
+                maxSegments=_MAX_SEGMENTS,
+            )
         merged.append((address, bytearray(payload)))
     segments = [(address, bytes(payload)) for address, payload in merged]
     return ParsedImage(_checked_segments(segments, rule="hexSegments"), entry)
@@ -1171,7 +1212,7 @@ def analyze_import(
     """Read and analyze one source file without creating any state."""
 
     region_pairs = _validate_regions(flash_regions)
-    if format not in _FORMAT_SUFFIX:
+    if not isinstance(format, str) or format not in _FORMAT_SUFFIX:
         raise _fail(
             "FIRMWARE_INPUT_INVALID",
             "Firmware input is invalid",
@@ -2373,17 +2414,22 @@ def _validate_attachment(attachment: object, admission: Admission, probe_id: str
         )
 
 
+def admission_matches(first: Admission, current: Admission) -> bool:
+    return (
+        current.import_id == first.import_id
+        and current.image_sha256 == first.image_sha256
+        and current.image_size == first.image_size
+        and current.source_sha256 == first.source_sha256
+        and current.source_size == first.source_size
+        and current.target == first.target
+        and current.regions == first.regions
+        and current.segments == first.segments
+        and current.entry_point == first.entry_point
+    )
+
+
 def _require_same_import(first: Admission, current: Admission) -> None:
-    if (
-        current.import_id != first.import_id
-        or current.image_sha256 != first.image_sha256
-        or current.image_size != first.image_size
-        or current.source_sha256 != first.source_sha256
-        or current.source_size != first.source_size
-        or current.target != first.target
-        or current.regions != first.regions
-        or current.segments != first.segments
-    ):
+    if not admission_matches(first, current):
         raise _fail(
             "FIRMWARE_INPUT_CHANGED",
             "Firmware import changed during programming",
@@ -2693,6 +2739,7 @@ __all__ = [
     "ImportAnalysis",
     "ImportedFlashReport",
     "ImportedFlashRequest",
+    "admission_matches",
     "analyze_import",
     "external_workspace_paths",
     "firmware_admit_workflow",

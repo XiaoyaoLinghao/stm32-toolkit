@@ -32,12 +32,13 @@ from stm32_toolkit.hardware_workflows import (
     HardwareWorkflowSeams,
     flash_imported_workflow,
 )
-from stm32_toolkit.probe.backend import ProbeDescriptor
+from stm32_toolkit.probe.backend import ProbeBackendError, ProbeDescriptor
 from stm32_toolkit.probe.client import ProbeClient, ProbeClientError
 from stm32_toolkit.probe.lease import ProbeLeaseManager
 from stm32_toolkit.probe.model import OperationLevel
 from stm32_toolkit.probe.pyocd_backend import PyOCDBackend
 from stm32_toolkit.probe.supervisor import ProbeServiceConfig, ProbeServiceSupervisor
+from stm32_toolkit.probe.worker import ProbeBackendWorker
 from test_external_firmware import _elf
 
 TARGET = "stm32f407vg"
@@ -176,6 +177,40 @@ def test_imported_flash_readback_mismatch_reports_no_success_or_receipt(
     assert _receipts(data_root) == []
     assert backend.closed is True
     # Exactly one programming attempt; no retry or fallback.
+    assert sum(event[0] == "flash_imported_elf" for event in backend.events) == 1
+
+
+def test_close_time_store_tamper_blocks_receipt_publication(tmp_path: Path) -> None:
+    project, data_root, _payload, import_id, source_sha, admission = _prepare_import(
+        tmp_path, b"close-tamper"
+    )
+    record_path = next(
+        (data_root / "projects").glob(
+            f"*/firmware-imports/{import_id}/record.json"
+        )
+    )
+    tampered = json.loads(record_path.read_text(encoding="utf-8"))
+    tampered["image"]["segments"][0]["length"] += 1
+
+    class CloseTamperingBackend(FakeProbeBackend):
+        def close(self) -> None:
+            super().close()
+            record_path.write_text(json.dumps(tampered), encoding="utf-8")
+
+    backend = CloseTamperingBackend(
+        probes=(ProbeDescriptor(PROBE, "Arm", "CMSIS-DAP", None),),
+        memory={
+            segment.address: bytes(segment.data)
+            for segment in admission.segments
+        },
+        registers={},
+    )
+    result = _run(project, data_root, import_id, source_sha, backend)
+
+    assert result.ok is False
+    assert result.code in {"FIRMWARE_IMPORT_INVALID", "FIRMWARE_INPUT_CHANGED"}
+    assert _receipts(data_root) == []
+    # No automatic retry after the integrity failure.
     assert sum(event[0] == "flash_imported_elf" for event in backend.events) == 1
 
 
@@ -474,6 +509,16 @@ def test_native_map_accepts_segment_crossing_contiguous_64k_regions() -> None:
             ((0x0800_0000, b"\x01" * 16),),
             "PROBE_BACKEND_ERROR",
         ),
+        # A later segment inside a non-Flash entry that overlaps Flash is
+        # rejected as an ambiguous map, with no driver call.
+        (
+            (
+                FakeMemoryRegion(0x0800_0000, 0x2_0000),
+                FakeMemoryRegion(0x0801_0000, 0x1000, is_flash=False),
+            ),
+            ((0x0800_0000, b"\x01" * 16), (0x0801_0000, b"\x02" * 16)),
+            "PROBE_BACKEND_ERROR",
+        ),
     ],
 )
 def test_native_map_later_gap_nonflash_or_overlap_rejects_before_driver(
@@ -499,3 +544,52 @@ def test_imported_rpc_request_type_is_a_closed_fake_hardware_contract() -> None:
     )
     assert request.authorized is True
     assert request.timeout_ms == 30_000
+
+
+WORKER_PROBE_DESCRIPTOR = ProbeDescriptor(PROBE, "Arm", "CMSIS-DAP", None)
+
+
+def _worker_backend():
+    return FakeProbeBackend(
+        probes=(WORKER_PROBE_DESCRIPTOR,), memory={}, registers={}
+    )
+
+
+class _RejectingWorkerBackend(FakeProbeBackend):
+    def flash_imported_elf(self, image: bytes):
+        raise ProbeBackendError(
+            "PROBE_PROGRAM_INVALID", "raw C:\\private token=secret"
+        )
+
+
+def _rejecting_worker_backend():
+    return _RejectingWorkerBackend(
+        probes=(WORKER_PROBE_DESCRIPTOR,), memory={}, registers={}
+    )
+
+
+def test_spawned_worker_dispatches_imported_program_and_sanitizes_failure() -> None:
+    """The owned worker allowlist carries flash_imported_elf and no raw text."""
+
+    image = _elf(((0x0800_0000, b"\x01\x02"),))
+    worker = ProbeBackendWorker(_test_backend_factory=_worker_backend)
+    try:
+        worker.open_attach(PROBE, TARGET, halt_on_connect=True)
+        report = worker.flash_imported_elf(image)
+        assert report.bytes_programmed == 1024
+        assert report.sectors_programmed == 2
+    finally:
+        worker.close()
+    assert worker.is_alive is False
+
+    rejecting = ProbeBackendWorker(_test_backend_factory=_rejecting_worker_backend)
+    try:
+        rejecting.open_attach(PROBE, TARGET, halt_on_connect=True)
+        with pytest.raises(ProbeBackendError) as error:
+            rejecting.flash_imported_elf(image)
+        assert error.value.code == "PROBE_PROGRAM_INVALID"
+        assert "secret" not in str(error.value)
+        assert "C:\\private" not in str(error.value)
+    finally:
+        rejecting.close()
+    assert rejecting.is_alive is False

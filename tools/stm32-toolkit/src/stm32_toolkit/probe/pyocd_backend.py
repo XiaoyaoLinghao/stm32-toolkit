@@ -1654,7 +1654,7 @@ class PyOCDBackend:
                 "PROBE_OPERATION_UNAVAILABLE",
                 "Connected target Flash map is unavailable",
             )
-        declared: list[tuple[int, int]] = []
+        entries: list[tuple[int, int, bool]] = []
         for region in regions:
             try:
                 is_flash = getattr(region, "is_flash")
@@ -1675,23 +1675,23 @@ class PyOCDBackend:
                 raise ProbeBackendError(
                     "PROBE_BACKEND_ERROR", "Connected target Flash map is invalid"
                 )
-            if is_flash:
-                declared.append((start, length))
-        if not declared:
-            raise ProbeBackendError(
-                "PROBE_OPERATION_UNAVAILABLE",
-                "Connected target Flash map is unavailable",
-            )
-        declared.sort()
+            entries.append((start, length, is_flash))
+        # Ambiguous overlaps across the whole native map (including non-Flash
+        # entries) are rejected before selecting the Flash subset.
+        entries.sort()
         previous_end = -1
-        for start, length in declared:
-            # Overlapping or duplicated native intervals are ambiguous and
-            # are rejected rather than treated as extra capacity.
+        for start, length, _is_flash in entries:
             if start < previous_end:
                 raise ProbeBackendError(
                     "PROBE_BACKEND_ERROR", "Connected target Flash map is invalid"
                 )
             previous_end = start + length
+        declared = [(start, length) for start, length, is_flash in entries if is_flash]
+        if not declared:
+            raise ProbeBackendError(
+                "PROBE_OPERATION_UNAVAILABLE",
+                "Connected target Flash map is unavailable",
+            )
         return tuple(declared)
 
     @staticmethod

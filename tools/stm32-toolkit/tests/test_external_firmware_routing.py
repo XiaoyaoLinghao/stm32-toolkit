@@ -5,6 +5,9 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 from typing import Mapping
 
@@ -394,6 +397,108 @@ def test_cli_flash_imported_routes_only_documented_arguments(
     assert request.probe_id == "probe-a"
     assert request.import_id == "a" * 64
     assert request.authorized is True
+
+
+def _fresh_cli(
+    arguments: list[str],
+) -> subprocess.CompletedProcess[str]:
+    environment = {
+        **os.environ,
+        "PYTHONUTF8": "1",
+        "PYTHONDONTWRITEBYTECODE": "1",
+    }
+    return subprocess.run(
+        [sys.executable, "-m", "stm32_toolkit.cli", *arguments],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env=environment,
+        timeout=120,
+    )
+
+
+def test_fresh_process_cli_plan_apply_admit_and_malformed_input(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    data_root = tmp_path / "data"
+    payload = b"fresh-process"
+    (project / "fw.bin").write_bytes(payload)
+
+    planned = _fresh_cli(
+        _cli_import_arguments(project, data_root, payload, mode="--dry-run")
+    )
+    assert planned.returncode == 0, planned.stderr
+    plan = json.loads(planned.stdout)
+    assert plan["ok"] is True, plan
+    assert plan["data"]["mode"] == "firmware-import-plan"
+    assert not data_root.exists()
+
+    applied = _fresh_cli(
+        _cli_import_arguments(
+            project,
+            data_root,
+            payload,
+            mode="--apply",
+            plan_id=plan["data"]["planId"],
+        )
+    )
+    assert applied.returncode == 0, applied.stderr
+    applied_data = json.loads(applied.stdout)
+    assert applied_data["data"]["created"] is True
+
+    admitted = _fresh_cli(
+        [
+            "firmware",
+            "admit",
+            "--project-root",
+            str(project),
+            "--data-root",
+            str(data_root),
+            "--session-id",
+            "session-a",
+            "--import-id",
+            applied_data["data"]["importId"],
+            "--expected-sha256",
+            _sha(payload),
+            "--json",
+        ]
+    )
+    assert admitted.returncode == 0, admitted.stderr
+    admitted_data = json.loads(admitted.stdout)
+    assert admitted_data["data"]["offlineReady"] is True
+    assert admitted_data["data"]["hardwareVerified"] is False
+
+    malformed = _fresh_cli(
+        [
+            "firmware",
+            "import",
+            "--project-root",
+            str(project),
+            "--data-root",
+            str(tmp_path / "data2"),
+            "--session-id",
+            "session-a",
+            "--firmware-path",
+            "fw.bin",
+            "--expected-sha256",
+            _sha(payload),
+            "--format",
+            "bin",
+            "--target",
+            "stm32f407vg",
+            "--flash-regions",
+            "not-json",
+            "--base-address",
+            str(BASE),
+            "--dry-run",
+            "--json",
+        ]
+    )
+    assert malformed.returncode == 2
+    assert "invalid arguments" in malformed.stderr
+    assert not (tmp_path / "data2").exists()
 
 
 def test_both_protocol_schema_copies_define_the_imported_program_contract() -> None:

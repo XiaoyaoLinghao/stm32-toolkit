@@ -292,6 +292,7 @@ def test_identity_binds_project_and_data_roots(tmp_path: Path) -> None:
     copied.mkdir()
     for child in (data_root / "projects").iterdir():
         (copied / child.name).mkdir()
+        (copied / child.name / "firmware-imports").mkdir()
         for import_dir in (child / "firmware-imports").iterdir():
             target = copied / child.name / "firmware-imports" / import_dir.name
             target.mkdir()
@@ -423,9 +424,10 @@ def test_bin_and_region_rules_are_strict(tmp_path: Path) -> None:
     assert missing_base.details["field"] == "baseAddress"
 
     for regions in (
-        _regions((0x2000_0000, 0x100)),
-        _regions((0x0801_0000, 0x100), (0x0800_0000, 0x100)),
-        _regions((0x0800_0000, 0x200), (0x0800_0100, 0x100)),
+        ((0x2000_0000, 0x100),),
+        # Deliberately unsorted; the helper must not pre-sort this case.
+        ((0x0801_0000, 0x100), (0x0800_0000, 0x100)),
+        ((0x0800_0000, 0x200), (0x0800_0100, 0x100)),
     ):
         result = firmware_import_workflow(
             _import_request(
@@ -513,8 +515,11 @@ def test_hex_crosses_64k_boundary_type04_after_data_and_type05_entry(
     upper = b"\x20" * 16
     text = _hex_file(
         [
+            # Normal 64 KiB crossing: base is 0x0800 Flash, then 0x0801 after
+            # data has already been recorded.
+            _hex_record(0x0000, 0x04, (0x0800).to_bytes(2, "big")),
             _hex_record(0x0000, 0x00, lower),
-            _hex_record(0x0000, 0x04, (1).to_bytes(2, "big")),
+            _hex_record(0x0000, 0x04, (0x0801).to_bytes(2, "big")),
             _hex_record(0x0000, 0x00, upper),
             _hex_record(0x0000, 0x05, (0x0800_0101).to_bytes(4, "big")),
         ]
@@ -523,17 +528,23 @@ def test_hex_crosses_64k_boundary_type04_after_data_and_type05_entry(
     (project / "fw.hex").write_bytes(payload)
 
     applied = _apply(
-        project, data_root, "fw.hex", payload, format="hex", base=None
+        project,
+        data_root,
+        "fw.hex",
+        payload,
+        format="hex",
+        base=None,
+        regions=_regions((0x0800_0000, 0x2_0000)),
     )
     assert applied["image"]["segments"] == [
-        {"address": 0x0000, "length": 16},
-        {"address": 0x1_0000, "length": 16},
+        {"address": 0x0800_0000, "length": 16},
+        {"address": 0x0801_0000, "length": 16},
     ]
     assert applied["image"]["entryPoint"] == 0x0800_0101
     image = _store_file(data_root, str(applied["importId"]), "image.elf").read_bytes()
     elf = ELFFile(io.BytesIO(image))
     loads = [segment for segment in elf.iter_segments() if segment.header.p_type == "PT_LOAD"]
-    assert [int(segment.header.p_paddr) for segment in loads] == [0, 0x1_0000]
+    assert [int(segment.header.p_paddr) for segment in loads] == [0x0800_0000, 0x0801_0000]
     assert bytes(loads[0].data()) == lower
     assert bytes(loads[1].data()) == upper
     assert all(int(segment.header.p_align) == 1 for segment in loads)
@@ -548,6 +559,7 @@ def test_hex_type03_segment_entry_uses_cs_times_sixteen_plus_ip(
     cs, ip = 0x1234, 0x5678
     text = _hex_file(
         [
+            _hex_record(0x0000, 0x04, (0x0800).to_bytes(2, "big")),
             _hex_record(0x0000, 0x00, b"\xAA\xBB"),
             _hex_record(0x0000, 0x03, cs.to_bytes(2, "big") + ip.to_bytes(2, "big")),
         ]
@@ -570,7 +582,9 @@ def test_hex_out_of_order_records_merge_by_address_and_keep_sparse_gaps(
     sparse = b"\xFE" * 4
     text = _hex_file(
         [
-            _hex_record(0x0010, 0x00, sparse),
+            _hex_record(0x0000, 0x04, (0x0800).to_bytes(2, "big")),
+            # A real gap: 16 contiguous bytes start at 0, then 0x20.
+            _hex_record(0x0020, 0x00, sparse),
             _hex_record(0x0008, 0x00, high),
             _hex_record(0x0000, 0x00, low),
         ]
@@ -578,11 +592,17 @@ def test_hex_out_of_order_records_merge_by_address_and_keep_sparse_gaps(
     payload = text.encode("ascii")
     (project / "fw.hex").write_bytes(payload)
     applied = _apply(
-        project, data_root, "fw.hex", payload, format="hex", base=None
+        project,
+        data_root,
+        "fw.hex",
+        payload,
+        format="hex",
+        base=None,
+        regions=_regions((0x0800_0000, 0x1000)),
     )
     assert applied["image"]["segments"] == [
-        {"address": 0x00, "length": 16},
-        {"address": 0x10, "length": 4},
+        {"address": 0x0800_0000, "length": 16},
+        {"address": 0x0800_0020, "length": 4},
     ]
     image = _store_file(data_root, str(applied["importId"]), "image.elf").read_bytes()
     loads = [
@@ -601,9 +621,9 @@ def test_hex_out_of_order_records_merge_by_address_and_keep_sparse_gaps(
         reference = IntelHex()
         reference.loadhex(io.StringIO(text))
         payload_map = reference.todict()
-        expected = {0x00 + index: low[index] for index in range(8)}
-        expected.update({0x08 + index: high[index] for index in range(8)})
-        expected.update({0x10 + index: 0xFE for index in range(4)})
+        expected = {0x0800_0000 + index: low[index] for index in range(8)}
+        expected.update({0x0800_0008 + index: high[index] for index in range(8)})
+        expected.update({0x0800_0020 + index: 0xFE for index in range(4)})
         assert payload_map == expected
 
 
@@ -827,6 +847,146 @@ def test_intermediate_store_redirect_is_rejected_before_reads(
         elif workspace_root.exists():
             os.rmdir(workspace_root)
         os.rename(moved, workspace_root)
+
+
+def test_malformed_request_types_are_input_failures_not_internal_errors(
+    tmp_path: Path,
+) -> None:
+    project = _project(tmp_path)
+    data_root = tmp_path / "data"
+    (project / "fw.bin").write_bytes(b"x")
+    result = firmware_import_workflow(
+        FirmwareImportRequest(
+            project,
+            data_root,
+            "session-a",
+            "fw.bin",
+            "a" * 64,
+            [],  # unhashable format must not reach dict membership
+            "stm32f407vg",
+            ((0x0800_0000, 0x100),),
+            None,
+            None,
+            False,
+        )
+    )
+    assert result.code == "FIRMWARE_INPUT_INVALID"
+    assert result.details["field"] == "format"
+
+    bad_request = firmware_import_workflow(
+        FirmwareAdmitRequest(project, data_root, "session-a", [], "a" * 64)  # type: ignore[arg-type]
+    )
+    assert bad_request.code == "FIRMWARE_INPUT_INVALID"
+    assert bad_request.code != "FIRMWARE_INTERNAL_ERROR"
+
+
+def test_hex_line_and_sparse_segment_limits_fail_early(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import stm32_toolkit.external_firmware as module
+
+    project = _project(tmp_path)
+    data_root = tmp_path / "data"
+    sparse_text = _hex_file(
+        [
+            _hex_record(0x0000, 0x04, (0x0800).to_bytes(2, "big")),
+            _hex_record(0x0000, 0x00, b"\x01"),
+            _hex_record(0x0100, 0x00, b"\x02"),
+        ]
+    )
+    sparse = sparse_text.encode("ascii")
+    (project / "sparse.hex").write_bytes(sparse)
+    monkeypatch.setattr(module, "_MAX_SEGMENTS", 1)
+    too_many_segments = firmware_import_workflow(
+        _import_request(
+            project,
+            data_root,
+            "sparse.hex",
+            sparse,
+            format="hex",
+            base=None,
+            regions=_regions((0x0800_0000, 0x1000)),
+        )
+    )
+    assert too_many_segments.code == "FIRMWARE_IMAGE_INVALID"
+    assert too_many_segments.details["rule"] == "size"
+
+    monkeypatch.setattr(module, "_MAX_HEX_LINES", 2)
+    many_lines = _hex_file(
+        [_hex_record(0x0000, 0x00, b"\x01"), _hex_record(0x0001, 0x00, b"\x02")]
+    ).encode("ascii")
+    (project / "lines.hex").write_bytes(many_lines)
+    too_many_lines = firmware_import_workflow(
+        _import_request(
+            project,
+            data_root,
+            "lines.hex",
+            many_lines,
+            format="hex",
+            base=None,
+        )
+    )
+    assert too_many_lines.code == "FIRMWARE_IMAGE_INVALID"
+    assert too_many_lines.details["rule"] == "size"
+    assert not data_root.exists()
+
+
+def test_installed_file_programmer_consumes_every_normalized_segment(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Offline loader evidence: the real FileProgrammer feeds every PT_LOAD."""
+
+    try:
+        from pyocd.flash import file_programmer as programmer_module
+    except ImportError:
+        pytest.skip("pyOCD is not installed in this environment")
+
+    recorded: list[tuple[int, bytes]] = []
+
+    class CollectingLoader:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def add_data(self, address: int, data: bytes) -> None:
+            recorded.append((address, bytes(data)))
+
+        def commit(self) -> None:
+            pass
+
+    monkeypatch.setattr(programmer_module, "FlashLoader", CollectingLoader)
+
+    project = _project(tmp_path)
+    data_root = tmp_path / "data"
+    payload = _elf(
+        (
+            (0x0800_0000, b"\x11" * 3),
+            (0x0800_0100, b"\x22" * 5),
+        )
+    )
+    (project / "fw.elf").write_bytes(payload)
+    applied = _apply(
+        project, data_root, "fw.elf", payload, format="elf", base=None
+    )
+    admission = load_admission(
+        project,
+        data_root,
+        import_id=str(applied["importId"]),
+        expected_sha256=_sha(payload),
+    )
+    image = _store_file(data_root, str(applied["importId"]), "image.elf").read_bytes()
+
+    programmer = programmer_module.FileProgrammer(
+        object(),
+        progress=None,
+        chip_erase="sector",
+        trust_crc=False,
+        keep_unwritten=True,
+    )
+    programmer.program(io.BytesIO(image), file_format="elf")
+
+    assert recorded == [
+        (segment.address, segment.data) for segment in admission.segments
+    ]
 
 
 def test_same_inputs_produce_the_same_plan_on_every_call(tmp_path: Path) -> None:
