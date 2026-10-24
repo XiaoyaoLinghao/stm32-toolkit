@@ -60,7 +60,11 @@ target_link_options({{ target_name }} PRIVATE
   "-Wl,-Map=${CMAKE_BINARY_DIR}/{{ map_name }}"
   "-Wl,--gc-sections"
 )
-
+{%- if linker_fragment %}
+set_property(TARGET {{ target_name }} APPEND PROPERTY LINK_DEPENDS
+  "${CMAKE_SOURCE_DIR}/linker/stm32tk.ld"
+)
+{%- endif %}
 {%- if native_linker_script or link_standard_math %}
 target_link_libraries({{ target_name }} PRIVATE m)
 {%- endif %}

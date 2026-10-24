@@ -36,6 +36,7 @@ from stm32_toolkit.memory_layout import (
     resolve_memory_layout,
     validate_memory_layout_regions,
 )
+from stm32_toolkit.linker_fragment import BUILD_REMEDIATION
 from stm32_toolkit.project_upgrade import ProjectMutationLockError
 from stm32_toolkit.project_model import ProjectManifestError, ProjectModel, load_project_model
 from stm32_toolkit.result import OperationResult
@@ -192,7 +193,9 @@ def _plan(model: ProjectModel) -> GenerationPlan:
     files = _classify_targets(root, rendered, prior)
     blockers = _collect_blockers(prior, files)
     model_sha256 = model_sha256_for(model)
-    manifest_bytes = build_managed_manifest_bytes(files, model_sha256)
+    manifest_bytes = build_managed_manifest_bytes(
+        files, model_sha256, linker_fragment=model.generation.linker_fragment
+    )
     if len(manifest_bytes) > TOTAL_LIMIT_BYTES:
         raise _raise_error(
             "GENERATION_TEMPLATE_INVALID",
@@ -296,6 +299,30 @@ def _validate_generation_spec(model: ProjectModel) -> None:
             "native linker script path is not supported",
             {"field": "generation.nativeLinkerScript", "rule": "withinProjectRoot"},
         )
+    fragment = model.generation.linker_fragment
+    if fragment is not None:
+        if portable_path_error(fragment.path) is not None or "\\" in fragment.path:
+            raise _raise_error(
+                "LINKER_FRAGMENT_INVALID",
+                "linker fragment path is not portable",
+                {
+                    "path": fragment.path,
+                    "field": "generation.linkerFragment",
+                    "rule": "path",
+                    "remediation": BUILD_REMEDIATION,
+                },
+            )
+        if model.generation.native_linker_script is not None:
+            raise _raise_error(
+                "LINKER_FRAGMENT_INVALID",
+                "a linker fragment cannot be combined with a native linker script",
+                {
+                    "path": fragment.path,
+                    "field": "generation.linkerFragment",
+                    "rule": "nativeLinkerOwned",
+                    "remediation": BUILD_REMEDIATION,
+                },
+            )
     runtime_initialization = model.generation.runtime_initialization
     if runtime_initialization not in (None, "cmsis-gcc-v1"):
         raise _raise_error(
@@ -822,6 +849,9 @@ def _collect_inputs(
         all_paths.append(model.generation.cube_mx_ioc)
     if model.generation.native_linker_script is not None:
         all_paths.append(model.generation.native_linker_script)
+    fragment = model.generation.linker_fragment
+    if fragment is not None:
+        all_paths.append(fragment.path)
     if prior_data is not None:
         all_paths.append(MANAGED_MANIFEST_PATH)
     if report_sha is not None:
@@ -834,25 +864,27 @@ def _collect_inputs(
                 "input path is not portable",
                 {"path": path, "rule": "withinProjectRoot"},
             )
-        if path == model.generation.native_linker_script:
-            native_path = root.joinpath(*path.split("/"))
+        if path == model.generation.native_linker_script or (
+            fragment is not None and path == fragment.path
+        ):
+            inspect_path = root.joinpath(*path.split("/"))
             try:
-                native_lstat = os.lstat(native_path)
+                inspect_lstat = os.lstat(inspect_path)
             except FileNotFoundError:
                 continue
             except OSError:
                 raise _raise_error(
                     "GENERATION_INPUT_INVALID",
-                    "native linker script inspection failed",
+                    "linker input inspection failed",
                     {"path": path, "rule": "unreadable"},
                 ) from None
             if (
-                stat.S_ISLNK(native_lstat.st_mode)
-                or bool(getattr(native_lstat, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
+                stat.S_ISLNK(inspect_lstat.st_mode)
+                or bool(getattr(inspect_lstat, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
             ):
                 raise _raise_error(
                     "GENERATION_INPUT_INVALID",
-                    "native linker script must not redirect",
+                    "linker input must not redirect",
                     {"path": path, "rule": "redirect"},
                 )
     duplicate = _duplicate_or_casefold(all_paths)
@@ -951,7 +983,21 @@ def _collect_inputs(
                 "aggregate input size exceeds the limit",
                 {"path": path, "rule": "aggregateSize"},
             )
-        inputs.append(GenerationInput(path=path, sha256=sha256_hex(data), size=len(data)))
+        digest = sha256_hex(data)
+        if fragment is not None and path == fragment.path and digest != fragment.sha256:
+            # The model parsed one exact byte image.  A second read that does
+            # not match it is a race, not a new fragment to render.
+            raise _raise_error(
+                "LINKER_FRAGMENT_INVALID",
+                "linker fragment changed while configuration was planning",
+                {
+                    "path": path,
+                    "field": "generation.linkerFragment",
+                    "rule": "changed",
+                    "remediation": BUILD_REMEDIATION,
+                },
+            )
+        inputs.append(GenerationInput(path=path, sha256=digest, size=len(data)))
     inputs.sort(key=lambda entry: portable_sort_key(entry.path))
     return inputs
 
@@ -1054,6 +1100,14 @@ def _build_contexts(
         "hex_name": f"{stem}.hex",
         "bin_name": f"{stem}.bin",
         "native_linker_script": model.generation.native_linker_script,
+        # The conditional LINK_DEPENDS route exists only when a fragment
+        # contributes to the merged managed linker; no-option bytes stay as
+        # they were.
+        "linker_fragment": (
+            model.generation.linker_fragment.path
+            if model.generation.linker_fragment is not None
+            else None
+        ),
     }
     linker = {
         "regions": [
@@ -1089,6 +1143,23 @@ def _build_contexts(
                 "region": region,
             }
             for section, address, region in fixed_sections
+        ],
+        "fragment_sections": [
+            {
+                "name": section.name,
+                "address_hex": (
+                    None
+                    if section.address is None
+                    else "0x%08x" % section.address
+                ),
+                "region": section.region,
+                "statement_lines": section.statement_lines(),
+            }
+            for section in (
+                model.generation.linker_fragment.sections
+                if model.generation.linker_fragment is not None
+                else ()
+            )
         ],
     }
     presets = {
@@ -1608,9 +1679,17 @@ def _validate_plan(plan: object) -> None:
     ):
         raise _plan_invalid("sortedOrder")
 
+    fragment = plan.model.generation.linker_fragment
+    if fragment is not None:
+        matching = [entry for entry in plan.inputs if entry.path == fragment.path]
+        if len(matching) != 1 or matching[0].sha256 != fragment.sha256:
+            raise _plan_invalid("linkerFragment")
+
     if len(plan.managed_manifest_bytes) > TOTAL_LIMIT_BYTES:
         raise _plan_invalid("manifestLimit")
-    expected = build_managed_manifest_bytes(plan.files, plan.model_sha256)
+    expected = build_managed_manifest_bytes(
+        plan.files, plan.model_sha256, linker_fragment=fragment
+    )
     if expected != plan.managed_manifest_bytes:
         raise _plan_invalid("manifestBytes")
     if model_sha256_for(plan.model) != plan.model_sha256:
@@ -1913,6 +1992,12 @@ def _map_fresh_error(error: GenerationError) -> None:
             "GENERATION_INPUT_CHANGED",
             "conversion report changed since planning",
             {"path": _CONVERSION_REPORT_PATH},
+        )
+    if code == "LINKER_FRAGMENT_INVALID":
+        raise _fail(
+            "GENERATION_INPUT_CHANGED",
+            "linker fragment changed since planning",
+            {"path": str(error.details.get("path", "generation.linkerFragment"))},
         )
     if code in ("GENERATION_INPUT_INVALID", "GENERATION_PATH_INVALID"):
         raise _fail(

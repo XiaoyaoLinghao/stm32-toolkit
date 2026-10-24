@@ -73,11 +73,14 @@ from stm32_toolkit.build.model import (
 )
 from stm32_toolkit.generation.managed_files import (
     GENERATED_TARGETS,
+    ManagedManifestFacts,
     is_supported_generation_producer,
-    parse_managed_manifest,
+    model_sha256_for,
+    parse_managed_manifest_facts,
     portable_path_error,
     sha256_hex,
 )
+from stm32_toolkit.linker_fragment import BUILD_REMEDIATION
 from stm32_toolkit.process import ProcessError, ProcessRequest, run_process
 from stm32_toolkit.project_model import ProjectManifestError, ProjectModel, load_project_model
 from stm32_toolkit.result import OperationResult
@@ -226,6 +229,48 @@ def _validate_request(request: BuildRequest) -> Path:
     return root
 
 
+def _fragment_provenance_error(path: str, rule: str) -> BuildError:
+    return build_error(
+        BUILD_PROJECT_INVALID,
+        "managed configuration is invalid",
+        {"path": path, "rule": rule, "remediation": BUILD_REMEDIATION},
+    )
+
+
+def _require_fragment_provenance(
+    model: ProjectModel, facts: ManagedManifestFacts
+) -> None:
+    """Refuse stale managed output before any compiler can be spawned.
+
+    The current manifest field alone is insufficient: a removed option would
+    leave no field to inspect.  The configuration-time provenance recorded in
+    the managed manifest is therefore compared with the current model, and a
+    fragment project also requires the recorded project model hash to match
+    the exact current model.
+    """
+    fragment = model.generation.linker_fragment
+    recorded_path = facts.linker_fragment_path
+    recorded_sha = facts.linker_fragment_sha256
+    if fragment is None:
+        if recorded_path is not None:
+            raise _fragment_provenance_error(
+                recorded_path, "linkerFragmentRemoved"
+            )
+        return
+    if recorded_path is None or recorded_sha is None:
+        raise _fragment_provenance_error(
+            fragment.path, "linkerFragmentMissing"
+        )
+    if recorded_path != fragment.path or recorded_sha != fragment.sha256:
+        raise _fragment_provenance_error(
+            fragment.path, "linkerFragmentChanged"
+        )
+    if facts.project_manifest_sha256 != model_sha256_for(model):
+        raise _fragment_provenance_error(
+            ".stm32-project.json", "modelChanged"
+        )
+
+
 def _require_managed_configuration(root: Path) -> ProjectModel:
     try:
         model = load_project_model(root)
@@ -272,7 +317,7 @@ def _require_managed_configuration(root: Path) -> ProjectModel:
             {"path": manifest_rel, "rule": "size"},
         )
     try:
-        records = parse_managed_manifest(manifest_data)
+        facts = parse_managed_manifest_facts(manifest_data)
     except Exception as error:
         details = getattr(error, "details", None)
         raise build_error(
@@ -280,6 +325,8 @@ def _require_managed_configuration(root: Path) -> ProjectModel:
             "managed configuration is invalid",
             dict(details) if isinstance(details, dict) else {"path": manifest_rel, "rule": "manifest"},
         ) from None
+    records = facts.records
+    _require_fragment_provenance(model, facts)
     native_linker = model.generation.native_linker_script
     targets = set(GENERATED_TARGETS)
     if native_linker is not None:

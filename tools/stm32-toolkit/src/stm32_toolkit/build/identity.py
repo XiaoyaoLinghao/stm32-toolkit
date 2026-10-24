@@ -72,6 +72,9 @@ _ELF_LIMIT_BYTES = 64 * 1024 * 1024
 _MAP_LIMIT_BYTES = 32 * 1024 * 1024
 _EVIDENCE_LIMIT_BYTES = 8 * 1024 * 1024
 _MAX_WALK_DEPTH = 64
+#: Deterministic bound for fragment-project overlap evidence; the ELF byte
+#: limit alone would otherwise permit quadratic interval work.
+_FRAGMENT_ALLOCATED_SECTION_LIMIT = 100_000
 LEGACY_INPUT_DISCOVERY_POLICY = "legacy"
 SOURCE_LOCAL_HEADERS_POLICY = "source-local-headers-v1"
 
@@ -242,15 +245,19 @@ def snapshot_project_inputs(
     declared_identities: dict[tuple[int, int], str] = {}
     declared = [".stm32-project.json", *model.build.sources, *model.build.assembly_sources]
     native_linker = model.generation.native_linker_script
+    fragment = model.generation.linker_fragment
+    fragment_path = fragment.path if fragment is not None else None
     if native_linker is not None:
         declared.append(native_linker)
+    if fragment_path is not None:
+        declared.append(fragment_path)
     for rel in declared:
         _require_input_path(
             root,
             rel,
             paths,
             declared_identities,
-            reject_redirect=rel == native_linker,
+            reject_redirect=rel == native_linker or rel == fragment_path,
         )
     manifest_rel = model.generation.managed_manifest
     manifest_abs = root.joinpath(*manifest_rel.split("/"))
@@ -321,6 +328,16 @@ def snapshot_project_inputs(
             raise _input_invalid(rel, "unreadable") from None
         if len(data) > _FILE_LIMIT_BYTES:
             raise _input_invalid(rel, "size")
+        if (
+            fragment is not None
+            and rel == fragment_path
+            and sha256_hex(data) != fragment.sha256
+        ):
+            # The model parsed one frozen byte image.  The snapshot must not
+            # silently accept a different fragment that appeared between the
+            # model load and input discovery; this also covers a change during
+            # the build itself on the post-build snapshot.
+            raise _input_invalid(rel, "fragmentChanged")
         aggregate += len(data)
         if aggregate > _AGGREGATE_LIMIT_BYTES:
             raise _input_invalid_rule("aggregate")
@@ -923,6 +940,8 @@ def _inspect_elf(elffile: ELFFile, rel: str, model: ProjectModel, data: bytes) -
             ElfSectionEvidence(name=section.name, address=addr, size=size, alloc=True, nobits=nobits)
         )
 
+    _validate_fragment_elf(rel, model, section_evidence)
+
     return ElfEvidence(
         entry_point=entry,
         vector_address=vector_addr,
@@ -931,6 +950,67 @@ def _inspect_elf(elffile: ELFFile, rel: str, model: ProjectModel, data: bytes) -
         size=len(data),
         sections=tuple(section_evidence),
     )
+
+
+def _validate_fragment_elf(
+    rel: str, model: ProjectModel, sections: list[ElfSectionEvidence]
+) -> None:
+    """Validate materialized fragment sections and allocated-section overlap.
+
+    A selector that matches no input may legitimately leave no output
+    section, so only nonempty materialized sections are required to exist.
+    Every nonempty section carrying a declared name must be allocated; a
+    non-allocated materialization is refused rather than silently skipped.
+    Each allocated one must be an ``SHT_NOBITS`` section placed in its
+    declared writable region (and exactly at an explicit address).  Because
+    the GNU MAP accounts interval unions, it cannot prove non-overlap; for a
+    fragment project every nonempty allocated ELF section must therefore have
+    a disjoint VMA interval from every other nonempty allocated section.
+    """
+    fragment = model.generation.linker_fragment
+    if fragment is None:
+        return
+    regions = {region.name: region for region in model.memory.regions}
+    declared = {section.name: section for section in fragment.sections}
+    allocated = [
+        section
+        for section in sections
+        if section.alloc and section.size > 0
+    ]
+    # Inspect every nonempty section, not only the allocated evidence: a
+    # declared custom section whose SHF_ALLOC bit was cleared must fail the
+    # contract instead of disappearing from the allocated subset.
+    for evidence in sections:
+        if evidence.size <= 0:
+            continue
+        expected = declared.get(evidence.name)
+        if expected is None:
+            continue
+        if not evidence.alloc:
+            raise _artifact_invalid(rel, "fragmentNotAllocated")
+        if not evidence.nobits:
+            raise _artifact_invalid(rel, "fragmentLoadable")
+        region = regions.get(expected.region)
+        if region is None or "w" not in region.attributes:
+            raise _artifact_invalid(rel, "fragmentRegion")
+        end = evidence.address + evidence.size
+        if (
+            evidence.address < region.origin
+            or end > region.origin + region.length
+        ):
+            raise _artifact_invalid(rel, "fragmentOutOfRange")
+        if expected.address is not None and evidence.address != expected.address:
+            raise _artifact_invalid(rel, "fragmentAddress")
+    if len(allocated) > _FRAGMENT_ALLOCATED_SECTION_LIMIT:
+        raise _artifact_invalid(rel, "fragmentSectionCount")
+    previous_end: int | None = None
+    for evidence in sorted(
+        allocated, key=lambda item: (item.address, item.size, item.name)
+    ):
+        if previous_end is not None and evidence.address < previous_end:
+            raise _artifact_invalid(rel, "fragmentOverlap")
+        end = evidence.address + evidence.size
+        previous_end = end if previous_end is None else max(previous_end, end)
 
 
 # ---------------------------------------------------------------------------

@@ -133,6 +133,28 @@ before access; external stack use can require earlier bootstrap than
 `SystemInit`. A native linker script stays user-owned and is never rewritten.
 This is offline source/link evidence, not hardware qualification.
 
+An owner-supplied linker fragment is a separate, optional configuration input.
+Schema 2/3 `generation.linkerFragment` names one project-relative UTF-8 file
+that configuration reads under a bounded grammar: at most 32 custom writable-RAM
+`NOLOAD` output sections, 64 KiB of raw bytes, `ALIGN`/selector/`KEEP` statements
+only, and selectors confined to each output section's own family. Every region
+name resolves against the same canonical base-plus-extra map used by fixed
+sections, linker rendering, ELF/MAP accounting and build identity; only writable
+regions are accepted, no region or capacity is inferred, and explicit addresses
+must start inside their region. Managed and standard GNU families (vector, text,
+rodata, data, bss, small-data, TLS, dynamic metadata, constructors/unwind,
+heap/stack, `.stm32tk.abs.*`) are rejected case-insensitively. The fragment is
+user-owned and is never rewritten or recorded as a managed file. Its path and
+exact raw-byte SHA-256 participate in model identity, managed-manifest
+provenance and build input snapshots; path/content edits, deletion and option
+removal invalidate prior configuration and refuse the build before any compiler
+spawn. Configuration renders validated sections after fixed sections and before
+managed data/bss, and the generated CMake gains a conditional `LINK_DEPENDS` on
+the merged linker only for this route. `NOLOAD` sections are never copied or
+zeroed: initialized objects and external-memory availability remain the owner's
+responsibility, and this is offline link evidence rather than behavioral or
+hardware qualification.
+
 Generation retains prior ownership and hash checks. Existing user files never become writable merely
 because they occupy a generator target or have identical bytes. The implemented v1.0.1
 editor-preservation behavior is described in its

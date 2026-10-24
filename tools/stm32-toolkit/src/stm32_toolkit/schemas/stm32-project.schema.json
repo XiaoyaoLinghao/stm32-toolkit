@@ -234,6 +234,11 @@
       "properties": {
         "cubeMxIoc": {"type": ["string", "null"], "minLength": 1},
         "nativeLinkerScript": {"type": ["string", "null"], "minLength": 1},
+        "linkerFragment": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Optional project-relative UTF-8 GNU ld fragment with writable-RAM NOLOAD output sections only. Its exact raw bytes participate in model identity and managed provenance; the grammar and region ownership are validated by the model layer."
+        },
         "runtimeInitialization": {"enum": ["cmsis-gcc-v1"]},
         "managedManifest": {"type": "string", "minLength": 1},
         "generatedDirectories": {

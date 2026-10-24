@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from stm32_toolkit import __version__
+from stm32_toolkit.linker_fragment import LinkerFragment
 from stm32_toolkit.project_model import ProjectModel
 
 #: Frozen generation contract values (work order sections 3 and 8.1).
@@ -163,6 +164,22 @@ class ManagedFileRecord:
 
 
 @dataclass(frozen=True)
+class ManagedManifestFacts:
+    """The validated provenance fields of one prior managed manifest.
+
+    ``linker_fragment_path``/``linker_fragment_sha256`` are present only when
+    configuration ran with ``generation.linkerFragment``.  Build compares
+    them with the current model instead of trusting the current manifest
+    field alone, so an edit, path change or removal is refused.
+    """
+
+    project_manifest_sha256: str
+    linker_fragment_path: str | None
+    linker_fragment_sha256: str | None
+    records: tuple[ManagedFileRecord, ...]
+
+
+@dataclass(frozen=True)
 class GeneratedFile:
     path: str
     status: str  # plus preserved-unowned for a fixed, unowned regular editor file
@@ -287,6 +304,13 @@ def _model_payload(model: ProjectModel) -> dict[str, object]:
     if model.generation.runtime_initialization is not None:
         generation_payload["runtime_initialization"] = (
             model.generation.runtime_initialization
+        )
+    # The exact raw fragment digest (and its normalized form) participate in
+    # model identity only when the option is present, so absent-option
+    # manifests keep their historical model hash.
+    if model.generation.linker_fragment is not None:
+        generation_payload["linker_fragment"] = (
+            model.generation.linker_fragment.to_dict()
         )
     # The bounded newlib selection participates in model identity only when it
     # is non-empty, so absent and empty fields keep the historical digest.
@@ -453,31 +477,43 @@ def casefold_collision(paths: list[str]) -> str | None:
 # ---------------------------------------------------------------------------
 
 
-def build_managed_manifest_bytes(files: tuple[GeneratedFile, ...], model_sha256: str) -> bytes:
+def build_managed_manifest_bytes(
+    files: tuple[GeneratedFile, ...],
+    model_sha256: str,
+    *,
+    linker_fragment: LinkerFragment | None = None,
+) -> bytes:
     """Deterministic proposed manifest bytes (work order 8.1).
 
     ``files`` must already be sorted by portable path. Only files generated
     or already managed are recorded with ``ownership: managed``. Existing
     unowned editor files remain outside the ownership manifest.
-    The manifest itself is never listed.
+    The manifest itself is never listed.  ``linker_fragment`` is optional
+    configuration provenance: it appears only for a fragment project, so a
+    no-fragment manifest keeps its exact historical bytes.
     """
-    payload = {
+    payload: dict[str, object] = {
         "schemaVersion": 1,
         "tool": "stm32-toolkit",
         "toolVersion": __version__,
         "templateVersion": TEMPLATE_VERSION,
         "projectManifestSha256": model_sha256,
-        "files": [
-            {
-                "path": entry.path,
-                "ownership": "managed",
-                "templateVersion": TEMPLATE_VERSION,
-                "sha256": entry.after_sha256,
-            }
-            for entry in files
-            if entry.status != "preserved-unowned"
-        ],
     }
+    if linker_fragment is not None:
+        payload["linkerFragment"] = {
+            "path": linker_fragment.path,
+            "sha256": linker_fragment.sha256,
+        }
+    payload["files"] = [
+        {
+            "path": entry.path,
+            "ownership": "managed",
+            "templateVersion": TEMPLATE_VERSION,
+            "sha256": entry.after_sha256,
+        }
+        for entry in files
+        if entry.status != "preserved-unowned"
+    ]
     return json.dumps(payload, indent=2, ensure_ascii=False).encode("utf-8") + b"\n"
 
 
@@ -498,12 +534,14 @@ def _reject_duplicate_json_keys(pairs: list[tuple[str, object]]) -> dict[str, ob
     return result
 
 
-def parse_managed_manifest(data: bytes) -> list[ManagedFileRecord]:
-    """Parse and strictly validate a prior managed manifest.
+def parse_managed_manifest_facts(data: bytes) -> ManagedManifestFacts:
+    """Parse and strictly validate a prior managed manifest including provenance.
 
     Raises ``GENERATION_MANIFEST_INVALID`` with a portable rule for every
     malformed, unsafe, or non-canonical shape.  The manifest is evidence
-    only; planning never repairs it silently.
+    only; planning never repairs it silently.  The optional
+    ``linkerFragment`` provenance is accepted only in its exact two-field
+    form and is returned separately from the managed records.
     """
     try:
         text = data.decode("utf-8")
@@ -515,7 +553,15 @@ def parse_managed_manifest(data: bytes) -> list[ManagedFileRecord]:
         raise _manifest_error("json") from None
     if not isinstance(payload, dict):
         raise _manifest_error("type")
-    allowed = {"schemaVersion", "tool", "toolVersion", "templateVersion", "projectManifestSha256", "files"}
+    allowed = {
+        "schemaVersion",
+        "tool",
+        "toolVersion",
+        "templateVersion",
+        "projectManifestSha256",
+        "files",
+        "linkerFragment",
+    }
     if not set(payload).issubset(allowed):
         raise _manifest_error("key")
     if payload.get("schemaVersion") != 1:
@@ -526,8 +572,32 @@ def parse_managed_manifest(data: bytes) -> list[ManagedFileRecord]:
         raise _manifest_error("version")
     if payload.get("templateVersion") != TEMPLATE_VERSION:
         raise _manifest_error("version")
-    if sha256_error(payload.get("projectManifestSha256")) is not None:
+    project_manifest_sha256 = payload.get("projectManifestSha256")
+    if sha256_error(project_manifest_sha256) is not None:
         raise _manifest_error("hash")
+    fragment_path: str | None = None
+    fragment_sha256: str | None = None
+    # Presence, not ``get()``, decides whether provenance was recorded: an
+    # explicit JSON null is malformed, never the same as omitting the option
+    # (which alone preserves the historical no-fragment manifest).
+    if "linkerFragment" in payload:
+        fragment_value = payload["linkerFragment"]
+        if not isinstance(fragment_value, dict) or set(fragment_value) != {
+            "path",
+            "sha256",
+        }:
+            raise _manifest_error("fragment")
+        path_value = fragment_value["path"]
+        hash_value = fragment_value["sha256"]
+        if (
+            not isinstance(path_value, str)
+            or portable_path_error(path_value) is not None
+            or "\\" in path_value
+            or sha256_error(hash_value) is not None
+        ):
+            raise _manifest_error("fragment")
+        fragment_path = path_value
+        fragment_sha256 = str(hash_value)
     files_value = payload.get("files")
     if not isinstance(files_value, list):
         raise _manifest_error("type")
@@ -563,4 +633,14 @@ def parse_managed_manifest(data: bytes) -> list[ManagedFileRecord]:
         raise _manifest_error("casefold")
     if paths != sorted(paths, key=portable_sort_key):
         raise _manifest_error("order")
-    return records
+    return ManagedManifestFacts(
+        project_manifest_sha256=str(project_manifest_sha256),
+        linker_fragment_path=fragment_path,
+        linker_fragment_sha256=fragment_sha256,
+        records=tuple(records),
+    )
+
+
+def parse_managed_manifest(data: bytes) -> list[ManagedFileRecord]:
+    """Parse and strictly validate a prior managed manifest's managed records."""
+    return list(parse_managed_manifest_facts(data).records)

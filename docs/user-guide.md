@@ -136,6 +136,45 @@ $Layout = '{"flash":"IROM1","data":"IRAM1","bss":"EXT_SRAM","heap":"EXT_SRAM","s
 
 （示例中的区域名、数值与容量都只是**审阅示例，非板级事实**，也不表示外部存储器已初始化；必须按实际器件和 owner 提供的精确 origin/字节长度给出。）
 
+### 用户自有 NOLOAD 链接片段（当前源码/候选切片）
+
+工程负责人可以用 `generation.linkerFragment` 指定一个**自己拥有的**、工程相对的 UTF-8 GNU ld 片段，由 configure 校验后渲染进托管 `linker/stm32tk.ld`。这是**当前源码/候选的未发布行为**：已发布 v1.2.0 runtime 与已冻结/已安装的 1.3.0 都不包含本补丁；**没有新增 MCP 工具或参数**，仍使用既有的 `stm32_project_configure` / CLI `project configure`。使用前必须按实际绑定的 MCP 工具和 input schema 核对（`stm32_doctor` 的 `data.runtime.toolkitVersion`/`data.publicInventory` 只是旁证），不能仅凭版本号声称支持。
+
+**所有权与位置。** 片段是用户拥有的普通文件，Toolkit 只读取、从不改写或纳入 managed records。路径必须是非空、可移植的工程相对路径（`/`，不得含反斜杠、盘符、UNC、`.`/`..` 分量）；任一路径分量是符号链接/重解析点、文件缺失/是目录/超过 64 KiB/非 UTF-8 都 fail closed。片段不得与 `build.sources`/`assemblySources`/`includePaths`、SVD、CubeMX IOC、`generation.managedManifest`、原生 linker 脚本、九个托管生成目标（如 `CMakeLists.txt`、`linker/stm32tk.ld`、`.vscode/settings.json`）、`build/`、`artifacts/migration/` 或 `.stm32-toolkit/generated-files.json` 冲突（大小写不敏感），也不能与 `generation.nativeLinkerScript` 同时声明。原生脚本路线保持原有的独立所有权，片段不会接管它。绝对路径、`..` 遍历、重定向和生成目标冲突都会返回 `LINKER_FRAGMENT_INVALID` 的 `path`/`field`/`rule`/`remediation`，修复方式是改片段位置，不是修改 managed 文件或 digest。
+
+**受支持的语法子集（不是通用 GNU linker-script 解释器）。** 每个输出节必须是：
+
+```ld
+.sram2 0x20000000 (NOLOAD) :
+{
+  . = ALIGN(8);
+  *(.sram2 .sram2.*)
+} > RAM
+```
+
+- 只接受自定义可写 RAM `NOLOAD` 输出节，最多 32 节、原文最多 64 KiB；地址可选，必须是精确 uint32（十进制或 `0x` 十六进制），且必须落在所选区域起点之后、区域结束之前。未给地址时由 GNU ld 在所选区域游标处放置。
+- 每节至少一个 selector；语句仅 `. = ALIGN(n);`（正 2 的幂且不超过 4096）、`*(selectors)`、`KEEP(*(selectors))`。每节最多 64 条语句、全文最多 256 条；每条语句最多 64 个 selector、全文最多 256 个。selector 只能是该输出节自己的精确名字或 `name.*`；不得跨出本输出节家族，也不得重复或重叠。
+- C 块注释与空白可接受，但注释内容永远不会被当作指令；整个输入必须被消费，残留或未终止语法 fail closed；空文件/仅注释文件拒绝。
+- 区域名必须精确解析到 `fixedSections`、linker、ELF/MAP 共用的同一 canonical 区域 map，且只能是可写区域；不会推断新区域、容量或 DMA 可达性。多个 RAM 需要显式 `memoryLayout`（见上一节），片段不能代替该选择。
+- 拒绝托管/标准 GNU 节家族，包括向量/`text`/`rodata`/`data`/`bss`、small-data（`.sdata`/`.sbss`）、TLS（`.tdata`/`.tbss`）、动态元数据（`.dynamic`/`.dynsym`/`.dynstr`/`.hash`）、构造/析构、ARM unwind、heap/stack、`.stm32tk.abs.*` 及其它标准元数据；比较按 casefold 进行。这是为了不让片段“偷走”托管模板通配符或标准初始化数据。
+- 渲染顺序固定为：既有 fixed sections → 片段 sections（按源码顺序）→ 托管 `.data`/`.bss`/`.heap`/`.stack`。`NOLOAD` 节**不会被自动复制或清零**：不要把需要初始化器的 C 对象放进这些节；外部 RAM 必须由 owner 在访问前完成初始化（若把 stack 放在外部 RAM，可能需要早于 `SystemInit` 的引导）。本切片不改 startup 表、编程资格或控制器配置。
+
+**配置 PLAN/APPLY（既有入口，无新参数）。**
+
+```powershell
+$CandidateCli = Join-Path $DataRoot 'runtime\1.3.0\Scripts\stm32-toolkit.exe'
+# 1) 只读 PLAN：核对 data.plan_id、data.inputs、data.files、data.blockers
+& $CandidateCli --project-root $ProjectRoot project configure --dry-run --json
+# 2) 用户显式授权该精确 data.plan_id 后 APPLY（写操作）
+& $CandidateCli --project-root $ProjectRoot project configure --apply --plan-id <data.plan_id> --authorized --json
+```
+
+MCP 客户端用同一合同：先调用 `stm32_project_configure()`（省略 `planId`，`authorized` 为 false/省略）取得 PLAN；核对 `data.plan_id`（64 位小写十六进制）、`data.model_sha256`、`data.inputs[]`（含 `path`/`sha256`/`size`，片段摘要必须出现）、`data.files[]`（尤其 `linker/stm32tk.ld` 的 `path`/`status`/`unified_diff`）、`data.blockers[]` 与 `data.managed_manifest_path`。只有用户显式授权该精确 `data.plan_id` 后，才调用 `stm32_project_configure(planId="<data.plan_id>", authorized=true)`。APPLY 成功响应的 `data` 使用既有 camelCase 字段：`planId`、`modelSha256`、`createdPaths`、`updatedPaths`、`unchangedPaths`、`preservedPaths`、`warnings`、`managedManifestPath`、`managedManifestSha256`、`templateVersion`。不要手工修改 `linker/stm32tk.ld`、`.stm32-toolkit/generated-files.json` 或任何 digest 来“修复”配置；apply 会以同一字节重新校验并拒绝计划后的片段编辑、路径变化或删除，且不写文件。
+
+**失败与构建新鲜度。** 语法/区域/所有权失败返回 `ok=false`、`code=LINKER_FRAGMENT_INVALID`，`details` 含 `path`、`field`（如 `sections[0].region`）、`rule`、`remediation`，适用时含 `line`/`column`；按 details 修复片段后重新走 PLAN/APPLY。片段路径和**精确原始字节**参与 model hash、managed manifest 的 `linkerFragment = {path, sha256}` provenance 和 build input snapshot。片段被编辑（即使是注释）、删除、路径改变，或整个选项被移除，都会使旧配置/构建证据失效：build 在 spawn 编译器之前返回 `BUILD_PROJECT_INVALID`，`details.rule` 为 `linkerFragmentChanged`、`linkerFragmentRemoved`、`linkerFragmentMissing` 或 `modelChanged`，并带 `remediation`；此时重跑 configure PLAN/APPLY，再按需 `build --preset arm-debug --clean`。不要编辑旧 receipt 或 managed hash 来绕过。生成 `CMakeLists.txt` 仅在片段路线下加入 `LINK_DEPENDS` 指向合并后的 `linker/stm32tk.ld`；直接使用 CMake/Ninja 不会重新解析片段，必须先通过 Toolkit 重新 configure。省略片段时历史 model hash、manifest 字节与生成字节保持不变。
+
+**与其它入口的区别。** `fixedSections` 是迁移证据决定的固定绝对地址 `NOLOAD` 节；`memory.layout` 是托管 `.data`/`.bss`/`.heap`/`.stack` 的区域选择；`extraRegions` 只声明可写 RAM 区域；`nativeLinkerScript` 是用户完全自有的原生脚本。`generation.linkerFragment` 只贡献上述受限的自定义 `NOLOAD` 输出节，不改变其它任何语义，也不是任意 GNU ld 脚本、初始化数据或硬件可达性的证明。
+
 `stm32_project_context` 的旧 `capabilities.*` 布尔值继续保留为保守兼容字段；新增 `capabilityDetails` 逐项给出 `available`、`blocked` 或 `not-evaluated` 及原因/下一步。`flash`、`targetTest`、`monitor`、`breakpointDebug` 的旧布尔 `false` 本身不区分“未探测硬件”与“已知 snapshot provenance 阻断”，必须读 `capabilityDetails`；它也不代表工具不存在。需要探针事实时单独调用只读 `probe list` / `stm32_probe_list`。仅询问已连接探针时，不需要 manifest、构建、debug backend、target 或 SVD；发现结果不授予改板权限，也不证明 target 身份或可烧录。有效工程保留 `workspaceId`，缺失或无效 manifest 时返回 `workspaceId: null` 与明确 `discovery.status=unbound`，不要伪造工程 ID。
 
 **无 Git 的构建与来源边界（当前源码切片）。** 有效托管 GCC/CMake 工程可从导出/非 Git 目录、unborn HEAD 或 Git 缺失/无法执行的环境构建；Git 不可用本身不是构建失败。此时 `firmware-identity.json` 与 `build-result.json` 使用 `schemaVersion: 2`，identity 明确写 `sourceBaseline: "input-snapshot-v1"`、`gitHead: null`、`gitDirty: null`，并只携带有界 `gitEvidence: {"status":"unavailable","code":"BUILD_GIT_INVALID","rule":"head"}`（`rule` 为 `head` 或 `status`）；`inputSnapshotSha256`、`targetDevice`、`preset`、实际 `toolkitVersion` 与 ELF/MAP 字段仍完整。null 绝不表示 clean，不要 `git init`、commit、stash 或伪造哈希。Git 可用时继续使用原有 schema-1 字节与 build ID 语义，schema-1 不接受 nullable Git 字段。context 的 `data.build` 新增 `sourceBaseline`、`gitDirty`、`gitEvidence`，schema-2 新鲜度只依赖精确 input snapshot、target/preset/model 与 ELF/MAP 哈希，不再启动 Git。schema-2 只是 build/build freshness 证据：flash、debug、Target 测试、Monitor 与 acceptance 仍要求 Git-shaped provenance，共享 firmware 准入在任何 probe/lease/attach 前返回稳定 `FIRMWARE_PROVENANCE_UNSUPPORTED`；外层封装可按各自既有协议映射该结果（例如 acceptance recovery 映射为 `ACCEPTANCE_ATTEMPT_OUTPUT_INVALID`），不要假定每个入口对外显示同一代码。新构建的 snapshot 证据会令 `capabilityDetails.flash/targetTest/monitor/breakpointDebug` 明确为 `blocked`。`stm32_probe_list` 仍是独立的只读发现，不受该限制。要使用硬件，先恢复带已提交 HEAD 的 Git 基线并重建；迁移计划/应用也继续要求其 Git 基线。

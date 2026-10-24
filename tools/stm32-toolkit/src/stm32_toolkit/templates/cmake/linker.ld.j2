@@ -65,6 +65,13 @@ SECTIONS
   {{ section.name }} {{ section.address_hex }} (NOLOAD) :
   {
     KEEP(*({{ section.name }}))
+  } > {{ section.region }}{% endfor %}{% for section in fragment_sections %}
+
+  {{ section.name }}{% if section.address_hex %} {{ section.address_hex }}{% endif %} (NOLOAD) :
+  {
+{%- for line in section.statement_lines %}
+    {{ line }}
+{%- endfor %}
   } > {{ section.region }}{% endfor %}
 
   .data :
