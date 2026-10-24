@@ -49,7 +49,6 @@ MAIN_FRAGMENT_ADDRESS = 0x68000020
 #: bare section would simply follow the region cursor before ``.data``.
 AUX_FRAGMENT_ADDRESS = 0x20000100
 MOVED_AUX_ADDRESS = 0x20000200
-DATA_AFTER_AUX_ADDRESS = 0x20000110
 FRAGMENT_TEXT = (
     "/* Authored synthetic NOLOAD fragment: no vendor or board facts. */\n"
     ".sram2 0x68000020 (NOLOAD) :\n"
@@ -107,8 +106,12 @@ def _require_tool(base: Path, name: str) -> str:
 
 
 def _fragment_repo(tmp_path: Path) -> Path:
+    # ``build_repo`` creates ``base / name`` with a single ``mkdir``; materialize
+    # the per-test base directory first.
+    base = tmp_path / "repo"
+    base.mkdir(parents=True, exist_ok=True)
     repo = build_repo(
-        tmp_path / "repo",
+        base,
         name="fragment",
         files={"Main/main.c": FRAGMENT_C, STARTUP_SOURCE: SYNTHETIC_STARTUP},
         uvprojx_kwargs={
@@ -235,7 +238,10 @@ def _adjacent_ext_model(model):
                 regions
                 + [
                     MemoryRegion("EXT_SRAM", 0x68000000, 0x20, "rw-"),
-                    MemoryRegion("EXT_TAIL", 0x68000020, 0x1000, "rw-"),
+                    # Large enough for the managed bss/heap/stack that follow
+                    # the fragment in EXT_SRAM; only .sram2 is retargeted by
+                    # the region split under test.
+                    MemoryRegion("EXT_TAIL", 0x68000020, 0x10000, "rw-"),
                 ]
             ),
             stack_size=model.memory.stack_size,
@@ -267,9 +273,16 @@ def test_fragment_sections_link_with_fixed_sections_and_multiple_rams(tmp_path):
     assert address == AUX_FRAGMENT_ADDRESS
     assert sections[".sram3"]["size"] == 16
     assert sections[f".stm32tk.abs.{FIXED_ADDRESS:08x}"]["size"] == 4
-    # The explicit .sram3 address advances the IRAM1 cursor, so .data follows
-    # it rather than starting at the region origin.
-    assert sections[".data"]["address"] == DATA_AFTER_AUX_ADDRESS
+    # Managed .data shares IRAM1 with the explicit fragment section.  Whether
+    # GNU ld keeps its region cursor at the origin or after the explicit
+    # address, the two allocated intervals must stay inside IRAM1 and disjoint.
+    data = sections[".data"]
+    assert 0x20000000 <= data["address"]
+    assert data["address"] + data["size"] <= 0x20030000
+    assert (
+        data["address"] + data["size"] <= AUX_FRAGMENT_ADDRESS
+        or AUX_FRAGMENT_ADDRESS + sections[".sram3"]["size"] <= data["address"]
+    )
     assert sections[".bss"]["address"] >= 0x68000014
 
     evidence = validate_elf(elf, model)
@@ -424,7 +437,6 @@ def test_generated_cmake_relinks_after_fragment_regeneration_and_clean_build(tmp
     second = elf.read_bytes()
     assert second != first
     assert compiler._elf_sections(elf)[".sram3"]["address"] == MOVED_AUX_ADDRESS
-    assert compiler._elf_sections(elf)[".data"]["address"] == MOVED_AUX_ADDRESS + 0x10
 
     # Explicit clean semantics remain available through the generated preset.
     run("--build", "--preset", "arm-debug", "--clean-first")

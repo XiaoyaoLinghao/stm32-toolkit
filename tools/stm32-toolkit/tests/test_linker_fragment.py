@@ -240,9 +240,11 @@ def test_parser_accepts_decimal_addresses_and_optional_semicolons():
             "required",
         ),
         (
+            # Dotted selector names are outside the selector shape, so the
+            # bounded grammar rejects them before family ownership is checked.
             ".sram2 (NOLOAD) : { *(.sram2.buf) } > RAM\n",
             "sections[0].statements[0].selectors",
-            "selectorFamily",
+            "selector",
         ),
         (
             ".sram2 (NOLOAD) : { *(*.o) } > RAM\n",
@@ -346,14 +348,17 @@ def test_parser_accepts_decimal_addresses_and_optional_semicolons():
             "reserved",
         ),
         (
+            # A dotted output-section name fails the identifier shape before
+            # reserved-name classification (same precedence as any malformed
+            # section name).
             ".ARM.exidx (NOLOAD) : { *(.ARM.exidx) } > RAM\n",
-            "sections[0].name",
-            "reserved",
+            "sections[0]",
+            "syntax",
         ),
         (
             ".stm32tk.abs.08000000 (NOLOAD) : { *(.stm32tk.abs.08000000) } > RAM\n",
-            "sections[0].name",
-            "reserved",
+            "sections[0]",
+            "syntax",
         ),
         (
             ".heap (NOLOAD) : { *(.heap) } > RAM\n",

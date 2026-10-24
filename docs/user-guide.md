@@ -138,9 +138,25 @@ $Layout = '{"flash":"IROM1","data":"IRAM1","bss":"EXT_SRAM","heap":"EXT_SRAM","s
 
 ### 用户自有 NOLOAD 链接片段（当前源码/候选切片）
 
-工程负责人可以用 `generation.linkerFragment` 指定一个**自己拥有的**、工程相对的 UTF-8 GNU ld 片段，由 configure 校验后渲染进托管 `linker/stm32tk.ld`。这是**当前源码/候选的未发布行为**：已发布 v1.2.0 runtime 与已冻结/已安装的 1.3.0 都不包含本补丁；**没有新增 MCP 工具或参数**，仍使用既有的 `stm32_project_configure` / CLI `project configure`。使用前必须按实际绑定的 MCP 工具和 input schema 核对（`stm32_doctor` 的 `data.runtime.toolkitVersion`/`data.publicInventory` 只是旁证），不能仅凭版本号声称支持。
+工程负责人可以用 `generation.linkerFragment` 指定一个**自己拥有的**、工程相对的 UTF-8 GNU ld 片段，由 configure 校验后渲染进托管 `linker/stm32tk.ld`。这是**当前源码/候选的未发布行为**：已发布 v1.2.0 runtime 与已冻结/已安装的 1.3.0 都不包含本补丁；**没有新增 MCP 工具或参数**，仍使用既有的 `stm32_project_configure` / CLI `project configure`。工具清单与 input schema 本切片没有变化，因此它们**无法**区分未打补丁的旧 1.3.0 与本补丁运行时；不能仅凭工具数量、版本号或 schema 宣称支持。必须使用**确认由本补丁源码构建并部署**的 runtime（安装/升级须另行授权），再用一个已审阅的 manifest 执行**只读 configure PLAN**，确认 `data.inputs[]` 出现片段 `path`/`sha256`、`linker/stm32tk.ld` 的 `unified_diff` 含片段内容且 `data.blockers` 符合预期；PLAN 失败或没有这些证据就停止，不要继续 APPLY。
 
-**所有权与位置。** 片段是用户拥有的普通文件，Toolkit 只读取、从不改写或纳入 managed records。路径必须是非空、可移植的工程相对路径（`/`，不得含反斜杠、盘符、UNC、`.`/`..` 分量）；任一路径分量是符号链接/重解析点、文件缺失/是目录/超过 64 KiB/非 UTF-8 都 fail closed。片段不得与 `build.sources`/`assemblySources`/`includePaths`、SVD、CubeMX IOC、`generation.managedManifest`、原生 linker 脚本、九个托管生成目标（如 `CMakeLists.txt`、`linker/stm32tk.ld`、`.vscode/settings.json`）、`build/`、`artifacts/migration/` 或 `.stm32-toolkit/generated-files.json` 冲突（大小写不敏感），也不能与 `generation.nativeLinkerScript` 同时声明。原生脚本路线保持原有的独立所有权，片段不会接管它。绝对路径、`..` 遍历、重定向和生成目标冲突都会返回 `LINKER_FRAGMENT_INVALID` 的 `path`/`field`/`rule`/`remediation`，修复方式是改片段位置，不是修改 managed 文件或 digest。
+**所有权与位置。** 片段是用户拥有的普通文件，Toolkit 只读取、从不改写或纳入 managed records。路径必须是非空、可移植的工程相对路径（`/`，不得含反斜杠、盘符、UNC、`.`/`..` 分量）；任一路径分量是符号链接/重解析点、文件缺失/是目录/超过 64 KiB/非 UTF-8 都 fail closed。片段不得与 `build.sources`/`assemblySources`/`includePaths`、SVD、CubeMX IOC、`generation.managedManifest`、原生 linker 脚本、九个托管生成目标（如 `CMakeLists.txt`、`linker/stm32tk.ld`、`.vscode/settings.json`）、`build/`、`artifacts/migration/` 或 `.stm32-toolkit/generated-files.json` 冲突（大小写不敏感），也不能与 `generation.nativeLinkerScript` 同时声明。原生脚本路线保持原有的独立所有权，片段不会接管它。
+
+错误代码不承诺单一优先级：`generation.linkerFragment` 为 `null`、空串或非字符串时由 packaged schema 以 `PROJECT_SCHEMA_INVALID` 拒绝；绝对路径、盘符、UNC 或 `..` 遍历等 manifest 路径 containment 也在片段语义之前按既有合同返回 `PROJECT_SCHEMA_INVALID`（`field=generation.linkerFragment`，`rule=pathWithinProjectRoot`）。只有通过这些检查后，原生脚本/声明输入/生成输出冲突、重定向、缺失/目录/超限/非 UTF-8、语法与区域错误才返回 `LINKER_FRAGMENT_INVALID`。失败细节包含 `path`、`field`、`rule`、`remediation`；部分语法/数值错误另带 `line`/`column`。先按返回的 `code`/`details` 处理，不要假定每种错误都得到同一个代码。修复方式是改片段位置或内容，不是修改 managed 文件或 digest。
+
+只添加 `generation.linkerFragment` 一个键，保留 manifest 中既有的其它 `generation` 字段（示例仅为形状，不表示这些值必须如此）：
+
+```json
+"generation": {
+  "cubeMxIoc": null,
+  "nativeLinkerScript": null,
+  "managedManifest": ".stm32-toolkit/generated-files.json",
+  "generatedDirectories": [],
+  "userDirectories": [],
+  "runtimeInitialization": "cmsis-gcc-v1",
+  "linkerFragment": "linker/user.ld"
+}
+```
 
 **受支持的语法子集（不是通用 GNU linker-script 解释器）。** 每个输出节必须是：
 
@@ -152,7 +168,7 @@ $Layout = '{"flash":"IROM1","data":"IRAM1","bss":"EXT_SRAM","heap":"EXT_SRAM","s
 } > RAM
 ```
 
-- 只接受自定义可写 RAM `NOLOAD` 输出节，最多 32 节、原文最多 64 KiB；地址可选，必须是精确 uint32（十进制或 `0x` 十六进制），且必须落在所选区域起点之后、区域结束之前。未给地址时由 GNU ld 在所选区域游标处放置。
+- 只接受自定义可写 RAM `NOLOAD` 输出节，最多 32 节、原文最多 64 KiB；地址可选，必须是精确 uint32（十进制或 `0x` 十六进制），且必须满足 `origin <= address < origin + length`（可以等于区域起点，但不能等于或超过结束地址）。未给地址时由 GNU ld 在所选区域游标处放置。
 - 每节至少一个 selector；语句仅 `. = ALIGN(n);`（正 2 的幂且不超过 4096）、`*(selectors)`、`KEEP(*(selectors))`。每节最多 64 条语句、全文最多 256 条；每条语句最多 64 个 selector、全文最多 256 个。selector 只能是该输出节自己的精确名字或 `name.*`；不得跨出本输出节家族，也不得重复或重叠。
 - C 块注释与空白可接受，但注释内容永远不会被当作指令；整个输入必须被消费，残留或未终止语法 fail closed；空文件/仅注释文件拒绝。
 - 区域名必须精确解析到 `fixedSections`、linker、ELF/MAP 共用的同一 canonical 区域 map，且只能是可写区域；不会推断新区域、容量或 DMA 可达性。多个 RAM 需要显式 `memoryLayout`（见上一节），片段不能代替该选择。
@@ -162,16 +178,26 @@ $Layout = '{"flash":"IROM1","data":"IRAM1","bss":"EXT_SRAM","heap":"EXT_SRAM","s
 **配置 PLAN/APPLY（既有入口，无新参数）。**
 
 ```powershell
-$CandidateCli = Join-Path $DataRoot 'runtime\1.3.0\Scripts\stm32-toolkit.exe'
+# 必须替换为“已确认由本补丁源码构建并部署”的 runtime 的完整绝对路径。
+# 已知的已安装 runtime\1.3.0 不含本补丁；本文不授权或执行任何安装/升级。
+$PatchedCli = '<absolute path to a runtime built from this patch>\Scripts\stm32-toolkit.exe'
 # 1) 只读 PLAN：核对 data.plan_id、data.inputs、data.files、data.blockers
-& $CandidateCli --project-root $ProjectRoot project configure --dry-run --json
+& $PatchedCli --project-root $ProjectRoot project configure --dry-run --json
 # 2) 用户显式授权该精确 data.plan_id 后 APPLY（写操作）
-& $CandidateCli --project-root $ProjectRoot project configure --apply --plan-id <data.plan_id> --authorized --json
+& $PatchedCli --project-root $ProjectRoot project configure --apply --plan-id <data.plan_id> --authorized --json
 ```
+
+CLI 中的 `--project-root <abs>` 是全局选项，放在 `project configure` 之前；子命令位置也接受 `--project <abs>`/`--project-root <abs>`，但 PLAN 与 APPLY 必须使用同一个工程根。
 
 MCP 客户端用同一合同：先调用 `stm32_project_configure()`（省略 `planId`，`authorized` 为 false/省略）取得 PLAN；核对 `data.plan_id`（64 位小写十六进制）、`data.model_sha256`、`data.inputs[]`（含 `path`/`sha256`/`size`，片段摘要必须出现）、`data.files[]`（尤其 `linker/stm32tk.ld` 的 `path`/`status`/`unified_diff`）、`data.blockers[]` 与 `data.managed_manifest_path`。只有用户显式授权该精确 `data.plan_id` 后，才调用 `stm32_project_configure(planId="<data.plan_id>", authorized=true)`。APPLY 成功响应的 `data` 使用既有 camelCase 字段：`planId`、`modelSha256`、`createdPaths`、`updatedPaths`、`unchangedPaths`、`preservedPaths`、`warnings`、`managedManifestPath`、`managedManifestSha256`、`templateVersion`。不要手工修改 `linker/stm32tk.ld`、`.stm32-toolkit/generated-files.json` 或任何 digest 来“修复”配置；apply 会以同一字节重新校验并拒绝计划后的片段编辑、路径变化或删除，且不写文件。
 
-**失败与构建新鲜度。** 语法/区域/所有权失败返回 `ok=false`、`code=LINKER_FRAGMENT_INVALID`，`details` 含 `path`、`field`（如 `sections[0].region`）、`rule`、`remediation`，适用时含 `line`/`column`；按 details 修复片段后重新走 PLAN/APPLY。片段路径和**精确原始字节**参与 model hash、managed manifest 的 `linkerFragment = {path, sha256}` provenance 和 build input snapshot。片段被编辑（即使是注释）、删除、路径改变，或整个选项被移除，都会使旧配置/构建证据失效：build 在 spawn 编译器之前返回 `BUILD_PROJECT_INVALID`，`details.rule` 为 `linkerFragmentChanged`、`linkerFragmentRemoved`、`linkerFragmentMissing` 或 `modelChanged`，并带 `remediation`；此时重跑 configure PLAN/APPLY，再按需 `build --preset arm-debug --clean`。不要编辑旧 receipt 或 managed hash 来绕过。生成 `CMakeLists.txt` 仅在片段路线下加入 `LINK_DEPENDS` 指向合并后的 `linker/stm32tk.ld`；直接使用 CMake/Ninja 不会重新解析片段，必须先通过 Toolkit 重新 configure。省略片段时历史 model hash、manifest 字节与生成字节保持不变。
+**失败与构建新鲜度。** 进入片段层后的语法/区域/所有权失败返回 `ok=false`、`code=LINKER_FRAGMENT_INVALID`，`details` 含 `path`、`field`（如 `sections[0].region`）、`rule`、`remediation`，适用时含 `line`/`column`；较早的 schema/路径问题则按上文返回 `PROJECT_SCHEMA_INVALID`。无论哪种，都按实际 `code`/`details` 修复后重新走 PLAN/APPLY，不要假定单一代码或单一检查顺序。片段路径和**精确原始字节**参与 model hash、managed manifest 的 `linkerFragment = {path, sha256}` provenance 和 build input snapshot。片段被编辑（即使是注释）、删除、路径改变，或整个选项被移除，都会使旧配置/构建证据失效；build 在 spawn 编译器之前拒绝，但具体表现并不唯一：
+
+- 片段文件被删除/变得不可读时，模型加载先失败，build 返回 `BUILD_PROJECT_INVALID`，`details.rule` 为 `missing`（或该层实际返回的规则），并带片段 `remediation`；configure 同样失败且不写文件。
+- 选项被移除、managed manifest 缺少 provenance、片段路径/摘要改变或 model hash 改变时，build 返回 `BUILD_PROJECT_INVALID`，`details.rule` 分别为 `linkerFragmentRemoved`、`linkerFragmentMissing`、`linkerFragmentChanged`、`modelChanged`。
+- 计划之后输入发生变化时，APPLY 返回既有 `GENERATION_INPUT_CHANGED`/`GENERATION_PLAN_INVALID` 合同。
+
+修复后重跑 configure PLAN/APPLY，再按需 `build --preset arm-debug --clean`。不要编辑旧 receipt 或 managed hash 来绕过。生成 `CMakeLists.txt` 仅在片段路线下加入 `LINK_DEPENDS` 指向合并后的 `linker/stm32tk.ld`；直接使用 CMake/Ninja 不会重新解析片段，必须先通过 Toolkit 重新 configure。省略片段时历史 model hash、manifest 字节与生成字节保持不变。
 
 **与其它入口的区别。** `fixedSections` 是迁移证据决定的固定绝对地址 `NOLOAD` 节；`memory.layout` 是托管 `.data`/`.bss`/`.heap`/`.stack` 的区域选择；`extraRegions` 只声明可写 RAM 区域；`nativeLinkerScript` 是用户完全自有的原生脚本。`generation.linkerFragment` 只贡献上述受限的自定义 `NOLOAD` 输出节，不改变其它任何语义，也不是任意 GNU ld 脚本、初始化数据或硬件可达性的证明。
 
