@@ -4,7 +4,10 @@ import json
 import asyncio
 import os
 import stat
+import subprocess
+import sys
 from dataclasses import FrozenInstanceError
+from functools import lru_cache
 from hashlib import sha256
 from pathlib import Path
 from types import SimpleNamespace
@@ -33,9 +36,61 @@ from stm32_toolkit.debug.model import (
 )
 
 
-def test_debug_public_api_is_complete_and_pyocd_lazy() -> None:
-    import sys
+_FRESH_DEBUG_IMPORT_PROBE = """
+import json
+import sys
 
+import stm32_toolkit.debug as debug
+
+document = {
+    "leaked": sorted(
+        name for name in sys.modules if name == "pyocd" or name.startswith("pyocd.")
+    ),
+    "moduleFile": debug.__file__,
+}
+print("PYOCD_PROBE " + json.dumps(document))
+if document["leaked"]:
+    raise SystemExit(1)
+"""
+
+
+@lru_cache(maxsize=1)
+def _assert_fresh_debug_import_loads_no_pyocd() -> None:
+    """Prove in a clean interpreter that importing the debug package never loads pyocd.
+
+    In-process ``sys.modules`` inspection is order-dependent: another test that
+    legitimately exercises the offline FileProgrammer imports pyocd first. Only a
+    fresh child seeded with this worktree's ``src`` is order-independent evidence.
+    """
+    source_root = (Path(__file__).resolve().parents[1] / "src").resolve()
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = os.pathsep.join(
+        value
+        for value in (str(source_root), environment.get("PYTHONPATH", ""))
+        if value
+    )
+    completed = subprocess.run(
+        [sys.executable, "-B", "-c", _FRESH_DEBUG_IMPORT_PROBE],
+        cwd=str(source_root.parent),
+        env=environment,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+        timeout=60,
+    )
+    output = completed.stdout + completed.stderr
+    assert completed.returncode == 0, output
+    marker = "PYOCD_PROBE "
+    lines = [line for line in completed.stdout.splitlines() if line.startswith(marker)]
+    assert len(lines) == 1, output
+    document = json.loads(lines[0][len(marker) :])
+    assert document["leaked"] == []
+    imported_from = Path(document["moduleFile"]).resolve()
+    assert imported_from.is_relative_to(source_root), imported_from
+
+
+def test_debug_public_api_is_complete_and_pyocd_lazy() -> None:
     import stm32_toolkit.debug as debug
 
     expected = {
@@ -54,7 +109,7 @@ def test_debug_public_api_is_complete_and_pyocd_lazy() -> None:
     }
     assert expected <= set(debug.__all__)
     assert all(hasattr(debug, name) for name in expected)
-    assert not any(name == "pyocd" or name.startswith("pyocd.") for name in sys.modules)
+    _assert_fresh_debug_import_loads_no_pyocd()
 from stm32_toolkit.probe.backend import ProbeAttachmentEvidence
 from stm32_toolkit.probe.attach_diagnostics import make_attach_diagnostic, make_primary
 from stm32_toolkit.probe.client import ProbeClientError
@@ -298,13 +353,12 @@ def test_models_are_frozen_deeply_json_safe_and_lossless():
 
 
 def test_debug_package_exports_task_one_contracts_without_importing_pyocd():
-    import sys
     import stm32_toolkit.debug as debug
 
     assert debug.DebugBindingRequest is DebugBindingRequest
     assert debug.bind_debug_firmware is bind_debug_firmware
     assert debug.SvdSelectionEvidence is SvdSelectionEvidence
-    assert "pyocd" not in sys.modules
+    _assert_fresh_debug_import_loads_no_pyocd()
 
 
 @pytest.mark.parametrize(
