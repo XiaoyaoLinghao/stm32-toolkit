@@ -187,6 +187,12 @@ def test_two_flash_candidates_require_an_explicit_flash_role():
 
 def test_omitted_layout_preserves_legacy_hash_and_linker_bytes(tmp_path):
     baseline_payload = standard_payload()
+    # The frozen hashes below were measured at accepted CodeHead c76f03c3,
+    # whose standard_payload still reported __version__ 1.2.0.  generatedBy.version
+    # participates in the model digest, so pin this historical producer version
+    # explicitly (the producer allowlist accepts 1.2.0); keep using the current
+    # standard_payload for every other field.
+    baseline_payload["generatedBy"] = {"tool": "stm32-toolkit", "version": "1.2.0"}
     legacy_root = write_project(tmp_path / "legacy", baseline_payload)
     legacy_model = load_project_model(legacy_root)
     legacy_hash = model_sha256_for(legacy_model)
