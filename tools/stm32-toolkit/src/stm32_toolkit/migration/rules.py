@@ -942,6 +942,40 @@ def _parse_placement(
     ]
     if len(at_spans) != 1:
         return {**candidate, "valid": False, "reason": "declaration"}
+    if language == "c":
+        # A reviewed fixed address is exact, so an explicit __align bound must
+        # divide it.  Only the same bounded expression the alignment rule
+        # accepts is considered; unresolved or invalid bounds stay that rule's
+        # blocker and never make the address check guess.
+        align_spans = [span for span in spans if span[0] == "__align"]
+        if len(align_spans) == 1:
+            content = text[
+                align_spans[0][1] + len("__align") : align_spans[0][2]
+            ].strip()
+            align_expression = (
+                content[1:-1].strip()
+                if content.startswith("(") and content.endswith(")")
+                else None
+            )
+            alignment, align_error = (
+                _evaluate(symbols, align_expression)
+                if align_expression
+                else (None, "syntax")
+            )
+            if (
+                align_error is None
+                and alignment is not None
+                and 1 <= alignment <= MAX_ALIGNMENT
+                and not alignment & (alignment - 1)
+                and address % alignment
+            ):
+                return {
+                    **candidate,
+                    "valid": False,
+                    "reason": "alignment",
+                    "resolved_address": address,
+                    "alignment": alignment,
+                }
     view = _blank_spans(
         text,
         line_start,
@@ -967,6 +1001,15 @@ def _parse_placement(
 
 def _placements_blocker(candidate: dict, text: str) -> MigrationBlocker:
     position = candidate["position"]
+    if candidate.get("reason") == "alignment":
+        message = (
+            f"absolute address 0x{candidate['resolved_address']:08x} does not "
+            f"satisfy __align({candidate['alignment']}); the address must be a "
+            "multiple of the alignment, so adjust the address or alignment; no "
+            "placement rewrite was applied for this file"
+        )
+    else:
+        message = "unsupported ARMCC absolute placement grammar"
     return MigrationBlocker(
         "ARMCC_ABSOLUTE_PLACEMENT_UNSUPPORTED",
         "ARMCC_ABSOLUTE_PLACEMENT_UNSUPPORTED",
@@ -974,7 +1017,7 @@ def _placements_blocker(candidate: dict, text: str) -> MigrationBlocker:
         candidate["line"],
         candidate["column"],
         _cap(_line_text(text, position)),
-        "unsupported ARMCC absolute placement grammar",
+        message,
     )
 
 

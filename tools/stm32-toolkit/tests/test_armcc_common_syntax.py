@@ -500,6 +500,37 @@ def test_alignment_and_placement_composition_with_macros():
     assert sections["reg"].address == 0x20000400
 
 
+def test_alignment_must_divide_the_fixed_address():
+    mismatches = (
+        ("__align(32) unsigned char pool[16] __attribute__((at(0x20000104)));\n", None),
+        (
+            "__align(ALIGN_BYTES) unsigned char pool[16] __at(0x20000104);\n",
+            {"ALIGN_BYTES": "32"},
+        ),
+    )
+    for case, values in mismatches:
+        scan = _scan(case, values=values)
+        placement = [
+            blocker
+            for blocker in scan.blockers
+            if blocker.code == "ARMCC_ABSOLUTE_PLACEMENT_UNSUPPORTED"
+        ]
+        assert len(placement) == 1, case
+        assert "0x20000104 does not satisfy __align(32)" in placement[0].message, case
+        assert scan.fixed_sections == (), case
+        after = scan.after.decode("utf-8")
+        assert "0x20000104" in after, case
+        assert ".stm32tk.abs.20000104" not in after, case
+        assert "__align" not in after, case
+
+    supported = _scan(
+        "__align(ALIGN_BYTES) unsigned char pool[16] __at(0x20000100);\n",
+        values={"ALIGN_BYTES": "32"},
+    )
+    assert supported.blockers == ()
+    assert [section.address for section in supported.fixed_sections] == [0x20000100]
+
+
 def test_alignment_and_placement_negative_forms_remain_blocked():
     align_cases = (
         "__align(3) int x;\n",
@@ -577,11 +608,7 @@ def test_line_spliced_comment_owns_fake_armcc_constructs():
         "// fake placement owned by this spliced comment \\\n"
         "__at(0x60000000) int fake_placed;\n"
         "// fake assembly owned by this spliced comment \\\n"
-        "__asm void fake_asm(void)\n"
-        "{\n"
-        "    WFI\n"
-        "    BX LR\n"
-        "}\n"
+        "__asm void fake_asm(void) { WFI BX LR }\n"
         "__at(0x20000000) int real_placed;\n"
         "int main(void) { return 0; }\n"
     )
@@ -807,3 +834,55 @@ def test_public_flow_keeps_unknown_and_conflicting_macros_blocked(tmp_path):
     assert len(placement) == 2
     assert plan.fixed_sections == ()
     assert not any(p.path == "Main/main.c" and b"section(" in p.after_bytes for p in plan.patches)
+
+
+def test_public_flow_blocks_incompatible_alignment_and_fixed_address(tmp_path):
+    repo = build_repo(
+        tmp_path,
+        name="misaligned",
+        files={
+            "Main/main.c": (
+                '#include "board.h"\n'
+                "__align(ALIGN) unsigned char pool[16] __at(PLACED);\n"
+                "int main(void) { return (int)pool[0]; }\n"
+            ),
+            "Main/board.h": (
+                "#ifndef BOARD_H\n"
+                "#define BOARD_H\n"
+                "#define ALIGN 32\n"
+                "#define PLACED 0x20000104\n"
+                "#endif\n"
+            ),
+        },
+        uvprojx_kwargs={
+            "groups": (("Main", (("main.c", "1", "Main/main.c"),)),),
+        },
+    )
+    inspection = fixture_inspection(repo)
+    plan = plan_keil_conversion(repo, inspection)
+    placement = [
+        blocker
+        for blocker in plan.blockers
+        if blocker.code == "ARMCC_ABSOLUTE_PLACEMENT_UNSUPPORTED"
+    ]
+    assert len(placement) == 1
+    assert placement[0].path == "Main/main.c"
+    assert "0x20000104 does not satisfy __align(32)" in placement[0].message
+    assert plan.fixed_sections == ()
+    patch = next(p for p in plan.patches if p.path == "Main/main.c")
+    after = patch.after_bytes.decode("utf-8")
+    assert "0x20000104" in after
+    assert ".stm32tk.abs.20000104" not in after
+
+    preflight = preflight_keil_conversion(repo, inspection)
+    reported = next(
+        blocker
+        for blocker in preflight["analysis"]["blockers"]
+        if blocker["code"] == "ARMCC_ABSOLUTE_PLACEMENT_UNSUPPORTED"
+    )
+    assert "0x20000104 does not satisfy __align(32)" in reported["message"]
+    changes = {
+        change["path"]: change for change in preflight["analysis"]["sourceChanges"]
+    }
+    assert "ARMCC_ABSOLUTE_PLACEMENT" not in changes["Main/main.c"]["ruleIds"]
+    assert "ARMCC_ALIGN_ATTRIBUTE" in changes["Main/main.c"]["ruleIds"]
