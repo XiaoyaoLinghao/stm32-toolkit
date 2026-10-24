@@ -32,7 +32,7 @@ After the conversion is applied, a user-owned writable-RAM `NOLOAD` section frag
 
 ## Post-migration configure: explicit PyOCD debug pair
 
-An ordinary conversion writes `"debug": {}` and remains a valid build-only project. Preflight reports this planned post-migration state additively as `data.debugConfiguration` with `phase=post-migration`, `blocking=false`, status `needs-user-input` and both missing fields; it is **not** a technical blocker, does not change `analysis.blockers` or `planReadiness`, requires no Git and invents no plan ID. Never treat it as a migration failure or add it to the blockers list.
+An ordinary conversion writes `"debug": {}` and remains a valid build-only project. Preflight reports this planned post-migration state additively as `data.debugConfiguration` using the shared shape: `backend`/`target` null, `status=needs-user-input`, `missingFields`, `diagnostics` (`code`/`field`/`rule`/`message`/`remediation`), `targetSupport=not-checked`, `hardwareVerified=false`, `nextSteps`, plus `phase=post-migration` and `blocking=false`. It is **not** a technical blocker, does not change `analysis.blockers` or `planReadiness`, adds no Git dependency and invents no plan ID; ordinary conversion PLAN/APPLY still require their existing Git baseline, plan ID and explicit authorization. Never treat this guidance as a migration failure or add it to the blockers list.
 
 After the conversion is applied, record a debug pair with the existing configure workflow — no new MCP tool and no migration parameter:
 

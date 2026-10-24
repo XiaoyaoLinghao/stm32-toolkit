@@ -49,7 +49,7 @@ from test_debug_configuration import (
 )
 from test_generation import write_project
 from test_mcp_roots import _RootSession, _context
-from test_migration_plan import build_repo
+from test_migration_plan import COMMON_C, MAIN_C, build_repo
 
 DEBUG_INVALID = "DEBUG_CONFIGURATION_INVALID"
 HARDWARE_INVALID = "HARDWARE_INPUT_INVALID"
@@ -221,14 +221,6 @@ def test_workflow_no_option_route_keeps_the_historical_shape(tmp_path):
             ["DEBUG_TARGET_MISSING"],
             ["debug.target"],
             "debug.target",
-            "missing",
-        ),
-        (
-            None,
-            None,
-            ["DEBUG_BACKEND_MISSING", "DEBUG_TARGET_MISSING"],
-            ["debug.backend", "debug.target"],
-            "debug.backend",
             "missing",
         ),
         (
@@ -487,16 +479,12 @@ def test_emitted_remediation_plan_command_runs_read_only(tmp_path, capsys):
     assert "stm32-toolkit configure " not in status.next_steps[0]
 
 
-def test_guidance_documents_use_the_same_runnable_pair_commands():
+def test_guidance_documents_document_the_same_pair_commands_and_fields():
     repo = Path(__file__).resolve().parents[3]
     user_guide = repo / "docs" / "user-guide.md"
-    documents = (
-        user_guide,
-        repo / "skills" / "configure-stm32-project" / "SKILL.md",
-        repo / "skills" / "migrate-keil" / "SKILL.md",
-    )
-    command_tokens = (
-        "stm32-toolkit project configure",
+    configure_skill = repo / "skills" / "configure-stm32-project" / "SKILL.md"
+    migrate_skill = repo / "skills" / "migrate-keil" / "SKILL.md"
+    shared_tokens = (
         "--debug-backend pyocd",
         "--debug-target",
         "--dry-run --json",
@@ -509,16 +497,29 @@ def test_guidance_documents_use_the_same_runnable_pair_commands():
         "diagnostics",
         "manifest_edit",
         "readableRegions",
+        "targetSupport",
+        "hardwareVerified",
+        "not-checked",
     )
-    for document in documents:
+
+    # Skills document the full CLI executable form.
+    for document in (configure_skill, migrate_skill):
         text = document.read_text(encoding="utf-8")
-        for token in command_tokens:
+        assert "stm32-toolkit project configure" in text
+        for token in shared_tokens:
             assert token in text, f"{document.name} lacks {token!r}"
         assert "stm32_configure_project" not in text
         assert "stm32-toolkit configure " not in text
+
+    # The user guide deliberately binds its CLI example to a runtime verified
+    # as built from this patch; it must not pretend an installed command
+    # exists.  Assert that real documented invocation and the same contract.
     guide = user_guide.read_text(encoding="utf-8")
-    for token in ("targetSupport", "hardwareVerified", "not-checked"):
-        assert token in guide
+    assert "& $PatchedCli --project-root $ProjectRoot project configure" in guide
+    for token in shared_tokens:
+        assert token in guide, f"user-guide.md lacks {token!r}"
+    assert "stm32_configure_project" not in guide
+    assert "stm32-toolkit configure " not in guide
 
 
 # ---------------------------------------------------------------------------
@@ -679,7 +680,9 @@ def test_context_absent_debug_blocks_hardware_but_keeps_build_and_configure(
 
     result = build_project_context(root, tmp_path / "data")
     assert result.ok is True
-    data = result.data
+    # Consume the public serialization; OperationResult.data is recursively
+    # frozen (tuples/mappingproxy) and is not the protocol shape.
+    data = result.to_dict()["data"]
     debug = data["debugConfiguration"]
     assert debug["status"] == "needs-user-input"
     assert debug["backend"] is None and debug["target"] is None
@@ -711,12 +714,14 @@ def test_context_configured_pair_is_metadata_only(tmp_path):
 
     result = build_project_context(root, tmp_path / "data")
     assert result.ok is True
-    data = result.data
+    # Consume the public serialization; OperationResult.data is recursively
+    # frozen (tuples/mappingproxy) and is not the protocol shape.
+    data = result.to_dict()["data"]
     debug = data["debugConfiguration"]
-    assert debug["status"] == "configured"
-    assert debug["backend"] is None and debug["target"] is None
     # schema3_payload has an SVD but no explicit pair; the read-only status
     # must report the missing pair without inventing one.
+    assert debug["status"] == "needs-user-input"
+    assert debug["backend"] is None and debug["target"] is None
     assert debug["missingFields"] == ["debug.backend", "debug.target"]
 
     configured_root = write_project(
@@ -724,7 +729,8 @@ def test_context_configured_pair_is_metadata_only(tmp_path):
     )
     configured = build_project_context(configured_root, tmp_path / "data-2")
     assert configured.ok is True
-    configured_debug = configured.data["debugConfiguration"]
+    configured_data = configured.to_dict()["data"]
+    configured_debug = configured_data["debugConfiguration"]
     assert configured_debug["status"] == "configured"
     assert configured_debug["backend"] == PAIR[0]
     assert configured_debug["target"] == PAIR[1]
@@ -733,28 +739,42 @@ def test_context_configured_pair_is_metadata_only(tmp_path):
     assert configured_debug["targetSupport"] == "not-checked"
     assert configured_debug["hardwareVerified"] is False
     for name in ("flash", "targetTest", "monitor", "breakpointDebug"):
-        assert configured.data["capabilityDetails"][name]["status"] == (
+        assert configured_data["capabilityDetails"][name]["status"] == (
             "not-evaluated"
         )
-        assert configured.data["capabilities"][name] is False
+        assert configured_data["capabilities"][name] is False
 
 
 def test_context_invalid_pair_reports_all_reasons(tmp_path):
-    payload = no_debug_payload(debug={"backend": "openocd", "target": 7})
+    # Schema-valid strings that fail the hardware target grammar reach the
+    # shared diagnostics; model-schema validation runs earlier and stays.
+    payload = no_debug_payload(debug={"backend": "openocd", "target": "bad target"})
     root = _root(tmp_path, payload)
 
     result = build_project_context(root, tmp_path / "data")
     assert result.ok is True
-    debug = result.data["debugConfiguration"]
+    data = result.to_dict()["data"]
+    debug = data["debugConfiguration"]
     assert debug["status"] == "needs-user-input"
     assert _diagnostic_codes(debug) == [
         "DEBUG_BACKEND_UNSUPPORTED",
         "DEBUG_TARGET_MALFORMED",
     ]
-    detail = result.data["capabilityDetails"]["flash"]
+    detail = data["capabilityDetails"]["flash"]
     assert detail["status"] == "blocked"
     assert "debug.backend (unsupported)" in detail["reason"]
-    assert "debug.target (type)" in detail["reason"]
+    assert "debug.target (pattern)" in detail["reason"]
+
+
+def test_context_numeric_debug_target_keeps_the_earlier_schema_failure(tmp_path):
+    payload = no_debug_payload(debug={"backend": "pyocd", "target": 7})
+    root = _root(tmp_path, payload)
+
+    result = build_project_context(root, tmp_path / "data")
+
+    assert result.ok is False
+    assert result.code == "PROJECT_SCHEMA_INVALID"
+    assert dict(result.details) == {"field": "debug.target", "rule": "type"}
 
 
 def test_context_snapshot_reason_is_retained_with_the_debug_block():
@@ -788,8 +808,9 @@ def test_unconfigured_context_has_no_debug_configuration(tmp_path):
 
     result = build_project_context(empty, tmp_path / "data")
     assert result.ok is True
-    assert "debugConfiguration" not in result.data
-    hardware = result.data["capabilityDetails"]["flash"]
+    data = result.to_dict()["data"]
+    assert "debugConfiguration" not in data
+    hardware = data["capabilityDetails"]["flash"]
     assert hardware["status"] == "not-evaluated"
 
 
@@ -799,12 +820,16 @@ def test_unconfigured_context_has_no_debug_configuration(tmp_path):
 
 
 def test_preflight_debug_configuration_is_nonblocking_post_migration(tmp_path):
-    root = build_repo(tmp_path, commit=False)
+    root = build_repo(
+        tmp_path,
+        files={"Main/main.c": MAIN_C, "Common/common.c": COMMON_C},
+        commit=False,
+    )
 
     result = preflight_keil_workflow(root)
 
     assert result.ok is True
-    data = result.data
+    data = result.to_dict()["data"]
     debug = data["debugConfiguration"]
     assert debug["phase"] == "post-migration"
     assert debug["blocking"] is False
@@ -828,7 +853,7 @@ def test_preflight_debug_configuration_is_nonblocking_post_migration(tmp_path):
         not str(blocker.get("code", "")).startswith("DEBUG")
         for blocker in data["analysis"]["blockers"]
     )
-    readiness = json.dumps(result.to_dict()["data"]["planReadiness"])
+    readiness = json.dumps(data["planReadiness"])
     assert "debugConfiguration" not in readiness
     assert "stm32-toolkit project configure" not in readiness
     assert data["planReadiness"]["planId"] is None
@@ -875,7 +900,12 @@ def test_hardware_missing_both_reports_full_diagnostics_and_old_first_rule(
 
 
 def test_hardware_malformed_target_reports_complete_diagnostics(tmp_path):
-    root = _root(tmp_path, no_debug_payload(debug={"backend": "pyocd", "target": 7}))
+    # A schema-valid string reaches the hardware identifier gate; a numeric
+    # value would be rejected earlier by the retained model schema contract.
+    root = _root(
+        tmp_path,
+        no_debug_payload(debug={"backend": "pyocd", "target": "bad target"}),
+    )
     data_root = tmp_path / "data"
     data_root.mkdir()
     request = _flash_request(root, data_root)
@@ -894,7 +924,11 @@ def test_hardware_malformed_target_reports_complete_diagnostics(tmp_path):
     assert error.details["rule"] == "identifierRequired"
     assert list(error.details["missingFields"]) == []
     assert _diagnostic_codes(error.details) == ["DEBUG_TARGET_MALFORMED"]
-    assert "debug.target" in error.details["guidance"]
+    assert error.details["diagnostics"][0]["rule"] == "pattern"
+    guidance = error.details["guidance"]
+    assert "--debug-target" in guidance
+    assert "stm32-toolkit project configure" in guidance
+    assert "stm32_project_configure" in guidance
 
 
 def test_hardware_svd_gate_stays_separate_from_the_debug_pair(tmp_path):
