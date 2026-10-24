@@ -428,11 +428,19 @@ def configure_project_workflow(
 
     try:
         model = load_project_model(root)
-        plan = plan_project_configuration(
-            model,
-            debug_backend=debug_backend,
-            debug_target=debug_target,
-        )
+        if debug_backend is None and debug_target is None:
+            # Historical configure route: call the accepted one-argument
+            # planning shape exactly, preserving legacy doubles and shape.
+            plan = plan_project_configuration(model)
+        else:
+            # Any supplied value (including only one) goes through the shared
+            # validator unchanged so incomplete/invalid pairs still fail with
+            # complete field diagnostics.
+            plan = plan_project_configuration(
+                model,
+                debug_backend=debug_backend,
+                debug_target=debug_target,
+            )
     except ProjectManifestError as error:
         return _failure(operation, error.code, error.message, error.details)
     except GenerationError as error:

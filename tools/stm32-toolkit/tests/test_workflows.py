@@ -706,7 +706,17 @@ def test_convert_workflow_translates_stable_inspection_and_plan_errors(
     assert missing.code == "KEIL_PROJECT_NOT_FOUND"
     assert missing.operation == "keil-conversion-plan"
 
-    def plan_failure(root_path, inspection, *, startup_options=None, memory_layout=None):
+    def plan_failure(
+        root_path,
+        inspection,
+        *,
+        startup_options=None,
+        memory_layout=None,
+        extra_regions=(),
+    ):
+        # The real conversion API gained extra_regions in an earlier slice; a
+        # no-option call must remain an explicit empty request.
+        assert not extra_regions
         raise MigrationPlanError(
             "MIGRATION_GIT_UNAVAILABLE", "git is unavailable", {"rule": "unavailable"}
         )

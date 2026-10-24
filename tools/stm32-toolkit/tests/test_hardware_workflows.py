@@ -3133,13 +3133,38 @@ def test_public_workflow_preflight_and_runtime_guard_matrix(tmp_path: Path) -> N
         "ok": False,
         "operation": "stm32_flash",
         "code": "HARDWARE_INPUT_INVALID",
-        "message": "A Schema-v2 PyOCD target is required",
+        "message": "A supported Schema v2/v3 PyOCD target is required",
         "data": None,
         "details": {
             "field": "debug.backend",
             "rule": "pyocdRequired",
             "projectKind": "configured",
-            "guidance": "Configure debug.backend as pyocd through a reviewed project-model change; Toolkit does not select or fall back to another backend.",
+            "diagnostics": [
+                {
+                    "code": "DEBUG_BACKEND_UNSUPPORTED",
+                    "field": "debug.backend",
+                    "rule": "unsupported",
+                    "message": "debug.backend is not supported",
+                    "remediation": (
+                        "Use the project configure entry to set the pair: "
+                        "`stm32-toolkit project configure --project <project> "
+                        "--debug-backend pyocd --debug-target <pyocd-target> "
+                        "--dry-run --json` (MCP: `stm32_project_configure` "
+                        "with `debugBackend` and `debugTarget`); `pyocd` is "
+                        "the only supported debug backend."
+                    ),
+                }
+            ],
+            "missingFields": [],
+            "guidance": (
+                "Configure the explicit pair with "
+                "`stm32-toolkit project configure --project <project> "
+                "--debug-backend pyocd --debug-target <pyocd-target> "
+                "--dry-run --json` (MCP: `stm32_project_configure` with "
+                "`debugBackend` and `debugTarget`), then review and "
+                "authorize its PLAN. Toolkit does not select, fall back "
+                "to, guess or auto-detect another backend or target."
+            ),
         },
     }
     assert recorder.events == []
@@ -4637,11 +4662,39 @@ def test_non_discovery_workflows_still_require_a_model_and_explain_failures(
         )
     )
     assert backend.code == "HARDWARE_INPUT_INVALID"
+    assert backend.to_dict()["message"] == (
+        "A supported Schema v2/v3 PyOCD target is required"
+    )
     assert backend.to_dict()["details"] == {
         "field": "debug.backend",
         "rule": "pyocdRequired",
         "projectKind": "configured",
-        "guidance": "Configure debug.backend as pyocd through a reviewed project-model change; Toolkit does not select or fall back to another backend.",
+        "diagnostics": [
+            {
+                "code": "DEBUG_BACKEND_UNSUPPORTED",
+                "field": "debug.backend",
+                "rule": "unsupported",
+                "message": "debug.backend is not supported",
+                "remediation": (
+                    "Use the project configure entry to set the pair: "
+                    "`stm32-toolkit project configure --project <project> "
+                    "--debug-backend pyocd --debug-target <pyocd-target> "
+                    "--dry-run --json` (MCP: `stm32_project_configure` "
+                    "with `debugBackend` and `debugTarget`); `pyocd` is "
+                    "the only supported debug backend."
+                ),
+            }
+        ],
+        "missingFields": [],
+        "guidance": (
+            "Configure the explicit pair with "
+            "`stm32-toolkit project configure --project <project> "
+            "--debug-backend pyocd --debug-target <pyocd-target> "
+            "--dry-run --json` (MCP: `stm32_project_configure` with "
+            "`debugBackend` and `debugTarget`), then review and "
+            "authorize its PLAN. Toolkit does not select, fall back "
+            "to, guess or auto-detect another backend or target."
+        ),
     }
 
     manifest["debug"]["backend"] = "pyocd"
@@ -4661,11 +4714,42 @@ def test_non_discovery_workflows_still_require_a_model_and_explain_failures(
             _seams=_seams(recorder),
         )
     )
+    assert target.code == "HARDWARE_INPUT_INVALID"
+    assert target.to_dict()["message"] == (
+        "A supported Schema v2/v3 PyOCD target is required"
+    )
     assert target.to_dict()["details"] == {
         "field": "debug.target",
         "rule": "identifierRequired",
         "projectKind": "configured",
-        "guidance": "Set debug.target to the exact supported target identifier for the device; do not guess or auto-select a target.",
+        "diagnostics": [
+            {
+                "code": "DEBUG_TARGET_MALFORMED",
+                "field": "debug.target",
+                "rule": "pattern",
+                "message": "debug.target is malformed",
+                "remediation": (
+                    "Use the project configure entry to set the pair: "
+                    "`stm32-toolkit project configure --project <project> "
+                    "--debug-backend pyocd --debug-target <pyocd-target> "
+                    "--dry-run --json` (MCP: `stm32_project_configure` "
+                    "with `debugBackend` and `debugTarget`). A target "
+                    "starts with an ASCII letter or digit, is at most 128 "
+                    "characters and contains only letters, digits, '.', "
+                    "'_', ':' or '-'."
+                ),
+            }
+        ],
+        "missingFields": [],
+        "guidance": (
+            "Configure the explicit pair with "
+            "`stm32-toolkit project configure --project <project> "
+            "--debug-backend pyocd --debug-target <pyocd-target> "
+            "--dry-run --json` (MCP: `stm32_project_configure` with "
+            "`debugBackend` and `debugTarget`), then review and "
+            "authorize its PLAN. Toolkit does not select, fall back "
+            "to, guess or auto-detect another backend or target."
+        ),
     }
 
     manifest["debug"]["target"] = "stm32f407vg"

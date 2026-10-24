@@ -243,6 +243,23 @@ def test_configured_context_reports_evidence_sections_without_build(
                 },
             },
             "recommendedActions": [],
+            # Additive shared debug-configuration shape for the fixture's
+            # already configured pair; metadata only, never hardware proof.
+            "debugConfiguration": {
+                "backend": "pyocd",
+                "target": "stm32f429zgtx",
+                "status": "configured",
+                "missingFields": [],
+                "diagnostics": [],
+                "targetSupport": "not-checked",
+                "hardwareVerified": False,
+                "nextSteps": [
+                    "A configured debug pair only records metadata; a live "
+                    "debug session still requires an authorized debug handoff.",
+                    "If build or firmware identities predate this manifest "
+                    "edit, rebuild with --clean before flashing or debugging.",
+                ],
+            },
         },
         "details": {
             "capabilitySemantics": "current-readiness",
