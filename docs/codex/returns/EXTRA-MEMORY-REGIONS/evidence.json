@@ -1,0 +1,511 @@
+{
+  "module": "EXTRA-MEMORY-REGIONS",
+  "acceptedBase": "e4c7314af220295037ed6d273127d9873ba3eedc",
+  "codeHead": "540a62cbdf6d92de69b078736f8ffa5a9ec77477",
+  "branch": "codex/extra-memory-regions",
+  "reviewTree": "C:\\Users\\zhy76\\.codex\\worktrees\\build-snapshot-final\\STM32-Toolkit",
+  "diffSha256": "6580dd494ad7e69400d31a4ca3c0ec5eccd06d7d688f08b7e635d3ae71cdb2f2",
+  "implementationRoute": "local Claude Code CLI, existing deepseek-v4.1-flash[1m] configuration",
+  "reviewer": "primary Codex",
+  "runs": [
+    {
+      "label": "initial",
+      "junit": "D:\\codex-tmp\\er24\\initial.xml",
+      "sha256": "5112b11acad2ad2493e558b93990b487bb36f076572fa801562cdcbf2516c3be",
+      "tests": 51,
+      "errors": 0,
+      "failures": 3,
+      "skipped": 0,
+      "passed": 48,
+      "exceptions": [
+        {
+          "classname": "tests.test_extra_memory_regions",
+          "name": "test_boundary_values_and_adjacency_are_accepted",
+          "kind": "failure",
+          "message": "stm32_toolkit.extra_regions.ExtraRegionError: extra regions must not overlap each other"
+        },
+        {
+          "classname": "tests.test_extra_memory_regions",
+          "name": "test_json_transport_is_bounded_and_rejects_duplicate_or_malformed_input",
+          "kind": "failure",
+          "message": "AssertionError: assert 'type' == 'nesting'\n  \n  - nesting\n  + type"
+        },
+        {
+          "classname": "tests.test_extra_memory_regions_compiler",
+          "name": "test_removed_or_shortened_extra_region_really_fails_the_link",
+          "kind": "failure",
+          "message": "assert 0 != 0\n +  where 0 = CompletedProcess(args=['C:\\\\ST\\\\STM32CubeCLT_1.22.0\\\\GNU-tools-for-STM32\\\\bin\\\\arm-none-eabi-gcc.exe', '-mcpu=cortex-m...est_removed_or_shortened_extr0\\\\bounds\\\\build-bounds\\\\removed.ld:67: warning: memory region `EXT_SRAM' not declared\\n\").returncode"
+        }
+      ],
+      "head": "a2e6837f4d791b87437ecb7697e0b2bcc355c98d"
+    },
+    {
+      "label": "final-new",
+      "junit": "D:\\codex-tmp\\er24\\final-new.xml",
+      "sha256": "e74ae7f728810e99fd6dad487c31afeaca9ac728753891f18e50b4ad62ad0f7e",
+      "tests": 56,
+      "errors": 0,
+      "failures": 0,
+      "skipped": 0,
+      "passed": 56,
+      "exceptions": [],
+      "head": "540a62cbdf6d92de69b078736f8ffa5a9ec77477"
+    },
+    {
+      "label": "model-review",
+      "junit": "D:\\codex-tmp\\er24\\model-review.xml",
+      "sha256": "b589491784e26fcf7ca476bea1b61d6c1b9d428bcedc6437d40bcd841f6a0966",
+      "tests": 568,
+      "errors": 0,
+      "failures": 0,
+      "skipped": 2,
+      "passed": 566,
+      "exceptions": [
+        {
+          "classname": "tests.test_project_model",
+          "name": "test_file_symlink_cannot_escape_project_root",
+          "kind": "skipped",
+          "message": "symbolic links are unavailable in this test environment"
+        },
+        {
+          "classname": "tests.test_project_model",
+          "name": "test_directory_symlink_parent_cannot_escape_project_root",
+          "kind": "skipped",
+          "message": "symbolic links are unavailable in this test environment"
+        }
+      ],
+      "execution": {
+        "head": "a2e6837f4d791b87437ecb7697e0b2bcc355c98d",
+        "cwd": "C:\\Users\\zhy76\\.codex\\worktrees\\build-snapshot-final\\STM32-Toolkit",
+        "argv": [
+          "D:/codex-tmp/kx23/venv/Scripts/python.exe",
+          "-m",
+          "pytest",
+          "tools/stm32-toolkit/tests/test_project_model.py",
+          "tools/stm32-toolkit/tests/test_project_v3.py",
+          "tools/stm32-toolkit/tests/test_memory_layout.py",
+          "tools/stm32-toolkit/tests/test_generation.py",
+          "-q",
+          "--tb=short",
+          "--basetemp=D:\\codex-tmp\\er24\\p-model-review",
+          "-o",
+          "cache_dir=D:\\codex-tmp\\er24\\c-model-review",
+          "--junitxml=D:\\codex-tmp\\er24\\model-review.xml"
+        ],
+        "exitCode": 0,
+        "logSha256": "3cb64794849b82a1bde29e13de4f1962f630b59c3a360e1071f441e75e3ca13e"
+      }
+    },
+    {
+      "label": "artifact-review",
+      "junit": "D:\\codex-tmp\\er24\\artifact-review.xml",
+      "sha256": "b31551cc925ebb6ebfda26de2b932403fc0682776f2e1bcef1c26f8c9f4dc720",
+      "tests": 158,
+      "errors": 0,
+      "failures": 0,
+      "skipped": 0,
+      "passed": 158,
+      "exceptions": [],
+      "execution": {
+        "head": "a2e6837f4d791b87437ecb7697e0b2bcc355c98d",
+        "cwd": "C:\\Users\\zhy76\\.codex\\worktrees\\build-snapshot-final\\STM32-Toolkit",
+        "argv": [
+          "D:/codex-tmp/kx23/venv/Scripts/python.exe",
+          "-m",
+          "pytest",
+          "tools/stm32-toolkit/tests/test_build_map.py",
+          "tools/stm32-toolkit/tests/test_build_snapshot.py",
+          "tools/stm32-toolkit/tests/test_flash.py",
+          "-q",
+          "--tb=short",
+          "--basetemp=D:\\codex-tmp\\er24\\p-artifact-review",
+          "-o",
+          "cache_dir=D:\\codex-tmp\\er24\\c-artifact-review",
+          "--junitxml=D:\\codex-tmp\\er24\\artifact-review.xml"
+        ],
+        "exitCode": 0,
+        "logSha256": "17df7a760466aed3c146573529ec0a0fba796aa67268bc8fc8755573e610f3d9"
+      }
+    },
+    {
+      "label": "final-review",
+      "junit": "D:\\codex-tmp\\er24\\final-review.xml",
+      "sha256": "117867536f5eea5e79233e3d3c3a084aac3bbb0b0f25090b292c23c006ebc69b",
+      "tests": 71,
+      "errors": 0,
+      "failures": 0,
+      "skipped": 0,
+      "passed": 71,
+      "exceptions": [],
+      "execution": {
+        "head": "540a62cbdf6d92de69b078736f8ffa5a9ec77477",
+        "cwd": "C:\\Users\\zhy76\\.codex\\worktrees\\build-snapshot-final\\STM32-Toolkit",
+        "argv": [
+          "D:/codex-tmp/kx23/venv/Scripts/python.exe",
+          "-m",
+          "pytest",
+          "tools/stm32-toolkit/tests/test_extra_memory_regions.py",
+          "tools/stm32-toolkit/tests/test_extra_memory_regions_migration.py",
+          "tools/stm32-toolkit/tests/test_extra_memory_regions_compiler.py",
+          "tools/stm32-toolkit/tests/test_memory_layout.py",
+          "-q",
+          "--tb=short",
+          "--basetemp=D:\\codex-tmp\\er24\\p-final-review",
+          "-o",
+          "cache_dir=D:\\codex-tmp\\er24\\c-final-review",
+          "--junitxml=D:\\codex-tmp\\er24\\final-review.xml"
+        ],
+        "exitCode": 0,
+        "logSha256": "69da8d234e42c652f11d8d233317140a489482b60a751dbf442c64a5e7251554"
+      }
+    },
+    {
+      "label": "migration",
+      "junit": "D:\\codex-tmp\\er24\\migration.xml",
+      "sha256": "ef0478b2f6a91d04c7af80f4099a8cd91f26c34838e1bbe3eaf51c121d5d0b23",
+      "tests": 296,
+      "errors": 0,
+      "failures": 0,
+      "skipped": 0,
+      "passed": 296,
+      "exceptions": [],
+      "head": "540a62cbdf6d92de69b078736f8ffa5a9ec77477"
+    },
+    {
+      "label": "build",
+      "junit": "D:\\codex-tmp\\er24\\build.xml",
+      "sha256": "864d3f6dee3b6feb6d06a0bf0cf0fcdd5174fad71a2a714d8e7d9b4d7d1d3c14",
+      "tests": 142,
+      "errors": 0,
+      "failures": 0,
+      "skipped": 1,
+      "passed": 141,
+      "exceptions": [
+        {
+          "classname": "tests.test_regeneration",
+          "name": "test_destination_symlink_is_rejected_before_resolution",
+          "kind": "skipped",
+          "message": "symlink creation is unavailable"
+        }
+      ],
+      "head": "540a62cbdf6d92de69b078736f8ffa5a9ec77477"
+    }
+  ],
+  "nativeInvocations": [
+    {
+      "label": "smoke",
+      "log": "D:\\codex-tmp\\er24\\smoke.jsonl",
+      "sha256": "7a08f81099ef1da234ff042fd179a4c03173d3b38b2b76ae7e25deddd45596d1",
+      "init": {
+        "tools": [
+          "PowerShell"
+        ],
+        "model": "deepseek-v4.1-flash[1m]",
+        "mcp_servers": []
+      },
+      "calls": [],
+      "results": [],
+      "terminal": {
+        "subtype": "success",
+        "is_error": false,
+        "permission_denials": []
+      }
+    },
+    {
+      "label": "test-location",
+      "log": "D:\\codex-tmp\\er24\\test-location.jsonl",
+      "sha256": "8d38340c7ba82a74adcff97253426a755efd2b84d1d50e4815f93f2f7b64c942",
+      "init": {
+        "tools": [
+          "PowerShell"
+        ],
+        "model": "deepseek-v4.1-flash[1m]",
+        "mcp_servers": []
+      },
+      "calls": [
+        {
+          "id": "call_00_748jqvomq87h460ll75811sn",
+          "name": "PowerShell",
+          "input": {
+            "command": "Get-Location",
+            "description": "Confirm bound working directory"
+          }
+        }
+      ],
+      "results": [
+        {
+          "toolUseId": "call_00_748jqvomq87h460ll75811sn",
+          "isError": false,
+          "content": "Path\r\n----\r\nC:\\Users\\zhy76\\.codex\\worktrees\\build-snapshot-review\\STM32-Toolkit",
+          "nativeResult": {
+            "stdout": "Path\r\n----\r\nC:\\Users\\zhy76\\.codex\\worktrees\\build-snapshot-review\\STM32-Toolkit",
+            "stderr": "",
+            "interrupted": false,
+            "isImage": false
+          }
+        }
+      ],
+      "terminal": {
+        "subtype": "success",
+        "is_error": false,
+        "permission_denials": []
+      }
+    },
+    {
+      "label": "test-initial",
+      "log": "D:\\codex-tmp\\er24\\test-initial.jsonl",
+      "sha256": "7dae0f7f8dcc6b25ecbc7bd73004bf47d41c5e3d7eae9b782ef829cad57216b4",
+      "init": {
+        "tools": [
+          "PowerShell"
+        ],
+        "model": "deepseek-v4.1-flash[1m]",
+        "mcp_servers": []
+      },
+      "calls": [
+        {
+          "id": "call_00_3nxlurv1lsn442aoz0t3urs1",
+          "name": "PowerShell",
+          "input": {
+            "command": "D:/codex-tmp/kx23/venv/Scripts/python.exe -m pytest tools/stm32-toolkit/tests/test_extra_memory_regions.py tools/stm32-toolkit/tests/test_extra_memory_regions_migration.py tools/stm32-toolkit/tests/test_extra_memory_regions_compiler.py -q --tb=short --basetemp=D:/codex-tmp/er24/p-initial -o cache_dir=D:/codex-tmp/er24/c-initial --junitxml=D:/codex-tmp/er24/initial.xml",
+            "description": "Run extra memory regions pytest suite",
+            "timeout": 600000
+          }
+        }
+      ],
+      "results": [
+        {
+          "toolUseId": "call_00_3nxlurv1lsn442aoz0t3urs1",
+          "isError": true,
+          "content": "Exit code 1\nF......................F..........................F                      [100%]\r\n================================== FAILURES ===================================\r\n_______________ test_boundary_values_and_adjacency_are_accepted _______________\r\ntools\\stm32-toolkit\\tests\\test_extra_memory_regions.py:78: in test_boundary_values_and_adjacency_are_accepted\r\n    regions = normalize_extra_regions(\r\ntools\\stm32-toolkit\\src\\stm32_toolkit\\extra_regions.py:214: in normalize_extra_regions\r\n    _validate_extra_overlaps(regions)\r\ntools\\stm32-toolkit\\src\\stm32_toolkit\\extra_regions.py:184: in _validate_extra_overlaps\r\n    raise _fail(\r\nE   stm32_toolkit.extra_regions.ExtraRegionError: extra regions must not overlap each other\r\n___ test_json_transport_is_bounded_and_rejects_duplicate_or_malformed_input ___\r\ntools\\stm32-toolkit\\tests\\test_extra_memory_regions.py:236: in test_json_transport_is_bounded_and_rejects_duplicate_or_malformed_input\r\n    assert caught.value.details[\"rule\"] == rule\r\nE   AssertionError: assert 'type' == 'nesting'\r\nE     \r\nE     - nesting\r\nE     + type\r\n________ test_removed_or_shortened_extra_region_really_fails_the_link _________\r\ntools\\stm32-toolkit\\tests\\test_extra_memory_regions_compiler.py:149: in test_removed_or_shortened_extra_region_really_fails_the_link\r\n    assert failed_removed.returncode != 0\r\nE   assert 0 != 0\r\nE    +  where 0 = CompletedProcess(args=['C:\\\\ST\\\\STM32CubeCLT_1.22.0\\\\GNU-tools-for-STM32\\\\bin\\\\arm-none-eabi-gcc.exe', '-mcpu=cortex-m...est_removed_or_shortened_extr0\\\\bounds\\\\build-bounds\\\\removed.ld:67: warning: memory region `EXT_SRAM' not declared\\n\").returncode\r\n---------------------------- Captured stderr call -----------------------------\r\nwarning: in the working copy of 'Main/main.c', LF will be replaced by CRLF the next time Git touches it\r\nwarning: in the working copy of 'Startup/startup_synthetic.s', LF will be replaced by CRLF the next time Git touches it\r\nwarning: in the working copy of 'app.uvprojx', LF will be replaced by CRLF the next time Git touches it\r\n============================== warnings summary ===============================\r\ntests/test_extra_memory_regions_migration.py::test_registered_mcp_schema_and_calls_preserve_raw_scalar_values\r\n  C:\\data\\stm32-toolkit\\runtime\\1.3.0\\Lib\\site-packages\\pydantic_settings\\sources\\utils.py:47: IncompleteFieldDefinitionWarning: Field 'lifespan' has an incomplete definition: its annotation contains an unresolved forward reference, so settings sources may fail to correctly resolve its value. Call `model_rebuild()` on the model where the field is defined, once all the referenced types are defined.\r\n    warnings.warn(\r\n\r\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\r\n-------------- generated xml file: D:\\codex-tmp\\er24\\initial.xml --------------\r\n=========================== short test summary info ===========================\r\nFAILED tools\\stm32-toolkit\\tests\\test_extra_memory_regions.py::test_boundary_values_and_adjacency_are_accepted\r\nFAILED tools\\stm32-toolkit\\tests\\test_extra_memory_regions.py::test_json_transport_is_bounded_and_rejects_duplicate_or_malformed_input\r\nFAILED tools\\stm32-toolkit\\tests\\test_extra_memory_regions_compiler.py::test_removed_or_shortened_extra_region_really_fails_the_link",
+          "nativeResult": "Error: Exit code 1\nF......................F..........................F                      [100%]\r\n================================== FAILURES ===================================\r\n_______________ test_boundary_values_and_adjacency_are_accepted _______________\r\ntools\\stm32-toolkit\\tests\\test_extra_memory_regions.py:78: in test_boundary_values_and_adjacency_are_accepted\r\n    regions = normalize_extra_regions(\r\ntools\\stm32-toolkit\\src\\stm32_toolkit\\extra_regions.py:214: in normalize_extra_regions\r\n    _validate_extra_overlaps(regions)\r\ntools\\stm32-toolkit\\src\\stm32_toolkit\\extra_regions.py:184: in _validate_extra_overlaps\r\n    raise _fail(\r\nE   stm32_toolkit.extra_regions.ExtraRegionError: extra regions must not overlap each other\r\n___ test_json_transport_is_bounded_and_rejects_duplicate_or_malformed_input ___\r\ntools\\stm32-toolkit\\tests\\test_extra_memory_regions.py:236: in test_json_transport_is_bounded_and_rejects_duplicate_or_malformed_input\r\n    assert caught.value.details[\"rule\"] == rule\r\nE   AssertionError: assert 'type' == 'nesting'\r\nE     \r\nE     - nesting\r\nE     + type\r\n________ test_removed_or_shortened_extra_region_really_fails_the_link _________\r\ntools\\stm32-toolkit\\tests\\test_extra_memory_regions_compiler.py:149: in test_removed_or_shortened_extra_region_really_fails_the_link\r\n    assert failed_removed.returncode != 0\r\nE   assert 0 != 0\r\nE    +  where 0 = CompletedProcess(args=['C:\\\\ST\\\\STM32CubeCLT_1.22.0\\\\GNU-tools-for-STM32\\\\bin\\\\arm-none-eabi-gcc.exe', '-mcpu=cortex-m...est_removed_or_shortened_extr0\\\\bounds\\\\build-bounds\\\\removed.ld:67: warning: memory region `EXT_SRAM' not declared\\n\").returncode\r\n---------------------------- Captured stderr call -----------------------------\r\nwarning: in the working copy of 'Main/main.c', LF will be replaced by CRLF the next time Git touches it\r\nwarning: in the working copy of 'Startup/startup_synthetic.s', LF will be replaced by CRLF the next time Git touches it\r\nwarning: in the working copy of 'app.uvprojx', LF will be replaced by CRLF the next time Git touches it\r\n============================== warnings summary ===============================\r\ntests/test_extra_memory_regions_migration.py::test_registered_mcp_schema_and_calls_preserve_raw_scalar_values\r\n  C:\\data\\stm32-toolkit\\runtime\\1.3.0\\Lib\\site-packages\\pydantic_settings\\sources\\utils.py:47: IncompleteFieldDefinitionWarning: Field 'lifespan' has an incomplete definition: its annotation contains an unresolved forward reference, so settings sources may fail to correctly resolve its value. Call `model_rebuild()` on the model where the field is defined, once all the referenced types are defined.\r\n    warnings.warn(\r\n\r\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\r\n-------------- generated xml file: D:\\codex-tmp\\er24\\initial.xml --------------\r\n=========================== short test summary info ===========================\r\nFAILED tools\\stm32-toolkit\\tests\\test_extra_memory_regions.py::test_boundary_values_and_adjacency_are_accepted\r\nFAILED tools\\stm32-toolkit\\tests\\test_extra_memory_regions.py::test_json_transport_is_bounded_and_rejects_duplicate_or_malformed_input\r\nFAILED tools\\stm32-toolkit\\tests\\test_extra_memory_regions_compiler.py::test_removed_or_shortened_extra_region_really_fails_the_link"
+        }
+      ],
+      "terminal": {
+        "subtype": "success",
+        "is_error": false,
+        "permission_denials": []
+      }
+    },
+    {
+      "label": "test-final-new",
+      "log": "D:\\codex-tmp\\er24\\test-final-new.jsonl",
+      "sha256": "4be93e2b83004d0cb50b1cec9cb68cbadc58e1ade5f0b9cfecbb08d9c909dc3e",
+      "init": {
+        "tools": [
+          "PowerShell"
+        ],
+        "model": "deepseek-v4.1-flash[1m]",
+        "mcp_servers": []
+      },
+      "calls": [
+        {
+          "id": "call_00_0pjl8ly82oaa4954nb23i2r5",
+          "name": "PowerShell",
+          "input": {
+            "command": "D:/codex-tmp/kx23/venv/Scripts/python.exe -m pytest tools/stm32-toolkit/tests/test_extra_memory_regions.py tools/stm32-toolkit/tests/test_extra_memory_regions_migration.py tools/stm32-toolkit/tests/test_extra_memory_regions_compiler.py -q --tb=short --basetemp=D:/codex-tmp/er24/p-final-new -o cache_dir=D:/codex-tmp/er24/c-final-new --junitxml=D:/codex-tmp/er24/final-new.xml",
+            "description": "Run frozen-head verification pytest suite",
+            "timeout": 600000
+          }
+        }
+      ],
+      "results": [
+        {
+          "toolUseId": "call_00_0pjl8ly82oaa4954nb23i2r5",
+          "isError": false,
+          "content": "........................................................                 [100%]\r\n============================== warnings summary ===============================\r\ntests/test_extra_memory_regions_migration.py::test_registered_mcp_schema_and_calls_preserve_raw_scalar_values\r\n  C:\\data\\stm32-toolkit\\runtime\\1.3.0\\Lib\\site-packages\\pydantic_settings\\sources\\utils.py:47: IncompleteFieldDefinitionWarning: Field 'lifespan' has an incomplete definition: its annotation contains an unresolved forward reference, so settings sources may fail to correctly resolve its value. Call `model_rebuild()` on the model where the field is defined, once all the referenced types are defined.\r\n    warnings.warn(\r\n\r\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\r\n------------- generated xml file: D:\\codex-tmp\\er24\\final-new.xml -------------",
+          "nativeResult": {
+            "stdout": "........................................................                 [100%]\r\n============================== warnings summary ===============================\r\ntests/test_extra_memory_regions_migration.py::test_registered_mcp_schema_and_calls_preserve_raw_scalar_values\r\n  C:\\data\\stm32-toolkit\\runtime\\1.3.0\\Lib\\site-packages\\pydantic_settings\\sources\\utils.py:47: IncompleteFieldDefinitionWarning: Field 'lifespan' has an incomplete definition: its annotation contains an unresolved forward reference, so settings sources may fail to correctly resolve its value. Call `model_rebuild()` on the model where the field is defined, once all the referenced types are defined.\r\n    warnings.warn(\r\n\r\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\r\n------------- generated xml file: D:\\codex-tmp\\er24\\final-new.xml -------------",
+            "stderr": "",
+            "interrupted": false,
+            "isImage": false
+          }
+        }
+      ],
+      "terminal": {
+        "subtype": "success",
+        "is_error": false,
+        "permission_denials": []
+      }
+    },
+    {
+      "label": "test-migration",
+      "log": "D:\\codex-tmp\\er24\\test-migration.jsonl",
+      "sha256": "e5a138e41c016fca4dd4fd3b532154ef67fe0981a4d0cfee74f519f930743009",
+      "init": {
+        "tools": [
+          "PowerShell"
+        ],
+        "model": "deepseek-v4.1-flash[1m]",
+        "mcp_servers": []
+      },
+      "calls": [
+        {
+          "id": "call_00_i22g4s4efu2o7im39sdtybni",
+          "name": "PowerShell",
+          "input": {
+            "command": "D:/codex-tmp/kx23/venv/Scripts/python.exe -m pytest tools/stm32-toolkit/tests/test_migration_plan.py tools/stm32-toolkit/tests/test_migration_apply.py tools/stm32-toolkit/tests/test_keil_preflight.py tools/stm32-toolkit/tests/test_scoped_includes.py tools/stm32-toolkit/tests/test_armcc_common_syntax.py tools/stm32-toolkit/tests/test_armcc_common_compiler.py tools/stm32-toolkit/tests/test_armcc_common_newlib.py tools/stm32-toolkit/tests/test_memory_layout_migration.py tools/stm32-toolkit/tests/test_memory_layout_routing.py tools/stm32-toolkit/tests/test_mcp_migration_build.py tools/stm32-toolkit/tests/test_ai_call_guidance.py -q --tb=short --basetemp=D:/codex-tmp/er24/p-migration -o cache_dir=D:/codex-tmp/er24/c-migration --junitxml=D:/codex-tmp/er24/migration.xml",
+            "description": "Run scoped migration pytest suite",
+            "timeout": 600000
+          }
+        }
+      ],
+      "results": [
+        {
+          "toolUseId": "call_00_i22g4s4efu2o7im39sdtybni",
+          "isError": false,
+          "content": "........................................................................ [ 24%]\r\n........................................................................ [ 48%]\r\n........................................................................ [ 72%]\r\n........................................................................ [ 97%]\r\n........                                                                 [100%]\r\n============================== warnings summary ===============================\r\ntests/test_memory_layout_routing.py::test_registered_mcp_tools_bind_the_public_camel_case_memory_layout\r\n  C:\\data\\stm32-toolkit\\runtime\\1.3.0\\Lib\\site-packages\\pydantic_settings\\sources\\utils.py:47: IncompleteFieldDefinitionWarning: Field 'lifespan' has an incomplete definition: its annotation contains an unresolved forward reference, so settings sources may fail to correctly resolve its value. Call `model_rebuild()` on the model where the field is defined, once all the referenced types are defined.\r\n    warnings.warn(\r\n\r\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\r\n------------- generated xml file: D:\\codex-tmp\\er24\\migration.xml -------------",
+          "nativeResult": {
+            "stdout": "........................................................................ [ 24%]\r\n........................................................................ [ 48%]\r\n........................................................................ [ 72%]\r\n........................................................................ [ 97%]\r\n........                                                                 [100%]\r\n============================== warnings summary ===============================\r\ntests/test_memory_layout_routing.py::test_registered_mcp_tools_bind_the_public_camel_case_memory_layout\r\n  C:\\data\\stm32-toolkit\\runtime\\1.3.0\\Lib\\site-packages\\pydantic_settings\\sources\\utils.py:47: IncompleteFieldDefinitionWarning: Field 'lifespan' has an incomplete definition: its annotation contains an unresolved forward reference, so settings sources may fail to correctly resolve its value. Call `model_rebuild()` on the model where the field is defined, once all the referenced types are defined.\r\n    warnings.warn(\r\n\r\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\r\n------------- generated xml file: D:\\codex-tmp\\er24\\migration.xml -------------",
+            "stderr": "",
+            "interrupted": false,
+            "isImage": false
+          }
+        }
+      ],
+      "terminal": {
+        "subtype": "success",
+        "is_error": false,
+        "permission_denials": []
+      }
+    },
+    {
+      "label": "test-build",
+      "log": "D:\\codex-tmp\\er24\\test-build.jsonl",
+      "sha256": "16e481938422331fd61a1b274f2a295baf37c0159c3d8d0d467188ecb10e447b",
+      "init": {
+        "tools": [
+          "PowerShell"
+        ],
+        "model": "deepseek-v4.1-flash[1m]",
+        "mcp_servers": []
+      },
+      "calls": [
+        {
+          "id": "call_00_a8ly5wtld7io2vn0qnhv7k6s",
+          "name": "PowerShell",
+          "input": {
+            "command": "D:/codex-tmp/kx23/venv/Scripts/python.exe -m pytest tools/stm32-toolkit/tests/test_build_runner.py tools/stm32-toolkit/tests/test_regeneration.py tools/stm32-toolkit/tests/test_memory_layout_compiler.py -q --tb=short --basetemp=D:/codex-tmp/er24/p-build -o cache_dir=D:/codex-tmp/er24/c-build --junitxml=D:/codex-tmp/er24/build.xml",
+            "description": "Run the three specified pytest suites at frozen head",
+            "timeout": 600000
+          }
+        }
+      ],
+      "results": [
+        {
+          "toolUseId": "call_00_a8ly5wtld7io2vn0qnhv7k6s",
+          "isError": false,
+          "content": "........................................................................ [ 50%]\r\n........................................s.............................   [100%]\r\n--------------- generated xml file: D:\\codex-tmp\\er24\\build.xml ---------------",
+          "nativeResult": {
+            "stdout": "........................................................................ [ 50%]\r\n........................................s.............................   [100%]\r\n--------------- generated xml file: D:\\codex-tmp\\er24\\build.xml ---------------",
+            "stderr": "",
+            "interrupted": false,
+            "isImage": false
+          }
+        }
+      ],
+      "terminal": {
+        "subtype": "success",
+        "is_error": false,
+        "permission_denials": []
+      }
+    },
+    {
+      "label": "validate-skill",
+      "log": "D:\\codex-tmp\\er24\\validate-skill.jsonl",
+      "sha256": "73b6e34f9e1c496bdb73af5d73dce01d71ec6da599de847ac1bc58e5f4b24328",
+      "init": {
+        "tools": [
+          "PowerShell"
+        ],
+        "model": "deepseek-v4.1-flash[1m]",
+        "mcp_servers": []
+      },
+      "calls": [
+        {
+          "id": "call_00_cc25adhcyuovcsu0y3yp1vbr",
+          "name": "PowerShell",
+          "input": {
+            "command": "D:/codex-tmp/kx23/venv/Scripts/python.exe C:/Users/zhy76/.codex/skills/.system/skill-creator/scripts/quick_validate.py skills/migrate-keil",
+            "description": "Validate migrate-keil skill with quick_validate.py"
+          }
+        }
+      ],
+      "results": [
+        {
+          "toolUseId": "call_00_cc25adhcyuovcsu0y3yp1vbr",
+          "isError": false,
+          "content": "Skill is valid!",
+          "nativeResult": {
+            "stdout": "Skill is valid!",
+            "stderr": "",
+            "interrupted": false,
+            "isImage": false
+          }
+        }
+      ],
+      "terminal": {
+        "subtype": "success",
+        "is_error": false,
+        "permission_denials": []
+      }
+    }
+  ],
+  "uniquePassingCases": 1217,
+  "remainingSkippedCases": [
+    "tests.test_project_model::test_directory_symlink_parent_cannot_escape_project_root",
+    "tests.test_project_model::test_file_symlink_cannot_escape_project_root",
+    "tests.test_regeneration::test_destination_symlink_is_rejected_before_resolution"
+  ],
+  "reusedEvidence": {
+    "testedHead": "a2e6837f4d791b87437ecb7697e0b2bcc355c98d",
+    "runs": [
+      "model-review",
+      "artifact-review"
+    ],
+    "delta": [
+      "docs/user-guide.md",
+      "skills/migrate-keil/SKILL.md",
+      "tools/stm32-toolkit/src/stm32_toolkit/extra_regions.py",
+      "tools/stm32-toolkit/tests/test_extra_memory_regions.py",
+      "tools/stm32-toolkit/tests/test_extra_memory_regions_compiler.py",
+      "tools/stm32-toolkit/tests/test_extra_memory_regions_migration.py"
+    ],
+    "note": "The only product delta is a bounded CLI extra-region JSON depth check; old model/generation/artifact code and tests are byte-identical. These no-extra regressions do not call that JSON parsing path. New option tests and 15 legacy layout cases were rerun at final head. No claim of a final-head combined full matrix."
+  },
+  "boundaries": {
+    "originalProject": "untouched",
+    "installedRuntime": "unchanged",
+    "globalSkills": "unchanged",
+    "hardware": "not accessed",
+    "remoteActions": [],
+    "releasePackaging": "not performed"
+  },
+  "authorLogs": [
+    {
+      "label": "author",
+      "path": "D:\\codex-tmp\\er24\\author.jsonl",
+      "sha256": "1da52badeb86d0b0bf7df6055fc5faaf2f44bcaf480acd5459346de435cb485a"
+    },
+    {
+      "label": "continue",
+      "path": "D:\\codex-tmp\\er24\\continue.jsonl",
+      "sha256": "c77f86f5edf1cab1d8f8ece1ba8b090df630fa5034a656984902a5f1dfe7791c"
+    },
+    {
+      "label": "continue2",
+      "path": "D:\\codex-tmp\\er24\\continue2.jsonl",
+      "sha256": "e8473f7c9e0d0c32f40a5a6f36a39b895651178d0e0c06ba1885651807926bf1"
+    },
+    {
+      "label": "fix1",
+      "path": "D:\\codex-tmp\\er24\\fix1.jsonl",
+      "sha256": "aee8c8db4c925b0167d1016bb01c616b1498b545ae6e1c43418848cae66cbbc1"
+    },
+    {
+      "label": "final-fixture",
+      "path": "D:\\codex-tmp\\er24\\final-fixture.jsonl",
+      "sha256": "cf0335bfa1cb4c0558e080288f717940ba4a0875de79c13ab5060c458a7119b8"
+    }
+  ]
+}
