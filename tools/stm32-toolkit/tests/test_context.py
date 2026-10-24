@@ -269,7 +269,10 @@ def test_keil_context_stays_read_only_and_reports_inspection_capabilities(
     result = build_project_context(tmp_path, data_root, "session-a")
 
     assert result.ok is True
-    assert result.to_dict()["data"] == {
+    payload = result.to_dict()
+    routes = pop_firmware_routes(payload)
+    assert routes["managed"]["status"] == "not-evaluated"
+    assert payload["data"] == {
         "project": {
             "kind": "keil",
             "root": str(tmp_path),
