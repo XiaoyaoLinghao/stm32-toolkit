@@ -55,6 +55,10 @@ _NO_SEMIHOSTING_RE = re.compile(
 )
 _NO_SEMIHOSTING_SPEC = "nosys.specs"
 
+#: Identifier token that cannot start inside a numeric literal (so the ``x``
+#: in ``0x100000000`` and integer-suffix letters are not symbolic).
+_SYMBOLIC_RE = re.compile(r"(?<![A-Za-z0-9_])[A-Za-z_][A-Za-z0-9_]*")
+
 #: Storage/declaration forms that never describe a placed or aligned object.
 _FORBIDDEN_DECLARATION_WORDS = frozenset({"extern", "typedef", "register", "auto"})
 #: Known 32-bit scalar prototypes for the MSP setter (ARM AAPCS r0).  Any
@@ -598,7 +602,7 @@ class _Scanner:
         ):
             reason = (
                 f" ({error})"
-                if error is not None and re.search(r"[A-Za-z_]", expression)
+                if error is not None and _SYMBOLIC_RE.search(expression)
                 else ""
             )
             self._align_blocker(
@@ -935,7 +939,7 @@ def _parse_placement(
             "valid": False,
             "reason": "address",
             "resolution": (
-                error if re.search(r"[A-Za-z_]", expression) else None
+                error if _SYMBOLIC_RE.search(expression) else None
             ),
         }
     if address is None or address > MAX_UINT32:

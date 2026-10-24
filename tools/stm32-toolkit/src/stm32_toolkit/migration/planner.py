@@ -330,7 +330,33 @@ def _unified_diff(path: str, before_text: str, after_text: str) -> str:
     )
 
 
-def _finding_blockers(findings: tuple) -> list[MigrationBlocker]:
+def _verified_source_line(
+    exact_bytes: dict[str, bytes] | None, path: str, line: int
+) -> str | None:
+    """Return one verified input line, or ``None`` when it is unavailable.
+
+    Inspection evidence is capped at 200 codepoints, so the supported pragma
+    check must use the exact revalidated source bytes when they are available.
+    Anything undecodable, out of range, or not a prefix match of the recorded
+    evidence falls back to the capped evidence.
+    """
+    if exact_bytes is None or line < 1:
+        return None
+    data = exact_bytes.get(path)
+    if data is None:
+        return None
+    try:
+        lines = data.decode("utf-8-sig").split("\n")
+    except UnicodeDecodeError:
+        return None
+    if line > len(lines):
+        return None
+    return lines[line - 1]
+
+
+def _finding_blockers(
+    findings: tuple, exact_bytes: dict[str, bytes] | None = None
+) -> list[MigrationBlocker]:
     """Map inspection findings to migration blockers.
 
     Severity-blocker findings resolved by a supported rule produce no extra
@@ -342,7 +368,17 @@ def _finding_blockers(findings: tuple) -> list[MigrationBlocker]:
     for finding in findings:
         if finding.severity == "blocker":
             if finding.rule_id == "ARMCC_UNSUPPORTED_PRAGMA":
-                if rules.pragma_is_supported(finding.evidence):
+                evidence = finding.evidence
+                verified = _verified_source_line(
+                    exact_bytes, finding.path, finding.line
+                )
+                if (
+                    verified is not None
+                    and finding.evidence
+                    and verified.strip().startswith(finding.evidence)
+                ):
+                    evidence = verified.strip()
+                if rules.pragma_is_supported(evidence):
                     # The token-aware rule rewrites exactly this directive;
                     # every other import/pragma keeps its blocker.
                     continue
@@ -427,7 +463,9 @@ def _scoped_option_blockers(inspection: KeilInspection) -> list[MigrationBlocker
 
 
 def _inspection_blockers(
-    inspection: KeilInspection, resolved_assembly: str | None = None
+    inspection: KeilInspection,
+    resolved_assembly: str | None = None,
+    exact_bytes: dict[str, bytes] | None = None,
 ) -> list[MigrationBlocker]:
     blockers: list[MigrationBlocker] = []
     if inspection.compiler != "armcc":
@@ -522,7 +560,7 @@ def _inspection_blockers(
                     "ARMCC target/group/file misc controls are not empty",
                 )
             )
-    blockers.extend(_finding_blockers(inspection.findings))
+    blockers.extend(_finding_blockers(inspection.findings, exact_bytes))
     return blockers
 
 
@@ -849,7 +887,9 @@ def analyze_keil_conversion(
 
     blockers: list[MigrationBlocker] = list(extra_blockers)
     scoped_option_blockers = _scoped_option_blockers(inspection)
-    blockers.extend(_inspection_blockers(inspection, resolved_assembly))
+    blockers.extend(
+        _inspection_blockers(inspection, resolved_assembly, exact_bytes)
+    )
     blockers.extend(include_analysis.blockers)
     if startup_outcome is not None:
         for diagnostic in startup_outcome.analysis.diagnostics:

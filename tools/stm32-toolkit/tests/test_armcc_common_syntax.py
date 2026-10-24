@@ -531,6 +531,25 @@ def test_alignment_must_divide_the_fixed_address():
     assert [section.address for section in supported.fixed_sections] == [0x20000100]
 
 
+def test_placement_literal_overflow_keeps_generic_message():
+    scan = _scan("__at(0x100000000) int pinned;\n")
+    placement = [
+        blocker
+        for blocker in scan.blockers
+        if blocker.code == "ARMCC_ABSOLUTE_PLACEMENT_UNSUPPORTED"
+    ]
+    assert len(placement) == 1
+    assert placement[0].message == "unsupported ARMCC absolute placement grammar"
+
+    undefined = _scan("__at(UNDEFINED_ADDR) int pinned;\n")
+    reported = next(
+        blocker
+        for blocker in undefined.blockers
+        if blocker.code == "ARMCC_ABSOLUTE_PLACEMENT_UNSUPPORTED"
+    )
+    assert "(undefined)" in reported.message
+
+
 def test_unresolved_symbolic_alignment_reports_its_reason():
     scan = _scan("__align(UNKNOWN_ALIGN) unsigned char pool[8] __at(0x20000100);\n")
     align = [
@@ -882,7 +901,7 @@ def test_public_flow_blocks_incompatible_alignment_and_fixed_address(tmp_path):
     assert plan.fixed_sections == ()
     patch = next(p for p in plan.patches if p.path == "Main/main.c")
     after = patch.after_bytes.decode("utf-8")
-    assert "0x20000104" in after
+    assert "__at(PLACED)" in after
     assert ".stm32tk.abs.20000104" not in after
 
     preflight = preflight_keil_conversion(repo, inspection)
@@ -942,3 +961,66 @@ def test_public_flow_surfaces_symbolic_placement_resolution_reason(tmp_path):
             if blocker["code"] == "ARMCC_ABSOLUTE_PLACEMENT_UNSUPPORTED"
         )
         assert f"({reason})" in blocker["message"]
+
+
+def test_public_flow_supports_pragma_with_long_trailing_comment(tmp_path):
+    comment = "/* " + "keep-comment " * 20 + "*/"
+    assert len(comment) > 200
+    repo = build_repo(
+        tmp_path,
+        name="longpragma",
+        files={
+            "Main/main.c": (
+                f"#pragma import(__use_no_semihosting) {comment}\n"
+                "int main(void) { return 0; }\n"
+            )
+        },
+        uvprojx_kwargs={
+            "groups": (("Main", (("main.c", "1", "Main/main.c"),)),),
+        },
+    )
+    inspection = fixture_inspection(repo)
+    preflight = preflight_keil_conversion(repo, inspection)
+    assert preflight["analysis"]["blockers"] == []
+    changes = {
+        change["path"]: change for change in preflight["analysis"]["sourceChanges"]
+    }
+    assert changes["Main/main.c"]["ruleIds"] == ["ARMCC_NO_SEMIHOSTING_PRAGMA"]
+
+    plan = plan_keil_conversion(repo, inspection)
+    assert plan.blockers == ()
+    patch = next(p for p in plan.patches if p.path == "Main/main.c")
+    after = patch.after_bytes.decode("utf-8")
+    assert "#pragma import" not in after
+    assert comment in after
+    manifest = next(
+        p for p in plan.patches if p.path == ".stm32-project.json"
+    ).after_bytes.decode("utf-8")
+    assert '"newlibSpecs": [\n      "nosys.specs"\n    ]' in manifest
+
+
+def test_public_flow_keeps_long_unknown_import_blocked(tmp_path):
+    comment = "/* " + "keep-going " * 20 + "*/"
+    repo = build_repo(
+        tmp_path,
+        name="longunknown",
+        files={
+            "Main/main.c": (
+                f"#pragma import(__use_no_semihosting_extra) {comment}\n"
+                "int main(void) { return 0; }\n"
+            )
+        },
+        uvprojx_kwargs={
+            "groups": (("Main", (("main.c", "1", "Main/main.c"),)),),
+        },
+    )
+    plan = plan_keil_conversion(repo, fixture_inspection(repo))
+    blockers = [
+        blocker
+        for blocker in plan.blockers
+        if blocker.code == "ARMCC_PRAGMA_UNSUPPORTED"
+    ]
+    assert blockers
+    assert not any(
+        b"nosys.specs" in patch.after_bytes for patch in plan.patches
+    )
