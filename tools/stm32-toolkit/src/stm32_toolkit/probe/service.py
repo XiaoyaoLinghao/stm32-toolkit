@@ -461,6 +461,7 @@ class ProbeService:
         operation_level: OperationLevel,
         session_root: Path,
         project_root: Path | None = None,
+        programming_root: Path | None = None,
         token_factory: Callable[[], bytes] = lambda: secrets.token_bytes(32),
         heartbeat_interval_seconds: float = 5.0,
         body_read_timeout_seconds: float = 2.0,
@@ -477,6 +478,9 @@ class ProbeService:
         self._operation_level = operation_level
         self._session_root = session_root
         self._project_root = project_root
+        # Private additive root used only by the validated imported-image
+        # workflow.  It never widens the general project path jail.
+        self._programming_root = programming_root
         self._token_factory = token_factory
         if heartbeat_interval_seconds <= 0 or heartbeat_interval_seconds > 60:
             raise ValueError("Probe Service heartbeat interval is invalid")
@@ -1138,12 +1142,31 @@ class ProbeService:
                 names = tuple(str(item) for item in request.data["names"])
                 return {"values": dict(self._backend.read_core_registers(names))}
             if request.operation == "flash.program":
+                if self._programming_root is not None:
+                    # An imported session grants programming authority only
+                    # to its validated immutable import.  The legacy project
+                    # root jail stays closed in this session mode.
+                    raise ProbeBackendError(
+                        "PROBE_OPERATION_UNAVAILABLE",
+                        "Legacy firmware programming is unavailable in an imported session",
+                    )
                 image = self._read_verified_elf(
                     request.data["elfPath"],
                     request.data["elfSha256"],
                     request.data["elfSize"],
                 )
                 return self._backend.flash_elf(image).to_dict()
+            if request.operation == "flash.program.imported":
+                if request.data["elfPath"] != "image.elf":
+                    raise ProbeBackendError(
+                        "FIRMWARE_PATH_INVALID", "Firmware evidence is invalid"
+                    )
+                image = self._read_verified_imported_elf(
+                    request.data["elfPath"],
+                    request.data["elfSha256"],
+                    request.data["elfSize"],
+                )
+                return self._backend.flash_imported_elf(image).to_dict()
             if request.operation == "target.identity.read":
                 return self._closed_target_identity(self._backend.target_identity())
             if request.operation == "target.state.read":
@@ -1321,7 +1344,7 @@ class ProbeService:
                 return result
             raise ProbeBackendError("PROBE_OPERATION_UNSUPPORTED", "Operation is unsupported")
 
-        is_modify = request.operation == "flash.program"
+        is_modify = request.operation in {"flash.program", "flash.program.imported"}
         is_attach = request.operation == "probe.attach"
         has_irreversible_native_effect = (
             is_modify or request.operation_level is OperationLevel.CONTROL
@@ -1966,6 +1989,24 @@ class ProbeService:
     def _read_verified_elf(
         self, relative_path: object, expected_sha256: object, expected_size: object
     ) -> bytes:
+        return self._read_verified_file(
+            self._project_root, relative_path, expected_sha256, expected_size
+        )
+
+    def _read_verified_imported_elf(
+        self, relative_path: object, expected_sha256: object, expected_size: object
+    ) -> bytes:
+        return self._read_verified_file(
+            self._programming_root, relative_path, expected_sha256, expected_size
+        )
+
+    def _read_verified_file(
+        self,
+        root: Path | None,
+        relative_path: object,
+        expected_sha256: object,
+        expected_size: object,
+    ) -> bytes:
         if (
             not isinstance(relative_path, str)
             or not 5 <= len(relative_path) <= 1024
@@ -1984,11 +2025,10 @@ class ProbeService:
             raise ProbeBackendError(
                 "FIRMWARE_PATH_INVALID", "Firmware evidence is invalid"
             )
-        root = self._project_root
         if root is None:
             raise ProbeBackendError(
                 "PROBE_PROJECT_ROOT_REQUIRED",
-                "Probe Service requires an exact project root for programming",
+                "Probe Service requires an exact programming root",
             )
         try:
             lexical_root = root.expanduser().absolute()
@@ -2117,7 +2157,7 @@ class ProbeService:
             )
         required_level = (
             OperationLevel.MODIFY
-            if request.operation == "flash.program"
+            if request.operation in {"flash.program", "flash.program.imported"}
             else OperationLevel.CONTROL if request.operation in {
                 "target.halt", "target.resume", "target.reset", "target.step", "target.breakpoint.set", "target.breakpoint.clear"
             } else OperationLevel.OBSERVE

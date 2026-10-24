@@ -1,29 +1,35 @@
 # Release status and retained limitations
 
-## v1.3.0 local candidate — version preparation, not released
+## v1.3.0 local candidate — integrated, not released
 
 The `codex/v1.3.0` branch carries a **local** v1.3.0 Release candidate based on
-`6b4c13b6fa76f320503b14679c8eb7bfc712c9af`. At this version-preparation stage the
-Toolkit, Monitor, UI, plugin, launchers, runtime state and release policy/schema identity
-have been aligned to `1.3.0`, and `1.2.0` is recognized as a legacy managed-runtime and
-generation-producer version. No v1.3.0 bundle, tag, GitHub Release, public asset or
-download link exists, and no v1.3.0 installation, upgrade, interactive browser, IDE or
-hardware qualification has been performed. The [v1.2.0 Release](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.2.0)
+`6b4c13b6fa76f320503b14679c8eb7bfc712c9af`. It integrates the accepted EXTERNAL-FIRMWARE
+slice (CodeHead `4f002cd1479dc98c2dc9c48d7e75dddf896de2f2`, accepted with fixes for the
+offline software scope) with the version alignment. The Toolkit, Monitor, UI, plugin,
+launchers, runtime state and release policy/schema identity are aligned to `1.3.0`, and
+`1.2.0` is recognized as a legacy managed-runtime and generation-producer version. The
+current source exposes the integrated inventory of 52 MCP tools and 9 bundled Skills,
+including `stm32_firmware_import`, `stm32_firmware_admit` and `stm32_flash_imported`.
+
+There is no v1.3.0 tag, GitHub Release, public asset or download link, and no v1.3.0
+installation, upgrade, interactive browser, IDE or hardware qualification has been
+performed. Local candidate construction and validation are recorded in the delivery
+evidence; full qualification and publication remain pending. The
+[v1.2.0 Release](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.2.0)
 remains the current public download.
 
-The candidate is also incomplete by design: the separately owned external-firmware slice
-has not yet been integrated. This branch therefore exposes 49 MCP tool names and 9 bundled
-Skills; the declared final v1.3.0 inventory of 52 MCP tools and 9 Skills is reached only
-after that slice is accepted and integrated. Offline firmware import/admission and any
-separately authorized flashing of imported images are outside this version-preparation
-change; nothing recorded here admits an imported image to a hardware path.
+The accepted external-firmware route is offline import/admission plus a separately
+authorized flash of the immutable imported image. No hardware operation was performed for
+this candidate. Import authorization covers only the offline copy, admission is not a
+reusable token or a hardware authorization, and an imported receipt does not admit debug,
+Monitor, Target tests, legacy flash evidence or a managed build identity.
 
 The **v1.2.0-only** user-approved qualification exception does not transfer to v1.3.0.
 Permanent coverage floors, package construction, fresh installation/upgrade/rollback,
 interactive browser, IDE and physical qualification all remain pending until separately
-executed and recorded. The setup bootstrap trust anchors are deliberately not updated in
-this version-preparation commit; they must be recomputed from the committed `git archive`
-bytes after integration and then corrected before any official build.
+executed and recorded. The setup bootstrap trust anchors have been recomputed from the
+utility and policy bytes of the committed candidate source and must be re-validated
+against the actual committed archive before any official build.
 
 ## v1.2.0 published Latest with a version-specific exception — 2026-10-23
 

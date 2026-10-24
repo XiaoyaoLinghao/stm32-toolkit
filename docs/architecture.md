@@ -139,6 +139,39 @@ externally visible code is not promised from every entry. Context exposes this k
 false capability booleans remain conservative compatibility fields and read-only probe discovery
 stays independent. Migration planning and apply continue to require their committed Git baseline.
 
+External firmware import is a separate, source-only route for projects without
+a managed model. It parses exactly one ELF/AXF (AXF is ELF), Intel HEX, or BIN
+source into deterministic PT_LOAD segments, then emits a minimal ARM ELF32
+programming image whose SHA-256 is distinct from the original source SHA-256.
+The import store lives under a deterministic external workspace
+(`projects/external-<key>/firmware-imports/<importId>`) derived from both the
+canonical project and data roots; the deterministic import identity binds the
+Toolkit version, both root digests, portable source path, format, source
+SHA-256/size, base address, target, reviewed Flash-region declaration, image
+SHA-256/size, segment summaries, and entry metadata. No timestamp participates
+in identity. Admission is read-only and offline: it re-reads the stored source,
+re-parses it with the recorded parameters, rebuilds the normalized image, and
+compares bytes, segment summaries, entry metadata, and the canonical identity
+before reporting `offlineReady=true`/`hardwareVerified=false`; it is not an
+authorization token. Every store ancestor is revalidated for redirects before
+reads, publication, programming, and receipt writes.
+
+A separately authorized imported flash uses the existing owned Probe Service
+one-shot lifecycle. Its session carries a private programming root containing
+only the validated immutable import; the general project-root jail and legacy
+`flash.program` behavior are unchanged, and legacy programming is refused in
+an imported session. Before the first driver call the backend parses the
+normalized image and requires every byte to be covered by the union of the
+attached target's declared contiguous Flash intervals (gaps, non-Flash
+intervals, and ambiguous overlapping maps are rejected). This native map is
+support metadata, not a physical-capacity measurement. Normalized sector erase,
+`trustCrc=false`, `keepUnwritten=true`, and failure cleanup are reused; the
+workflow verifies every planned byte by bounded readback, revalidates the store
+after attach, before the program RPC, and after readback, and commits a
+distinct external-flash receipt only after readback, final integrity, and owned
+cleanup. That receipt records no build, Git, or input-snapshot identity and
+does not admit debug, Monitor, Target tests, or legacy flash evidence.
+
 ## Probe, debugging and Monitor
 
 One physical probe has one owner. All attach/control uses the same Probe Service; no competing
@@ -183,9 +216,10 @@ local candidate aligns the product authorities to 1.3.0 and adds 1.2.0 to the re
 managed-runtime and generation-producer versions while retaining the older entries. That
 recognition is read-only: an existing 1.2.0 runtime still requires an explicit authorized Repair,
 and a 1.2.0-generated project keeps its historical `generatedBy` value until an explicit configure
-transaction. Exact current build, flash, import and export identities are not relaxed, and the
-candidate ships 9 bundled Skills while the final 52-tool inventory depends on the separately
-integrated external-firmware slice.
+transaction. Exact current build, flash, import and export identities are not relaxed. The
+candidate ships 9 bundled Skills and the integrated 52-tool inventory; the accepted
+external-firmware route contributes its three MCP registrations, while the published v1.2.0
+package remains 48 tools and 8 Skills.
 
 Replay Acceptance `diagnosticSessionId` identifies 128 bits without RFC UUID version/variant
 semantics. Public replay inputs accept lowercase compact 32-hex or grouped `8-4-4-4-12` spelling;

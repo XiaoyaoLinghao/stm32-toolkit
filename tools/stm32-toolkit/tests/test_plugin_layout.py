@@ -565,7 +565,12 @@ def test_readme_links_current_user_guidance_and_release_boundaries():
     for guide in (readme, readme_zh):
         assert "1.3.0" in guide
         assert "releases/tag/v1.3.0" not in guide
-        assert "stm32-toolkit-1.3.0-windows-x86_64.zip" not in guide
+        assert "releases/download/v1.3.0" not in guide
+        # A truthful locally delivered v1.3.0 filename and parameterized
+        # recipe are allowed; only a fabricated GitHub download is prohibited.
+        assert "$Version = '1.3.0'" in guide
+        assert "stm32-toolkit-$Version-windows-x86_64.zip" in guide
+        assert "DataRoot/runtime/1.3.0" in guide
     release_url = "https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.2.0"
     for guide in (readme, readme_zh):
         assert release_url in guide

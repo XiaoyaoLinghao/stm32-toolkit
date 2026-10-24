@@ -420,8 +420,38 @@ class ProbeClient:
         *,
         timeout_ms: int = 30_000,
     ) -> FlashBackendReport:
+        return await self._program_verified(
+            "flash.program", elf_path, elf_sha256, elf_size, timeout_ms
+        )
+
+    async def program_verified_imported_elf(
+        self,
+        elf_path: str,
+        elf_sha256: str,
+        elf_size: int,
+        *,
+        timeout_ms: int = 30_000,
+    ) -> FlashBackendReport:
+        """Program one admitted immutable import through the private root."""
+
+        return await self._program_verified(
+            "flash.program.imported",
+            elf_path,
+            elf_sha256,
+            elf_size,
+            timeout_ms,
+        )
+
+    async def _program_verified(
+        self,
+        operation: str,
+        elf_path: str,
+        elf_sha256: str,
+        elf_size: int,
+        timeout_ms: int,
+    ) -> FlashBackendReport:
         data = await self.request(
-            "flash.program",
+            operation,
             {
                 "elfPath": elf_path,
                 "elfSha256": elf_sha256,

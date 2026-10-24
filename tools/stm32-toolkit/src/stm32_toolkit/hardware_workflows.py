@@ -34,6 +34,15 @@ from stm32_toolkit.debug import (
     select_svd,
 )
 from stm32_toolkit.detection import detect_project
+from stm32_toolkit.external_firmware import (
+    ExternalFirmwareError,
+    ImportedFlashRequest,
+    admission_matches,
+    external_workspace_paths,
+    flash_imported_firmware,
+    load_admission,
+    write_flash_receipt,
+)
 from stm32_toolkit.debug.firmware import _svd_readable_regions_from_model
 from stm32_toolkit.debug.svd import SvdError
 from stm32_toolkit.paths import WorkspacePaths, require_safe_session_id
@@ -106,6 +115,17 @@ class FlashWorkflowRequest:
     expected_elf_sha256: str
     authorized: object
     recovery_under_reset: object = False
+
+
+@dataclass(frozen=True)
+class FlashImportedWorkflowRequest:
+    project_root: Path
+    data_root: Path
+    session_id: str
+    probe_id: str
+    import_id: str
+    expected_sha256: str
+    authorized: object = False
 
 
 @dataclass(frozen=True)
@@ -205,6 +225,7 @@ class HardwareWorkflowSeams:
     supervisor_factory: Callable[[ProbeServiceConfig, object, object], object] = _supervisor_factory
     client_factory: Callable[[object], object] = ProbeClient
     flash: Callable[[object, object], Awaitable[OperationResult[Any]]] = flash_firmware
+    flash_imported: Callable[[object, object], Awaitable[OperationResult[Any]]] = flash_imported_firmware
     handoff_begin: Callable[[object, object, object], Awaitable[OperationResult[Any]]] = begin_debug_handoff
     handoff_end: Callable[[object, object, Callable[[object], object]], Awaitable[OperationResult[Any]]] = end_debug_handoff
     bind: Callable[[object, object], Awaitable[OperationResult[Any]]] = bind_debug_firmware
@@ -649,6 +670,7 @@ def _make_supervisor(
     seams: HardwareWorkflowSeams,
     *,
     worker_config: ProbeWorkerConfig | None = None,
+    programming_root: Path | None = None,
 ) -> object:
     config = ProbeServiceConfig(
         probe_id=probe_id,
@@ -657,6 +679,7 @@ def _make_supervisor(
         operation_level=level,
         session_root=paths.session_root,
         project_root=paths.project_root,
+        programming_root=programming_root,
     )
     lease_manager = seams.lease_manager_factory(paths.data_root)
     backend_contract: object = (
@@ -992,6 +1015,7 @@ async def _one_shot(
     action: Callable[[object, object], Awaitable[OperationResult[Any]]],
     worker_config: ProbeWorkerConfig | None = None,
     requested_target: str | None = None,
+    programming_root: Path | None = None,
 ) -> OperationResult[object]:
     supervisor: object | None = None
     clients: list[object] = []
@@ -1006,6 +1030,7 @@ async def _one_shot(
             level,
             seams,
             worker_config=worker_config,
+            programming_root=programming_root,
         )
         endpoint = await supervisor.start()
         _validate_endpoint(endpoint, paths, probe_id, level)
@@ -1409,6 +1434,187 @@ async def flash_workflow(
             result, {"postFlash": {"targetState": "unknown", "runVerified": False}}
         )
     return result
+
+
+async def flash_imported_workflow(
+    request: object,
+    *,
+    _seams: HardwareWorkflowSeams = _DEFAULT_SEAMS,
+) -> OperationResult[object]:
+    """Program one admitted external import after separate authorization."""
+
+    operation = "stm32_flash_imported"
+    try:
+        if type(request) is not FlashImportedWorkflowRequest:
+            raise _fail(
+                "HARDWARE_INPUT_INVALID",
+                "Hardware workflow input is invalid",
+                {
+                    "field": "request",
+                    "rule": "type",
+                    "guidance": (
+                        "Call the imported flash tool with its documented "
+                        "request type; do not construct an ad-hoc object."
+                    ),
+                },
+            )
+        typed: FlashImportedWorkflowRequest = request  # type: ignore[assignment]
+        project_root = _safe_root(
+            typed.project_root, "project root", must_exist=True
+        )
+        data_root = _safe_external_data_root(typed.data_root, project_root)
+        try:
+            session_id = require_safe_session_id(typed.session_id)
+        except (TypeError, ValueError):
+            raise _fail(
+                "HARDWARE_INPUT_INVALID",
+                "Hardware workflow input is invalid",
+                {
+                    "field": "session_id",
+                    "rule": "format",
+                    "guidance": (
+                        "Use a filesystem-safe session id: lowercase letters, "
+                        "digits, '-' or '_', starting with a letter or digit."
+                    ),
+                },
+            ) from None
+        if (
+            not isinstance(typed.probe_id, str)
+            or _IDENTIFIER.fullmatch(typed.probe_id) is None
+        ):
+            raise _fail(
+                "HARDWARE_INPUT_INVALID",
+                "Probe selector is invalid",
+                {
+                    "field": "probe_id",
+                    "rule": "identifier",
+                    "guidance": (
+                        "Use the exact probeId returned by stm32_probe_list; "
+                        "never construct, hash, or guess a selector."
+                    ),
+                },
+            )
+        for field_name, value in (
+            ("import_id", typed.import_id),
+            ("expected_sha256", typed.expected_sha256),
+        ):
+            if not isinstance(value, str) or _DIGEST.fullmatch(value) is None:
+                raise _fail(
+                    "HARDWARE_INPUT_INVALID",
+                    "Imported firmware identity pins are invalid",
+                    {
+                        "field": field_name,
+                        "rule": "sha256",
+                        "guidance": (
+                            "Pass the exact importId and sourceSha256 returned "
+                            "by stm32_firmware_admit; expectedSha256 always "
+                            "pins the imported ORIGINAL file, not the "
+                            "normalized image."
+                        ),
+                    },
+                )
+        if typed.authorized is not True:
+            raise _fail(
+                "AUTHORIZATION_REQUIRED",
+                "Explicit imported flash authorization is required",
+                {
+                    "field": "authorized",
+                    "rule": "exactTrue",
+                    "guidance": (
+                        "Imported flash modifies the selected board. Obtain "
+                        "explicit user authorization for this exact probe and "
+                        "import, then pass authorized=true."
+                    ),
+                },
+            )
+        try:
+            admission = load_admission(
+                project_root,
+                data_root,
+                import_id=typed.import_id,
+                expected_sha256=typed.expected_sha256,
+            )
+        except ExternalFirmwareError as error:
+            raise _fail(error.code, error.message, dict(error.details)) from None
+        paths = external_workspace_paths(project_root, data_root, session_id)
+    except _WorkflowFailure as error:
+        return _operation_failure(operation, error)
+
+    async def action(supervisor: object, client: object) -> OperationResult[Any]:
+        return await _seams.flash_imported(
+            ImportedFlashRequest(
+                project_root,
+                data_root,
+                typed.probe_id,
+                typed.import_id,
+                typed.expected_sha256,
+                True,
+            ),
+            client,
+        )
+
+    result = await _one_shot(
+        operation=operation,
+        paths=paths,
+        probe_id=typed.probe_id,
+        level=OperationLevel.MODIFY,
+        seams=_seams,
+        action=action,
+        requested_target=admission.target,
+        programming_root=admission.import_dir,
+    )
+    if not result.ok:
+        return result
+    if not isinstance(result.data, Mapping):
+        return OperationResult.failure(
+            operation,
+            "FIRMWARE_INTERNAL_ERROR",
+            "Imported firmware programming failed",
+            {},
+        )
+    # Owned cleanup has completed.  Revalidate the immutable store once more
+    # so a close-time mutation cannot be covered by a success receipt.
+    try:
+        settled = load_admission(
+            project_root,
+            data_root,
+            import_id=typed.import_id,
+            expected_sha256=typed.expected_sha256,
+        )
+    except ExternalFirmwareError as error:
+        return _operation_failure(
+            operation, _fail(error.code, error.message, dict(error.details))
+        )
+    if not admission_matches(admission, settled):
+        return OperationResult.failure(
+            operation,
+            "FIRMWARE_INPUT_CHANGED",
+            "Firmware import changed before receipt publication",
+            {
+                "field": "importId",
+                "rule": "current",
+                "guidance": (
+                    "The immutable import changed after programming. Do not "
+                    "publish a success receipt; re-import and re-admit before "
+                    "any further hardware operation."
+                ),
+            },
+        )
+    try:
+        receipt = write_flash_receipt(project_root, data_root, result.data)
+    except ExternalFirmwareError as error:
+        return _operation_failure(operation, _fail(error.code, error.message, dict(error.details)))
+    except Exception:
+        return OperationResult.failure(
+            operation,
+            "EXTERNAL_FLASH_RECEIPT_FAILED",
+            "External flash receipt could not be committed",
+            {},
+        )
+    return _result_with_details(
+        OperationResult.success(operation, {**dict(result.data), **receipt}),
+        {"postFlash": {"targetState": "unknown", "runVerified": False}},
+    )
 
 
 async def handoff_begin_workflow(
@@ -2240,6 +2446,7 @@ async def fault_workflow(
 
 __all__ = [
     "FaultWorkflowRequest",
+    "FlashImportedWorkflowRequest",
     "FlashWorkflowRequest",
     "HandoffBeginWorkflowRequest",
     "HandoffEndWorkflowRequest",
@@ -2249,6 +2456,7 @@ __all__ = [
     "VariableReadWorkflowRequest",
     "VariableSampleWorkflowRequest",
     "fault_workflow",
+    "flash_imported_workflow",
     "flash_workflow",
     "handoff_begin_workflow",
     "handoff_end_workflow",

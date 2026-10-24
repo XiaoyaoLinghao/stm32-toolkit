@@ -57,11 +57,50 @@ $SetupScript = Join-Path $ToolkitRoot 'bin\setup-stm32-env.ps1'
 
 ### v1.3.0 本地候选
 
-v1.3.0 源码候选没有下载链接：它尚未发布、打包或通过资格验证。本地构建的候选标识为 `1.3.0`，使用 `DataRoot/runtime/1.3.0`，并把已有的 v1.2.0 runtime 或生成工程视为旧版输入，只能经显式授权的 Repair 或 configure 事务推进。候选包含只读 Keil preflight、snapshot 构建、受控 CMSIS startup 生成与显式多 RAM 布局，并把 `normalize-source-comments` 作为第九个 Skill 随插件提供，用于迁移 apply 之外的逐文件显式编码副本。只有集成外部固件切片后，v1.3.0 最终发行 inventory 才是 52 个 MCP 工具、9 个 Skill；当前源码为 49 个 MCP 工具。不要把任何 v1.3.0 资产描述为可下载，也不要沿用 v1.2.0 的资格例外。
+v1.3.0 本地候选不是 GitHub Release，也没有公开下载链接、tag、安装或资格结论；本地候选的构建与验证记录在交付证据中，完整资格验证与发布仍待完成。候选标识为 `1.3.0`，使用 `DataRoot/runtime/1.3.0`，并把已有的 v1.2.0 runtime 或生成工程视为旧版输入，只能经显式授权的 Repair 或 configure 事务推进。候选包含只读 Keil preflight、snapshot 构建、受控 CMSIS startup 生成、显式多 RAM 布局，以及已集成的外部固件路线：把原始 ELF/AXF、Intel HEX 或 BIN 导入不可变快照，离线准入，再对单个精确探针单独授权烧录。候选提供 52 个 MCP 工具和 9 个 Skill；已发布的 v1.2.0 runtime 仍是冻结的 48 工具、8 Skill 包。不要把任何 v1.3.0 资产描述为 GitHub 公开下载，也不要沿用 v1.2.0 的资格例外。
+
+#### 本地 v1.3.0 发行包
+
+当本地构建的 v1.3.0 ZIP 与 `CHECKSUMS.sha256` 已交付（例如来自交付证据）时，使用下面的参数化流程。它不是公开下载，不能指向未经核验的资产。`Check`、获授权的 `Bootstrap` 或获授权的 `Repair` 顺序与上文相同。
+
+```powershell
+$Version = '1.3.0'
+$Download = 'C:\Users\you\Downloads'
+$Bundle = Join-Path $Download "stm32-toolkit-$Version-windows-x86_64.zip"
+$Checksums = Join-Path $Download 'CHECKSUMS.sha256'
+$Pattern = '^[0-9a-f]{64}  stm32-toolkit-' + [regex]::Escape($Version) + '-windows-x86_64\.zip$'
+$ExpectedLine = @(Get-Content -LiteralPath $Checksums | Where-Object { $_ -match $Pattern })
+if ($ExpectedLine.Count -ne 1) { throw "Missing or duplicate $Version bundle checksum" }
+$Expected = ($ExpectedLine[0] -split '  ', 2)[0]
+$Actual = (Get-FileHash -LiteralPath $Bundle -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($Actual -ne $Expected) { throw 'Bundle SHA256 mismatch' }
+$BundleRoot = 'C:\tools\stm32-toolkit-1.3.0-bundle'
+if (Test-Path -LiteralPath $BundleRoot) { throw 'BundleRoot exists; choose a new path' }
+Expand-Archive -LiteralPath $Bundle -DestinationPath $BundleRoot
+$ToolkitRoot = Join-Path $BundleRoot "stm32-toolkit-$Version"
+$DataRoot = 'C:\data\stm32-toolkit'
+$ProjectRoot = 'C:\work\blinky'
+$SetupScript = Join-Path $ToolkitRoot 'bin\setup-stm32-env.ps1'
+
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $SetupScript -Mode Check `
+  -ToolkitRoot $ToolkitRoot -DataRoot $DataRoot -ProjectRoot $ProjectRoot
+```
+
+该 `Check` 对 `runtime/1.3.0` 返回 healthy（或已单独授权完成 `Bootstrap`/`Repair` 并再次 `Check` 为 healthy）后，使用与本版本匹配的候选启动器。v1.3.0 专属行为只走这条路线；下文的已发布 v1.2.0 `$Cli` 不是回退路径。
+
+```powershell
+$CandidateCli = Join-Path $DataRoot "runtime\$Version\Scripts\stm32-toolkit.exe"
+& $CandidateCli version
+& $CandidateCli --project-root $ProjectRoot doctor --json
+```
+
+确认启动器报出的版本为 `1.3.0` 且 `doctor` healthy 后，再使用 `keil preflight`、`--startup-strategy`、`--memory-layout` 或外部固件命令。版本或健康检查不符就停止并先解决 setup，不要改换启动器。
 
 ## 工程操作入口
 
-`Check` 确认 healthy 后，使用已安装的 v1.2.0 控制台启动器。检测、检查及首次 configure plan 均只读；应用前审阅计划和 blocker。`.stm32-project.json` 是版本控制的工程意图，`.stm32-toolkit/` 中的 managed manifest 另行记录生成文件所有权。
+以下示例使用已发布的 v1.2.0 控制台启动器，属于公开 runtime 示例。本地 v1.3.0 候选必须使用上面对应配方中的 `$CandidateCli`（`runtime\1.3.0`），不得沿用旧的 `$Cli`。检测、检查及首次 configure plan 均只读；应用前审阅计划和 blocker。`.stm32-project.json` 是版本控制的工程意图，`.stm32-toolkit/` 中的 managed manifest 另行记录生成文件所有权。
+
+**已发布 v1.2.0 runtime 示例：**
 
 ```powershell
 $Cli = Join-Path $DataRoot 'runtime\1.2.0\Scripts\stm32-toolkit.exe'
@@ -90,4 +129,4 @@ $env:STM32_TOOLKIT_DATA_ROOT = $DataRoot
 - [架构](docs/architecture.md)、[开发](docs/development.md)、[标准测试流程](docs/testing/standard-test-procedure.md)及[发布资格](docs/testing/release-qualification.md)。
 - [变更记录](CHANGELOG.md)及[v1.2.0 源码交付规范](docs/superpowers/specs/2026-10-21-monitor-v120-delivery-design.md)。[v1.0.1 执行记录](docs/codex/returns/STM32TK-101/execution.md)保留其历史资格事实。
 
-当前源码 inventory 有 49 个公开 MCP 名称，包含 `stm32_keil_preflight`，覆盖工程、构建、探针、诊断、测试、验收；另有九个随插件提供的 Skill（八个工作流 Skill 加 `normalize-source-comments`）。待集成的外部固件切片负责另外三个 MCP 注册；只有其被验收并集成后，v1.3.0 最终发行 inventory 才达到 52 个工具、9 个 Skill。已发布的 v1.2.0 runtime 仍是冻结的 48 工具、8 Skill 包，不包含该源码切片的新增 preflight 入口。请对实际已安装服务器执行 `doctor --json` 并读取 `data.publicInventory`，不要依据本页推断可用工具。`VS09-B` 的当前发行构建仍使用 `tools/release/build_0900_artifacts.py` 和固定的 `release_0900_policy.json`；历史文件名与冻结策略是现行打包输入，不代表该源码切片已打包或部署。退出当前树的旧计划与报告仍可用 `git show 694c825d29a55a53052a148efa4cc6720c315a04:<path>` 查阅。
+当前源码 inventory 有 52 个公开 MCP 名称，包含 `stm32_keil_preflight`、`stm32_firmware_import`、`stm32_firmware_admit` 与 `stm32_flash_imported`，覆盖工程、构建、探针、外部固件、诊断、测试、验收；另有九个随插件提供的 Skill（八个工作流 Skill 加 `normalize-source-comments`）。已发布的 v1.2.0 runtime 仍是冻结的 48 工具、8 Skill 包，不包含这些源码新增入口。请先核对启动器版本，再对实际绑定服务器执行 `doctor --json`，读取 `data.publicInventory` 与真实工具 input schema；不要依据本页或源码清单推断可用工具。外部固件路线只导入原始 ELF/AXF、Intel HEX 或 BIN 快照并离线准入，再单独授权烧录；它不需要托管 manifest、Git、构建 receipt 或 SVD。计划中的 `data.source.sha256` 与 `data.image.sha256` 是两个独立字段；准入与烧录结果中的 `sourceSha256`/`imageSha256` 是扁平字段。导入 receipt 不会解锁 debug、Monitor、Target 测试或伪造的 build identity。`VS09-B` 的当前发行构建仍使用 `tools/release/build_0900_artifacts.py` 和固定的 `release_0900_policy.json`；历史文件名与冻结策略是现行打包输入，不代表该源码候选已发布。退出当前树的旧计划与报告仍可用 `git show 694c825d29a55a53052a148efa4cc6720c315a04:<path>` 查阅。

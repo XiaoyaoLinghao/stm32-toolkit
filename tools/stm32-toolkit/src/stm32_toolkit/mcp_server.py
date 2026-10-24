@@ -77,8 +77,15 @@ from stm32_toolkit.diagnostic_workflows import (
     diagnostic_start_verification,
 )
 from stm32_toolkit.doctor import run_doctor
+from stm32_toolkit.external_firmware import (
+    FirmwareAdmitRequest,
+    FirmwareImportRequest,
+    firmware_admit_workflow,
+    firmware_import_workflow,
+)
 from stm32_toolkit.hardware_workflows import (
     FaultWorkflowRequest,
+    FlashImportedWorkflowRequest,
     FlashWorkflowRequest,
     HandoffBeginWorkflowRequest,
     HandoffEndWorkflowRequest,
@@ -87,6 +94,7 @@ from stm32_toolkit.hardware_workflows import (
     VariableReadWorkflowRequest,
     VariableSampleWorkflowRequest,
     fault_workflow,
+    flash_imported_workflow,
     flash_workflow,
     handoff_begin_workflow,
     handoff_end_workflow,
@@ -171,6 +179,16 @@ def _validate_test_string(value: str) -> str:
 
 ProbeId = Annotated[str, Field(pattern=_PROBE_PATTERN)]
 Digest = Annotated[str, Field(pattern=_DIGEST_PATTERN)]
+FirmwareTarget = Annotated[str, Field(pattern=_PROBE_PATTERN)]
+
+
+class FirmwareFlashRegion(BaseModel):
+    """One reviewed internal-Flash allowlist region declared by the caller."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    start: Annotated[StrictInt, Field(ge=0, le=0xFFFF_FFFF)]
+    length: Annotated[StrictInt, Field(ge=1, le=0xFFFF_FFFF)]
 RunId = Annotated[
     str,
     Field(
@@ -1327,6 +1345,119 @@ async def tool_flash_for_request(
             recovery_under_reset,
         ),
         flash_workflow,
+    )
+
+
+async def _firmware_for_request(
+    runtime: ServerRuntime,
+    context: Context | None,
+    operation: str,
+    request: object,
+    workflow: Callable[[object], OperationResult[object]],
+) -> dict[str, object]:
+    """Run one offline firmware workflow after validating client roots."""
+
+    failure = await _client_roots_failure(runtime, context, operation)
+    if failure is not None:
+        return failure
+    try:
+        result = workflow(request)
+        if not isinstance(result, OperationResult):
+            raise TypeError("firmware workflow returned an invalid result")
+        return result.to_dict()
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        return OperationResult.failure(
+            operation,
+            "FIRMWARE_INTERNAL_ERROR",
+            "Firmware workflow failed",
+            {},
+        ).to_dict()
+
+
+async def tool_firmware_import_for_request(
+    runtime: ServerRuntime,
+    context: Context | None,
+    firmware_path: str,
+    expected_sha256: str,
+    format: str,
+    target: str,
+    flash_regions: list[FirmwareFlashRegion] | tuple[FirmwareFlashRegion, ...],
+    base_address: int | None = None,
+    plan_id: str | None = None,
+    authorized: object = False,
+) -> dict[str, object]:
+    return await _firmware_for_request(
+        runtime,
+        context,
+        "stm32_firmware_import",
+        FirmwareImportRequest(
+            runtime.project_root,
+            runtime.data_root,
+            runtime.session_id,
+            firmware_path,
+            expected_sha256,
+            format,
+            target,
+            tuple((region.start, region.length) for region in flash_regions),
+            base_address,
+            plan_id,
+            authorized,
+        ),
+        firmware_import_workflow,
+    )
+
+
+async def tool_firmware_admit_for_request(
+    runtime: ServerRuntime,
+    context: Context | None,
+    import_id: str,
+    expected_sha256: str,
+) -> dict[str, object]:
+    return await _firmware_for_request(
+        runtime,
+        context,
+        "stm32_firmware_admit",
+        FirmwareAdmitRequest(
+            runtime.project_root,
+            runtime.data_root,
+            runtime.session_id,
+            import_id,
+            expected_sha256,
+        ),
+        firmware_admit_workflow,
+    )
+
+
+async def tool_flash_imported_for_request(
+    runtime: ServerRuntime,
+    context: Context | None,
+    probe_id: str,
+    import_id: str,
+    expected_sha256: str,
+    authorized: object = False,
+) -> dict[str, object]:
+    operation = "stm32_flash_imported"
+    failure = await _client_roots_failure(runtime, context, operation)
+    if failure is not None:
+        return failure
+    if authorized is not True:
+        return _authorization_failure(operation)
+    return await _hardware_for_request(
+        runtime,
+        None,
+        operation,
+        FlashImportedWorkflowRequest(
+            runtime.project_root,
+            runtime.data_root,
+            runtime.session_id,
+            probe_id,
+            import_id,
+            expected_sha256,
+            True,
+        ),
+        flash_imported_workflow,
     )
 
 
@@ -2596,6 +2727,108 @@ def create_server(
             expectedElfSha256,
             authorized,
             recoveryUnderReset,
+        )
+
+    @mcp.tool(name=MCP_TOOL_NAMES["firmware_import"])
+    async def stm32_firmware_import(
+        ctx: Context,
+        firmwarePath: ProjectRelativePath,
+        expectedSha256: Digest,
+        format: Literal["elf", "hex", "bin"],
+        target: FirmwareTarget,
+        flashRegions: Annotated[
+            list[FirmwareFlashRegion], Field(min_length=1, max_length=32)
+        ],
+        baseAddress: Annotated[StrictInt, Field(ge=0, le=0xFFFF_FFFF)] | None = None,
+        planId: Digest | None = None,
+        authorized: StrictBool = False,
+    ) -> dict[str, object]:
+        """Plan or explicitly persist one immutable external firmware import.
+
+        This is a source-only offline workflow: it does not require a managed
+        project manifest, Git repository, build receipt, or SVD, and it never
+        touches a probe, lease, worker, or board.  Without planId it returns a
+        deterministic read-only PLAN with data.planId, data.importId,
+        data.source (original path/SHA-256/size) and data.image (normalized
+        ELF SHA-256/size/segments); keep those two hashes distinct.
+        authorized=true without planId is an error.  With the exact returned
+        planId and authorized=true it re-reads and re-analyzes the source and
+        persists an immutable copy under the external data root.  Changing any
+        source, option, or binding input invalidates the plan before writes; a
+        conflicting existing import is never overwritten.  Import authorization
+        covers only the offline copy and does not authorize hardware.
+        AXF is parsed as ELF; BIN requires an explicit uint32 baseAddress and
+        carries no debug symbols.  flashRegions is a reviewed declaration of
+        STM32 internal application Flash addresses, not a measured chip
+        capacity.  Next call stm32_firmware_admit offline, then select a probe
+        and separately authorize stm32_flash_imported.
+        """
+        return await tool_firmware_import_for_request(
+            runtime,
+            ctx,
+            firmwarePath,
+            expectedSha256,
+            format,
+            target,
+            flashRegions,
+            baseAddress,
+            planId,
+            authorized,
+        )
+
+    @mcp.tool(name=MCP_TOOL_NAMES["firmware_admit"])
+    async def stm32_firmware_admit(
+        ctx: Context,
+        importId: Digest,
+        expectedSha256: Digest,
+    ) -> dict[str, object]:
+        """Admit one stored external import offline and read-only.
+
+        expectedSha256 always pins the imported ORIGINAL source file, not the
+        normalized ELF.  The workflow rebuilds the normalized image from the
+        stored source and parameters instead of trusting stored assertions,
+        and validates the canonical identity, target, and Flash regions
+        against this project and data root.  It returns offlineReady=true and
+        hardwareVerified=false plus the exact segment summaries and remaining
+        hardware requirements.  It creates no service, lease, worker,
+        authorization token, or receipt, and it cannot admit debug, Monitor,
+        Target tests, legacy build evidence, or a current build identity.
+        """
+        return await tool_firmware_admit_for_request(
+            runtime, ctx, importId, expectedSha256
+        )
+
+    @mcp.tool(name=MCP_TOOL_NAMES["flash_imported"])
+    async def stm32_flash_imported(
+        ctx: Context,
+        probeId: ProbeId,
+        importId: Digest,
+        expectedSha256: Digest,
+        authorized: StrictBool = False,
+    ) -> dict[str, object]:
+        """Flash one admitted external import to one exact probe.
+
+        Use the exact probeId returned by stm32_probe_list and the exact
+        importId/sourceSha256 returned by stm32_firmware_admit.  This modifies
+        the board and runs only with authorized=true after explicit user
+        authorization for this exact operation.  Admission is revalidated
+        before any supervisor, lease, or worker effect and again inside the
+        owned action before attach/program; the caller cannot override the
+        target, Flash regions, file paths, roots, backend, or provenance.
+        The backend rejects the whole image before programming if any segment
+        is outside the attached target's declared Flash map, and every planned
+        byte is read back.  A distinct external-flash receipt is written only
+        after successful readback and cleanup.  This path adds no
+        recovery-under-reset, reset, resume, handoff, debug, Monitor, or Target
+        test capability, and its receipt does not unlock them.
+        """
+        return await tool_flash_imported_for_request(
+            runtime,
+            ctx,
+            probeId,
+            importId,
+            expectedSha256,
+            authorized,
         )
 
     @mcp.tool(name=MCP_TOOL_NAMES["debug_handoff_begin"])

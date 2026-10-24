@@ -35,6 +35,9 @@ EXPECTED_MCP_TOOL_MAP = {
     "build": "stm32_build",
     "probe_list": "stm32_probe_list",
     "flash": "stm32_flash",
+    "firmware_import": "stm32_firmware_import",
+    "firmware_admit": "stm32_firmware_admit",
+    "flash_imported": "stm32_flash_imported",
     "debug_handoff_begin": "stm32_debug_handoff_begin",
     "debug_handoff_end": "stm32_debug_handoff_end",
     "variable_read": "stm32_variable_read",
@@ -134,13 +137,12 @@ def test_actual_mcp_and_skill_inventory_matches_the_closed_public_inventory(
     discovered = {
         path.parent.name for path in (REPO_ROOT / "skills").glob("*/SKILL.md")
     }
-    assert len(MCP_TOOL_NAMES) == 49
+    assert len(MCP_TOOL_NAMES) == 52
     assert actual == set(MCP_TOOL_NAMES.values())
     assert len(SKILL_NAMES) == 9
-    # normalize-source-comments is the ninth bundled skill.  The pending
-    # external-firmware slice owns the three MCP registrations that bring the
-    # final v1.3.0 inventory to 52 tools; this version-preparation slice must
-    # not duplicate them.
+    # normalize-source-comments is the ninth bundled skill.  The accepted
+    # external-firmware route contributes the three additional MCP
+    # registrations to the integrated 52-tool source inventory.
     assert discovered == set(SKILL_NAMES)
 
 

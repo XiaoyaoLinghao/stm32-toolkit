@@ -61,6 +61,9 @@ PUBLIC_TOOL_NAMES = frozenset(
         "stm32_build",
         "stm32_probe_list",
         "stm32_flash",
+        "stm32_firmware_import",
+        "stm32_firmware_admit",
+        "stm32_flash_imported",
         "stm32_debug_handoff_begin",
         "stm32_debug_handoff_end",
         "stm32_variable_read",
@@ -110,11 +113,11 @@ def _schemas(tmp_path: Path) -> dict[str, dict[str, object]]:
     return {tool.name: tool.inputSchema for tool in asyncio.run(server.list_tools())}
 
 
-def test_server_registers_exactly_forty_nine_tools_including_hardware(tmp_path: Path):
-    """Catches a missing, duplicate, or accidentally exposed 49-name inventory."""
+def test_server_registers_exactly_fifty_two_tools_including_hardware(tmp_path: Path):
+    """Catches a missing, duplicate, or accidentally exposed 52-name inventory."""
     schemas = _schemas(tmp_path)
 
-    assert len(schemas) == 49
+    assert len(schemas) == 52
     assert set(schemas) == PUBLIC_TOOL_NAMES
     assert HARDWARE_TOOLS <= set(schemas)
 

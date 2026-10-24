@@ -1,22 +1,22 @@
 # STM32 Toolkit 用户指南与排障
 
-本指南面向 **v1.3.0 本地候选源码**，说明其操作合同；v1.3.0 尚未发布、打包或通过资格验证，也没有下载链接。**公开下载仍是 v1.2.0**：其资产是否可用、最终资格与限制以 [v1.2.0 Release 页面](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.2.0)为准；[发布状态](release-status.md)保留历史断点并单独记录 v1.3.0 候选。Monitor 工作台与源码目录等行为见[源码规范](superpowers/specs/2026-10-21-monitor-v120-delivery-design.md)；v1.0.1 的历史资格见[执行记录](codex/returns/STM32TK-101/execution.md)。本文对应用户报告的 1–22 项；报告是核查输入，不是接收者机器的安装或实机证据。
+本指南面向 **v1.3.0 本地候选源码**，说明其操作合同；v1.3.0 尚无 GitHub Release 或公开下载链接，完整资格验证与发布仍待完成，本地候选的构建与验证记录在交付证据中。**公开下载仍是 v1.2.0**：其资产是否可用、最终资格与限制以 [v1.2.0 Release 页面](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.2.0)为准；[发布状态](release-status.md)保留历史断点并单独记录 v1.3.0 候选。Monitor 工作台与源码目录等行为见[源码规范](superpowers/specs/2026-10-21-monitor-v120-delivery-design.md)；v1.0.1 的历史资格见[执行记录](codex/returns/STM32TK-101/execution.md)。本文对应用户报告的 1–22 项；报告是核查输入，不是接收者机器的安装或实机证据。
 
 ## 路径、版本和安全入口
 
-安装前先在 [v1.2.0 Release](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.2.0) 页面确认同版 ZIP 与 `CHECKSUMS.sha256` 均已列出，再按[双语 README](../README_zh-CN.md) 下载并核对哈希；缺少任一资产就停止。之后用包内 `Check` 确认 ToolkitRoot、持久 DataRoot、工程根、发行包及受管 runtime。`Bootstrap`/`Repair` 修改 runtime，先审阅 `Check` 结果和对应发行包，再只执行获准的一种动作，完成后复查到 healthy。v1.3.0 候选只能由本地官方构建产出，其 `Check` 期望 `runtime/1.3.0`；不要把候选路径、哈希或包名写成公开下载。Claude Code 的入口为 [skills/setup-stm32-env/SKILL.md](../skills/setup-stm32-env/SKILL.md)；其它 MCP 宿主使用绝对 launcher、显式 project/data root 和 `STM32_TOOLKIT_DATA_ROOT`。`.stm32-project.json` 属于工程，DataRoot 保存机器状态和证据，不能把一次性测试目录当作长期 DataRoot。
+**公开下载（v1.2.0，legacy/public download）：** 安装前先在 [v1.2.0 Release](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.2.0) 页面确认同版 ZIP 与 `CHECKSUMS.sha256` 均已列出，再按[双语 README](../README_zh-CN.md) 下载并核对哈希；缺少任一资产就停止。之后用包内 `Check` 确认 ToolkitRoot、持久 DataRoot、工程根、发行包及受管 runtime。`Bootstrap`/`Repair` 修改 runtime，先审阅 `Check` 结果和对应发行包，再只执行获准的一种动作，完成后复查到 healthy。v1.3.0 候选只能由本地官方构建产出，其 `Check` 期望 `runtime/1.3.0`；不要把候选路径、哈希或包名写成公开下载。Claude Code 的入口为 [skills/setup-stm32-env/SKILL.md](../skills/setup-stm32-env/SKILL.md)；其它 MCP 宿主使用绝对 launcher、显式 project/data root 和 `STM32_TOOLKIT_DATA_ROOT`。`.stm32-project.json` 属于工程，DataRoot 保存机器状态和证据，不能把一次性测试目录当作长期 DataRoot。
 
-解压使用全新、每版专用的 `C:\tools\stm32-toolkit-1.2.0-bundle` 作为 BundleRoot；路径已存在就另选新目录，不覆盖或删除。ZIP 中的 `stm32-toolkit-1.2.0/` 与外层 `release/` 在 BundleRoot 下并列；ToolkitRoot 为 `C:\tools\stm32-toolkit-1.2.0-bundle\stm32-toolkit-1.2.0`，其内部另有供 setup 使用的 `release/`。长期 DataRoot 在 `C:\data\stm32-toolkit`，与 BundleRoot 分离。
+公开下载的 v1.2.0 包解压使用全新、每版专用的 `C:\tools\stm32-toolkit-1.2.0-bundle` 作为 BundleRoot；路径已存在就另选新目录，不覆盖或删除。ZIP 中的 `stm32-toolkit-1.2.0/` 与外层 `release/` 在 BundleRoot 下并列；ToolkitRoot 为 `C:\tools\stm32-toolkit-1.2.0-bundle\stm32-toolkit-1.2.0`，其内部另有供 setup 使用的 `release/`。长期 DataRoot 在 `C:\data\stm32-toolkit`，与 BundleRoot 分离。
 
 ## 通用 MCP 配置与公开入口
 
-下例供支持 `mcpServers` 的宿主使用。将三个示例路径换成真实绝对路径；`args` 的 `--data-root` 与 `env` 中的 `STM32_TOOLKIT_DATA_ROOT` 必须指向同一持久目录。cmd 启动器先用环境变量找到受管解释器，Python MCP 入口随后读取这两个显式参数。其它宿主请按其配置格式映射同一 `command`、`args`、`env`，不要改用系统 Python。
+下例对应**已核验、安装且 `Check` 为 healthy 的本地 v1.3.0 候选**（DataRoot 中确实存在 `runtime/1.3.0`）；它可照抄使用，但不表示安装已经发生。若使用公开下载的 v1.2.0，请把 `command` 换为 `stm32-toolkit-1.2.0` 路径，并按已发布的 48 工具、8 Skill 清单核对。下例供支持 `mcpServers` 的宿主使用。将三个示例路径换成真实绝对路径；`args` 的 `--data-root` 与 `env` 中的 `STM32_TOOLKIT_DATA_ROOT` 必须指向同一持久目录。cmd 启动器先用环境变量找到受管解释器，Python MCP 入口随后读取这两个显式参数。其它宿主请按其配置格式映射同一 `command`、`args`、`env`，不要改用系统 Python。
 
 ```json
 {
   "mcpServers": {
     "stm32-toolkit": {
-      "command": "C:\\tools\\stm32-toolkit-1.2.0-bundle\\stm32-toolkit-1.2.0\\bin\\stm32-toolkit-mcp.cmd",
+      "command": "C:\\tools\\stm32-toolkit-1.3.0-bundle\\stm32-toolkit-1.3.0\\bin\\stm32-toolkit-mcp.cmd",
       "args": [
         "--project-root", "C:\\work\\blinky",
         "--data-root", "C:\\data\\stm32-toolkit"
@@ -29,7 +29,7 @@
 }
 ```
 
-九个随插件提供的 Claude Code Skill 中，八个工作流 Skill 调用相同的公开合同：[setup-stm32-env](../skills/setup-stm32-env/SKILL.md)、[migrate-keil](../skills/migrate-keil/SKILL.md)、[configure-stm32-project](../skills/configure-stm32-project/SKILL.md)、[build-firmware](../skills/build-firmware/SKILL.md)、[flash-firmware](../skills/flash-firmware/SKILL.md)、[debug-firmware](../skills/debug-firmware/SKILL.md)、[read-var](../skills/read-var/SKILL.md)、[stm32-monitor](../skills/stm32-monitor/SKILL.md)；[normalize-source-comments](../skills/normalize-source-comments/SKILL.md) 是独立的显式编码复制助手，只生成注释级 UTF-8 副本，不属于迁移 apply，也不新增 MCP 工具。当前源码的 49 个 MCP 工具名称及九个 Skill 权威清单在 [public_inventory.py](../tools/stm32-toolkit/src/stm32_toolkit/public_inventory.py)。待集成的外部固件切片负责另外三个 MCP 注册，只有其被验收并集成后，v1.3.0 最终发行 inventory 才达到 52 个工具、9 个 Skill。已发布的 v1.2.0 安装包仍为 48 个工具、8 个 Skill，不包含 `stm32_keil_preflight`。**判断实际可用工具时，请对已安装服务器执行 `doctor --json` 并读取 `data.publicInventory.mcpTools`/`skills`，不要依据本页或源码清单推断。**
+九个随插件提供的 Claude Code Skill 中，八个工作流 Skill 调用相同的公开合同：[setup-stm32-env](../skills/setup-stm32-env/SKILL.md)、[migrate-keil](../skills/migrate-keil/SKILL.md)、[configure-stm32-project](../skills/configure-stm32-project/SKILL.md)、[build-firmware](../skills/build-firmware/SKILL.md)、[flash-firmware](../skills/flash-firmware/SKILL.md)、[debug-firmware](../skills/debug-firmware/SKILL.md)、[read-var](../skills/read-var/SKILL.md)、[stm32-monitor](../skills/stm32-monitor/SKILL.md)；[normalize-source-comments](../skills/normalize-source-comments/SKILL.md) 是独立的显式编码复制助手，只生成注释级 UTF-8 副本，不属于迁移 apply，也不新增 MCP 工具。当前源码的 52 个 MCP 工具名称及九个 Skill 权威清单在 [public_inventory.py](../tools/stm32-toolkit/src/stm32_toolkit/public_inventory.py)；已发布的 v1.2.0 安装包仍为 48 个工具、8 个 Skill，不包含 `stm32_keil_preflight`、`stm32_firmware_import`、`stm32_firmware_admit` 或 `stm32_flash_imported`。**判断实际可用工具时，请先核对启动器版本，再对实际绑定服务器执行 `doctor --json`，读取 `data.publicInventory.mcpTools`/`skills` 与真实工具 input schema，不要依据本页或源码清单推断。**
 
 以下命令中的路径均为示例，须替换为本机真实绝对路径。**已发布 v1.2.0 runtime（48 个工具）不含 `keil preflight`/`stm32_keil_preflight`**；第一组只列该发行包已有的入口，必须在 `Check` 返回 healthy 后使用。第二组属于 v1.3.0 源码候选，只有实际运行该源码或本地候选构建时才有这些入口；本文不表示它已打包、安装或部署。CLI 工程命令需显式 `--project-root`；`--json` 命令返回结构化 code/details，`uvprojx` 必须使用正斜杠的可移植相对路径。`--dry-run` 只产生计划，`--apply --plan-id ... --authorized` 是独立写操作，不要直接套用示例 plan ID。
 
@@ -48,7 +48,9 @@ $Cli = Join-Path $DataRoot 'runtime\1.2.0\Scripts\stm32-toolkit.exe'
 **仅 v1.3.0 源码候选（未随 v1.2.0 发行）：** 已发布 v1.2.0 安装包（48 个工具）没有 `keil preflight`/`stm32_keil_preflight`，也不接受 `--startup-strategy`/`--startup-source`/`--memory-layout`（MCP `startupStrategy`/`startupSource`/`memoryLayout`）。下列入口、startup 与显式内存布局选项属于 v1.3.0 候选的未发布行为，不要对已安装的 v1.2.0 runtime 使用或宣称支持；候选自身的本地 runtime 为 `runtime/1.3.0`。
 
 ```powershell
-$CandidateCli = '<current-source-or-candidate stm32-toolkit CLI>'
+$CandidateCli = Join-Path $DataRoot 'runtime\1.3.0\Scripts\stm32-toolkit.exe'
+# Requires a healthy Check for runtime/1.3.0 and a matching reported version.
+& $CandidateCli version
 & $CandidateCli --project-root $ProjectRoot keil preflight --uvprojx Project/blinky.uvprojx --target-name Debug --json
 & $CandidateCli --project-root $ProjectRoot keil convert --uvprojx Project/blinky.uvprojx --target-name Debug --startup-strategy generate-cmsis-gcc --startup-source Startup/startup_stm32f429_439xx.s --dry-run --json
 ```
@@ -102,7 +104,7 @@ MCP 客户端即使从不加载 `SKILL.md`，也可按工具描述和真实返�
 2. **检查与预检。** 若 target 未知，先调用 `stm32_keil_inspect(uvprojx)` 并省略 `targetName`；若返回 `KEIL_TARGET_SELECTION_REQUIRED`，把 `details.targets` 交给用户选择，再用该精确值调用 inspect。成功结果的 `data.inspection.target_name` 是后续必须保留的精确 targetName。然后用同一 `uvprojx`/`targetName` 调用 `stm32_keil_preflight(uvprojx, targetName)`。预检成功只表示 `data.analysis.complete=true`；逐项处理 `data.analysis.blockers`，并读取 `data.planReadiness.status`（`ready-for-plan`/`blocked`）、`ready` 与 `prerequisites`。`data.applyReadiness.status` 始终是 `requires-reviewed-plan`，`ready=false`、`planId=null`；预检不授权任何写入。
 3. **不可绕过的修复。** 对 encoding、assembly、scoped option、scatter/memory、manifest 冲突按 blocker 的 `code`、路径和消息处理；不要转码、替换 startup、删除未跟踪文件或伪造 manifest/工程 ID。Git 缺失、unborn HEAD、非 toplevel 或 dirty 工作区只阻塞计划，由工程负责人决定基线；不要让客户端自动 `git init`/commit/stash。
 4. **计划与授权。** `planReadiness.ready=true` 后调用 `stm32_keil_convert(uvprojx, targetName)`（无 `planId`、无 `authorized`）取得 PLAN 响应；检查 `data.blockers`、`data.plan_id` 和 `data.patches[].unified_diff`。若使用受支持的 CMSIS startup 路线，在 preflight、plan、apply 三次调用中传相同的 `startupStrategy="generate-cmsis-gcc"` 与 `startupSource="<精确工程相对 .s 路径>"`（单候选时可省略 source），并额外检查 `data.startup`、`Startup/stm32tk_startup_gcc.S`、`memory.stackSize`/`memory.heapSize` 和 `generation.runtimeInitialization`。只有用户显式授权该精确计划后，才调用 `stm32_keil_convert(uvprojx, targetName, planId=<data.plan_id>, authorized=true, startupStrategy=<同值>, startupSource=<同值>)`。PLAN 响应字段是 `data.plan_id`，APPLY 请求参数是 `planId`；省略或改动 startup 选项不会被接受，合法但不同的值返回 `PLAN_CHANGED`，非法的选项值返回结构化校验错误。startup 补丁与常规 manifest/源码补丁一起出现在 `data.patches` 中，而不是唯一输出文件。若 `data.analysis.memoryLayout.status=requires-selection`，先按 `candidates` 让用户选择布局，再把同一 `memoryLayout` 对象传入 preflight、PLAN 和 apply；plan 响应中的 `data.memory_layout` 显示 `status`、解析后的五角色布局（或 `null`）与实际候选。
-5. **配置、构建、烧录。** `stm32_project_configure()` 的 PLAN 响应同样用 `data.plan_id`，APPLY 传 `planId` 与 `authorized=true`。构建前读 `capabilityDetails.build.status`；`stm32_build(preset, clean, timeoutSeconds, authorized=true)` 才执行。烧录使用 `stm32_probe_list()` 返回的精确 `probeId`，以及 context 的 `data.build.buildId`/`data.build.elfSha256` 作为 `expectedBuildId`/`expectedElfSha256`，且仅在显式授权后传 `authorized=true`；不要复用旧 pin。
+5. **配置、构建、烧录。** `stm32_project_configure()` 的 PLAN 响应同样用 `data.plan_id`，APPLY 传 `planId` 与 `authorized=true`。构建前读 `capabilityDetails.build.status`；`stm32_build(preset, clean, timeoutSeconds, authorized=true)` 才执行。托管烧录使用 `stm32_probe_list()` 返回的精确 `probeId`，以及 context 的 `data.build.buildId`/`data.build.elfSha256` 作为 `expectedBuildId`/`expectedElfSha256`，且仅在显式授权后传 `authorized=true`；不要复用旧 pin。`capabilities.flash` 只覆盖这条托管路线。对于没有托管工程模型的固件，若绑定服务器实际列出 `stm32_firmware_import`、`stm32_firmware_admit` 与 `stm32_flash_imported`，可按上一节的外部固件路线先离线导入/准入，再单独授权烧录；不要为此伪造 manifest、`buildId` 或 Git 状态，也不要把 admission 成功当成烧录成功。
 6. **仅发现探针。** 用户只问“有哪些探针”时直接调用 `stm32_probe_list()`，读取 `data.probes`、`data.workspaceId` 和 `data.discovery`。该调用不需要 manifest、构建、backend、target 或 SVD，也不得继续执行 flash；若 `data.workspaceId=null` 且 `data.discovery.status="unbound"`，如实说明 discovery-only，绝不伪造 workspace ID。发现结果不证明 target 身份或烧录就绪。
 7. **VS Code 集成。** 生成的 `.vscode/tasks.json`/`launch.json` 只是配置目标；在真实 VS Code、扩展版本和实际调试会话中运行前，不得声称 IDE 路径已验收或部署完成。
 
@@ -149,6 +151,35 @@ MCP 客户端即使从不加载 `SKILL.md`，也可按工具描述和真实返�
 | 14 | doctor 启动 CubeMX GUI 或扩展显示 missing | 候选对 GUI 工具只读静态版本，取不到标 unknown；VS Code 扩展未实际探测为 `installed=false, version=null, status=not-probed`，不等同“未安装”。在 v1.0.0 现场若 GUI 被启动，先退出/记录，不把该次输出当静态版本证明。 |
 
 `read variable`、`read register`、有限采样与 Fault 有不同前置。OBSERVE 的短暂停核与持续观测需分开记证；完整 Fault 需稳定 halted，不能把 running OBSERVE 偷偷升权。[标准测试流程](testing/standard-test-procedure.md)规定实机前置、首错停止与证据归属。
+
+## 外部固件导入与独立烧录（当前源码/候选切片）
+
+这条路线与托管构建/烧录完全分开，已集成进 **v1.3.0 本地候选源码**但尚未发布；已发布 v1.2.0 的 48 工具包没有这些入口。它用于没有 `.stm32-project.json`、Git 或构建 receipt，但持有可用固件文件的工程。使用前先核对实际启动器版本，并对实际绑定服务器执行 `doctor --json`：确认 `data.publicInventory.mcpTools` 列出这三个工具、`skills` 为九个，并检查真实工具 input schema 的字段名与类型；只按实际返回调用，不要按本页推断。
+
+- `stm32_project_context` 的 `capabilities.flash` 只描述**托管构建路线**；它不评估、也不阻止外部导入路线。未托管工程只要实际绑定的服务器暴露 `stm32_firmware_import`、`stm32_firmware_admit`、`stm32_flash_imported`，就可以使用本路线。
+- **导入计划**：`stm32_firmware_import(firmwarePath, expectedSha256, format, target, flashRegions, baseAddress?)`。`firmwarePath` 是工程根内正斜杠相对路径；`expectedSha256` 是**原始文件**的精确小写 SHA-256；`format` 为 `elf`、`hex` 或 `bin`（AXF 按 ELF 解析）；`target` 是明确的受支持 pyOCD target 标识；`flashRegions` 是 1–32 个 `{start,length}` 内部应用 Flash 区间（`0x08000000 ≤ start < end ≤ 0x10000000`），这是用户复核的声明，不是芯片容量测量。BIN 必须显式给 `baseAddress`，其它格式禁止该参数；BIN 没有调试符号，也不推断启动地址。不传 `planId` 时返回只读 PLAN：`data.planId`、`data.importId`、`data.source`（原始路径/SHA-256/大小）与 `data.image`（规范化 ARM ELF 的 SHA-256/大小/段/入口）。计划中 `data.source.sha256` 与 `data.image.sha256` 是**两个独立字段**（准入/烧录结果中则是扁平的 `sourceSha256`/`imageSha256`）；它们通常不同，但原始 ELF 若已与规范化镜像逐字节相同，二者也会相同，不能把“不相等”当作校验规则。
+- **只读源哈希**：在工程内读取原始文件并计算 SHA-256，不修改文件：`(Get-FileHash -LiteralPath <path> -Algorithm SHA256).Hash.ToLowerInvariant()`。人工核对结果后再填入 `expectedSha256`；不要用会改写源文件的工具。
+- **导入应用**：用该次 `data.planId` 加 `authorized=true` 重发同一请求。写操作前的失败要按来源区分：`expectedSha256` 与当前原始文件不符时先返回 `FIRMWARE_INPUT_CHANGED`，不会进入计划比较；相同 `expectedSha256` 下路径、格式、base、target、Flash 区间或项目/数据根绑定发生变化时，重新分析成功后返回 `FIRMWARE_PLAN_CHANGED`。若新请求本身无效（例如格式、区间、类型或参数组合不合法），会在计划比较前返回对应的结构化校验错误；不能保证每种改动都得到同一个代码。`authorized=true` 而没有 `planId` 是错误。成功后在外部数据根保存不可变快照；相同输入重复应用是幂等成功，冲突的既有导入绝不覆盖。该授权只覆盖离线导入副本，**不授权任何硬件操作**。
+- **离线准入**：`stm32_firmware_admit(importId, expectedSha256)` 只读且离线。`expectedSha256` 始终钉住被导入的**原始文件**，不是规范化镜像。它会从保存的源文件与参数**重建**镜像并比对全部段/入口/记录，返回 `offlineReady=true`、`hardwareVerified=false`、扁平的 `sourceSha256`/`imageSha256`、target 与段摘要，以及仍需的硬件授权/身份条件。它不创建 service、lease、worker 或 receipt，也不是可复用授权令牌；**不要把 admission 成功当成烧录成功或当前构建身份**。
+- **独立烧录**：先 `stm32_probe_list` 取得精确 `probeId`，再单独取得用户对**该探针与该导入**的明确授权，调用 `stm32_flash_imported(probeId, importId, expectedSha256, authorized=true)`。调用方不能覆盖 target、Flash 区间、路径、根、backend 或来源。工作流在创建 supervisor/lease/worker 前、attach 后与发出编程 RPC 前都会重新校验存储；backend 在第一次驱动调用前要求规范化镜像的**每个字节**都被连接的 target 原生 Flash 区间并集覆盖（允许跨越相邻 64 KiB 区间，拒绝空洞、非 Flash 区间或重叠的畸形 map）；随后回读全部计划字节。只有回读、最终完整性检查、所有权清理成功，且在清理后再次确认快照未变化，才在数据根写入独立的 external-flash receipt；清理失败或清理期间快照被改动都不会产生成功 receipt。成功烧录结果的 `details.postFlash` 为 `{"targetState":"unknown","runVerified":false}`；早期失败（例如探针、认证、准入或参数错误）可能不包含该字段，应按实际返回报告。
+- CLI 对应 `firmware import`（显式 `--dry-run` 或 `--apply --plan-id … --authorized`）、`firmware admit`、`flash-imported`，参数为 `--firmware-path`、`--expected-sha256`、`--format`、`--target`、`--flash-regions '<json>'`、`--base-address`、`--import-id`、`--probe`、`--authorized`，并沿用 `--project-root`/`--data-root`/`--session-id`/`--json`。例如：
+
+```powershell
+$CandidateCli = Join-Path $DataRoot 'runtime\1.3.0\Scripts\stm32-toolkit.exe'
+# Requires a healthy Check for runtime/1.3.0 and a matching reported version.
+& $CandidateCli version
+# 1) Read-only PLAN. Keep the exact reviewed planId and original SHA-256.
+& $CandidateCli firmware import --project-root $ProjectRoot --data-root $DataRoot --session-id ext-1 --firmware-path firmware/app.bin --expected-sha256 <original-sha256> --format bin --target stm32f407vg --flash-regions '[{"start":134217728,"length":1048576}]' --base-address 134217728 --dry-run --json
+# 2) Apply that exact reviewed plan (separate authorization for the copy only).
+& $CandidateCli firmware import --project-root $ProjectRoot --data-root $DataRoot --session-id ext-1 --firmware-path firmware/app.bin --expected-sha256 <original-sha256> --format bin --target stm32f407vg --flash-regions '[{"start":134217728,"length":1048576}]' --base-address 134217728 --apply --plan-id <data.planId> --authorized --json
+# 3) Offline admission of the stored snapshot.
+& $CandidateCli firmware admit --project-root $ProjectRoot --data-root $DataRoot --session-id ext-1 --import-id <data.importId> --expected-sha256 <original-sha256> --json
+# 4) Optional, separately authorized hardware operation. Omit unless the user
+#    explicitly authorizes this exact probe and import.
+& $CandidateCli flash-imported --project-root $ProjectRoot --data-root $DataRoot --session-id ext-1 --probe <data.probeId> --import-id <data.importId> --expected-sha256 <original-sha256> --authorized --json
+```
+
+边界：不要为这条路线伪造 `.stm32-project.json`、`buildId`、Git 提交或托管 receipt。导入快照不代表原始工程当前的构建；原始文件之后被删除或重建也不会自动替换已导入字节，重新构建后应重新导入取得新身份。该 receipt 不解锁 debug、Monitor、Target 测试、旧式 flash-result，也不提供 under-reset 恢复、reset、resume、handoff 或自动调试准入。本切片不实现原生 UV4、自动“快照转托管”或迁移基线比较。
 
 ## Target 测试与 transport 资格边界
 

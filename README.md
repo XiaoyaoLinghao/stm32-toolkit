@@ -57,11 +57,50 @@ Run at most one mutation command, then repeat `Check`. For Claude Code, `/stm32-
 
 ### v1.3.0 local candidate
 
-The v1.3.0 source candidate has no download link: it is not published, packaged or qualified. A locally built candidate identifies as `1.3.0`, uses `DataRoot/runtime/1.3.0`, and treats an existing v1.2.0 runtime or generated project as a legacy input that requires an explicit authorized Repair or configure transaction. The candidate adds read-only Keil preflight, snapshot builds, bounded CMSIS startup generation and explicit multi-RAM layout, and bundles `normalize-source-comments` as the ninth Skill for explicit per-file encoding copies outside migration apply. The final v1.3.0 release inventory is 52 MCP tools and 9 Skills only after the external-firmware slice is integrated; the current source exposes 49 MCP tools. Do not describe any v1.3.0 asset as downloadable and do not reuse the v1.2.0 qualification exception.
+The v1.3.0 local candidate is not a GitHub Release and has no public download link, tag, installation or qualification. Local candidate construction and validation are recorded in the delivery evidence; full qualification and publication remain pending. The candidate identifies as `1.3.0`, uses `DataRoot/runtime/1.3.0`, and treats an existing v1.2.0 runtime or generated project as a legacy input that requires an explicit authorized Repair or configure transaction. It adds read-only Keil preflight, snapshot builds, bounded CMSIS startup generation, explicit multi-RAM layout, and the integrated external-firmware route: import an original ELF/AXF, Intel HEX or BIN into an immutable snapshot, admit it offline, then separately authorize flashing to one exact probe. It ships 52 MCP tools and 9 Skills; the published v1.2.0 runtime remains the frozen 48-tool, 8-Skill package. Do not describe any v1.3.0 asset as a public GitHub download and do not reuse the v1.2.0 qualification exception.
+
+#### Local v1.3.0 bundle
+
+When the locally built v1.3.0 ZIP and `CHECKSUMS.sha256` are delivered (for example from the delivery evidence), use this parameterized recipe. It is not a public download and must not be pointed at an unverified asset. The same `Check`, authorized `Bootstrap` or authorized `Repair` sequence described above applies.
+
+```powershell
+$Version = '1.3.0'
+$Download = 'C:\Users\you\Downloads'
+$Bundle = Join-Path $Download "stm32-toolkit-$Version-windows-x86_64.zip"
+$Checksums = Join-Path $Download 'CHECKSUMS.sha256'
+$Pattern = '^[0-9a-f]{64}  stm32-toolkit-' + [regex]::Escape($Version) + '-windows-x86_64\.zip$'
+$ExpectedLine = @(Get-Content -LiteralPath $Checksums | Where-Object { $_ -match $Pattern })
+if ($ExpectedLine.Count -ne 1) { throw "Missing or duplicate $Version bundle checksum" }
+$Expected = ($ExpectedLine[0] -split '  ', 2)[0]
+$Actual = (Get-FileHash -LiteralPath $Bundle -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($Actual -ne $Expected) { throw 'Bundle SHA256 mismatch' }
+$BundleRoot = 'C:\tools\stm32-toolkit-1.3.0-bundle'
+if (Test-Path -LiteralPath $BundleRoot) { throw 'BundleRoot exists; choose a new path' }
+Expand-Archive -LiteralPath $Bundle -DestinationPath $BundleRoot
+$ToolkitRoot = Join-Path $BundleRoot "stm32-toolkit-$Version"
+$DataRoot = 'C:\data\stm32-toolkit'
+$ProjectRoot = 'C:\work\blinky'
+$SetupScript = Join-Path $ToolkitRoot 'bin\setup-stm32-env.ps1'
+
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $SetupScript -Mode Check `
+  -ToolkitRoot $ToolkitRoot -DataRoot $DataRoot -ProjectRoot $ProjectRoot
+```
+
+After that `Check` reports healthy for `runtime/1.3.0` (or a separately authorized `Bootstrap`/`Repair` has completed and a repeated `Check` is healthy), use the matching candidate launcher. This is the only route for v1.3.0-only behavior; the published v1.2.0 `$Cli` below is not a fallback.
+
+```powershell
+$CandidateCli = Join-Path $DataRoot "runtime\$Version\Scripts\stm32-toolkit.exe"
+& $CandidateCli version
+& $CandidateCli --project-root $ProjectRoot doctor --json
+```
+
+Confirm the launcher reports `1.3.0` and `doctor` is healthy before using `keil preflight`, `--startup-strategy`, `--memory-layout` or the external-firmware commands. If the version or health check does not match, stop and resolve setup instead of switching launchers.
 
 ## Work with a project
 
-Use the installed v1.2.0 console launcher after a healthy `Check`. Detection, inspection, and the first configure call are read-only. Review the returned plan and blockers before any authorized apply. `.stm32-project.json` is the versioned project intent; managed generated-file ownership is tracked separately under `.stm32-toolkit/`.
+The examples below use the published v1.2.0 console launcher after a healthy `Check`; they are public-runtime examples. A local v1.3.0 candidate must use `$CandidateCli` from the matching recipe above (`runtime\1.3.0`), never the older `$Cli`. Detection, inspection, and the first configure call are read-only. Review the returned plan and blockers before any authorized apply. `.stm32-project.json` is the versioned project intent; managed generated-file ownership is tracked separately under `.stm32-toolkit/`.
+
+**Published v1.2.0 runtime example:**
 
 ```powershell
 $Cli = Join-Path $DataRoot 'runtime\1.2.0\Scripts\stm32-toolkit.exe'
@@ -90,4 +129,6 @@ Use the current authenticated browser tab. The allowed local Host is `127.0.0.1`
 - [Architecture](docs/architecture.md), [development](docs/development.md), [standard test procedure](docs/testing/standard-test-procedure.md), and [release qualification](docs/testing/release-qualification.md).
 - [Changelog](CHANGELOG.md) and [v1.2.0 source-delivery specification](docs/superpowers/specs/2026-10-21-monitor-v120-delivery-design.md). The [v1.0.1 execution ledger](docs/codex/returns/STM32TK-101/execution.md) retains its historical qualification record.
 
-The current source inventory has 49 public MCP names, including `stm32_keil_preflight`, organized by project, build, probe, diagnostic, test, and acceptance workflows, plus nine bundled Skills (the eight workflow Skills and `normalize-source-comments`). The pending external-firmware slice owns three further MCP registrations; only its accepted integration brings the final v1.3.0 inventory to 52 tools and 9 Skills. The published v1.2.0 runtime remains the frozen 48-tool, 8-Skill package and does not contain the source-only preflight entry. Check the actually installed server with `doctor --json` and read `data.publicInventory` instead of inferring availability from this page. `VS09-B` release construction uses the existing `tools/release/build_0900_artifacts.py` and pinned `release_0900_policy.json`; these historical filenames and the frozen policy remain current packaging inputs, not evidence that the source slice is packaged or deployed. Old plans and reports removed from the current tree remain retrievable with `git show 694c825d29a55a53052a148efa4cc6720c315a04:<path>`.
+The current source inventory has 52 public MCP names, including `stm32_keil_preflight`, `stm32_firmware_import`, `stm32_firmware_admit`, and `stm32_flash_imported`, organized by project, build, probe, external-firmware, diagnostic, test, and acceptance workflows, plus nine bundled Skills (the eight workflow Skills and `normalize-source-comments`). The published v1.2.0 runtime remains the frozen 48-tool, 8-Skill package and does not contain these source-only entries. Check the actually installed server with `doctor --json` and read `data.publicInventory` (and the real tool input schema) instead of inferring availability from this page; the launcher version and the server inventory must match. `VS09-B` release construction uses the existing `tools/release/build_0900_artifacts.py` and pinned `release_0900_policy.json`; these historical filenames and the frozen policy remain current packaging inputs, not evidence that the source candidate is published. Old plans and reports removed from the current tree remain retrievable with `git show 694c825d29a55a53052a148efa4cc6720c315a04:<path>`.
+
+The external-firmware route imports an original ELF/AXF, Intel HEX, or BIN file into an immutable project-bound snapshot, admits it offline, and only then offers a separately authorized flash to one exact probe. It needs no managed manifest, Git repository, build receipt, or SVD. `capabilities.flash` in project context describes only the managed build route; an unmanaged project can use the imported route when the bound server actually exposes these tools. The original source SHA-256 (`data.source.sha256` in a plan) and the normalized programming-image SHA-256 (`data.image.sha256` in a plan; flat `sourceSha256`/`imageSha256` in admission and flash results) are distinct fields, and an imported receipt never unlocks debug, Monitor, Target tests, or a fabricated build identity. See the [user guide](docs/user-guide.md).

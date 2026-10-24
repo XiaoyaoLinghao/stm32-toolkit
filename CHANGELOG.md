@@ -6,15 +6,36 @@
   an existing `1.2.0` managed runtime and `1.2.0`-generated project as legacy inputs while
   retaining the older `1.1.2`/`1.0.1`/`1.0.0`/`0.9.0` compatibility. Recognition is
   read-only: advancing a runtime still needs an explicit authorized `Repair`, and existing
-  `generatedBy` values are not rewritten. Exact current build, flash, import and export
-  identities are unchanged.
+  `generatedBy` values are not rewritten. Existing exact build, flash, import and export
+  identity checks are not relaxed.
+- Add a read-only, Git-free Keil preflight (`keil preflight` / `stm32_keil_preflight`):
+  it reports structured capability diagnostics and separates `planReadiness` from
+  `applyReadiness` without writing files or emitting a plan ID, and `keil inspect`
+  remains available without a migration baseline. Read-only probe discovery
+  (`probe list` / `stm32_probe_list`) is decoupled from preflight, manifest and build
+  facts, and does not grant hardware authority.
+- Support a content-snapshot managed build for projects without a usable Git identity:
+  `schemaVersion: 2` records `sourceBaseline: "input-snapshot-v1"`, explicit null Git
+  fields and bounded `gitEvidence`, and freshness depends on the exact input snapshot,
+  target/preset/model and ELF/MAP hashes. The hardware-managed flash, debug, Target and
+  Monitor route still requires a Git-verified build identity.
+- Add explicit opt-in bounded CMSIS GCC startup generation for conventional ST/CMSIS
+  Cortex-M3/M4/M7 ARMCC5 startup, and an explicit `memoryLayout` that maps the five
+  roles `flash`, `data`, `bss`, `heap` and `stack` to declared regions. Multiple RAM
+  candidates require an explicit reviewed selection; no RAM is chosen by default.
+- Add the accepted external-firmware route: import an original ELF/AXF, Intel HEX or BIN
+  file into an immutable project-bound snapshot, admit it offline, and only then offer a
+  separately authorized flash to one exact probe. The imported source SHA-256 and the
+  normalized programming-image SHA-256 are distinct fields. The route needs no managed
+  manifest, Git baseline, build receipt or SVD, and an imported receipt does not unlock
+  debug, Monitor, Target tests, a managed build identity or legacy flash evidence.
 - Bundle `normalize-source-comments` as the ninth discoverable Skill: an explicit,
   preview-first, per-file encoding helper that writes comment-only UTF-8 copies outside the
   project. It is not a migration step and adds no MCP tool.
-- The declared final v1.3.0 inventory is 52 MCP tools and 9 Skills. The separately owned
-  external-firmware slice supplies the remaining three MCP registrations and is not part of
-  this version-preparation change; until it is integrated this branch exposes 49 tools.
-  Offline imported-firmware admission is likewise separate from any authorized flashing.
+- The integrated v1.3.0 inventory is 52 MCP tools and 9 Skills, including the external
+  registrations `stm32_firmware_import`, `stm32_firmware_admit` and
+  `stm32_flash_imported`. The published v1.2.0 package remains 48 tools and 8 Skills.
+  Offline import/admission is separate from any authorized hardware flash.
 - Known boundaries carried by this candidate: there is no native Keil UV4 build backend,
   no automated VS Code extension readiness probe (`vscodeExtensions` stays `not-probed`),
   and no migration-baseline comparison verdict (a discovered AXF/MAP baseline is not proof
@@ -22,8 +43,10 @@
   for plans, refuses unknown source encodings and arbitrary ARMCC assembly, and only
   generates startup for the bounded conventional ST/CMSIS Cortex-M3/M4/M7 case; scatter,
   memory and multi-RAM decisions require explicit reviewed input.
-- **Not released.** This entry records a local source candidate only. There is no v1.3.0
-  bundle, tag, GitHub Release, download link, installation or qualification. The
+- **Not released as a GitHub Release.** This entry records a local v1.3.0 candidate. There
+  is no v1.3.0 tag, GitHub Release, public download link, installation or qualification.
+  Local candidate construction and validation are recorded in the delivery evidence; full
+  qualification and publication remain pending. The
   [v1.2.0 Release](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.2.0)
   remains the current public download, and its one-time qualification exception does not
   transfer. See [release status](docs/release-status.md).

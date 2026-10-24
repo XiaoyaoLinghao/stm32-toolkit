@@ -15,8 +15,8 @@ $LegacyRuntimeVersions = @("1.2.0", "1.1.2", "1.0.1", "1.0.0", "0.9.0", "0.5.0",
 $ProcessOutputLimit = 65536
 $ReleaseUtilityRelative = "tools/release/build_0900_artifacts.py"
 $ReleasePolicyRelative = "tools/release/release_0900_policy.json"
-$ReleaseUtilitySha256 = "2eb4c18b2180fd17e84fffc772de11a9edb713501e2f0cdbddb212cc551b4f6d"
-$ReleasePolicySha256 = "1c3701cd6764fa7fea56135df33e8f535370d73753a11612b64e5fb0ad045f86"
+$ReleaseUtilitySha256 = "72cc96a0457a2bfaed9a290dcff78687b3716c0d8990d259aef9a4bbc65e54ea"
+$ReleasePolicySha256 = "84028a6844537bcad455c3e8cdd7a9795aa1ed15d9b6a155d9247ac53f3fa4a6"
 $ReleaseManifestRelative = "release/release-manifest.json"
 $RuntimeStateFileName = "runtime-state.json"
 $InMemoryReleaseLauncher = @'
@@ -135,6 +135,9 @@ $ExpectedMcpTools = @(
     "stm32_build",
     "stm32_probe_list",
     "stm32_flash",
+    "stm32_firmware_import",
+    "stm32_firmware_admit",
+    "stm32_flash_imported",
     "stm32_debug_handoff_begin",
     "stm32_debug_handoff_end",
     "stm32_variable_read",
