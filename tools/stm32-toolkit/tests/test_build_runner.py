@@ -929,7 +929,7 @@ def test_run_build_accepts_schema_v3_managed_configuration(tmp_path: Path, monke
 
 
 @pytest.mark.parametrize("schema_version", [2, 3])
-@pytest.mark.parametrize("producer_version", ["1.1.2", "0.9.0"])
+@pytest.mark.parametrize("producer_version", ["1.2.0", "1.1.2", "0.9.0"])
 def test_run_build_accepts_legacy_producer_and_publishes_current_identity(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, schema_version: int,
     producer_version: str,
@@ -952,7 +952,7 @@ def test_run_build_accepts_legacy_producer_and_publishes_current_identity(
     assert result.ok is True, result
     identity = read_json(identity_path_for(root))
     project = read_json(root / ".stm32-project.json")
-    assert identity["toolkitVersion"] == "1.2.0"
+    assert identity["toolkitVersion"] == "1.3.0"
     assert project["generatedBy"]["version"] == producer_version
     assert json.loads(manifest_path.read_text(encoding="utf-8"))["toolVersion"] == producer_version
 
@@ -1066,7 +1066,7 @@ def test_run_build_success_debug_publishes_exact_evidence(
     assert identity_doc["mapPath"] == "build/arm-debug/firmware.map"
     assert identity_doc["targetDevice"] == "STM32F407VGTx"
     assert identity_doc["logicalProjectId"] == "12345678-1234-5678-1234-567812345678"
-    assert identity_doc["toolkitVersion"] == "1.2.0"
+    assert identity_doc["toolkitVersion"] == "1.3.0"
     assert identity_doc["buildId"] == report.identity.build_id
     assert len(identity_doc["gitHead"]) == 40
     assert identity_doc["entryPoint"] == 0x08000011

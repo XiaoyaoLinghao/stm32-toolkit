@@ -1,5 +1,30 @@
 # Release status and retained limitations
 
+## v1.3.0 local candidate — version preparation, not released
+
+The `codex/v1.3.0` branch carries a **local** v1.3.0 Release candidate based on
+`6b4c13b6fa76f320503b14679c8eb7bfc712c9af`. At this version-preparation stage the
+Toolkit, Monitor, UI, plugin, launchers, runtime state and release policy/schema identity
+have been aligned to `1.3.0`, and `1.2.0` is recognized as a legacy managed-runtime and
+generation-producer version. No v1.3.0 bundle, tag, GitHub Release, public asset or
+download link exists, and no v1.3.0 installation, upgrade, interactive browser, IDE or
+hardware qualification has been performed. The [v1.2.0 Release](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.2.0)
+remains the current public download.
+
+The candidate is also incomplete by design: the separately owned external-firmware slice
+has not yet been integrated. This branch therefore exposes 49 MCP tool names and 9 bundled
+Skills; the declared final v1.3.0 inventory of 52 MCP tools and 9 Skills is reached only
+after that slice is accepted and integrated. Offline firmware import/admission and any
+separately authorized flashing of imported images are outside this version-preparation
+change; nothing recorded here admits an imported image to a hardware path.
+
+The **v1.2.0-only** user-approved qualification exception does not transfer to v1.3.0.
+Permanent coverage floors, package construction, fresh installation/upgrade/rollback,
+interactive browser, IDE and physical qualification all remain pending until separately
+executed and recorded. The setup bootstrap trust anchors are deliberately not updated in
+this version-preparation commit; they must be recomputed from the committed `git archive`
+bytes after integration and then corrected before any official build.
+
 ## v1.2.0 published Latest with a version-specific exception — 2026-10-23
 
 The [v1.2.0 Release](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.2.0), ID `420935068`, was published at `2026-10-22T22:54:53Z` (`2026-10-23 06:54:53` Asia/Shanghai) and is Latest (`draft=false`, `prerelease=false`; tagged and Latest API lookups returned that same ID). Its `v1.2.0` tag and `target_commitish` identify the frozen Windows x86_64 / CPython 3.12 source `99e7f000e3ceb773071037f8b8e30f05091ba6fb` (tree `a5cbe6a0c318fad1d7fe3c48c547d88a2ef679bb`), not the later documentation-only report. All 13 public assets had names, sizes and SHA256 equal to the frozen official build; all 13 public downloads returned HTTP 200 and were independently rehashed. The Windows ZIP SHA256 is `b64fb651fb53c38568ba875e518d2d6bd16de1bae81ec8c2045fb83756691c9f`. The [execution record](codex/returns/STM32TK-120/execution.md) identifies the verification owners and evidence.

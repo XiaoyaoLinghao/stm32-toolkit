@@ -178,7 +178,14 @@ not service shutdown. The owning terminal's Ctrl-C invokes the existing cleanup 
 Toolkit, Monitor, UI and plugin ship one release version. Schema/protocol compatibility must be
 explicit; upgrades never silently rewrite project intent or historical evidence. Check is read-only;
 Bootstrap/Repair use verified offline artifacts, staging, validation, promotion and bounded rollback.
-Same-version source conflicts, downgrades and unknown future states remain refusals.
+Same-version source conflicts, downgrades and unknown future states remain refusals. The v1.3.0
+local candidate aligns the product authorities to 1.3.0 and adds 1.2.0 to the recognized legacy
+managed-runtime and generation-producer versions while retaining the older entries. That
+recognition is read-only: an existing 1.2.0 runtime still requires an explicit authorized Repair,
+and a 1.2.0-generated project keeps its historical `generatedBy` value until an explicit configure
+transaction. Exact current build, flash, import and export identities are not relaxed, and the
+candidate ships 9 bundled Skills while the final 52-tool inventory depends on the separately
+integrated external-firmware slice.
 
 Replay Acceptance `diagnosticSessionId` identifies 128 bits without RFC UUID version/variant
 semantics. Public replay inputs accept lowercase compact 32-hex or grouped `8-4-4-4-12` spelling;
@@ -205,11 +212,17 @@ The published v1.0.1 contract and schedule remain in its [specification](superpo
 and [implementation plan](superpowers/plans/2026-10-10-stm32tk-101-patch-plan.md).
 The accepted v1.2.0 source-delivery slice follows its
 [specification](superpowers/specs/2026-10-21-monitor-v120-delivery-design.md)
-and [plan](superpowers/plans/2026-10-21-monitor-v120-delivery-plan.md). The
+and [plan](superpowers/plans/2026-10-21-monitor-v120-delivery-plan.md). The v1.3.0
+local Release preparation follows the
+[local Release design](superpowers/specs/2026-10-24-v130-local-release-design.md) and
+[plan](superpowers/plans/2026-10-24-v130-local-release-plan.md); it is a source candidate,
+not a published version. The
 [v1.2.0 Release](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.2.0)
-is the source for asset availability, final qualification and limitations; [release status](release-status.md)
-retains the dated pre-freeze candidate evidence. Architecture and source behavior alone
-do not establish package installation, interactive browser, IDE or hardware qualification.
+remains the current public download and the source for its asset availability, final
+qualification and limitations; [release status](release-status.md) retains the dated
+historical evidence and records the v1.3.0 candidate separately. Architecture and source
+behavior alone do not establish package installation, interactive browser, IDE or hardware
+qualification.
 The earlier [v1.1.2 source delivery](superpowers/specs/2026-10-16-monitor-v112-source-delivery-design.md) remains a historical source record.
 Older designs remain recoverable from Git history at `694c825d29a55a53052a148efa4cc6720c315a04`;
 they are historical evidence rather than additional current workflow entry points.

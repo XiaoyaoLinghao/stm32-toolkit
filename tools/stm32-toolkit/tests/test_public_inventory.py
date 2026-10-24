@@ -78,6 +78,7 @@ EXPECTED_SKILLS = (
     "debug-firmware",
     "read-var",
     "stm32-monitor",
+    "normalize-source-comments",
 )
 
 
@@ -92,7 +93,7 @@ def test_release_python_and_static_package_versions_are_one_contract(tmp_path: P
     ui = json.loads(
         (REPO_ROOT / "tools/stm32-monitor/ui/package.json").read_text("utf-8")
     )
-    assert __version__ == "1.2.0"
+    assert __version__ == "1.3.0"
     assert REQUIRED_PYTHON == ">=3.12,<3.13"
     assert SUPPORTED_PYTHON == (3, 12)
     assert toolkit["project"]["version"] == __version__
@@ -135,11 +136,12 @@ def test_actual_mcp_and_skill_inventory_matches_the_closed_public_inventory(
     }
     assert len(MCP_TOOL_NAMES) == 49
     assert actual == set(MCP_TOOL_NAMES.values())
-    assert len(SKILL_NAMES) == 8
-    # normalize-source-comments is a discoverable companion skill.  It is not
-    # a ninth release workflow and does not change the closed public inventory
-    # or the release packager in this slice.
-    assert discovered == set(SKILL_NAMES) | {"normalize-source-comments"}
+    assert len(SKILL_NAMES) == 9
+    # normalize-source-comments is the ninth bundled skill.  The pending
+    # external-firmware slice owns the three MCP registrations that bring the
+    # final v1.3.0 inventory to 52 tools; this version-preparation slice must
+    # not duplicate them.
+    assert discovered == set(SKILL_NAMES)
 
 
 def test_production_inventory_and_server_registration_match_an_independent_oracle(

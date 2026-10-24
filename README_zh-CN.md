@@ -2,11 +2,11 @@
 
 [English](README.md) | 简体中文
 
-STM32 Toolkit 是面向 STM32 工程的本地工具。CLI 与 stdio MCP 共用工程、构建、Probe Service、测试和 Monitor 合同；八个 Claude Code Skill 只是这些公开入口的适配层，产品核心不依赖特定 Agent 宿主。
+STM32 Toolkit 是面向 STM32 工程的本地工具。CLI 与 stdio MCP 共用工程、构建、Probe Service、测试和 Monitor 合同；九个随插件提供的 Claude Code Skill 只是这些公开入口的适配层，产品核心不依赖特定 Agent 宿主。
 
-**当前版本：v1.2.0。**已验收源码包含 Monitor 工作台、源码目录、保留状态连接、u16 组合与一致读取更新。发行平台为 Windows x86_64、CPython `>=3.12,<3.13`。资产是否可用、最终资格与限制以 [v1.2.0 Release](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.2.0) 页面为准；[发布状态](docs/release-status.md)保留有日期的源冻结前证据断点。
+**当前源码候选：v1.3.0（本地 Release 准备，尚未发布）。**公开下载仍是 **v1.2.0**：资产是否可用、最终资格与限制以 [v1.2.0 Release](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.2.0) 页面为准。发行平台为 Windows x86_64、CPython `>=3.12,<3.13`。[发布状态](docs/release-status.md)保留有日期的历史断点，并单独记录 v1.3.0 候选。
 
-## 下载、校验并安装 v1.2.0
+## 下载、校验并安装已发布的 v1.2.0
 
 安装 v1.2.0 时，先确认 [v1.2.0 Release](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.2.0) 页面同时列出 `stm32-toolkit-1.2.0-windows-x86_64.zip` 与 `CHECKSUMS.sha256`，再从同一页面下载；任一资产缺失就停止，不借用旧版包或 GitHub 自动生成的源码归档。先核对 ZIP 哈希，再解压；缺少校验行或哈希不符即停止。发行包内含匹配的源码归档、发行清单与离线 wheels，不要混用其它版本文件。Bootstrap 前本机需要可用的 CPython 3.12。
 
@@ -55,6 +55,10 @@ $SetupScript = Join-Path $ToolkitRoot 'bin\setup-stm32-env.ps1'
 
 每次至多执行一个修改动作，再重复 `Check`。Claude Code 可用 `/stm32-toolkit:setup-stm32-env`，其底层仍是同一 setup 合同。其它 MCP 宿主使用 `bin/stm32-toolkit-mcp.cmd` 的绝对路径、显式工程/DataRoot 参数，环境变量 `STM32_TOOLKIT_DATA_ROOT` 指向该 DataRoot。[通用 MCP 配置示例和公开入口](docs/user-guide.md)见用户指南。`${CLAUDE_PROJECT_DIR}` 和 `${CLAUDE_PLUGIN_DATA}/projects/<workspaceId>` 是 Claude 适配占位符，不是通用 CLI 的依赖。所有工程 CLI 命令都要显式给出绝对 `--project-root`。
 
+### v1.3.0 本地候选
+
+v1.3.0 源码候选没有下载链接：它尚未发布、打包或通过资格验证。本地构建的候选标识为 `1.3.0`，使用 `DataRoot/runtime/1.3.0`，并把已有的 v1.2.0 runtime 或生成工程视为旧版输入，只能经显式授权的 Repair 或 configure 事务推进。候选包含只读 Keil preflight、snapshot 构建、受控 CMSIS startup 生成与显式多 RAM 布局，并把 `normalize-source-comments` 作为第九个 Skill 随插件提供，用于迁移 apply 之外的逐文件显式编码副本。只有集成外部固件切片后，v1.3.0 最终发行 inventory 才是 52 个 MCP 工具、9 个 Skill；当前源码为 49 个 MCP 工具。不要把任何 v1.3.0 资产描述为可下载，也不要沿用 v1.2.0 的资格例外。
+
 ## 工程操作入口
 
 `Check` 确认 healthy 后，使用已安装的 v1.2.0 控制台启动器。检测、检查及首次 configure plan 均只读；应用前审阅计划和 blocker。`.stm32-project.json` 是版本控制的工程意图，`.stm32-toolkit/` 中的 managed manifest 另行记录生成文件所有权。
@@ -86,4 +90,4 @@ $env:STM32_TOOLKIT_DATA_ROOT = $DataRoot
 - [架构](docs/architecture.md)、[开发](docs/development.md)、[标准测试流程](docs/testing/standard-test-procedure.md)及[发布资格](docs/testing/release-qualification.md)。
 - [变更记录](CHANGELOG.md)及[v1.2.0 源码交付规范](docs/superpowers/specs/2026-10-21-monitor-v120-delivery-design.md)。[v1.0.1 执行记录](docs/codex/returns/STM32TK-101/execution.md)保留其历史资格事实。
 
-当前源码 inventory 有 49 个公开 MCP 名称，包含 `stm32_keil_preflight`，覆盖工程、构建、探针、诊断、测试、验收。已发布的 v1.2.0 runtime 仍是冻结的 48 工具包，不包含该源码切片的新增 preflight 入口。`VS09-B` 的当前发行构建仍使用 `tools/release/build_0900_artifacts.py` 和固定的 `release_0900_policy.json`；历史文件名与冻结策略是现行打包输入，不代表该源码切片已打包或部署。退出当前树的旧计划与报告仍可用 `git show 694c825d29a55a53052a148efa4cc6720c315a04:<path>` 查阅。
+当前源码 inventory 有 49 个公开 MCP 名称，包含 `stm32_keil_preflight`，覆盖工程、构建、探针、诊断、测试、验收；另有九个随插件提供的 Skill（八个工作流 Skill 加 `normalize-source-comments`）。待集成的外部固件切片负责另外三个 MCP 注册；只有其被验收并集成后，v1.3.0 最终发行 inventory 才达到 52 个工具、9 个 Skill。已发布的 v1.2.0 runtime 仍是冻结的 48 工具、8 Skill 包，不包含该源码切片的新增 preflight 入口。请对实际已安装服务器执行 `doctor --json` 并读取 `data.publicInventory`，不要依据本页推断可用工具。`VS09-B` 的当前发行构建仍使用 `tools/release/build_0900_artifacts.py` 和固定的 `release_0900_policy.json`；历史文件名与冻结策略是现行打包输入，不代表该源码切片已打包或部署。退出当前树的旧计划与报告仍可用 `git show 694c825d29a55a53052a148efa4cc6720c315a04:<path>` 查阅。

@@ -1,5 +1,33 @@
 # Changelog
 
+## [v1.3.0 local candidate]
+
+- Align Toolkit, Monitor, UI, plugin, launchers and release metadata to `1.3.0`. Recognize
+  an existing `1.2.0` managed runtime and `1.2.0`-generated project as legacy inputs while
+  retaining the older `1.1.2`/`1.0.1`/`1.0.0`/`0.9.0` compatibility. Recognition is
+  read-only: advancing a runtime still needs an explicit authorized `Repair`, and existing
+  `generatedBy` values are not rewritten. Exact current build, flash, import and export
+  identities are unchanged.
+- Bundle `normalize-source-comments` as the ninth discoverable Skill: an explicit,
+  preview-first, per-file encoding helper that writes comment-only UTF-8 copies outside the
+  project. It is not a migration step and adds no MCP tool.
+- The declared final v1.3.0 inventory is 52 MCP tools and 9 Skills. The separately owned
+  external-firmware slice supplies the remaining three MCP registrations and is not part of
+  this version-preparation change; until it is integrated this branch exposes 49 tools.
+  Offline imported-firmware admission is likewise separate from any authorized flashing.
+- Known boundaries carried by this candidate: there is no native Keil UV4 build backend,
+  no automated VS Code extension readiness probe (`vscodeExtensions` stays `not-probed`),
+  and no migration-baseline comparison verdict (a discovered AXF/MAP baseline is not proof
+  of toolchain, source or binary comparability). Migration remains one-way and Git-gated
+  for plans, refuses unknown source encodings and arbitrary ARMCC assembly, and only
+  generates startup for the bounded conventional ST/CMSIS Cortex-M3/M4/M7 case; scatter,
+  memory and multi-RAM decisions require explicit reviewed input.
+- **Not released.** This entry records a local source candidate only. There is no v1.3.0
+  bundle, tag, GitHub Release, download link, installation or qualification. The
+  [v1.2.0 Release](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.2.0)
+  remains the current public download, and its one-time qualification exception does not
+  transfer. See [release status](docs/release-status.md).
+
 ## [v1.2.0]
 
 - Align Toolkit, Monitor, UI, plugin, launchers and release metadata to 1.2.0. Recognize 1.1.2 managed runtimes and generated projects as legacy inputs while preserving older supported inputs, user-edited files, and exact-version export checks. An explicit Repair or configure transaction is required to advance current artifacts.

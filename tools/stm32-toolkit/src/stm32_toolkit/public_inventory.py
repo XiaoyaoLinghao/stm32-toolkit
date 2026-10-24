@@ -73,4 +73,5 @@ SKILL_NAMES: Final = (
     "debug-firmware",
     "read-var",
     "stm32-monitor",
+    "normalize-source-comments",
 )

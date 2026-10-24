@@ -84,8 +84,8 @@ def test_doctor_reports_closed_runtime_and_public_inventory(monkeypatch, tmp_pat
         "monitorVersion": __version__,
         "versionsCompatible": True,
     }
-    assert len(result.data["publicInventory"]["mcpTools"]) == 48
-    assert len(result.data["publicInventory"]["skills"]) == 8
+    assert len(result.data["publicInventory"]["mcpTools"]) == 49
+    assert len(result.data["publicInventory"]["skills"]) == 9
 
 
 def test_doctor_reports_old_monitor_version_as_incompatible(monkeypatch, tmp_path: Path):

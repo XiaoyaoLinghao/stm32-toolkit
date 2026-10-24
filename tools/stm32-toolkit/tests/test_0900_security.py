@@ -23,6 +23,7 @@ def release_module():
 
 def _write_valid_runtime_manifest(path: Path) -> None:
     policy = json.loads(POLICY.read_text(encoding="utf-8"))
+    product_version = policy["version"]
     canonical = lambda name: name.lower().replace("_", "-")
     direct = {canonical(name) for name in policy["directPins"] if canonical(name) not in {"setuptools", "wheel"}}
     resolved = {canonical(name): version for name, version in policy["resolvedPins"].items()}
@@ -30,8 +31,8 @@ def _write_valid_runtime_manifest(path: Path) -> None:
     wheels = [
         {
             "name": name,
-            "version": "1.2.0" if name.startswith("stm32-") else resolved[name],
-            "file": f"release/wheels/{name.replace('-', '_')}-{'1.2.0' if name.startswith('stm32-') else resolved[name]}-py3-none-any.whl",
+            "version": product_version if name.startswith("stm32-") else resolved[name],
+            "file": f"release/wheels/{name.replace('-', '_')}-{product_version if name.startswith('stm32-') else resolved[name]}-py3-none-any.whl",
             "sha256": "b" * 64,
             "size": 1,
             "direct": name in direct or name.startswith("stm32-"),
@@ -52,14 +53,14 @@ def _write_valid_runtime_manifest(path: Path) -> None:
     ]
     manifest = {
         "schema": "stm32-toolkit-release/1",
-        "productVersion": "1.2.0",
+        "productVersion": product_version,
         "requiredPython": ">=3.12,<3.13",
         "platform": {"os": "windows", "architecture": "x86_64", "python": "cp312"},
         "source": {"repository": "https://github.com/XiaoyaoLinghao/stm32-toolkit.git", "commit": "a" * 40, "archive": "source.zip", "sha256": "a" * 64},
         "runtimeStateSchema": "stm32-toolkit-runtime-state/1",
         "wheels": wheels,
         "artifacts": artifacts,
-        "publicInventory": {"mcpTools": 48, "skills": 8},
+        "publicInventory": policy["publicInventory"],
     }
     path.write_text(json.dumps(manifest, separators=(",", ":")) + "\n", encoding="utf-8")
 
@@ -106,9 +107,10 @@ def test_case_folded_manifest_paths_are_rejected_before_reads(release_module, tm
     release = tmp_path / "release"
     wheels = release / "wheels"
     wheels.mkdir(parents=True)
+    policy = json.loads(POLICY.read_text(encoding="utf-8"))
     manifest = {
         "schema": "stm32-toolkit-release/1",
-        "productVersion": "1.2.0",
+        "productVersion": policy["version"],
         "requiredPython": ">=3.12,<3.13",
         "platform": {"os": "windows", "architecture": "x86_64", "python": "cp312"},
         "source": {"repository": "https://github.com/XiaoyaoLinghao/stm32-toolkit.git", "commit": "a" * 40, "archive": "SOURCE.ZIP", "sha256": "a" * 64},
@@ -118,7 +120,7 @@ def test_case_folded_manifest_paths_are_rejected_before_reads(release_module, tm
             {"name": "two", "version": "1.0", "file": "release/wheels/a.whl", "sha256": "b" * 64, "size": 1, "direct": False, "license": "MIT"},
         ],
         "artifacts": [],
-        "publicInventory": {"mcpTools": 48, "skills": 8},
+        "publicInventory": policy["publicInventory"],
     }
     path = release / "release-manifest.json"
     path.write_text(json.dumps(manifest, separators=(",", ":")) + "\n", encoding="utf-8")

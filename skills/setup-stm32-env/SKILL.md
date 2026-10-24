@@ -13,7 +13,7 @@ description: Use when a Claude Code user asks to check, bootstrap, repair, or di
 
 - CHECK is read-only and offline with respect to installation. It never creates files, probes hardware, kills unrelated or existing processes, or installs anything. It may terminate only a probe subprocess that CHECK itself started after that probe exceeds its timeout.
 - Never register a second MCP. The plugin-bundled `.mcp.json` starts only after the managed runtime is healthy.
-- The only MCP interpreter for this candidate is `${CLAUDE_PLUGIN_DATA}/runtime/1.2.0/Scripts/python.exe`; system `python`, `py`, or `uv` is never an MCP fallback. A healthy runtime includes the exact manifest-listed Toolkit/Monitor wheels with readable UI assets, the pinned `pyocd==0.45.1` distribution, and the existing doctor contract.
+- The only MCP interpreter for this candidate is `${CLAUDE_PLUGIN_DATA}/runtime/1.3.0/Scripts/python.exe`; system `python`, `py`, or `uv` is never an MCP fallback. A healthy runtime includes the exact manifest-listed Toolkit/Monitor wheels with readable UI assets, the pinned `pyocd==0.45.1` distribution, and the existing doctor contract.
 - CPython >=3.12,<3.13 is the only bounded bootstrap prerequisite for consuming an extracted offline bundle from the official pinned source candidate. Bootstrap never installs from a package index or from the source tree.
 - `${CLAUDE_PLUGIN_ROOT}/tools/stm32-toolkit` remains source provenance only; the historical
   `tools/stm32-toolkit[probe]` source expression is not installed directly.
@@ -43,7 +43,7 @@ PowerShell and do not require host placeholders. Set the paths once and always r
 check first.
 
 ```powershell
-$ToolkitRoot = 'C:\tools\stm32-toolkit-1.2.0'
+$ToolkitRoot = 'C:\tools\stm32-toolkit-1.3.0'
 $DataRoot = 'C:\data\stm32-toolkit'
 $ProjectRoot = 'C:\work\blinky'
 $SetupScript = Join-Path $ToolkitRoot 'bin\setup-stm32-env.ps1'
@@ -61,7 +61,7 @@ install before running this separate Bootstrap command:
   -ToolkitRoot $ToolkitRoot -DataRoot $DataRoot -ProjectRoot $ProjectRoot
 ```
 
-If `Check` reports `repairable` for an approved 1.1.2/1.0.1/1.0.0/0.9.0/0.5.0/0.3.0 legacy upgrade, or `broken` for
+If `Check` reports `repairable` for an approved 1.2.0/1.1.2/1.0.1/1.0.0/0.9.0/0.5.0/0.3.0 legacy upgrade, or `broken` for
 an existing runtime, review its source and downgrade guards and explicitly authorize Repair before
 running this separate command:
 
@@ -77,9 +77,9 @@ running this separate command:
 CHECK always returns JSON. `bundle.status` is `missing` or verified, and `runtimeState.status` is
 `missing`, `matching`, `repairable`, `downgrade-refused`, `source-conflict`, `unsupported`, or
 `invalid`. `runtime.status` is `missing`, `healthy`, or `broken`; it includes version/error evidence
-and `recommendedMode`. A healthy runtime has version `1.2.0` and a successful bounded
-`-m stm32_toolkit.cli ... doctor --json`. An existing 1.1.2, 1.0.1, 1.0.0, 0.9.0, 0.5.0 or 0.3.0 runtime reports broken as legacy
-evidence. Repair quarantines that runtime before atomically promoting 1.2.0 and publishing one
+and `recommendedMode`. A healthy runtime has version `1.3.0` and a successful bounded
+`-m stm32_toolkit.cli ... doctor --json`. An existing 1.2.0, 1.1.2, 1.0.1, 1.0.0, 0.9.0, 0.5.0 or 0.3.0 runtime reports broken as legacy
+evidence. Repair quarantines that runtime before atomically promoting 1.3.0 and publishing one
 `runtime/runtime-state.json` generation. Tool version, extension, and pack inventory commands are
 bounded; timeouts become evidence rather than hangs.
 
@@ -101,7 +101,7 @@ paths.
 
 Both modes first verify `release/release-manifest.json`, every manifest hash, safe path, and the closed
 wheel set. They copy the verified wheels into a unique
-`${CLAUDE_PLUGIN_DATA}/runtime/.staging/1.2.0-<id>` directory before one offline
+`${CLAUDE_PLUGIN_DATA}/runtime/.staging/1.3.0-<id>` directory before one offline
 `pip install --no-index --no-deps` invocation, run `pip check`, validate exact Toolkit/Monitor
 versions and assets, validate isolated `pyocd`, and validate doctor before promotion. Failed safe
 staging is removed; a staging tree containing redirects is preserved for manual recovery rather
@@ -118,4 +118,4 @@ After mutation, repeat CHECK. Toolchain gaps do not invalidate a healthy plugin 
 
 ## Available workflow handoff
 
-Once CHECK reports `healthy`, hand off to one of the eight release Skills: `/stm32-toolkit:migrate-keil`, `/stm32-toolkit:configure-stm32-project`, `/stm32-toolkit:build-firmware`, `/stm32-toolkit:flash-firmware`, `/stm32-toolkit:debug-firmware`, `/stm32-toolkit:read-var`, or `/stm32-toolkit:stm32-monitor`. Every workflow starts with `stm32_project_context`, keeps project-derived target/SVD selection authoritative, and requires explicit authorization at every modifying or ownership-release boundary. The Monitor UI is observation-only: it never connects a probe or starts sampling automatically, and opens only after the user explicitly asks.
+Once CHECK reports `healthy`, hand off to one of the eight release workflow Skills: `/stm32-toolkit:migrate-keil`, `/stm32-toolkit:configure-stm32-project`, `/stm32-toolkit:build-firmware`, `/stm32-toolkit:flash-firmware`, `/stm32-toolkit:debug-firmware`, `/stm32-toolkit:read-var`, or `/stm32-toolkit:stm32-monitor`. Every workflow starts with `stm32_project_context`, keeps project-derived target/SVD selection authoritative, and requires explicit authorization at every modifying or ownership-release boundary. The ninth bundled Skill, `normalize-source-comments`, is a separate explicit encoding-copy helper: it previews comment-only UTF-8 copies with per-file charsets into a new external directory, never edits the original project, and cannot remove migration blockers. The Monitor UI is observation-only: it never connects a probe or starts sampling automatically, and opens only after the user explicitly asks.

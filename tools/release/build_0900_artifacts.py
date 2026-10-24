@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build and verify the STM32 Toolkit 1.2.0 offline Windows bundle.
+"""Build and verify the STM32 Toolkit 1.3.0 offline Windows bundle.
 
 This module intentionally uses the Python standard library for the artifact
 boundary.  It does not resolve packages, contact an index, execute package
@@ -30,7 +30,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Mapping, Sequence
 
 
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 REPOSITORY = "https://github.com/XiaoyaoLinghao/stm32-toolkit.git"
 REQUIRED_PYTHON = ">=3.12,<3.13"
 MANIFEST_SCHEMA = "stm32-toolkit-release/1"
@@ -932,7 +932,7 @@ def _troubleshooting() -> bytes:
             f"- Full deployment and IDE checks: when reading the package-root troubleshooting.md, open the companion stm32-toolkit-{VERSION}-source.zip beside it and then open stm32-toolkit-{VERSION}/docs/testing/windows-deployment-and-ide-preflight.md inside that archive. In an extracted Windows bundle, the copy under stm32-toolkit-{VERSION}/release/troubleshooting.md is under the extracted Toolkit root; open ../docs/testing/windows-deployment-and-ide-preflight.md from release/ (or ToolkitRoot/docs/testing/windows-deployment-and-ide-preflight.md from the extracted ToolkitRoot).\n").encode("utf-8")
 
 
-def _manifest_shape(manifest: Any) -> None:
+def _manifest_shape(manifest: Any, policy: Mapping[str, Any]) -> None:
     if not isinstance(manifest, dict):
         _reject("release manifest is invalid")
     expected = {"schema", "productVersion", "requiredPython", "platform", "source", "runtimeStateSchema", "wheels", "artifacts", "publicInventory"}
@@ -950,16 +950,16 @@ def _manifest_shape(manifest: Any) -> None:
     if not isinstance(manifest["wheels"], list) or not isinstance(manifest["artifacts"], list):
         _reject("release manifest has an invalid shape")
     inventory = manifest["publicInventory"]
-    if inventory != {"mcpTools": 48, "skills": 8}:
+    if inventory != policy.get("publicInventory"):
         _reject("release manifest has an invalid public inventory")
 
 
 def _load_manifest(path: Path) -> dict[str, Any]:
     manifest = _strict_json(_read_bounded(path, MAX_MANIFEST_BYTES), limit=MAX_MANIFEST_BYTES)
-    _manifest_shape(manifest)
+    policy = _load_policy()
+    _manifest_shape(manifest, policy)
     names: set[str] = set()
     distributions: set[str] = set()
-    policy = _load_policy()
     expected_direct = _expected_direct_names(policy)
     direct_seen: set[str] = set()
     for wheel in manifest["wheels"]:
@@ -1179,15 +1179,20 @@ def _verify_runtime_state(state_path: Path, manifest_path: Path) -> tuple[str, d
 
 
 def _build_manifest(code_head: str, source_archive: bytes, product_wheels: Mapping[str, bytes], selected: Mapping[str, WheelInfo], artifacts: Mapping[str, bytes]) -> dict[str, Any]:
+    policy = _load_policy()
+    inventory = policy.get("publicInventory")
+    if not isinstance(inventory, dict) or set(inventory) != {"mcpTools", "skills"}:
+        _reject("release policy public inventory is invalid")
+    direct_names = _expected_direct_names(policy)
     wheels = []
     for normalized, info in sorted(selected.items()):
         file_name = f"release/wheels/{info.filename}"
         data = product_wheels.get(normalized, info.path.read_bytes())
-        wheels.append({"name": _canonical_distribution_name(info.name), "version": info.version, "file": file_name, "sha256": _sha256(data), "size": len(data), "direct": normalized in _expected_direct_names(_load_policy()), "license": info.license})
+        wheels.append({"name": _canonical_distribution_name(info.name), "version": info.version, "file": file_name, "sha256": _sha256(data), "size": len(data), "direct": normalized in direct_names, "license": info.license})
     artifact_entries = []
     for kind, (file_name, data) in sorted(artifacts.items()):
         artifact_entries.append({"kind": kind, "file": f"release/{file_name}", "sha256": _sha256(data), "size": len(data)})
-    return {"schema": MANIFEST_SCHEMA, "productVersion": VERSION, "requiredPython": REQUIRED_PYTHON, "platform": {"os": "windows", "architecture": "x86_64", "python": "cp312"}, "source": {"repository": REPOSITORY, "commit": code_head, "archive": f"stm32-toolkit-{VERSION}-source.zip", "sha256": _sha256(source_archive)}, "runtimeStateSchema": STATE_SCHEMA, "wheels": wheels, "artifacts": artifact_entries, "publicInventory": {"mcpTools": 48, "skills": 8}}
+    return {"schema": MANIFEST_SCHEMA, "productVersion": VERSION, "requiredPython": REQUIRED_PYTHON, "platform": {"os": "windows", "architecture": "x86_64", "python": "cp312"}, "source": {"repository": REPOSITORY, "commit": code_head, "archive": f"stm32-toolkit-{VERSION}-source.zip", "sha256": _sha256(source_archive)}, "runtimeStateSchema": STATE_SCHEMA, "wheels": wheels, "artifacts": artifact_entries, "publicInventory": dict(inventory)}
 
 
 def _build(args: argparse.Namespace) -> dict[str, Any]:
