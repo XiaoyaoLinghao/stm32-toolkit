@@ -27,3 +27,11 @@ Tests cover positive ST patterns, comments/strings/directive decoys and unknown 
 Claude authors tests and runs exact native PowerShell commands using coordinator-provided CPython/GCC paths in a clean frozen author head. Primary inspects the whole diff in a separate clean exact-CodeHead worktree and independently reruns focused public/compiler tests. Full release qualification and actual Keil-baseline/board equivalence remain later explicitly authorized phases.
 
 Compiler basis: GCC ARM naked functions have no prologue/epilogue and support basic asm only; https://gcc.gnu.org/onlinedocs/gcc/Basic-Asm.html and the installed GNU Arm compiler's disassembly are the evidence, not an assumption that a C intrinsic wrapper is stack-safe.
+
+## Implementation clarifications from draft review
+
+Known alignment and absolute-address attributes may compose on the same otherwise supported object. Reject extern/typedef/zero-size or uncertain storage declarations. New MSP wrappers use known 32-bit integer parameter forms; an unknown typedef is not proof of a safe scalar calling convention. The four asm patterns all require the explicit BX return from the design; preserve original newline convention and comment text, including comments around prototypes and trailing pragma comments.
+
+Macro replacement must preserve C token precedence, not evaluate each macro separately and substitute its integer value. The bounded decimal/hex grammar may reject leading-zero octal-looking forms and type-dependent operators such as unary complement instead of guessing C integer types. Limits must fail as diagnostics before expensive parsing/list materialization. Conditional includes carry conditional provenance to their definitions; stripping an ordinary include guard requires structural evidence and cannot assume an already-defined guard is absent. Quoted nested include paths are resolved component-wise with containment and redirect checks.
+
+Preflight adds `analysis.sourceChanges`, a concise list of proposed source patch paths, rule IDs and before/after digests. PLAN remains the full diff authority and APPLY remains the only authorized migration write. This is an additive output field, not a new tool, input parameter, permission or readiness gate. VS Code guidance must use the actual serialized names implemented and tested.
