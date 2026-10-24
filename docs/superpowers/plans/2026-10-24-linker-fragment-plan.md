@@ -1,0 +1,14 @@
+# LINKER-FRAGMENT implementation plan
+
+Base `b7ef2ebf2da37e127bf600d58878789cfbb23eb6`, branch `codex/linker-fragment`. Governing [design](../specs/2026-10-24-linker-fragment-design.md). Primary owns acceptance; Claude Code CLI owns code/tests/product guidance. Separate plan approval stop was waived. No ownership override or remote action.
+
+1. Add shared bounded fragment parsing/reading and frozen model representation; update paired schemas/model validation and conditional model identity. Keep absent-option compatibility.
+2. Integrate deterministic rendering and raw-byte input evidence into configure PLAN/APPLY and managed manifest provenance. Track fragment removal as well as edits; reject stale merged output before build spawn. Include fragment in build snapshots and conditional generated-linker link dependencies.
+3. Write synthetic unit/integration cases for grammar, ownership, stale input, transactions and public configuration routes; real GNU ARM compile/link plus ELF/MAP capacity and placement checks, with existing fixed sections and explicit memory extras. Do not touch the original project or hardware.
+4. Update user-guide, architecture if needed, and migrate-keil skill for exact configuration calls, diagnostics, supported NOLOAD subset and installed-source limitations.
+5. Freeze CodeHead. Claude executes coordinator-supplied native PowerShell pytest commands and skill quick_validate using verified Python3.12.14/GNU Arm GCC14.3.1, isolated `D:/codex-tmp/lf24`. Native actual tool events and machine results are required. Primary independently reviews full base-to-CodeHead diff in clean review tree and runs applicable checks; return correctable findings to Claude on this branch.
+6. Claude writes implementation report with accepted base, pre-report CodeHead, changed files, exact checks/results and limitations, without self-acceptance. Primary records independent verdict/evidence/checkpoint and integrates locally only after review.
+
+Allowed implementation: Toolkit `project_model.py`, paired manifest schemas, new `linker_fragment.py`, `generation/{configure,managed_files}.py`, affected `build/{identity,runner}.py` and minimal consumers only if needed for freshness, paired CMake/linker templates; new/affected Toolkit tests; `docs/{user-guide,architecture}.md`, `skills/migrate-keil/SKILL.md`, and slice author report. Ask coordinator before widening behavior/files. No unrelated modules, version/package changes, CI, automation, dependencies, global configs, runtime/asset updates, remote operations or original-project access.
+
+Evidence layers: author owns new cases and selected existing model/generation/build regressions on Windows; primary owns complete-diff review and independent focused/integration checks on clean exact CodeHead. Real symlink cases require capable OS privileges or remain explicitly deferred to primary release qualification. No required hardware layer in this slice.
