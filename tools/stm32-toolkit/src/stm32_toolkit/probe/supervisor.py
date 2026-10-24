@@ -37,6 +37,7 @@ class ProbeServiceConfig:
     operation_level: OperationLevel
     session_root: Path
     project_root: Path | None = None
+    programming_root: Path | None = field(default=None, repr=False, compare=False)
     control_authorizations: ControlAuthorizationStore | None = field(
         default=None, repr=False, compare=False
     )
@@ -111,6 +112,7 @@ class ProbeServiceSupervisor:
                     operation_level=self._config.operation_level,
                     session_root=self._config.session_root,
                     project_root=self._config.project_root,
+                    programming_root=self._config.programming_root,
                     handoff_ticket=handoff_ticket,
                     _runtime_root_authority=self._config._runtime_root_authority,
                     control_authorizations=self._control_authorizations,

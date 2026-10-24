@@ -11,6 +11,8 @@ from collections.abc import Iterable, Mapping
 from itertools import islice
 from typing import Callable, Protocol, runtime_checkable
 
+from elftools.elf.elffile import ELFFile
+
 from .backend import (
     DebugHandoffMetadata,
     FlashBackendReport,
@@ -1542,6 +1544,209 @@ class PyOCDBackend:
         session = self._session
         self._require_target()
         assert session is not None
+        options: dict[str, object] = {
+            "chipErase": "sector",
+            "trustCrc": False,
+            "keepUnwritten": True,
+            "progress": None,
+            "fileFormat": "elf",
+        }
+        try:
+            driver = self._get_driver()
+        except Exception as error:
+            raise self._program_failure("driver-acquire", error) from error
+        try:
+            driver.program_file(session, image, options=options)
+        except _DefaultPyOCDProgramError as error:
+            cause = error.original
+            raise self._program_failure(error.stage, cause) from cause
+        except Exception as error:
+            raise self._program_failure("program-call", error) from error
+        return FlashBackendReport(
+            bytes_programmed=None,
+            sectors_programmed=None,
+        )
+
+    @staticmethod
+    def _imported_segments(image: bytes) -> tuple[tuple[int, int], ...]:
+        """Parse the normalized ARM ELF programming image without driver I/O."""
+
+        try:
+            elf = ELFFile(BytesIO(image))
+            header = elf.header
+            ident = header["e_ident"]
+            if (
+                ident["EI_CLASS"] != "ELFCLASS32"
+                or ident["EI_DATA"] != "ELFDATA2LSB"
+                or ident.get("EI_VERSION") != "EV_CURRENT"
+                or header["e_type"] != "ET_EXEC"
+                or header["e_machine"] != "EM_ARM"
+            ):
+                raise ValueError("imported image header is unsupported")
+            phoff = int(header["e_phoff"])
+            phnum = int(header["e_phnum"])
+            phentsize = int(header["e_phentsize"])
+            if (
+                phentsize != 32
+                or phoff < 52
+                or not 0 <= phnum <= 1024
+                or phoff + phnum * phentsize > len(image)
+            ):
+                raise ValueError("imported image tables are invalid")
+            segments: list[tuple[int, int]] = []
+            total = 0
+            for segment in elf.iter_segments():
+                if segment.header.p_type != "PT_LOAD":
+                    continue
+                filesz = int(segment.header.p_filesz)
+                memsz = int(segment.header.p_memsz)
+                offset = int(segment.header.p_offset)
+                address = int(segment.header.p_paddr)
+                if filesz == 0:
+                    continue
+                if (
+                    filesz > memsz
+                    or offset < 0
+                    or offset + filesz > len(image)
+                    or address < 0
+                    or address + filesz > 0x1_0000_0000
+                ):
+                    raise ValueError("imported image segment is invalid")
+                segments.append((address, filesz))
+                total += filesz
+            segments.sort()
+            if (
+                not segments
+                or len(segments) > 1024
+                or total > _MAX_FLASH_BYTES
+            ):
+                raise ValueError("imported image segments are invalid")
+            for (address, length), (next_address, _next_length) in zip(
+                segments, segments[1:]
+            ):
+                if address + length > next_address:
+                    raise ValueError("imported image segments overlap")
+            return tuple(segments)
+        except Exception:
+            raise ProbeBackendError(
+                "PROBE_PROGRAM_INVALID", "Imported firmware image is invalid"
+            ) from None
+
+    @staticmethod
+    def _declared_flash_regions(target: object) -> tuple[tuple[int, int], ...]:
+        """Read the attached target's declared Flash map as support metadata.
+
+        This is the verified target's own memory map, not a new physical
+        capacity measurement.  A missing, malformed, or empty map fails
+        closed before any programming driver call.
+        """
+
+        try:
+            memory_map = getattr(target, "memory_map")
+            regions = getattr(memory_map, "regions")
+        except Exception:
+            raise ProbeBackendError(
+                "PROBE_OPERATION_UNAVAILABLE",
+                "Connected target Flash map is unavailable",
+            ) from None
+        if not isinstance(regions, (list, tuple)) or not regions:
+            raise ProbeBackendError(
+                "PROBE_OPERATION_UNAVAILABLE",
+                "Connected target Flash map is unavailable",
+            )
+        declared: list[tuple[int, int]] = []
+        for region in regions:
+            try:
+                is_flash = getattr(region, "is_flash")
+                start = getattr(region, "start")
+                length = getattr(region, "length")
+            except Exception:
+                raise ProbeBackendError(
+                    "PROBE_BACKEND_ERROR", "Connected target Flash map is invalid"
+                ) from None
+            if (
+                type(is_flash) is not bool
+                or type(start) is not int
+                or type(length) is not int
+                or start < 0
+                or length <= 0
+                or start + length > 0x1_0000_0000
+            ):
+                raise ProbeBackendError(
+                    "PROBE_BACKEND_ERROR", "Connected target Flash map is invalid"
+                )
+            if is_flash:
+                declared.append((start, length))
+        if not declared:
+            raise ProbeBackendError(
+                "PROBE_OPERATION_UNAVAILABLE",
+                "Connected target Flash map is unavailable",
+            )
+        declared.sort()
+        previous_end = -1
+        for start, length in declared:
+            # Overlapping or duplicated native intervals are ambiguous and
+            # are rejected rather than treated as extra capacity.
+            if start < previous_end:
+                raise ProbeBackendError(
+                    "PROBE_BACKEND_ERROR", "Connected target Flash map is invalid"
+                )
+            previous_end = start + length
+        return tuple(declared)
+
+    @staticmethod
+    def _covered_by_flash(
+        address: int,
+        length: int,
+        regions: tuple[tuple[int, int], ...],
+    ) -> bool:
+        """Require every byte to be covered by contiguous native Flash.
+
+        Adjacent Flash intervals may together cover one PT_LOAD segment, which
+        is how pyOCD's MemoryLoader also treats the STM32F429 64 KiB regions.
+        A gap, a non-Flash interval, or an uncovered tail fails.
+        """
+
+        end = address + length
+        cursor = address
+        for start, size in regions:
+            region_end = start + size
+            if region_end <= cursor:
+                continue
+            if start > cursor:
+                return False
+            cursor = region_end
+            if cursor >= end:
+                return True
+        return False
+
+    @classmethod
+    def _admit_imported_segments(
+        cls, image: bytes, target: object
+    ) -> tuple[tuple[int, int], ...]:
+        """Reject every non-Flash or out-of-range segment before programming."""
+
+        segments = cls._imported_segments(image)
+        regions = cls._declared_flash_regions(target)
+        for address, length in segments:
+            if not cls._covered_by_flash(address, length, regions):
+                raise ProbeBackendError(
+                    "PROBE_PROGRAM_INVALID",
+                    "Imported firmware segment is outside the connected target's Flash map",
+                )
+        return segments
+
+    def flash_imported_elf(self, image: bytes) -> FlashBackendReport:
+        """Program one normalized imported image after full map admission."""
+
+        if not isinstance(image, bytes) or not 1 <= len(image) <= _MAX_FLASH_BYTES:
+            raise ProbeBackendError(
+                "PROBE_PROGRAM_INVALID", "Firmware image is invalid"
+            )
+        session = self._session
+        target = self._require_target()
+        assert session is not None
+        self._admit_imported_segments(image, target)
         options: dict[str, object] = {
             "chipErase": "sector",
             "trustCrc": False,

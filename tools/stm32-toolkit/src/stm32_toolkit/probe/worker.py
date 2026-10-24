@@ -44,7 +44,8 @@ _MAX_OUTPUT_BYTES = 16 * 1024 * 1024
 _GRACE_SECONDS = 1.0
 _METHODS = {
     "preflight_target_capabilities", "list_probes", "open_attach", "read_memory",
-    "read_core_registers", "halt", "resume", "step", "reset", "flash_elf", "close",
+    "read_core_registers", "halt", "resume", "step", "reset", "flash_elf",
+    "flash_imported_elf", "close",
     "target_identity", "target_state", "target_observation_policy", "target_read_memory",
     "target_read_core_registers", "set_temporary_breakpoint",
     "clear_temporary_breakpoint", "capture_fault", "capture_logs",
@@ -336,7 +337,7 @@ def _worker_main(
                 _safe_attach_error_details(code, getattr(error, "details", None))
                 if method == "open_attach"
                 else _safe_program_error_details(code, getattr(error, "details", None))
-                if method == "flash_elf"
+                if method in {"flash_elf", "flash_imported_elf"}
                 else _safe_register_error_details(code, getattr(error, "details", None))
             )
             if safe_details is not None:
@@ -507,7 +508,7 @@ class ProbeBackendWorker:
                         _safe_attach_error_details(code, failure["details"])
                         if method == "open_attach"
                         else _safe_program_error_details(code, failure["details"])
-                        if method == "flash_elf"
+                        if method in {"flash_elf", "flash_imported_elf"}
                         else _safe_register_error_details(code, failure["details"])
                     )
                     if safe_details is None:
@@ -614,6 +615,8 @@ class ProbeBackendWorker:
     def reset(self) -> None: self.call("reset")
     def flash_elf(self, image: bytes) -> FlashBackendReport:
         return FlashBackendReport(**self.call("flash_elf", image, timeout_seconds=300.0))
+    def flash_imported_elf(self, image: bytes) -> FlashBackendReport:
+        return FlashBackendReport(**self.call("flash_imported_elf", image, timeout_seconds=300.0))
     def target_identity(self) -> Mapping[str, object]: return self.call("target_identity")
     def target_state(self) -> Mapping[str, object]: return self.call("target_state")
     def target_observation_policy(self) -> Mapping[str, object]: return self.call("target_observation_policy")

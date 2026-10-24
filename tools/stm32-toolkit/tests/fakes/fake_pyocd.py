@@ -44,6 +44,18 @@ class FakePyOCDProbe:
 _DEFAULT_MEMORY_RESULT = object()
 
 
+@dataclass(frozen=True)
+class FakeMemoryRegion:
+    start: int
+    length: int
+    is_flash: bool = True
+
+
+@dataclass(frozen=True)
+class FakeMemoryMap:
+    regions: tuple[FakeMemoryRegion, ...]
+
+
 class FakePyOCDTarget:
     def __init__(
         self,
@@ -52,11 +64,13 @@ class FakePyOCDTarget:
         registers: Mapping[str, int] | None = None,
         state: object = "halted",
         part_number: object = "stm32f407vg",
+        memory_map: object = None,
     ) -> None:
         self.memory = {address: bytes(data) for address, data in (memory or {}).items()}
         self.registers = dict(registers or {})
         self.state = state
         self.part_number = part_number
+        self.memory_map = memory_map
         self.cores: dict[int, object] = {0: self}
         self.calls: list[tuple[object, ...]] = []
         self.memory_result: object = _DEFAULT_MEMORY_RESULT

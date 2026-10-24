@@ -83,8 +83,15 @@ from stm32_toolkit.diagnostic_workflows import (
 )
 from stm32_toolkit.doctor import run_doctor
 from stm32_toolkit.tool_support import SupportProfileRequest, discover_tool_support
+from stm32_toolkit.external_firmware import (
+    FirmwareAdmitRequest,
+    FirmwareImportRequest,
+    firmware_admit_workflow,
+    firmware_import_workflow,
+)
 from stm32_toolkit.hardware_workflows import (
     FaultWorkflowRequest,
+    FlashImportedWorkflowRequest,
     FlashWorkflowRequest,
     HandoffBeginWorkflowRequest,
     HandoffEndWorkflowRequest,
@@ -93,6 +100,7 @@ from stm32_toolkit.hardware_workflows import (
     VariableReadWorkflowRequest,
     VariableSampleWorkflowRequest,
     fault_workflow,
+    flash_imported_workflow,
     flash_workflow,
     handoff_begin_workflow,
     handoff_end_workflow,
@@ -122,7 +130,9 @@ from stm32_toolkit import __version__
 
 
 _STDERR_LIMIT = 500
-_HARDWARE_COMMANDS = frozenset({"probe", "flash", "debug", "read", "fault"})
+_HARDWARE_COMMANDS = frozenset(
+    {"probe", "flash", "flash-imported", "debug", "read", "fault"}
+)
 _TEST_DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _DIAGNOSTIC_OPERATION_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
 _DIAGNOSTIC_SESSION_ID = re.compile(r"^[0-9a-f]{32}$")
@@ -429,6 +439,49 @@ def _build_parser() -> argparse.ArgumentParser:
         nargs=0,
         default=False,
     )
+
+    firmware = commands.add_parser("firmware")
+    firmware_commands = firmware.add_subparsers(
+        dest="firmware_command", required=True
+    )
+    firmware_import = firmware_commands.add_parser("import")
+    _add_hardware_context(firmware_import)
+    firmware_import.add_argument(
+        "--firmware-path", required=True, type=_firmware_portable_path
+    )
+    firmware_import.add_argument(
+        "--expected-sha256", required=True, type=_firmware_digest
+    )
+    firmware_import.add_argument(
+        "--format", required=True, choices=("elf", "hex", "bin")
+    )
+    firmware_import.add_argument(
+        "--target", required=True, type=_firmware_target
+    )
+    firmware_import.add_argument(
+        "--flash-regions", required=True, type=_flash_regions
+    )
+    firmware_import.add_argument(
+        "--base-address", type=_bounded_int(0, 0xFFFF_FFFF)
+    )
+    _add_dry_run_apply(firmware_import)
+    firmware_import.add_argument("--plan-id")
+    firmware_import.add_argument("--authorized", action="store_true")
+
+    firmware_admit = firmware_commands.add_parser("admit")
+    _add_hardware_context(firmware_admit)
+    firmware_admit.add_argument("--import-id", required=True, type=_firmware_digest)
+    firmware_admit.add_argument(
+        "--expected-sha256", required=True, type=_firmware_digest
+    )
+
+    flash_imported = commands.add_parser("flash-imported")
+    _add_hardware_context(flash_imported, probe=True)
+    flash_imported.add_argument("--import-id", required=True, type=_firmware_digest)
+    flash_imported.add_argument(
+        "--expected-sha256", required=True, type=_firmware_digest
+    )
+    flash_imported.add_argument("--authorized", action="store_true")
 
     debug = commands.add_parser("debug")
     debug_commands = debug.add_subparsers(dest="debug_command", required=True)
@@ -965,6 +1018,71 @@ def _testing_digest(value: str) -> str:
     return value
 
 
+def _firmware_digest(value: str) -> str:
+    if _TEST_DIGEST.fullmatch(value) is None:
+        raise argparse.ArgumentTypeError("invalid SHA-256 digest")
+    return value
+
+
+def _firmware_target(value: str) -> str:
+    if (
+        not value
+        or len(value) > 128
+        or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", value) is None
+    ):
+        raise argparse.ArgumentTypeError("invalid firmware target")
+    return value
+
+
+def _firmware_portable_path(value: str) -> str:
+    if (
+        not value
+        or len(value) > 1024
+        or value.startswith(("/", "\\"))
+        or "\\" in value
+        or ":" in value
+        or any(ord(character) < 32 or ord(character) == 127 for character in value)
+        or any(
+            not part or part in {".", ".."} or part != part.rstrip(" .")
+            for part in value.split("/")
+        )
+    ):
+        raise argparse.ArgumentTypeError("invalid portable firmware path")
+    return value
+
+
+def _flash_region_pairs(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    value: dict[str, object] = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError("duplicate flash-region field")
+        value[key] = item
+    return value
+
+
+def _flash_regions(value: str) -> tuple[tuple[int, int], ...]:
+    try:
+        parsed = json.loads(
+            value,
+            object_pairs_hook=_flash_region_pairs,
+            parse_constant=_reject_json_constant,
+        )
+    except (TypeError, ValueError, json.JSONDecodeError):
+        raise argparse.ArgumentTypeError("invalid flash regions") from None
+    if not isinstance(parsed, list) or not 1 <= len(parsed) <= 32:
+        raise argparse.ArgumentTypeError("invalid flash regions")
+    regions: list[tuple[int, int]] = []
+    for item in parsed:
+        if not isinstance(item, dict) or set(item) != {"start", "length"}:
+            raise argparse.ArgumentTypeError("invalid flash regions")
+        start = item["start"]
+        length = item["length"]
+        if type(start) is not int or type(length) is not int:
+            raise argparse.ArgumentTypeError("invalid flash regions")
+        regions.append((start, length))
+    return tuple(regions)
+
+
 def _acceptance_uuid(value: str) -> str:
     if _ACCEPTANCE_UUID.fullmatch(value) is None:
         raise argparse.ArgumentTypeError("invalid acceptance UUID")
@@ -1186,6 +1304,8 @@ def _hardware_operation_name(args: argparse.Namespace) -> str:
         return "stm32_probe_list"
     if args.command == "flash":
         return "stm32_flash"
+    if args.command == "flash-imported":
+        return "stm32_flash_imported"
     if args.command == "debug":
         return (
             "stm32_debug_handoff_begin"
@@ -1218,6 +1338,18 @@ async def _hardware_operation_result(
             context,
             probe_id=args.probe_id,
             authorized_action_digest=args.authorized_action_digest,
+        )
+    if args.command == "flash-imported":
+        return await flash_imported_workflow(
+            FlashImportedWorkflowRequest(
+                project_root,
+                args.data_root,
+                args.session_id,
+                args.probe,
+                args.import_id,
+                args.expected_sha256,
+                args.authorized,
+            )
         )
     common = (project_root, args.data_root, args.session_id)
     if args.command == "probe":
@@ -1292,6 +1424,32 @@ def _operation_result(
 ) -> OperationResult[object]:
     if args.command == "doctor":
         return run_doctor(project_root)
+    if args.command == "firmware":
+        if args.firmware_command == "import":
+            return firmware_import_workflow(
+                FirmwareImportRequest(
+                    project_root,
+                    args.data_root,
+                    args.session_id,
+                    args.firmware_path,
+                    args.expected_sha256,
+                    args.format,
+                    args.target,
+                    args.flash_regions,
+                    args.base_address,
+                    args.plan_id,
+                    args.authorized,
+                )
+            )
+        return firmware_admit_workflow(
+            FirmwareAdmitRequest(
+                project_root,
+                args.data_root,
+                args.session_id,
+                args.import_id,
+                args.expected_sha256,
+            )
+        )
     if args.command == "keil":
         if args.keil_command == "inspect":
             return inspect_keil_workflow(

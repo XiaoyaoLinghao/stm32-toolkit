@@ -50,6 +50,7 @@ def test_v2_schema_mirrors_and_closed_operation_matrix():
     jsonschema.Draft202012Validator.check_schema(schema)
     assert set(schema["properties"]["operation"]["enum"]) == {
         "probe.list", "probe.attach", "memory.read", "register.read", "probe.close", "flash.program",
+        "flash.program.imported",
         "target.transport.open", "target.transport.read", "target.transport.close", "target.identity.read",
         "target.state.read", "target.halt", "target.resume", "target.step",
         "target.reset",

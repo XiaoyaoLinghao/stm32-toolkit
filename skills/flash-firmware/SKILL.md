@@ -16,6 +16,43 @@ description: Use when a Claude Code user asks to discover a probe and flash an i
 7. Call `stm32_flash` with only the selected `probeId`, `expectedBuildId`, `expectedElfSha256`, and `authorized=true`.
 8. Return the complete operation result, including stable failure code, flash-result evidence, and `details.postFlash`. A successful flash proves only the existing programming and readback checks; target state is unknown and program execution is unverified.
 
+## Imported external firmware (current source/candidate only)
+
+Use this separate route only when the bound server actually exposes
+`stm32_firmware_import`, `stm32_firmware_admit`, and `stm32_flash_imported`;
+the published v1.2.0 runtime (48 tools) does not. It needs no managed
+`.stm32-project.json`, Git baseline, build receipt, or SVD. `capabilities.flash`
+in project context describes the managed route only and does not block this
+route.
+
+1. Ask for the original project-relative firmware path, its exact lowercase
+   SHA-256, the format (`elf`; AXF is parsed as ELF, `hex`, or `bin`), the exact
+   supported pyOCD target, and the reviewed internal-Flash regions. BIN also
+   requires an explicit uint32 base address and carries no debug symbols.
+2. Call `stm32_firmware_import` with no `planId` to obtain the read-only PLAN.
+   Show `data.planId`, `data.importId`, `data.source` (original SHA-256) and
+   `data.image` (normalized programming-image SHA-256, segments, entry). Never
+   conflate the source hash with the image hash.
+3. Obtain explicit authorization for the offline import copy, then repeat the
+   exact request with that `data.planId` and `authorized=true`. Import
+   authorization covers only the immutable copy and never authorizes hardware.
+4. Call `stm32_firmware_admit` with the exact `importId` and original source
+   SHA-256. Report `offlineReady`, `hardwareVerified=false`, and the remaining
+   requirements. Admission success is not a flash success, not a current build,
+   and not a reusable token. Never fabricate a manifest, `buildId`, or Git state
+   to replace it.
+5. Only if the user then asks to flash: call `stm32_probe_list`, require one
+   exact `probeId`, restate the exact import, probe, and target, and obtain a
+   new explicit authorization for this exact hardware operation.
+6. Call `stm32_flash_imported` with that `probeId`, `importId`, original source
+   SHA-256, and `authorized=true`. Report the complete result, including the
+   external-flash receipt path and `details.postFlash`
+   (`targetState=unknown`, `runVerified=false`).
+
+An imported receipt proves only the programming/readback checks for that
+immutable snapshot. It does not unlock debug, Monitor, Target tests, legacy
+flash evidence, reset/recovery, or a managed build identity.
+
 ## Boundaries
 
 - Never invoke PyOCD, a compiler, or a process directly. Call only the named MCP tools above.

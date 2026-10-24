@@ -175,6 +175,12 @@ class FakeProbeBackend:
         self.flashed_images.append(bytes(image))
         return FlashBackendReport(bytes_programmed=1024, sectors_programmed=2)
 
+    def flash_imported_elf(self, image: bytes) -> FlashBackendReport:
+        self._require_attach()
+        self.events.append(("flash_imported_elf", len(image)))
+        self.flashed_images.append(bytes(image))
+        return FlashBackendReport(bytes_programmed=1024, sectors_programmed=2)
+
     def close(self) -> None:
         if self.closed:
             return

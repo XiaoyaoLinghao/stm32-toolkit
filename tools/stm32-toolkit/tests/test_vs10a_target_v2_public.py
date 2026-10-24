@@ -404,7 +404,7 @@ def test_cli_and_registered_mcp_tools_run_real_v2_target_workflows(
     assert cli_event_names == mcp_event_names
 
 
-def test_mcp_inventory_is_exactly_the_frozen_48_names(tmp_path: Path) -> None:
+def test_mcp_inventory_is_exactly_the_current_source_52_names(tmp_path: Path) -> None:
     project = tmp_path / "project"
     project.mkdir()
     tools = asyncio.run(
@@ -412,9 +412,9 @@ def test_mcp_inventory_is_exactly_the_frozen_48_names(tmp_path: Path) -> None:
     )
 
     names = {tool.name for tool in tools}
-    assert len(names) == 48
+    assert len(names) == 52
     assert names == set(MCP_TOOL_NAMES.values())
-    assert len(MCP_TOOL_NAMES) == 48
+    assert len(MCP_TOOL_NAMES) == 52
 
 
 def test_cli_target_entry_point_rejects_identity_elf_target_and_address_injection(
