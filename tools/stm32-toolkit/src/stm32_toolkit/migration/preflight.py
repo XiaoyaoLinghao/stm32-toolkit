@@ -17,6 +17,7 @@ from stm32_toolkit.keil import KeilInspection
 from stm32_toolkit.memory_layout import MemoryLayout
 from stm32_toolkit.migration import git_guard
 from stm32_toolkit.migration.model import (
+    MigrationBlocker,
     MigrationPlanError,
     StartupOptions,
     inspection_sha256_for,
@@ -352,6 +353,231 @@ def _apply_readiness(
     }
 
 
+_NEEDS_USER_INPUT = "needs-user-input"
+_UNSUPPORTED = "unsupported"
+
+#: Known blocker classifications:
+#: ``(category, summary, tool, skill, requiredInputs)``.
+#: ``tool`` may name only a real MCP tool; the comment-copy helper is the
+#: separate ``normalize-source-comments`` Skill, reported in ``skill``.
+#: Every entry names only inputs that the current preflight actually accepts
+#: (``memoryLayout``); framework, FPU, and ABI overrides are deliberately
+#: absent because no such preflight parameter exists.
+_KNOWN_REMEDIATION: dict[
+    str, tuple[str, str, str | None, str | None, tuple[str, ...]]
+] = {
+    "MEMORY_LAYOUT_REQUIRED": (
+        _NEEDS_USER_INPUT,
+        "Choose exactly one existing region for each of flash, data, bss, heap,"
+        " and stack from data.analysis.memoryLayout.candidates, then pass that"
+        " same memoryLayout object to preflight, the PLAN call, and apply.",
+        "stm32_keil_preflight",
+        None,
+        ("memoryLayout",),
+    ),
+    "ARMCC_SOURCE_ENCODING_UNSUPPORTED": (
+        _NEEDS_USER_INPUT,
+        "Only when every affected file's charset is explicitly declared and"
+        " the reviewed change is comment-only, the normalize-source-comments"
+        " Skill can prepare a reviewed UTF-8 copy outside the project; verify"
+        " the bytes, then rerun inspect and preflight. Other byte sequences or"
+        " non-comment content remain unsupported, and Toolkit never transcodes"
+        " the original file.",
+        None,
+        "normalize-source-comments",
+        (),
+    ),
+    "MIGRATION_MANIFEST_EXISTS": (
+        _NEEDS_USER_INPUT,
+        "Review the existing .stm32-project.json conflict as the project owner"
+        " and decide whether that file or the migration tree should change;"
+        " preflight never edits, overwrites, or deletes it.",
+        None,
+        None,
+        (),
+    ),
+    "MIGRATION_MEMORY_INCOMPLETE": (
+        _UNSUPPORTED,
+        "The Keil project must declare at least one executable and one"
+        " writable memory region. Preflight does not synthesize missing"
+        " regions, and memoryLayout may only name declared regions.",
+        None,
+        None,
+        (),
+    ),
+    "MIGRATION_COMPILER_UNSUPPORTED": (
+        _UNSUPPORTED,
+        "Only an ARM Compiler 5 project is analyzed. Preflight has no"
+        " parameter to select another compiler or translate this toolchain.",
+        None,
+        None,
+        (),
+    ),
+    "MIGRATION_FRAMEWORK_SELECTION_REQUIRED": (
+        _UNSUPPORTED,
+        "Preflight has no framework selection parameter. Inspect the actual"
+        " project configuration and toolchain/build evidence, retain the"
+        " existing framework intent, and use a separately reviewed"
+        " project-owned port if the target toolchain requires a different"
+        " framework. Never remove framework controls merely to clear this"
+        " blocker.",
+        None,
+        None,
+        (),
+    ),
+    "MIGRATION_FPU_UNSUPPORTED": (
+        _UNSUPPORTED,
+        "Preflight has no FPU override. Inspect the Keil FPU evidence together"
+        " with the actual toolchain and build configuration, retain that"
+        " evidence, and use a separately reviewed project-owned port if the"
+        " target toolchain needs a different FPU setting. Do not alter the"
+        " evidence or invent an FPU fact merely to clear this blocker.",
+        None,
+        None,
+        (),
+    ),
+    "MIGRATION_FLOAT_ABI_REQUIRED": (
+        _UNSUPPORTED,
+        "Preflight has no float-ABI selection parameter. Inspect the actual"
+        " Keil and toolchain/build evidence, retain its current semantics, and"
+        " use a separately reviewed project-owned port if the float ABI must"
+        " change. Do not invent an ABI fact or alter the evidence merely to"
+        " clear this blocker.",
+        None,
+        None,
+        (),
+    ),
+    "MIGRATION_FLOAT_ABI_REQUIRES_FPU": (
+        _UNSUPPORTED,
+        "The Keil float-ABI evidence requires matching FPU evidence. Preflight"
+        " cannot supply either value; inspect and retain the actual"
+        " toolchain/build evidence and use a separately reviewed"
+        " project-owned port if those settings must change. Do not change one"
+        " fact merely to satisfy this cross-check.",
+        None,
+        None,
+        (),
+    ),
+    "MIGRATION_FLOAT_ABI_UNSUPPORTED": (
+        _UNSUPPORTED,
+        "Preflight has no float-ABI override. Inspect and retain the actual"
+        " Keil and toolchain/build evidence, and use a separately reviewed"
+        " project-owned port if a different float ABI is required. Do not"
+        " relabel unsupported evidence as supported merely to clear this"
+        " blocker.",
+        None,
+        None,
+        (),
+    ),
+    "ARMCC_ASSEMBLY_UNSUPPORTED": (
+        _UNSUPPORTED,
+        "Review the included ARMCC assembly. A conventional ST/CMSIS"
+        " Cortex-M3/M4/M7 startup file may be reviewed through the optional"
+        " startupStrategy=generate-cmsis-gcc route and its analysis.startup"
+        " diagnostics; arbitrary or unknown assembly is never promised or"
+        " translated automatically.",
+        "stm32_keil_preflight",
+        None,
+        (),
+    ),
+    "ARMCC_ABSOLUTE_PLACEMENT_UNSUPPORTED": (
+        _UNSUPPORTED,
+        "This absolute-placement grammar is not supported and is never"
+        " rewritten. Keep it project-owned and resolve it explicitly outside"
+        " the conversion.",
+        None,
+        None,
+        (),
+    ),
+    "ARMCC_OPTION_UNSUPPORTED": (
+        _UNSUPPORTED,
+        "Scoped or target ARMCC compiler options are not representable."
+        " Inspect the option evidence, retain its intended semantics, and use"
+        " a separately reviewed project-owned port; preflight has no option"
+        " override, and controls must not be removed merely to clear this"
+        " blocker.",
+        None,
+        None,
+        (),
+    ),
+    "ARMCC_PRAGMA_UNSUPPORTED": (
+        _UNSUPPORTED,
+        "This ARMCC pragma has no supported automatic translation. Review the"
+        " reported evidence and handle it as a project-owned source change.",
+        None,
+        None,
+        (),
+    ),
+    "ARMCC_FINDING_UNSUPPORTED": (
+        _UNSUPPORTED,
+        "This inspection finding has no supported automatic translation."
+        " Review the reported evidence and handle it as a project-owned"
+        " change.",
+        None,
+        None,
+        (),
+    ),
+    "ARMCC_LINKER_CONFIGURATION_UNSUPPORTED": (
+        _UNSUPPORTED,
+        "The linker or scatter configuration requires project-owned"
+        " translation and is never rewritten automatically. Review the"
+        " reported evidence outside preflight.",
+        None,
+        None,
+        (),
+    ),
+}
+
+_STARTUP_REMEDIATION_SUMMARY = (
+    "Review analysis.startup and its diagnostics. The reviewed"
+    " startupStrategy=generate-cmsis-gcc route covers only the conventional"
+    " ST/CMSIS Cortex-M3/M4/M7 pattern and does not promise support for this"
+    " startup diagnostic."
+)
+_UNKNOWN_REMEDIATION_SUMMARY = (
+    "No supported remediation is defined for this blocker code in the current"
+    " preflight. Review the returned code, rule_id, path, line, column,"
+    " evidence, and message; Toolkit does not auto-fix, suppress, or bypass"
+    " it."
+)
+
+
+def _remediation(
+    category: str,
+    summary: str,
+    tool: str | None = None,
+    skill: str | None = None,
+    required_inputs: tuple[str, ...] = (),
+) -> dict[str, object]:
+    value: dict[str, object] = {
+        "category": category,
+        "summary": summary,
+        "requiredInputs": list(required_inputs),
+    }
+    if tool is not None:
+        value["tool"] = tool
+    if skill is not None:
+        value["skill"] = skill
+    return value
+
+
+def _remediation_for(blocker: MigrationBlocker) -> dict[str, object]:
+    """Classify one blocker without changing the blocker or conversion plan."""
+    known = _KNOWN_REMEDIATION.get(blocker.code)
+    if known is not None:
+        category, summary, tool, skill, required_inputs = known
+        return _remediation(
+            category,
+            summary,
+            tool=tool,
+            skill=skill,
+            required_inputs=required_inputs,
+        )
+    if blocker.code.startswith("MIGRATION_STARTUP_"):
+        return _remediation(_UNSUPPORTED, _STARTUP_REMEDIATION_SUMMARY)
+    return _remediation(_UNSUPPORTED, _UNKNOWN_REMEDIATION_SUMMARY)
+
+
 def preflight_keil_conversion(
     root: Path,
     inspection: KeilInspection,
@@ -374,8 +600,15 @@ def preflight_keil_conversion(
     git = _git_state(analysis.project_root)
 
     by_code: dict[str, int] = {}
+    by_remediation = {_NEEDS_USER_INPUT: 0, _UNSUPPORTED: 0}
+    blockers: list[dict[str, object]] = []
     for blocker in analysis.blockers:
         by_code[blocker.code] = by_code.get(blocker.code, 0) + 1
+        remediation = _remediation_for(blocker)
+        category = remediation["category"]
+        assert isinstance(category, str)
+        by_remediation[category] += 1
+        blockers.append({**blocker.to_dict(), "remediation": remediation})
 
     fresh = analysis.inspection
     plan_readiness = _plan_readiness(
@@ -398,10 +631,11 @@ def preflight_keil_conversion(
                 "inspectionSha256": inspection_sha256_for(fresh),
             },
             "inputs": [entry.to_dict() for entry in analysis.inputs],
-            "blockers": [blocker.to_dict() for blocker in analysis.blockers],
+            "blockers": blockers,
             "blockerSummary": {
                 "total": len(analysis.blockers),
                 "byCode": dict(sorted(by_code.items())),
+                "byRemediation": dict(sorted(by_remediation.items())),
             },
             "fixedSections": [
                 section.to_dict() for section in analysis.fixed_sections

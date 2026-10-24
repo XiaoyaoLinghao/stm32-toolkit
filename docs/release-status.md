@@ -1,5 +1,21 @@
 # Release status and retained limitations
 
+## AI-CALL-GUIDANCE source-only slice — 2026-10-24
+
+The `codex/ai-call-guidance` branch adds offline AI invocation guidance at accepted base
+`c6cf5cda7a25e4aa0b1335558ab0ffe16fbb32be`: version/binding verification from existing
+doctor/context evidence, additive `data.firmwareRoutes` route separation, preflight-only
+blocker remediation classification, and synchronized tool/skill/user guidance. It does not
+bump the version or public inventory, change migration/import/flash/provenance/authorization
+behavior, rebuild or replace the frozen v1.3.0 local artifacts at source
+`1e6ea849c21fb3786d60dba0254acb375d016a62`, install or restart any runtime, or claim a
+public release or qualification. No installation qualification is recorded for this
+slice: a separate user session installed an earlier candidate, which this slice does not
+verify. All dated v1.3.0 and v1.2.0 claims below remain as recorded. A VS Code restart
+refreshes an installed MCP server; it does not install this source-only patch, and the
+absence of the new `firmwareRoutes`/`remediation` fields from a frozen pre-patch build is
+not evidence of a stale MCP server.
+
 ## v1.3.0 local candidate — built and locally verified, not released
 
 The `codex/v1.3.0` branch carries a **local** v1.3.0 Release candidate at source

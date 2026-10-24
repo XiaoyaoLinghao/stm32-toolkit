@@ -459,9 +459,14 @@ def test_skills_explain_preflight_statuses_and_discovery_boundaries():
     ):
         assert phrase in flash
     discovery = flash.index("**Discovery-only request.**")
-    build_requirement = flash.index("**Flash request.**")
+    build_requirement = flash.index("**Managed flash request.**")
     assert discovery < build_requirement
     assert "Finish here." in flash[discovery:build_requirement]
+    # Discovery-only precedes any context/model gate.
+    assert flash.index("**Discovery-only request.**") < flash.index(
+        "Call `stm32_project_context`"
+    )
+    assert "do not require a model" in flash
 
     read_var = (
         REPO_ROOT / "skills" / "read-var" / "SKILL.md"

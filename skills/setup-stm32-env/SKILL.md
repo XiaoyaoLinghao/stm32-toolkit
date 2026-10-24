@@ -7,7 +7,7 @@ description: Use when a Claude Code user asks to check, bootstrap, repair, or di
 
 ## Overview
 
-`/stm32-toolkit:setup-stm32-env` is the Skill-only bootstrap path before the MCP runtime exists. Always start with CHECK. Run Bootstrap or Repair only after explicit authorization for that exact mutation. After the runtime is healthy, the MCP tools expose Keil migration, configuration, build, probe flash, handoff, and typed debug workflows; every workflow Skill starts with `stm32_project_context`.
+`/stm32-toolkit:setup-stm32-env` is the Skill-only bootstrap path before the MCP runtime exists. Always start with CHECK. Run Bootstrap or Repair only after explicit authorization for that exact mutation. After the runtime is healthy, the MCP tools expose Keil migration, configuration, build, probe flash, handoff, and typed debug workflows; every managed-project workflow Skill starts with `stm32_project_context`. The discovery-only probe request does not, and an explicitly selected external/snapshot import validates its own declared inputs rather than requiring a managed model.
 
 ## Non-negotiable boundaries
 
@@ -72,6 +72,38 @@ running this separate command:
 
 `Check` is read-only. Run at most one mutation command for the decision, then repeat `Check`.
 
+## Verify version and binding
+
+Use existing evidence only. Repeat `stm32_doctor` and `stm32_project_context` through the actual MCP client: the PowerShell commands below start a separate CLI process and do not prove what that live MCP process registered. `stm32_doctor` `data.runtime.toolkitVersion` and `data.publicInventory` describe the server; compare them with the actual tool list and input schemas the client exposes, and keep `stm32_project_context` `data.project.root` authoritative. An inventory count is not proof that the client registered those tools, and a launcher/CLI version alone does not prove the bound MCP version. After an upgrade restart VS Code once, then verify again. If expected tools or fields are missing, or the root differs, preserve the full JSON and stop the dependent operation.
+
+`data.firmwareRoutes` and preflight `remediation` are source-only fields from this patch. A frozen v1.3.0 ZIP/runtime built before it will not return them; their absence there is not proof of a stale MCP server. They become checkable only after a later matching build is installed.
+
+The following reads and prints the unfiltered JSON before checking `ok`; do not pipe it through `Select-Object`, `head`, or `grep`:
+
+```powershell
+$DataRoot = 'C:\data\stm32-toolkit'
+$ProjectRoot = 'C:\work\blinky'
+$CandidateCli = Join-Path $DataRoot 'runtime\1.3.0\Scripts\stm32-toolkit.exe'
+
+& $CandidateCli version
+$DoctorText = & $CandidateCli --project-root $ProjectRoot doctor --json | Out-String
+$DoctorText
+$Doctor = $DoctorText | ConvertFrom-Json
+if (-not $Doctor.ok) { throw "doctor failed: $($Doctor.code): $($Doctor.message)" }
+$Doctor.data.runtime.toolkitVersion
+$Doctor.data.publicInventory
+
+$ContextText = & $CandidateCli --project-root $ProjectRoot project context --data-root $DataRoot --session-id verify-1 --json | Out-String
+$ContextText
+$Context = $ContextText | ConvertFrom-Json
+if (-not $Context.ok) { throw "context failed: $($Context.code): $($Context.message)" }
+$Context.data.project.root
+$Context.data.capabilityDetails
+$Context.data.firmwareRoutes
+```
+
+Keep every `details.*` field when a result is `ok=false`; read the complete result before summarizing. The context `firmwareRoutes.managed` entry mirrors `capabilityDetails.flash`; `firmwareRoutes.imported` is always `not-evaluated` in context and does not require Git or a managed model. Tool availability is not image readiness, and a managed blocker never selects the imported route automatically.
+
 ## CHECK
 
 CHECK always returns JSON. `bundle.status` is `missing` or verified, and `runtimeState.status` is
@@ -118,4 +150,4 @@ After mutation, repeat CHECK. Toolchain gaps do not invalidate a healthy plugin 
 
 ## Available workflow handoff
 
-Once CHECK reports `healthy`, hand off to one of the eight release workflow Skills: `/stm32-toolkit:migrate-keil`, `/stm32-toolkit:configure-stm32-project`, `/stm32-toolkit:build-firmware`, `/stm32-toolkit:flash-firmware`, `/stm32-toolkit:debug-firmware`, `/stm32-toolkit:read-var`, or `/stm32-toolkit:stm32-monitor`. Every workflow starts with `stm32_project_context`, keeps project-derived target/SVD selection authoritative, and requires explicit authorization at every modifying or ownership-release boundary. The ninth bundled Skill, `normalize-source-comments`, is a separate explicit encoding-copy helper: it previews comment-only UTF-8 copies with per-file charsets into a new external directory, never edits the original project, and cannot remove migration blockers. The Monitor UI is observation-only: it never connects a probe or starts sampling automatically, and opens only after the user explicitly asks.
+Once CHECK reports `healthy`, hand off to one of the eight release workflow Skills: `/stm32-toolkit:migrate-keil`, `/stm32-toolkit:configure-stm32-project`, `/stm32-toolkit:build-firmware`, `/stm32-toolkit:flash-firmware`, `/stm32-toolkit:debug-firmware`, `/stm32-toolkit:read-var`, or `/stm32-toolkit:stm32-monitor`. Every managed-project workflow starts with `stm32_project_context`, keeps project-derived target/SVD selection authoritative, and requires explicit authorization at every modifying or ownership-release boundary. Discovery-only probe interrogation needs no context or managed model. An explicitly selected external/snapshot import is separate: it validates its own declared path/hash/format/target/Flash-region inputs and does not require a managed model, though invalid roots or binding errors still stop it; no route switches automatically. The ninth bundled Skill, `normalize-source-comments`, is a separate explicit encoding-copy helper: it previews comment-only UTF-8 copies with per-file charsets into a new external directory, never edits the original project, and cannot remove migration blockers. The Monitor UI is observation-only: it never connects a probe or starts sampling automatically, and opens only after the user explicitly asks.

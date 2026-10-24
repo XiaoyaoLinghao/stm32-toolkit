@@ -64,6 +64,56 @@ EMPTY_MANAGED = {
     "managedFilesDrifted": [],
 }
 
+#: Exact managed-only flash guidance.  Only this capability names the
+#: Git-shaped provenance stop and the separate imported route.
+FLASH_NOT_EVALUATED_REASON = (
+    "Project context does not enumerate probes or inspect target state, so "
+    "this hardware capability is not evaluated here; the tool still exists. "
+    "This managed flash entry covers only stm32_flash and requires Git-shaped "
+    "managed firmware provenance: a build from a non-Git input snapshot is "
+    "build-only and firmware admission refuses it with "
+    "FIRMWARE_PROVENANCE_UNSUPPORTED before any probe, lease, or attach "
+    "effect. It does not describe a separately selected imported image."
+)
+FLASH_NOT_EVALUATED_NEXT_STEPS = [
+    "Call stm32_probe_list to enumerate connected probes. It requires no "
+    "build, debug backend, target, or SVD and does not modify the board.",
+    "For this managed route, build and inspect snapshot firmware without "
+    "Git; to flash the managed build identity, restore a Git repository with "
+    "a committed HEAD and rebuild. Never fabricate a commit or dirty state.",
+    "A separately selected external/snapshot import is a different route "
+    "(stm32_firmware_import -> stm32_firmware_admit -> "
+    "stm32_flash_imported) with its own inputs and authorizations; it is not "
+    "an available or admitted image in context and never substitutes "
+    "automatically for this managed identity.",
+]
+
+
+def pop_firmware_routes(payload: dict) -> dict:
+    """Assert the route contract without duplicating its prose in the dict."""
+    data = payload["data"]
+    routes = data.pop("firmwareRoutes")
+    flash = data["capabilityDetails"]["flash"]
+    managed = routes["managed"]
+    assert managed["status"] == flash["status"]
+    assert managed["reason"] == flash["reason"]
+    assert managed["nextSteps"] == flash["nextSteps"]
+    assert managed["identity"] == ["buildId", "elfSha256"]
+    assert managed["requiresGit"] is True
+    assert managed["requiresManagedModel"] is True
+    assert "stm32_flash" in managed["tools"]
+    imported = routes["imported"]
+    assert imported["status"] == "not-evaluated"
+    assert imported["requiresGit"] is False
+    assert imported["requiresManagedModel"] is False
+    assert imported["selection"] == "explicit"
+    assert imported["tools"] == [
+        "stm32_firmware_import",
+        "stm32_firmware_admit",
+        "stm32_flash_imported",
+    ]
+    return routes
+
 
 @pytest.mark.parametrize("schema_version", [2, 3])
 def test_configured_context_reports_evidence_sections_without_build(
@@ -76,7 +126,10 @@ def test_configured_context_reports_evidence_sections_without_build(
         manifest.write_text(json.dumps(payload), encoding="utf-8")
     result = build_project_context(configured_project, tmp_path.parent / "data", "session-a")
 
-    assert result.to_dict() == {
+    payload = result.to_dict()
+    routes = pop_firmware_routes(payload)
+    assert routes["managed"]["status"] == "not-evaluated"
+    assert payload == {
         "protocol": "stm32-toolkit/1",
         "ok": True,
         "operation": "project.context",
@@ -164,11 +217,8 @@ def test_configured_context_reports_evidence_sections_without_build(
                 },
                 "flash": {
                     "status": "not-evaluated",
-                    "reason": "Project context does not enumerate probes or inspect target state, so this hardware capability is not evaluated here; the tool still exists. Hardware operations also require Git-shaped firmware provenance: a build from a non-Git input snapshot is build-only and hardware admission refuses it with FIRMWARE_PROVENANCE_UNSUPPORTED.",
-                    "nextSteps": [
-                        "Call stm32_probe_list to enumerate connected probes. It requires no build, debug backend, target, or SVD and does not modify the board.",
-                        "Build and inspect snapshot firmware without Git; to flash or debug, restore a Git repository with a committed HEAD and rebuild. Never fabricate a commit or dirty state.",
-                    ],
+                    "reason": FLASH_NOT_EVALUATED_REASON,
+                    "nextSteps": FLASH_NOT_EVALUATED_NEXT_STEPS,
                 },
                 "targetTest": {
                     "status": "not-evaluated",
@@ -305,11 +355,8 @@ def test_keil_context_stays_read_only_and_reports_inspection_capabilities(
             },
             "flash": {
                 "status": "not-evaluated",
-                "reason": "Project context does not enumerate probes or inspect target state, so this hardware capability is not evaluated here; the tool still exists. Hardware operations also require Git-shaped firmware provenance: a build from a non-Git input snapshot is build-only and hardware admission refuses it with FIRMWARE_PROVENANCE_UNSUPPORTED.",
-                "nextSteps": [
-                    "Call stm32_probe_list to enumerate connected probes. It requires no build, debug backend, target, or SVD and does not modify the board.",
-                    "Build and inspect snapshot firmware without Git; to flash or debug, restore a Git repository with a committed HEAD and rebuild. Never fabricate a commit or dirty state.",
-                ],
+                "reason": FLASH_NOT_EVALUATED_REASON,
+                "nextSteps": FLASH_NOT_EVALUATED_NEXT_STEPS,
             },
             "targetTest": {
                 "status": "not-evaluated",

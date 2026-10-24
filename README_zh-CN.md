@@ -57,7 +57,15 @@ $SetupScript = Join-Path $ToolkitRoot 'bin\setup-stm32-env.ps1'
 
 ### v1.3.0 本地候选
 
-v1.3.0 本地候选不是 GitHub Release，也没有公开下载链接、tag、安装或资格结论；本地候选的构建与验证记录在交付证据中，完整资格验证与发布仍待完成。候选标识为 `1.3.0`，使用 `DataRoot/runtime/1.3.0`，并把已有的 v1.2.0 runtime 或生成工程视为旧版输入，只能经显式授权的 Repair 或 configure 事务推进。候选包含只读 Keil preflight、snapshot 构建、受控 CMSIS startup 生成、显式多 RAM 布局，以及已集成的外部固件路线：把原始 ELF/AXF、Intel HEX 或 BIN 导入不可变快照，离线准入，再对单个精确探针单独授权烧录。候选提供 52 个 MCP 工具和 9 个 Skill；已发布的 v1.2.0 runtime 仍是冻结的 48 工具、8 Skill 包。不要把任何 v1.3.0 资产描述为 GitHub 公开下载，也不要沿用 v1.2.0 的资格例外。
+v1.3.0 本地候选不是 GitHub Release，也没有公开下载链接或 tag。本文未记录安装资格：另一用户会话曾安装候选，本源码切片不复核或声称其已通过资格验证。本地候选的构建与验证记录在交付证据中，完整资格验证与发布仍待完成。候选标识为 `1.3.0`，使用 `DataRoot/runtime/1.3.0`，并把已有的 v1.2.0 runtime 或生成工程视为旧版输入，只能经显式授权的 Repair 或 configure 事务推进。候选包含只读 Keil preflight、snapshot 构建、受控 CMSIS startup 生成、显式多 RAM 布局，以及已集成的外部固件路线：把原始 ELF/AXF、Intel HEX 或 BIN 导入不可变快照，离线准入，再对单个精确探针单独授权烧录。候选提供 52 个 MCP 工具和 9 个 Skill；已发布的 v1.2.0 runtime 仍是冻结的 48 工具、8 Skill 包。不要把任何 v1.3.0 资产描述为 GitHub 公开下载，也不要沿用 v1.2.0 的资格例外。
+
+#### AI 调用指引（仅当前源码）
+
+用现有证据核对绑定：在**实际 MCP 客户端**重复 `stm32_doctor` 与 `stm32_project_context`，比较 `data.runtime.toolkitVersion`、`data.publicInventory` 与客户端真实列出的工具/input schema，并以 `data.project.root` 为根权威。启动器/CLI 进程或清单数量不能证明 MCP 客户端实际注册了哪些工具。升级后重启 VS Code 一次再验证；工具/字段缺失或根不一致时，保存完整结果并停止依赖该能力的操作。先读取并保留完整 `OperationResult`（含 `ok=false` 的 `details` 与 `capabilityDetails`），再作简明总结；读取 `data` 前先检查 `ok`，不要压平成旧布尔值。
+
+成功的 context 新增 `data.firmwareRoutes`。`managed` 与 `capabilityDetails.flash` 一致，使用 `stm32_flash` 并依赖 `buildId`/`elfSha256` 与 Git-shaped provenance；只有这条 managed 路线带 provenance 停止规则。`imported` 在 context 中始终是 `not-evaluated`：`stm32_firmware_import` -> `stm32_firmware_admit` -> `stm32_flash_imported`，不需要 Git 或托管模型，不可变副本与硬件操作各自独立授权，且不具备托管 debug/Monitor/Target/recovery 资格；debug/Monitor/Target 指引绝不把 imported 回执当作补救。工具存在不等于镜像就绪；managed blocker 不阻断单独显式选择的 imported 路线，任何路线也不会自动切换。context 模型错误保留自身诊断，不证明 imported 入口不存在；无效 root、绑定错误或该入口自身的错误仍然停止。`stm32_keil_preflight` 为每个 blocker 增加 `remediation`（`needs-user-input` 或 `unsupported`）与 `blockerSummary.byRemediation`；可选 `tool` 只命名真实 MCP 工具，可选 `skill` 单独命名 `normalize-source-comments` Skill。`uvprojx`/`targetName` 是基本选择参数；与 remediation 相关的可选补充参数只有 `memoryLayout`（以及独立的 startup 选项），没有 FPU/framework/ABI 覆盖参数，也没有自动修复；编码副本仅在每个受影响文件 charset 明确声明且改动仅限注释时适用，其它字节仍不受支持。framework/FPU/ABI/option 指引必须检查并保留实际工具链/构建语义，不得为清除 blocker 改证据或删控件。
+
+本指引属于当前源码切片，**不在**冻结的 `1e6ea849` v1.3.0 本地产物或 runtime 中，因此 `firmwareRoutes` 与 `remediation` 在该包中缺失是预期行为，**不是** MCP 过期的证据；它们需要后续匹配构建/安装才可检查。重启 VS Code 只会刷新已安装服务器，不会安装本补丁。可复制的版本/doctor/context PowerShell 与 MCP 路线示例见[用户指南](docs/user-guide.md)。
 
 #### 本地 v1.3.0 发行包
 

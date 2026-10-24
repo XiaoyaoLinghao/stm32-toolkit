@@ -111,6 +111,17 @@ def build_project_context(
     build = _build_evidence(manifest)
     build_ready = _build_ready(build)
     configure_available = _valid_supported_schema(canonical_root)
+    capability_details = _configured_capability_details(
+        build=build,
+        build_ready=build_ready,
+        configure_available=configure_available,
+        snapshot_fresh=(
+            build.get("elfFresh") is True
+            and build.get("sourceBaseline") == SOURCE_BASELINE_INPUT_SNAPSHOT
+        ),
+    )
+    flash_details = capability_details["flash"]
+    assert isinstance(flash_details, dict)
     return _context_success(
         {
             "project": {
@@ -130,16 +141,8 @@ def build_project_context(
                 build_available=build_ready,
                 configure_available=configure_available,
             ),
-            "capabilityDetails": _configured_capability_details(
-                build=build,
-                build_ready=build_ready,
-                configure_available=configure_available,
-                snapshot_fresh=(
-                    build.get("elfFresh") is True
-                    and build.get("sourceBaseline")
-                    == SOURCE_BASELINE_INPUT_SNAPSHOT
-                ),
-            ),
+            "capabilityDetails": capability_details,
+            "firmwareRoutes": _firmware_routes(flash_details),
             "recommendedActions": [],
         }
     )
@@ -202,27 +205,42 @@ _HARDWARE_NEXT_STEPS = (
 )
 _FLASH_NOT_EVALUATED_REASON = (
     _HARDWARE_NOT_EVALUATED_REASON
-    + " Hardware operations also require Git-shaped firmware provenance: a"
-    " build from a non-Git input snapshot is build-only and hardware"
-    " admission refuses it with FIRMWARE_PROVENANCE_UNSUPPORTED."
+    + " This managed flash entry covers only stm32_flash and requires"
+    " Git-shaped managed firmware provenance: a build from a non-Git input"
+    " snapshot is build-only and firmware admission refuses it with"
+    " FIRMWARE_PROVENANCE_UNSUPPORTED before any probe, lease, or attach"
+    " effect. It does not describe a separately selected imported image."
 )
 _FLASH_NEXT_STEPS = (
     _HARDWARE_NEXT_STEPS,
-    "Build and inspect snapshot firmware without Git; to flash or debug,"
-    " restore a Git repository with a committed HEAD and rebuild. Never"
-    " fabricate a commit or dirty state.",
+    "For this managed route, build and inspect snapshot firmware without Git;"
+    " to flash the managed build identity, restore a Git repository with a"
+    " committed HEAD and rebuild. Never fabricate a commit or dirty state.",
+    "A separately selected external/snapshot import is a different route"
+    " (stm32_firmware_import -> stm32_firmware_admit -> stm32_flash_imported)"
+    " with its own inputs and authorizations; it is not an available or"
+    " admitted image in context and never substitutes automatically for this"
+    " managed identity.",
 )
 _SNAPSHOT_HARDWARE_REASON = (
-    "A current debug build has sourceBaseline input-snapshot-v1 because Git"
-    " provenance was unavailable. Firmware admission refuses this evidence"
-    " with FIRMWARE_PROVENANCE_UNSUPPORTED before any probe, lease, or attach"
+    "This managed capability depends on the current managed build's firmware"
+    " admission. The build has sourceBaseline input-snapshot-v1 because Git"
+    " provenance was unavailable, so admission refuses it with"
+    " FIRMWARE_PROVENANCE_UNSUPPORTED before any probe, lease, or attach"
     " effect; no hardware state was evaluated."
 )
 _SNAPSHOT_HARDWARE_NEXT_STEPS = (
-    "Restore a Git repository with a committed HEAD, rebuild, and re-run"
-    " stm32_project_context; never fabricate a commit or dirty state.",
+    "For the managed route, restore a Git repository with a committed HEAD,"
+    " rebuild, and re-run stm32_project_context; never fabricate a commit or"
+    " dirty state.",
     "Probe discovery remains independent: stm32_probe_list requires no"
     " firmware identity and does not modify the board.",
+)
+_SNAPSHOT_FLASH_NEXT_STEPS = _SNAPSHOT_HARDWARE_NEXT_STEPS + (
+    "This managed flash stop does not select another route: a separately"
+    " selected imported image (stm32_firmware_import -> stm32_firmware_admit"
+    " -> stm32_flash_imported) has its own inputs and authorizations, and its"
+    " receipt is never a managed build identity.",
 )
 
 
@@ -233,6 +251,9 @@ def _unconfigured_context(
     recommended = [detection.recommended_action.to_dict()]
     if keil_detected:
         recommended.append(dict(_PREFLIGHT_ACTION))
+    capability_details = _unconfigured_capability_details(detection.kind)
+    flash_details = capability_details["flash"]
+    assert isinstance(flash_details, dict)
     return {
         "project": {
             "kind": detection.kind,
@@ -249,7 +270,8 @@ def _unconfigured_context(
             keil_preflight=keil_detected,
             keil_convert=keil_detected,
         ),
-        "capabilityDetails": _unconfigured_capability_details(detection.kind),
+        "capabilityDetails": capability_details,
+        "firmwareRoutes": _firmware_routes(flash_details),
         "recommendedActions": recommended,
     }
 
@@ -346,6 +368,67 @@ def _capability(
     return {"status": status, "reason": reason, "nextSteps": list(next_steps)}
 
 
+_IMPORTED_ROUTE_REASON = (
+    "Project context does not read or evaluate any external firmware, target,"
+    " migration plan, MAP, admission, or probe, so this route is not"
+    " evaluated. Tool availability is not image readiness. A managed blocker"
+    " or failure never selects this route automatically."
+)
+_IMPORTED_ROUTE_NEXT_STEPS = (
+    "For an explicitly selected external/snapshot import, collect the original"
+    " project-relative firmware path, its SHA-256, format, supported target,"
+    " and reviewed internal Flash regions (plus a BIN base address), then call"
+    " stm32_firmware_import without planId for a read-only PLAN. Keep the"
+    " plan source SHA-256 distinct from the normalized image SHA-256.",
+    "After separate authorization for the immutable offline copy, apply that"
+    " exact planId and call stm32_firmware_admit offline. Only a new explicit"
+    " authorization for one exact probe may call stm32_flash_imported.",
+    "An imported receipt covers only that snapshot's programming and readback."
+    " It does not unlock debug, Monitor, Target tests, legacy flash evidence,"
+    " reset/recovery, or a managed build identity.",
+)
+
+
+def _firmware_routes(flash: dict[str, object]) -> dict[str, object]:
+    """Describe the two explicit firmware routes without evaluating either.
+
+    The managed entry mirrors the current ``capabilityDetails.flash`` evidence
+    exactly. The imported entry is always ``not-evaluated``: context has not
+    read any external firmware, target, plan, admission, or probe, and no
+    route may switch automatically after a managed failure.
+    """
+    status = flash.get("status")
+    reason = flash.get("reason")
+    next_steps = flash.get("nextSteps")
+    assert isinstance(status, str)
+    assert isinstance(reason, str)
+    assert isinstance(next_steps, list)
+    return {
+        "managed": {
+            "status": status,
+            "reason": reason,
+            "nextSteps": list(next_steps),
+            "tools": ["stm32_probe_list", "stm32_flash"],
+            "identity": ["buildId", "elfSha256"],
+            "requiresGit": True,
+            "requiresManagedModel": True,
+        },
+        "imported": {
+            "status": "not-evaluated",
+            "reason": _IMPORTED_ROUTE_REASON,
+            "nextSteps": list(_IMPORTED_ROUTE_NEXT_STEPS),
+            "tools": [
+                "stm32_firmware_import",
+                "stm32_firmware_admit",
+                "stm32_flash_imported",
+            ],
+            "requiresGit": False,
+            "requiresManagedModel": False,
+            "selection": "explicit",
+        },
+    }
+
+
 def _hardware_capability_details(
     *, snapshot_fresh: bool = False
 ) -> dict[str, dict[str, object]]:
@@ -356,8 +439,12 @@ def _hardware_capability_details(
         blocked = _capability(
             "blocked", _SNAPSHOT_HARDWARE_REASON, _SNAPSHOT_HARDWARE_NEXT_STEPS
         )
+        # Only managed flash may describe the separate imported route; debug,
+        # Monitor, and Target-test guidance never offers an import as a remedy.
         return {
-            "flash": dict(blocked),
+            "flash": _capability(
+                "blocked", _SNAPSHOT_HARDWARE_REASON, _SNAPSHOT_FLASH_NEXT_STEPS
+            ),
             "targetTest": dict(blocked),
             "monitor": dict(blocked),
             "breakpointDebug": dict(blocked),

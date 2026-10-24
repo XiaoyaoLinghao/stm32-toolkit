@@ -226,7 +226,15 @@ def test_preflight_reuses_every_planner_technical_rule(tmp_path: Path) -> None:
 
     git_init(root)
     plan = plan_keil_conversion(root, fixture_inspection(root))
-    assert list(plan.to_dict()["blockers"]) == data["analysis"]["blockers"]
+    # Preflight adds only presentation metadata.  Project it away and require
+    # every original blocker field, order, count, and identity to be unchanged.
+    projected = [
+        {key: value for key, value in blocker.items() if key != "remediation"}
+        for blocker in data["analysis"]["blockers"]
+    ]
+    plan_blockers = list(plan.to_dict()["blockers"])
+    assert projected == plan_blockers
+    assert all("remediation" not in blocker for blocker in plan_blockers)
 
 
 def test_preflight_rejects_stale_inputs_and_ambiguous_selection(tmp_path: Path) -> None:

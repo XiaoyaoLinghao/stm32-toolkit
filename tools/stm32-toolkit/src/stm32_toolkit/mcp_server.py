@@ -132,7 +132,12 @@ _SERVER_INSTRUCTIONS = (
     "This server is permanently bound to one project root and exposes "
     "read-only inspection, planning, probe discovery, and observation plus "
     "explicitly authorized conversion, configuration, build, flash, and "
-    "debug handoff operations."
+    "debug handoff operations. Read and retain the complete OperationResult "
+    "envelope (ok, code, message, data, details) before presenting a concise "
+    "summary of the relevant fields; check ok before dereferencing data, and "
+    "never discard ok=false details or capabilityDetails diagnostics. Verify "
+    "version and tool binding from actual tool results, not from a launcher "
+    "version."
 )
 
 
@@ -2376,7 +2381,15 @@ def create_server(
 
         Read-only.  Report missing external tools without installing them.
         probeCore describes the managed runtime and probe lease directory;
-        VS Code extensions are not enumerated here.
+        VS Code extensions are not enumerated here.  Version and binding
+        evidence comes from data.runtime.toolkitVersion and
+        data.publicInventory: compare them with the actual tool list and input
+        schemas the client exposes, and with stm32_project_context
+        data.project.root.  A launcher/CLI version alone does not prove the
+        bound server's version, and an inventory count is not proof that the
+        client registered those tools.  After an upgrade restart VS Code once
+        and verify again; missing tools or fields, or a different root, means
+        stop the dependent operation and explain the mismatch.
         """
         return await tool_doctor_for_request(runtime, ctx)
 
@@ -2406,6 +2419,18 @@ def create_server(
         data.inspection.target_name for stm32_keil_preflight and
         stm32_keil_convert; entry-point availability does not establish
         migration readiness.
+        data.firmwareRoutes separates two explicitly selected routes.  The
+        managed entry mirrors capabilityDetails.flash and identifies
+        stm32_flash with the data.build.buildId/elfSha256 identity pins and
+        Git-shaped provenance.  The imported entry is always not-evaluated
+        here: context checked no firmware, target, plan, MAP, admission, or
+        probe.  It identifies stm32_firmware_import -> stm32_firmware_admit ->
+        stm32_flash_imported, needs no Git or managed model, and requires
+        separate authorization for the immutable copy and then hardware.
+        Tool availability is not image readiness; a managed blocker does not
+        block the separate imported route, and no route switches
+        automatically.  An imported receipt never unlocks managed debug,
+        Monitor, Target tests, or recovery.
         """
         return await tool_project_context_for_request(runtime, ctx)
 
@@ -2524,7 +2549,11 @@ def create_server(
         companion skill, whose instructions and helper live in its skill
         directory (there is no normalization MCP tool); that helper writes
         only reviewed copies outside the project, and preflight itself still
-        writes nothing and does not transcode.
+        writes nothing and does not transcode. Each blocker's additive
+        remediation names a real MCP tool in tool or the separate Skill in
+        skill, never conflates them. Its encoding summary applies only when
+        every affected file's charset is explicitly declared and the change
+        is comment-only; other bytes remain unsupported.
         To review the supported CMSIS startup route, pass
         startupStrategy="generate-cmsis-gcc".  Pass startupSource="<exact
         project-relative included ARMCC .s path>" when more than one included
@@ -2554,6 +2583,14 @@ def create_server(
         mapping and an explicit all-main-RAM choice are different reviewed
         requests.  A native linker-script project keeps its own layout and
         cannot also declare memoryLayout.
+        Each analysis.blockers entry adds remediation: category is
+        needs-user-input or unsupported, with a concise summary, a real
+        tool/Skill reference where applicable, and requiredInputs.  Only
+        currently accepted preflight parameters are named (memoryLayout,
+        startupStrategy, startupSource); preflight has no framework, FPU, or
+        ABI override parameter, and no blocker is auto-fixable.
+        blockerSummary.byRemediation counts the same classifications while
+        total, byCode, and every original blocker field stay unchanged.
         When analysis is complete and no blockers remain, establish any Git
         prerequisite as an explicit project-owner decision, then call
         stm32_keil_convert with no planId to obtain a PLAN response.  Read
@@ -2714,8 +2751,14 @@ def create_server(
         firmware admission requires Git-shaped provenance and returns
         FIRMWARE_PROVENANCE_UNSUPPORTED before any probe, lease or attach
         effect.  Restore a committed Git baseline and rebuild instead of
-        fabricating a commit.  This tool modifies the board and runs only
-        with authorized=true after explicit user authorization for this
+        fabricating a commit.  This is the managed route only: a blocked or
+        failed managed route never authorizes or automatically switches to
+        the separate imported route (stm32_firmware_import,
+        stm32_firmware_admit, stm32_flash_imported), which needs its own
+        explicit selection, inputs, and authorization.  An imported receipt
+        is not a managed build identity and does not unlock debug, Monitor,
+        Target tests, or recovery.  This tool modifies the board and runs
+        only with authorized=true after explicit user authorization for this
         exact operation.  Under-reset recovery is a separate policy, never
         an automatic retry.
         """
@@ -2747,7 +2790,11 @@ def create_server(
 
         This is a source-only offline workflow: it does not require a managed
         project manifest, Git repository, build receipt, or SVD, and it never
-        touches a probe, lease, worker, or board.  Without planId it returns a
+        touches a probe, lease, worker, or board.  Use it only when the user
+        explicitly selects this independent imported route; a managed
+        context, provenance, or flash failure never switches to it
+        automatically, and a context model error does not prove this tool is
+        absent.  Without planId it returns a
         deterministic read-only PLAN with data.planId, data.importId,
         data.source (original path/SHA-256/size) and data.image (normalized
         ELF SHA-256/size/segments); keep those two hashes distinct.
