@@ -363,6 +363,11 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_dry_run_apply(configure)
     configure.add_argument("--plan-id")
     configure.add_argument("--authorized", action="store_true")
+    # Optional explicit debug pair.  Values stay raw strings here so the
+    # workflow returns structured field diagnostics instead of argparse
+    # failures; omitting both preserves the historical configure route.
+    configure.add_argument("--debug-backend")
+    configure.add_argument("--debug-target")
 
     keil = commands.add_parser("keil")
     _add_project_root(keil)
@@ -1620,6 +1625,8 @@ def _operation_result(
             project_root,
             plan_id=args.plan_id,
             authorized=args.authorized,
+            debug_backend=args.debug_backend,
+            debug_target=args.debug_target,
         )
     if args.command == "test":
         context = TestingWorkflowContext(

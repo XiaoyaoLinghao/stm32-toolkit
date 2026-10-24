@@ -201,6 +201,30 @@ MCP 客户端用同一合同：先调用 `stm32_project_configure()`（省略 `p
 
 **与其它入口的区别。** `fixedSections` 是迁移证据决定的固定绝对地址 `NOLOAD` 节；`memory.layout` 是托管 `.data`/`.bss`/`.heap`/`.stack` 的区域选择；`extraRegions` 只声明可写 RAM 区域；`nativeLinkerScript` 是用户完全自有的原生脚本。`generation.linkerFragment` 只贡献上述受限的自定义 `NOLOAD` 输出节，不改变其它任何语义，也不是任意 GNU ld 脚本、初始化数据或硬件可达性的证明。
 
+### 迁移后的显式 PyOCD 调试配置（PLAN/APPLY）
+
+（`$PatchedCli`、`$ProjectRoot` 语义同上节：必须替换为实际工程根与本补丁构建的 runtime；frozen/installed 1.3.0 不支持。）
+
+普通迁移只写出 `"debug": {}`，仍是合法的 build-only 工程。无 Git 的 preflight 会额外返回 `data.debugConfiguration`（`phase=post-migration`、`blocking=false`、`status=needs-user-input`、`missingFields=["debug.backend","debug.target"]`、`diagnostics[]`、`targetSupport="not-checked"`、`hardwareVerified=false`、`nextSteps`）：该诊断不新增 technical blocker，不进入 `planReadiness`/`applyReadiness`，不创建 `planId`，也不引入 Git 依赖。普通转换的 PLAN/APPLY 仍保留既有的 Git 基线、`planId` 与显式授权要求；不要把该诊断当作迁移失败、就绪结论或授权依据。需要在迁移后显式记录调试 backend/target 时，使用**既有** `project configure`（MCP 仍是 `stm32_project_configure`，无新工具、无迁移参数）：
+
+```powershell
+# 1) 只读 PLAN：项目与参数对子必须与 APPLY 完全一致
+& $PatchedCli --project-root $ProjectRoot project configure --dry-run --json `
+  --debug-backend pyocd --debug-target <pyocd-target>
+# 2) 用户显式授权该精确 data.plan_id 后 APPLY（写操作）
+& $PatchedCli --project-root $ProjectRoot project configure --apply --json `
+  --debug-backend pyocd --debug-target <pyocd-target> `
+  --plan-id <data.plan_id> --authorized
+```
+
+MCP 使用同一对参数：`stm32_project_configure(debugBackend="pyocd", debugTarget="<pyocd-target>")` 取得 PLAN，再以 `stm32_project_configure(debugBackend="pyocd", debugTarget="<pyocd-target>", planId="<data.plan_id>", authorized=true)` APPLY。两个参数必须**同时给出**；省略两者保留旧 configure 行为。只给一个、非字符串、空/仅空白值或 backend 不是精确的 `pyocd` 都会在写入前返回 `DEBUG_CONFIGURATION_INVALID`，`details` 含首个 `field`/`rule`、完整 `diagnostics[]`（`code`/`field`/`rule`/`message`/`remediation`，remediation 指向真实 CLI/MCP 入口与成对参数）和 `missingFields[]`。值不做 trim、大小写折叠或类型转换；target 只做语法检查，不代表已安装、受支持或与板上器件一致。
+
+PLAN 只读，除既有 `data.files[]` 外还返回 `data.debug_configuration`（`backend`/`target`）与 `data.manifest_edit`：`path`、`status`（`update` 或 `unchanged`）、`before_sha256`/`after_sha256`、`before_size`/`after_size` 和完整 `unified_diff`；原始字节不进入协议。核对 diff 只改 `debug.backend`/`debug.target`，并保留 `svd`、`svdDevice`、`readableRegions`、`memory`、`generation`（含 `linkerFragment`）等其它字段。若 pair 已等于当前值，`status=unchanged` 且 manifest 精确字节不变，不重排格式。APPLY 必须带同一项目、同一参数对、精确 `data.plan_id` 和真实布尔 `authorized=true`；省略/改动参数对或计划后输入变化会在写入前返回 `PLAN_CHANGED`/结构化失败。`.stm32-project.json` 归用户所有，其它受支持字段仍可按各自合同自行维护；不要手工修补 managed hash、generated 文件或 build receipt，本切片的 debug 对子应通过上述 PLAN/APPLY 记录，以免与受管证据不一致。
+
+该编辑会自然使旧 build/firmware 身份失效；需要时按 `build --preset arm-debug --clean` 重新构建，再走各自的授权流程。配置记录只是元数据：不会发现、安装或验证 PyOCD target，也不会创建调试会话；`.vscode/launch.json` 仍为空，真实调试交接（handoff）是独立的显式授权步骤。此能力属于当前源码补丁，frozen/installed 1.3.0 不包含它；安装/升级需另行授权。
+
+`stm32_project_context` 的 `data.debugConfiguration` 使用同一字段语义：`backend`/`target`（不可用时为 null）、`status`（`configured`/`needs-user-input`）、`missingFields`、`diagnostics`（每项含 `code`/`field`/`rule`/`message`/`remediation`）、`targetSupport` 恒为 `not-checked`、`hardwareVerified` 恒为 false、`nextSteps`。`configured` 只表示字段已记录；缺少或无效时，`capabilityDetails.flash`/`targetTest`/`monitor`/`breakpointDebug` 为 `blocked` 并列出全部原因（与既有 snapshot/Git 阻断并存），即使 pair 有效也不会把硬件布尔值改为 true。`build`/`configure` 的可用性不受该检查影响，`stm32_probe_list` 仍是独立的只读发现。
+
 `stm32_project_context` 的旧 `capabilities.*` 布尔值继续保留为保守兼容字段；新增 `capabilityDetails` 逐项给出 `available`、`blocked` 或 `not-evaluated` 及原因/下一步。`flash`、`targetTest`、`monitor`、`breakpointDebug` 的旧布尔 `false` 本身不区分“未探测硬件”与“已知 snapshot provenance 阻断”，必须读 `capabilityDetails`；它也不代表工具不存在。需要探针事实时单独调用只读 `probe list` / `stm32_probe_list`。仅询问已连接探针时，不需要 manifest、构建、debug backend、target 或 SVD；发现结果不授予改板权限，也不证明 target 身份或可烧录。有效工程保留 `workspaceId`，缺失或无效 manifest 时返回 `workspaceId: null` 与明确 `discovery.status=unbound`，不要伪造工程 ID。
 
 **无 Git 的构建与来源边界（当前源码切片）。** 有效托管 GCC/CMake 工程可从导出/非 Git 目录、unborn HEAD 或 Git 缺失/无法执行的环境构建；Git 不可用本身不是构建失败。此时 `firmware-identity.json` 与 `build-result.json` 使用 `schemaVersion: 2`，identity 明确写 `sourceBaseline: "input-snapshot-v1"`、`gitHead: null`、`gitDirty: null`，并只携带有界 `gitEvidence: {"status":"unavailable","code":"BUILD_GIT_INVALID","rule":"head"}`（`rule` 为 `head` 或 `status`）；`inputSnapshotSha256`、`targetDevice`、`preset`、实际 `toolkitVersion` 与 ELF/MAP 字段仍完整。null 绝不表示 clean，不要 `git init`、commit、stash 或伪造哈希。Git 可用时继续使用原有 schema-1 字节与 build ID 语义，schema-1 不接受 nullable Git 字段。context 的 `data.build` 新增 `sourceBaseline`、`gitDirty`、`gitEvidence`，schema-2 新鲜度只依赖精确 input snapshot、target/preset/model 与 ELF/MAP 哈希，不再启动 Git。schema-2 只是 build/build freshness 证据：flash、debug、Target 测试、Monitor 与 acceptance 仍要求 Git-shaped provenance，共享 firmware 准入在任何 probe/lease/attach 前返回稳定 `FIRMWARE_PROVENANCE_UNSUPPORTED`；外层封装可按各自既有协议映射该结果（例如 acceptance recovery 映射为 `ACCEPTANCE_ATTEMPT_OUTPUT_INVALID`），不要假定每个入口对外显示同一代码。新构建的 snapshot 证据会令 `capabilityDetails.flash/targetTest/monitor/breakpointDebug` 明确为 `blocked`。`stm32_probe_list` 仍是独立的只读发现，不受该限制。要使用硬件，先恢复带已提交 HEAD 的 Git 基线并重建；迁移计划/应用也继续要求其 Git 基线。

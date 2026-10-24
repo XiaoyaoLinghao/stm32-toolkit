@@ -45,6 +45,10 @@ from stm32_toolkit.external_firmware import (
 )
 from stm32_toolkit.debug.firmware import _svd_readable_regions_from_model
 from stm32_toolkit.debug.svd import SvdError
+from stm32_toolkit.debug_configuration import (
+    CONFIGURED as DEBUG_CONFIGURED,
+    describe_debug_configuration,
+)
 from stm32_toolkit.paths import WorkspacePaths, require_safe_session_id
 from stm32_toolkit.probe import (
     DebugHandoffRequest,
@@ -489,29 +493,38 @@ def _prepare(
                 "guidance": "Re-bind the workflow to the manifest's canonical project root; do not copy or rewrite project identity.",
             },
         )
-    if model.debug.backend != "pyocd":
+    # The same pure validator used by configure/context reports every missing
+    # or malformed field together.  The historical first-field/rule pair is
+    # preserved for callers that key on it, and the complete diagnostics are
+    # additive.  No backend is imported, connected or discovered here.
+    debug_status = describe_debug_configuration(
+        model.debug.backend, model.debug.target
+    )
+    if debug_status.status != DEBUG_CONFIGURED:
+        if model.debug.backend != "pyocd":
+            field, rule = "debug.backend", "pyocdRequired"
+        else:
+            field, rule = "debug.target", "identifierRequired"
         raise _fail(
             "HARDWARE_INPUT_INVALID",
-            "A Schema-v2 PyOCD target is required",
+            "A supported Schema v2/v3 PyOCD target is required",
             {
-                "field": "debug.backend",
-                "rule": "pyocdRequired",
+                "field": field,
+                "rule": rule,
                 "projectKind": "configured",
-                "guidance": "Configure debug.backend as pyocd through a reviewed project-model change; Toolkit does not select or fall back to another backend.",
-            },
-        )
-    if (
-        not isinstance(model.debug.target, str)
-        or _IDENTIFIER.fullmatch(model.debug.target) is None
-    ):
-        raise _fail(
-            "HARDWARE_INPUT_INVALID",
-            "A Schema-v2 PyOCD target is required",
-            {
-                "field": "debug.target",
-                "rule": "identifierRequired",
-                "projectKind": "configured",
-                "guidance": "Set debug.target to the exact supported target identifier for the device; do not guess or auto-select a target.",
+                "diagnostics": [
+                    entry.to_dict() for entry in debug_status.diagnostics
+                ],
+                "missingFields": list(debug_status.missing_fields),
+                "guidance": (
+                    "Configure the explicit pair with "
+                    "`stm32-toolkit project configure --project <project> "
+                    "--debug-backend pyocd --debug-target <pyocd-target> "
+                    "--dry-run --json` (MCP: `stm32_project_configure` with "
+                    "`debugBackend` and `debugTarget`), then review and "
+                    "authorize its PLAN. Toolkit does not select, fall back "
+                    "to, guess or auto-detect another backend or target."
+                ),
             },
         )
     if require_svd and (

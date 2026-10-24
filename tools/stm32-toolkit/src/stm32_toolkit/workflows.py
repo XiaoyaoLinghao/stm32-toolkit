@@ -390,8 +390,16 @@ def configure_project_workflow(
     *,
     plan_id: str | None = None,
     authorized: bool = False,
+    debug_backend: object = None,
+    debug_target: object = None,
 ) -> OperationResult[dict[str, object]]:
-    """Read-only configuration plan, or apply only with the exact plan ID."""
+    """Read-only configuration plan, or apply only with the exact plan ID.
+
+    ``debug_backend``/``debug_target`` are passed through unchanged: supplying
+    both selects the explicit manifest-edit route, supplying neither keeps the
+    historical build-only route, and an incomplete or malformed pair is
+    refused by the shared debug validator with complete field diagnostics.
+    """
     operation = (
         "project-configuration-apply"
         if _apply_intent(plan_id, authorized)
@@ -420,7 +428,11 @@ def configure_project_workflow(
 
     try:
         model = load_project_model(root)
-        plan = plan_project_configuration(model)
+        plan = plan_project_configuration(
+            model,
+            debug_backend=debug_backend,
+            debug_target=debug_target,
+        )
     except ProjectManifestError as error:
         return _failure(operation, error.code, error.message, error.details)
     except GenerationError as error:

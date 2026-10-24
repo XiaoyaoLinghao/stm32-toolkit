@@ -1045,13 +1045,21 @@ def tool_project_configure(
     runtime: ServerRuntime,
     plan_id: str | None = None,
     authorized: bool = False,
+    debug_backend: object = None,
+    debug_target: object = None,
 ) -> dict[str, object]:
     """Read-only configuration plan, or apply with the exact plan ID plus
-    ``authorized=true``."""
+    ``authorized=true``.
+
+    Both debug options omitted keeps the historical route; both supplied
+    select the explicit ``debug.backend``/``debug.target`` manifest edit.
+    """
     return configure_project_workflow(
         runtime.project_root,
         plan_id=plan_id,
         authorized=authorized,
+        debug_backend=debug_backend,
+        debug_target=debug_target,
     ).to_dict()
 
 
@@ -1254,6 +1262,8 @@ async def tool_project_configure_for_request(
     context: Context | None,
     plan_id: str | None = None,
     authorized: bool = False,
+    debug_backend: object = None,
+    debug_target: object = None,
 ) -> dict[str, object]:
     operation = (
         "project-configuration-apply"
@@ -1263,7 +1273,9 @@ async def tool_project_configure_for_request(
     failure = await _client_roots_failure(runtime, context, operation)
     if failure is not None:
         return failure
-    return tool_project_configure(runtime, plan_id, authorized)
+    return tool_project_configure(
+        runtime, plan_id, authorized, debug_backend, debug_target
+    )
 
 
 async def tool_build_for_request(
@@ -2716,6 +2728,8 @@ def create_server(
         ctx: Context,
         planId: str | None = None,
         authorized: bool = False,
+        debugBackend: Any = None,
+        debugTarget: Any = None,
     ) -> dict[str, object]:
         """Plan or explicitly apply managed GCC/CMake and VS Code configuration.
 
@@ -2725,8 +2739,22 @@ def create_server(
         passing that data.plan_id as the planId request argument with
         authorized=true after explicit user authorization.  Preserved unowned
         files are not generated or adopted.
+
+        Omit debugBackend and debugTarget to keep the historical build-only
+        route.  Pass both as raw strings to set exactly debug.backend and
+        debug.target in the existing .stm32-project.json: the PLAN then also
+        returns data.debug_configuration and data.manifest_edit (status,
+        before/after SHA-256 and sizes, unified_diff).  One value alone, a
+        non-string value, an empty/whitespace value or a backend other than
+        \"pyocd\" fails with DEBUG_CONFIGURATION_INVALID and complete
+        diagnostics before any write.  Pass the same pair on apply; a
+        changed or omitted pair is a different plan and is refused without
+        writing.  The pair records metadata only: it does not discover,
+        install or verify a PyOCD target, and it is not a live debug session.
         """
-        return await tool_project_configure_for_request(runtime, ctx, planId, authorized)
+        return await tool_project_configure_for_request(
+            runtime, ctx, planId, authorized, debugBackend, debugTarget
+        )
 
     @mcp.tool(name=MCP_TOOL_NAMES["build"])
     async def stm32_build(

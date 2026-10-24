@@ -213,6 +213,41 @@ def test_describe_configured_pair_is_metadata_only():
     assert status.hardware_verified is False
 
 
+def test_every_diagnostic_remediation_names_the_real_configure_entries():
+    """No diagnostic may point at a non-existent command or MCP tool."""
+    diagnostics = (
+        *describe_debug_configuration(None, None).diagnostics,
+        *describe_debug_configuration(7, 7).diagnostics,
+        *describe_debug_configuration("openocd", "bad target").diagnostics,
+        *describe_debug_configuration("pyocd", "bad target").diagnostics,
+    )
+    assert len(diagnostics) >= 6
+    for entry in diagnostics:
+        text = entry.remediation
+        # The exact real CLI entry, the exact real MCP tool, and both
+        # explicit paired parameters must appear together.
+        assert (
+            "stm32-toolkit project configure --project <project> "
+            "--debug-backend pyocd --debug-target <pyocd-target>" in text
+        )
+        assert "stm32_project_configure" in text
+        assert "debugBackend" in text and "debugTarget" in text
+        # A PLAN command is only runnable with its required mode and JSON
+        # switches; the APPLY prompt must carry the same flags.
+        assert "--dry-run --json" in text
+        # The two invented names from the earlier revision must never return.
+        assert "stm32-toolkit configure " not in text
+        assert "stm32_configure_project" not in text
+    remediation_step = describe_debug_configuration(None, None).next_steps[0]
+    assert "stm32-toolkit project configure" in remediation_step
+    assert "stm32_project_configure" in remediation_step
+    assert "--dry-run --json" in remediation_step
+    assert "--apply --json" in remediation_step
+    assert "--plan-id <data.plan_id> --authorized" in remediation_step
+    assert "stm32-toolkit configure " not in remediation_step
+    assert "stm32_configure_project" not in remediation_step
+
+
 def test_describe_echoes_only_string_values():
     status = describe_debug_configuration("openocd", 5)
     assert status.status == "needs-user-input"
@@ -578,15 +613,21 @@ def test_apply_refuses_a_tampered_candidate_digest(tmp_path):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize(
+    "fail_at",
+    [2, 3],
+    ids=["managed-manifest", "generated-target"],
+)
 def test_rollback_restores_manifest_after_a_later_replace_failure(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, fail_at
 ):
     root, plan = paired_plan(tmp_path)
     before = content_snapshot(root)
     # Destinations are sorted: 1 = .stm32-project.json, 2 = managed manifest,
-    # 3 = the first generated target.  Failing at 3 forces rollback of both
-    # already-replaced user-owned and managed files.
-    fail_replace_at(monkeypatch, {3})
+    # 3 = the first generated target.  Failing at 2 rolls back the already
+    # replaced user-owned manifest; failing at 3 rolls back both the manifest
+    # and the managed manifest.
+    fail_replace_at(monkeypatch, {fail_at})
     result = apply_project_configuration(plan)
     assert not result.ok
     assert result.code == "GENERATION_APPLY_FAILED"

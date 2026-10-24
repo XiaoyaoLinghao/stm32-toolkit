@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from stm32_toolkit.debug_configuration import post_migration_debug_configuration
 from stm32_toolkit.extra_regions import ExtraRegion
 from stm32_toolkit.keil import KeilInspection
 from stm32_toolkit.memory_layout import MemoryLayout
@@ -774,6 +775,10 @@ def preflight_keil_conversion(
         "applyReadiness": _apply_readiness(
             plan_readiness, startup_options, memory_layout, extras
         ),
+        # Additive post-migration prerequisite, never a technical blocker or
+        # planReadiness item: an ordinary conversion writes ``debug: {}`` and
+        # remains valid for build-only use.
+        "debugConfiguration": post_migration_debug_configuration(),
     }
     if analysis.startup is not None:
         payload["analysis"]["startup"] = analysis.startup.to_dict()

@@ -34,20 +34,32 @@ CONFIGURED = "configured"
 NEEDS_USER_INPUT = "needs-user-input"
 TARGET_SUPPORT_NOT_CHECKED = "not-checked"
 
+#: Every diagnostic names the real project-configure entry point plus the
+#: explicit paired parameters.  These strings are part of the public protocol,
+#: so they must never invent a bare ``configure`` command or tool name.
 _CONFIGURE_REMEDIATION = (
     "Rerun the project configure entry with both explicit parameters: "
-    "`stm32-toolkit configure --project <project> --debug-backend pyocd "
-    "--debug-target <pyocd-target>` (MCP: `stm32_configure_project` with "
-    "`debugBackend` and `debugTarget`). Review the plan before authorizing it."
+    "`stm32-toolkit project configure --project <project> --debug-backend "
+    "pyocd --debug-target <pyocd-target> --dry-run --json` (MCP: "
+    "`stm32_project_configure` with `debugBackend` and `debugTarget`). "
+    "Review the PLAN, then apply with "
+    "`stm32-toolkit project configure --project <project> --debug-backend "
+    "pyocd --debug-target <pyocd-target> --apply --json "
+    "--plan-id <data.plan_id> --authorized` (MCP: the same pair with "
+    "`planId=<data.plan_id>` and `authorized=true`)."
 )
 _BACKEND_REMEDIATION = (
-    "Set the explicit pair with `--debug-backend pyocd` and "
-    "`--debug-target <pyocd-target>` (MCP: `debugBackend`/`debugTarget`); "
+    "Use the project configure entry to set the pair: "
+    "`stm32-toolkit project configure --project <project> --debug-backend "
+    "pyocd --debug-target <pyocd-target> --dry-run --json` (MCP: "
+    "`stm32_project_configure` with `debugBackend` and `debugTarget`); "
     "`pyocd` is the only supported debug backend."
 )
 _TARGET_REMEDIATION = (
-    "Set the explicit pair with `--debug-backend pyocd` and "
-    "`--debug-target <pyocd-target>` (MCP: `debugBackend`/`debugTarget`). "
+    "Use the project configure entry to set the pair: "
+    "`stm32-toolkit project configure --project <project> --debug-backend "
+    "pyocd --debug-target <pyocd-target> --dry-run --json` (MCP: "
+    "`stm32_project_configure` with `debugBackend` and `debugTarget`). "
     "A target starts with an ASCII letter or digit, is at most 128 characters "
     "and contains only letters, digits, '.', '_', ':' or '-'."
 )
@@ -285,3 +297,37 @@ def describe_debug_configuration(backend: object, target: object) -> DebugConfig
             _CONFIGURED_NEXT_STEPS if configured else _NEEDS_INPUT_NEXT_STEPS
         ),
     )
+
+
+_POST_MIGRATION_NEXT_STEPS = (
+    (
+        "Post-migration step only, never a conversion blocker or "
+        "planReadiness prerequisite: after an authorized conversion writes "
+        "`debug: {}` into .stm32-project.json, run "
+        "`stm32-toolkit project configure --project <project> "
+        "--debug-backend pyocd --debug-target <pyocd-target> --dry-run "
+        "--json` (MCP: `stm32_project_configure` with `debugBackend` and "
+        "`debugTarget`), review the PLAN, then apply its exact plan ID with "
+        "authorized=true."
+    ),
+    (
+        "A recorded pair is metadata only; target support and physical "
+        "hardware remain unverified until a separate authorized debug "
+        "handoff."
+    ),
+)
+
+
+def post_migration_debug_configuration() -> dict[str, object]:
+    """Describe the planned post-migration build-only model.
+
+    An ordinary conversion emits ``debug: {}``.  That is valid for
+    build-only use and is never a migration technical blocker or a
+    planReadiness prerequisite.  The returned mapping keeps the shared
+    status shape and adds explicit non-blocking markers.
+    """
+    payload = describe_debug_configuration(None, None).to_dict()
+    payload["blocking"] = False
+    payload["phase"] = "post-migration"
+    payload["nextSteps"] = list(_POST_MIGRATION_NEXT_STEPS)
+    return payload

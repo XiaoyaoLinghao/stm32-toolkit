@@ -20,6 +20,11 @@ from stm32_toolkit.build.model import (
     SNAPSHOT_IDENTITY_SCHEMA_VERSION,
     SOURCE_BASELINE_INPUT_SNAPSHOT,
 )
+from stm32_toolkit.debug_configuration import (
+    CONFIGURED as DEBUG_CONFIGURED,
+    DebugConfigurationStatus,
+    describe_debug_configuration,
+)
 from stm32_toolkit.detection import ProjectDetection, detect_project
 from stm32_toolkit.generation.managed_files import (
     MANAGED_MANIFEST_PATH,
@@ -111,6 +116,7 @@ def build_project_context(
     build = _build_evidence(manifest)
     build_ready = _build_ready(build)
     configure_available = _valid_supported_schema(canonical_root)
+    debug_status = _debug_configuration_status(canonical_root)
     capability_details = _configured_capability_details(
         build=build,
         build_ready=build_ready,
@@ -119,33 +125,38 @@ def build_project_context(
             build.get("elfFresh") is True
             and build.get("sourceBaseline") == SOURCE_BASELINE_INPUT_SNAPSHOT
         ),
+        debug_status=debug_status,
     )
     flash_details = capability_details["flash"]
     assert isinstance(flash_details, dict)
-    return _context_success(
-        {
-            "project": {
-                "kind": "configured",
-                "root": str(manifest.project_root),
-                "logicalProjectId": str(manifest.logical_project_id),
-                "target": manifest.target_device,
-                "framework": manifest.framework_type,
-            },
-            "workspace": {
-                "workspaceId": workspace.workspace_id,
-                "sessionId": workspace.session_id,
-            },
-            "build": build,
-            "hardware": _hardware_evidence(),
-            "capabilities": _capabilities(
-                build_available=build_ready,
-                configure_available=configure_available,
-            ),
-            "capabilityDetails": capability_details,
-            "firmwareRoutes": _firmware_routes(flash_details),
-            "recommendedActions": [],
-        }
-    )
+    data: dict[str, object] = {
+        "project": {
+            "kind": "configured",
+            "root": str(manifest.project_root),
+            "logicalProjectId": str(manifest.logical_project_id),
+            "target": manifest.target_device,
+            "framework": manifest.framework_type,
+        },
+        "workspace": {
+            "workspaceId": workspace.workspace_id,
+            "sessionId": workspace.session_id,
+        },
+        "build": build,
+        "hardware": _hardware_evidence(),
+        "capabilities": _capabilities(
+            build_available=build_ready,
+            configure_available=configure_available,
+        ),
+        "capabilityDetails": capability_details,
+        "firmwareRoutes": _firmware_routes(flash_details),
+        "recommendedActions": [],
+    }
+    if debug_status is not None:
+        # Additive read-only description of the manifest pair.  A valid pair
+        # means only that configuration is present; it never claims probe,
+        # target or firmware verification.
+        data["debugConfiguration"] = debug_status.to_dict()
+    return _context_success(data)
 
 
 def _valid_supported_schema(project_root: Path) -> bool:
@@ -155,6 +166,24 @@ def _valid_supported_schema(project_root: Path) -> bool:
     except (ProjectManifestError, OSError, ValueError, TypeError):
         return False
     return model.schema_version in (2, 3)
+
+
+def _debug_configuration_status(
+    project_root: Path,
+) -> DebugConfigurationStatus | None:
+    """Describe the model's debug pair, or ``None`` when no model loads.
+
+    A model-load failure keeps the existing broader context contract: this
+    helper adds no new failure mode, never connects a backend and never
+    verifies a target.
+    """
+    try:
+        model = load_project_model(project_root)
+    except (ProjectManifestError, OSError, ValueError, TypeError):
+        return None
+    if model.schema_version not in (2, 3):
+        return None
+    return describe_debug_configuration(model.debug.backend, model.debug.target)
 
 
 def _context_invalid(field: str, path: str | None = None) -> OperationResult[None]:
@@ -429,22 +458,79 @@ def _firmware_routes(flash: dict[str, object]) -> dict[str, object]:
     }
 
 
+def _debug_capability_block(
+    status: DebugConfigurationStatus,
+) -> tuple[str, tuple[str, ...]]:
+    """Render every missing/invalid field as one concrete blocked reason."""
+    reasons = "; ".join(
+        f"{entry.field} ({entry.rule}): {entry.message}"
+        for entry in status.diagnostics
+    )
+    return (
+        "Debug configuration is incomplete or invalid, so this managed "
+        "hardware capability is blocked: " + reasons + ".",
+        tuple(status.next_steps),
+    )
+
+
+def _merge_reason(*parts: str | None) -> str:
+    return " ".join(part for part in parts if part)
+
+
+def _merge_next_steps(
+    *groups: tuple[str, ...] | None,
+) -> tuple[str, ...]:
+    merged: list[str] = []
+    for group in groups:
+        if group is None:
+            continue
+        for step in group:
+            if step not in merged:
+                merged.append(step)
+    return tuple(merged)
+
+
 def _hardware_capability_details(
-    *, snapshot_fresh: bool = False
+    *,
+    snapshot_fresh: bool = False,
+    debug_status: DebugConfigurationStatus | None = None,
 ) -> dict[str, dict[str, object]]:
+    debug_block: tuple[str, tuple[str, ...]] | None = None
+    if debug_status is not None and debug_status.status != DEBUG_CONFIGURED:
+        debug_block = _debug_capability_block(debug_status)
     if snapshot_fresh:
         # The current build is known to be refused by firmware admission, so
         # the affected capabilities are a concrete blocker, not "not
-        # evaluated".  Probe discovery is deliberately not affected.
-        blocked = _capability(
-            "blocked", _SNAPSHOT_HARDWARE_REASON, _SNAPSHOT_HARDWARE_NEXT_STEPS
+        # evaluated".  Probe discovery is deliberately not affected.  Every
+        # existing snapshot/Git reason is preserved and any debug blocker is
+        # appended, never substituted.
+        reason = _merge_reason(
+            _SNAPSHOT_HARDWARE_REASON, debug_block[0] if debug_block else None
         )
+        next_steps = _merge_next_steps(
+            _SNAPSHOT_HARDWARE_NEXT_STEPS, debug_block[1] if debug_block else None
+        )
+        blocked = _capability("blocked", reason, next_steps)
         # Only managed flash may describe the separate imported route; debug,
         # Monitor, and Target-test guidance never offers an import as a remedy.
         return {
             "flash": _capability(
-                "blocked", _SNAPSHOT_HARDWARE_REASON, _SNAPSHOT_FLASH_NEXT_STEPS
+                "blocked",
+                reason,
+                _merge_next_steps(
+                    _SNAPSHOT_FLASH_NEXT_STEPS,
+                    debug_block[1] if debug_block else None,
+                ),
             ),
+            "targetTest": dict(blocked),
+            "monitor": dict(blocked),
+            "breakpointDebug": dict(blocked),
+        }
+    if debug_block is not None:
+        reason, next_steps = debug_block
+        blocked = _capability("blocked", reason, next_steps)
+        return {
+            "flash": dict(blocked),
             "targetTest": dict(blocked),
             "monitor": dict(blocked),
             "breakpointDebug": dict(blocked),
@@ -468,6 +554,7 @@ def _configured_capability_details(
     build_ready: bool,
     configure_available: bool,
     snapshot_fresh: bool = False,
+    debug_status: DebugConfigurationStatus | None = None,
 ) -> dict[str, dict[str, object]]:
     if build_ready:
         build_reason = "Managed configuration evidence is complete."
@@ -530,7 +617,11 @@ def _configured_capability_details(
             ),
         ),
     }
-    details.update(_hardware_capability_details(snapshot_fresh=snapshot_fresh))
+    details.update(
+        _hardware_capability_details(
+            snapshot_fresh=snapshot_fresh, debug_status=debug_status
+        )
+    )
     return details
 
 
