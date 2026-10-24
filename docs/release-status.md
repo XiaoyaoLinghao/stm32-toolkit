@@ -1,20 +1,33 @@
 # Release status and retained limitations
 
-## v1.3.0 local candidate — integrated, not released
+## v1.3.0 local candidate — built and locally verified, not released
 
-The `codex/v1.3.0` branch carries a **local** v1.3.0 Release candidate based on
+The `codex/v1.3.0` branch carries a **local** v1.3.0 Release candidate at source
+`1e6ea849c21fb3786d60dba0254acb375d016a62`, based on accepted base
 `6b4c13b6fa76f320503b14679c8eb7bfc712c9af`. It integrates the accepted EXTERNAL-FIRMWARE
 slice (CodeHead `4f002cd1479dc98c2dc9c48d7e75dddf896de2f2`, accepted with fixes for the
-offline software scope) with the version alignment. The Toolkit, Monitor, UI, plugin,
-launchers, runtime state and release policy/schema identity are aligned to `1.3.0`, and
-`1.2.0` is recognized as a legacy managed-runtime and generation-producer version. The
-current source exposes the integrated inventory of 52 MCP tools and 9 bundled Skills,
-including `stm32_firmware_import`, `stm32_firmware_admit` and `stm32_flash_imported`.
+offline software scope; that acceptance remains separate) with the version alignment. The
+Toolkit, Monitor, UI, plugin, launchers, runtime state and release policy/schema identity
+are aligned to `1.3.0`, and `1.2.0` is recognized as a legacy managed-runtime and
+generation-producer version. The source exposes 52 MCP tools and 9 bundled Skills,
+including `stm32_keil_preflight`, `stm32_firmware_import`, `stm32_firmware_admit` and
+`stm32_flash_imported`.
+
+Two official builds from the same clean source produced 13 byte-identical assets, and the
+official `verify-bundle` returned native `status: ok` with the same source commit, manifest
+and utility identities. All 13 files were copied to the local delivery directory
+`D:/WorkSpace/STM32-Toolkit/dist/v1.3.0` and every hash was independently re-verified.
+Four native shards passed 2,167 tests with no skip, failure or error at that source, and
+the primary independently passed 59 focused checks. Assets, hashes, commands and results
+are recorded in the
+[STM32TK-130 implementation report](codex/returns/STM32TK-130/implementation-report.md).
 
 There is no v1.3.0 tag, GitHub Release, public asset or download link, and no v1.3.0
-installation, upgrade, interactive browser, IDE or hardware qualification has been
-performed. Local candidate construction and validation are recorded in the delivery
-evidence; full qualification and publication remain pending. The
+installation, upgrade, interactive browser, IDE or physical hardware qualification has been
+performed. No original project, hardware or existing runtime was modified, and no remote
+action occurred. Local package construction does not establish full release qualification:
+no complete coverage matrix was run, and the VS Code extension readiness probe remains
+`not-probed`. The
 [v1.2.0 Release](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.2.0)
 remains the current public download.
 
@@ -25,11 +38,10 @@ reusable token or a hardware authorization, and an imported receipt does not adm
 Monitor, Target tests, legacy flash evidence or a managed build identity.
 
 The **v1.2.0-only** user-approved qualification exception does not transfer to v1.3.0.
-Permanent coverage floors, package construction, fresh installation/upgrade/rollback,
-interactive browser, IDE and physical qualification all remain pending until separately
-executed and recorded. The setup bootstrap trust anchors have been recomputed from the
-utility and policy bytes of the committed candidate source and must be re-validated
-against the actual committed archive before any official build.
+Permanent coverage floors, fresh installation/upgrade/rollback, interactive browser, IDE
+and physical qualification all remain pending until separately executed and recorded. The
+setup bootstrap trust anchors match the committed source archive as delivered; any rebuild
+or new archive must be separately re-validated before use.
 
 ## v1.2.0 published Latest with a version-specific exception — 2026-10-23
 
