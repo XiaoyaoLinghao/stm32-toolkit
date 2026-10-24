@@ -270,6 +270,11 @@ def _model_payload(model: ProjectModel) -> dict[str, object]:
         memory_payload["heap_size"] = model.memory.heap_size
     if model.memory.layout is not None:
         memory_payload["layout"] = model.memory.layout.to_dict()
+    # Extra-region provenance changes managed placement semantics (an
+    # owner-supplied RAM is never implicit).  It participates only when
+    # non-empty, so no-extra manifests keep their historical model hash.
+    if model.memory.extra_region_names:
+        memory_payload["extra_region_names"] = list(model.memory.extra_region_names)
     generation_payload: dict[str, object] = {
         "tool": model.generation.tool,
         "version": model.generation.version,

@@ -387,9 +387,17 @@ def _ram_candidates(facts: tuple[RegionFact, ...]) -> tuple[RegionFact, ...]:
 
 
 def resolve_memory_layout(
-    regions: Sequence[object], layout: MemoryLayout | None = None
+    regions: Sequence[object],
+    layout: MemoryLayout | None = None,
+    *,
+    extra_region_names: Sequence[str] = (),
 ) -> MemoryLayoutResolution:
-    """Resolve explicit roles, or the only unambiguous implicit topology."""
+    """Resolve explicit roles, or the only unambiguous implicit topology.
+
+    ``extra_region_names`` marks owner-supplied regions that must never be
+    selected implicitly for data/bss/heap/stack.  The candidates still report
+    every actual region, so an explicit reviewed choice may name one.
+    """
     facts = region_facts(regions)
     flash_candidates = _flash_candidates(facts)
     ram_candidates = _ram_candidates(facts)
@@ -398,14 +406,27 @@ def resolve_memory_layout(
         return MemoryLayoutResolution(
             "explicit", layout, flash_candidates, ram_candidates, ()
         )
+    extra_names = {
+        name.casefold() for name in extra_region_names if isinstance(name, str)
+    }
     if len(flash_candidates) == 1 and len(ram_candidates) == 1:
-        ram = ram_candidates[0].name
+        ram = ram_candidates[0]
+        if ram.name.casefold() in extra_names:
+            # The only writable region is owner-supplied external RAM; placing
+            # managed sections there requires an explicit reviewed mapping.
+            return MemoryLayoutResolution(
+                "requires-selection",
+                None,
+                flash_candidates,
+                ram_candidates,
+                tuple(RAM_ROLES),
+            )
         implicit = MemoryLayout(
             flash=flash_candidates[0].name,
-            data=ram,
-            bss=ram,
-            heap=ram,
-            stack=ram,
+            data=ram.name,
+            bss=ram.name,
+            heap=ram.name,
+            stack=ram.name,
         )
         return MemoryLayoutResolution(
             "implicit", implicit, flash_candidates, ram_candidates, ()

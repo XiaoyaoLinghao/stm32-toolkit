@@ -393,6 +393,11 @@ def _build_parser() -> argparse.ArgumentParser:
         action=_RejectDuplicate,
         help="Exact JSON object mapping flash,data,bss,heap,stack to existing region names",
     )
+    preflight.add_argument(
+        "--extra-regions",
+        action=_RejectDuplicate,
+        help="Exact JSON array of explicit writable RAM regions with name, origin, length, attributes",
+    )
 
     convert = keil_commands.add_parser("convert")
     _add_workflow_root(convert)
@@ -411,6 +416,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "--memory-layout",
         action=_RejectDuplicate,
         help="Exact JSON object mapping flash,data,bss,heap,stack to existing region names",
+    )
+    convert.add_argument(
+        "--extra-regions",
+        action=_RejectDuplicate,
+        help="Exact JSON array of explicit writable RAM regions with name, origin, length, attributes",
     )
     _add_dry_run_apply(convert)
     convert.add_argument("--plan-id")
@@ -1466,6 +1476,7 @@ def _operation_result(
                 startup_strategy=getattr(args, "startup_strategy", None),
                 startup_source=getattr(args, "startup_source", None),
                 memory_layout=getattr(args, "memory_layout", None),
+                extra_regions=getattr(args, "extra_regions", None),
             )
         return convert_keil_workflow(
             project_root,
@@ -1476,6 +1487,7 @@ def _operation_result(
             startup_strategy=getattr(args, "startup_strategy", None),
             startup_source=getattr(args, "startup_source", None),
             memory_layout=getattr(args, "memory_layout", None),
+            extra_regions=getattr(args, "extra_regions", None),
         )
     if args.command == "project":
         if args.project_command == "detect":

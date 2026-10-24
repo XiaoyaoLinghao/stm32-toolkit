@@ -523,7 +523,11 @@ def _validate_memory(model: ProjectModel) -> None:
 
 def _memory_layout_resolution(model: ProjectModel) -> MemoryLayoutResolution:
     """Resolve the explicit or unambiguous implicit managed section layout."""
-    resolution = resolve_memory_layout(model.memory.regions, model.memory.layout)
+    resolution = resolve_memory_layout(
+        model.memory.regions,
+        model.memory.layout,
+        extra_region_names=model.memory.extra_region_names,
+    )
     if resolution.requires_selection:
         raise _raise_error(
             "MEMORY_LAYOUT_REQUIRED",

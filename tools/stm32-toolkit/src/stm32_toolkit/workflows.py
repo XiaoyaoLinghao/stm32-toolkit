@@ -18,6 +18,10 @@ from dataclasses import replace
 from pathlib import Path
 
 from stm32_toolkit.build import BuildRequest, run_build
+from stm32_toolkit.extra_regions import (
+    ExtraRegionError,
+    normalize_extra_regions_option,
+)
 from stm32_toolkit.generation import (
     GenerationError,
     apply_project_configuration,
@@ -211,6 +215,7 @@ def preflight_keil_workflow(
     startup_strategy: str | None = None,
     startup_source: str | None = None,
     memory_layout: object = None,
+    extra_regions: object = None,
 ) -> OperationResult[dict[str, object]]:
     """Read-only migration preflight; analysis succeeds without Git.
 
@@ -226,6 +231,7 @@ def preflight_keil_workflow(
         source = _optional_name(startup_source, "startupSource")
         startup_options = normalize_startup_options(strategy, source)
         layout = normalize_memory_layout_option(memory_layout)
+        extras = normalize_extra_regions_option(extra_regions)
     except _InputInvalid as error:
         return _failure(
             operation,
@@ -237,6 +243,8 @@ def preflight_keil_workflow(
         return _failure(operation, error.code, error.message, error.details)
     except MemoryLayoutError as error:
         return _failure(operation, error.code, error.message, error.details)
+    except ExtraRegionError as error:
+        return _failure(operation, error.code, error.message, error.details)
 
     try:
         inspection = inspect_keil(root, uvprojx_path, target)
@@ -245,6 +253,7 @@ def preflight_keil_workflow(
             inspection,
             startup_options=startup_options,
             memory_layout=layout,
+            extra_regions=extras,
         )
     except KeilInspectionError as error:
         return _failure(operation, error.code, error.message, error.details)
@@ -283,13 +292,15 @@ def convert_keil_workflow(
     startup_strategy: str | None = None,
     startup_source: str | None = None,
     memory_layout: object = None,
+    extra_regions: object = None,
 ) -> OperationResult[dict[str, object]]:
     """Read-only conversion plan, or apply only with the exact plan ID.
 
-    The startup and memory-layout options are part of the plan identity.
-    Apply re-runs the deterministic plan with the request options and refuses
-    a stale plan ID, so a caller-edited strategy/source/layout cannot be
-    accepted after review.
+    The startup, memory-layout and extra-region options are part of the plan
+    identity.  Apply re-runs the deterministic plan with the request options
+    and refuses a stale plan ID, so a caller-edited
+    strategy/source/layout/extra-region request cannot be accepted after
+    review.
     """
     operation = "keil-conversion-apply" if _apply_intent(plan_id, authorized) else "keil-conversion-plan"
     try:
@@ -300,6 +311,7 @@ def convert_keil_workflow(
         source = _optional_name(startup_source, "startupSource")
         startup_options = normalize_startup_options(strategy, source)
         layout = normalize_memory_layout_option(memory_layout)
+        extras = normalize_extra_regions_option(extra_regions)
     except _InputInvalid as error:
         return _failure(
             operation,
@@ -310,6 +322,8 @@ def convert_keil_workflow(
     except MigrationPlanError as error:
         return _failure(operation, error.code, error.message, error.details)
     except MemoryLayoutError as error:
+        return _failure(operation, error.code, error.message, error.details)
+    except ExtraRegionError as error:
         return _failure(operation, error.code, error.message, error.details)
 
     closed = _authorization_failure(operation, authorized)
@@ -330,6 +344,7 @@ def convert_keil_workflow(
             inspection,
             startup_options=startup_options,
             memory_layout=layout,
+            extra_regions=extras,
         )
     except KeilInspectionError as error:
         return _failure(operation, error.code, error.message, error.details)

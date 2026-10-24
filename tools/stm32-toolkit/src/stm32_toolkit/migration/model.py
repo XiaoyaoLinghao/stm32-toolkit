@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from stm32_toolkit import __version__
+from stm32_toolkit.extra_regions import ExtraRegion
 from stm32_toolkit.keil import KeilInspection
 from stm32_toolkit.memory_layout import MemoryLayout, MemoryLayoutResolution
 
@@ -340,6 +341,9 @@ class MigrationPlan:
     #: Reviewed include-only scope merges.  Empty for plans without a merged
     #: scoped directory, so historical plan identities stay byte-identical.
     include_merges: tuple[IncludeMerge, ...] = ()
+    #: Reviewed explicit external-RAM request.  Empty for plans without one, so
+    #: historical plan bytes and identities stay unchanged.
+    extra_regions: tuple[ExtraRegion, ...] = ()
 
     def __post_init__(self) -> None:
         # Ignored-compatible observations are carried privately; they are not
@@ -366,6 +370,10 @@ class MigrationPlan:
             payload["memory_layout"] = self.memory_layout_resolution.to_dict()
         if self.include_merges:
             payload["include_merges"] = [merge.to_dict() for merge in self.include_merges]
+        if self.extra_regions:
+            payload["extra_regions"] = [
+                region.to_dict() for region in self.extra_regions
+            ]
         return payload
 
 
@@ -428,6 +436,12 @@ def _plan_id_payload(plan: MigrationPlan) -> dict[str, object]:
     # actually analyzed, so no-scope plans keep their historical identity.
     if plan.include_merges:
         payload["include_merges"] = [merge.to_dict() for merge in plan.include_merges]
+    # Only a non-empty reviewed request participates, so historical no-extra
+    # plan identities stay byte-identical.
+    if plan.extra_regions:
+        payload["extra_regions"] = [
+            region.to_dict() for region in plan.extra_regions
+        ]
     return payload
 
 

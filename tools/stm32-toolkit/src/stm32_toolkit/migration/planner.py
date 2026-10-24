@@ -23,6 +23,14 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from stm32_toolkit import __version__
+from stm32_toolkit.extra_regions import (
+    ExtraRegion,
+    ExtraRegionError,
+    combined_regions,
+    extra_region_names,
+    normalize_extra_regions,
+    validate_extra_regions,
+)
 from stm32_toolkit.keil import KeilInspection, KeilInspectionError, KeilInputDigest, inspect_keil
 from stm32_toolkit.memory_layout import (
     MemoryLayout,
@@ -615,6 +623,7 @@ def _manifest_proposal(
     memory_layout: MemoryLayout | None = None,
     include_paths: tuple[str, ...] | None = None,
     newlib_specs: tuple[str, ...] = (),
+    extra_regions: tuple[ExtraRegion, ...] = (),
 ) -> dict | None:
     """Deterministic Schema v3 proposal; ``None`` when framework selection is blocked.
 
@@ -665,6 +674,12 @@ def _manifest_proposal(
         if source.included and source.language == "asm"
     ]
     memory_payload: dict[str, object] = {"source": "keil", "regions": regions}
+    if extra_regions:
+        # The inspected Keil base regions stay exactly as inspected; explicit
+        # external RAM is proposed separately, never merged into that list.
+        memory_payload["extraRegions"] = [
+            region.to_dict() for region in extra_regions
+        ]
     generation_payload: dict[str, object] = {
         "cubeMxIoc": None,
         "managedManifest": ".stm32-toolkit/generated-files.json",
@@ -751,6 +766,7 @@ class ConversionAnalysis:
     #: list.  Empty merges preserve the historical proposal bytes.
     include_merges: tuple[IncludeMerge, ...] = ()
     include_paths: tuple[str, ...] = ()
+    extra_regions: tuple[ExtraRegion, ...] = ()
 
 
 def _bind_analysis_root(root: object, inspection: object) -> Path:
@@ -821,6 +837,55 @@ def _validate_memory_layout(layout: object) -> MemoryLayout | None:
     return layout
 
 
+def _extra_region_error(error: ExtraRegionError) -> MigrationPlanError:
+    return _raise(error.code, error.message, dict(error.details))
+
+
+def _validate_extra_region_option(
+    value: object,
+) -> tuple[ExtraRegion, ...]:
+    """Accept only the immutable normalized request produced by the adapter."""
+    if value is None:
+        return ()
+    if type(value) is not tuple:
+        raise _raise(
+            "EXTRA_REGIONS_INVALID",
+            "extraRegions must be a normalized region tuple",
+            {
+                "field": "extraRegions",
+                "rule": "type",
+                "remediation": (
+                    "Pass a normalized extraRegions tuple; transport strings and "
+                    "unvalidated lists are rejected."
+                ),
+            },
+        )
+    try:
+        normalized = normalize_extra_regions(value)
+    except ExtraRegionError as error:
+        raise _extra_region_error(error) from None
+    if normalized != value:
+        raise _raise(
+            "EXTRA_REGIONS_INVALID",
+            "extraRegions is not normalized",
+            {
+                "field": "extraRegions",
+                "rule": "type",
+                "remediation": "Pass the normalized extraRegions tuple unchanged.",
+            },
+        )
+    return normalized
+
+
+def _validate_extra_regions_against(
+    extras: tuple[ExtraRegion, ...], base_regions: object
+) -> None:
+    try:
+        validate_extra_regions(extras, base_regions)
+    except ExtraRegionError as error:
+        raise _extra_region_error(error) from None
+
+
 def analyze_keil_conversion(
     root: Path,
     inspection: KeilInspection,
@@ -828,6 +893,7 @@ def analyze_keil_conversion(
     block_source: Callable[[Path], tuple[MigrationBlocker, ...]] | None = None,
     startup_options: StartupOptions | None = None,
     memory_layout: MemoryLayout | None = None,
+    extra_regions: tuple[ExtraRegion, ...] | None = None,
 ) -> ConversionAnalysis:
     """Run the single shared technical analysis used by preflight and plan.
 
@@ -835,11 +901,16 @@ def analyze_keil_conversion(
     inspection, preserving the planning error precedence and letting the
     Git-bound planner contribute its dirty-worktree blockers.  ``startup_options``
     selects the opt-in CMSIS startup generation route; omitted options preserve
-    the existing assembly blockers byte-for-byte.
+    the existing assembly blockers byte-for-byte.  ``extra_regions`` is the
+    immutable explicit external-RAM request; it is checked against the actual
+    inspected base regions and composed once into the analysis map.
     """
     options = _validate_startup_options(startup_options)
     layout_option = _validate_memory_layout(memory_layout)
+    extras = _validate_extra_region_option(extra_regions)
     canonical = _bind_analysis_root(root, inspection)
+    _validate_extra_regions_against(extras, inspection.memory_regions)
+    combined_memory_regions = combined_regions(inspection.memory_regions, extras)
     exact_bytes = _revalidate_inputs(canonical, inspection.inputs)
     extra_blockers = block_source(canonical) if block_source is not None else ()
 
@@ -864,7 +935,9 @@ def analyze_keil_conversion(
 
     try:
         layout_resolution = resolve_memory_layout(
-            inspection.memory_regions, layout_option
+            combined_memory_regions,
+            layout_option,
+            extra_region_names=extra_region_names(extras),
         )
     except MemoryLayoutError as error:
         raise _raise(error.code, error.message, error.details)
@@ -935,7 +1008,8 @@ def analyze_keil_conversion(
         for path, digest, size in scan.dependencies:
             dependencies.setdefault(path, (digest, size))
 
-    memory_regions = inspection.memory_regions
+    # The canonical base-plus-extra map, never a separately inferred list.
+    memory_regions = combined_memory_regions
     # A fixed address outside every declared region is a memory-definition
     # decision for the project owner.  Toolkit never invents external SRAM.
     for section in sorted(
@@ -994,6 +1068,7 @@ def analyze_keil_conversion(
         layout_option,
         include_analysis.include_paths,
         tuple(sorted(set(link_specs))),
+        extra_regions=extras,
     )
     proposal_bytes = _canonical_manifest_bytes(proposal) if proposal is not None else None
 
@@ -1182,6 +1257,7 @@ def analyze_keil_conversion(
         memory_layout=layout_resolution,
         include_merges=include_analysis.merges,
         include_paths=include_analysis.include_paths,
+        extra_regions=extras,
     )
 
 
@@ -1216,10 +1292,12 @@ def plan_keil_conversion(
     *,
     startup_options: StartupOptions | None = None,
     memory_layout: MemoryLayout | None = None,
+    extra_regions: tuple[ExtraRegion, ...] | None = None,
 ) -> MigrationPlan:
     """Produce the deterministic, read-only conversion plan."""
     options = _validate_startup_options(startup_options)
     layout_option = _validate_memory_layout(memory_layout)
+    extras = _validate_extra_region_option(extra_regions)
     canonical = _bind_analysis_root(root, inspection)
 
     toplevel = git_guard.git_toplevel(canonical)
@@ -1243,6 +1321,7 @@ def plan_keil_conversion(
         block_source=block_source,
         startup_options=options,
         memory_layout=layout_option,
+        extra_regions=extras,
     )
 
     plan = MigrationPlan(
@@ -1261,6 +1340,7 @@ def plan_keil_conversion(
         memory_layout=layout_option,
         memory_layout_resolution=analysis.memory_layout,
         include_merges=analysis.include_merges,
+        extra_regions=extras,
     )
     object.__setattr__(plan, "_ignored", analysis.ignored)
     plan = replace(plan, plan_id=plan_id_for(plan))

@@ -163,6 +163,27 @@
               }
             }
           }
+        },
+        "extraRegions": {
+          "description": "Explicit owner-supplied writable RAM regions. The persisted base regions stay in memory.regions; these are composed once into the typed model map. No origin, length, name or access is inferred.",
+          "type": "array",
+          "maxItems": 32,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "origin", "length", "attributes"],
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+                "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+              },
+              "origin": {"type": "integer", "minimum": 0, "maximum": 4294967295},
+              "length": {"type": "integer", "minimum": 1, "maximum": 4294967296},
+              "attributes": {"enum": ["rw-", "rwx"]}
+            }
+          }
         }
       }
     },

@@ -9,7 +9,7 @@ import unicodedata
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
 from urllib.request import url2pathname
 
@@ -996,6 +996,7 @@ def tool_keil_preflight(
     startup_strategy: str | None = None,
     startup_source: str | None = None,
     memory_layout: object = None,
+    extra_regions: object = None,
 ) -> dict[str, object]:
     """Return read-only migration analysis without requiring Git.
 
@@ -1010,6 +1011,7 @@ def tool_keil_preflight(
         startup_strategy=startup_strategy,
         startup_source=startup_source,
         memory_layout=memory_layout,
+        extra_regions=extra_regions,
     ).to_dict()
 
 
@@ -1022,6 +1024,7 @@ def tool_keil_convert(
     startup_strategy: str | None = None,
     startup_source: str | None = None,
     memory_layout: object = None,
+    extra_regions: object = None,
 ) -> dict[str, object]:
     """Read-only conversion plan, or apply with the exact plan ID plus
     ``authorized=true``."""
@@ -1034,6 +1037,7 @@ def tool_keil_convert(
         startup_strategy=startup_strategy,
         startup_source=startup_source,
         memory_layout=memory_layout,
+        extra_regions=extra_regions,
     ).to_dict()
 
 
@@ -1196,6 +1200,7 @@ async def tool_keil_preflight_for_request(
     startup_strategy: str | None = None,
     startup_source: str | None = None,
     memory_layout: object = None,
+    extra_regions: object = None,
 ) -> dict[str, object]:
     failure = await _client_roots_failure(runtime, context, "keil-preflight")
     if failure is not None:
@@ -1207,6 +1212,7 @@ async def tool_keil_preflight_for_request(
         startup_strategy,
         startup_source,
         memory_layout,
+        extra_regions,
     )
 
 
@@ -1220,6 +1226,7 @@ async def tool_keil_convert_for_request(
     startup_strategy: str | None = None,
     startup_source: str | None = None,
     memory_layout: object = None,
+    extra_regions: object = None,
 ) -> dict[str, object]:
     operation = (
         "keil-conversion-apply"
@@ -1238,6 +1245,7 @@ async def tool_keil_convert_for_request(
         startup_strategy,
         startup_source,
         memory_layout,
+        extra_regions,
     )
 
 
@@ -2534,6 +2542,7 @@ def create_server(
         startupStrategy: str | None = None,
         startupSource: str | None = None,
         memoryLayout: dict[str, str] | None = None,
+        extraRegions: list[dict[str, Any]] | None = None,
     ) -> dict[str, object]:
         """Run read-only Keil migration preflight without requiring Git.
 
@@ -2583,12 +2592,32 @@ def create_server(
         mapping and an explicit all-main-RAM choice are different reviewed
         requests.  A native linker-script project keeps its own layout and
         cannot also declare memoryLayout.
+        External RAM is a separate explicit request.  Pass extraRegions as a
+        real JSON array of objects, not a JSON string; each object has exactly
+        name, origin, length and attributes, with attributes rw- or rwx.  No
+        origin, length, name or access is inferred from the device, an address
+        expression or the board, and only 1-64 character ASCII linker names,
+        exact integer origins/lengths and at most 32 non-overlapping entries
+        are accepted.  The inspected Keil base regions are unchanged; the
+        typed project map is base plus extras.  A non-empty request is bound
+        into plan identity and is exposed as analysis.extraRegions; omitting
+        or changing it is a different request.  The registered parameter is
+        list[dict[str, Any]] so raw scalar values reach the shared validator:
+        the MCP framework rejects a non-array or non-object entry before this
+        tool runs, while invalid names/ranges/attributes, duplicate keys in a
+        CLI JSON string, and overlaps with actual base regions return the
+        structured EXTRA_REGIONS_INVALID field/rule/remediation.  Extra RAM
+        adds RAM candidates and never a Flash candidate; data/bss/heap/stack
+        are not placed there implicitly.  A missing extra leaves
+        MIGRATION_FIXED_SECTION_OUTSIDE_MEMORY actionable: request the exact
+        owner-supplied map and never guess a length.
         Each analysis.blockers entry adds remediation: category is
         needs-user-input or unsupported, with a concise summary, a real
         tool/Skill reference where applicable, and requiredInputs.  Only
         currently accepted preflight parameters are named (memoryLayout,
-        startupStrategy, startupSource); preflight has no framework, FPU, or
-        ABI override parameter, and no blocker is auto-fixable.
+        extraRegions, startupStrategy, startupSource); preflight has no
+        framework, FPU, or ABI override parameter, and no blocker is
+        auto-fixable.
         blockerSummary.byRemediation counts the same classifications while
         total, byCode, and every original blocker field stay unchanged.
         When analysis is complete and no blockers remain, establish any Git
@@ -2606,6 +2635,7 @@ def create_server(
             startupStrategy,
             startupSource,
             memoryLayout,
+            extraRegions,
         )
 
     @mcp.tool(name=MCP_TOOL_NAMES["keil_convert"])
@@ -2618,6 +2648,7 @@ def create_server(
         startupStrategy: str | None = None,
         startupSource: str | None = None,
         memoryLayout: dict[str, str] | None = None,
+        extraRegions: list[dict[str, Any]] | None = None,
     ) -> dict[str, object]:
         """Plan or explicitly apply one Keil-to-GCC migration.
 
@@ -2650,6 +2681,18 @@ def create_server(
         heap/stack in their selected regions with the .data load address in
         the selected Flash.  This is offline placement evidence, not proof of
         CCM/external-RAM or board runtime behavior.
+        Pass the same extraRegions array used for preflight to bind the exact
+        owner-supplied external-RAM request into data.plan_id.  The PLAN
+        response exposes data.extra_regions and the conversion report records
+        extraRegions; the proposed manifest keeps the inspected Keil
+        memory.regions unchanged and adds memory.extraRegions.  Omitting,
+        shortening or changing any entry is a different request and apply
+        returns a structured validation failure or PLAN_CHANGED without
+        writing.  Extra RAM adds RAM candidates only: never a Flash candidate,
+        and data/bss/heap/stack are not placed there implicitly.  The owner
+        must arrange external-memory initialization before access; NOLOAD
+        fixed sections are not promised initialized.  A native linker script
+        remains user-owned and is not rewritten.
         The core replans and rechecks digest, Git, and drift guards before its
         first write.  Never run git init, transcode source text, replace ARMCC
         startup blindly, or reuse a stale plan ID; a missing Git repository is
@@ -2665,6 +2708,7 @@ def create_server(
             startupStrategy,
             startupSource,
             memoryLayout,
+            extraRegions,
         )
 
     @mcp.tool(name=MCP_TOOL_NAMES["project_configure"])

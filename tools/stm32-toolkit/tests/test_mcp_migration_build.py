@@ -256,6 +256,7 @@ def test_new_tool_schemas_expose_only_declared_properties(tmp_path: Path):
         "startupStrategy",
         "startupSource",
         "memoryLayout",
+        "extraRegions",
     }
     assert set(preflight.get("required", [])) == set()
     assert "string" in str(preflight["properties"]["uvprojx"])
@@ -263,6 +264,7 @@ def test_new_tool_schemas_expose_only_declared_properties(tmp_path: Path):
     assert "string" in str(preflight["properties"]["startupStrategy"])
     assert "string" in str(preflight["properties"]["startupSource"])
     assert "object" in str(preflight["properties"]["memoryLayout"])
+    assert "array" in str(preflight["properties"]["extraRegions"])
 
     convert = schemas["stm32_keil_convert"]
     assert set(convert["properties"]) == {
@@ -273,12 +275,14 @@ def test_new_tool_schemas_expose_only_declared_properties(tmp_path: Path):
         "startupStrategy",
         "startupSource",
         "memoryLayout",
+        "extraRegions",
     }
     assert set(convert.get("required", [])) == set()
     assert "string" in str(convert["properties"]["planId"])
     assert "string" in str(convert["properties"]["startupStrategy"])
     assert "string" in str(convert["properties"]["startupSource"])
     assert "object" in str(convert["properties"]["memoryLayout"])
+    assert "array" in str(convert["properties"]["extraRegions"])
     assert convert["properties"]["authorized"]["type"] == "boolean"
     assert convert["properties"]["authorized"]["default"] is False
 

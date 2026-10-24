@@ -20,6 +20,13 @@ import stat
 from pathlib import Path
 
 from stm32_toolkit import __version__
+from stm32_toolkit.extra_regions import (
+    ExtraRegion,
+    ExtraRegionError,
+    combined_regions,
+    normalize_extra_regions,
+    validate_extra_regions,
+)
 from stm32_toolkit.memory_layout import (
     MemoryLayout,
     MemoryLayoutError,
@@ -160,6 +167,23 @@ def _validate_plan(plan: object) -> None:
         raise _plan_invalid("type")
     if type(plan.inspection) is not KeilInspection:
         raise _plan_invalid("type")
+    if not isinstance(plan.extra_regions, tuple) or not all(
+        isinstance(region, ExtraRegion) for region in plan.extra_regions
+    ):
+        raise _plan_invalid("extraRegions")
+    try:
+        normalized_extras = normalize_extra_regions(plan.extra_regions)
+        validate_extra_regions(normalized_extras, plan.inspection.memory_regions)
+    except ExtraRegionError:
+        raise _plan_invalid("extraRegions") from None
+    if normalized_extras != plan.extra_regions:
+        raise _plan_invalid("extraRegions")
+    # The explicit layout is admitted against the same complete base-plus-extra
+    # map the planner used; otherwise a valid external-RAM role would be
+    # rejected on apply even though PLAN accepted it.
+    complete_regions = combined_regions(
+        plan.inspection.memory_regions, plan.extra_regions
+    )
     if type(plan.git) is not GitBaseline:
         raise _plan_invalid("type")
     if full_sha_error(plan.git.head) is not None or plan.git.root_marker != ".":
@@ -227,9 +251,7 @@ def _validate_plan(plan: object) -> None:
             raise _plan_invalid("memoryLayout")
     if plan.memory_layout is not None:
         try:
-            validate_memory_layout_regions(
-                plan.memory_layout, plan.inspection.memory_regions
-            )
+            validate_memory_layout_regions(plan.memory_layout, complete_regions)
         except MemoryLayoutError:
             raise _plan_invalid("memoryLayout") from None
 
@@ -502,6 +524,7 @@ def _fresh_plan(root: Path, plan: MigrationPlan) -> MigrationPlan:
             plan.inspection,
             startup_options=plan.startup_options,
             memory_layout=plan.memory_layout,
+            extra_regions=plan.extra_regions,
         )
     except MigrationPlanError as error:
         if error.code == "MIGRATION_INSPECTION_CHANGED":
@@ -618,6 +641,12 @@ def _build_report(plan: MigrationPlan, patch_bytes: bytes) -> bytes:
         # into its identity.  Absent for historical plans without a scope.
         payload["includeMerges"] = [
             merge.to_report_dict() for merge in plan.include_merges
+        ]
+    if plan.extra_regions:
+        # The same explicit request bound into the plan identity.  Absent for
+        # historical plans without extras.
+        payload["extraRegions"] = [
+            region.to_dict() for region in plan.extra_regions
         ]
     if plan.startup is not None:
         payload["startup"] = plan.startup.to_dict()

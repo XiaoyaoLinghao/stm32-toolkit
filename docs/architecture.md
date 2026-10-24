@@ -106,6 +106,33 @@ still require a separate startup table contract. This is offline link/ELF
 evidence, not proof that CCM, external memory or a physical board initializes
 or runs correctly.
 
+Explicit external RAM is a separate bounded input. Schema 2/3 manifests may
+carry `memory.extraRegions`, and Keil preflight/PLAN/APPLY accept the same
+explicit list as MCP `extraRegions` or CLI `--extra-regions` JSON. Every entry
+has exactly `name`, `origin`, `length` and `attributes`; only `rw-`/`rwx`
+writable RAM is representable, with at most 32 entries, linker-safe ASCII
+names of 1-64 characters, exact integer ranges, no overlap with the declared
+base or another extra region, and no inferred default. The persisted manifest
+keeps the inspected base `memory.regions` and `memory.extraRegions` separate;
+the typed `ProjectModel.memory.regions` is normalized once to the ordered
+base-plus-extra tuple, which is the only map used by fixed-section admission,
+managed layout selection, linker rendering, ELF/MAP accounting and build
+identity. Omitted or empty extras preserve historical bytes, model hashes and
+plan identities. A non-empty request is bound into migration plan identity,
+exposed in preflight/PLAN/report evidence, and revalidated on apply against
+the complete map, so a changed, shortened or omitted request refuses rather
+than reusing an approved plan.
+
+Extra regions add RAM candidates only, never Flash candidates. The existing
+`memory.layout`/`memoryLayout` selection requirement remains when the combined
+map is ambiguous, and managed `.data`/`.bss`/`.heap`/`.stack` are never placed
+in an owner-supplied region implicitly: an explicit mapping must name it.
+Fixed absolute sections remain address-bound `NOLOAD` placements and are not
+promised initialized. The owner must arrange external-memory initialization
+before access; external stack use can require earlier bootstrap than
+`SystemInit`. A native linker script stays user-owned and is never rewritten.
+This is offline source/link evidence, not hardware qualification.
+
 Generation retains prior ownership and hash checks. Existing user files never become writable merely
 because they occupy a generator target or have identical bytes. The implemented v1.0.1
 editor-preservation behavior is described in its

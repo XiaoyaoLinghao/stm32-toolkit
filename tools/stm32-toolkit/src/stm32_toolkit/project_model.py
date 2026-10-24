@@ -26,6 +26,13 @@ from jsonschema import Draft202012Validator, FormatChecker
 from jsonschema.exceptions import ValidationError
 
 from stm32_toolkit import __version__
+from stm32_toolkit.extra_regions import (
+    ExtraRegion,
+    ExtraRegionError,
+    combined_regions,
+    normalize_extra_regions,
+    validate_extra_regions,
+)
 from stm32_toolkit.identity import canonical_project_root
 from stm32_toolkit.memory_layout import (
     MemoryLayout,
@@ -118,6 +125,10 @@ class MemorySpec:
     stack_size: int | None = None
     heap_size: int | None = None
     layout: MemoryLayout | None = None
+    #: Names declared through ``memory.extraRegions``.  This is provenance for
+    #: the already-normalized ``regions`` tuple, never a second region map; it
+    #: keeps implicit managed placement out of owner-supplied external RAM.
+    extra_region_names: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -479,9 +490,16 @@ def validate_model_document(root: Path, payload: dict, version: int) -> None:
                 {"field": "generation.runtimeInitialization", "rule": "value"},
             )
         _validate_unique_region_names(payload["memory"]["regions"])
+        extras = _memory_extra_regions(payload["memory"])
+        base_document_regions = payload["memory"].get("regions")
+        combined = combined_regions(
+            base_document_regions if isinstance(base_document_regions, list) else (),
+            [extra.to_dict() for extra in extras],
+        )
         _validate_memory_layout_document(
             payload["memory"],
             generation.get("nativeLinkerScript"),
+            combined,
         )
     if version == 3 and isinstance(payload.get("testing"), dict):
         _validate_testing_document(root, payload["testing"], cache)
@@ -825,8 +843,26 @@ def _validate_unique_region_names(regions: object) -> None:
         )
 
 
+def _memory_extra_regions(memory: dict) -> tuple[ExtraRegion, ...]:
+    """Validate ``memory.extraRegions`` with the shared strict contract."""
+    try:
+        extras = normalize_extra_regions(memory.get("extraRegions"))
+        regions = memory.get("regions")
+        return validate_extra_regions(
+            extras, regions if isinstance(regions, list) else ()
+        )
+    except ExtraRegionError as error:
+        details = dict(error.details)
+        field = details.get("field")
+        if isinstance(field, str) and field.startswith("extraRegions"):
+            details["field"] = "memory." + field
+        raise ProjectManifestError(
+            "PROJECT_SCHEMA_INVALID", error.message, details
+        ) from None
+
+
 def _validate_memory_layout_document(
-    memory: object, native_linker_script: object
+    memory: object, native_linker_script: object, regions: object
 ) -> None:
     """Validate an explicit managed layout, or accept its deliberate absence.
 
@@ -843,9 +879,8 @@ def _validate_memory_layout_document(
         return
     try:
         layout = normalize_memory_layout(layout_value)
-        regions = memory.get("regions")
         validate_memory_layout_regions(
-            layout, regions if isinstance(regions, list) else ()
+            layout, regions if isinstance(regions, (list, tuple)) else ()
         )
     except MemoryLayoutError as error:
         raise ProjectManifestError(error.code, error.message, error.details) from None
@@ -915,17 +950,30 @@ def _build_model(root: Path, payload: dict, version: int) -> ProjectModel:
     else:
         memory_data = payload["memory"]
         layout_value = memory_data.get("layout")
+        extras = _memory_extra_regions(memory_data)
+        base_memory_regions = tuple(
+            MemoryRegion(
+                name=region["name"],
+                origin=region["origin"],
+                length=region["length"],
+                attributes=region["attributes"],
+            )
+            for region in memory_data["regions"]
+        )
+        extra_memory_regions = tuple(
+            MemoryRegion(
+                name=region.name,
+                origin=region.origin,
+                length=region.length,
+                attributes=region.attributes,
+            )
+            for region in extras
+        )
         memory = MemorySpec(
             source=memory_data["source"],
-            regions=tuple(
-                MemoryRegion(
-                    name=region["name"],
-                    origin=region["origin"],
-                    length=region["length"],
-                    attributes=region["attributes"],
-                )
-                for region in memory_data["regions"]
-            ),
+            # One canonical ordered map: persisted base first, then the
+            # explicit extras.  Every consumer uses this tuple only.
+            regions=combined_regions(base_memory_regions, extra_memory_regions),
             stack_size=memory_data.get("stackSize"),
             heap_size=memory_data.get("heapSize"),
             layout=(
@@ -933,6 +981,7 @@ def _build_model(root: Path, payload: dict, version: int) -> ProjectModel:
                 if layout_value is not None
                 else None
             ),
+            extra_region_names=tuple(region.name for region in extras),
         )
         generation_data = payload["generation"]
         generated_by = payload["generatedBy"]

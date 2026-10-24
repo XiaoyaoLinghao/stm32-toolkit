@@ -45,7 +45,7 @@ $Cli = Join-Path $DataRoot 'runtime\1.2.0\Scripts\stm32-toolkit.exe'
 & $Cli --project-root $ProjectRoot build --preset arm-debug --json
 ```
 
-**仅 v1.3.0 源码候选（未随 v1.2.0 发行）：** 已发布 v1.2.0 安装包（48 个工具）没有 `keil preflight`/`stm32_keil_preflight`，也不接受 `--startup-strategy`/`--startup-source`/`--memory-layout`（MCP `startupStrategy`/`startupSource`/`memoryLayout`）。下列入口、startup 与显式内存布局选项属于 v1.3.0 候选的未发布行为，不要对已安装的 v1.2.0 runtime 使用或宣称支持；候选自身的本地 runtime 为 `runtime/1.3.0`。
+**仅 v1.3.0 源码候选（未随 v1.2.0 发行）：** 已发布 v1.2.0 安装包（48 个工具）没有 `keil preflight`/`stm32_keil_preflight`，也不接受 `--startup-strategy`/`--startup-source`/`--memory-layout`/`--extra-regions`（MCP `startupStrategy`/`startupSource`/`memoryLayout`/`extraRegions`）。下列入口、startup 与显式内存布局选项属于 v1.3.0 候选的未发布行为，不要对已安装的 v1.2.0 runtime 使用或宣称支持；候选自身的本地 runtime 为 `runtime/1.3.0`。
 
 ```powershell
 $CandidateCli = Join-Path $DataRoot 'runtime\1.3.0\Scripts\stm32-toolkit.exe'
@@ -106,6 +106,34 @@ VS Code / MCP 客户端的审查路径：
 - CLI `--memory-layout` 接收一个 JSON 对象字符串：JSON 语法错误、重复键（如两个 `flash`）以及缺失/未知角色、非字符串或空字符串值都会在 inspect/plan 之前以 `MEMORY_LAYOUT_INVALID` 的 `field`/`rule`/`remediation` 失败；重复的 `--memory-layout` 选项则属于现有 sanitized 参数解析错误，不是 `MEMORY_LAYOUT_INVALID`。MCP 的 `memoryLayout` 是对象参数（不是 JSON 字符串），注册 input schema 为 `dict[str, str]`：字符串、数组等非对象值，以及角色值不是字符串的对象，都会在 Toolkit 运行前由 MCP 框架以 `ToolError`（如 `memoryLayout.flash` 的 `string_type` 校验）拒绝，不会得到 Toolkit 的 `MEMORY_LAYOUT_INVALID`。只有 schema 已接受的对象才交给 Toolkit：未知/缺失角色、空字符串值以及逻辑上的区域/权限错误由 Toolkit 返回结构化 `MEMORY_LAYOUT_INVALID`。不要把 MCP 框架的类型错误描述成 Toolkit 的结构化结果。
 - `generation.nativeLinkerScript` 存在时布局由用户原生脚本拥有：不允许同时声明显式布局（拒绝而非忽略）。固定地址节仍按原地址以 `NOLOAD` 放入所属区域或保留原有 blocker，不会被当作初始化数据复制/清零。
 - 托管 linker 将 `.data` 的 VMA 放入所选 RAM、LMA 放入所选 Flash，并保持 `_sidata`/`_sdata`/`_edata`/`_sbss`/`_ebss` 与 `cmsis-gcc-v1` 断言；stack/heap 精确字节与 8 字节栈对齐保持不变。区域越界、重叠或过小由实际链接失败暴露。成功链接只是离线镜像证据，不证明 CCM/外部 SRAM 或真实板卡运行时行为。
+
+### 显式外部 RAM 区域（当前源码/候选切片）
+
+迁移可以显式声明 Keil/设备事实之外的**可写 RAM**（例如外部 SRAM），用于固定地址缓冲或显式内存布局。该输入属于 **v1.3.0 候选的未发布行为**：已发布 v1.2.0 runtime 不接受 `extraRegions`/`--extra-regions`；使用前核对实际绑定的 MCP input schema。
+
+| 操作 | MCP 参数 | CLI 参数 | 值 |
+| --- | --- | --- | --- |
+| 预检/计划/应用 | `extraRegions` | `--extra-regions '<json>'` | JSON 数组，最多 32 个对象；每个对象恰好含 `name`、`origin`、`length`、`attributes` |
+
+规则（所有容量必须由工程负责人给出，Toolkit 不猜测）：
+
+- `name` 是 1–64 字符 ASCII linker 标识符（`[A-Za-z_][A-Za-z0-9_]*`），大小写不敏感地唯一，且不得与已声明 base 区域重名。
+- `origin` 必须是 JSON 整数 `0..0xffffffff`；`length` 必须是 JSON 整数 `1..0x100000000`；半开区间结束地址不得超过 `0x100000000`。布尔、字符串、浮点、零长度都不接受；显式零容量不是省略。相邻区域允许，重叠（与 base 或其它 extra）拒绝。
+- `attributes` 只能是 `rw-` 或 `rwx`。该入口不能声明新的可编程 Flash，`rwx` 外部 RAM 也绝不会被当作 Flash 候选。
+- 省略或空数组是同一个“无额外区域”请求，保持历史 manifest 字节、model hash、plan ID 与生成输出。非空请求写入 manifest 的 `memory.extraRegions`；`memory.regions` 保持从 Keil/模型得到的 base 列表不变，类型化 `ProjectModel.memory.regions` 只组合一次为 base+extra，供 fixedSections、linker、ELF/MAP、构建身份等所有消费者共用。
+- 同一精确请求必须用于 preflight、PLAN 和 APPLY。preflight 返回 `data.analysis.extraRegions`，PLAN 返回 `data.extra_regions`（并绑定进 `data.plan_id`），成功 apply 的 conversion report 记录 `extraRegions`。省略、缩短、删除或修改任一项都是不同的 reviewed 请求，apply 返回结构化校验错误或 `PLAN_CHANGED`，不会写文件；手工篡改类型化计划会在首次写入前被拒绝。`planReadiness.nextSteps` 会重复需要保留的精确请求。
+- extra RAM 只增加 RAM 候选。已有多个 RAM 时仍返回 `MEMORY_LAYOUT_REQUIRED`；若唯一的可写 RAM 是外部区域，也不会被隐式选为 `.data`/`.bss`/`.heap`/`.stack`。只有显式 `memoryLayout` 可以命名合法 extra RAM，语义与 startup 不变（不会新增 copy/zero 表或初始化代码）。
+- `MIGRATION_FIXED_SECTION_OUTSIDE_MEMORY` 在缺少额外区域时保持可操作：按实际硬件提供精确 origin/字节长度，不得猜长度。固定节仍以 `NOLOAD` 放置，不承诺已初始化；owner 必须在任何访问前完成外部存储器初始化（若把 stack 放在外部 RAM，可能需要早于 `SystemInit` 的引导）。外部 SRAM 的运行时正确性不由离线链接证明。
+- `generation.nativeLinkerScript` 仍由用户拥有，不会被改写，也不能同时声明托管 `memoryLayout`。该声明不授予任何硬件访问，也不添加 Flash 算法或绕过芯片 Flash 映射检查。
+- CLI `--extra-regions` 接收 JSON 数组字符串：语法错误、重复对象键、深层嵌套、超大 JSON、重复选项（现有 sanitized parser 错误）以及非法字段都在 inspect/plan 之前失败；Toolkit 侧错误使用结构化 `EXTRA_REGIONS_INVALID` 的 `field`/`rule`/`remediation`。MCP 使用真实数组（注册 schema 为 `list[dict[str, Any]]`，保留原始标量类型）：非数组/非对象项由 MCP 框架先行拒绝；schema 可接受但语义非法的值（布尔 origin、越界长度、`r-x`、重叠等）返回 `EXTRA_REGIONS_INVALID`。
+
+```powershell
+$Extra = '[{"name":"EXT_SRAM","origin":536870912,"length":65536,"attributes":"rw-"}]'
+& $CandidateCli --project-root $ProjectRoot keil preflight --uvprojx Project/blinky.uvprojx --target-name Debug --extra-regions $Extra --json
+& $CandidateCli --project-root $ProjectRoot keil convert --uvprojx Project/blinky.uvprojx --target-name Debug --extra-regions $Extra --memory-layout '{"flash":"IROM1","data":"IRAM1","bss":"EXT_SRAM","heap":"EXT_SRAM","stack":"EXT_SRAM"}' --dry-run --json
+```
+
+（示例中的数值只是**审阅示例，非板级事实**；必须按实际器件给出。）
 
 `stm32_project_context` 的旧 `capabilities.*` 布尔值继续保留为保守兼容字段；新增 `capabilityDetails` 逐项给出 `available`、`blocked` 或 `not-evaluated` 及原因/下一步。`flash`、`targetTest`、`monitor`、`breakpointDebug` 的旧布尔 `false` 本身不区分“未探测硬件”与“已知 snapshot provenance 阻断”，必须读 `capabilityDetails`；它也不代表工具不存在。需要探针事实时单独调用只读 `probe list` / `stm32_probe_list`。仅询问已连接探针时，不需要 manifest、构建、debug backend、target 或 SVD；发现结果不授予改板权限，也不证明 target 身份或可烧录。有效工程保留 `workspaceId`，缺失或无效 manifest 时返回 `workspaceId: null` 与明确 `discovery.status=unbound`，不要伪造工程 ID。
 

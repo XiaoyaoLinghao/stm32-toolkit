@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from stm32_toolkit.extra_regions import ExtraRegion
 from stm32_toolkit.keil import KeilInspection
 from stm32_toolkit.memory_layout import MemoryLayout
 from stm32_toolkit.migration import git_guard
@@ -199,11 +200,30 @@ def _memory_layout_option_guidance(layout: MemoryLayout | None) -> str:
     )
 
 
+def _extra_regions_option_guidance(
+    extra_regions: tuple[ExtraRegion, ...],
+) -> str:
+    """Return the exact reviewed extra-region request to retain."""
+    if not extra_regions:
+        return ""
+    return (
+        " Retain extraRegions="
+        + json.dumps(
+            [region.to_dict() for region in extra_regions],
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + " for the PLAN and apply requests; omitting or changing any entry is "
+        "a different reviewed request and is never accepted against this plan."
+    )
+
+
 def _plan_readiness(
     git: dict[str, object],
     blocker_total: int,
     startup_options: StartupOptions | None = None,
     memory_layout: MemoryLayout | None = None,
+    extra_regions: tuple[ExtraRegion, ...] = (),
 ) -> dict[str, object]:
     """Whether the technical/Git prerequisites for obtaining a plan are met.
 
@@ -282,9 +302,11 @@ def _plan_readiness(
             "Inspect data.git.worktree.error and confirm Git status access; do not assume the worktree is dirty or clean."
         )
     if ready:
-        guidance = _startup_option_guidance(
-            startup_options
-        ) + _memory_layout_option_guidance(memory_layout)
+        guidance = (
+            _startup_option_guidance(startup_options)
+            + _memory_layout_option_guidance(memory_layout)
+            + _extra_regions_option_guidance(extra_regions)
+        )
         next_steps.append(
             "Call stm32_keil_convert (CLI: keil convert --dry-run) with the same uvprojx and targetName and no planId; the read-only PLAN response returns the exact identifier as data.plan_id and the complete diff as data.patches[].unified_diff."
             + guidance
@@ -307,6 +329,7 @@ def _apply_readiness(
     plan_readiness: dict[str, object],
     startup_options: StartupOptions | None = None,
     memory_layout: MemoryLayout | None = None,
+    extra_regions: tuple[ExtraRegion, ...] = (),
 ) -> dict[str, object]:
     """Apply is never ready from preflight, regardless of plan prerequisites."""
     prerequisites = plan_readiness["prerequisites"]
@@ -316,9 +339,11 @@ def _apply_readiness(
         for item in prerequisites
         if isinstance(item, dict) and item.get("satisfied") is not True
     ]
-    guidance = _startup_option_guidance(
-        startup_options
-    ) + _memory_layout_option_guidance(memory_layout)
+    guidance = (
+        _startup_option_guidance(startup_options)
+        + _memory_layout_option_guidance(memory_layout)
+        + _extra_regions_option_guidance(extra_regions)
+    )
     if plan_readiness["ready"] is True:
         next_steps = [
             "Call stm32_keil_convert with the same uvprojx and targetName and no planId to obtain the read-only PLAN response; read data.plan_id and data.patches[].unified_diff."
@@ -502,12 +527,14 @@ _KNOWN_REMEDIATION: dict[
     "MIGRATION_FIXED_SECTION_OUTSIDE_MEMORY": (
         _NEEDS_USER_INPUT,
         "A fixed placement address lies outside every declared memory region."
-        " Review the actual memory map and provide an explicit project-owned"
-        " memory definition before applying; preflight has no parameter to add"
-        " or invent an external memory region.",
+        " Review the actual memory map and, when the project owner confirms a"
+        " writable RAM region such as external SRAM, pass its exact name,"
+        " origin, byte length and rw-/rwx attributes as extraRegions. Preflight"
+        " never guesses a length, invents an external region, or changes the"
+        " inspected Keil base regions.",
+        "stm32_keil_preflight",
         None,
-        None,
-        (),
+        ("extraRegions",),
     ),
     "ARMCC_OPTION_UNSUPPORTED": (
         _UNSUPPORTED,
@@ -677,6 +704,7 @@ def preflight_keil_conversion(
     *,
     startup_options: StartupOptions | None = None,
     memory_layout: MemoryLayout | None = None,
+    extra_regions: tuple[ExtraRegion, ...] | None = None,
 ) -> dict[str, object]:
     """Analyze one inspected Keil target without Git and without mutation.
 
@@ -689,7 +717,9 @@ def preflight_keil_conversion(
         inspection,
         startup_options=startup_options,
         memory_layout=memory_layout,
+        extra_regions=extra_regions,
     )
+    extras = analysis.extra_regions
     git = _git_state(analysis.project_root)
 
     by_code: dict[str, int] = {}
@@ -705,7 +735,7 @@ def preflight_keil_conversion(
 
     fresh = analysis.inspection
     plan_readiness = _plan_readiness(
-        git, len(analysis.blockers), startup_options, memory_layout
+        git, len(analysis.blockers), startup_options, memory_layout, extras
     )
     payload = {
         "analysis": {
@@ -742,11 +772,17 @@ def preflight_keil_conversion(
         "git": git,
         "planReadiness": plan_readiness,
         "applyReadiness": _apply_readiness(
-            plan_readiness, startup_options, memory_layout
+            plan_readiness, startup_options, memory_layout, extras
         ),
     }
     if analysis.startup is not None:
         payload["analysis"]["startup"] = analysis.startup.to_dict()
+    if extras:
+        # Additive reviewed evidence; absent for the historical no-extra
+        # request so preflight bytes stay unchanged.
+        payload["analysis"]["extraRegions"] = [
+            region.to_dict() for region in extras
+        ]
     if analysis.include_merges:
         # Additive reviewed evidence: absent when no include-only scope was
         # analyzed, so historical preflight payloads are unchanged.
