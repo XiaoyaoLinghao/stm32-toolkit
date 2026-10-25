@@ -1,0 +1,74 @@
+{
+  "acceptedBase": "41925c6e915a8af41c350bd08113e82bed41d1ed",
+  "codeHead": "1b2696ff768c5880cc6bdae232d7093f5f1be0ac",
+  "verdict": "ACCEPTED_WITH_FIXES",
+  "scope": "test-only offline recovery authority",
+  "authorSession": "1a9d79fe-609a-4ce3-8e5b-c3ee83266d41",
+  "verificationSession": "e42b5ca4-9ae7-4f32-be5a-d979b51b20be",
+  "newCases": 22,
+  "firstAuthor": {
+    "passed": 320,
+    "failed": 12
+  },
+  "firstPrimary": {
+    "passed": 128,
+    "failed": 12
+  },
+  "finalAuthorFocusedPassed": 22,
+  "reusedUnaffectedPassed": 310,
+  "primaryIndependentPassed": 140,
+  "productUnchanged": true,
+  "cohort": {
+    "cases": 8815,
+    "passed": 8796,
+    "skipped": 19
+  },
+  "scopes": {
+    "toolkit-overall": {
+      "covered": 15311,
+      "total": 17502,
+      "floor": 90,
+      "percent": 87.48143069363502,
+      "gain": 12,
+      "status": "UNMET"
+    },
+    "toolkit-risk-core-v2": {
+      "covered": 14278,
+      "total": 16296,
+      "floor": 90,
+      "percent": 87.61659302896416,
+      "gain": 12,
+      "status": "UNMET"
+    },
+    "monitor-overall": {
+      "covered": 3227,
+      "total": 3498,
+      "floor": 90,
+      "percent": 92.2527158376215,
+      "gain": 0,
+      "status": "PASS"
+    },
+    "monitor-risk-core-v2": {
+      "covered": 3227,
+      "total": 3498,
+      "floor": 95,
+      "percent": 92.2527158376215,
+      "gain": 0,
+      "status": "UNMET"
+    }
+  },
+  "evidenceHashes": {
+    "recovery-integrity-a/manifest.json": "7c9dc8be9bb16bc55fc2a78a0f5387ca7dd86068f5fb8af478b4129ad20b837c",
+    "recovery-integrity-a/ri-01/execution.json": "0d37667a354112d1303504b2d513e770a077eb0e26796aa5686254964717486f",
+    "recovery-integrity-b/manifest.json": "7f5e6a8bd1275f23570b0d94e14261259bf540aaf178963292e5101a16a29580",
+    "recovery-integrity-b/ri-01/execution.json": "6743dde5c7abc57063be56acb88180730c52f2a46b0fd993e7a4066c0b163a90",
+    "primary-recovery-integrity-a/execution.json": "aa28de716bd91052987933c46a0352fd6829f2c82d0bd5560bd1128a0e855db4",
+    "primary-recovery-integrity-b/execution.json": "66f244e60701e91ad8d55219eb23fe4855889337f0bb76f6b7e6bc37051912fb",
+    "recovery-retry-disposition.json": "16c9fce9d49156648b6f71ab927ca4dfc363ecad819c1538cafd1f4b7a5025e8",
+    "coverage-recovery-b/qualification.json": "d667c188d8aa9890cc2c1d6039d6f17a581cb9210b6ca7dcd04fdf8dfde4efb6",
+    "coverage-recovery-b/native.json": "f56d694a15e686e14fd09dd61554720412f9b4b2a6245df2e091e4b2b2411d4e"
+  },
+  "nativeRawFileCount": 955,
+  "singleHeadAllGreenRerun": false,
+  "releaseAccepted": false
+}

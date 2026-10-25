@@ -4,7 +4,9 @@
 
 ## 1. 当前断点与证据
 
-2026-10-26 最新补测：DIAGNOSTIC-INTEGRITY-REGRESSION 已 **ACCEPTED_WITH_FIXES**，见[报告](../codex/returns/DIAGNOSTIC-INTEGRITY-REGRESSION/implementation-report.md)。CodeHead `83365c700baa9fe79ba6784efbac87365c93cfda`；Claude 226 通过/1 个原有 WinError 1314 符号链接能力跳过，主代理独立 25/25，新增 24 项及 7 个 Toolkit 分支。全部新增用例与原生 Windows 锁测试执行通过，既有跳过明确留待主代理负责的具备符号链接能力的最终资格环境。当前去重复用队列 8,774 通过/19 跳过；Toolkit 总体/风险 87.4129%/87.5430%，Monitor 风险 92.2527%，永久门槛仍未满足。继续恢复流程完整性复核；安装解释器修正、本机 Git 登录仍待用户响应，实际 VS Code、最终包及发布未完成。不是最终单一提交全量重跑。以下为历史断点。
+2026-10-26 最新补测：RECOVERY-AUTHORITY-REGRESSION 已 **ACCEPTED_WITH_FIXES**，见[报告](../codex/returns/RECOVERY-AUTHORITY-REGRESSION/implementation-report.md)。CodeHead `1b2696ff768c5880cc6bdae232d7093f5f1be0ac`；最终 Claude 新增22/22、主代理140/140；310项未变相关通过结果明确复用。首轮双方各12个JSON比较夹具失败及后台通知后禁用Read拒绝均保留，失败运行覆盖率数据未导入。新增12个Toolkit分支；当前队列8,796通过/19跳过，Toolkit总体/风险87.4814%/87.6166%，Monitor风险92.2527%，永久门槛未满足。ARMCC注释前缀指令问题正独立复现；安装解释器修正、本机Git登录待原问题回复，实际VS Code、最终双构建及发布仍未完成。不是最终单一提交全量重跑，不授予硬件资格。以下为历史断点。
+
+2026-10-26 此前补测：DIAGNOSTIC-INTEGRITY-REGRESSION 已 **ACCEPTED_WITH_FIXES**，见[报告](../codex/returns/DIAGNOSTIC-INTEGRITY-REGRESSION/implementation-report.md)。CodeHead `83365c700baa9fe79ba6784efbac87365c93cfda`；Claude 226 通过/1 个原有 WinError 1314 符号链接能力跳过，主代理独立 25/25，新增 24 项及 7 个 Toolkit 分支。全部新增用例与原生 Windows 锁测试执行通过，既有跳过明确留待主代理负责的具备符号链接能力的最终资格环境。当前去重复用队列 8,774 通过/19 跳过；Toolkit 总体/风险 87.4129%/87.5430%，Monitor 风险 92.2527%，永久门槛仍未满足。继续恢复流程完整性复核；安装解释器修正、本机 Git 登录仍待用户响应，实际 VS Code、最终包及发布未完成。不是最终单一提交全量重跑。以下为历史断点。
 
 2026-10-26 此前补测：MONITOR-INTEGRITY-REGRESSION 已 **ACCEPTED_WITH_FIXES**，见[报告](../codex/returns/MONITOR-INTEGRITY-REGRESSION/implementation-report.md)。CodeHead `0be59bf039747ac6ba9b1effc6fe454261588bbb`；最终 Claude 494/494、主代理独立 109/109，新增 21 项及 24 个 Monitor 风险分支。首轮双方各两项新夹具失败均保留，修正 SourceIndex truncated 参数与真实 SQLite WAL 准备后完整相关组复跑通过。当前去重复用队列 8,750 通过/19 跳过；Toolkit 总体/风险 87.3729%/87.5000%，Monitor 风险 92.2527%，永久门槛仍未满足。继续诊断完整性补测；安装解释器修正、本机 Git 登录待用户响应，实际 VS Code、最终包及发布未完成。不代表最终单一提交全量重跑或硬件资格。以下为历史断点。
 
