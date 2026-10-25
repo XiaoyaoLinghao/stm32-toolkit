@@ -20,6 +20,7 @@ from stm32_toolkit import __version__
 from stm32_toolkit.extra_regions import ExtraRegion
 from stm32_toolkit.keil import KeilInspection
 from stm32_toolkit.memory_layout import MemoryLayout, MemoryLayoutResolution
+from stm32_toolkit.migration.float_abi import float_abi_evidence
 
 _PLAN_LIMIT_BYTES = 64 * 1024 * 1024
 
@@ -361,6 +362,9 @@ class MigrationPlan:
             "patches": [patch.to_dict() for patch in self.patches],
             "fixed_sections": [section.to_dict() for section in self.fixed_sections],
             "blockers": [blocker.to_dict() for blocker in self.blockers],
+            # Derived from the bound inspection; never stored separately, so a
+            # caller cannot forge evidence independently of the inspection.
+            "floatAbi": float_abi_evidence(self.inspection),
         }
         if self.startup is not None:
             payload["startup"] = self.startup.to_dict()
@@ -399,8 +403,8 @@ def _plan_id_payload(plan: MigrationPlan) -> dict[str, object]:
     Excludes ``project_root``, the inspection object, ``plan_id`` itself,
     raw bytes, and unified diffs.  Includes the plan version, inspection
     hash, Git head, all input and patch metadata/digests, fixed sections,
-    blockers, the Toolkit version, and the SHA-256 of the proposed
-    concatenated patch content.
+    blockers, the derived float-ABI evidence, the Toolkit version, and the
+    SHA-256 of the proposed concatenated patch content.
     """
     patch_content = b"".join(patch.unified_diff.encode("utf-8") for patch in plan.patches)
     payload: dict[str, object] = {
@@ -421,6 +425,7 @@ def _plan_id_payload(plan: MigrationPlan) -> dict[str, object]:
         ],
         "fixed_sections": [section.to_dict() for section in plan.fixed_sections],
         "blockers": [blocker.to_dict() for blocker in plan.blockers],
+        "floatAbi": float_abi_evidence(plan.inspection),
         "toolkit_version": __version__,
         "patch_content_sha256": hashlib.sha256(patch_content).hexdigest(),
     }

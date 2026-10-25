@@ -57,6 +57,19 @@ $CandidateCli = Join-Path $DataRoot 'runtime\1.3.0\Scripts\stm32-toolkit.exe'
 
 Keil `inspect`、`preflight` 和 `convert` 必须指向同一 `uvprojx` 和 `target-name`。`preflight` 只做技术分析：不要求 Git，可在存在 blocker 时仍成功返回 `analysis.complete=true`，并把 `analysis.blockers`、`planReadiness`（取得计划所需的技术/Git 前置）与 `applyReadiness`（在有 reviewed/authorized plan 前恒为 `requires-reviewed-plan` 且 `ready=false`）分开；它不产生可用 plan ID、不写文件、不会自动 `git init`、转码或替换 ARMCC startup。缺少 Git、unborn HEAD、非 Git toplevel 或 dirty/untracked 工作区会作为计划前置失败列出，由工程负责人决定是否建立干净基线。确认 plan 无 blocker、diff/路径均符合预期后，以 PLAN 响应的 `data.plan_id` 调用同一参数链的 `convert --apply --plan-id <data.plan_id> --authorized --json`。PLAN 响应字段是 `data.plan_id`，APPLY 请求参数是 `planId`/`--plan-id`，不要混用带命令前缀的展示文本。`configure` 同样先 `--dry-run` 再用该次 `data.plan_id` `--apply --plan-id <data.plan_id> --authorized --json`；应用前会重新检查输入与改动。构建报告 `BUILD_OUTPUT_STALE` 时，先判定是哪项输入或身份改变，再根据实际计划决定是否 `build --preset arm-debug --clean --json`；不能靠修改旧 receipt 让产物看似有效。
 
+### ARMCC 浮点 ABI 证据（当前源码/候选切片）
+
+Arm 的 Compiler 5 文档区分硬件浮点**计算**与参数传递 **ABI**；官方迁移表把 `--cpu=Cortex-M4.fp` 映射到 hard linkage，但这说明的是编译器规则，不是本项目原始二进制实际使用的 ABI（参见 [Arm Compiler 5 文档](https://documentation-service.arm.com/static/5f721c6c1b758617cd950f6f)、[ARMCC→ARMCLANG 架构/处理器名迁移](https://support.arm.com/documentation/100068/0609/migrating-from-armcc-to-armclang/migrating-architecture-and-processor-names-for-command-line-options)、[Keil FPU 硬件选择](https://www.keil.com/support/man/docs/uv4/uv4_dg_adstarg.asp) 与 [GCC ARM 选项](https://gcc.gnu.org/onlinedocs/gcc/ARM-Options.html)）。本切片不解析 AXF/对象/库或真实编译命令行，因此 `baselineVerified` 恒为 false。
+
+`stm32_keil_inspect` 额外记录选中 target 的原始 `ArmAdsMisc/RvdsVP`（inspection 字段 `rvds_vp`）。`stm32_keil_preflight` 的 `data.analysis.floatAbi`、PLAN 的 `data.floatAbi` 与成功 apply 的 `conversion-report.json` 中 `floatAbi` 是同一份确定性证据，字段为 `compiler`/`compilerVersion`/`cpu`/`rawFpu`/`rawFloatAbi`/`rawRvdsVp`、`fpu`（GCC 拼写或 null）、`selectedAbi`、`origin`（`inferred`/`declared`/`blocked`/`not-applicable`）、`ruleId`、`reason`、`baselineVerified`、`warning`、`nextStep`。
+
+- Keil 的数值 `uFloatingPoint`（0/1/2 等）不是已证明的 ABI 声明，不再自动映射为 soft/softfp；它们与未知值一样产生稳定 blocker，不伪造替换字段。
+- 只有字面量 `soft`/`softfp`/`hard` 作为**工程声明**保留，`origin=declared`；声明只表示工程意图，不证明原二进制使用同一 ABI。
+- 仅 `ARMCC + Cortex-M4 + FPU2` 且无显式 ABI 时保留窄推断 `origin=inferred`、`selectedAbi=hard`；这是未验证的兼容候选，不是 blanket 规则或 Linux 默认。
+- 选中 target 的 `RvdsVP` 缺失/为空或为 `2` 时允许上述历史候选；其它非空值（即使同时存在字面量 ABI）以 `MIGRATION_FPU_SELECTION_UNSUPPORTED` 阻断 FPU/ABI 推断。数值 `2` 只是本兼容规则允许的历史选择器，不证明二进制等价。
+- 其它 compiler/CPU/FPU 组合仍 fail closed；`--apcs`、`--fpu` 与 response-file 等 target/group/file misc controls 的既有 blocker 保持不变，不得为清除 blocker 改写证据或删除控件。
+- 请检查实际编译器命令行、对象与库的调用约定。没有新增 ABI override 参数或 CLI/MCP 标志，也不得手工编辑 `plan_id`、digest 或工程证据。本补丁仍在 1.3.0 源码候选；待其余改进一并集成为 1.3.1，frozen/installed 1.3.0 不包含此源码行为。
+
 ### 受支持的 CMSIS startup 生成（显式 opt-in）
 
 仅有常规 ST/CMSIS Cortex-M3/M4/M7 ARMCC5 startup 可走此路线；其它 ARMCC 汇编仍然阻断。本节参数属于 **v1.3.0 候选的未发布行为**：已发布 v1.2.0 安装包（48 个工具）不含 `stm32_keil_preflight` 及这两个选项，须以宿主实际安装版本为准。公开参数名固定为：

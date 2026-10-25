@@ -934,6 +934,10 @@ def inspect_keil(
     memory_regions = _parse_memory(cpu_text, target_option)
 
     arm_ads = _descendant(target_option, "TargetArmAds")
+    # Raw selected-target hardware-selection evidence only.  ArmAdsMisc/RvdsVP
+    # is not decoded generically; migration keeps one bounded compatibility
+    # check and otherwise fails closed.
+    rvds_vp = _text_of(_descendant(arm_ads, "ArmAdsMisc"), "RvdsVP")
     target_options = _extract_options(_descendant(arm_ads, "Cads", "VariousControls"))
     defines = target_options[0] if target_options else ()
     raw_include_paths = target_options[1] if target_options else ()
@@ -1169,4 +1173,5 @@ def inspect_keil(
         findings=findings,
         warnings=tuple(warnings),
         inputs=inputs,
+        rvds_vp=rvds_vp,
     )

@@ -330,6 +330,7 @@ def test_fpu_abi_framework_and_option_remediation_preserves_semantics() -> None:
     codes = (
         "MIGRATION_FRAMEWORK_SELECTION_REQUIRED",
         "MIGRATION_FPU_UNSUPPORTED",
+        "MIGRATION_FPU_SELECTION_UNSUPPORTED",
         "MIGRATION_FLOAT_ABI_REQUIRED",
         "MIGRATION_FLOAT_ABI_REQUIRES_FPU",
         "MIGRATION_FLOAT_ABI_UNSUPPORTED",

@@ -160,6 +160,10 @@ class KeilInspection(_JsonModel):
     findings: tuple[KeilFinding, ...]
     warnings: tuple[KeilWarning, ...]
     inputs: tuple[KeilInputDigest, ...]
+    #: Raw selected-target ``ArmAdsMisc/RvdsVP`` text.  ``None`` means absent;
+    #: an empty string means an empty element.  It is retained as evidence only
+    #: and is not generically decoded.
+    rvds_vp: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         """Return a portable JSON-safe mapping; the host path is omitted."""

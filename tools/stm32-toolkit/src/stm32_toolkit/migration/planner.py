@@ -43,6 +43,10 @@ from stm32_toolkit.project_model import ProjectManifestError, first_schema_error
 from stm32_toolkit.migration import git_guard
 from stm32_toolkit.migration import rules
 from stm32_toolkit.migration.constant_context import SymbolSource
+from stm32_toolkit.migration.float_abi import (
+    float_abi_evidence,
+    resolve_float_abi,
+)
 from stm32_toolkit.migration.model import (
     FilePatch,
     FixedSectionRequirement,
@@ -103,72 +107,17 @@ def _raise(code: str, message: str, details: dict[str, object]) -> MigrationPlan
     return MigrationPlanError(code, message, details)
 
 
-#: Exact GCC float ABIs the migration may emit (work order revision 1).
-_KNOWN_FLOAT_ABIS = frozenset({"soft", "softfp", "hard"})
-
-#: Verifiable Keil ``uFloatingPoint`` evidence mapped to a GCC float ABI.
-#: Keil writes 0/1/2 for "Not Used"/"Single precision"/"Double precision"
-#: (documented MDK-ARM project format).  "Not Used" (0) selects soft; both
-#: precision values use the ARM softfp ABI that ARMCC and ARMCLANG apply for
-#: hardware FPU (a hard ABI can only be selected through misc controls,
-#: which are already blocked separately).  Any other text is unknown or
-#: ambiguous and produces a stable blocker instead of entering the manifest.
-_KEIL_FLOAT_ABI_EVIDENCE = {"0": "soft", "1": "softfp", "2": "softfp"}
-
-# Verifiable Keil CPU/FPU evidence mapped to a GCC FPU spelling.  The mapping
-# is deliberately closed: an unknown tuple must not become an inferred
-# compiler option.
-_KEIL_FPU_EVIDENCE = {("cortex-m4", "FPU2"): "fpv4-sp-d16"}
-
-
-def _normalize_float_abi(raw: str | None) -> tuple[str | None, str | None]:
-    """Map raw Keil ``uFloatingPoint`` text to a GCC float ABI.
-
-    Returns ``(normalized_value, None)`` for verifiable evidence (the exact
-    GCC spellings ``soft``/``softfp``/``hard`` and Keil's "Not Used" value
-    ``0``), ``(None, None)`` for an absent/empty element, and
-    ``(None, blocker_code)`` for unknown or ambiguous text so the raw value
-    never enters the manifest.
-    """
-    if raw is None:
-        return None, None
-    value = raw.strip()
-    if not value:
-        return None, None
-    if value in _KNOWN_FLOAT_ABIS:
-        return value, None
-    normalized = _KEIL_FLOAT_ABI_EVIDENCE.get(value)
-    if normalized is not None:
-        return normalized, None
-    return None, "MIGRATION_FLOAT_ABI_UNSUPPORTED"
-
-
 def _normalize_target_fpu_abi(
     inspection: KeilInspection,
 ) -> tuple[str | None, str | None, str | None]:
-    """Normalize the atomic Keil FPU/ABI pair without guessing unsupported data."""
-    raw_fpu = (inspection.fpu or "").strip()
-    raw_abi = (inspection.float_abi or "").strip()
-    if not raw_fpu:
-        if raw_abi:
-            return None, None, "MIGRATION_FLOAT_ABI_REQUIRES_FPU"
-        return None, None, None
-    fpu = _KEIL_FPU_EVIDENCE.get((inspection.cpu.casefold(), raw_fpu.upper()))
-    if fpu is None:
-        return None, None, "MIGRATION_FPU_UNSUPPORTED"
-    if raw_abi:
-        abi, blocker = _normalize_float_abi(raw_abi)
-        if blocker is not None:
-            return None, None, blocker
-        assert abi is not None
-        return fpu, abi, None
-    if (
-        inspection.compiler == "armcc"
-        and inspection.cpu.casefold() == "cortex-m4"
-        and raw_fpu.upper() == "FPU2"
-    ):
-        return fpu, "hard", None
-    return None, None, "MIGRATION_FLOAT_ABI_REQUIRED"
+    """Normalize the atomic Keil FPU/ABI pair without guessing unsupported data.
+
+    Delegates to :mod:`stm32_toolkit.migration.float_abi`, the single owner of
+    the bounded evidence rules, so planning and public evidence cannot drift.
+    """
+    decision = resolve_float_abi(inspection)
+    blocker = decision.rule_id if decision.origin == "blocked" else None
+    return decision.fpu, decision.abi, blocker
 
 
 def _canonical_root(root: object, field: str = "projectRoot") -> Path:
@@ -529,29 +478,17 @@ def _inspection_blockers(
                 "non-empty scatter-file linker setting",
             )
         )
-    _, _, fpu_abi_blocker = _normalize_target_fpu_abi(inspection)
-    if fpu_abi_blocker is not None:
-        blocker_messages = {
-            "MIGRATION_FPU_UNSUPPORTED": "unsupported or ambiguous Keil FPU evidence",
-            "MIGRATION_FLOAT_ABI_REQUIRED": "Keil FPU evidence requires an explicit float ABI",
-            "MIGRATION_FLOAT_ABI_REQUIRES_FPU": "Keil float ABI evidence requires FPU evidence",
-            "MIGRATION_FLOAT_ABI_UNSUPPORTED": "unsupported or ambiguous Keil float ABI",
-        }
-        blocker_evidence = {
-            "MIGRATION_FPU_UNSUPPORTED": inspection.fpu,
-            "MIGRATION_FLOAT_ABI_REQUIRED": inspection.fpu,
-            "MIGRATION_FLOAT_ABI_REQUIRES_FPU": inspection.float_abi,
-            "MIGRATION_FLOAT_ABI_UNSUPPORTED": inspection.float_abi,
-        }[fpu_abi_blocker]
+    float_decision = resolve_float_abi(inspection)
+    if float_decision.blocked:
         blockers.append(
             MigrationBlocker(
-                fpu_abi_blocker,
-                fpu_abi_blocker,
+                float_decision.rule_id,
+                float_decision.rule_id,
                 inspection.project_file,
                 0,
                 0,
-                (blocker_evidence or "")[:200],
-                blocker_messages[fpu_abi_blocker],
+                (float_decision.evidence or "")[:200],
+                float_decision.message,
             )
         )
     for option in inspection.scoped_options:
@@ -767,6 +704,9 @@ class ConversionAnalysis:
     include_merges: tuple[IncludeMerge, ...] = ()
     include_paths: tuple[str, ...] = ()
     extra_regions: tuple[ExtraRegion, ...] = ()
+    #: Deterministic float-ABI evidence, always re-derived from the fresh
+    #: inspection above; callers cannot supply it.
+    float_abi: dict[str, object] | None = None
 
 
 def _bind_analysis_root(root: object, inspection: object) -> Path:
@@ -1258,6 +1198,9 @@ def analyze_keil_conversion(
         include_merges=include_analysis.merges,
         include_paths=include_analysis.include_paths,
         extra_regions=extras,
+        # Derived from the fresh inspection, never from caller-supplied
+        # diagnostics or mutable plan state.
+        float_abi=float_abi_evidence(fresh),
     )
 
 

@@ -211,9 +211,17 @@ def project_xml(*targets: dict, xmlns: bool = True) -> str:
             parts.append(f"        <OutputName>{target['outer_out_name']}</OutputName>")
         if "outer_listing_path" in target:
             parts.append(f"        <ListingPath>{target['outer_listing_path']}</ListingPath>")
+        parts.append("        <TargetArmAds>")
+        if "rvds_vp" in target:
+            parts.extend(
+                [
+                    "          <ArmAdsMisc>",
+                    f"            <RvdsVP>{target['rvds_vp']}</RvdsVP>",
+                    "          </ArmAdsMisc>",
+                ]
+            )
         parts.extend(
             [
-                "        <TargetArmAds>",
                 "          <Cads>",
                 "            <VariousControls>",
                 f"              <Define>{target.get('defines', '')}</Define>",
@@ -287,6 +295,7 @@ def simple_project(
     out_name: str = "firmware",
     misc: str = "",
     ld_misc: str = "",
+    rvds_vp: str | None = None,
     extra: dict | None = None,
 ) -> Path:
     target = {
@@ -308,6 +317,8 @@ def simple_project(
             }
         ],
     }
+    if rvds_vp is not None:
+        target["rvds_vp"] = rvds_vp
     target.update(extra or {})
     xml = project_xml(target)
     return write_project(root, xml, sources or {".\\Src\\a.c": "int a;\n"})
@@ -483,6 +494,28 @@ def test_real_keil_output_paths_keep_containment(
     assert error.value.details == {"field": field, "rule": "withinProjectRoot"}
 
 
+def test_selected_target_rvds_vp_is_raw_and_target_scoped(tmp_path: Path) -> None:
+    """Raw ArmAdsMisc/RvdsVP is captured only from the selected target."""
+    root = tmp_path / "rvds"
+    groups = [{"name": "G", "files": [{"name": "main.c", "path": ".\\Src\\main.c"}]}]
+    xml = project_xml(
+        {"name": "Hard", "rvds_vp": "2", "groups": groups},
+        {"name": "Other", "rvds_vp": "0", "groups": groups},
+    )
+    write_project(root, xml, {".\\Src\\main.c": "int main(void) { return 0; }\n"})
+
+    hard = inspect_keil(root, target_name="Hard")
+    other = inspect_keil(root, target_name="Other")
+    assert hard.rvds_vp == "2"
+    assert other.rvds_vp == "0"
+    assert hard.to_dict()["rvds_vp"] == "2"
+
+    absent = inspect_keil(simple_project(tmp_path / "absent"))
+    empty = inspect_keil(simple_project(tmp_path / "empty", rvds_vp=""))
+    assert absent.rvds_vp is None
+    assert empty.rvds_vp == ""
+
+
 def test_main_fixture_exact_extraction(keil_project: Path) -> None:
     report = inspect_keil(keil_project)
     assert report.project_file == "legacy.uvprojx"
@@ -492,6 +525,7 @@ def test_main_fixture_exact_extraction(keil_project: Path) -> None:
     assert report.cpu == "Cortex-M4"
     assert report.fpu == "FPU2"
     assert report.float_abi == "1"
+    assert report.rvds_vp is None
     assert report.compiler == "armcc"
     assert report.compiler_version == "V5.06 update 7 (build 750)"
     assert report.defines == ("USE_STDPERIPH_DRIVER", "STM32F429xx")

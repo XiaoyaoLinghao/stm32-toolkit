@@ -462,6 +462,18 @@ _KNOWN_REMEDIATION: dict[
         None,
         (),
     ),
+    "MIGRATION_FPU_SELECTION_UNSUPPORTED": (
+        _UNSUPPORTED,
+        "Preflight has no FPU hardware-selection override. Inspect the selected"
+        " target's ArmAdsMisc/RvdsVP together with the actual toolchain and"
+        " build configuration, retain that evidence, and use a separately"
+        " reviewed project-owned port if the selection must change. Do not"
+        " alter the selector or an ABI declaration merely to clear this"
+        " blocker.",
+        None,
+        None,
+        (),
+    ),
     "MIGRATION_FLOAT_ABI_REQUIRED": (
         _UNSUPPORTED,
         "Preflight has no float-ABI selection parameter. Inspect the actual"
@@ -769,6 +781,9 @@ def preflight_keil_conversion(
                 if analysis.memory_layout is not None
                 else None
             ),
+            # Same deterministic evidence object as the PLAN and conversion
+            # report; derived from the fresh inspection, never caller-supplied.
+            "floatAbi": analysis.float_abi,
         },
         "git": git,
         "planReadiness": plan_readiness,

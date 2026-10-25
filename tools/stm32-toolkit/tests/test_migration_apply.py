@@ -155,7 +155,8 @@ def write_uvprojx(
         "          <Vendor>STMicroelectronics</Vendor>\n"
         f"          <PackID>{pack}</PackID>\n"
         f"          <Cpu>{cpu}</Cpu>\n"
-        "          <uFloatingPoint>1</uFloatingPoint>\n"
+        # No uFloatingPoint: planning uses the narrow ARMCC/M4/FPU2 default-hard
+        # inference.  Numeric uFloatingPoint values are not proven ABI evidence.
         "          <OutputDirectory>.\\Objects\\</OutputDirectory>\n"
         f"          <OutputName>{output}</OutputName>\n"
         "          <ListingPath>.\\Listing\\</ListingPath>\n"

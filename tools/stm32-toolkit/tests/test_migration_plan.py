@@ -123,7 +123,8 @@ def write_uvprojx(
     scatter: str = "",
     uac6: str = "0",
     pack: str = "Keil.STM32F4xx_DFP.2.16.1",
-    fpu: str = "1",
+    fpu: str | None = None,
+    rvds_vp: str | None = None,
     pcc: str = "5060750::V5.06 update 7 (build 750)::ARMCC",
 ) -> Path:
     """Write a minimal namespace-qualified Keil MDK5 project file."""
@@ -168,7 +169,14 @@ def write_uvprojx(
         "          <ListingPath>.\\Listing\\</ListingPath>\n"
         "        </TargetCommonOption>\n"
         "        <TargetArmAds>\n"
-        "          <Cads>\n"
+        + (
+            "          <ArmAdsMisc>\n"
+            f"            <RvdsVP>{rvds_vp}</RvdsVP>\n"
+            "          </ArmAdsMisc>\n"
+            if rvds_vp is not None
+            else ""
+        )
+        + "          <Cads>\n"
         "            <VariousControls>\n"
         f"              <MiscControls>{compiler_misc}</MiscControls>\n"
         f"              <Define>{defines}</Define>\n"
@@ -1907,7 +1915,8 @@ def test_manifest_mapping_and_deterministic_uuid(tmp_path):
         "device": "STM32F429ZGTx",
         "core": "cortex-m4",
         "fpu": "fpv4-sp-d16",
-        "floatAbi": "softfp",
+        # Narrow ARMCC + Cortex-M4 + FPU2 default-hard inference (unverified).
+        "floatAbi": "hard",
         "devicePack": "Keil.STM32F4xx_DFP.2.16.1",
     }
     assert payload["framework"] == {"type": "spl", "version": None}
@@ -1961,7 +1970,7 @@ def test_manifest_canonical_bytes(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Keil float ABI normalization (STM32TK-0306 revision 1)
+# Keil float ABI evidence (ARMCC-FLOAT-ABI bounded slice)
 # ---------------------------------------------------------------------------
 
 
@@ -2213,24 +2222,36 @@ def _plan_target_for_fpu(
     return plan, manifest_json(patch)
 
 
-@pytest.mark.parametrize(
-    ("raw", "expected"),
-    [
-        ("0", "soft"),  # Keil "Not Used": no FPU instructions -> soft ABI
-        ("1", "softfp"),  # Keil "Single precision" (ARMCC softfp ABI)
-        ("2", "softfp"),  # Keil "Double precision" (ARMCC softfp ABI)
-        ("soft", "soft"),
-        ("softfp", "softfp"),
-        ("hard", "hard"),
-    ],
-)
-def test_known_keil_float_abi_values_are_normalized(tmp_path, raw: str, expected: str):
-    """Regression: raw Keil numbers or GCC spellings are normalized to
-    soft/softfp/hard only on verifiable Keil-format evidence."""
+@pytest.mark.parametrize("raw", ["soft", "softfp", "hard"])
+def test_literal_float_abi_declarations_are_retained(tmp_path, raw: str):
+    """Exact literal GCC spellings remain explicit project declarations."""
     plan, payload = _plan_target_for_fpu(tmp_path, raw)
 
-    assert payload["target"]["floatAbi"] == expected
+    assert payload["target"]["fpu"] == "fpv4-sp-d16"
+    assert payload["target"]["floatAbi"] == raw
     assert not any(b.code == "MIGRATION_FLOAT_ABI_UNSUPPORTED" for b in plan.blockers)
+    evidence = plan.to_dict()["floatAbi"]
+    assert evidence["origin"] == "declared"
+    assert evidence["selectedAbi"] == raw
+    assert evidence["baselineVerified"] is False
+
+
+@pytest.mark.parametrize("raw", ["0", "1", "2", "3"])
+def test_numeric_keil_float_abi_values_are_rejected(tmp_path, raw: str):
+    """Numeric uFloatingPoint values are not proven ABI evidence, so they keep
+    a stable blocker instead of a fabricated ABI mapping."""
+    plan, payload = _plan_target_for_fpu(tmp_path, raw)
+
+    assert "fpu" not in payload["target"]
+    assert "floatAbi" not in payload["target"]
+    blockers = [b for b in plan.blockers if b.code == "MIGRATION_FLOAT_ABI_UNSUPPORTED"]
+    assert len(blockers) == 1
+    assert blockers[0].evidence == raw
+    evidence = plan.to_dict()["floatAbi"]
+    assert evidence["origin"] == "blocked"
+    assert evidence["ruleId"] == "MIGRATION_FLOAT_ABI_UNSUPPORTED"
+    assert evidence["rawFloatAbi"] == raw
+    assert evidence["baselineVerified"] is False
 
 
 @pytest.mark.parametrize("raw", ["3", "Single", "Double", "FPU2", "weird", "SoftFP"])

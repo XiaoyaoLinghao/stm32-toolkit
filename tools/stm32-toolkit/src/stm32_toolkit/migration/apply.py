@@ -38,6 +38,7 @@ from stm32_toolkit.keil import KeilInspection
 from stm32_toolkit.result import OperationResult
 
 from stm32_toolkit.migration import git_guard
+from stm32_toolkit.migration.float_abi import float_abi_evidence
 from stm32_toolkit.migration.model import (
     FilePatch,
     FixedSectionRequirement,
@@ -564,6 +565,9 @@ def _build_report(plan: MigrationPlan, patch_bytes: bytes) -> bytes:
         "planId": plan.plan_id,
         "gitHead": plan.git.head,
         "inspectionSha256": plan.inspection_sha256,
+        # The same evidence object exposed by preflight and PLAN, re-derived
+        # from the bound inspection; it never proves the binary baseline.
+        "floatAbi": float_abi_evidence(inspection),
         "inputs": [
             {"path": entry.path, "sha256": entry.sha256, "size": entry.size}
             for entry in plan.inputs
