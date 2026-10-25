@@ -452,16 +452,6 @@ def test_static_tools_never_execute_cube_mx_or_vscode(
     assert all(Path(argv[0]) not in {cubemx, vscode} for argv in calls)
 
 
-@pytest.mark.parametrize(
-    ("label", "observation", "expected_issue"),
-    [
-        ("timeout", ProcessObservation(None, b"", b"", timed_out=True), "GCC_INVALID"),
-        ("nonzero", ProcessObservation(1, b"14.3.1", b""), "GCC_INVALID"),
-        ("oversize", ProcessObservation(0, b"14.3.1" * 4096, b"", truncated=True), "GCC_INVALID"),
-        ("invalid-utf8", ProcessObservation(0, b"\xff", b""), "GCC_INVALID"),
-        ("malformed", ProcessObservation(0, b"{not-json", b""), "GCC_INVALID"),
-    ],
-)
 def test_incomplete_metadata_output_cannot_produce_support_facts(
     tmp_path: Path, monkeypatch
 ):
@@ -521,6 +511,16 @@ def test_incomplete_native_version_output_cannot_produce_support_facts(
     assert "GCC_PROBE_FAILED" in {issue.code for issue in profile.issues}
 
 
+@pytest.mark.parametrize(
+    ("label", "observation", "expected_issue"),
+    [
+        ("timeout", ProcessObservation(None, b"", b"", timed_out=True), "GCC_INVALID"),
+        ("nonzero", ProcessObservation(1, b"14.3.1", b""), "GCC_INVALID"),
+        ("oversize", ProcessObservation(0, b"14.3.1" * 4096, b"", truncated=True), "GCC_INVALID"),
+        ("invalid-utf8", ProcessObservation(0, b"\xff", b""), "GCC_INVALID"),
+        ("malformed", ProcessObservation(0, b"{not-json", b""), "GCC_INVALID"),
+    ],
+)
 def test_metadata_runner_failures_do_not_fall_back_to_known_layout(
     tmp_path: Path, monkeypatch, label: str, observation: ProcessObservation, expected_issue: str
 ):

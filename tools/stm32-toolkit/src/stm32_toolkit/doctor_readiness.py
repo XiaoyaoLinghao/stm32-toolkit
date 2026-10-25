@@ -34,6 +34,8 @@ RECOMMENDED_EXTENSIONS = (
 #: compared with this value, never treated as physical validation.
 CORTEX_DEBUG_PROFILE_VERSION = "1.12.1"
 
+_IS_WINDOWS = os.name == "nt"
+
 EXTENSION_LIST_TIMEOUT_SECONDS = 10.0
 EXTENSION_LIST_CAPTURE_LIMIT = 64 * 1024
 ARMCC_TIMEOUT_SECONDS = 5.0
@@ -380,7 +382,7 @@ def _resolve_vscode_tier(entries: tuple[Path, ...], source: str) -> _VscodeSelec
 def _resolve_vscode(
     support_profile: ToolSupportProfile | None, explicit: Path | None
 ) -> _VscodeSelection:
-    if os.name != "nt":
+    if not _IS_WINDOWS:
         if explicit is not None:
             return _resolve_direct_cli(explicit)
         return _vscode_selection(
@@ -789,7 +791,7 @@ def _path_binary(name: str) -> Path | None:
 
 
 def _observe_uv4(explicit: Path | None) -> tuple[dict[str, object], dict[str, object] | None]:
-    if os.name != "nt":
+    if not _IS_WINDOWS:
         record = _tool_record(
             available=None,
             source=None,
@@ -916,7 +918,7 @@ def _tool_record(
 def _observe_armcc(
     explicit: Path | None, uv4: dict[str, object]
 ) -> tuple[dict[str, object], dict[str, object] | None]:
-    if os.name != "nt":
+    if not _IS_WINDOWS:
         record = _tool_record(
             available=None,
             source=None,

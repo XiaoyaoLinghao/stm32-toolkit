@@ -95,6 +95,12 @@ def _collect(monkeypatch: pytest.MonkeyPatch, **kwargs) -> dict[str, object]:
     return readiness.collect_doctor_readiness(**kwargs)
 
 
+@pytest.fixture(autouse=True)
+def _windows_readiness_seam(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Exercise the synthetic Windows layouts on any verification host."""
+    monkeypatch.setattr(readiness, "_IS_WINDOWS", True)
+
+
 # ---------------------------------------------------------------------------
 # VS Code extension inventory
 # ---------------------------------------------------------------------------
@@ -206,6 +212,28 @@ def test_skip_makes_no_process_call_and_keeps_unknown_values(monkeypatch):
     observation = result["vscodeExtensionObservation"]
     assert observation["status"] == "skipped"
     assert observation["completeInventory"] is False
+
+
+def test_non_windows_reports_unsupported_platform_without_process(monkeypatch):
+    monkeypatch.setattr(readiness, "_IS_WINDOWS", False)
+    _forbid_process(monkeypatch)
+
+    result = readiness.collect_doctor_readiness(probe_vscode_extensions=True)
+
+    observation = result["vscodeExtensionObservation"]
+    assert observation["status"] == "unsupported-platform"
+    assert observation["completeInventory"] is False
+    assert all(
+        entry["installed"] is None for entry in result["vscodeExtensions"].values()
+    )
+    assert result["keilTools"]["uv4"]["status"] == "unsupported-platform"
+    assert result["keilTools"]["armcc"]["status"] == "unsupported-platform"
+    codes = {item["code"] for item in result["diagnostics"]}
+    assert {
+        "VSCODE_PROBE_UNSUPPORTED",
+        "UV4_PLATFORM_UNSUPPORTED",
+        "ARMCC_PLATFORM_UNSUPPORTED",
+    } <= codes
 
 
 @pytest.mark.parametrize(
