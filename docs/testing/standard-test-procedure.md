@@ -4,6 +4,10 @@
 
 ## 1. 当前断点与证据
 
+2026-10-26 v1.3.1 集成断点：源码优化与版本对齐已完成，**发行仍为 REVISION_REQUIRED / NOT_QUALIFIED**。见[当前报告](../codex/returns/STM32TK-131/implementation-report.md)、[独立复核](../codex/returns/STM32TK-131/review.md)及[机器可读证据](../codex/returns/STM32TK-131/evidence.json)。Python 完整收集 8,674 项；经过保留原失败的完整组修正与明确复用，当前 8,655 通过、19 平台/外部数据跳过，不宣称最终单一提交全量重跑。Toolkit 总体/风险核心覆盖率 86.9501%/87.0459%，Monitor 风险核心 91.5666%，均未达到各自永久门槛。先复核有意义的离线测试缺口，不自动沿用旧版例外。
+
+UI 526 通过、1 可选外部数据跳过，各文件分支门槛通过；实际 Edge 44/44 与两组原预算性能测试通过。13 文件验证候选通过哈希和官方 bundle 验证，但最终同源可重复构建、实际隔离安装/升级/回滚及 VS Code/MCP 仍待完成。初次误选 Windows PowerShell 5.1 的 Check 被执行策略拒绝，未执行安装；更正为现有 PowerShell 7 的请求与本地 Git 登录仍待用户响应，不能改策略或换工具绕过。原工程、硬件、既有 runtime/全局 Skill 和远端未改。以下各条是保留的历史断点；其中“下一步”只描述当时状态。
+
 2026-10-25 DIAGNOSTIC-TAIL 指引/测试切片已 **ACCEPTED_WITH_FIXES**，见[独立复核](../codex/returns/DIAGNOSTIC-TAIL/review.md)。Accepted base `99c93ccfb63b104aeb58ce23f8a78b9d98ddb932`，CodeHead `712bd1721b10618b174b5ea35aef7c3407f48a4b`。双方各82通过/1真实文件符号链接平台跳过，最终32项通过；四个Skill结构通过。新AI消费复测已纠正构建默认超时的重复授权及preflight/PLAN字段混用，保留既有原始日志；不是实际IDE验收。旧1.3.0可用字段的概括性描述须在紧接的统一1.3.1版本对齐中按冻结源码澄清，不把它当MCP过期证据。下一步为完整回归/覆盖率、实际VS Code、构建与发布；原工程及硬件未操作。
 
 2026-10-25 MEMORY-MARGIN 离线切片已 **ACCEPTED_WITH_FIXES**，见[独立验收](../codex/returns/MEMORY-MARGIN/review.md)。Accepted base `1b16a38181770569cf1d0f533a73e94690231a32`，CodeHead `9a7a8a5f00a9c19333fffc6201ca2515310bb39c`。Claude Code CLI 编码与测试，主代理完整独立审查；双方各562个不同用例有通过证据（按未变产品/测试复用部分首轮通过结果），最终作者232/233后单项LF夹具复核通过、主代理64/64，另主代理169/169相关回归通过。首轮PT_LOAD夹具及作者工作树LF/CRLF差异已修正验证，原失败保留，不宣称最终全量矩阵。每个已声明区域按 free<1024 或 free*20<length 给出非阻断告警，identity可选摘要参与hash并在当前固件准入重算；静态空闲不证明连续可用空间、运行期峰值或外部内存初始化。原工程/硬件/runtime/版本/远端未操作；诊断尾项、整体回归与实际VS Code及v1.3.1构建发行继续由主代理负责。
@@ -69,6 +73,10 @@
 状态含义：PASS 为证据满足条款；READY 为前置成立但未执行；PENDING 为尚缺结果；BLOCKED 为已知前置缺口；TERMINAL_STOPPED 为本次执行结束。REUSED 必须附原证据及适用性；N/A 不能代替缺失、失败或不可用硬件。文档变化本身不触发重测；相关产品字节、环境、依赖或身份变更只使对应证据需要重新核对。
 
 ## 2. 离线环境与执行卡
+
+v1.3.1 回归补充：短临时根之外，还要核对嵌套子用例的最终路径；本轮 254/260 字符 hardlink 原生诊断支持路径长度归因，但原始失败未暴露 errno，报告须保留这一限制。Windows 本地化命令如 tasklist/mklink 应保留原始 bytes 和退出码，不把解码线程失败当成空输出成功。真实时限夹具须证明进入了被测操作，再验证跨越其实际 deadline；不得放宽产品时限或性能门槛。
+
+发行打包前除核对精确提交和 tracked/untracked 状态，还须检查被忽略的 package build/lib 与 egg-info 是否遗留退役文件。官方 source/wheel 绑定拒绝不能靠放松校验解决；保留失败材料，使用同一冻结源码且无旧打包残留的独立工作树。文档 checkpoint 不触发全量重测；最终交付的源归档与 manifest 必须绑定最终冻结提交。
 
 Windows 使用已核实的 PowerShell、解释器与工作目录。每次运行把 TEMP、TMP、TMPDIR 一起指向本轮短目录，显式指定 pytest basetemp、缓存、构建及日志路径；默认根为 `D:\codex-tmp`。CPython 会优先读 TMPDIR。不同进程/代理不共享可变 basetemp，禁止写回借用的环境或共享缓存。
 

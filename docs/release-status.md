@@ -1,5 +1,15 @@
 # Release status and retained limitations
 
+## v1.3.1 integration checkpoint — 2026-10-26
+
+**Local candidate, not qualified or published.** Product versions are aligned to 1.3.1. The accepted source optimizations include memory-margin warnings, diagnostic guidance, migration and memory-layout improvements, doctor/VS Code tasks and explicit flash frequency. Detailed source, owner and evidence identities are in the [v1.3.1 report](codex/returns/STM32TK-131/implementation-report.md) and [independent review](codex/returns/STM32TK-131/review.md).
+
+The complete reconciled Python cohort has 8,655 passes and 19 platform/external-data skips. The original six failures remain recorded beside their complete-group corrections; this is not one all-green rerun at a single commit. Native branch coverage is Toolkit 15,218/17,502 (86.9501%) overall and 14,185/16,296 (87.0459%) risk core, both below 90%; Monitor 3,203/3,498 (91.5666%) passes its overall 90% floor but misses the risk-core 95% floor. These gates remain **UNMET** while meaningful offline test gaps are reviewed. The v1.2.0 exception does not transfer.
+
+UI unit/static/build checks, per-file branch gates, 44 real Edge functional cases and both unchanged five-minute performance cases passed. One optional UI external-data unit case remains skipped. A validation-only 13-asset candidate passed independent hashes and the official bundle verifier; it is not the final package. Exact final-source reproducible builds, actual isolated installation/upgrade/rollback and installed VS Code/MCP qualification remain open. The first setup Check was refused before execution under an incorrectly selected interpreter; no installation or alternate-interpreter retry occurred. The requested interpreter correction and local Git authentication remain pending user action.
+
+No original firmware project, hardware, existing runtime, global Skill or remote ref was changed. v1.2.0 is the last observed dated public release; the sections below preserve the facts at their recorded checkpoints. Publication and Latest status will be recorded only after successful verification of actual remote assets.
+
 ## AI-CALL-GUIDANCE source-only slice — 2026-10-24
 
 The `codex/ai-call-guidance` branch adds offline AI invocation guidance at accepted base

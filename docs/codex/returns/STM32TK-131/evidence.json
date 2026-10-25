@@ -1,0 +1,233 @@
+{
+  "acceptedIntegrationBase": "4ab88f1e7275a0375caaa18662e468531efaa1f8",
+  "guideCodeHead": "42d4f808eeaf97b781f2212000669fb2a0e22928",
+  "softwareTestHead": "bb027fd3d0663a4e3310a011ecfc7b21b416f44b",
+  "uiHead": "3f9654d98c0a0b844c68add33fb9d8d3f8ed049c",
+  "owners": {
+    "implementation": "local Claude Code CLI, existing configured provider",
+    "independentReview": "primary conversation agent"
+  },
+  "releaseVerdict": "REVISION_REQUIRED",
+  "qualification": "NOT_QUALIFIED",
+  "python": {
+    "cohort": {
+      "cases": 8674,
+      "passed": 8655,
+      "skipped": 19
+    },
+    "singleHeadAllGreenRerun": false,
+    "allTrackedPythonFiles": 144,
+    "nativeRawCoverageFiles": 945,
+    "scopes": {
+      "toolkit-overall": {
+        "covered": 15218,
+        "total": 17502,
+        "percent": 86.95006284996,
+        "floor": 90,
+        "status": "UNMET"
+      },
+      "toolkit-risk-core-v2": {
+        "covered": 14185,
+        "total": 16296,
+        "percent": 87.04590083456063,
+        "floor": 90,
+        "status": "UNMET"
+      },
+      "monitor-overall": {
+        "covered": 3203,
+        "total": 3498,
+        "percent": 91.5666094911378,
+        "floor": 90,
+        "status": "PASS"
+      },
+      "monitor-risk-core-v2": {
+        "covered": 3203,
+        "total": 3498,
+        "percent": 91.5666094911378,
+        "floor": 95,
+        "status": "UNMET"
+      }
+    },
+    "originalFailures": 6,
+    "correctedCompleteGroupsPass": 617,
+    "shortPathCompleteGroupPass": 250,
+    "primaryAffectedPass": 11,
+    "skips": [
+      {
+        "shard": "tk-10",
+        "class": "tests.test_detection",
+        "name": "test_keil_discovery_does_not_follow_directory_symlink",
+        "reason": "directory symlink creation is unavailable",
+        "disposition": "PENDING applicability/qualification decision"
+      },
+      {
+        "shard": "tk-10",
+        "class": "tests.test_diagnostic_cli",
+        "name": "test_unsafe_steps_symlink_is_generic_error_without_dispatch",
+        "reason": "symlink capability unavailable",
+        "disposition": "PENDING applicability/qualification decision"
+      },
+      {
+        "shard": "tk-11",
+        "class": "tests.test_diagnostic_store",
+        "name": "test_event_redirect_is_rejected_without_root_mutation",
+        "reason": "Windows symlink creation unavailable: [WinError 1314] 客户端没有所需的特权。: 'D:\\\\codex-tmp\\\\r131\\\\full-e\\\\tk-11\\\\temp\\\\dstore0\\\\redirect-target.json' -> 'D:\\\\codex-tmp\\\\r131\\\\full-e\\\\tk-11\\\\temp\\\\dstore0\\\\diagnostics\\\\sessions\\\\ffffffffffffffffffffffffffffffff\\\\events\\\\00000000.json'",
+        "disposition": "PENDING applicability/qualification decision"
+      },
+      {
+        "shard": "tk-12",
+        "class": "tests.test_doctor_readiness",
+        "name": "test_redirected_explicit_parent_is_invalid",
+        "reason": "directory symlink unavailable",
+        "disposition": "PENDING applicability/qualification decision"
+      },
+      {
+        "shard": "tk-14",
+        "class": "tests.test_evidence_store",
+        "name": "test_read_artifact_rejects_redirected_object_path",
+        "reason": "this host does not permit file symlink creation",
+        "disposition": "PENDING applicability/qualification decision"
+      },
+      {
+        "shard": "tk-20",
+        "class": "tests.test_linker_fragment",
+        "name": "test_read_linker_fragment_rejects_a_real_symlinked_file",
+        "reason": "unprivileged Windows file symlinks are unavailable; mocked coverage applies",
+        "disposition": "PENDING applicability/qualification decision"
+      },
+      {
+        "shard": "tk-22",
+        "class": "tests.test_monitor_observation",
+        "name": "test_real_supervisor_thread_swap_after_identity_check_writes_no_replacement_state",
+        "reason": "Windows directory handles deny rename",
+        "disposition": "PENDING applicability/qualification decision"
+      },
+      {
+        "shard": "tk-26",
+        "class": "tests.test_project",
+        "name": "test_source_symlink_cannot_escape_canonical_project_root",
+        "reason": "symbolic links are unavailable in this test environment",
+        "disposition": "PENDING applicability/qualification decision"
+      },
+      {
+        "shard": "tk-27",
+        "class": "tests.test_project_model",
+        "name": "test_file_symlink_cannot_escape_project_root",
+        "reason": "symbolic links are unavailable in this test environment",
+        "disposition": "PENDING applicability/qualification decision"
+      },
+      {
+        "shard": "tk-27",
+        "class": "tests.test_project_model",
+        "name": "test_directory_symlink_parent_cannot_escape_project_root",
+        "reason": "symbolic links are unavailable in this test environment",
+        "disposition": "PENDING applicability/qualification decision"
+      },
+      {
+        "shard": "tk-28",
+        "class": "tests.test_regeneration",
+        "name": "test_destination_symlink_is_rejected_before_resolution",
+        "reason": "symlink creation is unavailable",
+        "disposition": "PENDING applicability/qualification decision"
+      },
+      {
+        "shard": "tk-29",
+        "class": "tests.test_risk_acceptance_archive_lifecycle",
+        "name": "test_archived_acceptance_begin_checkpoint_retry_and_completed_reader",
+        "reason": "set STM32TK_VS10A_PUBLIC_DATA_ARCHIVE for the selected archived public-data batch",
+        "disposition": "PENDING applicability/qualification decision"
+      },
+      {
+        "shard": "tk-29",
+        "class": "tests.test_risk_acceptance_archive_lifecycle",
+        "name": "test_archived_acceptance_refusals_preserve_data_then_complete_and_reject_completed_retry",
+        "reason": "set STM32TK_VS10A_PUBLIC_DATA_ARCHIVE for the selected archived public-data batch",
+        "disposition": "PENDING applicability/qualification decision"
+      },
+      {
+        "shard": "tk-29",
+        "class": "tests.test_risk_acceptance_archive_readers",
+        "name": "test_archived_completed_acceptance_show_and_resume_are_read_only",
+        "reason": "set STM32TK_VS10A_PUBLIC_DATA_ARCHIVE for the selected archived public-data batch",
+        "disposition": "PENDING applicability/qualification decision"
+      },
+      {
+        "shard": "tk-29",
+        "class": "tests.test_risk_acceptance_archive_readers",
+        "name": "test_archived_in_progress_acceptance_show_and_resume_report_current_timeout",
+        "reason": "set STM32TK_VS10A_PUBLIC_DATA_ARCHIVE for the selected archived public-data batch",
+        "disposition": "PENDING applicability/qualification decision"
+      },
+      {
+        "shard": "tk-29",
+        "class": "tests.test_risk_acceptance_archive_readers",
+        "name": "test_archived_acceptance_root_corruption_refuses_without_write_then_restores",
+        "reason": "set STM32TK_VS10A_PUBLIC_DATA_ARCHIVE for the selected archived public-data batch",
+        "disposition": "PENDING applicability/qualification decision"
+      },
+      {
+        "shard": "tk-29",
+        "class": "tests.test_risk_continuation_archive_reader",
+        "name": "test_archived_continuation_authenticate_and_prepare_public_context_variants",
+        "reason": "set STM32TK_VS10A_PUBLIC_DATA_ARCHIVE for the selected archived public-data batch",
+        "disposition": "PENDING applicability/qualification decision"
+      },
+      {
+        "shard": "tk-29",
+        "class": "tests.test_risk_continuation_archive_reader",
+        "name": "test_archived_continuation_public_root_refusal_restores_authentication_and_reference",
+        "reason": "set STM32TK_VS10A_PUBLIC_DATA_ARCHIVE for the selected archived public-data batch",
+        "disposition": "PENDING applicability/qualification decision"
+      },
+      {
+        "shard": "tk-36",
+        "class": "tests.test_vscode_configuration",
+        "name": "test_redirect_targets_are_refused",
+        "reason": "host cannot create a file symlink for this check",
+        "disposition": "PENDING applicability/qualification decision"
+      }
+    ]
+  },
+  "ui": {
+    "unitPass": 526,
+    "optionalUnitSkip": 1,
+    "nativeBranches": {
+      "covered": 2906,
+      "total": 3114,
+      "everyPositiveDenominatorFileAtLeast90": true
+    },
+    "edgeFunctional": {
+      "passed": 44,
+      "skipped": 0,
+      "flaky": 0,
+      "version": "156.0.4314.42"
+    },
+    "performance": {
+      "warmupMilliseconds": 120000,
+      "measurementMilliseconds": 180000,
+      "points": 4800,
+      "window1280": {
+        "p95Milliseconds": 15.6,
+        "heapMiBPerMinute": 0.29756
+      },
+      "window1024": {
+        "p95Milliseconds": 15.3,
+        "heapMiBPerMinute": -0.05849
+      },
+      "longTasksAtLeast200ms": 0,
+      "queueGrowth": 0,
+      "serverDrops": 0
+    }
+  },
+  "evidenceRoot": "D:\\codex-tmp\\r131",
+  "hashes": {
+    "coverage-final/inputs.json": "11a42514a7e5685f1332ef5ef18982f8262fae1b019f5d628e9b7b4327ec6479",
+    "coverage-final/native.json": "9b94366978c16e3306b214ea3f05278c500b9be3d151b518c9729149aa3786fd",
+    "coverage-final/qualification.json": "18879b390a7c6312d44c6fae7a74f2b0649eb5c6fd38d63996d27fa07ec61c0d",
+    "candidate-ui-primary-verification.json": "a1b1ebc79fc165a524a4499271d24b031608acc6a3d659688e346d6bd6b33595"
+  },
+  "actualInstalledVsCode": "PENDING",
+  "finalArtifacts": "PENDING",
+  "publication": "NOT_PERFORMED",
+  "hardware": "NOT_AUTHORIZED_OR_PERFORMED"
+}
