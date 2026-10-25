@@ -1752,9 +1752,9 @@ def _prepare_public_physical_attempt(
     DiagnosticWorkflowContext | None,
     str | None,
 ]:
-    """Build a legal public physical chain through revision 1 or revision 4."""
-    if through_revision not in {1, 4}:
-        raise ValueError("the focused physical fixtures stop at revision 1 or 4")
+    """Build a legal public physical chain through revision 0, 1, 2, 3 or 4."""
+    if through_revision not in {0, 1, 2, 3, 4}:
+        raise ValueError("the focused physical fixtures stop at revision 0 through 4")
 
     project_root = tmp_path / "project"
     _write_physical_project(project_root)
@@ -1786,7 +1786,7 @@ def _prepare_public_physical_attempt(
         git_commit="b" * 40,
         git_dirty=False,
     )
-    if through_revision >= 3:
+    if through_revision >= 2:
         failed_descriptor, failed_stream = vs08a_fixtures._canonical_replay_inputs(
             tmp_path, "failed-before", "seed-physical-boundary"
         )
@@ -1828,7 +1828,7 @@ def _prepare_public_physical_attempt(
 
     diagnostic_id: str | None = None
     diagnostic_context: DiagnosticWorkflowContext | None = None
-    if through_revision >= 4:
+    if through_revision >= 3:
         monkeypatch.setattr(
             diagnostic_workflows,
             "_session_id_factory",
@@ -1867,15 +1867,16 @@ def _prepare_public_physical_attempt(
             scenario_version="1",
         )
     )
-    _ok(
-        checkpoint_acceptance_attempt(
-            context,
-            attempt_id=ATTEMPT_ID,
-            expected_revision=0,
-            stage="project-materialized",
+    if through_revision >= 1:
+        _ok(
+            checkpoint_acceptance_attempt(
+                context,
+                attempt_id=ATTEMPT_ID,
+                expected_revision=0,
+                stage="project-materialized",
+            )
         )
-    )
-    if through_revision >= 4:
+    if through_revision >= 2:
         _ok(
             checkpoint_acceptance_attempt(
                 context,
@@ -1884,6 +1885,7 @@ def _prepare_public_physical_attempt(
                 stage="firmware-built-before",
             )
         )
+    if through_revision >= 3:
         _ok(
             checkpoint_acceptance_attempt(
                 context,
@@ -1893,6 +1895,7 @@ def _prepare_public_physical_attempt(
                 test_run_id=PHYSICAL_FAILED_RUN,
             )
         )
+    if through_revision >= 4:
         intent_input = {
             "schema": "stm32-source-change-intent/1",
             "changes": [
