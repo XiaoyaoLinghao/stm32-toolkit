@@ -284,15 +284,81 @@ def test_history_query_preflight_rejects_a_real_wal_hardlink_and_recovers(
     store = HistoryStore(paths)
     database = paths.monitor_root / "monitor.sqlite3"
     sidecar = database.with_name(database.name + "-wal")
+    shm = database.with_name(database.name + "-shm")
+    backup = database.with_name(database.name + "-wal.owned-backup")
     sentinel = tmp_path / "external-wal-sentinel"
     query = HistoryQuery("monitor-1", 0, 1_000)
     linked = False
+    backup_moved = False
+    wal_identity: tuple[int, int, int, int] | None = None
+    wal_bytes: bytes | None = None
+    shm_identity: tuple[int, int, int] | None = None
+
+    def restore_owned_wal() -> None:
+        nonlocal backup_moved
+        assert wal_identity is not None and wal_bytes is not None
+        assert not sidecar.exists()
+        metadata = os.lstat(backup)
+        assert (metadata.st_dev, metadata.st_ino) == (
+            wal_identity[0],
+            wal_identity[1],
+        )
+        assert backup.read_bytes() == wal_bytes
+        os.replace(backup, sidecar)
+        restored_metadata = os.lstat(sidecar)
+        assert (
+            restored_metadata.st_dev,
+            restored_metadata.st_ino,
+            restored_metadata.st_size,
+            restored_metadata.st_nlink,
+        ) == wal_identity
+        backup_moved = False
+
     try:
+        assert not backup.exists()
         assert store.append_batch(_batch(paths, 1, captured_ns=100)).ok
         assert store.query_history(query).ok
+
+        # SQLite may legitimately keep owned sidecars.  Checkpoint through a
+        # closed auxiliary connection, then take the durable baseline from the
+        # main file before touching any owned sidecar.
+        auxiliary = sqlite3.connect(database)
+        try:
+            checkpoint = auxiliary.execute(
+                "PRAGMA wal_checkpoint(TRUNCATE)"
+            ).fetchone()
+            assert checkpoint is not None and len(checkpoint) == 3
+            busy, log_frames, checkpointed_frames = checkpoint
+            assert busy == 0
+            assert checkpointed_frames == log_frames
+        finally:
+            auxiliary.close()
         before = _history_authority(database)
+        if shm.exists():
+            metadata = os.lstat(shm)
+            shm_identity = (metadata.st_dev, metadata.st_ino, metadata.st_size)
+        if sidecar.exists():
+            metadata = os.lstat(sidecar)
+            wal_identity = (
+                metadata.st_dev,
+                metadata.st_ino,
+                metadata.st_size,
+                metadata.st_nlink,
+            )
+            assert wal_identity[3] == 1
+            wal_bytes = sidecar.read_bytes()
+            # Preserve the owned WAL bytes and identity under an owned rename
+            # while no SQLite connection exists; restore it after the probe.
+            assert not backup.exists()
+            os.replace(sidecar, backup)
+            backup_moved = True
+            restored_metadata = os.lstat(backup)
+            assert (restored_metadata.st_dev, restored_metadata.st_ino) == (
+                wal_identity[0],
+                wal_identity[1],
+            )
+
         sentinel.write_bytes(b"external WAL sentinel")
-        assert not sidecar.exists()
         os.link(sentinel, sidecar)
         linked = True
         linked_state = (sentinel.read_bytes(), os.lstat(sentinel).st_nlink)
@@ -305,18 +371,28 @@ def test_history_query_preflight_rejects_a_real_wal_hardlink_and_recovers(
         assert _history_authority(database) == before
         assert (sentinel.read_bytes(), os.lstat(sentinel).st_nlink) == linked_state
         assert os.path.samefile(sentinel, sidecar)
+        if shm_identity is not None:
+            assert shm.exists()
+            metadata = os.lstat(shm)
+            assert (metadata.st_dev, metadata.st_ino, metadata.st_size) == shm_identity
 
+        assert os.path.samefile(sentinel, sidecar)
         sidecar.unlink()
         linked = False
+        if backup_moved:
+            restore_owned_wal()
+
         restored = store.query_history(query)
         assert restored.ok and restored.data is not None
         assert [batch.sequence for batch in restored.data.batches] == [1]
         assert _history_authority(database) == before
     finally:
         store.close()
-        if linked:
+        if linked and sidecar.exists():
             assert os.path.samefile(sentinel, sidecar)
             sidecar.unlink()
+        if backup_moved and not sidecar.exists():
+            restore_owned_wal()
 
     assert (sentinel.read_bytes(), os.lstat(sentinel).st_nlink) == (b"external WAL sentinel", 1)
     reopened = HistoryStore(paths)

@@ -160,7 +160,10 @@ def _provider(
 ) -> SourceCatalogProvider:
     declarations = _declarations(names)
     index = SourceIndex(
-        "engine", "version", "manifest", 1, 1, (), True, declarations, "f" * 64
+        "engine", "version", "manifest", 1, 1, (),
+        truncated=False,
+        declarations=declarations,
+        argument_fingerprint="f" * 64,
     )
     region = SimpleNamespace(
         name="RAM", origin=0x20000000, length=0x1000, attributes="rw"
@@ -241,7 +244,10 @@ def test_real_offline_facts_snapshot_and_mid_index_change_invalidate_request(
         "none", "global", None, (), ("App/main.c",),
     )
     index = SourceIndex(
-        "engine", "version", "manifest", 1, 1, (), True, (declaration,), "f" * 64
+        "engine", "version", "manifest", 1, 1, (),
+        truncated=False,
+        declarations=(declaration,),
+        argument_fingerprint="f" * 64,
     )
 
     class _MutatingAdapter(_Adapter):
@@ -319,7 +325,10 @@ def test_in_memory_source_file_limit_refuses_before_any_view_or_write(
     )
     monkeypatch.setattr(module, "_offline_facts", lambda _root: facts)
     index = SourceIndex(
-        "engine", "version", "manifest", 1, 1, (), True, (), "f" * 64
+        "engine", "version", "manifest", 1, 1, (),
+        truncated=False,
+        declarations=(),
+        argument_fingerprint="f" * 64,
     )
     provider = SourceCatalogProvider(
         tmp_path, "workspace", "session", _Adapter(index)
@@ -363,7 +372,10 @@ def test_compiled_debug_directory_limit_is_classified_before_any_base(
 
     monkeypatch.setattr(module.DwarfCatalog, "from_elf", staticmethod(limited))
     index = SourceIndex(
-        "engine", "version", "manifest", 1, 1, (), True, (), "f" * 64
+        "engine", "version", "manifest", 1, 1, (),
+        truncated=False,
+        declarations=(),
+        argument_fingerprint="f" * 64,
     )
     provider = SourceCatalogProvider(
         tmp_path, "workspace", "session", _Adapter(index)
@@ -568,7 +580,10 @@ def test_close_cancels_a_coalesced_in_flight_base_task(
 
     declarations = _declarations(("alpha", "alps"))
     index = SourceIndex(
-        "engine", "version", "manifest", 1, 1, (), True, declarations, "f" * 64
+        "engine", "version", "manifest", 1, 1, (),
+        truncated=False,
+        declarations=declarations,
+        argument_fingerprint="f" * 64,
     )
     model = SimpleNamespace(
         project_root=tmp_path,
