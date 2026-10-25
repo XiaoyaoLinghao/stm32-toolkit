@@ -472,7 +472,10 @@ def _build_parser() -> argparse.ArgumentParser:
         task.add_argument(
             "--confirmation",
             choices=("deny", "authorize"),
-            default="deny",
+            # SUPPRESS keeps the duplicate-rejection action usable: an
+            # explicit value must not collide with a pre-populated default.
+            # The actual default deny is applied at dispatch below.
+            default=argparse.SUPPRESS,
             action=_RejectDuplicate,
             help="One explicit invocation only; default deny.",
         )
@@ -1405,7 +1408,9 @@ async def _hardware_operation_result(
             data_root=args.data_root,
             session_id=args.session_id,
             probe_id=args.probe,
-            confirmation=args.confirmation,
+            # Omitted --confirmation is the generated default deny; it is
+            # never inferred from context or a previous invocation.
+            confirmation=getattr(args, "confirmation", "deny"),
             ticket=getattr(args, "ticket", None),
         )
     if args.command == "flash-imported":

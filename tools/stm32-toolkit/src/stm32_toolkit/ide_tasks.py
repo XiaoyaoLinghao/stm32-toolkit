@@ -23,6 +23,8 @@ from stm32_toolkit.hardware_workflows import (
     FlashWorkflowRequest,
     HandoffBeginWorkflowRequest,
     HandoffEndWorkflowRequest,
+    _WorkflowFailure,
+    _safe_external_data_root,
     flash_workflow,
     handoff_begin_workflow,
     handoff_end_workflow,
@@ -112,6 +114,14 @@ def _resolve_project_root(value: object, operation: str) -> Path | OperationResu
 def _resolve_data_root(
     value: object, project_root: Path, operation: str
 ) -> Path | OperationResult[object]:
+    """Preserve the accepted lexical data-root contract.
+
+    ``_safe_external_data_root`` is the existing hardware validator: it walks
+    every lexical component without following redirects and refuses a root
+    inside the project.  The adapter only adds the explicit absolute
+    requirement so a relative value is never resolved against the process cwd.
+    Its structured diagnostic is forwarded unchanged.
+    """
     if not isinstance(value, Path):
         return _failure(
             operation,
@@ -129,25 +139,11 @@ def _resolve_data_root(
             "project; a relative path is never resolved against the project.",
         )
     try:
-        canonical = value.expanduser().resolve(strict=False)
-    except (OSError, RuntimeError, ValueError):
-        return _failure(
-            operation,
-            "data_root",
-            "directory",
-            "Use a non-redirected data-root directory outside the project.",
+        return _safe_external_data_root(value, project_root)
+    except _WorkflowFailure as error:
+        return OperationResult.failure(
+            operation, error.code, error.message, error.details
         )
-    try:
-        canonical.relative_to(project_root)
-    except ValueError:
-        return canonical
-    return _failure(
-        operation,
-        "data_root",
-        "outsideProjectRoot",
-        "Choose a persistent data root outside the project tree; machine "
-        "state never lives inside the project.",
-    )
 
 
 def _safe_ticket(ticket: object) -> bool:

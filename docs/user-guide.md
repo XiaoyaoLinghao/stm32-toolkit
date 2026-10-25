@@ -247,30 +247,52 @@ PLAN 只读，除既有 `data.files[]` 外还返回 `data.debug_configuration`�
 
 ### VS Code 任务、可执行绑定与 `ide task` 适配器（当前源码切片）
 
-生成的 `.vscode/tasks.json` 现在包含五个**互相独立**的 `process` 任务：`STM32 Toolkit: Build Debug`、`Build Release`、`Flash Debug`、`Handoff Begin Debug`、`Handoff End Debug`。每个任务都用 argv（绝不拼接 shell 字符串）、显式 `--project-root ${workspaceFolder}` 和 `options.cwd=${workspaceFolder}`；没有 `dependsOn`、自动构建/烧录/调试序列、`group`、auto-run、恢复、reset 或重试。Build 任务沿用既有 build CLI 契约。`.vscode/launch.json` 仍为空：只有成功 handoff 才会产生活的配置，且 IDE detach 必须早于原始 ticket 结束。生成的硬件任务使用 `${input:...}` 提示输入 data root、session、**精确 probe**、handoff ticket 和确认值；不预填 probe、不持久化 ticket、不自动枚举探针。三个确认提示的默认值都是 `deny`，硬件任务设置 `runOptions.reevaluateOnRerun=true`，重跑会重新询问，而不是复用上次输入。
+生成的 `.vscode/tasks.json` 包含五个**互相独立**的 `process` 任务：`STM32 Toolkit: Build Debug`、`Build Release`、`Flash Debug`、`Handoff Begin Debug`、`Handoff End Debug`。每个任务都用 argv（绝不拼接 shell 字符串）、显式 `--project-root ${workspaceFolder}` 和 `options.cwd=${workspaceFolder}`；没有 `dependsOn`、自动构建/烧录/调试序列、`group`、auto-run、恢复、reset 或重试。Build 任务沿用既有 build CLI 契约（CLI 调用本身就是该次构建的显式动作）。`.vscode/launch.json` 仍为空：只有成功 handoff 才提供活的 Cortex-Debug 配置。生成的硬件任务用 `${input:...}` 提示 data root、session、**精确 probe**、handoff ticket 和确认值；不预填 probe、不持久化 ticket、不自动枚举探针。三个确认提示的默认值都是 `deny`；硬件任务设置 `runOptions.reevaluateOnRerun=true`，重跑会重新询问，而不是复用上次输入。已经存在的用户自有 `.vscode/*` 文件仍按既有 `preserved-unowned` 合同保留：不读取、不改写、不合并、不收编；IDE 设置需用户自行对齐。
 
-默认渲染的可执行位置是**用户级 VS Code 设置**的变量，而不是宿主机发现结果：
+**先绑定用户级可执行路径。** 默认渲染使用用户设置的变量（不是宿主机发现结果）：任务 command 为 `${config:stm32-toolkit.executablePath}`，`c_cpp_properties.json` 的 `compilerPath` 为 `${config:stm32-toolkit.compilerPath}`。请只在 **User Settings**（用户设置）里写成已核对的**绝对原生可执行文件**路径，例如（以下为占位示例，必须替换成本机实际路径）：
 
-- 任务 command：`${config:stm32-toolkit.executablePath}`
-- `c_cpp_properties.json` 的 `compilerPath`：`${config:stm32-toolkit.compilerPath}`
-
-请在用户设置（User Settings）中把这两项写成**已核对过的绝对本机可执行路径**；生成器不会写入空的 workspace 覆盖，也不会回退到裸 PATH 名称。未绑定这两个设置时生成结果**不可直接运行**（任务会解析失败），这不是安装或运行证据。VS Code 变量本身不证明实际 runtime/MCP 身份；请用 `stm32_doctor`（以及真实客户端的工具/input schema）核对绑定。`stm32-toolkit.compilerPath` 只配置 IntelliSense，不会静默选择 CMake 构建工具链；构建工具链仍由 `cmake/arm-none-eabi-gcc.cmake` 和 preset 决定，应与 doctor 的工具证据一致。
-
-也可以选择**成对**传入绝对原生可执行路径（二者必须同时给出）：
-
-```powershell
-# 只读 PLAN；再以同一对选项、data.plan_id 和 --authorized 执行 APPLY
-& $CandidateCli --project-root $ProjectRoot project configure `
-  --vscode-toolkit-path 'C:\tools\stm32-toolkit\bin\stm32-toolkit.exe' `
-  --vscode-gcc-path 'C:\ST\STM32CubeCLT\GNU-tools-for-STM32\bin\arm-none-eabi-gcc.exe' `
-  --dry-run --json
+```json
+{
+  "stm32-toolkit.executablePath": "C:/tools/stm32-toolkit-1.3.0-bundle/stm32-toolkit-1.3.0/bin/stm32-toolkit.exe",
+  "stm32-toolkit.compilerPath": "C:/ST/STM32CubeCLT/GNU-tools-for-STM32/bin/arm-none-eabi-gcc.exe"
+}
 ```
 
-MCP 对应参数为 `stm32_project_configure(..., vscodeToolkitPath="...", vscodeGccPath="...")`；不新增工具，清单仍是 52。校验是静态的：值必须是绝对路径、存在的普通文件；Windows 上必须是原生 `.exe`（拒绝 `.cmd`/`.bat` 脚本）、不得含 `${...}`/`$(...)`/`%VAR%` 变量、不得是目录、链接或重解析点；允许空格和 Unicode。它**不是**二进制信任或版本证明，版本/身份应另行核对。失败返回 `VSCODE_CONFIGURATION_INVALID`，`details` 含首个 `field`/`rule`、完整 `diagnostics[]`（`code`/`field`/`rule`/`message`/`remediation`）与 `missingFields[]`。这对路径进入不可变计划：参与 `plan_id`、序列化和重放校验；APPLY 必须带**同一对**选项，省略或改动即 `PLAN_CHANGED`，不会写入；路径不会写进工程模型。可执行文件被移动/删除后，原计划重放也会在写入前失败，应重新 PLAN。不要手工改 `plan_id`、managed digest 或已生成文件；重新配置即可。
+生成器不会写入空的 workspace 覆盖，也不会回退到裸 PATH 名称；未绑定这两项时生成结果**不可直接运行**（${config:...} 无法解析），这既不是安装证据也不是运行证据。`compilerPath` 只配置 IntelliSense，**不会**静默选择 CMake 构建工具链；构建工具链仍由 `cmake/arm-none-eabi-gcc.cmake` 与 preset 决定，并应与 `stm32_doctor` 的工具证据一致。VS Code 变量本身不证明当前 runtime/MCP 身份：用 `stm32_doctor` 及真实客户端列出的工具/input schema 核对。候选可执行文件是否就是本源码切片，先检查 `version`，再检查 `ide task --help`（帮助里必须出现 `flash`、`handoff-begin`、`handoff-end`）：只有 `version` 输出无法区分 frozen/installed 1.3.0 与当前源码，不能单独当作能力证明。
 
-`ide task` 是给生成任务用的窄 CLI 适配器，**不是** MCP 替代：`stm32-toolkit --project-root <abs> ide task <flash|handoff-begin|handoff-end> --data-root <abs> --session-id <id> --probe <exact probeId> [--ticket <original 64 位 ticket>] --confirmation deny|authorize --json`。`--confirmation` 默认 `deny`；只有精确的 `authorize` 才执行**这一次**调用，没有可继承的授权。flash/handoff-begin 在确认和上下文校验之后、调用任何硬件工作流之前，使用既有只读 `_load_fresh_firmware` 取得当前完整的 arm-debug 证据（buildId 与 ELF SHA-256），并保留其原始错误码/`details`（包括 snapshot provenance 拒绝与 build/input/artifact 失败）；随后把精确 pin 与绑定转交既有 flash/handoff 工作流，后者保留自身检查。没有 release 回退、自动构建、导入或直接后端调用。handoff-end 跳过 fresh build 准入、转发**原始** ticket，因此源码变化后仍可正确 reclaim。所有动作结果、错误和 handoff 配置/ticket 原样返回；失败仍是带非零退出码的有界结构化 JSON。
+也可以选择**成对**传入绝对原生路径（二者必须同时给出）。下面的 PLAN 与 APPLY 必须使用**同一对选项**和 PLAN 返回的精确 `data.plan_id`：
 
-这些能力只在**当前源码**中；frozen/installed 1.3.0 不包含，也不会因重启 VS Code 而安装。真实 VS Code 进程、扩展、IntelliSense 与实际 handoff UI/调试会话仍未验收；不要用真实硬件来测试任务，也不要手工编辑 managed digest。
+```powershell
+$ToolkitExe = 'C:\tools\stm32-toolkit\bin\stm32-toolkit.exe'   # 示例，替换为已核实的本机绝对路径
+$GccExe     = 'C:\ST\STM32CubeCLT\GNU-tools-for-STM32\bin\arm-none-eabi-gcc.exe'
+
+# 1) 只读 PLAN：检查 data.plan_id、data.files 中 tasks.json/c_cpp_properties.json 的 diff
+& $CandidateCli --project-root $ProjectRoot project configure --dry-run --json `
+  --vscode-toolkit-path $ToolkitExe --vscode-gcc-path $GccExe
+
+# 2) 用户显式授权该 PLAN 后 APPLY：同一对选项 + 同一 plan_id
+& $CandidateCli --project-root $ProjectRoot project configure --apply --json `
+  --plan-id '<PLAN 返回的 data.plan_id>' --authorized `
+  --vscode-toolkit-path $ToolkitExe --vscode-gcc-path $GccExe
+```
+
+MCP 对应参数为 `stm32_project_configure(..., vscodeToolkitPath="...", vscodeGccPath="...")`；不新增工具，清单仍是 52。校验是静态的：值必须是绝对路径、存在的普通原生文件；Windows 上必须是 `.exe`（拒绝 `.cmd`/`.bat` 脚本），不得含 `${...}`/`$(...)`/`%VAR%` 变量，不得是目录、链接或重解析点；**路径上的每一级父目录也必须是真实目录，不能经过链接/重解析父级**；允许空格和 Unicode。它**不是**二进制信任或版本证明。失败返回 `VSCODE_CONFIGURATION_INVALID`，`details` 含首个 `field`/`rule`、完整 `diagnostics[]`（`code`/`field`/`rule`/`message`/`remediation`）与 `missingFields[]`，且在任何写入前拒绝。这对路径进入不可变计划：参与 `plan_id`、序列化和重放校验；APPLY 必须带**同一对**选项，省略或改动即 `PLAN_CHANGED`，不会写入；路径不会写进工程模型。可执行文件被移动、删除或父级变为重定向后，原计划重放也会在写入前失败，应重新 PLAN。不要手工改 `plan_id`、managed digest 或已生成文件。
+
+`ide task` 是给生成任务用的窄 CLI 适配器，**不是** MCP 替代：
+
+```powershell
+& $ToolkitExe --project-root <绝对工程根> ide task <flash|handoff-begin|handoff-end> `
+  --data-root <绝对且在工程外的 DataRoot> --session-id <session> --probe <精确 probeId> `
+  [--ticket <原样 ticket>] --confirmation deny|authorize --json
+```
+
+`--confirmation` 默认 `deny`；只有精确的 `authorize` 才执行**这一次**调用，没有可继承的授权。flash/handoff-begin 在确认与上下文校验之后、调用任何硬件工作流之前，使用既有只读 fresh-firmware 准入取得当前完整的 arm-debug 证据（buildId 与 ELF SHA-256），并保留其原始错误码/`details`（包括 snapshot provenance 拒绝与 build/input/artifact 失败）；随后把精确 pin 与绑定转交既有 flash/handoff 工作流，后者保留自身检查。没有 release 回退、自动构建、导入或直接后端调用。handoff-end 跳过 fresh build 准入、转发**原始** ticket，因此源码变化后仍可正确 reclaim。所有动作结果、错误和 handoff 配置/ticket 原样返回；失败仍是带非零退出码的有界结构化 JSON。UI 里的确认提示不会给 AI 授权，也不能替 AI 制造授权；AI 调用方必须已经被用户显式授权该精确操作，且不得把一次 `authorize` 复用于下一次。
+
+**托管 flash → handoff-begin → handoff-end 的连续性。** 三个调用必须保持同一 `--project-root`、`--data-root`、`--session-id` 和同一精确 `probe`。`handoff-begin` 成功结果里的 `data.ticket` 必须原样保留给之后的 `handoff-end`；不要改写、猜测或复用别的会话/探针的 ticket，也不要把它持久化到任务文件。`handoff-begin` 返回的 `data.cortexDebugLaunch.configuration` 是给**独立的外部 IDE 工作区**使用的活配置：把它复制到该外部工作区的 launch 配置里，**不要**在构建后改写受管的 `.vscode/launch.json`。真实 IDE 必须先 detach，之后才能执行 `handoff-end` 归还原始 ticket。任何一步失败都停止并按完整 `OperationResult` 处理，不要静默重试或自动恢复。
+
+**snapshot / 无 Git 工程。** 有效的 schema-2 snapshot 构建证据仍会被托管硬件准入以 `FIRMWARE_PROVENANCE_UNSUPPORTED` 在任何 probe/lease/attach 前拒绝，因此托管 Flash/Handoff 任务不会工作；不要用任务或手工改 receipt/identity 绕过。若确实要烧录这类固件，只能走单独的导入路线（`stm32_firmware_import` → `stm32_firmware_admit` → `stm32_flash_imported`，每次授权独立）；导入固件不提供 handoff 身份，不能解锁 debug/Monitor/Target 测试，也不能拿 imported receipt 冒充托管 buildId。
+
+这些能力只在**当前源码**中；frozen/installed 1.3.0 不包含，也不会因重启 VS Code 而安装。真实 VS Code 进程、扩展、IntelliSense、`reevaluateOnRerun` 行为与实际 handoff UI/调试会话仍未验收；不要用真实硬件来测试任务，也不要手工编辑 managed digest。
 
 `stm32_project_context` 的 `data.debugConfiguration` 使用同一字段语义：`backend`/`target`（不可用时为 null）、`status`（`configured`/`needs-user-input`）、`missingFields`、`diagnostics`（每项含 `code`/`field`/`rule`/`message`/`remediation`）、`targetSupport` 恒为 `not-checked`、`hardwareVerified` 恒为 false、`nextSteps`。`configured` 只表示字段已记录；缺少或无效时，`capabilityDetails.flash`/`targetTest`/`monitor`/`breakpointDebug` 为 `blocked` 并列出全部原因（与既有 snapshot/Git 阻断并存），即使 pair 有效也不会把硬件布尔值改为 true。`build`/`configure` 的可用性不受该检查影响，`stm32_probe_list` 仍是独立的只读发现。
 

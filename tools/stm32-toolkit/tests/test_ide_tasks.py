@@ -11,11 +11,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+import stm32_toolkit.cli as cli_mod
 import stm32_toolkit.ide_tasks as ide_mod
 from stm32_toolkit.cli import main as cli_main
 from stm32_toolkit.generation import plan_project_configuration
@@ -95,6 +97,22 @@ def _generated_argv(
     if confirmation is not None:
         values["${input:" + CONFIRMATION_INPUTS[action] + "}"] = confirmation
     return [values.get(argument, argument) for argument in task["args"]]
+
+
+def _generated_build_argv(root: Path, label: str) -> list[str]:
+    payload = json.loads(
+        next(
+            entry
+            for entry in plan_project_configuration(load_project_model(root)).files
+            if entry.path == ".vscode/tasks.json"
+        ).after_bytes.decode("utf-8")
+    )
+    task = next(task for task in payload["tasks"] if task["label"] == label)
+    assert task["command"] == "${config:stm32-toolkit.executablePath}"
+    return [
+        str(root) if argument == "${workspaceFolder}" else argument
+        for argument in task["args"]
+    ]
 
 
 def _fresh(identity: dict):
@@ -217,6 +235,39 @@ def test_generated_handoff_end_argv_replays_without_fresh_build(
     assert fresh_calls == []
 
 
+def test_generated_build_argv_replays_into_the_build_workflow(
+    tmp_path, monkeypatch, capsys
+):
+    root = prepare_project(tmp_path)
+    calls: list[tuple[object, str, bool, int, bool]] = []
+
+    def fake_build(project_root, *, preset, clean, timeout_seconds, authorized):
+        calls.append((project_root, preset, clean, timeout_seconds, authorized))
+        return OperationResult.success("build", {"preset": preset})
+
+    monkeypatch.setattr(cli_mod, "build_firmware_workflow", fake_build)
+
+    for label, preset in (
+        ("STM32 Toolkit: Build Debug", "arm-debug"),
+        ("STM32 Toolkit: Build Release", "arm-release"),
+    ):
+        argv = _generated_build_argv(root, label)
+        assert argv[0:2] == ["--project-root", str(root)]
+        assert "--json" in argv
+        assert cli_main(argv) == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["ok"] is True
+        assert payload["operation"] == "build"
+        assert payload["data"] == {"preset": preset}
+
+    # The CLI invocation is the user's explicit process action: exact root and
+    # preset, no implicit clean, default timeout, authorized=True.
+    assert calls == [
+        (root, "arm-debug", False, 300, True),
+        (root, "arm-release", False, 300, True),
+    ]
+
+
 # ---------------------------------------------------------------------------
 # deny before any admission or hardware
 # ---------------------------------------------------------------------------
@@ -288,6 +339,80 @@ def test_cli_generated_task_without_authorize_is_refused_before_admission(
     assert payload["details"]["operation"] == "stm32_flash"
     assert payload["details"]["task"] == "flash"
     assert fresh_calls == []
+
+
+def test_omitted_confirmation_option_is_deny_at_the_parser(
+    tmp_path, monkeypatch, capsys
+):
+    root, identity = _valid_project(tmp_path)
+    fresh_calls = []
+
+    def fresh(_root: Path) -> object:
+        fresh_calls.append(_root)
+        return SimpleNamespace(identity=identity)
+
+    monkeypatch.setattr(ide_mod, "_FRESH_FIRMWARE", fresh)
+    monkeypatch.setattr(ide_mod, "_FLASH", _forbidden_workflow)
+
+    argv = [
+        "--project-root",
+        str(root),
+        "ide",
+        "task",
+        "flash",
+        "--data-root",
+        str(_data_root(tmp_path)),
+        "--session-id",
+        SESSION,
+        "--probe",
+        PROBE,
+        "--json",
+    ]
+    assert "--confirmation" not in argv
+    assert cli_main(argv) == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is False
+    assert payload["code"] == "AUTHORIZATION_REQUIRED"
+    assert payload["details"]["field"] == "confirmation"
+    assert payload["details"]["rule"] == "authorize"
+    assert fresh_calls == []
+
+
+@pytest.mark.parametrize(
+    ("first", "second"), [("deny", "authorize"), ("authorize", "deny")]
+)
+def test_repeated_confirmation_is_rejected_by_the_parser(
+    tmp_path, monkeypatch, capsys, first, second
+):
+    root, _identity = _valid_project(tmp_path)
+
+    def fresh(_root: Path) -> object:
+        raise AssertionError("parser rejection must precede admission")
+
+    monkeypatch.setattr(ide_mod, "_FRESH_FIRMWARE", fresh)
+
+    argv = [
+        "--project-root",
+        str(root),
+        "ide",
+        "task",
+        "flash",
+        "--data-root",
+        str(_data_root(tmp_path)),
+        "--session-id",
+        SESSION,
+        "--probe",
+        PROBE,
+        "--confirmation",
+        first,
+        "--confirmation",
+        second,
+        "--json",
+    ]
+    assert cli_main(argv) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "stm32-toolkit: invalid arguments" in captured.err
 
 
 @pytest.mark.parametrize(
@@ -471,7 +596,7 @@ def test_handoff_end_survives_stale_source_evidence(tmp_path):
 @pytest.mark.parametrize(
     ("field", "kwargs", "rule"),
     [
-        ("project_root", {"project_root": Path("relative")}, "relative"),
+        ("project_root", {"project_root": Path("relative")}, "absolute"),
         ("data_root", {"data_root": "not-a-path"}, "type"),
         ("data_root", {"data_root": Path("relative")}, "absolute"),
         ("session_id", {"session_id": "bad/session"}, "format"),
@@ -512,22 +637,109 @@ def test_context_is_validated_before_admission(tmp_path, field, kwargs, rule):
     assert fresh_calls == []
 
 
-def test_data_root_inside_project_is_refused_before_admission(tmp_path):
-    root, _identity = _valid_project(tmp_path)
-    result = asyncio.run(
+def _patch_reparse(monkeypatch, target: Path) -> None:
+    import stm32_toolkit.hardware_workflows as hardware_mod
+
+    real_lstat = os.lstat
+
+    def fake_lstat(path):
+        metadata = real_lstat(path)
+        if Path(path) == target:
+            return SimpleNamespace(
+                st_mode=metadata.st_mode,
+                st_file_attributes=(
+                    getattr(metadata, "st_file_attributes", 0) | 0x400
+                ),
+            )
+        return metadata
+
+    monkeypatch.setattr(hardware_mod.os, "lstat", fake_lstat)
+
+
+def _data_root_stub(term: str, **kwargs):
+    return asyncio.run(
         run_ide_task(
-            "flash",
-            project_root=root,
-            data_root=root / "machine-data",
-            session_id=SESSION,
-            probe_id=PROBE,
-            confirmation="authorize",
+            term,
+            **kwargs,
             fresh_firmware=_forbidden_workflow,  # type: ignore[arg-type]
             flash=_forbidden_workflow,
+            handoff_begin=_forbidden_workflow,
+            handoff_end=_forbidden_workflow,
         )
     )
+
+
+@pytest.mark.parametrize("term", ["flash", "handoff-begin", "handoff-end"])
+def test_data_root_inside_project_is_refused_before_admission(tmp_path, term):
+    root, _identity = _valid_project(tmp_path)
+    result = _data_root_stub(
+        term,
+        project_root=root,
+        data_root=root / "machine-data",
+        session_id=SESSION,
+        probe_id=PROBE,
+        ticket=TICKET,
+        confirmation="authorize",
+    )
     assert result.code == "HARDWARE_INPUT_INVALID"
+    assert result.details["field"] == "data_root"
     assert result.details["rule"] == "outsideProjectRoot"
+
+
+def test_data_root_file_component_is_refused_before_admission(tmp_path):
+    root, _identity = _valid_project(tmp_path)
+    plain = tmp_path / "plain-file"
+    plain.write_bytes(b"not a directory\n")
+    result = _data_root_stub(
+        "flash",
+        project_root=root,
+        data_root=plain / "data",
+        session_id=SESSION,
+        probe_id=PROBE,
+        confirmation="authorize",
+    )
+    assert result.code == "HARDWARE_INPUT_INVALID"
+    assert result.details["field"] == "data_root"
+    assert result.details["rule"] == "externalDirectory"
+    assert result.details["guidance"]
+
+
+def test_data_root_redirected_leaf_is_refused_before_admission(tmp_path, monkeypatch):
+    root, _identity = _valid_project(tmp_path)
+    data_root = _data_root(tmp_path)
+    _patch_reparse(monkeypatch, data_root)
+    result = _data_root_stub(
+        "flash",
+        project_root=root,
+        data_root=data_root,
+        session_id=SESSION,
+        probe_id=PROBE,
+        confirmation="authorize",
+    )
+    assert result.code == "HARDWARE_INPUT_INVALID"
+    assert result.details["field"] == "data_root"
+    assert result.details["rule"] == "externalDirectory"
+
+
+def test_data_root_redirected_ancestor_is_refused_before_admission(
+    tmp_path, monkeypatch
+):
+    root, _identity = _valid_project(tmp_path)
+    ancestor = tmp_path / "reparse-parent"
+    ancestor.mkdir()
+    data_root = ancestor / "data"
+    _patch_reparse(monkeypatch, ancestor)
+    result = _data_root_stub(
+        "flash",
+        project_root=root,
+        data_root=data_root,
+        session_id=SESSION,
+        probe_id=PROBE,
+        confirmation="authorize",
+    )
+    assert result.code == "HARDWARE_INPUT_INVALID"
+    assert result.details["field"] == "data_root"
+    assert result.details["rule"] == "externalDirectory"
 
 
 def test_unknown_task_is_refused(tmp_path):

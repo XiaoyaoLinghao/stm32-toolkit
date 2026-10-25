@@ -292,14 +292,21 @@ def test_new_tool_schemas_expose_only_declared_properties(tmp_path: Path):
         "authorized",
         "debugBackend",
         "debugTarget",
+        "vscodeToolkitPath",
+        "vscodeGccPath",
     }
     assert set(configure.get("required", [])) == set()
     assert "string" in str(configure["properties"]["planId"])
     assert configure["properties"]["authorized"]["type"] == "boolean"
     assert configure["properties"]["authorized"]["default"] is False
-    # Raw values must reach the shared validator unchanged: no enum/string
+    # Raw values must reach the shared validators unchanged: no enum/string
     # constraint may coerce or pre-reject a wrong scalar here.
-    for field in ("debugBackend", "debugTarget"):
+    for field in (
+        "debugBackend",
+        "debugTarget",
+        "vscodeToolkitPath",
+        "vscodeGccPath",
+    ):
         property_schema = configure["properties"][field]
         assert property_schema.get("type") != "string"
         assert "enum" not in property_schema

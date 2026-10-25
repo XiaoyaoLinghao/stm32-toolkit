@@ -13,10 +13,12 @@ import json
 import os
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 import stm32_toolkit.mcp_server as mcp_mod
+import stm32_toolkit.vscode_configuration as vscode_config_mod
 from stm32_toolkit.cli import main as cli_main
 from stm32_toolkit.generation import (
     apply_project_configuration,
@@ -363,6 +365,97 @@ def test_redirect_targets_are_refused(tmp_path):
         pytest.skip("host cannot create a file symlink for this check")
     error = _direct_error(str(link), str(gcc))
     assert error.details["rule"] == "redirect"
+
+
+def _reparse(real) -> SimpleNamespace:
+    return SimpleNamespace(
+        st_mode=real.st_mode,
+        st_file_attributes=(
+            getattr(real, "st_file_attributes", 0) | 0x400
+        ),
+    )
+
+
+def _patch_reparse(monkeypatch, target: Path) -> None:
+    real_lstat = os.lstat
+
+    def fake_lstat(path):
+        metadata = real_lstat(path)
+        if Path(path) == target:
+            return _reparse(metadata)
+        return metadata
+
+    monkeypatch.setattr(vscode_config_mod, "_LSTAT", fake_lstat)
+
+
+def test_redirected_parent_component_is_refused_without_resolving(tmp_path, monkeypatch):
+    toolkit, gcc = _double(tmp_path / "proj", tmp_path)
+    junction = toolkit.parent
+    _patch_reparse(monkeypatch, junction)
+
+    error = _direct_error(str(toolkit), str(gcc))
+
+    assert error.details["field"] == "vscode.toolkitPath"
+    assert error.details["rule"] == "redirect"
+
+
+def test_redirected_leaf_is_refused_without_resolving(tmp_path, monkeypatch):
+    toolkit, gcc = _double(tmp_path / "proj", tmp_path)
+    _patch_reparse(monkeypatch, toolkit)
+
+    error = _direct_error(str(toolkit), str(gcc))
+
+    assert error.details["field"] == "vscode.toolkitPath"
+    assert error.details["rule"] == "redirect"
+
+
+def test_missing_and_non_directory_parents_are_refused(tmp_path):
+    _toolkit, gcc = _double(tmp_path / "proj", tmp_path)
+
+    missing_parent = tmp_path / "missing-parent" / "stm32-toolkit.exe"
+    missing = _direct_error(str(missing_parent), str(gcc))
+    assert missing.details["rule"] == "notFound"
+
+    plain_parent = tmp_path / "plain-parent"
+    plain_parent.write_bytes(b"not a directory\n")
+    file_parent = plain_parent / "stm32-toolkit.exe"
+    parent = _direct_error(str(file_parent), str(gcc))
+    assert parent.details["rule"] == "parent"
+
+
+def test_spaces_and_unicode_paths_remain_valid(tmp_path):
+    directory = tmp_path / "Tool 工具 dir"
+    toolkit = _native_executable(directory, "stm32-toolkit.exe")
+    gcc = _native_executable(directory, "arm-none-eabi-gcc.exe")
+
+    config = normalize_vscode_configuration(str(toolkit), str(gcc))
+
+    assert config == VSCodeConfiguration(str(toolkit), str(gcc))
+
+
+def test_plan_and_apply_reject_a_redirected_parent_without_writes(tmp_path, monkeypatch):
+    root = write_project(tmp_path / "proj")
+    toolkit, gcc = _double(root, tmp_path)
+    junction = toolkit.parent
+    before = tree_snapshot(root)
+
+    _patch_reparse(monkeypatch, junction)
+    planned = configure_project_workflow(
+        root, vscode_toolkit_path=str(toolkit), vscode_gcc_path=str(gcc)
+    )
+    assert planned.ok is False
+    assert planned.code == INVALID
+    assert dict(planned.details)["rule"] == "redirect"
+    assert tree_snapshot(root) == before
+
+    monkeypatch.undo()
+    plan = _bound_plan(root, toolkit, gcc)
+    before = tree_snapshot(root)
+    _patch_reparse(monkeypatch, junction)
+    applied = apply_project_configuration(plan)
+    assert applied.ok is False
+    assert applied.code == "GENERATION_PLAN_INVALID"
+    assert tree_snapshot(root) == before
 
 
 def test_configure_workflow_refuses_invalid_pair_before_planning(tmp_path):
