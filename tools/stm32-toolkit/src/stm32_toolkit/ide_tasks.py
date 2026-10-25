@@ -6,6 +6,9 @@ replacement for any MCP tool: it validates the explicit context and
 confirmation, obtains firmware pins from the existing read-only
 ``_load_fresh_firmware`` admission (flash/handoff-begin only), and forwards the
 exact request to the accepted hardware workflows, which keep their own checks.
+Handoff-end therefore adds no admission, but the accepted end workflow still
+revalidates current firmware/flash evidence around reacquisition; the adapter
+surfaces that exact refusal rather than promising reclamation.
 
 Nothing is stored here: no authorization, probe enumeration, session record or
 handoff ticket.  ``--confirmation`` defaults to ``deny`` and an ``authorize``
@@ -171,9 +174,15 @@ async def run_ide_task(
     ``AUTHORIZATION_REQUIRED`` before the project model, firmware evidence or
     any hardware workflow is touched.  Flash and handoff-begin then use the
     existing fresh-firmware admission and forward its exact build ID/ELF
-    SHA-256 plus the bound roots, session and probe.  Handoff-end skips that
-    admission and forwards the original ticket, so reclamation still works
-    after source changes.
+    SHA-256 plus the bound roots, session and probe.
+
+    Handoff-end adds no adapter-side admission and forwards the original
+    ticket unchanged.  That is delegation, not proof of reclamation: the
+    accepted end workflow itself revalidates the current firmware and flash
+    evidence before and after reacquisition, so stale source, ELF or build
+    evidence can still refuse with its own error.  This adapter reports that
+    exact failure/ownership result and never rebuilds, flashes, retries or
+    claims cleanup.
     """
     if type(task) is not str or task not in _TASK_OPERATIONS:
         return _failure(

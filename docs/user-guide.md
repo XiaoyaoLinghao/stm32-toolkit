@@ -278,19 +278,30 @@ $GccExe     = 'C:\ST\STM32CubeCLT\GNU-tools-for-STM32\bin\arm-none-eabi-gcc.exe'
 
 MCP 对应参数为 `stm32_project_configure(..., vscodeToolkitPath="...", vscodeGccPath="...")`；不新增工具，清单仍是 52。校验是静态的：值必须是绝对路径、存在的普通原生文件；Windows 上必须是 `.exe`（拒绝 `.cmd`/`.bat` 脚本），不得含 `${...}`/`$(...)`/`%VAR%` 变量，不得是目录、链接或重解析点；**路径上的每一级父目录也必须是真实目录，不能经过链接/重解析父级**；允许空格和 Unicode。它**不是**二进制信任或版本证明。失败返回 `VSCODE_CONFIGURATION_INVALID`，`details` 含首个 `field`/`rule`、完整 `diagnostics[]`（`code`/`field`/`rule`/`message`/`remediation`）与 `missingFields[]`，且在任何写入前拒绝。这对路径进入不可变计划：参与 `plan_id`、序列化和重放校验；APPLY 必须带**同一对**选项，省略或改动即 `PLAN_CHANGED`，不会写入；路径不会写进工程模型。可执行文件被移动、删除或父级变为重定向后，原计划重放也会在写入前失败，应重新 PLAN。不要手工改 `plan_id`、managed digest 或已生成文件。
 
-`ide task` 是给生成任务用的窄 CLI 适配器，**不是** MCP 替代：
+`ide task` 是给生成任务用的窄 CLI 适配器，**不是** MCP 替代。以下是**不可执行的文本语法**（尖括号、方括号与 `|` 只是占位说明，不是 shell 语法）：
 
-```powershell
-& $ToolkitExe --project-root <绝对工程根> ide task <flash|handoff-begin|handoff-end> `
-  --data-root <绝对且在工程外的 DataRoot> --session-id <session> --probe <精确 probeId> `
-  [--ticket <原样 ticket>] --confirmation deny|authorize --json
+```text
+stm32-toolkit --project-root <absolute-project-root> ide task <flash|handoff-begin|handoff-end> \
+  --data-root <absolute-data-root-outside-project> --session-id <session> \
+  --probe <exact-probe-id> [--ticket <original-ticket>] \
+  --confirmation deny|authorize --json
 ```
 
-`--confirmation` 默认 `deny`；只有精确的 `authorize` 才执行**这一次**调用，没有可继承的授权。flash/handoff-begin 在确认与上下文校验之后、调用任何硬件工作流之前，使用既有只读 fresh-firmware 准入取得当前完整的 arm-debug 证据（buildId 与 ELF SHA-256），并保留其原始错误码/`details`（包括 snapshot provenance 拒绝与 build/input/artifact 失败）；随后把精确 pin 与绑定转交既有 flash/handoff 工作流，后者保留自身检查。没有 release 回退、自动构建、导入或直接后端调用。handoff-end 跳过 fresh build 准入、转发**原始** ticket，因此源码变化后仍可正确 reclaim。所有动作结果、错误和 handoff 配置/ticket 原样返回；失败仍是带非零退出码的有界结构化 JSON。UI 里的确认提示不会给 AI 授权，也不能替 AI 制造授权；AI 调用方必须已经被用户显式授权该精确操作，且不得把一次 `authorize` 复用于下一次。
+下面是一个**可复制的拒绝示例**：`$ToolkitExe`、`$ProjectRoot`、`$DataRoot` 使用前文已核实的值，`$SessionId`/`$ProbeId` 使用本会话已核实的值。它设置 `--confirmation deny`，不会接触硬件，只会返回 `AUTHORIZATION_REQUIRED`（本页不执行它）：
 
-**托管 flash → handoff-begin → handoff-end 的连续性。** 三个调用必须保持同一 `--project-root`、`--data-root`、`--session-id` 和同一精确 `probe`。`handoff-begin` 成功结果里的 `data.ticket` 必须原样保留给之后的 `handoff-end`；不要改写、猜测或复用别的会话/探针的 ticket，也不要把它持久化到任务文件。`handoff-begin` 返回的 `data.cortexDebugLaunch.configuration` 是给**独立的外部 IDE 工作区**使用的活配置：把它复制到该外部工作区的 launch 配置里，**不要**在构建后改写受管的 `.vscode/launch.json`。真实 IDE 必须先 detach，之后才能执行 `handoff-end` 归还原始 ticket。任何一步失败都停止并按完整 `OperationResult` 处理，不要静默重试或自动恢复。
+```powershell
+& $ToolkitExe --project-root $ProjectRoot ide task flash `
+  --data-root $DataRoot --session-id $SessionId --probe $ProbeId `
+  --confirmation deny --json
+```
 
-**snapshot / 无 Git 工程。** 有效的 schema-2 snapshot 构建证据仍会被托管硬件准入以 `FIRMWARE_PROVENANCE_UNSUPPORTED` 在任何 probe/lease/attach 前拒绝，因此托管 Flash/Handoff 任务不会工作；不要用任务或手工改 receipt/identity 绕过。若确实要烧录这类固件，只能走单独的导入路线（`stm32_firmware_import` → `stm32_firmware_admit` → `stm32_flash_imported`，每次授权独立）；导入固件不提供 handoff 身份，不能解锁 debug/Monitor/Target 测试，也不能拿 imported receipt 冒充托管 buildId。
+`--confirmation` 默认 `deny`；只有精确的 `authorize` 才执行**这一次**调用，没有可继承的授权。CLI 的 `--confirmation authorize`/MCP `authorized=true` 只覆盖该次调用，本身**不会**给 AI 授权，也不会把权限自动带到下一次；应复用用户已经给出的、适用于这些具体步骤的明确指令，不要重复索取同一授权。flash/handoff-begin 在确认与上下文校验之后、调用任何硬件工作流之前，使用既有只读 fresh-firmware 准入取得当前完整的 arm-debug 证据（buildId 与 ELF SHA-256），并保留其原始错误码/`details`（包括 snapshot provenance 拒绝与 build/input/artifact 失败）；随后把精确 pin 与绑定转交既有 flash/handoff 工作流，后者保留自身检查。没有 release 回退、自动构建、导入或直接后端调用。
+
+handoff-end **不额外增加**适配器侧准入，并原样转发原始 ticket；但既有 end 工作流本身仍会在重新接管前后重新校验当前 firmware/flash 证据。因此源码、ELF 或构建证据陈旧时，end 仍可能拒绝，并返回其精确错误码/`details`。ticket 本身不证明 reclaim 成功；失败时按返回值报告实际所有权状态并停止，不做自动重建、烧录、重试或清理承诺。所有动作结果、错误和 handoff 配置/ticket 原样返回；失败仍是带非零退出码的有界结构化 JSON。UI 里的确认提示不会给 AI 授权，也不能替 AI 制造授权；AI 调用方必须已经被用户显式授权该精确操作，且不得把一次 `authorize` 复用于下一次。
+
+**托管 flash → handoff-begin → handoff-end 的连续性。** 三个调用必须保持同一 `--project-root`、`--data-root`、`--session-id` 和同一精确 `probe`。`handoff-begin` 成功结果里的 `data.ticket` 必须原样保留给之后的 `handoff-end`；不要改写、猜测或复用别的会话/探针的 ticket，也不要把它持久化到任务文件。`handoff-begin` 返回的 `data.cortexDebugLaunch.configuration` 是给**独立的外部 IDE 工作区**使用的活配置：把它复制到该外部工作区的 launch 配置里，**不要**在构建后改写受管的 `.vscode/launch.json`。真实 IDE 必须先 detach，之后才能执行 `handoff-end` 归还原始 ticket。即使 ticket 完全正确，它也**不是** reclaim 成功的证明：end 会重新校验同一会话、探针和当前 firmware/flash 身份；任一不匹配（包括源码/ELF/构建证据陈旧）都必须按返回的 `code`/`details` 报告并停止，不得静默重试、自动 rebuild/flash 或宣称清理完成。任何一步失败都停止并按完整 `OperationResult` 处理。
+
+**snapshot / 无 Git 工程。** 有效的 schema-2 snapshot 构建证据仍会被托管硬件准入以 `FIRMWARE_PROVENANCE_UNSUPPORTED` 在任何 probe/lease/attach 前拒绝，因此托管 Flash/Handoff 任务不会工作；不要用任务或手工改 receipt/identity 绕过。若确实要烧录这类固件，只能显式选择导入路线（`stm32_firmware_import` → `stm32_firmware_admit` → `stm32_flash_imported`）：其中 import PLAN 和 ADMIT 是只读的，不需要额外审批；import APPLY（在外部位置创建副本）与 flash 需要各自适用的用户授权，但一条已有的明确用户指令可能已覆盖其中多个指定步骤，应按实际适用范围复用，不要额外制造审批停顿。导入固件不提供 handoff 身份，不能解锁 debug/Monitor/Target 测试，也不能拿 imported receipt 冒充托管 buildId。
 
 这些能力只在**当前源码**中；frozen/installed 1.3.0 不包含，也不会因重启 VS Code 而安装。真实 VS Code 进程、扩展、IntelliSense、`reevaluateOnRerun` 行为与实际 handoff UI/调试会话仍未验收；不要用真实硬件来测试任务，也不要手工编辑 managed digest。
 
@@ -325,7 +336,7 @@ AI 客户端只使用现有证据核对绑定，不新增绑定检查工具：
 | 路线 | context 中的状态 | 工具 | 边界 |
 | --- | --- | --- | --- |
 | managed | 与 `capabilityDetails.flash` 的 `status`/`reason`/`nextSteps` 完全一致 | `stm32_probe_list` -> `stm32_flash` | 使用 `data.build.buildId` 与 `data.build.elfSha256`；要求 Git-shaped provenance。已知 managed blocker 只停止该路线。 |
-| imported | 始终 `not-evaluated` | `stm32_firmware_import` -> `stm32_firmware_admit` -> `stm32_flash_imported` | 不需要 Git 或托管模型；不可变导入与后续硬件操作各自独立授权；回执不解锁 debug、Monitor、Target 测试、旧式 flash 证据或 reset/recovery。 |
+| imported | 始终 `not-evaluated` | `stm32_firmware_import` -> `stm32_firmware_admit` -> `stm32_flash_imported` | 不需要 Git 或托管模型；import PLAN 与 ADMIT 只读，不需要额外审批；import APPLY（外部副本）与 flash 需要各自适用的用户授权，一条已有的明确用户指令可能已覆盖其中多个指定步骤；回执不解锁 debug、Monitor、Target 测试、旧式 flash 证据或 reset/recovery。 |
 
 工具存在不等于镜像就绪。managed 失败不会自动切换路线；imported 路线必须由用户显式选择，并校验该路线自己的输入；context 的模型/绑定错误不证明该入口不存在，也不能用来绕过无效 root、绑定错误或工具错误。debug/Monitor/Target 路线不得把 imported 回执当作补救。
 

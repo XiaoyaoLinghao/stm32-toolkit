@@ -2,9 +2,11 @@
 
 The adapter is replayed from the *rendered* generated tasks through the public
 CLI parser into fake workflow seams.  Firmware admission uses the real
-``_load_fresh_firmware`` over synthetic build evidence; no probe worker,
-backend, lease, attach or hardware is constructed.  Every tree is disposable
-below ``tmp_path``.
+``_load_fresh_firmware`` over synthetic build evidence.  One integration check
+routes handoff-end into the real ``begin_debug_handoff``/``end_debug_handoff``
+using the established ``FakeSupervisor``/``FakeClient`` fixtures, so the real
+end freshness rejection is observed; no probe worker, backend, physical lease or
+hardware is constructed.  Every tree is disposable below ``tmp_path``.
 """
 
 from __future__ import annotations
@@ -27,11 +29,13 @@ from stm32_toolkit.hardware_workflows import (
     HandoffEndWorkflowRequest,
 )
 from stm32_toolkit.ide_tasks import run_ide_task
+from stm32_toolkit.probe.handoff import begin_debug_handoff, end_debug_handoff
 from stm32_toolkit.project_model import load_project_model
 from stm32_toolkit.result import OperationResult
 
 from test_build_runner import prepare_project
 from test_build_snapshot import snapshot_build
+from test_debug_handoff import FakeClient, _state, handoff_env  # noqa: F401
 from test_flash import _publish_current_debug_build
 
 LABELS = {
@@ -562,7 +566,16 @@ def test_fresh_pins_are_forwarded_exactly_for_both_hardware_routes(tmp_path):
         assert request.probe_id == PROBE
 
 
-def test_handoff_end_survives_stale_source_evidence(tmp_path):
+def test_adapter_handoff_end_forwards_original_ticket_without_added_admission(
+    tmp_path,
+):
+    """Delegation only: the fake end workflow proves no adapter admission.
+
+    A fake end workflow cannot prove real reclamation or define behavior for
+    stale source/ELF/build evidence.  The accepted end workflow performs its
+    own freshness revalidation; see the real begin/end integration check below.
+    """
+
     root, _identity = _valid_project(tmp_path)
     (root / "build" / "arm-debug" / "firmware.elf").write_bytes(b"stale")
     recorded = []
@@ -586,6 +599,84 @@ def test_handoff_end_survives_stale_source_evidence(tmp_path):
     )
     assert result.ok is True
     assert recorded[0].ticket == TICKET
+
+
+def test_real_end_refuses_stale_elf_without_adapter_admission(handoff_env, tmp_path):
+    """Real begin/end: stale evidence refusal is the end workflow's own check.
+
+    The adapter forwards the original ticket with no extra admission.  The
+    accepted end workflow still revalidates current firmware/flash evidence, so
+    mutating the synthetic ELF after a normal begin makes end refuse with its
+    original ``FIRMWARE_INPUT_CHANGED`` before reacquisition.  Only fakes
+    (FakeSupervisor/FakeClient) are used; no worker or physical probe exists.
+    """
+
+    project, _identity, session_root, supervisor, client, request = handoff_env
+
+    begun = asyncio.run(begin_debug_handoff(request, supervisor, client))
+    assert begun.ok is True, begun
+    ticket = begun.data.ticket_id
+    assert supervisor.start_calls == 0
+    stop_calls_after_begin = supervisor.stop_calls
+
+    elf = project / "build" / "arm-debug" / "firmware.elf"
+    elf.write_bytes(elf.read_bytes() + b"\x00")
+
+    data_root = tmp_path / "adapter-data-root"
+    fresh_calls: list[Path] = []
+    forwarded: list[object] = []
+    factory_calls: list[object] = []
+
+    def fresh(_root: Path) -> object:
+        fresh_calls.append(_root)
+        raise AssertionError("end must not add an adapter fresh admission")
+
+    def factory(endpoint: object) -> FakeClient:
+        factory_calls.append(endpoint)
+        return FakeClient(supervisor.endpoint, client.image)
+
+    async def real_end(end_request):
+        forwarded.append(end_request)
+        return await end_debug_handoff(end_request.ticket, supervisor, factory)
+
+    result = asyncio.run(
+        run_ide_task(
+            "handoff-end",
+            project_root=project,
+            data_root=data_root,
+            session_id="session-a",
+            probe_id="probe-123",
+            ticket=ticket,
+            confirmation="authorize",
+            fresh_firmware=fresh,
+            handoff_end=real_end,
+        )
+    )
+
+    # The accepted end workflow's own freshness check, with its exact fields.
+    assert result.ok is False
+    assert result.operation == "stm32_debug_handoff_end"
+    assert result.code == "FIRMWARE_INPUT_CHANGED"
+    assert result.message == "ELF changed after the selected build"
+    assert dict(result.details) == {"field": "elfSha256", "rule": "current"}
+
+    # Delegation evidence: the original ticket was forwarded once and the
+    # adapter added no admission of its own.
+    assert fresh_calls == []
+    assert len(forwarded) == 1
+    assert forwarded[0].ticket == ticket
+    assert forwarded[0].session_id == "session-a"
+    assert forwarded[0].probe_id == "probe-123"
+    assert forwarded[0].project_root == project
+
+    # No reacquisition, no client construction, no retry/flash/rebuild, and the
+    # reported ownership state is the real one left by the accepted workflow.
+    assert factory_calls == []
+    assert supervisor.start_calls == 0
+    assert supervisor.stop_calls == stop_calls_after_begin
+    state = _state(session_root)
+    assert state["state"] == "reacquiring"
+    assert state["ticketId"] == ticket
 
 
 # ---------------------------------------------------------------------------
