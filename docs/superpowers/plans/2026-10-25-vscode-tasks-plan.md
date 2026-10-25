@@ -1,0 +1,15 @@
+# VSCODE-TASKS implementation plan
+
+Accepted base `e7614e49ba384117770ff8b01f57489da8676223`; governing [design](../specs/2026-10-25-vscode-tasks-design.md). Primary specification/reviewer; local Claude Code CLI implementer. Separate plan-approval pause is waived for this authorized scope. No remote or hardware authority.
+
+1. Implement immutable optional VS Code executable binding/validation and thread it through generation plan hashing, validation/replay and existing configure CLI/MCP/workflow. Keep deterministic defaults as user-setting substitutions; no discovery, machine-path persistence in model or PATH mutation.
+2. Render five independent process tasks with explicit project/cwd, guarded prompts and intact handoff lifecycle. Add the narrow ide task adapter using existing current-firmware admission and workflow APIs. No new MCP tool or backend behavior.
+3. Add focused synthetic tests for the design, updating only affected old task snapshots. Update user-guide and MCP configure description with exact commands, bindings and known limits. No global Skill/runtime install or version bump.
+4. Freeze local CodeHead. Claude runs exact coordinator-supplied native PowerShell pytest commands; primary uses a separate clean checkout at that SHA, independently reads the full diff and runs focused plus applicable generation/configure/CLI/hardware regressions. Fix findings only through Claude on the same branch; preserve every failed run.
+5. Record implementation report, independent verdict, evidence and standard-procedure checkpoint. Integrate only locally after acceptance. Reports name tested CodeHead, not their own final commit.
+
+Environment: Windows; verified `D:/codex-tmp/kx23/venv/Scripts/python.exe`, read-only runtime dependencies under `C:/data/stm32-toolkit/runtime/1.3.0/Lib/site-packages`, source PYTHONPATH bound to each tree. Run-owned temp/cache/JUnit under `D:/codex-tmp/vs25`; no shared mutable test roots. Author tree `C:/Users/zhy76/.codex/worktrees/build-snapshot-review/STM32-Toolkit`; reviewer tree `C:/Users/zhy76/.codex/worktrees/build-snapshot-final/STM32-Toolkit`. Native PowerShell inventory plus actual Get-Location verified before delegation; file-only implementation and exact-command testing remain separate.
+
+Allowed implementation scope: Toolkit generation/configure and managed_files, new bounded vscode_configuration/ide_tasks modules, workflows.py, cli.py, existing MCP configure wrapper/description, affected generation templates only if necessary (both copies aligned), focused new tests and affected existing task assertions, docs/user-guide.md. No schema/version/release/build identity/probe backend behavior changes. Ask coordinator before expanding product scope. Primary may update governance/spec/plan/report files.
+
+Evidence owner: Claude for implementation and author execution; primary for independent diff review and clean-checkout tests. Real IDE/extension/process interoperability and all hardware remain deferred to integration with applicable authorization. Test commands selected after new filenames exist; all required behavior in the design must have evidence before acceptance.
