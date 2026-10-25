@@ -510,8 +510,8 @@ def test_selected_target_rvds_vp_is_raw_and_target_scoped(tmp_path: Path) -> Non
     assert other.rvds_vp == "0"
     assert hard.to_dict()["rvds_vp"] == "2"
 
-    absent = inspect_keil(simple_project(tmp_path / "absent"))
-    empty = inspect_keil(simple_project(tmp_path / "empty", rvds_vp=""))
+    absent = inspect_keil(simple_project(tmp_path / "absent").parent)
+    empty = inspect_keil(simple_project(tmp_path / "empty", rvds_vp="").parent)
     assert absent.rvds_vp is None
     assert empty.rvds_vp == ""
 
