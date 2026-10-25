@@ -4210,7 +4210,11 @@ def test_target_discovery_rejects_an_async_read_that_blocks_past_its_deadline(
 
     async def read_async(self, maximum, deadline):
       self.calls.append(("read_async", maximum, deadline))
-      time.sleep(0.03)
+      # Block past the deadline the product actually supplied rather than a fixed
+      # 0.03 s: the crossing must come from this pending read. A deadline that
+      # expires before the transport exists would test pre-dispatch expiry
+      # instead of this boundary, so the fixture cannot use a 5 ms setup.
+      time.sleep(max(0.0, deadline - time.monotonic()) + 0.03)
       return self.chunks.pop(0) if self.chunks else b""
 
   async def scenario() -> None:
@@ -4224,9 +4228,10 @@ def test_target_discovery_rejects_an_async_read_that_blocks_past_its_deadline(
     )
 
     with pytest.raises(target_module.TargetRunError) as caught:
-      await _r5_discover(runner, deadline=time.monotonic() + 0.005)
+      await _r5_discover(runner)
 
     assert caught.value.code == "TEST_TRANSPORT_UNAVAILABLE"
+    assert [call for call in active.calls if call[0] == "read_async"], "async read was never entered"
     assert active.calls[-1] == ("close",)
     assert probe.closed
 
