@@ -69,6 +69,21 @@ Toolkit paths below are relative to `tools/stm32-toolkit/src/stm32_toolkit`:
   `monitor_analysis_contract.py`.
 - `cli.py`, `mcp_server.py`.
 
+Before the v1.3.1 measurement, the responsibility review at source
+`712bd1721b10618b174b5ea35aef7c3407f48a4b` adds these complete files, with no
+removals or changed thresholds: `build/memory_margin.py`, `debug_configuration.py`,
+`doctor_readiness.py`, `external_firmware.py`, `extra_regions.py`, `ide_tasks.py`,
+`linker_fragment.py`, `memory_layout.py`, `migration/constant_context.py`,
+`migration/float_abi.py`, `migration/scoped_includes.py`, `migration/startup.py`,
+and `vscode_configuration.py`. They own unique integrity, containment, authority,
+safe execution-selection or migration/placement checks. The primary includes
+`doctor_readiness.py` for its exact native launcher/layout selection before child
+execution, despite its read-only output. `migration/preflight.py` remains
+overall-only: it reports advisory readiness, delegates authoritative checks and
+never returns an applicable plan ID or mutates. See the pre-measurement
+[scope decision](../codex/returns/STM32TK-131/scope.md). No coverage score was used
+to select this amendment; all source still enters the overall denominator.
+
 Other Toolkit files are overall-only while they own no unique safety/authority guard. Format
 interpretation, descriptions, discovery, templates and ordinary presentation do not by themselves
 own authority transitions. A reviewer must reject an omission if the file owns a unique check;
