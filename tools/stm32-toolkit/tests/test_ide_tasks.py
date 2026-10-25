@@ -601,7 +601,7 @@ def test_adapter_handoff_end_forwards_original_ticket_without_added_admission(
     assert recorded[0].ticket == TICKET
 
 
-def test_real_end_refuses_stale_elf_without_adapter_admission(handoff_env, tmp_path):
+def test_real_end_refuses_stale_elf_without_adapter_admission(handoff_env):
     """Real begin/end: stale evidence refusal is the end workflow's own check.
 
     The adapter forwards the original ticket with no extra admission.  The
@@ -622,7 +622,9 @@ def test_real_end_refuses_stale_elf_without_adapter_admission(handoff_env, tmp_p
     elf = project / "build" / "arm-debug" / "firmware.elf"
     elf.write_bytes(elf.read_bytes() + b"\x00")
 
-    data_root = tmp_path / "adapter-data-root"
+    # The real supervisor originated at this plugin-data root; bind the
+    # adapter request to the same root instead of an unrelated temp directory.
+    data_root = session_root.parents[2]
     fresh_calls: list[Path] = []
     forwarded: list[object] = []
     factory_calls: list[object] = []
@@ -668,6 +670,7 @@ def test_real_end_refuses_stale_elf_without_adapter_admission(handoff_env, tmp_p
     assert forwarded[0].session_id == "session-a"
     assert forwarded[0].probe_id == "probe-123"
     assert forwarded[0].project_root == project
+    assert forwarded[0].data_root == data_root
 
     # No reacquisition, no client construction, no retry/flash/rebuild, and the
     # reported ownership state is the real one left by the accepted workflow.
