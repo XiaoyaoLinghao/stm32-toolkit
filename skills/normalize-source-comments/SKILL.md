@@ -1,6 +1,6 @@
 ---
 name: normalize-source-comments
-description: Use when a Keil or legacy C/C++ project reports a source-encoding blocker and the user wants a reviewed, comment-only UTF-8 copy. Preview explicitly declared per-file charsets first, then copy only selected files to a new external directory. Do not use for implicit transcoding, in-place edits, assembly, binaries, or a claim that migration is complete.
+description: Use when a Keil or legacy C/C++ project reports a source-encoding blocker and the user wants a reviewed, comment-only UTF-8 copy. Preview explicitly declared per-file charsets first, then copy only selected files to a new external directory. An explicit reviewed replacement mode can replace undecodable or disallowed comment units with a literal question mark; it records every loss and needs one confirmation per lossy file. Do not use for implicit transcoding, in-place edits, assembly, binaries, or a claim that migration is complete.
 ---
 
 # Normalize source comments
@@ -29,6 +29,20 @@ route for the Toolkit encoding blocker; it is not part of migration apply.
   legacy conversion. In an already-UTF-8 file the bytes are unchanged, so the
   same code points are review warnings instead; review the decoded text before
   accepting it.
+- Strict decoding is the default and its behavior is unchanged. The single
+  opt-in is `preview --replace-invalid-with '?'`: it replaces undecodable byte
+  spans and existing private-use, C1-control, U+FFFD, and noncharacter code
+  points with a literal `?` **only after the lexer proves them to be comment
+  content**, including in a declared UTF-8 file. Each replacement is recorded
+  with its source byte offset, length, original bytes, line, column, reason,
+  and replacement value, and the plan ID binds the mode, the value, and those
+  records. Valid ordinary comment text still converts normally.
+- No other replacement value is accepted, and replacement never applies to
+  code, strings, character literals, preprocessing header names, or any other
+  non-comment byte. An error span that would consume ASCII or newline bytes is
+  blocked instead of replaced as a unit; incomplete constructs, raw strings,
+  trigraph `??/`/`??=`, the GCC continuation form, DBCS/backslash ambiguity,
+  bounds, and a trigraph created by the replacement itself also stay blockers.
 - Assembly, UTF-16/UTF-32, binaries, and arbitrary text formats are outside
   this helper. Leave them untouched and report the diagnostic.
 - The helper is not a C compiler. It does not promise generic charset support,
@@ -74,6 +88,24 @@ blocked file (`status: blocked`) or the run failed operationally
 (`status: failed`, for example an invalid selection, a preview collision, or an
 I/O error). Read `status` and `code` in the JSON before deciding what happened.
 
+#### Explicit reviewed replacement preview
+
+Run the strict preview first. Only when the user explicitly asks to replace
+undecodable comment bytes, or a private-use/C1-control/U+FFFD/noncharacter code
+point in a comment, with a literal `?`, preview the same selection with the one
+supported value:
+
+```powershell
+python $Normalizer preview --project-root 'C:\work\robot' --preview-dir 'D:\review\robot-comments-1-replace' --file 'App/main.c=gbk' --replace-invalid-with '?'
+```
+
+The JSON adds `mode` (`strict` or `replace`), `replacementValue`, `lossyFiles`,
+and `totalReplacementCount`; each file adds `lossy`, `replacementCount`, and
+its `replacementRecords`. Any value other than `?` fails with
+`REPLACEMENT_VALUE_UNSUPPORTED` before a preview directory is created. A file
+that ends `blocked` is not copyable even in replacement mode. No automatic
+bulk confirmation exists, and the preview never authorizes editing originals.
+
 ### 2. Review the plan
 
 Read `preview.md` and `plan.json` before copying:
@@ -83,11 +115,30 @@ Read `preview.md` and `plan.json` before copying:
   repaired automatically.
 - Warnings such as a DBCS pair with an ASCII trail or a private-use/control
   code point require a human decision about the intended text. Choosing another
-  charset is explicit; never infer it from a successful decode.
+  charset is explicit; never infer it from a successful decode. In replacement
+  mode the four replaceable code-point classes become review records instead of
+  classification warnings, but mixed-single-byte, unassigned, and non-comment
+  review evidence is still reported.
+- For a replacement plan, read `mode`, `replacementValue`, every
+  `replacementRecords` entry (path, byte offset and length, original hex,
+  line/column, reason, replacement), and every file's `lossy` and
+  `replacementCount`. Verify that each recorded range is comment content whose
+  literal loss you intend to accept. `REPLACEMENT_APPLIED` is an informational
+  count, never approval; `REPLACEMENT_TRIGRAPH_HAZARD`,
+  `REPLACEMENT_BOUND_EXCEEDED`, `INVALID_SPAN_ASCII_UNSUPPORTED`, and
+  `NON_COMMENT_NON_ASCII` are blockers. A strict diagnostic may name the
+  explicit replacement preview only for a proven comment unit; it never asserts
+  eligibility for bytes the lexer has not classified.
 - Check `sourceSha256`, `outputSha256`, `outsideCommentSha256`, newline/BOM
   evidence, the human-readable byte diff, and that the plan contains only the
   files you selected.
-- A preview, plan field, or warning is not authorization to modify originals.
+- A preview, plan field, warning, or replacement record is not authorization to
+  modify originals.
+- If a human choice is missing — the charset for a file, or acceptance of a
+  recorded loss — build the concrete per-file preview first and show its
+  findings, byte offsets, and byte diff before asking. Never ask the user to
+  accept an unreviewed loss, confirm on their behalf, or treat a prior copy
+  authorization as review of a loss.
 
 ### 3. Copy reviewed files
 
@@ -106,13 +157,33 @@ not ask again merely because the plan is ready. A preview, plan fields, or a
 the helper has no `authorized` flag. Always pass the exact `planId` you
 reviewed, never one you did not review.
 
+For a replacement plan, pass exactly one `--confirm-file '<relative path>'` for
+every file whose `lossy` flag is true, using that plan's canonical
+project-relative paths:
+
+```powershell
+python $Normalizer copy --project-root 'C:\work\robot' --plan 'D:\review\robot-comments-1-replace\plan.json' --plan-id '<exact 64-character planId>' --output-dir 'D:\review\robot-comments-1-replace-copy' --confirm-file 'App/main.c'
+```
+
+Missing (`CONFIRMATION_REQUIRED`), duplicate (`CONFIRMATION_DUPLICATE`),
+unknown (`CONFIRMATION_UNKNOWN`), non-lossy (`CONFIRMATION_NOT_LOSSY`), or
+invalid (`CONFIRMATION_INVALID`) confirmations fail before the output directory
+is created. Strict plans require no confirmation and reject any supplied one.
+Confirmation is per-file review evidence tied to the exact plan ID, never bulk
+approval, and it never authorizes editing originals. `copy` re-reads and
+re-derives every input and every replacement, so a changed source
+(`INPUT_CHANGED`), a tampered plan (`PLAN_TAMPERED`), a wrong plan ID
+(`PLAN_ID_MISMATCH`), or an older incompatible plan (`PLAN_UNSUPPORTED`, with
+re-preview guidance) is refused.
+
 `copy` re-reads every input, re-derives the conversion, verifies the plan ID
 and hashes, refuses changed inputs or tampered plans, and writes only the
 selected relative files. It never overwrites existing output or originals.
-The result includes `manifest.json`, which records output hashes,
-`originalsUnchanged: true`, and `outputsVerified: true`. On failure, an owned
-incomplete staging directory is marked by `INCOMPLETE.json` and has no final
-manifest.
+The result includes `manifest.json`, which records output hashes, the plan
+`mode` and `replacementValue`, `confirmedFiles`, `lossyFiles`, per-file loss
+counts, `originalsUnchanged: true`, and `outputsVerified: true`. It never claims
+migration completion. On failure, an owned incomplete staging directory is
+marked by `INCOMPLETE.json` and has no final manifest.
 
 The output is a set of converted file copies, not a complete migrated or
 buildable project.

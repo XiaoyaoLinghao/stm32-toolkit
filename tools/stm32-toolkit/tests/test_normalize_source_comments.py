@@ -508,14 +508,24 @@ def test_plan_fields_are_canonical_and_deterministic(tmp_path: Path, project: Pa
         "kind",
         "helperVersion",
         "sourceRoot",
+        "mode",
+        "replacementValue",
         "limits",
         "status",
         "files",
         "planId",
     }
+    assert plan["mode"] == "strict"
+    assert plan["replacementValue"] is None
     entry = plan["files"][0]
     assert entry["outsideCommentSha256"] == entry["outputOutsideCommentSha256"]
+    assert entry["decodeMode"] == "strict"
     assert entry["decodeRoundTrip"] is True
+    assert entry["unitRoundTrip"] is True
+    assert entry["invalidByteUnits"] == 0
+    assert entry["lossy"] is False
+    assert entry["replacementCount"] == 0
+    assert entry["replacementRecords"] == []
     assert entry["idempotent"] is True
 
 

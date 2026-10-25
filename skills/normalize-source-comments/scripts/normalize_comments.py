@@ -19,6 +19,15 @@ This helper is not a C compiler and does not replace a compiler migration.
 It only rewrites non-ASCII characters inside comment content.  All other
 bytes, comment delimiters, line endings, final-newline state and an existing
 UTF-8 BOM are preserved.
+
+The default is strict: any undecodable byte blocks the file.  ``preview
+--replace-invalid-with '?'`` is an explicit, reviewed opt-in that replaces
+undecodable byte spans and existing private-use, C1-control, U+FFFD and
+noncharacter code points **only when the lexer has proven them to be comment
+content**.  Every replacement is recorded with its physical byte range and
+reason, the plan ID binds the mode, value and records, and ``copy`` requires
+one explicit ``--confirm-file`` for each lossy file.  Originals are never
+written in either mode.
 """
 
 from __future__ import annotations
@@ -36,9 +45,9 @@ import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 
-HELPER_VERSION = "1.0.0"
-PLAN_SCHEMA_VERSION = 1
-MANIFEST_SCHEMA_VERSION = 1
+HELPER_VERSION = "1.1.0"
+PLAN_SCHEMA_VERSION = 2
+MANIFEST_SCHEMA_VERSION = 2
 PLAN_KIND = "stm32-comment-normalization-plan"
 MANIFEST_KIND = "stm32-comment-normalization-manifest"
 
@@ -74,6 +83,46 @@ MAX_FINDINGS = 200
 # branches cannot occur together, so it is an upper bound, not a tight count.
 MAX_PRESENTED_FINDINGS = MAX_FINDINGS * 2 + 8
 MAX_DIFF_LINES = 4000
+
+# Explicit reviewed replacement.  ``?`` is the only supported replacement
+# value; there is no implicit default and no per-byte choice.
+REPLACE_VALUE = "?"
+PLAN_MODES = ("strict", "replace")
+DECODE_MODES = ("strict", "recovery")
+REPLACEMENT_REASONS = (
+    "invalid-byte-unit",
+    "private-use-code-point",
+    "c1-control-code-point",
+    "replacement-code-point",
+    "noncharacter-code-point",
+)
+# Loss records are approval evidence, so they are bounded: a file that would
+# need more records is blocked rather than approved with silently omitted
+# replacements.
+MAX_REPLACEMENT_RECORDS = 512
+# Hard bound on recovery work before the file is blocked.  It is larger than
+# the record bound so an excess of non-comment invalid spans still reports
+# through the ordinary non-comment blocker path when practical.
+MAX_INVALID_SPANS = 1024
+_RECOVERY_FEED_BYTES = 64 * 1024
+# Internal sentinel standing in for one undecodable byte span.  The scanner
+# treats it as "non-ASCII", which keeps it opaque to every ASCII delimiter
+# rule; ``opaque`` flags identify it, so a real U+FFFD stays distinguishable.
+_OPAQUE_CHAR = "�"
+# Appended only to findings raised from proven comment content, where the
+# lexical proof needed to mention the opt-in replacement exists.
+_REPLACEMENT_HINT = (
+    " An explicit reviewed comment-only replacement preview "
+    "(--replace-invalid-with '?') can replace this comment unit; review the "
+    "recorded loss before copying. It does not resolve other findings."
+)
+# Appended to a strict decode failure.  It never asserts that the invalid
+# bytes are comment content; classification requires the lexer.
+_DECODE_HINT = (
+    " An explicit replacement preview (--replace-invalid-with '?') lexically "
+    "classifies each undecodable span and still blocks spans outside comment "
+    "content."
+)
 
 TRIGRAPH_CHARS = "=/'()!<>-"
 _FILE_ATTRIBUTE_REPARSE_POINT = 0x400
@@ -120,6 +169,8 @@ class _DecodeFailure(Exception):
         line: int,
         column: int,
         original_bytes: str | None = None,
+        code: str = "DECODE_ERROR",
+        replacement_hint: bool = False,
     ):
         super().__init__(message)
         self.message = message
@@ -127,6 +178,11 @@ class _DecodeFailure(Exception):
         self.line = line
         self.column = column
         self.original_bytes = original_bytes
+        self.code = code
+        # True only when the failure is an unclassified invalid-byte decode, so
+        # the diagnostic may mention the explicit reviewed replacement preview
+        # without asserting that the bytes are comment content.
+        self.replacement_hint = replacement_hint
 
 
 class _ScanAbort(Exception):
@@ -180,6 +236,12 @@ class Analysis:
     findings: list[Finding]
     output: bytes | None
     diff_lines: list[str]
+    decode_mode: str = "strict"
+    unit_round_trip: bool = True
+    invalid_byte_units: int = 0
+    lossy: bool = False
+    replacement_count: int = 0
+    replacement_records: list[dict] | None = None
 
     def to_plan_dict(self) -> dict:
         return {
@@ -197,7 +259,13 @@ class Analysis:
             "changedUnits": self.changed_units,
             "newline": self.newline,
             "bom": self.bom,
+            "decodeMode": self.decode_mode,
             "decodeRoundTrip": self.decode_round_trip,
+            "unitRoundTrip": self.unit_round_trip,
+            "invalidByteUnits": self.invalid_byte_units,
+            "lossy": self.lossy,
+            "replacementCount": self.replacement_count,
+            "replacementRecords": list(self.replacement_records or []),
             "idempotent": self.idempotent,
             "findings": [finding.to_dict() for finding in self.findings],
         }
@@ -611,7 +679,74 @@ def _check_collision(path: Path, data: bytes, limit: int = MAX_PLAN_BYTES) -> bo
         {"path": str(path)},
     )
 
-def _decode_strict(data: bytes, charset: str) -> tuple[str, list[tuple[int, int]], bool, int]:
+@dataclass
+class _Decoded:
+    """A decoded view that may contain opaque, undecodable byte units."""
+
+    text: str
+    offsets: list[tuple[int, int]]
+    bom: bool
+    prefix: int
+    opaque: list[bool]
+    spans: list[tuple[int, int, str]]
+
+
+def _replacement_reason(character: str) -> str | None:
+    """Classify a code point that the reviewed replacement preview may replace.
+
+    Only the four disallowed classes named by the contract are replaceable.
+    Unassigned code points and mixed-single-byte artifacts stay review
+    warnings, and no other character is ever selected for replacement.
+    """
+
+    codepoint = ord(character)
+    if (
+        0xE000 <= codepoint <= 0xF8FF
+        or 0xF0000 <= codepoint <= 0xFFFFD
+        or 0x100000 <= codepoint <= 0x10FFFD
+    ):
+        return "private-use-code-point"
+    if 0x80 <= codepoint <= 0x9F:
+        return "c1-control-code-point"
+    if codepoint == 0xFFFD:
+        return "replacement-code-point"
+    if 0xFDD0 <= codepoint <= 0xFDEF or (codepoint & 0xFFFE) == 0xFFFE:
+        return "noncharacter-code-point"
+    return None
+
+
+def _require_non_ascii_span(
+    span_bytes: bytes, absolute: int, line_starts: list[int]
+) -> None:
+    """Block an invalid span that would consume ASCII or newline bytes.
+
+    The replacement value is one byte, so a span that includes source syntax or
+    a line break could not be replaced without changing lexical structure.
+    """
+
+    if not span_bytes or any(byte < 0x80 for byte in span_bytes):
+        line, column = _loc(line_starts, absolute)
+        raise _DecodeFailure(
+            "undecodable byte span is empty or includes ASCII or newline bytes; "
+            "the span is blocked instead of replaced as a unit",
+            absolute,
+            line,
+            column,
+            _hex(span_bytes),
+            code="INVALID_SPAN_ASCII_UNSUPPORTED",
+        )
+
+
+def _decode_units(data: bytes, charset: str, *, recover: bool) -> _Decoded:
+    """Decode with strict round-trip proof, optionally classifying bad spans.
+
+    In strict mode any invalid byte is a bounded decode failure.  In recovery
+    mode each invalid byte span becomes one opaque unit with its exact physical
+    byte range; the lexer later decides whether that unit is comment content.
+    An error span that includes an ASCII or newline byte is never replaced as a
+    unit, because that could consume source syntax or a line break.
+    """
+
     if data.startswith((b"\xff\xfe", b"\xfe\xff", b"\x00\x00\xfe\xff", b"\xff\xfe\x00\x00")):
         raise _DecodeFailure(
             "UTF-16/UTF-32 BOM is outside the supported text formats",
@@ -626,36 +761,6 @@ def _decode_strict(data: bytes, charset: str) -> tuple[str, list[tuple[int, int]
     codec = "utf-8" if charset == "utf-8" else charset
     if charset == "utf-8":
         body = data[prefix:]
-        try:
-            text = body.decode("utf-8", "strict")
-        except UnicodeDecodeError as error:
-            offset = prefix + error.start
-            line, column = _loc(line_starts, offset)
-            raise _DecodeFailure(
-                f"strict UTF-8 decode failed: {error.reason}",
-                offset,
-                line,
-                column,
-                _hex(data[offset : offset + 1]),
-            ) from error
-        try:
-            encoded = text.encode("utf-8")
-        except UnicodeEncodeError as error:
-            line, column = _loc(line_starts, prefix)
-            raise _DecodeFailure(
-                f"UTF-8 round-trip encode failed: {error.reason}",
-                prefix,
-                line,
-                column,
-            ) from error
-        if encoded != body:
-            line, column = _loc(line_starts, prefix)
-            raise _DecodeFailure(
-                "UTF-8 round-trip did not reproduce the input bytes",
-                prefix,
-                line,
-                column,
-            )
     else:
         if bom:
             raise _DecodeFailure(
@@ -667,8 +772,145 @@ def _decode_strict(data: bytes, charset: str) -> tuple[str, list[tuple[int, int]
                 "efbbbf",
             )
         body = data
+
+    text_parts: list[str] = []
+    offsets: list[tuple[int, int]] = []
+    opaque: list[bool] = []
+    spans: list[tuple[int, int, str]] = []
+
+    def decoded_limit(unit_count: int, body_position: int) -> None:
+        """Fail before any further per-unit mapping is allocated."""
+
+        absolute = prefix + body_position
+        line, column = _loc(line_starts, absolute)
+        raise _DecodeFailure(
+            f"decoded character count {unit_count} exceeds the conservative "
+            f"limit {MAX_DECODED_CHARACTERS}; the file is blocked before "
+            "building source mappings",
+            absolute,
+            line,
+            column,
+        )
+
+    def emit(segment: bytes, body_start: int) -> None:
+        if not segment:
+            return
+        decoded = segment.decode(codec, "strict")
+        # The accepted base rejects oversized decoded text before it builds
+        # per-character byte mappings.  Check the running total here, before
+        # this segment appends any unit, so strict mode and every recovered
+        # window keep that bound.
+        if len(text_parts) + len(decoded) > MAX_DECODED_CHARACTERS:
+            decoded_limit(len(text_parts) + len(decoded), body_start)
+        position = body_start
+        for character in decoded:
+            try:
+                piece = character.encode(codec)
+            except UnicodeEncodeError as error:
+                offset = prefix + position
+                line, column = _loc(line_starts, offset)
+                raise _DecodeFailure(
+                    f"strict {codec} round-trip encode failed: {error.reason}",
+                    offset,
+                    line,
+                    column,
+                ) from error
+            end = position + len(piece)
+            if body[position:end] != piece:
+                message = (
+                    "UTF-8 round-trip did not reproduce the input bytes"
+                    if charset == "utf-8"
+                    else f"strict {charset} round-trip mismatch; refusing to invent bytes"
+                )
+                offset = prefix + position
+                line, column = _loc(line_starts, offset)
+                raise _DecodeFailure(
+                    message,
+                    offset,
+                    line,
+                    column,
+                    _hex(body[position : position + 1]),
+                )
+            text_parts.append(character)
+            offsets.append((prefix + position, prefix + end))
+            opaque.append(False)
+            position = end
+        if position != body_start + len(segment):
+            offset = prefix + body_start
+            line, column = _loc(line_starts, offset)
+            raise _DecodeFailure(
+                "per-character byte mapping did not reproduce the input bytes",
+                offset,
+                line,
+                column,
+            )
+
+    def scan_recovering() -> None:
+        length = len(body)
+        offset = 0
+        carry = b""
+        carry_start = 0
+        while offset < length or carry:
+            if carry:
+                take = max(1, _RECOVERY_FEED_BYTES - len(carry))
+                take = min(take, length - offset)
+                chunk = carry + body[offset : offset + take]
+                position = carry_start
+                offset += take
+                carry = b""
+            else:
+                chunk = body[offset : offset + _RECOVERY_FEED_BYTES]
+                position = offset
+                offset += len(chunk)
+            final = offset >= length
+            feed = chunk
+            while True:
+                try:
+                    feed.decode(codec, "strict")
+                except UnicodeDecodeError as error:
+                    if error.start:
+                        emit(feed[: error.start], position)
+                    span_start = position + error.start
+                    span_end = position + error.end
+                    if error.end >= len(feed) and not final:
+                        carry = feed[error.start :]
+                        carry_start = span_start
+                        break
+                    span_bytes = body[span_start:span_end]
+                    _require_non_ascii_span(
+                        span_bytes, prefix + span_start, line_starts
+                    )
+                    if len(spans) >= MAX_INVALID_SPANS:
+                        absolute = prefix + span_start
+                        line, column = _loc(line_starts, absolute)
+                        raise _DecodeFailure(
+                            "undecodable byte span count exceeds the configured "
+                            "recovery limit; the file is blocked rather than "
+                            "recovered further",
+                            absolute,
+                            line,
+                            column,
+                            _hex(span_bytes),
+                            code="RECOVERY_BOUND_EXCEEDED",
+                        ) from error
+                    if len(text_parts) + 1 > MAX_DECODED_CHARACTERS:
+                        decoded_limit(len(text_parts) + 1, span_start)
+                    text_parts.append(_OPAQUE_CHAR)
+                    offsets.append((prefix + span_start, prefix + span_end))
+                    opaque.append(True)
+                    spans.append((prefix + span_start, prefix + span_end, error.reason))
+                    feed = feed[error.end :]
+                    position = span_end
+                    continue
+                else:
+                    emit(feed, position)
+                    break
+
+    if recover:
+        scan_recovering()
+    else:
         try:
-            text = body.decode(charset, "strict")
+            body.decode(codec, "strict")
         except UnicodeDecodeError as error:
             offset = prefix + error.start
             line, column = _loc(line_starts, offset)
@@ -677,65 +919,34 @@ def _decode_strict(data: bytes, charset: str) -> tuple[str, list[tuple[int, int]
                 offset,
                 line,
                 column,
-                _hex(data[offset : offset + 1]),
+                _hex(body[error.start : error.start + 1]),
+                replacement_hint=True,
             ) from error
-        try:
-            encoded = text.encode(charset)
-        except UnicodeEncodeError as error:
-            offset = prefix + len(body)
-            line, column = _loc(line_starts, offset)
-            raise _DecodeFailure(
-                f"strict {charset} round-trip encode failed at character "
-                f"{error.start}: {error.reason}",
-                offset,
-                line,
-                column,
-            ) from error
-        if encoded != body:
-            position = 0
-            mismatch = prefix
-            for character in text:
-                piece = character.encode(charset)
-                if body[position : position + len(piece)] != piece:
-                    mismatch = prefix + position
-                    break
-                position += len(piece)
-            line, column = _loc(line_starts, mismatch)
-            raise _DecodeFailure(
-                f"strict {charset} round-trip mismatch; refusing to invent bytes",
-                mismatch,
-                line,
-                column,
-                _hex(data[mismatch : mismatch + 1]),
-            )
+        emit(body, 0)
 
-    if len(text) > MAX_DECODED_CHARACTERS:
-        line, column = _loc(line_starts, prefix)
-        raise _DecodeFailure(
-            f"decoded character count {len(text)} exceeds the conservative "
-            f"limit {MAX_DECODED_CHARACTERS}; the file is blocked before "
-            "building source mappings",
-            prefix,
-            line,
-            column,
-        )
-    offsets: list[tuple[int, int]] = []
-    assembled = bytearray()
-    position = prefix
-    for character in text:
-        piece = character.encode(codec)
-        offsets.append((position, position + len(piece)))
-        position += len(piece)
-        assembled.extend(piece)
-    if position != len(data) or bytes(assembled) != body:
-        line, column = _loc(line_starts, prefix)
+    text = "".join(text_parts)
+    if len(text) > MAX_DECODED_CHARACTERS:  # defensive: emit already bounds this
+        decoded_limit(len(text), 0)
+    expected = prefix
+    for start, end in offsets:
+        if start != expected:
+            line, column = _loc(line_starts, start)
+            raise _DecodeFailure(
+                "per-character byte mapping did not reproduce the input bytes",
+                start,
+                line,
+                column,
+            )
+        expected = end
+    if expected != len(data):
+        line, column = _loc(line_starts, expected)
         raise _DecodeFailure(
             "per-character byte mapping did not reproduce the input bytes",
-            prefix,
+            expected,
             line,
             column,
         )
-    return text, offsets, bom, prefix
+    return _Decoded(text, offsets, bom, prefix, opaque, spans)
 
 
 def _logical_view(
@@ -821,6 +1032,11 @@ class _Scanner:
         "comment_count",
         "comment_non_ascii",
         "changed_units",
+        "relative",
+        "opaque",
+        "replace",
+        "replacement_records",
+        "replacement_overflow",
     )
 
     def __init__(
@@ -831,6 +1047,9 @@ class _Scanner:
         physical: list[int],
         charset: str,
         line_starts: list[int],
+        relative: str = "",
+        opaque: list[bool] | None = None,
+        replace: bool = False,
     ):
         self.data = data
         self.text = text
@@ -847,6 +1066,11 @@ class _Scanner:
         self.comment_count = 0
         self.comment_non_ascii = 0
         self.changed_units = 0
+        self.relative = relative
+        self.opaque = opaque if opaque is not None else [False] * len(text)
+        self.replace = replace
+        self.replacement_records: list[dict] = []
+        self.replacement_overflow = False
 
     def _finding(
         self,
@@ -1167,61 +1391,122 @@ class _Scanner:
     def _mark_content(self, logical_index: int) -> None:
         physical_index = self.physical[logical_index]
         character = self.text[physical_index]
+        if self.opaque[physical_index]:
+            # An undecodable span proven to be comment content.  It stays
+            # opaque to the lexer and is replaced only by the explicit
+            # reviewed replacement mode; strict mode never produces one.
+            self.comment_non_ascii += 1
+            self.changed_units += 1
+            start, end = self.offsets[physical_index]
+            raw = self.data[start:end]
+            if raw.endswith(b"\\") and (
+                end >= len(self.data) or self.data[end] in b"\r\n"
+            ):
+                self._add(
+                    self._finding(
+                        "DBCS_TRAIL_BACKSLASH_UNSUPPORTED",
+                        "blocker",
+                        "an undecodable byte span ends in byte 0x5C at a "
+                        "physical line end; a raw-byte lexer and a decoded "
+                        "lexer can disagree, so the file is blocked",
+                        byte_offset=start,
+                        original=_hex(raw),
+                    )
+                )
+            self._record_replacement(start, end, "invalid-byte-unit")
+            return
         if ord(character) <= 127:
             return
         self.comment_non_ascii += 1
+        reason = _replacement_reason(character) if self.replace else None
+        if reason is not None:
+            self.changed_units += 1
+            self._check_content_character(physical_index, character, replaced=True)
+            start, end = self.offsets[physical_index]
+            self._record_replacement(start, end, reason)
+            return
         if self.legacy:
             self.changed_units += 1
         self._check_content_character(physical_index, character)
 
-    def _check_content_character(self, physical_index: int, character: str) -> None:
+    def _record_replacement(self, start: int, end: int, reason: str) -> None:
+        if len(self.replacement_records) >= MAX_REPLACEMENT_RECORDS:
+            self.replacement_overflow = True
+            return
+        line, column = _loc(self.line_starts, start)
+        self.replacement_records.append(
+            {
+                "path": self.relative,
+                "byteOffset": start,
+                "byteLength": end - start,
+                "originalBytes": _hex(self.data[start:end]),
+                "line": line,
+                "column": column,
+                "reason": reason,
+                "replacement": REPLACE_VALUE,
+            }
+        )
+
+    def _check_content_character(
+        self, physical_index: int, character: str, replaced: bool = False
+    ) -> None:
         start, end = self.offsets[physical_index]
         raw = self.data[start:end]
         codepoint = ord(character)
         severity = "blocker" if self.legacy else "warning"
         raw_hex = _hex(raw)
-        if 0xE000 <= codepoint <= 0xF8FF or 0xF0000 <= codepoint <= 0xFFFFD or 0x100000 <= codepoint <= 0x10FFFD:
+        if not replaced and (
+            0xE000 <= codepoint <= 0xF8FF
+            or 0xF0000 <= codepoint <= 0xFFFFD
+            or 0x100000 <= codepoint <= 0x10FFFD
+        ):
             self._add(
                 self._finding(
                     "PRIVATE_USE_CODE_POINT",
                     severity,
-                    "private-use code point has no portable human meaning; review the source text explicitly",
+                    "private-use code point has no portable human meaning; review the source text explicitly."
+                    + _REPLACEMENT_HINT,
                     logical_index=None,
                     byte_offset=start,
                     original=raw_hex,
                     decoded=character,
                 )
             )
-        if 0x80 <= codepoint <= 0x9F:
+        if not replaced and 0x80 <= codepoint <= 0x9F:
             self._add(
                 self._finding(
                     "C1_CONTROL_CODE_POINT",
                     severity,
-                    "C1 control code point often indicates a wrong charset; review the source text explicitly",
+                    "C1 control code point often indicates a wrong charset; review the source text explicitly."
+                    + _REPLACEMENT_HINT,
                     logical_index=None,
                     byte_offset=start,
                     original=raw_hex,
                     decoded=character,
                 )
             )
-        if codepoint == 0xFFFD:
+        if not replaced and codepoint == 0xFFFD:
             self._add(
                 self._finding(
                     "REPLACEMENT_CODE_POINT",
                     severity,
-                    "U+FFFD replacement character is ambiguous; review the source text explicitly",
+                    "U+FFFD replacement character is ambiguous; review the source text explicitly."
+                    + _REPLACEMENT_HINT,
                     logical_index=None,
                     byte_offset=start,
                     original=raw_hex,
                     decoded=character,
                 )
             )
-        if 0xFDD0 <= codepoint <= 0xFDEF or (codepoint & 0xFFFE) == 0xFFFE:
+        if not replaced and (
+            0xFDD0 <= codepoint <= 0xFDEF or (codepoint & 0xFFFE) == 0xFFFE
+        ):
             self._add(
                 self._finding(
                     "NONCHARACTER_CODE_POINT",
                     severity,
-                    "Unicode noncharacter is not valid human text; review the source text explicitly",
+                    "Unicode noncharacter is not valid human text; review the source text explicitly."
+                    + _REPLACEMENT_HINT,
                     logical_index=None,
                     byte_offset=start,
                     original=raw_hex,
@@ -1286,6 +1571,19 @@ class _Scanner:
         start, end = self.offsets[physical_index]
         raw = self.data[start:end]
         character = self.text[physical_index]
+        if self.opaque[physical_index]:
+            self._add(
+                self._finding(
+                    "NON_COMMENT_NON_ASCII",
+                    "blocker",
+                    "undecodable byte span appears outside comment content; "
+                    "reviewed replacement applies only to proven comment "
+                    "content, so this span is blocked",
+                    logical_index=logical_index,
+                    original=_hex(raw),
+                )
+            )
+            return
         if self.legacy:
             self._add(
                 self._finding(
@@ -1454,7 +1752,10 @@ def _build_output(
     offsets: list[tuple[int, int]],
     intervals: list[tuple[int, int]],
     prefix: int,
+    opaque: list[bool] | None = None,
+    replace: bool = False,
 ) -> bytes:
+    replacement = REPLACE_VALUE.encode("ascii")
     output = bytearray()
     position = 0
     if prefix:
@@ -1468,8 +1769,20 @@ def _build_output(
         for physical_index in range(first, last):
             character = text[physical_index]
             byte_start, byte_end = offsets[physical_index]
-            if ord(character) > 127:
-                output.extend(character.encode("utf-8"))
+            if opaque is not None and opaque[physical_index]:
+                # Only the explicit replacement mode can create opaque units.
+                if not replace:  # defensive: fail closed, never invent bytes
+                    raise ToolError(
+                        "INTERNAL_ERROR",
+                        "an opaque byte unit reached output derivation without "
+                        "the explicit replacement mode",
+                    )
+                output.extend(replacement)
+            elif ord(character) > 127:
+                if replace and _replacement_reason(character) is not None:
+                    output.extend(replacement)
+                else:
+                    output.extend(character.encode("utf-8"))
             else:
                 output.extend(data[byte_start:byte_end])
         position = max(position, end)
@@ -1600,7 +1913,15 @@ def analyze_bytes(
     relative: str,
     *,
     check_output: bool = True,
+    replace_value: str | None = None,
 ) -> Analysis:
+    if replace_value is not None and replace_value != REPLACE_VALUE:
+        raise ToolError(
+            "REPLACEMENT_VALUE_UNSUPPORTED",
+            "the only supported replacement value is '?'",
+            {"value": replace_value},
+        )
+    replace = replace_value is not None
     source_size = len(data)
     source_sha256 = _sha256(data)
     newline = _newline_info(data)
@@ -1616,16 +1937,30 @@ def analyze_bytes(
     outside_digest: str | None = None
     output_outside_digest: str | None = None
     decode_round_trip = False
+    decode_mode = "strict"
+    unit_round_trip = False
+    invalid_byte_units = 0
+    replacement_records: list[dict] = []
+    replacement_overflow = False
     idempotent = False
     scanner: _Scanner | None = None
     scan_complete = False
     text: str | None = None
     offsets: list[tuple[int, int]] | None = None
+    opaque: list[bool] = []
     prefix = 0
 
     try:
-        text, offsets, bom, prefix = _decode_strict(data, charset)
-        decode_round_trip = True
+        decoded = _decode_units(data, charset, recover=replace)
+        text = decoded.text
+        offsets = decoded.offsets
+        opaque = decoded.opaque
+        bom = decoded.bom
+        prefix = decoded.prefix
+        invalid_byte_units = len(decoded.spans)
+        decode_mode = "recovery" if decoded.spans else "strict"
+        decode_round_trip = not decoded.spans
+        unit_round_trip = True
         line_starts = _byte_line_starts(data)
         if "\x00" in text:
             findings.append(
@@ -1650,7 +1985,17 @@ def analyze_bytes(
                 )
             )
         _characters, physical = _logical_view(text, offsets, line_starts)
-        scanner = _Scanner(data, text, offsets, physical, charset, line_starts)
+        scanner = _Scanner(
+            data,
+            text,
+            offsets,
+            physical,
+            charset,
+            line_starts,
+            relative,
+            opaque,
+            replace,
+        )
         try:
             scanner.run()
             scan_complete = True
@@ -1661,6 +2006,28 @@ def analyze_bytes(
         comment_non_ascii = scanner.comment_non_ascii
         changed_units = scanner.changed_units
         intervals = scanner.content_intervals
+        replacement_records = list(scanner.replacement_records)
+        replacement_overflow = scanner.replacement_overflow
+        if replacement_overflow:
+            findings.append(
+                Finding(
+                    "REPLACEMENT_BOUND_EXCEEDED",
+                    "blocker",
+                    f"more than {MAX_REPLACEMENT_RECORDS} replacement units were "
+                    "detected; the loss-record list is bounded, so the file is "
+                    "blocked instead of silently omitting approval-relevant changes",
+                )
+            )
+        elif replacement_records:
+            findings.append(
+                Finding(
+                    "REPLACEMENT_APPLIED",
+                    "info",
+                    f"{len(replacement_records)} comment unit(s) would be "
+                    "replaced by the explicit reviewed replacement value; each "
+                    "loss is recorded and this finding is not approval",
+                )
+            )
         if scanner.suppressed:
             if scanner.blocker_suppressed:
                 findings.append(
@@ -1680,11 +2047,14 @@ def analyze_bytes(
                     )
                 )
     except _DecodeFailure as error:
+        message = error.message
+        if error.replacement_hint and not replace:
+            message += _DECODE_HINT
         findings.append(
             Finding(
-                "DECODE_ERROR",
+                error.code,
                 "blocker",
-                error.message,
+                message,
                 error.byte_offset,
                 error.line,
                 error.column,
@@ -1693,6 +2063,7 @@ def analyze_bytes(
             )
         )
         decode_round_trip = False
+        unit_round_trip = False
     except _ScanAbort as error:
         findings.append(error.finding)
 
@@ -1716,7 +2087,22 @@ def analyze_bytes(
         and offsets is not None
     ):
         outside_digest = _outside_digest(data, text, offsets, intervals, prefix)
-        output = _build_output(data, text, offsets, intervals, prefix)
+        output = _build_output(
+            data, text, offsets, intervals, prefix, opaque, replace
+        )
+        # Source-level trigraphs were already rejected, so any ??/ or ??= in
+        # the derived output can only have been formed by the replacement.
+        if replace and (b"??/" in output or b"??=" in output):
+            findings.append(
+                Finding(
+                    "REPLACEMENT_TRIGRAPH_HAZARD",
+                    "blocker",
+                    "the explicit replacement would create a trigraph sequence "
+                    "(??/ or ??=) that can change lexical meaning; the file is "
+                    "blocked rather than written",
+                )
+            )
+            blocked = True
         if len(output) > MAX_OUTPUT_BYTES:
             findings.append(
                 Finding(
@@ -1825,6 +2211,12 @@ def analyze_bytes(
         findings=findings,
         output=output,
         diff_lines=diff_lines,
+        decode_mode=decode_mode,
+        unit_round_trip=unit_round_trip,
+        invalid_byte_units=invalid_byte_units,
+        lossy=bool(replacement_records),
+        replacement_count=len(replacement_records),
+        replacement_records=replacement_records,
     )
 
 
@@ -1918,6 +2310,8 @@ def _file_summary(file_entry: dict) -> dict:
         "warnings": sum(
             1 for finding in findings if finding["severity"] == "warning"
         ),
+        "lossy": file_entry["lossy"],
+        "replacementCount": file_entry["replacementCount"],
     }
 
 
@@ -1956,6 +2350,13 @@ def _render_preview(plan: dict, analyses: list[Analysis]) -> bytes:
         "",
         f"- Plan ID: `{plan['planId']}`",
         f"- Source root: `{plan['sourceRoot']}`",
+        f"- Mode: **{plan['mode']}**",
+        f"- Replacement value: "
+        + (
+            f"`{plan['replacementValue']}`"
+            if plan["replacementValue"] is not None
+            else "none (strict)"
+        ),
         f"- Status: **{plan['status']}**",
         f"- Files: {len(files)}",
         f"- Blockers: {blockers}",
@@ -1963,6 +2364,11 @@ def _render_preview(plan: dict, analyses: list[Analysis]) -> bytes:
         "",
         "This preview is read-only. It is not authorization to modify the "
         "original project, and it does not create a complete migrated project.",
+        "",
+        "Each file with recorded losses requires one explicit "
+        "`--confirm-file '<relative path>'` at copy time. That confirmation "
+        "records review of that file's losses; it is not blanket approval and "
+        "never authorizes editing the originals.",
         "",
     ]
     for file_entry, analysis in zip(files, analyses):
@@ -2002,6 +2408,10 @@ def _render_preview(plan: dict, analyses: list[Analysis]) -> bytes:
                 f"- Non-ASCII comment units: "
                 f"{file_entry['commentNonAsciiUnits']}",
                 f"- Units changed by this conversion: {file_entry['changedUnits']}",
+                f"- Decode mode: {file_entry['decodeMode']}",
+                f"- Lossy replacement: "
+                f"{'yes' if file_entry['lossy'] else 'no'} "
+                f"({file_entry['replacementCount']} recorded unit(s))",
                 "",
             ]
         )
@@ -2012,6 +2422,23 @@ def _render_preview(plan: dict, analyses: list[Analysis]) -> bytes:
             lines.append("")
         else:
             lines.extend(["### Findings", "", "None.", ""])
+        if file_entry["replacementRecords"]:
+            lines.extend(
+                [
+                    "### Replacement records",
+                    "",
+                    "| byte | length | original bytes | line | column | reason | replacement |",
+                    "| --- | --- | --- | --- | --- | --- | --- |",
+                ]
+            )
+            for record in file_entry["replacementRecords"]:
+                lines.append(
+                    f"| {record['byteOffset']} | {record['byteLength']} | "
+                    f"`{_fmt_hex(record['originalBytes'])}` | {record['line']} | "
+                    f"{record['column']} | {record['reason']} | "
+                    f"`{record['replacement']}` |"
+                )
+            lines.append("")
         lines.extend(["### Diff", ""])
         if analysis.output is None:
             lines.extend(["No proposed output; the file is blocked.", ""])
@@ -2029,6 +2456,8 @@ _PLAN_TOP_KEYS = {
     "kind",
     "helperVersion",
     "sourceRoot",
+    "mode",
+    "replacementValue",
     "limits",
     "status",
     "files",
@@ -2049,9 +2478,25 @@ _PLAN_FILE_KEYS = {
     "changedUnits",
     "newline",
     "bom",
+    "decodeMode",
     "decodeRoundTrip",
+    "unitRoundTrip",
+    "invalidByteUnits",
+    "lossy",
+    "replacementCount",
+    "replacementRecords",
     "idempotent",
     "findings",
+}
+_REPLACEMENT_RECORD_KEYS = {
+    "path",
+    "byteOffset",
+    "byteLength",
+    "originalBytes",
+    "line",
+    "column",
+    "reason",
+    "replacement",
 }
 _FINDING_KEYS = {
     "code",
@@ -2139,6 +2584,19 @@ def _validate_plan(plan: dict) -> None:
 
 
 def _validate_plan_inner(plan: dict) -> None:
+    # Check the schema version before the exact top-level shape so an older,
+    # now-incompatible plan fails with actionable re-preview guidance instead
+    # of a generic field-shape error.
+    if isinstance(plan, dict):
+        early_version = plan.get("schemaVersion")
+        if _exact_int(early_version) and early_version != PLAN_SCHEMA_VERSION:
+            raise ToolError(
+                "PLAN_UNSUPPORTED",
+                "plan schema version is not supported; preview the same "
+                "selection again with this helper and review the new plan "
+                "before copying",
+                {"schemaVersion": early_version, "supported": PLAN_SCHEMA_VERSION},
+            )
     if not isinstance(plan, dict) or set(plan) != _PLAN_TOP_KEYS:
         raise ToolError(
             "PLAN_INVALID",
@@ -2151,8 +2609,9 @@ def _validate_plan_inner(plan: dict) -> None:
     if version != PLAN_SCHEMA_VERSION:
         raise ToolError(
             "PLAN_UNSUPPORTED",
-            "plan schema version is not supported by this helper",
-            {"schemaVersion": version},
+            "plan schema version is not supported; preview the same selection "
+            "again with this helper and review the new plan before copying",
+            {"schemaVersion": version, "supported": PLAN_SCHEMA_VERSION},
         )
     if not _exact_str(plan["kind"]) or plan["kind"] != PLAN_KIND:
         raise ToolError("PLAN_INVALID", "plan kind is not supported")
@@ -2161,11 +2620,31 @@ def _validate_plan_inner(plan: dict) -> None:
     if plan["helperVersion"] != HELPER_VERSION:
         raise ToolError(
             "PLAN_UNSUPPORTED",
-            "plan was produced by a different helper version",
+            "plan was produced by a different helper version; preview the same "
+            "selection again with this helper and review the new plan before copying",
             {
                 "planHelperVersion": plan["helperVersion"],
                 "helperVersion": HELPER_VERSION,
             },
+        )
+    if not _exact_str(plan["mode"]) or plan["mode"] not in PLAN_MODES:
+        raise ToolError(
+            "PLAN_INVALID",
+            "plan mode is not supported",
+            {"mode": plan["mode"]},
+        )
+    replacement_value = plan["replacementValue"]
+    if plan["mode"] == "strict":
+        if replacement_value is not None:
+            raise ToolError(
+                "PLAN_INVALID",
+                "a strict plan must not declare a replacement value",
+            )
+    elif not _exact_str(replacement_value) or replacement_value != REPLACE_VALUE:
+        raise ToolError(
+            "PLAN_INVALID",
+            "a replacement plan must declare the single supported replacement value '?'",
+            {"replacementValue": replacement_value},
         )
     if not _exact_str(plan["sourceRoot"]) or not plan["sourceRoot"]:
         raise ToolError("PLAN_INVALID", "plan sourceRoot is invalid")
@@ -2268,12 +2747,6 @@ def _validate_plan_inner(plan: dict) -> None:
                     f"invalid {field} digest",
                     {"path": relative},
                 )
-        if not _exact_bool(entry["decodeRoundTrip"]) or entry["decodeRoundTrip"] is not True:
-            raise ToolError(
-                "PLAN_INVALID",
-                "decodeRoundTrip must be true",
-                {"path": relative},
-            )
         if not _exact_bool(entry["idempotent"]) or entry["idempotent"] is not True:
             raise ToolError(
                 "PLAN_INVALID",
@@ -2310,6 +2783,140 @@ def _validate_plan_inner(plan: dict) -> None:
                 raise ToolError(
                     "PLAN_INVALID",
                     f"invalid {field}",
+                    {"path": relative},
+                )
+        if (
+            not _exact_str(entry["decodeMode"])
+            or entry["decodeMode"] not in DECODE_MODES
+        ):
+            raise ToolError("PLAN_INVALID", "invalid decodeMode", {"path": relative})
+        if not _exact_bool(entry["decodeRoundTrip"]):
+            raise ToolError(
+                "PLAN_INVALID", "invalid decodeRoundTrip evidence", {"path": relative}
+            )
+        if not _exact_bool(entry["unitRoundTrip"]) or entry["unitRoundTrip"] is not True:
+            raise ToolError(
+                "PLAN_INVALID",
+                "unitRoundTrip must be true for a ready file",
+                {"path": relative},
+            )
+        if entry["decodeRoundTrip"] != (entry["decodeMode"] == "strict"):
+            raise ToolError(
+                "PLAN_INVALID",
+                "decodeMode and decodeRoundTrip are inconsistent",
+                {"path": relative},
+            )
+        if not _exact_int(entry["invalidByteUnits"]) or entry["invalidByteUnits"] < 0:
+            raise ToolError(
+                "PLAN_INVALID", "invalid invalidByteUnits", {"path": relative}
+            )
+        if not _exact_bool(entry["lossy"]):
+            raise ToolError("PLAN_INVALID", "invalid lossy evidence", {"path": relative})
+        if not _exact_int(entry["replacementCount"]) or entry["replacementCount"] < 0:
+            raise ToolError(
+                "PLAN_INVALID", "invalid replacementCount", {"path": relative}
+            )
+        if entry["replacementCount"] > MAX_REPLACEMENT_RECORDS:
+            raise ToolError(
+                "BOUNDS_EXCEEDED",
+                "plan replacement records exceed the configured limit",
+                {"path": relative, "limit": MAX_REPLACEMENT_RECORDS},
+            )
+        records = entry["replacementRecords"]
+        if not isinstance(records, list):
+            raise ToolError(
+                "PLAN_INVALID", "invalid replacement records list", {"path": relative}
+            )
+        if len(records) != entry["replacementCount"]:
+            raise ToolError(
+                "PLAN_INVALID",
+                "replacementCount does not match the recorded replacements",
+                {"path": relative},
+            )
+        if entry["lossy"] != bool(entry["replacementCount"]):
+            raise ToolError(
+                "PLAN_INVALID",
+                "lossy evidence is inconsistent with the recorded replacements",
+                {"path": relative},
+            )
+        if plan["mode"] == "strict" and (
+            entry["replacementCount"] or entry["lossy"] or entry["invalidByteUnits"]
+        ):
+            raise ToolError(
+                "PLAN_INVALID",
+                "a strict plan must not contain replacement records or invalid byte units",
+                {"path": relative},
+            )
+        previous_offset = -1
+        for record in records:
+            if not isinstance(record, dict) or set(record) != _REPLACEMENT_RECORD_KEYS:
+                raise ToolError(
+                    "PLAN_INVALID",
+                    "replacement record has unexpected or missing fields",
+                    {"path": relative},
+                )
+            if not _exact_str(record["path"]) or record["path"] != relative:
+                raise ToolError(
+                    "PLAN_INVALID",
+                    "replacement record path does not match its file entry",
+                    {"path": relative},
+                )
+            record_offset = record["byteOffset"]
+            record_length = record["byteLength"]
+            if not _exact_int(record_offset) or record_offset < 0:
+                raise ToolError(
+                    "PLAN_INVALID", "invalid replacement byteOffset", {"path": relative}
+                )
+            if not _exact_int(record_length) or record_length < 1:
+                raise ToolError(
+                    "PLAN_INVALID", "invalid replacement byteLength", {"path": relative}
+                )
+            if record_offset + record_length > entry["sourceSize"]:
+                raise ToolError(
+                    "PLAN_INVALID",
+                    "replacement byte range exceeds the source size",
+                    {"path": relative},
+                )
+            if record_offset <= previous_offset:
+                raise ToolError(
+                    "PLAN_INVALID",
+                    "replacement records are not in increasing byte order",
+                    {"path": relative},
+                )
+            previous_offset = record_offset
+            original = record["originalBytes"]
+            if (
+                not _exact_str(original)
+                or len(original) != 2 * record_length
+                or any(character not in "0123456789abcdef" for character in original)
+            ):
+                raise ToolError(
+                    "PLAN_INVALID",
+                    "replacement originalBytes do not match its byte length",
+                    {"path": relative},
+                )
+            if not _exact_int(record["line"]) or record["line"] < 1:
+                raise ToolError(
+                    "PLAN_INVALID", "invalid replacement line", {"path": relative}
+                )
+            if not _exact_int(record["column"]) or record["column"] < 1:
+                raise ToolError(
+                    "PLAN_INVALID", "invalid replacement column", {"path": relative}
+                )
+            if (
+                not _exact_str(record["reason"])
+                or record["reason"] not in REPLACEMENT_REASONS
+            ):
+                raise ToolError(
+                    "PLAN_INVALID", "invalid replacement reason", {"path": relative}
+                )
+            if (
+                not _exact_str(record["replacement"])
+                or record["replacement"] != plan["replacementValue"]
+            ):
+                raise ToolError(
+                    "PLAN_INVALID",
+                    "replacement value does not match the plan",
                     {"path": relative},
                 )
         if not isinstance(entry["findings"], list):
@@ -2431,7 +3038,15 @@ def preview_plan(
     project_root: str,
     preview_dir: str,
     selections: list[str],
+    replace_value: str | None = None,
 ) -> dict:
+    if replace_value is not None and replace_value != REPLACE_VALUE:
+        raise ToolError(
+            "REPLACEMENT_VALUE_UNSUPPORTED",
+            "the only supported replacement value is '?'; omit the option for "
+            "the strict historical default",
+            {"value": replace_value},
+        )
     root = _validate_project_root(project_root)
     parsed = _parse_selections(selections)
     preview_root = _resolve_external_dir(
@@ -2453,7 +3068,9 @@ def preview_plan(
                 "selection exceeds the configured aggregate byte limit",
                 {"limit": MAX_TOTAL_BYTES},
             )
-        analysis = analyze_bytes(data, charset, relative)
+        analysis = analyze_bytes(
+            data, charset, relative, replace_value=replace_value
+        )
         if analysis.status == "ready" and analysis.output_size is not None:
             total_output += analysis.output_size
             if total_output > MAX_TOTAL_OUTPUT_BYTES:
@@ -2474,6 +3091,8 @@ def preview_plan(
         "kind": PLAN_KIND,
         "helperVersion": HELPER_VERSION,
         "sourceRoot": root.as_posix(),
+        "mode": "replace" if replace_value is not None else "strict",
+        "replacementValue": replace_value,
         "limits": _limits(),
         "status": status,
         "files": files,
@@ -2534,6 +3153,14 @@ def preview_plan(
         "previewPath": str(preview_path),
         "sourceRoot": plan["sourceRoot"],
         "helperVersion": HELPER_VERSION,
+        "mode": plan["mode"],
+        "replacementValue": plan["replacementValue"],
+        "lossyFiles": [
+            file_entry["path"] for file_entry in files if file_entry["lossy"]
+        ],
+        "totalReplacementCount": sum(
+            file_entry["replacementCount"] for file_entry in files
+        ),
         "blockers": blockers,
         "warnings": warnings,
         "files": summaries,
@@ -2541,11 +3168,86 @@ def preview_plan(
     }
 
 
+def _validate_confirmations(
+    plan: dict, confirmed_files: list[str] | None
+) -> list[str]:
+    """Require exactly one explicit confirmation per lossy file.
+
+    Confirmation is review evidence tied to the reviewed plan ID, never bulk
+    approval and never authorization to modify originals.
+    """
+
+    lossy_paths = [entry["path"] for entry in plan["files"] if entry["lossy"]]
+    provided = list(confirmed_files or [])
+    if plan["mode"] == "strict":
+        if provided:
+            raise ToolError(
+                "CONFIRMATION_INVALID",
+                "strict plans require no per-file confirmation; omit --confirm-file",
+                {"count": len(provided)},
+            )
+        return []
+    plan_by_key = {
+        os.path.normcase(entry["path"]): entry["path"] for entry in plan["files"]
+    }
+    seen: set[str] = set()
+    canonical: list[str] = []
+    for raw in provided:
+        if not isinstance(raw, str):
+            raise ToolError(
+                "CONFIRMATION_INVALID", "each confirmed file must be a string"
+            )
+        try:
+            relative = _normalize_relative(raw)
+        except ToolError as error:
+            raise ToolError(
+                "CONFIRMATION_INVALID",
+                "confirmed file must be a canonical project-relative path",
+                {"value": str(raw), "cause": error.code},
+            ) from error
+        key = os.path.normcase(relative)
+        if key in seen:
+            raise ToolError(
+                "CONFIRMATION_DUPLICATE",
+                "each file may be confirmed only once",
+                {"path": relative},
+            )
+        seen.add(key)
+        if key not in plan_by_key:
+            raise ToolError(
+                "CONFIRMATION_UNKNOWN",
+                "confirmed file is not selected by this plan",
+                {"path": relative},
+            )
+        canonical.append(plan_by_key[key])
+    lossy_keys = {os.path.normcase(path) for path in lossy_paths}
+    for path in canonical:
+        if os.path.normcase(path) not in lossy_keys:
+            raise ToolError(
+                "CONFIRMATION_NOT_LOSSY",
+                "confirmed file has no recorded replacement to review",
+                {"path": path},
+            )
+    missing = [path for path in lossy_paths if os.path.normcase(path) not in seen]
+    if missing:
+        raise ToolError(
+            "CONFIRMATION_REQUIRED",
+            "every file with recorded replacements must be confirmed "
+            "explicitly; inspect each loss in the preview and pass one "
+            "--confirm-file per file",
+            {"missing": missing},
+        )
+    order = {path: index for index, path in enumerate(lossy_paths)}
+    canonical.sort(key=lambda path: order[path])
+    return canonical
+
+
 def copy_plan(
     project_root: str,
     plan_file: str,
     expected_plan_id: str,
     output_dir: str,
+    confirmed_files: list[str] | None = None,
 ) -> dict:
     plan_path, plan = _read_plan_json(plan_file)
     _validate_plan(plan)
@@ -2578,6 +3280,7 @@ def copy_plan(
             "PLAN_UNSUPPORTED",
             "plan limits differ from this helper's enforced limits",
         )
+    confirmations = _validate_confirmations(plan, confirmed_files)
 
     derived: list[tuple[dict, bytes]] = []
     for entry in plan["files"]:
@@ -2589,7 +3292,12 @@ def copy_plan(
                 "source file changed after preview",
                 {"path": relative},
             )
-        current = analyze_bytes(data, entry["charset"], relative)
+        current = analyze_bytes(
+            data,
+            entry["charset"],
+            relative,
+            replace_value=plan["replacementValue"],
+        )
         if current.source_sha256 != entry["sourceSha256"]:
             raise ToolError(
                 "INPUT_CHANGED",
@@ -2758,6 +3466,8 @@ def copy_plan(
                     "outputSize": entry["outputSize"],
                     "outputSha256": entry["outputSha256"],
                     "outsideCommentSha256": entry["outsideCommentSha256"],
+                    "lossy": entry["lossy"],
+                    "replacementCount": entry["replacementCount"],
                 }
             )
         manifest = {
@@ -2766,6 +3476,15 @@ def copy_plan(
             "planId": plan["planId"],
             "sourceRoot": plan["sourceRoot"],
             "outputRoot": output_root.as_posix(),
+            "mode": plan["mode"],
+            "replacementValue": plan["replacementValue"],
+            "confirmedFiles": list(confirmations),
+            "lossyFiles": [
+                entry["path"] for entry in plan["files"] if entry["lossy"]
+            ],
+            "totalReplacementCount": sum(
+                entry["replacementCount"] for entry in plan["files"]
+            ),
             "copyOnly": True,
             "notAProject": True,
             "note": "These are converted file copies, not a complete migrated or buildable project.",
@@ -2836,6 +3555,15 @@ def copy_plan(
             "planPath": str(plan_path),
             "outputDir": str(output_root),
             "manifestPath": str(manifest_path),
+            "mode": plan["mode"],
+            "replacementValue": plan["replacementValue"],
+            "confirmedFiles": list(confirmations),
+            "lossyFiles": [
+                entry["path"] for entry in plan["files"] if entry["lossy"]
+            ],
+            "totalReplacementCount": sum(
+                entry["replacementCount"] for entry in plan["files"]
+            ),
             "files": summaries,
             "originalsUnchanged": True,
             "outputsVerified": True,
@@ -2877,6 +3605,16 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="REL=CHARSET",
         help="project-root-relative C/C++ path and explicit charset",
     )
+    preview.add_argument(
+        "--replace-invalid-with",
+        metavar="VALUE",
+        default=None,
+        help=(
+            "explicit reviewed replacement for undecodable byte spans and "
+            "disallowed code points inside proven comment content; the only "
+            "supported value is '?'. Omit for the strict historical default."
+        ),
+    )
     copy = subparsers.add_parser(
         "copy",
         help="revalidate a reviewed plan and copy converted files",
@@ -2885,6 +3623,16 @@ def _build_parser() -> argparse.ArgumentParser:
     copy.add_argument("--plan", required=True)
     copy.add_argument("--plan-id", required=True)
     copy.add_argument("--output-dir", required=True)
+    copy.add_argument(
+        "--confirm-file",
+        action="append",
+        default=None,
+        metavar="REL",
+        help=(
+            "explicit per-file review confirmation of recorded replacements; "
+            "repeat once for every lossy file in the reviewed replacement plan"
+        ),
+    )
     return parser
 
 
@@ -2906,6 +3654,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.project_root,
                 args.preview_dir,
                 args.file,
+                args.replace_invalid_with,
             )
             _emit(payload)
             return 0 if payload["status"] == "ready" else 2
@@ -2919,6 +3668,7 @@ def main(argv: list[str] | None = None) -> int:
             args.plan,
             args.plan_id,
             args.output_dir,
+            confirmed_files=args.confirm_file,
         )
         _emit(payload)
         return 0
