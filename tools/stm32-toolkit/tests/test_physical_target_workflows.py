@@ -1999,6 +1999,13 @@ def test_probe_service_orders_unsorted_project_ram_for_mailbox_without_memory_io
             "schemaVersion": 3,
             "memory": {
                 "source": "manual",
+                "layout": {
+                    "flash": "IROM1",
+                    "data": "IRAM1",
+                    "bss": "IRAM1",
+                    "heap": "IRAM1",
+                    "stack": "IRAM1",
+                },
                 "regions": [
                     {
                         "name": "IROM1",
