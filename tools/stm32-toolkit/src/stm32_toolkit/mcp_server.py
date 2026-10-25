@@ -2511,9 +2511,9 @@ def create_server(
         ``data.vscodeExtensions`` values.  ``data.keilTools`` reports bounded
         UV4/ARMCC discovery; ``toolkitNativeBuildSupported`` is always false,
         so use the Keil migration or external-firmware routes.  These
-        observation options and fields are current-source behavior; a frozen
-        or installed 1.3.0 server does not expose them, and their absence
-        there is not evidence that the MCP client is stale.  probeCore describes the
+        observation options and fields are current v1.3.1 source behavior; a
+        frozen or installed earlier 1.3.0 server does not expose them, and
+        their absence there is not evidence that the MCP client is stale.  probeCore describes the
         managed runtime and probe lease directory.  Version and binding
         evidence comes from data.runtime.toolkitVersion and
         data.publicInventory: compare them with the actual tool list and input

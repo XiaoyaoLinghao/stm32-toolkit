@@ -30,7 +30,7 @@ def test_plugin_manifest_uses_standard_skill_discovery_and_version():
     assert plugin == {
         "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
         "name": "stm32-toolkit",
-        "version": "1.3.0",
+        "version": "1.3.1",
         "description": (
             "AI-assisted STM32 development with read-only Keil inspection, "
             "guarded ARMCC-to-GCC conversion, managed GCC/CMake configuration, "
@@ -38,7 +38,7 @@ def test_plugin_manifest_uses_standard_skill_discovery_and_version():
         ),
         "author": {"name": "STM32 Toolkit Team"},
     }
-    assert plugin["version"] == __version__ == "1.3.0"
+    assert plugin["version"] == __version__ == "1.3.1"
 
 
 def test_marketplace_manifest_uses_a_supported_plugin_source():
@@ -126,14 +126,14 @@ def test_launcher_reports_missing_versioned_runtime_without_interpreter_fallback
     assert result.returncode != 0
     assert result.stdout == ""
     assert "STM32_TOOLKIT_DATA_ROOT" in result.stderr
-    assert "runtime/1.3.0/Scripts/python.exe" in result.stderr.replace("\\", "/")
+    assert "runtime/1.3.1/Scripts/python.exe" in result.stderr.replace("\\", "/")
     assert not marker.exists()
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows cmd.exe launcher")
 def test_launcher_forwards_arguments_and_preserves_runtime_exit_code(tmp_path: Path):
     plugin_data = tmp_path / "plugin data"
-    runtime = plugin_data / "runtime" / "1.3.0"
+    runtime = plugin_data / "runtime" / "1.3.1"
     venv.EnvBuilder(with_pip=False).create(runtime)
     module_root = tmp_path / "stub module"
     package = module_root / "stm32_toolkit"
@@ -218,7 +218,7 @@ def test_monitor_launcher_reports_missing_versioned_runtime_without_interpreter_
     assert result.returncode != 0
     assert result.stdout == ""
     assert "stm32-monitor" in result.stderr
-    assert "runtime/1.3.0/Scripts/python.exe" in result.stderr.replace("\\", "/")
+    assert "runtime/1.3.1/Scripts/python.exe" in result.stderr.replace("\\", "/")
     assert not marker.exists()
 
 
@@ -227,7 +227,7 @@ def test_monitor_launcher_forwards_arguments_and_preserves_runtime_exit_code(
     tmp_path: Path,
 ):
     plugin_data = tmp_path / "plugin data"
-    runtime = plugin_data / "runtime" / "1.3.0"
+    runtime = plugin_data / "runtime" / "1.3.1"
     venv.EnvBuilder(with_pip=False).create(runtime)
     module_root = tmp_path / "stub module"
     package = module_root / "stm32_monitor"
@@ -279,7 +279,7 @@ def test_setup_skill_has_an_explicit_read_only_check_and_authorized_mutation_con
         "read-only",
         "offline",
         "explicit authorization",
-        "${CLAUDE_PLUGIN_DATA}/runtime/1.3.0",
+        "${CLAUDE_PLUGIN_DATA}/runtime/1.3.1",
         "${CLAUDE_PLUGIN_ROOT}/tools/stm32-toolkit",
         "CPython >=3.12,<3.13",
         "ARM GCC",
@@ -508,7 +508,7 @@ def test_setup_helper_uses_explicit_paths_without_ambient_environment(tmp_path: 
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
     assert payload["mode"] == "CHECK"
-    assert payload["runtime"]["path"].endswith("/runtime/1.3.0")
+    assert payload["runtime"]["path"].endswith("/runtime/1.3.1")
     assert payload["project"] == project.as_posix()
     assert payload["mutated"] is False
     assert not plugin_data.exists()
@@ -565,17 +565,17 @@ def test_readme_links_current_user_guidance_and_release_boundaries():
     readme = README.read_text(encoding="utf-8")
     readme_zh = (REPO_ROOT / "README_zh-CN.md").read_text(encoding="utf-8")
 
-    assert "**Current source candidate: v1.3.0 (local Release preparation, not published).**" in readme
-    assert "**当前源码候选：v1.3.0（本地 Release 准备，尚未发布）。**" in readme_zh
+    assert "**Current source candidate: v1.3.1 (local Release preparation, not published).**" in readme
+    assert "**当前源码候选：v1.3.1（本地 Release 准备，尚未发布）。**" in readme_zh
     for guide in (readme, readme_zh):
-        assert "1.3.0" in guide
-        assert "releases/tag/v1.3.0" not in guide
-        assert "releases/download/v1.3.0" not in guide
-        # A truthful locally delivered v1.3.0 filename and parameterized
+        assert "1.3.1" in guide
+        assert "releases/tag/v1.3.1" not in guide
+        assert "releases/download/v1.3.1" not in guide
+        # A truthful locally delivered v1.3.1 filename and parameterized
         # recipe are allowed; only a fabricated GitHub download is prohibited.
-        assert "$Version = '1.3.0'" in guide
+        assert "$Version = '1.3.1'" in guide
         assert "stm32-toolkit-$Version-windows-x86_64.zip" in guide
-        assert "DataRoot/runtime/1.3.0" in guide
+        assert "DataRoot/runtime/1.3.1" in guide
     release_url = "https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.2.0"
     for guide in (readme, readme_zh):
         assert release_url in guide
@@ -778,15 +778,15 @@ def test_unified_1_0_1_runtime_version_across_launcher_setup_and_skill():
     command_blocks = "\n".join(_fenced_blocks(skill)).replace("\\", "/")
     manifest = json.loads(PLUGIN_MANIFEST.read_text(encoding="utf-8"))
 
-    assert manifest["version"] == __version__ == "1.3.0"
-    assert "runtime\\1.3.0\\Scripts\\python.exe" in launcher
-    assert "runtime/1.3.0/Scripts/python.exe" in launcher.replace("\\", "/")
+    assert manifest["version"] == __version__ == "1.3.1"
+    assert "runtime\\1.3.1\\Scripts\\python.exe" in launcher
+    assert "runtime/1.3.1/Scripts/python.exe" in launcher.replace("\\", "/")
     assert "0.3.0" not in launcher
-    assert "runtime\\1.3.0\\Scripts\\python.exe" in monitor_launcher
-    assert "runtime/1.3.0/Scripts/python.exe" in monitor_launcher.replace("\\", "/")
+    assert "runtime\\1.3.1\\Scripts\\python.exe" in monitor_launcher
+    assert "runtime/1.3.1/Scripts/python.exe" in monitor_launcher.replace("\\", "/")
     assert "0.3.0" not in monitor_launcher
     assert " -m stm32_monitor " in monitor_launcher
-    assert '$RuntimeVersion = "1.3.0"' in helper
+    assert '$RuntimeVersion = "1.3.1"' in helper
     assert "0.3.0" in helper  # legacy-upgrade detection, never current selection
     assert '"${package}[probe]"' in helper
     assert "$monitorPackage" in helper
@@ -795,12 +795,12 @@ def test_unified_1_0_1_runtime_version_across_launcher_setup_and_skill():
     assert "ui_dist" in helper
     assert "import pyocd" in helper
     assert '"-I", "-c"' in helper
-    assert "${CLAUDE_PLUGIN_DATA}/runtime/1.3.0" in skill
-    assert "${CLAUDE_PLUGIN_DATA}/runtime/.staging/1.3.0-<id>" in skill
+    assert "${CLAUDE_PLUGIN_DATA}/runtime/1.3.1" in skill
+    assert "${CLAUDE_PLUGIN_DATA}/runtime/.staging/1.3.1-<id>" in skill
     assert "tools/stm32-toolkit[probe]" in skill
     assert "isolated PEP 440 `pyocd` distribution check" in skill
     assert ">=0.45.1,<0.46" in skill
-    assert "existing 1.2.0, 1.1.2, 1.0.1, 1.0.0, 0.9.0, 0.5.0 or 0.3.0 runtime reports broken" in skill
-    assert "${CLAUDE_PLUGIN_DATA}/runtime/1.3.0/Scripts/python.exe" in skill
-    for legacy_version in ("1.2.0", "1.1.2", "1.0.1", "1.0.0", "0.9.0", "0.5.0", "0.3.0"):
+    assert "existing 1.3.0, 1.2.0, 1.1.2, 1.0.1, 1.0.0, 0.9.0, 0.5.0 or 0.3.0 runtime reports broken" in skill
+    assert "${CLAUDE_PLUGIN_DATA}/runtime/1.3.1/Scripts/python.exe" in skill
+    for legacy_version in ("1.3.0", "1.2.0", "1.1.2", "1.0.1", "1.0.0", "0.9.0", "0.5.0", "0.3.0"):
         assert f"runtime/{legacy_version}" not in command_blocks

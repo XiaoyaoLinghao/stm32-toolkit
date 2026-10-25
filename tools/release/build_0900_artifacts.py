@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build and verify the STM32 Toolkit 1.3.0 offline Windows bundle.
+"""Build and verify the STM32 Toolkit 1.3.1 offline Windows bundle.
 
 This module intentionally uses the Python standard library for the artifact
 boundary.  It does not resolve packages, contact an index, execute package
@@ -30,7 +30,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Mapping, Sequence
 
 
-VERSION = "1.3.0"
+VERSION = "1.3.1"
 REPOSITORY = "https://github.com/XiaoyaoLinghao/stm32-toolkit.git"
 REQUIRED_PYTHON = ">=3.12,<3.13"
 MANIFEST_SCHEMA = "stm32-toolkit-release/1"

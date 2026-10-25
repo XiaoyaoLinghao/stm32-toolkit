@@ -1,18 +1,18 @@
 # Windows 部署与 IDE 调试前置核对
 
-本文件面向 v1.2.0 的 Windows x86_64、CPython 3.12 发行包部署。资产可用性、最终发行资格与限制以 [v1.2.0 Release](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.2.0) 为准；[发布状态](../release-status.md)保留源冻结前有日期的资格断点。当前范围见[源码交付规范](../superpowers/specs/2026-10-21-monitor-v120-delivery-design.md)，旧版资格事实见[v1.0.1 执行记录](../codex/returns/STM32TK-101/execution.md)。实际执行顺序、授权、留证和首错停止以[标准测试流程](standard-test-procedure.md)为准；常见工程错误见[用户指南](../user-guide.md)。软件安装或 loopback HTTP 检查不等于真实交互浏览器、IDE/探针验收。
+本文件面向 Windows x86_64、CPython 3.12 发行包的部署。公开下载仍是 v1.2.0：资产可用性、最终发行资格与限制以 [v1.2.0 Release](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.2.0) 为准；[发布状态](../release-status.md)保留源冻结前有日期的资格断点。v1.3.1 本地候选沿用同一流程，但其标识、`runtime/1.3.1` 路径、资产清单与校验和只能取自实际交付证据；未观察到资格结论或发布前，不得把候选描述为公开下载。当前范围见[源码交付规范](../superpowers/specs/2026-10-21-monitor-v120-delivery-design.md)与[v1.3.1 集成设计](../superpowers/specs/2026-10-25-v131-integration-design.md)，旧版资格事实见[v1.0.1 执行记录](../codex/returns/STM32TK-101/execution.md)。实际执行顺序、授权、留证和首错停止以[标准测试流程](standard-test-procedure.md)为准；常见工程错误见[用户指南](../user-guide.md)。软件安装或 loopback HTTP 检查不等于真实交互浏览器、IDE/探针验收。
 
 ## 固定发行与本机输入
 
 先确认 [v1.2.0 Release](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.2.0) 页面同时列出 `stm32-toolkit-1.2.0-windows-x86_64.zip` 与 `CHECKSUMS.sha256`，再从同一页面下载；缺少任一资产就停止，不以旧版包代替。依[README 的校验命令](../../README_zh-CN.md)核对 ZIP SHA256 后解压到全新、每版独立的 BundleRoot；若目录已存在，另选新目录，不覆盖或删除。ZIP 的 `stm32-toolkit-1.2.0/` ToolkitRoot 与外层 `release/` 在 BundleRoot 下并列；ToolkitRoot 内另有供 setup 使用的 `release/release-manifest.json`。不要将 GitHub 自动生成的源码归档当作离线包。先记录经过审查的完整 source commit、包内 manifest、bundle SHA256、CPython 版本，以及真实的 ToolkitRoot、长期 DataRoot、ProjectRoot。仅使用与该 source/manifest 匹配的完整离线 wheelhouse，不能混用另一版 setup、wheel 或状态文件。DataRoot 保留 runtime、工程身份、会话和证据，不用可清理的测试临时目录；移动机器或磁盘后重新核对路径和当前绑定，不能复制旧探针 selector、ticket、已消费 action 作为新会话状态。
 
-发行构建所用的专用干净工作树应保证 checkout 与 `git archive` 的实际字节一致。若使用 LF 归档，在创建工作树前确定进程/工作树 Git 配置；仅一次 `git -c core.autocrlf=false worktree add` 不保证后续 builder 沿用。核对 `git ls-files --eol`，不改用户全局 Git 配置。构建 wheelhouse 须包含发行策略固定的 build backend（当前 setuptools 84.0.0、wheel 0.48.0），runtime wheels 本身不构成完整构建输入。现行工具是 `tools/release/build_0900_artifacts.py` 与 `tools/release/release_0900_policy.json`；文件名是历史延续，不表示应安装 0.9.0。
+发行构建所用的专用干净工作树应保证 checkout 与 `git archive` 的实际字节一致。若使用 LF 归档，在创建工作树前确定进程/工作树 Git 配置；仅一次 `git -c core.autocrlf=false worktree add` 不保证后续 builder 沿用。核对 `git ls-files --eol`，不改用户全局 Git 配置。构建 wheelhouse 须包含发行策略固定的 build backend（当前 setuptools 84.0.0、wheel 0.48.0），runtime wheels 本身不构成完整构建输入。现行工具是 `tools/release/build_0900_artifacts.py` 与 `tools/release/release_0900_policy.json`；文件名是历史延续，不表示应安装 0.9.0。二者当前绑定 1.3.1 候选；构建前后必须按发布策略核对实际版本、资产名与校验和，而不是沿用 1.2.0 的文件名。
 
 ## runtime Check 在硬件和 handoff 之前
 
 对已核验 bundle 使用 `bin/setup-stm32-env.ps1 -Mode Check`。`Check` 只读；`missing` 只在获准安装时进入 Bootstrap，`repairable`/`broken` 只在获准修复时进入 Repair。成功动作后再 `Check`。同版本不同 source/manifest 返回 source-conflict，记录过更高版本或未知状态按原拒绝处理；不要删除 `runtime-state.json`、降级或手修 EXE 绕过。
 
-最终目录的验证包括：发行包 hash 与闭合 wheel 集、最终位置的 Toolkit/Monitor/PyOCD wheel、`pip check`、console launcher 绑定及版本。staging 内成功并非最终位置成功。v1.2.0 的 `Check` 确认 healthy 后，可只读核对以下两个 PyOCD 入口；把路径换成实际 DataRoot，不访问板子：
+最终目录的验证包括：发行包 hash 与闭合 wheel 集、最终位置的 Toolkit/Monitor/PyOCD wheel、`pip check`、console launcher 绑定及版本。staging 内成功并非最终位置成功。v1.2.0 的 `Check` 确认 healthy 后，可只读核对以下两个 PyOCD 入口；把路径换成实际 DataRoot，不访问板子（v1.3.1 候选把 `$runtimeRoot` 换成 `runtime\1.3.1`，其余检查相同）：
 
 ```powershell
 $runtimeRoot = 'C:\data\stm32-toolkit\runtime\1.2.0'

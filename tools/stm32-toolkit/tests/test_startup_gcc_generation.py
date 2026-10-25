@@ -25,7 +25,7 @@ def v3_payload(**overrides):
     payload = {
         "schemaVersion": 3,
         "logicalProjectId": UUID,
-        "generatedBy": {"tool": "stm32-toolkit", "version": "1.3.0"},
+        "generatedBy": {"tool": "stm32-toolkit", "version": "1.3.1"},
         "project": {"name": "firmware", "origin": "keil-migration"},
         "target": {"device": "STM32F429ZGTx", "core": "cortex-m4"},
         "framework": {"type": "spl", "version": None},

@@ -9,14 +9,14 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$RuntimeVersion = "1.3.0"
+$RuntimeVersion = "1.3.1"
 $PyOcdVersion = "0.45.1"
-$LegacyRuntimeVersions = @("1.2.0", "1.1.2", "1.0.1", "1.0.0", "0.9.0", "0.5.0", "0.3.0")
+$LegacyRuntimeVersions = @("1.3.0", "1.2.0", "1.1.2", "1.0.1", "1.0.0", "0.9.0", "0.5.0", "0.3.0")
 $ProcessOutputLimit = 65536
 $ReleaseUtilityRelative = "tools/release/build_0900_artifacts.py"
 $ReleasePolicyRelative = "tools/release/release_0900_policy.json"
-$ReleaseUtilitySha256 = "72cc96a0457a2bfaed9a290dcff78687b3716c0d8990d259aef9a4bbc65e54ea"
-$ReleasePolicySha256 = "84028a6844537bcad455c3e8cdd7a9795aa1ed15d9b6a155d9247ac53f3fa4a6"
+$ReleaseUtilitySha256 = "a412fef54113b8d7f72b904b270c52bfa82446e244571d94157df7aaaaaa25ac"
+$ReleasePolicySha256 = "8fdae19aa3d0e03978679f2f3221464c09651f167f0dc70c4f033541c3cd9d26"
 $ReleaseManifestRelative = "release/release-manifest.json"
 $RuntimeStateFileName = "runtime-state.json"
 $InMemoryReleaseLauncher = @'
@@ -95,7 +95,7 @@ try:
 except Exception:
     raise SystemExit(2)
 ui = resources.files("stm32_monitor") / "ui_dist"
-if version != "1.3.0":
+if version != "1.3.1":
     raise SystemExit(3)
 if not _file(ui, "index.html") or not _file(ui, ".vite/manifest.json"):
     raise SystemExit(4)
