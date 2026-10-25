@@ -4,6 +4,8 @@
 
 ## 1. 当前断点与证据
 
+2026-10-25 DIAGNOSTIC-TAIL 指引/测试切片已 **ACCEPTED_WITH_FIXES**，见[独立复核](../codex/returns/DIAGNOSTIC-TAIL/review.md)。Accepted base `99c93ccfb63b104aeb58ce23f8a78b9d98ddb932`，CodeHead `712bd1721b10618b174b5ea35aef7c3407f48a4b`。双方各82通过/1真实文件符号链接平台跳过，最终32项通过；四个Skill结构通过。新AI消费复测已纠正构建默认超时的重复授权及preflight/PLAN字段混用，保留既有原始日志；不是实际IDE验收。旧1.3.0可用字段的概括性描述须在紧接的统一1.3.1版本对齐中按冻结源码澄清，不把它当MCP过期证据。下一步为完整回归/覆盖率、实际VS Code、构建与发布；原工程及硬件未操作。
+
 2026-10-25 MEMORY-MARGIN 离线切片已 **ACCEPTED_WITH_FIXES**，见[独立验收](../codex/returns/MEMORY-MARGIN/review.md)。Accepted base `1b16a38181770569cf1d0f533a73e94690231a32`，CodeHead `9a7a8a5f00a9c19333fffc6201ca2515310bb39c`。Claude Code CLI 编码与测试，主代理完整独立审查；双方各562个不同用例有通过证据（按未变产品/测试复用部分首轮通过结果），最终作者232/233后单项LF夹具复核通过、主代理64/64，另主代理169/169相关回归通过。首轮PT_LOAD夹具及作者工作树LF/CRLF差异已修正验证，原失败保留，不宣称最终全量矩阵。每个已声明区域按 free<1024 或 free*20<length 给出非阻断告警，identity可选摘要参与hash并在当前固件准入重算；静态空闲不证明连续可用空间、运行期峰值或外部内存初始化。原工程/硬件/runtime/版本/远端未操作；诊断尾项、整体回归与实际VS Code及v1.3.1构建发行继续由主代理负责。
 
 2026-10-25 FLASH-FREQUENCY 离线切片已 **ACCEPTED_WITH_FIXES**，见[独立验收记录](../codex/returns/FLASH-FREQUENCY/review.md)。Accepted base 449c30e056f614d1ecc9a4340c0ea5feda28f07b，最终 CodeHead 4cd1baf11a028438a69bf1cf74b91833731b13ed，产品/指引测试head a8095f03e9a8a5fa1d9dddf51075a6ac02e932f5。Claude Code CLI 编码与测试，主代理在独立干净树完整审查。双方各424项核心通过；相关386项回归中385项通过、1项旧多RAM夹具缺layout在接受基线同样失败。仅补齐该夹具7行显式布局，双方最终定向1项通过；424+385未变用例复用，共810个不同通过用例（含95项新增），未宣称最终全量矩阵重跑。频率CLI/MCP入口、执行前冲突拒绝、完整结果字段、受管条件恢复建议及单次调用/无自动重试均接受；Skill结构与新AI消费模拟通过。流程新增条目经独立只读复核。13处本轮临时目录清理被自动策略拒绝（blocked by policy），保留且未绕过。原工程、硬件、runtime/全局技能、版本及远端未操作，真实IDE/频率/复位接线资格留待主代理负责的后续授权集成，不授予发行资格。

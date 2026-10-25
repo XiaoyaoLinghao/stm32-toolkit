@@ -1,0 +1,7 @@
+# DIAGNOSTIC-TAIL independent review
+
+Verdict **ACCEPTED_WITH_FIXES** for the bounded source guidance/tests slice. This is not released-document or release-matrix acceptance. Accepted base `99c93ccfb63b104aeb58ce23f8a78b9d98ddb932`; CodeHead `712bd1721b10618b174b5ea35aef7c3407f48a4b`.
+
+Primary reviewed the complete base-to-head diff at the exact clean detached review tree, including both meaningful public regression tests and each guide correction. New behavior preserves existing guards and field contracts; the independently observed doctor status semantics and migration model fields match the corrected text. Author cannot approve its own diff. Both owners' 82 passing/one platform-skipped core cases and final32 passing cases are retained in [evidence](evidence.json). Primary Skill validation passed. No software test failure remains; actual file-symlink checks are named pending work for the primary-owned capable Windows/Linux integration environment, not hidden as PASS.
+
+Fresh consumer findings were corrected and affected decisions rechecked. The pre-existing old1.3.0 field-availability wording is explicitly assigned to the next version-alignment scope in the [return](implementation-report.md); no blanket legacy absence claim is accepted. Version alignment, full coverage/regression, actual VS Code, final package/install and public delivery remain incomplete. Hardware/original-project/installed-runtime/global Skills untouched. All evidence retained; no cleanup attempted.
