@@ -47,25 +47,44 @@ test.describe("STM32 Monitor browser accessibility",()=>{
     await tabTo(page,connect);
     await expect(connect).toBeFocused();
     await page.keyboard.press("Enter");
+    await expect(page.getByRole("status",{name:"探针操作结果"})).toContainText("探针连接成功");
+    await page.getByRole("button",{name:"连接与固件详情"}).click();
     await expect(page.getByText(/已连接：probe-a/)).toBeVisible();
-    await page.getByRole("button",{name:"关闭"}).click();
-    await page.getByRole("button",{name:"新建观测组"}).click();
-    await page.getByRole("button",{name:"浏览变量与寄存器"}).click();
+    await page.getByRole("button",{name:"关闭设备详情",exact:true}).click();
 
+    // The group editor is a modal drawer; its draft survives closing it while
+    // the source catalog in the sidebar is used to add the watch.
+    await page.getByRole("button",{name:"编辑并保存",exact:true}).click();
+    await page.getByRole("button",{name:"新建观测组"}).click();
     const name=page.getByLabel("名称",{exact:true});
     await tabTo(page,name);
     await page.keyboard.type("Keyboard group");
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("dialog",{name:"观测组"})).toBeHidden();
+    await page.getByRole("tab",{name:"源码目录",exact:true}).click();
     const search=page.getByLabel("搜索",{exact:true});
     await tabTo(page,search);
     await page.keyboard.type("counter");
-    const add=page.getByRole("button",{name:"加入观测组草稿",exact:true});
+    await page.keyboard.press("Enter");
+    const file=page.getByRole("button",{name:"展开 firmware/main.c",exact:true});
+    await expect(file).toBeVisible();
+    await tabTo(page,file);
+    await page.keyboard.press("Enter");
+    const add=page.getByRole("button",{name:"加入观测组草稿 counter",exact:true});
+    await expect(add).toBeVisible();
     await tabTo(page,add);
+    await page.keyboard.press("Enter");
+    await expect(page.getByText("已加入组草稿（尚未保存）",{exact:true})).toBeVisible();
+    const editor=page.getByRole("button",{name:"编辑并保存",exact:true});
+    await tabTo(page,editor);
     await page.keyboard.press("Enter");
     const create=page.getByRole("button",{name:"创建观测组",exact:true});
     await tabTo(page,create);
     await expect(create).toBeEnabled();
     await page.keyboard.press("Enter");
     await expect(page.getByRole("button",{name:"Keyboard group (1)"})).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("dialog",{name:"观测组"})).toBeHidden();
     const start=page.getByRole("button",{name:"开始采样",exact:true});
     await tabTo(page,start);
     await expect(start).toBeFocused();

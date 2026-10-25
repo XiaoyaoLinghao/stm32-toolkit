@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import gzip
+import hashlib
 import json
 import sys
 from dataclasses import dataclass, field
@@ -23,12 +24,34 @@ from pathlib import Path
 
 from aiohttp import web
 
-from stm32_monitor.protocol import failure, success
+from stm32_monitor.protocol import MONITOR_VERSION, TOOLKIT_VERSION, failure, success
 from stm32_monitor.service import MonitorService
 
-_TOOLKIT_VERSION = "1.0.0"
-_MONITOR_VERSION = "1.0.0"
 _DEFAULT_ROWS = 2
+
+# The fixture indexes one tracked translation unit. Source identity mirrors the
+# scripted firmware identity exposed by ``monitor.status`` after connect so the
+# browser can prove the selection belongs to the current build.
+_SOURCE_FILE = "firmware/main.c"
+_SOURCE_BUILD_ID = "0" * 64
+_SOURCE_ELF_SHA256 = "1" * 64
+_SOURCE_SNAPSHOT_SHA256 = "2" * 64
+_SOURCE_VARIABLES: tuple[tuple[str, int], ...] = (("counter", 12), ("faulty", 13))
+# A real DWARF typedef can be long enough to overflow the narrow catalog
+# scroller; the legacy catalog keeps that layout property observable.
+_LEGACY_COUNTER_TYPE = "stm32_monitor_capture_sequence_counter_value_uint32_t_definition"
+
+
+def _source_id(kind: str, value: str) -> str:
+    return hashlib.sha256((kind + "\0" + value).encode("utf-8")).hexdigest()
+
+
+_SOURCE_FILE_ID = _source_id("file", _SOURCE_FILE)
+_SOURCE_SCOPE_ID = _source_id("global", _SOURCE_FILE)
+_SOURCE_VARIABLE_IDS = {
+    name: _source_id("variable", _SOURCE_FILE + "\0" + name)
+    for name, _line in _SOURCE_VARIABLES
+}
 
 
 @dataclass
@@ -68,12 +91,16 @@ class _State:
 
 def _sampling_status(state: _State) -> dict[str, object]:
     active = state.sampling_state in {"RUNNING", "PAUSED"}
+    group = next(
+        (item for item in state.groups if item.group_id == state.active_group_id),
+        None,
+    )
     return {
         "state": state.sampling_state,
         "active": active,
         "blockedCode": None,
         "groupId": state.active_group_id,
-        "groupRevision": None,
+        "groupRevision": group.revision if active and group is not None else None,
         "runId": state.active_run_id if active else None,
         "lastSequence": None,
         "bindingEpoch": state.binding_epoch,
@@ -124,6 +151,19 @@ def _group_dict(group: _Group) -> dict[str, object]:
     }
 
 
+def _groups_revision(state: _State) -> str:
+    payload = json.dumps(
+        [[group.group_id, group.revision] for group in state.groups],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _catalog_group() -> dict[str, str]:
+    return {"id": "firmware", "label": "Firmware"}
+
+
 def _catalog_item(index: int) -> dict[str, object]:
     return {
         "selector": f"v{index}",
@@ -138,6 +178,227 @@ def _catalog_item(index: int) -> dict[str, object]:
         "elementCount": None,
         "elementKind": None,
         "memberNames": [],
+        "group": _catalog_group(),
+    }
+
+
+def _source_identity(state: _State) -> dict[str, object]:
+    return {
+        "workspaceId": state.workspace_id,
+        "sessionId": state.session_id,
+        "logicalProjectId": state.logical_project_id,
+        "targetDevice": state.target_device,
+        "sourceSnapshotSha256": _SOURCE_SNAPSHOT_SHA256,
+        "buildId": _SOURCE_BUILD_ID,
+        "elfSha256": _SOURCE_ELF_SHA256,
+        "bindingEpoch": state.binding_epoch,
+    }
+
+
+def _source_catalog_id(state: _State) -> str:
+    payload = json.dumps(
+        _source_identity(state), sort_keys=True, ensure_ascii=False, separators=(",", ":")
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _source_names(query: str) -> list[str]:
+    text = query.strip().casefold()
+    if not text:
+        return [name for name, _line in _SOURCE_VARIABLES]
+    if text in _SOURCE_FILE.casefold():
+        return [name for name, _line in _SOURCE_VARIABLES]
+    return [name for name, _line in _SOURCE_VARIABLES if text in name.casefold()]
+
+
+def _source_page(
+    state: _State, items: list[dict[str, object]], total: int
+) -> dict[str, object]:
+    return {
+        "schemaVersion": 1,
+        "catalogId": _source_catalog_id(state),
+        "identity": _source_identity(state),
+        "engine": {"name": "clang", "version": "e2e-fixture-1", "inputKind": "compdb"},
+        "coverage": {
+            "complete": True,
+            "totalUnits": 1,
+            "parsedUnits": 1,
+            "issues": [],
+            "truncated": False,
+            "compiledDebug": {
+                "available": True,
+                "variableCount": len(_SOURCE_VARIABLES),
+                "functionCount": 1,
+                "fileCount": 1,
+            },
+        },
+        "total": total,
+        "items": items,
+        "nextCursor": None,
+    }
+
+
+def _source_file_node(names: list[str]) -> dict[str, object]:
+    return {
+        "kind": "file",
+        "id": _SOURCE_FILE_ID,
+        "parentId": None,
+        "file": _SOURCE_FILE,
+        "name": _SOURCE_FILE.rsplit("/", 1)[-1],
+        "variableCount": len(names),
+        "scopeCount": 1 if names else 0,
+    }
+
+
+def _source_scope_node(names: list[str]) -> dict[str, object]:
+    return {
+        "kind": "scope",
+        "id": _SOURCE_SCOPE_ID,
+        "parentId": _SOURCE_FILE_ID,
+        "file": _SOURCE_FILE,
+        "name": "global",
+        "function": None,
+        "line": None,
+        "variableCount": len(names),
+    }
+
+
+def _source_variable_item(
+    state: _State, name: str, line: int
+) -> dict[str, object]:
+    can_add = state.probe_connected
+    return {
+        "id": _SOURCE_VARIABLE_IDS[name],
+        "parentId": None,
+        "name": name,
+        "typeName": "uint32_t",
+        "file": _SOURCE_FILE,
+        "line": line,
+        "column": 1,
+        "scope": {"kind": "global", "function": None, "path": []},
+        "storage": "none",
+        "translationUnits": [_SOURCE_FILE],
+        "selector": name,
+        "canAdd": can_add,
+        "reason": None if can_add else "probe_required",
+        "expandable": False,
+        "truncated": False,
+        "declaration": {
+            "kind": "global_definition",
+            "definitionSite": {"file": _SOURCE_FILE, "line": line},
+        },
+    }
+
+
+def _source_identity_matches(state: _State, catalog_id: str | None) -> bool:
+    return catalog_id is None or catalog_id == _source_catalog_id(state)
+
+
+def _source_tree(
+    state: _State, operation: str, query: dict[str, str]
+) -> dict[str, object]:
+    parent_id = query.get("parentId")
+    catalog_id = query.get("catalogId")
+    if parent_id is not None and catalog_id is None:
+        return failure(
+            operation, "MONITOR_SOURCE_INDEX_FAILED", "Source tree query is invalid"
+        )
+    if not _source_identity_matches(state, catalog_id):
+        return failure(
+            operation,
+            "MONITOR_SOURCE_CONTEXT_CHANGED",
+            "Source catalog identity changed",
+        )
+    if query.get("cursor") is not None:
+        return failure(
+            operation,
+            "MONITOR_SOURCE_CONTEXT_CHANGED",
+            "Source catalog cursor is invalid",
+        )
+    names = _source_names(query.get("query", ""))
+    if parent_id is None:
+        items = [_source_file_node(names)] if names else []
+    elif parent_id == _SOURCE_FILE_ID:
+        items = [_source_scope_node(names)] if names else []
+    else:
+        return failure(
+            operation,
+            "MONITOR_SOURCE_CONTEXT_CHANGED",
+            "Source tree parent changed",
+        )
+    return _source_page(state, items, len(items))
+
+
+def _source_variables(
+    state: _State, operation: str, query: dict[str, str]
+) -> dict[str, object]:
+    catalog_id = query.get("catalogId")
+    if not _source_identity_matches(state, catalog_id):
+        return failure(
+            operation,
+            "MONITOR_SOURCE_CONTEXT_CHANGED",
+            "Source catalog identity changed",
+        )
+    if query.get("cursor") is not None:
+        return failure(
+            operation,
+            "MONITOR_SOURCE_CONTEXT_CHANGED",
+            "Source catalog cursor is invalid",
+        )
+    names = _source_names(query.get("query", ""))
+    scope_id = query.get("scopeId")
+    parent_id = query.get("parentId")
+    if scope_id is not None:
+        if scope_id != _SOURCE_SCOPE_ID:
+            return failure(
+                operation,
+                "MONITOR_SOURCE_CONTEXT_CHANGED",
+                "Source scope changed",
+            )
+        selected = [(name, line) for name, line in _SOURCE_VARIABLES if name in names]
+    elif parent_id is not None:
+        if parent_id not in _SOURCE_VARIABLE_IDS.values():
+            return failure(
+                operation,
+                "MONITOR_SOURCE_CONTEXT_CHANGED",
+                "Source catalog parent changed",
+            )
+        return failure(
+            operation,
+            "MONITOR_SOURCE_SELECTION_UNAVAILABLE",
+            "Source aggregate cannot be expanded",
+        )
+    else:
+        selected = [(name, line) for name, line in _SOURCE_VARIABLES if name in names]
+    items = [_source_variable_item(state, name, line) for name, line in selected]
+    return _source_page(state, items, len(items))
+
+
+def _source_selection(
+    state: _State, operation: str, query: dict[str, str]
+) -> dict[str, object]:
+    catalog_id = query.get("catalogId")
+    item_id = query.get("id")
+    selector = query.get("selector")
+    if catalog_id is None or not _source_identity_matches(state, catalog_id):
+        return failure(
+            operation,
+            "MONITOR_SOURCE_CONTEXT_CHANGED",
+            "Source catalog identity changed",
+        )
+    if (
+        not state.probe_connected
+        or selector not in _SOURCE_VARIABLE_IDS
+        or item_id != _SOURCE_VARIABLE_IDS[selector]
+    ):
+        return failure(
+            operation,
+            "MONITOR_SOURCE_SELECTION_UNAVAILABLE",
+            "Source selection is unavailable",
+        )
+    return {
+        "catalogId": catalog_id,
+        "item": {"kind": "variable", "expression": selector},
     }
 
 
@@ -161,6 +422,9 @@ def _debug_binding(state: _State) -> dict[str, object]:
         "confirmedAtUtc": "2026-08-10T00:00:00Z",
         "memoryRegions": [
             {"name": "FLASH", "origin": 0x08000000, "length": 0x10000, "attributes": "rx"}
+        ],
+        "svdReadableRegions": [
+            {"name": "PERIPHERAL", "origin": 0x40000000, "length": 0x10000, "attributes": "rw"}
         ],
     }
 
@@ -194,12 +458,18 @@ async def _dispatch_operation(
         return {
             "groups": [_group_dict(group) for group in state.groups],
             "nextCursor": None,
-            "revision": "0",
+            "revision": _groups_revision(state),
         }
+    if operation == "monitor.catalog.source.tree":
+        return _source_tree(state, operation, query or {})
+    if operation == "monitor.catalog.source.variables":
+        return _source_variables(state, operation, query or {})
+    if operation == "monitor.catalog.source.selection":
+        return _source_selection(state, operation, query or {})
     if operation == "monitor.catalog.variables":
         counter = {
             "selector": "counter",
-            "typeName": "uint32_t",
+            "typeName": _LEGACY_COUNTER_TYPE,
             "kind": "scalar",
             "byteSize": 4,
             "signed": False,
@@ -210,8 +480,9 @@ async def _dispatch_operation(
             "elementCount": None,
             "elementKind": None,
             "memberNames": [],
+            "group": _catalog_group(),
         }
-        faulty = dict(counter, selector="faulty")
+        faulty = dict(counter, selector="faulty", typeName="uint32_t")
         all_items = [counter, faulty, *( _catalog_item(index) for index in range(state.rows))]
         text_query = (query or {}).get("query", "")
         items = (
@@ -230,6 +501,10 @@ async def _dispatch_operation(
             "serializedBytes": 0,
         }
     if operation == "monitor.groups.create":
+        if payload.get("authorized") is not True:
+            return failure(
+                operation, "MONITOR_REQUEST_INVALID", "Monitor request is invalid"
+            )
         group = _Group(
             state.next_group_id(),
             str(payload.get("name", "")),
@@ -247,6 +522,11 @@ async def _dispatch_operation(
             return failure(
                 operation, "MONITOR_GROUP_NOT_FOUND", "Monitor group is unknown"
             )
+        expected = payload.get("expectedRevision")
+        if type(expected) is not int or expected != found.revision:
+            return failure(
+                operation, "MONITOR_GROUP_CONFLICT", "watch group revision changed"
+            )
         if "name" in payload:
             found.name = str(payload["name"])
         if "description" in payload:
@@ -258,13 +538,25 @@ async def _dispatch_operation(
         found.revision += 1
         return _group_dict(found)
     if operation == "monitor.groups.delete":
+        found = next(
+            (group for group in state.groups if group.group_id == resource_id), None
+        )
+        if found is None:
+            return failure(
+                operation, "MONITOR_GROUP_NOT_FOUND", "Monitor group is unknown"
+            )
+        expected = payload.get("expectedRevision")
+        if type(expected) is not int or expected != found.revision:
+            return failure(
+                operation, "MONITOR_GROUP_CONFLICT", "watch group revision changed"
+            )
         state.groups = [
             group for group in state.groups if group.group_id != resource_id
         ]
         return {"groupId": resource_id, "deleted": True}
     if operation == "monitor.groups.import":
         document = payload.get("document")
-        if not isinstance(document, dict):
+        if payload.get("authorized") is not True or not isinstance(document, dict):
             return failure(
                 operation, "MONITOR_IMPORT_INVALID", "Monitor group import is invalid"
             )
@@ -329,7 +621,7 @@ async def _dispatch_operation(
         state.active_group_id = None
         state.active_run_id = None
         return {"stopped": True}
-    return {"operation": operation}
+    return failure(operation, "MONITOR_REQUEST_INVALID", "Monitor operation is unsupported")
 
 
 def _sample_event(state: _State, sequence: int) -> dict[str, object]:
@@ -353,6 +645,7 @@ def _sample_event(state: _State, sequence: int) -> dict[str, object]:
     group = next(
         (item for item in state.groups if item.group_id == state.active_group_id), None
     )
+    group_revision = group.revision if group is not None else 1
     items = list(group.items) if group is not None else []
     values: list[dict[str, object]] = []
     for item in items:
@@ -392,7 +685,7 @@ def _sample_event(state: _State, sequence: int) -> dict[str, object]:
             "batch": {
                 "binding": binding,
                 "groupId": state.active_group_id,
-                "groupRevision": 1,
+                "groupRevision": group_revision,
                 "runId": "run-a",
                 "sequence": sequence,
                 "scheduledUnixNs": 0,
@@ -442,8 +735,8 @@ class _FakeRuntime:
                 "type": "hello",
                 "data": {
                     "protocol": "stm32-toolkit-monitor/1",
-                    "toolkitVersion": _TOOLKIT_VERSION,
-                    "monitorVersion": _MONITOR_VERSION,
+                    "toolkitVersion": TOOLKIT_VERSION,
+                    "monitorVersion": MONITOR_VERSION,
                     "stateRevision": 0,
                 },
             }

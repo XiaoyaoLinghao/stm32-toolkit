@@ -16,37 +16,71 @@ test.describe("STM32 Monitor user workflow",()=>{
   async function freshPage(page:import("@playwright/test").Page){
     await openMonitor(page,monitor.accessUrl);
     await expect(page.getByLabel("STM32 监视器")).toBeAttached();
-    await expect(page.getByText("Fake Project")).toBeVisible();
+    await expect(page.getByText("Fake Project · STM32F407VG",{exact:true})).toBeVisible();
+  }
+
+  function groupDrawer(page:import("@playwright/test").Page){
+    return page.getByRole("dialog",{name:"观测组"});
+  }
+
+  async function openGroupDrawer(page:import("@playwright/test").Page){
+    if(!await groupDrawer(page).isVisible())
+      await page.getByRole("button",{name:"编辑并保存",exact:true}).click();
+    await expect(groupDrawer(page)).toBeVisible();
+  }
+
+  async function closeGroupDrawer(page:import("@playwright/test").Page){
+    if(await groupDrawer(page).isVisible())
+      await page.getByRole("button",{name:"关闭观测组",exact:true}).click();
+    await expect(groupDrawer(page)).toBeHidden();
   }
 
   async function connectProbe(page:import("@playwright/test").Page){
     await page.getByRole("button",{name:"连接与固件详情"}).click();
     await page.getByRole("button",{name:"连接",exact:true}).click();
+    // A successful write closes the device drawer; the receipt stays visible.
+    await expect(page.getByRole("status",{name:"探针操作结果"})).toContainText("探针连接成功");
+    await page.getByRole("button",{name:"连接与固件详情"}).click();
     await expect(page.getByText(/已连接：probe-a/)).toBeVisible();
-    await page.getByRole("button",{name:"关闭"}).click();
+    await page.getByRole("button",{name:"关闭设备详情",exact:true}).click();
   }
 
   async function addWatch(page:import("@playwright/test").Page,expression:string){
-    const catalog=page.getByRole("button",{name:"浏览变量与寄存器"});
-    if(await catalog.isVisible())await catalog.click();
-    await page.getByLabel("搜索").fill(expression);
-    await expect(page.getByRole("button",{name:"加入观测组草稿"})).toBeVisible();
-    await page.getByRole("button",{name:"加入观测组草稿"}).click();
+    await page.getByRole("tab",{name:"源码目录",exact:true}).click();
+    const search=page.getByLabel("搜索",{exact:true});
+    await search.fill(expression);
+    await search.press("Enter");
+    const file=page.getByRole("button",{name:"展开 firmware/main.c",exact:true});
+    await expect(file).toBeVisible();
+    await file.click();
+    const add=page.getByRole("button",{name:`加入观测组草稿 ${expression}`,exact:true});
+    await expect(add).toBeVisible();
+    await add.click();
+    await expect(page.getByText("已加入组草稿（尚未保存）",{exact:true})).toBeVisible();
+  }
+
+  async function newDraft(page:import("@playwright/test").Page){
+    await openGroupDrawer(page);
+    await page.getByRole("button",{name:"新建观测组"}).click();
+    await expect(page.getByRole("heading",{name:"新建观测组草稿"})).toBeVisible();
+    await closeGroupDrawer(page);
   }
 
   async function createGroup(page:import("@playwright/test").Page,name:string,expression:string){
-    await page.getByRole("button",{name:"新建观测组"}).click();
+    await newDraft(page);
     await addWatch(page,expression);
-    await page.getByLabel("名称").fill(name);
-    const create=page.getByRole("button",{name:"创建观测组"});
+    await openGroupDrawer(page);
+    await page.getByLabel("名称",{exact:true}).fill(name);
+    const create=page.getByRole("button",{name:"创建观测组",exact:true});
     await expect(create).toBeEnabled();
     await create.click();
-    await expect(page.getByRole("button",{name:`${name} (1)`})).toBeVisible();
+    await expect(page.getByRole("button",{name:`${name} (1)`,exact:true})).toBeVisible();
   }
 
   test("fresh workspace starts with zero named groups",async({page})=>{
     await freshPage(page);
-    const section=page.getByLabel("观测组");
+    await openGroupDrawer(page);
+    const section=page.getByRole("region",{name:"观测组"});
     await section.getByRole("button",{name:"新建观测组"}).click();
     await expect(section.getByRole("heading",{name:"新建观测组草稿"})).toBeVisible();
     await expect(section.getByRole("button",{name:"创建观测组"})).toBeDisabled();
@@ -56,15 +90,15 @@ test.describe("STM32 Monitor user workflow",()=>{
     await freshPage(page);
     await connectProbe(page);
     await createGroup(page,"Motor Watch","counter");
-    await expect(page.getByText("Motor Watch (1)")).toBeVisible();
+    await expect(page.getByRole("button",{name:"Motor Watch (1)",exact:true})).toBeVisible();
   });
 
   test("edits an existing group via expected revision save",async({page})=>{
     await freshPage(page);
     await connectProbe(page);
     await createGroup(page,"Motor Watch","counter");
-    await page.getByLabel("名称").fill("Renamed Watch");
-    await page.getByRole("button",{name:"保存观测组"}).click();
+    await page.getByLabel("名称",{exact:true}).fill("Renamed Watch");
+    await page.getByRole("button",{name:"保存观测组",exact:true}).click();
     await expect(page.getByRole("button",{name:"Renamed Watch (1)"})).toBeVisible();
   });
 
@@ -83,6 +117,7 @@ test.describe("STM32 Monitor user workflow",()=>{
 
   test("imports a group document after preview and second confirmation",async({page})=>{
     await freshPage(page);
+    await openGroupDrawer(page);
     await page.getByRole("button",{name:"导入观测组"}).click();
     await page.getByTestId("group-import-file").setInputFiles({
       name:"groups.json",
@@ -101,6 +136,7 @@ test.describe("STM32 Monitor user workflow",()=>{
 
   test("rejects an invalid import without sending it",async({page})=>{
     await freshPage(page);
+    await openGroupDrawer(page);
     await page.getByRole("button",{name:"导入观测组"}).click();
     await page.getByTestId("group-import-file").setInputFiles({
       name:"bad.json",
@@ -133,6 +169,7 @@ test.describe("STM32 Monitor user workflow",()=>{
     await freshPage(page);
     await connectProbe(page);
     await createGroup(page,"Motor Watch","counter");
+    await closeGroupDrawer(page);
     const state=page.getByLabel("采样控制").getByRole("status");
     await page.getByRole("button",{name:"开始采样"}).click();
     await expect(state).toContainText("采样中");
@@ -147,11 +184,13 @@ test.describe("STM32 Monitor user workflow",()=>{
   test("one failed item does not block the live table value",async({page})=>{
     await freshPage(page);
     await connectProbe(page);
-    await page.getByRole("button",{name:"新建观测组"}).click();
+    await newDraft(page);
     await addWatch(page,"counter");
     await addWatch(page,"faulty");
-    await page.getByLabel("名称").fill("Motor Watch");
-    await page.getByRole("button",{name:"创建观测组"}).click();
+    await openGroupDrawer(page);
+    await page.getByLabel("名称",{exact:true}).fill("Motor Watch");
+    await page.getByRole("button",{name:"创建观测组",exact:true}).click();
+    await closeGroupDrawer(page);
     await page.getByRole("button",{name:"开始采样"}).click();
     await expect(page.getByLabel("采样控制").getByRole("status")).toContainText("采样中");
     const table=page.getByRole("region",{name:"最新数值"}).getByRole("table");
@@ -162,10 +201,14 @@ test.describe("STM32 Monitor user workflow",()=>{
 
   test("keeps catalog results inside a local scroller at 320 pixels",async({page})=>{
     await page.setViewportSize({width:320,height:700});
-    await freshPage(page);
+    // The header project summary is intentionally hidden at this viewport, so
+    // this layout scenario checks only the shell and the catalog scroller.
+    await openMonitor(page,monitor.accessUrl);
+    await expect(page.getByLabel("STM32 监视器")).toBeAttached();
     await connectProbe(page);
-    await page.getByRole("button",{name:"浏览变量与寄存器"}).click();
-    await page.getByLabel("搜索").fill("counter");
+    await page.getByRole("tab",{name:"固件变量与寄存器",exact:true}).click();
+    await page.getByLabel("搜索",{exact:true}).fill("counter");
+    await page.getByRole("button",{name:"搜索/加载",exact:true}).click();
     const results=page.getByRole("region",{name:"目录搜索结果"});
     await expect(results.getByText("counter")).toBeVisible();
     const widths=await page.evaluate(()=>({page:document.documentElement.scrollWidth,viewport:window.innerWidth}));
@@ -210,8 +253,8 @@ test.describe("STM32 Monitor user workflow",()=>{
     });
     await freshPage(page);
     await page.getByRole("button",{name:"历史记录"}).click();
-    await page.getByLabel("开始时间（UTC）").fill("2026-08-10T00:00:00.000");
-    await page.getByLabel("结束时间（UTC）").fill("2026-08-10T00:00:02.000");
+    await page.getByLabel("开始时间（UTC）",{exact:true}).fill("2026-08-10T00:00:00.000");
+    await page.getByLabel("结束时间（UTC）",{exact:true}).fill("2026-08-10T00:00:02.000");
     await page.getByRole("button",{name:"查询历史"}).click();
     await expect(page.getByText("此范围内暂无历史记录。")).toBeVisible();
     const exportStart=page.getByLabel("导出开始时间（UTC）");
@@ -228,8 +271,8 @@ test.describe("STM32 Monitor user workflow",()=>{
     expect(submitted).toHaveLength(1);
     expect(submitted[0]).toContain((BigInt(Date.parse("2026-08-10T00:00:01Z"))*1_000_000n).toString());
     expect(submitted[0]).toContain('"format":"csv"');
-    await page.getByLabel("开始时间（UTC）").fill("2026-08-10T00:00:10.000");
-    await page.getByLabel("结束时间（UTC）").fill("2026-08-10T00:00:12.000");
+    await page.getByLabel("开始时间（UTC）",{exact:true}).fill("2026-08-10T00:00:10.000");
+    await page.getByLabel("结束时间（UTC）",{exact:true}).fill("2026-08-10T00:00:12.000");
     await page.getByRole("button",{name:"查询历史"}).click();
     await expect(page.getByText("查询范围已更新，保留当前导出范围。")).toBeVisible();
     await expect(exportStart).toHaveValue(/2026-08-10T00:00:01/);

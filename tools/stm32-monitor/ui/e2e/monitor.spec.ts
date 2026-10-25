@@ -16,7 +16,7 @@ test.describe("STM32 Monitor end-to-end",()=>{
   test("bootstraps from a fragment token and renders the shell",async({page})=>{
     await openMonitor(page,monitor.accessUrl);
     await expect(page.getByLabel("STM32 监视器")).toBeAttached();
-    await expect(page.getByText("Fake Project")).toBeVisible();
+    await expect(page.getByText("Fake Project · STM32F407VG",{exact:true})).toBeVisible();
   });
 
   test("serves content-hashed assets with immutable caching",async({page,request})=>{

@@ -29,12 +29,19 @@ test("five-minute production fixture stays bounded",async({page,context})=>{
     expect(groupId.length).toBeGreaterThan(0);
 
     await navigate(page,monitor);
+    // Named groups are listed in the group drawer; open it to verify the API
+    // creation was adopted, then close it before driving live controls.
+    await page.getByRole("button",{name:"编辑并保存",exact:true}).click();
     await expect(page.getByRole("button",{name:"Perf Watch (256)"})).toBeVisible();
+    await page.getByRole("button",{name:"关闭观测组",exact:true}).click();
+    await expect(page.getByRole("dialog",{name:"观测组"})).toBeHidden();
 
     await page.getByRole("button",{name:"连接与固件详情"}).click();
     await page.getByRole("button",{name:"连接",exact:true}).click();
+    await expect(page.getByRole("status",{name:"探针操作结果"})).toContainText("探针连接成功");
+    await page.getByRole("button",{name:"连接与固件详情"}).click();
     await expect(page.getByText(/已连接：probe-a/)).toBeVisible();
-    await page.getByRole("button",{name:"关闭"}).click();
+    await page.getByRole("button",{name:"关闭设备详情",exact:true}).click();
     await page.getByRole("button",{name:"开始采样"}).click();
     await expect(page.getByLabel("采样控制").getByRole("status")).toContainText("采样中");
 
