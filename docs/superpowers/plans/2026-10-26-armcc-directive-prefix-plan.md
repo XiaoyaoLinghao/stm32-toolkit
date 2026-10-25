@@ -1,0 +1,9 @@
+# ARMCC directive prefix implementation plan
+
+Accepted base41925c6e915a8af41c350bd08113e82bed41d1ed; governing design is ../specs/2026-10-26-armcc-directive-prefix-design.md. Primary design/orchestration/full-diff review/acceptance; Claude CLI existing provider implementation/tests.
+
+1. File-only author creates only test_armcc_directive_prefix.py using real scan/model/planner paths and existing synthetic fixtures. Initially target the demonstrated same-line prefix and adjacent controls; no product edits. Do not run tests in the file-only session.
+2. Primary reviews fixtures and freezes a reproduction head. Run the focused file with a verified exact native PowerShell command, then independently confirm the relevant failure. Distinguish product behavioral failures from fixture mistakes; no assertions may be weakened to fit observed output.
+3. After primary classifies the result, a file-only author fixes only the bounded scanner/reconciliation contract, extends relevant lexical controls and reports changed files. No new dependency, parser framework, global configuration or installation. Preserve comment/string/source evidence exactly.
+4. Primary reviews the complete base-to-CodeHead diff. Freeze and run focused plus complete affected public migration/Keil suites using bounded shards with retained duration estimates. Primary runs independent focused verification. Preserve failed trials and source identities.
+5. Update actual VS Code guidance through Claude in explicitly named existing documentation files. Primary records acceptance and source-aware native coverage obligations; integrate locally only after required checks. No source-changing slice may borrow native arcs from the old changed file. Final release gates and current pending installation/Git authentication stay independent.
