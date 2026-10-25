@@ -4,7 +4,7 @@
     "name": "zh"
   },
   "index.html": {
-    "file": "assets/index-12PWwl5f.js",
+    "file": "assets/index-zHYESMDy.js",
     "name": "index",
     "src": "index.html",
     "isEntry": true,
@@ -16,7 +16,7 @@
       "src/app.tsx"
     ],
     "css": [
-      "assets/index-ZOexCtJu.css"
+      "assets/index-CXR3Yr1r.css"
     ]
   },
   "node_modules/preact/dist/preact.module.js": {
