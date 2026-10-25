@@ -261,15 +261,15 @@
     "releaseAccepted": false
   },
   "latestSupplement": {
-    "codeHead": "25b29d2e71009c1de7b45cc5fbd00b72a419a98f",
-    "report": "../FIRMWARE-INTEGRITY-REGRESSION/implementation-report.md",
-    "newCases": 14,
+    "codeHead": "0be59bf039747ac6ba9b1effc6fe454261588bbb",
+    "report": "../MONITOR-INTEGRITY-REGRESSION/implementation-report.md",
+    "newCases": 21,
     "uniqueCohort": {
-      "cases": 8748,
-      "passed": 8729,
+      "cases": 8769,
+      "passed": 8750,
       "skipped": 19
     },
-    "nativeQualificationSha256": "037e5ae085f197006a699982ab36b726c8c08f7ada2e23715d143f059745703d",
+    "nativeQualificationSha256": "9bcec7da43ec834eda9783fbc96b3952f19bf3b05727aa3b285abde363167d2e",
     "singleHeadAllGreenRerun": false,
     "releaseAccepted": false
   },
@@ -284,6 +284,19 @@
         "skipped": 19
       },
       "nativeQualificationSha256": "4f0499652d93dffb586ab359721575280f9f40c818faa6c6c1d0d516949a542d",
+      "singleHeadAllGreenRerun": false,
+      "releaseAccepted": false
+    },
+    {
+      "codeHead": "25b29d2e71009c1de7b45cc5fbd00b72a419a98f",
+      "report": "../FIRMWARE-INTEGRITY-REGRESSION/implementation-report.md",
+      "newCases": 14,
+      "uniqueCohort": {
+        "cases": 8748,
+        "passed": 8729,
+        "skipped": 19
+      },
+      "nativeQualificationSha256": "037e5ae085f197006a699982ab36b726c8c08f7ada2e23715d143f059745703d",
       "singleHeadAllGreenRerun": false,
       "releaseAccepted": false
     }

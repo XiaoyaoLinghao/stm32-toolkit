@@ -4,7 +4,9 @@
 
 ## 1. 当前断点与证据
 
-2026-10-26 最新补测：FIRMWARE-INTEGRITY-REGRESSION 离线测试切片已 **ACCEPTED**，见[报告](../codex/returns/FIRMWARE-INTEGRITY-REGRESSION/implementation-report.md)。CodeHead `25b29d2e71009c1de7b45cc5fbd00b72a419a98f`；Claude 50/50、主代理独立 24/24，新增 14 项与 23 个 Toolkit 分支。当前去重复用队列 8,729 通过/19 跳过；Toolkit 总体 87.3729%、风险核心 87.5000%，Monitor 风险核心仍 91.5666%，永久门槛未满足。不是最终单一提交全量重跑。继续 Monitor 完整性测试；安装解释器修正与本地 Git 登录仍待用户响应，实际 VS Code、最终包及发布未完成。首次误调禁用 Bash 已停止且无编辑；新文件会话与原生 PowerShell 执行分开留证。以下是历史断点。
+2026-10-26 最新补测：MONITOR-INTEGRITY-REGRESSION 已 **ACCEPTED_WITH_FIXES**，见[报告](../codex/returns/MONITOR-INTEGRITY-REGRESSION/implementation-report.md)。CodeHead `0be59bf039747ac6ba9b1effc6fe454261588bbb`；最终 Claude 494/494、主代理独立 109/109，新增 21 项及 24 个 Monitor 风险分支。首轮双方各两项新夹具失败均保留，修正 SourceIndex truncated 参数与真实 SQLite WAL 准备后完整相关组复跑通过。当前去重复用队列 8,750 通过/19 跳过；Toolkit 总体/风险 87.3729%/87.5000%，Monitor 风险 92.2527%，永久门槛仍未满足。继续诊断完整性补测；安装解释器修正、本机 Git 登录待用户响应，实际 VS Code、最终包及发布未完成。不代表最终单一提交全量重跑或硬件资格。以下为历史断点。
+
+2026-10-26 此前补测：FIRMWARE-INTEGRITY-REGRESSION 离线测试切片已 **ACCEPTED**，见[报告](../codex/returns/FIRMWARE-INTEGRITY-REGRESSION/implementation-report.md)。CodeHead `25b29d2e71009c1de7b45cc5fbd00b72a419a98f`；Claude 50/50、主代理独立 24/24，新增 14 项与 23 个 Toolkit 分支。当前去重复用队列 8,729 通过/19 跳过；Toolkit 总体 87.3729%、风险核心 87.5000%，Monitor 风险核心仍 91.5666%，永久门槛未满足。不是最终单一提交全量重跑。继续 Monitor 完整性测试；安装解释器修正与本地 Git 登录仍待用户响应，实际 VS Code、最终包及发布未完成。首次误调禁用 Bash 已停止且无编辑；新文件会话与原生 PowerShell 执行分开留证。以下是历史断点。
 
 2026-10-26 此前补测：MIGRATION-BOUNDARY-REGRESSION 离线测试切片已 **ACCEPTED**，见[报告](../codex/returns/MIGRATION-BOUNDARY-REGRESSION/implementation-report.md)。CodeHead `d30b20ca7592ba433a88f7bfda6fb06ecc98caab`；Claude 相关完整组 264/264、主代理独立 81/81，新增 60 项及 51 个 Toolkit 分支。当前去重复用队列 8,715 通过/19 跳过；Toolkit 总体 87.2415%、风险核心 87.3589%，Monitor 风险核心仍 91.5666%，永久门槛仍未满足。不是最终单一提交全量重跑。继续外部固件完整性测试；安装解释器修正与本地 Git 登录待用户响应，实际 VS Code、最终包及发布未完成。以下集成记录保留补测前状态。
 

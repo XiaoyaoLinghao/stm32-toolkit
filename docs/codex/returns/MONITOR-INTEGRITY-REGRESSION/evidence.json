@@ -1,0 +1,68 @@
+{
+  "acceptedBase": "1b79981e1916e1f704c5c4ee393d6b935e705aaa",
+  "codeHead": "0be59bf039747ac6ba9b1effc6fe454261588bbb",
+  "verdict": "ACCEPTED_WITH_FIXES",
+  "scope": "test-only offline catalog/storage/history/replay integrity",
+  "authorSession": "50b9bd6f-30be-40c9-b5c1-4d5aca4de51c",
+  "verificationSession": "9c454e50-af72-4258-866c-7039c4afddd4",
+  "newCases": 21,
+  "authorAffectedCases": 494,
+  "primaryIndependentCases": 109,
+  "firstFailures": {
+    "author": 2,
+    "primary": 2
+  },
+  "sourceUnchanged": true,
+  "cohort": {
+    "cases": 8769,
+    "passed": 8750,
+    "skipped": 19
+  },
+  "scopes": {
+    "toolkit-overall": {
+      "covered": 15292,
+      "total": 17502,
+      "floor": 90,
+      "percent": 87.37287167180894,
+      "gain": 0,
+      "status": "UNMET"
+    },
+    "toolkit-risk-core-v2": {
+      "covered": 14259,
+      "total": 16296,
+      "floor": 90,
+      "percent": 87.5,
+      "gain": 0,
+      "status": "UNMET"
+    },
+    "monitor-overall": {
+      "covered": 3227,
+      "total": 3498,
+      "floor": 90,
+      "percent": 92.2527158376215,
+      "gain": 24,
+      "status": "PASS"
+    },
+    "monitor-risk-core-v2": {
+      "covered": 3227,
+      "total": 3498,
+      "floor": 95,
+      "percent": 92.2527158376215,
+      "gain": 24,
+      "status": "UNMET"
+    }
+  },
+  "evidenceHashes": {
+    "monitor-integrity-a/manifest.json": "2faf3ff84f1212f44cf477a77a4bf10811c051cc3d7e57e1cbd6b010b71f65b7",
+    "monitor-integrity-a/mi-01/execution.json": "64631b88f3a5a8a7d03f43a09683e74f126176f371c09b42540340f12ddbcad4",
+    "monitor-integrity-b/manifest.json": "f7ab96cc1a6637c33f38ac0901386acbe474909461d2fc2014b16a66863f581c",
+    "monitor-integrity-b/mi-01/execution.json": "06755bae7f18dd5d0c5558f4b0bb55d4aae81e16b31733e94e80b62ebf36ecf9",
+    "primary-monitor-integrity-a/execution.json": "619751e1f4ad21fc65aaf343e21ce0e0839d5acdcfed91c1d283b606e7352ce9",
+    "primary-monitor-integrity-b/execution.json": "e33d2961d1afd00dd640bde8b2508fd32813f8ea85342664183d7985a51f95e4",
+    "coverage-monitor-b/qualification.json": "9bcec7da43ec834eda9783fbc96b3952f19bf3b05727aa3b285abde363167d2e",
+    "coverage-monitor-b/native.json": "f93d5091dd101addc5b759111d72a1753304efbaf289fb81d5646a5dc9ef0a9c"
+  },
+  "nativeRawFileCount": 952,
+  "singleHeadAllGreenRerun": false,
+  "releaseAccepted": false
+}
