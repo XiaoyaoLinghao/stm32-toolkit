@@ -4,7 +4,9 @@
 
 ## 1. 当前断点与证据
 
-2026-10-26 最新补测：RECOVERY-AUTHORITY-REGRESSION 已 **ACCEPTED_WITH_FIXES**，见[报告](../codex/returns/RECOVERY-AUTHORITY-REGRESSION/implementation-report.md)。CodeHead `1b2696ff768c5880cc6bdae232d7093f5f1be0ac`；最终 Claude 新增22/22、主代理140/140；310项未变相关通过结果明确复用。首轮双方各12个JSON比较夹具失败及后台通知后禁用Read拒绝均保留，失败运行覆盖率数据未导入。新增12个Toolkit分支；当前队列8,796通过/19跳过，Toolkit总体/风险87.4814%/87.6166%，Monitor风险92.2527%，永久门槛未满足。ARMCC注释前缀指令问题正独立复现；安装解释器修正、本机Git登录待原问题回复，实际VS Code、最终双构建及发布仍未完成。不是最终单一提交全量重跑，不授予硬件资格。以下为历史断点。
+2026-10-26 最新复核：ARMCC-DIRECTIVE-PREFIX 已 **ACCEPTED_WITH_FIXES**，见[报告](../codex/returns/ARMCC-DIRECTIVE-PREFIX/implementation-report.md)。CodeHead `0ddfa8c92d6c0296ff6f34334fb99c7ba10dcb2e`；Claude 新增42/42、主代理203/203、受影响完整文件回归898/898通过。旧源码分支数据已从新聚合副本移除，再采纳当前原生数据；原始数据保留。当前去重复用队列8,838通过/19跳过，数值门槛仍未满足；不是最终单一提交全量重跑。下一步冻结源码并完成候选双构建，安装解释器修正及本机Git登录仍待原问题回复；实际VS Code、安装和发布未完成。以下为历史断点。
+
+2026-10-26 此前补测：RECOVERY-AUTHORITY-REGRESSION 已 **ACCEPTED_WITH_FIXES**，见[报告](../codex/returns/RECOVERY-AUTHORITY-REGRESSION/implementation-report.md)。CodeHead `1b2696ff768c5880cc6bdae232d7093f5f1be0ac`；最终 Claude 新增22/22、主代理140/140；310项未变相关通过结果明确复用。首轮双方各12个JSON比较夹具失败及后台通知后禁用Read拒绝均保留，失败运行覆盖率数据未导入。新增12个Toolkit分支；当前队列8,796通过/19跳过，Toolkit总体/风险87.4814%/87.6166%，Monitor风险92.2527%，永久门槛未满足。ARMCC注释前缀指令问题正独立复现；安装解释器修正、本机Git登录待原问题回复，实际VS Code、最终双构建及发布仍未完成。不是最终单一提交全量重跑，不授予硬件资格。以下为历史断点。
 
 2026-10-26 此前补测：DIAGNOSTIC-INTEGRITY-REGRESSION 已 **ACCEPTED_WITH_FIXES**，见[报告](../codex/returns/DIAGNOSTIC-INTEGRITY-REGRESSION/implementation-report.md)。CodeHead `83365c700baa9fe79ba6784efbac87365c93cfda`；Claude 226 通过/1 个原有 WinError 1314 符号链接能力跳过，主代理独立 25/25，新增 24 项及 7 个 Toolkit 分支。全部新增用例与原生 Windows 锁测试执行通过，既有跳过明确留待主代理负责的具备符号链接能力的最终资格环境。当前去重复用队列 8,774 通过/19 跳过；Toolkit 总体/风险 87.4129%/87.5430%，Monitor 风险 92.2527%，永久门槛仍未满足。继续恢复流程完整性复核；安装解释器修正、本机 Git 登录仍待用户响应，实际 VS Code、最终包及发布未完成。不是最终单一提交全量重跑。以下为历史断点。
 

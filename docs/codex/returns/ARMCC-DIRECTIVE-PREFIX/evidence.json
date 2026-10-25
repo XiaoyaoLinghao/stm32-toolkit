@@ -1,0 +1,108 @@
+{
+  "acceptedBase": "41925c6e915a8af41c350bd08113e82bed41d1ed",
+  "codeHead": "0ddfa8c92d6c0296ff6f34334fb99c7ba10dcb2e",
+  "verdict": "ACCEPTED_WITH_FIXES",
+  "authorSession": "71da2a45-6316-42b9-acd0-ff308d1f0e33",
+  "focusedAuthorPassed": 42,
+  "independentPrimaryPassed": 203,
+  "affectedPassed": 898,
+  "newCases": 42,
+  "cohort": {
+    "cases": 8857,
+    "passed": 8838,
+    "skipped": 19
+  },
+  "scopes": {
+    "toolkit-overall": {
+      "floor": 90,
+      "covered": 15380,
+      "total": 17606,
+      "percent": 87.35658298307395,
+      "status": "UNMET"
+    },
+    "toolkit-risk-core-v2": {
+      "floor": 90,
+      "covered": 14309,
+      "total": 16342,
+      "percent": 87.5596622200465,
+      "status": "UNMET"
+    },
+    "monitor-overall": {
+      "floor": 90,
+      "covered": 3227,
+      "total": 3498,
+      "percent": 92.2527158376215,
+      "status": "PASS"
+    },
+    "monitor-risk-core-v2": {
+      "floor": 95,
+      "covered": 3227,
+      "total": 3498,
+      "percent": 92.2527158376215,
+      "status": "UNMET"
+    }
+  },
+  "obsoleteSourceArcsPurged": {
+    "tools/stm32-toolkit/src/stm32_toolkit/keil/armcc_scan.py": {
+      "before": {
+        "covered": 113,
+        "total": 120,
+        "sha256": "6161b94e729f870cb1d3ce49871c35072e7a6dabc402548ddc8788231dc2a2b7"
+      },
+      "after": {
+        "sha256": "ba0bcc8f16db1c385b858f81a1e616e74c79833fa7c5736ee5035d7afb8f7cdd",
+        "covered": 151,
+        "total": 178
+      }
+    },
+    "tools/stm32-toolkit/src/stm32_toolkit/migration/planner.py": {
+      "before": {
+        "covered": 154,
+        "total": 176,
+        "sha256": "648164ad3111ab3f2b189bd141e0934e14b7fcdd1e8693606ee6c987a12f58b6"
+      },
+      "after": {
+        "sha256": "10c263abac30fbf6dd4dcf654bd9084987a78c120181dcb2adfbedfba8ad3585",
+        "covered": 158,
+        "total": 182
+      }
+    },
+    "tools/stm32-toolkit/src/stm32_toolkit/migration/rules.py": {
+      "before": {
+        "covered": 293,
+        "total": 368,
+        "sha256": "3c9cea04f5a6dc947e6eba43ddc01c075b4e0f38c6258483369c027043621e84"
+      },
+      "after": {
+        "sha256": "cf8849dbfcc1e57886be81d258e342cdf953dd803f20378358903cdb2c4d3345",
+        "covered": 320,
+        "total": 408
+      }
+    }
+  },
+  "sourceBindingNote": "Old raw applies only to unchanged files; obsolete arcs purged before new native data. Never flatten this lineage into unfiltered raw reuse.",
+  "evidenceHashes": {
+    "directive-reproduction-b/execution.json": "2e502f02c972181ad92dac7373e1f0d81109e44547c5443505f2eff6ed06a14c",
+    "directive-reproduction-c/execution.json": "afce1cd0723bd908988be07147eddbb7eb73772e8aeb990dc615c6ebe075230a",
+    "directive-reproduction-d/execution.json": "65e4df5f4ed27e999e2ab3c2c7669e3ef07faad1c2b1dc8ce80fe6f1baa905bc",
+    "primary-directive-a/execution.json": "cc96848a488f21b2911f90e1d75a48c13a0d67f88cd53b472a3a78a7c5d2f1c9",
+    "directive-native-a/manifest.json": "588bbdc55f00aadd7a219d486180a1e4d535c6d795c347f5b26d9c1f9d09db9f",
+    "coverage-directive-a/qualification.json": "be2b30944f30898600bf1df93e5362c61410391713e48314870774796dd88a2a",
+    "coverage-directive-a/native.json": "0431b52c158cac385ba44eb27a0ea82fe2dbde8e6dddd749862c2d3fff1b57f3",
+    "directive-first-author.diff": "9d91641aca99a40d4550728106e31041f659d521dc8e57df111b3a64aa0cafa9",
+    "directive-second-author.diff": "e2622fbe5eeefd9bd728f299c7580864397e67cdd2df5b8679fd978b50dc3a93",
+    "directive-native-a/dp-01/execution.json": "c8b2c2a878e4a4bbf68e9a88d59b0a31b5c34663fe8ee3023ac334d0bc3afdb0",
+    "directive-native-a/dp-02/execution.json": "21509821f0af9dd2696ccfb88f2657666107add63de02f2cc06b666c75b528c2",
+    "directive-native-a/dp-03/execution.json": "2151460751ae1e189d2e511ab58176ce4a27711491622cf8b2b7170622bff080",
+    "directive-native-a/dp-04/execution.json": "6132c342e7f15f443867e47206e2fd8fe0f5efe7f3f260946d1e2b37736f1d9e",
+    "directive-native-a/dp-05/execution.json": "c412e2c2a347cdce87c3a5ca30da37f06d2c415941aa1271b15c3b0f9969a551",
+    "directive-native-a/dp-06/execution.json": "6d377fe60d78956b89bb23dac7c2960bfc2dde7efdf541504f80a110be86f174",
+    "directive-native-a/dp-07/execution.json": "769d57d096112ab5c3ae89f9585a28d7a5d367b4f768cbcd4daba7b3e3ae4f97",
+    "directive-native-a/dp-08/execution.json": "8b95b95c4cab0ee0d7f9623807ba4ace59acf1f5b73e76682536104d28237e60",
+    "directive-native-a/dp-09/execution.json": "75f7d16b75e19d6e3422bf945a5e3a49a3c35c48618b707ec6061c688525e151",
+    "directive-native-a/dp-10/execution.json": "d9d8f7760ac8e1427997080bd87e5b930fb9b38cb613ebdb814dcef0be52638d"
+  },
+  "singleHeadAllGreenRerun": false,
+  "hardwarePerformed": false,
+  "releaseAccepted": false
+}
