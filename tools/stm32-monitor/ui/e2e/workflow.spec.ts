@@ -201,24 +201,17 @@ test.describe("STM32 Monitor user workflow",()=>{
 
   test("keeps catalog results inside a local scroller at 320 pixels",async({page})=>{
     await page.setViewportSize({width:320,height:700});
-    // The current grouped tree wraps instead of overflowing horizontally, so
-    // this scenario replaces only the item page of the fake runtime's own
-    // envelope (protocol and versions untouched) with a bounded page that
-    // really overflows vertically. The first item keeps the runtime's long
-    // typedef; the other 39 items are schema-valid fixtures, not firmware or
+    // The current grouped tree wraps instead of overflowing horizontally. This
+    // scenario performs two deliberate read-only loads: the first observes the
+    // fake runtime's ordinary catalog page and keeps its real envelope and
+    // long-typedef item; the second serves a bounded 40-item fixture page for
+    // the local overflow contract. They are fixture setup, not an automatic
+    // retry. The other 39 items are schema-valid fixtures, not firmware or
     // hardware evidence.
-    const captured:{originalType?:string}={};
-    await page.route(/\/api\/v1\/catalog\/variables(?:\?.*)?$/,async route=>{
-      const response=await route.fetch();
-      const envelope=await response.json() as {data:{items:{selector:string;typeName:string}[];nextCursor:string|null}};
-      const original=envelope.data.items[0];
-      if(original===undefined)throw new Error("fake runtime catalog page is empty");
-      captured.originalType=original.typeName;
-      const items=[original,...Array.from({length:39},(_value,index)=>({selector:`counter${index+1}`,
-        typeName:"uint32_t",kind:"scalar",byteSize:4,signed:false,encoding:null,qualifiers:[],aliases:[],
-        enumValues:[],elementCount:null,elementKind:null,memberNames:[],group:{id:"firmware",label:"Firmware"}}))];
-      await route.fulfill({response,json:{...envelope,data:{...envelope.data,items,nextCursor:null}}});
-    });
+    type CatalogEnvelope={protocol:string;toolkitVersion:string;monitorVersion:string;ok:boolean;operation:string;code:string;message:string;
+      data:{items:{selector:string;typeName:string}[];nextCursor:string|null}|null;details:Record<string,unknown>};
+    const results=page.getByRole("region",{name:"目录搜索结果"});
+    const load=page.getByRole("button",{name:"搜索/加载",exact:true});
     // The header project summary is intentionally hidden at this viewport, so
     // this layout scenario checks only the shell and the catalog scroller.
     await openMonitor(page,monitor.accessUrl);
@@ -227,11 +220,20 @@ test.describe("STM32 Monitor user workflow",()=>{
     await page.getByRole("tab",{name:"固件变量与寄存器",exact:true}).click();
     const search=page.getByLabel("搜索",{exact:true});
     await search.fill("counter");
-    await page.getByRole("button",{name:"搜索/加载",exact:true}).click();
-    const results=page.getByRole("region",{name:"目录搜索结果"});
+    const ordinary=page.waitForResponse(response=>response.request().method()==="GET"&&
+      response.url().includes("/api/v1/catalog/variables"));
+    await load.click();
+    const observed=await ordinary;
+    const envelope=await observed.json() as CatalogEnvelope;
+    if(!observed.ok()||envelope.ok!==true||envelope.code!=="OK"||envelope.data===null)
+      throw new Error("the ordinary catalog load did not return a successful page");
+    const observedData=envelope.data;
+    const original=observedData.items[0];
+    if(original===undefined||typeof original.typeName!=="string")
+      throw new Error("the ordinary catalog load lacks the runtime long-typedef item");
     await expect(results.getByText("counter",{exact:true})).toBeVisible();
-    const originalType=captured.originalType;
-    if(originalType===undefined)throw new Error("the fake runtime catalog page was not captured");
+    await expect(load).toBeEnabled();
+    const originalType=original.typeName;
     expect(originalType.length).toBeGreaterThan(40);
     const long=results.getByText(originalType,{exact:true});
     await expect(long).toBeVisible();
@@ -239,6 +241,14 @@ test.describe("STM32 Monitor user workflow",()=>{
       right:element.getBoundingClientRect().right}));
     expect(longBounds.scrollWidth).toBeLessThanOrEqual(longBounds.clientWidth);
     expect(longBounds.right).toBeLessThanOrEqual(320);
+    const items=[original,...Array.from({length:39},(_value,index)=>({selector:`counter${index+1}`,
+      typeName:"uint32_t",kind:"scalar",byteSize:4,signed:false,encoding:null,qualifiers:[],aliases:[],
+      enumValues:[],elementCount:null,elementKind:null,memberNames:[],group:{id:"firmware",label:"Firmware"}}))];
+    const fixturePage:CatalogEnvelope={...envelope,data:{...observedData,items,nextCursor:null}};
+    await page.route(/\/api\/v1\/catalog\/variables(?:\?.*)?$/,route=>route.fulfill({status:200,contentType:"application/json",
+      body:JSON.stringify(fixturePage)}));
+    await load.click();
+    await expect(results.getByText("counter39",{exact:true})).toBeVisible();
     await search.focus();
     await page.keyboard.press("Tab");
     await page.keyboard.press("Tab");

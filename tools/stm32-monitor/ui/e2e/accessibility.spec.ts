@@ -42,6 +42,23 @@ test.describe("STM32 Monitor browser accessibility",()=>{
     ]);
     expect(await page.evaluate(()=>matchMedia("(prefers-reduced-motion: reduce)").matches)).toBe(true);
 
+    await expect(page.locator(".main-nav")).toBeVisible();
+    await expect(page.locator(".header-status")).toBeVisible();
+    const header=await page.evaluate(()=>{
+      const rect=(element:Element)=>{const box=element.getBoundingClientRect();return{left:box.left,right:box.right};};
+      const nav=document.querySelector(".main-nav")!;
+      const status=document.querySelector(".header-status")!;
+      const device=document.querySelector(".header-device")!;
+      return{navButtons:[...nav.querySelectorAll("button")].map(rect),nav:rect(nav),
+        status:rect(status),device:rect(device),statusOverflow:getComputedStyle(status).overflow};
+    });
+    expect(header.navButtons).toHaveLength(2);
+    expect(header.navButtons[0]!.right).toBeLessThanOrEqual(header.navButtons[1]!.left+1);
+    expect(header.nav.right).toBeLessThanOrEqual(header.status.left+1);
+    expect(header.status.right).toBeLessThanOrEqual(header.device.left+1);
+    expect(header.nav.right).toBeLessThanOrEqual(header.device.left+1);
+    expect(header.statusOverflow).toBe("hidden");
+
     await page.getByRole("button",{name:"连接与固件详情"}).click();
     const connect=page.getByRole("button",{name:"连接",exact:true});
     await tabTo(page,connect);
