@@ -55,7 +55,7 @@ $CandidateCli = Join-Path $DataRoot 'runtime\1.3.0\Scripts\stm32-toolkit.exe'
 & $CandidateCli --project-root $ProjectRoot keil convert --uvprojx Project/blinky.uvprojx --target-name Debug --startup-strategy generate-cmsis-gcc --startup-source Startup/startup_stm32f429_439xx.s --dry-run --json
 ```
 
-Keil `inspect`、`preflight` 和 `convert` 必须指向同一 `uvprojx` 和 `target-name`。`preflight` 只做技术分析：不要求 Git，可在存在 blocker 时仍成功返回 `analysis.complete=true`，并把 `analysis.blockers`、`planReadiness`（取得计划所需的技术/Git 前置）与 `applyReadiness`（在有 reviewed/authorized plan 前恒为 `requires-reviewed-plan` 且 `ready=false`）分开；它不产生可用 plan ID、不写文件、不会自动 `git init`、转码或替换 ARMCC startup。缺少 Git、unborn HEAD、非 Git toplevel 或 dirty/untracked 工作区会作为计划前置失败列出，由工程负责人决定是否建立干净基线。确认 plan 无 blocker、diff/路径均符合预期后，以 PLAN 响应的 `data.plan_id` 调用同一参数链的 `convert --apply --plan-id <data.plan_id> --authorized --json`。PLAN 响应字段是 `data.plan_id`，APPLY 请求参数是 `planId`/`--plan-id`，不要混用带命令前缀的展示文本。`configure` 同样先 `--dry-run` 再用该次 `data.plan_id` `--apply --plan-id <data.plan_id> --authorized --json`；应用前会重新检查输入与改动。构建报告 `BUILD_OUTPUT_STALE` 时，先判定是哪项输入或身份改变，再根据实际计划决定是否 `build --preset arm-debug --clean --json`；不能靠修改旧 receipt 让产物看似有效。
+Keil `inspect`、`preflight` 和 `convert` 必须指向同一 `uvprojx` 和 `target-name`。`preflight` 只做技术分析：不要求 Git，可在存在 blocker 时仍成功返回 `analysis.complete=true`，并把 `analysis.blockers`、`planReadiness`（取得**可应用**计划并进入 APPLY 所需的技术/Git 前置；Git/root 前置不满足时仍可能无法取得任何 PLAN）与 `applyReadiness`（在有 reviewed/authorized plan 前恒为 `requires-reviewed-plan` 且 `ready=false`）分开；它不产生可用 plan ID、不写文件、不会自动 `git init`、转码或替换 ARMCC startup。缺少 Git、unborn HEAD、非 Git toplevel 或 dirty/untracked 工作区会作为计划前置失败列出，由工程负责人决定是否建立干净基线。确认 plan 无 blocker、diff/路径均符合预期后，以 PLAN 响应的 `data.plan_id` 调用同一参数链的 `convert --apply --plan-id <data.plan_id> --authorized --json`。PLAN 响应字段是 `data.plan_id`，APPLY 请求参数是 `planId`/`--plan-id`，不要混用带命令前缀的展示文本。`configure` 同样先 `--dry-run` 再用该次 `data.plan_id` `--apply --plan-id <data.plan_id> --authorized --json`；应用前会重新检查输入与改动。构建报告 `BUILD_OUTPUT_STALE` 时，先判定是哪项输入或身份改变，再根据实际计划决定是否 `build --preset arm-debug --clean --json`；不能靠修改旧 receipt 让产物看似有效。
 
 ### ARMCC 浮点 ABI 证据（当前源码/候选切片）
 
@@ -68,6 +68,7 @@ Arm 的 Compiler 5 文档区分硬件浮点**计算**与参数传递 **ABI**；�
 - 仅 `ARMCC + Cortex-M4 + FPU2` 且无显式 ABI 时保留窄推断 `origin=inferred`、`selectedAbi=hard`；这是未验证的兼容候选，不是 blanket 规则或 Linux 默认。
 - 选中 target 的 `RvdsVP` 缺失/为空或为 `2` 时允许上述历史候选；其它非空值（即使同时存在字面量 ABI）以 `MIGRATION_FPU_SELECTION_UNSUPPORTED` 阻断 FPU/ABI 推断。数值 `2` 只是本兼容规则允许的历史选择器，不证明二进制等价。
 - 其它 compiler/CPU/FPU 组合仍 fail closed；`--apcs`、`--fpu` 与 response-file 等 target/group/file misc controls 的既有 blocker 保持不变，不得为清除 blocker 改写证据或删除控件。
+- 被阻断的 ABI/硬件选择证据停止的是向 APPLY 的推进，而不是诊断性只读 PLAN：当 Git/root 前置满足时，PLAN 仍可能成功返回并携带 blocker，该 `plan_id` 不可应用；不要断言被阻断工程无法生成任何 PLAN（Git/root/选择前置不满足时仍会阻止 PLAN）。
 - 请检查实际编译器命令行、对象与库的调用约定。没有新增 ABI override 参数或 CLI/MCP 标志，也不得手工编辑 `plan_id`、digest 或工程证据。本补丁仍在 1.3.0 源码候选；待其余改进一并集成为 1.3.1，frozen/installed 1.3.0 不包含此源码行为。
 
 ### 受支持的 CMSIS startup 生成（显式 opt-in）
