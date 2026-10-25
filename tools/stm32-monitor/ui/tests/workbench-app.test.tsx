@@ -227,6 +227,19 @@ it("recovers modal focus when a deferred group write disables the focused contro
   }).not.toThrow();
 });
 
+it("exposes the Monitor brand as the page heading and the live source as a focusable named region",async()=>{
+  prepared=api();
+  render(<App/>);
+  await screen.findByText("Project");
+  const heading=screen.getByRole("heading",{level:1,name:"Monitor"});
+  expect(heading).toBeVisible();
+  const source=screen.getByRole("region",{name:"采样数据来源"});
+  expect(source).toHaveAttribute("tabindex","0");
+  expect(source).toHaveTextContent("下次目标预览；尚未开始采样。");
+  source.focus();
+  expect(document.activeElement).toBe(source);
+});
+
 it("keeps Tab and body Escape inside the topmost nested modal and cleans up after close",async()=>{
   prepared=api();
   const first=watchGroup(),second={...first,groupId:"other",name:"Other"};

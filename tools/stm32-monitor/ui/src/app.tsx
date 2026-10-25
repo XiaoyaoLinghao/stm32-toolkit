@@ -200,7 +200,7 @@ export function App():JSX.Element{
 
   return<main aria-label={copy.app} className="monitor-shell">
     <header className="workbench-header">
-      <div className="brand"><strong>Monitor</strong></div>
+      <h1 className="brand"><strong>Monitor</strong></h1>
       <nav className="main-nav" aria-label={copy.mainNav}>
         <button type="button" className={liveView?"active":""} aria-current={liveView?"page":undefined} onClick={()=>setView("live")}>{copy.live}</button>
         <button type="button" className={!liveView?"active":""} aria-current={!liveView?"page":undefined} onClick={()=>setView("history")}>{copy.history}</button>
@@ -256,7 +256,7 @@ export function App():JSX.Element{
               failure={null}/>
             <button type="button" className="toolbar-detail" aria-label={copy.toolbarDevice} onClick={event=>openDrawer("device",event.currentTarget)}>ⓘ</button>
           </div>
-          <div className="live-source" aria-label={copy.liveSource}>
+          <div className="live-source" role="region" aria-label={copy.liveSource} tabIndex={0}>
             {noRunPreview?<span>{sourceLabel}</span>:<>
               <span>{sourceFreshness}：{sourceLabel}</span>
               {state.live.retained&&<span className="stale-label">{copy.liveSourceStoppedRun}：{state.live.runId}</span>}

@@ -201,19 +201,65 @@ test.describe("STM32 Monitor user workflow",()=>{
 
   test("keeps catalog results inside a local scroller at 320 pixels",async({page})=>{
     await page.setViewportSize({width:320,height:700});
+    // The current grouped tree wraps instead of overflowing horizontally, so
+    // this scenario replaces only the item page of the fake runtime's own
+    // envelope (protocol and versions untouched) with a bounded page that
+    // really overflows vertically. The first item keeps the runtime's long
+    // typedef; the other 39 items are schema-valid fixtures, not firmware or
+    // hardware evidence.
+    const captured:{originalType?:string}={};
+    await page.route(/\/api\/v1\/catalog\/variables(?:\?.*)?$/,async route=>{
+      const response=await route.fetch();
+      const envelope=await response.json() as {data:{items:{selector:string;typeName:string}[];nextCursor:string|null}};
+      const original=envelope.data.items[0];
+      if(original===undefined)throw new Error("fake runtime catalog page is empty");
+      captured.originalType=original.typeName;
+      const items=[original,...Array.from({length:39},(_value,index)=>({selector:`counter${index+1}`,
+        typeName:"uint32_t",kind:"scalar",byteSize:4,signed:false,encoding:null,qualifiers:[],aliases:[],
+        enumValues:[],elementCount:null,elementKind:null,memberNames:[],group:{id:"firmware",label:"Firmware"}}))];
+      await route.fulfill({response,json:{...envelope,data:{...envelope.data,items,nextCursor:null}}});
+    });
     // The header project summary is intentionally hidden at this viewport, so
     // this layout scenario checks only the shell and the catalog scroller.
     await openMonitor(page,monitor.accessUrl);
     await expect(page.getByLabel("STM32 监视器")).toBeAttached();
     await connectProbe(page);
     await page.getByRole("tab",{name:"固件变量与寄存器",exact:true}).click();
-    await page.getByLabel("搜索",{exact:true}).fill("counter");
+    const search=page.getByLabel("搜索",{exact:true});
+    await search.fill("counter");
     await page.getByRole("button",{name:"搜索/加载",exact:true}).click();
     const results=page.getByRole("region",{name:"目录搜索结果"});
     await expect(results.getByText("counter",{exact:true})).toBeVisible();
+    const originalType=captured.originalType;
+    if(originalType===undefined)throw new Error("the fake runtime catalog page was not captured");
+    expect(originalType.length).toBeGreaterThan(40);
+    const long=results.getByText(originalType,{exact:true});
+    await expect(long).toBeVisible();
+    const longBounds=await long.evaluate(element=>({scrollWidth:element.scrollWidth,clientWidth:element.clientWidth,
+      right:element.getBoundingClientRect().right}));
+    expect(longBounds.scrollWidth).toBeLessThanOrEqual(longBounds.clientWidth);
+    expect(longBounds.right).toBeLessThanOrEqual(320);
+    await search.focus();
+    await page.keyboard.press("Tab");
+    await page.keyboard.press("Tab");
+    await expect(results).toBeFocused();
+    const dimensions=await results.evaluate(element=>({scrollHeight:element.scrollHeight,clientHeight:element.clientHeight,
+      scrollWidth:element.scrollWidth,clientWidth:element.clientWidth}));
+    expect(dimensions.scrollHeight).toBeGreaterThan(dimensions.clientHeight);
+    expect(dimensions.scrollWidth).toBeLessThanOrEqual(dimensions.clientWidth);
+    const initial=await results.evaluate(element=>element.scrollTop);
+    const last=results.locator("li").last().getByRole("button",{name:"加入观测组草稿",exact:true});
+    for(let index=0;index<80&&!(await last.evaluate(element=>element===document.activeElement));index+=1)
+      await page.keyboard.press("Tab");
+    await expect(last).toBeFocused();
+    await expect(results.getByText("counter39",{exact:true})).toBeVisible();
+    await expect.poll(()=>results.evaluate(element=>element.scrollTop)).toBeGreaterThan(initial);
     const widths=await page.evaluate(()=>({page:document.documentElement.scrollWidth,viewport:window.innerWidth}));
     expect(widths.page).toBeLessThanOrEqual(widths.viewport);
-    expect(await results.evaluate(element=>element.scrollWidth>element.clientWidth)).toBe(true);
+    await page.keyboard.press("Enter");
+    const drawer=page.getByRole("dialog",{name:"观测组"});
+    await expect(drawer).toBeVisible();
+    await expect(drawer).toContainText("counter39");
   });
 
   test("queries UTC history, retains a manual export draft, and downloads the submitted task",async({page})=>{
