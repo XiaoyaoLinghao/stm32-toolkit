@@ -1,0 +1,90 @@
+{
+  "head": "7ff99e50011b6321ae3f0c9bb2edfab91724be3e",
+  "assets": {
+    "LICENSE": {
+      "sha256": "55edb314745f2b0d3fe09e512726c3bf67cb20ba99fa3cd66859a64f3e6b6af5",
+      "bytes": 1075
+    },
+    "THIRD-PARTY-NOTICES.md": {
+      "sha256": "edcb4528611ff1789da5e5b1578cae22593c52400a2c87a0c7dcd94b8a2211a8",
+      "bytes": 2615
+    },
+    "compatibility.md": {
+      "sha256": "6a88163ca2736c2fc5d23926183eab877f13b6fe070618e6881b05dc3dc71839",
+      "bytes": 2014
+    },
+    "licenses.zip": {
+      "sha256": "0bd996d391f6c26d15b9e95ce3d80518244bac6c80c48a62eb4f01d02dac9fc7",
+      "bytes": 413750
+    },
+    "monitor-assets.json": {
+      "sha256": "dd271a3a1380c09ebb33b45b4e023d5582d7de75efd32cadc0287b1e97f92f0c",
+      "bytes": 970
+    },
+    "release-manifest.json": {
+      "sha256": "f0e66a549f4c15b3b401112d7fc5cd54267bba5ef797f45d65a4609d1b1ad849",
+      "bytes": 15814
+    },
+    "sbom.spdx.json": {
+      "sha256": "1511320829b56080b2526aa44532a7748217890b9662208ceb81067493594347",
+      "bytes": 191430
+    },
+    "stm32-toolkit-1.3.1-source.zip": {
+      "sha256": "2ddb22fad770ccb2d7e2d3790d0c7210db34286d84675d58352ce510ed5c9937",
+      "bytes": 18351314
+    },
+    "stm32-toolkit-1.3.1-windows-x86_64.zip": {
+      "sha256": "ec3eb4e9ccadecd832c570288b3449a5b6553b260cd734e1ac82dfc647fe6a08",
+      "bytes": 113475542
+    },
+    "stm32_monitor-1.3.1-py3-none-any.whl": {
+      "sha256": "4c097681762b5f979cbb4190ba32bbff5f8aac16b56ee422c1fcb043cbdc28a6",
+      "bytes": 1538473
+    },
+    "stm32_toolkit-1.3.1-py3-none-any.whl": {
+      "sha256": "8be1d2db0f7bd491a89b7dd2958bca3b2fc6bbae52f1095a6fbd109f69f2229e",
+      "bytes": 4032618
+    },
+    "troubleshooting.md": {
+      "sha256": "a299ced4b19ef259cf3fe8cd6165d118a70d7cf66f7e7a2398fd435385d8af87",
+      "bytes": 1737
+    },
+    "CHECKSUMS.sha256": {
+      "sha256": "42a85820c79c28567fb352312d06e36f85b912054083e6c14177b7c17189cd80",
+      "bytes": 1073
+    }
+  },
+  "twoIndependentBuildsIdentical": true,
+  "sourceRoots": [
+    "C:/Users/zhy76/.codex/worktrees/keil-input-audit/STM32-Toolkit",
+    "C:\\Users\\zhy76\\.codex\\worktrees\\v131-package-review\\STM32-Toolkit"
+  ],
+  "bundleRoot": "D:\\codex-tmp\\r131\\frozen-bundle\\stm32-toolkit-1.3.1",
+  "verifyCommand": [
+    "D:/codex-tmp/kx23/venv/Scripts/python.exe",
+    "-X",
+    "utf8",
+    "C:\\Users\\zhy76\\.codex\\worktrees\\v131-package-review\\STM32-Toolkit\\tools\\release\\build_0900_artifacts.py",
+    "verify-bundle",
+    "--toolkit-root",
+    "D:\\codex-tmp\\r131\\frozen-bundle\\stm32-toolkit-1.3.1",
+    "--json"
+  ],
+  "verifyExitCode": 0,
+  "verifyStdoutSha256": "4342ab4a0b3ed11c1bd139e495ff2099eb0de77718be663cadc19826608ea265",
+  "qualificationPath": "D:\\codex-tmp\\r131\\coverage-directive-a\\qualification.json",
+  "qualificationSha256": "be2b30944f30898600bf1df93e5362c61410391713e48314870774796dd88a2a",
+  "installationPerformed": false,
+  "actualVsCodePerformed": false,
+  "hardwarePerformed": false,
+  "remoteMutationPerformed": false,
+  "releaseStatus": "LOCAL_CANDIDATE_NOT_QUALIFIED",
+  "reportOwner": "primary independent reviewer",
+  "codeHeadBeforeReport": "7ff99e50011b6321ae3f0c9bb2edfab91724be3e",
+  "claudeBuildSessions": [
+    "4c31022d-cfe8-46d2-9738-8f4c77434115",
+    "c1bc5c17-f749-479a-8871-ce3188e2870e"
+  ],
+  "sourceBoundReuse": true,
+  "originalVerificationSha256": "295943d8a4c0ab83bef8ce7a5a28d0ecda7168a478237bc414d4f0772d2a2105"
+}

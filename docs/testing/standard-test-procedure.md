@@ -4,7 +4,9 @@
 
 ## 1. 当前断点与证据
 
-2026-10-26 最新复核：ARMCC-DIRECTIVE-PREFIX 已 **ACCEPTED_WITH_FIXES**，见[报告](../codex/returns/ARMCC-DIRECTIVE-PREFIX/implementation-report.md)。CodeHead `0ddfa8c92d6c0296ff6f34334fb99c7ba10dcb2e`；Claude 新增42/42、主代理203/203、受影响完整文件回归898/898通过。旧源码分支数据已从新聚合副本移除，再采纳当前原生数据；原始数据保留。当前去重复用队列8,838通过/19跳过，数值门槛仍未满足；不是最终单一提交全量重跑。下一步冻结源码并完成候选双构建，安装解释器修正及本机Git登录仍待原问题回复；实际VS Code、安装和发布未完成。以下为历史断点。
+2026-10-26 最新发行候选：[同源双构建记录](../codex/returns/STM32TK-131/candidate-build.md)。冻结源码 `7ff99e50011b6321ae3f0c9bb2edfab91724be3e` 的13文件逐一同hash，独立官方bundle验证通过，尚未发布。后续获准安装须使用 `D:/codex-tmp/r131/frozen-bundle/stm32-toolkit-1.3.1` 及新的运行日志，不得复用旧候选路径或误选PowerShell5.1的历史setup helper。安装解释器修正、本机Git登录仍待既有问题回复；数值门槛、实际安装/升级/回滚与VS Code资格未完成。当前8,838通过/19跳过是源绑定复用，不是最终单一提交全量重跑。不得因旧例外或时间经过自动发布、切换解释器重试或触碰硬件。以下保留历史断点。
+
+2026-10-26 此前复核：ARMCC-DIRECTIVE-PREFIX 已 **ACCEPTED_WITH_FIXES**，见[报告](../codex/returns/ARMCC-DIRECTIVE-PREFIX/implementation-report.md)。CodeHead `0ddfa8c92d6c0296ff6f34334fb99c7ba10dcb2e`；Claude 新增42/42、主代理203/203、受影响完整文件回归898/898通过。旧源码分支数据已从新聚合副本移除，再采纳当前原生数据；原始数据保留。当前去重复用队列8,838通过/19跳过，数值门槛仍未满足；不是最终单一提交全量重跑。下一步冻结源码并完成候选双构建，安装解释器修正及本机Git登录仍待原问题回复；实际VS Code、安装和发布未完成。以下为历史断点。
 
 2026-10-26 此前补测：RECOVERY-AUTHORITY-REGRESSION 已 **ACCEPTED_WITH_FIXES**，见[报告](../codex/returns/RECOVERY-AUTHORITY-REGRESSION/implementation-report.md)。CodeHead `1b2696ff768c5880cc6bdae232d7093f5f1be0ac`；最终 Claude 新增22/22、主代理140/140；310项未变相关通过结果明确复用。首轮双方各12个JSON比较夹具失败及后台通知后禁用Read拒绝均保留，失败运行覆盖率数据未导入。新增12个Toolkit分支；当前队列8,796通过/19跳过，Toolkit总体/风险87.4814%/87.6166%，Monitor风险92.2527%，永久门槛未满足。ARMCC注释前缀指令问题正独立复现；安装解释器修正、本机Git登录待原问题回复，实际VS Code、最终双构建及发布仍未完成。不是最终单一提交全量重跑，不授予硬件资格。以下为历史断点。
 
