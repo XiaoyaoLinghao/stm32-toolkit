@@ -4,6 +4,8 @@
 
 ## 1. 当前断点与证据
 
+2026-10-25 FLASH-FREQUENCY 离线切片已 **ACCEPTED_WITH_FIXES**，见[独立验收记录](../codex/returns/FLASH-FREQUENCY/review.md)。Accepted base 449c30e056f614d1ecc9a4340c0ea5feda28f07b，最终 CodeHead 4cd1baf11a028438a69bf1cf74b91833731b13ed，产品/指引测试head a8095f03e9a8a5fa1d9dddf51075a6ac02e932f5。Claude Code CLI 编码与测试，主代理在独立干净树完整审查。双方各424项核心通过；相关386项回归中385项通过、1项旧多RAM夹具缺layout在接受基线同样失败。仅补齐该夹具7行显式布局，双方最终定向1项通过；424+385未变用例复用，共810个不同通过用例（含95项新增），未宣称最终全量矩阵重跑。频率CLI/MCP入口、执行前冲突拒绝、完整结果字段、受管条件恢复建议及单次调用/无自动重试均接受；Skill结构与新AI消费模拟通过。流程新增条目经独立只读复核。13处本轮临时目录清理被自动策略拒绝（blocked by policy），保留且未绕过。原工程、硬件、runtime/全局技能、版本及远端未操作，真实IDE/频率/复位接线资格留待主代理负责的后续授权集成，不授予发行资格。
+
 2026-10-25 DOCTOR-READINESS 离线切片已 `ACCEPTED_WITH_FIXES`，见[独立验收记录](../codex/returns/DOCTOR-READINESS/review.md)。Accepted base `8737aaea950d2eec7f79c44b7b95bf07ca0ab471`，最终 CodeHead `353ab42f60324a1fb94ff8daf8875f80d138ce48`。Claude Code CLI 编码/测试，主代理在独立干净工作树完整审查；最终双方各304项核心通过、1项真实目录符号链接因主机能力延至主代理负责的集成/发行环境，另97项创建回归按未变共享代码/测试复用，共401个不同通过用例。实际只读观察本机默认profile得到cpptools 1.34.4、cmake-tools 1.24.42、cortex-debug 1.12.1；PATH/限定默认目录未找到UV4/ARMCC，不证明任意位置未安装或原生构建可用。完整/未知/缺失诊断、声明来源、严格CLI/MCP参数及根先验已验证；真实IDE/调试仍待验收。官方语言包长版本格式的实测问题已修正并回归。10处临时目录清理被自动策略拒绝（blocked by policy），已保留且未绕过。原工程、硬件、runtime、全局技能、版本与远端未改，不授予发行资格。
 
 2026-10-25 VSCODE-TASKS 离线切片已 `ACCEPTED_WITH_FIXES`，见[独立验收记录](../codex/returns/VSCODE-TASKS/review.md)。Accepted base `e7614e49ba384117770ff8b01f57489da8676223`，最终测试 CodeHead `4c79ef53111408ae2f5071f6edb52cbadb8363fb`。Claude Code CLI 编码/测试，主代理在独立干净工作树完整审查。双方首轮各469项（461通过/7失败/1平台跳过）；修正后各483项（482通过/0失败/1跳过）与539项相关回归通过，随后各51项任务/指引及最终13项绑定/指引复核通过。合并未变执行代码的复用证据，1022个不同用例通过、1个真实文件符号链接用例延至主代理负责的具备能力的Windows/Linux集成/发行环境，不宣称最终全量矩阵重跑。新增显式可执行路径绑定、五个独立process任务和窄CLI适配器；完整当前固件准入、默认deny、原ticket/会话/探针绑定、既有end失效拒绝及managed/imported分流不放宽。真实VS Code/扩展/IntelliSense/handoff UI仍待集成验收。14处已核对临时目录清理被自动策略拒绝（blocked by policy），未删除或绕过，含reparse的4处夹具及失败材料另保留。产品仍1.3.0；原工程、硬件、runtime/全局技能、冻结包和远端未操作，不授予发行资格。后续IDE/硬件仍按下方既有流程与实际授权执行。
@@ -14,7 +16,7 @@
 
 2026-10-25 COMMENT-REVIEWED-REPLACEMENT 离线切片已 `ACCEPTED_WITH_FIXES`，见[独立验收记录](../codex/returns/COMMENT-REVIEWED-REPLACEMENT/review.md)。Accepted base `3cd5eea7ccfa6599782400b8009496424ec99802`，CodeHead `045bea3574dece7ea5740d6eaa76a3a731150cc0`。Claude Code CLI 编码/测试，主代理在精确干净工作树完整审查；最终双方各82项通过、0失败、0跳过（39项既有助手、31项新增替换、12项AI调用指引），两个受影响Skill结构校验通过。初轮双方各78通过/1失败/1跳过留证；修正测试预期中遗漏的空格，以真实GB18030截断序列替代可跳过用例，并补充分块边界测试。审核要求保留解码映射前字符上限及私用区DBCS行末歧义检查，最终均已验证。新增显式 `--replace-invalid-with '?'`、只读预览损失记录、绑定精确planId的逐文件 `--confirm-file` 与外部副本；默认严格模式、原文件保护、非注释/歧义阻断不变。助手1.1.0、plan/manifest schema2需要旧计划重新预览；产品版本仍1.3.0。原工程、硬件、runtime、全局技能及冻结资产未操作，已安装/冻结1.3.0不含本补丁；不是全量发行资格。报告阶段仅澄清指引中两种危险trigraph措辞，helper/tests与测试CodeHead一致。
 
-用户已指定：剩余约定优化全部完成后，统一更新产品与发行版本至 **v1.3.1**。失效构建诊断/clean指引、VS Code生成配置/任务与doctor就绪检查的离线源码切片已完成；仍待烧录频率/失败提示、内存余量告警及后续集成/发行验证，真实IDE行为未验收。本次未提前改版本号、重建发行包或发布；既有硬件入口和授权边界继续适用。
+用户已指定：剩余约定优化全部完成后，统一更新产品与发行版本至 **v1.3.1**。失效构建诊断/clean指引、VS Code生成配置/任务、doctor就绪检查与烧录频率/失败提示的离线源码切片已完成；仍待内存余量告警及后续集成/发行验证，真实IDE行为未验收。本次未提前改版本号、重建发行包或发布；既有硬件入口和授权边界继续适用。
 
 2026-10-25 PY-OCD-DEBUG-CONFIG 离线切片已 `ACCEPTED_WITH_FIXES`，见[独立验收记录](../codex/returns/PY-OCD-DEBUG-CONFIG/review.md)。Accepted base `7b25b890f02892626c5ba6201bd3dec2712a95e4`，CodeHead `313743acfa609d6c29ca8bb9cbec3800f3577418`。Claude Code CLI 编码/测试，主代理在精确干净工作树完整审查；最终作者与主代理各344项通过，包含82项新增。1164项历史回归有通过证据，其中902项按记录复用；共1246个不同用例通过，不宣称最终全量矩阵重跑。初轮7项新测试失败、6项回归失败及接受基线中的旧转换夹具失败均已留证并修正。4项真实符号链接检查延至主代理负责的具备能力的Windows/Linux发行验证，模拟reparse检查通过。配对debug.backend/debug.target配置、只读PLAN、manifest与受管文件同事务APPLY/回滚、完整缺失诊断、非阻断迁移后提示及VS Code/Skill指引已接受；配置不证明target支持或实机状态，原有Git/固件身份/SVD/授权与独立探针发现边界保留。原工程、硬件、已安装runtime、全局技能、冻结发行资产未操作；已安装/冻结1.3.0不含本源码补丁。本断点不授予安装、硬件或发行权限，既有执行流程继续适用。
 
@@ -79,6 +81,7 @@ Windows 使用已核实的 PowerShell、解释器与工作目录。每次运行�
 | 身份 | workspace/session/input snapshot/Git/probe/target/receipt 来源及相等条件 |
 | 状态与所有权 | 最近证实的 target 状态和时间，Toolkit/IDE lease/ticket owner |
 | 入口 | 实际 argv、状态前置、连接/执行副作用、返回字段、源码函数依据 |
+| 烧录频率与策略 | 对实际支持本切片的CLI/MCP记录显式Hz或省略、选定connectionPolicy；核对frequencyHz/--frequency是否在实际绑定schema/入口中。100000..50000000为配置范围，不是实测时钟或成功证明。普通默认配置不变；受管under-reset固定100000Hz，显式冲突先离线解决；导入路线不支持under-reset |
 | 授权与预算 | 当前授权范围，新 action 来源，固定次数/时长/超时，允许的控制操作 |
 | 成功与停止 | 成功证据、下一步条件、首错停止、既有 cleanup 终态证明 |
 | 留证 | 原 code/details/cause、最后阶段、动作消费、TestRun/receipt/lease 保存位置 |
@@ -101,10 +104,12 @@ SVD 场景在首次硬件操作前以实际 project/target/device、完整 SVD �
 | Monitor 普通连接/释放 | 专用 observe-preserve、100kHz attach；不主动 halt/resume/reset，失败清理同样不补偿恢复。原来 running 或 halted 均保持其状态；禁用 pack/config/user 调试序列，使用已验证的 pyOCD 通用初始化路径。软件路径通过不等于板上无瞬时影响已实测 |
 | 正常 Target execute | 使用匹配的新 MODIFY action；flash/readback 后按既有流程 reset、必要 resume、启动 transport；须有真实 TestRun |
 | Target recovery-under-reset | prepare 只做静态检查；execute 从该新 action 派生 100kHz SWD/under-reset MODIFY，先核对真实身份；sector erase、keepUnwritten=true、auto_unlock=false，保留既有 readback/reset/条件 resume/transport/cleanup |
-| 普通 flash / recovery flash | 与 Target 测试流程不同；成功编程或 receipt 不证明运行态。恢复烧录保持既有 halted 后置，不擅自 reset/run |
+| 普通 flash / recovery flash | 与 Target 测试流程不同；普通烧录可显式选择频率，省略保留既有配置（生产normal默认1MHz）。显式频率若与选定策略冲突，在副作用前拒绝；受管recovery保持100kHz，显式其它频率拒绝；导入flash仅支持normal频率。成功编程或receipt不证明运行态；恢复烧录保持既有halted后置，不擅自reset/run。details.flashOptions仅记录选定配置，不证明实测频率或attach发生 |
 | 变量/SVD/有限采样 | memory.read 不要求 halted；按实际入口区分 Monitor 的 observe-preserve 与其他保留原合同的普通 OBSERVE。连接阶段和后续持续采样分别留证，采样不得隐式 halt/reset/resume |
 | 完整 Fault | 核心寄存器必须 halted 且稳定；默认 running OBSERVE 不能满足该前置。显式 halt-for-analysis 使用受控 CONTROL、独立授权、身份校验及 bounded resume/cleanup |
 | IDE handoff | begin 后 IDE 独占；正常 detach、原 ticket end 和成功回收后 Toolkit 才能访问 |
+
+若实际版本支持details.recoverySuggestion，只将其视为受管normal失败且自有清理完成后的条件建议；检查原code/details/attachDiagnostic/programDiagnostic及清理终态。它不授权或触发第二次调用，不能用于导入路线，也不绕过身份、授权或清理失败。终态失败立即停止；是否执行一次新的under-reset须先复核原身份/目标供电/复位接线/所有权与新授权，在新执行卡记录固定100kHz及有限次数。不得自动降频、重连、重烧、reset/resume或切换路线。冻结/已安装1.3.0没有本源码选项；重启不会安装补丁。
 
 受控 Fault 最多执行既有一个 halt 和一次恢复 resume，不 reset/flash/reattach/retry，未知身份不猜测恢复。核对当前 controlledSnapshot 字段及原45秒恢复总预算和 RPC/cleanup 预算，不能套用无关外层超时。完整 Fault 与不停核采样是不同证据。
 

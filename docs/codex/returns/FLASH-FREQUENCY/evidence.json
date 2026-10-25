@@ -1,0 +1,505 @@
+{
+  "module": "FLASH-FREQUENCY",
+  "acceptedBase": "449c30e056f614d1ecc9a4340c0ea5feda28f07b",
+  "testedProductHead": "a8095f03e9a8a5fa1d9dddf51075a6ac02e932f5",
+  "codeHead": "4cd1baf11a028438a69bf1cf74b91833731b13ed",
+  "verdict": "ACCEPTED_WITH_FIXES",
+  "ownership": {
+    "specification": "primary",
+    "implementation": "local Claude Code CLI",
+    "review": "primary"
+  },
+  "checks": [
+    {
+      "label": "author-core1",
+      "junit": "D:\\codex-tmp\\ff25\\author-core1.xml",
+      "junitSha256": "04098aca34de348e4b33a5ade6f742b85058cfc9a7bc5b9b9ee3f1f2e9d08de9",
+      "counts": {
+        "tests": 396,
+        "failures": 10,
+        "errors": 0,
+        "skipped": 0
+      },
+      "durationSeconds": 133.841,
+      "head": "701e536c7477d4c62cd1f620bb00ea4c2218e26b",
+      "nativeCommands": [
+        "D:/codex-tmp/kx23/venv/Scripts/python.exe -m pytest tools/stm32-toolkit/tests/test_flash_frequency.py tools/stm32-toolkit/tests/test_hardware_workflows.py tools/stm32-toolkit/tests/test_cli_hardware.py tools/stm32-toolkit/tests/test_mcp_hardware.py tools/stm32-toolkit/tests/test_external_firmware_workflow.py tools/stm32-toolkit/tests/test_external_firmware_routing.py tools/stm32-toolkit/tests/test_mcp_roots.py tools/stm32-toolkit/tests/test_ai_call_guidance.py -q --tb=short --basetemp=D:/codex-tmp/ff25/p-author-core1 -o cache_dir=D:/codex-tmp/ff25/c-author-core1 --junitxml=D:/codex-tmp/ff25/author-core1.xml"
+      ],
+      "nativeToolErrors": [
+        true
+      ],
+      "numericShellExitCode": null,
+      "exitNote": "Successful native tool output omits numeric shell exit; native tool result and actual JUnit establish outcome. CLI exit is not substituted for pytest exit."
+    },
+    {
+      "label": "review-core1",
+      "junit": "D:\\codex-tmp\\ff25\\review-core1.xml",
+      "junitSha256": "71c4dbd6a3c0e724e548fdb7e46932602e0b61e93b214198e7b5373520b9a21b",
+      "counts": {
+        "tests": 396,
+        "failures": 10,
+        "errors": 0,
+        "skipped": 0
+      },
+      "durationSeconds": 134.523,
+      "head": "701e536c7477d4c62cd1f620bb00ea4c2218e26b",
+      "cwd": "C:\\Users\\zhy76\\.codex\\worktrees\\build-snapshot-final\\STM32-Toolkit",
+      "argv": [
+        "D:/codex-tmp/kx23/venv/Scripts/python.exe",
+        "-m",
+        "pytest",
+        "tools/stm32-toolkit/tests/test_flash_frequency.py",
+        "tools/stm32-toolkit/tests/test_hardware_workflows.py",
+        "tools/stm32-toolkit/tests/test_cli_hardware.py",
+        "tools/stm32-toolkit/tests/test_mcp_hardware.py",
+        "tools/stm32-toolkit/tests/test_external_firmware_workflow.py",
+        "tools/stm32-toolkit/tests/test_external_firmware_routing.py",
+        "tools/stm32-toolkit/tests/test_mcp_roots.py",
+        "tools/stm32-toolkit/tests/test_ai_call_guidance.py",
+        "-q",
+        "--tb=short",
+        "--basetemp=D:\\codex-tmp\\ff25\\p-review-core1",
+        "-o",
+        "cache_dir=D:\\codex-tmp\\ff25\\c-review-core1",
+        "--junitxml=D:\\codex-tmp\\ff25\\review-core1.xml"
+      ],
+      "exitCode": 1,
+      "logSha256": "0d01aafd4d20a5fe8bd57141606055367ca465b62ab9fff4ad7d340569bfc04c"
+    },
+    {
+      "label": "author-core2",
+      "junit": "D:\\codex-tmp\\ff25\\author-core2.xml",
+      "junitSha256": "5b2d7cab723fd03f74adacb4c86cd79a6268b9c11507f0b2c311803df88eec22",
+      "counts": {
+        "tests": 424,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "durationSeconds": 144.663,
+      "head": "a8095f03e9a8a5fa1d9dddf51075a6ac02e932f5",
+      "nativeCommands": [
+        "D:/codex-tmp/kx23/venv/Scripts/python.exe -m pytest tools/stm32-toolkit/tests/test_flash_frequency.py tools/stm32-toolkit/tests/test_hardware_workflows.py tools/stm32-toolkit/tests/test_cli_hardware.py tools/stm32-toolkit/tests/test_mcp_hardware.py tools/stm32-toolkit/tests/test_external_firmware_workflow.py tools/stm32-toolkit/tests/test_external_firmware_routing.py tools/stm32-toolkit/tests/test_mcp_roots.py tools/stm32-toolkit/tests/test_ai_call_guidance.py -q --tb=short --basetemp=D:/codex-tmp/ff25/p-author-core2 -o cache_dir=D:/codex-tmp/ff25/c-author-core2 --junitxml=D:/codex-tmp/ff25/author-core2.xml"
+      ],
+      "nativeToolErrors": [
+        false
+      ],
+      "numericShellExitCode": null,
+      "exitNote": "Successful native tool output omits numeric shell exit; native tool result and actual JUnit establish outcome. CLI exit is not substituted for pytest exit."
+    },
+    {
+      "label": "review-core2",
+      "junit": "D:\\codex-tmp\\ff25\\review-core2.xml",
+      "junitSha256": "5694975db6f29c13d8af4e1745a1406aebb95f91ef6f7934c3b794eef02c283d",
+      "counts": {
+        "tests": 424,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "durationSeconds": 144.291,
+      "head": "a8095f03e9a8a5fa1d9dddf51075a6ac02e932f5",
+      "cwd": "C:\\Users\\zhy76\\.codex\\worktrees\\build-snapshot-final\\STM32-Toolkit",
+      "argv": [
+        "D:/codex-tmp/kx23/venv/Scripts/python.exe",
+        "-m",
+        "pytest",
+        "tools/stm32-toolkit/tests/test_flash_frequency.py",
+        "tools/stm32-toolkit/tests/test_hardware_workflows.py",
+        "tools/stm32-toolkit/tests/test_cli_hardware.py",
+        "tools/stm32-toolkit/tests/test_mcp_hardware.py",
+        "tools/stm32-toolkit/tests/test_external_firmware_workflow.py",
+        "tools/stm32-toolkit/tests/test_external_firmware_routing.py",
+        "tools/stm32-toolkit/tests/test_mcp_roots.py",
+        "tools/stm32-toolkit/tests/test_ai_call_guidance.py",
+        "-q",
+        "--tb=short",
+        "--basetemp=D:\\codex-tmp\\ff25\\p-review-core2",
+        "-o",
+        "cache_dir=D:\\codex-tmp\\ff25\\c-review-core2",
+        "--junitxml=D:\\codex-tmp\\ff25\\review-core2.xml"
+      ],
+      "exitCode": 0,
+      "logSha256": "498ccb9273c262e5d3aa9f2bd93ff0097eaf8fc61d96b169e701d388a46254ea"
+    },
+    {
+      "label": "author-reg",
+      "junit": "D:\\codex-tmp\\ff25\\author-reg.xml",
+      "junitSha256": "49574b870b19d9080e93ccb0a548b63e8fed58307a12b520e3e27f03d8c82af9",
+      "counts": {
+        "tests": 386,
+        "failures": 1,
+        "errors": 0,
+        "skipped": 0
+      },
+      "durationSeconds": 187.926,
+      "head": "a8095f03e9a8a5fa1d9dddf51075a6ac02e932f5",
+      "nativeCommands": [
+        "D:/codex-tmp/kx23/venv/Scripts/python.exe -m pytest tools/stm32-toolkit/tests/test_probe_worker.py tools/stm32-toolkit/tests/test_pyocd_backend.py tools/stm32-toolkit/tests/test_flash.py tools/stm32-toolkit/tests/test_external_firmware.py tools/stm32-toolkit/tests/test_physical_target_workflows.py tools/stm32-toolkit/tests/test_ide_tasks.py -q --tb=short --basetemp=D:/codex-tmp/ff25/p-author-reg -o cache_dir=D:/codex-tmp/ff25/c-author-reg --junitxml=D:/codex-tmp/ff25/author-reg.xml"
+      ],
+      "nativeToolErrors": [
+        true
+      ],
+      "numericShellExitCode": null,
+      "exitNote": "Successful native tool output omits numeric shell exit; native tool result and actual JUnit establish outcome. CLI exit is not substituted for pytest exit."
+    },
+    {
+      "label": "review-reg",
+      "junit": "D:\\codex-tmp\\ff25\\review-reg.xml",
+      "junitSha256": "129a3ad1c244b151378e72fa8d756a32332717931a57eb0626718d9f73f3c382",
+      "counts": {
+        "tests": 386,
+        "failures": 1,
+        "errors": 0,
+        "skipped": 0
+      },
+      "durationSeconds": 193.984,
+      "head": "a8095f03e9a8a5fa1d9dddf51075a6ac02e932f5",
+      "cwd": "C:\\Users\\zhy76\\.codex\\worktrees\\build-snapshot-final\\STM32-Toolkit",
+      "argv": [
+        "D:/codex-tmp/kx23/venv/Scripts/python.exe",
+        "-m",
+        "pytest",
+        "tools/stm32-toolkit/tests/test_probe_worker.py",
+        "tools/stm32-toolkit/tests/test_pyocd_backend.py",
+        "tools/stm32-toolkit/tests/test_flash.py",
+        "tools/stm32-toolkit/tests/test_external_firmware.py",
+        "tools/stm32-toolkit/tests/test_physical_target_workflows.py",
+        "tools/stm32-toolkit/tests/test_ide_tasks.py",
+        "-q",
+        "--tb=short",
+        "--basetemp=D:\\codex-tmp\\ff25\\p-review-reg",
+        "-o",
+        "cache_dir=D:\\codex-tmp\\ff25\\c-review-reg",
+        "--junitxml=D:\\codex-tmp\\ff25\\review-reg.xml"
+      ],
+      "exitCode": 1,
+      "logSha256": "ead3845c6f2bd3a30aeadf8cd756d10648cafa4c487eb7b7256fd11801291015"
+    },
+    {
+      "label": "review-baseline",
+      "junit": "D:\\codex-tmp\\ff25\\review-baseline.xml",
+      "junitSha256": "916790496a0ea929732da085144cbbba249520c6f9f54c5e27158041cbf24755",
+      "counts": {
+        "tests": 1,
+        "failures": 1,
+        "errors": 0,
+        "skipped": 0
+      },
+      "durationSeconds": 1.826,
+      "head": "449c30e056f614d1ecc9a4340c0ea5feda28f07b",
+      "cwd": "C:\\Users\\zhy76\\.codex\\worktrees\\build-snapshot-final\\STM32-Toolkit",
+      "argv": [
+        "D:/codex-tmp/kx23/venv/Scripts/python.exe",
+        "-m",
+        "pytest",
+        "tools/stm32-toolkit/tests/test_physical_target_workflows.py::test_probe_service_orders_unsorted_project_ram_for_mailbox_without_memory_io",
+        "-q",
+        "--tb=short",
+        "--basetemp=D:\\codex-tmp\\ff25\\p-review-baseline",
+        "-o",
+        "cache_dir=D:\\codex-tmp\\ff25\\c-review-baseline",
+        "--junitxml=D:\\codex-tmp\\ff25\\review-baseline.xml"
+      ],
+      "exitCode": 1,
+      "logSha256": "0385438ff028ac9da0b4954b1f2260a9e1e796fd42865bc0eb5e74b11b38a4e9"
+    },
+    {
+      "label": "author-fixture",
+      "junit": "D:\\codex-tmp\\ff25\\author-fixture.xml",
+      "junitSha256": "d5f308f24eed647b704ef3e99410d85c07b0a950c9191efbdca8a50f74a7f822",
+      "counts": {
+        "tests": 1,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "durationSeconds": 2.105,
+      "head": "4cd1baf11a028438a69bf1cf74b91833731b13ed",
+      "nativeCommands": [
+        "D:/codex-tmp/kx23/venv/Scripts/python.exe -m pytest tools/stm32-toolkit/tests/test_physical_target_workflows.py::test_probe_service_orders_unsorted_project_ram_for_mailbox_without_memory_io -q --tb=short --basetemp=D:/codex-tmp/ff25/p-author-fixture -o cache_dir=D:/codex-tmp/ff25/c-author-fixture --junitxml=D:/codex-tmp/ff25/author-fixture.xml"
+      ],
+      "nativeToolErrors": [
+        false
+      ],
+      "numericShellExitCode": null,
+      "exitNote": "Successful native tool output omits numeric shell exit; native tool result and actual JUnit establish outcome. CLI exit is not substituted for pytest exit."
+    },
+    {
+      "label": "review-fixture",
+      "junit": "D:\\codex-tmp\\ff25\\review-fixture.xml",
+      "junitSha256": "453f1f3f2f5cc8f5e4dbabbcc5d81dc39692721dd69022027ab937c29b835e93",
+      "counts": {
+        "tests": 1,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "durationSeconds": 2.272,
+      "head": "4cd1baf11a028438a69bf1cf74b91833731b13ed",
+      "cwd": "C:\\Users\\zhy76\\.codex\\worktrees\\build-snapshot-final\\STM32-Toolkit",
+      "argv": [
+        "D:/codex-tmp/kx23/venv/Scripts/python.exe",
+        "-m",
+        "pytest",
+        "tools/stm32-toolkit/tests/test_physical_target_workflows.py::test_probe_service_orders_unsorted_project_ram_for_mailbox_without_memory_io",
+        "-q",
+        "--tb=short",
+        "--basetemp=D:\\codex-tmp\\ff25\\p-review-fixture",
+        "-o",
+        "cache_dir=D:\\codex-tmp\\ff25\\c-review-fixture",
+        "--junitxml=D:\\codex-tmp\\ff25\\review-fixture.xml"
+      ],
+      "exitCode": 0,
+      "logSha256": "5f02b2595ebe92720e2c8cf98b8efbce8af2f1970a72661929c458de34859ccc"
+    }
+  ],
+  "uniquePassingCasesPerOwner": {
+    "author": 810,
+    "review": 810
+  },
+  "newFrequencyCases": 95,
+  "finalFullMatrixRerun": false,
+  "reuseBasis": "After testedProductHead only one synthetic test function gained seven explicit memory.layout lines. Product, Skill, guide and all other tests unchanged. Reuse424 core+385 regression passes; rerun corrected case at codeHead for both owners.",
+  "delegations": [
+    {
+      "label": "smoke",
+      "path": "D:\\codex-tmp\\ff25\\smoke.jsonl",
+      "sha256": "98939bd02fea66682085357bff710a2ddf4aa592e6101bda132b1a1d21ac0a30",
+      "sessionId": "f9827a3f-fe92-4099-9aec-7f1d80d52b84",
+      "tools": [
+        "PowerShell"
+      ],
+      "model": "deepseek-v4.1-flash[1m]",
+      "resultType": "success",
+      "permissionDenials": []
+    },
+    {
+      "label": "shell",
+      "path": "D:\\codex-tmp\\ff25\\shell.jsonl",
+      "sha256": "d1fb1c0436e97c5595e7dbe6e918ef7c24117464ee30fe254753318bc7af6dce",
+      "sessionId": "6396dca5-01ef-40df-af5e-f87040a8a32a",
+      "tools": [
+        "PowerShell"
+      ],
+      "model": "deepseek-v4.1-flash[1m]",
+      "resultType": "success",
+      "permissionDenials": []
+    },
+    {
+      "label": "audit",
+      "path": "D:\\codex-tmp\\ff25\\audit.jsonl",
+      "sha256": "b8fb0031c4939b30bc5c4a497fce2e11e767b4c5d764ea90890706a0f7e748fc",
+      "sessionId": "ba13ff4c-a4a3-4bae-92e8-38a817f94a62",
+      "tools": [
+        "Glob",
+        "Grep",
+        "Read"
+      ],
+      "model": "deepseek-v4.1-flash[1m]",
+      "resultType": "success",
+      "permissionDenials": []
+    },
+    {
+      "label": "author",
+      "path": "D:\\codex-tmp\\ff25\\author.jsonl",
+      "sha256": "073b55565519386cb3f63465e14a536433a19e4db8163a4f8aac73a5a039192d",
+      "sessionId": "3a2dd0b0-8a95-4b29-bc29-df33bb584c20",
+      "tools": [
+        "Edit",
+        "Glob",
+        "Grep",
+        "Read",
+        "Write"
+      ],
+      "model": "deepseek-v4.1-flash[1m]",
+      "resultType": "success",
+      "permissionDenials": []
+    },
+    {
+      "label": "fix1",
+      "path": "D:\\codex-tmp\\ff25\\fix1.jsonl",
+      "sha256": "664f78d0459265e7a39d49a870b5833b65ad205f7251ba94b6ece28039df1162",
+      "sessionId": "3a2dd0b0-8a95-4b29-bc29-df33bb584c20",
+      "tools": [
+        "Edit",
+        "Glob",
+        "Grep",
+        "Read",
+        "Write"
+      ],
+      "model": "deepseek-v4.1-flash[1m]",
+      "resultType": "success",
+      "permissionDenials": []
+    },
+    {
+      "label": "fix-fixture",
+      "path": "D:\\codex-tmp\\ff25\\fix-fixture.jsonl",
+      "sha256": "f734b9bc587c75f571873062fcf0bd7526d616af6008eec11ed820a5d2851da0",
+      "sessionId": "3a2dd0b0-8a95-4b29-bc29-df33bb584c20",
+      "tools": [
+        "Edit",
+        "Glob",
+        "Grep",
+        "Read",
+        "Write"
+      ],
+      "model": "deepseek-v4.1-flash[1m]",
+      "resultType": "success",
+      "permissionDenials": []
+    },
+    {
+      "label": "test-author-core1",
+      "path": "D:\\codex-tmp\\ff25\\test-author-core1.jsonl",
+      "sha256": "bedeff26a4494b062c4eae4a3fe9b5e7d44c101a7f1aa8fda899d1257b54c7d8",
+      "sessionId": "fb1d0eb6-aa7a-4b00-b83b-4bb28f21b391",
+      "tools": [
+        "PowerShell"
+      ],
+      "model": "deepseek-v4.1-flash[1m]",
+      "resultType": "success",
+      "permissionDenials": []
+    },
+    {
+      "label": "test-author-core2",
+      "path": "D:\\codex-tmp\\ff25\\test-author-core2.jsonl",
+      "sha256": "e0ba2843f5ca216085277d3dbb2de03520ad6fa4cfb800bb801450a1a917655e",
+      "sessionId": "33c04d18-212f-4468-b0c4-098426ca0cc8",
+      "tools": [
+        "PowerShell"
+      ],
+      "model": "deepseek-v4.1-flash[1m]",
+      "resultType": "success",
+      "permissionDenials": []
+    },
+    {
+      "label": "test-author-reg",
+      "path": "D:\\codex-tmp\\ff25\\test-author-reg.jsonl",
+      "sha256": "470e785e86054573ec96fa3dc955762a5f7b67dbb99d689a481832cf18b22d29",
+      "sessionId": "b397218e-c253-4362-94b7-4e072babf031",
+      "tools": [
+        "PowerShell"
+      ],
+      "model": "deepseek-v4.1-flash[1m]",
+      "resultType": "success",
+      "permissionDenials": []
+    },
+    {
+      "label": "test-author-fixture",
+      "path": "D:\\codex-tmp\\ff25\\test-author-fixture.jsonl",
+      "sha256": "887d1b054cca391e7d32fb0f2355cd96a0aadb499932d6f8d9f533efc57ac1f5",
+      "sessionId": "09d5a2f3-642c-429c-bf8a-6fdb9fe65ef2",
+      "tools": [
+        "PowerShell"
+      ],
+      "model": "deepseek-v4.1-flash[1m]",
+      "resultType": "success",
+      "permissionDenials": []
+    },
+    {
+      "label": "skill-validate",
+      "path": "D:\\codex-tmp\\ff25\\skill-validate.jsonl",
+      "sha256": "976bbf8179928e211b1a675835d529fdcdc0bf1d128b72fa260b24efbc514949",
+      "sessionId": "3111ab1b-3d9f-4752-9630-4ad91d6e5f7c",
+      "tools": [
+        "PowerShell"
+      ],
+      "model": "deepseek-v4.1-flash[1m]",
+      "resultType": "success",
+      "permissionDenials": []
+    },
+    {
+      "label": "consumer",
+      "path": "D:\\codex-tmp\\ff25\\consumer.jsonl",
+      "sha256": "66ccc9aeb779708a0b568f955b6cd8d4c4489e4b8fd72c18f27a92863c49dd79",
+      "sessionId": "3a2b0b46-2266-463a-96d8-fb09069f8575",
+      "tools": [
+        "Glob",
+        "Grep",
+        "Read"
+      ],
+      "model": "deepseek-v4.1-flash[1m]",
+      "resultType": "success",
+      "permissionDenials": []
+    },
+    {
+      "label": "procedure-review",
+      "path": "D:\\codex-tmp\\ff25\\procedure-review.jsonl",
+      "sha256": "46031ee4aa5d33eef4c68bcf9d6039432f5d04cb4a4c604a8ed449d05a423202",
+      "sessionId": "e05e0742-3315-4781-91b0-13c555544a5b",
+      "tools": [
+        "Glob",
+        "Grep",
+        "Read"
+      ],
+      "model": "deepseek-v4.1-flash[1m]",
+      "resultType": "success",
+      "permissionDenials": []
+    },
+    {
+      "label": "procedure-close",
+      "path": "D:\\codex-tmp\\ff25\\procedure-close.jsonl",
+      "sha256": "141364efe2a562b3c09b4ca1eab265223203e90b6166a6c166e76411609459ae",
+      "sessionId": "5a901c0a-9e57-4355-ae4a-9c5dbb10ca8b",
+      "tools": [
+        "Glob",
+        "Grep",
+        "Read"
+      ],
+      "model": "deepseek-v4.1-flash[1m]",
+      "resultType": "success",
+      "permissionDenials": []
+    }
+  ],
+  "skillValidation": {
+    "head": "a8095f03e9a8a5fa1d9dddf51075a6ac02e932f5",
+    "argv": [
+      "D:/codex-tmp/kx23/venv/Scripts/python.exe",
+      "C:/Users/zhy76/.codex/skills/.system/skill-creator/scripts/quick_validate.py",
+      "C:/Users/zhy76/.codex/worktrees/build-snapshot-final/STM32-Toolkit/skills/flash-firmware"
+    ],
+    "exitCode": 0,
+    "stdout": "Skill is valid!\n",
+    "stderr": "",
+    "initialEnvironmentFailure": "First direct invocation omitted dependency PYTHONPATH, ModuleNotFoundError yaml; no files changed."
+  },
+  "consumerSimulation": "A-F independently reviewed by primary: correct one-call selection, authorization scope, failure stop, imported unsupported recovery, conflicting parameters, unknown postFlash and source/installed distinction. Not live VS Code acceptance.",
+  "procedureIndependentReview": [
+    "procedure-review",
+    "procedure-close"
+  ],
+  "cleanup": {
+    "status": "POLICY_BLOCKED_RETAINED",
+    "attemptedPaths": [
+      "D:\\codex-tmp\\ff25\\c-author-core1",
+      "D:\\codex-tmp\\ff25\\c-review-core1",
+      "D:\\codex-tmp\\ff25\\c-author-core2",
+      "D:\\codex-tmp\\ff25\\c-review-core2",
+      "D:\\codex-tmp\\ff25\\p-author-core2",
+      "D:\\codex-tmp\\ff25\\p-review-core2",
+      "D:\\codex-tmp\\ff25\\c-author-reg",
+      "D:\\codex-tmp\\ff25\\c-review-reg",
+      "D:\\codex-tmp\\ff25\\c-review-baseline",
+      "D:\\codex-tmp\\ff25\\p-author-fixture",
+      "D:\\codex-tmp\\ff25\\p-review-fixture",
+      "D:\\codex-tmp\\ff25\\c-author-fixture",
+      "D:\\codex-tmp\\ff25\\c-review-fixture"
+    ],
+    "reason": "Automatic approval review rejected native PowerShell Remove-Item before process creation: blocked by policy",
+    "retried": false,
+    "alternateToolUsed": false,
+    "priorPolicyHeldRootsTouched": false,
+    "failureFixturesRetained": true
+  },
+  "scope": {
+    "productVersion": "1.3.0",
+    "nextVersionAfterRemainingWork": "1.3.1",
+    "hardwareAccess": false,
+    "originalProjectAccess": false,
+    "installation": false,
+    "globalSkillChanges": false,
+    "packaging": false,
+    "remoteActions": false
+  },
+  "laterEvidenceOwner": "primary at authorized integration/release for real IDE, physical frequency and reset/wiring behavior"
+}
