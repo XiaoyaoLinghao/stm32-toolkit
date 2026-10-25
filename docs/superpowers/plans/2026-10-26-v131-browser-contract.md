@@ -1,0 +1,7 @@
+# v1.3.1 browser fixture repair plan
+
+1. Claude reads the approved specification, supplied AGENTS instructions, exact current protocol serializers/guards and all affected browser scenarios. Do not rediscover Git or execute shell in the file-only phase.
+2. Correct only fixture responses/state semantics and visible selectors needed by existing tests. Keep source catalog, group editing, sampling errors, imports, isolation, accessibility and security checks meaningful. Return changed paths, rationale, remaining limitations and explicitly NOT RUN tests.
+3. Primary reviews the whole diff, commits the proposed CodeHead locally, and uses a clean independent review tree. Python release regression remains frozen on base `4b0153964306fe9f0f727a33bf8ea0a014cf03d4`; a fixture-only descendant can reuse it with recorded identical Python product/test hashes. A production change requires revisiting this boundary.
+4. Claude executes coordinator-supplied exact native PowerShell verification, with full output files and finite budgets. Primary reconciles every collected test outcome and reviews any failure. Correctable issues return on this branch; after two nonconverging rounds return to the contract design.
+5. Record source identities, complete results and limitations. No release acceptance follows merely from fixture correction. Actual IDE, final package verification and release gates remain separate.
