@@ -100,6 +100,101 @@
     "inputDiscoveryPolicy": {
       "const": "source-local-headers-v1"
     },
+    "memorySummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "basis",
+        "regions",
+        "warnings"
+      ],
+      "properties": {
+        "basis": {
+          "const": "elf-map-static-v1"
+        },
+        "regions": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name",
+              "origin",
+              "length",
+              "used",
+              "free"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "origin": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 4294967295
+              },
+              "length": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 4294967296
+              },
+              "used": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 4294967296
+              },
+              "free": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 4294967296
+              }
+            }
+          }
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "code",
+              "region",
+              "freeBytes",
+              "lengthBytes",
+              "belowBytes",
+              "belowPercent"
+            ],
+            "properties": {
+              "code": {
+                "const": "MEMORY_LOW_MARGIN"
+              },
+              "region": {
+                "type": "string",
+                "minLength": 1
+              },
+              "freeBytes": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 4294967296
+              },
+              "lengthBytes": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 4294967296
+              },
+              "belowBytes": {
+                "type": "boolean"
+              },
+              "belowPercent": {
+                "type": "boolean"
+              }
+            }
+          }
+        }
+      }
+    },
     "newestInputMtimeNs": {
       "type": "integer",
       "minimum": 0

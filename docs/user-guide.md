@@ -81,6 +81,12 @@ Keil `inspect`、`preflight` 和 `convert` 必须指向同一 `uvprojx` 和 `tar
 
 `remediation.action=inspect-build-log`（输出不可用或本次已 `clean=true`）时先检查构建日志与配置，不要重复 clean 循环。`BUILD_PROJECT_INVALID`（含受管文件漂移或片段 provenance）不是 stale：应按受支持的 configure/fragment 修复路径处理，不能靠 clean 或改 hash 绕过。不得通过修改旧 receipt、identity 或 managed hash 让产物看似有效。这些 `reason`/`evidenceField`/`remediation` 字段属于当前源码切片；frozen/installed 1.3.0 不包含，重启 VS Code 也不会安装，需等后续获授权安装。
 
+### 构建内存余量警告（`MEMORY_LOW_MARGIN`，当前源码切片）
+
+成功的托管构建始终在 identity 中写入可选 `memorySummary`（schema-1 与 schema-2 均可），字段为 `basis="elf-map-static-v1"`、按规范化模型顺序排列的 `regions[{name,origin,length,used,free}]`，以及确定性的 `warnings[{code,region,freeBytes,lengthBytes,belowBytes,belowPercent}]`。每个已声明区域（包括未使用的 `memory.extraRegions` 区域）在 `free < 1024` **或** `free * 20 < length` 时产生一条非阻塞 `MEMORY_LOW_MARGIN`。两个阈值各自严格小于才命中：恰好等于只会关闭该阈值本身，另一阈值仍可触发；例如 128 KiB 区域在 `free == 1024` 时虽不满足字节阈值，仍因不足 5% 而警告。`belowBytes`/`belowPercent` 分别记录实际命中的阈值，同一摘要生成 `BuildReport.warnings` 与 build-result `warnings` 中的可读字符串。警告不改变构建成功与否，也不触发自动重建、内存布局修改或忽略开关。
+
+`free` 只表示已验证 ELF/MAP 已分配区间的并集剩余量，不是最大连续空闲块、运行时栈/堆峰值或内存初始化完成的证明；`used` 也不包含运行时动态峰值。`memorySummary` 参与 `buildId`。JSON schema 校验 shape、字段类型与基本范围，语义校验进一步检查跨字段不变量（`used+free==length`、唯一且不重叠的地址范围）以及警告与阈值/区域行的一一对应；两者联合拒绝伪造摘要，即使攻击者重算了 `buildId`。硬件当前固件准入还会依据当前 ELF/MAP 与模型重新计算并比对已有摘要。旧 identity 缺少该字段时保持原有校验与构建 ID，但“没有警告字段”不能当作余量充足的正证据；当前读取器可读旧 receipt，但旧 runtime 可能拒绝含新字段的新 receipt，因此新 receipt 需与当前 runtime 匹配。摘要与警告只是静态离线证据，不授予烧录、调试或实机结论。
+
 ### ARMCC 浮点 ABI 证据（当前源码/候选切片）
 
 Arm 的 Compiler 5 文档区分硬件浮点**计算**与参数传递 **ABI**；官方迁移表把 `--cpu=Cortex-M4.fp` 映射到 hard linkage，但这说明的是编译器规则，不是本项目原始二进制实际使用的 ABI（参见 [Arm Compiler 5 文档](https://documentation-service.arm.com/static/5f721c6c1b758617cd950f6f)、[ARMCC→ARMCLANG 架构/处理器名迁移](https://support.arm.com/documentation/100068/0609/migrating-from-armcc-to-armclang/migrating-architecture-and-processor-names-for-command-line-options)、[Keil FPU 硬件选择](https://www.keil.com/support/man/docs/uv4/uv4_dg_adstarg.asp) 与 [GCC ARM 选项](https://gcc.gnu.org/onlinedocs/gcc/ARM-Options.html)）。本切片不解析 AXF/对象/库或真实编译命令行，因此 `baselineVerified` 恒为 false。

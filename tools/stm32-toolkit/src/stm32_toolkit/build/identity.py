@@ -38,6 +38,7 @@ from stm32_toolkit.build.map_file import (
     map_error,
     parse_map,
 )
+from stm32_toolkit.build.memory_margin import MemorySummary, MemorySummaryError
 from stm32_toolkit.build.model import (
     BUILD_ARTIFACT_INVALID,
     BUILD_EVIDENCE_FAILED,
@@ -1041,6 +1042,7 @@ def build_identity_document(
     built_at_utc: str,
     git: GitEvidence | None = None,
     git_unavailable: GitUnavailableEvidence | None = None,
+    memory_summary: MemorySummary | None = None,
 ) -> dict:
     """Construct a schema-1 Git or schema-2 input-snapshot identity.
 
@@ -1101,6 +1103,8 @@ def build_identity_document(
         }
     if snapshot.policy == SOURCE_LOCAL_HEADERS_POLICY:
         document["inputDiscoveryPolicy"] = SOURCE_LOCAL_HEADERS_POLICY
+    if memory_summary is not None:
+        document["memorySummary"] = memory_summary.to_dict()
     document["buildId"] = compute_build_id(document)
     return document
 
@@ -1145,6 +1149,15 @@ def validate_identity_document(document: dict) -> None:
             "identity evidence is invalid",
             {"phase": "identity"},
         )
+    if "memorySummary" in document:
+        try:
+            MemorySummary.from_document(document["memorySummary"])
+        except (MemorySummaryError, TypeError, ValueError, KeyError):
+            raise build_error(
+                BUILD_EVIDENCE_FAILED,
+                "identity evidence is invalid",
+                {"phase": "identity"},
+            ) from None
 
 
 # ---------------------------------------------------------------------------

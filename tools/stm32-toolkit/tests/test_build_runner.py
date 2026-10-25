@@ -379,9 +379,14 @@ def fake_cmake_main(argv: list[str]) -> int:
             os.remove(os.path.join(cwd, delete_input))
         if env.get("FAKE_CMAKE_NO_OUTPUT") == "1":
             return 0
+        # The typed model composes base regions then extraRegions; the fake
+        # GNU MAP must declare exactly that ordered region map.
         regions = [
             (region["name"], region["origin"], region["length"])
-            for region in payload["memory"]["regions"]
+            for region in (
+                *payload["memory"]["regions"],
+                *payload["memory"].get("extraRegions", []),
+            )
         ]
         defect_elf = env.get("FAKE_CMAKE_ELF_DEFECT", "")
         defect_map = env.get("FAKE_CMAKE_MAP_DEFECT", "")

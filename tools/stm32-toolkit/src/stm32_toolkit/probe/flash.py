@@ -19,6 +19,7 @@ from elftools.elf.segments import Segment
 from stm32_toolkit import __version__
 from stm32_toolkit.build.identity import (
     BuildError,
+    ElfEvidence,
     atomic_write_json,
     compute_build_id,
     git_evidence,
@@ -29,6 +30,12 @@ from stm32_toolkit.build.identity import (
     validate_elf,
     validate_identity_document,
     validate_snapshot_build_result,
+)
+from stm32_toolkit.build.map_file import parse_map
+from stm32_toolkit.build.memory_margin import (
+    MemorySummary,
+    MemorySummaryError,
+    build_memory_summary,
 )
 from stm32_toolkit.build.model import (
     SNAPSHOT_IDENTITY_SCHEMA_VERSION,
@@ -364,6 +371,55 @@ def _flash_segments(data: bytes, model: ProjectModel, rel: str) -> tuple[FlashSe
     return tuple(segments)
 
 
+def _require_matching_memory_summary(
+    identity: Mapping[str, object],
+    model: ProjectModel,
+    elf_evidence: ElfEvidence,
+    map_data: bytes,
+    map_rel: str,
+) -> None:
+    """Recompute a stored static summary before admitting current firmware.
+
+    A missing summary preserves the legacy admission contract.  When a summary
+    exists, a schema/semantic-invalid value, an unparseable current MAP, or any
+    mismatch with the freshly recomputed ELF/MAP/model summary is refused, so
+    edited region rows or warnings can never be admitted as measured evidence.
+    """
+    if "memorySummary" not in identity:
+        return
+    try:
+        declared = MemorySummary.from_document(identity["memorySummary"])
+    except (MemorySummaryError, TypeError, ValueError, KeyError):
+        raise _fail(
+            "FIRMWARE_EVIDENCE_INVALID",
+            "Firmware evidence is invalid",
+            path=_IDENTITY_REL,
+            rule="memorySummary",
+        ) from None
+    try:
+        map_text = map_data.decode("utf-8")
+        usages = parse_map(
+            map_text,
+            model.memory.regions,
+            path=map_rel,
+            elf_sections=elf_evidence.sections,
+        )
+    except (UnicodeDecodeError, AttributeError, BuildError):
+        raise _fail(
+            "FIRMWARE_EVIDENCE_INVALID",
+            "Firmware evidence is invalid",
+            path=map_rel,
+            rule="memorySummary",
+        ) from None
+    if declared != build_memory_summary(usages):
+        raise _fail(
+            "FIRMWARE_IDENTITY_MISMATCH",
+            "Firmware summary does not match the current ELF/MAP",
+            field="memorySummary",
+            rule="identity",
+        )
+
+
 def _load_fresh_firmware(root: Path) -> _FreshFirmware:
     """Shared firmware admission for every hardware workflow.
 
@@ -497,6 +553,9 @@ def _load_git_firmware(
         or elf_evidence.reset_handler_address != identity.get("resetHandlerAddress")
     ):
         raise _fail("FIRMWARE_IDENTITY_MISMATCH", "ELF structure disagrees with firmware identity", field="elf", rule="identity")
+    _require_matching_memory_summary(
+        identity, model, elf_evidence, map_data, str(map_rel)
+    )
     segments = _flash_segments(elf_data, model, str(elf_rel))
     return _FreshFirmware(root, model, identity, str(elf_rel), elf_data, segments)
 
@@ -637,6 +696,9 @@ def _refuse_snapshot_firmware(
         or elf_evidence.reset_handler_address != identity.get("resetHandlerAddress")
     ):
         raise _fail("FIRMWARE_IDENTITY_MISMATCH", "ELF structure disagrees with firmware identity", field="elf", rule="identity")
+    _require_matching_memory_summary(
+        identity, model, elf_evidence, map_data, str(map_rel)
+    )
     raise _fail(
         "FIRMWARE_PROVENANCE_UNSUPPORTED",
         "Firmware provenance does not support hardware workflows",

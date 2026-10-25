@@ -50,6 +50,7 @@ from stm32_toolkit.build.identity import (
     validate_snapshot_build_result,
 )
 from stm32_toolkit.build.map_file import MapError, parse_map
+from stm32_toolkit.build.memory_margin import MemorySummaryError, build_memory_summary
 from stm32_toolkit.build.model import (
     BUILD_ARTIFACT_INVALID,
     BUILD_BUSY,
@@ -1160,6 +1161,15 @@ def _run_locked(
             path=map_rel,
             elf_sections=elf_evidence.sections,
         )
+        try:
+            memory_summary = build_memory_summary(usages)
+        except MemorySummaryError:
+            raise build_error(
+                BUILD_EVIDENCE_FAILED,
+                "build evidence is invalid",
+                {"phase": "memorySummary"},
+            ) from None
+        memory_warnings = memory_summary.warning_texts()
         map_size, map_sha = hash_artifact(map_path, map_rel, _MAP_LIMIT_BYTES, BUILD_MAP_INVALID)
     except BuildError as error:
         return _publish_failure(
@@ -1181,6 +1191,7 @@ def _run_locked(
         map_size=map_size,
         map_sha256=map_sha,
         built_at_utc=utc_now_rfc3339(),
+        memory_summary=memory_summary,
     )
     try:
         validate_identity_document(identity_doc)
@@ -1226,7 +1237,7 @@ def _run_locked(
             {"path": map_rel},
         ],
         memory=[item.to_dict() for item in usages],
-        warnings=[],
+        warnings=list(memory_warnings),
         schema_version=(
             SNAPSHOT_IDENTITY_SCHEMA_VERSION if snapshot_mode else 1
         ),
@@ -1272,7 +1283,7 @@ def _run_locked(
     report = BuildReport(
         identity=typed_identity,
         memory=usages,
-        warnings=(),
+        warnings=memory_warnings,
         build_log_path=_LOG_REL,
         build_result_path=_RESULT_REL,
         identity_path=identity_rel,

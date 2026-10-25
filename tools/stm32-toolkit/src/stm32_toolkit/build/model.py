@@ -10,6 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from stm32_toolkit.build.memory_margin import MemorySummary
+
 SUPPORTED_PRESETS = ("arm-debug", "arm-release")
 IDENTITY_SCHEMA_VERSION = 1
 #: A snapshot identity is emitted only when Git provenance is unavailable.
@@ -100,6 +102,7 @@ class FirmwareIdentity:
     input_discovery_policy: str = "legacy"
     source_baseline: str | None = None
     git_evidence: dict[str, str] | None = None
+    memory_summary: MemorySummary | None = None
 
     def to_dict(self) -> dict[str, object]:
         result = {
@@ -133,6 +136,8 @@ class FirmwareIdentity:
         )
         if self.input_discovery_policy == "source-local-headers-v1":
             result["inputDiscoveryPolicy"] = self.input_discovery_policy
+        if self.memory_summary is not None:
+            result["memorySummary"] = self.memory_summary.to_dict()
         return result
 
     @classmethod
@@ -161,6 +166,14 @@ class FirmwareIdentity:
                 raise TypeError("gitEvidence must be an object")
             git_evidence = {str(key): str(value) for key, value in raw_evidence.items()}
         policy = document.get("inputDiscoveryPolicy")
+        raw_summary = (
+            document["memorySummary"] if "memorySummary" in document else None
+        )
+        memory_summary = (
+            MemorySummary.from_document(raw_summary)
+            if "memorySummary" in document
+            else None
+        )
         return cls(
             schema_version=schema_version,
             build_id=str(document["buildId"]),
@@ -184,6 +197,7 @@ class FirmwareIdentity:
             input_discovery_policy=str(policy) if policy is not None else "legacy",
             source_baseline=None if source_baseline is None else str(source_baseline),
             git_evidence=git_evidence,
+            memory_summary=memory_summary,
         )
 
 
