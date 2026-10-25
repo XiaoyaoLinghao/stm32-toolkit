@@ -237,6 +237,49 @@ def test_preflight_reuses_every_planner_technical_rule(tmp_path: Path) -> None:
     assert all("remediation" not in blocker for blocker in plan_blockers)
 
 
+def test_committed_technical_blockers_allow_only_a_diagnostic_plan(
+    tmp_path: Path,
+) -> None:
+    """Git permits a read-only PLAN; technical blockers make it unapplicable."""
+    root = build_repo(
+        tmp_path,
+        name="diagnostic",
+        uvprojx_kwargs={"scatter": "link.sct"},
+        files={"Main/main.c": MAIN_C, "Common/common.c": COMMON_C},
+    )
+    before = snapshot_tree(root)
+
+    preflight = preflight_keil_workflow(root)
+    assert preflight.ok is True, preflight
+    assert preflight.data["analysis"]["blockers"]
+    readiness = preflight.data["planReadiness"]
+    assert readiness["ready"] is False
+    assert readiness["status"] == "blocked"
+    prerequisites = {item["id"]: item for item in readiness["prerequisites"]}
+    assert prerequisites["technical-blockers"]["satisfied"] is False
+    assert preflight.data["applyReadiness"]["ready"] is False
+
+    plan = convert_keil_workflow(root)
+    assert plan.ok is True, plan
+    assert plan.operation == "keil-conversion-plan"
+    assert plan.data["blockers"]
+    assert {
+        "ARMCC_LINKER_CONFIGURATION_UNSUPPORTED",
+    } <= _blocker_codes(plan.data["blockers"])
+    assert len(plan.data["plan_id"]) == 64
+    assert snapshot_tree(root) == before
+
+    applied = convert_keil_workflow(
+        root, plan_id=plan.data["plan_id"], authorized=True
+    )
+    assert applied.ok is False
+    assert applied.code == "MIGRATION_BLOCKED"
+    assert "ARMCC_LINKER_CONFIGURATION_UNSUPPORTED" in applied.details[
+        "blockerCodes"
+    ]
+    assert snapshot_tree(root) == before
+
+
 def test_preflight_rejects_stale_inputs_and_ambiguous_selection(tmp_path: Path) -> None:
     root = standard_repo(tmp_path)
     inspection = fixture_inspection(root)

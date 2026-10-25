@@ -226,6 +226,64 @@ def test_apply_rejects_changed_or_omitted_binding_as_a_different_plan(tmp_path):
     assert applied.operation == "project-configuration-apply"
 
 
+def test_new_omitted_plan_after_accepted_binding_returns_portable_defaults(tmp_path):
+    root = write_project(tmp_path / "proj")
+    toolkit, gcc = _double(root, tmp_path)
+    bound = _bound_plan(root, toolkit, gcc)
+    applied = apply_project_configuration(bound)
+    assert applied.ok is True, applied
+
+    bound_tasks = json.loads(
+        (root / ".vscode" / "tasks.json").read_text("utf-8")
+    )["tasks"]
+    assert {task["command"] for task in bound_tasks} == {str(toolkit)}
+    project_model = (root / ".stm32-project.json").read_bytes()
+
+    portable = plan_for(root)
+    assert portable.vscode_configuration is None
+    assert "vscode_configuration" not in portable.to_dict()
+    assert portable.plan_id != bound.plan_id
+    tasks = next(
+        entry for entry in portable.files if entry.path == ".vscode/tasks.json"
+    )
+    c_cpp = next(
+        entry
+        for entry in portable.files
+        if entry.path == ".vscode/c_cpp_properties.json"
+    )
+    assert tasks.status == "update-managed"
+    assert c_cpp.status == "update-managed"
+    portable_tasks = json.loads(tasks.after_bytes.decode("utf-8"))["tasks"]
+    assert {task["command"] for task in portable_tasks} == {
+        "${config:stm32-toolkit.executablePath}"
+    }
+    portable_c_cpp = json.loads(c_cpp.after_bytes.decode("utf-8"))
+    assert portable_c_cpp["configurations"][0]["compilerPath"] == (
+        "${config:stm32-toolkit.compilerPath}"
+    )
+    # The reviewed diff shows the binding being returned to portable defaults.
+    assert "${config:stm32-toolkit.executablePath}" in tasks.unified_diff
+    assert "${config:stm32-toolkit.compilerPath}" in c_cpp.unified_diff
+    # Omission never persists the invocation-scoped local paths into the model.
+    assert (root / ".stm32-project.json").read_bytes() == project_model
+
+    restored = apply_project_configuration(portable)
+    assert restored.ok is True, restored
+    disk_tasks = json.loads(
+        (root / ".vscode" / "tasks.json").read_text("utf-8")
+    )["tasks"]
+    assert {task["command"] for task in disk_tasks} == {
+        "${config:stm32-toolkit.executablePath}"
+    }
+    disk_c_cpp = json.loads(
+        (root / ".vscode" / "c_cpp_properties.json").read_text("utf-8")
+    )
+    assert disk_c_cpp["configurations"][0]["compilerPath"] == (
+        "${config:stm32-toolkit.compilerPath}"
+    )
+    assert (root / ".stm32-project.json").read_bytes() == project_model
+
+
 def test_forged_or_removed_binding_is_refused_before_write(tmp_path):
     root = write_project(tmp_path / "proj")
     toolkit, gcc = _double(root, tmp_path)
