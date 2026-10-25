@@ -15,9 +15,12 @@ route for the Toolkit encoding blocker; it is not part of migration apply.
   `gbk`, `gb18030`, or explicitly `cp1252`. Different files may use different
   charsets. Never guess, probe, or silently fall back. A successful decode does
   not prove that the decoded human text is intended.
-- Convert non-ASCII characters only inside real C/C++ comments. Preserve every
-  other byte, comment delimiter, CR/LF/CRLF sequence, final-newline state, and
-  an existing UTF-8 BOM. Do not add a BOM or normalize line endings.
+- Convert non-ASCII characters only inside real C/C++ comments. Preserve actual
+  ASCII lexical units, comment delimiters, all bytes outside comment content,
+  CR/LF/CRLF sequences, final-newline state, and an existing UTF-8 BOM. A
+  multibyte unit can contain an ASCII-valued trail byte (for example GB18030
+  `A3 42`); preserve or replace the whole decoded unit, never split it by a raw
+  ASCII test. Do not add a BOM or normalize line endings.
 - Block a legacy file that contains non-ASCII bytes in code, strings,
   character literals, or preprocessing header names. Do not change runtime
   literal bytes to make a conversion appear to work.
@@ -30,12 +33,15 @@ route for the Toolkit encoding blocker; it is not part of migration apply.
   same code points are review warnings instead; review the decoded text before
   accepting it.
 - Strict decoding is the default and its behavior is unchanged. The single
-  opt-in is `preview --replace-invalid-with '?'`: it replaces undecodable byte
-  spans and existing private-use, C1-control, U+FFFD, and noncharacter code
-  points with a literal `?` **only after the lexer proves them to be comment
-  content**, including in a declared UTF-8 file. Each replacement is recorded
-  with its source byte offset, length, original bytes, line, column, reason,
-  and replacement value, and the plan ID binds the mode, the value, and those
+  opt-in is `preview --replace-invalid-with '?'`. An explicit user request to
+  replace undecodable comment bytes or existing private-use, C1-control, U+FFFD,
+  and noncharacter code points with a literal `?`, together with the declared
+  charset, authorizes this read-only preview; the preview itself classifies each
+  unit and can block the file. Copy is allowed only for records the lexer
+  actually proved to be comment content and that the user reviewed per file,
+  including in a declared UTF-8 file. Each replacement is recorded with its
+  source byte offset, length, original bytes, line, column, reason, and
+  replacement value, and the plan ID binds the mode, the value, and those
   records. Valid ordinary comment text still converts normally.
 - No other replacement value is accepted, and replacement never applies to
   code, strings, character literals, preprocessing header names, or any other
@@ -90,10 +96,12 @@ I/O error). Read `status` and `code` in the JSON before deciding what happened.
 
 #### Explicit reviewed replacement preview
 
-Run the strict preview first. Only when the user explicitly asks to replace
-undecodable comment bytes, or a private-use/C1-control/U+FFFD/noncharacter code
-point in a comment, with a literal `?`, preview the same selection with the one
-supported value:
+Run the strict preview when it can classify the selection. When the user
+explicitly asks to replace undecodable comment bytes, or a private-use/C1-
+control/U+FFFD/noncharacter code point in a comment, with a literal `?`, the
+explicit intent plus the declared charset authorizes previewing the same
+selection read-only with the one supported value. A strict `DECODE_ERROR` does
+not by itself classify those bytes; this preview does:
 
 ```powershell
 python $Normalizer preview --project-root 'C:\work\robot' --preview-dir 'D:\review\robot-comments-1-replace' --file 'App/main.c=gbk' --replace-invalid-with '?'
@@ -158,8 +166,11 @@ the helper has no `authorized` flag. Always pass the exact `planId` you
 reviewed, never one you did not review.
 
 For a replacement plan, pass exactly one `--confirm-file '<relative path>'` for
-every file whose `lossy` flag is true, using that plan's canonical
-project-relative paths:
+each lossy file whose recorded loss you reviewed and accept, using that plan's
+canonical project-relative paths. These confirmations must reflect the reviewed
+per-file choices; never manufacture them by looping over `lossyFiles`, editing
+the plan, or confirming on the user's behalf. If any lossy file is declined,
+re-preview the narrowed selection rather than copying unapproved files:
 
 ```powershell
 python $Normalizer copy --project-root 'C:\work\robot' --plan 'D:\review\robot-comments-1-replace\plan.json' --plan-id '<exact 64-character planId>' --output-dir 'D:\review\robot-comments-1-replace-copy' --confirm-file 'App/main.c'

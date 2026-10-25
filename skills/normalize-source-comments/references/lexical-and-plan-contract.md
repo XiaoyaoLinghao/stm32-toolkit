@@ -118,10 +118,14 @@ selected for replacement becomes one ASCII `?` instead:
   noncharacter (`noncharacter-code-point`) code point.
 
 Unassigned code points and `MIXED_SINGLE_BYTE_ARTIFACT` stay review warnings
-even when the same unit is selected for replacement. ASCII bytes, comment
-delimiters, all bytes outside comment content, CR/LF/CRLF sequences,
-final-newline state, and an existing UTF-8 BOM are preserved. The derived output
-must decode as strict UTF-8 and must pass these checks:
+even when the same unit is selected for replacement. Actual ASCII lexical units,
+comment delimiters, all bytes outside comment content, CR/LF/CRLF sequences,
+final-newline state, and an existing UTF-8 BOM are preserved. A multibyte unit
+can contain an ASCII-valued trail byte (for example GB18030 `A3 42`); when that
+whole decoded unit is explicitly replaced, its trail byte is part of the
+replacement rather than separately preserved ASCII. Preserve by decoded unit,
+not by a raw-byte ASCII test. The derived output must decode as strict UTF-8 and
+must pass these checks:
 
 - The outside-comment byte digest is unchanged.
 - Re-deriving the output as `utf-8` is a no-op (idempotence).
@@ -257,11 +261,14 @@ It:
    cannot diverge from the reviewed options.
 3. Validates confirmations before creating any output directory. A `replace`
    plan requires exactly one canonical, selected, lossy `--confirm-file` per
-   lossy file: missing (`CONFIRMATION_REQUIRED`), duplicate
+   reviewed and accepted lossy file: missing (`CONFIRMATION_REQUIRED`), duplicate
    (`CONFIRMATION_DUPLICATE`), unknown (`CONFIRMATION_UNKNOWN`), non-lossy
    (`CONFIRMATION_NOT_LOSSY`), and malformed (`CONFIRMATION_INVALID`) sets are
-   refused. A `strict` plan accepts no confirmation and rejects any supplied
-   one (`CONFIRMATION_INVALID`).
+   refused. Confirmations are reviewed per-file choices; do not manufacture them
+   by iterating `lossyFiles`, and declining a lossy file calls for a narrowed
+   re-preview rather than a plan edit or an unapproved copy. A `strict` plan
+   accepts no confirmation and rejects any supplied one
+   (`CONFIRMATION_INVALID`).
 4. Creates only the new output directory and writes an `INCOMPLETE.json`
    marker immediately, before any converted file, so interruption cannot leave
    an apparently complete directory without a marker.
@@ -303,7 +310,12 @@ complete migrated or buildable project.
   content loss — `?` does not recover the intended characters, and it must not
   be presented as a repaired comment, a guessed charset, a text encoding
   claim, or authorization to edit originals.
-- The companion skill is discoverable under `skills/normalize-source-comments`
-  but is intentionally not added to the eight-skill closed release inventory or
-  release packager in this slice. `doctor` therefore continues to report the
-  release workflow skills only.
+- The companion skill is present in the current source tree's
+  `skills/normalize-source-comments` and in `public_inventory.py` as the ninth
+  bundled skill; the user guide lists the same nine current-source skills. The
+  frozen v1.3.0 local candidate already packaged an earlier version of this
+  helper, while the published v1.2.0 package has eight skills and no helper.
+  The reviewed replacement behavior described here exists only in the current
+  source tree: this slice did not update an installed, frozen, or global copy of
+  the helper, so check the loaded `SKILL.md`, helper directory, and behavior
+  rather than assuming the replacement mode is available.

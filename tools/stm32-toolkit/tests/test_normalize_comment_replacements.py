@@ -374,37 +374,24 @@ def test_error_span_that_would_consume_ascii_is_blocked():
         nc._require_non_ascii_span(b"", 0, [0])
 
 
-def _ascii_crossing_gbk_span() -> tuple[bytes, int, int] | None:
-    for candidate in (
-        b"/* \xd6 \n*/\n",
-        b"/* \xd6\n*/\n",
-        b"/* \xd6\x7f */\n",
-        b"/* \x81\x30\x81A */\n",
-        b"/* \x81 \n*/\n",
-    ):
-        try:
-            candidate.decode("gbk")
-        except UnicodeDecodeError as error:
-            span = candidate[error.start : error.end]
-            if any(byte < 0x80 for byte in span):
-                return candidate, error.start, error.end
-    return None
-
-
 def test_interpreter_ascii_consuming_span_is_blocked_end_to_end(
     tmp_path: Path, project: Path
 ):
-    candidate = _ascii_crossing_gbk_span()
-    if candidate is None:
-        pytest.skip(
-            "platform-only: this interpreter reports no ASCII-containing gbk "
-            "error span; the guard is also covered directly above. Owner: "
-            "coordinator; later phase: platform verification on another CPython."
-        )
-    source, start, end = candidate
+    # Native CPython 3.12 reports this truncated GB18030 sequence at EOF as an
+    # error span start=3, end=5, bytes 81 30, "incomplete multibyte sequence".
+    # The span contains ASCII 0x30, so this deterministic decode proves the
+    # ASCII-consumption guard end to end without a platform search or skip.
+    source = b"// \x81\x30"
+    with pytest.raises(UnicodeDecodeError) as decode_error:
+        source.decode("gb18030")
+    error = decode_error.value
+    assert (error.start, error.end) == (3, 5)
+    assert error.object[error.start : error.end] == b"\x81\x30"
+    assert "incomplete multibyte sequence" in error.reason
+
     _write(project, "App/boundary.c", source)
     preview_dir = tmp_path / "preview"
-    result = _preview(project, preview_dir, ["App/boundary.c=gbk"], REPLACE)
+    result = _preview(project, preview_dir, ["App/boundary.c=gb18030"], REPLACE)
     assert result["status"] == "blocked"
     entry = _plan_file(preview_dir, "App/boundary.c")
     blockers = _codes(entry, "blocker")
@@ -414,9 +401,16 @@ def test_interpreter_ascii_consuming_span_is_blocked_end_to_end(
         for finding in entry["findings"]
         if finding["code"] == "INVALID_SPAN_ASCII_UNSUPPORTED"
     )
-    assert finding["byteOffset"] == start
-    assert finding["originalBytes"] == source[start:end].hex()
+    assert finding["byteOffset"] == 3
+    assert finding["originalBytes"] == "8130"
     assert entry["outputSha256"] is None
+    assert entry["replacementRecords"] == []
+
+    output = tmp_path / "out"
+    with pytest.raises(nc.ToolError) as blocked_copy:
+        _copy(project, preview_dir, result["planId"], output)
+    assert blocked_copy.value.code == "PLAN_BLOCKED"
+    assert not output.exists()
 
 
 def test_preservation_of_bom_crlf_final_newline_and_valid_text(
@@ -828,9 +822,11 @@ def test_replacement_preview_is_read_only_and_keeps_mixed_valid_text(
     start, end = spans[0]
     assert source[start:end] == b"\xff"
     assert entry["replacementRecords"][0]["byteOffset"] == start
-    assert entry["outputSha256"] == nc._sha256(
-        source[:start] + b"?" + b"\xe4\xb8\xad */\r\nint a;\r\n"
-    )
+    # The literal space after the invalid byte is real source text; only the
+    # invalid FF becomes '?'.  The valid GBK pair D6 D0 still becomes U+4E2D.
+    expected = b"/* ? " + "中".encode("utf-8") + b" */\r\nint a;\r\n"
+    assert expected == b"/* ? \xe4\xb8\xad */\r\nint a;\r\n"
+    assert entry["outputSha256"] == nc._sha256(expected)
     assert entry["newline"] == {
         "crlf": 2,
         "lf": 0,
@@ -838,8 +834,11 @@ def test_replacement_preview_is_read_only_and_keeps_mixed_valid_text(
         "finalNewline": True,
         "finalSequence": "CRLF",
     }
+    output = tmp_path / "out"
+    _copy(project, preview_dir, result["planId"], output, ["App/mixed.c"])
+    assert _read(output, "App/mixed.c") == expected
     assert original.read_bytes() == source
-    # Preview alone never writes into the project or creates output copies.
+    # The preview and the external copy never write into the project.
     project_files = sorted(
         path.relative_to(project).as_posix()
         for path in project.rglob("*")
@@ -1013,3 +1012,86 @@ def test_recovered_carry_boundary_enforces_decoded_limit(
     assert finding.byte_offset == window - 1
     assert analysis.decode_mode == "strict"
     assert analysis.unit_round_trip is False
+
+
+def test_recovery_window_carries_complete_multibyte_sequence(
+    tmp_path: Path, project: Path, monkeypatch
+):
+    # Keep the seam small and deterministic: the first recovery feed ends in the
+    # middle of a valid UTF-8 sequence, so the lead bytes must be carried into
+    # the next feed instead of being classified as an invalid span.
+    window = 5
+    monkeypatch.setattr(nc, "_RECOVERY_FEED_BYTES", window)
+    source = b"// " + "中".encode("utf-8") + b" tail\n"
+    assert source[:window] == b"// \xe4\xb8"
+    with pytest.raises(UnicodeDecodeError):
+        source[:window].decode("utf-8")
+    assert source.decode("utf-8") == "// 中 tail\n"
+
+    _write(project, "App/seam.c", source)
+    preview_dir = tmp_path / "preview"
+    result = _preview(project, preview_dir, ["App/seam.c=utf-8"], REPLACE)
+    assert result["status"] == "ready"
+    entry = _plan_file(preview_dir, "App/seam.c")
+    # A valid sequence carried across the seam is preserved comment text, not a
+    # recorded loss; the recovery pass still proves the exact byte mapping.
+    assert entry["decodeMode"] == "strict"
+    assert entry["decodeRoundTrip"] is True
+    assert entry["invalidByteUnits"] == 0
+    assert entry["replacementRecords"] == []
+    assert entry["lossy"] is False
+    assert entry["commentCount"] == 1
+    assert entry["commentNonAsciiUnits"] == 1
+    assert entry["outputSha256"] == nc._sha256(source)
+    assert entry["idempotent"] is True
+
+    output = tmp_path / "out"
+    _copy(project, preview_dir, result["planId"], output)
+    assert _read(output, "App/seam.c") == source
+    assert _read(project, "App/seam.c") == source
+
+
+def test_recovery_window_classifies_invalid_sequence_spanning_seam(
+    tmp_path: Path, project: Path, monkeypatch
+):
+    # The first recovery feed ends inside a truncated UTF-8 sequence.  The
+    # carried bytes plus the next feed form one wholly non-ASCII error span, so
+    # the span is classified in the second feed and replaced inside the comment.
+    window = 5
+    monkeypatch.setattr(nc, "_RECOVERY_FEED_BYTES", window)
+    truncated = b"\xe4\xb8"
+    source = b"// " + truncated + b" tail\n"
+    assert source[:window] == b"// \xe4\xb8"
+    with pytest.raises(UnicodeDecodeError):
+        source.decode("utf-8")
+
+    _write(project, "App/seam-invalid.c", source)
+    preview_dir = tmp_path / "preview"
+    result = _preview(project, preview_dir, ["App/seam-invalid.c=utf-8"], REPLACE)
+    assert result["status"] == "ready"
+    entry = _plan_file(preview_dir, "App/seam-invalid.c")
+    assert entry["decodeMode"] == "recovery"
+    assert entry["decodeRoundTrip"] is False
+    assert entry["unitRoundTrip"] is True
+    assert entry["invalidByteUnits"] == 1
+    assert entry["replacementCount"] == 1
+    assert entry["lossy"] is True
+    record = entry["replacementRecords"][0]
+    assert record["byteOffset"] == 3
+    assert record["byteLength"] == 2
+    assert record["originalBytes"] == "e4b8"
+    assert record["reason"] == "invalid-byte-unit"
+    assert record["replacement"] == REPLACE
+    expected = b"// ? tail\n"
+    assert entry["outputSha256"] == nc._sha256(expected)
+
+    output = tmp_path / "out"
+    _copy(
+        project,
+        preview_dir,
+        result["planId"],
+        output,
+        ["App/seam-invalid.c"],
+    )
+    assert _read(output, "App/seam-invalid.c") == expected
+    assert _read(project, "App/seam-invalid.c") == source
