@@ -156,6 +156,22 @@
     {
       "path": "D:\\codex-tmp\\ab25\\author-final-request.txt",
       "sha256": "483af20ecd52b6711e5c20d94e86e5671ceeb030b1f618c55be80a9a9b549434"
+    },
+    {
+      "path": "D:\\codex-tmp\\ab25\\skill-audit.jsonl",
+      "sha256": "d1ba35e04554fdc8e5f685eb16ac479ddbf5f11a2511fb04c5ec70335b917410"
+    },
+    {
+      "path": "D:\\codex-tmp\\ab25\\skill-audit-final.jsonl",
+      "sha256": "e2e60210dda21bd7c46ab65185f5e151ba9efc5c842ce7c2191ec6ebc905f1c2"
+    },
+    {
+      "path": "D:\\codex-tmp\\ab25\\report.jsonl",
+      "sha256": "5c906f4d2007ceb5992f00dc499d8f757fd5f1eb126e4e329c5b026a34bb4401"
+    },
+    {
+      "path": "D:\\codex-tmp\\ab25\\cleanup.json",
+      "sha256": "05d5f120ce3a09a24259b67aa9eb86808d0e0f0950f5b49cbbda614a385ea6fa"
     }
   ],
   "broaderEvidenceReuse": {
@@ -191,5 +207,27 @@
   },
   "hardware": false,
   "install": false,
-  "remoteActions": []
+  "remoteActions": [],
+  "distinctApplicableCases": {
+    "passing": 983,
+    "overlap": 0,
+    "basis": "672 at tested CodeHead plus311 unchanged consumer cases at4eea45d6; not a whole release matrix"
+  },
+  "skillFollowup": {
+    "head": "d1ab283862b3c0ccf9460d764ef432aa1d9b4478",
+    "structuralValidator": "Skill is valid!",
+    "simulation": "Fresh read-only Claude sessions, three synthetic ABI scenarios. Initial response overclaimed blocked projects could not generate diagnostic PLAN; docs clarified against workflows.py. Final response permits diagnostic PLAN under Git/root prerequisites and refuses APPLY while blockers remain; declarations/inferences never prove original library ABI. No real IDE/tool/hardware action."
+  },
+  "cleanup": {
+    "action": "Remove passed disposable pytest/cache directories under D:/codex-tmp/ab25",
+    "retainedFailedRoots": [
+      "p-author-first",
+      "p-review-first"
+    ],
+    "status": "held-policy-rejection",
+    "executed": false,
+    "note": "No alternate deletion tool or permission bypass used.",
+    "reason": "exec_command rejected: blocked by policy",
+    "retry": false
+  }
 }

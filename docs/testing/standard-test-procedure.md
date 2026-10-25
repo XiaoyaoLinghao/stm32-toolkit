@@ -4,9 +4,11 @@
 
 ## 1. 当前断点与证据
 
+2026-10-25 ARMCC-FLOAT-ABI 离线切片已 `ACCEPTED_WITH_FIXES`，见[独立验收记录](../codex/returns/ARMCC-FLOAT-ABI/review.md)。Accepted base `386d63bc2fc5c633c1296c87601ae188cf09ebfd`，测试 CodeHead `1bf7a7a3b44538a13d826e1790d15bde2bf15532`。Claude Code CLI 编码/编写测试，主代理在独立干净工作树完整审查；最终双方各672项通过、0失败/跳过，其中32项新增ABI用例。另311项共享夹具调用方回归通过，按产品与相关测试字节不变复用，共983个不同通过用例；不宣称最终全仓库/发行矩阵重跑。首轮双方各671通过/1失败，原因是新测试把uvprojx文件当成目录传入，修正两处`.parent`后复核；不是环境缺失，不放宽产品校验。删除无依据的数字uFloatingPoint→ABI映射，保留有条件、明确未验证的ARMCC/M4/FPU2 hard推断；捕获RvdsVP并阻断不支持的选择器，preflight/PLAN/report共享且绑定ABI证据，baselineVerified恒false。原工程仅只读核对配置，SHA前后相同，无AXF/MAP基线证明；未构建原工程或操作硬件。指引模拟发现并修正“有blocker不能生成任何PLAN”的误读，明确可返回带blocker的诊断PLAN但不可APPLY，复测和Skill结构校验通过。报告阶段仅指引澄清，无代码/测试变化。初次文件任务误用未开放Bash已停止、未执行shell；日志与两次65-turn续作留证。清理本轮测试临时目录被自动审批策略拒绝，仅返回blocked by policy，保留且未绕过。产品仍1.3.0；runtime/全局技能/冻结包/远端未改，不授予发行或硬件资格。
+
 2026-10-25 COMMENT-REVIEWED-REPLACEMENT 离线切片已 `ACCEPTED_WITH_FIXES`，见[独立验收记录](../codex/returns/COMMENT-REVIEWED-REPLACEMENT/review.md)。Accepted base `3cd5eea7ccfa6599782400b8009496424ec99802`，CodeHead `045bea3574dece7ea5740d6eaa76a3a731150cc0`。Claude Code CLI 编码/测试，主代理在精确干净工作树完整审查；最终双方各82项通过、0失败、0跳过（39项既有助手、31项新增替换、12项AI调用指引），两个受影响Skill结构校验通过。初轮双方各78通过/1失败/1跳过留证；修正测试预期中遗漏的空格，以真实GB18030截断序列替代可跳过用例，并补充分块边界测试。审核要求保留解码映射前字符上限及私用区DBCS行末歧义检查，最终均已验证。新增显式 `--replace-invalid-with '?'`、只读预览损失记录、绑定精确planId的逐文件 `--confirm-file` 与外部副本；默认严格模式、原文件保护、非注释/歧义阻断不变。助手1.1.0、plan/manifest schema2需要旧计划重新预览；产品版本仍1.3.0。原工程、硬件、runtime、全局技能及冻结资产未操作，已安装/冻结1.3.0不含本补丁；不是全量发行资格。报告阶段仅澄清指引中两种危险trigraph措辞，helper/tests与测试CodeHead一致。
 
-用户已指定：剩余约定优化全部完成后，统一更新产品与发行版本至 **v1.3.1**。仍待ABI核实、失效构建指引、VS Code生成配置、doctor就绪检查、烧录频率/失败提示、内存余量告警及后续集成/发行验证；本次未提前改版本号、重建发行包或发布。既有硬件入口和授权边界继续适用。
+用户已指定：剩余约定优化全部完成后，统一更新产品与发行版本至 **v1.3.1**。仍待失效构建指引、VS Code生成配置、doctor就绪检查、烧录频率/失败提示、内存余量告警及后续集成/发行验证；本次未提前改版本号、重建发行包或发布。既有硬件入口和授权边界继续适用。
 
 2026-10-25 PY-OCD-DEBUG-CONFIG 离线切片已 `ACCEPTED_WITH_FIXES`，见[独立验收记录](../codex/returns/PY-OCD-DEBUG-CONFIG/review.md)。Accepted base `7b25b890f02892626c5ba6201bd3dec2712a95e4`，CodeHead `313743acfa609d6c29ca8bb9cbec3800f3577418`。Claude Code CLI 编码/测试，主代理在精确干净工作树完整审查；最终作者与主代理各344项通过，包含82项新增。1164项历史回归有通过证据，其中902项按记录复用；共1246个不同用例通过，不宣称最终全量矩阵重跑。初轮7项新测试失败、6项回归失败及接受基线中的旧转换夹具失败均已留证并修正。4项真实符号链接检查延至主代理负责的具备能力的Windows/Linux发行验证，模拟reparse检查通过。配对debug.backend/debug.target配置、只读PLAN、manifest与受管文件同事务APPLY/回滚、完整缺失诊断、非阻断迁移后提示及VS Code/Skill指引已接受；配置不证明target支持或实机状态，原有Git/固件身份/SVD/授权与独立探针发现边界保留。原工程、硬件、已安装runtime、全局技能、冻结发行资产未操作；已安装/冻结1.3.0不含本源码补丁。本断点不授予安装、硬件或发行权限，既有执行流程继续适用。
 
