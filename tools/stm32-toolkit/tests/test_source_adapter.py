@@ -614,8 +614,9 @@ def test_two_index_keys_serialize_and_close_prevents_queued_compiler(tmp_path: P
         assert starts == [first.fingerprint]
         pid = int(pid_text)
         listing = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
-                                 capture_output=True, text=True, timeout=5)
-        assert f'"{pid}"' not in listing.stdout
+                                 capture_output=True, timeout=5)
+        assert listing.returncode == 0, listing.stderr
+        assert f'"{pid}"'.encode("ascii") not in listing.stdout
     finally:
         adapter.close()
 
@@ -666,8 +667,9 @@ def test_timeout_reaps_only_owned_compiler_child_tree(tmp_path: Path) -> None:
         # tasklist is read-only; any fallback cleanup targets this test-owned PID.
         for _ in range(20):
             listing = subprocess.run(["tasklist", "/FI", f"PID eq {child_pid}", "/FO", "CSV", "/NH"],
-                                     capture_output=True, text=True, timeout=5)
-            if f'"{child_pid}"' not in listing.stdout:
+                                     capture_output=True, timeout=5)
+            assert listing.returncode == 0, listing.stderr
+            if f'"{child_pid}"'.encode("ascii") not in listing.stdout:
                 break
             time.sleep(0.1)
         else:
@@ -697,8 +699,9 @@ def test_root_exits_first_but_owned_descendant_is_reaped(tmp_path: Path, stop_mo
 
     def alive(pid: int) -> bool:
         listing = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
-                                 capture_output=True, text=True, timeout=5)
-        return f'"{pid}"' in listing.stdout
+                                 capture_output=True, timeout=5)
+        assert listing.returncode == 0, listing.stderr
+        return f'"{pid}"'.encode("ascii") in listing.stdout
 
     try:
         with ThreadPoolExecutor(max_workers=1) as pool:

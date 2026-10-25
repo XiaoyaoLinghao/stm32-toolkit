@@ -594,7 +594,6 @@ def test_real_ntfs_junction_candidate_is_rejected(tmp_path: Path) -> None:
     result = subprocess.run(
         ["cmd", "/c", "mklink", "/J", str(junction), str(outside)],
         capture_output=True,
-        text=True,
         check=False,
     )
     assert result.returncode == 0, result.stderr

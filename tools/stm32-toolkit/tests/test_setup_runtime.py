@@ -1036,7 +1036,6 @@ def test_check_rejects_redirected_plugin_data_ancestor(tmp_path: Path):
         ["cmd.exe", "/d", "/c", "mklink", "/J", str(redirect), str(target)],
         check=False,
         capture_output=True,
-        text=True,
     )
     if junction.returncode != 0:
         pytest.skip("directory junctions unavailable")

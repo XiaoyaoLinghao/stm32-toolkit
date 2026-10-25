@@ -1565,7 +1565,7 @@ def test_control_authority_rejects_a_root_replaced_by_a_real_junction(tmp_path: 
   root.rename(original)
   created = subprocess.run(
       ["cmd", "/d", "/c", "mklink", "/J", str(root), str(original)],
-      capture_output=True, text=True, timeout=10, check=False,
+      capture_output=True, timeout=10, check=False,
   )
   if created.returncode != 0:
     original.rename(root)
@@ -3292,7 +3292,7 @@ def test_target_modify_rejects_real_junction_replacement(
     target.rename(original)
     created = subprocess.run(
         ["cmd", "/d", "/c", "mklink", "/J", str(target), str(original)],
-        capture_output=True, text=True, timeout=10, check=False,
+        capture_output=True, timeout=10, check=False,
     )
     if created.returncode != 0:
       original.rename(target)
@@ -4004,7 +4004,11 @@ def test_target_discovery_rejects_a_synchronous_read_that_crosses_its_deadline(
 
     def read(self, maximum, deadline):
       self.calls.append(("read", maximum, deadline))
-      time.sleep(0.03)
+      # Block past the deadline the product actually supplied rather than a fixed
+      # 0.03 s: the crossing must come from this pending synchronous read. A
+      # deadline that expires before the transport exists would test pre-dispatch
+      # expiry instead of this boundary, so the fixture cannot use a 5 ms setup.
+      time.sleep(max(0.0, deadline - time.monotonic()) + 0.03)
       return self.chunks.pop(0) if self.chunks else b""
 
   async def scenario() -> None:
@@ -4018,9 +4022,10 @@ def test_target_discovery_rejects_a_synchronous_read_that_crosses_its_deadline(
     )
 
     with pytest.raises(target_module.TargetRunError) as caught:
-      await _r5_discover(runner, deadline=time.monotonic() + 0.005)
+      await _r5_discover(runner)
 
     assert caught.value.code == "TEST_TRANSPORT_UNAVAILABLE"
+    assert [call for call in active.calls if call[0] == "read"], "synchronous read was never entered"
     assert active.calls[-1] == ("close",)
     assert probe.closed
 
