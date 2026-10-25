@@ -540,7 +540,34 @@ def _load_prior_evidence(root: Path, preset: str):
     return record, identity_doc
 
 
-def _prior_evidence_matches(
+@dataclass(frozen=True)
+class _EvidenceMatch:
+    """Result of the single prior-evidence admission comparison.
+
+    ``field``/``source`` are fixed names only; recorded values are never
+    carried into diagnostics.
+    """
+
+    matched: bool
+    reason: str | None = None
+    field: str | None = None
+    source: str | None = None
+
+
+_EVIDENCE_MATCHED = _EvidenceMatch(True)
+
+_STALE_OUTPUT_UNAVAILABLE = "output-unavailable"
+_STALE_PRIOR_UNAVAILABLE = "prior-evidence-unavailable"
+_STALE_PRIOR_FAILED = "prior-build-not-successful"
+_STALE_INPUT_MISMATCH = "input-snapshot-mismatch"
+_STALE_EVIDENCE_MISMATCH = "prior-evidence-mismatch"
+
+
+def _evidence_mismatch(reason: str, field: str, source: str) -> _EvidenceMatch:
+    return _EvidenceMatch(False, reason, field, source)
+
+
+def _prior_evidence_check(
     prior,
     model: ProjectModel,
     preset: str,
@@ -550,50 +577,59 @@ def _prior_evidence_matches(
     map_rel: str,
     post_elf: _ArtifactState,
     post_map: _ArtifactState,
-) -> bool:
+) -> _EvidenceMatch:
+    """Return the first bounded reason the prior success cannot be reused.
+
+    The acceptance decision is unchanged: every predicate and its order is
+    the same as the historical boolean comparison.  Only the first failing
+    predicate is named so callers do not need a second validation algorithm.
+    """
     record, identity_doc = prior
     if record.get("status") != "success":
-        return False
+        return _evidence_mismatch(_STALE_PRIOR_FAILED, "status", "record")
     if record.get("preset") != preset:
-        return False
+        return _evidence_mismatch(_STALE_EVIDENCE_MISMATCH, "preset", "record")
     if record.get("targetDevice") != model.target.device:
-        return False
+        return _evidence_mismatch(_STALE_EVIDENCE_MISMATCH, "targetDevice", "record")
     if record.get("inputSnapshotSha256") != snapshot.sha256:
-        return False
+        return _evidence_mismatch(_STALE_INPUT_MISMATCH, "inputSnapshotSha256", "record")
     try:
         validate_identity_document(identity_doc)
     except BuildError:
-        return False
+        return _evidence_mismatch(_STALE_EVIDENCE_MISMATCH, "identityDocument", "identity")
     if compute_build_id(identity_doc) != identity_doc.get("buildId"):
-        return False
+        return _evidence_mismatch(_STALE_EVIDENCE_MISMATCH, "buildId", "identity")
     if identity_doc.get("preset") != preset:
-        return False
+        return _evidence_mismatch(_STALE_EVIDENCE_MISMATCH, "preset", "identity")
     if identity_doc.get("targetDevice") != model.target.device:
-        return False
+        return _evidence_mismatch(_STALE_EVIDENCE_MISMATCH, "targetDevice", "identity")
     if identity_doc.get("inputSnapshotSha256") != snapshot.sha256:
-        return False
+        return _evidence_mismatch(_STALE_INPUT_MISMATCH, "inputSnapshotSha256", "identity")
     if identity_discovery_policy(identity_doc) != snapshot.policy:
-        return False
-    if identity_doc.get("elfPath") != elf_rel or identity_doc.get("mapPath") != map_rel:
-        return False
-    if (
-        identity_doc.get("elfSha256") != post_elf.sha256
-        or identity_doc.get("mapSha256") != post_map.sha256
-    ):
-        return False
+        return _evidence_mismatch(
+            _STALE_EVIDENCE_MISMATCH, "inputDiscoveryPolicy", "identity"
+        )
+    if identity_doc.get("elfPath") != elf_rel:
+        return _evidence_mismatch(_STALE_EVIDENCE_MISMATCH, "elfPath", "identity")
+    if identity_doc.get("mapPath") != map_rel:
+        return _evidence_mismatch(_STALE_EVIDENCE_MISMATCH, "mapPath", "identity")
+    if identity_doc.get("elfSha256") != post_elf.sha256:
+        return _evidence_mismatch(_STALE_EVIDENCE_MISMATCH, "elfSha256", "identity")
+    if identity_doc.get("mapSha256") != post_map.sha256:
+        return _evidence_mismatch(_STALE_EVIDENCE_MISMATCH, "mapSha256", "identity")
     if record.get("buildId") != identity_doc.get("buildId"):
-        return False
+        return _evidence_mismatch(_STALE_EVIDENCE_MISMATCH, "buildId", "record")
     if isinstance(provenance, GitEvidence):
         if record.get("schemaVersion") != 1:
-            return False
+            return _evidence_mismatch(_STALE_EVIDENCE_MISMATCH, "schemaVersion", "record")
         if identity_doc.get("schemaVersion") != 1:
-            return False
+            return _evidence_mismatch(_STALE_EVIDENCE_MISMATCH, "schemaVersion", "identity")
         if record.get("gitHead") != provenance.head:
-            return False
+            return _evidence_mismatch(_STALE_EVIDENCE_MISMATCH, "gitHead", "record")
         if identity_doc.get("gitHead") != provenance.head:
-            return False
+            return _evidence_mismatch(_STALE_EVIDENCE_MISMATCH, "gitHead", "identity")
         if "sourceBaseline" in identity_doc or "gitEvidence" in identity_doc:
-            return False
+            return _evidence_mismatch(_STALE_EVIDENCE_MISMATCH, "provenance", "identity")
     else:
         expected = provenance.to_dict()
         expected_artifacts = frozenset(
@@ -608,31 +644,134 @@ def _prior_evidence_matches(
         if not validate_snapshot_build_result(
             record, preset=preset, expected_artifact_paths=expected_artifacts
         ):
-            return False
+            return _evidence_mismatch(_STALE_EVIDENCE_MISMATCH, "snapshotResult", "record")
         if identity_doc.get("schemaVersion") != SNAPSHOT_IDENTITY_SCHEMA_VERSION:
-            return False
+            return _evidence_mismatch(_STALE_EVIDENCE_MISMATCH, "schemaVersion", "identity")
         if identity_doc.get("logicalProjectId") != str(model.logical_project_id):
-            return False
+            return _evidence_mismatch(
+                _STALE_EVIDENCE_MISMATCH, "logicalProjectId", "identity"
+            )
         if identity_doc.get("toolkitVersion") != __version__:
-            return False
+            return _evidence_mismatch(_STALE_EVIDENCE_MISMATCH, "toolkitVersion", "identity")
         if identity_doc.get("sourceBaseline") != SOURCE_BASELINE_INPUT_SNAPSHOT:
-            return False
+            return _evidence_mismatch(
+                _STALE_EVIDENCE_MISMATCH, "sourceBaseline", "identity"
+            )
         if record.get("sourceBaseline") != SOURCE_BASELINE_INPUT_SNAPSHOT:
-            return False
+            return _evidence_mismatch(_STALE_EVIDENCE_MISMATCH, "sourceBaseline", "record")
         if identity_doc.get("gitHead") is not None or identity_doc.get("gitDirty") is not None:
-            return False
+            return _evidence_mismatch(_STALE_EVIDENCE_MISMATCH, "gitState", "identity")
         if record.get("gitHead") is not None or record.get("gitDirty") is not None:
-            return False
+            return _evidence_mismatch(_STALE_EVIDENCE_MISMATCH, "gitState", "record")
         if identity_doc.get("gitEvidence") != expected:
-            return False
+            return _evidence_mismatch(_STALE_EVIDENCE_MISMATCH, "gitEvidence", "identity")
         if record.get("gitEvidence") != expected:
-            return False
-    return True
+            return _evidence_mismatch(_STALE_EVIDENCE_MISMATCH, "gitEvidence", "record")
+    return _EVIDENCE_MATCHED
+
+
+def _stale_remediation(
+    reason: str, preset: str, clean_requested: bool, timeout_seconds: int
+) -> dict[str, object]:
+    """Return bounded advice for one stale reason; it never executes."""
+    if reason == _STALE_OUTPUT_UNAVAILABLE:
+        return {
+            "action": "inspect-build-log",
+            "summary": (
+                "A required build output is unavailable after the command reported "
+                "success. Do not repeat the same build automatically; inspect the "
+                "build log and configuration first."
+            ),
+        }
+    if clean_requested:
+        return {
+            "action": "inspect-build-log",
+            "summary": (
+                "The requested clean build did not produce outputs that match the "
+                "current inputs and prior evidence. Do not repeat the same clean "
+                "command automatically; inspect the build log and configuration first."
+            ),
+        }
+    return {
+        "action": "clean-rebuild",
+        "summary": (
+            "Current inputs and prior build evidence do not establish these outputs "
+            "as fresh. A preset clean rebuild (CMake --clean-first) regenerates them, "
+            "but it can still fail; this guidance executes nothing."
+        ),
+        "cli": {
+            # ``arguments`` is only the command tail.  Prefix it with the
+            # caller-verified executable, then this required option and the
+            # caller's verified bound absolute project root.  The executable
+            # label is symbolic, not a real path, and the bound root stays
+            # outside this portable advice: no absolute path or shell string.
+            "executable": "caller-verified-stm32-toolkit",
+            "workingDirectory": "project-root",
+            "projectRoot": {
+                "option": "--project-root",
+                "valueFrom": "same-bound-project-root",
+                "required": True,
+            },
+            "arguments": [
+                "build",
+                "--preset",
+                preset,
+                "--clean",
+                "--timeout-seconds",
+                str(timeout_seconds),
+            ],
+        },
+        "mcp": {
+            "tool": "stm32_build",
+            "arguments": {
+                "preset": preset,
+                "clean": True,
+                "timeoutSeconds": timeout_seconds,
+            },
+        },
+        "authorizationRequired": True,
+        "authorization": (
+            "Explicit user authorization for this exact clean build is required "
+            "before execution."
+        ),
+    }
+
+
+def _stale_details(
+    *,
+    path: str,
+    rule: str,
+    reason: str,
+    preset: str,
+    clean_requested: bool,
+    timeout_seconds: int,
+    evidence_field: str | None = None,
+    evidence_source: str | None = None,
+) -> dict[str, object]:
+    details: dict[str, object] = {
+        "path": path,
+        "rule": rule,
+        "reason": reason,
+        "preset": preset,
+        "cleanRequested": clean_requested,
+        "logPath": _LOG_REL,
+        "resultPath": _RESULT_REL,
+        "identityPath": f"build/{preset}/firmware-identity.json",
+        "remediation": _stale_remediation(
+            reason, preset, clean_requested, timeout_seconds
+        ),
+    }
+    if evidence_field is not None:
+        details["evidenceField"] = evidence_field
+    if evidence_source is not None:
+        details["evidenceSource"] = evidence_source
+    return details
 
 
 def _require_fresh_outputs(
     root: Path,
     model: ProjectModel,
+    request: BuildRequest,
     preset: str,
     pre_elf: _ArtifactState,
     pre_map: _ArtifactState,
@@ -647,22 +786,65 @@ def _require_fresh_outputs(
     post_map = _artifact_state(map_path)
     if not post_elf.exists:
         raise build_error(
-            BUILD_OUTPUT_STALE, "build outputs are stale", {"path": elf_rel, "rule": "missing"}
+            BUILD_OUTPUT_STALE,
+            "build outputs are stale",
+            _stale_details(
+                path=elf_rel,
+                rule="missing",
+                reason=_STALE_OUTPUT_UNAVAILABLE,
+                preset=preset,
+                clean_requested=request.clean,
+                timeout_seconds=request.timeout_seconds,
+                evidence_source="output",
+            ),
         )
     if not post_map.exists:
         raise build_error(
-            BUILD_OUTPUT_STALE, "build outputs are stale", {"path": map_rel, "rule": "missing"}
+            BUILD_OUTPUT_STALE,
+            "build outputs are stale",
+            _stale_details(
+                path=map_rel,
+                rule="missing",
+                reason=_STALE_OUTPUT_UNAVAILABLE,
+                preset=preset,
+                clean_requested=request.clean,
+                timeout_seconds=request.timeout_seconds,
+                evidence_source="output",
+            ),
         )
     if pre_elf != post_elf or pre_map != post_map:
         return
     prior = _load_prior_evidence(root, preset)
-    if prior is None or not _prior_evidence_matches(
-        prior, model, preset, snapshot, provenance, elf_rel, map_rel, post_elf, post_map
-    ):
+    if prior is None:
         raise build_error(
             BUILD_OUTPUT_STALE,
             "build outputs are stale",
-            {"path": elf_rel, "rule": "unverifiable"},
+            _stale_details(
+                path=elf_rel,
+                rule="unverifiable",
+                reason=_STALE_PRIOR_UNAVAILABLE,
+                preset=preset,
+                clean_requested=request.clean,
+                timeout_seconds=request.timeout_seconds,
+            ),
+        )
+    match = _prior_evidence_check(
+        prior, model, preset, snapshot, provenance, elf_rel, map_rel, post_elf, post_map
+    )
+    if not match.matched:
+        raise build_error(
+            BUILD_OUTPUT_STALE,
+            "build outputs are stale",
+            _stale_details(
+                path=elf_rel,
+                rule="unverifiable",
+                reason=match.reason or _STALE_EVIDENCE_MISMATCH,
+                preset=preset,
+                clean_requested=request.clean,
+                timeout_seconds=request.timeout_seconds,
+                evidence_field=match.field,
+                evidence_source=match.source,
+            ),
         )
 
 
@@ -953,6 +1135,7 @@ def _run_locked(
         _require_fresh_outputs(
             root,
             model,
+            request,
             preset,
             pre_elf,
             pre_map,

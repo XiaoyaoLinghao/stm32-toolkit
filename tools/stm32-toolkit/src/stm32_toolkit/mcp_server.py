@@ -2783,6 +2783,33 @@ def create_server(
         that code under their existing protocol (acceptance recovery maps it
         to ACCEPTANCE_ATTEMPT_OUTPUT_INVALID).  Report the returned identity
         evidence exactly; a failed build leaves prior artifacts stale.
+
+        Retain the complete BUILD_OUTPUT_STALE response before any further
+        operation, because the next build overwrites the current log and
+        result.  Details keep legacy path/rule and add a bounded reason:
+        output-unavailable, prior-evidence-unavailable,
+        prior-build-not-successful, input-snapshot-mismatch, or
+        prior-evidence-mismatch; evidenceField/evidenceSource name only fixed
+        fields and never echo recorded values.  For
+        remediation.action=clean-rebuild (unchanged outputs with clean=false),
+        the exact CLI tokens and MCP parameters preserve preset and
+        timeoutSeconds and omit authorized.  CLI tokens are only the command
+        tail, not a standalone invocation: prefix the caller-verified Toolkit
+        executable and the required remediation.cli.projectRoot option
+        (--project-root) with the same binding's verified absolute project
+        root, even when the current directory is the project root; bare
+        tokens are rejected.  The executable label is symbolic, not a real
+        path, and the advice contains no absolute root or shell command.
+        Send the MCP call to this same bound server/project.  Both are
+        diagnostic advice, not authorization: execute them only under the
+        user's applicable authorization for that exact clean build.
+        For inspect-build-log
+        (missing/unavailable output or clean already requested), inspect the
+        build log and configuration instead of repeating a clean build; a
+        clean build is not guaranteed to fix either case.  BUILD_PROJECT_INVALID
+        (including managed-file drift or fragment provenance) is a
+        configure/fragment repair problem, not stale output: do not clean or
+        edit hashes to bypass it.
         """
         return await tool_build_for_request(
             runtime, ctx, preset, clean, timeoutSeconds, authorized

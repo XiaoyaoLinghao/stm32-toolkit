@@ -387,6 +387,24 @@ def test_public_tool_descriptions_guide_mcp_only_consumers(tmp_path: Path):
     build = descriptions["stm32_build"]
     assert "capabilityDetails.build" in build
     assert "authorized=true" in build
+    for phrase in (
+        "BUILD_OUTPUT_STALE",
+        "Retain",
+        "output-unavailable",
+        "prior-evidence-unavailable",
+        "prior-build-not-successful",
+        "input-snapshot-mismatch",
+        "prior-evidence-mismatch",
+        "remediation.action=clean-rebuild",
+        "inspect-build-log",
+        "omit authorized",
+        "caller-verified Toolkit executable",
+        "workingDirectory=project-root",
+        "remediation.cli.projectRoot",
+        "not a standalone invocation",
+        "same bound server/project",
+    ):
+        assert phrase in build
 
     probe = descriptions["stm32_probe_list"]
     for phrase in (

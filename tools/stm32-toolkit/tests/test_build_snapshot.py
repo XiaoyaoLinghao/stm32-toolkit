@@ -417,7 +417,12 @@ def test_tampered_snapshot_prior_evidence_is_stale(
 
     assert result.ok is False
     assert result.code == "BUILD_OUTPUT_STALE"
-    assert result.details == {"path": "build/arm-debug/firmware.elf", "rule": "unverifiable"}
+    assert result.details["path"] == "build/arm-debug/firmware.elf"
+    assert result.details["rule"] == "unverifiable"
+    assert result.details["reason"] == "prior-evidence-mismatch"
+    assert result.details["evidenceField"] == "identityDocument"
+    assert result.details["evidenceSource"] == "identity"
+    assert result.details["remediation"]["action"] == "clean-rebuild"
 
 
 def test_cross_provenance_mode_never_reuses_prior_outputs(

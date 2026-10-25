@@ -1251,7 +1251,23 @@ def test_exit_zero_without_outputs_is_stale(tmp_path: Path, monkeypatch: pytest.
     result = run_build(BuildRequest(project_root=root, preset="arm-debug"))
     assert result.ok is False
     assert result.code == "BUILD_OUTPUT_STALE"
-    assert result.details == {"path": "build/arm-debug/firmware.elf", "rule": "missing"}
+    assert set(result.details) == {
+        "path", "rule", "reason", "preset", "cleanRequested",
+        "logPath", "resultPath", "identityPath", "remediation", "evidenceSource",
+    }
+    assert result.details["path"] == "build/arm-debug/firmware.elf"
+    assert result.details["rule"] == "missing"
+    assert result.details["reason"] == "output-unavailable"
+    assert result.details["preset"] == "arm-debug"
+    assert result.details["cleanRequested"] is False
+    assert result.details["evidenceSource"] == "output"
+    assert "evidenceField" not in result.details
+    assert result.details["logPath"] == "artifacts/migration/build.log"
+    assert result.details["resultPath"] == "artifacts/migration/build-result.json"
+    assert result.details["identityPath"] == "build/arm-debug/firmware-identity.json"
+    assert result.details["remediation"]["action"] == "inspect-build-log"
+    assert "cli" not in result.details["remediation"]
+    assert "mcp" not in result.details["remediation"]
     assert not identity_path_for(root).exists()
     failure = read_json(result_path_for(root))
     assert failure["status"] == "failure"
@@ -1270,7 +1286,30 @@ def test_unchanged_outputs_without_prior_evidence_are_stale(
     result = run_build(BuildRequest(project_root=root, preset="arm-debug"))
     assert result.ok is False
     assert result.code == "BUILD_OUTPUT_STALE"
+    assert result.details["path"] == "build/arm-debug/firmware.elf"
     assert result.details["rule"] == "unverifiable"
+    assert result.details["reason"] == "prior-evidence-unavailable"
+    assert "evidenceField" not in result.details
+    assert "evidenceSource" not in result.details
+    assert result.details["cleanRequested"] is False
+    remediation = result.details["remediation"]
+    assert remediation["action"] == "clean-rebuild"
+    assert remediation["cli"]["executable"] == "caller-verified-stm32-toolkit"
+    assert remediation["cli"]["workingDirectory"] == "project-root"
+    assert remediation["cli"]["projectRoot"] == {
+        "option": "--project-root",
+        "valueFrom": "same-bound-project-root",
+        "required": True,
+    }
+    assert remediation["cli"]["arguments"] == [
+        "build", "--preset", "arm-debug", "--clean", "--timeout-seconds", "300",
+    ]
+    assert remediation["mcp"] == {
+        "tool": "stm32_build",
+        "arguments": {"preset": "arm-debug", "clean": True, "timeoutSeconds": 300},
+    }
+    assert remediation["authorizationRequired"] is True
+    assert "authorized" not in remediation["mcp"]["arguments"]
 
 
 def test_legitimate_noop_rebuild_shares_build_id(
@@ -1313,7 +1352,12 @@ def test_legacy_prior_output_cannot_be_reused_across_policy_upgrade_with_same_di
     monkeypatch.setenv("FAKE_CMAKE_NO_OUTPUT", "1")
     second = run_build(BuildRequest(project_root=root, preset="arm-debug"))
     assert not second.ok and second.code == "BUILD_OUTPUT_STALE"
-    assert second.details == {"path": "build/arm-debug/firmware.elf", "rule": "unverifiable"}
+    assert second.details["path"] == "build/arm-debug/firmware.elf"
+    assert second.details["rule"] == "unverifiable"
+    assert second.details["reason"] == "prior-evidence-mismatch"
+    assert second.details["evidenceField"] == "inputDiscoveryPolicy"
+    assert second.details["evidenceSource"] == "identity"
+    assert second.details["remediation"]["action"] == "clean-rebuild"
     assert identity_path.read_bytes() == old_bytes
 
 
@@ -1954,7 +1998,11 @@ def test_noop_rebuild_with_tampered_prior_evidence_is_stale(
     result = run_build(BuildRequest(project_root=root, preset="arm-debug"))
     assert result.ok is False
     assert result.code == "BUILD_OUTPUT_STALE"
-    assert result.details == {"path": "build/arm-debug/firmware.elf", "rule": "unverifiable"}
+    assert result.details["path"] == "build/arm-debug/firmware.elf"
+    assert result.details["rule"] == "unverifiable"
+    assert result.details["reason"] == "prior-evidence-mismatch"
+    assert result.details["evidenceField"] == "buildId"
+    assert result.details["evidenceSource"] == "identity"
 
 
 def test_release_noop_without_release_prior_evidence_is_stale(
@@ -1971,7 +2019,17 @@ def test_release_noop_without_release_prior_evidence_is_stale(
     result = run_build(BuildRequest(project_root=root, preset="arm-release"))
     assert result.ok is False
     assert result.code == "BUILD_OUTPUT_STALE"
-    assert result.details == {"path": "build/arm-release/firmware.elf", "rule": "unverifiable"}
+    assert result.details["path"] == "build/arm-release/firmware.elf"
+    assert result.details["rule"] == "unverifiable"
+    assert result.details["reason"] == "prior-evidence-unavailable"
+    assert result.details["preset"] == "arm-release"
+    assert result.details["cleanRequested"] is False
+    assert result.details["identityPath"] == "build/arm-release/firmware-identity.json"
+    assert result.details["remediation"]["action"] == "clean-rebuild"
+    assert result.details["remediation"]["cli"]["arguments"] == [
+        "build", "--preset", "arm-release", "--clean", "--timeout-seconds", "300",
+    ]
+    assert result.details["remediation"]["mcp"]["arguments"]["preset"] == "arm-release"
 
 
 def test_failure_record_publication_failure_returns_evidence_failed(
@@ -2110,7 +2168,13 @@ def test_map_missing_is_stale(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     result = run_build(BuildRequest(project_root=root, preset="arm-debug"))
     assert result.ok is False
     assert result.code == "BUILD_OUTPUT_STALE"
-    assert result.details == {"path": "build/arm-debug/firmware.map", "rule": "missing"}
+    assert result.details["path"] == "build/arm-debug/firmware.map"
+    assert result.details["rule"] == "missing"
+    assert result.details["reason"] == "output-unavailable"
+    assert result.details["evidenceSource"] == "output"
+    assert result.details["remediation"]["action"] == "inspect-build-log"
+    assert "cli" not in result.details["remediation"]
+    assert "mcp" not in result.details["remediation"]
 
 
 def test_pre_configure_snapshot_raise_publishes_failure(tmp_path: Path, monkeypatch):
@@ -2192,25 +2256,64 @@ def test_failure_record_log_publication_failure(tmp_path: Path, monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "tamper",
+    ("tamper", "reason", "field", "source"),
     [
-        lambda root, _result: rewrite_json(result_path_for(root), lambda doc: doc.__setitem__("status", "failure")),
-        lambda root, _result: rewrite_json(result_path_for(root), lambda doc: doc.__setitem__("preset", "arm-release")),
-        lambda root, _result: rewrite_json(result_path_for(root), lambda doc: doc.__setitem__("targetDevice", "OTHER")),
-        lambda root, _result: rewrite_json(result_path_for(root), lambda doc: doc.__setitem__("inputSnapshotSha256", "0" * 64)),
-        lambda root, _result: rewrite_json(result_path_for(root), lambda doc: doc.__setitem__("gitHead", "0" * 40)),
-        lambda root, _result: rewrite_json(result_path_for(root), lambda doc: doc.__setitem__("buildId", "1" * 64)),
-        lambda root, _result: tamper_identity(root, lambda doc: doc.__setitem__("preset", "arm-release")),
-        lambda root, _result: tamper_identity(root, lambda doc: doc.__setitem__("targetDevice", "OTHER")),
-        lambda root, _result: tamper_identity(root, lambda doc: doc.__setitem__("inputSnapshotSha256", "0" * 64)),
-        lambda root, _result: tamper_identity(root, lambda doc: doc.__setitem__("gitHead", "0" * 40)),
-        lambda root, _result: tamper_identity(root, lambda doc: doc.__setitem__("elfPath", "build/arm-debug/other.elf")),
-        lambda root, _result: tamper_identity(root, lambda doc: doc.__setitem__("elfSha256", "0" * 64)),
-        lambda root, _result: tamper_identity(root, lambda doc: doc.__setitem__("mapSha256", "0" * 64)),
+        pytest.param(
+            lambda root, _result: rewrite_json(result_path_for(root), lambda doc: doc.__setitem__("status", "failure")),
+            "prior-build-not-successful", "status", "record", id="record-status",
+        ),
+        pytest.param(
+            lambda root, _result: rewrite_json(result_path_for(root), lambda doc: doc.__setitem__("preset", "arm-release")),
+            "prior-evidence-mismatch", "preset", "record", id="record-preset",
+        ),
+        pytest.param(
+            lambda root, _result: rewrite_json(result_path_for(root), lambda doc: doc.__setitem__("targetDevice", "OTHER")),
+            "prior-evidence-mismatch", "targetDevice", "record", id="record-target",
+        ),
+        pytest.param(
+            lambda root, _result: rewrite_json(result_path_for(root), lambda doc: doc.__setitem__("inputSnapshotSha256", "0" * 64)),
+            "input-snapshot-mismatch", "inputSnapshotSha256", "record", id="record-snapshot",
+        ),
+        pytest.param(
+            lambda root, _result: rewrite_json(result_path_for(root), lambda doc: doc.__setitem__("gitHead", "0" * 40)),
+            "prior-evidence-mismatch", "gitHead", "record", id="record-git-head",
+        ),
+        pytest.param(
+            lambda root, _result: rewrite_json(result_path_for(root), lambda doc: doc.__setitem__("buildId", "1" * 64)),
+            "prior-evidence-mismatch", "buildId", "record", id="record-build-id",
+        ),
+        pytest.param(
+            lambda root, _result: tamper_identity(root, lambda doc: doc.__setitem__("preset", "arm-release")),
+            "prior-evidence-mismatch", "preset", "identity", id="identity-preset",
+        ),
+        pytest.param(
+            lambda root, _result: tamper_identity(root, lambda doc: doc.__setitem__("targetDevice", "OTHER")),
+            "prior-evidence-mismatch", "targetDevice", "identity", id="identity-target",
+        ),
+        pytest.param(
+            lambda root, _result: tamper_identity(root, lambda doc: doc.__setitem__("inputSnapshotSha256", "0" * 64)),
+            "input-snapshot-mismatch", "inputSnapshotSha256", "identity", id="identity-snapshot",
+        ),
+        pytest.param(
+            lambda root, _result: tamper_identity(root, lambda doc: doc.__setitem__("gitHead", "0" * 40)),
+            "prior-evidence-mismatch", "gitHead", "identity", id="identity-git-head",
+        ),
+        pytest.param(
+            lambda root, _result: tamper_identity(root, lambda doc: doc.__setitem__("elfPath", "build/arm-debug/other.elf")),
+            "prior-evidence-mismatch", "elfPath", "identity", id="identity-elf-path",
+        ),
+        pytest.param(
+            lambda root, _result: tamper_identity(root, lambda doc: doc.__setitem__("elfSha256", "0" * 64)),
+            "prior-evidence-mismatch", "elfSha256", "identity", id="identity-elf-hash",
+        ),
+        pytest.param(
+            lambda root, _result: tamper_identity(root, lambda doc: doc.__setitem__("mapSha256", "0" * 64)),
+            "prior-evidence-mismatch", "mapSha256", "identity", id="identity-map-hash",
+        ),
     ],
 )
 def test_noop_rebuild_with_mismatched_prior_evidence_is_stale(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tamper
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tamper, reason, field, source
 ):
     root = prepare_project(tmp_path)
     install_fake_cmake(monkeypatch, tmp_path)
@@ -2221,7 +2324,14 @@ def test_noop_rebuild_with_mismatched_prior_evidence_is_stale(
     result = run_build(BuildRequest(project_root=root, preset="arm-debug"))
     assert result.ok is False
     assert result.code == "BUILD_OUTPUT_STALE"
-    assert result.details == {"path": "build/arm-debug/firmware.elf", "rule": "unverifiable"}
+    assert result.details["path"] == "build/arm-debug/firmware.elf"
+    assert result.details["rule"] == "unverifiable"
+    assert result.details["reason"] == reason
+    assert result.details["evidenceField"] == field
+    assert result.details["evidenceSource"] == source
+    assert result.details["preset"] == "arm-debug"
+    assert result.details["cleanRequested"] is False
+    assert result.details["remediation"]["action"] == "clean-rebuild"
 
 
 def test_artifact_state_edge_cases(tmp_path: Path, monkeypatch):

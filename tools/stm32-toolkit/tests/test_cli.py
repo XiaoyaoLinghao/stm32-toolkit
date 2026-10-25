@@ -532,6 +532,107 @@ def test_build_command_accepts_clean_and_timeout(tmp_path: Path, monkeypatch, ca
     assert payload["ok"] is True
 
 
+def test_build_command_returns_stale_guidance_json(
+    tmp_path: Path, monkeypatch, capsys
+):
+    from test_build_runner import hit_records, install_fake_cmake
+
+    from stm32_toolkit.build import runner as runner_mod
+
+    root = _configured_repo(tmp_path)
+    hit_file = install_fake_cmake(monkeypatch, tmp_path)
+    assert main(["build", "--project", str(root), "--preset", "arm-debug"]) == 0
+    capsys.readouterr()
+
+    (root / "Src" / "main.c").write_text(
+        "int main(void) { return 45; }\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("FAKE_CMAKE_NO_OUTPUT", "1")
+
+    assert main([
+        "build", "--project", str(root), "--preset", "arm-debug",
+        "--timeout-seconds", "321",
+    ]) == 2
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is False
+    assert payload["operation"] == "build"
+    assert payload["code"] == "BUILD_OUTPUT_STALE"
+    details = payload["details"]
+    assert details["reason"] == "input-snapshot-mismatch"
+    assert details["evidenceField"] == "inputSnapshotSha256"
+    assert details["cleanRequested"] is False
+    remediation = details["remediation"]
+    assert remediation["action"] == "clean-rebuild"
+    assert remediation["cli"]["executable"] == "caller-verified-stm32-toolkit"
+    assert remediation["cli"]["workingDirectory"] == "project-root"
+    project_root_binding = remediation["cli"]["projectRoot"]
+    assert project_root_binding == {
+        "option": "--project-root",
+        "valueFrom": "same-bound-project-root",
+        "required": True,
+    }
+    arguments = remediation["cli"]["arguments"]
+    assert arguments == [
+        "build", "--preset", "arm-debug", "--clean", "--timeout-seconds", "321",
+    ]
+    assert remediation["mcp"]["arguments"] == {
+        "preset": "arm-debug", "clean": True, "timeoutSeconds": 321,
+    }
+    assert "authorized" not in remediation["mcp"]["arguments"]
+
+    # ``arguments`` is only the command tail.  Even with the project root as
+    # the current directory, the explicit absolute binding is required, so
+    # the bare tail must be rejected before CMake runs.
+    monkeypatch.chdir(root)
+    hits_before = len(hit_records(hit_file))
+    assert main(arguments) == 2
+    capsys.readouterr()
+    assert len(hit_records(hit_file)) == hits_before
+
+    # Replay the returned tokens through the public grammar in the same bound
+    # project root, using the returned metadata for the required option.
+    # Removing the no-output switch makes the synthetic clean build write
+    # fresh outputs, so this proves the advice is accepted.
+    monkeypatch.delenv("FAKE_CMAKE_NO_OUTPUT")
+    timeouts: list[int] = []
+    real_run_process = runner_mod.run_process
+
+    def recording_run_process(request):
+        timeouts.append(request.timeout_seconds)
+        return real_run_process(request)
+
+    monkeypatch.setattr(runner_mod, "run_process", recording_run_process)
+
+    assert main([project_root_binding["option"], str(root), *arguments]) == 0
+
+    replay = json.loads(capsys.readouterr().out)
+    assert replay["ok"] is True
+    assert replay["data"]["identity"]["preset"] == "arm-debug"
+    assert timeouts == [321, 321]
+
+    log_text = (
+        root / "artifacts" / "migration" / "build.log"
+    ).read_text(encoding="utf-8")
+    assert "[stage:configure]" in log_text
+    assert "[stage:build]" in log_text
+    assert '"--clean-first"' in log_text
+    assert '"--preset", "arm-debug"' in log_text
+
+    records = [
+        json.loads(line)
+        for line in hit_file.read_text(encoding="utf-8").splitlines()
+    ]
+    build_calls = [
+        item["argv"]
+        for item in records
+        if item["argv"][:2] == ["--build", "--preset"]
+    ]
+    assert build_calls[-1] == [
+        "--build", "--preset", "arm-debug", "--clean-first",
+    ]
+
+
 # ---------------------------------------------------------------------------
 # end-to-end gate through the CLI
 # ---------------------------------------------------------------------------

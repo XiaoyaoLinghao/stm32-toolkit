@@ -436,7 +436,15 @@ def _build_parser() -> argparse.ArgumentParser:
     build.add_argument(
         "--preset", required=True, choices=["arm-debug", "arm-release"]
     )
-    build.add_argument("--clean", action="store_true")
+    build.add_argument(
+        "--clean",
+        action="store_true",
+        help=(
+            "Pass CMake --clean-first during the build stage after configure. "
+            "This does not delete the build directory, cache, or receipts and "
+            "does not guarantee fresh ELF/MAP evidence."
+        ),
+    )
     build.add_argument("--timeout-seconds", type=int, default=300)
     build.add_argument("--json", action="store_true")
 
