@@ -1292,7 +1292,7 @@ def test_unchanged_outputs_without_prior_evidence_are_stale(
     assert "evidenceField" not in result.details
     assert "evidenceSource" not in result.details
     assert result.details["cleanRequested"] is False
-    remediation = result.details["remediation"]
+    remediation = result.to_dict()["details"]["remediation"]
     assert remediation["action"] == "clean-rebuild"
     assert remediation["cli"]["executable"] == "caller-verified-stm32-toolkit"
     assert remediation["cli"]["workingDirectory"] == "project-root"
@@ -2026,7 +2026,7 @@ def test_release_noop_without_release_prior_evidence_is_stale(
     assert result.details["cleanRequested"] is False
     assert result.details["identityPath"] == "build/arm-release/firmware-identity.json"
     assert result.details["remediation"]["action"] == "clean-rebuild"
-    assert result.details["remediation"]["cli"]["arguments"] == [
+    assert result.to_dict()["details"]["remediation"]["cli"]["arguments"] == [
         "build", "--preset", "arm-release", "--clean", "--timeout-seconds", "300",
     ]
     assert result.details["remediation"]["mcp"]["arguments"]["preset"] == "arm-release"
@@ -2294,9 +2294,12 @@ def test_failure_record_log_publication_failure(tmp_path: Path, monkeypatch):
             lambda root, _result: tamper_identity(root, lambda doc: doc.__setitem__("inputSnapshotSha256", "0" * 64)),
             "input-snapshot-mismatch", "inputSnapshotSha256", "identity", id="identity-snapshot",
         ),
+        # tamper_identity recomputes the identity buildId but leaves the prior
+        # record's buildId unchanged, so the record/identity buildId admission
+        # comparison fails first; the later gitHead checks never run here.
         pytest.param(
             lambda root, _result: tamper_identity(root, lambda doc: doc.__setitem__("gitHead", "0" * 40)),
-            "prior-evidence-mismatch", "gitHead", "identity", id="identity-git-head",
+            "prior-evidence-mismatch", "buildId", "record", id="identity-git-head",
         ),
         pytest.param(
             lambda root, _result: tamper_identity(root, lambda doc: doc.__setitem__("elfPath", "build/arm-debug/other.elf")),

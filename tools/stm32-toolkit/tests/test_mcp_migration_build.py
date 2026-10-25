@@ -387,6 +387,9 @@ def test_public_tool_descriptions_guide_mcp_only_consumers(tmp_path: Path):
     build = descriptions["stm32_build"]
     assert "capabilityDetails.build" in build
     assert "authorized=true" in build
+    # The registered description wraps long phrases across lines; compare on
+    # normalized whitespace rather than asserting a single physical line.
+    build_prose = " ".join(build.split())
     for phrase in (
         "BUILD_OUTPUT_STALE",
         "Retain",
@@ -404,7 +407,7 @@ def test_public_tool_descriptions_guide_mcp_only_consumers(tmp_path: Path):
         "not a standalone invocation",
         "same bound server/project",
     ):
-        assert phrase in build
+        assert phrase in build_prose
 
     probe = descriptions["stm32_probe_list"]
     for phrase in (

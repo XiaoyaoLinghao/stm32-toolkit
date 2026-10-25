@@ -188,7 +188,7 @@ def test_input_snapshot_mismatch_offers_exact_clean_rebuild_advice(
 
     assert result.ok is False
     assert result.code == "BUILD_OUTPUT_STALE"
-    details = result.details
+    details = result.to_dict()["details"]
     assert details["path"] == "build/arm-debug/firmware.elf"
     assert details["rule"] == "unverifiable"
     assert details["reason"] == "input-snapshot-mismatch"
@@ -226,7 +226,7 @@ def test_release_preset_and_nondefault_timeout_are_preserved(
 
     assert result.ok is False
     assert result.code == "BUILD_OUTPUT_STALE"
-    details = result.details
+    details = result.to_dict()["details"]
     assert details["reason"] == "prior-evidence-mismatch"
     assert details["evidenceField"] == "preset"
     assert details["evidenceSource"] == "record"
@@ -261,7 +261,7 @@ def test_clean_already_requested_advises_inspection_without_rebuild_invocation(
 
     assert result.ok is False
     assert result.code == "BUILD_OUTPUT_STALE"
-    details = result.details
+    details = result.to_dict()["details"]
     assert details["reason"] == "input-snapshot-mismatch"
     assert details["evidenceField"] == "inputSnapshotSha256"
     _assert_inspect_action(details, clean=True)
@@ -288,7 +288,7 @@ def test_malformed_receipt_is_prior_evidence_unavailable(
     result = run_build(BuildRequest(project_root=root, preset="arm-debug"))
 
     assert result.code == "BUILD_OUTPUT_STALE"
-    details = result.details
+    details = result.to_dict()["details"]
     assert details["path"] == "build/arm-debug/firmware.elf"
     assert details["rule"] == "unverifiable"
     assert details["reason"] == "prior-evidence-unavailable"
@@ -311,7 +311,7 @@ def test_non_success_receipt_is_previous_build_not_successful(
     result = run_build(BuildRequest(project_root=root, preset="arm-debug"))
 
     assert result.code == "BUILD_OUTPUT_STALE"
-    details = result.details
+    details = result.to_dict()["details"]
     assert details["reason"] == "prior-build-not-successful"
     assert details["evidenceField"] == "status"
     assert details["evidenceSource"] == "record"
@@ -339,7 +339,7 @@ def test_invalid_identity_document_is_named_without_echoing_values(
     result = run_build(BuildRequest(project_root=root, preset="arm-debug"))
 
     assert result.code == "BUILD_OUTPUT_STALE"
-    details = result.details
+    details = result.to_dict()["details"]
     assert details["reason"] == "prior-evidence-mismatch"
     assert details["evidenceField"] == "identityDocument"
     assert details["evidenceSource"] == "identity"
@@ -347,6 +347,35 @@ def test_invalid_identity_document_is_named_without_echoing_values(
     assert "leak-marker" not in dumped
     assert str(root) not in dumped
     assert root.as_posix() not in dumped
+
+
+def test_identity_git_head_mismatch_is_named_after_earlier_checks_match(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    root = prepare_project(tmp_path)
+    install_fake_cmake(monkeypatch, tmp_path)
+    assert run_build(BuildRequest(project_root=root, preset="arm-debug")).ok is True
+    # Recompute the identity build ID after changing gitHead and sync the
+    # prior record's buildId, so the early record/identity comparisons all
+    # match and only the later identity gitHead discriminator can fail.
+    _rewrite_identity_and_record(
+        root, lambda document: document.__setitem__("gitHead", "0" * 40)
+    )
+    monkeypatch.setenv("FAKE_CMAKE_NO_OUTPUT", "1")
+
+    result = run_build(BuildRequest(project_root=root, preset="arm-debug"))
+
+    assert result.ok is False
+    assert result.code == "BUILD_OUTPUT_STALE"
+    details = result.to_dict()["details"]
+    assert details["path"] == "build/arm-debug/firmware.elf"
+    assert details["rule"] == "unverifiable"
+    assert details["reason"] == "prior-evidence-mismatch"
+    assert details["evidenceField"] == "gitHead"
+    assert details["evidenceSource"] == "identity"
+    assert details["preset"] == "arm-debug"
+    assert details["cleanRequested"] is False
+    _assert_clean_rebuild_action(details, "arm-debug", 300)
 
 
 def test_snapshot_strict_result_mismatch_reports_snapshot_result(
@@ -363,7 +392,7 @@ def test_snapshot_strict_result_mismatch_reports_snapshot_result(
     result = run_build(BuildRequest(project_root=root, preset="arm-debug"))
 
     assert result.code == "BUILD_OUTPUT_STALE"
-    details = result.details
+    details = result.to_dict()["details"]
     assert details["reason"] == "prior-evidence-mismatch"
     assert details["evidenceField"] == "snapshotResult"
     assert details["evidenceSource"] == "record"
