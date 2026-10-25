@@ -1,0 +1,1023 @@
+{
+  "module": "VSCODE-TASKS",
+  "acceptedBase": "e7614e49ba384117770ff8b01f57489da8676223",
+  "codeHeadBeforeReport": "4c79ef53111408ae2f5071f6edb52cbadb8363fb",
+  "runRoot": "D:\\codex-tmp\\vs25",
+  "runs": [
+    {
+      "label": "author-first",
+      "owner": "Claude Code CLI",
+      "tests": 469,
+      "passed": 461,
+      "failed": 7,
+      "skipped": 1,
+      "junit": "D:\\codex-tmp\\vs25\\author-first.xml",
+      "junitSha256": "3e285ce5934bbf5637b0e9082fce6cf022e7a02661ea56940bae72b479cccbaa",
+      "failures": [
+        {
+          "classname": "tests.test_ide_tasks",
+          "name": "test_generated_flash_argv_replays_to_the_exact_workflow_request",
+          "time": "0.725"
+        },
+        {
+          "classname": "tests.test_ide_tasks",
+          "name": "test_generated_handoff_begin_argv_replays_to_the_exact_workflow_request",
+          "time": "0.749"
+        },
+        {
+          "classname": "tests.test_ide_tasks",
+          "name": "test_generated_handoff_end_argv_replays_without_fresh_build",
+          "time": "0.790"
+        },
+        {
+          "classname": "tests.test_ide_tasks",
+          "name": "test_cli_generated_task_without_authorize_is_refused_before_admission",
+          "time": "0.781"
+        },
+        {
+          "classname": "tests.test_ide_tasks",
+          "name": "test_context_is_validated_before_admission[project_root-kwargs0-relative]",
+          "time": "0.670"
+        },
+        {
+          "classname": "tests.test_ide_tasks",
+          "name": "test_cli_failure_is_bounded_json_with_nonzero_exit",
+          "time": "0.026"
+        },
+        {
+          "classname": "tests.test_mcp_migration_build",
+          "name": "test_new_tool_schemas_expose_only_declared_properties",
+          "time": "0.771"
+        }
+      ],
+      "skips": [
+        {
+          "case": {
+            "classname": "tests.test_vscode_configuration",
+            "name": "test_redirect_targets_are_refused",
+            "time": "0.005"
+          },
+          "reason": {
+            "type": "pytest.skip",
+            "message": "host cannot create a file symlink for this check"
+          }
+        }
+      ],
+      "sourceHead": "3822571f69648949e10bffbc3bda2fec282c3e9e",
+      "nativeCommands": [
+        "D:/codex-tmp/kx23/venv/Scripts/python.exe -m pytest tools/stm32-toolkit/tests/test_vscode_configuration.py tools/stm32-toolkit/tests/test_ide_tasks.py tools/stm32-toolkit/tests/test_generation.py tools/stm32-toolkit/tests/test_debug_configuration_workflows.py tools/stm32-toolkit/tests/test_mcp_migration_build.py tools/stm32-toolkit/tests/test_cli_hardware.py -q --tb=short --basetemp=D:/codex-tmp/vs25/p-author-first -o cache_dir=D:/codex-tmp/vs25/c-author-first --junitxml=D:/codex-tmp/vs25/author-first.xml"
+      ],
+      "toolNames": [
+        "PowerShell"
+      ],
+      "initialTools": [
+        "PowerShell"
+      ],
+      "configuredModel": "deepseek-v4.1-flash[1m]",
+      "cliExitIsNotPytestEvidence": true
+    },
+    {
+      "label": "review-first",
+      "owner": "primary independent reviewer",
+      "tests": 469,
+      "passed": 461,
+      "failed": 7,
+      "skipped": 1,
+      "junit": "D:\\codex-tmp\\vs25\\review-first.xml",
+      "junitSha256": "d7d7bbcbef53b76c6d522bdef1a03a67bb62023db74b2658b2ca06ab97e00b85",
+      "failures": [
+        {
+          "classname": "tests.test_ide_tasks",
+          "name": "test_generated_flash_argv_replays_to_the_exact_workflow_request",
+          "time": "0.689"
+        },
+        {
+          "classname": "tests.test_ide_tasks",
+          "name": "test_generated_handoff_begin_argv_replays_to_the_exact_workflow_request",
+          "time": "0.687"
+        },
+        {
+          "classname": "tests.test_ide_tasks",
+          "name": "test_generated_handoff_end_argv_replays_without_fresh_build",
+          "time": "0.721"
+        },
+        {
+          "classname": "tests.test_ide_tasks",
+          "name": "test_cli_generated_task_without_authorize_is_refused_before_admission",
+          "time": "0.691"
+        },
+        {
+          "classname": "tests.test_ide_tasks",
+          "name": "test_context_is_validated_before_admission[project_root-kwargs0-relative]",
+          "time": "0.716"
+        },
+        {
+          "classname": "tests.test_ide_tasks",
+          "name": "test_cli_failure_is_bounded_json_with_nonzero_exit",
+          "time": "0.026"
+        },
+        {
+          "classname": "tests.test_mcp_migration_build",
+          "name": "test_new_tool_schemas_expose_only_declared_properties",
+          "time": "0.900"
+        }
+      ],
+      "skips": [
+        {
+          "case": {
+            "classname": "tests.test_vscode_configuration",
+            "name": "test_redirect_targets_are_refused",
+            "time": "0.004"
+          },
+          "reason": {
+            "type": "pytest.skip",
+            "message": "host cannot create a file symlink for this check"
+          }
+        }
+      ],
+      "execution": {
+        "head": "3822571f69648949e10bffbc3bda2fec282c3e9e",
+        "cwd": "C:\\Users\\zhy76\\.codex\\worktrees\\build-snapshot-final\\STM32-Toolkit",
+        "argv": [
+          "D:/codex-tmp/kx23/venv/Scripts/python.exe",
+          "-m",
+          "pytest",
+          "tools/stm32-toolkit/tests/test_vscode_configuration.py",
+          "tools/stm32-toolkit/tests/test_ide_tasks.py",
+          "tools/stm32-toolkit/tests/test_generation.py",
+          "tools/stm32-toolkit/tests/test_debug_configuration_workflows.py",
+          "tools/stm32-toolkit/tests/test_mcp_migration_build.py",
+          "tools/stm32-toolkit/tests/test_cli_hardware.py",
+          "-q",
+          "--tb=short",
+          "--basetemp=D:\\codex-tmp\\vs25\\p-review-first",
+          "-o",
+          "cache_dir=D:\\codex-tmp\\vs25\\c-review-first",
+          "--junitxml=D:\\codex-tmp\\vs25\\review-first.xml"
+        ],
+        "exitCode": 1,
+        "logSha256": "80748b525f5ca431633d05883a6ca6de12614a1d97f4024b72fea9f30ff28df2"
+      },
+      "sourceHead": "3822571f69648949e10bffbc3bda2fec282c3e9e"
+    },
+    {
+      "label": "author-final",
+      "owner": "Claude Code CLI",
+      "tests": 483,
+      "passed": 482,
+      "failed": 0,
+      "skipped": 1,
+      "junit": "D:\\codex-tmp\\vs25\\author-final.xml",
+      "junitSha256": "1a381f054484dda955b19cedd0d1ca2431a127471f404ac75e3844d0782a208d",
+      "failures": [],
+      "skips": [
+        {
+          "case": {
+            "classname": "tests.test_vscode_configuration",
+            "name": "test_redirect_targets_are_refused",
+            "time": "0.005"
+          },
+          "reason": {
+            "type": "pytest.skip",
+            "message": "host cannot create a file symlink for this check"
+          }
+        }
+      ],
+      "sourceHead": "3351f40ae83e90b908620a2ab196cace5340ef93",
+      "nativeCommands": [
+        "D:/codex-tmp/kx23/venv/Scripts/python.exe -m pytest tools/stm32-toolkit/tests/test_vscode_configuration.py tools/stm32-toolkit/tests/test_ide_tasks.py tools/stm32-toolkit/tests/test_generation.py tools/stm32-toolkit/tests/test_debug_configuration_workflows.py tools/stm32-toolkit/tests/test_mcp_migration_build.py tools/stm32-toolkit/tests/test_cli_hardware.py -q --tb=short --basetemp=D:/codex-tmp/vs25/p-author-final -o cache_dir=D:/codex-tmp/vs25/c-author-final --junitxml=D:/codex-tmp/vs25/author-final.xml"
+      ],
+      "toolNames": [
+        "PowerShell"
+      ],
+      "initialTools": [
+        "PowerShell"
+      ],
+      "configuredModel": "deepseek-v4.1-flash[1m]",
+      "cliExitIsNotPytestEvidence": true
+    },
+    {
+      "label": "review-final",
+      "owner": "primary independent reviewer",
+      "tests": 483,
+      "passed": 482,
+      "failed": 0,
+      "skipped": 1,
+      "junit": "D:\\codex-tmp\\vs25\\review-final.xml",
+      "junitSha256": "fbcbe34de1738f186dc21ceadead623781cf105a1520529c491dcab480a4dad8",
+      "failures": [],
+      "skips": [
+        {
+          "case": {
+            "classname": "tests.test_vscode_configuration",
+            "name": "test_redirect_targets_are_refused",
+            "time": "0.005"
+          },
+          "reason": {
+            "type": "pytest.skip",
+            "message": "host cannot create a file symlink for this check"
+          }
+        }
+      ],
+      "execution": {
+        "head": "3351f40ae83e90b908620a2ab196cace5340ef93",
+        "cwd": "C:\\Users\\zhy76\\.codex\\worktrees\\build-snapshot-final\\STM32-Toolkit",
+        "argv": [
+          "D:/codex-tmp/kx23/venv/Scripts/python.exe",
+          "-m",
+          "pytest",
+          "tools/stm32-toolkit/tests/test_vscode_configuration.py",
+          "tools/stm32-toolkit/tests/test_ide_tasks.py",
+          "tools/stm32-toolkit/tests/test_generation.py",
+          "tools/stm32-toolkit/tests/test_debug_configuration_workflows.py",
+          "tools/stm32-toolkit/tests/test_mcp_migration_build.py",
+          "tools/stm32-toolkit/tests/test_cli_hardware.py",
+          "-q",
+          "--tb=short",
+          "--basetemp=D:\\codex-tmp\\vs25\\p-review-final",
+          "-o",
+          "cache_dir=D:\\codex-tmp\\vs25\\c-review-final",
+          "--junitxml=D:\\codex-tmp\\vs25\\review-final.xml"
+        ],
+        "exitCode": 0,
+        "logSha256": "125a41a1885851aeb5b711530f6b013e3d349478d6663a235485e000f132f5e8"
+      },
+      "sourceHead": "3351f40ae83e90b908620a2ab196cace5340ef93"
+    },
+    {
+      "label": "author-regression",
+      "owner": "Claude Code CLI",
+      "tests": 539,
+      "passed": 539,
+      "failed": 0,
+      "skipped": 0,
+      "junit": "D:\\codex-tmp\\vs25\\author-regression.xml",
+      "junitSha256": "6bab8f0b0595911390ddc7702b5e8e27e0b5d2338896057e2242e0099060fe67",
+      "failures": [],
+      "skips": [],
+      "sourceHead": "3351f40ae83e90b908620a2ab196cace5340ef93",
+      "nativeCommands": [
+        "D:/codex-tmp/kx23/venv/Scripts/python.exe -m pytest tools/stm32-toolkit/tests/test_cli.py tools/stm32-toolkit/tests/test_workflows.py tools/stm32-toolkit/tests/test_hardware_workflows.py tools/stm32-toolkit/tests/test_flash.py tools/stm32-toolkit/tests/test_debug_handoff.py tools/stm32-toolkit/tests/test_mcp_roots.py tools/stm32-toolkit/tests/test_ai_call_guidance.py tools/stm32-toolkit/tests/test_debug_configuration.py -q --tb=short --basetemp=D:/codex-tmp/vs25/p-author-regression -o cache_dir=D:/codex-tmp/vs25/c-author-regression --junitxml=D:/codex-tmp/vs25/author-regression.xml"
+      ],
+      "toolNames": [
+        "PowerShell"
+      ],
+      "initialTools": [
+        "PowerShell"
+      ],
+      "configuredModel": "deepseek-v4.1-flash[1m]",
+      "cliExitIsNotPytestEvidence": true
+    },
+    {
+      "label": "review-regression",
+      "owner": "primary independent reviewer",
+      "tests": 539,
+      "passed": 539,
+      "failed": 0,
+      "skipped": 0,
+      "junit": "D:\\codex-tmp\\vs25\\review-regression.xml",
+      "junitSha256": "d0831167d1c23599527d646e8b293e24b0c32e35ceccf12c32d48c2752dc65bd",
+      "failures": [],
+      "skips": [],
+      "execution": {
+        "head": "3351f40ae83e90b908620a2ab196cace5340ef93",
+        "cwd": "C:\\Users\\zhy76\\.codex\\worktrees\\build-snapshot-final\\STM32-Toolkit",
+        "argv": [
+          "D:/codex-tmp/kx23/venv/Scripts/python.exe",
+          "-m",
+          "pytest",
+          "tools/stm32-toolkit/tests/test_cli.py",
+          "tools/stm32-toolkit/tests/test_workflows.py",
+          "tools/stm32-toolkit/tests/test_hardware_workflows.py",
+          "tools/stm32-toolkit/tests/test_flash.py",
+          "tools/stm32-toolkit/tests/test_debug_handoff.py",
+          "tools/stm32-toolkit/tests/test_mcp_roots.py",
+          "tools/stm32-toolkit/tests/test_ai_call_guidance.py",
+          "tools/stm32-toolkit/tests/test_debug_configuration.py",
+          "-q",
+          "--tb=short",
+          "--basetemp=D:\\codex-tmp\\vs25\\p-review-regression",
+          "-o",
+          "cache_dir=D:\\codex-tmp\\vs25\\c-review-regression",
+          "--junitxml=D:\\codex-tmp\\vs25\\review-regression.xml"
+        ],
+        "exitCode": 0,
+        "logSha256": "9288fcb002bd17f6776c6aebf2f0d115de57d9f08287303f58877f230b4e601d"
+      },
+      "sourceHead": "3351f40ae83e90b908620a2ab196cace5340ef93"
+    },
+    {
+      "label": "author-accepted",
+      "owner": "Claude Code CLI",
+      "tests": 51,
+      "passed": 51,
+      "failed": 0,
+      "skipped": 0,
+      "junit": "D:\\codex-tmp\\vs25\\author-accepted.xml",
+      "junitSha256": "252294cdbe1b63c0bf6f96ecca20855e9c64199040458cdf5dd31a390d191312",
+      "failures": [],
+      "skips": [],
+      "sourceHead": "210b16a4873d430290c76eae2f96000d5bb24f55",
+      "nativeCommands": [
+        "D:/codex-tmp/kx23/venv/Scripts/python.exe -m pytest tools/stm32-toolkit/tests/test_ide_tasks.py tools/stm32-toolkit/tests/test_ai_call_guidance.py -q --tb=short --basetemp=D:/codex-tmp/vs25/p-author-accepted -o cache_dir=D:/codex-tmp/vs25/c-author-accepted --junitxml=D:/codex-tmp/vs25/author-accepted.xml"
+      ],
+      "toolNames": [
+        "PowerShell"
+      ],
+      "initialTools": [
+        "PowerShell"
+      ],
+      "configuredModel": "deepseek-v4.1-flash[1m]",
+      "cliExitIsNotPytestEvidence": true
+    },
+    {
+      "label": "review-accepted",
+      "owner": "primary independent reviewer",
+      "tests": 51,
+      "passed": 51,
+      "failed": 0,
+      "skipped": 0,
+      "junit": "D:\\codex-tmp\\vs25\\review-accepted.xml",
+      "junitSha256": "bdf7775acd92bc3ee51f0f70390039a953be8d26b1e3130e5490bfd7e3327e01",
+      "failures": [],
+      "skips": [],
+      "execution": {
+        "head": "210b16a4873d430290c76eae2f96000d5bb24f55",
+        "cwd": "C:\\Users\\zhy76\\.codex\\worktrees\\build-snapshot-final\\STM32-Toolkit",
+        "argv": [
+          "D:/codex-tmp/kx23/venv/Scripts/python.exe",
+          "-m",
+          "pytest",
+          "tools/stm32-toolkit/tests/test_ide_tasks.py",
+          "tools/stm32-toolkit/tests/test_ai_call_guidance.py",
+          "-q",
+          "--tb=short",
+          "--basetemp=D:\\codex-tmp\\vs25\\p-review-accepted",
+          "-o",
+          "cache_dir=D:\\codex-tmp\\vs25\\c-review-accepted",
+          "--junitxml=D:\\codex-tmp\\vs25\\review-accepted.xml"
+        ],
+        "exitCode": 0,
+        "logSha256": "3c790545bf8f054b64d1e5eb7665e7d1797b95ac16083793f00379779e0e291b"
+      },
+      "sourceHead": "210b16a4873d430290c76eae2f96000d5bb24f55"
+    },
+    {
+      "label": "author-binding",
+      "owner": "Claude Code CLI",
+      "tests": 13,
+      "passed": 13,
+      "failed": 0,
+      "skipped": 0,
+      "junit": "D:\\codex-tmp\\vs25\\author-binding.xml",
+      "junitSha256": "90518d60fa54b0633c19f1f9ee542b95023a3dbb9d2946a6d93b1421e2178c75",
+      "failures": [],
+      "skips": [],
+      "sourceHead": "4c79ef53111408ae2f5071f6edb52cbadb8363fb",
+      "nativeCommands": [
+        "D:/codex-tmp/kx23/venv/Scripts/python.exe -m pytest tools/stm32-toolkit/tests/test_ide_tasks.py::test_real_end_refuses_stale_elf_without_adapter_admission tools/stm32-toolkit/tests/test_ai_call_guidance.py -q --tb=short --basetemp=D:/codex-tmp/vs25/p-author-binding -o cache_dir=D:/codex-tmp/vs25/c-author-binding --junitxml=D:/codex-tmp/vs25/author-binding.xml"
+      ],
+      "toolNames": [
+        "PowerShell"
+      ],
+      "initialTools": [
+        "PowerShell"
+      ],
+      "configuredModel": "deepseek-v4.1-flash[1m]",
+      "cliExitIsNotPytestEvidence": true
+    },
+    {
+      "label": "review-binding",
+      "owner": "primary independent reviewer",
+      "tests": 13,
+      "passed": 13,
+      "failed": 0,
+      "skipped": 0,
+      "junit": "D:\\codex-tmp\\vs25\\review-binding.xml",
+      "junitSha256": "e4eecf45356913809247e09515439661990e297c8336d6bfab3ef75f5bb4bd0e",
+      "failures": [],
+      "skips": [],
+      "execution": {
+        "head": "4c79ef53111408ae2f5071f6edb52cbadb8363fb",
+        "cwd": "C:\\Users\\zhy76\\.codex\\worktrees\\build-snapshot-final\\STM32-Toolkit",
+        "argv": [
+          "D:/codex-tmp/kx23/venv/Scripts/python.exe",
+          "-m",
+          "pytest",
+          "tools/stm32-toolkit/tests/test_ide_tasks.py::test_real_end_refuses_stale_elf_without_adapter_admission",
+          "tools/stm32-toolkit/tests/test_ai_call_guidance.py",
+          "-q",
+          "--tb=short",
+          "--basetemp=D:\\codex-tmp\\vs25\\p-review-binding",
+          "-o",
+          "cache_dir=D:\\codex-tmp\\vs25\\c-review-binding",
+          "--junitxml=D:\\codex-tmp\\vs25\\review-binding.xml"
+        ],
+        "exitCode": 0,
+        "logSha256": "51fdea7e21d354ddd2c08dc1e5c9697d3ddb65ed8ec30272f3551df2fbcfc33d"
+      },
+      "sourceHead": "4c79ef53111408ae2f5071f6edb52cbadb8363fb"
+    }
+  ],
+  "delegationLogs": [
+    {
+      "label": "smoke",
+      "tools": [],
+      "resultSubtypes": [
+        "success"
+      ],
+      "log": "D:\\codex-tmp\\vs25\\smoke.jsonl",
+      "sha256": "1eede46ab94f528a7e183367976ca20b79d9ea230fe0ce344e1edaa794f56a10"
+    },
+    {
+      "label": "shell",
+      "tools": [
+        "PowerShell"
+      ],
+      "resultSubtypes": [
+        "success"
+      ],
+      "log": "D:\\codex-tmp\\vs25\\shell.jsonl",
+      "sha256": "62d3deb64855e500ab19c9a138bea028b11764f8daafbf82d8e4be9edde6824a"
+    },
+    {
+      "label": "audit",
+      "tools": [
+        "Glob",
+        "Grep",
+        "Read"
+      ],
+      "resultSubtypes": [
+        "error_max_turns"
+      ],
+      "log": "D:\\codex-tmp\\vs25\\audit.jsonl",
+      "sha256": "84011b8735615c8b582511335ade1018000d59b38912f03b2717432a42820c82"
+    },
+    {
+      "label": "author",
+      "tools": [
+        "Glob",
+        "Grep",
+        "Read"
+      ],
+      "resultSubtypes": [
+        "error_max_turns"
+      ],
+      "log": "D:\\codex-tmp\\vs25\\author.jsonl",
+      "sha256": "2bb11a2df5da33f55de738f78d102047b2d43e91589f077058ef74d7b53b553e"
+    },
+    {
+      "label": "author2",
+      "tools": [
+        "Edit",
+        "Grep",
+        "Read",
+        "Write"
+      ],
+      "resultSubtypes": [
+        "error_max_turns"
+      ],
+      "log": "D:\\codex-tmp\\vs25\\author2.jsonl",
+      "sha256": "2c43edca8e25d6a3e67a1f945a26cf9026b9ef85efd5cf6fdf2ad94f8e94587f"
+    },
+    {
+      "label": "fix1",
+      "tools": [
+        "Edit",
+        "Grep",
+        "Read"
+      ],
+      "resultSubtypes": [
+        "success"
+      ],
+      "log": "D:\\codex-tmp\\vs25\\fix1.jsonl",
+      "sha256": "d439114a92e56a14ff54b968db16f0f3a84d61593e5dfd30a9450d7dcad2d0c9"
+    },
+    {
+      "label": "clarify",
+      "tools": [
+        "Edit",
+        "Grep",
+        "Read"
+      ],
+      "resultSubtypes": [
+        "success"
+      ],
+      "log": "D:\\codex-tmp\\vs25\\clarify.jsonl",
+      "sha256": "44f9a3f6142abc56ff7f315a9548c6877b368930af3c6fb1536adf625f63a281"
+    },
+    {
+      "label": "binding",
+      "tools": [
+        "Edit",
+        "Read"
+      ],
+      "resultSubtypes": [
+        "success"
+      ],
+      "log": "D:\\codex-tmp\\vs25\\binding.jsonl",
+      "sha256": "1a522aebedf96b2ae4acb35d0f2e2f6aa1cfc1cb2a72535ce6168b9a777cafb8"
+    },
+    {
+      "label": "route-wording",
+      "tools": [
+        "Edit"
+      ],
+      "resultSubtypes": [
+        "success"
+      ],
+      "log": "D:\\codex-tmp\\vs25\\route-wording.jsonl",
+      "sha256": "7a70f0c100610fb731e4c15d2c2a99ed2708b5e06963c1b39e00b41b5d8d244e"
+    },
+    {
+      "label": "guide-audit",
+      "tools": [
+        "Read"
+      ],
+      "resultSubtypes": [
+        "success"
+      ],
+      "log": "D:\\codex-tmp\\vs25\\guide-audit.jsonl",
+      "sha256": "3e12e776bbed568fba8f3cd350b94a96d38811f78412b51566956ab0bc0e2166"
+    }
+  ],
+  "bindingEvidence": {
+    "python": "D:\\codex-tmp\\kx23\\venv\\Scripts\\python.exe",
+    "toolkit": "C:\\Users\\zhy76\\.codex\\worktrees\\build-snapshot-final\\STM32-Toolkit\\tools\\stm32-toolkit\\src\\stm32_toolkit\\__init__.py",
+    "cli": "C:\\Users\\zhy76\\.codex\\worktrees\\build-snapshot-final\\STM32-Toolkit\\tools\\stm32-toolkit\\src\\stm32_toolkit\\cli.py",
+    "thirdParty": "C:\\data\\stm32-toolkit\\runtime\\1.3.0\\Lib\\site-packages\\pydantic_settings\\__init__.py",
+    "head": "3822571f69648949e10bffbc3bda2fec282c3e9e"
+  },
+  "rawArtifacts": [
+    {
+      "path": "D:\\codex-tmp\\vs25\\audit.exit",
+      "sha256": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b",
+      "bytes": 1
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\audit.jsonl",
+      "sha256": "84011b8735615c8b582511335ade1018000d59b38912f03b2717432a42820c82",
+      "bytes": 347972
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\audit.stderr",
+      "sha256": "c70189c0b7b6fa2c142efa936b48434238170f41c6278550fd58c34ef55d2ba5",
+      "bytes": 90
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\audit.txt",
+      "sha256": "764cbef1d95db3be6b576f6ab9f73df39702b7a27cb62e2b6c84305188be58b8",
+      "bytes": 1557
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\author-accepted-head.txt",
+      "sha256": "e8ec7ebb82e9c9732190363c044a1978616040c811132e705a2bc1e85a2482aa",
+      "bytes": 40
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\author-accepted-request.txt",
+      "sha256": "5029da5fa6a9927b97d6a90787b76d6c27a12f5199591e8926e7423d4428651b",
+      "bytes": 1082
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\author-accepted.xml",
+      "sha256": "252294cdbe1b63c0bf6f96ecca20855e9c64199040458cdf5dd31a390d191312",
+      "bytes": 6913
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\author-binding-head.txt",
+      "sha256": "4e3e8cee0120289f95b424b9137370aa7a5f78ac1bcbc29bf2888c59c547c07e",
+      "bytes": 40
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\author-binding-request.txt",
+      "sha256": "83fa36997540c3d75d7ad914fb193eb2ca598a9bf5f43313dd215c6effb5be52",
+      "bytes": 1138
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\author-binding.xml",
+      "sha256": "90518d60fa54b0633c19f1f9ee542b95023a3dbb9d2946a6d93b1421e2178c75",
+      "bytes": 2018
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\author-final-head.txt",
+      "sha256": "22d120a3ca41a128188c7171ab8b938a8939e75b5e32728c426d00066fe61d07",
+      "bytes": 40
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\author-final-request.txt",
+      "sha256": "83f450a0fc11662c8db54750bd89f6b30875b68b68b27ce40f97af1e2b79e74a",
+      "bytes": 1287
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\author-final.xml",
+      "sha256": "1a381f054484dda955b19cedd0d1ca2431a127471f404ac75e3844d0782a208d",
+      "bytes": 64006
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\author-first-head.txt",
+      "sha256": "a74267a66259612a1960ef709d784299926dcab7a6c4cbe991432f1d5e434ef1",
+      "bytes": 40
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\author-first-request.txt",
+      "sha256": "415e136f9c0d6e47e408b4651ac9bc7718aa926db0a8bd2a6f45c0a1172614fb",
+      "bytes": 1287
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\author-first.xml",
+      "sha256": "3e285ce5934bbf5637b0e9082fce6cf022e7a02661ea56940bae72b479cccbaa",
+      "bytes": 68562
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\author-regression-head.txt",
+      "sha256": "22d120a3ca41a128188c7171ab8b938a8939e75b5e32728c426d00066fe61d07",
+      "bytes": 40
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\author-regression-request.txt",
+      "sha256": "c4d531d995ceab3403904a4f21f3eb5ac7815b53b92e4e1d727386cef9b5d58c",
+      "bytes": 1365
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\author-regression.xml",
+      "sha256": "6bab8f0b0595911390ddc7702b5e8e27e0b5d2338896057e2242e0099060fe67",
+      "bytes": 75872
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\author-session.txt",
+      "sha256": "3821bec3ab4b0d53af60242b94967512c9e9e6ae8ac7b76e382840a410ec0b62",
+      "bytes": 36
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\author.exit",
+      "sha256": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b",
+      "bytes": 1
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\author.jsonl",
+      "sha256": "2bb11a2df5da33f55de738f78d102047b2d43e91589f077058ef74d7b53b553e",
+      "bytes": 2228601
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\author.stderr",
+      "sha256": "c70189c0b7b6fa2c142efa936b48434238170f41c6278550fd58c34ef55d2ba5",
+      "bytes": 90
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\author.txt",
+      "sha256": "06e42d869a196718f5e8be23691c52f3a449f94f6dafbf12aebf4c7925230a3d",
+      "bytes": 21772
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\author2.exit",
+      "sha256": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b",
+      "bytes": 1
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\author2.jsonl",
+      "sha256": "2c43edca8e25d6a3e67a1f945a26cf9026b9ef85efd5cf6fdf2ad94f8e94587f",
+      "bytes": 5595953
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\author2.stderr",
+      "sha256": "c70189c0b7b6fa2c142efa936b48434238170f41c6278550fd58c34ef55d2ba5",
+      "bytes": 90
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\binding-request.txt",
+      "sha256": "c5b7e49be2223002a9da546ed93b5fa7efff68703047325bbdb2347de4209038",
+      "bytes": 1132
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\binding.exit",
+      "sha256": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
+      "bytes": 1
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\binding.jsonl",
+      "sha256": "1a522aebedf96b2ae4acb35d0f2e2f6aa1cfc1cb2a72535ce6168b9a777cafb8",
+      "bytes": 156441
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\binding.stderr",
+      "sha256": "c70189c0b7b6fa2c142efa936b48434238170f41c6278550fd58c34ef55d2ba5",
+      "bytes": 90
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\clarify-run.txt",
+      "sha256": "ecada56b2e6c78f8a1f96e33510cd4580f41071770ae0068a2ee19b1c85cc8d3",
+      "bytes": 3260
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\clarify.exit",
+      "sha256": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
+      "bytes": 1
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\clarify.jsonl",
+      "sha256": "44f9a3f6142abc56ff7f315a9548c6877b368930af3c6fb1536adf625f63a281",
+      "bytes": 1254492
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\clarify.stderr",
+      "sha256": "c70189c0b7b6fa2c142efa936b48434238170f41c6278550fd58c34ef55d2ba5",
+      "bytes": 90
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\clarify.txt",
+      "sha256": "f44db552aa6ccdf65b41294afe32a0c161c813acc1c44135bdd42646e6ed486a",
+      "bytes": 3054
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\cleanup-checked.json",
+      "sha256": "eeffffeedd753fa7c3e4b05f036f7899497237f84d3c959a868e20c6c23c3267",
+      "bytes": 4069
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\cleanup.json",
+      "sha256": "ad8f95f13716a114daac5f1033a10afe0c1c13126d00eb2a678a889b7c7d3407",
+      "bytes": 490
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\continue.txt",
+      "sha256": "3fb01138ce3088e8debc35eed929a95955fd96624b67329331ae2788f90ad3b4",
+      "bytes": 1452
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\fix1.exit",
+      "sha256": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
+      "bytes": 1
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\fix1.jsonl",
+      "sha256": "d439114a92e56a14ff54b968db16f0f3a84d61593e5dfd30a9450d7dcad2d0c9",
+      "bytes": 2739764
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\fix1.stderr",
+      "sha256": "c70189c0b7b6fa2c142efa936b48434238170f41c6278550fd58c34ef55d2ba5",
+      "bytes": 90
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\fix1.txt",
+      "sha256": "c61b490c07a45d42bc99799138ea94f5da9b7dd13c61e05389dc1161aa72e6dc",
+      "bytes": 4866
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\guide-audit-request.txt",
+      "sha256": "c2f14cd15432733c78df1afec2ff57a5442087673a01bcf6ba8a1135bb9fca5b",
+      "bytes": 1675
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\guide-audit.exit",
+      "sha256": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
+      "bytes": 1
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\guide-audit.jsonl",
+      "sha256": "3e12e776bbed568fba8f3cd350b94a96d38811f78412b51566956ab0bc0e2166",
+      "bytes": 134940
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\guide-audit.stderr",
+      "sha256": "c70189c0b7b6fa2c142efa936b48434238170f41c6278550fd58c34ef55d2ba5",
+      "bytes": 90
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\import-binding.json",
+      "sha256": "8689809b028d6aa0f8688549774ae0ffadc9c3475491007b5d24fff6dc2a0a63",
+      "bytes": 514
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\offline-mcp.json",
+      "sha256": "ceacd2470508e859cc796c3f982eecc15704e10a5e2a5ebc6f5f02dba4090c87",
+      "bytes": 20
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\preflight.json",
+      "sha256": "d5d18f17383cbf6f0718da667ca346ac9a8fc56b155ea44bdaf288a8864a0303",
+      "bytes": 873
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\reuse-evidence.json",
+      "sha256": "6270e95d1476ea1ab63e4ee196a272391d20a6bf6c63cf3e7452b5d540e6416b",
+      "bytes": 675
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\review-accepted-execution.json",
+      "sha256": "3fbf5ff900eab350a20749c88b6047b08837c545e5b0b715745a63fb73d64cd2",
+      "bytes": 667
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\review-accepted.log",
+      "sha256": "3c790545bf8f054b64d1e5eb7665e7d1797b95ac16083793f00379779e0e291b",
+      "bytes": 162
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\review-accepted.xml",
+      "sha256": "bdf7775acd92bc3ee51f0f70390039a953be8d26b1e3130e5490bfd7e3327e01",
+      "bytes": 6913
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\review-binding-execution.json",
+      "sha256": "c77b50d8f5f6c97ab987d396a1da88275573d40875bd72df7bbb40628e88a50b",
+      "bytes": 723
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\review-binding.log",
+      "sha256": "51fdea7e21d354ddd2c08dc1e5c9697d3ddb65ed8ec30272f3551df2fbcfc33d",
+      "bytes": 162
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\review-binding.xml",
+      "sha256": "e4eecf45356913809247e09515439661990e297c8336d6bfab3ef75f5bb4bd0e",
+      "bytes": 2018
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\review-final-execution.json",
+      "sha256": "b81630f0ad31d431d878d5c11bd22a65d333242334c575a95564697549352827",
+      "bytes": 904
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\review-final.log",
+      "sha256": "125a41a1885851aeb5b711530f6b013e3d349478d6663a235485e000f132f5e8",
+      "bytes": 1338
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\review-final.xml",
+      "sha256": "fbcbe34de1738f186dc21ceadead623781cf105a1520529c491dcab480a4dad8",
+      "bytes": 64005
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\review-first-execution.json",
+      "sha256": "4ba592a6a26a1acb076bab08922cc9ada4bf60a826199d4d1ed371d4b035e89d",
+      "bytes": 904
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\review-first.log",
+      "sha256": "80748b525f5ca431633d05883a6ca6de12614a1d97f4024b72fea9f30ff28df2",
+      "bytes": 7545
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\review-first.xml",
+      "sha256": "d7d7bbcbef53b76c6d522bdef1a03a67bb62023db74b2658b2ca06ab97e00b85",
+      "bytes": 68561
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\review-regression-execution.json",
+      "sha256": "c07d2eaf820bd864f2c3a73f0f0e4c8b5788c226e189511e388ef3148a89dcb2",
+      "bytes": 998
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\review-regression.log",
+      "sha256": "9288fcb002bd17f6776c6aebf2f0d115de57d9f08287303f58877f230b4e601d",
+      "bytes": 1681
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\review-regression.xml",
+      "sha256": "d0831167d1c23599527d646e8b293e24b0c32e35ceccf12c32d48c2752dc65bd",
+      "bytes": 75872
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\route-wording-request.txt",
+      "sha256": "87a82f9021926fd463ef65b2ee5c5194937ac8cab5bd3c44991f87f5907e11c1",
+      "bytes": 793
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\route-wording.exit",
+      "sha256": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
+      "bytes": 1
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\route-wording.jsonl",
+      "sha256": "7a70f0c100610fb731e4c15d2c2a99ed2708b5e06963c1b39e00b41b5d8d244e",
+      "bytes": 133257
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\route-wording.stderr",
+      "sha256": "c70189c0b7b6fa2c142efa936b48434238170f41c6278550fd58c34ef55d2ba5",
+      "bytes": 90
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\shell.exit",
+      "sha256": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
+      "bytes": 1
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\shell.jsonl",
+      "sha256": "62d3deb64855e500ab19c9a138bea028b11764f8daafbf82d8e4be9edde6824a",
+      "bytes": 7202
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\shell.stderr",
+      "sha256": "c70189c0b7b6fa2c142efa936b48434238170f41c6278550fd58c34ef55d2ba5",
+      "bytes": 90
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\shell.txt",
+      "sha256": "97bd49a8580331fa62be696e28621be529a9d56e0343912d4a26ae8b36df9fd7",
+      "bytes": 156
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\smoke.exit",
+      "sha256": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
+      "bytes": 1
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\smoke.jsonl",
+      "sha256": "1eede46ab94f528a7e183367976ca20b79d9ea230fe0ce344e1edaa794f56a10",
+      "bytes": 8727
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\smoke.stderr",
+      "sha256": "c70189c0b7b6fa2c142efa936b48434238170f41c6278550fd58c34ef55d2ba5",
+      "bytes": 90
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\smoke.txt",
+      "sha256": "02bb489561449d2af91c935ba65e0f0f4cd6dc9b45fdb4353402db3cd52cf4b0",
+      "bytes": 75
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\test-author-accepted.exit",
+      "sha256": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
+      "bytes": 1
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\test-author-accepted.jsonl",
+      "sha256": "a01350157c9141c63757fee07f6eba0037da1244e335589f19d3644e7f81672d",
+      "bytes": 30534
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\test-author-accepted.stderr",
+      "sha256": "c70189c0b7b6fa2c142efa936b48434238170f41c6278550fd58c34ef55d2ba5",
+      "bytes": 90
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\test-author-binding.exit",
+      "sha256": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
+      "bytes": 1
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\test-author-binding.jsonl",
+      "sha256": "ce009506d9c7fe946d0d685f5788a2fad7da1ac6547dd13ef1760149d6840fb0",
+      "bytes": 20380
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\test-author-binding.stderr",
+      "sha256": "c70189c0b7b6fa2c142efa936b48434238170f41c6278550fd58c34ef55d2ba5",
+      "bytes": 90
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\test-author-final.exit",
+      "sha256": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
+      "bytes": 1
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\test-author-final.jsonl",
+      "sha256": "5b79f019ba9012a1ed51c349dea88e7d72624b4de38e5de18db1caac87a3293e",
+      "bytes": 39087
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\test-author-final.stderr",
+      "sha256": "c70189c0b7b6fa2c142efa936b48434238170f41c6278550fd58c34ef55d2ba5",
+      "bytes": 90
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\test-author-first.exit",
+      "sha256": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
+      "bytes": 1
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\test-author-first.jsonl",
+      "sha256": "4b0ce7ceb759a86c5de1e71351d1591dd0c3f3d07386e56c9bc24c3b27eaef83",
+      "bytes": 35627
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\test-author-first.stderr",
+      "sha256": "c70189c0b7b6fa2c142efa936b48434238170f41c6278550fd58c34ef55d2ba5",
+      "bytes": 90
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\test-author-regression.exit",
+      "sha256": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
+      "bytes": 1
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\test-author-regression.jsonl",
+      "sha256": "d33bfb21b4348cf9124b8af98792c36c264a914a8afef317eef671910344344f",
+      "bytes": 40035
+    },
+    {
+      "path": "D:\\codex-tmp\\vs25\\test-author-regression.stderr",
+      "sha256": "c70189c0b7b6fa2c142efa936b48434238170f41c6278550fd58c34ef55d2ba5",
+      "bytes": 90
+    }
+  ],
+  "limits": [
+    "Synthetic offline validation only; no original-project, hardware, runtime installation, release or remote changes.",
+    "Real file symlink case skipped for Windows privilege; primary owns later capable Windows/Linux integration check.",
+    "Full release and real VS Code/IntelliSense/handoff UI remain integration-phase obligations."
+  ]
+}
