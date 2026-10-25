@@ -1,0 +1,63 @@
+{
+  "acceptedBase": "848dc0a79e3e5741ef0528cfbfca533345128a51",
+  "codeHead": "83365c700baa9fe79ba6784efbac87365c93cfda",
+  "verdict": "ACCEPTED_WITH_FIXES",
+  "scope": "test-only offline diagnostic authority and input integrity",
+  "authorSession": "9f26a3a6-51cb-47b2-a68b-4dbea41a5d5d",
+  "verificationSession": "f92e6799-5da5-4c76-b429-da7f0b5dd667",
+  "newCases": 24,
+  "authorAffectedCases": 227,
+  "authorPassed": 226,
+  "retainedExistingPlatformSkip": 1,
+  "primaryIndependentPassed": 25,
+  "sourceUnchanged": true,
+  "cohort": {
+    "cases": 8793,
+    "passed": 8774,
+    "skipped": 19
+  },
+  "scopes": {
+    "toolkit-overall": {
+      "covered": 15299,
+      "total": 17502,
+      "floor": 90,
+      "percent": 87.41286710090276,
+      "gain": 7,
+      "status": "UNMET"
+    },
+    "toolkit-risk-core-v2": {
+      "covered": 14266,
+      "total": 16296,
+      "floor": 90,
+      "percent": 87.54295532646049,
+      "gain": 7,
+      "status": "UNMET"
+    },
+    "monitor-overall": {
+      "covered": 3227,
+      "total": 3498,
+      "floor": 90,
+      "percent": 92.2527158376215,
+      "gain": 0,
+      "status": "PASS"
+    },
+    "monitor-risk-core-v2": {
+      "covered": 3227,
+      "total": 3498,
+      "floor": 95,
+      "percent": 92.2527158376215,
+      "gain": 0,
+      "status": "UNMET"
+    }
+  },
+  "evidenceHashes": {
+    "diagnostic-integrity-a/manifest.json": "8474d52255cb413b8fabbab6bd6b9a5227f51a60b961812fff8909fdb1153767",
+    "diagnostic-integrity-a/di-01/execution.json": "d693a6b31e15b7aac45e060d87c3b3d4da14fcb49160e8c112b4236e42a3b116",
+    "primary-diagnostic-integrity-a/execution.json": "49a0ebf0f9447aa0580c7fdaa25b81be0b4786d20c64a87720cc22b775b0ab4e",
+    "coverage-diagnostic-a/qualification.json": "e9baf34cbec8d9f0bfbef29d1d69ac661d96236f1c699a1f2eae8ec7685d3c56",
+    "coverage-diagnostic-a/native.json": "9c4fc0bc24cdad037d13bda2a2f175e94f6aed96cbb0c4312703db52dfef6840"
+  },
+  "nativeRawFileCount": 954,
+  "singleHeadAllGreenRerun": false,
+  "releaseAccepted": false
+}

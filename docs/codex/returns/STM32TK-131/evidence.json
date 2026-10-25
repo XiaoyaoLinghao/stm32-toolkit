@@ -261,15 +261,15 @@
     "releaseAccepted": false
   },
   "latestSupplement": {
-    "codeHead": "0be59bf039747ac6ba9b1effc6fe454261588bbb",
-    "report": "../MONITOR-INTEGRITY-REGRESSION/implementation-report.md",
-    "newCases": 21,
+    "codeHead": "83365c700baa9fe79ba6784efbac87365c93cfda",
+    "report": "../DIAGNOSTIC-INTEGRITY-REGRESSION/implementation-report.md",
+    "newCases": 24,
     "uniqueCohort": {
-      "cases": 8769,
-      "passed": 8750,
+      "cases": 8793,
+      "passed": 8774,
       "skipped": 19
     },
-    "nativeQualificationSha256": "9bcec7da43ec834eda9783fbc96b3952f19bf3b05727aa3b285abde363167d2e",
+    "nativeQualificationSha256": "e9baf34cbec8d9f0bfbef29d1d69ac661d96236f1c699a1f2eae8ec7685d3c56",
     "singleHeadAllGreenRerun": false,
     "releaseAccepted": false
   },
@@ -297,6 +297,19 @@
         "skipped": 19
       },
       "nativeQualificationSha256": "037e5ae085f197006a699982ab36b726c8c08f7ada2e23715d143f059745703d",
+      "singleHeadAllGreenRerun": false,
+      "releaseAccepted": false
+    },
+    {
+      "codeHead": "0be59bf039747ac6ba9b1effc6fe454261588bbb",
+      "report": "../MONITOR-INTEGRITY-REGRESSION/implementation-report.md",
+      "newCases": 21,
+      "uniqueCohort": {
+        "cases": 8769,
+        "passed": 8750,
+        "skipped": 19
+      },
+      "nativeQualificationSha256": "9bcec7da43ec834eda9783fbc96b3952f19bf3b05727aa3b285abde363167d2e",
       "singleHeadAllGreenRerun": false,
       "releaseAccepted": false
     }
