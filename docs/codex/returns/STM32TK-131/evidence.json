@@ -194,13 +194,15 @@
     "nativeBranches": {
       "covered": 2906,
       "total": 3114,
-      "everyPositiveDenominatorFileAtLeast90": true
+      "everyPositiveDenominatorFileAtLeast90": true,
+      "executionHead": "0eaadcba1bd0024575304829c370b269ffa2775c"
     },
     "edgeFunctional": {
       "passed": 44,
       "skipped": 0,
       "flaky": 0,
-      "version": "156.0.4314.42"
+      "version": "156.0.4314.42",
+      "executionHead": "3f9654d98c0a0b844c68add33fb9d8d3f8ed049c"
     },
     "performance": {
       "warmupMilliseconds": 120000,
@@ -216,7 +218,29 @@
       },
       "longTasksAtLeast200ms": 0,
       "queueGrowth": 0,
-      "serverDrops": 0
+      "serverDrops": 0,
+      "executionHead": "3f9654d98c0a0b844c68add33fb9d8d3f8ed049c"
+    },
+    "unitHead": "0eaadcba1bd0024575304829c370b269ffa2775c",
+    "staticBuildHead": "0eaadcba1bd0024575304829c370b269ffa2775c",
+    "bundleHead": "3f9654d98c0a0b844c68add33fb9d8d3f8ed049c",
+    "primaryAffected": {
+      "executionHead": "961d03d65a5a1e6670b7be3d8493129c677c96c5",
+      "passed": 10,
+      "reuseBasis": "Corresponding TypeScript source/test bytes unchanged through later CSS/E2E correction",
+      "evidenceDirectory": "D:/codex-tmp/r131/primary-ui-layout-review"
+    },
+    "embeddedAssets": {
+      "owner": "Claude Code CLI",
+      "sessionId": "ceb230e4-5d56-48ae-83a4-048651e69131",
+      "executionHead": "3f9654d98c0a0b844c68add33fb9d8d3f8ed049c",
+      "passed": 20,
+      "failed": 0,
+      "skipped": 0,
+      "exitCode": 0,
+      "command": "& 'D:\\codex-tmp\\kx23\\venv\\Scripts\\python.exe' -X utf8 -m pytest tools/stm32-monitor/tests/test_ui_assets.py -q -o addopts= --tb=short --basetemp=D:/codex-tmp/r131ua -o cache_dir=D:/codex-tmp/r131/ui-assets-cache --junitxml=D:/codex-tmp/r131/ui-assets-final.xml",
+      "junit": "D:/codex-tmp/r131/ui-assets-final.xml",
+      "junitSha256": "06b63c91f4feae72b7921e2630b8b904e6ca968c98c2cd0b9f87405bc604efa9"
     }
   },
   "evidenceRoot": "D:\\codex-tmp\\r131",
@@ -229,5 +253,11 @@
   "actualInstalledVsCode": "PENDING",
   "finalArtifacts": "PENDING",
   "publication": "NOT_PERFORMED",
-  "hardware": "NOT_AUTHORIZED_OR_PERFORMED"
+  "hardware": "NOT_AUTHORIZED_OR_PERFORMED",
+  "documentationReview": {
+    "sessionId": "78426192-2051-4e20-bfda-1c2e11678237",
+    "mode": "read-only",
+    "findings": "Accepted-base, exact UI execution identities and embedded-asset traceability clarified by primary; no numerical or procedure/permission relaxation blocker",
+    "releaseAccepted": false
+  }
 }
