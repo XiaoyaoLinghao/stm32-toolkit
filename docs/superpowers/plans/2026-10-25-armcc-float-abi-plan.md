@@ -1,0 +1,11 @@
+# ARMCC-FLOAT-ABI implementation plan
+
+Base `386d63bc2fc5c633c1296c87601ae188cf09ebfd`; governing [design](../specs/2026-10-25-armcc-float-abi-design.md). User authorized this bounded offline slice and waived separate later-plan approval. Primary is specification/evidence-review owner; Claude Code CLI is implementation and author-test owner.
+
+1. Verify current native PowerShell inventory and harmless Get-Location, preserving existing provider and permissions. Reuse clean isolated author tree on codex/armcc-float-abi; supply full instructions and source ledger.
+2. File-only Claude invocation implements resolver/evidence, bounded raw selection capture, regressions and VS Code guidance. No shell/discovery/test execution in this phase. Return changed paths and limitations; coordinator freezes CodeHead.
+3. Separate Claude verification invocation uses exact supplied single native PowerShell pytest commands, bound source/dependencies and run-owned D:/codex-tmp/ab25 roots. Stop a denied/absent operation, never reroute it. Preserve all failures.
+4. Primary reviews complete accepted-base diff in a clean detached review tree at CodeHead and independently executes applicable tests. Return correctable findings to the same Claude author. Do not count author self-approval as acceptance; at most two rounds for the same issue.
+5. Record author report, machine evidence, independent verdict and standard-test-procedure checkpoint with tested CodeHead. Integrate accepted commits locally into a new delivery branch only after clean-state checks. No remote or release action. Keep Toolkit1.3.0 and future integration target1.3.1 explicit.
+
+Verification environment: Windows CPython3.12.14 at D:/codex-tmp/kx23/venv/Scripts/python.exe; current tree toolkit/monitor PYTHONPATH; read-only dependencies in C:/data/stm32-toolkit/runtime/1.3.0/Lib/site-packages; GNU compiler in C:/ST/STM32CubeCLT_1.22.0/GNU-tools-for-STM32/bin. Initial suite selection: test_keil_inspect.py, test_migration_plan.py, test_migration_apply.py, test_keil_preflight.py, test_ai_call_guidance.py, new ABI tests; expand only for directly affected integration failures. Actual compiler option test may use the existing GNU fixture. Owner-run results record commit/argv/exit or native results/JUnit, not CLI exit inferred as pytest status. No original firmware build or hardware.

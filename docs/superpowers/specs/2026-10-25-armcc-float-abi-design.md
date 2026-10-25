@@ -1,0 +1,28 @@
+# ARMCC-FLOAT-ABI bounded design
+
+Accepted base: `386d63bc2fc5c633c1296c87601ae188cf09ebfd`. Primary owns this design, plan, independent complete-diff review and acceptance. Local Claude Code CLI (existing provider/model) owns implementation, tests and product guidance. Author branch `codex/armcc-float-abi`; no ownership override or remote authorization.
+
+## Findings and intended behavior
+
+Do not blanket-change ARMCC/FPU2 from hard to softfp. Arm's Compiler 5 documentation distinguishes hardware computations from parameter-passing ABI. ARMCC bare-metal hardware-FPU defaults do not establish an ARM Linux softfp default. The official migration table maps `--cpu=Cortex-M4.fp` to hard linkage; explicit `--apcs=/softfp` changes that linkage. This establishes the compiler rule, not the exact original binary's ABI.
+
+Sources reviewed 2026-10-25:
+- https://documentation-service.arm.com/static/5f721c6c1b758617cd950f6f (ARMCC5 for uVision, sections4.42,4.51-4.53,7.6)
+- https://support.arm.com/documentation/100068/0609/migrating-from-armcc-to-armclang/migrating-architecture-and-processor-names-for-command-line-options
+- https://www.keil.com/support/man/docs/uv4/uv4_dg_adstarg.asp (FPU hardware selection, not proof of calling convention)
+- https://gcc.gnu.org/onlinedocs/gcc/ARM-Options.html
+
+Read-only original-project observation: `Project/LWIP.uvprojx`, SHA256 `037236a2ae7cd4cebfa59944a881367b042f2c36627ad6169d63ae1ff20f4567`, compiler ARMCC5.06u3, Cortex-M4/FPU2, no uFloatingPoint, ArmAdsMisc/RvdsVP=2, target/group C misc controls empty. Expected Project/OBJ/LWIP.axf and Project/LIST/LWIP.map absent. This is configuration evidence only; do not claim Keil/GCC binary or behavior equivalence. Do not read or change other original files for implementation/testing.
+
+1. Remove unsupported numeric `uFloatingPoint` -> soft/softfp inference (0/1/2 are not proven ABI declarations). Retain literal soft/softfp/hard compatibility as explicit *project declaration*, never proof of binary baseline; absent/empty remains distinct. Unknown/numeric values block with actionable diagnostics, not a fabricated replacement field.
+2. Keep only the existing narrow ARMCC+Cortex-M4+FPU2 default-hard inference, explicitly labeled inferred and unverified. Capture selected target ArmAdsMisc/RvdsVP as raw evidence in inspection. For that tuple, absent/2 may retain the historical inferred candidate; other nonempty values must block automatic FPU/ABI inference rather than ignoring a possibly disabled/different hardware selection. This is a bounded compatibility rule, not a generic RvdsVP decoder. An explicit literal ABI must not suppress a conflicting/unsupported hardware selection. Other compiler/CPU/FPU combinations remain fail-closed. No automatic softfp switch.
+3. Expose one deterministic `floatAbi` evidence object at preflight `analysis.floatAbi`, PLAN `floatAbi`, and successful conversion report `floatAbi`. Include raw compiler/version/CPU/FPU/ABI/RvdsVP evidence, normalized FPU/selected ABI, decision origin (inferred/declared/blocked/not-applicable), rule ID/reason, `baselineVerified:false`, and a concise compatibility warning/remediation. Do not assert `abiChanged:false` or that an AXF filename proves compatibility. No native Keil baseline parser, new ABI override parameter or firmware identity schema in this slice.
+4. Re-derive evidence from fresh inspection; do not accept caller-supplied diagnostics as authority. PLAN evidence must participate in existing deterministic plan ID and APPLY revalidation. Preserve tamper/stale/no-write guarantees. If simpler, derive the serialized evidence from bound inspection instead of introducing mutable payload state.
+5. Existing target/group/file misc-control blocking stays in force, including --apcs, --fpu and response-file overrides. Do not translate, drop or execute those switches. Diagnostics must tell AI to preserve those blockers and inspect actual compiler command lines/objects/libraries, not rewrite project evidence to clear them. Baseline warnings are not an extra apply authorization or an assertion that migration is equivalent.
+6. Synchronize user-guide and migrate-keil Skill/VS Code instructions: inspect complete ABI evidence and blockers; default-hard is conditional inference, numeric precision is not ABI proof, actual object/library calling conventions matter, no invented CLI/MCP flags or manual digest edits. Current installed/frozen1.3.0 does not contain this source patch. Version remains1.3.0 until all remaining improvements are integrated as1.3.1.
+
+## Scope and evidence
+
+Allowed product scope: Keil inspection/model, migration planner/model/preflight/apply or a small focused ABI helper, directly affected tests/fixtures, docs/user-guide.md, skills/migrate-keil/SKILL.md. No build/hardware authorization changes, original-project writes, installations, global settings/skills, packaging, version bump, remote mutations or unrelated cleanup.
+
+Required offline tests: missing/empty/literal/numeric/unknown ABI, ARMCC versus ARMCLANG/unknown, unsupported FPU/CPU, RvdsVP absent/2/0/unknown and selected-target scoping, explicit declaration cannot bypass conflicting hardware selector, misc overrides still block, preflight/PLAN/report consistency, determinism/tamper/stale apply rejection, generated compile AND link options consistent with selected ABI. Use synthetic projects and the supplied GNU compiler only. Existing migration/inspection/preflight/AI-guidance/configuration regression suites must pass as applicable; no full release/hardware matrix here. Primary independently reviews full diff and executes the affected suite in a separate clean exact-CodeHead tree. Actual original ABI comparison remains unverified, not a fabricated PASS.
