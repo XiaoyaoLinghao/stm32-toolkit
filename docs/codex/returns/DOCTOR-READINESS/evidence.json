@@ -1,0 +1,865 @@
+{
+  "module": "DOCTOR-READINESS",
+  "acceptedBase": "8737aaea950d2eec7f79c44b7b95bf07ca0ab471",
+  "codeHead": "353ab42f60324a1fb94ff8daf8875f80d138ce48",
+  "sourceVersion": "1.3.0",
+  "runRoot": "D:\\codex-tmp\\dr25",
+  "owners": {
+    "specification": "primary",
+    "implementationAndTests": "Claude Code CLI, existing deepseek-v4.1-flash[1m] configuration",
+    "review": "primary, independent clean worktree"
+  },
+  "remoteActionAuthorized": null,
+  "originalProjectAccess": false,
+  "hardwareAccess": false,
+  "installedRuntimeChanged": false,
+  "cli": [
+    {
+      "path": "D:\\codex-tmp\\dr25\\author.jsonl",
+      "sha256": "67021c6e7f60fd1562cea8daf977e54cb773382d64b011dc9390a227c261bc2e",
+      "initTools": [
+        "Edit",
+        "Glob",
+        "Grep",
+        "Read",
+        "Write"
+      ],
+      "model": "deepseek-v4.1-flash[1m]",
+      "toolCounts": {
+        "Read": 33,
+        "Grep": 30,
+        "Glob": 4,
+        "Edit": 44,
+        "Write": 2
+      },
+      "nativeCommands": [],
+      "toolResultCount": 113,
+      "toolErrorCount": 1,
+      "subtype": "error_max_turns",
+      "permissionDenials": [],
+      "exitCode": 1
+    },
+    {
+      "path": "D:\\codex-tmp\\dr25\\finish-fix1.jsonl",
+      "sha256": "3fc4330c6d41484d6a8b62a8fd6c41d680997dac452e88a727ccd1a3ff34103c",
+      "initTools": [
+        "Edit",
+        "Glob",
+        "Grep",
+        "Read",
+        "Write"
+      ],
+      "model": "deepseek-v4.1-flash[1m]",
+      "toolCounts": {
+        "Read": 3,
+        "Edit": 7,
+        "Grep": 2
+      },
+      "nativeCommands": [],
+      "toolResultCount": 12,
+      "toolErrorCount": 0,
+      "subtype": "success",
+      "permissionDenials": [],
+      "exitCode": 0
+    },
+    {
+      "path": "D:\\codex-tmp\\dr25\\fix1.jsonl",
+      "sha256": "a7fa42624665f24a01a0715f02b4837252b80a1a1709e890e9ff1b9dd3712986",
+      "initTools": [
+        "Edit",
+        "Glob",
+        "Grep",
+        "Read",
+        "Write"
+      ],
+      "model": "deepseek-v4.1-flash[1m]",
+      "toolCounts": {
+        "Read": 24,
+        "Edit": 42,
+        "Grep": 22
+      },
+      "nativeCommands": [],
+      "toolResultCount": 88,
+      "toolErrorCount": 1,
+      "subtype": "error_max_turns",
+      "permissionDenials": [],
+      "exitCode": 1
+    },
+    {
+      "path": "D:\\codex-tmp\\dr25\\guidance-audit-complete.jsonl",
+      "sha256": "8100bba93802534ae259cc14cb45d2719a0a55da6becfe1b49900ca447ed5c51",
+      "initTools": [
+        "Glob",
+        "Grep",
+        "Read"
+      ],
+      "model": "deepseek-v4.1-flash[1m]",
+      "toolCounts": {
+        "Read": 3
+      },
+      "nativeCommands": [],
+      "toolResultCount": 3,
+      "toolErrorCount": 0,
+      "subtype": "success",
+      "permissionDenials": [],
+      "exitCode": 0
+    },
+    {
+      "path": "D:\\codex-tmp\\dr25\\guidance-audit.jsonl",
+      "sha256": "6404f10399fc581cfb48d4c966729b031ecebcdc7f069a2ae557eae9e32108fb",
+      "initTools": [
+        "Glob",
+        "Grep",
+        "Read"
+      ],
+      "model": "deepseek-v4.1-flash[1m]",
+      "toolCounts": {
+        "Read": 2
+      },
+      "nativeCommands": [],
+      "toolResultCount": 2,
+      "toolErrorCount": 0,
+      "subtype": "success",
+      "permissionDenials": [],
+      "exitCode": 0
+    },
+    {
+      "path": "D:\\codex-tmp\\dr25\\shell.jsonl",
+      "sha256": "51862f3efb89ee4033c6d58153d0e50b8ab2f30687445e4188e301b7c087a841",
+      "initTools": [
+        "PowerShell"
+      ],
+      "model": "deepseek-v4.1-flash[1m]",
+      "toolCounts": {
+        "PowerShell": 1
+      },
+      "nativeCommands": [
+        {
+          "command": "Get-Location",
+          "description": "Print current working directory"
+        }
+      ],
+      "toolResultCount": 1,
+      "toolErrorCount": 0,
+      "subtype": "success",
+      "permissionDenials": [],
+      "exitCode": 0
+    },
+    {
+      "path": "D:\\codex-tmp\\dr25\\smoke.jsonl",
+      "sha256": "449edc0ef9f0cd8eecd2404f97a38aeb65b67ca2a5f3d9e3f2ba1e292049a6c0",
+      "initTools": [
+        "PowerShell"
+      ],
+      "model": "deepseek-v4.1-flash[1m]",
+      "toolCounts": {},
+      "nativeCommands": [],
+      "toolResultCount": 0,
+      "toolErrorCount": 0,
+      "subtype": "success",
+      "permissionDenials": [],
+      "exitCode": 0
+    },
+    {
+      "path": "D:\\codex-tmp\\dr25\\test-author-accepted.jsonl",
+      "sha256": "89287510b84d38e1c0ced5e72909e87d96f35d3f45fc151db6d3c246acd088b3",
+      "initTools": [
+        "PowerShell"
+      ],
+      "model": "deepseek-v4.1-flash[1m]",
+      "toolCounts": {
+        "PowerShell": 1
+      },
+      "nativeCommands": [
+        {
+          "command": "D:/codex-tmp/kx23/venv/Scripts/python.exe -m pytest tools/stm32-toolkit/tests/test_doctor_readiness.py tools/stm32-toolkit/tests/test_doctor.py tools/stm32-toolkit/tests/test_tool_support.py tools/stm32-toolkit/tests/test_cli.py tools/stm32-toolkit/tests/test_mcp_server.py tools/stm32-toolkit/tests/test_mcp_roots.py tools/stm32-toolkit/tests/test_mcp_migration_build.py tools/stm32-toolkit/tests/test_ai_call_guidance.py -q --tb=short --basetemp=D:/codex-tmp/dr25/p-author-accepted -o cache_dir=D:/codex-tmp/dr25/c-author-accepted --junitxml=D:/codex-tmp/dr25/author-accepted.xml",
+          "description": "Run pytest on frozen source head verification set",
+          "timeout": 600000
+        }
+      ],
+      "toolResultCount": 1,
+      "toolErrorCount": 0,
+      "subtype": "success",
+      "permissionDenials": [],
+      "exitCode": 0
+    },
+    {
+      "path": "D:\\codex-tmp\\dr25\\test-author-creation.jsonl",
+      "sha256": "e512ebeb22321cdc0b866beacd18c0e0385bd438e87aed49b8ed1c45cf62cf15",
+      "initTools": [
+        "PowerShell"
+      ],
+      "model": "deepseek-v4.1-flash[1m]",
+      "toolCounts": {
+        "PowerShell": 1
+      },
+      "nativeCommands": [
+        {
+          "command": "D:/codex-tmp/kx23/venv/Scripts/python.exe -m pytest tools/stm32-toolkit/tests/test_creation_environment.py tools/stm32-toolkit/tests/test_creation_plan.py tools/stm32-toolkit/tests/test_creation_workflows.py tools/stm32-toolkit/tests/test_creation_cli.py tools/stm32-toolkit/tests/test_creation_mcp.py tools/stm32-toolkit/tests/test_risk_tool_support_adapters.py -q --tb=short --basetemp=D:/codex-tmp/dr25/p-author-creation -o cache_dir=D:/codex-tmp/dr25/c-author-creation --junitxml=D:/codex-tmp/dr25/author-creation.xml",
+          "description": "Run author-creation pytest suite at frozen head",
+          "timeout": 600000
+        }
+      ],
+      "toolResultCount": 1,
+      "toolErrorCount": 0,
+      "subtype": "success",
+      "permissionDenials": [],
+      "exitCode": 0
+    },
+    {
+      "path": "D:\\codex-tmp\\dr25\\test-author-final.jsonl",
+      "sha256": "9c84694d2e9a64bf978ce9d260b704720f6fef317f78a48982c877d0dfb4363f",
+      "initTools": [
+        "PowerShell"
+      ],
+      "model": "deepseek-v4.1-flash[1m]",
+      "toolCounts": {
+        "PowerShell": 1
+      },
+      "nativeCommands": [
+        {
+          "command": "D:/codex-tmp/kx23/venv/Scripts/python.exe -m pytest tools/stm32-toolkit/tests/test_doctor_readiness.py tools/stm32-toolkit/tests/test_doctor.py tools/stm32-toolkit/tests/test_tool_support.py tools/stm32-toolkit/tests/test_cli.py tools/stm32-toolkit/tests/test_mcp_server.py tools/stm32-toolkit/tests/test_mcp_roots.py tools/stm32-toolkit/tests/test_mcp_migration_build.py tools/stm32-toolkit/tests/test_ai_call_guidance.py -q --tb=short --basetemp=D:/codex-tmp/dr25/p-author-final -o cache_dir=D:/codex-tmp/dr25/c-author-final --junitxml=D:/codex-tmp/dr25/author-final.xml",
+          "description": "Run scoped pytest suite for doctor readiness verification",
+          "timeout": 600000
+        }
+      ],
+      "toolResultCount": 1,
+      "toolErrorCount": 0,
+      "subtype": "success",
+      "permissionDenials": [],
+      "exitCode": 0
+    },
+    {
+      "path": "D:\\codex-tmp\\dr25\\test-author-first.jsonl",
+      "sha256": "70c1d771676ece740ba55c5b583b435c108004f0a338c1710158acba421fb47e",
+      "initTools": [
+        "PowerShell"
+      ],
+      "model": "deepseek-v4.1-flash[1m]",
+      "toolCounts": {
+        "PowerShell": 1
+      },
+      "nativeCommands": [
+        {
+          "command": "D:/codex-tmp/kx23/venv/Scripts/python.exe -m pytest tools/stm32-toolkit/tests/test_doctor_readiness.py tools/stm32-toolkit/tests/test_doctor.py tools/stm32-toolkit/tests/test_tool_support.py tools/stm32-toolkit/tests/test_cli.py tools/stm32-toolkit/tests/test_mcp_server.py tools/stm32-toolkit/tests/test_mcp_roots.py tools/stm32-toolkit/tests/test_mcp_migration_build.py tools/stm32-toolkit/tests/test_ai_call_guidance.py -q --tb=short --basetemp=D:/codex-tmp/dr25/p-author-first -o cache_dir=D:/codex-tmp/dr25/c-author-first --junitxml=D:/codex-tmp/dr25/author-first.xml",
+          "description": "Run doctor readiness pytest slice at frozen head",
+          "timeout": 600000
+        }
+      ],
+      "toolResultCount": 1,
+      "toolErrorCount": 1,
+      "subtype": "success",
+      "permissionDenials": [],
+      "exitCode": 0
+    },
+    {
+      "path": "D:\\codex-tmp\\dr25\\version-width.jsonl",
+      "sha256": "e5aca32afc0d0057afd57950ce7bf18c63d87a43aa36390f47203980f78a58e0",
+      "initTools": [
+        "Edit",
+        "Glob",
+        "Grep",
+        "Read",
+        "Write"
+      ],
+      "model": "deepseek-v4.1-flash[1m]",
+      "toolCounts": {
+        "Edit": 2,
+        "Read": 1
+      },
+      "nativeCommands": [],
+      "toolResultCount": 3,
+      "toolErrorCount": 0,
+      "subtype": "success",
+      "permissionDenials": [],
+      "exitCode": 0
+    }
+  ],
+  "tests": [
+    {
+      "label": "author-accepted",
+      "junitPath": "D:\\codex-tmp\\dr25\\author-accepted.xml",
+      "junitSha256": "904a3bf3fe42637b5c1580e704ea88dd2e317125c07b05cba40d5be55b503b6a",
+      "counts": {
+        "tests": 305,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 1
+      },
+      "timeSeconds": 125.115,
+      "skips": [
+        {
+          "name": "test_redirected_explicit_parent_is_invalid",
+          "reason": "directory symlink unavailable"
+        }
+      ],
+      "failures": [],
+      "head": "353ab42f60324a1fb94ff8daf8875f80d138ce48"
+    },
+    {
+      "label": "author-creation",
+      "junitPath": "D:\\codex-tmp\\dr25\\author-creation.xml",
+      "junitSha256": "c7b262d9612b7d1e36491eeb5bfc452c701d86ee92b0f5115ae5dcd0fd3de6f8",
+      "counts": {
+        "tests": 97,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "timeSeconds": 17.851,
+      "skips": [],
+      "failures": [],
+      "head": "f8e688cc70a82e3c3ef56024cd8de77055ad20d2"
+    },
+    {
+      "label": "author-final",
+      "junitPath": "D:\\codex-tmp\\dr25\\author-final.xml",
+      "junitSha256": "0e7da955e342ec63670989cbd618fe04a54d752f4b339c00173127a00e601dff",
+      "counts": {
+        "tests": 303,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 1
+      },
+      "timeSeconds": 129.739,
+      "skips": [
+        {
+          "name": "test_redirected_explicit_parent_is_invalid",
+          "reason": "directory symlink unavailable"
+        }
+      ],
+      "failures": [],
+      "head": "f8e688cc70a82e3c3ef56024cd8de77055ad20d2"
+    },
+    {
+      "label": "author-first",
+      "junitPath": "D:\\codex-tmp\\dr25\\author-first.xml",
+      "junitSha256": "950cc22f802c94a9b0d1d921a03aaadaaae3b84bbc1228c55f0603103887932f",
+      "counts": {
+        "tests": 278,
+        "failures": 21,
+        "errors": 0,
+        "skipped": 1
+      },
+      "timeSeconds": 128.605,
+      "skips": [
+        {
+          "name": "test_redirected_explicit_parent_is_invalid",
+          "reason": "directory symlink unavailable"
+        }
+      ],
+      "failures": [
+        {
+          "name": "test_complete_listing_observes_case_insensitive_duplicates_and_exact_argv",
+          "message": "KeyError: 'ok'"
+        },
+        {
+          "name": "test_empty_successful_listing_is_valid_absence",
+          "message": "KeyError: 'ok'"
+        },
+        {
+          "name": "test_partial_or_invalid_output_never_becomes_installed_or_absent[observation0-timeout]",
+          "message": "KeyError: 'ok'"
+        },
+        {
+          "name": "test_partial_or_invalid_output_never_becomes_installed_or_absent[observation1-nonzero]",
+          "message": "KeyError: 'ok'"
+        },
+        {
+          "name": "test_partial_or_invalid_output_never_becomes_installed_or_absent[observation2-truncated]",
+          "message": "KeyError: 'ok'"
+        },
+        {
+          "name": "test_partial_or_invalid_output_never_becomes_installed_or_absent[observation3-incomplete]",
+          "message": "KeyError: 'ok'"
+        },
+        {
+          "name": "test_partial_or_invalid_output_never_becomes_installed_or_absent[observation4-invalid-output]",
+          "message": "KeyError: 'ok'"
+        },
+        {
+          "name": "test_partial_or_invalid_output_never_becomes_installed_or_absent[observation5-start-error]",
+          "message": "KeyError: 'ok'"
+        },
+        {
+          "name": "test_partial_or_invalid_output_never_becomes_installed_or_absent[observation6-nonzero]",
+          "message": "KeyError: 'ok'"
+        },
+        {
+          "name": "test_malformed_or_conflicting_records_fail_closed[garbage line\\n-malformed-output]",
+          "message": "KeyError: 'ok'"
+        },
+        {
+          "name": "test_malformed_or_conflicting_records_fail_closed[ms-vscode.cpptools@1.0.0\\nms-vscode.cpptools@1.0.1\\n-conflicting-versions]",
+          "message": "KeyError: 'ok'"
+        },
+        {
+          "name": "test_malformed_or_conflicting_records_fail_closed[publisher.extension@1.0\\n-observed]",
+          "message": "KeyError: 'ok'"
+        },
+        {
+          "name": "test_conflicting_unrelated_versions_are_ignored",
+          "message": "KeyError: 'ok'"
+        },
+        {
+          "name": "test_cortex_version_is_compared_with_declared_profile",
+          "message": "KeyError: 'ok'"
+        },
+        {
+          "name": "test_hash_layout_is_derived_from_the_launcher_literal_without_executing_it",
+          "message": "KeyError: 'ok'"
+        },
+        {
+          "name": "test_code_exe_selects_the_same_installations_hash_script",
+          "message": "KeyError: 'ok'"
+        },
+        {
+          "name": "test_standard_layout_ambiguity_and_missing_are_distinct",
+          "message": "KeyError: 'ok'"
+        },
+        {
+          "name": "test_path_and_support_profile_sources_are_selected_consistently",
+          "message": "KeyError: 'ok'"
+        },
+        {
+          "name": "test_run_doctor_keeps_declared_profile_separate_from_live_observation",
+          "message": "KeyError: 'ok'"
+        },
+        {
+          "name": "test_doctor_vscode_extensions_are_unknown_when_probing_is_skipped",
+          "message": "AssertionError: assert ('keil-migrat...nal-firmware') == ['keil-migrat...nal-firmware']\n  \n  Use -v to get more diff"
+        },
+        {
+          "name": "test_new_tool_schemas_expose_only_declared_properties",
+          "message": "KeyError: 'required'"
+        }
+      ],
+      "head": "3ae9928a91f3e58b4145a137c596f051dfe3dadf"
+    },
+    {
+      "label": "review-accepted",
+      "junitPath": "D:\\codex-tmp\\dr25\\review-accepted.xml",
+      "junitSha256": "6f64a019392d5ae0a4e822ab6d4cd27764653b4d71f3bd7063a92041cf931063",
+      "counts": {
+        "tests": 305,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 1
+      },
+      "timeSeconds": 126.329,
+      "skips": [
+        {
+          "name": "test_redirected_explicit_parent_is_invalid",
+          "reason": "directory symlink unavailable"
+        }
+      ],
+      "failures": [],
+      "execution": {
+        "head": "353ab42f60324a1fb94ff8daf8875f80d138ce48",
+        "cwd": "C:\\Users\\zhy76\\.codex\\worktrees\\build-snapshot-final\\STM32-Toolkit",
+        "argv": [
+          "D:/codex-tmp/kx23/venv/Scripts/python.exe",
+          "-m",
+          "pytest",
+          "tools/stm32-toolkit/tests/test_doctor_readiness.py",
+          "tools/stm32-toolkit/tests/test_doctor.py",
+          "tools/stm32-toolkit/tests/test_tool_support.py",
+          "tools/stm32-toolkit/tests/test_cli.py",
+          "tools/stm32-toolkit/tests/test_mcp_server.py",
+          "tools/stm32-toolkit/tests/test_mcp_roots.py",
+          "tools/stm32-toolkit/tests/test_mcp_migration_build.py",
+          "tools/stm32-toolkit/tests/test_ai_call_guidance.py",
+          "-q",
+          "--tb=short",
+          "--basetemp=D:\\codex-tmp\\dr25\\p-review-accepted",
+          "-o",
+          "cache_dir=D:\\codex-tmp\\dr25\\c-review-accepted",
+          "--junitxml=D:\\codex-tmp\\dr25\\review-accepted.xml"
+        ],
+        "exitCode": 0,
+        "logSha256": "24c0f6280d9760c7ac445cbca79563718cc7edcaf485f81c6e1155058ba5a98d"
+      },
+      "head": "353ab42f60324a1fb94ff8daf8875f80d138ce48"
+    },
+    {
+      "label": "review-creation",
+      "junitPath": "D:\\codex-tmp\\dr25\\review-creation.xml",
+      "junitSha256": "a8d4c69e55e918712c5305c6ba7dd9c665508746ea96fdf67d35ca453cc286cb",
+      "counts": {
+        "tests": 97,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "timeSeconds": 21.764,
+      "skips": [],
+      "failures": [],
+      "execution": {
+        "head": "f8e688cc70a82e3c3ef56024cd8de77055ad20d2",
+        "cwd": "C:\\Users\\zhy76\\.codex\\worktrees\\build-snapshot-final\\STM32-Toolkit",
+        "argv": [
+          "D:/codex-tmp/kx23/venv/Scripts/python.exe",
+          "-m",
+          "pytest",
+          "tools/stm32-toolkit/tests/test_creation_environment.py",
+          "tools/stm32-toolkit/tests/test_creation_plan.py",
+          "tools/stm32-toolkit/tests/test_creation_workflows.py",
+          "tools/stm32-toolkit/tests/test_creation_cli.py",
+          "tools/stm32-toolkit/tests/test_creation_mcp.py",
+          "tools/stm32-toolkit/tests/test_risk_tool_support_adapters.py",
+          "-q",
+          "--tb=short",
+          "--basetemp=D:\\codex-tmp\\dr25\\p-review-creation",
+          "-o",
+          "cache_dir=D:\\codex-tmp\\dr25\\c-review-creation",
+          "--junitxml=D:\\codex-tmp\\dr25\\review-creation.xml"
+        ],
+        "exitCode": 0,
+        "logSha256": "c6ef233969cdfb94d4bce9b8bdee3137b119bc18b39c4e38b4565e9842f0c9ba"
+      },
+      "head": "f8e688cc70a82e3c3ef56024cd8de77055ad20d2"
+    },
+    {
+      "label": "review-final",
+      "junitPath": "D:\\codex-tmp\\dr25\\review-final.xml",
+      "junitSha256": "a37d19dd5ddc5ccea34d58bd829abf188ad12f99c0245ea3bb54c7cf32f8fa15",
+      "counts": {
+        "tests": 303,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 1
+      },
+      "timeSeconds": 130.844,
+      "skips": [
+        {
+          "name": "test_redirected_explicit_parent_is_invalid",
+          "reason": "directory symlink unavailable"
+        }
+      ],
+      "failures": [],
+      "execution": {
+        "head": "f8e688cc70a82e3c3ef56024cd8de77055ad20d2",
+        "cwd": "C:\\Users\\zhy76\\.codex\\worktrees\\build-snapshot-final\\STM32-Toolkit",
+        "argv": [
+          "D:/codex-tmp/kx23/venv/Scripts/python.exe",
+          "-m",
+          "pytest",
+          "tools/stm32-toolkit/tests/test_doctor_readiness.py",
+          "tools/stm32-toolkit/tests/test_doctor.py",
+          "tools/stm32-toolkit/tests/test_tool_support.py",
+          "tools/stm32-toolkit/tests/test_cli.py",
+          "tools/stm32-toolkit/tests/test_mcp_server.py",
+          "tools/stm32-toolkit/tests/test_mcp_roots.py",
+          "tools/stm32-toolkit/tests/test_mcp_migration_build.py",
+          "tools/stm32-toolkit/tests/test_ai_call_guidance.py",
+          "-q",
+          "--tb=short",
+          "--basetemp=D:\\codex-tmp\\dr25\\p-review-final",
+          "-o",
+          "cache_dir=D:\\codex-tmp\\dr25\\c-review-final",
+          "--junitxml=D:\\codex-tmp\\dr25\\review-final.xml"
+        ],
+        "exitCode": 0,
+        "logSha256": "1aea29e9d6c329f01005dc64ef43bb01693baeb2e4344b7f7f2bcc66a9e9ea95"
+      },
+      "head": "f8e688cc70a82e3c3ef56024cd8de77055ad20d2"
+    },
+    {
+      "label": "review-first",
+      "junitPath": "D:\\codex-tmp\\dr25\\review-first.xml",
+      "junitSha256": "b01f70de65bd50e8b40a6bb8f44c8660e5ae43ad2740955f71c57d101d702e3e",
+      "counts": {
+        "tests": 278,
+        "failures": 21,
+        "errors": 0,
+        "skipped": 1
+      },
+      "timeSeconds": 129.884,
+      "skips": [
+        {
+          "name": "test_redirected_explicit_parent_is_invalid",
+          "reason": "directory symlink unavailable"
+        }
+      ],
+      "failures": [
+        {
+          "name": "test_complete_listing_observes_case_insensitive_duplicates_and_exact_argv",
+          "message": "KeyError: 'ok'"
+        },
+        {
+          "name": "test_empty_successful_listing_is_valid_absence",
+          "message": "KeyError: 'ok'"
+        },
+        {
+          "name": "test_partial_or_invalid_output_never_becomes_installed_or_absent[observation0-timeout]",
+          "message": "KeyError: 'ok'"
+        },
+        {
+          "name": "test_partial_or_invalid_output_never_becomes_installed_or_absent[observation1-nonzero]",
+          "message": "KeyError: 'ok'"
+        },
+        {
+          "name": "test_partial_or_invalid_output_never_becomes_installed_or_absent[observation2-truncated]",
+          "message": "KeyError: 'ok'"
+        },
+        {
+          "name": "test_partial_or_invalid_output_never_becomes_installed_or_absent[observation3-incomplete]",
+          "message": "KeyError: 'ok'"
+        },
+        {
+          "name": "test_partial_or_invalid_output_never_becomes_installed_or_absent[observation4-invalid-output]",
+          "message": "KeyError: 'ok'"
+        },
+        {
+          "name": "test_partial_or_invalid_output_never_becomes_installed_or_absent[observation5-start-error]",
+          "message": "KeyError: 'ok'"
+        },
+        {
+          "name": "test_partial_or_invalid_output_never_becomes_installed_or_absent[observation6-nonzero]",
+          "message": "KeyError: 'ok'"
+        },
+        {
+          "name": "test_malformed_or_conflicting_records_fail_closed[garbage line\\n-malformed-output]",
+          "message": "KeyError: 'ok'"
+        },
+        {
+          "name": "test_malformed_or_conflicting_records_fail_closed[ms-vscode.cpptools@1.0.0\\nms-vscode.cpptools@1.0.1\\n-conflicting-versions]",
+          "message": "KeyError: 'ok'"
+        },
+        {
+          "name": "test_malformed_or_conflicting_records_fail_closed[publisher.extension@1.0\\n-observed]",
+          "message": "KeyError: 'ok'"
+        },
+        {
+          "name": "test_conflicting_unrelated_versions_are_ignored",
+          "message": "KeyError: 'ok'"
+        },
+        {
+          "name": "test_cortex_version_is_compared_with_declared_profile",
+          "message": "KeyError: 'ok'"
+        },
+        {
+          "name": "test_hash_layout_is_derived_from_the_launcher_literal_without_executing_it",
+          "message": "KeyError: 'ok'"
+        },
+        {
+          "name": "test_code_exe_selects_the_same_installations_hash_script",
+          "message": "KeyError: 'ok'"
+        },
+        {
+          "name": "test_standard_layout_ambiguity_and_missing_are_distinct",
+          "message": "KeyError: 'ok'"
+        },
+        {
+          "name": "test_path_and_support_profile_sources_are_selected_consistently",
+          "message": "KeyError: 'ok'"
+        },
+        {
+          "name": "test_run_doctor_keeps_declared_profile_separate_from_live_observation",
+          "message": "KeyError: 'ok'"
+        },
+        {
+          "name": "test_doctor_vscode_extensions_are_unknown_when_probing_is_skipped",
+          "message": "AssertionError: assert ('keil-migrat...nal-firmware') == ['keil-migrat...nal-firmware']\n  \n  Use -v to get more diff"
+        },
+        {
+          "name": "test_new_tool_schemas_expose_only_declared_properties",
+          "message": "KeyError: 'required'"
+        }
+      ],
+      "execution": {
+        "head": "3ae9928a91f3e58b4145a137c596f051dfe3dadf",
+        "cwd": "C:\\Users\\zhy76\\.codex\\worktrees\\build-snapshot-final\\STM32-Toolkit",
+        "argv": [
+          "D:/codex-tmp/kx23/venv/Scripts/python.exe",
+          "-m",
+          "pytest",
+          "tools/stm32-toolkit/tests/test_doctor_readiness.py",
+          "tools/stm32-toolkit/tests/test_doctor.py",
+          "tools/stm32-toolkit/tests/test_tool_support.py",
+          "tools/stm32-toolkit/tests/test_cli.py",
+          "tools/stm32-toolkit/tests/test_mcp_server.py",
+          "tools/stm32-toolkit/tests/test_mcp_roots.py",
+          "tools/stm32-toolkit/tests/test_mcp_migration_build.py",
+          "tools/stm32-toolkit/tests/test_ai_call_guidance.py",
+          "-q",
+          "--tb=short",
+          "--basetemp=D:\\codex-tmp\\dr25\\p-review-first",
+          "-o",
+          "cache_dir=D:\\codex-tmp\\dr25\\c-review-first",
+          "--junitxml=D:\\codex-tmp\\dr25\\review-first.xml"
+        ],
+        "exitCode": 1,
+        "logSha256": "10c6d6f51b6f68d74c359380dd4eed71e4d8ae2f7579b4be77cfae944a7ccfbd"
+      },
+      "head": "3ae9928a91f3e58b4145a137c596f051dfe3dadf"
+    }
+  ],
+  "artifacts": [
+    {
+      "path": "D:\\codex-tmp\\dr25\\installed-listing-execution.json",
+      "sha256": "7c9ff981167df0c985f62a98d52eca596c8ee7eb91d4b5d8ca59b672ba741fdb"
+    },
+    {
+      "path": "D:\\codex-tmp\\dr25\\installed-observation-execution.json",
+      "sha256": "fc97ff3498cc5378af17a65943daad081b0d7da396bb721391cc2552a96dfc0f"
+    },
+    {
+      "path": "D:\\codex-tmp\\dr25\\installed-observation-final-execution.json",
+      "sha256": "c6458f90d48cfd78c7d98e7fb0d6617194ac44067396048a55af4141421358fc"
+    },
+    {
+      "path": "D:\\codex-tmp\\dr25\\review-accepted-execution.json",
+      "sha256": "2a3f4e363d3a7c1b0cdf7da5ef65b1d1c5e154168fcb958028223c1ef6216612"
+    },
+    {
+      "path": "D:\\codex-tmp\\dr25\\review-creation-execution.json",
+      "sha256": "fa6e847b25dde81e6c5fc9f4e91e3ea0896f5de6e9b52d96c4a59867f37ff857"
+    },
+    {
+      "path": "D:\\codex-tmp\\dr25\\review-final-execution.json",
+      "sha256": "569dd901281763c31e9214179c4529720f9874c429a5623cb6eb6671a209c445"
+    },
+    {
+      "path": "D:\\codex-tmp\\dr25\\review-first-execution.json",
+      "sha256": "9c4b8dfebf1677b65759f255d308b65aaea0b5bfcbf62ce140b59eda050e5c8d"
+    },
+    {
+      "path": "D:\\codex-tmp\\dr25\\preflight.json",
+      "sha256": "ff2477f0f937640e98be9ed7e75bbd54887635c498752745965384ae6ddf0233"
+    },
+    {
+      "path": "D:\\codex-tmp\\dr25\\installed-doctor-final.json",
+      "sha256": "f94a6fe08e3398fc98d7441c5b08187c1cafeceb8d4358875d4509b0d679d8d9"
+    },
+    {
+      "path": "D:\\codex-tmp\\dr25\\installed-doctor.json",
+      "sha256": "c053857a287f878e486ad3360fa18cc4f77b1476d3e590d0df931e51f4a0624c"
+    },
+    {
+      "path": "D:\\codex-tmp\\dr25\\installed-doctor-final.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "D:\\codex-tmp\\dr25\\installed-doctor.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "D:\\codex-tmp\\dr25\\installed-listing.stdout",
+      "sha256": "85ee57f33bba3462da3d459d5ec86c15b4436929b5418a845c41a8764b44e266"
+    },
+    {
+      "path": "D:\\codex-tmp\\dr25\\installed-listing.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "D:\\codex-tmp\\dr25\\cleanup-checked.json",
+      "sha256": "1a447169f081a64d9ce5e47b2a1e4babf67cd216d0a480935a5a2995b4a3eb4e"
+    },
+    {
+      "path": "D:\\codex-tmp\\dr25\\cleanup.json",
+      "sha256": "e2c393a7a8868ebf9b0d5fa5650c19fbb10e22b70c99843ee51b302f127e07f9"
+    }
+  ],
+  "creationReuse": {
+    "head": "f8e688cc70a82e3c3ef56024cd8de77055ad20d2",
+    "labels": [
+      "author-creation",
+      "review-creation"
+    ],
+    "reason": "Only doctor extension numeric-version regex and two readiness tests changed after this matrix. tool_support and all creation code/tests remain byte-identical.",
+    "sourceDelta": " .../src/stm32_toolkit/doctor_readiness.py          |  2 +-\n tools/stm32-toolkit/tests/test_doctor_readiness.py | 51 ++++++++++++++++++++++\n 2 files changed, 52 insertions(+), 1 deletion(-)\n"
+  },
+  "changedFiles": [
+    "A\tdocs/superpowers/plans/2026-10-25-doctor-readiness-plan.md",
+    "A\tdocs/superpowers/specs/2026-10-25-doctor-readiness-design.md",
+    "M\tdocs/user-guide.md",
+    "M\ttools/stm32-toolkit/src/stm32_toolkit/cli.py",
+    "M\ttools/stm32-toolkit/src/stm32_toolkit/doctor.py",
+    "A\ttools/stm32-toolkit/src/stm32_toolkit/doctor_readiness.py",
+    "M\ttools/stm32-toolkit/src/stm32_toolkit/mcp_server.py",
+    "M\ttools/stm32-toolkit/src/stm32_toolkit/tool_support.py",
+    "M\ttools/stm32-toolkit/tests/test_cli.py",
+    "M\ttools/stm32-toolkit/tests/test_doctor.py",
+    "A\ttools/stm32-toolkit/tests/test_doctor_readiness.py",
+    "M\ttools/stm32-toolkit/tests/test_mcp_migration_build.py",
+    "M\ttools/stm32-toolkit/tests/test_mcp_roots.py",
+    "M\ttools/stm32-toolkit/tests/test_mcp_server.py",
+    "M\ttools/stm32-toolkit/tests/test_tool_support.py"
+  ],
+  "finalProductDiffSha256": "cb51c6973917073e464e2d31587483dec1605f89b5229cc25663f06ee387d621",
+  "verdict": "ACCEPTED_WITH_FIXES",
+  "installedObservation": {
+    "head": "353ab42f60324a1fb94ff8daf8875f80d138ce48",
+    "scope": "local-default-profile",
+    "extensions": {
+      "ms-vscode.cpptools": {
+        "installed": true,
+        "version": "1.34.4",
+        "status": "installed",
+        "code": null,
+        "remediation": null
+      },
+      "ms-vscode.cmake-tools": {
+        "installed": true,
+        "version": "1.24.42",
+        "status": "installed",
+        "code": null,
+        "remediation": null
+      },
+      "marus25.cortex-debug": {
+        "installed": true,
+        "version": "1.12.1",
+        "status": "installed",
+        "code": null,
+        "remediation": null,
+        "profileVersion": "1.12.1",
+        "profileMatchBasis": "observed-extension-version-vs-declared-handoff-profile",
+        "profileMatch": "match"
+      }
+    },
+    "keilTools": {
+      "toolkitNativeBuildSupported": false,
+      "nativeBuildReason": "No native Keil/ARMCC build backend is implemented; discovered UV4 or ARMCC installations do not unlock one.",
+      "routes": [
+        "keil-migration",
+        "external-firmware"
+      ],
+      "uv4": {
+        "available": false,
+        "path": null,
+        "source": null,
+        "status": "missing",
+        "version": null,
+        "returnCode": null,
+        "code": "UV4_NOT_FOUND",
+        "remediation": "Install Keil uVision or pass its absolute UV4.exe with --uv4-path (MCP uv4Path); doctor never installs software or changes PATH."
+      },
+      "armcc": {
+        "available": false,
+        "path": null,
+        "source": null,
+        "status": "missing",
+        "version": null,
+        "returnCode": null,
+        "code": "ARMCC_NOT_FOUND",
+        "remediation": "Install ARM Compiler 5 under the selected Keil installation or on PATH, or pass its absolute armcc.exe with --armcc-path (MCP armccPath); doctor never installs software or changes PATH."
+      }
+    },
+    "projectFilesAfter": []
+  },
+  "effectiveDistinctCases": {
+    "passed": 401,
+    "platformSkipped": 1,
+    "releaseMatrix": false
+  },
+  "cleanup": {
+    "status": "blocked-by-policy",
+    "action": "Remove 10 checked, contained, non-reparse cache/passed-creation fixture directories under D:/codex-tmp/dr25 using native PowerShell Remove-Item -LiteralPath -Recurse -Force",
+    "reason": "blocked by policy",
+    "processCreated": false,
+    "deleted": [],
+    "retryOrAlternateTool": false,
+    "retained": "All current outputs; four passed-fixture roots containing reparse entries and first failed fixtures separately retained. No earlier vs25/bs25/ab25 policy-held directory touched."
+  }
+}
