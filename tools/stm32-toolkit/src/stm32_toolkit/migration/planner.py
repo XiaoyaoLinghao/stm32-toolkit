@@ -329,12 +329,25 @@ def _finding_blockers(
                 verified = _verified_source_line(
                     exact_bytes, finding.path, finding.line
                 )
-                if (
-                    verified is not None
-                    and finding.evidence
-                    and verified.strip().startswith(finding.evidence)
-                ):
-                    evidence = verified.strip()
+                if verified is not None:
+                    stripped = verified.strip()
+                    if (
+                        finding.evidence
+                        and stripped.startswith(finding.evidence)
+                    ):
+                        evidence = stripped
+                    elif 1 <= finding.column <= len(verified):
+                        # The finding column is the directive '#'.  Recovering
+                        # the same source-verified line from that column keeps
+                        # a leading trivia prefix or the bounded evidence cap
+                        # from hiding the exact supported pragma; the capped
+                        # evidence is never trusted on its own.
+                        span = verified[finding.column - 1 :].strip()
+                        if span.startswith("#") and (
+                            not finding.evidence
+                            or span.startswith(finding.evidence)
+                        ):
+                            evidence = span
                 if rules.pragma_is_supported(evidence):
                     # The token-aware rule rewrites exactly this directive;
                     # every other import/pragma keeps its blocker.

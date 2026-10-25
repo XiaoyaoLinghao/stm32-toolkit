@@ -34,6 +34,36 @@ _ATTRIBUTE_AT_RE = re.compile(r"\bat\s*\(")
 _ATTRIBUTE_SECTION_RE = re.compile(r"\bsection\s*\(")
 _INCLUDE_DIRECTIVE_RE = re.compile(r'#include\s*[<"]([^>"]+)[>"]')
 
+#: C++ raw-string encoding prefixes accepted immediately before the quote.
+_RAW_STRING_PREFIXES = ("u8R", "uR", "UR", "LR", "R")
+
+
+def _raw_string_quote(text: str, limit: int, start: int) -> int | None:
+    """Opening-quote index of a C++ raw literal whose prefix starts at ``start``."""
+    if start > 0 and (text[start - 1].isalnum() or text[start - 1] == "_"):
+        return None
+    for prefix in _RAW_STRING_PREFIXES:
+        end = start + len(prefix)
+        if end < limit and text[start:end] == prefix and text[end] == '"':
+            return end
+    return None
+
+
+def _raw_string_end(text: str, limit: int, quote: int) -> int:
+    """End index of a raw literal whose opening quote is ``quote``.
+
+    Returns ``quote`` when the text is not actually a raw literal, so the
+    caller can keep its ordinary quoted-literal handling.
+    """
+    index = quote + 1
+    while index < limit and text[index] not in "()\r\n\t \"\\":
+        index += 1
+    if index >= limit or text[index] != "(":
+        return quote
+    delimiter = text[quote + 1 : index]
+    close = text.find(")" + delimiter + '"', index + 1)
+    return limit if close == -1 else close + 2 + len(delimiter)
+
 
 @dataclass(frozen=True)
 class ScanOutcome:
@@ -176,6 +206,9 @@ class _Scanner:
                 self._line_starts.append(index + 1)
         self.raw: list[tuple[int, int, str, str, str]] = []
         self.includes: list[tuple[str, str]] = []
+        #: Whether a real code token was seen on the current preprocessing
+        #: line; trivia and spliced newlines do not set it.
+        self.line_has_code = False
     def run(self) -> tuple[list[tuple[int, int, str, str, str]], list[tuple[str, str]]]:
         while self.i < self.n:
             char = self.text[self.i]
@@ -183,11 +216,18 @@ class _Scanner:
                 self.i += 1
                 self.line += 1
                 self.column = 1
+                self.line_has_code = False
+            elif char == "\\" and self.text[self.i + 1 : self.i + 2] == "\n":
+                self._jump(self.i + 2)
+            elif char == "\\" and self.text[self.i + 1 : self.i + 3] == "\r\n":
+                self._jump(self.i + 3)
             elif char == "/" and self.text[self.i + 1 : self.i + 2] in ("/", "*"):
                 self._skip_comment()
             elif char == '"':
+                self.line_has_code = True
                 self._skip_quoted('"')
             elif char == "'":
+                self.line_has_code = True
                 self._skip_quoted("'")
             elif char == ";" and self.language == "asm":
                 self._skip_line_comment()
@@ -196,6 +236,8 @@ class _Scanner:
             elif char.isalpha() or char == "_":
                 self._handle_identifier()
             else:
+                if char not in " \t\r\f\v":
+                    self.line_has_code = True
                 self.i += 1
                 self.column += 1
         return self.raw, self.includes
@@ -213,11 +255,99 @@ class _Scanner:
 
     def _skip_comment(self) -> None:
         if self.text[self.i + 1] == "/":
-            end = self.text.find("\n", self.i + 2)
-            self._jump(self.n if end == -1 else end)
+            # A backslash-spliced line comment owns every continuation line.
+            end = self.i + 2
+            while True:
+                newline = self.text.find("\n", end)
+                if newline == -1:
+                    end = self.n
+                    break
+                if self.text[newline - 1] == "\\" or (
+                    newline > 1
+                    and self.text[newline - 1] == "\r"
+                    and self.text[newline - 2] == "\\"
+                ):
+                    end = newline + 1
+                    continue
+                end = newline
+                break
+            self._jump(end)
         else:
             end = self.text.find("*/", self.i + 2)
             self._jump(self.n if end == -1 else end + 2)
+
+    def _skip_raw_string(self, quote: int) -> None:
+        """Skip a C++ raw literal whose opening quote is at ``quote``."""
+        self._jump(_raw_string_end(self.text, self.n, quote))
+
+    def _directive_end(self, start: int) -> int:
+        """Index just past the whole logical directive at ``start``.
+
+        Comments and literals inside the directive are lexically skipped, so
+        their contents and internal newlines never end the directive or start
+        a new one.  Only a newline outside them terminates it; backslash
+        newlines continue it.  This stays within the existing lexical bounds.
+        """
+        index = start
+        while index < self.n:
+            char = self.text[index]
+            if char == "\\" and self.text[index + 1 : index + 2] == "\n":
+                index += 2
+                continue
+            if (
+                char == "\\"
+                and self.text[index + 1 : index + 3] == "\r\n"
+            ):
+                index += 3
+                continue
+            if char == "/" and self.text[index + 1 : index + 2] == "/":
+                newline = self.text.find("\n", index + 2)
+                while newline != -1 and (
+                    self.text[newline - 1] == "\\"
+                    or (
+                        newline > 1
+                        and self.text[newline - 1] == "\r"
+                        and self.text[newline - 2] == "\\"
+                    )
+                ):
+                    newline = self.text.find("\n", newline + 1)
+                if newline == -1:
+                    return self.n
+                index = newline
+                continue
+            if char == "/" and self.text[index + 1 : index + 2] == "*":
+                close = self.text.find("*/", index + 2)
+                index = self.n if close == -1 else close + 2
+                continue
+            if self.language == "cxx":
+                raw_quote = _raw_string_quote(self.text, self.n, index)
+                if raw_quote is not None:
+                    raw_end = _raw_string_end(self.text, self.n, raw_quote)
+                    if raw_end > raw_quote:
+                        index = raw_end
+                        continue
+            if char in ('"', "'"):
+                quote = char
+                index += 1
+                while index < self.n:
+                    if self.text[index] == "\\":
+                        if self.text[index + 1 : index + 3] == "\r\n":
+                            index += 3
+                        else:
+                            index += 2
+                        continue
+                    if self.text[index] == quote:
+                        index += 1
+                        break
+                    if self.text[index] == "\n":
+                        break
+                    index += 1
+                continue
+            if char == "\n":
+                index += 1
+                break
+            index += 1
+        return min(index, self.n)
 
     def _skip_line_comment(self) -> None:
         end = self.text.find("\n", self.i)
@@ -237,8 +367,9 @@ class _Scanner:
         self._jump(index)
 
     def _handle_directive(self) -> None:
-        line_start = self.text.rfind("\n", 0, self.i) + 1
-        if self.text[line_start : self.i].strip():
+        if self.line_has_code:
+            # '#' after a real code token, including a token on a spliced
+            # previous physical line, is an ordinary character.
             self.i += 1
             self.column += 1
             return
@@ -247,7 +378,11 @@ class _Scanner:
             end = self.n
         directive = self.text[self.i : end]
         line, column = self.line, self.column
-        self._jump(end)
+        # Skip the whole logical directive: comments and literals inside it are
+        # one lexical unit, so a fake #pragma in a macro/comment body is never
+        # scanned as a directive on its own.
+        self._jump(self._directive_end(self.i))
+        self.line_has_code = False
         self._classify_directive(directive, line, column)
 
     def _classify_directive(self, directive: str, line: int, column: int) -> None:
@@ -269,11 +404,12 @@ class _Scanner:
         pragma = parts[1]
         tail = " ".join(parts[2:])
         if pragma == "arm" and tail.startswith("section"):
-            self._record("ARMCC_CUSTOM_SECTION", "warning", line, column)
+            self._record("ARMCC_CUSTOM_SECTION", "warning", line, column, directive)
         elif pragma.startswith("arm") or pragma.startswith("import") or pragma.startswith("O"):
-            self._record("ARMCC_UNSUPPORTED_PRAGMA", "blocker", line, column)
+            self._record("ARMCC_UNSUPPORTED_PRAGMA", "blocker", line, column, directive)
 
     def _handle_identifier(self) -> None:
+        self.line_has_code = True
         start = self.i
         index = self.i
         while index < self.n and (self.text[index].isalnum() or self.text[index] == "_"):
@@ -281,6 +417,14 @@ class _Scanner:
         token = self.text[start:index]
         line, column = self.line, self.column
         self._jump(index)
+        if (
+            self.language == "cxx"
+            and token in _RAW_STRING_PREFIXES
+            and self.i < self.n
+            and self.text[self.i] == '"'
+        ):
+            self._skip_raw_string(self.i)
+            return
         if token == "__irq":
             self._record("ARMCC_IRQ_QUALIFIER", "warning", line, column)
         elif token == "__nop":
@@ -349,8 +493,18 @@ class _Scanner:
         else:
             self._record("ARMCC_INLINE_ASSEMBLY_FUNCTION", "blocker", line, column)
 
-    def _record(self, rule_id: str, severity: str, line: int, column: int) -> None:
-        start = self._line_starts[line - 1]
-        end = self._line_starts[line] if line < len(self._line_starts) else self.n
-        evidence = self.text[start:end].strip()[:MAX_EVIDENCE_CODEPOINTS]
-        self.raw.append((line, column, rule_id, severity, evidence))
+    def _record(
+        self,
+        rule_id: str,
+        severity: str,
+        line: int,
+        column: int,
+        evidence: str | None = None,
+    ) -> None:
+        if evidence is None:
+            start = self._line_starts[line - 1]
+            end = self._line_starts[line] if line < len(self._line_starts) else self.n
+            evidence = self.text[start:end]
+        self.raw.append(
+            (line, column, rule_id, severity, evidence.strip()[:MAX_EVIDENCE_CODEPOINTS])
+        )
