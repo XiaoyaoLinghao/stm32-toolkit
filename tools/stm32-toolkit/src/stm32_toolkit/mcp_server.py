@@ -3006,10 +3006,19 @@ def create_server(
         default.  Under-reset recovery keeps its fixed 100000 Hz policy, so
         a conflicting explicit frequency fails before any effect.  The
         result's details.flashOptions records selected configuration, not a
-        measured or verified hardware frequency.  An eligible failed managed
-        attempt may include details.recoverySuggestion: it is informational,
-        requires new authorization, and never retries automatically.
-        Imported flash does not gain recovery from that suggestion.
+        measured or verified hardware frequency.  details.recoverySuggestion
+        can appear only for a failed managed normal (non-recovery) attempt:
+        PROBE_PROGRAM_FAILED after owned cleanup, or PROBE_ATTACH_FAILED with
+        a validated attachDiagnostic whose primary.stage is session-open or
+        halt-verify and whose primary.reason is probe-disconnected, probe-io,
+        transport-timeout, transport-fault, transport-error, target-response,
+        target-register, debug-command, debug-operation, postcondition-failed,
+        or backend-code.
+        It is absent for cleanup, identity, stale/provenance, verification or
+        readback, input, authorization, receipt, success, cancellation,
+        already-recovery and imported results.  The suggestion is
+        informational, requires new authorization, and never retries
+        automatically.  Imported flash does not gain recovery from it.
         """
         return await tool_flash_for_request(
             runtime,

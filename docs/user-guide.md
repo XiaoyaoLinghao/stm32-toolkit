@@ -446,7 +446,7 @@ stm32_flash_imported(probeId="<user-selected probe>", importId=apply.data.import
 - 托管正常烧录：显式 `frequencyHz` 选定该值。恢复策略固定 `100000` Hz：`recoveryUnderReset=true`/`--recovery-under-reset` 时可省略频率或恰好传 `100000`；其它显式值在创建目录、lease、supervisor、backend 或执行 flash 之前以 `HARDWARE_INPUT_INVALID`（`details.field=frequencyHz`，`details.rule=conflict`）失败。类型错误为 `rule=type`，越界为 `rule=range`。
 - 导入烧录：只接受正常频率，不支持 under-reset recovery，也不应给出该路线的恢复建议。
 - 成功与失败结果在配置选定后都会带 `details.flashOptions`：`requestedFrequencyHz`（省略时为 `null`）、`configuredFrequencyHz`、`connectionPolicy`、`automaticRetry=false`。早期输入/授权/准入失败可以没有该字段。托管成功仍保留 `details.postFlash.targetState=unknown` 与 `runVerified=false`。
-- 仅托管正常烧录在自有清理完成后返回 `PROBE_PROGRAM_FAILED`，或返回带有效闭合 `attachDiagnostic` 且 `primary.stage` 为 `session-open`/`halt-verify`、`primary.reason` 属于可恢复连接类别的 `PROBE_ATTACH_FAILED` 时，才可能附加 `details.recoverySuggestion`（`kind=under-reset`、`frequencyHz=100000`、`requiresNewAuthorization=true`、`automaticRetry=false`）。它只是提示：先停止、保留完整诊断、核对目标供电/复位接线与清理结果，再由用户另行授权一次性恢复；恢复可能让目标保持 halted，不证明其已运行。
+- 仅托管正常烧录在自有清理完成后返回 `PROBE_PROGRAM_FAILED`，或返回带有效闭合 `attachDiagnostic` 且 `primary.stage` 为 `session-open`/`halt-verify`、`primary.reason` 属于可恢复连接类别的 `PROBE_ATTACH_FAILED` 时，才可能附加 `details.recoverySuggestion`（`kind=under-reset`、`frequencyHz=100000`、`requiresNewAuthorization=true`、`automaticRetry=false`）。它只是提示：先停止、保留完整诊断、核对目标供电/复位接线与清理结果，再由用户另行授权一次性恢复；恢复可能让目标保持 halted，不证明其已运行。频率或恢复选项应在这一次授权调用前选定；失败建议不是第二次调用，也不构成自动重试。
 - 清理失败、身份/stale/provenance/输入/授权/回读/receipt 失败、成功结果、已选择 recovery、导入路线、取消或任意其它错误都不附加该建议；不要把它当作自动重试、路线切换或既有 `attachDiagnostic`/一般 guidance 的替代。原有失败字段与清理优先级保持不变。
 - 这些频率选项和 `flashOptions`/`recoverySuggestion` 只存在于本源码切片；冻结/已安装的 v1.3.0 没有它们，重启 VS Code 也不会安装。生成的 IDE 任务模板保持原样；不要通过修改模板 digest 设置频率，也不要在原授权之外自动执行恢复。
 

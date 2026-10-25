@@ -76,7 +76,11 @@ from stm32_toolkit.probe.attach_diagnostics import (
     make_cleanup_entry,
 )
 from stm32_toolkit.probe.handoff import _canonical_target
-from stm32_toolkit.probe.worker import ProbeBackendWorker, ProbeWorkerConfig
+from stm32_toolkit.probe.worker import (
+    NORMAL_CONNECTION_POLICY,
+    ProbeBackendWorker,
+    ProbeWorkerConfig,
+)
 from stm32_toolkit.project_model import ProjectManifestError, ProjectModel, load_project_model
 from stm32_toolkit.result import OperationResult
 
@@ -1046,7 +1050,8 @@ def _selected_flash_worker_config(
                 "guidance": (
                     "The selected frequency is incompatible with the configured "
                     "connection policy. Omit frequencyHz to keep that policy, or "
-                    "use the separately authorized under-reset recovery option."
+                    "inspect the configured connection policy before selecting an "
+                    "explicit frequency."
                 ),
             },
         ) from error
@@ -1097,11 +1102,18 @@ _RECOVERY_SUGGESTION_REASONS = frozenset(
 
 
 def _under_reset_recovery_suggestion(
-    result: OperationResult[Any], *, recovery_requested: bool
+    result: OperationResult[Any],
+    *,
+    recovery_requested: bool,
+    configured: ProbeWorkerConfig,
 ) -> dict[str, object] | None:
     """Return bounded informational guidance for one eligible failed attempt."""
 
-    if recovery_requested or result.ok:
+    if (
+        recovery_requested
+        or configured.connection_policy != NORMAL_CONNECTION_POLICY
+        or result.ok
+    ):
         return None
     if result.code == "PROBE_PROGRAM_FAILED":
         eligible = True
@@ -1625,7 +1637,9 @@ async def flash_workflow(
         details["postFlash"] = {"targetState": "unknown", "runVerified": False}
     else:
         suggestion = _under_reset_recovery_suggestion(
-            result, recovery_requested=typed.recovery_under_reset
+            result,
+            recovery_requested=typed.recovery_under_reset,
+            configured=configured,
         )
         if suggestion is not None:
             details["recoverySuggestion"] = suggestion
