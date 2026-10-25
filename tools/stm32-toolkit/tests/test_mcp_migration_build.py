@@ -772,12 +772,20 @@ def test_end_to_end_fixture_inspect_convert_configure_build(tmp_path: Path, monk
     assert [task["label"] for task in tasks["tasks"]] == [
         "STM32 Toolkit: Build Debug",
         "STM32 Toolkit: Build Release",
+        "STM32 Toolkit: Flash Debug",
+        "STM32 Toolkit: Handoff Begin Debug",
+        "STM32 Toolkit: Handoff End Debug",
     ]
     for task in tasks["tasks"]:
-        assert task["args"][:2] == ["build", "--preset"]
-        assert task["args"][2] in ("arm-debug", "arm-release")
-        assert "--project" in task["args"]
+        assert task["type"] == "process"
+        assert task["command"] == "${config:stm32-toolkit.executablePath}"
+        assert task["options"]["cwd"] == "${workspaceFolder}"
+        assert "--project-root" in task["args"]
         assert "${workspaceFolder}" in task["args"]
+    for task, preset in zip(tasks["tasks"][:2], ("arm-debug", "arm-release")):
+        assert task["args"][:2] == ["--project-root", "${workspaceFolder}"]
+        assert task["args"][2:5] == ["build", "--preset", preset]
+    assert tasks["inputs"]
     # Empty debug generates a deterministic launch config that claims no
     # usable hardware debugging: no cortex-debug configuration at all.
     launch = json.loads((root / ".vscode" / "launch.json").read_text(encoding="utf-8"))

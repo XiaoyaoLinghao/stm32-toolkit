@@ -654,8 +654,15 @@ def test_registered_mcp_schema_keeps_debug_values_unconstrained(tmp_path):
         "authorized",
         "debugBackend",
         "debugTarget",
+        "vscodeToolkitPath",
+        "vscodeGccPath",
     }
-    for field in ("debugBackend", "debugTarget"):
+    for field in (
+        "debugBackend",
+        "debugTarget",
+        "vscodeToolkitPath",
+        "vscodeGccPath",
+    ):
         entry = configure["properties"][field]
         assert entry.get("type") != "string"
         assert "enum" not in entry and "const" not in entry

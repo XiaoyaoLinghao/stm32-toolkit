@@ -13,6 +13,8 @@ Module: VSCODE-TASKS. Accepted base: `e7614e49ba384117770ff8b01f57489da8676223`.
 
 ## Verification and boundaries
 
+Implementation clarification: generated hardware tasks set `runOptions.reevaluateOnRerun=true`, so rerun does not reuse a previous confirmation. The GCC binding configures IntelliSense, not the compiler selected by the existing build support profile; guidance must align it with the actual doctor/build evidence. These clarify the existing no-stored-authorization and executable-binding requirements.
+
 Author and primary independently run synthetic offline tests at recorded clean CodeHeads. Required cases: default and explicit generated JSON, quoting/Unicode, missing/unsafe bindings, deterministic plan and plan tamper/changed bindings, combined debug configuration/rollback/preserved-unowned, CLI and MCP propagation/root guard, actual rendered task argv replay through public parser to fake workflows, deny before any validator/hardware, fresh pins passed exactly, stale/failed/malformed/snapshot evidence rejects before workflow, end uses original ticket and no fresh build, full response fields retained, unchanged managed flash/handoff admission regressions. Reuse existing synthetic firmware fixtures and inject fake workflow seams; no real probe workers. Tests must distinguish immutable internal OperationResult from public JSON.
 
 Primary reviews the complete base-to-CodeHead diff in a separate clean checkout and records applicable evidence. Full release matrix and actual installed VS Code process/IntelliSense/handoff UI validation are deferred to the primary-owned integration/authorized IDE phase, not counted as passed here. Stop on denied/absent CLI tools; preserve evidence, never bypass or silently replace the implementer.

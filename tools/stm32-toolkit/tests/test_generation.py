@@ -1773,21 +1773,97 @@ def test_tasks_snapshot_exact(tmp_path):
     plan = plan_for(root)
     entry = next(entry for entry in plan.files if entry.path == ".vscode/tasks.json")
     payload = json.loads(entry.after_bytes.decode("utf-8"))
-    labels = [task["label"] for task in payload["tasks"]]
-    assert labels == [
+    tasks = payload["tasks"]
+    assert [task["label"] for task in tasks] == [
         "STM32 Toolkit: Build Debug",
         "STM32 Toolkit: Build Release",
+        "STM32 Toolkit: Flash Debug",
+        "STM32 Toolkit: Handoff Begin Debug",
+        "STM32 Toolkit: Handoff End Debug",
     ]
-    for task in payload["tasks"]:
+    for task in tasks:
         assert task["type"] == "process"
-        assert task["command"] == "stm32-toolkit"
+        assert task["command"] == "${config:stm32-toolkit.executablePath}"
+        assert task["options"] == {"cwd": "${workspaceFolder}"}
+        assert task["problemMatcher"] == []
         assert isinstance(task["args"], list)
-        assert task["args"][:2] == ["build", "--preset"]
-        assert task["args"][2] in ("arm-debug", "arm-release")
-        assert task["args"][3:] == ["--project", "${workspaceFolder}"]
+        # No dependency, automatic sequence, group or auto-run binding.
+        for forbidden_key in ("dependsOn", "dependsOrder", "group", "runOn"):
+            assert forbidden_key not in task
+        assert task["args"][0:2] == ["--project-root", "${workspaceFolder}"]
+
+    for task, preset in zip(tasks[:2], ("arm-debug", "arm-release")):
+        assert task["args"] == [
+            "--project-root",
+            "${workspaceFolder}",
+            "build",
+            "--preset",
+            preset,
+            "--json",
+        ]
+        assert "runOptions" not in task
+
+    for task, action, confirmation in zip(
+        tasks[2:],
+        ("flash", "handoff-begin", "handoff-end"),
+        (
+            "stm32tkFlashConfirmation",
+            "stm32tkHandoffBeginConfirmation",
+            "stm32tkHandoffEndConfirmation",
+        ),
+    ):
+        args = task["args"]
+        assert args[0:5] == [
+            "--project-root",
+            "${workspaceFolder}",
+            "ide",
+            "task",
+            action,
+        ]
+        assert args[-3:] == ["--confirmation", "${input:" + confirmation + "}", "--json"]
+        for required in (
+            "${input:stm32tkDataRoot}",
+            "${input:stm32tkSessionId}",
+            "${input:stm32tkProbeId}",
+        ):
+            assert required in args
+        assert task["runOptions"] == {"reevaluateOnRerun": True}
+        if action == "handoff-end":
+            assert "--ticket" in args
+            assert "${input:stm32tkHandoffTicket}" in args
+        else:
+            assert "--ticket" not in args
+
+    inputs = {item["id"]: item for item in payload["inputs"]}
+    assert set(inputs) == {
+        "stm32tkDataRoot",
+        "stm32tkSessionId",
+        "stm32tkProbeId",
+        "stm32tkFlashConfirmation",
+        "stm32tkHandoffBeginConfirmation",
+        "stm32tkHandoffTicket",
+        "stm32tkHandoffEndConfirmation",
+    }
+    for name in (
+        "stm32tkFlashConfirmation",
+        "stm32tkHandoffBeginConfirmation",
+        "stm32tkHandoffEndConfirmation",
+    ):
+        assert inputs[name]["default"] == "deny"
+        assert inputs[name]["type"] == "promptString"
+    for name in (
+        "stm32tkDataRoot",
+        "stm32tkSessionId",
+        "stm32tkProbeId",
+        "stm32tkHandoffTicket",
+    ):
+        # No stored/prefilled probe or ticket: the user must type the value.
+        assert "default" not in inputs[name]
+
     joined = json.dumps(payload)
-    for forbidden in ("pyocd", "cmake", "arm-none-eabi", "shell", "ninja", "objcopy", "flash", "handoff"):
+    for forbidden in ("pyocd", "cmake", "arm-none-eabi", "shell", "ninja", "objcopy"):
         assert forbidden not in joined
+    assert "${config:stm32-toolkit.compilerPath}" not in joined
 
 
 def test_launch_snapshot_exact(tmp_path):
@@ -1816,7 +1892,7 @@ def test_c_cpp_snapshot_exact(tmp_path):
     payload = json.loads(entry.after_bytes.decode("utf-8"))
     config = payload["configurations"][0]
     assert config["name"] == "arm-debug"
-    assert config["compilerPath"] == "arm-none-eabi-gcc"
+    assert config["compilerPath"] == "${config:stm32-toolkit.compilerPath}"
     assert config["includePath"] == ["${workspaceFolder}/Inc"]
     assert config["defines"] == ["USE_HAL_DRIVER", "STM32F407xx"]
     assert config["intelliSenseMode"] == "gcc-arm"

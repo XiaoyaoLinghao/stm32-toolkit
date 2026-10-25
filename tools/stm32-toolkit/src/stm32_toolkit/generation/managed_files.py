@@ -20,6 +20,7 @@ from stm32_toolkit import __version__
 from stm32_toolkit.debug_configuration import DebugConfiguration
 from stm32_toolkit.linker_fragment import LinkerFragment
 from stm32_toolkit.project_model import ProjectModel
+from stm32_toolkit.vscode_configuration import VSCodeConfiguration
 
 #: Frozen generation contract values (work order sections 3 and 8.1).
 PLAN_VERSION = 1
@@ -263,11 +264,15 @@ class GenerationPlan:
     blockers: tuple[GenerationBlocker, ...]
     managed_manifest_path: str
     managed_manifest_bytes: bytes  # omitted from to_dict()
-    #: Present only on the explicit paired-configure route.  Both optional
-    #: fields are omitted from ``to_dict()`` and from the plan ID when absent,
+    #: Present only on the explicit paired-configure routes.  Optional fields
+    #: are omitted from ``to_dict()`` and from the plan ID when absent,
     #: preserving the historical plan shape/hash byte-for-byte.
     debug_configuration: DebugConfiguration | None = None
     manifest_edit: ManifestEdit | None = None
+    #: Present only when both absolute native VS Code executable paths were
+    #: explicitly supplied.  Omitted from ``to_dict()`` and the plan ID when
+    #: absent, preserving the historical plan shape/hash byte-for-byte.
+    vscode_configuration: VSCodeConfiguration | None = None
 
     def to_dict(self) -> dict[str, object]:
         payload: dict[str, object] = {
@@ -283,6 +288,8 @@ class GenerationPlan:
             payload["debug_configuration"] = self.debug_configuration.to_dict()
         if self.manifest_edit is not None:
             payload["manifest_edit"] = self.manifest_edit.to_dict()
+        if self.vscode_configuration is not None:
+            payload["vscode_configuration"] = self.vscode_configuration.to_dict()
         return payload
 
 
@@ -446,6 +453,8 @@ def plan_id_for(plan: GenerationPlan) -> str:
     # diff stay private; their digests already bind both sides.
     if plan.debug_configuration is not None:
         payload["debug_configuration"] = plan.debug_configuration.to_dict()
+    if plan.vscode_configuration is not None:
+        payload["vscode_configuration"] = plan.vscode_configuration.to_dict()
     if plan.manifest_edit is not None:
         edit = plan.manifest_edit
         payload["manifest_edit"] = {

@@ -50,6 +50,11 @@ from stm32_toolkit.project_model import (
     load_project_model_candidate,
 )
 from stm32_toolkit.result import OperationResult
+from stm32_toolkit.vscode_configuration import (
+    VSCodeConfiguration,
+    VSCodeConfigurationError,
+    normalize_vscode_configuration,
+)
 
 from stm32_toolkit.generation.managed_files import (
     AGGREGATE_LIMIT_BYTES,
@@ -168,20 +173,28 @@ def plan_project_configuration(
     *,
     debug_backend: object = None,
     debug_target: object = None,
+    vscode_toolkit_path: object = None,
+    vscode_gcc_path: object = None,
 ) -> GenerationPlan:
     """Produce a deterministic, read-only configuration plan for the model.
 
-    With both keyword arguments omitted the historical build-only planning
-    route and plan shape are unchanged.  Supplying the explicit pair (or only
-    one of them, which is refused) plans a user-owned manifest edit that sets
-    exactly ``debug.backend`` and ``debug.target`` and nothing else.
+    With every keyword argument omitted the historical build-only planning
+    route and plan shape are unchanged.  Supplying the explicit debug pair (or
+    only one of them, which is refused) plans a user-owned manifest edit that
+    sets exactly ``debug.backend`` and ``debug.target`` and nothing else.  The
+    optional VS Code pair is validated statically and rendered verbatim; it is
+    never written into the project model.
     """
     try:
         configuration = normalize_debug_configuration(debug_backend, debug_target)
     except DebugConfigurationError as error:
         raise _raise_error(error.code, error.message, error.details) from None
     try:
-        return _plan(model, configuration)
+        vscode = normalize_vscode_configuration(vscode_toolkit_path, vscode_gcc_path)
+    except VSCodeConfigurationError as error:
+        raise _raise_error(error.code, error.message, error.details) from None
+    try:
+        return _plan(model, configuration, vscode)
     except GenerationError:
         raise
     except ProjectManifestError:
@@ -195,6 +208,7 @@ def plan_project_configuration(
 def _plan(
     model: ProjectModel,
     configuration: DebugConfiguration | None = None,
+    vscode_configuration: VSCodeConfiguration | None = None,
 ) -> GenerationPlan:
     _validate_model(model)
     root = model.project_root
@@ -302,7 +316,9 @@ def _plan(
                 "project model changed while configuration was planning",
                 {"field": "model", "rule": "stale"},
             )
-    rendered = _render_targets(effective, options, fixed_sections, layout)
+    rendered = _render_targets(
+        effective, options, fixed_sections, layout, vscode_configuration
+    )
     files = _classify_targets(root, rendered, prior)
     blockers = _collect_blockers(prior, files)
     model_sha256 = model_sha256_for(effective)
@@ -335,6 +351,7 @@ def _plan(
         managed_manifest_bytes=manifest_bytes,
         debug_configuration=configuration,
         manifest_edit=manifest_edit,
+        vscode_configuration=vscode_configuration,
     )
     plan = replace(plan, plan_id=plan_id_for(plan))
     if len(canonical_json_bytes(plan.to_dict())) > PLAN_LIMIT_BYTES:
@@ -1252,8 +1269,11 @@ def _render_targets(
     options: dict[str, object],
     fixed_sections: tuple[tuple[str, int, str], ...],
     layout: MemoryLayoutResolution | None,
+    vscode_configuration: VSCodeConfiguration | None = None,
 ) -> dict[str, tuple[str, bytes]]:
-    contexts = _build_contexts(model, options, fixed_sections, layout)
+    contexts = _build_contexts(
+        model, options, fixed_sections, layout, vscode_configuration
+    )
     rendered: dict[str, tuple[str, bytes]] = {}
     for target in _targets_for_model(model):
         template_name = _target_template(target)
@@ -1287,16 +1307,169 @@ def _normalize_gnu_ld_attributes(attrs: str) -> str:
     return attrs.replace("-", "")
 
 
+def _vscode_tasks_context(toolkit_command: str) -> dict[str, object]:
+    """Render five independent ``process`` tasks with explicit project binding.
+
+    Every task uses argv (never a shell string), the bound project root and
+    ``cwd``, and no dependency/auto-run/group.  Build tasks call the existing
+    build CLI contract.  Hardware tasks call the narrow ``ide task`` adapter and
+    take the data root, session, probe and one-shot confirmation from prompts;
+    nothing is persisted and the confirmation prompt defaults to ``deny``.
+    Hardware prompts use ``runOptions.reevaluateOnRerun`` so a rerun always
+    re-prompts instead of reusing the previous input.
+    """
+    project = "${workspaceFolder}"
+    reevaluate = {"reevaluateOnRerun": True}
+
+    def hardware_task(
+        label: str,
+        action: str,
+        confirmation_input: str,
+        prompt: str,
+        *,
+        ticket_input: str | None = None,
+    ) -> dict[str, object]:
+        args = [
+            "--project-root",
+            project,
+            "ide",
+            "task",
+            action,
+            "--data-root",
+            "${input:stm32tkDataRoot}",
+            "--session-id",
+            "${input:stm32tkSessionId}",
+            "--probe",
+            "${input:stm32tkProbeId}",
+        ]
+        if ticket_input is not None:
+            args.extend(["--ticket", "${input:" + ticket_input + "}"])
+        args.extend(["--confirmation", "${input:" + confirmation_input + "}", "--json"])
+        return {
+            "label": label,
+            "detail": prompt,
+            "type": "process",
+            "command": toolkit_command,
+            "args": args,
+            "options": {"cwd": project},
+            "problemMatcher": [],
+            "runOptions": dict(reevaluate),
+        }
+
+    tasks = [
+        {
+            "label": "STM32 Toolkit: Build Debug",
+            "type": "process",
+            "command": toolkit_command,
+            "args": [
+                "--project-root",
+                project,
+                "build",
+                "--preset",
+                "arm-debug",
+                "--json",
+            ],
+            "options": {"cwd": project},
+            "problemMatcher": [],
+        },
+        {
+            "label": "STM32 Toolkit: Build Release",
+            "type": "process",
+            "command": toolkit_command,
+            "args": [
+                "--project-root",
+                project,
+                "build",
+                "--preset",
+                "arm-release",
+                "--json",
+            ],
+            "options": {"cwd": project},
+            "problemMatcher": [],
+        },
+        hardware_task(
+            "STM32 Toolkit: Flash Debug",
+            "flash",
+            "stm32tkFlashConfirmation",
+            "Flash Debug: program the current managed arm-debug build on the named probe.",
+        ),
+        hardware_task(
+            "STM32 Toolkit: Handoff Begin Debug",
+            "handoff-begin",
+            "stm32tkHandoffBeginConfirmation",
+            "Handoff Begin Debug: enter one debug handoff on the named probe.",
+        ),
+        hardware_task(
+            "STM32 Toolkit: Handoff End Debug",
+            "handoff-end",
+            "stm32tkHandoffEndConfirmation",
+            "Handoff End Debug: release the handoff using its original ticket.",
+            ticket_input="stm32tkHandoffTicket",
+        ),
+    ]
+    inputs = [
+        {
+            "id": "stm32tkDataRoot",
+            "type": "promptString",
+            "description": "Absolute machine-owned Toolkit data root outside this project (for example C:/data/stm32-toolkit).",
+        },
+        {
+            "id": "stm32tkSessionId",
+            "type": "promptString",
+            "description": "Session id for this probe workspace: lowercase letters, digits, '-' or '_'.",
+        },
+        {
+            "id": "stm32tkProbeId",
+            "type": "promptString",
+            "description": "Exact probeId from the separate read-only probe list; never guessed.",
+        },
+        {
+            "id": "stm32tkFlashConfirmation",
+            "type": "promptString",
+            "description": "Flash Debug: type authorize for ONE explicit invocation; any other value (default deny) refuses.",
+            "default": "deny",
+        },
+        {
+            "id": "stm32tkHandoffBeginConfirmation",
+            "type": "promptString",
+            "description": "Handoff Begin Debug: type authorize for ONE explicit invocation; any other value (default deny) refuses.",
+            "default": "deny",
+        },
+        {
+            "id": "stm32tkHandoffTicket",
+            "type": "promptString",
+            "description": "Handoff End Debug: the original 64-character ticket returned by handoff-begin; it is never stored for you.",
+        },
+        {
+            "id": "stm32tkHandoffEndConfirmation",
+            "type": "promptString",
+            "description": "Handoff End Debug: type authorize for ONE explicit reclaim invocation; any other value (default deny) refuses.",
+            "default": "deny",
+        },
+    ]
+    return {"tasks": {"version": "2.0.0", "tasks": tasks, "inputs": inputs}}
+
+
 def _build_contexts(
     model: ProjectModel,
     options: dict[str, object],
     fixed_sections: tuple[tuple[str, int, str], ...],
     layout: MemoryLayoutResolution | None,
+    vscode_configuration: VSCodeConfiguration | None = None,
 ) -> dict[str, dict[str, object]]:
     project_name = sanitize_cmake_identifier(model.project.name)
     basename = model.build.elf[len("build/arm-debug/") :]
     stem = basename[: -len(".elf")]
     target_name = sanitize_cmake_identifier(stem)
+    # Deterministic defaults are explicit user-scope VS Code settings: host
+    # discovery never freezes the coordinator's machine paths into the project.
+    # An explicitly supplied pair renders its exact validated absolute paths.
+    if vscode_configuration is None:
+        toolkit_command = "${config:stm32-toolkit.executablePath}"
+        compiler_path = "${config:stm32-toolkit.compilerPath}"
+    else:
+        toolkit_command = vscode_configuration.toolkit_path
+        compiler_path = vscode_configuration.gcc_path
     if layout is not None and layout.layout is not None:
         roles = layout.layout
         flash_region = roles.flash
@@ -1415,25 +1588,7 @@ def _build_contexts(
             ],
         }
     }
-    tasks = {
-        "tasks": {
-            "version": "2.0.0",
-            "tasks": [
-                {
-                    "label": "STM32 Toolkit: Build Debug",
-                    "type": "process",
-                    "command": "stm32-toolkit",
-                    "args": ["build", "--preset", "arm-debug", "--project", "${workspaceFolder}"],
-                },
-                {
-                    "label": "STM32 Toolkit: Build Release",
-                    "type": "process",
-                    "command": "stm32-toolkit",
-                    "args": ["build", "--preset", "arm-release", "--project", "${workspaceFolder}"],
-                },
-            ],
-        }
-    }
+    tasks = _vscode_tasks_context(toolkit_command)
     # A live Cortex-Debug identity is available only after an authorized
     # handoff. Static generation therefore leaves launch configuration empty.
     launch = {
@@ -1448,7 +1603,7 @@ def _build_contexts(
             "configurations": [
                 {
                     "name": "arm-debug",
-                    "compilerPath": "arm-none-eabi-gcc",
+                    "compilerPath": compiler_path,
                     "includePath": [
                         "${workspaceFolder}/" + include
                         for include in model.build.include_paths
@@ -1925,6 +2080,22 @@ def _validate_plan(plan: object) -> None:
             raise _plan_invalid("debugConfiguration")
         _validate_manifest_edit(plan, configuration)
 
+    if plan.vscode_configuration is not None:
+        bound = plan.vscode_configuration
+        if type(bound) is not VSCodeConfiguration:
+            raise _plan_invalid("vscodeConfiguration")
+        try:
+            # Revalidation is static but current: the same pair must still
+            # describe two existing native executables.  The exact strings
+            # stay immutable and feed the plan ID.
+            normalized = normalize_vscode_configuration(
+                bound.toolkit_path, bound.gcc_path
+            )
+        except VSCodeConfigurationError:
+            raise _plan_invalid("vscodeConfiguration") from None
+        if normalized != bound:
+            raise _plan_invalid("vscodeConfiguration")
+
     fragment = plan.model.generation.linker_fragment
     if fragment is not None:
         matching = [entry for entry in plan.inputs if entry.path == fragment.path]
@@ -2396,6 +2567,17 @@ def _map_fresh_error(error: GenerationError) -> None:
         # A validated plan cannot replay an invalid request; treat it as
         # plan tampering rather than a source change.
         raise _plan_invalid("debugConfiguration")
+    if code == "VSCODE_CONFIGURATION_INVALID":
+        # The plan's immutable binding no longer validates (for example the
+        # executable was removed or replaced by a redirect).  Nothing writes.
+        raise _fail(
+            "GENERATION_INPUT_CHANGED",
+            "VS Code executable binding changed since planning",
+            {
+                "field": str(error.details.get("field", "vscode")),
+                "rule": str(error.details.get("rule", "value")),
+            },
+        )
     raise _plan_invalid("freshPlan")
 
 
@@ -2467,6 +2649,8 @@ def _fresh_matches(fresh: GenerationPlan, plan: GenerationPlan) -> None:
                 "project model changed since planning",
                 {"path": _STM32_PROJECT_MANIFEST},
             )
+        raise _plan_invalid("freshPlan")
+    if fresh.vscode_configuration != plan.vscode_configuration:
         raise _plan_invalid("freshPlan")
 
 
@@ -2592,6 +2776,16 @@ def _apply(plan: GenerationPlan) -> dict[str, object]:
             debug_target=(
                 plan.debug_configuration.target
                 if plan.debug_configuration is not None
+                else None
+            ),
+            vscode_toolkit_path=(
+                plan.vscode_configuration.toolkit_path
+                if plan.vscode_configuration is not None
+                else None
+            ),
+            vscode_gcc_path=(
+                plan.vscode_configuration.gcc_path
+                if plan.vscode_configuration is not None
                 else None
             ),
         )

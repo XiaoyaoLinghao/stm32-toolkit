@@ -109,6 +109,7 @@ from stm32_toolkit.hardware_workflows import (
     variable_read_workflow,
     variable_sample_workflow,
 )
+from stm32_toolkit.ide_tasks import run_ide_task
 from stm32_toolkit.result import OperationResult
 from stm32_toolkit.testing_workflows import (
     TestingWorkflowContext,
@@ -131,7 +132,7 @@ from stm32_toolkit import __version__
 
 _STDERR_LIMIT = 500
 _HARDWARE_COMMANDS = frozenset(
-    {"probe", "flash", "flash-imported", "debug", "read", "fault"}
+    {"probe", "flash", "flash-imported", "debug", "read", "fault", "ide"}
 )
 _TEST_DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _DIAGNOSTIC_OPERATION_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
@@ -368,6 +369,10 @@ def _build_parser() -> argparse.ArgumentParser:
     # failures; omitting both preserves the historical configure route.
     configure.add_argument("--debug-backend")
     configure.add_argument("--debug-target")
+    # Optional paired absolute native VS Code bindings.  Omit both for the
+    # portable user-setting defaults; one alone is refused.
+    configure.add_argument("--vscode-toolkit-path")
+    configure.add_argument("--vscode-gcc-path")
 
     keil = commands.add_parser("keil")
     _add_project_root(keil)
@@ -447,6 +452,31 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     build.add_argument("--timeout-seconds", type=int, default=300)
     build.add_argument("--json", action="store_true")
+
+    ide = commands.add_parser("ide")
+    ide_commands = ide.add_subparsers(dest="ide_command", required=True)
+    ide_task = ide_commands.add_parser("task")
+    ide_task_commands = ide_task.add_subparsers(
+        dest="ide_task_command", required=True
+    )
+    for action in ("flash", "handoff-begin", "handoff-end"):
+        task = ide_task_commands.add_parser(action)
+        _add_workflow_root(task)
+        task.add_argument(
+            "--data-root", required=True, type=Path, action=_RejectDuplicate
+        )
+        task.add_argument("--session-id", required=True, action=_RejectDuplicate)
+        task.add_argument("--probe", required=True, action=_RejectDuplicate)
+        if action == "handoff-end":
+            task.add_argument("--ticket", required=True, action=_RejectDuplicate)
+        task.add_argument(
+            "--confirmation",
+            choices=("deny", "authorize"),
+            default="deny",
+            action=_RejectDuplicate,
+            help="One explicit invocation only; default deny.",
+        )
+        _add_json(task)
 
     probe = commands.add_parser("probe")
     probe_commands = probe.add_subparsers(dest="probe_command", required=True)
@@ -1341,6 +1371,12 @@ def _hardware_operation_name(args: argparse.Namespace) -> str:
             "sample": "stm32_variable_sample",
             "register": "stm32_register_read",
         }[args.read_command]
+    if args.command == "ide":
+        return {
+            "flash": "stm32_flash",
+            "handoff-begin": "stm32_debug_handoff_begin",
+            "handoff-end": "stm32_debug_handoff_end",
+        }[args.ide_task_command]
     return "stm32_fault_analyze"
 
 
@@ -1361,6 +1397,16 @@ async def _hardware_operation_result(
             context,
             probe_id=args.probe_id,
             authorized_action_digest=args.authorized_action_digest,
+        )
+    if args.command == "ide":
+        return await run_ide_task(
+            args.ide_task_command,
+            project_root=project_root,
+            data_root=args.data_root,
+            session_id=args.session_id,
+            probe_id=args.probe,
+            confirmation=args.confirmation,
+            ticket=getattr(args, "ticket", None),
         )
     if args.command == "flash-imported":
         return await flash_imported_workflow(
@@ -1635,6 +1681,8 @@ def _operation_result(
             authorized=args.authorized,
             debug_backend=args.debug_backend,
             debug_target=args.debug_target,
+            vscode_toolkit_path=args.vscode_toolkit_path,
+            vscode_gcc_path=args.vscode_gcc_path,
         )
     if args.command == "test":
         context = TestingWorkflowContext(

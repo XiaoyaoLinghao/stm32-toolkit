@@ -1047,12 +1047,16 @@ def tool_project_configure(
     authorized: bool = False,
     debug_backend: object = None,
     debug_target: object = None,
+    vscode_toolkit_path: object = None,
+    vscode_gcc_path: object = None,
 ) -> dict[str, object]:
     """Read-only configuration plan, or apply with the exact plan ID plus
     ``authorized=true``.
 
     Both debug options omitted keeps the historical route; both supplied
     select the explicit ``debug.backend``/``debug.target`` manifest edit.
+    Both VS Code options supplied render validated absolute native executable
+    paths; both omitted keep portable user-setting defaults.
     """
     return configure_project_workflow(
         runtime.project_root,
@@ -1060,6 +1064,8 @@ def tool_project_configure(
         authorized=authorized,
         debug_backend=debug_backend,
         debug_target=debug_target,
+        vscode_toolkit_path=vscode_toolkit_path,
+        vscode_gcc_path=vscode_gcc_path,
     ).to_dict()
 
 
@@ -1264,6 +1270,8 @@ async def tool_project_configure_for_request(
     authorized: bool = False,
     debug_backend: object = None,
     debug_target: object = None,
+    vscode_toolkit_path: object = None,
+    vscode_gcc_path: object = None,
 ) -> dict[str, object]:
     operation = (
         "project-configuration-apply"
@@ -1274,7 +1282,13 @@ async def tool_project_configure_for_request(
     if failure is not None:
         return failure
     return tool_project_configure(
-        runtime, plan_id, authorized, debug_backend, debug_target
+        runtime,
+        plan_id,
+        authorized,
+        debug_backend,
+        debug_target,
+        vscode_toolkit_path,
+        vscode_gcc_path,
     )
 
 
@@ -2730,6 +2744,8 @@ def create_server(
         authorized: bool = False,
         debugBackend: Any = None,
         debugTarget: Any = None,
+        vscodeToolkitPath: Any = None,
+        vscodeGccPath: Any = None,
     ) -> dict[str, object]:
         """Plan or explicitly apply managed GCC/CMake and VS Code configuration.
 
@@ -2751,9 +2767,28 @@ def create_server(
         changed or omitted pair is a different plan and is refused without
         writing.  The pair records metadata only: it does not discover,
         install or verify a PyOCD target, and it is not a live debug session.
+
+        Omit vscodeToolkitPath and vscodeGccPath for portable defaults: the
+        generated tasks use `${config:stm32-toolkit.executablePath}` and
+        IntelliSense uses `${config:stm32-toolkit.compilerPath}`, which must be
+        absolute verified native paths in user-scope VS Code settings.  Pass
+        both to render validated absolute native paths instead (Windows:
+        regular `.exe` files, never `.cmd`/`.bat`, variables, directories,
+        symlinks or reparse points).  The two paths bind the immutable plan:
+        pass the same values on apply, or the request is a different plan and
+        is refused before any write.  vscodeGccPath configures IntelliSense
+        only; it does not silently select the CMake build toolchain.  This
+        static validation is not a binary version or trust attestation.
         """
         return await tool_project_configure_for_request(
-            runtime, ctx, planId, authorized, debugBackend, debugTarget
+            runtime,
+            ctx,
+            planId,
+            authorized,
+            debugBackend,
+            debugTarget,
+            vscodeToolkitPath,
+            vscodeGccPath,
         )
 
     @mcp.tool(name=MCP_TOOL_NAMES["build"])

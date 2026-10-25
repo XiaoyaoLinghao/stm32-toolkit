@@ -392,6 +392,8 @@ def configure_project_workflow(
     authorized: bool = False,
     debug_backend: object = None,
     debug_target: object = None,
+    vscode_toolkit_path: object = None,
+    vscode_gcc_path: object = None,
 ) -> OperationResult[dict[str, object]]:
     """Read-only configuration plan, or apply only with the exact plan ID.
 
@@ -399,6 +401,11 @@ def configure_project_workflow(
     both selects the explicit manifest-edit route, supplying neither keeps the
     historical build-only route, and an incomplete or malformed pair is
     refused by the shared debug validator with complete field diagnostics.
+    ``vscode_toolkit_path``/``vscode_gcc_path`` are likewise passed through:
+    supplying both renders the validated absolute native paths, omitting both
+    keeps the portable user-setting defaults.  Applying requires the same
+    options, so a changed or omitted pair is a different plan and is refused
+    before any write.
     """
     operation = (
         "project-configuration-apply"
@@ -428,18 +435,25 @@ def configure_project_workflow(
 
     try:
         model = load_project_model(root)
-        if debug_backend is None and debug_target is None:
+        if (
+            debug_backend is None
+            and debug_target is None
+            and vscode_toolkit_path is None
+            and vscode_gcc_path is None
+        ):
             # Historical configure route: call the accepted one-argument
             # planning shape exactly, preserving legacy doubles and shape.
             plan = plan_project_configuration(model)
         else:
-            # Any supplied value (including only one) goes through the shared
-            # validator unchanged so incomplete/invalid pairs still fail with
-            # complete field diagnostics.
+            # Any supplied value (including only one of a pair) goes through
+            # the shared validators unchanged so incomplete/invalid pairs still
+            # fail with complete field diagnostics.
             plan = plan_project_configuration(
                 model,
                 debug_backend=debug_backend,
                 debug_target=debug_target,
+                vscode_toolkit_path=vscode_toolkit_path,
+                vscode_gcc_path=vscode_gcc_path,
             )
     except ProjectManifestError as error:
         return _failure(operation, error.code, error.message, error.details)
