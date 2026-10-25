@@ -1,0 +1,61 @@
+{
+  "acceptedBase": "8e3aa106d07cbc11547d16be035a719c1f2c605f",
+  "codeHead": "25b29d2e71009c1de7b45cc5fbd00b72a419a98f",
+  "verdict": "ACCEPTED",
+  "scope": "test-only offline immutable import/admission/publication integrity",
+  "authorSession": "59d31b60-dd87-4649-9295-c3703ae9e6af",
+  "interruptedAuthorSession": "fa3486e9-8e6f-4417-a602-86a8337e3aa1",
+  "verificationSession": "73b26128-cf60-4d0f-bf4d-b59026c24076",
+  "newCases": 14,
+  "authorAffectedCases": 50,
+  "primaryIndependentCases": 24,
+  "sourceUnchanged": true,
+  "cohort": {
+    "cases": 8748,
+    "passed": 8729,
+    "skipped": 19
+  },
+  "scopes": {
+    "toolkit-overall": {
+      "covered": 15292,
+      "total": 17502,
+      "floor": 90,
+      "percent": 87.37287167180894,
+      "gain": 23,
+      "status": "UNMET"
+    },
+    "toolkit-risk-core-v2": {
+      "covered": 14259,
+      "total": 16296,
+      "floor": 90,
+      "percent": 87.5,
+      "gain": 23,
+      "status": "UNMET"
+    },
+    "monitor-overall": {
+      "covered": 3203,
+      "total": 3498,
+      "floor": 90,
+      "percent": 91.5666094911378,
+      "gain": 0,
+      "status": "PASS"
+    },
+    "monitor-risk-core-v2": {
+      "covered": 3203,
+      "total": 3498,
+      "floor": 95,
+      "percent": 91.5666094911378,
+      "gain": 0,
+      "status": "UNMET"
+    }
+  },
+  "evidenceHashes": {
+    "firmware-integrity-a/manifest.json": "ec4963659c9144427a38d79976de7fb81b92ee64e505b06e1fb74a0c98919841",
+    "firmware-integrity-a/fi-01/execution.json": "aba35b66c598d6c26ca671b4f52ccb709c24077e90e86312997e0d12d3b47d8b",
+    "primary-firmware-integrity-a/execution.json": "4bdad4f0f8019f98f22fbbbc949cc748469dcbda5984ed8ab3a25ea91648408b",
+    "coverage-firmware-a/qualification.json": "037e5ae085f197006a699982ab36b726c8c08f7ada2e23715d143f059745703d",
+    "coverage-firmware-a/native.json": "51bac6149958288b4041614253393f255138c476b353c025b549df0d2bd06abf"
+  },
+  "nativeRawFileCount": 951,
+  "releaseAccepted": false
+}

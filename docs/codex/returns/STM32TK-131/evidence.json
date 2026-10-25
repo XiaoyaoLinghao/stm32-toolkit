@@ -261,16 +261,31 @@
     "releaseAccepted": false
   },
   "latestSupplement": {
-    "codeHead": "d30b20ca7592ba433a88f7bfda6fb06ecc98caab",
-    "report": "../MIGRATION-BOUNDARY-REGRESSION/implementation-report.md",
-    "newCases": 60,
+    "codeHead": "25b29d2e71009c1de7b45cc5fbd00b72a419a98f",
+    "report": "../FIRMWARE-INTEGRITY-REGRESSION/implementation-report.md",
+    "newCases": 14,
     "uniqueCohort": {
-      "cases": 8734,
-      "passed": 8715,
+      "cases": 8748,
+      "passed": 8729,
       "skipped": 19
     },
-    "nativeQualificationSha256": "4f0499652d93dffb586ab359721575280f9f40c818faa6c6c1d0d516949a542d",
+    "nativeQualificationSha256": "037e5ae085f197006a699982ab36b726c8c08f7ada2e23715d143f059745703d",
     "singleHeadAllGreenRerun": false,
     "releaseAccepted": false
-  }
+  },
+  "priorSupplements": [
+    {
+      "codeHead": "d30b20ca7592ba433a88f7bfda6fb06ecc98caab",
+      "report": "../MIGRATION-BOUNDARY-REGRESSION/implementation-report.md",
+      "newCases": 60,
+      "uniqueCohort": {
+        "cases": 8734,
+        "passed": 8715,
+        "skipped": 19
+      },
+      "nativeQualificationSha256": "4f0499652d93dffb586ab359721575280f9f40c818faa6c6c1d0d516949a542d",
+      "singleHeadAllGreenRerun": false,
+      "releaseAccepted": false
+    }
+  ]
 }

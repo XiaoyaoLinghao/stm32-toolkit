@@ -4,7 +4,9 @@
 
 ## 1. 当前断点与证据
 
-2026-10-26 最新补测：MIGRATION-BOUNDARY-REGRESSION 离线测试切片已 **ACCEPTED**，见[报告](../codex/returns/MIGRATION-BOUNDARY-REGRESSION/implementation-report.md)。CodeHead `d30b20ca7592ba433a88f7bfda6fb06ecc98caab`；Claude 相关完整组 264/264、主代理独立 81/81，新增 60 项及 51 个 Toolkit 分支。当前去重复用队列 8,715 通过/19 跳过；Toolkit 总体 87.2415%、风险核心 87.3589%，Monitor 风险核心仍 91.5666%，永久门槛仍未满足。不是最终单一提交全量重跑。继续外部固件完整性测试；安装解释器修正与本地 Git 登录待用户响应，实际 VS Code、最终包及发布未完成。以下集成记录保留补测前状态。
+2026-10-26 最新补测：FIRMWARE-INTEGRITY-REGRESSION 离线测试切片已 **ACCEPTED**，见[报告](../codex/returns/FIRMWARE-INTEGRITY-REGRESSION/implementation-report.md)。CodeHead `25b29d2e71009c1de7b45cc5fbd00b72a419a98f`；Claude 50/50、主代理独立 24/24，新增 14 项与 23 个 Toolkit 分支。当前去重复用队列 8,729 通过/19 跳过；Toolkit 总体 87.3729%、风险核心 87.5000%，Monitor 风险核心仍 91.5666%，永久门槛未满足。不是最终单一提交全量重跑。继续 Monitor 完整性测试；安装解释器修正与本地 Git 登录仍待用户响应，实际 VS Code、最终包及发布未完成。首次误调禁用 Bash 已停止且无编辑；新文件会话与原生 PowerShell 执行分开留证。以下是历史断点。
+
+2026-10-26 此前补测：MIGRATION-BOUNDARY-REGRESSION 离线测试切片已 **ACCEPTED**，见[报告](../codex/returns/MIGRATION-BOUNDARY-REGRESSION/implementation-report.md)。CodeHead `d30b20ca7592ba433a88f7bfda6fb06ecc98caab`；Claude 相关完整组 264/264、主代理独立 81/81，新增 60 项及 51 个 Toolkit 分支。当前去重复用队列 8,715 通过/19 跳过；Toolkit 总体 87.2415%、风险核心 87.3589%，Monitor 风险核心仍 91.5666%，永久门槛仍未满足。不是最终单一提交全量重跑。继续外部固件完整性测试；安装解释器修正与本地 Git 登录待用户响应，实际 VS Code、最终包及发布未完成。以下集成记录保留补测前状态。
 
 2026-10-26 v1.3.1 集成断点：源码优化与版本对齐已完成，**发行仍为 REVISION_REQUIRED / NOT_QUALIFIED**。见[当前报告](../codex/returns/STM32TK-131/implementation-report.md)、[独立复核](../codex/returns/STM32TK-131/review.md)及[机器可读证据](../codex/returns/STM32TK-131/evidence.json)。Python 完整收集 8,674 项；经过保留原失败的完整组修正与明确复用，当前 8,655 通过、19 平台/外部数据跳过，不宣称最终单一提交全量重跑。Toolkit 总体/风险核心覆盖率 86.9501%/87.0459%，Monitor 风险核心 91.5666%，均未达到各自永久门槛。先复核有意义的离线测试缺口，不自动沿用旧版例外。
 
