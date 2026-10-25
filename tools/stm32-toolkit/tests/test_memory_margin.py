@@ -50,7 +50,11 @@ from test_build_runner import (
     prepare_project,
     read_json,
 )
-from test_flash import RecordingFlashClient, _request
+from test_flash import (
+    RecordingFlashClient,
+    _publish_current_debug_build,
+    _request,
+)
 from test_mcp_roots import _RootSession, _context
 
 _BUILT_AT = "2026-10-25T08:00:00.000000Z"
@@ -679,19 +683,36 @@ def test_cli_and_mcp_build_paths_propagate_summary_and_warnings(
 
 
 def test_flash_admission_recomputes_and_rejects_edited_summary(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
 ) -> None:
     root = prepare_project(tmp_path)
-    install_fake_cmake(monkeypatch, tmp_path)
-    built = run_build(BuildRequest(project_root=root, preset="arm-debug"))
-    assert built.ok is True, built
-
-    # The genuine current build is admitted, proving the summary path runs.
-    facts = load_fresh_firmware_facts(root)
-    assert facts.elf_path == "build/arm-debug/firmware.elf"
+    # Use the established current-debug fixture: a real PT_LOAD-bearing ELF,
+    # matching GNU MAP, complete Git evidence and identity/result records.
+    identity = _publish_current_debug_build(root)
+    model = load_project_model(root)
+    map_rel = "build/arm-debug/firmware.map"
+    elf_evidence = validate_elf(root / "build" / "arm-debug" / "firmware.elf", model)
+    usages = parse_map(
+        (root / "build" / "arm-debug" / "firmware.map").read_text(encoding="utf-8"),
+        model.memory.regions,
+        path=map_rel,
+        elf_sections=elf_evidence.sections,
+    )
+    identity["memorySummary"] = build_memory_summary(usages).to_dict()
+    identity["buildId"] = compute_build_id(identity)
 
     identity_path = root / "build" / "arm-debug" / "firmware-identity.json"
     result_path = root / "artifacts" / "migration" / "build-result.json"
+    identity_path.write_text(json.dumps(identity, indent=2) + "\n", encoding="utf-8")
+    result_document = read_json(result_path)
+    result_document["buildId"] = identity["buildId"]
+    result_path.write_text(json.dumps(result_document, indent=2) + "\n", encoding="utf-8")
+
+    # The genuine current build with its real flashable segment is admitted,
+    # proving both summary recomputation and the unchanged image guards run.
+    facts = load_fresh_firmware_facts(root)
+    assert facts.elf_path == "build/arm-debug/firmware.elf"
+
     original = read_json(identity_path)
     original_summary = json.loads(json.dumps(original["memorySummary"]))
 
