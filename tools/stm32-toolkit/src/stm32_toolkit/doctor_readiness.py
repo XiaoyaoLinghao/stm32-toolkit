@@ -44,7 +44,7 @@ _LAUNCHER_CAPTURE_LIMIT = 16 * 1024
 _ARMCC_VERSION_LIMIT = 200
 
 _EXTENSION_VERSION = (
-    r"\d{1,6}(?:\.\d{1,6}){1,3}"
+    r"\d{1,16}(?:\.\d{1,16}){1,3}"
     r"(?:-[0-9A-Za-z][0-9A-Za-z.-]{0,63})?"
     r"(?:\+[0-9A-Za-z][0-9A-Za-z.-]{0,63})?"
 )

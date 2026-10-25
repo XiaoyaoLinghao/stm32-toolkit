@@ -362,6 +362,57 @@ def test_malformed_extension_versions_are_not_installed_facts(
     )
 
 
+def test_long_numeric_language_pack_version_keeps_complete_inventory(
+    monkeypatch, tmp_path: Path
+):
+    root = tmp_path / "vscode"
+    _normal_install(root)
+    listing = (
+        b"ms-ceintl.vscode-language-pack-zh-hans@1.131.2026090407\n"
+        b"ms-vscode.cpptools@1.21.0\n"
+        b"ms-vscode.cmake-tools@1.14.0\n"
+        b"marus25.cortex-debug@1.12.1\n"
+    )
+    _fake_runner(monkeypatch, ProcessObservation(0, listing, b""))
+
+    result = _collect(
+        monkeypatch, probe_vscode_extensions=True, vscode_path=root / "Code.exe"
+    )
+
+    observation = result["vscodeExtensionObservation"]
+    assert observation["status"] == "observed"
+    assert observation["completeInventory"] is True
+    extensions = result["vscodeExtensions"]
+    assert set(extensions) == set(readiness.RECOMMENDED_EXTENSIONS)
+    assert extensions["ms-vscode.cpptools"]["installed"] is True
+    assert extensions["ms-vscode.cpptools"]["version"] == "1.21.0"
+    assert extensions["ms-vscode.cmake-tools"]["installed"] is True
+    assert extensions["ms-vscode.cmake-tools"]["version"] == "1.14.0"
+    assert extensions["marus25.cortex-debug"]["installed"] is True
+    assert extensions["marus25.cortex-debug"]["version"] == "1.12.1"
+    serialized = json.dumps(result, default=str)
+    assert "ms-ceintl.vscode-language-pack-zh-hans" not in serialized
+    assert "1.131.2026090407" not in serialized
+
+
+def test_extension_version_numeric_component_cap_is_preserved(
+    monkeypatch, tmp_path: Path
+):
+    root = tmp_path / "vscode"
+    _normal_install(root)
+    too_long = b"ms-vscode.cpptools@1." + b"1" * 17
+    _fake_runner(monkeypatch, ProcessObservation(0, too_long + b"\n", b""))
+
+    result = _collect(
+        monkeypatch, probe_vscode_extensions=True, vscode_path=root / "Code.exe"
+    )
+
+    assert result["vscodeExtensionObservation"]["status"] == "malformed-output"
+    assert all(
+        entry["installed"] is None for entry in result["vscodeExtensions"].values()
+    )
+
+
 def test_conflicting_unrelated_versions_are_ignored(monkeypatch, tmp_path: Path):
     root = tmp_path / "vscode"
     _normal_install(root)
