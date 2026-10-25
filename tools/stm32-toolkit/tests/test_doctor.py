@@ -7,6 +7,8 @@ import sys
 import time
 from pathlib import Path
 
+import pytest
+
 from stm32_toolkit import __version__
 from stm32_toolkit.doctor import (
     TOOLS,
@@ -20,6 +22,16 @@ from stm32_toolkit.doctor import (
     _terminate_and_reap,
     run_doctor,
 )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_keil_discovery(monkeypatch):
+    """Keep legacy doctor tests independent of host Keil installations."""
+    monkeypatch.setattr(
+        "stm32_toolkit.doctor_readiness._path_binary", lambda name: None
+    )
+    monkeypatch.setattr("stm32_toolkit.doctor_readiness._UV4_STANDARD_PATHS", ())
+    monkeypatch.setattr("stm32_toolkit.doctor_readiness._ARMCC_STANDARD_PATHS", ())
 
 
 class _FakeProcess:
@@ -55,7 +67,7 @@ class _FakeProcess:
 def test_doctor_reports_missing_planned_tools_without_mutating(monkeypatch, tmp_path: Path):
     monkeypatch.setattr("stm32_toolkit.doctor.shutil.which", lambda name: None)
 
-    result = run_doctor(tmp_path)
+    result = run_doctor(tmp_path, probe_vscode_extensions=False)
 
     assert result.ok is True
     assert tuple(result.data["tools"]) == TOOLS
@@ -74,7 +86,7 @@ def test_doctor_reports_closed_runtime_and_public_inventory(monkeypatch, tmp_pat
     monkeypatch.setattr(
         "stm32_toolkit.doctor.importlib.metadata.version", lambda name: __version__
     )
-    result = run_doctor(tmp_path)
+    result = run_doctor(tmp_path, probe_vscode_extensions=False)
     runtime = result.data["runtime"]
     assert runtime == {
         "requiredPython": ">=3.12,<3.13",
@@ -92,7 +104,7 @@ def test_doctor_reports_old_monitor_version_as_incompatible(monkeypatch, tmp_pat
     monkeypatch.setattr(
         "stm32_toolkit.doctor.importlib.metadata.version", lambda name: "1.0.0"
     )
-    runtime = run_doctor(tmp_path).data["runtime"]
+    runtime = run_doctor(tmp_path, probe_vscode_extensions=False).data["runtime"]
     assert runtime["toolkitVersion"] == __version__
     assert runtime["monitorVersion"] == "1.0.0"
     assert runtime["versionsCompatible"] is False
@@ -105,7 +117,7 @@ def test_doctor_reports_missing_monitor_metadata_without_fabrication(
         raise importlib.metadata.PackageNotFoundError
 
     monkeypatch.setattr("stm32_toolkit.doctor.importlib.metadata.version", missing)
-    runtime = run_doctor(tmp_path).data["runtime"]
+    runtime = run_doctor(tmp_path, probe_vscode_extensions=False).data["runtime"]
     assert runtime["monitorVersion"] is None
     assert runtime["versionsCompatible"] is False
 
@@ -127,7 +139,7 @@ def test_doctor_reports_probe_core_dependencies_without_starting_or_writing(
         dependency_version,
     )
 
-    result = run_doctor(project, data_root=data_root)
+    result = run_doctor(project, data_root=data_root, probe_vscode_extensions=False)
 
     assert result.data["probeCore"] == {
         "dependencies": {
@@ -149,7 +161,7 @@ def test_doctor_probe_registry_reports_safe_directory_read_only(monkeypatch, tmp
     before = marker.stat().st_mtime_ns
     monkeypatch.setattr("stm32_toolkit.doctor.shutil.which", lambda name: None)
 
-    result = run_doctor(project, data_root=registry.parent)
+    result = run_doctor(project, data_root=registry.parent, probe_vscode_extensions=False)
 
     assert result.data["probeCore"]["registry"] == {"status": "ok", "safe": True}
     assert marker.read_bytes() == b"owner"
@@ -188,7 +200,7 @@ def test_doctor_probe_registry_reports_redirect_without_following_it(
         monkeypatch.setattr("stm32_toolkit.doctor.os.lstat", injected_lstat)
     monkeypatch.setattr("stm32_toolkit.doctor.shutil.which", lambda name: None)
 
-    result = run_doctor(project, data_root=data_root)
+    result = run_doctor(project, data_root=data_root, probe_vscode_extensions=False)
 
     assert result.data["probeCore"]["registry"] == {
         "status": "redirect",
@@ -235,7 +247,7 @@ def test_doctor_probe_registry_reports_data_root_parent_redirect(
     before = marker.stat().st_mtime_ns
     monkeypatch.setattr("stm32_toolkit.doctor.shutil.which", lambda name: None)
 
-    result = run_doctor(project, data_root=data_root)
+    result = run_doctor(project, data_root=data_root, probe_vscode_extensions=False)
 
     assert result.data["probeCore"]["registry"] == {
         "status": "redirect",
@@ -260,7 +272,7 @@ def test_doctor_records_a_found_tool_version_with_fixed_read_only_command(monkey
     monkeypatch.setattr("stm32_toolkit.doctor.shutil.which", fake_which)
     monkeypatch.setattr("stm32_toolkit.doctor.subprocess.Popen", fake_popen)
 
-    result = run_doctor(tmp_path)
+    result = run_doctor(tmp_path, probe_vscode_extensions=False)
 
     assert result.data["tools"]["cmake"] == {
         "available": True,
@@ -295,7 +307,7 @@ def test_doctor_keeps_nonzero_and_timeout_as_tool_evidence(monkeypatch, tmp_path
     monkeypatch.setattr("stm32_toolkit.doctor.shutil.which", fake_which)
     monkeypatch.setattr("stm32_toolkit.doctor.subprocess.Popen", fake_popen)
 
-    result = run_doctor(tmp_path)
+    result = run_doctor(tmp_path, probe_vscode_extensions=False)
 
     assert result.ok is True
     assert result.data["tools"]["cmake"] == {
@@ -346,7 +358,7 @@ def test_doctor_decodes_invalid_version_bytes_as_evidence(monkeypatch, tmp_path:
     )
     monkeypatch.setattr("stm32_toolkit.doctor.subprocess.Popen", lambda argv, **kwargs: process)
 
-    result = run_doctor(tmp_path)
+    result = run_doctor(tmp_path, probe_vscode_extensions=False)
 
     assert result.ok is True
     assert result.data["tools"]["cmake"]["status"] == "ok"
@@ -408,7 +420,7 @@ def test_doctor_treats_executable_discovery_errors_as_missing(monkeypatch, tmp_p
 
     monkeypatch.setattr("stm32_toolkit.doctor.shutil.which", unavailable)
 
-    result = run_doctor(tmp_path)
+    result = run_doctor(tmp_path, probe_vscode_extensions=False)
 
     assert result.ok is True
     assert all(tool["status"] == "missing" for tool in result.data["tools"].values())
@@ -426,7 +438,7 @@ def test_doctor_treats_process_start_errors_as_tool_evidence(monkeypatch, tmp_pa
 
     monkeypatch.setattr("stm32_toolkit.doctor.subprocess.Popen", unavailable)
 
-    result = run_doctor(tmp_path)
+    result = run_doctor(tmp_path, probe_vscode_extensions=False)
 
     assert result.data["tools"]["cmake"] == {
         "available": True,
@@ -532,33 +544,40 @@ def test_reader_discards_stream_errors_and_attempts_close():
 def test_doctor_evidence_is_json_serializable(monkeypatch, tmp_path: Path):
     monkeypatch.setattr("stm32_toolkit.doctor.shutil.which", lambda name: None)
 
-    result = run_doctor(tmp_path)
+    result = run_doctor(tmp_path, probe_vscode_extensions=False)
 
     assert json.loads(json.dumps(result.to_dict()))["data"]["project"]["kind"] == "unknown"
 
 
 # ---------------------------------------------------------------------------
-# VS Code extension evidence (STM32TK-0304)
+# VS Code extension evidence (STM32TK-0304, DOCTOR-READINESS)
 # ---------------------------------------------------------------------------
 
 
-from stm32_toolkit.doctor import (
-    VSCODE_EXTENSIONS,
-    _parse_extension_lines,
-    _vscode_extension_evidence,
-)
+from stm32_toolkit.doctor import VSCODE_EXTENSIONS
 
 
-def test_doctor_vscode_extensions_are_not_probed_without_code(monkeypatch, tmp_path: Path):
+def test_doctor_vscode_extensions_are_unknown_when_probing_is_skipped(
+    monkeypatch, tmp_path: Path
+):
     monkeypatch.setattr("stm32_toolkit.doctor.shutil.which", lambda name: None)
 
-    result = run_doctor(tmp_path)
+    result = run_doctor(tmp_path, probe_vscode_extensions=False)
 
     assert tuple(result.data["vscodeExtensions"]) == VSCODE_EXTENSIONS
-    assert all(
-        value == {"installed": False, "version": None, "status": "not-probed"}
-        for value in result.data["vscodeExtensions"].values()
-    )
+    for value in result.data["vscodeExtensions"].values():
+        assert value["installed"] is None
+        assert value["version"] is None
+        assert value["status"] == "skipped"
+    observation = result.data["vscodeExtensionObservation"]
+    assert observation["status"] == "skipped"
+    assert observation["completeInventory"] is False
+    assert observation["scope"] == "local-default-profile"
+    assert result.data["keilTools"]["toolkitNativeBuildSupported"] is False
+    assert result.data["keilTools"]["routes"] == [
+        "keil-migration",
+        "external-firmware",
+    ]
 
 
 def test_doctor_gui_version_is_static_and_never_starts_a_process(monkeypatch, tmp_path: Path):
@@ -577,7 +596,9 @@ def test_doctor_gui_version_is_static_and_never_starts_a_process(monkeypatch, tm
     )
     support = SimpleNamespace(to_dict=lambda: {})
 
-    result = run_doctor(tmp_path, support_profile=support)
+    result = run_doctor(
+        tmp_path, support_profile=support, probe_vscode_extensions=False
+    )
 
     assert result.data["tools"]["STM32CubeMX"] == {
         "available": True,
@@ -595,33 +616,29 @@ def test_doctor_gui_version_is_static_and_never_starts_a_process(monkeypatch, tm
     }
     assert reads == [Path(paths["STM32CubeMX"]), Path(paths["code"])]
     assert all(
-        value == {"installed": False, "version": None, "status": "not-probed"}
+        value["installed"] is None and value["status"] == "skipped"
         for value in result.data["vscodeExtensions"].values()
     )
     assert result.details["probeRegistrySemantics"] == "probe-lease-directory"
     assert not any(tmp_path.iterdir())
 
 
-def test_doctor_extension_evidence_does_not_launch_code(monkeypatch):
+def test_skipped_extension_probing_dispatches_no_process(monkeypatch):
+    from stm32_toolkit import doctor_readiness
+
     monkeypatch.setattr(
-        "stm32_toolkit.doctor._run_process",
-        lambda argv: (_ for _ in ()).throw(AssertionError(f"unexpected process: {argv}")),
+        doctor_readiness,
+        "_run_bounded",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError(f"unexpected process: {args}")
+        ),
     )
-    evidence = _vscode_extension_evidence()
-    assert all(item["status"] == "not-probed" for item in evidence.values())
 
-
-def test_parse_extension_lines_ignores_malformed_and_unrelated():
-    output = (
-        "ms-vscode.cpptools@1.21.0\n"
-        "garbage line\n"
-        "no-version-line\n"
-        "publisher.extension\n"
-        "ext@1.0\n"
-        "has space.id@1.0\n"
-        "other.ext@2.0\n"
+    extensions, observation = doctor_readiness._observe_vscode_extensions(
+        None, False, None
     )
-    assert _parse_extension_lines(output) == {
-        "ms-vscode.cpptools": "1.21.0",
-        "other.ext": "2.0",
-    }
+
+    assert tuple(extensions) == VSCODE_EXTENSIONS
+    assert all(item["status"] == "skipped" for item in extensions.values())
+    assert observation["status"] == "skipped"
+

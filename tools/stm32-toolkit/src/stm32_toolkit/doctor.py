@@ -14,6 +14,10 @@ from typing import BinaryIO
 
 from stm32_toolkit.detection import detect_project, planned_action
 from stm32_toolkit import __version__ as TOOLKIT_VERSION
+from stm32_toolkit.doctor_readiness import (
+    RECOMMENDED_EXTENSIONS as VSCODE_EXTENSIONS,
+    collect_doctor_readiness,
+)
 from stm32_toolkit.keil.model import KeilInspectionError
 from stm32_toolkit.result import OperationResult
 from stm32_toolkit.tool_support import (
@@ -40,12 +44,6 @@ TOOLS = (
     "code",
 )
 
-#: The exact three recommended VS Code extensions (STM32TK-0304).
-VSCODE_EXTENSIONS = (
-    "ms-vscode.cpptools",
-    "ms-vscode.cmake-tools",
-    "marus25.cortex-debug",
-)
 _GUI_TOOLS = frozenset({"STM32CubeMX", "code"})
 _VERSION_TIMEOUT_SECONDS = 5
 _REAP_TIMEOUT_SECONDS = 1
@@ -58,16 +56,36 @@ _VERSION_LINE_LIMIT = 512
 def run_doctor(
     project_root: Path, *, data_root: Path | None = None,
     support_profile: ToolSupportProfile | None = None,
+    probe_vscode_extensions: bool = True,
+    vscode_path: Path | None = None,
+    uv4_path: Path | None = None,
+    armcc_path: Path | None = None,
 ) -> OperationResult[dict[str, object]]:
-    """Collect offline, read-only evidence about the local toolkit environment."""
+    """Collect offline, read-only evidence about the local toolkit environment.
+
+    ``ok=true`` only means the report was collected.  Missing, invalid, or
+    incomplete observations remain explicit evidence; they are not readiness
+    failures fabricated into installed/missing facts.
+    """
     support = support_profile or discover_tool_support(SupportProfileRequest(data_root=data_root), probe_versions=True)
+    readiness = collect_doctor_readiness(
+        support_profile=support,
+        probe_vscode_extensions=probe_vscode_extensions,
+        vscode_path=vscode_path,
+        uv4_path=uv4_path,
+        armcc_path=armcc_path,
+    )
     return replace(OperationResult.success(
         "doctor",
         {
             "platform": _platform_evidence(),
             "project": _project_evidence(project_root),
             "tools": {name: _tool_evidence(name) for name in TOOLS},
-            "vscodeExtensions": _vscode_extension_evidence(),
+            "vscodeExtensions": readiness["vscodeExtensions"],
+            "vscodeExtensionObservation": readiness["vscodeExtensionObservation"],
+            "keilTools": readiness["keilTools"],
+            "readiness": readiness["readiness"],
+            "diagnostics": readiness["diagnostics"],
             "probeCore": _probe_core_evidence(data_root),
             "creationSupport": support.to_dict(),
             "runtime": _runtime_evidence(),
@@ -358,37 +376,6 @@ def _tool_result(
         "returnCode": return_code,
         "version": version,
     }
-
-
-def _extension_evidence(
-    installed: bool, version: str | None, status: str
-) -> dict[str, object]:
-    return {"installed": installed, "version": version, "status": status}
-
-
-def _vscode_extension_evidence() -> dict[str, dict[str, object]]:
-    """Do not launch VS Code to enumerate extensions during offline doctor."""
-    return {
-        extension: _extension_evidence(False, None, "not-probed")
-        for extension in VSCODE_EXTENSIONS
-    }
-
-
-def _parse_extension_lines(output: str) -> dict[str, str]:
-    """Parse ``publisher.extension@version`` lines case-insensitively.
-
-    Malformed and unrelated lines are ignored; the retained output is already
-    capped at 8 KiB by the bounded reader.
-    """
-    parsed: dict[str, str] = {}
-    for line in output.splitlines():
-        identifier, separator, version = line.strip().rpartition("@")
-        if not separator or not identifier or not version:
-            continue
-        if "." not in identifier or any(ch.isspace() for ch in identifier):
-            continue
-        parsed[identifier.casefold()] = version
-    return parsed
 
 
 def _version_line(output: str | None) -> str | None:

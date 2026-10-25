@@ -295,6 +295,32 @@ def _build_parser() -> argparse.ArgumentParser:
 
     doctor = commands.add_parser("doctor")
     _add_project_root(doctor)
+    doctor.add_argument(
+        "--skip-vscode-extensions",
+        action="store_true",
+        help="Do not query the local VS Code CLI for extension evidence.",
+    )
+    doctor.add_argument(
+        "--vscode-path",
+        type=Path,
+        action=_RejectDuplicate,
+        help=(
+            "Absolute Code.exe or installed bin/code.cmd; the launcher is "
+            "parsed, never executed."
+        ),
+    )
+    doctor.add_argument(
+        "--uv4-path",
+        type=Path,
+        action=_RejectDuplicate,
+        help="Absolute Keil UV4.exe used only for static file-version evidence.",
+    )
+    doctor.add_argument(
+        "--armcc-path",
+        type=Path,
+        action=_RejectDuplicate,
+        help="Absolute armcc.exe queried only with the fixed --vsn option.",
+    )
     _add_json(doctor)
 
     project = commands.add_parser("project")
@@ -1497,7 +1523,13 @@ def _operation_result(
     args: argparse.Namespace, project_root: Path
 ) -> OperationResult[object]:
     if args.command == "doctor":
-        return run_doctor(project_root)
+        return run_doctor(
+            project_root,
+            probe_vscode_extensions=not args.skip_vscode_extensions,
+            vscode_path=args.vscode_path,
+            uv4_path=args.uv4_path,
+            armcc_path=args.armcc_path,
+        )
     if args.command == "firmware":
         if args.firmware_command == "import":
             return firmware_import_workflow(

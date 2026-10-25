@@ -594,6 +594,47 @@ def test_bounded_runner_has_one_total_capture_limit_and_marks_oversize(monkeypat
     assert len(observation.stdout) + len(observation.stderr) <= capture_limit
     assert seen["shell"] is False
     assert seen["stdin"] is subprocess.DEVNULL
+    assert "env" not in seen
+
+
+def test_bounded_runner_passes_child_env_and_marks_incomplete_readers(monkeypatch):
+    class BrokenStream:
+        def read(self, size: int = -1) -> bytes:
+            raise OSError("pipe unavailable")
+
+        def close(self) -> None:
+            pass
+
+    class FakeProcess:
+        returncode = 0
+
+        def __init__(self):
+            self.stdout = BrokenStream()
+            self.stderr = BrokenStream()
+
+        def wait(self, timeout: float | None = None) -> int:
+            return 0
+
+        def terminate(self) -> None:
+            pass
+
+        def kill(self) -> None:
+            pass
+
+    seen: dict[str, object] = {}
+
+    def popen(argv, **kwargs):
+        seen.update(kwargs)
+        return FakeProcess()
+
+    monkeypatch.setattr(support, "_REAL_POPEN", popen)
+    environment = {"ELECTRON_RUN_AS_NODE": "1", "VSCODE_DEV": ""}
+
+    observation = support._run_bounded(("tool",), env=environment)
+
+    assert observation.returncode == 0
+    assert observation.incomplete is True
+    assert seen["env"] is environment
 
 
 def test_bounded_runner_timeout_terminates_and_reaps(monkeypatch):

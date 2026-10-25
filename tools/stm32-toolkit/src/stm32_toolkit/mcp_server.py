@@ -812,12 +812,33 @@ def _require_external_data_root(data_root: Path, project_root: Path) -> None:
     raise ValueError("data root must be outside project root")
 
 
-def tool_doctor(runtime: ServerRuntime) -> dict[str, object]:
+def _doctor_path(value: str | Path | None) -> Path | None:
+    if value is None:
+        return None
+    if isinstance(value, Path):
+        return value
+    if isinstance(value, str):
+        return Path(value)
+    raise TypeError("doctor path arguments must be strings or paths")
+
+
+def tool_doctor(
+    runtime: ServerRuntime,
+    *,
+    probe_vscode_extensions: bool = True,
+    vscode_path: str | Path | None = None,
+    uv4_path: str | Path | None = None,
+    armcc_path: str | Path | None = None,
+) -> dict[str, object]:
     """Return the read-only environment diagnosis for the bound project."""
     return run_doctor(
         runtime.project_root,
         data_root=runtime.data_root,
         support_profile=runtime.support_profile,
+        probe_vscode_extensions=probe_vscode_extensions,
+        vscode_path=_doctor_path(vscode_path),
+        uv4_path=_doctor_path(uv4_path),
+        armcc_path=_doctor_path(armcc_path),
     ).to_dict()
 
 
@@ -1088,10 +1109,24 @@ def tool_build(
 
 
 async def tool_doctor_for_request(
-    runtime: ServerRuntime, context: Context | None
+    runtime: ServerRuntime,
+    context: Context | None,
+    *,
+    probe_vscode_extensions: bool = True,
+    vscode_path: str | Path | None = None,
+    uv4_path: str | Path | None = None,
+    armcc_path: str | Path | None = None,
 ) -> dict[str, object]:
     failure = await _client_roots_failure(runtime, context, "doctor")
-    return failure if failure is not None else tool_doctor(runtime)
+    if failure is not None:
+        return failure
+    return tool_doctor(
+        runtime,
+        probe_vscode_extensions=probe_vscode_extensions,
+        vscode_path=vscode_path,
+        uv4_path=uv4_path,
+        armcc_path=armcc_path,
+    )
 
 
 async def tool_project_detect_for_request(
@@ -2410,12 +2445,64 @@ def create_server(
     mcp = FastMCP(_SERVER_NAME, instructions=_SERVER_INSTRUCTIONS)
 
     @mcp.tool(name=MCP_TOOL_NAMES["doctor"])
-    async def stm32_doctor(ctx: Context) -> dict[str, object]:
+    async def stm32_doctor(
+        ctx: Context,
+        probeVscodeExtensions: Annotated[
+            StrictBool,
+            Field(
+                description=(
+                    "Query the selected local VS Code CLI for the three "
+                    "recommended extensions. Default true."
+                )
+            ),
+        ] = True,
+        vscodePath: Annotated[
+            StrictStr | None,
+            Field(
+                description=(
+                    "Absolute Code.exe or installed bin/code.cmd. The launcher "
+                    "is parsed, never executed. Invalid values do not fall back."
+                )
+            ),
+        ] = None,
+        uv4Path: Annotated[
+            StrictStr | None,
+            Field(
+                description=(
+                    "Absolute Keil UV4.exe used only for static file-version "
+                    "evidence; UV4 is never executed."
+                )
+            ),
+        ] = None,
+        armccPath: Annotated[
+            StrictStr | None,
+            Field(
+                description=(
+                    "Absolute armcc.exe queried only with the fixed --vsn "
+                    "option; presence is not license or build evidence."
+                )
+            ),
+        ] = None,
+    ) -> dict[str, object]:
         """Diagnose the bound project's Toolkit environment.
 
-        Read-only.  Report missing external tools without installing them.
-        probeCore describes the managed runtime and probe lease directory;
-        VS Code extensions are not enumerated here.  Version and binding
+        Read-only, with no install, editor-window, build, license, or hardware
+        effect.  ``ok=true`` means the report was collected, not that every
+        observation is ready.  By default the selected local VS Code CLI is
+        asked for the three recommended extensions with the fixed
+        ``--list-extensions --show-versions`` arguments; pass
+        ``probeVscodeExtensions=false`` to skip.  Only the local default
+        profile is inspected: this is not the active window, a remote host,
+        enabled/activated extension state, or successful debug evidence.
+        ``data.vscodeExtensions`` contains observed values only; declared
+        support-profile values remain separately under
+        ``data.creationSupport.vsCodeExtensions``.  Incomplete, truncated,
+        malformed, ambiguous, nonzero, or timed-out output yields
+        ``installed=null`` with a precise status and diagnostic, never a
+        fabricated absence.  ``data.keilTools`` reports bounded UV4/ARMCC
+        discovery; ``toolkitNativeBuildSupported`` is always false, so use the
+        Keil migration or external-firmware routes.  probeCore describes the
+        managed runtime and probe lease directory.  Version and binding
         evidence comes from data.runtime.toolkitVersion and
         data.publicInventory: compare them with the actual tool list and input
         schemas the client exposes, and with stm32_project_context
@@ -2425,7 +2512,14 @@ def create_server(
         and verify again; missing tools or fields, or a different root, means
         stop the dependent operation and explain the mismatch.
         """
-        return await tool_doctor_for_request(runtime, ctx)
+        return await tool_doctor_for_request(
+            runtime,
+            ctx,
+            probe_vscode_extensions=probeVscodeExtensions,
+            vscode_path=vscodePath,
+            uv4_path=uv4Path,
+            armcc_path=armccPath,
+        )
 
     @mcp.tool(name=MCP_TOOL_NAMES["project_detect"])
     async def stm32_project_detect(ctx: Context) -> dict[str, object]:

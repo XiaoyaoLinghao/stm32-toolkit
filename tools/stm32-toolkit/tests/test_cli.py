@@ -264,14 +264,82 @@ def test_context_failure_is_json_on_stdout_and_returns_two(tmp_path: Path, capsy
 def test_json_commands_preserve_the_current_working_directory(tmp_path: Path, capsys):
     before = Path.cwd()
 
-    assert main(["doctor", "--project-root", str(tmp_path), "--json"]) == 0
+    assert main(
+        [
+            "doctor",
+            "--project-root",
+            str(tmp_path),
+            "--skip-vscode-extensions",
+            "--json",
+        ]
+    ) == 0
 
     assert Path.cwd() == before
     assert json.loads(capsys.readouterr().out)["operation"] == "doctor"
 
 
+def test_doctor_cli_propagates_observation_options(monkeypatch, tmp_path: Path, capsys):
+    calls: list[dict[str, object]] = []
+
+    def capture(project_root: Path, **kwargs):
+        calls.append({"project_root": project_root, **kwargs})
+        return OperationResult.success("doctor", {})
+
+    monkeypatch.setattr("stm32_toolkit.cli.run_doctor", capture)
+    vscode = tmp_path / "Code.exe"
+    uv4 = tmp_path / "UV4.exe"
+    armcc = tmp_path / "armcc.exe"
+
+    assert main(
+        [
+            "doctor",
+            "--project-root",
+            str(tmp_path),
+            "--skip-vscode-extensions",
+            "--vscode-path",
+            str(vscode),
+            "--uv4-path",
+            str(uv4),
+            "--armcc-path",
+            str(armcc),
+            "--json",
+        ]
+    ) == 0
+
+    assert calls == [
+        {
+            "project_root": tmp_path,
+            "probe_vscode_extensions": False,
+            "vscode_path": vscode,
+            "uv4_path": uv4,
+            "armcc_path": armcc,
+        }
+    ]
+
+
+def test_doctor_cli_defaults_to_extension_probing(monkeypatch, tmp_path: Path, capsys):
+    calls: list[dict[str, object]] = []
+
+    def capture(project_root: Path, **kwargs):
+        calls.append(kwargs)
+        return OperationResult.success("doctor", {})
+
+    monkeypatch.setattr("stm32_toolkit.cli.run_doctor", capture)
+
+    assert main(["doctor", "--project-root", str(tmp_path), "--json"]) == 0
+
+    assert calls == [
+        {
+            "probe_vscode_extensions": True,
+            "vscode_path": None,
+            "uv4_path": None,
+            "armcc_path": None,
+        }
+    ]
+
+
 def test_unexpected_cli_error_goes_to_stderr_without_json(monkeypatch, tmp_path: Path, capsys):
-    def explode(project_root: Path):
+    def explode(project_root: Path, **_kwargs):
         raise RuntimeError("unexpected")
 
     monkeypatch.setattr("stm32_toolkit.cli.run_doctor", explode)
@@ -286,7 +354,9 @@ def test_unexpected_cli_error_goes_to_stderr_without_json(monkeypatch, tmp_path:
 def test_unserializable_doctor_result_goes_to_stderr_without_json(monkeypatch, tmp_path: Path, capsys):
     monkeypatch.setattr(
         "stm32_toolkit.cli.run_doctor",
-        lambda project_root: OperationResult.success("doctor", {"invalid": object()}),
+        lambda project_root, **_kwargs: OperationResult.success(
+            "doctor", {"invalid": object()}
+        ),
     )
 
     assert main(["doctor", "--project-root", str(tmp_path), "--json"]) == 1
@@ -779,7 +849,7 @@ def _hardware_argv(command: list[str]) -> list[str]:
 
 
 def test_long_internal_error_message_is_truncated(monkeypatch, tmp_path: Path, capsys):
-    def explode(project_root: Path):
+    def explode(project_root: Path, **_kwargs):
         raise RuntimeError("x" * 1000)
 
     monkeypatch.setattr("stm32_toolkit.cli.run_doctor", explode)

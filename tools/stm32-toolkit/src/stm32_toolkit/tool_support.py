@@ -91,6 +91,9 @@ class ProcessObservation:
     stderr: bytes
     timed_out: bool = False
     truncated: bool = False
+    #: A pipe reader raised or did not finish; retained bytes are not a
+    #: complete capture and must not be treated as a complete inventory.
+    incomplete: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -261,12 +264,25 @@ def _digest(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _run_bounded(argv: tuple[str, ...], timeout_seconds: float = 5.0, capture_limit: int = _MAX_VERSION_BYTES) -> ProcessObservation:
+def _run_bounded(
+    argv: tuple[str, ...],
+    timeout_seconds: float = 5.0,
+    capture_limit: int = _MAX_VERSION_BYTES,
+    env: dict[str, str] | None = None,
+) -> ProcessObservation:
     process = None
     try:
-        process = _REAL_POPEN(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=False)
+        arguments: dict[str, object] = {
+            "stdin": subprocess.DEVNULL,
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.PIPE,
+            "shell": False,
+        }
+        if env is not None:
+            arguments["env"] = env
+        process = _REAL_POPEN(argv, **arguments)
         output: dict[str, bytearray] = {"stdout": bytearray(), "stderr": bytearray()}
-        state = {"captured": 0, "truncated": False}
+        state = {"captured": 0, "truncated": False, "incomplete": False}
         lock = threading.Lock()
 
         def drain(stream: object, name: str) -> None:
@@ -286,6 +302,8 @@ def _run_bounded(argv: tuple[str, ...], timeout_seconds: float = 5.0, capture_li
                         if len(chunk) > available:
                             state["truncated"] = True
             except (OSError, ValueError, AttributeError, TypeError):
+                with lock:
+                    state["incomplete"] = True
                 return
 
         readers = tuple(
@@ -322,12 +340,14 @@ def _run_bounded(argv: tuple[str, ...], timeout_seconds: float = 5.0, capture_li
             returncode = None
         for reader in readers:
             reader.join(timeout=1)
+        incomplete = bool(state["incomplete"]) or any(reader.is_alive() for reader in readers)
         return ProcessObservation(
             returncode,
             bytes(output["stdout"]),
             bytes(output["stderr"]),
             timed_out=timed_out,
             truncated=state["truncated"],
+            incomplete=incomplete,
         )
     except (OSError, ValueError, subprocess.SubprocessError):
         return ProcessObservation(None, b"", b"")

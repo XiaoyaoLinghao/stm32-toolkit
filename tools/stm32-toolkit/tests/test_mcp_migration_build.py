@@ -326,11 +326,15 @@ def test_new_tool_schemas_expose_only_declared_properties(tmp_path: Path):
     assert build["properties"]["authorized"]["type"] == "boolean"
     assert build["properties"]["authorized"]["default"] is False
 
-    for name in (
-        "stm32_doctor",
-        "stm32_project_detect",
-        "stm32_project_context",
-    ):
+    doctor = schemas["stm32_doctor"]
+    assert set(doctor["properties"]) == {
+        "probeVscodeExtensions",
+        "vscodePath",
+        "uv4Path",
+        "armccPath",
+    }
+    assert doctor["required"] == []
+    for name in ("stm32_project_detect", "stm32_project_context"):
         assert schemas[name].get("properties", {}) == {}
         assert schemas[name].get("required", []) == []
 
@@ -341,6 +345,17 @@ def test_public_tool_descriptions_guide_mcp_only_consumers(tmp_path: Path):
         tool.name: (tool.description or "")
         for tool in asyncio.run(server.list_tools())
     }
+
+    doctor = descriptions["stm32_doctor"]
+    for phrase in (
+        "probeVscodeExtensions=false",
+        "local default",
+        "installed=null",
+        "declared",
+        "toolkitNativeBuildSupported",
+        "not the active window",
+    ):
+        assert phrase in doctor
 
     context = descriptions["stm32_project_context"]
     assert "capabilityDetails" in context

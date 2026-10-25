@@ -1043,7 +1043,6 @@ def test_injected_context_does_not_add_arguments_to_tool_schemas(tmp_path: Path)
     # The injected ``ctx`` parameter must never surface as a schema property.
     assert all("ctx" not in tool.inputSchema.get("properties", {}) for tool in tools)
     zero_argument_tools = {
-        "stm32_doctor",
         "stm32_project_detect",
         "stm32_project_context",
         "stm32_probe_list",

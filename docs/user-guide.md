@@ -57,6 +57,22 @@ $CandidateCli = Join-Path $DataRoot 'runtime\1.3.0\Scripts\stm32-toolkit.exe'
 
 Keil `inspect`、`preflight` 和 `convert` 必须指向同一 `uvprojx` 和 `target-name`。`preflight` 只做技术分析：不要求 Git，可在存在 blocker 时仍成功返回 `analysis.complete=true`，并把 `analysis.blockers`、`planReadiness`（取得**可应用**计划并进入 APPLY 所需的技术/Git 前置；Git/root 前置不满足时仍可能无法取得任何 PLAN）与 `applyReadiness`（在有 reviewed/authorized plan 前恒为 `requires-reviewed-plan` 且 `ready=false`）分开；它不产生可用 plan ID、不写文件、不会自动 `git init`、转码或替换 ARMCC startup。缺少 Git、unborn HEAD、非 Git toplevel 或 dirty/untracked 工作区会作为计划前置失败列出，由工程负责人决定是否建立干净基线。确认 plan 无 blocker、diff/路径均符合预期后，以 PLAN 响应的 `data.plan_id` 调用同一参数链的 `convert --apply --plan-id <data.plan_id> --authorized --json`。PLAN 响应字段是 `data.plan_id`，APPLY 请求参数是 `planId`/`--plan-id`，不要混用带命令前缀的展示文本。`configure` 同样先 `--dry-run` 再用该次 `data.plan_id` `--apply --plan-id <data.plan_id> --authorized --json`；应用前会重新检查输入与改动。
 
+### `doctor` 环境就绪证据（当前源码切片）
+
+`doctor` 仍是只读诊断；`ok=true` 只表示**报告已收集**，不表示所有工具或扩展都已就绪。它与其它 MCP 工具一样绑定同一工程/根：`stm32_doctor` 使用绑定 runtime，CLI 必须显式给出已核实的绝对 `--project-root`；不要用另一个目录或另一台机器上的结果替代当前绑定证据。默认会观察本机 VS Code 的推荐扩展；不需要该观察时用 CLI `--skip-vscode-extensions` 或 MCP `probeVscodeExtensions=false`。
+
+```powershell
+& $CandidateCli --project-root $ProjectRoot doctor --json
+& $CandidateCli --project-root $ProjectRoot doctor --skip-vscode-extensions --json
+& $CandidateCli --project-root $ProjectRoot doctor --vscode-path 'C:\Users\<user>\AppData\Local\Programs\Microsoft VS Code\Code.exe' --json
+```
+
+- **扩展观察范围。** 选中本机 VS Code CLI 后只执行固定参数 `--list-extensions --show-versions`，不传 `--profile`（可能创建缺失的 profile），不安装/更新扩展、不打开编辑器窗口。`data.vscodeExtensionObservation.scope` 固定为 `local-default-profile`：这是所选安装的**本地默认 profile** 列表，不是当前窗口/远程主机/工作区、不是扩展启用状态或激活证据，也不是成功调试证据。`data.vscodeExtensions` 只含**实时观察值**；`data.creationSupport.vsCodeExtensions` 仍是 support-profile 中声明的值，两者必须分开阅读，绝不能用声明值伪造实时结果。cortex-debug 仅把观察版本与 handoff 声明的 `1.12.1` 比较为 `profileMatch`（`match`/`mismatch`/`unverified`），不是物理调试验证；cpptools/cmake-tools 只报告观察版本，不推断受支持版本矩阵。
+- **完整输出才产生事实。** 只有完整、可解析的列表才给出 `installed=true/false`；空列表是合法的“全部未安装”。超时（10 秒）、非零退出、启动失败、截断（64 KiB）、读取不完整、非法字节、未知/畸形行或推荐扩展的冲突版本一律为 `installed=null`、`version=null`，并在该条目和 `data.diagnostics` 中给出固定 `status`/`code`/`remediation`。不完整输出不会被当作“未安装”，也不会回显原始 stdout/stderr 或无关扩展清单。
+- **路径选择。** `--vscode-path`（MCP `vscodePath`）必须是绝对、存在、无重定向的 `Code.exe` 或已安装的 `bin/code.cmd`。VS Code 的 `bin/code.cmd` **只被有界解析**，用于定位同一安装中的 `Code.exe` 与 `resources/app/out/cli.js`（含哈希版本布局），**绝不执行批处理内容**；不支持或歧义的布局直接报告，不搜索任意目录、不挑选过期哈希目录。无效显式值会给出有界诊断，不会静默回退到 PATH/标准目录。未显式给出时，按 trusted support-profile、PATH、受限标准布局顺序选择，并要求可执行文件与 CLI 脚本来自同一安装。
+- **UV4/ARMCC。** `data.keilTools.uv4`/`armcc` 报告 `available`/`path`/`source`/`status`/`version`/`returnCode` 及诊断。发现顺序为显式路径（`--uv4-path`/`--armcc-path`，MCP `uv4Path`/`armccPath`）、PATH、受限 `C:/Keil_v5`/`C:/Keil` 布局；ARMCC 还可来自所选 UV4 安装的 `ARM/ARMCC/bin`。UV4 从不执行，只用静态 Windows 文件版本；ARMCC 只执行固定 `--vsn`，从不执行 `--version`、构建或许可证激活。存在/版本不是许可证、工程所选编译器、pack 兼容或成功构建证据；未知安装应由用户显式选择路径修复，`doctor` 不安装软件、不改 PATH。
+- **原生 Keil 后端未实现。** `data.keilTools.toolkitNativeBuildSupported` 恒为 `false`，与是否检测到 UV4/ARMCC 无关；检测不会解锁原生构建。可行路线是 `keil-migration`（审查 PLAN 后转换）或 `external-firmware`（导入/准入外部固件），两者仍分别遵守 managed/imported 路线的授权与身份限制，不因 `doctor` 而改变创建/构建准入或自动执行任何操作。
+
 ### 构建输出陈旧（`BUILD_OUTPUT_STALE`）诊断
 
 构建返回 `BUILD_OUTPUT_STALE` 时，先完整保存该 `OperationResult`，因为下一次构建会覆盖当前 log/result；再读 `details.reason`：`output-unavailable`（ELF/MAP 不可用）、`prior-evidence-unavailable`（旧 receipt/identity 缺失、不可读或无法解析；既有有界读取器有意合并这些情况）、`prior-build-not-successful`、`input-snapshot-mismatch` 或 `prior-evidence-mismatch`。最后一种用固定 `evidenceField`/`evidenceSource`（`record`/`identity`/`output`）指出首个失败字段；它不回显旧记录值，摘要层面的 digest 差异也不证明某个源码被改动或被恶意篡改。`details` 另含本次实际 `preset`、`cleanRequested` 和可移植 `logPath`/`resultPath`/`identityPath`。

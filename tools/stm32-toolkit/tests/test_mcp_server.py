@@ -11,6 +11,7 @@ from stm32_toolkit.mcp_server import (
     tool_project_detect,
 )
 from stm32_toolkit.public_inventory import MCP_TOOL_NAMES
+from stm32_toolkit.result import OperationResult
 
 
 def test_tool_project_detect_uses_the_runtime_bound_project_root(tmp_path: Path):
@@ -105,7 +106,6 @@ def test_server_registers_exactly_the_project_bound_tools(tmp_path: Path):
     assert "only read-only foundation tools" not in server.instructions
     assert {tool.name for tool in tools} == set(MCP_TOOL_NAMES.values())
     zero_argument_tools = {
-        "stm32_doctor",
         "stm32_project_detect",
         "stm32_project_context",
         "stm32_test_host_discover",
@@ -117,6 +117,67 @@ def test_server_registers_exactly_the_project_bound_tools(tmp_path: Path):
         else:
             assert "projectRoot" not in tool.inputSchema.get("properties", {})
             assert "dataRoot" not in tool.inputSchema.get("properties", {})
+    doctor = next(tool for tool in tools if tool.name == "stm32_doctor")
+    assert set(doctor.inputSchema.get("properties", {})) == {
+        "probeVscodeExtensions",
+        "vscodePath",
+        "uv4Path",
+        "armccPath",
+    }
+    assert not doctor.inputSchema.get("required", [])
+    assert doctor.inputSchema["properties"]["probeVscodeExtensions"]["default"] is True
+
+
+def test_mcp_doctor_propagates_observation_options(tmp_path: Path, monkeypatch):
+    project = tmp_path / "project"
+    project.mkdir()
+    server = create_server(project, tmp_path / "plugin-data", "session-a")
+    calls: list[dict[str, object]] = []
+
+    def capture(project_root: Path, **kwargs):
+        calls.append({"project_root": project_root, **kwargs})
+        return OperationResult.success("doctor", {})
+
+    monkeypatch.setattr("stm32_toolkit.mcp_server.run_doctor", capture)
+    vscode = tmp_path / "Code.exe"
+    uv4 = tmp_path / "UV4.exe"
+    armcc = tmp_path / "armcc.exe"
+
+    _, structured = asyncio.run(
+        server.call_tool(
+            "stm32_doctor",
+            {
+                "probeVscodeExtensions": False,
+                "vscodePath": str(vscode),
+                "uv4Path": str(uv4),
+                "armccPath": str(armcc),
+            },
+        )
+    )
+
+    assert structured["operation"] == "doctor"
+    assert len(calls) == 1
+    call = calls[0]
+    assert call["project_root"] == project
+    assert call["probe_vscode_extensions"] is False
+    assert call["vscode_path"] == vscode
+    assert call["uv4_path"] == uv4
+    assert call["armcc_path"] == armcc
+
+
+def test_mcp_doctor_rejects_coercible_scalar_types(tmp_path: Path):
+    project = tmp_path / "project"
+    project.mkdir()
+    server = create_server(project, tmp_path / "plugin-data", "session-a")
+
+    for arguments in (
+        {"probeVscodeExtensions": "false"},
+        {"vscodePath": 5},
+        {"uv4Path": 5},
+        {"armccPath": 5},
+    ):
+        with pytest.raises(Exception):
+            asyncio.run(server.call_tool("stm32_doctor", arguments))
 
 
 def test_main_runs_the_server_over_stdio(monkeypatch, tmp_path: Path):
@@ -374,6 +435,11 @@ def test_registered_tools_return_bound_runtime_results(monkeypatch, tmp_path: Pa
     project.mkdir()
     (project / "legacy.uvprojx").write_text("<Project/>", encoding="utf-8")
     monkeypatch.setattr("stm32_toolkit.doctor.shutil.which", lambda name: None)
+    monkeypatch.setattr(
+        "stm32_toolkit.doctor_readiness._path_binary", lambda name: None
+    )
+    monkeypatch.setattr("stm32_toolkit.doctor_readiness._UV4_STANDARD_PATHS", ())
+    monkeypatch.setattr("stm32_toolkit.doctor_readiness._ARMCC_STANDARD_PATHS", ())
     server = create_server(project, tmp_path / "plugin-data", "session-a")
 
     results = {}
@@ -382,7 +448,10 @@ def test_registered_tools_return_bound_runtime_results(monkeypatch, tmp_path: Pa
         "stm32_project_detect",
         "stm32_project_context",
     ):
-        _, structured = asyncio.run(server.call_tool(tool_name, {}))
+        arguments = (
+            {"probeVscodeExtensions": False} if tool_name == "stm32_doctor" else {}
+        )
+        _, structured = asyncio.run(server.call_tool(tool_name, arguments))
         results[tool_name] = structured
 
     assert results["stm32_doctor"]["operation"] == "doctor"
