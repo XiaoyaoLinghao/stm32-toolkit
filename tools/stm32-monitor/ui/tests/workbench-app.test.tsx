@@ -3,7 +3,7 @@ import {act,fireEvent,render,screen,waitFor} from "@testing-library/preact";
 import userEvent from "@testing-library/user-event";
 import {App} from "../src/app";
 import {sourcePage,sourceTreePage,watchGroup} from "./fixtures";
-import type {WatchGroup} from "../src/api/contract";
+import type {ApiResult,WatchGroup} from "../src/api/contract";
 
 vi.mock("echarts/core",()=>({init:vi.fn(()=>null),use:vi.fn(),default:{init:vi.fn(()=>null),use:vi.fn()}}));
 vi.mock("echarts/charts",()=>({LineChart:class{}}));
@@ -180,4 +180,89 @@ it("keeps a write retry confirmation above diagnostics and Escape cancels only t
   expect(screen.queryByRole("dialog",{name:"确认重试上次写入"})).toBeNull();
   expect(screen.getByRole("dialog",{name:"诊断详情"})).toBeTruthy();
   expect(prepared.createGroup).toHaveBeenCalledTimes(1);
+});
+
+it("recovers modal focus when a deferred group write disables the focused control",async()=>{
+  prepared=api();
+  let listed=false;
+  prepared.groups=vi.fn(async()=>{
+    const groups=listed?[watchGroup()]:[];
+    listed=true;
+    return ok({groups,nextCursor:null,revision:"0"});
+  });
+  let settle!:(value:ApiResult<WatchGroup>)=>void;
+  const pending=new Promise<ApiResult<WatchGroup>>(resolve=>{settle=resolve;});
+  prepared.createGroup=vi.fn(()=>pending) as unknown as ReturnType<typeof api>["createGroup"];
+  const view=render(<App/>);
+  await screen.findByText("Project");
+  fireEvent.click(screen.getByRole("tab",{name:"固件变量与寄存器"}));
+  fireEvent.click(screen.getByRole("button",{name:"搜索/加载"}));
+  fireEvent.click(await screen.findByText("main.c · 已加载 1 项"));
+  fireEvent.click(screen.getByRole("button",{name:"加入观测组草稿"}));
+  const dialog=screen.getByRole("dialog",{name:"观测组"});
+  fireEvent.input(screen.getByLabelText("名称"),{target:{value:"Motor"}});
+  const create=screen.getByRole("button",{name:"创建观测组"});
+  await waitFor(()=>expect(create).toBeEnabled());
+  create.focus();
+  expect(document.activeElement).toBe(create);
+  fireEvent.click(create);
+  await waitFor(()=>expect(create).toBeDisabled());
+  // Edge drops focus to body when the write disables the focused control;
+  // reproduce that body-focus loss explicitly in jsdom.
+  (document.activeElement as HTMLElement|null)?.blur();
+  await waitFor(()=>expect(dialog.contains(document.activeElement)).toBe(true));
+  await act(async()=>{settle(ok(watchGroup()));});
+  await waitFor(()=>expect(screen.getByRole("button",{name:"Group (1)"})).toBeTruthy());
+  expect(dialog.contains(document.activeElement)).toBe(true);
+  fireEvent.keyDown(document.body,{key:"Escape"});
+  await waitFor(()=>expect(screen.queryByRole("dialog",{name:"观测组"})).toBeNull());
+  await waitFor(()=>expect(document.activeElement).toBe(screen.getByRole("button",{name:"编辑并保存"})));
+  fireEvent.keyDown(document.body,{key:"Escape"});
+  fireEvent.keyDown(document.body,{key:"Tab"});
+  expect(screen.queryByRole("dialog",{name:"观测组"})).toBeNull();
+  view.unmount();
+  expect(()=>{
+    fireEvent.keyDown(document.body,{key:"Escape"});
+    fireEvent.keyDown(document.body,{key:"Tab"});
+  }).not.toThrow();
+});
+
+it("keeps Tab and body Escape inside the topmost nested modal and cleans up after close",async()=>{
+  prepared=api();
+  const first=watchGroup(),second={...first,groupId:"other",name:"Other"};
+  prepared.groups=vi.fn(async()=>ok({groups:[first,second],nextCursor:null,revision:"0"}));
+  const view=render(<App/>);
+  await screen.findByText("Project");
+  fireEvent.click(screen.getByRole("button",{name:"编辑并保存"}));
+  fireEvent.input(screen.getByLabelText("名称"),{target:{value:"Unsent"}});
+  act(()=>{screen.getByRole("button",{name:"Other (1)"}).click();});
+  const navigation=await screen.findByRole("dialog",{name:"未保存的观测组修改"});
+  const keep=screen.getByRole("button",{name:"继续编辑"});
+  keep.addEventListener("keydown",event=>event.preventDefault(),{once:true});
+  fireEvent.keyDown(keep,{key:"Escape"});
+  fireEvent.keyDown(keep,{key:"a"});
+  expect(screen.getByRole("dialog",{name:"未保存的观测组修改"})).toBeTruthy();
+  screen.getByRole("button",{name:"连接与固件详情"}).focus();
+  expect(document.activeElement===navigation||navigation.contains(document.activeElement)).toBe(true);
+  fireEvent.keyDown(document.body,{key:"Tab"});
+  expect(document.activeElement).toBe(keep);
+  const discard=screen.getByRole("button",{name:"放弃修改并继续"});
+  fireEvent.keyDown(document.body,{key:"Tab",shiftKey:true});
+  expect(document.activeElement).toBe(discard);
+  fireEvent.keyDown(document.body,{key:"Escape"});
+  await waitFor(()=>expect(screen.queryByRole("dialog",{name:"未保存的观测组修改"})).toBeNull());
+  expect(screen.getByRole("dialog",{name:"观测组"})).toBeTruthy();
+  expect(screen.getByLabelText("名称")).toHaveValue("Unsent");
+  fireEvent.keyDown(document.body,{key:"Escape"});
+  await waitFor(()=>expect(screen.queryByRole("dialog",{name:"观测组"})).toBeNull());
+  await waitFor(()=>expect(document.activeElement).toBe(screen.getByRole("button",{name:"编辑并保存"})));
+  fireEvent.keyDown(document.body,{key:"Escape"});
+  fireEvent.keyDown(document.body,{key:"Tab"});
+  expect(screen.queryByRole("dialog",{name:"观测组"})).toBeNull();
+  expect(document.activeElement).toBe(screen.getByRole("button",{name:"编辑并保存"}));
+  view.unmount();
+  expect(()=>{
+    fireEvent.keyDown(document.body,{key:"Escape"});
+    fireEvent.keyDown(document.body,{key:"Tab"});
+  }).not.toThrow();
 });
