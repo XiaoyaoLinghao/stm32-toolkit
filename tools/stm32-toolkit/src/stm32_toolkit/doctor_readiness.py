@@ -41,13 +41,22 @@ ARMCC_CAPTURE_LIMIT = 8 * 1024
 _LAUNCHER_CAPTURE_LIMIT = 16 * 1024
 _ARMCC_VERSION_LIMIT = 200
 
+_EXTENSION_VERSION = (
+    r"\d{1,6}(?:\.\d{1,6}){1,3}"
+    r"(?:-[0-9A-Za-z][0-9A-Za-z.-]{0,63})?"
+    r"(?:\+[0-9A-Za-z][0-9A-Za-z.-]{0,63})?"
+)
 _EXTENSION_LINE = re.compile(
-    r"^([A-Za-z0-9][A-Za-z0-9._-]{0,127})@([0-9A-Za-z][0-9A-Za-z.+_-]{0,127})$"
+    rf"^([A-Za-z0-9][A-Za-z0-9._-]{{0,127}})@({_EXTENSION_VERSION})$"
 )
 _LAUNCHER_LINE = re.compile(
     r'^"%~dp0\.\.\\Code\.exe" '
     r'"%~dp0\.\.\\(?:([A-Za-z0-9][A-Za-z0-9._-]{0,63})\\)?'
     r'resources\\app\\out\\cli\.js" %\*$'
+)
+_ARMCC_RECORD = re.compile(
+    r"^(?:(?:Product|Component):\s*)?ARM Compiler (5\.\d{2})"
+    r"(?: update (\d{1,5}))?(?: \(build (\d{1,6})\))?$"
 )
 _UV4_STANDARD_PATHS = (
     Path("C:/Keil_v5/UV4/UV4.exe"),
@@ -200,13 +209,16 @@ def _vscode_selection(
     locator: Path | None = None,
     remediation: str | None = None,
 ) -> _VscodeSelection:
+    # A successful selection has no diagnostic code; only failure statuses
+    # carry the fixed failure codes.
+    code = None if status == "ok" else _VSCODE_SELECTION_CODES[status]
     return _VscodeSelection(
         status,
         source,
         executable,
         script,
         locator,
-        _VSCODE_SELECTION_CODES[status],
+        code,
         remediation,
     )
 
@@ -287,22 +299,37 @@ def _resolve_vscode_entry(
         return _vscode_selection("invalid", source=source, remediation=_VSCODE_PATH_REMEDIATION)
     if name == "code.exe":
         root = canonical.parent
-        script = _canonical_regular_file(root / "resources" / "app" / "out" / "cli.js")
-        locator = None
-        if script is None:
-            launcher = root / "bin" / "code.cmd"
-            if not _lexists(launcher):
+        launcher = root / "bin" / "code.cmd"
+        if _lexists(launcher):
+            # The installed launcher is authoritative for the current layout;
+            # a stale root/resources/app/out/cli.js must never win over it.
+            canonical_launcher = _canonical_regular_file(launcher)
+            if canonical_launcher is None:
                 return _vscode_selection(
-                    "unsupported-layout", source=source, remediation=_VSCODE_LAYOUT_REMEDIATION
+                    "invalid", source=source, remediation=_VSCODE_PATH_REMEDIATION
                 )
-            script, recognized = _launcher_script(launcher)
+            script, recognized = _launcher_script(canonical_launcher)
             if not recognized or script is None:
                 return _vscode_selection(
-                    "unsupported-layout", source=source, remediation=_VSCODE_LAYOUT_REMEDIATION
+                    "unsupported-layout",
+                    source=source,
+                    remediation=_VSCODE_LAYOUT_REMEDIATION,
                 )
-            locator = _canonical_regular_file(launcher)
+            return _vscode_selection(
+                "ok",
+                source=source,
+                executable=canonical,
+                script=script,
+                locator=canonical_launcher,
+            )
+        # Fixed layout is accepted only when no installed launcher exists.
+        script = _canonical_regular_file(root / "resources" / "app" / "out" / "cli.js")
+        if script is None:
+            return _vscode_selection(
+                "unsupported-layout", source=source, remediation=_VSCODE_LAYOUT_REMEDIATION
+            )
         return _vscode_selection(
-            "ok", source=source, executable=canonical, script=script, locator=locator
+            "ok", source=source, executable=canonical, script=script
         )
     root = canonical.parent.parent
     executable = _canonical_regular_file(root / "Code.exe")
@@ -453,12 +480,21 @@ def _classify_listing(observation: ProcessObservation) -> _Listing:
         )
     try:
         text = observation.stdout.decode("utf-8", errors="strict")
+        diagnostic_text = observation.stderr.decode("utf-8", errors="strict")
     except UnicodeDecodeError:
         return _Listing(
             "invalid-output",
             "VSCODE_EXTENSIONS_INVALID_OUTPUT",
             _EXTENSION_UNKNOWN_REMEDIATION,
             "the extension listing was not valid UTF-8",
+            observation.returncode,
+        )
+    if diagnostic_text.strip():
+        return _Listing(
+            "diagnostic-output",
+            "VSCODE_EXTENSIONS_STDERR",
+            _EXTENSION_UNKNOWN_REMEDIATION,
+            "the selected VS Code CLI wrote unexpected diagnostic output",
             observation.returncode,
         )
     records, malformed, conflict = _parse_listing(text)
@@ -1032,33 +1068,60 @@ def _classify_armcc(
             "the armcc --vsn reader did not complete",
         )
     try:
-        text = observation.stdout.decode("utf-8", errors="strict")
+        stdout_text = observation.stdout.decode("utf-8", errors="strict")
+        stderr_text = observation.stderr.decode("utf-8", errors="strict")
     except UnicodeDecodeError:
         return (
             "invalid-output", None, "ARMCC_OUTPUT_INVALID", _ARMCC_PROBE_REMEDIATION,
             "the armcc --vsn output was not valid UTF-8",
         )
-    version = _armcc_version(text)
+    version, conflict = _armcc_versions(stdout_text, stderr_text)
+    if conflict:
+        return (
+            "version-conflict", None, "ARMCC_VERSION_CONFLICT",
+            _ARMCC_PROBE_REMEDIATION,
+            "the armcc --vsn output reported conflicting compiler versions",
+        )
     if version is None:
         return (
             "version-unknown", None, "ARMCC_VERSION_UNKNOWN", _ARMCC_PROBE_REMEDIATION,
-            "the armcc --vsn output contained no version evidence",
+            "the armcc --vsn output contained no recognized ARM Compiler version",
         )
     return "ok", version, None, None, None
 
 
-def _armcc_version(text: str) -> str | None:
-    fallback: str | None = None
-    for raw_line in text.splitlines():
-        line = raw_line.strip()
-        if not line:
-            continue
-        if fallback is None:
-            fallback = line[:_ARMCC_VERSION_LIMIT]
-        if line.casefold().startswith("product:"):
-            value = line.split(":", 1)[1].strip()
-            return value[:_ARMCC_VERSION_LIMIT] or None
-    return fallback
+def _armcc_versions(stdout_text: str, stderr_text: str) -> tuple[str | None, bool]:
+    """Return ``(safe_version, conflict)`` from recognized ARM Compiler records.
+
+    Only exact Product/Component/bare ``ARM Compiler 5.xx`` records are
+    accepted.  Unrelated text, serial numbers, license messages, and error
+    output never become a version.
+    """
+    records: list[tuple[str, str | None, str | None]] = []
+    for text in (stdout_text, stderr_text):
+        for raw_line in text.splitlines():
+            match = _ARMCC_RECORD.match(raw_line.strip())
+            if match is not None:
+                records.append((match.group(1), match.group(2), match.group(3)))
+    if not records:
+        return None, False
+    bases = {base for base, _update, _build in records}
+    if len(bases) > 1:
+        return None, True
+    updates = {update for _base, update, _build in records if update is not None}
+    if len(updates) > 1:
+        return None, True
+    builds = {build for _base, _update, build in records if build is not None}
+    if len(builds) > 1:
+        return None, True
+    update = next(iter(updates)) if updates else None
+    build = next(iter(builds)) if builds else None
+    version = next(iter(bases))
+    if update is not None:
+        version += f" update {update}"
+    if build is not None:
+        version += f" (build {build})"
+    return version[:_ARMCC_VERSION_LIMIT], False
 
 
 def _diagnostic(
@@ -1068,6 +1131,8 @@ def _diagnostic(
     remediation: str,
     field: str | None,
     cli_option: str | None,
+    *,
+    extension_id: str | None = None,
 ) -> dict[str, object]:
     return {
         "component": component,
@@ -1076,6 +1141,7 @@ def _diagnostic(
         "remediation": remediation,
         "field": field,
         "cliOption": cli_option,
+        "extensionId": extension_id,
     }
 
 
@@ -1117,6 +1183,7 @@ def collect_doctor_readiness(
                     str(entry["remediation"]),
                     None,
                     None,
+                    extension_id=extension,
                 )
             )
     if uv4_diagnostic is not None:

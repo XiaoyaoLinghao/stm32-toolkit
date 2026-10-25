@@ -462,6 +462,65 @@ def test_static_tools_never_execute_cube_mx_or_vscode(
         ("malformed", ProcessObservation(0, b"{not-json", b""), "GCC_INVALID"),
     ],
 )
+def test_incomplete_metadata_output_cannot_produce_support_facts(
+    tmp_path: Path, monkeypatch
+):
+    root, gcc, cmake, ninja = _metadata_root(tmp_path)
+    payload = json.dumps(
+        {
+            "GNUToolsForSTM32": str(gcc),
+            "CMake": str(cmake),
+            "Ninja": str(ninja),
+        }
+    ).encode()
+    monkeypatch.setattr(support, "_CUBECLT_ROOTS", ())
+    monkeypatch.setattr(
+        support,
+        "_run_bounded",
+        lambda argv, **kwargs: ProcessObservation(
+            0, payload, b"", incomplete=True
+        ),
+    )
+
+    profile = discover_tool_support(
+        _write_profile(tmp_path, {"cubeCltRoot": str(root)}),
+        probe_versions=False,
+    )
+
+    assert profile.gcc is None
+    assert "GCC_INVALID" in {issue.code for issue in profile.issues}
+
+
+def test_incomplete_native_version_output_cannot_produce_support_facts(
+    tmp_path: Path, monkeypatch
+):
+    root, gcc, cmake, ninja = _metadata_root(tmp_path)
+    metadata_path = root / "STM32CubeCLT_metadata.bat"
+    metadata = json.dumps(
+        {
+            "GNUToolsForSTM32": str(gcc),
+            "CMake": str(cmake),
+            "Ninja": str(ninja),
+        }
+    ).encode()
+    monkeypatch.setattr(support, "_CUBECLT_ROOTS", ())
+
+    def runner(argv, **kwargs):
+        if Path(argv[0]) == metadata_path:
+            return ProcessObservation(0, metadata, b"")
+        return ProcessObservation(
+            0, b"arm-none-eabi-gcc 14.3.1\n", b"", incomplete=True
+        )
+
+    monkeypatch.setattr(support, "_run_bounded", runner)
+    profile = discover_tool_support(
+        _write_profile(tmp_path, {"cubeCltRoot": str(root)})
+    )
+
+    assert profile.gcc is None
+    assert "GCC_PROBE_FAILED" in {issue.code for issue in profile.issues}
+
+
 def test_metadata_runner_failures_do_not_fall_back_to_known_layout(
     tmp_path: Path, monkeypatch, label: str, observation: ProcessObservation, expected_issue: str
 ):

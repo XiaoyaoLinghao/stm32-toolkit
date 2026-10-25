@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from stm32_toolkit import doctor_readiness as readiness
+from stm32_toolkit import tool_support
 from stm32_toolkit.doctor import run_doctor
 from stm32_toolkit.tool_support import (
     ProcessObservation,
@@ -103,7 +104,7 @@ def test_complete_listing_observes_case_insensitive_duplicates_and_exact_argv(
     monkeypatch, tmp_path: Path
 ):
     root = tmp_path / "vscode"
-    executable, script, _locator = _normal_install(root)
+    executable, script, locator = _normal_install(root)
     listing = (
         b"MS-VSCODE.CPPTOOLS@1.21.0\r\n"
         b"ms-vscode.cpptools@1.21.0\n"
@@ -155,7 +156,7 @@ def test_complete_listing_observes_case_insensitive_duplicates_and_exact_argv(
     assert observation["source"] == "explicit"
     assert observation["executable"] == executable.as_posix()
     assert observation["cliScript"] == script.as_posix()
-    assert observation["locator"] is None
+    assert observation["locator"] == locator.as_posix()
     assert observation["returnCode"] == 0
     assert not [
         item for item in result["diagnostics"] if item["component"] == "vsCode"
@@ -184,6 +185,12 @@ def test_empty_successful_listing_is_valid_absence(monkeypatch, tmp_path: Path):
         if item["code"] == "VSCODE_EXTENSION_MISSING"
     ]
     assert len(missing) == 3
+    assert {item["extensionId"] for item in missing} == set(
+        readiness.RECOMMENDED_EXTENSIONS
+    )
+    assert all(
+        item["field"] is None and item["cliOption"] is None for item in missing
+    )
 
 
 def test_skip_makes_no_process_call_and_keeps_unknown_values(monkeypatch):
@@ -274,6 +281,57 @@ def test_malformed_or_conflicting_records_fail_closed(
             entry["installed"] is None
             for entry in result["vscodeExtensions"].values()
         )
+
+
+@pytest.mark.parametrize(
+    ("stderr", "status"),
+    [
+        (b"warning: profile unavailable\n", "diagnostic-output"),
+        (b"\xff", "invalid-output"),
+    ],
+)
+def test_unexpected_stderr_never_becomes_absence(
+    monkeypatch, tmp_path: Path, stderr: bytes, status: str
+):
+    root = tmp_path / "vscode"
+    _normal_install(root)
+    _fake_runner(
+        monkeypatch,
+        ProcessObservation(0, b"ms-vscode.cpptools@1.2.3\n", stderr),
+    )
+
+    result = _collect(
+        monkeypatch, probe_vscode_extensions=True, vscode_path=root / "Code.exe"
+    )
+
+    assert result["vscodeExtensionObservation"]["status"] == status
+    assert result["vscodeExtensionObservation"]["completeInventory"] is False
+    for entry in result["vscodeExtensions"].values():
+        assert entry["installed"] is None
+        assert entry["version"] is None
+
+
+@pytest.mark.parametrize(
+    "version", [b"not-a-version", b"1", b"1.2.3-", b"1.2.3+"], ids=str
+)
+def test_malformed_extension_versions_are_not_installed_facts(
+    monkeypatch, tmp_path: Path, version: bytes
+):
+    root = tmp_path / "vscode"
+    _normal_install(root)
+    _fake_runner(
+        monkeypatch,
+        ProcessObservation(0, b"ms-vscode.cpptools@" + version + b"\n", b""),
+    )
+
+    result = _collect(
+        monkeypatch, probe_vscode_extensions=True, vscode_path=root / "Code.exe"
+    )
+
+    assert result["vscodeExtensionObservation"]["status"] == "malformed-output"
+    assert all(
+        entry["installed"] is None for entry in result["vscodeExtensions"].values()
+    )
 
 
 def test_conflicting_unrelated_versions_are_ignored(monkeypatch, tmp_path: Path):
@@ -368,6 +426,90 @@ def test_code_exe_selects_the_same_installations_hash_script(
     assert result["vscodeExtensionObservation"]["locator"].endswith("bin/code.cmd")
 
 
+def test_installed_launcher_outranks_stale_fixed_layout(monkeypatch, tmp_path: Path):
+    root = tmp_path / "vscode"
+    executable, script, locator = _hash_install(root)
+    stale = _write(root / "resources" / "app" / "out" / "cli.js", b"stale")
+    calls = _fake_runner(monkeypatch, ProcessObservation(0, b"", b""))
+
+    result = _collect(
+        monkeypatch, probe_vscode_extensions=True, vscode_path=root / "Code.exe"
+    )
+
+    assert stale.exists()
+    assert calls[0]["argv"] == (
+        str(executable),
+        str(script),
+        "--list-extensions",
+        "--show-versions",
+    )
+    observation = result["vscodeExtensionObservation"]
+    assert observation["cliScript"] == script.as_posix()
+    assert observation["locator"] == locator.as_posix()
+
+
+def test_unrecognized_or_unsafe_launcher_never_falls_back_to_fixed_layout(
+    monkeypatch, tmp_path: Path
+):
+    _forbid_process(monkeypatch)
+    root = tmp_path / "unrecognized"
+    _write(root / "Code.exe")
+    _write(root / "resources" / "app" / "out" / "cli.js")
+    _write(root / "bin" / "code.cmd", b"@echo off\nsomething-else\n")
+    result = _collect(
+        monkeypatch, probe_vscode_extensions=True, vscode_path=root / "Code.exe"
+    )
+    assert result["vscodeExtensionObservation"]["status"] == "unsupported-layout"
+
+    unsafe = tmp_path / "unsafe"
+    _write(unsafe / "Code.exe")
+    _write(unsafe / "resources" / "app" / "out" / "cli.js")
+    (unsafe / "bin" / "code.cmd").mkdir(parents=True)
+    result = _collect(
+        monkeypatch, probe_vscode_extensions=True, vscode_path=unsafe / "Code.exe"
+    )
+    assert result["vscodeExtensionObservation"]["status"] == "invalid"
+
+
+def test_ambiguous_launcher_literals_never_fall_back_to_fixed_layout(
+    monkeypatch, tmp_path: Path
+):
+    root = tmp_path / "ambiguous-launcher"
+    _write(root / "Code.exe")
+    _write(root / "resources" / "app" / "out" / "cli.js")
+    literal = (
+        b'"%~dp0..\\Code.exe" "%~dp0..\\resources\\app\\out\\cli.js" %*\n'
+    )
+    _write(root / "bin" / "code.cmd", b"@echo off\n" + literal + literal)
+    _forbid_process(monkeypatch)
+
+    result = _collect(
+        monkeypatch, probe_vscode_extensions=True, vscode_path=root / "Code.exe"
+    )
+
+    assert result["vscodeExtensionObservation"]["status"] == "unsupported-layout"
+
+
+def test_unicode_and_space_paths_remain_separate_argv_elements(
+    monkeypatch, tmp_path: Path
+):
+    root = tmp_path / "VS Code ünicode"
+    executable, script, _locator = _normal_install(root)
+    calls = _fake_runner(monkeypatch, ProcessObservation(0, b"", b""))
+
+    _collect(monkeypatch, probe_vscode_extensions=True, vscode_path=root / "Code.exe")
+
+    argv = calls[0]["argv"]
+    assert argv == (
+        str(executable),
+        str(script),
+        "--list-extensions",
+        "--show-versions",
+    )
+    assert len(argv) == 4
+    assert " " in argv[0] and "ü" in argv[0]
+
+
 def test_invalid_explicit_path_never_falls_back(monkeypatch, tmp_path: Path):
     valid_root = tmp_path / "valid"
     _normal_install(valid_root)
@@ -444,6 +586,37 @@ def test_redirected_explicit_parent_is_invalid(monkeypatch, tmp_path: Path):
     )
 
     assert result["vscodeExtensionObservation"]["status"] == "invalid"
+
+
+def test_mocked_lexical_parent_reparse_is_rejected(monkeypatch, tmp_path: Path):
+    root = tmp_path / "redirected"
+    _normal_install(root)
+    real_lstat = tool_support.os.lstat
+
+    def injected_lstat(path):
+        metadata = real_lstat(path)
+        if Path(path) == root:
+            attributes = {
+                name: getattr(metadata, name)
+                for name in dir(metadata)
+                if name.startswith("st_")
+            }
+            attributes["st_file_attributes"] = 0x400
+            attributes["st_reparse_tag"] = 0
+            return type("InjectedParentReparse", (), attributes)()
+        return metadata
+
+    monkeypatch.setattr(tool_support.os, "lstat", injected_lstat)
+    _forbid_process(monkeypatch)
+
+    result = _collect(
+        monkeypatch, probe_vscode_extensions=True, vscode_path=root / "Code.exe"
+    )
+
+    assert result["vscodeExtensionObservation"]["status"] == "invalid"
+    assert all(
+        entry["installed"] is None for entry in result["vscodeExtensions"].values()
+    )
 
 
 def test_standard_layout_ambiguity_and_missing_are_distinct(
@@ -596,8 +769,125 @@ def test_armcc_probes_only_vsn_and_derives_from_selected_uv4(
     assert record["source"] == "uv4-installation"
     assert record["path"] == armcc.as_posix()
     assert record["status"] == "ok"
-    assert record["version"] == "ARM Compiler 5.06 update 7"
+    assert record["version"] == "5.06 update 7"
     assert record["returnCode"] == 0
+
+
+def test_armcc_accepts_a_genuine_version_on_stderr(monkeypatch, tmp_path: Path):
+    armcc = _write(tmp_path / "armcc.exe")
+    _fake_runner(
+        monkeypatch,
+        ProcessObservation(
+            0, b"", b"Component: ARM Compiler 5.06 update 7 (build 960)\n"
+        ),
+    )
+
+    result = _collect(
+        monkeypatch, probe_vscode_extensions=False, armcc_path=armcc
+    )
+
+    record = result["keilTools"]["armcc"]
+    assert record["status"] == "ok"
+    assert record["version"] == "5.06 update 7 (build 960)"
+
+
+def test_armcc_ignores_unrelated_first_line_and_serial_text(
+    monkeypatch, tmp_path: Path
+):
+    armcc = _write(tmp_path / "armcc.exe")
+    _fake_runner(
+        monkeypatch,
+        ProcessObservation(
+            0,
+            b"License valid until 2030\n"
+            b"Product: ARM Compiler 5.06\n"
+            b"Component: ARM Compiler 5.06 update 7 (build 960)\n"
+            b"Tool: armcc [4d3621]\n",
+            b"",
+        ),
+    )
+
+    result = _collect(
+        monkeypatch, probe_vscode_extensions=False, armcc_path=armcc
+    )
+
+    record = result["keilTools"]["armcc"]
+    assert record["status"] == "ok"
+    assert record["version"] == "5.06 update 7 (build 960)"
+    serialized = json.dumps(result, default=str)
+    assert "License valid until 2030" not in serialized
+    assert "4d3621" not in serialized
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        b"License valid until 2030\n",
+        b"Product: License valid\n",
+        b"Tool: armcc [4d3621]\n",
+        b"ARM Compiler 6.18\n",
+        b"garbage\n",
+        b"Component: ARM Compiler 5.06 extra\n",
+    ],
+    ids=str,
+)
+def test_armcc_unrelated_or_unsupported_text_is_not_a_version(
+    monkeypatch, tmp_path: Path, text: bytes
+):
+    armcc = _write(tmp_path / "armcc.exe")
+    _fake_runner(monkeypatch, ProcessObservation(0, text, b""))
+
+    result = _collect(
+        monkeypatch, probe_vscode_extensions=False, armcc_path=armcc
+    )
+
+    record = result["keilTools"]["armcc"]
+    assert record["status"] == "version-unknown"
+    assert record["version"] is None
+    assert record["code"] == "ARMCC_VERSION_UNKNOWN"
+    assert text.strip().decode("utf-8") not in json.dumps(result, default=str)
+
+
+def test_armcc_conflicting_versions_are_not_a_fact(monkeypatch, tmp_path: Path):
+    armcc = _write(tmp_path / "armcc.exe")
+    _fake_runner(
+        monkeypatch,
+        ProcessObservation(
+            0,
+            b"Component: ARM Compiler 5.06 update 7 (build 960)\n"
+            b"Component: ARM Compiler 5.06 update 8 (build 961)\n",
+            b"",
+        ),
+    )
+
+    result = _collect(
+        monkeypatch, probe_vscode_extensions=False, armcc_path=armcc
+    )
+
+    record = result["keilTools"]["armcc"]
+    assert record["status"] == "version-conflict"
+    assert record["version"] is None
+    assert record["code"] == "ARMCC_VERSION_CONFLICT"
+    assert "update 8" not in json.dumps(result, default=str)
+
+
+def test_armcc_invalid_bytes_on_stderr_is_invalid_output(
+    monkeypatch, tmp_path: Path
+):
+    armcc = _write(tmp_path / "armcc.exe")
+    _fake_runner(
+        monkeypatch,
+        ProcessObservation(0, b"Product: ARM Compiler 5.06\n", b"\xff"),
+    )
+
+    result = _collect(
+        monkeypatch, probe_vscode_extensions=False, armcc_path=armcc
+    )
+
+    record = result["keilTools"]["armcc"]
+    assert record["status"] == "invalid-output"
+    assert record["version"] is None
+    assert record["code"] == "ARMCC_OUTPUT_INVALID"
 
 
 @pytest.mark.parametrize(
@@ -723,17 +1013,26 @@ def test_run_doctor_keeps_declared_profile_separate_from_live_observation(
     )
 
     result = run_doctor(project, support_profile=profile)
-    data = result.data
+    payload = result.to_dict()
+    data = payload["data"]
 
     assert data["creationSupport"]["vsCodeExtensions"] == [
         {"id": "ms-vscode.cpptools", "version": "9.9.9"}
     ]
+    assert (
+        data["creationSupport"]["vsCodeExtensionsSource"]
+        == "support-profile-declared"
+    )
     observed = data["vscodeExtensions"]["ms-vscode.cpptools"]
     assert observed["installed"] is False
     assert observed["version"] is None
     assert data["vscodeExtensionObservation"]["source"] == "support-profile"
     assert data["vscodeExtensionObservation"]["completeInventory"] is True
     assert data["keilTools"]["toolkitNativeBuildSupported"] is False
+    assert data["keilTools"]["routes"] == [
+        "keil-migration",
+        "external-firmware",
+    ]
     assert data["readiness"]["reportCollected"] is True
     assert data["mutated"] is False
-    assert json.loads(json.dumps(result.to_dict()))["ok"] is True
+    assert payload["ok"] is True

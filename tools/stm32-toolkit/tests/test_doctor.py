@@ -573,11 +573,16 @@ def test_doctor_vscode_extensions_are_unknown_when_probing_is_skipped(
     assert observation["status"] == "skipped"
     assert observation["completeInventory"] is False
     assert observation["scope"] == "local-default-profile"
-    assert result.data["keilTools"]["toolkitNativeBuildSupported"] is False
-    assert result.data["keilTools"]["routes"] == [
+    payload = result.to_dict()["data"]
+    assert payload["keilTools"]["toolkitNativeBuildSupported"] is False
+    assert payload["keilTools"]["routes"] == [
         "keil-migration",
         "external-firmware",
     ]
+    assert (
+        payload["creationSupport"]["vsCodeExtensionsSource"]
+        == "support-profile-declared"
+    )
 
 
 def test_doctor_gui_version_is_static_and_never_starts_a_process(monkeypatch, tmp_path: Path):
@@ -641,4 +646,3 @@ def test_skipped_extension_probing_dispatches_no_process(monkeypatch):
     assert tuple(extensions) == VSCODE_EXTENSIONS
     assert all(item["status"] == "skipped" for item in extensions.values())
     assert observation["status"] == "skipped"
-

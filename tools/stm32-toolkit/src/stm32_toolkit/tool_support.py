@@ -365,7 +365,13 @@ def _extract_version(text: str) -> str | None:
 def _version_probe(path: Path) -> str | None:
     try:
         observation = _run_bounded((str(path), "--version"))
-        if not isinstance(observation, ProcessObservation) or observation.returncode != 0 or observation.timed_out or observation.truncated:
+        if (
+            not isinstance(observation, ProcessObservation)
+            or observation.returncode != 0
+            or observation.timed_out
+            or observation.truncated
+            or observation.incomplete
+        ):
             return None
         raw = observation.stdout or observation.stderr
         text = raw.decode("utf-8", errors="strict").strip()
@@ -567,7 +573,13 @@ def _read_metadata(root: Path) -> _MetadataRead:
         return _MetadataRead({}, True, True)
     try:
         observation = _run_bounded((str(script), "-j"), capture_limit=_MAX_METADATA_BYTES)
-        if not isinstance(observation, ProcessObservation) or observation.returncode != 0 or observation.timed_out or observation.truncated:
+        if (
+            not isinstance(observation, ProcessObservation)
+            or observation.returncode != 0
+            or observation.timed_out
+            or observation.truncated
+            or observation.incomplete
+        ):
             return _MetadataRead({}, True, True)
         raw = observation.stdout.decode("utf-8", errors="strict")
         native_path_format = False

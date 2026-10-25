@@ -843,6 +843,36 @@ def test_one_matching_client_root_is_accepted(tmp_path: Path):
     assert session.list_roots_calls == 1
 
 
+def test_doctor_root_rejection_skips_all_readiness_work(
+    tmp_path: Path, monkeypatch
+):
+    runtime = _runtime(tmp_path)
+    other = tmp_path / "other"
+    other.mkdir()
+    session = _RootSession([[runtime.project_root, other]])
+    calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    monkeypatch.setattr(
+        mcp_server,
+        "run_doctor",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+
+    result = asyncio.run(
+        tool_doctor_for_request(
+            runtime,
+            _context(session),
+            probe_vscode_extensions=True,
+            vscode_path=str(tmp_path / "Code.exe"),
+            uv4_path=str(tmp_path / "UV4.exe"),
+            armcc_path=str(tmp_path / "armcc.exe"),
+        )
+    )
+
+    assert result["ok"] is False
+    assert result["code"] == "UNSUPPORTED_MULTIROOT"
+    assert calls == []
+
+
 @pytest.mark.parametrize(
     ("request_tool", "operation"),
     [

@@ -2457,32 +2457,32 @@ def create_server(
             ),
         ] = True,
         vscodePath: Annotated[
-            StrictStr | None,
+            StrictStr,
             Field(
                 description=(
                     "Absolute Code.exe or installed bin/code.cmd. The launcher "
                     "is parsed, never executed. Invalid values do not fall back."
                 )
             ),
-        ] = None,
+        ] | None = None,
         uv4Path: Annotated[
-            StrictStr | None,
+            StrictStr,
             Field(
                 description=(
                     "Absolute Keil UV4.exe used only for static file-version "
                     "evidence; UV4 is never executed."
                 )
             ),
-        ] = None,
+        ] | None = None,
         armccPath: Annotated[
-            StrictStr | None,
+            StrictStr,
             Field(
                 description=(
                     "Absolute armcc.exe queried only with the fixed --vsn "
                     "option; presence is not license or build evidence."
                 )
             ),
-        ] = None,
+        ] | None = None,
     ) -> dict[str, object]:
         """Diagnose the bound project's Toolkit environment.
 
@@ -2499,9 +2499,16 @@ def create_server(
         ``data.creationSupport.vsCodeExtensions``.  Incomplete, truncated,
         malformed, ambiguous, nonzero, or timed-out output yields
         ``installed=null`` with a precise status and diagnostic, never a
-        fabricated absence.  ``data.keilTools`` reports bounded UV4/ARMCC
-        discovery; ``toolkitNativeBuildSupported`` is always false, so use the
-        Keil migration or external-firmware routes.  probeCore describes the
+        fabricated absence.
+        ``data.creationSupport.vsCodeExtensionsSource`` is fixed to
+        ``support-profile-declared`` to mark the declared provenance of
+        ``creationSupport.vsCodeExtensions``; it never describes the live
+        ``data.vscodeExtensions`` values.  ``data.keilTools`` reports bounded
+        UV4/ARMCC discovery; ``toolkitNativeBuildSupported`` is always false,
+        so use the Keil migration or external-firmware routes.  These
+        observation options and fields are current-source behavior; a frozen
+        or installed 1.3.0 server does not expose them, and their absence
+        there is not evidence that the MCP client is stale.  probeCore describes the
         managed runtime and probe lease directory.  Version and binding
         evidence comes from data.runtime.toolkitVersion and
         data.publicInventory: compare them with the actual tool list and input

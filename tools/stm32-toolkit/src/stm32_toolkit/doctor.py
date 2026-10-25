@@ -75,6 +75,10 @@ def run_doctor(
         uv4_path=uv4_path,
         armcc_path=armcc_path,
     )
+    creation_support = support.to_dict()
+    # The declared support-profile list remains compatible, with explicit
+    # provenance.  Live observations stay only in vscodeExtensions above.
+    creation_support["vsCodeExtensionsSource"] = "support-profile-declared"
     return replace(OperationResult.success(
         "doctor",
         {
@@ -87,7 +91,7 @@ def run_doctor(
             "readiness": readiness["readiness"],
             "diagnostics": readiness["diagnostics"],
             "probeCore": _probe_core_evidence(data_root),
-            "creationSupport": support.to_dict(),
+            "creationSupport": creation_support,
             "runtime": _runtime_evidence(),
             "publicInventory": _public_inventory(),
             "mutated": False,

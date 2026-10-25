@@ -333,7 +333,7 @@ def test_new_tool_schemas_expose_only_declared_properties(tmp_path: Path):
         "uv4Path",
         "armccPath",
     }
-    assert doctor["required"] == []
+    assert doctor.get("required", []) == []
     for name in ("stm32_project_detect", "stm32_project_context"):
         assert schemas[name].get("properties", {}) == {}
         assert schemas[name].get("required", []) == []
@@ -352,6 +352,7 @@ def test_public_tool_descriptions_guide_mcp_only_consumers(tmp_path: Path):
         "local default",
         "installed=null",
         "declared",
+        "vsCodeExtensionsSource",
         "toolkitNativeBuildSupported",
         "not the active window",
     ):
