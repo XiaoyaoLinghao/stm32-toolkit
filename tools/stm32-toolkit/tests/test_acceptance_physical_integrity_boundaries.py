@@ -83,7 +83,12 @@ _ENTRY_OPERATIONS = {
 
 
 def _ok(result: object) -> Mapping[str, object]:
-    return physical_fixture._ok(result)
+    # Compare exact public wire representations: OperationResult.data freezes
+    # nested containers, while to_dict() thaws them to JSON lists/objects.
+    assert getattr(result, "ok", False), getattr(result, "to_dict", lambda: result)()
+    data = result.to_dict()["data"]
+    assert isinstance(data, Mapping)
+    return data
 
 
 def _assert_failure(result: object, operation: str, code: str, message: str) -> None:
