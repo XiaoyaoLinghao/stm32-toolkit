@@ -80,6 +80,7 @@ def _success(operation: str = "hardware") -> OperationResult[object]:
                 "expected_elf_sha256": ELF_SHA,
                 "authorized": True,
                 "recovery_under_reset": False,
+                "frequency_hz": None,
             },
         ),
         (

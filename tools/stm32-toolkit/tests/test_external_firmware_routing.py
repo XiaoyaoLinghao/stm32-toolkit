@@ -86,6 +86,7 @@ def test_registered_firmware_tools_expose_closed_source_only_shapes(
         "importId",
         "expectedSha256",
         "authorized",
+        "frequencyHz",
     }
     import_schema = schemas["stm32_firmware_import"]
     regions = import_schema["properties"]["flashRegions"]

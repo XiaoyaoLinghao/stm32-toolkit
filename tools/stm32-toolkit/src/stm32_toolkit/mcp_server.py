@@ -185,6 +185,7 @@ def _validate_test_string(value: str) -> str:
 ProbeId = Annotated[str, Field(pattern=_PROBE_PATTERN)]
 Digest = Annotated[str, Field(pattern=_DIGEST_PATTERN)]
 FirmwareTarget = Annotated[str, Field(pattern=_PROBE_PATTERN)]
+FlashFrequency = Annotated[StrictInt, Field(ge=100_000, le=50_000_000)]
 
 
 class FirmwareFlashRegion(BaseModel):
@@ -1397,6 +1398,7 @@ async def tool_flash_for_request(
     expected_elf_sha256: str,
     authorized: object = False,
     recovery_under_reset: object = False,
+    frequency_hz: object = None,
 ) -> dict[str, object]:
     operation = "stm32_flash"
     failure = await _client_roots_failure(runtime, context, operation)
@@ -1417,6 +1419,7 @@ async def tool_flash_for_request(
             expected_elf_sha256,
             True,
             recovery_under_reset,
+            frequency_hz=frequency_hz,
         ),
         flash_workflow,
     )
@@ -1511,6 +1514,7 @@ async def tool_flash_imported_for_request(
     import_id: str,
     expected_sha256: str,
     authorized: object = False,
+    frequency_hz: object = None,
 ) -> dict[str, object]:
     operation = "stm32_flash_imported"
     failure = await _client_roots_failure(runtime, context, operation)
@@ -1530,6 +1534,7 @@ async def tool_flash_imported_for_request(
             import_id,
             expected_sha256,
             True,
+            frequency_hz=frequency_hz,
         ),
         flash_imported_workflow,
     )
@@ -2974,6 +2979,7 @@ def create_server(
         expectedElfSha256: Digest,
         authorized: StrictBool = False,
         recoveryUnderReset: StrictBool = False,
+        frequencyHz: FlashFrequency | None = None,
     ) -> dict[str, object]:
         """Flash one exact probe with the current firmware identity pins.
 
@@ -2995,7 +3001,15 @@ def create_server(
         Target tests, or recovery.  This tool modifies the board and runs
         only with authorized=true after explicit user authorization for this
         exact operation.  Under-reset recovery is a separate policy, never
-        an automatic retry.
+        an automatic retry.  frequencyHz is an optional explicit debug
+        frequency in Hz (100000..50000000); omit it to keep the configured
+        default.  Under-reset recovery keeps its fixed 100000 Hz policy, so
+        a conflicting explicit frequency fails before any effect.  The
+        result's details.flashOptions records selected configuration, not a
+        measured or verified hardware frequency.  An eligible failed managed
+        attempt may include details.recoverySuggestion: it is informational,
+        requires new authorization, and never retries automatically.
+        Imported flash does not gain recovery from that suggestion.
         """
         return await tool_flash_for_request(
             runtime,
@@ -3005,6 +3019,7 @@ def create_server(
             expectedElfSha256,
             authorized,
             recoveryUnderReset,
+            frequencyHz,
         )
 
     @mcp.tool(name=MCP_TOOL_NAMES["firmware_import"])
@@ -3087,6 +3102,7 @@ def create_server(
         importId: Digest,
         expectedSha256: Digest,
         authorized: StrictBool = False,
+        frequencyHz: FlashFrequency | None = None,
     ) -> dict[str, object]:
         """Flash one admitted external import to one exact probe.
 
@@ -3100,7 +3116,10 @@ def create_server(
         The backend rejects the whole image before programming if any segment
         is outside the attached target's declared Flash map, and every planned
         byte is read back.  A distinct external-flash receipt is written only
-        after successful readback and cleanup.  This path adds no
+        after successful readback and cleanup.  frequencyHz is an optional
+        explicit debug frequency in Hz (100000..50000000); omit it to keep the
+        configured default.  details.flashOptions records selected
+        configuration, not a measured frequency.  This path adds no
         recovery-under-reset, reset, resume, handoff, debug, Monitor, or Target
         test capability, and its receipt does not unlock them.
         """
@@ -3111,6 +3130,7 @@ def create_server(
             importId,
             expectedSha256,
             authorized,
+            frequencyHz,
         )
 
     @mcp.tool(name=MCP_TOOL_NAMES["debug_handoff_begin"])

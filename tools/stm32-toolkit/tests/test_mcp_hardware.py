@@ -145,7 +145,7 @@ def test_hardware_schemas_expose_only_project_bound_arguments(tmp_path: Path):
         "stm32_probe_list": set(),
         "stm32_flash": {
             "probeId", "expectedBuildId", "expectedElfSha256", "authorized",
-            "recoveryUnderReset",
+            "recoveryUnderReset", "frequencyHz",
         },
         "stm32_debug_handoff_begin": {
             "probeId", "expectedBuildId", "expectedElfSha256", "authorized",

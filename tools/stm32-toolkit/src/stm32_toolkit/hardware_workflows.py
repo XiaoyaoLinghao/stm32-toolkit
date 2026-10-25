@@ -87,6 +87,9 @@ _REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 _MAX_PROBES = 64
 _MAX_ITEMS = 256
 _CONTROLLED_SNAPSHOT_RECOVERY_SECONDS = 45.0
+_MIN_FLASH_FREQUENCY_HZ = 100_000
+_MAX_FLASH_FREQUENCY_HZ = 50_000_000
+_UNDER_RESET_FREQUENCY_HZ = 100_000
 _FORBIDDEN_RESULT_KEYS = frozenset(
     {
         "token",
@@ -119,6 +122,7 @@ class FlashWorkflowRequest:
     expected_elf_sha256: str
     authorized: object
     recovery_under_reset: object = False
+    frequency_hz: object = None
 
 
 @dataclass(frozen=True)
@@ -130,6 +134,7 @@ class FlashImportedWorkflowRequest:
     import_id: str
     expected_sha256: str
     authorized: object = False
+    frequency_hz: object = None
 
 
 @dataclass(frozen=True)
@@ -961,6 +966,175 @@ def _result_with_details(
     )
 
 
+def _validated_flash_frequency(value: object, *, recovery: bool) -> int | None:
+    """Return one explicit frequency or raise before any hardware effect."""
+
+    if value is None:
+        return None
+    if type(value) is not int:
+        raise _fail(
+            "HARDWARE_INPUT_INVALID",
+            "Flash frequency is invalid",
+            {
+                "field": "frequencyHz",
+                "rule": "type",
+                "guidance": (
+                    "Pass frequencyHz as an exact decimal integer in Hz; omit it "
+                    "to keep the configured default. Booleans, floats, and "
+                    "strings are rejected."
+                ),
+            },
+        )
+    if not _MIN_FLASH_FREQUENCY_HZ <= value <= _MAX_FLASH_FREQUENCY_HZ:
+        raise _fail(
+            "HARDWARE_INPUT_INVALID",
+            "Flash frequency is invalid",
+            {
+                "field": "frequencyHz",
+                "rule": "range",
+                "minimumHz": _MIN_FLASH_FREQUENCY_HZ,
+                "maximumHz": _MAX_FLASH_FREQUENCY_HZ,
+                "guidance": (
+                    "Choose a frequency between 100000 and 50000000 Hz, or omit "
+                    "frequencyHz to keep the configured default."
+                ),
+            },
+        )
+    if recovery and value != _UNDER_RESET_FREQUENCY_HZ:
+        raise _fail(
+            "HARDWARE_INPUT_INVALID",
+            "Flash frequency conflicts with under-reset recovery",
+            {
+                "field": "frequencyHz",
+                "rule": "conflict",
+                "guidance": (
+                    "Under-reset recovery uses its fixed 100000 Hz policy. Omit "
+                    "frequencyHz (recommended) or pass exactly 100000 together "
+                    "with recoveryUnderReset/--recovery-under-reset."
+                ),
+            },
+        )
+    return value
+
+
+def _selected_flash_worker_config(
+    base: ProbeWorkerConfig,
+    frequency_hz: int | None,
+    *,
+    recovery: bool,
+) -> ProbeWorkerConfig | None:
+    """Select an immutable worker configuration for this operation only."""
+
+    if recovery:
+        return base.for_under_reset_recovery()
+    if frequency_hz is None:
+        return None
+    try:
+        return ProbeWorkerConfig(
+            frequency_hz=frequency_hz,
+            target_profile=base.target_profile(),
+            transport_provider=base.transport_provider,
+            connection_policy=base.connection_policy,
+        )
+    except TypeError as error:
+        raise _fail(
+            "HARDWARE_INPUT_INVALID",
+            "Flash frequency is invalid",
+            {
+                "field": "frequencyHz",
+                "rule": "conflict",
+                "guidance": (
+                    "The selected frequency is incompatible with the configured "
+                    "connection policy. Omit frequencyHz to keep that policy, or "
+                    "use the separately authorized under-reset recovery option."
+                ),
+            },
+        ) from error
+
+
+def _flash_options_details(
+    requested_frequency_hz: int | None,
+    configured: ProbeWorkerConfig,
+) -> dict[str, object]:
+    """Describe the selected configuration; never measured hardware frequency."""
+
+    return {
+        "requestedFrequencyHz": requested_frequency_hz,
+        "configuredFrequencyHz": configured.frequency_hz,
+        "connectionPolicy": configured.connection_policy,
+        "automaticRetry": False,
+    }
+
+
+def _with_flash_options(
+    result: OperationResult[Any],
+    requested_frequency_hz: int | None,
+    configured: ProbeWorkerConfig,
+) -> OperationResult[Any]:
+    details = dict(result.details) if isinstance(result.details, Mapping) else {}
+    details["flashOptions"] = _flash_options_details(
+        requested_frequency_hz, configured
+    )
+    return _result_with_details(result, details)
+
+
+_RECOVERY_SUGGESTION_STAGES = frozenset({"session-open", "halt-verify"})
+_RECOVERY_SUGGESTION_REASONS = frozenset(
+    {
+        "probe-disconnected",
+        "probe-io",
+        "transport-timeout",
+        "transport-fault",
+        "transport-error",
+        "target-response",
+        "target-register",
+        "debug-command",
+        "debug-operation",
+        "postcondition-failed",
+        "backend-code",
+    }
+)
+
+
+def _under_reset_recovery_suggestion(
+    result: OperationResult[Any], *, recovery_requested: bool
+) -> dict[str, object] | None:
+    """Return bounded informational guidance for one eligible failed attempt."""
+
+    if recovery_requested or result.ok:
+        return None
+    if result.code == "PROBE_PROGRAM_FAILED":
+        eligible = True
+    elif result.code == "PROBE_ATTACH_FAILED":
+        diagnostic = extract_attach_diagnostic(result.details)
+        if diagnostic is None:
+            return None
+        primary = diagnostic["primary"]
+        eligible = (
+            primary["stage"] in _RECOVERY_SUGGESTION_STAGES
+            and primary["reason"] in _RECOVERY_SUGGESTION_REASONS
+        )
+    else:
+        return None
+    if not eligible:
+        return None
+    return {
+        "kind": "under-reset",
+        "frequencyHz": _UNDER_RESET_FREQUENCY_HZ,
+        "cliOption": "--recovery-under-reset",
+        "mcpArgument": "recoveryUnderReset",
+        "requiresNewAuthorization": True,
+        "automaticRetry": False,
+        "guidance": (
+            "Stop here and retain the complete failure result and diagnostics. "
+            "Verify the target is powered, check the reset wiring and that owned "
+            "cleanup completed, then consider a separately authorized one-shot "
+            "under-reset recovery. Recovery may leave the target halted and does "
+            "not prove that it is running."
+        ),
+    }
+
+
 def _with_controlled_cleanup(
     result: OperationResult[Any],
     cleanup: _CleanupOutcome,
@@ -1410,15 +1584,16 @@ async def flash_workflow(
             raise _fail("AUTHORIZATION_REQUIRED", "Explicit flash authorization is required")
         if type(typed.recovery_under_reset) is not bool:
             raise _fail("HARDWARE_INPUT_INVALID", "Flash recovery selection is invalid")
+        frequency_hz = _validated_flash_frequency(
+            typed.frequency_hz, recovery=typed.recovery_under_reset
+        )
+        selected_config = _selected_flash_worker_config(
+            _seams.worker_config,
+            frequency_hz,
+            recovery=typed.recovery_under_reset,
+        )
     except _WorkflowFailure as error:
         return _operation_failure(operation, error)
-
-    selected_seams = _seams
-    if typed.recovery_under_reset:
-        selected_seams = replace(
-            _seams,
-            worker_config=_seams.worker_config.for_under_reset_recovery(),
-        )
 
     async def action(supervisor: object, client: object) -> OperationResult[Any]:
         return await _seams.flash(
@@ -1438,15 +1613,23 @@ async def flash_workflow(
         paths=paths,
         probe_id=typed.probe_id,
         level=OperationLevel.MODIFY,
-        seams=selected_seams,
+        seams=_seams,
         action=action,
+        worker_config=selected_config,
         requested_target=model.debug.target,
     )
+    configured = selected_config if selected_config is not None else _seams.worker_config
+    details = dict(result.details) if isinstance(result.details, Mapping) else {}
+    details["flashOptions"] = _flash_options_details(frequency_hz, configured)
     if result.ok:
-        return _result_with_details(
-            result, {"postFlash": {"targetState": "unknown", "runVerified": False}}
+        details["postFlash"] = {"targetState": "unknown", "runVerified": False}
+    else:
+        suggestion = _under_reset_recovery_suggestion(
+            result, recovery_requested=typed.recovery_under_reset
         )
-    return result
+        if suggestion is not None:
+            details["recoverySuggestion"] = suggestion
+    return _result_with_details(result, details)
 
 
 async def flash_imported_workflow(
@@ -1540,6 +1723,12 @@ async def flash_imported_workflow(
                     ),
                 },
             )
+        frequency_hz = _validated_flash_frequency(
+            typed.frequency_hz, recovery=False
+        )
+        selected_config = _selected_flash_worker_config(
+            _seams.worker_config, frequency_hz, recovery=False
+        )
         try:
             admission = load_admission(
                 project_root,
@@ -1573,17 +1762,24 @@ async def flash_imported_workflow(
         level=OperationLevel.MODIFY,
         seams=_seams,
         action=action,
+        worker_config=selected_config,
         requested_target=admission.target,
         programming_root=admission.import_dir,
     )
+    configured = selected_config if selected_config is not None else _seams.worker_config
+    result = _with_flash_options(result, frequency_hz, configured)
     if not result.ok:
         return result
     if not isinstance(result.data, Mapping):
-        return OperationResult.failure(
-            operation,
-            "FIRMWARE_INTERNAL_ERROR",
-            "Imported firmware programming failed",
-            {},
+        return _with_flash_options(
+            OperationResult.failure(
+                operation,
+                "FIRMWARE_INTERNAL_ERROR",
+                "Imported firmware programming failed",
+                {},
+            ),
+            frequency_hz,
+            configured,
         )
     # Owned cleanup has completed.  Revalidate the immutable store once more
     # so a close-time mutation cannot be covered by a success receipt.
@@ -1595,38 +1791,59 @@ async def flash_imported_workflow(
             expected_sha256=typed.expected_sha256,
         )
     except ExternalFirmwareError as error:
-        return _operation_failure(
-            operation, _fail(error.code, error.message, dict(error.details))
+        return _with_flash_options(
+            _operation_failure(
+                operation, _fail(error.code, error.message, dict(error.details))
+            ),
+            frequency_hz,
+            configured,
         )
     if not admission_matches(admission, settled):
-        return OperationResult.failure(
-            operation,
-            "FIRMWARE_INPUT_CHANGED",
-            "Firmware import changed before receipt publication",
-            {
-                "field": "importId",
-                "rule": "current",
-                "guidance": (
-                    "The immutable import changed after programming. Do not "
-                    "publish a success receipt; re-import and re-admit before "
-                    "any further hardware operation."
-                ),
-            },
+        return _with_flash_options(
+            OperationResult.failure(
+                operation,
+                "FIRMWARE_INPUT_CHANGED",
+                "Firmware import changed before receipt publication",
+                {
+                    "field": "importId",
+                    "rule": "current",
+                    "guidance": (
+                        "The immutable import changed after programming. Do not "
+                        "publish a success receipt; re-import and re-admit before "
+                        "any further hardware operation."
+                    ),
+                },
+            ),
+            frequency_hz,
+            configured,
         )
     try:
         receipt = write_flash_receipt(project_root, data_root, result.data)
     except ExternalFirmwareError as error:
-        return _operation_failure(operation, _fail(error.code, error.message, dict(error.details)))
+        return _with_flash_options(
+            _operation_failure(
+                operation, _fail(error.code, error.message, dict(error.details))
+            ),
+            frequency_hz,
+            configured,
+        )
     except Exception:
-        return OperationResult.failure(
-            operation,
-            "EXTERNAL_FLASH_RECEIPT_FAILED",
-            "External flash receipt could not be committed",
-            {},
+        return _with_flash_options(
+            OperationResult.failure(
+                operation,
+                "EXTERNAL_FLASH_RECEIPT_FAILED",
+                "External flash receipt could not be committed",
+                {},
+            ),
+            frequency_hz,
+            configured,
         )
     return _result_with_details(
         OperationResult.success(operation, {**dict(result.data), **receipt}),
-        {"postFlash": {"targetState": "unknown", "runVerified": False}},
+        {
+            "flashOptions": _flash_options_details(frequency_hz, configured),
+            "postFlash": {"targetState": "unknown", "runVerified": False},
+        },
     )
 
 

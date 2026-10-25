@@ -441,6 +441,15 @@ stm32_flash_imported(probeId="<user-selected probe>", importId=apply.data.import
 
 写授权只有两个边界：固件 APPLY（不可变离线副本）和 `stm32_flash_imported`（一次精确硬件操作）。PLAN 与 ADMIT 都是只读的，ADMIT 没有 `authorized` 参数，不要要求用户为它授权。两套 PLAN/APPLY 字段不同：Keil convert/configure（`stm32_keil_convert`/`stm32_project_configure`）的 PLAN 响应字段是 `data.plan_id`，固件 import 的 PLAN 响应字段是 `data.planId`；两者的 APPLY 请求参数都是 `planId`。固件 import 的 `data.source.sha256`（原始文件）与 `data.image.sha256`（规范化镜像）是两个独立字段，admission/flash 结果中对应扁平的 `sourceSha256`/`imageSha256`。任一失败都不会自动切换路线。
 
+**显式烧录频率与恢复建议（当前源码切片）。** `stm32_flash` 与 `stm32_flash_imported` 新增可选参数 `frequencyHz`（StrictInt，含端点 `100000..50000000`，或 `null`）；CLI 对应 `flash`/`flash-imported` 的 `--frequency`，只接受十进制整数 Hz，重复、小数、越界或其它格式在解析阶段拒绝。省略时保持既有 worker 配置：生产正常 CMSIS-DAP 默认仍为 `1000000` Hz。频率是**选定的配置**，不是实测/生效频率，也不证明 attach 或编程发生。
+
+- 托管正常烧录：显式 `frequencyHz` 选定该值。恢复策略固定 `100000` Hz：`recoveryUnderReset=true`/`--recovery-under-reset` 时可省略频率或恰好传 `100000`；其它显式值在创建目录、lease、supervisor、backend 或执行 flash 之前以 `HARDWARE_INPUT_INVALID`（`details.field=frequencyHz`，`details.rule=conflict`）失败。类型错误为 `rule=type`，越界为 `rule=range`。
+- 导入烧录：只接受正常频率，不支持 under-reset recovery，也不应给出该路线的恢复建议。
+- 成功与失败结果在配置选定后都会带 `details.flashOptions`：`requestedFrequencyHz`（省略时为 `null`）、`configuredFrequencyHz`、`connectionPolicy`、`automaticRetry=false`。早期输入/授权/准入失败可以没有该字段。托管成功仍保留 `details.postFlash.targetState=unknown` 与 `runVerified=false`。
+- 仅托管正常烧录在自有清理完成后返回 `PROBE_PROGRAM_FAILED`，或返回带有效闭合 `attachDiagnostic` 且 `primary.stage` 为 `session-open`/`halt-verify`、`primary.reason` 属于可恢复连接类别的 `PROBE_ATTACH_FAILED` 时，才可能附加 `details.recoverySuggestion`（`kind=under-reset`、`frequencyHz=100000`、`requiresNewAuthorization=true`、`automaticRetry=false`）。它只是提示：先停止、保留完整诊断、核对目标供电/复位接线与清理结果，再由用户另行授权一次性恢复；恢复可能让目标保持 halted，不证明其已运行。
+- 清理失败、身份/stale/provenance/输入/授权/回读/receipt 失败、成功结果、已选择 recovery、导入路线、取消或任意其它错误都不附加该建议；不要把它当作自动重试、路线切换或既有 `attachDiagnostic`/一般 guidance 的替代。原有失败字段与清理优先级保持不变。
+- 这些频率选项和 `flashOptions`/`recoverySuggestion` 只存在于本源码切片；冻结/已安装的 v1.3.0 没有它们，重启 VS Code 也不会安装。生成的 IDE 任务模板保持原样；不要通过修改模板 digest 设置频率，也不要在原授权之外自动执行恢复。
+
 **状态：**以上 AI 调用指引是当前源码切片，**不在**冻结的 v1.3.0 本地构建源码 `1e6ea849c21fb3786d60dba0254acb375d016a62` 及其 runtime/ZIP 中。重启 VS Code 只会刷新已安装服务器，不会安装本补丁。本切片未安装、未重启、未记录安装资格（另有用户会话安装过更早的候选，本切片不复核）。本切片不提升版本、不改变 52 工具/9 Skill 清单、不改写既有 runtime/缓存，也不构成公开发布或资格结论。
 
 ## 工程 manifest 的阶段约束
@@ -498,7 +507,7 @@ stm32_flash_imported(probeId="<user-selected probe>", importId=apply.data.import
 - **导入应用**：用该次 `data.planId` 加 `authorized=true` 重发同一请求。写操作前的失败要按来源区分：`expectedSha256` 与当前原始文件不符时先返回 `FIRMWARE_INPUT_CHANGED`，不会进入计划比较；相同 `expectedSha256` 下路径、格式、base、target、Flash 区间或项目/数据根绑定发生变化时，重新分析成功后返回 `FIRMWARE_PLAN_CHANGED`。若新请求本身无效（例如格式、区间、类型或参数组合不合法），会在计划比较前返回对应的结构化校验错误；不能保证每种改动都得到同一个代码。`authorized=true` 而没有 `planId` 是错误。成功后在外部数据根保存不可变快照；相同输入重复应用是幂等成功，冲突的既有导入绝不覆盖。该授权只覆盖离线导入副本，**不授权任何硬件操作**。
 - **离线准入**：`stm32_firmware_admit(importId, expectedSha256)` 只读且离线。`expectedSha256` 始终钉住被导入的**原始文件**，不是规范化镜像。它会从保存的源文件与参数**重建**镜像并比对全部段/入口/记录，返回 `offlineReady=true`、`hardwareVerified=false`、扁平的 `sourceSha256`/`imageSha256`、target 与段摘要，以及仍需的硬件授权/身份条件。它不创建 service、lease、worker 或 receipt，也不是可复用授权令牌；**不要把 admission 成功当成烧录成功或当前构建身份**。
 - **独立烧录**：先 `stm32_probe_list` 取得精确 `probeId`，再单独取得用户对**该探针与该导入**的明确授权，调用 `stm32_flash_imported(probeId, importId, expectedSha256, authorized=true)`。调用方不能覆盖 target、Flash 区间、路径、根、backend 或来源。工作流在创建 supervisor/lease/worker 前、attach 后与发出编程 RPC 前都会重新校验存储；backend 在第一次驱动调用前要求规范化镜像的**每个字节**都被连接的 target 原生 Flash 区间并集覆盖（允许跨越相邻 64 KiB 区间，拒绝空洞、非 Flash 区间或重叠的畸形 map）；随后回读全部计划字节。只有回读、最终完整性检查、所有权清理成功，且在清理后再次确认快照未变化，才在数据根写入独立的 external-flash receipt；清理失败或清理期间快照被改动都不会产生成功 receipt。成功烧录结果的 `details.postFlash` 为 `{"targetState":"unknown","runVerified":false}`；早期失败（例如探针、认证、准入或参数错误）可能不包含该字段，应按实际返回报告。
-- CLI 对应 `firmware import`（显式 `--dry-run` 或 `--apply --plan-id … --authorized`）、`firmware admit`、`flash-imported`，参数为 `--firmware-path`、`--expected-sha256`、`--format`、`--target`、`--flash-regions '<json>'`、`--base-address`、`--import-id`、`--probe`、`--authorized`，并沿用 `--project-root`/`--data-root`/`--session-id`/`--json`。例如：
+- CLI 对应 `firmware import`（显式 `--dry-run` 或 `--apply --plan-id … --authorized`）、`firmware admit`、`flash-imported`，参数为 `--firmware-path`、`--expected-sha256`、`--format`、`--target`、`--flash-regions '<json>'`、`--base-address`、`--import-id`、`--probe`、`--authorized`（`flash`/`flash-imported` 还可选 `--frequency <decimal Hz>`），并沿用 `--project-root`/`--data-root`/`--session-id`/`--json`。例如：
 
 ```powershell
 $CandidateCli = Join-Path $DataRoot 'runtime\1.3.0\Scripts\stm32-toolkit.exe'

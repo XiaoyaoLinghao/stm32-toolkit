@@ -521,6 +521,16 @@ def _build_parser() -> argparse.ArgumentParser:
         nargs=0,
         default=False,
     )
+    flash.add_argument(
+        "--frequency",
+        type=_flash_frequency,
+        action=_RejectDuplicate,
+        default=None,
+        help=(
+            "Explicit debug frequency in Hz (100000..50000000); omitted keeps "
+            "the configured default. Under-reset recovery requires 100000."
+        ),
+    )
 
     firmware = commands.add_parser("firmware")
     firmware_commands = firmware.add_subparsers(
@@ -564,6 +574,16 @@ def _build_parser() -> argparse.ArgumentParser:
         "--expected-sha256", required=True, type=_firmware_digest
     )
     flash_imported.add_argument("--authorized", action="store_true")
+    flash_imported.add_argument(
+        "--frequency",
+        type=_flash_frequency,
+        action=_RejectDuplicate,
+        default=None,
+        help=(
+            "Explicit debug frequency in Hz (100000..50000000); omitted keeps "
+            "the configured default. Imported flash has no recovery option."
+        ),
+    )
 
     debug = commands.add_parser("debug")
     debug_commands = debug.add_subparsers(dest="debug_command", required=True)
@@ -1330,6 +1350,18 @@ def _bounded_int(minimum: int, maximum: int):
     return convert
 
 
+def _flash_frequency(value: str) -> int:
+    if not value.isascii() or not value.isdigit():
+        raise argparse.ArgumentTypeError("invalid decimal frequency in Hz")
+    try:
+        integer = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("invalid decimal frequency in Hz") from None
+    if not 100_000 <= integer <= 50_000_000:
+        raise argparse.ArgumentTypeError("frequency outside 100000..50000000 Hz")
+    return integer
+
+
 def _add_json(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--json", action="store_true", required=True)
 
@@ -1449,6 +1481,7 @@ async def _hardware_operation_result(
                 args.import_id,
                 args.expected_sha256,
                 args.authorized,
+                frequency_hz=args.frequency,
             )
         )
     common = (project_root, args.data_root, args.session_id)
@@ -1463,6 +1496,7 @@ async def _hardware_operation_result(
                 args.expected_elf_sha256,
                 args.authorized,
                 args.recovery_under_reset,
+                frequency_hz=args.frequency,
             )
         )
     if args.command == "debug":
