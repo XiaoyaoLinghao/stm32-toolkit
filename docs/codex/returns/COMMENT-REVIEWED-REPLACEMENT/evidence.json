@@ -1,0 +1,149 @@
+{
+  "module": "COMMENT-REVIEWED-REPLACEMENT",
+  "acceptedBase": "3cd5eea7ccfa6599782400b8009496424ec99802",
+  "codeHead": "045bea3574dece7ea5740d6eaa76a3a731150cc0",
+  "scope": "offline standalone helper, tests and invocation guidance",
+  "version": "1.3.0",
+  "futureIntegrationVersion": "1.3.1",
+  "rawRoot": "D:\\codex-tmp\\nr25",
+  "implementationRoute": "local Claude Code CLI",
+  "configuredModel": "deepseek-v4.1-flash[1m]",
+  "independentReviewer": "primary",
+  "diffSha256": "94c34a1209d0cf54bf314d4a4f7b8fb0f3ed53ff998146c827544c79e14a2a0d",
+  "tests": [
+    {
+      "owner": "primary",
+      "head": "3cd5eea7ccfa6599782400b8009496424ec99802",
+      "junit": "D:\\codex-tmp\\nr25\\baseline.xml",
+      "sha256": "76636b5b082564b74ffbb81998b30884f3c99fee5627adfc87a903727d0021d1",
+      "tests": 39,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "passed": 39
+    },
+    {
+      "owner": "Claude CLI",
+      "head": "df46c9a6fb22081522b73ce0203ebd57347efe57",
+      "junit": "D:\\codex-tmp\\nr25\\first.xml",
+      "sha256": "42e1563ae0ebf4faf0b34bc1a4ba930ef82c7d4732e8bf5772bbc7b3dd156dda",
+      "tests": 80,
+      "failures": 1,
+      "errors": 0,
+      "skipped": 1,
+      "passed": 78
+    },
+    {
+      "owner": "primary",
+      "head": "df46c9a6fb22081522b73ce0203ebd57347efe57",
+      "junit": "D:\\codex-tmp\\nr25\\first-review.xml",
+      "sha256": "35140ab63163fea3932c761ea5289e329bbfebc1e061dc9239441a7fcc3422dd",
+      "tests": 80,
+      "failures": 1,
+      "errors": 0,
+      "skipped": 1,
+      "passed": 78
+    },
+    {
+      "owner": "Claude CLI",
+      "head": "045bea3574dece7ea5740d6eaa76a3a731150cc0",
+      "junit": "D:\\codex-tmp\\nr25\\final.xml",
+      "sha256": "24bb5ed7e4afc3b79cee53aef37d3683c0cf83efae3e7c0d0a552083f20d7bb7",
+      "tests": 82,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "passed": 82
+    },
+    {
+      "owner": "primary",
+      "head": "045bea3574dece7ea5740d6eaa76a3a731150cc0",
+      "junit": "D:\\codex-tmp\\nr25\\final-review.xml",
+      "sha256": "b776c3ebf64085dbe0eff434365321730f3626b230e478544ce2ceb50007efd3",
+      "tests": 82,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "passed": 82
+    }
+  ],
+  "authorFinalPytestProcessExit": "not printed by native tool; JUnit and actual tool output establish passing results",
+  "primaryFinalPytestExit": 0,
+  "skillValidation": {
+    "author": [
+      "normalize-source-comments",
+      "migrate-keil"
+    ],
+    "primary": [
+      "normalize-source-comments",
+      "migrate-keil"
+    ],
+    "result": "PASS",
+    "primaryEnvironmentCorrection": "ad-hoc runs first lacked yaml, then default GBK decoding; bundled Python -X utf8 passed both without repository or installation changes"
+  },
+  "limitations": [
+    "source only; no package, runtime or global skill update",
+    "synthetic offline tests only; no original-project or hardware operation",
+    "not full release qualification or ARMCC behavior equivalence",
+    "helper1.1.0 plan2/manifest2 require re-preview of incompatible old plans"
+  ],
+  "logs": [
+    {
+      "path": "D:\\codex-tmp\\nr25\\smoke.jsonl",
+      "sha256": "cca7547c3060be1c6d9f3153b4560953a1e06d2692aada6e23c87940f548f26e"
+    },
+    {
+      "path": "D:\\codex-tmp\\nr25\\shell.jsonl",
+      "sha256": "6012168c91ee1f6b660baed39acbb856fe5a9da5d2f7b34aa24790ca5e110c3d"
+    },
+    {
+      "path": "D:\\codex-tmp\\nr25\\author.jsonl",
+      "sha256": "6548287509a6421a56008024cfcd05a297c377c69632365f2f04f07da0bd0855"
+    },
+    {
+      "path": "D:\\codex-tmp\\nr25\\continue.jsonl",
+      "sha256": "d8d4b2dfc4d45342af53ebec46229900650db9c3a90a17f7522dc2d80c484aa6"
+    },
+    {
+      "path": "D:\\codex-tmp\\nr25\\test-first.jsonl",
+      "sha256": "d3d1533a6dd8233cd41d9c4a380e90b0f621d7b14e65196d0a800f3f3d215e5f"
+    },
+    {
+      "path": "D:\\codex-tmp\\nr25\\fix.jsonl",
+      "sha256": "2c48824349aedad7e1fa2eb9488baa04495c134cfef8221c1d74c5e73d8591d0"
+    },
+    {
+      "path": "D:\\codex-tmp\\nr25\\test-final.jsonl",
+      "sha256": "7e41c9bf26787729d4fe936514b9cb3e2ec099ff49b8eae7f976271e2800a178"
+    },
+    {
+      "path": "D:\\codex-tmp\\nr25\\skills.jsonl",
+      "sha256": "013c20d2a1ff0a16b2204191f7c63455c56470ec1af2a33d24e173e959677e56"
+    },
+    {
+      "path": "D:\\codex-tmp\\nr25\\final-review.log",
+      "sha256": "9895f7bbf07ee34b3b58787b7b2f752cab61230a1acd58c1fc9c852a193d11b2"
+    },
+    {
+      "path": "D:\\codex-tmp\\nr25\\final-review-execution.json",
+      "sha256": "1d72886a24a37dd5092c2effcb0773492bce814580bf188670000b3b13399d3c"
+    },
+    {
+      "path": "D:\\codex-tmp\\nr25\\review-early.txt",
+      "sha256": "eec2432d2cd8aea3f299192d915606625a439fc91178ef87d4dad7500d0276d4"
+    },
+    {
+      "path": "D:\\codex-tmp\\nr25\\review-guidance.txt",
+      "sha256": "ba53fb9ca85b18eba90befe67904d557d8c5cef7df1f6ed8aa8f7c8d90151f00"
+    },
+    {
+      "path": "D:/codex-tmp/nr25/skill-audit.jsonl",
+      "sha256": "38db8a6d21b7be95c3f0a95a595f056cab9fe384d1b26e99001c141f31625d78"
+    },
+    {
+      "path": "D:/codex-tmp/nr25/report.jsonl",
+      "sha256": "28e9dec5331afee38fe71e1fca2ab8ffc0ded3e8056b3e67607999dc07ee63a6"
+    }
+  ],
+  "skillForwardTest": "Independent read-only CLI scenarios reviewed by primary; no actual IDE/hardware execution. Adjudication in review.md."
+}
