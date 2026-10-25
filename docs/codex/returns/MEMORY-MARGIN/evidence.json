@@ -1,0 +1,71 @@
+{
+  "acceptedBase": "1b16a38181770569cf1d0f533a73e94690231a32",
+  "codeHead": "9a7a8a5f00a9c19333fffc6201ca2515310bb39c",
+  "initialProductHead": "f5c641cb24f2c22987bd0e81772ebb43a8290b7e",
+  "owners": {
+    "implementation": "local Claude Code CLI, existing deepseek-v4.1-flash[1m] configuration",
+    "independentReview": "primary conversation agent"
+  },
+  "runs": {
+    "author-core": {
+      "tests": "393",
+      "failures": "2",
+      "errors": "0",
+      "skipped": "0",
+      "time": "401.069",
+      "junitSha256": "b360db22c4e025c72121abdaab8972ffacb2ae5ee5bc2a608a9b0068c067ad80",
+      "path": "D:\\codex-tmp\\mm25\\author-core.xml"
+    },
+    "author-final": {
+      "tests": "233",
+      "failures": "1",
+      "errors": "0",
+      "skipped": "0",
+      "time": "176.989",
+      "junitSha256": "fcb2f4f16842b0ceb1b80771e696c1a641613f9a5813b0997295625cfaedadcc",
+      "path": "D:\\codex-tmp\\mm25\\author-final.xml"
+    },
+    "author-lf": {
+      "tests": "1",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "time": "0.829",
+      "junitSha256": "24d53be790aa27c97ee1140530b3c3ced70fcc2cc3a30b2174fd42fee5324b31",
+      "path": "D:\\codex-tmp\\mm25\\author-lf.xml"
+    },
+    "review-core": {
+      "tests": "393",
+      "failures": "1",
+      "errors": "0",
+      "skipped": "0",
+      "time": "410.523",
+      "junitSha256": "00895db9cf6d87969b03c5c0afc9780d25a7760d731411a8933bcecbe604e63c",
+      "path": "D:\\codex-tmp\\mm25\\review-core.xml"
+    },
+    "review-reg": {
+      "tests": "169",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "time": "154.385",
+      "junitSha256": "25816b3fd198a1be658cf3e9b140f9c090daa104db877c02d365158f76ea967c",
+      "path": "D:\\codex-tmp\\mm25\\review-reg.xml"
+    },
+    "review-final": {
+      "tests": "64",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "time": "21.747",
+      "junitSha256": "ec5537af11ccdc97004fcd6f286768f5025a3bfabc812e21d89dd5e63a986453",
+      "path": "D:\\codex-tmp\\mm25\\review-final.xml"
+    }
+  },
+  "distinctPassingCasesPerOwner": 562,
+  "reuse": "Initial unaffected passes retained; final test-only repair changes no product bytes. No complete final matrix claim.",
+  "hardware": "not accessed",
+  "originalProject": "not accessed",
+  "version": "1.3.0",
+  "releaseQualification": false
+}
