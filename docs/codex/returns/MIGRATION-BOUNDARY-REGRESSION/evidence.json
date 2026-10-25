@@ -1,0 +1,59 @@
+{
+  "acceptedBase": "763d7745ca8821bb3d6d9fa4eb5fda7028235858",
+  "codeHead": "d30b20ca7592ba433a88f7bfda6fb06ecc98caab",
+  "verdict": "ACCEPTED",
+  "scope": "test-only offline migration boundaries",
+  "authorSession": "89770909-8ed2-4396-b437-53efb4584b96",
+  "verificationSession": "39ec6bee-19d3-4676-a5cc-197445e43f5a",
+  "newCases": 60,
+  "authorAffectedCases": 264,
+  "primaryIndependentCases": 81,
+  "sourceUnchanged": true,
+  "cohort": {
+    "cases": 8734,
+    "passed": 8715,
+    "skipped": 19
+  },
+  "scopes": {
+    "toolkit-overall": {
+      "covered": 15269,
+      "total": 17502,
+      "floor": 90,
+      "percent": 87.2414581190721,
+      "gain": 51,
+      "status": "UNMET"
+    },
+    "toolkit-risk-core-v2": {
+      "covered": 14236,
+      "total": 16296,
+      "floor": 90,
+      "percent": 87.35886107020127,
+      "gain": 51,
+      "status": "UNMET"
+    },
+    "monitor-overall": {
+      "covered": 3203,
+      "total": 3498,
+      "floor": 90,
+      "percent": 91.5666094911378,
+      "gain": 0,
+      "status": "PASS"
+    },
+    "monitor-risk-core-v2": {
+      "covered": 3203,
+      "total": 3498,
+      "floor": 95,
+      "percent": 91.5666094911378,
+      "gain": 0,
+      "status": "UNMET"
+    }
+  },
+  "evidenceHashes": {
+    "migration-boundary-a/manifest.json": "3a4962e2efbf61d0629423e8c1d85b8eb43c98103308c5802dc8743cc108e001",
+    "migration-boundary-a/mb-01/execution.json": "e3e4ab9a9f923adb7f0e7675fac2179897bf0d8a80dde2e97fb12d6d1d2b5334",
+    "primary-migration-boundary-a/execution.json": "37ae3f844d6c5d6d9a0f05235e0ae8ec55ccedc97499f7d14ef1cdcd83f52e1c",
+    "coverage-migration-a/qualification.json": "4f0499652d93dffb586ab359721575280f9f40c818faa6c6c1d0d516949a542d",
+    "coverage-migration-a/native.json": "1f3fed7eccab08b25f6e1389c015f50f8b8e0775ab13d0486e7b41e0148c443a"
+  },
+  "releaseAccepted": false
+}

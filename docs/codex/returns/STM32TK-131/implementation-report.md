@@ -1,5 +1,7 @@
 # v1.3.1 qualification checkpoint
 
+Latest supplement: [migration boundary regression](../MIGRATION-BOUNDARY-REGRESSION/implementation-report.md) records 60 new passes, a 264-case affected PASS and 81 independent passes at `d30b20ca7592ba433a88f7bfda6fb06ecc98caab`. Toolkit gains 51 native branches; the current reconciled cohort is 8,715 passes / 19 skips, with Toolkit overall/risk 87.2415%/87.3589% and unchanged Monitor values. Gates remain unmet. The sections below preserve the complete-matrix checkpoint before this supplement; neither record claims a single all-green final-head rerun.
+
 Disposition: **NOT_QUALIFIED — numerical gates and external checks remain open**. This records software evidence, not permission to publish or operate hardware. Accepted integration base is `4ab88f1e7275a0375caaa18662e468531efaa1f8` (version alignment and the subsequent integration phase). Accepted software/test head is `bb027fd3d0663a4e3310a011ecfc7b21b416f44b`; the recipient-guide CodeHead before this report commit is `42d4f808eeaf97b781f2212000669fb2a0e22928`. The report does not contain its own commit SHA. Primary owns specification, full independent review and qualification; local Claude Code CLI with the user's configured provider owns implementation and implementation verification.
 
 ## Regression evidence

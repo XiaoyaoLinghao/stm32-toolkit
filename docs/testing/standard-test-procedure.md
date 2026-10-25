@@ -4,6 +4,8 @@
 
 ## 1. 当前断点与证据
 
+2026-10-26 最新补测：MIGRATION-BOUNDARY-REGRESSION 离线测试切片已 **ACCEPTED**，见[报告](../codex/returns/MIGRATION-BOUNDARY-REGRESSION/implementation-report.md)。CodeHead `d30b20ca7592ba433a88f7bfda6fb06ecc98caab`；Claude 相关完整组 264/264、主代理独立 81/81，新增 60 项及 51 个 Toolkit 分支。当前去重复用队列 8,715 通过/19 跳过；Toolkit 总体 87.2415%、风险核心 87.3589%，Monitor 风险核心仍 91.5666%，永久门槛仍未满足。不是最终单一提交全量重跑。继续外部固件完整性测试；安装解释器修正与本地 Git 登录待用户响应，实际 VS Code、最终包及发布未完成。以下集成记录保留补测前状态。
+
 2026-10-26 v1.3.1 集成断点：源码优化与版本对齐已完成，**发行仍为 REVISION_REQUIRED / NOT_QUALIFIED**。见[当前报告](../codex/returns/STM32TK-131/implementation-report.md)、[独立复核](../codex/returns/STM32TK-131/review.md)及[机器可读证据](../codex/returns/STM32TK-131/evidence.json)。Python 完整收集 8,674 项；经过保留原失败的完整组修正与明确复用，当前 8,655 通过、19 平台/外部数据跳过，不宣称最终单一提交全量重跑。Toolkit 总体/风险核心覆盖率 86.9501%/87.0459%，Monitor 风险核心 91.5666%，均未达到各自永久门槛。先复核有意义的离线测试缺口，不自动沿用旧版例外。
 
 UI 526 通过、1 可选外部数据跳过，各文件分支门槛通过；实际 Edge 44/44 与两组原预算性能测试通过。13 文件验证候选通过哈希和官方 bundle 验证，但最终同源可重复构建、实际隔离安装/升级/回滚及 VS Code/MCP 仍待完成。初次误选 Windows PowerShell 5.1 的 Check 被执行策略拒绝，未执行安装；更正为现有 PowerShell 7 的请求与本地 Git 登录仍待用户响应，不能改策略或换工具绕过。原工程、硬件、既有 runtime/全局 Skill 和远端未改。以下各条是保留的历史断点；其中“下一步”只描述当时状态。

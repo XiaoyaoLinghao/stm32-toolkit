@@ -2,6 +2,8 @@
 
 ## v1.3.1 integration checkpoint — 2026-10-26
 
+Latest measured supplement: [migration boundary regressions](codex/returns/MIGRATION-BOUNDARY-REGRESSION/implementation-report.md) add 60 passing cases and 51 Toolkit branches at `d30b20ca7592ba433a88f7bfda6fb06ecc98caab`. Claude passed the complete 264-case affected suite and primary independently passed 81 cases. The reconciled cohort is now 8,715 passes / 19 skips; Toolkit overall is 15,269/17,502 (87.2415%) and risk core 14,236/16,296 (87.3589%), both still below 90%. Monitor is unchanged. This is additive source-bound evidence, not a complete single-head rerun. The original complete-matrix checkpoint below remains preserved.
+
 **Local candidate, not qualified or published.** Product versions are aligned to 1.3.1. The accepted source optimizations include memory-margin warnings, diagnostic guidance, migration and memory-layout improvements, doctor/VS Code tasks and explicit flash frequency. Detailed source, owner and evidence identities are in the [v1.3.1 report](codex/returns/STM32TK-131/implementation-report.md) and [independent review](codex/returns/STM32TK-131/review.md).
 
 The complete reconciled Python cohort has 8,655 passes and 19 platform/external-data skips. The original six failures remain recorded beside their complete-group corrections; this is not one all-green rerun at a single commit. Native branch coverage is Toolkit 15,218/17,502 (86.9501%) overall and 14,185/16,296 (87.0459%) risk core, both below 90%; Monitor 3,203/3,498 (91.5666%) passes its overall 90% floor but misses the risk-core 95% floor. These gates remain **UNMET** while meaningful offline test gaps are reviewed. The v1.2.0 exception does not transfer.
