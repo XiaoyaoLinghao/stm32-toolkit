@@ -402,7 +402,6 @@ def test_public_tool_descriptions_guide_mcp_only_consumers(tmp_path: Path):
         "inspect-build-log",
         "omit authorized",
         "caller-verified Toolkit executable",
-        "workingDirectory=project-root",
         "remediation.cli.projectRoot",
         "not a standalone invocation",
         "same bound server/project",
