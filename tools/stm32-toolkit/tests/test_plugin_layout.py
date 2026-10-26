@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import venv
 from pathlib import Path
@@ -30,7 +31,7 @@ def test_plugin_manifest_uses_standard_skill_discovery_and_version():
     assert plugin == {
         "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
         "name": "stm32-toolkit",
-        "version": "1.3.1",
+        "version": "1.3.2",
         "description": (
             "AI-assisted STM32 development with read-only Keil inspection, "
             "guarded ARMCC-to-GCC conversion, managed GCC/CMake configuration, "
@@ -38,7 +39,7 @@ def test_plugin_manifest_uses_standard_skill_discovery_and_version():
         ),
         "author": {"name": "STM32 Toolkit Team"},
     }
-    assert plugin["version"] == __version__ == "1.3.1"
+    assert plugin["version"] == __version__ == "1.3.2"
 
 
 def test_marketplace_manifest_uses_a_supported_plugin_source():
@@ -126,14 +127,14 @@ def test_launcher_reports_missing_versioned_runtime_without_interpreter_fallback
     assert result.returncode != 0
     assert result.stdout == ""
     assert "STM32_TOOLKIT_DATA_ROOT" in result.stderr
-    assert "runtime/1.3.1/Scripts/python.exe" in result.stderr.replace("\\", "/")
+    assert "runtime/1.3.2/Scripts/python.exe" in result.stderr.replace("\\", "/")
     assert not marker.exists()
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows cmd.exe launcher")
 def test_launcher_forwards_arguments_and_preserves_runtime_exit_code(tmp_path: Path):
     plugin_data = tmp_path / "plugin data"
-    runtime = plugin_data / "runtime" / "1.3.1"
+    runtime = plugin_data / "runtime" / "1.3.2"
     venv.EnvBuilder(with_pip=False).create(runtime)
     module_root = tmp_path / "stub module"
     package = module_root / "stm32_toolkit"
@@ -218,7 +219,7 @@ def test_monitor_launcher_reports_missing_versioned_runtime_without_interpreter_
     assert result.returncode != 0
     assert result.stdout == ""
     assert "stm32-monitor" in result.stderr
-    assert "runtime/1.3.1/Scripts/python.exe" in result.stderr.replace("\\", "/")
+    assert "runtime/1.3.2/Scripts/python.exe" in result.stderr.replace("\\", "/")
     assert not marker.exists()
 
 
@@ -227,7 +228,7 @@ def test_monitor_launcher_forwards_arguments_and_preserves_runtime_exit_code(
     tmp_path: Path,
 ):
     plugin_data = tmp_path / "plugin data"
-    runtime = plugin_data / "runtime" / "1.3.1"
+    runtime = plugin_data / "runtime" / "1.3.2"
     venv.EnvBuilder(with_pip=False).create(runtime)
     module_root = tmp_path / "stub module"
     package = module_root / "stm32_monitor"
@@ -279,7 +280,7 @@ def test_setup_skill_has_an_explicit_read_only_check_and_authorized_mutation_con
         "read-only",
         "offline",
         "explicit authorization",
-        "${CLAUDE_PLUGIN_DATA}/runtime/1.3.1",
+        "${CLAUDE_PLUGIN_DATA}/runtime/1.3.2",
         "${CLAUDE_PLUGIN_ROOT}/tools/stm32-toolkit",
         "CPython >=3.12,<3.13",
         "ARM GCC",
@@ -477,6 +478,14 @@ def test_skills_explain_preflight_statuses_and_discovery_boundaries():
 
 
 @pytest.mark.skipif(os.name != "nt", reason="PowerShell setup helper")
+def _require_pwsh() -> str:
+    executable = shutil.which("pwsh")
+    assert executable is not None, (
+        "PowerShell 7 (pwsh) is required for this Windows test host"
+    )
+    return executable
+
+
 def test_setup_helper_uses_explicit_paths_without_ambient_environment(tmp_path: Path):
     project = tmp_path / "project"
     project.mkdir()
@@ -484,10 +493,8 @@ def test_setup_helper_uses_explicit_paths_without_ambient_environment(tmp_path: 
     environment = _environment_without_claude_plugin_paths()
     result = subprocess.run(
         [
-            "powershell.exe",
+            _require_pwsh(),
             "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
             "-File",
             str(SETUP_HELPER),
             "-Mode",
@@ -508,7 +515,7 @@ def test_setup_helper_uses_explicit_paths_without_ambient_environment(tmp_path: 
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
     assert payload["mode"] == "CHECK"
-    assert payload["runtime"]["path"].endswith("/runtime/1.3.1")
+    assert payload["runtime"]["path"].endswith("/runtime/1.3.2")
     assert payload["project"] == project.as_posix()
     assert payload["mutated"] is False
     assert not plugin_data.exists()
@@ -519,10 +526,8 @@ def test_setup_helper_rejects_unresolved_inline_paths_before_mutation(tmp_path: 
     environment = _environment_without_claude_plugin_paths()
     result = subprocess.run(
         [
-            "powershell.exe",
+            _require_pwsh(),
             "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
             "-File",
             str(SETUP_HELPER),
             "-Mode",
@@ -550,7 +555,11 @@ def test_setup_skill_passes_inline_claude_paths_explicitly_without_ambient_varia
     command_blocks = "\n".join(_fenced_blocks(skill))
 
     assert "$env:CLAUDE_PLUGIN_" not in skill
-    assert "powershell.exe" in command_blocks
+    assert "pwsh" in command_blocks
+    assert "powershell.exe" not in command_blocks
+    assert "-NoProfile" in command_blocks
+    assert "-ExecutionPolicy" not in command_blocks
+    assert "Bypass" not in command_blocks
     assert "-File '${CLAUDE_PLUGIN_ROOT}/bin/setup-stm32-env.ps1'" in command_blocks
     for argument in (
         "-ToolkitRoot '${CLAUDE_PLUGIN_ROOT}'",
@@ -560,22 +569,79 @@ def test_setup_skill_passes_inline_claude_paths_explicitly_without_ambient_varia
         assert argument in command_blocks
     assert "PowerShell" in skill
     assert "### Agent-host adapter" in skill
+    # The interpreter is checked before execution, and a policy denial is a
+    # stop condition, not an automatic shell switch or retry.
+    assert "PSVersionTable.PSVersion" in skill
+    assert "never switch" in skill
+    assert "automatically retry after a denial" in skill
 
 def test_readme_links_current_user_guidance_and_release_boundaries():
     readme = README.read_text(encoding="utf-8")
     readme_zh = (REPO_ROOT / "README_zh-CN.md").read_text(encoding="utf-8")
 
-    assert "**Current source candidate: v1.3.1 (local Release preparation, not published).**" in readme
-    assert "**当前源码候选：v1.3.1（本地 Release 准备，尚未发布）。**" in readme_zh
+    # The public Latest and any local candidate must stay distinguishable, and
+    # a later truthful post-publication update must remain expressible. Only
+    # two consistent bilingual states are valid: (a) public Latest v1.3.1 with
+    # v1.3.2 still a pending local candidate, or (b) public Latest v1.3.2 after
+    # actual publication. A mismatched English/Chinese status is rejected.
+    latest_131_en = "**Current published Latest: [v1.3.1](" in readme
+    latest_131_zh = "**当前公开 Latest：[v1.3.1](" in readme_zh
+    latest_132_en = "**Current published Latest: [v1.3.2](" in readme
+    latest_132_zh = "**当前公开 Latest：[v1.3.2](" in readme_zh
+    assert latest_131_en == latest_131_zh
+    assert latest_132_en == latest_132_zh
+    assert latest_131_en != latest_132_en
+    if latest_131_en:
+        # v1.3.1 is the observed public release; v1.3.2 is a local candidate
+        # whose versioned links must stay explicitly conditional.
+        assert "Local source candidate: v1.3.2" in readme
+        assert "pending qualification and publication" in readme
+        assert "本地源码候选：v1.3.2" in readme_zh
+        assert "资格验证与发布仍待完成" in readme_zh
+        for guide in (readme, readme_zh):
+            assert "releases/tag/v1.3.1" in guide
+    else:
+        # After actual publication both guides must link the real v1.3.2
+        # Release; stale pending-publication wording is no longer required.
+        for guide in (readme, readme_zh):
+            assert "releases/tag/v1.3.2" in guide
+    # The obsolete v1.3.1-unpublished claim must not return.
     for guide in (readme, readme_zh):
-        assert "1.3.1" in guide
-        assert "releases/tag/v1.3.1" not in guide
-        assert "releases/download/v1.3.1" not in guide
-        # A truthful locally delivered v1.3.1 filename and parameterized
-        # recipe are allowed; only a fabricated GitHub download is prohibited.
-        assert "$Version = '1.3.1'" in guide
+        assert "not published)" not in guide
+        assert "尚未发布）。**" not in guide
+    for guide in (readme, readme_zh):
+        assert "$Version = '1.3.2'" in guide
         assert "stm32-toolkit-$Version-windows-x86_64.zip" in guide
-        assert "DataRoot/runtime/1.3.1" in guide
+        assert "DataRoot/runtime/1.3.2" in guide
+        assert "stm32-toolkit-1.3.2-windows-x86_64.zip" in guide
+        assert "CHECKSUMS.sha256" in guide
+        assert "if ($ExpectedLine.Count -ne 1) { throw" in guide
+        assert "if ($Actual -ne $Expected) { throw" in guide
+        # Setup examples use native PowerShell 7 without a policy override.
+        # The interpreter check and denial-stop rule remain visible in prose.
+        command_blocks = "\n".join(_fenced_blocks(guide))
+        assert "pwsh -NoProfile" in command_blocks
+        assert "powershell.exe" not in command_blocks
+        assert "-ExecutionPolicy" not in command_blocks
+        assert "Bypass" not in command_blocks
+        assert "PSVersionTable.PSVersion" in guide
+        # While v1.3.2 is unpublished, a versioned v1.3.2 link is allowed only
+        # as an explicitly conditional location whose existence must be
+        # verified, never as claimed availability. A later truthful publication
+        # switches the status branch above instead.
+        if latest_131_en and (
+            "releases/tag/v1.3.2" in guide or "releases/download/v1.3.2" in guide
+        ):
+            assert (
+                "actually exist" in guide.lower()
+                or "确实存在" in guide
+                or "conditional" in guide.lower()
+                or "有条件" in guide
+            )
+    assert "never switch shells" in readme
+    assert "automatically retry after a denial" in readme
+    assert "不得切换 shell" in readme_zh
+    assert "自动重试" in readme_zh
     release_url = "https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.2.0"
     for guide in (readme, readme_zh):
         assert release_url in guide
@@ -778,15 +844,15 @@ def test_unified_1_0_1_runtime_version_across_launcher_setup_and_skill():
     command_blocks = "\n".join(_fenced_blocks(skill)).replace("\\", "/")
     manifest = json.loads(PLUGIN_MANIFEST.read_text(encoding="utf-8"))
 
-    assert manifest["version"] == __version__ == "1.3.1"
-    assert "runtime\\1.3.1\\Scripts\\python.exe" in launcher
-    assert "runtime/1.3.1/Scripts/python.exe" in launcher.replace("\\", "/")
+    assert manifest["version"] == __version__ == "1.3.2"
+    assert "runtime\\1.3.2\\Scripts\\python.exe" in launcher
+    assert "runtime/1.3.2/Scripts/python.exe" in launcher.replace("\\", "/")
     assert "0.3.0" not in launcher
-    assert "runtime\\1.3.1\\Scripts\\python.exe" in monitor_launcher
-    assert "runtime/1.3.1/Scripts/python.exe" in monitor_launcher.replace("\\", "/")
+    assert "runtime\\1.3.2\\Scripts\\python.exe" in monitor_launcher
+    assert "runtime/1.3.2/Scripts/python.exe" in monitor_launcher.replace("\\", "/")
     assert "0.3.0" not in monitor_launcher
     assert " -m stm32_monitor " in monitor_launcher
-    assert '$RuntimeVersion = "1.3.1"' in helper
+    assert '$RuntimeVersion = "1.3.2"' in helper
     assert "0.3.0" in helper  # legacy-upgrade detection, never current selection
     assert '"${package}[probe]"' in helper
     assert "$monitorPackage" in helper
@@ -795,12 +861,12 @@ def test_unified_1_0_1_runtime_version_across_launcher_setup_and_skill():
     assert "ui_dist" in helper
     assert "import pyocd" in helper
     assert '"-I", "-c"' in helper
-    assert "${CLAUDE_PLUGIN_DATA}/runtime/1.3.1" in skill
-    assert "${CLAUDE_PLUGIN_DATA}/runtime/.staging/1.3.1-<id>" in skill
+    assert "${CLAUDE_PLUGIN_DATA}/runtime/1.3.2" in skill
+    assert "${CLAUDE_PLUGIN_DATA}/runtime/.staging/1.3.2-<id>" in skill
     assert "tools/stm32-toolkit[probe]" in skill
     assert "isolated PEP 440 `pyocd` distribution check" in skill
     assert ">=0.45.1,<0.46" in skill
-    assert "existing 1.3.0, 1.2.0, 1.1.2, 1.0.1, 1.0.0, 0.9.0, 0.5.0 or 0.3.0 runtime reports broken" in skill
-    assert "${CLAUDE_PLUGIN_DATA}/runtime/1.3.1/Scripts/python.exe" in skill
-    for legacy_version in ("1.3.0", "1.2.0", "1.1.2", "1.0.1", "1.0.0", "0.9.0", "0.5.0", "0.3.0"):
+    assert "existing 1.3.1, 1.3.0, 1.2.0, 1.1.2, 1.0.1, 1.0.0, 0.9.0, 0.5.0 or 0.3.0 runtime reports broken" in skill
+    assert "${CLAUDE_PLUGIN_DATA}/runtime/1.3.2/Scripts/python.exe" in skill
+    for legacy_version in ("1.3.1", "1.3.0", "1.2.0", "1.1.2", "1.0.1", "1.0.0", "0.9.0", "0.5.0", "0.3.0"):
         assert f"runtime/{legacy_version}" not in command_blocks

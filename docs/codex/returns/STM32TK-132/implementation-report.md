@@ -42,6 +42,10 @@ redirect checks execute. Two non-failing warnings concern pydantic-settings forw
 references and runpy module reuse. The independent group overlaps the full group;
 its count is not added to a unique regression total.
 
+Native symlink cases remain DEFERRED to the primary release-qualification owner
+on a Windows host with symlink privileges; this task does not change host policy
+to obtain them. Any release disposition retaining those skips must say so explicitly.
+
 Claude verification session `39c3b312-5d53-4be0-aaef-f6fd072e3491` exposed only
 PowerShell and executed the one supplied command with native tool-use/result
 events, exit 0 and no permission denials. Exact command:

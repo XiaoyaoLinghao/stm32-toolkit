@@ -47,3 +47,13 @@ assertion and real failure. This follows the user's existing PowerShell7 permiss
 and execution-policy requirement; it does not modify global policy or production
 installation behavior. The verified executable is
 C:/Users/zhy76/.cache/codex-runtimes/codex-primary-runtime/dependencies/native/powershell/pwsh.exe.
+
+The same review found active README and setup Skill command examples still using
+ExecutionPolicy Bypass. In the already allowed README.md, README_zh-CN.md and
+skills/setup-stm32-env/SKILL.md, Claude must remove that override, show native
+PowerShell7 (`pwsh`) explicitly, and explain checking the selected interpreter
+before execution. A policy denial stops the step; changing policy or switching
+shells after denial requires resolving that prerequisite, not an automatic retry.
+This is caller-guidance consistency, not a production runtime change. Update the
+corresponding test_plugin_layout.py assertions to protect the command boundary
+while preserving explicit host-substituted path arguments and checksum checks.

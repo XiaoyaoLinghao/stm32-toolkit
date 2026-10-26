@@ -13,7 +13,7 @@ description: Use when a Claude Code user asks to check, bootstrap, repair, or di
 
 - CHECK is read-only and offline with respect to installation. It never creates files, probes hardware, kills unrelated or existing processes, or installs anything. It may terminate only a probe subprocess that CHECK itself started after that probe exceeds its timeout.
 - Never register a second MCP. The plugin-bundled `.mcp.json` starts only after the managed runtime is healthy.
-- The only MCP interpreter for this candidate is `${CLAUDE_PLUGIN_DATA}/runtime/1.3.1/Scripts/python.exe`; system `python`, `py`, or `uv` is never an MCP fallback. A healthy runtime includes the exact manifest-listed Toolkit/Monitor wheels with readable UI assets, the pinned `pyocd==0.45.1` distribution, and the existing doctor contract.
+- The only MCP interpreter for this candidate is `${CLAUDE_PLUGIN_DATA}/runtime/1.3.2/Scripts/python.exe`; system `python`, `py`, or `uv` is never an MCP fallback. A healthy runtime includes the exact manifest-listed Toolkit/Monitor wheels with readable UI assets, the pinned `pyocd==0.45.1` distribution, and the existing doctor contract.
 - CPython >=3.12,<3.13 is the only bounded bootstrap prerequisite for consuming an extracted offline bundle from the official pinned source candidate. Bootstrap never installs from a package index or from the source tree.
 - `${CLAUDE_PLUGIN_ROOT}/tools/stm32-toolkit` remains source provenance only; the historical
   `tools/stm32-toolkit[probe]` source expression is not installed directly.
@@ -28,28 +28,35 @@ paths. Never guess a replacement path.
 ### Agent-host adapter
 
 Claude substitutes `${CLAUDE_PLUGIN_ROOT}`, `${CLAUDE_PLUGIN_DATA}`, and `${CLAUDE_PROJECT_DIR}`
-inline. Never read them from ambient shell variables. This host command invokes `powershell.exe`
-with explicit quoted paths:
+inline. Never read them from ambient shell variables. This host command invokes native
+PowerShell 7 (`pwsh`) with explicit quoted paths. Before the step, confirm the selected
+interpreter is available and starts, for example with
+`pwsh -NoProfile -Command '$PSVersionTable.PSVersion'`:
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File '${CLAUDE_PLUGIN_ROOT}/bin/setup-stm32-env.ps1' -Mode Check -ToolkitRoot '${CLAUDE_PLUGIN_ROOT}' -DataRoot '${CLAUDE_PLUGIN_DATA}' -ProjectRoot '${CLAUDE_PROJECT_DIR}'
+pwsh -NoProfile -File '${CLAUDE_PLUGIN_ROOT}/bin/setup-stm32-env.ps1' -Mode Check -ToolkitRoot '${CLAUDE_PLUGIN_ROOT}' -DataRoot '${CLAUDE_PLUGIN_DATA}' -ProjectRoot '${CLAUDE_PROJECT_DIR}'
 ```
+
+Do not add an `-ExecutionPolicy` override. If the machine execution policy denies the
+script, stop and resolve that policy prerequisite with the machine owner; never switch
+shells, widen policy, or automatically retry after a denial.
 
 ### Standalone PowerShell sequence
 
 Standalone users must pass three explicit absolute paths: the extracted `ToolkitRoot`, the
 long-lived `DataRoot`, and the existing `ProjectRoot`. The examples below are complete ordinary
-PowerShell and do not require host placeholders. Set the paths once and always run the read-only
-check first.
+PowerShell 7 commands and do not require host placeholders. Verify that `pwsh` starts
+(`pwsh -NoProfile -Command '$PSVersionTable.PSVersion'`), set the paths once, and always run
+the read-only check first.
 
 ```powershell
-$ToolkitRoot = 'C:\tools\stm32-toolkit-1.3.1'
+$ToolkitRoot = 'C:\tools\stm32-toolkit-1.3.2'
 $DataRoot = 'C:\data\stm32-toolkit'
 $ProjectRoot = 'C:\work\blinky'
 $SetupScript = Join-Path $ToolkitRoot 'bin\setup-stm32-env.ps1'
 
 # Always run the read-only check first.
-& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $SetupScript -Mode Check `
+& pwsh -NoProfile -File $SetupScript -Mode Check `
   -ToolkitRoot $ToolkitRoot -DataRoot $DataRoot -ProjectRoot $ProjectRoot
 ```
 
@@ -57,16 +64,16 @@ If `Check` reports `missing`, review its evidence and explicitly authorize the a
 install before running this separate Bootstrap command:
 
 ```powershell
-& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $SetupScript -Mode Bootstrap `
+& pwsh -NoProfile -File $SetupScript -Mode Bootstrap `
   -ToolkitRoot $ToolkitRoot -DataRoot $DataRoot -ProjectRoot $ProjectRoot
 ```
 
-If `Check` reports `repairable` for an approved 1.3.0/1.2.0/1.1.2/1.0.1/1.0.0/0.9.0/0.5.0/0.3.0 legacy upgrade, or `broken` for
+If `Check` reports `repairable` for an approved 1.3.1/1.3.0/1.2.0/1.1.2/1.0.1/1.0.0/0.9.0/0.5.0/0.3.0 legacy upgrade, or `broken` for
 an existing runtime, review its source and downgrade guards and explicitly authorize Repair before
 running this separate command:
 
 ```powershell
-& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $SetupScript -Mode Repair `
+& pwsh -NoProfile -File $SetupScript -Mode Repair `
   -ToolkitRoot $ToolkitRoot -DataRoot $DataRoot -ProjectRoot $ProjectRoot
 ```
 
@@ -76,14 +83,14 @@ running this separate command:
 
 Use existing evidence only. Repeat `stm32_doctor` and `stm32_project_context` through the actual MCP client: the PowerShell commands below start a separate CLI process and do not prove what that live MCP process registered. `stm32_doctor` `data.runtime.toolkitVersion` and `data.publicInventory` describe the server; compare them with the actual tool list and input schemas the client exposes, and keep `stm32_project_context` `data.project.root` authoritative. An inventory count is not proof that the client registered those tools, and a launcher/CLI version alone does not prove the bound MCP version. After an upgrade restart VS Code once, then verify again. If expected tools or fields are missing, or the root differs, preserve the full JSON and stop the dependent operation.
 
-`data.firmwareRoutes`, per-blocker preflight `remediation`/`blockerSummary.byRemediation`, and the `extraRegions` option (with `analysis.extraRegions`) are additions in the current v1.3.1 source. The frozen `1e6ea849` v1.3.0 ZIP/runtime already contains `stm32_keil_preflight` with `analysis.blockers`, the blocker summary, `planReadiness`/`applyReadiness`, and the `startupStrategy`/`startupSource`/`memoryLayout` options, so do not describe the whole preflight tool or its basic payload as absent there. Only these later additions are missing, and that absence is not proof of a stale MCP server; do not infer it from a version string or inventory count. They become checkable only after a matching v1.3.1 build is installed.
+`data.firmwareRoutes`, per-blocker preflight `remediation`/`blockerSummary.byRemediation`, and the `extraRegions` option (with `analysis.extraRegions`) are additions in the current v1.3.2 source. The published v1.3.1 package already contains them, but it may legitimately omit the new v1.3.2 `probeCore.pyocdResolution`, the pyOCD diagnostics entries, and `data.vscodeGuidance`; treat that absence as an older implementation, not proof of a stale MCP server. The frozen `1e6ea849` v1.3.0 ZIP/runtime contains only the earlier preflight basics (`stm32_keil_preflight` with `analysis.blockers`, the blocker summary, `planReadiness`/`applyReadiness`, and the `startupStrategy`/`startupSource`/`memoryLayout` options), so do not describe the whole preflight tool as absent there either. The newer fields become checkable only after a matching v1.3.2 build is installed; do not infer them from a version string or inventory count.
 
 The following reads and prints the unfiltered JSON before checking `ok`; do not pipe it through `Select-Object`, `head`, or `grep`:
 
 ```powershell
 $DataRoot = 'C:\data\stm32-toolkit'
 $ProjectRoot = 'C:\work\blinky'
-$CandidateCli = Join-Path $DataRoot 'runtime\1.3.1\Scripts\stm32-toolkit.exe'
+$CandidateCli = Join-Path $DataRoot 'runtime\1.3.2\Scripts\stm32-toolkit.exe'
 
 & $CandidateCli version
 $DoctorText = & $CandidateCli --project-root $ProjectRoot doctor --json | Out-String
@@ -109,9 +116,9 @@ Keep every `details.*` field when a result is `ok=false`; read the complete resu
 CHECK always returns JSON. `bundle.status` is `missing` or verified, and `runtimeState.status` is
 `missing`, `matching`, `repairable`, `downgrade-refused`, `source-conflict`, `unsupported`, or
 `invalid`. `runtime.status` is `missing`, `healthy`, or `broken`; it includes version/error evidence
-and `recommendedMode`. A healthy runtime has version `1.3.1` and a successful bounded
-`-m stm32_toolkit.cli ... doctor --json`. An existing 1.3.0, 1.2.0, 1.1.2, 1.0.1, 1.0.0, 0.9.0, 0.5.0 or 0.3.0 runtime reports broken as legacy
-evidence. Repair quarantines that runtime before atomically promoting 1.3.1 and publishing one
+and `recommendedMode`. A healthy runtime has version `1.3.2` and a successful bounded
+`-m stm32_toolkit.cli ... doctor --json`. An existing 1.3.1, 1.3.0, 1.2.0, 1.1.2, 1.0.1, 1.0.0, 0.9.0, 0.5.0 or 0.3.0 runtime reports broken as legacy
+evidence. Repair quarantines that runtime before atomically promoting 1.3.2 and publishing one
 `runtime/runtime-state.json` generation. Tool version, extension, and pack inventory commands are
 bounded; timeouts become evidence rather than hangs.
 
@@ -135,7 +142,7 @@ paths.
 
 Both modes first verify `release/release-manifest.json`, every manifest hash, safe path, and the closed
 wheel set. They copy the verified wheels into a unique
-`${CLAUDE_PLUGIN_DATA}/runtime/.staging/1.3.1-<id>` directory before one offline
+`${CLAUDE_PLUGIN_DATA}/runtime/.staging/1.3.2-<id>` directory before one offline
 `pip install --no-index --no-deps` invocation, run `pip check`, validate exact Toolkit/Monitor
 versions and assets, validate isolated `pyocd`, and validate doctor before promotion. Failed safe
 staging is removed; a staging tree containing redirects is preserved for manual recovery rather
