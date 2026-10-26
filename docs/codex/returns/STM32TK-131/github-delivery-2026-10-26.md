@@ -1,5 +1,9 @@
 # v1.3.1 GitHub delivery and user validation handoff — 2026-10-26
 
+This is the draft-delivery checkpoint. The subsequent user-authorized Latest
+publication and anonymous download verification are recorded in
+[the publication record](publication-2026-10-26.md).
+
 The user confirmed Git Credential Manager login and explicitly requested the
 v1.3.1 GitHub push, retaining ownership of final actual installation and VS Code
 validation. Primary owns this delivery record; no product or test source changed.

@@ -4,7 +4,7 @@
 
 STM32 Toolkit 是面向 STM32 工程的本地工具。CLI 与 stdio MCP 共用工程、构建、Probe Service、测试和 Monitor 合同；九个随插件提供的 Claude Code Skill 只是这些公开入口的适配层，产品核心不依赖特定 Agent 宿主。
 
-**当前源码候选：v1.3.1（本地 Release 准备，尚未发布）。**仅在版本化 Release 实际同时列出 Windows ZIP 与 `CHECKSUMS.sha256`，或另行提供的本地候选已核验哈希时，才使用与版本匹配的 v1.3.1 包。**最后观察到的有日期公开版本仍是 v1.2.0**（冻结的 48 工具、8 Skill runtime），作为显式 legacy 路线保留在下文。[发布状态](docs/release-status.md)记录当前资格结论与发布历史。发行平台为 Windows x86_64、CPython `>=3.12,<3.13`。
+**当前公开 Latest：[v1.3.1](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.3.1)，发布于 2026-10-26。**从同一 Release 下载 Windows ZIP 与 `CHECKSUMS.sha256`。本版包含 52 个工具、9 个 Skill，按用户批准的候选限定例外发布；最终安装与 VS Code 独立测试由用户负责，仍待完成。v1.2.0 作为历史 legacy 路线保留在下文。[发布状态](docs/release-status.md)记录证据与保留限制。发行平台为 Windows x86_64、CPython `>=3.12,<3.13`。
 
 ## 下载、校验并安装与版本匹配的 v1.3.1 包
 
@@ -70,9 +70,9 @@ $CandidateCli = Join-Path $DataRoot "runtime\$Version\Scripts\stm32-toolkit.exe"
 
 确认启动器报出的版本为 `1.3.1`；依赖候选专属行为前，按[用户指南](docs/user-guide.md)核对实际绑定服务器的版本、工具 input schema 与 `data.project.root`。只读 `keil inspect`/`preflight` 不要求可选的 UV4/ARMCC 工具、VS Code 扩展或构建工具，缺少这些不会单独阻断它们。按各自的真实响应判断：`keil preflight` 返回 `data.analysis.blockers`、`data.planReadiness` 与 `data.applyReadiness`；convert PLAN 返回 `data.plan_id`、`data.blockers` 与 `data.patches[]`。Git/root 前置允许时，诊断 PLAN 仍可携带 blocker；blocker 阻止的是 APPLY，而非只读分析。该操作的授权、capability、身份或 blocker 检查失败时停止。启动器版本不符就停止并先解决 setup，不要改换启动器。
 
-### 最后观察到的公开版本：v1.2.0（legacy 路线）
+### 历史公开版本：v1.2.0（legacy 路线）
 
-[v1.2.0 Release](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.2.0) 是最后观察到的、有日期的公开版本；资产是否可用、最终资格与限制仍以该页面为准。它是显式选择的 legacy 路线，不是 v1.3.1 包不可用时的回退：v1.2.0 是冻结的 48 工具、8 Skill runtime，不包含本 README 描述的 v1.3.1 专属行为。
+[v1.2.0 Release](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.2.0) 是历史公开版本；资产是否可用、最终资格与限制仍以该页面为准。它是显式选择的 legacy 路线：v1.2.0 是冻结的 48 工具、8 Skill runtime，不包含本 README 描述的 v1.3.1 专属行为。
 
 安装 v1.2.0 时，先确认该 Release 页面同时列出 `stm32-toolkit-1.2.0-windows-x86_64.zip` 与 `CHECKSUMS.sha256`，再从同一页面下载；任一资产缺失就停止，不借用其它包或 GitHub 自动生成的源码归档。先核对 ZIP 哈希，再解压；缺少校验行或哈希不符即停止。发行包内含匹配的源码归档、发行清单与离线 wheels，不要混用其它版本文件。Bootstrap 前本机需要可用的 CPython 3.12。
 
@@ -134,7 +134,7 @@ $CandidateCli = Join-Path $DataRoot 'runtime\1.3.1\Scripts\stm32-toolkit.exe'
 & $CandidateCli --project-root $ProjectRoot build --preset arm-debug --json
 ```
 
-**legacy v1.2.0 公开 runtime 示例（最后观察到的有日期公开版本）：**
+**legacy v1.2.0 公开 runtime 示例：**
 
 ```powershell
 $Cli = Join-Path $DataRoot 'runtime\1.2.0\Scripts\stm32-toolkit.exe'
@@ -163,4 +163,4 @@ $env:STM32_TOOLKIT_DATA_ROOT = $DataRoot
 - [架构](docs/architecture.md)、[开发](docs/development.md)、[标准测试流程](docs/testing/standard-test-procedure.md)及[发布资格](docs/testing/release-qualification.md)。
 - [变更记录](CHANGELOG.md)及[v1.2.0 源码交付规范](docs/superpowers/specs/2026-10-21-monitor-v120-delivery-design.md)。[v1.0.1 执行记录](docs/codex/returns/STM32TK-101/execution.md)保留其历史资格事实。
 
-当前源码 inventory 有 52 个公开 MCP 名称，包含 `stm32_keil_preflight`、`stm32_firmware_import`、`stm32_firmware_admit` 与 `stm32_flash_imported`，覆盖工程、构建、探针、外部固件、诊断、测试、验收；另有九个随插件提供的 Skill（八个工作流 Skill 加 `normalize-source-comments`）。已发布的 v1.2.0 runtime 仍是冻结的 48 工具、8 Skill 包，不包含这些源码新增入口。请先核对启动器版本，再对实际绑定服务器执行 `doctor --json`，读取 `data.publicInventory` 与真实工具 input schema；不要依据本页或源码清单推断可用工具。外部固件路线只导入原始 ELF/AXF、Intel HEX 或 BIN 快照并离线准入，再单独授权烧录；它不需要托管 manifest、Git、构建 receipt 或 SVD。计划中的 `data.source.sha256` 与 `data.image.sha256` 是两个独立字段；准入与烧录结果中的 `sourceSha256`/`imageSha256` 是扁平字段。导入 receipt 不会解锁 debug、Monitor、Target 测试或伪造的 build identity。`VS09-B` 的当前发行构建仍使用 `tools/release/build_0900_artifacts.py` 和固定名称的 `release_0900_policy.json`；历史文件名与该策略是现行打包输入，不代表该源码候选已发布。退出当前树的旧计划与报告仍可用 `git show 694c825d29a55a53052a148efa4cc6720c315a04:<path>` 查阅。
+已发布的 v1.3.1 inventory 有 52 个公开 MCP 名称，包含 `stm32_keil_preflight`、`stm32_firmware_import`、`stm32_firmware_admit` 与 `stm32_flash_imported`，覆盖工程、构建、探针、外部固件、诊断、测试、验收；另有九个随插件提供的 Skill（八个工作流 Skill 加 `normalize-source-comments`）。历史 v1.2.0 runtime 仍是冻结的 48 工具、8 Skill 包，不包含这些新增入口。请先核对启动器版本，再对实际绑定服务器执行 `doctor --json`，读取 `data.publicInventory` 与真实工具 input schema；不要依据本页或源码清单推断可用工具。外部固件路线只导入原始 ELF/AXF、Intel HEX 或 BIN 快照并离线准入，再单独授权烧录；它不需要托管 manifest、Git、构建 receipt 或 SVD。计划中的 `data.source.sha256` 与 `data.image.sha256` 是两个独立字段；准入与烧录结果中的 `sourceSha256`/`imageSha256` 是扁平字段。导入 receipt 不会解锁 debug、Monitor、Target 测试或伪造的 build identity。`VS09-B` 的当前发行构建仍使用 `tools/release/build_0900_artifacts.py` 和固定名称的 `release_0900_policy.json`；这些历史文件名仍是现行打包输入。发布身份见[发布状态](docs/release-status.md)。退出当前树的旧计划与报告仍可用 `git show 694c825d29a55a53052a148efa4cc6720c315a04:<path>` 查阅。

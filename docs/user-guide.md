@@ -1,18 +1,18 @@
 # STM32 Toolkit 用户指南与排障
 
-本指南面向 **v1.3.1 源码候选**，说明其操作合同。使用与版本匹配的 v1.3.1 包以实际可用为前提：版本化 Release 实际同时列出 Windows ZIP 与 `CHECKSUMS.sha256`，或另行提供的本地候选已核验哈希。**最后观察到的有日期公开版本仍是 v1.2.0**（冻结的 48 工具、8 Skill runtime），只能作为显式 legacy 路线选择，不作为 v1.3.1 资产缺失时的自动回退。[发布状态](release-status.md)记录当前资格结论与发布历史。Monitor 工作台与源码目录等行为见[源码规范](superpowers/specs/2026-10-21-monitor-v120-delivery-design.md)；v1.0.1 的历史资格见[执行记录](codex/returns/STM32TK-101/execution.md)。本文对应用户报告的 1–22 项；报告是核查输入，不是接收者机器的安装或实机证据。
+本指南面向已于 2026-10-26 公开发布为 Latest 的 **[v1.3.1](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.3.1)**，说明其操作合同。从同一 Release 获取 Windows ZIP 与 `CHECKSUMS.sha256` 并核验。本版包含 52 个工具、9 个 Skill；用户已批准保留披露限制先发布，随后独立完成最终安装与 VS Code 测试，该测试仍待完成。v1.2.0（冻结的 48 工具、8 Skill runtime）保留为历史 legacy 路线。[发布状态](release-status.md)记录证据、例外和发布历史。Monitor 工作台与源码目录等行为见[源码规范](superpowers/specs/2026-10-21-monitor-v120-delivery-design.md)；v1.0.1 的历史资格见[执行记录](codex/returns/STM32TK-101/execution.md)。本指南不代替接收者机器的安装或实机证据。
 
 ## 路径、版本和安全入口
 
 **主接收路径（conditional：与版本匹配的 v1.3.1 包）：** 仅当版本化 v1.3.1 Release 页面确实同时列出同版 ZIP 与 `CHECKSUMS.sha256`，或另行提供的本地候选同时提供这两个文件且哈希相符时，才按[双语 README](../README.md) 的参数化流程下载、校验并安装该 v1.3.1 包。任一资产或校验行缺失即停止，不要用 v1.2.0、更早的包或 GitHub 自动源码归档顶替。之后用包内 `Check` 确认 ToolkitRoot、持久 DataRoot、工程根、发行包及受管 runtime（v1.3.1 期望 `runtime/1.3.1`）。`Bootstrap`/`Repair` 修改 runtime，先审阅 `Check` 结果和对应发行包，再只执行获准的一种动作，完成后复查到 healthy。Claude Code 的入口为 [skills/setup-stm32-env/SKILL.md](../skills/setup-stm32-env/SKILL.md)；其它 MCP 宿主使用绝对 launcher、显式 project/data root 和 `STM32_TOOLKIT_DATA_ROOT`。`.stm32-project.json` 属于工程，DataRoot 保存机器状态和证据，不能把一次性测试目录当作长期 DataRoot。
 
-**显式 legacy 路线（最后观察到的公开版本 v1.2.0）：** 安装前先在 [v1.2.0 Release](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.2.0) 页面确认同版 ZIP 与 `CHECKSUMS.sha256` 均已列出，再从同一页面下载；缺少任一资产就停止。v1.2.0 是冻结的 48 工具、8 Skill runtime，不含下文 v1.3.1 专属入口。
+**显式 legacy 路线（历史公开版本 v1.2.0）：** 安装前先在 [v1.2.0 Release](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.2.0) 页面确认同版 ZIP 与 `CHECKSUMS.sha256` 均已列出，再从同一页面下载；缺少任一资产就停止。v1.2.0 是冻结的 48 工具、8 Skill runtime，不含下文 v1.3.1 专属入口。
 
 版本匹配的 v1.3.1 包与 legacy v1.2.0 包都使用全新、每版专用的 BundleRoot，路径已存在就另选新目录，不覆盖或删除。v1.3.1 使用 `C:\tools\stm32-toolkit-1.3.1-bundle`，ZIP 中的 `stm32-toolkit-1.3.1/` 与外层 `release/` 并列，ToolkitRoot 为 `C:\tools\stm32-toolkit-1.3.1-bundle\stm32-toolkit-1.3.1`，其内部另有供 setup 使用的 `release/`。legacy v1.2.0 同理使用 `C:\tools\stm32-toolkit-1.2.0-bundle` 与 `stm32-toolkit-1.2.0/`。下载/校验以及 `Check`/获授权 `Bootstrap`/获授权 `Repair` 的命令形式见双语 README，两条路线策略相同，只更换版本与路径。长期 DataRoot 在 `C:\data\stm32-toolkit`，与 BundleRoot 分离。
 
 ## 通用 MCP 配置与公开入口
 
-下例**只有在**本地 v1.3.1 候选已经过核验、`Check` 为 healthy，且该 DataRoot 中确实存在 `runtime/1.3.1` 时才可照抄；它描述的是这种前提下的条件/示例，而不是本文已经安装或测试过 1.3.1。本文不记录该候选的安装资格：较早的用户会话安装的是 v1.3.0 候选，本次切片未复核该安装，也未安装 1.3.1 补丁。若显式选择最后观察到的公开版本 v1.2.0，请把 `command` 换为 `stm32-toolkit-1.2.0` 路径，并按该发行包的 48 工具、8 Skill 清单核对。下例供支持 `mcpServers` 的宿主使用。将三个示例路径换成真实绝对路径；`args` 的 `--data-root` 与 `env` 中的 `STM32_TOOLKIT_DATA_ROOT` 必须指向同一持久目录。cmd 启动器先用环境变量找到受管解释器，Python MCP 入口随后读取这两个显式参数。其它宿主请按其配置格式映射同一 `command`、`args`、`env`，不要改用系统 Python。
+下例**只有在**本地 v1.3.1 包已经过核验、`Check` 为 healthy，且该 DataRoot 中确实存在 `runtime/1.3.1` 时才可使用。发布前的隔离新装检查已有通过记录，最终接收者安装和 VS Code/MCP 测试仍须独立完成；参见[安装证据](codex/returns/STM32TK-131/authorization-2026-10-26.md)。若显式选择历史版本 v1.2.0，请把 `command` 换为 `stm32-toolkit-1.2.0` 路径，并按该发行包的 48 工具、8 Skill 清单核对。下例供支持 `mcpServers` 的宿主使用。将三个示例路径换成真实绝对路径；`args` 的 `--data-root` 与 `env` 中的 `STM32_TOOLKIT_DATA_ROOT` 必须指向同一持久目录。cmd 启动器先用环境变量找到受管解释器，Python MCP 入口随后读取这两个显式参数。其它宿主请按其配置格式映射同一 `command`、`args`、`env`，不要改用系统 Python。
 
 ```json
 {
@@ -33,7 +33,7 @@
 
 九个随插件提供的 Claude Code Skill 中，八个工作流 Skill 调用相同的公开合同：[setup-stm32-env](../skills/setup-stm32-env/SKILL.md)、[migrate-keil](../skills/migrate-keil/SKILL.md)、[configure-stm32-project](../skills/configure-stm32-project/SKILL.md)、[build-firmware](../skills/build-firmware/SKILL.md)、[flash-firmware](../skills/flash-firmware/SKILL.md)、[debug-firmware](../skills/debug-firmware/SKILL.md)、[read-var](../skills/read-var/SKILL.md)、[stm32-monitor](../skills/stm32-monitor/SKILL.md)；[normalize-source-comments](../skills/normalize-source-comments/SKILL.md) 是独立的显式编码复制助手，只生成注释级 UTF-8 副本，不属于迁移 apply，也不新增 MCP 工具。当前源码的 52 个 MCP 工具名称及九个 Skill 权威清单在 [public_inventory.py](../tools/stm32-toolkit/src/stm32_toolkit/public_inventory.py)；已发布的 v1.2.0 安装包仍为 48 个工具、8 个 Skill，不包含 `stm32_keil_preflight`、`stm32_firmware_import`、`stm32_firmware_admit` 或 `stm32_flash_imported`。**判断实际可用工具时，请在真正的 MCP 客户端调用 `stm32_doctor`，先检查 `ok`，再读取 `data.runtime.toolkitVersion` 与 `data.publicInventory`，并与客户端真实列出的工具及 input schema 对比。单独启动的启动器/CLI `doctor --json` 只是旁证，不能证明当前 MCP 进程的绑定；不要依据本页或源码清单推断。**
 
-以下命令中的路径均为示例，须替换为本机真实绝对路径。**默认示例使用与当前源码匹配的 v1.3.1 候选**，只在已按上述条件取得并安装该版本、且 `Check` 返回 healthy 后使用；本文不表示它已公开发布、安装或部署。**最后观察到的公开版本 v1.2.0（48 个工具）** 是显式 legacy 路线：把启动器换为 `$DataRoot\runtime\1.2.0\Scripts\stm32-toolkit.exe`，命令限于该发行包已有的入口，不要混用启动器。较早的 v1.3.0 已有本地官方构建产物（见[发布状态](release-status.md)），而 v1.3.1 包仍在准备/验证；本切片未产生 GitHub Release、公开下载、安装或完整资格结论（另有用户会话安装过更早候选，本切片不复核）。CLI 工程命令需显式 `--project-root`；`--json` 命令返回结构化 code/details，`uvprojx` 必须使用正斜杠的可移植相对路径。`--dry-run` 只产生计划，`--apply --plan-id ... --authorized` 是独立写操作，不要直接套用示例 plan ID。
+以下命令中的路径均为示例，须替换为本机真实绝对路径。**默认示例使用已发布的 v1.3.1**，只在已按上述条件取得并安装该版本、且 `Check` 返回 healthy 后使用。**历史公开版本 v1.2.0（48 个工具）** 是显式 legacy 路线：把启动器换为 `$DataRoot\runtime\1.2.0\Scripts\stm32-toolkit.exe`，命令限于该发行包已有的入口，不要混用启动器。较早的 v1.3.0 仅保留本地候选记录；v1.3.1 的发布限制和待完成的独立测试见[发布状态](release-status.md)。CLI 工程命令需显式 `--project-root`；`--json` 命令返回结构化 code/details，`uvprojx` 必须使用正斜杠的可移植相对路径。`--dry-run` 只产生计划，`--apply --plan-id ... --authorized` 是独立写操作，不要直接套用示例 plan ID。
 
 ```powershell
 $DataRoot = 'C:\data\stm32-toolkit'
@@ -513,7 +513,7 @@ stm32_flash_imported(probeId="<user-selected probe>", importId=apply.data.import
 
 ## 外部固件导入与独立烧录（当前源码/候选切片）
 
-这条路线与托管构建/烧录完全分开，已集成进 **v1.3.1 本地候选源码**但尚未发布；已发布 v1.2.0 的 48 工具包没有这些入口。它用于没有 `.stm32-project.json`、Git 或构建 receipt，但持有可用固件文件的工程。使用前先核对实际启动器版本，并对实际绑定服务器执行 `doctor --json`：确认 `data.publicInventory.mcpTools` 列出这三个工具、`skills` 为九个，并检查真实工具 input schema 的字段名与类型；只按实际返回调用，不要按本页推断。
+这条路线与托管构建/烧录完全分开，已随 **v1.3.1** 公开发布；历史 v1.2.0 的 48 工具包没有这些入口。它用于没有 `.stm32-project.json`、Git 或构建 receipt，但持有可用固件文件的工程。使用前先核对实际启动器版本，并对实际绑定服务器执行 `doctor --json`：确认 `data.publicInventory.mcpTools` 列出这三个工具、`skills` 为九个，并检查真实工具 input schema 的字段名与类型；只按实际返回调用，不要按本页推断。
 
 - `stm32_project_context` 的 `capabilities.flash` 只描述**托管构建路线**；它不评估、也不阻止外部导入路线。未托管工程只要实际绑定的服务器暴露 `stm32_firmware_import`、`stm32_firmware_admit`、`stm32_flash_imported`，就可以使用本路线。
 - **导入计划**：`stm32_firmware_import(firmwarePath, expectedSha256, format, target, flashRegions, baseAddress?)`。`firmwarePath` 是工程根内正斜杠相对路径；`expectedSha256` 是**原始文件**的精确小写 SHA-256；`format` 为 `elf`、`hex` 或 `bin`（AXF 按 ELF 解析）；`target` 是明确的受支持 pyOCD target 标识；`flashRegions` 是 1–32 个 `{start,length}` 内部应用 Flash 区间（`0x08000000 ≤ start < end ≤ 0x10000000`），这是用户复核的声明，不是芯片容量测量。BIN 必须显式给 `baseAddress`，其它格式禁止该参数；BIN 没有调试符号，也不推断启动地址。不传 `planId` 时返回只读 PLAN：`data.planId`、`data.importId`、`data.source`（原始路径/SHA-256/大小）与 `data.image`（规范化 ARM ELF 的 SHA-256/大小/段/入口）。计划中 `data.source.sha256` 与 `data.image.sha256` 是**两个独立字段**（准入/烧录结果中则是扁平的 `sourceSha256`/`imageSha256`）；它们通常不同，但原始 ELF 若已与规范化镜像逐字节相同，二者也会相同，不能把“不相等”当作校验规则。

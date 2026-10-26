@@ -4,6 +4,8 @@
 
 ## 1. 当前断点与证据
 
+2026-10-26 最新发布：[v1.3.1 已公开发布为 Latest](../codex/returns/STM32TK-131/publication-2026-10-26.md)。用户明确要求先发布，再自行独立测试。Release 423752112 的版本页和 Latest API 均返回 `draft=false`、`prerelease=false`，标签/target 为冻结源码 `7ff99e50011b6321ae3f0c9bb2edfab91724be3e`。13 个附件匿名下载均为 HTTP200，大小与 SHA-256 全部匹配冻结构建。最终安装/VS Code 验证仍由用户负责并记 USER_VALIDATION_PENDING；保留原批准限制，不转换成 PASS，不操作原工程或硬件。主代理本轮优化、构建和发布交付已完成，以下为历史断点。
+
 2026-10-26 最新远端交付：[GitHub 交付记录](../codex/returns/STM32TK-131/github-delivery-2026-10-26.md)。本机 Git Credential Manager 登录复核通过，按用户明确授权以非强推方式将 `master` 推送至 `a1bb1908fb1fa992cc3e9f6b9bb802b309157d78`；`v1.3.1` 标签指向冻结构建源码 `7ff99e50011b6321ae3f0c9bb2edfab91724be3e`，远端身份已核对。Release 草稿423752112已创建，未公开发布为Latest。最终实际安装与VS Code实测由用户负责，仍为 USER_VALIDATION_PENDING；不重新启动自动IDE验证，不操作原工程或硬件。后续文档提交只记录交付，不改变冻结包。以下为历史断点。
 
 2026-10-26 最新交接：[授权与隔离安装记录](../codex/returns/STM32TK-131/authorization-2026-10-26.md)。用户已批准既有 PowerShell7 和仅针对冻结 `7ff99e50011b6321ae3f0c9bb2edfab91724be3e` 的已披露限制例外。该候选在 `D:/codex-tmp/r131/ide-data` 完成 Check → Bootstrap → Check，均退出0，最终 healthy/matching、1.3.1、generation1。用户随后接手最终实际安装与 VS Code 验证，状态为 USER_VALIDATION_PENDING，不记 PASS；主代理停止 IDE 自动验证，按本次明确授权处理 GitHub 推送。升级/回滚无新通过记录。Git Credential Manager 账户仍为空，等待该客户端登录；未推送、未发布，不触碰原工程或硬件。以下为历史断点。

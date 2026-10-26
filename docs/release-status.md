@@ -1,5 +1,23 @@
 # Release status and retained limitations
 
+## v1.3.1 published Latest — 2026-10-26
+
+The [v1.3.1 Release](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.3.1),
+ID `423752112`, was published at `2026-10-26T01:40:23Z` (09:40:23 Asia/Shanghai)
+and is Latest: `draft=false`, `prerelease=false`. The tag and target identify
+frozen source `7ff99e50011b6321ae3f0c9bb2edfab91724be3e`. All 13 public assets
+were anonymously downloaded with HTTP 200 and independently rehashed; every size
+and SHA-256 matches the frozen build. Windows ZIP SHA-256:
+`ec3eb4e9ccadecd832c570288b3449a5b6553b260cd734e1ac82dfc647fe6a08`.
+
+The user explicitly requested publication and Latest before their independent
+testing. Final installation and VS Code/MCP testing remain **USER_VALIDATION_PENDING**.
+The approved candidate-specific coverage/reuse limits remain disclosed; permanent
+gates are unchanged. Isolated new installation passed; upgrade/rollback has no new
+PASS, and no hardware was operated. See the
+[publication and public verification record](codex/returns/STM32TK-131/publication-2026-10-26.md).
+The earlier checkpoints below retain their historical states.
+
 ## v1.3.1 integration checkpoint — 2026-10-26
 
 Latest delivery checkpoint: Git Credential Manager authentication now succeeds.

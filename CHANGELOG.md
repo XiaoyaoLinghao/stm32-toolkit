@@ -1,5 +1,18 @@
 # Changelog
 
+## [v1.3.1] - 2026-10-26
+
+- Published as [Latest](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.3.1)
+  from frozen source `7ff99e50011b6321ae3f0c9bb2edfab91724be3e`, with 13 verified assets.
+- Include the v1.3.0 candidate's Git-free preflight/build and external-firmware routes,
+  plus safe scoped includes, bounded common ARMCC migration, explicit extra memory
+  regions/linker fragments, PyOCD configuration and reviewed comment replacement.
+- Improve floating-point ABI decisions, stale-build diagnostics, VS Code tasks,
+  doctor readiness, flash-frequency guidance and memory-margin warnings.
+- Retain the approved candidate-specific coverage/reuse limits. The user explicitly
+  requested publication before their final installation and VS Code independent
+  testing; that testing remains pending. See [release status](docs/release-status.md).
+
 ## [v1.3.0 local candidate]
 
 - Align Toolkit, Monitor, UI, plugin, launchers and release metadata to `1.3.0`. Recognize

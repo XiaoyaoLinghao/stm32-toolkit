@@ -8,6 +8,13 @@ The user's explicit v1.0.1 conditional exception is recorded below, separately f
 
 ## v1.3.1 frozen-candidate exception authorized on 2026-10-26
 
+The user subsequently explicitly requested publication as v1.3.1 and Latest
+before their independent installation/VS Code testing. Publication is complete;
+that final user testing remains USER_VALIDATION_PENDING, not PASS. The
+[public verification record](../codex/returns/STM32TK-131/publication-2026-10-26.md)
+binds the release, frozen source and all 13 downloaded assets. This ordering
+decision preserves the disclosed limits and permanent gates below.
+
 The user explicitly approved **USER_APPROVED_EXCEPTION** only for frozen source
 `7ff99e50011b6321ae3f0c9bb2edfab91724be3e` and its reproducible 13-asset v1.3.1
 candidate. The Windows ZIP is 113,475,542 bytes with SHA-256
