@@ -19,6 +19,12 @@ from typing import TypeVar, cast
 from unicodedata import normalize
 from uuid import UUID
 
+from stm32_toolkit.source_provenance import (
+    SOURCE_BASELINE_INPUT_SNAPSHOT,
+    source_revision,
+    unavailable_git_evidence,
+)
+
 
 EVIDENCE_SCHEMA = "stm32-evidence/1"
 MAX_ENVELOPE_BYTES = 1024 * 1024
@@ -284,8 +290,6 @@ def _validate_identity_shared_fields(
     session_id: object,
     target_device: object,
     input_snapshot_sha256: object,
-    git_commit: object,
-    git_dirty: object,
 ) -> None:
     """Validate the caller-owned fields shared by complete identities and contexts."""
     _require_hash("workspace_id", workspace_id)
@@ -293,10 +297,54 @@ def _validate_identity_shared_fields(
     _validate_session_id(session_id)
     _require_bounded_string("target_device", target_device)
     _require_hash("input_snapshot_sha256", input_snapshot_sha256)
+
+
+def _validate_provenance_fields(
+    *,
+    git_commit: object,
+    git_dirty: object,
+    source_baseline: object,
+    git_evidence: object,
+) -> Mapping[str, str] | None:
+    """Validate one closed provenance form and return its frozen evidence.
+
+    The two forms never mix: a snapshot record carries the explicit baseline,
+    bounded unavailable-Git evidence and null Git fields, while a legacy
+    record carries a real Git commit and strict boolean.  Null Git fields
+    without the snapshot discriminator, a partial pair and unknown evidence
+    fields all fail closed instead of being coerced into a clean state.
+    """
+    snapshot = source_baseline is not None or git_evidence is not None
+    if snapshot:
+        if source_baseline != SOURCE_BASELINE_INPUT_SNAPSHOT:
+            raise EvidenceValidationError(EVIDENCE_INVALID, "source_baseline is invalid")
+        if git_commit is not None or git_dirty is not None:
+            raise EvidenceValidationError(
+                EVIDENCE_INVALID, "snapshot identity requires null Git fields"
+            )
+        try:
+            evidence = unavailable_git_evidence(git_evidence)
+        except ValueError as error:
+            raise EvidenceValidationError(EVIDENCE_INVALID, "git_evidence is invalid") from error
+        return MappingProxyType(evidence)
+    if git_commit is None or git_dirty is None:
+        raise EvidenceValidationError(
+            EVIDENCE_INVALID, "Git fields require a commit and a boolean dirty flag"
+        )
     if _GIT_COMMIT.fullmatch(_require_bounded_string("git_commit", git_commit)) is None:
         raise EvidenceValidationError(EVIDENCE_INVALID, "git_commit must be a lowercase Git SHA-1")
     if type(git_dirty) is not bool:
         raise EvidenceValidationError(EVIDENCE_INVALID, "git_dirty must be a JSON boolean")
+    return None
+
+
+_IDENTITY_FIELDS = frozenset(
+    {
+        "workspace_id", "project_id", "session_id", "build_id", "elf_sha256",
+        "target_device", "input_snapshot_sha256", "git_commit", "git_dirty",
+    }
+)
+_SNAPSHOT_IDENTITY_FIELDS = _IDENTITY_FIELDS | {"source_baseline", "git_evidence"}
 
 
 @dataclass(frozen=True)
@@ -308,8 +356,11 @@ class EvidenceIdentity:
     elf_sha256: str
     target_device: str
     input_snapshot_sha256: str
-    git_commit: str
-    git_dirty: bool
+    git_commit: str | None
+    git_dirty: bool | None
+    #: Explicit snapshot form fields; both stay ``None`` for the legacy form.
+    source_baseline: str | None = None
+    git_evidence: Mapping[str, str] | None = None
 
     def __post_init__(self) -> None:
         _validate_identity_shared_fields(
@@ -318,26 +369,63 @@ class EvidenceIdentity:
             session_id=self.session_id,
             target_device=self.target_device,
             input_snapshot_sha256=self.input_snapshot_sha256,
-            git_commit=self.git_commit,
-            git_dirty=self.git_dirty,
         )
         _require_hash("build_id", self.build_id)
         _require_hash("elf_sha256", self.elf_sha256)
+        evidence = _validate_provenance_fields(
+            git_commit=self.git_commit,
+            git_dirty=self.git_dirty,
+            source_baseline=self.source_baseline,
+            git_evidence=self.git_evidence,
+        )
+        if evidence is not None:
+            object.__setattr__(self, "git_evidence", evidence)
+
+    @property
+    def is_snapshot(self) -> bool:
+        return self.source_baseline is not None
+
+    @property
+    def content_revision(self) -> str:
+        """The one generic revision bound to this identity's provenance form."""
+        return source_revision(
+            git_commit=self.git_commit,
+            source_baseline=self.source_baseline,
+            input_snapshot_sha256=self.input_snapshot_sha256,
+        )
 
     @classmethod
     def from_dict(cls, value: object) -> "EvidenceIdentity":
-        data = _require_keys(
-            value,
-            {
-                "workspace_id", "project_id", "session_id", "build_id", "elf_sha256",
-                "target_device", "input_snapshot_sha256", "git_commit", "git_dirty",
-            },
-            "EvidenceIdentity",
-        )
-        return cls(**cast(dict[str, object], dict(data)))
+        if not isinstance(value, Mapping) or set(value) not in (
+            _IDENTITY_FIELDS,
+            _SNAPSHOT_IDENTITY_FIELDS,
+        ):
+            raise EvidenceValidationError(EVIDENCE_INVALID, "EvidenceIdentity fields are not closed")
+        data = dict(value)
+        if set(data) == _SNAPSHOT_IDENTITY_FIELDS and (
+            data.get("source_baseline") is None or data.get("git_evidence") is None
+        ):
+            # The extended wire keys are the snapshot discriminator and its
+            # bounded evidence.  Present-but-null keys are neither a legacy
+            # Git record nor a usable snapshot record; accepting them would
+            # silently drop them on the next serialization.
+            raise EvidenceValidationError(
+                EVIDENCE_INVALID,
+                "snapshot identity requires source_baseline and git_evidence",
+            )
+        return cls(**cast(dict[str, object], data))
+
+    def provenance_fields(self) -> dict[str, object]:
+        """The serialized provenance pair (empty for the legacy Git form)."""
+        if self.source_baseline is None:
+            return {}
+        return {
+            "source_baseline": self.source_baseline,
+            "git_evidence": dict(cast(Mapping[str, str], self.git_evidence)),
+        }
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        document: dict[str, object] = {
             "workspace_id": self.workspace_id,
             "project_id": self.project_id,
             "session_id": self.session_id,
@@ -348,6 +436,8 @@ class EvidenceIdentity:
             "git_commit": self.git_commit,
             "git_dirty": self.git_dirty,
         }
+        document.update(self.provenance_fields())
+        return document
 
 
 @dataclass(frozen=True)
@@ -359,8 +449,10 @@ class EvidenceIdentityContext:
     session_id: str
     target_device: str
     input_snapshot_sha256: str
-    git_commit: str
-    git_dirty: bool
+    git_commit: str | None
+    git_dirty: bool | None
+    source_baseline: str | None = None
+    git_evidence: Mapping[str, str] | None = None
 
     def __post_init__(self) -> None:
         _validate_identity_shared_fields(
@@ -369,9 +461,15 @@ class EvidenceIdentityContext:
             session_id=self.session_id,
             target_device=self.target_device,
             input_snapshot_sha256=self.input_snapshot_sha256,
+        )
+        evidence = _validate_provenance_fields(
             git_commit=self.git_commit,
             git_dirty=self.git_dirty,
+            source_baseline=self.source_baseline,
+            git_evidence=self.git_evidence,
         )
+        if evidence is not None:
+            object.__setattr__(self, "git_evidence", evidence)
 
     def bind(self, *, build_id: str, elf_sha256: str) -> EvidenceIdentity:
         return EvidenceIdentity(
@@ -384,6 +482,8 @@ class EvidenceIdentityContext:
             input_snapshot_sha256=self.input_snapshot_sha256,
             git_dirty=self.git_dirty,
             git_commit=self.git_commit,
+            source_baseline=self.source_baseline,
+            git_evidence=self.git_evidence,
         )
 
 

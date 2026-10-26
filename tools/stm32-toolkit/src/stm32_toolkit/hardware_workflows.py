@@ -83,6 +83,7 @@ from stm32_toolkit.probe.worker import (
 )
 from stm32_toolkit.project_model import ProjectManifestError, ProjectModel, load_project_model
 from stm32_toolkit.result import OperationResult
+from stm32_toolkit.source_provenance import source_revision
 
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
@@ -2148,11 +2149,19 @@ def _control_authorization_binding(
     identity_snapshot: Mapping[str, object],
     operation: str,
 ) -> dict[str, object]:
+    # Project the identical content revision the managed build/flash and debug
+    # read paths bind: the recorded Git commit for a legacy binding and the
+    # explicitly namespaced snapshot content revision for the snapshot form.
+    revision = source_revision(
+        git_commit=binding.git_head,
+        source_baseline=binding.source_baseline,
+        input_snapshot_sha256=binding.input_snapshot_sha256,
+    )
     return {
         "workspace_id": binding.workspace_id,
         "project_id": binding.logical_project_id,
         "session_id": binding.observation_session_id,
-        "revision": binding.git_head,
+        "revision": revision,
         "target": dict(identity_snapshot),
         "firmware": {
             "build_id": binding.build_id,

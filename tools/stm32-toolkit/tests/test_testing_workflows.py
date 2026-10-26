@@ -13,6 +13,7 @@ import sys
 import pytest
 
 import stm32_toolkit.testing_workflows as workflows
+from stm32_toolkit.build.identity import GitEvidence
 from stm32_toolkit.build.model import BuildError
 from stm32_toolkit.evidence import EvidenceValidationError
 from stm32_toolkit.project_model import ProjectManifestError
@@ -93,8 +94,8 @@ def _install_context_seams(monkeypatch: pytest.MonkeyPatch, project_root: Path) 
     )
     monkeypatch.setattr(
         workflows,
-        "_git_evidence",
-        lambda _root: SimpleNamespace(head=GIT_HEAD, dirty=False),
+        "_collect_git_evidence",
+        lambda _root: GitEvidence(head=GIT_HEAD, dirty=False),
     )
 
 
@@ -793,8 +794,8 @@ raise SystemExit(1)
     )
     monkeypatch.setattr(
         workflows,
-        "_git_evidence",
-        lambda _root: SimpleNamespace(head=GIT_HEAD, dirty=False),
+        "_collect_git_evidence",
+        lambda _root: GitEvidence(head=GIT_HEAD, dirty=False),
     )
 
     discovered = workflows.host_test_discover(context)

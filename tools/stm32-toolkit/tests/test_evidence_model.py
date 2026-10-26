@@ -15,6 +15,14 @@ import stm32_toolkit.evidence.catalog as evidence_catalog
 import stm32_toolkit.evidence.gc as evidence_gc
 import stm32_toolkit.evidence.model as evidence_model
 import stm32_toolkit.evidence.store as evidence_store
+from stm32_toolkit.build.identity import GitEvidence, GitUnavailableEvidence
+from stm32_toolkit.source_provenance import (
+    SOURCE_BASELINE_INPUT_SNAPSHOT,
+    SourceProvenance,
+    snapshot_content_revision,
+    snapshot_provenance,
+    source_revision,
+)
 from stm32_toolkit.evidence.model import (
     ArtifactRef,
     EvidenceEnvelope,
@@ -561,10 +569,242 @@ def test_t10_1a_evidence_package_exports_exact_typed_error_boundary():
         assert getattr(evidence_package, name) is getattr(expected_module, name)
 
 
+SNAPSHOT_BASELINE = SOURCE_BASELINE_INPUT_SNAPSHOT
+SNAPSHOT_EVIDENCE = {"status": "unavailable", "code": "BUILD_GIT_INVALID", "rule": "head"}
+LEGACY_IDENTITY_BYTES = (
+    b'{"build_id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",'
+    b'"elf_sha256":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",'
+    b'"git_commit":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","git_dirty":false,'
+    b'"input_snapshot_sha256":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",'
+    b'"project_id":"123e4567-e89b-42d3-a456-426614174000","session_id":"session-01",'
+    b'"target_device":"host:windows/amd64",'
+    b'"workspace_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}'
+)
+
+
+def _snapshot_identity(**overrides: object) -> dict[str, object]:
+    value: dict[str, object] = {
+        "workspace_id": HASH_A,
+        "project_id": "123e4567-e89b-42d3-a456-426614174000",
+        "session_id": "session-01",
+        "build_id": HASH_B,
+        "elf_sha256": HASH_C,
+        "target_device": "host:windows/amd64",
+        "input_snapshot_sha256": HASH_D,
+        "git_commit": None,
+        "git_dirty": None,
+        "source_baseline": SNAPSHOT_BASELINE,
+        "git_evidence": dict(SNAPSHOT_EVIDENCE),
+    }
+    value.update(overrides)
+    return value
+
+
+def test_evidence_identity_snapshot_form_round_trips_with_namespaced_revision():
+    """The explicit snapshot pair is preserved on every serialization boundary."""
+    identity = EvidenceIdentity.from_dict(_snapshot_identity())
+
+    assert identity.is_snapshot is True
+    assert identity.git_commit is None
+    assert identity.git_dirty is None
+    assert identity.source_baseline == SNAPSHOT_BASELINE
+    assert dict(identity.git_evidence or {}) == SNAPSHOT_EVIDENCE
+    assert identity.content_revision == snapshot_content_revision(HASH_D)
+    assert identity.content_revision.startswith("input-snapshot-v1:")
+    assert identity.to_dict() == _snapshot_identity()
+
+    context = EvidenceIdentityContext(
+        workspace_id=HASH_A,
+        project_id="123e4567-e89b-42d3-a456-426614174000",
+        session_id="session-01",
+        target_device="host:windows/amd64",
+        input_snapshot_sha256=HASH_D,
+        git_commit=None,
+        git_dirty=None,
+        source_baseline=SNAPSHOT_BASELINE,
+        git_evidence=SNAPSHOT_EVIDENCE,
+    )
+    assert context.bind(build_id=HASH_B, elf_sha256=HASH_C).to_dict() == identity.to_dict()
+    with pytest.raises(TypeError):
+        identity.git_evidence["rule"] = "status"  # type: ignore[index]
+
+
+def test_evidence_identity_legacy_form_keeps_its_exact_serialized_bytes():
+    """The legacy Git form must not gain, reorder, or reformat any field."""
+    identity = EvidenceIdentity.from_dict(
+        {
+            "workspace_id": HASH_A,
+            "project_id": "123e4567-e89b-42d3-a456-426614174000",
+            "session_id": "session-01",
+            "build_id": HASH_B,
+            "elf_sha256": HASH_C,
+            "target_device": "host:windows/amd64",
+            "input_snapshot_sha256": HASH_D,
+            "git_commit": "e" * 40,
+            "git_dirty": False,
+        }
+    )
+
+    assert identity.is_snapshot is False
+    assert identity.content_revision == "e" * 40
+    assert set(identity.to_dict()) == {
+        "workspace_id",
+        "project_id",
+        "session_id",
+        "build_id",
+        "elf_sha256",
+        "target_device",
+        "input_snapshot_sha256",
+        "git_commit",
+        "git_dirty",
+    }
+    assert canonical_json_bytes(identity.to_dict()) == LEGACY_IDENTITY_BYTES
+
+
+def test_evidence_identity_rejects_extended_keys_with_null_snapshot_pair():
+    """Present-but-null extended wire keys are neither legacy nor snapshot."""
+    for overrides in (
+        {"source_baseline": None},
+        {"git_evidence": None},
+        {"source_baseline": None, "git_evidence": None},
+    ):
+        with pytest.raises(evidence_model.EvidenceValidationError) as caught:
+            EvidenceIdentity.from_dict(_snapshot_identity(**overrides))
+        assert caught.value.code == "EVIDENCE_INVALID"
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"git_commit": "e" * 40, "git_dirty": False},
+        {"git_dirty": False},
+        {"git_dirty": True},
+        {"git_evidence": {**SNAPSHOT_EVIDENCE, "rule": "index"}},
+        {"git_evidence": {**SNAPSHOT_EVIDENCE, "extra": "x"}},
+        {"git_evidence": {**SNAPSHOT_EVIDENCE, "status": "available"}},
+        {"source_baseline": "input-snapshot-v2"},
+        {"unexpected": None},
+    ],
+)
+def test_evidence_identity_rejects_mixed_or_open_snapshot_provenance(
+    overrides: dict[str, object],
+):
+    with pytest.raises(evidence_model.EvidenceValidationError):
+        EvidenceIdentity.from_dict(_snapshot_identity(**overrides))
+
+
+def test_source_revision_requires_a_real_legacy_git_sha_and_namespaces_snapshots():
+    """The generic revision accepts only a lowercase SHA-1 or one bound snapshot."""
+    for malformed in (
+        "",
+        "rev-a",
+        "A" * 40,
+        "e" * 39,
+        "e" * 41,
+        "input-snapshot-v1:" + HASH_D,
+        None,
+        1,
+    ):
+        with pytest.raises(ValueError):
+            source_revision(
+                git_commit=malformed,
+                source_baseline=None,
+                input_snapshot_sha256=HASH_D,
+            )
+
+    assert (
+        source_revision(
+            git_commit="e" * 40,
+            source_baseline=None,
+            input_snapshot_sha256=HASH_D,
+        )
+        == "e" * 40
+    )
+    assert source_revision(
+        git_commit=None,
+        source_baseline=SNAPSHOT_BASELINE,
+        input_snapshot_sha256=HASH_D,
+    ) == snapshot_content_revision(HASH_D)
+    for git_commit in ("e" * 40, "0" * 40):
+        with pytest.raises(ValueError):
+            source_revision(
+                git_commit=git_commit,
+                source_baseline=SNAPSHOT_BASELINE,
+                input_snapshot_sha256=HASH_D,
+            )
+    with pytest.raises(ValueError):
+        source_revision(
+            git_commit=None,
+            source_baseline="input-snapshot-v2",
+            input_snapshot_sha256=HASH_D,
+        )
+
+
+def test_source_provenance_missing_git_never_synthesizes_a_clean_or_zero_commit():
+    """Missing Git is an explicit snapshot form, never a fake commit or clean flag."""
+    provenance = SourceProvenance.from_collected_git(
+        GitUnavailableEvidence(rule="head"), HASH_D
+    )
+
+    assert provenance.is_snapshot is True
+    assert provenance.git_commit is None
+    assert provenance.git_dirty is None
+    assert provenance.revision == snapshot_content_revision(HASH_D)
+    assert provenance.git_evidence_document() == SNAPSHOT_EVIDENCE
+
+    legacy = SourceProvenance.from_collected_git(
+        GitEvidence(head="e" * 40, dirty=True), HASH_D
+    )
+    assert legacy.is_snapshot is False
+    assert legacy.revision == "e" * 40
+    assert legacy.git_dirty is True
+    assert legacy.git_evidence_document() is None
+
+    with pytest.raises(TypeError):
+        SourceProvenance.from_collected_git(object(), HASH_D)
+
+
+def test_snapshot_provenance_binds_the_revision_to_the_exact_snapshot():
+    revision = snapshot_content_revision(HASH_D)
+    provenance = snapshot_provenance(
+        revision=revision,
+        input_snapshot_sha256=HASH_D,
+        source_baseline=SNAPSHOT_BASELINE,
+        git_evidence=SNAPSHOT_EVIDENCE,
+    )
+    assert provenance.revision == revision
+
+    for wrong in (
+        "e" * 40,
+        "input-snapshot-v1:" + HASH_F,
+        revision[:-1] + "0",
+    ):
+        with pytest.raises(ValueError):
+            snapshot_provenance(
+                revision=wrong,
+                input_snapshot_sha256=HASH_D,
+                source_baseline=SNAPSHOT_BASELINE,
+                git_evidence=SNAPSHOT_EVIDENCE,
+            )
+    for malformed in (
+        {"source_baseline": None},
+        {"git_evidence": None},
+        {"source_baseline": SNAPSHOT_BASELINE, "git_evidence": {**SNAPSHOT_EVIDENCE, "rule": "x"}},
+    ):
+        values = {
+            "input_snapshot_sha256": HASH_D,
+            "source_baseline": SNAPSHOT_BASELINE,
+            "git_evidence": SNAPSHOT_EVIDENCE,
+        }
+        values.update(malformed)
+        with pytest.raises((TypeError, ValueError)):
+            snapshot_provenance(revision=revision, **values)
+
+
 def test_t10_1a_evidence_raise_inventory_is_exact_and_literal():
     """A missing, extra, reordered-shape, or wrongly classified raise site breaks the frozen ABI map."""
     expected = {
-        "model.py": (43, {"EVIDENCE_INVALID": 30, "EVIDENCE_CORRUPT": 0, "EVIDENCE_PATH_UNSAFE": 4, "EVIDENCE_LIMIT_EXCEEDED": 9}),
+        "model.py": (44, {"EVIDENCE_INVALID": 31, "EVIDENCE_CORRUPT": 0, "EVIDENCE_PATH_UNSAFE": 4, "EVIDENCE_LIMIT_EXCEEDED": 9}),
         "store.py": (59, {"EVIDENCE_INVALID": 10, "EVIDENCE_CORRUPT": 9, "EVIDENCE_PATH_UNSAFE": 34, "EVIDENCE_LIMIT_EXCEEDED": 6}),
         "catalog.py": (19, {"EVIDENCE_INVALID": 14, "EVIDENCE_CORRUPT": 2, "EVIDENCE_PATH_UNSAFE": 3, "EVIDENCE_LIMIT_EXCEEDED": 0}),
         "gc.py": (33, {"EVIDENCE_INVALID": 8, "EVIDENCE_CORRUPT": 11, "EVIDENCE_PATH_UNSAFE": 13, "EVIDENCE_LIMIT_EXCEEDED": 1}),

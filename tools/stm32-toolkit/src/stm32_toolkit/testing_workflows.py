@@ -10,9 +10,8 @@ from typing import Callable, Mapping
 from datetime import datetime, timezone
 
 from stm32_toolkit.build.identity import (
-    GitEvidence,
     InputSnapshot,
-    git_evidence,
+    collect_build_git_evidence,
     snapshot_project_inputs,
 )
 from stm32_toolkit.evidence import (
@@ -69,6 +68,10 @@ from stm32_toolkit.probe.model import OperationLevel
 from stm32_toolkit.probe.supervisor import ProbeServiceConfig, ProbeServiceSupervisor
 from stm32_toolkit.probe.service import ProbeServiceError
 from stm32_toolkit.probe.worker import ProbeWorkerConfig
+from stm32_toolkit.source_provenance import (
+    SOURCE_BASELINE_INPUT_SNAPSHOT,
+    SourceProvenance,
+)
 
 
 _DISCOVER_OPERATION = "test.host.discover"
@@ -111,7 +114,7 @@ class _WorkflowFailure(Exception):
 # of this module.  They are not a general dependency-injection facility.
 _load_project_model = load_project_model
 _snapshot_project_inputs = snapshot_project_inputs
-_git_evidence = git_evidence
+_collect_git_evidence = collect_build_git_evidence
 _host_runner_factory = HostTestRunner
 _evidence_store_factory = EvidenceStore
 _publisher_factory = TestRunPublisher
@@ -279,15 +282,22 @@ def _make_state(
     identity: EvidenceIdentityContext | None = None
     if with_identity:
         snapshot: InputSnapshot = _snapshot_project_inputs(model)
-        git: GitEvidence = _git_evidence(context.project_root)
+        # Missing or unborn Git is an ordinary supported Host operation: the
+        # bounded collector maps only availability failure to the explicit
+        # snapshot form, and unexpected failures still propagate.
+        provenance = SourceProvenance.from_collected_git(
+            _collect_git_evidence(context.project_root), snapshot.sha256
+        )
         identity = EvidenceIdentityContext(
             workspace_id=workspace.workspace_id,
             project_id=str(model.logical_project_id),
             session_id=workspace.session_id,
             target_device=host_target_device(),
             input_snapshot_sha256=snapshot.sha256,
-            git_commit=git.head,
-            git_dirty=git.dirty,
+            git_commit=provenance.git_commit,
+            git_dirty=provenance.git_dirty,
+            source_baseline=provenance.source_baseline,
+            git_evidence=provenance.git_evidence,
         )
     evidence_store = _evidence_store_factory(workspace.workspace_root / "evidence")
     return _WorkflowState(
@@ -332,6 +342,17 @@ def host_test_discover(context: TestingWorkflowContext) -> OperationResult[dict[
 
 def _valid_digest(value: object) -> bool:
     return isinstance(value, str) and _DIGEST.fullmatch(value) is not None
+
+
+def _provenance_equal(left: SourceProvenance, right: SourceProvenance) -> bool:
+    """Same provenance form and recorded content, never a coerced default."""
+    return (
+        left.revision == right.revision
+        and left.git_commit == right.git_commit
+        and left.git_dirty == right.git_dirty
+        and left.source_baseline == right.source_baseline
+        and left.git_evidence_document() == right.git_evidence_document()
+    )
 
 
 def _valid_portable_probe_id(value: object) -> bool:
@@ -496,12 +517,13 @@ async def target_test_prepare(
         if recovery_under_reset and not _valid_portable_probe_id(probe_id):
             raise TestProtocolError("TEST_PROTOCOL_INVALID", "Physical Target request is invalid")
         state, model, facts, transport, protocol, project_config, support = _target_state(context)
+        provenance = SourceProvenance.from_firmware_facts(facts)
         probe_hash = sha256(probe_id.encode("utf-8")).hexdigest()
         expected_identity = EvidenceIdentity(
             state.workspace.workspace_id, str(model.logical_project_id),
             state.workspace.session_id, facts.build_id, facts.elf_sha256,
-            facts.target_device, facts.input_snapshot_sha256, facts.git_commit,
-            facts.git_dirty,
+            facts.target_device, facts.input_snapshot_sha256, provenance.git_commit,
+            provenance.git_dirty, provenance.source_baseline, provenance.git_evidence,
         )
         inventory_digest = calculate_inventory_digest("target", expected_identity, case_ids)
         case_inventory_digest = calculate_case_inventory_digest(case_ids)
@@ -525,12 +547,12 @@ async def target_test_prepare(
             if physical != expected_target:
                 raise TargetRunError("TEST_IDENTITY_MISMATCH", "Physical Target identity changed")
         current_facts = load_fresh_firmware_facts(context.project_root)
+        current_provenance = SourceProvenance.from_firmware_facts(current_facts)
         if (
             current_facts.build_id != facts.build_id
             or current_facts.elf_sha256 != facts.elf_sha256
             or current_facts.input_snapshot_sha256 != facts.input_snapshot_sha256
-            or current_facts.git_commit != facts.git_commit
-            or current_facts.git_dirty != facts.git_dirty
+            or not _provenance_equal(current_provenance, provenance)
             or current_facts.target_device != facts.target_device
         ):
             raise TargetRunError("TEST_INVENTORY_CHANGED", "Physical Target inputs changed")
@@ -542,7 +564,7 @@ async def target_test_prepare(
             workspace_id=state.workspace.workspace_id,
             project_id=str(model.logical_project_id),
             session_id=state.workspace.session_id,
-            revision=facts.git_commit,
+            revision=provenance.revision,
             input_snapshot_sha256=facts.input_snapshot_sha256,
             target=expected_target,
             probe_serial_hash=probe_hash,
@@ -557,6 +579,13 @@ async def target_test_prepare(
             timeout_ms=int(getattr(getattr(model.testing, "target"), "timeout_seconds")) * 1000,
             recovery_under_reset=recovery_under_reset,
         )
+        if provenance.is_snapshot:
+            # A snapshot prepared record always carries its explicit pair; the
+            # legacy Git record never gains these keys.
+            binding.update(
+                source_baseline=provenance.source_baseline,
+                git_evidence=provenance.git_evidence_document(),
+            )
         if protocol == TARGET_FRAME_V2:
             binding.update(
                 protocol=protocol,
@@ -609,12 +638,13 @@ async def target_test_execute(
         if datetime.now(timezone.utc) >= loaded.expires_at_utc:
             raise TargetRunError("TEST_AUTHORIZATION_INVALID", "Target authorization expired")
         state, model, facts, transport, protocol, project_config, support = _target_state(context)
+        provenance = SourceProvenance.from_firmware_facts(facts)
         probe_hash = sha256(probe_id.encode("utf-8")).hexdigest()
         expected_identity = EvidenceIdentity(
             state.workspace.workspace_id, str(model.logical_project_id),
             state.workspace.session_id, facts.build_id, facts.elf_sha256,
-            facts.target_device, facts.input_snapshot_sha256, facts.git_commit,
-            facts.git_dirty,
+            facts.target_device, facts.input_snapshot_sha256, provenance.git_commit,
+            provenance.git_dirty, provenance.source_baseline, provenance.git_evidence,
         )
         expected_inventory_digest = calculate_inventory_digest(
             "target", expected_identity, tuple(binding["cases"])
@@ -626,8 +656,10 @@ async def target_test_execute(
             binding["workspace_id"] != state.workspace.workspace_id
             or binding["project_id"] != str(model.logical_project_id)
             or binding["session_id"] != state.workspace.session_id
-            or binding["revision"] != facts.git_commit
+            or binding["revision"] != provenance.revision
             or binding["input_snapshot_sha256"] != facts.input_snapshot_sha256
+            or binding.get("source_baseline") != provenance.source_baseline
+            or binding.get("git_evidence") != provenance.git_evidence_document()
             or binding["build_id"] != facts.build_id
             or binding["elf_sha256"] != facts.elf_sha256
             or binding["elf_path"] != facts.elf_path
@@ -685,7 +717,7 @@ async def target_test_execute(
         )
         result = await runner.run(
             None, authorized_action_digest,
-            current_revision=facts.git_commit,
+            current_revision=provenance.revision,
             current_inventory_digest=str(binding["inventory_digest"]),
             current_input_snapshot_sha256=facts.input_snapshot_sha256,
             consumed=physical_consumed,

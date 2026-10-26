@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from jsonschema import Draft202012Validator, ValidationError
 
-from stm32_toolkit.evidence import ArtifactRef
+from stm32_toolkit.evidence import ArtifactRef, EvidenceIdentity, EvidenceValidationError
 
 
 ROOT_SCHEMA = Path("schemas/evidence-envelope.schema.json")
@@ -36,6 +36,51 @@ def _envelope() -> dict[str, object]:
         "artifacts": [],
         "metadata": {"result": "passed"},
     }
+
+
+SNAPSHOT_IDENTITY = {
+    "workspace_id": "a" * 64,
+    "project_id": "123e4567-e89b-42d3-a456-426614174000",
+    "session_id": "session-01",
+    "build_id": "b" * 64,
+    "elf_sha256": "c" * 64,
+    "target_device": "host:windows/amd64",
+    "input_snapshot_sha256": "d" * 64,
+    "git_commit": None,
+    "git_dirty": None,
+    "source_baseline": "input-snapshot-v1",
+    "git_evidence": {
+        "status": "unavailable",
+        "code": "BUILD_GIT_INVALID",
+        "rule": "head",
+    },
+}
+
+
+def _snapshot_identity(**overrides: object) -> dict[str, object]:
+    value = dict(SNAPSHOT_IDENTITY)
+    value["git_evidence"] = dict(SNAPSHOT_IDENTITY["git_evidence"])
+    value.update(overrides)
+    return value
+
+
+def _schema_accepts(identity: dict[str, object]) -> bool:
+    schema = json.loads(ROOT_SCHEMA.read_text(encoding="utf-8"))
+    value = _envelope()
+    value["identity"] = identity
+    try:
+        Draft202012Validator(schema).validate(value)
+    except ValidationError:
+        return False
+    return True
+
+
+def _model_accepts(identity: dict[str, object]) -> bool:
+    try:
+        EvidenceIdentity.from_dict(identity)
+    except EvidenceValidationError:
+        return False
+    return True
 
 
 def _producer_schema(common: dict[str, object], operation: str) -> dict[str, object]:
@@ -120,6 +165,63 @@ def test_common_schema_leaves_utf8_byte_path_limit_to_the_canonical_model():
         "maxLength counts Unicode code points; the canonical model separately enforces "
         "the 512 UTF-8 byte limit."
     )
+
+
+def test_schema_and_model_agree_on_the_two_closed_provenance_forms():
+    """Canonical model acceptance and schema acceptance never disagree."""
+    legacy = {
+        "workspace_id": "a" * 64,
+        "project_id": "123e4567-e89b-42d3-a456-426614174000",
+        "session_id": "session-01",
+        "build_id": "b" * 64,
+        "elf_sha256": "c" * 64,
+        "target_device": "host:windows/amd64",
+        "input_snapshot_sha256": "d" * 64,
+        "git_commit": "e" * 40,
+        "git_dirty": False,
+    }
+    cases = [
+        (legacy, True),
+        (_snapshot_identity(), True),
+        (_snapshot_identity(source_baseline=None), False),
+        (_snapshot_identity(git_evidence=None), False),
+        (_snapshot_identity(source_baseline=None, git_evidence=None), False),
+        (_snapshot_identity(git_commit="e" * 40, git_dirty=False), False),
+        (_snapshot_identity(git_dirty=False), False),
+        (_snapshot_identity(git_dirty=True), False),
+        (
+            _snapshot_identity(
+                git_evidence={
+                    "status": "unavailable",
+                    "code": "BUILD_GIT_INVALID",
+                    "rule": "index",
+                }
+            ),
+            False,
+        ),
+        (
+            _snapshot_identity(
+                git_evidence={
+                    "status": "unavailable",
+                    "code": "BUILD_GIT_INVALID",
+                    "rule": "head",
+                    "extra": "x",
+                }
+            ),
+            False,
+        ),
+        (_snapshot_identity(source_baseline="input-snapshot-v2"), False),
+        ({**legacy, "unexpected": None}, False),
+    ]
+
+    for identity, expected in cases:
+        assert _schema_accepts(identity) is expected, identity
+        assert _model_accepts(identity) is expected, identity
+
+    parsed = EvidenceIdentity.from_dict(_snapshot_identity())
+    assert parsed.is_snapshot is True
+    assert parsed.to_dict() == _snapshot_identity()
+    assert _schema_accepts(parsed.to_dict()) is True
 
 
 @pytest.mark.parametrize("relative_path", ["../outside.txt", "x" * 513])

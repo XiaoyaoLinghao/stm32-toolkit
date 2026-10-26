@@ -26,7 +26,7 @@ from stm32_toolkit.acceptance.model import (
 )
 from stm32_toolkit.build.identity import (
     LEGACY_INPUT_DISCOVERY_POLICY, SOURCE_LOCAL_HEADERS_POLICY,
-    git_evidence, snapshot_project_inputs,
+    collect_build_git_evidence, snapshot_project_inputs,
 )
 from stm32_toolkit.context import build_project_context
 from stm32_toolkit.diagnostic_workflows import (
@@ -56,6 +56,7 @@ from stm32_toolkit.probe.flash import load_fresh_firmware_facts
 from stm32_toolkit.project_model import ProjectManifestError, load_project_model
 from stm32_toolkit.generation.managed_files import model_sha256_for
 from stm32_toolkit.result import OperationResult
+from stm32_toolkit.source_provenance import SourceProvenance
 from stm32_toolkit.testing.publication import TestRunRepository
 from stm32_toolkit.testing_workflows import TestingWorkflowContext, test_show
 
@@ -440,16 +441,23 @@ def _current_identity(
     if not isinstance(elf_sha, str) or _HASH_PATTERN.fullmatch(elf_sha) is None:
         elf_sha = "0" * 64
     if not isinstance(input_snapshot, str) or _HASH_PATTERN.fullmatch(input_snapshot) is None:
+        # An enumeration failure is a typed input error, never an all-zero
+        # digest promoted to an input-snapshot-v1 baseline.
         try:
             input_snapshot = snapshot_project_inputs(model).sha256
-        except Exception:
-            input_snapshot = "0" * 64
+        except Exception as error:
+            raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_OUTPUT_INVALID") from error
+        if (
+            not isinstance(input_snapshot, str)
+            or _HASH_PATTERN.fullmatch(input_snapshot) is None
+        ):
+            raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_OUTPUT_INVALID")
     try:
-        git = git_evidence(context.project_root)
-        git_head = git.head if isinstance(git.head, str) and re.fullmatch(r"[0-9a-f]{40}", git.head) else "0" * 40
-        git_dirty = bool(git.dirty)
-    except Exception:
-        git_head, git_dirty = "0" * 40, False
+        provenance = SourceProvenance.from_collected_git(
+            collect_build_git_evidence(context.project_root), input_snapshot
+        )
+    except Exception as error:
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_OUTPUT_INVALID") from error
     return EvidenceIdentity(
         workspace_id=workspace.workspace_id,
         project_id=project_id,
@@ -458,8 +466,10 @@ def _current_identity(
         elf_sha256=elf_sha,
         target_device=target,
         input_snapshot_sha256=input_snapshot,
-        git_commit=git_head,
-        git_dirty=git_dirty,
+        git_commit=provenance.git_commit,
+        git_dirty=provenance.git_dirty,
+        source_baseline=provenance.source_baseline,
+        git_evidence=provenance.git_evidence,
     )
 
 

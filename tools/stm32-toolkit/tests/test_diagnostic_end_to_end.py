@@ -12,6 +12,7 @@ from uuid import UUID
 import pytest
 
 import stm32_toolkit.testing_workflows as testing_workflows
+from stm32_toolkit.build.identity import GitEvidence
 from stm32_toolkit.diagnostics import (
     DiagnosticEvent,
     calculate_event_digest,
@@ -203,8 +204,8 @@ def test_registered_fastmcp_failed_host_run_survives_full_diagnostic_replay(
     )
     monkeypatch.setattr(
         testing_workflows,
-        "_git_evidence",
-        lambda _root: SimpleNamespace(head=GIT_HEAD, dirty=False),
+        "_collect_git_evidence",
+        lambda _root: GitEvidence(head=GIT_HEAD, dirty=False),
     )
 
     discovered_result = _call_registered_tool(

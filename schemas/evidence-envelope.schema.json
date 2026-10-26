@@ -37,6 +37,16 @@
   },
   "$defs": {
     "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "gitEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "code", "rule"],
+      "properties": {
+        "status": {"const": "unavailable"},
+        "code": {"const": "BUILD_GIT_INVALID"},
+        "rule": {"enum": ["head", "status"]}
+      }
+    },
     "identity": {
       "type": "object",
       "additionalProperties": false,
@@ -62,9 +72,35 @@
         "elf_sha256": {"$ref": "#/$defs/sha256"},
         "target_device": {"type": "string", "minLength": 1, "maxLength": 65536},
         "input_snapshot_sha256": {"$ref": "#/$defs/sha256"},
-        "git_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
-        "git_dirty": {"type": "boolean"}
-      }
+        "git_commit": {"type": ["string", "null"]},
+        "git_dirty": {"type": ["boolean", "null"]},
+        "source_baseline": {"const": "input-snapshot-v1"},
+        "git_evidence": {"$ref": "#/$defs/gitEvidence"}
+      },
+      "oneOf": [
+        {
+          "required": ["git_commit", "git_dirty"],
+          "properties": {
+            "git_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+            "git_dirty": {"type": "boolean"}
+          },
+          "not": {
+            "anyOf": [
+              {"required": ["source_baseline"]},
+              {"required": ["git_evidence"]}
+            ]
+          }
+        },
+        {
+          "required": ["git_commit", "git_dirty", "source_baseline", "git_evidence"],
+          "properties": {
+            "git_commit": {"type": "null"},
+            "git_dirty": {"type": "null"},
+            "source_baseline": {"const": "input-snapshot-v1"},
+            "git_evidence": {"$ref": "#/$defs/gitEvidence"}
+          }
+        }
+      ]
     },
     "artifact": {
       "type": "object",

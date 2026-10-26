@@ -21,6 +21,13 @@ from stm32_toolkit.evidence import EvidenceEnvelope, EvidenceIdentity, canonical
 from stm32_toolkit.execution_provenance import validate_execution_provenance
 from stm32_toolkit.probe.backend import extract_program_diagnostic
 from stm32_toolkit.result import OperationResult
+from stm32_toolkit.source_provenance import (
+    SNAPSHOT_BINDING_FIELDS,
+    SNAPSHOT_CONTENT_REVISION_PREFIX,
+    SNAPSHOT_MARKER_FIELDS,
+    SourceProvenance,
+    snapshot_provenance,
+)
 from stm32_toolkit.testing.artifacts import TestArtifactCollector
 from stm32_toolkit.probe.client import (
     ControlAuthorizationClient,
@@ -281,13 +288,92 @@ def _optional_recovery_binding_sets(
     )
 
 
+def _target_binding_sets(
+    base_required: set[str], v2_required: set[str]
+) -> tuple[tuple[set[str], ...], tuple[set[str], ...]]:
+    """Closed v1/v2 binding sets, including the explicit snapshot form.
+
+    Legacy sets stay byte-for-byte compatible with the accepted records.  A
+    binding naming either snapshot marker must name all three snapshot fields
+    together, so such a partial or mixed set is never accepted; a namespaced
+    revision without the markers is rejected by record validation instead.
+    """
+    snapshot = set(SNAPSHOT_BINDING_FIELDS)
+    legacy_bindings = (
+        base_required,
+        base_required | {"input_snapshot_sha256"},
+        base_required | {"protocol"},
+        base_required | {"protocol", "input_snapshot_sha256"},
+        base_required | snapshot,
+        base_required | {"protocol"} | snapshot,
+    )
+    v2_bindings = (
+        v2_required,
+        v2_required | {"input_snapshot_sha256"},
+        v2_required | {"git_dirty"},
+        v2_required | {"input_snapshot_sha256", "git_dirty"},
+        v2_required | snapshot,
+        v2_required | snapshot | {"git_dirty"},
+    )
+    return legacy_bindings, v2_bindings
+
+
+def _binding_snapshot_provenance(
+    binding: Mapping[str, object],
+) -> SourceProvenance | None:
+    """Return the snapshot provenance a binding carries, or ``None`` if legacy.
+
+    Only ``source_baseline`` and ``git_evidence`` discriminate the snapshot
+    form; a legacy Git binding still records ``input_snapshot_sha256``.  Once
+    either marker is present all three snapshot fields are required together,
+    so a partial or mixed pair is never read as the legacy form, and a
+    snapshot binding may not carry a boolean Git dirty flag.  The generic
+    ``revision`` must be the exact namespaced content revision of the same
+    input snapshot.
+    """
+    if not SNAPSHOT_MARKER_FIELDS.intersection(binding):
+        return None
+    if not SNAPSHOT_BINDING_FIELDS.issubset(binding):
+        raise TargetRunError(
+            "TEST_IDENTITY_MISMATCH", "Target source provenance is incomplete"
+        )
+    if "git_dirty" in binding and binding["git_dirty"] is not None:
+        raise TargetRunError(
+            "TEST_IDENTITY_MISMATCH", "Snapshot Target run cannot carry Git dirty state"
+        )
+    try:
+        return snapshot_provenance(
+            revision=binding["revision"],
+            input_snapshot_sha256=binding["input_snapshot_sha256"],
+            source_baseline=binding["source_baseline"],
+            git_evidence=binding["git_evidence"],
+        )
+    except (KeyError, TypeError, ValueError) as error:
+        raise TargetRunError(
+            "TEST_IDENTITY_MISMATCH", "Target source provenance is invalid"
+        ) from error
+
+
 def _host_identity_from_binding(binding: Mapping[str, object]) -> EvidenceIdentity:
     target = binding.get("target")
     if not isinstance(target, Mapping):
         raise TargetRunError("TEST_IDENTITY_MISMATCH", "Target identity binding is invalid")
-    input_snapshot = binding.get("input_snapshot_sha256", "0" * 64)
-    git_dirty = binding.get("git_dirty", False)
     try:
+        provenance = _binding_snapshot_provenance(binding)
+        if provenance is None:
+            # The accepted legacy form keeps its historical decoding defaults;
+            # the snapshot form above requires every field explicitly.
+            input_snapshot = binding.get("input_snapshot_sha256", "0" * 64)
+            git_commit: str | None = str(binding["revision"])
+            git_dirty: bool | None = binding.get("git_dirty", False)
+            source_baseline: str | None = None
+            git_evidence: Mapping[str, str] | None = None
+        else:
+            input_snapshot = provenance.input_snapshot_sha256
+            git_commit = None
+            git_dirty = None
+            source_baseline = provenance.source_baseline
+            git_evidence = provenance.git_evidence
         return EvidenceIdentity(
             workspace_id=str(binding["workspace_id"]),
             project_id=str(binding["project_id"]),
@@ -296,11 +382,42 @@ def _host_identity_from_binding(binding: Mapping[str, object]) -> EvidenceIdenti
             elf_sha256=str(binding["elf_sha256"]),
             target_device=str(target["target_id"]),
             input_snapshot_sha256=str(input_snapshot),
-            git_commit=str(binding["revision"]),
+            git_commit=git_commit,
             git_dirty=git_dirty,
+            source_baseline=source_baseline,
+            git_evidence=git_evidence,
         )
+    except TargetRunError:
+        raise
     except (KeyError, TypeError, ValueError) as error:
         raise TargetRunError("TEST_IDENTITY_MISMATCH", "Host Target identity binding is invalid") from error
+
+
+def _identity_matches_source_binding(
+    identity: EvidenceIdentity, binding: Mapping[str, object]
+) -> bool:
+    """True only when a recorded identity carries this binding's exact form."""
+    provenance = _binding_snapshot_provenance(binding)
+    if provenance is not None:
+        return (
+            identity.source_baseline == provenance.source_baseline
+            and identity.git_commit is None
+            and identity.git_dirty is None
+            and dict(identity.git_evidence or {})
+            == dict(provenance.git_evidence or {})
+            and identity.input_snapshot_sha256 == provenance.input_snapshot_sha256
+            and identity.content_revision == binding["revision"]
+        )
+    if identity.source_baseline is not None or identity.git_evidence is not None:
+        return False
+    if identity.git_commit != binding["revision"]:
+        return False
+    if (
+        "input_snapshot_sha256" in binding
+        and identity.input_snapshot_sha256 != binding["input_snapshot_sha256"]
+    ):
+        return False
+    return True
 
 
 @dataclass(frozen=True)
@@ -1222,18 +1339,7 @@ class TargetTestRunner:
         except TargetRunError as error:
             raise error
         v2_required = legacy_required | {"protocol", "case_inventory_digest"}
-        legacy_bindings = (
-            legacy_required,
-            legacy_required | {"input_snapshot_sha256"},
-            legacy_required | {"protocol"},
-            legacy_required | {"protocol", "input_snapshot_sha256"},
-        )
-        v2_bindings = (
-            v2_required,
-            v2_required | {"input_snapshot_sha256"},
-            v2_required | {"git_dirty"},
-            v2_required | {"input_snapshot_sha256", "git_dirty"},
-        )
+        legacy_bindings, v2_bindings = _target_binding_sets(legacy_required, v2_required)
         allowed = _optional_recovery_binding_sets(legacy_bindings + v2_bindings)
         if set(binding) not in allowed or (
             protocol_version == FRAME_VERSION
@@ -1263,7 +1369,12 @@ class TargetTestRunner:
             except TestProtocolError as error:
                 raise TargetRunError(error.code, error.message) from error
             if "git_dirty" in binding and type(binding["git_dirty"]) is not bool:
-                raise TargetRunError("TEST_PROTOCOL_INVALID", "git_dirty is invalid")
+                # Only an explicit snapshot binding may carry null Git state.
+                if not (
+                    SNAPSHOT_BINDING_FIELDS.issubset(binding)
+                    and binding["git_dirty"] is None
+                ):
+                    raise TargetRunError("TEST_PROTOCOL_INVALID", "git_dirty is invalid")
         if type(binding["timeout_ms"]) is not int or not 1 <= binding["timeout_ms"] <= 300_000:
             raise TargetRunError("TEST_PROTOCOL_INVALID", "Target timeout is invalid")
         instant = now or datetime.now(timezone.utc)
@@ -1410,17 +1521,8 @@ class TargetTestRunner:
             except TargetRunError as error:
                 raise ValueError from error
             v2_required = legacy_required | {"protocol", "case_inventory_digest"}
-            legacy_bindings = (
-                legacy_required,
-                legacy_required | {"input_snapshot_sha256"},
-                legacy_required | {"protocol"},
-                legacy_required | {"protocol", "input_snapshot_sha256"},
-            )
-            v2_bindings = (
-                v2_required,
-                v2_required | {"input_snapshot_sha256"},
-                v2_required | {"git_dirty"},
-                v2_required | {"input_snapshot_sha256", "git_dirty"},
+            legacy_bindings, v2_bindings = _target_binding_sets(
+                legacy_required, v2_required
             )
             allowed = _optional_recovery_binding_sets(legacy_bindings + v2_bindings)
             if set(record) not in allowed:
@@ -1459,11 +1561,35 @@ class TargetTestRunner:
                 ):
                     raise ValueError
                 if "git_dirty" in record and type(record["git_dirty"]) is not bool:
-                    raise ValueError
+                    if not (
+                        SNAPSHOT_BINDING_FIELDS.issubset(record)
+                        and record["git_dirty"] is None
+                    ):
+                        raise ValueError
             if "input_snapshot_sha256" in record:
                 value = record["input_snapshot_sha256"]
                 if not isinstance(value, str) or len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
                     raise ValueError
+            # A legacy record legitimately carries ``input_snapshot_sha256``
+            # alone; only the two snapshot markers discriminate the form.
+            if SNAPSHOT_MARKER_FIELDS.intersection(record):
+                if not SNAPSHOT_BINDING_FIELDS.issubset(record):
+                    raise ValueError
+                if "git_dirty" in record and record["git_dirty"] is not None:
+                    raise ValueError
+                snapshot_provenance(
+                    revision=record["revision"],
+                    input_snapshot_sha256=record["input_snapshot_sha256"],
+                    source_baseline=record["source_baseline"],
+                    git_evidence=record["git_evidence"],
+                )
+            elif isinstance(record["revision"], str) and record[
+                "revision"
+            ].startswith(SNAPSHOT_CONTENT_REVISION_PREFIX):
+                # A namespaced content revision always names a snapshot pair;
+                # accepting it as a legacy Git revision would downgrade the
+                # bound provenance.
+                raise ValueError
             target = record["target"]
             if (
                 not isinstance(target, Mapping)
@@ -1799,11 +1925,7 @@ class TargetTestRunner:
                     or identity.build_id != binding["build_id"]
                     or identity.elf_sha256 != binding["elf_sha256"]
                     or identity.target_device != dict(binding["target"])["target_id"]
-                    or identity.git_commit != binding["revision"]
-                    or (
-                        "input_snapshot_sha256" in binding
-                        and identity.input_snapshot_sha256 != binding["input_snapshot_sha256"]
-                    )
+                    or not _identity_matches_source_binding(identity, binding)
                 ):
                     raise TargetRunError(
                         "TEST_IDENTITY_MISMATCH", "Target Test and Evidence identities do not match"
@@ -2283,7 +2405,7 @@ class TargetTestRunner:
                 if (
                     inventory.identity.build_id != firmware["build_id"]
                     or inventory.identity.elf_sha256 != firmware["elf_sha256"]
-                    or inventory.identity.git_commit != firmware["revision"]
+                    or inventory.identity.content_revision != firmware["revision"]
                     or inventory.identity.target_device != target["target_id"]
                 ):
                     raise TargetRunError(
@@ -2323,7 +2445,7 @@ class TargetTestRunner:
                 or inventory.inventory_digest != firmware["inventory_digest"]
                 or evidence_identity.build_id != firmware["build_id"]
                 or evidence_identity.elf_sha256 != firmware["elf_sha256"]
-                or evidence_identity.git_commit != firmware["revision"]
+                or evidence_identity.content_revision != firmware["revision"]
                 or evidence_identity.target_device != target["target_id"]
             ):
                 raise TargetRunError(
