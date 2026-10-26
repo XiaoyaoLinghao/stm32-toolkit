@@ -67,11 +67,34 @@ class MigrationInput:
         return {"path": self.path, "sha256": self.sha256, "size": self.size}
 
 
+@dataclass(frozen=True)
+class WfiReturn:
+    """One reviewed explicit WFI normal-return source-intent selection.
+
+    ``path`` is the exact portable project-relative C source and ``function``
+    is the exact ASCII C identifier.  The choice names one plain unconditional
+    file-scope zero-argument ``__asm void name(void)`` definition whose body is
+    WFI alone; it never describes arbitrary assembly.  The selection is a
+    requested source-behaviour decision, not a claim of binary equivalence.
+    """
+
+    path: str
+    function: str
+
+    def to_dict(self) -> dict[str, object]:
+        return {"path": self.path, "function": self.function}
+
+
 #: Trusted internal remediation hints on ``MigrationBlocker``.  They are set
 #: only by rule code that already knows the bounded cause; presentation code
 #: compares these constants and never parses a path, message, or evidence.
 BLOCKER_HINT_DEPENDENCY_ENCODING = "dependency-encoding"
 BLOCKER_HINT_DEPENDENCY_PATH = "dependency-path"
+#: Set only for the exact plain unconditional file-scope zero-argument
+#: ``__asm void`` wrapper whose whole body is WFI with no explicit return.  The
+#: scanner establishes that candidate itself, so remediation presentation never
+#: derives the ``wfiReturns`` choice from a path, message, or evidence string.
+BLOCKER_HINT_WFI_MISSING_RETURN = "wfi-missing-return"
 
 
 @dataclass(frozen=True)

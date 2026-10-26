@@ -21,12 +21,17 @@ from stm32_toolkit.migration import git_guard
 from stm32_toolkit.migration.model import (
     BLOCKER_HINT_DEPENDENCY_ENCODING,
     BLOCKER_HINT_DEPENDENCY_PATH,
+    BLOCKER_HINT_WFI_MISSING_RETURN,
     MigrationBlocker,
     MigrationPlanError,
     StartupOptions,
+    WfiReturn,
     inspection_sha256_for,
 )
-from stm32_toolkit.migration.planner import analyze_keil_conversion
+from stm32_toolkit.migration.planner import (
+    _wfi_return_evidence,
+    analyze_keil_conversion,
+)
 
 _ANALYSIS_RULESET = "keil-conversion-technical/1"
 _DELIVERY_DESTINATION_INPUT = "delivery-destination"
@@ -222,6 +227,25 @@ def _extra_regions_option_guidance(
     )
 
 
+def _wfi_return_option_guidance(
+    wfi_returns: tuple[WfiReturn, ...],
+) -> str:
+    """Return the exact reviewed WFI source-intent request to retain."""
+    if not wfi_returns:
+        return ""
+    return (
+        " Retain wfiReturns="
+        + json.dumps(
+            [choice.to_dict() for choice in wfi_returns],
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + " for the PLAN and apply requests; omitting or changing any"
+        " selection is a different reviewed source-intent request and is never"
+        " accepted against this plan."
+    )
+
+
 def _destination_input() -> dict[str, object]:
     """The one input preflight cannot evaluate: the independent output root."""
     return {
@@ -244,6 +268,7 @@ def _plan_readiness(
     startup_options: StartupOptions | None = None,
     memory_layout: MemoryLayout | None = None,
     extra_regions: tuple[ExtraRegion, ...] = (),
+    wfi_returns: tuple[WfiReturn, ...] = (),
 ) -> dict[str, object]:
     """Whether technical blockers permit obtaining a delivery plan.
 
@@ -265,6 +290,7 @@ def _plan_readiness(
         _startup_option_guidance(startup_options)
         + _memory_layout_option_guidance(memory_layout)
         + _extra_regions_option_guidance(extra_regions)
+        + _wfi_return_option_guidance(wfi_returns)
     )
     next_steps: list[str] = []
     if blocker_total:
@@ -299,6 +325,7 @@ def _apply_readiness(
     startup_options: StartupOptions | None = None,
     memory_layout: MemoryLayout | None = None,
     extra_regions: tuple[ExtraRegion, ...] = (),
+    wfi_returns: tuple[WfiReturn, ...] = (),
 ) -> dict[str, object]:
     """Apply is never ready from preflight, regardless of plan prerequisites."""
     prerequisites = plan_readiness["prerequisites"]
@@ -312,6 +339,7 @@ def _apply_readiness(
         _startup_option_guidance(startup_options)
         + _memory_layout_option_guidance(memory_layout)
         + _extra_regions_option_guidance(extra_regions)
+        + _wfi_return_option_guidance(wfi_returns)
     )
     choose_destination = (
         "Choose an absolute new output directory outside the Keil source; it"
@@ -500,6 +528,17 @@ _KNOWN_REMEDIATION: dict[
         None,
         (),
     ),
+    "ARMCC_INLINE_ASSEMBLY_UNSUPPORTED": (
+        _UNSUPPORTED,
+        "Review the reported embedded assembly and port it as project-owned"
+        " source. Toolkit never translates arbitrary embedded assembly, keeps"
+        " a different storage class or conditional/nested context explicit,"
+        " and never invents a return instruction. No Keil disassembly/AXF"
+        " baseline is required merely to review this decision.",
+        None,
+        None,
+        (),
+    ),
     "ARMCC_ABSOLUTE_PLACEMENT_UNSUPPORTED": (
         _UNSUPPORTED,
         "This absolute-placement grammar is not supported and is never"
@@ -679,6 +718,33 @@ _DEPENDENCY_REMEDIATION: dict[
     ),
 }
 
+#: Cause-specific remediation for the one embedded-assembly decision that has a
+#: real reviewed input: the exact plain unconditional file-scope zero-argument
+#: WFI-only wrapper with no explicit return that the scanner itself established.
+#: Selection uses only the blocker's trusted internal ``diagnostic`` hint, never
+#: its path or message text, so unknown, conditional, nested, or otherwise
+#: ineligible assembly keeps the project-owned source-port guidance above.
+_WFI_RETURN_REMEDIATION: dict[
+    str, tuple[str, str, str | None, str | None, tuple[str, ...]]
+] = {
+    BLOCKER_HINT_WFI_MISSING_RETURN: (
+        _NEEDS_USER_INPUT,
+        "This exact definition is a plain unconditional file-scope"
+        " zero-argument __asm void wrapper whose whole body is WFI with no"
+        " explicit return. Choose the intended behaviour: select"
+        ' wfiReturns=[{"path": <exact project-relative .c>, "function":'
+        " <exact name>}] to convert exactly this wrapper into ordinary"
+        ' non-naked C executing __asm volatile ("wfi" ::: "memory"); and'
+        " returning normally, or keep an intentional fall-through as a"
+        " project-owned source port. That records requested source behaviour,"
+        " not binary equivalence. No Keil disassembly/AXF baseline is required."
+        " No other embedded assembly body can use this choice.",
+        "stm32_keil_preflight",
+        None,
+        ("wfiReturns",),
+    ),
+}
+
 _STARTUP_REMEDIATION_SUMMARY = (
     "Review analysis.startup and its diagnostics. The reviewed"
     " startupStrategy=generate-cmsis-gcc route covers only the conventional"
@@ -724,6 +790,16 @@ def _remediation_for(blocker: MigrationBlocker) -> dict[str, object]:
             skill=skill,
             required_inputs=required_inputs,
         )
+    wfi_missing_return = _WFI_RETURN_REMEDIATION.get(blocker.diagnostic or "")
+    if wfi_missing_return is not None:
+        category, summary, tool, skill, required_inputs = wfi_missing_return
+        return _remediation(
+            category,
+            summary,
+            tool=tool,
+            skill=skill,
+            required_inputs=required_inputs,
+        )
     known = _KNOWN_REMEDIATION.get(blocker.code)
     if known is not None:
         category, summary, tool, skill, required_inputs = known
@@ -746,12 +822,15 @@ def preflight_keil_conversion(
     startup_options: StartupOptions | None = None,
     memory_layout: MemoryLayout | None = None,
     extra_regions: tuple[ExtraRegion, ...] | None = None,
+    wfi_returns: tuple[WfiReturn, ...] | None = None,
 ) -> dict[str, object]:
     """Analyze one inspected Keil target without Git and without mutation.
 
     Stable ``MigrationPlanError`` failures are raised for invalid/unreadable
     or ambiguous input; technical blockers are returned in a successful
-    result, independently of apply readiness.
+    result, independently of apply readiness.  ``wfi_returns`` is the
+    reviewed explicit WFI normal-return source-intent request; an invalid,
+    unused, or ambiguous selection fails instead of being silently ignored.
     """
     analysis = analyze_keil_conversion(
         root,
@@ -759,8 +838,10 @@ def preflight_keil_conversion(
         startup_options=startup_options,
         memory_layout=memory_layout,
         extra_regions=extra_regions,
+        wfi_returns=wfi_returns,
     )
     extras = analysis.extra_regions
+    wfi_choices = analysis.wfi_returns
     git = _git_state(analysis.project_root)
 
     by_code: dict[str, int] = {}
@@ -776,7 +857,11 @@ def preflight_keil_conversion(
 
     fresh = analysis.inspection
     plan_readiness = _plan_readiness(
-        len(analysis.blockers), startup_options, memory_layout, extras
+        len(analysis.blockers),
+        startup_options,
+        memory_layout,
+        extras,
+        wfi_choices,
     )
     payload = {
         "analysis": {
@@ -816,7 +901,11 @@ def preflight_keil_conversion(
         "git": git,
         "planReadiness": plan_readiness,
         "applyReadiness": _apply_readiness(
-            plan_readiness, startup_options, memory_layout, extras
+            plan_readiness,
+            startup_options,
+            memory_layout,
+            extras,
+            wfi_choices,
         ),
         # Additive post-migration prerequisite, never a technical blocker or
         # planReadiness item: an ordinary conversion writes ``debug: {}`` and
@@ -837,6 +926,10 @@ def preflight_keil_conversion(
         payload["analysis"]["includeMerges"] = [
             merge.to_report_dict() for merge in analysis.include_merges
         ]
+    if wfi_choices:
+        # Additive reviewed source-intent evidence with exact source and
+        # converted digests; absent for the historical no-choice request.
+        payload["analysis"]["wfiReturns"] = _wfi_return_evidence(analysis)
     # Concise supported-change evidence: exact rule IDs and the same digests
     # the PLAN patches carry, so a reviewer can distinguish proposed supported
     # changes from blockers without reading the full diff.  PLAN keeps the

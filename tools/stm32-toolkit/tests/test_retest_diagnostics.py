@@ -312,8 +312,21 @@ def test_missing_return_assembly_keeps_blocker_with_fall_through_diagnostic():
         assert "fall through" in blocker.message
         assert "armcc User Guide" in blocker.message
         assert "section 7.30" in blocker.message
-        assert "disassembly/control-flow baseline" in blocker.message
+        # The source-intent decision no longer demands a Keil disassembly/AXF
+        # baseline, and no return instruction is invented.
+        assert "does not require a Keil disassembly/control-flow baseline" in (
+            blocker.message
+        )
+        assert "project-owned source port" in blocker.message
         assert "BX LR" in blocker.message
+    # The plain WFI-only wrapper names the exact opt-in and its normal body.
+    assert 'wfiReturns=[{"path": "Main/sys.c", "function": "WFI_SET"}]' in (
+        blockers[0].message
+    )
+    assert '__asm volatile ("wfi" ::: "memory")' in blockers[0].message
+    assert "not binary equivalence" in blockers[0].message
+    # CPSID I is not eligible for the WFI normal-return choice.
+    assert "'CPSID I' is not eligible" in blockers[1].message
     # No invented return was written anywhere in the source.
     assert "bx lr" not in scan.after.decode("utf-8").lower()
 

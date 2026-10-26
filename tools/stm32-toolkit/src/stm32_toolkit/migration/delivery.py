@@ -41,6 +41,7 @@ from stm32_toolkit.migration.model import (
     IncludeMerge,
     MigrationPlanError,
     StartupOptions,
+    WfiReturn,
     canonical_json_bytes,
     inspection_sha256_for,
     portable_path_error,
@@ -51,8 +52,10 @@ from stm32_toolkit.migration.planner import (
     _validate_extra_region_option,
     _validate_memory_layout,
     _validate_startup_options,
+    _wfi_return_evidence,
     analyze_keil_conversion,
 )
+from stm32_toolkit.migration.source_intent import normalize_wfi_returns
 from stm32_toolkit.project_model import ProjectManifestError, load_project_model_candidate
 from stm32_toolkit.result import OperationResult
 
@@ -201,9 +204,29 @@ class DeliveryPlan:
     memory_layout: MemoryLayout | None
     extra_regions: tuple[ExtraRegion, ...]
     include_merges: tuple[IncludeMerge, ...] = ()
+    wfi_returns: tuple[WfiReturn, ...] = ()
     warnings: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, object]:
+        options: dict[str, object] = {
+            "startupOptions": (
+                self.startup_options.to_dict()
+                if self.startup_options is not None
+                else None
+            ),
+            "memoryLayout": (
+                self.memory_layout.to_dict()
+                if self.memory_layout is not None
+                else None
+            ),
+            "extraRegions": [region.to_dict() for region in self.extra_regions],
+        }
+        if self.wfi_returns:
+            # Only a non-empty reviewed request changes the option bytes, so a
+            # historical no-choice delivery preview stays identical.
+            options["wfiReturns"] = [
+                choice.to_dict() for choice in self.wfi_returns
+            ]
         payload: dict[str, object] = {
             "planVersion": self.plan_version,
             "planId": self.plan_id,
@@ -219,19 +242,7 @@ class DeliveryPlan:
                 "device": self.inspection.device,
                 "compiler": self.inspection.compiler,
             },
-            "options": {
-                "startupOptions": (
-                    self.startup_options.to_dict()
-                    if self.startup_options is not None
-                    else None
-                ),
-                "memoryLayout": (
-                    self.memory_layout.to_dict()
-                    if self.memory_layout is not None
-                    else None
-                ),
-                "extraRegions": [region.to_dict() for region in self.extra_regions],
-            },
+            "options": options,
             "inventory": {
                 "files": self.source_file_count,
                 "directories": self.source_directory_count,
@@ -968,6 +979,11 @@ def _report_bytes(
         ]
     if analysis.startup is not None:
         payload["startup"] = analysis.startup.to_dict()
+    if analysis.wfi_returns:
+        # Bind each reviewed selection to the exact source and reviewed
+        # converted digest.  This is requested source behaviour, never a
+        # binary-equivalence claim.
+        payload["wfiReturns"] = _wfi_return_evidence(analysis)
     return json.dumps(payload, indent=2, ensure_ascii=False).encode("utf-8") + b"\n"
 
 
@@ -997,6 +1013,7 @@ def _build_delivery(
     startup_options: StartupOptions | None,
     memory_layout: MemoryLayout | None,
     extra_regions: tuple[ExtraRegion, ...] | None,
+    wfi_returns: tuple[WfiReturn, ...] | None = None,
     expected_source_snapshot: str | None = None,
 ) -> tuple[DeliveryPlan, tuple[tuple[str, bytes], ...], tuple[str, ...]]:
     canonical_source = _canonical_source(source)
@@ -1013,6 +1030,7 @@ def _build_delivery(
     options = _validate_startup_options(startup_options)
     layout_option = _validate_memory_layout(memory_layout)
     extras = _validate_extra_region_option(extra_regions)
+    wfi_choices = normalize_wfi_returns(wfi_returns)
 
     # Revalidate the complete source snapshot before any conversion analysis.
     # A changed/unreadable/removed source is a delivery-source change with
@@ -1039,6 +1057,7 @@ def _build_delivery(
             startup_options=options,
             memory_layout=layout_option,
             extra_regions=extras,
+            wfi_returns=wfi_choices,
         )
     except MigrationPlanError as error:
         # A conversion-analysis failure is relabelled as a source change only
@@ -1111,11 +1130,17 @@ def _build_delivery(
 
     normalized_destination = _normalized_destination(absolute_destination)
     inspection_sha256 = inspection_sha256_for(analysis.inspection)
-    option_payload = {
+    option_payload: dict[str, object] = {
         "startupOptions": options.to_dict() if options is not None else None,
         "memoryLayout": layout_option.to_dict() if layout_option is not None else None,
         "extraRegions": [region.to_dict() for region in extras],
     }
+    if wfi_choices:
+        # Only a non-empty selection changes the analysis identity, so a
+        # historical no-choice plan ID stays byte-identical.
+        option_payload["wfiReturns"] = [
+            choice.to_dict() for choice in wfi_choices
+        ]
     analysis_id = _analysis_id(
         normalized_destination,
         destination_state,
@@ -1261,6 +1286,7 @@ def _build_delivery(
         memory_layout=layout_option,
         extra_regions=extras,
         include_merges=analysis.include_merges,
+        wfi_returns=wfi_choices,
         warnings=(
             "Inputs outside the source tree are never guessed; unresolved"
             " dependencies remain conversion diagnostics.",
@@ -1298,6 +1324,7 @@ def plan_keil_delivery(
     startup_options: StartupOptions | None = None,
     memory_layout: MemoryLayout | None = None,
     extra_regions: tuple[ExtraRegion, ...] | None = None,
+    wfi_returns: tuple[WfiReturn, ...] | None = None,
 ) -> DeliveryPlan:
     """Plan one independent output directory without writing anything."""
     plan, _outputs, _directories = _build_delivery(
@@ -1307,6 +1334,7 @@ def plan_keil_delivery(
         startup_options=startup_options,
         memory_layout=memory_layout,
         extra_regions=extra_regions,
+        wfi_returns=wfi_returns,
     )
     return plan
 
@@ -1407,6 +1435,16 @@ def _validate_plan_object(plan: object) -> None:
         isinstance(region, ExtraRegion) for region in plan.extra_regions
     ):
         raise _plan_invalid("extraRegions")
+    if not isinstance(plan.wfi_returns, tuple) or not all(
+        type(choice) is WfiReturn for choice in plan.wfi_returns
+    ):
+        raise _plan_invalid("wfiReturns")
+    try:
+        normalized_wfi = normalize_wfi_returns(plan.wfi_returns)
+    except MigrationPlanError:
+        raise _plan_invalid("wfiReturns") from None
+    if normalized_wfi != plan.wfi_returns:
+        raise _plan_invalid("wfiReturns")
     if not isinstance(plan.source_patches, tuple) or not all(
         isinstance(patch, FilePatch) for patch in plan.source_patches
     ):
@@ -1472,6 +1510,8 @@ def _plan_preview_mismatch(fresh: DeliveryPlan, plan: DeliveryPlan) -> str | Non
         return "memoryLayout"
     if fresh.extra_regions != plan.extra_regions:
         return "extraRegions"
+    if fresh.wfi_returns != plan.wfi_returns:
+        return "wfiReturns"
     if fresh.include_merges != plan.include_merges:
         return "includeMerges"
     if fresh.warnings != plan.warnings:
@@ -1688,6 +1728,7 @@ def _apply(plan: DeliveryPlan) -> dict[str, object]:
             startup_options=plan.startup_options,
             memory_layout=plan.memory_layout,
             extra_regions=plan.extra_regions,
+            wfi_returns=plan.wfi_returns,
             expected_source_snapshot=plan.source_snapshot_sha256,
         )
     except MigrationPlanError as error:
