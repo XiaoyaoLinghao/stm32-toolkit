@@ -1074,7 +1074,7 @@ def _test_identity_matches_reference(manifest: object, reference: MonitorRunRef)
         and identity.git_commit == reference.git_head
         and identity.git_dirty == reference.git_dirty
         and identity.source_baseline == reference.source_baseline
-        and identity.git_evidence_document()
+        and _provenance_document(identity.git_evidence)
         == _provenance_document(reference.git_evidence)
     )
 
