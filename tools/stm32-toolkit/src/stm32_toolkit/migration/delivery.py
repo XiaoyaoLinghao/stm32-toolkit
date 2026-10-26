@@ -362,11 +362,14 @@ def _read_limited(path: Path, limit: int) -> bytes:
         return handle.read(limit + 1)
 
 
-def _scan_tree(root: Path) -> _Inventory:
+def _scan_tree(root: Path, *, exclude_git: bool = True) -> _Inventory:
     """Read the complete bounded regular-file tree below ``root``.
 
-    Only ``.git`` entries are excluded.  Links/reparse points, special files,
-    casefold collisions, and every exceeded bound are stable refusals.
+    Only ``.git`` entries are excluded when ``exclude_git`` is true (source
+    inventory).  Output/staging verification passes ``exclude_git=False`` so a
+    Git directory can never be silently omitted from the verified snapshot.
+    Links/reparse points, special files, casefold collisions, and every
+    exceeded bound are stable refusals.
     """
     files: list[_SourceFile] = []
     directories: list[str] = []
@@ -387,7 +390,7 @@ def _scan_tree(root: Path) -> _Inventory:
             ) from None
         for entry in entries:
             name = entry.name
-            if name == _EXCLUDED_ENTRY:
+            if exclude_git and name == _EXCLUDED_ENTRY:
                 excluded += 1
                 continue
             child = name if not relative else f"{relative}/{name}"
@@ -750,6 +753,59 @@ def _output_directories(
     return tuple(sorted(directories, key=portable_sort_key))
 
 
+def _validate_output_bounds(
+    outputs: tuple[_PlannedOutput, ...], directories: tuple[str, ...]
+) -> None:
+    """Refuse at planning time any output the published verifier would refuse.
+
+    The same module bounds apply to the staged/published scan, so a source
+    tree near a limit cannot plan an output that validation later rejects
+    after staging.
+    """
+    if len(outputs) > _MAX_FILES:
+        raise _raise(
+            "DELIVERY_LIMIT_EXCEEDED",
+            "final output exceeds the file-count limit",
+            {"scope": "output-files", "limit": _MAX_FILES},
+        )
+    total = 0
+    for output in outputs:
+        if output.size > _FILE_LIMIT_BYTES:
+            raise _raise(
+                "DELIVERY_LIMIT_EXCEEDED",
+                "final output file exceeds the per-file limit",
+                {
+                    "scope": "output-file",
+                    "limitBytes": _FILE_LIMIT_BYTES,
+                    "path": output.path,
+                },
+            )
+        total += output.size
+        if total > _AGGREGATE_LIMIT_BYTES:
+            raise _raise(
+                "DELIVERY_LIMIT_EXCEEDED",
+                "final output exceeds the aggregate byte limit",
+                {
+                    "scope": "output-aggregate",
+                    "limitBytes": _AGGREGATE_LIMIT_BYTES,
+                    "path": output.path,
+                },
+            )
+    if len(directories) > _MAX_DIRECTORIES:
+        raise _raise(
+            "DELIVERY_LIMIT_EXCEEDED",
+            "final output exceeds the directory limit",
+            {"scope": "output-directories", "limit": _MAX_DIRECTORIES},
+        )
+    for path in [output.path for output in outputs] + list(directories):
+        if len(path.split("/")) > _MAX_DEPTH:
+            raise _raise(
+                "DELIVERY_LIMIT_EXCEEDED",
+                "final output exceeds the depth limit",
+                {"scope": "output-depth", "limit": _MAX_DEPTH, "path": path},
+            )
+
+
 def _reject_output_conflicts(
     outputs: tuple[_PlannedOutput, ...], directories: tuple[str, ...]
 ) -> None:
@@ -829,7 +885,7 @@ def _delivery_output(output: _PlannedOutput) -> DeliveryOutput:
 def _report_bytes(
     analysis: ConversionAnalysis,
     *,
-    plan_id: str,
+    content_id: str,
     source_snapshot_sha256: str,
     inventory: _Inventory,
     destination_state: str,
@@ -839,7 +895,10 @@ def _report_bytes(
     payload: dict[str, object] = {
         "schemaVersion": 2,
         "toolkitVersion": __version__,
-        "planId": plan_id,
+        # The final delivery plan hashes every published byte, including this
+        # report, so the report carries the pre-report content identity rather
+        # than claiming to be the final plan ID.
+        "contentId": content_id,
         "sourceSnapshotSha256": source_snapshot_sha256,
         "destinationState": destination_state,
         "sourceFileCount": len(inventory.files),
@@ -938,6 +997,7 @@ def _build_delivery(
     startup_options: StartupOptions | None,
     memory_layout: MemoryLayout | None,
     extra_regions: tuple[ExtraRegion, ...] | None,
+    expected_source_snapshot: str | None = None,
 ) -> tuple[DeliveryPlan, tuple[tuple[str, bytes], ...], tuple[str, ...]]:
     canonical_source = _canonical_source(source)
     absolute_destination = _absolute_destination(destination)
@@ -954,6 +1014,24 @@ def _build_delivery(
     layout_option = _validate_memory_layout(memory_layout)
     extras = _validate_extra_region_option(extra_regions)
 
+    # Revalidate the complete source snapshot before any conversion analysis.
+    # A changed/unreadable/removed source is a delivery-source change with
+    # replan guidance, not an incidental low-level input error.
+    inventory = _scan_tree(canonical_source)
+    if (
+        expected_source_snapshot is not None
+        and inventory.snapshot_sha256 != expected_source_snapshot
+    ):
+        raise _raise(
+            "DELIVERY_SOURCE_CHANGED",
+            "source content changed since planning; replan before applying",
+            {
+                "rule": "sourceSnapshot",
+                "expected": expected_source_snapshot,
+                "actual": inventory.snapshot_sha256,
+            },
+        )
+
     try:
         analysis = analyze_keil_conversion(
             canonical_source,
@@ -963,17 +1041,54 @@ def _build_delivery(
             extra_regions=extras,
         )
     except MigrationPlanError as error:
-        if error.code in ("MIGRATION_INSPECTION_CHANGED", "MIGRATION_INSPECTION_INVALID"):
+        # A conversion-analysis failure is relabelled as a source change only
+        # when the complete source snapshot demonstrably differs from the one
+        # just read; otherwise the genuine diagnostic is returned unchanged.
+        rescanned: _Inventory | None = None
+        try:
+            rescanned = _scan_tree(canonical_source)
+        except MigrationPlanError:
+            rescanned = None
+        if (
+            rescanned is not None
+            and rescanned.snapshot_sha256 != inventory.snapshot_sha256
+        ):
+            details = {
+                "rule": "sourceSnapshot",
+                "cause": error.code,
+                "path": _first_inventory_difference(inventory, rescanned),
+            }
             raise _raise(
                 "DELIVERY_SOURCE_CHANGED",
-                "source no longer matches the supplied inspection",
-                {"rule": "inspection"},
+                "source content changed while planning; replan",
+                details,
+            ) from None
+        if error.code in ("MIGRATION_INSPECTION_CHANGED", "MIGRATION_INSPECTION_INVALID"):
+            details = {"rule": "inspection", "cause": error.code}
+            if isinstance(error.details.get("path"), str):
+                details["path"] = error.details["path"]
+            raise _raise(
+                "DELIVERY_SOURCE_CHANGED",
+                "source no longer matches the supplied inspection; replan before applying",
+                details,
             ) from None
         raise
     if analysis.blockers:
         raise _blocked(analysis)
 
-    inventory = _scan_tree(canonical_source)
+    # Analysis re-inspects the source; refuse a source change between the
+    # complete snapshot above and that analysis rather than planning from
+    # mixed evidence.
+    after_analysis = _scan_tree(canonical_source)
+    if after_analysis.snapshot_sha256 != inventory.snapshot_sha256:
+        raise _raise(
+            "DELIVERY_SOURCE_CHANGED",
+            "source content changed while planning; replan",
+            {
+                "rule": "sourceSnapshot",
+                "path": _first_inventory_difference(inventory, after_analysis),
+            },
+        )
     outputs = _overlay_patches(inventory, analysis.patches)
     manifest_output = outputs.get(_MANIFEST_NAME)
     if manifest_output is None:
@@ -1011,10 +1126,11 @@ def _build_delivery(
         analysis.patches,
     )
     # The seed report carries validated fixed-section evidence into the shared
-    # renderer; only its planId changes once the final content identity exists.
+    # renderer; only its content identity changes once the final content
+    # identity exists.
     seed_report = _report_bytes(
         analysis,
-        plan_id=analysis_id,
+        content_id=analysis_id,
         source_snapshot_sha256=inventory.snapshot_sha256,
         inventory=inventory,
         destination_state=destination_state,
@@ -1057,7 +1173,7 @@ def _build_delivery(
     )
     report = _report_bytes(
         analysis,
-        plan_id=content_id,
+        content_id=content_id,
         source_snapshot_sha256=inventory.snapshot_sha256,
         inventory=inventory,
         destination_state=destination_state,
@@ -1076,6 +1192,7 @@ def _build_delivery(
         skip_equal=True,
     )
     _reject_output_conflicts(final, directories)
+    _validate_output_bounds(final, directories)
     for output in final:
         if output.path == _EXCLUDED_ENTRY or output.path.startswith(
             _EXCLUDED_ENTRY + "/"
@@ -1149,6 +1266,9 @@ def _build_delivery(
             " dependencies remain conversion diagnostics.",
         ),
     )
+    # Private, non-identity inventory evidence for change diagnostics only.
+    object.__setattr__(plan, "_source_files", inventory.files)
+    object.__setattr__(plan, "_source_directories", inventory.directories)
     try:
         serialized = json.dumps(plan.to_dict(), ensure_ascii=False).encode("utf-8")
     except (TypeError, ValueError):
@@ -1217,7 +1337,7 @@ def _plan_invalid(rule: str) -> _DeliveryFailure:
 def _validate_plan_object(plan: object) -> None:
     if type(plan) is not DeliveryPlan:
         raise _plan_invalid("type")
-    if not isinstance(plan.plan_version, int) or plan.plan_version != _PLAN_VERSION:
+    if type(plan.plan_version) is not int or plan.plan_version != _PLAN_VERSION:
         raise _plan_invalid("planVersion")
     if not isinstance(plan.source_root, Path) or not isinstance(
         plan.destination_root, Path
@@ -1260,9 +1380,13 @@ def _validate_plan_object(plan: object) -> None:
             raise _plan_invalid("kind")
         if sha256_error(output.sha256) is not None:
             raise _plan_invalid("digest")
-        if not isinstance(output.size, int) or output.size < 0:
+        if type(output.size) is not int or output.size < 0:
             raise _plan_invalid("digest")
         if (output.before_sha256 is None) != (output.before_size is None):
+            raise _plan_invalid("digest")
+        if output.before_size is not None and (
+            type(output.before_size) is not int or output.before_size < 0
+        ):
             raise _plan_invalid("digest")
         if output.before_sha256 is not None and sha256_error(
             output.before_sha256
@@ -1287,17 +1411,139 @@ def _validate_plan_object(plan: object) -> None:
         isinstance(patch, FilePatch) for patch in plan.source_patches
     ):
         raise _plan_invalid("patches")
+    for count in (
+        plan.source_file_count,
+        plan.source_directory_count,
+        plan.source_total_bytes,
+        plan.excluded_git_entries,
+    ):
+        if type(count) is not int or count < 0:
+            raise _plan_invalid("counts")
 
 
-def _source_changed(path: str = "") -> _DeliveryFailure:
+def _plan_preview_mismatch(fresh: DeliveryPlan, plan: DeliveryPlan) -> str | None:
+    """Return the first preview field that differs from a fresh recomputation.
+
+    Comparing only ``plan_id`` and selected digest attributes would accept a
+    ``dataclasses.replace``-mutated plan whose displayed outputs, directories,
+    patches, options or counts no longer describe what apply would publish.
+    """
+    if fresh.plan_version != plan.plan_version:
+        return "planVersion"
+    if fresh.source_root != plan.source_root:
+        return "sourceRoot"
+    if fresh.destination_root != plan.destination_root:
+        return "destination"
+    if fresh.inspection != plan.inspection:
+        return "inspection"
+    if fresh.destination_state != plan.destination_state:
+        return "destinationState"
+    if fresh.source_snapshot_sha256 != plan.source_snapshot_sha256:
+        return "sourceSnapshot"
+    if fresh.content_id != plan.content_id:
+        return "contentId"
+    if fresh.output_snapshot_sha256 != plan.output_snapshot_sha256:
+        return "outputSnapshot"
+    if fresh.outputs != plan.outputs:
+        return "outputs"
+    if fresh.output_directories != plan.output_directories:
+        return "directories"
+    if fresh.source_patches != plan.source_patches:
+        return "patches"
+    if fresh.source_file_count != plan.source_file_count:
+        return "sourceFileCount"
+    if fresh.source_directory_count != plan.source_directory_count:
+        return "sourceDirectoryCount"
+    if fresh.source_total_bytes != plan.source_total_bytes:
+        return "sourceTotalBytes"
+    if fresh.excluded_git_entries != plan.excluded_git_entries:
+        return "excludedGitEntries"
+    if fresh.report_path != plan.report_path:
+        return "reportPath"
+    if fresh.report_sha256 != plan.report_sha256:
+        return "reportSha256"
+    if fresh.managed_manifest_path != plan.managed_manifest_path:
+        return "managedManifestPath"
+    if fresh.managed_manifest_sha256 != plan.managed_manifest_sha256:
+        return "managedManifestSha256"
+    if fresh.startup_options != plan.startup_options:
+        return "startupOptions"
+    if fresh.memory_layout != plan.memory_layout:
+        return "memoryLayout"
+    if fresh.extra_regions != plan.extra_regions:
+        return "extraRegions"
+    if fresh.include_merges != plan.include_merges:
+        return "includeMerges"
+    if fresh.warnings != plan.warnings:
+        return "warnings"
+    return None
+
+
+def _source_changed(
+    *, path: str = "", cause: str = "", scope: str = ""
+) -> _DeliveryFailure:
     details: dict[str, object] = {"rule": "sourceSnapshot"}
+    if cause:
+        details["cause"] = cause
     if path:
         details["path"] = path
+    if scope:
+        details["scope"] = scope
     return _fail(
         "DELIVERY_SOURCE_CHANGED",
         "source content changed since planning; replan before applying",
         details,
     )
+
+
+def _first_inventory_difference(planned: _Inventory, current: _Inventory) -> str:
+    """Return the first source path whose content or presence differs."""
+    planned_files = {entry.path: entry.sha256 for entry in planned.files}
+    actual_files = {entry.path: entry.sha256 for entry in current.files}
+    for path in sorted(
+        set(planned_files) | set(actual_files), key=portable_sort_key
+    ):
+        if planned_files.get(path) != actual_files.get(path):
+            return path
+    planned_dirs = set(planned.directories)
+    actual_dirs = set(current.directories)
+    for path in sorted(planned_dirs | actual_dirs, key=portable_sort_key):
+        if (path in planned_dirs) != (path in actual_dirs):
+            return path
+    return ""
+
+
+def _first_source_difference(plan: DeliveryPlan, current: _Inventory) -> str:
+    """Difference against the planning-time inventory carried privately.
+
+    That inventory is diagnostic only and never participates in identity or
+    preview fields.
+    """
+    return _first_inventory_difference(
+        _Inventory(
+            root=plan.source_root,
+            files=tuple(getattr(plan, "_source_files", ())),
+            directories=tuple(getattr(plan, "_source_directories", ())),
+            data={},
+        ),
+        current,
+    )
+
+
+def _source_changed_from(error: MigrationPlanError) -> _DeliveryFailure:
+    """Map a source-tree refusal to a source change without dropping detail."""
+    path = error.details.get("path")
+    scope = error.details.get("scope")
+    failure = _source_changed(
+        path=path if isinstance(path, str) else "",
+        cause=error.code,
+        scope=scope if isinstance(scope, str) else "",
+    )
+    for key in ("expected", "actual"):
+        value = error.details.get(key)
+        if isinstance(value, str):
+            failure.details[key] = value
+    return failure
 
 
 def _destination_changed() -> _DeliveryFailure:
@@ -1308,14 +1554,68 @@ def _destination_changed() -> _DeliveryFailure:
     )
 
 
-def _cleanup_staging(staging: Path) -> bool:
+@dataclass(frozen=True)
+class _StagingIdentity:
+    """Identity of the one staging directory this apply created."""
+
+    dev: int
+    ino: int
+    parent_dev: int
+    parent_ino: int
+
+
+def _capture_staging_identity(staging: Path) -> _StagingIdentity:
+    st = os.lstat(staging)
+    parent = os.lstat(staging.parent)
+    return _StagingIdentity(
+        dev=st.st_dev,
+        ino=st.st_ino,
+        parent_dev=parent.st_dev,
+        parent_ino=parent.st_ino,
+    )
+
+
+def _staging_still_owned(staging: Path, identity: _StagingIdentity) -> bool:
+    """True only when the staging root and its parent are the same regular dirs.
+
+    A replaced root, a replaced/redirected parent, or a missing path is never
+    treated as ours; callers must not delete or publish through it.
+    """
     try:
-        shutil.rmtree(staging)
-        return True
-    except FileNotFoundError:
-        return True
+        st = os.lstat(staging)
+        parent = os.lstat(staging.parent)
     except OSError:
         return False
+    if _is_redirect(st) or not stat.S_ISDIR(st.st_mode):
+        return False
+    if _is_redirect(parent) or not stat.S_ISDIR(parent.st_mode):
+        return False
+    return (st.st_dev, st.st_ino) == (identity.dev, identity.ino) and (
+        parent.st_dev,
+        parent.st_ino,
+    ) == (identity.parent_dev, identity.parent_ino)
+
+
+def _cleanup_staging(
+    staging: Path, identity: _StagingIdentity | None
+) -> tuple[bool, str]:
+    """Remove only the verified owned staging root.
+
+    Returns ``(removed, status)`` where status is ``removed``, ``absent``,
+    ``skipped-replaced`` (identity changed; nothing was deleted), ``failed``
+    (owned but removal failed), or ``unverified`` (no recorded identity).
+    """
+    if identity is None:
+        return False, "unverified"
+    if not _staging_still_owned(staging, identity):
+        return False, "skipped-replaced"
+    try:
+        shutil.rmtree(staging)
+        return True, "removed"
+    except FileNotFoundError:
+        return True, "absent"
+    except OSError:
+        return False, "failed"
 
 
 def _write_new_file(path: Path, data: bytes) -> None:
@@ -1347,25 +1647,35 @@ def _stage_outputs(
         _write_new_file(target, data)
 
 
-def _verify_staging(
-    staging: Path, outputs: tuple[tuple[str, bytes], ...]
-) -> None:
-    for path, data in outputs:
-        target = staging.joinpath(*path.split("/"))
-        try:
-            staged = _read_limited(target, len(data))
-        except OSError:
-            raise _fail(
-                "DELIVERY_APPLY_FAILED",
-                "staged output is unreadable",
-                {"phase": "stage", "path": path},
-            ) from None
-        if len(staged) != len(data) or _sha256(staged) != _sha256(data):
-            raise _fail(
-                "DELIVERY_APPLY_FAILED",
-                "staged output does not match the plan",
-                {"phase": "stage", "path": path},
-            )
+def _verify_staging(staging: Path, expected_snapshot: str) -> None:
+    """Verify the complete staged tree, not only the files we intended.
+
+    The same bounded scanner used for publication runs here, so unexpected
+    files, links/reparse points, directories, missing bytes, or a tree beyond
+    a limit are refused before the destination is touched.
+    """
+    try:
+        scanned = _scan_tree(staging, exclude_git=False)
+    except MigrationPlanError as error:
+        details: dict[str, object] = {"phase": "stage", "cause": error.code}
+        path = error.details.get("path")
+        if isinstance(path, str):
+            details["path"] = path
+        raise _fail(
+            "DELIVERY_APPLY_FAILED",
+            "staged output is not a supported complete tree",
+            details,
+        ) from None
+    snapshot = _output_snapshot_sha256(
+        tuple((entry.path, entry.sha256, entry.size) for entry in scanned.files),
+        scanned.directories,
+    )
+    if snapshot != expected_snapshot:
+        raise _fail(
+            "DELIVERY_APPLY_FAILED",
+            "staged output does not match the planned snapshot",
+            {"phase": "stage", "rule": "outputSnapshot"},
+        )
 
 
 def _apply(plan: DeliveryPlan) -> dict[str, object]:
@@ -1378,6 +1688,7 @@ def _apply(plan: DeliveryPlan) -> dict[str, object]:
             startup_options=plan.startup_options,
             memory_layout=plan.memory_layout,
             extra_regions=plan.extra_regions,
+            expected_source_snapshot=plan.source_snapshot_sha256,
         )
     except MigrationPlanError as error:
         if error.code in ("DELIVERY_DESTINATION_EXISTS", "DELIVERY_DESTINATION_INVALID"):
@@ -1390,34 +1701,32 @@ def _apply(plan: DeliveryPlan) -> dict[str, object]:
             "DELIVERY_UNSUPPORTED_ENTRY",
             "DELIVERY_LIMIT_EXCEEDED",
             "DELIVERY_CASEFOLD_COLLISION",
-            "DELIVERY_BLOCKED",
             "MIGRATION_INSPECTION_CHANGED",
             "MIGRATION_INSPECTION_INVALID",
         ):
-            raise _source_changed() from None
+            raise _source_changed_from(error) from None
+        # Every other refusal (invalid inspection/model/options/manifest,
+        # conversion blockers, generation errors) is a genuine diagnostic and
+        # is returned unchanged rather than relabelled as a source change.
         raise
     if fresh.destination_state != plan.destination_state:
         raise _destination_changed()
     if fresh.source_snapshot_sha256 != plan.source_snapshot_sha256:
-        raise _source_changed()
+        raise _source_changed(cause="sourceSnapshot")
     if fresh.plan_id != plan.plan_id:
         raise _fail(
             "DELIVERY_PLAN_CHANGED",
             "recomputed delivery plan does not match the supplied plan",
             {"rule": "planId"},
         )
-    # Bind every digest the caller can inspect to the freshly recomputed
-    # values before the first staging write.
-    if (
-        fresh.content_id != plan.content_id
-        or fresh.output_snapshot_sha256 != plan.output_snapshot_sha256
-        or fresh.report_sha256 != plan.report_sha256
-        or fresh.managed_manifest_sha256 != plan.managed_manifest_sha256
-    ):
+    # The supplied plan is a preview object: every displayed field and digest
+    # must match the fresh recomputation before the first staging write.
+    mismatch = _plan_preview_mismatch(fresh, plan)
+    if mismatch is not None:
         raise _fail(
             "DELIVERY_PLAN_CHANGED",
             "recomputed delivery plan does not match the supplied plan",
-            {"rule": "digest"},
+            {"rule": mismatch},
         )
 
     destination = plan.destination_root
@@ -1443,21 +1752,42 @@ def _apply(plan: DeliveryPlan) -> dict[str, object]:
             {"phase": "stage"},
         ) from None
 
+    identity: _StagingIdentity | None
+    try:
+        identity = _capture_staging_identity(staging)
+    except OSError:
+        # The directory was created but cannot be proven to be ours; never
+        # delete an unverified path.
+        raise _fail(
+            "DELIVERY_APPLY_FAILED",
+            "owned staging identity could not be recorded",
+            {"phase": "stage", "stagingRemoved": False, "cleanup": "unverified"},
+        ) from None
+
     emptied = False
     try:
         _stage_outputs(staging, outputs, directories)
-        _verify_staging(staging, outputs)
+        if not _staging_still_owned(staging, identity):
+            raise _fail(
+                "DELIVERY_STAGING_CHANGED",
+                "owned staging was replaced; nothing was published",
+                {"phase": "stage", "reason": "replaced"},
+            )
+        _verify_staging(staging, fresh.output_snapshot_sha256)
 
         # A concurrent source change invalidates the plan before publication.
         try:
             current = _scan_tree(plan.source_root)
-        except MigrationPlanError:
-            raise _source_changed() from None
+        except MigrationPlanError as error:
+            raise _source_changed_from(error) from None
         if (
             current.snapshot_sha256 != fresh.source_snapshot_sha256
             or current.snapshot_sha256 != plan.source_snapshot_sha256
         ):
-            raise _source_changed()
+            raise _source_changed(
+                cause="sourceSnapshot",
+                path=_first_source_difference(fresh, current),
+            )
         try:
             state = _inspect_destination(destination)
         except MigrationPlanError:
@@ -1482,6 +1812,13 @@ def _apply(plan: DeliveryPlan) -> dict[str, object]:
             raise _destination_changed() from None
         else:
             raise _destination_changed()
+        # Publication uses only the verified owned staging root.
+        if not _staging_still_owned(staging, identity):
+            raise _fail(
+                "DELIVERY_STAGING_CHANGED",
+                "owned staging was replaced; nothing was published",
+                {"phase": "publish", "reason": "replaced"},
+            )
         try:
             os.replace(staging, destination)
         except FileExistsError:
@@ -1499,12 +1836,12 @@ def _apply(plan: DeliveryPlan) -> dict[str, object]:
                 {"phase": "publish"},
             ) from None
     except _DeliveryFailure as failure:
-        removed = _cleanup_staging(staging)
+        removed, cleanup_status = _cleanup_staging(staging, identity)
         details = dict(failure.details)
-        details.setdefault("stagingRemoved", removed)
+        details["stagingRemoved"] = removed
+        details["cleanup"] = cleanup_status
         if not removed:
             details["staging"] = staging.name
-            details["cleanup"] = "failed"
         if emptied and not destination.exists():
             try:
                 os.mkdir(destination)
@@ -1512,11 +1849,14 @@ def _apply(plan: DeliveryPlan) -> dict[str, object]:
                 pass
         raise _DeliveryFailure(failure.code, failure.message, details) from None
     except OSError:
-        removed = _cleanup_staging(staging)
-        details: dict[str, object] = {"phase": "stage", "stagingRemoved": removed}
+        removed, cleanup_status = _cleanup_staging(staging, identity)
+        details: dict[str, object] = {
+            "phase": "stage",
+            "stagingRemoved": removed,
+            "cleanup": cleanup_status,
+        }
         if not removed:
             details["staging"] = staging.name
-            details["cleanup"] = "failed"
         raise _fail(
             "DELIVERY_APPLY_FAILED", "delivery apply failed", details
         ) from None
@@ -1524,7 +1864,7 @@ def _apply(plan: DeliveryPlan) -> dict[str, object]:
     # Honest published-state verification: the complete directory must match
     # the output snapshot the plan bound.
     try:
-        published = _scan_tree(destination)
+        published = _scan_tree(destination, exclude_git=False)
         published_snapshot = _output_snapshot_sha256(
             tuple(
                 (entry.path, entry.sha256, entry.size) for entry in published.files

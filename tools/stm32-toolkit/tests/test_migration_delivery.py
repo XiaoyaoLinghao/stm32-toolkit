@@ -18,6 +18,7 @@ import shutil
 import stat
 import subprocess
 from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -128,6 +129,16 @@ def output_parent(tmp_path: Path, name: str = "output") -> Path:
     return parent
 
 
+def edit_manifest(root: Path, mutate) -> None:
+    path = root / ".stm32-project.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    mutate(payload)
+    path.write_text(
+        json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+
+
 def apply_authorized(plan):
     return apply_keil_delivery(plan, authorized=True, plan_id=plan.plan_id)
 
@@ -198,6 +209,11 @@ def test_no_git_plan_apply_preserves_source_and_configures_output(tmp_path: Path
     assert all("content" not in entry for entry in preview["outputs"])
     assert preview["inventory"]["excludedGitEntries"] == 0
 
+    # Identical input, destination and options produce an identical plan.
+    repeat = plan_keil_delivery(repo, destination, inspect_keil(repo))
+    assert repeat.plan_id == plan.plan_id
+    assert repeat.to_dict()["outputs"] == preview["outputs"]
+
     result = apply_authorized(plan)
     assert result.ok is True, result.to_dict()
     data = result.data
@@ -224,11 +240,14 @@ def test_no_git_plan_apply_preserves_source_and_configures_output(tmp_path: Path
     ):
         assert (destination / path).read_bytes() == (repo / path).read_bytes()
 
-    # Schema 2 conversion report: content snapshot, no mandatory Git.
+    # Schema 2 conversion report: content snapshot and content identity, no
+    # mandatory Git and no claim to be the final plan ID.
     report = json.loads((destination / REPORT_PATH).read_text(encoding="utf-8"))
     assert report["schemaVersion"] == 2
     assert report["sourceSnapshotSha256"] == plan.source_snapshot_sha256
-    assert SHA_RE.fullmatch(report["planId"]) is not None
+    assert report["contentId"] == plan.content_id
+    assert SHA_RE.fullmatch(report["contentId"]) is not None
+    assert "planId" not in report
     assert "gitHead" not in report
 
     # The normal configure route accepts the output and agrees on the manifest.
@@ -244,13 +263,31 @@ def test_no_git_plan_apply_preserves_source_and_configures_output(tmp_path: Path
     applied = apply_project_configuration(configuration)
     assert applied.ok is True, applied.to_dict()
 
-    # A second destination binds different output identity but the same
-    # source snapshot and output file digests.
+    # A second destination binds its own content identity because the report
+    # records the destination-bound content ID.  Every other output remains
+    # byte-identical; only the report differs.
     other = parent / "second-project"
     second = plan_keil_delivery(repo, other, inspect_keil(repo))
     assert second.source_snapshot_sha256 == plan.source_snapshot_sha256
-    assert second.output_snapshot_sha256 == plan.output_snapshot_sha256
+    assert second.content_id != plan.content_id
+    assert second.output_snapshot_sha256 != plan.output_snapshot_sha256
     assert second.plan_id != plan.plan_id
+    first_outputs = {
+        output.path: output.sha256
+        for output in plan.outputs
+        if output.path != REPORT_PATH
+    }
+    second_outputs = {
+        output.path: output.sha256
+        for output in second.outputs
+        if output.path != REPORT_PATH
+    }
+    assert first_outputs == second_outputs
+    second_result = apply_authorized(second)
+    assert second_result.ok is True, second_result.to_dict()
+    second_report = json.loads((other / REPORT_PATH).read_text(encoding="utf-8"))
+    assert second_report["contentId"] == second.content_id
+    assert second_report["contentId"] != report["contentId"]
 
 
 EXT_REGION = ExtraRegion("EXT_SRAM", 0x68000000, 0x10000, "rw-")
@@ -278,6 +315,7 @@ def test_explicit_extra_regions_bind_and_configure_accepts(tmp_path: Path) -> No
     destination = parent / "with-extras"
     report = json.loads((destination / REPORT_PATH).read_text(encoding="utf-8"))
     assert report["extraRegions"] == [EXT_REGION.to_dict()]
+    assert report["contentId"] == with_extras.content_id
     configuration = plan_project_configuration(load_project_model(destination))
     assert configuration.blockers == ()
 
@@ -577,6 +615,256 @@ def test_publish_failure_cleans_only_owned_staging(
     assert tree_digest(repo) == before
 
 
+def test_publish_failure_restores_originally_empty_destination(
+    tmp_path: Path, monkeypatch
+) -> None:
+    repo = make_repo(tmp_path)
+    parent = output_parent(tmp_path)
+    destination = parent / "project"
+    destination.mkdir()
+    plan = plan_keil_delivery(repo, destination, inspect_keil(repo))
+    assert plan.destination_state == "empty"
+
+    def failing_replace(source, target):
+        raise OSError("simulated publish failure")
+
+    monkeypatch.setattr(delivery.os, "replace", failing_replace)
+    result = apply_authorized(plan)
+    assert result.ok is False
+    assert result.code == "DELIVERY_APPLY_FAILED"
+    assert result.details["phase"] == "publish"
+    assert result.details["stagingRemoved"] is True
+    assert destination.is_dir()
+    assert list(destination.iterdir()) == []
+    assert staging_entries(parent) == []
+
+
+def test_replaced_staging_is_never_deleted_or_published(
+    tmp_path: Path, monkeypatch
+) -> None:
+    repo = make_repo(tmp_path)
+    parent = output_parent(tmp_path)
+    destination = parent / "project"
+    before = tree_digest(repo)
+    plan = plan_keil_delivery(repo, destination, inspect_keil(repo))
+
+    real_stage = delivery._stage_outputs
+    replacement_marker = "replacement-owner-content\n"
+
+    def stage_then_replace(staging, outputs, directories):
+        real_stage(staging, outputs, directories)
+        shutil.rmtree(staging)
+        staging.mkdir()
+        (staging / "replacement.txt").write_text(
+            replacement_marker, encoding="utf-8"
+        )
+
+    monkeypatch.setattr(delivery, "_stage_outputs", stage_then_replace)
+    result = apply_authorized(plan)
+    assert result.ok is False
+    assert result.code == "DELIVERY_STAGING_CHANGED"
+    assert result.details["stagingRemoved"] is False
+    assert result.details["cleanup"] == "skipped-replaced"
+    assert not destination.exists()
+    assert tree_digest(repo) == before
+    remaining = staging_entries(parent)
+    assert len(remaining) == 1
+    assert (remaining[0] / "replacement.txt").read_text(
+        encoding="utf-8"
+    ) == replacement_marker
+
+
+def test_redirected_staging_is_neither_deleted_nor_published(
+    tmp_path: Path, monkeypatch
+) -> None:
+    repo = make_repo(tmp_path)
+    parent = output_parent(tmp_path)
+    destination = parent / "project"
+    plan = plan_keil_delivery(repo, destination, inspect_keil(repo))
+    staging = parent / f".{destination.name}.stm32tk-staging-{plan.plan_id[:12]}"
+
+    real_stage = delivery._stage_outputs
+    real_lstat = os.lstat
+    armed = {"value": False}
+
+    def stage_then_arm(staging_path, outputs, directories):
+        real_stage(staging_path, outputs, directories)
+        armed["value"] = True
+
+    def redirected_lstat(path, *args, **kwargs):
+        state = real_lstat(path, *args, **kwargs)
+        if armed["value"] and os.path.normcase(
+            os.path.abspath(os.fspath(path))
+        ) == os.path.normcase(os.path.abspath(os.fspath(staging))):
+            return SimpleNamespace(
+                st_mode=state.st_mode,
+                st_dev=state.st_dev,
+                st_ino=state.st_ino,
+                st_file_attributes=0x400,
+            )
+        return state
+
+    monkeypatch.setattr(delivery, "_stage_outputs", stage_then_arm)
+    monkeypatch.setattr(os, "lstat", redirected_lstat)
+    result = apply_authorized(plan)
+    assert result.ok is False
+    assert result.code == "DELIVERY_STAGING_CHANGED"
+    assert result.details["stagingRemoved"] is False
+    assert result.details["cleanup"] == "skipped-replaced"
+    assert staging.is_dir()
+    assert not destination.exists()
+
+
+def test_unexpected_staged_content_is_refused_before_publication(
+    tmp_path: Path, monkeypatch
+) -> None:
+    repo = make_repo(tmp_path)
+    parent = output_parent(tmp_path)
+    destination = parent / "project"
+    before = tree_digest(repo)
+    plan = plan_keil_delivery(repo, destination, inspect_keil(repo))
+
+    real_stage = delivery._stage_outputs
+
+    def stage_with_extra(staging, outputs, directories):
+        real_stage(staging, outputs, directories)
+        (staging / "unexpected.txt").write_text("unexpected\n", encoding="utf-8")
+
+    monkeypatch.setattr(delivery, "_stage_outputs", stage_with_extra)
+    result = apply_authorized(plan)
+    assert result.ok is False
+    assert result.code == "DELIVERY_APPLY_FAILED"
+    assert result.details["phase"] == "stage"
+    assert result.details["stagingRemoved"] is True
+    assert not destination.exists()
+    assert staging_entries(parent) == []
+    assert tree_digest(repo) == before
+
+
+def test_final_output_limit_overflow_is_refused_at_planning(
+    tmp_path: Path, monkeypatch
+) -> None:
+    repo = make_repo(tmp_path)
+    parent = output_parent(tmp_path, "limits")
+    baseline = plan_keil_delivery(
+        repo, parent / "baseline", inspect_keil(repo)
+    )
+    before = tree_digest(repo)
+
+    # The source passes at exactly this file count, but the final output adds
+    # generated files beyond it.
+    monkeypatch.setattr(delivery, "_MAX_FILES", baseline.source_file_count)
+    rejected = parent / "rejected"
+    with pytest.raises(MigrationPlanError) as caught:
+        plan_keil_delivery(repo, rejected, inspect_keil(repo))
+    assert caught.value.code == "DELIVERY_LIMIT_EXCEEDED"
+    assert caught.value.details["scope"] == "output-files"
+    assert not rejected.exists()
+    assert tree_digest(repo) == before
+
+
+def test_source_removed_during_stage_is_reported_and_cleaned(
+    tmp_path: Path, monkeypatch
+) -> None:
+    repo = make_repo(tmp_path)
+    parent = output_parent(tmp_path)
+    destination = parent / "project"
+    plan = plan_keil_delivery(repo, destination, inspect_keil(repo))
+
+    real_stage = delivery._stage_outputs
+
+    def stage_then_remove_source(staging, outputs, directories):
+        real_stage(staging, outputs, directories)
+        shutil.rmtree(repo)
+
+    monkeypatch.setattr(delivery, "_stage_outputs", stage_then_remove_source)
+    result = apply_authorized(plan)
+    assert result.ok is False
+    assert result.code == "DELIVERY_SOURCE_CHANGED"
+    assert result.details["stagingRemoved"] is True
+    assert result.details["cleanup"] == "removed"
+    assert not destination.exists()
+    assert staging_entries(parent) == []
+
+
+def test_unreadable_source_during_stage_preserves_path_diagnostic(
+    tmp_path: Path, monkeypatch
+) -> None:
+    repo = make_repo(tmp_path)
+    parent = output_parent(tmp_path)
+    destination = parent / "project"
+    plan = plan_keil_delivery(repo, destination, inspect_keil(repo))
+
+    real_stage = delivery._stage_outputs
+    real_scan = delivery._scan_tree
+    armed = {"value": False}
+
+    def stage_then_arm(staging, outputs, directories):
+        real_stage(staging, outputs, directories)
+        armed["value"] = True
+
+    def scan_with_unreadable_source(root, **kwargs):
+        if armed["value"] and os.path.normcase(os.fspath(root)) == os.path.normcase(
+            os.fspath(repo)
+        ):
+            raise MigrationPlanError(
+                "DELIVERY_SOURCE_INVALID",
+                "source file is unreadable",
+                {"path": "Main/main.c", "rule": "unreadable"},
+            )
+        return real_scan(root, **kwargs)
+
+    monkeypatch.setattr(delivery, "_stage_outputs", stage_then_arm)
+    monkeypatch.setattr(delivery, "_scan_tree", scan_with_unreadable_source)
+    result = apply_authorized(plan)
+    assert result.ok is False
+    assert result.code == "DELIVERY_SOURCE_CHANGED"
+    assert result.details["path"] == "Main/main.c"
+    assert result.details["cause"] == "DELIVERY_SOURCE_INVALID"
+    assert result.details["stagingRemoved"] is True
+    assert not destination.exists()
+
+
+@pytest.mark.parametrize(
+    "forged",
+    ["planVersion", "outputs", "directories", "patches", "size"],
+)
+def test_mutated_preview_plan_is_rejected_before_staging(
+    tmp_path: Path, forged: str
+) -> None:
+    repo = make_repo(tmp_path)
+    parent = output_parent(tmp_path)
+    destination = parent / "project"
+    plan = plan_keil_delivery(repo, destination, inspect_keil(repo))
+    if forged == "planVersion":
+        mutated = replace(plan, plan_version=True)
+    elif forged == "outputs":
+        mutated = replace(plan, outputs=plan.outputs[:-1])
+    elif forged == "directories":
+        mutated = replace(
+            plan, output_directories=plan.output_directories + ("forged-dir",)
+        )
+    elif forged == "patches":
+        mutated = replace(plan, source_patches=())
+    else:
+        mutated = replace(
+            plan,
+            outputs=(replace(plan.outputs[0], size=True),) + plan.outputs[1:],
+        )
+    assert mutated.plan_id == plan.plan_id
+
+    result = apply_authorized(mutated)
+    expected_code = (
+        "DELIVERY_PLAN_INVALID"
+        if forged in ("planVersion", "size")
+        else "DELIVERY_PLAN_CHANGED"
+    )
+    assert result.ok is False
+    assert result.code == expected_code
+    assert not destination.exists()
+    assert staging_entries(parent) == []
+
+
 # ---------------------------------------------------------------------------
 # explicit generated/copied collisions
 # ---------------------------------------------------------------------------
@@ -642,18 +930,32 @@ def test_schema2_report_requires_content_identity(tmp_path: Path) -> None:
     assert caught.value.code == "GENERATION_FIXED_SECTION_INVALID"
     assert caught.value.details["rule"] == "sourceSnapshotSha256"
 
-    bad_plan = dict(payload)
-    bad_plan["planId"] = "not-a-digest"
-    _write_report(root, bad_plan)
+    bad_content = dict(payload)
+    bad_content["contentId"] = "not-a-digest"
+    _write_report(root, bad_content)
     with pytest.raises(GenerationError) as caught:
         plan_project_configuration(load_project_model(root))
     assert caught.value.code == "GENERATION_FIXED_SECTION_INVALID"
-    assert caught.value.details["rule"] == "planId"
+    assert caught.value.details["rule"] == "contentId"
+
+
+def test_schema_version_must_be_a_strict_int(tmp_path: Path) -> None:
+    root = _delivered(tmp_path)
+    payload = _report(root)
+    payload["schemaVersion"] = True  # bool would masquerade as 1
+    _write_report(root, payload)
+    with pytest.raises(GenerationError) as caught:
+        plan_project_configuration(load_project_model(root))
+    assert caught.value.code == "GENERATION_FIXED_SECTION_INVALID"
+    assert caught.value.details["rule"] == "schemaVersion"
 
 
 def test_schema1_report_remains_strict_about_git_head(tmp_path: Path) -> None:
     root = _delivered(tmp_path)
     payload = _report(root)
+    # Schema 1 keeps its original explicit planId contract; the schema-2
+    # content identity is ignored historical data there.
+    payload["planId"] = payload["contentId"]
     payload["schemaVersion"] = 1
     payload["gitHead"] = "0" * 40
     _write_report(root, payload)
@@ -677,6 +979,53 @@ def test_unknown_report_schema_is_rejected(tmp_path: Path) -> None:
         plan_project_configuration(load_project_model(root))
     assert caught.value.code == "GENERATION_FIXED_SECTION_INVALID"
     assert caught.value.details["rule"] == "schemaVersion"
+
+
+def test_post_migration_extra_region_adjustment_is_allowed(tmp_path: Path) -> None:
+    # The report's migration-time extra region is historical evidence.  A
+    # later legitimate owner adjustment to the manifest memory must configure
+    # without rewriting the historical report or its digests.
+    root = _delivered(tmp_path)
+
+    def add_owner_ram(payload: dict) -> None:
+        payload["memory"]["extraRegions"] = [
+            {
+                "name": "EXT_SRAM",
+                "origin": 0x68000000,
+                "length": 0x10000,
+                "attributes": "rw-",
+            }
+        ]
+        payload["memory"]["layout"] = {
+            "flash": "IROM1",
+            "data": "IRAM1",
+            "bss": "IRAM1",
+            "heap": "IRAM1",
+            "stack": "IRAM1",
+        }
+
+    edit_manifest(root, add_owner_ram)
+    configuration = plan_project_configuration(load_project_model(root))
+    assert configuration.blockers == ()
+    assert "EXT_SRAM" in configuration.model.memory.extra_region_names
+
+
+def test_current_fixed_section_layout_must_contain_sections(tmp_path: Path) -> None:
+    # Current validated memory remains authoritative for fixed-section
+    # containment even though the historical report is unchanged.
+    root = _delivered(tmp_path)
+
+    def move_ram(payload: dict) -> None:
+        for region in payload["memory"]["regions"]:
+            if region["name"] == "IRAM1":
+                region["origin"] = 0x20010000
+                region["length"] = 0x1000
+
+    edit_manifest(root, move_ram)
+    with pytest.raises(GenerationError) as caught:
+        plan_project_configuration(load_project_model(root))
+    assert caught.value.code == "GENERATION_FIXED_SECTION_INVALID"
+    assert caught.value.details["rule"] == "region"
 
 
 def test_render_seam_matches_normal_configure_bytes(tmp_path: Path) -> None:

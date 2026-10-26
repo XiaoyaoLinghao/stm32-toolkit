@@ -393,8 +393,12 @@ def render_new_project_configuration(
     owns the destination, and the destination is required to be empty, so no
     prior managed manifest or current target is consulted.  The candidate
     manifest and optional conversion report are validated exactly as the
-    normal configure route validates the files it reads; nothing is read from
-    ``root`` except the packaged templates and nothing is written.
+    normal configure route validates the files it reads.  Validation performs
+    the same bounded reads the shared model loader normally performs for
+    declared project-relative paths (for example an explicit
+    ``generation.linkerFragment``); packaged templates are loaded through
+    ``importlib.resources``.  Nothing is written, and no destination state is
+    read or created.
 
     ``root`` must be an existing directory for the shared containment rules.
     The returned model hash and rendered bytes are independent of that host
@@ -1018,8 +1022,15 @@ def _validate_fixed_sections(
         return ()
     path = _CONVERSION_REPORT_PATH
     schema_version = report.get("schemaVersion")
+    if type(schema_version) is not int:
+        raise _raise_error(
+            "GENERATION_FIXED_SECTION_INVALID",
+            "conversion report schema is not supported",
+            {"path": path, "rule": "schemaVersion"},
+        )
     if schema_version == 1:
-        # Schema 1 stays exactly as before: an explicit Git HEAD is required.
+        # Schema 1 stays exactly as before: an explicit Git HEAD and the
+        # historical final plan ID are required.
         if sha256_error(report.get("planId")) is not None:
             raise _raise_error(
                 "GENERATION_FIXED_SECTION_INVALID",
@@ -1035,14 +1046,25 @@ def _validate_fixed_sections(
                 {"path": path, "rule": "gitHead"},
             )
     elif schema_version == 2:
-        # Schema 2 identifies the source by content snapshot, never by Git.
-        # Git evidence may be attached as optional metadata but is not required
-        # and is never inferred.
-        if sha256_error(report.get("planId")) is not None:
+        # Schema 2 identifies the source and delivery content by snapshot and
+        # content digest, never by Git and never by a final plan ID.  The
+        # final delivery plan additionally hashes every published byte,
+        # including this report, so the report cannot contain that final ID.
+        # A document claiming version 2 without the mandatory content identity
+        # is not a supported schema-2 document at all (the historical
+        # planId/gitHead shape is a different schema).  Git evidence may be
+        # attached as optional metadata but is not required or inferred.
+        if "contentId" not in report:
             raise _raise_error(
                 "GENERATION_FIXED_SECTION_INVALID",
-                "conversion report plan id is invalid",
-                {"path": path, "rule": "planId"},
+                "conversion report schema is not supported",
+                {"path": path, "rule": "schemaVersion"},
+            )
+        if sha256_error(report.get("contentId")) is not None:
+            raise _raise_error(
+                "GENERATION_FIXED_SECTION_INVALID",
+                "conversion report content id is invalid",
+                {"path": path, "rule": "contentId"},
             )
         if sha256_error(report.get("sourceSnapshotSha256")) is not None:
             raise _raise_error(
@@ -1059,7 +1081,7 @@ def _validate_fixed_sections(
                 "conversion report git head is invalid",
                 {"path": path, "rule": "gitHead"},
             )
-        _validate_report_extra_regions(report, model)
+        _validate_report_extra_regions_shape(report)
     else:
         raise _raise_error(
             "GENERATION_FIXED_SECTION_INVALID",
@@ -1163,30 +1185,18 @@ def _validate_fixed_sections(
     return tuple(result)
 
 
-def _validate_report_extra_regions(
-    report: dict[str, object], model: ProjectModel
-) -> None:
-    """Require Schema 2 extra-region evidence to match the explicit model memory.
+def _validate_report_extra_regions_shape(report: dict[str, object]) -> None:
+    """Validate the Schema 2 historical extra-region evidence shape only.
 
-    The model's ``memory.regions`` already contains the normalized base-plus-
-    extra map, so fixed sections are checked against the same regions configure
-    renders.  This adds the provenance check: the report cannot omit, add, or
-    silently alter an explicit extra region.
+    ``extraRegions`` records the migration-time decision.  It is historical
+    evidence, not a permanent lock on the current project memory: the user may
+    legitimately adjust the manifest regions after migration.  Fixed-section
+    containment is still checked against the current validated model in
+    :func:`_validate_fixed_sections`, which is the authoritative memory map.
     """
     path = _CONVERSION_REPORT_PATH
-    expected = {
-        region.name: (region.origin, region.length, region.attributes)
-        for region in model.memory.regions
-        if region.name in model.memory.extra_region_names
-    }
     value = report.get("extraRegions")
     if value is None:
-        if expected:
-            raise _raise_error(
-                "GENERATION_FIXED_SECTION_INVALID",
-                "conversion report omits explicit extra regions",
-                {"path": path, "rule": "extraRegions"},
-            )
         return
     if not isinstance(value, list):
         raise _raise_error(
@@ -1194,7 +1204,7 @@ def _validate_report_extra_regions(
             "conversion report extraRegions is invalid",
             {"path": path, "rule": "extraRegions"},
         )
-    seen: dict[str, tuple[int, int, str]] = {}
+    seen: set[str] = set()
     for item in value:
         if not isinstance(item, dict) or set(item) != {
             "name",
@@ -1213,10 +1223,11 @@ def _validate_report_extra_regions(
         attributes = item["attributes"]
         if (
             not isinstance(name, str)
-            or isinstance(origin, bool)
-            or not isinstance(origin, int)
-            or isinstance(length, bool)
-            or not isinstance(length, int)
+            or not name
+            or type(origin) is not int
+            or type(length) is not int
+            or origin < 0
+            or length < 1
             or not isinstance(attributes, str)
             or name in seen
         ):
@@ -1225,13 +1236,7 @@ def _validate_report_extra_regions(
                 "conversion report extra region entry is invalid",
                 {"path": path, "rule": "extraRegions"},
             )
-        seen[name] = (origin, length, attributes)
-    if seen != expected:
-        raise _raise_error(
-            "GENERATION_FIXED_SECTION_INVALID",
-            "conversion report extra regions do not match the project memory",
-            {"path": path, "rule": "extraRegions"},
-        )
+        seen.add(name)
 
 
 def _region_for_address(model: ProjectModel, address: int) -> str | None:
