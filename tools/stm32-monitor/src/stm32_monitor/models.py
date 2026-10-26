@@ -13,6 +13,10 @@ from typing import Mapping, cast
 from uuid import UUID, uuid4
 
 from stm32_toolkit.paths import require_safe_session_id
+from stm32_toolkit.source_provenance import (
+    SOURCE_BASELINE_INPUT_SNAPSHOT,
+    unavailable_git_evidence,
+)
 
 
 MAX_SELECTOR_CHARS = 512
@@ -40,6 +44,40 @@ _UTC_TIMESTAMP = re.compile(
 _MAPPING_PROXY = type(MappingProxyType({}))
 _TRUSTED_HISTORY_SLICE = object()
 _TRUSTED_HISTORY_SIZE = object()
+
+_FIRMWARE_STATUS_FIELDS = frozenset(
+    {
+        "buildId",
+        "elfSha256",
+        "inputSnapshotSha256",
+        "gitHead",
+        "gitDirty",
+        "targetDevice",
+    }
+)
+_OBSERVATION_BINDING_FIELDS = frozenset(
+    {
+        "workspaceId",
+        "logicalProjectId",
+        "sessionId",
+        "probeId",
+        "targetDevice",
+        "physicalTarget",
+        "buildId",
+        "elfSha256",
+        "inputSnapshotSha256",
+        "gitHead",
+        "gitDirty",
+        "flashSessionId",
+        "leaseId",
+        "dwarfSha256",
+        "svdSha256",
+    }
+)
+#: The wire keys that only exist for the snapshot provenance form.  Their
+#: presence alone selects that form, so a present-null pair is never mistaken
+#: for a legacy record by applying defaults.
+_PROVENANCE_FIELDS = frozenset({"sourceBaseline", "gitEvidence"})
 
 
 def _freeze_json(value: object) -> object:
@@ -235,24 +273,74 @@ class FirmwareStatus:
     build_id: str
     elf_sha256: str
     input_snapshot_sha256: str
-    git_head: str
-    git_dirty: bool
+    git_head: str | None
+    git_dirty: bool | None
     target_device: str
+    source_baseline: str | None = None
+    git_evidence: Mapping[str, str] | None = None
 
     def __post_init__(self) -> None:
         for name in ("build_id", "elf_sha256", "input_snapshot_sha256"):
             object.__setattr__(self, name, _require_sha256(getattr(self, name), name))
-        if not isinstance(self.git_head, str) or _GIT_SHA.fullmatch(self.git_head.lower()) is None:
-            raise ValueError("Git HEAD is invalid")
-        object.__setattr__(self, "git_head", self.git_head.lower())
-        if type(self.git_dirty) is not bool:
-            raise ValueError("Git dirty state is invalid")
+        if self.source_baseline is None and self.git_evidence is None:
+            # The legacy Git form keeps its accepted case behavior exactly.
+            if (
+                not isinstance(self.git_head, str)
+                or _GIT_SHA.fullmatch(self.git_head.lower()) is None
+            ):
+                raise ValueError("Git HEAD is invalid")
+            object.__setattr__(self, "git_head", self.git_head.lower())
+            if type(self.git_dirty) is not bool:
+                raise ValueError("Git dirty state is invalid")
+        else:
+            if self.source_baseline != SOURCE_BASELINE_INPUT_SNAPSHOT:
+                raise ValueError("source baseline is invalid")
+            if self.git_evidence is None:
+                raise ValueError("snapshot firmware status requires unavailable Git evidence")
+            if self.git_head is not None or self.git_dirty is not None:
+                raise ValueError("snapshot firmware status requires null Git fields")
+            object.__setattr__(
+                self,
+                "git_evidence",
+                MappingProxyType(unavailable_git_evidence(self.git_evidence)),
+            )
         object.__setattr__(
             self, "target_device", _require_text(self.target_device, "target device", 128)
         )
 
+    @classmethod
+    def from_dict(cls, value: Mapping[str, object]) -> "FirmwareStatus":
+        if not isinstance(value, Mapping):
+            raise ValueError("firmware status is invalid")
+        keys = set(value)
+        if keys == _FIRMWARE_STATUS_FIELDS:
+            return cls(
+                build_id=cast(str, value["buildId"]),
+                elf_sha256=cast(str, value["elfSha256"]),
+                input_snapshot_sha256=cast(str, value["inputSnapshotSha256"]),
+                git_head=cast(str | None, value["gitHead"]),
+                git_dirty=cast(bool | None, value["gitDirty"]),
+                target_device=cast(str, value["targetDevice"]),
+            )
+        if keys != _FIRMWARE_STATUS_FIELDS | _PROVENANCE_FIELDS:
+            raise ValueError("firmware status is invalid")
+        source_baseline = value["sourceBaseline"]
+        git_evidence = value["gitEvidence"]
+        if source_baseline is None or git_evidence is None:
+            raise ValueError("firmware status provenance is invalid")
+        return cls(
+            build_id=cast(str, value["buildId"]),
+            elf_sha256=cast(str, value["elfSha256"]),
+            input_snapshot_sha256=cast(str, value["inputSnapshotSha256"]),
+            git_head=cast(str | None, value["gitHead"]),
+            git_dirty=cast(bool | None, value["gitDirty"]),
+            target_device=cast(str, value["targetDevice"]),
+            source_baseline=cast(str, source_baseline),
+            git_evidence=cast(Mapping[str, str], git_evidence),
+        )
+
     def to_dict(self) -> dict[str, object]:
-        return {
+        result: dict[str, object] = {
             "buildId": self.build_id,
             "elfSha256": self.elf_sha256,
             "inputSnapshotSha256": self.input_snapshot_sha256,
@@ -260,6 +348,12 @@ class FirmwareStatus:
             "gitDirty": self.git_dirty,
             "targetDevice": self.target_device,
         }
+        # Only the snapshot form adds wire keys; legacy records serialize to
+        # exactly their previous fields and canonical bytes.
+        if self.source_baseline is not None:
+            result["sourceBaseline"] = self.source_baseline
+            result["gitEvidence"] = dict(cast(Mapping[str, str], self.git_evidence))
+        return result
 
 
 @dataclass(frozen=True, slots=True)
@@ -456,12 +550,14 @@ class ObservationBinding:
     build_id: str
     elf_sha256: str
     input_snapshot_sha256: str
-    git_head: str
-    git_dirty: bool
+    git_head: str | None
+    git_dirty: bool | None
     flash_session_id: str
     lease_id: str
     dwarf_sha256: str
     svd_sha256: str | None
+    source_baseline: str | None = None
+    git_evidence: Mapping[str, str] | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.workspace_id, str) or _WORKSPACE_ID.fullmatch(self.workspace_id) is None:
@@ -474,20 +570,46 @@ class ObservationBinding:
             object.__setattr__(self, field_name, _require_sha256(getattr(self, field_name), field_name))
         if self.svd_sha256 is not None:
             object.__setattr__(self, "svd_sha256", _require_sha256(self.svd_sha256, "SVD digest"))
-        if not isinstance(self.git_head, str) or _GIT_SHA.fullmatch(self.git_head.lower()) is None:
-            raise ValueError("Git HEAD is invalid")
-        if type(self.git_dirty) is not bool:
-            raise ValueError("Git dirty state is invalid")
+        if self.source_baseline is None and self.git_evidence is None:
+            # The legacy Git form validates but preserves its accepted casing.
+            if (
+                not isinstance(self.git_head, str)
+                or _GIT_SHA.fullmatch(self.git_head.lower()) is None
+            ):
+                raise ValueError("Git HEAD is invalid")
+            if type(self.git_dirty) is not bool:
+                raise ValueError("Git dirty state is invalid")
+            return
+        if self.source_baseline != SOURCE_BASELINE_INPUT_SNAPSHOT:
+            raise ValueError("source baseline is invalid")
+        if self.git_evidence is None:
+            raise ValueError("snapshot binding requires unavailable Git evidence")
+        if self.git_head is not None or self.git_dirty is not None:
+            raise ValueError("snapshot binding requires null Git fields")
+        object.__setattr__(
+            self,
+            "git_evidence",
+            MappingProxyType(unavailable_git_evidence(self.git_evidence)),
+        )
 
     @classmethod
     def from_dict(cls, value: Mapping[str, object]) -> "ObservationBinding":
-        expected = {
-            "workspaceId", "logicalProjectId", "sessionId", "probeId", "targetDevice",
-            "physicalTarget", "buildId", "elfSha256", "inputSnapshotSha256", "gitHead",
-            "gitDirty", "flashSessionId", "leaseId", "dwarfSha256", "svdSha256",
-        }
-        if set(value) != expected:
+        if not isinstance(value, Mapping):
             raise ValueError("observation binding is invalid")
+        keys = set(value)
+        if keys not in (
+            _OBSERVATION_BINDING_FIELDS,
+            _OBSERVATION_BINDING_FIELDS | _PROVENANCE_FIELDS,
+        ):
+            raise ValueError("observation binding is invalid")
+        snapshot = keys != _OBSERVATION_BINDING_FIELDS
+        source_baseline: object = None
+        git_evidence: object = None
+        if snapshot:
+            source_baseline = value["sourceBaseline"]
+            git_evidence = value["gitEvidence"]
+            if source_baseline is None or git_evidence is None:
+                raise ValueError("observation binding provenance is invalid")
         return cls(
             workspace_id=cast(str, value["workspaceId"]),
             logical_project_id=cast(str, value["logicalProjectId"]),
@@ -498,16 +620,18 @@ class ObservationBinding:
             build_id=cast(str, value["buildId"]),
             elf_sha256=cast(str, value["elfSha256"]),
             input_snapshot_sha256=cast(str, value["inputSnapshotSha256"]),
-            git_head=cast(str, value["gitHead"]),
-            git_dirty=cast(bool, value["gitDirty"]),
+            git_head=cast(str | None, value["gitHead"]),
+            git_dirty=cast(bool | None, value["gitDirty"]),
             flash_session_id=cast(str, value["flashSessionId"]),
             lease_id=cast(str, value["leaseId"]),
             dwarf_sha256=cast(str, value["dwarfSha256"]),
             svd_sha256=cast(str | None, value["svdSha256"]),
+            source_baseline=cast(str | None, source_baseline),
+            git_evidence=cast(Mapping[str, str] | None, git_evidence),
         )
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        result: dict[str, object] = {
             "workspaceId": self.workspace_id,
             "logicalProjectId": self.logical_project_id,
             "sessionId": self.session_id,
@@ -524,6 +648,12 @@ class ObservationBinding:
             "dwarfSha256": self.dwarf_sha256,
             "svdSha256": self.svd_sha256,
         }
+        # Only the snapshot form adds wire keys; legacy records serialize to
+        # exactly their previous fields and canonical bytes.
+        if self.source_baseline is not None:
+            result["sourceBaseline"] = self.source_baseline
+            result["gitEvidence"] = dict(cast(Mapping[str, str], self.git_evidence))
+        return result
 
 
 @dataclass(frozen=True, slots=True)
@@ -689,19 +819,9 @@ def _validate_live_status(value: object) -> None:
     _live_text(project["targetDevice"], "target device")
     firmware = status["firmware"]
     if firmware is not None:
-        document = _live_mapping(
-            firmware,
-            {"buildId", "elfSha256", "inputSnapshotSha256", "gitHead", "gitDirty", "targetDevice"},
-            "firmware status",
-        )
-        FirmwareStatus(
-            cast(str, document["buildId"]),
-            cast(str, document["elfSha256"]),
-            cast(str, document["inputSnapshotSha256"]),
-            cast(str, document["gitHead"]),
-            cast(bool, document["gitDirty"]),
-            cast(str, document["targetDevice"]),
-        )
+        if type(firmware) not in (dict, _MAPPING_PROXY):
+            raise ValueError("firmware status is invalid")
+        FirmwareStatus.from_dict(cast(Mapping[str, object], firmware))
     probe = _live_mapping(status["probe"], {"connected", "probeId"}, "probe status")
     if type(probe["connected"]) is not bool:
         raise ValueError("probe status is invalid")
@@ -760,17 +880,10 @@ def _validate_live_batch(value: object) -> None:
         },
         "live sample batch",
     )
-    ObservationBinding.from_dict(
-        _live_mapping(
-            batch["binding"],
-            {
-                "workspaceId", "logicalProjectId", "sessionId", "probeId", "targetDevice",
-                "physicalTarget", "buildId", "elfSha256", "inputSnapshotSha256", "gitHead",
-                "gitDirty", "flashSessionId", "leaseId", "dwarfSha256", "svdSha256",
-            },
-            "sample binding",
-        )
-    )
+    binding_value = batch["binding"]
+    if type(binding_value) not in (dict, _MAPPING_PROXY):
+        raise ValueError("sample binding is invalid")
+    ObservationBinding.from_dict(cast(Mapping[str, object], binding_value))
     UUID(_live_text(batch["groupId"], "group ID"))
     UUID(_live_text(batch["runId"], "run ID"))
     _live_count(batch["groupRevision"], "group revision", positive=True)

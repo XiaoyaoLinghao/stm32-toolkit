@@ -15,7 +15,9 @@ export function IdentityBar({project,firmware,onCopy}:IdentityBarProps):JSX.Elem
     <p>{copy.logicalProject}<code>{project.logicalProjectId}</code> · {copy.targetDevice}<code>{project.targetDevice}</code></p>
     {firmware===null
       ?<p>{copy.noFirmware}</p>
-      :<p>{copy.firmwareBuild}<code>{firmware.buildId}</code> · {copy.elfLabel}<code>{firmware.elfSha256}</code> · {copy.gitLabel}{firmware.gitDirty?copy.gitDirty:firmware.gitHead} · {firmware.targetDevice}</p>}
+      :firmware.gitHead===null
+        ?<p>{copy.firmwareBuild}<code>{firmware.buildId}</code> · {copy.elfLabel}<code>{firmware.elfSha256}</code> · {copy.inputSnapshotLabel}<code>{firmware.inputSnapshotSha256}</code> · {copy.gitUnavailable} · {firmware.targetDevice}</p>
+        :<p>{copy.firmwareBuild}<code>{firmware.buildId}</code> · {copy.elfLabel}<code>{firmware.elfSha256}</code> · {copy.gitLabel}{firmware.gitDirty?copy.gitDirty:firmware.gitHead} · {firmware.targetDevice}</p>}
     <button type="button" onClick={()=>void onCopy()}>{copy.copyIdentity}</button>
   </section>;
 }

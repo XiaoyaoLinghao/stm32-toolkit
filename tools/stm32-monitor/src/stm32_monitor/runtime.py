@@ -421,19 +421,24 @@ def _probe_connect_request(payload: Mapping[str, object], request_type):
 
 
 def _firmware_status(project_root: Path):
-    from stm32_toolkit.probe.flash import _load_fresh_firmware
+    from stm32_toolkit.probe.flash import load_fresh_firmware_facts
 
     from .models import FirmwareStatus
 
-    current = _load_fresh_firmware(project_root)
-    identity = current.identity
+    # The admitted facts already carry exactly one closed provenance form:
+    # either a real Git pair or explicit nulls plus the snapshot discriminator
+    # and bounded unavailable-Git evidence.  Forward them unchanged so a
+    # missing commit is never stringified or reported as a clean tree.
+    facts = load_fresh_firmware_facts(project_root)
     return FirmwareStatus(
-        str(identity["buildId"]),
-        str(identity["elfSha256"]),
-        str(identity["inputSnapshotSha256"]),
-        str(identity["gitHead"]),
-        identity["gitDirty"],
-        str(identity["targetDevice"]),
+        build_id=facts.build_id,
+        elf_sha256=facts.elf_sha256,
+        input_snapshot_sha256=facts.input_snapshot_sha256,
+        git_head=facts.git_commit,
+        git_dirty=facts.git_dirty,
+        target_device=facts.target_device,
+        source_baseline=facts.source_baseline,
+        git_evidence=facts.git_evidence,
     )
 
 

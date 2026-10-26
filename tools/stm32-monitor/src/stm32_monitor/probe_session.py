@@ -20,6 +20,23 @@ _BLOCKING_CODES = {
     "SVD_SELECTION_REQUIRED",
 }
 
+#: Firmware-specific fields of the admitted source/firmware identity.  A change
+#: in any of them, including either snapshot provenance field, is classified as
+#: ``MONITOR_FIRMWARE_CHANGED``; other binding changes are classified as
+#: ``MONITOR_PROVENANCE_CHANGED``.  Both invalidate dependent state before the
+#: next read.  ``dwarf_sha256``/``svd_sha256`` are deliberately excluded: they
+#: are catalog provenance, not source identity.
+_FIRMWARE_IDENTITY_FIELDS = (
+    "build_id",
+    "elf_sha256",
+    "input_snapshot_sha256",
+    "git_head",
+    "git_dirty",
+    "source_baseline",
+    "git_evidence",
+    "flash_session_id",
+)
+
 
 @dataclass(frozen=True)
 class ProbeReadOutcome:
@@ -69,6 +86,7 @@ def _map_binding(observation: object, raw: object) -> ObservationBinding:
     dwarf_sha256 = getattr(catalog, "elf_sha256", None)
     svd = getattr(observation, "svd", None)
     svd_sha256 = None if svd is None else getattr(svd, "sha256", None)
+    evidence = raw.git_evidence
     return ObservationBinding(
         workspace_id=raw.workspace_id,
         logical_project_id=raw.logical_project_id,
@@ -85,6 +103,8 @@ def _map_binding(observation: object, raw: object) -> ObservationBinding:
         lease_id=raw.lease_id,
         dwarf_sha256=dwarf_sha256,
         svd_sha256=svd_sha256,
+        source_baseline=raw.source_baseline,
+        git_evidence=None if evidence is None else dict(evidence),
     )
 
 
@@ -379,12 +399,12 @@ class ProbeSession:
             invalidate_failed_revalidation()
             return failure(operation, "MONITOR_PROVENANCE_CHANGED", "Monitor observation changed")
         if current != self.binding:
-            firmware_fields = (
-                "build_id", "elf_sha256", "input_snapshot_sha256", "git_head", "git_dirty", "flash_session_id",
-            )
             code = (
                 "MONITOR_FIRMWARE_CHANGED"
-                if any(getattr(current, field) != getattr(self.binding, field) for field in firmware_fields)
+                if any(
+                    getattr(current, field) != getattr(self.binding, field)
+                    for field in _FIRMWARE_IDENTITY_FIELDS
+                )
                 else "MONITOR_PROVENANCE_CHANGED"
             )
             invalidate_failed_revalidation()
@@ -419,12 +439,12 @@ class ProbeSession:
         except (TypeError, ValueError):
             return failure(operation, "MONITOR_PROVENANCE_CHANGED", "Monitor observation changed")
         if current != self.binding:
-            firmware_fields = (
-                "build_id", "elf_sha256", "input_snapshot_sha256", "git_head", "git_dirty", "flash_session_id",
-            )
             code = (
                 "MONITOR_FIRMWARE_CHANGED"
-                if any(getattr(current, field) != getattr(self.binding, field) for field in firmware_fields)
+                if any(
+                    getattr(current, field) != getattr(self.binding, field)
+                    for field in _FIRMWARE_IDENTITY_FIELDS
+                )
                 else "MONITOR_PROVENANCE_CHANGED"
             )
             return failure(operation, code, "Monitor observation changed")

@@ -6,7 +6,10 @@ export type JsonValue=null|boolean|number|bigint|string|readonly JsonValue[]|{re
 export type ApiFailure={ok:false;code:string;message:string};
 export type ApiResult<T>={ok:true;data:T}|ApiFailure;
 export type ProjectStatus={logicalProjectId:string;name:string;targetDevice:string};
-export type FirmwareStatus={buildId:string;elfSha256:string;inputSnapshotSha256:string;gitHead:string;gitDirty:boolean;targetDevice:string};
+export type GitEvidenceUnavailable=Readonly<{status:"unavailable";code:"BUILD_GIT_INVALID";rule:"head"|"status"}>;
+export type SnapshotProvenance=Readonly<{sourceBaseline:"input-snapshot-v1";gitEvidence:GitEvidenceUnavailable}>;
+type FirmwareIdentity={buildId:string;elfSha256:string;inputSnapshotSha256:string;targetDevice:string};
+export type FirmwareStatus=(FirmwareIdentity&{gitHead:string;gitDirty:boolean})|(FirmwareIdentity&{gitHead:null;gitDirty:null}&SnapshotProvenance);
 export type SamplingStatus={state:"IDLE"|"STARTING"|"RUNNING"|"PAUSED"|"PAUSED_BLOCKED"|"STOPPING";active:boolean;blockedCode:string|null;groupId:string|null;groupRevision:I64|null;runId:string|null;lastSequence:I64|null;bindingEpoch:I64;subscriberDrops:I64;historyDrops:I64;deadlineDrops:I64;serviceDrops:I64};
 export type MonitorStatus={workspaceId:string;sessionId:string;project:ProjectStatus;firmware:FirmwareStatus|null;probe:{connected:boolean;probeId:string|null};sampling:SamplingStatus;probeConnected:boolean;samplingActive:boolean};
 export type ProbeInfo={probeId:string;vendor:string;product:string;boardName:string|null};
@@ -33,8 +36,10 @@ export type GroupPage={groups:readonly WatchGroup[];nextCursor:string|null;revis
 export type GroupTransfer={name:string;description:string;intervalMs:number;items:readonly WatchItem[]};
 export type GroupImportDocument={schemaVersion:1;groups:readonly GroupTransfer[]};
 export type MemoryRegionBinding={name:string;origin:number;length:number;attributes:string};
-export type DebugFirmwareBinding={logicalProjectId:string;workspaceId:string;observationSessionId:string;flashSessionId:string;leaseId:string;probeId:string;targetDevice:string;debugTarget:string;buildId:string;elfSha256:string;elfSize:number;elfPath:string;inputSnapshotSha256:string;gitHead:string;gitDirty:boolean;confirmedAtUtc:string;memoryRegions:readonly MemoryRegionBinding[];svdReadableRegions:readonly MemoryRegionBinding[]};
-export type ObservationBinding={workspaceId:string;logicalProjectId:string;sessionId:string;probeId:string;targetDevice:string;physicalTarget:string;buildId:string;elfSha256:string;inputSnapshotSha256:string;gitHead:string;gitDirty:boolean;flashSessionId:string;leaseId:string;dwarfSha256:string;svdSha256:string|null};
+type DebugFirmwareBindingIdentity={logicalProjectId:string;workspaceId:string;observationSessionId:string;flashSessionId:string;leaseId:string;probeId:string;targetDevice:string;debugTarget:string;buildId:string;elfSha256:string;elfSize:number;elfPath:string;inputSnapshotSha256:string;confirmedAtUtc:string;memoryRegions:readonly MemoryRegionBinding[];svdReadableRegions:readonly MemoryRegionBinding[]};
+export type DebugFirmwareBinding=(DebugFirmwareBindingIdentity&{gitHead:string;gitDirty:boolean})|(DebugFirmwareBindingIdentity&{gitHead:null;gitDirty:null}&SnapshotProvenance);
+type ObservationBindingIdentity={workspaceId:string;logicalProjectId:string;sessionId:string;probeId:string;targetDevice:string;physicalTarget:string;buildId:string;elfSha256:string;inputSnapshotSha256:string;flashSessionId:string;leaseId:string;dwarfSha256:string;svdSha256:string|null};
+export type ObservationBinding=(ObservationBindingIdentity&{gitHead:string;gitDirty:boolean})|(ObservationBindingIdentity&{gitHead:null;gitDirty:null}&SnapshotProvenance);
 export type KnownTypedValue={expression:string;typeName:string;value:JsonValue;rawHex:string;bitWidth:number};
 export type SampleValue={watch:WatchItem;status:"OK";typedValue:JsonValue;code:null;definition:Readonly<Record<string,JsonValue>>|null}|{watch:WatchItem;status:"ERROR";typedValue:null;code:string;definition:Readonly<Record<string,JsonValue>>|null};
 export type SampleBatch={binding:ObservationBinding;groupId:string;groupRevision:I64;runId:string;sequence:I64;scheduledUnixNs:I64;scheduledAtUtc:string;capturedUnixNs:I64;capturedAtUtc:string;latencyNs:I64;actualRateHz:number;subscriberDrops:I64;historyDrops:I64;deadlineDrops:I64;values:readonly SampleValue[]};
@@ -82,7 +87,29 @@ const jsonValueGuard=(value:unknown):JsonValue=>{if(value===null||typeof value==
 const jsonRecordGuard=(value:unknown):Readonly<Record<string,JsonValue>>=>{const record=object(value),result=nullRecord();for(const [key,item] of Object.entries(record))result[key]=jsonValueGuard(item);return result;};
 
 export const projectStatusGuard:DataGuard<ProjectStatus>=(value)=>{const v=object(value);exact(v,["logicalProjectId","name","targetDevice"]);return{logicalProjectId:string(v.logicalProjectId),name:string(v.name),targetDevice:string(v.targetDevice)};};
-export const firmwareStatusGuard:DataGuard<FirmwareStatus>=(value)=>{const v=object(value);exact(v,["buildId","elfSha256","inputSnapshotSha256","gitHead","gitDirty","targetDevice"]);return{buildId:string(v.buildId),elfSha256:string(v.elfSha256),inputSnapshotSha256:string(v.inputSnapshotSha256),gitHead:string(v.gitHead),gitDirty:boolean(v.gitDirty),targetDevice:string(v.targetDevice)};};
+const gitEvidenceGuard:DataGuard<GitEvidenceUnavailable>=(value)=>{
+  const v=object(value);exact(v,["status","code","rule"]);
+  literal("unavailable")(v.status);literal("BUILD_GIT_INVALID")(v.code);
+  return{status:"unavailable",code:"BUILD_GIT_INVALID",rule:enumValue(["head","status"],v.rule)};
+};
+const sourceBaselineGuard=(value:unknown):"input-snapshot-v1"=>literal("input-snapshot-v1")(value);
+const snapshotProvenance=(v:RecordValue):boolean=>{
+  const baseline=Object.hasOwn(v,"sourceBaseline"),evidence=Object.hasOwn(v,"gitEvidence");
+  if(baseline!==evidence)throw new Error("partial provenance pair");
+  return baseline;
+};
+const snapshotGit=():{gitHead:null;gitDirty:null}=>({gitHead:null,gitDirty:null});
+const requireNullGit=(v:RecordValue)=>{if(v.gitHead!==null||v.gitDirty!==null)throw new Error("mixed provenance form");};
+export const firmwareStatusGuard:DataGuard<FirmwareStatus>=(value)=>{
+  const v=object(value),snapshot=snapshotProvenance(v);
+  if(!snapshot){
+    exact(v,["buildId","elfSha256","inputSnapshotSha256","gitHead","gitDirty","targetDevice"]);
+    return{buildId:string(v.buildId),elfSha256:string(v.elfSha256),inputSnapshotSha256:string(v.inputSnapshotSha256),gitHead:string(v.gitHead),gitDirty:boolean(v.gitDirty),targetDevice:string(v.targetDevice)};
+  }
+  exact(v,["buildId","elfSha256","inputSnapshotSha256","gitHead","gitDirty","targetDevice","sourceBaseline","gitEvidence"]);
+  requireNullGit(v);
+  return{...snapshotGit(),buildId:string(v.buildId),elfSha256:string(v.elfSha256),inputSnapshotSha256:string(v.inputSnapshotSha256),targetDevice:string(v.targetDevice),sourceBaseline:sourceBaselineGuard(v.sourceBaseline),gitEvidence:gitEvidenceGuard(v.gitEvidence)};
+};
 export const samplingStatusGuard:DataGuard<SamplingStatus>=(value)=>{const v=object(value);exact(v,["state","active","blockedCode","groupId","groupRevision","runId","lastSequence","bindingEpoch","subscriberDrops","historyDrops","deadlineDrops","serviceDrops"]);return{state:enumValue(["IDLE","STARTING","RUNNING","PAUSED","PAUSED_BLOCKED","STOPPING"],v.state),active:boolean(v.active),blockedCode:nullable(v.blockedCode,string),groupId:nullable(v.groupId,string),groupRevision:nullable(v.groupRevision,i64),runId:nullable(v.runId,string),lastSequence:nullable(v.lastSequence,i64),bindingEpoch:i64(v.bindingEpoch),subscriberDrops:i64(v.subscriberDrops),historyDrops:i64(v.historyDrops),deadlineDrops:i64(v.deadlineDrops),serviceDrops:i64(v.serviceDrops)};};
 export const monitorStatusGuard:DataGuard<MonitorStatus>=(value)=>{const v=object(value);exact(v,["workspaceId","sessionId","project","firmware","probe","sampling","probeConnected","samplingActive"]);const p=object(v.probe);exact(p,["connected","probeId"]);return{workspaceId:string(v.workspaceId),sessionId:string(v.sessionId),project:projectStatusGuard(v.project),firmware:nullable(v.firmware,firmwareStatusGuard),probe:{connected:boolean(p.connected),probeId:nullable(p.probeId,string)},sampling:samplingStatusGuard(v.sampling),probeConnected:boolean(v.probeConnected),samplingActive:boolean(v.samplingActive)};};
 export const probeInfoGuard:DataGuard<ProbeInfo>=(value)=>{const v=object(value);exact(v,["probeId","vendor","product","boardName"]);return{probeId:string(v.probeId),vendor:string(v.vendor),product:string(v.product),boardName:nullable(v.boardName,string)};};
@@ -178,13 +205,23 @@ export const groupTransferGuard:DataGuard<GroupTransfer>=(value)=>{const v=objec
 export const groupImportGuard:DataGuard<GroupImportDocument>=(value)=>{const v=object(value);exact(v,["schemaVersion","groups"]);return{schemaVersion:literal(1)(v.schemaVersion),groups:array(v.groups,groupTransferGuard)};};
 export const memoryRegionBindingGuard:DataGuard<MemoryRegionBinding>=(value)=>{const v=object(value);exact(v,["name","origin","length","attributes"]);return{name:string(v.name),origin:boundedInteger(v.origin),length:boundedInteger(v.length),attributes:string(v.attributes)};};
 export const debugFirmwareBindingGuard:DataGuard<DebugFirmwareBinding>=(value)=>{
-  const v=object(value);
-  exact(v,["logicalProjectId","workspaceId","observationSessionId","flashSessionId","leaseId","probeId","targetDevice","debugTarget","buildId","elfSha256","elfSize","elfPath","inputSnapshotSha256","gitHead","gitDirty","confirmedAtUtc","memoryRegions","svdReadableRegions"]);
+  const v=object(value),snapshot=snapshotProvenance(v);
+  exact(v,["logicalProjectId","workspaceId","observationSessionId","flashSessionId","leaseId","probeId","targetDevice","debugTarget","buildId","elfSha256","elfSize","elfPath","inputSnapshotSha256","gitHead","gitDirty","confirmedAtUtc","memoryRegions","svdReadableRegions",...(snapshot?["sourceBaseline","gitEvidence"]:[])]);
   const svdReadableRegions=array(v.svdReadableRegions,memoryRegionBindingGuard);
   if(svdReadableRegions.length===0)throw new Error("expected non-empty readable regions");
-  return{logicalProjectId:string(v.logicalProjectId),workspaceId:string(v.workspaceId),observationSessionId:string(v.observationSessionId),flashSessionId:string(v.flashSessionId),leaseId:string(v.leaseId),probeId:string(v.probeId),targetDevice:string(v.targetDevice),debugTarget:string(v.debugTarget),buildId:string(v.buildId),elfSha256:string(v.elfSha256),elfSize:boundedInteger(v.elfSize),elfPath:string(v.elfPath),inputSnapshotSha256:string(v.inputSnapshotSha256),gitHead:string(v.gitHead),gitDirty:boolean(v.gitDirty),confirmedAtUtc:string(v.confirmedAtUtc),memoryRegions:array(v.memoryRegions,memoryRegionBindingGuard),svdReadableRegions};
+  const identity={logicalProjectId:string(v.logicalProjectId),workspaceId:string(v.workspaceId),observationSessionId:string(v.observationSessionId),flashSessionId:string(v.flashSessionId),leaseId:string(v.leaseId),probeId:string(v.probeId),targetDevice:string(v.targetDevice),debugTarget:string(v.debugTarget),buildId:string(v.buildId),elfSha256:string(v.elfSha256),elfSize:boundedInteger(v.elfSize),elfPath:string(v.elfPath),inputSnapshotSha256:string(v.inputSnapshotSha256),confirmedAtUtc:string(v.confirmedAtUtc),memoryRegions:array(v.memoryRegions,memoryRegionBindingGuard),svdReadableRegions};
+  if(!snapshot)return{logicalProjectId:identity.logicalProjectId,workspaceId:identity.workspaceId,observationSessionId:identity.observationSessionId,flashSessionId:identity.flashSessionId,leaseId:identity.leaseId,probeId:identity.probeId,targetDevice:identity.targetDevice,debugTarget:identity.debugTarget,buildId:identity.buildId,elfSha256:identity.elfSha256,elfSize:identity.elfSize,elfPath:identity.elfPath,inputSnapshotSha256:identity.inputSnapshotSha256,gitHead:string(v.gitHead),gitDirty:boolean(v.gitDirty),confirmedAtUtc:identity.confirmedAtUtc,memoryRegions:identity.memoryRegions,svdReadableRegions:identity.svdReadableRegions};
+  requireNullGit(v);
+  return{...identity,...snapshotGit(),sourceBaseline:sourceBaselineGuard(v.sourceBaseline),gitEvidence:gitEvidenceGuard(v.gitEvidence)};
 };
-export const observationBindingGuard:DataGuard<ObservationBinding>=(value)=>{const v=object(value);exact(v,["workspaceId","logicalProjectId","sessionId","probeId","targetDevice","physicalTarget","buildId","elfSha256","inputSnapshotSha256","gitHead","gitDirty","flashSessionId","leaseId","dwarfSha256","svdSha256"]);return{workspaceId:string(v.workspaceId),logicalProjectId:string(v.logicalProjectId),sessionId:string(v.sessionId),probeId:string(v.probeId),targetDevice:string(v.targetDevice),physicalTarget:string(v.physicalTarget),buildId:string(v.buildId),elfSha256:string(v.elfSha256),inputSnapshotSha256:string(v.inputSnapshotSha256),gitHead:string(v.gitHead),gitDirty:boolean(v.gitDirty),flashSessionId:string(v.flashSessionId),leaseId:string(v.leaseId),dwarfSha256:string(v.dwarfSha256),svdSha256:nullable(v.svdSha256,string)};};
+export const observationBindingGuard:DataGuard<ObservationBinding>=(value)=>{
+  const v=object(value),snapshot=snapshotProvenance(v);
+  exact(v,["workspaceId","logicalProjectId","sessionId","probeId","targetDevice","physicalTarget","buildId","elfSha256","inputSnapshotSha256","gitHead","gitDirty","flashSessionId","leaseId","dwarfSha256","svdSha256",...(snapshot?["sourceBaseline","gitEvidence"]:[])]);
+  const identity={workspaceId:string(v.workspaceId),logicalProjectId:string(v.logicalProjectId),sessionId:string(v.sessionId),probeId:string(v.probeId),targetDevice:string(v.targetDevice),physicalTarget:string(v.physicalTarget),buildId:string(v.buildId),elfSha256:string(v.elfSha256),inputSnapshotSha256:string(v.inputSnapshotSha256),flashSessionId:string(v.flashSessionId),leaseId:string(v.leaseId),dwarfSha256:string(v.dwarfSha256),svdSha256:nullable(v.svdSha256,string)};
+  if(!snapshot)return{workspaceId:identity.workspaceId,logicalProjectId:identity.logicalProjectId,sessionId:identity.sessionId,probeId:identity.probeId,targetDevice:identity.targetDevice,physicalTarget:identity.physicalTarget,buildId:identity.buildId,elfSha256:identity.elfSha256,inputSnapshotSha256:identity.inputSnapshotSha256,gitHead:string(v.gitHead),gitDirty:boolean(v.gitDirty),flashSessionId:identity.flashSessionId,leaseId:identity.leaseId,dwarfSha256:identity.dwarfSha256,svdSha256:identity.svdSha256};
+  requireNullGit(v);
+  return{...identity,...snapshotGit(),sourceBaseline:sourceBaselineGuard(v.sourceBaseline),gitEvidence:gitEvidenceGuard(v.gitEvidence)};
+};
 export const knownTypedValue=(value:JsonValue):KnownTypedValue|null=>{try{const v=object(value);exact(v,["expression","typeName","value","rawHex","bitWidth"]);return{expression:string(v.expression),typeName:string(v.typeName),value:jsonValueGuard(v.value),rawHex:string(v.rawHex),bitWidth:typeof v.bitWidth==="bigint"?Number(v.bitWidth):number(v.bitWidth)};}catch{return null;}};
 export const sampleValueGuard:DataGuard<SampleValue>=(value)=>{const v=object(value);exact(v,["watch","status","typedValue","code","definition"]);const definition=nullable(v.definition,jsonRecordGuard);if(v.status==="OK"){if(v.code!==null)throw new Error("OK sample has code");return{watch:watchItemGuard(v.watch),status:"OK",typedValue:jsonValueGuard(v.typedValue),code:null,definition};}if(v.status==="ERROR"){if(v.typedValue!==null)throw new Error("ERROR sample has value");return{watch:watchItemGuard(v.watch),status:"ERROR",typedValue:null,code:string(v.code),definition};}throw new Error("unknown sample status");};
 export const sampleBatchGuard:DataGuard<SampleBatch>=(value)=>{const v=object(value);exact(v,["binding","groupId","groupRevision","runId","sequence","scheduledUnixNs","scheduledAtUtc","capturedUnixNs","capturedAtUtc","latencyNs","actualRateHz","subscriberDrops","historyDrops","deadlineDrops","values"]);return{binding:observationBindingGuard(v.binding),groupId:string(v.groupId),groupRevision:i64(v.groupRevision),runId:string(v.runId),sequence:i64(v.sequence),scheduledUnixNs:i64(v.scheduledUnixNs),scheduledAtUtc:string(v.scheduledAtUtc),capturedUnixNs:i64(v.capturedUnixNs),capturedAtUtc:string(v.capturedAtUtc),latencyNs:i64(v.latencyNs),actualRateHz:number(v.actualRateHz),subscriberDrops:i64(v.subscriberDrops),historyDrops:i64(v.historyDrops),deadlineDrops:i64(v.deadlineDrops),values:array(v.values,sampleValueGuard)};};
