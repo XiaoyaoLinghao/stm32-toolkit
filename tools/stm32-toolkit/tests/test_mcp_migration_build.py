@@ -268,6 +268,7 @@ def test_new_tool_schemas_expose_only_declared_properties(tmp_path: Path):
         "startupSource",
         "memoryLayout",
         "extraRegions",
+        "wfiReturns",
     }
     assert set(preflight.get("required", [])) == set()
     assert "string" in str(preflight["properties"]["uvprojx"])
@@ -288,6 +289,7 @@ def test_new_tool_schemas_expose_only_declared_properties(tmp_path: Path):
         "memoryLayout",
         "extraRegions",
         "destination",
+        "wfiReturns",
     }
     assert set(convert.get("required", [])) == set()
     assert "string" in str(convert["properties"]["planId"])

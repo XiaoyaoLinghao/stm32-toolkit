@@ -631,10 +631,20 @@ def test_registered_mcp_schema_and_calls_expose_wfi_returns(
     tools = {tool.name: tool for tool in asyncio.run(server.list_tools())}
 
     assert set(MCP_TOOL_NAMES.values()) == set(tools)
+    expected_wfi_returns_schema = {
+        "anyOf": [
+            {
+                "items": {"additionalProperties": True, "type": "object"},
+                "type": "array",
+            },
+            {"type": "null"},
+        ],
+        "default": None,
+        "title": "Wfireturns",
+    }
     for tool_name in ("stm32_keil_preflight", "stm32_keil_convert"):
         properties = tools[tool_name].inputSchema["properties"]
-        assert "array" in str(properties["wfiReturns"])
-        assert "object" in str(properties["wfiReturns"])
+        assert properties["wfiReturns"] == expected_wfi_returns_schema
         assert tools[tool_name].inputSchema.get("required", []) == []
 
     choices = [{"path": "Common/common.c", "function": "WFI_SET"}]
