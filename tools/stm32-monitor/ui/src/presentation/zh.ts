@@ -76,7 +76,7 @@ export const copy={
   historyCaptured:"采集时间（UTC）",value:"数值",readFailed:"读取失败",previousPage:"上一页",
   identityTitle:"项目与固件身份",logicalProject:"逻辑项目：",targetDevice:"目标芯片：",
   noFirmware:"尚无已验证的固件身份。",firmwareBuild:"固件构建：",elfLabel:"ELF：",gitLabel:"Git：",gitDirty:"有未提交改动",copyIdentity:"复制工作区身份",
-  inputSnapshotLabel:"输入快照：",gitUnavailable:"Git 不可用（构建未提供有效 Git 证据）",
+  inputSnapshotLabel:"输入快照：",gitUnavailable:"Git：未记录",
   chartTitle:"实时波形",chartLimit:"最多显示 8 条曲线",chartAria:"实时数值波形图",
   chartMaximize:"放大波形",chartRestore:"还原布局",directoryCollapse:"收起目录",directoryExpand:"展开目录",directoryClosePanel:"关闭目录面板",
   chartTimeAxis:"相对时间（ms）",chartOrigin:"起点（UTC）：",chartMissingValue:"读取空缺",

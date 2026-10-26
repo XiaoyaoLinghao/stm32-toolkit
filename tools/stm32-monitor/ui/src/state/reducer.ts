@@ -1,4 +1,4 @@
-import type {MonitorStatus,ObservationBinding,ParsedLiveEnvelope,SourceFileNode,SourceScopeNode} from "../api/contract";
+import type {FirmwareStatus,MonitorStatus,ObservationBinding,ParsedLiveEnvelope,SourceFileNode,SourceScopeNode} from "../api/contract";
 import {appendAuthoritativeSample,appendContinuityGap,emptyLive,addSampleDropDeltas,watchKey,projectHistoryPage} from "../chart/series";
 import {initialZoom,zoomReducer} from "../chart/zoom";
 import {draftFromGroup,emptyDraft,groupDirty,groupWorkflowBusy,sameGroupContent,sourceContextKey,type DropTotals,type GroupNavigation,type LiveState,type MonitorAction,type MonitorState,type RequestScope,type SourceCatalogState} from "./model";
@@ -9,12 +9,11 @@ const liveForStatus=(status:MonitorStatus,selected:ReadonlySet<string>):LiveStat
 const emptyProjection={rows:[],series:new Map()};
 const emptySource=(generation=0n):SourceCatalogState=>({query:"",initialized:false,generation,contextKey:"",tree:null,branches:{},scopePages:{},children:{},lastAddedId:null});
 export const initialState:MonitorState={status:null,probes:[],groups:[],selectedGroupId:null,groupDraft:emptyDraft,groupBaseline:emptyDraft,groupGeneration:0n,groupNavigation:null,groupNavigationMissing:false,groupNameReviewRequired:false,groupWriteBusy:false,groupsNeedRefresh:false,stateRevision:-1n,lastAcceptedEventId:null,pending:{},reconciling:{},failures:{},catalog:{variables:null,registers:null,source:emptySource()},selectedSeries:new Set(),live:emptyLive(),zoom:initialZoom,transport:{phase:"idle",open:false,stale:true,needsStatusRefresh:false,gapRevision:0n},history:{query:null,page:null,projection:emptyProjection,cursorIndex:0,cursorStack:[],nextCursor:null,inFlight:null},exports:{artifact:null,submitted:null},notices:[],blockingError:null};
-type ProvenancePair={readonly sourceBaseline?:"input-snapshot-v1";readonly gitEvidence?:Readonly<{status:string;code:string;rule:string}>};
-const sameSnapshotProvenance=(left:ProvenancePair,right:ProvenancePair):boolean=>{
- const leftBaseline=left.sourceBaseline,rightBaseline=right.sourceBaseline,leftEvidence=left.gitEvidence,rightEvidence=right.gitEvidence;
- return leftBaseline===rightBaseline&&(leftEvidence===undefined||rightEvidence===undefined
-   ?leftEvidence===rightEvidence
-   :leftEvidence.status===rightEvidence.status&&leftEvidence.code===rightEvidence.code&&leftEvidence.rule===rightEvidence.rule);
+type ProvenanceBearing=FirmwareStatus|ObservationBinding;
+const sameSnapshotProvenance=(left:ProvenanceBearing,right:ProvenanceBearing):boolean=>{
+ if(left.gitHead!==null)return right.gitHead!==null;
+ if(right.gitHead!==null)return false;
+ return left.sourceBaseline===right.sourceBaseline&&left.gitEvidence.status===right.gitEvidence.status&&left.gitEvidence.code===right.gitEvidence.code&&left.gitEvidence.rule===right.gitEvidence.rule;
 };
 const sameBinding=(a:ObservationBinding,b:ObservationBinding):boolean=>a.workspaceId===b.workspaceId&&a.sessionId===b.sessionId&&a.logicalProjectId===b.logicalProjectId&&a.probeId===b.probeId&&a.targetDevice===b.targetDevice&&a.physicalTarget===b.physicalTarget&&a.buildId===b.buildId&&a.elfSha256===b.elfSha256&&a.inputSnapshotSha256===b.inputSnapshotSha256&&a.gitHead===b.gitHead&&a.gitDirty===b.gitDirty&&sameSnapshotProvenance(a,b)&&a.flashSessionId===b.flashSessionId&&a.leaseId===b.leaseId&&a.dwarfSha256===b.dwarfSha256&&a.svdSha256===b.svdSha256;
 const statusMatches=(status:MonitorStatus,binding:ObservationBinding):boolean=>status.workspaceId===binding.workspaceId&&status.sessionId===binding.sessionId&&status.project.logicalProjectId===binding.logicalProjectId&&status.project.targetDevice===binding.targetDevice&&status.probe.connected&&status.probe.probeId===binding.probeId&&status.firmware!==null&&status.firmware.buildId===binding.buildId&&status.firmware.elfSha256===binding.elfSha256&&status.firmware.inputSnapshotSha256===binding.inputSnapshotSha256&&status.firmware.gitHead===binding.gitHead&&status.firmware.gitDirty===binding.gitDirty&&sameSnapshotProvenance(status.firmware,binding)&&status.firmware.targetDevice===binding.targetDevice;

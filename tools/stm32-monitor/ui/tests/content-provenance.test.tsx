@@ -9,6 +9,8 @@ import {sourceContextKey} from "../src/state/model";
 import {sourceTreePage,statusResult,watchGroup} from "./fixtures";
 
 const SNAPSHOT="input-snapshot-v1" as const;
+// Wiring a rate as an integer makes JSON.stringify emit an integer token, which the lossless wire guard rejects.
+const WIRE_RATE_HZ=4.5;
 const HEAD_EVIDENCE={status:"unavailable",code:"BUILD_GIT_INVALID",rule:"head"} as const;
 const STATUS_EVIDENCE={status:"unavailable",code:"BUILD_GIT_INVALID",rule:"status"} as const;
 const PROJECT={logicalProjectId:"project",name:"Project",targetDevice:"STM32F407VGTx"};
@@ -34,11 +36,11 @@ const wireStatus=(firmware:unknown)=>({workspaceId:"workspace",sessionId:"sessio
   probeConnected:true,samplingActive:true});
 const historyWire=(binding:unknown)=>({batches:[{binding,groupId:"group",groupRevision:1,runId:"run",sequence:0,
   scheduledUnixNs:1,scheduledAtUtc:"2026-08-10T00:00:00Z",capturedUnixNs:2,capturedAtUtc:"2026-08-10T00:00:00Z",latencyNs:1,
-  actualRateHz:4,subscriberDrops:0,historyDrops:0,deadlineDrops:0,values:[],startOrdinal:0,batchValueCount:0}],
+  actualRateHz:WIRE_RATE_HZ,subscriberDrops:0,historyDrops:0,deadlineDrops:0,values:[],startOrdinal:0,batchValueCount:0}],
   valueCount:0,nextCursor:null,serializedBytes:0});
 const sampleWire=(binding:unknown)=>({eventId:1,type:"sample",data:{batch:{binding,groupId:"group",groupRevision:1,runId:"run",
   sequence:0,scheduledUnixNs:1,scheduledAtUtc:"2026-08-10T00:00:00Z",capturedUnixNs:2,capturedAtUtc:"2026-08-10T00:00:00Z",latencyNs:1,
-  actualRateHz:4,subscriberDrops:0,historyDrops:0,deadlineDrops:0,values:[]},serviceSubscriberDrops:0}});
+  actualRateHz:WIRE_RATE_HZ,subscriberDrops:0,historyDrops:0,deadlineDrops:0,values:[]},serviceSubscriberDrops:0}});
 const okEnvelope=(operation:string,data:unknown,details:unknown={})=>JSON.stringify({protocol:"stm32-toolkit-monitor/1",
   toolkitVersion:"1.3.2",monitorVersion:"1.3.2",ok:true,operation,code:"OK",message:"",data,details});
 
@@ -131,16 +133,18 @@ describe("snapshot provenance contract",()=>{
       expect(()=>observationBindingGuard(doc)).toThrow();
       expect(parseEnvelope(okEnvelope("monitor.history.query",historyWire(doc)),"monitor.history.query",historyPageGuard)).toEqual(INVALID);
     }
-    expect(parseLiveEnvelope(okEnvelope("monitor.live",sampleWire({...snapshotBindingDoc(),gitEvidence:null}),{subscriberDropped:0}))).toEqual(INVALID);
+    const malformedLive={...snapshotBindingDoc(),gitEvidence:null};
+    expect(()=>observationBindingGuard(malformedLive)).toThrow();
+    expect(parseLiveEnvelope(okEnvelope("monitor.live",sampleWire(malformedLive),{subscriberDropped:0}))).toEqual(INVALID);
   });
 
-  it("shows the input snapshot and an honest Git-unavailable label for snapshot firmware",()=>{
+  it("shows the input snapshot and an informational unrecorded Git label for snapshot firmware",()=>{
     const parsed=parseEnvelope(okEnvelope("monitor.status",wireStatus(snapshotFirmwareDoc())),"monitor.status",monitorStatusGuard);
     if(!parsed.ok||parsed.data.firmware===null)throw new Error("expected snapshot status");
     render(<IdentityBar project={parsed.data.project} firmware={parsed.data.firmware} onCopy={vi.fn()}/>);
     expect(screen.getByText("9".repeat(64))).toBeTruthy();
     expect(screen.getByText(/输入快照/)).toBeTruthy();
-    expect(screen.getByText(/Git 不可用/)).toBeTruthy();
+    expect(screen.getByText(/Git：未记录/)).toBeTruthy();
     expect(screen.queryByText("a".repeat(40))).toBeNull();
   });
 
@@ -151,9 +155,9 @@ describe("snapshot provenance contract",()=>{
     expect(firmware.gitHead).toBe("a".repeat(40));
     expect(firmware.gitDirty).toBe(false);
     render(<IdentityBar project={PROJECT} firmware={firmware} onCopy={vi.fn()}/>);
-    expect(screen.getByText("a".repeat(40))).toBeTruthy();
+    expect(screen.getByText(new RegExp(`Git：${"a".repeat(40)}`))).toBeTruthy();
     expect(screen.queryByText(/输入快照/)).toBeNull();
-    expect(screen.queryByText(/Git 不可用/)).toBeNull();
+    expect(screen.queryByText(/Git：未记录/)).toBeNull();
     expect(parseEnvelope(okEnvelope("monitor.status",wireStatus(legacy)),"monitor.status",monitorStatusGuard).ok).toBe(true);
     expect(parseEnvelope(okEnvelope("monitor.probe.connect",debugBindingDoc(false)),"monitor.probe.connect",debugFirmwareBindingGuard).ok).toBe(true);
     expect(parseEnvelope(okEnvelope("monitor.history.query",historyWire(legacyBindingDoc())),"monitor.history.query",historyPageGuard).ok).toBe(true);
