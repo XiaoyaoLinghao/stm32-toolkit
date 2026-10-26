@@ -242,10 +242,14 @@ def test_cli_apply_requires_the_same_layout_choice(tmp_path, capsys):
     planned = json.loads(capsys.readouterr().out)
     plan_id = planned["data"]["planId"]
 
-    # Omission is a different reviewed request.
+    # Omission re-plans without the required layout, so the delivery is
+    # blocked before any plan-ID comparison and writes nothing.
     assert _convert(repo, None, "--apply", "--plan-id", plan_id, "--authorized") != 0
     omitted = json.loads(capsys.readouterr().out)
-    assert omitted["code"] == "PLAN_CHANGED"
+    assert omitted["code"] == "DELIVERY_BLOCKED"
+    assert omitted["details"]["blockerCodes"] == ["MEMORY_LAYOUT_REQUIRED"]
+    assert omitted["details"]["blockers"]
+    assert not _destination(repo).exists()
 
     # A valid but different mapping is also a different choice.
     assert (
@@ -324,7 +328,10 @@ def test_registered_mcp_tools_bind_the_public_camel_case_memory_layout(tmp_path)
         {**selection, "planId": plan_id, "authorized": True},
     )
     assert omitted["ok"] is False
-    assert omitted["code"] == "PLAN_CHANGED"
+    assert omitted["code"] == "DELIVERY_BLOCKED"
+    assert omitted["details"]["blockerCodes"] == ["MEMORY_LAYOUT_REQUIRED"]
+    assert omitted["details"]["blockers"]
+    assert not destination.exists()
 
     edited = call(
         "stm32_keil_convert",

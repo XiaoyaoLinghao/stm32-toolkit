@@ -405,6 +405,9 @@ def test_public_tool_descriptions_guide_mcp_only_consumers(tmp_path: Path):
         assert phrase in preflight
 
     convert = descriptions["stm32_keil_convert"]
+    # The registered description wraps long prose across physical lines;
+    # compare on normalized whitespace rather than raw multiline text.
+    convert_prose = " ".join(convert.split())
     for phrase in (
         "destination",
         "absolute path of a new output directory",
@@ -419,8 +422,8 @@ def test_public_tool_descriptions_guide_mcp_only_consumers(tmp_path: Path):
         "outputRoot",
         "Git is optional",
     ):
-        assert phrase in convert
-    assert "data.plan_id" not in convert
+        assert phrase in convert_prose
+    assert "data.plan_id" not in convert_prose
 
     configure = descriptions["stm32_project_configure"]
     assert "data.plan_id" in configure

@@ -2805,7 +2805,7 @@ def create_server(
         apply.
 
         With no planId and authorized=false this returns a deterministic,
-        read-only PLAN response.  Read data.planId (not data.plan_id),
+        read-only PLAN response.  Read data.planId,
         data.sourceSnapshotSha256, data.outputs[] with kind/path/
         beforeSha256/sha256/unifiedDiff/collision, data.sourcePatches[], and
         data.options.  The preview states configured=false, built=false and

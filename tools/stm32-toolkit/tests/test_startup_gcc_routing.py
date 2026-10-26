@@ -28,7 +28,10 @@ def _destination(tmp_path):
 
 
 def test_cli_accepts_startup_options_for_preflight_and_plan(tmp_path, capsys):
-    repo = two_assembly_repo(tmp_path)
+    # One included assembly source: the supported fixture produces a
+    # successful delivery PLAN (the two-assembly fixture remains blocked by
+    # its unrelated DSP assembly).
+    repo = startup_repo(tmp_path)
     destination = _destination(tmp_path)
 
     assert (
@@ -151,7 +154,7 @@ def test_cli_apply_requires_the_same_startup_options(tmp_path, capsys):
 
 
 def test_cli_rejects_an_unsupported_or_edited_strategy_without_writes(tmp_path, capsys):
-    repo = two_assembly_repo(tmp_path)
+    repo = startup_repo(tmp_path)
     destination = _destination(tmp_path)
     assert (
         cli_main(
@@ -200,6 +203,9 @@ def test_cli_rejects_an_unsupported_or_edited_strategy_without_writes(tmp_path, 
     failure = json.loads(capsys.readouterr().out)
     assert failure["code"] == "MIGRATION_STARTUP_STRATEGY_UNSUPPORTED"
 
+    # A valid but different reviewed option set (explicit source vs the
+    # auto-selected single candidate) re-plans successfully with a different
+    # plan identity.
     assert cli_main(
         [
             "keil",
@@ -212,8 +218,6 @@ def test_cli_rejects_an_unsupported_or_edited_strategy_without_writes(tmp_path, 
             TARGET,
             "--startup-strategy",
             "generate-cmsis-gcc",
-            "--startup-source",
-            "DSP/filter.s",
             "--destination",
             str(destination),
             "--apply",
@@ -333,12 +337,17 @@ def test_registered_mcp_tools_bind_the_public_camel_case_startup_options(tmp_pat
     assert changed["code"] == "PLAN_CHANGED"
     assert not destination.exists()
 
+    # Omitting the reviewed startup options re-plans without them, so the
+    # unsupported ARMCC assembly blocks the delivery before any plan-ID
+    # comparison.
     omitted = call(
         "stm32_keil_convert",
         {**selection, "planId": plan_id, "authorized": True},
     )
     assert omitted["ok"] is False
-    assert omitted["code"] == "PLAN_CHANGED"
+    assert omitted["code"] == "DELIVERY_BLOCKED"
+    assert omitted["details"]["blockerCodes"] == ["ARMCC_ASSEMBLY_UNSUPPORTED"]
+    assert omitted["details"]["blockers"]
     assert not destination.exists()
 
     applied = call(
@@ -351,7 +360,7 @@ def test_registered_mcp_tools_bind_the_public_camel_case_startup_options(tmp_pat
 
 
 def test_mcp_apply_refuses_edited_startup_source(tmp_path):
-    repo = two_assembly_repo(tmp_path)
+    repo = startup_repo(tmp_path)
     destination = _destination(tmp_path)
     runtime = ServerRuntime.create(repo, tmp_path / "data", "session-startup-2")
     planned = mcp_mod.tool_keil_convert(
@@ -365,6 +374,8 @@ def test_mcp_apply_refuses_edited_startup_source(tmp_path):
     assert planned["ok"] is True
     plan_id = planned["data"]["planId"]
 
+    # A source that is not one of the included assembly candidates keeps its
+    # precise structured error.
     edited = mcp_mod.tool_keil_convert(
         runtime,
         UVPROJX,
@@ -376,7 +387,22 @@ def test_mcp_apply_refuses_edited_startup_source(tmp_path):
         destination=str(destination),
     )
     assert edited["ok"] is False
-    assert edited["code"] == "PLAN_CHANGED"
+    assert edited["code"] == "MIGRATION_STARTUP_SOURCE_INVALID"
+    assert not destination.exists()
+
+    # A valid but different reviewed option set (explicit source vs the
+    # auto-selected single candidate) is a different plan.
+    changed = mcp_mod.tool_keil_convert(
+        runtime,
+        UVPROJX,
+        TARGET,
+        plan_id,
+        True,
+        startup_strategy="generate-cmsis-gcc",
+        destination=str(destination),
+    )
+    assert changed["ok"] is False
+    assert changed["code"] == "PLAN_CHANGED"
     assert not destination.exists()
 
 

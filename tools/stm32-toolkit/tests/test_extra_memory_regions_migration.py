@@ -173,7 +173,10 @@ def test_git_free_preflight_accepts_the_same_explicit_request(tmp_path):
     # The fixture itself has no repository; even if an enclosing repository
     # were discovered, this project root cannot be its toplevel.
     assert data["data"]["git"]["head"]["available"] is False
-    assert data["data"]["planReadiness"]["status"] == "blocked"
+    assert data["data"]["git"]["analysisRequiresGit"] is False
+    # Missing Git is optional evidence, never a planReadiness prerequisite.
+    assert data["data"]["planReadiness"]["ready"] is True
+    assert data["data"]["planReadiness"]["status"] == "ready-for-plan"
 
 
 def test_omitted_and_explicit_empty_extras_are_the_same_request(tmp_path):
@@ -253,8 +256,9 @@ def test_omitted_and_changed_extras_are_never_accepted_against_a_reviewed_plan(
 ):
     repo = extra_repo(tmp_path / "stale")
     # The external layout role itself is covered by the explicit PLAN/APPLY
-    # test above; here the base-only layout keeps omission/change diagnostic
-    # deterministic (PLAN_CHANGED rather than an unknown-role layout error).
+    # test above; here the base-only layout keeps the omission/change
+    # diagnostics deterministic (blocked fixed section rather than an
+    # unknown-role layout error).
     plan = _plan(repo, layout=ALL_MAIN)
     destination = repo.parent / "reviewed-gcc-output"
     base = dict(
@@ -267,14 +271,21 @@ def test_omitted_and_changed_extras_are_never_accepted_against_a_reviewed_plan(
         startup_source=STARTUP_SOURCE,
         memory_layout=ALL_MAIN,
     )
+    # Omitting the reviewed extra region re-plans without it, so the fixed
+    # section is outside every declared region and the delivery is blocked
+    # before any plan-ID comparison.
     omitted = convert_keil_workflow(repo, **base).to_dict()
-    assert omitted["ok"] is False and omitted["code"] == "PLAN_CHANGED"
+    assert omitted["ok"] is False and omitted["code"] == "DELIVERY_BLOCKED"
+    assert omitted["details"]["blockerCodes"] == [
+        "MIGRATION_FIXED_SECTION_OUTSIDE_MEMORY"
+    ]
+    assert omitted["details"]["blockers"]
+    # A valid but different request (smaller region that still covers the
+    # fixed address) re-plans successfully with a different plan identity.
     changed = convert_keil_workflow(
         repo,
         **base,
-        extra_regions=[
-            {**EXT_DICT, "origin": 0x68010000, "length": 0x8000}
-        ],
+        extra_regions=[{**EXT_DICT, "length": 0x8000}],
     ).to_dict()
     assert changed["ok"] is False and changed["code"] == "PLAN_CHANGED"
     assert not (repo / ".stm32-project.json").exists()
@@ -409,6 +420,8 @@ def test_cli_routes_the_exact_json_array_and_rejects_bad_grammar(tmp_path, capsy
 
 def test_cli_plan_and_apply_require_the_same_extra_request(tmp_path, capsys):
     repo = extra_repo(tmp_path / "cli-apply")
+    destination = repo.parent / "reviewed-gcc-output"
+    assert not destination.exists()
     extras_text = json.dumps([EXT_DICT])
     layout_text = json.dumps(ALL_MAIN.to_dict())
 
@@ -422,6 +435,8 @@ def test_cli_plan_and_apply_require_the_same_extra_request(tmp_path, capsys):
         "--target-name",
         TARGET,
         *STARTUP_ARGS,
+        "--destination",
+        str(destination),
         "--memory-layout",
         layout_text,
         "--extra-regions",
@@ -431,7 +446,11 @@ def test_cli_plan_and_apply_require_the_same_extra_request(tmp_path, capsys):
     ]
     assert cli_main(planned) == 0
     plan = json.loads(capsys.readouterr().out)
-    plan_id = plan["data"]["plan_id"]
+    assert plan["ok"] is True
+    assert plan["data"]["destination"] == str(destination)
+    assert plan["data"]["options"]["extraRegions"] == [EXT_DICT]
+    plan_id = plan["data"]["planId"]
+    assert not destination.exists()
 
     def apply(*extra: str):
         return cli_main(
@@ -445,6 +464,8 @@ def test_cli_plan_and_apply_require_the_same_extra_request(tmp_path, capsys):
                 "--target-name",
                 TARGET,
                 *STARTUP_ARGS,
+                "--destination",
+                str(destination),
                 "--memory-layout",
                 layout_text,
                 *extra,
@@ -456,25 +477,44 @@ def test_cli_plan_and_apply_require_the_same_extra_request(tmp_path, capsys):
             ]
         )
 
+    # Omitting the reviewed extra region re-plans without it, so the fixed
+    # section is outside every declared region and the delivery is blocked
+    # before any plan-ID comparison.
     assert apply() != 0
     omitted = json.loads(capsys.readouterr().out)
-    assert omitted["code"] == "PLAN_CHANGED"
+    assert omitted["code"] == "DELIVERY_BLOCKED"
+    assert omitted["details"]["blockerCodes"] == [
+        "MIGRATION_FIXED_SECTION_OUTSIDE_MEMORY"
+    ]
+    assert omitted["details"]["blockers"]
+    assert not destination.exists()
+    assert not (repo / ".stm32-project.json").exists()
+
+    # A valid but different request (smaller region that still covers the
+    # fixed address) is a different reviewed plan.
     assert apply(
         "--extra-regions",
         json.dumps([{**EXT_DICT, "length": 0x8000}]),
     ) != 0
     changed = json.loads(capsys.readouterr().out)
     assert changed["code"] == "PLAN_CHANGED"
+    assert not destination.exists()
 
     assert apply("--extra-regions", extras_text) == 0
     applied = json.loads(capsys.readouterr().out)
     assert applied["ok"] is True
-    manifest = json.loads((repo / ".stm32-project.json").read_text("utf-8"))
+    assert applied["data"]["outputRoot"] == str(destination)
+    manifest = json.loads(
+        (destination / ".stm32-project.json").read_text("utf-8")
+    )
     assert manifest["memory"]["extraRegions"] == [EXT_DICT]
     assert [region["name"] for region in manifest["memory"]["regions"]] == [
         "IROM1",
         "IRAM1",
     ]
+    # The Keil source tree stays read-only.
+    assert not (repo / ".stm32-project.json").exists()
+    assert not (repo / "artifacts").exists()
 
 
 def test_registered_mcp_schema_and_calls_preserve_raw_scalar_values(tmp_path):
@@ -515,21 +555,27 @@ def test_registered_mcp_schema_and_calls_preserve_raw_scalar_values(tmp_path):
     assert preflight["ok"] is True
     assert preflight["data"]["analysis"]["extraRegions"] == [EXT_DICT]
 
+    destination = repo.parent / "reviewed-gcc-output"
+    assert not destination.exists()
     planned = call(
         "stm32_keil_convert",
         {
             **selection,
+            "destination": str(destination),
             "extraRegions": [EXT_DICT],
             "memoryLayout": EXT_LAYOUT.to_dict(),
         },
     )
     assert planned["ok"] is True
-    assert planned["data"]["extra_regions"] == [EXT_DICT]
-    plan_id = planned["data"]["plan_id"]
+    assert planned["data"]["destination"] == str(destination)
+    assert planned["data"]["options"]["extraRegions"] == [EXT_DICT]
+    plan_id = planned["data"]["planId"]
+    assert not destination.exists()
     applied = call(
         "stm32_keil_convert",
         {
             **selection,
+            "destination": str(destination),
             "extraRegions": [EXT_DICT],
             "memoryLayout": EXT_LAYOUT.to_dict(),
             "planId": plan_id,
@@ -537,9 +583,12 @@ def test_registered_mcp_schema_and_calls_preserve_raw_scalar_values(tmp_path):
         },
     )
     assert applied["ok"] is True
-    assert json.loads((repo / ".stm32-project.json").read_text("utf-8"))["memory"][
-        "extraRegions"
-    ] == [EXT_DICT]
+    assert applied["data"]["outputRoot"] == str(destination)
+    assert json.loads(
+        (destination / ".stm32-project.json").read_text("utf-8")
+    )["memory"]["extraRegions"] == [EXT_DICT]
+    # The Keil source tree stays read-only.
+    assert not (repo / ".stm32-project.json").exists()
 
 
 def test_workflow_preflight_returns_structured_extra_failure(tmp_path):

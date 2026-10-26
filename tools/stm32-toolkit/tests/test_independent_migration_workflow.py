@@ -402,7 +402,9 @@ def test_readiness_is_independent_of_missing_unborn_dirty_and_nested_git(
     for label, root in cases.items():
         preflight = preflight_keil_workflow(root)
         assert preflight.ok is True, label
-        assert preflight.data["analysis"]["blockers"] == [], label
+        # OperationResult freezes JSON lists into tuples; compare the native
+        # immutable empty result rather than a JSON list.
+        assert preflight.data["analysis"]["blockers"] == (), label
         readiness = preflight.data["planReadiness"]
         assert readiness["ready"] is True, label
         assert readiness["status"] == "ready-for-plan", label
@@ -450,12 +452,16 @@ def test_complete_blocker_diagnostics_reach_direct_cli_and_mcp(
     direct = convert_keil_workflow(source, destination=destination)
     assert direct.ok is False
     assert direct.code == "DELIVERY_BLOCKED"
-    assert "ARMCC_LINKER_CONFIGURATION_UNSUPPORTED" in direct.details[
-        "blockerCodes"
-    ]
+    assert "ARMCC_LINKER_CONFIGURATION_UNSUPPORTED" in direct.to_dict()[
+        "details"
+    ]["blockerCodes"]
     assert direct.details["blockerCount"] >= 1
     assert direct.details["blockers"]
     assert not destination.exists()
+
+    # The native result freezes lists into tuples; to_dict() is the JSON form
+    # the CLI subprocess and registered MCP server actually return.
+    direct_json = direct.to_dict()
 
     assert cli_main([
         "keil", "convert", "--project", str(source),
@@ -463,8 +469,8 @@ def test_complete_blocker_diagnostics_reach_direct_cli_and_mcp(
     ]) == 2
     cli = json.loads(capsys.readouterr().out)
     assert cli["code"] == "DELIVERY_BLOCKED"
-    assert cli["details"]["blockerCodes"] == direct.details["blockerCodes"]
-    assert cli["details"]["blockers"] == direct.details["blockers"]
+    assert cli["details"]["blockerCodes"] == direct_json["details"]["blockerCodes"]
+    assert cli["details"]["blockers"] == direct_json["details"]["blockers"]
 
     mcp = _registered_call(
         source,
@@ -474,7 +480,8 @@ def test_complete_blocker_diagnostics_reach_direct_cli_and_mcp(
     )
     assert mcp["ok"] is False
     assert mcp["code"] == "DELIVERY_BLOCKED"
-    assert mcp["details"]["blockerCodes"] == direct.details["blockerCodes"]
+    assert mcp["details"]["blockerCodes"] == direct_json["details"]["blockerCodes"]
+    assert mcp["details"]["blockers"] == direct_json["details"]["blockers"]
 
     # Preflight keeps the complete technical/remediation diagnostics.
     analysis = preflight_keil_conversion(source, inspect_keil(source))

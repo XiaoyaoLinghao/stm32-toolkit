@@ -925,7 +925,9 @@ def test_workflow_preflight_plan_and_apply_use_the_same_options(tmp_path):
 
 
 def test_apply_with_a_caller_edited_source_or_omitted_options_is_rejected(tmp_path):
-    repo = two_assembly_repo(tmp_path)
+    # One included assembly source keeps the positive plan valid; the
+    # two-assembly fixture remains blocked by its unrelated DSP assembly.
+    repo = startup_repo(tmp_path)
     destination = tmp_path / "delivered" / "project"
     destination.parent.mkdir()
     planned = convert_keil_workflow(
@@ -940,6 +942,8 @@ def test_apply_with_a_caller_edited_source_or_omitted_options_is_rejected(tmp_pa
     plan_id = planned.data["planId"]
     before = snapshot_tree(repo)
 
+    # A source that is not one of the included assembly candidates keeps its
+    # precise structured error.
     edited = convert_keil_workflow(
         repo,
         destination=destination,
@@ -951,10 +955,30 @@ def test_apply_with_a_caller_edited_source_or_omitted_options_is_rejected(tmp_pa
         startup_source="DSP/filter.s",
     )
     assert edited.ok is False
-    assert edited.code == "PLAN_CHANGED"
+    assert edited.code == "MIGRATION_STARTUP_SOURCE_INVALID"
     assert snapshot_tree(repo) == before
     assert not destination.exists()
 
+    # A valid but different reviewed option set (explicit source vs the
+    # auto-selected single candidate) re-plans successfully with a different
+    # plan identity.
+    changed = convert_keil_workflow(
+        repo,
+        destination=destination,
+        uvprojx=UVPROJX,
+        target_name=TARGET,
+        plan_id=plan_id,
+        authorized=True,
+        startup_strategy="generate-cmsis-gcc",
+    )
+    assert changed.ok is False
+    assert changed.code == "PLAN_CHANGED"
+    assert snapshot_tree(repo) == before
+    assert not destination.exists()
+
+    # Omitting the reviewed startup options re-plans without them, so the
+    # unsupported ARMCC assembly blocks the delivery before plan-ID
+    # comparison.
     omitted = convert_keil_workflow(
         repo,
         destination=destination,
@@ -964,7 +988,11 @@ def test_apply_with_a_caller_edited_source_or_omitted_options_is_rejected(tmp_pa
         authorized=True,
     )
     assert omitted.ok is False
-    assert omitted.code == "PLAN_CHANGED"
+    assert omitted.code == "DELIVERY_BLOCKED"
+    assert omitted.to_dict()["details"]["blockerCodes"] == [
+        "ARMCC_ASSEMBLY_UNSUPPORTED"
+    ]
+    assert omitted.details["blockers"]
     assert snapshot_tree(repo) == before
     assert not destination.exists()
 
