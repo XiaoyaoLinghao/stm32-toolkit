@@ -47,6 +47,7 @@ from stm32_toolkit.memory_layout import (
     normalize_memory_layout_option,
 )
 from stm32_toolkit.migration.model import portable_path_error
+from stm32_toolkit.migration.source_intent import normalize_wfi_return_options
 from stm32_toolkit.migration.startup import normalize_startup_options
 from stm32_toolkit.project_model import ProjectManifestError, load_project_model
 from stm32_toolkit.result import OperationResult
@@ -249,11 +250,14 @@ def preflight_keil_workflow(
     startup_source: str | None = None,
     memory_layout: object = None,
     extra_regions: object = None,
+    wfi_returns: object = None,
 ) -> OperationResult[dict[str, object]]:
     """Read-only migration preflight; analysis succeeds without Git.
 
     The result always means "analysis completed", never "apply authorized".
     Technical blockers and Git/apply prerequisites are reported separately.
+    ``wfi_returns`` is the optional raw public ``wfiReturns`` list; it is
+    validated into the immutable reviewed choices before analysis.
     """
     operation = "keil-preflight"
     try:
@@ -265,6 +269,7 @@ def preflight_keil_workflow(
         startup_options = normalize_startup_options(strategy, source)
         layout = normalize_memory_layout_option(memory_layout)
         extras = normalize_extra_regions_option(extra_regions)
+        wfi_choices = normalize_wfi_return_options(wfi_returns)
     except _InputInvalid as error:
         return _failure(
             operation,
@@ -287,6 +292,7 @@ def preflight_keil_workflow(
             startup_options=startup_options,
             memory_layout=layout,
             extra_regions=extras,
+            wfi_returns=wfi_choices,
         )
     except KeilInspectionError as error:
         return _failure(operation, error.code, error.message, error.details)
@@ -327,6 +333,7 @@ def convert_keil_workflow(
     startup_source: str | None = None,
     memory_layout: object = None,
     extra_regions: object = None,
+    wfi_returns: object = None,
 ) -> OperationResult[dict[str, object]]:
     """Plan or apply one independent Keil-to-GCC delivery.
 
@@ -337,10 +344,12 @@ def convert_keil_workflow(
     APPLY publishes one complete output directory without building or
     flashing it.  Git is optional and never a plan prerequisite.
 
-    The destination, startup, memory-layout and extra-region options are part
-    of the plan identity.  Apply re-runs the deterministic plan with the
-    request options and refuses a stale plan ID, so a caller-edited
-    destination/option request cannot be accepted after review.
+    The destination, startup, memory-layout, extra-region and reviewed
+    ``wfi_returns`` options are part of the plan identity.  Apply re-runs the
+    deterministic plan with the request options and refuses a stale plan ID,
+    so a caller-edited destination/option request cannot be accepted after
+    review.  Omitting or changing the raw ``wfiReturns`` list is a different
+    request; a fresh technical blocker still takes precedence over staleness.
     """
     operation = "keil-conversion-apply" if _apply_intent(plan_id, authorized) else "keil-conversion-plan"
     try:
@@ -353,6 +362,7 @@ def convert_keil_workflow(
         startup_options = normalize_startup_options(strategy, source)
         layout = normalize_memory_layout_option(memory_layout)
         extras = normalize_extra_regions_option(extra_regions)
+        wfi_choices = normalize_wfi_return_options(wfi_returns)
     except _InputInvalid as error:
         return _failure(
             operation,
@@ -389,6 +399,7 @@ def convert_keil_workflow(
             startup_options=startup_options,
             memory_layout=layout,
             extra_regions=extras,
+            wfi_returns=wfi_choices,
         )
     except KeilInspectionError as error:
         return _failure(operation, error.code, error.message, error.details)

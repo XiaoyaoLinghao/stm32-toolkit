@@ -34,6 +34,8 @@ WFI_NORMAL_BODY = '__asm volatile ("wfi" ::: "memory");'
 WFI_RETURN_RULE_ID = "ARMCC_WFI_RETURN_INTENT"
 
 _WFI_FUNCTION_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+#: Exact keys accepted in one public/raw ``wfiReturns`` object.
+_WFI_OPTION_KEYS = frozenset({"path", "function"})
 
 
 def _invalid(
@@ -119,10 +121,77 @@ def normalize_wfi_returns(value: object) -> tuple[WfiReturn, ...]:
     return tuple(sorted(selections, key=lambda item: (item.path, item.function)))
 
 
+def normalize_wfi_return_options(value: object) -> tuple[WfiReturn, ...]:
+    """Validate one public (CLI/MCP) ``wfiReturns`` request.
+
+    ``None`` keeps the historical no-choice behavior.  The bounded transport
+    value is a real ``list`` of objects with exactly ``path`` and ``function``
+    string keys; a tuple, JSON string, mapping, or object with unknown/missing
+    keys is refused rather than coerced.  Each object becomes one immutable
+    :class:`WfiReturn` and the exact tuple then goes through
+    :func:`normalize_wfi_returns`, so path, identifier, duplicate, count and
+    deterministic-order rules stay identical to the internal contract.
+    """
+    if value is None:
+        return ()
+    if type(value) is not list:
+        raise _invalid(
+            "type",
+            "wfiReturns must be a list of {path, function} objects",
+        )
+    if len(value) > MAX_WFI_RETURNS:
+        raise _invalid(
+            "limit",
+            "wfiReturns exceeds the selection limit",
+            limit=MAX_WFI_RETURNS,
+        )
+    selections: list[WfiReturn] = []
+    for index, item in enumerate(value):
+        if not isinstance(item, dict):
+            raise _invalid(
+                "type",
+                "each wfiReturns entry must be an object",
+                index=index,
+            )
+        keys = set(item)
+        if keys - _WFI_OPTION_KEYS:
+            # Never echo an arbitrary key: only the bounded rule is stable.
+            raise _invalid(
+                "unknownKey",
+                "wfiReturns objects accept only path and function",
+                index=index,
+            )
+        missing = _WFI_OPTION_KEYS - keys
+        if missing:
+            raise _invalid(
+                "required",
+                "each wfiReturns object requires path and function",
+                index=index,
+                missing=sorted(missing),
+            )
+        path = item["path"]
+        function = item["function"]
+        if not isinstance(path, str):
+            raise _invalid(
+                "type",
+                "wfiReturns path must be a string",
+                index=index,
+            )
+        if not isinstance(function, str):
+            raise _invalid(
+                "type",
+                "wfiReturns function must be a string",
+                index=index,
+            )
+        selections.append(WfiReturn(path, function))
+    return normalize_wfi_returns(tuple(selections))
+
+
 __all__ = [
     "MAX_WFI_FUNCTION_LENGTH",
     "MAX_WFI_RETURNS",
     "WFI_NORMAL_BODY",
     "WFI_RETURN_RULE_ID",
     "normalize_wfi_returns",
+    "normalize_wfi_return_options",
 ]

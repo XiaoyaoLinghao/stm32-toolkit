@@ -434,6 +434,16 @@ def _build_parser() -> argparse.ArgumentParser:
         action=_RejectDuplicate,
         help="Exact JSON array of explicit writable RAM regions with name, origin, length, attributes",
     )
+    preflight.add_argument(
+        "--wfi-return",
+        dest="wfi_returns",
+        action="append",
+        metavar="PATH:FUNCTION",
+        help=(
+            "Repeatable reviewed WFI normal-return intent for one exact"
+            " project-relative C wrapper; no automatic selection"
+        ),
+    )
 
     convert = keil_commands.add_parser("convert")
     _add_workflow_root(convert)
@@ -465,6 +475,16 @@ def _build_parser() -> argparse.ArgumentParser:
         "--extra-regions",
         action=_RejectDuplicate,
         help="Exact JSON array of explicit writable RAM regions with name, origin, length, attributes",
+    )
+    convert.add_argument(
+        "--wfi-return",
+        dest="wfi_returns",
+        action="append",
+        metavar="PATH:FUNCTION",
+        help=(
+            "Repeatable reviewed WFI normal-return intent for one exact"
+            " project-relative C wrapper; no automatic selection"
+        ),
     )
     _add_dry_run_apply(convert)
     convert.add_argument("--plan-id")
@@ -1370,6 +1390,50 @@ def _flash_frequency(value: str) -> int:
     return integer
 
 
+class _WfiReturnSyntaxError(ValueError):
+    """A repeatable ``--wfi-return`` value is not PATH:FUNCTION."""
+
+
+def _parse_wfi_return_choices(value: object) -> list[dict[str, str]] | None:
+    """Convert repeatable raw ``--wfi-return`` values to public objects.
+
+    The last colon separates the exact project-relative C path from one ASCII
+    C identifier, so a caller-supplied drive path stays intact (and is then
+    refused as non-portable) instead of becoming a relative path.  Only the
+    PATH:FUNCTION syntax is checked here; path/name validity, raw types and
+    duplicates are reported by the shared ``wfiReturns`` validator.  Callers
+    receive an actionable structured failure instead of argparse's generic
+    grammar message, which never echoes caller text.
+    """
+    if value is None:
+        return None
+    choices: list[dict[str, str]] = []
+    for item in value:
+        if not isinstance(item, str):
+            raise _WfiReturnSyntaxError
+        path, separator, function = item.rpartition(":")
+        if not separator or not path or not function:
+            raise _WfiReturnSyntaxError
+        choices.append({"path": path, "function": function})
+    return choices
+
+
+def _wfi_return_syntax_failure(operation: str) -> OperationResult[None]:
+    """Actionable failure for a malformed repeatable ``--wfi-return`` value."""
+    return OperationResult.failure(
+        operation,
+        "WFI_RETURNS_INVALID",
+        "each --wfi-return must be PATH:FUNCTION with an exact"
+        " project-relative .c path and ASCII C identifier"
+        " (for example Common/common.c:WFI_SET)",
+        {
+            "field": "wfiReturns",
+            "rule": "syntax",
+            "example": "Common/common.c:WFI_SET",
+        },
+    )
+
+
 def _add_json(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--json", action="store_true", required=True)
 
@@ -1607,6 +1671,12 @@ def _operation_result(
                 include_baseline=not args.no_baseline,
             )
         if args.keil_command == "preflight":
+            try:
+                wfi_choices = _parse_wfi_return_choices(
+                    getattr(args, "wfi_returns", None)
+                )
+            except _WfiReturnSyntaxError:
+                return _wfi_return_syntax_failure("keil-preflight")
             return preflight_keil_workflow(
                 project_root,
                 uvprojx=args.uvprojx,
@@ -1615,7 +1685,19 @@ def _operation_result(
                 startup_source=getattr(args, "startup_source", None),
                 memory_layout=getattr(args, "memory_layout", None),
                 extra_regions=getattr(args, "extra_regions", None),
+                wfi_returns=wfi_choices,
             )
+        try:
+            wfi_choices = _parse_wfi_return_choices(
+                getattr(args, "wfi_returns", None)
+            )
+        except _WfiReturnSyntaxError:
+            operation = (
+                "keil-conversion-apply"
+                if args.plan_id is not None or args.authorized
+                else "keil-conversion-plan"
+            )
+            return _wfi_return_syntax_failure(operation)
         return convert_keil_workflow(
             project_root,
             destination=args.destination,
@@ -1627,6 +1709,7 @@ def _operation_result(
             startup_source=getattr(args, "startup_source", None),
             memory_layout=getattr(args, "memory_layout", None),
             extra_regions=getattr(args, "extra_regions", None),
+            wfi_returns=wfi_choices,
         )
     if args.command == "project":
         if args.project_command == "detect":

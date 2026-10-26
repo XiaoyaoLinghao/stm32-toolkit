@@ -1019,12 +1019,14 @@ def tool_keil_preflight(
     startup_source: str | None = None,
     memory_layout: object = None,
     extra_regions: object = None,
+    wfi_returns: object = None,
 ) -> dict[str, object]:
     """Return read-only migration analysis without requiring Git.
 
     A successful result means the technical analysis completed; it may still
     contain blockers.  Apply prerequisites and the absence of an applicable
     plan ID are reported separately.  Preflight never authorizes apply.
+    ``wfi_returns`` is the optional raw public ``wfiReturns`` list.
     """
     return preflight_keil_workflow(
         runtime.project_root,
@@ -1034,6 +1036,7 @@ def tool_keil_preflight(
         startup_source=startup_source,
         memory_layout=memory_layout,
         extra_regions=extra_regions,
+        wfi_returns=wfi_returns,
     ).to_dict()
 
 
@@ -1048,9 +1051,11 @@ def tool_keil_convert(
     memory_layout: object = None,
     extra_regions: object = None,
     destination: object = None,
+    wfi_returns: object = None,
 ) -> dict[str, object]:
     """Read-only delivery plan, or apply with the exact plan ID plus
-    ``authorized=true`` into the explicit ``destination``."""
+    ``authorized=true`` into the explicit ``destination``.  ``wfi_returns`` is
+    the optional raw public ``wfiReturns`` list and is part of plan identity."""
     return convert_keil_workflow(
         runtime.project_root,
         destination=destination,
@@ -1062,6 +1067,7 @@ def tool_keil_convert(
         startup_source=startup_source,
         memory_layout=memory_layout,
         extra_regions=extra_regions,
+        wfi_returns=wfi_returns,
     ).to_dict()
 
 
@@ -1253,6 +1259,7 @@ async def tool_keil_preflight_for_request(
     startup_source: str | None = None,
     memory_layout: object = None,
     extra_regions: object = None,
+    wfi_returns: object = None,
 ) -> dict[str, object]:
     failure = await _client_roots_failure(runtime, context, "keil-preflight")
     if failure is not None:
@@ -1265,6 +1272,7 @@ async def tool_keil_preflight_for_request(
         startup_source,
         memory_layout,
         extra_regions,
+        wfi_returns,
     )
 
 
@@ -1280,6 +1288,7 @@ async def tool_keil_convert_for_request(
     memory_layout: object = None,
     extra_regions: object = None,
     destination: object = None,
+    wfi_returns: object = None,
 ) -> dict[str, object]:
     operation = (
         "keil-conversion-apply"
@@ -1300,6 +1309,7 @@ async def tool_keil_convert_for_request(
         memory_layout,
         extra_regions,
         destination,
+        wfi_returns,
     )
 
 
@@ -2679,6 +2689,7 @@ def create_server(
         startupSource: str | None = None,
         memoryLayout: dict[str, str] | None = None,
         extraRegions: list[dict[str, Any]] | None = None,
+        wfiReturns: list[dict[str, Any]] | None = None,
     ) -> dict[str, object]:
         """Run read-only Keil migration preflight without requiring Git.
 
@@ -2751,12 +2762,20 @@ def create_server(
         are not placed there implicitly.  A missing extra leaves
         MIGRATION_FIXED_SECTION_OUTSIDE_MEMORY actionable: request the exact
         owner-supplied map and never guess a length.
+        A WFI normal-return source change is never selected automatically.
+        Pass wfiReturns as a real JSON array of exactly {path, function}
+        objects: an exact project-relative .c source and one ASCII C
+        identifier naming a plain WFI-only ARMCC wrapper.  The same value must
+        be used for preflight, the PLAN call and apply; omitting or changing
+        it is a different request.  This is requested source behaviour, needs
+        no Keil disassembly/AXF baseline, and every other unsupported assembly
+        remains a project-owned source port.
         Each analysis.blockers entry adds remediation: category is
         needs-user-input or unsupported, with a concise summary, a real
         tool/Skill reference where applicable, and requiredInputs.  Only
         currently accepted preflight parameters are named (memoryLayout,
-        extraRegions, startupStrategy, startupSource); preflight has no
-        framework, FPU, or ABI override parameter, and no blocker is
+        extraRegions, startupStrategy, startupSource, wfiReturns); preflight
+        has no framework, FPU, or ABI override parameter, and no blocker is
         auto-fixable.
         blockerSummary.byRemediation counts the same classifications while
         total, byCode, and every original blocker field stay unchanged.
@@ -2778,6 +2797,7 @@ def create_server(
             startupSource,
             memoryLayout,
             extraRegions,
+            wfiReturns,
         )
 
     @mcp.tool(name=MCP_TOOL_NAMES["keil_convert"])
@@ -2792,6 +2812,7 @@ def create_server(
         memoryLayout: dict[str, str] | None = None,
         extraRegions: list[dict[str, Any]] | None = None,
         destination: str | None = None,
+        wfiReturns: list[dict[str, Any]] | None = None,
     ) -> dict[str, object]:
         """Plan or explicitly apply one independent Keil-to-GCC delivery.
 
@@ -2814,14 +2835,22 @@ def create_server(
         Technical blockers fail planning with DELIVERY_BLOCKED and complete
         blocker codes/details; no blocked plan is applicable.
 
+        wfiReturns is the same optional reviewed WFI normal-return intent as
+        preflight: a real JSON array of exactly {path, function} objects, with
+        no automatic selection and no Keil disassembly/AXF prerequisite.  It
+        is requested source behaviour, not binary equivalence; every other
+        unsupported assembly remains a project-owned source port.
+
         Apply only after the user explicitly authorizes that exact reviewed
         plan: pass its data.planId as planId, the identical destination, and
         authorized=true.  A changed destination, startupStrategy/
-        startupSource, memoryLayout or extraRegions is a different plan and
-        is refused with PLAN_CHANGED before any write.  Apply revalidates the
-        source snapshot and destination state, stages writes in an owned
-        sibling, and publishes one complete output directory.  The result
-        returns the exact outputRoot and sets built=false and flashed=false.
+        startupSource, memoryLayout, extraRegions or wfiReturns is a different
+        plan and is refused with PLAN_CHANGED before any write; an omitted
+        selection that leaves a technical blocker is reported as
+        DELIVERY_BLOCKED instead.  Apply revalidates the source snapshot and
+        destination state, stages writes in an owned sibling, and publishes
+        one complete output directory.  The result returns the exact
+        outputRoot and sets built=false and flashed=false.
 
         After apply, bind that outputRoot as the VS Code workspace and MCP
         project root, run stm32_project_context there, configure the explicit
@@ -2843,6 +2872,7 @@ def create_server(
             memoryLayout,
             extraRegions,
             destination,
+            wfiReturns,
         )
 
     @mcp.tool(name=MCP_TOOL_NAMES["project_configure"])
