@@ -4,6 +4,8 @@
 
 ## 1. 当前断点与证据
 
+2026-10-26 最新本地断点：RETEST-GUIDANCE 在 `9d8b06427cd237309c5f3061316b37ebc0a73d06` 已 **ACCEPTED_WITH_FIXES**，见[执行与独立复核记录](../codex/returns/RETEST-GUIDANCE/implementation-report.md)。Claude 完整相关组317/317、主代理独立23/23通过，重叠证据不相加。用户报告已安装v1.3.2并完成复验；本轮仅只读复核其外部测试副本，178文件哈希未变。7项编码依赖及1项缺少汇编返回的阻断仍保留，现提供准确处置指引，不宣称迁移无阻断或语义等价。CLI JSON编码缺陷已修复。此补丁仅本地源码，未安装、构建发布或推送；原工程、硬件和全局设置未改。后续新包的实际安装/VS Code验证仍由用户负责，旧发布例外不转移。以下为历史断点。
+
 2026-10-26 v1.3.2 最新发布断点：[发布与公网核验记录](../codex/returns/STM32TK-132/publication-2026-10-26.md)。Release `423877513` 于 `2026-10-26T05:10:19Z` 公开并设为Latest，`draft=false/prerelease=false`；标签与target绑定冻结源码 `acb71b9f39e8ae4799179b0cab088245c0a5ea5b`。13附件匿名下载全部HTTP200、实际长度与SHA-256匹配双构建冻结包。仅本候选的 USER_APPROVED_EXCEPTION 已获明确批准并在Release公开，覆盖率/跳过/复用限制及永久门槛保持原义。最终实际安装和VS Code仍由用户执行，USER_VALIDATION_PENDING；未改原工程、既有runtime、全局设置或硬件。冻结包文档保留构建时状态，后续master文档和本记录说明实际发布。以下为历史断点。
 
 2026-10-26 v1.3.2 发布授权断点：用户明确批准仅对冻结 `acb71b9f39e8ae4799179b0cab088245c0a5ea5b` 的既有13文件候选接受披露限制并发布Latest，见[授权记录](../codex/returns/STM32TK-132/authorization-2026-10-26.md)。资格处置为 USER_APPROVED_EXCEPTION，永久门槛未改、未达标数值不变为PASS。下一步非强推源码/标签、上传核验13文件、发布并匿名复核；最终实际安装/VS Code仍由用户负责，USER_VALIDATION_PENDING，不改原工程、不操作硬件。以下为历史断点。
