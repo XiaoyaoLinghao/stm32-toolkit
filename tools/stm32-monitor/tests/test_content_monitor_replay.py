@@ -8,6 +8,7 @@ TestRun and fake History window through the normal public workflow.
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import replace
 from hashlib import sha256
 import json
 from pathlib import Path
@@ -429,8 +430,11 @@ _SNAPSHOT_REFERENCE_MUTATIONS = (
 )
 
 
-def _v2_physical_snapshot_wire(v1_wire: dict[str, object]) -> dict[str, object]:
-    """Project one valid v1 snapshot reference onto the physical v2 form."""
+def _v2_physical_wire(
+    v1_wire: dict[str, object],
+    source_record_sha256: str,
+) -> dict[str, object]:
+    """Project one v1 reference onto the physical v2 form."""
     wire = deepcopy(v1_wire)
     wire.pop("fixture_sha256")
     wire["schema"] = "stm32-monitor-run-ref/2"
@@ -443,9 +447,21 @@ def _v2_physical_snapshot_wire(v1_wire: dict[str, object]) -> dict[str, object]:
     wire["import_workspace_id"] = wire["origin_workspace_id"]
     wire["projected_session_id"] = wire["origin_session_id"]
     wire["projected_run_id"] = wire["origin_run_id"]
-    wire["source_record_sha256"] = "2" * 64
+    wire["source_record_sha256"] = source_record_sha256
     _redigest_reference(wire)
     return wire
+
+
+def _v2_physical_snapshot_wire(v1_wire: dict[str, object]) -> dict[str, object]:
+    """Project one valid v1 snapshot reference onto the physical v2 form."""
+    return _v2_physical_wire(v1_wire, "2" * 64)
+
+
+def _v2_physical_legacy_wire(v1_wire: dict[str, object]) -> dict[str, object]:
+    """Project one valid legacy v1 reference onto the physical v2 form."""
+    source_record_sha256 = v1_wire["fixture_sha256"]
+    assert isinstance(source_record_sha256, str)
+    return _v2_physical_wire(v1_wire, source_record_sha256)
 
 
 @pytest.mark.parametrize("version", ("v1", "v2"))
@@ -479,6 +495,136 @@ def test_snapshot_run_reference_rejects_partial_mixed_and_forged_forms(
             MonitorRunRefV2.from_value(wire)
         assert versioned.value.code == "MONITOR_REPLAY_INVALID"
     assert wire == before, case
+
+
+def _direct_reference_kwargs(wire: dict[str, object]) -> dict[str, object]:
+    """Build direct-constructor kwargs from one already-validated wire form."""
+    from stm32_monitor.replay import _REF_FIELDS, _REF_FIELDS_V2
+
+    fields = (
+        _REF_FIELDS_V2
+        if wire["schema"] == "stm32-monitor-run-ref/2"
+        else _REF_FIELDS
+    )
+    projected = wire["projected_batch_sha256s"]
+    assert isinstance(projected, list)
+    kwargs = {field: wire[field] for field in fields}
+    kwargs["projected_batch_sha256s"] = tuple(projected)
+    for name in PROVENANCE_FIELDS:
+        if name in wire:
+            kwargs[name] = wire[name]
+    return kwargs
+
+
+_DIRECT_PROVENANCE_FAULTS = (
+    "legacy-git-with-evidence-only",
+    "baseline-without-evidence",
+    "mixed-git-and-snapshot",
+    "null-git-without-markers",
+)
+
+
+@pytest.mark.parametrize("version", ("v1", "v2"))
+@pytest.mark.parametrize("case", _DIRECT_PROVENANCE_FAULTS)
+def test_direct_run_reference_rejects_inconsistent_provenance(
+    case: str,
+    version: str,
+    legacy_reference_payload: dict[str, object],
+    snapshot_reference_payload: dict[str, object],
+) -> None:
+    snapshot_form = case in {"baseline-without-evidence", "mixed-git-and-snapshot"}
+    wire = deepcopy(
+        snapshot_reference_payload if snapshot_form else legacy_reference_payload
+    )
+    extra: dict[str, object] = {}
+    if case == "legacy-git-with-evidence-only":
+        extra["git_evidence"] = dict(GIT_EVIDENCE)
+    elif case == "baseline-without-evidence":
+        wire["git_evidence"] = None
+    elif case == "mixed-git-and-snapshot":
+        wire["git_head"] = "b" * 40
+        wire["git_dirty"] = False
+    else:
+        wire["git_head"] = None
+        wire["git_dirty"] = None
+    _redigest_reference(wire)
+    if version == "v2":
+        wire = (
+            _v2_physical_snapshot_wire(wire)
+            if snapshot_form
+            else _v2_physical_legacy_wire(wire)
+        )
+    before = deepcopy(wire)
+    kwargs = _direct_reference_kwargs(wire) | extra
+
+    if case == "legacy-git-with-evidence-only":
+        # The serialized legacy form stays closed and hides the extra pair.
+        assert validate_run_reference(wire) == wire
+    else:
+        with pytest.raises(ReplayContractError):
+            validate_run_reference(wire)
+
+    classifier = MonitorRunRef if version == "v1" else MonitorRunRefV2
+    with pytest.raises(MonitorReplayError) as error:
+        classifier(**kwargs)
+
+    assert error.value.code == "MONITOR_REPLAY_INVALID"
+    assert wire == before, case
+
+
+@pytest.mark.parametrize(
+    "change",
+    ("add-evidence", "drop-baseline"),
+)
+def test_replace_cannot_desynchronize_the_run_reference_pair(
+    change: str,
+    legacy_reference_payload: dict[str, object],
+    snapshot_reference_payload: dict[str, object],
+) -> None:
+    if change == "add-evidence":
+        wire = _v2_physical_legacy_wire(legacy_reference_payload)
+    else:
+        wire = _v2_physical_snapshot_wire(snapshot_reference_payload)
+    assert validate_run_reference(wire) == wire
+    reference = MonitorRunRefV2(**_direct_reference_kwargs(wire))
+
+    with pytest.raises(MonitorReplayError) as error:
+        if change == "add-evidence":
+            replace(reference, git_evidence=dict(GIT_EVIDENCE))
+        else:
+            replace(reference, source_baseline=None)
+
+    assert error.value.code == "MONITOR_REPLAY_INVALID"
+    assert reference.to_dict() == wire
+
+
+@pytest.mark.parametrize("version", ("v1", "v2"))
+def test_direct_snapshot_reference_freezes_copied_evidence(
+    version: str,
+    snapshot_reference_payload: dict[str, object],
+) -> None:
+    wire = deepcopy(snapshot_reference_payload)
+    if version == "v2":
+        wire = _v2_physical_snapshot_wire(wire)
+    assert validate_run_reference(wire) == wire
+
+    classifier = MonitorRunRef if version == "v1" else MonitorRunRefV2
+    reference = classifier(**_direct_reference_kwargs(wire))
+
+    assert type(reference) is classifier
+    assert reference.source_baseline == SOURCE_BASELINE
+    assert reference.git_head is None and reference.git_dirty is None
+    assert reference.git_evidence == GIT_EVIDENCE
+    assert isinstance(reference.git_evidence, MappingProxyType)
+    with pytest.raises(TypeError):
+        reference.git_evidence["rule"] = "status"  # type: ignore[index]
+    assert reference.to_dict() == wire
+
+    serialized = reference.to_dict()
+    evidence = serialized["git_evidence"]
+    assert isinstance(evidence, dict)
+    evidence["rule"] = "status"
+    assert reference.to_dict()["git_evidence"] == GIT_EVIDENCE
 
 
 @pytest.mark.parametrize(

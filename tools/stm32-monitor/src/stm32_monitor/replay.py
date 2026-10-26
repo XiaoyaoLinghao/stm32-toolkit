@@ -709,18 +709,17 @@ class MonitorRunRefV2:
     def __post_init__(self) -> None:
         if self.schema != MONITOR_RUN_REF_SCHEMA_V2:
             _fail(MONITOR_REPLAY_INVALID, "monitor run reference schema is invalid")
-        if self.git_evidence is not None:
-            try:
-                object.__setattr__(
-                    self,
-                    "git_evidence",
-                    MappingProxyType(unavailable_git_evidence(self.git_evidence)),
-                )
-            except ValueError as error:
-                raise MonitorReplayError(
-                    MONITOR_REPLAY_INVALID,
-                    "monitor run reference provenance is invalid",
-                ) from error
+        # Validate the complete provenance form before serialization.  ``to_dict``
+        # omits both keys together for a legacy reference, so a partial snapshot
+        # pair must fail here instead of being hidden by the closed wire check.
+        evidence = _validated_reference_provenance(
+            git_head=self.git_head,
+            git_dirty=self.git_dirty,
+            source_baseline=self.source_baseline,
+            git_evidence=self.git_evidence,
+        )
+        if evidence is not None:
+            object.__setattr__(self, "git_evidence", evidence)
         try:
             validate_run_reference(self.to_dict())
         except ReplayContractError as error:
