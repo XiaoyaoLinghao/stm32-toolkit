@@ -20,7 +20,10 @@ from stm32_toolkit.acceptance.recovery_workflows import (
     checkpoint_acceptance_attempt,
     resume_acceptance_attempt,
 )
-from stm32_toolkit.build.identity import LEGACY_INPUT_DISCOVERY_POLICY
+from stm32_toolkit.build.identity import (
+    LEGACY_INPUT_DISCOVERY_POLICY,
+    SOURCE_LOCAL_HEADERS_POLICY,
+)
 from stm32_toolkit.diagnostic_workflows import (
     DiagnosticWorkflowContext,
     diagnostic_declare_source_change,
@@ -57,6 +60,7 @@ ALTERNATE_ELF_SHA256 = "8" * 64
 WRONG_AFTER_BUILD_ID = "7" * 64
 WRONG_AFTER_ELF_SHA256 = "6" * 64
 ALTERNATE_RUN_ID = "00000000-0000-4000-8000-000000000004"
+CURRENT_INPUT_SNAPSHOT_SHA256 = "9" * 64
 
 
 def _build_identity(build_id: str, elf_sha256: str, input_snapshot_sha256: str) -> dict[str, str]:
@@ -187,7 +191,13 @@ def _install_build_seam(
             },
         )
 
-    def snapshot_provider(_model: object, *, policy: str) -> object:
+    def snapshot_provider(
+        _model: object, *, policy: str = SOURCE_LOCAL_HEADERS_POLICY
+    ) -> object:
+        if policy == SOURCE_LOCAL_HEADERS_POLICY:
+            # The begin/current-input identity seam calls the collector through
+            # its real optional default; this is not a build verification call.
+            return SimpleNamespace(sha256=CURRENT_INPUT_SNAPSHOT_SHA256)
         assert policy == LEGACY_INPUT_DISCOVERY_POLICY
         index = max(0, len(build_calls) - 1)
         value = build_snapshots[index]

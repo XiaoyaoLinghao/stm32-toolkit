@@ -20,6 +20,10 @@ from stm32_toolkit.acceptance.recovery_workflows import (
     authorize_acceptance_source_change,
     resume_acceptance_attempt,
 )
+from stm32_toolkit.build.identity import (
+    LEGACY_INPUT_DISCOVERY_POLICY,
+    SOURCE_LOCAL_HEADERS_POLICY,
+)
 from stm32_toolkit.evidence import ArtifactRef, EvidenceEnvelope, EvidenceIdentity
 from stm32_toolkit.evidence.gc import RootRecord, get_root
 from stm32_toolkit.diagnostics import (
@@ -31,6 +35,31 @@ from stm32_toolkit.diagnostics import (
 
 
 ATTEMPT_ID = "00000000-0000-4000-8000-000000000001"
+CURRENT_INPUT_SNAPSHOT = "9" * 64
+LEGACY_BUILD_INPUT_SNAPSHOT = "d" * 64
+
+
+def _snapshot_provider(record: list[str] | None = None):
+    """Model the real optional policy default and the explicit legacy policy.
+
+    ``_current_identity`` calls ``snapshot_project_inputs(model)`` and therefore
+    takes the optional source-local default, while a built-firmware checkpoint
+    passes the legacy policy explicitly.  Both paths must yield a real nonzero
+    digest; neither may fall back to a fabricated zero identity.  The optional
+    ``record`` list keeps the two call shapes distinguishable in a test.
+    """
+
+    def snapshot(
+        _model: object, *, policy: str = SOURCE_LOCAL_HEADERS_POLICY
+    ) -> SimpleNamespace:
+        if record is not None:
+            record.append(policy)
+        if policy == LEGACY_INPUT_DISCOVERY_POLICY:
+            return SimpleNamespace(sha256=LEGACY_BUILD_INPUT_SNAPSHOT)
+        assert policy == SOURCE_LOCAL_HEADERS_POLICY
+        return SimpleNamespace(sha256=CURRENT_INPUT_SNAPSHOT)
+
+    return snapshot
 
 
 def test_diagnostic_store_busy_maps_to_acceptance_availability_result() -> None:
@@ -58,6 +87,10 @@ def test_begin_publishes_revision_zero_and_retry_returns_the_same_snapshot(tmp_p
             target_device="STM32F429ZITx",
         ),
     )
+    policies: list[str] = []
+    monkeypatch.setattr(
+        recovery_workflows, "snapshot_project_inputs", _snapshot_provider(policies)
+    )
     context = AcceptanceRecoveryContext(project, data, "session-a")
     first = begin_acceptance_attempt(
         context,
@@ -67,6 +100,9 @@ def test_begin_publishes_revision_zero_and_retry_returns_the_same_snapshot(tmp_p
     )
     assert first.ok is True
     assert first.data["attempt"]["revision"] == 0
+    # The begin identity enumerates current inputs through the optional default,
+    # never through the built-firmware legacy policy.
+    assert policies == [SOURCE_LOCAL_HEADERS_POLICY]
     second = begin_acceptance_attempt(
         context,
         attempt_id=ATTEMPT_ID,
@@ -95,6 +131,9 @@ def test_identical_checkpoint_retry_returns_the_published_snapshot(
             memory=SimpleNamespace(source="keil"),
             target_device="STM32F429ZITx",
         ),
+    )
+    monkeypatch.setattr(
+        recovery_workflows, "snapshot_project_inputs", _snapshot_provider()
     )
     context = AcceptanceRecoveryContext(project, tmp_path / "data", "session-a")
     assert begin_acceptance_attempt(
@@ -158,11 +197,9 @@ def _project_transition_context(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
             {"build": {"elfFresh": True, "preset": "arm-debug", "buildId": "b" * 64, "elfSha256": "e" * 64}},
         ),
     )
-    def snapshot(_model: object, *, policy: str) -> SimpleNamespace:
-        assert policy == "legacy"
-        return SimpleNamespace(sha256="d" * 64)
-
-    monkeypatch.setattr(recovery_workflows, "snapshot_project_inputs", snapshot)
+    monkeypatch.setattr(
+        recovery_workflows, "snapshot_project_inputs", _snapshot_provider()
+    )
     return project, data, AcceptanceRecoveryContext(project, data, "session-a", clock=clock)
 
 
@@ -708,6 +745,12 @@ def test_public_target_replay_refusals_preserve_revision_two(
         stage="firmware-built-before",
     )
     assert built.ok is True, case_id
+    # The built-firmware checkpoint still verifies through the explicit legacy
+    # snapshot policy, not the current-input default.
+    assert (
+        built.data["attempt"]["stageOutputs"]["beforeInputSnapshotSha256"]
+        == LEGACY_BUILD_INPUT_SNAPSHOT
+    )
     workspace = recovery_workflows._workspace_paths_factory(
         data,
         project,

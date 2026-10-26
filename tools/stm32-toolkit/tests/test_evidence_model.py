@@ -848,7 +848,7 @@ def test_provenance_leaf_imports_in_a_fresh_interpreter_in_any_initial_order():
 def test_t10_1a_evidence_raise_inventory_is_exact_and_literal():
     """A missing, extra, reordered-shape, or wrongly classified raise site breaks the frozen ABI map."""
     expected = {
-        "model.py": (44, {"EVIDENCE_INVALID": 31, "EVIDENCE_CORRUPT": 0, "EVIDENCE_PATH_UNSAFE": 4, "EVIDENCE_LIMIT_EXCEEDED": 9}),
+        "model.py": (49, {"EVIDENCE_INVALID": 36, "EVIDENCE_CORRUPT": 0, "EVIDENCE_PATH_UNSAFE": 4, "EVIDENCE_LIMIT_EXCEEDED": 9}),
         "store.py": (59, {"EVIDENCE_INVALID": 10, "EVIDENCE_CORRUPT": 9, "EVIDENCE_PATH_UNSAFE": 34, "EVIDENCE_LIMIT_EXCEEDED": 6}),
         "catalog.py": (19, {"EVIDENCE_INVALID": 14, "EVIDENCE_CORRUPT": 2, "EVIDENCE_PATH_UNSAFE": 3, "EVIDENCE_LIMIT_EXCEEDED": 0}),
         "gc.py": (33, {"EVIDENCE_INVALID": 8, "EVIDENCE_CORRUPT": 11, "EVIDENCE_PATH_UNSAFE": 13, "EVIDENCE_LIMIT_EXCEEDED": 1}),

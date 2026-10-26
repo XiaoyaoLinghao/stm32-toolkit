@@ -1020,6 +1020,63 @@ def test_acceptance_recovery_identity_emits_the_snapshot_form_without_git(
     assert failed.value.code == "ACCEPTANCE_ATTEMPT_OUTPUT_INVALID"
 
 
+def test_begin_acceptance_attempt_stores_the_real_snapshot_form_without_git(
+    tmp_path: Path,
+) -> None:
+    """The public begin path enumerates a real configured project on disk.
+
+    The stored envelope must carry the actual input snapshot digest and only the
+    bounded Git-unavailable diagnostic; a zero or fabricated digest may never
+    become an input-snapshot-v1 baseline.
+    """
+    from stm32_toolkit.acceptance import recovery_workflows
+    from stm32_toolkit.build.identity import snapshot_project_inputs
+    from stm32_toolkit.project_model import load_project_model
+    from test_risk_recovery_public_producers import _write_project
+
+    project_root = tmp_path / "project"
+    _write_project(project_root)
+    assert not (project_root / ".git").exists()
+    data_root = tmp_path / "data"
+    context = recovery_workflows.AcceptanceRecoveryContext(
+        project_root, data_root, SESSION_ID
+    )
+    attempt_id = "00000000-0000-4000-8000-000000000011"
+
+    begun = recovery_workflows.begin_acceptance_attempt(
+        context,
+        attempt_id=attempt_id,
+        scenario_id="legacy-keil-migration",
+        scenario_version="1",
+    )
+
+    assert begun.ok is True, begun.to_dict()
+    model = load_project_model(project_root)
+    expected_snapshot = snapshot_project_inputs(model).sha256
+    workspace = recovery_workflows._workspace_paths_factory(
+        data_root, project_root, model.logical_project_id, SESSION_ID
+    )
+    evidence = recovery_workflows._evidence_store_factory(
+        workspace.workspace_root / "evidence"
+    )
+    root = recovery_workflows.get_root(
+        evidence,
+        recovery_workflows._ATTEMPT_ROOT_TYPE,
+        recovery_workflows._root_id(attempt_id, 0),
+    )
+    stored = evidence.get_envelope(root.manifest_id).identity
+
+    assert stored.source_baseline == SNAPSHOT_BASELINE
+    assert stored.git_commit is None
+    assert stored.git_dirty is None
+    assert stored.input_snapshot_sha256 == expected_snapshot
+    assert stored.input_snapshot_sha256 != "0" * 64
+    assert stored.content_revision == f"{SNAPSHOT_BASELINE}:{expected_snapshot}"
+    assert stored.git_evidence is not None
+    assert dict(stored.git_evidence) == SNAPSHOT_EVIDENCE
+    assert set(stored.git_evidence) == {"status", "code", "rule"}
+
+
 @dataclass(frozen=True)
 class _ReplayFixture:
     descriptor: object
