@@ -477,7 +477,6 @@ def test_skills_explain_preflight_statuses_and_discovery_boundaries():
     assert "never writes memory, resumes execution" not in read_var
 
 
-@pytest.mark.skipif(os.name != "nt", reason="PowerShell setup helper")
 def _require_pwsh() -> str:
     executable = shutil.which("pwsh")
     assert executable is not None, (
@@ -486,6 +485,7 @@ def _require_pwsh() -> str:
     return executable
 
 
+@pytest.mark.skipif(os.name != "nt", reason="PowerShell setup helper")
 def test_setup_helper_uses_explicit_paths_without_ambient_environment(tmp_path: Path):
     project = tmp_path / "project"
     project.mkdir()
@@ -662,8 +662,10 @@ def test_readme_links_current_user_guidance_and_release_boundaries():
     assert "同一页面" in readme_zh
     assert "Keep DataRoot durable and separate from BundleRoot" in readme
     assert "DataRoot 要长期保留，并与 BundleRoot" in readme_zh
-    assert "after a healthy `Check`" in readme
-    assert "`Check` 确认 healthy 后" in readme_zh
+    # The healthy-`Check` prerequisite must remain stated even when its first
+    # letter is capitalized in the guide.
+    assert "after a healthy `check`" in readme.lower()
+    assert "`Check` 为 healthy 后" in readme_zh
     assert "has no system-Python fallback" in readme
     assert "不回退到系统 Python" in readme_zh
     assert "Run at most one mutation command" in readme

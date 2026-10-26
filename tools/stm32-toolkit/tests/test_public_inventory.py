@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import runpy
 import sys
 import tomllib
 from pathlib import Path
@@ -113,8 +114,21 @@ def test_current_monitor_ui_lock_and_fixtures_match_the_release_identity() -> No
     )
     assert lock["version"] == __version__
     assert lock["packages"][""]["version"] == __version__
+
+    # The e2e fixture imports the live protocol constants and drives the real
+    # service, so it must follow the current release instead of pinning a
+    # historical literal. A non-main run name keeps __main__ (and its live
+    # service) unentered while still exposing the imported constants.
+    fixture = runpy.run_path(
+        str(REPO_ROOT / "tools/stm32-monitor/ui/e2e/fake_runtime.py"),
+        run_name="monitor_ui_fake_runtime_fixture",
+    )
+    assert fixture["MONITOR_VERSION"] == __version__
+    assert fixture["TOOLKIT_VERSION"] == __version__
+
+    # The TypeScript unit mocks stay static and intentionally pin the
+    # historical 1.0.0 wire identity.
     for path in (
-        REPO_ROOT / "tools/stm32-monitor/ui/e2e/fake_runtime.py",
         REPO_ROOT / "tools/stm32-monitor/ui/tests/main.test.tsx",
         REPO_ROOT / "tools/stm32-monitor/ui/tests/bootstrap.test.ts",
     ):
