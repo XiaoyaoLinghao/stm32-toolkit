@@ -248,7 +248,9 @@ def test_replay_parser_and_shared_contract_use_identical_wire_bytes() -> None:
     assert payload == before
 
 
-def test_monitor_run_ref_has_exact_closed_fields_and_round_trips_digest() -> None:
+def test_monitor_run_ref_has_exact_closed_fields_and_round_trips_digest(
+    canonical_replay_reference: MonitorRunRef,
+) -> None:
     assert [field.name for field in fields(MonitorRunRef)] == [
         "schema",
         "operation_id",
@@ -284,7 +286,50 @@ def test_monitor_run_ref_has_exact_closed_fields_and_round_trips_digest() -> Non
         "projected_batch_sha256s",
         "transcript_evidence_id",
         "run_ref_sha256",
+        "source_baseline",
+        "git_evidence",
     ]
+
+    assert canonical_replay_reference.source_baseline is None
+    assert canonical_replay_reference.git_evidence is None
+    # A legacy reference keeps the exact old wire key set: the designed optional
+    # provenance fields are omitted rather than emitted as null.
+    assert set(canonical_replay_reference.to_dict()) == {
+        "schema",
+        "operation_id",
+        "scenario_role",
+        "execution_source",
+        "physical_transport_evidence",
+        "origin_workspace_id",
+        "import_workspace_id",
+        "logical_project_id",
+        "origin_session_id",
+        "projected_session_id",
+        "origin_run_id",
+        "projected_run_id",
+        "target_device",
+        "probe_id",
+        "physical_target",
+        "build_id",
+        "elf_sha256",
+        "input_snapshot_sha256",
+        "git_head",
+        "git_dirty",
+        "flash_session_id",
+        "lease_id",
+        "dwarf_sha256",
+        "svd_sha256",
+        "group_id",
+        "group_revision",
+        "start_sequence",
+        "end_sequence_exclusive",
+        "start_captured_unix_ns",
+        "end_captured_unix_ns_exclusive",
+        "fixture_sha256",
+        "projected_batch_sha256s",
+        "transcript_evidence_id",
+        "run_ref_sha256",
+    }
 
 
 @pytest.mark.parametrize(
@@ -487,7 +532,10 @@ def test_public_replay_constructor_boundary_matrix(
     values = {item.name: getattr(reference, item.name) for item in fields(reference)}
     values[field] = replacement
     if recompute_digest:
-        unsigned = dict(values)
+        # Hash the legacy wire dictionary, not the dataclass fields: the wire form
+        # omits the None-only provenance fields that the fields carry.
+        unsigned = dict(before)
+        unsigned[field] = replacement
         unsigned.pop("run_ref_sha256")
         unsigned["projected_batch_sha256s"] = list(
             unsigned["projected_batch_sha256s"]
