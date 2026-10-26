@@ -36,3 +36,14 @@ owns product/test/documentation implementation. No extra plan-approval stop.
   disposition. Obtain any necessary candidate-specific exception only after the
   artifact/evidence is concrete. Existing user request authorizes v1.3.2 delivery;
   do not re-request push/Release authority already given for this version.
+
+## Test-launcher correction identified before phase-2 execution
+
+The existing setup test fixtures in test_setup_runtime.py and two cases in
+ test_plugin_layout.py use powershell.exe with ExecutionPolicy Bypass. They have
+not been executed in this v1.3.2 turn. Claude will change only these test launchers
+to available native PowerShell7 without ExecutionPolicy flags, preserving every
+assertion and real failure. This follows the user's existing PowerShell7 permission
+and execution-policy requirement; it does not modify global policy or production
+installation behavior. The verified executable is
+C:/Users/zhy76/.cache/codex-runtimes/codex-primary-runtime/dependencies/native/powershell/pwsh.exe.

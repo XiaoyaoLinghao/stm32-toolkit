@@ -304,8 +304,8 @@ _SETTINGS_REQUIRED_MESSAGE = (
     "resolve from VS Code configuration, and this generator's supported "
     "default guidance is to supply both reviewed absolute native executable "
     "paths in User Settings; workspace configuration may also define them. "
-    "This offline PLAN/APPLY never reads VS Code configuration, so it makes no "
-    "claim that the settings are absent, unbound, or incomplete."
+    "This offline PLAN/APPLY does not evaluate your effective VS Code settings, "
+    "so it makes no claim that the settings are absent, unbound, or incomplete."
 )
 _SETTINGS_REQUIRED_REMEDIATION = (
     "Put `stm32-toolkit.executablePath` and `stm32-toolkit.compilerPath` in "

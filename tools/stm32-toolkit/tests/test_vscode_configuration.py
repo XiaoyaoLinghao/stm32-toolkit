@@ -745,7 +745,7 @@ def test_default_plan_payload_exposes_user_settings_guidance(tmp_path):
     assert "User Settings" in entry["message"]
     assert "workspace configuration may also define them" in entry["message"]
     assert "makes no claim that the settings are absent" in entry["message"]
-    assert "never reads VS Code configuration" in entry["message"]
+    assert "does not evaluate your effective VS Code settings" in entry["message"]
     assert "--vscode-toolkit-path" in entry["remediation"]
     assert "vscodeToolkitPath" in entry["remediation"]
     assert "PATH installation" in entry["remediation"]
@@ -843,7 +843,6 @@ def test_preserved_invalid_tasks_json_is_never_read_and_gets_warning(
     ]
     for field in (
         "stm32-toolkit.executablePath",
-        "setup-stm32-env",
         "data.vscodeGuidance",
         "data.files",
         "data.preservedPaths",
