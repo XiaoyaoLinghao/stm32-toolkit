@@ -13,9 +13,11 @@ failures and the incomplete Monitor run are retained and corrected, not erased.
 Release qualification is **NOT_QUALIFIED**: Toolkit overall/risk native branch
 coverage is 87.3028%/87.5015% (90% floors); Monitor risk is 92.2527% (95% floor).
 Evidence uses explicit source-bound reuse, with native symlink/platform and
-historical-data limitations. The v1.3.1-only exception does not transfer. Next is
-the frozen-source independent double build, 13-file verification and a concrete
-candidate disposition. Final installation/VS Code remains user-owned and
+historical-data limitations. The v1.3.1-only exception does not transfer. The
+[frozen candidate](codex/returns/STM32TK-132/candidate-build.md) at
+`acb71b9f39e8ae4799179b0cab088245c0a5ea5b` has completed independent double
+builds: all 13 files are identical and official bundle verification passed.
+Candidate-specific qualification disposition is pending. Final installation/VS Code remains user-owned and
 USER_VALIDATION_PENDING; original project and hardware access remain prohibited.
 The following sections preserve earlier release checkpoints.
 
