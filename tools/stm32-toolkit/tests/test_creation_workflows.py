@@ -289,7 +289,7 @@ def test_prepare_persists_authorization_without_git_workspace(
 
     support = _complete_support(tmp_path)
     request, planned = _prepare_with_support(tmp_path, support)
-    assert planned.data["blockers"] == []
+    assert not planned.data["blockers"]
     assert not (tmp_path / ".git").exists()
     calls: list[str] = []
     original_prepare = CreationAuthorizationStore.prepare
@@ -339,7 +339,7 @@ def test_prepare_persists_authorization_with_unborn_git_head(
     assert unborn_head.startswith("ref: ")
     assert not (tmp_path / ".git" / unborn_head.removeprefix("ref: ")).exists()
     request, planned = _prepare_with_support(tmp_path, support)
-    assert planned.data["blockers"] == []
+    assert not planned.data["blockers"]
     calls: list[str] = []
     original_prepare = CreationAuthorizationStore.prepare
 
@@ -425,7 +425,7 @@ def test_public_prepare_and_apply_succeed_without_git(tmp_path: Path, monkeypatc
     assert not (tmp_path / ".git").exists()
     planned = plan_creation_workflow(request, support_profile=support)
     assert planned.ok is True
-    assert planned.data["blockers"] == []
+    assert not planned.data["blockers"]
 
     store = CreationAuthorizationStore(
         tmp_path / "data",
