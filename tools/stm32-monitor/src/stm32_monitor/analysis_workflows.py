@@ -58,6 +58,7 @@ from .replay import (
     _AuthenticatedPhysicalMonitorRun,
     canonical_replay_json_bytes,
     _load_authenticated_physical_monitor_run,
+    _provenance_document,
 )
 
 
@@ -282,6 +283,8 @@ def _identity_for_ref(reference: MonitorRunReference) -> EvidenceIdentity:
             input_snapshot_sha256=reference.input_snapshot_sha256,
             git_commit=reference.git_head,
             git_dirty=reference.git_dirty,
+            source_baseline=reference.source_baseline,
+            git_evidence=reference.git_evidence,
         )
     except (TypeError, ValueError, OverflowError, EvidenceValidationError) as error:
         _fail(EVIDENCE_INTEGRITY_FAILURE, "Monitor Evidence identity is invalid")
@@ -403,6 +406,11 @@ def _validate_transcript(
         "dwarfSha256": reference.dwarf_sha256,
         "svdSha256": reference.svd_sha256,
     }
+    # Only the snapshot form adds wire keys; a legacy transcript keeps its
+    # exact recorded binding key set.
+    if reference.source_baseline is not None:
+        expected_binding["sourceBaseline"] = reference.source_baseline
+        expected_binding["gitEvidence"] = _provenance_document(reference.git_evidence)
     batches = document.batches
     if (
         document.source != "toolkit-generated-probe-v2-replay"
@@ -437,6 +445,8 @@ def _validate_transcript(
             lease_id=reference.lease_id,
             dwarf_sha256=reference.dwarf_sha256,
             svd_sha256=reference.svd_sha256,
+            source_baseline=reference.source_baseline,
+            git_evidence=reference.git_evidence,
         )
         projected_digests = tuple(
             sha256(
@@ -709,6 +719,8 @@ def _projected_binding(reference: MonitorRunReference, paths: WorkspacePaths) ->
             lease_id=reference.lease_id,
             dwarf_sha256=reference.dwarf_sha256,
             svd_sha256=reference.svd_sha256,
+            source_baseline=reference.source_baseline,
+            git_evidence=reference.git_evidence,
         )
     except (TypeError, ValueError, OverflowError) as error:
         _fail(INCOMPATIBLE_IDENTITY, "projected Monitor binding is invalid")
@@ -1061,6 +1073,9 @@ def _test_identity_matches_reference(manifest: object, reference: MonitorRunRef)
         and identity.input_snapshot_sha256 == reference.input_snapshot_sha256
         and identity.git_commit == reference.git_head
         and identity.git_dirty == reference.git_dirty
+        and identity.source_baseline == reference.source_baseline
+        and identity.git_evidence_document()
+        == _provenance_document(reference.git_evidence)
     )
 
 

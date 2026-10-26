@@ -27,6 +27,7 @@ from stm32_toolkit.monitor_analysis_contract import (
     native_statistics,
     validate_native_request,
 )
+from stm32_toolkit.source_provenance import unavailable_git_evidence
 
 
 ANALYSIS_REQUEST_SCHEMA = "stm32-monitor-analysis-request/1"
@@ -1105,6 +1106,16 @@ class DiagnosticMarker:
         }
 
 
+def _git_evidence_document(value: object) -> dict[str, str] | None:
+    """Return the one canonical bounded document for a recorded pair member."""
+    if value is None:
+        return None
+    try:
+        return unavailable_git_evidence(value)
+    except ValueError as error:
+        raise AnalysisError(ANALYSIS_REQUEST_INVALID, "analysis batch identity is invalid") from error
+
+
 def _binding_matches(reference: MonitorRunReference, batch: SampleBatch) -> bool:
     binding = batch.binding
     return (
@@ -1120,6 +1131,9 @@ def _binding_matches(reference: MonitorRunReference, batch: SampleBatch) -> bool
         and binding.input_snapshot_sha256 == reference.input_snapshot_sha256
         and binding.git_head == reference.git_head
         and binding.git_dirty == reference.git_dirty
+        and binding.source_baseline == reference.source_baseline
+        and _git_evidence_document(binding.git_evidence)
+        == _git_evidence_document(reference.git_evidence)
         and binding.flash_session_id == reference.flash_session_id
         and binding.lease_id == reference.lease_id
         and binding.dwarf_sha256 == reference.dwarf_sha256

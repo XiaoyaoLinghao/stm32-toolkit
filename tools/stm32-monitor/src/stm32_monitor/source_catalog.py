@@ -24,6 +24,10 @@ from stm32_toolkit.debug.types import DwarfError, DwarfType
 from stm32_toolkit.probe.flash import load_fresh_firmware_facts
 from stm32_toolkit.probe.protocol import MAX_READ_BYTES
 from stm32_toolkit.project_model import ProjectModel, load_project_model
+from stm32_toolkit.source_provenance import (
+    SOURCE_BASELINE_INPUT_SNAPSHOT,
+    unavailable_git_evidence,
+)
 
 
 _ID = re.compile(r"[0-9a-f]{64}\Z")
@@ -220,6 +224,35 @@ def _load_base(adapter: ClangSourceAdapter, facts: _Facts, plan: SourcePlan) -> 
     return _Base(index, dwarf, tuple(sorted(verified, key=lambda path: (path.casefold(), path))))
 
 
+def _provenance_signature(binding: object) -> tuple[object, ...]:
+    """Return the closed provenance projection for one source binding.
+
+    Snapshot bindings keep explicit null Git fields, so the recorded Git
+    fields alone never distinguish two provenance records.  The immutable
+    source-baseline/unavailable-Git pair is projected into a canonical,
+    hashable and JSON-serializable form so a changed pair invalidates the
+    dependent catalog even when both Git fields remain null.  Legacy bindings
+    contribute nothing and keep their previous signature exactly.
+    """
+    source_baseline = getattr(binding, "source_baseline", None)
+    git_evidence = getattr(binding, "git_evidence", None)
+    if source_baseline is None and git_evidence is None:
+        return ()
+    if (source_baseline != SOURCE_BASELINE_INPUT_SNAPSHOT
+            or getattr(binding, "git_head", None) is not None
+            or getattr(binding, "git_dirty", None) is not None):
+        raise SourceCatalogFailure("MONITOR_SOURCE_CONTEXT_CHANGED",
+                                   "Source binding provenance is invalid")
+    try:
+        evidence = unavailable_git_evidence(git_evidence)
+    except ValueError as error:
+        raise SourceCatalogFailure("MONITOR_SOURCE_CONTEXT_CHANGED",
+                                   "Source binding provenance is invalid") from error
+    # A sorted tuple is independent of mapping insertion order while staying
+    # hashable for signature keys and JSON-serializable for the catalog digest.
+    return ((source_baseline, tuple(sorted(evidence.items()))),)
+
+
 def _binding_signature(binding: object | None) -> tuple[object, ...]:
     if binding is None:
         return ()
@@ -230,7 +263,7 @@ def _binding_signature(binding: object | None) -> tuple[object, ...]:
     regions = tuple((getattr(region, "name", None), getattr(region, "origin", None),
                      getattr(region, "length", None), getattr(region, "attributes", None))
                     for region in getattr(binding, "memory_regions", ()))
-    return identity + (regions,)
+    return identity + _provenance_signature(binding) + (regions,)
 
 
 def _binding_matches(binding: object | None, facts: _Facts, workspace: str, session: str) -> bool:
