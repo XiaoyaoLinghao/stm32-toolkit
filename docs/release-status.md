@@ -1,5 +1,24 @@
 # Release status and retained limitations
 
+## v1.3.2 reviewed local candidate — 2026-10-26
+
+The diagnostics and version-alignment software is **ACCEPTED_WITH_FIXES** at
+`c1985337bb1b74eab38deb12509ace22f191ab07`; see the
+[independent review and executed evidence](codex/returns/STM32TK-132/version-review.md).
+Public Latest remains v1.3.1. Version groups passed 746 cases with one platform
+skip; setup fixtures passed all 45; the affected Monitor group passed all 288.
+Overlapping phase-1 and independent runs are reported separately. Original
+failures and the incomplete Monitor run are retained and corrected, not erased.
+
+Release qualification is **NOT_QUALIFIED**: Toolkit overall/risk native branch
+coverage is 87.3028%/87.5015% (90% floors); Monitor risk is 92.2527% (95% floor).
+Evidence uses explicit source-bound reuse, with native symlink/platform and
+historical-data limitations. The v1.3.1-only exception does not transfer. Next is
+the frozen-source independent double build, 13-file verification and a concrete
+candidate disposition. Final installation/VS Code remains user-owned and
+USER_VALIDATION_PENDING; original project and hardware access remain prohibited.
+The following sections preserve earlier release checkpoints.
+
 ## v1.3.1 published Latest — 2026-10-26
 
 The [v1.3.1 Release](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.3.1),

@@ -4,6 +4,8 @@
 
 ## 1. 当前断点与证据
 
+2026-10-26 v1.3.2 当前断点：诊断与版本对齐软件在 `c1985337bb1b74eab38deb12509ace22f191ab07` 独立审核为 **ACCEPTED_WITH_FIXES**，见[执行与复核记录](../codex/returns/STM32TK-132/version-review.md)。版本相关完整分组746通过/1平台跳过，setup隔离夹具45通过，Monitor受影响完整组288通过；独立76项及前期837项等重叠证据单列，不相加冒充全量。原失败和未完成Monitor运行保留，修正后相关组重跑通过。原生分支数据仅按完全匹配源码复用，变更文件旧弧已移除；Toolkit总体/风险87.3028%/87.5015%、Monitor风险92.2527%，永久门槛未满足，发行仍 **NOT_QUALIFIED**。下一步冻结源码、双构建并核验13文件，再对具体候选处理例外；旧v1.3.1批准不自动沿用。最终安装/VS Code继续由用户负责，USER_VALIDATION_PENDING，不改原工程、既有runtime、全局设置或硬件。GitHub Latest仍为v1.3.1，以下为历史断点。
+
 2026-10-26 最新发布：[v1.3.1 已公开发布为 Latest](../codex/returns/STM32TK-131/publication-2026-10-26.md)。用户明确要求先发布，再自行独立测试。Release 423752112 的版本页和 Latest API 均返回 `draft=false`、`prerelease=false`，标签/target 为冻结源码 `7ff99e50011b6321ae3f0c9bb2edfab91724be3e`。13 个附件匿名下载均为 HTTP200，大小与 SHA-256 全部匹配冻结构建。最终安装/VS Code 验证仍由用户负责并记 USER_VALIDATION_PENDING；保留原批准限制，不转换成 PASS，不操作原工程或硬件。主代理本轮优化、构建和发布交付已完成，以下为历史断点。
 
 2026-10-26 最新远端交付：[GitHub 交付记录](../codex/returns/STM32TK-131/github-delivery-2026-10-26.md)。本机 Git Credential Manager 登录复核通过，按用户明确授权以非强推方式将 `master` 推送至 `a1bb1908fb1fa992cc3e9f6b9bb802b309157d78`；`v1.3.1` 标签指向冻结构建源码 `7ff99e50011b6321ae3f0c9bb2edfab91724be3e`，远端身份已核对。Release 草稿423752112已创建，未公开发布为Latest。最终实际安装与VS Code实测由用户负责，仍为 USER_VALIDATION_PENDING；不重新启动自动IDE验证，不操作原工程或硬件。后续文档提交只记录交付，不改变冻结包。以下为历史断点。
