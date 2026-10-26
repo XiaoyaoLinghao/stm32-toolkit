@@ -24,12 +24,16 @@ from stm32_toolkit.generation import (
     apply_project_configuration,
     plan_project_configuration,
 )
+from stm32_toolkit.generation import configure as configure_mod
 from stm32_toolkit.generation.managed_files import plan_id_for
 from stm32_toolkit.mcp_server import ServerRuntime
 from stm32_toolkit.project_model import load_project_model
 from stm32_toolkit.vscode_configuration import (
+    VSCODE_USER_SETTING_COMPILER,
+    VSCODE_USER_SETTING_EXECUTABLE,
     VSCodeConfiguration,
     VSCodeConfigurationError,
+    build_vscode_guidance,
     normalize_vscode_configuration,
 )
 from stm32_toolkit.workflows import configure_project_workflow
@@ -712,3 +716,360 @@ def test_mcp_wrapper_propagates_binding_and_keeps_root_boundary(tmp_path):
     )
     assert guarded["ok"] is False
     assert guarded["code"] == "UNSUPPORTED_MULTIROOT"
+
+
+# ---------------------------------------------------------------------------
+# derived PLAN/APPLY guidance
+# ---------------------------------------------------------------------------
+
+
+def test_default_plan_payload_exposes_user_settings_guidance(tmp_path):
+    root = write_project(tmp_path / "proj")
+    plan = plan_for(root)
+
+    guidance = plan.to_dict()["vscodeGuidance"]
+    assert guidance["bindingMode"] == "user-settings"
+    assert guidance["requiredUserSettings"] == [
+        VSCODE_USER_SETTING_EXECUTABLE,
+        VSCODE_USER_SETTING_COMPILER,
+    ]
+    assert guidance["userSettingsChecked"] is False
+    assert guidance["preservedPaths"] == []
+    entry = guidance["diagnostics"][0]
+    assert set(entry) == {"code", "severity", "message", "remediation"}
+    assert entry["code"] == "VSCODE_EXECUTABLE_SETTINGS_REQUIRED"
+    assert entry["severity"] == "info"
+    # The supported default is User Settings guidance, without asserting that
+    # VS Code configuration is absent (workspace configuration can also bind
+    # these values) and without claiming PATH installation is required.
+    assert "User Settings" in entry["message"]
+    assert "workspace configuration may also define them" in entry["message"]
+    assert "makes no claim that the settings are absent" in entry["message"]
+    assert "never reads VS Code configuration" in entry["message"]
+    assert "--vscode-toolkit-path" in entry["remediation"]
+    assert "vscodeToolkitPath" in entry["remediation"]
+    assert "PATH installation" in entry["remediation"]
+    assert "is not implied" in entry["remediation"]
+    # The guidance is advisory only and does not alter plan identity.
+    assert plan.plan_id == plan_id_for(plan)
+
+
+def test_explicit_binding_plan_has_no_default_settings_diagnostic(tmp_path):
+    root = write_project(tmp_path / "proj")
+    toolkit, gcc = _double(root, tmp_path)
+
+    guidance = _bound_plan(root, toolkit, gcc).to_dict()["vscodeGuidance"]
+
+    assert guidance["bindingMode"] == "explicit-paths"
+    assert guidance["requiredUserSettings"] == []
+    assert guidance["userSettingsChecked"] is False
+    assert guidance["preservedPaths"] == []
+    assert guidance["diagnostics"] == []
+
+
+def test_explicit_binding_with_preserved_tasks_gets_only_the_tasks_warning(
+    tmp_path,
+):
+    root = write_project(tmp_path / "proj")
+    toolkit, gcc = _double(root, tmp_path)
+    tasks = root / ".vscode" / "tasks.json"
+    tasks.parent.mkdir()
+    user_bytes = b'{"version": "2.0.0", "tasks": [ user-owned invalid json\n'
+    tasks.write_bytes(user_bytes)
+
+    plan = _bound_plan(root, toolkit, gcc)
+    guidance = plan.to_dict()["vscodeGuidance"]
+    assert guidance["bindingMode"] == "explicit-paths"
+    assert guidance["requiredUserSettings"] == []
+    assert guidance["userSettingsChecked"] is False
+    assert guidance["preservedPaths"] == [".vscode/tasks.json"]
+    assert [item["code"] for item in guidance["diagnostics"]] == [
+        "VSCODE_TASKS_PRESERVED"
+    ]
+    assert guidance["diagnostics"][0]["severity"] == "warning"
+    assert guidance["diagnostics"][0]["path"] == ".vscode/tasks.json"
+
+    applied = apply_project_configuration(plan)
+    assert applied.ok is True, applied
+    applied_guidance = applied.data["vscodeGuidance"]
+    assert applied_guidance["bindingMode"] == "explicit-paths"
+    assert list(applied_guidance["requiredUserSettings"]) == []
+    assert [item["code"] for item in applied_guidance["diagnostics"]] == [
+        "VSCODE_TASKS_PRESERVED"
+    ]
+    assert tasks.read_bytes() == user_bytes
+
+
+def test_preserved_invalid_tasks_json_is_never_read_and_gets_warning(
+    tmp_path, monkeypatch
+):
+    root = write_project(tmp_path / "proj")
+    tasks = root / ".vscode" / "tasks.json"
+    tasks.parent.mkdir()
+    user_bytes = b'{"version": "2.0.0", "tasks": [ not valid json\n'
+    tasks.write_bytes(user_bytes)
+    real_read = configure_mod._read_limited
+
+    def guarded_read(path, limit):
+        if Path(path) == tasks:
+            raise AssertionError("preserved tasks bytes must not be read")
+        return real_read(path, limit)
+
+    monkeypatch.setattr(configure_mod, "_read_limited", guarded_read)
+
+    plan = plan_for(root)
+
+    entry = next(
+        entry for entry in plan.files if entry.path == ".vscode/tasks.json"
+    )
+    assert entry.status == "preserved-unowned"
+    assert entry.before_bytes is None
+    assert entry.unified_diff == ""
+    guidance = plan.to_dict()["vscodeGuidance"]
+    assert guidance["preservedPaths"] == [".vscode/tasks.json"]
+    assert [item["code"] for item in guidance["diagnostics"]] == [
+        "VSCODE_EXECUTABLE_SETTINGS_REQUIRED",
+        "VSCODE_TASKS_PRESERVED",
+    ]
+    tasks_diagnostic = guidance["diagnostics"][1]
+    assert tasks_diagnostic["severity"] == "warning"
+    assert tasks_diagnostic["path"] == ".vscode/tasks.json"
+    assert "retained unchanged" in tasks_diagnostic["message"]
+    assert "were not applied to that file" in tasks_diagnostic["message"]
+    assert "contents were not inspected" in tasks_diagnostic["message"]
+    assert "may remain" in tasks_diagnostic["message"]
+    assert "does not claim that a bare command was found" in tasks_diagnostic[
+        "remediation"
+    ]
+    for field in (
+        "stm32-toolkit.executablePath",
+        "setup-stm32-env",
+        "data.vscodeGuidance",
+        "data.files",
+        "data.preservedPaths",
+    ):
+        assert field in tasks_diagnostic["remediation"]
+    # The invalid user bytes never enter the plan payload.
+    serialized = json.dumps(plan.to_dict())
+    assert "not valid json" not in serialized
+    assert "vscodeGuidance" not in next(
+        item.after_bytes
+        for item in plan.files
+        if item.path == ".vscode/tasks.json"
+    ).decode("utf-8")
+
+    applied = apply_project_configuration(plan)
+    assert applied.ok is True, applied
+    assert list(applied.data["preservedPaths"]) == [".vscode/tasks.json"]
+    assert [
+        item["code"] for item in applied.data["vscodeGuidance"]["diagnostics"]
+    ] == ["VSCODE_EXECUTABLE_SETTINGS_REQUIRED", "VSCODE_TASKS_PRESERVED"]
+    assert tasks.read_bytes() == user_bytes
+
+
+def test_other_preserved_editor_paths_are_reported_without_tasks_warning(tmp_path):
+    root = write_project(tmp_path / "proj")
+    settings = root / ".vscode" / "settings.json"
+    settings.parent.mkdir()
+    settings.write_bytes(b"user-owned editor settings\n")
+
+    plan = plan_for(root)
+
+    guidance = plan.to_dict()["vscodeGuidance"]
+    assert guidance["preservedPaths"] == [".vscode/settings.json"]
+    assert [item["code"] for item in guidance["diagnostics"]] == [
+        "VSCODE_EXECUTABLE_SETTINGS_REQUIRED"
+    ]
+    applied = apply_project_configuration(plan)
+    assert applied.ok is True
+    assert list(applied.data["preservedPaths"]) == [".vscode/settings.json"]
+    # Existing preserved-editor warnings stay compatible.
+    assert list(applied.data["warnings"])
+    assert settings.read_bytes() == b"user-owned editor settings\n"
+
+
+def test_apply_writing_and_unchanged_results_both_carry_guidance(tmp_path):
+    root = write_project(tmp_path / "proj")
+    plan = plan_for(root)
+
+    writing = apply_project_configuration(plan)
+    assert writing.ok is True, writing
+    assert list(writing.data["createdPaths"])
+    assert writing.data["vscodeGuidance"]["bindingMode"] == "user-settings"
+    assert [
+        item["code"] for item in writing.data["vscodeGuidance"]["diagnostics"]
+    ] == ["VSCODE_EXECUTABLE_SETTINGS_REQUIRED"]
+
+    unchanged_plan = plan_for(root)
+    assert all(entry.status == "unchanged" for entry in unchanged_plan.files)
+    unchanged = apply_project_configuration(unchanged_plan)
+    assert unchanged.ok is True, unchanged
+    assert list(unchanged.data["createdPaths"]) == []
+    assert list(unchanged.data["updatedPaths"]) == []
+    assert set(unchanged.data["unchangedPaths"]) == {
+        entry.path for entry in unchanged_plan.files
+    }
+    assert unchanged.data["vscodeGuidance"]["bindingMode"] == "user-settings"
+    assert unchanged.data["vscodeGuidance"]["userSettingsChecked"] is False
+    assert [
+        item["code"] for item in unchanged.data["vscodeGuidance"]["diagnostics"]
+    ] == ["VSCODE_EXECUTABLE_SETTINGS_REQUIRED"]
+
+
+def test_guidance_does_not_change_plan_identity_or_generated_bytes(tmp_path):
+    root = write_project(tmp_path / "proj")
+    first = plan_for(root)
+    second = plan_for(root)
+
+    assert first.plan_id == second.plan_id == plan_id_for(first)
+    assert first.to_dict()["vscodeGuidance"] == second.to_dict()["vscodeGuidance"]
+    first_tasks = next(
+        entry for entry in first.files if entry.path == ".vscode/tasks.json"
+    )
+    second_tasks = next(
+        entry for entry in second.files if entry.path == ".vscode/tasks.json"
+    )
+    assert first_tasks.after_bytes == second_tasks.after_bytes
+    assert b"vscodeGuidance" not in first_tasks.after_bytes
+    assert b"VSCODE_EXECUTABLE_SETTINGS_REQUIRED" not in first_tasks.after_bytes
+    # The managed manifest is unaffected by derived guidance.
+    assert b"vscodeGuidance" not in first.managed_manifest_bytes
+
+
+def test_build_vscode_guidance_is_pure_and_advisory():
+    default = build_vscode_guidance(None)
+    assert {
+        key: default[key]
+        for key in (
+            "bindingMode",
+            "requiredUserSettings",
+            "userSettingsChecked",
+            "preservedPaths",
+        )
+    } == {
+        "bindingMode": "user-settings",
+        "requiredUserSettings": [
+            VSCODE_USER_SETTING_EXECUTABLE,
+            VSCODE_USER_SETTING_COMPILER,
+        ],
+        "userSettingsChecked": False,
+        "preservedPaths": [],
+    }
+    assert [item["code"] for item in default["diagnostics"]] == [
+        "VSCODE_EXECUTABLE_SETTINGS_REQUIRED"
+    ]
+    assert default["diagnostics"][0]["severity"] == "info"
+
+    explicit = build_vscode_guidance(
+        VSCodeConfiguration("C:/tools/a.exe", "C:/tools/b.exe")
+    )
+    assert explicit["bindingMode"] == "explicit-paths"
+    assert explicit["requiredUserSettings"] == []
+    assert explicit["diagnostics"] == []
+
+    mixed = build_vscode_guidance(
+        None, [".vscode/settings.json", ".vscode/tasks.json", ".vscode/tasks.json"]
+    )
+    assert mixed["preservedPaths"] == [
+        ".vscode/settings.json",
+        ".vscode/tasks.json",
+    ]
+    assert [item["code"] for item in mixed["diagnostics"]] == [
+        "VSCODE_EXECUTABLE_SETTINGS_REQUIRED",
+        "VSCODE_TASKS_PRESERVED",
+    ]
+
+
+def test_cli_plan_and_apply_expose_guidance_and_preserve_failure_status(
+    tmp_path, capsys
+):
+    root = write_project(tmp_path / "proj")
+
+    assert (
+        cli_main(
+            [
+                "project",
+                "configure",
+                "--project",
+                str(root),
+                "--dry-run",
+                "--json",
+            ]
+        )
+        == 0
+    )
+    plan = json.loads(capsys.readouterr().out)
+    assert plan["data"]["vscodeGuidance"]["bindingMode"] == "user-settings"
+    assert plan["data"]["vscodeGuidance"]["preservedPaths"] == []
+    plan_id = plan["data"]["plan_id"]
+
+    # A caller failure keeps its exit status and structured code; no guidance
+    # is fabricated into a failed response.
+    assert (
+        cli_main(
+            [
+                "project",
+                "configure",
+                "--project",
+                str(root),
+                "--apply",
+                "--plan-id",
+                plan_id,
+                "--json",
+            ]
+        )
+        == 2
+    )
+    failure = json.loads(capsys.readouterr().out)
+    assert failure["ok"] is False
+    assert failure["code"] == "AUTHORIZATION_REQUIRED"
+    assert failure["data"] is None
+
+    assert (
+        cli_main(
+            [
+                "project",
+                "configure",
+                "--project",
+                str(root),
+                "--apply",
+                "--plan-id",
+                plan_id,
+                "--authorized",
+                "--json",
+            ]
+        )
+        == 0
+    )
+    applied = json.loads(capsys.readouterr().out)
+    assert applied["operation"] == "project-configuration-apply"
+    assert applied["data"]["vscodeGuidance"]["bindingMode"] == "user-settings"
+    assert [
+        item["code"]
+        for item in applied["data"]["vscodeGuidance"]["diagnostics"]
+    ] == ["VSCODE_EXECUTABLE_SETTINGS_REQUIRED"]
+
+
+def test_mcp_plan_and_apply_expose_guidance_without_new_parameters(tmp_path):
+    root = write_project(tmp_path / "proj")
+    runtime = ServerRuntime.create(root, tmp_path / "data", "session-a")
+
+    planned = asyncio.run(
+        mcp_mod.tool_project_configure_for_request(runtime, None)
+    )
+    assert planned["ok"] is True
+    assert planned["data"]["vscodeGuidance"]["bindingMode"] == "user-settings"
+    assert planned["data"]["vscodeGuidance"]["userSettingsChecked"] is False
+
+    applied = mcp_mod.tool_project_configure(
+        runtime,
+        plan_id=planned["data"]["plan_id"],
+        authorized=True,
+    )
+    assert applied["ok"] is True
+    assert applied["operation"] == "project-configuration-apply"
+    assert applied["data"]["vscodeGuidance"]["bindingMode"] == "user-settings"
+    assert [
+        item["code"]
+        for item in applied["data"]["vscodeGuidance"]["diagnostics"]
+    ] == ["VSCODE_EXECUTABLE_SETTINGS_REQUIRED"]

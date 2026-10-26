@@ -444,3 +444,60 @@ def test_documentation_keeps_route_and_authorization_contracts() -> None:
     # JSON region sample is decimal and labelled as a reviewed example.
     assert '{"start": 134217728, "length": 1048576}' in guide
     assert "审阅示例，非默认" in guide
+
+
+def test_documentation_covers_pyocd_evidence_and_vscode_guidance() -> None:
+    """Both evidence forms and the derived guidance must be documented."""
+    guide = (REPO_ROOT / "docs" / "user-guide.md").read_text(encoding="utf-8")
+    for field in (
+        "data.tools.pyocd",
+        "data.probeCore.dependencies.pyocd",
+        "data.probeCore.pyocdResolution",
+        "runtime-package-present",
+        "runtime-package-unconfirmed",
+        "distribution-metadata",
+        "hardwareVerified=false",
+        "PYOCD_CLI_NOT_ON_PATH_RUNTIME_PRESENT",
+        "PYOCD_RUNTIME_PACKAGE_UNCONFIRMED",
+        "data.vscodeGuidance",
+        "bindingMode",
+        "requiredUserSettings",
+        "userSettingsChecked=false",
+        "preservedPaths",
+        "VSCODE_EXECUTABLE_SETTINGS_REQUIRED",
+        "VSCODE_TASKS_PRESERVED",
+    ):
+        assert field in guide, field
+    # The guide must not present global pip or PATH edits as the fix.
+    pyocd_paragraph = guide[guide.index("PyOCD 两条证据必须分开读") :]
+    pyocd_paragraph = pyocd_paragraph[: pyocd_paragraph.index("\n")]
+    assert "setup-stm32-env.ps1 -Mode Check" in pyocd_paragraph
+    assert "不要把全局 pip 安装或 PATH 编辑当作默认修复" in pyocd_paragraph
+    assert "不导入 pyOCD" in pyocd_paragraph
+
+    setup = (REPO_ROOT / "skills" / "setup-stm32-env" / "SKILL.md").read_text(
+        encoding="utf-8"
+    )
+    for field in (
+        "data.tools.pyocd",
+        "data.probeCore.pyocdResolution",
+        "runtime-package-present",
+        "runtime-package-unconfirmed",
+        "PYOCD_CLI_NOT_ON_PATH_RUNTIME_PRESENT",
+        "PYOCD_RUNTIME_PACKAGE_UNCONFIRMED",
+        "never treat a global pip install or PATH edit as the default remedy",
+    ):
+        assert field in setup, field
+
+    configure = (
+        REPO_ROOT / "skills" / "configure-stm32-project" / "SKILL.md"
+    ).read_text(encoding="utf-8")
+    for field in (
+        "data.vscodeGuidance",
+        "userSettingsChecked=false",
+        "VSCODE_EXECUTABLE_SETTINGS_REQUIRED",
+        "VSCODE_TASKS_PRESERVED",
+        "preservedPaths",
+        "never imply that PATH installation is required",
+    ):
+        assert field in configure, field

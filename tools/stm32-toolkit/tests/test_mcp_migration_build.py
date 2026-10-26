@@ -633,6 +633,35 @@ def test_in_memory_configure_and_build_fail_closed(tmp_path: Path, monkeypatch):
     assert plan["operation"] == "project-configuration-plan"
 
 
+def test_mcp_configure_plan_and_apply_expose_vscode_guidance(tmp_path: Path):
+    root = prepare_project(tmp_path)
+    runtime = ServerRuntime.create(root, tmp_path / "plugin-data", "session-a")
+
+    planned = asyncio.run(
+        mcp_mod.tool_project_configure_for_request(runtime, None)
+    )
+    assert planned["ok"] is True
+    assert planned["operation"] == "project-configuration-plan"
+    guidance = planned["data"]["vscodeGuidance"]
+    assert guidance["bindingMode"] == "user-settings"
+    assert guidance["userSettingsChecked"] is False
+    assert [entry["code"] for entry in guidance["diagnostics"]] == [
+        "VSCODE_EXECUTABLE_SETTINGS_REQUIRED"
+    ]
+
+    applied = mcp_mod.tool_project_configure(
+        runtime,
+        plan_id=planned["data"]["plan_id"],
+        authorized=True,
+    )
+    assert applied["ok"] is True
+    assert applied["operation"] == "project-configuration-apply"
+    assert applied["data"]["vscodeGuidance"]["bindingMode"] == "user-settings"
+    assert [
+        entry["code"] for entry in applied["data"]["vscodeGuidance"]["diagnostics"]
+    ] == ["VSCODE_EXECUTABLE_SETTINGS_REQUIRED"]
+
+
 # ---------------------------------------------------------------------------
 # roots guard for every new tool
 # ---------------------------------------------------------------------------

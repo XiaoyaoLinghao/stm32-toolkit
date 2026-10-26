@@ -521,6 +521,7 @@ def test_plan_to_dict_key_order_is_exact(tmp_path):
         "files",
         "blockers",
         "managed_manifest_path",
+        "vscodeGuidance",
     ]
     assert list(plan.files[0].to_dict()) == [
         "path",

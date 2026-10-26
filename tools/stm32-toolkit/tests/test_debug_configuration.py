@@ -279,6 +279,7 @@ def test_no_option_plan_keeps_the_historical_shape_and_writes_nothing(tmp_path):
         "files",
         "blockers",
         "managed_manifest_path",
+        "vscodeGuidance",
     }
     assert plan.model_sha256 == model_sha256_for(model)
     assert plan.plan_id == plan_id_for(plan)

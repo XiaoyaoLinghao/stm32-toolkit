@@ -20,7 +20,10 @@ from stm32_toolkit import __version__
 from stm32_toolkit.debug_configuration import DebugConfiguration
 from stm32_toolkit.linker_fragment import LinkerFragment
 from stm32_toolkit.project_model import ProjectModel
-from stm32_toolkit.vscode_configuration import VSCodeConfiguration
+from stm32_toolkit.vscode_configuration import (
+    VSCodeConfiguration,
+    build_vscode_guidance,
+)
 
 #: Frozen generation contract values (work order sections 3 and 8.1).
 PLAN_VERSION = 1
@@ -290,6 +293,18 @@ class GenerationPlan:
             payload["manifest_edit"] = self.manifest_edit.to_dict()
         if self.vscode_configuration is not None:
             payload["vscode_configuration"] = self.vscode_configuration.to_dict()
+        # Derived, advisory presentation only: this is computed from the
+        # already-validated binding and existing file statuses, never from
+        # user-owned editor bytes or VS Code user settings.  It is appended
+        # last and stays outside the plan ID so plan identity is unchanged.
+        payload["vscodeGuidance"] = build_vscode_guidance(
+            self.vscode_configuration,
+            (
+                entry.path
+                for entry in self.files
+                if entry.status == "preserved-unowned"
+            ),
+        )
         return payload
 
 

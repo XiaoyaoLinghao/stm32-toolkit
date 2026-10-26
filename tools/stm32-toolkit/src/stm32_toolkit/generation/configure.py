@@ -53,6 +53,7 @@ from stm32_toolkit.result import OperationResult
 from stm32_toolkit.vscode_configuration import (
     VSCodeConfiguration,
     VSCodeConfigurationError,
+    build_vscode_guidance,
     normalize_vscode_configuration,
 )
 
@@ -2704,6 +2705,25 @@ def _manifest_edit_result(plan: GenerationPlan) -> dict[str, object]:
     }
 
 
+def _vscode_guidance_result(plan: GenerationPlan) -> dict[str, object]:
+    """Advisory binding guidance shared by every successful APPLY result.
+
+    It is derived only from the validated binding and the plan's existing
+    preserved-unowned statuses; applying never reads the preserved content or
+    VS Code user settings.
+    """
+    return {
+        "vscodeGuidance": build_vscode_guidance(
+            plan.vscode_configuration,
+            (
+                entry.path
+                for entry in plan.files
+                if entry.status == "preserved-unowned"
+            ),
+        )
+    }
+
+
 def _apply(plan: GenerationPlan) -> dict[str, object]:
     _validate_plan(plan)
 
@@ -2867,6 +2887,7 @@ def _apply(plan: GenerationPlan) -> dict[str, object]:
             "managedManifestSha256": sha256_hex(plan.managed_manifest_bytes),
             "templateVersion": TEMPLATE_VERSION,
             **_manifest_edit_result(plan),
+            **_vscode_guidance_result(plan),
         }
 
     staging = canonical.joinpath(*STAGING_ROOT.split("/"), plan.plan_id)
@@ -3032,6 +3053,7 @@ def _apply(plan: GenerationPlan) -> dict[str, object]:
         "managedManifestSha256": sha256_hex(plan.managed_manifest_bytes),
         "templateVersion": TEMPLATE_VERSION,
         **_manifest_edit_result(plan),
+        **_vscode_guidance_result(plan),
     }
 
 

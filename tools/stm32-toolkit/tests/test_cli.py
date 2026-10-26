@@ -548,6 +548,51 @@ def test_project_configure_dry_run_emits_a_plan(tmp_path: Path, capsys):
     assert payload["operation"] == "project-configuration-plan"
     assert payload["ok"] is True
     assert len(payload["data"]["plan_id"]) == 64
+    assert payload["data"]["vscodeGuidance"]["bindingMode"] == "user-settings"
+
+
+def test_project_configure_cli_guidance_and_failure_status_are_preserved(
+    tmp_path: Path, capsys
+):
+    root = _configured_repo(tmp_path)
+
+    assert main([
+        "project", "configure", "--project", str(root), "--dry-run", "--json",
+    ]) == 0
+    plan = json.loads(capsys.readouterr().out)
+    guidance = plan["data"]["vscodeGuidance"]
+    assert list(guidance["requiredUserSettings"]) == [
+        "stm32-toolkit.executablePath",
+        "stm32-toolkit.compilerPath",
+    ]
+    assert guidance["userSettingsChecked"] is False
+    assert [entry["code"] for entry in guidance["diagnostics"]] == [
+        "VSCODE_EXECUTABLE_SETTINGS_REQUIRED"
+    ]
+
+    # A failed apply keeps its nonzero status, structured code, and null data;
+    # no guidance is invented for a failure.
+    assert main([
+        "project", "configure", "--project", str(root),
+        "--apply", "--plan-id", plan["data"]["plan_id"], "--json",
+    ]) == 2
+    captured = capsys.readouterr()
+    failure = json.loads(captured.out)
+    assert failure["ok"] is False
+    assert failure["code"] == "AUTHORIZATION_REQUIRED"
+    assert failure["data"] is None
+    assert captured.err == ""
+
+    assert main([
+        "project", "configure", "--project", str(root),
+        "--apply", "--plan-id", plan["data"]["plan_id"], "--authorized", "--json",
+    ]) == 0
+    applied = json.loads(capsys.readouterr().out)
+    assert applied["operation"] == "project-configuration-apply"
+    assert applied["data"]["vscodeGuidance"]["bindingMode"] == "user-settings"
+    assert [
+        entry["code"] for entry in applied["data"]["vscodeGuidance"]["diagnostics"]
+    ] == ["VSCODE_EXECUTABLE_SETTINGS_REQUIRED"]
 
 
 def test_project_configure_apply_requires_authorization(tmp_path: Path, capsys):

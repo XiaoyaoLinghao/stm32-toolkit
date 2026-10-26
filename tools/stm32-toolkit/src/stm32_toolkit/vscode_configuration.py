@@ -10,6 +10,10 @@ This module is deliberately inert beyond static filesystem inspection: it
 never launches, probes, hashes or version-attests either executable.  Validation
 says only that each value is an absolute, existing, non-redirected regular
 native executable path.
+
+:func:`build_vscode_guidance` derives the advisory PLAN/APPLY guidance from
+those validated facts and existing preserved-file statuses.  It never reads
+VS Code user settings or any user-owned editor file.
 """
 
 from __future__ import annotations
@@ -17,10 +21,18 @@ from __future__ import annotations
 import os
 import re
 import stat
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
 VSCODE_CONFIGURATION_INVALID = "VSCODE_CONFIGURATION_INVALID"
+
+#: The two portable user-scope settings the default generation route renders.
+VSCODE_USER_SETTING_EXECUTABLE = "stm32-toolkit.executablePath"
+VSCODE_USER_SETTING_COMPILER = "stm32-toolkit.compilerPath"
+
+#: Fixed editor target whose preserved-unowned status needs explicit guidance.
+_VSCODE_TASKS_PATH = ".vscode/tasks.json"
 
 _FIELD_TOOLKIT = "vscode.toolkitPath"
 _FIELD_GCC = "vscode.gccPath"
@@ -281,10 +293,105 @@ def normalize_vscode_configuration(
     return VSCodeConfiguration(toolkit_path=toolkit_path, gcc_path=gcc_path)
 
 
+# ---------------------------------------------------------------------------
+# derived PLAN/APPLY guidance (offline, advisory only)
+# ---------------------------------------------------------------------------
+
+_SETTINGS_REQUIRED_MESSAGE = (
+    "The default generation route renders the VS Code task command "
+    "`${config:stm32-toolkit.executablePath}` and the IntelliSense "
+    "`compilerPath` `${config:stm32-toolkit.compilerPath}`. Those variables "
+    "resolve from VS Code configuration, and this generator's supported "
+    "default guidance is to supply both reviewed absolute native executable "
+    "paths in User Settings; workspace configuration may also define them. "
+    "This offline PLAN/APPLY never reads VS Code configuration, so it makes no "
+    "claim that the settings are absent, unbound, or incomplete."
+)
+_SETTINGS_REQUIRED_REMEDIATION = (
+    "Put `stm32-toolkit.executablePath` and `stm32-toolkit.compilerPath` in "
+    "VS Code **User Settings** with reviewed absolute native executable paths, "
+    "or re-run PLAN and APPLY with the same explicitly paired "
+    "`--vscode-toolkit-path`/`--vscode-gcc-path` options (MCP "
+    "`vscodeToolkitPath`/`vscodeGccPath`) so the generated files carry the "
+    "exact paths instead. PATH installation of the toolkit is not required and "
+    "is not implied by this diagnostic."
+)
+_TASKS_PRESERVED_MESSAGE = (
+    "The existing user-owned `.vscode/tasks.json` was retained unchanged: the "
+    "requested executable bindings and the new STM32 Toolkit tasks were not "
+    "applied to that file, and its contents were not inspected. Old bare "
+    "commands may remain in it, so review it before running those tasks."
+)
+_TASKS_PRESERVED_REMEDIATION = (
+    "Open `.vscode/tasks.json` manually and align each STM32 Toolkit task with "
+    "the absolute managed runtime executable (for example "
+    "`<DataRoot>/runtime/<version>/Scripts/stm32-toolkit.exe`) or with the "
+    "documented User Settings `stm32-toolkit.executablePath` and "
+    "`stm32-toolkit.compilerPath`. Inspect `data.vscodeGuidance` (this object) "
+    "on PLAN or APPLY, `data.files[].status` and `unified_diff` for "
+    "`.vscode/tasks.json` on PLAN, and `data.preservedPaths` on APPLY. This "
+    "guidance does not claim that a bare command was found."
+)
+
+
+def build_vscode_guidance(
+    configuration: VSCodeConfiguration | None,
+    preserved_paths: Iterable[str] = (),
+) -> dict[str, object]:
+    """Derive advisory VS Code binding guidance from validated plan facts.
+
+    ``configuration`` is the already-validated explicit pair or ``None`` for
+    the portable user-setting default route. ``preserved_paths`` is exactly
+    the plan's ``preserved-unowned`` editor paths; their contents are never
+    read here. The result is presentation metadata only: it never authorizes
+    a mutation, never asserts the VS Code user settings are unbound, and never
+    claims that a preserved file contains a specific command.
+    """
+    binding_mode = "user-settings" if configuration is None else "explicit-paths"
+    required_settings = (
+        [VSCODE_USER_SETTING_EXECUTABLE, VSCODE_USER_SETTING_COMPILER]
+        if configuration is None
+        else []
+    )
+    paths = sorted(
+        {str(path) for path in preserved_paths}, key=lambda value: value.encode("utf-8")
+    )
+    diagnostics: list[dict[str, object]] = []
+    if configuration is None:
+        diagnostics.append(
+            {
+                "code": "VSCODE_EXECUTABLE_SETTINGS_REQUIRED",
+                "severity": "info",
+                "message": _SETTINGS_REQUIRED_MESSAGE,
+                "remediation": _SETTINGS_REQUIRED_REMEDIATION,
+            }
+        )
+    if _VSCODE_TASKS_PATH in paths:
+        diagnostics.append(
+            {
+                "code": "VSCODE_TASKS_PRESERVED",
+                "severity": "warning",
+                "path": _VSCODE_TASKS_PATH,
+                "message": _TASKS_PRESERVED_MESSAGE,
+                "remediation": _TASKS_PRESERVED_REMEDIATION,
+            }
+        )
+    return {
+        "bindingMode": binding_mode,
+        "requiredUserSettings": required_settings,
+        "userSettingsChecked": False,
+        "preservedPaths": paths,
+        "diagnostics": diagnostics,
+    }
+
+
 __all__ = [
     "VSCODE_CONFIGURATION_INVALID",
+    "VSCODE_USER_SETTING_COMPILER",
+    "VSCODE_USER_SETTING_EXECUTABLE",
     "VSCodeConfiguration",
     "VSCodeConfigurationDiagnostic",
     "VSCodeConfigurationError",
+    "build_vscode_guidance",
     "normalize_vscode_configuration",
 ]

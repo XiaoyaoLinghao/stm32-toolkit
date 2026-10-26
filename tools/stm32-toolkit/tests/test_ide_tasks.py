@@ -23,6 +23,7 @@ import stm32_toolkit.cli as cli_mod
 import stm32_toolkit.ide_tasks as ide_mod
 from stm32_toolkit.cli import main as cli_main
 from stm32_toolkit.generation import plan_project_configuration
+from stm32_toolkit.generation.managed_files import plan_id_for
 from stm32_toolkit.hardware_workflows import (
     FlashWorkflowRequest,
     HandoffBeginWorkflowRequest,
@@ -270,6 +271,28 @@ def test_generated_build_argv_replays_into_the_build_workflow(
         (root, "arm-debug", False, 300, True),
         (root, "arm-release", False, 300, True),
     ]
+
+
+def test_guidance_is_advisory_and_does_not_change_generated_tasks(tmp_path):
+    root = prepare_project(tmp_path)
+    plan = plan_project_configuration(load_project_model(root))
+
+    guidance = plan.to_dict()["vscodeGuidance"]
+    assert guidance["bindingMode"] == "user-settings"
+    assert guidance["userSettingsChecked"] is False
+
+    tasks = next(
+        entry for entry in plan.files if entry.path == ".vscode/tasks.json"
+    )
+    rendered = json.loads(tasks.after_bytes.decode("utf-8"))
+    assert [task["command"] for task in rendered["tasks"]] == [
+        "${config:stm32-toolkit.executablePath}"
+    ] * 5
+    # Guidance is derived presentation, never a generation input or template
+    # byte, and it stays outside the plan identity.
+    assert b"vscodeGuidance" not in tasks.after_bytes
+    assert b"VSCODE_EXECUTABLE_SETTINGS_REQUIRED" not in tasks.after_bytes
+    assert plan.plan_id == plan_id_for(plan)
 
 
 # ---------------------------------------------------------------------------

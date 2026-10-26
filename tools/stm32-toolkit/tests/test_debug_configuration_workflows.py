@@ -149,6 +149,50 @@ def test_workflow_paired_plan_and_apply_round_trip(tmp_path):
     )
 
 
+def test_workflow_debug_edit_carries_default_guidance_and_preserved_tasks_warning(
+    tmp_path,
+):
+    root = _root(tmp_path)
+    tasks = root / ".vscode" / "tasks.json"
+    tasks.parent.mkdir()
+    user_bytes = b"not-json user-owned tasks\n"
+    tasks.write_bytes(user_bytes)
+
+    plan = configure_project_workflow(
+        root, debug_backend=PAIR[0], debug_target=PAIR[1]
+    )
+    assert plan.ok is True
+    data = plan.data
+    guidance = data["vscodeGuidance"]
+    assert guidance["bindingMode"] == "user-settings"
+    assert guidance["userSettingsChecked"] is False
+    assert list(guidance["preservedPaths"]) == [".vscode/tasks.json"]
+    assert [entry["code"] for entry in guidance["diagnostics"]] == [
+        "VSCODE_EXECUTABLE_SETTINGS_REQUIRED",
+        "VSCODE_TASKS_PRESERVED",
+    ]
+    assert guidance["diagnostics"][1]["severity"] == "warning"
+    assert guidance["diagnostics"][1]["path"] == ".vscode/tasks.json"
+
+    applied = configure_project_workflow(
+        root,
+        plan_id=data["plan_id"],
+        authorized=True,
+        debug_backend=PAIR[0],
+        debug_target=PAIR[1],
+    )
+    assert applied.ok is True
+    assert applied.data["manifestEditStatus"] == "update"
+    applied_guidance = applied.data["vscodeGuidance"]
+    assert applied_guidance["bindingMode"] == "user-settings"
+    assert [entry["code"] for entry in applied_guidance["diagnostics"]] == [
+        "VSCODE_EXECUTABLE_SETTINGS_REQUIRED",
+        "VSCODE_TASKS_PRESERVED",
+    ]
+    # The preserved user file stays unread and byte-identical.
+    assert tasks.read_bytes() == user_bytes
+
+
 def test_workflow_pair_edit_preserves_schema3_svd_fields(tmp_path):
     payload = schema3_payload()
     root = _root(tmp_path, payload)

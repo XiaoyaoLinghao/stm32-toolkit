@@ -406,6 +406,36 @@ def test_configure_plan_mode_is_read_only_and_deterministic(
     assert snapshot_tree(root) == before_tree
 
 
+def test_configure_plan_and_apply_payloads_expose_vscode_guidance(tmp_path: Path):
+    root = prepare_project(tmp_path)
+    plan = configure_project_workflow(root)
+
+    guidance = plan.data["vscodeGuidance"]
+    assert guidance["bindingMode"] == "user-settings"
+    assert list(guidance["requiredUserSettings"]) == [
+        "stm32-toolkit.executablePath",
+        "stm32-toolkit.compilerPath",
+    ]
+    assert guidance["userSettingsChecked"] is False
+    assert list(guidance["preservedPaths"]) == []
+    assert [
+        entry["code"] for entry in guidance["diagnostics"]
+    ] == ["VSCODE_EXECUTABLE_SETTINGS_REQUIRED"]
+    assert guidance["diagnostics"][0]["severity"] == "info"
+
+    applied = configure_project_workflow(
+        root, plan_id=plan.data["plan_id"], authorized=True
+    )
+    assert applied.ok is True
+    assert applied.operation == "project-configuration-apply"
+    applied_guidance = applied.data["vscodeGuidance"]
+    assert applied_guidance["bindingMode"] == "user-settings"
+    assert applied_guidance["userSettingsChecked"] is False
+    assert [
+        entry["code"] for entry in applied_guidance["diagnostics"]
+    ] == ["VSCODE_EXECUTABLE_SETTINGS_REQUIRED"]
+
+
 @pytest.mark.parametrize("authorized", ["true", "false", 1, 0, None, [], {}])
 def test_configure_workflow_non_boolean_authorization_fails_closed_without_plan_id(
     monkeypatch, tmp_path: Path, authorized: object

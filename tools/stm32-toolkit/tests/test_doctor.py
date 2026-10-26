@@ -22,6 +22,7 @@ from stm32_toolkit.doctor import (
     _terminate_and_reap,
     run_doctor,
 )
+from stm32_toolkit.tool_support import ToolSupportProfile
 
 
 @pytest.fixture(autouse=True)
@@ -141,14 +142,252 @@ def test_doctor_reports_probe_core_dependencies_without_starting_or_writing(
 
     result = run_doctor(project, data_root=data_root, probe_vscode_extensions=False)
 
-    assert result.data["probeCore"] == {
-        "dependencies": {
-            "aiohttp": {"available": True, "version": "3.14.3"},
-            "pyocd": {"available": False, "version": None},
-        },
-        "registry": {"status": "missing", "safe": True},
+    probe_core = result.data["probeCore"]
+    assert probe_core["dependencies"] == {
+        "aiohttp": {"available": True, "version": "3.14.3"},
+        "pyocd": {"available": False, "version": None},
     }
+    assert probe_core["registry"] == {"status": "missing", "safe": True}
+    resolution = probe_core["pyocdResolution"]
+    assert set(resolution) == {
+        "status",
+        "runtimeAvailable",
+        "runtimeVersion",
+        "pathCommandAvailable",
+        "pathCommandStatus",
+        "evidenceBasis",
+        "hardwareVerified",
+        "message",
+        "remediation",
+    }
+    assert resolution["status"] == "runtime-package-unconfirmed"
+    assert resolution["runtimeAvailable"] is False
+    assert resolution["runtimeVersion"] is None
+    assert resolution["pathCommandAvailable"] is False
+    assert resolution["pathCommandStatus"] == "missing"
+    assert resolution["evidenceBasis"] == "distribution-metadata"
+    assert resolution["hardwareVerified"] is False
     assert not data_root.exists()
+
+
+def _pyocd_diagnostics(result) -> list[dict]:
+    return [
+        dict(entry)
+        for entry in result.data["diagnostics"]
+        if entry.get("component") == "pyocd"
+    ]
+
+
+def _runtime_present_metadata(name: str) -> str:
+    if name == "pyocd":
+        return "0.45.1"
+    raise importlib.metadata.PackageNotFoundError(name)
+
+
+def test_doctor_reports_runtime_metadata_with_missing_path_command_as_info(
+    monkeypatch, tmp_path: Path
+):
+    monkeypatch.setattr("stm32_toolkit.doctor.shutil.which", lambda name: None)
+    monkeypatch.setattr(
+        "stm32_toolkit.doctor.importlib.metadata.version",
+        _runtime_present_metadata,
+    )
+
+    result = run_doctor(tmp_path, probe_vscode_extensions=False)
+
+    resolution = result.data["probeCore"]["pyocdResolution"]
+    assert resolution["status"] == "runtime-package-present"
+    assert resolution["runtimeAvailable"] is True
+    assert resolution["runtimeVersion"] == "0.45.1"
+    assert resolution["pathCommandAvailable"] is False
+    assert resolution["pathCommandStatus"] == "missing"
+    assert resolution["evidenceBasis"] == "distribution-metadata"
+    assert resolution["hardwareVerified"] is False
+    # Metadata is not importability or hardware evidence, and a missing PATH
+    # command alone is not a missing runtime dependency.
+    message = resolution["message"]
+    assert "distribution metadata only" in message
+    assert "importability" in message and "were not checked" in message
+    assert "does not establish a missing runtime dependency" in message
+    assert "No PATH correction is needed solely because" in resolution["remediation"]
+    assert "setup-stm32-env.ps1 -Mode Check" in resolution["remediation"]
+    # The PATH evidence itself keeps the existing tool record exactly.
+    assert result.data["tools"]["pyocd"] == {
+        "available": False,
+        "path": None,
+        "status": "missing",
+        "returnCode": None,
+        "version": None,
+    }
+    assert _pyocd_diagnostics(result) == [
+        {
+            "component": "pyocd",
+            "code": "PYOCD_CLI_NOT_ON_PATH_RUNTIME_PRESENT",
+            "severity": "info",
+            "message": resolution["message"],
+            "remediation": resolution["remediation"],
+        }
+    ]
+
+
+def test_doctor_runtime_metadata_present_with_path_command_has_no_diagnostic(
+    monkeypatch, tmp_path: Path
+):
+    process = _FakeProcess(stdout=b"0.45.1\n")
+    monkeypatch.setattr(
+        "stm32_toolkit.doctor.shutil.which",
+        lambda name: "C:/tools/pyocd.exe" if name == "pyocd" else None,
+    )
+    monkeypatch.setattr(
+        "stm32_toolkit.doctor.subprocess.Popen",
+        lambda argv, **kwargs: process,
+    )
+    monkeypatch.setattr(
+        "stm32_toolkit.doctor.importlib.metadata.version",
+        _runtime_present_metadata,
+    )
+
+    result = run_doctor(tmp_path, probe_vscode_extensions=False)
+
+    resolution = result.data["probeCore"]["pyocdResolution"]
+    assert resolution["status"] == "runtime-package-present"
+    assert resolution["pathCommandAvailable"] is True
+    assert resolution["pathCommandStatus"] == "ok"
+    assert result.data["tools"]["pyocd"]["version"] == "0.45.1"
+    assert _pyocd_diagnostics(result) == []
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        importlib.metadata.PackageNotFoundError("pyocd"),
+        OSError("metadata unavailable"),
+    ],
+    ids=["not-found", "os-error"],
+)
+def test_doctor_metadata_errors_are_unconfirmed_not_uninstalled(
+    monkeypatch, tmp_path: Path, error: BaseException
+):
+    process = _FakeProcess(stdout=b"0.45.1\n")
+    monkeypatch.setattr(
+        "stm32_toolkit.doctor.shutil.which",
+        lambda name: "C:/tools/pyocd.exe" if name == "pyocd" else None,
+    )
+    monkeypatch.setattr(
+        "stm32_toolkit.doctor.subprocess.Popen",
+        lambda argv, **kwargs: process,
+    )
+
+    def dependency_version(name: str) -> str:
+        if name == "pyocd":
+            raise error
+        return "0.1.0"
+
+    monkeypatch.setattr(
+        "stm32_toolkit.doctor.importlib.metadata.version",
+        dependency_version,
+    )
+
+    result = run_doctor(tmp_path, probe_vscode_extensions=False)
+
+    resolution = result.data["probeCore"]["pyocdResolution"]
+    assert resolution["status"] == "runtime-package-unconfirmed"
+    assert resolution["runtimeAvailable"] is False
+    assert resolution["runtimeVersion"] is None
+    # A separate working PATH command does not confirm the runtime package.
+    assert resolution["pathCommandAvailable"] is True
+    assert resolution["pathCommandStatus"] == "ok"
+    assert "not proof that the runtime package is uninstalled" in resolution["message"]
+    assert "would not confirm the runtime dependency" in resolution["message"]
+    assert _pyocd_diagnostics(result) == [
+        {
+            "component": "pyocd",
+            "code": "PYOCD_RUNTIME_PACKAGE_UNCONFIRMED",
+            "severity": "warning",
+            "message": resolution["message"],
+            "remediation": resolution["remediation"],
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    ("process_factory", "status", "return_code"),
+    [
+        (lambda: _FakeProcess(stdout=b"0.45.1\n"), "ok", 0),
+        (lambda: _FakeProcess(stderr=b"version unavailable", returncode=7), "nonzero", 7),
+        (lambda: _FakeProcess(timeout_once=True), "timeout", None),
+    ],
+    ids=["ok", "nonzero", "timeout"],
+)
+def test_doctor_preserves_pyocd_cli_evidence_without_extra_diagnostics(
+    monkeypatch, tmp_path: Path, process_factory, status, return_code
+):
+    monkeypatch.setattr(
+        "stm32_toolkit.doctor.shutil.which",
+        lambda name: "C:/tools/pyocd.exe" if name == "pyocd" else None,
+    )
+    monkeypatch.setattr(
+        "stm32_toolkit.doctor.subprocess.Popen",
+        lambda argv, **kwargs: process_factory(),
+    )
+    monkeypatch.setattr(
+        "stm32_toolkit.doctor.importlib.metadata.version",
+        _runtime_present_metadata,
+    )
+
+    result = run_doctor(tmp_path, probe_vscode_extensions=False)
+
+    tool = result.data["tools"]["pyocd"]
+    assert tool["available"] is True
+    assert tool["status"] == status
+    assert tool["returnCode"] == return_code
+    resolution = result.data["probeCore"]["pyocdResolution"]
+    assert resolution["status"] == "runtime-package-present"
+    assert resolution["pathCommandAvailable"] is True
+    assert resolution["pathCommandStatus"] == status
+    # CLI timeout/nonzero stays CLI evidence; it is not turned into a runtime
+    # failure or success diagnostic.
+    assert _pyocd_diagnostics(result) == []
+
+
+def test_doctor_collects_pyocd_metadata_and_path_evidence_exactly_once(
+    monkeypatch, tmp_path: Path
+):
+    metadata_calls: list[str] = []
+    which_calls: list[str] = []
+    popen_calls: list[tuple[str, ...]] = []
+
+    def dependency_version(name: str) -> str:
+        metadata_calls.append(name)
+        if name == "pyocd":
+            return "0.45.1"
+        raise importlib.metadata.PackageNotFoundError(name)
+
+    def which(name: str) -> str | None:
+        which_calls.append(name)
+        return "C:/tools/pyocd.exe" if name == "pyocd" else None
+
+    def popen(argv, **kwargs):
+        popen_calls.append(tuple(argv))
+        return _FakeProcess(stdout=b"0.45.1\n")
+
+    monkeypatch.setattr("stm32_toolkit.doctor.importlib.metadata.version", dependency_version)
+    monkeypatch.setattr("stm32_toolkit.doctor.shutil.which", which)
+    monkeypatch.setattr("stm32_toolkit.doctor.subprocess.Popen", popen)
+    support = ToolSupportProfile(
+        "3.12.0", None, None, None, None, None, None, (), ()
+    )
+
+    result = run_doctor(
+        tmp_path, support_profile=support, probe_vscode_extensions=False
+    )
+
+    assert metadata_calls.count("pyocd") == 1
+    assert which_calls.count("pyocd") == 1
+    # No pyOCD import, worker, probe enumeration, or extra process discovery:
+    # the single PATH version probe is the only process started.
+    assert popen_calls == [("C:/tools/pyocd.exe", "--version")]
+    assert result.data["probeCore"]["pyocdResolution"]["runtimeVersion"] == "0.45.1"
 
 
 def test_doctor_probe_registry_reports_safe_directory_read_only(monkeypatch, tmp_path: Path):

@@ -52,6 +52,55 @@ _VERSION_CAPTURE_LIMIT = 8 * 1024
 _STREAM_READ_BYTES = 4 * 1024
 _VERSION_LINE_LIMIT = 512
 
+#: pyOCD evidence is deliberately split: ``data.tools.pyocd`` is PATH command
+#: evidence, while ``probeCore.dependencies.pyocd`` is installed-distribution
+#: metadata in this interpreter.  Neither is importability or hardware proof.
+_PYOCD_RUNTIME_PRESENT = "runtime-package-present"
+_PYOCD_RUNTIME_UNCONFIRMED = "runtime-package-unconfirmed"
+_PYOCD_EVIDENCE_BASIS = "distribution-metadata"
+
+_PYOCD_MESSAGE_PRESENT = (
+    "pyOCD distribution metadata is present in this Toolkit interpreter's "
+    "installed distributions. This evidence basis is distribution metadata "
+    "only: importability, a working Probe backend, and hardware readiness were "
+    "not checked, so it does not prove that pyOCD can be imported or that any "
+    "target can be attached. The internal Probe backend imports pyOCD from its "
+    "runtime, so a separate `pyocd` PATH command is not required for probe "
+    "workflows."
+)
+_PYOCD_MESSAGE_PATH_MISSING = (
+    "pyOCD distribution metadata is present in this Toolkit interpreter's "
+    "installed distributions, but no `pyocd` command was found through PATH. "
+    "This evidence basis is distribution metadata only: importability, a "
+    "working Probe backend, and hardware readiness were not checked. The "
+    "internal Probe backend imports pyOCD from its runtime, so a missing PATH "
+    "command alone does not establish a missing runtime dependency."
+)
+_PYOCD_MESSAGE_UNCONFIRMED = (
+    "pyOCD distribution metadata could not be confirmed from this Toolkit "
+    "interpreter's installed distributions. This is unconfirmed evidence, not "
+    "proof that the runtime package is uninstalled, and a separate `pyocd` PATH "
+    "command would not confirm the runtime dependency either. Importability and "
+    "hardware readiness were not checked."
+)
+_PYOCD_REMEDIATION_PRESENT = (
+    "Distribution metadata alone does not verify importability, a working "
+    "Probe backend, or hardware. Keep using the managed runtime and confirm it "
+    "with the matching setup Check (`bin/setup-stm32-env.ps1 -Mode Check`). No "
+    "PATH correction is needed solely because the PATH lookup is missing; do "
+    "not add a global pip install or a PATH edit as the default remedy."
+)
+_PYOCD_REMEDIATION_UNCONFIRMED = (
+    "Re-run the matching managed interpreter's setup Check "
+    "(`bin/setup-stm32-env.ps1 -Mode Check`) and use the managed runtime whose "
+    "`pyocd` distribution is installed; a separate PATH command does not "
+    "substitute for that dependency, and this metadata check does not verify "
+    "importability or hardware. Do not use a global pip install or a PATH edit "
+    "as the default remedy."
+)
+_PYOCD_CLI_NOT_ON_PATH = "PYOCD_CLI_NOT_ON_PATH_RUNTIME_PRESENT"
+_PYOCD_RUNTIME_UNCONFIRMED_CODE = "PYOCD_RUNTIME_PACKAGE_UNCONFIRMED"
+
 
 def run_doctor(
     project_root: Path, *, data_root: Path | None = None,
@@ -66,6 +115,12 @@ def run_doctor(
     ``ok=true`` only means the report was collected.  Missing, invalid, or
     incomplete observations remain explicit evidence; they are not readiness
     failures fabricated into installed/missing facts.
+
+    pyOCD is reported through two separate evidence forms: ``tools.pyocd`` is
+    PATH command evidence and ``probeCore.dependencies.pyocd`` is installed
+    distribution metadata in this interpreter.  ``probeCore.pyocdResolution``
+    combines them for presentation only; it never imports pyOCD, starts a
+    worker, enumerates probes, or claims importability or hardware readiness.
     """
     support = support_profile or discover_tool_support(SupportProfileRequest(data_root=data_root), probe_versions=True)
     readiness = collect_doctor_readiness(
@@ -79,18 +134,33 @@ def run_doctor(
     # The declared support-profile list remains compatible, with explicit
     # provenance.  Live observations stay only in vscodeExtensions above.
     creation_support["vsCodeExtensionsSource"] = "support-profile-declared"
+    # Both pyOCD evidence forms are collected exactly once per doctor call:
+    # PATH command evidence from ``tools`` and installed-distribution metadata
+    # from ``probeCore.dependencies``.  No pyOCD import, worker, probe
+    # enumeration, or extra process/network discovery happens here.
+    tools = {name: _tool_evidence(name) for name in TOOLS}
+    dependencies = {
+        "aiohttp": _dependency_evidence("aiohttp"),
+        "pyocd": _dependency_evidence("pyocd"),
+    }
+    pyocd_resolution = _pyocd_resolution(tools["pyocd"], dependencies["pyocd"])
     return replace(OperationResult.success(
         "doctor",
         {
             "platform": _platform_evidence(),
             "project": _project_evidence(project_root),
-            "tools": {name: _tool_evidence(name) for name in TOOLS},
+            "tools": tools,
             "vscodeExtensions": readiness["vscodeExtensions"],
             "vscodeExtensionObservation": readiness["vscodeExtensionObservation"],
             "keilTools": readiness["keilTools"],
             "readiness": readiness["readiness"],
-            "diagnostics": readiness["diagnostics"],
-            "probeCore": _probe_core_evidence(data_root),
+            "diagnostics": [
+                *readiness["diagnostics"],
+                *_pyocd_diagnostics(pyocd_resolution),
+            ],
+            "probeCore": _probe_core_evidence(
+                data_root, dependencies, pyocd_resolution
+            ),
             "creationSupport": creation_support,
             "runtime": _runtime_evidence(),
             "publicInventory": _public_inventory(),
@@ -186,14 +256,88 @@ def _probe_registry_evidence(data_root: Path | None) -> dict[str, object]:
     return {"status": "ok", "safe": True}
 
 
-def _probe_core_evidence(data_root: Path | None) -> dict[str, object]:
+def _probe_core_evidence(
+    data_root: Path | None,
+    dependencies: dict[str, object],
+    pyocd_resolution: dict[str, object],
+) -> dict[str, object]:
     return {
-        "dependencies": {
-            "aiohttp": _dependency_evidence("aiohttp"),
-            "pyocd": _dependency_evidence("pyocd"),
-        },
+        "dependencies": dependencies,
         "registry": _probe_registry_evidence(data_root),
+        "pyocdResolution": pyocd_resolution,
     }
+
+
+def _pyocd_resolution(
+    path_evidence: dict[str, object],
+    runtime_metadata: dict[str, object],
+) -> dict[str, object]:
+    """Combine the two pyOCD evidence forms without cross-inference.
+
+    ``path_evidence`` is ``data.tools.pyocd`` (PATH executable evidence);
+    ``runtime_metadata`` is ``data.probeCore.dependencies.pyocd`` (installed
+    distribution metadata).  A metadata lookup failure is reported as
+    unconfirmed rather than as an uninstalled runtime, and a missing PATH
+    command never overrides present metadata.
+    """
+    runtime_available = runtime_metadata.get("available") is True
+    runtime_version = runtime_metadata.get("version") if runtime_available else None
+    path_available = path_evidence.get("available") is True
+    path_status = path_evidence.get("status")
+    if not runtime_available:
+        status = _PYOCD_RUNTIME_UNCONFIRMED
+        message = _PYOCD_MESSAGE_UNCONFIRMED
+        remediation = _PYOCD_REMEDIATION_UNCONFIRMED
+    elif path_available:
+        status = _PYOCD_RUNTIME_PRESENT
+        message = _PYOCD_MESSAGE_PRESENT
+        remediation = _PYOCD_REMEDIATION_PRESENT
+    else:
+        status = _PYOCD_RUNTIME_PRESENT
+        message = _PYOCD_MESSAGE_PATH_MISSING
+        remediation = _PYOCD_REMEDIATION_PRESENT
+    return {
+        "status": status,
+        "runtimeAvailable": runtime_available,
+        "runtimeVersion": (
+            runtime_version if isinstance(runtime_version, str) else None
+        ),
+        "pathCommandAvailable": path_available,
+        "pathCommandStatus": (
+            path_status if isinstance(path_status, str) else "unknown"
+        ),
+        "evidenceBasis": _PYOCD_EVIDENCE_BASIS,
+        "hardwareVerified": False,
+        "message": message,
+        "remediation": remediation,
+    }
+
+
+def _pyocd_diagnostics(
+    resolution: dict[str, object],
+) -> list[dict[str, object]]:
+    """Additive diagnostics that preserve the CLI evidence as-is."""
+    if resolution.get("runtimeAvailable") is not True:
+        return [
+            {
+                "component": "pyocd",
+                "code": _PYOCD_RUNTIME_UNCONFIRMED_CODE,
+                "severity": "warning",
+                "message": resolution["message"],
+                "remediation": resolution["remediation"],
+            }
+        ]
+    if resolution.get("pathCommandAvailable") is not True:
+        return [
+            {
+                "component": "pyocd",
+                "code": _PYOCD_CLI_NOT_ON_PATH,
+                "severity": "info",
+                "message": resolution["message"],
+                "remediation": resolution["remediation"],
+            }
+        ]
+    return []
 
 
 def _platform_evidence() -> dict[str, str]:
