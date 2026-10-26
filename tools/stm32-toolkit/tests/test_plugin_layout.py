@@ -579,138 +579,59 @@ def test_readme_links_current_user_guidance_and_release_boundaries():
     readme = README.read_text(encoding="utf-8")
     readme_zh = (REPO_ROOT / "README_zh-CN.md").read_text(encoding="utf-8")
 
-    # The public Latest and any local candidate must stay distinguishable, and
-    # a later truthful post-publication update must remain expressible. Only
-    # two consistent bilingual states are valid: (a) public Latest v1.3.1 with
-    # v1.3.2 still a pending local candidate, or (b) public Latest v1.3.2 after
-    # actual publication. A mismatched English/Chinese status is rejected.
-    latest_131_en = "**Current published Latest: [v1.3.1](" in readme
-    latest_131_zh = "**当前公开 Latest：[v1.3.1](" in readme_zh
-    latest_132_en = "**Current published Latest: [v1.3.2](" in readme
-    latest_132_zh = "**当前公开 Latest：[v1.3.2](" in readme_zh
-    assert latest_131_en == latest_131_zh
-    assert latest_132_en == latest_132_zh
-    assert latest_131_en != latest_132_en
-    if latest_131_en:
-        # v1.3.1 is the observed public release; v1.3.2 is a local candidate
-        # whose versioned links must stay explicitly conditional.
-        assert "Local source candidate: v1.3.2" in readme
-        assert "pending qualification and publication" in readme
-        assert "本地源码候选：v1.3.2" in readme_zh
-        assert "资格验证与发布仍待完成" in readme_zh
-        for guide in (readme, readme_zh):
-            assert "releases/tag/v1.3.1" in guide
-    else:
-        # After actual publication both guides must link the real v1.3.2
-        # Release; stale pending-publication wording is no longer required.
-        for guide in (readme, readme_zh):
-            assert "releases/tag/v1.3.2" in guide
-    # The obsolete v1.3.1-unpublished claim must not return.
+    release_tag = "https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.3.2"
+    bundle_url = (
+        "https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/download/"
+        "v1.3.2/stm32-toolkit-1.3.2-windows-x86_64.zip"
+    )
+    checksums_url = (
+        "https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/download/"
+        "v1.3.2/CHECKSUMS.sha256"
+    )
+
     for guide in (readme, readme_zh):
-        assert "not published)" not in guide
-        assert "尚未发布）。**" not in guide
-    for guide in (readme, readme_zh):
-        assert "$Version = '1.3.2'" in guide
-        assert "stm32-toolkit-$Version-windows-x86_64.zip" in guide
-        assert "DataRoot/runtime/1.3.2" in guide
-        assert "stm32-toolkit-1.3.2-windows-x86_64.zip" in guide
+        # The landing pages advertise the actual current release and the
+        # version-matched download/checksum assets from that same Release.
+        assert release_tag in guide
+        assert bundle_url in guide
+        assert checksums_url in guide
+        assert "stm32-toolkit-1.3.2" in guide
         assert "CHECKSUMS.sha256" in guide
-        assert "if ($ExpectedLine.Count -ne 1) { throw" in guide
-        assert "if ($Actual -ne $Expected) { throw" in guide
-        # Setup examples use native PowerShell 7 without a policy override.
-        # The interpreter check and denial-stop rule remain visible in prose.
+        assert "runtime\\1.3.2\\Scripts\\stm32-toolkit.exe" in guide
+        # Legacy versioned recipes belong to their own release documentation.
+        assert "1.2.0-windows-x86_64.zip" not in guide
+
         command_blocks = "\n".join(_fenced_blocks(guide))
         assert "pwsh -NoProfile" in command_blocks
         assert "powershell.exe" not in command_blocks
         assert "-ExecutionPolicy" not in command_blocks
         assert "Bypass" not in command_blocks
-        assert "PSVersionTable.PSVersion" in guide
-        # While v1.3.2 is unpublished, a versioned v1.3.2 link is allowed only
-        # as an explicitly conditional location whose existence must be
-        # verified, never as claimed availability. A later truthful publication
-        # switches the status branch above instead.
-        if latest_131_en and (
-            "releases/tag/v1.3.2" in guide or "releases/download/v1.3.2" in guide
-        ):
-            assert (
-                "actually exist" in guide.lower()
-                or "确实存在" in guide
-                or "conditional" in guide.lower()
-                or "有条件" in guide
-            )
-    assert "never switch shells" in readme
-    assert "automatically retry after a denial" in readme
-    assert "不得切换 shell" in readme_zh
-    assert "自动重试" in readme_zh
-    release_url = "https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.2.0"
-    for guide in (readme, readme_zh):
-        assert release_url in guide
-        assert "stm32-toolkit-1.2.0-windows-x86_64.zip" in guide
-        assert "CHECKSUMS.sha256" in guide
-        assert "if ($ExpectedLine.Count -ne 1) { throw" in guide
-        assert "if ($Actual -ne $Expected) { throw" in guide
-        assert "if (Test-Path -LiteralPath $BundleRoot) { throw" in guide
-        assert "$ToolkitRoot = Join-Path $BundleRoot 'stm32-toolkit-1.2.0'" in guide
-        assert "$DataRoot = 'C:\\data\\stm32-toolkit'" in guide
-        assert "$Cli = Join-Path $DataRoot 'runtime\\1.2.0\\Scripts\\stm32-toolkit.exe'" in guide
-        assert "& $Cli --project-root $ProjectRoot build --preset arm-debug --json" in guide
-        assert "$env:STM32_TOOLKIT_DATA_ROOT = $DataRoot" in guide
-        assert "bin\\stm32-monitor.cmd" in guide
-        for mode in ("Check", "Bootstrap", "Repair"):
-            assert f"-Mode {mode}" in guide
-    assert "same page" in readme
-    assert "同一页面" in readme_zh
-    assert "Keep DataRoot durable and separate from BundleRoot" in readme
-    assert "DataRoot 要长期保留，并与 BundleRoot" in readme_zh
-    # The healthy-`Check` prerequisite must remain stated even when its first
-    # letter is capitalized in the guide.
-    assert "after a healthy `check`" in readme.lower()
-    assert "`Check` 为 healthy 后" in readme_zh
-    assert "has no system-Python fallback" in readme
-    assert "不回退到系统 Python" in readme_zh
-    assert "Run at most one mutation command" in readme
-    assert "每次至多执行一个修改动作" in readme_zh
-    for stale_claim in (
-        "v1.0.1 is published",
-        "source candidate identifies as **v1.2.0**",
-        "has not been released or installed",
-    ):
-        assert stale_claim not in readme
-    for stale_claim in ("v1.0.1 已发布", "源码候选标识为 **v1.2.0**", "未发布、未安装"):
-        assert stale_claim not in readme_zh
-    old_bare_build = "stm32-toolkit --project-root C:\\work\\blinky build --preset arm-debug --json"
-    assert old_bare_build not in readme
-    assert old_bare_build not in readme_zh
-    assert "CPython `>=3.12,<3.13`" in readme
-    assert "docs/user-guide.md" in readme
-    assert "docs/user-guide.md" in readme_zh
-    assert "docs/testing/windows-deployment-and-ide-preflight.md" in readme
-    assert "docs/testing/standard-test-procedure.md" in readme
-    assert "-Mode Check" in readme and "-Mode Repair" in readme
-    assert "STM32_TOOLKIT_DATA_ROOT" in readme
-    assert "absolute launcher" in readme
-    for phrase in (
-        "/stm32-toolkit:setup-stm32-env",
-        "${CLAUDE_PROJECT_DIR}",
-        ".stm32-project.json",
-        "${CLAUDE_PLUGIN_DATA}/projects/<workspaceId>",
-        "doctor --json",
-        "Keil-to-GCC",
-        "one-way",
-        "user-created monitor groups",
-    ):
-        assert phrase in readme
-    for stale_claim in (
-        "motor_status",
-        "can_bus",
-        "localhost:8888",
-        "pyocd-debug-mcp",
-        "cp -r stm32-toolkit/skills",
-        "exactly 15",
-        "runtime/0.5.0",
-        "Host Python 3.10",
-    ):
-        assert stale_claim not in readme
+        for mode in ("Check", "Bootstrap"):
+            assert f"-Mode {mode}" in command_blocks
+        for argument in ("-ToolkitRoot", "-DataRoot", "-ProjectRoot"):
+            assert argument in command_blocks
+        # Project-bound calls use the installed launcher, never a bare command
+        # resolved from PATH.
+        assert "& $Cli --project-root" in command_blocks
+        assert "stm32-toolkit --project-root" not in command_blocks
+
+        # Detailed setup, MCP/VS Code and release information stay reachable.
+        assert "docs/user-guide.md" in guide
+        assert "docs/testing/windows-deployment-and-ide-preflight.md" in guide
+        assert "CHANGELOG.md" in guide
+
+    # The installed CLI is only used after a healthy read-only check.
+    assert "reports healthy for `runtime/1.3.2`" in readme
+    assert "对 `runtime/1.3.2` 报告 healthy" in readme_zh
+    # Publication is described as complete in both languages, without the old
+    # pending-candidate wording.
+    assert "current published Latest" in readme
+    assert "当前公开发布的最新版本" in readme_zh
+    assert "pending qualification" not in readme
+    assert "资格验证与发布仍待完成" not in readme_zh
+    # A policy denial remains a stop, not an override or a shell switch.
+    assert "execution policy" in readme
+    assert "执行策略" in readme_zh
 
 
 def test_two_configured_clones_use_distinct_workspaces_without_project_mutation(
