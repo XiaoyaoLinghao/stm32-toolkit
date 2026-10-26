@@ -871,10 +871,13 @@ def test_convert_workflow_translates_stable_inspection_and_plan_errors(
         startup_options=None,
         memory_layout=None,
         extra_regions=(),
+        wfi_returns=(),
     ):
-        # The real delivery API gained extra_regions in an earlier slice; a
-        # no-option call must remain an explicit empty request.
+        # The real delivery API gained extra_regions in an earlier slice and
+        # wfi_returns in a later one; a no-option call must remain an explicit
+        # empty request for both.
         assert not extra_regions
+        assert wfi_returns == ()
         assert output_root == destination
         raise MigrationPlanError(
             "DELIVERY_SOURCE_CHANGED", "source changed", {"rule": "sourceSnapshot"}
