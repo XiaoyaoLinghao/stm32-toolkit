@@ -54,6 +54,7 @@ from stm32_toolkit.probe.handoff import (
     _flash_mismatch_fields,
     _load_flash_result,
     begin_debug_handoff,
+    end_debug_handoff,
 )
 from stm32_toolkit.project_model import load_project_model
 
@@ -541,6 +542,70 @@ def test_snapshot_flash_readback_hands_off_without_git(snapshot_env, tmp_path: P
     assert state["buildId"] == identity["buildId"]
     assert state["elfSha256"] == identity["elfSha256"]
     assert any(event[0] == "read" for event in client.events)
+
+
+def test_snapshot_begin_end_handoff_consumes_ticket_without_git(
+    snapshot_env, tmp_path: Path
+):
+    root, identity, elf_data = _flash_snapshot(snapshot_env)
+    image = _segment_image(elf_data)
+    assert not (root / ".git").exists()
+    receipt_before = (root / _FLASH_REL).read_bytes()
+    session_root = tmp_path / "plugin-data" / "projects" / "workspace-a" / "session-a"
+    supervisor = FakeSupervisor(root, session_root)
+    begin_client = FakeClient(supervisor.endpoint, image)
+    request = DebugHandoffRequest(
+        project_root=root,
+        expected_build_id=str(identity["buildId"]),
+        expected_elf_sha256=str(identity["elfSha256"]),
+        authorized=True,
+        previous_watch_selection=("counter", "device.state"),
+    )
+
+    begun = asyncio.run(begin_debug_handoff(request, supervisor, begin_client))
+
+    assert begun.ok is True, begun.to_dict()
+    assert [event[0] for event in begin_client.events] == ["attach", "read"]
+    state = json.loads((session_root / "debug-handoff.json").read_text(encoding="utf-8"))
+    assert state["state"] == "externally-owned"
+    assert state["buildId"] == identity["buildId"]
+    # The admitted snapshot receipt stays an explicit null-Git baseline.
+    receipt = _load_flash_result(root)
+    assert receipt["schemaVersion"] == 2
+    assert receipt["gitHead"] is None and receipt["gitDirty"] is None
+    assert receipt["sourceBaseline"] == SOURCE_BASELINE_INPUT_SNAPSHOT
+    assert receipt["gitEvidence"] == SNAPSHOT_EVIDENCE
+
+    returned_clients: list[FakeClient] = []
+
+    def factory(endpoint: object) -> FakeClient:
+        client = FakeClient(endpoint, image)
+        returned_clients.append(client)
+        return client
+
+    ended = asyncio.run(end_debug_handoff(begun.data.ticket_id, supervisor, factory))
+
+    assert ended.ok is True, ended.to_dict()
+    assert ended.data.to_dict() == {
+        "previousWatchSelection": ["counter", "device.state"]
+    }
+    assert [event[0] for event in returned_clients[0].events] == [
+        "attach",
+        "read",
+        "close",
+    ]
+    consumed = json.loads(
+        (session_root / "debug-handoff.json").read_text(encoding="utf-8")
+    )
+    assert consumed["state"] == "observing"
+    assert consumed["ticketId"] is None
+    assert consumed["previousWatchSelection"] == []
+    lease = json.loads(
+        (session_root / "probe.lock").read_text(encoding="utf-8")
+    )
+    assert lease["state"] == "released"
+    # Neither begin nor end rewrote the explicit snapshot receipt.
+    assert (root / _FLASH_REL).read_bytes() == receipt_before
 
 
 # ---------------------------------------------------------------------------

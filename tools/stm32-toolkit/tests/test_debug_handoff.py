@@ -975,21 +975,23 @@ def test_begin_rejects_missing_or_wrong_flash_evidence_before_stop(handoff_env):
 
 
 @pytest.mark.parametrize(
-    ("field", "value"),
+    ("field", "value", "expected_code"),
     [
-        ("elfSize", 1),
-        ("verifiedBytes", 1),
-        ("gitHead", "f" * 40),
-        ("gitDirty", "false"),
-        ("inputSnapshotSha256", "f" * 64),
-        ("startedAtUtc", "yesterday"),
-        ("finishedAtUtc", "tomorrow"),
-        ("backendBytesProgrammed", True),
-        ("backendSectorsProgrammed", -1),
+        ("elfSize", 1, "HANDOFF_FLASH_MISMATCH"),
+        ("verifiedBytes", 1, "HANDOFF_FLASH_MISMATCH"),
+        ("gitHead", "f" * 40, "HANDOFF_FLASH_MISMATCH"),
+        # A string dirty flag makes the legacy receipt malformed, so the
+        # strict reader rejects it as missing proof before field matching.
+        ("gitDirty", "false", "HANDOFF_FLASH_REQUIRED"),
+        ("inputSnapshotSha256", "f" * 64, "HANDOFF_FLASH_MISMATCH"),
+        ("startedAtUtc", "yesterday", "HANDOFF_FLASH_MISMATCH"),
+        ("finishedAtUtc", "tomorrow", "HANDOFF_FLASH_MISMATCH"),
+        ("backendBytesProgrammed", True, "HANDOFF_FLASH_MISMATCH"),
+        ("backendSectorsProgrammed", -1, "HANDOFF_FLASH_MISMATCH"),
     ],
 )
 def test_begin_rejects_incomplete_or_mistyped_flash_proof(
-    handoff_env, field: str, value: object
+    handoff_env, field: str, value: object, expected_code: str
 ):
     project, _, _, supervisor, client, request = handoff_env
     path = project / "artifacts" / "migration" / "flash-result.json"
@@ -997,7 +999,7 @@ def test_begin_rejects_incomplete_or_mistyped_flash_proof(
     document[field] = value
     atomic_write_json(path, document)
     result = asyncio.run(begin_debug_handoff(request, supervisor, client))
-    assert result.code == "HANDOFF_FLASH_MISMATCH"
+    assert result.code == expected_code
     assert supervisor.stop_calls == 0
     assert client.events == []
 
