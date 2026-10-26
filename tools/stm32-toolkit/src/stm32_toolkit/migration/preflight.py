@@ -663,22 +663,24 @@ _KNOWN_REMEDIATION: dict[
     ),
 }
 
-#: Cause-specific remediation for a supported declaration whose only problem
-#: is an unusable quoted include.  Selection uses the blocker's trusted
-#: internal ``diagnostic`` hint, never its path or message text.
+#: Cause-specific remediation when a blocker stopped at unusable quoted-include
+#: evidence.  This does not assert that the declaration or address is otherwise
+#: supported.  Selection uses the blocker's trusted internal ``diagnostic``
+#: hint, never its path or message text.
 _DEPENDENCY_REMEDIATION: dict[
     str, tuple[str, str, str | None, str | None, tuple[str, ...]]
 ] = {
     BLOCKER_HINT_DEPENDENCY_ENCODING: (
         _NEEDS_USER_INPUT,
-        "The declaration shape and numeric form are supported; the blocker's"
-        " cause is the named project-relative quoted include, which is not"
-        " UTF-8. Declare that file's charset, and only for a reviewed"
-        " comment-only change use the normalize-source-comments Skill to"
-        " preview and copy a strict UTF-8 file outside the project; review each"
-        " affected file and pass the exact reviewed plan before any copy."
-        " Toolkit never transcodes the original, skips the include, guesses an"
-        " encoding, or relaxes the bound.",
+        "The current check stopped at dependency evidence: the named"
+        " project-relative quoted include is not UTF-8. That does not prove the"
+        " declaration or address will otherwise be accepted. Declare the file's"
+        " charset, and only for a reviewed comment-only change use the"
+        " normalize-source-comments Skill to preview and copy a strict UTF-8"
+        " file outside the project; review each affected file and pass the"
+        " exact reviewed plan before any copy, then rerun preflight, where"
+        " remaining syntax can still block. Toolkit never transcodes the"
+        " original, skips the include, or guesses an encoding.",
         None,
         "normalize-source-comments",
         ("declaredCharset", "reviewedPlanId"),

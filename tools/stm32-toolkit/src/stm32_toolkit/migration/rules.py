@@ -745,7 +745,9 @@ class _Scanner:
         ):
             reason = ""
             if error is not None and _SYMBOLIC_RE.search(expression):
-                reason = f" ({error})" if context is None else f" ({error}; {context})"
+                reason = f" ({error})"
+                if context is not None:
+                    reason = f"{reason}: {context}"
             self._align_blocker(
                 start,
                 f"unsupported or unresolved __align bound{reason}",
@@ -784,8 +786,7 @@ class _Scanner:
             if bound_failure is not None:
                 self._align_blocker(
                     start,
-                    "unsupported or unresolved __align declaration array bound: "
-                    f"{bound_failure}",
+                    f"__align declaration: {bound_failure}",
                     diagnostic,
                 )
             else:
@@ -855,11 +856,16 @@ def _bound_failure(
     error: str | None,
     context: str | None,
 ) -> str:
-    """Describe one unusable array bound without collapsing it into grammar."""
+    """Describe one unusable array bound without collapsing it into grammar.
+
+    The bounded reason token keeps its established ``(reason)`` form; any
+    dependency context is appended after the closing parenthesis so existing
+    diagnostics remain a prefix of the enriched message.
+    """
     bound = _cap(expression.strip())
     if error is not None:
-        detail = f"{error}; {context}" if context is not None else error
-        return f"array bound '{bound}' could not be resolved ({detail})"
+        reason = f"array bound '{bound}' could not be resolved ({error})"
+        return f"{reason}: {context}" if context is not None else reason
     return f"array bound '{bound}' is not a positive uint32 dimension ({value})"
 
 
@@ -1298,16 +1304,16 @@ def _placements_blocker(candidate: dict, text: str) -> MigrationBlocker:
             "placement rewrite was applied for this file"
         )
     elif candidate.get("resolution"):
-        resolution = candidate["resolution"]
-        if candidate.get("resolution_context"):
-            resolution = f"{resolution}; {candidate['resolution_context']}"
-        message = (
-            "unsupported ARMCC absolute placement grammar: address expression "
-            f"could not be resolved ({resolution})"
+        resolution = (
+            f"address expression could not be resolved "
+            f"({candidate['resolution']})"
         )
+        if candidate.get("resolution_context"):
+            resolution = f"{resolution}: {candidate['resolution_context']}"
+        message = f"ARMCC absolute placement: {resolution}"
     elif candidate.get("bound"):
         message = (
-            "unsupported ARMCC absolute placement grammar: "
+            "ARMCC absolute placement: "
             f"{candidate['bound']}; no placement rewrite was applied for this file"
         )
     else:

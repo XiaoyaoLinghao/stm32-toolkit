@@ -152,34 +152,40 @@ def test_non_utf8_header_names_relative_dependency_and_preserves_bytes(tmp_path)
     )
 
     by_line = {blocker.line: blocker for blocker in align}
-    assert "array bound 'MEM1_MAX_SIZE' could not be resolved (unreadable;" in (
+    assert "array bound 'MEM1_MAX_SIZE' could not be resolved (unreadable)" in (
         by_line[2].message
     )
-    assert "array bound 'MEM2_MAX_SIZE' could not be resolved (unreadable;" in (
+    assert "array bound 'MEM2_MAX_SIZE' could not be resolved (unreadable)" in (
         by_line[3].message
     )
-    assert "array bound 'MEM3_MAX_SIZE' could not be resolved (unreadable;" in (
+    assert "array bound 'MEM3_MAX_SIZE' could not be resolved (unreadable)" in (
         by_line[4].message
     )
+    for line in (2, 3, 4):
+        assert 'quoted include "Main/malloc.h" is not UTF-8' in by_line[line].message
     # Only array bounds reach the declaration parser here; the shape itself is
     # plain and supported, so it must not be reported as grammar.
     assert "unsupported __align declaration grammar" not in messages
 
     placed = {blocker.line: blocker for blocker in placement}
-    assert "array bound 'MEM2_MAX_SIZE' could not be resolved (unreadable;" in (
+    assert "array bound 'MEM2_MAX_SIZE' could not be resolved (unreadable)" in (
         placed[3].message
     )
-    assert "array bound 'MEM3_MAX_SIZE' could not be resolved (unreadable;" in (
+    assert "array bound 'MEM3_MAX_SIZE' could not be resolved (unreadable)" in (
         placed[4].message
     )
-    assert "address expression could not be resolved (unreadable;" in (
+    # The source expression is already the blocker evidence; the message only
+    # has to carry the stable reason and dependency context.
+    assert "MEM2_MAX_SIZE" in placed[5].evidence
+    assert "address expression could not be resolved (unreadable)" in (
         placed[5].message
     )
-    assert "MEM2_MAX_SIZE" in placed[5].message
-    assert "address expression could not be resolved (unreadable;" in (
+    assert 'quoted include "Main/malloc.h" is not UTF-8' in placed[5].message
+    assert "MEM3_MAX_SIZE" in placed[6].evidence
+    assert "address expression could not be resolved (unreadable)" in (
         placed[6].message
     )
-    assert "MEM3_MAX_SIZE" in placed[6].message
+    assert 'quoted include "Main/malloc.h" is not UTF-8' in placed[6].message
     assert "no placement rewrite was applied for this file" in placed[3].message
 
 
@@ -187,19 +193,26 @@ def test_transitive_non_utf8_header_is_named_without_host_path(tmp_path):
     root = tmp_path / "transitive"
     (root / "Main" / "cfg").mkdir(parents=True)
     (root / "Main" / "malloc.c").write_text(
-        '#include "cfg/mem.h"\n__align(4) u8 pool[MEM2_MAX_SIZE];\n',
+        '#include "wrapper.h"\n__align(4) u8 pool[MEM2_MAX_SIZE];\n',
         encoding="utf-8",
+    )
+    # Real chain: the UTF-8 wrapper includes the non-UTF-8 leaf.
+    (root / "Main" / "wrapper.h").write_text(
+        '#include "cfg/mem.h"\n', encoding="utf-8"
     )
     (root / "Main" / "cfg" / "mem.h").write_bytes(b"#define MEM2_MAX_SIZE 1\n\xff\n")
 
+    raw = (root / "Main" / "malloc.c").read_bytes()
     scan = _scan(root)
 
+    assert scan.after == raw
     blocker = _blockers(scan, "ARMCC_ALIGN_UNSUPPORTED")[0]
-    assert 'quoted include "Main/cfg/mem.h" is not UTF-8' in blocker.message
-    assert "array bound 'MEM2_MAX_SIZE' could not be resolved (unreadable;" in (
+    assert "array bound 'MEM2_MAX_SIZE' could not be resolved (unreadable)" in (
         blocker.message
     )
+    assert 'quoted include "Main/cfg/mem.h" is not UTF-8' in blocker.message
     assert str(root) not in blocker.message
+    assert blocker.diagnostic == BLOCKER_HINT_DEPENDENCY_ENCODING
 
 
 def test_missing_quoted_header_is_named_and_stays_unavailable(tmp_path):
@@ -213,7 +226,7 @@ def test_missing_quoted_header_is_named_and_stays_unavailable(tmp_path):
     scan = _scan(root)
 
     blocker = _blockers(scan, "ARMCC_ALIGN_UNSUPPORTED")[0]
-    assert "array bound 'NEEDED_SIZE' could not be resolved (unavailable;" in (
+    assert "array bound 'NEEDED_SIZE' could not be resolved (unavailable)" in (
         blocker.message
     )
     assert 'quoted include "missing.h" was not found' in blocker.message
@@ -234,7 +247,8 @@ def test_cyclic_macro_keeps_bounded_reason_without_dependency_context(tmp_path):
     scan = _scan(root)
 
     blocker = _blockers(scan, "ARMCC_ALIGN_UNSUPPORTED")[0]
-    assert "array bound 'A' could not be resolved (cycle;" in blocker.message
+    assert "array bound 'A' could not be resolved (cycle)" in blocker.message
+    assert "quoted include" not in blocker.message
     assert str(root) not in blocker.message
     # A cyclic macro is a real resolution cause, not a dependency-hint case.
     assert blocker.diagnostic is None
@@ -296,6 +310,7 @@ def test_missing_return_assembly_keeps_blocker_with_fall_through_diagnostic():
     for blocker in blockers:
         assert "no explicit return" in blocker.message
         assert "fall through" in blocker.message
+        assert "armcc User Guide" in blocker.message
         assert "section 7.30" in blocker.message
         assert "disassembly/control-flow baseline" in blocker.message
         assert "BX LR" in blocker.message
@@ -432,7 +447,7 @@ def test_preflight_classifies_missing_dependency_as_path_evidence(tmp_path):
         name="path-hint",
         files={
             "Main/main.c": (
-                '#include "absent.h"\n'
+                '#include "is not UTF-8.h"\n'
                 "__align(4) u8 pool[NEEDED_SIZE];\n"
                 "int main(void) { return 0; }\n"
             ),
@@ -443,7 +458,10 @@ def test_preflight_classifies_missing_dependency_as_path_evidence(tmp_path):
     blockers = _dependency_blockers(repo)
     assert len(blockers) == 1
     blocker = blockers[0]
-    assert 'quoted include "absent.h" was not found' in blocker["message"]
+    # A human-readable name cannot spoof the trusted encoding cause: the file
+    # is missing, so the structured hint stays path evidence and no charset
+    # skill is attached.
+    assert 'quoted include "is not UTF-8.h" was not found' in blocker["message"]
     assert "diagnostic" not in blocker
     remediation = blocker["remediation"]
     assert remediation["category"] == "needs-user-input"
@@ -451,4 +469,40 @@ def test_preflight_classifies_missing_dependency_as_path_evidence(tmp_path):
     assert remediation["requiredInputs"] == ["includePathEvidence"]
     assert "not an encoding problem" in remediation["summary"]
     assert "read-only evidence" in remediation["summary"]
-    assert "msr msp" not in scan.after.decode("utf-8").lower()
+    assert "normalize-source-comments" not in remediation["summary"]
+
+
+def test_preflight_dependency_evidence_does_not_claim_syntax_support(tmp_path):
+    repo = build_repo(
+        tmp_path,
+        name="unproven-syntax",
+        files={
+            "Main/main.c": (
+                '#include "flags.h"\n'
+                "__at(BASE) int *pointer;\n"
+                "int main(void) { return 0; }\n"
+            ),
+            "Common/common.c": "int common_value;\n",
+        },
+    )
+    (repo / "Main" / "flags.h").write_bytes(
+        b"/* \xd6\xd0\xce\xc4 */\n#define BASE 0x20000000\n"
+    )
+
+    blockers = _dependency_blockers(repo)
+    assert len(blockers) == 1
+    blocker = blockers[0]
+    # Address evaluation stopped before declaration validation, so the message
+    # must not claim the declaration is supported or call it grammar.
+    assert blocker["message"].startswith("ARMCC absolute placement: ")
+    assert "grammar" not in blocker["message"]
+    assert "address expression could not be resolved (unreadable)" in (
+        blocker["message"]
+    )
+    assert "Main/flags.h" in blocker["message"]
+    remediation = blocker["remediation"]
+    assert remediation["category"] == "needs-user-input"
+    assert remediation["skill"] == "normalize-source-comments"
+    # Preparing the dependency is not syntax acceptance; rerun may still block.
+    assert "does not prove" in remediation["summary"]
+    assert "remaining syntax can still block" in remediation["summary"]
