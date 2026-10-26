@@ -87,6 +87,13 @@ PROJECT_ID = physical_fixture.PROJECT_ID
 LEGACY_TIME = "2026-09-10T00:00:00.000000Z"
 CONTINUATION_TIME = "2026-09-11T00:00:00.000000Z"
 CONTINUATION_AFTER_DEADLINE = "2026-09-11T00:15:00.000001Z"
+#: The accepted optional-Git snapshot form used by opt-in fixture variants.
+SNAPSHOT_BASELINE = "input-snapshot-v1"
+SNAPSHOT_EVIDENCE = {
+    "status": "unavailable",
+    "code": "BUILD_GIT_INVALID",
+    "rule": "head",
+}
 
 
 def _ok(result: object) -> dict[str, object]:
@@ -463,7 +470,12 @@ def _publish_after_variant(
     ).publish_target_physical(manifest, envelope)
 
 
-def prepare_pair(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
+def prepare_pair(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    snapshot_provenance: bool = False,
+) -> SimpleNamespace:
     """Create the persisted v2 predecessor and a distinct-session physical pair.
 
     The fixture uses the repository's real replay seeds only to create the
@@ -505,8 +517,10 @@ def prepare_pair(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SimpleNames
         elf_sha256=physical_fixture.PHYSICAL_BEFORE_ELF,
         target_device=model.target.device,
         input_snapshot_sha256=before_snapshot.sha256,
-        git_commit="b" * 40,
-        git_dirty=False,
+        git_commit=None if snapshot_provenance else "b" * 40,
+        git_dirty=None if snapshot_provenance else False,
+        source_baseline=SNAPSHOT_BASELINE if snapshot_provenance else None,
+        git_evidence=SNAPSHOT_EVIDENCE if snapshot_provenance else None,
     )
     after_identity = EvidenceIdentity(
         workspace_id=after_workspace.workspace_id,
@@ -516,8 +530,10 @@ def prepare_pair(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SimpleNames
         elf_sha256=physical_fixture.PHYSICAL_AFTER_ELF,
         target_device=model.target.device,
         input_snapshot_sha256=after_snapshot.sha256,
-        git_commit="c" * 40,
-        git_dirty=False,
+        git_commit=None if snapshot_provenance else "c" * 40,
+        git_dirty=None if snapshot_provenance else False,
+        source_baseline=SNAPSHOT_BASELINE if snapshot_provenance else None,
+        git_evidence=SNAPSHOT_EVIDENCE if snapshot_provenance else None,
     )
 
     failed_seed_id = "seed-failed-t10-cont"
@@ -576,8 +592,10 @@ def prepare_pair(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SimpleNames
             elf_sha256=elf_sha,
             build_id=build_id,
             input_snapshot_sha256=current_snapshot.sha256,
-            git_commit="b" * 40,
-            git_dirty=False,
+            git_commit=None if snapshot_provenance else "b" * 40,
+            git_dirty=None if snapshot_provenance else False,
+            source_baseline=SNAPSHOT_BASELINE if snapshot_provenance else None,
+            git_evidence=SNAPSHOT_EVIDENCE if snapshot_provenance else None,
             target_device=current_model.target.device,
         )
 

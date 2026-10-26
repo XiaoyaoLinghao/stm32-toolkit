@@ -258,6 +258,8 @@ def _append_physical_monitor_history(
         input_snapshot_sha256=identity.input_snapshot_sha256,
         git_head=identity.git_commit,
         git_dirty=identity.git_dirty,
+        source_baseline=identity.source_baseline,
+        git_evidence=identity.git_evidence,
         flash_session_id=flash_session_id,
         lease_id=lease_id,
         dwarf_sha256="e" * 64,
