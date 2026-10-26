@@ -6,6 +6,22 @@ The [standard procedure](standard-test-procedure.md) governs execution and autho
 Historical measurements and one-time exceptions do not transfer automatically to a later release.
 The user's explicit v1.0.1 conditional exception is recorded below, separately from permanent gates.
 
+## v1.3.2 frozen-candidate exception authorized on 2026-10-26
+
+The user explicitly approved **USER_APPROVED_EXCEPTION** and publication as Latest
+only for frozen source `acb71b9f39e8ae4799179b0cab088245c0a5ea5b`, with 13
+reproducible verified files. The Windows ZIP is 113,770,074 bytes, SHA-256
+`1773a5e6b61a882bbd3d77a2a23902bd24f88ed296fb6e12dfccc03594c77f79`.
+Approved disclosed limits: Toolkit overall 15381/17618 = 87.3028%, Toolkit
+risk-core-v2 14310/16354 = 87.5015%, Monitor risk-core-v2 3227/3498 = 92.2527%,
+retained platform/historical-data skips, and explicit source-bound reuse rather
+than a single final-head full rerun. Permanent floors and scope remain unchanged;
+this exception neither turns unmet gates into PASS nor transfers to another
+candidate. Final actual installation/VS Code remains user-owned and
+**USER_VALIDATION_PENDING**; original project/hardware actions remain prohibited.
+See [authorization](../codex/returns/STM32TK-132/authorization-2026-10-26.md) and
+[frozen build evidence](../codex/returns/STM32TK-132/candidate-build.md).
+
 ## v1.3.1 frozen-candidate exception authorized on 2026-10-26
 
 The user subsequently explicitly requested publication as v1.3.1 and Latest

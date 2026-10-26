@@ -4,6 +4,8 @@
 
 ## 1. 当前断点与证据
 
+2026-10-26 v1.3.2 发布授权断点：用户明确批准仅对冻结 `acb71b9f39e8ae4799179b0cab088245c0a5ea5b` 的既有13文件候选接受披露限制并发布Latest，见[授权记录](../codex/returns/STM32TK-132/authorization-2026-10-26.md)。资格处置为 USER_APPROVED_EXCEPTION，永久门槛未改、未达标数值不变为PASS。下一步非强推源码/标签、上传核验13文件、发布并匿名复核；最终实际安装/VS Code仍由用户负责，USER_VALIDATION_PENDING，不改原工程、不操作硬件。以下为历史断点。
+
 2026-10-26 v1.3.2 冻结包断点：[候选核验记录](../codex/returns/STM32TK-132/candidate-build.md)。源码 `acb71b9f39e8ae4799179b0cab088245c0a5ea5b` 已完成两个独立干净树官方构建，13文件逐一同hash，安全解压后官方bundle验证退出0。Windows ZIP为113,770,074字节、SHA-256 `1773a5e6b61a882bbd3d77a2a23902bd24f88ed296fb6e12dfccc03594c77f79`。冻结源码相对测试head仅新增治理文档；覆盖率、平台跳过与明确复用的限制未改变，等待仅对此候选的资格处置，不自动沿用v1.3.1例外。尚未推送或发布v1.3.2；最终实际安装/VS Code由用户负责，原工程和硬件不操作。以下为历史断点。
 
 2026-10-26 v1.3.2 当前断点：诊断与版本对齐软件在 `c1985337bb1b74eab38deb12509ace22f191ab07` 独立审核为 **ACCEPTED_WITH_FIXES**，见[执行与复核记录](../codex/returns/STM32TK-132/version-review.md)。版本相关完整分组746通过/1平台跳过，setup隔离夹具45通过，Monitor受影响完整组288通过；独立76项及前期837项等重叠证据单列，不相加冒充全量。原失败和未完成Monitor运行保留，修正后相关组重跑通过。原生分支数据仅按完全匹配源码复用，变更文件旧弧已移除；Toolkit总体/风险87.3028%/87.5015%、Monitor风险92.2527%，永久门槛未满足，发行仍 **NOT_QUALIFIED**。下一步冻结源码、双构建并核验13文件，再对具体候选处理例外；旧v1.3.1批准不自动沿用。最终安装/VS Code继续由用户负责，USER_VALIDATION_PENDING，不改原工程、既有runtime、全局设置或硬件。GitHub Latest仍为v1.3.1，以下为历史断点。

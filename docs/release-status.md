@@ -1,5 +1,16 @@
 # Release status and retained limitations
 
+## v1.3.2 publication authorized — 2026-10-26
+
+The user approved the disclosed limits only for frozen source
+`acb71b9f39e8ae4799179b0cab088245c0a5ea5b` and explicitly requested publication
+as Latest. Qualification disposition is **USER_APPROVED_EXCEPTION**, not a
+numeric-gate PASS. See the [authorization record](codex/returns/STM32TK-132/authorization-2026-10-26.md).
+The verified 13 assets remain unchanged; push, release and public verification
+are next. Final actual installation/VS Code is USER_VALIDATION_PENDING and
+user-owned. No original firmware project or hardware action is authorized.
+The following sections preserve prior checkpoints.
+
 ## v1.3.2 reviewed local candidate — 2026-10-26
 
 The diagnostics and version-alignment software is **ACCEPTED_WITH_FIXES** at
