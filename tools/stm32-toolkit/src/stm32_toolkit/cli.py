@@ -441,6 +441,14 @@ def _build_parser() -> argparse.ArgumentParser:
     convert.add_argument("--uvprojx")
     convert.add_argument("--target-name")
     convert.add_argument(
+        "--destination",
+        help=(
+            "Absolute new output directory outside the read-only Keil source;"
+            " it must be absent or verified empty. It is required for both the"
+            " read-only plan and the authorized apply."
+        ),
+    )
+    convert.add_argument(
         "--startup-strategy",
         help="Opt in to reviewed CMSIS startup generation: generate-cmsis-gcc",
     )
@@ -1610,6 +1618,7 @@ def _operation_result(
             )
         return convert_keil_workflow(
             project_root,
+            destination=args.destination,
             uvprojx=args.uvprojx,
             target_name=args.target_name,
             plan_id=args.plan_id,

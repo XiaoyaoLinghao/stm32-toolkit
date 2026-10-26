@@ -220,7 +220,8 @@ _PREFLIGHT_ACTION = {
     "explanation": (
         "Run stm32_keil_preflight with the selected project-relative uvprojx "
         "and exact targetName. It is read-only, requires no Git, may return "
-        "blockers, and does not authorize conversion."
+        "blockers, and does not authorize conversion; the PLAN also needs a "
+        "separate absolute new output directory."
     ),
 }
 
@@ -637,7 +638,8 @@ def _unconfigured_capability_details(kind: str) -> dict[str, dict[str, object]]:
                     "Call stm32_keil_inspect with the project-relative uvprojx "
                     "and exact targetName.",
                     "Call stm32_keil_preflight with the same selection to "
-                    "receive typed blockers and Git/apply prerequisites.",
+                    "receive typed blockers and the required delivery "
+                    "destination input.",
                 ),
             ),
             "keilPreflight": _capability(
@@ -647,18 +649,26 @@ def _unconfigured_capability_details(kind: str) -> dict[str, dict[str, object]]:
                 (
                     "Call stm32_keil_preflight with the selected uvprojx and "
                     "exact targetName, then resolve every reported blocker.",
-                    "Establish any Git baseline as an explicit project-owner "
-                    "decision; preflight never runs git init.",
+                    "Choose an absolute new output directory outside the Keil "
+                    "source; preflight does not create or evaluate it.",
                 ),
             ),
             "keilConvert": _capability(
                 "available",
-                "The conversion entry point exists; a Git-bound plan and "
-                "explicit authorization are still required.",
+                "The conversion entry point exists; an independent destination, "
+                "a reviewed plan and explicit authorization are still required.",
                 (
                     "After preflight is complete and blockers are resolved, "
-                    "call stm32_keil_convert without planId for a read-only PLAN response.",
-                    "Read data.plan_id and data.patches[].unified_diff; pass that exact value as the apply request's planId only after explicit user authorization.",
+                    "call stm32_keil_convert with destination set to the chosen "
+                    "absolute new output directory and no planId for a "
+                    "read-only PLAN response.",
+                    "Review data.planId, data.outputs[] and data.sourcePatches[]; "
+                    "pass that exact data.planId as the apply request's planId "
+                    "with the same destination and options only after explicit "
+                    "user authorization.",
+                    "After apply, bind the result's outputRoot as the VS Code "
+                    "workspace and MCP project root, then run context, "
+                    "configure and build there. Git is optional.",
                 ),
             ),
         }

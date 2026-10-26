@@ -56,7 +56,8 @@ def _all_keys(value: object) -> set[str]:
 
 def _assert_no_applicable_plan(data: dict[str, object]) -> None:
     """Preflight exposes no usable identifier and never claims apply readiness."""
-    # PLAN responses use data.plan_id; preflight must not construct that key.
+    # Delivery PLAN responses use data.planId; preflight carries only a null
+    # planReadiness/applyReadiness planId and must not construct a usable one.
     assert "plan_id" not in _all_keys(data)
     json.dumps(data)  # remains JSON-safe for public envelopes
     assert data["planReadiness"]["planId"] is None
@@ -109,20 +110,27 @@ def test_preflight_completes_without_git_and_never_writes(tmp_path: Path) -> Non
     }
     assert data["git"]["worktree"]["status"] == "not-evaluated"
     assert data["git"]["worktree"]["dirtyPaths"] == []
-    assert data["planReadiness"]["ready"] is False
-    assert data["planReadiness"]["status"] == "blocked"
+    # Git is optional evidence: no blockers means the delivery plan may be
+    # requested.  The destination is a required input whose state preflight
+    # has not evaluated.
+    assert data["planReadiness"]["ready"] is True
+    assert data["planReadiness"]["status"] == "ready-for-plan"
     assert data["planReadiness"]["planId"] is None
     prerequisites = {
         item["id"]: item for item in data["planReadiness"]["prerequisites"]
     }
+    assert set(prerequisites) == {"technical-blockers"}
     assert prerequisites["technical-blockers"]["satisfied"] is True
-    assert prerequisites["git-repository"]["satisfied"] is False
-    assert prerequisites["git-clean-worktree"]["satisfied"] is False
-    first_step = data["planReadiness"]["nextSteps"][0]
-    assert first_step.startswith("Inspect data.git.repository.error")
-    assert "confirm Git availability" in first_step
-    assert "never run git init" in first_step
-    assert not first_step.startswith("Establish a Git worktree")
+    required = {
+        item["id"]: item for item in data["planReadiness"]["requiredInputs"]
+    }
+    assert required["delivery-destination"]["required"] is True
+    assert required["delivery-destination"]["state"] == "not-evaluated"
+    steps = " ".join(data["planReadiness"]["nextSteps"])
+    assert "absolute new output directory" in steps
+    assert "data.planId" in steps
+    assert "git init" not in steps
+    assert "commit" not in steps.lower()
     _assert_no_applicable_plan(data)
     assert snapshot_tree(root) == before
 
@@ -148,7 +156,9 @@ def test_preflight_handles_unborn_head_and_dirty_worktree(tmp_path: Path) -> Non
     assert unborn["git"]["head"]["available"] is False
     assert unborn["git"]["head"]["error"]["rule"] == "head"
     assert unborn["git"]["head"]["status"] == "unavailable"
-    assert unborn["planReadiness"]["ready"] is False
+    # An unborn HEAD is optional evidence, not a plan prerequisite.
+    assert unborn["planReadiness"]["ready"] is True
+    assert unborn["planReadiness"]["status"] == "ready-for-plan"
     assert unborn["applyReadiness"]["ready"] is False
 
     git_init(root)
@@ -166,16 +176,15 @@ def test_preflight_handles_unborn_head_and_dirty_worktree(tmp_path: Path) -> Non
     assert ("tracked", "Main/main.c") in entries
     assert ("untracked", "untracked.txt") in entries
     assert dirty["analysis"]["blockers"] == []
-    assert dirty["planReadiness"]["ready"] is False
+    # A dirty worktree is reported as optional evidence and never blocks the
+    # delivery plan or instructs the owner to commit/stash/clean.
+    assert dirty["planReadiness"]["ready"] is True
+    assert dirty["planReadiness"]["status"] == "ready-for-plan"
     assert dirty["applyReadiness"]["ready"] is False
-    assert any(
-        "Commit or intentionally preserve" in step
-        for step in dirty["planReadiness"]["nextSteps"]
-    )
-    assert dirty["applyReadiness"]["nextSteps"][0].startswith(
-        "Resolve these unmet planReadiness prerequisites first:"
-    )
-    assert "git-clean-worktree" in dirty["applyReadiness"]["nextSteps"][0]
+    steps = " ".join(dirty["planReadiness"]["nextSteps"]).lower()
+    assert "commit" not in steps
+    assert "stash" not in steps
+    assert "clean" not in steps
 
 
 def test_preflight_reuses_every_planner_technical_rule(tmp_path: Path) -> None:
@@ -237,10 +246,10 @@ def test_preflight_reuses_every_planner_technical_rule(tmp_path: Path) -> None:
     assert all("remediation" not in blocker for blocker in plan_blockers)
 
 
-def test_committed_technical_blockers_allow_only_a_diagnostic_plan(
+def test_technical_blockers_fail_delivery_planning_with_complete_diagnostics(
     tmp_path: Path,
 ) -> None:
-    """Git permits a read-only PLAN; technical blockers make it unapplicable."""
+    """Public delivery has no diagnostic-plan fallback: blockers stop planning."""
     root = build_repo(
         tmp_path,
         name="diagnostic",
@@ -248,6 +257,8 @@ def test_committed_technical_blockers_allow_only_a_diagnostic_plan(
         files={"Main/main.c": MAIN_C, "Common/common.c": COMMON_C},
     )
     before = snapshot_tree(root)
+    destination = tmp_path / "delivered" / "project"
+    destination.parent.mkdir()
 
     preflight = preflight_keil_workflow(root)
     assert preflight.ok is True, preflight
@@ -259,24 +270,14 @@ def test_committed_technical_blockers_allow_only_a_diagnostic_plan(
     assert prerequisites["technical-blockers"]["satisfied"] is False
     assert preflight.data["applyReadiness"]["ready"] is False
 
-    plan = convert_keil_workflow(root)
-    assert plan.ok is True, plan
+    plan = convert_keil_workflow(root, destination=destination)
+    assert plan.ok is False
     assert plan.operation == "keil-conversion-plan"
-    assert plan.data["blockers"]
-    assert {
-        "ARMCC_LINKER_CONFIGURATION_UNSUPPORTED",
-    } <= _blocker_codes(plan.data["blockers"])
-    assert len(plan.data["plan_id"]) == 64
-    assert snapshot_tree(root) == before
-
-    applied = convert_keil_workflow(
-        root, plan_id=plan.data["plan_id"], authorized=True
-    )
-    assert applied.ok is False
-    assert applied.code == "MIGRATION_BLOCKED"
-    assert "ARMCC_LINKER_CONFIGURATION_UNSUPPORTED" in applied.details[
-        "blockerCodes"
-    ]
+    assert plan.code == "DELIVERY_BLOCKED"
+    assert "ARMCC_LINKER_CONFIGURATION_UNSUPPORTED" in plan.details["blockerCodes"]
+    assert plan.details["blockerCount"] >= 1
+    assert plan.details["blockers"]
+    assert not destination.exists()
     assert snapshot_tree(root) == before
 
 
@@ -333,7 +334,7 @@ def test_preflight_workflow_cli_and_mcp_share_selection_without_git(
         workflow["data"]["analysis"]["selection"]
     )
     assert cli["data"]["applyReadiness"]["ready"] is False
-    assert cli["data"]["planReadiness"]["status"] == "blocked"
+    assert cli["data"]["planReadiness"]["status"] == "ready-for-plan"
     assert "plan_id" not in _all_keys(cli)
 
     runtime = ServerRuntime.create(root, tmp_path / "plugin-data", "session-a")
@@ -344,19 +345,35 @@ def test_preflight_workflow_cli_and_mcp_share_selection_without_git(
         workflow["data"]["analysis"]["selection"]
     )
 
-    # Planning is still Git-bound and refuses this repository.
-    conversion = convert_keil_workflow(
+    # Planning needs no Git; it needs an explicit independent destination.
+    missing = convert_keil_workflow(
         root, uvprojx="app.uvprojx", target_name="Legacy"
     )
-    assert conversion.ok is False
-    assert conversion.code == "MIGRATION_GIT_UNAVAILABLE"
+    assert missing.ok is False
+    assert missing.code == "DELIVERY_DESTINATION_REQUIRED"
+
+    destination = tmp_path / "delivered" / "app"
+    destination.parent.mkdir()
+    conversion = convert_keil_workflow(
+        root,
+        destination=destination,
+        uvprojx="app.uvprojx",
+        target_name="Legacy",
+    )
+    assert conversion.ok is True, conversion
+    assert conversion.operation == "keil-conversion-plan"
+    assert len(conversion.data["planId"]) == 64
+    assert not (root / ".stm32-project.json").exists()
+
     assert cli_main([
         "keil", "convert", "--project", str(root),
         "--uvprojx", "app.uvprojx", "--target-name", "Legacy",
+        "--destination", str(destination),
         "--dry-run", "--json",
-    ]) == 2
-    failed = json.loads(capsys.readouterr().out)
-    assert failed["code"] == "MIGRATION_GIT_UNAVAILABLE"
+    ]) == 0
+    planned = json.loads(capsys.readouterr().out)
+    assert planned["ok"] is True
+    assert planned["data"]["planId"] == conversion.data["planId"]
 
 
 def test_preflight_nested_project_below_git_toplevel_keeps_complete_shape(
@@ -384,16 +401,13 @@ def test_preflight_nested_project_below_git_toplevel_keeps_complete_shape(
     assert data["git"]["head"]["commit"] is None
     assert data["git"]["worktree"]["status"] == "not-evaluated"
     assert data["git"]["worktree"]["dirtyPaths"] == []
-    prerequisites = {
-        item["id"]: item for item in data["planReadiness"]["prerequisites"]
-    }
-    assert prerequisites["git-project-root-is-toplevel"]["satisfied"] is False
-    assert data["planReadiness"]["ready"] is False
-    assert data["planReadiness"]["status"] == "blocked"
+    # A nested project root is optional Git evidence only; it does not block
+    # the delivery plan.
+    assert data["planReadiness"]["ready"] is True
+    assert data["planReadiness"]["status"] == "ready-for-plan"
     assert data["applyReadiness"]["nextSteps"][0].startswith(
-        "Resolve these unmet planReadiness prerequisites first:"
+        "Choose an absolute new output directory"
     )
-    assert "git-project-root-is-toplevel" in data["applyReadiness"]["nextSteps"][0]
     _assert_no_applicable_plan(data)
 
 
@@ -425,14 +439,11 @@ def test_preflight_missing_git_executable_is_reported_not_raised(
     }
     assert data["git"]["head"]["status"] == "not-evaluated"
     assert data["git"]["worktree"]["status"] == "not-evaluated"
-    assert data["planReadiness"]["status"] == "blocked"
-    assert data["planReadiness"]["nextSteps"][0].startswith(
-        "Inspect data.git.repository.error"
-    )
-    assert "confirm Git availability" in data["planReadiness"]["nextSteps"][0]
-    assert data["applyReadiness"]["nextSteps"][0].startswith(
-        "Resolve these unmet planReadiness prerequisites first:"
-    )
+    assert data["planReadiness"]["status"] == "ready-for-plan"
+    assert data["planReadiness"]["ready"] is True
+    steps = " ".join(data["planReadiness"]["nextSteps"])
+    assert "delivery-destination" not in steps  # requiredInputs, not a step id
+    assert "data.planId" in steps
     _assert_no_applicable_plan(data)
 
 
@@ -493,7 +504,9 @@ def test_preflight_public_workflow_survives_os_level_git_failures(
         assert git["head"]["available"] is True
         assert git["worktree"]["status"] == "unavailable"
         assert git["worktree"]["error"] == expected_error
-    assert data["planReadiness"]["status"] == "blocked"
+    # Git evidence failures never change technical readiness.
+    assert data["planReadiness"]["status"] == "ready-for-plan"
+    assert data["planReadiness"]["ready"] is True
     assert data["applyReadiness"]["ready"] is False
     assert data["applyReadiness"]["status"] == "requires-reviewed-plan"
     _assert_no_applicable_plan(data)
@@ -591,11 +604,15 @@ def test_preflight_unreadable_head_and_status_do_not_assert_root_causes(
 
     monkeypatch.setattr(preflight_mod.git_guard, "git_head", fail_head)
     head_data = preflight_keil_conversion(root, inspection)
-    head_steps = " ".join(head_data["planReadiness"]["nextSteps"])
-    assert "Inspect data.git.head.error/status" in head_steps
-    assert "confirmed unborn" in head_steps
-    assert "Toolkit never commits automatically" in head_steps
-    assert "Create the project's first commit so" not in head_steps
+    # The Git failure stays in optional evidence and generates no readiness
+    # instruction to commit or initialize anything.
+    assert head_data["git"]["head"]["error"]["rule"] == "head"
+    assert head_data["planReadiness"]["ready"] is True
+    head_steps = " ".join(head_data["planReadiness"]["nextSteps"]).lower()
+    assert "inspect data.git" not in head_steps
+    assert "unborn" not in head_steps
+    assert "commit" not in head_steps
+    assert "git init" not in head_steps
 
     def fail_status(_root: Path) -> bytes:
         raise MigrationPlanError(
@@ -607,10 +624,11 @@ def test_preflight_unreadable_head_and_status_do_not_assert_root_causes(
     monkeypatch.setattr(preflight_mod.git_guard, "porcelain_status", fail_status)
     status_data = preflight_keil_conversion(root, inspection)
     assert status_data["git"]["worktree"]["status"] == "unavailable"
-    status_steps = " ".join(status_data["planReadiness"]["nextSteps"])
-    assert "confirm Git status access" in status_steps
-    assert "do not assume the worktree is dirty or clean" in status_steps
-    assert "Commit or intentionally preserve" not in status_steps
+    assert status_data["planReadiness"]["ready"] is True
+    status_steps = " ".join(status_data["planReadiness"]["nextSteps"]).lower()
+    assert "git status" not in status_steps
+    assert "dirty or clean" not in status_steps
+    assert "commit" not in status_steps
 
 
 def test_preflight_clean_eligible_input_is_ready_for_plan_not_apply(
@@ -630,11 +648,11 @@ def test_preflight_clean_eligible_input_is_ready_for_plan_not_apply(
     assert data["applyReadiness"]["status"] == "requires-reviewed-plan"
     assert data["applyReadiness"]["planId"] is None
     next_steps = " ".join(data["planReadiness"]["nextSteps"])
-    assert "data.plan_id" in next_steps
-    assert "planId" in next_steps
+    assert "data.planId" in next_steps
+    assert "destination <absolute-new-output>" in next_steps
     assert "authorized=true" in next_steps
     assert data["applyReadiness"]["nextSteps"][0].startswith(
-        "Call stm32_keil_convert"
+        "Choose an absolute new output directory"
     )
     assert "planReadiness.status becomes ready-for-plan" not in " ".join(
         data["applyReadiness"]["nextSteps"]
@@ -663,6 +681,8 @@ def test_preflight_rejects_unsafe_selection_and_does_not_change_apply_guards(
     tmp_path: Path,
 ) -> None:
     root = standard_repo(tmp_path)
+    destination = tmp_path / "delivered" / "project"
+    destination.parent.mkdir()
 
     unsafe = preflight_keil_workflow(
         root, uvprojx="../outside.uvprojx", target_name="Legacy"
@@ -671,9 +691,14 @@ def test_preflight_rejects_unsafe_selection_and_does_not_change_apply_guards(
     assert unsafe.code == "WORKFLOW_INPUT_INVALID"
     assert unsafe.details == {"field": "uvprojx", "rule": "portablePath"}
 
-    stale = convert_keil_workflow(root, plan_id="0" * 64, authorized=True)
+    stale = convert_keil_workflow(
+        root, destination=destination, plan_id="0" * 64, authorized=True
+    )
     assert stale.ok is False
     assert stale.code == "PLAN_CHANGED"
-    no_auth = convert_keil_workflow(root, plan_id="0" * 64, authorized=False)
+    no_auth = convert_keil_workflow(
+        root, destination=destination, plan_id="0" * 64, authorized=False
+    )
     assert no_auth.ok is False
     assert no_auth.code == "AUTHORIZATION_REQUIRED"
+    assert not destination.exists()

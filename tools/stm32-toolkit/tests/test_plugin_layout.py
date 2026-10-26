@@ -405,7 +405,13 @@ def test_skills_explain_preflight_statuses_and_discovery_boundaries():
         "stm32_keil_convert",
         "uvprojx",
         "targetName",
-        "data.plan_id",
+        "destination",
+        "data.planId",
+        "data.outputs[]",
+        "data.sourcePatches[]",
+        "outputRoot",
+        "DELIVERY_DESTINATION_REQUIRED",
+        "DELIVERY_BLOCKED",
         "planId",
         "authorized=true",
         "requires no Git",
@@ -415,7 +421,7 @@ def test_skills_explain_preflight_statuses_and_discovery_boundaries():
         "blindly replaces ARMCC startup",
     ):
         assert phrase in migrate
-    assert "PLAN response field is `data.plan_id`" in migrate
+    assert "PLAN response field is `data.planId`" in migrate
     assert "APPLY request argument is `planId`" in migrate
     assert "applyReadiness" in migrate
     assert "planReadiness" in migrate
@@ -575,63 +581,56 @@ def test_setup_skill_passes_inline_claude_paths_explicitly_without_ambient_varia
     assert "never switch" in skill
     assert "automatically retry after a denial" in skill
 
-def test_readme_links_current_user_guidance_and_release_boundaries():
+def test_readmes_are_concise_and_distinguish_published_and_local_contracts():
+    """Landing pages stay short: routes, release state, no install recipe."""
     readme = README.read_text(encoding="utf-8")
     readme_zh = (REPO_ROOT / "README_zh-CN.md").read_text(encoding="utf-8")
 
     release_tag = "https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.3.2"
-    bundle_url = (
-        "https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/download/"
-        "v1.3.2/stm32-toolkit-1.3.2-windows-x86_64.zip"
-    )
-    checksums_url = (
-        "https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/download/"
-        "v1.3.2/CHECKSUMS.sha256"
-    )
 
     for guide in (readme, readme_zh):
-        # The landing pages advertise the actual current release and the
-        # version-matched download/checksum assets from that same Release.
+        # Both routes, the explicit destination and the delivered root are the
+        # landing-page contract, not an in-place conversion.
+        assert "keil convert --destination" in guide
+        assert "outputRoot" in guide
         assert release_tag in guide
-        assert bundle_url in guide
-        assert checksums_url in guide
-        assert "stm32-toolkit-1.3.2" in guide
-        assert "CHECKSUMS.sha256" in guide
-        assert "runtime\\1.3.2\\Scripts\\stm32-toolkit.exe" in guide
-        # Legacy versioned recipes belong to their own release documentation.
-        assert "1.2.0-windows-x86_64.zip" not in guide
-
-        command_blocks = "\n".join(_fenced_blocks(guide))
-        assert "pwsh -NoProfile" in command_blocks
-        assert "powershell.exe" not in command_blocks
-        assert "-ExecutionPolicy" not in command_blocks
-        assert "Bypass" not in command_blocks
-        for mode in ("Check", "Bootstrap"):
-            assert f"-Mode {mode}" in command_blocks
-        for argument in ("-ToolkitRoot", "-DataRoot", "-ProjectRoot"):
-            assert argument in command_blocks
-        # Project-bound calls use the installed launcher, never a bare command
-        # resolved from PATH.
-        assert "& $Cli --project-root" in command_blocks
-        assert "stm32-toolkit --project-root" not in command_blocks
-
-        # Detailed setup, MCP/VS Code and release information stay reachable.
+        assert "v1.3.2" in guide
+        # Detailed installation, upgrade and local limitations stay in the
+        # user guide instead of being duplicated as landing-page steps.
         assert "docs/user-guide.md" in guide
         assert "docs/testing/windows-deployment-and-ide-preflight.md" in guide
         assert "CHANGELOG.md" in guide
+        assert "stm32-toolkit-1.3.2-windows-x86_64.zip" not in guide
+        assert "CHECKSUMS.sha256" not in guide
+        command_blocks = "\n".join(_fenced_blocks(guide))
+        for boilerplate in (
+            "-Mode Check",
+            "-Mode Bootstrap",
+            "-Mode Repair",
+            "-ExecutionPolicy",
+            "Bypass",
+        ):
+            assert boilerplate not in command_blocks
+        assert "pip install" not in guide
 
-    # The installed CLI is only used after a healthy read-only check.
-    assert "reports healthy for `runtime/1.3.2`" in readme
-    assert "对 `runtime/1.3.2` 报告 healthy" in readme_zh
-    # Publication is described as complete in both languages, without the old
-    # pending-candidate wording.
-    assert "current published Latest" in readme
-    assert "当前公开发布的最新版本" in readme_zh
-    assert "pending qualification" not in readme
-    assert "资格验证与发布仍待完成" not in readme_zh
-    # A policy denial remains a stop, not an override or a shell switch.
-    assert "execution policy" in readme
-    assert "执行策略" in readme_zh
+    assert "Two core product routes" in readme
+    assert "两条核心产品路线" in readme_zh
+    assert "The Keil source is never rewritten" in readme
+    assert "Keil 源工程绝不被改写" in readme_zh
+    assert "Git is optional traceability" in readme
+    assert "Git 只是可选追溯信息" in readme_zh
+    # Published package versus current local source behavior is explicit.
+    assert "local unpublished source behavior" in readme
+    assert "本地未发布源码行为" in readme_zh
+    assert "in-place `keil convert`" in readme
+    assert "原地 `keil convert`" in readme_zh
+    # The unpublished branch's hardware limits belong in the guide; the
+    # landing page must not claim integrated no-Git hardware readiness or
+    # describe another slice's integration state.
+    assert "no hardware-acceptance claim" in readme
+    assert "不声称已完成硬件验收" in readme_zh
+    for branch_detail in ("snapshot-admission", "snapshot 准入", "current branch", "当前分支"):
+        assert branch_detail not in readme + readme_zh
 
 
 def test_two_configured_clones_use_distinct_workspaces_without_project_mutation(

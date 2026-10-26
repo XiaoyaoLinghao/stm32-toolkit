@@ -136,6 +136,19 @@ def test_unconfigured_keil_context_reports_routes_without_git(
     assert data["workspace"] is None
     assert data["capabilities"]["keilPreflight"] is True
     assert data["hardware"] == {"probe": None, "state": "unavailable"}
+    # Keil delivery guidance is available without Git and names the actual
+    # independent-destination fields instead of an in-place default.
+    convert = data["capabilityDetails"]["keilConvert"]
+    assert convert["status"] == "available"
+    convert_text = " ".join([convert["reason"], *convert["nextSteps"]])
+    for field in (
+        "destination",
+        "data.planId",
+        "data.outputs[]",
+        "data.sourcePatches[]",
+        "outputRoot",
+    ):
+        assert field in convert_text, field
 
     managed, imported = routes_of(payload)
     assert managed["status"] == "not-evaluated"
@@ -501,3 +514,49 @@ def test_documentation_covers_pyocd_evidence_and_vscode_guidance() -> None:
         "never imply that PATH installation is required",
     ):
         assert field in configure, field
+
+
+def test_documentation_describes_independent_delivery_and_root_rebinding() -> None:
+    """AI guidance names the actual destination-delivery public fields.
+
+    Both the migration Skill and the user guide must describe the explicit
+    destination, the camelCase delivery plan/result fields, the no-in-place
+    boundary and the explicit output-root handoff.  The flash Skill must not
+    reduce the unpublished snapshot firmware limitation to one route.
+    """
+    migrate = (REPO_ROOT / "skills" / "migrate-keil" / "SKILL.md").read_text(
+        encoding="utf-8"
+    )
+    flash = (REPO_ROOT / "skills" / "flash-firmware" / "SKILL.md").read_text(
+        encoding="utf-8"
+    )
+    guide = (REPO_ROOT / "docs" / "user-guide.md").read_text(encoding="utf-8")
+
+    for text in (migrate, guide):
+        assert "DELIVERY_DESTINATION_REQUIRED" in text
+        assert "data.planId" in text
+        assert "data.outputs[]" in text
+        assert "data.sourcePatches[]" in text
+        assert "outputRoot" in text
+        assert "PLAN_CHANGED" in text
+    assert "authorized=true" in migrate
+    # No silent in-place fallback and no stale Git baseline prerequisite.
+    assert "in-place" in migrate
+    assert "Git baseline" not in migrate
+    # The user guide owns the detailed unpublished/local limitation and the
+    # explicit (never automatic) rebinding of the delivered project root.
+    assert "keil convert --destination" in guide
+    assert "本地未发布" in guide
+    assert "原地 `keil convert`" in guide
+    assert "把 `data.outputRoot` 绑定为 VS Code workspace" in guide
+    assert "不要偷偷改现有服务器绑定" in guide
+    # The managed firmware-provenance limitation affects more than flash.
+    assert "Git-shaped provenance" in guide
+    assert "debug handoff" in guide
+    assert "Target 测试" in guide
+    assert "Monitor" in guide
+    # Flash guidance must not call managed flash the only Git dependency.
+    assert "only current Git dependency" not in flash
+    assert "debug handoff" in flash
+    assert "Target tests" in flash
+    assert "Monitor" in flash

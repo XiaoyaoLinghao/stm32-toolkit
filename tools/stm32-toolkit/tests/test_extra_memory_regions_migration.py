@@ -256,7 +256,9 @@ def test_omitted_and_changed_extras_are_never_accepted_against_a_reviewed_plan(
     # test above; here the base-only layout keeps omission/change diagnostic
     # deterministic (PLAN_CHANGED rather than an unknown-role layout error).
     plan = _plan(repo, layout=ALL_MAIN)
+    destination = repo.parent / "reviewed-gcc-output"
     base = dict(
+        destination=destination,
         uvprojx=UVPROJX,
         target_name=TARGET,
         plan_id=plan.plan_id,
@@ -276,6 +278,7 @@ def test_omitted_and_changed_extras_are_never_accepted_against_a_reviewed_plan(
     ).to_dict()
     assert changed["ok"] is False and changed["code"] == "PLAN_CHANGED"
     assert not (repo / ".stm32-project.json").exists()
+    assert not destination.exists()
 
 
 def test_tampered_typed_plan_is_rejected_before_any_write(tmp_path):

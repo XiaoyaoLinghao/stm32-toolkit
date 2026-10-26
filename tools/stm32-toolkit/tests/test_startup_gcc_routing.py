@@ -21,8 +21,15 @@ from startup_gcc_fixture import (
 )
 
 
+def _destination(tmp_path):
+    destination = tmp_path / "delivered" / "project"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    return destination
+
+
 def test_cli_accepts_startup_options_for_preflight_and_plan(tmp_path, capsys):
     repo = two_assembly_repo(tmp_path)
+    destination = _destination(tmp_path)
 
     assert (
         cli_main(
@@ -63,6 +70,8 @@ def test_cli_accepts_startup_options_for_preflight_and_plan(tmp_path, capsys):
                 "generate-cmsis-gcc",
                 "--startup-source",
                 STARTUP_SOURCE,
+                "--destination",
+                str(destination),
                 "--dry-run",
                 "--json",
             ]
@@ -71,14 +80,20 @@ def test_cli_accepts_startup_options_for_preflight_and_plan(tmp_path, capsys):
     )
     plan = json.loads(capsys.readouterr().out)
     assert plan["ok"] is True
-    assert plan["data"]["startup"]["status"] == "ready"
+    assert plan["data"]["options"]["startupOptions"] == {
+        "strategy": "generate-cmsis-gcc",
+        "source": STARTUP_SOURCE,
+    }
     assert any(
-        patch["path"] == GENERATED_SOURCE for patch in plan["data"]["patches"]
+        output["path"] == GENERATED_SOURCE
+        for output in plan["data"]["outputs"]
     )
+    assert not destination.exists()
 
 
 def test_cli_apply_requires_the_same_startup_options(tmp_path, capsys):
     repo = startup_repo(tmp_path, name="cli-apply")
+    destination = _destination(tmp_path)
     assert (
         cli_main(
             [
@@ -94,6 +109,8 @@ def test_cli_apply_requires_the_same_startup_options(tmp_path, capsys):
                 "generate-cmsis-gcc",
                 "--startup-source",
                 STARTUP_SOURCE,
+                "--destination",
+                str(destination),
                 "--dry-run",
                 "--json",
             ]
@@ -101,7 +118,7 @@ def test_cli_apply_requires_the_same_startup_options(tmp_path, capsys):
         == 0
     )
     plan = json.loads(capsys.readouterr().out)
-    plan_id = plan["data"]["plan_id"]
+    plan_id = plan["data"]["planId"]
 
     assert cli_main(
         [
@@ -117,6 +134,8 @@ def test_cli_apply_requires_the_same_startup_options(tmp_path, capsys):
             "generate-cmsis-gcc",
             "--startup-source",
             STARTUP_SOURCE,
+            "--destination",
+            str(destination),
             "--apply",
             "--plan-id",
             plan_id,
@@ -126,11 +145,14 @@ def test_cli_apply_requires_the_same_startup_options(tmp_path, capsys):
     ) == 0
     applied = json.loads(capsys.readouterr().out)
     assert applied["ok"] is True
-    assert (repo / GENERATED_SOURCE).is_file()
+    assert applied["data"]["outputRoot"] == str(destination)
+    assert (destination / GENERATED_SOURCE).is_file()
+    assert not (repo / GENERATED_SOURCE).exists()
 
 
 def test_cli_rejects_an_unsupported_or_edited_strategy_without_writes(tmp_path, capsys):
     repo = two_assembly_repo(tmp_path)
+    destination = _destination(tmp_path)
     assert (
         cli_main(
             [
@@ -146,6 +168,8 @@ def test_cli_rejects_an_unsupported_or_edited_strategy_without_writes(tmp_path, 
                 "generate-cmsis-gcc",
                 "--startup-source",
                 STARTUP_SOURCE,
+                "--destination",
+                str(destination),
                 "--dry-run",
                 "--json",
             ]
@@ -153,7 +177,7 @@ def test_cli_rejects_an_unsupported_or_edited_strategy_without_writes(tmp_path, 
         == 0
     )
     plan = json.loads(capsys.readouterr().out)
-    plan_id = plan["data"]["plan_id"]
+    plan_id = plan["data"]["planId"]
 
     assert cli_main(
         [
@@ -167,6 +191,8 @@ def test_cli_rejects_an_unsupported_or_edited_strategy_without_writes(tmp_path, 
             TARGET,
             "--startup-strategy",
             "not-supported",
+            "--destination",
+            str(destination),
             "--dry-run",
             "--json",
         ]
@@ -188,6 +214,8 @@ def test_cli_rejects_an_unsupported_or_edited_strategy_without_writes(tmp_path, 
             "generate-cmsis-gcc",
             "--startup-source",
             "DSP/filter.s",
+            "--destination",
+            str(destination),
             "--apply",
             "--plan-id",
             plan_id,
@@ -198,10 +226,12 @@ def test_cli_rejects_an_unsupported_or_edited_strategy_without_writes(tmp_path, 
     changed = json.loads(capsys.readouterr().out)
     assert changed["code"] == "PLAN_CHANGED"
     assert not (repo / GENERATED_SOURCE).exists()
+    assert not destination.exists()
 
 
 def test_mcp_preflight_and_convert_route_the_camel_case_options(tmp_path):
     repo = startup_repo(tmp_path, name="mcp-apply")
+    destination = _destination(tmp_path)
     runtime = ServerRuntime.create(repo, tmp_path / "data", "session-startup")
 
     preflight = mcp_mod.tool_keil_preflight(
@@ -220,10 +250,14 @@ def test_mcp_preflight_and_convert_route_the_camel_case_options(tmp_path):
         TARGET,
         startup_strategy="generate-cmsis-gcc",
         startup_source=STARTUP_SOURCE,
+        destination=str(destination),
     )
     assert planned["ok"] is True
-    assert planned["data"]["startup"]["status"] == "ready"
-    plan_id = planned["data"]["plan_id"]
+    assert planned["data"]["options"]["startupOptions"] == {
+        "strategy": "generate-cmsis-gcc",
+        "source": STARTUP_SOURCE,
+    }
+    plan_id = planned["data"]["planId"]
 
     applied = mcp_mod.tool_keil_convert(
         runtime,
@@ -233,14 +267,17 @@ def test_mcp_preflight_and_convert_route_the_camel_case_options(tmp_path):
         True,
         startup_strategy="generate-cmsis-gcc",
         startup_source=STARTUP_SOURCE,
+        destination=str(destination),
     )
     assert applied["ok"] is True
-    assert (repo / GENERATED_SOURCE).is_file()
+    assert (destination / GENERATED_SOURCE).is_file()
+    assert not (repo / GENERATED_SOURCE).exists()
 
 
 def test_registered_mcp_tools_bind_the_public_camel_case_startup_options(tmp_path):
     """The real registered server, not the snake-case helpers, owns the options."""
     repo = startup_repo(tmp_path, name="mcp-registered-startup")
+    destination = _destination(tmp_path)
     server = mcp_mod.create_server(repo, tmp_path / "data", "session-startup-server")
 
     tools = {tool.name: tool for tool in asyncio.run(server.list_tools())}
@@ -250,23 +287,34 @@ def test_registered_mcp_tools_bind_the_public_camel_case_startup_options(tmp_pat
         assert "startupSource" in properties
         assert "startup_strategy" not in properties
         assert "startup_source" not in properties
+    assert "destination" in tools["stm32_keil_convert"].inputSchema["properties"]
 
     def call(tool_name: str, arguments: dict[str, object]) -> dict[str, object]:
         _, structured = asyncio.run(server.call_tool(tool_name, arguments))
         assert structured is not None
         return structured
 
-    selection = {"uvprojx": UVPROJX, "targetName": TARGET}
+    selection = {
+        "uvprojx": UVPROJX,
+        "targetName": TARGET,
+        "destination": str(destination),
+    }
     startup = {"startupStrategy": "generate-cmsis-gcc", "startupSource": STARTUP_SOURCE}
 
-    preflight = call("stm32_keil_preflight", {**selection, **startup})
+    preflight = call(
+        "stm32_keil_preflight",
+        {"uvprojx": UVPROJX, "targetName": TARGET, **startup},
+    )
     assert preflight["ok"] is True
     assert preflight["data"]["analysis"]["startup"]["source_path"] == STARTUP_SOURCE
 
     planned = call("stm32_keil_convert", {**selection, **startup})
     assert planned["ok"] is True
-    assert planned["data"]["startup"]["status"] == "ready"
-    plan_id = planned["data"]["plan_id"]
+    assert planned["data"]["options"]["startupOptions"] == {
+        "strategy": "generate-cmsis-gcc",
+        "source": STARTUP_SOURCE,
+    }
+    plan_id = planned["data"]["planId"]
 
     # With this single candidate, omitting startupSource still resolves to the
     # same file but is a different reviewed option set (and therefore a
@@ -283,7 +331,7 @@ def test_registered_mcp_tools_bind_the_public_camel_case_startup_options(tmp_pat
     )
     assert changed["ok"] is False
     assert changed["code"] == "PLAN_CHANGED"
-    assert not (repo / GENERATED_SOURCE).exists()
+    assert not destination.exists()
 
     omitted = call(
         "stm32_keil_convert",
@@ -291,18 +339,20 @@ def test_registered_mcp_tools_bind_the_public_camel_case_startup_options(tmp_pat
     )
     assert omitted["ok"] is False
     assert omitted["code"] == "PLAN_CHANGED"
-    assert not (repo / GENERATED_SOURCE).exists()
+    assert not destination.exists()
 
     applied = call(
         "stm32_keil_convert",
         {**selection, **startup, "planId": plan_id, "authorized": True},
     )
     assert applied["ok"] is True
-    assert (repo / GENERATED_SOURCE).is_file()
+    assert (destination / GENERATED_SOURCE).is_file()
+    assert not (repo / GENERATED_SOURCE).exists()
 
 
 def test_mcp_apply_refuses_edited_startup_source(tmp_path):
     repo = two_assembly_repo(tmp_path)
+    destination = _destination(tmp_path)
     runtime = ServerRuntime.create(repo, tmp_path / "data", "session-startup-2")
     planned = mcp_mod.tool_keil_convert(
         runtime,
@@ -310,9 +360,10 @@ def test_mcp_apply_refuses_edited_startup_source(tmp_path):
         TARGET,
         startup_strategy="generate-cmsis-gcc",
         startup_source=STARTUP_SOURCE,
+        destination=str(destination),
     )
     assert planned["ok"] is True
-    plan_id = planned["data"]["plan_id"]
+    plan_id = planned["data"]["planId"]
 
     edited = mcp_mod.tool_keil_convert(
         runtime,
@@ -322,21 +373,25 @@ def test_mcp_apply_refuses_edited_startup_source(tmp_path):
         True,
         startup_strategy="generate-cmsis-gcc",
         startup_source="DSP/filter.s",
+        destination=str(destination),
     )
     assert edited["ok"] is False
     assert edited["code"] == "PLAN_CHANGED"
-    assert not (repo / GENERATED_SOURCE).exists()
+    assert not destination.exists()
 
 
 def test_mcp_ambiguous_startup_selection_returns_candidates(tmp_path):
     repo = two_assembly_repo(tmp_path)
+    destination = _destination(tmp_path)
     runtime = ServerRuntime.create(repo, tmp_path / "data", "session-startup-3")
     result = mcp_mod.tool_keil_convert(
         runtime,
         UVPROJX,
         TARGET,
         startup_strategy="generate-cmsis-gcc",
+        destination=str(destination),
     )
     assert result["ok"] is False
     assert result["code"] == "MIGRATION_STARTUP_SELECTION_REQUIRED"
     assert result["details"]["candidates"] == ["DSP/filter.s", STARTUP_SOURCE]
+    assert not destination.exists()

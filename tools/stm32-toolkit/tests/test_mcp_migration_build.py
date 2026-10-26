@@ -139,20 +139,31 @@ def test_nested_keil_public_cli_mcp_inspect_plan_apply_share_selection(
     cli_inspect = json.loads(capsys.readouterr().out)
     assert cli_inspect["data"]["inspection"] == inspected["data"]["inspection"]
 
-    planned = mcp_mod.tool_keil_convert(runtime, selected, "Legacy")
+    destination = tmp_path / "delivered" / "Project"
+    destination.parent.mkdir()
+    planned = mcp_mod.tool_keil_convert(
+        runtime, selected, "Legacy", destination=str(destination)
+    )
     assert planned["ok"] is True
-    assert planned["data"]["blockers"] == []
+    assert planned["data"]["built"] is False
     assert cli_main([
         "keil", "convert", "--project", str(root), "--uvprojx", selected,
-        "--target-name", "Legacy", "--dry-run", "--json",
+        "--target-name", "Legacy", "--destination", str(destination),
+        "--dry-run", "--json",
     ]) == 0
     cli_plan = json.loads(capsys.readouterr().out)
-    assert cli_plan["data"]["plan_id"] == planned["data"]["plan_id"]
+    assert cli_plan["data"]["planId"] == planned["data"]["planId"]
     applied = mcp_mod.tool_keil_convert(
-        runtime, selected, "Legacy", planned["data"]["plan_id"], True
+        runtime,
+        selected,
+        "Legacy",
+        planned["data"]["planId"],
+        True,
+        destination=str(destination),
     )
     assert applied["ok"] is True
-    assert (root / ".stm32-project.json").is_file()
+    assert (destination / ".stm32-project.json").is_file()
+    assert not (root / ".stm32-project.json").exists()
 
 
 def test_public_keil_multi_candidate_and_incomplete_discovery(
@@ -276,9 +287,11 @@ def test_new_tool_schemas_expose_only_declared_properties(tmp_path: Path):
         "startupSource",
         "memoryLayout",
         "extraRegions",
+        "destination",
     }
     assert set(convert.get("required", [])) == set()
     assert "string" in str(convert["properties"]["planId"])
+    assert "string" in str(convert["properties"]["destination"])
     assert "string" in str(convert["properties"]["startupStrategy"])
     assert "string" in str(convert["properties"]["startupSource"])
     assert "object" in str(convert["properties"]["memoryLayout"])
@@ -393,14 +406,21 @@ def test_public_tool_descriptions_guide_mcp_only_consumers(tmp_path: Path):
 
     convert = descriptions["stm32_keil_convert"]
     for phrase in (
-        "data.plan_id",
-        "data.patches[].unified_diff",
+        "destination",
+        "absolute path of a new output directory",
+        "DELIVERY_DESTINATION_REQUIRED",
+        "data.planId",
+        "data.outputs[]",
+        "data.sourcePatches[]",
         "planId",
         "authorized=true",
         "same uvprojx",
-        "stale plan",
+        "PLAN_CHANGED",
+        "outputRoot",
+        "Git is optional",
     ):
         assert phrase in convert
+    assert "data.plan_id" not in convert
 
     configure = descriptions["stm32_project_configure"]
     assert "data.plan_id" in configure
@@ -503,21 +523,42 @@ def test_direct_helpers_return_operation_result_envelopes(tmp_path: Path):
     )["operation"] == "build"
 
 
-def test_in_memory_convert_requires_plan_id_and_authorization(tmp_path: Path):
-    """Regression: MCP convert is a two-phase plan/apply tool that fails closed."""
+def test_in_memory_convert_requires_destination_plan_id_and_authorization(
+    tmp_path: Path,
+):
+    """Regression: MCP convert is a two-phase delivery that fails closed."""
     runtime = _keil_runtime(tmp_path)
     server = create_server(
         runtime.project_root, tmp_path / "plugin-data", "session-a"
     )
+    destination = tmp_path / "delivered" / "project"
+    destination.parent.mkdir()
 
-    plan = asyncio.run(_call(server, "stm32_keil_convert", {"authorized": False}))
+    missing = asyncio.run(
+        _call(server, "stm32_keil_convert", {"authorized": False})
+    )
+    assert missing["ok"] is False
+    assert missing["code"] == "DELIVERY_DESTINATION_REQUIRED"
+
+    plan = asyncio.run(
+        _call(
+            server,
+            "stm32_keil_convert",
+            {"destination": str(destination), "authorized": False},
+        )
+    )
     assert plan["ok"] is True
     assert plan["operation"] == "keil-conversion-plan"
-    plan_id = plan["data"]["plan_id"]
+    plan_id = plan["data"]["planId"]
     assert len(plan_id) == 64
+    assert plan["data"]["built"] is False
 
     without_auth = asyncio.run(
-        _call(server, "stm32_keil_convert", {"planId": plan_id})
+        _call(
+            server,
+            "stm32_keil_convert",
+            {"destination": str(destination), "planId": plan_id},
+        )
     )
     assert without_auth["ok"] is False
     assert without_auth["code"] == "AUTHORIZATION_REQUIRED"
@@ -527,7 +568,11 @@ def test_in_memory_convert_requires_plan_id_and_authorization(tmp_path: Path):
         _call(
             server,
             "stm32_keil_convert",
-            {"planId": "0" * 64, "authorized": True},
+            {
+                "destination": str(destination),
+                "planId": "0" * 64,
+                "authorized": True,
+            },
         )
     )
     assert stale["ok"] is False
@@ -537,12 +582,20 @@ def test_in_memory_convert_requires_plan_id_and_authorization(tmp_path: Path):
         _call(
             server,
             "stm32_keil_convert",
-            {"planId": plan_id, "authorized": True},
+            {
+                "destination": str(destination),
+                "planId": plan_id,
+                "authorized": True,
+            },
         )
     )
     assert applied["ok"] is True
     assert applied["operation"] == "keil-conversion-apply"
-    assert (runtime.project_root / ".stm32-project.json").is_file()
+    assert applied["data"]["outputRoot"] == str(destination)
+    assert applied["data"]["built"] is False
+    assert applied["data"]["flashed"] is False
+    assert (destination / ".stm32-project.json").is_file()
+    assert not (runtime.project_root / ".stm32-project.json").exists()
 
 
 def test_in_memory_configure_and_build_fail_closed(tmp_path: Path, monkeypatch):
@@ -779,25 +832,38 @@ def test_end_to_end_fixture_inspect_convert_configure_build(tmp_path: Path, monk
     assert inspection["operation"] == "keil-inspect"
     assert inspection["data"]["inspection"]["device"] == "STM32F429ZGTx"
 
+    # The delivered project is a new output root outside the read-only source.
+    destination = tmp_path / "delivered" / "project"
+    destination.parent.mkdir()
+
     # conversion plan
-    plan = convert_keil_workflow(root).to_dict()
+    plan = convert_keil_workflow(root, destination=destination).to_dict()
     assert plan["ok"] is True
     assert plan["operation"] == "keil-conversion-plan"
-    assert plan["data"]["blockers"] == []
-    plan_id = plan["data"]["plan_id"]
+    assert plan["data"]["built"] is False
+    assert plan["data"]["flashed"] is False
+    plan_id = plan["data"]["planId"]
 
-    # conversion apply
-    applied = convert_keil_workflow(root, plan_id=plan_id, authorized=True).to_dict()
+    # conversion apply publishes one complete output directory
+    applied = convert_keil_workflow(
+        root, destination=destination, plan_id=plan_id, authorized=True
+    ).to_dict()
     assert applied["ok"] is True
     assert applied["operation"] == "keil-conversion-apply"
-    report_path = root / "artifacts" / "migration" / "conversion-report.json"
+    assert applied["data"]["outputRoot"] == str(destination)
+    assert applied["data"]["built"] is False
+    assert applied["data"]["flashed"] is False
+    assert not (root / ".stm32-project.json").exists()
+    report_path = destination / "artifacts" / "migration" / "conversion-report.json"
     report = json.loads(report_path.read_text(encoding="utf-8"))
-    assert report["planId"] == plan_id
-    assert report["gitHead"]
+    assert report["schemaVersion"] == 2
+    assert report["contentId"] == applied["data"]["contentId"]
+    assert "planId" not in report
+    assert "gitHead" not in report
     assert any(
         section["address"] == 0x20000000 for section in report["fixedSections"]
     )
-    manifest_path = root / ".stm32-project.json"
+    manifest_path = destination / ".stm32-project.json"
     assert manifest_path.is_file()
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert manifest["schemaVersion"] == 3
@@ -806,21 +872,23 @@ def test_end_to_end_fixture_inspect_convert_configure_build(tmp_path: Path, monk
     assert manifest["debug"] == {}
 
     # configuration plan/apply with the untouched generated manifest
-    configure_plan = configure_project_workflow(root).to_dict()
+    configure_plan = configure_project_workflow(destination).to_dict()
     assert configure_plan["ok"] is True
     assert configure_plan["operation"] == "project-configuration-plan"
     assert configure_plan["data"]["blockers"] == []
     configure_id = configure_plan["data"]["plan_id"]
     configured = configure_project_workflow(
-        root, plan_id=configure_id, authorized=True
+        destination, plan_id=configure_id, authorized=True
     ).to_dict()
     assert configured["ok"] is True
     assert configured["operation"] == "project-configuration-apply"
-    generated = root / ".stm32-toolkit" / "generated-files.json"
+    generated = destination / ".stm32-toolkit" / "generated-files.json"
     assert generated.is_file()
     generated_payload = json.loads(generated.read_text(encoding="utf-8"))
     assert generated_payload["toolVersion"] == "1.3.2"
-    tasks = json.loads((root / ".vscode" / "tasks.json").read_text(encoding="utf-8"))
+    tasks = json.loads(
+        (destination / ".vscode" / "tasks.json").read_text(encoding="utf-8")
+    )
     assert [task["label"] for task in tasks["tasks"]] == [
         "STM32 Toolkit: Build Debug",
         "STM32 Toolkit: Build Release",
@@ -840,31 +908,39 @@ def test_end_to_end_fixture_inspect_convert_configure_build(tmp_path: Path, monk
     assert tasks["inputs"]
     # Empty debug generates a deterministic launch config that claims no
     # usable hardware debugging: no cortex-debug configuration at all.
-    launch = json.loads((root / ".vscode" / "launch.json").read_text(encoding="utf-8"))
+    launch = json.loads(
+        (destination / ".vscode" / "launch.json").read_text(encoding="utf-8")
+    )
     assert launch["configurations"] == []
 
-    # fake build through the workflow
-    built = build_firmware_workflow(root, preset="arm-debug", authorized=True).to_dict()
+    # fake build through the workflow at the delivered root (no Git delivered)
+    built = build_firmware_workflow(
+        destination, preset="arm-debug", authorized=True
+    ).to_dict()
     assert built["ok"] is True
     assert built["operation"] == "build"
     assert built["data"]["identity"]["preset"] == "arm-debug"
-    assert built["data"]["identity"]["gitHead"] == report["gitHead"]
+    assert built["data"]["identity"]["sourceBaseline"] == "input-snapshot-v1"
+    assert built["data"]["identity"]["gitHead"] is None
+    assert built["data"]["identity"]["gitDirty"] is None
 
     build_result = json.loads(
-        (root / "artifacts" / "migration" / "build-result.json").read_text(
-            encoding="utf-8"
-        )
+        (
+            destination / "artifacts" / "migration" / "build-result.json"
+        ).read_text(encoding="utf-8")
     )
     assert build_result["status"] == "success"
+    assert build_result["sourceBaseline"] == "input-snapshot-v1"
+    assert build_result["gitHead"] is None
     identity_doc = json.loads(
-        (root / "build" / "arm-debug" / "firmware-identity.json").read_text(
-            encoding="utf-8"
-        )
+        (
+            destination / "build" / "arm-debug" / "firmware-identity.json"
+        ).read_text(encoding="utf-8")
     )
     assert identity_doc["buildId"] == build_result["buildId"]
-    assert identity_doc["gitHead"] == report["gitHead"]
+    assert identity_doc["gitHead"] is None
     assert identity_doc["preset"] == "arm-debug"
-    elf = (root / "build" / "arm-debug" / "legacy.elf").read_bytes()
+    elf = (destination / "build" / "arm-debug" / "legacy.elf").read_bytes()
     assert identity_doc["elfSha256"] == hashlib.sha256(elf).hexdigest()
     assert {entry["path"] for entry in build_result["artifacts"]} >= {
         "build/arm-debug/legacy.elf",
@@ -873,9 +949,9 @@ def test_end_to_end_fixture_inspect_convert_configure_build(tmp_path: Path, monk
     }
     assert hit_file.read_text(encoding="utf-8") != ""
 
-    # context agrees: build ready, hardware capabilities still false
+    # context agrees at the delivered root: build ready, hardware still false
     context = build_project_context(
-        root, tmp_path / "plugin-data", "session-a"
+        destination, tmp_path / "plugin-data", "session-a"
     ).to_dict()
     assert context["ok"] is True
     assert context["data"]["build"]["managedManifestValid"] is True

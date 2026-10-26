@@ -40,6 +40,10 @@ def _preflight(repo, layout_text: str | None):
     return cli_main(arguments)
 
 
+def _destination(repo):
+    return repo.parent / f"{repo.name}-gcc-output"
+
+
 def _convert(repo, layout_text: str | None, *extra: str):
     arguments = [
         "keil",
@@ -51,6 +55,8 @@ def _convert(repo, layout_text: str | None, *extra: str):
         "--target-name",
         TARGET,
         *STARTUP_ARGS,
+        "--destination",
+        str(_destination(repo)),
         *extra,
         "--json",
     ]
@@ -78,10 +84,13 @@ def test_cli_preflight_and_plan_route_the_exact_json_layout(tmp_path, capsys):
     assert _convert(repo, layout_text, "--dry-run") == 0
     plan = json.loads(capsys.readouterr().out)
     assert plan["ok"] is True
-    assert plan["data"]["memory_layout"]["status"] == "explicit"
-    assert plan["data"]["memory_layout"]["layout"] == ALL_MAIN.to_dict()
+    assert plan["data"]["options"]["memoryLayout"] == ALL_MAIN.to_dict()
+    assert plan["data"]["options"]["startupOptions"] == {
+        "strategy": "generate-cmsis-gcc",
+        "source": STARTUP_SOURCE,
+    }
     manifest = next(
-        patch for patch in plan["data"]["patches"]
+        patch for patch in plan["data"]["sourcePatches"]
         if patch["path"] == ".stm32-project.json"
     )
     added = "".join(
@@ -91,6 +100,7 @@ def test_cli_preflight_and_plan_route_the_exact_json_layout(tmp_path, capsys):
     )
     payload = json.loads(added)
     assert payload["memory"]["layout"] == ALL_MAIN.to_dict()
+    assert not _destination(repo).exists()
 
 
 def test_cli_no_layout_returns_candidates_and_a_blocker(tmp_path, capsys):
@@ -230,7 +240,7 @@ def test_cli_apply_requires_the_same_layout_choice(tmp_path, capsys):
     repo = multi_ram_repo(tmp_path / "cli-apply")
     assert _convert(repo, json.dumps(SPLIT.to_dict()), "--dry-run") == 0
     planned = json.loads(capsys.readouterr().out)
-    plan_id = planned["data"]["plan_id"]
+    plan_id = planned["data"]["planId"]
 
     # Omission is a different reviewed request.
     assert _convert(repo, None, "--apply", "--plan-id", plan_id, "--authorized") != 0
@@ -265,8 +275,12 @@ def test_cli_apply_requires_the_same_layout_choice(tmp_path, capsys):
     )
     applied = json.loads(capsys.readouterr().out)
     assert applied["ok"] is True
-    manifest = json.loads((repo / ".stm32-project.json").read_text("utf-8"))
+    assert applied["data"]["outputRoot"] == str(_destination(repo))
+    manifest = json.loads(
+        (_destination(repo) / ".stm32-project.json").read_text("utf-8")
+    )
     assert manifest["memory"]["layout"] == SPLIT.to_dict()
+    assert not (repo / ".stm32-project.json").exists()
 
 
 def test_registered_mcp_tools_bind_the_public_camel_case_memory_layout(tmp_path):
@@ -284,13 +298,15 @@ def test_registered_mcp_tools_bind_the_public_camel_case_memory_layout(tmp_path)
         assert structured is not None
         return structured
 
-    selection = {
+    destination = _destination(repo)
+    preflight_selection = {
         "uvprojx": UVPROJX,
         "targetName": TARGET,
         "startupStrategy": "generate-cmsis-gcc",
         "startupSource": STARTUP_SOURCE,
     }
-    required = call("stm32_keil_preflight", selection)
+    selection = {**preflight_selection, "destination": str(destination)}
+    required = call("stm32_keil_preflight", preflight_selection)
     assert required["ok"] is True
     assert required["data"]["analysis"]["memoryLayout"]["status"] == (
         "requires-selection"
@@ -300,9 +316,8 @@ def test_registered_mcp_tools_bind_the_public_camel_case_memory_layout(tmp_path)
         "stm32_keil_convert", {**selection, "memoryLayout": SPLIT.to_dict()}
     )
     assert planned["ok"] is True
-    assert planned["data"]["memory_layout"]["status"] == "explicit"
-    assert planned["data"]["memory_layout"]["layout"] == SPLIT.to_dict()
-    plan_id = planned["data"]["plan_id"]
+    assert planned["data"]["options"]["memoryLayout"] == SPLIT.to_dict()
+    plan_id = planned["data"]["planId"]
 
     omitted = call(
         "stm32_keil_convert",
@@ -322,7 +337,7 @@ def test_registered_mcp_tools_bind_the_public_camel_case_memory_layout(tmp_path)
     )
     assert edited["ok"] is False
     assert edited["code"] == "PLAN_CHANGED"
-    assert not (repo / ".stm32-project.json").exists()
+    assert not destination.exists()
 
     applied = call(
         "stm32_keil_convert",
@@ -334,8 +349,11 @@ def test_registered_mcp_tools_bind_the_public_camel_case_memory_layout(tmp_path)
         },
     )
     assert applied["ok"] is True
-    manifest = json.loads((repo / ".stm32-project.json").read_text("utf-8"))
+    manifest = json.loads(
+        (destination / ".stm32-project.json").read_text("utf-8")
+    )
     assert manifest["memory"]["layout"] == SPLIT.to_dict()
+    assert not (repo / ".stm32-project.json").exists()
 
 
 def test_registered_mcp_invalid_layout_is_a_structured_failure(tmp_path):

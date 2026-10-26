@@ -422,29 +422,64 @@ def test_keil_inspect_accepts_project_root_alias_and_no_baseline(
     assert payload["data"]["baseline"] is None
 
 
-def test_keil_convert_dry_run_emits_a_deterministic_plan(tmp_path: Path, capsys):
-    root = _keil_repo(tmp_path)
+def _destination(tmp_path: Path, name: str = "gcc-project") -> Path:
+    parent = tmp_path / "delivery"
+    parent.mkdir(parents=True, exist_ok=True)
+    return parent / name
 
-    assert main(["keil", "convert", "--project", str(root), "--dry-run", "--json"]) == 0
+
+def test_keil_convert_dry_run_emits_a_deterministic_delivery_plan(
+    tmp_path: Path, capsys
+):
+    root = _keil_repo(tmp_path)
+    destination = _destination(tmp_path)
+
+    assert main([
+        "keil", "convert", "--project", str(root), "--destination", str(destination),
+        "--dry-run", "--json",
+    ]) == 0
     first = json.loads(capsys.readouterr().out)
 
-    assert main(["keil", "convert", "--project", str(root), "--dry-run", "--json"]) == 0
+    assert main([
+        "keil", "convert", "--project", str(root), "--destination", str(destination),
+        "--dry-run", "--json",
+    ]) == 0
     second = json.loads(capsys.readouterr().out)
 
     assert first["operation"] == "keil-conversion-plan"
     assert first["ok"] is True
-    assert first["data"]["plan_id"] == second["data"]["plan_id"]
-    assert len(first["data"]["plan_id"]) == 64
+    assert first["data"]["planId"] == second["data"]["planId"]
+    assert len(first["data"]["planId"]) == 64
+    assert first["data"]["built"] is False
+    assert first["data"]["flashed"] is False
+    assert not destination.exists()
+
+
+def test_keil_convert_requires_a_destination(tmp_path: Path, capsys):
+    root = _keil_repo(tmp_path)
+
+    assert main([
+        "keil", "convert", "--project", str(root), "--dry-run", "--json",
+    ]) == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is False
+    assert payload["operation"] == "keil-conversion-plan"
+    assert payload["code"] == "DELIVERY_DESTINATION_REQUIRED"
+    assert payload["details"]["field"] == "destination"
 
 
 def test_keil_convert_apply_is_authorized_two_phase(tmp_path: Path, capsys):
     root = _keil_repo(tmp_path)
-
-    assert main(["keil", "convert", "--project", str(root), "--dry-run", "--json"]) == 0
-    plan_id = json.loads(capsys.readouterr().out)["data"]["plan_id"]
+    destination = _destination(tmp_path)
 
     assert main([
-        "keil", "convert", "--project", str(root),
+        "keil", "convert", "--project", str(root), "--destination", str(destination),
+        "--dry-run", "--json",
+    ]) == 0
+    plan_id = json.loads(capsys.readouterr().out)["data"]["planId"]
+
+    assert main([
+        "keil", "convert", "--project", str(root), "--destination", str(destination),
         "--apply", "--plan-id", plan_id, "--authorized", "--json",
     ]) == 0
 
@@ -452,19 +487,24 @@ def test_keil_convert_apply_is_authorized_two_phase(tmp_path: Path, capsys):
     payload = json.loads(captured.out)
     assert payload["operation"] == "keil-conversion-apply"
     assert payload["ok"] is True
-    assert (root / ".stm32-project.json").is_file()
+    assert payload["data"]["outputRoot"] == str(destination)
+    assert payload["data"]["built"] is False
+    assert payload["data"]["flashed"] is False
+    assert (destination / ".stm32-project.json").is_file()
+    assert not (root / ".stm32-project.json").exists()
     assert captured.err == ""
 
 
 def test_keil_convert_stale_plan_is_an_expected_failure(tmp_path: Path, capsys):
     root = _keil_repo(tmp_path)
+    destination = _destination(tmp_path)
     (root / "Main" / "main.c").write_text(
         (root / "Main" / "main.c").read_text(encoding="utf-8") + "/* edit */\n",
         encoding="utf-8",
     )
 
     assert main([
-        "keil", "convert", "--project", str(root),
+        "keil", "convert", "--project", str(root), "--destination", str(destination),
         "--apply", "--plan-id", "0" * 64, "--authorized", "--json",
     ]) == 2
 
@@ -473,6 +513,7 @@ def test_keil_convert_stale_plan_is_an_expected_failure(tmp_path: Path, capsys):
     assert payload["ok"] is False
     assert payload["operation"] == "keil-conversion-apply"
     assert payload["code"] == "PLAN_CHANGED"
+    assert not destination.exists()
     assert captured.err == ""
 
 
@@ -754,78 +795,102 @@ def test_build_command_returns_stale_guidance_json(
 
 
 def test_end_to_end_inspect_convert_configure_build(tmp_path: Path, monkeypatch, capsys):
-    """The complete two-phase workflow chain through the CLI grammar."""
+    """Independent delivery -> configure -> build through the CLI grammar."""
     import hashlib
-    import subprocess
 
     from test_mcp_migration_build import convertible_fixture_copy
+    from test_migration_apply import snapshot_tree
 
     root = convertible_fixture_copy(tmp_path)
     from test_build_runner import install_fake_cmake
 
     install_fake_cmake(monkeypatch, tmp_path)
+    source_before = snapshot_tree(root)
+    destination = _destination(tmp_path, "delivered-project")
 
     # inspect
     assert main(["keil", "inspect", "--project", str(root), "--json"]) == 0
     assert json.loads(capsys.readouterr().out)["operation"] == "keil-inspect"
 
-    # conversion plan -> apply
-    assert main(["keil", "convert", "--project", str(root), "--dry-run", "--json"]) == 0
-    plan_id = json.loads(capsys.readouterr().out)["data"]["plan_id"]
+    # conversion plan -> apply into a new independent output root
     assert main([
-        "keil", "convert", "--project", str(root),
+        "keil", "convert", "--project", str(root), "--destination", str(destination),
+        "--dry-run", "--json",
+    ]) == 0
+    plan = json.loads(capsys.readouterr().out)
+    plan_id = plan["data"]["planId"]
+    assert plan["data"]["built"] is False
+    assert main([
+        "keil", "convert", "--project", str(root), "--destination", str(destination),
         "--apply", "--plan-id", plan_id, "--authorized", "--json",
     ]) == 0
     applied = json.loads(capsys.readouterr().out)
     assert applied["operation"] == "keil-conversion-apply"
+    assert applied["data"]["outputRoot"] == str(destination)
+    assert applied["data"]["built"] is False
+    assert applied["data"]["flashed"] is False
+    # The Keil source tree is untouched; the output is a separate project.
+    assert snapshot_tree(root) == source_before
+    assert not (root / ".stm32-project.json").exists()
 
     # The generated manifest is used exactly as produced: the debug spec
     # stays empty and build-only configuration must still succeed.
-    manifest_path = root / ".stm32-project.json"
+    manifest_path = destination / ".stm32-project.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert manifest["schemaVersion"] == 3
     assert manifest["debug"] == {}
 
-    # configuration plan -> apply
-    assert main(["project", "configure", "--project", str(root), "--dry-run", "--json"]) == 0
+    # configuration plan -> apply at the delivered output root
+    assert main([
+        "project", "configure", "--project", str(destination), "--dry-run", "--json",
+    ]) == 0
     configure_id = json.loads(capsys.readouterr().out)["data"]["plan_id"]
     assert main([
-        "project", "configure", "--project", str(root),
+        "project", "configure", "--project", str(destination),
         "--apply", "--plan-id", configure_id, "--authorized", "--json",
     ]) == 0
     configured = json.loads(capsys.readouterr().out)
     assert configured["operation"] == "project-configuration-apply"
-    launch = json.loads((root / ".vscode" / "launch.json").read_text(encoding="utf-8"))
+    launch = json.loads(
+        (destination / ".vscode" / "launch.json").read_text(encoding="utf-8")
+    )
     assert launch["configurations"] == []
 
-    # build
-    assert main(["build", "--project", str(root), "--preset", "arm-debug"]) == 0
+    # build at the delivered output root (no Git repository was delivered)
+    assert main(["build", "--project", str(destination), "--preset", "arm-debug"]) == 0
     built = json.loads(capsys.readouterr().out)
     assert built["operation"] == "build"
     assert built["ok"] is True
+    assert built["data"]["identity"]["sourceBaseline"] == "input-snapshot-v1"
+    assert built["data"]["identity"]["gitHead"] is None
+    assert built["data"]["identity"]["gitDirty"] is None
 
-    # linked evidence chain
+    # linked evidence chain: schema-2 report content identity, then build
     report = json.loads(
-        (root / "artifacts" / "migration" / "conversion-report.json").read_text(
-            encoding="utf-8"
-        )
+        (
+            destination / "artifacts" / "migration" / "conversion-report.json"
+        ).read_text(encoding="utf-8")
     )
-    assert report["planId"] == plan_id
-    assert (root / ".stm32-toolkit" / "generated-files.json").is_file()
+    assert report["schemaVersion"] == 2
+    assert report["contentId"] == applied["data"]["contentId"]
+    assert "planId" not in report
+    assert "gitHead" not in report
+    assert (
+        destination / ".stm32-toolkit" / "generated-files.json"
+    ).is_file()
     build_result = json.loads(
-        (root / "artifacts" / "migration" / "build-result.json").read_text(
-            encoding="utf-8"
-        )
+        (
+            destination / "artifacts" / "migration" / "build-result.json"
+        ).read_text(encoding="utf-8")
     )
     assert build_result["status"] == "success"
-    assert build_result["gitHead"] == report["gitHead"]
+    assert build_result["sourceBaseline"] == "input-snapshot-v1"
+    assert build_result["gitHead"] is None
     identity = built["data"]["identity"]
-    elf = (root / "build" / "arm-debug" / "legacy.elf").read_bytes()
+    elf = (destination / "build" / "arm-debug" / "legacy.elf").read_bytes()
     assert identity["elfSha256"] == hashlib.sha256(elf).hexdigest()
-    assert identity["gitHead"] == report["gitHead"]
-    assert subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=root, check=True, capture_output=True, text=True
-    ).stdout.strip() == report["gitHead"]
+    assert identity["buildId"] == build_result["buildId"]
+    assert not (destination / ".git").exists()
 
 
 # ---------------------------------------------------------------------------

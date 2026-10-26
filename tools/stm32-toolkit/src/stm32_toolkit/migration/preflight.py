@@ -29,6 +29,7 @@ from stm32_toolkit.migration.model import (
 from stm32_toolkit.migration.planner import analyze_keil_conversion
 
 _ANALYSIS_RULESET = "keil-conversion-technical/1"
+_DELIVERY_DESTINATION_INPUT = "delivery-destination"
 #: Same public output bound as a serialized conversion plan.
 _PREFLIGHT_OUTPUT_LIMIT_BYTES = 64 * 1024 * 1024
 
@@ -221,30 +222,36 @@ def _extra_regions_option_guidance(
     )
 
 
+def _destination_input() -> dict[str, object]:
+    """The one input preflight cannot evaluate: the independent output root."""
+    return {
+        "id": _DELIVERY_DESTINATION_INPUT,
+        "required": True,
+        "state": "not-evaluated",
+        "description": (
+            "An absolute path to a new output directory outside the Keil"
+            " source. The destination must be absent or verified empty."
+        ),
+        "nextStep": (
+            "Choose the destination as the project owner. Preflight does not"
+            " create, inspect, or evaluate it."
+        ),
+    }
+
+
 def _plan_readiness(
-    git: dict[str, object],
     blocker_total: int,
     startup_options: StartupOptions | None = None,
     memory_layout: MemoryLayout | None = None,
     extra_regions: tuple[ExtraRegion, ...] = (),
 ) -> dict[str, object]:
-    """Whether the technical/Git prerequisites for obtaining a plan are met.
+    """Whether technical blockers permit obtaining a delivery plan.
 
-    This is deliberately not apply readiness.  Even when every prerequisite is
-    satisfied, no plan exists yet and no authorization has been granted.
+    Git is optional evidence and never a prerequisite.  The destination is a
+    required next input but preflight does not inspect its state.  This is
+    deliberately not apply readiness: even when every blocker is resolved, no
+    plan exists yet and no authorization has been granted.
     """
-    repository = git["repository"]
-    head = git["head"]
-    worktree = git["worktree"]
-    assert isinstance(repository, dict)
-    assert isinstance(head, dict)
-    assert isinstance(worktree, dict)
-
-    repository_available = repository["available"] is True
-    toplevel_match = repository["projectRootIsToplevel"] is True
-    head_available = head["available"] is True
-    worktree_clean = worktree["status"] == "clean"
-
     prerequisites = [
         _prerequisite(
             "technical-blockers",
@@ -252,70 +259,28 @@ def _plan_readiness(
             f"{blocker_total} technical migration blocker(s) remain.",
             "Resolve every reported blocker; preflight does not edit files or bypass rules.",
         ),
-        _prerequisite(
-            "git-repository",
-            repository_available,
-            "The project root must be inside a readable Git repository.",
-            "Inspect data.git.repository.error (code/rule) and confirm Git installation plus repository readability/access. Only if the owner confirms no repository exists, establish a Git worktree as an explicit project-owner decision; preflight never runs git init.",
-        ),
-        _prerequisite(
-            "git-project-root-is-toplevel",
-            repository_available and toplevel_match,
-            "The project root must be the canonical Git worktree toplevel.",
-            "Inspect data.git.repository.projectRootIsToplevel and run conversion from the worktree toplevel, or establish a separate owner-approved Git baseline; preflight does not rewrite Git ownership.",
-        ),
-        _prerequisite(
-            "git-committed-head",
-            head_available,
-            "A committed HEAD is required for the Git-bound conversion plan.",
-            "Inspect data.git.head.error/status. If the repository is confirmed unborn, the owner may create its first commit as an explicit baseline decision; otherwise restore repository access. Preflight never commits.",
-        ),
-        _prerequisite(
-            "git-clean-worktree",
-            worktree_clean,
-            "Index, tracked, and untracked changes must be resolved by the project owner.",
-            "Inspect data.git.worktree.status, dirtyPaths, and error. Resolve actual local changes as the owner; Toolkit never stashes, discards, deletes, or ignores them.",
-        ),
     ]
-    ready = all(item["satisfied"] is True for item in prerequisites)
+    ready = blocker_total == 0
+    guidance = (
+        _startup_option_guidance(startup_options)
+        + _memory_layout_option_guidance(memory_layout)
+        + _extra_regions_option_guidance(extra_regions)
+    )
     next_steps: list[str] = []
     if blocker_total:
         next_steps.append(
             "Resolve the reported technical blockers. Preflight is analysis only: it does not transcode sources, replace startup code, or write a manifest."
         )
-    if not repository_available:
-        next_steps.append(
-            "Inspect data.git.repository.error (code/rule) and confirm Git availability and repository readability/access. If the owner confirms no baseline exists, establish a Git worktree as an explicit project-owner decision; preflight and Toolkit never run git init."
-        )
-    elif not toplevel_match:
-        next_steps.append(
-            "Inspect data.git.repository.projectRootIsToplevel; use the Git worktree toplevel as the project root, or establish a separate owner-approved Git baseline. Do not move Git state implicitly."
-        )
-    if repository_available and toplevel_match and not head_available:
-        next_steps.append(
-            "Inspect data.git.head.error/status. If the repository is confirmed unborn, the owner may create its first commit as an explicit baseline decision; otherwise restore repository access. Toolkit never commits automatically."
-        )
-    worktree_status = worktree["status"]
-    if repository_available and toplevel_match and worktree_status == "dirty":
-        next_steps.append(
-            "Commit or intentionally preserve the reported local changes; Toolkit will not stash, discard, or delete them."
-        )
-    elif repository_available and toplevel_match and worktree_status == "unavailable":
-        next_steps.append(
-            "Inspect data.git.worktree.error and confirm Git status access; do not assume the worktree is dirty or clean."
-        )
+    next_steps.append(
+        "Choose an absolute new output directory outside the Keil source; it must be absent or empty. Preflight does not create, inspect, or evaluate it."
+    )
     if ready:
-        guidance = (
-            _startup_option_guidance(startup_options)
-            + _memory_layout_option_guidance(memory_layout)
-            + _extra_regions_option_guidance(extra_regions)
-        )
         next_steps.append(
-            "Call stm32_keil_convert (CLI: keil convert --dry-run) with the same uvprojx and targetName and no planId; the read-only PLAN response returns the exact identifier as data.plan_id and the complete diff as data.patches[].unified_diff."
+            "Call stm32_keil_convert (CLI: keil convert --destination <absolute-new-output>) with the same uvprojx and targetName and no planId; the read-only PLAN response returns data.planId, data.sourceSnapshotSha256, data.outputs[] (kind/path/beforeSha256/sha256/unifiedDiff/collision) and data.sourcePatches[]."
             + guidance
         )
         next_steps.append(
-            "Review that plan, then pass its exact data.plan_id as the apply request's planId together with authorized=true only after explicit user authorization."
+            "Review that plan, then pass its exact data.planId as the apply request's planId with the same destination and options together with authorized=true only after explicit user authorization."
             + guidance
         )
     return {
@@ -324,6 +289,7 @@ def _plan_readiness(
         "planId": None,
         "requiresReviewedPlan": True,
         "prerequisites": prerequisites,
+        "requiredInputs": [_destination_input()],
         "nextSteps": next_steps,
     }
 
@@ -347,25 +313,38 @@ def _apply_readiness(
         + _memory_layout_option_guidance(memory_layout)
         + _extra_regions_option_guidance(extra_regions)
     )
+    choose_destination = (
+        "Choose an absolute new output directory outside the Keil source; it"
+        " must be absent or empty. Preflight has not evaluated that state."
+    )
+    obtain_plan = (
+        "Call stm32_keil_convert with the same uvprojx and targetName, the"
+        " chosen destination, and no planId to obtain the read-only PLAN"
+        " response; read data.planId, data.outputs[].unifiedDiff and"
+        " data.sourcePatches[]."
+    )
+    authorize = (
+        "Only after reviewing that exact plan and obtaining explicit user"
+        " authorization, call stm32_keil_convert with the same destination and"
+        " options, planId set to the reviewed data.planId, and authorized=true."
+    )
     if plan_readiness["ready"] is True:
         next_steps = [
-            "Call stm32_keil_convert with the same uvprojx and targetName and no planId to obtain the read-only PLAN response; read data.plan_id and data.patches[].unified_diff."
-            + guidance,
-            "Only after reviewing that exact plan and obtaining explicit user authorization, call stm32_keil_convert with planId set to the reviewed data.plan_id and authorized=true."
-            + guidance,
+            choose_destination,
+            obtain_plan + guidance,
+            authorize + guidance,
         ]
     else:
         blockers = (
             " Resolve these unmet planReadiness prerequisites first: "
             + ", ".join(unmet)
-            + ". See data.analysis.blockers and each prerequisite's nextStep, and inspect the reported data.git evidence."
+            + ". See data.analysis.blockers and each prerequisite's nextStep."
         )
         next_steps = [
             blockers.strip(),
-            "After planReadiness.status becomes ready-for-plan, call stm32_keil_convert with the same uvprojx and targetName and no planId to obtain the read-only PLAN response; read data.plan_id and data.patches[].unified_diff."
-            + guidance,
-            "Only after reviewing that exact plan and obtaining explicit user authorization, call stm32_keil_convert with planId set to the reviewed data.plan_id and authorized=true."
-            + guidance,
+            choose_destination,
+            "After planReadiness.status becomes ready-for-plan, " + obtain_plan + guidance,
+            authorize + guidance,
         ]
     return {
         "ready": False,
@@ -374,8 +353,9 @@ def _apply_readiness(
         "planReadinessStatus": plan_readiness["status"],
         "reason": (
             "Preflight has produced no applicable plan and grants no apply "
-            "authorization. A current Git-bound conversion plan must be "
-            "obtained, reviewed, and explicitly authorized separately."
+            "authorization. A current delivery plan for the chosen new output "
+            "directory must be obtained, reviewed, and explicitly authorized"
+            " separately."
         ),
         "nextSteps": next_steps,
     }
@@ -796,7 +776,7 @@ def preflight_keil_conversion(
 
     fresh = analysis.inspection
     plan_readiness = _plan_readiness(
-        git, len(analysis.blockers), startup_options, memory_layout, extras
+        len(analysis.blockers), startup_options, memory_layout, extras
     )
     payload = {
         "analysis": {

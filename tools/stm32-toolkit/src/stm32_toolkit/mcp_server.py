@@ -1047,11 +1047,13 @@ def tool_keil_convert(
     startup_source: str | None = None,
     memory_layout: object = None,
     extra_regions: object = None,
+    destination: object = None,
 ) -> dict[str, object]:
-    """Read-only conversion plan, or apply with the exact plan ID plus
-    ``authorized=true``."""
+    """Read-only delivery plan, or apply with the exact plan ID plus
+    ``authorized=true`` into the explicit ``destination``."""
     return convert_keil_workflow(
         runtime.project_root,
+        destination=destination,
         uvprojx=uvprojx,
         target_name=target_name,
         plan_id=plan_id,
@@ -1277,6 +1279,7 @@ async def tool_keil_convert_for_request(
     startup_source: str | None = None,
     memory_layout: object = None,
     extra_regions: object = None,
+    destination: object = None,
 ) -> dict[str, object]:
     operation = (
         "keil-conversion-apply"
@@ -1296,6 +1299,7 @@ async def tool_keil_convert_for_request(
         startup_source,
         memory_layout,
         extra_regions,
+        destination,
     )
 
 
@@ -2681,11 +2685,15 @@ def create_server(
         Use the same project-root-relative uvprojx and exact targetName as
         inspect.  A successful result means analysis completed; it may still
         contain typed blockers.  Read analysis.blockers and planReadiness
-        (technical/Git prerequisites for obtaining a plan) separately from
-        applyReadiness, which stays ready=false with
-        status=requires-reviewed-plan.  Preflight returns no applicable plan
-        ID, writes nothing, does not transcode sources, replace startup code,
-        or run git init, and never authorizes apply.  A source-encoding
+        (technical prerequisites for obtaining a delivery plan) separately
+        from applyReadiness, which stays ready=false with
+        status=requires-reviewed-plan.  Git is optional evidence and is never
+        a planReadiness prerequisite.  planReadiness.requiredInputs names the
+        new independent output directory that convert needs; preflight does
+        not create, inspect, or evaluate that destination.  Preflight returns
+        no applicable plan ID, writes nothing, does not transcode sources,
+        replace startup code, or run git init, and never authorizes apply.  A
+        source-encoding
         blocker may be prepared with the separate normalize-source-comments
         companion skill, whose instructions and helper live in its skill
         directory (there is no normalization MCP tool); that helper writes
@@ -2752,12 +2760,14 @@ def create_server(
         auto-fixable.
         blockerSummary.byRemediation counts the same classifications while
         total, byCode, and every original blocker field stay unchanged.
-        When analysis is complete and no blockers remain, establish any Git
-        prerequisite as an explicit project-owner decision, then call
-        stm32_keil_convert with no planId to obtain a PLAN response.  Read
-        its data.plan_id and data.patches[].unified_diff; only after review
-        and explicit user authorization pass that exact value as planId with
-        authorized=true.
+        When analysis is complete and no blockers remain, choose an absolute
+        new output directory outside the source (absent or empty), then call
+        stm32_keil_convert with that destination and no planId to obtain a
+        read-only PLAN response.  Read its data.planId, data.outputs[] and
+        data.sourcePatches[]; only after review and explicit user
+        authorization pass that exact value as planId with the identical
+        destination and options plus authorized=true.  Git is optional and is
+        never required for this route.
         """
         return await tool_keil_preflight_for_request(
             runtime,
@@ -2781,54 +2791,45 @@ def create_server(
         startupSource: str | None = None,
         memoryLayout: dict[str, str] | None = None,
         extraRegions: list[dict[str, Any]] | None = None,
+        destination: str | None = None,
     ) -> dict[str, object]:
-        """Plan or explicitly apply one Keil-to-GCC migration.
+        """Plan or explicitly apply one independent Keil-to-GCC delivery.
+
+        The Keil source is read-only and is never modified.  Pass
+        destination=<absolute path of a new output directory outside the
+        source>; it must be absent or verified empty and is required for both
+        the read-only PLAN and the authorized apply.  Omitting it returns
+        DELIVERY_DESTINATION_REQUIRED with an example and the rationale that
+        the deliverable is a separate, independently buildable GCC/CMake
+        project.  Git is optional evidence and is never required to plan or
+        apply.
 
         With no planId and authorized=false this returns a deterministic,
-        Git-bound PLAN response whose identifier is data.plan_id and whose
-        complete diff is data.patches[].unified_diff.  Keep the same uvprojx
-        and exact targetName across every call.  Review every blocker, that
-        exact data.plan_id, and the complete patches/diff before acting.
-        Apply only after the user explicitly authorizes that exact plan: pass
-        its data.plan_id as the apply request's planId with authorized=true.
-        Pass the same startupStrategy="generate-cmsis-gcc" and
-        startupSource="<exact project-relative source>" values used for
-        preflight and plan; the options are bound into the plan digest, and a
-        changed or omitted choice is never silently accepted on apply: the
-        request fails with a structured validation error or PLAN_CHANGED.
-        With the startup strategy the normal manifest/source patches are
-        accompanied by a create-only startup patch for
-        Startup/stm32tk_startup_gcc.S; the original ARMCC startup is
-        preserved, and the plan records memory.stackSize, memory.heapSize and
-        generation.runtimeInitialization=cmsis-gcc-v1 and reports
-        data.startup with source/generated hashes, vectors and review
-        warnings.  Review that evidence and the generated reset path; this is
-        not ARMCC, ABI or Microlib behavioral equivalence.
-        Pass the same memoryLayout object used for preflight when a managed
-        multi-RAM layout is required.  The PLAN response exposes
-        data.memory_layout (status, resolved layout or null, and actual
-        candidates) and binds the exact explicit mapping into data.plan_id; an
-        omitted mapping is a different reviewed choice, and apply refuses a
-        changed or omitted mapping.  The generated linker places .data/.bss/
-        heap/stack in their selected regions with the .data load address in
-        the selected Flash.  This is offline placement evidence, not proof of
-        CCM/external-RAM or board runtime behavior.
-        Pass the same extraRegions array used for preflight to bind the exact
-        owner-supplied external-RAM request into data.plan_id.  The PLAN
-        response exposes data.extra_regions and the conversion report records
-        extraRegions; the proposed manifest keeps the inspected Keil
-        memory.regions unchanged and adds memory.extraRegions.  Omitting,
-        shortening or changing any entry is a different request and apply
-        returns a structured validation failure or PLAN_CHANGED without
-        writing.  Extra RAM adds RAM candidates only: never a Flash candidate,
-        and data/bss/heap/stack are not placed there implicitly.  The owner
-        must arrange external-memory initialization before access; NOLOAD
-        fixed sections are not promised initialized.  A native linker script
-        remains user-owned and is not rewritten.
-        The core replans and rechecks digest, Git, and drift guards before its
-        first write.  Never run git init, transcode source text, replace ARMCC
-        startup blindly, or reuse a stale plan ID; a missing Git repository is
-        an explicit project-owner decision.
+        read-only PLAN response.  Read data.planId (not data.plan_id),
+        data.sourceSnapshotSha256, data.outputs[] with kind/path/
+        beforeSha256/sha256/unifiedDiff/collision, data.sourcePatches[], and
+        data.options.  The preview states configured=false, built=false and
+        flashed=false: it is neither build nor flash evidence.  Keep the same
+        uvprojx, exact targetName and destination across every call.
+        Technical blockers fail planning with DELIVERY_BLOCKED and complete
+        blocker codes/details; no blocked plan is applicable.
+
+        Apply only after the user explicitly authorizes that exact reviewed
+        plan: pass its data.planId as planId, the identical destination, and
+        authorized=true.  A changed destination, startupStrategy/
+        startupSource, memoryLayout or extraRegions is a different plan and
+        is refused with PLAN_CHANGED before any write.  Apply revalidates the
+        source snapshot and destination state, stages writes in an owned
+        sibling, and publishes one complete output directory.  The result
+        returns the exact outputRoot and sets built=false and flashed=false.
+
+        After apply, bind that outputRoot as the VS Code workspace and MCP
+        project root, run stm32_project_context there, configure the explicit
+        debug backend/target and verified Toolkit/GCC paths when missing, then
+        plan/apply configuration and use the normal stm32_build ->
+        stm32_flash route.  Never run git init, commit, stash or clean, never
+        transcode source text, never overwrite a nonempty destination, and
+        never reuse a stale planId.
         """
         return await tool_keil_convert_for_request(
             runtime,
@@ -2841,6 +2842,7 @@ def create_server(
             startupSource,
             memoryLayout,
             extraRegions,
+            destination,
         )
 
     @mcp.tool(name=MCP_TOOL_NAMES["project_configure"])

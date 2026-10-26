@@ -877,6 +877,8 @@ def test_existing_identical_generated_target_is_reused_without_overwrite(tmp_pat
 
 def test_workflow_preflight_plan_and_apply_use_the_same_options(tmp_path):
     repo = startup_repo(tmp_path)
+    destination = tmp_path / "delivered" / "project"
+    destination.parent.mkdir()
     preflight = preflight_keil_workflow(
         repo,
         uvprojx=UVPROJX,
@@ -889,17 +891,26 @@ def test_workflow_preflight_plan_and_apply_use_the_same_options(tmp_path):
 
     planned = convert_keil_workflow(
         repo,
+        destination=destination,
         uvprojx=UVPROJX,
         target_name=TARGET,
         startup_strategy="generate-cmsis-gcc",
         startup_source=STARTUP_SOURCE,
     )
     assert planned.ok is True
-    assert planned.data["startup"]["status"] == "ready"
-    plan_id = planned.data["plan_id"]
+    assert planned.data["options"]["startupOptions"] == {
+        "strategy": "generate-cmsis-gcc",
+        "source": STARTUP_SOURCE,
+    }
+    outputs = {entry["path"]: entry for entry in planned.data["outputs"]}
+    assert outputs[GENERATED_SOURCE]["kind"] == "generated"
+    assert outputs[GENERATED_SOURCE]["sha256"]
+    assert "startup" not in planned.data
+    plan_id = planned.data["planId"]
 
     applied = convert_keil_workflow(
         repo,
+        destination=destination,
         uvprojx=UVPROJX,
         target_name=TARGET,
         plan_id=plan_id,
@@ -908,24 +919,30 @@ def test_workflow_preflight_plan_and_apply_use_the_same_options(tmp_path):
         startup_source=STARTUP_SOURCE,
     )
     assert applied.ok is True
-    assert (repo / GENERATED_SOURCE).is_file()
+    assert applied.data["outputRoot"] == str(destination)
+    assert (destination / GENERATED_SOURCE).is_file()
+    assert not (repo / GENERATED_SOURCE).exists()
 
 
 def test_apply_with_a_caller_edited_source_or_omitted_options_is_rejected(tmp_path):
     repo = two_assembly_repo(tmp_path)
+    destination = tmp_path / "delivered" / "project"
+    destination.parent.mkdir()
     planned = convert_keil_workflow(
         repo,
+        destination=destination,
         uvprojx=UVPROJX,
         target_name=TARGET,
         startup_strategy="generate-cmsis-gcc",
         startup_source=STARTUP_SOURCE,
     )
     assert planned.ok is True
-    plan_id = planned.data["plan_id"]
+    plan_id = planned.data["planId"]
     before = snapshot_tree(repo)
 
     edited = convert_keil_workflow(
         repo,
+        destination=destination,
         uvprojx=UVPROJX,
         target_name=TARGET,
         plan_id=plan_id,
@@ -936,9 +953,11 @@ def test_apply_with_a_caller_edited_source_or_omitted_options_is_rejected(tmp_pa
     assert edited.ok is False
     assert edited.code == "PLAN_CHANGED"
     assert snapshot_tree(repo) == before
+    assert not destination.exists()
 
     omitted = convert_keil_workflow(
         repo,
+        destination=destination,
         uvprojx=UVPROJX,
         target_name=TARGET,
         plan_id=plan_id,
@@ -947,6 +966,7 @@ def test_apply_with_a_caller_edited_source_or_omitted_options_is_rejected(tmp_pa
     assert omitted.ok is False
     assert omitted.code == "PLAN_CHANGED"
     assert snapshot_tree(repo) == before
+    assert not destination.exists()
 
 
 def test_forged_plan_startup_options_fail_plan_id_validation(tmp_path):
