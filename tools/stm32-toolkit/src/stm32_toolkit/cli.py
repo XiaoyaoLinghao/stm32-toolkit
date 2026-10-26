@@ -1990,7 +1990,11 @@ def _detect_result(project_root: Path) -> OperationResult[dict[str, object]]:
 
 
 def _write_json(result: OperationResult[object]) -> None:
-    print(json.dumps(result.to_dict(), ensure_ascii=False, indent=2))
+    # Structured output must be decodable as UTF-8 regardless of the console
+    # code page (for example a legacy GBK stdout on Windows).  ASCII escapes
+    # keep the bytes portable while ``json.loads`` restores the exact values;
+    # no global stdout reconfiguration is involved.
+    print(json.dumps(result.to_dict(), ensure_ascii=True, indent=2))
 
 
 if __name__ == "__main__":

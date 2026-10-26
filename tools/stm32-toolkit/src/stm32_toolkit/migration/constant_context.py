@@ -70,21 +70,49 @@ _SUFFIXES = frozenset({"", "u", "l", "ul", "lu", "ll", "ull", "llu"})
 _CONDITIONALS = frozenset({"if", "ifdef", "ifndef", "elif", "else", "endif"})
 
 
-class ConstantResolutionError(Exception):
-    """A stable, bounded failure to resolve one expression or macro."""
+MAX_DIAGNOSTIC_CHARS = 240
 
-    def __init__(self, code: str, detail: str = "") -> None:
+#: Trusted structured causes for an unusable quoted include.  Callers map
+#: these constants to remediation; they never parse the context text.
+CAUSE_ENCODING = "encoding"
+CAUSE_PATH = "path"
+
+
+class ConstantResolutionError(Exception):
+    """A stable, bounded failure to resolve one expression or macro.
+
+    ``context`` optionally names the exact project-relative dependency whose
+    bounded evidence was unusable (for example the quoted include that is not
+    UTF-8).  It is composed only from relative paths and fixed wording, is
+    capped, and never carries an absolute host path or raw exception text.
+    ``cause`` is the trusted structured counterpart of that context.
+    """
+
+    def __init__(
+        self,
+        code: str,
+        detail: str = "",
+        context: str | None = None,
+        cause: str | None = None,
+    ) -> None:
         super().__init__(code)
         self.code = code
         self.detail = detail
+        self.context = context[:MAX_DIAGNOSTIC_CHARS] if context else None
+        self.cause = cause if self.context else None
 
 
 class _SymbolNeeded(Exception):
     """Internal: a literal-only probe encountered an identifier."""
 
 
-def _fail(code: str, detail: str = "") -> ConstantResolutionError:
-    return ConstantResolutionError(code, detail)
+def _fail(
+    code: str,
+    detail: str = "",
+    context: str | None = None,
+    cause: str | None = None,
+) -> ConstantResolutionError:
+    return ConstantResolutionError(code, detail, context, cause)
 
 
 # ---------------------------------------------------------------------------
@@ -488,7 +516,7 @@ class _MacroIndex:
     definitions: dict[str, list[_Definition]] = field(default_factory=dict)
     undefs: set[str] = field(default_factory=set)
     system_includes: set[str] = field(default_factory=set)
-    unresolved_quoted: bool = False
+    unresolved_quoted: set[str] = field(default_factory=set)
     dependencies: dict[str, tuple[str, int]] = field(default_factory=dict)
     children: dict[str, set[str]] = field(default_factory=dict)
     failure: ConstantResolutionError | None = None
@@ -588,7 +616,7 @@ class _MacroIndex:
                     continue
                 target = self._resolve_include(rel_path, match.group(1))
                 if target is None:
-                    self.unresolved_quoted = True
+                    self.unresolved_quoted.add(match.group(1))
                     continue
                 resolved_rel, dependency, body = target
                 self.children.setdefault(rel_path, set()).add(resolved_rel)
@@ -652,9 +680,19 @@ class _MacroIndex:
         except (FileNotFoundError, NotADirectoryError):
             return None
         except OSError:
-            raise _fail("unreadable", "include directory is unreadable")
+            raise _fail(
+                "unreadable",
+                "include directory is unreadable",
+                f'include directory "{rel}" cannot be read',
+                CAUSE_PATH,
+            )
         if _is_redirect(info):
-            raise _fail("redirect", "include directory redirects")
+            raise _fail(
+                "redirect",
+                "include directory redirects",
+                f'include directory "{rel}" is a symlink or reparse point',
+                CAUSE_PATH,
+            )
         if not stat.S_ISDIR(info.st_mode):
             return None
         mapping: dict[str, list[str]] = {}
@@ -667,7 +705,12 @@ class _MacroIndex:
                         raise _fail("limit", "directory listing budget exceeded")
                     mapping.setdefault(entry.name.casefold(), []).append(entry.name)
         except OSError:
-            raise _fail("unreadable", "include directory is unreadable")
+            raise _fail(
+                "unreadable",
+                "include directory is unreadable",
+                f'include directory "{rel}" cannot be read',
+                CAUSE_PATH,
+            )
         self.directory_cache[rel] = mapping
         return mapping
 
@@ -689,7 +732,19 @@ class _MacroIndex:
             if base in seen:
                 continue
             seen.add(base)
-            resolved = self._try_base(base, components)
+            try:
+                resolved = self._try_base(base, components)
+            except ConstantResolutionError as error:
+                if error.context is not None:
+                    raise
+                # Name the exact quoted operand when the failure is about the
+                # search itself; the operand is portable and project-relative.
+                raise _fail(
+                    error.code,
+                    error.detail,
+                    f'quoted include "{name}" could not be resolved',
+                    CAUSE_PATH,
+                ) from None
             if resolved is not None:
                 return resolved
         return None
@@ -713,9 +768,19 @@ class _MacroIndex:
             except (FileNotFoundError, NotADirectoryError):
                 return False
             except OSError:
-                raise _fail("unreadable", "include search base is unreadable")
+                raise _fail(
+                    "unreadable",
+                    "include search base is unreadable",
+                    f'include search directory "{base}" cannot be read',
+                    CAUSE_PATH,
+                )
             if _is_redirect(info):
-                raise _fail("redirect", "include search base redirects")
+                raise _fail(
+                    "redirect",
+                    "include search base redirects",
+                    f'include search directory "{base}" is a symlink or reparse point',
+                    CAUSE_PATH,
+                )
             if not stat.S_ISDIR(info.st_mode):
                 return False
         self.checked_bases.add(base)
@@ -736,9 +801,19 @@ class _MacroIndex:
             except (FileNotFoundError, NotADirectoryError):
                 return None
             except OSError:
-                raise _fail("unreadable", "include path is unreadable")
+                raise _fail(
+                    "unreadable",
+                    "include path is unreadable",
+                    f'include path "{current}" cannot be read',
+                    CAUSE_PATH,
+                )
             if _is_redirect(info):
-                raise _fail("redirect", "include parent redirects")
+                raise _fail(
+                    "redirect",
+                    "include parent redirects",
+                    f'include path "{current}" is a symlink or reparse point',
+                    CAUSE_PATH,
+                )
             if not stat.S_ISDIR(info.st_mode):
                 return None
         mapping = self._directory(current)
@@ -747,7 +822,13 @@ class _MacroIndex:
         final = components[-1]
         matches = mapping.get(final.casefold(), [])
         if len(matches) > 1:
-            raise _fail("ambiguous", "include name matches multiple files")
+            raise _fail(
+                "ambiguous",
+                "include name matches multiple files",
+                f'include directory "{current}" has {len(matches)} case-insensitive '
+                f'matches for "{final}"',
+                CAUSE_PATH,
+            )
         if not matches:
             return None
         rel = matches[0] if current == "." else f"{current}/{matches[0]}"
@@ -755,29 +836,69 @@ class _MacroIndex:
         try:
             info = os.lstat(host)
         except OSError:
-            raise _fail("unreadable", "include file is unreadable")
+            raise _fail(
+                "unreadable",
+                "include file is unreadable",
+                f'quoted include "{rel}" cannot be read',
+                CAUSE_PATH,
+            )
         if _is_redirect(info):
-            raise _fail("redirect", "include file redirects")
+            raise _fail(
+                "redirect",
+                "include file redirects",
+                f'quoted include "{rel}" is a symlink or reparse point',
+                CAUSE_PATH,
+            )
         if not stat.S_ISREG(info.st_mode):
-            raise _fail("unreadable", "include path is not a regular file")
+            raise _fail(
+                "unreadable",
+                "include path is not a regular file",
+                f'quoted include "{rel}" is not a regular file',
+                CAUSE_PATH,
+            )
         if info.st_size > MAX_INCLUDE_BYTES:
-            raise _fail("limit", "include file exceeds the byte budget")
+            raise _fail(
+                "limit",
+                "include file exceeds the byte budget",
+                f'quoted include "{rel}" exceeds the include byte budget',
+                CAUSE_PATH,
+            )
         try:
             resolved = host.resolve(strict=True)
             resolved.relative_to(self.root)
         except (OSError, RuntimeError, ValueError):
-            raise _fail("escape", "include path escapes the project root")
+            raise _fail(
+                "escape",
+                "include path escapes the project root",
+                f'quoted include "{rel}" escapes the project root',
+                CAUSE_PATH,
+            )
         try:
             with host.open("rb") as handle:
                 data = handle.read(info.st_size + 1)
         except OSError:
-            raise _fail("unreadable", "include file is unreadable")
+            raise _fail(
+                "unreadable",
+                "include file is unreadable",
+                f'quoted include "{rel}" cannot be read',
+                CAUSE_PATH,
+            )
         if len(data) != info.st_size:
-            raise _fail("unreadable", "include file changed while reading")
+            raise _fail(
+                "unreadable",
+                "include file changed while reading",
+                f'quoted include "{rel}" changed while it was read',
+                CAUSE_PATH,
+            )
         try:
             body = data.decode("utf-8-sig")
         except UnicodeDecodeError:
-            raise _fail("unreadable", "include file is not UTF-8")
+            raise _fail(
+                "unreadable",
+                "include file is not UTF-8",
+                f'quoted include "{rel}" is not UTF-8',
+                CAUSE_ENCODING,
+            )
         return rel, (hashlib.sha256(data).hexdigest(), len(data)), body
 
     # -- resolution ----------------------------------------------------------
@@ -789,9 +910,19 @@ class _MacroIndex:
         if name in self.undefs:
             raise _fail("undef", "macro is undefined in the include chain")
         definitions = self.definitions.get(name)
+        missing = sorted(self.unresolved_quoted)
         if not definitions:
             if self.unresolved_quoted or self.system_includes:
-                raise _fail("unavailable", "macro has no resolvable quoted definition")
+                raise _fail(
+                    "unavailable",
+                    "macro has no resolvable quoted definition",
+                    (
+                        f'quoted include "{missing[0]}" was not found'
+                        if missing
+                        else None
+                    ),
+                    CAUSE_PATH if missing else None,
+                )
             raise _fail("undefined", "macro is not defined")
         if len(definitions) > 1:
             raise _fail("redefined", "macro is defined more than once")
@@ -806,6 +937,8 @@ class _MacroIndex:
             raise _fail(
                 "unavailable",
                 "a quoted include in the chain could not be resolved",
+                f'quoted include "{missing[0]}" was not found',
+                CAUSE_PATH,
             )
         if not definition.value:
             raise _fail("non-integer", "macro has no integer replacement")
@@ -888,6 +1021,7 @@ class SourceSymbols:
             source_text=source_text,
         )
         self._built = False
+        self._last_failure: ConstantResolutionError | None = None
 
     def _ensure(self) -> _MacroIndex:
         if not self._built:
@@ -901,17 +1035,37 @@ class SourceSymbols:
         return self._index
 
     def evaluate(self, expression: str) -> tuple[int | None, str | None]:
+        self._last_failure = None
         try:
             return evaluate_integer(expression, _require_symbol), None
         except _SymbolNeeded:
             pass
         except ConstantResolutionError as error:
+            self._last_failure = error
             return None, error.code
         index = self._ensure()
         try:
             return evaluate_integer(expression, index.lookup), None
         except ConstantResolutionError as error:
+            self._last_failure = error
             return None, error.code
+
+    def failure_context(self) -> str | None:
+        """Bounded, project-relative dependency context for the last failure.
+
+        Returns ``None`` when the last evaluation succeeded or the failure has
+        no named dependency (for example an ordinary undefined or cyclic
+        macro), so existing bounded reason codes stay the whole diagnostic.
+        """
+        if self._last_failure is None:
+            return None
+        return self._last_failure.context
+
+    def failure_cause(self) -> str | None:
+        """Trusted structured cause for the last failure (``CAUSE_*`` or None)."""
+        if self._last_failure is None:
+            return None
+        return self._last_failure.cause
 
     def dependencies(self) -> tuple[tuple[str, str, int], ...]:
         if not self._built:

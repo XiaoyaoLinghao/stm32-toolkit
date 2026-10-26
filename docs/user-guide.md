@@ -129,9 +129,9 @@ VS Code / MCP 客户端的审查路径：
 
 | 规则 ID | 触发（只接受精确形式） | 结果与限制 |
 | --- | --- | --- |
-| `ARMCC_NAKED_ASM_FUNCTION` | `__asm void name(void)` 或 `()`，函数体恰为 `WFI`/`CPSID I`/`CPSIE I` 加显式 `BX LR`/`BX R14`；或 `__asm void name(<32 位标量>)`，函数体恰为 `MSR MSP, R0` 加显式 `BX LR`/`BX R14` | 改写为 `__attribute__((naked))` + 单条 GNU basic asm 指令串，不生成普通 C `__set_MSP` 包装，不加栈操作；32 位标量仅接受 `uint32_t`、`u32`、`unsigned int`、`unsigned long`。缺少 `BX`、额外指令、未知/多参数/指针原型、原型内注释一律 blocker。 |
-| `ARMCC_ALIGN_ATTRIBUTE` | 单个未初始化普通对象声明上的 `__align(n)`（前缀或后缀），`n` 为正 2 的幂且不超过 4096，可来自目标 define 或受支持的宏 | 改为 `__attribute__((aligned(n)))`；非法/未解析边界、`extern`/`typedef`、多声明符、零长数组、与未知属性组合一律 blocker（符号边界求值失败时消息附带稳定有界原因），绝不把未识别 `__align` 带入 GNU 源。 |
-| `ARMCC_ABSOLUTE_PLACEMENT` | 单个未初始化标量或固定大小数组、前缀或后缀 `__at(EXPR)`/`__attribute__((at(EXPR)))`，并可与受支持的 `__align` 组合 | `EXPR` 由禁用 `eval` 的有界求值器解析：十进制/十六进制整数与标准后缀、括号、标识符和受限运算符；结果必须为非负 uint32。浮点、八进制样式、`sizeof`、强转、函数宏、未定义/条件/冲突/`#undef` 宏、除零、移位越界、溢出、指针/初始化器/多声明符/函数/位域/混合属性均为 blocker；同一文件任一不支持放置会取消该文件全部放置改写。地址落在所有已声明内存区域之外时报告 `MIGRATION_FIXED_SECTION_OUTSIDE_MEMORY`（`needs-user-input`），绝不臆造外部 SRAM。与受支持 `__align(n)` 组合时，解析出的固定地址必须是 `n` 的整数倍（按同一有界表达式求值，不猜测任意类型的自然对齐）；不满足时报告 `ARMCC_ABSOLUTE_PLACEMENT_UNSUPPORTED`，不产生该文件任何固定节/放置改写。符号地址求值失败时 blocker 消息附带稳定有界原因（如 conditional/undefined/cycle/unavailable/limit），不含绝对路径。 |
+| `ARMCC_NAKED_ASM_FUNCTION` | `__asm void name(void)` 或 `()`，函数体恰为 `WFI`/`CPSID I`/`CPSIE I` 加显式 `BX LR`/`BX R14`；或 `__asm void name(<32 位标量>)`，函数体恰为 `MSR MSP, R0` 加显式 `BX LR`/`BX R14` | 改写为 `__attribute__((naked))` + 单条 GNU basic asm 指令串，不生成普通 C `__set_MSP` 包装，不加栈操作；32 位标量仅接受 `uint32_t`、`u32`、`unsigned int`、`unsigned long`。缺少 `BX`、额外指令、未知/多参数/指针原型、原型内注释一律 blocker。缺少显式返回的已识别函数仍为 blocker，消息说明可能顺延到下一个嵌入式汇编函数（ARM Compiler armcc 用户指南 7.30），并要求先取得 Keil 反汇编/控制流基线；Toolkit 不补 `BX LR`，也不改写为 CMSIS intrinsic。 |
+| `ARMCC_ALIGN_ATTRIBUTE` | 单个未初始化普通对象声明上的 `__align(n)`（前缀或后缀），`n` 为正 2 的幂且不超过 4096，可来自目标 define 或受支持的宏 | 改为 `__attribute__((aligned(n)))`；非法/未解析边界、`extern`/`typedef`、多声明符、零长数组、与未知属性组合一律 blocker（符号边界求值失败时消息附带稳定有界原因），绝不把未识别 `__align` 带入 GNU 源。数组边界求值失败单独报告 `array bound '<expr>' could not be resolved (...)` 并附工程相对依赖，区别于 `unsupported __align declaration grammar`。 |
+| `ARMCC_ABSOLUTE_PLACEMENT` | 单个未初始化标量或固定大小数组、前缀或后缀 `__at(EXPR)`/`__attribute__((at(EXPR)))`，并可与受支持的 `__align` 组合 | `EXPR` 由禁用 `eval` 的有界求值器解析：十进制/十六进制整数与标准后缀、括号、标识符和受限运算符；结果必须为非负 uint32。浮点、八进制样式、`sizeof`、强转、函数宏、未定义/条件/冲突/`#undef` 宏、除零、移位越界、溢出、指针/初始化器/多声明符/函数/位域/混合属性均为 blocker；同一文件任一不支持放置会取消该文件全部放置改写。地址落在所有已声明内存区域之外时报告 `MIGRATION_FIXED_SECTION_OUTSIDE_MEMORY`（`needs-user-input`），绝不臆造外部 SRAM。与受支持 `__align(n)` 组合时，解析出的固定地址必须是 `n` 的整数倍（按同一有界表达式求值，不猜测任意类型的自然对齐）；不满足时报告 `ARMCC_ABSOLUTE_PLACEMENT_UNSUPPORTED`。地址或数组边界求值失败时消息区分 `address expression ...` 与 `array bound ...`，附稳定有界原因与工程相对依赖，不含绝对宿主路径。 |
 | `ARMCC_NO_SEMIHOSTING_PRAGMA` | 精确独立 `#pragma import(__use_no_semihosting)`，其前只允许预处理 trivia（水平空白、单个或多个块注释、经恰当处理的续行），指令本体可带保留的尾随注释，不允许续行或额外 token | 仅删除该指令本体（保留前导注释/空白、尾随注释、BOM 与 CRLF/LF），并在清单提议中显式加入 `build.newlibSpecs=["nosys.specs"]`；受管 CMake 链接仅额外输出一次 `--specs=nosys.specs`，不隐式加入 `nano.specs`，原生 linker 默认不变。其它不受支持的 ARMCC `import`/pragma 即使带注释前缀仍为 blocker，通用 pragma（如 `pack`/`once`）保持原有行为；不添加 I/O stub，也不宣称运行时 I/O 等价。 |
 
 词法边界遵循 C 翻译阶段 2：以反斜杠续行的 `//` 注释拥有其续行，续行中的伪 `#define`/`#include`/`__at`/`__asm` 不会被当作代码或宏证据；嵌套引号包含路径逐级解析，搜索基路径从工程根起的每一级父目录都会检查重解析点，任一级重定向都 fail closed。符号求值只读取显式 target define 与源文件目录/合并 include 路径内可解析的引号包含头文件（支持有界包含链、嵌套相对路径和结构完整的普通 include guard）。被使用的宏若来自条件分支、被重复定义、被 `#undef`、是函数式宏，或包含链中有缺失的引号头文件，都返回保守的不可用证据而不是猜值；未解析被当作未定义/不可用报告。所有实际使用的头文件字节（包括未列入工程的忽略头文件）会作为计划输入绑定摘要，头文件变化或新出现的遮蔽解析会使 apply 的输入复核/重规划失败。
@@ -139,6 +139,20 @@ VS Code / MCP 客户端的审查路径：
 指令前缀按逻辑行识别：`#` 之前只允许水平空白、块注释（可跨行、可多个）和被删除的续行；块注释内部的换行不会开始新的预处理行，注释之前已有的代码 token 仍使同一逻辑行上的 `#` 保持普通字符。被反斜杠续行的 `//` 注释拥有其续行；宏/指令体中的块注释内容（包括伪 `#pragma`）属于注释，不会被当作新指令；字符串、字符字面量与 C++ raw string（含 `u8R`/`uR`/`UR`/`LR`/`R` 前缀）中的 `#pragma` 不会变成指令。该修正不扩展通用 pragma 语义，也不把注释内容当作证据；未知或不确定形式继续 blocker。
 
 审查路径：preflight 的 `analysis.sourceChanges` 给出每个**计划提议**（尚未写入）的 `path`、精确 `ruleIds` 与 `beforeSha256`/`afterSha256`（仅用于区分已支持变换与 blocker，不授予写权限）；PLAN 仍返回完整 `data.patches[].unified_diff`，`data.blockers` 非空时不得 apply。带注释前缀的受支持 pragma 应出现在 `sourceChanges[].ruleIds` 与 PLAN patch 中且不产生 blocker；未知 `import`/`arm`/优化 pragma 即使带注释前缀仍为 blocker。VS Code/MCP 调用方按字段来源核对：`stm32_keil_preflight` 的返回信封中以 `data.analysis.blockers` 与 `data.analysis.sourceChanges[].ruleIds` 作为诊断建议；`stm32_keil_convert` 在不传 `planId` 且未授权时返回 PLAN，读取 `data.plan_id`、`data.blockers` 与 `data.patches[].unified_diff`；只有审查该精确计划后，才以同一 `planId` 和显式 `authorized=true` 执行 APPLY。不要手工修改计划摘要、inspection 证据或 rule ID 来消除 blocker。apply 后按常规 configure 审查：确认 `build.newlibSpecs` 与受管 `CMakeLists.txt` 的 `--specs=nosys.specs` 仅出现一次、固定地址节按审查地址进入 linker 脚本。离线 GCC/objdump/ELF 证据只说明语法与镜像层面符合切片契约，不证明与 ARMCC 构建或真实板卡行为等价；本节也不代表真实 VS Code 或硬件已验证。
+
+#### 诊断判读与依赖头文件准备（本地未发布源码行为）
+
+本节与 ASCII JSON 输出属于当前本地未发布源码，不在已安装的 1.3.2 二进制中；安装版按实际绑定服务器/CLI 的行为判断。
+
+1. 读完整 `code`/`rule_id`/`path`/`line`/`column`/`evidence`/`message`。`ARMCC_ALIGN_UNSUPPORTED`/`ARMCC_ABSOLUTE_PLACEMENT_UNSUPPORTED` 区分：声明形状不支持、地址表达式无法求值（`address expression could not be resolved (...)`）、数组边界无法求值（`array bound '<expr>' could not be resolved (...)`）。括号内是稳定原因（`conditional`/`undefined`/`redefined`/`undef`/`unavailable`/`cycle`/`limit`/`unreadable` 等）。
+2. 消息出现 `quoted include "<工程相对路径>" ...` 时只读检查该依赖。非 UTF-8 的已知原因在 preflight remediation 中为 `needs-user-input` + `normalize-source-comments`：显式声明该文件 charset，仅在差异被确认为注释内容时于工程外生成严格 UTF-8 审阅副本；普通严格副本需要精确审阅过的计划，`--confirm-file` 只用于每个已审阅接受的 lossy 文件。
+3. 缺失/不可读/重定向/歧义不是编码问题：先收集实际路径与 scoped include 的只读证据。经审阅的 include 路径修正是工程自有决定，但不得为消除报错而盲改路径或扩大搜索。Toolkit 不会跳过 include、猜路径或转码原文件。
+4. 地址/对齐表达式本身是字面量（`__at(0x68000000)`、`__align(8)`）时不读头文件；但同一声明的数组上界若含标识符（`[MEM2_MAX_SIZE]`），仍会惰性读取依赖头文件。"字面量 at + 宏数组上界"正是依赖证据问题，而不是放置规则缺失。
+5. 实际用到的头文件字节绑定进计划；修改、新增或遮蔽同名头文件会使 apply 重规划失败。修复后按 inspect → preflight → PLAN 重新核对，不要手工改 digest、计划或清单。
+
+#### `__asm` 缺失显式返回的边界（本地未发布源码行为）
+
+`__asm void WFI_SET(void) { WFI; }` 缺少显式返回，仍是 blocker。ARM Compiler armcc 用户指南 7.30 节（https://documentation-service.arm.com/static/5eb946b50f1c1e0dae6ee21e）说明省略返回时执行可能顺延到下一个嵌入式汇编函数；预期返回/栈语义无法仅从文本证明。Toolkit 不补 `BX LR`，也不改写为 CMSIS intrinsic：先在 Keil 取得该函数的反汇编/控制流基线，再决定是否需要工程自有改写。显式 `BX LR`/`BX R14` 的受支持包装保持原有改写；未知指令、额外指令和原型内注释仍为一般 blocker，不会被描述成"缺失返回"。
 
 ### 显式多 RAM 内存布局（当前源码/候选切片）
 
@@ -363,6 +377,7 @@ AI 客户端只使用现有证据核对绑定，不新增绑定检查工具：
 - `stm32_doctor` 的 `data.runtime.toolkitVersion` 与 `data.publicInventory` 描述**实际绑定的服务器**；还要对比客户端真实列出的工具及 input schema，并保留 `stm32_project_context.data.project.root` 为根权威。启动器/CLI 版本和 doctor 的工具数量都不是“客户端已注册这些工具”的证明。
 - 升级后重启 VS Code 一次再验证；工具/字段缺失或根不一致时，保存完整 JSON 并停止依赖该能力的操作，不要在启动器间回退、伪造会话或绕过 root 校验。
 - 先保存/读取完整 `OperationResult`（`ok`、`code`、`message`、`data`、`details`），再作总结；不要用 `head`/`grep` 或旧布尔值丢掉诊断。`ok=false` 时保留 `details`；`capabilityDetails` 的 `status`/`reason`/`nextSteps`、`planReadiness`/`applyReadiness` 与原始 preflight blocker 字段含义不变。
+- CLI 结构化 JSON 使用 ASCII 转义（`\uXXXX`，本地未发布源码行为），因此与 Windows 控制台代码页无关：把 stdout 原始字节按 UTF-8 解码再 `json.loads` 可还原中文与非 BMP 值。进程退出码需单独保留，JSON 解析不会再产生退出码。已安装的冻结 1.3.2 二进制没有该改动；若必须显式取得 UTF-8 文本，可在该次进程内设置 `PYTHONIOENCODING=utf-8`，不要修改全局环境或控制台编码。
 
 成功 context 新增的 `data.firmwareRoutes` 只是**描述，不执行任何发现、导入或后端操作**：
 

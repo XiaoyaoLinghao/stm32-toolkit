@@ -19,6 +19,8 @@ from stm32_toolkit.keil import KeilInspection
 from stm32_toolkit.memory_layout import MemoryLayout
 from stm32_toolkit.migration import git_guard
 from stm32_toolkit.migration.model import (
+    BLOCKER_HINT_DEPENDENCY_ENCODING,
+    BLOCKER_HINT_DEPENDENCY_PATH,
     MigrationBlocker,
     MigrationPlanError,
     StartupOptions,
@@ -661,6 +663,40 @@ _KNOWN_REMEDIATION: dict[
     ),
 }
 
+#: Cause-specific remediation for a supported declaration whose only problem
+#: is an unusable quoted include.  Selection uses the blocker's trusted
+#: internal ``diagnostic`` hint, never its path or message text.
+_DEPENDENCY_REMEDIATION: dict[
+    str, tuple[str, str, str | None, str | None, tuple[str, ...]]
+] = {
+    BLOCKER_HINT_DEPENDENCY_ENCODING: (
+        _NEEDS_USER_INPUT,
+        "The declaration shape and numeric form are supported; the blocker's"
+        " cause is the named project-relative quoted include, which is not"
+        " UTF-8. Declare that file's charset, and only for a reviewed"
+        " comment-only change use the normalize-source-comments Skill to"
+        " preview and copy a strict UTF-8 file outside the project; review each"
+        " affected file and pass the exact reviewed plan before any copy."
+        " Toolkit never transcodes the original, skips the include, guesses an"
+        " encoding, or relaxes the bound.",
+        None,
+        "normalize-source-comments",
+        ("declaredCharset", "reviewedPlanId"),
+    ),
+    BLOCKER_HINT_DEPENDENCY_PATH: (
+        _NEEDS_USER_INPUT,
+        "This is not an encoding problem: the named quoted include is missing,"
+        " unreadable, redirected, ambiguous, or outside the reviewed limits."
+        " Collect read-only evidence for the actual file path and the scoped"
+        " include search first. A legitimately reviewed include-path correction"
+        " is a project-owned change; never transcode, guess a path, or widen or"
+        " edit search paths merely to silence the blocker.",
+        None,
+        None,
+        ("includePathEvidence",),
+    ),
+}
+
 _STARTUP_REMEDIATION_SUMMARY = (
     "Review analysis.startup and its diagnostics. The reviewed"
     " startupStrategy=generate-cmsis-gcc route covers only the conventional"
@@ -696,6 +732,16 @@ def _remediation(
 
 def _remediation_for(blocker: MigrationBlocker) -> dict[str, object]:
     """Classify one blocker without changing the blocker or conversion plan."""
+    dependency = _DEPENDENCY_REMEDIATION.get(blocker.diagnostic or "")
+    if dependency is not None:
+        category, summary, tool, skill, required_inputs = dependency
+        return _remediation(
+            category,
+            summary,
+            tool=tool,
+            skill=skill,
+            required_inputs=required_inputs,
+        )
     known = _KNOWN_REMEDIATION.get(blocker.code)
     if known is not None:
         category, summary, tool, skill, required_inputs = known

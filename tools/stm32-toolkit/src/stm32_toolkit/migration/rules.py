@@ -16,11 +16,15 @@ import re
 from dataclasses import dataclass
 
 from stm32_toolkit.migration.constant_context import (
+    CAUSE_ENCODING,
+    CAUSE_PATH,
     MAX_UINT32,
     ConstantResolutionError,
     evaluate_integer,
 )
 from stm32_toolkit.migration.model import (
+    BLOCKER_HINT_DEPENDENCY_ENCODING,
+    BLOCKER_HINT_DEPENDENCY_PATH,
     FixedSectionRequirement,
     IgnoredObservation,
     MigrationBlocker,
@@ -221,7 +225,9 @@ class _Scanner:
     def _balanced_braces(self, open_index: int) -> int:
         return _balanced_lexical(self.text, open_index, self.n, "{", "}")
 
-    def _blocker(self, code: str, position: int, message: str) -> None:
+    def _blocker(
+        self, code: str, position: int, message: str, diagnostic: str | None = None
+    ) -> None:
         self.blockers.append(
             MigrationBlocker(
                 code,
@@ -231,6 +237,7 @@ class _Scanner:
                 self._column_of(position),
                 _cap(_line_text(self.text, position)),
                 message,
+                diagnostic,
             )
         )
 
@@ -537,9 +544,28 @@ class _Scanner:
                 "ARMCC __asm function declaration or body",
             )
             return
-        end, replacement = parsed
-        self.rewrites.append((start, end, replacement, "ARMCC_NAKED_ASM_FUNCTION"))
-        self._advance(end - self.i)
+        if parsed.replacement is None:
+            # ARM assembly permits falling through into the next embedded
+            # assembly function, so the source can be legitimate; its intended
+            # return behaviour is still unknowable from the text.  Keep the
+            # blocker and ask for a control-flow baseline instead of guessing.
+            self._blocker(
+                "ARMCC_INLINE_ASSEMBLY_UNSUPPORTED",
+                start,
+                f"ARMCC __asm function '{parsed.name}' ends after "
+                f"'{parsed.instruction}' with no explicit return; control can "
+                "fall through into the next embedded assembly function, which "
+                "the ARM Compiler armcc User Guide documents as possible"
+                " (section 7.30). Toolkit never invents BX LR or a CMSIS"
+                " intrinsic: obtain "
+                "a Keil disassembly/control-flow baseline for this function "
+                "before choosing a reviewed translation",
+            )
+            return
+        self.rewrites.append(
+            (start, parsed.end, parsed.replacement, "ARMCC_NAKED_ASM_FUNCTION")
+        )
+        self._advance(parsed.end - self.i)
 
     def _skip_ws(self, index: int) -> int:
         while index < self.n and self.text[index] in _NEWLINE_SKIP:
@@ -556,14 +582,17 @@ class _Scanner:
             cursor += 1
         return self.text[index:cursor], cursor
 
-    def _parse_naked_function(self, index: int) -> tuple[int, str] | None:
+    def _parse_naked_function(self, index: int) -> "_NakedTranslation | None":
         """Parse one exact supported ``__asm void`` wrapper, else ``None``.
 
         Only ``void name(void)``/``void name()`` with ``WFI``/``CPSID I``/
         ``CPSIE I`` plus an explicit ``BX LR``/``BX R14``, and
         ``void name(<known 32-bit scalar>)`` with ``MSR MSP, R0`` plus the same
-        explicit return, are supported.  Comments between prototype tokens are
-        ambiguous and rejected; body comments are preserved verbatim.
+        explicit return, are supported.  A recognised instruction sequence
+        that omits the explicit return returns a translation whose
+        ``replacement`` is ``None``: the caller keeps its blocker and reports
+        the missing return, it never invents one.  Comments between prototype
+        tokens are ambiguous and rejected; body comments are preserved.
         """
         cursor = self._skip_ws(index)
         word = self._read_identifier(cursor)
@@ -597,12 +626,15 @@ class _Scanner:
         if body_end == -1:
             return None
         body = self.text[cursor + 1 : body_end - 1]
-        parsed = _naked_instructions(body, needs_parameter)
-        if parsed is None:
-            return None
-        instructions, comments = parsed
         if not self._line_tail_is_trivia(body_end):
             return None
+        parsed = _naked_instructions(body, needs_parameter)
+        if parsed is None:
+            instruction = _naked_missing_return(body, needs_parameter)
+            if instruction is None:
+                return None
+            return _NakedTranslation(body_end, None, function_name, instruction)
+        instructions, comments = parsed
         newline = (
             "\r\n"
             if "\r\n" in self.text[index:body_end]
@@ -618,7 +650,7 @@ class _Scanner:
             for line in comment.splitlines() or [""]:
                 lines.append("    " + line.rstrip("\r"))
         lines.append("}")
-        return body_end, newline.join(lines)
+        return _NakedTranslation(body_end, newline.join(lines), function_name, None)
 
     def _line_tail_is_trivia(self, index: int) -> bool:
         """Whether only whitespace/comments remain on the closing-brace line."""
@@ -703,7 +735,7 @@ class _Scanner:
         if "\n" in expression or "\r" in expression:
             self._align_blocker(start, "uncertain __align grammar")
             return
-        value, error = _evaluate(self.symbols, expression)
+        value, error, context, diagnostic = _evaluate(self.symbols, expression)
         if (
             error is not None
             or value is None
@@ -711,13 +743,13 @@ class _Scanner:
             or value > MAX_ALIGNMENT
             or value & (value - 1)
         ):
-            reason = (
-                f" ({error})"
-                if error is not None and _SYMBOLIC_RE.search(expression)
-                else ""
-            )
+            reason = ""
+            if error is not None and _SYMBOLIC_RE.search(expression):
+                reason = f" ({error})" if context is None else f" ({error}; {context})"
             self._align_blocker(
-                start, f"unsupported or unresolved __align bound{reason}"
+                start,
+                f"unsupported or unresolved __align bound{reason}",
+                diagnostic,
             )
             return
         line_start = self.text.rfind("\n", 0, start) + 1
@@ -745,16 +777,28 @@ class _Scanner:
         if "__attribute__" in view or "__at" in view or "__align" in view:
             self._align_blocker(start, "conflicting or unknown attribute combination")
             return
-        declaration = _parse_declaration(view, self.symbols)
+        declaration, bound_failure, diagnostic = _parse_declaration(
+            view, self.symbols
+        )
         if declaration is None:
-            self._align_blocker(start, "unsupported __align declaration grammar")
+            if bound_failure is not None:
+                self._align_blocker(
+                    start,
+                    "unsupported or unresolved __align declaration array bound: "
+                    f"{bound_failure}",
+                    diagnostic,
+                )
+            else:
+                self._align_blocker(start, "unsupported __align declaration grammar")
             return
         self.rewrites.append(
             (start, end, f"__attribute__((aligned({value})))", "ARMCC_ALIGN_ATTRIBUTE")
         )
 
-    def _align_blocker(self, position: int, message: str) -> None:
-        self._blocker("ARMCC_ALIGN_UNSUPPORTED", position, message)
+    def _align_blocker(
+        self, position: int, message: str, diagnostic: str | None = None
+    ) -> None:
+        self._blocker("ARMCC_ALIGN_UNSUPPORTED", position, message, diagnostic)
 
 
 # ---------------------------------------------------------------------------
@@ -772,14 +816,51 @@ def _undefined_lookup(name: str) -> int:
     raise ConstantResolutionError("undefined", "no symbol context")
 
 
-def _evaluate(symbols, expression: str) -> tuple[int | None, str | None]:
-    """Evaluate one bounded expression; ``symbols`` may be absent (literals only)."""
+#: Map the trusted expression cause to the internal blocker hint.  No path,
+#: message, or user-controlled text is ever inspected to make this choice.
+_DIAGNOSTIC_FOR_CAUSE = {
+    CAUSE_ENCODING: BLOCKER_HINT_DEPENDENCY_ENCODING,
+    CAUSE_PATH: BLOCKER_HINT_DEPENDENCY_PATH,
+}
+
+
+def _evaluate(
+    symbols, expression: str
+) -> tuple[int | None, str | None, str | None, str | None]:
+    """Evaluate one bounded expression; ``symbols`` may be absent (literals only).
+
+    Returns ``(value, error_code, context, diagnostic)``.  ``context`` is the
+    bounded, project-relative dependency description supplied by the symbol
+    provider after a failure.  ``diagnostic`` is the trusted internal hint
+    derived only from the provider's structured cause.
+    """
     if symbols is not None:
-        return symbols.evaluate(expression)
+        value, error = symbols.evaluate(expression)
+        if error is None:
+            return value, None, None, None
+        describe = getattr(symbols, "failure_context", None)
+        context = describe() if callable(describe) else None
+        cause_of = getattr(symbols, "failure_cause", None)
+        cause = cause_of() if callable(cause_of) else None
+        return value, error, context, _DIAGNOSTIC_FOR_CAUSE.get(cause)
     try:
-        return evaluate_integer(expression, _undefined_lookup), None
+        return evaluate_integer(expression, _undefined_lookup), None, None, None
     except ConstantResolutionError as error:
-        return None, error.code
+        return None, error.code, None, None
+
+
+def _bound_failure(
+    expression: str,
+    value: int | None,
+    error: str | None,
+    context: str | None,
+) -> str:
+    """Describe one unusable array bound without collapsing it into grammar."""
+    bound = _cap(expression.strip())
+    if error is not None:
+        detail = f"{error}; {context}" if context is not None else error
+        return f"array bound '{bound}' could not be resolved ({detail})"
+    return f"array bound '{bound}' is not a positive uint32 dimension ({value})"
 
 
 def _strip_declaration_comment(text: str) -> str:
@@ -801,32 +882,41 @@ _LITERAL_ADDRESS_RE = re.compile(r"^(?:0[xX][0-9a-fA-F]+|[0-9]+)$")
 
 def _parse_declaration(
     text: str, symbols, *, literal_bounds: bool = False
-) -> _Declaration | None:
-    """Parse a plain uninitialized object declaration; anything else is ``None``.
+) -> tuple[_Declaration | None, str | None, str | None]:
+    """Parse a plain uninitialized object declaration.
 
-    Storage classes that never define the placed/aligned object (``extern``,
-    ``typedef``, ...), zero-length arrays, pointers, initializers, functions,
-    bit-fields, and multiple declarators are rejected.
+    Returns ``(declaration, None, None)`` on success and ``(None, None, None)``
+    for every unsupported declaration shape.  ``(None, description, hint)`` is
+    reserved for a plain declaration whose array bound was rejected or could
+    not be resolved, so the caller can distinguish a bound problem from
+    unsupported declaration grammar.  Storage classes that never define the
+    placed/aligned object (``extern``, ``typedef``, ...), zero-length arrays,
+    pointers, initializers, functions, bit-fields, and multiple declarators
+    are rejected as grammar.
     """
     cleaned = _strip_declaration_comment(text)
     if not cleaned.endswith(";"):
-        return None
+        return None, None, None
     cleaned = cleaned[:-1]
     match = _OBJECT_BODY_RE.match(cleaned)
     if match is None:
-        return None
+        return None, None, None
     words = match.group(1).split()
     if any(word in _FORBIDDEN_DECLARATION_WORDS for word in words):
-        return None
+        return None, None, None
     array_expression = match.group(3)
     if array_expression is not None:
         if literal_bounds:
             if _DECIMAL_LITERAL_RE.fullmatch(array_expression.strip()) is None:
-                return None
-        value, error = _evaluate(symbols, array_expression)
+                return None, None, None
+        value, error, context, diagnostic = _evaluate(symbols, array_expression)
         if error is not None or value is None or value < 1 or value > MAX_UINT32:
-            return None
-    return _Declaration(match.group(2), array_expression)
+            return (
+                None,
+                _bound_failure(array_expression, value, error, context),
+                diagnostic,
+            )
+    return _Declaration(match.group(2), array_expression), None, None
 
 
 def _extract_at_expression(content: str) -> str | None:
@@ -959,12 +1049,29 @@ def _blank_spans(
     return "".join(chars)
 
 
-def _naked_instructions(body: str, needs_parameter: bool) -> tuple[str, list[str]] | None:
-    """Return exact GNU basic-asm text for one supported wrapper body.
+@dataclass(frozen=True)
+class _NakedTranslation:
+    """One recognised ``__asm void`` wrapper.
 
-    Every supported form is the explicit instruction followed by an explicit
-    ``BX LR``/``BX R14``; Toolkit never invents a return the ARMCC source did
-    not contain.  Comments are collected verbatim; anything else is a blocker.
+    ``replacement`` is ``None`` only for a supported instruction sequence that
+    omits the explicit return; ``instruction`` then names the instruction the
+    body ends with so the blocker can explain the fall-through boundary.
+    """
+
+    end: int
+    replacement: str | None
+    name: str
+    instruction: str | None
+
+
+def _naked_tokens(
+    body: str, *, allow_semicolons: bool = False
+) -> tuple[list[str], list[str]] | None:
+    """Upper-case instruction tokens and verbatim comments, else ``None``.
+
+    ``allow_semicolons`` is used only by the missing-return diagnostic so a
+    one-line ARMCC body such as ``{ WFI; }`` can be recognised; it never
+    broadens the rewritable forms.
     """
     tokens: list[str] = []
     comments: list[str] = []
@@ -973,6 +1080,9 @@ def _naked_instructions(body: str, needs_parameter: bool) -> tuple[str, list[str
     while index < length:
         char = body[index]
         if char in _NEWLINE_SKIP:
+            index += 1
+            continue
+        if allow_semicolons and char == ";":
             index += 1
             continue
         if char == "/" and body[index + 1 : index + 2] == "/":
@@ -1008,7 +1118,20 @@ def _naked_instructions(body: str, needs_parameter: bool) -> tuple[str, list[str
             index += 1
             continue
         return None
-    upper = tokens
+    return tokens, comments
+
+
+def _naked_instructions(body: str, needs_parameter: bool) -> tuple[str, list[str]] | None:
+    """Return exact GNU basic-asm text for one supported wrapper body.
+
+    Every supported form is the explicit instruction followed by an explicit
+    ``BX LR``/``BX R14``; Toolkit never invents a return the ARMCC source did
+    not contain.  Comments are collected verbatim; anything else is a blocker.
+    """
+    parsed = _naked_tokens(body)
+    if parsed is None:
+        return None
+    upper, comments = parsed
     returns = (
         ["BX", "LR"],
         ["BX", "R14"],
@@ -1029,6 +1152,29 @@ def _naked_instructions(body: str, needs_parameter: bool) -> tuple[str, list[str
     return None
 
 
+def _naked_missing_return(body: str, needs_parameter: bool) -> str | None:
+    """Name the instruction of a recognised body that omits its return.
+
+    Returns ``None`` for every other body, so unknown assembly keeps its
+    generic blocker and is never described as a missing return.
+    """
+    parsed = _naked_tokens(body, allow_semicolons=True)
+    if parsed is None:
+        return None
+    upper, _comments = parsed
+    if not needs_parameter:
+        if upper == ["WFI"]:
+            return "WFI"
+        if upper == ["CPSID", "I"]:
+            return "CPSID I"
+        if upper == ["CPSIE", "I"]:
+            return "CPSIE I"
+        return None
+    if upper == ["MSR", "MSP", "R0"]:
+        return "MSR MSP, R0"
+    return None
+
+
 def _parse_placement(
     candidate: dict, text: str, symbols=None, language: str = "c"
 ) -> dict:
@@ -1040,18 +1186,21 @@ def _parse_placement(
         # C++ keeps only the historically reviewed numeric literal form; new
         # symbolic forms are C-only.
         return {**candidate, "valid": False, "reason": "address"}
-    address, error = _evaluate(symbols, expression)
+    address, error, context, diagnostic = _evaluate(symbols, expression)
     if error is not None:
         # Keep the bounded, stable resolution reason for symbolic expressions
         # so the blocker explains conditional/undefined/cycle/unavailable/limit
-        # failures; literal grammar errors keep the legacy generic message.
+        # failures, plus the project-relative dependency context when the
+        # failure came from an unusable quoted include; literal grammar errors
+        # keep the legacy generic message.
+        symbolic = _SYMBOLIC_RE.search(expression) is not None
         return {
             **candidate,
             "valid": False,
             "reason": "address",
-            "resolution": (
-                error if _SYMBOLIC_RE.search(expression) else None
-            ),
+            "resolution": error if symbolic else None,
+            "resolution_context": context if symbolic else None,
+            "diagnostic": diagnostic if symbolic else None,
         }
     if address is None or address > MAX_UINT32:
         return {**candidate, "valid": False, "reason": "address"}
@@ -1091,10 +1240,10 @@ def _parse_placement(
                 if content.startswith("(") and content.endswith(")")
                 else None
             )
-            alignment, align_error = (
+            alignment, align_error, _align_context, _align_diagnostic = (
                 _evaluate(symbols, align_expression)
                 if align_expression
-                else (None, "syntax")
+                else (None, "syntax", None, None)
             )
             if (
                 align_error is None
@@ -1119,11 +1268,17 @@ def _parse_placement(
     )
     if "__attribute__" in view or "__at" in view or "__align" in view:
         return {**candidate, "valid": False, "reason": "declaration"}
-    declaration = _parse_declaration(
+    declaration, bound_failure, diagnostic = _parse_declaration(
         view, symbols, literal_bounds=language != "c"
     )
     if declaration is None:
-        return {**candidate, "valid": False, "reason": "declaration"}
+        return {
+            **candidate,
+            "valid": False,
+            "reason": "declaration",
+            "bound": bound_failure,
+            "diagnostic": diagnostic,
+        }
     return {
         **candidate,
         "valid": True,
@@ -1143,9 +1298,17 @@ def _placements_blocker(candidate: dict, text: str) -> MigrationBlocker:
             "placement rewrite was applied for this file"
         )
     elif candidate.get("resolution"):
+        resolution = candidate["resolution"]
+        if candidate.get("resolution_context"):
+            resolution = f"{resolution}; {candidate['resolution_context']}"
         message = (
             "unsupported ARMCC absolute placement grammar: address expression "
-            f"could not be resolved ({candidate['resolution']})"
+            f"could not be resolved ({resolution})"
+        )
+    elif candidate.get("bound"):
+        message = (
+            "unsupported ARMCC absolute placement grammar: "
+            f"{candidate['bound']}; no placement rewrite was applied for this file"
         )
     else:
         message = "unsupported ARMCC absolute placement grammar"
@@ -1157,6 +1320,7 @@ def _placements_blocker(candidate: dict, text: str) -> MigrationBlocker:
         candidate["column"],
         _cap(_line_text(text, position)),
         message,
+        candidate.get("diagnostic"),
     )
 
 

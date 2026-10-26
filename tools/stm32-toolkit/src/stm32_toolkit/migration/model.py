@@ -67,6 +67,13 @@ class MigrationInput:
         return {"path": self.path, "sha256": self.sha256, "size": self.size}
 
 
+#: Trusted internal remediation hints on ``MigrationBlocker``.  They are set
+#: only by rule code that already knows the bounded cause; presentation code
+#: compares these constants and never parses a path, message, or evidence.
+BLOCKER_HINT_DEPENDENCY_ENCODING = "dependency-encoding"
+BLOCKER_HINT_DEPENDENCY_PATH = "dependency-path"
+
+
 @dataclass(frozen=True)
 class MigrationBlocker:
     code: str
@@ -76,6 +83,10 @@ class MigrationBlocker:
     column: int
     evidence: str
     message: str
+    #: Optional internal classification hint for remediation presentation.  It
+    #: is intentionally omitted from ``to_dict`` and from plan identity, so the
+    #: public blocker contract and apply replanning bytes are unchanged.
+    diagnostic: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
