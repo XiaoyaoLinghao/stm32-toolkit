@@ -2,7 +2,22 @@
 
 ## v1.3.1 integration checkpoint — 2026-10-26
 
-Latest delivery checkpoint: [two independent frozen builds](codex/returns/STM32TK-131/candidate-build.md) at `7ff99e50011b6321ae3f0c9bb2edfab91724be3e` produced 13 identical assets, with independent checksum and official bundle validation PASS. Status remains **LOCAL_CANDIDATE_NOT_QUALIFIED / NOT PUBLISHED**. Current Python cohort is8,838 passes/19 skips; Toolkit overall/risk87.3566%/87.5597%, Monitor risk92.2527%. Installation/actual VS Code, the existing interpreter/Git prerequisites and release-gate disposition remain open. Earlier records below are dated checkpoints, not current completion claims.
+Latest delivery checkpoint: the user approved the disclosed exception only for
+frozen `7ff99e50011b6321ae3f0c9bb2edfab91724be3e` and authorized existing
+PowerShell7. Fresh isolated Check -> Bootstrap -> Check passed, with healthy
+1.3.1 runtime and matching generation 1. The user subsequently took ownership
+of final actual installation and VS Code verification and explicitly requested
+the GitHub push. That final user validation is **USER_VALIDATION_PENDING**, not
+PASS; automated IDE verification has stopped. Git Credential Manager still has
+no GitHub account, so the authorized source push awaits that client's login.
+No push or release publication is claimed. See the
+[authorization and installation evidence](codex/returns/STM32TK-131/authorization-2026-10-26.md).
+
+The [two independent frozen builds](codex/returns/STM32TK-131/candidate-build.md)
+produced 13 identical assets, with independent checksum and official bundle
+validation PASS. Current Python cohort is 8,838 passes/19 skips; Toolkit
+overall/risk 87.3566%/87.5597%, Monitor risk 92.2527%. Permanent gates remain
+unchanged. Earlier records below are dated checkpoints, not current completion claims.
 
 Previous supplement: ARMCC directive-prefix repair is **ACCEPTED_WITH_FIXES** at `0ddfa8c92d6c0296ff6f34334fb99c7ba10dcb2e`: Claude 42 new cases, primary independent 203 cases and all 898 affected cases pass. Old arcs for changed source were removed before native coverage reconciliation. Current source-bound cohort: 8,838 passes / 19 skips; numerical release gates remain unmet. This is not a single-head full rerun. Final candidate packaging is next; installation/IDE and publication remain pending. [Full report](codex/returns/ARMCC-DIRECTIVE-PREFIX/implementation-report.md). Earlier checkpoints follow.
 

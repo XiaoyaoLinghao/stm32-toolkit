@@ -4,6 +4,8 @@
 
 ## 1. 当前断点与证据
 
+2026-10-26 最新交接：[授权与隔离安装记录](../codex/returns/STM32TK-131/authorization-2026-10-26.md)。用户已批准既有 PowerShell7 和仅针对冻结 `7ff99e50011b6321ae3f0c9bb2edfab91724be3e` 的已披露限制例外。该候选在 `D:/codex-tmp/r131/ide-data` 完成 Check → Bootstrap → Check，均退出0，最终 healthy/matching、1.3.1、generation1。用户随后接手最终实际安装与 VS Code 验证，状态为 USER_VALIDATION_PENDING，不记 PASS；主代理停止 IDE 自动验证，按本次明确授权处理 GitHub 推送。升级/回滚无新通过记录。Git Credential Manager 账户仍为空，等待该客户端登录；未推送、未发布，不触碰原工程或硬件。以下为历史断点。
+
 2026-10-26 最新发行候选：[同源双构建记录](../codex/returns/STM32TK-131/candidate-build.md)。冻结源码 `7ff99e50011b6321ae3f0c9bb2edfab91724be3e` 的13文件逐一同hash，独立官方bundle验证通过，尚未发布。后续获准安装须使用 `D:/codex-tmp/r131/frozen-bundle/stm32-toolkit-1.3.1` 及新的运行日志，不得复用旧候选路径或误选PowerShell5.1的历史setup helper。安装解释器修正、本机Git登录仍待既有问题回复；数值门槛、实际安装/升级/回滚与VS Code资格未完成。当前8,838通过/19跳过是源绑定复用，不是最终单一提交全量重跑。不得因旧例外或时间经过自动发布、切换解释器重试或触碰硬件。以下保留历史断点。
 
 2026-10-26 此前复核：ARMCC-DIRECTIVE-PREFIX 已 **ACCEPTED_WITH_FIXES**，见[报告](../codex/returns/ARMCC-DIRECTIVE-PREFIX/implementation-report.md)。CodeHead `0ddfa8c92d6c0296ff6f34334fb99c7ba10dcb2e`；Claude 新增42/42、主代理203/203、受影响完整文件回归898/898通过。旧源码分支数据已从新聚合副本移除，再采纳当前原生数据；原始数据保留。当前去重复用队列8,838通过/19跳过，数值门槛仍未满足；不是最终单一提交全量重跑。下一步冻结源码并完成候选双构建，安装解释器修正及本机Git登录仍待原问题回复；实际VS Code、安装和发布未完成。以下为历史断点。

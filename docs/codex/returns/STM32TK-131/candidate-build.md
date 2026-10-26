@@ -1,5 +1,10 @@
 # v1.3.1 frozen candidate build checkpoint — 2026-10-26
 
+This is the original build checkpoint. Subsequent user authorization, completed
+isolated fresh installation and transfer of final VS Code validation to the user
+are recorded in [the continuation record](authorization-2026-10-26.md). Pending
+decisions below describe the state at build time, not the latest handoff.
+
 **LOCAL_CANDIDATE_NOT_QUALIFIED; NOT PUBLISHED.** Frozen package source, accepted base and CodeHead for this post-freeze report: `7ff99e50011b6321ae3f0c9bb2edfab91724be3e`. This report commit is outside the frozen source ZIP, wheels and Windows bundle and does not claim its own final SHA. The governing v1.3.1 integration plan remains in force. Primary owns independent acceptance; Claude Code CLI, using the configured provider, executed both official builds.
 
 Two clean, canonical worktrees with no package build/egg-info residue were used: `C:/Users/zhy76/.codex/worktrees/keil-input-audit/STM32-Toolkit` and `C:/Users/zhy76/.codex/worktrees/v131-package-review/STM32-Toolkit`. No old residue was deleted. The official `tools/release/build_0900_artifacts.py build` entry bound the exact source, unchanged 64-file wheelhouse `D:/codex-tmp/fi24/wheelhouse`, and separate fresh output directories `D:/codex-tmp/r131/frozen-package-a` and `frozen-package-b`.

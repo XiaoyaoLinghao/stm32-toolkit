@@ -6,6 +6,32 @@ The [standard procedure](standard-test-procedure.md) governs execution and autho
 Historical measurements and one-time exceptions do not transfer automatically to a later release.
 The user's explicit v1.0.1 conditional exception is recorded below, separately from permanent gates.
 
+## v1.3.1 frozen-candidate exception authorized on 2026-10-26
+
+The user explicitly approved **USER_APPROVED_EXCEPTION** only for frozen source
+`7ff99e50011b6321ae3f0c9bb2edfab91724be3e` and its reproducible 13-asset v1.3.1
+candidate. The Windows ZIP is 113,475,542 bytes with SHA-256
+`ec3eb4e9ccadecd832c570288b3449a5b6553b260cd734e1ac82dfc647fe6a08`.
+The accepted disclosed limits are Toolkit overall 15,380/17,606 = 87.3566%,
+Toolkit risk-core-v2 14,309/16,342 = 87.5597%, Monitor risk-core-v2
+3,227/3,498 = 92.2527%, 19 retained platform/historical-data skips, and explicit
+source-bound reuse rather than a single final-head full rerun. Original failures,
+corrections, raw coverage and actual owner/source identities remain retained.
+Permanent floors and membership below are unchanged; this exception does not
+transfer to a different candidate or convert unmet gates into PASS.
+
+The user initially required the other acceptance checks to proceed normally and
+subsequently took ownership of final actual installation and VS Code verification,
+explicitly asking the agent to concentrate on pushing GitHub. Fresh isolated
+Check -> Bootstrap -> Check has passed for this frozen package. Final user
+installation/IDE acceptance remains USER_VALIDATION_PENDING; it is not PASS and
+does not block the newly authorized source push. Upgrade/rollback has no new
+PASS. Original firmware-project edits and hardware access remain prohibited.
+The user also authorized correcting the earlier mistaken Windows PowerShell5.1
+invocation to the existing PowerShell7 without changing execution policy.
+See the [frozen build evidence](../codex/returns/STM32TK-131/candidate-build.md)
+and [authorization record](../codex/returns/STM32TK-131/authorization-2026-10-26.md).
+
 ## v1.2.0-only exception authorized on 2026-10-23
 
 The user explicitly approved **USER_APPROVED_EXCEPTION** for only the frozen Windows x86_64 / CPython 3.12 v1.2.0 package and `v1.2.0` tag source `99e7f000e3ceb773071037f8b8e30f05091ba6fb` (tree `a5cbe6a0c318fad1d7fe3c48c547d88a2ef679bb`), with the limits below disclosed, and authorized its publication as Latest. The public [v1.2.0 Release](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.2.0) contains the verified 13-asset delivery and limitations; the [v1.2.0 execution record](../codex/returns/STM32TK-120/execution.md) identifies the decision, evidence owners and remote verification. This one-version delivery decision does not amend the permanent 90% Toolkit overall/risk-core-v2 and 95% Monitor risk-core-v2 floors below, transfer to another version or source, or grant hardware authorization.
