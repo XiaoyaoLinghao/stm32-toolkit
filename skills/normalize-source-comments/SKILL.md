@@ -1,6 +1,6 @@
 ---
 name: normalize-source-comments
-description: Use when a Keil or legacy C/C++ project reports a source-encoding blocker and the user wants a reviewed, comment-only UTF-8 copy. Preview explicitly declared per-file charsets first, then copy only selected files to a new external directory. An explicit reviewed replacement mode can replace undecodable or disallowed comment units with a literal question mark; it records every loss and needs one confirmation per lossy file. Do not use for implicit transcoding, in-place edits, assembly, binaries, or a claim that migration is complete.
+description: Use when a Keil or legacy C/C++ project reports a source-encoding blocker, including a needed quoted header, and the user wants a reviewed, comment-only UTF-8 copy. Preview explicitly declared per-file charsets first, then copy only selected files to a new external directory; a complete prepared project tree is a separate explicit copy, not this helper's output. An explicit reviewed replacement mode can replace undecodable or disallowed comment units with a literal question mark; it records every loss and needs one confirmation per lossy file. Do not use for implicit transcoding, in-place edits, assembly, binaries, or a claim that migration is complete.
 ---
 
 # Normalize source comments
@@ -52,7 +52,9 @@ route for the Toolkit encoding blocker; it is not part of migration apply.
 - Assembly, UTF-16/UTF-32, binaries, and arbitrary text formats are outside
   this helper. Leave them untouched and report the diagnostic.
 - The helper is not a C compiler. It does not promise generic charset support,
-  runtime string/ABI equivalence, or that a project builds after conversion.
+  runtime string/ABI equivalence, or that a project builds after conversion. Its
+  output is a selected-file set, never a complete project; building the complete
+  prepared tree is a separate explicit copy described below.
 
 ## Run the helper
 
@@ -199,12 +201,24 @@ marked by `INCOMPLETE.json` and has no final manifest.
 The output is a set of converted file copies, not a complete migrated or
 buildable project.
 
-### 4. Inspect the deliberately prepared project copy
+### 4. Build and inspect the complete prepared project copy
 
-If the project owner chooses to prepare a separate project copy, do that as a
-separate explicit action: copy the project, replace only the selected files
-with the reviewed converted copies, and point the Toolkit at that copy. Then
-rerun the ordinary read-only migration sequence on the prepared copy:
+The helper output is a partial file set, never the project. If the project owner
+chooses to prepare a separate project copy, do that as a separate explicit
+action outside the original root:
+
+1. Inventory the original tree as portable relative path plus SHA-256 per file.
+   Refuse symlink, junction or other reparse redirects, absolute or escaping
+   paths, case-insensitive duplicate paths, unreadable entries and special files.
+2. Copy the whole project, including every unselected source, header, startup or
+   assembly file, resource, license and directory needed by the project.
+   Byte-copy files that are not being converted.
+3. Overlay only reviewed converted copies whose reviewed `sourceSha256` still
+   matches the current original file and whose `outputSha256` matches the helper
+   `manifest.json`. On any mismatch, re-preview; never force an overlay, edit the
+   plan, or invent a hash.
+4. Recompute the prepared inventory and rerun the ordinary read-only migration
+   sequence from the prepared root:
 
 ```text
 stm32_project_context()
@@ -212,14 +226,20 @@ stm32_keil_inspect(uvprojx='<same relative .uvprojx>', targetName='<exact target
 stm32_keil_preflight(uvprojx='<same relative .uvprojx>', targetName='<exact target>')
 ```
 
-Rerun `stm32_keil_inspect` and then `stm32_keil_preflight` after the source
-remediation; results from the original project do not carry over. Any remaining
-blocker must be reported and addressed before a conversion plan is requested.
+Bind the prepared root explicitly as the workspace and MCP project root. Keep
+the same relative `.uvprojx` and exact target. Results from the original project
+do not carry over; report every remaining blocker and address it before a
+conversion plan is requested. After the reviewed migration apply, bind the
+returned `data.outputRoot` for the normal configure/build/flash route. An
+existing migration authorization can cover this reversible preparation; each
+explicit charset choice, accepted lossy replacement and behavior decision still
+needs real user intent, never an inferred approval.
 
-Do not run migration apply, `git init`/commit, a build, or a flash from this
-skill. If all encoding blockers disappear, startup, scoped compiler options,
-scatter/memory, Git/apply, and baseline blockers remain independent. Replacing
-the original project in place is a separate explicit user decision.
+Do not run migration apply, a build, a flash, or `git init`/commit/stash/clean
+from this skill. Preparation is reversible and needs no Git repository. Startup,
+scoped compiler options, scatter/memory and unsupported-assembly blockers remain
+independent of encoding. Replacing the original project in place is a separate
+explicit user decision.
 
 ## Reference
 
