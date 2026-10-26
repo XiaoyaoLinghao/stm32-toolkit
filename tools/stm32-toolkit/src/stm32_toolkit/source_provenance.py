@@ -23,14 +23,16 @@ import re
 from types import MappingProxyType
 from typing import TYPE_CHECKING, cast
 
-from stm32_toolkit.build.model import (
-    BUILD_GIT_INVALID,
-    GIT_DIAGNOSTIC_UNAVAILABLE,
-    SOURCE_BASELINE_INPUT_SNAPSHOT,
-)
-
 if TYPE_CHECKING:  # pragma: no cover - typing only, avoids an import cycle
     from stm32_toolkit.build.identity import GitEvidence, GitUnavailableEvidence
+
+#: The shared provenance literals live in this low-level validation leaf so
+#: that importing this module never initializes the ``stm32_toolkit.build``
+#: package.  ``stm32_toolkit.build.model`` imports and re-exports the same
+#: objects for its historical callers.
+SOURCE_BASELINE_INPUT_SNAPSHOT = "input-snapshot-v1"
+GIT_DIAGNOSTIC_UNAVAILABLE = "unavailable"
+BUILD_GIT_INVALID = "BUILD_GIT_INVALID"
 
 GIT_DIAGNOSTIC_RULES = frozenset({"head", "status"})
 GIT_EVIDENCE_FIELDS = frozenset({"status", "code", "rule"})
@@ -238,7 +240,9 @@ class SourceProvenance:
 
 
 __all__ = [
+    "BUILD_GIT_INVALID",
     "GIT_DIAGNOSTIC_RULES",
+    "GIT_DIAGNOSTIC_UNAVAILABLE",
     "GIT_EVIDENCE_FIELDS",
     "SNAPSHOT_BINDING_FIELDS",
     "SNAPSHOT_CONTENT_REVISION_PREFIX",

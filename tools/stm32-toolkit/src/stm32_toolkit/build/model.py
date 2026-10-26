@@ -11,20 +11,24 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from stm32_toolkit.build.memory_margin import MemorySummary
+#: The shared provenance literals are owned by the low-level validation leaf;
+#: this module re-exports the same objects for its historical callers.
+from stm32_toolkit.source_provenance import (
+    BUILD_GIT_INVALID,
+    GIT_DIAGNOSTIC_UNAVAILABLE,
+    SOURCE_BASELINE_INPUT_SNAPSHOT,
+)
 
 SUPPORTED_PRESETS = ("arm-debug", "arm-release")
 IDENTITY_SCHEMA_VERSION = 1
 #: A snapshot identity is emitted only when Git provenance is unavailable.
 SNAPSHOT_IDENTITY_SCHEMA_VERSION = 2
-SOURCE_BASELINE_INPUT_SNAPSHOT = "input-snapshot-v1"
-GIT_DIAGNOSTIC_UNAVAILABLE = "unavailable"
 
 #: Stable failure codes (work order section 12).
 BUILD_REQUEST_INVALID = "BUILD_REQUEST_INVALID"
 BUILD_PROJECT_INVALID = "BUILD_PROJECT_INVALID"
 BUILD_INPUT_INVALID = "BUILD_INPUT_INVALID"
 BUILD_INPUT_CHANGED = "BUILD_INPUT_CHANGED"
-BUILD_GIT_INVALID = "BUILD_GIT_INVALID"
 BUILD_BUSY = "BUILD_BUSY"
 BUILD_CONFIGURE_FAILED = "BUILD_CONFIGURE_FAILED"
 BUILD_FAILED = "BUILD_FAILED"

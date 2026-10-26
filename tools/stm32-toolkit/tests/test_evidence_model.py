@@ -7,6 +7,8 @@ from collections import Counter
 from copy import deepcopy
 import math
 from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 
@@ -799,6 +801,48 @@ def test_snapshot_provenance_binds_the_revision_to_the_exact_snapshot():
         values.update(malformed)
         with pytest.raises((TypeError, ValueError)):
             snapshot_provenance(revision=revision, **values)
+
+
+_PROVENANCE_IMPORT_ORDERS = (
+    (
+        "stm32_toolkit.evidence.model",
+        "stm32_toolkit.source_provenance",
+        "stm32_toolkit.build.identity",
+    ),
+    (
+        "stm32_toolkit.source_provenance",
+        "stm32_toolkit.build.identity",
+        "stm32_toolkit.evidence.model",
+    ),
+    (
+        "stm32_toolkit.build.identity",
+        "stm32_toolkit.evidence.model",
+        "stm32_toolkit.source_provenance",
+    ),
+)
+
+
+def test_provenance_leaf_imports_in_a_fresh_interpreter_in_any_initial_order():
+    """The low-level provenance leaf must not require build's initializer first.
+
+    ``source_provenance`` used to import shared literals from ``build.model``,
+    which initialized the ``stm32_toolkit.build`` package and re-entered a
+    partially initialized ``evidence.model``.  Only a fresh interpreter can
+    observe the true initial import order, so each order runs in its own
+    child process with no installs, no external data and the inherited
+    environment.  The child's working directory is the package root so the
+    same source tree under test is imported.
+    """
+    package_root = Path(evidence_model.__file__).resolve().parent.parent
+    for order in _PROVENANCE_IMPORT_ORDERS:
+        completed = subprocess.run(
+            [sys.executable, "-c", "import " + ", ".join(order)],
+            cwd=str(package_root),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert completed.returncode == 0, (order, completed.stderr)
 
 
 def test_t10_1a_evidence_raise_inventory_is_exact_and_literal():

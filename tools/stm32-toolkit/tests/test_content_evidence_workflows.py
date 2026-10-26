@@ -674,7 +674,7 @@ def test_snapshot_target_rejects_tampered_stream_identity_before_evidence(
                 1,
                 {
                     "mode": "target",
-                    "identity": body_identity,
+                    "identity": body_identity.to_dict(),
                     "case_ids": [CASE_ID],
                     "inventory_digest": digest,
                     "discovered_at_utc": "2026-08-16T00:00:00.000000Z",
@@ -919,7 +919,7 @@ def test_host_discover_and_run_in_an_unborn_repository(
         _assert_host_snapshot_identity(identity)
 
 
-def _debug_binding(*, snapshot: bool) -> DebugFirmwareBinding:
+def _debug_binding(*, snapshot: bool, project_root: Path) -> DebugFirmwareBinding:
     evidence = dict(SNAPSHOT_EVIDENCE)
     return DebugFirmwareBinding(
         logical_project_id=PROJECT_ID,
@@ -939,20 +939,25 @@ def _debug_binding(*, snapshot: bool) -> DebugFirmwareBinding:
         git_dirty=None if snapshot else False,
         confirmed_at_utc="2026-08-25T00:00:00.000000Z",
         memory_regions=(MemoryRegionBinding("RAM", 0x20000000, 0x10000, "rw-"),),
-        project_root=Path("C:/fixture/project"),
+        project_root=project_root,
         source_baseline=SNAPSHOT_BASELINE if snapshot else None,
         git_evidence=evidence if snapshot else None,
     )
 
 
-def test_controlled_debug_authorization_uses_the_snapshot_content_revision() -> None:
-    snapshot = _debug_binding(snapshot=True)
+def test_controlled_debug_authorization_uses_the_snapshot_content_revision(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    project_root = project_root.resolve()
+    snapshot = _debug_binding(snapshot=True, project_root=project_root)
     binding = _control_authorization_binding(snapshot, dict(IDENTITY), "target.halt")
     assert binding["revision"] == SNAPSHOT_REVISION
     assert binding["revision"].startswith("input-snapshot-v1:")
     assert binding["firmware"] == {"build_id": BUILD_ID, "elf_sha256": ELF_SHA256}
 
-    legacy = _debug_binding(snapshot=False)
+    legacy = _debug_binding(snapshot=False, project_root=project_root)
     legacy_binding = _control_authorization_binding(legacy, dict(IDENTITY), "target.halt")
     assert legacy_binding["revision"] == "c" * 40
 
