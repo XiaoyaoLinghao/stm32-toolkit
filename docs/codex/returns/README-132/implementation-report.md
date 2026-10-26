@@ -36,3 +36,23 @@ worktree and D:/codex-tmp/r132/publication-docs-before-readme-steering.patch;
 they are not substituted for these concise READMEs. The existing authorization
 covers pushing this README update to master. Final user installation/VS Code
 validation remains pending under the published release's unchanged limits.
+
+## Final documentation integration
+
+Integration CodeHead before this report update:
+`623f7e4429a50a1361e5155be911752d75c84995`. The concise READMEs were
+pushed first; independent GitHub reads confirmed both public pages show v1.3.2
+and the revised quick start. The separately reviewed detailed-document and
+publication-evidence changes were then integrated without either superseded
+README draft. The primary verified their complete diff in the clean
+v132-review checkout; it matches the reviewed guidance branch byte for byte.
+The preflight link label now refers to README download/checksum instructions.
+
+Claude's exact native PowerShell verification ran the complete plugin-layout
+and AI-call-guidance files: **33 passed, 0 failed, 0 skipped**, exit 0, source
+unchanged. Evidence: `D:/codex-tmp/r132/publication-docs-final`; CLI inventory
+and command/result events: `verify-publication-docs-final.jsonl`. This group
+includes the earlier 20 README checks and must not be added to them as unique
+tests. The primary accepts the combined documentation. Frozen v1.3.2 source,
+assets, disclosed qualification limits and user-owned final validation remain
+unchanged; no package rebuild or retag is required for this documentation work.
