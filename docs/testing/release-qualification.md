@@ -8,6 +8,11 @@ The user's explicit v1.0.1 conditional exception is recorded below, separately f
 
 ## v1.3.2 frozen-candidate exception authorized on 2026-10-26
 
+Publication is complete: [v1.3.2 is Latest](../codex/returns/STM32TK-132/publication-2026-10-26.md).
+All 13 public files were anonymously downloaded and rehashed against the frozen
+candidate. Final user installation/VS Code checks remain pending; publication
+does not convert them or the disclosed limits into PASS.
+
 The user explicitly approved **USER_APPROVED_EXCEPTION** and publication as Latest
 only for frozen source `acb71b9f39e8ae4799179b0cab088245c0a5ea5b`, with 13
 reproducible verified files. The Windows ZIP is 113,770,074 bytes, SHA-256

@@ -1,5 +1,23 @@
 # Release status and retained limitations
 
+## v1.3.2 published Latest — 2026-10-26
+
+The [v1.3.2 Release](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.3.2),
+ID `423877513`, was published at `2026-10-26T05:10:19Z` (13:10:19 Asia/Shanghai)
+and is Latest: `draft=false`, `prerelease=false`. Its annotated tag/target bind
+frozen source `acb71b9f39e8ae4799179b0cab088245c0a5ea5b`. All 13 attachments
+were anonymously downloaded with HTTP 200; actual lengths and SHA-256 match the
+independent double build. Windows ZIP SHA-256:
+`1773a5e6b61a882bbd3d77a2a23902bd24f88ed296fb6e12dfccc03594c77f79`.
+
+Publication uses the user's new candidate-only **USER_APPROVED_EXCEPTION** for
+the disclosed coverage, skips and source-bound reuse limits. Numeric gates do
+not become PASS and permanent floors remain unchanged. Final actual installation
+and VS Code verification are user-owned, **USER_VALIDATION_PENDING**. No original
+firmware project, installed runtime or hardware was operated. See the
+[publication and anonymous verification record](codex/returns/STM32TK-132/publication-2026-10-26.md).
+The following sections retain their earlier checkpoint states.
+
 ## v1.3.2 publication authorized — 2026-10-26
 
 The user approved the disclosed limits only for frozen source
