@@ -1,5 +1,9 @@
 # v1.3.1 continuation authorization — 2026-10-26
 
+The subsequent Git Credential Manager login and authorized source/tag push are
+recorded in [the GitHub delivery record](github-delivery-2026-10-26.md).
+Authentication failures below retain the earlier checkpoint, not the current state.
+
 The human explicitly authorized existing PowerShell7 for the isolated candidate
 installation, without changing execution policy, and approved only the previously
 disclosed limits of frozen source `7ff99e50011b6321ae3f0c9bb2edfab91724be3e`.

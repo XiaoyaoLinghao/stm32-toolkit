@@ -2,7 +2,17 @@
 
 ## v1.3.1 integration checkpoint — 2026-10-26
 
-Latest delivery checkpoint: the user approved the disclosed exception only for
+Latest delivery checkpoint: Git Credential Manager authentication now succeeds.
+The authorized non-forced push delivered `master` at `a1bb1908fb1fa992cc3e9f6b9bb802b309157d78`
+and the annotated `v1.3.1` tag at frozen source
+`7ff99e50011b6321ae3f0c9bb2edfab91724be3e`. GitHub Release draft `423752112`
+contains all 13 frozen assets, with size/SHA-256 independently matched against
+the build evidence; it is not publicly published or Latest. Final actual installation
+and VS Code validation remain user-owned. See the
+[GitHub delivery record](codex/returns/STM32TK-131/github-delivery-2026-10-26.md).
+Subsequent master changes record delivery only; the tagged package is unchanged.
+
+Previous checkpoint: the user approved the disclosed exception only for
 frozen `7ff99e50011b6321ae3f0c9bb2edfab91724be3e` and authorized existing
 PowerShell7. Fresh isolated Check -> Bootstrap -> Check passed, with healthy
 1.3.1 runtime and matching generation 1. The user subsequently took ownership
