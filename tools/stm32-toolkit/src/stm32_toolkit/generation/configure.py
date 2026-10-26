@@ -24,7 +24,7 @@ import os
 import re
 import shutil
 import stat
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from jinja2 import Environment, StrictUndefined, UndefinedError
@@ -133,6 +133,23 @@ def _fail(code: str, message: str, details: dict[str, object]) -> _ApplyFailure:
 
 def _plan_invalid(rule: str) -> _ApplyFailure:
     return _fail("GENERATION_PLAN_INVALID", "plan validation failed", {"rule": rule})
+
+
+@dataclass(frozen=True)
+class RenderedConfiguration:
+    """Pure in-memory rendering of a candidate manifest for a new project.
+
+    ``files`` holds every generated target with ``status="create"`` and the
+    exact bytes the normal planning route would write.  The managed manifest
+    bytes come from :func:`build_managed_manifest_bytes`, the single authority
+    shared with planning/apply, so callers never rebuild digests by hand.
+    """
+
+    model: ProjectModel
+    model_sha256: str
+    files: tuple[GeneratedFile, ...]
+    managed_manifest_path: str
+    managed_manifest_bytes: bytes
 
 
 # ---------------------------------------------------------------------------
@@ -362,6 +379,94 @@ def _plan(
             {"rule": "planLimit"},
         )
     return plan
+
+
+def render_new_project_configuration(
+    root: Path,
+    manifest_bytes: bytes,
+    *,
+    conversion_report_bytes: bytes | None = None,
+) -> RenderedConfiguration:
+    """Render generated configuration from validated in-memory candidate bytes.
+
+    This is the pure new-project seam used by independent delivery: the caller
+    owns the destination, and the destination is required to be empty, so no
+    prior managed manifest or current target is consulted.  The candidate
+    manifest and optional conversion report are validated exactly as the
+    normal configure route validates the files it reads; nothing is read from
+    ``root`` except the packaged templates and nothing is written.
+
+    ``root`` must be an existing directory for the shared containment rules.
+    The returned model hash and rendered bytes are independent of that host
+    path, so the same manifest renders identically after relocation.
+    """
+    if not isinstance(root, Path):
+        raise _raise_error(
+            "GENERATION_MODEL_INVALID",
+            "project root must be a Path",
+            {"field": "projectRoot", "rule": "type"},
+        )
+    try:
+        model = load_project_model_candidate(root, manifest_bytes)
+    except ProjectManifestError:
+        raise _raise_error(
+            "GENERATION_MODEL_INVALID",
+            "project model is not available",
+            {"field": "model", "rule": "unavailable"},
+        ) from None
+    _validate_model(model)
+    _validate_generation_spec(model)
+    options = _validate_options(model)
+    _validate_memory(model)
+    layout = (
+        None
+        if model.generation.native_linker_script is not None
+        else _memory_layout_resolution(model)
+    )
+    report: dict[str, object] | None = None
+    if conversion_report_bytes is not None:
+        report = _decode_conversion_report(conversion_report_bytes, _CONVERSION_REPORT_PATH)
+    fixed_sections = _validate_fixed_sections(report, model)
+    rendered = _render_targets(model, options, fixed_sections, layout, None)
+    files = tuple(
+        GeneratedFile(
+            path=target,
+            status="create",
+            template_name=template_name,
+            template_version=TEMPLATE_VERSION,
+            before_sha256=None,
+            before_size=None,
+            after_sha256=sha256_hex(after_bytes),
+            after_size=len(after_bytes),
+            unified_diff="",
+            before_bytes=None,
+            after_bytes=after_bytes,
+        )
+        for target, (template_name, after_bytes) in sorted(
+            rendered.items(), key=lambda item: portable_sort_key(item[0])
+        )
+    )
+    model_sha256 = model_sha256_for(model)
+    managed_manifest_bytes = build_managed_manifest_bytes(
+        files, model_sha256, linker_fragment=model.generation.linker_fragment
+    )
+    if (
+        len(managed_manifest_bytes) > TOTAL_LIMIT_BYTES
+        or sum(entry.after_size for entry in files) + len(managed_manifest_bytes)
+        > TOTAL_LIMIT_BYTES
+    ):
+        raise _raise_error(
+            "GENERATION_TEMPLATE_INVALID",
+            "generated configuration exceeds the aggregate limit",
+            {"template": "$", "rule": "aggregateLimit"},
+        )
+    return RenderedConfiguration(
+        model=model,
+        model_sha256=model_sha256,
+        files=files,
+        managed_manifest_path=MANAGED_MANIFEST_PATH,
+        managed_manifest_bytes=managed_manifest_bytes,
+    )
 
 
 def _read_source_manifest(root: Path) -> bytes:
@@ -873,6 +978,11 @@ def _read_conversion_report(root: Path) -> tuple[dict[str, object] | None, str |
             "conversion report exceeds the limit",
             {"path": path, "rule": "size"},
         )
+    return _decode_conversion_report(data, path), sha256_hex(data)
+
+
+def _decode_conversion_report(data: bytes, path: str) -> dict[str, object]:
+    """Decode one exact report byte image (no filesystem access)."""
     try:
         text = data.decode("utf-8")
         report = json.loads(text, object_pairs_hook=_reject_duplicate_json_keys)
@@ -894,7 +1004,7 @@ def _read_conversion_report(root: Path) -> tuple[dict[str, object] | None, str |
             "conversion report is not an object",
             {"path": path, "rule": "type"},
         )
-    return report, sha256_hex(data)
+    return report
 
 
 def _validate_fixed_sections(
@@ -907,25 +1017,54 @@ def _validate_fixed_sections(
     if report is None:
         return ()
     path = _CONVERSION_REPORT_PATH
-    if report.get("schemaVersion") != 1:
+    schema_version = report.get("schemaVersion")
+    if schema_version == 1:
+        # Schema 1 stays exactly as before: an explicit Git HEAD is required.
+        if sha256_error(report.get("planId")) is not None:
+            raise _raise_error(
+                "GENERATION_FIXED_SECTION_INVALID",
+                "conversion report plan id is invalid",
+                {"path": path, "rule": "planId"},
+            )
+        if not isinstance(report.get("gitHead"), str) or _FULL_SHA_RE.fullmatch(
+            report["gitHead"]
+        ) is None:
+            raise _raise_error(
+                "GENERATION_FIXED_SECTION_INVALID",
+                "conversion report git head is invalid",
+                {"path": path, "rule": "gitHead"},
+            )
+    elif schema_version == 2:
+        # Schema 2 identifies the source by content snapshot, never by Git.
+        # Git evidence may be attached as optional metadata but is not required
+        # and is never inferred.
+        if sha256_error(report.get("planId")) is not None:
+            raise _raise_error(
+                "GENERATION_FIXED_SECTION_INVALID",
+                "conversion report plan id is invalid",
+                {"path": path, "rule": "planId"},
+            )
+        if sha256_error(report.get("sourceSnapshotSha256")) is not None:
+            raise _raise_error(
+                "GENERATION_FIXED_SECTION_INVALID",
+                "conversion report source snapshot is invalid",
+                {"path": path, "rule": "sourceSnapshotSha256"},
+            )
+        if "gitHead" in report and (
+            not isinstance(report["gitHead"], str)
+            or _FULL_SHA_RE.fullmatch(report["gitHead"]) is None
+        ):
+            raise _raise_error(
+                "GENERATION_FIXED_SECTION_INVALID",
+                "conversion report git head is invalid",
+                {"path": path, "rule": "gitHead"},
+            )
+        _validate_report_extra_regions(report, model)
+    else:
         raise _raise_error(
             "GENERATION_FIXED_SECTION_INVALID",
             "conversion report schema is not supported",
             {"path": path, "rule": "schemaVersion"},
-        )
-    if sha256_error(report.get("planId")) is not None:
-        raise _raise_error(
-            "GENERATION_FIXED_SECTION_INVALID",
-            "conversion report plan id is invalid",
-            {"path": path, "rule": "planId"},
-        )
-    if not isinstance(report.get("gitHead"), str) or _FULL_SHA_RE.fullmatch(
-        report["gitHead"]
-    ) is None:
-        raise _raise_error(
-            "GENERATION_FIXED_SECTION_INVALID",
-            "conversion report git head is invalid",
-            {"path": path, "rule": "gitHead"},
         )
     sections_value = report.get("fixedSections")
     if not isinstance(sections_value, list):
@@ -1022,6 +1161,77 @@ def _validate_fixed_sections(
         result.append((section, address, region))
     result.sort(key=lambda entry: entry[1])
     return tuple(result)
+
+
+def _validate_report_extra_regions(
+    report: dict[str, object], model: ProjectModel
+) -> None:
+    """Require Schema 2 extra-region evidence to match the explicit model memory.
+
+    The model's ``memory.regions`` already contains the normalized base-plus-
+    extra map, so fixed sections are checked against the same regions configure
+    renders.  This adds the provenance check: the report cannot omit, add, or
+    silently alter an explicit extra region.
+    """
+    path = _CONVERSION_REPORT_PATH
+    expected = {
+        region.name: (region.origin, region.length, region.attributes)
+        for region in model.memory.regions
+        if region.name in model.memory.extra_region_names
+    }
+    value = report.get("extraRegions")
+    if value is None:
+        if expected:
+            raise _raise_error(
+                "GENERATION_FIXED_SECTION_INVALID",
+                "conversion report omits explicit extra regions",
+                {"path": path, "rule": "extraRegions"},
+            )
+        return
+    if not isinstance(value, list):
+        raise _raise_error(
+            "GENERATION_FIXED_SECTION_INVALID",
+            "conversion report extraRegions is invalid",
+            {"path": path, "rule": "extraRegions"},
+        )
+    seen: dict[str, tuple[int, int, str]] = {}
+    for item in value:
+        if not isinstance(item, dict) or set(item) != {
+            "name",
+            "origin",
+            "length",
+            "attributes",
+        }:
+            raise _raise_error(
+                "GENERATION_FIXED_SECTION_INVALID",
+                "conversion report extra region entry is invalid",
+                {"path": path, "rule": "extraRegions"},
+            )
+        name = item["name"]
+        origin = item["origin"]
+        length = item["length"]
+        attributes = item["attributes"]
+        if (
+            not isinstance(name, str)
+            or isinstance(origin, bool)
+            or not isinstance(origin, int)
+            or isinstance(length, bool)
+            or not isinstance(length, int)
+            or not isinstance(attributes, str)
+            or name in seen
+        ):
+            raise _raise_error(
+                "GENERATION_FIXED_SECTION_INVALID",
+                "conversion report extra region entry is invalid",
+                {"path": path, "rule": "extraRegions"},
+            )
+        seen[name] = (origin, length, attributes)
+    if seen != expected:
+        raise _raise_error(
+            "GENERATION_FIXED_SECTION_INVALID",
+            "conversion report extra regions do not match the project memory",
+            {"path": path, "rule": "extraRegions"},
+        )
 
 
 def _region_for_address(model: ProjectModel, address: int) -> str | None:
