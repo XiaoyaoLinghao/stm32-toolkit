@@ -8,7 +8,6 @@ from stm32_toolkit import __version__
 from stm32_toolkit.build.identity import (
     BuildError,
     compute_build_id,
-    git_evidence,
     identity_discovery_policy,
     read_bounded,
     read_evidence_json,
@@ -121,10 +120,6 @@ def build_project_context(
         build=build,
         build_ready=build_ready,
         configure_available=configure_available,
-        snapshot_fresh=(
-            build.get("elfFresh") is True
-            and build.get("sourceBaseline") == SOURCE_BASELINE_INPUT_SNAPSHOT
-        ),
         debug_status=debug_status,
     )
     flash_details = capability_details["flash"]
@@ -234,42 +229,21 @@ _HARDWARE_NEXT_STEPS = (
 )
 _FLASH_NOT_EVALUATED_REASON = (
     _HARDWARE_NOT_EVALUATED_REASON
-    + " This managed flash entry covers only stm32_flash and requires"
-    " Git-shaped managed firmware provenance: a build from a non-Git input"
-    " snapshot is build-only and firmware admission refuses it with"
-    " FIRMWARE_PROVENANCE_UNSUPPORTED before any probe, lease, or attach"
-    " effect. It does not describe a separately selected imported image."
+    + " This managed flash entry covers only stm32_flash and admits a current"
+    " managed build from its content identity: declared inputs, configuration,"
+    " target, ELF/MAP bytes and successful build evidence. Optional Git"
+    " metadata is never a prerequisite. It does not describe a separately"
+    " selected imported image."
 )
 _FLASH_NEXT_STEPS = (
     _HARDWARE_NEXT_STEPS,
-    "For this managed route, build and inspect snapshot firmware without Git;"
-    " to flash the managed build identity, restore a Git repository with a"
-    " committed HEAD and rebuild. Never fabricate a commit or dirty state.",
+    "For this managed route, build and flash normally; an unavailable or"
+    " unborn Git repository does not block a current managed build.",
     "A separately selected external/snapshot import is a different route"
     " (stm32_firmware_import -> stm32_firmware_admit -> stm32_flash_imported)"
     " with its own inputs and authorizations; it is not an available or"
     " admitted image in context and never substitutes automatically for this"
     " managed identity.",
-)
-_SNAPSHOT_HARDWARE_REASON = (
-    "This managed capability depends on the current managed build's firmware"
-    " admission. The build has sourceBaseline input-snapshot-v1 because Git"
-    " provenance was unavailable, so admission refuses it with"
-    " FIRMWARE_PROVENANCE_UNSUPPORTED before any probe, lease, or attach"
-    " effect; no hardware state was evaluated."
-)
-_SNAPSHOT_HARDWARE_NEXT_STEPS = (
-    "For the managed route, restore a Git repository with a committed HEAD,"
-    " rebuild, and re-run stm32_project_context; never fabricate a commit or"
-    " dirty state.",
-    "Probe discovery remains independent: stm32_probe_list requires no"
-    " firmware identity and does not modify the board.",
-)
-_SNAPSHOT_FLASH_NEXT_STEPS = _SNAPSHOT_HARDWARE_NEXT_STEPS + (
-    "This managed flash stop does not select another route: a separately"
-    " selected imported image (stm32_firmware_import -> stm32_firmware_admit"
-    " -> stm32_flash_imported) has its own inputs and authorizations, and its"
-    " receipt is never a managed build identity.",
 )
 
 
@@ -439,7 +413,7 @@ def _firmware_routes(flash: dict[str, object]) -> dict[str, object]:
             "nextSteps": list(next_steps),
             "tools": ["stm32_probe_list", "stm32_flash"],
             "identity": ["buildId", "elfSha256"],
-            "requiresGit": True,
+            "requiresGit": False,
             "requiresManagedModel": True,
         },
         "imported": {
@@ -473,59 +447,13 @@ def _debug_capability_block(
     )
 
 
-def _merge_reason(*parts: str | None) -> str:
-    return " ".join(part for part in parts if part)
-
-
-def _merge_next_steps(
-    *groups: tuple[str, ...] | None,
-) -> tuple[str, ...]:
-    merged: list[str] = []
-    for group in groups:
-        if group is None:
-            continue
-        for step in group:
-            if step not in merged:
-                merged.append(step)
-    return tuple(merged)
-
-
 def _hardware_capability_details(
     *,
-    snapshot_fresh: bool = False,
     debug_status: DebugConfigurationStatus | None = None,
 ) -> dict[str, dict[str, object]]:
     debug_block: tuple[str, tuple[str, ...]] | None = None
     if debug_status is not None and debug_status.status != DEBUG_CONFIGURED:
         debug_block = _debug_capability_block(debug_status)
-    if snapshot_fresh:
-        # The current build is known to be refused by firmware admission, so
-        # the affected capabilities are a concrete blocker, not "not
-        # evaluated".  Probe discovery is deliberately not affected.  Every
-        # existing snapshot/Git reason is preserved and any debug blocker is
-        # appended, never substituted.
-        reason = _merge_reason(
-            _SNAPSHOT_HARDWARE_REASON, debug_block[0] if debug_block else None
-        )
-        next_steps = _merge_next_steps(
-            _SNAPSHOT_HARDWARE_NEXT_STEPS, debug_block[1] if debug_block else None
-        )
-        blocked = _capability("blocked", reason, next_steps)
-        # Only managed flash may describe the separate imported route; debug,
-        # Monitor, and Target-test guidance never offers an import as a remedy.
-        return {
-            "flash": _capability(
-                "blocked",
-                reason,
-                _merge_next_steps(
-                    _SNAPSHOT_FLASH_NEXT_STEPS,
-                    debug_block[1] if debug_block else None,
-                ),
-            ),
-            "targetTest": dict(blocked),
-            "monitor": dict(blocked),
-            "breakpointDebug": dict(blocked),
-        }
     if debug_block is not None:
         reason, next_steps = debug_block
         blocked = _capability("blocked", reason, next_steps)
@@ -553,7 +481,6 @@ def _configured_capability_details(
     build: dict[str, object],
     build_ready: bool,
     configure_available: bool,
-    snapshot_fresh: bool = False,
     debug_status: DebugConfigurationStatus | None = None,
 ) -> dict[str, dict[str, object]]:
     if build_ready:
@@ -617,11 +544,7 @@ def _configured_capability_details(
             ),
         ),
     }
-    details.update(
-        _hardware_capability_details(
-            snapshot_fresh=snapshot_fresh, debug_status=debug_status
-        )
-    )
+    details.update(_hardware_capability_details(debug_status=debug_status))
     return details
 
 
@@ -799,12 +722,14 @@ def _evidence_fresh(manifest: ProjectManifest, root: Path) -> dict[str, object] 
     ``elfFresh`` requires: build-result status success; a schema-valid
     identity whose build ID recomputes; record and identity agreement on the
     shared fields; target, preset, complete input snapshot, ELF digest, and
-    MAP digest all agreeing; every path contained and regular.  Schema 1
-    additionally requires the current Git HEAD.  Schema 2 is the explicit
-    non-Git input-snapshot baseline: it must carry null Git fields and
-    bounded unavailability evidence, and freshness never spawns Git.  Only
-    the model-selected debug evidence is consulted; another preset's
-    evidence is never accepted.
+    MAP digest all agreeing; every path contained and regular.  Both schemas
+    are decoded under their own recorded rules.  Schema 1 keeps its recorded
+    Git metadata as truthful evidence but current Git availability, HEAD and
+    dirty state never decide freshness.  Schema 2 is the explicit
+    input-snapshot baseline: it must carry null Git fields and bounded
+    unavailability evidence, and freshness never spawns Git.  Only the
+    model-selected debug evidence is consulted; another preset's evidence is
+    never accepted.
     """
     try:
         model = load_project_model(root)
@@ -843,6 +768,9 @@ def _evidence_fresh(manifest: ProjectManifest, root: Path) -> dict[str, object] 
         if type(record.get("schemaVersion")) is not int:
             return None
         if record.get("schemaVersion") != identity_schema:
+            return None
+        if identity_schema == 1 and type(record.get("gitDirty")) is not bool:
+            # A numeric/JSON stand-in is never a legitimate legacy dirty flag.
             return None
         if compute_build_id(identity_doc) != identity_doc.get("buildId"):
             return None
@@ -890,9 +818,9 @@ def _evidence_fresh(manifest: ProjectManifest, root: Path) -> dict[str, object] 
         if snapshot.sha256 != identity_doc.get("inputSnapshotSha256"):
             return None
         if identity_schema == 1:
-            git = git_evidence(root)
-            if git.head != identity_doc.get("gitHead"):
-                return None
+            # Recorded Git metadata remains truthful optional evidence; a
+            # new commit, dirty file or unavailable Git never alone makes
+            # unchanged inputs and artifacts stale.
             source_baseline = "git"
         else:
             # Snapshot freshness is decided from the exact input snapshot

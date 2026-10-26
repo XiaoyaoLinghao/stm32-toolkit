@@ -605,6 +605,31 @@ def test_flash_rejects_self_consistent_forged_identity_fields(
     assert client.events == []
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("gitDirty", 0), ("schemaVersion", True)],
+    ids=["numeric-dirty", "bool-schema"],
+)
+def test_flash_rejects_malformed_legacy_record_fields(
+    tmp_path: Path, field: str, value: object
+) -> None:
+    root = prepare_project(tmp_path)
+    identity = _publish_current_debug_build(root)
+    result_path = root / "artifacts" / "migration" / "build-result.json"
+    document = json.loads(result_path.read_text(encoding="utf-8"))
+    document[field] = value
+    atomic_write_json(result_path, document)
+    client = RecordingFlashClient(_elf_with_flash_segment()[84 : 84 + 320])
+
+    result = asyncio.run(flash_firmware(_request(root, identity), client))
+
+    assert result.ok is False
+    assert result.code == "FIRMWARE_EVIDENCE_INVALID"
+    assert result.details["path"] == "artifacts/migration/build-result.json"
+    assert result.details["rule"] == "fields"
+    assert client.events == []
+
+
 def test_flash_rejects_deterministic_reparse_evidence(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1177,22 +1202,25 @@ def test_flash_rejects_failed_or_mismatched_build_result(tmp_path: Path) -> None
     assert client.events == []
 
 
-def test_flash_rejects_git_only_change_and_artifact_record_mismatch(
+def test_flash_accepts_unrelated_dirty_state_but_rejects_artifact_record_mismatch(
     tmp_path: Path,
 ) -> None:
     root = prepare_project(tmp_path)
     identity = _publish_current_debug_build(root)
     client = RecordingFlashClient(_elf_with_flash_segment()[84 : 84 + 320])
+    # An unrelated dirty file is optional traceability, not freshness: the
+    # declared input snapshot and artifacts are unchanged.
     (root / "untracked.txt").write_text("dirty", encoding="utf-8")
     dirty = asyncio.run(flash_firmware(_request(root, identity), client))
-    assert dirty.code == "FIRMWARE_INPUT_CHANGED"
-    assert dirty.details == {"field": "gitHead", "rule": "current"}
+    assert dirty.ok is True, dirty.to_dict()
+    assert [event[0] for event in client.events] == ["attach", "program", "read"]
     (root / "untracked.txt").unlink()
 
     result_path = root / "artifacts" / "migration" / "build-result.json"
     document = json.loads(result_path.read_text(encoding="utf-8"))
     document["artifacts"][0]["sha256"] = "0" * 64
     atomic_write_json(result_path, document)
+    client.events.clear()
     mismatch = asyncio.run(flash_firmware(_request(root, identity), client))
     assert mismatch.code == "FIRMWARE_IDENTITY_MISMATCH"
     assert mismatch.details == {"field": "artifacts", "rule": "identity"}

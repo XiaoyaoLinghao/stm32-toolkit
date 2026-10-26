@@ -530,7 +530,9 @@ def test_invalid_current_evidence_is_refused_before_workflow(
     assert calls == []
 
 
-def test_snapshot_provenance_is_refused_before_workflow(tmp_path, monkeypatch):
+def test_snapshot_content_identity_stops_at_segment_admission_before_workflow(
+    tmp_path, monkeypatch
+):
     root, _identity, _record = snapshot_build(tmp_path, monkeypatch)
     calls = []
 
@@ -549,10 +551,15 @@ def test_snapshot_provenance_is_refused_before_workflow(tmp_path, monkeypatch):
             flash=workflow,
         )
     )
+    # The snapshot identity is admitted from content alone and stops only at
+    # the deterministic fake image's absent PT_LOAD segment; the workflow is
+    # never invoked and Git is not required.
     assert result.ok is False
-    assert result.code == "FIRMWARE_PROVENANCE_UNSUPPORTED"
-    assert result.details["field"] == "sourceBaseline"
-    assert result.details["rule"] == "input-snapshot-v1"
+    assert result.code == "FLASH_IMAGE_INVALID"
+    assert dict(result.details) == {
+        "path": "build/arm-debug/firmware.elf",
+        "rule": "segments",
+    }
     assert calls == []
 
 

@@ -10,6 +10,12 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Mapping, cast
 
+from stm32_toolkit.build.model import (
+    BUILD_GIT_INVALID,
+    GIT_DIAGNOSTIC_UNAVAILABLE,
+    SOURCE_BASELINE_INPUT_SNAPSHOT,
+)
+
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _DECIMAL = re.compile(r"^(?:0|-?[1-9][0-9]*)$")
@@ -204,13 +210,19 @@ class DebugFirmwareBinding:
     elf_size: int
     elf_path: str
     input_snapshot_sha256: str
-    git_head: str
-    git_dirty: bool
+    git_head: str | None
+    git_dirty: bool | None
     confirmed_at_utc: str
     memory_regions: tuple[MemoryRegionBinding, ...]
     project_root: Path = field(repr=False, compare=True)
     svd_readable_regions: tuple[MemoryRegionBinding, ...] | None = field(
         default=None, repr=False, compare=True, kw_only=True
+    )
+    #: Explicit snapshot discriminator plus bounded unavailable-Git evidence.
+    #: Both stay ``None`` for the legacy Git-backed form.
+    source_baseline: str | None = field(default=None, kw_only=True)
+    git_evidence: Mapping[str, object] | None = field(
+        default=None, repr=False, kw_only=True
     )
 
     def __post_init__(self) -> None:
@@ -228,10 +240,30 @@ class DebugFirmwareBinding:
         for name in ("build_id", "elf_sha256", "input_snapshot_sha256"):
             if _SHA256.fullmatch(getattr(self, name)) is None:
                 raise ValueError(f"{name} must be a SHA-256 digest")
-        if not isinstance(self.git_head, str) or not self.git_head:
-            raise ValueError("git_head is invalid")
-        if type(self.git_dirty) is not bool:
-            raise TypeError("git_dirty must be a boolean")
+        snapshot = self.source_baseline is not None or self.git_evidence is not None
+        if snapshot:
+            # Nullable Git fields are admissible only with the explicit
+            # snapshot discriminator and bounded evidence; a mixed form is
+            # rejected rather than coerced into a fake commit or clean state.
+            if self.source_baseline != SOURCE_BASELINE_INPUT_SNAPSHOT:
+                raise ValueError("source_baseline is invalid")
+            if self.git_head is not None or self.git_dirty is not None:
+                raise ValueError("snapshot provenance requires null Git fields")
+            evidence = self.git_evidence
+            if (
+                not isinstance(evidence, MappingABC)
+                or set(evidence) != {"status", "code", "rule"}
+                or evidence.get("status") != GIT_DIAGNOSTIC_UNAVAILABLE
+                or evidence.get("code") != BUILD_GIT_INVALID
+                or evidence.get("rule") not in ("head", "status")
+            ):
+                raise ValueError("git_evidence is invalid")
+            object.__setattr__(self, "git_evidence", _freeze_json(dict(evidence)))
+        else:
+            if not isinstance(self.git_head, str) or not self.git_head:
+                raise ValueError("git_head is invalid")
+            if type(self.git_dirty) is not bool:
+                raise TypeError("git_dirty must be a boolean")
         _integer("elf_size", self.elf_size, 1, 64 * 1024 * 1024)
         _portable_path(self.elf_path)
         _timestamp("confirmed_at_utc", self.confirmed_at_utc)
@@ -268,7 +300,7 @@ class DebugFirmwareBinding:
             raise ValueError("project_root must be a canonical absolute directory")
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        document: dict[str, object] = {
             "logicalProjectId": self.logical_project_id,
             "workspaceId": self.workspace_id,
             "observationSessionId": self.observation_session_id,
@@ -290,6 +322,35 @@ class DebugFirmwareBinding:
                 region.to_dict() for region in self.svd_readable_regions
             ],
         }
+        if self.source_baseline is not None:
+            document["sourceBaseline"] = self.source_baseline
+            document["gitEvidence"] = _thaw_json(self.git_evidence)
+        return document
+
+
+def identity_matches_provenance(
+    binding: DebugFirmwareBinding, identity: Mapping[str, object]
+) -> bool:
+    """True only when ``identity`` carries exactly the binding's provenance form.
+
+    Legacy bindings require the content identity's real Git metadata; a
+    snapshot binding requires the explicit baseline, null Git fields and the
+    same bounded unavailable evidence.  A mixed form never matches.
+    """
+    if binding.source_baseline is None:
+        return (
+            "sourceBaseline" not in identity
+            and "gitEvidence" not in identity
+            and identity.get("gitHead") == binding.git_head
+            and identity.get("gitDirty") is binding.git_dirty
+        )
+    return (
+        identity.get("sourceBaseline") == binding.source_baseline
+        and identity.get("gitHead") is None
+        and identity.get("gitDirty") is None
+        and isinstance(identity.get("gitEvidence"), MappingABC)
+        and dict(identity.get("gitEvidence")) == dict(binding.git_evidence or {})
+    )
 
 
 @dataclass(frozen=True)
@@ -614,4 +675,5 @@ __all__ = [
     "SvdSelectionEvidence",
     "TypedLocation",
     "TypedValue",
+    "identity_matches_provenance",
 ]

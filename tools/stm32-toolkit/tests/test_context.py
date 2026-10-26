@@ -2,10 +2,11 @@
 
 ``elfFresh`` is true only when the complete evidence chain is consistent:
 a published success build-result, a schema-valid identity with an
-independently recomputed build ID, current Git HEAD, target, preset, input
-snapshot, and ELF/MAP digests.  Missing, malformed, failure, unreadable,
-mismatched, or oversized evidence fails closed to ``False``; mtimes are
-never consulted.
+independently recomputed build ID, target, preset, input snapshot, and
+ELF/MAP digests.  Recorded Git metadata is optional and current Git
+availability/HEAD/dirty state never decides freshness.  Missing, malformed,
+failure, unreadable, mismatched, or oversized evidence fails closed to
+``False``; mtimes are never consulted.
 """
 
 from __future__ import annotations
@@ -64,23 +65,22 @@ EMPTY_MANAGED = {
     "managedFilesDrifted": [],
 }
 
-#: Exact managed-only flash guidance.  Only this capability names the
-#: Git-shaped provenance stop and the separate imported route.
+#: Exact managed-only flash guidance.  Content identity, not Git, governs
+#: managed admission; only this capability names the separate imported route.
 FLASH_NOT_EVALUATED_REASON = (
     "Project context does not enumerate probes or inspect target state, so "
     "this hardware capability is not evaluated here; the tool still exists. "
-    "This managed flash entry covers only stm32_flash and requires Git-shaped "
-    "managed firmware provenance: a build from a non-Git input snapshot is "
-    "build-only and firmware admission refuses it with "
-    "FIRMWARE_PROVENANCE_UNSUPPORTED before any probe, lease, or attach "
-    "effect. It does not describe a separately selected imported image."
+    "This managed flash entry covers only stm32_flash and admits a current "
+    "managed build from its content identity: declared inputs, configuration, "
+    "target, ELF/MAP bytes and successful build evidence. Optional Git "
+    "metadata is never a prerequisite. It does not describe a separately "
+    "selected imported image."
 )
 FLASH_NOT_EVALUATED_NEXT_STEPS = [
     "Call stm32_probe_list to enumerate connected probes. It requires no "
     "build, debug backend, target, or SVD and does not modify the board.",
-    "For this managed route, build and inspect snapshot firmware without "
-    "Git; to flash the managed build identity, restore a Git repository with "
-    "a committed HEAD and rebuild. Never fabricate a commit or dirty state.",
+    "For this managed route, build and flash normally; an unavailable or "
+    "unborn Git repository does not block a current managed build.",
     "A separately selected external/snapshot import is a different route "
     "(stm32_firmware_import -> stm32_firmware_admit -> "
     "stm32_flash_imported) with its own inputs and authorizations; it is not "
@@ -99,7 +99,7 @@ def pop_firmware_routes(payload: dict) -> dict:
     assert managed["reason"] == flash["reason"]
     assert managed["nextSteps"] == flash["nextSteps"]
     assert managed["identity"] == ["buildId", "elfSha256"]
-    assert managed["requiresGit"] is True
+    assert managed["requiresGit"] is False
     assert managed["requiresManagedModel"] is True
     assert "stm32_flash" in managed["tools"]
     imported = routes["imported"]
@@ -691,12 +691,32 @@ def test_context_stale_after_elf_replaced(tmp_path: Path, monkeypatch):
     assert result.data["build"]["elfFresh"] is False
 
 
-def test_context_stale_after_git_head_changes(tmp_path: Path, monkeypatch):
+def test_context_stays_fresh_after_git_head_changes_with_unchanged_inputs(
+    tmp_path: Path, monkeypatch
+):
     from test_build_runner import git
 
     root = prepare_project(tmp_path)
     build_successfully(root, monkeypatch, tmp_path)
     git("commit", "-q", "--allow-empty", "-m", "move head", cwd=root)
+
+    result = build_project_context(root, tmp_path.parent / "data", "session-a")
+
+    # Recorded Git metadata stays truthful; current HEAD alone cannot
+    # disqualify unchanged inputs and artifacts.
+    assert result.data["build"]["elfFresh"] is True
+
+
+def test_context_rejects_numeric_git_dirty_in_legacy_record(
+    tmp_path: Path, monkeypatch
+):
+    root = prepare_project(tmp_path)
+    build_successfully(root, monkeypatch, tmp_path)
+    record_path = root / "artifacts" / "migration" / "build-result.json"
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    # JSON 0 must never be admitted as the legacy boolean False.
+    record["gitDirty"] = 0
+    record_path.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
 
     result = build_project_context(root, tmp_path.parent / "data", "session-a")
 

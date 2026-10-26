@@ -17,6 +17,12 @@ from typing import Callable, Iterator, Mapping
 
 from stm32_toolkit import __version__
 from stm32_toolkit.build.identity import utc_now_rfc3339
+from stm32_toolkit.build.model import (
+    BUILD_GIT_INVALID,
+    GIT_DIAGNOSTIC_UNAVAILABLE,
+    SNAPSHOT_IDENTITY_SCHEMA_VERSION,
+    SOURCE_BASELINE_INPUT_SNAPSHOT,
+)
 from stm32_toolkit.result import OperationResult
 
 from .flash import _load_fresh_firmware, _verify_segments
@@ -37,6 +43,7 @@ _FLASH_RESULT_LIMIT = 8 * 1024 * 1024
 _REPARSE_POINT = 0x400
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_GIT_HEAD = re.compile(r"^[0-9a-f]{40}$")
 _TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$")
 _TARGET_CANONICAL = re.compile(r"[^a-z0-9]")
 _FLASH_RESULT_REL = "artifacts/migration/flash-result.json"
@@ -66,6 +73,9 @@ _FLASH_FIELDS = {
     "operationLevel",
     "authorized",
 }
+#: Schema-2 receipt: the legacy fields plus the explicit snapshot pair.
+_FLASH_SNAPSHOT_FIELDS = _FLASH_FIELDS | {"sourceBaseline", "gitEvidence"}
+_GIT_EVIDENCE_RULES = frozenset({"head", "status"})
 _STATE_FIELDS = {
     "schemaVersion",
     "toolkitVersion",
@@ -856,6 +866,19 @@ def _validate_client_endpoint(client: object, endpoint: object) -> None:
         )
 
 
+def _valid_unavailable_evidence(value: object) -> bool:
+    """True only for the bounded Git-unavailability evidence shape."""
+    if not isinstance(value, dict) or set(value) != {"status", "code", "rule"}:
+        return False
+    rule = value.get("rule")
+    return (
+        value.get("status") == GIT_DIAGNOSTIC_UNAVAILABLE
+        and value.get("code") == BUILD_GIT_INVALID
+        and isinstance(rule, str)
+        and rule in _GIT_EVIDENCE_RULES
+    )
+
+
 def _load_flash_result(root: Path) -> dict[str, object]:
     path = root
     for component in _FLASH_RESULT_REL.split("/"):
@@ -873,9 +896,34 @@ def _load_flash_result(root: Path) -> dict[str, object]:
     except _HandoffFailure:
         raise _fail("HANDOFF_FLASH_REQUIRED", "A current successful flash result is required") from None
     assert value is not None
-    if set(value) != _FLASH_FIELDS or value.get("schemaVersion") != 1 or value.get("status") != "success" or value.get("code") != "OK":
+    if value.get("status") != "success" or value.get("code") != "OK":
         raise _fail("HANDOFF_FLASH_REQUIRED", "A current successful flash result is required")
-    return value
+    schema = value.get("schemaVersion")
+    if type(schema) is not int:
+        raise _fail("HANDOFF_FLASH_REQUIRED", "A current successful flash result is required")
+    if schema == 1:
+        # Legacy receipts keep their exact established closed field set and
+        # must carry a real Git head plus a strict boolean dirty flag; null or
+        # numeric stand-ins are never decoded as a legitimate legacy receipt.
+        if set(value) != _FLASH_FIELDS:
+            raise _fail("HANDOFF_FLASH_REQUIRED", "A current successful flash result is required")
+        head = value.get("gitHead")
+        if not isinstance(head, str) or _GIT_HEAD.fullmatch(head) is None:
+            raise _fail("HANDOFF_FLASH_REQUIRED", "A current successful flash result is required")
+        if type(value.get("gitDirty")) is not bool:
+            raise _fail("HANDOFF_FLASH_REQUIRED", "A current successful flash result is required")
+        return value
+    if schema == SNAPSHOT_IDENTITY_SCHEMA_VERSION:
+        if set(value) != _FLASH_SNAPSHOT_FIELDS:
+            raise _fail("HANDOFF_FLASH_REQUIRED", "A current successful flash result is required")
+        if value.get("sourceBaseline") != SOURCE_BASELINE_INPUT_SNAPSHOT:
+            raise _fail("HANDOFF_FLASH_REQUIRED", "A current successful flash result is required")
+        if value.get("gitHead") is not None or value.get("gitDirty") is not None:
+            raise _fail("HANDOFF_FLASH_REQUIRED", "A current successful flash result is required")
+        if not _valid_unavailable_evidence(value.get("gitEvidence")):
+            raise _fail("HANDOFF_FLASH_REQUIRED", "A current successful flash result is required")
+        return value
+    raise _fail("HANDOFF_FLASH_REQUIRED", "A current successful flash result is required")
 
 
 def _flash_mismatch_fields(
@@ -912,7 +960,16 @@ def _flash_mismatch_fields(
         "gitDirty": identity.get("gitDirty"),
         "inputSnapshotSha256": identity.get("inputSnapshotSha256"),
     }
+    identity_schema = identity.get("schemaVersion")
+    if identity_schema == SNAPSHOT_IDENTITY_SCHEMA_VERSION:
+        # The receipt form is decided by the admitted firmware, never by the
+        # receipt itself: a snapshot identity requires the explicit baseline
+        # and bounded evidence even if a receipt was downgraded or stripped.
+        expected["sourceBaseline"] = identity.get("sourceBaseline")
+        expected["gitEvidence"] = identity.get("gitEvidence")
     mismatches = [field for field, value in expected.items() if result.get(field) != value]
+    if result.get("schemaVersion") != identity_schema:
+        mismatches.append("schemaVersion")
     if result.get("authorized") is not True:
         mismatches.append("authorized")
     if result.get("probeId") not in (

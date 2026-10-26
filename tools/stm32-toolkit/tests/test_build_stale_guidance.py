@@ -318,6 +318,46 @@ def test_non_success_receipt_is_previous_build_not_successful(
     _assert_clean_rebuild_action(details, "arm-debug", 300)
 
 
+@pytest.mark.parametrize(
+    ("mutate", "expected_field"),
+    [
+        (lambda record: record.__setitem__("gitDirty", 0), "gitDirty"),
+        (lambda record: record.__setitem__("code", "PARTIAL"), "code"),
+        (lambda record: record.__setitem__("stage", "complete-later"), "stage"),
+        (lambda record: record.__setitem__("schemaVersion", True), "schemaVersion"),
+        (lambda record: record.__setitem__("schemaVersion", 2), "schemaVersion"),
+    ],
+    ids=[
+        "numeric-dirty",
+        "unsupported-code",
+        "unsupported-stage",
+        "bool-schema",
+        "cross-schema",
+    ],
+)
+def test_malformed_or_cross_schema_prior_record_is_never_reused(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutate,
+    expected_field: str,
+):
+    root = prepare_project(tmp_path)
+    install_fake_cmake(monkeypatch, tmp_path)
+    assert run_build(BuildRequest(project_root=root, preset="arm-debug")).ok is True
+    record = read_json(result_path_for(root))
+    mutate(record)
+    result_path_for(root).write_text(json.dumps(record) + "\n", encoding="utf-8")
+    monkeypatch.setenv("FAKE_CMAKE_NO_OUTPUT", "1")
+
+    result = run_build(BuildRequest(project_root=root, preset="arm-debug"))
+
+    assert result.ok is False
+    assert result.code == "BUILD_OUTPUT_STALE"
+    assert result.details["reason"] == "prior-evidence-mismatch"
+    assert result.details["evidenceField"] == expected_field
+    assert result.details["evidenceSource"] == "record"
+
+
 # ---------------------------------------------------------------------------
 # identity field discriminators
 # ---------------------------------------------------------------------------
@@ -356,8 +396,8 @@ def test_identity_git_head_mismatch_is_named_after_earlier_checks_match(
     install_fake_cmake(monkeypatch, tmp_path)
     assert run_build(BuildRequest(project_root=root, preset="arm-debug")).ok is True
     # Recompute the identity build ID after changing gitHead and sync the
-    # prior record's buildId, so the early record/identity comparisons all
-    # match and only the later identity gitHead discriminator can fail.
+    # prior record's buildId, so the early comparisons all match and only the
+    # record/identity provenance pair itself disagrees.
     _rewrite_identity_and_record(
         root, lambda document: document.__setitem__("gitHead", "0" * 40)
     )
@@ -372,7 +412,7 @@ def test_identity_git_head_mismatch_is_named_after_earlier_checks_match(
     assert details["rule"] == "unverifiable"
     assert details["reason"] == "prior-evidence-mismatch"
     assert details["evidenceField"] == "gitHead"
-    assert details["evidenceSource"] == "identity"
+    assert details["evidenceSource"] == "record"
     assert details["preset"] == "arm-debug"
     assert details["cleanRequested"] is False
     _assert_clean_rebuild_action(details, "arm-debug", 300)
@@ -401,19 +441,27 @@ def test_snapshot_strict_result_mismatch_reports_snapshot_result(
 
 
 @pytest.mark.parametrize(
-    ("field", "value", "expected_field"),
+    ("field", "value", "expected_field", "expected_source"),
     [
         pytest.param(
             "logicalProjectId",
             "87654321-4321-8765-4321-876543218765",
             "logicalProjectId",
+            "identity",
             id="project-id",
         ),
-        pytest.param("toolkitVersion", "0.0.0", "toolkitVersion", id="toolkit-version"),
+        pytest.param(
+            "toolkitVersion",
+            "0.0.0",
+            "toolkitVersion",
+            "identity",
+            id="toolkit-version",
+        ),
         pytest.param(
             "gitEvidence",
             {"status": "unavailable", "code": "BUILD_GIT_INVALID", "rule": "status"},
             "gitEvidence",
+            "record",
             id="git-evidence",
         ),
     ],
@@ -424,6 +472,7 @@ def test_snapshot_identity_field_mismatches_are_bounded(
     field: str,
     value,
     expected_field: str,
+    expected_source: str,
 ):
     root, _identity, _record = snapshot_build(tmp_path, monkeypatch)
     _rewrite_identity_and_record(
@@ -440,7 +489,7 @@ def test_snapshot_identity_field_mismatches_are_bounded(
     details = result.details
     assert details["reason"] == "prior-evidence-mismatch"
     assert details["evidenceField"] == expected_field
-    assert details["evidenceSource"] == "identity"
+    assert details["evidenceSource"] == expected_source
 
 
 def test_snapshot_identity_schema_mismatch_is_identity_document(
@@ -470,7 +519,7 @@ def test_snapshot_identity_schema_mismatch_is_identity_document(
 # ---------------------------------------------------------------------------
 
 
-def test_git_to_snapshot_provenance_fails_as_snapshot_result(
+def test_git_to_snapshot_provenance_reuses_outputs_and_records_snapshot(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     from stm32_toolkit.build import identity as identity_mod
@@ -478,6 +527,10 @@ def test_git_to_snapshot_provenance_fails_as_snapshot_result(
     root = prepare_project(tmp_path)
     install_fake_cmake(monkeypatch, tmp_path)
     assert run_build(BuildRequest(project_root=root, preset="arm-debug")).ok is True
+    assert read_json(identity_path_for(root))["schemaVersion"] == 1
+    # Git availability is optional traceability, not freshness: unchanged
+    # inputs/artifacts remain reusable and the new success records the
+    # truthful snapshot provenance rather than a fabricated commit.
     monkeypatch.setattr(
         "stm32_toolkit.build.runner.collect_build_git_evidence",
         lambda _root, _timeout=30: identity_mod.GitUnavailableEvidence(rule="head"),
@@ -486,13 +539,17 @@ def test_git_to_snapshot_provenance_fails_as_snapshot_result(
 
     result = run_build(BuildRequest(project_root=root, preset="arm-debug"))
 
-    assert result.code == "BUILD_OUTPUT_STALE"
-    assert result.details["reason"] == "prior-evidence-mismatch"
-    assert result.details["evidenceField"] == "snapshotResult"
-    assert result.details["evidenceSource"] == "record"
+    assert result.ok is True, result
+    identity = read_json(identity_path_for(root))
+    record = read_json(result_path_for(root))
+    assert identity["schemaVersion"] == 2
+    assert identity["gitHead"] is None and identity["gitDirty"] is None
+    assert identity["sourceBaseline"] == "input-snapshot-v1"
+    assert record["schemaVersion"] == 2
+    assert record["buildId"] == identity["buildId"]
 
 
-def test_snapshot_to_git_provenance_fails_as_record_schema(
+def test_snapshot_to_git_provenance_reuses_outputs_and_records_real_head(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     from stm32_toolkit.build import identity as identity_mod
@@ -506,10 +563,11 @@ def test_snapshot_to_git_provenance_fails_as_record_schema(
 
     result = run_build(BuildRequest(project_root=root, preset="arm-debug"))
 
-    assert result.code == "BUILD_OUTPUT_STALE"
-    assert result.details["reason"] == "prior-evidence-mismatch"
-    assert result.details["evidenceField"] == "schemaVersion"
-    assert result.details["evidenceSource"] == "record"
+    assert result.ok is True, result
+    identity = read_json(identity_path_for(root))
+    assert identity["schemaVersion"] == 1
+    assert identity["gitHead"] == "b" * 40
+    assert identity["gitDirty"] is False
 
 
 # ---------------------------------------------------------------------------

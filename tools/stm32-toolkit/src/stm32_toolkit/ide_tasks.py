@@ -268,8 +268,8 @@ async def run_ide_task(
             firmware = admit(root)
         except _FlashFailure as error:
             # Preserve the original admission code, message and details
-            # (including snapshot provenance refusal and build/input/artifact
-            # failures) exactly, before any workflow or probe.
+            # (including content-evidence and build/input/artifact failures)
+            # exactly, before any workflow or probe.
             return OperationResult.failure(
                 operation, error.code, error.message, error.details
             )

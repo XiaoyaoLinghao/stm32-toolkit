@@ -23,6 +23,7 @@ from .model import (
     DebugReadReport,
     MemoryRegionBinding,
     TypedValue,
+    identity_matches_provenance,
 )
 from .svd import SvdError, SvdRegister, SvdSelection
 from .types import DwarfError, DwarfSelection, DwarfValue
@@ -145,7 +146,11 @@ def _canonical_target(value: str) -> str:
 
 
 def _current_firmware(binding: DebugFirmwareBinding) -> None:
-    """Reprove the complete disk/Git/flash chain captured by the binding."""
+    """Reprove the complete disk/provenance/flash chain captured by the binding.
+
+    The binding's own provenance form is compared with the current identity,
+    so a legacy Git binding and a snapshot binding can never be mixed.
+    """
 
     try:
         firmware = _load_fresh_firmware(binding.project_root)
@@ -167,9 +172,7 @@ def _current_firmware(binding: DebugFirmwareBinding) -> None:
             or len(firmware.elf_data) != binding.elf_size
             or str(identity.get("inputSnapshotSha256"))
             != binding.input_snapshot_sha256
-            or str(identity.get("gitHead")) != binding.git_head
-            or type(identity.get("gitDirty")) is not bool
-            or identity.get("gitDirty") != binding.git_dirty
+            or not identity_matches_provenance(binding, identity)
             or regions != binding.memory_regions
         ):
             raise ValueError("identity changed")

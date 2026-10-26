@@ -480,7 +480,7 @@ def test_successful_runner_always_emits_summary_with_empty_warnings(
     assert FirmwareIdentity.from_document(identity_document).to_dict() == identity_document
 
 
-def test_successful_snapshot_runner_emits_summary_and_refuses_hardware(
+def test_successful_snapshot_runner_emits_summary_and_admits_content_identity(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root = prepare_project(tmp_path, git_repo=False)
@@ -501,14 +501,17 @@ def test_successful_snapshot_runner_emits_summary_and_refuses_hardware(
 
     client = RecordingFlashClient(b"\x00" * 64)
     refused = asyncio.run(flash_firmware(_request(root, identity_document), client))
+    # The snapshot identity passes every content/memory check and stops only
+    # at the segment stage because this deterministic fake image carries no
+    # PT_LOAD header.  Git is not required, and no probe effect occurs.
     assert refused.ok is False
-    assert refused.code == "FIRMWARE_PROVENANCE_UNSUPPORTED"
-    assert refused.details["field"] == "sourceBaseline"
+    assert refused.code == "FLASH_IMAGE_INVALID"
+    assert refused.details == {"path": "build/arm-debug/firmware.elf", "rule": "segments"}
     assert client.events == []
 
-    # The malformed-summary guard still runs before the build-only refusal;
-    # schema-2 provenance never turns forged summary evidence into a normal
-    # policy result, and no probe/hardware effect occurs.
+    # The malformed-summary guard still runs inside admission; schema-2
+    # provenance never turns forged summary evidence into a normal result,
+    # and no probe/hardware effect occurs.
     tampered = read_json(identity_path)
     tampered["memorySummary"]["warnings"].append(
         {

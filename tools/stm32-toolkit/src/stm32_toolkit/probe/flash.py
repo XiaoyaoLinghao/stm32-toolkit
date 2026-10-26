@@ -22,7 +22,6 @@ from stm32_toolkit.build.identity import (
     ElfEvidence,
     atomic_write_json,
     compute_build_id,
-    git_evidence,
     identity_discovery_policy,
     model_artifact_paths,
     snapshot_project_inputs,
@@ -38,6 +37,8 @@ from stm32_toolkit.build.memory_margin import (
     build_memory_summary,
 )
 from stm32_toolkit.build.model import (
+    BUILD_GIT_INVALID,
+    GIT_DIAGNOSTIC_UNAVAILABLE,
     SNAPSHOT_IDENTITY_SCHEMA_VERSION,
     SOURCE_BASELINE_INPUT_SNAPSHOT,
 )
@@ -80,13 +81,6 @@ _BUILD_RESULT_FIELDS = {
     "memory",
     "warnings",
 }
-_PROVENANCE_UNSUPPORTED_GUIDANCE = (
-    "Builds from a non-Git input snapshot are supported for build and build "
-    "freshness only. Restore a Git repository with a committed HEAD, rebuild, "
-    "and retry; never fabricate a commit or dirty state."
-)
-
-
 @dataclass(frozen=True)
 class FlashRequest:
     project_root: Path
@@ -153,15 +147,48 @@ class _FreshFirmware:
 
 @dataclass(frozen=True)
 class FreshFirmwareFacts:
+    """Provenance facts for one admitted current firmware image.
+
+    A Git-backed identity carries a real commit and dirty flag.  A snapshot
+    identity carries explicit nulls plus the ``sourceBaseline`` discriminator
+    and bounded unavailable-Git evidence; the two forms are never mixed and
+    ``None`` is never coerced into a string or boolean.  The added fields are
+    optional so existing callers keep their positional construction.
+    """
+
     model: ProjectModel
     elf_path: str
     elf_sha256: str
     build_id: str
     input_snapshot_sha256: str
-    git_commit: str
-    git_dirty: bool
+    git_commit: str | None
+    git_dirty: bool | None
     target_device: str
     input_discovery_policy: str = "legacy"
+    source_baseline: str | None = None
+    git_evidence: dict[str, str] | None = None
+
+    def __post_init__(self) -> None:
+        snapshot = self.source_baseline is not None or self.git_evidence is not None
+        if not snapshot:
+            if not isinstance(self.git_commit, str) or not self.git_commit:
+                raise ValueError("git_commit is invalid")
+            if type(self.git_dirty) is not bool:
+                raise TypeError("git_dirty must be a boolean")
+            return
+        if self.source_baseline != SOURCE_BASELINE_INPUT_SNAPSHOT:
+            raise ValueError("source_baseline is invalid")
+        if self.git_commit is not None or self.git_dirty is not None:
+            raise ValueError("snapshot facts require null Git fields")
+        evidence = self.git_evidence
+        if (
+            not isinstance(evidence, dict)
+            or set(evidence) != {"status", "code", "rule"}
+            or evidence.get("status") != GIT_DIAGNOSTIC_UNAVAILABLE
+            or evidence.get("code") != BUILD_GIT_INVALID
+            or evidence.get("rule") not in ("head", "status")
+        ):
+            raise ValueError("git_evidence is invalid")
 
 
 class _FlashFailure(Exception):
@@ -423,11 +450,11 @@ def _require_matching_memory_summary(
 def _load_fresh_firmware(root: Path) -> _FreshFirmware:
     """Shared firmware admission for every hardware workflow.
 
-    A schema-1 Git identity keeps the established behaviour.  A structurally
-    valid schema-2 input-snapshot identity is recognized and then refused
-    with ``FIRMWARE_PROVENANCE_UNSUPPORTED`` before any probe, lease, or
-    attach effect.  Malformed or cross-schema evidence stays
-    ``FIRMWARE_EVIDENCE_INVALID``.
+    Schema 1 (Git metadata) and schema 2 (input snapshot with explicit null
+    Git fields and unavailable evidence) are both decoded strictly and pass
+    the same current content, ELF/segment, MAP and memory checks.  Git is
+    optional traceability, never an eligibility gate; malformed or
+    cross-schema evidence stays ``FIRMWARE_EVIDENCE_INVALID``.
     """
     try:
         model = load_project_model(root)
@@ -438,10 +465,14 @@ def _load_fresh_firmware(root: Path) -> _FreshFirmware:
 
     identity = _json_document(root, _IDENTITY_REL, _IDENTITY_LIMIT)
     result = _json_document(root, _RESULT_REL, _RESULT_LIMIT)
-    if result.get("schemaVersion") == 1:
+    schema = result.get("schemaVersion")
+    if type(schema) is not int:
+        # ``True == 1`` must never decode as a legacy schema-1 record.
+        raise _fail("FIRMWARE_EVIDENCE_INVALID", "Build result is invalid", path=_RESULT_REL, rule="fields")
+    if schema == 1:
         return _load_git_firmware(root, model, identity, result)
-    if result.get("schemaVersion") == SNAPSHOT_IDENTITY_SCHEMA_VERSION:
-        _refuse_snapshot_firmware(root, model, identity, result)
+    if schema == SNAPSHOT_IDENTITY_SCHEMA_VERSION:
+        return _load_snapshot_firmware(root, model, identity, result)
     raise _fail("FIRMWARE_EVIDENCE_INVALID", "Build result is invalid", path=_RESULT_REL, rule="fields")
 
 
@@ -453,11 +484,15 @@ def _load_git_firmware(
 ) -> _FreshFirmware:
     if set(result) != _BUILD_RESULT_FIELDS:
         raise _fail("FIRMWARE_EVIDENCE_INVALID", "Build result is invalid", path=_RESULT_REL, rule="fields")
+    if type(result.get("gitDirty")) is not bool:
+        raise _fail("FIRMWARE_EVIDENCE_INVALID", "Build result is invalid", path=_RESULT_REL, rule="fields")
     try:
         validate_identity_document(identity)
     except BuildError:
         raise _fail("FIRMWARE_EVIDENCE_INVALID", "Firmware identity is invalid", path=_IDENTITY_REL, rule="schema") from None
-    if identity.get("schemaVersion") != 1:
+    if type(identity.get("schemaVersion")) is not int or identity.get("schemaVersion") != 1:
+        raise _fail("FIRMWARE_EVIDENCE_INVALID", "Firmware identity is invalid", path=_IDENTITY_REL, rule="schema")
+    if type(identity.get("gitDirty")) is not bool:
         raise _fail("FIRMWARE_EVIDENCE_INVALID", "Firmware identity is invalid", path=_IDENTITY_REL, rule="schema")
     if compute_build_id(identity) != identity.get("buildId"):
         raise _fail("FIRMWARE_EVIDENCE_INVALID", "Firmware identity is invalid", path=_IDENTITY_REL, rule="buildId")
@@ -490,13 +525,12 @@ def _load_git_firmware(
 
     try:
         snapshot = snapshot_project_inputs(model, policy=identity_discovery_policy(identity))
-        git = git_evidence(root)
     except BuildError:
         raise _fail("FIRMWARE_EVIDENCE_INVALID", "Current source evidence is unavailable", path=".stm32-project.json", rule="freshness") from None
     if snapshot.sha256 != identity.get("inputSnapshotSha256"):
         raise _fail("FIRMWARE_INPUT_CHANGED", "Project inputs changed after the selected build", field="inputSnapshotSha256", rule="current")
-    if git.head != identity.get("gitHead") or git.dirty != identity.get("gitDirty"):
-        raise _fail("FIRMWARE_INPUT_CHANGED", "Git evidence changed after the selected build", field="gitHead", rule="current")
+    # Current Git HEAD/dirty state is optional metadata, not freshness: a new
+    # commit over unchanged inputs cannot alone invalidate this firmware.
 
     expected_elf_rel, expected_map_rel = model_artifact_paths(model, "arm-debug")
     elf_rel = identity.get("elfPath")
@@ -564,18 +598,20 @@ def _snapshot_evidence_invalid(rule: str, path: str = _IDENTITY_REL) -> _FlashFa
     return _fail("FIRMWARE_EVIDENCE_INVALID", "Firmware evidence is invalid", path=path, rule=rule)
 
 
-def _refuse_snapshot_firmware(
+def _load_snapshot_firmware(
     root: Path,
     model: ProjectModel,
     identity: dict[str, object],
     result: dict[str, object],
-) -> None:
-    """Validate one snapshot identity, then refuse hardware admission.
+) -> _FreshFirmware:
+    """Admit one schema-2 input-snapshot firmware with the full content checks.
 
-    Validation is intentionally as strict as the Git path so tampered,
-    cross-schema, stale, or malformed evidence cannot be misreported as a
-    provenance policy decision.  A truly valid current snapshot identity is
-    refused with the stable build-only code, after no probe or lease effect.
+    This is intentionally as strict as the Git path: the exact record field
+    set, identity schema, build ID, stage, preset, target, project and
+    toolkit identity, source baseline, null Git fields, bounded unavailable
+    evidence, current declared inputs, ELF/MAP bytes, artifact records, ELF
+    structure and memory summary are all validated, and only then are the
+    programmable segments derived.  Git metadata is never required.
     """
     expected_elf_rel, expected_map_rel = model_artifact_paths(model, "arm-debug")
     if not validate_snapshot_build_result(
@@ -699,13 +735,8 @@ def _refuse_snapshot_firmware(
     _require_matching_memory_summary(
         identity, model, elf_evidence, map_data, str(map_rel)
     )
-    raise _fail(
-        "FIRMWARE_PROVENANCE_UNSUPPORTED",
-        "Firmware provenance does not support hardware workflows",
-        field="sourceBaseline",
-        rule=SOURCE_BASELINE_INPUT_SNAPSHOT,
-        guidance=_PROVENANCE_UNSUPPORTED_GUIDANCE,
-    )
+    segments = _flash_segments(elf_data, model, str(elf_rel))
+    return _FreshFirmware(root, model, identity, str(elf_rel), elf_data, segments)
 
 
 def load_fresh_firmware_facts(project_root: Path) -> FreshFirmwareFacts:
@@ -717,16 +748,19 @@ def load_fresh_firmware_facts(project_root: Path) -> FreshFirmwareFacts:
         raise _fail("FLASH_REQUEST_INVALID", "Flash request is invalid", field="projectRoot", rule="value") from None
     fresh = _load_fresh_firmware(root)
     identity = fresh.identity
+    snapshot = identity.get("schemaVersion") == SNAPSHOT_IDENTITY_SCHEMA_VERSION
     return FreshFirmwareFacts(
         fresh.model,
         fresh.elf_path,
         str(identity["elfSha256"]),
         str(identity["buildId"]),
         str(identity["inputSnapshotSha256"]),
-        str(identity["gitHead"]),
-        bool(identity["gitDirty"]),
+        None if snapshot else identity["gitHead"],  # type: ignore[arg-type]
+        None if snapshot else identity["gitDirty"],  # type: ignore[arg-type]
         str(identity["targetDevice"]),
         identity_discovery_policy(dict(identity)),
+        SOURCE_BASELINE_INPUT_SNAPSHOT if snapshot else None,
+        dict(identity["gitEvidence"]) if snapshot else None,  # type: ignore[arg-type]
     )
 
 
@@ -869,19 +903,27 @@ async def flash_firmware(request: object, client: object) -> OperationResult[Fla
             started_at_utc=started,
             finished_at_utc=finished,
         )
+        snapshot_mode = (
+            firmware.identity.get("schemaVersion") == SNAPSHOT_IDENTITY_SCHEMA_VERSION
+        )
         document = {
-            "schemaVersion": 1,
+            "schemaVersion": SNAPSHOT_IDENTITY_SCHEMA_VERSION if snapshot_mode else 1,
             "status": "success",
             "code": "OK",
             "toolkitVersion": __version__,
             **report.to_dict(),
             "elfPath": firmware.elf_path,
-            "gitHead": firmware.identity["gitHead"],
-            "gitDirty": firmware.identity["gitDirty"],
+            "gitHead": None if snapshot_mode else firmware.identity["gitHead"],
+            "gitDirty": None if snapshot_mode else firmware.identity["gitDirty"],
             "inputSnapshotSha256": firmware.identity["inputSnapshotSha256"],
             "operationLevel": "modify",
             "authorized": True,
         }
+        if snapshot_mode:
+            # The receipt carries the same explicit content baseline as the
+            # admitted identity; Git is recorded as unavailable, never clean.
+            document["sourceBaseline"] = SOURCE_BASELINE_INPUT_SNAPSHOT
+            document["gitEvidence"] = dict(firmware.identity["gitEvidence"])  # type: ignore[arg-type]
         try:
             atomic_write_json(root.joinpath(*_FLASH_RESULT_REL.split("/")), document)
         except Exception:

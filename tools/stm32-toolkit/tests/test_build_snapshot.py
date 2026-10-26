@@ -3,10 +3,11 @@
 These regressions cover the BUILD-SNAPSHOT contract: Git unavailability is
 not a build failure; a schema-2 snapshot identity/record is explicit, bounded,
 and nullable rather than a fake commit; context freshness never requires a Git
-subprocess for schema 2; no-op reuse is provenance-aware; and hardware
-admission refuses a valid snapshot identity with ``FIRMWARE_PROVENANCE_
-UNSUPPORTED`` before any probe, lease, or attach effect.  All processes are
-offline fakes; no probe is enumerated or attached.
+subprocess; no-op reuse is validated against the prior pair's own schema, so
+current Git availability/HEAD/dirty state never alone rejects unchanged
+outputs; and a current snapshot build is admitted by the same managed
+flash/debug workflows as a Git-backed build, with an explicit schema-2 flash
+receipt.  All processes are offline fakes; no probe is enumerated or attached.
 """
 
 from __future__ import annotations
@@ -39,7 +40,13 @@ from stm32_toolkit.context import build_project_context
 from stm32_toolkit.debug.firmware import bind_debug_firmware
 from stm32_toolkit.debug.model import DebugBindingRequest
 from stm32_toolkit.mcp_server import ServerRuntime
-from stm32_toolkit.probe.flash import flash_firmware, load_fresh_firmware_facts
+from stm32_toolkit.probe import flash as flash_mod
+from stm32_toolkit.probe.flash import (
+    FlashSegment,
+    flash_firmware,
+    load_fresh_firmware_facts,
+)
+from stm32_toolkit.probe.handoff import _FLASH_FIELDS
 from stm32_toolkit.process import ProcessError, ProcessResult
 
 from test_build_runner import (
@@ -425,11 +432,12 @@ def test_tampered_snapshot_prior_evidence_is_stale(
     assert result.details["remediation"]["action"] == "clean-rebuild"
 
 
-def test_cross_provenance_mode_never_reuses_prior_outputs(
+def test_git_availability_or_head_change_never_invalidates_unchanged_outputs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    # Git-backed success, then the same outputs become unverifiable when Git
-    # provenance is unavailable.
+    # Git-backed success, then Git becomes unavailable while inputs and
+    # artifacts stay unchanged.  The prior schema-1 pair is still coherent,
+    # so the no-op build succeeds and records truthful snapshot provenance.
     root = prepare_project(tmp_path, name="git-to-snapshot")
     install_fake_cmake(monkeypatch, tmp_path)
     first = run_build(BuildRequest(project_root=root, preset="arm-debug"))
@@ -441,23 +449,32 @@ def test_cross_provenance_mode_never_reuses_prior_outputs(
     )
     monkeypatch.setenv("FAKE_CMAKE_NO_OUTPUT", "1")
     second = run_build(BuildRequest(project_root=root, preset="arm-debug"))
-    assert second.ok is False
-    assert second.code == "BUILD_OUTPUT_STALE"
+    assert second.ok is True, second
+    second_identity = read_json(identity_path(root))
+    assert second_identity["schemaVersion"] == 2
+    assert second_identity["gitHead"] is None
+    assert second_identity["gitDirty"] is None
+    assert second_identity["sourceBaseline"] == SOURCE_BASELINE_INPUT_SNAPSHOT
+    assert second.data.identity.build_id == second_identity["buildId"]
 
-    # Snapshot success, then Git becomes available: the schema-2 identity
-    # cannot be reused under schema-1 provenance.
+    # Snapshot success, then Git becomes available: the schema-2 prior pair
+    # is still current and the new success records the real head truthfully.
     monkeypatch.delenv("FAKE_CMAKE_NO_OUTPUT")
-    snapshot_root, _identity, _record = snapshot_build(
+    snapshot_root, snapshot_identity, _record = snapshot_build(
         tmp_path, monkeypatch, name="snapshot-to-git"
     )
+    assert snapshot_identity["gitHead"] is None
     monkeypatch.setattr(
         "stm32_toolkit.build.runner.collect_build_git_evidence",
         lambda _root, _timeout=30: identity_mod.GitEvidence(head="b" * 40, dirty=False),
     )
     monkeypatch.setenv("FAKE_CMAKE_NO_OUTPUT", "1")
     third = run_build(BuildRequest(project_root=snapshot_root, preset="arm-debug"))
-    assert third.ok is False
-    assert third.code == "BUILD_OUTPUT_STALE"
+    assert third.ok is True, third
+    third_identity = read_json(identity_path(snapshot_root))
+    assert third_identity["schemaVersion"] == 1
+    assert third_identity["gitHead"] == "b" * 40
+    assert third_identity["gitDirty"] is False
 
 
 def test_failed_snapshot_build_publishes_schema_two_failure_and_supersedes_success(
@@ -509,10 +526,10 @@ def test_snapshot_context_is_fresh_without_spawning_git(
 ):
     root, identity, _record = snapshot_build(tmp_path, monkeypatch)
 
-    def forbidden_git(*_args, **_kwargs):
-        raise AssertionError("schema-2 context freshness must not spawn Git")
+    def forbidden_process(*_args, **_kwargs):
+        raise AssertionError("schema-2 context freshness must not spawn any process")
 
-    monkeypatch.setattr("stm32_toolkit.context.git_evidence", forbidden_git)
+    monkeypatch.setattr(identity_mod, "run_process", forbidden_process)
     result = build_project_context(root, tmp_path.parent / "data", "session-a")
 
     assert result.ok is True
@@ -524,9 +541,12 @@ def test_snapshot_context_is_fresh_without_spawning_git(
     assert evidence["gitDirty"] is None
     assert evidence["gitEvidence"] == SNAPSHOT_EVIDENCE
     flash = result.data["capabilityDetails"]["flash"]
-    assert flash["status"] == "blocked"
-    assert "FIRMWARE_PROVENANCE_UNSUPPORTED" in flash["reason"]
-    assert any("Git repository with a committed HEAD" in step for step in flash["nextSteps"])
+    # Hardware is still not evaluated here; a snapshot build is no longer a
+    # policy blocker and context never claims a probe or target is ready.
+    assert flash["status"] == "not-evaluated"
+    assert "content identity" in flash["reason"]
+    assert "FIRMWARE_PROVENANCE_UNSUPPORTED" not in flash["reason"]
+    assert result.data["firmwareRoutes"]["managed"]["requiresGit"] is False
 
 
 def test_snapshot_context_goes_stale_on_source_or_artifact_change(
@@ -709,10 +729,10 @@ def test_snapshot_context_requires_current_project_and_toolkit(
     assert result.code == "BUILD_OUTPUT_STALE"
 
 
-def test_fresh_snapshot_context_blocks_known_hardware_in_capability_details(
+def test_fresh_snapshot_context_does_not_claim_checked_hardware(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    root, _identity, _record = snapshot_build(tmp_path, monkeypatch, name="blocked-hw")
+    root, _identity, _record = snapshot_build(tmp_path, monkeypatch, name="neutral-hw")
     runtime = ServerRuntime.create(root, tmp_path / "plugin-data", "session-a")
 
     result = asyncio.run(
@@ -723,19 +743,16 @@ def test_fresh_snapshot_context_blocks_known_hardware_in_capability_details(
 
     assert result["ok"] is True
     details = result["data"]["capabilityDetails"]
+    # Configured capability is distinct from a probe/target actually checked:
+    # no snapshot policy blocker and no false readiness claim.
     for key in ("flash", "targetTest", "monitor", "breakpointDebug"):
-        assert details[key]["status"] == "blocked", key
-        assert "FIRMWARE_PROVENANCE_UNSUPPORTED" in details[key]["reason"], key
-        assert any(
-            "Git repository with a committed HEAD" in step
-            for step in details[key]["nextSteps"]
+        assert details[key]["status"] == "not-evaluated", key
+        assert "FIRMWARE_PROVENANCE_UNSUPPORTED" not in details[key]["reason"], key
+        assert "Git repository with a committed HEAD" not in " ".join(
+            details[key]["nextSteps"]
         ), key
-    # Discovery is not a firmware-consuming operation and stays independent.
     assert result["data"]["capabilities"]["flash"] is False
-    assert all(
-        "FIRMWARE_PROVENANCE_UNSUPPORTED" not in step
-        for step in details["hostTest"]["nextSteps"]
-    )
+    assert result["data"]["firmwareRoutes"]["managed"]["requiresGit"] is False
     assert details["hostTest"]["status"] == "not-evaluated"
 
 
@@ -864,28 +881,50 @@ def test_mcp_build_path_reports_snapshot_identity(
 # ---------------------------------------------------------------------------
 
 
-def test_flash_refuses_snapshot_provenance_before_probe_use(
+def _recordable_segments(monkeypatch: pytest.MonkeyPatch, payload: bytes) -> None:
+    """The fake ARM GNU image has no PT_LOAD header; admit one fixed segment."""
+    monkeypatch.setattr(
+        flash_mod,
+        "_flash_segments",
+        lambda _data, _model, _rel: (FlashSegment(0x08000000, payload),),
+    )
+
+
+def test_flash_admits_current_snapshot_firmware_and_writes_schema_two_receipt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     root, identity, _record = snapshot_build(tmp_path, monkeypatch)
-    client = RecordingFlashClient(b"\x00" * 64)
+    payload = b"\x00\xbf\x00\xbf"
+    _recordable_segments(monkeypatch, payload)
+    client = RecordingFlashClient(payload)
 
     result = asyncio.run(flash_firmware(_request(root, identity), client))
 
-    assert result.ok is False
-    assert result.code == "FIRMWARE_PROVENANCE_UNSUPPORTED"
-    assert result.details["field"] == "sourceBaseline"
-    assert result.details["rule"] == SOURCE_BASELINE_INPUT_SNAPSHOT
-    assert "build and build freshness only" in result.details["guidance"]
-    assert client.events == []
+    assert result.ok is True, result.to_dict()
+    assert [event[0] for event in client.events] == ["attach", "program", "read"]
+    receipt = read_json(root / "artifacts" / "migration" / "flash-result.json")
+    assert receipt["schemaVersion"] == 2
+    assert receipt["status"] == "success"
+    assert receipt["sourceBaseline"] == SOURCE_BASELINE_INPUT_SNAPSHOT
+    assert receipt["gitHead"] is None
+    assert receipt["gitDirty"] is None
+    assert receipt["gitEvidence"] == SNAPSHOT_EVIDENCE
+    assert set(receipt) == _FLASH_FIELDS | {"sourceBaseline", "gitEvidence"}
+    assert receipt["buildId"] == identity["buildId"]
+    assert receipt["verifiedBytes"] == len(payload)
 
 
-def test_debug_binding_refuses_snapshot_provenance_before_attach(
+def test_debug_binding_carries_snapshot_provenance_without_git(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     root, identity, _record = snapshot_build(tmp_path, monkeypatch)
-    image = (root / "build" / "arm-debug" / "firmware.elf").read_bytes()
-    client = BindingClient(image)
+    payload = b"\x00\xbf\x00\xbf"
+    _recordable_segments(monkeypatch, payload)
+    flashed = asyncio.run(
+        flash_firmware(_request(root, identity), RecordingFlashClient(payload))
+    )
+    assert flashed.ok is True, flashed.to_dict()
+    client = BindingClient(payload)
     request = DebugBindingRequest(
         project_root=root,
         probe_id="probe-123",
@@ -899,18 +938,29 @@ def test_debug_binding_refuses_snapshot_provenance_before_attach(
 
     result = asyncio.run(bind_debug_firmware(request, client))
 
-    assert result.ok is False
-    assert result.code == "FIRMWARE_PROVENANCE_UNSUPPORTED"
-    assert client.events == []
+    assert result.ok is True, result.to_dict()
+    document = result.data.to_dict()
+    assert document["gitHead"] is None
+    assert document["gitDirty"] is None
+    assert document["sourceBaseline"] == SOURCE_BASELINE_INPUT_SNAPSHOT
+    assert document["gitEvidence"] == SNAPSHOT_EVIDENCE
+    assert client.events[0][0] == "attach"
 
 
-def test_shared_admission_refuses_snapshot_provenance(
+def test_shared_admission_reports_snapshot_facts_without_fake_git(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    root, _identity, _record = snapshot_build(tmp_path, monkeypatch)
-    with pytest.raises(Exception) as error:
-        load_fresh_firmware_facts(root)
-    assert getattr(error.value, "code", None) == "FIRMWARE_PROVENANCE_UNSUPPORTED"
+    root, identity, _record = snapshot_build(tmp_path, monkeypatch)
+    payload = b"\x00\xbf\x00\xbf"
+    _recordable_segments(monkeypatch, payload)
+
+    facts = load_fresh_firmware_facts(root)
+
+    assert facts.build_id == identity["buildId"]
+    assert facts.git_commit is None
+    assert facts.git_dirty is None
+    assert facts.source_baseline == SOURCE_BASELINE_INPUT_SNAPSHOT
+    assert facts.git_evidence == SNAPSHOT_EVIDENCE
 
 
 def test_admission_still_rejects_tampered_snapshot_evidence(

@@ -828,29 +828,25 @@ def test_context_numeric_debug_target_keeps_the_earlier_schema_failure(tmp_path)
     assert dict(result.details) == {"field": "debug.target", "rule": "type"}
 
 
-def test_context_snapshot_reason_is_retained_with_the_debug_block():
+def test_context_missing_debug_pair_blocks_without_a_git_requirement():
     status = describe_debug_configuration(None, None)
 
-    details = _hardware_capability_details(
-        snapshot_fresh=True, debug_status=status
-    )
+    details = _hardware_capability_details(debug_status=status)
 
     flash = details["flash"]
     assert flash["status"] == "blocked"
-    for text in (
-        "FIRMWARE_PROVENANCE_UNSUPPORTED",
-        "debug.backend (missing)",
-        "debug.target (missing)",
-    ):
+    for text in ("debug.backend (missing)", "debug.target (missing)"):
         assert text in flash["reason"]
+    assert "FIRMWARE_PROVENANCE_UNSUPPORTED" not in flash["reason"]
     joined = " ".join(flash["nextSteps"])
-    assert "restore a Git repository" in joined
+    assert "restore a Git repository" not in joined
     assert "stm32-toolkit project configure" in joined
     for name in ("targetTest", "monitor", "breakpointDebug"):
-        assert "FIRMWARE_PROVENANCE_UNSUPPORTED" in details[name]["reason"]
+        assert "FIRMWARE_PROVENANCE_UNSUPPORTED" not in details[name]["reason"]
         assert "debug.backend (missing)" in details[name]["reason"]
     routes = _firmware_routes(flash)
     assert routes["imported"]["status"] == "not-evaluated"
+    assert routes["managed"]["requiresGit"] is False
 
 
 def test_unconfigured_context_has_no_debug_configuration(tmp_path):

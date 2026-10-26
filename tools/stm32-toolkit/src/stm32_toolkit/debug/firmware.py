@@ -10,6 +10,10 @@ from typing import Mapping
 
 from stm32_toolkit import __version__
 from stm32_toolkit.build.identity import utc_now_rfc3339
+from stm32_toolkit.build.model import (
+    SNAPSHOT_IDENTITY_SCHEMA_VERSION,
+    SOURCE_BASELINE_INPUT_SNAPSHOT,
+)
 from stm32_toolkit.probe.client import ProbeClientError
 from stm32_toolkit.probe.attach_diagnostics import extract_attach_diagnostic
 from stm32_toolkit.probe.flash import _load_fresh_firmware, _verify_segments
@@ -116,18 +120,7 @@ def _endpoint(
 def _firmware(root: Path, *, changed: bool = False):
     try:
         return _load_fresh_firmware(root)
-    except Exception as error:
-        if getattr(error, "code", None) == "FIRMWARE_PROVENANCE_UNSUPPORTED":
-            details = getattr(error, "details", None)
-            raise _fail(
-                "FIRMWARE_PROVENANCE_UNSUPPORTED",
-                getattr(
-                    error,
-                    "message",
-                    "Firmware provenance does not support hardware workflows",
-                ),
-                **(dict(details) if isinstance(details, Mapping) else {}),
-            ) from None
+    except Exception:
         if changed:
             raise _fail(
                 "DEBUG_FIRMWARE_CHANGED",
@@ -207,6 +200,8 @@ def _same_firmware(before: object, after: object) -> bool:
         "inputSnapshotSha256",
         "gitHead",
         "gitDirty",
+        "sourceBaseline",
+        "gitEvidence",
         "targetDevice",
         "elfPath",
         "mapPath",
@@ -356,6 +351,10 @@ async def bind_debug_firmware(
         # shared model-derived helper keeps their linker-readable fallback
         # while normalizing schema-v3 debug regions to read-only access.
         svd_regions = _svd_readable_regions_from_model(final_firmware.model)
+        identity = final_firmware.identity
+        snapshot_identity = (
+            identity.get("schemaVersion") == SNAPSHOT_IDENTITY_SCHEMA_VERSION
+        )
         binding = DebugFirmwareBinding(
             logical_project_id=str(final_firmware.model.logical_project_id),
             workspace_id=typed.workspace_id,
@@ -365,17 +364,23 @@ async def bind_debug_firmware(
             probe_id=typed.probe_id,
             target_device=final_firmware.model.target.device,
             debug_target=typed.target,
-            build_id=str(final_firmware.identity["buildId"]),
-            elf_sha256=str(final_firmware.identity["elfSha256"]),
+            build_id=str(identity["buildId"]),
+            elf_sha256=str(identity["elfSha256"]),
             elf_size=len(final_firmware.elf_data),
             elf_path=final_firmware.elf_path,
-            input_snapshot_sha256=str(final_firmware.identity["inputSnapshotSha256"]),
-            git_head=str(final_firmware.identity["gitHead"]),
-            git_dirty=bool(final_firmware.identity["gitDirty"]),
+            input_snapshot_sha256=str(identity["inputSnapshotSha256"]),
+            git_head=None if snapshot_identity else identity["gitHead"],  # type: ignore[arg-type]
+            git_dirty=None if snapshot_identity else identity["gitDirty"],  # type: ignore[arg-type]
             confirmed_at_utc=confirmed_at,
             memory_regions=regions,
             project_root=root,
             svd_readable_regions=svd_regions,
+            source_baseline=(
+                SOURCE_BASELINE_INPUT_SNAPSHOT if snapshot_identity else None
+            ),
+            git_evidence=(
+                dict(identity["gitEvidence"]) if snapshot_identity else None  # type: ignore[arg-type]
+            ),
         )
         return OperationResult.success(_OPERATION, binding)
     except asyncio.CancelledError:

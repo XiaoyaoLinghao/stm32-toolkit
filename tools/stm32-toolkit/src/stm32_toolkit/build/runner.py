@@ -573,7 +573,6 @@ def _prior_evidence_check(
     model: ProjectModel,
     preset: str,
     snapshot,
-    provenance: GitEvidence | GitUnavailableEvidence,
     elf_rel: str,
     map_rel: str,
     post_elf: _ArtifactState,
@@ -581,9 +580,13 @@ def _prior_evidence_check(
 ) -> _EvidenceMatch:
     """Return the first bounded reason the prior success cannot be reused.
 
-    The acceptance decision is unchanged: every predicate and its order is
-    the same as the historical boolean comparison.  Only the first failing
-    predicate is named so callers do not need a second validation algorithm.
+    Reuse is decided only by the prior record, its identity, and the current
+    declared inputs/artifacts.  The prior pair is validated against the schema
+    it recorded, never against the current Git availability, HEAD or dirty
+    state: a new commit over unchanged inputs, or Git becoming unavailable,
+    cannot alone invalidate otherwise current outputs.  Record and identity
+    must still agree with each other, and every content digest must still
+    match, so a mismatched or malformed legacy pair is never accepted.
     """
     record, identity_doc = prior
     if record.get("status") != "success":
@@ -620,19 +623,39 @@ def _prior_evidence_check(
         return _evidence_mismatch(_STALE_EVIDENCE_MISMATCH, "mapSha256", "identity")
     if record.get("buildId") != identity_doc.get("buildId"):
         return _evidence_mismatch(_STALE_EVIDENCE_MISMATCH, "buildId", "record")
-    if isinstance(provenance, GitEvidence):
-        if record.get("schemaVersion") != 1:
-            return _evidence_mismatch(_STALE_EVIDENCE_MISMATCH, "schemaVersion", "record")
-        if identity_doc.get("schemaVersion") != 1:
-            return _evidence_mismatch(_STALE_EVIDENCE_MISMATCH, "schemaVersion", "identity")
-        if record.get("gitHead") != provenance.head:
-            return _evidence_mismatch(_STALE_EVIDENCE_MISMATCH, "gitHead", "record")
-        if identity_doc.get("gitHead") != provenance.head:
-            return _evidence_mismatch(_STALE_EVIDENCE_MISMATCH, "gitHead", "identity")
+    if identity_doc.get("logicalProjectId") != str(model.logical_project_id):
+        return _evidence_mismatch(
+            _STALE_EVIDENCE_MISMATCH, "logicalProjectId", "identity"
+        )
+    if identity_doc.get("toolkitVersion") != __version__:
+        return _evidence_mismatch(_STALE_EVIDENCE_MISMATCH, "toolkitVersion", "identity")
+    record_schema = record.get("schemaVersion")
+    identity_schema = identity_doc.get("schemaVersion")
+    if type(record_schema) is not int or type(identity_schema) is not int:
+        return _evidence_mismatch(_STALE_EVIDENCE_MISMATCH, "schemaVersion", "record")
+    if record_schema != identity_schema:
+        # One record and one identity of different schemas are never a
+        # coherent provenance pair, whatever the current repository says.
+        return _evidence_mismatch(_STALE_EVIDENCE_MISMATCH, "schemaVersion", "record")
+    if record_schema == 1:
         if "sourceBaseline" in identity_doc or "gitEvidence" in identity_doc:
             return _evidence_mismatch(_STALE_EVIDENCE_MISMATCH, "provenance", "identity")
-    else:
-        expected = provenance.to_dict()
+        if "sourceBaseline" in record or "gitEvidence" in record:
+            return _evidence_mismatch(_STALE_EVIDENCE_MISMATCH, "provenance", "record")
+        # A schema-1 record must describe an actual supported success and
+        # carry a strict boolean dirty flag; JSON 0/1 is not False/True.
+        if record.get("code") != "OK":
+            return _evidence_mismatch(_STALE_EVIDENCE_MISMATCH, "code", "record")
+        if record.get("stage") not in ("", "complete"):
+            return _evidence_mismatch(_STALE_EVIDENCE_MISMATCH, "stage", "record")
+        if type(record.get("gitDirty")) is not bool:
+            return _evidence_mismatch(_STALE_EVIDENCE_MISMATCH, "gitDirty", "record")
+        if record.get("gitHead") != identity_doc.get("gitHead"):
+            return _evidence_mismatch(_STALE_EVIDENCE_MISMATCH, "gitHead", "record")
+        if record.get("gitDirty") != identity_doc.get("gitDirty"):
+            return _evidence_mismatch(_STALE_EVIDENCE_MISMATCH, "gitDirty", "record")
+        return _EVIDENCE_MATCHED
+    if record_schema == SNAPSHOT_IDENTITY_SCHEMA_VERSION:
         expected_artifacts = frozenset(
             {
                 _LOG_REL,
@@ -646,14 +669,6 @@ def _prior_evidence_check(
             record, preset=preset, expected_artifact_paths=expected_artifacts
         ):
             return _evidence_mismatch(_STALE_EVIDENCE_MISMATCH, "snapshotResult", "record")
-        if identity_doc.get("schemaVersion") != SNAPSHOT_IDENTITY_SCHEMA_VERSION:
-            return _evidence_mismatch(_STALE_EVIDENCE_MISMATCH, "schemaVersion", "identity")
-        if identity_doc.get("logicalProjectId") != str(model.logical_project_id):
-            return _evidence_mismatch(
-                _STALE_EVIDENCE_MISMATCH, "logicalProjectId", "identity"
-            )
-        if identity_doc.get("toolkitVersion") != __version__:
-            return _evidence_mismatch(_STALE_EVIDENCE_MISMATCH, "toolkitVersion", "identity")
         if identity_doc.get("sourceBaseline") != SOURCE_BASELINE_INPUT_SNAPSHOT:
             return _evidence_mismatch(
                 _STALE_EVIDENCE_MISMATCH, "sourceBaseline", "identity"
@@ -664,11 +679,11 @@ def _prior_evidence_check(
             return _evidence_mismatch(_STALE_EVIDENCE_MISMATCH, "gitState", "identity")
         if record.get("gitHead") is not None or record.get("gitDirty") is not None:
             return _evidence_mismatch(_STALE_EVIDENCE_MISMATCH, "gitState", "record")
-        if identity_doc.get("gitEvidence") != expected:
-            return _evidence_mismatch(_STALE_EVIDENCE_MISMATCH, "gitEvidence", "identity")
+        expected = identity_doc.get("gitEvidence")
         if record.get("gitEvidence") != expected:
             return _evidence_mismatch(_STALE_EVIDENCE_MISMATCH, "gitEvidence", "record")
-    return _EVIDENCE_MATCHED
+        return _EVIDENCE_MATCHED
+    return _evidence_mismatch(_STALE_EVIDENCE_MISMATCH, "schemaVersion", "record")
 
 
 def _stale_remediation(
@@ -781,7 +796,6 @@ def _require_fresh_outputs(
     elf_path: Path,
     map_path: Path,
     snapshot,
-    provenance: GitEvidence | GitUnavailableEvidence,
 ) -> None:
     post_elf = _artifact_state(elf_path)
     post_map = _artifact_state(map_path)
@@ -830,7 +844,7 @@ def _require_fresh_outputs(
             ),
         )
     match = _prior_evidence_check(
-        prior, model, preset, snapshot, provenance, elf_rel, map_rel, post_elf, post_map
+        prior, model, preset, snapshot, elf_rel, map_rel, post_elf, post_map
     )
     if not match.matched:
         raise build_error(
@@ -1145,7 +1159,6 @@ def _run_locked(
             elf_path,
             map_path,
             snapshot,
-            provenance,
         )
         # ELF format, security, and section attributes are validated first;
         # its immutable section evidence then classifies every non-zero MAP

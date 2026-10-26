@@ -26,7 +26,7 @@ from stm32_toolkit.probe.handoff import (
 from stm32_toolkit.probe.model import OperationLevel, PROBE_PROTOCOL_VERSION
 from stm32_toolkit.result import OperationResult
 
-from .model import DebugFirmwareBinding, FaultReport
+from .model import DebugFirmwareBinding, FaultReport, identity_matches_provenance
 
 _OPERATION = "stm32_fault_analyze"
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -161,7 +161,8 @@ def _current_firmware(root: Path, binding: DebugFirmwareBinding) -> bytes:
             "targetDevice": binding.target_device,
         }
         if (
-            any(identity.get(name) != value for name, value in expected.items())
+            not identity_matches_provenance(binding, identity)
+            or any(identity.get(name) != value for name, value in expected.items())
             or str(current.model.logical_project_id) != binding.logical_project_id
             or current.model.target.device != binding.target_device
             or current.model.debug.target != binding.debug_target

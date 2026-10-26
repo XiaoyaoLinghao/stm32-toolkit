@@ -112,7 +112,7 @@ def test_configured_no_build_context_separates_routes_without_side_effects(
     assert managed["reason"] == flash["reason"]
     assert managed["nextSteps"] == flash["nextSteps"]
     assert managed["identity"] == ["buildId", "elfSha256"]
-    assert managed["requiresGit"] is True
+    assert managed["requiresGit"] is False
     assert managed["requiresManagedModel"] is True
     assert set(managed["tools"]) <= REAL_MCP_TOOLS
     assert "stm32_flash" in managed["tools"]
@@ -139,12 +139,13 @@ def test_unconfigured_keil_context_reports_routes_without_git(
 
     managed, imported = routes_of(payload)
     assert managed["status"] == "not-evaluated"
-    assert "Git-shaped managed firmware provenance" in managed["reason"]
-    assert any("committed HEAD" in step for step in managed["nextSteps"])
+    assert "content identity" in managed["reason"]
+    assert managed["requiresGit"] is False
+    assert not any("committed HEAD" in step for step in managed["nextSteps"])
     assert_imported_not_evaluated(imported)
 
 
-def test_snapshot_only_context_blocks_managed_flash_but_not_import_route(
+def test_snapshot_context_never_blocks_managed_flash_or_selects_import(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root, _identity, _record = snapshot_build(tmp_path, monkeypatch, name="snapshot")
@@ -156,14 +157,16 @@ def test_snapshot_only_context_blocks_managed_flash_but_not_import_route(
     data = payload["data"]
     details = data["capabilityDetails"]
     managed, imported = routes_of(payload)
-    assert managed["status"] == "blocked"
-    assert "FIRMWARE_PROVENANCE_UNSUPPORTED" in managed["reason"]
+    # A current content identity is not a Git policy blocker, and context
+    # still does not claim a probe or target was checked.
+    assert managed["status"] == "not-evaluated"
+    assert "FIRMWARE_PROVENANCE_UNSUPPORTED" not in managed["reason"]
     assert details["flash"]["status"] == managed["status"]
     # Only managed flash may describe the separate imported route.
     flash_text = " ".join([details["flash"]["reason"], *details["flash"]["nextSteps"]])
     assert "stm32_firmware_import" in flash_text
     for key in ("targetTest", "monitor", "breakpointDebug"):
-        assert details[key]["status"] == "blocked"
+        assert details[key]["status"] == "not-evaluated"
         text = " ".join([details[key]["reason"], *details[key]["nextSteps"]]).lower()
         assert "import" not in text, key
     # The imported route is never selected, admitted, or made ready by a block.

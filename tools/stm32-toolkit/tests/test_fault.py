@@ -297,6 +297,7 @@ def fault_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         elf_data=elf,
         elf_path=binding.elf_path,
         identity={
+            "schemaVersion": 1,
             "buildId": binding.build_id,
             "elfSha256": binding.elf_sha256,
             "elfSize": binding.elf_size,
