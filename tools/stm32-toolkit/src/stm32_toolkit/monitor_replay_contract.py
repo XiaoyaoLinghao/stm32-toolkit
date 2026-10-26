@@ -12,6 +12,11 @@ import unicodedata
 from uuid import UUID
 from typing import cast
 
+from stm32_toolkit.source_provenance import (
+    SOURCE_BASELINE_INPUT_SNAPSHOT,
+    unavailable_git_evidence,
+)
+
 
 MONITOR_REPLAY_SCHEMA = "stm32-monitor-replay/1"
 MONITOR_REPLAY_SOURCE = "toolkit-generated-probe-v2-replay"
@@ -76,6 +81,11 @@ _BINDING_FIELDS = frozenset(
         "svdSha256",
     }
 )
+#: The two camelCase wire keys that only exist for the snapshot provenance
+#: form.  A binding carrying either marker must carry the complete pair, so a
+#: present-null pair is never read as the legacy Git form by applying defaults.
+_PROVENANCE_BINDING_FIELDS = frozenset({"sourceBaseline", "gitEvidence"})
+_SNAPSHOT_BINDING_FIELDS = _BINDING_FIELDS | _PROVENANCE_BINDING_FIELDS
 _BATCH_FIELDS = frozenset(
     {
         "binding",
@@ -136,12 +146,18 @@ _REF_FIELDS_V1 = frozenset(
         "run_ref_sha256",
     }
 )
+#: The two snake_case wire keys that only exist for the snapshot provenance
+#: form.  Run references keep their existing schema version; the pair is an
+#: additional closed form, never a blanket additional-key allowance.
+_REF_PROVENANCE_FIELDS = frozenset({"source_baseline", "git_evidence"})
+_REF_FIELDS_V1_SNAPSHOT = _REF_FIELDS_V1 | _REF_PROVENANCE_FIELDS
 _REF_FIELDS_V2 = frozenset(
     {
         *(_REF_FIELDS_V1 - {"fixture_sha256"}),
         "source_record_sha256",
     }
 )
+_REF_FIELDS_V2_SNAPSHOT = _REF_FIELDS_V2 | _REF_PROVENANCE_FIELDS
 _PHYSICAL_TRANSCRIPT_FIELDS = frozenset(
     {
         "schema",
@@ -598,8 +614,42 @@ def _timestamp(unix_ns: int, label: str) -> str:
     return timestamp.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
+def _binding_provenance(binding: dict[str, object], label: str) -> None:
+    """Validate exactly one closed binding provenance form.
+
+    The camelCase marker pair selects the snapshot form.  A legacy Git binding
+    keeps its accepted commit casing; a snapshot binding records the shared
+    baseline, explicit null Git fields and the bounded unavailable-Git record.
+    Partial, mixed, present-null and forged pairs all fail closed here.
+    """
+    if not set(binding) & _PROVENANCE_BINDING_FIELDS:
+        if type(binding["gitDirty"]) is not bool:
+            _fail("gitDirty is invalid")
+        if type(binding["gitHead"]) is not str or _GIT_SHA.fullmatch(binding["gitHead"]) is None:
+            _fail("gitHead is invalid")
+        return
+    if binding["sourceBaseline"] != SOURCE_BASELINE_INPUT_SNAPSHOT:
+        _fail(f"{label} source baseline is invalid")
+    if binding["gitHead"] is not None or binding["gitDirty"] is not None:
+        _fail(f"{label} snapshot provenance requires null Git fields")
+    try:
+        unavailable_git_evidence(binding["gitEvidence"])
+    except ValueError as error:
+        raise ReplayContractError(f"{label} Git evidence is invalid") from error
+
+
+def _binding_document(value: object, label: str) -> dict[str, object]:
+    """Return one closed replay/physical binding from either provenance form."""
+    fields = _BINDING_FIELDS
+    if type(value) is dict and set(value) & _PROVENANCE_BINDING_FIELDS:
+        fields = _SNAPSHOT_BINDING_FIELDS
+    binding = _mapping(value, fields, label)
+    _binding_provenance(binding, label)
+    return binding
+
+
 def _validate_binding(value: object) -> dict[str, object]:
-    binding = _mapping(value, _BINDING_FIELDS, "replay binding")
+    binding = _binding_document(value, "replay binding")
     for field in (
         "workspaceId",
         "buildId",
@@ -614,10 +664,6 @@ def _validate_binding(value: object) -> dict[str, object]:
     _session(binding["sessionId"], "sessionId")
     for field in ("probeId", "targetDevice", "physicalTarget", "flashSessionId", "leaseId"):
         _text(binding[field], field, 256)
-    if type(binding["gitDirty"]) is not bool:
-        _fail("gitDirty is invalid")
-    if type(binding["gitHead"]) is not str or _GIT_SHA.fullmatch(binding["gitHead"]) is None:
-        _fail("gitHead is invalid")
     if (
         binding["probeId"] != MONITOR_REPLAY_PROBE_ID
         or binding["physicalTarget"] != MONITOR_REPLAY_PHYSICAL_TARGET
@@ -702,7 +748,7 @@ def _validate_batch(value: object, binding: dict[str, object]) -> dict[str, obje
 
 
 def _validate_physical_binding(value: object) -> dict[str, object]:
-    binding = _mapping(value, _BINDING_FIELDS, "physical binding")
+    binding = _binding_document(value, "physical binding")
     for field in (
         "workspaceId",
         "buildId",
@@ -717,10 +763,6 @@ def _validate_physical_binding(value: object) -> dict[str, object]:
     _session(binding["sessionId"], "sessionId")
     for field in ("probeId", "targetDevice", "physicalTarget", "flashSessionId", "leaseId"):
         _text(binding[field], field, 256)
-    if type(binding["gitDirty"]) is not bool:
-        _fail("gitDirty is invalid")
-    if type(binding["gitHead"]) is not str or _GIT_SHA.fullmatch(binding["gitHead"]) is None:
-        _fail("gitHead is invalid")
     if (
         _SHA256.fullmatch(cast(str, binding["probeId"])) is None
         or any(
@@ -848,7 +890,11 @@ def validate_replay_document(value: object) -> dict[str, object]:
     return document
 
 
-def _validate_run_reference_common(reference: dict[str, object]) -> None:
+def _validate_run_reference_common(
+    reference: dict[str, object],
+    *,
+    snapshot: bool,
+) -> None:
     operation_id = _uuid(reference["operation_id"], "operation_id")
     if type(reference["scenario_role"]) is not str or reference["scenario_role"] not in _ROLES:
         _fail("monitor run reference scenario role is invalid")
@@ -899,10 +945,20 @@ def _validate_run_reference_common(reference: dict[str, object]) -> None:
         _hash(reference[field], field)
     if reference["svd_sha256"] is not None:
         _hash(reference["svd_sha256"], "svd_sha256")
-    if type(reference["git_head"]) is not str or _GIT_SHA.fullmatch(reference["git_head"]) is None:
-        _fail("git_head is invalid")
-    if type(reference["git_dirty"]) is not bool:
-        _fail("git_dirty is invalid")
+    if snapshot:
+        if reference["source_baseline"] != SOURCE_BASELINE_INPUT_SNAPSHOT:
+            _fail("source_baseline is invalid")
+        if reference["git_head"] is not None or reference["git_dirty"] is not None:
+            _fail("snapshot provenance requires null Git fields")
+        try:
+            unavailable_git_evidence(reference["git_evidence"])
+        except ValueError as error:
+            raise ReplayContractError("git_evidence is invalid") from error
+    else:
+        if type(reference["git_head"]) is not str or _GIT_SHA.fullmatch(reference["git_head"]) is None:
+            _fail("git_head is invalid")
+        if type(reference["git_dirty"]) is not bool:
+            _fail("git_dirty is invalid")
     _uuid(reference["group_id"], "group_id")
     _integer(reference["group_revision"], "group_revision", positive=True)
     for field in (
@@ -932,13 +988,16 @@ def validate_run_reference(value: object) -> dict[str, object]:
     if type(reference) is not dict:
         _fail("monitor run reference must be an object")
     schema = reference.get("schema")
+    snapshot = bool(set(reference) & _REF_PROVENANCE_FIELDS)
     if schema == MONITOR_RUN_REF_SCHEMA:
-        reference = _mapping(reference, _REF_FIELDS_V1, "monitor run reference")
+        fields = _REF_FIELDS_V1_SNAPSHOT if snapshot else _REF_FIELDS_V1
+        reference = _mapping(reference, fields, "monitor run reference")
     elif schema == MONITOR_RUN_REF_SCHEMA_V2:
-        reference = _mapping(reference, _REF_FIELDS_V2, "monitor run reference")
+        fields = _REF_FIELDS_V2_SNAPSHOT if snapshot else _REF_FIELDS_V2
+        reference = _mapping(reference, fields, "monitor run reference")
     else:
         _fail("monitor run reference schema is invalid")
-    _validate_run_reference_common(reference)
+    _validate_run_reference_common(reference, snapshot=snapshot)
     if schema == MONITOR_RUN_REF_SCHEMA:
         if reference["execution_source"] != MONITOR_REPLAY_EXECUTION_SOURCE:
             _fail("monitor run reference execution source is invalid")

@@ -11,6 +11,7 @@ import tempfile
 import unicodedata
 from collections.abc import Mapping
 from pathlib import Path
+from types import MappingProxyType
 from typing import cast
 from uuid import UUID
 
@@ -47,6 +48,10 @@ from stm32_toolkit.monitor_replay_contract import (
 )
 from stm32_toolkit.evidence.store import MAX_EVIDENCE_READ_BYTES, EvidenceStore
 from stm32_toolkit.project_model import ProjectManifestError, load_project_model
+from stm32_toolkit.source_provenance import (
+    SOURCE_BASELINE_INPUT_SNAPSHOT,
+    unavailable_git_evidence,
+)
 from stm32_toolkit.testing.publication import TestRunRepository
 from stm32_toolkit.paths import WorkspacePaths, require_safe_session_id
 
@@ -138,6 +143,9 @@ _REF_FIELDS_V2 = tuple(
     "source_record_sha256" if field == "fixture_sha256" else field
     for field in _REF_FIELDS
 )
+#: The two snake_case wire keys that only exist for the snapshot provenance
+#: form.  Legacy references serialize exactly their previous key set.
+_REF_PROVENANCE_FIELDS = ("source_baseline", "git_evidence")
 _EVIDENCE_METADATA_FIELDS = frozenset(
     {
         "operation_id",
@@ -267,6 +275,51 @@ def _require_text(value: object, label: str, *, code: str = MONITOR_REPLAY_INVAL
     except UnicodeEncodeError:
         _fail(code, f"{label} is invalid")
     return value
+
+
+def _validated_reference_provenance(
+    *,
+    git_head: object,
+    git_dirty: object,
+    source_baseline: object,
+    git_evidence: object,
+) -> Mapping[str, str] | None:
+    """Validate one closed run-reference provenance form.
+
+    The legacy form keeps its recorded Git commit and strict dirty boolean.
+    The snapshot form requires the shared baseline, explicit null Git fields
+    and the bounded unavailable-Git record, returned frozen.  Partial, mixed,
+    present-null and forged pairs fail closed instead of being coerced.
+    """
+    if source_baseline is None and git_evidence is None:
+        if type(git_head) is not str or _GIT_SHA.fullmatch(git_head) is None:
+            _fail(MONITOR_REPLAY_INVALID, "git_head is invalid")
+        if type(git_dirty) is not bool:
+            _fail(MONITOR_REPLAY_INVALID, "git_dirty is invalid")
+        return None
+    if source_baseline != SOURCE_BASELINE_INPUT_SNAPSHOT:
+        _fail(MONITOR_REPLAY_INVALID, "source_baseline is invalid")
+    if git_head is not None or git_dirty is not None:
+        _fail(MONITOR_REPLAY_INVALID, "snapshot provenance requires null Git fields")
+    try:
+        return MappingProxyType(unavailable_git_evidence(git_evidence))
+    except ValueError as error:
+        raise MonitorReplayError(
+            MONITOR_REPLAY_INVALID,
+            "git_evidence is invalid",
+        ) from error
+
+
+def _provenance_document(value: Mapping[str, str] | None) -> dict[str, str] | None:
+    """Return a fresh plain copy of one bounded unavailable-Git record."""
+    if value is None:
+        return None
+    return dict(value)
+
+
+def _reference_provenance_fields(wire: Mapping[str, object]) -> dict[str, object]:
+    """Return the snapshot pair of one validated reference wire mapping."""
+    return {name: wire[name] for name in _REF_PROVENANCE_FIELDS if name in wire}
 
 
 def _parse_binding(value: object) -> ObservationBinding:
@@ -458,8 +511,8 @@ class MonitorRunRef:
     build_id: str
     elf_sha256: str
     input_snapshot_sha256: str
-    git_head: str
-    git_dirty: bool
+    git_head: str | None
+    git_dirty: bool | None
     flash_session_id: str
     lease_id: str
     dwarf_sha256: str
@@ -474,6 +527,9 @@ class MonitorRunRef:
     projected_batch_sha256s: tuple[str, ...]
     transcript_evidence_id: str
     run_ref_sha256: str
+    #: Explicit snapshot form fields; both stay ``None`` for the legacy form.
+    source_baseline: str | None = None
+    git_evidence: Mapping[str, str] | None = None
 
     def __post_init__(self) -> None:
         if self.schema != MONITOR_RUN_REF_SCHEMA:
@@ -509,10 +565,14 @@ class MonitorRunRef:
             _fail(MONITOR_REPLAY_INVALID, "svd_sha256 is invalid")
         if self.svd_sha256 is not None:
             _require_hash(self.svd_sha256, "svd_sha256")
-        if type(self.git_head) is not str or _GIT_SHA.fullmatch(self.git_head) is None:
-            _fail(MONITOR_REPLAY_INVALID, "git_head is invalid")
-        if type(self.git_dirty) is not bool:
-            _fail(MONITOR_REPLAY_INVALID, "git_dirty is invalid")
+        evidence = _validated_reference_provenance(
+            git_head=self.git_head,
+            git_dirty=self.git_dirty,
+            source_baseline=self.source_baseline,
+            git_evidence=self.git_evidence,
+        )
+        if evidence is not None:
+            object.__setattr__(self, "git_evidence", evidence)
         group = _require_uuid(self.group_id, "group_id")
         if type(self.group_revision) is not int or isinstance(self.group_revision, bool) or not 1 <= self.group_revision <= MAX_SIGNED_INT64:
             _fail(MONITOR_REPLAY_INVALID, "group_revision is invalid")
@@ -549,7 +609,8 @@ class MonitorRunRef:
                         else wire[field_name]
                     )
                     for field_name in _REF_FIELDS
-                }
+                },
+                **_reference_provenance_fields(wire),
             )
         except ReplayContractError as error:
             raise MonitorReplayError(MONITOR_REPLAY_INVALID, "monitor run reference failed closed validation") from error
@@ -559,7 +620,7 @@ class MonitorRunRef:
             raise MonitorReplayError(MONITOR_REPLAY_INVALID, "monitor run reference is invalid") from error
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        result: dict[str, object] = {
             "schema": self.schema,
             "operation_id": self.operation_id,
             "scenario_role": self.scenario_role,
@@ -595,6 +656,12 @@ class MonitorRunRef:
             "transcript_evidence_id": self.transcript_evidence_id,
             "run_ref_sha256": self.run_ref_sha256,
         }
+        # Only the snapshot form adds wire keys; legacy references serialize to
+        # exactly their previous fields and canonical bytes.
+        if self.source_baseline is not None:
+            result["source_baseline"] = self.source_baseline
+            result["git_evidence"] = _provenance_document(self.git_evidence)
+        return result
 
 
 @dataclass(frozen=True, slots=True)
@@ -619,8 +686,8 @@ class MonitorRunRefV2:
     build_id: str
     elf_sha256: str
     input_snapshot_sha256: str
-    git_head: str
-    git_dirty: bool
+    git_head: str | None
+    git_dirty: bool | None
     flash_session_id: str
     lease_id: str
     dwarf_sha256: str
@@ -635,10 +702,25 @@ class MonitorRunRefV2:
     projected_batch_sha256s: tuple[str, ...]
     transcript_evidence_id: str
     run_ref_sha256: str
+    #: Explicit snapshot form fields; both stay ``None`` for the legacy form.
+    source_baseline: str | None = None
+    git_evidence: Mapping[str, str] | None = None
 
     def __post_init__(self) -> None:
         if self.schema != MONITOR_RUN_REF_SCHEMA_V2:
             _fail(MONITOR_REPLAY_INVALID, "monitor run reference schema is invalid")
+        if self.git_evidence is not None:
+            try:
+                object.__setattr__(
+                    self,
+                    "git_evidence",
+                    MappingProxyType(unavailable_git_evidence(self.git_evidence)),
+                )
+            except ValueError as error:
+                raise MonitorReplayError(
+                    MONITOR_REPLAY_INVALID,
+                    "monitor run reference provenance is invalid",
+                ) from error
         try:
             validate_run_reference(self.to_dict())
         except ReplayContractError as error:
@@ -663,7 +745,8 @@ class MonitorRunRefV2:
                         else wire[field_name]
                     )
                     for field_name in _REF_FIELDS_V2
-                }
+                },
+                **_reference_provenance_fields(wire),
             )
         except ReplayContractError as error:
             raise MonitorReplayError(
@@ -679,7 +762,7 @@ class MonitorRunRefV2:
             ) from error
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        result: dict[str, object] = {
             "schema": self.schema,
             "operation_id": self.operation_id,
             "scenario_role": self.scenario_role,
@@ -715,6 +798,12 @@ class MonitorRunRefV2:
             "transcript_evidence_id": self.transcript_evidence_id,
             "run_ref_sha256": self.run_ref_sha256,
         }
+        # Only the snapshot form adds wire keys; legacy references serialize to
+        # exactly their previous fields and canonical bytes.
+        if self.source_baseline is not None:
+            result["source_baseline"] = self.source_baseline
+            result["git_evidence"] = _provenance_document(self.git_evidence)
+        return result
 
 
 def _decode_document_bytes(raw: bytes) -> dict[str, object]:
@@ -762,6 +851,8 @@ def _project_binding(binding: ObservationBinding, paths: WorkspacePaths) -> Obse
             lease_id=binding.lease_id,
             dwarf_sha256=binding.dwarf_sha256,
             svd_sha256=binding.svd_sha256,
+            source_baseline=binding.source_baseline,
+            git_evidence=binding.git_evidence,
         )
     except (TypeError, ValueError, OverflowError) as error:
         raise MonitorReplayError(EVIDENCE_INTEGRITY_FAILURE, "replay projection identity is invalid") from error
@@ -825,6 +916,11 @@ def _make_reference(
         "transcript_evidence_id": transcript_evidence_id,
         "run_ref_sha256": "0" * 64,
     }
+    # Only the snapshot form adds wire keys; legacy references serialize to
+    # exactly their previous fields and canonical bytes.
+    if document.binding.source_baseline is not None:
+        payload["source_baseline"] = document.binding.source_baseline
+        payload["git_evidence"] = _provenance_document(document.binding.git_evidence)
     unsigned = dict(payload)
     unsigned.pop("run_ref_sha256")
     payload["run_ref_sha256"] = hashlib.sha256(canonical_replay_json_bytes(unsigned)).hexdigest()
@@ -869,6 +965,8 @@ def _expected_transcript_envelope(
             input_snapshot_sha256=document.binding.input_snapshot_sha256,
             git_commit=document.binding.git_head,
             git_dirty=document.binding.git_dirty,
+            source_baseline=document.binding.source_baseline,
+            git_evidence=document.binding.git_evidence,
         )
         return EvidenceEnvelope(
             identity=identity,
@@ -1542,6 +1640,8 @@ def _physical_transcript_envelope(
             input_snapshot_sha256=binding.input_snapshot_sha256,
             git_commit=binding.git_head,
             git_dirty=binding.git_dirty,
+            source_baseline=binding.source_baseline,
+            git_evidence=binding.git_evidence,
         )
         metadata = {
             "operation_id": str(batches[0].run_id),
@@ -1682,6 +1782,11 @@ def _physical_make_reference(
         "transcript_evidence_id": transcript_evidence_id,
         "run_ref_sha256": "0" * 64,
     }
+    # Only the snapshot form adds wire keys; legacy references serialize to
+    # exactly their previous fields and canonical bytes.
+    if binding.source_baseline is not None:
+        payload["source_baseline"] = binding.source_baseline
+        payload["git_evidence"] = _provenance_document(binding.git_evidence)
     unsigned = dict(payload)
     unsigned.pop("run_ref_sha256")
     payload["run_ref_sha256"] = hashlib.sha256(
@@ -2007,6 +2112,9 @@ def _physical_validate_binding(
         or published.manifest.identity.input_snapshot_sha256 != binding.input_snapshot_sha256
         or published.manifest.identity.git_commit != binding.git_head
         or published.manifest.identity.git_dirty != binding.git_dirty
+        or published.manifest.identity.source_baseline != binding.source_baseline
+        or _provenance_document(published.manifest.identity.git_evidence)
+        != _provenance_document(binding.git_evidence)
     ):
         _physical_identity_error("physical TestRun and Monitor history identity differ")
     expected_state = {"failed-before": "failed", "fixed-after": "passed"}[scenario_role]
@@ -2301,6 +2409,8 @@ def _load_monitor_run_authenticated(
             input_snapshot_sha256=binding.input_snapshot_sha256,
             git_commit=binding.git_head,
             git_dirty=binding.git_dirty,
+            source_baseline=binding.source_baseline,
+            git_evidence=binding.git_evidence,
         )
         if transcript_envelope.identity != expected_identity:
             raise ReplayContractError("physical transcript identity is invalid")
@@ -2326,6 +2436,9 @@ def _load_monitor_run_authenticated(
             or reference.input_snapshot_sha256 != binding.input_snapshot_sha256
             or reference.git_head != binding.git_head
             or reference.git_dirty is not binding.git_dirty
+            or reference.source_baseline != binding.source_baseline
+            or _provenance_document(reference.git_evidence)
+            != _provenance_document(binding.git_evidence)
             or reference.flash_session_id != binding.flash_session_id
             or reference.lease_id != binding.lease_id
             or reference.dwarf_sha256 != binding.dwarf_sha256
