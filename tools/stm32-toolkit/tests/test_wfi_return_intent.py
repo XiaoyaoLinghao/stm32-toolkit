@@ -553,7 +553,17 @@ def test_macro_generated_and_comment_prefixed_forms_are_not_definitions() -> Non
         ),
         ("__asm void WFI_SET(unsigned int top) { WFI; }\n", "unsupported"),
         ("__asm void WFI_SET(void) { WFI; NOP; }\n", "unsupported"),
-        ("__asm void WFI_SET(void) { WFI; BX LR; }\n", "explicitReturn"),
+        # The legacy explicit-return grammar takes no semicolons, so this form
+        # stays an unsupported refusal rather than a rewritten wrapper.
+        ("__asm void WFI_SET(void) { WFI; BX LR; }\n", "unsupported"),
+        (
+            "__asm void WFI_SET(void)\n"
+            "{\n"
+            "    WFI\n"
+            "    BX LR\n"
+            "}\n",
+            "explicitReturn",
+        ),
         (
             "__asm void WFI_SET(unsigned int top) { MSR MSP, R0; }\n",
             "nonWfi",
@@ -960,7 +970,7 @@ def test_real_gcc_emits_wfi_then_normal_return_without_interrupt_disable(
     objdump = _require_tool(GNU_BIN, "arm-none-eabi-objdump")
 
     repo = wfi_repo(tmp_path, name="gcc-evidence")
-    destination = output_parent(tmp_path, "gcc-evidence") / "project"
+    destination = output_parent(tmp_path, "gcc-output") / "project"
     plan = plan_keil_delivery(
         repo,
         destination,
