@@ -20,9 +20,11 @@ from pydantic import (
     BeforeValidator,
     ConfigDict,
     Field,
+    SerializerFunctionWrapHandler,
     StrictBool,
     StrictInt,
     StrictStr,
+    model_serializer,
     model_validator,
 )
 
@@ -507,6 +509,16 @@ MonitorRunRefUuid = Annotated[
 ]
 
 
+class MonitorRunRefGitEvidence(BaseModel):
+    """The bounded unavailable-Git record a snapshot reference carries."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["unavailable"]
+    code: Literal["BUILD_GIT_INVALID"]
+    rule: Literal["head", "status"]
+
+
 class DiagnosticMonitorRunRef(BaseModel):
     """Closed v2 physical Monitor source reference accepted by the MCP edge."""
 
@@ -530,8 +542,12 @@ class DiagnosticMonitorRunRef(BaseModel):
     build_id: Digest
     elf_sha256: Digest
     input_snapshot_sha256: Digest
-    git_head: MonitorRunRefGitHead
-    git_dirty: StrictBool
+    #: Null Git fields are accepted only in the validated snapshot form below.
+    git_head: MonitorRunRefGitHead | None
+    git_dirty: StrictBool | None
+    #: The snapshot provenance pair; both stay unset for the legacy Git form.
+    source_baseline: Literal["input-snapshot-v1"] | None = None
+    git_evidence: MonitorRunRefGitEvidence | None = None
     flash_session_id: MonitorRunRefText
     lease_id: MonitorRunRefText
     dwarf_sha256: Digest
@@ -579,6 +595,22 @@ class DiagnosticMonitorRunRef(BaseModel):
         if self.end_captured_unix_ns_exclusive <= self.start_captured_unix_ns:
             raise ValueError("Monitor reference capture window is invalid")
         return self
+
+    @model_serializer(mode="wrap")
+    def _serialize_reference(
+        self, handler: SerializerFunctionWrapHandler
+    ) -> dict[str, object]:
+        """Omit only the two absent snapshot pair keys from a legacy reference.
+
+        A snapshot reference dumps the complete validated pair.  Every other
+        key stays exactly as serialized, so the legacy wire document keeps its
+        accepted key set and the required nullable ``svd_sha256`` survives.
+        """
+        data = handler(self)
+        for key in ("source_baseline", "git_evidence"):
+            if data.get(key) is None:
+                data.pop(key, None)
+        return data
 
 
 class DiagnosticPhysicalMonitorFactSelector(BaseModel):

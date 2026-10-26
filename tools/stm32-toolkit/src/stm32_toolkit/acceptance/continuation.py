@@ -48,6 +48,10 @@ from stm32_toolkit.monitor_analysis_contract import (
     native_statistics,
     validate_native_request,
 )
+from stm32_toolkit.source_provenance import (
+    SOURCE_BASELINE_INPUT_SNAPSHOT,
+    unavailable_git_evidence,
+)
 from stm32_toolkit.testing.publication import PublishedTestRun, TestRunRepository
 
 from .recovery import (
@@ -153,6 +157,54 @@ def _time(value: str) -> datetime:
 
 def _hash_payload(value: Mapping[str, object]) -> str:
     return hashlib.sha256(canonical_json_bytes(dict(value))).hexdigest()
+
+
+def _git_evidence_document(value: object) -> dict[str, str] | None:
+    """Return the one canonical bounded document for a recorded pair member."""
+    if value is None:
+        return None
+    try:
+        return unavailable_git_evidence(value)
+    except ValueError as error:
+        raise ContinuationValidationError("continuation Git evidence is invalid") from error
+
+
+def _provenance_signature(
+    source_baseline: object, git_evidence: object
+) -> tuple[object, ...]:
+    """Return the closed provenance projection of one recorded source form.
+
+    A snapshot record carries null Git fields, so equal hashes and equal Git
+    fields are not enough: the bounded Git-unavailable evidence is part of the
+    identity.  Only the single legacy form projects to an empty tuple, so
+    neither form can stand in for the other, and a partial or forged pair fails
+    closed instead of being coerced into one.
+    """
+    document = _git_evidence_document(git_evidence)
+    if source_baseline is None and document is None:
+        return ()
+    if source_baseline != SOURCE_BASELINE_INPUT_SNAPSHOT or document is None:
+        raise ContinuationValidationError("continuation source provenance is invalid")
+    return (source_baseline, tuple(sorted(document.items())))
+
+
+def _identity_provenance(identity: object) -> tuple[object, ...]:
+    return _provenance_signature(
+        getattr(identity, "source_baseline", None),
+        getattr(identity, "git_evidence", None),
+    )
+
+
+def _binding_provenance(binding: Mapping[str, object]) -> tuple[object, ...]:
+    return _provenance_signature(
+        binding.get("sourceBaseline"), binding.get("gitEvidence")
+    )
+
+
+def _reference_provenance(reference: Mapping[str, object]) -> tuple[object, ...]:
+    return _provenance_signature(
+        reference.get("source_baseline"), reference.get("git_evidence")
+    )
 
 
 _PROOF_FIELDS = frozenset(
@@ -901,6 +953,7 @@ def _continuation_monitor_reference(evidence, parent_id, loaded, role, *, includ
     }
     if (transcript["test_run_id"] != loaded.manifest.run_id or transcript["scenario_role"] != role
         or any(binding[key] != value for key, value in expected_binding.items())
+        or _binding_provenance(binding) != _identity_provenance(identity)
         or any(batch["runId"] != operation_id for batch in batches)):
         raise ContinuationValidationError("continuation transcript TestRun binding differs")
     expected_metadata = {
@@ -946,7 +999,8 @@ def _continuation_monitor_reference(evidence, parent_id, loaded, role, *, includ
         "end_captured_unix_ns_exclusive": last["capturedUnixNs"] + 1,
         "projected_batch_sha256s": [hashlib.sha256(canonical_physical_json_bytes(batch)).hexdigest() for batch in batches],
     }
-    if any(reference[key] != value for key, value in expected_reference.items()):
+    if (any(reference[key] != value for key, value in expected_reference.items())
+        or _reference_provenance(reference) != _binding_provenance(binding)):
         raise ContinuationValidationError("continuation Monitor reference binding differs")
     root_metadata = {
         "source_record_sha256": artifact.sha256, "run_ref_sha256": reference["run_ref_sha256"],

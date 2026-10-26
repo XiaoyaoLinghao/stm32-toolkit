@@ -79,6 +79,10 @@ from stm32_toolkit.diagnostics.model import (
 )
 from stm32_toolkit.project_model import ProjectManifestError, load_project_model
 from stm32_toolkit.result import OperationResult
+from stm32_toolkit.source_provenance import (
+    SOURCE_BASELINE_INPUT_SNAPSHOT,
+    unavailable_git_evidence,
+)
 from stm32_toolkit.testing.model import TestProtocolError
 from stm32_toolkit.testing.publication import TestRunRepository
 
@@ -1278,14 +1282,65 @@ def _same_scope(left: object, right: object) -> bool:
     )
 
 
+def _git_evidence_document(value: object) -> dict[str, str] | None:
+    """Return the one canonical bounded document for a recorded pair member."""
+    if value is None:
+        return None
+    try:
+        return unavailable_git_evidence(value)
+    except ValueError as error:
+        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE) from error
+
+
+def _provenance_signature(
+    source_baseline: object, git_evidence: object
+) -> tuple[object, ...]:
+    """Return the closed provenance projection of one recorded source form.
+
+    A snapshot record carries null Git fields, so two identities with equal
+    hashes and equal Git fields can still name different bounded Git-unavailable
+    evidence.  The projection therefore keeps the complete pair and stays empty
+    only for the single legacy form, which makes a snapshot record unable to
+    masquerade as a legacy one and vice versa.  A partial or forged pair fails
+    closed instead of being coerced into either form.
+    """
+    document = _git_evidence_document(git_evidence)
+    if source_baseline is None and document is None:
+        return ()
+    if source_baseline != SOURCE_BASELINE_INPUT_SNAPSHOT or document is None:
+        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+    return (source_baseline, tuple(sorted(document.items())))
+
+
+def _identity_provenance(identity: object) -> tuple[object, ...]:
+    return _provenance_signature(
+        getattr(identity, "source_baseline", None),
+        getattr(identity, "git_evidence", None),
+    )
+
+
+def _binding_provenance(binding: Mapping[str, object]) -> tuple[object, ...]:
+    return _provenance_signature(
+        binding.get("sourceBaseline"), binding.get("gitEvidence")
+    )
+
+
+def _reference_provenance(reference: Mapping[str, object]) -> tuple[object, ...]:
+    return _provenance_signature(
+        reference.get("source_baseline"), reference.get("git_evidence")
+    )
+
+
 def _same_replay_identity(left: object, right: object) -> bool:
-    return all(
+    if not all(
         getattr(left, field, None) == getattr(right, field, None)
         for field in (
             "workspace_id", "project_id", "build_id", "elf_sha256", "target_device",
             "input_snapshot_sha256", "git_commit", "git_dirty",
         )
-    )
+    ):
+        return False
+    return _identity_provenance(left) == _identity_provenance(right)
 
 
 def _load_target_run(
@@ -1634,6 +1689,8 @@ def _read_transcript_parent(
         }
         if any(binding.get(key) != value for key, value in expected_binding.items()):
             raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+        if _binding_provenance(binding) != _identity_provenance(run_identity):
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
         if binding.get("sessionId") != envelope.identity.session_id:
             raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
         batches = cast(list[object], decoded["batches"])
@@ -1805,6 +1862,8 @@ def _read_physical_transcript_parent(
             or binding["gitDirty"] is not getattr(run_identity, "git_dirty", None)
         ):
             raise _WorkflowFailure(_INCOMPATIBLE_IDENTITY)
+        if _binding_provenance(binding) != _identity_provenance(run_identity):
+            raise _WorkflowFailure(_INCOMPATIBLE_IDENTITY)
         if any(
             not isinstance(batch, dict)
             or batch.get("runId") != operation_id
@@ -1874,6 +1933,8 @@ def _read_physical_transcript_parent(
             or reference["transcript_evidence_id"] != evidence_id
             or reference_envelope.identity != envelope.identity
         ):
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+        if _reference_provenance(reference) != _binding_provenance(binding):
             raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
 
         expected_reference = {
@@ -2034,6 +2095,8 @@ def _read_monitor_reference_authority(
             or reference["fixture_sha256"] != transcript_metadata["fixture_sha256"]
         ):
             raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+        if _reference_provenance(reference) != _binding_provenance(transcript_binding):
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
 
         try:
             if str(UUID(operation_id)) != operation_id:
@@ -2085,6 +2148,10 @@ def _read_monitor_reference_authority(
         if any(
             getattr(reference_envelope.identity, key, None) != value
             for key, value in expected_transcript_identity.items()
+        ):
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+        if _identity_provenance(reference_envelope.identity) != _reference_provenance(
+            reference
         ):
             raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
         if reference["transcript_evidence_id"] != str(transcript_envelope.evidence_id):
