@@ -1,0 +1,452 @@
+{
+  "acceptedBase": "39497f89e1ad2e2b5af27181af08385b755961b6",
+  "codeHeadBeforeReport": "d281addbbdb70e36c270e24828868d7e936dc6e1",
+  "runs": {
+    "a1": {
+      "head": "59dd2b93e6dc81fe102155dd71c1c4730810691e",
+      "exitCode": 0,
+      "owner": "Claude CLI; primary independently reconciled bound result",
+      "counts": {
+        "failed": 0,
+        "errors": 0,
+        "skipped": 0,
+        "cases": 324,
+        "passed": 324
+      },
+      "executionSha256": "8cb666ddeb7baa7b742c2a12b70f266a95c1b77c4ebab8f8fe08f68e3f43b0ca",
+      "junitSha256": "7dc98b53716eb992caf2bb25c65523eed40f24e539c3cc6781d41c3cb9101040"
+    },
+    "a2": {
+      "head": "59dd2b93e6dc81fe102155dd71c1c4730810691e",
+      "exitCode": 0,
+      "owner": "Claude CLI; primary independently reconciled bound result",
+      "counts": {
+        "failed": 0,
+        "errors": 0,
+        "skipped": 0,
+        "cases": 98,
+        "passed": 98
+      },
+      "executionSha256": "7a7abd03431e180e209dbf50eabb9d6fdc4d8158dc839e3b127d066eeff667d7",
+      "junitSha256": "e08fc268dfbf8bb9519b7410124dbf900ec9cf94b7927b94601698b288eca710"
+    },
+    "a3": {
+      "head": "59dd2b93e6dc81fe102155dd71c1c4730810691e",
+      "exitCode": 0,
+      "owner": "Claude CLI; primary independently reconciled bound result",
+      "counts": {
+        "failed": 0,
+        "errors": 0,
+        "skipped": 0,
+        "cases": 114,
+        "passed": 114
+      },
+      "executionSha256": "3d399d49ff23b49cf040ff90143047d44f993bc22245669f7d92b5867616c632",
+      "junitSha256": "b5c5f2d0f8114b69bf36a67125923952fb5347824fd888121d38d18a12d85603"
+    },
+    "b1": {
+      "head": "59dd2b93e6dc81fe102155dd71c1c4730810691e",
+      "exitCode": 0,
+      "owner": "Claude CLI; primary independently reconciled bound result",
+      "counts": {
+        "failed": 0,
+        "errors": 0,
+        "skipped": 0,
+        "cases": 574,
+        "passed": 574
+      },
+      "executionSha256": "af89f75d62b591aff7633e2b1a33fdc01d8cfc7b11b9a3fe1e65b56e1d7005a4",
+      "junitSha256": "dea12e1bbb9987526a561a6cf5d26b71c371ced9effb4c4312211d895e6ae39b"
+    },
+    "b2": {
+      "head": "59dd2b93e6dc81fe102155dd71c1c4730810691e",
+      "exitCode": 0,
+      "owner": "Claude CLI; primary independently reconciled bound result",
+      "counts": {
+        "failed": 0,
+        "errors": 0,
+        "skipped": 0,
+        "cases": 787,
+        "passed": 787
+      },
+      "executionSha256": "635c75b6cfb937579349d85043c454e9ed6bcff4170f5d2e4f9f3d190dd5244c",
+      "junitSha256": "07f7aaca2732528fa3adeb060de8ae4507d5f827de7db6af7a68620f21980667"
+    },
+    "c1": {
+      "head": "1b08d5a04895716b8a9ba2bfb303d59449932749",
+      "exitCode": 0,
+      "owner": "Claude CLI; primary independently reconciled bound result",
+      "counts": {
+        "failed": 0,
+        "errors": 0,
+        "skipped": 0,
+        "cases": 161,
+        "passed": 161
+      },
+      "executionSha256": "582c335a2923ebf24f86cb8f2d13f30e51c82f15c5f29a73422f82d2cf7893e5",
+      "junitSha256": "e3d8e3117e134833fda14ca3a467cfb4135df63dbc6c062435eb1c5469527955"
+    },
+    "c2": {
+      "head": "1b08d5a04895716b8a9ba2bfb303d59449932749",
+      "exitCode": 0,
+      "owner": "Claude CLI; primary independently reconciled bound result",
+      "counts": {
+        "failed": 0,
+        "errors": 0,
+        "skipped": 1,
+        "cases": 94,
+        "passed": 93
+      },
+      "executionSha256": "1b29665fadef9721d279e29cb03ad44e3f4f929cda404de0aee85cc782c80f13",
+      "junitSha256": "f979eb73cfbebb8dc52419a2b447a56bfaaf4e72b1d979789445aa0c2193fa01"
+    },
+    "c3": {
+      "head": "1b08d5a04895716b8a9ba2bfb303d59449932749",
+      "exitCode": 0,
+      "owner": "Claude CLI; primary independently reconciled bound result",
+      "counts": {
+        "failed": 0,
+        "errors": 0,
+        "skipped": 0,
+        "cases": 14,
+        "passed": 14
+      },
+      "executionSha256": "4d7490ff181cd137cfa76aa9f2a4aca5e82ab7e2ed09cfa605d803b20052d06a",
+      "junitSha256": "c92ceffe9afbd2d31c66b3b28ee6cf728e90313800aa9f9d46dac65275be7323"
+    },
+    "s1": {
+      "head": "1b08d5a04895716b8a9ba2bfb303d59449932749",
+      "exitCode": 0,
+      "owner": "Claude CLI; primary independently reconciled bound result",
+      "counts": {
+        "failed": 0,
+        "errors": 0,
+        "skipped": 0,
+        "cases": 16,
+        "passed": 16
+      },
+      "executionSha256": "e45e64c7cd11fd5e1a876725e0ceb405945f021ae43c1e626534cefe9335684e",
+      "junitSha256": "b5f414a335f5eb77d4bc6858bea8374ac556dec617ce995b8d0d4120371fc9ea"
+    },
+    "s2": {
+      "head": "1b08d5a04895716b8a9ba2bfb303d59449932749",
+      "exitCode": 1,
+      "owner": "Claude CLI; primary independently reconciled bound result",
+      "counts": {
+        "failed": 1,
+        "errors": 0,
+        "skipped": 0,
+        "cases": 30,
+        "passed": 29
+      },
+      "executionSha256": "db43dfb605deb0c88db5cf44cf2db36576907c3786bcbcc5eaa3a4e84b69dc77",
+      "junitSha256": "ddf0a9c528ae651913e0ba79148c2447851fbfbcc8f896e65e367a02f7d0194f"
+    },
+    "d1": {
+      "head": "d281addbbdb70e36c270e24828868d7e936dc6e1",
+      "exitCode": 0,
+      "owner": "Claude CLI; primary independently reconciled bound result",
+      "counts": {
+        "failed": 0,
+        "errors": 0,
+        "skipped": 0,
+        "cases": 4,
+        "passed": 4
+      },
+      "executionSha256": "38ceacd3e800ba04f7d84c092aa149906af43de033d384864a974500cbf3acb1",
+      "junitSha256": "fd1d344e417d0f7fa54a1fecaf3bb2bbb3f0c29426ebaab457632b592ecd5824"
+    },
+    "p1": {
+      "head": "1b08d5a04895716b8a9ba2bfb303d59449932749",
+      "exitCode": 1,
+      "owner": "Claude CLI; primary independently reconciled bound result",
+      "counts": {
+        "failed": 1,
+        "errors": 0,
+        "skipped": 0,
+        "cases": 2,
+        "passed": 1
+      },
+      "executionSha256": "55f7ef500b33ccd8080e1807e06a9cc07268450764ad1433ed8df037b09cc4e0",
+      "junitSha256": "6ef9e46a2a66be6c7d265db633ddf0c4e983b9b3f73bbef58fb05f9851c29f38"
+    },
+    "p2": {
+      "head": "acb71b9f39e8ae4799179b0cab088245c0a5ea5b",
+      "exitCode": 0,
+      "owner": "Claude CLI; primary independently reconciled bound result",
+      "counts": {
+        "failed": 0,
+        "errors": 0,
+        "skipped": 0,
+        "cases": 1,
+        "passed": 1
+      },
+      "executionSha256": "c90d334d53e18ac40ed1fb26625e80f8f41ea671f659ed8e80a7603c88ea5412",
+      "junitSha256": "489ff0318e26acf64ba1ef1112cb368a6390935f4904160befb25fc98f8a7e0d"
+    },
+    "p3": {
+      "head": "1b08d5a04895716b8a9ba2bfb303d59449932749",
+      "exitCode": 0,
+      "owner": "Claude CLI; primary independently reconciled bound result",
+      "counts": {
+        "failed": 0,
+        "errors": 0,
+        "skipped": 0,
+        "cases": 1,
+        "passed": 1
+      },
+      "executionSha256": "b6cd1968fed179cfa273ca653d95739a434ea33fef8fabc6b32a9269312b5ce3",
+      "junitSha256": "ac57f3cfb3a28d72f23cef6ad8c1423c4531f5460f3f8dd8fee00f72bd92849f"
+    },
+    "u1": {
+      "head": "59dd2b93e6dc81fe102155dd71c1c4730810691e",
+      "exitCode": 0,
+      "owner": "Claude CLI; primary independently reconciled bound result",
+      "counts": {
+        "failed": 0,
+        "errors": 0,
+        "skipped": 1,
+        "cases": 535,
+        "passed": 534
+      },
+      "executionSha256": "8f85075837f199ca3a6652af7cc4abcc4855885b2740d422cc0e60d01b464f69",
+      "junitSha256": "a91de0f542bfa4faef868d0a6f181bbad4415a78dcdc02aedf62e5a511023379"
+    },
+    "u2": {
+      "head": "59dd2b93e6dc81fe102155dd71c1c4730810691e",
+      "exitCode": 0,
+      "owner": "Claude CLI; primary independently reconciled bound result",
+      "counts": null,
+      "executionSha256": "4183c3e41cf01b6d8b21a68217f5cac2b0c998bedc69972048176e7e1551e0fc",
+      "junitSha256": null
+    }
+  },
+  "qualificationSha256": "255f8a9f79794a465fbf1c3b17793ddbc88bf0dbff1d353daabb4c874f3008dd",
+  "coverage": {
+    "toolkit-overall": {
+      "covered": 15211,
+      "total": 18418,
+      "percent": 82.58768595938756,
+      "floor": 90,
+      "status": "UNMET"
+    },
+    "toolkit-risk-core-v2": {
+      "covered": 14157,
+      "total": 17176,
+      "percent": 82.42314857941314,
+      "floor": 90,
+      "status": "UNMET"
+    },
+    "monitor-overall": {
+      "covered": 3292,
+      "total": 3564,
+      "percent": 92.36812570145904,
+      "floor": 90,
+      "status": "PASS"
+    },
+    "monitor-risk-core-v2": {
+      "covered": 3292,
+      "total": 3564,
+      "percent": 92.36812570145904,
+      "floor": 95,
+      "status": "UNMET"
+    }
+  },
+  "ui": {
+    "covered": 2938,
+    "total": 3147,
+    "percent": 93.35875436924054,
+    "positiveFileFloor": 90,
+    "allFilesPass": true,
+    "files": [
+      {
+        "file": "C:\\Users\\zhy76\\.codex\\worktrees\\v133-release-review\\STM32-Toolkit\\tools\\stm32-monitor\\ui\\src\\app.tsx",
+        "covered": 262,
+        "total": 288
+      },
+      {
+        "file": "C:\\Users\\zhy76\\.codex\\worktrees\\v133-release-review\\STM32-Toolkit\\tools\\stm32-monitor\\ui\\src\\bootstrap.ts",
+        "covered": 55,
+        "total": 57
+      },
+      {
+        "file": "C:\\Users\\zhy76\\.codex\\worktrees\\v133-release-review\\STM32-Toolkit\\tools\\stm32-monitor\\ui\\src\\controller.ts",
+        "covered": 519,
+        "total": 567
+      },
+      {
+        "file": "C:\\Users\\zhy76\\.codex\\worktrees\\v133-release-review\\STM32-Toolkit\\tools\\stm32-monitor\\ui\\src\\main.tsx",
+        "covered": 9,
+        "total": 10
+      },
+      {
+        "file": "C:\\Users\\zhy76\\.codex\\worktrees\\v133-release-review\\STM32-Toolkit\\tools\\stm32-monitor\\ui\\src\\api\\client.ts",
+        "covered": 38,
+        "total": 41
+      },
+      {
+        "file": "C:\\Users\\zhy76\\.codex\\worktrees\\v133-release-review\\STM32-Toolkit\\tools\\stm32-monitor\\ui\\src\\api\\contract.ts",
+        "covered": 207,
+        "total": 228
+      },
+      {
+        "file": "C:\\Users\\zhy76\\.codex\\worktrees\\v133-release-review\\STM32-Toolkit\\tools\\stm32-monitor\\ui\\src\\api\\live.ts",
+        "covered": 28,
+        "total": 30
+      },
+      {
+        "file": "C:\\Users\\zhy76\\.codex\\worktrees\\v133-release-review\\STM32-Toolkit\\tools\\stm32-monitor\\ui\\src\\api\\wire.ts",
+        "covered": 47,
+        "total": 47
+      },
+      {
+        "file": "C:\\Users\\zhy76\\.codex\\worktrees\\v133-release-review\\STM32-Toolkit\\tools\\stm32-monitor\\ui\\src\\catalog\\shallow-selectors.ts",
+        "covered": 8,
+        "total": 8
+      },
+      {
+        "file": "C:\\Users\\zhy76\\.codex\\worktrees\\v133-release-review\\STM32-Toolkit\\tools\\stm32-monitor\\ui\\src\\chart\\echarts.ts",
+        "covered": 43,
+        "total": 46
+      },
+      {
+        "file": "C:\\Users\\zhy76\\.codex\\worktrees\\v133-release-review\\STM32-Toolkit\\tools\\stm32-monitor\\ui\\src\\chart\\series.ts",
+        "covered": 54,
+        "total": 54
+      },
+      {
+        "file": "C:\\Users\\zhy76\\.codex\\worktrees\\v133-release-review\\STM32-Toolkit\\tools\\stm32-monitor\\ui\\src\\chart\\zoom.ts",
+        "covered": 30,
+        "total": 33
+      },
+      {
+        "file": "C:\\Users\\zhy76\\.codex\\worktrees\\v133-release-review\\STM32-Toolkit\\tools\\stm32-monitor\\ui\\src\\components\\CatalogPanel.tsx",
+        "covered": 72,
+        "total": 75
+      },
+      {
+        "file": "C:\\Users\\zhy76\\.codex\\worktrees\\v133-release-review\\STM32-Toolkit\\tools\\stm32-monitor\\ui\\src\\components\\ChartZoomControls.tsx",
+        "covered": 5,
+        "total": 5
+      },
+      {
+        "file": "C:\\Users\\zhy76\\.codex\\worktrees\\v133-release-review\\STM32-Toolkit\\tools\\stm32-monitor\\ui\\src\\components\\ExportPanel.tsx",
+        "covered": 49,
+        "total": 54
+      },
+      {
+        "file": "C:\\Users\\zhy76\\.codex\\worktrees\\v133-release-review\\STM32-Toolkit\\tools\\stm32-monitor\\ui\\src\\components\\FailureMessage.tsx",
+        "covered": 3,
+        "total": 3
+      },
+      {
+        "file": "C:\\Users\\zhy76\\.codex\\worktrees\\v133-release-review\\STM32-Toolkit\\tools\\stm32-monitor\\ui\\src\\components\\GroupPanel.tsx",
+        "covered": 140,
+        "total": 148
+      },
+      {
+        "file": "C:\\Users\\zhy76\\.codex\\worktrees\\v133-release-review\\STM32-Toolkit\\tools\\stm32-monitor\\ui\\src\\components\\HistoryPanel.tsx",
+        "covered": 84,
+        "total": 92
+      },
+      {
+        "file": "C:\\Users\\zhy76\\.codex\\worktrees\\v133-release-review\\STM32-Toolkit\\tools\\stm32-monitor\\ui\\src\\components\\IdentityBar.tsx",
+        "covered": 6,
+        "total": 6
+      },
+      {
+        "file": "C:\\Users\\zhy76\\.codex\\worktrees\\v133-release-review\\STM32-Toolkit\\tools\\stm32-monitor\\ui\\src\\components\\LiveChart.tsx",
+        "covered": 51,
+        "total": 55
+      },
+      {
+        "file": "C:\\Users\\zhy76\\.codex\\worktrees\\v133-release-review\\STM32-Toolkit\\tools\\stm32-monitor\\ui\\src\\components\\LiveTable.tsx",
+        "covered": 36,
+        "total": 38
+      },
+      {
+        "file": "C:\\Users\\zhy76\\.codex\\worktrees\\v133-release-review\\STM32-Toolkit\\tools\\stm32-monitor\\ui\\src\\components\\NoticeRegion.tsx",
+        "covered": 2,
+        "total": 2
+      },
+      {
+        "file": "C:\\Users\\zhy76\\.codex\\worktrees\\v133-release-review\\STM32-Toolkit\\tools\\stm32-monitor\\ui\\src\\components\\OperationRegion.tsx",
+        "covered": 34,
+        "total": 37
+      },
+      {
+        "file": "C:\\Users\\zhy76\\.codex\\worktrees\\v133-release-review\\STM32-Toolkit\\tools\\stm32-monitor\\ui\\src\\components\\ProbePanel.tsx",
+        "covered": 16,
+        "total": 16
+      },
+      {
+        "file": "C:\\Users\\zhy76\\.codex\\worktrees\\v133-release-review\\STM32-Toolkit\\tools\\stm32-monitor\\ui\\src\\components\\SamplingControls.tsx",
+        "covered": 28,
+        "total": 29
+      },
+      {
+        "file": "C:\\Users\\zhy76\\.codex\\worktrees\\v133-release-review\\STM32-Toolkit\\tools\\stm32-monitor\\ui\\src\\components\\SourceCatalogPanel.tsx",
+        "covered": 160,
+        "total": 176
+      },
+      {
+        "file": "C:\\Users\\zhy76\\.codex\\worktrees\\v133-release-review\\STM32-Toolkit\\tools\\stm32-monitor\\ui\\src\\components\\StatusStrip.tsx",
+        "covered": 33,
+        "total": 33
+      },
+      {
+        "file": "C:\\Users\\zhy76\\.codex\\worktrees\\v133-release-review\\STM32-Toolkit\\tools\\stm32-monitor\\ui\\src\\components\\TransportStatus.tsx",
+        "covered": 12,
+        "total": 12
+      },
+      {
+        "file": "C:\\Users\\zhy76\\.codex\\worktrees\\v133-release-review\\STM32-Toolkit\\tools\\stm32-monitor\\ui\\src\\components\\dialog-focus.ts",
+        "covered": 94,
+        "total": 100
+      },
+      {
+        "file": "C:\\Users\\zhy76\\.codex\\worktrees\\v133-release-review\\STM32-Toolkit\\tools\\stm32-monitor\\ui\\src\\presentation\\zh.ts",
+        "covered": 109,
+        "total": 112
+      },
+      {
+        "file": "C:\\Users\\zhy76\\.codex\\worktrees\\v133-release-review\\STM32-Toolkit\\tools\\stm32-monitor\\ui\\src\\state\\group-transfer.ts",
+        "covered": 0,
+        "total": 0
+      },
+      {
+        "file": "C:\\Users\\zhy76\\.codex\\worktrees\\v133-release-review\\STM32-Toolkit\\tools\\stm32-monitor\\ui\\src\\state\\model.ts",
+        "covered": 29,
+        "total": 29
+      },
+      {
+        "file": "C:\\Users\\zhy76\\.codex\\worktrees\\v133-release-review\\STM32-Toolkit\\tools\\stm32-monitor\\ui\\src\\state\\reducer.ts",
+        "covered": 606,
+        "total": 643
+      },
+      {
+        "file": "C:\\Users\\zhy76\\.codex\\worktrees\\v133-release-review\\STM32-Toolkit\\tools\\stm32-monitor\\ui\\src\\state\\selectors.ts",
+        "covered": 43,
+        "total": 46
+      },
+      {
+        "file": "C:\\Users\\zhy76\\.codex\\worktrees\\v133-release-review\\STM32-Toolkit\\tools\\stm32-monitor\\ui\\src\\state\\watch.ts",
+        "covered": 26,
+        "total": 27
+      }
+    ],
+    "nativeSha256": "7623122dd5b374772e3562f45fd25d921e244acf548d8e24e5127bc97ea0a9ec"
+  },
+  "singleFinalHeadFullRerun": false,
+  "sourceReuseInputs": 88,
+  "changedSourcesPriorArcsRemoved": 45,
+  "performance": {
+    "originalFullFile": "p1: export PASS; monitor append p95 124.9428 ms FAIL (<50 ms required); subsequent monitor stages unexecuted",
+    "controlledComparison": "p2 baseline append p95 21.4292 ms PASS; p3 candidate 19.5793 ms PASS; all monitor-only assertions executed",
+    "cause": "Not established. No source regression reproduced by bounded comparison; original failure remains."
+  },
+  "userValidation": "USER_VALIDATION_PENDING",
+  "releaseDisposition": "NOT_QUALIFIED",
+  "originalProjectAccess": false,
+  "physicalHardware": false
+}

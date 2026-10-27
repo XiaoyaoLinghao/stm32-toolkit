@@ -1,5 +1,9 @@
 # Release status and retained limitations
 
+## v1.3.3 local release preparation — 2026-10-27
+
+Version alignment and current guidance are reviewed at `d281addbbdb70e36c270e24828868d7e936dc6e1`; release qualification is **NOT_QUALIFIED**. See [review and retained limits](codex/returns/STM32TK-133/version-review.md). Canonical double builds are next. The user authorizes push/Latest after validation and owns final installation/VS Code (**USER_VALIDATION_PENDING**). Prior exceptions do not transfer. No original-project or hardware actions, no v1.3.3 remote publication yet.
+
 ## v1.3.2 published Latest — 2026-10-26
 
 The [v1.3.2 Release](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.3.2),
