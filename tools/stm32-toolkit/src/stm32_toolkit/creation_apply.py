@@ -393,6 +393,131 @@ def _default_build(staging: Path, preset: str) -> OperationResult[object]:
     return build_firmware_workflow(staging, preset=preset, clean=False, timeout_seconds=300, authorized=True)
 
 
+_CACHE_PRESETS = ("arm-debug", "arm-release")
+_FILE_ATTRIBUTE_REPARSE_POINT = 0x400
+
+
+def _cache_failure(preset: str, rule: str, path: str) -> CreationApplyError:
+    return CreationApplyError(
+        "CREATION_CACHE_PREPARATION_FAILED",
+        "creation build cache cannot be invalidated before activation",
+        {"preset": preset, "rule": rule, "path": path},
+    )
+
+
+def _cache_lstat(path: Path) -> os.stat_result:
+    """Inspect one cache candidate without following links."""
+    return os.lstat(path)
+
+
+def _cache_entry(path: Path, root: Path, preset: str, relative: str) -> os.stat_result | None:
+    """lstat one owned cache candidate, returning ``None`` only when absent."""
+    try:
+        info = _cache_lstat(path)
+    except FileNotFoundError:
+        return None
+    except OSError:
+        raise _cache_failure(preset, "io", relative) from None
+    if stat.S_ISLNK(info.st_mode):
+        raise _cache_failure(preset, "link", relative)
+    if getattr(info, "st_file_attributes", 0) & _FILE_ATTRIBUTE_REPARSE_POINT:
+        raise _cache_failure(preset, "reparse", relative)
+    try:
+        path.resolve(strict=True).relative_to(root)
+    except (OSError, RuntimeError, ValueError):
+        raise _cache_failure(preset, "escape", relative) from None
+    return info
+
+
+def _cache_children(path: Path, preset: str, relative: str) -> list[str]:
+    try:
+        with os.scandir(path) as entries:
+            return sorted(entry.name for entry in entries)
+    except OSError:
+        raise _cache_failure(preset, "io", relative) from None
+
+
+def _validate_cache_tree(path: Path, root: Path, preset: str, relative: str) -> None:
+    """Inspect every cache entry before anything is removed."""
+    info = _cache_entry(path, root, preset, relative)
+    if info is None or stat.S_ISREG(info.st_mode):
+        return
+    if not stat.S_ISDIR(info.st_mode):
+        raise _cache_failure(preset, "shape", relative)
+    for name in _cache_children(path, preset, relative):
+        _validate_cache_tree(path / name, root, preset, f"{relative}/{name}")
+
+
+def _remove_cache_tree(path: Path, root: Path, preset: str, relative: str) -> None:
+    """Remove one validated cache tree without ever traversing a link."""
+    info = _cache_entry(path, root, preset, relative)
+    if info is None:
+        return
+    if stat.S_ISREG(info.st_mode):
+        try:
+            os.unlink(path)
+        except OSError:
+            raise _cache_failure(preset, "io", relative) from None
+        return
+    if not stat.S_ISDIR(info.st_mode):
+        raise _cache_failure(preset, "shape", relative)
+    for name in _cache_children(path, preset, relative):
+        _remove_cache_tree(path / name, root, preset, f"{relative}/{name}")
+    try:
+        os.rmdir(path)
+    except OSError:
+        raise _cache_failure(preset, "io", relative) from None
+
+
+def _invalidate_creation_build_caches(project_root: Path) -> None:
+    """Drop only this attempt's staged CMake caches before delivery.
+
+    Both staged builds already succeeded, so ELF/MAP/identity artifacts, source
+    and managed manifests survive byte-identically; only the generated
+    ``CMakeCache.txt`` and ``CMakeFiles`` caches beneath the two known preset
+    directories go away so the delivered project reconfigures in place.
+    Missing cache paths are valid seams. Every ancestor and recursive entry is
+    inspected first, so no deletion starts on a link, reparse point, escaping
+    path, or unexpected shape.
+    """
+    try:
+        root = project_root.resolve(strict=True)
+    except (OSError, RuntimeError):
+        raise _cache_failure("build", "io", "build") from None
+    build_root = project_root / "build"
+    build_info = _cache_entry(build_root, root, "build", "build")
+    if build_info is None:
+        return
+    if not stat.S_ISDIR(build_info.st_mode):
+        raise _cache_failure("build", "shape", "build")
+    removals: list[tuple[Path, str, str]] = []
+    for preset in _CACHE_PRESETS:
+        preset_relative = f"build/{preset}"
+        preset_root = build_root / preset
+        preset_info = _cache_entry(preset_root, root, preset, preset_relative)
+        if preset_info is None:
+            continue
+        if not stat.S_ISDIR(preset_info.st_mode):
+            raise _cache_failure(preset, "shape", preset_relative)
+        cache_path = preset_root / "CMakeCache.txt"
+        cache_relative = f"{preset_relative}/CMakeCache.txt"
+        cache_info = _cache_entry(cache_path, root, preset, cache_relative)
+        if cache_info is not None:
+            if not stat.S_ISREG(cache_info.st_mode):
+                raise _cache_failure(preset, "shape", cache_relative)
+            removals.append((cache_path, preset, cache_relative))
+        files_path = preset_root / "CMakeFiles"
+        files_relative = f"{preset_relative}/CMakeFiles"
+        files_info = _cache_entry(files_path, root, preset, files_relative)
+        if files_info is not None:
+            if not stat.S_ISDIR(files_info.st_mode):
+                raise _cache_failure(preset, "shape", files_relative)
+            _validate_cache_tree(files_path, root, preset, files_relative)
+            removals.append((files_path, preset, files_relative))
+    for path, preset, relative in removals:
+        _remove_cache_tree(path, root, preset, relative)
+
+
 def _activate_absent(staging: Path, destination: Path) -> None:
     try:
         os.replace(staging, destination)
@@ -538,6 +663,7 @@ def apply_creation(
         release = (build or _default_build)(project_root, "arm-release")
         if not _result_ok(release):
             raise CreationApplyError("CREATION_RELEASE_BUILD_FAILED", "Release build failed", {"result": _json_value(release)})
+        _invalidate_creation_build_caches(project_root)
         with _acquire_activation_lock(request.data_root, destination):
             current_digest, current_state = _state(root, destination)
             if current_digest != original_digest or current_state != original_state:

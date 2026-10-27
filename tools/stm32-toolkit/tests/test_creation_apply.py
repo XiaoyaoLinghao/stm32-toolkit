@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import hashlib
 import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -1013,3 +1014,294 @@ def test_host_path_scan_consumes_bounded_native_inventory(tmp_path: Path, monkey
         tmp_path,
         inventory=(("listed.c", listed.stat().st_size, "0" * 64),),
     )
+
+
+_CACHE_ARTIFACTS = {
+    "STM32F429ZITx.elf": b"\x7fELF creation cache delivery\n",
+    "STM32F429ZITx.map": b"Memory Configuration\n",
+    "firmware-identity.json": b'{"schemaVersion":2}\n',
+}
+
+
+def _write_preset_artifacts(root: Path, preset: str) -> Path:
+    build_dir = root / "build" / preset
+    build_dir.mkdir(parents=True)
+    for name, payload in _CACHE_ARTIFACTS.items():
+        (build_dir / name).write_bytes(payload)
+    return build_dir
+
+
+def test_creation_apply_invalidates_staged_cmake_caches_and_keeps_build_artifacts(
+    tmp_path: Path,
+):
+    data, store, prepared = _authorization(tmp_path)
+    observed: list[tuple[str, Path, bool, bool]] = []
+    activated: list[str] = []
+
+    def build(root: Path, preset: str):
+        build_dir = _write_preset_artifacts(root, preset)
+        cache = build_dir / "CMakeCache.txt"
+        cache.write_text(
+            f"CMAKE_CACHEFILE_DIR:INTERNAL={root.as_posix()}/build/{preset}\n",
+            encoding="utf-8",
+        )
+        files = build_dir / "CMakeFiles"
+        (files / "3.31.5").mkdir(parents=True)
+        (files / "3.31.5" / "CMakeCCompiler.cmake").write_text(
+            'set(CMAKE_C_COMPILER "gcc.exe")\n', encoding="utf-8"
+        )
+        observed.append((preset, root, cache.is_file(), files.is_dir()))
+        return OperationResult.success("build", {"preset": preset})
+
+    result = apply_creation(
+        CreationApplyRequest(tmp_path, data, prepared.authorization_digest, True),
+        store=store,
+        adapter=RecordingAdapter([]),
+        validate_native=_validator([]),
+        configure=lambda root: OperationResult.success("configure", {}),
+        build=build,
+        on_activate=lambda: activated.append("activate"),
+    )
+
+    assert result.ok is True, result.to_dict()
+    # Both caches existed inside the attempt-owned activation staging tree at
+    # build time, and the destination was only activated afterwards.
+    assert [preset for preset, *_ in observed] == ["arm-debug", "arm-release"]
+    assert all(
+        root.name.startswith(".stm32tk-activation-") for _, root, _, _ in observed
+    )
+    assert all(cache and files for _, _, cache, files in observed)
+    assert activated == ["activate"]
+
+    destination = tmp_path / "generated"
+    for preset in ("arm-debug", "arm-release"):
+        build_dir = destination / "build" / preset
+        for name, payload in _CACHE_ARTIFACTS.items():
+            assert (build_dir / name).read_bytes() == payload
+        assert not (build_dir / "CMakeCache.txt").exists()
+        assert not (build_dir / "CMakeFiles").exists()
+    assert (destination / "native.txt").read_text(encoding="utf-8") == "generated"
+    assert not list(tmp_path.glob(".stm32tk-creation-*"))
+    assert not list(tmp_path.glob(".stm32tk-activation-*"))
+
+
+@pytest.mark.parametrize("layout", ["no-build-directory", "artifacts-without-cache"])
+def test_creation_apply_allows_absent_staged_cache_paths(tmp_path: Path, layout: str):
+    data, store, prepared = _authorization(tmp_path)
+
+    def build(root: Path, preset: str):
+        if layout == "artifacts-without-cache" and preset == "arm-debug":
+            _write_preset_artifacts(root, preset)
+        return OperationResult.success("build", {"preset": preset})
+
+    result = apply_creation(
+        CreationApplyRequest(tmp_path, data, prepared.authorization_digest, True),
+        store=store,
+        adapter=RecordingAdapter([]),
+        validate_native=_validator([]),
+        configure=lambda root: OperationResult.success("configure", {}),
+        build=build,
+    )
+
+    assert result.ok is True, result.to_dict()
+    destination = tmp_path / "generated"
+    if layout == "artifacts-without-cache":
+        build_dir = destination / "build" / "arm-debug"
+        for name, payload in _CACHE_ARTIFACTS.items():
+            assert (build_dir / name).read_bytes() == payload
+        assert not (build_dir / "CMakeCache.txt").exists()
+        assert not (build_dir / "CMakeFiles").exists()
+    else:
+        assert not (destination / "build").exists()
+
+
+@pytest.mark.parametrize("shape", ["build-file", "cache-directory", "files-file"])
+@pytest.mark.parametrize("destination_state", ["absent", "empty"])
+def test_creation_apply_refuses_wrong_cache_shapes_before_activation(
+    tmp_path: Path, shape: str, destination_state: str
+):
+    data, store, prepared = _authorization(tmp_path)
+    destination = tmp_path / "generated"
+    if destination_state == "empty":
+        destination.mkdir()
+    expected_preset = "build" if shape == "build-file" else "arm-debug"
+    expected_path = {
+        "build-file": "build",
+        "cache-directory": "build/arm-debug/CMakeCache.txt",
+        "files-file": "build/arm-debug/CMakeFiles",
+    }[shape]
+
+    def build(root: Path, preset: str):
+        if shape == "build-file":
+            (root / "build").write_text("not a build directory\n", encoding="utf-8")
+            return OperationResult.success("build", {"preset": preset})
+        build_dir = _write_preset_artifacts(root, preset)
+        if preset == "arm-debug":
+            if shape == "cache-directory":
+                (build_dir / "CMakeCache.txt").mkdir()
+            else:
+                (build_dir / "CMakeFiles").write_text(
+                    "not a cache directory\n", encoding="utf-8"
+                )
+        return OperationResult.success("build", {"preset": preset})
+
+    activated: list[str] = []
+    result = apply_creation(
+        CreationApplyRequest(tmp_path, data, prepared.authorization_digest, True),
+        store=store,
+        adapter=RecordingAdapter([]),
+        validate_native=_validator([]),
+        configure=lambda root: OperationResult.success("configure", {}),
+        build=build,
+        on_activate=lambda: activated.append("activate"),
+    )
+
+    assert result.ok is False
+    assert result.code == "CREATION_CACHE_PREPARATION_FAILED"
+    assert result.details["rule"] == "shape"
+    assert result.details["preset"] == expected_preset
+    assert result.details["path"] == expected_path
+    assert activated == []
+    if destination_state == "absent":
+        assert not destination.exists()
+    else:
+        assert destination.is_dir()
+        assert list(destination.iterdir()) == []
+    assert not list(tmp_path.glob(".stm32tk-creation-*"))
+    assert not list(tmp_path.glob(".stm32tk-activation-*"))
+    assert not list(tmp_path.glob(".generated.backup-*"))
+    record = store.authorization_root / f"{prepared.authorization_digest}.json"
+    assert __import__("json").loads(record.read_text(encoding="utf-8"))["state"] == "consumed"
+
+
+def test_creation_apply_refuses_linked_cache_entry_before_activation(tmp_path: Path):
+    data, store, prepared = _authorization(tmp_path)
+    outside = tmp_path / "outside-cache"
+    outside.mkdir()
+    (outside / "sentinel.txt").write_text("keep", encoding="utf-8")
+
+    def build(root: Path, preset: str):
+        build_dir = _write_preset_artifacts(root, preset)
+        if preset == "arm-debug":
+            (build_dir / "CMakeCache.txt").write_text("cache\n", encoding="utf-8")
+            nested = build_dir / "CMakeFiles" / "3.31.5"
+            nested.mkdir(parents=True)
+            (nested / "CMakeCCompiler.cmake").write_text(
+                "compiler\n", encoding="utf-8"
+            )
+            try:
+                (nested / "linked").symlink_to(outside, target_is_directory=True)
+            except (OSError, NotImplementedError):
+                pytest.skip("directory symlinks are unavailable on this host")
+        return OperationResult.success("build", {"preset": preset})
+
+    result = apply_creation(
+        CreationApplyRequest(tmp_path, data, prepared.authorization_digest, True),
+        store=store,
+        adapter=RecordingAdapter([]),
+        validate_native=_validator([]),
+        configure=lambda root: OperationResult.success("configure", {}),
+        build=build,
+    )
+
+    assert result.ok is False
+    assert result.code == "CREATION_CACHE_PREPARATION_FAILED"
+    assert result.details["rule"] == "link"
+    assert result.details["preset"] == "arm-debug"
+    assert result.details["path"] == "build/arm-debug/CMakeFiles/3.31.5/linked"
+    assert not (tmp_path / "generated").exists()
+    assert (outside / "sentinel.txt").read_text(encoding="utf-8") == "keep"
+    assert not list(tmp_path.glob(".stm32tk-creation-*"))
+    assert not list(tmp_path.glob(".stm32tk-activation-*"))
+
+
+def test_creation_apply_refuses_reparse_cache_entry_deterministically(
+    tmp_path: Path, monkeypatch
+):
+    data, store, prepared = _authorization(tmp_path)
+    real_lstat = creation_apply_module._cache_lstat
+    target = "CMakeCCompiler.cmake"
+
+    def reparse_lstat(path: Path):
+        info = real_lstat(path)
+        if Path(path).name == target:
+            return SimpleNamespace(st_mode=stat.S_IFREG, st_file_attributes=0x400)
+        return info
+
+    def build(root: Path, preset: str):
+        build_dir = _write_preset_artifacts(root, preset)
+        (build_dir / "CMakeCache.txt").write_text("cache\n", encoding="utf-8")
+        nested = build_dir / "CMakeFiles" / "3.31.5"
+        nested.mkdir(parents=True)
+        (nested / target).write_text("compiler\n", encoding="utf-8")
+        return OperationResult.success("build", {"preset": preset})
+
+    monkeypatch.setattr(creation_apply_module, "_cache_lstat", reparse_lstat)
+    result = apply_creation(
+        CreationApplyRequest(tmp_path, data, prepared.authorization_digest, True),
+        store=store,
+        adapter=RecordingAdapter([]),
+        validate_native=_validator([]),
+        configure=lambda root: OperationResult.success("configure", {}),
+        build=build,
+    )
+
+    assert result.ok is False
+    assert result.code == "CREATION_CACHE_PREPARATION_FAILED"
+    assert result.details["rule"] == "reparse"
+    assert result.details["preset"] == "arm-debug"
+    assert result.details["path"] == f"build/arm-debug/CMakeFiles/3.31.5/{target}"
+    assert not (tmp_path / "generated").exists()
+    assert not list(tmp_path.glob(".stm32tk-creation-*"))
+    assert not list(tmp_path.glob(".stm32tk-activation-*"))
+
+
+@pytest.mark.parametrize("destination_state", ["absent", "empty"])
+def test_creation_apply_cache_io_failure_leaves_destination_unchanged(
+    tmp_path: Path, monkeypatch, destination_state: str
+):
+    data, store, prepared = _authorization(tmp_path)
+    destination = tmp_path / "generated"
+    if destination_state == "empty":
+        destination.mkdir()
+    real_lstat = creation_apply_module._cache_lstat
+
+    def failing_lstat(path: Path):
+        if Path(path).name == "CMakeCache.txt":
+            raise OSError("injected cache inspection failure")
+        return real_lstat(path)
+
+    def build(root: Path, preset: str):
+        build_dir = _write_preset_artifacts(root, preset)
+        (build_dir / "CMakeCache.txt").write_text("cache\n", encoding="utf-8")
+        (build_dir / "CMakeFiles").mkdir()
+        (build_dir / "CMakeFiles" / "build.ninja").write_text(
+            "rules\n", encoding="utf-8"
+        )
+        return OperationResult.success("build", {"preset": preset})
+
+    monkeypatch.setattr(creation_apply_module, "_cache_lstat", failing_lstat)
+    result = apply_creation(
+        CreationApplyRequest(tmp_path, data, prepared.authorization_digest, True),
+        store=store,
+        adapter=RecordingAdapter([]),
+        validate_native=_validator([]),
+        configure=lambda root: OperationResult.success("configure", {}),
+        build=build,
+    )
+
+    assert result.ok is False
+    assert result.code == "CREATION_CACHE_PREPARATION_FAILED"
+    assert result.details["rule"] == "io"
+    assert result.details["preset"] == "arm-debug"
+    assert result.details["path"] == "build/arm-debug/CMakeCache.txt"
+    if destination_state == "absent":
+        assert not destination.exists()
+    else:
+        assert destination.is_dir()
+        assert list(destination.iterdir()) == []
+    assert not list(tmp_path.glob(".stm32tk-creation-*"))
+    assert not list(tmp_path.glob(".stm32tk-activation-*"))
+    assert not list(tmp_path.glob(".generated.backup-*"))
+    record = store.authorization_root / f"{prepared.authorization_digest}.json"
+    assert __import__("json").loads(record.read_text(encoding="utf-8"))["state"] == "consumed"
