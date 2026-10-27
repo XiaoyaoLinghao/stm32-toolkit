@@ -4,7 +4,8 @@ This module is test-only infrastructure for the cross-branch GCC delivery
 integration.  It contains no product behavior:
 
 * one synthetic, non-Git Keil fixture whose authored C/header comments are GBK
-  and whose required quoted macro header supplies the fixed-pool address,
+  and whose required quoted macro header supplies the fixed-pool offset used in
+  a real ``__attribute__((at(...)))`` address expression,
 * the existing ``normalize-source-comments`` helper invocation (preview and
   reviewed copy) plus the explicit complete prepared-tree copy described by
   that skill,
@@ -66,12 +67,14 @@ EXTRA_SRAM2 = {
     "length": 0x40000,
     "attributes": "rw-",
 }
+#: Multi-RAM role choice: writable data/bss/heap stay in the internal SRAM1
+#: (IRAM1) while only the stack uses the separately declared IRAM2 region.
 MAIN_RAM_LAYOUT = {
     "flash": "IROM1",
     "data": "IRAM1",
     "bss": "IRAM1",
     "heap": "IRAM1",
-    "stack": "IRAM1",
+    "stack": "IRAM2",
 }
 WFI_RETURNS = [{"path": WFI_SOURCE, "function": WFI_FUNCTION}]
 STARTUP_STRATEGY = "generate-cmsis-gcc"
@@ -88,10 +91,13 @@ MAIN_C_TEXT = (
     '#include "stm32f4xx.h"\n'
     '#include "board_layout.h"\n'
     "\n"
-    "__align(16) volatile unsigned int aligned_runtime[BOARD_BUFFER_WORDS];\n"
-    "__at(BOARD_FIXED_ADDRESS) volatile unsigned int fixed_buffer[4];\n"
+    "void WFI_SET(void);\n"
     "\n"
-    'static const char runtime_marker[] = "' + RUNTIME_LITERAL + '";\n'
+    "__align(16) unsigned int aligned_runtime[BOARD_BUFFER_WORDS];\n"
+    "unsigned int fixed_buffer[4] "
+    "__attribute__((at(0x68000000 + BOARD_OFFSET)));\n"
+    "\n"
+    'static const volatile char runtime_marker[] = "' + RUNTIME_LITERAL + '";\n'
     "\n"
     "void SystemInit(void)\n"
     "{\n"
@@ -107,13 +113,18 @@ MAIN_C_TEXT = (
     "        total += aligned_runtime[index];\n"
     "    }\n"
     "    total += fixed_buffer[0] + fixed_buffer[3];\n"
-    "    total += (unsigned int)(unsigned char)runtime_marker[0];\n"
+    "    /* Volatile access keeps the complete runtime literal in the image. */\n"
+    "    total += (unsigned int)(unsigned char)"
+    "runtime_marker[sizeof(runtime_marker) - 2u];\n"
+    "    WFI_SET();\n"
     "    return (int)(total & 0x1u);\n"
     "}\n"
 )
 
 #: The required quoted macro header.  It is selected for comment conversion
-#: together with the C source and supplies the fixed-pool address expression.
+#: together with the C sources and supplies the fixed-pool offset.  No
+#: ``__align``-style portability macro is authored: the source keeps the real
+#: ARMCC form that the supported rewrite must translate.
 HEADER_TEXT = (
     "/*\n"
     " * 板级内存布局：外部 SRAM2 固定地址与对齐缓冲区尺寸。\n"
@@ -121,13 +132,9 @@ HEADER_TEXT = (
     "#ifndef BOARD_LAYOUT_H\n"
     "#define BOARD_LAYOUT_H\n"
     "\n"
-    "/* Authored portability macro so the array declaration is valid in both\n"
-    " * ARMCC and GNU C without relying on the Keil environment. */\n"
-    "#ifndef __align\n"
-    "#define __align(n) __attribute__((aligned(n)))\n"
-    "#endif\n"
-    "\n"
-    "#define BOARD_FIXED_ADDRESS 0x68000010\n"
+    "/* Object-like integer offset: the placement attribute carries a real\n"
+    " * address expression (0x68000000 + BOARD_OFFSET), never a literal alias. */\n"
+    "#define BOARD_OFFSET 0x10\n"
     "#define BOARD_BUFFER_WORDS 16\n"
     "\n"
     "#endif\n"
@@ -183,6 +190,12 @@ def tree_directories(root: Path) -> set[str]:
         for path in root.rglob("*")
         if path.is_dir()
     }
+
+
+def is_git_metadata(relative: str) -> bool:
+    """True for a ``.git`` directory, its contents, or a worktree pointer file."""
+
+    return any(part == ".git" for part in relative.split("/"))
 
 
 def assert_no_git_metadata(*roots: Path) -> None:
@@ -302,6 +315,10 @@ def preview_source_comments(
         "Main/main.c=gbk",
         "--file",
         "Board/board_layout.h=gbk",
+        # The explicit WFI normal-return source intent can only be analyzed
+        # once this GBK source is a reviewed UTF-8 copy.
+        "--file",
+        f"{WFI_SOURCE}=gbk",
     )
     assert completed.returncode == 0, (completed.stdout, completed.stderr)
     assert payload["status"] == "ready", payload
@@ -365,7 +382,7 @@ def prepare_complete_project(
 
     for path in sorted(source.rglob("*")):
         relative = path.relative_to(source)
-        if any(part == ".git" for part in relative.parts):
+        if is_git_metadata(relative.as_posix()):
             continue
         target = prepared / relative
         if path.is_dir():
@@ -395,7 +412,11 @@ def prepare_complete_project(
     assert actual_copies == copied_outputs | {"manifest.json"}
 
     prepared_inventory = tree_inventory(prepared)
-    source_inventory = tree_inventory(source)
+    source_inventory = {
+        relative: digest
+        for relative, digest in tree_inventory(source).items()
+        if not is_git_metadata(relative)
+    }
     assert set(prepared_inventory) == set(source_inventory)
     assert_no_git_metadata(prepared)
     for relative in selected:

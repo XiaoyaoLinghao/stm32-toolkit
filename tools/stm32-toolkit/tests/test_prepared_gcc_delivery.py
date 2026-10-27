@@ -26,6 +26,7 @@ from stm32_toolkit.build.model import (
     SNAPSHOT_IDENTITY_SCHEMA_VERSION,
     SOURCE_BASELINE_INPUT_SNAPSHOT,
 )
+from stm32_toolkit.project_model import load_project_model
 from stm32_toolkit.workflows import (
     build_firmware_workflow,
     configure_project_workflow,
@@ -51,6 +52,7 @@ from gcc_delivery_integration_helpers import (
     UVPROJX,
     WFI_RETURNS,
     WFI_SOURCE,
+    WFI_TEXT,
     FlashOutcome,
     apply_toolchain_path,
     assert_no_git_metadata,
@@ -74,6 +76,8 @@ from startup_gcc_fixture import STARTUP_SOURCE as FIXTURE_STARTUP_SOURCE
 DEBUG_TARGET = "stm32f429zgtx"
 IREGION = (0x08000000, 0x08100000)
 IRAM1 = (0x20000000, 0x20030000)
+#: The second internal RAM region selected for the stack role.
+IRAM2 = (0x10000000, 0x10010000)
 STAGING_MARKER = ".stm32tk-staging-"
 
 
@@ -103,14 +107,33 @@ def _assert_flash_confined(elf: bytes) -> None:
         assert address + len(payload) <= IREGION[1], hex(address)
 
 
+def _initial_stack_pointer(elf: bytes) -> int:
+    """Read the vector table's initial SP word from the linked flash image."""
+
+    segments = pt_load_segments(elf)
+    address, payload = min(segments, key=lambda item: item[0])
+    assert address == IREGION[0], hex(address)
+    assert len(payload) >= 4
+    return int.from_bytes(payload[:4], "little")
+
+
 def _assert_fixed_placement(elf: bytes) -> None:
     entry, symbols = elf_entry_and_symbols(elf)
     assert IREGION[0] <= entry < IREGION[1]
+    # The supported absolute-placement rewrite produced one fixed section at
+    # the exact value of the authored address expression.
     assert symbols["fixed_buffer"] == FIXED_ADDRESS
     aligned = symbols["aligned_runtime"]
     assert aligned % ALIGNMENT == 0
     assert IRAM1[0] <= aligned < IRAM1[1]
     assert "Reset_Handler" in symbols
+    # main() calls WFI_SET, so the converted wrapper survives --gc-sections
+    # in the executable flash region rather than being dropped as unused.
+    assert IREGION[0] <= symbols["WFI_SET"] < IREGION[1]
+    # The selected stack role is real: the vector table's initial stack
+    # pointer points into IRAM2, while bss stays in IRAM1 above.
+    stack_pointer = _initial_stack_pointer(elf)
+    assert IRAM2[0] < stack_pointer <= IRAM2[1], hex(stack_pointer)
     assert RUNTIME_LITERAL.encode("ascii") in elf
 
 
@@ -169,10 +192,16 @@ def journey(tmp_path_factory) -> SimpleNamespace:
 
         preflight = preflight_keil_workflow(prepared, **delivery_options)
         assert preflight.ok is True, preflight.to_dict()
-        assert preflight.to_dict()["data"]["analysis"]["blockers"] == ()
-        assert preflight.to_dict()["data"]["planReadiness"]["ready"] is True
+        assert preflight.to_dict()["data"]["analysis"]["blockers"] == []
+        assert (
+            preflight.to_dict()["data"]["planReadiness"]["status"]
+            == "ready-for-plan"
+        )
 
+        # Delivery planning requires an existing destination parent and a
+        # destination that is absent or empty; it never creates either.
         destination = root / "out" / "gcc-project"
+        destination.parent.mkdir(parents=True, exist_ok=True)
         planned = convert_keil_workflow(
             prepared, destination=destination, **delivery_options
         )
@@ -203,7 +232,8 @@ def journey(tmp_path_factory) -> SimpleNamespace:
             destination, debug_backend="pyocd", debug_target=DEBUG_TARGET
         )
         assert configuring.ok is True, configuring.to_dict()
-        configuration_id = configuring.to_dict()["data"]["planId"]
+        # The configure PLAN response carries the snake_case plan_id.
+        configuration_id = configuring.to_dict()["data"]["plan_id"]
         configured = configure_project_workflow(
             destination,
             plan_id=configuration_id,
@@ -311,7 +341,10 @@ def test_prepared_complete_project_delivery_and_real_build(journey) -> None:
     )
 
     # Public preflight/PLAN/APPLY shapes are distinct from build and flash.
-    assert journey.preflight["data"]["planReadiness"]["ready"] is True
+    assert journey.preflight["data"]["analysis"]["blockers"] == []
+    assert journey.preflight["data"]["planReadiness"]["status"] == (
+        "ready-for-plan"
+    )
     assert journey.planned["data"]["planId"] == journey.applied["data"]["planId"]
     assert journey.applied["data"]["outputRoot"] == str(journey.destination)
     for data in (journey.planned["data"], journey.applied["data"]):
@@ -339,13 +372,21 @@ def test_prepared_complete_project_delivery_and_real_build(journey) -> None:
     )
 
     # The existing comment helper reviewed valid authored GBK comments only;
-    # no lossy replacement or confirmation was needed.
+    # no lossy replacement or confirmation was needed.  The GBK WFI source is
+    # part of the reviewed selection, so its explicit normal-return intent can
+    # be analyzed as UTF-8.
     assert journey.preview_payload["mode"] == "strict"
     assert journey.preview_payload["lossyFiles"] == []
     assert journey.preview_payload["totalReplacementCount"] == 0
     assert journey.copy_payload["copyOnly"] is True
     assert journey.copy_payload["notAProject"] is True
     assert journey.copy_manifest["confirmedFiles"] == []
+    reviewed = {entry["path"] for entry in journey.copy_manifest["files"]}
+    assert reviewed == {"Main/main.c", "Board/board_layout.h", WFI_SOURCE}
+    prepared_wfi = (journey.prepared / WFI_SOURCE).read_bytes()
+    prepared_wfi.decode("utf-8", "strict")
+    assert prepared_wfi != WFI_TEXT.encode("gbk")
+    assert "等待中断".encode("utf-8") in prepared_wfi
 
     # The reviewed conversion is bound into the public delivery report.
     assert journey.report["schemaVersion"] == 2
@@ -378,22 +419,36 @@ def test_prepared_complete_project_delivery_and_real_build(journey) -> None:
         and entry["section"] == ".stm32tk.abs.68000010"
         for entry in fixed
     ), fixed
-    assert journey.report["wfiReturns"] == [
-        {
-            "path": WFI_SOURCE,
-            "function": "WFI_SET",
-            "sourceSha256": journey.report["wfiReturns"][0]["sourceSha256"],
-            "convertedSha256": journey.report["wfiReturns"][0]["convertedSha256"],
-            "requestedBehavior": "normal-return",
-            "binaryEquivalent": False,
-        }
-    ]
+    delivered_wfi = (journey.destination / WFI_SOURCE).read_bytes()
+    (wfi_entry,) = journey.report["wfiReturns"]
+    assert set(wfi_entry) == {
+        "path",
+        "function",
+        "sourceSha256",
+        "convertedSha256",
+        "requestedBehavior",
+        "binaryEquivalent",
+    }
+    assert wfi_entry["path"] == WFI_SOURCE
+    assert wfi_entry["function"] == "WFI_SET"
+    assert wfi_entry["requestedBehavior"] == "normal-return"
+    assert wfi_entry["binaryEquivalent"] is False
+    # Both digests are proven by independently hashing the actual fixture
+    # bytes (the reviewed UTF-8 source and the delivered conversion), never by
+    # comparing a returned value with itself.
+    assert wfi_entry["sourceSha256"] == sha256_bytes(prepared_wfi)
+    assert wfi_entry["convertedSha256"] == sha256_bytes(delivered_wfi)
+    assert wfi_entry["sourceSha256"] != wfi_entry["convertedSha256"]
+
     delivered_main = (journey.destination / "Main" / "main.c").read_bytes()
-    assert b"__at(" not in delivered_main
+    # The supported rewrites replaced both authored ARMCC forms with GNU C.
+    assert b"__align(" not in delivered_main
+    assert b"at(0x68000000" not in delivered_main
+    assert b".stm32tk.abs.68000010" in delivered_main
     assert b"fixed_buffer" in delivered_main
     assert b"aligned_runtime" in delivered_main
+    assert b"WFI_SET();" in delivered_main
     # The selected WFI wrapper is ordinary C now.
-    delivered_wfi = (journey.destination / WFI_SOURCE).read_bytes()
     assert b"__asm void" not in delivered_wfi
     assert b'__asm volatile ("wfi" ::: "memory");' in delivered_wfi
 
@@ -418,6 +473,7 @@ def test_prepared_complete_project_delivery_and_real_build(journey) -> None:
         text = map_data.decode("utf-8", "replace")
         assert "fixed_buffer" in text
         assert "aligned_runtime" in text
+        assert "WFI_SET" in text
         assert "68000010" in text.lower()
 
     # The relocated output-only rebuild had no source/prepared access and no
@@ -435,6 +491,61 @@ def test_prepared_complete_project_delivery_and_real_build(journey) -> None:
     )
     # The original and prepared fixture trees still exist after relocation.
     assert journey.source.is_dir() and journey.prepared.is_dir()
+
+
+def _write_fixture_tree(root: Path, files: dict[str, bytes]) -> None:
+    for relative, data in files.items():
+        target = root.joinpath(*relative.split("/"))
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+
+
+@pytest.mark.parametrize("git_form", ["directory", "worktree-pointer"])
+def test_prepare_complete_project_excludes_git_metadata_only(
+    tmp_path: Path, git_form: str
+) -> None:
+    """The complete-copy step omits ``.git`` but keeps every project file.
+
+    This is fixture-only: a synthetic ``.git`` directory (with nested objects)
+    or a synthetic worktree ``.git`` pointer file is written below ``tmp_path``.
+    No real repository metadata is read or modified.
+    """
+
+    source = tmp_path / "source"
+    project_files = {
+        "Main/main.c": b"int main(void) { return 0; }\n",
+        "README.md": b"synthetic fixture\n",
+    }
+    _write_fixture_tree(source, project_files)
+    if git_form == "directory":
+        _write_fixture_tree(
+            source,
+            {
+                ".git/HEAD": b"ref: refs/heads/main\n",
+                ".git/objects/ab/cdef0123": b"object bytes\n",
+            },
+        )
+    else:
+        (source / ".git").write_bytes(
+            b"gitdir: ../elsewhere/.git/worktrees/source\n"
+        )
+
+    copy_dir = tmp_path / "copy"
+    copy_dir.mkdir()
+    (copy_dir / "manifest.json").write_text("{}\n", encoding="utf-8")
+    prepared = tmp_path / "prepared"
+
+    inventory = prepare_complete_project(
+        source, copy_dir, {"planId": "fixture", "files": []}, prepared
+    )
+
+    assert not (prepared / ".git").exists()
+    assert not any(".git" in relative.split("/") for relative in inventory)
+    assert inventory == {
+        relative: sha256_bytes(data) for relative, data in project_files.items()
+    }
+    for relative, data in project_files.items():
+        assert prepared.joinpath(*relative.split("/")).read_bytes() == data
 
 
 # ---------------------------------------------------------------------------
@@ -465,10 +576,12 @@ def test_managed_simulated_flash_programs_and_reads_back(
 
     assert outcome.result.ok is True, outcome.result.to_dict()
     assert outcome.result.operation == "stm32_flash"
-    assert outcome.result.to_dict()["details"]["postFlash"] == {
+    details = outcome.result.to_dict()["details"]
+    assert details["postFlash"] == {
         "targetState": "unknown",
         "runVerified": False,
     }
+    assert details["flashOptions"]["automaticRetry"] is False
     names = event_names(list(outcome.events))
     assert names.count("flash_elf") == 1
     assert names.count("open_attach") == 1
@@ -478,6 +591,7 @@ def test_managed_simulated_flash_programs_and_reads_back(
 
     segments = pt_load_segments(journey.second_elf)
     expected_bytes = sum(len(payload) for _address, payload in segments)
+    assert names.count("program_segment") == len(segments)
     data = outcome.result.to_dict()["data"]
     assert data["verifiedBytes"] == expected_bytes > 0
     assert data["backendBytesProgrammed"] == expected_bytes > 0
@@ -517,6 +631,18 @@ def test_managed_simulated_flash_programs_and_reads_back(
     assert all(
         event.get("event") != "flash_imported_elf" for event in outcome.events
     )
+    # Owned cleanup really ran after the verified readback: the simulated
+    # backend was closed last, and the real lease manager recorded that the
+    # probe lease was released (the existing tested probe.lock contract).
+    assert names.count("close") >= 1
+    assert names[-1] == "close"
+    leases = sorted((tmp_path / "data-success").rglob("probe.lock"))
+    assert leases, "no probe lease record was written"
+    states = {
+        json.loads(path.read_text(encoding="utf-8")).get("state")
+        for path in leases
+    }
+    assert states == {"released"}
 
 
 @pytest.mark.parametrize(
@@ -526,6 +652,8 @@ def test_managed_simulated_flash_programs_and_reads_back(
         ("changed-source", "FIRMWARE_INPUT_CHANGED"),
         ("changed-header", "FIRMWARE_INPUT_CHANGED"),
         ("changed-elf", "FIRMWARE_INPUT_CHANGED"),
+        ("changed-model", "FIRMWARE_INPUT_CHANGED"),
+        ("wrong-target", "FIRMWARE_IDENTITY_MISMATCH"),
         ("wrong-build-pin", "FLASH_PLAN_CHANGED"),
         ("wrong-elf-pin", "FLASH_PLAN_CHANGED"),
     ],
@@ -562,6 +690,34 @@ def test_rejected_inputs_never_program(
         )
         original = target.read_bytes()
         target.write_bytes(original + b"\x00")
+        restore = (target, original)
+    elif case == "changed-model":
+        # Configuration drift after the admitted build changes the declared
+        # input snapshot, so the current firmware is no longer fresh.
+        target = journey.relocated / ".stm32-project.json"
+        original = target.read_bytes()
+        document = json.loads(original.decode("utf-8"))
+        document["build"]["defines"] = [
+            *document["build"]["defines"],
+            "STM32TK_MODEL_DRIFT",
+        ]
+        target.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+        assert (
+            "STM32TK_MODEL_DRIFT"
+            in load_project_model(journey.relocated).build.defines
+        )
+        restore = (target, original)
+    elif case == "wrong-target":
+        # A manifest that no longer describes the admitted firmware target is
+        # refused as an identity mismatch before any probe effect.
+        target = journey.relocated / ".stm32-project.json"
+        original = target.read_bytes()
+        document = json.loads(original.decode("utf-8"))
+        document["target"]["device"] = "STM32F407VGTx"
+        target.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+        assert load_project_model(journey.relocated).target.device == (
+            "STM32F407VGTx"
+        )
         restore = (target, original)
     elif case == "wrong-build-pin":
         extra["build_id"] = "0" * 64
@@ -630,3 +786,12 @@ def test_readback_mismatch_fails_once_without_retry(
     # receipt was published for the failed verification.
     assert not outcome.receipt_path.exists()
     assert read_probe_log(log_path) == list(outcome.events)
+    # A failed verification still performs owned cleanup after the single
+    # attempt: the backend is closed and the probe lease is released.
+    assert names[-1] == "close"
+    leases = sorted((tmp_path / "data-mismatch").rglob("probe.lock"))
+    assert leases, "no probe lease record was written"
+    assert {
+        json.loads(path.read_text(encoding="utf-8")).get("state")
+        for path in leases
+    } == {"released"}
