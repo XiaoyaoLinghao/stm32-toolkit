@@ -52,10 +52,12 @@ from stm32_toolkit.creation_workflows import (
     plan_creation_workflow,
     prepare_creation_workflow,
 )
+from stm32_toolkit.probe.lease import ProbeLeaseManager
 from stm32_toolkit.tool_support import ToolFact, ToolSupportProfile
 from stm32_toolkit.workflows import build_firmware_workflow, configure_project_workflow
 
 from gcc_delivery_integration_helpers import (
+    PROBE_ID,
     SIM_LOG_ENV,
     SIM_MODE_ENV,
     apply_toolchain_path,
@@ -634,6 +636,9 @@ def test_offline_creation_journey_reaches_independent_gcc_build_and_managed_flas
     finally:
         main_source.write_bytes(original_source)
 
+    # A fresh log isolates this run: the earlier rejected attempts are the same
+    # workflow and must not leak into the success ordering evidence.
+    monkeypatch.setenv(SIM_LOG_ENV, str(tmp_path / "probe-success.jsonl"))
     flashed = run_managed_flash(
         relocated,
         data_root,
@@ -658,20 +663,67 @@ def test_offline_creation_journey_reaches_independent_gcc_build_and_managed_flas
         event["bytes"] for event in flashed.events if event["event"] == "read_memory"
     )
     assert read_back >= total_payload
-    assert flashed.result.data.verified_bytes == total_payload
+
+    # Every segment is programmed before any readback, and the backend session
+    # is closed exactly once as the final observable event of the run.
+    program_index = [
+        index
+        for index, event in enumerate(flashed.events)
+        if event["event"] == "program_segment"
+    ]
+    readback_index = [
+        index
+        for index, event in enumerate(flashed.events)
+        if event["event"] == "read_memory"
+    ]
+    assert readback_index
+    assert max(program_index) < min(readback_index)
+    assert names.count("close") == 1
+    assert names[-1] == "close"
 
     receipt_path = relocated / "artifacts" / "migration" / "flash-result.json"
     assert flashed.receipt_path == receipt_path
     receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    data = flashed.result.to_dict()["data"]
+
+    # The public result data reports the exact payload that was programmed and
+    # verified, bound to the identity that was really built and requested.
+    assert data["verifiedBytes"] == total_payload
+    assert data["backendBytesProgrammed"] == total_payload
+    assert data["backendSectorsProgrammed"] == len(segments)
+    assert data["buildId"] == relocated_identity["buildId"]
+    assert data["elfSha256"] == relocated_identity["elfSha256"]
+    assert data["elfSha256"] == sha256_bytes(elf_bytes)
+    assert "importId" not in data
+
+    # The published receipt agrees with the same run, probe, session, target
+    # and built identity.
     assert receipt["schemaVersion"] == 2
+    assert receipt["status"] == "success"
+    assert receipt["code"] == "OK"
+    assert receipt["probeId"] == PROBE_ID
+    assert receipt["debugTarget"] == DEBUG_TARGET
+    assert receipt["sessionId"] == SESSION
     assert receipt["sourceBaseline"] == SOURCE_BASELINE_INPUT_SNAPSHOT
     assert receipt["buildId"] == relocated_identity["buildId"]
     assert receipt["inputSnapshotSha256"] == relocated_identity["inputSnapshotSha256"]
     assert receipt["elfSha256"] == sha256_bytes(elf_bytes)
+    assert receipt["gitEvidence"] == relocated_identity["gitEvidence"]
     assert receipt["gitHead"] is None
     assert receipt["gitDirty"] is None
     assert receipt["verifiedBytes"] == total_payload
+    assert receipt["backendBytesProgrammed"] == total_payload
+    assert receipt["backendSectorsProgrammed"] == len(segments)
     assert "importId" not in receipt
     assert receipt["operationLevel"] == "modify"
     assert receipt["authorized"] is True
+
+    # The exclusive probe lease was really released through the real registry
+    # record for this probe in the configured data root.
+    lease_record = json.loads(
+        ProbeLeaseManager(data_root).record_path(PROBE_ID).read_text(encoding="utf-8")
+    )
+    assert lease_record["schemaVersion"] == 1
+    assert lease_record["state"] == "released"
+
     assert json.loads(record.read_text(encoding="utf-8"))["state"] == "consumed"
