@@ -1,24 +1,24 @@
 # STM32 Toolkit 用户指南与排障
 
-本指南面向 **v1.3.2**（已于 2026-10-26 发布为 Latest），并说明其操作合同与当前未发布源码切片的独立交付合同。资产可用性、资格与保留限制以 [v1.3.2 Release](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.3.2) 和[发布状态](release-status.md)为准；最终安装与 VS Code 独立测试由用户负责，仍待完成。上一公开版本 v1.3.1 的包可能合法缺少较新的 v1.3.2 字段，其缺失不是服务器过期的证据。已发布 v1.3.2 与 v1.3.1 均为 52 个工具、9 个 Skill；v1.2.0（冻结的 48 工具、8 Skill runtime）保留为历史 legacy 路线。[发布状态](release-status.md)记录证据、例外和发布历史。Monitor 工作台与源码目录等行为见[源码规范](superpowers/specs/2026-10-21-monitor-v120-delivery-design.md)；v1.0.1 的历史资格见[执行记录](codex/returns/STM32TK-101/execution.md)。本指南不代替接收者机器的安装或实机证据。
+本指南面向**当前 v1.3.3 发布候选源码**（尚未公开发布），并以已发布为 Latest 的 **v1.3.2**（2026-10-26）为当前公开版本；下面同时说明已发布 v1.3.2 的操作合同与 v1.3.3 候选的独立交付合同。资产可用性、资格与保留限制以 [v1.3.2 Release](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.3.2) 和[发布状态](release-status.md)为准；最终安装与 VS Code 独立测试由用户负责，仍待完成。上一公开版本 v1.3.1 的包可能合法缺少较新的 v1.3.2 字段，已发布 v1.3.2 的包也可能缺少 v1.3.3 候选新增字段，其缺失不是服务器过期的证据。v1.3.3 候选、已发布 v1.3.2 与 v1.3.1 均为 52 个工具、9 个 Skill；v1.2.0（冻结的 48 工具、8 Skill runtime）保留为历史 legacy 路线。[发布状态](release-status.md)记录证据、例外和发布历史。Monitor 工作台与源码目录等行为见[源码规范](superpowers/specs/2026-10-21-monitor-v120-delivery-design.md)；v1.0.1 的历史资格见[执行记录](codex/returns/STM32TK-101/execution.md)。本指南不代替接收者机器的安装或实机证据。
 
 ## 路径、版本和安全入口
 
-**主接收路径（已发布的 v1.3.2 Release）：** 已发布的 [v1.3.2 Release](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.3.2) 同时列出同版 ZIP 与 `CHECKSUMS.sha256`；下载前先确认该页面确实列出这两个资产，再从该页面下载、与 `CHECKSUMS.sha256` 核对，并用包内 `bin/setup-stm32-env.ps1` 的只读 `Check` 与获授权 `Bootstrap` 安装该 v1.3.2 包；命令形式见 [setup-stm32-env Skill](../skills/setup-stm32-env/SKILL.md)。另行提供的同版本本地包只可作为补充来源，且须同时提供这两个文件、可核对的校验和与 source commit。任一资产或校验行缺失即停止，不要用 v1.2.0、更早的包或 GitHub 自动源码归档顶替。之后用包内 `Check` 确认 ToolkitRoot、持久 DataRoot、工程根、发行包及受管 runtime（v1.3.2 期望 `runtime/1.3.2`）。`Bootstrap`/`Repair` 修改 runtime，先审阅 `Check` 结果和对应发行包，再只执行获准的一种动作，完成后复查到 healthy。Claude Code 的入口为 [skills/setup-stm32-env/SKILL.md](../skills/setup-stm32-env/SKILL.md)；其它 MCP 宿主使用绝对 launcher、显式 project/data root 和 `STM32_TOOLKIT_DATA_ROOT`。`.stm32-project.json` 属于工程，DataRoot 保存机器状态和证据，不能把一次性测试目录当作长期 DataRoot。
+**主接收路径（v1.3.3 候选；资产未发布前使用已发布 v1.3.2）：** v1.3.3 发布前没有任何公开资产；只有在 v1.3.3 发布页同时列出同版 ZIP 与 `CHECKSUMS.sha256` 时，才能从同一页面下载、核对并用包内 `bin/setup-stm32-env.ps1` 的只读 `Check` 与获授权 `Bootstrap` 安装该 v1.3.3 包；在此之前，主接收路径仍是已发布的 [v1.3.2 Release](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.3.2)，其页面同时列出同版 ZIP 与 `CHECKSUMS.sha256`，下载前先确认这两个资产确实列出，再从同一页面下载并与 `CHECKSUMS.sha256` 核对；命令形式见 [setup-stm32-env Skill](../skills/setup-stm32-env/SKILL.md)。另行提供的同版本本地包只可作为补充来源，且须同时提供这两个文件、可核对的校验和与 source commit。任一资产或校验行缺失即停止，不要用 v1.2.0、更早的包或 GitHub 自动源码归档顶替。之后用包内 `Check` 确认 ToolkitRoot、持久 DataRoot、工程根、发行包及受管 runtime（v1.3.3 期望 `runtime/1.3.3`；已安装的 v1.3.2 仍是 `runtime/1.3.2` 的 legacy 升级输入）。`Bootstrap`/`Repair` 修改 runtime，先审阅 `Check` 结果和对应发行包，再只执行获准的一种动作，完成后复查到 healthy。Claude Code 的入口为 [skills/setup-stm32-env/SKILL.md](../skills/setup-stm32-env/SKILL.md)；其它 MCP 宿主使用绝对 launcher、显式 project/data root 和 `STM32_TOOLKIT_DATA_ROOT`。`.stm32-project.json` 属于工程，DataRoot 保存机器状态和证据，不能把一次性测试目录当作长期 DataRoot。
 
-**显式 legacy 路线（历史公开版本 v1.2.0）：** 安装前先在 [v1.2.0 Release](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.2.0) 页面确认同版 ZIP 与 `CHECKSUMS.sha256` 均已列出，再从同一页面下载；缺少任一资产就停止。v1.2.0 是冻结的 48 工具、8 Skill runtime，不含下文 v1.3.2 专属入口。
+**显式 legacy 路线（历史公开版本 v1.2.0）：** 安装前先在 [v1.2.0 Release](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.2.0) 页面确认同版 ZIP 与 `CHECKSUMS.sha256` 均已列出，再从同一页面下载；缺少任一资产就停止。v1.2.0 是冻结的 48 工具、8 Skill runtime，不含下文 v1.3.3 候选专属入口。
 
-版本匹配的 v1.3.2 包与 legacy v1.2.0 包都使用全新、每版专用的 BundleRoot，路径已存在就另选新目录，不覆盖或删除。v1.3.2 使用 `C:\tools\stm32-toolkit-1.3.2-bundle`，ZIP 中的 `stm32-toolkit-1.3.2/` 与外层 `release/` 并列，ToolkitRoot 为 `C:\tools\stm32-toolkit-1.3.2-bundle\stm32-toolkit-1.3.2`，其内部另有供 setup 使用的 `release/`。legacy v1.2.0 同理使用 `C:\tools\stm32-toolkit-1.2.0-bundle` 与 `stm32-toolkit-1.2.0/`。下载/校验以及 `Check`/获授权 `Bootstrap`/获授权 `Repair` 的命令形式见 [setup-stm32-env Skill](../skills/setup-stm32-env/SKILL.md) 与包内脚本，两条路线策略相同，只更换版本与路径。长期 DataRoot 在 `C:\data\stm32-toolkit`，与 BundleRoot 分离。
+版本匹配的 v1.3.3 包（资产可用时）与 legacy v1.2.0 包都使用全新、每版专用的 BundleRoot，路径已存在就另选新目录，不覆盖或删除。v1.3.3 使用 `C:\tools\stm32-toolkit-1.3.3-bundle`，ZIP 中的 `stm32-toolkit-1.3.3/` 与外层 `release/` 并列，ToolkitRoot 为 `C:\tools\stm32-toolkit-1.3.3-bundle\stm32-toolkit-1.3.3`，其内部另有供 setup 使用的 `release/`。legacy v1.2.0 同理使用 `C:\tools\stm32-toolkit-1.2.0-bundle` 与 `stm32-toolkit-1.2.0/`。下载/校验以及 `Check`/获授权 `Bootstrap`/获授权 `Repair` 的命令形式见 [setup-stm32-env Skill](../skills/setup-stm32-env/SKILL.md) 与包内脚本，两条路线策略相同，只更换版本与路径。长期 DataRoot 在 `C:\data\stm32-toolkit`，与 BundleRoot 分离。
 
 ## 通用 MCP 配置与公开入口
 
-下例**只有在**已按 v1.3.2 Release 取得并核验的包安装、`Check` 为 healthy，且该 DataRoot 中确实存在 `runtime/1.3.2` 时才可使用。v1.3.2 的最终接收者安装和 VS Code/MCP 测试仍须独立完成；[安装证据](codex/returns/STM32TK-131/authorization-2026-10-26.md)是已发布 v1.3.1 的历史记录，不证明 v1.3.2 已安装。若显式选择历史版本 v1.2.0，请把 `command` 换为 `stm32-toolkit-1.2.0` 路径，并按该发行包的 48 工具、8 Skill 清单核对。下例供支持 `mcpServers` 的宿主使用。将三个示例路径换成真实绝对路径；`args` 的 `--data-root` 与 `env` 中的 `STM32_TOOLKIT_DATA_ROOT` 必须指向同一持久目录。cmd 启动器先用环境变量找到受管解释器，Python MCP 入口随后读取这两个显式参数。其它宿主请按其配置格式映射同一 `command`、`args`、`env`，不要改用系统 Python。
+下例**只有在**已按上述条件取得并核验的 v1.3.3 包安装、`Check` 为 healthy，且该 DataRoot 中确实存在 `runtime/1.3.3` 时才可使用；v1.3.3 资产在发布页可用前不得据此假定可安装。v1.3.3 的最终接收者安装和 VS Code/MCP 测试仍须独立完成；[安装证据](codex/returns/STM32TK-131/authorization-2026-10-26.md)是已发布 v1.3.1 的历史记录，不证明任何 v1.3.2/v1.3.3 已安装。若显式选择历史版本 v1.2.0，请把 `command` 换为 `stm32-toolkit-1.2.0` 路径，并按该发行包的 48 工具、8 Skill 清单核对。下例供支持 `mcpServers` 的宿主使用。将三个示例路径换成真实绝对路径；`args` 的 `--data-root` 与 `env` 中的 `STM32_TOOLKIT_DATA_ROOT` 必须指向同一持久目录。cmd 启动器先用环境变量找到受管解释器，Python MCP 入口随后读取这两个显式参数。其它宿主请按其配置格式映射同一 `command`、`args`、`env`，不要改用系统 Python。
 
 ```json
 {
   "mcpServers": {
     "stm32-toolkit": {
-      "command": "C:\\tools\\stm32-toolkit-1.3.2-bundle\\stm32-toolkit-1.3.2\\bin\\stm32-toolkit-mcp.cmd",
+      "command": "C:\\tools\\stm32-toolkit-1.3.3-bundle\\stm32-toolkit-1.3.3\\bin\\stm32-toolkit-mcp.cmd",
       "args": [
         "--project-root", "C:\\work\\blinky",
         "--data-root", "C:\\data\\stm32-toolkit"
@@ -33,22 +33,22 @@
 
 九个随插件提供的 Claude Code Skill 中，八个工作流 Skill 调用相同的公开合同：[setup-stm32-env](../skills/setup-stm32-env/SKILL.md)、[migrate-keil](../skills/migrate-keil/SKILL.md)、[configure-stm32-project](../skills/configure-stm32-project/SKILL.md)、[build-firmware](../skills/build-firmware/SKILL.md)、[flash-firmware](../skills/flash-firmware/SKILL.md)、[debug-firmware](../skills/debug-firmware/SKILL.md)、[read-var](../skills/read-var/SKILL.md)、[stm32-monitor](../skills/stm32-monitor/SKILL.md)；[normalize-source-comments](../skills/normalize-source-comments/SKILL.md) 是独立的显式编码复制助手，只生成注释级 UTF-8 副本，不属于迁移 apply，也不新增 MCP 工具。当前源码的 52 个 MCP 工具名称及九个 Skill 权威清单在 [public_inventory.py](../tools/stm32-toolkit/src/stm32_toolkit/public_inventory.py)；已发布的 v1.2.0 安装包仍为 48 个工具、8 个 Skill，不包含 `stm32_keil_preflight`、`stm32_firmware_import`、`stm32_firmware_admit` 或 `stm32_flash_imported`。**判断实际可用工具时，请在真正的 MCP 客户端调用 `stm32_doctor`，先检查 `ok`，再读取 `data.runtime.toolkitVersion` 与 `data.publicInventory`，并与客户端真实列出的工具及 input schema 对比。单独启动的启动器/CLI `doctor --json` 只是旁证，不能证明当前 MCP 进程的绑定；不要依据本页或源码清单推断。**
 
-以下命令中的路径均为示例，须替换为本机真实绝对路径。示例把两类入口分开：`$CandidateCli` 绑定**已安装**的 `runtime\1.3.2`，只在已按上述条件取得并安装该版本、且 `Check` 返回 healthy 后使用，只能执行该安装包已有的入口；`keil convert --destination`、同一 destination/选项的 PLAN → APPLY 与随后以 `$OutputRoot` 为工程根的命令是**当前本地未发布源码行为**，必须改用本机已核实、确实运行当前源码树的开发启动器占位 `$DevCli`，不要指向 `runtime\1.3.2`，也不要臆造某个已安装版本。已安装的 v1.3.2 runtime 仍是历史的原地 `keil convert`，不要对它使用或宣称这些参数。上一版本 v1.3.1 路由请使用其自身 `runtime\1.3.1` 启动器。**历史公开版本 v1.2.0（48 个工具）** 是显式 legacy 路线：把启动器换为 `$DataRoot\runtime\1.2.0\Scripts\stm32-toolkit.exe`，命令限于该发行包已有的入口，不要混用启动器。较早的 v1.3.0 仅保留本地候选记录；v1.3.1 的公开限制与 v1.3.2 待完成的独立测试见[发布状态](release-status.md)。CLI 工程命令需显式 `--project-root`；`--json` 命令返回结构化 code/details，`uvprojx` 必须使用正斜杠的可移植相对路径。`--dry-run` 只产生计划，`--apply --plan-id ... --authorized` 是独立写操作，不要直接套用示例 plan ID。
+以下命令中的路径均为示例，须替换为本机真实绝对路径。示例把两类入口分开：`$CandidateCli` 绑定**已安装**的 `runtime\1.3.3`，只在已按上述条件取得匹配资产并安装该版本、且 `Check` 返回 healthy 后使用，只能执行该安装包已有的入口；`keil convert --destination`、同一 destination/选项的 PLAN → APPLY 与随后以 `$OutputRoot` 为工程根的命令是**当前本地未发布源码行为**，必须改用本机已核实、确实运行当前源码树的开发启动器占位 `$DevCli`，不要指向 `runtime\1.3.3`，也不要臆造某个已安装版本。已安装的 v1.3.2 runtime 仍是历史的原地 `keil convert`，不要对它使用或宣称这些参数。上一版本 v1.3.1 路由请使用其自身 `runtime\1.3.1` 启动器。**历史公开版本 v1.2.0（48 个工具）** 是显式 legacy 路线：把启动器换为 `$DataRoot\runtime\1.2.0\Scripts\stm32-toolkit.exe`，命令限于该发行包已有的入口，不要混用启动器。较早的 v1.3.0 仅保留本地候选记录；v1.3.2 的公开限制与 v1.3.3 候选待完成的独立测试见[发布状态](release-status.md)。CLI 工程命令需显式 `--project-root`；`--json` 命令返回结构化 code/details，`uvprojx` 必须使用正斜杠的可移植相对路径。`--dry-run` 只产生计划，`--apply --plan-id ... --authorized` 是独立写操作，不要直接套用示例 plan ID。
 
 ```powershell
 $DataRoot = 'C:\data\stm32-toolkit'
 $ProjectRoot = 'C:\work\blinky'
 $OutputRoot = 'C:\work\blinky-gcc'
 
-# Installed v1.3.2 package commands.
-# Requires a healthy Check for runtime/1.3.2 and a matching reported version.
-$CandidateCli = Join-Path $DataRoot 'runtime\1.3.2\Scripts\stm32-toolkit.exe'
+# Installed v1.3.3 package commands (matching versioned assets).
+# Requires a healthy Check for runtime/1.3.3 and a matching reported version.
+$CandidateCli = Join-Path $DataRoot 'runtime\1.3.3\Scripts\stm32-toolkit.exe'
 & $CandidateCli --project-root $ProjectRoot doctor --json
 & $CandidateCli --project-root $ProjectRoot project detect --json
 & $CandidateCli --project-root $ProjectRoot keil inspect --uvprojx Project/blinky.uvprojx --target-name Debug --json
 
-# Current local unpublished source behavior: use a separately verified
-# development launcher for this source tree, never the installed runtime/1.3.2.
+# Current v1.3.3 candidate source behavior: use a separately verified
+# development launcher for this source tree, never the installed runtime/1.3.3.
 $DevCli = '<verified development launcher for this source tree>'
 & $DevCli --project-root $ProjectRoot keil convert --uvprojx Project/blinky.uvprojx --target-name Debug --destination $OutputRoot --dry-run --json
 # Review that PLAN, then repeat the same destination/options with its exact data.planId.
@@ -58,17 +58,17 @@ $DevCli = '<verified development launcher for this source tree>'
 & $DevCli --project-root $OutputRoot build --preset arm-debug --json
 ```
 
-**v1.3.2 入口（未随 v1.2.0 发行）：** 已发布 v1.2.0 安装包（48 个工具）没有 `keil preflight`/`stm32_keil_preflight`，也不接受 `--startup-strategy`/`--startup-source`/`--memory-layout`/`--extra-regions`（MCP `startupStrategy`/`startupSource`/`memoryLayout`/`extraRegions`）。下列入口、startup 与显式内存布局选项不属于 v1.2.0 runtime 的行为，不要对它使用或宣称支持；显式选择 legacy v1.2.0 时只用其 `runtime\1.2.0` 启动器与既有入口。`--destination` 独立交付与 `outputRoot` 交接是当前本地未发布源码行为，不在已发布 v1.3.2 安装包内；已安装的 v1.3.2 runtime 仍是原地 `keil convert`。本版本自身的 runtime 为 `runtime/1.3.2`。较早的 v1.3.0 候选已包含 `stm32_keil_preflight` 及 `startupStrategy`/`startupSource`/`memoryLayout`，但没有 `extraRegions`；已发布 v1.3.1 还包含 `extraRegions` 与后续诊断字段，但可能缺少 v1.3.2 新增的 pyOCD/VS Code guidance 字段；不要因某字段缺失就推断整个 preflight 或 MCP 服务器过期。
+**v1.3.3 候选入口（未随 v1.2.0 发行）：** 已发布 v1.2.0 安装包（48 个工具）没有 `keil preflight`/`stm32_keil_preflight`，也不接受 `--startup-strategy`/`--startup-source`/`--memory-layout`/`--extra-regions`（MCP `startupStrategy`/`startupSource`/`memoryLayout`/`extraRegions`）。下列入口、startup 与显式内存布局选项不属于 v1.2.0 runtime 的行为，不要对它使用或宣称支持；显式选择 legacy v1.2.0 时只用其 `runtime\1.2.0` 启动器与既有入口。`--destination` 独立交付与 `outputRoot` 交接是 v1.3.3 候选的当前本地未发布源码行为，不在已发布 v1.3.2 安装包内；已安装的 v1.3.2 runtime 仍是原地 `keil convert`。本版本自身的 runtime 为 `runtime/1.3.3`。较早的 v1.3.0 候选已包含 `stm32_keil_preflight` 及 `startupStrategy`/`startupSource`/`memoryLayout`，但没有 `extraRegions`；已发布 v1.3.1 还包含 `extraRegions` 与后续诊断字段，但可能缺少 v1.3.2 新增的 pyOCD/VS Code guidance 字段；不要因某字段缺失就推断整个 preflight 或 MCP 服务器过期。
 
 ```powershell
-# Installed v1.3.2 package commands.
-$CandidateCli = Join-Path $DataRoot 'runtime\1.3.2\Scripts\stm32-toolkit.exe'
-# Requires a healthy Check for runtime/1.3.2 and a matching reported version.
+# Installed v1.3.3 package commands (matching versioned assets).
+$CandidateCli = Join-Path $DataRoot 'runtime\1.3.3\Scripts\stm32-toolkit.exe'
+# Requires a healthy Check for runtime/1.3.3 and a matching reported version.
 & $CandidateCli version
 & $CandidateCli --project-root $ProjectRoot keil preflight --uvprojx Project/blinky.uvprojx --target-name Debug --json
 
 # Current local unpublished source behavior: same verified development
-# launcher as above, not the installed runtime/1.3.2.
+# launcher as above, not the installed runtime/1.3.3.
 & $DevCli --project-root $ProjectRoot keil convert --uvprojx Project/blinky.uvprojx --target-name Debug --destination $OutputRoot --startup-strategy generate-cmsis-gcc --startup-source Startup/startup_stm32f429_439xx.s --dry-run --json
 & $DevCli --project-root $ProjectRoot keil convert --uvprojx Project/blinky.uvprojx --target-name Debug --destination $OutputRoot --startup-strategy generate-cmsis-gcc --startup-source Startup/startup_stm32f429_439xx.s --apply --plan-id '<PLAN 返回的 data.planId>' --authorized --json
 ```
@@ -77,7 +77,7 @@ Keil `inspect`、`preflight` 和 `convert` 必须指向同一 `uvprojx` 和 `tar
 
 ### 独立交付、同参重放与工程根重绑（当前源码切片）
 
-本节是**当前本地未发布源码行为**，不包含在已发布 v1.3.2 安装包中：已安装的 v1.3.2 runtime 仍使用历史的原地 `keil convert`，不要向它承诺 `--destination`、`data.planId`、`outputs`、`sourcePatches` 或 `outputRoot`。
+本节属于 **v1.3.3 候选的当前本地未发布源码行为**，不包含在已发布 v1.3.2 安装包中：已安装的 v1.3.2 runtime 仍使用历史的原地 `keil convert`，不要向它承诺 `--destination`、`data.planId`、`outputs`、`sourcePatches` 或 `outputRoot`。
 
 公共 `keil convert` 不再原地改写 Keil 工程，也不保留 in-place 回退。源工程只读；`--destination`/`destination` 必须是源工程之外的绝对路径，且不存在或已验证为空。省略时返回 `DELIVERY_DESTINATION_REQUIRED`，`details` 给出示例与理由。PLAN 绑定完整源清单、目标、输出、destination 状态与选项；APPLY 必须用同一 destination、同一组 `startupStrategy`/`startupSource`/`memoryLayout`/`extraRegions` 和 PLAN 的精确 `data.planId`。任何 destination/选项/源快照变化返回 `PLAN_CHANGED` 或 `DELIVERY_*`，不写文件；已有内容的 destination 绝不被覆盖或清空。
 
@@ -90,7 +90,7 @@ Keil `inspect`、`preflight` 和 `convert` 必须指向同一 `uvprojx` 和 `tar
 
 ### 新建工程：CubeMX 生成 GCC/CMake/VS Code（当前未发布源码）
 
-本节描述**当前本地未发布源码切片**的工程创建行为，与上面的 Keil 独立交付是两条并列路线；已安装版本是否包含这些工具/字段，以实际绑定服务器列出的工具与 input schema 为准，不要据本页推断。真实创建需要实际 STM32CubeMX、配套**离线固件包**以及受支持的 STM32CubeCLT/GCC/CMake/Ninja；Git 从不是前提，也绝不要为创建而 `git init` 或提交。缺少厂商前置时按实际返回停止并报告，不要用合成 fixture 顶替真实 CubeMX/固件。
+本节描述**当前 v1.3.3 候选的本地未发布源码**的工程创建行为，与上面的 Keil 独立交付是两条并列路线；已安装版本是否包含这些工具/字段，以实际绑定服务器列出的工具与 input schema 为准，不要据本页推断。真实创建需要实际 STM32CubeMX、配套**离线固件包**以及受支持的 STM32CubeCLT/GCC/CMake/Ninja；Git 从不是前提，也绝不要为创建而 `git init` 或提交。缺少厂商前置时按实际返回停止并报告，不要用合成 fixture 顶替真实 CubeMX/固件。
 
 - **只读 PLAN。** `stm32_project_create_plan(sourceKind, source, destination, framework, language)` 只返回计划（`mutated=false`）。`sourceKind` 只能是 `mcu`/`board`/`ioc`；`mcu` 用器件名（如 `STM32F429ZITx`），`board` 用板名，`ioc` 用工程根内可读的 UTF-8 `.ioc` 相对路径。`framework` 为 `hal`/`ll`，`language` 为 `c`/`cpp`。`destination` 是**当前 workspace 工程根内的可移植相对路径**（`/` 分隔，不得绝对、带盘符或含 `..`），且必须不存在或已验证为空；它不同于 Keil `convert` 的工程外绝对 `--destination`，也不同于迁移结果的 `data.outputRoot`，三者不可混用。逐项审阅**全部** `data.blockers[]`（`code`/`component`/`remediation`，含 CubeMX/CubeCLT/GCC/CMake/Ninja、目标目录安全/非空等），并记录实际 `data.planId`、`data.actionDigest`、`data.expiresAt`（计划约一小时后过期）与 `data.request`。只读 PLAN 不构成写授权。
 - **同一输入的 PREPARE。** 用**完全相同的五个输入**外加该 `data.planId`/`data.actionDigest` 调用 `stm32_project_create_prepare`。它重新规划并比对：计划变化返回 `CREATION_PLAN_CHANGED`（附 `currentPlanId`/`currentActionDigest`），仍有 blocker 时以首个 blocker 失败；通过后只在 DataRoot 的 `creation/authorizations` 下写入**一次性、会过期**的授权记录并返回 `data.authorizationDigest`。它不启动 CubeMX，也不创建、清空或改动 destination；`mutated=false` 表示未改动工程，不是“没有写任何文件”。
@@ -102,7 +102,7 @@ Keil `inspect`、`preflight` 和 `convert` 必须指向同一 `uvprojx` 和 `tar
 
 ### `doctor` 环境就绪证据（当前源码切片）
 
-`doctor` 仍是只读诊断；`ok=true` 只表示**报告已收集**，不表示所有工具或扩展都已就绪。构建路线只依据 `data.tools` 中实际观察到的 ARM GCC、CMake、Ninja 证据；ARM GDB 面向调试，缺失或未知的可选 CubeMX、VS Code `code`、PyOCD 或扩展观察本身不构成构建阻断。`ok`、`unknown`、`missing`、`timeout`/`error`/`nonzero` 与扩展 `installed=null` 是不同证据，不要合并为统一的“就绪”门禁，并保留完整 `diagnostics`。它与其它 MCP 工具一样绑定同一工程/根：`stm32_doctor` 使用绑定 runtime，CLI 必须显式给出已核实的绝对 `--project-root`；不要用另一个目录或另一台机器上的结果替代当前绑定证据。默认会观察本机 VS Code 的推荐扩展；不需要该观察时用 CLI `--skip-vscode-extensions` 或 MCP `probeVscodeExtensions=false`。这些观察选项与字段属于**当前 v1.3.2 源码切片**；较早的 frozen/installed 1.3.0 不包含 `--skip-vscode-extensions`/`--vscode-path`/`--uv4-path`/`--armcc-path`、`vscodeExtensionObservation`、`keilTools`、`readiness`、`diagnostics` 或 `creationSupport.vsCodeExtensionsSource`，在该包中缺失不证明 MCP 过期，需等匹配构建安装后再检查。
+`doctor` 仍是只读诊断；`ok=true` 只表示**报告已收集**，不表示所有工具或扩展都已就绪。构建路线只依据 `data.tools` 中实际观察到的 ARM GCC、CMake、Ninja 证据；ARM GDB 面向调试，缺失或未知的可选 CubeMX、VS Code `code`、PyOCD 或扩展观察本身不构成构建阻断。`ok`、`unknown`、`missing`、`timeout`/`error`/`nonzero` 与扩展 `installed=null` 是不同证据，不要合并为统一的“就绪”门禁，并保留完整 `diagnostics`。它与其它 MCP 工具一样绑定同一工程/根：`stm32_doctor` 使用绑定 runtime，CLI 必须显式给出已核实的绝对 `--project-root`；不要用另一个目录或另一台机器上的结果替代当前绑定证据。默认会观察本机 VS Code 的推荐扩展；不需要该观察时用 CLI `--skip-vscode-extensions` 或 MCP `probeVscodeExtensions=false`。这些观察选项与字段属于**当前 v1.3.3 候选源码切片**；较早的 frozen/installed 1.3.0 不包含 `--skip-vscode-extensions`/`--vscode-path`/`--uv4-path`/`--armcc-path`、`vscodeExtensionObservation`、`keilTools`、`readiness`、`diagnostics` 或 `creationSupport.vsCodeExtensionsSource`，在该包中缺失不证明 MCP 过期，需等匹配构建安装后再检查。
 
 ```powershell
 & $CandidateCli --project-root $ProjectRoot doctor --json
@@ -143,11 +143,11 @@ Arm 的 Compiler 5 文档区分硬件浮点**计算**与参数传递 **ABI**；�
 - 选中 target 的 `RvdsVP` 缺失/为空或为 `2` 时允许上述历史候选；其它非空值（即使同时存在字面量 ABI）以 `MIGRATION_FPU_SELECTION_UNSUPPORTED` 阻断 FPU/ABI 推断。数值 `2` 只是本兼容规则允许的历史选择器，不证明二进制等价。
 - 其它 compiler/CPU/FPU 组合仍 fail closed；`--apcs`、`--fpu` 与 response-file 等 target/group/file misc controls 的既有 blocker 保持不变，不得为清除 blocker 改写证据或删除控件。
 - 被阻断的 ABI/硬件选择证据同时停止交付 PLAN 与向 APPLY 的推进：PLAN 返回 `DELIVERY_BLOCKED` 并携带完整 blocker；不存在可应用的诊断性交付 PLAN。Git 状态不参与该判断。
-- 请检查实际编译器命令行、对象与库的调用约定。没有新增 ABI override 参数或 CLI/MCP 标志，也不得手工编辑 `plan_id`、digest 或工程证据。本补丁已随其余改进集成为 v1.3.2；较早的 frozen/installed 1.3.0 不包含此行为。
+- 请检查实际编译器命令行、对象与库的调用约定。没有新增 ABI override 参数或 CLI/MCP 标志，也不得手工编辑 `plan_id`、digest 或工程证据。本补丁已随其余改进集成为 v1.3.2，并在当前 v1.3.3 候选中保留；较早的 frozen/installed 1.3.0 不包含此行为。
 
 ### 受支持的 CMSIS startup 生成（显式 opt-in）
 
-仅有常规 ST/CMSIS Cortex-M3/M4/M7 ARMCC5 startup 可走此路线；其它 ARMCC 汇编仍然阻断。本节参数属于 **v1.3.2 行为**：已发布 v1.2.0 安装包（48 个工具）不含 `stm32_keil_preflight` 及这两个选项；较早的 v1.3.0 候选已支持它们，上一版本 v1.3.1 也包含；仍须以宿主实际安装版本为准。公开参数名固定为：
+仅有常规 ST/CMSIS Cortex-M3/M4/M7 ARMCC5 startup 可走此路线；其它 ARMCC 汇编仍然阻断。本节参数属于 **v1.3.2 引入的行为**，并在当前 v1.3.3 候选中保留：已发布 v1.2.0 安装包（48 个工具）不含 `stm32_keil_preflight` 及这两个选项；较早的 v1.3.0 候选已支持它们，上一版本 v1.3.1 也包含；仍须以宿主实际安装版本为准。公开参数名固定为：
 
 | 操作 | MCP 参数 | CLI 参数 | 值 |
 | --- | --- | --- | --- |
@@ -182,7 +182,7 @@ VS Code / MCP 客户端的审查路径：
 
 #### 诊断判读与依赖头文件准备（本地未发布源码行为）
 
-本节与 ASCII JSON 输出属于当前本地未发布源码，不在已安装的 1.3.2 二进制中；安装版按实际绑定服务器/CLI 的行为判断。
+本节与 ASCII JSON 输出属于当前 v1.3.3 候选的本地未发布源码，不在已安装的 1.3.2 二进制中；安装版按实际绑定服务器/CLI 的行为判断。
 
 1. 读完整 `code`/`rule_id`/`path`/`line`/`column`/`evidence`/`message`。`ARMCC_ALIGN_UNSUPPORTED`/`ARMCC_ABSOLUTE_PLACEMENT_UNSUPPORTED` 区分：声明形状不支持、地址表达式无法求值（`address expression could not be resolved (...)`）、数组边界无法求值（`array bound '<expr>' could not be resolved (...)`）。括号内是稳定原因（`conditional`/`undefined`/`redefined`/`undef`/`unavailable`/`cycle`/`limit`/`unreadable` 等）。
 2. 消息出现 `quoted include "<工程相对路径>" ...` 时只读检查该依赖。非 UTF-8 的已知原因在 preflight remediation 中为 `needs-user-input` + `normalize-source-comments`：对源文件与确实需要的依赖头文件分别显式声明 charset，先在工程外生成只读严格预览，仅在差异被确认为注释内容并审阅通过后复制选中的 UTF-8 文件。普通严格副本需要精确审阅过的计划，`--confirm-file` 只用于每个已审阅接受的 lossy 文件。helper 的输出只是选中文件集合，不是工程。
@@ -214,7 +214,7 @@ VS Code / MCP 客户端的审查路径：
 
 ### 显式多 RAM 内存布局（当前源码/候选切片）
 
-托管生成的 `.data`/`.bss`/`.heap`/`.stack` 可以显式分配到不同 RAM 区域。参数属于 **v1.3.2 行为**：v1.2.0 runtime 不接受它们；较早的 v1.3.0 候选已接受 `memoryLayout`，上一版本 v1.3.1 也包含；使用前仍须检查所连 MCP 服务器的真实工具与 input schema（`memoryLayout`/`--memory-layout`）。
+托管生成的 `.data`/`.bss`/`.heap`/`.stack` 可以显式分配到不同 RAM 区域。参数属于 **v1.3.2 引入的行为**，当前 v1.3.3 候选保持不变：v1.2.0 runtime 不接受它们；较早的 v1.3.0 候选已接受 `memoryLayout`，上一版本 v1.3.1 也包含；使用前仍须检查所连 MCP 服务器的真实工具与 input schema（`memoryLayout`/`--memory-layout`）。
 
 | 操作 | MCP 参数 | CLI 参数 | 值 |
 | --- | --- | --- | --- |
@@ -231,7 +231,7 @@ VS Code / MCP 客户端的审查路径：
 
 ### 显式外部 RAM 区域（当前源码/候选切片）
 
-迁移可以显式声明 Keil/设备事实之外的**可写 RAM**（例如外部 SRAM），用于固定地址缓冲或显式内存布局。该输入属于 **v1.3.2 行为**：v1.2.0 runtime 不接受 `extraRegions`/`--extra-regions`；**已冻结/已安装的 1.3.0 也不包含 `extraRegions` 这一新增选项**（其基本 preflight、blockers 与 `memoryLayout` 仍存在）；上一版本 v1.3.1 则包含 `extraRegions`。因此仍须先核对实际绑定的 MCP 工具与 input schema，不能仅凭版本号宣称支持或推断整个工具缺失。
+迁移可以显式声明 Keil/设备事实之外的**可写 RAM**（例如外部 SRAM），用于固定地址缓冲或显式内存布局。该输入属于 **v1.3.2 引入的行为**，当前 v1.3.3 候选保持不变：v1.2.0 runtime 不接受 `extraRegions`/`--extra-regions`；**已冻结/已安装的 1.3.0 也不包含 `extraRegions` 这一新增选项**（其基本 preflight、blockers 与 `memoryLayout` 仍存在）；上一版本 v1.3.1 则包含 `extraRegions`。因此仍须先核对实际绑定的 MCP 工具与 input schema，不能仅凭版本号宣称支持或推断整个工具缺失。
 
 | 操作 | MCP 参数 | CLI 参数 | 值 |
 | --- | --- | --- | --- |
@@ -252,7 +252,7 @@ VS Code / MCP 客户端的审查路径：
 ```powershell
 $Extra = '[{"name":"EXT_SRAM","origin":1744830464,"length":65536,"attributes":"rw-"}]'
 $Layout = '{"flash":"IROM1","data":"IRAM1","bss":"EXT_SRAM","heap":"EXT_SRAM","stack":"EXT_SRAM"}'
-# Installed v1.3.2 package: preflight accepts both explicit options.
+# Installed v1.3.3 runtime (or the published v1.3.2 package): preflight accepts both explicit options.
 & $CandidateCli --project-root $ProjectRoot keil preflight --uvprojx Project/blinky.uvprojx --target-name Debug --extra-regions $Extra --memory-layout $Layout --json
 # Current local unpublished source behavior: use the verified development
 # launcher from above, and keep the same destination/options for PLAN and APPLY.
@@ -264,7 +264,7 @@ $Layout = '{"flash":"IROM1","data":"IRAM1","bss":"EXT_SRAM","heap":"EXT_SRAM","s
 
 ### 用户自有 NOLOAD 链接片段（当前源码/候选切片）
 
-工程负责人可以用 `generation.linkerFragment` 指定一个**自己拥有的**、工程相对的 UTF-8 GNU ld 片段，由 configure 校验后渲染进托管 `linker/stm32tk.ld`。这是**v1.3.2 的本补丁行为**：v1.2.0 runtime 与较早冻结/安装的 1.3.0 都不包含本补丁；**没有新增 MCP 工具或参数**，仍使用既有的 `stm32_project_configure` / CLI `project configure`。工具清单与 input schema 本切片没有变化，因此它们**无法**区分未打补丁的旧 1.3.0 与本补丁运行时；不能仅凭工具数量、版本号或 schema 宣称支持。必须使用**确认由本补丁源码构建并部署**的 runtime（安装/升级须另行授权），再用一个已审阅的 manifest 执行**只读 configure PLAN**，确认 `data.inputs[]` 出现片段 `path`/`sha256`、`linker/stm32tk.ld` 的 `unified_diff` 含片段内容且 `data.blockers` 符合预期；PLAN 失败或没有这些证据就停止，不要继续 APPLY。
+工程负责人可以用 `generation.linkerFragment` 指定一个**自己拥有的**、工程相对的 UTF-8 GNU ld 片段，由 configure 校验后渲染进托管 `linker/stm32tk.ld`。这是**v1.3.2 引入的本补丁行为**，当前 v1.3.3 候选保留：v1.2.0 runtime 与较早冻结/安装的 1.3.0 都不包含本补丁；**没有新增 MCP 工具或参数**，仍使用既有的 `stm32_project_configure` / CLI `project configure`。工具清单与 input schema 本切片没有变化，因此它们**无法**区分未打补丁的旧 1.3.0 与本补丁运行时；不能仅凭工具数量、版本号或 schema 宣称支持。必须使用**确认由本补丁源码构建并部署**的 runtime（安装/升级须另行授权），再用一个已审阅的 manifest 执行**只读 configure PLAN**，确认 `data.inputs[]` 出现片段 `path`/`sha256`、`linker/stm32tk.ld` 的 `unified_diff` 含片段内容且 `data.blockers` 符合预期；PLAN 失败或没有这些证据就停止，不要继续 APPLY。
 
 **所有权与位置。** 片段是用户拥有的普通文件，Toolkit 只读取、从不改写或纳入 managed records。路径必须是非空、可移植的工程相对路径（`/`，不得含反斜杠、盘符、UNC、`.`/`..` 分量）；任一路径分量是符号链接/重解析点、文件缺失/是目录/超过 64 KiB/非 UTF-8 都 fail closed。片段不得与 `build.sources`/`assemblySources`/`includePaths`、SVD、CubeMX IOC、`generation.managedManifest`、原生 linker 脚本、九个托管生成目标（如 `CMakeLists.txt`、`linker/stm32tk.ld`、`.vscode/settings.json`）、`build/`、`artifacts/migration/` 或 `.stm32-toolkit/generated-files.json` 冲突（大小写不敏感），也不能与 `generation.nativeLinkerScript` 同时声明。原生脚本路线保持原有的独立所有权，片段不会接管它。
 
@@ -305,7 +305,7 @@ $Layout = '{"flash":"IROM1","data":"IRAM1","bss":"EXT_SRAM","heap":"EXT_SRAM","s
 
 ```powershell
 # 必须替换为“已确认由本补丁源码构建并部署”的 runtime 的完整绝对路径。
-# 已知的已安装 runtime\1.3.0（上一候选）不含本补丁；v1.3.2 候选也未在本切片安装。
+# 已知的已安装 runtime\1.3.0（上一候选）不含本补丁；v1.3.3 候选也未在本切片安装。
 # 本文不授权或执行任何安装/升级。
 $PatchedCli = '<absolute path to a runtime built from this patch>\Scripts\stm32-toolkit.exe'
 # 1) 只读 PLAN：核对 data.plan_id、data.inputs、data.files、data.blockers
@@ -348,7 +348,7 @@ MCP 使用同一对参数：`stm32_project_configure(debugBackend="pyocd", debug
 
 PLAN 只读，除既有 `data.files[]` 外还返回 `data.debug_configuration`（`backend`/`target`）与 `data.manifest_edit`：`path`、`status`（`update` 或 `unchanged`）、`before_sha256`/`after_sha256`、`before_size`/`after_size` 和完整 `unified_diff`；原始字节不进入协议。核对 diff 只改 `debug.backend`/`debug.target`，并保留 `svd`、`svdDevice`、`readableRegions`、`memory`、`generation`（含 `linkerFragment`）等其它字段。若 pair 已等于当前值，`status=unchanged` 且 manifest 精确字节不变，不重排格式。APPLY 必须带同一项目、同一参数对、精确 `data.plan_id` 和真实布尔 `authorized=true`；审阅实际 PLAN 后，若既有明确指令已覆盖这次变更与范围即可复用（用户无需预先给出新 ID），只读 PLAN 不构成写授权；省略/改动参数对或计划后输入变化会在写入前返回 `PLAN_CHANGED`/结构化失败。`.stm32-project.json` 归用户所有，其它受支持字段仍可按各自合同自行维护；不要手工修补 managed hash、generated 文件或 build receipt，本切片的 debug 对子应通过上述 PLAN/APPLY 记录，以免与受管证据不一致。
 
-该编辑会自然使旧 build/firmware 身份失效；需要时按 `build --preset arm-debug --clean` 重新构建，再走各自的授权流程。配置记录只是元数据：不会发现、安装或验证 PyOCD target，也不会创建调试会话；`.vscode/launch.json` 仍为空，真实调试交接（handoff）是独立的显式授权步骤。此能力属于 v1.3.2，较早的 frozen/installed 1.3.0 不包含它；安装/升级需另行授权。
+该编辑会自然使旧 build/firmware 身份失效；需要时按 `build --preset arm-debug --clean` 重新构建，再走各自的授权流程。配置记录只是元数据：不会发现、安装或验证 PyOCD target，也不会创建调试会话；`.vscode/launch.json` 仍为空，真实调试交接（handoff）是独立的显式授权步骤。此能力属于 v1.3.2 并在当前 v1.3.3 候选中保留，较早的 frozen/installed 1.3.0 不包含它；安装/升级需另行授权。
 
 ### VS Code 任务、可执行绑定与 `ide task` 适配器（当前源码切片）
 
@@ -358,14 +358,14 @@ PLAN 只读，除既有 `data.files[]` 外还返回 `data.debug_configuration`�
 
 ```json
 {
-  "stm32-toolkit.executablePath": "C:/data/stm32-toolkit/runtime/1.3.2/Scripts/stm32-toolkit.exe",
+  "stm32-toolkit.executablePath": "C:/data/stm32-toolkit/runtime/1.3.3/Scripts/stm32-toolkit.exe",
   "stm32-toolkit.compilerPath": "C:/ST/STM32CubeCLT/GNU-tools-for-STM32/bin/arm-none-eabi-gcc.exe"
 }
 ```
 
-示例中的 `executablePath` 是用户本机**已核验且 `Check` 为 healthy** 的受管 runtime 控制台启动器（`DataRoot/runtime/1.3.2/Scripts/stm32-toolkit.exe`），不是 BundleRoot 下的 `bin/stm32-toolkit.exe` 包内可执行文件；请替换为本机真实存在的同类路径。下面成对 `vscodeToolkitPath`/`vscodeGccPath` 与可移植默认值的语义不变。
+示例中的 `executablePath` 是用户本机**已核验且 `Check` 为 healthy** 的受管 runtime 控制台启动器（`DataRoot/runtime/1.3.3/Scripts/stm32-toolkit.exe`），不是 BundleRoot 下的 `bin/stm32-toolkit.exe` 包内可执行文件；请替换为本机真实存在的同类路径。下面成对 `vscodeToolkitPath`/`vscodeGccPath` 与可移植默认值的语义不变。
 
-生成器不会写入空的 workspace 覆盖，也不会回退到裸 PATH 名称；未绑定这两项时生成结果**不可直接运行**（${config:...} 无法解析），这既不是安装证据也不是运行证据。`compilerPath` 只配置 IntelliSense，**不会**静默选择 CMake 构建工具链；构建工具链仍由 `cmake/arm-none-eabi-gcc.cmake` 与 preset 决定，并应与 `stm32_doctor` 的工具证据一致。VS Code 变量本身不证明当前 runtime/MCP 身份：用 `stm32_doctor` 及真实客户端列出的工具/input schema 核对。所选可执行文件是否就是本源码切片，先检查 `version`，再检查 `ide task --help`（帮助里必须出现 `flash`、`handoff-begin`、`handoff-end`）：只有 `version` 输出不能证明该可执行文件就是本源码切片：1.3.0 与 1.3.2 可由版本身份区分，但同一版本的不同构建仍需 `ide task --help` 能力检查。
+生成器不会写入空的 workspace 覆盖，也不会回退到裸 PATH 名称；未绑定这两项时生成结果**不可直接运行**（${config:...} 无法解析），这既不是安装证据也不是运行证据。`compilerPath` 只配置 IntelliSense，**不会**静默选择 CMake 构建工具链；构建工具链仍由 `cmake/arm-none-eabi-gcc.cmake` 与 preset 决定，并应与 `stm32_doctor` 的工具证据一致。VS Code 变量本身不证明当前 runtime/MCP 身份：用 `stm32_doctor` 及真实客户端列出的工具/input schema 核对。所选可执行文件是否就是本源码切片，先检查 `version`，再检查 `ide task --help`（帮助里必须出现 `flash`、`handoff-begin`、`handoff-end`）：只有 `version` 输出不能证明该可执行文件就是本源码切片：1.3.0、1.3.2 与 1.3.3 可由版本身份区分，但同一版本的不同构建仍需 `ide task --help` 能力检查。
 
 也可以选择**成对**传入绝对原生路径（二者必须同时给出）。下面的 PLAN 与 APPLY 必须使用**同一对选项**和 PLAN 返回的精确 `data.plan_id`：
 
@@ -410,9 +410,9 @@ handoff-end **不额外增加**适配器侧准入，并原样转发原始 ticket
 
 **托管 flash → handoff-begin → handoff-end 的连续性。** 三个调用必须保持同一 `--project-root`、`--data-root`、`--session-id` 和同一精确 `probe`。`handoff-begin` 成功结果里的 `data.ticket` 必须原样保留给之后的 `handoff-end`；不要改写、猜测或复用别的会话/探针的 ticket，也不要把它持久化到任务文件。`handoff-begin` 返回的 `data.cortexDebugLaunch.configuration` 是给**独立的外部 IDE 工作区**使用的活配置：把它复制到该外部工作区的 launch 配置里，**不要**在构建后改写受管的 `.vscode/launch.json`。真实 IDE 必须先 detach，之后才能执行 `handoff-end` 归还原始 ticket。即使 ticket 完全正确，它也**不是** reclaim 成功的证明：end 会重新校验同一会话、探针和当前 firmware/flash 身份；任一不匹配（包括源码/ELF/构建证据陈旧）都必须按返回的 `code`/`details` 报告并停止，不得静默重试、自动 rebuild/flash 或宣称清理完成。任何一步失败都停止并按完整 `OperationResult` 处理。
 
-**snapshot / 无 Git 工程（当前本地未发布源码行为）。** 有效的 schema-2 snapshot 构建是正常的受管来源，不是仅构建证据：共享固件准入会像 schema-1 一样严格校验同一内容身份（声明输入、model/debug target、实际 ELF/MAP、`buildId` 与成功构建记录），因此托管 Flash、debug handoff、Monitor 与 Target 测试都可按正常受管路线使用同一 `data.build.buildId`/`data.build.elfSha256`。仍须显式选择精确探针、取得该次硬件操作授权，并满足既有 lease/所有权与失败停止规则；Git 只是可选追溯信息，null 绝不表示 clean，不要 `git init`、commit 或手工改 receipt/identity 绕过。外部固件导入（`stm32_firmware_import` → `stm32_firmware_admit` → `stm32_flash_imported`）仍是独立的显式 opt-in 路线：import PLAN 与 ADMIT 只读，import APPLY（外部位置副本）与 flash 需要各自适用的用户授权，一条已有的明确用户指令可能已覆盖其中多个指定步骤，应按实际适用范围复用；它不是 Toolkit GCC 输出的绕行方案，也不能拿 imported receipt 冒充托管 buildId 或解锁 debug/Monitor/Target。不要据本节向已安装的 v1.3.2/1.3.1 包承诺该准入；已安装包按其实际绑定服务器的返回为准。
+**snapshot / 无 Git 工程（当前本地未发布源码行为）。** 有效的 schema-2 snapshot 构建是正常的受管来源，不是仅构建证据：共享固件准入会像 schema-1 一样严格校验同一内容身份（声明输入、model/debug target、实际 ELF/MAP、`buildId` 与成功构建记录），因此托管 Flash、debug handoff、Monitor 与 Target 测试都可按正常受管路线使用同一 `data.build.buildId`/`data.build.elfSha256`。仍须显式选择精确探针、取得该次硬件操作授权，并满足既有 lease/所有权与失败停止规则；Git 只是可选追溯信息，null 绝不表示 clean，不要 `git init`、commit 或手工改 receipt/identity 绕过。外部固件导入（`stm32_firmware_import` → `stm32_firmware_admit` → `stm32_flash_imported`）仍是独立的显式 opt-in 路线：import PLAN 与 ADMIT 只读，import APPLY（外部位置副本）与 flash 需要各自适用的用户授权，一条已有的明确用户指令可能已覆盖其中多个指定步骤，应按实际适用范围复用；它不是 Toolkit GCC 输出的绕行方案，也不能拿 imported receipt 冒充托管 buildId 或解锁 debug/Monitor/Target。不要据本节向已安装的 v1.3.2/1.3.1 包承诺该准入；v1.3.3 候选也须以实际绑定的开发启动器返回为准。
 
-上述 VS Code 任务、可执行绑定与 handoff 能力已包含在 **v1.3.2** 与上一公开版本 **v1.3.1** 中；较早的 frozen/installed 1.3.0 不包含，也不会因重启 VS Code 而安装。本节所述的 snapshot 内容身份准入属于当前本地未发布源码行为，不在已安装包内。真实 VS Code 进程、扩展、IntelliSense、`reevaluateOnRerun` 行为与实际 handoff UI/调试会话仍未验收；不要用真实硬件来测试任务，也不要手工编辑 managed digest。
+上述 VS Code 任务、可执行绑定与 handoff 能力已包含在 **v1.3.2** 与上一公开版本 **v1.3.1** 中，并在当前 **v1.3.3** 候选中保留；较早的 frozen/installed 1.3.0 不包含，也不会因重启 VS Code 而安装。本节所述的 snapshot 内容身份准入属于当前 v1.3.3 候选的本地未发布源码行为，不在已安装包内。真实 VS Code 进程、扩展、IntelliSense、`reevaluateOnRerun` 行为与实际 handoff UI/调试会话仍未验收；不要用真实硬件来测试任务，也不要手工编辑 managed digest。
 
 `stm32_project_context` 的 `data.debugConfiguration` 使用同一字段语义：`backend`/`target`（不可用时为 null）、`status`（`configured`/`needs-user-input`）、`missingFields`、`diagnostics`（每项含 `code`/`field`/`rule`/`message`/`remediation`）、`targetSupport` 恒为 `not-checked`、`hardwareVerified` 恒为 false、`nextSteps`。`configured` 只表示字段已记录；缺少或无效时，`capabilityDetails.flash`/`targetTest`/`monitor`/`breakpointDebug` 为 `blocked` 并列出全部原因，即使 pair 有效也不会把硬件布尔值改为 true。`build`/`configure` 的可用性不受该检查影响，`stm32_probe_list` 仍是独立的只读发现。
 
@@ -439,7 +439,7 @@ AI 客户端只使用现有证据核对绑定，不新增绑定检查工具：
 - `stm32_doctor` 的 `data.runtime.toolkitVersion` 与 `data.publicInventory` 描述**实际绑定的服务器**；还要对比客户端真实列出的工具及 input schema，并保留 `stm32_project_context.data.project.root` 为根权威。启动器/CLI 版本和 doctor 的工具数量都不是“客户端已注册这些工具”的证明。
 - 升级后重启 VS Code 一次再验证；工具/字段缺失或根不一致时，保存完整 JSON 并停止依赖该能力的操作，不要在启动器间回退、伪造会话或绕过 root 校验。
 - 先保存/读取完整 `OperationResult`（`ok`、`code`、`message`、`data`、`details`），再作总结；不要用 `head`/`grep` 或旧布尔值丢掉诊断。`ok=false` 时保留 `details`；`capabilityDetails` 的 `status`/`reason`/`nextSteps`、`planReadiness`/`applyReadiness` 与原始 preflight blocker 字段含义不变。
-- CLI 结构化 JSON 使用 ASCII 转义（`\uXXXX`，本地未发布源码行为），因此与 Windows 控制台代码页无关：把 stdout 原始字节按 UTF-8 解码再 `json.loads` 可还原中文与非 BMP 值。进程退出码需单独保留，JSON 解析不会再产生退出码。已安装的冻结 1.3.2 二进制没有该改动；若必须显式取得 UTF-8 文本，可在该次进程内设置 `PYTHONIOENCODING=utf-8`，不要修改全局环境或控制台编码。
+- CLI 结构化 JSON 使用 ASCII 转义（`\uXXXX`，本地未发布源码行为），因此与 Windows 控制台代码页无关：把 stdout 原始字节按 UTF-8 解码再 `json.loads` 可还原中文与非 BMP 值。进程退出码需单独保留，JSON 解析不会再产生退出码。该行为属于当前 v1.3.3 候选，已安装的冻结 1.3.2 二进制没有此改动；若必须显式取得 UTF-8 文本，可在该次进程内设置 `PYTHONIOENCODING=utf-8`，不要修改全局环境或控制台编码。
 
 成功 context 新增的 `data.firmwareRoutes` 只是**描述，不执行任何发现、导入或后端操作**：
 
@@ -456,12 +456,12 @@ AI 客户端只使用现有证据核对绑定，不新增绑定检查工具：
 
 **可复制 PowerShell 核对（保留未过滤 JSON，并处理 ok/error）：**
 
-这些命令启动**独立的 CLI 进程**；它们不能证明当前 VS Code 中实际绑定的 MCP 进程注册了哪些工具。真正的绑定证明必须在实际 MCP 客户端重复 `stm32_doctor` 与 `stm32_project_context`，并对照客户端列出的工具/input schema。`data.firmwareRoutes`、preflight 的逐 blocker `remediation`/`blockerSummary.byRemediation` 与 `extraRegions` 属于本 v1.3.2 源码切片。冻结的 `1e6ea849` v1.3.0 ZIP/runtime **已经有** `stm32_keil_preflight`、`analysis.blockers`、blocker summary、`planReadiness`/`applyReadiness` 及 `startupStrategy`/`startupSource`/`memoryLayout`；它缺少的只是上述较新字段/选项。因此不能把该包描述成没有 preflight 或没有基本 blocker 载荷，也不能仅凭版本号或清单数量判定 MCP 过期；新增部分需等匹配的 v1.3.2 构建安装后才可检查。
+这些命令启动**独立的 CLI 进程**；它们不能证明当前 VS Code 中实际绑定的 MCP 进程注册了哪些工具。真正的绑定证明必须在实际 MCP 客户端重复 `stm32_doctor` 与 `stm32_project_context`，并对照客户端列出的工具/input schema。`data.firmwareRoutes`、preflight 的逐 blocker `remediation`/`blockerSummary.byRemediation` 与 `extraRegions` 属于本 v1.3.3 候选源码切片。冻结的 `1e6ea849` v1.3.0 ZIP/runtime **已经有** `stm32_keil_preflight`、`analysis.blockers`、blocker summary、`planReadiness`/`applyReadiness` 及 `startupStrategy`/`startupSource`/`memoryLayout`；它缺少的只是上述较新字段/选项。因此不能把该包描述成没有 preflight 或没有基本 blocker 载荷，也不能仅凭版本号或清单数量判定 MCP 过期；新增部分需等匹配的 v1.3.3 构建安装后才可检查。
 
 ```powershell
 $DataRoot = 'C:\data\stm32-toolkit'
 $ProjectRoot = 'C:\work\blinky'
-$CandidateCli = Join-Path $DataRoot 'runtime\1.3.2\Scripts\stm32-toolkit.exe'
+$CandidateCli = Join-Path $DataRoot 'runtime\1.3.3\Scripts\stm32-toolkit.exe'
 
 & $CandidateCli version
 $DoctorText = & $CandidateCli --project-root $ProjectRoot doctor --json | Out-String
@@ -542,9 +542,9 @@ stm32_flash_imported(probeId="<user-selected probe>", importId=apply.data.import
 - 成功与失败结果在配置选定后都会带 `details.flashOptions`：`requestedFrequencyHz`（省略时为 `null`）、`configuredFrequencyHz`、`connectionPolicy`、`automaticRetry=false`。早期输入/授权/准入失败可以没有该字段。托管成功仍保留 `details.postFlash.targetState=unknown` 与 `runVerified=false`。
 - 仅托管正常烧录在自有清理完成后返回 `PROBE_PROGRAM_FAILED`，或返回带有效闭合 `attachDiagnostic` 且 `primary.stage` 为 `session-open`/`halt-verify`、`primary.reason` 属于可恢复连接类别的 `PROBE_ATTACH_FAILED` 时，才可能附加 `details.recoverySuggestion`（`kind=under-reset`、`frequencyHz=100000`、`requiresNewAuthorization=true`、`automaticRetry=false`）。它只是提示：先停止、保留完整诊断、核对目标供电/复位接线与清理结果，再由用户另行授权一次性恢复；恢复可能让目标保持 halted，不证明其已运行。频率或恢复选项应在这一次授权调用前选定；失败建议不是第二次调用，也不构成自动重试。
 - 清理失败、身份/stale/provenance/输入/授权/回读/receipt 失败、成功结果、已选择 recovery、导入路线、取消或任意其它错误都不附加该建议；不要把它当作自动重试、路线切换或既有 `attachDiagnostic`/一般 guidance 的替代。原有失败字段与清理优先级保持不变。
-- 这些频率选项和 `flashOptions`/`recoverySuggestion` 已包含在 v1.3.2 与上一公开版本 v1.3.1 中；较早冻结/安装的 v1.3.0 没有它们，重启 VS Code 也不会安装。生成的 IDE 任务模板保持原样；不要通过修改模板 digest 设置频率，也不要在原授权之外自动执行恢复。
+- 这些频率选项和 `flashOptions`/`recoverySuggestion` 已包含在 v1.3.2 与上一公开版本 v1.3.1 中，并在当前 v1.3.3 候选中保留；较早冻结/安装的 v1.3.0 没有它们，重启 VS Code 也不会安装。生成的 IDE 任务模板保持原样；不要通过修改模板 digest 设置频率，也不要在原授权之外自动执行恢复。
 
-**状态：**以上 AI 调用指引是 **v1.3.2** 行为，**不在**较早冻结的 v1.3.0 本地构建源码 `1e6ea849c21fb3786d60dba0254acb375d016a62` 及其 runtime/ZIP 中（该 1.3.0 包已含基本 preflight/`analysis.blockers`/`planReadiness` 及 startup/`memoryLayout` 选项，仅缺本文列出的较新增补）。重启 VS Code 只会刷新已安装服务器，不会安装本补丁。本工作树未安装、未重启，也不复核另一用户会话的安装。v1.3.2 统一当前版本、不改变 52 工具/9 Skill 清单、不改写既有 runtime/缓存；本文不代替用户本机的安装、IDE 或实机资格证据。
+**状态：**以上 AI 调用指引是 **v1.3.2** 引入、当前 **v1.3.3** 候选保留的行为，**不在**较早冻结的 v1.3.0 本地构建源码 `1e6ea849c21fb3786d60dba0254acb375d016a62` 及其 runtime/ZIP 中（该 1.3.0 包已含基本 preflight/`analysis.blockers`/`planReadiness` 及 startup/`memoryLayout` 选项，仅缺本文列出的较新增补）。重启 VS Code 只会刷新已安装服务器，不会安装本补丁。本工作树未安装、未重启，也不复核另一用户会话的安装。v1.3.3 候选统一当前版本、不改变 52 工具/9 Skill 清单、不改写既有 runtime/缓存；本文不代替用户本机的安装、IDE 或实机资格证据。
 
 ## 工程 manifest 的阶段约束
 
@@ -593,7 +593,7 @@ stm32_flash_imported(probeId="<user-selected probe>", importId=apply.data.import
 
 ## 外部固件导入与独立烧录（当前源码/候选切片）
 
-这条路线与托管构建/烧录完全分开，已随 **v1.3.1** 公开发布，并在 **v1.3.2** 中保留；历史 v1.2.0 的 48 工具包没有这些入口。它用于没有 `.stm32-project.json`、Git 或构建 receipt，但持有可用固件文件的工程。使用前先核对实际启动器版本，并对实际绑定服务器执行 `doctor --json`：确认 `data.publicInventory.mcpTools` 列出这三个工具、`skills` 为九个，并检查真实工具 input schema 的字段名与类型；只按实际返回调用，不要按本页推断。
+这条路线与托管构建/烧录完全分开，已随 **v1.3.1** 公开发布，并在 **v1.3.2** 与当前 **v1.3.3** 候选中保留；历史 v1.2.0 的 48 工具包没有这些入口。它用于没有 `.stm32-project.json`、Git 或构建 receipt，但持有可用固件文件的工程。使用前先核对实际启动器版本，并对实际绑定服务器执行 `doctor --json`：确认 `data.publicInventory.mcpTools` 列出这三个工具、`skills` 为九个，并检查真实工具 input schema 的字段名与类型；只按实际返回调用，不要按本页推断。
 
 - `stm32_project_context` 的 `capabilities.flash` 只描述**托管构建路线**；它不评估、也不阻止外部导入路线。未托管工程只要实际绑定的服务器暴露 `stm32_firmware_import`、`stm32_firmware_admit`、`stm32_flash_imported`，就可以使用本路线。
 - **导入计划**：`stm32_firmware_import(firmwarePath, expectedSha256, format, target, flashRegions, baseAddress?)`。`firmwarePath` 是工程根内正斜杠相对路径；`expectedSha256` 是**原始文件**的精确小写 SHA-256；`format` 为 `elf`、`hex` 或 `bin`（AXF 按 ELF 解析）；`target` 是明确的受支持 pyOCD target 标识；`flashRegions` 是 1–32 个 `{start,length}` 内部应用 Flash 区间（`0x08000000 ≤ start < end ≤ 0x10000000`），这是用户复核的声明，不是芯片容量测量。BIN 必须显式给 `baseAddress`，其它格式禁止该参数；BIN 没有调试符号，也不推断启动地址。不传 `planId` 时返回只读 PLAN：`data.planId`、`data.importId`、`data.source`（原始路径/SHA-256/大小）与 `data.image`（规范化 ARM ELF 的 SHA-256/大小/段/入口）。计划中 `data.source.sha256` 与 `data.image.sha256` 是**两个独立字段**（准入/烧录结果中则是扁平的 `sourceSha256`/`imageSha256`）；它们通常不同，但原始 ELF 若已与规范化镜像逐字节相同，二者也会相同，不能把“不相等”当作校验规则。
@@ -604,8 +604,8 @@ stm32_flash_imported(probeId="<user-selected probe>", importId=apply.data.import
 - CLI 对应 `firmware import`（显式 `--dry-run` 或 `--apply --plan-id … --authorized`）、`firmware admit`、`flash-imported`，参数为 `--firmware-path`、`--expected-sha256`、`--format`、`--target`、`--flash-regions '<json>'`、`--base-address`、`--import-id`、`--probe`、`--authorized`（`flash`/`flash-imported` 还可选 `--frequency <decimal Hz>`），并沿用 `--project-root`/`--data-root`/`--session-id`/`--json`。例如：
 
 ```powershell
-$CandidateCli = Join-Path $DataRoot 'runtime\1.3.2\Scripts\stm32-toolkit.exe'
-# Requires a healthy Check for runtime/1.3.2 and a matching reported version.
+$CandidateCli = Join-Path $DataRoot 'runtime\1.3.3\Scripts\stm32-toolkit.exe'
+# Requires a healthy Check for runtime/1.3.3 and a matching reported version.
 & $CandidateCli version
 # 1) Read-only PLAN. Keep the exact reviewed planId and original SHA-256.
 & $CandidateCli firmware import --project-root $ProjectRoot --data-root $DataRoot --session-id ext-1 --firmware-path firmware/app.bin --expected-sha256 <original-sha256> --format bin --target stm32f407vg --flash-regions '[{"start":134217728,"length":1048576}]' --base-address 134217728 --dry-run --json
@@ -642,16 +642,16 @@ Monitor 工作台默认使用简体中文和浅色界面。打开授权标签后
 
 实时数值每行显示自己的 UTC 采集时间。图表与数值表上方标明当前或上次采样的轮次、运行组和版本；切换左侧的编辑组不会将另一组的对象误标为当前运行组。运行组版本尚未从列表核对时，只保留同一轮次已接受的旧值并标明其来源。尚未收到样本时，状态栏的速率和延迟会显示“尚未收到样本”；暂停、断流、状态待核对或运行组版本变化时，既有速率和延迟标为“上次样本”并显示其 UTC 时间。丢弃计数仍是单独的累计数据。观测绑定或采样轮次变化后，上轮样本时间会清除。
 
-以下 UI02/UI03 就地恢复、固定端口、书签与会话恢复行为属于 v1.2.0 已验收源码，并在 v1.3.2、上一公开版本 v1.3.1 与 v1.3.0 候选中保持；取得并核验对应发行包或本地候选、安装且 `Check` 确认 healthy 后，才能按该版本启动器使用。v1.0.1 发布包不支持 `--port`，也不包含这些就地恢复操作。
+以下 UI02/UI03 就地恢复、固定端口、书签与会话恢复行为属于 v1.2.0 已验收源码，并在 v1.3.2、上一公开版本 v1.3.1、当前 v1.3.3 候选与 v1.3.0 候选中保持；取得并核验对应发行包或本地候选、安装且 `Check` 确认 healthy 后，才能按该版本启动器使用。v1.0.1 发布包不支持 `--port`，也不包含这些就地恢复操作。
 
 已打开的工作台内，普通操作失败会在导航下方的“操作提示”就地显示原因；多个提示可分别查看、关闭或按提示重试，当前页面、最后成功的数据和未保存草稿保留。读取重试使用失败时的原查询、页游标或导出任务 ID。除上述组冲突外，写入被明确拒绝时，须先核对原目标和内容并确认，才会重试上次操作；编辑按钮仍提交当前草稿。写入结果未知时不盲目重复提交：能核对的操作只刷新状态或列表，导出创建若没有任务 ID 则说明结果未知。若写入已成功而随后刷新失败，只重试读取，不重复写入。无效的导入文件须重新选择。初次读取普通失败可重试初始化；真正的认证或访问失效仍整页阻断，按提示重新打开授权标签。
 
 `open --port 8765` 成功后，终端显示不带 token 的 `http://127.0.0.1:8765/`，可将这个短地址加入书签。服务保持运行、同一浏览器配置的会话 cookie 有效时，关闭标签页后打开书签可回到工作台。关闭整个浏览器后是否保留会话取决于浏览器配置；新浏览器配置不会自动继承原会话。若短地址提示“当前会话已失效”，在**原 `open` 前台交互终端**按 Enter，启动器会把同一服务的授权页面再次交付系统默认浏览器。该浏览器配置完成认证后，在原短地址页面点“重新检查会话”；只有状态核对成功才进入工作台。交付请求本身不证明浏览器已完成认证。非交互启动时，须由启动方重新交付授权页面；不要保存或手输包含 fragment token 的授权链接。403“访问被拒绝”须检查入口、请求来源与浏览器配置，不能当作会话过期处理或放宽访问限制。
 
-`bin/stm32-monitor.cmd` 先用 `STM32_TOOLKIT_DATA_ROOT` 定位相同版本的受管 Python；单给 `--data-root` 不能启动 cmd。Monitor 入口启动后才读取 `open --data-root`，两处须指向同一 DataRoot。v1.2.0 启动器只使用已安装的 `runtime/1.2.0`，v1.3.2 启动器只使用 `runtime/1.3.2`；不要把另一版本的解释器、`PYTHONPATH` 源码覆盖或不同版 wheel 混入。以下命令要求**本版发行包已核验、安装且 Check 为 healthy**：它打开服务和新浏览器标签，并在前台保持运行；用该终端的 Ctrl-C 正常结束，不存在通用后台 daemon/stop 协议。
+`bin/stm32-monitor.cmd` 先用 `STM32_TOOLKIT_DATA_ROOT` 定位相同版本的受管 Python；单给 `--data-root` 不能启动 cmd。Monitor 入口启动后才读取 `open --data-root`，两处须指向同一 DataRoot。v1.2.0 启动器只使用已安装的 `runtime/1.2.0`，v1.3.3 候选启动器只使用 `runtime/1.3.3`，已安装的 v1.3.2 启动器只使用 `runtime/1.3.2`；不要把另一版本的解释器、`PYTHONPATH` 源码覆盖或不同版 wheel 混入。以下命令要求**本版发行包已核验、安装且 Check 为 healthy**：它打开服务和新浏览器标签，并在前台保持运行；用该终端的 Ctrl-C 正常结束，不存在通用后台 daemon/stop 协议。
 
 ```powershell
-$Version = '1.3.2'
+$Version = '1.3.3'
 $BundleRoot = "C:\tools\stm32-toolkit-$Version-bundle"
 $ToolkitRoot = Join-Path $BundleRoot "stm32-toolkit-$Version"
 $DataRoot = 'C:\data\stm32-toolkit'
@@ -669,6 +669,6 @@ $env:STM32_TOOLKIT_DATA_ROOT = $DataRoot
 
 ## 升级与历史材料
 
-已发布 v1.0.0/v1.0.1/v1.2.0 的标签、发行资产、凭据和数据边界不变；v1.3.2 是当前公开 Latest，v1.3.1 是上一公开版本。v1.3.2 的 Toolkit、Monitor、UI、插件、启动器与发行身份统一为 1.3.2；已有 1.3.1、1.3.0、1.2.0、1.1.2、1.0.1 及更早获批 runtime 经 `Check` 后只能以获授权的 `Repair` 事务升级，旧目录进入隔离区；只有既有事务可恢复分支才按其规则回滚旧 runtime 和状态，具体证据范围见[发布状态](release-status.md)。多旧版、未知未来目录、同版本不同来源、降级和锁定提升继续拒绝；不要手动移走状态文件。现有工程 `generatedBy` 保留真实旧版本；1.3.1/1.3.0/1.2.0/1.1.2/1.0.1/1.0.0/0.9.0 工程可计划和应用，只有显式 configure 事务刷新未改动的托管模板与记账，用户改动仍阻断。新 build 生成实际 1.3.2 身份，旧 flash receipt/evidence 不改写。工程 producer 可读不代表旧固件身份可供新版观测：现有 flash 合同要求 build 的 Toolkit 版本与当前 1.3.2 精确一致，1.3.1/1.3.0/1.2.0/1.1.2 build/flash receipt 不能直接绑定 1.3.2 运行观测，旧 build 会以 `FIRMWARE_IDENTITY_MISMATCH` 被拒绝；后续须经授权重建、烧录并建立新观测身份。旧 1.3.1/1.3.0/1.2.0/1.1.2/1.0.1 导出清单的 Toolkit/Monitor 版本不符合 1.3.2 精确校验；需使用原版本读取旧导出，或在新版本重新创建，不自动迁移或重签。改变 debug 元数据后，完整输入身份合同可能要求重新 configure、clean build 和必要的新烧录；运行观测仍按原完整身份与具名硬件授权，不提供内容等价 rebind。本指南不代替 Release notes 的最终资格结论；较早的 v1.3.0 候选已有本地官方构建产物（源 `1e6ea849c21fb3786d60dba0254acb375d016a62`，见[发布状态](release-status.md)），v1.3.2 已于 2026-10-26 按本候选单独批准的覆盖/复用/平台限制发布，最终安装与 VS Code 独立测试仍由用户负责且待完成（另一用户会话安装过更早候选，本工作树不复核），实机资格证据仍受既有边界限制；v1.0.1 的历史资格事实见[执行记录](codex/returns/STM32TK-101/execution.md)与[发布状态](release-status.md)。
+已发布 v1.0.0/v1.0.1/v1.2.0/v1.3.1/v1.3.2 的标签、发行资产、凭据和数据边界不变；v1.3.2 仍是当前公开 Latest，v1.3.3 是当前尚未发布的发布候选。v1.3.3 候选的 Toolkit、Monitor、UI、插件、启动器与发行身份统一为 1.3.3；已有 1.3.2、1.3.1、1.3.0、1.2.0、1.1.2、1.0.1 及更早获批 runtime 经 `Check` 后只能以获授权的 `Repair` 事务升级，旧目录进入隔离区；只有既有事务可恢复分支才按其规则回滚旧 runtime 和状态，具体证据范围见[发布状态](release-status.md)。多旧版、未知未来目录、同版本不同来源、降级和锁定提升继续拒绝；不要手动移走状态文件。现有工程 `generatedBy` 保留真实旧版本；1.3.2/1.3.1/1.3.0/1.2.0/1.1.2/1.0.1/1.0.0/0.9.0 工程可计划和应用，只有显式 configure 事务刷新未改动的托管模板与记账，用户改动仍阻断。新 build 生成实际 1.3.3 身份，旧 flash receipt/evidence 不改写。工程 producer 可读不代表旧固件身份可供新版观测：现有 flash 合同要求 build 的 Toolkit 版本与当前 1.3.3 精确一致，1.3.2/1.3.1/1.3.0/1.2.0/1.1.2 build/flash receipt 不能直接绑定 1.3.3 运行观测，旧 build 会以 `FIRMWARE_IDENTITY_MISMATCH` 被拒绝；后续须经授权重建、烧录并建立新观测身份。旧 1.3.2/1.3.1/1.3.0/1.2.0/1.1.2/1.0.1 导出清单的 Toolkit/Monitor 版本不符合 1.3.3 精确校验；需使用原版本读取旧导出，或在新版本重新创建，不自动迁移或重签。改变 debug 元数据后，完整输入身份合同可能要求重新 configure、clean build 和必要的新烧录；运行观测仍按原完整身份与具名硬件授权，不提供内容等价 rebind。本指南不代替 Release notes 的最终资格结论；较早的 v1.3.0 候选已有本地官方构建产物（源 `1e6ea849c21fb3786d60dba0254acb375d016a62`，见[发布状态](release-status.md)），v1.3.2 已于 2026-10-26 按本候选单独批准的覆盖/复用/平台限制发布；v1.3.3 候选尚未发布，其最终安装与 VS Code 独立测试同样由用户负责、仍待完成（另一用户会话安装过更早候选，本工作树不复核），实机资格证据仍受既有边界限制；v1.0.1 的历史资格事实见[执行记录](codex/returns/STM32TK-101/execution.md)与[发布状态](release-status.md)。
 
 当前源树已退役旧阶段计划、报告、资格工具及其专属测试。需要审计原文时使用 `git show 694c825d29a55a53052a148efa4cc6720c315a04:<path>`，不要重建旧机器本地路径。发行构建仍使用现行 `tools/release/build_0900_artifacts.py`、`tools/release/release_0900_policy.json`、许可证和当前测试。部署/IDE 另见 [Windows 前置核对](testing/windows-deployment-and-ide-preflight.md)。

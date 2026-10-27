@@ -143,6 +143,15 @@ interpretation, descriptions, discovery, templates and ordinary presentation do 
 own authority transitions. A reviewer must reject an omission if the file owns a unique check;
 renaming a low-scoring owner as an adapter does not justify exclusion.
 
+Before the v1.3.3 release measurement, the primary's responsibility review at
+accepted integration `39497f89e1ad2e2b5af27181af08385b755961b6` adds the complete
+files `source_provenance.py`, `migration/delivery.py`, `migration/source_intent.py`
+and `build/model.py`. They validate content identity, destination ownership and
+delivery boundaries, explicit semantic-change intent, and serialized build identity
+inputs. No member is removed and no threshold changes. The
+[v1.3.3 release plan](../superpowers/plans/2026-10-27-v133-release-plan.md)
+records this decision before measurement; no coverage score selected these files.
+
 For Monitor, all tracked Python source is core except forwarding-only `__init__.py` and
 `__main__.py`. Analysis, CLI, models, protocol, groups, exports and UI asset handlers retain
 integrity/security behavior and stay in scope.

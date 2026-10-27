@@ -1,5 +1,35 @@
 # Changelog
 
+## [v1.3.3 release candidate] - 2026-10-27
+
+- Align the active Toolkit, Monitor, UI package metadata/lock root, plugin, launchers,
+  setup, release utility/policy and release schema to `1.3.3`. Dependency versions and
+  schema/template versions are unchanged. Recognize an existing `1.3.2` managed runtime
+  and `1.3.2`-generated project as supported legacy inputs while retaining every older
+  entry and guard. Recognition stays read-only: a `1.3.2` runtime advances only through an
+  explicit authorized `Repair`, and an existing `generatedBy` value is not rewritten until
+  an explicit configure transaction. Same-version source conflicts, downgrades, unknown
+  future states and rollback rules are unchanged.
+- Keil migration publishes one complete, independently buildable GCC/CMake project into a
+  new absolute destination (`keil convert --destination`); the Keil source is read-only and
+  public conversion has no in-place fallback. Complete source preparation preserves every
+  ordinary project file while omitting Git metadata, and an explicit WFI normal-return
+  intent records reviewed source behavior without claiming binary equivalence.
+- Content identity is normal managed admission: Git remains optional traceability, and a
+  schema-2 input-snapshot build of a new or migrated project uses the same normal managed
+  GCC build, managed flash, debug handoff, Monitor and Target routes. New-project creation
+  prepares a complete destination, and its apply both drops only its own staging CMake
+  caches and initializes an empty durable lock only after native acquisition by the owner.
+- Offline qualification at this source ran real GCC builds plus a simulated managed-flash
+  journey; the new-project journey replaces only external CubeMX generation with a labeled
+  synthetic adapter because no vendor firmware package is present. This is not vendor
+  package generation, hardware, installation or IDE acceptance. Final installation and
+  independent VS Code testing remain user-owned and pending. Detailed qualification stays
+  in [release status](docs/release-status.md).
+- **Not published as a GitHub Release.** There is no v1.3.3 tag, Release, asset or
+  installation claim; the [v1.3.2 Release](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.3.2)
+  remains the public Latest.
+
 ## [v1.3.2] - 2026-10-26
 
 - Align the active Toolkit, Monitor, UI package metadata/lock root, plugin, launchers,

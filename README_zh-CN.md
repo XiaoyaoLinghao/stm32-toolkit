@@ -9,11 +9,11 @@ STM32 Toolkit 是面向 STM32 开发的本地工具。CLI 与 MCP 服务器共�
 1. **新建 STM32 工程** —— 创建工程、配置受管 ARM GCC/CMake 构建，再通过正常的授权路线编译和烧录。
 2. **现有 Keil 工程** —— 先只读 inspect 与 preflight，审阅确定性交付计划，再用 `keil convert --destination <绝对新输出目录>` **应用到一个新的独立输出目录**。Keil 源工程绝不被改写，交付出的工程可独立构建；随后绑定其 `outputRoot`，走同一套 configure、build、flash 路线。
 
-两条路线都不以 Git 为资格条件，Git 只是可选追溯信息。硬件操作只在明确选择设备并授权后评估，本源码树不声称已完成硬件验收。
+两条路线都不以 Git 为使用条件，Git 只是可选追溯信息。硬件操作需要明确选择设备并授权；本源码树不声称已完成硬件验收。
 
 ## 发布状态
 
-公开发布版本为 **v1.3.2**（2026-10-26，见 [v1.3.2 Release 页面](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.3.2)）。上述独立目标目录交付合同是**当前本地未发布源码行为**，不包含在该安装包中：已安装的 v1.3.2 runtime 仍使用历史的原地 `keil convert`。安装、升级、当前本地限制与详细迁移指引见[用户指南](docs/user-guide.md)。
+当前源码：**v1.3.3 发布候选（尚未发布）**。公开发行版：[v1.3.2](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.3.2)。安装、升级、迁移差异与验证限制见[用户指南](docs/user-guide.md)。
 
 ## 环境要求
 

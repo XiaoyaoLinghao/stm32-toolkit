@@ -9,11 +9,11 @@ STM32 Toolkit is a local toolkit for STM32 development. The CLI and the MCP serv
 1. **New STM32 project** — create a project, configure the managed ARM GCC/CMake build, then build and flash through the normal authorized route.
 2. **Existing Keil project** — inspect and preflight the Keil project read-only, review a deterministic delivery plan, then apply it to a **new independent output directory** (`keil convert --destination <absolute-new-output>`). The Keil source is never rewritten, and the delivered project builds on its own; bind its `outputRoot` and use the same configure, build and flash route.
 
-Git is optional traceability for both routes, never an eligibility gate. Hardware operations are evaluated only after an explicit device selection and authorization, and this source tree makes no hardware-acceptance claim.
+Git is optional traceability for both routes, never an eligibility gate. Hardware operations require explicit device selection and authorization; this source tree makes no hardware-acceptance claim.
 
 ## Release status
 
-The published package is **v1.3.2** (2026-10-26) on the [v1.3.2 Release page](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.3.2). The independent destination-delivery contract above is current **local unpublished source behavior**, not part of that package: an installed v1.3.2 runtime still uses the historical in-place `keil convert`. See the [user guide](docs/user-guide.md) for installation and upgrade steps, current local limitations, and detailed migration guidance.
+Current source: **v1.3.3 release candidate**. Published release: [v1.3.2](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.3.2). See the [user guide](docs/user-guide.md) for installation, upgrades, migration differences and validation limits.
 
 ## Requirements
 

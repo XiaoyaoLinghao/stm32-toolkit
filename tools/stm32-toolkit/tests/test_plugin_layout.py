@@ -626,6 +626,8 @@ def test_readmes_are_concise_and_distinguish_published_and_local_contracts():
             assert any(mark in guide for mark in candidate_marks), (
                 "1.3.3 must be marked as a local candidate until it is published"
             )
+        # Each landing page names the current source version.
+        assert f"v{__version__}" in guide
         declared.append(newest)
         # Detailed installation, upgrade and local limitations stay in the
         # user guide instead of being duplicated as landing-page steps.
@@ -655,11 +657,6 @@ def test_readmes_are_concise_and_distinguish_published_and_local_contracts():
     assert "Keil 源工程绝不被改写" in readme_zh
     assert "Git is optional traceability" in readme
     assert "Git 只是可选追溯信息" in readme_zh
-    # Published package versus current local source behavior is explicit.
-    assert "local unpublished source behavior" in readme
-    assert "本地未发布源码行为" in readme_zh
-    assert "in-place `keil convert`" in readme
-    assert "原地 `keil convert`" in readme_zh
     # The unpublished branch's hardware limits belong in the guide; the
     # landing page must not claim integrated no-Git hardware readiness or
     # describe another slice's integration state.
@@ -822,11 +819,8 @@ def test_unified_1_0_1_runtime_version_across_launcher_setup_and_skill():
     assert "ui_dist" in helper
     assert "import pyocd" in helper
     assert '"-I", "-c"' in helper
-    # The setup Skill prose still names the published 1.3.2 runtime; updating
-    # that documentation is a separate task, so its expectations stay on the
-    # published identity while the executable launchers/helper move to 1.3.3.
-    assert "${CLAUDE_PLUGIN_DATA}/runtime/1.3.2" in skill
-    assert "${CLAUDE_PLUGIN_DATA}/runtime/.staging/1.3.2-<id>" in skill
+    assert "${CLAUDE_PLUGIN_DATA}/runtime/1.3.3" in skill
+    assert "${CLAUDE_PLUGIN_DATA}/runtime/.staging/1.3.3-<id>" in skill
     assert "tools/stm32-toolkit[probe]" in skill
     assert "isolated PEP 440 `pyocd` distribution check" in skill
     assert ">=0.45.1,<0.46" in skill

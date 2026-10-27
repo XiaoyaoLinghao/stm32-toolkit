@@ -77,7 +77,7 @@ After apply, use the ordinary two-step configure route. For a PyOCD pair, PLAN w
 
 ## Boundaries
 
-- Destination delivery is current local unpublished source behavior, not part of the published v1.3.2 package: an installed v1.3.2/v1.3.1 runtime
+- Destination delivery is the current v1.3.3 release-candidate behavior and remains local unpublished source behavior until publication; it is not part of the published v1.3.2 package, and an installed v1.3.2/v1.3.1 runtime
   still exposes the historical in-place `keil convert` without `--destination`. Verify the bound server's actual input schema before promising
   `destination`, `data.planId`, `data.outputs[]`, `data.sourcePatches[]` or `outputRoot`; never install or upgrade without separate authorization.
 - Capability availability does not establish migration readiness; only current preflight/PLAN evidence does. Read complete diagnostics; unknown codes
@@ -85,7 +85,7 @@ After apply, use the ordinary two-step configure route. For a PyOCD pair, PLAN w
 - `stm32_keil_inspect`, `stm32_keil_preflight` and the plan call are read-only. APPLY is the only migration write and writes only into the explicit new
   destination; the Keil source is never edited. The `normalize-source-comments` helper writes reviewed copies outside the project; it is not a migration
   apply.
-- On this local source tree, content snapshot identity is normal managed admission, not a branch caveat. A delivered or newly created GCC project without Git builds, flashes, debugs,
+- In the current v1.3.3 release candidate, content snapshot identity is normal managed admission, not a branch caveat. A delivered or newly created GCC project without Git builds, flashes, debugs,
   runs Target tests and Monitor through the normal managed routes. Those routes still require the current managed build identity (exact `buildId`/ELF,
   model and debug target, successful current build), an explicitly selected probe and real authorization; Git is optional traceability only. Never
   `git init`, commit or fabricate provenance, and never route Toolkit GCC output through the separate external firmware import route, which remains
