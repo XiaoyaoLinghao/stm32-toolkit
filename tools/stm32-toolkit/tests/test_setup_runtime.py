@@ -1132,27 +1132,32 @@ def test_setup_contract_uses_namespaced_skill_and_ignores_coverage_data():
     assert "CLAUDE_PLUGIN_DATA" not in launcher
     assert "`/setup-stm32-env`" not in readme
     assert "Run /setup-stm32-env" not in readme
-    for variable in ("BundleRoot", "DataRoot", "ProjectRoot"):
+    assert "docs/user-guide.md" in readme
+    assert "skills/setup-stm32-env/SKILL.md" in guide
+    assert "stm32-toolkit:setup-stm32-env.ps1" not in readme
+    assert "skills/stm32-toolkit:setup-stm32-env" not in guide
+
+    assert "### Standalone PowerShell sequence" in skill
+    standalone = skill.split("### Standalone PowerShell sequence", 1)[1]
+    for variable in ("ToolkitRoot", "DataRoot", "ProjectRoot"):
         assert re.search(
             rf"^\${variable}\s*=\s*'[A-Za-z]:[\\/][^'\r\n]+'[ \t]*$",
-            readme,
+            standalone,
             flags=re.MULTILINE,
         )
-    assert "if (Test-Path -LiteralPath $BundleRoot) { throw 'BundleRoot exists; choose a new path' }" in readme
-    assert "$ToolkitRoot = Join-Path $BundleRoot 'stm32-toolkit-1.2.0'" in readme
-    assert "$SetupScript = Join-Path $ToolkitRoot 'bin\\setup-stm32-env.ps1'" in readme
+    assert "$ToolkitRoot = 'C:\\tools\\stm32-toolkit-1.3.3'" in standalone
+    assert "$SetupScript = Join-Path $ToolkitRoot 'bin\\setup-stm32-env.ps1'" in standalone
     for argument in (
         "-ToolkitRoot $ToolkitRoot",
         "-DataRoot $DataRoot",
         "-ProjectRoot $ProjectRoot",
     ):
-        assert argument in readme
-    check_position = readme.index("-Mode Check")
-    assert check_position < readme.index("-Mode Bootstrap")
-    assert check_position < readme.index("-Mode Repair")
-    assert "skills/setup-stm32-env/SKILL.md" in guide
-    assert "stm32-toolkit:setup-stm32-env.ps1" not in readme
-    assert "skills/stm32-toolkit:setup-stm32-env" not in guide
+        assert argument in standalone
+    check_position = standalone.index("-Mode Check")
+    assert check_position < standalone.index("-Mode Bootstrap")
+    assert check_position < standalone.index("-Mode Repair")
+
+    assert "全新、每版专用的 BundleRoot，路径已存在就另选新目录，不覆盖或删除" in guide
     assert "Repair" in skill
     assert "staging" in skill
     assert "quarantine" in skill
