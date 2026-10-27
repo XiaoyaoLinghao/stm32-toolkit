@@ -34,6 +34,7 @@ verified GNU/CMake/Ninja toolchain fails the test instead of skipping.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import struct
 import sys
@@ -367,6 +368,29 @@ def _support_profile(tmp_path: Path, gcc: str, cmake: str, ninja: str) -> ToolSu
     )
 
 
+def _recorded_c_compiler(build_dir: Path) -> Path:
+    """Return the C compiler CMake actually resolved for this build directory.
+
+    The Toolkit toolchain file sets ``CMAKE_C_COMPILER`` as a normal variable,
+    not as a cache entry, so ``CMakeCache.txt`` never records it.  CMake still
+    writes the resolved compiler it used into the generated
+    ``CMakeFiles/<version>/CMakeCCompiler.cmake`` module.
+    """
+
+    modules = sorted((build_dir / "CMakeFiles").glob("*/CMakeCCompiler.cmake"))
+    assert modules, build_dir
+    assert len(modules) == 1, modules
+    match = re.search(
+        r'^set\(CMAKE_C_COMPILER\s+"([^"]+)"',
+        modules[0].read_text(encoding="utf-8"),
+        re.MULTILINE,
+    )
+    assert match is not None, modules[0]
+    compiler = Path(match.group(1)).resolve()
+    assert compiler.is_file()
+    return compiler
+
+
 def test_offline_creation_journey_reaches_independent_gcc_build_and_managed_flash(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
@@ -450,10 +474,6 @@ def test_offline_creation_journey_reaches_independent_gcc_build_and_managed_flas
         assert staged_identity["gitDirty"] is None
 
     # Explicit supported debug configuration through the normal PLAN/APPLY.
-    # The activated project still carries the generation-time build caches,
-    # whose CMake cache records the pre-activation source directory; those
-    # moved caches are deliberately not reused.  The supported fresh path is
-    # the output-only copy below, rebuilt clean in an independent root.
     config_plan = configure_project_workflow(
         destination, authorized=False, debug_backend="pyocd", debug_target=DEBUG_TARGET
     )
@@ -468,6 +488,14 @@ def test_offline_creation_journey_reaches_independent_gcc_build_and_managed_flas
     assert configured.ok is True, configured.to_dict()
     manifest = json.loads((destination / ".stm32-project.json").read_text(encoding="utf-8"))
     assert manifest["debug"] == {"backend": "pyocd", "target": DEBUG_TARGET}
+
+    # The activated destination itself must remain directly usable by the
+    # everyday build workflow: the normal clean build runs in place, without
+    # deleting caches, invoking alternative CMake, or building a copy first.
+    activated_build = build_firmware_workflow(
+        destination, preset="arm-debug", clean=True, authorized=True
+    )
+    assert activated_build.ok is True, activated_build.to_dict()
 
     # Independent relocated output: no carried build cache, real clean rebuild.
     relocated = copy_output_only(tmp_path, destination, tmp_path / "relocated")
@@ -539,16 +567,15 @@ def test_offline_creation_journey_reaches_independent_gcc_build_and_managed_flas
         assert str(destination) not in text
         assert ".stm32tk-" not in text
 
-    # The CMake cache proves the real verified compiler was used.
+    # The compiler CMake recorded for this build proves the real verified
+    # executable was used.  The Toolkit toolchain file sets
+    # ``CMAKE_C_COMPILER`` as a normal variable, so the evidence lives in the
+    # generated compiler module rather than in ``CMakeCache.txt``.
+    compiler = _recorded_c_compiler(relocated / "build" / "arm-debug")
+    assert compiler == Path(gcc).resolve()
     cache = (relocated / "build" / "arm-debug" / "CMakeCache.txt").read_text(
         encoding="utf-8"
     )
-    compiler_line = next(
-        line for line in cache.splitlines() if line.startswith("CMAKE_C_COMPILER:")
-    )
-    compiler = Path(compiler_line.split("=", 1)[1].strip()).resolve()
-    assert compiler.is_file()
-    assert compiler == Path(gcc).resolve()
     assert str(destination) not in cache
     assert str(workspace) not in cache
 
