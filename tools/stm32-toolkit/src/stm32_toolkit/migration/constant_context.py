@@ -717,37 +717,79 @@ class _MacroIndex:
     def _resolve_include(
         self, including: str, name: str
     ) -> tuple[str, tuple[str, int] | None, str] | None:
+        components = self._include_components(name)
+        for base in self._search_bases(including):
+            try:
+                resolved = self._try_base(base, components)
+            except ConstantResolutionError as error:
+                if error.context is not None:
+                    raise
+                raise self._wrap_include_error(name, error) from None
+            if resolved is not None:
+                return resolved
+        return None
+
+    def resolve_include_bytes(
+        self, including: str, name: str
+    ) -> tuple[str, tuple[str, int] | None, bytes] | None:
+        """Return the exact bytes of one contained quoted include.
+
+        The caller supplies the including project-relative path and the quoted
+        operand.  The search order, case-aware matching, containment and byte
+        budget are the same ones the semantic include path uses.  The payload
+        is never decoded, so bytes that are not strict UTF-8 are returned as
+        found instead of becoming semantic source text; callers that need
+        source must keep using the decoded path.
+        """
+        components = self._include_components(name)
+        for base in self._search_bases(including):
+            try:
+                located = self._locate_base(base, components)
+            except ConstantResolutionError as error:
+                if error.context is not None:
+                    raise
+                raise self._wrap_include_error(name, error) from None
+            if located is not None:
+                return located
+        return None
+
+    def _include_components(self, name: str) -> list[str]:
         if not self._portable(name):
             raise _fail("escape", "include path is not contained")
         components = name.split("/")
         if len(components) > MAX_INCLUDE_COMPONENTS:
             raise _fail("limit", "include path component budget exceeded")
+        return components
+
+    def _search_bases(self, including: str) -> list[str]:
+        """Return the ordered, de-duplicated search bases for one operand."""
         parent = including.rsplit("/", 1)[0] if "/" in including else ""
         search: list[str] = [parent or "."]
         for entry in self.include_paths:
             if entry == "." or self._portable(entry):
                 search.append(entry)
         seen: set[str] = set()
+        ordered: list[str] = []
         for base in search:
             if base in seen:
                 continue
             seen.add(base)
-            try:
-                resolved = self._try_base(base, components)
-            except ConstantResolutionError as error:
-                if error.context is not None:
-                    raise
-                # Name the exact quoted operand when the failure is about the
-                # search itself; the operand is portable and project-relative.
-                raise _fail(
-                    error.code,
-                    error.detail,
-                    f'quoted include "{name}" could not be resolved',
-                    CAUSE_PATH,
-                ) from None
-            if resolved is not None:
-                return resolved
-        return None
+            ordered.append(base)
+        return ordered
+
+    def _wrap_include_error(
+        self, name: str, error: ConstantResolutionError
+    ) -> ConstantResolutionError:
+        """Name the exact quoted operand when the failure is about the search.
+
+        The operand is portable and project-relative.
+        """
+        return _fail(
+            error.code,
+            error.detail,
+            f'quoted include "{name}" could not be resolved',
+            CAUSE_PATH,
+        )
 
     def _check_search_base(self, base: str) -> bool:
         """Validate every component of one search base from the project root.
@@ -789,6 +831,25 @@ class _MacroIndex:
     def _try_base(
         self, base: str, components: list[str]
     ) -> tuple[str, tuple[str, int] | None, str] | None:
+        located = self._locate_base(base, components)
+        if located is None:
+            return None
+        rel, fingerprint, data = located
+        try:
+            body = data.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            raise _fail(
+                "unreadable",
+                "include file is not UTF-8",
+                f'quoted include "{rel}" is not UTF-8',
+                CAUSE_ENCODING,
+            )
+        return rel, fingerprint, body
+
+    def _locate_base(
+        self, base: str, components: list[str]
+    ) -> tuple[str, tuple[str, int] | None, bytes] | None:
+        """Locate one include candidate and read its exact bytes."""
         if not self._check_search_base(base):
             return None
         current = base
@@ -890,16 +951,7 @@ class _MacroIndex:
                 f'quoted include "{rel}" changed while it was read',
                 CAUSE_PATH,
             )
-        try:
-            body = data.decode("utf-8-sig")
-        except UnicodeDecodeError:
-            raise _fail(
-                "unreadable",
-                "include file is not UTF-8",
-                f'quoted include "{rel}" is not UTF-8',
-                CAUSE_ENCODING,
-            )
-        return rel, (hashlib.sha256(data).hexdigest(), len(data)), body
+        return rel, (hashlib.sha256(data).hexdigest(), len(data)), data
 
     # -- resolution ----------------------------------------------------------
 
