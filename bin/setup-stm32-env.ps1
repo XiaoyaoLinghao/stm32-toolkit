@@ -9,9 +9,9 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$RuntimeVersion = "1.3.3"
+$RuntimeVersion = "1.3.4"
 $PyOcdVersion = "0.45.1"
-$LegacyRuntimeVersions = @("1.3.2", "1.3.1", "1.3.0", "1.2.0", "1.1.2", "1.0.1", "1.0.0", "0.9.0", "0.5.0", "0.3.0")
+$LegacyRuntimeVersions = @("1.3.3", "1.3.2", "1.3.1", "1.3.0", "1.2.0", "1.1.2", "1.0.1", "1.0.0", "0.9.0", "0.5.0", "0.3.0")
 $ProcessOutputLimit = 65536
 $ReleaseUtilityRelative = "tools/release/build_0900_artifacts.py"
 $ReleasePolicyRelative = "tools/release/release_0900_policy.json"
@@ -95,7 +95,7 @@ try:
 except Exception:
     raise SystemExit(2)
 ui = resources.files("stm32_monitor") / "ui_dist"
-if version != "1.3.3":
+if version != "1.3.4":
     raise SystemExit(3)
 if not _file(ui, "index.html") or not _file(ui, ".vite/manifest.json"):
     raise SystemExit(4)

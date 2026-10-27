@@ -7,7 +7,7 @@
   "required": ["schema", "productVersion", "requiredPython", "platform", "source", "runtimeStateSchema", "wheels", "artifacts", "publicInventory"],
   "properties": {
     "schema": {"const": "stm32-toolkit-release/1"},
-    "productVersion": {"const": "1.3.3"},
+    "productVersion": {"const": "1.3.4"},
     "requiredPython": {"const": ">=3.12,<3.13"},
     "platform": {
       "type": "object", "additionalProperties": false,
