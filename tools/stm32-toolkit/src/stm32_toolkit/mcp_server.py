@@ -522,7 +522,15 @@ class MonitorRunRefGitEvidence(BaseModel):
 class DiagnosticMonitorRunRef(BaseModel):
     """Closed v2 physical Monitor source reference accepted by the MCP edge."""
 
-    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+    #: Instance inputs (validated models, ``model_copy`` results and mutated
+    #: instances) re-enter the same wire contract as JSON input.  The
+    #: before-validator below dumps through the serializer, so absent default
+    #: pair keys stay absent instead of surfacing as explicit nulls.
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+        revalidate_instances="always",
+    )
 
     schema_: Literal["stm32-monitor-run-ref/2"] = Field(alias="schema")
     operation_id: MonitorRunRefUuid
@@ -568,6 +576,10 @@ class DiagnosticMonitorRunRef(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _validate_replay_wire(cls, value: object) -> object:
+        # ``model_dump`` applies this model's serializer, which omits only the
+        # pair keys that were never supplied.  An explicitly supplied null
+        # pair therefore stays on the wire and the shared contract rejects it
+        # instead of silently reading the legacy Git form.
         raw = (
             value.model_dump(mode="python", by_alias=True)
             if isinstance(value, BaseModel)
@@ -600,15 +612,17 @@ class DiagnosticMonitorRunRef(BaseModel):
     def _serialize_reference(
         self, handler: SerializerFunctionWrapHandler
     ) -> dict[str, object]:
-        """Omit only the two absent snapshot pair keys from a legacy reference.
+        """Omit only pair keys that were never supplied.
 
-        A snapshot reference dumps the complete validated pair.  Every other
-        key stays exactly as serialized, so the legacy wire document keeps its
-        accepted key set and the required nullable ``svd_sha256`` survives.
+        A snapshot reference dumps the complete validated pair, and a pair key
+        supplied explicitly as null stays on the wire so the shared contract
+        can reject it.  Every other key stays exactly as serialized, so the
+        legacy wire document keeps its accepted key set and the required
+        nullable ``svd_sha256`` survives.
         """
         data = handler(self)
         for key in ("source_baseline", "git_evidence"):
-            if data.get(key) is None:
+            if data.get(key) is None and key not in self.model_fields_set:
                 data.pop(key, None)
         return data
 
