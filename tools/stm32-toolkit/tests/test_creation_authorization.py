@@ -913,7 +913,9 @@ def test_empty_lock_is_initialized_only_by_its_lock_owner(tmp_path: Path):
     process = None
     try:
         _hold_native_exclusive(fd)
-        assert lock_path.read_bytes() == b""
+        # A second handle cannot read the byte this process already locked, even
+        # while the file is still empty, so the owning descriptor is inspected.
+        assert os.fstat(fd).st_size == 0
         environment = os.environ.copy()
         source_root = str(Path(__file__).resolve().parents[1] / "src")
         environment["PYTHONPATH"] = source_root + os.pathsep + environment.get("PYTHONPATH", "")
@@ -934,11 +936,11 @@ def test_empty_lock_is_initialized_only_by_its_lock_owner(tmp_path: Path):
         )
         # The contender reached its lock attempt while this process still owns
         # the file, so it must wait without failing and without writing.
-        assert lock_path.read_bytes() == b""
+        assert os.fstat(fd).st_size == 0
         blocked_until = time.monotonic() + 0.25
         while time.monotonic() < blocked_until:
             assert process.poll() is None, _process_diagnostic(process)
-            assert lock_path.read_bytes() == b""
+            assert os.fstat(fd).st_size == 0
             time.sleep(0.01)
         _release_native_exclusive(fd)
         owned = False
