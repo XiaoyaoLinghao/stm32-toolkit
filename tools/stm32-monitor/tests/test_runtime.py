@@ -121,7 +121,7 @@ class FakeEndpoint:
     token: str = field(default="c" * 64, repr=False)
     workspace_id: str = ""
     session_id: str = ""
-    monitor_version: str = "1.3.3"
+    monitor_version: str = "1.3.4"
 
     @property
     def url(self) -> str:
@@ -418,7 +418,7 @@ def test_start_is_project_read_only_and_runtime_record_contains_digest_not_token
         assert record["tokenSha256"] == hashlib.sha256(
             endpoint.token.encode("ascii")
         ).hexdigest()
-        assert record["monitorVersion"] == "1.3.3"
+        assert record["monitorVersion"] == "1.3.4"
         assert record["port"] == 8765
         assert endpoint.token not in runtime.runtime_record.read_text(encoding="utf-8")
         assert endpoint.token not in repr(runtime)
