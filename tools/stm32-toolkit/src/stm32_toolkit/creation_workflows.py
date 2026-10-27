@@ -6,8 +6,6 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from stm32_toolkit.build.identity import git_evidence
-from stm32_toolkit.build.model import BuildError
 from stm32_toolkit.creation_authorization import (
     CreationAuthorizationError,
     CreationAuthorizationStore,
@@ -68,9 +66,11 @@ def prepare_creation_workflow(
 ) -> OperationResult[dict[str, object]]:
     """Re-plan and issue one expiring, single-use creation capability.
 
-    Preparation validates every prerequisite and writes only the authorization
-    record under the caller's Toolkit data root.  It never starts CubeMX and
-    never creates, removes, or changes the requested destination.
+    Preparation validates every real prerequisite and writes only the
+    authorization record under the caller's Toolkit data root.  Git is optional
+    traceability metadata, so a missing repository or unborn HEAD does not
+    block preparation.  It never starts CubeMX and never creates, removes, or
+    changes the requested destination.
     """
     operation = "project-create-prepare"
     try:
@@ -101,10 +101,6 @@ def prepare_creation_workflow(
         blockers = [blocker.to_dict() for blocker in plan.blockers]
         first = plan.blockers[0]
         return OperationResult.failure(operation, first.code, "Creation prerequisites are unavailable", {"blockers": blockers})
-    try:
-        git_evidence(request.project_root.expanduser().resolve(strict=True))
-    except BuildError as error:
-        return OperationResult.failure(operation, error.code, error.message, error.details)
     try:
         environment = discover_creation_environment(
             support,

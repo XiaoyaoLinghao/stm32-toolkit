@@ -59,10 +59,12 @@ from stm32_toolkit.migration.model import (
     MigrationPlanError,
     StartupAnalysis,
     StartupOptions,
+    WfiReturn,
     inspection_sha256_for,
     plan_id_for,
     portable_path_error,
 )
+from stm32_toolkit.migration.source_intent import normalize_wfi_returns
 from stm32_toolkit.migration.scoped_includes import (
     analyze_scoped_includes,
     classify_include_scopes,
@@ -717,9 +719,42 @@ class ConversionAnalysis:
     include_merges: tuple[IncludeMerge, ...] = ()
     include_paths: tuple[str, ...] = ()
     extra_regions: tuple[ExtraRegion, ...] = ()
+    #: Reviewed explicit WFI normal-return selections.  Empty for the
+    #: historical no-choice analysis, so existing payloads stay unchanged.
+    wfi_returns: tuple[WfiReturn, ...] = ()
     #: Deterministic float-ABI evidence, always re-derived from the fresh
     #: inspection above; callers cannot supply it.
     float_abi: dict[str, object] | None = None
+
+
+def _wfi_return_evidence(
+    analysis: ConversionAnalysis,
+) -> list[dict[str, object]]:
+    """Bind each reviewed selection to its exact source and converted bytes.
+
+    The entry records requested source behaviour, never binary equivalence.
+    ``sourceSha256`` is the revalidated pre-conversion source digest and
+    ``convertedSha256`` is the exact reviewed patch output digest.
+    """
+    source_sha = {entry.path: entry.sha256 for entry in analysis.inputs}
+    converted_sha = {
+        patch.path: patch.after_sha256 for patch in analysis.patches
+    }
+    evidence: list[dict[str, object]] = []
+    for choice in analysis.wfi_returns:
+        evidence.append(
+            {
+                "path": choice.path,
+                "function": choice.function,
+                "sourceSha256": source_sha.get(choice.path),
+                "convertedSha256": converted_sha.get(
+                    choice.path, source_sha.get(choice.path)
+                ),
+                "requestedBehavior": "normal-return",
+                "binaryEquivalent": False,
+            }
+        )
+    return evidence
 
 
 def _bind_analysis_root(root: object, inspection: object) -> Path:
@@ -847,6 +882,7 @@ def analyze_keil_conversion(
     startup_options: StartupOptions | None = None,
     memory_layout: MemoryLayout | None = None,
     extra_regions: tuple[ExtraRegion, ...] | None = None,
+    wfi_returns: tuple[WfiReturn, ...] | None = None,
 ) -> ConversionAnalysis:
     """Run the single shared technical analysis used by preflight and plan.
 
@@ -857,10 +893,13 @@ def analyze_keil_conversion(
     the existing assembly blockers byte-for-byte.  ``extra_regions`` is the
     immutable explicit external-RAM request; it is checked against the actual
     inspected base regions and composed once into the analysis map.
+    ``wfi_returns`` is the immutable reviewed WFI normal-return source-intent
+    request; every selection must reconcile with exactly one plain definition.
     """
     options = _validate_startup_options(startup_options)
     layout_option = _validate_memory_layout(memory_layout)
     extras = _validate_extra_region_option(extra_regions)
+    wfi_choices = normalize_wfi_returns(wfi_returns)
     canonical = _bind_analysis_root(root, inspection)
     _validate_extra_regions_against(extras, inspection.memory_regions)
     combined_memory_regions = combined_regions(inspection.memory_regions, extras)
@@ -945,7 +984,9 @@ def analyze_keil_conversion(
     symbols = SymbolSource(
         canonical, include_analysis.include_paths, inspection.defines
     )
-    scans = rules.scan_sources(scan_entries, symbols=symbols)
+    scans = rules.scan_sources(
+        scan_entries, symbols=symbols, wfi_returns=wfi_choices
+    )
 
     fixed_sections: list[FixedSectionRequirement] = []
     ignored: list[IgnoredObservation] = []
@@ -1211,6 +1252,7 @@ def analyze_keil_conversion(
         include_merges=include_analysis.merges,
         include_paths=include_analysis.include_paths,
         extra_regions=extras,
+        wfi_returns=wfi_choices,
         # Derived from the fresh inspection, never from caller-supplied
         # diagnostics or mutable plan state.
         float_abi=float_abi_evidence(fresh),

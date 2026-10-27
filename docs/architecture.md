@@ -40,18 +40,35 @@ runtime launchers use the configured managed interpreter, with no system-Python 
 
 ## Migration, generation and builds
 
-Keil inspection is read-only. Keil-to-GCC migration is one-way, uses deterministic plans and
-digest-checked authorized apply, and never rewrites `.uvprojx` or synchronizes two build systems.
-Preflight runs the same technical analysis as planning without requiring Git; blockers and apply
-prerequisites stay separate, and preflight never creates a plan ID or mutates state. Missing Git,
-unborn HEAD, and dirty work are diagnosable but remain explicit project-owner decisions before a
-Git-bound plan. Only implemented compiler/source rules are supported. Non-UTF-8 sources and
-unsupported ARMCC assembly require explicit project-owned adaptation; the Toolkit does not guess
-encoding, silently transcode, or invent MCU startup/vector initialization. A separate
-`normalize-source-comments` companion skill may produce reviewed comment-only UTF-8 file copies in a
-new external directory with explicit per-file charsets; it is not part of migration apply, never
-edits originals, and does not remove startup, option, scatter/memory, Git, or baseline blockers.
-Keep compiler migration separate from SPL/HAL conversion.
+Keil inspection and preflight are read-only. Keil-to-GCC migration is one-way independent delivery:
+the Keil source is an immutable input and the deterministic plan publishes one complete, separately
+buildable GCC/CMake project into an explicit absolute destination outside it. Planning binds the
+complete source inventory, selected target, exact outputs/diffs, destination state and reviewed
+options; apply revalidates all of them, stages in an owned sibling, verifies the complete staged
+tree, and publishes only into an absent destination (an existing empty destination is verified and
+replaced atomically). A nonempty destination is never overwritten, and public conversion has no
+in-place fallback. The legacy in-place plan/apply engines remain available internally for historical
+evidence, not as a public route. This destination contract is local unpublished source behavior; the
+published v1.3.2 package still exposes the historical in-place `keil convert`.
+
+Preflight runs the same technical analysis as planning without requiring Git. Technical blockers
+alone determine technical readiness; Git is optional evidence and never a plan prerequisite. The
+new output directory is a required next input whose absence/empty state preflight deliberately does
+not evaluate, and apply readiness never follows from preflight. Only implemented compiler/source
+rules are supported. Non-UTF-8 sources, needed quoted headers and unsupported ARMCC assembly
+require explicit project-owned adaptation; the Toolkit does not guess encoding, silently
+transcode, or invent MCU startup/vector initialization. A separate
+`normalize-source-comments` companion skill may produce reviewed comment-only UTF-8 file copies in
+a new external directory with explicit per-file charsets. Its output is a selected-file set, never
+a project. Complete preparation is a separate explicit copy: inventory every project file, refuse
+reparse/escaping/duplicate or unreadable paths, preserve all unselected sources, headers, startup
+files, resources and licenses, overlay only reviewed copies whose source and output hashes match,
+recheck the hashes and reparse the prepared root before planning. The original tree stays
+unchanged; the prepared root is the migration input, and the delivered GCC output is an
+independent tree whose build inputs never depend on the original or prepared tree. Bind the
+prepared root for migration, then the returned output root for configuration/build. Preparation is
+reversible and needs no Git. It does not remove startup, option, scatter/memory or
+unsupported-assembly blockers. Keep compiler migration separate from SPL/HAL conversion.
 
 One bounded migration opt-in recognizes and generates a GNU replacement for the
 conventional ST/CMSIS Cortex-M3/M4/M7 ARMCC5 startup. It is selected only by
@@ -83,6 +100,23 @@ fields keep their model hash and default 4 KiB heap/1 KiB stack bytes. This is a
 reviewed GCC runtime replacement, not ARMCC, ABI or Microlib equivalence; it
 does not claim device/IRQ fabrication, binary equivalence or board-level memory
 behavior.
+
+Explicit WFI normal-return intent is a separate reviewed source choice, not a binary-equivalence
+claim and not an assembly translator. Public MCP `wfiReturns` (a real array of exactly
+`{path, function}` objects) and repeatable CLI `--wfi-return PATH:FUNCTION` bind one or more plain
+file-scope zero-argument ARMCC `__asm void name(void)`/`name()` definitions whose body is exactly
+one WFI, with an optional trailing semicolon and lexical comments, and no explicit return. The
+same selection must be used for preflight, PLAN and APPLY; a nonempty selection participates in
+plan identity and source-change previews, while omission or change is a different request that
+fails with `DELIVERY_BLOCKED` or `PLAN_CHANGED` before any write. The selected wrapper becomes
+ordinary non-naked C executing `__asm volatile ("wfi" ::: "memory");` and returning normally,
+preserving its name, prototype, comments, BOM/newline convention and adjacent functions; the
+patch carries rule `ARMCC_WFI_RETURN_INTENT`. Wrappers with an explicit `BX LR`/`BX R14` keep the
+existing naked rewrite. Storage or prefix tokens, conditional/macro/nested definitions, multiple
+definitions, extra instructions and every other unsupported assembly stay project-owned ports,
+with unused or ambiguous selections reported rather than silently accepted.
+Keil disassembly, AXF or a binary baseline is not a prerequisite, and the choice does not prove
+the original binary behavior.
 
 Managed multi-RAM placement is an explicit, reviewed choice. The optional
 `memory.layout` object (MCP `memoryLayout`, CLI `--memory-layout` JSON) has
@@ -178,15 +212,18 @@ reports `sourceBaseline`, `gitDirty`, and `gitEvidence` explicitly. No-op reuse 
 current prior success record in the same provenance mode; unknown, tampered, cross-schema, stale, or
 failed records are refused.
 
-Snapshot provenance is build-only. Flash, debug, Target tests, Monitor, and acceptance protocols
-still require Git-shaped firmware provenance. The shared firmware admission boundary validates the
-snapshot identity and then returns `FIRMWARE_PROVENANCE_UNSUPPORTED` before any probe, lease, or
-attach effect; outer wrappers may map that failure under their existing protocol (for example
-acceptance recovery maps admission failure to `ACCEPTANCE_ATTEMPT_OUTPUT_INVALID`), so the same
-externally visible code is not promised from every entry. Context exposes this known blocker as
-`blocked` in the affected hardware `capabilityDetails` for a fresh snapshot build, while legacy
-false capability booleans remain conservative compatibility fields and read-only probe discovery
-stays independent. Migration planning and apply continue to require their committed Git baseline.
+Snapshot provenance is build-only on this unpublished source branch. Flash, debug, Target tests,
+Monitor, and acceptance protocols still require Git-shaped firmware provenance here; the separately
+verified managed-snapshot admission slice is not integrated in this branch and must not be
+duplicated. The shared firmware admission boundary validates the snapshot identity and then returns
+`FIRMWARE_PROVENANCE_UNSUPPORTED` before any probe, lease, or attach effect; outer wrappers may map
+that failure under their existing protocol (for example acceptance recovery maps admission failure
+to `ACCEPTANCE_ATTEMPT_OUTPUT_INVALID`), so the same externally visible code is not promised from
+every entry. Context exposes this known blocker as `blocked` in the affected hardware
+`capabilityDetails` for a fresh snapshot build, while legacy false capability booleans remain
+conservative compatibility fields and read-only probe discovery stays independent. Migration
+planning and apply are Git-independent: they bind the complete source snapshot and destination
+instead of a committed HEAD.
 
 External firmware import is a separate, source-only route for projects without
 a managed model. It parses exactly one ELF/AXF (AXF is ELF), Intel HEX, or BIN

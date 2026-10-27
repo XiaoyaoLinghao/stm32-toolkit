@@ -88,22 +88,29 @@ def git_porcelain(root: Path) -> str:
 def _count_apply_calls(monkeypatch: pytest.MonkeyPatch) -> dict[str, int]:
     """Count how many times the real core apply seam is invoked."""
     calls = {"n": 0}
-    real_convert = workflows_mod.apply_keil_conversion
+    real_convert = workflows_mod.apply_keil_delivery
     real_configure = workflows_mod.apply_project_configuration
 
-    def counting_convert(plan):
+    def counting_convert(plan, **kwargs):
         calls["n"] += 1
-        return real_convert(plan)
+        return real_convert(plan, **kwargs)
 
     def counting_configure(plan):
         calls["n"] += 1
         return real_configure(plan)
 
-    monkeypatch.setattr(workflows_mod, "apply_keil_conversion", counting_convert)
+    monkeypatch.setattr(workflows_mod, "apply_keil_delivery", counting_convert)
     monkeypatch.setattr(
         workflows_mod, "apply_project_configuration", counting_configure
     )
     return calls
+
+
+def delivery_destination(tmp_path: Path, name: str = "gcc-project") -> Path:
+    """An absent destination whose parent exists, outside the source tree."""
+    parent = tmp_path / "delivered"
+    parent.mkdir(parents=True, exist_ok=True)
+    return parent / name
 
 
 # ---------------------------------------------------------------------------
@@ -145,8 +152,10 @@ def test_inspect_and_plan_calls_preserve_complete_tree_and_git_state(tmp_path: P
     before_git = git_porcelain(root)
 
     assert inspect_keil_workflow(root).ok is True
-    plan = convert_keil_workflow(root)
+    destination = delivery_destination(tmp_path)
+    plan = convert_keil_workflow(root, destination=destination)
     assert plan.ok is True
+    assert not destination.exists()
 
     assert snapshot_tree(root) == before_tree
     assert git_porcelain(root) == before_git
@@ -242,18 +251,49 @@ def test_inspect_workflow_maps_unexpected_failures_to_unavailable(
 # ---------------------------------------------------------------------------
 
 
-def test_convert_plan_mode_returns_deterministic_plan(tmp_path: Path):
+def test_convert_plan_mode_returns_deterministic_delivery_preview(tmp_path: Path):
     root = keil_repo(tmp_path)
+    destination = delivery_destination(tmp_path)
 
-    first = convert_keil_workflow(root)
-    second = convert_keil_workflow(root)
+    first = convert_keil_workflow(root, destination=destination)
+    second = convert_keil_workflow(root, destination=destination)
 
     assert first.ok is True
     assert first.operation == "keil-conversion-plan"
     first_data = first.to_dict()["data"]
-    assert first_data["plan_id"] == second.to_dict()["data"]["plan_id"]
-    assert len(first_data["plan_id"]) == 64
-    assert first_data["blockers"] == []
+    assert first_data["planId"] == second.to_dict()["data"]["planId"]
+    assert len(first_data["planId"]) == 64
+    assert first_data["destination"] == str(destination)
+    assert first_data["destinationState"] == "absent"
+    assert first_data["configured"] is False
+    assert first_data["built"] is False
+    assert first_data["flashed"] is False
+    assert "plan_id" not in first_data
+    assert "blockers" not in first_data
+    assert first_data["outputs"]
+    assert first_data["sourcePatches"]
+    assert not destination.exists()
+
+
+def test_convert_requires_an_explicit_new_destination(tmp_path: Path):
+    root = keil_repo(tmp_path)
+    before_tree = snapshot_tree(root)
+
+    missing = convert_keil_workflow(root)
+    assert missing.ok is False
+    assert missing.operation == "keil-conversion-plan"
+    assert missing.code == "DELIVERY_DESTINATION_REQUIRED"
+    assert missing.details["field"] == "destination"
+    assert missing.details["rule"] == "required"
+    assert "C:/work/" in missing.details["example"]
+    assert "read-only" in missing.details["rationale"]
+    assert "independent" in missing.details["rationale"]
+
+    in_tree = convert_keil_workflow(root, destination=root / "gcc-out")
+    assert in_tree.ok is False
+    assert in_tree.code == "DELIVERY_SOURCE_DESTINATION_OVERLAP"
+    assert not (root / "gcc-out").exists()
+    assert snapshot_tree(root) == before_tree
 
 
 def test_convert_apply_without_authorization_fails_closed_without_writes(
@@ -261,13 +301,21 @@ def test_convert_apply_without_authorization_fails_closed_without_writes(
 ):
     """Regression: apply intent without boolean-true authorization never applies."""
     root = keil_repo(tmp_path)
+    destination = delivery_destination(tmp_path)
     calls = _count_apply_calls(monkeypatch)
-    plan_id = convert_keil_workflow(root).to_dict()["data"]["plan_id"]
+    plan_id = convert_keil_workflow(
+        root, destination=destination
+    ).to_dict()["data"]["planId"]
     before_tree = snapshot_tree(root)
     before_git = git_porcelain(root)
 
     for authorized in (False, "true", 1, None, [], {}):
-        result = convert_keil_workflow(root, plan_id=plan_id, authorized=authorized)
+        result = convert_keil_workflow(
+            root,
+            destination=destination,
+            plan_id=plan_id,
+            authorized=authorized,
+        )
         assert result.ok is False
         assert result.code == AUTHORIZATION_REQUIRED
         assert result.operation == "keil-conversion-apply"
@@ -275,6 +323,7 @@ def test_convert_apply_without_authorization_fails_closed_without_writes(
     assert calls["n"] == 0
     assert snapshot_tree(root) == before_tree
     assert git_porcelain(root) == before_git
+    assert not destination.exists()
 
 
 @pytest.mark.parametrize("authorized", ["true", "false", 1, 0, None, [], {}])
@@ -291,7 +340,7 @@ def test_convert_workflow_non_boolean_authorization_fails_closed_without_plan_id
     before_tree = snapshot_tree(root)
     before_git = git_porcelain(root)
 
-    result = convert_keil_workflow(root, authorized=authorized)
+    result = convert_keil_workflow(root, destination=delivery_destination(tmp_path), authorized=authorized)
 
     assert result.ok is False
     assert result.code == AUTHORIZATION_REQUIRED
@@ -306,11 +355,16 @@ def test_convert_workflow_non_boolean_authorization_fails_closed_with_plan_id(
 ):
     """Regression: apply intent with a non-bool authorized never applies."""
     root = keil_repo(tmp_path)
+    destination = delivery_destination(tmp_path)
     calls = _count_apply_calls(monkeypatch)
-    plan_id = convert_keil_workflow(root).to_dict()["data"]["plan_id"]
+    plan_id = convert_keil_workflow(
+        root, destination=destination
+    ).to_dict()["data"]["planId"]
     before_tree = snapshot_tree(root)
 
-    result = convert_keil_workflow(root, plan_id=plan_id, authorized=authorized)
+    result = convert_keil_workflow(
+        root, destination=destination, plan_id=plan_id, authorized=authorized
+    )
 
     assert result.ok is False
     assert result.code == AUTHORIZATION_REQUIRED
@@ -323,66 +377,131 @@ def test_convert_apply_without_plan_id_or_malformed_plan_id_fails_closed(
     monkeypatch, tmp_path: Path
 ):
     root = keil_repo(tmp_path)
+    destination = delivery_destination(tmp_path)
     calls = _count_apply_calls(monkeypatch)
     before_tree = snapshot_tree(root)
 
-    missing = convert_keil_workflow(root, authorized=True)
+    missing = convert_keil_workflow(root, destination=destination, authorized=True)
     assert missing.ok is False
     assert missing.code == AUTHORIZATION_REQUIRED
     assert dict(missing.details) == {"field": "planId", "rule": "required"}
 
-    malformed = convert_keil_workflow(root, authorized=True, plan_id="not-a-plan-id")
+    malformed = convert_keil_workflow(
+        root, destination=destination, authorized=True, plan_id="not-a-plan-id"
+    )
     assert malformed.ok is False
     assert malformed.code == AUTHORIZATION_REQUIRED
     assert malformed.details["field"] == "planId"
 
-    stale = convert_keil_workflow(root, authorized=True, plan_id="0" * 64)
+    stale = convert_keil_workflow(
+        root, destination=destination, authorized=True, plan_id="0" * 64
+    )
     assert stale.ok is False
     assert stale.code == PLAN_CHANGED
     assert dict(stale.details) == {
         "field": "planId",
         "rule": "stale",
-        "currentPlanId": convert_keil_workflow(root).to_dict()["data"]["plan_id"],
+        "currentPlanId": convert_keil_workflow(
+            root, destination=destination
+        ).to_dict()["data"]["planId"],
     }
 
     assert calls["n"] == 0
     assert snapshot_tree(root) == before_tree
+    assert not destination.exists()
 
 
 def test_convert_apply_success_applies_exactly_once(monkeypatch, tmp_path: Path):
     """Exact current plan ID plus boolean true calls the apply seam once."""
     root = keil_repo(tmp_path)
+    destination = delivery_destination(tmp_path)
     calls = _count_apply_calls(monkeypatch)
-    plan_id = convert_keil_workflow(root).to_dict()["data"]["plan_id"]
-    uvprojx_before = (root / "app.uvprojx").read_bytes()
+    plan_id = convert_keil_workflow(
+        root, destination=destination
+    ).to_dict()["data"]["planId"]
+    source_before = snapshot_tree(root)
 
-    result = convert_keil_workflow(root, plan_id=plan_id, authorized=True)
+    result = convert_keil_workflow(
+        root, destination=destination, plan_id=plan_id, authorized=True
+    )
 
     assert result.ok is True
     assert result.operation == "keil-conversion-apply"
     assert calls["n"] == 1
-    assert (root / "artifacts" / "migration" / "conversion-report.json").is_file()
-    assert (root / ".stm32-project.json").is_file()
-    assert "void systick_isr" in (root / "Common" / "common.c").read_text(encoding="utf-8")
-    assert (root / "app.uvprojx").read_bytes() == uvprojx_before
+    assert result.data["built"] is False
+    assert result.data["flashed"] is False
+    assert result.data["configured"] is True
+    assert Path(result.data["outputRoot"]) == destination
+    assert (destination / "artifacts" / "migration" / "conversion-report.json").is_file()
+    assert (destination / ".stm32-project.json").is_file()
+    assert "void systick_isr" in (destination / "Common" / "common.c").read_text(
+        encoding="utf-8"
+    )
+    # The original Keil source tree is byte-identical.
+    assert snapshot_tree(root) == source_before
 
 
-def test_convert_apply_disk_change_between_plan_and_apply_is_plan_changed(
-    monkeypatch, tmp_path: Path
+def test_convert_apply_destination_or_option_drift_is_plan_changed(
+    tmp_path: Path,
 ):
-    """Regression: a disk change after planning makes the fresh plan ID differ."""
+    """A changed destination or reviewed option is a different plan."""
     root = keil_repo(tmp_path)
-    calls = _count_apply_calls(monkeypatch)
-    plan_id = convert_keil_workflow(root).to_dict()["data"]["plan_id"]
-    main_c = root / "Main" / "main.c"
-    main_c.write_text(main_c.read_text(encoding="utf-8") + "/* user edit */\n", encoding="utf-8")
+    destination = delivery_destination(tmp_path, "reviewed")
+    plan_id = convert_keil_workflow(
+        root, destination=destination
+    ).to_dict()["data"]["planId"]
+    source_before = snapshot_tree(root)
 
-    result = convert_keil_workflow(root, plan_id=plan_id, authorized=True)
+    other = delivery_destination(tmp_path, "other")
+    moved = convert_keil_workflow(
+        root, destination=other, plan_id=plan_id, authorized=True
+    )
+    assert moved.ok is False
+    assert moved.code == PLAN_CHANGED
+    assert not other.exists()
+    assert not destination.exists()
+
+    changed_option = convert_keil_workflow(
+        root,
+        destination=destination,
+        plan_id=plan_id,
+        authorized=True,
+        memory_layout={
+            "flash": "IROM1",
+            "data": "IRAM1",
+            "bss": "IRAM1",
+            "heap": "IRAM1",
+            "stack": "IRAM1",
+        },
+    )
+    assert changed_option.ok is False
+    assert changed_option.code == PLAN_CHANGED
+    assert not destination.exists()
+    assert snapshot_tree(root) == source_before
+
+
+def test_convert_apply_source_change_between_plan_and_apply_is_plan_changed(
+    tmp_path: Path,
+):
+    """A disk change after planning makes the fresh plan ID differ."""
+    root = keil_repo(tmp_path)
+    destination = delivery_destination(tmp_path)
+    plan_id = convert_keil_workflow(
+        root, destination=destination
+    ).to_dict()["data"]["planId"]
+    main_c = root / "Main" / "main.c"
+    main_c.write_text(
+        main_c.read_text(encoding="utf-8") + "/* user edit */\n", encoding="utf-8"
+    )
+
+    result = convert_keil_workflow(
+        root, destination=destination, plan_id=plan_id, authorized=True
+    )
 
     assert result.ok is False
     assert result.code == PLAN_CHANGED
-    assert calls["n"] == 0
     assert "/* user edit */" in main_c.read_text(encoding="utf-8")
+    assert not destination.exists()
 
 
 # ---------------------------------------------------------------------------
@@ -651,9 +770,13 @@ def test_cli_and_workflow_return_identical_envelopes_for_equivalent_requests(
     assert cli_payload["code"] == direct["code"]
     assert cli_payload["data"] == direct["data"]
 
-    assert cli_main(["keil", "convert", "--project", str(root), "--dry-run", "--json"]) == 0
+    destination = delivery_destination(tmp_path)
+    assert cli_main([
+        "keil", "convert", "--project", str(root),
+        "--destination", str(destination), "--dry-run", "--json",
+    ]) == 0
     cli_plan = json.loads(capsys.readouterr().out)
-    direct_plan = convert_keil_workflow(root).to_dict()
+    direct_plan = convert_keil_workflow(root, destination=destination).to_dict()
     assert cli_plan["operation"] == direct_plan["operation"]
     assert cli_plan["data"] == direct_plan["data"]
 
@@ -661,11 +784,14 @@ def test_cli_and_workflow_return_identical_envelopes_for_equivalent_requests(
     # on stdout, and nothing on stderr.
     assert cli_main([
         "keil", "convert", "--project", str(root),
+        "--destination", str(destination),
         "--apply", "--plan-id", "0" * 64, "--authorized", "--json",
     ]) == 2
     captured = capsys.readouterr()
     cli_failure = json.loads(captured.out)
-    direct_failure = convert_keil_workflow(root, plan_id="0" * 64, authorized=True).to_dict()
+    direct_failure = convert_keil_workflow(
+        root, destination=destination, plan_id="0" * 64, authorized=True
+    ).to_dict()
     assert cli_failure["operation"] == direct_failure["operation"]
     assert cli_failure["code"] == direct_failure["code"]
     assert cli_failure["data"] == direct_failure["data"]
@@ -730,31 +856,37 @@ def test_convert_workflow_translates_stable_inspection_and_plan_errors(
     root = keil_repo(tmp_path)
     empty = tmp_path / "empty"
     empty.mkdir()
+    destination = delivery_destination(tmp_path)
 
-    missing = convert_keil_workflow(empty)
+    missing = convert_keil_workflow(empty, destination=destination)
     assert missing.ok is False
     assert missing.code == "KEIL_PROJECT_NOT_FOUND"
     assert missing.operation == "keil-conversion-plan"
 
     def plan_failure(
-        root_path,
+        source_root,
+        output_root,
         inspection,
         *,
         startup_options=None,
         memory_layout=None,
         extra_regions=(),
+        wfi_returns=(),
     ):
-        # The real conversion API gained extra_regions in an earlier slice; a
-        # no-option call must remain an explicit empty request.
+        # The real delivery API gained extra_regions in an earlier slice and
+        # wfi_returns in a later one; a no-option call must remain an explicit
+        # empty request for both.
         assert not extra_regions
+        assert wfi_returns == ()
+        assert output_root == destination
         raise MigrationPlanError(
-            "MIGRATION_GIT_UNAVAILABLE", "git is unavailable", {"rule": "unavailable"}
+            "DELIVERY_SOURCE_CHANGED", "source changed", {"rule": "sourceSnapshot"}
         )
 
-    monkeypatch.setattr(workflows_mod, "plan_keil_conversion", plan_failure)
-    failed = convert_keil_workflow(root)
+    monkeypatch.setattr(workflows_mod, "plan_keil_delivery", plan_failure)
+    failed = convert_keil_workflow(root, destination=destination)
     assert failed.ok is False
-    assert failed.code == "MIGRATION_GIT_UNAVAILABLE"
+    assert failed.code == "DELIVERY_SOURCE_CHANGED"
     assert failed.operation == "keil-conversion-plan"
 
 
@@ -762,13 +894,14 @@ def test_convert_workflow_maps_unexpected_failures_to_plan_unavailable(
     monkeypatch, tmp_path: Path
 ):
     root = keil_repo(tmp_path)
+    destination = delivery_destination(tmp_path)
     monkeypatch.setattr(
         workflows_mod,
-        "plan_keil_conversion",
+        "plan_keil_delivery",
         lambda *a, **k: (_ for _ in ()).throw(OSError("boom")),
     )
 
-    result = convert_keil_workflow(root)
+    result = convert_keil_workflow(root, destination=destination)
 
     assert result.ok is False
     assert result.code == MIGRATION_PLAN_UNAVAILABLE

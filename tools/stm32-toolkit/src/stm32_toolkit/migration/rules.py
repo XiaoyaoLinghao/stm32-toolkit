@@ -25,10 +25,17 @@ from stm32_toolkit.migration.constant_context import (
 from stm32_toolkit.migration.model import (
     BLOCKER_HINT_DEPENDENCY_ENCODING,
     BLOCKER_HINT_DEPENDENCY_PATH,
+    BLOCKER_HINT_WFI_MISSING_RETURN,
     FixedSectionRequirement,
     IgnoredObservation,
     MigrationBlocker,
     MigrationPlanError,
+    WfiReturn,
+)
+from stm32_toolkit.migration.source_intent import (
+    WFI_NORMAL_BODY,
+    WFI_RETURN_RULE_ID,
+    normalize_wfi_returns,
 )
 
 SCAN_FILE_LIMIT = 8 * 1024 * 1024
@@ -149,9 +156,28 @@ class _Placement:
 
 
 @dataclass(frozen=True)
+class _WfiDefinition:
+    """One lexically detected ``__asm void name`` definition candidate.
+
+    ``eligible`` is true only for a plain unconditional file-scope
+    zero-argument definition whose body is WFI alone.  ``reason`` is a stable
+    bounded token (``prefix``/``conditional``/``nested``/``parameters``/
+    ``body``/``explicitReturn``/``nonWfi``/``language``) and is empty for an
+    eligible candidate.
+    """
+
+    path: str
+    function: str
+    line: int
+    eligible: bool
+    reason: str
+
+
+@dataclass(frozen=True)
 class _FileScan:
     scan: SourceScan
     placements: tuple[_Placement, ...]
+    wfi_definitions: tuple[_WfiDefinition, ...] = ()
 
 
 def _sha256(data: bytes) -> str:
@@ -173,7 +199,14 @@ def _line_text(text: str, position: int) -> str:
 class _Scanner:
     """Single-pass lexical scanner producing rewrites, blockers, and placements."""
 
-    def __init__(self, text: str, path: str, language: str, symbols=None) -> None:
+    def __init__(
+        self,
+        text: str,
+        path: str,
+        language: str,
+        symbols=None,
+        wfi_functions: frozenset[str] = frozenset(),
+    ) -> None:
         self.text = text
         self.n = len(text)
         self.path = path
@@ -187,11 +220,27 @@ class _Scanner:
         self.ignored: list[IgnoredObservation] = []
         self.placements: list[dict] = []  # raw candidates
         self.link_specs: list[str] = []
+        #: Function names explicitly selected for the WFI normal-return choice.
+        self.wfi_functions = wfi_functions
+        self.wfi_definitions: list[_WfiDefinition] = []
+        #: Lexical file scope: brace depth of ordinary code (directives,
+        #: comments and literals never contribute) and preprocessor
+        #: conditional nesting of real directives.
+        self.brace_depth = 0
+        self.conditional_depth = 0
+        #: The last significant ordinary-code token, or ``None`` at file
+        #: start.  Comments, whitespace and spliced newlines are trivia, so a
+        #: storage class on a previous physical line is still visible.
+        self._last_code_token: str | None = None
         #: Whether a real code token was seen on the current preprocessing
         #: line.  Comments, horizontal whitespace and spliced newlines are
         #: trivia and do not set it; a ``#`` is a directive only when it is
         #: still clear.
         self._line_has_code = False
+        #: Set when a directive's logical prefix cannot be resolved lexically.
+        #: Real conditional nesting then stays unknowable, so no later
+        #: file-scope definition may be treated as plainly unconditional.
+        self.directive_ambiguous = False
 
     # -- position bookkeeping -------------------------------------------------
 
@@ -276,9 +325,11 @@ class _Scanner:
                 self._skip_comment()
             elif char == '"':
                 self._line_has_code = True
+                self._last_code_token = '"literal"'
                 self._skip_quoted('"')
             elif char == "'":
                 self._line_has_code = True
+                self._last_code_token = "'literal'"
                 self._skip_quoted("'")
             elif char == "#":
                 self._handle_directive()
@@ -287,6 +338,11 @@ class _Scanner:
             else:
                 if char not in " \t\r\f\v":
                     self._line_has_code = True
+                    if char == "{":
+                        self.brace_depth += 1
+                    elif char == "}":
+                        self.brace_depth = max(0, self.brace_depth - 1)
+                    self._last_code_token = char
                 self._advance(1)
 
     def _skip_comment(self) -> None:
@@ -456,11 +512,131 @@ class _Scanner:
                 self._blocker(
                     "ARMCC_PRAGMA_UNSUPPORTED", position, "unsupported ARMCC pragma"
                 )
+        # Conditional nesting is lexical file-scope evidence: a definition in a
+        # conditional block cannot be proven to be the compiled definition.
+        keyword = self._directive_keyword(position)
+        if keyword is None:
+            # An unresolvable directive prefix may hide a real conditional, so
+            # later file-scope eligibility is never inferred to be plain.
+            self.directive_ambiguous = True
+        elif keyword in ("if", "ifdef", "ifndef"):
+            self.conditional_depth += 1
+        elif keyword == "endif":
+            self.conditional_depth = max(0, self.conditional_depth - 1)
         # Skip the whole logical directive: comments and literals inside it are
         # one lexical unit, so a fake #pragma in a macro/comment body is never
         # scanned as a directive on its own.
         self._advance(self._directive_end(self.i) - self.i)
         self._line_has_code = False
+
+    def _spliced_next(self, index: int) -> tuple[str, int]:
+        """First character at/after ``index`` after backslash-newline splices."""
+        while index < self.n:
+            if self.text[index] == "\\":
+                if self.text[index + 1 : index + 2] == "\n":
+                    index += 2
+                    continue
+                if self.text[index + 1 : index + 3] == "\r\n":
+                    index += 3
+                    continue
+            break
+        return (self.text[index] if index < self.n else ""), index
+
+    def _block_comment_end(self, index: int) -> int:
+        """Index just past the ``*/`` closing a splice-aware block comment.
+
+        Phase 2 splices before comments are recognised, so a ``/`` and ``*``
+        pair, or a ``*`` and ``/`` pair, may be separated by a backslash-newline.
+        """
+        while index < self.n:
+            char = self.text[index]
+            if char == "\\":
+                if self.text[index + 1 : index + 2] == "\n":
+                    index += 2
+                    continue
+                if self.text[index + 1 : index + 3] == "\r\n":
+                    index += 3
+                    continue
+            if char == "*":
+                marker, slash = self._spliced_next(index + 1)
+                if marker == "/":
+                    return slash + 1
+            index += 1
+        return -1
+
+    def _directive_keyword(self, position: int) -> str | None:
+        """The first identifier of the directive's logical line, else ``None``.
+
+        Preprocessor trivia between ``#`` and the keyword is normalized the
+        way translation phases 2 and 3 do it: horizontal whitespace, line and
+        block comments (which become one separator), and backslash-newline
+        splices (LF and CRLF) are skipped.  A block comment may span physical
+        lines and still leave one logical directive, a splice may split the
+        keyword itself, and a splice may create a comment open (``#/`` +
+        splice + ``**/if`` is ``#/**/if`` after splicing).  ``""`` is reserved
+        for a genuine null directive where only trivia remains on the logical
+        line.  ``None`` means the prefix cannot be resolved lexically, so a
+        conditional must never be ruled out from it.
+        """
+        index = position + 1
+        while index < self.n:
+            char = self.text[index]
+            if char in " \t\f\v":
+                index += 1
+                continue
+            if char == "\r" and self.text[index + 1 : index + 2] != "\n":
+                index += 1
+                continue
+            if char == "\\":
+                if self.text[index + 1 : index + 2] == "\n":
+                    index += 2
+                    continue
+                if self.text[index + 1 : index + 3] == "\r\n":
+                    index += 3
+                    continue
+                return None
+            if char == "/":
+                # A comment delimiter may be split by a splice, so classify
+                # against the next spliced character, never the next raw byte.
+                marker, marker_at = self._spliced_next(index + 1)
+                if marker == "/":
+                    # The rest of the logical line is a comment, so no keyword
+                    # follows the ``#`` (a null directive).
+                    return ""
+                if marker == "*":
+                    close = self._block_comment_end(marker_at + 1)
+                    if close == -1:
+                        return None
+                    index = close
+                    continue
+            break
+        if index >= self.n or self.text[index] in "\r\n":
+            # Only trivia remains on the logical line: a genuine null
+            # directive hides no conditional.
+            return ""
+        if not (self.text[index].isalpha() or self.text[index] == "_"):
+            # Unknown non-trivia punctuation after ``#`` cannot be resolved
+            # lexically, and a real conditional may hide behind it, so it is
+            # never treated as a harmless null directive.
+            return None
+        start = index
+        while index < self.n:
+            char = self.text[index]
+            if char.isalnum() or char == "_":
+                index += 1
+                continue
+            if char == "\\" and self.text[index + 1 : index + 2] == "\n":
+                index += 2
+                continue
+            if char == "\\" and self.text[index + 1 : index + 3] == "\r\n":
+                index += 3
+                continue
+            break
+        return (
+            self.text[start:index]
+            .replace("\\\r\n", "")
+            .replace("\\\n", "")
+        )
 
     def _handle_identifier(self) -> None:
         self._line_has_code = True
@@ -470,6 +646,8 @@ class _Scanner:
             index += 1
         token = self.text[start:index]
         self._advance(index - start)
+        previous = self._last_code_token
+        self._last_code_token = token
         if token == "__irq":
             end = self.i
             while end < self.n and self.text[end] in _HWS:
@@ -480,7 +658,7 @@ class _Scanner:
         elif token == "__wfi":
             self._maybe_intrinsic(start, "__WFI", "ARMCC_INTRINSIC_WFI")
         elif token == "__asm":
-            self._classify_asm(start)
+            self._classify_asm(start, previous)
         elif token == "__at":
             self._maybe_at_placement(start)
         elif token == "__align":
@@ -504,7 +682,9 @@ class _Scanner:
 
     # -- inline/naked assembly ------------------------------------------------
 
-    def _classify_asm(self, start: int) -> None:
+    def _classify_asm(
+        self, start: int, previous_token: str | None = None
+    ) -> None:
         next_char = self._peek_non_ws()
         if next_char == "{":
             self._blocker("ARMCC_INLINE_ASSEMBLY_UNSUPPORTED", start, "brace-form inline assembly")
@@ -526,10 +706,19 @@ class _Scanner:
             )
             return
         prefix = self.text[self.text.rfind("\n", 0, start) + 1 : start]
-        if self.language != "c" or prefix.strip(" \t"):
+        prefix_blank = not prefix.strip(" \t")
+        name_hint = self._asm_name_hint(self.i)
+        candidate = (
+            name_hint
+            if name_hint is not None and self._asm_body_hint(self.i)
+            else None
+        )
+        scope_reason = self._asm_scope_reason(prefix_blank, previous_token)
+        if self.language != "c" or not prefix_blank:
             # Only a plain file-scope ``__asm void ...`` definition is a
             # supported wrapper; storage classes or same-line prefixes stay
             # explicit blockers rather than being silently dropped.
+            self._record_wfi_definition(candidate, start, False, scope_reason or "prefix")
             self._blocker(
                 "ARMCC_INLINE_ASSEMBLY_UNSUPPORTED",
                 start,
@@ -538,34 +727,206 @@ class _Scanner:
             return
         parsed = self._parse_naked_function(self.i)
         if parsed is None:
+            self._record_wfi_definition(candidate, start, False, "unsupported")
             self._blocker(
                 "ARMCC_INLINE_ASSEMBLY_UNSUPPORTED",
                 start,
                 "ARMCC __asm function declaration or body",
             )
             return
+        function = candidate or parsed.name
         if parsed.replacement is None:
             # ARM assembly permits falling through into the next embedded
             # assembly function, so the source can be legitimate; its intended
-            # return behaviour is still unknowable from the text.  Keep the
-            # blocker and ask for a control-flow baseline instead of guessing.
+            # return behaviour is still unknowable from the text.  Only an
+            # exact plain WFI-only definition with a selection may become a
+            # normal C return; everything else keeps the actionable blocker.
+            if scope_reason is not None:
+                reason = scope_reason
+            elif parsed.instruction != "WFI" or parsed.needs_parameter:
+                reason = "nonWfi"
+            elif not parsed.wfi_eligible:
+                reason = "body"
+            else:
+                reason = ""
+            eligible = reason == ""
+            self._record_wfi_definition(function, start, eligible, reason)
+            if eligible and parsed.name in self.wfi_functions:
+                self.rewrites.append(
+                    (
+                        start,
+                        parsed.end,
+                        self._wfi_normal_body(parsed, start),
+                        WFI_RETURN_RULE_ID,
+                    )
+                )
+                self._advance(parsed.end - self.i)
+                self._last_code_token = "}"
+                return
             self._blocker(
                 "ARMCC_INLINE_ASSEMBLY_UNSUPPORTED",
                 start,
-                f"ARMCC __asm function '{parsed.name}' ends after "
-                f"'{parsed.instruction}' with no explicit return; control can "
-                "fall through into the next embedded assembly function, which "
-                "the ARM Compiler armcc User Guide documents as possible"
-                " (section 7.30). Toolkit never invents BX LR or a CMSIS"
-                " intrinsic: obtain "
-                "a Keil disassembly/control-flow baseline for this function "
-                "before choosing a reviewed translation",
+                self._missing_return_message(parsed, scope_reason),
+                # Only this exact scanner-established candidate may carry the
+                # concrete wfiReturns remediation; no other embedded assembly
+                # body is trusted to support that opt-in.
+                BLOCKER_HINT_WFI_MISSING_RETURN if eligible else None,
             )
             return
+        # An explicit BX LR/BX R14 wrapper keeps its current translation; it is
+        # never eligible for the missing-return source-intent choice.
+        self._record_wfi_definition(function, start, False, "explicitReturn")
         self.rewrites.append(
             (start, parsed.end, parsed.replacement, "ARMCC_NAKED_ASM_FUNCTION")
         )
         self._advance(parsed.end - self.i)
+        self._last_code_token = "}"
+
+    def _asm_scope_reason(
+        self, prefix_blank: bool, previous_token: str | None
+    ) -> str | None:
+        """Why ``__asm`` is not a plain unconditional file-scope definition.
+
+        Only the explicit WFI normal-return opt-in requires this evidence;
+        existing explicit-return translations keep their historical scope
+        handling.  ``None`` means the lexical position is plain.
+        """
+        if self.language != "c":
+            return "language"
+        if not prefix_blank:
+            return "prefix"
+        if self.conditional_depth > 0 or self.directive_ambiguous:
+            return "conditional"
+        if self.brace_depth > 0:
+            return "nested"
+        if previous_token not in (None, ";", "}"):
+            # A storage class, attribute, or macro token on a previous
+            # physical line still declares this function; a bare line break
+            # never makes a prefixed function plain.
+            return "prefix"
+        return None
+
+    def _asm_name_hint(self, index: int) -> str | None:
+        """The declared name after ``__asm [whitespace] void [whitespace]``."""
+        cursor = self._skip_ws(index)
+        word = self._read_identifier(cursor)
+        if word is None or word[0] != "void":
+            return None
+        cursor = self._skip_ws(word[1])
+        name = self._read_identifier(cursor)
+        return name[0] if name is not None else None
+
+    def _asm_body_hint(self, index: int) -> bool:
+        """Whether a ``{`` body follows the hinted prototype.
+
+        A bare ``__asm void name(void);`` declaration is not a definition and
+        must not make a selected definition look duplicated.
+        """
+        cursor = self._skip_ws(index)
+        word = self._read_identifier(cursor)
+        if word is None or word[0] != "void":
+            return False
+        cursor = self._skip_ws(word[1])
+        name = self._read_identifier(cursor)
+        if name is None:
+            return False
+        cursor = self._skip_ws(name[1])
+        if cursor < self.n and self.text[cursor] == "(":
+            end = self._balanced_end(cursor)
+            if end == -1:
+                return False
+            cursor = self._skip_ws(end)
+        return cursor < self.n and self.text[cursor] == "{"
+
+    def _record_wfi_definition(
+        self,
+        function: str | None,
+        start: int,
+        eligible: bool,
+        reason: str,
+    ) -> None:
+        """Record one definition candidate for selection reconciliation."""
+        if function is None:
+            return
+        self.wfi_definitions.append(
+            _WfiDefinition(
+                self.path,
+                function,
+                self._line_of(start),
+                eligible,
+                reason,
+            )
+        )
+
+    def _missing_return_message(
+        self, parsed: "_NakedTranslation", scope_reason: str | None
+    ) -> str:
+        base = (
+            f"ARMCC __asm function '{parsed.name}' ends after "
+            f"'{parsed.instruction}' with no explicit return; control can "
+            "fall through into the next embedded assembly function, which the "
+            "ARM Compiler armcc User Guide documents as possible (section"
+            " 7.30). Toolkit never invents BX LR or a CMSIS intrinsic and does"
+            " not require a Keil disassembly/control-flow baseline."
+        )
+        if parsed.instruction == "WFI" and parsed.needs_parameter is False:
+            if scope_reason is not None:
+                return (
+                    base
+                    + " Only a plain unconditional file-scope zero-argument"
+                    " WFI-only wrapper can use the wfiReturns normal-return"
+                    " choice; this definition is not plain"
+                    f" ({scope_reason}), so it needs a project-owned source"
+                    " port."
+                )
+            if not parsed.wfi_eligible:
+                return (
+                    base
+                    + " Only a body that is exactly one WFI token with at most"
+                    " one trailing ';' (ordinary whitespace and comments"
+                    " aside) can use the wfiReturns normal-return choice; this"
+                    " body has other punctuation, so it needs a project-owned"
+                    " source port."
+                )
+            return (
+                base
+                + ' Select wfiReturns=[{"path": "'
+                + self.path
+                + '", "function": "'
+                + parsed.name
+                + '"}] to convert this plain file-scope zero-argument'
+                " WFI-only wrapper into ordinary non-naked C executing "
+                + WFI_NORMAL_BODY
+                + " and returning normally; that records requested source"
+                " behaviour, not binary equivalence. Intentional"
+                " fall-through needs a project-owned source port instead."
+            )
+        return (
+            base
+            + " Only a plain WFI-only wrapper can use the wfiReturns"
+            " normal-return choice; '"
+            + str(parsed.instruction)
+            + "' is not eligible, so this needs a project-owned source port."
+        )
+
+    def _wfi_normal_body(self, parsed: "_NakedTranslation", start: int) -> str:
+        """Normal non-naked C body: GNU asm WFI with memory clobber, no naked."""
+        newline = (
+            "\r\n"
+            if "\r\n" in self.text[start : parsed.end]
+            or self.text[parsed.end : parsed.end + 2] == "\r\n"
+            else "\n"
+        )
+        lines = [
+            f"void {parsed.name}({parsed.params})",
+            "{",
+            f"    {WFI_NORMAL_BODY}",
+        ]
+        for comment in parsed.comments:
+            for line in comment.splitlines() or [""]:
+                lines.append("    " + line.rstrip("\r"))
+        lines.append("}")
+        return newline.join(lines)
 
     def _skip_ws(self, index: int) -> int:
         while index < self.n and self.text[index] in _NEWLINE_SKIP:
@@ -630,10 +991,26 @@ class _Scanner:
             return None
         parsed = _naked_instructions(body, needs_parameter)
         if parsed is None:
-            instruction = _naked_missing_return(body, needs_parameter)
+            tokens = _naked_tokens(body, allow_semicolons=True)
+            instruction = _missing_return_from_tokens(tokens, needs_parameter)
             if instruction is None:
                 return None
-            return _NakedTranslation(body_end, None, function_name, instruction)
+            comments = tuple(tokens[1]) if tokens is not None else ()
+            return _NakedTranslation(
+                body_end,
+                None,
+                function_name,
+                instruction,
+                params.strip(),
+                comments,
+                needs_parameter,
+                # The recognized missing-return diagnostic stays permissive so
+                # legacy CPSID/MSR reporting is unchanged; only this strict
+                # WFI form may become selected normal-return code.
+                wfi_eligible=(
+                    instruction == "WFI" and _wfi_only_body(body) is not None
+                ),
+            )
         instructions, comments = parsed
         newline = (
             "\r\n"
@@ -650,7 +1027,15 @@ class _Scanner:
             for line in comment.splitlines() or [""]:
                 lines.append("    " + line.rstrip("\r"))
         lines.append("}")
-        return _NakedTranslation(body_end, newline.join(lines), function_name, None)
+        return _NakedTranslation(
+            body_end,
+            newline.join(lines),
+            function_name,
+            None,
+            params.strip(),
+            tuple(comments),
+            needs_parameter,
+        )
 
     def _line_tail_is_trivia(self, index: int) -> bool:
         """Whether only whitespace/comments remain on the closing-brace line."""
@@ -1062,12 +1447,23 @@ class _NakedTranslation:
     ``replacement`` is ``None`` only for a supported instruction sequence that
     omits the explicit return; ``instruction`` then names the instruction the
     body ends with so the blocker can explain the fall-through boundary.
+    ``params`` is the stripped prototype parameter text, ``comments`` holds
+    the verbatim body comments, and ``needs_parameter`` distinguishes the MSP
+    setter from a zero-argument wrapper.
     """
 
     end: int
     replacement: str | None
     name: str
     instruction: str | None
+    params: str = ""
+    comments: tuple[str, ...] = ()
+    needs_parameter: bool = False
+    #: True only for the strict single-``WFI`` missing-return body the
+    #: reviewed normal-return choice accepts: one ``WFI`` token with at most
+    #: one trailing ``;`` and otherwise only whitespace and comments.  Legacy
+    #: permissive tokenization never makes another body eligible.
+    wfi_eligible: bool = False
 
 
 def _naked_tokens(
@@ -1127,6 +1523,65 @@ def _naked_tokens(
     return tokens, comments
 
 
+def _wfi_only_body(body: str) -> tuple[str, ...] | None:
+    """Verbatim comments when ``body`` is exactly the reviewed WFI form.
+
+    The normal-return selection contract is one ``WFI`` token with zero or one
+    trailing ``;``; ordinary whitespace and body comments are the only other
+    content.  Unlike the legacy permissive :func:`_naked_tokens` diagnostic,
+    commas, extra or leading semicolons, and any other token are rejected, so
+    a body such as ``WFI;;`` or ``,WFI`` never becomes eligible.  ``None``
+    means the body is outside that contract.
+    """
+    comments: list[str] = []
+    index = 0
+    length = len(body)
+    seen_wfi = False
+    seen_semicolon = False
+    while index < length:
+        char = body[index]
+        if char in _NEWLINE_SKIP:
+            index += 1
+            continue
+        if char == "/" and body[index + 1 : index + 2] == "/":
+            end = body.find("\n", index + 2)
+            end = length if end == -1 else end
+            if end < length and (
+                body[end - 1] == "\\"
+                or (end > 1 and body[end - 1] == "\r" and body[end - 2] == "\\")
+            ):
+                # A spliced line comment owns the next physical line; the
+                # body bounds would be ambiguous, so never select it.
+                return None
+            comments.append(body[index:end].strip())
+            index = end
+            continue
+        if char == "/" and body[index + 1 : index + 2] == "*":
+            end = body.find("*/", index + 2)
+            if end == -1:
+                return None
+            comments.append(body[index : end + 2].strip())
+            index = end + 2
+            continue
+        if char == ";" and seen_wfi and not seen_semicolon:
+            seen_semicolon = True
+            index += 1
+            continue
+        if char.isalnum() or char == "_":
+            cursor = index + 1
+            while cursor < length and (
+                body[cursor].isalnum() or body[cursor] == "_"
+            ):
+                cursor += 1
+            if seen_wfi or body[index:cursor].upper() != "WFI":
+                return None
+            seen_wfi = True
+            index = cursor
+            continue
+        return None
+    return tuple(comments) if seen_wfi else None
+
+
 def _naked_instructions(body: str, needs_parameter: bool) -> tuple[str, list[str]] | None:
     """Return exact GNU basic-asm text for one supported wrapper body.
 
@@ -1158,13 +1613,14 @@ def _naked_instructions(body: str, needs_parameter: bool) -> tuple[str, list[str
     return None
 
 
-def _naked_missing_return(body: str, needs_parameter: bool) -> str | None:
+def _missing_return_from_tokens(
+    parsed: tuple[list[str], list[str]] | None, needs_parameter: bool
+) -> str | None:
     """Name the instruction of a recognised body that omits its return.
 
     Returns ``None`` for every other body, so unknown assembly keeps its
     generic blocker and is never described as a missing return.
     """
-    parsed = _naked_tokens(body, allow_semicolons=True)
     if parsed is None:
         return None
     upper, _comments = parsed
@@ -1179,6 +1635,13 @@ def _naked_missing_return(body: str, needs_parameter: bool) -> str | None:
     if upper == ["MSR", "MSP", "R0"]:
         return "MSR MSP, R0"
     return None
+
+
+def _naked_missing_return(body: str, needs_parameter: bool) -> str | None:
+    """Tokenize and name one recognised body without an explicit return."""
+    return _missing_return_from_tokens(
+        _naked_tokens(body, allow_semicolons=True), needs_parameter
+    )
 
 
 def _parse_placement(
@@ -1348,6 +1811,7 @@ def _scan_file(
     language: str,
     placements_enabled: bool = True,
     symbols=None,
+    wfi_functions: frozenset[str] = frozenset(),
 ) -> _FileScan:
     """Scan one source; ``placements_enabled=False`` drops every placement rewrite.
 
@@ -1374,7 +1838,7 @@ def _scan_file(
         )
 
     provider = symbols.for_source(path, text) if symbols is not None else None
-    scanner = _Scanner(text, path, language, provider)
+    scanner = _Scanner(text, path, language, provider, wfi_functions)
     scanner.run()
 
     placements: list[_Placement] = []
@@ -1466,16 +1930,42 @@ def _scan_file(
         tuple(provider.dependencies()) if provider is not None else (),
         tuple(scanner.link_specs),
     )
-    return _FileScan(scan, tuple(placements))
+    return _FileScan(
+        scan,
+        tuple(placements),
+        tuple(
+            sorted(
+                scanner.wfi_definitions,
+                key=lambda item: (item.path, item.line, item.function),
+            )
+        ),
+    )
 
 
-def scan_sources(entries: list[tuple[str, bytes, str]], symbols=None) -> tuple[SourceScan, ...]:
+def scan_sources(
+    entries: list[tuple[str, bytes, str]],
+    symbols=None,
+    wfi_returns: tuple[WfiReturn, ...] | None = None,
+) -> tuple[SourceScan, ...]:
     """Scan included C/C++ sources and enforce cross-file placement uniqueness.
 
     A section address reused by declarations in different files blocks the
     later declarations' file (no placement rewrite there) while keeping the
     first declaration; the plan still reports every patch and every blocker.
+    ``wfi_returns`` carries reviewed WFI normal-return selections: every
+    selection must match exactly one plain unconditional file-scope
+    zero-argument WFI-only definition, otherwise the request fails instead of
+    being silently ignored.
     """
+    choices = normalize_wfi_returns(wfi_returns)
+    selected_by_path: dict[str, set[str]] = {}
+    for choice in choices:
+        selected_by_path.setdefault(choice.path, set()).add(choice.function)
+    selected = {
+        path: frozenset(functions)
+        for path, functions in selected_by_path.items()
+    }
+
     total = 0
     for path, data, language in entries:
         if len(data) > SCAN_FILE_LIMIT:
@@ -1493,7 +1983,13 @@ def scan_sources(entries: list[tuple[str, bytes, str]], symbols=None) -> tuple[S
             )
 
     results = [
-        _scan_file(path, data, language, symbols=symbols)
+        _scan_file(
+            path,
+            data,
+            language,
+            symbols=symbols,
+            wfi_functions=selected.get(path, frozenset()),
+        )
         for path, data, language in entries
     ]
 
@@ -1521,8 +2017,83 @@ def scan_sources(entries: list[tuple[str, bytes, str]], symbols=None) -> tuple[S
         for index in sorted(offenders):
             path, data, language = entries[index]
             rescanned = _scan_file(
-                path, data, language, placements_enabled=False, symbols=symbols
+                path,
+                data,
+                language,
+                placements_enabled=False,
+                symbols=symbols,
+                wfi_functions=selected.get(path, frozenset()),
             )
             results[index] = rescanned
 
+    if choices:
+        definitions = tuple(
+            definition
+            for result in results
+            for definition in result.wfi_definitions
+        )
+        _validate_wfi_selections(choices, definitions)
+
     return tuple(result.scan for result in results)
+
+
+def _validate_wfi_selections(
+    choices: tuple[WfiReturn, ...], definitions: tuple[_WfiDefinition, ...]
+) -> None:
+    """Reconcile every reviewed selection with the scanned definitions.
+
+    A selection that matches nothing, matches a name defined more than once,
+    or names a definition that is not the exact plain unconditional
+    file-scope zero-argument WFI-only form fails with a stable error.  No
+    selection is ever silently ignored or broadened to another definition.
+    """
+    for choice in choices:
+        in_path = [
+            definition
+            for definition in definitions
+            if definition.path == choice.path
+            and definition.function == choice.function
+        ]
+        anywhere = [
+            definition
+            for definition in definitions
+            if definition.function == choice.function
+        ]
+        if not in_path:
+            raise MigrationPlanError(
+                "WFI_RETURN_UNUSED",
+                "the selected WFI function was not found as a definition in"
+                " the named compiled C source",
+                {
+                    "field": "wfiReturns",
+                    "rule": "unused",
+                    "path": choice.path,
+                    "function": choice.function,
+                },
+            )
+        if len(anywhere) != 1 or len(in_path) != 1:
+            raise MigrationPlanError(
+                "WFI_RETURN_AMBIGUOUS",
+                "the selected WFI function has multiple definitions; the"
+                " source-intent selection is ambiguous",
+                {
+                    "field": "wfiReturns",
+                    "rule": "duplicateDefinition",
+                    "path": choice.path,
+                    "function": choice.function,
+                },
+            )
+        definition = in_path[0]
+        if not definition.eligible:
+            raise MigrationPlanError(
+                "WFI_RETURN_AMBIGUOUS",
+                "the selected function is not a plain unconditional"
+                " file-scope zero-argument WFI-only definition",
+                {
+                    "field": "wfiReturns",
+                    "rule": definition.reason or "unsupported",
+                    "path": choice.path,
+                    "function": choice.function,
+                    "line": definition.line,
+                },
+            )

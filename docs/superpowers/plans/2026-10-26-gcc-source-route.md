@@ -1,0 +1,23 @@
+# Public source-intent route and complete preparation
+
+Accepted base: `d8c088635760f193fa6b94e71e11e98f23496223` (M3a accepted). Governing contract: [GCC delivery](../specs/2026-10-26-gcc-delivery-contract.md); this refines M3b of the [source-intent plan](2026-10-26-gcc-source-intent.md). Primary owns specification, bounded dispatch, complete clean-diff review and acceptance; local Claude Code CLI implements code/tests with the unchanged configured provider/model. Reuse the clean M3a checkout sequentially on `codex/gcc-source-route`. No original projects, installed runtime, hardware, remote, release/version or permission changes.
+
+## M3b1: public option
+
+Expose repeatable CLI `--wfi-return 'Common/common.c:WFI_SET'` on Keil preflight/convert and MCP `wfiReturns=[{path,function}]` on the actual registered tools. The workflow accepts a closed bounded list of dictionaries, validates exact keys/types without coercion, constructs the immutable core choices and reuses the M3a validator. Do not weaken the internal tuple-only contract or add the option to the historical in-place API. None/empty selection preserves no-option behavior.
+
+Carry the exact same selection through technical preflight, PLAN and APPLY. The independent destination and reviewed plan identity remain mandatory for apply. Unknown fields, invalid/non-C/escaping paths, non-ASCII or overlong names, duplicates, excessive counts and invalid scalar types fail before effects. Changing/omitting a selection cannot reuse a reviewed plan; preserve existing technical-blocker versus stale-plan precedence. CLI syntax diagnostics must be actionable and never normalize a drive path into a relative one. User intent is explicit: no automatic WFI selection.
+
+Allowed implementation: migration/source_intent.py, workflows.py, cli.py, mcp_server.py and new tests/test_wfi_public.py. Existing migration helpers/tests may be read but are not rewritten. Keep the public tool descriptions concise and accurate: this is a requested normal-return source change, no Keil disassembly prerequisite, and every other unsupported assembly remains a source-port task. Plan output is the M2 independent delivery preview, not a build or flash result.
+
+Tests exercise real CLI parsing/output, workflow execution, registered MCP schema and actual tool calls on synthetic non-Git Keil inputs. Assert exact preflight/PLAN/APPLY option propagation, reviewed source hashes and output files, no original mutation, invalid inputs, missing/changed selections and no-option compatibility. After clean freeze, Claude runs focused and affected CLI/MCP/workflow groups; primary reviews the entire exact-head diff and independently checks the public route. No physical operation.
+
+## M3b2: preparation and caller guidance
+
+After the public option is accepted, reuse the existing normalize-source-comments helper with declared charsets for both sources and required headers. Guide original tree -> reviewed partial comment copies -> complete separate prepared tree -> independent GCC output -> normal GCC build/managed flash. A partial normalized file set is never called a complete project. Retain unselected files, startup and licenses, overlay only reviewed byte-bound outputs, and recheck hashes before migrating. Do not add a second transcoder, silently guess a charset, normalize runtime literal bytes or write the original tree. Lossy replacement retains explicit per-file review.
+
+Keep the main migration skill short, with linked conditional details and exact current CLI/MCP fields. Update VS Code/user/architecture guidance and remove obsolete Git and Keil-binary prerequisites. Verify a combined synthetic fixture with GBK comments/header, ARMCC startup, absolute placement, scoped includes, explicit external RAM, WFI intent and no Git. The independent output must rebuild with real ARM GCC after original/prepared inputs are unavailable. Normal managed fake-flash/readback follows at integration with the content-provenance branch. Global normalizer synchronization is a later backed-up step under the user's prior project/global-reuse authorization, not part of this edit call.
+
+## Evidence
+
+Use the maintained standard test procedure/current checkpoint. File-only editing is separate from exact-command native PowerShell verification; every launch's actual inventory and verify smoke are checked. Primary supplies verified runtimes/toolchains and short isolated evidence roots. Retain failed/partial runs and actual identities. M3b1 acceptance is only the option route; M3b2 and integration remain separately named until their gates pass. No release matrix, installation, hardware or publication is implied.

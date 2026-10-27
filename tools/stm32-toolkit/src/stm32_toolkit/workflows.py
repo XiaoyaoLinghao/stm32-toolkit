@@ -4,7 +4,11 @@ The adapter layer owns input validation, exception translation, fresh
 replanning, and plan-ID comparison.  It imports the accepted core modules
 (Keil inspection, migration, generation, build, project model) and never
 lets them import back; all mutation goes through
-``apply_keil_conversion`` / ``apply_project_configuration`` / ``run_build``.
+``apply_keil_delivery`` / ``apply_project_configuration`` / ``run_build``.
+Keil conversion is an independent delivery into an explicit new directory;
+the legacy in-place ``plan_keil_conversion``/``apply_keil_conversion``
+engines remain available for historical evidence but are not a public
+fallback.
 
 Every conversion/configuration call freshly recomputes the deterministic
 plan from current disk state and compares the exact plan ID immediately
@@ -34,8 +38,8 @@ from stm32_toolkit.keil import (
 )
 from stm32_toolkit.migration import (
     MigrationPlanError,
-    apply_keil_conversion,
-    plan_keil_conversion,
+    apply_keil_delivery,
+    plan_keil_delivery,
     preflight_keil_conversion,
 )
 from stm32_toolkit.memory_layout import (
@@ -43,6 +47,7 @@ from stm32_toolkit.memory_layout import (
     normalize_memory_layout_option,
 )
 from stm32_toolkit.migration.model import portable_path_error
+from stm32_toolkit.migration.source_intent import normalize_wfi_return_options
 from stm32_toolkit.migration.startup import normalize_startup_options
 from stm32_toolkit.project_model import ProjectManifestError, load_project_model
 from stm32_toolkit.result import OperationResult
@@ -55,6 +60,7 @@ KEIL_INSPECTION_UNAVAILABLE = "KEIL_INSPECTION_UNAVAILABLE"
 MIGRATION_PLAN_UNAVAILABLE = "MIGRATION_PLAN_UNAVAILABLE"
 KEIL_PREFLIGHT_UNAVAILABLE = "KEIL_PREFLIGHT_UNAVAILABLE"
 CONFIGURATION_PLAN_UNAVAILABLE = "CONFIGURATION_PLAN_UNAVAILABLE"
+DELIVERY_DESTINATION_REQUIRED = "DELIVERY_DESTINATION_REQUIRED"
 
 SUPPORTED_PRESETS = ("arm-debug", "arm-release")
 _MIN_TIMEOUT_SECONDS = 1
@@ -110,6 +116,34 @@ def _optional_name(value: object, field: str) -> str | None:
     if not isinstance(value, str):
         raise _InputInvalid(field, "type")
     return value
+
+
+def _delivery_destination(value: object) -> Path:
+    """Return the explicit destination as a Path (absolute is checked later)."""
+    if isinstance(value, Path):
+        return value
+    if isinstance(value, str):
+        return Path(value)
+    raise _InputInvalid("destination", "type")
+
+
+def _destination_required(operation: str) -> OperationResult[None]:
+    """Fail with the public requirement to choose an independent output root."""
+    return _failure(
+        operation,
+        DELIVERY_DESTINATION_REQUIRED,
+        "an absolute new output directory is required for Keil conversion",
+        {
+            "field": "destination",
+            "rule": "required",
+            "example": "C:/work/my-project-gcc",
+            "rationale": (
+                "The Keil source is read-only; the deliverable is a separate,"
+                " independently buildable GCC/CMake project. Choose an absolute"
+                " directory outside the source that is absent or empty."
+            ),
+        },
+    )
 
 
 def _require_plan_id(value: object) -> None:
@@ -216,11 +250,14 @@ def preflight_keil_workflow(
     startup_source: str | None = None,
     memory_layout: object = None,
     extra_regions: object = None,
+    wfi_returns: object = None,
 ) -> OperationResult[dict[str, object]]:
     """Read-only migration preflight; analysis succeeds without Git.
 
     The result always means "analysis completed", never "apply authorized".
     Technical blockers and Git/apply prerequisites are reported separately.
+    ``wfi_returns`` is the optional raw public ``wfiReturns`` list; it is
+    validated into the immutable reviewed choices before analysis.
     """
     operation = "keil-preflight"
     try:
@@ -232,6 +269,7 @@ def preflight_keil_workflow(
         startup_options = normalize_startup_options(strategy, source)
         layout = normalize_memory_layout_option(memory_layout)
         extras = normalize_extra_regions_option(extra_regions)
+        wfi_choices = normalize_wfi_return_options(wfi_returns)
     except _InputInvalid as error:
         return _failure(
             operation,
@@ -254,6 +292,7 @@ def preflight_keil_workflow(
             startup_options=startup_options,
             memory_layout=layout,
             extra_regions=extras,
+            wfi_returns=wfi_choices,
         )
     except KeilInspectionError as error:
         return _failure(operation, error.code, error.message, error.details)
@@ -285,6 +324,7 @@ def preflight_keil_workflow(
 def convert_keil_workflow(
     project_root: Path,
     *,
+    destination: object = None,
     uvprojx: str | None = None,
     target_name: str | None = None,
     plan_id: str | None = None,
@@ -293,18 +333,28 @@ def convert_keil_workflow(
     startup_source: str | None = None,
     memory_layout: object = None,
     extra_regions: object = None,
+    wfi_returns: object = None,
 ) -> OperationResult[dict[str, object]]:
-    """Read-only conversion plan, or apply only with the exact plan ID.
+    """Plan or apply one independent Keil-to-GCC delivery.
 
-    The startup, memory-layout and extra-region options are part of the plan
-    identity.  Apply re-runs the deterministic plan with the request options
-    and refuses a stale plan ID, so a caller-edited
-    strategy/source/layout/extra-region request cannot be accepted after
-    review.
+    The source project is read-only.  ``destination`` is an explicit absolute
+    directory outside it that is absent or verified empty; there is no
+    in-place fallback.  The returned PLAN is the complete delivery preview
+    (``planId``/``sourceSnapshotSha256``/``outputs``/``sourcePatches``), and
+    APPLY publishes one complete output directory without building or
+    flashing it.  Git is optional and never a plan prerequisite.
+
+    The destination, startup, memory-layout, extra-region and reviewed
+    ``wfi_returns`` options are part of the plan identity.  Apply re-runs the
+    deterministic plan with the request options and refuses a stale plan ID,
+    so a caller-edited destination/option request cannot be accepted after
+    review.  Omitting or changing the raw ``wfiReturns`` list is a different
+    request; a fresh technical blocker still takes precedence over staleness.
     """
     operation = "keil-conversion-apply" if _apply_intent(plan_id, authorized) else "keil-conversion-plan"
     try:
         root = _bind_project_root(project_root)
+        output_root = None if destination is None else _delivery_destination(destination)
         uvprojx_path = _optional_portable_path(uvprojx, "uvprojx")
         target = _optional_name(target_name, "targetName")
         strategy = _optional_name(startup_strategy, "startupStrategy")
@@ -312,6 +362,7 @@ def convert_keil_workflow(
         startup_options = normalize_startup_options(strategy, source)
         layout = normalize_memory_layout_option(memory_layout)
         extras = normalize_extra_regions_option(extra_regions)
+        wfi_choices = normalize_wfi_return_options(wfi_returns)
     except _InputInvalid as error:
         return _failure(
             operation,
@@ -336,15 +387,19 @@ def convert_keil_workflow(
             "authorization is required to apply the conversion plan",
             {"field": "authorized", "rule": "required"},
         )
+    if output_root is None:
+        return _destination_required(operation)
 
     try:
         inspection = inspect_keil(root, uvprojx_path, target)
-        plan = plan_keil_conversion(
+        plan = plan_keil_delivery(
             root,
+            output_root,
             inspection,
             startup_options=startup_options,
             memory_layout=layout,
             extra_regions=extras,
+            wfi_returns=wfi_choices,
         )
     except KeilInspectionError as error:
         return _failure(operation, error.code, error.message, error.details)
@@ -377,7 +432,8 @@ def convert_keil_workflow(
             "the conversion plan changed since planning",
             {"field": "planId", "rule": "stale", "currentPlanId": plan.plan_id},
         )
-    return apply_keil_conversion(plan)
+    applied = apply_keil_delivery(plan, authorized=True, plan_id=plan_id)
+    return replace(applied, operation=operation)
 
 
 # ---------------------------------------------------------------------------

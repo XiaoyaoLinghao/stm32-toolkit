@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import subprocess
 from pathlib import Path
 from datetime import datetime, timezone
@@ -281,13 +282,15 @@ def _prepare_with_support(tmp_path: Path, support: ToolSupportProfile):
     return request, planned
 
 
-def test_prepare_rejects_non_git_workspace_before_environment_or_authorization(
+def test_prepare_persists_authorization_without_git_workspace(
     tmp_path: Path, monkeypatch
 ):
     import stm32_toolkit.creation_workflows as workflows
 
     support = _complete_support(tmp_path)
     request, planned = _prepare_with_support(tmp_path, support)
+    assert not planned.data["blockers"]
+    assert not (tmp_path / ".git").exists()
     calls: list[str] = []
     original_prepare = CreationAuthorizationStore.prepare
 
@@ -307,22 +310,36 @@ def test_prepare_rejects_non_git_workspace_before_environment_or_authorization(
         action_digest=planned.data["actionDigest"],
         support_profile=support,
     )
-    assert result.ok is False
-    assert result.code == "BUILD_GIT_INVALID"
-    assert result.details == {"rule": "head"}
-    assert calls == []
-    assert not (tmp_path / "data").exists()
+    assert result.ok is True
+    assert calls == ["environment", "authorization"]
+    assert result.data["executionEnvironmentDigest"] == "c" * 64
+    authorization = (
+        tmp_path
+        / "data"
+        / "creation"
+        / "authorizations"
+        / f"{result.data['authorizationDigest']}.json"
+    )
+    payload = json.loads(authorization.read_text(encoding="utf-8"))
+    assert payload["state"] == "prepared"
+    assert payload["planId"] == planned.data["planId"]
+    assert payload["executionEnvironmentDigest"] == "c" * 64
     assert not (tmp_path / "generated").exists()
+    assert not (tmp_path / ".git").exists()
 
 
-def test_prepare_rejects_unborn_git_workspace_before_environment_or_authorization(
+def test_prepare_persists_authorization_with_unborn_git_head(
     tmp_path: Path, monkeypatch
 ):
     import stm32_toolkit.creation_workflows as workflows
 
     support = _complete_support(tmp_path)
     _init_local_head(tmp_path, commit=False)
+    unborn_head = (tmp_path / ".git" / "HEAD").read_text(encoding="utf-8").strip()
+    assert unborn_head.startswith("ref: ")
+    assert not (tmp_path / ".git" / unborn_head.removeprefix("ref: ")).exists()
     request, planned = _prepare_with_support(tmp_path, support)
+    assert not planned.data["blockers"]
     calls: list[str] = []
     original_prepare = CreationAuthorizationStore.prepare
 
@@ -342,11 +359,18 @@ def test_prepare_rejects_unborn_git_workspace_before_environment_or_authorizatio
         action_digest=planned.data["actionDigest"],
         support_profile=support,
     )
-    assert result.ok is False
-    assert result.code == "BUILD_GIT_INVALID"
-    assert result.details == {"rule": "head"}
-    assert calls == []
-    assert not (tmp_path / "data").exists()
+    assert result.ok is True
+    assert calls == ["environment", "authorization"]
+    authorization = (
+        tmp_path
+        / "data"
+        / "creation"
+        / "authorizations"
+        / f"{result.data['authorizationDigest']}.json"
+    )
+    payload = json.loads(authorization.read_text(encoding="utf-8"))
+    assert payload["state"] == "prepared"
+    assert payload["planId"] == planned.data["planId"]
     assert not (tmp_path / "generated").exists()
 
 
@@ -376,6 +400,88 @@ def test_prepare_accepts_valid_local_head_before_existing_environment_authorizat
     assert result.data["executionEnvironmentDigest"] == "c" * 64
     assert (tmp_path / "data").is_dir()
     assert not (tmp_path / "generated").exists()
+
+
+def test_public_prepare_and_apply_succeed_without_git(tmp_path: Path, monkeypatch):
+    import stm32_toolkit.creation_workflows as workflows
+
+    fixed = datetime(2026, 8, 23, 12, tzinfo=timezone.utc)
+    monkeypatch.setattr(workflows, "_now_factory", lambda: fixed)
+    support = _complete_support(tmp_path)
+    environment = SimpleNamespace(digest="c" * 64)
+    monkeypatch.setattr(
+        workflows, "discover_creation_environment", lambda *args, **kwargs: environment
+    )
+    request = CreationPlanWorkflowRequest(
+        tmp_path,
+        tmp_path / "data",
+        "session",
+        "mcu",
+        "STM32F429ZITx",
+        "generated",
+        "hal",
+        "c",
+    )
+    assert not (tmp_path / ".git").exists()
+    planned = plan_creation_workflow(request, support_profile=support)
+    assert planned.ok is True
+    assert not planned.data["blockers"]
+
+    store = CreationAuthorizationStore(
+        tmp_path / "data",
+        now=lambda: fixed,
+        nonce_factory=lambda: "nonce",
+    )
+    prepared = prepare_creation_workflow(
+        request,
+        plan_id=planned.data["planId"],
+        action_digest=planned.data["actionDigest"],
+        support_profile=support,
+        store=store,
+    )
+    assert prepared.ok is True
+    authorization = (
+        store.authorization_root
+        / f"{prepared.data['authorizationDigest']}.json"
+    )
+    payload = json.loads(authorization.read_text(encoding="utf-8"))
+    assert payload["state"] == "prepared"
+    assert not (tmp_path / "generated").exists()
+
+    class GeneratingAdapter:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def generate(self, capability, staging):
+            self.calls += 1
+            child = staging.staging_dir / "generated"
+            child.mkdir()
+            (child / "main.c").write_text("int main(void) { return 0; }\n", encoding="utf-8")
+            return SimpleNamespace(invocations=1, project_root=child)
+
+    adapter = GeneratingAdapter()
+    applied = apply_creation_workflow(
+        request,
+        authorization_digest=prepared.data["authorizationDigest"],
+        authorized=True,
+        store=store,
+        adapter=adapter,
+        environment=environment,
+        support_profile=support,
+        validate_native=lambda staging, **kwargs: SimpleNamespace(
+            ownership_manifest_path="m", ownership_manifest_sha256="1" * 64
+        ),
+        configure=lambda root: OperationResult.success("configure", {}),
+        build=lambda root, preset: OperationResult.success("build", {"preset": preset}),
+    )
+    assert applied.ok is True
+    assert applied.data["mutated"] is True
+    assert adapter.calls == 1
+    assert (tmp_path / "generated" / "main.c").read_text(encoding="utf-8") == (
+        "int main(void) { return 0; }\n"
+    )
+    assert json.loads(authorization.read_text(encoding="utf-8"))["state"] == "consumed"
+    assert not (tmp_path / ".git").exists()
 
 
 def test_public_workflow_rejects_fallback_descriptor_drift_before_native_generate(
@@ -439,7 +545,9 @@ def test_public_workflow_rejects_fallback_descriptor_drift_before_native_generat
     assert calls == []
 
 
-def test_prepare_preserves_plan_blocker_priority_before_git_check(tmp_path: Path, monkeypatch):
+def test_prepare_preserves_plan_blocker_priority_before_environment_or_authorization(
+    tmp_path: Path, monkeypatch
+):
     import stm32_toolkit.creation_workflows as workflows
 
     support = ToolSupportProfile("3.12.10", None, None, None, None, None, None, (), ())
@@ -459,10 +567,6 @@ def test_prepare_preserves_plan_blocker_priority_before_git_check(tmp_path: Path
     calls: list[str] = []
     original_prepare = CreationAuthorizationStore.prepare
 
-    def record_git(*args, **kwargs):
-        calls.append("git")
-        return SimpleNamespace(head="a" * 40, dirty=False)
-
     def record_environment(*args, **kwargs):
         calls.append("environment")
         return SimpleNamespace(digest="c" * 64)
@@ -471,7 +575,6 @@ def test_prepare_preserves_plan_blocker_priority_before_git_check(tmp_path: Path
         calls.append("authorization")
         return original_prepare(self, *args, **kwargs)
 
-    monkeypatch.setattr(workflows, "git_evidence", record_git)
     monkeypatch.setattr(workflows, "discover_creation_environment", record_environment)
     monkeypatch.setattr(CreationAuthorizationStore, "prepare", record_authorization)
     result = workflows.prepare_creation_workflow(

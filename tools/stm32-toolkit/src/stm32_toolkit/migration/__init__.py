@@ -6,6 +6,12 @@ immutable plan models and the stable ``MigrationPlanError``.
 """
 
 from stm32_toolkit.migration.apply import apply_keil_conversion
+from stm32_toolkit.migration.delivery import (
+    DeliveryOutput,
+    DeliveryPlan,
+    apply_keil_delivery,
+    plan_keil_delivery,
+)
 from stm32_toolkit.migration.model import (
     FilePatch,
     FixedSectionRequirement,
@@ -22,8 +28,12 @@ from stm32_toolkit.migration.preflight import preflight_keil_conversion
 
 __all__ = [
     "apply_keil_conversion",
+    "apply_keil_delivery",
     "plan_keil_conversion",
+    "plan_keil_delivery",
     "preflight_keil_conversion",
+    "DeliveryOutput",
+    "DeliveryPlan",
     "FilePatch",
     "FixedSectionRequirement",
     "GitBaseline",
