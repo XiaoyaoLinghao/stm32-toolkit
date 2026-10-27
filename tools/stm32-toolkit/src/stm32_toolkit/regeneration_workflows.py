@@ -660,6 +660,11 @@ def prepare_regeneration_workflow(
         return _failure(operation, error.code, error.message, {"field": error.field})
     except RegenerationError as error:
         return _failure(operation, error.code, error.message, error.details)
+    except Exception:
+        # Mirrors ``plan_regeneration``: optional Git collection and other
+        # unexpected planning errors must fail closed rather than escape the
+        # public workflow or be mistaken for absent Git evidence.
+        return _failure(operation, "REGENERATION_PROJECT_INVALID", "the CubeMX project is unavailable", {})
     if type(plan_id) is not str or type(action_digest) is not str or plan_id != plan.plan_id or action_digest != plan.action_digest:
         return _failure(operation, "REGENERATION_PLAN_CHANGED", "the regeneration plan changed since planning", {"currentPlanId": plan.plan_id, "currentActionDigest": plan.action_digest})
     if type(authorized) is not bool or authorized is not True:

@@ -5,6 +5,12 @@ module owns the immutable request/plan/preview values, the single ownership
 inventory used by both planning and apply, and all deterministic hashing.  It
 does not invoke CubeMX or mutate a project; orchestration lives in
 ``regeneration_workflows``.
+
+Git is optional traceability here: HEAD, dirty status, and availability are
+reported honestly (``null`` plus bounded unavailable evidence when absent) but
+never participate in ``project_state_digest``, ``plan_id``, or
+``action_digest``.  Relevant content, environment, and authorization digests
+remain authoritative.
 """
 
 from __future__ import annotations
@@ -21,7 +27,11 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable, Mapping
 
-from stm32_toolkit.build.identity import GitEvidence, git_evidence
+from stm32_toolkit.build.identity import (
+    GitEvidence,
+    GitUnavailableEvidence,
+    collect_build_git_evidence,
+)
 from stm32_toolkit.creation_environment import (
     CreationEnvironmentError,
     CreationExecutionEnvironment,
@@ -245,7 +255,12 @@ class RegenerationPlan:
     ioc_path: str
     current_ioc_sha256: str
     prior_owned_ioc_sha256: str
-    git_head: str
+    # Optional Git traceability.  These values are reported publicly but are
+    # deliberately excluded from ``project_state_digest``, ``plan_id`` and
+    # ``action_digest``: only relevant project content authorizes a plan.
+    git_head: str | None
+    git_dirty: bool | None
+    git_evidence: Mapping[str, str] | None
     project_state_digest: str
     ownership_manifest_digest: str
     managed_manifest_digest: str
@@ -262,7 +277,7 @@ class RegenerationPlan:
     # The following values are internal evidence and are never serialized.
     model: ProjectModel | None = field(default=None, repr=False, compare=False)
     inventory: tuple[InventoryEntry, ...] = field(default=(), repr=False, compare=False)
-    git: GitEvidence | None = field(default=None, repr=False, compare=False)
+    git: GitEvidence | GitUnavailableEvidence | None = field(default=None, repr=False, compare=False)
     environment: object | None = field(default=None, repr=False, compare=False)
 
     def to_dict(self) -> dict[str, object]:
@@ -274,7 +289,12 @@ class RegenerationPlan:
             "iocPath": self.ioc_path,
             "currentIocSha256": self.current_ioc_sha256,
             "priorOwnedIocSha256": self.prior_owned_ioc_sha256,
+            # ``null`` means Git evidence is genuinely absent (no repository,
+            # unborn HEAD, or Git unavailable); it is never an empty string
+            # and never an implied clean working tree.
             "gitHead": self.git_head,
+            "gitDirty": self.git_dirty,
+            "gitEvidence": dict(self.git_evidence) if self.git_evidence is not None else None,
             "projectStateDigest": self.project_state_digest,
             "ownershipManifestDigest": self.ownership_manifest_digest,
             "managedManifestDigest": self.managed_manifest_digest,
@@ -759,12 +779,19 @@ def _load_snapshot(request: RegenerationWorkflowRequest) -> OwnershipSnapshot:
     return _classify_snapshot(model, inventory, bytes_by_path, ownership_rows, ownership_bytes, managed_bytes, managed_digest, model_sha)
 
 
-def _state_payload(request: RegenerationWorkflowRequest, snapshot: OwnershipSnapshot, git: GitEvidence | None) -> dict[str, object]:
+def _state_payload(request: RegenerationWorkflowRequest, snapshot: OwnershipSnapshot) -> dict[str, object]:
+    """Authoritative regeneration state: relevant content only.
+
+    Git HEAD, dirty status and Git availability are optional traceability,
+    not authorization fields.  They are intentionally absent here so that a
+    commit, a dirty sibling, or a repository appearing/disappearing between
+    phases cannot invalidate a prepared regeneration while the project bytes
+    are unchanged.
+    """
     rows = [entry.to_dict() for entry in snapshot.inventory if entry.ownership != "derived"]
     return {
         "request": request.canonical_dict(),
         "logicalProjectId": str(snapshot.model.logical_project_id),
-        "gitHead": git.head if git else "",
         "ownershipManifestSha256": snapshot.ownership_manifest_digest,
         "managedManifestSha256": snapshot.managed_manifest_digest,
         "modelSha256": snapshot.model_sha256,
@@ -833,12 +860,22 @@ def build_regeneration_plan(
                 or recorded_pkg.get("packageSha256") != package.get("sha256")
             ):
                 blockers.append(RegenerationBlocker("REGENERATION_GENERATOR_DRIFT", "", "CubeMX generator or package facts drifted"))
-    try:
-        git = git_evidence(request.workspace_root)
-    except Exception:
-        git = None
-        blockers.append(RegenerationBlocker("BUILD_GIT_INVALID", "", "Git HEAD evidence is unavailable"))
-    state_digest = sha256_hex(canonical_json_bytes(_state_payload(request, snapshot, git)))
+    # Git is optional traceability for regeneration.  Only the bounded
+    # availability collector is tolerated here; an unexpected collector
+    # failure propagates to the caller's typed failure handling instead of
+    # being reported as a successful plan with absent metadata.
+    provenance = collect_build_git_evidence(request.workspace_root)
+    if isinstance(provenance, GitUnavailableEvidence):
+        git: GitEvidence | None = None
+        git_head: str | None = None
+        git_dirty: bool | None = None
+        git_evidence_record: Mapping[str, str] | None = provenance.to_dict()
+    else:
+        git = provenance
+        git_head = provenance.head
+        git_dirty = provenance.dirty
+        git_evidence_record = None
+    state_digest = sha256_hex(canonical_json_bytes(_state_payload(request, snapshot)))
     blockers = sorted({(item.code, item.path, item.message): item for item in blockers}.values(), key=lambda item: (item.code, portable_sort_key(item.path), item.message))
     plan_payload = {
         "schemaVersion": REGENERATION_SCHEMA_VERSION,
@@ -848,7 +885,8 @@ def build_regeneration_plan(
         "iocPath": snapshot.ioc_path,
         "currentIocSha256": snapshot.current_ioc_sha256,
         "priorOwnedIocSha256": snapshot.prior_ioc_sha256,
-        "gitHead": git.head if git else "",
+        # Git metadata is excluded from the plan identity on purpose; see
+        # ``_state_payload`` and the ``RegenerationPlan`` field comments.
         "projectStateDigest": state_digest,
         "ownershipManifestDigest": snapshot.ownership_manifest_digest,
         "managedManifestDigest": snapshot.managed_manifest_digest,
@@ -878,7 +916,9 @@ def build_regeneration_plan(
         ioc_path=snapshot.ioc_path,
         current_ioc_sha256=snapshot.current_ioc_sha256,
         prior_owned_ioc_sha256=snapshot.prior_ioc_sha256,
-        git_head=git.head if git else "",
+        git_head=git_head,
+        git_dirty=git_dirty,
+        git_evidence=git_evidence_record,
         project_state_digest=state_digest,
         ownership_manifest_digest=snapshot.ownership_manifest_digest,
         managed_manifest_digest=snapshot.managed_manifest_digest,
