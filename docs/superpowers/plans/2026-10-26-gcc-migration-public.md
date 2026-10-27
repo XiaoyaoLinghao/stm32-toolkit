@@ -23,4 +23,3 @@ Update skills/migrate-keil, build-firmware, configure-stm32-project, flash-firmw
 ## Evidence
 
 Claude tests direct workflow + CLI subprocess + registered MCP parameter/call paths on disposable no-Git sources. Exercise missing destination, new destination plan/apply, source hashes unchanged, output configured/buildable, not falsely built/flashed, option/destination drift, nonempty destination, authorization denial, complete blocker classification and missing debug/editor guidance. Verify no repository or committed-HEAD prerequisite for no-Git, unborn, dirty and nested Git roots. Verify old public calls cannot edit the original tree. Preserve M1 real GCC relocation evidence and rerun only affected integration checks. Primary full clean-head review and representative CLI/MCP acceptance follow; real hardware/user IDE are not claimed.
-
