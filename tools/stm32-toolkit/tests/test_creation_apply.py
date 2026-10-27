@@ -22,6 +22,7 @@ from stm32_toolkit.creation_authorization import (
 from stm32_toolkit.creation_environment import CreationEnvironmentError
 from stm32_toolkit.cubemx_adapter import CubeMXAdapterError
 from stm32_toolkit.generation.creation import CreationRequest
+from stm32_toolkit.generation.managed_files import MANAGED_MANIFEST_PATH
 from stm32_toolkit.result import OperationResult
 
 
@@ -1031,6 +1032,29 @@ def _write_preset_artifacts(root: Path, preset: str) -> Path:
     return build_dir
 
 
+# Project-level evidence that must survive cache invalidation byte-identically.
+_OWNED_SENTINELS: dict[str, bytes] = {
+    ".stm32-project.json": b'{"schemaVersion":2,"sentinel":"project-model"}\n',
+    MANAGED_MANIFEST_PATH: b'{"schemaVersion":1,"sentinel":"managed-manifest"}\n',
+    ".stm32-toolkit/cubemx-ownership.json": b'{"schemaVersion":1,"sentinel":"ownership"}\n',
+    "artifacts/migration/build-result.json": b'{"schemaVersion":2,"status":"success"}\n',
+}
+
+# Image payloads carry non-UTF-8 bytes so preservation is checked byte-for-byte
+# rather than as decoded text.
+_FIRMWARE_PAYLOADS: dict[str, bytes] = {
+    "STM32F429ZITx.bin": b"\x00\x01\x02\xff\xfe\x00firmware\x00",
+    "STM32F429ZITx.hex": b":020000040800F2\n:00000001FF\n",
+}
+
+
+def _write_owned_sentinels(root: Path) -> None:
+    for relative, payload in _OWNED_SENTINELS.items():
+        path = root.joinpath(*relative.split("/"))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(payload)
+
+
 def test_creation_apply_invalidates_staged_cmake_caches_and_keeps_build_artifacts(
     tmp_path: Path,
 ):
@@ -1039,7 +1063,10 @@ def test_creation_apply_invalidates_staged_cmake_caches_and_keeps_build_artifact
     activated: list[str] = []
 
     def build(root: Path, preset: str):
+        _write_owned_sentinels(root)
         build_dir = _write_preset_artifacts(root, preset)
+        for name, payload in _FIRMWARE_PAYLOADS.items():
+            (build_dir / name).write_bytes(payload)
         cache = build_dir / "CMakeCache.txt"
         cache.write_text(
             f"CMAKE_CACHEFILE_DIR:INTERNAL={root.as_posix()}/build/{preset}\n",
@@ -1074,10 +1101,13 @@ def test_creation_apply_invalidates_staged_cmake_caches_and_keeps_build_artifact
     assert activated == ["activate"]
 
     destination = tmp_path / "generated"
+    for relative, payload in _OWNED_SENTINELS.items():
+        path = destination.joinpath(*relative.split("/"))
+        assert path.read_bytes() == payload, relative
     for preset in ("arm-debug", "arm-release"):
         build_dir = destination / "build" / preset
-        for name, payload in _CACHE_ARTIFACTS.items():
-            assert (build_dir / name).read_bytes() == payload
+        for name, payload in {**_CACHE_ARTIFACTS, **_FIRMWARE_PAYLOADS}.items():
+            assert (build_dir / name).read_bytes() == payload, name
         assert not (build_dir / "CMakeCache.txt").exists()
         assert not (build_dir / "CMakeFiles").exists()
     assert (destination / "native.txt").read_text(encoding="utf-8") == "generated"
@@ -1120,10 +1150,12 @@ def test_creation_apply_allows_absent_staged_cache_paths(tmp_path: Path, layout:
 def test_creation_apply_refuses_wrong_cache_shapes_before_activation(
     tmp_path: Path, shape: str, destination_state: str
 ):
-    data, store, prepared = _authorization(tmp_path)
+    # The empty destination pre-exists the prepared capability so the scenario
+    # matches the established empty-destination setup.
     destination = tmp_path / "generated"
     if destination_state == "empty":
         destination.mkdir()
+    data, store, prepared = _authorization(tmp_path)
     expected_preset = "build" if shape == "build-file" else "arm-debug"
     expected_path = {
         "build-file": "build",
@@ -1260,10 +1292,12 @@ def test_creation_apply_refuses_reparse_cache_entry_deterministically(
 def test_creation_apply_cache_io_failure_leaves_destination_unchanged(
     tmp_path: Path, monkeypatch, destination_state: str
 ):
-    data, store, prepared = _authorization(tmp_path)
+    # The empty destination is created before the capability is prepared,
+    # matching the established empty-destination setup.
     destination = tmp_path / "generated"
     if destination_state == "empty":
         destination.mkdir()
+    data, store, prepared = _authorization(tmp_path)
     real_lstat = creation_apply_module._cache_lstat
 
     def failing_lstat(path: Path):
@@ -1305,3 +1339,85 @@ def test_creation_apply_cache_io_failure_leaves_destination_unchanged(
     assert not list(tmp_path.glob(".generated.backup-*"))
     record = store.authorization_root / f"{prepared.authorization_digest}.json"
     assert __import__("json").loads(record.read_text(encoding="utf-8"))["state"] == "consumed"
+
+
+def test_cache_invalidation_validates_release_before_deleting_any_debug_cache(
+    tmp_path: Path,
+):
+    """An invalid later candidate must not let earlier deletions start."""
+    root = tmp_path / "project"
+    root.mkdir()
+    debug_dir = _write_preset_artifacts(root, "arm-debug")
+    debug_cache = debug_dir / "CMakeCache.txt"
+    debug_cache.write_bytes(b"cache: debug\n")
+    debug_files = debug_dir / "CMakeFiles"
+    (debug_files / "3.31.5").mkdir(parents=True)
+    compiler_module = debug_files / "3.31.5" / "CMakeCCompiler.cmake"
+    compiler_module.write_bytes(b'set(CMAKE_C_COMPILER "gcc.exe")\n')
+    debug_before = {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in debug_dir.rglob("*")
+        if path.is_file()
+    }
+    release_dir = _write_preset_artifacts(root, "arm-release")
+    (release_dir / "CMakeCache.txt").mkdir()
+    release_cache = release_dir / "CMakeCache.txt"
+
+    with pytest.raises(CreationApplyError) as error:
+        creation_apply_module._invalidate_creation_build_caches(root)
+
+    assert error.value.code == "CREATION_CACHE_PREPARATION_FAILED"
+    assert error.value.details == {
+        "preset": "arm-release",
+        "rule": "shape",
+        "path": "build/arm-release/CMakeCache.txt",
+    }
+    # Validation stopped before the removal phase, so every debug cache byte
+    # queued for deletion is still present unchanged.
+    debug_after = {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in debug_dir.rglob("*")
+        if path.is_file()
+    }
+    assert debug_after == debug_before
+    assert debug_cache.is_file()
+    assert compiler_module.is_file()
+    assert release_cache.is_dir()
+
+
+def test_cache_invalidation_deletion_io_failure_is_typed_and_stops(
+    tmp_path: Path, monkeypatch
+):
+    """A deletion-phase I/O error is typed, not a blanket exception."""
+    root = tmp_path / "project"
+    root.mkdir()
+    debug_dir = _write_preset_artifacts(root, "arm-debug")
+    debug_cache = debug_dir / "CMakeCache.txt"
+    debug_cache.write_bytes(b"cache: debug\n")
+    debug_files = debug_dir / "CMakeFiles"
+    debug_files.mkdir()
+    (debug_files / "build.ninja").write_bytes(b"rules\n")
+    release_dir = _write_preset_artifacts(root, "arm-release")
+    release_cache = release_dir / "CMakeCache.txt"
+    release_cache.write_bytes(b"cache: release\n")
+    real_unlink = creation_apply_module.os.unlink
+
+    def failing_unlink(path):
+        if Path(path) == debug_cache:
+            raise OSError("injected deletion failure")
+        return real_unlink(path)
+
+    monkeypatch.setattr(creation_apply_module.os, "unlink", failing_unlink)
+    with pytest.raises(CreationApplyError) as error:
+        creation_apply_module._invalidate_creation_build_caches(root)
+
+    assert type(error.value) is CreationApplyError
+    assert error.value.code == "CREATION_CACHE_PREPARATION_FAILED"
+    assert error.value.details == {
+        "preset": "arm-debug",
+        "rule": "io",
+        "path": "build/arm-debug/CMakeCache.txt",
+    }
+    assert debug_cache.read_bytes() == b"cache: debug\n"
+    assert (debug_files / "build.ninja").read_bytes() == b"rules\n"
+    assert release_cache.read_bytes() == b"cache: release\n"
