@@ -15,6 +15,7 @@ simulated probe is not physical evidence.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -26,6 +27,7 @@ from stm32_toolkit.build.model import (
     SNAPSHOT_IDENTITY_SCHEMA_VERSION,
     SOURCE_BASELINE_INPUT_SNAPSHOT,
 )
+from stm32_toolkit.probe.lease import ProbeLeaseManager
 from stm32_toolkit.project_model import load_project_model
 from stm32_toolkit.workflows import (
     build_firmware_workflow,
@@ -561,6 +563,31 @@ def _set_backend_env(
     return log_path
 
 
+def _assert_released_probe_lease(data_root: Path) -> None:
+    """The registry holds exactly this probe's lease, recorded as released.
+
+    ``ProbeLeaseManager`` names the registry record after the SHA-256 of the
+    probe id, so that exact path is the probe-identity evidence; releasing a
+    lease rewrites the record as a ``released`` state rather than deleting it.
+    """
+
+    manager = ProbeLeaseManager(data_root)
+    record_path = manager.record_path(PROBE_ID)
+    digest = hashlib.sha256(PROBE_ID.encode("utf-8")).hexdigest()
+    assert record_path == data_root / "probe-registry" / f"{digest}.lock"
+    assert record_path.is_file(), "no probe lease record was written"
+    registry = record_path.parent
+    assert sorted(path.name for path in registry.glob("*.lock")) == [
+        record_path.name
+    ]
+    guard_path = record_path.with_suffix(".guard")
+    assert guard_path.is_file(), "no probe lease guard was written"
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    assert record["schemaVersion"] == 1
+    assert record["state"] == "released"
+    assert isinstance(record["leaseId"], str) and record["leaseId"]
+
+
 def test_managed_simulated_flash_programs_and_reads_back(
     journey, tmp_path: Path, monkeypatch
 ) -> None:
@@ -633,16 +660,10 @@ def test_managed_simulated_flash_programs_and_reads_back(
     )
     # Owned cleanup really ran after the verified readback: the simulated
     # backend was closed last, and the real lease manager recorded that the
-    # probe lease was released (the existing tested probe.lock contract).
+    # probe lease was released in the shared probe registry.
     assert names.count("close") >= 1
     assert names[-1] == "close"
-    leases = sorted((tmp_path / "data-success").rglob("probe.lock"))
-    assert leases, "no probe lease record was written"
-    states = {
-        json.loads(path.read_text(encoding="utf-8")).get("state")
-        for path in leases
-    }
-    assert states == {"released"}
+    _assert_released_probe_lease(tmp_path / "data-success")
 
 
 @pytest.mark.parametrize(
@@ -789,9 +810,4 @@ def test_readback_mismatch_fails_once_without_retry(
     # A failed verification still performs owned cleanup after the single
     # attempt: the backend is closed and the probe lease is released.
     assert names[-1] == "close"
-    leases = sorted((tmp_path / "data-mismatch").rglob("probe.lock"))
-    assert leases, "no probe lease record was written"
-    assert {
-        json.loads(path.read_text(encoding="utf-8")).get("state")
-        for path in leases
-    } == {"released"}
+    _assert_released_probe_lease(tmp_path / "data-mismatch")
