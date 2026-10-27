@@ -1,5 +1,9 @@
 # Release status and retained limitations
 
+## v1.3.3 frozen package — 2026-10-27
+
+Two official builds of `46ca09084bbe39f670714d19d7d55f9365ef06be` produced 13 identical verified files; official bundle verification passed. See [candidate and disclosed limits](codex/returns/STM32TK-133/candidate-build.md). Qualification remains **LOCAL_CANDIDATE_NOT_QUALIFIED** pending this candidate's decision. No v1.3.3 push/publication yet. Final user installation/VS Code remains **USER_VALIDATION_PENDING**.
+
 ## v1.3.3 local release preparation — 2026-10-27
 
 Version alignment and current guidance are reviewed at `d281addbbdb70e36c270e24828868d7e936dc6e1`; release qualification is **NOT_QUALIFIED**. See [review and retained limits](codex/returns/STM32TK-133/version-review.md). Canonical double builds are next. The user authorizes push/Latest after validation and owns final installation/VS Code (**USER_VALIDATION_PENDING**). Prior exceptions do not transfer. No original-project or hardware actions, no v1.3.3 remote publication yet.
