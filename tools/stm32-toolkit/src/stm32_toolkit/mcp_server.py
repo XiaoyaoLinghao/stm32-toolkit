@@ -523,14 +523,14 @@ class DiagnosticMonitorRunRef(BaseModel):
     """Closed v2 physical Monitor source reference accepted by the MCP edge."""
 
     #: Instance inputs (validated models, ``model_copy`` results and mutated
-    #: instances) re-enter the same wire contract as JSON input.  The
-    #: before-validator below dumps through the serializer, so absent default
-    #: pair keys stay absent instead of surfacing as explicit nulls.
-    model_config = ConfigDict(
-        extra="forbid",
-        populate_by_name=True,
-        revalidate_instances="always",
-    )
+    #: instances) re-enter the same wire contract as raw JSON input.  The
+    #: before-validator below dumps an instance through this model's serializer,
+    #: which omits only the pair keys that were never supplied, so a legacy
+    #: reference keeps its absent pair while an explicitly supplied null stays
+    #: on the wire and the shared contract rejects it.  Forcing
+    #: ``revalidate_instances`` would convert an instance to its internal field
+    #: dict before that dump and erase the fields-set distinction.
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     schema_: Literal["stm32-monitor-run-ref/2"] = Field(alias="schema")
     operation_id: MonitorRunRefUuid
@@ -576,10 +576,11 @@ class DiagnosticMonitorRunRef(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _validate_replay_wire(cls, value: object) -> object:
-        # ``model_dump`` applies this model's serializer, which omits only the
-        # pair keys that were never supplied.  An explicitly supplied null
-        # pair therefore stays on the wire and the shared contract rejects it
-        # instead of silently reading the legacy Git form.
+        # Raw mappings and existing instances both re-enter this closed wire
+        # contract here.  ``model_dump`` applies this model's serializer, which
+        # omits only the pair keys that were never supplied; an explicitly
+        # supplied null pair therefore stays on the wire and the shared
+        # contract rejects it instead of silently reading the legacy Git form.
         raw = (
             value.model_dump(mode="python", by_alias=True)
             if isinstance(value, BaseModel)
@@ -593,6 +594,19 @@ class DiagnosticMonitorRunRef(BaseModel):
         except (ReplayContractError, TypeError, ValueError, OverflowError) as error:
             raise ValueError("monitor run reference violates replay contract") from error
         return raw
+
+    @model_validator(mode="after")
+    def _validate_constructed_reference(self) -> "DiagnosticMonitorRunRef":
+        # The model that was actually built must still form one closed wire
+        # reference: the shared validator runs on the canonical alias dump, so
+        # an existing, copied or mutated instance cannot reach consumers with a
+        # partial or mixed provenance pair.  The shared contract stays the only
+        # owner of the pair, hash and digest rules.
+        try:
+            validate_run_reference(self.model_dump(mode="python", by_alias=True))
+        except (ReplayContractError, TypeError, ValueError, OverflowError) as error:
+            raise ValueError("monitor run reference violates replay contract") from error
+        return self
 
     @model_validator(mode="after")
     def _validate_lineage(self) -> "DiagnosticMonitorRunRef":
