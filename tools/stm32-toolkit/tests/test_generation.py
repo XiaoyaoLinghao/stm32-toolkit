@@ -775,7 +775,7 @@ def test_generation_spec_validation(tmp_path, field, rule):
 
 
 @pytest.mark.parametrize("schema_version", [2, 3])
-@pytest.mark.parametrize("producer_version", ["1.3.1", "1.3.0", "1.2.0", "1.1.2", "1.0.1", "1.0.0", "0.9.0"])
+@pytest.mark.parametrize("producer_version", ["1.3.2", "1.3.1", "1.3.0", "1.2.0", "1.1.2", "1.0.1", "1.0.0", "0.9.0"])
 def test_legacy_generation_producer_plans_and_emits_current_managed_manifest(
     tmp_path: Path, schema_version: int, producer_version: str
 ):
@@ -822,6 +822,7 @@ def test_legacy_generation_producer_plans_and_emits_current_managed_manifest(
 
 def test_generation_producer_allowlist_is_exact_and_type_safe(tmp_path: Path):
     assert is_supported_generation_producer("stm32-toolkit", __version__)
+    assert is_supported_generation_producer("stm32-toolkit", "1.3.2")
     assert is_supported_generation_producer("stm32-toolkit", "1.3.1")
     assert is_supported_generation_producer("stm32-toolkit", "1.3.0")
     assert is_supported_generation_producer("stm32-toolkit", "1.2.0")

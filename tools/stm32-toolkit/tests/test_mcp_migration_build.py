@@ -890,7 +890,7 @@ def test_end_to_end_fixture_inspect_convert_configure_build(tmp_path: Path, monk
     generated = destination / ".stm32-toolkit" / "generated-files.json"
     assert generated.is_file()
     generated_payload = json.loads(generated.read_text(encoding="utf-8"))
-    assert generated_payload["toolVersion"] == "1.3.2"
+    assert generated_payload["toolVersion"] == "1.3.3"
     tasks = json.loads(
         (destination / ".vscode" / "tasks.json").read_text(encoding="utf-8")
     )
