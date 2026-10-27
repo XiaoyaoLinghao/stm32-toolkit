@@ -1,5 +1,18 @@
 # Changelog
 
+## [v1.3.4] - 2026-10-27 (release candidate)
+
+- Release candidate under local preparation; not accepted, published or qualified. Intended
+  scope: structurally balanced outer include guards allow independent nested conditionals,
+  while true nested macro definitions remain rejected.
+- Preflight inventories potential quoted-header encoding blockers without transcoding. On an
+  actual guarded UTF-8 project the zero-blocker `PLAN` was verified at primary head
+  `53ffbc47395ec622b49fc2504df05eb3e1056ccb` with 191 planned outputs; no apply, build or
+  flash ran, so this is plan-level evidence only.
+- The header-discovery implementation and complete v1.3.4 qualification remain pending; this
+  entry records intended candidate scope only. Package version alignment and `1.3.3` legacy
+  recognition are tracked separately and are not claimed here.
+
 ## [v1.3.3] - 2026-10-27
 
 - Align the active Toolkit, Monitor, UI package metadata/lock root, plugin, launchers,
