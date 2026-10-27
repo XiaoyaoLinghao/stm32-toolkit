@@ -13,7 +13,7 @@ STM32 Toolkit 是面向 STM32 开发的本地工具。CLI 与 MCP 服务器共�
 
 ## 发布状态
 
-当前源码：**v1.3.3 发布候选（尚未发布）**。公开发行版：[v1.3.2](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.3.2)。安装、升级、迁移差异与验证限制见[用户指南](docs/user-guide.md)。
+当前版本：**v1.3.3**，已发布为 [Latest](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.3.3)。安装、升级、迁移差异与验证限制见[用户指南](docs/user-guide.md)。
 
 ## 环境要求
 

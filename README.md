@@ -13,7 +13,7 @@ Git is optional traceability for both routes, never an eligibility gate. Hardwar
 
 ## Release status
 
-Current source: **v1.3.3 release candidate**. Published release: [v1.3.2](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.3.2). See the [user guide](docs/user-guide.md) for installation, upgrades, migration differences and validation limits.
+Current version: **v1.3.3**, published as [Latest](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.3.3). See the [user guide](docs/user-guide.md) for installation, upgrades, migration differences and validation limits.
 
 ## Requirements
 

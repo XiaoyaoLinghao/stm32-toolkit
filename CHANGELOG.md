@@ -1,6 +1,6 @@
 # Changelog
 
-## [v1.3.3 release candidate] - 2026-10-27
+## [v1.3.3] - 2026-10-27
 
 - Align the active Toolkit, Monitor, UI package metadata/lock root, plugin, launchers,
   setup, release utility/policy and release schema to `1.3.3`. Dependency versions and
@@ -26,9 +26,14 @@
   package generation, hardware, installation or IDE acceptance. Final installation and
   independent VS Code testing remain user-owned and pending. Detailed qualification stays
   in [release status](docs/release-status.md).
-- **Not published as a GitHub Release.** There is no v1.3.3 tag, Release, asset or
-  installation claim; the [v1.3.2 Release](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.3.2)
-  remains the public Latest.
+- Published as [Latest](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.3.3)
+  on 2026-10-27 from frozen source `46ca09084bbe39f670714d19d7d55f9365ef06be`, with 13
+  published assets matching the frozen package sizes and SHA-256. The user explicitly
+  approved this candidate-specific exception and its disclosed coverage, reuse and platform
+  limits ([approval record](docs/codex/returns/STM32TK-133/authorization-2026-10-27.md));
+  the permanent coverage/risk gates remain unmet and unchanged. Final installation and
+  independent VS Code testing remain user-owned and pending. Frozen package documentation
+  keeps its build-time candidate status; this entry supersedes that status.
 
 ## [v1.3.2] - 2026-10-26
 

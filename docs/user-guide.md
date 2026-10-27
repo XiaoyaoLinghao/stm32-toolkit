@@ -1,18 +1,18 @@
 # STM32 Toolkit 用户指南与排障
 
-本指南面向**当前 v1.3.3 发布候选源码**（尚未公开发布），并以已发布为 Latest 的 **v1.3.2**（2026-10-26）为当前公开版本；下面同时说明已发布 v1.3.2 的操作合同与 v1.3.3 候选的独立交付合同。资产可用性、资格与保留限制以 [v1.3.2 Release](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.3.2) 和[发布状态](release-status.md)为准；最终安装与 VS Code 独立测试由用户负责，仍待完成。上一公开版本 v1.3.1 的包可能合法缺少较新的 v1.3.2 字段，已发布 v1.3.2 的包也可能缺少 v1.3.3 候选新增字段，其缺失不是服务器过期的证据。v1.3.3 候选、已发布 v1.3.2 与 v1.3.1 均为 52 个工具、9 个 Skill；v1.2.0（冻结的 48 工具、8 Skill runtime）保留为历史 legacy 路线。[发布状态](release-status.md)记录证据、例外和发布历史。Monitor 工作台与源码目录等行为见[源码规范](superpowers/specs/2026-10-21-monitor-v120-delivery-design.md)；v1.0.1 的历史资格见[执行记录](codex/returns/STM32TK-101/execution.md)。本指南不代替接收者机器的安装或实机证据。
+本指南面向已发布为 Latest 的 **v1.3.3**（2026-10-27），并以 **v1.3.2**（2026-10-26）为上一公开版本；下面说明已发布 v1.3.3 的操作合同及与历史 v1.3.2 的差异。资产可用性、资格与保留限制以 [v1.3.3 Release](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.3.3) 和[发布状态](release-status.md)为准；最终安装与 VS Code 独立测试由用户负责，仍待完成。上一公开版本 v1.3.2 的包可能合法缺少 v1.3.3 新增字段，v1.3.1 的包还可能缺少较新的 v1.3.2 字段，其缺失不是服务器过期的证据。v1.3.3、v1.3.2 与 v1.3.1 均为 52 个工具、9 个 Skill；v1.2.0（冻结的 48 工具、8 Skill runtime）保留为历史 legacy 路线。[发布状态](release-status.md)记录证据、例外和发布历史。Monitor 工作台与源码目录等行为见[源码规范](superpowers/specs/2026-10-21-monitor-v120-delivery-design.md)；v1.0.1 的历史资格见[执行记录](codex/returns/STM32TK-101/execution.md)。本指南不代替接收者机器的安装或实机证据。
 
 ## 路径、版本和安全入口
 
-**主接收路径（v1.3.3 候选；资产未发布前使用已发布 v1.3.2）：** v1.3.3 发布前没有任何公开资产；只有在 v1.3.3 发布页同时列出同版 ZIP 与 `CHECKSUMS.sha256` 时，才能从同一页面下载、核对并用包内 `bin/setup-stm32-env.ps1` 的只读 `Check` 与获授权 `Bootstrap` 安装该 v1.3.3 包；在此之前，主接收路径仍是已发布的 [v1.3.2 Release](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.3.2)，其页面同时列出同版 ZIP 与 `CHECKSUMS.sha256`，下载前先确认这两个资产确实列出，再从同一页面下载并与 `CHECKSUMS.sha256` 核对；命令形式见 [setup-stm32-env Skill](../skills/setup-stm32-env/SKILL.md)。另行提供的同版本本地包只可作为补充来源，且须同时提供这两个文件、可核对的校验和与 source commit。任一资产或校验行缺失即停止，不要用 v1.2.0、更早的包或 GitHub 自动源码归档顶替。之后用包内 `Check` 确认 ToolkitRoot、持久 DataRoot、工程根、发行包及受管 runtime（v1.3.3 期望 `runtime/1.3.3`；已安装的 v1.3.2 仍是 `runtime/1.3.2` 的 legacy 升级输入）。`Bootstrap`/`Repair` 修改 runtime，先审阅 `Check` 结果和对应发行包，再只执行获准的一种动作，完成后复查到 healthy。Claude Code 的入口为 [skills/setup-stm32-env/SKILL.md](../skills/setup-stm32-env/SKILL.md)；其它 MCP 宿主使用绝对 launcher、显式 project/data root 和 `STM32_TOOLKIT_DATA_ROOT`。`.stm32-project.json` 属于工程，DataRoot 保存机器状态和证据，不能把一次性测试目录当作长期 DataRoot。
+**主接收路径（v1.3.3）：** 先在 [v1.3.3 Release](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.3.3) 页面确认同版 ZIP 与 `CHECKSUMS.sha256` 均已列出，再从同一页面下载、核对并用包内 `bin/setup-stm32-env.ps1` 的只读 `Check` 与获授权 `Bootstrap` 安装该 v1.3.3 包；缺少任一资产就停止。上一公开版本 [v1.3.2 Release](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.3.2) 按其自身页面核对；命令形式见 [setup-stm32-env Skill](../skills/setup-stm32-env/SKILL.md)。另行提供的同版本本地包只可作为补充来源，且须同时提供这两个文件、可核对的校验和与 source commit。任一资产或校验行缺失即停止，不要用 v1.2.0、更早的包或 GitHub 自动源码归档顶替。之后用包内 `Check` 确认 ToolkitRoot、持久 DataRoot、工程根、发行包及受管 runtime（v1.3.3 期望 `runtime/1.3.3`；已安装的 v1.3.2 仍是 `runtime/1.3.2` 的 legacy 升级输入）。`Bootstrap`/`Repair` 修改 runtime，先审阅 `Check` 结果和对应发行包，再只执行获准的一种动作，完成后复查到 healthy。Claude Code 的入口为 [skills/setup-stm32-env/SKILL.md](../skills/setup-stm32-env/SKILL.md)；其它 MCP 宿主使用绝对 launcher、显式 project/data root 和 `STM32_TOOLKIT_DATA_ROOT`。`.stm32-project.json` 属于工程，DataRoot 保存机器状态和证据，不能把一次性测试目录当作长期 DataRoot。
 
-**显式 legacy 路线（历史公开版本 v1.2.0）：** 安装前先在 [v1.2.0 Release](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.2.0) 页面确认同版 ZIP 与 `CHECKSUMS.sha256` 均已列出，再从同一页面下载；缺少任一资产就停止。v1.2.0 是冻结的 48 工具、8 Skill runtime，不含下文 v1.3.3 候选专属入口。
+**显式 legacy 路线（历史公开版本 v1.2.0）：** 安装前先在 [v1.2.0 Release](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.2.0) 页面确认同版 ZIP 与 `CHECKSUMS.sha256` 均已列出，再从同一页面下载；缺少任一资产就停止。v1.2.0 是冻结的 48 工具、8 Skill runtime，不含下文 v1.3.3 专属入口。
 
-版本匹配的 v1.3.3 包（资产可用时）与 legacy v1.2.0 包都使用全新、每版专用的 BundleRoot，路径已存在就另选新目录，不覆盖或删除。v1.3.3 使用 `C:\tools\stm32-toolkit-1.3.3-bundle`，ZIP 中的 `stm32-toolkit-1.3.3/` 与外层 `release/` 并列，ToolkitRoot 为 `C:\tools\stm32-toolkit-1.3.3-bundle\stm32-toolkit-1.3.3`，其内部另有供 setup 使用的 `release/`。legacy v1.2.0 同理使用 `C:\tools\stm32-toolkit-1.2.0-bundle` 与 `stm32-toolkit-1.2.0/`。下载/校验以及 `Check`/获授权 `Bootstrap`/获授权 `Repair` 的命令形式见 [setup-stm32-env Skill](../skills/setup-stm32-env/SKILL.md) 与包内脚本，两条路线策略相同，只更换版本与路径。长期 DataRoot 在 `C:\data\stm32-toolkit`，与 BundleRoot 分离。
+版本匹配的 v1.3.3 包与 legacy v1.2.0 包都使用全新、每版专用的 BundleRoot，路径已存在就另选新目录，不覆盖或删除。v1.3.3 使用 `C:\tools\stm32-toolkit-1.3.3-bundle`，ZIP 中的 `stm32-toolkit-1.3.3/` 与外层 `release/` 并列，ToolkitRoot 为 `C:\tools\stm32-toolkit-1.3.3-bundle\stm32-toolkit-1.3.3`，其内部另有供 setup 使用的 `release/`。legacy v1.2.0 同理使用 `C:\tools\stm32-toolkit-1.2.0-bundle` 与 `stm32-toolkit-1.2.0/`。下载/校验以及 `Check`/获授权 `Bootstrap`/获授权 `Repair` 的命令形式见 [setup-stm32-env Skill](../skills/setup-stm32-env/SKILL.md) 与包内脚本，两条路线策略相同，只更换版本与路径。长期 DataRoot 在 `C:\data\stm32-toolkit`，与 BundleRoot 分离。
 
 ## 通用 MCP 配置与公开入口
 
-下例**只有在**已按上述条件取得并核验的 v1.3.3 包安装、`Check` 为 healthy，且该 DataRoot 中确实存在 `runtime/1.3.3` 时才可使用；v1.3.3 资产在发布页可用前不得据此假定可安装。v1.3.3 的最终接收者安装和 VS Code/MCP 测试仍须独立完成；[安装证据](codex/returns/STM32TK-131/authorization-2026-10-26.md)是已发布 v1.3.1 的历史记录，不证明任何 v1.3.2/v1.3.3 已安装。若显式选择历史版本 v1.2.0，请把 `command` 换为 `stm32-toolkit-1.2.0` 路径，并按该发行包的 48 工具、8 Skill 清单核对。下例供支持 `mcpServers` 的宿主使用。将三个示例路径换成真实绝对路径；`args` 的 `--data-root` 与 `env` 中的 `STM32_TOOLKIT_DATA_ROOT` 必须指向同一持久目录。cmd 启动器先用环境变量找到受管解释器，Python MCP 入口随后读取这两个显式参数。其它宿主请按其配置格式映射同一 `command`、`args`、`env`，不要改用系统 Python。
+下例**只有在**已按上述条件取得并核验的 v1.3.3 包安装、`Check` 为 healthy，且该 DataRoot 中确实存在 `runtime/1.3.3` 时才可使用。v1.3.3 的最终接收者安装和 VS Code/MCP 测试仍须独立完成；[安装证据](codex/returns/STM32TK-131/authorization-2026-10-26.md)是已发布 v1.3.1 的历史记录，不证明任何 v1.3.2/v1.3.3 已安装。若显式选择历史版本 v1.2.0，请把 `command` 换为 `stm32-toolkit-1.2.0` 路径，并按该发行包的 48 工具、8 Skill 清单核对。下例供支持 `mcpServers` 的宿主使用。将三个示例路径换成真实绝对路径；`args` 的 `--data-root` 与 `env` 中的 `STM32_TOOLKIT_DATA_ROOT` 必须指向同一持久目录。cmd 启动器先用环境变量找到受管解释器，Python MCP 入口随后读取这两个显式参数。其它宿主请按其配置格式映射同一 `command`、`args`、`env`，不要改用系统 Python。
 
 ```json
 {
@@ -31,9 +31,9 @@
 }
 ```
 
-九个随插件提供的 Claude Code Skill 中，八个工作流 Skill 调用相同的公开合同：[setup-stm32-env](../skills/setup-stm32-env/SKILL.md)、[migrate-keil](../skills/migrate-keil/SKILL.md)、[configure-stm32-project](../skills/configure-stm32-project/SKILL.md)、[build-firmware](../skills/build-firmware/SKILL.md)、[flash-firmware](../skills/flash-firmware/SKILL.md)、[debug-firmware](../skills/debug-firmware/SKILL.md)、[read-var](../skills/read-var/SKILL.md)、[stm32-monitor](../skills/stm32-monitor/SKILL.md)；[normalize-source-comments](../skills/normalize-source-comments/SKILL.md) 是独立的显式编码复制助手，只生成注释级 UTF-8 副本，不属于迁移 apply，也不新增 MCP 工具。当前源码的 52 个 MCP 工具名称及九个 Skill 权威清单在 [public_inventory.py](../tools/stm32-toolkit/src/stm32_toolkit/public_inventory.py)；已发布的 v1.2.0 安装包仍为 48 个工具、8 个 Skill，不包含 `stm32_keil_preflight`、`stm32_firmware_import`、`stm32_firmware_admit` 或 `stm32_flash_imported`。**判断实际可用工具时，请在真正的 MCP 客户端调用 `stm32_doctor`，先检查 `ok`，再读取 `data.runtime.toolkitVersion` 与 `data.publicInventory`，并与客户端真实列出的工具及 input schema 对比。单独启动的启动器/CLI `doctor --json` 只是旁证，不能证明当前 MCP 进程的绑定；不要依据本页或源码清单推断。**
+九个随插件提供的 Claude Code Skill 中，八个工作流 Skill 调用相同的公开合同：[setup-stm32-env](../skills/setup-stm32-env/SKILL.md)、[migrate-keil](../skills/migrate-keil/SKILL.md)、[configure-stm32-project](../skills/configure-stm32-project/SKILL.md)、[build-firmware](../skills/build-firmware/SKILL.md)、[flash-firmware](../skills/flash-firmware/SKILL.md)、[debug-firmware](../skills/debug-firmware/SKILL.md)、[read-var](../skills/read-var/SKILL.md)、[stm32-monitor](../skills/stm32-monitor/SKILL.md)；[normalize-source-comments](../skills/normalize-source-comments/SKILL.md) 是独立的显式编码复制助手，只生成注释级 UTF-8 副本，不属于迁移 apply，也不新增 MCP 工具。v1.3.3 的 52 个 MCP 工具名称及九个 Skill 权威清单在 [public_inventory.py](../tools/stm32-toolkit/src/stm32_toolkit/public_inventory.py)；已发布的 v1.2.0 安装包仍为 48 个工具、8 个 Skill，不包含 `stm32_keil_preflight`、`stm32_firmware_import`、`stm32_firmware_admit` 或 `stm32_flash_imported`。**判断实际可用工具时，请在真正的 MCP 客户端调用 `stm32_doctor`，先检查 `ok`，再读取 `data.runtime.toolkitVersion` 与 `data.publicInventory`，并与客户端真实列出的工具及 input schema 对比。单独启动的启动器/CLI `doctor --json` 只是旁证，不能证明当前 MCP 进程的绑定；不要依据本页或源码清单推断。**
 
-以下命令中的路径均为示例，须替换为本机真实绝对路径。示例把两类入口分开：`$CandidateCli` 绑定**已安装**的 `runtime\1.3.3`，只在已按上述条件取得匹配资产并安装该版本、且 `Check` 返回 healthy 后使用，只能执行该安装包已有的入口；`keil convert --destination`、同一 destination/选项的 PLAN → APPLY 与随后以 `$OutputRoot` 为工程根的命令是**当前本地未发布源码行为**，必须改用本机已核实、确实运行当前源码树的开发启动器占位 `$DevCli`，不要指向 `runtime\1.3.3`，也不要臆造某个已安装版本。已安装的 v1.3.2 runtime 仍是历史的原地 `keil convert`，不要对它使用或宣称这些参数。上一版本 v1.3.1 路由请使用其自身 `runtime\1.3.1` 启动器。**历史公开版本 v1.2.0（48 个工具）** 是显式 legacy 路线：把启动器换为 `$DataRoot\runtime\1.2.0\Scripts\stm32-toolkit.exe`，命令限于该发行包已有的入口，不要混用启动器。较早的 v1.3.0 仅保留本地候选记录；v1.3.2 的公开限制与 v1.3.3 候选待完成的独立测试见[发布状态](release-status.md)。CLI 工程命令需显式 `--project-root`；`--json` 命令返回结构化 code/details，`uvprojx` 必须使用正斜杠的可移植相对路径。`--dry-run` 只产生计划，`--apply --plan-id ... --authorized` 是独立写操作，不要直接套用示例 plan ID。
+以下命令中的路径均为示例，须替换为本机真实绝对路径。示例中的入口都绑定**已安装**的 `runtime\1.3.3`（`$CandidateCli`），只在已按上述条件取得匹配资产并安装该版本、且 `Check` 返回 healthy 后使用，只能执行该安装包已有的入口；`keil convert --destination`、同一 destination/选项的 PLAN → APPLY 与随后以 `$OutputRoot` 为工程根的命令是**已发布的 v1.3.3 行为**，同样使用该启动器；已安装的 v1.3.2 runtime 仍是历史的原地 `keil convert`，不要对它使用或宣称这些参数，既有 v1.3.2 进程也不会因重启 VS Code 获得 v1.3.3 行为，须先安装或升级到 v1.3.3 再重启并核对绑定。已发布 v1.3.1 路由请使用其自身 `runtime\1.3.1` 启动器。**历史公开版本 v1.2.0（48 个工具）** 是显式 legacy 路线：把启动器换为 `$DataRoot\runtime\1.2.0\Scripts\stm32-toolkit.exe`，命令限于该发行包已有的入口，不要混用启动器。较早的 v1.3.0 仅保留本地未发布候选记录；v1.3.2/v1.3.3 的公开限制与 v1.3.3 待完成的独立测试见[发布状态](release-status.md)。CLI 工程命令需显式 `--project-root`；`--json` 命令返回结构化 code/details，`uvprojx` 必须使用正斜杠的可移植相对路径。`--dry-run` 只产生计划，`--apply --plan-id ... --authorized` 是独立写操作，不要直接套用示例 plan ID。
 
 ```powershell
 $DataRoot = 'C:\data\stm32-toolkit'
@@ -47,18 +47,17 @@ $CandidateCli = Join-Path $DataRoot 'runtime\1.3.3\Scripts\stm32-toolkit.exe'
 & $CandidateCli --project-root $ProjectRoot project detect --json
 & $CandidateCli --project-root $ProjectRoot keil inspect --uvprojx Project/blinky.uvprojx --target-name Debug --json
 
-# Current v1.3.3 candidate source behavior: use a separately verified
-# development launcher for this source tree, never the installed runtime/1.3.3.
-$DevCli = '<verified development launcher for this source tree>'
-& $DevCli --project-root $ProjectRoot keil convert --uvprojx Project/blinky.uvprojx --target-name Debug --destination $OutputRoot --dry-run --json
+# Published v1.3.3 behavior: use the installed runtime/1.3.3 after install/upgrade
+# and a healthy Check; an existing v1.3.2 process does not gain it by restart alone.
+& $CandidateCli --project-root $ProjectRoot keil convert --uvprojx Project/blinky.uvprojx --target-name Debug --destination $OutputRoot --dry-run --json
 # Review that PLAN, then repeat the same destination/options with its exact data.planId.
-& $DevCli --project-root $ProjectRoot keil convert --uvprojx Project/blinky.uvprojx --target-name Debug --destination $OutputRoot --apply --plan-id '<PLAN 返回的 data.planId>' --authorized --json
+& $CandidateCli --project-root $ProjectRoot keil convert --uvprojx Project/blinky.uvprojx --target-name Debug --destination $OutputRoot --apply --plan-id '<PLAN 返回的 data.planId>' --authorized --json
 # After the reviewed apply, bind the returned data.outputRoot as the new project root.
-& $DevCli --project-root $OutputRoot project configure --dry-run --json
-& $DevCli --project-root $OutputRoot build --preset arm-debug --json
+& $CandidateCli --project-root $OutputRoot project configure --dry-run --json
+& $CandidateCli --project-root $OutputRoot build --preset arm-debug --json
 ```
 
-**v1.3.3 候选入口（未随 v1.2.0 发行）：** 已发布 v1.2.0 安装包（48 个工具）没有 `keil preflight`/`stm32_keil_preflight`，也不接受 `--startup-strategy`/`--startup-source`/`--memory-layout`/`--extra-regions`（MCP `startupStrategy`/`startupSource`/`memoryLayout`/`extraRegions`）。下列入口、startup 与显式内存布局选项不属于 v1.2.0 runtime 的行为，不要对它使用或宣称支持；显式选择 legacy v1.2.0 时只用其 `runtime\1.2.0` 启动器与既有入口。`--destination` 独立交付与 `outputRoot` 交接是 v1.3.3 候选的当前本地未发布源码行为，不在已发布 v1.3.2 安装包内；已安装的 v1.3.2 runtime 仍是原地 `keil convert`。本版本自身的 runtime 为 `runtime/1.3.3`。较早的 v1.3.0 候选已包含 `stm32_keil_preflight` 及 `startupStrategy`/`startupSource`/`memoryLayout`，但没有 `extraRegions`；已发布 v1.3.1 还包含 `extraRegions` 与后续诊断字段，但可能缺少 v1.3.2 新增的 pyOCD/VS Code guidance 字段；不要因某字段缺失就推断整个 preflight 或 MCP 服务器过期。
+**v1.3.3 入口（未随 v1.2.0 发行）：** 已发布 v1.2.0 安装包（48 个工具）没有 `keil preflight`/`stm32_keil_preflight`，也不接受 `--startup-strategy`/`--startup-source`/`--memory-layout`/`--extra-regions`（MCP `startupStrategy`/`startupSource`/`memoryLayout`/`extraRegions`）。下列入口、startup 与显式内存布局选项不属于 v1.2.0 runtime 的行为，不要对它使用或宣称支持；显式选择 legacy v1.2.0 时只用其 `runtime\1.2.0` 启动器与既有入口。`--destination` 独立交付与 `outputRoot` 交接是已发布的 v1.3.3 行为，不在 v1.3.2 安装包内；已安装的 v1.3.2 runtime 仍是原地 `keil convert`，既有 v1.3.2 进程不会因重启获得该行为，须先安装或升级到 v1.3.3。本版本自身的 runtime 为 `runtime/1.3.3`。较早的 v1.3.0 候选已包含 `stm32_keil_preflight` 及 `startupStrategy`/`startupSource`/`memoryLayout`，但没有 `extraRegions`；已发布 v1.3.1 还包含 `extraRegions` 与后续诊断字段，但可能缺少 v1.3.2 新增的 pyOCD/VS Code guidance 字段；不要因某字段缺失就推断整个 preflight 或 MCP 服务器过期。
 
 ```powershell
 # Installed v1.3.3 package commands (matching versioned assets).
@@ -67,17 +66,16 @@ $CandidateCli = Join-Path $DataRoot 'runtime\1.3.3\Scripts\stm32-toolkit.exe'
 & $CandidateCli version
 & $CandidateCli --project-root $ProjectRoot keil preflight --uvprojx Project/blinky.uvprojx --target-name Debug --json
 
-# Current local unpublished source behavior: same verified development
-# launcher as above, not the installed runtime/1.3.3.
-& $DevCli --project-root $ProjectRoot keil convert --uvprojx Project/blinky.uvprojx --target-name Debug --destination $OutputRoot --startup-strategy generate-cmsis-gcc --startup-source Startup/startup_stm32f429_439xx.s --dry-run --json
-& $DevCli --project-root $ProjectRoot keil convert --uvprojx Project/blinky.uvprojx --target-name Debug --destination $OutputRoot --startup-strategy generate-cmsis-gcc --startup-source Startup/startup_stm32f429_439xx.s --apply --plan-id '<PLAN 返回的 data.planId>' --authorized --json
+# Published v1.3.3 behavior: same installed runtime/1.3.3 launcher as above.
+& $CandidateCli --project-root $ProjectRoot keil convert --uvprojx Project/blinky.uvprojx --target-name Debug --destination $OutputRoot --startup-strategy generate-cmsis-gcc --startup-source Startup/startup_stm32f429_439xx.s --dry-run --json
+& $CandidateCli --project-root $ProjectRoot keil convert --uvprojx Project/blinky.uvprojx --target-name Debug --destination $OutputRoot --startup-strategy generate-cmsis-gcc --startup-source Startup/startup_stm32f429_439xx.s --apply --plan-id '<PLAN 返回的 data.planId>' --authorized --json
 ```
 
 Keil `inspect`、`preflight` 和 `convert` 必须指向同一 `uvprojx` 和 `target-name`；PLAN 与 APPLY 还必须使用同一个绝对新输出目录。`preflight` 只做技术分析：不要求 Git，可在存在 blocker 时仍成功返回 `analysis.complete=true`，并把 `analysis.blockers`、`planReadiness`（仅由技术 blocker 决定）与 `applyReadiness`（在有 reviewed/authorized plan 前恒为 `requires-reviewed-plan` 且 `ready=false`）分开；它不产生可用 plan ID、不写文件、不会自动 `git init`、转码或替换 ARMCC startup。Git 是可选证据：缺少仓库、unborn HEAD、非 toplevel 或 dirty/untracked 工作区会如实出现在 `data.git`，但**不构成计划前置，也不会产生 init/commit/stash/clean 指引**。`planReadiness.requiredInputs` 列出 preflight 不评估的新输出目录：它必须位于源工程之外，且不存在或已验证为空。公共交付没有“诊断性 PLAN”回退：任何技术 blocker 都会使 PLAN 返回 `DELIVERY_BLOCKED` 并携带完整 `details.blockerCodes`/`details.blockers`，preflight 仍保留每个 blocker 与 remediation。字段归属按实际响应：preflight 专属的 `analysis.blockerSummary`、blocker 的 `remediation`、`analysis.sourceChanges`、`planReadiness`/`applyReadiness` 属于 preflight 响应；交付 PLAN 报告 `data.planId`、`data.sourceSnapshotSha256`、`data.destination`/`data.destinationState`、`data.options`、`data.outputs[]`（`kind`/`path`/`beforeSha256`/`sha256`/`unifiedDiff`/`collision`）与 `data.sourcePatches[]`，并声明 `configured=false`、`built=false`、`flashed=false`。准备 APPLY 时才要求 plan 无 blocker、输出/差异/路径均符合预期；随后以 PLAN 响应的 `data.planId` 和同一 destination/选项调用 `convert --apply --plan-id <data.planId> --authorized --json`。既有明确用户指令若已覆盖这次预期变更与范围（例如“只计划并应用这些改动，审阅精确计划后直接继续”），在审阅实际 PLAN 且确认全部改动都在该指令范围内后即可复用；用户无需预先引用尚不存在的 `planId`，APPLY 时发送实际审阅的 `data.planId`。plan/destination/参数/范围变化需重新审阅，只有新审阅的改动超出或冲突于既有授权时才另问；仅有只读 preflight/PLAN 请求从不构成写授权。PLAN 响应字段是 `data.planId`，APPLY 请求参数是 `planId`/`--plan-id`，不要混用带命令前缀的展示文本，也不要把 PREFLIGHT/PLAN 字段混写。成功 APPLY 返回精确 `data.outputRoot`；随后把它绑定为 VS Code workspace 与 MCP 工程根，再运行 context。`configure` 同样先 `--dry-run` 再用该次 configure 计划的 `data.plan_id` `--apply --plan-id <data.plan_id> --authorized --json`；应用前会重新检查输入与改动。
 
-### 独立交付、同参重放与工程根重绑（当前源码切片）
+### 独立交付、同参重放与工程根重绑（v1.3.3）
 
-本节属于 **v1.3.3 候选的当前本地未发布源码行为**，不包含在已发布 v1.3.2 安装包中：已安装的 v1.3.2 runtime 仍使用历史的原地 `keil convert`，不要向它承诺 `--destination`、`data.planId`、`outputs`、`sourcePatches` 或 `outputRoot`。
+本节属于**已发布的 v1.3.3 行为**，不包含在 v1.3.2 安装包中：已安装的 v1.3.2 runtime 仍使用历史的原地 `keil convert`，不要向它承诺 `--destination`、`data.planId`、`outputs`、`sourcePatches` 或 `outputRoot`；既有 v1.3.2 进程不会因重启 VS Code 获得 v1.3.3 行为，须先安装或升级到 v1.3.3 再重启并核对绑定。
 
 公共 `keil convert` 不再原地改写 Keil 工程，也不保留 in-place 回退。源工程只读；`--destination`/`destination` 必须是源工程之外的绝对路径，且不存在或已验证为空。省略时返回 `DELIVERY_DESTINATION_REQUIRED`，`details` 给出示例与理由。PLAN 绑定完整源清单、目标、输出、destination 状态与选项；APPLY 必须用同一 destination、同一组 `startupStrategy`/`startupSource`/`memoryLayout`/`extraRegions` 和 PLAN 的精确 `data.planId`。任何 destination/选项/源快照变化返回 `PLAN_CHANGED` 或 `DELIVERY_*`，不写文件；已有内容的 destination 绝不被覆盖或清空。
 
@@ -88,21 +86,21 @@ Keil `inspect`、`preflight` 和 `convert` 必须指向同一 `uvprojx` 和 `tar
 3. 若缺少 debug 后端/target 或已核实的 Toolkit/GCC 可执行路径，用现有 `stm32_project_configure`（PLAN/APPLY）显式配置，不在 convert 里复制这些选项。
 4. 按正常 GCC 路线 PLAN/APPLY configure，再 `stm32_build`。成功后从 context 读取实际 `data.build.buildId` 与 `data.build.elfSha256`，让用户显式选择一个探针并授权 `stm32_flash` 正常受管烧录。Git 对新建和迁移工程都不是前提：托管硬件准入使用当前内容身份（声明输入、model/debug target、实际 ELF/MAP 与成功构建证据），无 Git 工程与有 Git 工程走同一正常受管路线。这不是硬件就绪或实机验收；外部固件导入路线仍是独立、显式选择的另一条路线，不是本工程 GCC 输出的绕行方案。
 
-### 新建工程：CubeMX 生成 GCC/CMake/VS Code（当前未发布源码）
+### 新建工程：CubeMX 生成 GCC/CMake/VS Code（v1.3.3）
 
-本节描述**当前 v1.3.3 候选的本地未发布源码**的工程创建行为，与上面的 Keil 独立交付是两条并列路线；已安装版本是否包含这些工具/字段，以实际绑定服务器列出的工具与 input schema 为准，不要据本页推断。真实创建需要实际 STM32CubeMX、配套**离线固件包**以及受支持的 STM32CubeCLT/GCC/CMake/Ninja；Git 从不是前提，也绝不要为创建而 `git init` 或提交。缺少厂商前置时按实际返回停止并报告，不要用合成 fixture 顶替真实 CubeMX/固件。
+本节描述**已发布的 v1.3.3** 的工程创建行为，与上面的 Keil 独立交付是两条并列路线；实际绑定服务器是否包含这些工具/字段，以实际列出的工具与 input schema 为准，不要据本页推断。既有 v1.3.2 安装不会因重启获得这些行为，须先安装或升级到 v1.3.3 再重启并核对绑定。真实创建需要实际 STM32CubeMX、配套**离线固件包**以及受支持的 STM32CubeCLT/GCC/CMake/Ninja；Git 从不是前提，也绝不要为创建而 `git init` 或提交。缺少厂商前置时按实际返回停止并报告，不要用合成 fixture 顶替真实 CubeMX/固件。
 
 - **只读 PLAN。** `stm32_project_create_plan(sourceKind, source, destination, framework, language)` 只返回计划（`mutated=false`）。`sourceKind` 只能是 `mcu`/`board`/`ioc`；`mcu` 用器件名（如 `STM32F429ZITx`），`board` 用板名，`ioc` 用工程根内可读的 UTF-8 `.ioc` 相对路径。`framework` 为 `hal`/`ll`，`language` 为 `c`/`cpp`。`destination` 是**当前 workspace 工程根内的可移植相对路径**（`/` 分隔，不得绝对、带盘符或含 `..`），且必须不存在或已验证为空；它不同于 Keil `convert` 的工程外绝对 `--destination`，也不同于迁移结果的 `data.outputRoot`，三者不可混用。逐项审阅**全部** `data.blockers[]`（`code`/`component`/`remediation`，含 CubeMX/CubeCLT/GCC/CMake/Ninja、目标目录安全/非空等），并记录实际 `data.planId`、`data.actionDigest`、`data.expiresAt`（计划约一小时后过期）与 `data.request`。只读 PLAN 不构成写授权。
 - **同一输入的 PREPARE。** 用**完全相同的五个输入**外加该 `data.planId`/`data.actionDigest` 调用 `stm32_project_create_prepare`。它重新规划并比对：计划变化返回 `CREATION_PLAN_CHANGED`（附 `currentPlanId`/`currentActionDigest`），仍有 blocker 时以首个 blocker 失败；通过后只在 DataRoot 的 `creation/authorizations` 下写入**一次性、会过期**的授权记录并返回 `data.authorizationDigest`。它不启动 CubeMX，也不创建、清空或改动 destination；`mutated=false` 表示未改动工程，不是“没有写任何文件”。
 - **显式授权的 APPLY。** 仅在用户明确授权该次创建后，以返回的 `data.authorizationDigest` 和真实布尔 `authorized=true` 调用 `stm32_project_create_apply`（非真实 `true` 返回 `CREATION_AUTHORIZATION_REQUIRED`）。它消费该授权（重复使用或过期分别返回 `CREATION_AUTHORIZATION_CONSUMED`/`CREATION_AUTHORIZATION_EXPIRED`），复核计划、执行环境与目标目录状态，在目标旁的暂存目录用 CubeMX 生成、校验并写入托管清单、执行 configure，再分别构建 `arm-debug` 与 `arm-release`；全部成功后才一次性激活 destination，返回 `data.destination`、`planId`、`authorizationDigest`、`ownershipManifestPath`/`ownershipManifestSha256`、`debug`/`release` 与 `attemptId`（`mutated=true`）。失败按实际 `code`/`details` 报告（如 `CREATION_CONFIGURATION_FAILED`、`CREATION_DEBUG_BUILD_FAILED`、`CREATION_RELEASE_BUILD_FAILED`、`CUBEMX_*`、`CREATION_DESTINATION_CHANGED`、`CREATION_ACTIVATION_FAILED`），不自动重试或切换路线。
-- **激活前的缓存处理（当前源码）。** 激活前只删除本次暂存构建自有的 `build/arm-debug`、`build/arm-release` 下的 `CMakeCache.txt` 与 `CMakeFiles`，使交付工程在目的地正常重新配置/重建；CubeMX 生成的固件源码、ELF/MAP、构建与固件证据、托管清单均保持不变。任一缓存路径是链接/重解析点、逃逸或形状异常时返回 `CREATION_CACHE_PREPARATION_FAILED`，`details` 给出 `preset`/`rule`/`path`；不得手工修改托管 hash/digest 绕过。
+- **激活前的缓存处理。** 激活前只删除本次暂存构建自有的 `build/arm-debug`、`build/arm-release` 下的 `CMakeCache.txt` 与 `CMakeFiles`，使交付工程在目的地正常重新配置/重建；CubeMX 生成的固件源码、ELF/MAP、构建与固件证据、托管清单均保持不变。任一缓存路径是链接/重解析点、逃逸或形状异常时返回 `CREATION_CACHE_PREPARATION_FAILED`，`details` 给出 `preset`/`rule`/`path`；不得手工修改托管 hash/digest 绕过。
 - **成功后重绑与验收。** 只有 APPLY 成功、目的地已激活后，才把该目的地绑定为 VS Code workspace 与 MCP `--project-root`（相对路径按当前 workspace 解析，不要偷偷改现有服务器绑定），并在新根运行 `stm32_project_context`。按需用 `stm32_project_configure`（PLAN/APPLY）成对配置 debug backend/target 与已核实的绝对可执行路径；再按正常 GCC 路线 `stm32_build`，从 context 读取实际 `data.build.buildId`/`data.build.elfSha256`，并在用户单独授权该次硬件操作后用精确探针 `stm32_flash`。APPLY 内部的 debug/release 构建结果不替代新根上的正常构建与身份。
 
 本切片的离线/合成回归只验证软件合同，不构成真实 CubeMX、配套固件包、VS Code/扩展、真实 IDE 任务或实机验证。
 
-### `doctor` 环境就绪证据（当前源码切片）
+### `doctor` 环境就绪证据（v1.3.3）
 
-`doctor` 仍是只读诊断；`ok=true` 只表示**报告已收集**，不表示所有工具或扩展都已就绪。构建路线只依据 `data.tools` 中实际观察到的 ARM GCC、CMake、Ninja 证据；ARM GDB 面向调试，缺失或未知的可选 CubeMX、VS Code `code`、PyOCD 或扩展观察本身不构成构建阻断。`ok`、`unknown`、`missing`、`timeout`/`error`/`nonzero` 与扩展 `installed=null` 是不同证据，不要合并为统一的“就绪”门禁，并保留完整 `diagnostics`。它与其它 MCP 工具一样绑定同一工程/根：`stm32_doctor` 使用绑定 runtime，CLI 必须显式给出已核实的绝对 `--project-root`；不要用另一个目录或另一台机器上的结果替代当前绑定证据。默认会观察本机 VS Code 的推荐扩展；不需要该观察时用 CLI `--skip-vscode-extensions` 或 MCP `probeVscodeExtensions=false`。这些观察选项与字段属于**当前 v1.3.3 候选源码切片**；较早的 frozen/installed 1.3.0 不包含 `--skip-vscode-extensions`/`--vscode-path`/`--uv4-path`/`--armcc-path`、`vscodeExtensionObservation`、`keilTools`、`readiness`、`diagnostics` 或 `creationSupport.vsCodeExtensionsSource`，在该包中缺失不证明 MCP 过期，需等匹配构建安装后再检查。
+`doctor` 仍是只读诊断；`ok=true` 只表示**报告已收集**，不表示所有工具或扩展都已就绪。构建路线只依据 `data.tools` 中实际观察到的 ARM GCC、CMake、Ninja 证据；ARM GDB 面向调试，缺失或未知的可选 CubeMX、VS Code `code`、PyOCD 或扩展观察本身不构成构建阻断。`ok`、`unknown`、`missing`、`timeout`/`error`/`nonzero` 与扩展 `installed=null` 是不同证据，不要合并为统一的“就绪”门禁，并保留完整 `diagnostics`。它与其它 MCP 工具一样绑定同一工程/根：`stm32_doctor` 使用绑定 runtime，CLI 必须显式给出已核实的绝对 `--project-root`；不要用另一个目录或另一台机器上的结果替代当前绑定证据。默认会观察本机 VS Code 的推荐扩展；不需要该观察时用 CLI `--skip-vscode-extensions` 或 MCP `probeVscodeExtensions=false`。这些观察选项与字段属于**已发布的 v1.3.3**；较早的 frozen/installed 1.3.0 不包含 `--skip-vscode-extensions`/`--vscode-path`/`--uv4-path`/`--armcc-path`、`vscodeExtensionObservation`、`keilTools`、`readiness`、`diagnostics` 或 `creationSupport.vsCodeExtensionsSource`，在该包中缺失不证明 MCP 过期，需等匹配构建安装后再检查。
 
 ```powershell
 & $CandidateCli --project-root $ProjectRoot doctor --json
@@ -115,7 +113,7 @@ Keil `inspect`、`preflight` 和 `convert` 必须指向同一 `uvprojx` 和 `tar
 - **路径选择。** `--vscode-path`（MCP `vscodePath`）必须是绝对、存在、无重定向的 `Code.exe` 或已安装的 `bin/code.cmd`。VS Code 的 `bin/code.cmd` **只被有界解析**，用于定位同一安装中的 `Code.exe` 与 `resources/app/out/cli.js`（含哈希版本布局），**绝不执行批处理内容**；不支持或歧义的布局直接报告，不搜索任意目录、不挑选过期哈希目录。无效显式值会给出有界诊断，不会静默回退到 PATH/标准目录。未显式给出时，按 trusted support-profile、PATH、受限标准布局顺序选择，并要求可执行文件与 CLI 脚本来自同一安装。
 - **UV4/ARMCC。** `data.keilTools.uv4`/`armcc` 报告 `available`/`path`/`source`/`status`/`version`/`returnCode` 及诊断。发现顺序为显式路径（`--uv4-path`/`--armcc-path`，MCP `uv4Path`/`armccPath`）、PATH、受限 `C:/Keil_v5`/`C:/Keil` 布局；ARMCC 还可来自所选 UV4 安装的 `ARM/ARMCC/bin`。UV4 从不执行，只用静态 Windows 文件版本；ARMCC 只执行固定 `--vsn`，从不执行 `--version`、构建或许可证激活。存在/版本不是许可证、工程所选编译器、pack 兼容或成功构建证据；未知安装应由用户显式选择路径修复，`doctor` 不安装软件、不改 PATH。
 - **原生 Keil 后端未实现。** `data.keilTools.toolkitNativeBuildSupported` 恒为 `false`，与是否检测到 UV4/ARMCC 无关；检测不会解锁原生构建。可行路线是 `keil-migration`（审查 PLAN 后转换）或 `external-firmware`（导入/准入外部固件），两者仍分别遵守 managed/imported 路线的授权与身份限制，不因 `doctor` 而改变创建/构建准入或自动执行任何操作。
-- **PyOCD 两条证据必须分开读（当前源码切片）。** `data.tools.pyocd` 是 **PATH 命令**观察（`available`/`path`/`status`/`returnCode`/`version`）；`data.probeCore.dependencies.pyocd` 是本解释器已安装 **distribution 元数据**。`data.probeCore.pyocdResolution` 在一次 doctor 调用内把两者合并为 `status`（`runtime-package-present` 或 `runtime-package-unconfirmed`）、`runtimeAvailable`、`runtimeVersion`、`pathCommandAvailable`、`pathCommandStatus`、`evidenceBasis="distribution-metadata"`、`hardwareVerified=false`、`message` 与 `remediation`。该证据只表示 distribution 元数据，**不检查 importability、Probe 后端可用性或硬件**；`hardwareVerified=false` 既不是失败，也不是烧录/调试就绪证明。内部 Probe 后端从 runtime 导入 pyOCD，因此 PATH 上缺少 `pyocd` 命令本身不构成“runtime 依赖缺失”：元数据存在而 PATH 缺失时，`data.diagnostics` 追加 `PYOCD_CLI_NOT_ON_PATH_RUNTIME_PRESENT`（`severity="info"`），并说明不要仅因 PATH 缺失去改 PATH；元数据不可确认（未安装或查询异常）时为 `PYOCD_RUNTIME_PACKAGE_UNCONFIRMED`（`severity="warning"`），即使另有一个可用的 PATH 命令，也不会被改写成 runtime 成功或失败。CLI 的 `nonzero`/`timeout`/`error` 原样保留在 `pathCommandStatus` 与 `data.tools.pyocd`，不转成 runtime 诊断。修复入口是匹配解释器的 setup Check（`bin/setup-stm32-env.ps1 -Mode Check`）；不要把全局 pip 安装或 PATH 编辑当作默认修复。`doctor` 不导入 pyOCD、不启动 worker、不枚举探针，也不做额外进程/网络发现。
+- **PyOCD 两条证据必须分开读（v1.3.2 引入，v1.3.3 保留）。** `data.tools.pyocd` 是 **PATH 命令**观察（`available`/`path`/`status`/`returnCode`/`version`）；`data.probeCore.dependencies.pyocd` 是本解释器已安装 **distribution 元数据**。`data.probeCore.pyocdResolution` 在一次 doctor 调用内把两者合并为 `status`（`runtime-package-present` 或 `runtime-package-unconfirmed`）、`runtimeAvailable`、`runtimeVersion`、`pathCommandAvailable`、`pathCommandStatus`、`evidenceBasis="distribution-metadata"`、`hardwareVerified=false`、`message` 与 `remediation`。该证据只表示 distribution 元数据，**不检查 importability、Probe 后端可用性或硬件**；`hardwareVerified=false` 既不是失败，也不是烧录/调试就绪证明。内部 Probe 后端从 runtime 导入 pyOCD，因此 PATH 上缺少 `pyocd` 命令本身不构成“runtime 依赖缺失”：元数据存在而 PATH 缺失时，`data.diagnostics` 追加 `PYOCD_CLI_NOT_ON_PATH_RUNTIME_PRESENT`（`severity="info"`），并说明不要仅因 PATH 缺失去改 PATH；元数据不可确认（未安装或查询异常）时为 `PYOCD_RUNTIME_PACKAGE_UNCONFIRMED`（`severity="warning"`），即使另有一个可用的 PATH 命令，也不会被改写成 runtime 成功或失败。CLI 的 `nonzero`/`timeout`/`error` 原样保留在 `pathCommandStatus` 与 `data.tools.pyocd`，不转成 runtime 诊断。修复入口是匹配解释器的 setup Check（`bin/setup-stm32-env.ps1 -Mode Check`）；不要把全局 pip 安装或 PATH 编辑当作默认修复。`doctor` 不导入 pyOCD、不启动 worker、不枚举探针，也不做额外进程/网络发现。
 
 ### 构建输出陈旧（`BUILD_OUTPUT_STALE`）诊断
 
@@ -123,15 +121,15 @@ Keil `inspect`、`preflight` 和 `convert` 必须指向同一 `uvprojx` 和 `tar
 
 仅当 `remediation.action=clean-rebuild`（输出未变且本次 `clean=false`）时，才把 `remediation.cli.arguments` 或 `remediation.mcp.tool`/`arguments` 当作**建议**：它们保留 preset 与 timeout，MCP 参数不含 `authorized`，建议本身不是授权；其中 CLI 的 `arguments` 只是**命令尾部**，不是可独立执行的调用：必须在同一绑定工程根（`remediation.cli.workingDirectory=project-root`）中，先给出调用方核实的 Toolkit 可执行文件，再给出 `remediation.cli.projectRoot` 声明的 `--project-root` 选项和同一绑定的已核实**绝对**工程根；即使当前目录就是工程根，显式绝对 `--project-root` 也是必需的，仅传命令尾部会被 CLI 拒绝。`remediation.cli.executable` 的取值是符号标签，不是真实可执行文件路径；建议中不含绝对根或 shell 字符串，MCP 调用也必须发往同一绑定服务器/工程；只有在用户已授权该次 clean 构建时，才以同一工程根、预设和超时执行，且 `--clean` 只是 CMake `--clean-first`：CMake 会先调用 `clean` 目标再重新构建，因此可能删除生成的构建产物；它不是对整个构建目录、缓存、receipt 或 identity 的递归删除，也不保证修复。
 
-`remediation.action=inspect-build-log`（输出不可用或本次已 `clean=true`）时先检查构建日志与配置，不要重复 clean 循环。`BUILD_PROJECT_INVALID`（含受管文件漂移或片段 provenance）不是 stale：应按受支持的 configure/fragment 修复路径处理，不能靠 clean 或改 hash 绕过。不得通过修改旧 receipt、identity 或 managed hash 让产物看似有效。这些 `reason`/`evidenceField`/`remediation` 字段属于当前源码切片；frozen/installed 1.3.0 不包含，重启 VS Code 也不会安装，需等后续获授权安装。
+`remediation.action=inspect-build-log`（输出不可用或本次已 `clean=true`）时先检查构建日志与配置，不要重复 clean 循环。`BUILD_PROJECT_INVALID`（含受管文件漂移或片段 provenance）不是 stale：应按受支持的 configure/fragment 修复路径处理，不能靠 clean 或改 hash 绕过。不得通过修改旧 receipt、identity 或 managed hash 让产物看似有效。这些 `reason`/`evidenceField`/`remediation` 字段已随 v1.3.1 公开发布并在 v1.3.3 保留；frozen/installed 1.3.0 不包含，重启 VS Code 也不会把已有 v1.3.2 安装升级到 v1.3.3，需另行获授权安装或升级。
 
-### 构建内存余量警告（`MEMORY_LOW_MARGIN`，当前源码切片）
+### 构建内存余量警告（`MEMORY_LOW_MARGIN`，v1.3.1 起公开，v1.3.3 保留）
 
 成功的托管构建始终在 identity 中写入可选 `memorySummary`（schema-1 与 schema-2 均可），字段为 `basis="elf-map-static-v1"`、按规范化模型顺序排列的 `regions[{name,origin,length,used,free}]`，以及确定性的 `warnings[{code,region,freeBytes,lengthBytes,belowBytes,belowPercent}]`。每个已声明区域（包括未使用的 `memory.extraRegions` 区域）在 `free < 1024` **或** `free * 20 < length` 时产生一条非阻塞 `MEMORY_LOW_MARGIN`。两个阈值各自严格小于才命中：恰好等于只会关闭该阈值本身，另一阈值仍可触发；例如 128 KiB 区域在 `free == 1024` 时虽不满足字节阈值，仍因不足 5% 而警告。`belowBytes`/`belowPercent` 分别记录实际命中的阈值，同一摘要生成 `BuildReport.warnings` 与 build-result `warnings` 中的可读字符串。警告不改变构建成功与否，也不触发自动重建、内存布局修改或忽略开关。
 
 `free` 只表示已验证 ELF/MAP 已分配区间的并集剩余量，不是最大连续空闲块、运行时栈/堆峰值或内存初始化完成的证明；`used` 也不包含运行时动态峰值。`memorySummary` 参与 `buildId`。JSON schema 校验 shape、字段类型与基本范围，语义校验进一步检查跨字段不变量（`used+free==length`、唯一且不重叠的地址范围）以及警告与阈值/区域行的一一对应；两者联合拒绝伪造摘要，即使攻击者重算了 `buildId`。硬件当前固件准入还会依据当前 ELF/MAP 与模型重新计算并比对已有摘要。旧 identity 缺少该字段时保持原有校验与构建 ID，但“没有警告字段”不能当作余量充足的正证据；当前读取器可读旧 receipt，但旧 runtime 可能拒绝含新字段的新 receipt，因此新 receipt 需与当前 runtime 匹配。摘要与警告只是静态离线证据，不授予烧录、调试或实机结论。
 
-### ARMCC 浮点 ABI 证据（当前源码/候选切片）
+### ARMCC 浮点 ABI 证据（v1.3.2 引入，v1.3.3 保留）
 
 Arm 的 Compiler 5 文档区分硬件浮点**计算**与参数传递 **ABI**；官方迁移表把 `--cpu=Cortex-M4.fp` 映射到 hard linkage，但这说明的是编译器规则，不是本项目原始二进制实际使用的 ABI（参见 [Arm Compiler 5 文档](https://documentation-service.arm.com/static/5f721c6c1b758617cd950f6f)、[ARMCC→ARMCLANG 架构/处理器名迁移](https://support.arm.com/documentation/100068/0609/migrating-from-armcc-to-armclang/migrating-architecture-and-processor-names-for-command-line-options)、[Keil FPU 硬件选择](https://www.keil.com/support/man/docs/uv4/uv4_dg_adstarg.asp) 与 [GCC ARM 选项](https://gcc.gnu.org/onlinedocs/gcc/ARM-Options.html)）。本切片不解析 AXF/对象/库或真实编译命令行，因此 `baselineVerified` 恒为 false。
 
@@ -143,11 +141,11 @@ Arm 的 Compiler 5 文档区分硬件浮点**计算**与参数传递 **ABI**；�
 - 选中 target 的 `RvdsVP` 缺失/为空或为 `2` 时允许上述历史候选；其它非空值（即使同时存在字面量 ABI）以 `MIGRATION_FPU_SELECTION_UNSUPPORTED` 阻断 FPU/ABI 推断。数值 `2` 只是本兼容规则允许的历史选择器，不证明二进制等价。
 - 其它 compiler/CPU/FPU 组合仍 fail closed；`--apcs`、`--fpu` 与 response-file 等 target/group/file misc controls 的既有 blocker 保持不变，不得为清除 blocker 改写证据或删除控件。
 - 被阻断的 ABI/硬件选择证据同时停止交付 PLAN 与向 APPLY 的推进：PLAN 返回 `DELIVERY_BLOCKED` 并携带完整 blocker；不存在可应用的诊断性交付 PLAN。Git 状态不参与该判断。
-- 请检查实际编译器命令行、对象与库的调用约定。没有新增 ABI override 参数或 CLI/MCP 标志，也不得手工编辑 `plan_id`、digest 或工程证据。本补丁已随其余改进集成为 v1.3.2，并在当前 v1.3.3 候选中保留；较早的 frozen/installed 1.3.0 不包含此行为。
+- 请检查实际编译器命令行、对象与库的调用约定。没有新增 ABI override 参数或 CLI/MCP 标志，也不得手工编辑 `plan_id`、digest 或工程证据。本补丁已随其余改进集成为 v1.3.2，并在 v1.3.3 中保留；较早的 frozen/installed 1.3.0 不包含此行为。
 
 ### 受支持的 CMSIS startup 生成（显式 opt-in）
 
-仅有常规 ST/CMSIS Cortex-M3/M4/M7 ARMCC5 startup 可走此路线；其它 ARMCC 汇编仍然阻断。本节参数属于 **v1.3.2 引入的行为**，并在当前 v1.3.3 候选中保留：已发布 v1.2.0 安装包（48 个工具）不含 `stm32_keil_preflight` 及这两个选项；较早的 v1.3.0 候选已支持它们，上一版本 v1.3.1 也包含；仍须以宿主实际安装版本为准。公开参数名固定为：
+仅有常规 ST/CMSIS Cortex-M3/M4/M7 ARMCC5 startup 可走此路线；其它 ARMCC 汇编仍然阻断。本节参数属于 **v1.3.2 引入的行为**，并在 v1.3.3 中保留：已发布 v1.2.0 安装包（48 个工具）不含 `stm32_keil_preflight` 及这两个选项；较早的 v1.3.0 候选已支持它们，已发布 v1.3.1 也包含；仍须以宿主实际安装版本为准。公开参数名固定为：
 
 | 操作 | MCP 参数 | CLI 参数 | 值 |
 | --- | --- | --- | --- |
@@ -163,9 +161,9 @@ VS Code / MCP 客户端的审查路径：
 3. 审阅实际 PLAN 后，若既有明确指令已覆盖这次变更与范围即可复用（无需预先给出新 ID）；以同一 destination/选项传 `planId` 和 `authorized=true`。只读 PLAN 不构成写授权；只有新审阅的改动超出或冲突于既有授权时才另问。apply 会重算交付并核对源快照、destination 状态、选项和精确 planId，失败不写文件。
 4. apply 后按常规 `stm32_project_configure`（先 PLAN 再授权 apply）与 `stm32_build` 流程构建；托管 linker 会使用记录的精确 stack/heap 字节并保留构造数组。GCC/newlib 运行时替换不是 ARMCC、ABI 或 Microlib 等价，仍须自行审查向量表、RAM 假设和实际运行行为。显式多 RAM 分区见后面的“显式多 RAM 内存布局”一节；任意额外初始化/清零节仍需独立 startup 表契约，不在本切片范围。
 
-### ARMCC 常用语法迁移（当前源码/候选切片）
+### ARMCC 常用语法迁移（v1.3.1 起公开，v1.3.3 保留）
 
-本节规则属于当前源码/候选行为，不是通用 ARMCC 转译器，也不证明固件行为等价。新增的函数/声明变换只作用于已包含的 C 源文件（C++ 保留旧有的纯数字绝对地址形式，不新增函数/对齐规则）；精确 `#pragma import(__use_no_semihosting)` 的删除对 C 与 C++ 均生效。未被重写的文本、字符串、字符字面量、BOM 与 CRLF/LF 约定保持原样，但被替换范围不保证逐字节不变：重写后的 asm 函数体内注释可能被重排或重新缩进，原型内注释一律 blocker；受支持的 pragma 删除本身即是有意改写。未知或不确定形式一律保留 blocker。
+本节规则已随 v1.3.1 起公开并在 v1.3.3 保留，不是通用 ARMCC 转译器，也不证明固件行为等价。新增的函数/声明变换只作用于已包含的 C 源文件（C++ 保留旧有的纯数字绝对地址形式，不新增函数/对齐规则）；精确 `#pragma import(__use_no_semihosting)` 的删除对 C 与 C++ 均生效。未被重写的文本、字符串、字符字面量、BOM 与 CRLF/LF 约定保持原样，但被替换范围不保证逐字节不变：重写后的 asm 函数体内注释可能被重排或重新缩进，原型内注释一律 blocker；受支持的 pragma 删除本身即是有意改写。未知或不确定形式一律保留 blocker。
 
 | 规则 ID | 触发（只接受精确形式） | 结果与限制 |
 | --- | --- | --- |
@@ -180,9 +178,9 @@ VS Code / MCP 客户端的审查路径：
 
 审查路径：preflight 的 `analysis.sourceChanges` 给出每个**计划提议**（尚未写入）的 `path`、精确 `ruleIds` 与 `beforeSha256`/`afterSha256`（仅用于区分已支持变换与 blocker，不授予写权限）；交付 PLAN 在 `data.outputs[]` 中给出每个最终输出（`kind`/`path`/`sha256`/`unifiedDiff`），并在 `data.sourcePatches[]` 中给出审阅过的源/manifest 补丁；任何技术 blocker 都使 PLAN 以 `DELIVERY_BLOCKED` 返回完整 `details.blockerCodes`/`details.blockers`，没有可 apply 的计划。带注释前缀的受支持 pragma 应出现在 `sourceChanges[].ruleIds` 与 PLAN 输出/源补丁中且不产生 blocker；未知 `import`/`arm`/优化 pragma 即使带注释前缀仍为 blocker。VS Code/MCP 调用方按字段来源核对：`stm32_keil_preflight` 的返回信封中以 `data.analysis.blockers` 与 `data.analysis.sourceChanges[].ruleIds` 作为诊断建议；`stm32_keil_convert` 在不传 `planId` 且未授权时返回 PLAN，读取 `data.planId`、`data.outputs[]` 与 `data.sourcePatches[].unified_diff`（blocker 只出现在 `DELIVERY_BLOCKED` 的 `details` 中）；只有审查该精确计划后，才以同一 `planId` 和显式 `authorized=true` 执行 APPLY。不要手工修改计划摘要、inspection 证据或 rule ID 来消除 blocker。apply 后按常规 configure 审查：确认 `build.newlibSpecs` 与受管 `CMakeLists.txt` 的 `--specs=nosys.specs` 仅出现一次、固定地址节按审查地址进入 linker 脚本。离线 GCC/objdump/ELF 证据只说明语法与镜像层面符合切片契约，不证明与 ARMCC 构建或真实板卡行为等价；本节也不代表真实 VS Code 或硬件已验证。
 
-#### 诊断判读与依赖头文件准备（本地未发布源码行为）
+#### 诊断判读与依赖头文件准备（v1.3.3 行为）
 
-本节与 ASCII JSON 输出属于当前 v1.3.3 候选的本地未发布源码，不在已安装的 1.3.2 二进制中；安装版按实际绑定服务器/CLI 的行为判断。
+本节与 ASCII JSON 输出属于已发布的 v1.3.3，不在已安装的 1.3.2 二进制中；既有 v1.3.2 进程不会因重启获得它，须先安装或升级到 v1.3.3 并重启核对绑定，安装版按实际绑定服务器/CLI 的行为判断。
 
 1. 读完整 `code`/`rule_id`/`path`/`line`/`column`/`evidence`/`message`。`ARMCC_ALIGN_UNSUPPORTED`/`ARMCC_ABSOLUTE_PLACEMENT_UNSUPPORTED` 区分：声明形状不支持、地址表达式无法求值（`address expression could not be resolved (...)`）、数组边界无法求值（`array bound '<expr>' could not be resolved (...)`）。括号内是稳定原因（`conditional`/`undefined`/`redefined`/`undef`/`unavailable`/`cycle`/`limit`/`unreadable` 等）。
 2. 消息出现 `quoted include "<工程相对路径>" ...` 时只读检查该依赖。非 UTF-8 的已知原因在 preflight remediation 中为 `needs-user-input` + `normalize-source-comments`：对源文件与确实需要的依赖头文件分别显式声明 charset，先在工程外生成只读严格预览，仅在差异被确认为注释内容并审阅通过后复制选中的 UTF-8 文件。普通严格副本需要精确审阅过的计划，`--confirm-file` 只用于每个已审阅接受的 lossy 文件。helper 的输出只是选中文件集合，不是工程。
@@ -191,7 +189,7 @@ VS Code / MCP 客户端的审查路径：
 5. 实际用到的头文件字节绑定进计划；修改、新增或遮蔽同名头文件会使 apply 重规划失败。修复后按 inspect → preflight → PLAN 重新核对，不要手工改 digest、计划或清单。
 6. **完整准备树。** 若需要单独准备工程副本，必须在原工程之外另建完整树：先记录原树每个文件的便携相对路径与 SHA-256（仅排除 `.git` VCS 元数据，包括 worktree 指针文件），拒绝符号链接/junction/重解析点、绝对或越界路径、大小写不敏感的同名冲突、不可读项与特殊文件；整树复制全部未选中源文件、头文件、startup/汇编、资源、许可证和目录结构（同样仅排除 `.git`），不静默跳过其它未知项，只覆盖 `sourceSha256`（当前原文件）与 `outputSha256`（helper 清单）都匹配的已审阅转换副本。任何不匹配都重新预览，不强行覆盖或伪造哈希。覆盖后重算准备树清单，并从准备根重新 inspect/preflight；原树结果不沿用。准备树是迁移输入，交付的 GCC 输出是另一个独立目录：迁移前把准备根显式绑定为 workspace/MCP 工程根，成功 APPLY 后再绑定 `data.outputRoot`，不要偷偷改现有服务器绑定，也不要就地修改原工程。可逆准备可复用既有迁移授权；每个显式 charset、lossy 接受和行为选择仍需要真实用户意图，不需要另造统一的确认仪式。
 
-#### 显式 WFI 正常返回意图（本地未发布源码行为）
+#### 显式 WFI 正常返回意图（v1.3.3 行为）
 
 `__asm void WFI_SET(void) { WFI; }` 缺少显式返回时，文本无法证明预期返回/栈语义；ARM Compiler armcc 用户指南 7.30 节（https://documentation-service.arm.com/static/5eb946b50f1c1e0dae6ee21e）说明省略返回可能顺延到下一个嵌入式汇编函数。Toolkit 不会自动补 `BX LR`、改写为 CMSIS intrinsic 或臆造二进制等价。若用户确认此处应当是普通返回，用显式选择把它记录为请求的源码行为：函数变成普通非 naked C，执行 `__asm volatile ("wfi" ::: "memory");` 后正常返回。若真实意图是继续顺延，则保留为工程自有源码移植。该选择不要求 Keil 反汇编、AXF 或二进制基线。
 
@@ -205,16 +203,16 @@ VS Code / MCP 客户端的审查路径：
 - 生成结果保留函数名、原型、注释内容、BOM/换行约定与相邻函数；PLAN 的 `data.sourcePatches[]` 带 `ARMCC_WFI_RETURN_INTENT`，preflight 暴露 `analysis.wfiReturns` 与 `analysis.sourceChanges`。显式 `BX LR`/`BX R14` 的包装保持既有 naked 改写，不适用该选择；缺少显式返回的 MSP/CPSID/CPSIE 与其它未知/额外汇编仍是工程自有的源码移植。成功转换只表示请求的源码行为，不证明与 ARMCC 构建、真实板卡或“无中断”语义等价。
 
 ```powershell
-# Current local unpublished source behavior; use the verified development launcher.
-& $DevCli --project-root $ProjectRoot keil preflight --uvprojx Project/blinky.uvprojx --target-name Debug --wfi-return 'Common/common.c:WFI_SET' --json
+# Published v1.3.3 behavior; use the installed runtime/1.3.3 launcher.
+& $CandidateCli --project-root $ProjectRoot keil preflight --uvprojx Project/blinky.uvprojx --target-name Debug --wfi-return 'Common/common.c:WFI_SET' --json
 # Repeat --wfi-return for each selection, and keep the identical set on PLAN and APPLY.
-& $DevCli --project-root $ProjectRoot keil convert --uvprojx Project/blinky.uvprojx --target-name Debug --destination $OutputRoot --wfi-return 'Common/common.c:WFI_SET' --dry-run --json
-& $DevCli --project-root $ProjectRoot keil convert --uvprojx Project/blinky.uvprojx --target-name Debug --destination $OutputRoot --wfi-return 'Common/common.c:WFI_SET' --apply --plan-id '<data.planId>' --authorized --json
+& $CandidateCli --project-root $ProjectRoot keil convert --uvprojx Project/blinky.uvprojx --target-name Debug --destination $OutputRoot --wfi-return 'Common/common.c:WFI_SET' --dry-run --json
+& $CandidateCli --project-root $ProjectRoot keil convert --uvprojx Project/blinky.uvprojx --target-name Debug --destination $OutputRoot --wfi-return 'Common/common.c:WFI_SET' --apply --plan-id '<data.planId>' --authorized --json
 ```
 
-### 显式多 RAM 内存布局（当前源码/候选切片）
+### 显式多 RAM 内存布局（v1.3.2 引入，v1.3.3 保留）
 
-托管生成的 `.data`/`.bss`/`.heap`/`.stack` 可以显式分配到不同 RAM 区域。参数属于 **v1.3.2 引入的行为**，当前 v1.3.3 候选保持不变：v1.2.0 runtime 不接受它们；较早的 v1.3.0 候选已接受 `memoryLayout`，上一版本 v1.3.1 也包含；使用前仍须检查所连 MCP 服务器的真实工具与 input schema（`memoryLayout`/`--memory-layout`）。
+托管生成的 `.data`/`.bss`/`.heap`/`.stack` 可以显式分配到不同 RAM 区域。参数属于 **v1.3.2 引入的行为**，v1.3.3 保持不变：v1.2.0 runtime 不接受它们；较早的 v1.3.0 候选已接受 `memoryLayout`，已发布 v1.3.1 也包含；使用前仍须检查所连 MCP 服务器的真实工具与 input schema（`memoryLayout`/`--memory-layout`）。
 
 | 操作 | MCP 参数 | CLI 参数 | 值 |
 | --- | --- | --- | --- |
@@ -229,9 +227,9 @@ VS Code / MCP 客户端的审查路径：
 - `generation.nativeLinkerScript` 存在时布局由用户原生脚本拥有：不允许同时声明显式布局（拒绝而非忽略）。固定地址节仍按原地址以 `NOLOAD` 放入所属区域或保留原有 blocker，不会被当作初始化数据复制/清零。
 - 托管 linker 将 `.data` 的 VMA 放入所选 RAM、LMA 放入所选 Flash，并保持 `_sidata`/`_sdata`/`_edata`/`_sbss`/`_ebss` 与 `cmsis-gcc-v1` 断言；stack/heap 精确字节与 8 字节栈对齐保持不变。区域越界、重叠或过小由实际链接失败暴露。成功链接只是离线镜像证据，不证明 CCM/外部 SRAM 或真实板卡运行时行为。
 
-### 显式外部 RAM 区域（当前源码/候选切片）
+### 显式外部 RAM 区域（v1.3.2 引入，v1.3.3 保留）
 
-迁移可以显式声明 Keil/设备事实之外的**可写 RAM**（例如外部 SRAM），用于固定地址缓冲或显式内存布局。该输入属于 **v1.3.2 引入的行为**，当前 v1.3.3 候选保持不变：v1.2.0 runtime 不接受 `extraRegions`/`--extra-regions`；**已冻结/已安装的 1.3.0 也不包含 `extraRegions` 这一新增选项**（其基本 preflight、blockers 与 `memoryLayout` 仍存在）；上一版本 v1.3.1 则包含 `extraRegions`。因此仍须先核对实际绑定的 MCP 工具与 input schema，不能仅凭版本号宣称支持或推断整个工具缺失。
+迁移可以显式声明 Keil/设备事实之外的**可写 RAM**（例如外部 SRAM），用于固定地址缓冲或显式内存布局。该输入属于 **v1.3.2 引入的行为**，v1.3.3 保持不变：v1.2.0 runtime 不接受 `extraRegions`/`--extra-regions`；**已冻结/已安装的 1.3.0 也不包含 `extraRegions` 这一新增选项**（其基本 preflight、blockers 与 `memoryLayout` 仍存在）；已发布 v1.3.1 则包含 `extraRegions`。因此仍须先核对实际绑定的 MCP 工具与 input schema，不能仅凭版本号宣称支持或推断整个工具缺失。
 
 | 操作 | MCP 参数 | CLI 参数 | 值 |
 | --- | --- | --- | --- |
@@ -252,19 +250,19 @@ VS Code / MCP 客户端的审查路径：
 ```powershell
 $Extra = '[{"name":"EXT_SRAM","origin":1744830464,"length":65536,"attributes":"rw-"}]'
 $Layout = '{"flash":"IROM1","data":"IRAM1","bss":"EXT_SRAM","heap":"EXT_SRAM","stack":"EXT_SRAM"}'
-# Installed v1.3.3 runtime (or the published v1.3.2 package): preflight accepts both explicit options.
+# Installed v1.3.3 runtime (or the previous v1.3.2 package): preflight accepts both explicit options.
 & $CandidateCli --project-root $ProjectRoot keil preflight --uvprojx Project/blinky.uvprojx --target-name Debug --extra-regions $Extra --memory-layout $Layout --json
-# Current local unpublished source behavior: use the verified development
-# launcher from above, and keep the same destination/options for PLAN and APPLY.
-& $DevCli --project-root $ProjectRoot keil convert --uvprojx Project/blinky.uvprojx --target-name Debug --destination $OutputRoot --extra-regions $Extra --memory-layout $Layout --dry-run --json
-& $DevCli --project-root $ProjectRoot keil convert --uvprojx Project/blinky.uvprojx --target-name Debug --destination $OutputRoot --extra-regions $Extra --memory-layout $Layout --apply --plan-id '<PLAN 返回的 data.planId>' --authorized --json
+# Published v1.3.3 behavior: use the installed runtime/1.3.3 launcher from above,
+# and keep the same destination/options for PLAN and APPLY.
+& $CandidateCli --project-root $ProjectRoot keil convert --uvprojx Project/blinky.uvprojx --target-name Debug --destination $OutputRoot --extra-regions $Extra --memory-layout $Layout --dry-run --json
+& $CandidateCli --project-root $ProjectRoot keil convert --uvprojx Project/blinky.uvprojx --target-name Debug --destination $OutputRoot --extra-regions $Extra --memory-layout $Layout --apply --plan-id '<PLAN 返回的 data.planId>' --authorized --json
 ```
 
 （示例中的区域名、数值与容量都只是**审阅示例，非板级事实**，也不表示外部存储器已初始化；必须按实际器件和 owner 提供的精确 origin/字节长度给出。）
 
-### 用户自有 NOLOAD 链接片段（当前源码/候选切片）
+### 用户自有 NOLOAD 链接片段（v1.3.2 引入，v1.3.3 保留）
 
-工程负责人可以用 `generation.linkerFragment` 指定一个**自己拥有的**、工程相对的 UTF-8 GNU ld 片段，由 configure 校验后渲染进托管 `linker/stm32tk.ld`。这是**v1.3.2 引入的本补丁行为**，当前 v1.3.3 候选保留：v1.2.0 runtime 与较早冻结/安装的 1.3.0 都不包含本补丁；**没有新增 MCP 工具或参数**，仍使用既有的 `stm32_project_configure` / CLI `project configure`。工具清单与 input schema 本切片没有变化，因此它们**无法**区分未打补丁的旧 1.3.0 与本补丁运行时；不能仅凭工具数量、版本号或 schema 宣称支持。必须使用**确认由本补丁源码构建并部署**的 runtime（安装/升级须另行授权），再用一个已审阅的 manifest 执行**只读 configure PLAN**，确认 `data.inputs[]` 出现片段 `path`/`sha256`、`linker/stm32tk.ld` 的 `unified_diff` 含片段内容且 `data.blockers` 符合预期；PLAN 失败或没有这些证据就停止，不要继续 APPLY。
+工程负责人可以用 `generation.linkerFragment` 指定一个**自己拥有的**、工程相对的 UTF-8 GNU ld 片段，由 configure 校验后渲染进托管 `linker/stm32tk.ld`。这是**v1.3.2 引入的本补丁行为**，v1.3.3 保留：v1.2.0 runtime 与较早冻结/安装的 1.3.0 都不包含本补丁；**没有新增 MCP 工具或参数**，仍使用既有的 `stm32_project_configure` / CLI `project configure`。工具清单与 input schema 本切片没有变化，因此它们**无法**区分未打补丁的旧 1.3.0 与本补丁运行时；不能仅凭工具数量、版本号或 schema 宣称支持。必须使用**确认由本补丁源码构建并部署**的 runtime（安装/升级须另行授权），再用一个已审阅的 manifest 执行**只读 configure PLAN**，确认 `data.inputs[]` 出现片段 `path`/`sha256`、`linker/stm32tk.ld` 的 `unified_diff` 含片段内容且 `data.blockers` 符合预期；PLAN 失败或没有这些证据就停止，不要继续 APPLY。
 
 **所有权与位置。** 片段是用户拥有的普通文件，Toolkit 只读取、从不改写或纳入 managed records。路径必须是非空、可移植的工程相对路径（`/`，不得含反斜杠、盘符、UNC、`.`/`..` 分量）；任一路径分量是符号链接/重解析点、文件缺失/是目录/超过 64 KiB/非 UTF-8 都 fail closed。片段不得与 `build.sources`/`assemblySources`/`includePaths`、SVD、CubeMX IOC、`generation.managedManifest`、原生 linker 脚本、九个托管生成目标（如 `CMakeLists.txt`、`linker/stm32tk.ld`、`.vscode/settings.json`）、`build/`、`artifacts/migration/` 或 `.stm32-toolkit/generated-files.json` 冲突（大小写不敏感），也不能与 `generation.nativeLinkerScript` 同时声明。原生脚本路线保持原有的独立所有权，片段不会接管它。
 
@@ -305,7 +303,7 @@ $Layout = '{"flash":"IROM1","data":"IRAM1","bss":"EXT_SRAM","heap":"EXT_SRAM","s
 
 ```powershell
 # 必须替换为“已确认由本补丁源码构建并部署”的 runtime 的完整绝对路径。
-# 已知的已安装 runtime\1.3.0（上一候选）不含本补丁；v1.3.3 候选也未在本切片安装。
+# 已知的已安装 runtime\1.3.0（上一候选）不含本补丁；v1.3.3 需另行安装或升级。
 # 本文不授权或执行任何安装/升级。
 $PatchedCli = '<absolute path to a runtime built from this patch>\Scripts\stm32-toolkit.exe'
 # 1) 只读 PLAN：核对 data.plan_id、data.inputs、data.files、data.blockers
@@ -348,9 +346,9 @@ MCP 使用同一对参数：`stm32_project_configure(debugBackend="pyocd", debug
 
 PLAN 只读，除既有 `data.files[]` 外还返回 `data.debug_configuration`（`backend`/`target`）与 `data.manifest_edit`：`path`、`status`（`update` 或 `unchanged`）、`before_sha256`/`after_sha256`、`before_size`/`after_size` 和完整 `unified_diff`；原始字节不进入协议。核对 diff 只改 `debug.backend`/`debug.target`，并保留 `svd`、`svdDevice`、`readableRegions`、`memory`、`generation`（含 `linkerFragment`）等其它字段。若 pair 已等于当前值，`status=unchanged` 且 manifest 精确字节不变，不重排格式。APPLY 必须带同一项目、同一参数对、精确 `data.plan_id` 和真实布尔 `authorized=true`；审阅实际 PLAN 后，若既有明确指令已覆盖这次变更与范围即可复用（用户无需预先给出新 ID），只读 PLAN 不构成写授权；省略/改动参数对或计划后输入变化会在写入前返回 `PLAN_CHANGED`/结构化失败。`.stm32-project.json` 归用户所有，其它受支持字段仍可按各自合同自行维护；不要手工修补 managed hash、generated 文件或 build receipt，本切片的 debug 对子应通过上述 PLAN/APPLY 记录，以免与受管证据不一致。
 
-该编辑会自然使旧 build/firmware 身份失效；需要时按 `build --preset arm-debug --clean` 重新构建，再走各自的授权流程。配置记录只是元数据：不会发现、安装或验证 PyOCD target，也不会创建调试会话；`.vscode/launch.json` 仍为空，真实调试交接（handoff）是独立的显式授权步骤。此能力属于 v1.3.2 并在当前 v1.3.3 候选中保留，较早的 frozen/installed 1.3.0 不包含它；安装/升级需另行授权。
+该编辑会自然使旧 build/firmware 身份失效；需要时按 `build --preset arm-debug --clean` 重新构建，再走各自的授权流程。配置记录只是元数据：不会发现、安装或验证 PyOCD target，也不会创建调试会话；`.vscode/launch.json` 仍为空，真实调试交接（handoff）是独立的显式授权步骤。此能力属于 v1.3.2 并在 v1.3.3 中保留，较早的 frozen/installed 1.3.0 不包含它；安装/升级需另行授权。
 
-### VS Code 任务、可执行绑定与 `ide task` 适配器（当前源码切片）
+### VS Code 任务、可执行绑定与 `ide task` 适配器（v1.3.2 引入，v1.3.3 保留）
 
 生成的 `.vscode/tasks.json` 包含五个**互相独立**的 `process` 任务：`STM32 Toolkit: Build Debug`、`Build Release`、`Flash Debug`、`Handoff Begin Debug`、`Handoff End Debug`。每个任务都用 argv（绝不拼接 shell 字符串）、显式 `--project-root ${workspaceFolder}` 和 `options.cwd=${workspaceFolder}`；没有 `dependsOn`、自动构建/烧录/调试序列、`group`、auto-run、恢复、reset 或重试。Build 任务沿用既有 build CLI 契约（CLI 调用本身就是该次构建的显式动作）。`.vscode/launch.json` 仍为空：只有成功 handoff 才提供活的 Cortex-Debug 配置。生成的硬件任务用 `${input:...}` 提示 data root、session、**精确 probe**、handoff ticket 和确认值；不预填 probe、不持久化 ticket、不自动枚举探针。三个确认提示的默认值都是 `deny`；硬件任务设置 `runOptions.reevaluateOnRerun=true`，重跑会重新询问，而不是复用上次输入。已经存在的用户自有 `.vscode/*` 文件仍按既有 `preserved-unowned` 合同保留：不读取、不改写、不合并、不收编；IDE 设置需用户自行对齐。
 
@@ -385,7 +383,7 @@ $GccExe     = 'C:\ST\STM32CubeCLT\GNU-tools-for-STM32\bin\arm-none-eabi-gcc.exe'
 
 MCP 对应参数为 `stm32_project_configure(..., vscodeToolkitPath="...", vscodeGccPath="...")`；不新增工具，清单仍是 52。校验是静态的：值必须是绝对路径、存在的普通原生文件；Windows 上必须是 `.exe`（拒绝 `.cmd`/`.bat` 脚本），不得含 `${...}`/`$(...)`/`%VAR%` 变量，不得是目录、链接或重解析点；**路径上的每一级父目录也必须是真实目录，不能经过链接/重解析父级**；允许空格和 Unicode。它**不是**二进制信任或版本证明。失败返回 `VSCODE_CONFIGURATION_INVALID`，`details` 含首个 `field`/`rule`、完整 `diagnostics[]`（`code`/`field`/`rule`/`message`/`remediation`）与 `missingFields[]`，且在任何写入前拒绝。这对路径进入不可变计划：参与 `plan_id`、序列化和重放校验；APPLY 必须带**同一对**选项，省略或改动即 `PLAN_CHANGED`，不会写入；路径不会写进工程模型。该对子只属于本次调用/计划：若要在之后同一工程的 configure PLAN/APPLY 中保留这一绑定，必须重复给出同一已审阅对子；省略对子取得的是**另一个新计划**，它会把 `.vscode/tasks.json` 的 command 与 `c_cpp_properties.json` 的 `compilerPath` 恢复为 `${config:...}` 可移植默认值。应把该 PLAN 的 diff 展示并审阅后再决定是否 APPLY；不要为了保留本机路径而自动把它写入工程模型，也不要手工修改 managed hash/digest。可执行文件被移动、删除或父级变为重定向后，原计划重放也会在写入前失败，应重新 PLAN。不要手工改 `plan_id`、managed digest 或已生成文件。
 
-**`data.vscodeGuidance`（派生、只读建议，当前源码切片）。** 每次成功的 configure PLAN 与每个成功的 APPLY 结果（包括实际写盘和 unchanged/idempotent apply）都带 `data.vscodeGuidance`：`bindingMode`（默认 route 为 `user-settings`；成对显式绑定通过既有校验后为 `explicit-paths`）、`requiredUserSettings`（默认 route 为 `stm32-toolkit.executablePath` 与 `stm32-toolkit.compilerPath`，显式绑定为空）、`userSettingsChecked=false`、`preservedPaths`（恰好是该计划的 `preserved-unowned` 路径）与附加 `diagnostics`。默认绑定给出 `VSCODE_EXECUTABLE_SETTINGS_REQUIRED`（`severity="info"`）：本生成器支持的默认做法是在 **User Settings** 里写入已审阅的两个绝对原生路径；VS Code 的 workspace 配置也可能提供这些 config 值。`userSettingsChecked=false` 表示本离线调用没有评估用于判断这两个绑定是否存在的**生效 VS Code 设置**，因此不声称它们缺失、未绑定或不完整（这不表示完全不读取任何受管编辑器字节；`preserved-unowned` 内容仍从不读取且字节保持不变），也绝不要求安装到 PATH；替代做法仍是 PLAN/APPLY 使用同一对显式参数。若 `.vscode/tasks.json` 为 `preserved-unowned`，另外给出 `VSCODE_TASKS_PRESERVED`（`severity="warning"`、`path=".vscode/tasks.json"`）：既有任务被保留，本请求的绑定/新任务没有应用到该文件，其内容**未被检查**，旧裸命令可能仍存在；请手工按绝对受管 runtime 可执行文件（如 `<DataRoot>/runtime/<version>/Scripts/stm32-toolkit.exe`）或文档中的 User Settings 对齐，并核对 PLAN 的 `data.files[].status`/`unified_diff`、APPLY 的 `data.preservedPaths` 与本对象。该诊断不声称已发现某个裸命令。其它 preserved editor 路径仍出现在 `preservedPaths` 并保留既有 warning；`vscodeGuidance` 不改变渲染字节、计划哈希或计划身份，也不构成写入授权或安装/IDE 使用证明。
+**`data.vscodeGuidance`（派生、只读建议，v1.3.2 引入，v1.3.3 保留）。** 每次成功的 configure PLAN 与每个成功的 APPLY 结果（包括实际写盘和 unchanged/idempotent apply）都带 `data.vscodeGuidance`：`bindingMode`（默认 route 为 `user-settings`；成对显式绑定通过既有校验后为 `explicit-paths`）、`requiredUserSettings`（默认 route 为 `stm32-toolkit.executablePath` 与 `stm32-toolkit.compilerPath`，显式绑定为空）、`userSettingsChecked=false`、`preservedPaths`（恰好是该计划的 `preserved-unowned` 路径）与附加 `diagnostics`。默认绑定给出 `VSCODE_EXECUTABLE_SETTINGS_REQUIRED`（`severity="info"`）：本生成器支持的默认做法是在 **User Settings** 里写入已审阅的两个绝对原生路径；VS Code 的 workspace 配置也可能提供这些 config 值。`userSettingsChecked=false` 表示本离线调用没有评估用于判断这两个绑定是否存在的**生效 VS Code 设置**，因此不声称它们缺失、未绑定或不完整（这不表示完全不读取任何受管编辑器字节；`preserved-unowned` 内容仍从不读取且字节保持不变），也绝不要求安装到 PATH；替代做法仍是 PLAN/APPLY 使用同一对显式参数。若 `.vscode/tasks.json` 为 `preserved-unowned`，另外给出 `VSCODE_TASKS_PRESERVED`（`severity="warning"`、`path=".vscode/tasks.json"`）：既有任务被保留，本请求的绑定/新任务没有应用到该文件，其内容**未被检查**，旧裸命令可能仍存在；请手工按绝对受管 runtime 可执行文件（如 `<DataRoot>/runtime/<version>/Scripts/stm32-toolkit.exe`）或文档中的 User Settings 对齐，并核对 PLAN 的 `data.files[].status`/`unified_diff`、APPLY 的 `data.preservedPaths` 与本对象。该诊断不声称已发现某个裸命令。其它 preserved editor 路径仍出现在 `preservedPaths` 并保留既有 warning；`vscodeGuidance` 不改变渲染字节、计划哈希或计划身份，也不构成写入授权或安装/IDE 使用证明。
 
 `ide task` 是给生成任务用的窄 CLI 适配器，**不是** MCP 替代。以下是**不可执行的文本语法**（尖括号、方括号与 `|` 只是占位说明，不是 shell 语法）：
 
@@ -410,15 +408,15 @@ handoff-end **不额外增加**适配器侧准入，并原样转发原始 ticket
 
 **托管 flash → handoff-begin → handoff-end 的连续性。** 三个调用必须保持同一 `--project-root`、`--data-root`、`--session-id` 和同一精确 `probe`。`handoff-begin` 成功结果里的 `data.ticket` 必须原样保留给之后的 `handoff-end`；不要改写、猜测或复用别的会话/探针的 ticket，也不要把它持久化到任务文件。`handoff-begin` 返回的 `data.cortexDebugLaunch.configuration` 是给**独立的外部 IDE 工作区**使用的活配置：把它复制到该外部工作区的 launch 配置里，**不要**在构建后改写受管的 `.vscode/launch.json`。真实 IDE 必须先 detach，之后才能执行 `handoff-end` 归还原始 ticket。即使 ticket 完全正确，它也**不是** reclaim 成功的证明：end 会重新校验同一会话、探针和当前 firmware/flash 身份；任一不匹配（包括源码/ELF/构建证据陈旧）都必须按返回的 `code`/`details` 报告并停止，不得静默重试、自动 rebuild/flash 或宣称清理完成。任何一步失败都停止并按完整 `OperationResult` 处理。
 
-**snapshot / 无 Git 工程（当前本地未发布源码行为）。** 有效的 schema-2 snapshot 构建是正常的受管来源，不是仅构建证据：共享固件准入会像 schema-1 一样严格校验同一内容身份（声明输入、model/debug target、实际 ELF/MAP、`buildId` 与成功构建记录），因此托管 Flash、debug handoff、Monitor 与 Target 测试都可按正常受管路线使用同一 `data.build.buildId`/`data.build.elfSha256`。仍须显式选择精确探针、取得该次硬件操作授权，并满足既有 lease/所有权与失败停止规则；Git 只是可选追溯信息，null 绝不表示 clean，不要 `git init`、commit 或手工改 receipt/identity 绕过。外部固件导入（`stm32_firmware_import` → `stm32_firmware_admit` → `stm32_flash_imported`）仍是独立的显式 opt-in 路线：import PLAN 与 ADMIT 只读，import APPLY（外部位置副本）与 flash 需要各自适用的用户授权，一条已有的明确用户指令可能已覆盖其中多个指定步骤，应按实际适用范围复用；它不是 Toolkit GCC 输出的绕行方案，也不能拿 imported receipt 冒充托管 buildId 或解锁 debug/Monitor/Target。不要据本节向已安装的 v1.3.2/1.3.1 包承诺该准入；v1.3.3 候选也须以实际绑定的开发启动器返回为准。
+**snapshot / 无 Git 工程（v1.3.3 行为）。** 有效的 schema-2 snapshot 构建是正常的受管来源，不是仅构建证据：共享固件准入会像 schema-1 一样严格校验同一内容身份（声明输入、model/debug target、实际 ELF/MAP、`buildId` 与成功构建记录），因此托管 Flash、debug handoff、Monitor 与 Target 测试都可按正常受管路线使用同一 `data.build.buildId`/`data.build.elfSha256`。仍须显式选择精确探针、取得该次硬件操作授权，并满足既有 lease/所有权与失败停止规则；Git 只是可选追溯信息，null 绝不表示 clean，不要 `git init`、commit 或手工改 receipt/identity 绕过。外部固件导入（`stm32_firmware_import` → `stm32_firmware_admit` → `stm32_flash_imported`）仍是独立的显式 opt-in 路线：import PLAN 与 ADMIT 只读，import APPLY（外部位置副本）与 flash 需要各自适用的用户授权，一条已有的明确用户指令可能已覆盖其中多个指定步骤，应按实际适用范围复用；它不是 Toolkit GCC 输出的绕行方案，也不能拿 imported receipt 冒充托管 buildId 或解锁 debug/Monitor/Target。不要据本节向已安装的 v1.3.2/1.3.1 包承诺该准入；已发布 v1.3.3 也须以实际绑定的服务器返回为准。
 
-上述 VS Code 任务、可执行绑定与 handoff 能力已包含在 **v1.3.2** 与上一公开版本 **v1.3.1** 中，并在当前 **v1.3.3** 候选中保留；较早的 frozen/installed 1.3.0 不包含，也不会因重启 VS Code 而安装。本节所述的 snapshot 内容身份准入属于当前 v1.3.3 候选的本地未发布源码行为，不在已安装包内。真实 VS Code 进程、扩展、IntelliSense、`reevaluateOnRerun` 行为与实际 handoff UI/调试会话仍未验收；不要用真实硬件来测试任务，也不要手工编辑 managed digest。
+上述 VS Code 任务、可执行绑定与 handoff 能力已包含在 **v1.3.2** 与 **v1.3.1** 中，并在 **v1.3.3** 中保留；较早的 frozen/installed 1.3.0 不包含，也不会因重启 VS Code 而安装。本节所述的 snapshot 内容身份准入属于已发布的 v1.3.3，不在已安装的 v1.3.2/1.3.1 包内；既有 v1.3.2 进程须先安装或升级到 v1.3.3 并重启后才能获得。真实 VS Code 进程、扩展、IntelliSense、`reevaluateOnRerun` 行为与实际 handoff UI/调试会话仍未验收；不要用真实硬件来测试任务，也不要手工编辑 managed digest。
 
 `stm32_project_context` 的 `data.debugConfiguration` 使用同一字段语义：`backend`/`target`（不可用时为 null）、`status`（`configured`/`needs-user-input`）、`missingFields`、`diagnostics`（每项含 `code`/`field`/`rule`/`message`/`remediation`）、`targetSupport` 恒为 `not-checked`、`hardwareVerified` 恒为 false、`nextSteps`。`configured` 只表示字段已记录；缺少或无效时，`capabilityDetails.flash`/`targetTest`/`monitor`/`breakpointDebug` 为 `blocked` 并列出全部原因，即使 pair 有效也不会把硬件布尔值改为 true。`build`/`configure` 的可用性不受该检查影响，`stm32_probe_list` 仍是独立的只读发现。
 
 `stm32_project_context` 的旧 `capabilities.*` 布尔值继续保留为保守兼容字段；新增 `capabilityDetails` 逐项给出 `available`、`blocked` 或 `not-evaluated` 及原因/下一步。`flash`、`targetTest`、`monitor`、`breakpointDebug` 的旧布尔 `false` 本身不区分“未探测硬件”与“已知模型/身份/配置阻断”，必须读 `capabilityDetails`；它也不代表工具不存在。需要探针事实时单独调用只读 `probe list` / `stm32_probe_list`。仅询问已连接探针时，不需要 manifest、构建、debug backend、target 或 SVD；发现结果不授予改板权限，也不证明 target 身份或可烧录。有效工程保留 `workspaceId`，缺失或无效 manifest 时返回 `workspaceId: null` 与明确 `discovery.status=unbound`，不要伪造工程 ID。
 
-**无 Git 的构建与来源边界（当前源码切片）。** 有效托管 GCC/CMake 工程可从导出/非 Git 目录、unborn HEAD 或 Git 缺失/无法执行的环境构建；Git 不可用本身不是构建失败。此时 `firmware-identity.json` 与 `build-result.json` 使用 `schemaVersion: 2`，identity 明确写 `sourceBaseline: "input-snapshot-v1"`、`gitHead: null`、`gitDirty: null`，并只携带有界 `gitEvidence: {"status":"unavailable","code":"BUILD_GIT_INVALID","rule":"head"}`（`rule` 为 `head` 或 `status`）；`inputSnapshotSha256`、`targetDevice`、`preset`、实际 `toolkitVersion` 与 ELF/MAP 字段仍完整。null 绝不表示 clean，不要 `git init`、commit、stash 或伪造哈希。Git 可用时继续使用原有 schema-1 字节与 build ID 语义，schema-1 不接受 nullable Git 字段。context 的 `data.build` 新增 `sourceBaseline`、`gitDirty`、`gitEvidence`，schema-2 新鲜度只依赖精确 input snapshot、target/preset/model 与 ELF/MAP 哈希，不再启动 Git。schema-2 与 schema-1 一样是共享固件准入接受的正常来源：flash、debug handoff、Target 测试、Monitor 与其它共享准入消费者都按各自既有合同校验同一当前内容身份（`inputSnapshotSha256`、`targetDevice`、model/debug target、`buildId`、实际 ELF/MAP 与成功构建记录），Git 元数据不是准入条件。外层封装仍可按各自协议报告或映射共享准入的失败，不保证每个入口对外显示同一代码。context 的 `capabilityDetails.flash/targetTest/monitor/breakpointDebug` 仍按 `available`/`blocked`/`not-evaluated` 如实报告；`not-evaluated` 只表示 context 未检查硬件，既不是就绪也不是阻断，缺失探针、过期构建、目标/ELF 不匹配、未授权或所有权失败仍按各路线返回的 `code`/`details` 停止。`stm32_probe_list` 仍是独立的只读发现，不受来源形式影响。内容身份与成功构建也不等于硬件或实机验收。迁移、工程创建与构建本身不以 Git 为前提：迁移交付绑定完整源快照与目标目录，构建可用 schema-2 input snapshot。
+**无 Git 的构建与来源边界（v1.3.3）。** 有效托管 GCC/CMake 工程可从导出/非 Git 目录、unborn HEAD 或 Git 缺失/无法执行的环境构建；Git 不可用本身不是构建失败。此时 `firmware-identity.json` 与 `build-result.json` 使用 `schemaVersion: 2`，identity 明确写 `sourceBaseline: "input-snapshot-v1"`、`gitHead: null`、`gitDirty: null`，并只携带有界 `gitEvidence: {"status":"unavailable","code":"BUILD_GIT_INVALID","rule":"head"}`（`rule` 为 `head` 或 `status`）；`inputSnapshotSha256`、`targetDevice`、`preset`、实际 `toolkitVersion` 与 ELF/MAP 字段仍完整。null 绝不表示 clean，不要 `git init`、commit、stash 或伪造哈希。Git 可用时继续使用原有 schema-1 字节与 build ID 语义，schema-1 不接受 nullable Git 字段。context 的 `data.build` 新增 `sourceBaseline`、`gitDirty`、`gitEvidence`，schema-2 新鲜度只依赖精确 input snapshot、target/preset/model 与 ELF/MAP 哈希，不再启动 Git。schema-2 与 schema-1 一样是共享固件准入接受的正常来源：flash、debug handoff、Target 测试、Monitor 与其它共享准入消费者都按各自既有合同校验同一当前内容身份（`inputSnapshotSha256`、`targetDevice`、model/debug target、`buildId`、实际 ELF/MAP 与成功构建记录），Git 元数据不是准入条件。外层封装仍可按各自协议报告或映射共享准入的失败，不保证每个入口对外显示同一代码。context 的 `capabilityDetails.flash/targetTest/monitor/breakpointDebug` 仍按 `available`/`blocked`/`not-evaluated` 如实报告；`not-evaluated` 只表示 context 未检查硬件，既不是就绪也不是阻断，缺失探针、过期构建、目标/ELF 不匹配、未授权或所有权失败仍按各路线返回的 `code`/`details` 停止。`stm32_probe_list` 仍是独立的只读发现，不受来源形式影响。内容身份与成功构建也不等于硬件或实机验收。迁移、工程创建与构建本身不以 Git 为前提：迁移交付绑定完整源快照与目标目录，构建可用 schema-2 input snapshot。
 
 ### 不安装 Skill 的 MCP/VS Code 客户端路线
 
@@ -432,14 +430,14 @@ MCP 客户端即使从不加载 `SKILL.md`，也可按工具描述和真实返�
 6. **仅发现探针。** 用户只问“有哪些探针”时直接调用 `stm32_probe_list()`，读取 `data.probes`、`data.workspaceId` 和 `data.discovery`。该调用不需要 manifest、构建、backend、target 或 SVD，也不得继续执行 flash；若 `data.workspaceId=null` 且 `data.discovery.status="unbound"`，如实说明 discovery-only，绝不伪造 workspace ID。发现结果不证明 target 身份或烧录就绪。
 7. **VS Code 集成。** 生成的 `.vscode/tasks.json`/`launch.json` 只是配置目标；`launch.json` 保持为空，任务中的硬件动作默认 `deny` 且一次授权只覆盖一次调用。在真实 VS Code、扩展版本和实际调试会话中运行前，不得声称 IDE 路径已验收或部署完成。
 
-### AI 调用：版本绑定、完整结果与两条固件路线（当前源码切片）
+### AI 调用：版本绑定、完整结果与两条固件路线（v1.3.3）
 
 AI 客户端只使用现有证据核对绑定，不新增绑定检查工具：
 
 - `stm32_doctor` 的 `data.runtime.toolkitVersion` 与 `data.publicInventory` 描述**实际绑定的服务器**；还要对比客户端真实列出的工具及 input schema，并保留 `stm32_project_context.data.project.root` 为根权威。启动器/CLI 版本和 doctor 的工具数量都不是“客户端已注册这些工具”的证明。
 - 升级后重启 VS Code 一次再验证；工具/字段缺失或根不一致时，保存完整 JSON 并停止依赖该能力的操作，不要在启动器间回退、伪造会话或绕过 root 校验。
 - 先保存/读取完整 `OperationResult`（`ok`、`code`、`message`、`data`、`details`），再作总结；不要用 `head`/`grep` 或旧布尔值丢掉诊断。`ok=false` 时保留 `details`；`capabilityDetails` 的 `status`/`reason`/`nextSteps`、`planReadiness`/`applyReadiness` 与原始 preflight blocker 字段含义不变。
-- CLI 结构化 JSON 使用 ASCII 转义（`\uXXXX`，本地未发布源码行为），因此与 Windows 控制台代码页无关：把 stdout 原始字节按 UTF-8 解码再 `json.loads` 可还原中文与非 BMP 值。进程退出码需单独保留，JSON 解析不会再产生退出码。该行为属于当前 v1.3.3 候选，已安装的冻结 1.3.2 二进制没有此改动；若必须显式取得 UTF-8 文本，可在该次进程内设置 `PYTHONIOENCODING=utf-8`，不要修改全局环境或控制台编码。
+- CLI 结构化 JSON 使用 ASCII 转义（`\uXXXX`，v1.3.3 行为），因此与 Windows 控制台代码页无关：把 stdout 原始字节按 UTF-8 解码再 `json.loads` 可还原中文与非 BMP 值。进程退出码需单独保留，JSON 解析不会再产生退出码。该行为属于已发布的 v1.3.3，已安装的冻结 1.3.2 二进制没有此改动；既有 v1.3.2 进程须先安装或升级到 v1.3.3 并重启后才能获得；若必须显式取得 UTF-8 文本，可在该次进程内设置 `PYTHONIOENCODING=utf-8`，不要修改全局环境或控制台编码。
 
 成功 context 新增的 `data.firmwareRoutes` 只是**描述，不执行任何发现、导入或后端操作**：
 
@@ -452,11 +450,11 @@ AI 客户端只使用现有证据核对绑定，不新增绑定检查工具：
 
 `stm32_keil_preflight` 的每个 `analysis.blockers[]` 新增 `remediation`：`category` 为 `needs-user-input` 或 `unsupported`，附简明 `summary`、适用的真实工具/Skill 引用和 `requiredInputs`；`blockerSummary.byRemediation` 保留分类计数，`total`/`byCode` 与原始 blocker 字段不变。可选 `tool` 只命名真实 MCP 工具，可选 `skill` 单独命名 Skill，两者不混用。`uvprojx`/`targetName` 是基本选择参数；与 remediation 相关的可选补充参数只有 `startupStrategy`/`startupSource`、`memoryLayout`、`extraRegions` 与 `wfiReturns`，其取值、绑定与重放要求见各自章节（“受支持的 CMSIS startup 生成”“显式多 RAM 内存布局”“显式外部 RAM 区域”“显式 WFI 正常返回意图”），并须以实际绑定 MCP 服务器列出的 input schema 为准。没有 framework、FPU 或 ABI 覆盖参数，不得臆造，也不得为了清除 blocker 而改证据或删除控件；应检查并保留实际工具链/构建语义，必要时用另行审阅的工程自有移植。编码 blocker 只有在每个受影响文件的 charset 明确声明且改动仅限注释时，才可建议独立的 `normalize-source-comments` 审阅副本；其它字节序列或非注释内容仍不受支持。若用户明确要求把不可解码单元，或注释内的私有使用、C1 控制、U+FFFD、非字符码点，在副本中显式换成字面 `?`，则该显式意图与已声明 charset 即可授权生成只读的替换预览（`preview --replace-invalid-with '?'`，唯一支持值）；严格 `DECODE_ERROR` 尚未把这些字节分类为注释内容，不能据此宣称它们可替换，替换预览本身负责逐条分类并可阻断。只有实际被证明属于注释内容、且逐文件审查过的记录才允许复制；复制时按已审查的逐文件选择显式传入 `--confirm-file`，不得遍历 `lossyFiles` 自动生成确认，若拒绝某个有损失文件则重新生成缩小选择范围的预览，而不是编辑计划或复制未批准文件。该预览逐条记录原始字节偏移、长度、十六进制、行列、原因和替换值。非注释字节、字符串/字符字面量/头文件名、未终止结构、DBCS/反斜杠歧义、源码已有或替换产生的 `??/`、`??=` trigraph 仍阻断（其它 trigraph 序列只作审查警告），且不会改写原工程。未知汇编、选项、绝对放置语法和未知未来代码仍是 `unsupported`，没有自动修复。
 
-**Scope 级 IncludePath（当前源码切片）。** 当 include 分析产生决定证据（存在可合并或已再次暴露的 scoped 目录）时，preflight 额外返回 `data.analysis.includeMerges[]`：每项含 `scope`（`group`/`file`）、`owner`（组名或工程相对源路径）、规范化 `path`、`decision`（`added` 或 `already-present`）；`added` 项还带目录清单摘要 `inventorySha256` 与 `inventoryFiles`（交付 PLAN 的可选 `data.includeMerges` 与 preflight 一样使用这些 camelCase 字段）。只有其参与编译的源文件全部是被加入构建的 C/C++ 的作用域才参与；列出的头文件与预编译库不会执行编译器，因此不影响该判定（C/C++ 组同时列出头文件仍可合并）；被排除文件、仅含头文件/库的组或文件、以及没有任何被加入构建源文件的组都被忽略。同时带 Define 或 MiscControls 的作用域仍按单个 `ARMCC_OPTION_UNSUPPORTED` 整体拒绝，同时参与编译被加入构建的汇编或未知语言的作用域也保持该 blocker，绝不只取出其中的 include，也不得为迁移删除这些控件或作用域。`MIGRATION_INCLUDE_*` blocker（missing、not-directory、escaping、unreadable、redirect、limit、collision）表示整次 include 分析不成立：不产生任何部分合并，`build.includePaths` 保持原 target 列表，按 blocker 处理真实工程语义。冲突检测按大小写不敏感的 include 相对完整键（含嵌套路径）比较：同一键在不同搜索目录解析到不同文件才是冲突，即使字节相同；同一物理文件通过重叠目录（例如 target 已有 `USER`，scoped 再暴露 `USER/IWDG`）暴露不构成冲突，包含关系本身也不拒绝。同一物理目录只出现一次，扫描前先按规范化目录去重；所有目录共享一个聚合遍历/哈希预算（条目、文件、目录、深度、字节），超限即整体拒绝而不是采样猜测。交付 PLAN 在存在该证据时以可选 `data.includeMerges` 暴露同一决定，成功 apply 的 `conversion-report.json` 增加 `includeMerges`；`added` 目录按 inspection 顺序追加到 target 列表末尾，原有顺序不变。该证据（含清单摘要）只在存在相关作用域时绑定进计划身份，因此没有任何相关作用域的工程不会因这类证据改变计划身份。公共独立交付路线以 PLAN 返回的 `data.planId` 和完整源快照绑定该证据：头文件内容变化或新增同名文件使已审阅的旧计划失效——重新 PLAN 得到反映当前源内容的计划，而以旧 `data.planId` APPLY 会在写入前以 `PLAN_CHANGED` 失败；若该变化同时引入新的技术 blocker，则先返回 `DELIVERY_BLOCKED` 及其完整 `details.blockerCodes`/`details.blockers`。请求本身不合法（参数、类型或取值）时仍返回各自的类型化校验错误，不会表现为计划比较结果。不要手工修改计划、补丁、`data.planId` 或清单哈希来强行迁移。
+**Scope 级 IncludePath（v1.3.1 起公开，v1.3.3 保留）。** 当 include 分析产生决定证据（存在可合并或已再次暴露的 scoped 目录）时，preflight 额外返回 `data.analysis.includeMerges[]`：每项含 `scope`（`group`/`file`）、`owner`（组名或工程相对源路径）、规范化 `path`、`decision`（`added` 或 `already-present`）；`added` 项还带目录清单摘要 `inventorySha256` 与 `inventoryFiles`（交付 PLAN 的可选 `data.includeMerges` 与 preflight 一样使用这些 camelCase 字段）。只有其参与编译的源文件全部是被加入构建的 C/C++ 的作用域才参与；列出的头文件与预编译库不会执行编译器，因此不影响该判定（C/C++ 组同时列出头文件仍可合并）；被排除文件、仅含头文件/库的组或文件、以及没有任何被加入构建源文件的组都被忽略。同时带 Define 或 MiscControls 的作用域仍按单个 `ARMCC_OPTION_UNSUPPORTED` 整体拒绝，同时参与编译被加入构建的汇编或未知语言的作用域也保持该 blocker，绝不只取出其中的 include，也不得为迁移删除这些控件或作用域。`MIGRATION_INCLUDE_*` blocker（missing、not-directory、escaping、unreadable、redirect、limit、collision）表示整次 include 分析不成立：不产生任何部分合并，`build.includePaths` 保持原 target 列表，按 blocker 处理真实工程语义。冲突检测按大小写不敏感的 include 相对完整键（含嵌套路径）比较：同一键在不同搜索目录解析到不同文件才是冲突，即使字节相同；同一物理文件通过重叠目录（例如 target 已有 `USER`，scoped 再暴露 `USER/IWDG`）暴露不构成冲突，包含关系本身也不拒绝。同一物理目录只出现一次，扫描前先按规范化目录去重；所有目录共享一个聚合遍历/哈希预算（条目、文件、目录、深度、字节），超限即整体拒绝而不是采样猜测。交付 PLAN 在存在该证据时以可选 `data.includeMerges` 暴露同一决定，成功 apply 的 `conversion-report.json` 增加 `includeMerges`；`added` 目录按 inspection 顺序追加到 target 列表末尾，原有顺序不变。该证据（含清单摘要）只在存在相关作用域时绑定进计划身份，因此没有任何相关作用域的工程不会因这类证据改变计划身份。公共独立交付路线以 PLAN 返回的 `data.planId` 和完整源快照绑定该证据：头文件内容变化或新增同名文件使已审阅的旧计划失效——重新 PLAN 得到反映当前源内容的计划，而以旧 `data.planId` APPLY 会在写入前以 `PLAN_CHANGED` 失败；若该变化同时引入新的技术 blocker，则先返回 `DELIVERY_BLOCKED` 及其完整 `details.blockerCodes`/`details.blockers`。请求本身不合法（参数、类型或取值）时仍返回各自的类型化校验错误，不会表现为计划比较结果。不要手工修改计划、补丁、`data.planId` 或清单哈希来强行迁移。
 
 **可复制 PowerShell 核对（保留未过滤 JSON，并处理 ok/error）：**
 
-这些命令启动**独立的 CLI 进程**；它们不能证明当前 VS Code 中实际绑定的 MCP 进程注册了哪些工具。真正的绑定证明必须在实际 MCP 客户端重复 `stm32_doctor` 与 `stm32_project_context`，并对照客户端列出的工具/input schema。`data.firmwareRoutes`、preflight 的逐 blocker `remediation`/`blockerSummary.byRemediation` 与 `extraRegions` 属于本 v1.3.3 候选源码切片。冻结的 `1e6ea849` v1.3.0 ZIP/runtime **已经有** `stm32_keil_preflight`、`analysis.blockers`、blocker summary、`planReadiness`/`applyReadiness` 及 `startupStrategy`/`startupSource`/`memoryLayout`；它缺少的只是上述较新字段/选项。因此不能把该包描述成没有 preflight 或没有基本 blocker 载荷，也不能仅凭版本号或清单数量判定 MCP 过期；新增部分需等匹配的 v1.3.3 构建安装后才可检查。
+这些命令启动**独立的 CLI 进程**；它们不能证明当前 VS Code 中实际绑定的 MCP 进程注册了哪些工具。真正的绑定证明必须在实际 MCP 客户端重复 `stm32_doctor` 与 `stm32_project_context`，并对照客户端列出的工具/input schema。`data.firmwareRoutes`、preflight 的逐 blocker `remediation`/`blockerSummary.byRemediation` 与 `extraRegions` 属于 v1.3.3。冻结的 `1e6ea849` v1.3.0 ZIP/runtime **已经有** `stm32_keil_preflight`、`analysis.blockers`、blocker summary、`planReadiness`/`applyReadiness` 及 `startupStrategy`/`startupSource`/`memoryLayout`；它缺少的只是上述较新字段/选项。因此不能把该包描述成没有 preflight 或没有基本 blocker 载荷，也不能仅凭版本号或清单数量判定 MCP 过期；新增部分需在匹配的 v1.3.3 安装中检查。
 
 ```powershell
 $DataRoot = 'C:\data\stm32-toolkit'
@@ -535,16 +533,16 @@ stm32_flash_imported(probeId="<user-selected probe>", importId=apply.data.import
 
 写授权只有两个边界：固件 APPLY（不可变离线副本）和 `stm32_flash_imported`（一次精确硬件操作）。PLAN 与 ADMIT 都是只读的，ADMIT 没有 `authorized` 参数，不要要求用户为它授权。各 PLAN 响应字段必须按入口区分：Keil 交付 `stm32_keil_convert` 的 PLAN 响应字段是 `data.planId`（交付预览 camelCase），`stm32_project_configure` 的配置 PLAN 仍是 `data.plan_id`（snake_case），固件 import 的 PLAN 响应也是 `data.planId`；所有 APPLY 请求参数都是 `planId`。不要把 `planId` 与 `contentId` 混用：交付计划 ID 是 `data.planId`，schema-2 conversion report 的内容身份是 `contentId`。固件 import 的 `data.source.sha256`（原始文件）与 `data.image.sha256`（规范化镜像）是两个独立字段，admission/flash 结果中对应扁平的 `sourceSha256`/`imageSha256`。任一失败都不会自动切换路线。
 
-**显式烧录频率与恢复建议（当前源码切片）。** `stm32_flash` 与 `stm32_flash_imported` 新增可选参数 `frequencyHz`（StrictInt，含端点 `100000..50000000`，或 `null`）；CLI 对应 `flash`/`flash-imported` 的 `--frequency`，只接受十进制整数 Hz，重复、小数、越界或其它格式在解析阶段拒绝。省略时保持既有 worker 配置：生产正常 CMSIS-DAP 默认仍为 `1000000` Hz。频率是**选定的配置**，不是实测/生效频率，也不证明 attach 或编程发生。
+**显式烧录频率与恢复建议（v1.3.2 引入，v1.3.3 保留）。** `stm32_flash` 与 `stm32_flash_imported` 新增可选参数 `frequencyHz`（StrictInt，含端点 `100000..50000000`，或 `null`）；CLI 对应 `flash`/`flash-imported` 的 `--frequency`，只接受十进制整数 Hz，重复、小数、越界或其它格式在解析阶段拒绝。省略时保持既有 worker 配置：生产正常 CMSIS-DAP 默认仍为 `1000000` Hz。频率是**选定的配置**，不是实测/生效频率，也不证明 attach 或编程发生。
 
 - 托管正常烧录：显式 `frequencyHz` 选定该值。恢复策略固定 `100000` Hz：`recoveryUnderReset=true`/`--recovery-under-reset` 时可省略频率或恰好传 `100000`；其它显式值在创建目录、lease、supervisor、backend 或执行 flash 之前以 `HARDWARE_INPUT_INVALID`（`details.field=frequencyHz`，`details.rule=conflict`）失败。类型错误为 `rule=type`，越界为 `rule=range`。
 - 导入烧录：只接受正常频率，不支持 under-reset recovery，也不应给出该路线的恢复建议。
 - 成功与失败结果在配置选定后都会带 `details.flashOptions`：`requestedFrequencyHz`（省略时为 `null`）、`configuredFrequencyHz`、`connectionPolicy`、`automaticRetry=false`。早期输入/授权/准入失败可以没有该字段。托管成功仍保留 `details.postFlash.targetState=unknown` 与 `runVerified=false`。
 - 仅托管正常烧录在自有清理完成后返回 `PROBE_PROGRAM_FAILED`，或返回带有效闭合 `attachDiagnostic` 且 `primary.stage` 为 `session-open`/`halt-verify`、`primary.reason` 属于可恢复连接类别的 `PROBE_ATTACH_FAILED` 时，才可能附加 `details.recoverySuggestion`（`kind=under-reset`、`frequencyHz=100000`、`requiresNewAuthorization=true`、`automaticRetry=false`）。它只是提示：先停止、保留完整诊断、核对目标供电/复位接线与清理结果，再由用户另行授权一次性恢复；恢复可能让目标保持 halted，不证明其已运行。频率或恢复选项应在这一次授权调用前选定；失败建议不是第二次调用，也不构成自动重试。
 - 清理失败、身份/stale/provenance/输入/授权/回读/receipt 失败、成功结果、已选择 recovery、导入路线、取消或任意其它错误都不附加该建议；不要把它当作自动重试、路线切换或既有 `attachDiagnostic`/一般 guidance 的替代。原有失败字段与清理优先级保持不变。
-- 这些频率选项和 `flashOptions`/`recoverySuggestion` 已包含在 v1.3.2 与上一公开版本 v1.3.1 中，并在当前 v1.3.3 候选中保留；较早冻结/安装的 v1.3.0 没有它们，重启 VS Code 也不会安装。生成的 IDE 任务模板保持原样；不要通过修改模板 digest 设置频率，也不要在原授权之外自动执行恢复。
+- 这些频率选项和 `flashOptions`/`recoverySuggestion` 已包含在 v1.3.2 与 v1.3.1 中，并在 v1.3.3 中保留；较早冻结/安装的 v1.3.0 没有它们，重启 VS Code 也不会安装。生成的 IDE 任务模板保持原样；不要通过修改模板 digest 设置频率，也不要在原授权之外自动执行恢复。
 
-**状态：**以上 AI 调用指引是 **v1.3.2** 引入、当前 **v1.3.3** 候选保留的行为，**不在**较早冻结的 v1.3.0 本地构建源码 `1e6ea849c21fb3786d60dba0254acb375d016a62` 及其 runtime/ZIP 中（该 1.3.0 包已含基本 preflight/`analysis.blockers`/`planReadiness` 及 startup/`memoryLayout` 选项，仅缺本文列出的较新增补）。重启 VS Code 只会刷新已安装服务器，不会安装本补丁。本工作树未安装、未重启，也不复核另一用户会话的安装。v1.3.3 候选统一当前版本、不改变 52 工具/9 Skill 清单、不改写既有 runtime/缓存；本文不代替用户本机的安装、IDE 或实机资格证据。
+**状态：**以上 AI 调用指引是 **v1.3.2** 引入、**v1.3.3** 保留的行为，**不在**较早冻结的 v1.3.0 本地构建源码 `1e6ea849c21fb3786d60dba0254acb375d016a62` 及其 runtime/ZIP 中（该 1.3.0 包已含基本 preflight/`analysis.blockers`/`planReadiness` 及 startup/`memoryLayout` 选项，仅缺本文列出的较新增补）。重启 VS Code 只会刷新已安装服务器，不会安装本补丁或把已有 v1.3.2 安装升级到 v1.3.3。本工作树未安装、未重启，也不复核另一用户会话的安装。v1.3.3 统一当前版本、不改变 52 工具/9 Skill 清单、不改写既有 runtime/缓存；本文不代替用户本机的安装、IDE 或实机资格证据。
 
 ## 工程 manifest 的阶段约束
 
@@ -567,16 +565,16 @@ stm32_flash_imported(probeId="<user-selected probe>", importId=apply.data.import
 | # | 看见什么 | 本版行为与处置 |
 | --- | --- | --- |
 | 1 | 子目录 `.uvprojx` 报 `KEIL_PROJECT_NOT_FOUND` | v1.0.0 可用 `--uvprojx Project/xxx.uvprojx`（可移植正斜杠）指明根内路径；自 v1.0.1 起在工程根内安全递归发现，多候选要求显式选择。目录不可枚举返回发现不完整，不能冒充“无工程”。 |
-| 2 | `ARMCC_SOURCE_ENCODING_UNSUPPORTED` | 先确认原始编码与版本控制状态，工程负责人决定转换副本/源码；Toolkit 不猜 GB2312/GB18030，也不自动转码。需要 UTF-8 副本时走独立 `normalize-source-comments` 技能：逐文件显式声明编码，默认只读预览，再按已审查 plan 复制到项目外新目录；它只转换注释、绝不改写原工程，也不解决 startup、scoped option、scatter/memory、apply、baseline 等其它 blocker（Git 本身不是 blocker）。严格预览报 `DECODE_ERROR`，或注释内出现私有使用/C1/U+FFFD/非字符码点时，先向用户展示具体逐文件证据；严格 `DECODE_ERROR` 尚未把这些字节分类为注释内容。只有用户明确要求把这些单元换成字面 `?`，该显式意图与已声明 charset 才授权追加 `--replace-invalid-with '?'` 生成只读替换预览（其它值在创建预览目录前即失败）；该预览负责分类并可阻断，只有被证明属于注释内容且逐文件审查过的记录才允许复制。审查 `mode`、`replacementValue`、每个 `lossy` 文件的 `replacementRecords`（原始字节偏移/长度/十六进制/行列/原因/替换值）与字节 diff，然后按已审查的逐文件选择各传一个 `--confirm-file '<相对路径>'`，不得遍历 `lossyFiles` 自动生成确认；若有文件被拒绝，重新生成缩小选择范围的预览，而不是编辑计划或复制未批准文件；用户请求若已足够具体地授权输出已审阅副本，复用该授权，不额外增加重复许可停顿。缺失、重复、未知、非损失或严格计划上的确认都会在创建输出目录前拒绝。替换模式仍会阻断非注释字节、未终止结构、DBCS/反斜杠歧义、源码已有的 `??/`/`??=` 和替换产生的 `??/`/`??=` trigraph（其它 trigraph 序列只作审查警告），且 manifest 只记录模式、确认文件与损失，不宣称迁移完成；`?` 是已审阅的内容丢失，不是修复或编码结论。字节保真仍是项目责任。该技能说明与 helper 位于仓库 `skills/normalize-source-comments/`（安装后为对应个人技能目录，含 `SKILL.md`、`references/lexical-and-plan-contract.md` 和 `scripts/normalize_comments.py`）；MCP 客户端没有、也不应臆造规范化工具，应直接按该目录说明用已验证的 Python 调用 helper。本页描述的能力只在当前源码中；重启 VS Code 不会安装这份源码补丁。 |
+| 2 | `ARMCC_SOURCE_ENCODING_UNSUPPORTED` | 先确认原始编码与版本控制状态，工程负责人决定转换副本/源码；Toolkit 不猜 GB2312/GB18030，也不自动转码。需要 UTF-8 副本时走独立 `normalize-source-comments` 技能：逐文件显式声明编码，默认只读预览，再按已审查 plan 复制到项目外新目录；它只转换注释、绝不改写原工程，也不解决 startup、scoped option、scatter/memory、apply、baseline 等其它 blocker（Git 本身不是 blocker）。严格预览报 `DECODE_ERROR`，或注释内出现私有使用/C1/U+FFFD/非字符码点时，先向用户展示具体逐文件证据；严格 `DECODE_ERROR` 尚未把这些字节分类为注释内容。只有用户明确要求把这些单元换成字面 `?`，该显式意图与已声明 charset 才授权追加 `--replace-invalid-with '?'` 生成只读替换预览（其它值在创建预览目录前即失败）；该预览负责分类并可阻断，只有被证明属于注释内容且逐文件审查过的记录才允许复制。审查 `mode`、`replacementValue`、每个 `lossy` 文件的 `replacementRecords`（原始字节偏移/长度/十六进制/行列/原因/替换值）与字节 diff，然后按已审查的逐文件选择各传一个 `--confirm-file '<相对路径>'`，不得遍历 `lossyFiles` 自动生成确认；若有文件被拒绝，重新生成缩小选择范围的预览，而不是编辑计划或复制未批准文件；用户请求若已足够具体地授权输出已审阅副本，复用该授权，不额外增加重复许可停顿。缺失、重复、未知、非损失或严格计划上的确认都会在创建输出目录前拒绝。替换模式仍会阻断非注释字节、未终止结构、DBCS/反斜杠歧义、源码已有的 `??/`/`??=` 和替换产生的 `??/`/`??=` trigraph（其它 trigraph 序列只作审查警告），且 manifest 只记录模式、确认文件与损失，不宣称迁移完成；`?` 是已审阅的内容丢失，不是修复或编码结论。字节保真仍是项目责任。该技能说明与 helper 位于仓库 `skills/normalize-source-comments/`（安装后为对应个人技能目录，含 `SKILL.md`、`references/lexical-and-plan-contract.md` 和 `scripts/normalize_comments.py`）；MCP 客户端没有、也不应臆造规范化工具，应直接按该目录说明用已验证的 Python 调用 helper。本页描述的能力属于已发布的 v1.3.3；重启 VS Code 不会把已有 v1.3.2 安装升级到它。 |
 | 3 | `ARMCC_ASSEMBLY_UNSUPPORTED` | 默认仍阻断任意 ARMCC 汇编。仅当文件是受支持的常规 ST/CMSIS Cortex-M3/M4/M7 startup 时，可显式使用 `startupStrategy="generate-cmsis-gcc"`（CLI `--startup-strategy generate-cmsis-gcc`）并通常配合 `startupSource="<工程相对 .s 路径>"`（CLI `--startup-source`）；工具生成并审查 `Startup/stm32tk_startup_gcc.S`，保留原文件，只替换 `build.assemblySources` 中选中的那一项。其它 `.s` 仍逐个阻断。识别器整文件校验语法，不执行代码、不猜测未知指令/宏/条件分支/自定义 reset 或 handler；preflight 的 `analysis.startup` 返回源哈希、有序向量与保留槽、stack/heap 字节、reset 模式、生成摘要、警告和诊断；交付 PLAN 以 `data.options.startupOptions` 回显选择，并在 `data.outputs[]`/`data.sourcePatches[]` 中给出生成的 startup 与 manifest 差异。preflight 必须使用相同的 `uvprojx`、`targetName` 和 startup 选项（或都省略）；同一 destination 只属于 convert 的 PLAN/APPLY，apply 重算交付并拒绝被改动的 destination/strategy/source：省略审阅过的 startup 选项会先返回 `DELIVERY_BLOCKED`（`ARMCC_ASSEMBLY_UNSUPPORTED`），合法但不同的值返回 `PLAN_CHANGED`，非法的选项值返回结构化校验错误；目标路径已存在且字节不同时报告 `MIGRATION_STARTUP_TARGET_COLLISION`，绝不覆盖。生成的是经审查的 GCC 迁移补丁，不是 ARMCC、ABI 或 Microlib 的二进制/行为等价物。 |
 | 4, 17, 22 | configure 遇 `UNOWNED_COLLISION` 或编辑器设置已存在 | 核对目标路径与 managed manifest。构建必需文件冲突需工程方决定所有权；自 v1.0.1 起只保留上述五个未托管普通编辑器文件，不 merge/adopt。 |
-| 9 | Flash used 似乎含 `.bss`/栈 | 核对原始 ELF/MAP。候选按有内容段的 LMA 计加载容量，NOBITS 只计运行地址预留；没有原始 ELF/MAP 不可宣称复现报告数字。 |
+| 9 | Flash used 似乎含 `.bss`/栈 | 核对原始 ELF/MAP。本版本按有内容段的 LMA 计加载容量，NOBITS 只计运行地址预留；没有原始 ELF/MAP 不可宣称复现报告数字。 |
 | 10 | RAM `free=0`，栈处于区域高端 | 报告按 section 实际占用区间并集，而非区域首尾跨度。若 `.stack` section 自身含大空隙/预留，它仍是 linker 分配；不能当成可用 RAM。运行时峰值需另测。 |
 | 12 | 历史低层计划的 `MIGRATION_GIT_DIRTY` | 该 Git 阻断只属于内部历史低层 `plan_keil_conversion`/`apply_keil_conversion` API，不是公共 `keil convert` 交付路线。公共路线不以 Git 为前提：`data.git` 只报告可选状态，不产生 init/commit/stash/clean 指引。 |
-| 13 | `baseline.available=true` | 只表示找到了可解析的历史 AXF/MAP，不证明本次 GCC/Keil 构建、工具链、授权来源或可比身份；候选在结果中明确这一语义。 |
+| 13 | `baseline.available=true` | 只表示找到了可解析的历史 AXF/MAP，不证明本次 GCC/Keil 构建、工具链、授权来源或可比身份；本版本在结果中明确这一语义。 |
 | 15 | Skill 在 capability false 后停止，或 apply 丢参数 | 先读 `capabilityDetails`：`available` 只表示入口适用于当前工程，`blocked` 给出具体前置，`not-evaluated` 表示 context 未检查（尤其硬件布尔值）。inspect/preflight/PLAN/APPLY 保持同一 `uvprojx`、`targetName` 与选项；preflight 没有 destination 参数，同一 destination 只用于 convert 的 PLAN/APPLY，并严格核对 `data.planId`；入口可用不保证迁移没有 blocker。成功 APPLY 后把 `data.outputRoot` 绑定为新的工程根。 |
 | 20 | schema 未写尽跨字段规则 | 以上配置阶段规则是当前合同；不要手工生成错误 manifest 或把 configure 条件升格为 loader 不兼容。根与包内 schema 副本应一致。 |
-| 21 | 默认栈容量/`__StackTop` 语义不符工程 | 候选模板的向下增长栈 Top 在高地址、Limit 在低地址；未设置 `memory.stackSize`/`memory.heapSize` 时保留默认 4 KiB heap/1 KiB stack。startup 生成路线会记录源文件中的精确字节数并在托管 linker 输出精确值；其它工程可显式设置这两个可选字段。若改用受控 native linker，`generation.runtimeInitialization` 必须移除，并核对实际 ELF/MAP。 |
+| 21 | 默认栈容量/`__StackTop` 语义不符工程 | 当前模板的向下增长栈 Top 在高地址、Limit 在低地址；未设置 `memory.stackSize`/`memory.heapSize` 时保留默认 4 KiB heap/1 KiB stack。startup 生成路线会记录源文件中的精确字节数并在托管 linker 输出精确值；其它工程可显式设置这两个可选字段。若改用受控 native linker，`generation.runtimeInitialization` 必须移除，并核对实际 ELF/MAP。 |
 
 ## Doctor、context、Probe 与运行态：报告项 5–8、11、14、16
 
@@ -584,16 +582,16 @@ stm32_flash_imported(probeId="<user-selected probe>", importId=apply.data.import
 | --- | --- | --- |
 | 5, 16 | flash 成功后 OBSERVE attach 拒绝 `halted` | flash 的编程/回读 receipt 不证明固件正在运行。核对当前目标状态与原因；如需 reset/resume，应走独立、明确授权的控制流程，不能在观察失败后自动恢复。`--recovery-under-reset` 是受控烧录选项，不是所有旧固件必需；它的 halted 后置不改变此结论。 |
 | 6 | `SVD_SELECTION_REQUIRED` / `SVD_ADDRESS_OUT_OF_RANGE` | 将正确设备 SVD 放在工程根，配置 `debug.svd`、设备与可信区域；逐项核对候选返回的首个失败寄存器路径、地址、宽度和区域。不要只放宽为全地址可读。 |
-| 7 | `DEBUG_FLASH_MISMATCH` | 比较 workspace/session/build/input/probe/target/receipt 等全部绑定，重新按当前配置 build/flash/授权；旧 receipt 不可 rebind。候选列具体失配字段和经验证读取的 ELF 内容是否相同；ELF 相同也不等于完整身份相同。 |
+| 7 | `DEBUG_FLASH_MISMATCH` | 比较 workspace/session/build/input/probe/target/receipt 等全部绑定，重新按当前配置 build/flash/授权；旧 receipt 不可 rebind。当前实现列出具体失配字段和经验证读取的 ELF 内容是否相同；ELF 相同也不等于完整身份相同。 |
 | 8 | `PROBE_ATTACH_FAILED`，`target-unsupported` | 核对请求的 `debug.target`、实际器件与已安装 pack/PyOCD 支持列表，记录来源。`probeCore.registry` 是 Probe 租约目录，不是 PyOCD target 注册表；缺失不能推断不支持器件。 |
 | 11 | `capabilities.*` 与当时人工观测不一致 | 旧布尔值表示当前阶段就绪/兼容语义，`capabilityDetails` 才区分 `available`、`blocked`、`not-evaluated`。context 不枚举探针；`hardware` 是未探测快照，需要独立 `probe list` 才能取得当次探针事实。`probe list` 不要求 manifest/构建/backend/target/SVD；无有效工程时返回 `workspaceId: null` 和 `discovery.status=unbound`。 |
-| 14 | doctor 启动 CubeMX GUI 或扩展显示 missing | 候选对 GUI 工具只读静态版本，取不到标 unknown；VS Code 扩展未实际探测为 `installed=false, version=null, status=not-probed`，不等同“未安装”。在 v1.0.0 现场若 GUI 被启动，先退出/记录，不把该次输出当静态版本证明。 |
+| 14 | doctor 启动 CubeMX GUI 或扩展显示 missing | 当前实现对 GUI 工具只读静态版本，取不到标 unknown；VS Code 扩展未实际探测为 `installed=false, version=null, status=not-probed`，不等同“未安装”。在 v1.0.0 现场若 GUI 被启动，先退出/记录，不把该次输出当静态版本证明。 |
 
 `read variable`、`read register`、有限采样与 Fault 有不同前置。OBSERVE 的短暂停核与持续观测需分开记证；完整 Fault 需稳定 halted，不能把 running OBSERVE 偷偷升权。[标准测试流程](testing/standard-test-procedure.md)规定实机前置、首错停止与证据归属。
 
-## 外部固件导入与独立烧录（当前源码/候选切片）
+## 外部固件导入与独立烧录（v1.3.1 起公开，v1.3.3 保留）
 
-这条路线与托管构建/烧录完全分开，已随 **v1.3.1** 公开发布，并在 **v1.3.2** 与当前 **v1.3.3** 候选中保留；历史 v1.2.0 的 48 工具包没有这些入口。它用于没有 `.stm32-project.json`、Git 或构建 receipt，但持有可用固件文件的工程。使用前先核对实际启动器版本，并对实际绑定服务器执行 `doctor --json`：确认 `data.publicInventory.mcpTools` 列出这三个工具、`skills` 为九个，并检查真实工具 input schema 的字段名与类型；只按实际返回调用，不要按本页推断。
+这条路线与托管构建/烧录完全分开，已随 **v1.3.1** 公开发布，并在 **v1.3.2** 与 **v1.3.3** 中保留；历史 v1.2.0 的 48 工具包没有这些入口。它用于没有 `.stm32-project.json`、Git 或构建 receipt，但持有可用固件文件的工程。使用前先核对实际启动器版本，并对实际绑定服务器执行 `doctor --json`：确认 `data.publicInventory.mcpTools` 列出这三个工具、`skills` 为九个，并检查真实工具 input schema 的字段名与类型；只按实际返回调用，不要按本页推断。
 
 - `stm32_project_context` 的 `capabilities.flash` 只描述**托管构建路线**；它不评估、也不阻止外部导入路线。未托管工程只要实际绑定的服务器暴露 `stm32_firmware_import`、`stm32_firmware_admit`、`stm32_flash_imported`，就可以使用本路线。
 - **导入计划**：`stm32_firmware_import(firmwarePath, expectedSha256, format, target, flashRegions, baseAddress?)`。`firmwarePath` 是工程根内正斜杠相对路径；`expectedSha256` 是**原始文件**的精确小写 SHA-256；`format` 为 `elf`、`hex` 或 `bin`（AXF 按 ELF 解析）；`target` 是明确的受支持 pyOCD target 标识；`flashRegions` 是 1–32 个 `{start,length}` 内部应用 Flash 区间（`0x08000000 ≤ start < end ≤ 0x10000000`），这是用户复核的声明，不是芯片容量测量。BIN 必须显式给 `baseAddress`，其它格式禁止该参数；BIN 没有调试符号，也不推断启动地址。不传 `planId` 时返回只读 PLAN：`data.planId`、`data.importId`、`data.source`（原始路径/SHA-256/大小）与 `data.image`（规范化 ARM ELF 的 SHA-256/大小/段/入口）。计划中 `data.source.sha256` 与 `data.image.sha256` 是**两个独立字段**（准入/烧录结果中则是扁平的 `sourceSha256`/`imageSha256`）；它们通常不同，但原始 ELF 若已与规范化镜像逐字节相同，二者也会相同，不能把“不相等”当作校验规则。
@@ -642,13 +640,13 @@ Monitor 工作台默认使用简体中文和浅色界面。打开授权标签后
 
 实时数值每行显示自己的 UTC 采集时间。图表与数值表上方标明当前或上次采样的轮次、运行组和版本；切换左侧的编辑组不会将另一组的对象误标为当前运行组。运行组版本尚未从列表核对时，只保留同一轮次已接受的旧值并标明其来源。尚未收到样本时，状态栏的速率和延迟会显示“尚未收到样本”；暂停、断流、状态待核对或运行组版本变化时，既有速率和延迟标为“上次样本”并显示其 UTC 时间。丢弃计数仍是单独的累计数据。观测绑定或采样轮次变化后，上轮样本时间会清除。
 
-以下 UI02/UI03 就地恢复、固定端口、书签与会话恢复行为属于 v1.2.0 已验收源码，并在 v1.3.2、上一公开版本 v1.3.1、当前 v1.3.3 候选与 v1.3.0 候选中保持；取得并核验对应发行包或本地候选、安装且 `Check` 确认 healthy 后，才能按该版本启动器使用。v1.0.1 发布包不支持 `--port`，也不包含这些就地恢复操作。
+以下 UI02/UI03 就地恢复、固定端口、书签与会话恢复行为属于 v1.2.0 已验收源码，并在 v1.3.2、v1.3.1、v1.3.3 与 v1.3.0 候选中保持；取得并核验对应发行包或本地候选、安装且 `Check` 确认 healthy 后，才能按该版本启动器使用。v1.0.1 发布包不支持 `--port`，也不包含这些就地恢复操作。
 
 已打开的工作台内，普通操作失败会在导航下方的“操作提示”就地显示原因；多个提示可分别查看、关闭或按提示重试，当前页面、最后成功的数据和未保存草稿保留。读取重试使用失败时的原查询、页游标或导出任务 ID。除上述组冲突外，写入被明确拒绝时，须先核对原目标和内容并确认，才会重试上次操作；编辑按钮仍提交当前草稿。写入结果未知时不盲目重复提交：能核对的操作只刷新状态或列表，导出创建若没有任务 ID 则说明结果未知。若写入已成功而随后刷新失败，只重试读取，不重复写入。无效的导入文件须重新选择。初次读取普通失败可重试初始化；真正的认证或访问失效仍整页阻断，按提示重新打开授权标签。
 
 `open --port 8765` 成功后，终端显示不带 token 的 `http://127.0.0.1:8765/`，可将这个短地址加入书签。服务保持运行、同一浏览器配置的会话 cookie 有效时，关闭标签页后打开书签可回到工作台。关闭整个浏览器后是否保留会话取决于浏览器配置；新浏览器配置不会自动继承原会话。若短地址提示“当前会话已失效”，在**原 `open` 前台交互终端**按 Enter，启动器会把同一服务的授权页面再次交付系统默认浏览器。该浏览器配置完成认证后，在原短地址页面点“重新检查会话”；只有状态核对成功才进入工作台。交付请求本身不证明浏览器已完成认证。非交互启动时，须由启动方重新交付授权页面；不要保存或手输包含 fragment token 的授权链接。403“访问被拒绝”须检查入口、请求来源与浏览器配置，不能当作会话过期处理或放宽访问限制。
 
-`bin/stm32-monitor.cmd` 先用 `STM32_TOOLKIT_DATA_ROOT` 定位相同版本的受管 Python；单给 `--data-root` 不能启动 cmd。Monitor 入口启动后才读取 `open --data-root`，两处须指向同一 DataRoot。v1.2.0 启动器只使用已安装的 `runtime/1.2.0`，v1.3.3 候选启动器只使用 `runtime/1.3.3`，已安装的 v1.3.2 启动器只使用 `runtime/1.3.2`；不要把另一版本的解释器、`PYTHONPATH` 源码覆盖或不同版 wheel 混入。以下命令要求**本版发行包已核验、安装且 Check 为 healthy**：它打开服务和新浏览器标签，并在前台保持运行；用该终端的 Ctrl-C 正常结束，不存在通用后台 daemon/stop 协议。
+`bin/stm32-monitor.cmd` 先用 `STM32_TOOLKIT_DATA_ROOT` 定位相同版本的受管 Python；单给 `--data-root` 不能启动 cmd。Monitor 入口启动后才读取 `open --data-root`，两处须指向同一 DataRoot。v1.2.0 启动器只使用已安装的 `runtime/1.2.0`，v1.3.3 启动器只使用 `runtime/1.3.3`，已安装的 v1.3.2 启动器只使用 `runtime/1.3.2`；不要把另一版本的解释器、`PYTHONPATH` 源码覆盖或不同版 wheel 混入。以下命令要求**本版发行包已核验、安装且 Check 为 healthy**：它打开服务和新浏览器标签，并在前台保持运行；用该终端的 Ctrl-C 正常结束，不存在通用后台 daemon/stop 协议。
 
 ```powershell
 $Version = '1.3.3'
@@ -669,6 +667,6 @@ $env:STM32_TOOLKIT_DATA_ROOT = $DataRoot
 
 ## 升级与历史材料
 
-已发布 v1.0.0/v1.0.1/v1.2.0/v1.3.1/v1.3.2 的标签、发行资产、凭据和数据边界不变；v1.3.2 仍是当前公开 Latest，v1.3.3 是当前尚未发布的发布候选。v1.3.3 候选的 Toolkit、Monitor、UI、插件、启动器与发行身份统一为 1.3.3；已有 1.3.2、1.3.1、1.3.0、1.2.0、1.1.2、1.0.1 及更早获批 runtime 经 `Check` 后只能以获授权的 `Repair` 事务升级，旧目录进入隔离区；只有既有事务可恢复分支才按其规则回滚旧 runtime 和状态，具体证据范围见[发布状态](release-status.md)。多旧版、未知未来目录、同版本不同来源、降级和锁定提升继续拒绝；不要手动移走状态文件。现有工程 `generatedBy` 保留真实旧版本；1.3.2/1.3.1/1.3.0/1.2.0/1.1.2/1.0.1/1.0.0/0.9.0 工程可计划和应用，只有显式 configure 事务刷新未改动的托管模板与记账，用户改动仍阻断。新 build 生成实际 1.3.3 身份，旧 flash receipt/evidence 不改写。工程 producer 可读不代表旧固件身份可供新版观测：现有 flash 合同要求 build 的 Toolkit 版本与当前 1.3.3 精确一致，1.3.2/1.3.1/1.3.0/1.2.0/1.1.2 build/flash receipt 不能直接绑定 1.3.3 运行观测，旧 build 会以 `FIRMWARE_IDENTITY_MISMATCH` 被拒绝；后续须经授权重建、烧录并建立新观测身份。旧 1.3.2/1.3.1/1.3.0/1.2.0/1.1.2/1.0.1 导出清单的 Toolkit/Monitor 版本不符合 1.3.3 精确校验；需使用原版本读取旧导出，或在新版本重新创建，不自动迁移或重签。改变 debug 元数据后，完整输入身份合同可能要求重新 configure、clean build 和必要的新烧录；运行观测仍按原完整身份与具名硬件授权，不提供内容等价 rebind。本指南不代替 Release notes 的最终资格结论；较早的 v1.3.0 候选已有本地官方构建产物（源 `1e6ea849c21fb3786d60dba0254acb375d016a62`，见[发布状态](release-status.md)），v1.3.2 已于 2026-10-26 按本候选单独批准的覆盖/复用/平台限制发布；v1.3.3 候选尚未发布，其最终安装与 VS Code 独立测试同样由用户负责、仍待完成（另一用户会话安装过更早候选，本工作树不复核），实机资格证据仍受既有边界限制；v1.0.1 的历史资格事实见[执行记录](codex/returns/STM32TK-101/execution.md)与[发布状态](release-status.md)。
+已发布 v1.0.0/v1.0.1/v1.2.0/v1.3.1/v1.3.2/v1.3.3 的标签、发行资产、凭据和数据边界不变；v1.3.3 是当前公开 Latest，v1.3.2 是上一公开版本。v1.3.3 的 Toolkit、Monitor、UI、插件、启动器与发行身份统一为 1.3.3；已有 1.3.2、1.3.1、1.3.0、1.2.0、1.1.2、1.0.1 及更早获批 runtime 经 `Check` 后只能以获授权的 `Repair` 事务升级，旧目录进入隔离区；只有既有事务可恢复分支才按其规则回滚旧 runtime 和状态，具体证据范围见[发布状态](release-status.md)。多旧版、未知未来目录、同版本不同来源、降级和锁定提升继续拒绝；不要手动移走状态文件。现有工程 `generatedBy` 保留真实旧版本；1.3.2/1.3.1/1.3.0/1.2.0/1.1.2/1.0.1/1.0.0/0.9.0 工程可计划和应用，只有显式 configure 事务刷新未改动的托管模板与记账，用户改动仍阻断。新 build 生成实际 1.3.3 身份，旧 flash receipt/evidence 不改写。工程 producer 可读不代表旧固件身份可供新版观测：现有 flash 合同要求 build 的 Toolkit 版本与当前 1.3.3 精确一致，1.3.2/1.3.1/1.3.0/1.2.0/1.1.2 build/flash receipt 不能直接绑定 1.3.3 运行观测，旧 build 会以 `FIRMWARE_IDENTITY_MISMATCH` 被拒绝；后续须经授权重建、烧录并建立新观测身份。旧 1.3.2/1.3.1/1.3.0/1.2.0/1.1.2/1.0.1 导出清单的 Toolkit/Monitor 版本不符合 1.3.3 精确校验；需使用原版本读取旧导出，或在新版本重新创建，不自动迁移或重签。改变 debug 元数据后，完整输入身份合同可能要求重新 configure、clean build 和必要的新烧录；运行观测仍按原完整身份与具名硬件授权，不提供内容等价 rebind。本指南不代替 Release notes 的最终资格结论；较早的 v1.3.0 候选已有本地官方构建产物（源 `1e6ea849c21fb3786d60dba0254acb375d016a62`，见[发布状态](release-status.md)），v1.3.2 已于 2026-10-26 按其候选单独批准的覆盖/复用/平台限制发布；v1.3.3 已于 2026-10-27 按候选专属例外发布，其最终安装与 VS Code 独立测试同样由用户负责、仍待完成（另一用户会话安装过更早候选，本工作树不复核），实机资格证据仍受既有边界限制；v1.0.1 的历史资格事实见[执行记录](codex/returns/STM32TK-101/execution.md)与[发布状态](release-status.md)。
 
 当前源树已退役旧阶段计划、报告、资格工具及其专属测试。需要审计原文时使用 `git show 694c825d29a55a53052a148efa4cc6720c315a04:<path>`，不要重建旧机器本地路径。发行构建仍使用现行 `tools/release/build_0900_artifacts.py`、`tools/release/release_0900_policy.json`、许可证和当前测试。部署/IDE 另见 [Windows 前置核对](testing/windows-deployment-and-ide-preflight.md)。
