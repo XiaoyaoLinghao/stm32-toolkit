@@ -33,7 +33,7 @@ VS Code/AI guidance now distinguishes new-project creation from configure, names
 
 ## Verification and reproducibility
 
-Evidence root: `D:/codex-tmp/gi27`. Each group retains exact argv/head, source hashes, real subprocess exit code, fresh JUnit and stdout, with `sourceUnchanged=true`. The native shell result may omit a numeric exit; it stays null. The bound Python subprocess record supplies the separately reported actual test exit.
+Evidence root: `D:/codex-tmp/gi27`. Each group retains exact argv/head, source hashes, real subprocess exit code, fresh JUnit and stdout, with `sourceUnchanged=true`. The inherited run-local wrapper writes a static `owner=Claude CLI` field even when invoked directly by the primary. That raw field is retained; this report and `evidence.json` identify the actual caller from coordinator/native dispatch events, so primary runs are not attributed to Claude. The native shell result may omit a numeric exit; it stays null. The bound Python subprocess record supplies the separately reported actual test exit.
 
 The reconciled affected matrix contains **2,322 distinct passing tests and 3 platform skips**, after deduplicating JUnit `(classname,name)` and retaining latest applicable evidence. It combines source-specific runs and explicit reuse; it is not one final-head full repository matrix and does not establish release coverage thresholds. Earlier overlapping pass counts are not added again.
 

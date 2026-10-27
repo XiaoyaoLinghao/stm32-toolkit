@@ -1316,5 +1316,6 @@
   "controlledOldSourceRed": "l5: 48 passed, 1 intended failure, old creation_authorization.py byte-identical to 194e983e; final native test passed",
   "c1ReconciliationSha256": "181a0dead33e6e9a291dca11fc39a7c5e95327705f6c85ffa2273cfe5205aa37",
   "vendorEnvironmentSha256": "12593133ccdca0dfe02b9b3ee9b63e64154d13826e8564bab9bd6bb3476c9475",
-  "externalValidation": "Real vendor package generation, installed VS Code and physical hardware not performed; user requested offline repeatable regression"
+  "externalValidation": "Real vendor package generation, installed VS Code and physical hardware not performed; user requested offline repeatable regression",
+  "ownerProvenanceNote": "The inherited runner uses a static owner=Claude CLI in raw execution.json; runs[].owner here maps actual coordinator/native dispatch invocation. Raw evidence is preserved."
 }
