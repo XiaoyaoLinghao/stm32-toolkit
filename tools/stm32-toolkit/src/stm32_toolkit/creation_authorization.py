@@ -25,6 +25,7 @@ def _durable_lock(path: Path) -> Iterator[None]:
     flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
     deadline = time.monotonic() + 30.0
     fd: int | None = None
+    locked = False
     try:
         pre_open = os.lstat(path) if os.path.lexists(path) else None
         fd = os.open(path, flags, 0o600)
@@ -33,12 +34,8 @@ def _durable_lock(path: Path) -> Iterator[None]:
             raise OSError("lock file is not a single-link regular file")
         if pre_open is not None and (pre_open.st_dev, pre_open.st_ino) != (opened.st_dev, opened.st_ino):
             raise OSError("lock file identity changed before open")
-        if opened.st_size == 0:
-            os.lseek(fd, 0, os.SEEK_END)
-            os.write(fd, b"\0")
-            opened = os.fstat(fd)
-        if opened.st_size != 1:
-            raise OSError("lock file size is invalid")
+        # Byte 0 is lockable even while the file is still empty, so the
+        # sentinel byte is only ever written by the process that owns it.
         os.lseek(fd, 0, os.SEEK_SET)
         if os.name == "nt":
             import msvcrt
@@ -46,6 +43,7 @@ def _durable_lock(path: Path) -> Iterator[None]:
             while True:
                 try:
                     msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+                    locked = True
                     break
                 except OSError:
                     if time.monotonic() >= deadline:
@@ -55,6 +53,23 @@ def _durable_lock(path: Path) -> Iterator[None]:
             import fcntl
 
             fcntl.flock(fd, fcntl.LOCK_EX)
+            locked = True
+        held = os.fstat(fd)
+        current = os.lstat(path)
+        if (
+            not stat.S_ISREG(held.st_mode)
+            or not stat.S_ISREG(current.st_mode)
+            or held.st_nlink != 1
+            or current.st_nlink != 1
+            or (current.st_dev, current.st_ino) != (held.st_dev, held.st_ino)
+            or current.st_size != held.st_size
+        ):
+            raise OSError("lock file identity changed while held")
+        if held.st_size not in (0, 1):
+            raise OSError("lock file size is invalid")
+        if held.st_size == 0:
+            os.lseek(fd, 0, os.SEEK_SET)
+            os.write(fd, b"\0")
         current = os.lstat(path)
         held = os.fstat(fd)
         if (
@@ -75,18 +90,19 @@ def _durable_lock(path: Path) -> Iterator[None]:
         ) from None
     finally:
         if fd is not None:
-            try:
-                if os.name == "nt":
-                    import msvcrt
+            if locked:
+                try:
+                    if os.name == "nt":
+                        import msvcrt
 
-                    os.lseek(fd, 0, os.SEEK_SET)
-                    msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
-                else:
-                    import fcntl
+                        os.lseek(fd, 0, os.SEEK_SET)
+                        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+                    else:
+                        import fcntl
 
-                    fcntl.flock(fd, fcntl.LOCK_UN)
-            except OSError:
-                pass
+                        fcntl.flock(fd, fcntl.LOCK_UN)
+                except OSError:
+                    pass
             try:
                 os.close(fd)
             except OSError:
