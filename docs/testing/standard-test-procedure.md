@@ -4,6 +4,8 @@
 
 ## 1. 当前断点与证据
 
+2026-10-27 最新本地断点：GCC-DELIVERY-INTEGRATION 在 `2d24028258c310afdfe76823e35ece48937880c8` 已 **ACCEPTED_WITH_FIXES（离线集成范围）**，见[执行与独立复核记录](../codex/returns/GCC-DELIVERY-INTEGRATION/implementation-report.md)。无 Git 的 Keil 独立交付和新建 GCC 工程两条完整流程，Claude 与主代理在最终提交各自14/14通过，包含真实 GCC 构建、输出目录独立搬移、正常受管模拟烧录/读回和清理。集成发现并修复新建工程缓存仍引用暂存路径及首次锁初始化竞态；创建138+1平台跳过、重新生成132+1、创建接口151均复核。受影响矩阵去重2,322通过/3平台跳过，明确包含未变源码证据复用，并非最终提交全仓库重跑或发行覆盖率验收。用户确认无离线厂商包：仅外部 CubeMX 生成采用合成适配器，其余核心流程为实际实现；真实厂商生成、安装/VS Code和硬件不记PASS。M3b2准备副本/引导及跨分支离线集成已关闭；原工程、运行时、全局配置、硬件未改，未改版本、未推送或发布。以下为历史断点。
+
 2026-10-26 最新本地断点：RETEST-GUIDANCE 在 `9d8b06427cd237309c5f3061316b37ebc0a73d06` 已 **ACCEPTED_WITH_FIXES**，见[执行与独立复核记录](../codex/returns/RETEST-GUIDANCE/implementation-report.md)。Claude 完整相关组317/317、主代理独立23/23通过，重叠证据不相加。用户报告已安装v1.3.2并完成复验；本轮仅只读复核其外部测试副本，178文件哈希未变。7项编码依赖及1项缺少汇编返回的阻断仍保留，现提供准确处置指引，不宣称迁移无阻断或语义等价。CLI JSON编码缺陷已修复。此补丁仅本地源码，未安装、构建发布或推送；原工程、硬件和全局设置未改。后续新包的实际安装/VS Code验证仍由用户负责，旧发布例外不转移。以下为历史断点。
 
 2026-10-26 v1.3.2 最新发布断点：[发布与公网核验记录](../codex/returns/STM32TK-132/publication-2026-10-26.md)。Release `423877513` 于 `2026-10-26T05:10:19Z` 公开并设为Latest，`draft=false/prerelease=false`；标签与target绑定冻结源码 `acb71b9f39e8ae4799179b0cab088245c0a5ea5b`。13附件匿名下载全部HTTP200、实际长度与SHA-256匹配双构建冻结包。仅本候选的 USER_APPROVED_EXCEPTION 已获明确批准并在Release公开，覆盖率/跳过/复用限制及永久门槛保持原义。最终实际安装和VS Code仍由用户执行，USER_VALIDATION_PENDING；未改原工程、既有runtime、全局设置或硬件。冻结包文档保留构建时状态，后续master文档和本记录说明实际发布。以下为历史断点。

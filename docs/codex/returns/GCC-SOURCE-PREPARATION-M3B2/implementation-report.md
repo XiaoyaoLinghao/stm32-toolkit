@@ -28,3 +28,7 @@ Remaining work:
 4. Integrate content-provenance managed hardware support and remove temporary branch restrictions only after integration. Normal fake-flash/readback and the second new-project journey remain integration gates. Backed-up global skill synchronization remains later work.
 
 An independent Toolkit diagnostic implementation invocation returned a provider API refusal before any native tool call (`monitor-diagnostic-global-core`, session `a72bbba5-6927-4781-b292-19e5fb3f15b1`). It was stopped, with no model switch, retry or Codex implementation fallback. This already-running guidance task was preserved separately. Original projects, installed runtime, global configuration, hardware and remote state remain unchanged. No complete-product or release acceptance is claimed.
+
+## 2026-10-27 follow-up
+
+The remaining complete-preparation guidance, combined real-GCC fixture and content-based managed flash integration were closed by [GCC-DELIVERY-INTEGRATION](../GCC-DELIVERY-INTEGRATION/implementation-report.md). Its final CodeHead and fresh author/independent evidence supersede the pending work above; the original intermediate verdict and abnormal invocation records remain historical evidence. Global installed skills and physical/release validation were outside that offline integration scope.
