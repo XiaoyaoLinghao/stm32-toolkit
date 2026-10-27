@@ -522,14 +522,16 @@ class MonitorRunRefGitEvidence(BaseModel):
 class DiagnosticMonitorRunRef(BaseModel):
     """Closed v2 physical Monitor source reference accepted by the MCP edge."""
 
-    #: Instance inputs (validated models, ``model_copy`` results and mutated
-    #: instances) re-enter the same wire contract as raw JSON input.  The
-    #: before-validator below dumps an instance through this model's serializer,
-    #: which omits only the pair keys that were never supplied, so a legacy
-    #: reference keeps its absent pair while an explicitly supplied null stays
-    #: on the wire and the shared contract rejects it.  Forcing
-    #: ``revalidate_instances`` would convert an instance to its internal field
-    #: dict before that dump and erase the fields-set distinction.
+    #: Raw mappings and other ``BaseModel`` input re-enter the same wire
+    #: contract as JSON through the before-validator below.  Under the default
+    #: instance fast path an existing ``DiagnosticMonitorRunRef`` does not
+    #: re-run that hook; the ``_validate_constructed_reference`` after-validator
+    #: re-checks its canonical alias dump instead.  That dump omits only the
+    #: pair keys that were never supplied, so a legacy reference keeps its
+    #: absent pair while an explicitly supplied null stays on the wire and the
+    #: shared contract rejects it.  Forcing ``revalidate_instances`` would
+    #: convert such an instance to its internal field dict before that dump and
+    #: erase the fields-set distinction.
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     schema_: Literal["stm32-monitor-run-ref/2"] = Field(alias="schema")
@@ -576,11 +578,15 @@ class DiagnosticMonitorRunRef(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _validate_replay_wire(cls, value: object) -> object:
-        # Raw mappings and existing instances both re-enter this closed wire
-        # contract here.  ``model_dump`` applies this model's serializer, which
-        # omits only the pair keys that were never supplied; an explicitly
-        # supplied null pair therefore stays on the wire and the shared
-        # contract rejects it instead of silently reading the legacy Git form.
+        # Raw mappings and other ``BaseModel`` input re-enter this closed wire
+        # contract here.  An existing ``DiagnosticMonitorRunRef`` instance takes
+        # the default instance fast path instead and is validated by the
+        # ``_validate_constructed_reference`` after-validator on its canonical
+        # alias dump.  For input that reaches this hook, ``model_dump`` applies
+        # this model's serializer, which omits only the pair keys that were
+        # never supplied; an explicitly supplied null pair therefore stays on
+        # the wire and the shared contract rejects it instead of silently
+        # reading the legacy Git form.
         raw = (
             value.model_dump(mode="python", by_alias=True)
             if isinstance(value, BaseModel)
