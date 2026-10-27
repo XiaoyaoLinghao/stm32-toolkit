@@ -212,18 +212,19 @@ reports `sourceBaseline`, `gitDirty`, and `gitEvidence` explicitly. No-op reuse 
 current prior success record in the same provenance mode; unknown, tampered, cross-schema, stale, or
 failed records are refused.
 
-Snapshot provenance is build-only on this unpublished source branch. Flash, debug, Target tests,
-Monitor, and acceptance protocols still require Git-shaped firmware provenance here; the separately
-verified managed-snapshot admission slice is not integrated in this branch and must not be
-duplicated. The shared firmware admission boundary validates the snapshot identity and then returns
-`FIRMWARE_PROVENANCE_UNSUPPORTED` before any probe, lease, or attach effect; outer wrappers may map
-that failure under their existing protocol (for example acceptance recovery maps admission failure
-to `ACCEPTANCE_ATTEMPT_OUTPUT_INVALID`), so the same externally visible code is not promised from
-every entry. Context exposes this known blocker as `blocked` in the affected hardware
-`capabilityDetails` for a fresh snapshot build, while legacy false capability booleans remain
-conservative compatibility fields and read-only probe discovery stays independent. Migration
-planning and apply are Git-independent: they bind the complete source snapshot and destination
-instead of a committed HEAD.
+Snapshot provenance is a normal managed source, not a build-only form. One shared firmware
+admission boundary decodes both provenance forms strictly and derives the same firmware facts for
+managed flash, debug handoff, register/Fault reads, Target tests, Monitor and other
+diagnostic/acceptance consumers: declared inputs, model/debug target, exact ELF/MAP bytes, build ID
+and the successful build record must still match. Git commit and dirty state are optional
+traceability for schema 1; schema 2 records explicit nulls plus bounded unavailable evidence. Null
+is never clean, and no route initializes or fabricates Git state. Outer wrappers keep their own
+protocol and may report or map a shared admission failure differently. Context still reports
+`available`/`blocked`/`not-evaluated` honestly: `not-evaluated` means it did not inspect hardware,
+not that the route is ready or blocked, and probe discovery stays independent. Missing probes,
+stale builds, target/ELF mismatch, absent authorization and lease/ownership failures still stop
+before effects. Migration planning and apply remain Git-independent: they bind the complete source
+snapshot and destination instead of a committed HEAD.
 
 External firmware import is a separate, source-only route for projects without
 a managed model. It parses exactly one ELF/AXF (AXF is ELF), Intel HEX, or BIN

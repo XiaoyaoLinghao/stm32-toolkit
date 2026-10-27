@@ -32,7 +32,8 @@ external-RAM, WFI and common-syntax options and diagnostics).
    report all of it. Any technical blocker fails the PLAN with `DELIVERY_BLOCKED` and complete details/codes.
 4. **Prepare source when required.** Non-UTF-8 sources or needed quoted headers are `needs-user-input`. Reuse the `normalize-source-comments` helper
    with one explicit charset per selected file, then build a complete separate prepared tree with all unselected sources, headers, startup files,
-   resources and licenses, overlaying only reviewed hash-matched converted copies. The helper output is a partial file set, never the project; follow
+   resources and licenses, overlaying only reviewed hash-matched converted copies. Omit `.git` VCS metadata (including a worktree pointer file) from
+   the inventory and copy; do not silently skip other unknown entries. The helper output is a partial file set, never the project; follow
    [source-preparation.md](references/source-preparation.md).
 5. **Choose options.** Pass only accepted inputs, identical for preflight, PLAN and APPLY: `startupStrategy`/`startupSource`, `memoryLayout`,
    `extraRegions`, and `wfiReturns` MCP objects or repeatable CLI `--wfi-return PATH:FUNCTION`. A plain file-scope zero-argument ARMCC
@@ -59,8 +60,10 @@ external-RAM, WFI and common-syntax options and diagnostics).
    never overwritten.
 10. **Return and rebind.** Report `data.outputRoot`, `data.contentId`, `data.reportPath`, the delivered `.stm32-project.json`, changed/generated paths
     and warnings; confirm `configured=true`, `built=false`, `flashed=false`. Bind `data.outputRoot` as the VS Code workspace and MCP project root,
-    rerun context there, configure explicit debug/paths when missing, then use the normal authorized GCC build and managed flash route. Never mutate the
-    server binding behind the user's back, fabricate paths or select a probe automatically.
+    rerun context there, configure explicit debug/paths when missing, then use the normal authorized GCC build and managed flash route: read the actual
+    `data.build.buildId` and `data.build.elfSha256` after a successful build, have the user select one exact probe, and call the authorized `stm32_flash`
+    normal route. No Git repository is required, and the independent external-firmware import route is not a workaround. Never mutate the server binding
+    behind the user's back, fabricate paths or select a probe automatically.
 
 ## Post-migration configure
 
@@ -82,8 +85,10 @@ After apply, use the ordinary two-step configure route. For a PyOCD pair, PLAN w
 - `stm32_keil_inspect`, `stm32_keil_preflight` and the plan call are read-only. APPLY is the only migration write and writes only into the explicit new
   destination; the Keil source is never edited. The `normalize-source-comments` helper writes reviewed copies outside the project; it is not a migration
   apply.
-- Current-branch limitation: content-based managed hardware admission is not integrated here yet, so a delivered project without Git-shaped provenance can
-  build, but its managed flash, debug handoff, Monitor and Target tests stay blocked until integration. Do not route the final product definition through
-  the external firmware import workaround.
+- On this local source tree, content snapshot identity is normal managed admission, not a branch caveat. A delivered or newly created GCC project without Git builds, flashes, debugs,
+  runs Target tests and Monitor through the normal managed routes. Those routes still require the current managed build identity (exact `buildId`/ELF,
+  model and debug target, successful current build), an explicitly selected probe and real authorization; Git is optional traceability only. Never
+  `git init`, commit or fabricate provenance, and never route Toolkit GCC output through the separate external firmware import route, which remains
+  independent and explicitly opt-in.
 - Successful syntax conversion is not behavioral equivalence; offline compiler/ELF checks are not hardware qualification. Do not parse `.uvprojx` XML,
   rewrite project sources, render templates or run compilers yourself. Never claim success; report the returned `OperationResult` exactly as received.

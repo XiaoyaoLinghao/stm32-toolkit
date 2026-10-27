@@ -524,8 +524,9 @@ def test_documentation_describes_independent_delivery_and_root_rebinding() -> No
 
     Both the migration Skill and the user guide must describe the explicit
     destination, the camelCase delivery plan/result fields, the no-in-place
-    boundary and the explicit output-root handoff.  The flash Skill must not
-    reduce the unpublished snapshot firmware limitation to one route.
+    boundary and the explicit output-root handoff.  The guidance must not
+    reintroduce the superseded Git-shaped admission requirement or route
+    Toolkit GCC output through imported firmware.
     """
     migrate = (REPO_ROOT / "skills" / "migrate-keil" / "SKILL.md").read_text(
         encoding="utf-8"
@@ -546,20 +547,58 @@ def test_documentation_describes_independent_delivery_and_root_rebinding() -> No
     # No silent in-place fallback and no stale Git baseline prerequisite.
     assert "in-place" in migrate
     assert "Git baseline" not in migrate
-    # The user guide owns the detailed unpublished/local limitation and the
+    # The user guide owns the detailed unpublished/local behavior and the
     # explicit (never automatic) rebinding of the delivered project root.
     assert "keil convert --destination" in guide
     assert "本地未发布" in guide
     assert "原地 `keil convert`" in guide
     assert "把 `data.outputRoot` 绑定为 VS Code workspace" in guide
     assert "不要偷偷改现有服务器绑定" in guide
-    # The managed firmware-provenance limitation affects more than flash.
-    assert "Git-shaped provenance" in guide
-    assert "debug handoff" in guide
-    assert "Target 测试" in guide
-    assert "Monitor" in guide
-    # Flash guidance must not call managed flash the only Git dependency.
-    assert "only current Git dependency" not in flash
-    assert "debug handoff" in flash
-    assert "Target tests" in flash
-    assert "Monitor" in flash
+    # Source immutability and destination collision behavior stay explicit.
+    assert "source is read-only" in migrate
+    assert "never overwritten" in migrate
+    assert "源工程只读" in guide
+
+    # The superseded branch limitation must not reappear as guidance: a
+    # schema-2 content identity is normal admission on the managed hardware
+    # routes, and Git is optional traceability rather than an eligibility gate.
+    for text in (migrate, flash, guide):
+        assert "FIRMWARE_PROVENANCE_UNSUPPORTED" not in text
+        assert "Git-shaped" not in text
+    assert "content snapshot identity" in migrate.lower()
+    assert "accepted by the shared firmware admission" in flash
+    assert "内容身份" in guide
+    for text in (guide, flash):
+        assert "git init" in text
+        assert "null" in text.lower()
+    # Normal managed flash uses the actual build identity and an explicitly
+    # selected probe; imported firmware stays a separate explicit opt-in and
+    # is never the workaround for Toolkit GCC output.
+    assert "data.build.buildId" in migrate
+    assert "data.build.elfSha256" in migrate
+    assert "stm32_flash" in migrate
+    assert "explicitly selects it" in flash
+    assert "never switches the route automatically" in flash
+    assert "external firmware import route" in migrate
+    assert "independent and explicitly opt-in" in migrate
+    assert "绕行方案" in guide
+
+    # Complete preparation omits only VCS metadata and never silently skips
+    # other ordinary project files; the original and prepared bytes stay
+    # unmodified apart from reviewed overlays.
+    preparation = (
+        REPO_ROOT
+        / "skills"
+        / "migrate-keil"
+        / "references"
+        / "source-preparation.md"
+    ).read_text(encoding="utf-8")
+    normalizer = (
+        REPO_ROOT / "skills" / "normalize-source-comments" / "SKILL.md"
+    ).read_text(encoding="utf-8")
+    for text in (preparation, normalizer):
+        assert ".git" in text
+        assert "worktree" in text
+        assert "VCS metadata" in text
+        assert "Do not silently skip" in text
+    assert "unmodified" in preparation

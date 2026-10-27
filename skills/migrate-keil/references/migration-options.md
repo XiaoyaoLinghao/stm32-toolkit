@@ -158,6 +158,7 @@ After the reviewed APPLY, bind `data.outputRoot` as the project root and use the
 `configure-stm32-project` Skill. Configure an explicit debug backend/target and verified
 Toolkit/GCC paths; PLAN first, then APPLY with the configure plan's `data.plan_id`. A
 user-owned writable `NOLOAD` linker fragment is a separate reviewed configure input.
-Rebuild after every manifest edit. Current-branch managed hardware admission still requires
-Git-shaped provenance; do not describe configuration or a successful build as hardware
-readiness.
+Rebuild after every manifest edit. On this local source tree, managed hardware admission uses the
+current content identity (declared inputs, model/debug target, exact ELF/MAP and successful build evidence),
+not Git, so the normal flash/debug/Target/Monitor routes need no repository; still do not
+describe configuration or a successful build as hardware readiness.

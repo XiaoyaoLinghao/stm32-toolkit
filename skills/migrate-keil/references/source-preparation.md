@@ -101,12 +101,16 @@ Do this as a separate explicit file operation after reviewing the copies:
 1. Choose a new prepared root outside the original project. Refuse a source or prepared
    root reached through a symlink, junction or other reparse point.
 2. Inventory the original tree before copying. Record every file as an exact portable
-   relative path plus SHA-256. Refuse absolute paths, `..` escapes, paths outside the
-   selected root, case-insensitive duplicate paths, unreadable entries, special files and
-   redirects. Do not silently skip an unknown entry.
+   relative path plus SHA-256, omitting `.git` VCS metadata (the directory or a worktree
+   pointer file) from both the inventory and the copy. Refuse absolute paths, `..` escapes,
+   paths outside the selected root, case-insensitive duplicate paths, unreadable entries,
+   special files and redirects. Do not silently skip any other unknown entry; `.git` is the
+   only exclusion.
 3. Copy the whole project, not only compiled files. Preserve every unselected source,
    header, startup/assembly file, resource, license, documentation file, project file and
-   directory layout needed by the project. Byte-copy files that are not being converted.
+   directory layout needed by the project, apart from the omitted `.git` metadata. Byte-copy
+   files that are not being converted: every other prepared file is byte-identical to the
+   original, and the original stays unmodified.
 4. Overlay only reviewed converted copies. For each overlay, require the current original
    file hash to equal the reviewed plan's `sourceSha256` and the converted copy hash to
    equal its `outputSha256`. Any mismatch means re-preview; never force the overlay.
@@ -148,8 +152,9 @@ Source and destination are disjoint; the destination must be absent or verified 
 anything in the original, prepared tree or reviewed copies changes after review, re-inspect
 and re-plan rather than reusing the old plan ID.
 
-Current-branch limitation: content-based managed hardware admission is not integrated in
-this branch yet. A delivered project without Git-shaped provenance can build, but its
-managed flash, debug handoff, Monitor and Target tests remain blocked until that integration
-lands. Do not present the separate external firmware import route as the final product
-workaround.
+On this local source tree, content snapshot identity is accepted by the same managed firmware
+admission as Git-backed identity. A delivered project without Git builds, flashes, debugs, runs Target tests and
+Monitor through the normal managed routes once it has a current successful build, the bound
+model/debug target, an explicitly selected probe and real authorization. Git is optional
+traceability only: do not `git init`, commit or fabricate provenance, and do not present the
+separate external firmware import route as a workaround for Toolkit GCC output.

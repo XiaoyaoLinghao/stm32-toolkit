@@ -207,12 +207,16 @@ The helper output is a partial file set, never the project. If the project owner
 chooses to prepare a separate project copy, do that as a separate explicit
 action outside the original root:
 
-1. Inventory the original tree as portable relative path plus SHA-256 per file.
-   Refuse symlink, junction or other reparse redirects, absolute or escaping
-   paths, case-insensitive duplicate paths, unreadable entries and special files.
-2. Copy the whole project, including every unselected source, header, startup or
-   assembly file, resource, license and directory needed by the project.
-   Byte-copy files that are not being converted.
+1. Inventory the original tree as portable relative path plus SHA-256 per file,
+   omitting `.git` VCS metadata (the directory or a worktree pointer file) from
+   both inventory and copy. Refuse symlink, junction or other reparse redirects,
+   absolute or escaping paths, case-insensitive duplicate paths, unreadable
+   entries and special files. Do not silently skip any other unknown entry.
+2. Copy the whole project apart from that omitted `.git` metadata, including
+   every unselected source, header, startup or assembly file, resource, license
+   and directory needed by the project. Byte-copy files that are not being
+   converted: every other prepared file is byte-identical to the original, and
+   the original stays unmodified.
 3. Overlay only reviewed converted copies whose reviewed `sourceSha256` still
    matches the current original file and whose `outputSha256` matches the helper
    `manifest.json`. On any mismatch, re-preview; never force an overlay, edit the
