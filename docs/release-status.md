@@ -1,5 +1,9 @@
 # Release status and retained limitations
 
+## v1.3.3 candidate-specific exception — 2026-10-27
+
+The user approved **USER_APPROVED_EXCEPTION** only for frozen `46ca09084bbe39f670714d19d7d55f9365ef06be` and authorized Latest publication with disclosed limits. See [authorization](codex/returns/STM32TK-133/authorization-2026-10-27.md). Permanent gates remain unchanged. Publication is pending observed remote success; final installation/VS Code remains **USER_VALIDATION_PENDING**.
+
 ## v1.3.3 frozen package — 2026-10-27
 
 Two official builds of `46ca09084bbe39f670714d19d7d55f9365ef06be` produced 13 identical verified files; official bundle verification passed. See [candidate and disclosed limits](codex/returns/STM32TK-133/candidate-build.md). Qualification remains **LOCAL_CANDIDATE_NOT_QUALIFIED** pending this candidate's decision. No v1.3.3 push/publication yet. Final user installation/VS Code remains **USER_VALIDATION_PENDING**.

@@ -4,6 +4,8 @@
 
 ## 1. 当前断点与证据
 
+2026-10-27 v1.3.3 资格处置：用户明确批准仅对冻结 `46ca09084bbe39f670714d19d7d55f9365ef06be` 的13文件候选接受已披露限制并发布Latest，见[授权记录](../codex/returns/STM32TK-133/authorization-2026-10-27.md)。处置为 USER_APPROVED_EXCEPTION，永久门槛未改，未达标及跳过不变为PASS。下一步非强推源码/标签、上传校验及公网核验；最终安装/VS Code由用户负责，原工程/硬件不操作。以下为历史断点。
+
 2026-10-27 v1.3.3 冻结包：`46ca09084bbe39f670714d19d7d55f9365ef06be` 两次官方离线构建的13文件大小/hash完全一致，官方 bundle 验证退出0，见[候选记录](../codex/returns/STM32TK-133/candidate-build.md)。Toolkit总体/风险82.5877%/82.4231%、Monitor风险92.3681%仍未达门槛；首次性能失败和随后定点对照通过分别保留。当前 LOCAL_CANDIDATE_NOT_QUALIFIED，需仅对具体候选处置限制；还未推送/发布。最终安装和 VS Code 由用户负责，原工程/硬件不操作。以下为历史断点。
 
 2026-10-27 v1.3.3 版本与发布复核：CodeHead `d281addbbdb70e36c270e24828868d7e936dc6e1` 的版本/文档修改已 **ACCEPTED_WITH_FIXES**；发行资格仍 **NOT_QUALIFIED**，见[复核记录](../codex/returns/STM32TK-133/version-review.md)。真实 GCC 两条流程14/14通过，正常受管模拟烧录已验证；功能/UI/安装夹具及性能定点对照证据均保留，原始性能失败未抹去。当前 Python 覆盖率未达永久门槛，明确使用完全匹配源码的既有证据，非最终提交全量重跑。下一步冻结双构建及具体候选处置；最终安装/VS Code 由用户负责，原工程/硬件不操作。尚未推送或发布 v1.3.3。以下为历史断点。

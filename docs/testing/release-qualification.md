@@ -6,6 +6,21 @@ The [standard procedure](standard-test-procedure.md) governs execution and autho
 Historical measurements and one-time exceptions do not transfer automatically to a later release.
 The user's explicit v1.0.1 conditional exception is recorded below, separately from permanent gates.
 
+## v1.3.3 frozen-candidate exception authorized on 2026-10-27
+
+The user explicitly approves **USER_APPROVED_EXCEPTION** and Latest publication only
+for `46ca09084bbe39f670714d19d7d55f9365ef06be` and its 13 reproducible verified files.
+Toolkit overall/risk are 82.5877%/82.4231% below 90%; Monitor risk is 92.3681% below
+95%. The original Monitor performance failure and subsequent passing bounded
+comparisons remain separate evidence. Exact-source reuse, platform/historical-data
+skips and unverified actual CubeMX vendor generation are disclosed, not a final-head
+full rerun. Permanent thresholds and membership are unchanged; no exception transfers.
+Final installation/VS Code remains **USER_VALIDATION_PENDING**, owned by the user;
+original project/hardware access remains prohibited. See the
+[specific authorization](../codex/returns/STM32TK-133/authorization-2026-10-27.md)
+and [frozen build record](../codex/returns/STM32TK-133/candidate-build.md).
+Publication status will be recorded after observed success.
+
 ## v1.3.2 frozen-candidate exception authorized on 2026-10-26
 
 Publication is complete: [v1.3.2 is Latest](../codex/returns/STM32TK-132/publication-2026-10-26.md).
