@@ -547,10 +547,16 @@ def test_documentation_describes_independent_delivery_and_root_rebinding() -> No
     # No silent in-place fallback and no stale Git baseline prerequisite.
     assert "in-place" in migrate
     assert "Git baseline" not in migrate
-    # The user guide owns the detailed unpublished/local behavior and the
-    # explicit (never automatic) rebinding of the delivered project root.
+    # The user guide owns the published v1.3.3 independent-delivery contract
+    # and the explicit (never automatic) rebinding of the delivered project
+    # root.  This is published behavior, not a local unpublished source
+    # change: the historical v1.3.0 candidate note may still say 本地未发布,
+    # so that phrase alone cannot support an unpublished classification.
     assert "keil convert --destination" in guide
-    assert "本地未发布" in guide
+    assert "[v1.3.3 Release](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.3.3)" in guide
+    assert "已发布为 Latest 的 **v1.3.3**" in guide
+    assert "`--destination` 独立交付与 `outputRoot` 交接是已发布的 v1.3.3 行为" in guide
+    assert "本地未发布源码行为" not in guide
     assert "原地 `keil convert`" in guide
     assert "把 `data.outputRoot` 绑定为 VS Code workspace" in guide
     assert "不要偷偷改现有服务器绑定" in guide

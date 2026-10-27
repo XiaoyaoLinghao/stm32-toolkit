@@ -129,7 +129,7 @@ Keil `inspect`、`preflight` 和 `convert` 必须指向同一 `uvprojx` 和 `tar
 
 `free` 只表示已验证 ELF/MAP 已分配区间的并集剩余量，不是最大连续空闲块、运行时栈/堆峰值或内存初始化完成的证明；`used` 也不包含运行时动态峰值。`memorySummary` 参与 `buildId`。JSON schema 校验 shape、字段类型与基本范围，语义校验进一步检查跨字段不变量（`used+free==length`、唯一且不重叠的地址范围）以及警告与阈值/区域行的一一对应；两者联合拒绝伪造摘要，即使攻击者重算了 `buildId`。硬件当前固件准入还会依据当前 ELF/MAP 与模型重新计算并比对已有摘要。旧 identity 缺少该字段时保持原有校验与构建 ID，但“没有警告字段”不能当作余量充足的正证据；当前读取器可读旧 receipt，但旧 runtime 可能拒绝含新字段的新 receipt，因此新 receipt 需与当前 runtime 匹配。摘要与警告只是静态离线证据，不授予烧录、调试或实机结论。
 
-### ARMCC 浮点 ABI 证据（v1.3.2 引入，v1.3.3 保留）
+### ARMCC 浮点 ABI 证据（v1.3.1 已包含，v1.3.3 保留）
 
 Arm 的 Compiler 5 文档区分硬件浮点**计算**与参数传递 **ABI**；官方迁移表把 `--cpu=Cortex-M4.fp` 映射到 hard linkage，但这说明的是编译器规则，不是本项目原始二进制实际使用的 ABI（参见 [Arm Compiler 5 文档](https://documentation-service.arm.com/static/5f721c6c1b758617cd950f6f)、[ARMCC→ARMCLANG 架构/处理器名迁移](https://support.arm.com/documentation/100068/0609/migrating-from-armcc-to-armclang/migrating-architecture-and-processor-names-for-command-line-options)、[Keil FPU 硬件选择](https://www.keil.com/support/man/docs/uv4/uv4_dg_adstarg.asp) 与 [GCC ARM 选项](https://gcc.gnu.org/onlinedocs/gcc/ARM-Options.html)）。本切片不解析 AXF/对象/库或真实编译命令行，因此 `baselineVerified` 恒为 false。
 
@@ -141,11 +141,11 @@ Arm 的 Compiler 5 文档区分硬件浮点**计算**与参数传递 **ABI**；�
 - 选中 target 的 `RvdsVP` 缺失/为空或为 `2` 时允许上述历史候选；其它非空值（即使同时存在字面量 ABI）以 `MIGRATION_FPU_SELECTION_UNSUPPORTED` 阻断 FPU/ABI 推断。数值 `2` 只是本兼容规则允许的历史选择器，不证明二进制等价。
 - 其它 compiler/CPU/FPU 组合仍 fail closed；`--apcs`、`--fpu` 与 response-file 等 target/group/file misc controls 的既有 blocker 保持不变，不得为清除 blocker 改写证据或删除控件。
 - 被阻断的 ABI/硬件选择证据同时停止交付 PLAN 与向 APPLY 的推进：PLAN 返回 `DELIVERY_BLOCKED` 并携带完整 blocker；不存在可应用的诊断性交付 PLAN。Git 状态不参与该判断。
-- 请检查实际编译器命令行、对象与库的调用约定。没有新增 ABI override 参数或 CLI/MCP 标志，也不得手工编辑 `plan_id`、digest 或工程证据。本补丁已随其余改进集成为 v1.3.2，并在 v1.3.3 中保留；较早的 frozen/installed 1.3.0 不包含此行为。
+- 请检查实际编译器命令行、对象与库的调用约定。没有新增 ABI override 参数或 CLI/MCP 标志，也不得手工编辑 `plan_id`、digest 或工程证据。本补丁已随其余改进公开于 v1.3.1，并在 v1.3.3 中保留；较早的 frozen/installed 1.3.0 不包含此行为。
 
 ### 受支持的 CMSIS startup 生成（显式 opt-in）
 
-仅有常规 ST/CMSIS Cortex-M3/M4/M7 ARMCC5 startup 可走此路线；其它 ARMCC 汇编仍然阻断。本节参数属于 **v1.3.2 引入的行为**，并在 v1.3.3 中保留：已发布 v1.2.0 安装包（48 个工具）不含 `stm32_keil_preflight` 及这两个选项；较早的 v1.3.0 候选已支持它们，已发布 v1.3.1 也包含；仍须以宿主实际安装版本为准。公开参数名固定为：
+仅有常规 ST/CMSIS Cortex-M3/M4/M7 ARMCC5 startup 可走此路线；其它 ARMCC 汇编仍然阻断。本节参数**已包含在已发布 v1.3.1 中**，并在 v1.3.3 中保留：已发布 v1.2.0 安装包（48 个工具）不含 `stm32_keil_preflight` 及这两个选项；较早的 v1.3.0 候选已支持它们；仍须以宿主实际安装版本为准。公开参数名固定为：
 
 | 操作 | MCP 参数 | CLI 参数 | 值 |
 | --- | --- | --- | --- |
@@ -210,9 +210,9 @@ VS Code / MCP 客户端的审查路径：
 & $CandidateCli --project-root $ProjectRoot keil convert --uvprojx Project/blinky.uvprojx --target-name Debug --destination $OutputRoot --wfi-return 'Common/common.c:WFI_SET' --apply --plan-id '<data.planId>' --authorized --json
 ```
 
-### 显式多 RAM 内存布局（v1.3.2 引入，v1.3.3 保留）
+### 显式多 RAM 内存布局（v1.3.1 已包含，v1.3.3 保留）
 
-托管生成的 `.data`/`.bss`/`.heap`/`.stack` 可以显式分配到不同 RAM 区域。参数属于 **v1.3.2 引入的行为**，v1.3.3 保持不变：v1.2.0 runtime 不接受它们；较早的 v1.3.0 候选已接受 `memoryLayout`，已发布 v1.3.1 也包含；使用前仍须检查所连 MCP 服务器的真实工具与 input schema（`memoryLayout`/`--memory-layout`）。
+托管生成的 `.data`/`.bss`/`.heap`/`.stack` 可以显式分配到不同 RAM 区域。参数**已包含在已发布 v1.3.1 中**，v1.3.3 保持不变：v1.2.0 runtime 不接受它们；较早的 v1.3.0 候选也已接受 `memoryLayout`；使用前仍须检查所连 MCP 服务器的真实工具与 input schema（`memoryLayout`/`--memory-layout`）。
 
 | 操作 | MCP 参数 | CLI 参数 | 值 |
 | --- | --- | --- | --- |
@@ -227,9 +227,9 @@ VS Code / MCP 客户端的审查路径：
 - `generation.nativeLinkerScript` 存在时布局由用户原生脚本拥有：不允许同时声明显式布局（拒绝而非忽略）。固定地址节仍按原地址以 `NOLOAD` 放入所属区域或保留原有 blocker，不会被当作初始化数据复制/清零。
 - 托管 linker 将 `.data` 的 VMA 放入所选 RAM、LMA 放入所选 Flash，并保持 `_sidata`/`_sdata`/`_edata`/`_sbss`/`_ebss` 与 `cmsis-gcc-v1` 断言；stack/heap 精确字节与 8 字节栈对齐保持不变。区域越界、重叠或过小由实际链接失败暴露。成功链接只是离线镜像证据，不证明 CCM/外部 SRAM 或真实板卡运行时行为。
 
-### 显式外部 RAM 区域（v1.3.2 引入，v1.3.3 保留）
+### 显式外部 RAM 区域（v1.3.1 已包含，v1.3.3 保留）
 
-迁移可以显式声明 Keil/设备事实之外的**可写 RAM**（例如外部 SRAM），用于固定地址缓冲或显式内存布局。该输入属于 **v1.3.2 引入的行为**，v1.3.3 保持不变：v1.2.0 runtime 不接受 `extraRegions`/`--extra-regions`；**已冻结/已安装的 1.3.0 也不包含 `extraRegions` 这一新增选项**（其基本 preflight、blockers 与 `memoryLayout` 仍存在）；已发布 v1.3.1 则包含 `extraRegions`。因此仍须先核对实际绑定的 MCP 工具与 input schema，不能仅凭版本号宣称支持或推断整个工具缺失。
+迁移可以显式声明 Keil/设备事实之外的**可写 RAM**（例如外部 SRAM），用于固定地址缓冲或显式内存布局。该输入**已包含在已发布 v1.3.1 中**，v1.3.3 保持不变：v1.2.0 runtime 不接受 `extraRegions`/`--extra-regions`；**已冻结/已安装的 1.3.0 也不包含 `extraRegions` 这一新增选项**（其基本 preflight、blockers 与 `memoryLayout` 仍存在）。因此仍须先核对实际绑定的 MCP 工具与 input schema，不能仅凭版本号宣称支持或推断整个工具缺失。
 
 | 操作 | MCP 参数 | CLI 参数 | 值 |
 | --- | --- | --- | --- |
@@ -260,9 +260,9 @@ $Layout = '{"flash":"IROM1","data":"IRAM1","bss":"EXT_SRAM","heap":"EXT_SRAM","s
 
 （示例中的区域名、数值与容量都只是**审阅示例，非板级事实**，也不表示外部存储器已初始化；必须按实际器件和 owner 提供的精确 origin/字节长度给出。）
 
-### 用户自有 NOLOAD 链接片段（v1.3.2 引入，v1.3.3 保留）
+### 用户自有 NOLOAD 链接片段（v1.3.1 已包含，v1.3.3 保留）
 
-工程负责人可以用 `generation.linkerFragment` 指定一个**自己拥有的**、工程相对的 UTF-8 GNU ld 片段，由 configure 校验后渲染进托管 `linker/stm32tk.ld`。这是**v1.3.2 引入的本补丁行为**，v1.3.3 保留：v1.2.0 runtime 与较早冻结/安装的 1.3.0 都不包含本补丁；**没有新增 MCP 工具或参数**，仍使用既有的 `stm32_project_configure` / CLI `project configure`。工具清单与 input schema 本切片没有变化，因此它们**无法**区分未打补丁的旧 1.3.0 与本补丁运行时；不能仅凭工具数量、版本号或 schema 宣称支持。必须使用**确认由本补丁源码构建并部署**的 runtime（安装/升级须另行授权），再用一个已审阅的 manifest 执行**只读 configure PLAN**，确认 `data.inputs[]` 出现片段 `path`/`sha256`、`linker/stm32tk.ld` 的 `unified_diff` 含片段内容且 `data.blockers` 符合预期；PLAN 失败或没有这些证据就停止，不要继续 APPLY。
+工程负责人可以用 `generation.linkerFragment` 指定一个**自己拥有的**、工程相对的 UTF-8 GNU ld 片段，由 configure 校验后渲染进托管 `linker/stm32tk.ld`。这是**已随 v1.3.1 公开的本补丁行为**，v1.3.3 保留：v1.2.0 runtime 与较早冻结/安装的 1.3.0 都不包含本补丁；**没有新增 MCP 工具或参数**，仍使用既有的 `stm32_project_configure` / CLI `project configure`。工具清单与 input schema 本切片没有变化，因此它们**无法**区分未打补丁的旧 1.3.0 与本补丁运行时；不能仅凭工具数量、版本号或 schema 宣称支持。必须使用**确认由本补丁源码构建并部署**的 runtime（安装/升级须另行授权），再用一个已审阅的 manifest 执行**只读 configure PLAN**，确认 `data.inputs[]` 出现片段 `path`/`sha256`、`linker/stm32tk.ld` 的 `unified_diff` 含片段内容且 `data.blockers` 符合预期；PLAN 失败或没有这些证据就停止，不要继续 APPLY。
 
 **所有权与位置。** 片段是用户拥有的普通文件，Toolkit 只读取、从不改写或纳入 managed records。路径必须是非空、可移植的工程相对路径（`/`，不得含反斜杠、盘符、UNC、`.`/`..` 分量）；任一路径分量是符号链接/重解析点、文件缺失/是目录/超过 64 KiB/非 UTF-8 都 fail closed。片段不得与 `build.sources`/`assemblySources`/`includePaths`、SVD、CubeMX IOC、`generation.managedManifest`、原生 linker 脚本、九个托管生成目标（如 `CMakeLists.txt`、`linker/stm32tk.ld`、`.vscode/settings.json`）、`build/`、`artifacts/migration/` 或 `.stm32-toolkit/generated-files.json` 冲突（大小写不敏感），也不能与 `generation.nativeLinkerScript` 同时声明。原生脚本路线保持原有的独立所有权，片段不会接管它。
 
@@ -348,7 +348,7 @@ PLAN 只读，除既有 `data.files[]` 外还返回 `data.debug_configuration`�
 
 该编辑会自然使旧 build/firmware 身份失效；需要时按 `build --preset arm-debug --clean` 重新构建，再走各自的授权流程。配置记录只是元数据：不会发现、安装或验证 PyOCD target，也不会创建调试会话；`.vscode/launch.json` 仍为空，真实调试交接（handoff）是独立的显式授权步骤。此能力属于 v1.3.2 并在 v1.3.3 中保留，较早的 frozen/installed 1.3.0 不包含它；安装/升级需另行授权。
 
-### VS Code 任务、可执行绑定与 `ide task` 适配器（v1.3.2 引入，v1.3.3 保留）
+### VS Code 任务、可执行绑定与 `ide task` 适配器（v1.3.1 已包含，v1.3.3 保留）
 
 生成的 `.vscode/tasks.json` 包含五个**互相独立**的 `process` 任务：`STM32 Toolkit: Build Debug`、`Build Release`、`Flash Debug`、`Handoff Begin Debug`、`Handoff End Debug`。每个任务都用 argv（绝不拼接 shell 字符串）、显式 `--project-root ${workspaceFolder}` 和 `options.cwd=${workspaceFolder}`；没有 `dependsOn`、自动构建/烧录/调试序列、`group`、auto-run、恢复、reset 或重试。Build 任务沿用既有 build CLI 契约（CLI 调用本身就是该次构建的显式动作）。`.vscode/launch.json` 仍为空：只有成功 handoff 才提供活的 Cortex-Debug 配置。生成的硬件任务用 `${input:...}` 提示 data root、session、**精确 probe**、handoff ticket 和确认值；不预填 probe、不持久化 ticket、不自动枚举探针。三个确认提示的默认值都是 `deny`；硬件任务设置 `runOptions.reevaluateOnRerun=true`，重跑会重新询问，而不是复用上次输入。已经存在的用户自有 `.vscode/*` 文件仍按既有 `preserved-unowned` 合同保留：不读取、不改写、不合并、不收编；IDE 设置需用户自行对齐。
 
@@ -533,7 +533,7 @@ stm32_flash_imported(probeId="<user-selected probe>", importId=apply.data.import
 
 写授权只有两个边界：固件 APPLY（不可变离线副本）和 `stm32_flash_imported`（一次精确硬件操作）。PLAN 与 ADMIT 都是只读的，ADMIT 没有 `authorized` 参数，不要要求用户为它授权。各 PLAN 响应字段必须按入口区分：Keil 交付 `stm32_keil_convert` 的 PLAN 响应字段是 `data.planId`（交付预览 camelCase），`stm32_project_configure` 的配置 PLAN 仍是 `data.plan_id`（snake_case），固件 import 的 PLAN 响应也是 `data.planId`；所有 APPLY 请求参数都是 `planId`。不要把 `planId` 与 `contentId` 混用：交付计划 ID 是 `data.planId`，schema-2 conversion report 的内容身份是 `contentId`。固件 import 的 `data.source.sha256`（原始文件）与 `data.image.sha256`（规范化镜像）是两个独立字段，admission/flash 结果中对应扁平的 `sourceSha256`/`imageSha256`。任一失败都不会自动切换路线。
 
-**显式烧录频率与恢复建议（v1.3.2 引入，v1.3.3 保留）。** `stm32_flash` 与 `stm32_flash_imported` 新增可选参数 `frequencyHz`（StrictInt，含端点 `100000..50000000`，或 `null`）；CLI 对应 `flash`/`flash-imported` 的 `--frequency`，只接受十进制整数 Hz，重复、小数、越界或其它格式在解析阶段拒绝。省略时保持既有 worker 配置：生产正常 CMSIS-DAP 默认仍为 `1000000` Hz。频率是**选定的配置**，不是实测/生效频率，也不证明 attach 或编程发生。
+**显式烧录频率与恢复建议（v1.3.1 已包含，v1.3.3 保留）。** `stm32_flash` 与 `stm32_flash_imported` 新增可选参数 `frequencyHz`（StrictInt，含端点 `100000..50000000`，或 `null`）；CLI 对应 `flash`/`flash-imported` 的 `--frequency`，只接受十进制整数 Hz，重复、小数、越界或其它格式在解析阶段拒绝。省略时保持既有 worker 配置：生产正常 CMSIS-DAP 默认仍为 `1000000` Hz。频率是**选定的配置**，不是实测/生效频率，也不证明 attach 或编程发生。
 
 - 托管正常烧录：显式 `frequencyHz` 选定该值。恢复策略固定 `100000` Hz：`recoveryUnderReset=true`/`--recovery-under-reset` 时可省略频率或恰好传 `100000`；其它显式值在创建目录、lease、supervisor、backend 或执行 flash 之前以 `HARDWARE_INPUT_INVALID`（`details.field=frequencyHz`，`details.rule=conflict`）失败。类型错误为 `rule=type`，越界为 `rule=range`。
 - 导入烧录：只接受正常频率，不支持 under-reset recovery，也不应给出该路线的恢复建议。
@@ -542,7 +542,7 @@ stm32_flash_imported(probeId="<user-selected probe>", importId=apply.data.import
 - 清理失败、身份/stale/provenance/输入/授权/回读/receipt 失败、成功结果、已选择 recovery、导入路线、取消或任意其它错误都不附加该建议；不要把它当作自动重试、路线切换或既有 `attachDiagnostic`/一般 guidance 的替代。原有失败字段与清理优先级保持不变。
 - 这些频率选项和 `flashOptions`/`recoverySuggestion` 已包含在 v1.3.2 与 v1.3.1 中，并在 v1.3.3 中保留；较早冻结/安装的 v1.3.0 没有它们，重启 VS Code 也不会安装。生成的 IDE 任务模板保持原样；不要通过修改模板 digest 设置频率，也不要在原授权之外自动执行恢复。
 
-**状态：**以上 AI 调用指引是 **v1.3.2** 引入、**v1.3.3** 保留的行为，**不在**较早冻结的 v1.3.0 本地构建源码 `1e6ea849c21fb3786d60dba0254acb375d016a62` 及其 runtime/ZIP 中（该 1.3.0 包已含基本 preflight/`analysis.blockers`/`planReadiness` 及 startup/`memoryLayout` 选项，仅缺本文列出的较新增补）。重启 VS Code 只会刷新已安装服务器，不会安装本补丁或把已有 v1.3.2 安装升级到 v1.3.3。本工作树未安装、未重启，也不复核另一用户会话的安装。v1.3.3 统一当前版本、不改变 52 工具/9 Skill 清单、不改写既有 runtime/缓存；本文不代替用户本机的安装、IDE 或实机资格证据。
+**状态：**以上 AI 调用指引是**当前 v1.3.3 的指导文本**：各节的历史引入版本并不相同（多数能力已在已发布 v1.3.1 中公开，`probeCore.pyocdResolution` 与 `data.vscodeGuidance` 等在 v1.3.2 加入，独立交付 destination 等为 v1.3.3 新增），因此不要把它整体归为某一较早版本。本文列出的较新行为**不在**较早冻结的 v1.3.0 本地构建源码 `1e6ea849c21fb3786d60dba0254acb375d016a62` 及其 runtime/ZIP 中（该 1.3.0 包已含基本 preflight/`analysis.blockers`/`planReadiness` 及 startup/`memoryLayout` 选项，仅缺本文列出的较新增补）。重启 VS Code 只会刷新已安装服务器，不会安装本补丁，也不会把已有安装升级到 v1.3.3；要让绑定服务器获得当前行为，须先安装或升级到 v1.3.3，再重启并重新核对。本工作树未安装、未重启，也不复核另一用户会话的安装。v1.3.3 统一当前版本、不改变 52 工具/9 Skill 清单、不改写既有 runtime/缓存；本文不代替用户本机的安装、IDE 或实机资格证据。
 
 ## 工程 manifest 的阶段约束
 
