@@ -790,3 +790,157 @@ def test_creation_authorization_peek_root_relative(tmp_path: Path):
         "CREATION_AUTHORIZATION_INVALID",
         "authorization record is malformed",
     )
+
+
+# First-use lock initialization coverage: the sentinel byte of a brand-new lock
+# file may only be written by the process that already owns the file's byte 0.
+
+_LOCK_INITIALIZATION_CHILD = r'''
+import os
+import sys
+from pathlib import Path
+
+import stm32_toolkit.creation_authorization as module
+
+lock_path = Path(sys.argv[1])
+marker = Path(sys.argv[2])
+
+
+def announce() -> None:
+    if not marker.exists():
+        marker.write_text("attempted", encoding="utf-8")
+
+
+# Signal immediately before the first blocking lock attempt so the parent can
+# observe the empty file while this process is definitely inside the attempt.
+if os.name == "nt":
+    import msvcrt
+
+    real_locking = msvcrt.locking
+
+    def signaling_locking(fd, mode, nbytes):
+        if mode == msvcrt.LK_LOCK:
+            announce()
+        return real_locking(fd, mode, nbytes)
+
+    msvcrt.locking = signaling_locking
+else:
+    import fcntl
+
+    real_flock = fcntl.flock
+
+    def signaling_flock(fd, operation):
+        if operation & fcntl.LOCK_EX:
+            announce()
+        return real_flock(fd, operation)
+
+    fcntl.flock = signaling_flock
+
+try:
+    with module._durable_lock(lock_path):
+        data = lock_path.read_bytes()
+        print("OK" if data == b"\x00" else "SIZE:%d" % len(data), flush=True)
+except module.CreationAuthorizationError as error:
+    print("ERROR:%s" % error.code, flush=True)
+'''
+
+
+def _hold_native_exclusive(fd: int) -> None:
+    if os.name == "nt":
+        import msvcrt
+
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+    else:
+        import fcntl
+
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
+def _release_native_exclusive(fd: int) -> None:
+    if os.name == "nt":
+        import msvcrt
+
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+    else:
+        import fcntl
+
+        fcntl.flock(fd, fcntl.LOCK_UN)
+
+
+def test_empty_lock_is_initialized_only_by_its_lock_owner(tmp_path: Path):
+    lock_path = tmp_path / "locks" / "creation.lock"
+    lock_path.parent.mkdir()
+    marker = tmp_path / "attempted"
+    fd = os.open(
+        lock_path,
+        os.O_RDWR | os.O_CREAT | getattr(os, "O_BINARY", 0),
+        0o600,
+    )
+    owned = True
+    process = None
+    try:
+        _hold_native_exclusive(fd)
+        assert lock_path.read_bytes() == b""
+        environment = os.environ.copy()
+        source_root = str(Path(__file__).resolve().parents[1] / "src")
+        environment["PYTHONPATH"] = source_root + os.pathsep + environment.get("PYTHONPATH", "")
+        process = subprocess.Popen(
+            [sys.executable, "-c", _LOCK_INITIALIZATION_CHILD, str(lock_path), str(marker)],
+            env=environment,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        deadline = time.monotonic() + 20
+        while not marker.exists() and time.monotonic() < deadline:
+            assert process.poll() is None, process.communicate()
+            time.sleep(0.01)
+        assert marker.exists(), process.communicate()
+        # The contender reached its lock attempt while this process still owns
+        # the file, so it must wait without failing and without writing.
+        assert lock_path.read_bytes() == b""
+        blocked_until = time.monotonic() + 0.25
+        while time.monotonic() < blocked_until:
+            assert process.poll() is None, process.communicate()
+            assert lock_path.read_bytes() == b""
+            time.sleep(0.01)
+        _release_native_exclusive(fd)
+        owned = False
+        stdout, stderr = process.communicate(timeout=20)
+        assert process.returncode == 0, stderr
+        assert stdout.strip() == "OK", stderr
+        assert lock_path.read_bytes() == b"\x00"
+    finally:
+        if owned:
+            try:
+                _release_native_exclusive(fd)
+            except OSError:
+                pass
+        if process is not None and process.poll() is None:
+            try:
+                process.communicate(timeout=10)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.communicate(timeout=10)
+        os.close(fd)
+
+
+def test_malformed_nonempty_lock_is_preserved_without_repair(tmp_path: Path):
+    store, _project_root, prepared = _prepared_case(tmp_path)
+    lock = store.authorization_locks_root / f"{prepared.authorization_digest}.lock"
+    malformed = b"\x00extra"
+    lock.write_bytes(malformed)
+    before = _tree_snapshot(tmp_path)
+    with pytest.raises(CreationAuthorizationError) as error:
+        store.consume(prepared.authorization_digest, authorized=True)
+    _assert_error(
+        error,
+        "CREATION_AUTHORIZATION_STORE_UNAVAILABLE",
+        "authorization store is unavailable",
+    )
+    assert lock.read_bytes() == malformed
+    assert _tree_snapshot(tmp_path) == before
+    record = store.authorization_root / f"{prepared.authorization_digest}.json"
+    assert json.loads(record.read_text(encoding="utf-8"))["state"] == "prepared"
