@@ -31,7 +31,7 @@ def test_plugin_manifest_uses_standard_skill_discovery_and_version():
     assert plugin == {
         "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
         "name": "stm32-toolkit",
-        "version": "1.3.3",
+        "version": "1.3.4",
         "description": (
             "AI-assisted STM32 development with read-only Keil inspection, "
             "guarded ARMCC-to-GCC conversion, managed GCC/CMake configuration, "
@@ -39,7 +39,7 @@ def test_plugin_manifest_uses_standard_skill_discovery_and_version():
         ),
         "author": {"name": "STM32 Toolkit Team"},
     }
-    assert plugin["version"] == __version__ == "1.3.3"
+    assert plugin["version"] == __version__ == "1.3.4"
 
 
 def test_marketplace_manifest_uses_a_supported_plugin_source():
@@ -127,14 +127,14 @@ def test_launcher_reports_missing_versioned_runtime_without_interpreter_fallback
     assert result.returncode != 0
     assert result.stdout == ""
     assert "STM32_TOOLKIT_DATA_ROOT" in result.stderr
-    assert "runtime/1.3.3/Scripts/python.exe" in result.stderr.replace("\\", "/")
+    assert "runtime/1.3.4/Scripts/python.exe" in result.stderr.replace("\\", "/")
     assert not marker.exists()
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows cmd.exe launcher")
 def test_launcher_forwards_arguments_and_preserves_runtime_exit_code(tmp_path: Path):
     plugin_data = tmp_path / "plugin data"
-    runtime = plugin_data / "runtime" / "1.3.3"
+    runtime = plugin_data / "runtime" / "1.3.4"
     venv.EnvBuilder(with_pip=False).create(runtime)
     module_root = tmp_path / "stub module"
     package = module_root / "stm32_toolkit"
@@ -219,7 +219,7 @@ def test_monitor_launcher_reports_missing_versioned_runtime_without_interpreter_
     assert result.returncode != 0
     assert result.stdout == ""
     assert "stm32-monitor" in result.stderr
-    assert "runtime/1.3.3/Scripts/python.exe" in result.stderr.replace("\\", "/")
+    assert "runtime/1.3.4/Scripts/python.exe" in result.stderr.replace("\\", "/")
     assert not marker.exists()
 
 
@@ -228,7 +228,7 @@ def test_monitor_launcher_forwards_arguments_and_preserves_runtime_exit_code(
     tmp_path: Path,
 ):
     plugin_data = tmp_path / "plugin data"
-    runtime = plugin_data / "runtime" / "1.3.3"
+    runtime = plugin_data / "runtime" / "1.3.4"
     venv.EnvBuilder(with_pip=False).create(runtime)
     module_root = tmp_path / "stub module"
     package = module_root / "stm32_monitor"
@@ -619,15 +619,23 @@ def test_readmes_are_concise_and_distinguish_published_and_local_contracts():
             tags.add(version)
         assert tags, "a landing page must link a concrete release tag"
         newest = max(tags, key=lambda value: tuple(int(part) for part in value.split(".")))
-        # 1.3.2 is the published release; 1.3.3 is either the current local
-        # candidate or, after publication, the newest release page.
+        # 1.3.3 is the newest published release page.  v1.3.4 is the current
+        # source version but is deliberately not published yet: the separate
+        # bounded documentation task adds it to these landing pages only
+        # together with an explicit local-candidate mark.
         assert newest in {"1.3.2", "1.3.3"}, tags
         if newest == "1.3.2" and "1.3.3" in guide:
             assert any(mark in guide for mark in candidate_marks), (
                 "1.3.3 must be marked as a local candidate until it is published"
             )
-        # Each landing page names the current source version.
-        assert f"v{__version__}" in guide
+        if f"v{__version__}" in guide and __version__ != newest:
+            assert any(mark in guide for mark in candidate_marks), (
+                f"v{__version__} must be marked as a local candidate; publication "
+                "remains a separate authorized remote action"
+            )
+        # Each landing page links the newest published release line; the
+        # v1.3.4 candidate line lands with the deferred documentation task.
+        assert f"v{newest}" in guide
         declared.append(newest)
         # Detailed installation, upgrade and local limitations stay in the
         # user guide instead of being duplicated as landing-page steps.
@@ -799,18 +807,20 @@ def test_unified_1_0_1_runtime_version_across_launcher_setup_and_skill():
     command_blocks = "\n".join(_fenced_blocks(skill)).replace("\\", "/")
     manifest = json.loads(PLUGIN_MANIFEST.read_text(encoding="utf-8"))
 
-    assert manifest["version"] == __version__ == "1.3.3"
-    assert "runtime\\1.3.3\\Scripts\\python.exe" in launcher
-    assert "runtime/1.3.3/Scripts/python.exe" in launcher.replace("\\", "/")
+    assert manifest["version"] == __version__ == "1.3.4"
+    assert "runtime\\1.3.4\\Scripts\\python.exe" in launcher
+    assert "runtime/1.3.4/Scripts/python.exe" in launcher.replace("\\", "/")
     assert "0.3.0" not in launcher
     assert "1.3.2" not in launcher
-    assert "runtime\\1.3.3\\Scripts\\python.exe" in monitor_launcher
-    assert "runtime/1.3.3/Scripts/python.exe" in monitor_launcher.replace("\\", "/")
+    assert "1.3.3" not in launcher
+    assert "runtime\\1.3.4\\Scripts\\python.exe" in monitor_launcher
+    assert "runtime/1.3.4/Scripts/python.exe" in monitor_launcher.replace("\\", "/")
     assert "0.3.0" not in monitor_launcher
     assert "1.3.2" not in monitor_launcher
+    assert "1.3.3" not in monitor_launcher
     assert " -m stm32_monitor " in monitor_launcher
-    assert '$RuntimeVersion = "1.3.3"' in helper
-    assert '$LegacyRuntimeVersions = @("1.3.2", "1.3.1"' in helper
+    assert '$RuntimeVersion = "1.3.4"' in helper
+    assert '$LegacyRuntimeVersions = @("1.3.3", "1.3.2", "1.3.1"' in helper
     assert "0.3.0" in helper  # legacy-upgrade detection, never current selection
     assert '"${package}[probe]"' in helper
     assert "$monitorPackage" in helper
@@ -819,6 +829,8 @@ def test_unified_1_0_1_runtime_version_across_launcher_setup_and_skill():
     assert "ui_dist" in helper
     assert "import pyocd" in helper
     assert '"-I", "-c"' in helper
+    # SKILL.md still documents the published 1.3.3 runtime; the bounded
+    # documentation task moves those prose paths to the v1.3.4 candidate.
     assert "${CLAUDE_PLUGIN_DATA}/runtime/1.3.3" in skill
     assert "${CLAUDE_PLUGIN_DATA}/runtime/.staging/1.3.3-<id>" in skill
     assert "tools/stm32-toolkit[probe]" in skill
