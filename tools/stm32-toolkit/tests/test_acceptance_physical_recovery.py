@@ -810,22 +810,15 @@ def test_physical_build_authority_rejects_snapshot_mutated_after_fresh_facts(
     assert error.value.code == "ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH"
 
 
-def test_v1_attempt_rejects_physical_stage_and_physical_input(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
+def test_v1_attempt_rejects_physical_stage_and_physical_input(tmp_path: Path):
     project = tmp_path / "project"
     data = tmp_path / "data"
-    project.mkdir()
-    monkeypatch.setattr(
-        recovery_workflows,
-        "_load_project_model",
-        lambda _root: SimpleNamespace(
-            schema_version=3,
-            logical_project_id=UUID(PROJECT_ID),
-            memory=SimpleNamespace(source="keil"),
-            target_device=TARGET,
-        ),
-    )
+    _write_physical_project(project, "keil")
+    model = load_project_model(project)
+    snapshot = snapshot_project_inputs(model)
+    assert snapshot.entries
+    assert snapshot.sha256 != "0" * 64
+    assert len(snapshot.sha256) == 64
     context = AcceptanceRecoveryContext(project, data, "session-a")
     started = recovery_workflows.begin_acceptance_attempt(
         context,
@@ -904,21 +897,16 @@ def test_existing_physical_attempt_dispatches_plain_build_checkpoint(
 
 
 def test_cubemx_begin_and_checkpoint_use_the_v4_profile_and_reject_continuation(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
 ):
     project = tmp_path / "project"
     data = tmp_path / "data"
-    project.mkdir()
-    monkeypatch.setattr(
-        recovery_workflows,
-        "_load_project_model",
-        lambda _root: SimpleNamespace(
-            schema_version=3,
-            logical_project_id=UUID(PROJECT_ID),
-            memory=SimpleNamespace(source="cubemx"),
-            target_device=TARGET,
-        ),
-    )
+    _write_physical_project(project, "cubemx")
+    model = load_project_model(project)
+    snapshot = snapshot_project_inputs(model)
+    assert snapshot.entries
+    assert snapshot.sha256 != "0" * 64
+    assert len(snapshot.sha256) == 64
     context = AcceptanceRecoveryContext(project, data, "session-a")
     started = begin_acceptance_attempt(
         context,
