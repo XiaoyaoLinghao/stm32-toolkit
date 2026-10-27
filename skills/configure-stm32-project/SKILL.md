@@ -5,6 +5,10 @@ description: Use when a Claude Code user asks to generate or update managed GCC/
 
 # Configure STM32 Project
 
+## New-project routing (before this workflow)
+
+This skill configures an existing, validated project model; it is not a project-creation entry. If the user asks for a **new** STM32 project, or `stm32_project_context` reports no usable model for that request, do not only report "blocked" and stop: explain the separate creation sequence and point them to [the new-project section of the user guide](../../docs/user-guide.md) — read-only `stm32_project_create_plan`, then same-input `stm32_project_create_prepare` (writes only an expiring, single-use authorization under the Toolkit data root; never launches CubeMX or changes the destination), then explicitly authorized `stm32_project_create_apply` with the returned `authorizationDigest`, which stages via CubeMX, configures, builds debug/release and activates the project-relative destination. That flow is current unpublished source behavior and needs actual STM32CubeMX plus a matching offline firmware package; Git is never required, and a missing vendor prerequisite is reported with the actual diagnostic rather than replaced by a synthetic fixture. After a successful apply, bind the applied destination as workspace/MCP project root and return to the workflow below.
+
 ## Workflow
 
 1. **Context first.** Call `stm32_project_context` (no arguments). Read `capabilityDetails.configure`: `available` means a valid supported project model is loaded; `blocked` means a named prerequisite is missing; `not-evaluated` means context did not check it. If it is `blocked`, report the context evidence and next step and stop. The legacy `capabilities.configure` boolean remains for compatibility. For a project delivered by `keil convert`, first bind the apply result's `data.outputRoot` as the VS Code workspace and MCP project root, then run context there; configure at that root and never against or inside the read-only Keil source. Git is optional for both new and delivered projects.
