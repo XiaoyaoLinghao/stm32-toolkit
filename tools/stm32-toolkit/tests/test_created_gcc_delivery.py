@@ -388,6 +388,7 @@ def test_offline_creation_journey_reaches_independent_gcc_build_and_managed_flas
     destination = workspace / DESTINATION
     store = CreationAuthorizationStore(data_root)
     before = tree_inventory(workspace)
+    fixture_before = tree_inventory(FIXTURE)
 
     planned = plan_creation_workflow(request, support_profile=support)
     assert planned.ok is True, planned.to_dict()
@@ -428,6 +429,9 @@ def test_offline_creation_journey_reaches_independent_gcc_build_and_managed_flas
     assert not list(workspace.glob(".stm32tk-*"))
     assert not any(path.name.endswith(".script") for path in destination.rglob("*"))
     assert_no_git_metadata(workspace, destination)
+    # The adapter copied the tracked fixture and reshaped only that disposable
+    # copy: the tracked fixture input inventory is byte-identical afterwards.
+    assert tree_inventory(FIXTURE) == fixture_before
 
     # Genuine debug and release builds ran inside apply before activation, and
     # the ownership manifest is the real literal CubeMX ownership record.
@@ -456,7 +460,7 @@ def test_offline_creation_journey_reaches_independent_gcc_build_and_managed_flas
     assert config_plan.ok is True, config_plan.to_dict()
     configured = configure_project_workflow(
         destination,
-        plan_id=config_plan.data["planId"],
+        plan_id=config_plan.data["plan_id"],
         authorized=True,
         debug_backend="pyocd",
         debug_target=DEBUG_TARGET,
@@ -469,7 +473,28 @@ def test_offline_creation_journey_reaches_independent_gcc_build_and_managed_flas
     relocated = copy_output_only(tmp_path, destination, tmp_path / "relocated")
     assert not (relocated / "build").exists()
     assert_no_git_metadata(relocated)
-    rebuilt = build_firmware_workflow(relocated, preset="arm-debug", clean=True, authorized=True)
+
+    # Independence also means the original delivered path must not exist while
+    # the relocated copy is rebuilt, so the build cannot silently reuse the
+    # pre-activation cache or fall back to the original tree.  The delivered
+    # workspace is a disposable test-owned tree: it is renamed reversibly here
+    # and restored below -- never deleted or modified -- so every later
+    # "no reference to the original" check still compares the real old
+    # workspace/destination paths.  Nothing about the build is caught or
+    # downgraded: if the normal ``clean`` build cannot stand on its own, this
+    # test fails.
+    parked_workspace = tmp_path / "workspace-parked"
+    assert not parked_workspace.exists()
+    workspace.rename(parked_workspace)
+    try:
+        assert not workspace.exists()
+        assert not destination.exists()
+        rebuilt = build_firmware_workflow(
+            relocated, preset="arm-debug", clean=True, authorized=True
+        )
+    finally:
+        parked_workspace.rename(workspace)
+    assert workspace.is_dir()
     assert rebuilt.ok is True, rebuilt.to_dict()
     relocated_identity = json.loads(
         (relocated / "build" / "arm-debug" / "firmware-identity.json").read_text(
@@ -525,6 +550,7 @@ def test_offline_creation_journey_reaches_independent_gcc_build_and_managed_flas
     assert compiler.is_file()
     assert compiler == Path(gcc).resolve()
     assert str(destination) not in cache
+    assert str(workspace) not in cache
 
     # Real ELF: entry is the reset handler and the first PT_LOAD begins with
     # the live vector table at the internal-Flash origin.
