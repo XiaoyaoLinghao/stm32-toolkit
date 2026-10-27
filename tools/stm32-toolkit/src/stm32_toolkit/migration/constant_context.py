@@ -954,20 +954,29 @@ def _is_redirect(info: os.stat_result) -> bool:
     )
 
 
+_CONDITIONAL_OPENERS = frozenset({"if", "ifdef", "ifndef"})
+_CONDITIONAL_BRANCHES = frozenset({"else", "elif"})
+
+
 def _guard_info(directives: list[_Directive]) -> tuple[set[int], str] | None:
     """Recognise only a structural ordinary include guard.
 
     The guard must be the first directive, immediately followed by an empty
-    object-like ``#define`` of the same name, closed by the file's last
-    directive, with no other conditional anywhere.  Anything else is a real
-    conditional and keeps per-definition conditional provenance.
+    object-like ``#define`` of the exact same name, and closed by the file's
+    last directive.  Balanced nested conditional groups are permitted inside
+    the guarded body.  Only the guard's own opening and closing directives are
+    exempt from conditional depth, so any macro or include inside a nested
+    group keeps conditional provenance.  A branch of the guard itself (an
+    outer-level ``#else``/``#elif``), a premature close, unbalanced nesting,
+    or a malformed, unrelated or nonempty guard definition proves nothing and
+    leaves every definition with real conditional provenance.
     """
     if len(directives) < 3:
         return None
     first = directives[0]
     if first.keyword != "ifndef":
         return None
-    match = _IDENT_RE.match(first.rest.strip())
+    match = _IDENT_RE.fullmatch(first.rest.strip())
     if match is None:
         return None
     name = match.group(0)
@@ -979,12 +988,26 @@ def _guard_info(directives: list[_Directive]) -> tuple[set[int], str] | None:
         return None
     if defined.group(2) is not None or second.rest[defined.end() :].strip():
         return None
-    if directives[-1].keyword != "endif":
+    last = len(directives) - 1
+    if directives[last].keyword != "endif":
         return None
-    for directive in directives[1:-1]:
-        if directive.keyword in _CONDITIONALS:
+    depth = 0
+    for position in range(1, last):
+        keyword = directives[position].keyword
+        if keyword in _CONDITIONAL_OPENERS:
+            depth += 1
+        elif keyword == "endif":
+            if depth == 0:
+                # The guard itself would close before the file's last
+                # directive, so the outer ``#endif`` is not its match.
+                return None
+            depth -= 1
+        elif keyword in _CONDITIONAL_BRANCHES and depth == 0:
+            # A branch of the guard itself makes the whole body conditional.
             return None
-    return {0, len(directives) - 1}, name
+    if depth != 0:
+        return None
+    return {0, last}, name
 
 
 # ---------------------------------------------------------------------------
