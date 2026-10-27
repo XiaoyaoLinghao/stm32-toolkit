@@ -1,0 +1,120 @@
+{
+  "id": 425062317,
+  "tag_name": "v1.3.3",
+  "target_commitish": "46ca09084bbe39f670714d19d7d55f9365ef06be",
+  "html_url": "https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.3.3",
+  "draft": false,
+  "prerelease": false,
+  "published_at": "2026-10-27T05:22:56Z",
+  "latestReleaseId": 425062317,
+  "sourceCommit": "46ca09084bbe39f670714d19d7d55f9365ef06be",
+  "tagObject": "4e06d5fc364cc15782d7a66cf36c00d97080332a",
+  "authentication": "none",
+  "downloads": [
+    {
+      "name": "CHECKSUMS.sha256",
+      "assetId": 680550262,
+      "url": "https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/download/v1.3.3/CHECKSUMS.sha256",
+      "httpStatus": 200,
+      "bytes": 1073,
+      "sha256": "a71744ac8a602441bf49a47b20d04111f7d76cf99958d886d64ccaebcf698272"
+    },
+    {
+      "name": "compatibility.md",
+      "assetId": 680548298,
+      "url": "https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/download/v1.3.3/compatibility.md",
+      "httpStatus": 200,
+      "bytes": 2014,
+      "sha256": "e3ceff749cfd97548ddc9a61fc80884c502b94ff07964596b4377010b355de13"
+    },
+    {
+      "name": "LICENSE",
+      "assetId": 680548174,
+      "url": "https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/download/v1.3.3/LICENSE",
+      "httpStatus": 200,
+      "bytes": 1075,
+      "sha256": "55edb314745f2b0d3fe09e512726c3bf67cb20ba99fa3cd66859a64f3e6b6af5"
+    },
+    {
+      "name": "licenses.zip",
+      "assetId": 680548353,
+      "url": "https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/download/v1.3.3/licenses.zip",
+      "httpStatus": 200,
+      "bytes": 413750,
+      "sha256": "1b6e46780391d74b146853f1306582bb5433c35193f370731135afc325ad9ad9"
+    },
+    {
+      "name": "monitor-assets.json",
+      "assetId": 680548428,
+      "url": "https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/download/v1.3.3/monitor-assets.json",
+      "httpStatus": 200,
+      "bytes": 970,
+      "sha256": "0fe98bbd73abff784e9832c12a42a1b91cc0fda4bea3ce2d7d3f68c1a8b6bc4c"
+    },
+    {
+      "name": "release-manifest.json",
+      "assetId": 680548489,
+      "url": "https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/download/v1.3.3/release-manifest.json",
+      "httpStatus": 200,
+      "bytes": 15814,
+      "sha256": "5391dba36fb7bcb564116783e595a73118c9bbbf4e6418839a232808036c24ed"
+    },
+    {
+      "name": "sbom.spdx.json",
+      "assetId": 680548530,
+      "url": "https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/download/v1.3.3/sbom.spdx.json",
+      "httpStatus": 200,
+      "bytes": 191430,
+      "sha256": "4c405d1219296b9e6aa9d0549bac6209dd97bbfe3fcaeb8b17727e86b6788141"
+    },
+    {
+      "name": "stm32-toolkit-1.3.3-source.zip",
+      "assetId": 680548609,
+      "url": "https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/download/v1.3.3/stm32-toolkit-1.3.3-source.zip",
+      "httpStatus": 200,
+      "bytes": 19562020,
+      "sha256": "5e3251ea300a589a5f72c7ed0a2c08cb11d3c7905287792e577d32ecfd943645"
+    },
+    {
+      "name": "stm32-toolkit-1.3.3-windows-x86_64.zip",
+      "assetId": 680548845,
+      "url": "https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/download/v1.3.3/stm32-toolkit-1.3.3-windows-x86_64.zip",
+      "httpStatus": 200,
+      "bytes": 116350730,
+      "sha256": "52829b90bdd2ebf5b8dd61825ba7c423f5679597b23a35487bf3f8ca4c51378a"
+    },
+    {
+      "name": "stm32_monitor-1.3.3-py3-none-any.whl",
+      "assetId": 680549960,
+      "url": "https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/download/v1.3.3/stm32_monitor-1.3.3-py3-none-any.whl",
+      "httpStatus": 200,
+      "bytes": 1556130,
+      "sha256": "f2b960d18abc18445659c0f7f7e5fc29902e6c292c45f73fb464feb521f18ac7"
+    },
+    {
+      "name": "stm32_toolkit-1.3.3-py3-none-any.whl",
+      "assetId": 680550091,
+      "url": "https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/download/v1.3.3/stm32_toolkit-1.3.3-py3-none-any.whl",
+      "httpStatus": 200,
+      "bytes": 4241849,
+      "sha256": "732c28ef502dbc89a7919f2b3be1ae46a23fe1781f89337968add915393f3714"
+    },
+    {
+      "name": "THIRD-PARTY-NOTICES.md",
+      "assetId": 680548242,
+      "url": "https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/download/v1.3.3/THIRD-PARTY-NOTICES.md",
+      "httpStatus": 200,
+      "bytes": 2615,
+      "sha256": "241426e64abd43801dc97d0c2a3fcc6c39f17246329031c0a52a5e52149b7939"
+    },
+    {
+      "name": "troubleshooting.md",
+      "assetId": 680550205,
+      "url": "https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/download/v1.3.3/troubleshooting.md",
+      "httpStatus": 200,
+      "bytes": 1737,
+      "sha256": "48973953d6ae85e16a45cc2c41f65571697a496044a210fea95a43649b153710"
+    }
+  ],
+  "allDownloadsMatchFrozenBuild": true
+}

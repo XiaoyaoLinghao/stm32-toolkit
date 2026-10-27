@@ -4,6 +4,8 @@
 
 ## 1. 当前断点与证据
 
+2026-10-27 v1.3.3 已完成发布和公网校验：[发布记录](../codex/returns/STM32TK-133/publication-2026-10-27.md)。Release `425062317` 于 `2026-10-27T05:22:56Z` 设为Latest，标签绑定冻结 `46ca09084bbe39f670714d19d7d55f9365ef06be`。13附件匿名下载均HTTP200、大小及SHA-256匹配双构建候选；中英文README和现行调用指引已同步，文档合同检查通过。仅本候选的已披露例外保持原义，永久门槛未变。最终安装/VS Code仍USER_VALIDATION_PENDING、由用户负责；未改原工程/硬件。冻结包保留构建时文档状态，master文档说明实际发布。以下为历史断点。
+
 2026-10-27 v1.3.3 资格处置：用户明确批准仅对冻结 `46ca09084bbe39f670714d19d7d55f9365ef06be` 的13文件候选接受已披露限制并发布Latest，见[授权记录](../codex/returns/STM32TK-133/authorization-2026-10-27.md)。处置为 USER_APPROVED_EXCEPTION，永久门槛未改，未达标及跳过不变为PASS。下一步非强推源码/标签、上传校验及公网核验；最终安装/VS Code由用户负责，原工程/硬件不操作。以下为历史断点。
 
 2026-10-27 v1.3.3 冻结包：`46ca09084bbe39f670714d19d7d55f9365ef06be` 两次官方离线构建的13文件大小/hash完全一致，官方 bundle 验证退出0，见[候选记录](../codex/returns/STM32TK-133/candidate-build.md)。Toolkit总体/风险82.5877%/82.4231%、Monitor风险92.3681%仍未达门槛；首次性能失败和随后定点对照通过分别保留。当前 LOCAL_CANDIDATE_NOT_QUALIFIED，需仅对具体候选处置限制；还未推送/发布。最终安装和 VS Code 由用户负责，原工程/硬件不操作。以下为历史断点。

@@ -19,7 +19,7 @@ Final installation/VS Code remains **USER_VALIDATION_PENDING**, owned by the use
 original project/hardware access remains prohibited. See the
 [specific authorization](../codex/returns/STM32TK-133/authorization-2026-10-27.md)
 and [frozen build record](../codex/returns/STM32TK-133/candidate-build.md).
-Publication status will be recorded after observed success.
+Publication is complete: [v1.3.3 is Latest](../codex/returns/STM32TK-133/publication-2026-10-27.md). All 13 assets were anonymously downloaded and rehashed; final user installation/VS Code remains pending.
 
 ## v1.3.2 frozen-candidate exception authorized on 2026-10-26
 

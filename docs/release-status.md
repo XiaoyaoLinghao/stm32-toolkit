@@ -1,5 +1,9 @@
 # Release status and retained limitations
 
+## v1.3.3 published as Latest — 2026-10-27
+
+[v1.3.3 Release](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.3.3) is public and Latest. All 13 files were anonymously downloaded and rehashed against frozen `46ca09084bbe39f670714d19d7d55f9365ef06be`; see [publication evidence](codex/returns/STM32TK-133/publication-2026-10-27.md). The approved candidate-specific limitations remain disclosed. Final actual installation/VS Code remains **USER_VALIDATION_PENDING**, owned by the user. No original-project or hardware actions occurred. Frozen package docs keep build-time status; current master docs supersede that status.
+
 ## v1.3.3 candidate-specific exception — 2026-10-27
 
 The user approved **USER_APPROVED_EXCEPTION** only for frozen `46ca09084bbe39f670714d19d7d55f9365ef06be` and authorized Latest publication with disclosed limits. See [authorization](codex/returns/STM32TK-133/authorization-2026-10-27.md). Permanent gates remain unchanged. Publication is pending observed remote success; final installation/VS Code remains **USER_VALIDATION_PENDING**.
