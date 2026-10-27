@@ -18,6 +18,7 @@ from stm32_toolkit.extra_regions import ExtraRegion
 from stm32_toolkit.keil import KeilInspection
 from stm32_toolkit.memory_layout import MemoryLayout
 from stm32_toolkit.migration import git_guard
+from stm32_toolkit.migration.header_encoding import discover_header_encodings
 from stm32_toolkit.migration.model import (
     BLOCKER_HINT_DEPENDENCY_ENCODING,
     BLOCKER_HINT_DEPENDENCY_PATH,
@@ -421,6 +422,18 @@ _KNOWN_REMEDIATION: dict[
         " the original file.",
         None,
         "normalize-source-comments",
+        (),
+    ),
+    "ARMCC_HEADER_ENCODING_UNSUPPORTED": (
+        _NEEDS_USER_INPUT,
+        "A quoted header dependency is not strict UTF-8. Establish the exact"
+        " per-file charset explicitly and, only then, prepare a"
+        " byte-preserving strict UTF-8 copy through reviewed external"
+        " preparation outside the project; verify the bytes, then rerun"
+        " inspect and preflight. Toolkit never transcodes the original header"
+        " and never guesses an encoding.",
+        None,
+        None,
         (),
     ),
     "MIGRATION_MANIFEST_EXISTS": (
@@ -842,12 +855,55 @@ def preflight_keil_conversion(
     )
     extras = analysis.extra_regions
     wfi_choices = analysis.wfi_returns
+    # Read-only, bounded inventory of quoted header dependencies.  Missing,
+    # unsupported, or incomplete discovery edges stay explicit metadata in
+    # ``encodingDiscovery``; they never become semantic blockers, so a
+    # literal-only conversion keeps its original meaning.
+    encoding_discovery = discover_header_encodings(
+        analysis.project_root,
+        tuple(
+            source.path
+            for source in analysis.inspection.sources
+            if source.included and source.language in ("c", "cxx")
+        ),
+        tuple(analysis.include_paths),
+        {entry.path: (entry.sha256, entry.size) for entry in analysis.inputs},
+    )
+    # Original technical blockers keep their exact order and count.  Each
+    # distinct non-UTF-8 header appends one stable needs-user-input blocker;
+    # this single local list drives the serialized blockers, the totals, and
+    # plan readiness without mutating ConversionAnalysis or the PLAN schema.
+    combined_blockers = list(analysis.blockers)
+    non_utf8_headers = encoding_discovery["nonUtf8Headers"]
+    assert isinstance(non_utf8_headers, list)
+    reported_headers: set[str] = set()
+    for header_path in non_utf8_headers:
+        if not isinstance(header_path, str) or header_path in reported_headers:
+            continue
+        reported_headers.add(header_path)
+        combined_blockers.append(
+            MigrationBlocker(
+                code="ARMCC_HEADER_ENCODING_UNSUPPORTED",
+                rule_id="keil.header-encoding/1",
+                path=header_path,
+                line=0,
+                column=0,
+                evidence="quoted header bytes are not strict UTF-8",
+                message=(
+                    "Prepare this header as strict UTF-8 through reviewed"
+                    " external preparation: declare its exact charset"
+                    " explicitly, preserve every non-comment byte, and rerun"
+                    " inspect and preflight. Preflight never transcodes the"
+                    " original header and never guesses an encoding."
+                ),
+            )
+        )
     git = _git_state(analysis.project_root)
 
     by_code: dict[str, int] = {}
     by_remediation = {_NEEDS_USER_INPUT: 0, _UNSUPPORTED: 0}
     blockers: list[dict[str, object]] = []
-    for blocker in analysis.blockers:
+    for blocker in combined_blockers:
         by_code[blocker.code] = by_code.get(blocker.code, 0) + 1
         remediation = _remediation_for(blocker)
         category = remediation["category"]
@@ -857,7 +913,7 @@ def preflight_keil_conversion(
 
     fresh = analysis.inspection
     plan_readiness = _plan_readiness(
-        len(analysis.blockers),
+        len(combined_blockers),
         startup_options,
         memory_layout,
         extras,
@@ -880,9 +936,13 @@ def preflight_keil_conversion(
                 "inspectionSha256": inspection_sha256_for(fresh),
             },
             "inputs": [entry.to_dict() for entry in analysis.inputs],
+            # Read-only discovery evidence, including any incomplete or
+            # unsupported quoted edges.  This is metadata only: it never
+            # changes ``complete`` nor adds a semantic blocker by itself.
+            "encodingDiscovery": encoding_discovery,
             "blockers": blockers,
             "blockerSummary": {
-                "total": len(analysis.blockers),
+                "total": len(combined_blockers),
                 "byCode": dict(sorted(by_code.items())),
                 "byRemediation": dict(sorted(by_remediation.items())),
             },
