@@ -838,11 +838,42 @@ else:
 
 try:
     with module._durable_lock(lock_path):
-        data = lock_path.read_bytes()
-        print("OK" if data == b"\x00" else "SIZE:%d" % len(data), flush=True)
+        pass
 except module.CreationAuthorizationError as error:
     print("ERROR:%s" % error.code, flush=True)
+else:
+    # Read only after leaving the context.  Windows applies byte-range locks
+    # across handles within one process too, so opening a second handle over
+    # the locked byte while it is still held would be denied even though this
+    # process is the legitimate owner; that denial is not a lock-initialization
+    # failure.
+    data = lock_path.read_bytes()
+    print("OK" if data == b"\x00" else "SIZE:%d" % len(data), flush=True)
 '''
+
+
+def _process_diagnostic(process: subprocess.Popen[str], *, timeout: float = 5.0) -> str:
+    """Describe the child without ever waiting on a live lock holder's pipes.
+
+    ``communicate`` without a bound can deadlock while this test still owns the
+    lock and the child is parked inside its lock attempt, so output is only
+    collected once ``poll`` proves the child is terminal.
+    """
+    if process.poll() is None:
+        return f"child pid {process.pid} is still running"
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return f"child pid {process.pid} exited but its output was unavailable within {timeout:g}s"
+    return f"child pid {process.pid} exit {process.returncode}: stdout={stdout!r} stderr={stderr!r}"
+
+
+def _lock_file_state(path: Path) -> str:
+    """Report lock-file bytes without masking the real failure on a denied read."""
+    try:
+        return repr(path.read_bytes())
+    except OSError as error:
+        return f"<unreadable: {error}>"
 
 
 def _hold_native_exclusive(fd: int) -> None:
@@ -895,15 +926,18 @@ def test_empty_lock_is_initialized_only_by_its_lock_owner(tmp_path: Path):
         )
         deadline = time.monotonic() + 20
         while not marker.exists() and time.monotonic() < deadline:
-            assert process.poll() is None, process.communicate()
+            assert process.poll() is None, _process_diagnostic(process)
             time.sleep(0.01)
-        assert marker.exists(), process.communicate()
+        assert marker.exists(), (
+            f"child never reached its lock attempt; lock={_lock_file_state(lock_path)}; "
+            f"{_process_diagnostic(process)}"
+        )
         # The contender reached its lock attempt while this process still owns
         # the file, so it must wait without failing and without writing.
         assert lock_path.read_bytes() == b""
         blocked_until = time.monotonic() + 0.25
         while time.monotonic() < blocked_until:
-            assert process.poll() is None, process.communicate()
+            assert process.poll() is None, _process_diagnostic(process)
             assert lock_path.read_bytes() == b""
             time.sleep(0.01)
         _release_native_exclusive(fd)
