@@ -14,18 +14,26 @@ refused edge is reported as bounded evidence and never followed.
 
 Discovery is intentionally weaker than a preprocessor and fails conservative:
 
-* Only full, ASCII, double-quoted operands become edges.  Angle includes are
-  ignored and never swept from disk; dynamic, non-ASCII, malformed or
-  trailing-garbage operands produce a diagnostic and no guessed filename.
+* Only ``#include`` with a full, ASCII, double-quoted operand becomes an edge.
+  Angle includes are ignored and never swept from disk; dynamic, non-ASCII,
+  malformed or trailing-garbage operands produce a diagnostic and no guessed
+  filename.
+* ``#include_next`` and ``#import`` do not have ordinary quoted include search
+  semantics.  Each occurrence is reported as ``unsupported-directive``
+  evidence and is never followed as an ordinary ``#include``.
 * Backslash-newline (including CRLF) splices are removed before comment
   masking and directive splitting, so a continued string or comment cannot
   invent a directive line.
 * A C++ raw string literal that the shared comment masker cannot prove
   (unterminated, or spanning physical lines) marks its file as incomplete and
   none of that file's apparent edges are followed.
-* Files, bytes, include depth, visited directories and emitted diagnostics are
-  explicitly bounded; hitting a bound is reported as ``complete=False`` with
-  a stable diagnostic.
+* Files, bytes, include depth, visited directories, resolver attempts and
+  emitted diagnostics are explicitly bounded; hitting a bound is reported as
+  ``complete=False`` with a stable diagnostic.  ``counts["bytes"]`` charges
+  every successful raw read, including a file reached again through a
+  different edge, so an overrun can exceed the budget by at most one file's
+  bounded size: the resolver must return the bytes before their size is
+  known.  An exhausted budget never continues to the next edge.
 
 The result is a plain dictionary::
 
@@ -64,6 +72,10 @@ MAX_INVENTORY_BYTES = 64 * 1024 * 1024
 MAX_INVENTORY_DEPTH = 32
 MAX_INVENTORY_DIRECTORIES = 4096
 MAX_INVENTORY_DIAGNOSTICS = 512
+
+#: Bound on resolver attempts, so repeated unresolved edges cannot multiply
+#: physical lookups past the file budget.
+MAX_INVENTORY_LOOKUPS = 4 * MAX_INVENTORY_FILES
 
 MAX_OPERAND_CHARS = 120
 MAX_MESSAGE_CHARS = 240
@@ -122,6 +134,7 @@ def discover_header_encodings(
     truncated = False
     files = 0
     total_bytes = 0
+    lookups = 0
 
     def directories_used() -> int:
         return len(seed_index.directory_cache) + len(
@@ -178,14 +191,30 @@ def discover_header_encodings(
         }
 
     for seed in sorted(set(source_paths)):
+        # An exact repeat of an inventoried path needs no second read.
+        if seed in seen:
+            continue
+        if directories_used() > MAX_INVENTORY_DIRECTORIES:
+            add_diagnostic(seed, seed, "limit", "directory budget exceeded")
+            return build_result()
         if files >= MAX_INVENTORY_FILES:
             add_diagnostic(seed, seed, "limit", "file budget exceeded")
             return build_result()
+        if total_bytes >= MAX_INVENTORY_BYTES:
+            add_diagnostic(seed, seed, "limit", "byte budget exceeded")
+            return build_result()
+        if lookups >= MAX_INVENTORY_LOOKUPS:
+            add_diagnostic(seed, seed, "limit", "include lookup budget exceeded")
+            return build_result()
+        lookups += 1
         try:
             located = seed_index.resolve_include_bytes("", seed)
         except ConstantResolutionError as error:
             add_diagnostic(seed, seed, error.code, _error_message(error))
             continue
+        if directories_used() > MAX_INVENTORY_DIRECTORIES:
+            add_diagnostic(seed, seed, "limit", "directory budget exceeded")
+            return build_result()
         if located is None:
             add_diagnostic(
                 seed,
@@ -195,11 +224,13 @@ def discover_header_encodings(
             )
             continue
         rel, fingerprint, payload = located
-        if rel in seen:
-            continue
-        if total_bytes + len(payload) > MAX_INVENTORY_BYTES:
+        # The bytes are already read; charge them before any dedup decision.
+        total_bytes += len(payload)
+        if total_bytes > MAX_INVENTORY_BYTES:
             add_diagnostic(seed, seed, "limit", "byte budget exceeded")
             return build_result()
+        if rel in seen:
+            continue
         digest = _digest(fingerprint, payload)
         expected = expected_inputs.get(rel)
         if expected is None and seed != rel:
@@ -213,7 +244,6 @@ def discover_header_encodings(
             )
         seen.add(rel)
         files += 1
-        total_bytes += len(payload)
         queue.append((rel, payload, 0))
 
     while queue:
@@ -225,32 +255,50 @@ def discover_header_encodings(
         for operand, code, message in problems:
             add_diagnostic(rel, operand, code, message)
         for operand in operands:
+            # ``_discover_edges`` returns each operand once, and every queued
+            # file is dequeued once, so an identical including-file/operand
+            # edge is never resolved twice.
+            if depth + 1 > MAX_INVENTORY_DEPTH:
+                add_diagnostic(
+                    rel, operand, "limit", "include depth budget exceeded"
+                )
+                continue
             if directories_used() > MAX_INVENTORY_DIRECTORIES:
                 add_diagnostic(rel, operand, "limit", "directory budget exceeded")
                 return build_result()
+            if total_bytes >= MAX_INVENTORY_BYTES:
+                add_diagnostic(rel, operand, "limit", "byte budget exceeded")
+                return build_result()
+            if lookups >= MAX_INVENTORY_LOOKUPS:
+                add_diagnostic(
+                    rel, operand, "limit", "include lookup budget exceeded"
+                )
+                return build_result()
+            lookups += 1
             try:
                 located = dependency_index.resolve_include_bytes(rel, operand)
             except ConstantResolutionError as error:
                 add_diagnostic(rel, operand, error.code, _error_message(error))
                 continue
+            if directories_used() > MAX_INVENTORY_DIRECTORIES:
+                add_diagnostic(rel, operand, "limit", "directory budget exceeded")
+                return build_result()
             if located is None:
                 add_diagnostic(
                     rel, operand, "missing", "quoted include was not found"
                 )
                 continue
             dependency, fingerprint, body = located
+            # The resolver already returned the bytes, so charge this read
+            # even when the dependency is already inventoried.
+            total_bytes += len(body)
+            if total_bytes > MAX_INVENTORY_BYTES:
+                add_diagnostic(rel, operand, "limit", "byte budget exceeded")
+                return build_result()
             if dependency in seen:
-                continue
-            if depth + 1 > MAX_INVENTORY_DEPTH:
-                add_diagnostic(
-                    rel, operand, "limit", "include depth budget exceeded"
-                )
                 continue
             if files >= MAX_INVENTORY_FILES:
                 add_diagnostic(rel, operand, "limit", "file budget exceeded")
-                return build_result()
-            if total_bytes + len(body) > MAX_INVENTORY_BYTES:
-                add_diagnostic(rel, operand, "limit", "byte budget exceeded")
                 return build_result()
             digest = _digest(fingerprint, body)
             expected = expected_inputs.get(dependency)
@@ -266,7 +314,6 @@ def discover_header_encodings(
                 )
             seen.add(dependency)
             files += 1
-            total_bytes += len(body)
             utf8 = _is_utf8(body)
             headers[dependency] = {
                 "path": dependency,
@@ -289,6 +336,10 @@ def _discover_edges(data: bytes) -> tuple[list[str], list[tuple[str, str, str]]]
     ASCII directive text and every non-ASCII operand is rejected instead of
     guessed.  Comments are masked and splices removed first, and a raw string
     the masker cannot prove suppresses every edge in the file.
+
+    Only ``#include`` yields an edge; ``#include_next`` and ``#import`` use
+    different search or inclusion semantics and are reported as
+    ``unsupported-directive`` instead of being followed.
     """
     masked = _mask_comments(_logical_text(data))
     unproven = _unproven_raw_string(masked)
@@ -300,6 +351,15 @@ def _discover_edges(data: bytes) -> tuple[list[str], list[tuple[str, str, str]]]
     problems: list[tuple[str, str, str]] = []
     for directive in _directives(masked):
         if directive.keyword not in _INCLUDE_KEYWORDS:
+            continue
+        if directive.keyword != "include":
+            problems.append(
+                (
+                    directive.rest.strip()[:MAX_OPERAND_CHARS],
+                    "unsupported-directive",
+                    f"#{directive.keyword} is not an ordinary quoted include",
+                )
+            )
             continue
         stripped = directive.rest.strip()
         if stripped.startswith("<"):
