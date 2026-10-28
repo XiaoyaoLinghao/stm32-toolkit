@@ -4,6 +4,8 @@
 
 ## 1. 当前断点与证据
 
+2026-10-28 FLASH-PREPARATION 一次受明确授权的源码候选普通1MHz烧录在连接阶段失败，见[实机执行记录](../codex/returns/FLASH-PREPARATION/hardware-validation-2026-10-28.md)。执行源码HEAD `7193fcd933020a7084aab9472fc6716d5ca28e82`、产品CodeHead `1bb95790dbe1552b700f588d56e5ef9301b839a2`；入口合同、执行卡和捕获包装已由独立Claude CLI审查为NO_BLOCKERS，离线准入及Windows纯软件spawn检查通过。唯一一次调用退出2，`PROBE_CLOSE_FAILED`，主诊断`service-attach-deadline`超时、terminal wait超时，随后自有worker中止及租约释放等记录成功；目标状态仍未知。未进入新烧录前复位、编程或回读，未生成本次成功收据，旧recovery收据和工程输入hash未变。首错后未重试、恢复或追加硬件读取/控制；一次授权已用完。当前实机结论 **FAILED_AT_ATTACH_HARDWARE_VALIDATION_INCOMPLETE**，既有离线软件接受不变、整体仍 **SOFTWARE_COMPLETE_HARDWARE_PENDING**；原IPSR=3与修复实效未证实。下一步先离线定位attach超时，任何补硬件另填卡并核对新授权。此为源码实验，未修改已安装runtime、打包、推送或发布。以下为历史断点。
+
 2026-10-28 FLASH-PREPARATION 的离线软件范围已通过审查修正与验收，整体状态 **SOFTWARE_COMPLETE_HARDWARE_PENDING**，最终CodeHead `1bb95790dbe1552b700f588d56e5ef9301b839a2`，见[执行与独立验收记录](../codex/returns/FLASH-PREPARATION/implementation-report.md)。普通受管/导入烧录新增一次明确SYSRESETREQ reset-and-halt和HALTED确认；under-reset复用连接复位，只检查暂停；准备失败即停止编程/回读/成功收据，保留清理。新增两个诊断阶段与选定策略字段，正常频率及只读路径不变。受影响矩阵988个不同用例取得通过证据，Claude627、主代理761（重复不相加），最终精确CodeHead新增33项和文档54项均独立通过；复用范围、原调用异常、两项已修正断言失败和一项既有30ms时序失败的串行对照均保留在报告中，不是最终提交全仓重跑或发行资格。改动为Unreleased、计划v1.3.5，源码版本元数据仍1.3.4；未打包、安装、操作硬件、合并或推送发布。实机故障是否消除仍未证实；后续硬件由主代理在独立授权阶段填卡，先取得更新入口合同的独立审查。以下为历史断点。
 
 2026-10-28 问题2由用户明确交主代理继续调查，见[离线续查报告](../codex/returns/POST134-USABILITY/flash-offline-followup.md)。已找到under-reset/100 kHz的61,516字节校验成功收据；已通过源码和无硬件替身调用检查确认标准API路径缺少pyOCD CLI的烧录前reset-and-halt。该差异是优先修复候选，尚未证明现场HardFault根因或修复有效性；未改产品代码、未操作硬件、未安装或推送发布。后续须先定义烧录前状态准备合同；本记录不授予复位/重试权限，也不改变下述1/3/4/5/8的软件验收。
