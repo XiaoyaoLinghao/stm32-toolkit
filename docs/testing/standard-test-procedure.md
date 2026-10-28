@@ -4,6 +4,8 @@
 
 ## 1. 当前断点与证据
 
+2026-10-28 v1.3.4 已公开为Latest：Release426198381于2026-10-28T02:39:44Z发布，target/标签绑定冻结 `a7db6a8cc3ecdab53ef0b52cb80b54cbadcacead`。13附件均匿名下载HTTP200且大小/SHA-256匹配双构建候选，见[发布记录](../codex/returns/STM32TK-134/publication-2026-10-28.md)。Windows ZIP首次网络失败保留，经用户明确批准的一次有界续传成功，只清理该失败starter，8成功附件保留。候选专属例外不改变永久门槛/失败/跳过事实。现行指引同步与文档合同检查仍在进行；冻结包保留构建时状态。最终安装/VS Code仍USER_VALIDATION_PENDING、由用户负责，原工程/既有runtime/硬件未操作。以下为历史断点。
+
 2026-10-28 v1.3.4 资格处置：用户明确批准只对冻结 `a7db6a8cc3ecdab53ef0b52cb80b54cbadcacead` 的13文件候选接受已披露覆盖/复用/失败保留/跳过/平台限制并发布Latest，见[授权记录](../codex/returns/STM32TK-134/authorization-2026-10-28.md)。处置为 USER_APPROVED_EXCEPTION，永久门槛未变、未达标不变PASS；另明确批准仅发布脚本进程内复用既有GCM凭据，不显示/保存/更改认证。下一步非强推源码/标签、上传核验、公开发布与匿名下载复核。最终安装/VS Code由用户负责，原工程和硬件不操作；远端发布尚未发生。以下为历史断点。
 
 2026-10-28 v1.3.4 冻结包：`a7db6a8cc3ecdab53ef0b52cb80b54cbadcacead` 的两次官方离线构建13文件逐项同hash，安全解压后官方bundle验证退出0，见[候选记录](../codex/returns/STM32TK-134/candidate-build.md)。软件已独立审查ACCEPTED_WITH_FIXES；永久覆盖门槛仍未满足，当前 **LOCAL_CANDIDATE_NOT_QUALIFIED**，等待只对具体候选的资格处置，旧例外不转移。现有Git推送dry-run已验证但未实际推送；API发布脚本的进程内现有凭据复用需本次never-read规则的有限例外，准备脚本尚未执行。最终安装/VS Code仍由用户负责，原工程、既有runtime与硬件未操作。以下为历史断点。

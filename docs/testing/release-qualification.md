@@ -18,7 +18,7 @@ no exception transfers or converts an unmet gate into PASS. Final installation/
 VS Code is USER_VALIDATION_PENDING, owned by the user; no original-project or
 physical hardware operation is authorized. See the [specific authorization](../codex/returns/STM32TK-134/authorization-2026-10-28.md)
 and [frozen inventory](../codex/returns/STM32TK-134/candidate-build.md).
-Publication awaits observed remote success.
+Publication is complete: [v1.3.4 is Latest](../codex/returns/STM32TK-134/publication-2026-10-28.md). All13assets were anonymously downloaded and rehashed; final recipient installation/VS Code remains pending.
 
 ## v1.3.3 frozen-candidate exception authorized on 2026-10-27
 
