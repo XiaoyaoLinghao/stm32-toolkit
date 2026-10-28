@@ -1145,7 +1145,7 @@ def test_setup_contract_uses_namespaced_skill_and_ignores_coverage_data():
             standalone,
             flags=re.MULTILINE,
         )
-    assert "$ToolkitRoot = 'C:\\tools\\stm32-toolkit-1.3.3'" in standalone
+    assert "$ToolkitRoot = 'C:\\tools\\stm32-toolkit-1.3.4'" in standalone
     assert "$SetupScript = Join-Path $ToolkitRoot 'bin\\setup-stm32-env.ps1'" in standalone
     for argument in (
         "-ToolkitRoot $ToolkitRoot",
