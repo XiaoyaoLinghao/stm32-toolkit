@@ -20,14 +20,16 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from stm32_toolkit.build import BuildRequest, run_build
 from stm32_toolkit.build import runner as runner_mod
 from stm32_toolkit.context import build_project_context
-from stm32_toolkit.probe.flash import load_fresh_firmware_facts
+from stm32_toolkit.probe.flash import _FlashFailure, load_fresh_firmware_facts
 
 from test_build_runner import (
     hit_records,
@@ -151,7 +153,7 @@ def test_schema2_debug_release_switching_reuses_snapshot_evidence(
 ):
     root = prepare_project(tmp_path, git_repo=False)
     install_fake_git(monkeypatch, tmp_path, "exit1")
-    install_fake_cmake(monkeypatch, tmp_path)
+    hit_file = install_fake_cmake(monkeypatch, tmp_path)
 
     debug_first = run_build(BuildRequest(project_root=root, preset="arm-debug"))
     assert debug_first.ok is True, debug_first
@@ -194,15 +196,26 @@ def test_schema2_debug_release_switching_reuses_snapshot_evidence(
     debug_second = run_build(BuildRequest(project_root=root, preset="arm-debug"))
     assert debug_second.ok is True, debug_second
     assert debug_second.data.identity.build_id == debug_identity["buildId"]
+    # A second debug build republishes its own receipt pair, so its log and
+    # record bytes may legitimately differ from the first build's timings.
+    # Capture them now to prove the *intervening* release build leaves the
+    # debug pair untouched.
+    debug_log_bytes = result_path(root, DEBUG_LOG).read_bytes()
+    debug_record_bytes = result_path(root, DEBUG_RESULT).read_bytes()
     release_second = run_build(BuildRequest(project_root=root, preset="arm-release"))
     assert release_second.ok is True, release_second
     assert release_second.data.identity.build_id == release_identity["buildId"]
 
     # The strict schema-2 artifact-set validation accepted exactly each
-    # preset's own paths; the debug pair is byte-identical throughout.
+    # preset's own paths; the intervening release build left the debug pair
+    # byte-identical, and matching build IDs prove both presets reused their
+    # own prior evidence instead of being forced into a clean rebuild.
     assert result_path(root, DEBUG_LOG).read_bytes() == debug_log_bytes
     assert result_path(root, DEBUG_RESULT).read_bytes() == debug_record_bytes
     assert read_json(result_path(root, RELEASE_RESULT))["schemaVersion"] == 2
+    records = hit_records(hit_file)
+    assert records, "the cmake double was never invoked"
+    assert all("--clean-first" not in record["argv"] for record in records)
 
 
 # ---------------------------------------------------------------------------
@@ -496,6 +509,164 @@ def test_legacy_record_of_the_other_preset_is_refused(
 
 
 # ---------------------------------------------------------------------------
+# redirected receipt paths are refused, never read as absence
+# ---------------------------------------------------------------------------
+
+
+def _mark_redirect(monkeypatch: pytest.MonkeyPatch, path: Path) -> None:
+    """Report ``path`` as a Windows reparse point through the runner's seam.
+
+    Creating a native junction/symlink needs a privilege this suite cannot
+    assume, so the redirect is injected at the runner's owned ``lstat`` seam
+    (the same evidence a real junction produces).  The real filesystem stays
+    ordinary, which is exactly what lets the test prove the product wrote
+    nothing to the selected receipt path.
+    """
+    real_lstat = runner_mod._lstat
+    marked = os.path.normcase(str(path.resolve(strict=False)))
+
+    def fake_lstat(candidate):
+        info = real_lstat(candidate)
+        try:
+            candidate_path = os.path.normcase(str(Path(candidate).resolve(strict=False)))
+        except (OSError, RuntimeError, ValueError):
+            candidate_path = os.path.normcase(str(candidate))
+        if candidate_path == marked:
+            return SimpleNamespace(
+                st_mode=info.st_mode,
+                st_file_attributes=getattr(
+                    stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400
+                ),
+            )
+        return info
+
+    monkeypatch.setattr(runner_mod, "_lstat", fake_lstat)
+
+
+def _prior_evidence(root: Path):
+    """The release build's own prior-evidence admission decision."""
+    return runner_mod._load_prior_evidence(
+        root, "arm-release", runner_mod._preset_evidence_paths("arm-release")
+    )
+
+
+def test_redirected_canonical_release_record_refuses_reuse(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A present but redirected canonical receipt is refused state.
+
+    The legacy global release record is tempting here: the canonical receipt
+    holds exactly the same release bytes.  Following that redirect (or
+    treating it as absence) would admit another path's record, so admission
+    must refuse it entirely.
+    """
+    root = prepare_project(tmp_path)
+    install_fake_cmake(monkeypatch, tmp_path)
+    assert run_build(BuildRequest(project_root=root, preset="arm-release")).ok is True
+    legacy_bytes = _publish_release_then_seed_legacy_global(root)
+    canonical = result_path(root, RELEASE_RESULT)
+    canonical.write_bytes(legacy_bytes)
+    identity_bytes = release_identity_path(root).read_bytes()
+    # Control: the ordinary canonical receipt is admitted as this preset's
+    # own prior evidence, so the refusal below is about the redirect only.
+    admitted = _prior_evidence(root)
+    assert admitted is not None
+    assert admitted.paths.result_rel == RELEASE_RESULT
+
+    _mark_redirect(monkeypatch, canonical)
+
+    # No prior pair is admitted at all: matching build IDs, paths and hashes
+    # are not enough while the receipt path is redirected.
+    assert _prior_evidence(root) is None
+    result = run_build(BuildRequest(project_root=root, preset="arm-release"))
+    assert result.ok is False
+    # Publication is refused as well, so the redirected receipt and its
+    # legacy global twin keep their exact bytes: nothing was written through
+    # the redirect and no failure record displaced present evidence.
+    assert result.code == "BUILD_EVIDENCE_FAILED"
+    assert result.details == {"path": RELEASE_RESULT, "phase": "result"}
+    assert canonical.read_bytes() == legacy_bytes
+    assert result_path(root, DEBUG_RESULT).read_bytes() == legacy_bytes
+    assert release_identity_path(root).read_bytes() == identity_bytes
+
+
+def test_redirected_canonical_release_record_refuses_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Nothing is ever written through a redirected selected receipt path."""
+    root = prepare_project(tmp_path)
+    install_fake_cmake(monkeypatch, tmp_path, env={"FAKE_CMAKE_EXIT": "3"})
+    canonical = result_path(root, RELEASE_RESULT)
+    canonical.parent.mkdir(parents=True, exist_ok=True)
+    canonical.write_text("{prior canonical bytes\n", encoding="utf-8")
+    before = canonical.read_bytes()
+    _mark_redirect(monkeypatch, canonical)
+
+    result = run_build(BuildRequest(project_root=root, preset="arm-release"))
+
+    assert result.ok is False
+    assert result.code == "BUILD_EVIDENCE_FAILED"
+    assert result.details == {"path": RELEASE_RESULT, "phase": "result"}
+    # The redirected receipt and its sibling log were not rewritten.
+    assert canonical.read_bytes() == before
+    assert not result_path(root, DEBUG_RESULT).exists()
+    assert not result_path(root, DEBUG_LOG).exists()
+
+
+def test_redirected_release_parent_with_absent_canonical_never_borrows_legacy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A redirected canonical *parent* is never mistaken for true absence.
+
+    This is the reported hazard: the canonical release receipt is missing
+    inside a redirected ``arm-release`` directory, so a leaf-only check sees
+    "absent" and borrows the legacy global record.  Under a real junction the
+    publication would then also land outside the project.  Both must be
+    refused: no legacy fallback, and no write through the redirected parent.
+    """
+    root = prepare_project(tmp_path)
+    install_fake_cmake(monkeypatch, tmp_path)
+    assert run_build(BuildRequest(project_root=root, preset="arm-release")).ok is True
+    legacy_bytes = _publish_release_then_seed_legacy_global(root)
+    canonical_dir = result_path(root, RELEASE_DIR)
+    assert not result_path(root, RELEASE_RESULT).exists()
+    # Control: with the canonical receipt genuinely absent and the legacy
+    # global record genuine, migration *is* admitted.  The refusal below is
+    # therefore caused by the redirect alone.
+    admitted = _prior_evidence(root)
+    assert admitted is not None
+    assert admitted.paths.log_rel == DEBUG_LOG
+    assert admitted.paths.result_rel == DEBUG_RESULT
+
+    def inventory() -> dict[str, bytes]:
+        return {
+            path.name: path.read_bytes()
+            for path in canonical_dir.iterdir()
+            if path.is_file()
+        }
+
+    legacy_log_bytes = result_path(root, DEBUG_LOG).read_bytes()
+    before = inventory()
+    assert before, "the canonical release directory must hold the prior log"
+    _mark_redirect(monkeypatch, canonical_dir)
+    monkeypatch.setenv("FAKE_CMAKE_NO_OUTPUT", "1")
+
+    # The redirected parent is refused state, never true absence.
+    assert _prior_evidence(root) is None
+    result = run_build(BuildRequest(project_root=root, preset="arm-release"))
+
+    assert result.ok is False
+    assert result.code == "BUILD_EVIDENCE_FAILED"
+    assert result.details == {"path": RELEASE_LOG, "phase": "log"}
+    # Nothing was published through the redirected parent: the legacy global
+    # pair and the canonical directory are byte-identical, so no success or
+    # failure record was written.
+    assert result_path(root, DEBUG_RESULT).read_bytes() == legacy_bytes
+    assert result_path(root, DEBUG_LOG).read_bytes() == legacy_log_bytes
+    assert inventory() == before
+
+
+# ---------------------------------------------------------------------------
 # debug-only consumers keep working after a release build
 # ---------------------------------------------------------------------------
 
@@ -503,6 +674,16 @@ def test_legacy_record_of_the_other_preset_is_refused(
 def test_debug_context_and_managed_admission_survive_a_release_build(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
+    """A release build never disturbs the debug context/consumer view.
+
+    The offline fake ``cmake`` double writes a build-only ELF fixture with no
+    ``PT_LOAD`` segment, so managed flash admission correctly refuses it with
+    ``FLASH_IMAGE_INVALID``.  This test therefore asserts the debug consumer
+    *context* and the bounded admission refusal; the genuine managed
+    admission assertions run in
+    :func:`test_real_gcc_debug_release_debug_keeps_both_presets_current`
+    against a real compiler-produced ELF.
+    """
     root = prepare_project(tmp_path)
     install_fake_cmake(monkeypatch, tmp_path)
     debug = run_build(BuildRequest(project_root=root, preset="arm-debug"))
@@ -523,11 +704,18 @@ def test_debug_context_and_managed_admission_survive_a_release_build(
     assert evidence["buildResultPath"] == DEBUG_RESULT
     assert evidence["buildLogPath"] == DEBUG_LOG
 
-    facts = load_fresh_firmware_facts(root)
-    assert facts.build_id == debug_build_id
-    assert facts.elf_sha256 == debug_elf_sha
-    assert facts.elf_path == "build/arm-debug/firmware.elf"
-    assert facts.target_device == debug.data.identity.target_device
+    # Admission is not mocked: the fixture ELF genuinely carries no PT_LOAD
+    # segment, so the real product segment validation refuses it.  That
+    # refusal is the correct product behavior for this fixture, which is why
+    # the genuine admitted-firmware facts are asserted against the real
+    # compiler journey below.
+    with pytest.raises(_FlashFailure) as caught:
+        load_fresh_firmware_facts(root)
+    assert caught.value.code == "FLASH_IMAGE_INVALID"
+    assert caught.value.details == {
+        "path": "build/arm-debug/firmware.elf",
+        "rule": "segments",
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -609,6 +797,13 @@ def _deliver_real_gcc_project(root: Path, monkeypatch: pytest.MonkeyPatch) -> Pa
 def test_real_gcc_debug_release_debug_keeps_both_presets_current(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
+    """Real debug -> release -> debug without clean keeps both presets current.
+
+    The delivered synthetic project names its output from the migrated Keil
+    target (``app.elf``/``app.map``), not ``firmware.elf``.  Every artifact
+    path asserted here therefore comes from the returned identity, so the
+    journey proves the actual product naming rather than a fixture name.
+    """
     destination = _deliver_real_gcc_project(tmp_path, monkeypatch)
 
     first = run_build(
@@ -617,23 +812,54 @@ def test_real_gcc_debug_release_debug_keeps_both_presets_current(
     assert first.ok is True, first.to_dict()
     first_identity = read_json(debug_identity_path(destination))
     assert first_identity["preset"] == "arm-debug"
-    assert first_identity["elfPath"] == "build/arm-debug/firmware.elf"
-    debug_elf_bytes = (destination / "build" / "arm-debug" / "firmware.elf").read_bytes()
+    debug_elf_path = first.data.identity.elf_path
+    debug_map_path = first.data.identity.map_path
+    assert debug_elf_path == first_identity["elfPath"]
+    assert debug_map_path == first_identity["mapPath"]
+    assert debug_elf_path.startswith("build/arm-debug/")
+    assert result_path(destination, debug_elf_path).is_file()
+    assert result_path(destination, debug_map_path).is_file()
+    debug_elf_bytes = result_path(destination, debug_elf_path).read_bytes()
+    debug_record = read_json(result_path(destination, DEBUG_RESULT))
+    assert artifact_paths(debug_record) == {
+        DEBUG_LOG,
+        DEBUG_RESULT,
+        "build/arm-debug/firmware-identity.json",
+        debug_elf_path,
+        debug_map_path,
+    }
 
     release = run_build(
         BuildRequest(project_root=destination, preset="arm-release", timeout_seconds=600)
     )
     assert release.ok is True, release.to_dict()
     release_identity = read_json(release_identity_path(destination))
+    release_elf_path = release.data.identity.elf_path
+    release_map_path = release.data.identity.map_path
     assert release_identity["preset"] == "arm-release"
-    assert release_identity["elfPath"] == "build/arm-release/firmware.elf"
-    assert read_json(result_path(destination, RELEASE_RESULT))["status"] == "success"
-    assert read_json(result_path(destination, DEBUG_RESULT))["status"] == "success"
-    assert read_json(result_path(destination, DEBUG_RESULT))["preset"] == "arm-debug"
+    assert release_elf_path == release_identity["elfPath"]
+    assert release_map_path == release_identity["mapPath"]
+    # Release reuses the debug basename under its own preset directory.
+    assert release_elf_path == "build/arm-release/" + debug_elf_path.rsplit("/", 1)[-1]
+    assert release_map_path == "build/arm-release/" + debug_map_path.rsplit("/", 1)[-1]
+    release_record = read_json(result_path(destination, RELEASE_RESULT))
+    assert release_record["status"] == "success"
+    assert artifact_paths(release_record) == {
+        RELEASE_LOG,
+        RELEASE_RESULT,
+        "build/arm-release/firmware-identity.json",
+        release_elf_path,
+        release_map_path,
+    }
+    assert artifact_paths(read_json(result_path(destination, DEBUG_RESULT))) == {
+        DEBUG_LOG,
+        DEBUG_RESULT,
+        "build/arm-debug/firmware-identity.json",
+        debug_elf_path,
+        debug_map_path,
+    }
     # the release build never reused or overwrote debug evidence
-    assert (
-        destination / "build" / "arm-debug" / "firmware.elf"
-    ).read_bytes() == debug_elf_bytes
+    assert result_path(destination, debug_elf_path).read_bytes() == debug_elf_bytes
 
     # Back to debug without a clean build: the real incremental rebuild either
     # reproduces identical outputs (reused prior evidence) or produces changed
@@ -644,7 +870,7 @@ def test_real_gcc_debug_release_debug_keeps_both_presets_current(
     )
     assert second.ok is True, second.to_dict()
     assert second.data.identity.preset == "arm-debug"
-    assert second.data.identity.elf_path == "build/arm-debug/firmware.elf"
+    assert second.data.identity.elf_path == debug_elf_path
     assert read_json(result_path(destination, DEBUG_RESULT))["status"] == "success"
     assert read_json(result_path(destination, RELEASE_RESULT))["status"] == "success"
     # release evidence still names release paths after the second debug build
@@ -652,8 +878,8 @@ def test_real_gcc_debug_release_debug_keeps_both_presets_current(
         RELEASE_LOG,
         RELEASE_RESULT,
         "build/arm-release/firmware-identity.json",
-        "build/arm-release/firmware.elf",
-        "build/arm-release/firmware.map",
+        release_elf_path,
+        release_map_path,
     }
 
     context = build_project_context(
@@ -663,8 +889,16 @@ def test_real_gcc_debug_release_debug_keeps_both_presets_current(
     assert context.data["build"]["elfFresh"] is True
     assert context.data["build"]["buildId"] == second.data.identity.build_id
     assert context.data["build"]["buildResultPath"] == DEBUG_RESULT
-    release_elf = destination / "build" / "arm-release" / "firmware.elf"
-    assert release_elf.read_bytes()[:4] == b"\x7fELF"
+    assert result_path(destination, release_elf_path).read_bytes()[:4] == b"\x7fELF"
+
+    # Genuine managed admission of the real compiler output: the debug preset
+    # is the admitted one after returning from the release build, and the
+    # release build never replaced the debug consumer's evidence.
+    facts = load_fresh_firmware_facts(destination)
+    assert facts.build_id == second.data.identity.build_id
+    assert facts.elf_path == debug_elf_path
+    assert facts.elf_sha256 == second.data.identity.elf_sha256
+    assert facts.target_device == second.data.identity.target_device
 
     # Both presets were configured with the verified installed ARM GNU
     # compiler, not a host default or a fake binary.

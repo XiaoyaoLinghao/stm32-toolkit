@@ -137,6 +137,15 @@ def _preset_evidence_paths(preset: str) -> _EvidencePaths:
     )
 
 
+# Component-level evidence-path inspection.  ``lstat`` stays a module seam so a
+# host without junction/symlink privilege can still inject reparse evidence.
+_lstat = os.lstat
+_REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+_PATH_ABSENT = "absent"
+_PATH_PRESENT = "present"
+_PATH_UNSAFE = "unsafe"
+
+
 # ---------------------------------------------------------------------------
 # advisory lock (product abstraction; real fcntl/msvcrt per host)
 # ---------------------------------------------------------------------------
@@ -585,6 +594,68 @@ class _PriorEvidence:
     paths: _EvidencePaths
 
 
+def _is_redirect(info: os.stat_result) -> bool:
+    """True for a symlink or a Windows reparse point (junction) component."""
+    return stat.S_ISLNK(info.st_mode) or bool(
+        getattr(info, "st_file_attributes", 0) & _REPARSE_POINT
+    )
+
+
+def _inspect_evidence_path(root: Path, rel: str) -> str:
+    """Classify one receipt/log path by inspecting every component.
+
+    ``lstat`` never follows the final component, and each parent is inspected
+    in turn, so a redirected or uninspectable *parent* is detected rather than
+    silently followed.  A missing ordinary component proves the leaf is truly
+    absent (publication creates ordinary directories); an existing ordinary
+    leaf must be a regular file.  Anything else -- a symlink or Windows
+    reparse point anywhere in the selected path, a non-directory parent, a
+    non-regular leaf, or an uninspectable component -- is unsafe and reported
+    as such, never treated as absence.
+    """
+    parts = rel.split("/")
+    current = root
+    for part in parts[:-1]:
+        current = current / part
+        try:
+            info = _lstat(current)
+        except FileNotFoundError:
+            return _PATH_ABSENT
+        except OSError:
+            return _PATH_UNSAFE
+        if _is_redirect(info) or not stat.S_ISDIR(info.st_mode):
+            return _PATH_UNSAFE
+    try:
+        leaf = _lstat(current / parts[-1])
+    except FileNotFoundError:
+        return _PATH_ABSENT
+    except OSError:
+        return _PATH_UNSAFE
+    if _is_redirect(leaf) or not stat.S_ISREG(leaf.st_mode):
+        return _PATH_UNSAFE
+    return _PATH_PRESENT
+
+
+def _refused_publication(
+    root: Path, targets: tuple[tuple[str, str], ...]
+) -> BuildError | None:
+    """Return the bounded refusal for an unsafe selected publication path.
+
+    Callers pass every path they are about to write, so a failure record or a
+    success record can never be published through a redirected parent or onto
+    a redirected evidence file.  Ordinary absent directories stay supported:
+    publication creates them itself.
+    """
+    for rel, phase in targets:
+        if _inspect_evidence_path(root, rel) == _PATH_UNSAFE:
+            return build_error(
+                BUILD_EVIDENCE_FAILED,
+                "evidence publication failed",
+                {"path": rel, "phase": phase},
+            )
+    return None
+
+
 def _load_prior_evidence(
     root: Path, preset: str, paths: _EvidencePaths
 ) -> _PriorEvidence | None:
@@ -596,6 +667,10 @@ def _load_prior_evidence(
     is truly absent may consult the pre-patch global release record, and the
     existing complete same-preset identity/snapshot/hash validation still
     decides reuse.  A debug record is never borrowed as release evidence.
+
+    Presence is decided by inspecting every path component.  A redirected or
+    uninspectable canonical receipt is refused state, not absence, so it can
+    never borrow the legacy global record either.
     """
     identity_rel = f"build/{preset}/firmware-identity.json"
     identity_doc = read_evidence_json(
@@ -603,10 +678,17 @@ def _load_prior_evidence(
     )
     if identity_doc is None:
         return None
-    record = read_evidence_json(
-        root.joinpath(*paths.result_rel.split("/")), paths.result_rel, _EVIDENCE_LIMIT_BYTES
-    )
-    if record is not None:
+    state = _inspect_evidence_path(root, paths.result_rel)
+    if state == _PATH_UNSAFE:
+        return None
+    if state == _PATH_PRESENT:
+        record = read_evidence_json(
+            root.joinpath(*paths.result_rel.split("/")),
+            paths.result_rel,
+            _EVIDENCE_LIMIT_BYTES,
+        )
+        if record is None:
+            return None
         return _PriorEvidence(record, identity_doc, paths)
     if preset != "arm-release":
         return None
@@ -619,22 +701,19 @@ def _load_prior_evidence(
 def _legacy_release_pair(root: Path, identity_doc: dict) -> dict | None:
     """Read the pre-patch global record for release migration only.
 
-    The canonical release record must be genuinely absent.  Nothing is
-    inferred from a debug build: the legacy record must itself name the
-    release preset and share the release identity's build ID, so a debug
-    record can never be admitted as release evidence.
+    The canonical release record must be genuinely absent: a present,
+    redirected or uninspectable canonical path is never treated as absence.
+    Nothing is inferred from a debug build: the legacy record must itself name
+    the release preset and share the release identity's build ID, so a debug
+    record can never be admitted as release evidence.  The legacy receipt is
+    inspected component by component before it is read, so a redirected
+    legacy path is refused rather than followed.
     """
-    canonical = root.joinpath(*_RELEASE_EVIDENCE_PATHS.result_rel.split("/"))
-    try:
-        os.lstat(canonical)
-    except FileNotFoundError:
-        pass
-    except OSError:
-        # An uninspectable canonical path is present state: no fallback.
-        return None
-    else:
+    if _inspect_evidence_path(root, _RELEASE_EVIDENCE_PATHS.result_rel) != _PATH_ABSENT:
         return None
     legacy = _LEGACY_RELEASE_EVIDENCE_PATHS
+    if _inspect_evidence_path(root, legacy.result_rel) != _PATH_PRESENT:
+        return None
     record = read_evidence_json(
         root.joinpath(*legacy.result_rel.split("/")), legacy.result_rel, _EVIDENCE_LIMIT_BYTES
     )
@@ -1080,6 +1159,11 @@ def _publish_failure(
     paths: _EvidencePaths,
     provenance: GitEvidence | GitUnavailableEvidence | None = None,
 ) -> OperationResult[None]:
+    refused = _refused_publication(
+        root, ((paths.log_rel, "log"), (paths.result_rel, "result"))
+    )
+    if refused is not None:
+        return _failure(refused)
     finished_at = utc_now_rfc3339()
     duration_ms = int((time.monotonic() - started_mono) * 1000)
     log_text = render_build_log(
@@ -1387,6 +1471,14 @@ def _run_locked(
         ),
     )
     log_text = render_build_log(root, sections)
+    # Both selected receipt paths are inspected immediately before the first
+    # success write, so nothing is ever published through a redirected parent
+    # or onto a redirected receipt file.
+    refused = _refused_publication(
+        root, ((paths.log_rel, "log"), (paths.result_rel, "result"))
+    )
+    if refused is not None:
+        return _failure(refused)
     try:
         atomic_write_text(root.joinpath(*paths.log_rel.split("/")), log_text)
     except OSError:
