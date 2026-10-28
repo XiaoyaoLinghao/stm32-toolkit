@@ -4,6 +4,8 @@
 
 ## 1. 当前断点与证据
 
+2026-10-28 FLASH-PREPARATION 的离线软件范围已通过审查修正与验收，整体状态 **SOFTWARE_COMPLETE_HARDWARE_PENDING**，最终CodeHead `1bb95790dbe1552b700f588d56e5ef9301b839a2`，见[执行与独立验收记录](../codex/returns/FLASH-PREPARATION/implementation-report.md)。普通受管/导入烧录新增一次明确SYSRESETREQ reset-and-halt和HALTED确认；under-reset复用连接复位，只检查暂停；准备失败即停止编程/回读/成功收据，保留清理。新增两个诊断阶段与选定策略字段，正常频率及只读路径不变。受影响矩阵988个不同用例取得通过证据，Claude627、主代理761（重复不相加），最终精确CodeHead新增33项和文档54项均独立通过；复用范围、原调用异常、两项已修正断言失败和一项既有30ms时序失败的串行对照均保留在报告中，不是最终提交全仓重跑或发行资格。改动为Unreleased、计划v1.3.5，源码版本元数据仍1.3.4；未打包、安装、操作硬件、合并或推送发布。实机故障是否消除仍未证实；后续硬件由主代理在独立授权阶段填卡，先取得更新入口合同的独立审查。以下为历史断点。
+
 2026-10-28 问题2由用户明确交主代理继续调查，见[离线续查报告](../codex/returns/POST134-USABILITY/flash-offline-followup.md)。已找到under-reset/100 kHz的61,516字节校验成功收据；已通过源码和无硬件替身调用检查确认标准API路径缺少pyOCD CLI的烧录前reset-and-halt。该差异是优先修复候选，尚未证明现场HardFault根因或修复有效性；未改产品代码、未操作硬件、未安装或推送发布。后续须先定义烧录前状态准备合同；本记录不授予复位/重试权限，也不改变下述1/3/4/5/8的软件验收。
 
 2026-10-28 POST134-USABILITY 本地软件已 **ACCEPTED_WITH_FIXES**，CodeHead `29d13fc75881bfc771d81aa1c54f45948a6fa0f0`，见[执行与独立验收记录](../codex/returns/POST134-USABILITY/implementation-report.md)。已完成1（preset证据隔离）、3（CLI字段诊断）、4/5（共享迁移调试引导和空launch说明）、8（发布文档）；2仅完成离线调查，实机失败根因未证实。Claude构建相关319通过、迁移相关229通过/1平台跳过；另明确复用未变CLI的90项证据，受影响矩阵去重638通过/1跳过，并非最终提交全仓重跑。主代理在干净精确CodeHead独立183/183通过；一个原生pending命令按既有绑定证据核对完成，未重跑。旧失败、超轮数及scope审计拒绝保留，不追溯接受；见[此前部分处置](../codex/returns/POST134-USABILITY/partial-review-2026-10-28.md)。真实文件symlink检查因宿主能力跳过，留待后续发行资格阶段的具备能力宿主；新reparse注入用例已通过。新改动列为Unreleased、计划v1.3.5，源码版本仍1.3.4；本轮未打包、安装、推送发布、修改原工程或操作硬件，既有v1.3.4发布限制和例外不转移。以下为历史断点。

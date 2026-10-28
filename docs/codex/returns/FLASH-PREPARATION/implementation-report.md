@@ -1,94 +1,193 @@
-# FLASH-PREPARATION — implementation not yet started
+# FLASH-PREPARATION — independent offline acceptance
 
-Date: 2026-10-28. Status: **REVISION_REQUIRED — delegated invocation stopped; no product
-implementation or verification completed.** This is an interim orchestration record,
-not acceptance or a claim that issue 2 is fixed.
+Date: 2026-10-28. Verdict: **SOFTWARE_COMPLETE_HARDWARE_PENDING**.
+The required offline software scope passes after bounded Claude review corrections.
+The original board's HardFault cause and the fix's physical effectiveness remain
+unverified. This is **Unreleased, planned v1.3.5**, not release acceptance.
 
-## Ownership and source
+## Ownership and frozen source
 
 - Accepted base: `528528f9e00791a96effa3a3bdb069c875fa9508`.
-- Source head before this report: `905f55f4f4d501da09cc1cb08794038cd37352b7`.
-- Branch: `codex/v135-flash-preparation`; isolated workspace:
+- Final **CodeHead before this report/checkpoint commit**:
+  `1bb95790dbe1552b700f588d56e5ef9301b839a2`.
+- Core checkpoint: `f88295a0180355fdb052bf33d7ee01070371c87a`.
+- Complete runtime/test checkpoint before the last Skill sentence correction:
+  `4b85111d03d768d2d4b35cbce78db00e94f8b4a7`.
+- Branch: `codex/v135-flash-preparation`; isolated implementation workspace:
   `C:/Users/zhy76/.codex/worktrees/v135-flash-preparation/STM32-Toolkit`.
-- Primary Codex owns [design](../../../superpowers/specs/2026-10-28-flash-preparation-design.md),
-  [plan](../../../superpowers/plans/2026-10-28-flash-preparation-plan.md), orchestration,
-  independent review and acceptance. The local Claude Code CLI is the implementation
-  owner; no Codex implementation fallback occurred.
-- User authorized planned v1.3.5 implementation and offline verification, with no hardware,
-  installation, push or publication. No PR or remote action is authorized.
+- Clean independent exact-head review workspace:
+  `C:/Users/zhy76/.codex/worktrees/post134-independent-review/STM32-Toolkit`.
+- Primary Codex owns design, plan, orchestration, complete-diff review, independent
+  verification, this verdict and the standard procedure. The local Claude Code CLI
+  owns every product/test/guide/Skill/Changelog edit, retaining the configured
+  `deepseek-v4.1-flash[1m]` route (observed CLI 2.1.308). No Codex implementation
+  fallback, provider/model/authentication or global permission change occurred.
+- Governing [design](../../../superpowers/specs/2026-10-28-flash-preparation-design.md),
+  [plan](../../../superpowers/plans/2026-10-28-flash-preparation-plan.md) and
+  [standard procedure](../../../testing/standard-test-procedure.md).
+  The current procedure checkpoint and referenced execution evidence were read before
+  planning/executing checks.
+- No PR or remote action is authorized. No hardware/probe enumeration, device connection,
+  physical reset/halt/resume, flash/readback, installation, packaging, push, merge, tag or
+  release occurred. Test calls to reset/program/readback were deterministic substitutes;
+  local loopback services and Windows child processes supplied software evidence only.
 
-## What happened
+## Accepted behavior
 
-The dispatch used `C:/Users/zhy76/.codex/tools/claude-dispatch/dispatch.py`, task
-`D:/codex-tmp/f135/edit-task.json`, run `D:/codex-tmp/f135/edit-run`.
-Both no-action inventory and main init registered exactly Read/Edit/Write/Glob/Grep.
-The observed model remained `deepseek-v4.1-flash[1m]`, CLI 2.1.308, default permission
-mode. No model/provider/authentication or global permission change was made.
+Both managed and imported PyOCD programming now acquire their driver and enter shared
+preparation before creating/calling the programmer. Existing service MODIFY/action
+authorization, target identity and verified immutable-image admission remain earlier.
+Imported native Flash-map admission also finishes before preparation.
 
-The main run produced 97 native calls and **zero Edit/Write calls**. Git confirmed no
-tracked/untracked product changes. There were no shell/test calls or hardware operations.
-The invocation spent substantial time reading interfaces; a long gap in tool events
-was followed by further read/search activity, not by an execution result.
+Normal preparation requests exactly one
+`target.reset_and_halt(Target.ResetType.SYSRESETREQ)`, using the actual pyOCD enum.
+It then reads target state and requires HALTED. There is no default-reset selection,
+repair halt, resume, fallback, reconnection, frequency change or retry loop. Missing/
+non-callable reset support, reset exceptions, unknown/unreadable state and every
+non-HALTED state stop programming. Under-reset recovery reuses its connection reset and
+only rechecks HALTED; observe-preserve refuses programming without target control.
 
-Post-run audit lists seven read-scope discrepancies: a default-root Glob, source/package
-parent searches, and reads/searches of related Target execution modules omitted from
-the task's read scope. The coordinator's task also mistakenly declared
-`src/stm32_toolkit/external_firmware` as a directory; the actual module is
-`src/stm32_toolkit/external_firmware.py`. This incomplete scope and excessive combined
-task were coordination mistakes. They do not retroactively validate out-of-scope calls.
+The closed schema-1 diagnostic adds `pre-program-reset` and `pre-program-halt`.
+Preparation failures retain `PROBE_PROGRAM_FAILED` and bounded sanitized diagnostics,
+survive worker IPC and managed/imported result mapping, and reach no programmer,
+readback or success receipt. Existing owned cleanup remains; later control does not
+follow the failure. Existing `driver-acquire`, `programmer-create` and `program-call`
+boundaries retain their meaning.
 
-The coordinator stopped the invocation after noticing the latest parent-directory search.
-Earlier discrepancies were only identified in the full audit: **the invocation was not
-intercepted at its first discrepancy**. The launcher is a prompt/audit boundary, not a
-guaranteed pre-execution interceptor. Preserve that limitation rather than claiming the
-first-deviation stop rule was perfectly enforced.
+`details.flashOptions` adds `preProgramReset=sysresetreq` for normal or
+`under-reset-connect` for recovery, plus `preProgramHaltRequired=true`.
+These are selected policy, including on an early failure, never proof that a reset
+executed. Existing normal 1 MHz/default-or-explicit frequency, recovery 100 kHz,
+sector erase, no auto-unlock, keep-unwritten, byte readback and receipt identities remain.
+Ordinary/imported flash gains no post-flash run; `postFlash` stays
+`targetState=unknown, runVerified=false`. Target execution inherits preparation through
+the shared backend and retains its separately authorized post-flash control sequence.
+Read-only Monitor/discovery/handoff behavior is unchanged.
 
-Only the owned Claude process was stopped, after matching PID 14372, parent PID 20696,
-the verified Claude executable and this run's unique empty-MCP path. Dispatch then exited
-with code 1; native CLI exit was 4294967295. Its summary has `accepted=false`,
-`file_edit_completed=false`, `tests_executed=false`, `tests_passed=false` and no native
-permission denial. `stopped=false` in the dispatch summary describes its own internal
-stop mechanism; it does not negate the separate coordinator termination recorded here.
-No other session/process was stopped. Original task, prompts, raw streams and summary
-remain under the run directory.
+Guide, Skill and Changelog disclose the side effect, normal/recovery distinction,
+failure stop, selected-policy fields and unpublished status. Source version metadata
+remains 1.3.4 pending the separate v1.3.5 release alignment. Published v1.3.4 bytes,
+installed runtimes and existing POST134 acceptance are unaffected.
 
-## Prepared continuation, not executed
+## Review and verification
 
-The next proposed edit invocation is reduced to five core files: backend diagnostic
-allowlist, PyOCD backend, fake PyOCD target, existing backend tests and a new preparation
-test file. Implement and test the normal SYSRESETREQ preparation, strict halt check,
-under-reset reuse and fail-closed behavior there first. Public policy fields, their
-workflow/IPC tests and user-facing documentation remain a subsequent part of the already
-approved feature, not prerequisites for this first edit task to finish.
+Primary reviewed the complete accepted-base-to-final-CodeHead diff in the clean review
+tree, including all product files, new/changed tests, guide, Skill, Changelog, plans,
+reports and procedure changes. Final diff checks pass. Corrections applied by Claude:
+a duplicate worker factory and EOF blank line; ambiguous normal/recovery and Changelog
+wording; and an imported test's immutable-internal versus serialized-public comparison.
+All resulting product and test changes were independently checked; no actionable
+software finding remains.
 
-The corrected read scope names the real external-firmware file and relevant Target
-modules; no installed-runtime or unrelated-project access is needed. Existing exact write
-boundaries and file-only edit / exact-command verify separation remain. The prepared
-run-local evidence runner only selects tests through the existing source-bound runner;
-it has not executed any test. Neither this report nor the task grants retry authority.
+Evidence root: `D:/codex-tmp/f135`. Existing source-bound runner:
+`D:/codex-tmp/r132/run_checks.py`, selected by run-local wrappers. Verified interpreter:
+`D:/codex-tmp/kx23/venv/Scripts/python.exe` (Python 3.12, pyOCD 0.45.1 environment).
+Each execution binds its source head, tracked-file hashes, exact pytest argv, owner,
+subprocess exit, explicit same-tree PYTHONPATH, unique short temp/cache/coverage/JUnit
+paths and unchanged-source check. No dependencies were installed.
 
-Global instructions at `C:/Users/zhy76/.codex/AGENTS.md:23` state: “Retries are not
-authorized by default” and “Any retry needs explicit, bounded authorization in the task”.
-A new bounded authorization is required before re-delegating this stopped attempt.
-No automatic restart or recovery was performed. The absent-tool recovery mechanism is
-inapplicable: this was a scope issue, not a proven missing and unexecuted native tool.
+| Owner / source | Labels / coverage | Passing cases |
+| --- | --- | --- |
+| Claude / core checkpoint | cn1, ca1, cd1: new preparation, complete adapter and diagnostic contracts | 21 / 159 / 33 |
+| Primary / core checkpoint | pn1, pa1, pd1: independent core checks | 21 / 159 / 33 |
+| Primary / core checkpoint | ps1–ps3: complete service authorization/lifecycle partitions | 141 distinct |
+| Primary / core checkpoint | pr1, pi1: worker settlement and imported integrity/map admission | 4 / 14 |
+| Primary / core checkpoint | pt1–pt3 plus pcd1: complete Target cases, with the retained timing disposition below | 202 distinct |
+| Claude / runtime-test checkpoint | cf1, ch1, ce2, cdo1: frequency/preparation policy, public hardware workflows, imported workflow/routing, guide/Skill contracts | 99 / 116 / 28 / 54 |
+| Claude / runtime-test checkpoint | cw1–cw4, cfl1–cfl3: all worker and managed flash partitions | 64 / 53 |
+| Primary / earlier public candidate | pf1: full frequency/preparation-policy group | 99 |
+| Primary / runtime-test checkpoint | pn2, pnew1: all new backend and public/IPC cases | 21 / 12 |
+| Claude / final CodeHead | cdo2: final guide/Skill contracts | 54 |
+| Primary / final CodeHead | pall2, pdo2: all new cases and final guide/Skill contracts | 33 / 54 |
 
-No hardware efficacy, software PASS, release acceptance or version alignment is claimed.
-The original project, installed runtime, integration/review worktrees and existing
-accepted v1.3.5-planned changes remain intact.
+The affected matrix has **988 distinct test identities with passing execution evidence**,
+with **627 distinct Claude-owned** and **761 distinct Primary-owned** passing identities.
+Owners and repeated runs are not added together. All **33 new cases** independently pass
+at final CodeHead, as do 54 final documentation contracts. No case in the final required
+scope remains failed or skipped. This is an affected matrix with explicit reuse, not a
+single full-repository final-head rerun or release coverage qualification.
 
-## Authorized core invocation and restart
+Reuse is bounded: Git comparisons prove that core/probe implementations, core tests,
+service, Target, map/integrity and settlement sources remain byte-identical to their
+core checkpoint. Shared public workflow changes only add selected policy metadata;
+review confirms the reused service/Target cases do not consume that helper. Runtime
+and test bytes at final CodeHead exactly match the fully verified runtime-test
+checkpoint; only one Skill authorization sentence changed afterward, and its 54
+contracts were freshly rerun by both owners. The final 33 new cases were also rerun
+independently. Exact commands and hashes are retained in each task/manifest/execution.
 
-The user subsequently approved one bounded five-file core re-delegation. Run
-`D:/codex-tmp/f135/core-edit-run` retained matching native tools, 14 read/search calls,
-zero edits, no scope discrepancies and no test execution. It ended with CLI/dispatch
-exit 1 and a native error result: upstream API 400 reported that `content[].thinking`
-must be passed back in thinking mode. This is an invocation/API failure, not a tool
-permission denial or a completed implementation. No model, provider, authentication
-or thinking setting was changed.
+Three successful delegated verify invocations each registered exactly native PowerShell,
+ran the matched harmless smoke, and matched all 15 designated test commands in total.
+There were no unexpected commands or pending results. Native numeric exit fields were
+absent and remain **null**; the separate bound pytest subprocess exits are recorded as 0.
+JUnit hashes/counts and unchanged-source evidence were independently reconciled.
 
-On 2026-10-28 the user explicitly requested “重新开始”, authorizing one fresh attempt
-of the same bounded core task. Source before this report update remains
-`17e5d0ced769c289ee3d4acb6fd22f675837b1c9`, with unchanged product files. The new run
-will use a fresh evidence directory and preserve both failed runs. No automatic retry
-or implementation fallback is authorized by this record.
+## Retained failures and invocation limitations
+
+- The initial stopped read-only call, coordinator scope mistake and delayed interception
+  remain in [the historical report](delegation-history.md), its Git history and edit-run.
+  It made no edits. The user-approved core-edit-run then failed at the upstream thinking
+  API after 14 read/search calls, also with no edits. The user explicitly authorized a
+  restart; no model/provider/permission workaround was used.
+- core-restart-run completed normally with 19 successful native edits but retained five
+  read-scope audit flags. These include a literal Glob confined to the named test file,
+  plus related Toolkit parent searches. public-edit-run retained two root-path audit
+  flags (patterns/globs confined to the Toolkit module), made 23 successful edits and
+  reached its 100-turn limit. Their launcher acceptance remains false; it is not
+  retroactively rewritten as passing. The coordinator inspected actual targets/results
+  under the user's approved related-module read/search allowance. All successful writes
+  matched their exact allowed files; no unrelated project, credential, shell or hardware
+  access was observed. Product acceptance rests on complete independent diff review,
+  frozen source and actual checks, not a claimed successful invocation.
+- review-fix-run, import-assert-fix-run and skill-auth-fix-run completed with matching
+  native file tools, successful scoped edits and no audit discrepancies. File editing,
+  test execution and passing are recorded separately. Normal model completion or CLI
+  exit alone was never counted as proof.
+- pe1 produced 26 pass / 2 fail: the two new imported stage tests compared nested immutable
+  mapping/tuple data directly with JSON dict/list data. Claude corrected the assertions
+  to use the public serialized result, preserving every stop/receipt/cleanup assertion.
+  ce2 passed all 28 cases, and final independent new-case checks passed both stage cases.
+  Product behavior was not weakened to satisfy the test.
+- pt3 produced 62 pass / 1 fail in the unchanged
+  `test_target_discovery_accepts_one_canonical_inventory_without_eof_at_deadline`.
+  It has a real 30 ms deadline and uses FakeFlashWorkflow, not the changed PyOCD path.
+  Its test and discovery implementation are unchanged from accepted base. One bounded
+  serial baseline control (bd1, not counted in feature passes) and one serial candidate
+  check (pcd1) both passed without changing code, deadlines or assertions. This supports
+  environment/timing sensitivity; the precise scheduling cause is unproven. The original
+  partition remains a failed run and is not relabeled PASS; its 62 passing cases and the
+  separately passing case are reconciled by identity. No test was disabled, quarantined
+  or given a relaxed timeout. Future full release qualification must retain this history.
+
+## Delivery and pending physical work
+
+Required offline software gates pass after review fixes. Changes are retained on the
+local feature branch; no merge/remote publication or installation is implied. The old
+integration checkout remains available as its baseline, and the exact final review tree
+is retained for reproducibility.
+
+Hardware acceptance remains owned by **Primary Codex in a separately authorized later
+hardware qualification phase**. Before any device operation, that owner must bind the
+actual packaged/runtime/source and firmware identities, known initial target state,
+ownership and finite budget in the standard execution card. The procedure changes
+require independent review by a reviewer who did not author the procedure (the local
+Claude Code CLI may perform that review) before the dependent hardware step. This
+offline report supplies neither that review nor hardware authority.
+
+A future controlled comparison must establish that normal programming at the selected
+frequency now completes reset/halt, programming and readback with real evidence. Recovery
+reuse and no duplicate reset need their own applicable authorized check; there is no
+automatic retry or recovery fallback. The original IPSR=3 fault may have another cause.
+Packaging, version alignment, full release matrices/coverage, installation and physical
+qualification are separate phases. Existing v1.3.4 exceptions/limitations do not transfer.
+
+## Evidence integrity
+
+The retained raw streams, tasks, manifests, execution records, source hashes, JUnit,
+coverage and original failure outputs remain external; no credential is included here.
+
+| Artifact under D:/codex-tmp/f135 | SHA-256 |
+| --- | --- |
+| final-reviewed.diff (accepted base to final CodeHead) | dd82c0a665c35970ea289b800bf83cd3c0b417d2994b99b333288228d08ccdc6 |
+| matrix.json (deduplicated identities and retained failures) | b4a0b8e0a6ca2e633fb9305c2ff32520b59c922535f4574f259afbdc6013c643 |
+| delegation-audit.json (native tools, scopes, edits and commands) | 68c5afa3d22c4ef2fb9d985228357b7a8ba2adfa35b9964c48b60dcbe595deb8 |
