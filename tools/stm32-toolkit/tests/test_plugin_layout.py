@@ -280,9 +280,8 @@ def test_setup_skill_has_an_explicit_read_only_check_and_authorized_mutation_con
         "read-only",
         "offline",
         "explicit authorization",
-        # The Skill prose still documents the published 1.3.2 runtime; the
-        # documentation update is a separate task, so this expectation tracks
-        # the Skill file as it currently ships.
+        # SKILL.md names the current 1.3.4 runtime for setup and keeps the
+        # 1.3.2 path only as a legacy-upgrade example.
         "${CLAUDE_PLUGIN_DATA}/runtime/1.3.2",
         "${CLAUDE_PLUGIN_ROOT}/tools/stm32-toolkit",
         "CPython >=3.12,<3.13",
@@ -524,7 +523,7 @@ def test_setup_helper_uses_explicit_paths_without_ambient_environment(tmp_path: 
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
     assert payload["mode"] == "CHECK"
-    assert payload["runtime"]["path"].endswith("/runtime/1.3.3")
+    assert payload["runtime"]["path"].endswith("/runtime/1.3.4")
     assert payload["project"] == project.as_posix()
     assert payload["mutated"] is False
     assert not plugin_data.exists()
@@ -619,23 +618,20 @@ def test_readmes_are_concise_and_distinguish_published_and_local_contracts():
             tags.add(version)
         assert tags, "a landing page must link a concrete release tag"
         newest = max(tags, key=lambda value: tuple(int(part) for part in value.split(".")))
-        # 1.3.3 is the newest published release page.  v1.3.4 is the current
-        # source version but is deliberately not published yet: the separate
-        # bounded documentation task adds it to these landing pages only
-        # together with an explicit local-candidate mark.
-        assert newest in {"1.3.2", "1.3.3"}, tags
-        if newest == "1.3.2" and "1.3.3" in guide:
+        # 1.3.3 is the newest published release page.  v1.3.4 names the current
+        # source version and only counts as a release page after the separately
+        # authorized publication is observed; until then it stays a candidate.
+        assert newest in {"1.3.3", "1.3.4"}, tags
+        # Each landing page names the current source version explicitly, so a
+        # page that still advertises only the previous release cannot pass.
+        assert f"v{__version__}" in guide
+        if __version__ != newest:
             assert any(mark in guide for mark in candidate_marks), (
-                "1.3.3 must be marked as a local candidate until it is published"
+                f"v{__version__} must be marked as a local candidate until it is "
+                "published; publication remains a separate authorized remote action"
             )
-        if f"v{__version__}" in guide and __version__ != newest:
-            assert any(mark in guide for mark in candidate_marks), (
-                f"v{__version__} must be marked as a local candidate; publication "
-                "remains a separate authorized remote action"
-            )
-        # Each landing page links the newest published release line; the
-        # v1.3.4 candidate line lands with the deferred documentation task.
-        assert f"v{newest}" in guide
+        # Each landing page still links the newest published release page.
+        assert f"{tag_prefix}{newest}" in guide
         declared.append(newest)
         # Detailed installation, upgrade and local limitations stay in the
         # user guide instead of being duplicated as landing-page steps.
@@ -829,10 +825,11 @@ def test_unified_1_0_1_runtime_version_across_launcher_setup_and_skill():
     assert "ui_dist" in helper
     assert "import pyocd" in helper
     assert '"-I", "-c"' in helper
-    # SKILL.md still documents the published 1.3.3 runtime; the bounded
-    # documentation task moves those prose paths to the v1.3.4 candidate.
+    # SKILL.md documents the current 1.3.4 runtime and staging paths; 1.3.3 and
+    # 1.3.2 appear only as legacy upgrade examples, never as the current one.
+    assert "${CLAUDE_PLUGIN_DATA}/runtime/1.3.4" in skill
+    assert "${CLAUDE_PLUGIN_DATA}/runtime/.staging/1.3.4-<id>" in skill
     assert "${CLAUDE_PLUGIN_DATA}/runtime/1.3.3" in skill
-    assert "${CLAUDE_PLUGIN_DATA}/runtime/.staging/1.3.3-<id>" in skill
     assert "tools/stm32-toolkit[probe]" in skill
     assert "isolated PEP 440 `pyocd` distribution check" in skill
     assert ">=0.45.1,<0.46" in skill
