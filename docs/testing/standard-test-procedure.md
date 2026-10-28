@@ -4,6 +4,8 @@
 
 ## 1. 当前断点与证据
 
+2026-10-28 问题2由用户明确交主代理继续调查，见[离线续查报告](../codex/returns/POST134-USABILITY/flash-offline-followup.md)。已找到under-reset/100 kHz的61,516字节校验成功收据；已通过源码和无硬件替身调用检查确认标准API路径缺少pyOCD CLI的烧录前reset-and-halt。该差异是优先修复候选，尚未证明现场HardFault根因或修复有效性；未改产品代码、未操作硬件、未安装或推送发布。后续须先定义烧录前状态准备合同；本记录不授予复位/重试权限，也不改变下述1/3/4/5/8的软件验收。
+
 2026-10-28 POST134-USABILITY 本地软件已 **ACCEPTED_WITH_FIXES**，CodeHead `29d13fc75881bfc771d81aa1c54f45948a6fa0f0`，见[执行与独立验收记录](../codex/returns/POST134-USABILITY/implementation-report.md)。已完成1（preset证据隔离）、3（CLI字段诊断）、4/5（共享迁移调试引导和空launch说明）、8（发布文档）；2仅完成离线调查，实机失败根因未证实。Claude构建相关319通过、迁移相关229通过/1平台跳过；另明确复用未变CLI的90项证据，受影响矩阵去重638通过/1跳过，并非最终提交全仓重跑。主代理在干净精确CodeHead独立183/183通过；一个原生pending命令按既有绑定证据核对完成，未重跑。旧失败、超轮数及scope审计拒绝保留，不追溯接受；见[此前部分处置](../codex/returns/POST134-USABILITY/partial-review-2026-10-28.md)。真实文件symlink检查因宿主能力跳过，留待后续发行资格阶段的具备能力宿主；新reparse注入用例已通过。新改动列为Unreleased、计划v1.3.5，源码版本仍1.3.4；本轮未打包、安装、推送发布、修改原工程或操作硬件，既有v1.3.4发布限制和例外不转移。以下为历史断点。
 
 2026-10-28 v1.3.4 已公开为Latest：Release426198381于2026-10-28T02:39:44Z发布，target/标签绑定冻结 `a7db6a8cc3ecdab53ef0b52cb80b54cbadcacead`。13附件均匿名下载HTTP200且大小/SHA-256匹配双构建候选，见[发布记录](../codex/returns/STM32TK-134/publication-2026-10-28.md)。Windows ZIP首次网络失败保留，经用户明确批准的一次有界续传成功，只清理该失败starter，8成功附件保留。候选专属例外不改变永久门槛/失败/跳过事实。中英文README、changelog及现行指引已同步并独立审查；最终文档合同172通过/1平台跳过，见[审查记录](../codex/returns/STM32TK-134/publication-guidance-review.md)，冻结包保留构建时状态、master文档说明实际发布。最终安装/VS Code仍USER_VALIDATION_PENDING、由用户负责，原工程/既有runtime/硬件未操作。以下为历史断点。

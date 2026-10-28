@@ -5,6 +5,12 @@ Items **1, 3, 4/5 and 8** are complete. Item **2** is complete only as an offlin
 investigation; its hardware failure remains unresolved. These changes belong to
 **Unreleased, planned v1.3.5**. This is not release or hardware qualification.
 
+Subsequent primary-owned issue 2 investigation is recorded in
+[the offline follow-up](flash-offline-followup.md). It found a successful under-reset
+receipt and confirmed that the normal API path lacks the CLI's pre-program reset.
+The physical cause remains unproven; this is a new proposed correction, not an
+implemented or hardware-qualified fix. The acceptance below covers the earlier scope.
+
 The prior partial disposition, its failed calls and test results remain in
 [partial-review-2026-10-28.md](partial-review-2026-10-28.md) and the original external
 evidence. Later acceptance does not retroactively accept those invocations.
