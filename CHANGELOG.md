@@ -27,12 +27,14 @@
   A pre-fix release that already overwrote the global debug receipt cannot have that debug
   evidence reconstructed; one explicitly authorized `arm-debug --clean` rebuild may be
   needed once.
-- Implemented: bounded CLI `--flash-regions` diagnostics. The schema is exactly 1..32
-  objects of `[{"start": <integer>, "length": <positive integer>}]` with an optional
-  `name`; no `origin` field is accepted. Grammar failures keep exit code 2 with fixed
-  messages that identify the field, list index and reason (shape, missing
-  start/length, duplicate fields, integer types where `bool` is not an integer) without
-  echoing caller payloads, and `--help` shows the schema plus one example.
+- Implemented: bounded CLI `--flash-regions` diagnostics. The accepted schema is exactly
+  1..32 objects of `[{"start": <integer>, "length": <integer>}]`; `name` and `origin` are
+  unsupported keys. Grammar failures keep exit code 2 with fixed messages that name the
+  rejected aspect — bad JSON or wrong shape, missing or unsupported region fields,
+  duplicate fields, and non-integer types where `bool` is not an integer — plus the
+  1-based region index where applicable, without echoing caller payloads; `--help` shows
+  the schema plus one example. Address-range, positive-length and other security checks
+  remain existing workflow validation and are not part of this CLI diagnostic change.
 - Both entries above are local `Unreleased` corrections planned for `v1.3.5`; they are not
   part of the published v1.3.4 bytes, are not an accepted release, and change no packaging,
   hardware or installation behavior.
