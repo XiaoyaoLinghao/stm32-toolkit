@@ -1,5 +1,26 @@
 # Release status and retained limitations
 
+## v1.3.4 software reviewed, release qualification pending — 2026-10-28
+
+Include-guard recognition and quoted-header encoding discovery are **ACCEPTED_WITH_FIXES**
+at CodeHead `08ff6e82931a0a4ac35cd6f020a2f9eaee67aea5`; see the
+[implementation and independent review](codex/returns/STM32TK-134/implementation-report.md)
+and [source/run evidence](codex/returns/STM32TK-134/release-evidence.json).
+The affected matrix accounts for 1,263 passes / one platform skip using explicitly bound
+unchanged evidence and targeted corrections, rather than one final-head full rerun.
+The existing guarded UTF-8 project copy produces 0 blockers / planReady=true and a
+191-output destination dry-run; original preflight now lists 36 C plus 24 reachable
+header encoding blockers. Both captures are read-only and leave destination absent.
+
+Permanent qualification is **NOT_QUALIFIED**: Toolkit overall/risk are
+82.7452%/82.6335% below 90%, Monitor risk is 92.3681% below 95%; UI exact-source
+reuse meets its aggregate and per-file gates. Original failures, bounded passing
+comparisons and retained platform/vendor limits remain separate evidence. No old
+candidate exception transfers. Next: freeze and verify two canonical 13-file builds,
+then resolve only that concrete candidate's qualification. No v1.3.4 push/tag/Release,
+installation or hardware operation has occurred. Final recipient installation/VS Code
+remains **USER_VALIDATION_PENDING**, owned by the user; public Latest remains v1.3.3.
+
 ## v1.3.3 published as Latest — 2026-10-27
 
 [v1.3.3 Release](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.3.3) is public and Latest. All 13 files were anonymously downloaded and rehashed against frozen `46ca09084bbe39f670714d19d7d55f9365ef06be`; see [publication evidence](codex/returns/STM32TK-133/publication-2026-10-27.md). The approved candidate-specific limitations remain disclosed. Final actual installation/VS Code remains **USER_VALIDATION_PENDING**, owned by the user. No original-project or hardware actions occurred. Frozen package docs keep build-time status; current master docs supersede that status.

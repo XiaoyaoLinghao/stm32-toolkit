@@ -4,6 +4,8 @@
 
 ## 1. 当前断点与证据
 
+2026-10-28 v1.3.4 软件复核：include guard 判定与引号头文件编码发现已在 CodeHead `08ff6e82931a0a4ac35cd6f020a2f9eaee67aea5` 独立审查为 **ACCEPTED_WITH_FIXES**，见[执行与独立审查](../codex/returns/STM32TK-134/implementation-report.md)。受影响矩阵为1,263通过/1平台跳过，明确复用未变源码证据并保留原失败和定点修正结果，非最终提交全仓重跑。原工程preflight提前列36个C与24个可达头文件编码阻断；保留guard的既有UTF-8副本已0 blocker、planReady=true，destination dry-run为191输出，工程字节未变、目标目录未创建。永久覆盖门槛未满足，发行仍 **NOT_QUALIFIED**；下一步冻结双构建13文件，再对具体候选单独处置，v1.3.3例外不转移。未推送/发布v1.3.4、未安装或操作硬件；最终安装/VS Code仍由用户负责。以下为历史断点。
+
 2026-10-27 v1.3.3 已完成发布和公网校验：[发布记录](../codex/returns/STM32TK-133/publication-2026-10-27.md)。Release `425062317` 于 `2026-10-27T05:22:56Z` 设为Latest，标签绑定冻结 `46ca09084bbe39f670714d19d7d55f9365ef06be`。13附件匿名下载均HTTP200、大小及SHA-256匹配双构建候选；中英文README和现行调用指引已同步，文档合同检查通过。仅本候选的已披露例外保持原义，永久门槛未变。最终安装/VS Code仍USER_VALIDATION_PENDING、由用户负责；未改原工程/硬件。冻结包保留构建时文档状态，master文档说明实际发布。以下为历史断点。
 
 2026-10-27 v1.3.3 资格处置：用户明确批准仅对冻结 `46ca09084bbe39f670714d19d7d55f9365ef06be` 的13文件候选接受已披露限制并发布Latest，见[授权记录](../codex/returns/STM32TK-133/authorization-2026-10-27.md)。处置为 USER_APPROVED_EXCEPTION，永久门槛未改，未达标及跳过不变为PASS。下一步非强推源码/标签、上传校验及公网核验；最终安装/VS Code由用户负责，原工程/硬件不操作。以下为历史断点。

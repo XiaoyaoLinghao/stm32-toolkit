@@ -1,0 +1,1363 @@
+{
+  "acceptedBase": "dc278ca226a0c1d4540657f48eb74fa1d5b361ca",
+  "codeHead": "08ff6e82931a0a4ac35cd6f020a2f9eaee67aea5",
+  "owner": "primary independent acceptance",
+  "softwareVerdict": "ACCEPTED_WITH_FIXES",
+  "releaseStatus": "NOT_QUALIFIED",
+  "affectedMatrix": {
+    "passed": 1263,
+    "skipped": 1,
+    "singleFinalHeadFullRerun": false,
+    "overlappingIndependent30NotAdded": true
+  },
+  "runs": [
+    {
+      "run": "encoding-first",
+      "head": "56be1a3449d4bc32cbe9b07487a50131b6451e1f",
+      "group": "encoding-new",
+      "owner": "Claude CLI",
+      "exitCode": 0,
+      "terminal": {
+        "count": 30,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "sourceUnchanged": true,
+      "executionSha256": "e794a007980338099b3240cca1fe4bcf45235da36e7697b418cf1b60f5a1777b",
+      "junitSha256": "6fba9228a3899a3ab25b3ce137982b9af1c1376a6f03be37a44ad426d69852d6",
+      "argv": [
+        "D:/codex-tmp/kx23/venv/Scripts/python.exe",
+        "-X",
+        "utf8",
+        "-m",
+        "coverage",
+        "run",
+        "--rcfile=D:\\codex-tmp\\r134\\encoding-first\\coverage.ini",
+        "-m",
+        "pytest",
+        "C:\\Users\\zhy76\\.codex\\worktrees\\v133-retest-audit\\STM32-Toolkit\\tools\\stm32-toolkit\\tests\\test_migration_readiness_v134.py",
+        "C:\\Users\\zhy76\\.codex\\worktrees\\v133-retest-audit\\STM32-Toolkit\\tools\\stm32-toolkit\\tests\\test_header_encoding_discovery.py",
+        "-q",
+        "-o",
+        "addopts=",
+        "--tb=short",
+        "--color=no",
+        "--basetemp=D:\\codex-tmp\\r134\\encoding-first\\t",
+        "-o",
+        "cache_dir=D:\\codex-tmp\\r134\\encoding-first\\cache",
+        "--junitxml=D:\\codex-tmp\\r134\\encoding-first\\junit.xml"
+      ]
+    },
+    {
+      "run": "constants-full",
+      "head": "56be1a3449d4bc32cbe9b07487a50131b6451e1f",
+      "group": "constants",
+      "owner": "Claude CLI",
+      "exitCode": 0,
+      "terminal": {
+        "count": 68,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "sourceUnchanged": true,
+      "executionSha256": "decb523b7c040801ded7545058320e9b02780858de0d3a153f40110814faa55d",
+      "junitSha256": "c21ae3b5021ec4240bdbc43d18deb7e425d0b1d5ed89f5de544ad27af276c021",
+      "argv": [
+        "D:/codex-tmp/kx23/venv/Scripts/python.exe",
+        "-X",
+        "utf8",
+        "-m",
+        "coverage",
+        "run",
+        "--rcfile=D:\\codex-tmp\\r134\\constants-full\\coverage.ini",
+        "-m",
+        "pytest",
+        "C:\\Users\\zhy76\\.codex\\worktrees\\v133-retest-audit\\STM32-Toolkit\\tools\\stm32-toolkit\\tests\\test_migration_constant_boundaries.py",
+        "C:\\Users\\zhy76\\.codex\\worktrees\\v133-retest-audit\\STM32-Toolkit\\tools\\stm32-toolkit\\tests\\test_armcc_common_syntax.py",
+        "-q",
+        "-o",
+        "addopts=",
+        "--tb=short",
+        "--color=no",
+        "--basetemp=D:\\codex-tmp\\r134\\constants-full\\t",
+        "-o",
+        "cache_dir=D:\\codex-tmp\\r134\\constants-full\\cache",
+        "--junitxml=D:\\codex-tmp\\r134\\constants-full\\junit.xml"
+      ]
+    },
+    {
+      "run": "preflight-first",
+      "head": "56be1a3449d4bc32cbe9b07487a50131b6451e1f",
+      "group": "preflight",
+      "owner": "Claude CLI",
+      "exitCode": 0,
+      "terminal": {
+        "count": 39,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "sourceUnchanged": true,
+      "executionSha256": "cf6932d872574333fcf8fedb19314df0d706723bdd1dfff9f0a295fa760e0305",
+      "junitSha256": "8ad4455d9817a60ccdd838002a5076e578e4e014ec5cbe0c4a46beeef098c0a2",
+      "argv": [
+        "D:/codex-tmp/kx23/venv/Scripts/python.exe",
+        "-X",
+        "utf8",
+        "-m",
+        "coverage",
+        "run",
+        "--rcfile=D:\\codex-tmp\\r134\\preflight-first\\coverage.ini",
+        "-m",
+        "pytest",
+        "C:\\Users\\zhy76\\.codex\\worktrees\\v133-retest-audit\\STM32-Toolkit\\tools\\stm32-toolkit\\tests\\test_keil_preflight.py",
+        "C:\\Users\\zhy76\\.codex\\worktrees\\v133-retest-audit\\STM32-Toolkit\\tools\\stm32-toolkit\\tests\\test_retest_diagnostics.py",
+        "-q",
+        "-o",
+        "addopts=",
+        "--tb=short",
+        "--color=no",
+        "--basetemp=D:\\codex-tmp\\r134\\preflight-first\\t",
+        "-o",
+        "cache_dir=D:\\codex-tmp\\r134\\preflight-first\\cache",
+        "--junitxml=D:\\codex-tmp\\r134\\preflight-first\\junit.xml"
+      ]
+    },
+    {
+      "run": "migration-plan-full",
+      "head": "a49754cad69b32da770c43a9f166972ab2a24da4",
+      "group": "plans",
+      "owner": "Claude CLI",
+      "exitCode": 0,
+      "terminal": {
+        "count": 98,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "sourceUnchanged": true,
+      "executionSha256": "8741a11cee1f453c3458937c10e2442672eb3f96ce5266f2c9eb91fdd2a51687",
+      "junitSha256": "4561021005c4e11bab7ba1e9f6e817042a0f2e6e2dfa67c3c6440979bc4343df",
+      "argv": [
+        "D:/codex-tmp/kx23/venv/Scripts/python.exe",
+        "-X",
+        "utf8",
+        "-m",
+        "coverage",
+        "run",
+        "--rcfile=D:\\codex-tmp\\r134\\migration-plan-full\\coverage.ini",
+        "-m",
+        "pytest",
+        "C:\\Users\\zhy76\\.codex\\worktrees\\v133-retest-audit\\STM32-Toolkit\\tools\\stm32-toolkit\\tests\\test_migration_plan.py",
+        "-q",
+        "-o",
+        "addopts=",
+        "--tb=short",
+        "--color=no",
+        "--basetemp=D:\\codex-tmp\\r134\\migration-plan-full\\t",
+        "-o",
+        "cache_dir=D:\\codex-tmp\\r134\\migration-plan-full\\cache",
+        "--junitxml=D:\\codex-tmp\\r134\\migration-plan-full\\junit.xml"
+      ]
+    },
+    {
+      "run": "j",
+      "head": "a49754cad69b32da770c43a9f166972ab2a24da4",
+      "group": "delivery",
+      "owner": "Claude CLI",
+      "exitCode": 0,
+      "terminal": {
+        "count": 14,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "sourceUnchanged": true,
+      "executionSha256": "5d2a224bac0d7d7ff62ee026525de655e37ee75ba1aba7c2713ceba0fdb95b57",
+      "junitSha256": "7efe81f4daed873b7444acf7e75edb60afcc6134d4f6f29635503c2bc7561ccf",
+      "argv": [
+        "D:/codex-tmp/kx23/venv/Scripts/python.exe",
+        "-X",
+        "utf8",
+        "-m",
+        "coverage",
+        "run",
+        "--rcfile=D:\\codex-tmp\\r134\\j\\coverage.ini",
+        "-m",
+        "pytest",
+        "C:\\Users\\zhy76\\.codex\\worktrees\\v133-retest-audit\\STM32-Toolkit\\tools\\stm32-toolkit\\tests\\test_prepared_gcc_delivery.py",
+        "C:\\Users\\zhy76\\.codex\\worktrees\\v133-retest-audit\\STM32-Toolkit\\tools\\stm32-toolkit\\tests\\test_created_gcc_delivery.py",
+        "-q",
+        "-o",
+        "addopts=",
+        "--tb=short",
+        "--color=no",
+        "--basetemp=D:\\codex-tmp\\r134\\j\\t",
+        "-o",
+        "cache_dir=D:\\codex-tmp\\r134\\j\\cache",
+        "--junitxml=D:\\codex-tmp\\r134\\j\\junit.xml"
+      ]
+    },
+    {
+      "run": "vg",
+      "head": "a49754cad69b32da770c43a9f166972ab2a24da4",
+      "group": "version-generation",
+      "owner": "Claude CLI",
+      "exitCode": 0,
+      "terminal": {
+        "count": 342,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "sourceUnchanged": true,
+      "executionSha256": "2339a7cb18e08cf92757dcb8b4c4a92cebf0a6a71087f85efb3fd68410971f52",
+      "junitSha256": "716ca5dbfd9953ee6790e5532288ccd1aac3e7ab25f095a8aa04045bb13f2c34",
+      "argv": [
+        "D:/codex-tmp/kx23/venv/Scripts/python.exe",
+        "-X",
+        "utf8",
+        "-m",
+        "coverage",
+        "run",
+        "--rcfile=D:\\codex-tmp\\r134\\vg\\coverage.ini",
+        "-m",
+        "pytest",
+        "C:\\Users\\zhy76\\.codex\\worktrees\\v133-retest-audit\\STM32-Toolkit\\tools\\stm32-toolkit\\tests\\test_generation.py",
+        "C:\\Users\\zhy76\\.codex\\worktrees\\v133-retest-audit\\STM32-Toolkit\\tools\\stm32-toolkit\\tests\\test_startup_gcc_generation.py",
+        "-q",
+        "-o",
+        "addopts=",
+        "--tb=short",
+        "--color=no",
+        "--basetemp=D:\\codex-tmp\\r134\\vg\\t",
+        "-o",
+        "cache_dir=D:\\codex-tmp\\r134\\vg\\cache",
+        "--junitxml=D:\\codex-tmp\\r134\\vg\\junit.xml"
+      ]
+    },
+    {
+      "run": "vb",
+      "head": "a49754cad69b32da770c43a9f166972ab2a24da4",
+      "group": "version-build",
+      "owner": "Claude CLI",
+      "exitCode": 0,
+      "terminal": {
+        "count": 100,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "sourceUnchanged": true,
+      "executionSha256": "fd41f3e444528b18819a64b6964cc0d48b7ce0dafeb6fa2e1fccd909f95c42b5",
+      "junitSha256": "3f755d7fcb14c007f555186b2dfd4f044a4c52a66fc5f67a74471db542612083",
+      "argv": [
+        "D:/codex-tmp/kx23/venv/Scripts/python.exe",
+        "-X",
+        "utf8",
+        "-m",
+        "coverage",
+        "run",
+        "--rcfile=D:\\codex-tmp\\r134\\vb\\coverage.ini",
+        "-m",
+        "pytest",
+        "C:\\Users\\zhy76\\.codex\\worktrees\\v133-retest-audit\\STM32-Toolkit\\tools\\stm32-toolkit\\tests\\test_build_runner.py",
+        "-q",
+        "-o",
+        "addopts=",
+        "--tb=short",
+        "--color=no",
+        "--basetemp=D:\\codex-tmp\\r134\\vb\\t",
+        "-o",
+        "cache_dir=D:\\codex-tmp\\r134\\vb\\cache",
+        "--junitxml=D:\\codex-tmp\\r134\\vb\\junit.xml"
+      ]
+    },
+    {
+      "run": "mf",
+      "head": "41c771d24345fecf6d4284f108cca173f6371444",
+      "group": "version-meta",
+      "owner": "Claude CLI",
+      "exitCode": 0,
+      "terminal": {
+        "count": 78,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "sourceUnchanged": true,
+      "executionSha256": "a547297c0f530ae937170ee885ca9f9285b4a0f5d2d977aee45bc19e7e8dfbde",
+      "junitSha256": "101be6bc8398897910172aa69f2b6141a1564321fc42cf7405438253e0c2fcb4",
+      "argv": [
+        "D:/codex-tmp/kx23/venv/Scripts/python.exe",
+        "-X",
+        "utf8",
+        "-m",
+        "coverage",
+        "run",
+        "--rcfile=D:\\codex-tmp\\r134\\mf\\coverage.ini",
+        "-m",
+        "pytest",
+        "C:\\Users\\zhy76\\.codex\\worktrees\\v134-review\\STM32-Toolkit\\tools\\stm32-toolkit\\tests\\test_plugin_layout.py",
+        "C:\\Users\\zhy76\\.codex\\worktrees\\v134-review\\STM32-Toolkit\\tools\\stm32-toolkit\\tests\\test_public_inventory.py",
+        "C:\\Users\\zhy76\\.codex\\worktrees\\v134-review\\STM32-Toolkit\\tools\\stm32-toolkit\\tests\\release\\test_0900_artifacts.py",
+        "-q",
+        "-o",
+        "addopts=",
+        "--tb=short",
+        "--color=no",
+        "--basetemp=D:\\codex-tmp\\r134\\mf\\t",
+        "-o",
+        "cache_dir=D:\\codex-tmp\\r134\\mf\\cache",
+        "--junitxml=D:\\codex-tmp\\r134\\mf\\junit.xml"
+      ]
+    },
+    {
+      "run": "vc",
+      "head": "c6392a9b4fe93d5ffe78771f1e1eeba29c4a4f8b",
+      "group": "version-cli",
+      "owner": "Claude CLI",
+      "exitCode": 0,
+      "terminal": {
+        "count": 66,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "sourceUnchanged": true,
+      "executionSha256": "0bf93923116ce64fd661b210c1b0ab2f4288d1416cb558ad09136cff2eb6fb70",
+      "junitSha256": "cba3c2dc57bff60b216ad4fbd184bc4a6b70ff546eccc5dce1c7b8abdfb5c3c7",
+      "argv": [
+        "D:/codex-tmp/kx23/venv/Scripts/python.exe",
+        "-X",
+        "utf8",
+        "-m",
+        "coverage",
+        "run",
+        "--rcfile=D:\\codex-tmp\\r134\\vc\\coverage.ini",
+        "-m",
+        "pytest",
+        "C:\\Users\\zhy76\\.codex\\worktrees\\v133-retest-audit\\STM32-Toolkit\\tools\\stm32-toolkit\\tests\\test_cli.py",
+        "C:\\Users\\zhy76\\.codex\\worktrees\\v133-retest-audit\\STM32-Toolkit\\tools\\stm32-toolkit\\tests\\test_mcp_migration_build.py",
+        "-q",
+        "-o",
+        "addopts=",
+        "--tb=short",
+        "--color=no",
+        "--basetemp=D:\\codex-tmp\\r134\\vc\\t",
+        "-o",
+        "cache_dir=D:\\codex-tmp\\r134\\vc\\cache",
+        "--junitxml=D:\\codex-tmp\\r134\\vc\\junit.xml"
+      ]
+    },
+    {
+      "run": "mo",
+      "head": "c6392a9b4fe93d5ffe78771f1e1eeba29c4a4f8b",
+      "group": "monitor",
+      "owner": "Claude CLI",
+      "exitCode": 0,
+      "terminal": {
+        "count": 288,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "sourceUnchanged": true,
+      "executionSha256": "f6702f5ea98a65b64ef2ea178340e292dbe2cc8c37e940dd4f13a9385cfdd93b",
+      "junitSha256": "d2184f0075ec438c2af1ba18138d9833eb1267d54437b665f956c8e1e0f888de",
+      "argv": [
+        "D:/codex-tmp/kx23/venv/Scripts/python.exe",
+        "-X",
+        "utf8",
+        "-m",
+        "coverage",
+        "run",
+        "--rcfile=D:\\codex-tmp\\r134\\mo\\coverage.ini",
+        "-m",
+        "pytest",
+        "C:\\Users\\zhy76\\.codex\\worktrees\\v133-retest-audit\\STM32-Toolkit\\tools\\stm32-monitor\\tests\\test_cli.py",
+        "C:\\Users\\zhy76\\.codex\\worktrees\\v133-retest-audit\\STM32-Toolkit\\tools\\stm32-monitor\\tests\\test_package_boundary.py",
+        "C:\\Users\\zhy76\\.codex\\worktrees\\v133-retest-audit\\STM32-Toolkit\\tools\\stm32-monitor\\tests\\test_exports.py",
+        "C:\\Users\\zhy76\\.codex\\worktrees\\v133-retest-audit\\STM32-Toolkit\\tools\\stm32-monitor\\tests\\test_models.py",
+        "C:\\Users\\zhy76\\.codex\\worktrees\\v133-retest-audit\\STM32-Toolkit\\tools\\stm32-monitor\\tests\\test_runtime.py",
+        "C:\\Users\\zhy76\\.codex\\worktrees\\v133-retest-audit\\STM32-Toolkit\\tools\\stm32-monitor\\tests\\test_service.py",
+        "-q",
+        "-o",
+        "addopts=",
+        "--tb=short",
+        "--color=no",
+        "--basetemp=D:\\codex-tmp\\r134\\mo\\t",
+        "-o",
+        "cache_dir=D:\\codex-tmp\\r134\\mo\\cache",
+        "--junitxml=D:\\codex-tmp\\r134\\mo\\junit.xml"
+      ]
+    },
+    {
+      "run": "gf",
+      "head": "41c771d24345fecf6d4284f108cca173f6371444",
+      "group": "guidance",
+      "owner": "Claude CLI",
+      "exitCode": 0,
+      "terminal": {
+        "count": 94,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 1
+      },
+      "sourceUnchanged": true,
+      "executionSha256": "c3dd342beb4509da4791a5375f2617e44269cfe3cb5b9b9aac72fc0c82a136b0",
+      "junitSha256": "675131aad4176ff0d185d44a3585a9082e42d771831e5d5353cc6e7f62a2f906",
+      "argv": [
+        "D:/codex-tmp/kx23/venv/Scripts/python.exe",
+        "-X",
+        "utf8",
+        "-m",
+        "coverage",
+        "run",
+        "--rcfile=D:\\codex-tmp\\r134\\gf\\coverage.ini",
+        "-m",
+        "pytest",
+        "C:\\Users\\zhy76\\.codex\\worktrees\\v134-review\\STM32-Toolkit\\tools\\stm32-toolkit\\tests\\test_ai_call_guidance.py",
+        "C:\\Users\\zhy76\\.codex\\worktrees\\v134-review\\STM32-Toolkit\\tools\\stm32-toolkit\\tests\\test_vscode_configuration.py",
+        "C:\\Users\\zhy76\\.codex\\worktrees\\v134-review\\STM32-Toolkit\\tools\\stm32-toolkit\\tests\\test_ide_tasks.py",
+        "-q",
+        "-o",
+        "addopts=",
+        "--tb=short",
+        "--color=no",
+        "--basetemp=D:\\codex-tmp\\r134\\gf\\t",
+        "-o",
+        "cache_dir=D:\\codex-tmp\\r134\\gf\\cache",
+        "--junitxml=D:\\codex-tmp\\r134\\gf\\junit.xml"
+      ]
+    },
+    {
+      "run": "sa",
+      "head": "c6392a9b4fe93d5ffe78771f1e1eeba29c4a4f8b",
+      "group": "setup-a",
+      "owner": "Claude CLI",
+      "exitCode": 0,
+      "terminal": {
+        "count": 17,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "sourceUnchanged": true,
+      "executionSha256": "d03cba1da601bc6afa8c56bee33af05989ec99c975f2c95ddcc241a296e7d986",
+      "junitSha256": "38ce9f4495e2102ad4b8290e23febb317e9bd9c14ed4477f5db0c4bbd42f6ada",
+      "argv": [
+        "D:/codex-tmp/kx23/venv/Scripts/python.exe",
+        "-X",
+        "utf8",
+        "-m",
+        "coverage",
+        "run",
+        "--rcfile=D:\\codex-tmp\\r134\\sa\\coverage.ini",
+        "-m",
+        "pytest",
+        "C:\\Users\\zhy76\\.codex\\worktrees\\v133-retest-audit\\STM32-Toolkit\\tools\\stm32-toolkit\\tests\\test_setup_runtime.py",
+        "-q",
+        "-o",
+        "addopts=",
+        "--tb=short",
+        "--color=no",
+        "--basetemp=D:\\codex-tmp\\r134\\sa\\t",
+        "-o",
+        "cache_dir=D:\\codex-tmp\\r134\\sa\\cache",
+        "--junitxml=D:\\codex-tmp\\r134\\sa\\junit.xml",
+        "-k",
+        "legacy or promotion or repair"
+      ]
+    },
+    {
+      "run": "sb",
+      "head": "c6392a9b4fe93d5ffe78771f1e1eeba29c4a4f8b",
+      "group": "setup-b",
+      "owner": "Claude CLI",
+      "exitCode": 1,
+      "terminal": {
+        "count": 30,
+        "failures": 1,
+        "errors": 0,
+        "skipped": 0
+      },
+      "sourceUnchanged": true,
+      "executionSha256": "858db23c3ae26bf7aa2aafdb14db244473e8e4aa9278147eed3c4046ba0ff80f",
+      "junitSha256": "95237bdee32b02526c33d15d2e717ec2dfea47d56cecbfd36516f93354678c30",
+      "argv": [
+        "D:/codex-tmp/kx23/venv/Scripts/python.exe",
+        "-X",
+        "utf8",
+        "-m",
+        "coverage",
+        "run",
+        "--rcfile=D:\\codex-tmp\\r134\\sb\\coverage.ini",
+        "-m",
+        "pytest",
+        "C:\\Users\\zhy76\\.codex\\worktrees\\v133-retest-audit\\STM32-Toolkit\\tools\\stm32-toolkit\\tests\\test_setup_runtime.py",
+        "-q",
+        "-o",
+        "addopts=",
+        "--tb=short",
+        "--color=no",
+        "--basetemp=D:\\codex-tmp\\r134\\sb\\t",
+        "-o",
+        "cache_dir=D:\\codex-tmp\\r134\\sb\\cache",
+        "--junitxml=D:\\codex-tmp\\r134\\sb\\junit.xml",
+        "-k",
+        "not (legacy or promotion or repair)"
+      ]
+    },
+    {
+      "run": "sd",
+      "head": "08ff6e82931a0a4ac35cd6f020a2f9eaee67aea5",
+      "group": "setup-doc",
+      "owner": "Claude CLI",
+      "exitCode": 0,
+      "terminal": {
+        "count": 1,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "sourceUnchanged": true,
+      "executionSha256": "ae6b8e759c8d1f8a482ede4a7ee18b6bb6929bd429fa919eed0e40554a0265a6",
+      "junitSha256": "830deb5a2ed5e009dbbf158a6c8b05ad171ae004a84e072a5af729472d6cfbbc",
+      "argv": [
+        "D:\\codex-tmp\\kx23\\venv\\Scripts\\python.exe",
+        "-X",
+        "utf8",
+        "-m",
+        "pytest",
+        "C:\\Users\\zhy76\\.codex\\worktrees\\v133-retest-audit\\STM32-Toolkit\\tools\\stm32-toolkit\\tests\\test_setup_runtime.py::test_setup_contract_uses_namespaced_skill_and_ignores_coverage_data",
+        "-q",
+        "-o",
+        "addopts=",
+        "-p",
+        "no:cacheprovider",
+        "--basetemp=D:\\codex-tmp\\r134\\sd\\t",
+        "--junitxml=D:\\codex-tmp\\r134\\sd\\junit.xml"
+      ]
+    },
+    {
+      "run": "ir",
+      "head": "c6392a9b4fe93d5ffe78771f1e1eeba29c4a4f8b",
+      "group": "encoding-new",
+      "owner": "primary independent review",
+      "exitCode": 0,
+      "terminal": {
+        "count": 30,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "sourceUnchanged": true,
+      "executionSha256": "9a8b4599e9eb115606189ae3b6e51237bebefc3fb170e300c70421fe18721b25",
+      "junitSha256": "d47f32218692acfb91fc5278065792a6ee9e8827ccfb63b94c60bacd5e53ebf5",
+      "argv": [
+        "D:/codex-tmp/kx23/venv/Scripts/python.exe",
+        "-X",
+        "utf8",
+        "-m",
+        "coverage",
+        "run",
+        "--rcfile=D:\\codex-tmp\\r134\\ir\\coverage.ini",
+        "-m",
+        "pytest",
+        "C:\\Users\\zhy76\\.codex\\worktrees\\v134-review\\STM32-Toolkit\\tools\\stm32-toolkit\\tests\\test_migration_readiness_v134.py",
+        "C:\\Users\\zhy76\\.codex\\worktrees\\v134-review\\STM32-Toolkit\\tools\\stm32-toolkit\\tests\\test_header_encoding_discovery.py",
+        "-q",
+        "-o",
+        "addopts=",
+        "--tb=short",
+        "--color=no",
+        "--basetemp=D:\\codex-tmp\\r134\\ir\\t",
+        "-o",
+        "cache_dir=D:\\codex-tmp\\r134\\ir\\cache",
+        "--junitxml=D:\\codex-tmp\\r134\\ir\\junit.xml"
+      ]
+    }
+  ],
+  "review": {
+    "acceptedBase": "dc278ca226a0c1d4540657f48eb74fa1d5b361ca",
+    "reviewedCodeHead": "08ff6e82931a0a4ac35cd6f020a2f9eaee67aea5",
+    "reviewer": "primary Codex",
+    "implementer": "local Claude Code CLI with configured deepseek-v4.1-flash[1m]",
+    "verdict": "ACCEPTED_WITH_FIXES for software scope; release NOT_QUALIFIED",
+    "completeDiffSha256": "6d1266d246daefa96d67b47d98aac49f90d069034a0c28fb217a8e965aa90406",
+    "independentRun": "ir",
+    "remainingCodeFindings": [],
+    "setupFinalCorrection": "Exactly one assertion1.3.3->1.3.4 inside documentation node; every other AST node/helper/fixture unchanged.46passing behavior nodes reused; corrected documentation node sd independently bound."
+  },
+  "qualification": {
+    "path": "D:\\codex-tmp\\r134\\coverage-v134\\qualification.json",
+    "sha256": "00d0ff0fd025f6ee4dbca29fd5519118baa871446592014884d9f21e19d1fb35",
+    "allCurrentPythonBytesMatch": true,
+    "scopes": {
+      "toolkit-overall": {
+        "covered": 15336,
+        "total": 18534,
+        "percent": 82.74522499190677,
+        "floor": 90,
+        "status": "UNMET"
+      },
+      "toolkit-risk-core-v2": {
+        "covered": 14208,
+        "total": 17194,
+        "percent": 82.63347679423055,
+        "floor": 90,
+        "status": "UNMET"
+      },
+      "monitor-overall": {
+        "covered": 3292,
+        "total": 3564,
+        "percent": 92.36812570145904,
+        "floor": 90,
+        "status": "PASS"
+      },
+      "monitor-risk-core-v2": {
+        "covered": 3292,
+        "total": 3564,
+        "percent": 92.36812570145904,
+        "floor": 95,
+        "status": "UNMET"
+      }
+    },
+    "uiReuseSha256": "acc6e55db06a2c06e8b9bb4fbfa06d8f2709203a645cafaa45e2adcfb933c759"
+  },
+  "projectCaptures": {
+    "final-original": {
+      "head": "e02d63605bccc1011712b1e458725c51ee51ab79",
+      "executionSha256": "4821f53a4a6d69f26ce9433f46ea99c80d42179317947e2ed38c89863f37ba45"
+    },
+    "final-prepared": {
+      "head": "e02d63605bccc1011712b1e458725c51ee51ab79",
+      "executionSha256": "341b1da63fb2a5ca91d2273e1b1a411a820c5380ed12f70c23153ab241ac5697"
+    }
+  },
+  "saReconciliationSha256": "68f667a9b6382725419b5076d80d4d23070c8c5c71377c4c1c7664f11ef0a182",
+  "invocations": [
+    {
+      "run": "candidate-doc-truth-fix",
+      "accepted": true,
+      "cliExitCode": 0,
+      "dispatchExitCode": 0,
+      "observedTools": [
+        "Edit",
+        "Glob",
+        "Grep",
+        "Read",
+        "Write"
+      ],
+      "fileEditing": true,
+      "testsExecuted": false,
+      "testsPassed": false,
+      "backgroundPending": false,
+      "stopReason": null,
+      "scopeViolations": [],
+      "summarySha256": "031a98ef99070fd5e25c24bdefe5e4d04099ae8bef9617933c34fd46d2aa4ddc"
+    },
+    {
+      "run": "current-guides-once",
+      "accepted": false,
+      "cliExitCode": 1,
+      "dispatchExitCode": 1,
+      "observedTools": [
+        "Edit",
+        "Glob",
+        "Grep",
+        "Read",
+        "Write"
+      ],
+      "fileEditing": false,
+      "testsExecuted": false,
+      "testsPassed": false,
+      "backgroundPending": false,
+      "stopReason": null,
+      "scopeViolations": [
+        {
+          "tool_use_id": "call_00_zcciv8llki76fco5ro4tw5vh",
+          "reason": "read outside read_scope",
+          "path": "docs"
+        }
+      ],
+      "summarySha256": "e1812340917a91968d6200fa20f9104f1fe2e02c9b241dc3806f45fbc9f49a18"
+    },
+    {
+      "run": "encoding-verify-first",
+      "accepted": true,
+      "cliExitCode": 0,
+      "dispatchExitCode": 0,
+      "observedTools": [
+        "PowerShell"
+      ],
+      "fileEditing": false,
+      "testsExecuted": true,
+      "testsPassed": true,
+      "backgroundPending": false,
+      "stopReason": null,
+      "scopeViolations": [],
+      "summarySha256": "884b202f0a5f3139c977adf5525a2d79ef598d50eae19754fea7d4e17b127f55"
+    },
+    {
+      "run": "final-doc-contract-verify",
+      "accepted": true,
+      "cliExitCode": 0,
+      "dispatchExitCode": 0,
+      "observedTools": [
+        "PowerShell"
+      ],
+      "fileEditing": false,
+      "testsExecuted": true,
+      "testsPassed": true,
+      "backgroundPending": false,
+      "stopReason": null,
+      "scopeViolations": [],
+      "summarySha256": "85eed57f182edcbd2568128cbfea79f2efdb8594e9c85cde185a21f9d52d9011"
+    },
+    {
+      "run": "guard-edit",
+      "accepted": false,
+      "cliExitCode": 1,
+      "dispatchExitCode": 1,
+      "observedTools": [
+        "Edit",
+        "Glob",
+        "Grep",
+        "Read",
+        "Write"
+      ],
+      "fileEditing": false,
+      "testsExecuted": false,
+      "testsPassed": false,
+      "backgroundPending": false,
+      "stopReason": null,
+      "scopeViolations": [],
+      "summarySha256": "6d8027a872d913f090633e341ceaab8213d4cf8d3338b5154c145e6a79a456a7"
+    },
+    {
+      "run": "guard-verify",
+      "accepted": true,
+      "cliExitCode": 0,
+      "dispatchExitCode": 0,
+      "observedTools": [
+        "PowerShell"
+      ],
+      "fileEditing": false,
+      "testsExecuted": true,
+      "testsPassed": true,
+      "backgroundPending": false,
+      "stopReason": null,
+      "scopeViolations": [],
+      "summarySha256": "24ae5bf753939c3a20a0e1102bb8641ff3ba1e17b37a041c40184dbbfd0968e6"
+    },
+    {
+      "run": "guidance-contract-review-fix",
+      "accepted": true,
+      "cliExitCode": 0,
+      "dispatchExitCode": 0,
+      "observedTools": [
+        "Edit",
+        "Glob",
+        "Grep",
+        "Read",
+        "Write"
+      ],
+      "fileEditing": true,
+      "testsExecuted": false,
+      "testsPassed": false,
+      "backgroundPending": false,
+      "stopReason": null,
+      "scopeViolations": [],
+      "summarySha256": "b82f295f3459c0ffb9cfa2b898e4c5d6909a556b6a86cb914e2b2608c54676ea"
+    },
+    {
+      "run": "header-budget-fix-once",
+      "accepted": false,
+      "cliExitCode": 1,
+      "dispatchExitCode": 1,
+      "observedTools": [
+        "Edit",
+        "Glob",
+        "Grep",
+        "Read",
+        "Write"
+      ],
+      "fileEditing": false,
+      "testsExecuted": false,
+      "testsPassed": false,
+      "backgroundPending": false,
+      "stopReason": null,
+      "scopeViolations": [],
+      "summarySha256": "ec880d7091971e77bb69c4313225a74988a6cd1b7d1b502f806c16648ee6cefd"
+    },
+    {
+      "run": "header-edit-corrected",
+      "accepted": false,
+      "cliExitCode": 1,
+      "dispatchExitCode": 1,
+      "observedTools": [
+        "Edit",
+        "Glob",
+        "Grep",
+        "Read",
+        "Write"
+      ],
+      "fileEditing": false,
+      "testsExecuted": false,
+      "testsPassed": false,
+      "backgroundPending": false,
+      "stopReason": null,
+      "scopeViolations": [
+        {
+          "tool_use_id": "call_00_pqqvmx8vm6rd1lgo7j9umb3z",
+          "reason": "read outside read_scope",
+          "path": "C:\\Users\\zhy76\\.codex\\worktrees\\v133-retest-audit\\STM32-Toolkit\\tools\\stm32-toolkit\\tests"
+        },
+        {
+          "tool_use_id": "call_01_8pdvh18lhzo8upiooywd1bws",
+          "reason": "read outside read_scope",
+          "path": "C:\\Users\\zhy76\\.codex\\worktrees\\v133-retest-audit\\STM32-Toolkit\\tools\\stm32-toolkit\\src\\stm32_toolkit"
+        }
+      ],
+      "summarySha256": "ebbf9595c8b931f45adce1ef50fbbd62aed255b2162f1f5a5cc2a0cb65be76cd"
+    },
+    {
+      "run": "header-module-once",
+      "accepted": false,
+      "cliExitCode": 0,
+      "dispatchExitCode": 1,
+      "observedTools": [
+        "Edit",
+        "Glob",
+        "Grep",
+        "Read",
+        "Write"
+      ],
+      "fileEditing": false,
+      "testsExecuted": false,
+      "testsPassed": false,
+      "backgroundPending": false,
+      "stopReason": null,
+      "scopeViolations": [
+        {
+          "tool_use_id": "call_00_dci23vjblb6cztrtjqy4ij0d",
+          "reason": "read outside read_scope",
+          "path": "C:\\Users\\zhy76\\.codex\\worktrees\\v133-retest-audit\\STM32-Toolkit\\tools\\stm32-toolkit\\src\\stm32_toolkit\\migration\\header_encoding.py"
+        }
+      ],
+      "summarySha256": "70f1080ad89060676314c5168d802212a1808330af26eefb74494e95423a2061"
+    },
+    {
+      "run": "header-regression-tests-once",
+      "accepted": false,
+      "cliExitCode": 0,
+      "dispatchExitCode": 1,
+      "observedTools": [
+        "Edit",
+        "Glob",
+        "Grep",
+        "Read",
+        "Write"
+      ],
+      "fileEditing": false,
+      "testsExecuted": false,
+      "testsPassed": false,
+      "backgroundPending": false,
+      "stopReason": null,
+      "scopeViolations": [
+        {
+          "tool_use_id": "call_01_evcn7Ks1bYrRl83eUEAG7973",
+          "reason": "read outside read_scope",
+          "path": "C:\\Users\\zhy76\\.codex\\worktrees\\v133-retest-audit\\STM32-Toolkit\\tools\\stm32-toolkit"
+        },
+        {
+          "tool_use_id": "call_01_4d8faize8f1k204siwpo02sb",
+          "reason": "read outside read_scope",
+          "path": "C:\\Users\\zhy76\\.codex\\worktrees\\v133-retest-audit\\STM32-Toolkit\\tools\\stm32-toolkit\\src\\stm32_toolkit\\migration\\model.py"
+        },
+        {
+          "tool_use_id": "call_00_2wu4pnjos8ivx9uxfflt7ori",
+          "reason": "read outside read_scope",
+          "path": "C:\\Users\\zhy76\\.codex\\worktrees\\v133-retest-audit\\STM32-Toolkit\\tools\\stm32-toolkit\\tests"
+        }
+      ],
+      "summarySha256": "1dea22411343d695c6fc84128c73050f34cd5917612a621a8b3b07bad2ea2872"
+    },
+    {
+      "run": "integrated-monitor-guidance-verify",
+      "accepted": false,
+      "cliExitCode": 0,
+      "dispatchExitCode": 1,
+      "observedTools": [
+        "PowerShell"
+      ],
+      "fileEditing": false,
+      "testsExecuted": false,
+      "testsPassed": false,
+      "backgroundPending": false,
+      "stopReason": null,
+      "scopeViolations": [],
+      "summarySha256": "811a7d5f931a5ee3f5bbae8907b0f723079fe949609dac7c93e7c0fe9f5a9224"
+    },
+    {
+      "run": "integrated-setup-a-verify",
+      "accepted": false,
+      "cliExitCode": 1,
+      "dispatchExitCode": 1,
+      "observedTools": [
+        "PowerShell"
+      ],
+      "fileEditing": false,
+      "testsExecuted": false,
+      "testsPassed": false,
+      "backgroundPending": true,
+      "stopReason": "multiple_init_events",
+      "scopeViolations": [],
+      "summarySha256": "1cca44ba9efceeb8c4664e0978abe7577dc732db33dfe1eac81a5fea2677d7ce"
+    },
+    {
+      "run": "integrated-setup-b-verify",
+      "accepted": false,
+      "cliExitCode": 0,
+      "dispatchExitCode": 1,
+      "observedTools": [
+        "PowerShell"
+      ],
+      "fileEditing": false,
+      "testsExecuted": true,
+      "testsPassed": false,
+      "backgroundPending": false,
+      "stopReason": null,
+      "scopeViolations": [],
+      "summarySha256": "2ed31b967499d1612696a60782d935b16d1a71b212e9dcdbc20d2dd8a93cd562"
+    },
+    {
+      "run": "integrated-version-verify",
+      "accepted": true,
+      "cliExitCode": 0,
+      "dispatchExitCode": 0,
+      "observedTools": [
+        "PowerShell"
+      ],
+      "fileEditing": false,
+      "testsExecuted": true,
+      "testsPassed": true,
+      "backgroundPending": false,
+      "stopReason": null,
+      "scopeViolations": [],
+      "summarySha256": "a0ce3a39bc7d04cd0a6cb950fba39370ec61dcab5ecc94b80e2a67f525150843"
+    },
+    {
+      "run": "integration-short-verify",
+      "accepted": true,
+      "cliExitCode": 0,
+      "dispatchExitCode": 0,
+      "observedTools": [
+        "PowerShell"
+      ],
+      "fileEditing": false,
+      "testsExecuted": true,
+      "testsPassed": true,
+      "backgroundPending": false,
+      "stopReason": null,
+      "scopeViolations": [],
+      "summarySha256": "3c14b5e630ff8e5a0b02c8b3fa7cbd222f502ca90e2d42f0fe838d8d12e5422b"
+    },
+    {
+      "run": "integration-verify",
+      "accepted": false,
+      "cliExitCode": 0,
+      "dispatchExitCode": 1,
+      "observedTools": [
+        "PowerShell"
+      ],
+      "fileEditing": false,
+      "testsExecuted": false,
+      "testsPassed": false,
+      "backgroundPending": false,
+      "stopReason": null,
+      "scopeViolations": [],
+      "summarySha256": "0ca49d4b0208fe76453c0dc0849ff4593f28ade449518c65a80ecdd9b67347d2"
+    },
+    {
+      "run": "landing-docs-once",
+      "accepted": true,
+      "cliExitCode": 0,
+      "dispatchExitCode": 0,
+      "observedTools": [
+        "Edit",
+        "Glob",
+        "Grep",
+        "Read",
+        "Write"
+      ],
+      "fileEditing": true,
+      "testsExecuted": false,
+      "testsPassed": false,
+      "backgroundPending": false,
+      "stopReason": null,
+      "scopeViolations": [],
+      "summarySha256": "a527f7384ef71e81d6e6011c768044e947f70d074dd6401efafe1d42b685327a"
+    },
+    {
+      "run": "metadata-continue",
+      "accepted": true,
+      "cliExitCode": 0,
+      "dispatchExitCode": 0,
+      "observedTools": [
+        "Edit",
+        "Glob",
+        "Grep",
+        "Read",
+        "Write"
+      ],
+      "fileEditing": true,
+      "testsExecuted": false,
+      "testsPassed": false,
+      "backgroundPending": false,
+      "stopReason": null,
+      "scopeViolations": [],
+      "summarySha256": "f3e7993736c9c686e7a55e175b3544869a6c007614be3b930856aff3069e7ca0"
+    },
+    {
+      "run": "metadata-edit",
+      "accepted": false,
+      "cliExitCode": 1,
+      "dispatchExitCode": 1,
+      "observedTools": [
+        "Edit",
+        "Glob",
+        "Grep",
+        "Read",
+        "Write"
+      ],
+      "fileEditing": false,
+      "testsExecuted": false,
+      "testsPassed": false,
+      "backgroundPending": false,
+      "stopReason": null,
+      "scopeViolations": [],
+      "summarySha256": "38c331cefb793261dae4f8903bfecb83255e4be40b35ef29de513cbbe1aacbba"
+    },
+    {
+      "run": "migration-guides-once",
+      "accepted": false,
+      "cliExitCode": 0,
+      "dispatchExitCode": 1,
+      "observedTools": [
+        "Edit",
+        "Glob",
+        "Grep",
+        "Read",
+        "Write"
+      ],
+      "fileEditing": true,
+      "testsExecuted": false,
+      "testsPassed": false,
+      "backgroundPending": false,
+      "stopReason": null,
+      "scopeViolations": [],
+      "summarySha256": "ce8d4e605bd51dcc39b6a6ff777af4af823fc73e5e83deee88ed6fd302c425b8"
+    },
+    {
+      "run": "monitor-version-a-once",
+      "accepted": true,
+      "cliExitCode": 0,
+      "dispatchExitCode": 0,
+      "observedTools": [
+        "Edit",
+        "Glob",
+        "Grep",
+        "Read",
+        "Write"
+      ],
+      "fileEditing": true,
+      "testsExecuted": false,
+      "testsPassed": false,
+      "backgroundPending": false,
+      "stopReason": null,
+      "scopeViolations": [],
+      "summarySha256": "41432cd0f7347a2aef1da149077b79ec7d19d231cda9458f5c34f6346087c58d"
+    },
+    {
+      "run": "monitor-version-b-once",
+      "accepted": true,
+      "cliExitCode": 0,
+      "dispatchExitCode": 0,
+      "observedTools": [
+        "Edit",
+        "Glob",
+        "Grep",
+        "Read",
+        "Write"
+      ],
+      "fileEditing": true,
+      "testsExecuted": false,
+      "testsPassed": false,
+      "backgroundPending": false,
+      "stopReason": null,
+      "scopeViolations": [],
+      "summarySha256": "0f2cf99e7b10cd6d919ae969eb9c1367c84540e6f90f3b6267b2c054429f9886"
+    },
+    {
+      "run": "plugin-doc-contract-fix",
+      "accepted": true,
+      "cliExitCode": 0,
+      "dispatchExitCode": 0,
+      "observedTools": [
+        "Edit",
+        "Glob",
+        "Grep",
+        "Read",
+        "Write"
+      ],
+      "fileEditing": true,
+      "testsExecuted": false,
+      "testsPassed": false,
+      "backgroundPending": false,
+      "stopReason": null,
+      "scopeViolations": [],
+      "summarySha256": "788e5b57d017c7c88b34b574f2a32577aebc5fe1f4356c113dd4c012edd6d026"
+    },
+    {
+      "run": "preflight-integration-once",
+      "accepted": true,
+      "cliExitCode": 0,
+      "dispatchExitCode": 0,
+      "observedTools": [
+        "Edit",
+        "Glob",
+        "Grep",
+        "Read",
+        "Write"
+      ],
+      "fileEditing": true,
+      "testsExecuted": false,
+      "testsPassed": false,
+      "backgroundPending": false,
+      "stopReason": null,
+      "scopeViolations": [],
+      "summarySha256": "7941c17aad2a12f83dde85d3caa52efc4495511d6b513364f2b4dc1cb82b3fce"
+    },
+    {
+      "run": "raw-resolver-once",
+      "accepted": false,
+      "cliExitCode": 1,
+      "dispatchExitCode": 1,
+      "observedTools": [
+        "Edit",
+        "Glob",
+        "Grep",
+        "Read",
+        "Write"
+      ],
+      "fileEditing": false,
+      "testsExecuted": false,
+      "testsPassed": false,
+      "backgroundPending": false,
+      "stopReason": null,
+      "scopeViolations": [],
+      "summarySha256": "75e59ff349c25591c524641ff3418a55171b89da9d461e7fddf8e4820d331418"
+    },
+    {
+      "run": "release-tests-once",
+      "accepted": false,
+      "cliExitCode": 1,
+      "dispatchExitCode": 1,
+      "observedTools": [
+        "Edit",
+        "Glob",
+        "Grep",
+        "Read",
+        "Write"
+      ],
+      "fileEditing": false,
+      "testsExecuted": false,
+      "testsPassed": false,
+      "backgroundPending": false,
+      "stopReason": null,
+      "scopeViolations": [],
+      "summarySha256": "f8770f1cf7ef89f76a46f02d79d70bdcc9cae69644433b9e46b121e2265450b6"
+    },
+    {
+      "run": "retry-guard-1",
+      "accepted": false,
+      "cliExitCode": 0,
+      "dispatchExitCode": 1,
+      "observedTools": [
+        "Edit",
+        "Glob",
+        "Grep",
+        "Read",
+        "Write"
+      ],
+      "fileEditing": true,
+      "testsExecuted": false,
+      "testsPassed": false,
+      "backgroundPending": false,
+      "stopReason": null,
+      "scopeViolations": [],
+      "summarySha256": "a65a6e8233a4cdb09cb0ad410cf427917506fae9f88fa487cb01ec73dd207b2c"
+    },
+    {
+      "run": "setup-doc-contract-review-fix",
+      "accepted": true,
+      "cliExitCode": 0,
+      "dispatchExitCode": 0,
+      "observedTools": [
+        "Edit",
+        "Glob",
+        "Grep",
+        "Read",
+        "Write"
+      ],
+      "fileEditing": true,
+      "testsExecuted": false,
+      "testsPassed": false,
+      "backgroundPending": false,
+      "stopReason": null,
+      "scopeViolations": [],
+      "summarySha256": "322b7f3aa5802c6cb9e3bd1df5e787df1d88ac28478f8327242903398198857f"
+    },
+    {
+      "run": "setup-doc-verify",
+      "accepted": true,
+      "cliExitCode": 0,
+      "dispatchExitCode": 0,
+      "observedTools": [
+        "PowerShell"
+      ],
+      "fileEditing": false,
+      "testsExecuted": true,
+      "testsPassed": true,
+      "backgroundPending": false,
+      "stopReason": null,
+      "scopeViolations": [],
+      "summarySha256": "16c0b9e50e81beba5d881995e768466df0238a9db749fa0a97296838a373cb1d"
+    },
+    {
+      "run": "setup-fixture-review-fix",
+      "accepted": true,
+      "cliExitCode": 0,
+      "dispatchExitCode": 0,
+      "observedTools": [
+        "Edit",
+        "Glob",
+        "Grep",
+        "Read",
+        "Write"
+      ],
+      "fileEditing": true,
+      "testsExecuted": false,
+      "testsPassed": false,
+      "backgroundPending": false,
+      "stopReason": null,
+      "scopeViolations": [],
+      "summarySha256": "e1c8d1e6a8b7b0b2bfc1d68b672b4a3f68725a1dfb85ffb87f71b0d9093bc27b"
+    },
+    {
+      "run": "setup-observed-verify",
+      "accepted": false,
+      "cliExitCode": 0,
+      "dispatchExitCode": 1,
+      "observedTools": [
+        "PowerShell"
+      ],
+      "fileEditing": false,
+      "testsExecuted": true,
+      "testsPassed": false,
+      "backgroundPending": false,
+      "stopReason": null,
+      "scopeViolations": [],
+      "summarySha256": "1ab2c2ac1ffec7fff4bea1f3fac0e96c5c51c623235a1719bc16b6b81c537157"
+    },
+    {
+      "run": "setup-runtime-tests-once",
+      "accepted": false,
+      "cliExitCode": 1,
+      "dispatchExitCode": 1,
+      "observedTools": [
+        "Edit",
+        "Glob",
+        "Grep",
+        "Read",
+        "Write"
+      ],
+      "fileEditing": false,
+      "testsExecuted": false,
+      "testsPassed": false,
+      "backgroundPending": false,
+      "stopReason": null,
+      "scopeViolations": [],
+      "summarySha256": "588663403a4d043e789b019b936aaf82fe1e173efb5877f32f07bbb69b710884"
+    },
+    {
+      "run": "setup-skill-once",
+      "accepted": true,
+      "cliExitCode": 0,
+      "dispatchExitCode": 0,
+      "observedTools": [
+        "Edit",
+        "Glob",
+        "Grep",
+        "Read",
+        "Write"
+      ],
+      "fileEditing": true,
+      "testsExecuted": false,
+      "testsPassed": false,
+      "backgroundPending": false,
+      "stopReason": null,
+      "scopeViolations": [],
+      "summarySha256": "e47ad59f1bc9bfb6a05049c88e2c94dd17bdddcd993eea6e156937a6417f21f4"
+    },
+    {
+      "run": "user-guide-review-fix",
+      "accepted": true,
+      "cliExitCode": 0,
+      "dispatchExitCode": 0,
+      "observedTools": [
+        "Edit",
+        "Glob",
+        "Grep",
+        "Read",
+        "Write"
+      ],
+      "fileEditing": true,
+      "testsExecuted": false,
+      "testsPassed": false,
+      "backgroundPending": false,
+      "stopReason": null,
+      "scopeViolations": [],
+      "summarySha256": "ea3f1566e42ff67a4fc8f70fdbc8ff85f56570ad27a1428df4ffef7729c80051"
+    },
+    {
+      "run": "version-tests",
+      "accepted": false,
+      "cliExitCode": 1,
+      "dispatchExitCode": 1,
+      "observedTools": [
+        "Edit",
+        "Glob",
+        "Grep",
+        "Read",
+        "Write"
+      ],
+      "fileEditing": false,
+      "testsExecuted": false,
+      "testsPassed": false,
+      "backgroundPending": false,
+      "stopReason": null,
+      "scopeViolations": [],
+      "summarySha256": "079d44c470734912fc92dbe289be36391a167334ac3f87ef34e14bba4c54cbae"
+    }
+  ],
+  "historicalExceptionTransferred": false,
+  "remoteMutation": false,
+  "installation": false,
+  "hardware": false
+}
