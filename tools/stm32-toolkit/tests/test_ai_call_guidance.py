@@ -554,7 +554,14 @@ def test_documentation_describes_independent_delivery_and_root_rebinding() -> No
     # so that phrase alone cannot support an unpublished classification.
     assert "keil convert --destination" in guide
     assert "[v1.3.3 Release](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.3.3)" in guide
-    assert "已发布为 Latest 的 **v1.3.3**" in guide
+    assert "当前公开 Latest **v1.3.3**" in guide
+    # The current guide still carries the local v1.3.4 candidate, which stays
+    # explicitly unqualified and unpublished.  Asserting that alongside the
+    # Latest wording keeps the alignment above from accepting a stale guide
+    # that silently promotes the candidate to the published version.
+    assert "本工作树的现行本地候选是 **v1.3.4**" in guide
+    assert "它尚未完成资格化与发布" in guide
+    assert "只有协调者记录远端发布成功后才会成为公开版本" in guide
     assert "`--destination` 独立交付与 `outputRoot` 交接是已发布的 v1.3.3 行为" in guide
     assert "本地未发布源码行为" not in guide
     assert "原地 `keil convert`" in guide
