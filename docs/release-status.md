@@ -1,5 +1,17 @@
 # Release status and retained limitations
 
+## v1.3.4 frozen package awaiting disposition — 2026-10-28
+
+Frozen `a7db6a8cc3ecdab53ef0b52cb80b54cbadcacead` has two official canonical builds with all13 files identical
+and official extracted-bundle verification exit0. See the [candidate record](codex/returns/STM32TK-134/candidate-build.md).
+Windows ZIP: 116715146bytes,
+SHA-256 `4e75811adcac0e1e2c24a4cfc01a9a7f0ae8e08e458c639d2f361ffb1eec3cdc`.
+Status is **LOCAL_CANDIDATE_NOT_QUALIFIED** until this specific candidate's disclosed
+coverage/reuse/platform limits receive disposition. Previous exceptions do not transfer.
+No v1.3.4 push/tag/Release or installed-runtime/hardware change occurred; Latest remains1.3.3.
+Final installation/VS Code remains USER_VALIDATION_PENDING. API credential reuse needs
+a bounded exception to the current instruction; the prepared release client has not run.
+
 ## v1.3.4 software reviewed, release qualification pending — 2026-10-28
 
 Include-guard recognition and quoted-header encoding discovery are **ACCEPTED_WITH_FIXES**
