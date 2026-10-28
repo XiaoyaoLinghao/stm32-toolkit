@@ -579,7 +579,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "--target", required=True, type=_firmware_target
     )
     firmware_import.add_argument(
-        "--flash-regions", required=True, type=_flash_regions
+        "--flash-regions",
+        required=True,
+        action=_FlashRegionsAction,
+        help=_FLASH_REGIONS_HELP,
     )
     firmware_import.add_argument(
         "--base-address", type=_bounded_int(0, 0xFFFF_FFFF)
@@ -1181,36 +1184,172 @@ def _firmware_portable_path(value: str) -> str:
     return value
 
 
-def _flash_region_pairs(pairs: list[tuple[str, object]]) -> dict[str, object]:
-    value: dict[str, object] = {}
+_FLASH_REGION_MAX_ITEMS = 32
+_FLASH_REGIONS_OPTION = "--flash-regions"
+_FLASH_REGIONS_EXAMPLE = '[{"start":134217728,"length":65536}]'
+_FLASH_REGIONS_HELP = (
+    "Exact JSON array of 1..32 region objects, each with only the integer"
+    ' fields "start" and "length" (byte address and byte size); for example '
+    + _FLASH_REGIONS_EXAMPLE
+    + ". This option checks shape and field types only; address range and"
+    " security validation stay in their existing layer."
+)
+# Closed --flash-regions diagnostics.  Only these fixed templates may reach
+# stderr, so a refusal can never echo caller-supplied bytes; "{index}" is
+# filled from a validated 1..32 position and nothing else is interpolated.
+_FLASH_REGIONS_DIAGNOSTICS = {
+    "json": "value must be valid JSON",
+    "array": "value must be a JSON array of region objects",
+    "count": "value must contain 1 to 32 region objects",
+    "item": "region {index} must be a JSON object",
+    "duplicate": "region {index} contains a duplicate field",
+    "start": "region {index} requires start",
+    "length": "region {index} requires length",
+    "fields": "region {index} requires start and length",
+    "keys": "region {index} must not contain fields other than start and length",
+    "start_type": (
+        "region {index} start must be an integer; booleans, strings, and"
+        " fractional numbers are not integers"
+    ),
+    "length_type": (
+        "region {index} length must be an integer; booleans, strings, and"
+        " fractional numbers are not integers"
+    ),
+}
+
+
+class _FlashRegionsError(argparse.ArgumentTypeError):
+    """One closed ``--flash-regions`` refusal reason that holds no caller text.
+
+    It also remains an ``ArgumentTypeError`` so any existing ``type=`` use of
+    the parser keeps the sanitized exit-2 contract instead of raising an
+    unexpected exception type.
+    """
+
+    def __init__(self, code: str, index: int | None = None) -> None:
+        super().__init__(code)
+        self.code = code
+        self.index = index
+
+
+class _FlashRegionObject(dict):
+    """JSON object that retains duplicate-field evidence for diagnostics.
+
+    A ``dict`` subclass carries an instance ``__dict__`` (dict does not accept
+    nonempty ``__slots__``), which is where ``duplicate_fields`` lives; the
+    mapping content itself stays the plain parsed object.
+    """
+
+    duplicate_fields: tuple[str, ...] = ()
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.duplicate_fields = ()
+
+
+def _flash_region_pairs(pairs: list[tuple[str, object]]) -> _FlashRegionObject:
+    value = _FlashRegionObject()
+    duplicates: list[str] = []
     for key, item in pairs:
         if key in value:
-            raise ValueError("duplicate flash-region field")
+            duplicates.append(key)
         value[key] = item
+    value.duplicate_fields = tuple(duplicates)
     return value
 
 
+def _flash_regions_message(error: _FlashRegionsError) -> str:
+    """Render one bounded diagnostic from the closed template table."""
+    template = _FLASH_REGIONS_DIAGNOSTICS[error.code]
+    if "{index}" not in template:
+        return template
+    index = error.index
+    # Defensive: an out-of-contract index still yields fixed text, never a
+    # partly formatted template and never caller bytes.
+    if type(index) is not int or not 1 <= index <= _FLASH_REGION_MAX_ITEMS:
+        return "value does not match the required flash region schema"
+    return template.format(index=index)
+
+
+def _refuse_flash_regions(
+    parser: argparse.ArgumentParser, error: _FlashRegionsError
+) -> None:
+    """Refuse --flash-regions with the fixed contract plus one safe reason."""
+    parser.exit(
+        2,
+        "stm32-toolkit: invalid arguments\n"
+        f"stm32-toolkit: {_FLASH_REGIONS_OPTION}: {_flash_regions_message(error)}\n",
+    )
+
+
 def _flash_regions(value: str) -> tuple[tuple[int, int], ...]:
+    """Parse the exact --flash-regions schema with bounded refusals.
+
+    The accepted schema is unchanged: a JSON array of 1..32 objects whose only
+    fields are integer ``start`` and ``length``.  Address range and security
+    validation remain in the import workflow's own layer; this parser only
+    reports JSON, array, item, required-field, duplicate, and type refusals by
+    closed reason code.
+    """
     try:
         parsed = json.loads(
             value,
             object_pairs_hook=_flash_region_pairs,
             parse_constant=_reject_json_constant,
         )
-    except (TypeError, ValueError, json.JSONDecodeError):
-        raise argparse.ArgumentTypeError("invalid flash regions") from None
-    if not isinstance(parsed, list) or not 1 <= len(parsed) <= 32:
-        raise argparse.ArgumentTypeError("invalid flash regions")
+    except (TypeError, ValueError, RecursionError):
+        raise _FlashRegionsError("json") from None
+    if not isinstance(parsed, list):
+        raise _FlashRegionsError("array")
+    if not 1 <= len(parsed) <= _FLASH_REGION_MAX_ITEMS:
+        raise _FlashRegionsError("count")
     regions: list[tuple[int, int]] = []
-    for item in parsed:
-        if not isinstance(item, dict) or set(item) != {"start", "length"}:
-            raise argparse.ArgumentTypeError("invalid flash regions")
+    for position, item in enumerate(parsed, start=1):
+        if type(item) is not _FlashRegionObject:
+            raise _FlashRegionsError("item", position)
+        if item.duplicate_fields:
+            raise _FlashRegionsError("duplicate", position)
+        # Unsupported keys are reported before missing ones: a caller passing
+        # another tool's region shape (for example name/origin) must learn that
+        # the accepted schema is exactly start and length.
+        if set(item) - {"start", "length"}:
+            raise _FlashRegionsError("keys", position)
+        missing = tuple(name for name in ("start", "length") if name not in item)
+        if len(missing) == 2:
+            raise _FlashRegionsError("fields", position)
+        if missing:
+            # Only the two schema field names reach the diagnostic table, so
+            # ``missing[0]`` is a fixed key rather than caller text.
+            raise _FlashRegionsError(missing[0], position)
         start = item["start"]
         length = item["length"]
-        if type(start) is not int or type(length) is not int:
-            raise argparse.ArgumentTypeError("invalid flash regions")
+        if type(start) is not int:
+            raise _FlashRegionsError("start_type", position)
+        if type(length) is not int:
+            raise _FlashRegionsError("length_type", position)
         regions.append((start, length))
     return tuple(regions)
+
+
+class _FlashRegionsAction(argparse.Action):
+    """Parse --flash-regions without argparse's generic refused message."""
+
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: object,
+        option_string: str | None = None,
+    ) -> None:
+        if not isinstance(values, str):
+            _refuse_flash_regions(parser, _FlashRegionsError("json"))
+            return
+        try:
+            regions = _flash_regions(values)
+        except _FlashRegionsError as error:
+            _refuse_flash_regions(parser, error)
+            return
+        setattr(namespace, self.dest, regions)
 
 
 def _acceptance_uuid(value: str) -> str:

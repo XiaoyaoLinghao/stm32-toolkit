@@ -501,6 +501,27 @@ def test_fresh_process_cli_plan_apply_admit_and_malformed_input(
     assert "invalid arguments" in malformed.stderr
     assert not (tmp_path / "data2").exists()
 
+    # POST134 section B: a fresh process reports one bounded reason line and
+    # never echoes the caller's region values.
+    assert "stm32-toolkit: --flash-regions: value must be valid JSON" in malformed.stderr
+
+    misnamed = _cli_import_arguments(
+        project, tmp_path / "data3", payload, mode="--dry-run"
+    )
+    misnamed[misnamed.index("--flash-regions") + 1] = (
+        '[{"name":"FLASH","origin":134217728,"length":65536}]'
+    )
+    refused = _fresh_cli(misnamed)
+    assert refused.returncode == 2
+    assert "invalid arguments" in refused.stderr
+    assert (
+        "stm32-toolkit: --flash-regions: region 1 must not contain fields"
+        " other than start and length"
+    ) in refused.stderr
+    assert "FLASH" not in refused.stderr
+    assert "origin" not in refused.stderr
+    assert not (tmp_path / "data3").exists()
+
 
 def test_both_protocol_schema_copies_define_the_imported_program_contract() -> None:
     assert ROOT_SCHEMA.read_bytes() == PACKAGED_SCHEMA.read_bytes()
