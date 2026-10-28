@@ -359,7 +359,7 @@ def test_post_migration_debug_guidance_is_shared_and_not_an_identity(
     # The conversion report and delivered manifest carry no derived guidance.
     result = apply_authorized(plan)
     assert result.ok is True, result.to_dict()
-    data = result.data
+    data = result.to_dict()["data"]
     assert data["configured"] is True
     assert data["built"] is False
     assert data["flashed"] is False
