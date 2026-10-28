@@ -1,17 +1,29 @@
 # Changelog
 
-## [v1.3.4] - 2026-10-27 (release candidate)
+## [v1.3.4] - 2026-10-28
 
-- Release candidate under local preparation; not accepted, published or qualified. Implemented:
-  structurally balanced outer include guards allow independent nested conditionals, while true
-  nested macro definitions remain rejected.
-- Implemented: preflight inventories potential quoted-header encoding blockers without
-  transcoding. On an actual guarded UTF-8 project the zero-blocker `PLAN` was verified at primary head
+- Implemented: structurally balanced outer include guards allow independent nested
+  conditionals, while true nested macro definitions remain rejected.
+- Implemented: read-only preflight discovers potential quoted-header encoding blockers
+  without transcoding. On an actual guarded UTF-8 project the zero-blocker `PLAN` was verified at primary head
   `53ffbc47395ec622b49fc2504df05eb3e1056ccb` with 191 planned outputs; no apply, build or
   flash ran, so this is plan-level evidence only.
-- Both core v1.3.4 corrections are implemented in this local candidate and their affected checks
-  pass. This is not release acceptance: complete v1.3.4 qualification remains pending, and package
-  version alignment and `1.3.3` legacy recognition are tracked separately and are not claimed here.
+- Neither change alters ABI or floating-point ABI decisions, debug-address inference or
+  transcoding behavior.
+- Published as [Latest](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.3.4)
+  from frozen source/tag target `a7db6a8cc3ecdab53ef0b52cb80b54cbadcacead`. The release
+  (ID `426198381`) was observed public and Latest at `2026-10-28T02:39:44Z` with
+  `draft=false` and `prerelease=false`; all 13 uploaded assets match the sizes and SHA-256
+  of the two canonical builds. Anonymous download rehash of the public assets was still in
+  progress at this entry and is not claimed as complete.
+- The user explicitly approved a candidate-only **USER_APPROVED_EXCEPTION** for this fixed
+  package and its disclosed limits ([approval record](docs/codex/returns/STM32TK-134/authorization-2026-10-28.md)):
+  Toolkit overall 82.7452% and risk 82.6335% remain below the 90% floors, Monitor risk
+  92.3681% remains below its 95% floor, source-bound evidence reuse and original
+  failures/skips are retained, and vendor-firmware, installation, VS Code and hardware
+  limits are unchanged. Permanent gates and memberships are not lowered, and unmet values
+  or skips do not become PASS. Final recipient installation and independent VS Code testing
+  remain user-owned and pending; see [release status](docs/release-status.md).
 
 ## [v1.3.3] - 2026-10-27
 

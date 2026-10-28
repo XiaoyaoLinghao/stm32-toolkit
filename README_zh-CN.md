@@ -13,9 +13,9 @@ STM32 Toolkit 是面向 STM32 开发的本地工具。CLI 与 MCP 服务器共�
 
 ## 发布状态
 
-当前已发布版本：**v1.3.3**，已发布为 [Latest](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.3.3)。安装、升级、迁移差异与验证限制见[用户指南](docs/user-guide.md)。
+当前已发布版本：**v1.3.4**，已发布为 [Latest](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.3.4)。安装、升级、迁移差异与验证限制见[用户指南](docs/user-guide.md)，发布证据与保留限制见[发布状态](docs/release-status.md)。
 
-本地 **v1.3.4 候选**（尚未发布）：结构平衡的外层 include 保护现在可允许相互独立的嵌套条件编译，而真正的嵌套宏定义仍被拒绝。只读前置检查还会发现潜在的引号头文件编码阻塞，不做转码。两项核心改动均已在本地实现且受影响的检查通过；完整的 v1.3.4 资格验证与发布仍在进行中。
+v1.3.4 接受结构平衡且允许相互独立嵌套条件编译的外层 include 保护，而真正的嵌套宏定义仍被拒绝；只读前置检查还会发现潜在的引号头文件编码阻塞，不做转码。这两项改动都不改变 ABI 判定、调试地址推断或转码行为。在仅针对本候选的用户批准例外下，永久覆盖率/风险门槛仍未满足；最终安装与 VS Code 验证仍归用户所有且尚待完成。此前的 [v1.3.3](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.3.3) 发布仍可获取。
 
 ## 环境要求
 
