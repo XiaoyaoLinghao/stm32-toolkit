@@ -268,5 +268,6 @@
   "runtimeInstalled": false,
   "actualVsCodeValidated": false,
   "physicalHardwareAccessed": false,
-  "currentGuidanceStatus": "Claude file-only updates and final contracts pending"
+  "currentGuidanceStatus": "ACCEPTED_WITH_FIXES;172passing/1platform skip at713327c86c2a9c88d7ff82732caca1b95ca6f75f",
+  "currentGuidanceReviewCodeHead": "713327c86c2a9c88d7ff82732caca1b95ca6f75f"
 }

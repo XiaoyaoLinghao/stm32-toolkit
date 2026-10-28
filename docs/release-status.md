@@ -10,7 +10,7 @@ The specific approved exception and permanent unmet thresholds retain their mean
 One explicitly bounded upload recovery succeeded; original failure evidence remains.
 Final installation/VS Code is USER_VALIDATION_PENDING, owned by the user; no original-project,
 installed-runtime or hardware action occurred. Frozen package documents keep build-time status;
-current source guidance synchronization and its documentation checks are still in progress.
+current source guidance is independently reviewed and its final contracts passed172cases/1platform skip; see [guidance review](codex/returns/STM32TK-134/publication-guidance-review.md).
 
 ## v1.3.4 specific candidate approved for Latest — 2026-10-28
 

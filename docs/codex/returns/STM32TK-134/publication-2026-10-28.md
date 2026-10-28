@@ -58,9 +58,10 @@ and independent VS Code checks remain **USER_VALIDATION_PENDING**, owned by the 
 No original-project edits, installed-runtime replacement or physical hardware action occurred.
 
 Frozen package documents retain their build-time candidate state. Current source guidance
-is being updated through local Claude Code CLI; final documentation contracts are pending.
-The final current source record will supersede that build-time status without rebuilding or
-replacing any approved release asset.
+was updated through local Claude Code CLI and independently reviewed; final contracts at
+`713327c86c2a9c88d7ff82732caca1b95ca6f75f` passed172cases with1platform skip. See
+[guidance review](publication-guidance-review.md). Current master guidance supersedes that
+build-time status without rebuilding or replacing any approved release asset.
 
 ## Evidence
 

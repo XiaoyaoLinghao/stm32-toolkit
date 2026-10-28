@@ -1,0 +1,247 @@
+{
+  "acceptedBase": "8f2a37f974e77faf298b5e856525275192b1425d",
+  "reviewedCodeHead": "713327c86c2a9c88d7ff82732caca1b95ca6f75f",
+  "reviewer": "primary Codex",
+  "implementer": "local Claude Code CLI configured deepseek-v4.1-flash[1m]",
+  "verdict": "ACCEPTED_WITH_FIXES for current publication guidance",
+  "completePhaseDiffSha256": "a63d7e68b55cf6b930ce7f137484599c7becc9ced995945ee851a1a237314da3",
+  "frozenProductBytesUnchanged": true,
+  "frozenSource": "a7db6a8cc3ecdab53ef0b52cb80b54cbadcacead",
+  "checks": [
+    {
+      "run": "qm",
+      "head": "713327c86c2a9c88d7ff82732caca1b95ca6f75f",
+      "owner": "Claude CLI",
+      "argv": [
+        "D:/codex-tmp/kx23/venv/Scripts/python.exe",
+        "-X",
+        "utf8",
+        "-m",
+        "coverage",
+        "run",
+        "--rcfile=D:\\codex-tmp\\r134\\qm\\coverage.ini",
+        "-m",
+        "pytest",
+        "C:\\Users\\zhy76\\.codex\\worktrees\\v134-review\\STM32-Toolkit\\tools\\stm32-toolkit\\tests\\test_plugin_layout.py",
+        "C:\\Users\\zhy76\\.codex\\worktrees\\v134-review\\STM32-Toolkit\\tools\\stm32-toolkit\\tests\\test_public_inventory.py",
+        "C:\\Users\\zhy76\\.codex\\worktrees\\v134-review\\STM32-Toolkit\\tools\\stm32-toolkit\\tests\\release\\test_0900_artifacts.py",
+        "-q",
+        "-o",
+        "addopts=",
+        "--tb=short",
+        "--color=no",
+        "--basetemp=D:\\codex-tmp\\r134\\qm\\t",
+        "-o",
+        "cache_dir=D:\\codex-tmp\\r134\\qm\\cache",
+        "--junitxml=D:\\codex-tmp\\r134\\qm\\junit.xml"
+      ],
+      "boundExitCode": 0,
+      "sourceUnchanged": true,
+      "terminal": {
+        "count": 78,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "executionSha256": "6c660af02d8ee52e8a322b221ccbd54df868caca82a9bba19bd25529aef1f395",
+      "junitSha256": "d222a4d04787793b8f568d4b8b9a1b7c21b5b6a1b15eb42a175840bf10d6b617"
+    },
+    {
+      "run": "qg",
+      "head": "713327c86c2a9c88d7ff82732caca1b95ca6f75f",
+      "owner": "Claude CLI",
+      "argv": [
+        "D:/codex-tmp/kx23/venv/Scripts/python.exe",
+        "-X",
+        "utf8",
+        "-m",
+        "coverage",
+        "run",
+        "--rcfile=D:\\codex-tmp\\r134\\qg\\coverage.ini",
+        "-m",
+        "pytest",
+        "C:\\Users\\zhy76\\.codex\\worktrees\\v134-review\\STM32-Toolkit\\tools\\stm32-toolkit\\tests\\test_ai_call_guidance.py",
+        "C:\\Users\\zhy76\\.codex\\worktrees\\v134-review\\STM32-Toolkit\\tools\\stm32-toolkit\\tests\\test_vscode_configuration.py",
+        "C:\\Users\\zhy76\\.codex\\worktrees\\v134-review\\STM32-Toolkit\\tools\\stm32-toolkit\\tests\\test_ide_tasks.py",
+        "-q",
+        "-o",
+        "addopts=",
+        "--tb=short",
+        "--color=no",
+        "--basetemp=D:\\codex-tmp\\r134\\qg\\t",
+        "-o",
+        "cache_dir=D:\\codex-tmp\\r134\\qg\\cache",
+        "--junitxml=D:\\codex-tmp\\r134\\qg\\junit.xml"
+      ],
+      "boundExitCode": 0,
+      "sourceUnchanged": true,
+      "terminal": {
+        "count": 94,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 1
+      },
+      "executionSha256": "6ca709d83f94904447c7b096e09973afaef16f37524a7c229c587e1092f6fb54",
+      "junitSha256": "052dcd19ed8b08ec074b65b2388d4305ad2fb5a8815b45609048704b1233665a"
+    },
+    {
+      "run": "qs",
+      "head": "713327c86c2a9c88d7ff82732caca1b95ca6f75f",
+      "owner": "Claude CLI",
+      "argv": [
+        "D:\\codex-tmp\\kx23\\venv\\Scripts\\python.exe",
+        "-X",
+        "utf8",
+        "-m",
+        "pytest",
+        "C:\\Users\\zhy76\\.codex\\worktrees\\v134-review\\STM32-Toolkit\\tools\\stm32-toolkit\\tests\\test_setup_runtime.py::test_setup_contract_uses_namespaced_skill_and_ignores_coverage_data",
+        "-q",
+        "-o",
+        "addopts=",
+        "-p",
+        "no:cacheprovider",
+        "--basetemp=D:\\codex-tmp\\r134\\qs\\t",
+        "--junitxml=D:\\codex-tmp\\r134\\qs\\junit.xml"
+      ],
+      "boundExitCode": 0,
+      "sourceUnchanged": true,
+      "terminal": {
+        "count": 1,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "executionSha256": "765863cc500fa022b44333a9e299184e1216c37fff9d236d636f7b1a48e43f25",
+      "junitSha256": "474db44eb2565aeb0b65359aa2424715139e8af3bcb6b73634b3e19eaa0a34d0"
+    }
+  ],
+  "passed": 172,
+  "skipped": [
+    {
+      "run": "qg",
+      "class": "tests.test_vscode_configuration",
+      "name": "test_redirect_targets_are_refused",
+      "message": "host cannot create a file symlink for this check"
+    }
+  ],
+  "overlapNotAddedToEarlierMatrix": true,
+  "invocations": [
+    {
+      "run": "publication-landing-edit",
+      "accepted": true,
+      "cliExitCode": 0,
+      "dispatchExitCode": 0,
+      "scopeViolations": 0,
+      "terminalSubtype": "success",
+      "fileEditingComplete": true,
+      "testsExecuted": false,
+      "testsPassed": false,
+      "summarySha256": "3aad7619b667249cdeec93f5b1d343cd3c699be8e07a54869271e353b26bc4b7"
+    },
+    {
+      "run": "publication-guides-edit",
+      "accepted": false,
+      "cliExitCode": 1,
+      "dispatchExitCode": 1,
+      "scopeViolations": 14,
+      "terminalSubtype": "error_max_turns",
+      "fileEditingComplete": false,
+      "testsExecuted": false,
+      "testsPassed": false,
+      "summarySha256": "392d0fc0a502310523830208c003743c7e86b680f4c036e72566d5786e51bbb4"
+    },
+    {
+      "run": "publication-skills-edit",
+      "accepted": false,
+      "cliExitCode": 0,
+      "dispatchExitCode": 1,
+      "scopeViolations": 8,
+      "terminalSubtype": "success",
+      "fileEditingComplete": false,
+      "testsExecuted": false,
+      "testsPassed": false,
+      "summarySha256": "db3fa37c00c71654887106a8821ff84a7f8ad017d61ea8112c8ada8c213cc253"
+    },
+    {
+      "run": "publication-skills-wording-fix",
+      "accepted": true,
+      "cliExitCode": 0,
+      "dispatchExitCode": 0,
+      "scopeViolations": 0,
+      "terminalSubtype": "success",
+      "fileEditingComplete": true,
+      "testsExecuted": false,
+      "testsPassed": false,
+      "summarySha256": "7c7e10ecbb0ab0aaa1457677005c97fe4af09a78b21eb0e424908e3e9d8ecb1e"
+    },
+    {
+      "run": "publication-review-fixes",
+      "accepted": false,
+      "cliExitCode": 1,
+      "dispatchExitCode": 1,
+      "scopeViolations": 0,
+      "terminalSubtype": "error_max_turns",
+      "fileEditingComplete": false,
+      "testsExecuted": false,
+      "testsPassed": false,
+      "summarySha256": "c51e4dc436ebac8e8afe1364e09d0782b68808d7ea8aefa34636dd3a389916de"
+    },
+    {
+      "run": "publication-legacy-qualifier-fix",
+      "accepted": true,
+      "cliExitCode": 0,
+      "dispatchExitCode": 0,
+      "scopeViolations": 0,
+      "terminalSubtype": "success",
+      "fileEditingComplete": true,
+      "testsExecuted": false,
+      "testsPassed": false,
+      "summarySha256": "9e277eac5c665dafe4315af41657fba915d2a3cae1b1cb6884b465a07a0a8c77"
+    },
+    {
+      "run": "publication-contract-verify",
+      "accepted": true,
+      "cliExitCode": 0,
+      "dispatchExitCode": 0,
+      "scopeViolations": 0,
+      "terminalSubtype": "success",
+      "fileEditingComplete": false,
+      "testsExecuted": true,
+      "testsPassed": true,
+      "summarySha256": "0d0e9a4140059e949a09ae14806e5196534e2d77fc25bd5604313cfb65e496a3"
+    },
+    {
+      "run": "publication-final-contract-verify",
+      "accepted": true,
+      "cliExitCode": 0,
+      "dispatchExitCode": 0,
+      "scopeViolations": 0,
+      "terminalSubtype": "success",
+      "fileEditingComplete": false,
+      "testsExecuted": true,
+      "testsPassed": true,
+      "summarySha256": "8c187575eafbd21b0a932528e1284155353be948dfd7341456a315ac3e41fd40"
+    }
+  ],
+  "lateWrapClarification": [
+    {
+      "path": "docs/user-guide.md",
+      "canonicalBytesSame": true,
+      "tokenSequenceSame": true
+    },
+    {
+      "path": "docs/architecture.md",
+      "canonicalBytesSame": false,
+      "tokenSequenceSame": true
+    },
+    {
+      "path": "skills/migrate-keil/SKILL.md",
+      "canonicalBytesSame": false,
+      "tokenSequenceSame": true
+    }
+  ],
+  "lateWrapNote": "Prior exactBytesSame field compared LF Git blobs with physical checkout EOL. Canonical comparison above proves only architecture/skill wrapping changed; user-guide was unchanged until the separate one-clause legacy correction. No process was stopped: stop-attempt source mismatch guard exited before process discovery/Stop-Process. Producer ended naturally at max-turn limit.",
+  "publicVerificationSha256": "a1ee3e26f903c94d56f4967d8c0240189c264133f4f0d08d73e55ce218aa667a",
+  "remainingFindings": [],
+  "remoteActionRemaining": "Non-force final master documentation push/readback only; no asset/tag change."
+}
