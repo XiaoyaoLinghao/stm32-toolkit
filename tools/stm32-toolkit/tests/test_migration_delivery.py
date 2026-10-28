@@ -374,11 +374,13 @@ def test_post_migration_debug_guidance_is_shared_and_not_an_identity(
     assert "followUp" not in report
     model = load_project_model(destination)
     assert model.debug.backend is None and model.debug.target is None
-    # No launch configuration was written for the delivered project.
+    # No launch configuration was written for the delivered project. The
+    # generated file is a plain launch document with top-level "configurations",
+    # not a workspace settings object wrapping one.
     launch = json.loads(
         (destination / ".vscode" / "launch.json").read_text(encoding="utf-8")
     )
-    assert launch["launch"]["configurations"] == []
+    assert launch["configurations"] == []
 
 
 EXT_REGION = ExtraRegion("EXT_SRAM", 0x68000000, 0x10000, "rw-")
