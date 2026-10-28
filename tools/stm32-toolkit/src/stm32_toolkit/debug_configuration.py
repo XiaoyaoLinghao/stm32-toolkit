@@ -303,17 +303,45 @@ _POST_MIGRATION_NEXT_STEPS = (
     (
         "Post-migration step only, never a conversion blocker or "
         "planReadiness prerequisite: after an authorized conversion writes "
-        "`debug: {}` into .stm32-project.json, run "
+        "`debug: {}` into .stm32-project.json, bind that conversion's "
+        "destination root (`data.outputRoot` from the successful APPLY) as "
+        "the project root for later CLI `--project-root` calls and for the "
+        "bound MCP server. The read-only Keil source root is not the new "
+        "project."
+    ),
+    (
+        "Then record the pair through the existing project configure entry "
+        "with both explicit parameters: "
         "`stm32-toolkit project configure --project <project> "
         "--debug-backend pyocd --debug-target <pyocd-target> --dry-run "
         "--json` (MCP: `stm32_project_configure` with `debugBackend` and "
-        "`debugTarget`), review the PLAN, then apply its exact plan ID with "
-        "authorized=true."
+        "`debugTarget`). Review that PLAN, then apply exactly that plan with "
+        "`--apply --json --plan-id <data.plan_id> --authorized` (MCP: the "
+        "same pair plus `planId=<data.plan_id>` and `authorized=true`). Both "
+        "values are explicit user choices; no backend or target is inferred "
+        "from the Keil project or the device name."
+    ),
+    (
+        "Do this before establishing build or flash identities: the manifest "
+        "edit naturally invalidates earlier build/firmware identity, so "
+        "record the pair first and only then build and flash. Read the actual "
+        "`data.build.buildId` and `data.build.elfSha256` from that fresh "
+        "arm-debug build, and keep any flash as its own authorized step."
     ),
     (
         "A recorded pair is metadata only; target support and physical "
         "hardware remain unverified until a separate authorized debug "
         "handoff."
+    ),
+    (
+        "The generated `.vscode/launch.json` stays empty by design: a live "
+        "Cortex-Debug configuration exists only after an authorized "
+        "handoff-begin, whose `data.cortexDebugLaunch.configuration` belongs "
+        "to an independent external IDE workspace. Use it in that external "
+        "workspace instead of writing a static launch configuration or "
+        "rewriting the managed launch.json; detach the real IDE session, then "
+        "run handoff-end with the original ticket. This guidance performs no "
+        "hardware action and grants no authorization."
     ),
 )
 
@@ -325,6 +353,12 @@ def post_migration_debug_configuration() -> dict[str, object]:
     build-only use and is never a migration technical blocker or a
     planReadiness prerequisite.  The returned mapping keeps the shared
     status shape and adds explicit non-blocking markers.
+
+    This is the single source of post-migration debug guidance: the read-only
+    Keil preflight, the delivery PLAN and a successful delivery APPLY all
+    expose it unchanged, and the delivery ``followUp`` string is derived from
+    the same ``nextSteps``.  It is presentation only, so it never enters a
+    plan/content identity, an output snapshot or an authorization decision.
     """
     payload = describe_debug_configuration(None, None).to_dict()
     payload["blocking"] = False

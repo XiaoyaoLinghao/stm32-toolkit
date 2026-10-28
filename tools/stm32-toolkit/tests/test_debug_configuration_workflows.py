@@ -24,7 +24,10 @@ from stm32_toolkit.context import (
     _hardware_capability_details,
     build_project_context,
 )
-from stm32_toolkit.debug_configuration import describe_debug_configuration
+from stm32_toolkit.debug_configuration import (
+    describe_debug_configuration,
+    post_migration_debug_configuration,
+)
 from stm32_toolkit.hardware_workflows import (
     FlashWorkflowRequest,
     HardwareWorkflowSeams,
@@ -905,6 +908,59 @@ def test_preflight_debug_configuration_is_nonblocking_post_migration(tmp_path):
     assert "stm32-toolkit project configure" not in readiness
     assert data["planReadiness"]["planId"] is None
     assert data["applyReadiness"]["ready"] is False
+
+
+def test_post_migration_debug_guidance_covers_root_configure_build_and_handoff(
+):
+    """The one shared post-migration description is complete and non-blocking."""
+    first = post_migration_debug_configuration()
+    second = post_migration_debug_configuration()
+    # Deterministic and free of host paths or caller values.
+    assert first == second
+    assert first["phase"] == "post-migration"
+    assert first["blocking"] is False
+    assert first["status"] == "needs-user-input"
+    assert first["backend"] is None and first["target"] is None
+    assert first["missingFields"] == ["debug.backend", "debug.target"]
+    assert first["targetSupport"] == "not-checked"
+    assert first["hardwareVerified"] is False
+    assert [entry["code"] for entry in first["diagnostics"]] == [
+        "DEBUG_BACKEND_MISSING",
+        "DEBUG_TARGET_MISSING",
+    ]
+
+    steps = first["nextSteps"]
+    assert isinstance(steps, list) and steps
+    joined = " ".join(steps)
+    # Bind the conversion's destination root: the Keil source is not the new
+    # project.
+    assert "outputRoot" in joined
+    assert "--project-root" in joined
+    # The existing paired configure PLAN then its exact-plan APPLY, in order.
+    plan_command = (
+        "stm32-toolkit project configure --project <project> "
+        "--debug-backend pyocd --debug-target <pyocd-target> --dry-run --json"
+    )
+    assert plan_command in joined
+    assert "--apply --json --plan-id <data.plan_id> --authorized" in joined
+    assert joined.index(plan_command) < joined.index("--apply --json --plan-id")
+    assert "stm32_project_configure" in joined
+    # Explicit user choice only; nothing is inferred from the device.
+    assert "no backend or target is inferred" in joined
+    # Configure precedes the build/flash identities.
+    assert "before establishing build or flash identities" in joined
+    assert "data.build.buildId" in joined
+    assert "data.build.elfSha256" in joined
+    # The empty launch.json has a real explanation, not a static bypass.
+    assert "launch.json" in joined
+    assert "data.cortexDebugLaunch.configuration" in joined
+    assert "independent external IDE workspace" in joined
+    assert "detach" in joined
+    assert "handoff-end" in joined
+    assert "original ticket" in joined
+    # Guidance performs nothing and grants nothing.
+    assert "no hardware action" in joined
+    assert "grants no authorization" in joined
 
 
 # ---------------------------------------------------------------------------

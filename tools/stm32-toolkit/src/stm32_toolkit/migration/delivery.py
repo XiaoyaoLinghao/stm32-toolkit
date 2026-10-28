@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from stm32_toolkit import __version__
+from stm32_toolkit.debug_configuration import post_migration_debug_configuration
 from stm32_toolkit.extra_regions import ExtraRegion
 from stm32_toolkit.generation.configure import render_new_project_configuration
 from stm32_toolkit.generation.managed_files import (
@@ -81,10 +82,31 @@ _OUTPUT_SNAPSHOT_FORMAT = "stm32tk-output-snapshot/1"
 _ANALYSIS_FORMAT = "stm32tk-delivery-analysis/1"
 _CONTENT_FORMAT = "stm32tk-delivery-content/1"
 
-_FOLLOW_UP = (
-    "Bind the new output root and use the normal GCC configure/build route."
-    " Configuration output is not a successful build or flash."
+_FOLLOW_UP_SUMMARY = (
+    "Migrated output is configuration only: no build, flash or debug session"
+    " ran, and the Keil source is unchanged. Bind the destination root, then"
+    " follow the same post-migration debug guidance the preflight and this"
+    " plan expose in debugConfiguration.nextSteps."
 )
+
+
+def _post_migration_debug() -> dict[str, object]:
+    """The one shared post-migration debug description (never an identity)."""
+    return post_migration_debug_configuration()
+
+
+def _follow_up() -> str:
+    """Readable follow-up derived from the shared post-migration guidance.
+
+    ``followUp`` keeps its historical string type, but its content is
+    generated from the same helper that produces ``debugConfiguration`` so a
+    delivery plan, an apply result and the preflight cannot describe
+    different next steps.
+    """
+    steps = _post_migration_debug()["nextSteps"]
+    return " ".join(
+        [_FOLLOW_UP_SUMMARY, *(str(step) for step in steps)]
+    )
 
 
 def _raise(code: str, message: str, details: dict[str, object]) -> MigrationPlanError:
@@ -274,12 +296,17 @@ class DeliveryPlan:
             "configured": False,
             "built": False,
             "flashed": False,
-            "followUp": _FOLLOW_UP,
+            "followUp": _follow_up(),
         }
         if self.include_merges:
             payload["includeMerges"] = [
                 merge.to_report_dict() for merge in self.include_merges
             ]
+        # Additive, derived presentation only: the shared post-migration debug
+        # description is never hashed into plan/content identity, never a
+        # blocker and never an authorization.  It is added last so historical
+        # identity inputs and every earlier field keep their exact bytes.
+        payload["debugConfiguration"] = _post_migration_debug()
         return payload
 
 
@@ -1947,7 +1974,10 @@ def _apply(plan: DeliveryPlan) -> dict[str, object]:
         "configured": True,
         "built": False,
         "flashed": False,
-        "followUp": _FOLLOW_UP,
+        "followUp": _follow_up(),
+        # Same shared, derived post-migration description as the PLAN; it is
+        # presentation, never part of the plan or output identity.
+        "debugConfiguration": _post_migration_debug(),
         "warnings": list(fresh.warnings),
     }
 

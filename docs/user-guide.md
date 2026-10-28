@@ -332,7 +332,7 @@ MCP 客户端用同一合同：先调用 `stm32_project_configure()`（省略 `p
 
 （`$PatchedCli`、`$ProjectRoot` 语义同上节：必须替换为实际工程根与本补丁构建的 runtime；较早的 frozen/installed 1.3.0 不支持。）
 
-普通迁移只写出 `"debug": {}`，仍是合法的 build-only 工程。无 Git 的 preflight 会额外返回 `data.debugConfiguration`（`phase=post-migration`、`blocking=false`、`status=needs-user-input`、`missingFields=["debug.backend","debug.target"]`、`diagnostics[]`、`targetSupport="not-checked"`、`hardwareVerified=false`、`nextSteps`）：该诊断不新增 technical blocker，不进入 `planReadiness`/`applyReadiness`，不创建 `planId`，也不引入 Git 依赖。普通转换的 PLAN/APPLY 仍保留 `planId` 与显式授权要求，但不需要 Git 基线；不要把该诊断当作迁移失败、就绪结论或授权依据。需要在迁移后显式记录调试 backend/target 时，使用**既有** `project configure`（MCP 仍是 `stm32_project_configure`，无新工具、无迁移参数）：
+普通迁移只写出 `"debug": {}`，仍是合法的 build-only 工程。无 Git 的 preflight、**Keil 交付 PLAN 与成功的 APPLY 结果**都返回同一个派生 `data.debugConfiguration`（`phase=post-migration`、`blocking=false`、`status=needs-user-input`、`missingFields=["debug.backend","debug.target"]`、`diagnostics[]`、`targetSupport="not-checked"`、`hardwareVerified=false`、`nextSteps`），可读的 `data.followUp` 仍是字符串，内容也由同一份共享指引派生，三处不会给出互相冲突的下一步。该诊断不新增 technical blocker，不进入 `planReadiness`/`applyReadiness`，不创建 `planId`，也不引入 Git 依赖；它不是计划/内容身份哈希（`planId`/`contentId`/输出快照）的输入，不改变已生成的 `launch.json` 或其它生成字节。普通转换的 PLAN/APPLY 仍保留 `planId` 与显式授权要求，但不需要 Git 基线；不要把该诊断当作迁移失败、就绪结论或授权依据。它**不会**从 Keil 工程或器件名推断 backend/target，也不执行任何硬件动作。推荐顺序是：先绑定新根，再记录 debug 参数对，最后才建立 build/flash 身份——因为该 manifest 编辑会自然使更早的 build/firmware 身份失效。需要在迁移后显式记录调试 backend/target 时，使用**既有** `project configure`（MCP 仍是 `stm32_project_configure`，无新工具、无迁移参数）：
 
 ```powershell
 # 1) 只读 PLAN：项目与参数对子必须与 APPLY 完全一致
@@ -348,7 +348,7 @@ MCP 使用同一对参数：`stm32_project_configure(debugBackend="pyocd", debug
 
 PLAN 只读，除既有 `data.files[]` 外还返回 `data.debug_configuration`（`backend`/`target`）与 `data.manifest_edit`：`path`、`status`（`update` 或 `unchanged`）、`before_sha256`/`after_sha256`、`before_size`/`after_size` 和完整 `unified_diff`；原始字节不进入协议。核对 diff 只改 `debug.backend`/`debug.target`，并保留 `svd`、`svdDevice`、`readableRegions`、`memory`、`generation`（含 `linkerFragment`）等其它字段。若 pair 已等于当前值，`status=unchanged` 且 manifest 精确字节不变，不重排格式。APPLY 必须带同一项目、同一参数对、精确 `data.plan_id` 和真实布尔 `authorized=true`；审阅实际 PLAN 后，若既有明确指令已覆盖这次变更与范围即可复用（用户无需预先给出新 ID），只读 PLAN 不构成写授权；省略/改动参数对或计划后输入变化会在写入前返回 `PLAN_CHANGED`/结构化失败。`.stm32-project.json` 归用户所有，其它受支持字段仍可按各自合同自行维护；不要手工修补 managed hash、generated 文件或 build receipt，本切片的 debug 对子应通过上述 PLAN/APPLY 记录，以免与受管证据不一致。
 
-该编辑会自然使旧 build/firmware 身份失效；需要时按 `build --preset arm-debug --clean` 重新构建，再走各自的授权流程。配置记录只是元数据：不会发现、安装或验证 PyOCD target，也不会创建调试会话；`.vscode/launch.json` 仍为空，真实调试交接（handoff）是独立的显式授权步骤。此能力属于 v1.3.2 并在 v1.3.3 中保留，较早的 frozen/installed 1.3.0 不包含它；安装/升级需另行授权。
+该编辑会自然使旧 build/firmware 身份失效；因此推荐顺序是“绑定新根 → 记录 debug 对子 → 才建立 build/firmware 身份”：需要时按 `build --preset arm-debug --clean` 重新构建，从该次构建读取实际 `data.build.buildId`/`data.build.elfSha256`，烧录仍作为单独授权的步骤。配置记录只是元数据：不会发现、安装或验证 PyOCD target，也不会创建调试会话。`.vscode/launch.json` 仍为**空**是有意的：静态生成不写任何 launch 配置，也不提供绕过用的静态配置；活的 Cortex-Debug 配置只来自一次成功、且经单独授权的 handoff-begin，其 `data.cortexDebugLaunch.configuration` 供**独立的外部 IDE 工作区**使用。真实 IDE 必须先 detach，之后才能用原始 ticket 执行 handoff-end 归还所有权（完整连续性要求见下文 handoff 一节；不要持久化 ticket，也不要改写受管的 `launch.json`）。此能力属于 v1.3.2 并在 v1.3.3 中保留，较早的 frozen/installed 1.3.0 不包含它；安装/升级需另行授权。
 
 ### VS Code 任务、可执行绑定与 `ide task` 适配器（v1.3.1 已包含，v1.3.3 保留）
 

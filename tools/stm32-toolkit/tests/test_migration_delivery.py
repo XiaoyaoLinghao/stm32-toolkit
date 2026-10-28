@@ -40,6 +40,7 @@ from stm32_toolkit.migration import (
     plan_keil_delivery,
 )
 import stm32_toolkit.migration.delivery as delivery
+from stm32_toolkit.debug_configuration import post_migration_debug_configuration
 from stm32_toolkit.project_model import load_project_model
 
 from startup_gcc_fixture import MAIN_C as STARTUP_MAIN_C
@@ -288,6 +289,96 @@ def test_no_git_plan_apply_preserves_source_and_configures_output(tmp_path: Path
     second_report = json.loads((other / REPORT_PATH).read_text(encoding="utf-8"))
     assert second_report["contentId"] == second.content_id
     assert second_report["contentId"] != report["contentId"]
+
+
+def test_post_migration_debug_guidance_is_shared_and_not_an_identity(
+    tmp_path: Path,
+) -> None:
+    """PLAN and successful APPLY expose the shared derived debug guidance.
+
+    The guidance is additive presentation: it must never enter the hashed
+    plan/content inputs, never add a blocker, and never invent a backend,
+    target or hardware fact.
+    """
+    repo = make_repo(tmp_path)
+    parent = output_parent(tmp_path, "guidance")
+    destination = parent / "gcc-project"
+
+    plan = plan_keil_delivery(repo, destination, inspect_keil(repo))
+    preview = plan.to_dict()
+    expected = post_migration_debug_configuration()
+
+    debug = preview["debugConfiguration"]
+    assert debug == expected
+    assert debug["phase"] == "post-migration"
+    assert debug["blocking"] is False
+    assert debug["status"] == "needs-user-input"
+    assert debug["backend"] is None and debug["target"] is None
+    assert debug["missingFields"] == ["debug.backend", "debug.target"]
+    assert [entry["code"] for entry in debug["diagnostics"]] == [
+        "DEBUG_BACKEND_MISSING",
+        "DEBUG_TARGET_MISSING",
+    ]
+    assert debug["targetSupport"] == "not-checked"
+    assert debug["hardwareVerified"] is False
+    # The readable follow-up keeps its historical string type and is derived
+    # from exactly the same next steps.
+    assert isinstance(preview["followUp"], str)
+    for step in debug["nextSteps"]:
+        assert step in preview["followUp"]
+    joined = " ".join(debug["nextSteps"])
+    # The existing paired configure PLAN command stays an exact substring.
+    assert (
+        "stm32-toolkit project configure --project <project> "
+        "--debug-backend pyocd --debug-target <pyocd-target> --dry-run --json"
+    ) in joined
+    assert "stm32_project_configure" in joined
+    assert "--apply --json --plan-id <data.plan_id> --authorized" in joined
+    # Bind the destination root, then configure before establishing build or
+    # flash identities.
+    assert "outputRoot" in joined
+    assert "before establishing build or flash identities" in joined
+    # launch.json stays empty by design; the live configuration belongs to an
+    # independent external IDE workspace and the original ticket ends it.
+    assert "data.cortexDebugLaunch.configuration" in joined
+    assert "launch.json" in joined
+    assert "handoff-end" in joined
+    # The plan still declares build-only state and no inferred target.
+    assert preview["configured"] is False
+    assert preview["built"] is False
+    assert preview["flashed"] is False
+
+    # Deriving guidance changes no identity input: the same source, destination
+    # and options produce the same plan ID, content ID and output snapshot.
+    repeat = plan_keil_delivery(repo, destination, inspect_keil(repo))
+    assert repeat.plan_id == plan.plan_id
+    assert repeat.content_id == plan.content_id
+    assert repeat.output_snapshot_sha256 == plan.output_snapshot_sha256
+    assert repeat.to_dict()["debugConfiguration"] == debug
+
+    # The conversion report and delivered manifest carry no derived guidance.
+    result = apply_authorized(plan)
+    assert result.ok is True, result.to_dict()
+    data = result.data
+    assert data["configured"] is True
+    assert data["built"] is False
+    assert data["flashed"] is False
+    assert data["debugConfiguration"] == expected
+    assert isinstance(data["followUp"], str)
+    for step in expected["nextSteps"]:
+        assert step in data["followUp"]
+    report = json.loads(
+        (destination / REPORT_PATH).read_text(encoding="utf-8")
+    )
+    assert "debugConfiguration" not in report
+    assert "followUp" not in report
+    model = load_project_model(destination)
+    assert model.debug.backend is None and model.debug.target is None
+    # No launch configuration was written for the delivered project.
+    launch = json.loads(
+        (destination / ".vscode" / "launch.json").read_text(encoding="utf-8")
+    )
+    assert launch["launch"]["configurations"] == []
 
 
 EXT_REGION = ExtraRegion("EXT_SRAM", 0x68000000, 0x10000, "rw-")

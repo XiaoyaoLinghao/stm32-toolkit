@@ -1,5 +1,23 @@
 # Changelog
 
+## [Unreleased]
+
+- Migration/debug handoff guidance only; no new tool, option, schema or hardware behavior. A
+  Keil delivery PLAN and a successful APPLY now expose the same derived
+  `data.debugConfiguration` object the read-only preflight already reports (`phase`,
+  `status`, `missingFields`, `diagnostics`, `nextSteps`, `targetSupport`,
+  `hardwareVerified`, `blocking=false`), and the readable `data.followUp` string is derived
+  from that same shared helper. The guidance binds the conversion's destination root
+  (`data.outputRoot`), names the existing paired `project configure` PLAN with
+  `--debug-backend pyocd --debug-target <pyocd-target> --dry-run --json` followed by its
+  exact-plan APPLY, and places that edit before build/flash identities are established. It
+  also explains why the generated `.vscode/launch.json` stays empty: a live Cortex-Debug
+  configuration exists only after an authorized handoff-begin, whose
+  `data.cortexDebugLaunch.configuration` belongs to an independent external IDE workspace
+  that must detach before handoff-end consumes the original ticket. The derived text never
+  enters the hashed plan/content identity, adds no blocker, infers no backend/target and
+  performs no hardware action.
+
 ## [v1.3.4] - 2026-10-28
 
 - Implemented: structurally balanced outer include guards allow independent nested
@@ -8,6 +26,13 @@
   without transcoding. On an actual guarded UTF-8 project the zero-blocker `PLAN` was verified at
   the final full-core capture `e02d63605bccc1011712b1e458725c51ee51ab79` with 191 planned
   outputs; no apply, build or flash ran, so this is plan-level evidence only.
+- Implemented: version alignment to `1.3.4` across the active Toolkit, Monitor, UI
+  package/lock root, plugin, launchers, setup/release metadata, plus recognition of a
+  `1.3.3` managed runtime and a `1.3.3`-generated project as supported legacy inputs while
+  every older entry and guard is retained. Recognition is read-only: a `1.3.3` runtime
+  advances only through an explicit authorized `Repair`, and an existing `generatedBy`
+  value is not rewritten until an explicit configure transaction. Same-version source
+  conflicts, downgrades, unknown future states and rollback rules are unchanged.
 - Neither change alters ABI or floating-point ABI decisions, debug-address inference or
   transcoding behavior.
 - Published as [Latest](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.3.4)
@@ -17,6 +42,9 @@
   of the two canonical builds. Anonymous download of all 13 files then returned HTTP 200
   with exact frozen bytes and matching SHA-256 (record
   `a1ee3e26f903c94d56f4967d8c0240189c264133f4f0d08d73e55ce218aa667a`).
+  Documents inside the frozen package keep the build-time candidate wording they were
+  built with; the current [release status](docs/release-status.md) and the Release notes
+  record the observed publication. Published assets and tags are not rewritten.
 - The user explicitly approved a candidate-only **USER_APPROVED_EXCEPTION** for this fixed
   package and its disclosed limits ([approval record](docs/codex/returns/STM32TK-134/authorization-2026-10-28.md)):
   Toolkit overall 82.7452% and risk 82.6335% remain below the 90% floors, Monitor risk
@@ -25,6 +53,9 @@
   limits are unchanged. Permanent gates and memberships are not lowered, and unmet values
   or skips do not become PASS. Final recipient installation and independent VS Code testing
   remain user-owned and pending; see [release status](docs/release-status.md).
+- Later local corrections recorded under `[Unreleased]` are **not** part of the published
+  v1.3.4 bytes; no build, CLI fix or documentation change in this source tree is claimed to
+  have shipped in that release.
 
 ## [v1.3.3] - 2026-10-27
 
