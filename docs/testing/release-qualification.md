@@ -6,6 +6,20 @@ The [standard procedure](standard-test-procedure.md) governs execution and autho
 Historical measurements and one-time exceptions do not transfer automatically to a later release.
 The user's explicit v1.0.1 conditional exception is recorded below, separately from permanent gates.
 
+## v1.3.4 frozen-candidate exception authorized on 2026-10-28
+
+The user explicitly approved **USER_APPROVED_EXCEPTION** and Latest publication
+only for `a7db6a8cc3ecdab53ef0b52cb80b54cbadcacead` and its 13 reproducible verified files.
+Toolkit overall/risk82.7452%/82.6335% remain below90%; Monitor risk92.3681% remains
+below95%. Exact-source reuse, original failures and bounded passing comparisons,
+platform/historical-data skips and unverified actual vendor generation remain
+separate disclosed limits. Permanent floors and membership remain unchanged;
+no exception transfers or converts an unmet gate into PASS. Final installation/
+VS Code is USER_VALIDATION_PENDING, owned by the user; no original-project or
+physical hardware operation is authorized. See the [specific authorization](../codex/returns/STM32TK-134/authorization-2026-10-28.md)
+and [frozen inventory](../codex/returns/STM32TK-134/candidate-build.md).
+Publication awaits observed remote success.
+
 ## v1.3.3 frozen-candidate exception authorized on 2026-10-27
 
 The user explicitly approves **USER_APPROVED_EXCEPTION** and Latest publication only

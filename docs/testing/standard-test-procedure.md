@@ -4,6 +4,8 @@
 
 ## 1. 当前断点与证据
 
+2026-10-28 v1.3.4 资格处置：用户明确批准只对冻结 `a7db6a8cc3ecdab53ef0b52cb80b54cbadcacead` 的13文件候选接受已披露覆盖/复用/失败保留/跳过/平台限制并发布Latest，见[授权记录](../codex/returns/STM32TK-134/authorization-2026-10-28.md)。处置为 USER_APPROVED_EXCEPTION，永久门槛未变、未达标不变PASS；另明确批准仅发布脚本进程内复用既有GCM凭据，不显示/保存/更改认证。下一步非强推源码/标签、上传核验、公开发布与匿名下载复核。最终安装/VS Code由用户负责，原工程和硬件不操作；远端发布尚未发生。以下为历史断点。
+
 2026-10-28 v1.3.4 冻结包：`a7db6a8cc3ecdab53ef0b52cb80b54cbadcacead` 的两次官方离线构建13文件逐项同hash，安全解压后官方bundle验证退出0，见[候选记录](../codex/returns/STM32TK-134/candidate-build.md)。软件已独立审查ACCEPTED_WITH_FIXES；永久覆盖门槛仍未满足，当前 **LOCAL_CANDIDATE_NOT_QUALIFIED**，等待只对具体候选的资格处置，旧例外不转移。现有Git推送dry-run已验证但未实际推送；API发布脚本的进程内现有凭据复用需本次never-read规则的有限例外，准备脚本尚未执行。最终安装/VS Code仍由用户负责，原工程、既有runtime与硬件未操作。以下为历史断点。
 
 2026-10-28 v1.3.4 软件复核：include guard 判定与引号头文件编码发现已在 CodeHead `08ff6e82931a0a4ac35cd6f020a2f9eaee67aea5` 独立审查为 **ACCEPTED_WITH_FIXES**，见[执行与独立审查](../codex/returns/STM32TK-134/implementation-report.md)。受影响矩阵为1,263通过/1平台跳过，明确复用未变源码证据并保留原失败和定点修正结果，非最终提交全仓重跑。原工程preflight提前列36个C与24个可达头文件编码阻断；保留guard的既有UTF-8副本已0 blocker、planReady=true，destination dry-run为191输出，工程字节未变、目标目录未创建。永久覆盖门槛未满足，发行仍 **NOT_QUALIFIED**；下一步冻结双构建13文件，再对具体候选单独处置，v1.3.3例外不转移。未推送/发布v1.3.4、未安装或操作硬件；最终安装/VS Code仍由用户负责。以下为历史断点。

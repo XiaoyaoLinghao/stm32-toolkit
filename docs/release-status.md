@@ -1,5 +1,16 @@
 # Release status and retained limitations
 
+## v1.3.4 specific candidate approved for Latest — 2026-10-28
+
+The user approved USER_APPROVED_EXCEPTION only for frozen `a7db6a8cc3ecdab53ef0b52cb80b54cbadcacead`
+and its 13 verified files, and authorized publication as Latest. See the
+[authorization](codex/returns/STM32TK-134/authorization-2026-10-28.md).
+The permanent gates, disclosed failures/reuse/skips and user-owned installation/
+VS Code limits remain unchanged. The release client's bounded in-process existing
+credential reuse is explicitly authorized; no model/auth/settings change is granted.
+Next: non-force source/tag push, draft upload/verification, publication and anonymous
+rehash. Publication has not yet occurred; current public Latest remains v1.3.3.
+
 ## v1.3.4 frozen package awaiting disposition — 2026-10-28
 
 Frozen `a7db6a8cc3ecdab53ef0b52cb80b54cbadcacead` has two official canonical builds with all13 files identical
