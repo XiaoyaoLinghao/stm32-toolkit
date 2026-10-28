@@ -75,7 +75,7 @@ def test_preflight_and_delivery_expose_the_same_derived_guidance(
 
     preflight = preflight_keil_workflow(source)
     assert preflight.ok is True, preflight.to_dict()
-    preflight_debug = preflight.data["debugConfiguration"]
+    preflight_debug = preflight.to_dict()["data"]["debugConfiguration"]
     _assert_shared_debug(preflight_debug)
 
     plan = plan_keil_delivery(source, destination, inspect_keil(source))
