@@ -94,8 +94,8 @@ After apply, use the ordinary two-step configure route. For a PyOCD pair, PLAN w
   That published version introduced the independent destination, the explicit WFI normal-return intent and the no-Git managed flow; those
   are not new v1.3.4 claims. Published v1.3.4 adds only the bounded, read-only `analysis.encodingDiscovery` inventory and outer-guard structural
   recognition described in step 3, and publishes no physical-target or ABI verification claim. It was released as Latest on 2026-10-28 under an
-  explicitly approved candidate-specific exception: the permanent coverage gates and disclosed limits in `docs/architecture.md` remain unmet
-  rather than passing, and installing published assets is a separate explicit user action. Verify the bound server's actual schema before relying
+  explicitly approved candidate-specific exception: the permanent coverage gates remain unmet and the disclosed limits in `docs/architecture.md`
+  remain in force, and installing published assets is a separate explicit user action. Verify the bound server's actual schema before relying
   on `analysis.encodingDiscovery` or its `complete` field.
 - Capability availability does not establish migration readiness; only current preflight/PLAN evidence does. Read complete diagnostics; unknown codes
   stay unsupported and no blocker is auto-fixable. An incomplete encoding discovery result is not proof that every dependency was checked.
