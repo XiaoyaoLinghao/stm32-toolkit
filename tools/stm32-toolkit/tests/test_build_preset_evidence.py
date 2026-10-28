@@ -861,6 +861,40 @@ def test_real_gcc_debug_release_debug_keeps_both_presets_current(
     # the release build never reused or overwrote debug evidence
     assert result_path(destination, debug_elf_path).read_bytes() == debug_elf_bytes
 
+    # Genuine managed admission immediately after the release build, before any
+    # second debug build can repair the damage: the debug preset is still the
+    # admitted one and its identity, digest, path and target are unchanged from
+    # the first debug build.  Checking only after the second debug build would
+    # hide damage the intervening release caused.
+    after_release_facts = load_fresh_firmware_facts(destination)
+    assert after_release_facts.build_id == first.data.identity.build_id
+    assert after_release_facts.build_id == first_identity["buildId"]
+    assert after_release_facts.elf_sha256 == first.data.identity.elf_sha256
+    assert after_release_facts.elf_sha256 == first_identity["elfSha256"]
+    assert after_release_facts.elf_path == debug_elf_path
+    assert after_release_facts.elf_path == first_identity["elfPath"]
+    assert after_release_facts.target_device == first.data.identity.target_device
+    assert after_release_facts.target_device == first_identity["targetDevice"]
+
+    after_release_context = build_project_context(
+        destination, tmp_path.parent / "data", "session-a"
+    )
+    assert after_release_context.ok is True
+    assert after_release_context.data["build"]["elfFresh"] is True
+    assert (
+        after_release_context.data["build"]["buildId"]
+        == first.data.identity.build_id
+    )
+    assert after_release_context.data["build"]["elfSha256"] == (
+        first.data.identity.elf_sha256
+    )
+    assert after_release_context.data["build"]["preset"] == "arm-debug"
+    assert after_release_context.data["build"]["buildResultPath"] == DEBUG_RESULT
+    assert (
+        after_release_context.data["build"]["identityPath"]
+        == "build/arm-debug/firmware-identity.json"
+    )
+
     # Back to debug without a clean build: the real incremental rebuild either
     # reproduces identical outputs (reused prior evidence) or produces changed
     # outputs (accepted as new evidence).  Both are valid successes; the debug
