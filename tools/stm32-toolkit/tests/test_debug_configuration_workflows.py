@@ -949,8 +949,8 @@ def test_post_migration_debug_guidance_covers_root_configure_build_and_handoff(
     assert "no backend or target is inferred" in joined
     # Configure precedes the build/flash identities.
     assert "before establishing build or flash identities" in joined
-    assert "data.build.buildId" in joined
-    assert "data.build.elfSha256" in joined
+    assert "data.identity.buildId" in joined
+    assert "data.identity.elfSha256" in joined
     # The empty launch.json has a real explanation, not a static bypass.
     assert "launch.json" in joined
     assert "data.cortexDebugLaunch.configuration" in joined

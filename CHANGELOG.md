@@ -17,6 +17,25 @@
   that must detach before handoff-end consumes the original ticket. The derived text never
   enters the hashed plan/content identity, adds no blocker, infers no backend/target and
   performs no hardware action.
+- Implemented: preset-specific build evidence. Ordinary un-`clean` debug/release switching
+  retains valid incremental evidence per preset; `arm-debug` keeps
+  `artifacts/migration/build-result.json` and `artifacts/migration/build.log`, while
+  `arm-release` publishes `artifacts/migration/arm-release/build-result.json` and
+  `artifacts/migration/arm-release/build.log`. Identities stay at
+  `build/<preset>/firmware-identity.json`, so no automatic clean is required, and
+  malformed/failed/redirected canonical evidence is still refused rather than bypassed.
+  A pre-fix release that already overwrote the global debug receipt cannot have that debug
+  evidence reconstructed; one explicitly authorized `arm-debug --clean` rebuild may be
+  needed once.
+- Implemented: bounded CLI `--flash-regions` diagnostics. The schema is exactly 1..32
+  objects of `[{"start": <integer>, "length": <positive integer>}]` with an optional
+  `name`; no `origin` field is accepted. Grammar failures keep exit code 2 with fixed
+  messages that identify the field, list index and reason (shape, missing
+  start/length, duplicate fields, integer types where `bool` is not an integer) without
+  echoing caller payloads, and `--help` shows the schema plus one example.
+- Both entries above are local `Unreleased` corrections planned for `v1.3.5`; they are not
+  part of the published v1.3.4 bytes, are not an accepted release, and change no packaging,
+  hardware or installation behavior.
 
 ## [v1.3.4] - 2026-10-28
 

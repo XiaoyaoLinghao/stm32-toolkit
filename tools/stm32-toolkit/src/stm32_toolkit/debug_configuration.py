@@ -325,8 +325,9 @@ _POST_MIGRATION_NEXT_STEPS = (
         "Do this before establishing build or flash identities: the manifest "
         "edit naturally invalidates earlier build/firmware identity, so "
         "record the pair first and only then build and flash. Read the actual "
-        "`data.build.buildId` and `data.build.elfSha256` from that fresh "
-        "arm-debug build, and keep any flash as its own authorized step."
+        "`data.identity.buildId` and `data.identity.elfSha256` from that fresh "
+        "arm-debug build response, and keep any flash as its own authorized "
+        "step."
     ),
     (
         "A recorded pair is metadata only; target support and physical "
