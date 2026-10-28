@@ -76,6 +76,9 @@ class FakePyOCDTarget:
         self.memory_result: object = _DEFAULT_MEMORY_RESULT
         self.memory_error: BaseException | None = None
         self.register_errors: dict[str, BaseException] = {}
+        self.reset_and_halt_error: BaseException | None = None
+        self.reset_and_halt_state: object = "halted"
+        self.state_error: BaseException | None = None
 
     def read_memory_block8(self, address: int, length: int) -> object:
         self.calls.append(("read_memory_block8", address, length))
@@ -102,6 +105,8 @@ class FakePyOCDTarget:
 
     def get_state(self) -> object:
         self.calls.append(("get_state",))
+        if self.state_error is not None:
+            raise self.state_error
         return self.state
 
     def halt(self) -> None:
@@ -118,6 +123,12 @@ class FakePyOCDTarget:
     def reset(self) -> None:
         self.calls.append(("reset",))
         self.state = "running"
+
+    def reset_and_halt(self, reset_type: object) -> None:
+        self.calls.append(("reset_and_halt", reset_type))
+        if self.reset_and_halt_error is not None:
+            raise self.reset_and_halt_error
+        self.state = self.reset_and_halt_state
 
 
 class FakePyOCDBoard:

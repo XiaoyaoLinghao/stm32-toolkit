@@ -559,6 +559,54 @@ class PyOCDBackend:
             self._program_failure_details(stage, error),
         )
 
+    def _require_programming_authority(self) -> None:
+        """Keep the observe-preserve policy read-only; it never programs."""
+
+        if self._connection_policy == OBSERVE_PRESERVE_CONNECTION_POLICY:
+            raise ProbeBackendError(
+                "PROBE_OPERATION_UNAVAILABLE",
+                "Preserve connection cannot program firmware",
+            )
+
+    @staticmethod
+    def _program_system_reset_type() -> object:
+        """Return pyOCD's exact system-reset enum, never a string or a default."""
+
+        from pyocd.core.target import Target
+
+        return Target.ResetType.SYSRESETREQ
+
+    def _require_programming_halt(self, target: object) -> None:
+        """Require HALTED now; never infer, repair, resume or retry."""
+
+        try:
+            state = self._read_target_state(target)
+        except Exception as error:
+            raise self._program_failure("pre-program-halt", error) from error
+        if state != "halted":
+            raise self._program_failure(
+                "pre-program-halt",
+                ProbeBackendError(
+                    "PROBE_BACKEND_ERROR",
+                    f"Target state is {state} before programming",
+                ),
+            )
+
+    def _prepare_for_programming(self, target: object) -> None:
+        """Apply the one shared pre-program reset-and-halt contract."""
+
+        if self._connection_policy != UNDER_RESET_RECOVERY_CONNECTION_POLICY:
+            try:
+                reset_and_halt = getattr(target, "reset_and_halt")
+                if not callable(reset_and_halt):
+                    raise TypeError("target reset-and-halt support is unavailable")
+                reset_and_halt(self._program_system_reset_type())
+            except Exception as error:
+                raise self._program_failure("pre-program-reset", error) from error
+        # Under-reset recovery already reset and halted on connect; reuse that
+        # state instead of adding a second reset.
+        self._require_programming_halt(target)
+
     def preflight_target_capabilities(self, probe_id: str, operation_level: object) -> None:
         """Validate static identity/provider facts without enumerating or attaching hardware."""
         if not _valid_identifier(probe_id) or getattr(operation_level, "value", None) not in {
@@ -1542,8 +1590,9 @@ class PyOCDBackend:
                 "PROBE_PROGRAM_INVALID", "Firmware image is invalid"
             )
         session = self._session
-        self._require_target()
+        target = self._require_target()
         assert session is not None
+        self._require_programming_authority()
         options: dict[str, object] = {
             "chipErase": "sector",
             "trustCrc": False,
@@ -1555,6 +1604,8 @@ class PyOCDBackend:
             driver = self._get_driver()
         except Exception as error:
             raise self._program_failure("driver-acquire", error) from error
+        self._prepare_for_programming(target)
+
         try:
             driver.program_file(session, image, options=options)
         except _DefaultPyOCDProgramError as error:
@@ -1746,6 +1797,7 @@ class PyOCDBackend:
         session = self._session
         target = self._require_target()
         assert session is not None
+        self._require_programming_authority()
         self._admit_imported_segments(image, target)
         options: dict[str, object] = {
             "chipErase": "sector",
@@ -1758,6 +1810,7 @@ class PyOCDBackend:
             driver = self._get_driver()
         except Exception as error:
             raise self._program_failure("driver-acquire", error) from error
+        self._prepare_for_programming(target)
         try:
             driver.program_file(session, image, options=options)
         except _DefaultPyOCDProgramError as error:

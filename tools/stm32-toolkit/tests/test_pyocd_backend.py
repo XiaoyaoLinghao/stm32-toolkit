@@ -28,6 +28,10 @@ from stm32_toolkit.probe.pyocd_backend import (
 )
 
 
+def _sysresetreq() -> object:
+    return pytest.importorskip("pyocd.core.target").Target.ResetType.SYSRESETREQ
+
+
 ATK_RAW = "ATK 20210914"
 ATK_FINGERPRINT = "91d67402fe525a5d16bf226f59ab5ecea743eb69292e95719167263ed1fcbf8c"
 ATK_SELECTOR = f"pyocd:{ATK_FINGERPRINT}"
@@ -957,7 +961,10 @@ def test_flash_elf_uses_sector_only_file_programmer_options():
             },
         )
     ]
-    assert driver.target.calls == []
+    assert driver.target.calls == [
+        ("reset_and_halt", _sysresetreq()),
+        ("get_state",),
+    ]
 
 
 def test_default_driver_programs_in_memory_elf_without_reset_or_progress():
@@ -1012,7 +1019,7 @@ def test_default_driver_constructor_failure_preserves_programmer_create_stage():
     driver._programmer_type = Programmer
     backend = PyOCDBackend(driver)
     backend._session = object()
-    backend._target = object()
+    backend._target = FakePyOCDTarget()
     backend._probe_id = "pyocd:public-selector"
     backend._hardware_probe_id = "RAW PROBE 01"
 
@@ -1048,7 +1055,7 @@ def test_default_driver_program_failure_preserves_flash_failure_numbers():
     driver._programmer_type = Programmer
     backend = PyOCDBackend(driver)
     backend._session = object()
-    backend._target = object()
+    backend._target = FakePyOCDTarget()
 
     with pytest.raises(ProbeBackendError) as error:
         backend.flash_elf(b"ELF")

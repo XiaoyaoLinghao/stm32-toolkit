@@ -17,7 +17,13 @@ from .selector import (
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 
 PROGRAM_DIAGNOSTIC_STAGES = frozenset(
-    {"driver-acquire", "programmer-create", "program-call"}
+    {
+        "driver-acquire",
+        "pre-program-reset",
+        "pre-program-halt",
+        "programmer-create",
+        "program-call",
+    }
 )
 _PROGRAM_EXCEPTION_FIELDS = frozenset(
     {"type", "message", "errno", "winerror", "address", "resultCode"}
