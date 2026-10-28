@@ -549,19 +549,24 @@ def test_documentation_describes_independent_delivery_and_root_rebinding() -> No
     assert "Git baseline" not in migrate
     # The user guide owns the published v1.3.3 independent-delivery contract
     # and the explicit (never automatic) rebinding of the delivered project
-    # root.  This is published behavior, not a local unpublished source
-    # change: the historical v1.3.0 candidate note may still say 本地未发布,
-    # so that phrase alone cannot support an unpublished classification.
+    # root.  Independent delivery was introduced in v1.3.3 and is retained in
+    # the current published v1.3.4: the historical v1.3.0 candidate note may
+    # still say 本地未发布, so that phrase alone cannot support an unpublished
+    # classification.
     assert "keil convert --destination" in guide
+    assert "[v1.3.4 Release](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.3.4)" in guide
+    assert "当前公开 Latest **v1.3.4**" in guide
+    # The previous published release stays a supported historical delivery
+    # route, and the current public release is the only version described as
+    # Latest.  Requiring both keeps a stale guide that either omits the current
+    # release or still advertises v1.3.3 as Latest from passing.
     assert "[v1.3.3 Release](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.3.3)" in guide
-    assert "当前公开 Latest **v1.3.3**" in guide
-    # The current guide still carries the local v1.3.4 candidate, which stays
-    # explicitly unqualified and unpublished.  Asserting that alongside the
-    # Latest wording keeps the alignment above from accepting a stale guide
-    # that silently promotes the candidate to the published version.
-    assert "本工作树的现行本地候选是 **v1.3.4**" in guide
-    assert "它尚未完成资格化与发布" in guide
-    assert "只有协调者记录远端发布成功后才会成为公开版本" in guide
+    assert "v1.3.3 是上一公开版本" in guide
+    # Obsolete local-candidate qualifications for v1.3.4 must be gone now that
+    # the release is observed public.
+    assert "本工作树的现行本地候选是 **v1.3.4**" not in guide
+    assert "它尚未完成资格化与发布" not in guide
+    assert "只有协调者记录远端发布成功后才会成为公开版本" not in guide
     assert "`--destination` 独立交付与 `outputRoot` 交接是已发布的 v1.3.3 行为" in guide
     assert "本地未发布源码行为" not in guide
     assert "原地 `keil convert`" in guide

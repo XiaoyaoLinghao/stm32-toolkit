@@ -5,17 +5,18 @@
 - Implemented: structurally balanced outer include guards allow independent nested
   conditionals, while true nested macro definitions remain rejected.
 - Implemented: read-only preflight discovers potential quoted-header encoding blockers
-  without transcoding. On an actual guarded UTF-8 project the zero-blocker `PLAN` was verified at primary head
-  `53ffbc47395ec622b49fc2504df05eb3e1056ccb` with 191 planned outputs; no apply, build or
-  flash ran, so this is plan-level evidence only.
+  without transcoding. On an actual guarded UTF-8 project the zero-blocker `PLAN` was verified at
+  the final full-core capture `e02d63605bccc1011712b1e458725c51ee51ab79` with 191 planned
+  outputs; no apply, build or flash ran, so this is plan-level evidence only.
 - Neither change alters ABI or floating-point ABI decisions, debug-address inference or
   transcoding behavior.
 - Published as [Latest](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.3.4)
   from frozen source/tag target `a7db6a8cc3ecdab53ef0b52cb80b54cbadcacead`. The release
   (ID `426198381`) was observed public and Latest at `2026-10-28T02:39:44Z` with
   `draft=false` and `prerelease=false`; all 13 uploaded assets match the sizes and SHA-256
-  of the two canonical builds. Anonymous download rehash of the public assets was still in
-  progress at this entry and is not claimed as complete.
+  of the two canonical builds. Anonymous download of all 13 files then returned HTTP 200
+  with exact frozen bytes and matching SHA-256 (record
+  `a1ee3e26f903c94d56f4967d8c0240189c264133f4f0d08d73e55ce218aa667a`).
 - The user explicitly approved a candidate-only **USER_APPROVED_EXCEPTION** for this fixed
   package and its disclosed limits ([approval record](docs/codex/returns/STM32TK-134/authorization-2026-10-28.md)):
   Toolkit overall 82.7452% and risk 82.6335% remain below the 90% floors, Monitor risk
