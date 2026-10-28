@@ -146,6 +146,7 @@ Windows 使用已核实的 PowerShell、解释器与工作目录。每次运行�
 | 状态与所有权 | 最近证实的 target 状态和时间，Toolkit/IDE lease/ticket owner |
 | 入口 | 实际 argv、状态前置、连接/执行副作用、返回字段、源码函数依据 |
 | 烧录频率与策略 | 对实际支持本切片的CLI/MCP记录显式Hz或省略、选定connectionPolicy；核对frequencyHz/--frequency是否在实际绑定schema/入口中。100000..50000000为配置范围，不是实测时钟或成功证明。普通默认配置不变；受管under-reset固定100000Hz，显式冲突先离线解决；导入路线不支持under-reset |
+| 烧录前准备（计划v1.3.5源码候选） | 先确认实际部署源码/运行时包含FLASH-PREPARATION，不能仅凭版本号推断。普通受管/导入烧录在既有授权、身份与镜像准入后请求一次SYSRESETREQ reset-and-halt，再确认HALTED；受管under-reset复用连接时复位，只重新确认HALTED。记录details.flashOptions.preProgramReset/preProgramHaltRequired，作为选定策略而非已执行证据。准备失败即停，不进入编程、回读或成功收据，不补偿halt/reset/resume或重试。未发布/未安装的源码候选不会改变现有runtime |
 | 授权与预算 | 当前授权范围，新 action 来源，固定次数/时长/超时，允许的控制操作 |
 | 成功与停止 | 成功证据、下一步条件、首错停止、既有 cleanup 终态证明 |
 | 留证 | 原 code/details/cause、最后阶段、动作消费、TestRun/receipt/lease 保存位置 |
@@ -174,6 +175,8 @@ SVD 场景在首次硬件操作前以实际 project/target/device、完整 SVD �
 | IDE handoff | begin 后 IDE 独占；正常 detach、原 ticket end 和成功回收后 Toolkit 才能访问 |
 
 若实际版本支持details.recoverySuggestion，只将其视为受管normal失败且自有清理完成后的条件建议；检查原code/details/attachDiagnostic/programDiagnostic及清理终态。它不授权或触发第二次调用，不能用于导入路线，也不绕过身份、授权或清理失败。终态失败立即停止；是否执行一次新的under-reset须先复核原身份/目标供电/复位接线/所有权与新授权，在新执行卡记录固定100kHz及有限次数。不得自动降频、重连、重烧、reset/resume或切换路线。冻结/已安装1.3.0没有本源码选项；重启不会安装补丁。
+
+FLASH-PREPARATION候选的正常烧录授权明确包含烧录前SYSRESETREQ reset-and-halt与暂停确认；只读Monitor、发现和handoff不获得该动作。`programDiagnostic.stage=pre-program-reset`或`pre-program-halt`分别定位复位调用或暂停确认失败，保留原始闭合诊断及既有cleanup结果，不能继续编程/回读/生成成功收据。under-reset连接复位不再叠加此SYSRESETREQ；普通/导入flash均不因此增加烧录后reset/run，Target原有烧录后独立控制流程仍按原合同授权。`preProgramReset=sysresetreq`或`under-reset-connect`及`preProgramHaltRequired=true`可以出现在未到达准备阶段的失败响应中，不证明动作或硬件状态。此入口合同须在后续硬件执行前由独立审查者复核并填卡；本轮离线实现与文档不授予硬件、安装或重试权限。
 
 受控 Fault 最多执行既有一个 halt 和一次恢复 resume，不 reset/flash/reattach/retry，未知身份不猜测恢复。核对当前 controlledSnapshot 字段及原45秒恢复总预算和 RPC/cleanup 预算，不能套用无关外层超时。完整 Fault 与不停核采样是不同证据。
 
