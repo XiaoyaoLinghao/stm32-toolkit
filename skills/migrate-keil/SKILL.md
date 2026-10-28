@@ -34,8 +34,9 @@ external-RAM, WFI and common-syntax options and diagnostics).
    `DELIVERY_BLOCKED` with complete details/codes for its own technical blockers.
    In published v1.3.4, `analysis.encodingDiscovery` (still read-only, still no transcoding) inventories potential
    project-contained dependency headers reached by ASCII quoted includes; a known non-UTF-8 header is reported even when invalid
-   C/header bytes stop that file's own parse. Excluded paths, unrelated files and angle/system headers are not scanned. An unresolved
-   quoted standard-library name, non-ASCII or dynamic include, multiline raw-string edge or scan limit returns
+   C/header bytes stop that file's own parse. Excluded translation units do not seed traversal; unrelated directories, angle includes and
+   compiler system search paths are not swept. Contained literal quoted dependencies reached from selected sources are still inventoried.
+   An unresolved quoted standard-library name, non-ASCII or dynamic include, multiline raw-string edge or scan limit returns
    `analysis.encodingDiscovery.complete=false` with explicit diagnostics; that means the dependency set is not proven complete and is not
    itself a new semantic blocker. Structural outer include guards accept balanced independent nested conditionals, while real nested macro
    definitions/includes stay conditional.

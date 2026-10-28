@@ -78,22 +78,23 @@ unconditional constant evidence of the guarded content. Preflight also
 exposes `analysis.encodingDiscovery`: a read-only inventory of potential project-contained
 dependency headers reached through ASCII quoted includes from the selected sources. A known
 non-UTF-8 header becomes a header blocker alongside source blockers even when earlier invalid C or
-header bytes stop that file's own parse. Excluded paths, unrelated files and angle or system
-headers are never scanned. An unresolved quoted standard-library name, non-ASCII or dynamic
-include, multiline raw-string edge or scan limit reports `discovery.complete=false` with explicit
-diagnostics: incomplete discovery is not proof that every dependency was checked, and those
-discovery diagnostics are not a new semantic blocker by themselves. On the actual original project,
-v1.3.4 selected 36 non-UTF-8 C files and reached 24 non-UTF-8 headers, with two further
-non-UTF-8 headers inside excluded paths. UTF-8 preparation stays an explicit per-file charset
-conversion outside the original tree with stable source hashes and a reviewed destination PLAN, and
-explicit WFI, memory-region, startup and layout selections keep their existing meaning; Git remains
-optional traceability on the normal managed flow. Independent destination delivery, explicit WFI
-normal-return intent and the no-Git managed flow were introduced by published v1.3.3 and are not
-new v1.3.4 claims. v1.3.4 was published as Latest from frozen source `a7db6a8c` under an explicitly
-approved candidate-specific exception: Toolkit overall/risk 82.7452%/82.6335% remain below
-90% and Monitor risk 92.3681% remains below 95%, with exact-source reuse, retained original
-failures, platform/historical-data skips, the synthetic external vendor adapter and final
-recipient installation/VS Code validation still disclosed. This section claims no
+header bytes stop that file's own parse. Excluded translation units do not seed traversal; unrelated
+directories, angle includes and compiler system search paths are not swept. Contained literal quoted
+dependencies reached from selected sources are still inventoried. An unresolved quoted
+standard-library name, non-ASCII or dynamic include, multiline raw-string edge or scan limit reports
+`discovery.complete=false` with explicit diagnostics: incomplete discovery is not proof that every
+dependency was checked, and those discovery diagnostics are not a new semantic blocker by themselves.
+On the actual original project, v1.3.4 selected 36 non-UTF-8 C files and reached 24 non-UTF-8
+headers, with two further non-UTF-8 headers inside excluded paths. UTF-8 preparation stays an
+explicit per-file charset conversion outside the original tree with stable source hashes and a
+reviewed destination PLAN, and explicit WFI, memory-region, startup and layout selections keep their
+existing meaning; Git remains optional traceability on the normal managed flow. Independent
+destination delivery, explicit WFI normal-return intent and the no-Git managed flow were introduced
+by published v1.3.3 and are not new v1.3.4 claims. v1.3.4 was published as Latest from frozen source
+`a7db6a8c` under an explicitly approved candidate-specific exception: Toolkit overall/risk
+82.7452%/82.6335% remain below 90% and Monitor risk 92.3681% remains below 95%, with exact-source
+reuse, retained original failures, platform/historical-data skips, the synthetic external vendor
+adapter and final recipient installation/VS Code validation still disclosed. This section claims no
 physical-target or ABI verification.
 
 One bounded migration opt-in recognizes and generates a GNU replacement for the
