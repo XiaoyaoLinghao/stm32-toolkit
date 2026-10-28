@@ -38,4 +38,3 @@ implementation-plan approval is waived under AGENTS.md.
 The exact file lists and command groups are captured in per-run task JSON under
 D:/codex-tmp/f134. Any new dependency needed outside those read scopes is first assessed
 and explicitly scoped by the coordinator; do not retroactively legitimize violations.
-

@@ -95,4 +95,3 @@ Primary reviews complete base-to-CodeHead changes in a clean exact-head worktree
 independently runs proportionate affected checks. Record owner, argv, source, result,
 limitations and code-head before report commit. Offline acceptance is not release or
 hardware qualification.
-
