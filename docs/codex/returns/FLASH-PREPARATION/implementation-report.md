@@ -76,3 +76,19 @@ inapplicable: this was a scope issue, not a proven missing and unexecuted native
 No hardware efficacy, software PASS, release acceptance or version alignment is claimed.
 The original project, installed runtime, integration/review worktrees and existing
 accepted v1.3.5-planned changes remain intact.
+
+## Authorized core invocation and restart
+
+The user subsequently approved one bounded five-file core re-delegation. Run
+`D:/codex-tmp/f135/core-edit-run` retained matching native tools, 14 read/search calls,
+zero edits, no scope discrepancies and no test execution. It ended with CLI/dispatch
+exit 1 and a native error result: upstream API 400 reported that `content[].thinking`
+must be passed back in thinking mode. This is an invocation/API failure, not a tool
+permission denial or a completed implementation. No model, provider, authentication
+or thinking setting was changed.
+
+On 2026-10-28 the user explicitly requested “重新开始”, authorizing one fresh attempt
+of the same bounded core task. Source before this report update remains
+`17e5d0ced769c289ee3d4acb6fd22f675837b1c9`, with unchanged product files. The new run
+will use a fresh evidence directory and preserve both failed runs. No automatic retry
+or implementation fallback is authorized by this record.
