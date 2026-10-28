@@ -30,11 +30,19 @@ external-RAM, WFI and common-syntax options and diagnostics).
    absent or verified empty. Success means analysis completed; it does **not** mean the project is ready to apply and never returns an applicable plan ID.
    Each blocker carries complete `remediation` (`category` `needs-user-input`/`unsupported`, `summary`, optional real `tool` or `skill`, `requiredInputs`);
    report all of it. Any technical blocker fails the PLAN with `DELIVERY_BLOCKED` and complete details/codes.
+   In the v1.3.4 local candidate, `analysis.encodingDiscovery` (still read-only, still no transcoding) inventories potential
+   project-contained dependency headers reached by ASCII quoted includes; a known non-UTF-8 header is reported even when invalid
+   C/header bytes stop that file's own parse. Excluded paths, unrelated files and angle/system headers are not scanned. An unresolved
+   quoted standard-library name, non-ASCII or dynamic include, multiline raw-string edge or scan limit returns
+   `analysis.encodingDiscovery.complete=false` with explicit diagnostics; that means the dependency set is not proven complete and is not
+   itself a new semantic blocker. Structural outer include guards accept balanced independent nested conditionals, while real nested macro
+   definitions/includes stay conditional.
 4. **Prepare source when required.** Non-UTF-8 sources or needed quoted headers are `needs-user-input`. Reuse the `normalize-source-comments` helper
    with one explicit charset per selected file, then build a complete separate prepared tree with all unselected sources, headers, startup files,
    resources and licenses, overlaying only reviewed hash-matched converted copies. Omit `.git` VCS metadata (including a worktree pointer file) from
    the inventory and copy; do not silently skip other unknown entries. The helper output is a partial file set, never the project; follow
-   [source-preparation.md](references/source-preparation.md).
+   [source-preparation.md](references/source-preparation.md). On the actual original project the v1.3.4 local candidate selected 36 non-UTF-8 C
+   files and reached 24 non-UTF-8 headers; two further non-UTF-8 headers sit in excluded paths and are not selected by discovery.
 5. **Choose options.** Pass only accepted inputs, identical for preflight, PLAN and APPLY: `startupStrategy`/`startupSource`, `memoryLayout`,
    `extraRegions`, and `wfiReturns` MCP objects or repeatable CLI `--wfi-return PATH:FUNCTION`. A plain file-scope zero-argument ARMCC
    `__asm void name(void)`/`name()` whose body is one WFI with no explicit return can become ordinary non-naked C executing
@@ -81,8 +89,12 @@ After apply, use the ordinary two-step configure route. For a PyOCD pair, PLAN w
   still exposes the historical in-place `keil convert` without `--destination`. An existing v1.3.2 process does not acquire it by restarting
   alone; install or upgrade to v1.3.3 and restart once before verifying. Verify the bound server's actual input schema before promising
   `destination`, `data.planId`, `data.outputs[]`, `data.sourcePatches[]` or `outputRoot`; never install or upgrade without separate authorization.
+  That published version introduced the independent destination, the explicit WFI normal-return intent and the no-Git managed flow; those
+  are not new v1.3.4 claims. The v1.3.4 local candidate is still pending qualification and publication: it adds only the bounded, read-only
+  `analysis.encodingDiscovery` inventory and outer-guard structural recognition described in step 3, and claims no physical-target or ABI
+  verification. Verify the bound server's actual schema before relying on `analysis.encodingDiscovery` or its `complete` field.
 - Capability availability does not establish migration readiness; only current preflight/PLAN evidence does. Read complete diagnostics; unknown codes
-  stay unsupported and no blocker is auto-fixable.
+  stay unsupported and no blocker is auto-fixable. An incomplete encoding discovery result is not proof that every dependency was checked.
 - `stm32_keil_inspect`, `stm32_keil_preflight` and the plan call are read-only. APPLY is the only migration write and writes only into the explicit new
   destination; the Keil source is never edited. The `normalize-source-comments` helper writes reviewed copies outside the project; it is not a migration
   apply.

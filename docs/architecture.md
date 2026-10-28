@@ -70,6 +70,27 @@ prepared root for migration, then the returned output root for configuration/bui
 reversible and needs no Git. It does not remove startup, option, scatter/memory or
 unsupported-assembly blockers. Keep compiler migration separate from SPL/HAL conversion.
 
+The v1.3.4 local candidate adds two bounded analysis changes to that read-only preflight contract,
+without changing any public command and still without transcoding. Structural outer include-guard
+recognition accepts a balanced, independent nested conditional inside the guard, while real nested
+macro definitions or includes stay conditional and are not treated as reached. Preflight also
+exposes `analysis.encodingDiscovery`: a read-only inventory of potential project-contained
+dependency headers reached through ASCII quoted includes from the selected sources. A known
+non-UTF-8 header becomes a header blocker alongside source blockers even when earlier invalid C or
+header bytes stop that file's own parse. Excluded paths, unrelated files and angle or system
+headers are never scanned. An unresolved quoted standard-library name, non-ASCII or dynamic
+include, multiline raw-string edge or scan limit reports `discovery.complete=false` with explicit
+diagnostics: incomplete discovery is not proof that every dependency was checked, and those
+discovery diagnostics are not a new semantic blocker by themselves. On the actual original project
+the candidate selected 36 non-UTF-8 C files and reached 24 non-UTF-8 headers, with two further
+non-UTF-8 headers inside excluded paths. UTF-8 preparation stays an explicit per-file charset
+conversion outside the original tree with stable source hashes and a reviewed destination PLAN, and
+explicit WFI, memory-region, startup and layout selections keep their existing meaning; Git remains
+optional traceability on the normal managed flow. Independent destination delivery, explicit WFI
+normal-return intent and the no-Git managed flow were introduced by published v1.3.3 and are not
+new v1.3.4 claims. The 1.3.4 local candidate is pending qualification and publication, and this
+section claims no physical-target or ABI verification.
+
 One bounded migration opt-in recognizes and generates a GNU replacement for the
 conventional ST/CMSIS Cortex-M3/M4/M7 ARMCC5 startup. It is selected only by
 explicit `startupStrategy: "generate-cmsis-gcc"` plus, when the choice is
