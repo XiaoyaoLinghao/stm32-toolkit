@@ -15,7 +15,7 @@ Git is optional traceability for both routes, never an eligibility gate. Hardwar
 
 Current published version: **v1.3.3**, published as [Latest](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.3.3). See the [user guide](docs/user-guide.md) for installation, upgrades, migration differences and validation limits.
 
-Local **v1.3.4 candidate** (not published): structurally balanced outer include guards now allow independent nested conditionals, while true nested macro definitions remain rejected. An earlier v1.3.4 slice also added read-only preflight discovery of potential quoted-header encoding blockers without transcoding. The header-discovery implementation and complete v1.3.4 qualification are still pending.
+Local **v1.3.4 candidate** (not published): structurally balanced outer include guards now allow independent nested conditionals, while true nested macro definitions remain rejected. Read-only preflight also discovers potential quoted-header encoding blockers without transcoding. Both core changes are implemented locally and their affected checks pass; full v1.3.4 qualification and publication are still pending.
 
 ## Requirements
 

@@ -29,7 +29,9 @@ external-RAM, WFI and common-syntax options and diagnostics).
    Never run `git init`, commit, stash, clean or ignore files. `planReadiness.requiredInputs` names the absolute new output directory outside the source,
    absent or verified empty. Success means analysis completed; it does **not** mean the project is ready to apply and never returns an applicable plan ID.
    Each blocker carries complete `remediation` (`category` `needs-user-input`/`unsupported`, `summary`, optional real `tool` or `skill`, `requiredInputs`);
-   report all of it. Any technical blocker fails the PLAN with `DELIVERY_BLOCKED` and complete details/codes.
+   report all of it. Known header encoding findings from preflight gate the project's readiness to request a plan: resolve them before
+   requesting one. The authoritative PLAN keeps its existing strict semantic-analysis and lazy header rules, and returns
+   `DELIVERY_BLOCKED` with complete details/codes for its own technical blockers.
    In the v1.3.4 local candidate, `analysis.encodingDiscovery` (still read-only, still no transcoding) inventories potential
    project-contained dependency headers reached by ASCII quoted includes; a known non-UTF-8 header is reported even when invalid
    C/header bytes stop that file's own parse. Excluded paths, unrelated files and angle/system headers are not scanned. An unresolved

@@ -73,7 +73,8 @@ unsupported-assembly blockers. Keep compiler migration separate from SPL/HAL con
 The v1.3.4 local candidate adds two bounded analysis changes to that read-only preflight contract,
 without changing any public command and still without transcoding. Structural outer include-guard
 recognition accepts a balanced, independent nested conditional inside the guard, while real nested
-macro definitions or includes stay conditional and are not treated as reached. Preflight also
+macro definitions or includes are still read as conditional evidence and cannot be used as
+unconditional constant evidence of the guarded content. Preflight also
 exposes `analysis.encodingDiscovery`: a read-only inventory of potential project-contained
 dependency headers reached through ASCII quoted includes from the selected sources. A known
 non-UTF-8 header becomes a header blocker alongside source blockers even when earlier invalid C or
