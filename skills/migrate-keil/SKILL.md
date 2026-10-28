@@ -32,7 +32,7 @@ external-RAM, WFI and common-syntax options and diagnostics).
    report all of it. Known header encoding findings from preflight gate the project's readiness to request a plan: resolve them before
    requesting one. The authoritative PLAN keeps its existing strict semantic-analysis and lazy header rules, and returns
    `DELIVERY_BLOCKED` with complete details/codes for its own technical blockers.
-   In the v1.3.4 local candidate, `analysis.encodingDiscovery` (still read-only, still no transcoding) inventories potential
+   In published v1.3.4, `analysis.encodingDiscovery` (still read-only, still no transcoding) inventories potential
    project-contained dependency headers reached by ASCII quoted includes; a known non-UTF-8 header is reported even when invalid
    C/header bytes stop that file's own parse. Excluded paths, unrelated files and angle/system headers are not scanned. An unresolved
    quoted standard-library name, non-ASCII or dynamic include, multiline raw-string edge or scan limit returns
@@ -43,7 +43,7 @@ external-RAM, WFI and common-syntax options and diagnostics).
    with one explicit charset per selected file, then build a complete separate prepared tree with all unselected sources, headers, startup files,
    resources and licenses, overlaying only reviewed hash-matched converted copies. Omit `.git` VCS metadata (including a worktree pointer file) from
    the inventory and copy; do not silently skip other unknown entries. The helper output is a partial file set, never the project; follow
-   [source-preparation.md](references/source-preparation.md). On the actual original project the v1.3.4 local candidate selected 36 non-UTF-8 C
+   [source-preparation.md](references/source-preparation.md). On the actual original project, v1.3.4 selected 36 non-UTF-8 C
    files and reached 24 non-UTF-8 headers; two further non-UTF-8 headers sit in excluded paths and are not selected by discovery.
 5. **Choose options.** Pass only accepted inputs, identical for preflight, PLAN and APPLY: `startupStrategy`/`startupSource`, `memoryLayout`,
    `extraRegions`, and `wfiReturns` MCP objects or repeatable CLI `--wfi-return PATH:FUNCTION`. A plain file-scope zero-argument ARMCC
@@ -89,12 +89,14 @@ After apply, use the ordinary two-step configure route. For a PyOCD pair, PLAN w
 
 - Destination delivery is published v1.3.3 behavior; it is not part of the published v1.3.2 package, and an installed v1.3.2/v1.3.1 runtime
   still exposes the historical in-place `keil convert` without `--destination`. An existing v1.3.2 process does not acquire it by restarting
-  alone; install or upgrade to v1.3.3 and restart once before verifying. Verify the bound server's actual input schema before promising
+  alone; install or upgrade to v1.3.3 or later and restart once before verifying. Verify the bound server's actual input schema before promising
   `destination`, `data.planId`, `data.outputs[]`, `data.sourcePatches[]` or `outputRoot`; never install or upgrade without separate authorization.
   That published version introduced the independent destination, the explicit WFI normal-return intent and the no-Git managed flow; those
-  are not new v1.3.4 claims. The v1.3.4 local candidate is still pending qualification and publication: it adds only the bounded, read-only
-  `analysis.encodingDiscovery` inventory and outer-guard structural recognition described in step 3, and claims no physical-target or ABI
-  verification. Verify the bound server's actual schema before relying on `analysis.encodingDiscovery` or its `complete` field.
+  are not new v1.3.4 claims. Published v1.3.4 adds only the bounded, read-only `analysis.encodingDiscovery` inventory and outer-guard structural
+  recognition described in step 3, and publishes no physical-target or ABI verification claim. It was released as Latest on 2026-10-28 under an
+  explicitly approved candidate-specific exception: the permanent coverage gates and disclosed limits in `docs/architecture.md` remain unmet
+  rather than passing, and installing published assets is a separate explicit user action. Verify the bound server's actual schema before relying
+  on `analysis.encodingDiscovery` or its `complete` field.
 - Capability availability does not establish migration readiness; only current preflight/PLAN evidence does. Read complete diagnostics; unknown codes
   stay unsupported and no blocker is auto-fixable. An incomplete encoding discovery result is not proof that every dependency was checked.
 - `stm32_keil_inspect`, `stm32_keil_preflight` and the plan call are read-only. APPLY is the only migration write and writes only into the explicit new
