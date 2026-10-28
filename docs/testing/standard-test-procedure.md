@@ -4,6 +4,8 @@
 
 ## 1. 当前断点与证据
 
+2026-10-28 POST134-USABILITY 本地处置：整体 **REVISION_REQUIRED**，见[执行与独立审查记录](../codex/returns/POST134-USABILITY/implementation-report.md)。CodeHead `42451ea3a374cc9cc435c56cee160c9fbf63f416` 仅集成 CLI flash-regions 字段诊断和离线烧录调查；CLI 的 90 项相关测试由 Claude 和主代理各自通过，重复证据不相加。preset 构建 WIP `42b4aa007445e27eb60c911d51817df1f385aaea` 保留但未集成：新增组9通过/3失败，另有路径重定向审查问题。迁移引导4/5和补充文档8尚未实现；两轮用户批准的有界重新委派均因任务边界违规停止，最后一轮没有新修改，不能继续重试或转移实现归属。所有失败日志保留，不因后续测试而追溯接受。未安装、打包、发布、改变原工程或操作硬件；发行状态沿用下面的既有记录。
+
 2026-10-28 v1.3.4 已公开为Latest：Release426198381于2026-10-28T02:39:44Z发布，target/标签绑定冻结 `a7db6a8cc3ecdab53ef0b52cb80b54cbadcacead`。13附件均匿名下载HTTP200且大小/SHA-256匹配双构建候选，见[发布记录](../codex/returns/STM32TK-134/publication-2026-10-28.md)。Windows ZIP首次网络失败保留，经用户明确批准的一次有界续传成功，只清理该失败starter，8成功附件保留。候选专属例外不改变永久门槛/失败/跳过事实。中英文README、changelog及现行指引已同步并独立审查；最终文档合同172通过/1平台跳过，见[审查记录](../codex/returns/STM32TK-134/publication-guidance-review.md)，冻结包保留构建时状态、master文档说明实际发布。最终安装/VS Code仍USER_VALIDATION_PENDING、由用户负责，原工程/既有runtime/硬件未操作。以下为历史断点。
 
 2026-10-28 v1.3.4 资格处置：用户明确批准只对冻结 `a7db6a8cc3ecdab53ef0b52cb80b54cbadcacead` 的13文件候选接受已披露覆盖/复用/失败保留/跳过/平台限制并发布Latest，见[授权记录](../codex/returns/STM32TK-134/authorization-2026-10-28.md)。处置为 USER_APPROVED_EXCEPTION，永久门槛未变、未达标不变PASS；另明确批准仅发布脚本进程内复用既有GCM凭据，不显示/保存/更改认证。下一步非强推源码/标签、上传核验、公开发布与匿名下载复核。最终安装/VS Code由用户负责，原工程和硬件不操作；远端发布尚未发生。以下为历史断点。
