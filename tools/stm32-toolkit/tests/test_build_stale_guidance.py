@@ -28,6 +28,8 @@ from test_build_runner import (
     log_path_for,
     prepare_project,
     read_json,
+    release_log_path_for,
+    release_result_path_for,
     result_path_for,
 )
 from test_build_snapshot import (
@@ -210,10 +212,11 @@ def test_release_preset_and_nondefault_timeout_are_preserved(
     first = run_build(BuildRequest(project_root=root, preset="arm-release"))
     assert first.ok is True, first
     # The recorded evidence now names a different preset, so the accepted
-    # admission comparison fails with the fixed preset discriminator.
-    record = read_json(result_path_for(root))
+    # admission comparison fails with the fixed preset discriminator.  The
+    # release receipt pair is the release preset's own (POST134-A).
+    record = read_json(release_result_path_for(root))
     record["preset"] = "arm-debug"
-    result_path_for(root).write_text(json.dumps(record) + "\n", encoding="utf-8")
+    release_result_path_for(root).write_text(json.dumps(record) + "\n", encoding="utf-8")
     monkeypatch.setenv("FAKE_CMAKE_NO_OUTPUT", "1")
 
     result = run_build(
@@ -234,6 +237,11 @@ def test_release_preset_and_nondefault_timeout_are_preserved(
     assert details["preset"] == "arm-release"
     assert details["cleanRequested"] is False
     assert details["identityPath"] == "build/arm-release/firmware-identity.json"
+    assert details["logPath"] == "artifacts/migration/arm-release/build.log"
+    assert details["resultPath"] == (
+        "artifacts/migration/arm-release/build-result.json"
+    )
+    assert release_log_path_for(root).is_file()
     _assert_clean_rebuild_action(details, "arm-release", 777)
 
 

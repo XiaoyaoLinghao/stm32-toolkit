@@ -830,6 +830,15 @@ def result_path_for(root: Path) -> Path:
     return root / "artifacts" / "migration" / "build-result.json"
 
 
+def release_result_path_for(root: Path) -> Path:
+    """The release preset's own receipt path (POST134-A)."""
+    return root / "artifacts" / "migration" / "arm-release" / "build-result.json"
+
+
+def release_log_path_for(root: Path) -> Path:
+    return root / "artifacts" / "migration" / "arm-release" / "build.log"
+
+
 def log_path_for(root: Path) -> Path:
     return root / "artifacts" / "migration" / "build.log"
 
@@ -1136,10 +1145,20 @@ def test_run_build_success_release_never_references_debug(
     assert identity_doc["preset"] == "arm-release"
     assert identity_doc["elfPath"] == "build/arm-release/firmware.elf"
     assert identity_doc["mapPath"] == "build/arm-release/firmware.map"
-    result_doc = read_json(result_path_for(root))
+    result_doc = read_json(release_result_path_for(root))
     assert result_doc["preset"] == "arm-release"
     assert "arm-debug" not in json.dumps(identity_doc)
     assert "arm-debug" not in json.dumps(result_doc["artifacts"])
+    assert {entry["path"] for entry in result_doc["artifacts"]} == {
+        "artifacts/migration/arm-release/build.log",
+        "artifacts/migration/arm-release/build-result.json",
+        "build/arm-release/firmware-identity.json",
+        "build/arm-release/firmware.elf",
+        "build/arm-release/firmware.map",
+    }
+    # A release build publishes nothing at the debug-only paths.
+    assert not result_path_for(root).exists()
+    assert not log_path_for(root).exists()
     assert not identity_path_for(root, "arm-debug").exists()
 
 
@@ -2030,6 +2049,11 @@ def test_release_noop_without_release_prior_evidence_is_stale(
     assert result.details["preset"] == "arm-release"
     assert result.details["cleanRequested"] is False
     assert result.details["identityPath"] == "build/arm-release/firmware-identity.json"
+    # Stale guidance for a release build names the release receipt pair.
+    assert result.details["logPath"] == "artifacts/migration/arm-release/build.log"
+    assert result.details["resultPath"] == (
+        "artifacts/migration/arm-release/build-result.json"
+    )
     assert result.details["remediation"]["action"] == "clean-rebuild"
     assert result.to_dict()["details"]["remediation"]["cli"]["arguments"] == [
         "build", "--preset", "arm-release", "--clean", "--timeout-seconds", "300",

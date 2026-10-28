@@ -11,6 +11,14 @@ MAP and ELF, constructs and schema-validates the firmware identity, and
 publishes log → identity → build-result atomically with the build-result as
 the freshness commit point.  Every failure after prerequisites publishes a
 new failure log/result so a previous success can never remain fresh.
+
+Each preset publishes to its own fixed receipt paths: ``arm-debug`` keeps the
+historical ``artifacts/migration`` pair read by context, flash, debug and
+Monitor, while ``arm-release`` uses ``artifacts/migration/arm-release``.  The
+paths are derived from the request's preset, never from mutable module state,
+so switching presets without a clean build keeps both presets' incremental
+evidence and one preset's failure or stale guidance can never overwrite or
+describe the other's record.
 """
 
 from __future__ import annotations
@@ -87,8 +95,47 @@ from stm32_toolkit.project_model import ProjectManifestError, ProjectModel, load
 from stm32_toolkit.result import OperationResult
 
 _OPERATION = "build"
+#: Preset-scoped receipts.  ``arm-debug`` keeps the historical global paths
+#: that context, flash, debug and Monitor already read; ``arm-release`` owns a
+#: sibling directory so neither preset can overwrite the other's evidence.
 _LOG_REL = "artifacts/migration/build.log"
 _RESULT_REL = "artifacts/migration/build-result.json"
+_RELEASE_EVIDENCE_DIR = "artifacts/migration/arm-release"
+
+
+@dataclass(frozen=True)
+class _EvidencePaths:
+    """The exact log/result publication paths for one requested preset."""
+
+    log_rel: str
+    result_rel: str
+
+
+_DEBUG_EVIDENCE_PATHS = _EvidencePaths(_LOG_REL, _RESULT_REL)
+_RELEASE_EVIDENCE_PATHS = _EvidencePaths(
+    f"{_RELEASE_EVIDENCE_DIR}/build.log",
+    f"{_RELEASE_EVIDENCE_DIR}/build-result.json",
+)
+#: A pre-patch release build published its single receipt pair at the global
+#: debug paths.  These are read-only migration expectations for an existing
+#: legacy record; they are never a publication target.
+_LEGACY_RELEASE_EVIDENCE_PATHS = _EvidencePaths(_LOG_REL, _RESULT_REL)
+
+
+def _preset_evidence_paths(preset: str) -> _EvidencePaths:
+    """Return the preset's fixed publication paths (never mutable state).
+
+    Every caller derives the paths from the requested preset it already holds,
+    so concurrent presets cannot observe each other's path selection.
+    """
+    if preset == "arm-debug":
+        return _DEBUG_EVIDENCE_PATHS
+    if preset == "arm-release":
+        return _RELEASE_EVIDENCE_PATHS
+    raise build_error(
+        BUILD_REQUEST_INVALID, "build request is invalid", {"field": "preset", "rule": "value"}
+    )
+
 
 # ---------------------------------------------------------------------------
 # advisory lock (product abstraction; real fcntl/msvcrt per host)
@@ -473,6 +520,7 @@ def _run_stage(
     root: Path,
     timeout_seconds: int,
     sections: list[dict],
+    log_rel: str,
 ) -> _StageOutcome:
     try:
         result = run_process(
@@ -490,7 +538,7 @@ def _run_stage(
         code = BUILD_CONFIGURE_FAILED if stage == "configure" else BUILD_FAILED
         message = "configure failed" if stage == "configure" else "build failed"
         return _StageOutcome(
-            build_error(code, message, {"stage": stage, "rule": "launch", "log": _LOG_REL})
+            build_error(code, message, {"stage": stage, "rule": "launch", "log": log_rel})
         )
     sections.append(
         {
@@ -510,7 +558,7 @@ def _run_stage(
             build_error(
                 BUILD_TIMEOUT,
                 "build timed out",
-                {"stage": stage, "timeoutSeconds": timeout_seconds, "log": _LOG_REL},
+                {"stage": stage, "timeoutSeconds": timeout_seconds, "log": log_rel},
             ),
             result.duration_ms,
         )
@@ -521,24 +569,82 @@ def _run_stage(
             build_error(
                 code,
                 message,
-                {"stage": stage, "exitCode": result.returncode, "log": _LOG_REL},
+                {"stage": stage, "exitCode": result.returncode, "log": log_rel},
             ),
             result.duration_ms,
         )
     return _StageOutcome(None, result.duration_ms)
 
 
-def _load_prior_evidence(root: Path, preset: str):
-    record = read_evidence_json(
-        root.joinpath(*_RESULT_REL.split("/")), _RESULT_REL, _EVIDENCE_LIMIT_BYTES
-    )
+@dataclass(frozen=True)
+class _PriorEvidence:
+    """One admitted prior evidence pair plus the paths it must describe."""
+
+    record: dict
+    identity: dict
+    paths: _EvidencePaths
+
+
+def _load_prior_evidence(
+    root: Path, preset: str, paths: _EvidencePaths
+) -> _PriorEvidence | None:
+    """Load the prior (record, identity) pair for this preset only.
+
+    The preset's own canonical record is authoritative whenever it exists,
+    readable or not: present malformed/failed/redirected evidence is never
+    replaced by another record.  Only a release build whose canonical record
+    is truly absent may consult the pre-patch global release record, and the
+    existing complete same-preset identity/snapshot/hash validation still
+    decides reuse.  A debug record is never borrowed as release evidence.
+    """
     identity_rel = f"build/{preset}/firmware-identity.json"
     identity_doc = read_evidence_json(
         root.joinpath(*identity_rel.split("/")), identity_rel, _EVIDENCE_LIMIT_BYTES
     )
-    if record is None or identity_doc is None:
+    if identity_doc is None:
         return None
-    return record, identity_doc
+    record = read_evidence_json(
+        root.joinpath(*paths.result_rel.split("/")), paths.result_rel, _EVIDENCE_LIMIT_BYTES
+    )
+    if record is not None:
+        return _PriorEvidence(record, identity_doc, paths)
+    if preset != "arm-release":
+        return None
+    legacy = _legacy_release_pair(root, identity_doc)
+    if legacy is None:
+        return None
+    return _PriorEvidence(legacy, identity_doc, _LEGACY_RELEASE_EVIDENCE_PATHS)
+
+
+def _legacy_release_pair(root: Path, identity_doc: dict) -> dict | None:
+    """Read the pre-patch global record for release migration only.
+
+    The canonical release record must be genuinely absent.  Nothing is
+    inferred from a debug build: the legacy record must itself name the
+    release preset and share the release identity's build ID, so a debug
+    record can never be admitted as release evidence.
+    """
+    canonical = root.joinpath(*_RELEASE_EVIDENCE_PATHS.result_rel.split("/"))
+    try:
+        os.lstat(canonical)
+    except FileNotFoundError:
+        pass
+    except OSError:
+        # An uninspectable canonical path is present state: no fallback.
+        return None
+    else:
+        return None
+    legacy = _LEGACY_RELEASE_EVIDENCE_PATHS
+    record = read_evidence_json(
+        root.joinpath(*legacy.result_rel.split("/")), legacy.result_rel, _EVIDENCE_LIMIT_BYTES
+    )
+    if record is None or record.get("preset") != "arm-release":
+        return None
+    if identity_doc.get("preset") != "arm-release":
+        return None
+    if record.get("buildId") is None or record.get("buildId") != identity_doc.get("buildId"):
+        return None
+    return record
 
 
 @dataclass(frozen=True)
@@ -569,7 +675,7 @@ def _evidence_mismatch(reason: str, field: str, source: str) -> _EvidenceMatch:
 
 
 def _prior_evidence_check(
-    prior,
+    prior: _PriorEvidence,
     model: ProjectModel,
     preset: str,
     snapshot,
@@ -586,9 +692,13 @@ def _prior_evidence_check(
     state: a new commit over unchanged inputs, or Git becoming unavailable,
     cannot alone invalidate otherwise current outputs.  Record and identity
     must still agree with each other, and every content digest must still
-    match, so a mismatched or malformed legacy pair is never accepted.
+    match, so a mismatched or malformed legacy pair is never accepted.  A
+    schema-2 record must name the artifact paths of the receipt pair that was
+    actually consulted, so a legacy pre-patch release pair is validated
+    against its own legacy paths.
     """
-    record, identity_doc = prior
+    record, identity_doc = prior.record, prior.identity
+    paths = prior.paths
     if record.get("status") != "success":
         return _evidence_mismatch(_STALE_PRIOR_FAILED, "status", "record")
     if record.get("preset") != preset:
@@ -658,8 +768,8 @@ def _prior_evidence_check(
     if record_schema == SNAPSHOT_IDENTITY_SCHEMA_VERSION:
         expected_artifacts = frozenset(
             {
-                _LOG_REL,
-                _RESULT_REL,
+                paths.log_rel,
+                paths.result_rel,
                 f"build/{preset}/firmware-identity.json",
                 elf_rel,
                 map_rel,
@@ -761,6 +871,7 @@ def _stale_details(
     preset: str,
     clean_requested: bool,
     timeout_seconds: int,
+    paths: _EvidencePaths,
     evidence_field: str | None = None,
     evidence_source: str | None = None,
 ) -> dict[str, object]:
@@ -770,8 +881,8 @@ def _stale_details(
         "reason": reason,
         "preset": preset,
         "cleanRequested": clean_requested,
-        "logPath": _LOG_REL,
-        "resultPath": _RESULT_REL,
+        "logPath": paths.log_rel,
+        "resultPath": paths.result_rel,
         "identityPath": f"build/{preset}/firmware-identity.json",
         "remediation": _stale_remediation(
             reason, preset, clean_requested, timeout_seconds
@@ -796,6 +907,7 @@ def _require_fresh_outputs(
     elf_path: Path,
     map_path: Path,
     snapshot,
+    paths: _EvidencePaths,
 ) -> None:
     post_elf = _artifact_state(elf_path)
     post_map = _artifact_state(map_path)
@@ -810,6 +922,7 @@ def _require_fresh_outputs(
                 preset=preset,
                 clean_requested=request.clean,
                 timeout_seconds=request.timeout_seconds,
+                paths=paths,
                 evidence_source="output",
             ),
         )
@@ -824,12 +937,13 @@ def _require_fresh_outputs(
                 preset=preset,
                 clean_requested=request.clean,
                 timeout_seconds=request.timeout_seconds,
+                paths=paths,
                 evidence_source="output",
             ),
         )
     if pre_elf != post_elf or pre_map != post_map:
         return
-    prior = _load_prior_evidence(root, preset)
+    prior = _load_prior_evidence(root, preset, paths)
     if prior is None:
         raise build_error(
             BUILD_OUTPUT_STALE,
@@ -841,6 +955,7 @@ def _require_fresh_outputs(
                 preset=preset,
                 clean_requested=request.clean,
                 timeout_seconds=request.timeout_seconds,
+                paths=paths,
             ),
         )
     match = _prior_evidence_check(
@@ -857,6 +972,7 @@ def _require_fresh_outputs(
                 preset=preset,
                 clean_requested=request.clean,
                 timeout_seconds=request.timeout_seconds,
+                paths=paths,
                 evidence_field=match.field,
                 evidence_source=match.source,
             ),
@@ -961,6 +1077,7 @@ def _publish_failure(
     started_at: str,
     started_mono: float,
     sections: list[dict],
+    paths: _EvidencePaths,
     provenance: GitEvidence | GitUnavailableEvidence | None = None,
 ) -> OperationResult[None]:
     finished_at = utc_now_rfc3339()
@@ -993,7 +1110,7 @@ def _publish_failure(
             started_at_utc=started_at,
             finished_at_utc=finished_at,
             duration_ms=duration_ms,
-            artifacts=[{"path": _LOG_REL}],
+            artifacts=[{"path": paths.log_rel}],
             memory=[],
             warnings=[],
             schema_version=SNAPSHOT_IDENTITY_SCHEMA_VERSION,
@@ -1017,28 +1134,28 @@ def _publish_failure(
             started_at_utc=started_at,
             finished_at_utc=finished_at,
             duration_ms=duration_ms,
-            artifacts=[{"path": _LOG_REL}],
+            artifacts=[{"path": paths.log_rel}],
             memory=[],
             warnings=[],
         )
     try:
-        atomic_write_text(root.joinpath(*_LOG_REL.split("/")), log_text)
+        atomic_write_text(root.joinpath(*paths.log_rel.split("/")), log_text)
     except OSError:
         return _failure(
             build_error(
                 BUILD_EVIDENCE_FAILED,
                 "evidence publication failed",
-                {"path": _LOG_REL, "phase": "log"},
+                {"path": paths.log_rel, "phase": "log"},
             )
         )
     try:
-        atomic_write_json(root.joinpath(*_RESULT_REL.split("/")), result_doc)
+        atomic_write_json(root.joinpath(*paths.result_rel.split("/")), result_doc)
     except OSError:
         return _failure(
             build_error(
                 BUILD_EVIDENCE_FAILED,
                 "evidence publication failed",
-                {"path": _RESULT_REL, "phase": "result"},
+                {"path": paths.result_rel, "phase": "result"},
             )
         )
     return _failure(error)
@@ -1056,6 +1173,7 @@ def run_build(request: BuildRequest) -> OperationResult[BuildReport]:
         model = _require_managed_configuration(root)
         preset = request.preset
         elf_rel, map_rel = model_artifact_paths(model, preset)
+        paths = _preset_evidence_paths(preset)
     except BuildError as error:
         return _failure(error)
     lock = _BuildLock(root / ".stm32-toolkit" / "build.lock")
@@ -1067,7 +1185,7 @@ def run_build(request: BuildRequest) -> OperationResult[BuildReport]:
             {"path": ".stm32-toolkit/build.lock"},
         )
     try:
-        return _run_locked(request, root, model, preset, elf_rel, map_rel)
+        return _run_locked(request, root, model, preset, elf_rel, map_rel, paths)
     finally:
         lock.release()
 
@@ -1079,6 +1197,7 @@ def _run_locked(
     preset: str,
     elf_rel: str,
     map_rel: str,
+    paths: _EvidencePaths,
 ) -> OperationResult:
     started_at = utc_now_rfc3339()
     started_mono = time.monotonic()
@@ -1087,12 +1206,14 @@ def _run_locked(
     pre_elf = _artifact_state(elf_path)
     pre_map = _artifact_state(map_path)
     sections: list[dict] = []
+    log_rel = paths.log_rel
 
     try:
         snapshot = snapshot_project_inputs(model, policy=SOURCE_LOCAL_HEADERS_POLICY)
     except BuildError as error:
         return _publish_failure(
-            error, root, model, preset, "snapshot", started_at, started_mono, sections
+            error, root, model, preset, "snapshot", started_at, started_mono, sections,
+            paths,
         )
     # Git availability never decides build success.  The strict collector
     # still propagates unexpected errors; only the stable availability error
@@ -1103,32 +1224,35 @@ def _run_locked(
     except BuildError as error:
         return _publish_failure(
             error, root, model, preset, "snapshot", started_at, started_mono, sections,
-            provenance,
+            paths, provenance,
         )
     changed = _snapshot_difference(snapshot, second)
     if changed is not None:
         error = build_error(BUILD_INPUT_CHANGED, "build inputs changed", {"path": changed})
         return _publish_failure(
             error, root, model, preset, "snapshot", started_at, started_mono, sections,
-            provenance,
+            paths, provenance,
         )
 
     configure = _run_stage(
-        "configure", ("cmake", "--preset", preset), root, request.timeout_seconds, sections
+        "configure", ("cmake", "--preset", preset), root, request.timeout_seconds, sections,
+        log_rel,
     )
     if configure.error is not None:
         return _publish_failure(
             configure.error, root, model, preset, "configure", started_at, started_mono,
-            sections, provenance,
+            sections, paths, provenance,
         )
     build_argv = ("cmake", "--build", "--preset", preset)
     if request.clean:
         build_argv = build_argv + ("--clean-first",)
-    build_outcome = _run_stage("build", build_argv, root, request.timeout_seconds, sections)
+    build_outcome = _run_stage(
+        "build", build_argv, root, request.timeout_seconds, sections, log_rel
+    )
     if build_outcome.error is not None:
         return _publish_failure(
             build_outcome.error, root, model, preset, "build", started_at, started_mono,
-            sections, provenance,
+            sections, paths, provenance,
         )
 
     try:
@@ -1136,14 +1260,14 @@ def _run_locked(
     except BuildError as error:
         return _publish_failure(
             error, root, model, preset, "validate", started_at, started_mono, sections,
-            provenance,
+            paths, provenance,
         )
     changed = _snapshot_difference(snapshot, post_snapshot)
     if changed is not None:
         error = build_error(BUILD_INPUT_CHANGED, "build inputs changed", {"path": changed})
         return _publish_failure(
             error, root, model, preset, "validate", started_at, started_mono, sections,
-            provenance,
+            paths, provenance,
         )
 
     try:
@@ -1159,6 +1283,7 @@ def _run_locked(
             elf_path,
             map_path,
             snapshot,
+            paths,
         )
         # ELF format, security, and section attributes are validated first;
         # its immutable section evidence then classifies every non-zero MAP
@@ -1187,7 +1312,7 @@ def _run_locked(
     except BuildError as error:
         return _publish_failure(
             error, root, model, preset, "validate", started_at, started_mono, sections,
-            provenance,
+            paths, provenance,
         )
 
     identity_doc = build_identity_document(
@@ -1211,7 +1336,7 @@ def _run_locked(
     except BuildError as error:
         return _publish_failure(
             error, root, model, preset, "validate", started_at, started_mono, sections,
-            provenance,
+            paths, provenance,
         )
     typed_identity = FirmwareIdentity.from_document(identity_doc)
     if typed_identity.to_dict() != identity_doc:
@@ -1243,8 +1368,8 @@ def _run_locked(
         finished_at_utc=finished_at,
         duration_ms=duration_ms,
         artifacts=[
-            {"path": _LOG_REL},
-            {"path": _RESULT_REL},
+            {"path": paths.log_rel},
+            {"path": paths.result_rel},
             {"path": identity_rel},
             {"path": elf_rel},
             {"path": map_rel},
@@ -1263,13 +1388,13 @@ def _run_locked(
     )
     log_text = render_build_log(root, sections)
     try:
-        atomic_write_text(root.joinpath(*_LOG_REL.split("/")), log_text)
+        atomic_write_text(root.joinpath(*paths.log_rel.split("/")), log_text)
     except OSError:
         return _failure(
             build_error(
                 BUILD_EVIDENCE_FAILED,
                 "evidence publication failed",
-                {"path": _LOG_REL, "phase": "log"},
+                {"path": paths.log_rel, "phase": "log"},
             )
         )
     try:
@@ -1283,13 +1408,13 @@ def _run_locked(
             )
         )
     try:
-        atomic_write_json(root.joinpath(*_RESULT_REL.split("/")), result_doc)
+        atomic_write_json(root.joinpath(*paths.result_rel.split("/")), result_doc)
     except OSError:
         return _failure(
             build_error(
                 BUILD_EVIDENCE_FAILED,
                 "evidence publication failed",
-                {"path": _RESULT_REL, "phase": "result"},
+                {"path": paths.result_rel, "phase": "result"},
             )
         )
 
@@ -1297,8 +1422,8 @@ def _run_locked(
         identity=typed_identity,
         memory=usages,
         warnings=memory_warnings,
-        build_log_path=_LOG_REL,
-        build_result_path=_RESULT_REL,
+        build_log_path=paths.log_rel,
+        build_result_path=paths.result_rel,
         identity_path=identity_rel,
         configure_duration_ms=configure.duration_ms,
         build_duration_ms=build_outcome.duration_ms,
