@@ -221,8 +221,11 @@ def test_imported_preparation_failure_stops_readback_receipt_and_retry(
 
     assert result.ok is False
     assert result.code == "PROBE_PROGRAM_FAILED"
-    assert result.details["programDiagnostic"] == diagnostic
-    assert result.details["programDiagnostic"]["stage"] == stage
+    # The internal diagnostic keeps an immutable mapping and tuple form, while
+    # the public result serializes both sides into JSON dicts and lists.
+    serialized_diagnostic = result.to_dict()["details"]["programDiagnostic"]
+    assert serialized_diagnostic == json.loads(json.dumps(diagnostic))
+    assert serialized_diagnostic["stage"] == stage
     assert result.details["flashOptions"]["preProgramReset"] == "sysresetreq"
     assert result.details["flashOptions"]["preProgramHaltRequired"] is True
     # No readback and no success receipt followed the failed preparation.
