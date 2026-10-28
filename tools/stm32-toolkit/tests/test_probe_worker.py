@@ -456,10 +456,6 @@ def test_worker_program_failure_preserves_closed_diagnostic(tmp_path: Path) -> N
         worker.close()
 
 
-def _preparation_stage_factory(stage: str) -> _PreparationStageWorkerBackend:
-    return _PreparationStageWorkerBackend(stage)
-
-
 @pytest.mark.parametrize("entry", ("flash_elf", "flash_imported_elf"))
 @pytest.mark.parametrize("stage", ("pre-program-reset", "pre-program-halt"))
 def test_worker_preserves_both_pre_program_preparation_stages(
@@ -488,7 +484,6 @@ def test_worker_preserves_both_pre_program_preparation_stages(
     finally:
         if worker.is_alive:
             worker.close()
-
 
 
 def test_windows_launcher_preserves_stdlib_identity_and_closes_owned_null_handles(

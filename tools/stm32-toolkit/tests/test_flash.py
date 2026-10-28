@@ -1355,4 +1355,3 @@ def test_flash_preserves_pre_program_preparation_stage_and_stops_readback(
     assert not (
         root / "artifacts" / "migration" / "flash-result.json"
     ).exists()
-

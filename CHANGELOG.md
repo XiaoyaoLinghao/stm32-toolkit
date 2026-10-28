@@ -44,9 +44,10 @@
   re-verifies `halted`; the observe-preserve policy still refuses programming before any
   reset. The closed schema-1 program diagnostic gains two stages, `pre-program-reset` and
   `pre-program-halt`, alongside `driver-acquire`, `programmer-create` and `program-call`;
-  every failure is `PROBE_PROGRAM_FAILED` with bounded sanitised exceptions and no
-  programmer, readback, success receipt or second program call, while the existing owned
-  cleanup still runs. `details.flashOptions` additionally reports `preProgramReset`
+  every pre-program preparation failure is `PROBE_PROGRAM_FAILED` with bounded sanitised
+  exceptions, and a failure in either new stage reaches no programmer, readback, success
+  receipt or second program call, while the existing owned cleanup still runs.
+  `details.flashOptions` additionally reports `preProgramReset`
   (`sysresetreq` normally, `under-reset-connect` for recovery) and
   `preProgramHaltRequired: true` as selected policy, not evidence that a reset or attach
   happened. No input option, schema/receipt version, frequency default, erase/keep-unwritten
@@ -54,8 +55,12 @@
   part of the authorized flash operation and grants no later independent reset, resume,
   Monitor or handoff authority; offline success does not claim a physical HardFault fix.
 - All entries above are local `Unreleased` corrections planned for `v1.3.5`; they are not
-  part of the published v1.3.4 bytes, are not an accepted release, and change no packaging,
-  hardware or installation behavior.
+  part of the published v1.3.4 bytes, are not an accepted release, and packaging,
+  installation and release qualification have not been performed for them. The controlled
+  pre-program preparation entry is a real source-level hardware behavior change (one
+  authorized `SYSRESETREQ` reset-and-halt on the managed and imported routes); it has no
+  hardware acceptance evidence until the change is installed and explicitly qualified on a
+  board.
 
 ## [v1.3.4] - 2026-10-28
 
