@@ -17,6 +17,7 @@ from stm32_toolkit import __version__
 from stm32_toolkit.probe.backend import (
     DebugHandoffMetadata,
     FlashBackendReport, ProbeAttachmentEvidence, ProbeBackendError, ProbeDescriptor,
+    make_program_diagnostic, validate_program_diagnostic,
 )
 from stm32_toolkit.probe.attach_diagnostics import (
     CleanupFragment,
@@ -335,6 +336,37 @@ def _program_stage_factory(details: object) -> _ProgramStageWorkerBackend:
     return _ProgramStageWorkerBackend(details)
 
 
+class _PreparationStageWorkerBackend:
+    """Spawn-safe seam for the two pre-program preparation stages."""
+
+    def __init__(self, stage: str) -> None:
+        self.stage = stage
+
+    def _raise_preparation_failure(self):
+        raise ProbeBackendError(
+            "PROBE_PROGRAM_FAILED",
+            "Firmware programming failed",
+            {
+                "programDiagnostic": make_program_diagnostic(
+                    self.stage, OSError(5, "preparation failed")
+                )
+            },
+        )
+
+    def flash_elf(self, image: bytes):
+        self._raise_preparation_failure()
+
+    def flash_imported_elf(self, image: bytes):
+        self._raise_preparation_failure()
+
+    def close(self) -> None:
+        return None
+
+
+def _preparation_stage_factory(stage: str) -> _PreparationStageWorkerBackend:
+    return _PreparationStageWorkerBackend(stage)
+
+
 def _attach_recovery_factory(mode: str, marker_root: str) -> _AttachRecoveryWorkerBackend:
     return _AttachRecoveryWorkerBackend(mode, marker_root)
 
@@ -422,6 +454,41 @@ def test_worker_program_failure_preserves_closed_diagnostic(tmp_path: Path) -> N
         }
     finally:
         worker.close()
+
+
+def _preparation_stage_factory(stage: str) -> _PreparationStageWorkerBackend:
+    return _PreparationStageWorkerBackend(stage)
+
+
+@pytest.mark.parametrize("entry", ("flash_elf", "flash_imported_elf"))
+@pytest.mark.parametrize("stage", ("pre-program-reset", "pre-program-halt"))
+def test_worker_preserves_both_pre_program_preparation_stages(
+    entry: str, stage: str
+) -> None:
+    """The owned child carries either new stage across the IPC boundary intact.
+
+    Both programming methods share the closed diagnostic admission, so the
+    diagnostic must arrive at the parent unchanged, with the same bounded
+    exception entry and no extra or missing members.
+    """
+
+    diagnostic = make_program_diagnostic(stage, OSError(5, "preparation failed"))
+    worker = ProbeBackendWorker(
+        _test_backend_factory=partial(_preparation_stage_factory, stage)
+    )
+    try:
+        with pytest.raises(ProbeWorkerError) as caught:
+            getattr(worker, entry)(b"ELF")
+        assert caught.value.code == "PROBE_PROGRAM_FAILED"
+        assert caught.value.details == {"programDiagnostic": diagnostic}
+        assert caught.value.details["programDiagnostic"]["stage"] == stage
+        assert validate_program_diagnostic(
+            caught.value.details["programDiagnostic"]
+        ) == diagnostic
+    finally:
+        if worker.is_alive:
+            worker.close()
+
 
 
 def test_windows_launcher_preserves_stdlib_identity_and_closes_owned_null_handles(

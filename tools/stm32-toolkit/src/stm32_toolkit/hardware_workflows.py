@@ -78,6 +78,7 @@ from stm32_toolkit.probe.attach_diagnostics import (
 from stm32_toolkit.probe.handoff import _canonical_target
 from stm32_toolkit.probe.worker import (
     NORMAL_CONNECTION_POLICY,
+    UNDER_RESET_RECOVERY_CONNECTION_POLICY,
     ProbeBackendWorker,
     ProbeWorkerConfig,
 )
@@ -1062,12 +1063,25 @@ def _flash_options_details(
     requested_frequency_hz: int | None,
     configured: ProbeWorkerConfig,
 ) -> dict[str, object]:
-    """Describe the selected configuration; never measured hardware frequency."""
+    """Describe the selected configuration; never measured hardware frequency.
 
+    ``preProgramReset`` and ``preProgramHaltRequired`` name the pre-program
+    preparation policy selected by ``configured``: a normal flash performs one
+    explicit SYSRESETREQ reset-and-halt, while under-reset recovery reuses the
+    connection-time reset and only rechecks HALTED.  They are selected policy,
+    not evidence that a reset or attach happened, and they are reported even
+    when the operation failed before reaching that preparation.
+    """
+
+    recovery = (
+        configured.connection_policy == UNDER_RESET_RECOVERY_CONNECTION_POLICY
+    )
     return {
         "requestedFrequencyHz": requested_frequency_hz,
         "configuredFrequencyHz": configured.frequency_hz,
         "connectionPolicy": configured.connection_policy,
+        "preProgramReset": "under-reset-connect" if recovery else "sysresetreq",
+        "preProgramHaltRequired": True,
         "automaticRetry": False,
     }
 

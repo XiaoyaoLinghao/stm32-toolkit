@@ -32,7 +32,11 @@ from stm32_toolkit.hardware_workflows import (
     HardwareWorkflowSeams,
     flash_imported_workflow,
 )
-from stm32_toolkit.probe.backend import ProbeBackendError, ProbeDescriptor
+from stm32_toolkit.probe.backend import (
+    ProbeBackendError,
+    ProbeDescriptor,
+    make_program_diagnostic,
+)
 from stm32_toolkit.probe.client import ProbeClient, ProbeClientError
 from stm32_toolkit.probe.lease import ProbeLeaseManager
 from stm32_toolkit.probe.model import OperationLevel
@@ -178,6 +182,56 @@ def test_imported_flash_readback_mismatch_reports_no_success_or_receipt(
     assert backend.closed is True
     # Exactly one programming attempt; no retry or fallback.
     assert sum(event[0] == "flash_imported_elf" for event in backend.events) == 1
+
+
+@pytest.mark.parametrize("stage", ("pre-program-reset", "pre-program-halt"))
+def test_imported_preparation_failure_stops_readback_receipt_and_retry(
+    tmp_path: Path, stage: str
+) -> None:
+    """A pre-program failure crosses the real loopback service boundary intact.
+
+    The owned cleanup must still run, and the workflow must not read memory,
+    publish a success receipt, or attempt a second program call.
+    """
+
+    project, data_root, _payload, import_id, source_sha, admission = _prepare_import(
+        tmp_path, b"preparation-failure"
+    )
+    diagnostic = make_program_diagnostic(stage, OSError(5, "preparation failed"))
+
+    class UnpreparedBackend(FakeProbeBackend):
+        def flash_imported_elf(self, image: bytes):
+            self.events.append(("flash_imported_elf", len(image)))
+            raise ProbeBackendError(
+                "PROBE_PROGRAM_FAILED",
+                "Firmware programming failed",
+                {"programDiagnostic": diagnostic},
+            )
+
+    backend = UnpreparedBackend(
+        probes=(ProbeDescriptor(PROBE, "Arm", "CMSIS-DAP", None),),
+        memory={
+            segment.address: bytes(segment.data)
+            for segment in admission.segments
+        },
+        registers={},
+    )
+
+    result = _run(project, data_root, import_id, source_sha, backend)
+
+    assert result.ok is False
+    assert result.code == "PROBE_PROGRAM_FAILED"
+    assert result.details["programDiagnostic"] == diagnostic
+    assert result.details["programDiagnostic"]["stage"] == stage
+    assert result.details["flashOptions"]["preProgramReset"] == "sysresetreq"
+    assert result.details["flashOptions"]["preProgramHaltRequired"] is True
+    # No readback and no success receipt followed the failed preparation.
+    assert not any(event[0] == "read_memory" for event in backend.events)
+    assert _receipts(data_root) == []
+    # Exactly one programming attempt and the existing owned cleanup ran.
+    assert sum(event[0] == "flash_imported_elf" for event in backend.events) == 1
+    assert backend.closed is True
+    assert ("close",) in backend.events
 
 
 def test_close_time_store_tamper_blocks_receipt_publication(tmp_path: Path) -> None:

@@ -35,7 +35,25 @@
   1-based region index where applicable, without echoing caller payloads; `--help` shows
   the schema plus one example. Address-range, positive-length and other security checks
   remain existing workflow validation and are not part of this CLI diagnostic change.
-- Both entries above are local `Unreleased` corrections planned for `v1.3.5`; they are not
+- Implemented: controlled pre-program preparation for firmware programming. Managed
+  `stm32_flash` and imported `stm32_flash_imported` now perform exactly one explicit
+  `Target.ResetType.SYSRESETREQ` reset-and-halt after the existing service identity,
+  immutable-image, MODIFY/action authorization and imported Flash-map admission checks, then
+  read the target state and require `halted` before entering the programmer. Under-reset
+  recovery reuses its connection-time reset instead of adding a second one and only
+  re-verifies `halted`; the observe-preserve policy still refuses programming before any
+  reset. The closed schema-1 program diagnostic gains two stages, `pre-program-reset` and
+  `pre-program-halt`, alongside `driver-acquire`, `programmer-create` and `program-call`;
+  every failure is `PROBE_PROGRAM_FAILED` with bounded sanitised exceptions and no
+  programmer, readback, success receipt or second program call, while the existing owned
+  cleanup still runs. `details.flashOptions` additionally reports `preProgramReset`
+  (`sysresetreq` normally, `under-reset-connect` for recovery) and
+  `preProgramHaltRequired: true` as selected policy, not evidence that a reset or attach
+  happened. No input option, schema/receipt version, frequency default, erase/keep-unwritten
+  behavior, automatic retry, target-state repair or post-flash run is added. The reset is
+  part of the authorized flash operation and grants no later independent reset, resume,
+  Monitor or handoff authority; offline success does not claim a physical HardFault fix.
+- All entries above are local `Unreleased` corrections planned for `v1.3.5`; they are not
   part of the published v1.3.4 bytes, are not an accepted release, and change no packaging,
   hardware or installation behavior.
 

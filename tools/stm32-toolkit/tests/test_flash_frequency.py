@@ -115,6 +115,8 @@ def test_managed_omitted_frequency_keeps_default_and_reports_configuration(
         "requestedFrequencyHz": None,
         "configuredFrequencyHz": 1_000_000,
         "connectionPolicy": NORMAL_CONNECTION_POLICY,
+        "preProgramReset": "sysresetreq",
+        "preProgramHaltRequired": True,
         "automaticRetry": False,
     }
     assert result.details["postFlash"] == {
@@ -153,6 +155,8 @@ def test_managed_explicit_frequency_reaches_worker_config_and_preserves_profile(
         "requestedFrequencyHz": 4_000_000,
         "configuredFrequencyHz": 4_000_000,
         "connectionPolicy": NORMAL_CONNECTION_POLICY,
+        "preProgramReset": "sysresetreq",
+        "preProgramHaltRequired": True,
         "automaticRetry": False,
     }
     assert recorder.events.count("operation") == 1
@@ -280,6 +284,8 @@ def test_managed_recovery_omitted_frequency_keeps_fixed_policy(tmp_path: Path) -
         "requestedFrequencyHz": None,
         "configuredFrequencyHz": 100_000,
         "connectionPolicy": UNDER_RESET_RECOVERY_CONNECTION_POLICY,
+        "preProgramReset": "under-reset-connect",
+        "preProgramHaltRequired": True,
         "automaticRetry": False,
     }
     assert "recoverySuggestion" not in result.details
@@ -517,6 +523,8 @@ def test_custom_non_normal_configuration_is_not_advertised_as_normal(
         "requestedFrequencyHz": None,
         "configuredFrequencyHz": 100_000,
         "connectionPolicy": UNDER_RESET_RECOVERY_CONNECTION_POLICY,
+        "preProgramReset": "under-reset-connect",
+        "preProgramHaltRequired": True,
         "automaticRetry": False,
     }
     assert "recoverySuggestion" not in result.details
@@ -642,6 +650,8 @@ def test_imported_success_reports_frequency_and_keeps_post_flash_receipt(
         "requestedFrequencyHz": 2_000_000,
         "configuredFrequencyHz": 2_000_000,
         "connectionPolicy": NORMAL_CONNECTION_POLICY,
+        "preProgramReset": "sysresetreq",
+        "preProgramHaltRequired": True,
         "automaticRetry": False,
     }
     assert result.details["postFlash"] == {
@@ -702,6 +712,87 @@ def test_imported_failure_has_flash_options_but_no_recovery_suggestion(
     assert result.details["flashOptions"]["configuredFrequencyHz"] == 3_000_000
     assert "recoverySuggestion" not in result.details
     assert list((data_root / "projects").glob("*/flash-receipts/*.json")) == []
+
+
+# ---------------------------------------------------------------------------
+# selected pre-program preparation policy
+# ---------------------------------------------------------------------------
+
+
+def test_managed_normal_reports_sysresetreq_preparation_policy(
+    tmp_path: Path,
+) -> None:
+    project = _project(tmp_path / "project")
+
+    result = _flash(project, tmp_path / "data", seams=_seams(_Recorder()))
+
+    options = _options(result)
+    assert options["connectionPolicy"] == NORMAL_CONNECTION_POLICY
+    assert options["preProgramReset"] == "sysresetreq"
+    assert options["preProgramHaltRequired"] is True
+
+
+def test_managed_recovery_reports_under_reset_connect_policy(
+    tmp_path: Path,
+) -> None:
+    project = _project(tmp_path / "project")
+
+    result = _flash(
+        project, tmp_path / "data", recovery=True, seams=_seams(_Recorder())
+    )
+
+    options = _options(result)
+    assert options["connectionPolicy"] == UNDER_RESET_RECOVERY_CONNECTION_POLICY
+    assert options["preProgramReset"] == "under-reset-connect"
+    assert options["preProgramHaltRequired"] is True
+
+
+def test_imported_reports_sysresetreq_policy_and_never_under_reset(
+    tmp_path: Path,
+) -> None:
+    project, data_root, _payload, import_id, source_sha, admission = _prepare_import(
+        tmp_path
+    )
+
+    result = _run(
+        flash_imported_workflow(
+            FlashImportedWorkflowRequest(
+                project, data_root, "session-a", "probe-a", import_id, source_sha, True
+            ),
+            _seams=_imported_seams(_backend(admission)),
+        )
+    )
+
+    assert result.ok is True
+    options = result.details["flashOptions"]
+    assert options["connectionPolicy"] == NORMAL_CONNECTION_POLICY
+    assert options["preProgramReset"] == "sysresetreq"
+    assert options["preProgramHaltRequired"] is True
+
+
+def test_preparation_policy_is_reported_for_a_preparation_failure(
+    tmp_path: Path,
+) -> None:
+    """Selected policy appears even when attach/reset never happened.
+
+    A failure with no diagnostic and no backend effect still describes the
+    configuration that was selected; it is never evidence the reset ran.
+    """
+
+    project = _project(tmp_path / "project")
+
+    result = _flash(
+        project,
+        tmp_path / "data",
+        seams=_seams(_Recorder(), operation=_failure_operation("PROBE_PROGRAM_FAILED")),
+    )
+
+    assert result.ok is False
+    options = result.details["flashOptions"]
+    assert options["preProgramReset"] == "sysresetreq"
+    assert options["preProgramHaltRequired"] is True
+    assert "preparationVerified" not in options
+    assert "resetVerified" not in options
 
 
 @pytest.mark.parametrize(

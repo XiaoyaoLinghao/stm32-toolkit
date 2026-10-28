@@ -1315,3 +1315,44 @@ def test_flash_preserves_program_diagnostic_from_client_failure(tmp_path: Path) 
 
     assert result.code == "PROBE_PROGRAM_FAILED"
     assert result.to_dict()["details"] == {"programDiagnostic": diagnostic}
+
+
+@pytest.mark.parametrize("stage", ("pre-program-reset", "pre-program-halt"))
+def test_flash_preserves_pre_program_preparation_stage_and_stops_readback(
+    tmp_path: Path, stage: str
+) -> None:
+    """Both new preparation stages survive the client boundary untouched.
+
+    One programming attempt is made, then the failure must stop the workflow
+    before any readback or success receipt.  The stage is only carried, never
+    reinterpreted, retried or converted into a later action.
+    """
+
+    root = prepare_project(tmp_path)
+    identity = _publish_current_debug_build(root)
+    segment = _elf_with_flash_segment()[84 : 84 + 320]
+    diagnostic = make_program_diagnostic(stage, OSError(5, "preparation failed"))
+
+    class PrePreparationFailure(RecordingFlashClient):
+        async def program_verified_elf(self, *args: object, **kwargs: object) -> object:
+            self.events.append(("program", stage))
+            raise ProbeClientError(
+                "PROBE_PROGRAM_FAILED", "Firmware programming failed",
+                {"programDiagnostic": diagnostic},
+            )
+
+    client = PrePreparationFailure(segment)
+    result = asyncio.run(flash_firmware(_request(root, identity), client))
+
+    assert result.ok is False
+    assert result.code == "PROBE_PROGRAM_FAILED"
+    assert result.to_dict()["details"] == {"programDiagnostic": diagnostic}
+    assert result.details["programDiagnostic"]["stage"] == stage
+    # Exactly the attach and one programming attempt: no readback, no retry.
+    assert [event[0] for event in client.events] == ["attach", "program"]
+    assert client.events.count(("program", stage)) == 1
+    assert [event for event in client.events if event[0] == "read"] == []
+    assert not (
+        root / "artifacts" / "migration" / "flash-result.json"
+    ).exists()
+
