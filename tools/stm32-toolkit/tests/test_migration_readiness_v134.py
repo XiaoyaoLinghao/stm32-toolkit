@@ -2,7 +2,7 @@
 
 Synthetic ``SourceSymbols``-only tests for the whole-file include guard in the
 audited ``MALLOC/malloc.h`` shape: a balanced nested ``#ifndef NULL`` block
-ahead of the unconditional ``MEM*_BLOCK_SIZE`` constants.  Only the guard's own
+ahead of the unconditional ``MEM*_MAX_SIZE`` constants.  Only the guard's own
 opening and closing directives may be exempt from conditional depth; every
 definition inside a nested group keeps conditional provenance.  No compiler,
 probe, network, installed runtime or project fixture participates.
@@ -51,16 +51,16 @@ def test_nested_null_guard_keeps_mem_constants_resolvable(tmp_path):
         "#define NULL ((void *)0)\n"
         "#endif\n"
         "\n"
-        "#define MEM1_BLOCK_SIZE 110\n"
-        "#define MEM2_BLOCK_SIZE 200\n"
-        "#define MEM3_BLOCK_SIZE (60 * 1024)\n"
+        "#define MEM1_MAX_SIZE 110*1024\n"
+        "#define MEM2_MAX_SIZE 200*1024\n"
+        "#define MEM3_MAX_SIZE 60*1024\n"
         "\n"
         "#endif\n",
     )
 
-    assert symbols.evaluate("MEM1_BLOCK_SIZE") == (110, None)
-    assert symbols.evaluate("MEM2_BLOCK_SIZE") == (200, None)
-    assert symbols.evaluate("MEM3_BLOCK_SIZE") == (60 * 1024, None)
+    assert symbols.evaluate("MEM1_MAX_SIZE") == (110 * 1024, None)
+    assert symbols.evaluate("MEM2_MAX_SIZE") == (200 * 1024, None)
+    assert symbols.evaluate("MEM3_MAX_SIZE") == (60 * 1024, None)
     # The nested block is still a real conditional region.
     assert symbols.evaluate("NULL") == (None, "conditional")
     assert _dependencies(symbols) == {"Main/candidate.h"}
