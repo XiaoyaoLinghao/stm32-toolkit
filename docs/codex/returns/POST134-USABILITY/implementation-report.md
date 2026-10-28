@@ -1,204 +1,198 @@
-# POST134-USABILITY implementation and independent review
+# POST134 usability corrections — independent acceptance
 
-Date: 2026-10-28. Primary Codex owns specification, orchestration, complete-diff
-review and acceptance; local Claude Code CLI owns all product/test edits and the
-offline flash investigation. Configured route remained `deepseek-v4.1-flash[1m]`;
-the CLI route is not described as an Anthropic model.
+Date: 2026-10-28. Verdict: **ACCEPTED_WITH_FIXES (local offline software scope)**.
+Items **1, 3, 4/5 and 8** are complete. Item **2** is complete only as an offline
+investigation; its hardware failure remains unresolved. These changes belong to
+**Unreleased, planned v1.3.5**. This is not release or hardware qualification.
 
-## Verdict and exact source ledger
+The prior partial disposition, its failed calls and test results remain in
+[partial-review-2026-10-28.md](partial-review-2026-10-28.md) and the original external
+evidence. Later acceptance does not retroactively accept those invocations.
 
-**Overall: REVISION_REQUIRED. The requested work is not complete.**
-
-| Requested item | Disposition |
-| --- | --- |
-| 1. Incremental preset switching | REVISION_REQUIRED. Retained WIP, not integrated; 9 new tests passed and 3 failed, with an additional path-redirection review finding |
-| 3. CLI flash-region diagnostics | ACCEPTED as a local software artifact after complete-diff review and independent 90/90 tests; the original editing invocation remains rejected |
-| 4 + 5. Migration/debug follow-up | NOT_IMPLEMENTED. Three bounded edit invocations ended without edits |
-| 8. Release documentation additions | NOT_IMPLEMENTED; it belonged to the same guidance slice |
-| 2. Standard flash failure | Offline investigation artifact accepted with the stated evidence limits; root cause unproven, no flash behavior change or hardware acceptance |
+## Ownership and frozen source
 
 - Accepted base: `7e578ca1395ffa3b9743bef5a9fe55c40912eed6`.
-- Approved scope/plan: [specification](../../../superpowers/specs/2026-10-28-post134-usability.md)
-  and [plan](../../../superpowers/plans/2026-10-28-post134-usability.md).
-- Governance source: `ccc5d9994ac93571227d204786f9cefdb4e66e2e`.
-- Integrated CodeHead **before this report/checkpoint commit**:
-  `42451ea3a374cc9cc435c56cee160c9fbf63f416`,
-  branch `codex/v134-fixes-integration`.
-- Integration workspace:
+- Integrated **CodeHead before this report/checkpoint commit**:
+  `29d13fc75881bfc771d81aa1c54f45948a6fa0f0`.
+- Integration branch: `codex/v134-fixes-integration`, workspace
   `C:/Users/zhy76/.codex/worktrees/v134-fixes-integration/STM32-Toolkit`.
-- Independent clean review workspace at that exact CodeHead:
+- Independent clean exact-head review workspace:
   `C:/Users/zhy76/.codex/worktrees/post134-independent-review/STM32-Toolkit`.
-- CLI implementation CodeHead:
-  `0cb0ee497d460423ae161b2b248d3d303666652b`,
-  branch `codex/post134-cli-diagnostics`; integrated as
-  `54a2f25da088d8389686b9641894644fb7b56479`.
-- Offline report source commit:
-  `cb9dfa033e369b1144efab1d6ff2f2232ca66612`; integrated as
-  `bfbd32c33b0b2136f2f703455f08d60c7a7d4946`.
-- Unaccepted build WIP CodeHead:
-  `42b4aa007445e27eb60c911d51817df1f385aaea`,
-  branch `codex/post134-build-presets`, retained at
-  `C:/Users/zhy76/.codex/worktrees/post134-build-presets/STM32-Toolkit`.
-- Guidance branch `codex/post134-migration-guidance` remained at governance
-  source with no product changes.
-- Original `D:/WorkSpace/STM32-Toolkit` checkout was not used as the implementation
-  source; it was on older `codex/flash-frequency-delivery` at
-  `f5d8978a2a60c59ec5afee4fc014707311210fe5`.
-- No PR, push, merge to master, tag, publication, installation, version change,
-  hardware authority or ownership override was granted or exercised. Local slice
-  commits and integration do not authorize those actions.
+- Build implementation head:
+  `cea47d13c0c7e75c8d8600b2e3c053c94f71b447`.
+- Guidance implementation head:
+  `f524ed2c602ba2afdbd540a8825c6504e02307a3`.
+- Primary Codex owns specification, plans, orchestration, complete-diff review,
+  independent verification and this verdict. Product code, tests and user-facing
+  documentation were edited by the local Claude Code CLI using the user's existing
+  `deepseek-v4.1-flash[1m]` route. No provider/model/authentication changes or Codex
+  implementation fallback occurred.
+- Scope: [specification](../../../superpowers/specs/2026-10-28-post134-usability.md),
+  [initial plan](../../../superpowers/plans/2026-10-28-post134-usability.md),
+  [resumption plan](../../../superpowers/plans/2026-10-28-post134-resumption.md).
+  The latest user authorization permits related-module Read/Grep/Glob and continued
+  bounded Claude implementation; exact write and command boundaries remain.
+- No PR or remote action is authorized. No push, tag, release, installation, package
+  build, version-number alignment, original-project modification or hardware access
+  occurred. The original `D:/WorkSpace/STM32-Toolkit` checkout was not the implementation
+  or test source.
 
-## Accepted local changes
+## Accepted behavior and review
 
-CLI `firmware import --flash-regions` retains exit 2 and the historical
-`stm32-toolkit: invalid arguments` first line. A second line reports only fixed
-schema reasons and a bounded item index: valid JSON, array/count, object shape,
-required fields, unsupported/duplicate keys and integer types excluding bool.
-The accepted shape remains 1..32 objects with exactly `start` and `length`.
-Help includes that schema and a concrete example; range/security validation is
-unchanged. Caller values, secret markers and control characters are not echoed.
-Unrelated argparse failures retain their sanitized message.
+**1 — Per-preset evidence.** arm-debug retains
+`artifacts/migration/build-result.json` and `build.log`; arm-release owns the same
+filenames under `artifacts/migration/arm-release/`. Identities and ELF/MAP paths
+remain under `build/<preset>/`. Stage errors, success/failure publication, result
+payloads and stale guidance consistently name the selected preset. Paths are immutable
+per-request values, not mutable global state. Normal preset switching needs no clean.
 
-Changed product/test files:
-- `tools/stm32-toolkit/src/stm32_toolkit/cli.py`
-- `tools/stm32-toolkit/tests/test_cli_flash_regions.py` (new)
-- `tools/stm32-toolkit/tests/test_external_firmware_routing.py`
+Legacy release reuse is allowed only when the canonical release receipt is truly absent.
+Present invalid/failed/redirected canonical evidence never falls back to the old global
+receipt, and debug evidence cannot become release evidence. Existing schema-1/schema-2
+identity, input snapshot and artifact validation remain. Receipt/log components are
+checked for ordinary file/directory types, symlinks and Windows reparse attributes before
+reuse/fallback and publication. This is bounded path validation, not a claim of protection
+against an adversarial concurrent filesystem replacement.
 
-[Offline flash investigation](flash-offline-investigation.md) separates source
-inference from observed log evidence. Only the fresh log records normal-policy
-configured 1 MHz. The two historical files are byte-identical and lack options
-and runtime identity. The message matches the inspected pyOCD 0.45.1
-non-running/non-halted flash-algorithm wait branch; IPSR=3 captures HardFault
-context but does not determine the cause. The inspected source is not proven
-to be the failing runtime. Neither a default-frequency change nor a hardware
-recovery outcome is established.
+The real ARM GNU journey verifies debug -> release -> debug without clean. Immediately
+after release, before the second debug build, the original debug context is fresh and
+the genuine shared firmware admission accepts its original identity/hash/path/target.
+Failure isolation and both evidence schemas are covered. A debug receipt already lost
+to an old version's global release overwrite cannot be reconstructed; the guide discloses
+the possible one-time, explicitly authorized debug clean rebuild.
 
-The source snapshots and user logs were copied without changing originals.
-Retained external copies: `D:/codex-tmp/f134/flash-inputs`; their identities are
-listed in the investigation. No hardware command ran.
+**3 — CLI diagnostics.** The previously accepted change is retained unchanged. The exact
+schema is 1..32 objects with only integer start/length; name/origin are unsupported.
+Closed diagnostics preserve exit 2, identify a bounded region index where applicable,
+and do not echo arbitrary caller bytes. Help shows the schema. Range/security validation
+stays in the existing workflow.
 
-## Verification and evidence ownership
+**4/5 — Migration and debug guidance.** Destination PLAN and successful APPLY expose the
+shared non-blocking post-migration debugConfiguration. Their followUp stays a string
+derived from the same nextSteps. Guidance binds the destination root, names the paired
+configure PLAN/exact-plan APPLY, places that edit before establishing firmware identities,
+and uses the correct fresh-build response paths data.identity.buildId/elfSha256.
+Preflight shares debugConfiguration; it does not promise followUp.
 
-Before testing, the coordinator read `docs/testing/standard-test-procedure.md`,
-its current checkpoint and the referenced STM32TK-134 implementation/publication
-review records. Tests used the existing verified CPython environment
-`D:/codex-tmp/kx23/venv/Scripts/python.exe`; no packages were installed.
-Only the build WIP group used installed ARM GNU/CMake/Ninja on a synthetic project.
-Every hardware-related test uses offline fakes or pure firmware admission.
+Migration remains valid with debug:{} and no inferred backend/target. Generated
+launch.json deliberately keeps an empty configurations array. The guide explains that
+an authorized handoff-begin supplies data.cortexDebugLaunch.configuration for an
+independent external IDE workspace; the IDE detaches before handoff-end with the original
+ticket. No static launch bypass, generated-byte change, plan/content hash input, new
+tool, automatic action or hardware authority was added.
 
-| Owner | Head | Evidence directory under D:/codex-tmp/f134 | Result |
-| --- | --- | --- | --- |
-| Claude CLI | 0cb0ee497d460423ae161b2b248d3d303666652b | claude-cli-new | 34 passed, 0 skipped; 6.86 s |
-| Claude CLI | same CLI head | claude-cli-reg | 56 passed, 0 skipped; 64.65 s |
-| Primary Codex, independent clean review | 42451ea3a374cc9cc435c56cee160c9fbf63f416 | primary-cli-new | 34 passed, 0 skipped; 5.85 s |
-| Primary Codex, independent clean review | same integrated CodeHead | primary-cli-reg | 56 passed, 0 skipped; 61.47 s |
-| Claude CLI, retained build WIP | 42b4aa007445e27eb60c911d51817df1f385aaea | claude-build-new | **9 passed, 3 failed**, 0 skipped; 99.16 s |
+**8 — Release documentation.** Changelog records the already-implemented v1.3.3 legacy
+runtime/producer recognition, explicit Repair/configure requirements and retained guards.
+Frozen v1.3.4 package wording is distinguished from current publication records.
+New build/CLI/guidance corrections are Unreleased, planned v1.3.5; published v1.3.4 tags
+and assets remain frozen.
 
-Overlapping independent checks are not added to inflate coverage: the accepted
-CLI set has 90 distinct tests, run by both owners. No full release matrix,
-packaging, install/IDE or hardware result is claimed. Source hashes before/after
-were equal in every completed run. The primary reviewed the entire accepted-base
-to integrated CodeHead diff in the clean exact-head review tree. Final
-`git diff --check <accepted-base> HEAD` passed after correcting coordinator-owned
-specification trailing whitespace.
+**2 — Offline investigation.** The accepted
+[offline report](flash-offline-investigation.md) retains pinned evidence and separates
+observations from hypotheses. IPSR=3 does not establish root cause. Frequency and
+under-reset mode are independent variables; combined recovery success does not prove
+a 100 kHz default would fix the normal path. No flash behavior was changed.
 
-Each evidence directory contains `execution.json` (exact argv, head/root, owner,
-all tracked source hashes, subprocess exit, timing, JUnit digest),
-`junit.xml`, `stdout.log`, coverage data and native coverage JSON.
-`D:/codex-tmp/f134/run_checks.py` only selects groups for the existing
-`D:/codex-tmp/r132/run_checks.py` orchestrator; it adds no product/test assertions.
-Fresh external JUnit and subprocess evidence were reconciled by the coordinator;
-the dispatcher's own `test_report_paths` was empty because those reports are
-outside each product checkout.
+Primary review covered the complete accepted-base product/test/documentation diff.
+In the clean integrated review tree, Git comparisons confirmed exact equality to the
+reviewed build and guidance branch files and to the unchanged CLI files from
+`42451ea3a374cc9cc435c56cee160c9fbf63f416`. Product/user-documentation diff checks pass.
+No remaining actionable software finding is deferred.
 
-Exact verify commands are retained in
-`claude-cli-new-v2.json`, `claude-cli-reg-v2.json` and `claude-build-new.json`
-under `D:/codex-tmp/f134`. Their only main command calls the verified Python with
-`run_checks.py <exact-root> <full-head> <unique-label> <group>`.
-Primary runs used the same command form with `primary-cli-new` / `primary-cli-reg`
-labels and a child-process-only evidence owner of `Primary Codex`.
+## Verification evidence
 
-All three verify launches had actual inventory `[PowerShell]`, matched native
-`Write-Output 'CLAUDE_DISPATCH_SMOKE'` calls/results, and matched exact main commands.
-Both CLI verification native success results lacked numeric exit codes, retained
-as null; their subprocess evidence records exit 0. The build test command has
-native executed-failure exit 1 and subprocess exit 1. No pending result was
-misrepresented as completion. Two preliminary CLI verify task documents with an
-empty read_scope were rejected by input validation before launch; the preserved
-v2 documents only correct that metadata, with no prior test execution to retry.
+Procedure/checkpoint and its referenced latest report were read before testing.
+No dependencies were installed. Verified test interpreter:
+`D:/codex-tmp/kx23/venv/Scripts/python.exe`.
+The real synthetic project used the installed ARM GNU/CMake/Ninja tools under
+`C:/ST/STM32CubeCLT_1.22.0/`; no probe or board was accessed.
 
-## Build review findings, not accepted
+Fresh evidence root: `D:/codex-tmp/f134r`. Each label below contains execution.json,
+stdout.log, JUnit, source hashes and native coverage output. Reports bind exact source,
+argv, owner, elapsed time and subprocess exit; all successful runs record sourceUnchanged.
+The run-local run_checks.py selects existing tests and partitions; it adds no product
+assertions. Its chain of hashes, JUnit digest checks and unique test identities are in
+final-matrix.json; native tool audit is in delegation-audit.json.
 
-At WIP `42b4aa007445e27eb60c911d51817df1f385aaea`:
+| Owner / source | Labels and groups | Result |
+| --- | --- | --- |
+| Claude CLI / build head above | cbn: new preset cases including real GCC | 15 passed |
+| Claude CLI / build head | cbr1/cbr2/cbr3/cbr4: complete runner partitions | 28/32/20/20 passed |
+| Claude CLI / build head | cbs: snapshot; cbg: stale guidance | 50/27 passed |
+| Claude CLI / build head | cbc: context; cba: firmware admission; cbf: flash with doubles | 49/27/51 passed |
+| Claude CLI / guidance source | cgn2: public guidance/workflows; cg1b/cg2c: complete delivery partitions | 36/17/22 passed |
+| Claude CLI / guidance source | cgwc: independent migration; cgcc: debug configuration | 10/51 passed |
+| Claude CLI / unchanged guidance docs | cgd: AI/VS Code/task contracts | 93 passed, 1 platform skip |
+| Primary Codex / exact integrated CodeHead | pin: all new preset/CLI/migration cases | 52 passed |
+| Primary Codex / exact integrated CodeHead | pic: context/admission/debug workflows | 109 passed |
+| Primary Codex / exact integrated CodeHead | pid: delivery partition containing new APPLY contract | 22 passed |
 
-1. **P1 — redirected receipt paths are not rejected.**
-   `tools/stm32-toolkit/src/stm32_toolkit/build/runner.py:606` reads canonical
-   JSON through normal file open; `:628` checks only the final canonical file
-   with lstat. A redirected parent whose target lacks the leaf can look absent
-   and admit the legacy global receipt. Publication also follows parent paths.
-   Expected: selected log/result paths reject symlink/reparse/nonregular or
-   uninspectable components before reuse/fallback/publication, without writing
-   through a redirected parent. Static review finding; no exploit or hardware
-   reproduction claimed. Required regression: redirected canonical plus
-   redirected parent/absent canonical, no fallback and no redirected writes.
-2. **P2 — receipt timestamp assertion is invalid.**
-   `tools/stm32-toolkit/tests/test_build_preset_evidence.py:204` compares the
-   debug receipt across a second debug build, although timestamps/duration may
-   change. Actual test fails. Capture after debug_second and compare only across
-   release_second, preserving semantic identity and no-clean checks.
-3. **P2 — managed-admission fixture is not programmable.**
-   Same test file `:526` passes the build-only fake ELF without PT_LOAD to
-   `load_fresh_firmware_facts`, which correctly refuses FLASH_IMAGE_INVALID.
-   Actual test fails. Exercise genuine managed admission with the real GCC ELF;
-   do not weaken segment checks or mock the admission result.
-4. **P2 — real GCC path assertions name the wrong output.**
-   Same test file `:620` expects firmware.elf but this delivered fixture produces
-   app.elf/app.map. Actual test fails before the complete preset journey.
-   Derive exact paths from the model/identities and retain the real
-   debug-release-debug no-clean and admission assertions.
+Build has **319 distinct passing tests**; guidance has **229 passing, 1 skipped**.
+The unchanged CLI's **90 distinct tests** retain both Claude and independent evidence
+under `D:/codex-tmp/f134/claude-cli-new`, `claude-cli-reg`, `primary-cli-new`,
+`primary-cli-reg`, as detailed in the partial report. Its 34 new cases were also
+rerun in pin at final CodeHead. Total affected matrix: **638 passed, 1 platform skip**;
+repeated owners/runs are not added again. Primary final-head checks: **183/183 passed**.
 
-Verification command for findings 2–4 is exactly the one in
-`D:/codex-tmp/f134/claude-build-new.json`; failure stdout/JUnit are retained.
-The product preset switching change is not accepted merely because nine cases
-passed. Broader runner/stale/consumer groups were not run after this failing
-gate, and no pure software failure is deferred as a platform limitation.
+Reuse is explicit: guidance checks at f213b5ad and 9ae8f5c7 cover unchanged product/docs
+and selected tests; later changes only correct the two new test assertions, whose affected
+groups were rerun. This is an affected matrix with unchanged-source reuse, not a final-head
+full-repository rerun or release-coverage qualification.
 
-## Invocation audit and stop history
+The skipped preexisting VS Code test is test_redirect_targets_are_refused: this Windows
+host cannot create the required file symlink. Real symlink execution remains DEFERRED
+to a capable host in the next release qualification, owned by that qualification's
+coordinator. New receipt reparse tests inject lstat evidence and pass; they are not
+misrepresented as native-junction hardware/platform acceptance.
 
-All local edit launches registered exactly `[Edit, Glob, Grep, Read, Write]`.
-Actual registration is distinct from task authorization: the later briefs
-expressly prohibited Grep/Glob even on otherwise permitted files.
-No credentials, provider/model configuration or permission policy was changed.
+Representative command form (exact expanded commands are in each task/manifest):
+`& 'D:/codex-tmp/kx23/venv/Scripts/python.exe' 'D:/codex-tmp/f134r/run_checks.py' '<root>' '<full-head>' '<label>' '<group>'`.
+Primary independently uses the same bound runner with owner Primary Codex.
 
-| Run under D:/codex-tmp/f134 | Native/audit outcome |
-| --- | --- |
-| build-edit-run | Repeated read-scope violations (8); exact owned CLI stopped; no edits |
-| guidance-edit-run | Repeated read-scope violations (10); exact owned CLI stopped; no edits |
-| cli-edit-run | 8 read-scope violations discovered during full stream audit; exact owned CLI stopped; three-file implementation retained, invocation rejected |
-| flash-edit-run | One src-root search outside read_scope; retained draft, invocation rejected |
-| flash-review-fix-run | Bounded report-only correction completed, no scope violations |
-| flash-review-fix2-run | Second bounded report-only correction completed, no scope violations |
-| build-redelegate-run | User's first one-shot retry; 3 explicitly prohibited Grep calls plus one out-of-scope fixture Read; exact owned CLI stopped, WIP retained |
-| guidance-redelegate-run | User's first one-shot retry; 2 out-of-scope searches; self-ended with no edits |
-| build-correction-authorized-run | User's additional one-shot authorization; 2 prohibited exact-file Grep calls in one batch, then self-ended with no edits |
-| guidance-authorized-final-run | Same additional authorization; 1 prohibited exact-file Grep call, then self-ended with no edits |
+## Retained failures, native provenance and corrections
 
-Each run retains task/manifest, inventory/main raw native events, analyses,
-exit status and summary. The last two summaries have empty path-scope violation
-lists because their Grep targets were within read_scope; the task-level tool
-prohibition is independently recorded by the coordinator and ordinary worker
-completion text. The coordinator stop audits found these invocations already
-finished; they record null stoppedOwnedChild, not a claimed process kill.
-Earlier forced stops were limited to the exact identified owned Claude child;
-there is no guarantee about descendant termination, and no unrelated process
-was stopped.
+- Earlier f134 partial work and all failures remain unchanged; see the historical report.
+- build-edit-run and guidance-edit-run reached the CLI 100-turn limit. Their edits were
+  preserved and reviewed, not silently restarted or declared completed. Native inventories
+  matched Read/Edit/Write/Glob/Grep; no shell or hardware tool was available in edit mode.
+- build-edit-run records one attempted Edit to a mistyped, unallowed nonexistent path and
+  one mistyped read path. The Edit failed before modifying that path. All successful edits
+  are confined to the two allowed files; Git tracked/untracked review found no extra files.
+- guidance-edit-run has eight read-scope audit mismatches; guidance-launch-test-edit-run
+  has seven, including default-root searches and a relevant launch template path.
+  The coordinator inspected those native outputs: they concern the requested modules,
+  guidance/version metadata or nonexistent paths, with no credential, external-project,
+  shell or hardware access. These invocations remain audit-rejected; later related-module
+  permission does not rewrite their manifests or erase the scope discrepancies.
+- Subsequent bounded product/test corrections retained implementation ownership. Fixed:
+  wrong build-response identity paths; the missing immediate post-release real admission
+  checkpoint; public JSON vs internal frozen mapping comparisons; and launch.json's
+  top-level configurations assertion. A mistaken optional-name Changelog brief from the
+  coordinator was corrected to the unchanged exact CLI schema before acceptance.
+- cgn originally produced 35 pass/1 fail (frozen preflight mapping compared to public JSON).
+  After the targeted serialized-response correction, cgn2 passed 36/36. cg2b produced
+  21 pass/1 fail (incorrect nested launch key); cg2c passed 22/22 after that test fix.
+  Original stdout/JUnit/native results remain; no pure code failure is deferred.
+- Every verify launch passed matching actual PowerShell inventory and a real native
+  harmless smoke. Each designated command has a matched native call; no unexpected shell
+  command was accepted. Missing native numeric exit codes remain null. Model prose and
+  CLI exit alone are never test evidence.
+- cbg's native call returned structured background_pending with started=true and no
+  terminal numeric exit. The worker reported pending and ended. Primary reconciled the
+  same already-started bound execution.json/JUnit/source hashes: subprocess exit 0,
+  27 passes, unchanged source, 189.13 s. No command rerun, polling by the worker, tool
+  expansion or process interference occurred; the native pending result remains intact.
 
-The coordinator's delayed detection of earlier stream violations is retained
-as an audit limitation. These invocations are not retroactively accepted by
-later tests, report corrections, source review or user retry authorization.
-Retained product artifacts are assessed separately by the primary reviewer.
+## Delivery limits and next phase
 
-Both user-granted retry budgets are exhausted. No further implementation
-invocation, ownership fallback or tool/permission expansion is authorized by
-this report. The latest successful deliverable remains the CLI correction and
-the bounded offline investigation; items 1, 4, 5 and 8 remain open.
+The local software slice is accepted with the above reviewed fixes. Source version
+metadata remains 1.3.4; the new user-facing behavior is marked Unreleased for v1.3.5.
+Version alignment, packaging, full release qualification, installation, remote publication
+and hardware work are separate later phases and are not authorized by this report.
+Existing v1.3.4 release limitations and candidate-specific exceptions do not transfer.
+
+Implementation worktrees were clean after local commits; all current evidence is external
+under f134/f134r. The integration checkout and exact-CodeHead independent review checkout
+are retained. Completed build/guidance worktrees were recoverably archived after checking
+that they had no untracked or ignored files; local Git commits and the external abnormal
+logs remain the durable record.
