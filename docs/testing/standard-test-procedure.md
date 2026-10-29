@@ -2,8 +2,11 @@
 
 本文件是离线验证、部署与实机验收的执行入口。规格定义要求，源码定义实际入口合同，本文件规定执行顺序，报告记录事实。冲突须先离线解决，不在硬件操作中猜测。主代理维护本流程、调度和验收；实现和新增测试由本地 Claude Code CLI 按其现有配置负责，作者不能自行接受差异。本文不授予安装、硬件或远端权限。
 
+当前普通烧录频率政策以[100 kHz设计](../superpowers/specs/2026-10-29-flash-default-100khz-design.md)为准：计划v1.3.5源码候选默认100 kHz，显式较高频率只是可选配置，不要求1 MHz实机通过。普通100 kHz不等于under-reset；不得因缺少1 MHz成功证据追加实机或阻塞默认路径验收。下方带日期的旧断点与报告保留原频率事实，不构成现行需求；先核对实际runtime是否包含该改动，旧安装不因源码修改或重启改变。
+
 ## 1. 当前断点与证据
 
+2026-10-29 FLASH-DEFAULT-100KHZ 已按用户授权冻结[规格](../superpowers/specs/2026-10-29-flash-default-100khz-design.md)与[计划](../superpowers/plans/2026-10-29-flash-default-100khz-plan.md)，accepted base `4fe1be23d7b2c8a282757e1b8b45f73ee3484043`；Primary设计/审查、本地Claude CLI实现，当前IMPLEMENTATION_PENDING。普通缺省改为100 kHz、显式频率保留，不再把1 MHz作为物理门槛；更新CLI/MCP/Skill/指南和测试，历史实机记录保留。此处冻结不是完成或PASS；旧Session构造超时与IPSR=3原因、复位准备的实机效果仍未证实，本轮不操作硬件、不安装或推送发布。以下为历史断点。
 2026-10-29 ATTACH-PROGRESS 离线续查记录见[Session构造与频率依据](../codex/returns/ATTACH-PROGRESS/attach-frequency-offline-2026-10-29.md)。源码HEAD `75e18b7a1f9a8c04eb07d53a7dc7438d540d0d68`、产品CodeHead仍`e8d7e16436dc7130ec70b6fea0efdc8650ce791a`。静态依赖追踪确认CMSIS-DAP会话构造可临时打开USB并查询协议信息；配置SWD时钟发生在后续Session.open内，因此当前session-create末标记不能证明1MHz导致超时。一次纯导入诊断退出0：默认驱动导入约0.577秒，其后Board模块已加载；新进程使用既有OS缓存，不是实机复现或硬件资格。1MHz来源是早期Toolkit普通默认值、与pyOCD默认一致，不是板卡最低需求；整套设备普通1MHz稳定性尚未验证，既有100kHz+under-reset成功不能分离频率和复位效应。保守100kHz默认可作为产品选择评估，主要代价是SWD传输变慢及预算/性能复核，不能冒充当前USB构造超时的已证实修复。本轮只离线检查源码并记录诊断，无新探针枚举/连接、产品/测试/默认/时限修改、安装或远端操作；原实机一次授权仍已消耗，物理根因未定，整体仍SOFTWARE_COMPLETE_HARDWARE_PENDING。以下为历史断点。
 
 2026-10-29 ATTACH-PROGRESS 更新流程、执行卡及捕获包装已取得独立Claude CLI完整审查NO_BLOCKERS，并执行新授权的原板/原探针唯一一次普通1MHz源码候选烧录，见[实机执行与阶段证据](../codex/returns/ATTACH-PROGRESS/hardware-validation-2026-10-29.md)。执行HEAD `f71efe4b63600c533ddd4263a9905f4816b2c2db`、产品CodeHead `e8d7e16436dc7130ec70b6fea0efdc8650ce791a`；CLI退出2、`PROBE_CLOSE_FAILED`，主诊断仍为service-attach-deadline超时，terminal wait超时；自有worker中止、后续清理及租约释放记录成功，物理状态仍UNKNOWN。新progress最后收到session-create@3688ms，之前driver-acquire@0、probe-enumeration@2983ms；snapshot为5983ms，未收到target-resolve-before-open/session-open。它将离线排查收窄至会话构造边界及可能未收到的后续帧，不证明精确硬件耗时、具体阻塞行或后续目标操作从未发生。未进入烧录前复位/编程/回读，无本次成功收据，六项工程文件hash及源码未变。首错后只检查文件证据，未重试、恢复或追加硬件操作；新一次授权已消耗。原始截断部分审查及主代理准备校验错误保留，完整19段审查和READY后离线检查通过才执行实机。当前实机 **FAILED_AT_ATTACH_HARDWARE_VALIDATION_INCOMPLETE**，既有离线软件接受不变，整体仍 **SOFTWARE_COMPLETE_HARDWARE_PENDING**；IPSR=3根因和复位修复实效未证实。仍为Unreleased/计划1.3.5源码、元数据1.3.4，未安装、打包、推送或发布。下一步先离线定位Session构造路径，进一步实机另需有界执行卡和新授权；以下为历史断点。
@@ -184,7 +187,7 @@ SVD 场景在首次硬件操作前以实际 project/target/device、完整 SVD �
 | Monitor 普通连接/释放 | 专用 observe-preserve、100kHz attach；不主动 halt/resume/reset，失败清理同样不补偿恢复。原来 running 或 halted 均保持其状态；禁用 pack/config/user 调试序列，使用已验证的 pyOCD 通用初始化路径。软件路径通过不等于板上无瞬时影响已实测 |
 | 正常 Target execute | 使用匹配的新 MODIFY action；flash/readback 后按既有流程 reset、必要 resume、启动 transport；须有真实 TestRun |
 | Target recovery-under-reset | prepare 只做静态检查；execute 从该新 action 派生 100kHz SWD/under-reset MODIFY，先核对真实身份；sector erase、keepUnwritten=true、auto_unlock=false，保留既有 readback/reset/条件 resume/transport/cleanup |
-| 普通 flash / recovery flash | 与 Target 测试流程不同；普通烧录可显式选择频率，省略保留既有配置（生产normal默认1MHz）。显式频率若与选定策略冲突，在副作用前拒绝；受管recovery保持100kHz，显式其它频率拒绝；导入flash仅支持normal频率。成功编程或receipt不证明运行态；恢复烧录保持既有halted后置，不擅自reset/run。details.flashOptions仅记录选定配置，不证明实测频率或attach发生 |
+| 普通 flash / recovery flash | 与 Target 测试流程不同；普通烧录可显式选择频率，省略保留既有配置（当前生产normal默认100kHz；1MHz仅显式可选，不是验收门槛）。显式频率若与选定策略冲突，在副作用前拒绝；受管recovery保持100kHz，显式其它频率拒绝；导入flash仅支持normal频率。成功编程或receipt不证明运行态；恢复烧录保持既有halted后置，不擅自reset/run。details.flashOptions仅记录选定配置，不证明实测频率或attach发生 |
 | 变量/SVD/有限采样 | memory.read 不要求 halted；按实际入口区分 Monitor 的 observe-preserve 与其他保留原合同的普通 OBSERVE。连接阶段和后续持续采样分别留证，采样不得隐式 halt/reset/resume |
 | 完整 Fault | 核心寄存器必须 halted 且稳定；默认 running OBSERVE 不能满足该前置。显式 halt-for-analysis 使用受控 CONTROL、独立授权、身份校验及 bounded resume/cleanup |
 | IDE handoff | begin 后 IDE 独占；正常 detach、原 ticket end 和成功回收后 Toolkit 才能访问 |

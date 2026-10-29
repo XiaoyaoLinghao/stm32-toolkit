@@ -1,5 +1,7 @@
 # ATTACH-PROGRESS — retained connection stage evidence
 
+Current ordinary flash default is 100 kHz under the [100 kHz policy](2026-10-29-flash-default-100khz-design.md). References below to a 1 MHz failure identify historical evidence only; they impose no current frequency or hardware-acceptance requirement. Progress/timeout contracts are unchanged.
+
 Approved product scope: the user's 2026-10-29 instruction to add internal connection
 stage logs, delegate implementation to local Claude Code CLI, and independently
 review/verify offline. No hardware, installation or remote publication is authorized.

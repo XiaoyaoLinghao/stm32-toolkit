@@ -1,5 +1,7 @@
 # FLASH-PREPARATION — controlled pre-program reset
 
+Current frequency policy is governed by the [2026-10-29 100 kHz design](2026-10-29-flash-default-100khz-design.md): ordinary production default is 100 kHz, with no 1 MHz acceptance gate. The original slice's unchanged-frequency boundary below is historical and does not override this follow-up. Reset/preparation contracts remain unchanged.
+
 Approved scope: the user's 2026-10-28 instruction to implement the offline investigation's
 direction for planned v1.3.5, using Claude Code implementation and primary independent
 review. Accepted base: `528528f9e00791a96effa3a3bdb069c875fa9508`.

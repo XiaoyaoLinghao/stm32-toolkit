@@ -5,6 +5,14 @@ are thin adapters over the same Python workflows. Monitor consumes the same proj
 Probe Service contracts. A host-specific skill must not create a second implementation or bypass
 the public result, identity or authorization checks.
 
+Current source-candidate flash policy for planned v1.3.5 is **100 kHz by default**,
+including normal managed/imported flash and the shared worker/backend defaults.
+Explicit frequency selection remains available; no 1 MHz physical success gate is
+required. Normal 100 kHz does not select under-reset recovery. See the governing
+[100 kHz design](superpowers/specs/2026-10-29-flash-default-100khz-design.md).
+Historical 1 MHz runs/defaults describe previous source only; source changes do
+not alter already published or installed runtimes.
+
 The supported release environment is Windows x86_64 and CPython `>=3.12,<3.13`. Dependencies and
 offline artifacts are pinned by `tools/release/release_0900_policy.json`; the historical filename is
 the current release engine's path, not a separate supported 0.9 runtime. See [release status](release-status.md)
