@@ -6,6 +6,8 @@
 
 ## 1. 当前断点与证据
 
+2026-10-29 SESSION-TRACE 后续一次构造器/USB诊断的流程、执行卡和实际入口已取得独立 **NO_BLOCKERS**，见[入口审查记录与限制](../codex/returns/SESSION-TRACE/entry-review-2026-10-29.md)。审查源码HEAD `60daa9cc0e38438fa7acf555bdd37f58b644fd08`，CodeHead仍为下方离线通过的e8c43322；16条原生只读命令、25段完整源码（含2225行helper）已核对，未执行helper/后端/枚举/USB或测试，也未编辑产品/测试。新硬件授权、当前供电/原板原探针独占及变化确认仍缺，状态 **BLOCKED_NOT_EXECUTED**，不是READY；已审查执行卡不能自行授权或重用旧实机次数。补充依赖源hash、实际解释器版本及字段只是代码路径声明的限制已留证，原物理原因与完整三项目标仍未解决。以下为软件与历史断点。
+
 2026-10-29 SESSION-TRACE 最终离线诊断已 **SOFTWARE_COMPLETE_HARDWARE_PENDING**，CodeHead `e8c43322efa454ac5ddc782572c073e566b432fd`，见[当前验收记录](../codex/returns/SESSION-TRACE/implementation-report.md)。Claude新执行全部42项、主代理在干净精确提交另独立8项均通过，0失败/跳过/错误，实际退出0且tracked源码hash未变；原生未提供数值退出时仍记null。仅修新增测试的回收等待：在同一固定10秒清理deadline内观察真实既有owner判定，之后只acquire一次；其他41个测试函数AST、诊断脚本和产品lease保持不变。原文件调用一次Grep越过精确只读范围，仍保留dispatcher未接受，实际一个范围内Edit与其后独立审查、另行获准的验证分开记录，未追溯接受或重启编辑调用；一次上下文校正额度未用并到期。旧26/14、41/1与准备错误均保留。该结论仅使后续一次构造器/USB留证可以进入执行卡与独立入口审查准备；尚无新硬件授权/READY，不执行烧录或自动恢复。原物理连接原因、IPSR/reset实效与完整三项目标仍未解决，未安装、打包或推送发布。以下为历史断点。
 
 2026-10-29 SESSION-TRACE 显式直接CPython运行时的新CodeHead `439900a2397a0862d28afecc3012294f6f0100cd` 已全新执行42项，**41通过/1失败/0跳过/0错误**，主代理在干净精确提交另独立8项通过；所有tracked源码hash未变，见[当前执行与审查](../codex/returns/SESSION-TRACE/implementation-report.md)。诊断脚本Git blob保持不变；Claude仅修改测试适配，两个verify调用均实际完成原生PowerShell inventory/smoke和全部9条命令。失败为新增租约释放负例的最后回收步骤PROBE_BUSY；构造、Session关闭、唯一释放错误及整体失败断言已通过，但退出码已终止不保证现有Windows owner identity已不可查询。独立通过不能覆盖原失败，当前仍REVISION_REQUIRED，下一次只准备测试在有限预算内等待真实既有回收条件，不能放宽PID/租约/健康校验或改诊断脚本。原生成功未提供数值退出时仍记null；实际pytest退出按外置证据记录。旧venv失败及主代理换行hash准备错误均留证。尚无新的修正调用或硬件授权，不是软件接受/硬件READY；原物理连接原因与完整三项目标未解决。以下为历史断点。

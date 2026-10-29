@@ -15,9 +15,12 @@ unmodified real owner predicate under one fixed cleanup deadline, then acquires
 once; other41 function ASTs and product lease are unchanged. The original
 26/14 and41/1 executions and abnormal file-call audit remain retained, not
 overwritten. See the [current report](../../codex/returns/SESSION-TRACE/implementation-report.md).
-Status SOFTWARE_COMPLETE_HARDWARE_PENDING permits preparing/reviewing a
-separate one-shot constructor card, not executing it. The physical board cause
-is still unknown. Older checkpoints below are historical, not next authority.
+Status SOFTWARE_COMPLETE_HARDWARE_PENDING. The separate one-shot constructor
+card/procedure now has an independent conditional NO_BLOCKERS review, with all
+native source evidence complete; see [entry review](../../codex/returns/SESSION-TRACE/entry-review-2026-10-29.md).
+It remains BLOCKED_NOT_EXECUTED pending fresh hardware authorization and present
+power/exclusivity/change confirmation. The physical board cause is still
+unknown. Older checkpoints below are historical, not next authority.
 
 1. **Attach timeout, active.** The previous standalone multiprocessing diagnostic
    is REWRITE_REQUIRED after two correction rounds; its code/logs are preserved
