@@ -74,6 +74,12 @@ Evidence root: `D:/codex-tmp/ap135-offline-20261029`.
 
 ## Why 1 MHz was selected
 
+Subsequent [requirements-origin audit](frequency-requirement-origin-2026-10-29.md)
+locates the explicit 1 MHz default in the 2026-08-07 implementation plan before
+the code below. The original product requirements and overall probe plan did not
+mandate it. Matching pyOCD's default does not establish the historical decision's
+motivation; that rationale was not recorded in the earliest plan.
+
 The initial backend already supplied `frequency_hz=1_000_000` in commit
 `65f1ea637a4f47183c3d40fe36deae51b6f2f012`; worker configuration later retained it
 in `58f38a610e0255921eb45bb106cf1677ca01a259`. Current defaults remain in
