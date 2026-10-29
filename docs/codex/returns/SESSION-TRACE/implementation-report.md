@@ -1,6 +1,111 @@
 # SESSION-TRACE execution and verification disposition
 
-## Current checkpoint: direct-runtime matrix, one test revision required
+## Current checkpoint: offline diagnostic qualified, physical investigation pending
+
+2026-10-29 verdict: **SOFTWARE_COMPLETE_HARDWARE_PENDING**. All required offline
+gates for this run-specific diagnostic pass. The original physical Session
+timeout and the full ordered three-item goal are not resolved or accepted.
+Accepted diff origin is `bee6118339166e7d57a0e8ed1fc29ddf85242d0c`; final
+code/test head before this report commit is
+`e8c43322efa454ac5ddc782572c073e566b432fd`, on
+`codex/v135-session-trace-runtime`. Primary owns design, orchestration, complete
+independent diff review and acceptance; local Claude Code CLI owns the test
+correction and delegated verification, retaining deepseek-v4.1-flash[1m].
+
+The human explicitly authorized one bounded test-only correction and offline
+verification, including one same-file context correction. One actual matched
+native Edit changed only the final cleanup prerequisite in
+`test_lease_release_failure_is_the_sole_failing_phase`: a single fixed10-second
+deadline covers death observation and waiting for the real existing owner
+predicate, then one acquisition/release. Persistent busy or inspection failure
+still fails. No constructor, error, overall-failure or identity assertion was
+removed. Primary read the entire18-changed-line correction in the clean exact
+head independent checkout and checked all other41 function ASTs unchanged.
+The cumulative accepted-base-to-code diff review remains complete. No Primary
+product/test implementation, fake liveness/health, forced release or edit retry.
+
+The file-only invocation's inventory/main exactly matched the5 file tools and
+CLI exited0; however, one native Grep searched `docs` beyond the declared exact
+read scope and the worker continued afterward. Original dispatcher verdict is
+**accepted=false, file_edit_completed=false** and remains so. The actual one
+scoped successful write is recorded separately from compliant edit completion.
+No native failed call, shell/test command, out-of-repository read or outside-
+allowlist write is established. The call was already terminal when the completed
+audit exposed that search; no restart or retrospective scope expansion occurred.
+Evidence: D:/codex-tmp/st135/runtime-cleanup-run, tool_use
+call_00_h905nyibdex6q094tk6cg4ny. The eligible Edit-context correction was not
+used and expired. Primary independently reviewed the retained candidate and
+carried out the human-authorized separate verification phase; the source can
+qualify without relabeling the abnormal invocation as accepted.
+
+### Final fresh evidence
+
+Both new delegated verify calls passed no-action PowerShell inventory and real
+harmless smoke, then ran all9 exact test commands once: **42 distinct functions
+passed,0failed/0errors/0skipped** at the final head. Both verify calls accepted,
+with no scope/command deviation, pending result, retry or missing command.
+Primary independently ran the8 final risk cases at the same clean exact head:
+**8passed,0failed/0errors/0skipped**. They include the corrected sole-lease failure,
+sole-handle failure, successful real inert child, production argv/env boundary,
+actual native traceback and actual main timeout/cancellation with a surviving
+inert child. The8 are overlapping independent checks, not8 more distinct cases.
+
+| Group | Actual subprocess/pytest exit | Passing functions |
+| --- | --- | --- |
+| e01 default/import/launch | 0 | 7 |
+| e02 protocol validators | 0 | 5 |
+| e03 construction/close/native stack | 0 | 7 |
+| e04 ownership/readiness | 0 | 6 |
+| e05 cancellation/startup | 0 | 4 |
+| e06 actual main timeout | 0 | 1 |
+| e07 actual main cancellation | 0 | 1 |
+| e08 error helpers/results | 0 | 9 |
+| e09 sole cleanup failures | 0 | 2 |
+| paccept1/paccept2/paccept3, Primary | 0 each | 5 / 2 / 1 |
+
+D:/codex-tmp/st135/cleanup-final-audit.json matches all42 distinct names to the
+final module, native matched commands/results, actual subprocess exits, fresh
+JUnit names/counts/hashes/times, source and runtime/runner/selector pins. All
+tracked hashes stayed unchanged during execution. Evidence directories are
+D:/codex-tmp/st135-direct/e01–e09 and paccept1–paccept3; exact task/native logs
+are verify-cleanup-a-run and verify-cleanup-b-run under D:/codex-tmp/st135.
+Native successful PowerShell results lack numeric exits and remain null;
+the recorded subprocess/pytest exits really are0. Model-written native0 claims
+are not evidence and were not used.
+
+The explicit real CPython3.12.14 executable, its SHA256 and existing read-only
+dependency site are unchanged from the approved runtime design; no fallback to
+the old venv redirector. Parent and actual child identity remain strictly
+matched. Author test-file SHA256 is
+8a94f4c9bc2d801777dfe554f0edace5cb2f39933430fcf0ce69e315101c4c51;
+independent CRLF checkout test SHA256 is
+accf68f3b836d9568e3081834e7c04ec4b227fe7cf3b5223562ffe7026675b39.
+Canonical blobs match. Helper raw hashes remain f607dcd4...991e32 (author) and
+8a883179...87b1d (review), with identical committed helper blob from1c8d32c3.
+Product lease blob and raw author SHA256e9bcde8932cc5176285d95802e2948cbbc1d6b0e045462985af17667520a7aff
+are unchanged. No source normalization or Git/environment/model/permission
+setting was changed. Prior26/14 and41/1 failures, independent passes, bad calls
+and coordinator hash-preparation failure all remain historical evidence.
+
+### Next boundary
+
+The qualified diagnostic is constructor-only and not packaged. A separately
+reviewed execution card and fresh hardware authorization are still required
+before its one exact-probe enumeration/Session-constructor USB operation using
+the original shared registry. No Session.open, reset/halt/resume, programming,
+readback or automatic recovery is authorized here. Selected100kHz options do not
+prove measured SWD frequency or attach; construction may perform USB metadata
+work before SWD clock configuration. Original target state stays UNKNOWN.
+
+Goal1 still needs the actual wait/cause and evidence-supported product fix;
+goal2 physical IPSR/reset/HALTED efficacy and goal3 ABI/CCM disposition remain
+queued. User has no original ARMCC output, so ABI remains unverified. This
+offline acceptance grants no hardware, install, packaging, remote publication
+or release qualification. Toolkit metadata remains1.3.4 with planned unreleased
+v1.3.5 changes. Original project, installed runtime and shared registry were not
+changed or accessed by these inert tests.
+
+## Historical checkpoint: direct-runtime matrix, one test revision required
 
 2026-10-29 verdict: **REVISION_REQUIRED**, not software acceptance or hardware
 READY. Accepted diff origin remains

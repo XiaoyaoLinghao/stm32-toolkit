@@ -7,19 +7,17 @@ local Claude Code CLI owns code/tests, unchanged `deepseek-v4.1-flash[1m]` route
 using `C:/Users/zhy76/.codex/tools/claude-dispatch/dispatch.py` only. Hardware,
 installation, packaging and remote authority remain absent.
 
-Current item1 checkpoint: direct-runtime CodeHead
-`439900a2397a0862d28afecc3012294f6f0100cd` has41pass/1fail across all42 fresh
-functions, plus8 independent Primary risk passes at the exact head. No pass
-overwrites the failed d09 reclamation case. The helper stays frozen; the
-[runtime integration design](../specs/2026-10-29-session-trace-runtime-design.md)
-has progressed through scoped test adaptation and complete execution, but is
-REVISION_REQUIRED. The added lease-failure test assumes process exit immediately
-means the existing Windows owner predicate permits registry reclamation. Prepare
-only a bounded test-file correction: wait for that unmodified real predicate
-within a fixed budget, then acquire once; preserve failure evidence, identity,
-health and all constructor/error assertions. No new edit-call retry authority.
-The physical board cause is still unknown. Older checkpoints below are retained
-history, not the next execution authority.
+Current item1 checkpoint: final direct-runtime CodeHead
+`e8c43322efa454ac5ddc782572c073e566b432fd` has42/42 fresh delegated passes,
+plus8/8 independent Primary risk passes at the clean exact head;0skip/errors.
+The helper stays frozen. The bounded test-only correction now waits for the
+unmodified real owner predicate under one fixed cleanup deadline, then acquires
+once; other41 function ASTs and product lease are unchanged. The original
+26/14 and41/1 executions and abnormal file-call audit remain retained, not
+overwritten. See the [current report](../../codex/returns/SESSION-TRACE/implementation-report.md).
+Status SOFTWARE_COMPLETE_HARDWARE_PENDING permits preparing/reviewing a
+separate one-shot constructor card, not executing it. The physical board cause
+is still unknown. Older checkpoints below are historical, not next authority.
 
 1. **Attach timeout, active.** The previous standalone multiprocessing diagnostic
    is REWRITE_REQUIRED after two correction rounds; its code/logs are preserved
@@ -64,13 +62,13 @@ Reuse the clean attached isolated worktree
 `codex/v135-session-trace-runtime`. The old accepted branch and the
 rejected diagnostic branch/worktree remain intact. Freeze this design/plan.
 
-The completed adapter call wrote only the test module,13 native successful
-edits, no errors or commands. Its once-only context allowance expired unused.
-Any next call requires explicit bounded authorization and may write only that
-test file's reclamation prerequisite; helper/product lease bytes stay frozen.
-Read scope names the exact test/helper/lease/spec/report files. No shell/test/
-hardware action in edit. Startup must register exactly the five file tools;
-no automatic retry, policy bypass or implementation fallback.
+The adapter call and later bounded cleanup correction wrote only the test
+module. The correction made one successful native Edit, but its earlier Grep
+searched docs beyond exact read scope and the file invocation stays unaccepted;
+Primary reviewed the retained scope-correct write before separately authorized
+verification. Both once-only context allowances expired unused. No new edit
+retry authority; helper/product lease bytes stay frozen. Preserve original
+logs, permissions and ownership; no policy bypass or implementation fallback.
 
 Primary freezes the code, audits native edits against the exact files, reads the
 complete base-to-code diff in a clean review tree, then delegates small exact
@@ -83,8 +81,9 @@ worktree's actual byte hashes; canonical Git equality does not imply LF/CRLF
 working-byte equality. Never normalize source or change Git settings to hide it.
 Partition slow real-child tests separately to stay under foreground limits.
 Primary independently verifies the final head; reuse no earlier passing cases
-as proof for the new implementation. Current final evidence is41/1 delegated
-and8/0 independent, with0skip/errors; no software acceptance. Correctable findings stay on this slice;
+as proof for the new implementation. Current final evidence is42/0 delegated
+and8/0 independent, with0skip/errors; software gates pass, physical investigation
+still pending. Correctable findings stay on this slice;
 two unconverged rounds for the same issue return to design.
 
 Record verdict and exact CodeHead before report commit in
