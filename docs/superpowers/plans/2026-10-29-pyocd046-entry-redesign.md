@@ -1,6 +1,10 @@
 # PYOCD046-HID file-creation entry redesign
 
-Status: **PROPOSED / NOT AUTHORIZED TO DISPATCH** on2026-10-29.
+Status: **AUTHORIZED / TWO BOUNDED EDIT CALLS PENDING** on2026-10-29.
+The human approved this exact interface: creation-only call A, documentation-only
+call B, repository-only reads and the single exact-new-path expected-absence
+observation, followed by separate offline verification and Primary acceptance.
+No general retry or expired Edit-context allowance transfers to these calls.
 Accepted diff origin remains62bede1d55a513f3dfd8d634b2d3116b0de41890.
 Product CodeHead remainsc7b91d2afad06be4838a365d7e5afa8469922643;
 source HEAD before this proposal/report commit is
@@ -28,8 +32,8 @@ No product architecture rewrite or implementation fallback is authorized.
 
 ## Proposed two smaller edit calls
 
-Require new explicit human authority for these two calls, not a third call under
-the expired permission. Use the same clean isolated branch/current exact HEAD,
+The new explicit human authority above covers only these two calls, not a third
+call under the expired permission. Use the clean isolated branch/exact HEAD,
 preserve every prior log and retain repository-only Read/Grep/Glob scope if
 authorized again. Shared dispatch.py and its normal tool inventory are unchanged;
 no new launcher/validator/automation, model/provider/auth/permission change.
@@ -45,7 +49,7 @@ file. First file action should be Write to create it; no preceding file-content
 read is necessary. If it unexpectedly exists during Primary preflight, stop and
 reconcile rather than overwrite a concurrent file.
 
-Proposed narrow observation rule, only if the human explicitly approves it:
+Newly authorized narrow observation rule:
 at most one native Read result reporting File-does-not-exist for THIS EXACT
 coordinator-verified absent new path may be treated as expected absence, followed
 by one Write there. It is not a retry, alternate tool for a denial, or permission
