@@ -28,6 +28,13 @@ interpreter. Do not create a generic service/framework. Keep the parent stdlib-o
 reuse existing Toolkit selector/default driver and lease API in the child.
 Private test-only launcher/backend injection must not be exposed as a CLI capability.
 
+Environment switches inherited by the ordinary saved helper are a CLI capability
+too. Keep fake backends, modes and test receipt paths in the test module. A fixed
+test bootstrap may import this exact helper and explicitly inject a Python-only
+launcher/backend, then exercise its unchanged `main` chain. No production argument,
+environment or request file selects it. Verify the production launch argv/source/
+interpreter separately; this adds no public extension or module loader.
+
 Parent exclusive-creates one output directory and attempt record. Fixed run-owned
 files carry a small closed request, child READY, parent GO, child result, events
 and private native traceback. Correlate them by fresh attempt/session identity
@@ -92,6 +99,11 @@ Physical target state is always UNKNOWN. Own-operation facts (constructed,
 Session closed, no Session.open) are separate. A returned constructor is narrow
 evidence; overall success also requires confirmed child exit0, close/snapshot/lease
 cleanup success, matching bounded result and no parent/lifecycle/handle failure.
+Matching GO includes the child's acquired leaseId, finite timing and unexpired
+original budget; a completed matching claim precedes GO. Refuse stale/extra
+one-shot outputs before backend access. Recheck known cancellation at the grant
+decision and preserve launch-time cancellation/parent exceptions separately from
+cleanup. Persistence/snapshot errors fail returned and printed success consistently.
 Neither a selected100kHz policy nor constructor success proves attachment,
 programming, clock rate, application execution or a repaired physical fault.
 

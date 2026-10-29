@@ -18,6 +18,12 @@ installation, packaging and remote authority remain absent.
    and obtain explicit hardware authorization. Locate actual wait/budget cause,
    then make only an evidence-supported bounded product fix and verify it.
    A diagnostic helper passing tests does not resolve this item.
+   Initial replacement candidate `e385e5b17b1dfb1835e4a8db3dc67c2a8309f951`
+   is now REVISION_REQUIRED; see the SESSION-TRACE implementation-report for
+   seven concrete corrections, abnormal invocation evidence and c01 collection
+   failure (exit4, zero passes). Prepare one same-two-file correction; do not
+   automatically retry the abnormal invocation. Explicit bounded re-delegation
+   authorization remains pending; hardware entry is not READY.
 2. **IPSR=3 and reset/HALTED preparation, queued.** Reuse accepted reset software
    evidence; once connection is available, verify the actual normal100kHz path
    only under a separately approved finite hardware operation. No automatic
