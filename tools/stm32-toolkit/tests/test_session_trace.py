@@ -2394,12 +2394,26 @@ def test_lease_release_failure_is_the_sole_failing_phase(tmp_path: Path) -> None
     assert health_url.endswith("/health")
 
     # Only the existing safe reclamation runs, and only after the owner is
-    # proven dead; nothing fakes a live owner or overrides liveness.
-    assert _wait_for_death(pid, 10.0)
+    # proven dead; nothing fakes a live owner or overrides liveness.  Child
+    # exit and disappearance of its creation identity are different
+    # conditions: while a terminal handle still retains the process object,
+    # the real Windows inspector keeps returning that same identity and the
+    # unmodified owner predicate keeps reporting the exited child as owned.
+    # Observe -- never override -- that real predicate until it clears inside
+    # the one fixed cleanup budget that death confirmation shares.
+    cleanup_budget_seconds = 10.0
+    cleanup_deadline = time.monotonic() + cleanup_budget_seconds
+    assert _wait_for_death(pid, cleanup_budget_seconds)
     from stm32_toolkit.probe.lease import ProbeLeaseManager
     from stm32_toolkit.probe.model import OperationLevel
 
     manager = ProbeLeaseManager(data)
+    while manager._is_record_owner_live(record):
+        if time.monotonic() >= cleanup_deadline:
+            pytest.fail(
+                "the real owner predicate still reports the exited child as owned"
+            )
+        time.sleep(0.02)
     reclaimed = manager.acquire(
         probe_id="fake-probe-1",
         workspace_id="reclaim-after-lease-fault",
