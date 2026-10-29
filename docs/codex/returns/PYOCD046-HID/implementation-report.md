@@ -1,6 +1,104 @@
 # PYOCD046-HID execution and review
 
-## Latest checkpoint: offline matrix passes, one source finding remains
+## Final software checkpoint: qualified, physical validation pending
+
+2026-10-29 overall verdict: **SOFTWARE_COMPLETE_HARDWARE_PENDING**.
+The SDK-origin portability finding is closed. Accepted diff origin:
+`62bede1d55a513f3dfd8d634b2d3116b0de41890`; final code/test CodeHead before
+this report commit: `694e1e912adfc017c31b52630a323bd733567688`.
+Primary Codex owns specification/orchestration/complete-diff review/acceptance;
+local Claude Code CLI owns all product/test changes, retaining the actual
+deepseek-v4.1-flash[1m] execution route. Branch codex/v135-pyocd046-hid,
+same isolated author worktree. No remote action or ownership exception.
+
+### Authorized correction and independent source review
+
+The human authorized one correction of the existing test file and offline
+verification. Dispatch source was clean8fbe2c3c6635469b06b35a00d78c88f7e0de52c0;
+task SHA2567d624134ec611357237a0748b317eb2958bdcd337f32127fad61ba8f433ffc3b.
+Actual inventory/main matched the five file tools. Six native calls included
+one successful Write, solely to test_pyocd_hid_timeout.py; CLI0/accepted, no
+tool error, scope deviation, shell or test execution. The one-call authority is
+consumed, no old absence/context exception renewed; prior abnormal logs remain
+unchanged and unaccepted. Evidence D:/codex-tmp/st135-pyocd046/portability-run
+and portability-authorization.json.
+
+The collection guard now compares exact policy/module/distribution versions
+and resolved loaded-package origin with distribution.locate_file's package
+origin. It contains no temporary-directory condition or fallback. A pure
+observation-check helper admits a consistent synthetic normal site-packages
+location and rejects a different loaded origin; the real collection entry still
+supplies live installed metadata/module paths. The HID import versus hardware
+I/O wording is clarified. The original four real-SDK test function ASTs,
+FakeHidDevice, _device_info and _make_interface ASTs are unchanged, independently
+verified in portability-source-audit.json. No SDK read implementation was
+replaced or mocked. Synthetic path tests do not represent a second installation.
+
+Primary reviewed the complete accepted-base-to-final-CodeHead diff in the clean
+exact-head review tree C:/Users/zhy76/.codex/worktrees/post134-independent-review/STM32-Toolkit,
+including all shipping changes, tests and reports/plans, and closed the single
+remaining source finding. Policy/utility trust hashes, metadata/runtime paths,
+historical admission bytes and firmware/identity/lease/reset/deadline boundaries
+retain their previously reviewed meaning. No other source finding remains.
+
+### Fresh and reused verification, kept separate
+
+Primary recollected all504 exact affected node IDs at final CodeHead. Collection
+is not execution. The changed HID module's6 cases then ran fresh through one
+separate Claude verify call, with actual PowerShell-only inventory, real harmless
+native smoke and the one exact test command once. Native result is matched
+executed_success; successful native numeric exit remains null, actual pytest
+exit0. Fresh JUnit confirms **6passed/0failure/error/skip**, tracked source
+unchanged, no pending/error/refusal/scope issue, CLI/dispatcher0.
+
+Primary independently ran8 fresh risks in the clean final-head review tree:
+all6 HID/guard cases, actual SDK/policy version and canonical handoff projection.
+**8passed/0failure/error/skip**, actual exit0, source unchanged and fresh JUnit.
+They overlap the affected set and are not added to its distinct count. Review-
+copy actual raw hashes were pinned separately from author bytes.
+
+The remaining498 cases retain their actual execution/owner at
+3e19dd55af87655326f29b85a5bf92a392ded68d. Primary proved identical non-document,
+non-target tracked raw hashes; identical exact498 node IDs; unchanged SDK347
+source hashes, real runtime, dependency layer and runner/environment contract;
+no other module imports the changed guard, and the new guard tests are pure and
+do not mutate SDK globals. Only the HID test and Primary reports/plans changed.
+Under the standard procedure, these unaffected passes remain valid. The old4
+HID cases are excluded from reuse and were rerun within the fresh6.
+
+Final affected evidence is therefore **6fresh +498reused =504 distinct cases**,
+not504 executions on the final head. The earlier502 run remains at its original
+head, and all older8/p01 counts remain historical. No coverage measurement,
+full-repository run, physical or release qualification is claimed.
+
+Evidence D:/codex-tmp/st135-pyocd046/portability-{verify-run,reuse-audit.json,
+final-audit.json,selection-h01.json,selection-p04.json}; fresh outputs/JUnit/
+actual execution records D:/codex-tmp/p46v/h01 and p04; full recollection
+pcollect2. Original502 evidence remains verification-audit-final.json and
+g01..g45. The existing SDK layer is still bound to the official wheel's347
+Python files; no new installation or installed-runtime replacement occurred.
+
+### Retained limits and ordered goal
+
+This closes the required software gates for the official0.46.0 dependency slice.
+It verifies the finite HID timeout argument/empty-response error and coherent
+setup/handoff/policy contracts, not that the original probe now responds.
+Production service5s versus SDK HID10s is unchanged. SDK0.46.0 has broader changes;
+the old0.45.1 constructor entry review/card is not automatically qualified for it.
+Before another physical step, Primary must prepare the new exact source/SDK/
+runtime/card, complete the applicable independent entry review and obtain fresh
+finite hardware authorization/current ownership confirmation. Target stays
+UNKNOWN; the old child's separately authorized termination did not release its
+lease or establish target state. No automatic retry/recovery/lease deletion.
+
+The full ordered three-item goal remains open at item1's physical confirmation;
+IPSR/reset/HALTED efficacy and ABI/CCM engineering disposition retain their
+named later phases. User has no original ARMCC artifacts; ABI stays unverified,
+observed CCM margin remains256B, no allocator/ABI change is implied. Source is
+still Unreleased/next1.3.5 candidate with current metadata/runtime version1.3.4,
+not installed or published. No hardware, real release packaging, push or release.
+
+## Earlier checkpoint: offline matrix passes, one source finding remains
 
 2026-10-29 verdict **REVISION_REQUIRED**. The new creation/documentation calls
 completed normally. Frozen CodeHead `3e19dd55af87655326f29b85a5bf92a392ded68d`

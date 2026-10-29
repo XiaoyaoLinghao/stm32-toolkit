@@ -1,6 +1,11 @@
 # PYOCD046-HID: one-file SDK-origin portability correction
 
-Status **AUTHORIZED / ONE EDIT CALL PENDING** on2026-10-29.
+Status **COMPLETED / SOFTWARE FINDING CLOSED** on2026-10-29.
+Final CodeHead694e1e912adfc017c31b52630a323bd733567688. One scoped Write,
+no native error/scope deviation;6 fresh delegated cases and8 independent risks
+passed.498 unaffected cases retain their original3e19 head/proof. Overall
+SOFTWARE_COMPLETE_HARDWARE_PENDING; see current implementation report. The
+one-call authority is consumed and no retry or hardware permission follows.
 The human explicitly approved this single-file correction and separate offline
 verification. No other file is writable; errors/scope deviations stop, no retry.
 Accepted origin62bede1d55a513f3dfd8d634b2d3116b0de41890;

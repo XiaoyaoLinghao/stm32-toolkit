@@ -1,5 +1,17 @@
 # Remaining-three goal: ordered execution
 
+Current checkpoint: PYOCD046-HID software gates pass at final CodeHead
+694e1e912adfc017c31b52630a323bd733567688, overall
+SOFTWARE_COMPLETE_HARDWARE_PENDING. Metadata/module-origin portability finding
+is closed;6 final-head fresh delegated cases,498 unchanged cases retained at
+3e19 with explicit proof, and8 fresh independent risks pass,0fail/error/skip.
+See [final report](../../codex/returns/PYOCD046-HID/implementation-report.md).
+No claim of504 fresh final-head executions or physical success. Item1 awaits
+new-SDK physical confirmation after updated independent entry review and fresh
+finite hardware authority. Items2/3 stay queued, ABI unverified/CCM256B unchanged.
+No current hardware, installation, packaging or remote authority. Earlier
+checkpoints below are historical.
+
 Latest checkpoint: PYOCD046-HID candidate3e19dd55af87655326f29b85a5bf92a392ded68d
 completed both scoped edit calls,502 affected offline cases and8 independent
 risks with no failures/errors/skips. Complete-diff review keeps REVISION_REQUIRED
