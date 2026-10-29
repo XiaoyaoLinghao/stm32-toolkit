@@ -39,6 +39,18 @@ not a third correction of rejected ATTACH-ISOLATION.
   accepted. No prior candidate's passes qualify this CodeHead. No independent
   final-head passing matrix exists.
 
+Primary additionally invoked the saved helper directly with no arguments from
+an empty external cwd in the clean exact-CodeHead review tree. The __main__ path
+loaded and emitted its refusal message without the dataclass import exception;
+this narrows R1 to the dynamic test import path. The helper hash stayed
+`7f8fff1410437e3193e3cc436210aac79baa97980dc0b0fe046bc59e938199b6`,
+the source tree remained clean and the external cwd stayed empty. The exec tool
+reported outer PowerShell exit1; the native helper exit was not separately
+captured and remains null, not inferred2 from source. This is a narrow entry
+observation, not a passing exit-contract gate or pytest case. Original c01 stays
+failed/zero passes. Evidence is `D:/codex-tmp/st135/p01-default-entry.record.json`.
+No corrected implementation, repeat Claude invocation or hardware action occurred.
+
 The coordinator's c01 brief inadvertently retained two edit-mode paragraphs.
 The final verify instruction and manifest still resulted in only the authorized
 single PowerShell command, with no extra action. Future briefs must embed global
