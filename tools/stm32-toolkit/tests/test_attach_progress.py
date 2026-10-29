@@ -11,6 +11,7 @@ from types import MappingProxyType
 import pytest
 
 from stm32_toolkit import __version__
+from stm32_toolkit.probe import pyocd_backend
 from stm32_toolkit.probe.attach_diagnostics import (
     append_attach_progress,
     append_cleanup,
@@ -423,11 +424,23 @@ def _stage_callback(events: list[str]):
     return lambda stage: events.append(f"stage:{stage}")
 
 
-def test_backend_stage_markers_straddle_the_real_acquisition_and_enumeration() -> None:
+def test_backend_stage_markers_straddle_the_real_acquisition_and_enumeration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     events: list[str] = []
     driver = _RecordingEnumeratingDriver((FakePyOCDProbe("probe-a"),), events)
+    factory_calls: list[object] = []
+
+    def counted_lazy_driver() -> _RecordingEnumeratingDriver:
+        # Stands in for the real default driver: this case still exercises the
+        # existing single lazy construction without importing any pyOCD
+        # provider or opening a real transport.
+        factory_calls.append(driver)
+        return driver
+
+    monkeypatch.setattr(pyocd_backend, "_DefaultPyOCDDriver", counted_lazy_driver)
     backend = _AcquisitionRecordingBackend(
-        driver, events=events, stage_callback=_stage_callback(events)
+        None, events=events, stage_callback=_stage_callback(events)
     )
 
     backend.open_attach("probe-a", "stm32f407vg")
@@ -443,22 +456,36 @@ def test_backend_stage_markers_straddle_the_real_acquisition_and_enumeration() -
         "enumerate-enter",
         "enumerate-return",
     ]
-    # Exactly the one lazy acquisition, import and enumeration already present.
-    assert backend.acquire_calls == 1
+    # One lazy factory construction feeds the two unchanged cached helper
+    # lookups (enumeration, then Session creation); exactly the one enumeration
+    # already present still performs the only driver.list_probes.
+    assert factory_calls == [driver]
+    assert backend.acquire_calls == 2
     assert driver.list_calls == 1
     assert events.count("enumerate-enter") == 1
     assert len(driver.created_sessions) == 1
     assert [call[0] for call in driver.target.calls] == ["resume", "get_state"]
-    stage_events = [event for event in events if event.startswith("stage:")]
+    stage_events = [
+        event[len("stage:"):] for event in events if event.startswith("stage:")
+    ]
     assert stage_events == list(_BACKEND_STAGES)
     assert stage_events.count("driver-acquire") == 1
     assert stage_events.count("probe-enumeration") == 1
 
     # The private routing scope ends with open_attach: a later enumeration is
-    # never reported as attach progress.
+    # never reported as attach progress, and it reuses the cached driver rather
+    # than constructing another one.
     events.clear()
     backend.list_probes()
-    assert events == ["enumerate-enter", "enumerate-return"]
+    assert events == [
+        "acquire-enter",
+        "acquire-return",
+        "enumerate-enter",
+        "enumerate-return",
+    ]
+    assert backend.acquire_calls == 3
+    assert driver.list_calls == 2
+    assert factory_calls == [driver]
 
 
 def test_backend_stage_callback_is_scoped_to_open_attach_only() -> None:
@@ -868,8 +895,29 @@ def test_worker_queued_attach_gets_no_prior_progress_or_dispatch(
     caller = threading.Thread(target=invoke)
     caller.start()
     try:
-        _wait_for_marker(marker, "stage:session-open")
-        running = worker.attach_progress_snapshot("token-running")
+        # One bounded setup budget covers both observations below.  The fake
+        # writes its file marker before sending the stage frame, so the parent
+        # snapshot receipt is the authoritative signal; polling that local
+        # metadata adds no IPC or target action here and leaves the fake's
+        # existing 5 s stall untouched.
+        setup_deadline = time.monotonic() + 3.0
+        _wait_for_marker(
+            marker,
+            "stage:session-open",
+            timeout=max(0.0, setup_deadline - time.monotonic()),
+        )
+        while True:
+            running = worker.attach_progress_snapshot("token-running")
+            if (
+                running is not None
+                and running["events"][-1]["stage"] == "session-open"
+            ):
+                break
+            if time.monotonic() >= setup_deadline:
+                raise AssertionError(
+                    "parent never received the session-open stage frame"
+                )
+            time.sleep(0.01)
         assert running is not None
         running_events = [dict(entry) for entry in running["events"]]
         assert [entry["stage"] for entry in running_events] == [
@@ -969,7 +1017,7 @@ def test_worker_snapshot_survives_owned_abort_without_late_actions(
         assert "program" not in events
         assert "resume" not in events
     finally:
-        if caller.is_alive:
+        if caller.is_alive():
             caller.join(1.0)
         if worker.is_alive:
             worker.abort_owned_execution()
