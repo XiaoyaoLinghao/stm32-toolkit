@@ -42,10 +42,13 @@ programming, clock rate, application execution or a repaired physical fault.
 
 Private test seam: an importing test bootstrap may call
 ``_install_private_test_injection`` to supply, in Python only, an inert
-launcher and/or driver factory.  No environment variable, CLI argument,
-request record, module string, alternate interpreter or shell can select it,
-and an un-injected helper always uses the production launcher and the
-production default PyOCD driver.
+launcher and/or a driver factory.  The driver factory returns one object with
+the existing ``PyOCDDriver`` boundary (``list_probes``/``create_session`` /
+``program_file``), which the helper wraps in the real ``PyOCDBackend`` so the
+private ``_select_probe``/``_get_driver`` reuse stays exercised.  No
+environment variable, CLI argument, request record, module string, alternate
+interpreter or shell can select it, and an un-injected helper always uses the
+production launcher and the production default PyOCD driver.
 """
 
 from __future__ import annotations
@@ -1022,20 +1025,13 @@ def run_attempt(
         ) from error
 
     source_path = Path(__file__).resolve()
-    source_digest = _file_digest(source_path)
     interpreter = os.path.abspath(sys.executable)
     attempt_id = f"attempt-{secrets.token_hex(16)}"
     session_id = f"session-{secrets.token_hex(16)}"
-    deadline_wall = wall_clock() + float(config.deadline_seconds)
     deadline_mono = started + float(config.deadline_seconds)
-    request = _build_request(
-        config,
-        attempt_id=attempt_id,
-        session_id=session_id,
-        deadline_wall=deadline_wall,
-    )
-    request_digest = str(request["requestDigest"])
-    _write_json_exclusive(output_dir / REQUEST_FILE, request)
+    source_digest = ""
+    request_digest = ""
+    request: dict[str, object] | None = None
 
     process: object | None = None
     errors: list[str] = []
@@ -1081,6 +1077,7 @@ def run_attempt(
         )
 
     def _result_validator(payload: Mapping[str, object]) -> None:
+        assert request is not None
         lease_id = None if ready_payload is None else str(ready_payload["leaseId"])
         _validate_result(
             payload,
@@ -1099,10 +1096,36 @@ def run_attempt(
         return (output_dir / TERMINATE_FILE).exists()
 
     try:
-        if _cancellation_requested():
+        # Source hashing and request persistence are initiating failures too:
+        # they run inside this guard so an attempt record is still attempted
+        # wherever the exclusive run directory remains writable.
+        try:
+            source_digest = _file_digest(source_path)
+            deadline_wall = wall_clock() + float(config.deadline_seconds)
+            request = _build_request(
+                config,
+                attempt_id=attempt_id,
+                session_id=session_id,
+                deadline_wall=deadline_wall,
+            )
+            request_digest = str(request["requestDigest"])
+            _write_json_exclusive(output_dir / REQUEST_FILE, request)
+        except KeyboardInterrupt:
+            # A cancellation during preparation stays a cancellation.
             outcome = "cancelled"
             initiating = {"outcome": "cancelled", "error": "cancelled-before-launch"}
-        else:
+        except SessionTraceError as error:
+            errors.append(_safe_code(error.code))
+            outcome = "failure"
+            initiating = {"outcome": outcome, "error": _safe_code(error.code)}
+        except BaseException as error:
+            errors.append(_error_name(error))
+            outcome = "parent-error"
+            initiating = {"outcome": outcome, "error": _error_name(error)}
+        if outcome is None and _cancellation_requested():
+            outcome = "cancelled"
+            initiating = {"outcome": "cancelled", "error": "cancelled-before-launch"}
+        elif outcome is None:
             stderr_handle = None
             try:
                 stderr_fd = os.open(
@@ -1184,6 +1207,14 @@ def run_attempt(
                 )
                 if claim_code is None:
                     claim_verified = True
+                elif claim_code == "cancelled":
+                    # A known cancellation during claim waiting keeps its own
+                    # initiating outcome instead of becoming a mismatch.
+                    outcome = "cancelled"
+                    initiating = {
+                        "outcome": "cancelled",
+                        "error": "cancelled-before-claim",
+                    }
                 else:
                     errors.append(
                         "claim-mismatch"
@@ -1313,60 +1344,79 @@ def run_attempt(
             if returncode is not None:
                 handle_errors.extend(_release_terminal_process_handles(process))
 
-    if result_payload is None and process is not None:
-        status, payload = _read_json_once(output_dir / RESULT_FILE)
-        if status == "ok" and isinstance(payload, dict):
-            try:
-                _result_validator(payload)
-            except SessionTraceError:
-                errors.append("result-identity-mismatch")
-            else:
-                result_payload = payload
-                result_valid = True
-
-    stale_entries = _unexpected_entries(output_dir)
-    if stale_entries and "unexpected-entries" not in errors:
-        errors.append("unexpected-entries")
-
-    result_ok = bool(
-        result_valid and result_payload is not None and _result_is_ok(result_payload)
-    )
-    if result_valid and process is not None:
-        events_status, events_payload = _read_json_once(output_dir / EVENTS_FILE)
-        try:
-            if events_status != "ok" or not isinstance(events_payload, dict):
-                raise SessionTraceError("EVENTS_INVALID", "Event record is unavailable")
-            _validate_events(
-                events_payload,
-                attempt_id=attempt_id,
-                request_digest=request_digest,
-                pid=_child_pid(),
-            )
-        except SessionTraceError:
-            errors.append("events-invalid")
-        else:
-            events_verified = True
-
-    trace_armed = bool(
-        result_valid
-        and result_payload is not None
-        and isinstance(result_payload.get("traceback"), Mapping)
-        and result_payload["traceback"].get("armed") is True  # type: ignore[union-attr]
-    )
-    trace_cancelled = bool(
-        result_valid
-        and result_payload is not None
-        and isinstance(result_payload.get("traceback"), Mapping)
-        and result_payload["traceback"].get("cancelled") is True  # type: ignore[union-attr]
-    )
-    traceback_bytes: int | None
+    stale_entries: list[str] = []
+    result_ok = False
+    trace_armed = False
+    trace_cancelled = False
+    traceback_bytes: int | None = None
     try:
-        traceback_bytes = (output_dir / TRACEBACK_FILE).stat().st_size
-    except OSError:
-        traceback_bytes = None
-        if trace_armed:
-            # Never report an unreadable run-owned snapshot as zero bytes.
-            errors.append("traceback-stat-failed")
+        if result_payload is None and process is not None:
+            status, payload = _read_json_once(output_dir / RESULT_FILE)
+            if status == "ok" and isinstance(payload, dict):
+                try:
+                    _result_validator(payload)
+                except SessionTraceError:
+                    errors.append("result-identity-mismatch")
+                else:
+                    result_payload = payload
+                    result_valid = True
+
+        stale_entries = _unexpected_entries(output_dir)
+        if stale_entries and "unexpected-entries" not in errors:
+            errors.append("unexpected-entries")
+
+        result_ok = bool(
+            result_valid
+            and result_payload is not None
+            and _result_is_ok(result_payload)
+        )
+        if result_valid and process is not None:
+            events_status, events_payload = _read_json_once(output_dir / EVENTS_FILE)
+            try:
+                if events_status != "ok" or not isinstance(events_payload, dict):
+                    raise SessionTraceError(
+                        "EVENTS_INVALID", "Event record is unavailable"
+                    )
+                _validate_events(
+                    events_payload,
+                    attempt_id=attempt_id,
+                    request_digest=request_digest,
+                    pid=_child_pid(),
+                )
+            except SessionTraceError:
+                errors.append("events-invalid")
+            else:
+                events_verified = True
+
+        trace_armed = bool(
+            result_valid
+            and result_payload is not None
+            and isinstance(result_payload.get("traceback"), Mapping)
+            and result_payload["traceback"].get("armed") is True  # type: ignore[union-attr]
+        )
+        trace_cancelled = bool(
+            result_valid
+            and result_payload is not None
+            and isinstance(result_payload.get("traceback"), Mapping)
+            and result_payload["traceback"].get("cancelled") is True  # type: ignore[union-attr]
+        )
+        try:
+            traceback_bytes = (output_dir / TRACEBACK_FILE).stat().st_size
+        except OSError:
+            traceback_bytes = None
+            if trace_armed:
+                # Never report an unreadable run-owned snapshot as zero bytes.
+                errors.append("traceback-stat-failed")
+    except KeyboardInterrupt:
+        # A late cancellation keeps its own outcome rather than a failure.
+        outcome = "cancelled"
+        initiating = {"outcome": "cancelled", "error": "cancelled-after-result"}
+    except BaseException as error:
+        # A post-child validation or cleanup failure is an initiating failure
+        # too; it must not escape before the attempt record is attempted.
+        errors.append(_error_name(error))
+        outcome = "parent-error"
+        initiating = {"outcome": outcome, "error": _error_name(error)}
 
     termination_errors = list(termination.get("errors") or [])  # type: ignore[arg-type]
     all_errors = errors + handle_errors + termination_errors
@@ -1449,7 +1499,8 @@ def run_attempt(
     try:
         _write_json_exclusive(output_dir / ATTEMPT_FILE, report)
     except BaseException as error:
-        report_error = _safe_code(error)
+        # Only the closed class code is exported; no raw exception text.
+        report_error = _error_name(error)
     if report_error is not None:
         # Every available surface fails together; the printed and returned
         # outcomes may not claim success after the attempt record was lost.
@@ -1641,7 +1692,10 @@ class _NativeTraceback:
         try:
             self.bytes = self.path.stat().st_size
         except OSError:
+            # An unreadable run-owned snapshot is an explicit failure, never
+            # a silently reported zero-byte capture.
             self.bytes = 0
+            return "traceback-stat-failed"
         return None
 
     def summary(self) -> dict[str, object]:
@@ -1935,52 +1989,62 @@ def child_main(output_dir: Path | str) -> int:
                             errors["construction"] = driver_error
                             outcome = "driver-error"
                         else:
+                            # The single lazy driver acquisition is the real
+                            # boundary for the driver-acquired marker; the one
+                            # enumeration then reuses this same driver inside
+                            # the existing _select_probe.
                             try:
-                                probe = backend._select_probe(  # type: ignore[attr-defined]
-                                    str(request["probeSelector"])
-                                )
-                            except BaseException as error:
-                                code = getattr(error, "code", None)
-                                if code in {
-                                    "PROBE_NOT_FOUND",
-                                    "PROBE_SELECTION_AMBIGUOUS",
-                                    "PROBE_DESCRIPTOR_INVALID",
-                                }:
-                                    facts["driverAcquired"] = 1
-                                    facts["enumerations"] = 1
-                                    errors["construction"] = "selection-failed"
-                                    outcome = "selection-error"
-                                else:
-                                    errors["construction"] = "driver-error"
-                                    outcome = "driver-error"
-                            else:
-                                facts["driverAcquired"] = 1
-                                facts["enumerations"] = 1
-                                facts["selections"] = 1
-                                facts["probeFingerprint"] = _fingerprint_probe(probe)
-                                _event(events, "probe-enumerated", started)
-                                _event(events, "probe-selected", started)
                                 driver = backend._get_driver()  # type: ignore[attr-defined]
-                                options = _session_options(request)
-                                _construct_and_close(
-                                    facts,
-                                    errors,
-                                    trace_meta,
-                                    driver=driver,
-                                    probe=probe,
-                                    options=options,
-                                    traceback_path=output_dir / TRACEBACK_FILE,
-                                    events=events,
-                                    started=started,
-                                )
-                                outcome = (
-                                    "ok"
-                                    if facts["sessionConstructed"]
-                                    else "construct-error"
-                                )
-                                if (output_dir / TERMINATE_FILE).exists():
-                                    outcome = "cancelled-after-go"
-                                    _event(events, "cancelled", started)
+                            except BaseException:
+                                errors["construction"] = "driver-error"
+                                outcome = "driver-error"
+                                driver = None
+                            if driver is not None:
+                                facts["driverAcquired"] = 1
+                                _event(events, "driver-acquired", started)
+                                try:
+                                    probe = backend._select_probe(  # type: ignore[attr-defined]
+                                        str(request["probeSelector"])
+                                    )
+                                except BaseException as error:
+                                    code = getattr(error, "code", None)
+                                    if code in {
+                                        "PROBE_NOT_FOUND",
+                                        "PROBE_SELECTION_AMBIGUOUS",
+                                        "PROBE_DESCRIPTOR_INVALID",
+                                    }:
+                                        facts["enumerations"] = 1
+                                        errors["construction"] = "selection-failed"
+                                        outcome = "selection-error"
+                                    else:
+                                        errors["construction"] = "driver-error"
+                                        outcome = "driver-error"
+                                else:
+                                    facts["enumerations"] = 1
+                                    facts["selections"] = 1
+                                    facts["probeFingerprint"] = _fingerprint_probe(probe)
+                                    _event(events, "probe-enumerated", started)
+                                    _event(events, "probe-selected", started)
+                                    options = _session_options(request)
+                                    _construct_and_close(
+                                        facts,
+                                        errors,
+                                        trace_meta,
+                                        driver=driver,
+                                        probe=probe,
+                                        options=options,
+                                        traceback_path=output_dir / TRACEBACK_FILE,
+                                        events=events,
+                                        started=started,
+                                    )
+                                    outcome = (
+                                        "ok"
+                                        if facts["sessionConstructed"]
+                                        else "construct-error"
+                                    )
+                                    if (output_dir / TERMINATE_FILE).exists():
+                                        outcome = "cancelled-after-go"
+                                        _event(events, "cancelled", started)
                     elif grant == "cancelled-before-go":
                         outcome = "cancelled-before-go"
                     elif grant in (
