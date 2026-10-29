@@ -1647,7 +1647,10 @@ def test_private_mixed_batch_uses_one_guard_pair_per_tick_and_preserves_read_ord
                     "GPIOA.IDR",
                 )
             assert load_calls == 4
-            assert git_calls == 8
+            # Shared firmware admission treats Git as optional stored traceability,
+            # not a live eligibility gate; eligibility uses content/ELF/MAP/memory
+            # checks, so the runtime spy observes no Git process at all.
+            assert git_calls == 0
             assert dwarf_calls == 4
             assert svd_calls == 4
             assert client.attach_count == 4
