@@ -3104,9 +3104,16 @@ def create_server(
         100000 Hz (100 kHz) production default, and a faster value is an
         optional explicit choice rather than a required 1 MHz gate.
         Under-reset recovery keeps its fixed 100000 Hz policy, so
-        a conflicting explicit frequency fails before any effect.  The
-        result's details.flashOptions records selected configuration, not a
-        measured or verified hardware frequency.  details.recoverySuggestion
+        a conflicting explicit frequency fails before any effect.  Normal
+        managed programming also performs one explicit pre-program
+        SYSRESETREQ reset-and-halt and requires the target to read back as
+        HALTED before programming; that reset belongs to this authorized
+        operation, not to a separate switch or a reusable reset permission.
+        Those reset/halt steps are selected policy, not evidence: an
+        operation that fails earlier still reports them without proving a
+        reset or halt occurred.  The result's details.flashOptions records
+        selected configuration, not a measured or verified hardware frequency.
+        details.recoverySuggestion
         can appear only for a failed managed normal (non-recovery) attempt:
         PROBE_PROGRAM_FAILED after owned cleanup, or PROBE_ATTACH_FAILED with
         a validated attachDiagnostic whose primary.stage is session-open or
@@ -3230,9 +3237,14 @@ def create_server(
         ordinary 100000 Hz (100 kHz) production default, and a faster value
         is an optional explicit choice rather than a required 1 MHz gate.
         details.flashOptions records selected
-        configuration, not a measured frequency.  This path adds no
-        recovery-under-reset, reset, resume, handoff, debug, Monitor, or Target
-        test capability, and its receipt does not unlock them.
+        configuration, not a measured frequency.  Imported programming
+        performs the same one explicit pre-program SYSRESETREQ reset-and-halt
+        with HALTED verification as normal managed programming; that reset is
+        part of this authorized operation, selected policy rather than
+        evidence that it happened.  Beyond it, this path adds no separate or
+        post-flash reset, resume, recovery-under-reset, handoff, debug,
+        Monitor, or Target test capability, and its receipt does not unlock
+        them.
         """
         return await tool_flash_imported_for_request(
             runtime,

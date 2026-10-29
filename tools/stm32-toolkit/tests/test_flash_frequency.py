@@ -151,13 +151,16 @@ def test_production_defaults_are_100khz_without_any_recovery() -> None:
         backend.close()
 
 
-def test_managed_omitted_frequency_reaches_worker_config_at_100khz(
-    tmp_path: Path,
+@pytest.mark.parametrize("base_frequency_hz", [100_000, 2_000_000])
+def test_managed_omitted_frequency_preserves_supplied_worker_config(
+    tmp_path: Path, base_frequency_hz: int
 ) -> None:
     project = _project(tmp_path / "project")
     recorder = _Recorder()
     captured: list[object] = []
-    base = ProbeWorkerConfig(target_profile={"mcu": "stm32f407vgtx"})
+    base = ProbeWorkerConfig(
+        frequency_hz=base_frequency_hz, target_profile={"mcu": "stm32f407vgtx"}
+    )
 
     result = _flash(
         project,
@@ -167,19 +170,19 @@ def test_managed_omitted_frequency_reaches_worker_config_at_100khz(
 
     assert len(captured) == 1
     # Omission reuses the supplied configuration object unchanged: no copy,
-    # no mutation and no recovery substitution.
+    # no mutation, no forced 100 kHz and no recovery substitution.
     assert captured[0] is base
-    assert captured[0].frequency_hz == 100_000
+    assert captured[0].frequency_hz == base_frequency_hz
     assert captured[0].connection_policy == NORMAL_CONNECTION_POLICY
     assert captured[0].target_profile() == {"mcu": "stm32f407vgtx"}
     assert captured[0].transport_provider == base.transport_provider
-    assert base.frequency_hz == 100_000
+    assert base.frequency_hz == base_frequency_hz
     assert base.connection_policy == NORMAL_CONNECTION_POLICY
     assert base.target_profile() == {"mcu": "stm32f407vgtx"}
     assert result.ok is True
     assert result.details["flashOptions"] == {
         "requestedFrequencyHz": None,
-        "configuredFrequencyHz": 100_000,
+        "configuredFrequencyHz": base_frequency_hz,
         "connectionPolicy": NORMAL_CONNECTION_POLICY,
         "preProgramReset": "sysresetreq",
         "preProgramHaltRequired": True,
@@ -751,15 +754,18 @@ def test_imported_omitted_frequency_keeps_default(tmp_path: Path) -> None:
     assert result.details["flashOptions"]["configuredFrequencyHz"] == 100_000
 
 
-def test_imported_omitted_frequency_reaches_worker_config_at_100khz(
-    tmp_path: Path,
+@pytest.mark.parametrize("base_frequency_hz", [100_000, 2_000_000])
+def test_imported_omitted_frequency_preserves_supplied_worker_config(
+    tmp_path: Path, base_frequency_hz: int
 ) -> None:
     project, data_root, _payload, import_id, source_sha, _admission = _prepare_import(
         tmp_path
     )
     recorder = _Recorder()
     captured: list[object] = []
-    base = ProbeWorkerConfig(target_profile={"mcu": "stm32f407vgtx"})
+    base = ProbeWorkerConfig(
+        frequency_hz=base_frequency_hz, target_profile={"mcu": "stm32f407vgtx"}
+    )
 
     async def refused(
         _request: object, _client: object
@@ -794,17 +800,19 @@ def test_imported_omitted_frequency_reaches_worker_config_at_100khz(
     assert result.ok is False
     assert result.code == "PROBE_PROGRAM_FAILED"
     assert len(captured) == 1
+    # Omission reuses the supplied configuration object unchanged: no copy,
+    # no mutation, no forced 100 kHz and no recovery substitution.
     assert captured[0] is base
-    assert captured[0].frequency_hz == 100_000
+    assert captured[0].frequency_hz == base_frequency_hz
     assert captured[0].connection_policy == NORMAL_CONNECTION_POLICY
     assert captured[0].target_profile() == {"mcu": "stm32f407vgtx"}
     assert captured[0].transport_provider == base.transport_provider
-    assert base.frequency_hz == 100_000
+    assert base.frequency_hz == base_frequency_hz
     assert base.connection_policy == NORMAL_CONNECTION_POLICY
     assert base.target_profile() == {"mcu": "stm32f407vgtx"}
     assert result.details["flashOptions"] == {
         "requestedFrequencyHz": None,
-        "configuredFrequencyHz": 100_000,
+        "configuredFrequencyHz": base_frequency_hz,
         "connectionPolicy": NORMAL_CONNECTION_POLICY,
         "preProgramReset": "sysresetreq",
         "preProgramHaltRequired": True,
@@ -1319,11 +1327,18 @@ def test_registered_flash_tools_describe_the_100khz_production_default(
         assert "100000..50000000" in description
         assert "ordinary 100000 Hz (100 kHz) production default" in description
         assert "optional explicit choice" in description
-        assert "required 1 MHz gate" in description
+        assert "rather than a required 1 MHz gate" in description
         assert "not a measured" in description
-    assert "Under-reset recovery keeps its fixed 100000 Hz policy" in (
-        descriptions["stm32_flash"]
-    )
+        # Both ordinary routes share the inherited pre-program preparation.
+        assert "pre-program SYSRESETREQ reset-and-halt" in description
+        assert "HALTED" in description
+    managed = descriptions["stm32_flash"]
+    assert "Under-reset recovery keeps its fixed 100000 Hz policy" in managed
+    assert "selected policy, not evidence" in managed
+    # The imported route must not claim independent or post-flash control.
+    imported = descriptions["stm32_flash_imported"]
+    assert "selected policy rather than evidence" in imported
+    assert "no separate or post-flash reset, resume, recovery-under-reset" in imported
 
 
 def test_registered_flash_forwards_frequency_and_null_default(
