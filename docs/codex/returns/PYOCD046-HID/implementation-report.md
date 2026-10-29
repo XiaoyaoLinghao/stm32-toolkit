@@ -1,5 +1,39 @@
 # PYOCD046-HID execution and review
 
+## Latest checkpoint: continuation stopped without edits
+
+The human authorized one three-file continuation with repository-only reads and
+one same-file Edit-context correction. It ran at clean
+df46b4f857ba580892fa09c76edfc78a76ee3c19, task SHA256
+a95a115068575c1303ae5d68d0f20bcb957a469382f3bc2475839c8893935538.
+Actual inventory/main registered the requested five file tools and configured
+deepseek-v4.1-flash[1m] route. The fifth native call Read the known-absent
+tools/stm32-toolkit/tests/test_pyocd_hid_timeout.py, returned File-does-not-exist,
+then continued reading/searching. This is a Read absence result, not a permission
+refusal, missing tool or the authorized Edit-context case. Primary verified and
+stopped only its owned direct Claude CLI child PID21152, creation
+134377536039379882, then reconciled the original dispatcher handle.
+
+Result:22 matched native calls, one error, **zero edits/writes, zero tests and
+zero scope violations**; CLI4294967295/dispatcher1, invocation unaccepted.
+The one Edit correction was not used and expired; the continuation authority is
+consumed. Source remained clean at that exact head, product CodeHead remains
+c7b91d2afad06be4838a365d7e5afa8469922643, and the earlier four Primary passes
+remain only their recorded cases. No new SDK/HID or full-matrix result exists.
+Evidence: D:/codex-tmp/st135-pyocd046/continuation-run,
+continuation-native-audit.json, continuation-authorization.json and
+owned-continuation-stop-{identity,result}.json. First-call logs remain unchanged.
+
+Primary's wording asked to read target files while one was explicitly new; this
+was an entry-design ambiguity. After two unsuccessful file-discovery invocations,
+return to the interface rather than launch a third local patch. See the
+[proposed creation/documentation split](../../../superpowers/plans/2026-10-29-pyocd046-entry-redesign.md).
+It requires new bounded authority before any dispatch; its exact-new-path
+expected-absence rule is prospective, not permission to ignore a refusal or
+retroactively accept this call. No active-runtime replacement, hardware,
+packaging or remote action. Verdict stays REVISION_REQUIRED. Earlier execution
+and complete-diff review follow.
+
 2026-10-29 verdict: **REVISION_REQUIRED**. Isolated official dependency
 preparation and newly authorized owned-process cleanup completed. The first
 Claude edit invocation is unaccepted; retained candidate is incomplete. Four
