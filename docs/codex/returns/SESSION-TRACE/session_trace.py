@@ -40,12 +40,12 @@ Physical target state is always UNKNOWN.  A returned constructor is narrow
 evidence about this helper's own operations, not proof of attachment,
 programming, clock rate, application execution or a repaired physical fault.
 
-Private test seam: the child understands a small closed set of
-``SESSION_TRACE_PRIVATE_*`` environment variables (fixed fake mode, bounded
-seconds, fake probe id, unique release path, receipt path) used only by the
-offline tests to select an inert fixed backend.  They are never CLI arguments
-and can never name a module, interpreter, command or import; an unknown mode
-fails closed before any construction.
+Private test seam: an importing test bootstrap may call
+``_install_private_test_injection`` to supply, in Python only, an inert
+launcher and/or driver factory.  No environment variable, CLI argument,
+request record, module string, alternate interpreter or shell can select it,
+and an un-injected helper always uses the production launcher and the
+production default PyOCD driver.
 """
 
 from __future__ import annotations
@@ -54,6 +54,7 @@ import faulthandler
 import hashlib
 import http.server
 import json
+import math
 import os
 import re
 import secrets
@@ -64,7 +65,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Iterable, Mapping, Sequence
+from typing import Callable, Mapping, Sequence
 
 SCHEMA_VERSION = 1
 WORKSPACE_ID = "session-trace"
@@ -104,12 +105,29 @@ RUN_FILE_NAMES = frozenset(
     }
 )
 
-_PRIVATE_ENV = "SESSION_TRACE_PRIVATE_"
-FAKE_MODE_ENV = _PRIVATE_ENV + "FAKE_MODE"
-FAKE_SECONDS_ENV = _PRIVATE_ENV + "FAKE_SECONDS"
-FAKE_PROBE_ENV = _PRIVATE_ENV + "FAKE_PROBE"
-FAKE_RELEASE_ENV = _PRIVATE_ENV + "FAKE_RELEASE"
-FAKE_RECEIPT_ENV = _PRIVATE_ENV + "FAKE_RECEIPT"
+# Test-only, Python-only seam.  It is a plain module attribute that only an
+# importing test bootstrap can set; no environment variable, CLI argument or
+# request record can reach it, and the production helpers ignore it when unset.
+_PRIVATE_TEST_STATE: dict[str, object] = {
+    "launcher": None,
+    "backendFactory": None,
+}
+
+
+def _install_private_test_injection(
+    *,
+    launcher: Callable[[Sequence[str], str], object] | None = None,
+    backend_factory: Callable[[], object] | None = None,
+) -> None:
+    """Install an explicit private test launcher/backend factory (tests only)."""
+
+    if launcher is not None and not callable(launcher):
+        raise TypeError("test launcher must be callable")
+    if backend_factory is not None and not callable(backend_factory):
+        raise TypeError("test backend factory must be callable")
+    _PRIVATE_TEST_STATE["launcher"] = launcher
+    _PRIVATE_TEST_STATE["backendFactory"] = backend_factory
+
 
 _PORTABLE_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _SAFE_CODE = re.compile(r"^[A-Za-z0-9_.:-]{1,80}$")
@@ -121,18 +139,6 @@ _EXIT_CANCELLED = 5
 _EXIT_CHILD_FAILED = 6
 _EXIT_LIFECYCLE = 7
 
-FAKE_MODES = frozenset(
-    {
-        "construct-ok",
-        "construct-block-exit",
-        "construct-block-stubborn",
-        "construct-error",
-        "close-error",
-        "no-ready",
-        "bad-ready",
-    }
-)
-
 RESULT_OUTCOMES = frozenset(
     {
         "ok",
@@ -141,6 +147,8 @@ RESULT_OUTCOMES = frozenset(
         "ready-write-failed",
         "startup-aborted",
         "go-timeout",
+        "go-lease-mismatch",
+        "go-expired",
         "cancelled-before-go",
         "go-identity-mismatch",
         "driver-error",
@@ -393,10 +401,6 @@ def _read_json_until(
         sleep(POLL_SECONDS)
 
 
-def _peek_json(path: Path) -> tuple[str, object]:
-    return _read_json_once(path)
-
-
 def _require_exact_keys(
     payload: Mapping[str, object], keys: frozenset[str], name: str
 ) -> None:
@@ -413,7 +417,10 @@ def _require_identifier(value: object, field_name: str, code: str) -> str:
 def _require_number(value: object, field_name: str, code: str) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise SessionTraceError(code, f"{field_name} is not a number")
-    return float(value)
+    number = float(value)
+    if not math.isfinite(number):
+        raise SessionTraceError(code, f"{field_name} is not finite")
+    return number
 
 
 def _require_schema(payload: Mapping[str, object], code: str) -> None:
@@ -496,7 +503,15 @@ def _validate_request(payload: Mapping[str, object]) -> dict[str, object]:
             raise SessionTraceError("REQUEST_INVALID", f"{field_name} is not absolute")
     if not os.path.isdir(str(payload["projectDir"])):
         raise SessionTraceError("REQUEST_INVALID", "projectDir is not a directory")
-    _require_number(payload["deadlineUnix"], "deadlineUnix", "REQUEST_INVALID")
+    deadline = _require_number(
+        payload["deadlineUnix"], "deadlineUnix", "REQUEST_INVALID"
+    )
+    if deadline - time.time() > MAX_DEADLINE_SECONDS:
+        raise SessionTraceError(
+            "REQUEST_INVALID", "deadlineUnix exceeds the bounded budget"
+        )
+    if deadline <= time.time():
+        raise SessionTraceError("REQUEST_INVALID", "deadlineUnix has expired")
     delay = _require_number(
         payload["faulthandlerDelaySeconds"], "faulthandlerDelaySeconds", "REQUEST_INVALID"
     )
@@ -590,6 +605,7 @@ def _validate_go(
     pid: int,
     source_digest: str,
     interpreter: str,
+    lease_id: str,
 ) -> None:
     _require_exact_keys(payload, GO_KEYS, "go")
     _require_schema(payload, "go-identity-mismatch")
@@ -602,8 +618,23 @@ def _validate_go(
         interpreter=interpreter,
         code="go-identity-mismatch",
     )
-    _require_identifier(payload["leaseId"], "leaseId", "go-identity-mismatch")
-    _require_number(payload["issuedAtUnix"], "issuedAtUnix", "go-identity-mismatch")
+    go_lease = _require_identifier(
+        payload["leaseId"], "leaseId", "go-identity-mismatch"
+    )
+    if go_lease != lease_id:
+        raise SessionTraceError(
+            "go-lease-mismatch", "GO does not bind the acquired lease"
+        )
+    issued_at = _require_number(
+        payload["issuedAtUnix"], "issuedAtUnix", "go-identity-mismatch"
+    )
+    deadline = _require_number(
+        request["deadlineUnix"], "deadlineUnix", "go-identity-mismatch"
+    )
+    if issued_at > deadline or time.time() >= deadline:
+        raise SessionTraceError(
+            "go-expired", "GO was issued outside the original finite budget"
+        )
 
 
 def _validate_session_options(
@@ -701,7 +732,12 @@ def _validate_result(
 def _result_is_ok(payload: Mapping[str, object]) -> bool:
     facts = payload["facts"]
     errors = payload["errors"]
-    assert isinstance(facts, Mapping) and isinstance(errors, Mapping)
+    trace_meta = payload["traceback"]
+    assert (
+        isinstance(facts, Mapping)
+        and isinstance(errors, Mapping)
+        and isinstance(trace_meta, Mapping)
+    )
     return bool(
         payload["ok"] is True
         and payload["outcome"] == "ok"
@@ -712,6 +748,9 @@ def _result_is_ok(payload: Mapping[str, object]) -> bool:
         and facts["sessionOpened"] is False
         and facts["sessionClosed"] == 1
         and facts["forbiddenCalls"] == []
+        and payload["sessionOptions"] is not None
+        and trace_meta["armed"] is True
+        and trace_meta["cancelled"] is True
         and all(value is None for value in errors.values())
     )
 
@@ -879,6 +918,9 @@ def _launch_child(
     launcher: Callable[[Sequence[str], str], object] | None,
 ) -> object:
     argv = [str(interpreter), "-B", str(source_path), "child", str(output_dir)]
+    if launcher is None:
+        injected = _PRIVATE_TEST_STATE["launcher"]
+        launcher = injected if callable(injected) else None  # type: ignore[assignment]
     if launcher is not None:
         return launcher(argv, str(project_dir))
     kwargs: dict[str, object] = {
@@ -900,6 +942,19 @@ def _unexpected_entries(output_dir: Path) -> list[str]:
         return ["run-directory-unreadable"]
     extra = sorted(name for name in names if name not in RUN_FILE_NAMES)
     return extra
+
+
+_CHILD_ALLOWED_ENTRIES = frozenset({REQUEST_FILE, STDERR_FILE})
+
+
+def _preexisting_child_entries(output_dir: Path) -> list[str]:
+    """Refuse stale one-shot outputs before the child reserves or leases."""
+
+    try:
+        names = os.listdir(output_dir)
+    except OSError:
+        return ["run-directory-unreadable"]
+    return sorted(name for name in names if name not in _CHILD_ALLOWED_ENTRIES)
 
 
 def _validate_config(config: AttemptConfig) -> None:
@@ -986,10 +1041,13 @@ def run_attempt(
     errors: list[str] = []
     go_written = False
     ready_matched = False
+    claim_verified = False
+    events_verified = False
     ready_payload: dict[str, object] | None = None
     result_payload: dict[str, object] | None = None
     result_valid = False
     outcome: str | None = None
+    initiating: dict[str, object] = {"outcome": "none", "error": None}
     termination: dict[str, object] = {
         "terminateRequested": False,
         "joined": None,
@@ -999,12 +1057,25 @@ def run_attempt(
     }
     handle_errors: list[str] = []
 
+    def _child_pid() -> int:
+        return int(getattr(process, "pid"))
+
     def _ready_validator(payload: Mapping[str, object]) -> None:
         _validate_ready(
             payload,
             attempt_id=attempt_id,
             request_digest=request_digest,
-            pid=int(getattr(process, "pid")),
+            pid=_child_pid(),
+            source_digest=source_digest,
+            interpreter=interpreter,
+        )
+
+    def _claim_validator(payload: Mapping[str, object]) -> None:
+        _validate_claim(
+            payload,
+            attempt_id=attempt_id,
+            request_digest=request_digest,
+            pid=_child_pid(),
             source_digest=source_digest,
             interpreter=interpreter,
         )
@@ -1015,16 +1086,22 @@ def run_attempt(
             payload,
             attempt_id=attempt_id,
             request_digest=request_digest,
-            pid=int(getattr(process, "pid")),
+            pid=_child_pid(),
             source_digest=source_digest,
             lease_id=lease_id,
             request=request,
             interpreter=interpreter,
         )
 
-    try:
+    def _cancellation_requested() -> bool:
         if cancel_event is not None and cancel_event.is_set():
+            return True
+        return (output_dir / TERMINATE_FILE).exists()
+
+    try:
+        if _cancellation_requested():
             outcome = "cancelled"
+            initiating = {"outcome": "cancelled", "error": "cancelled-before-launch"}
         else:
             stderr_handle = None
             try:
@@ -1037,6 +1114,7 @@ def run_attempt(
             except OSError:
                 errors.append("stderr-open-failed")
                 outcome = "startup-failed"
+                initiating = {"outcome": outcome, "error": "stderr-open-failed"}
             if outcome is None:
                 try:
                     process = _launch_child(
@@ -1047,9 +1125,17 @@ def run_attempt(
                         stderr=stderr_handle,
                         launcher=launcher,
                     )
+                except KeyboardInterrupt:
+                    # A launch-time cancellation keeps its own initiating
+                    # outcome instead of becoming a creation failure.
+                    errors.append("launch-cancelled")
+                    outcome = "cancelled"
+                    initiating = {"outcome": "cancelled", "error": "launch-cancelled"}
+                    process = None
                 except BaseException:
                     errors.append("launch-failed")
                     outcome = "startup-failed"
+                    initiating = {"outcome": outcome, "error": "launch-failed"}
                     process = None
                 finally:
                     if stderr_handle is not None:
@@ -1062,6 +1148,7 @@ def run_attempt(
                 if type(child_pid) is not int or child_pid <= 0:
                     errors.append("startup-handle-invalid")
                     outcome = "startup-failed"
+                    initiating = {"outcome": outcome, "error": "startup-handle-invalid"}
                     process = None
         if outcome is None and process is not None:
             ready_code, ready_seen = _await_identity_file(
@@ -1083,33 +1170,55 @@ def run_attempt(
                     "child-exited": "startup-exited",
                     "run-file-invalid": "readiness-invalid",
                 }.get(ready_code, "readiness-mismatch")
+                initiating = {"outcome": outcome, "error": ready_code}
             if outcome is None:
-                claim_status, claim_payload = _peek_json(output_dir / CLAIM_FILE)
-                if claim_status in ("oversized", "unreadable", "invalid"):
-                    errors.append("claim-record-invalid")
+                # A completed, matching claim is a precondition of the grant.
+                claim_code, _claim_seen = _await_identity_file(
+                    output_dir / CLAIM_FILE,
+                    deadline_mono=deadline_mono,
+                    clock=clock,
+                    sleep=sleep,
+                    cancel_event=cancel_event,
+                    process=process,
+                    validator=_claim_validator,
+                )
+                if claim_code is None:
+                    claim_verified = True
+                else:
+                    errors.append(
+                        "claim-mismatch"
+                        if claim_code in ("CLAIM_MISMATCH", "claim-mismatch")
+                        else "claim-unavailable"
+                    )
                     outcome = "readiness-mismatch"
-                elif claim_status == "ok" and isinstance(claim_payload, dict):
-                    try:
-                        _validate_claim(
-                            claim_payload,
-                            attempt_id=attempt_id,
-                            request_digest=request_digest,
-                            pid=int(getattr(process, "pid")),
-                            source_digest=source_digest,
-                            interpreter=interpreter,
-                        )
-                    except SessionTraceError:
-                        errors.append("claim-identity-mismatch")
-                        outcome = "readiness-mismatch"
-            if outcome is None and clock() >= deadline_mono:
-                outcome = "readiness-timeout"
+                    initiating = {"outcome": outcome, "error": claim_code}
+            if outcome is None:
+                stale = _unexpected_entries(output_dir)
+                if stale:
+                    errors.append("unexpected-entries")
+                    outcome = "readiness-mismatch"
+                    initiating = {
+                        "outcome": outcome,
+                        "error": "unexpected-entries",
+                    }
+            if outcome is None:
+                # Final cancellation decision immediately before the grant.
+                if _cancellation_requested():
+                    outcome = "cancelled"
+                    initiating = {
+                        "outcome": "cancelled",
+                        "error": "cancelled-before-grant",
+                    }
+                elif clock() >= deadline_mono:
+                    outcome = "readiness-timeout"
+                    initiating = {"outcome": outcome, "error": "deadline"}
             if outcome is None:
                 assert ready_payload is not None
                 go_payload: dict[str, object] = {
                     "schemaVersion": SCHEMA_VERSION,
                     "attemptId": attempt_id,
                     "requestDigest": request_digest,
-                    "pid": int(getattr(process, "pid")),
+                    "pid": _child_pid(),
                     "sourceDigest": source_digest,
                     "interpreter": ready_payload["interpreter"],
                     "leaseId": ready_payload["leaseId"],
@@ -1120,8 +1229,10 @@ def run_attempt(
                 except BaseException:
                     errors.append("grant-write-failed")
                     outcome = "grant-failed"
+                    initiating = {"outcome": outcome, "error": "grant-write-failed"}
                 else:
                     go_written = True
+                    initiating = {"outcome": "granted", "error": None}
         if outcome is None and go_written and process is not None:
             result_code, result_seen = _await_identity_file(
                 output_dir / RESULT_FILE,
@@ -1142,25 +1253,48 @@ def run_attempt(
                     "child-exited": "child-exited",
                     "run-file-invalid": "result-invalid",
                 }.get(result_code, "result-mismatch")
+                initiating = {"outcome": outcome, "error": result_code}
             if result_valid:
                 while clock() < deadline_mono:
+                    if _cancellation_requested():
+                        # Post-result exit waiting keeps a known cancellation
+                        # separate from the bounded cleanup that follows.
+                        outcome = "cancelled"
+                        initiating = {
+                            "outcome": "cancelled",
+                            "error": "cancelled-after-result",
+                        }
+                        break
                     if process.poll() is not None:  # type: ignore[attr-defined]
                         break
                     sleep(POLL_SECONDS)
-                returncode = process.poll()  # type: ignore[attr-defined]
-                if returncode is None:
-                    outcome = "exit-timeout"
-                elif returncode != 0:
-                    outcome = "child-nonzero-exit"
-                else:
-                    outcome = "ok"
+                if outcome is None:
+                    returncode = process.poll()  # type: ignore[attr-defined]
+                    if returncode is None:
+                        outcome = "exit-timeout"
+                        initiating = {"outcome": outcome, "error": "exit-timeout"}
+                    elif returncode != 0:
+                        outcome = "child-nonzero-exit"
+                        initiating = {"outcome": outcome, "error": "nonzero-exit"}
+                    else:
+                        outcome = "ok"
+                        initiating = {"outcome": "ok", "error": None}
         if outcome is None:
             outcome = "no-grant"
+            initiating = {"outcome": outcome, "error": "no-grant"}
     except KeyboardInterrupt:
         outcome = "cancelled"
+        initiating = {"outcome": "cancelled", "error": "parent-interrupt"}
     except SessionTraceError as error:
         errors.append(_safe_code(error.code))
         outcome = "failure"
+        initiating = {"outcome": outcome, "error": _safe_code(error.code)}
+    except BaseException as error:
+        # Preserve the initiating parent failure instead of escaping before
+        # the attempt record exists; bounded cleanup below still runs.
+        errors.append(_error_name(error))
+        outcome = "parent-error"
+        initiating = {"outcome": outcome, "error": _error_name(error)}
     finally:
         if process is not None:
             try:
@@ -1190,10 +1324,13 @@ def run_attempt(
                 result_payload = payload
                 result_valid = True
 
-    extra_entries = _unexpected_entries(output_dir)
-    if extra_entries:
+    stale_entries = _unexpected_entries(output_dir)
+    if stale_entries and "unexpected-entries" not in errors:
         errors.append("unexpected-entries")
 
+    result_ok = bool(
+        result_valid and result_payload is not None and _result_is_ok(result_payload)
+    )
     if result_valid and process is not None:
         events_status, events_payload = _read_json_once(output_dir / EVENTS_FILE)
         try:
@@ -1203,30 +1340,50 @@ def run_attempt(
                 events_payload,
                 attempt_id=attempt_id,
                 request_digest=request_digest,
-                pid=int(getattr(process, "pid")),
+                pid=_child_pid(),
             )
         except SessionTraceError:
             errors.append("events-invalid")
+        else:
+            events_verified = True
 
+    trace_armed = bool(
+        result_valid
+        and result_payload is not None
+        and isinstance(result_payload.get("traceback"), Mapping)
+        and result_payload["traceback"].get("armed") is True  # type: ignore[union-attr]
+    )
+    trace_cancelled = bool(
+        result_valid
+        and result_payload is not None
+        and isinstance(result_payload.get("traceback"), Mapping)
+        and result_payload["traceback"].get("cancelled") is True  # type: ignore[union-attr]
+    )
+    traceback_bytes: int | None
     try:
         traceback_bytes = (output_dir / TRACEBACK_FILE).stat().st_size
     except OSError:
-        traceback_bytes = 0
+        traceback_bytes = None
+        if trace_armed:
+            # Never report an unreadable run-owned snapshot as zero bytes.
+            errors.append("traceback-stat-failed")
 
     termination_errors = list(termination.get("errors") or [])  # type: ignore[arg-type]
     all_errors = errors + handle_errors + termination_errors
     child_alive = termination.get("alive") if process is not None else None
     child_returncode = termination.get("returncode") if process is not None else None
-    result_ok = bool(
-        result_valid and result_payload is not None and _result_is_ok(result_payload)
-    )
     ok = bool(
         outcome == "ok"
         and ready_matched
+        and claim_verified
         and go_written
         and child_returncode == 0
         and child_alive is False
         and result_ok
+        and events_verified
+        and trace_armed
+        and trace_cancelled
+        and traceback_bytes is not None
         and not all_errors
     )
     exit_code = _exit_code(str(outcome), ok, all_errors)
@@ -1240,6 +1397,7 @@ def run_attempt(
         "ok": ok,
         "exitCode": exit_code,
         "physicalTargetState": "UNKNOWN",
+        "initiating": dict(initiating),
         "child": {
             "pid": None if process is None else getattr(process, "pid", None),
             "returncode": child_returncode,
@@ -1250,6 +1408,7 @@ def run_attempt(
                 and not handle_errors
             ),
         },
+        "claim": {"verified": claim_verified},
         "grant": {"readyMatched": ready_matched, "goWritten": go_written},
         "result": {
             "present": result_payload is not None,
@@ -1265,14 +1424,25 @@ def run_attempt(
                 and result_payload.get("leaseId") is not None
             ),
         },
-        "traceback": {"present": traceback_bytes > 0, "bytes": traceback_bytes},
+        "traceback": {
+            "present": traceback_bytes is not None and traceback_bytes > 0,
+            "bytes": traceback_bytes,
+            "armed": trace_armed,
+            "cancelled": trace_cancelled,
+        },
+        "events": {"verified": events_verified},
+        "cleanup": {
+            "terminateRequested": bool(termination.get("terminateRequested")),
+            "errors": sorted(set(termination_errors)),
+            "handleErrors": sorted(set(handle_errors)),
+        },
         "termination": {
             "terminateRequested": bool(termination.get("terminateRequested")),
             "joined": termination.get("joined"),
             "alive": termination.get("alive"),
         },
         "errors": sorted(set(all_errors)),
-        "unexpectedEntries": extra_entries,
+        "unexpectedEntries": stale_entries,
         "durationMs": int((clock() - started) * 1000),
     }
     report_error: str | None = None
@@ -1280,9 +1450,17 @@ def run_attempt(
         _write_json_exclusive(output_dir / ATTEMPT_FILE, report)
     except BaseException as error:
         report_error = _safe_code(error)
+    if report_error is not None:
+        # Every available surface fails together; the printed and returned
+        # outcomes may not claim success after the attempt record was lost.
+        ok = False
+        exit_code = _EXIT_LIFECYCLE
+        report["ok"] = False
+        report["exitCode"] = exit_code
+        report["errors"] = sorted(set(all_errors + ["attempt-write-failed"]))
+        report["reportError"] = report_error
     print(json.dumps(report, sort_keys=True, separators=(",", ":")))
     if report_error is not None:
-        exit_code = _EXIT_LIFECYCLE
         print("session-trace: attempt report write failed", file=sys.stderr)
     return AttemptOutcome(
         attempt_id=attempt_id,
@@ -1474,231 +1652,20 @@ class _NativeTraceback:
         }
 
 
-_FORBIDDEN_NAMES = frozenset(
-    {
-        "open",
-        "connect",
-        "halt",
-        "resume",
-        "reset",
-        "step",
-        "reset_and_halt",
-        "program",
-        "program_file",
-        "read_memory",
-        "read_memory_block8",
-        "read_core_registers",
-        "read_core_registers_raw",
-        "get_state",
-        "flash",
-        "recover",
-        "unlock",
-        "close",
-    }
-)
+def _acquire_backend() -> tuple[object | None, str | None]:
+    """Return one PyOCDBackend holding a single lazy or injected driver."""
 
-
-class _ForbiddenCall(RuntimeError):
-    pass
-
-
-class _FakeReceipt:
-    def __init__(self, path: Path | None) -> None:
-        self.path = path
-        self.data: dict[str, object] = {
-            "listProbes": 0,
-            "createSession": 0,
-            "options": None,
-            "selectedIsProbe": None,
-            "sessionOpenCalls": 0,
-            "sessionCloseCalls": 0,
-            "forbiddenCalls": [],
-            "blockResult": None,
-        }
-
-    def forbid(self, name: str) -> None:
-        calls = self.data["forbiddenCalls"]
-        assert isinstance(calls, list)
-        calls.append(name)
-        raise _ForbiddenCall(name)
-
-    def flush(self) -> None:
-        if self.path is None:
-            return
-        try:
-            self.path.write_text(
-                json.dumps(self.data, sort_keys=True, separators=(",", ":")),
-                encoding="utf-8",
-            )
-        except OSError:
-            pass
-
-
-class _FakeProbe:
-    def __init__(self, unique_id: str, receipt: _FakeReceipt) -> None:
-        self.unique_id = unique_id
-        self._receipt = receipt
-
-    def __getattr__(self, name: str) -> object:
-        if name in _FORBIDDEN_NAMES:
-            return lambda *_args, **_kwargs: self._receipt.forbid(name)
-        raise AttributeError(name)
-
-
-class _FakeSession:
-    def __init__(self, probe: _FakeProbe, receipt: _FakeReceipt) -> None:
-        self.probe = probe
-        self.closed = False
-        self._receipt = receipt
-
-    def open(self) -> None:
-        self._receipt.data["sessionOpenCalls"] = int(
-            self._receipt.data["sessionOpenCalls"]
-        ) + 1
-        self._receipt.forbid("open")
-
-    def close(self) -> None:
-        self._receipt.data["sessionCloseCalls"] = int(
-            self._receipt.data["sessionCloseCalls"]
-        ) + 1
-        self.closed = True
-        if self._receipt.data.get("mode") == "close-error":
-            raise RuntimeError("fake close failure")
-
-    def __getattr__(self, name: str) -> object:
-        if name in _FORBIDDEN_NAMES and name != "close":
-            return lambda *_args, **_kwargs: self._receipt.forbid(name)
-        raise AttributeError(name)
-
-
-class _FakeDriver:
-    def __init__(
-        self,
-        config: "_FakeConfig",
-        receipt: _FakeReceipt,
-        *,
-        terminate_path: Path,
-    ) -> None:
-        self._config = config
-        self._receipt = receipt
-        self._terminate_path = terminate_path
-        self._probe = _FakeProbe(config.probe_id, receipt)
-        receipt.data["mode"] = config.mode
-
-    def list_probes(self) -> tuple[object, ...]:
-        self._receipt.data["listProbes"] = int(self._receipt.data["listProbes"]) + 1
-        return (self._probe,)
-
-    def _block(self, stubborn: bool) -> str:
-        end = time.monotonic() + self._config.seconds
-        release = self._config.release_path
-        while time.monotonic() < end:
-            if release is not None and release.exists():
-                return "released"
-            if not stubborn and self._terminate_path.exists():
-                return "terminated"
-            time.sleep(POLL_SECONDS)
-        return "elapsed"
-
-    def create_session(
-        self, probe: object, *, options: Mapping[str, object]
-    ) -> object:
-        self._receipt.data["createSession"] = (
-            int(self._receipt.data["createSession"]) + 1
-        )
-        self._receipt.data["options"] = dict(options)
-        self._receipt.data["selectedIsProbe"] = probe is self._probe
-        try:
-            if self._config.mode == "construct-error":
-                raise RuntimeError("fake constructor failure")
-            if self._config.mode in ("construct-block-exit", "construct-block-stubborn"):
-                self._receipt.data["blockResult"] = self._block(
-                    self._config.mode == "construct-block-stubborn"
-                )
-            return _FakeSession(self._probe, self._receipt)
-        finally:
-            self._receipt.flush()
-
-
-@dataclass(frozen=True)
-class _FakeConfig:
-    mode: str
-    seconds: float = 0.0
-    probe_id: str = "fake-probe-1"
-    release_path: Path | None = None
-    receipt_path: Path | None = None
-
-
-def _env_path(name: str) -> Path | None:
-    value = os.environ.get(name, "").strip()
-    if not value or not os.path.isabs(value):
-        return None
-    return Path(value)
-
-
-def _fake_config() -> _FakeConfig:
-    mode = os.environ.get(FAKE_MODE_ENV, "").strip() or "none"
-    seconds = 0.0
     try:
-        seconds = float(os.environ.get(FAKE_SECONDS_ENV, "0") or "0")
-    except ValueError:
-        seconds = 0.0
-    seconds = min(max(seconds, 0.0), 60.0)
-    probe_id = os.environ.get(FAKE_PROBE_ENV, "").strip() or "fake-probe-1"
-    if (
-        not probe_id.isprintable()
-        or len(probe_id.encode("utf-8", errors="replace")) > 512
-    ):
-        probe_id = "fake-probe-1"
-    return _FakeConfig(
-        mode=mode,
-        seconds=seconds,
-        probe_id=probe_id,
-        release_path=_env_path(FAKE_RELEASE_ENV),
-        receipt_path=_env_path(FAKE_RECEIPT_ENV),
-    )
-
-
-def _acquire_driver(
-    fake: _FakeConfig, output_dir: Path
-) -> tuple[object | None, str | None, _FakeReceipt | None]:
-    if fake.mode == "none":
-        try:
-            from stm32_toolkit.probe.pyocd_backend import _DefaultPyOCDDriver
-
-            return _DefaultPyOCDDriver(), None, None
-        except BaseException:
-            return None, "driver-acquire-failed", None
-    if fake.mode not in FAKE_MODES:
-        return None, "fake-mode-invalid", None
-    receipt = _FakeReceipt(fake.receipt_path)
-    driver = _FakeDriver(fake, receipt, terminate_path=output_dir / TERMINATE_FILE)
-    return driver, None, receipt
-
-
-def _select_exactly_one(
-    probes: Iterable[object], selector: str
-) -> object:
-    from stm32_toolkit.probe.selector import (
-        public_probe_selector,
-        valid_hardware_probe_id,
-    )
-
-    matches: list[object] = []
-    for probe in probes:
-        try:
-            raw = getattr(probe, "unique_id", None)
-        except Exception:
-            raise SessionTraceError("SELECTION_ERROR", "Probe descriptor is invalid")
-        if not valid_hardware_probe_id(raw):
-            raise SessionTraceError("SELECTION_ERROR", "Probe descriptor is invalid")
-        if public_probe_selector(raw) == selector:
-            matches.append(probe)
-    if not matches:
-        raise SessionTraceError("SELECTION_NOT_FOUND", "Selected probe is unavailable")
-    if len(matches) != 1:
-        raise SessionTraceError("SELECTION_AMBIGUOUS", "Selected probe is ambiguous")
-    return matches[0]
+        from stm32_toolkit.probe.pyocd_backend import PyOCDBackend
+    except BaseException:
+        return None, "driver-acquire-failed"
+    factory = _PRIVATE_TEST_STATE["backendFactory"]
+    try:
+        if callable(factory):
+            return PyOCDBackend(factory()), None
+        return PyOCDBackend(), None
+    except BaseException:
+        return None, "driver-acquire-failed"
 
 
 def _fingerprint_probe(probe: object) -> str:
@@ -1770,7 +1737,10 @@ def _construct_and_close(
 
 
 def _child_ok(
-    outcome: str, facts: Mapping[str, object], errors: Mapping[str, str | None]
+    outcome: str,
+    facts: Mapping[str, object],
+    errors: Mapping[str, str | None],
+    trace_meta: Mapping[str, object],
 ) -> bool:
     return bool(
         outcome == "ok"
@@ -1781,6 +1751,8 @@ def _child_ok(
         and facts["sessionOpened"] is False
         and facts["sessionClosed"] == 1
         and facts["forbiddenCalls"] == []
+        and trace_meta["armed"] is True
+        and trace_meta["cancelled"] is True
         and all(value is None for value in errors.values())
     )
 
@@ -1831,6 +1803,7 @@ def _await_go(
     request: Mapping[str, object],
     source_digest: str,
     interpreter: str,
+    lease_id: str,
 ) -> str:
     deadline = float(request["deadlineUnix"])
     while True:
@@ -1846,9 +1819,10 @@ def _await_go(
                     pid=os.getpid(),
                     source_digest=source_digest,
                     interpreter=interpreter,
+                    lease_id=lease_id,
                 )
-            except SessionTraceError:
-                return "go-identity-mismatch"
+            except SessionTraceError as error:
+                return _safe_code(error.code)
             return "accepted"
         if status not in ("missing", "incomplete"):
             return "go-identity-mismatch"
@@ -1864,6 +1838,10 @@ def child_main(output_dir: Path | str) -> int:
     request = _load_request(output_dir)
     if request is None:
         return _EXIT_UNKNOWN
+    stale_entries = _preexisting_child_entries(output_dir)
+    if stale_entries:
+        # Never start backend work next to stale one-shot outputs.
+        return _EXIT_REFUSED
     attempt_id = str(request["attemptId"])
     request_digest = str(request["requestDigest"])
     source_digest = _file_digest(Path(__file__).resolve())
@@ -1876,9 +1854,7 @@ def child_main(output_dir: Path | str) -> int:
     trace_meta: dict[str, object] = {"armed": False, "bytes": 0, "cancelled": False}
     outcome = "internal-error"
     lease: object | None = None
-    receipt: _FakeReceipt | None = None
     server = _HealthServer()
-    fake = _fake_config()
 
     claim_payload: dict[str, object] = {
         "schemaVersion": SCHEMA_VERSION,
@@ -1893,6 +1869,21 @@ def child_main(output_dir: Path | str) -> int:
         _write_json_exclusive(output_dir / CLAIM_FILE, claim_payload)
     except (FileExistsError, OSError):
         # One-shot output: never overwrite an existing claim or result.
+        return _EXIT_REFUSED
+    claim_status, claim_seen = _read_json_once(output_dir / CLAIM_FILE)
+    if claim_status != "ok" or not isinstance(claim_seen, dict):
+        return _EXIT_REFUSED
+    try:
+        _validate_claim(
+            claim_seen,
+            attempt_id=attempt_id,
+            request_digest=request_digest,
+            pid=os.getpid(),
+            source_digest=source_digest,
+            interpreter=interpreter,
+        )
+    except SessionTraceError:
+        # A claim that did not complete as written is not a reservation.
         return _EXIT_REFUSED
     _event(events, "claim-reserved", started)
 
@@ -1915,95 +1906,93 @@ def child_main(output_dir: Path | str) -> int:
                 errors["lease"] = lease_error or "lease-acquire-failed"
             else:
                 server.set_lease(str(getattr(lease, "lease_id")))
+                lease_id = str(getattr(lease, "lease_id"))
                 _event(events, "lease-acquired", started)
-                if fake.mode == "no-ready":
-                    # A deliberately partial start: claim and lease exist but
-                    # no READY is ever published.
-                    outcome = "startup-aborted"
+                ready_payload: dict[str, object] = {
+                    "schemaVersion": SCHEMA_VERSION,
+                    "attemptId": attempt_id,
+                    "requestDigest": request_digest,
+                    "pid": os.getpid(),
+                    "sourceDigest": source_digest,
+                    "interpreter": interpreter,
+                    "leaseId": lease_id,
+                    "readyAtUnix": time.time(),
+                }
+                try:
+                    _write_json_exclusive(output_dir / READY_FILE, ready_payload)
+                except BaseException:
+                    errors["ready"] = "ready-write-failed"
+                    outcome = "ready-write-failed"
                 else:
-                    ready_pid = (
-                        os.getpid() + 1 if fake.mode == "bad-ready" else os.getpid()
+                    _event(events, "ready-published", started)
+                    grant = _await_go(
+                        output_dir, request, source_digest, interpreter, lease_id
                     )
-                    ready_payload: dict[str, object] = {
-                        "schemaVersion": SCHEMA_VERSION,
-                        "attemptId": attempt_id,
-                        "requestDigest": request_digest,
-                        "pid": ready_pid,
-                        "sourceDigest": source_digest,
-                        "interpreter": interpreter,
-                        "leaseId": str(getattr(lease, "lease_id")),
-                        "readyAtUnix": time.time(),
-                    }
-                    try:
-                        _write_json_exclusive(output_dir / READY_FILE, ready_payload)
-                    except BaseException:
-                        errors["ready"] = "ready-write-failed"
-                        outcome = "ready-write-failed"
-                    else:
-                        _event(events, "ready-published", started)
-                        grant = _await_go(
-                            output_dir, request, source_digest, interpreter
-                        )
-                        if grant == "accepted":
-                            _event(events, "go-accepted", started)
-                            driver, driver_error, receipt = _acquire_driver(
-                                fake, output_dir
-                            )
-                            if driver is None:
-                                errors["construction"] = driver_error
-                                outcome = "driver-error"
+                    if grant == "accepted":
+                        _event(events, "go-accepted", started)
+                        backend, driver_error = _acquire_backend()
+                        if backend is None:
+                            errors["construction"] = driver_error
+                            outcome = "driver-error"
+                        else:
+                            try:
+                                probe = backend._select_probe(  # type: ignore[attr-defined]
+                                    str(request["probeSelector"])
+                                )
+                            except BaseException as error:
+                                code = getattr(error, "code", None)
+                                if code in {
+                                    "PROBE_NOT_FOUND",
+                                    "PROBE_SELECTION_AMBIGUOUS",
+                                    "PROBE_DESCRIPTOR_INVALID",
+                                }:
+                                    facts["driverAcquired"] = 1
+                                    facts["enumerations"] = 1
+                                    errors["construction"] = "selection-failed"
+                                    outcome = "selection-error"
+                                else:
+                                    errors["construction"] = "driver-error"
+                                    outcome = "driver-error"
                             else:
                                 facts["driverAcquired"] = 1
-                                _event(events, "driver-acquired", started)
-                                try:
-                                    probes = tuple(driver.list_probes())  # type: ignore[attr-defined]
-                                except BaseException:
-                                    errors["construction"] = "enumeration-failed"
-                                    outcome = "driver-error"
-                                else:
-                                    facts["enumerations"] = 1
-                                    _event(events, "probe-enumerated", started)
-                                    try:
-                                        probe = _select_exactly_one(
-                                            probes, str(request["probeSelector"])
-                                        )
-                                    except SessionTraceError:
-                                        errors["construction"] = "selection-failed"
-                                        outcome = "selection-error"
-                                    else:
-                                        facts["selections"] = 1
-                                        facts["probeFingerprint"] = _fingerprint_probe(
-                                            probe
-                                        )
-                                        _event(events, "probe-selected", started)
-                                        options = _session_options(request)
-                                        _construct_and_close(
-                                            facts,
-                                            errors,
-                                            trace_meta,
-                                            driver=driver,
-                                            probe=probe,
-                                            options=options,
-                                            traceback_path=output_dir / TRACEBACK_FILE,
-                                            events=events,
-                                            started=started,
-                                        )
-                                        outcome = (
-                                            "ok"
-                                            if facts["sessionConstructed"]
-                                            else "construct-error"
-                                        )
-                                        if (output_dir / TERMINATE_FILE).exists():
-                                            outcome = "cancelled-after-go"
-                                            _event(events, "cancelled", started)
-                        elif grant == "cancelled-before-go":
-                            outcome = "cancelled-before-go"
-                        elif grant == "go-identity-mismatch":
-                            outcome = "go-identity-mismatch"
-                            errors["go"] = "go-identity-mismatch"
-                        else:
-                            outcome = "go-timeout"
-                            errors["go"] = "go-timeout"
+                                facts["enumerations"] = 1
+                                facts["selections"] = 1
+                                facts["probeFingerprint"] = _fingerprint_probe(probe)
+                                _event(events, "probe-enumerated", started)
+                                _event(events, "probe-selected", started)
+                                driver = backend._get_driver()  # type: ignore[attr-defined]
+                                options = _session_options(request)
+                                _construct_and_close(
+                                    facts,
+                                    errors,
+                                    trace_meta,
+                                    driver=driver,
+                                    probe=probe,
+                                    options=options,
+                                    traceback_path=output_dir / TRACEBACK_FILE,
+                                    events=events,
+                                    started=started,
+                                )
+                                outcome = (
+                                    "ok"
+                                    if facts["sessionConstructed"]
+                                    else "construct-error"
+                                )
+                                if (output_dir / TERMINATE_FILE).exists():
+                                    outcome = "cancelled-after-go"
+                                    _event(events, "cancelled", started)
+                    elif grant == "cancelled-before-go":
+                        outcome = "cancelled-before-go"
+                    elif grant in (
+                        "go-identity-mismatch",
+                        "go-lease-mismatch",
+                        "go-expired",
+                    ):
+                        outcome = grant
+                        errors["go"] = grant
+                    else:
+                        outcome = "go-timeout"
+                        errors["go"] = "go-timeout"
     except SessionTraceError as error:
         errors["internal"] = _safe_code(error.code)
         outcome = "internal-error"
@@ -2022,8 +2011,6 @@ def child_main(output_dir: Path | str) -> int:
         health_error = server.stop()
         if health_error is not None and errors["health"] is None:
             errors["health"] = health_error
-        if receipt is not None:
-            receipt.flush()
 
     lease_id = None if lease is None else str(getattr(lease, "lease_id"))
     events_payload: dict[str, object] = {
@@ -2037,7 +2024,7 @@ def child_main(output_dir: Path | str) -> int:
         _write_json_exclusive(output_dir / EVENTS_FILE, events_payload)
     except BaseException:
         errors["events"] = "events-write-failed"
-    ok = _child_ok(outcome, facts, errors)
+    ok = _child_ok(outcome, facts, errors, trace_meta)
     if outcome == "ok" and not ok:
         # Cleanup/handle failures keep narrow constructor facts but are never
         # reported as an overall success.
