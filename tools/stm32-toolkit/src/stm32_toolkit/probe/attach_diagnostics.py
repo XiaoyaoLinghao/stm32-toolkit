@@ -11,6 +11,8 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
 
+from .attach_progress import validate_attach_progress
+
 
 PRIMARY_STAGES = frozenset(
     {
@@ -312,6 +314,12 @@ def _validate_late_attach(value: object) -> bool:
     return True
 
 
+_ATTACH_DIAGNOSTIC_KEYS = frozenset({
+    "version", "primary", "lateAttach", "cleanup", "lastVerifiedTargetState",
+})
+_ATTACH_DIAGNOSTIC_PROGRESS_KEYS = _ATTACH_DIAGNOSTIC_KEYS | {"progress"}
+
+
 def validate_attach_diagnostic(
     value: object,
     *,
@@ -319,10 +327,18 @@ def validate_attach_diagnostic(
 ) -> dict[str, object] | None:
     """Return a detached copy when *value* is an exact valid diagnostic."""
 
-    if not _exact_dict(value) or set(value) != {
-        "version", "primary", "lateAttach", "cleanup", "lastVerifiedTargetState"
-    }:
+    if not _exact_dict(value):
         return None
+    keys = frozenset(value)
+    if keys not in {_ATTACH_DIAGNOSTIC_KEYS, _ATTACH_DIAGNOSTIC_PROGRESS_KEYS}:
+        return None
+    progress: dict[str, object] | None = None
+    if "progress" in value:
+        if worker:
+            return None
+        progress = validate_attach_progress(value["progress"])
+        if progress is None:
+            return None
     if (
         type(value["version"]) is not int
         or value["version"] != 1
@@ -380,13 +396,16 @@ def validate_attach_diagnostic(
             return None
     if len(stages) > len(CLEANUP_STAGES):
         return None
-    return {
+    result: dict[str, object] = {
         "version": 1,
         "primary": dict(value["primary"]),
         "lateAttach": late_copy,
         "cleanup": cleanup,
         "lastVerifiedTargetState": value["lastVerifiedTargetState"],
     }
+    if progress is not None:
+        result["progress"] = progress
+    return result
 
 
 def make_primary(stage: str, reason: str, source_code: str) -> dict[str, str]:
@@ -461,14 +480,17 @@ def make_attach_diagnostic(
     cleanup: Iterable[Mapping[str, object]] = (),
     last_verified_target_state: str | None = None,
     late_attach: Mapping[str, object] | None = None,
+    progress: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
-    value = {
+    value: dict[str, object] = {
         "version": 1,
         "primary": dict(primary),
         "lateAttach": None if late_attach is None else dict(late_attach),
         "cleanup": [dict(item) for item in cleanup],
         "lastVerifiedTargetState": last_verified_target_state,
     }
+    if progress is not None:
+        value["progress"] = dict(progress)
     valid = validate_attach_diagnostic(value)
     if valid is None:
         raise ValueError("attach diagnostic is invalid")
@@ -619,6 +641,23 @@ def append_late_attach(
     return validate_attach_diagnostic(candidate)
 
 
+def append_attach_progress(
+    diagnostic: object,
+    progress: object,
+) -> dict[str, object] | None:
+    """Attach one valid detached progress snapshot, or retain the diagnostic."""
+
+    current = validate_attach_diagnostic(diagnostic)
+    if current is None:
+        return None
+    valid = validate_attach_progress(progress)
+    if valid is None:
+        return current
+    candidate = dict(current)
+    candidate["progress"] = valid
+    return validate_attach_diagnostic(candidate) or current
+
+
 def update_last_verified_target_state(
     diagnostic: object,
     state: object,
@@ -660,6 +699,7 @@ __all__ = [
     "REASONS",
     "SERVICE_OUTER_CLEANUP_STAGES",
     "SOURCE_CODES",
+    "append_attach_progress",
     "append_cleanup",
     "append_late_attach",
     "attach_details",

@@ -404,6 +404,7 @@ class PyOCDBackend:
         target_profile: Mapping[str, object] | None = None,
         target_transport_factory: Callable[[str, object, Mapping[str, object]], object] | None = None,
         connection_policy: str = NORMAL_CONNECTION_POLICY,
+        stage_callback: Callable[[str], None] | None = None,
     ) -> None:
         if (
             isinstance(frequency_hz, bool)
@@ -430,7 +431,10 @@ class PyOCDBackend:
         self._target_profile = dict(target_profile or {})
         if target_transport_factory is not None and not callable(target_transport_factory):
             raise ValueError("Target transport factory is invalid")
+        if stage_callback is not None and not callable(stage_callback):
+            raise ValueError("PyOCD stage callback is invalid")
         self._target_transport_factory = target_transport_factory
+        self._stage_callback: Callable[[str], None] | None = stage_callback
         self._session: object | None = None
         self._probe: object | None = None
         self._target: object | None = None
@@ -515,6 +519,29 @@ class PyOCDBackend:
             raise
         except Exception as error:
             raise ProbeBackendError("PROBE_BACKEND_ERROR", "Target transport is unavailable") from error
+
+    def _set_attach_stage_callback(self, callback: object) -> None:
+        """Register the private optional attach stage callback (no target I/O)."""
+
+        if callback is None:
+            self._stage_callback = None
+            return
+        if not callable(callback):
+            raise TypeError("PyOCD stage callback is invalid")
+        self._stage_callback = callback
+
+    def _emit_attach_stage(self, stage: str) -> None:
+        """Mark entry into one existing attach operation, never a new action."""
+
+        callback = self._stage_callback
+        if callback is None:
+            return
+        try:
+            callback(stage)
+        except BaseException:
+            # Progress transport is diagnostic-only: it can never trigger or
+            # replace the primary attach behavior or error.
+            pass
 
     def _get_driver(self) -> PyOCDDriver:
         driver = self._driver
@@ -998,6 +1025,10 @@ class PyOCDBackend:
             )
         if not _valid_identifier(target):
             raise ProbeBackendError("PROBE_TARGET_INVALID", "Target is invalid")
+        # One lazy driver acquisition immediately precedes the single probe
+        # enumeration already performed by _select_probe.
+        self._emit_attach_stage("driver-acquire")
+        self._emit_attach_stage("probe-enumeration")
         probe = self._select_probe(probe_id)
         try:
             hardware_probe_id = getattr(probe, "unique_id", None)
@@ -1013,6 +1044,7 @@ class PyOCDBackend:
                 "PROBE_IDENTITY_MISMATCH", "Selected debug probe identity is invalid"
             )
         prior_cleanup: list[dict[str, str]] = []
+        self._emit_attach_stage("prior-attachment-close")
         try:
             self._close_internal(cleanup=prior_cleanup)
         except ProbeBackendError as error:
@@ -1051,14 +1083,18 @@ class PyOCDBackend:
         last_verified: list[str | None] = [None]
         primary_postcondition_failed = False
         try:
+            self._emit_attach_stage("session-create")
             session = self._get_driver().create_session(probe, options=options)
             open_started = True
             attach_stage = "target-resolve-before-open"
+            self._emit_attach_stage("target-resolve-before-open")
             session_target = self._candidate_target(session)
             attach_stage = "session-open"
+            self._emit_attach_stage("session-open")
             getattr(session, "open")()
             session_opened = True
             attach_stage = "target-resolve-after-open"
+            self._emit_attach_stage("target-resolve-after-open")
             if session_target is None:
                 session_target = self._candidate_target(session)
             if session_target is None:
@@ -1072,6 +1108,7 @@ class PyOCDBackend:
                     "Selected target does not resolve to exactly one core",
                 )
             attach_stage = "target-identity"
+            self._emit_attach_stage("target-identity")
             try:
                 part_number = _display_text(
                     getattr(session_target, "part_number", None), fallback=None
@@ -1088,6 +1125,7 @@ class PyOCDBackend:
                 )
             if halt_on_connect:
                 attach_stage = "halt-verify"
+                self._emit_attach_stage("halt-verify")
                 last_verified[0] = self._read_target_state(session_target)
                 if last_verified[0] != "halted":
                     primary_postcondition_failed = True
@@ -1096,8 +1134,10 @@ class PyOCDBackend:
                     )
             elif not preserve:
                 attach_stage = "resume"
+                self._emit_attach_stage("resume")
                 getattr(session_target, "resume")()
                 attach_stage = "resume-verify"
+                self._emit_attach_stage("resume-verify")
                 last_verified[0] = self._read_target_state(session_target)
                 if last_verified[0] != "running":
                     primary_postcondition_failed = True

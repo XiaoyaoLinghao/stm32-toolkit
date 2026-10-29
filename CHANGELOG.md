@@ -54,6 +54,22 @@
   behavior, automatic retry, target-state repair or post-flash run is added. The reset is
   part of the authorized flash operation and grants no later independent reset, resume,
   Monitor or handoff authority; offline success does not claim a physical HardFault fix.
+- Implemented: optional retained attach stage progress. Only the parent may add a closed
+  `attachDiagnostic.progress` snapshot to an existing service attach timeout/cancellation
+  diagnostic: `version=1`, `clock="parent-receipt"`, a bounded `elapsedMs`, and an ordered
+  subsequence of the closed stage vocabulary beginning with a parent-created
+  `worker-dispatch` at zero. Small stage frames use the existing owned worker connection,
+  are accepted only for the matching `open_attach` request ID under the original absolute
+  deadline, and never renew it. `PyOCDBackend` marks entry into its existing lazy driver
+  acquisition, single enumeration, prior close, session create/open, target resolution,
+  identity and the halt or resume branch through a private optional callback without adding
+  target actions, warmup, retries or a second enumeration. The service attaches a validated
+  snapshot only when its private per-attempt token matches, keeps it local and detached, and
+  preserves it across the owned worker abort; raw child diagnostics carrying `progress` are
+  rejected. Absent progress keeps the exact previous five-key envelope, successful attach
+  results and all cleanup/control ordering are unchanged, and every timing marker is
+  approximate observed IPC entry evidence — not a hardware duration, completion proof or
+  target state.
 - All entries above are local `Unreleased` corrections planned for `v1.3.5`; they are not
   part of the published v1.3.4 bytes, are not an accepted release, and packaging,
   installation and release qualification have not been performed for them. The controlled

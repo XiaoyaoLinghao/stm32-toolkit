@@ -31,6 +31,7 @@ from .backend import (
 from .attach_diagnostics import (
     CleanupFragment,
     LEGACY_ATTACH_STAGES,
+    append_attach_progress,
     append_late_attach,
     attach_details,
     extract_attach_diagnostic,
@@ -40,6 +41,7 @@ from .attach_diagnostics import (
     make_primary,
     SOURCE_CODES,
 )
+from .attach_progress import validate_attach_progress
 from .authorization import ControlAuthorizationError, ControlAuthorizationStore
 from .lease import ProbeLease, ProbeLeaseManager, _RuntimeRootAuthority
 from .model import OperationLevel, ProbeRequest, ProbeResponse
@@ -939,6 +941,32 @@ class ProbeService:
             }
         )
 
+    def _attach_progress_snapshot(
+        self, token: str | None
+    ) -> dict[str, object] | None:
+        """Copy the local matching progress snapshot; never IPC or hardware."""
+
+        if token is None:
+            return None
+        snapshot = getattr(self._backend, "attach_progress_snapshot", None)
+        if not callable(snapshot):
+            return None
+        try:
+            value = snapshot(token)
+        except BaseException:
+            return None
+        return validate_attach_progress(value)
+
+    def _with_attach_progress(
+        self, diagnostic: dict[str, object], token: str | None
+    ) -> dict[str, object]:
+        """Add optional matching progress without replacing the diagnostic."""
+
+        progress = self._attach_progress_snapshot(token)
+        if progress is None:
+            return diagnostic
+        return append_attach_progress(diagnostic, progress) or diagnostic
+
     async def _run_backend(self, request: ProbeRequest) -> object:
         if (
             request.operation == "probe.attach"
@@ -975,6 +1003,13 @@ class ProbeService:
         observation_candidate: tuple[
             str, str, ProbeAttachmentEvidence
         ] | None = None
+        attach_progress_token: str | None = None
+        if (
+            request.operation == "probe.attach"
+            and callable(getattr(self._backend, "open_attach_with_progress", None))
+            and callable(getattr(self._backend, "attach_progress_snapshot", None))
+        ):
+            attach_progress_token = secrets.token_hex(16)
 
         def invoke() -> object:
             nonlocal observation_candidate
@@ -1015,11 +1050,22 @@ class ProbeService:
                     payload["requestedTarget"] = target
                     return payload
 
-                evidence = self._backend.open_attach(
-                    probe_id,
-                    target,
-                    halt_on_connect=self._operation_level is OperationLevel.MODIFY,
+                progress_attach = getattr(
+                    self._backend, "open_attach_with_progress", None
                 )
+                if attach_progress_token is not None and callable(progress_attach):
+                    evidence = progress_attach(
+                        probe_id,
+                        target,
+                        halt_on_connect=self._operation_level is OperationLevel.MODIFY,
+                        request_token=attach_progress_token,
+                    )
+                else:
+                    evidence = self._backend.open_attach(
+                        probe_id,
+                        target,
+                        halt_on_connect=self._operation_level is OperationLevel.MODIFY,
+                    )
                 resolved_target = getattr(evidence, "resolved_part_number", None)
                 requested_target = request.data.get("target")
                 if (
@@ -1436,6 +1482,9 @@ class ProbeService:
                         ),
                         cleanup=recovery_cleanup,
                     )
+                    diagnostic = self._with_attach_progress(
+                        diagnostic, attach_progress_token
+                    )
                     initiating = ProbeBackendError(
                         "PROBE_TIMEOUT", "Attach recovery did not reach a terminal state"
                     )
@@ -1462,6 +1511,9 @@ class ProbeService:
                             diagnostic = append_late_attach(
                                 diagnostic, _late_attach_payload(incoming)
                             ) or diagnostic
+                        diagnostic = self._with_attach_progress(
+                            diagnostic, attach_progress_token
+                        )
                         if value.code == "PROBE_CLOSE_FAILED":
                             raise ProbeBackendError(
                                 value.code,
@@ -1479,15 +1531,18 @@ class ProbeService:
                     )
                     if was_cancelled:
                         raise asyncio.CancelledError() from None
+                    diagnostic = make_attach_diagnostic(
+                        _service_primary(
+                            primary_stage,
+                            code=primary_code,
+                            reason=primary_reason,
+                        ),
+                        cleanup=recovery_cleanup,
+                    )
                     raise ProbeAttachTimeout(
                         attach_details(
-                            make_attach_diagnostic(
-                                _service_primary(
-                                    primary_stage,
-                                    code=primary_code,
-                                    reason=primary_reason,
-                                ),
-                                cleanup=recovery_cleanup,
+                            self._with_attach_progress(
+                                diagnostic, attach_progress_token
                             )
                         )
                     ) from None
@@ -1579,6 +1634,9 @@ class ProbeService:
                         cleanup=recovery_cleanup,
                         last_verified_target_state=recovery_state,
                     )
+                    diagnostic = self._with_attach_progress(
+                        diagnostic, attach_progress_token
+                    )
                     raise ProbeBackendError(
                         "PROBE_CLOSE_FAILED",
                         "Probe attach cleanup failed",
@@ -1595,6 +1653,9 @@ class ProbeService:
                     ),
                     cleanup=recovery_cleanup,
                     last_verified_target_state=recovery_state,
+                )
+                diagnostic = self._with_attach_progress(
+                    diagnostic, attach_progress_token
                 )
                 if recovery_error is not None:
                     raise ProbeBackendError(

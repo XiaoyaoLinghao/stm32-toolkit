@@ -31,6 +31,14 @@ from .attach_diagnostics import (
     SOURCE_CODES,
     validate_attach_diagnostic,
 )
+from .attach_progress import (
+    HALT_STAGE,
+    PROGRESS_CLOCK,
+    PROGRESS_STAGES,
+    PROGRESS_VERSION,
+    RESUME_STAGES,
+    validate_attach_progress,
+)
 
 
 _VERSION = "stm32-toolkit-probe-worker/1"
@@ -270,11 +278,34 @@ def _worker_main(
     backend: object | None = None
     explicit_close_started = False
     method: str | None = None
+    stage_request: dict[str, int | None] = {"id": None}
+
+    def attach_stage_callback(stage: object) -> None:
+        identifier = stage_request["id"]
+        if identifier is None:
+            return
+        try:
+            _send(connection, {
+                "version": _VERSION, "progress": stage, "id": identifier,
+            })
+        except BaseException:
+            # A stage frame is diagnostic-only; its transport failure must not
+            # alter or replace the backend's own attach behavior or error.
+            pass
+
     try:
         if backend_factory is not None:
             # The callable is an explicit private test seam passed through Windows spawn;
             # production construction never accepts a module or import string.
             backend = backend_factory()
+            register_stage_callback = getattr(
+                backend, "_set_attach_stage_callback", None
+            )
+            if callable(register_stage_callback):
+                try:
+                    register_stage_callback(attach_stage_callback)
+                except BaseException:
+                    pass
         elif type(config) is ProbeWorkerConfig:
             from .pyocd_backend import PyOCDBackend, admitted_target_transport_factory
             backend = PyOCDBackend(
@@ -282,6 +313,7 @@ def _worker_main(
                 target_profile=config.target_profile(),
                 target_transport_factory=admitted_target_transport_factory,
                 connection_policy=config.connection_policy,
+                stage_callback=attach_stage_callback,
             )
         else:
             raise TypeError("Probe worker configuration is invalid")
@@ -311,10 +343,16 @@ def _worker_main(
             ):
                 args[0] = tuple(args[0])
             explicit_close_started = method == "close"
-            result = getattr(backend, method)(
-                *args,
-                **{key: _from_json(item) for key, item in request["kwargs"].items()},
-            )
+            if method == "open_attach":
+                stage_request["id"] = request["id"]
+            try:
+                result = getattr(backend, method)(
+                    *args,
+                    **{key: _from_json(item) for key, item in request["kwargs"].items()},
+                )
+            finally:
+                if method == "open_attach":
+                    stage_request["id"] = None
             if method == "debug_handoff_metadata":
                 result = DebugHandoffMetadata.from_value(result).to_dict()
             _send(connection, {
@@ -403,6 +441,14 @@ class ProbeBackendWorker:
         self._call_lock = threading.Lock()
         self._sequence = 0
         self._closed = False
+        # Small local-only metadata snapshot for the current attach attempt.
+        # It is never shared with the child and never holds the call lock.
+        self._attach_progress_lock = threading.Lock()
+        self._attach_progress_token: str | None = None
+        self._attach_progress_origin: float | None = None
+        self._attach_progress_events: list[tuple[str, int]] = []
+        self._attach_progress_last_index = -1
+        self._attach_progress_frozen_ms: int | None = None
         try:
             ready = self._receive(time.monotonic() + 10.0)
         except BaseException:
@@ -443,18 +489,135 @@ class ProbeBackendWorker:
             raise ProbeWorkerError("PROBE_BACKEND_ERROR", "Probe worker response is invalid")
         return value
 
+    def _reset_attach_progress(self, token: str | None) -> None:
+        with self._attach_progress_lock:
+            self._attach_progress_token = token
+            self._attach_progress_origin = None
+            self._attach_progress_events = []
+            self._attach_progress_last_index = -1
+            self._attach_progress_frozen_ms = None
+
+    def _mark_attach_dispatch(self) -> None:
+        """Record the parent-created origin only after a successful send."""
+
+        with self._attach_progress_lock:
+            self._attach_progress_origin = time.monotonic()
+            self._attach_progress_events = [("worker-dispatch", 0)]
+            self._attach_progress_last_index = 0
+            self._attach_progress_frozen_ms = None
+
+    def _freeze_attach_progress(self) -> None:
+        with self._attach_progress_lock:
+            origin = self._attach_progress_origin
+            if origin is not None and self._attach_progress_frozen_ms is None:
+                self._attach_progress_frozen_ms = max(
+                    0, int((time.monotonic() - origin) * 1000)
+                )
+
+    def _record_attach_progress_frame(
+        self, frame: dict[str, object], request_id: int
+    ) -> None:
+        """Admit one ordered child stage frame or fail the worker protocol closed."""
+
+        if (
+            set(frame) != {"version", "progress", "id"}
+            or type(frame.get("id")) is not int
+            or frame["id"] != request_id
+            or type(frame.get("progress")) is not str
+            or frame["progress"] not in PROGRESS_STAGES
+        ):
+            raise ProbeWorkerError(
+                "PROBE_BACKEND_ERROR", "Probe worker response is invalid"
+            )
+        stage = frame["progress"]
+        assert type(stage) is str
+        index = PROGRESS_STAGES.index(stage)
+        with self._attach_progress_lock:
+            if self._attach_progress_frozen_ms is not None:
+                return
+            origin = self._attach_progress_origin
+            if origin is None or index <= self._attach_progress_last_index:
+                raise ProbeWorkerError(
+                    "PROBE_BACKEND_ERROR", "Probe worker response is invalid"
+                )
+            stages = {item[0] for item in self._attach_progress_events}
+            if (
+                (stage == HALT_STAGE and RESUME_STAGES[0] in stages)
+                or (stage == RESUME_STAGES[0] and HALT_STAGE in stages)
+                or (stage == RESUME_STAGES[1] and RESUME_STAGES[0] not in stages)
+            ):
+                raise ProbeWorkerError(
+                    "PROBE_BACKEND_ERROR", "Probe worker response is invalid"
+                )
+            elapsed_ms = max(0, int((time.monotonic() - origin) * 1000))
+            self._attach_progress_events.append((stage, elapsed_ms))
+            self._attach_progress_last_index = index
+
+    def _receive_attach_response(
+        self, deadline: float, request_id: int
+    ) -> dict[str, object]:
+        """Receive stage frames and the terminal result under one absolute deadline."""
+
+        while True:
+            value = self._receive(deadline)
+            if "progress" not in value:
+                return value
+            self._record_attach_progress_frame(value, request_id)
+
+    def attach_progress_snapshot(self, request_token: str) -> dict[str, object] | None:
+        """Return the detached local snapshot for exactly this private token.
+
+        This never acquires the blocking call lock and never performs IPC or
+        hardware access, so it remains usable after an owned abort.
+        """
+
+        if type(request_token) is not str or not 1 <= len(request_token) <= 128:
+            return None
+        with self._attach_progress_lock:
+            if (
+                self._attach_progress_token != request_token
+                or self._attach_progress_origin is None
+            ):
+                return None
+            elapsed_ms = self._attach_progress_frozen_ms
+            if elapsed_ms is None:
+                elapsed_ms = max(
+                    0,
+                    int((time.monotonic() - self._attach_progress_origin) * 1000),
+                )
+            events = tuple(self._attach_progress_events)
+        value = {
+            "version": PROGRESS_VERSION,
+            "clock": PROGRESS_CLOCK,
+            "elapsedMs": elapsed_ms,
+            "events": [
+                {"stage": stage, "elapsedMs": milliseconds}
+                for stage, milliseconds in events
+            ],
+        }
+        return validate_attach_progress(value)
+
     def call(
         self,
         method: str,
         *args: object,
         timeout_seconds: float = 30.0,
         deadline: float | None = None,
+        _progress_token: str | None = None,
         **kwargs: object,
     ) -> object:
         if (
             method not in _METHODS
             or not 0 < timeout_seconds <= 301
             or (deadline is not None and (type(deadline) is not float or not math.isfinite(deadline)))
+            or (
+                _progress_token is not None
+                and (
+                    method != "open_attach"
+                    or type(_progress_token) is not str
+                    or not 1 <= len(_progress_token) <= 128
+                )
+            )
         ):
             raise ProbeWorkerError("PROBE_PROTOCOL_INVALID", "Probe worker request is invalid")
         if deadline is None:
@@ -476,6 +639,8 @@ class ProbeBackendWorker:
                 raise ProbeWorkerError("PROBE_TIMEOUT", "Probe worker operation timed out")
             self._sequence += 1
             request_id = self._sequence
+            if method == "open_attach":
+                self._reset_attach_progress(_progress_token)
             payload = _canonical_bytes({
                 "version": _VERSION, "id": request_id, "method": method,
                 "args": _json_value(args), "kwargs": _json_value(kwargs),
@@ -485,7 +650,14 @@ class ProbeBackendWorker:
             try:
                 self._connection.send_bytes(payload)
                 dispatched = True
-                response = self._receive(request_deadline)
+                if method == "open_attach":
+                    self._mark_attach_dispatch()
+                    response = self._receive_attach_response(
+                        request_deadline, request_id
+                    )
+                    self._freeze_attach_progress()
+                else:
+                    response = self._receive(request_deadline)
             except ProbeWorkerError:
                 if dispatched:
                     self.abort_owned_execution()
@@ -566,6 +738,7 @@ class ProbeBackendWorker:
 
     def abort_owned_execution(self) -> None:
         """Terminate only the exact child owned by this proxy and bound the join."""
+        self._freeze_attach_progress()
         if self._closed:
             return
         self._closed = True
@@ -589,6 +762,28 @@ class ProbeBackendWorker:
 
     def open_attach(self, probe_id: str, target: str, *, halt_on_connect: bool = False) -> ProbeAttachmentEvidence:
         return ProbeAttachmentEvidence(**self.call("open_attach", probe_id, target, halt_on_connect=halt_on_connect))
+
+    def open_attach_with_progress(
+        self,
+        probe_id: str,
+        target: str,
+        *,
+        halt_on_connect: bool = False,
+        request_token: str,
+    ) -> ProbeAttachmentEvidence:
+        """Attach while retaining a snapshot scoped to one private service token."""
+
+        if type(request_token) is not str or not 1 <= len(request_token) <= 128:
+            raise ProbeWorkerError(
+                "PROBE_PROTOCOL_INVALID", "Probe worker request is invalid"
+            )
+        return ProbeAttachmentEvidence(**self.call(
+            "open_attach",
+            probe_id,
+            target,
+            halt_on_connect=halt_on_connect,
+            _progress_token=request_token,
+        ))
 
     def debug_handoff_metadata(self, *, deadline: float | None = None) -> DebugHandoffMetadata:
         try:
