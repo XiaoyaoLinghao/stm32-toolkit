@@ -190,6 +190,16 @@ SVD 场景在首次硬件操作前以实际 project/target/device、完整 SVD �
 
 原始异常必须在首次获准执行前具备留证路径。details.programDiagnostic 仅说明对应编程阶段，program-call 不证明已经擦除/写入。按当前源码检查 backend、IPC、外层映射是否保留所需字段；若 prepare/attach 信息会丢失，先离线验证最小捕获边界，不能失败后自动重连补日志。
 
+### SESSION-TRACE 一次构造器诊断的后续实机入口
+
+该入口只用于当前Session构造超时调查，须先满足[离线诊断门槛](../codex/returns/SESSION-TRACE/implementation-report.md)和[显式直接运行时设计](../superpowers/specs/2026-10-29-session-trace-runtime-design.md)，再由独立审查者复核本节、真实源码入口与run目录执行卡。它不是已安装Toolkit CLI或普通烧录，不继承过去一次烧录授权；未获本次明确硬件授权及新供电/独占确认，不标READY、不运行`run`或`child`。
+
+执行卡必须绑定干净source HEAD与已验收CodeHead、实际helper字节hash、固定真实CPython可执行文件/hash、同树Toolkit源码和既有只读pyOCD依赖。Windows venv启动器不是本诊断支持的执行镜像；不在失败后换解释器、不接管子孙PID或放宽READY的PID/source/request/lease相等检查。临时目录与一次输出目录单独绑定；后者执行前必须不存在，已有证据不覆盖。记录真实project/target/public probe selector和原共享data root，不创建替代注册表或移除旧lease。只读文件快照中的released不证明当前独占，执行时仍由真实guard/owner/loopback health合同拒绝占用或handoff。
+
+固定一次父调用、一个直接child、一个原始20秒总deadline和至多2秒自有协作终止等待；父进程持有明确句柄、claim/READY与期限均匹配后才写一次GO。GO前的真实租约和回环health不枚举设备；GO后只允许一次默认驱动获取、一次现有精确selector枚举/选择、一次`Session(auto_open=False)`构造和成功返回后的既有Session.close。该构造可临时打开USB并查询元数据，需要实机授权。选项与正常100kHz路径一致，不调用Session.open、目标reset/halt/resume、编程、读回或恢复；100kHz仅是传入选项，在Session.open之前不能证明已配置实际SWD时钟。固件不是此诊断输入，板上固件身份/CPU状态均UNKNOWN，不能把现存ELF/hash当作运行证明。
+
+构造前一次真实faulthandler延迟1秒，repeat=false/exit=false，返回后取消；按固定文件留证attempt/request/claim/READY/GO/result/events、child stderr和私有栈。总体成功要求匹配记录、确认child退出0、一次构造/关闭、无禁止动作、trace/lease/handle清理成功；不要求快于1秒时也产生非空栈。超时、取消、拒绝、身份、持久化或清理任一失败，保留 initiating 与 cleanup 后立即停止，不补枚举/连接/烧录/复位或恢复，也不延长原deadline。自有child仍活着或启动未知时保留UNKNOWN与其自有lease，不强杀、不删除注册表、不关闭活/未知句柄或声称已回收；后续处置另核对真实所有权与授权。一次诊断返回只证明该次自有操作，不能单独完成原超时根因、IPSR=3或烧录验收。
+
 ## 3. 状态和所有权
 
 按被测版本的函数重新核对，不复用旧部署的行号或机器路径。
