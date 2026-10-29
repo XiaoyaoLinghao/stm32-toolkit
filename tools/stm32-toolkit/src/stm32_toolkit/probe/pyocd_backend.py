@@ -426,6 +426,7 @@ class PyOCDBackend:
         ):
             raise ValueError("PyOCD connection policy requires 100 kHz")
         self._driver = driver
+        self._attach_acquisition_scope = False
         self._frequency_hz = frequency_hz
         self._connection_policy = connection_policy
         self._target_profile = dict(target_profile or {})
@@ -793,8 +794,18 @@ class PyOCDBackend:
                 raise ProbeBackendError("PROBE_IDENTITY_MISMATCH", "Target log transport options do not match")
 
     def _enumerate_raw(self) -> tuple[object, ...]:
+        # These two markers sit on the real boundaries of the existing single
+        # lazy acquisition and the single probe enumeration; nothing is added
+        # before them.  They are emitted only while open_attach has routed the
+        # callback into this scope.
+        attach_scope = self._attach_acquisition_scope
         try:
-            probes = tuple(self._get_driver().list_probes())
+            if attach_scope:
+                self._emit_attach_stage("driver-acquire")
+            driver = self._get_driver()
+            if attach_scope:
+                self._emit_attach_stage("probe-enumeration")
+            probes = tuple(driver.list_probes())
         except ProbeBackendError:
             raise
         except Exception as error:
@@ -1026,10 +1037,16 @@ class PyOCDBackend:
         if not _valid_identifier(target):
             raise ProbeBackendError("PROBE_TARGET_INVALID", "Target is invalid")
         # One lazy driver acquisition immediately precedes the single probe
-        # enumeration already performed by _select_probe.
-        self._emit_attach_stage("driver-acquire")
-        self._emit_attach_stage("probe-enumeration")
-        probe = self._select_probe(probe_id)
+        # enumeration already performed by _select_probe.  Those two markers are
+        # emitted inside that existing operation at their real boundaries, so
+        # this scope only routes the callback into it: no extra acquisition,
+        # import, warmup or enumeration is added here.
+        previous_attach_scope = self._attach_acquisition_scope
+        self._attach_acquisition_scope = True
+        try:
+            probe = self._select_probe(probe_id)
+        finally:
+            self._attach_acquisition_scope = previous_attach_scope
         try:
             hardware_probe_id = getattr(probe, "unique_id", None)
         except Exception as error:

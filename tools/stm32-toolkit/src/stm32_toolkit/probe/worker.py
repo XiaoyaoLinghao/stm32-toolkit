@@ -534,7 +534,11 @@ class ProbeBackendWorker:
         index = PROGRESS_STAGES.index(stage)
         with self._attach_progress_lock:
             if self._attach_progress_frozen_ms is not None:
-                return
+                # A frozen snapshot is terminal for its token: any later frame
+                # is a protocol violation, never a late-but-acceptable stage.
+                raise ProbeWorkerError(
+                    "PROBE_BACKEND_ERROR", "Probe worker response is invalid"
+                )
             origin = self._attach_progress_origin
             if origin is None or index <= self._attach_progress_last_index:
                 raise ProbeWorkerError(
