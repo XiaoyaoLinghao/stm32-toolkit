@@ -1,5 +1,14 @@
 # SESSION-TRACE execution and verification disposition
 
+Latest hardware checkpoint: the newly authorized once-only constructor diagnostic
+at clean source HEAD `90f9a42cd2b37fd597e02eadc434d408c7e2b7b7` is
+**TERMINAL_STOPPED / FAILED_AT_CONSTRUCTOR**; see the
+[execution and upstream-fix report](constructor-diagnostic-2026-10-29.md).
+Parent exit4/22,016ms; captured Windows HID metadata-read wait; child alive at
+parent exit, lease release unconfirmed and physical state UNKNOWN. Authority
+consumed, no retry/forced cleanup/install. Offline software acceptance below
+remains scoped to unchanged diagnostic code, not the unresolved physical goal.
+
 ## Current checkpoint: offline diagnostic qualified, physical investigation pending
 
 2026-10-29 verdict: **SOFTWARE_COMPLETE_HARDWARE_PENDING**. All required offline

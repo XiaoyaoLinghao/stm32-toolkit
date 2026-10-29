@@ -5,7 +5,22 @@ Accepted base for replacement SESSION-TRACE:
 Primary Codex owns design/planning/orchestration/complete-diff review/acceptance;
 local Claude Code CLI owns code/tests, unchanged `deepseek-v4.1-flash[1m]` route,
 using `C:/Users/zhy76/.codex/tools/claude-dispatch/dispatch.py` only. Hardware,
-installation, packaging and remote authority remain absent.
+installation, packaging and remote authority are separately bounded; the single
+constructor-only hardware authority below is now consumed.
+
+Latest item1 checkpoint: the authorized diagnostic at clean source HEAD
+`90f9a42cd2b37fd597e02eadc434d408c7e2b7b7` failed, parent exit4/22,016ms,
+child alive at parent exit and lease release unconfirmed. A native stack shows
+pyOCD0.45.1 Windows HID read of DAP_Info maximum packet count before SWD setup;
+see [hardware diagnostic](../../codex/returns/SESSION-TRACE/constructor-diagnostic-2026-10-29.md).
+Matching upstream fix is released in0.46.0, not yet upgraded/validated. Preserve
+UNKNOWN and evidence; no force kill, lease deletion or retry under the consumed
+card. Resolve owned-process cleanup and isolated dependency preparation with
+new bounded authority. Plan a new dependency slice with setup/policy/profile/
+skill consistency and fresh offline API evidence, retaining historical0.45.1
+qualification. Item1 stays open; items2/3 queued. Preserve the potentially live
+child's source/dependencies and use another clean tree for new implementation.
+Earlier checkpoints follow.
 
 Current item1 checkpoint: final direct-runtime CodeHead
 `e8c43322efa454ac5ddc782572c073e566b432fd` has42/42 fresh delegated passes,

@@ -6,6 +6,8 @@
 
 ## 1. 当前断点与证据
 
+2026-10-29 SESSION-TRACE 新获明确授权与原板原探针就绪/独占/无变化确认后，已执行唯一一次构造器诊断，执行HEAD `90f9a42cd2b37fd597e02eadc434d408c7e2b7b7`，见[实机诊断报告](../codex/returns/SESSION-TRACE/constructor-diagnostic-2026-10-29.md)。父进程22,016ms、实际退出4/work-timeout；一秒原生栈落在pyOCD0.45.1 Windows HID读取，等待DAP_Info/MAX_PACKET_COUNT，早于Session.open及SWD频率设置。上游0.46.0已包含对应无超时等待修复，但尚未升级/验证，不能声称探针响应或烧录已修好。父退出时自有child仍活，协作等待未成功、无result/events、租约释放未确认，物理状态UNKNOWN；19:40:45只读核对PID/创建时刻/映像匹配且仍运行，不强杀/删除租约/重连。一次权限已消耗，状态TERMINAL_STOPPED，不再READY。下一步只离线审查依赖升级范围；强制回收自有child或准备新隔离依赖均需另明确授权，不自动安装、追加硬件或推送发布。既有42+8软件证据保留，完整三项目标仍在第1项。以下为历史断点。
+
 2026-10-29 SESSION-TRACE 在等待同一份新硬件授权/就绪答复期间，离线追踪了USB等待分支，并补齐枚举期间Session.get_current可能创建无探针默认选项Session的配置前置；见[源证据及聚焦复核](../codex/returns/SESSION-TRACE/usb-wait-offline-2026-10-29.md)。原project四个默认YAML与两个环境覆盖项当前均不存在，未读取配置内容、导入后端或操作设备。新增前置在b68794a7取得独立NO_BLOCKERS，三条原生命令/三个完整JSON源码包均已核对；原完整入口审查和42+8软件证据仍保留。USB默认10秒与旧服务5秒只构成待实机区分的候选解释，不是根因或延长超时的授权。代码、时限、后端选择、实机次数及20s+2s预算均未改变，仍BLOCKED_NOT_EXECUTED；此前硬件权限/供电独占问题未获新答复，不重复发起或自动执行。以下为此前断点。
 
 2026-10-29 SESSION-TRACE 后续一次构造器/USB诊断的流程、执行卡和实际入口已取得独立 **NO_BLOCKERS**，见[入口审查记录与限制](../codex/returns/SESSION-TRACE/entry-review-2026-10-29.md)。审查源码HEAD `60daa9cc0e38438fa7acf555bdd37f58b644fd08`，CodeHead仍为下方离线通过的e8c43322；16条原生只读命令、25段完整源码（含2225行helper）已核对，未执行helper/后端/枚举/USB或测试，也未编辑产品/测试。新硬件授权、当前供电/原板原探针独占及变化确认仍缺，状态 **BLOCKED_NOT_EXECUTED**，不是READY；已审查执行卡不能自行授权或重用旧实机次数。补充依赖源hash、实际解释器版本及字段只是代码路径声明的限制已留证，原物理原因与完整三项目标仍未解决。以下为软件与历史断点。
