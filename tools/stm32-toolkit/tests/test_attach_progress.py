@@ -952,7 +952,7 @@ def test_worker_queued_attach_gets_no_prior_progress_or_dispatch(
 
         worker.abort_owned_execution()
         caller.join(2.0)
-        assert not caller.is_alive
+        assert not caller.is_alive()
         assert len(failures) == 1
         assert isinstance(failures[0], (ProbeWorkerError, EOFError, OSError))
         assert not worker.is_alive
