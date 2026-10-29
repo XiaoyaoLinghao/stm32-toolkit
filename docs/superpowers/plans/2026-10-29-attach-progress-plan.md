@@ -74,3 +74,29 @@ launch, owner, exact HEAD/tracked hashes, real subprocess exit and fresh JUnit;
 same-tree PYTHONPATH, guarded main and no device API are mandatory. No dependencies
 are installed. Required command lists are frozen in each verify task after source
 review/test discovery; unlisted commands remain unauthorized.
+
+## Evidence-triggered test correction
+
+The complete Monitor observation regression exposed an unchanged test assertion
+`git_calls == 8` in
+`test_private_mixed_batch_uses_one_guard_pair_per_tick_and_preserves_read_order`.
+Candidate run cmo1 and one independent accepted-base e4d9118e control bm1 both
+failed identically with zero observed Git calls. The test and Monitor runtime are
+unchanged by ATTACH-PROGRESS. Source review confirms the existing shared firmware
+admission's documented contract: Git is optional stored traceability, not a live
+eligibility gate; content/ELF/MAP/memory admission stays active.
+
+Under the existing offline verification/review scope, authorize one narrowly bounded
+Claude test-only correction to the exact additional file
+`tools/stm32-toolkit/tests/test_monitor_observation.py`: change only this stale count
+expectation to zero with a short contract comment; retain spy, guard counts, read
+order, identity, lifecycle, attach, DWARF and SVD assertions. No Monitor/product
+behavior, deadline, fixture, skipped case or test selection changes. This is a
+new review finding and changed-source verification, not a retry of unchanged
+failed code or an acceptance of the original failure. Preserve cmo1/bm1 and the
+earlier cr15 pre-pytest coordinator-routing failure. Verify the complete Monitor
+module at the resulting clean source, and run all final attach-progress cases.
+
+The existing Windows directory-handle rename skip, if repeated, is a platform-only
+gate deferred to Primary during release qualification on a rename-capable Linux
+host. Record its exact identity/reason; do not mark it PASS or disable the test.
