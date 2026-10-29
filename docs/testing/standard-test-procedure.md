@@ -4,7 +4,9 @@
 
 ## 1. 当前断点与证据
 
-2026-10-29 ATTACH-PROGRESS 阶段留证切片已冻结规格/计划，但实现委派在只读搜索路径拼写错误及未授权自行更正后由主代理停止，见[保留记录](../codex/returns/ATTACH-PROGRESS/implementation-report.md)。Accepted base `e4d9118e1c83f139db2959acbd4076a357c37992`，委派source freeze `a5d7308e421c7d2724e916d038d8a257dc115eed`；状态 **NOT_IMPLEMENTED_DELEGATION_STOPPED**，无新产品CodeHead、无编辑/测试执行。原生工具清单匹配；一次范围外不存在路径的Grep失败，后续正确路径Grep属于未授权更正；失败日志及实际强制停止证据保留，未重试该调用。已有产品与16项离线续查结论不变；新阶段日志、离线验证与独立验收尚未完成，未接触硬件、安装或推送发布。后续仅在明确有界重新委派授权后恢复，沿用既定文件/工具/模型/执行边界。以下为历史断点。
+2026-10-29 ATTACH-PROGRESS 已完成离线审查修正与验收，整体 **SOFTWARE_COMPLETE_HARDWARE_PENDING**，最终产品/测试CodeHead `e8d7e16436dc7130ec70b6fea0efdc8650ce791a`，见[当前执行与独立验收记录](../codex/returns/ATTACH-PROGRESS/implementation-report.md)。attach超时/取消的既有诊断可带闭合`progress`：父进程收到的阶段标记与近似耗时，按当前私有请求token隔离，保留至自有worker中止后；成功响应、原时限、频率、授权、控制及清理合同不变。修正了驱动/枚举标记位置、冻结后帧校验及测试断言/收帧等待；另通过accepted-base同错对照确认并修正一个既有Monitor测试的旧Git次数预期，未改Monitor运行逻辑。受影响矩阵去重1,063通过，Claude1,063、主代理独立67（不相加）；主代理在精确最终CodeHead全新执行全部66项新增用例及修正的Monitor断言。仅1项既有Windows目录句柄阻止rename的用例跳过，明确由主代理在可rename的Linux宿主发行资格阶段补验。复用范围、实际失败、scope审计偏差及调度修正均保留，不是最终提交全仓重跑或发行资格。源码仍为Unreleased/计划1.3.5，版本元数据1.3.4；未操作硬件、安装、打包、推送或发布，旧物理attach超时与IPSR=3根因仍未证实。后续实机须另授权、填新执行卡并先独立审查更新入口合同；旧一次授权已消耗。以下为历史断点。
+
+2026-10-29 ATTACH-PROGRESS 阶段留证切片已冻结规格/计划，但实现委派在只读搜索路径拼写错误及未授权自行更正后由主代理停止，见[保留记录](../codex/returns/ATTACH-PROGRESS/delegation-history.md)。Accepted base `e4d9118e1c83f139db2959acbd4076a357c37992`，委派source freeze `a5d7308e421c7d2724e916d038d8a257dc115eed`；状态 **NOT_IMPLEMENTED_DELEGATION_STOPPED**，无新产品CodeHead、无编辑/测试执行。原生工具清单匹配；一次范围外不存在路径的Grep失败，后续正确路径Grep属于未授权更正；失败日志及实际强制停止证据保留，未重试该调用。已有产品与16项离线续查结论不变；新阶段日志、离线验证与独立验收尚未完成，未接触硬件、安装或推送发布。后续仅在明确有界重新委派授权后恢复，沿用既定文件/工具/模型/执行边界。以下为历史断点。
 
 2026-10-29 FLASH-PREPARATION 继续完成attach离线续查，见[执行与证据审查](../codex/returns/FLASH-PREPARATION/attach-offline-2026-10-29.md)。干净执行HEAD `fa7b2547f657ffd3faa74f9af34d30e0925ecf5b`，产品CodeHead未变；Claude原生PowerShell执行16项既有定向测试全部通过，主代理核对真实工具/命令、外置JUnit新鲜度/身份/hash及全部记录的tracked源码hash。另一次普通诊断测得冷进程驱动依赖加载约0.964秒（模块导入约0.683秒），未枚举或连接硬件；单样本不能解释或排除此前现场延迟。源码确认初始worker握手在服务attach之前已完成，故旧超时范围缩小至后续attach内部/IPC；旧响应无内部阶段进度，物理根因仍未确定。本轮 **OFFLINE_CHECKS_PASS_PHYSICAL_CAUSE_UNRESOLVED**，整体仍 **SOFTWARE_COMPLETE_HARDWARE_PENDING**；未重试实机、改产品/测试/时限、安装或推送发布。后续须先准备并离线审查分阶段连接留证入口；此前一次授权已消耗，不授予新连接或烧录。以下为历史断点。
 
@@ -155,6 +157,7 @@ Windows 使用已核实的 PowerShell、解释器与工作目录。每次运行�
 | 入口 | 实际 argv、状态前置、连接/执行副作用、返回字段、源码函数依据 |
 | 烧录频率与策略 | 对实际支持本切片的CLI/MCP记录显式Hz或省略、选定connectionPolicy；核对frequencyHz/--frequency是否在实际绑定schema/入口中。100000..50000000为配置范围，不是实测时钟或成功证明。普通默认配置不变；受管under-reset固定100000Hz，显式冲突先离线解决；导入路线不支持under-reset |
 | 烧录前准备（计划v1.3.5源码候选） | 先确认实际部署源码/运行时包含FLASH-PREPARATION，不能仅凭版本号推断。普通受管/导入烧录在既有授权、身份与镜像准入后请求一次SYSRESETREQ reset-and-halt，再确认HALTED；受管under-reset复用连接时复位，只重新确认HALTED。记录details.flashOptions.preProgramReset/preProgramHaltRequired，作为选定策略而非已执行证据。准备失败即停，不进入编程、回读或成功收据，不补偿halt/reset/resume或重试。未发布/未安装的源码候选不会改变现有runtime |
+| 连接阶段留证（计划v1.3.5源码候选） | 先核对实际源码/runtime包含ATTACH-PROGRESS，不能凭仍为1.3.4的元数据推断已安装。原attach超时/取消诊断可附加attachDiagnostic.progress，记录version/clock/elapsedMs/events；它是当前请求的父进程收帧近似时间与最后收到的阶段入口，可能仅有worker-dispatch，不是精确硬件耗时、完成证明或目标状态。按原样保存code/details及cleanup，缺字段或缺后续帧不补读目标、不重连补日志；旧请求trace不得迁移，队列未派发不得冒用旧trace。所有原授权/时限/频率/首错停止规则仍有效 |
 | 授权与预算 | 当前授权范围，新 action 来源，固定次数/时长/超时，允许的控制操作 |
 | 成功与停止 | 成功证据、下一步条件、首错停止、既有 cleanup 终态证明 |
 | 留证 | 原 code/details/cause、最后阶段、动作消费、TestRun/receipt/lease 保存位置 |
