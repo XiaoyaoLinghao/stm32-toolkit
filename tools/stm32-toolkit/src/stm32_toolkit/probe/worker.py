@@ -83,7 +83,7 @@ class ProbeWorkerConfig:
     def __init__(
         self,
         *,
-        frequency_hz: int = 1_000_000,
+        frequency_hz: int = 100_000,
         target_profile: Mapping[str, object] | None = None,
         transport_provider: str = "task8",
         connection_policy: str = NORMAL_CONNECTION_POLICY,

@@ -3100,8 +3100,10 @@ def create_server(
         only with authorized=true after explicit user authorization for this
         exact operation.  Under-reset recovery is a separate policy, never
         an automatic retry.  frequencyHz is an optional explicit debug
-        frequency in Hz (100000..50000000); omit it to keep the configured
-        default.  Under-reset recovery keeps its fixed 100000 Hz policy, so
+        frequency in Hz (100000..50000000); omitted uses the ordinary
+        100000 Hz (100 kHz) production default, and a faster value is an
+        optional explicit choice rather than a required 1 MHz gate.
+        Under-reset recovery keeps its fixed 100000 Hz policy, so
         a conflicting explicit frequency fails before any effect.  The
         result's details.flashOptions records selected configuration, not a
         measured or verified hardware frequency.  details.recoverySuggestion
@@ -3224,8 +3226,10 @@ def create_server(
         is outside the attached target's declared Flash map, and every planned
         byte is read back.  A distinct external-flash receipt is written only
         after successful readback and cleanup.  frequencyHz is an optional
-        explicit debug frequency in Hz (100000..50000000); omit it to keep the
-        configured default.  details.flashOptions records selected
+        explicit debug frequency in Hz (100000..50000000); omitted uses the
+        ordinary 100000 Hz (100 kHz) production default, and a faster value
+        is an optional explicit choice rather than a required 1 MHz gate.
+        details.flashOptions records selected
         configuration, not a measured frequency.  This path adds no
         recovery-under-reset, reset, resume, handoff, debug, Monitor, or Target
         test capability, and its receipt does not unlock them.

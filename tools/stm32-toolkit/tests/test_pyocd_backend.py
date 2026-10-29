@@ -803,7 +803,7 @@ def test_observation_attach_uses_pinned_halt_policy_then_returns_running():
         "auto_unlock": False,
         "connect_mode": "halt",
         "dap_protocol": "swd",
-        "frequency": 1_000_000,
+        "frequency": 100_000,
         "no_config": True,
         "pack.debug_sequences.enable": True,
         "primary_core": 0,

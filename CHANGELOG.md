@@ -50,8 +50,10 @@
   `details.flashOptions` additionally reports `preProgramReset`
   (`sysresetreq` normally, `under-reset-connect` for recovery) and
   `preProgramHaltRequired: true` as selected policy, not evidence that a reset or attach
-  happened. No input option, schema/receipt version, frequency default, erase/keep-unwritten
-  behavior, automatic retry, target-state repair or post-flash run is added. The reset is
+  happened. No input option, schema/receipt version, erase/keep-unwritten
+  behavior, automatic retry, target-state repair or post-flash run is added by
+  this entry; the separately listed ordinary-flash default-frequency change
+  does not alter any of them. The reset is
   part of the authorized flash operation and grants no later independent reset, resume,
   Monitor or handoff authority; offline success does not claim a physical HardFault fix.
 - Implemented: optional retained attach stage progress. Only the parent may add a closed
@@ -70,11 +72,30 @@
   results and all cleanup/control ordering are unchanged, and every timing marker is
   approximate observed IPC entry evidence — not a hardware duration, completion proof or
   target state.
+- Implemented: ordinary flash default debug frequency. The shared production
+  `ProbeWorkerConfig` and the direct `PyOCDBackend` constructor now default to
+  exactly `100000` Hz (100 kHz), so an omitted `frequencyHz`/`--frequency` on
+  managed flash, imported flash and normal Target programming reaches 100 kHz
+  without selecting under-reset recovery or adding a reconnect, retry, warmup or
+  extra enumeration/read/control. Omitted requests still forward `null` and an
+  explicitly supplied private worker configuration is reused unchanged; the
+  explicit frequency range `100000..50000000`, precedence, type/range/conflict
+  errors and reset/halt, erase, keep-unwritten, identity, authorization, readback,
+  cleanup and deadline behavior are unchanged. A supported faster value remains an
+  optional explicit configuration, and 1 MHz is no longer a flash requirement or
+  acceptance gate. CLI help, both registered MCP tool descriptions, the user guide
+  and the flash Skill state this default and the optional override. The fixed
+  100 kHz under-reset-recovery and observation/observe-preserve policies remain
+  distinct from the ordinary default. Slower wire transfer may increase physical
+  elapsed time; no hardware performance, frequency measurement or reset efficacy
+  is claimed, and finite deadlines are unchanged.
 - All entries above are local `Unreleased` corrections planned for `v1.3.5`; they are not
   part of the published v1.3.4 bytes, are not an accepted release, and packaging,
   installation and release qualification have not been performed for them. The controlled
   pre-program preparation entry is a real source-level hardware behavior change (one
-  authorized `SYSRESETREQ` reset-and-halt on the managed and imported routes); it has no
+  authorized `SYSRESETREQ` reset-and-halt on the managed and imported routes); the
+  ordinary-flash 100 kHz default is likewise a source-level behavior change for any
+  omitted frequency. Neither has
   hardware acceptance evidence until the change is installed and explicitly qualified on a
   board.
 

@@ -400,7 +400,7 @@ class PyOCDBackend:
         self,
         driver: PyOCDDriver | None = None,
         *,
-        frequency_hz: int = 1_000_000,
+        frequency_hz: int = 100_000,
         target_profile: Mapping[str, object] | None = None,
         target_transport_factory: Callable[[str, object, Mapping[str, object]], object] | None = None,
         connection_policy: str = NORMAL_CONNECTION_POLICY,

@@ -1045,7 +1045,7 @@ def test_target_supervisor_uses_the_frozen_worker_configuration(
     )
 
     assert [item["worker_config"] for item in captured] == [normal, recovery]
-    assert captured[0]["worker_config"].frequency_hz == 1_000_000
+    assert captured[0]["worker_config"].frequency_hz == 100_000
     assert captured[0]["worker_config"].connection_policy == NORMAL_CONNECTION_POLICY
     assert captured[1]["worker_config"].frequency_hz == 100_000
     assert (

@@ -675,7 +675,8 @@ def test_worker_config_derives_only_the_fixed_under_reset_recovery_profile() -> 
     )
     recovery = normal.for_under_reset_recovery()
 
-    assert normal.frequency_hz == 1_000_000
+    assert module.ProbeWorkerConfig().frequency_hz == 100_000
+    assert normal.frequency_hz == 100_000
     assert normal.connection_policy == module.NORMAL_CONNECTION_POLICY
     assert recovery.frequency_hz == 100_000
     assert recovery.connection_policy == module.UNDER_RESET_RECOVERY_CONNECTION_POLICY
@@ -704,7 +705,7 @@ def test_worker_config_derives_normal_observation_profile_without_recovery_mecha
     assert observation.target_profile() == base.target_profile()
     assert observation.transport_provider == base.transport_provider
     assert base == module.ProbeWorkerConfig(target_profile=profile)
-    assert base.frequency_hz == 1_000_000
+    assert base.frequency_hz == 100_000
     assert base.for_under_reset_recovery().connection_policy == (
         module.UNDER_RESET_RECOVERY_CONNECTION_POLICY
     )

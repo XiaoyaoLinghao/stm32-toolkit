@@ -113,7 +113,73 @@ def test_managed_omitted_frequency_keeps_default_and_reports_configuration(
 
     assert result.details["flashOptions"] == {
         "requestedFrequencyHz": None,
-        "configuredFrequencyHz": 1_000_000,
+        "configuredFrequencyHz": 100_000,
+        "connectionPolicy": NORMAL_CONNECTION_POLICY,
+        "preProgramReset": "sysresetreq",
+        "preProgramHaltRequired": True,
+        "automaticRetry": False,
+    }
+    assert result.details["postFlash"] == {
+        "targetState": "unknown",
+        "runVerified": False,
+    }
+    assert "recoverySuggestion" not in result.details
+    assert recorder.events.count("operation") == 1
+
+
+def test_production_defaults_are_100khz_without_any_recovery() -> None:
+    """Ordinary omission reaches 100 kHz in the shared production defaults."""
+
+    from fakes.fake_pyocd import FakePyOCDDriver, FakePyOCDProbe
+    from stm32_toolkit.probe.pyocd_backend import PyOCDBackend
+
+    ordinary = ProbeWorkerConfig()
+    assert ordinary.frequency_hz == 100_000
+    assert ordinary.connection_policy == NORMAL_CONNECTION_POLICY
+    assert HardwareWorkflowSeams().worker_config.frequency_hz == 100_000
+    assert (
+        HardwareWorkflowSeams().worker_config.connection_policy
+        == NORMAL_CONNECTION_POLICY
+    )
+
+    driver = FakePyOCDDriver((FakePyOCDProbe("probe-a"),))
+    backend = PyOCDBackend(driver)
+    try:
+        backend.open_attach("probe-a", "stm32f407vg")
+        assert driver.created_sessions[0].options["frequency"] == 100_000
+    finally:
+        backend.close()
+
+
+def test_managed_omitted_frequency_reaches_worker_config_at_100khz(
+    tmp_path: Path,
+) -> None:
+    project = _project(tmp_path / "project")
+    recorder = _Recorder()
+    captured: list[object] = []
+    base = ProbeWorkerConfig(target_profile={"mcu": "stm32f407vgtx"})
+
+    result = _flash(
+        project,
+        tmp_path / "data",
+        seams=_capturing_worker_seams(recorder, captured, worker_config=base),
+    )
+
+    assert len(captured) == 1
+    # Omission reuses the supplied configuration object unchanged: no copy,
+    # no mutation and no recovery substitution.
+    assert captured[0] is base
+    assert captured[0].frequency_hz == 100_000
+    assert captured[0].connection_policy == NORMAL_CONNECTION_POLICY
+    assert captured[0].target_profile() == {"mcu": "stm32f407vgtx"}
+    assert captured[0].transport_provider == base.transport_provider
+    assert base.frequency_hz == 100_000
+    assert base.connection_policy == NORMAL_CONNECTION_POLICY
+    assert base.target_profile() == {"mcu": "stm32f407vgtx"}
+    assert result.ok is True
+    assert result.details["flashOptions"] == {
+        "requestedFrequencyHz": None,
+        "configuredFrequencyHz": 100_000,
         "connectionPolicy": NORMAL_CONNECTION_POLICY,
         "preProgramReset": "sysresetreq",
         "preProgramHaltRequired": True,
@@ -150,7 +216,9 @@ def test_managed_explicit_frequency_reaches_worker_config_and_preserves_profile(
     assert selected.transport_provider == base.transport_provider
     assert selected.target_profile() == {"mcu": "stm32f407vgtx"}
     assert selected is not base
-    assert base.frequency_hz == 1_000_000
+    assert base.frequency_hz == 100_000
+    assert base.target_profile() == {"mcu": "stm32f407vgtx"}
+    assert base.connection_policy == NORMAL_CONNECTION_POLICY
     assert result.details["flashOptions"] == {
         "requestedFrequencyHz": 4_000_000,
         "configuredFrequencyHz": 4_000_000,
@@ -365,7 +433,7 @@ def test_program_failure_without_diagnostic_gets_bounded_suggestion(
     assert "Stop here" in suggestion["guidance"]
     assert "separately authorized" in suggestion["guidance"]
     assert "halted" in suggestion["guidance"]
-    assert result.details["flashOptions"]["configuredFrequencyHz"] == 1_000_000
+    assert result.details["flashOptions"]["configuredFrequencyHz"] == 100_000
     assert "postFlash" not in result.details
 
 
@@ -680,7 +748,70 @@ def test_imported_omitted_frequency_keeps_default(tmp_path: Path) -> None:
 
     assert result.ok is True
     assert result.details["flashOptions"]["requestedFrequencyHz"] is None
-    assert result.details["flashOptions"]["configuredFrequencyHz"] == 1_000_000
+    assert result.details["flashOptions"]["configuredFrequencyHz"] == 100_000
+
+
+def test_imported_omitted_frequency_reaches_worker_config_at_100khz(
+    tmp_path: Path,
+) -> None:
+    project, data_root, _payload, import_id, source_sha, _admission = _prepare_import(
+        tmp_path
+    )
+    recorder = _Recorder()
+    captured: list[object] = []
+    base = ProbeWorkerConfig(target_profile={"mcu": "stm32f407vgtx"})
+
+    async def refused(
+        _request: object, _client: object
+    ) -> OperationResult[object]:
+        recorder.events.append("operation")
+        return OperationResult.failure(
+            "stm32_flash_imported",
+            "PROBE_PROGRAM_FAILED",
+            "simulated imported failure",
+            {},
+        )
+
+    seams = replace(
+        _capturing_worker_seams(recorder, captured, worker_config=base),
+        flash_imported=refused,
+    )
+    result = _run(
+        flash_imported_workflow(
+            FlashImportedWorkflowRequest(
+                project,
+                data_root,
+                "session-a",
+                "probe-a",
+                import_id,
+                source_sha,
+                True,
+            ),
+            _seams=seams,
+        )
+    )
+
+    assert result.ok is False
+    assert result.code == "PROBE_PROGRAM_FAILED"
+    assert len(captured) == 1
+    assert captured[0] is base
+    assert captured[0].frequency_hz == 100_000
+    assert captured[0].connection_policy == NORMAL_CONNECTION_POLICY
+    assert captured[0].target_profile() == {"mcu": "stm32f407vgtx"}
+    assert captured[0].transport_provider == base.transport_provider
+    assert base.frequency_hz == 100_000
+    assert base.connection_policy == NORMAL_CONNECTION_POLICY
+    assert base.target_profile() == {"mcu": "stm32f407vgtx"}
+    assert result.details["flashOptions"] == {
+        "requestedFrequencyHz": None,
+        "configuredFrequencyHz": 100_000,
+        "connectionPolicy": NORMAL_CONNECTION_POLICY,
+        "preProgramReset": "sysresetreq",
+        "preProgramHaltRequired": True,
+        "automaticRetry": False,
+    }
+    assert "recoverySuggestion" not in result.details
+    assert recorder.events.count("operation") == 1
 
 
 def test_imported_failure_has_flash_options_but_no_recovery_suggestion(
@@ -1026,6 +1157,29 @@ def test_flash_imported_cli_forwards_frequency(monkeypatch, tmp_path: Path, caps
     assert calls[0].frequency_hz == 3_000_000
 
 
+@pytest.mark.parametrize("route", ["flash", "flash-imported"])
+def test_flash_route_help_states_the_100khz_production_default(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    route: str,
+) -> None:
+    # A wide terminal keeps argparse from wrapping inside the help prose.
+    monkeypatch.setenv("COLUMNS", "200")
+    assert main([route, "--help"]) == 0
+    help_text = capsys.readouterr().out
+    collapsed = "".join(help_text.split()).lower()
+
+    assert "--frequency" in collapsed
+    assert "100000..50000000" in collapsed
+    assert "100000hz(100khz)productiondefault" in collapsed
+    assert "optionalexplicit" in collapsed
+    assert "neverarequired1mhzgate" in collapsed
+    if route == "flash":
+        assert "under-resetrecoveryrequires100000" in collapsed
+    else:
+        assert "importedflashhasnorecoveryoption" in collapsed
+
+
 def _frequency_argv(
     route: str,
     project: Path,
@@ -1147,6 +1301,29 @@ def test_mcp_schemas_expose_bounded_optional_frequency(tmp_path: Path) -> None:
         assert constraints["type"] == "integer"
         assert constraints["minimum"] == 100_000
         assert constraints["maximum"] == 50_000_000
+
+
+def test_registered_flash_tools_describe_the_100khz_production_default(
+    tmp_path: Path,
+) -> None:
+    runtime = _runtime(tmp_path)
+    server = create_server(runtime.project_root, runtime.data_root, runtime.session_id)
+    descriptions = {
+        tool.name: " ".join((tool.description or "").split())
+        for tool in asyncio.run(server.list_tools())
+    }
+
+    for name in ("stm32_flash", "stm32_flash_imported"):
+        description = descriptions[name]
+        assert "frequencyHz" in description
+        assert "100000..50000000" in description
+        assert "ordinary 100000 Hz (100 kHz) production default" in description
+        assert "optional explicit choice" in description
+        assert "required 1 MHz gate" in description
+        assert "not a measured" in description
+    assert "Under-reset recovery keeps its fixed 100000 Hz policy" in (
+        descriptions["stm32_flash"]
+    )
 
 
 def test_registered_flash_forwards_frequency_and_null_default(

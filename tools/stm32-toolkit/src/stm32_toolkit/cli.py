@@ -555,8 +555,10 @@ def _build_parser() -> argparse.ArgumentParser:
         action=_RejectDuplicate,
         default=None,
         help=(
-            "Explicit debug frequency in Hz (100000..50000000); omitted keeps "
-            "the configured default. Under-reset recovery requires 100000."
+            "Explicit debug frequency in Hz (100000..50000000); omitted uses "
+            "the ordinary 100000 Hz (100 kHz) production default. A faster "
+            "value is an optional explicit choice, never a required 1 MHz "
+            "gate. Under-reset recovery requires 100000."
         ),
     )
 
@@ -611,8 +613,10 @@ def _build_parser() -> argparse.ArgumentParser:
         action=_RejectDuplicate,
         default=None,
         help=(
-            "Explicit debug frequency in Hz (100000..50000000); omitted keeps "
-            "the configured default. Imported flash has no recovery option."
+            "Explicit debug frequency in Hz (100000..50000000); omitted uses "
+            "the ordinary 100000 Hz (100 kHz) production default. A faster "
+            "value is an optional explicit choice, never a required 1 MHz "
+            "gate. Imported flash has no recovery option."
         ),
     )
 
