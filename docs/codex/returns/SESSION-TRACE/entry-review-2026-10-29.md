@@ -77,6 +77,13 @@ observation validates the exact planned argv without main/run_attempt/child.
 
 ## Next authorized boundary
 
+Later offline source tracing found the enumeration-time get_current default
+Session(None) configuration boundary, which the original source excerpts did
+not include. See [the focused supplement](usb-wait-offline-2026-10-29.md).
+The original NO_BLOCKERS verdict remains retained for its stated scope, but a
+focused independent review of this added prerequisite is also required before
+hardware. Software42+8 results and all hardware operation limits are unchanged.
+
 After a new explicit hardware authorization and current original-board/probe
 power/exclusivity/change confirmation, update only the card's identities/status,
 recheck exact clean source/runtime/helper/dependency/project pins and absent
