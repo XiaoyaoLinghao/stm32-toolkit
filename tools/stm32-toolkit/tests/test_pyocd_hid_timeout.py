@@ -1,10 +1,13 @@
 """Regression tests for the pyocd 0.46.0 CMSIS-DAP HID read path.
 
 These tests drive the real ``HidApiUSB.read`` implementation shipped in the
-selected pyocd 0.46.0 install against a fake HID device object.  The fake only
-records the arguments of ``hid.device.read`` and replays synthetic payloads; no
-USB backend, ``hid`` module, real device, debug session or target API is
-touched, and the implementation under test is never copied or monkeypatched.
+selected pyocd 0.46.0 install against a fake HID device object.  Importing
+``HidApiUSB`` imports pyocd's HID backend module, which in turn imports its
+bundled ``hid`` binding at import time; however no hardware I/O occurs: no USB
+backend is started, no device is enumerated, opened, read or written, and no
+debug session or target API is touched.  The fake only records the arguments of
+``hid.device.read`` and replays synthetic payloads, and the implementation under
+test is never copied or monkeypatched.
 
 Covered contract:
 
@@ -16,15 +19,24 @@ Covered contract:
 * An empty HID response (device read timeout or disconnect) raises
   ``DAPAccessIntf.DeviceError`` instead of returning an empty buffer.
 
-The module fails hard at collection time (no ``skip``) when the wrong pyocd
-build is imported, so an older package cannot silently satisfy the regression.
+At import time the module validates the active pyocd build from installer
+metadata rather than from a directory-name convention: the installed
+distribution metadata version and the loaded module's own version must both
+equal the release policy pin, and the loaded ``pyocd`` package must resolve to
+the ``pyocd/__init__.py`` that the installed distribution reports.  A wrong
+version or a pyocd package imported from a different origin fails hard at
+collection time (no ``skip``), so an older or mismatched package cannot silently
+satisfy the regression.  The guard itself is exercised by the metadata-only
+regressions at the end of this module.
 """
 
 from __future__ import annotations
 
+import importlib.metadata
 import json
 import math
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -36,13 +48,28 @@ from pyocd.probe.pydapaccess.interface.hidapi_backend import HidApiUSB
 
 POLICY = Path(__file__).parents[3] / "tools" / "release" / "release_0900_policy.json"
 EXPECTED_PYOCD_VERSION = "0.46.0"
-SELECTED_SITE_MARKER = "candidate-site"
 EXPECTED_DEFAULT_TIMEOUT_MS = 10000
+POLICY_PLATFORM_OS = "windows"
+EXPECTED_PLATFORM_NAME = "win32"
+PACKAGE_INIT_RELATIVE_PATH = "pyocd/__init__.py"
 
 
-def _require_selected_sdk() -> None:
-    """Fail collection unless the policy's actual pyocd 0.46.0 layer is active."""
-    policy = json.loads(POLICY.read_text(encoding="utf-8"))
+def _assert_selected_sdk(
+    policy: Mapping[str, Any],
+    *,
+    module_version: str,
+    distribution_version: str,
+    module_init: Path,
+    distribution_init: Path,
+    platform_name: str,
+    default_timeout_ms: int,
+) -> None:
+    """Check supplied pyocd observations against the release policy pins.
+
+    The checks are pure: they read no file, installer metadata or SDK, so the
+    guard can be regression tested with synthetic observations while the real
+    callers below feed it the live environment.
+    """
     direct_pin = policy["directPins"]["pyocd"]
     resolved_pin = policy["resolvedPins"]["pyocd"]
     assert direct_pin == resolved_pin == EXPECTED_PYOCD_VERSION, (
@@ -51,29 +78,55 @@ def _require_selected_sdk() -> None:
         f"direct={direct_pin!r} resolved={resolved_pin!r}"
     )
 
-    version = str(getattr(pyocd, "__version__", ""))
-    assert version == direct_pin, (
-        f"installed pyocd {version!r} does not match the policy pin "
+    assert module_version == direct_pin, (
+        f"imported pyocd {module_version!r} does not match the policy pin "
         f"{direct_pin!r}; these regressions must run against the selected "
         "0.46.0 SDK, not an older package"
     )
 
-    package_path = Path(pyocd.__file__).resolve()
-    assert SELECTED_SITE_MARKER in str(package_path).lower(), (
-        "pyocd must be imported from the selected 0.46.0 candidate install "
-        f"(path marker {SELECTED_SITE_MARKER!r}), not another package: "
-        f"{package_path}"
+    assert distribution_version == direct_pin, (
+        "installed pyocd distribution metadata version "
+        f"{distribution_version!r} does not match the policy pin "
+        f"{direct_pin!r}; the selected 0.46.0 SDK must be the installed "
+        "distribution"
     )
 
-    assert policy["platform"]["os"] == "windows" and sys.platform == "win32", (
+    assert Path(module_init) == Path(distribution_init), (
+        "the imported pyocd package must come from the origin reported by the "
+        f"installed distribution ({distribution_init}), got loaded module "
+        f"origin {module_init}; a pyocd import from another directory cannot "
+        "satisfy this regression"
+    )
+
+    assert (
+        policy["platform"]["os"] == POLICY_PLATFORM_OS
+        and platform_name == EXPECTED_PLATFORM_NAME
+    ), (
         "the finite HID read timeout is the Windows repair; this regression "
         "must run on the policy platform windows/x86_64, got "
-        f"{sys.platform!r}"
+        f"{platform_name!r}"
     )
 
-    assert HidApiUSB.DEFAULT_USB_TIMEOUT_MS == EXPECTED_DEFAULT_TIMEOUT_MS, (
+    assert default_timeout_ms == EXPECTED_DEFAULT_TIMEOUT_MS, (
         "selected pyocd build must expose the 10000 ms SDK default USB "
-        f"timeout, got {HidApiUSB.DEFAULT_USB_TIMEOUT_MS!r}"
+        f"timeout, got {default_timeout_ms!r}"
+    )
+
+
+def _require_selected_sdk() -> None:
+    """Fail collection unless the imported pyocd is the policy's 0.46.0 layer."""
+    policy = json.loads(POLICY.read_text(encoding="utf-8"))
+    distribution = importlib.metadata.distribution("pyocd")
+    _assert_selected_sdk(
+        policy,
+        module_version=str(getattr(pyocd, "__version__", "")),
+        distribution_version=distribution.version,
+        module_init=Path(pyocd.__file__).resolve(),
+        distribution_init=Path(
+            distribution.locate_file(PACKAGE_INIT_RELATIVE_PATH)
+        ).resolve(),
+        platform_name=sys.platform,
+        default_timeout_ms=HidApiUSB.DEFAULT_USB_TIMEOUT_MS,
     )
 
 
@@ -197,3 +250,47 @@ def test_read_empty_response_raises_device_error() -> None:
 
     assert device.read_calls, "HidApiUSB.read never read from the HID device"
     assert device.write_calls == [], "HidApiUSB.read must not write to the device"
+
+
+def _synthetic_policy() -> dict[str, Any]:
+    """Minimal policy document shaped like the tracked release policy."""
+    return {
+        "directPins": {"pyocd": EXPECTED_PYOCD_VERSION},
+        "resolvedPins": {"pyocd": EXPECTED_PYOCD_VERSION},
+        "platform": {"os": POLICY_PLATFORM_OS},
+    }
+
+
+def test_guard_admits_consistent_ordinary_site_packages_install() -> None:
+    """The guard must accept a 0.46.0 SDK in any ordinary install directory."""
+    site_packages = Path("C:/Users/example/project/.venv/Lib/site-packages")
+    package_init = site_packages / PACKAGE_INIT_RELATIVE_PATH
+
+    # No exception means the guard admitted this ordinary, non-candidate path.
+    _assert_selected_sdk(
+        _synthetic_policy(),
+        module_version=EXPECTED_PYOCD_VERSION,
+        distribution_version=EXPECTED_PYOCD_VERSION,
+        module_init=package_init,
+        distribution_init=package_init,
+        platform_name=EXPECTED_PLATFORM_NAME,
+        default_timeout_ms=EXPECTED_DEFAULT_TIMEOUT_MS,
+    )
+
+
+def test_guard_rejects_module_loaded_from_different_origin() -> None:
+    """A pyocd import from outside the installed distribution must be rejected."""
+    site_packages = Path("C:/Users/example/project/.venv/Lib/site-packages")
+    distribution_init = site_packages / PACKAGE_INIT_RELATIVE_PATH
+    stray_init = Path("D:/scratch/pyocd-checkout/src/pyocd/__init__.py")
+
+    with pytest.raises(AssertionError, match="origin"):
+        _assert_selected_sdk(
+            _synthetic_policy(),
+            module_version=EXPECTED_PYOCD_VERSION,
+            distribution_version=EXPECTED_PYOCD_VERSION,
+            module_init=stray_init,
+            distribution_init=distribution_init,
+            platform_name=EXPECTED_PLATFORM_NAME,
+            default_timeout_ms=EXPECTED_DEFAULT_TIMEOUT_MS,
+        )
