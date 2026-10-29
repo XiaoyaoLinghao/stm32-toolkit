@@ -8,9 +8,9 @@
   existing Cortex-Debug `1.12.1`) now select the official pyOCD `0.46.0` release. Upstream
   uses a finite timeout for the Windows HID read and reports an empty response as an error
   instead of blocking there; this addresses the dependency read captured in the one-shot
-  constructor diagnostic. It adds no monkeypatch, vendored SDK code, forced one-megahertz
-  profile, frequency/backend override, limit-packets workaround, skipped metadata query,
-  retry, recovery or deadline increase, and leaves the ordinary `100 kHz` default,
+  constructor diagnostic. It adds no monkeypatch, vendored SDK code, frequency/backend
+  override, limit-packets workaround, skipped metadata query, retry, recovery or deadline
+  increase, and leaves the ordinary `100 kHz` default,
   reset/halt, lease, identity, authorization and cleanup contracts unchanged. The production
   service's 5 s attach budget versus the SDK's 10 s HID default is unchanged, so an outer
   attach timeout may still elapse before the SDK timeout and is not claimed solved. It does
