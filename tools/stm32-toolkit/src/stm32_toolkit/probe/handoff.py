@@ -181,7 +181,7 @@ class _CortexDebugLaunchProjection:
         )
         return {
             "schemaVersion": 1,
-            "profile": {"cortexDebug": "1.12.1", "pyocd": "0.45.1"},
+            "profile": {"cortexDebug": "1.12.1", "pyocd": "0.46.0"},
             "configuration": configuration,
         }
 

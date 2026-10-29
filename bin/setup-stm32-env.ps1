@@ -10,13 +10,13 @@ param(
 
 $ErrorActionPreference = "Stop"
 $RuntimeVersion = "1.3.4"
-$PyOcdVersion = "0.45.1"
+$PyOcdVersion = "0.46.0"
 $LegacyRuntimeVersions = @("1.3.3", "1.3.2", "1.3.1", "1.3.0", "1.2.0", "1.1.2", "1.0.1", "1.0.0", "0.9.0", "0.5.0", "0.3.0")
 $ProcessOutputLimit = 65536
 $ReleaseUtilityRelative = "tools/release/build_0900_artifacts.py"
 $ReleasePolicyRelative = "tools/release/release_0900_policy.json"
 $ReleaseUtilitySha256 = "4ce078240c4c206b8c69bc7d189789f185b10e73aa4f884fbde56f57d3511fff"
-$ReleasePolicySha256 = "aa02bf03fb6b2f226fdbc51e4df5b1a377dd411ec943cb5edeb027b7481e266d"
+$ReleasePolicySha256 = "e897775325a8bdd4828a4066913e64e4fa561179ae1d9f7d2b0d334b5a391aaf"
 $ReleaseManifestRelative = "release/release-manifest.json"
 $RuntimeStateFileName = "runtime-state.json"
 $InMemoryReleaseLauncher = @'
@@ -64,8 +64,8 @@ try:
     import pyocd
     probe_version = metadata.version("pyocd")
     parsed_version = Version(probe_version)
-    lower_bound = Version("0.45.1")
-    upper_bound = Version("0.46")
+    lower_bound = Version("0.46.0")
+    upper_bound = Version("0.47")
 except Exception:
     raise SystemExit(2)
 

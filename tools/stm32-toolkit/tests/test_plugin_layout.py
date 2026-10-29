@@ -832,7 +832,7 @@ def test_unified_1_0_1_runtime_version_across_launcher_setup_and_skill():
     assert "${CLAUDE_PLUGIN_DATA}/runtime/1.3.3" in skill
     assert "tools/stm32-toolkit[probe]" in skill
     assert "isolated PEP 440 `pyocd` distribution check" in skill
-    assert ">=0.45.1,<0.46" in skill
+    assert ">=0.46.0,<0.47" in skill
     assert "existing 1.3.1, 1.3.0, 1.2.0, 1.1.2, 1.0.1, 1.0.0, 0.9.0, 0.5.0 or 0.3.0 runtime reports broken" in skill
     assert "${CLAUDE_PLUGIN_DATA}/runtime/1.3.2/Scripts/python.exe" in skill
     for legacy_version in ("1.3.1", "1.3.0", "1.2.0", "1.1.2", "1.0.1", "1.0.0", "0.9.0", "0.5.0", "0.3.0"):

@@ -423,7 +423,7 @@ def test_cortex_debug_launch_projection_passes_raw_probe_id_and_ready_regex():
     launch = result["cortexDebugLaunch"]
     assert launch == {
         "schemaVersion": 1,
-        "profile": {"cortexDebug": "1.12.1", "pyocd": "0.45.1"},
+        "profile": {"cortexDebug": "1.12.1", "pyocd": "0.46.0"},
         "configuration": {
             "servertype": "pyocd",
             "request": "attach",
@@ -592,7 +592,7 @@ def test_begin_persists_paused_stops_releases_then_marks_external(handoff_env):
     }
     assert returned["cortexDebugLaunch"] == {
         "schemaVersion": 1,
-        "profile": {"cortexDebug": "1.12.1", "pyocd": "0.45.1"},
+        "profile": {"cortexDebug": "1.12.1", "pyocd": "0.46.0"},
         "configuration": {
             "servertype": "pyocd",
             "request": "attach",

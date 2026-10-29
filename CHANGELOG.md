@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+- Dependency repair: the optional `probe` extra, both current release-policy pyOCD pins, the
+  Setup helper's isolated PEP 440 check (`>=0.46.0,<0.47`, with its trusted release-policy
+  anchor updated) and the Cortex-Debug handoff profile (pyOCD `0.46.0` alongside the
+  existing Cortex-Debug `1.12.1`) now select the official pyOCD `0.46.0` release. Upstream
+  uses a finite timeout for the Windows HID read and reports an empty response as an error
+  instead of blocking there; this addresses the dependency read captured in the one-shot
+  constructor diagnostic. It adds no monkeypatch, vendored SDK code, forced one-megahertz
+  profile, frequency/backend override, limit-packets workaround, skipped metadata query,
+  retry, recovery or deadline increase, and leaves the ordinary `100 kHz` default,
+  reset/halt, lease, identity, authorization and cleanup contracts unchanged. The production
+  service's 5 s attach budget versus the SDK's 10 s HID default is unchanged, so an outer
+  attach timeout may still elapse before the SDK timeout and is not claimed solved. It does
+  not prove this probe responds, does not establish the earlier fault-mode observation, and
+  changes no readback, identity or target-state behavior. The retained `0.45.1`
+  component-admission fixtures and the published qualified-reference text stay as historical
+  evidence. Installation on a recipient machine and hardware qualification of the upgraded
+  dependency remain pending, so no attach, flash, Target or physical result is claimed.
 - Migration/debug handoff guidance only; no new tool, option, schema or hardware behavior. A
   Keil delivery PLAN and a successful APPLY now expose the same derived
   `data.debugConfiguration` object the read-only preflight already reports (`phase`,
@@ -95,7 +112,8 @@
   pre-program preparation entry is a real source-level hardware behavior change (one
   authorized `SYSRESETREQ` reset-and-halt on the managed and imported routes); the
   ordinary-flash 100 kHz default is likewise a source-level behavior change for any
-  omitted frequency. Neither has
+  omitted frequency, and the pyOCD `0.46.0` dependency repair changes the installed probe
+  stack. None of the three has
   hardware acceptance evidence until the change is installed and explicitly qualified on a
   board.
 

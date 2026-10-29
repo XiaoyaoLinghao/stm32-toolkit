@@ -318,7 +318,7 @@ def test_check_rejects_ok_doctor_without_exact_runtime_inventory(tmp_path: Path)
     site_packages = runtime / "Lib" / "site-packages"
     _install_fake_toolkit(site_packages)
     _install_fake_monitor(site_packages)
-    _install_fake_probe(site_packages, "0.45.1")
+    _install_fake_probe(site_packages, "0.46.0")
     (site_packages / "stm32_toolkit" / "cli.py").write_text(
         "import json,sys\n"
         "if sys.argv[1:]==['version']: print('1.3.4')\n"
@@ -370,7 +370,17 @@ def test_bootstrap_rejects_ok_doctor_without_exact_runtime_inventory_before_prom
 
 
 @pytest.mark.parametrize(
-    "probe_version", ["0.44.9", "0.45rc1", "0.45.0", "0.45.1rc1", "0.46.0"]
+    "probe_version",
+    [
+        "0.44.9",
+        "0.45rc1",
+        "0.45.0",
+        "0.45.1",
+        "0.45.1rc1",
+        "0.45.1.post1",
+        "0.46rc1",
+        "0.47.0",
+    ],
 )
 def test_check_rejects_out_of_range_probe_distribution_without_leaking_details(
     tmp_path: Path,
@@ -417,7 +427,7 @@ def test_check_rejects_out_of_range_probe_distribution_without_leaking_details(
     assert str(tmp_path).lower() not in error
 
 
-@pytest.mark.parametrize("probe_version", ["0.45.1", "0.45.1.post1"])
+@pytest.mark.parametrize("probe_version", ["0.46.0", "0.46.0.post1"])
 def test_check_accepts_probe_distribution_in_declared_pep440_range(
     tmp_path: Path,
     probe_version: str,
@@ -775,7 +785,7 @@ def test_bootstrap_promotes_public_console_launchers_with_final_runtime_binding(
         env=environment,
     )
     assert pyocd.returncode == 0, pyocd.stderr
-    assert pyocd.stdout.strip() == "0.45.1"
+    assert pyocd.stdout.strip() == "0.46.0"
 
 
 @pytest.mark.parametrize("launcher_name", ["stm32-toolkit", "pyocd"])
@@ -930,7 +940,7 @@ def test_bootstrap_installs_declared_build_requirements_in_fresh_venv(tmp_path: 
         env=_clean_environment(),
     )
     assert probe_import.returncode == 0, probe_import.stderr
-    assert probe_import.stdout.strip() == "0.45.1"
+    assert probe_import.stdout.strip() == "0.46.0"
 
 
 def test_bootstrap_ignores_hostile_python_path_and_home(tmp_path: Path):
@@ -987,7 +997,7 @@ def test_bootstrap_ignores_hostile_python_path_and_home(tmp_path: Path):
         env=environment,
     )
     assert installed_probe.returncode == 0, installed_probe.stderr
-    assert installed_probe.stdout.strip() == "0.45.1"
+    assert installed_probe.stdout.strip() == "0.46.0"
 
 def test_healthy_check_preserves_drive_root_argument_and_following_doctor_args(tmp_path: Path):
     bootstrap_project = tmp_path / "project"
@@ -1189,7 +1199,7 @@ def prepare_metadata_for_build_wheel(metadata_directory, config_settings=None):
     dist_name = "stm32_monitor" if name == "stm32-monitor" else "stm32_toolkit"
     dist = Path(metadata_directory) / f"{dist_name}-1.3.4.dist-info"
     dist.mkdir()
-    (dist / 'METADATA').write_text(f'Metadata-Version: 2.1\\nName: {name}\\nVersion: 1.3.4\\nProvides-Extra: probe\\nRequires-Dist: pyocd==0.45.1; extra == "probe"\\n')
+    (dist / 'METADATA').write_text(f'Metadata-Version: 2.1\\nName: {name}\\nVersion: 1.3.4\\nProvides-Extra: probe\\nRequires-Dist: pyocd==0.46.0; extra == "probe"\\n')
     (dist / 'WHEEL').write_text('Wheel-Version: 1.0\\nGenerator: test-backend\\nRoot-Is-Purelib: true\\nTag: py3-none-any\\n')
     return dist.name
 
@@ -1218,7 +1228,7 @@ def build_wheel(wheel_directory, config_settings=None, metadata_directory=None):
             'stm32_toolkit-1.3.4.dist-info/entry_points.txt': '[console_scripts]\\n'
             'stm32-toolkit = stm32_toolkit.cli:main\\n'
             'stm32-toolkit-mcp = stm32_toolkit.cli:mcp_main\\n',
-            'stm32_toolkit-1.3.4.dist-info/METADATA': 'Metadata-Version: 2.1\\nName: stm32-toolkit\\nVersion: 1.3.4\\nProvides-Extra: probe\\nRequires-Dist: pyocd==0.45.1; extra == "probe"\\n',
+            'stm32_toolkit-1.3.4.dist-info/METADATA': 'Metadata-Version: 2.1\\nName: stm32-toolkit\\nVersion: 1.3.4\\nProvides-Extra: probe\\nRequires-Dist: pyocd==0.46.0; extra == "probe"\\n',
             'stm32_toolkit-1.3.4.dist-info/WHEEL': 'Wheel-Version: 1.0\\nGenerator: test-backend\\nRoot-Is-Purelib: true\\nTag: py3-none-any\\n',
             'stm32_toolkit-1.3.4.dist-info/RECORD': '',
         }
@@ -1240,23 +1250,23 @@ def build_wheel(wheel_directory, config_settings=None, metadata_directory=None):
             "Wheel-Version: 1.0\nGenerator: tests\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
         )
         archive.writestr("test_build_backend-1.0.dist-info/RECORD", "")
-    probe_wheel = wheelhouse / "pyocd-0.45.1-py3-none-any.whl"
+    probe_wheel = wheelhouse / "pyocd-0.46.0-py3-none-any.whl"
     with zipfile.ZipFile(probe_wheel, "w") as archive:
-        archive.writestr("pyocd/__init__.py", "__version__ = '0.45.1'\n")
+        archive.writestr("pyocd/__init__.py", "__version__ = '0.46.0'\n")
         archive.writestr("pyocd/cli.py", _fake_probe_cli_source())
         archive.writestr(
-            "pyocd-0.45.1.dist-info/METADATA",
-            "Metadata-Version: 2.1\nName: pyocd\nVersion: 0.45.1\n",
+            "pyocd-0.46.0.dist-info/METADATA",
+            "Metadata-Version: 2.1\nName: pyocd\nVersion: 0.46.0\n",
         )
         archive.writestr(
-            "pyocd-0.45.1.dist-info/WHEEL",
+            "pyocd-0.46.0.dist-info/WHEEL",
             "Wheel-Version: 1.0\nGenerator: tests\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
         )
         archive.writestr(
-            "pyocd-0.45.1.dist-info/entry_points.txt",
+            "pyocd-0.46.0.dist-info/entry_points.txt",
             "[console_scripts]\npyocd = pyocd.cli:main\n",
         )
-        archive.writestr("pyocd-0.45.1.dist-info/RECORD", "")
+        archive.writestr("pyocd-0.46.0.dist-info/RECORD", "")
 
 
 def _write_fake_release_bundle(plugin_root: Path, wheelhouse: Path, *, complete_doctor: bool = True) -> None:
@@ -1348,7 +1358,7 @@ raise SystemExit(main())
             b"stm32-toolkit = stm32_toolkit.cli:main\n"
             b"stm32-toolkit-mcp = stm32_toolkit.cli:mcp_main\n"
         ),
-        f"{toolkit_dist}/METADATA": b"Metadata-Version: 2.3\nName: stm32-toolkit\nVersion: 1.3.4\nRequires-Dist: pyocd==0.45.1\nLicense-Expression: MIT\n",
+        f"{toolkit_dist}/METADATA": b"Metadata-Version: 2.3\nName: stm32-toolkit\nVersion: 1.3.4\nRequires-Dist: pyocd==0.46.0\nLicense-Expression: MIT\n",
         f"{toolkit_dist}/WHEEL": b"Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
         f"{toolkit_dist}/RECORD": b"",
     }
@@ -1371,7 +1381,7 @@ raise SystemExit(main())
         f"{monitor_dist}/RECORD": b"",
     }
     write_wheel(wheels / monitor_name, monitor_files)
-    pyocd_source = wheelhouse / "pyocd-0.45.1-py3-none-any.whl"
+    pyocd_source = wheelhouse / "pyocd-0.46.0-py3-none-any.whl"
     if pyocd_source.is_file():
         shutil.copy2(pyocd_source, wheels / pyocd_source.name)
     source = plugin_root / "source.zip"
@@ -1385,9 +1395,9 @@ raise SystemExit(main())
     for name, dist in ((toolkit_name, "stm32-toolkit"), (monitor_name, "stm32-monitor")):
         path = wheels / name
         wheel_entries.append({"name": dist, "version": "1.3.4", "file": f"release/wheels/{name}", "sha256": digest(path), "size": path.stat().st_size, "direct": True, "license": "MIT"})
-    pyocd_path = wheels / "pyocd-0.45.1-py3-none-any.whl"
+    pyocd_path = wheels / "pyocd-0.46.0-py3-none-any.whl"
     if pyocd_path.is_file():
-        wheel_entries.append({"name": "pyocd", "version": "0.45.1", "file": "release/wheels/pyocd-0.45.1-py3-none-any.whl", "sha256": digest(pyocd_path), "size": pyocd_path.stat().st_size, "direct": False, "license": "MIT"})
+        wheel_entries.append({"name": "pyocd", "version": "0.46.0", "file": "release/wheels/pyocd-0.46.0-py3-none-any.whl", "sha256": digest(pyocd_path), "size": pyocd_path.stat().st_size, "direct": False, "license": "MIT"})
     manifest = {
         "schema": "stm32-toolkit-release/1",
         "productVersion": "1.3.4",

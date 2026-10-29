@@ -36,6 +36,7 @@ from stm32_toolkit.testing.transports.uart import pyserial_factory
 
 
 ADMISSION = Path(__file__).parent / "fixtures" / "component-admission" / "target-transports"
+POLICY = Path(__file__).parents[3] / "tools" / "release" / "release_0900_policy.json"
 ATTRIBUTES = Path(__file__).parents[3] / ".gitattributes"
 RAM = ({"start": 0x20000000, "size": 0x8000},)
 PROFILE = {
@@ -410,13 +411,22 @@ def test_component_admission_manifest_is_closed_hash_bound_and_honest() -> None:
     assert "/tools/stm32-toolkit/tests/fixtures/component-admission/target-transports/** text eol=lf" in ATTRIBUTES.read_text(encoding="utf-8").splitlines()
 
 
-def test_installed_component_versions_and_apis_match_admission() -> None:
+def test_installed_component_versions_and_apis_match_current_release_policy() -> None:
+    """The selected distributions match the current policy pins.
+
+    The retained `0.45.1` component-admission observation stays immutable
+    historical evidence with its own closed hash check above; it does not
+    describe the dependency selected by the current release policy.
+    """
+
     import pyocd
     from pyocd.debug.rtt import RTTControlBlock
     from pyocd.debug.semihost import SemihostIOHandler
     import serial
 
-    assert pyocd.__version__ == (ADMISSION / "pyocd-version.txt").read_text(encoding="utf-8").strip()
+    policy = json.loads(POLICY.read_text(encoding="utf-8"))
+    assert pyocd.__version__ == policy["directPins"]["pyocd"]
+    assert pyocd.__version__ == policy["resolvedPins"]["pyocd"]
     assert serial.VERSION == (ADMISSION / "pyserial-version.txt").read_text(encoding="utf-8").strip()
     assert RTTControlBlock.__abstractmethods__
     with pytest.raises(NotImplementedError):
