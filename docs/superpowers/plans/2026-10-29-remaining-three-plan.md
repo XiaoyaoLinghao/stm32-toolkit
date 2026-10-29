@@ -1,5 +1,14 @@
 # Remaining-three goal: ordered execution
 
+Latest checkpoint: PYOCD046-HID candidate3e19dd55af87655326f29b85a5bf92a392ded68d
+completed both scoped edit calls,502 affected offline cases and8 independent
+risks with no failures/errors/skips. Complete-diff review keeps REVISION_REQUIRED
+for one test guard tied to the temporary candidate-site directory name. Only
+that test file is proposed for metadata/origin correction under fresh bounded
+authority; see [current report](../../codex/returns/PYOCD046-HID/implementation-report.md).
+No hardware, runtime replacement, packaging or remote authority. Item1 remains
+open; items2/3 stay queued. Older checkpoints follow as historical evidence.
+
 Accepted base for replacement SESSION-TRACE:
 `bee6118339166e7d57a0e8ed1fc29ddf85242d0c`.
 Primary Codex owns design/planning/orchestration/complete-diff review/acceptance;

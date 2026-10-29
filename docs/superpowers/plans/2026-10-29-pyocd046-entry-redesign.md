@@ -1,6 +1,10 @@
 # PYOCD046-HID file-creation entry redesign
 
-Status: **AUTHORIZED / TWO BOUNDED EDIT CALLS PENDING** on2026-10-29.
+Status: **COMPLETED / TWO EDIT CALLS CONSUMED** on2026-10-29.
+Both calls completed normally. All502 affected cases and8 independent risks
+passed at3e19dd55af87655326f29b85a5bf92a392ded68d. Primary retains one test-
+origin portability finding, so source is not accepted. See current implementation
+report and separate one-file correction proposal; no additional edit is granted.
 The human approved this exact interface: creation-only call A, documentation-only
 call B, repository-only reads and the single exact-new-path expected-absence
 observation, followed by separate offline verification and Primary acceptance.

@@ -6,6 +6,8 @@
 
 ## 1. 当前断点与证据
 
+2026-10-29 PYOCD046-HID 新入口两次编辑均正常完成并已离线验证，CodeHead `3e19dd55af87655326f29b85a5bf92a392ded68d`，见[当前完整审查与矩阵](../codex/returns/PYOCD046-HID/implementation-report.md)。A/B实际3次及5次范围内写入，无工具错误/越界；新文件缺失观察额度未用并到期，两次编辑权限已消耗。五个verify调用的原生PowerShell inventory/smoke及45条精确测试命令均真实完成，主代理核对502个新JUnit用例、实际退出0、源码不变及官方wheel347个SDK源码hash；502通过/0失败/错误/跳过。主代理干净精确提交另独立8项通过（重复不累加）。仍REVISION_REQUIRED：新HID测试用candidate-site临时目录名限制SDK来源，正常安装路径会在收集期被拒绝；须按[单文件修正提案](../superpowers/plans/2026-10-29-pyocd046-portability-correction.md)改用发行包元数据/模块来源核验并补路径一致/不一致用例，需额外有界编辑授权。当前全绿不能覆盖源问题；原异常日志不改判接受。无新SDK安装、现有运行时替换、硬件、真实发行打包或远端动作，目标UNKNOWN、完整goal仍在第1项。以下为历史断点。
+
 2026-10-29 PYOCD046-HID 获准的一次三文件续修已停止，见[当前记录](../codex/returns/PYOCD046-HID/implementation-report.md)。执行HEAD `df46b4f857ba580892fa09c76edfc78a76ee3c19`，第5次原生Read读取已知尚未创建的HID测试文件，返回不存在后仍继续；不是权限拒绝，也不属于仅获准的Edit上下文校正。Primary核对本次自有CLI身份后停止，最终22次原生调用、零写入/测试/越界，CLI4294967295/dispatcher1，调用未接受，校正额度未用并到期，一次续修权限已消耗。产品CodeHead仍c7b91d2a、旧4项独立通过仅保留原适用范围，HID与完整矩阵仍未完成。委派文字要求读取目标却包含新文件，入口约定有缺陷；连续两次同类文件定位问题后转入[创建与文档分开的入口重设计](../superpowers/plans/2026-10-29-pyocd046-entry-redesign.md)，只作提案，未授权调度第三次修补。无新安装、硬件、打包或远端操作，目标UNKNOWN、完整goal仍在第1项。以下为历史断点。
 
 2026-10-29 PYOCD046-HID 为当前离线续修入口，见[当前执行及完整差异审查](../codex/returns/PYOCD046-HID/implementation-report.md)。新获两项授权后，原诊断自有child经同一句柄身份核对后一次终止、确认退出238，lease原字节保留且目标仍UNKNOWN；官方0.46.0 wheel核验后仅准备到独立D盘目录，旧运行时未替换。新隔离分支的部分CodeHead `c7b91d2afad06be4838a365d7e5afa8469922643` 为REVISION_REQUIRED：Claude实际25次范围内编辑改11文件，但两次猜测不存在路径的Grep错误后继续，审计另有3次读取范围违规；Primary发现后停止本次自有CLI，未在首个违规点停下，原调用仍未接受，CLI退出4294967295/dispatcher1。必需HID测试尚未写出，另须澄清Skill候选与已发布1.3.4及移除新添1MHz措辞。主代理干净精确提交的4项真实SDK/有界fake风险测试通过，0失败/错误/跳过，不能替代缺失HID测试或完整矩阵。仅准备三文件有界续修，重委派须新明确授权，不自动重试；无新增硬件、打包或远端权限，完整goal仍在第1项。以下为历史断点。

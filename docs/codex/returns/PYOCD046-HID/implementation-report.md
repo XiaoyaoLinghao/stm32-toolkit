@@ -1,6 +1,108 @@
 # PYOCD046-HID execution and review
 
-## Latest checkpoint: continuation stopped without edits
+## Latest checkpoint: offline matrix passes, one source finding remains
+
+2026-10-29 verdict **REVISION_REQUIRED**. The new creation/documentation calls
+completed normally. Frozen CodeHead `3e19dd55af87655326f29b85a5bf92a392ded68d`
+passed502 fresh affected cases and8 independent Primary risks,0failure/error/skip.
+Complete-diff review retains a temporary-directory collection guard in the new
+test; current prepared-path success cannot waive it. Accepted origin remains
+62bede1d55a513f3dfd8d634b2d3116b0de41890. This CodeHead precedes this report
+commit; no later-head execution is claimed.
+
+### Two authorized edit calls completed
+
+A ran at clean005ce4e2c4363858742a6c36ab318c02c45672f6, task SHA256
+4fcc87e9cc9b118a562a2faeff4894a3faddd2c2e4fce7ff7f034fe3cfa788af:
+27 native calls,3 successful writes to the sole new test file, CLI0/accepted.
+Its first file action was Write, no tool error/scope deviation; the prospective
+absence exception was unused. Creation commit a504ff80caafbfc1443353bfebf760081502010e.
+B ran at that clean head, task SHA256
+14c22b61f988d63d87f27de9b35e8256ff685d07dd9de04caf8a15f9109e7c23:
+11 native calls,5 writes only to the two allowed documents, CLI0/accepted,
+no tool error/scope deviation. Actual inventory/main for both registered exactly
+the five file tools and existing deepseek-v4.1-flash[1m] route. Neither edit call
+executed tests. Both call authorities/unused exceptions are consumed or expired;
+old abnormal calls remain unaccepted and their logs are retained.
+
+Setup Skill now distinguishes Unreleased/next1.3.5 source with0.46.0 from
+published1.3.4 with0.45.1, including bundle-specific checks and unchanged current
+metadata/runtime paths. Only the new one-megahertz phrase was removed from the
+changelog paragraph; historical measurements/100kHz policy remain.
+
+Primary reviewed the complete base-to-CodeHead diff in clean exact-head
+C:/Users/zhy76/.codex/worktrees/post134-independent-review/STM32-Toolkit.
+Policy trust bytes/hash, utility and historical admission fixture bytes remain
+as previously reviewed. The new four tests call real HidApiUSB.read with fake
+device, checking finite10000ms argument, list/bytes payload and empty-response
+DeviceError. They establish SDK argument/error behavior, not native driver
+timing, physical probe response or successful flash.
+
+### Fresh delegated matrix and independent reconciliation
+
+Primary first collected502 exact node IDs (ordinary collection, not passes),
+then supplied45 exact finite test commands across5 separate verify calls.
+All five had actual PowerShell-only inventory and real harmless native smoke.
+Every designated command ran once with matched native results; no missing,
+pending, unexpected command, refusal, error or scope issue. Native successful
+numeric exits remain null; actual pytest exits are separately recorded0.
+
+| Affected module | Fresh cases passed |
+| --- | ---: |
+| test_setup_runtime.py | 50 |
+| test_plugin_layout.py | 20 |
+| test_debug_handoff.py | 129 |
+| test_target_transports.py | 86 |
+| test_pyocd_hid_timeout.py | 4 |
+| test_pyocd_backend.py | 159 |
+| release/test_0900_artifacts.py | 54 |
+| Total distinct cases | 502 |
+
+Primary reconciled exact selector/argv/head/runner hash, actual subprocess exits,
+fresh SHA-bound JUnit and case-name multisets:502passed/0failure/error/skip;
+tracked source unchanged for every execution. Every SDK source map equals all347
+Python entries of the verified official wheel. Fake setup/bundle fixture tests
+are not real release packaging/deployment. Evidence:
+D:/codex-tmp/st135-pyocd046/verification-manifest.json,
+verify-{fast,probe,release,setup1,setup2}-run, verification-audit-final.json and
+D:/codex-tmp/p46v/g01..g45 logs/JUnit/execution records. CLI0/model completion
+alone did not establish passing; no old0.45.1 result was substituted.
+
+Primary independently ran all4 HID cases, actual SDK/policy version, canonical
+handoff projection and setup old-version refusal/new-version acceptance at the
+same clean head: **8passed/0failure/error/skip**, actual exits0, source unchanged
+and fresh JUnit. Evidence p46v/p02,p03 and st135-pyocd046/independent-final-audit.json.
+They overlap the502 and are not added to its distinct total. Review-copy actual
+raw hashes were pinned, not assumed equal to author LF bytes. Earlier p01's4
+passes stay at their original head. These are affected checks, not coverage
+measurement, full-repository execution or release qualification.
+
+Read-only hidapi0.15.0 method metadata exposes timeout_ms, matching the SDK's
+argument; see binding-metadata-review.json. No native device was constructed or
+read/enumeration called. This is metadata compatibility, not hardware proof.
+
+### One remaining source finding and next boundary
+
+**[P2] test_pyocd_hid_timeout.py:39,61–65 — local directory collection guard.**
+SELECTED_SITE_MARKER='candidate-site' rejects a correct0.46.0 install under
+normal .venv/Lib/site-packages before tests run. Expected identity is policy/
+distribution version and module-origin correspondence, not a temporary directory
+name. This is deterministic source analysis, not a claim another SDK was
+installed/tested. Current prepared-path passes do not resolve it.
+Proposed correction replaces the marker with metadata/origin checks, preserves
+four real-SDK cases, adds focused normal-path/mismatch regressions and clarifies
+the import versus hardware-I/O docstring. Verify the whole changed HID module
+with the later exact command and Primary independent origin/behavior risks.
+
+Only that test file is proposed for correction; see the
+[bounded plan](../../../superpowers/plans/2026-10-29-pyocd046-portability-correction.md).
+No additional edit is covered by the consumed two-call grant. Prior entry
+failures were not retried/reclassified. No new SDK installation, existing-runtime
+replacement, hardware, real release packaging or remote action. Ordered goal
+stays on item1; service5s/SDK10s, responsiveness, IPSR/reset, ABI and CCM limits
+retain their recorded meanings.
+
+## Earlier checkpoint: continuation stopped without edits
 
 The human authorized one three-file continuation with repository-only reads and
 one same-file Edit-context correction. It ran at clean
