@@ -1,12 +1,14 @@
 # PYOCD046-HID: one-file SDK-origin portability correction
 
-Status **PROPOSED / NOT AUTHORIZED TO DISPATCH** on2026-10-29.
+Status **AUTHORIZED / ONE EDIT CALL PENDING** on2026-10-29.
+The human explicitly approved this single-file correction and separate offline
+verification. No other file is writable; errors/scope deviations stop, no retry.
 Accepted origin62bede1d55a513f3dfd8d634b2d3116b0de41890;
 reviewed CodeHead3e19dd55af87655326f29b85a5bf92a392ded68d.
 Primary owns requirements/orchestration/complete-diff review/acceptance. Local
 Claude Code CLI owns code/tests using the unchanged configured route. Both
-authorized edit calls A/B completed normally and are consumed; this additional
-review correction needs new bounded authority.
+authorized edit calls A/B completed normally and are consumed; the new explicit
+single-file authority is separate and does not renew those allowances.
 
 Sole proposed write: tools/stm32-toolkit/tests/test_pyocd_hid_timeout.py.
 SELECTED_SITE_MARKER and the collection assertion at lines39,61–65 require the
