@@ -1,6 +1,98 @@
-# SESSION-TRACE review and stopped correction
+# SESSION-TRACE execution and verification disposition
 
-## Current checkpoint: first correction stopped
+## Current checkpoint: return to integration design
+
+2026-10-29 verdict: **REWRITE_REQUIRED for the execution/verification interface**.
+Reviewed unqualified CodeHead before this report commit is
+`1c8d32c3f0a8fe166034ed934bf2d87347502c14`; accepted diff origin remains
+`bee6118339166e7d57a0e8ed1fc29ddf85242d0c`. No third local helper patch.
+The original codex/v135-session-trace branch retains the candidate. Primary
+reused the clean attached checkout on codex/v135-session-trace-runtime for the
+[new runtime integration design](../../../superpowers/specs/2026-10-29-session-trace-runtime-design.md).
+No new implementation call is authorized by this report.
+
+The human-authorized second file-only call completed normally with CLI0,
+dispatcher accepted=true,25 matched successful writes in exactly the helper/test
+files, no native error/scope/command/test execution. The approved once-only
+benign Edit-context correction was not used and expired. Original failed runs
+and the stopped first correction remain unchanged; no retrospective acceptance.
+Primary read the complete candidate diff cumulatively in the clean exact-head
+review tree, including the entire migrated test module before enabling its
+explicit inert construction paths.
+
+Both separate verify invocations completed actual native PowerShell inventory,
+real smoke and exact commands. All40 current test functions ran once,26passed/
+14failed/0skipped/0errors, with fresh external JUnit and every tracked source hash
+unchanged at the recorded head. This is not software acceptance or coverage of
+the blocked construction/timeout phases.
+
+| Group | Actual pytest exit | Passed | Failed |
+| --- | --- | --- | --- |
+| c02 default/import/launch | 1 | 6 | 1 |
+| c03 protocol validators | 0 | 5 | 0 |
+| c04 inert construction chain | 1 | 0 | 7 |
+| c05 ownership/readiness | 1 | 4 | 2 |
+| c06 cancellation/startup | 1 | 2 | 2 |
+| c07 actual main timeout | 1 | 0 | 1 |
+| c08 actual main cancellation | 1 | 0 | 1 |
+| c09 error helpers/results | 0 | 9 | 0 |
+
+All eight commands are executed, none pending/unexecuted, with no native scope or
+command deviation. Successful native shell results without numeric status retain
+null; execution.json supplies actual subprocess exit0. Failed native/subprocess
+exits are1. Verify dispatcher accepted=false is retained for both calls.
+
+### Proven causes of these offline failures
+
+The c02 test globally replaces subprocess.Popen before backend import. The first
+import reaches probe.__init__ -> flash -> asyncio -> windows_utils, whose line125
+defines class Popen(subprocess.Popen). A function spy cannot be that base class.
+Primary's separate unpatched import/lazy-backend observation succeeds; a fresh
+patched import-only observation reproduces the TypeError. This needs a scoped
+test-adapter boundary, not weaker assertions or a product backend change.
+
+The other13 failures are masked by READY PID mismatch before GO. In c04 the
+Popen handle PID is10492, READY PID29520; attempt/request/source digest and logical
+interpreter all match. c06 and c07 independently show the same shape. Primary's
+earlier runtime selection assumed a Windows venv executable was a single real
+Python process. That architecture assumption is contradicted by the evidence.
+
+A new inert stdlib-only observation records Popen PID11732, actual Python22744
+whose parent is11732, exit0. The pinned
+[CPython3.12.14 launcher](https://github.com/python/cpython/blob/v3.12.14/PC/launcher.c)
+implements VENV_REDIRECT by launching the original executable; official
+[venv documentation](https://docs.python.org/3.12/library/venv.html) also describes
+Windows redirectors. Do not weaken PID matching, trust a child-supplied replacement
+PID or infer the actual board timeout from this diagnostic-entry defect.
+
+Primary returned to integration design and performed only new, explicitly
+selected runtime feasibility observations: the existing direct CPython3.12.14
+image produces matching Popen/Python PID23792, exit0; explicit child-only
+PYTHONPATH loads this exact review-tree Toolkit and existing pyocd0.45.1/
+pytest8.4.2 site directory with the backend driver still lazy. No helper operation,
+driver getter, enumeration or USB was invoked. The three observation JSONs under
+D:/codex-tmp/st135 and the new design record exact executable/site/hash. This is
+feasibility, not a passing helper matrix; the venv lane remains unqualified.
+
+### Remaining gates
+
+The two attempts have not qualified the actual entry/lifetime contract; local
+helper patching stops. The proposed integration phase freezes helper bytes,
+selects the real executable before launch, scopes the test Popen spy correctly,
+and adds the explicitly requested overall successful-child handle/lease failure
+adapters. Current utility-only handle checks and lease-failure-on-an-already-
+timed-out child do not prove those sole-failure verdicts. All original and added
+cases must run fresh in the new declared lane, with no skip, shortened budget,
+old-pass substitution or relaxed identity. Primary independent final checks and
+an updated reviewed hardware card still follow any actual software acceptance.
+
+No board/probe operation, original project/shared registry change, install,
+package, provider/model/permission change or remote mutation occurred. Original
+physical Session timeout, IPSR/reset efficacy and final ABI/CCM disposition
+remain unresolved. Passing diagnostic tests will not complete the full goal.
+
+## First correction checkpoint (historical)
+
 
 2026-10-29 current verdict remains **REVISION_REQUIRED**. Current retained
 partial diagnostic CodeHead before this report commit:

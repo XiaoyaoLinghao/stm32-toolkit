@@ -7,6 +7,15 @@ local Claude Code CLI owns code/tests, unchanged `deepseek-v4.1-flash[1m]` route
 using `C:/Users/zhy76/.codex/tools/claude-dispatch/dispatch.py` only. Hardware,
 installation, packaging and remote authority remain absent.
 
+Current item1 checkpoint: candidate1c8d32c3f0a8fe166034ed934bf2d87347502c14 has
+26pass/14fail across all40 test functions. The selected Windows venv redirector
+breaks the direct-PID ownership assumption; a separate scoped-Popen test import
+bug is also proven. After two attempts, stop local helper patches and return to
+the [explicit runtime/verification integration design](../specs/2026-10-29-session-trace-runtime-design.md).
+The helper stays frozen; only a newly authorized test adapter and new declared
+direct-runtime qualification may proceed. The real board cause is still unknown.
+Older checkpoints below are retained history, not the next execution authority.
+
 1. **Attach timeout, active.** The previous standalone multiprocessing diagnostic
    is REWRITE_REQUIRED after two correction rounds; its code/logs are preserved
    on `codex/v135-attach-isolation`, report commit

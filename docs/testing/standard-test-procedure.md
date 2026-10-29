@@ -6,6 +6,8 @@
 
 ## 1. 当前断点与证据
 
+2026-10-29 SESSION-TRACE 两次修正后的CodeHead `1c8d32c3f0a8fe166034ed934bf2d87347502c14` 已完成40项新执行，**26通过/14失败/0跳过**，源码hash未变；见[当前执行与原因](../codex/returns/SESSION-TRACE/implementation-report.md)。第二次文件委派审计通过、无工具错误，一次同文件校正额度未使用；测试未通过。首项失败是Popen测试替身破坏Windows asyncio导入；其余13项在READY PID不匹配前被阻断：venv启动器PID不是实际Python PID，未进入被测构造/超时阶段。Primary已独立用纯软件进程观察复现，并确认现有直接CPython3.12.14＋既有pyocd0.45.1依赖路径的可行性，未调用helper/探针。按两轮限制停止局部helper修补，转入[显式直接运行时与测试适配设计](../superpowers/specs/2026-10-29-session-trace-runtime-design.md)，保持严格PID/租约校验；旧venv入口仍不合格。新方案须明确授权、只改测试适配、在固定真实解释器和同一源码/依赖路径全新完成矩阵及独立验收。当前为执行/验证接口REWRITE_REQUIRED，尚非软件接受或硬件READY；原物理连接原因与完整三项目标未解决。未安装、操作硬件或推送发布。以下为历史断点。
+
 2026-10-29 SESSION-TRACE 首次有界修正已由用户授权并执行，但原生Edit未匹配原文后仍继续编辑，Primary停止了经核实的本次Claude CLI；见[当前修正处置](../codex/returns/SESSION-TRACE/implementation-report.md)。保留的部分CodeHead `d1b975d4d9f044b08fd6e73e1c3bb2b42e884237`，25次成功写入仅改诊断脚本，测试文件未改；无范围外写入、命令或测试，原错误、停止记录与CLI退出4294967295保留，dispatcher未接受。Primary已在干净精确CodeHead审查全部修正差异，仍REVISION_REQUIRED。**旧测试依赖的模拟环境开关已从脚本移除，测试尚未迁移到私有Python注入，不能在只修收集问题后直接运行旧CLI构造用例，以免调用真实后端。** 下一次先完成测试迁移和余下错误合同，再固定源码、审查、分开执行离线验证；没有新的修正调用授权或硬件READY。原c01仍0通过，实际连接超时及完整三项目标未解决。以下为历史断点。
 
 2026-10-29 SESSION-TRACE 初版候选独立完整差异审查为 **REVISION_REQUIRED**，见[当前审查及执行记录](../codex/returns/SESSION-TRACE/implementation-report.md)。Accepted base `bee6118339166e7d57a0e8ed1fc29ddf85242d0c`，诊断/测试CodeHead `e385e5b17b1dfb1835e4a8db3dc67c2a8309f951`。Claude文件调用38次范围内写入，原生两次不存在路径Read及一次畸形Write错误保留，dispatcher未接受；后续独立PowerShell验证实际退出4，动态导入/dataclass收集错误1项、通过0项，tracked源码hash未变。Primary已在干净精确CodeHead审查全部六文件差异，提出七项有界修正，未执行自动重新委派。不是软件接受或硬件READY；实际连接超时、IPSR=3和完整三项目标仍未解决。用户无原ARMCC产物，ABI维持未验证。仅准备原两文件修正，按全局AGENTS明确有界授权后再委派、分开验证；不操作硬件、安装、打包或远端。以下为历史断点。
