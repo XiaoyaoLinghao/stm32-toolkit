@@ -69,6 +69,11 @@ open_attach response. Reject malformed, extra-key, wrong-ID, non-attach, duplica
 reordered or excessive frames with the existing fail-closed worker protocol cleanup.
 Every receive uses the same original absolute deadline; progress never renews it.
 Ready/success/error result envelopes keep their existing meaning and exact shapes.
+Raw child error diagnostics validated with `worker=True` must reject a supplied
+`progress` field: only the parent can produce parent-receipt timestamps. Child
+stage frames carry the stage token, not claimed elapsed time or a public snapshot.
+The parent records worker-dispatch only after successful request send, never before
+an undispatched queue or failed send.
 
 Instrument PyOCDBackend through a private optional stage callback. Emit before
 the corresponding existing operations and only during open_attach. Driver acquisition
