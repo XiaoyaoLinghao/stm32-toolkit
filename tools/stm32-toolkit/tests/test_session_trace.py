@@ -11,6 +11,7 @@ environment variable, CLI argument or request record.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import importlib.util
 import json
@@ -22,7 +23,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
 import pytest
@@ -39,14 +40,17 @@ TEST_MODULE_PATH = Path(__file__).resolve()
 SRC_ROOT = Path(__file__).resolve().parents[1] / "src"
 CREATE_NEW_PROCESS_GROUP = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
 
-# Former helper-side environment switches.  They must have no effect at all;
-# the tests set them and still require the production launcher/backend.
+# Former helper-side environment switches, in their real removed spellings: the
+# private fake family (backend mode, selector, receipt destination, timing and
+# release behaviour) plus its private selection-mode companion.  They must have
+# no effect at all; the tests set them and still require the production
+# launcher and the lazy production backend.
 REMOVED_FAKE_ENV = (
-    "SESSION_TRACE_FAKE_MODE",
-    "SESSION_TRACE_FAKE_PROBE",
-    "SESSION_TRACE_FAKE_RECEIPT",
-    "SESSION_TRACE_FAKE_SECONDS",
-    "SESSION_TRACE_FAKE_RELEASE",
+    "SESSION_TRACE_PRIVATE_FAKE_MODE",
+    "SESSION_TRACE_PRIVATE_FAKE_PROBE",
+    "SESSION_TRACE_PRIVATE_FAKE_RECEIPT",
+    "SESSION_TRACE_PRIVATE_FAKE_SECONDS",
+    "SESSION_TRACE_PRIVATE_FAKE_RELEASE",
     "SESSION_TRACE_PRIVATE_MODE",
 )
 
@@ -102,6 +106,25 @@ def _env(**extra: object) -> dict[str, str]:
         env.pop(key, None)
     env.update({key: str(value) for key, value in extra.items()})
     return env
+
+
+@contextlib.contextmanager
+def _scoped_popen_replacement(replacement: Callable[..., object]):
+    """Replace ``subprocess.Popen`` only for one bounded observation.
+
+    A function replacement is not a valid base class for
+    ``asyncio.windows_utils.Popen``, so the real class is restored -- and
+    verified restored -- before any Toolkit backend import or acquisition.
+    """
+
+    original = subprocess.Popen
+    subprocess.Popen = replacement  # type: ignore[assignment]
+    try:
+        yield
+    finally:
+        subprocess.Popen = original  # type: ignore[assignment]
+        assert subprocess.Popen is original
+        assert isinstance(subprocess.Popen, type)
 
 
 def _paths(tmp_path: Path) -> tuple[Path, Path, Path]:
@@ -374,7 +397,22 @@ def _make_driver_factory(profile: Mapping[str, object]):
 # ---------------------------------------------------------------------------
 
 
-def _make_child_launcher(config_path: Path):
+def _child_argv(
+    config_path: Path, output_dir: str, mode: str = "trace-child"
+) -> list[str]:
+    """The fixed test bootstrap argv used for every inert real child."""
+
+    return [
+        sys.executable,
+        "-B",
+        str(TEST_MODULE_PATH),
+        mode,
+        str(config_path),
+        output_dir,
+    ]
+
+
+def _make_child_launcher(config_path: Path, mode: str = "trace-child"):
     """Launch the fixed test child bootstrap instead of the raw helper child."""
 
     def launcher(argv: Sequence[str], cwd: str) -> object:
@@ -384,14 +422,7 @@ def _make_child_launcher(config_path: Path):
         assert argv[3] == "child"
         output_dir = argv[4]
         return subprocess.Popen(
-            [
-                sys.executable,
-                "-B",
-                str(TEST_MODULE_PATH),
-                "trace-child",
-                str(config_path),
-                output_dir,
-            ],
+            _child_argv(config_path, output_dir, mode),
             cwd=cwd,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
@@ -573,6 +604,39 @@ def _spy_run(
     return 0
 
 
+class _ReleaseFaultLease:
+    """A real acquired lease whose single release fails (child-side fault)."""
+
+    def __init__(self, lease: object) -> None:
+        self._lease = lease
+        self.lease_id = getattr(lease, "lease_id")
+
+    def release(self) -> None:
+        raise RuntimeError("injected lease release fault")
+
+
+def _install_release_fault() -> None:
+    """Wrap only the lease manager so the cleanup release fails.
+
+    The inner ``ProbeLeaseManager``, its registry record and guard lock, the
+    per-attempt loopback health server and the real owner inspection are all
+    unchanged; the fault is exactly one raised ``release`` call.
+    """
+
+    import stm32_toolkit.probe.lease as lease_module
+
+    real_manager = lease_module.ProbeLeaseManager
+
+    class FaultManager:
+        def __init__(self, root: Path) -> None:
+            self._manager = real_manager(root)
+
+        def acquire(self, **kwargs: object) -> object:
+            return _ReleaseFaultLease(self._manager.acquire(**kwargs))
+
+    lease_module.ProbeLeaseManager = FaultManager  # type: ignore[assignment]
+
+
 def _bootstrap_main(argv: Sequence[str]) -> int:
     if len(argv) < 2:
         print("session-trace-bootstrap: missing mode or config", file=sys.stderr)
@@ -587,6 +651,13 @@ def _bootstrap_main(argv: Sequence[str]) -> int:
         return trace.main(list(config["argv"]))
     if mode == "trace-child":
         profile = config["profile"]
+        trace._install_private_test_injection(
+            backend_factory=_make_driver_factory(profile)
+        )
+        return trace.main(["child", str(argv[2])])
+    if mode == "trace-child-lease-fault":
+        profile = config["profile"]
+        _install_release_fault()
         trace._install_private_test_injection(
             backend_factory=_make_driver_factory(profile)
         )
@@ -667,10 +738,13 @@ def test_import_creates_no_files_or_processes(
         spawned.append(args)
         raise AssertionError("import must not spawn a process")
 
-    monkeypatch.setattr(subprocess, "Popen", guarded_popen)
+    # Only the helper's own import is guarded: its Toolkit backend import is
+    # lazy, so no real class is subclassed here.  The replacement is still
+    # explicitly restored and verified before anything else can run.
+    with _scoped_popen_replacement(guarded_popen):
+        module = _load_module("session_trace_import_probe")
 
-    module = _load_module("session_trace_import_probe")
-
+    assert isinstance(subprocess.Popen, type)
     assert spawned == []
     assert list(tmp_path.iterdir()) == []
     assert callable(module.main)
@@ -727,7 +801,7 @@ def test_existing_output_directory_is_refused_without_touching_it(
 
 
 def test_production_launcher_uses_saved_helper_source_and_interpreter(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
 ) -> None:
     project, _data, run = _paths(tmp_path)
     run.mkdir()
@@ -737,18 +811,21 @@ def test_production_launcher_uses_saved_helper_source_and_interpreter(
         calls.append((list(argv), dict(kwargs)))
         return object()
 
-    monkeypatch.setattr(trace.subprocess, "Popen", recording_popen)
     stderr_sentinel = object()
 
-    trace._launch_child(
-        source_path=HELPER_PATH,
-        interpreter=os.path.abspath(sys.executable),
-        output_dir=run,
-        project_dir=project,
-        stderr=stderr_sentinel,
-        launcher=None,
-    )
+    # The spy covers exactly this one launch call and is restored (verified
+    # below) before any backend import could subclass the real class.
+    with _scoped_popen_replacement(recording_popen):
+        trace._launch_child(
+            source_path=HELPER_PATH,
+            interpreter=os.path.abspath(sys.executable),
+            output_dir=run,
+            project_dir=project,
+            stderr=stderr_sentinel,
+            launcher=None,
+        )
 
+    assert isinstance(subprocess.Popen, type)
     assert len(calls) == 1
     argv, kwargs = calls[0]
     assert argv == [
@@ -780,15 +857,19 @@ def test_environment_cannot_select_a_fake_launcher_or_backend(
         spawned.append(list(argv))
         return object()
 
-    monkeypatch.setattr(trace.subprocess, "Popen", recording_popen)
-    trace._launch_child(
-        source_path=HELPER_PATH,
-        interpreter=os.path.abspath(sys.executable),
-        output_dir=run,
-        project_dir=project,
-        stderr=subprocess.DEVNULL,
-        launcher=None,
-    )
+    with _scoped_popen_replacement(recording_popen):
+        trace._launch_child(
+            source_path=HELPER_PATH,
+            interpreter=os.path.abspath(sys.executable),
+            output_dir=run,
+            project_dir=project,
+            stderr=subprocess.DEVNULL,
+            launcher=None,
+        )
+
+    # Restored before backend acquisition: windows_utils subclasses the real
+    # class, so a function replacement must not still be installed here.
+    assert isinstance(subprocess.Popen, type)
     assert spawned == [
         [
             os.path.abspath(sys.executable),
@@ -2103,3 +2184,229 @@ def test_partial_json_write_is_awaited_finitely(tmp_path: Path) -> None:
 
 
 # --- appended tests 5 ---
+
+
+# --- appended tests 6 ---
+
+
+# ---------------------------------------------------------------------------
+# R6: sole-failing-phase adapters on otherwise successful real child paths
+# ---------------------------------------------------------------------------
+
+
+class _FailingCloseHandle:
+    """Test-owned process control handle whose one terminal close fails."""
+
+    closed = False
+
+    def Close(self) -> None:
+        raise OSError("handle close failed")
+
+
+class _OwnedProcessAdapter:
+    """Test-owned view of exactly one already-launched inert child process.
+
+    ``pid``/``poll``/``wait`` delegate to the real ``Popen`` this test owns;
+    only the control handle the parent's terminal cleanup sees is substituted,
+    so the failure lands in the handle-close phase alone.  No other PID and no
+    live or unknown handle is ever touched.
+    """
+
+    def __init__(self, process: subprocess.Popen, handle: object) -> None:
+        self._process = process
+        self._handle = handle
+
+    @property
+    def pid(self) -> int:
+        return self._process.pid
+
+    def poll(self) -> int | None:
+        return self._process.poll()
+
+    def wait(self, timeout: float | None = None) -> int | None:
+        return self._process.wait(timeout=timeout)
+
+
+def test_terminal_process_handle_close_failure_fails_a_successful_attempt(
+    tmp_path: Path,
+) -> None:
+    project, data, run = _paths(tmp_path)
+    receipt_path = tmp_path / "receipt.json"
+    config_path = _write_child_profile(tmp_path, _profile(receipt=receipt_path))
+    owned: list[subprocess.Popen] = []
+
+    def owning_launcher(argv: Sequence[str], cwd: str) -> object:
+        argv = list(argv)
+        assert argv[3] == "child"
+        process = subprocess.Popen(
+            _child_argv(config_path, argv[4]),
+            cwd=cwd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+            creationflags=CREATE_NEW_PROCESS_GROUP,
+            env=_env(),
+        )
+        owned.append(process)
+        return _OwnedProcessAdapter(process, _FailingCloseHandle())
+
+    try:
+        outcome = trace.run_attempt(
+            _config(project, data, run, deadline=10.0), launcher=owning_launcher
+        )
+
+        attempt = _read(run / trace.ATTEMPT_FILE)
+        result = _read(run / trace.RESULT_FILE)
+        receipt = _read(receipt_path)
+
+        # The real inert child did construct and close its Session, and the
+        # parent's positive path recovered the successful child result.
+        assert result["ok"] is True
+        assert result["outcome"] == "ok"
+        facts = result["facts"]
+        assert facts["driverAcquired"] == 1
+        assert facts["enumerations"] == 1
+        assert facts["selections"] == 1
+        assert facts["sessionConstructed"] is True
+        assert facts["sessionOpened"] is False
+        assert facts["sessionClosed"] == 1
+        assert facts["forbiddenCalls"] == []
+        assert result["errors"] == {key: None for key in trace.CHILD_ERROR_KEYS}
+        assert result["sessionOptions"] == _expected_options(project)
+        assert receipt["listProbes"] == 1
+        assert receipt["createSession"] == 1
+        assert receipt["sessionCloseCalls"] == 1
+
+        # That one handle-close failure alone makes the overall verdict fail.
+        assert outcome.ok is False
+        assert outcome.exit_code == 7
+        assert attempt["ok"] is False
+        assert attempt["exitCode"] == 7
+        assert attempt["outcome"] == "ok"
+        assert attempt["errors"] == ["process-handle-close-failed"]
+        assert attempt["cleanup"]["handleErrors"] == ["process-handle-close-failed"]
+        assert attempt["cleanup"]["errors"] == []
+        assert attempt["child"]["handleReleased"] is False
+        assert attempt["child"]["returncode"] == 0
+        assert attempt["child"]["alive"] is False
+        assert attempt["grant"] == {"readyMatched": True, "goWritten": True}
+        assert attempt["claim"] == {"verified": True}
+        assert attempt["result"]["ok"] is True
+        assert attempt["result"]["outcome"] == "ok"
+        assert attempt["result"]["leaseReleased"] is True
+        assert attempt["events"] == {"verified": True}
+    finally:
+        # Bounded cleanup for the single process this test created: only a
+        # proven-terminal, test-owned handle is released.
+        for process in owned:
+            try:
+                process.wait(timeout=15.0)
+            except subprocess.TimeoutExpired:  # pragma: no cover - hard failure
+                process.kill()
+                process.wait(timeout=5.0)
+            assert process.poll() is not None
+            assert trace._release_terminal_process_handles(process) == []
+            assert process._handle is None
+
+
+def test_lease_release_failure_is_the_sole_failing_phase(tmp_path: Path) -> None:
+    project, data, run = _paths(tmp_path)
+    receipt_path = tmp_path / "receipt.json"
+    config_path = _write_child_profile(tmp_path, _profile(receipt=receipt_path))
+    trace._install_private_test_injection(
+        launcher=_make_child_launcher(config_path, mode="trace-child-lease-fault")
+    )
+
+    outcome = trace.run_attempt(_config(project, data, run, deadline=10.0))
+
+    attempt = _read(run / trace.ATTEMPT_FILE)
+    result = _read(run / trace.RESULT_FILE)
+    ready = _read(run / trace.READY_FILE)
+    events = _read(run / trace.EVENTS_FILE)
+    receipt = _read(receipt_path)
+
+    # Construction and the Session close really succeeded behind a real
+    # temporary registry record and a real loopback health endpoint.
+    assert result["outcome"] == "internal-error"
+    assert result["ok"] is False
+    facts = result["facts"]
+    assert facts["driverAcquired"] == 1
+    assert facts["enumerations"] == 1
+    assert facts["selections"] == 1
+    assert facts["sessionConstructed"] is True
+    assert facts["sessionOpened"] is False
+    assert facts["sessionClosed"] == 1
+    assert facts["forbiddenCalls"] == []
+    assert result["sessionOptions"] == _expected_options(project)
+    assert result["traceback"]["armed"] is True
+    assert result["traceback"]["cancelled"] is True
+    assert result["leaseId"] is not None
+    assert ready["leaseId"] == result["leaseId"]
+    assert receipt["listProbes"] == 1
+    assert receipt["createSession"] == 1
+    assert receipt["sessionCloseCalls"] == 1
+
+    # Lease release is the sole failing phase and it is retained, not hidden.
+    assert {
+        key: value for key, value in result["errors"].items() if value is not None
+    } == {"leaseRelease": "RuntimeError"}
+    stages = [entry["stage"] for entry in events["events"]]
+    assert "session-closed" in stages
+    assert "lease-release-failed" in stages
+    assert "lease-released" not in stages
+
+    # The parent reports an overall failure, not a constructor success.
+    assert outcome.ok is False
+    assert outcome.exit_code == 6
+    assert outcome.outcome == "child-nonzero-exit"
+    assert attempt["ok"] is False
+    assert attempt["exitCode"] == 6
+    assert attempt["outcome"] == "child-nonzero-exit"
+    assert attempt["initiating"] == {
+        "outcome": "child-nonzero-exit",
+        "error": "nonzero-exit",
+    }
+    assert attempt["grant"] == {"readyMatched": True, "goWritten": True}
+    assert attempt["claim"] == {"verified": True}
+    assert attempt["child"]["returncode"] == 6
+    assert attempt["child"]["alive"] is False
+    assert attempt["child"]["handleReleased"] is True
+    assert attempt["errors"] == []
+    assert attempt["result"] == {
+        "present": True,
+        "outcome": "internal-error",
+        "ok": False,
+        "leaseReleased": False,
+    }
+
+    # The original cleanup failure is preserved: the dead child's real record
+    # is still active and still bound to its own loopback health endpoint.
+    pid = attempt["child"]["pid"]
+    assert isinstance(pid, int)
+    record = _read(_record_path(data, "fake-probe-1"))
+    assert record["state"] == "active"
+    assert record["leaseId"] == result["leaseId"]
+    assert record["pid"] == pid
+    assert record["operationLevel"] == "observe"
+    health_url = str(record["healthUrl"])
+    assert health_url.startswith("http://127.0.0.1:")
+    assert health_url.endswith("/health")
+
+    # Only the existing safe reclamation runs, and only after the owner is
+    # proven dead; nothing fakes a live owner or overrides liveness.
+    assert _wait_for_death(pid, 10.0)
+    from stm32_toolkit.probe.lease import ProbeLeaseManager
+    from stm32_toolkit.probe.model import OperationLevel
+
+    manager = ProbeLeaseManager(data)
+    reclaimed = manager.acquire(
+        probe_id="fake-probe-1",
+        workspace_id="reclaim-after-lease-fault",
+        session_id="reclaim-session",
+        operation_level=OperationLevel.OBSERVE,
+        health_url="http://127.0.0.1:65535/health",
+    )
+    assert reclaimed.lease_id != result["leaseId"]
+    reclaimed.release()
+    assert _read(_record_path(data, "fake-probe-1"))["state"] == "released"
