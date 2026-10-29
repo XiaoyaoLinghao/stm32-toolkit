@@ -22,6 +22,17 @@ qualification. Item1 stays open; items2/3 queued. Preserve the potentially live
 child's source/dependencies and use another clean tree for new implementation.
 Earlier checkpoints follow.
 
+PYOCD046-HID continuation: the newly authorized owned diagnostic child cleanup
+confirmed exit238 and preserved lease bytes; isolated official0.46.0 package
+preparation completed without active-runtime replacement. The first edit call
+is unaccepted after path errors, read-scope deviations and continued editing;
+retained partial CodeHead c7b91d2afad06be4838a365d7e5afa8469922643 is
+REVISION_REQUIRED. Primary clean-head complete-diff review and4 limited real-SDK
+fake-API/profile tests passed, but mandatory HID tests and full affected matrix
+are not executed. See [current report](../../codex/returns/PYOCD046-HID/implementation-report.md)
+for exact three-file continuation and retained evidence. No automatic retry;
+prepare explicit bounded authority. No new hardware or remote authority.
+
 Current item1 checkpoint: final direct-runtime CodeHead
 `e8c43322efa454ac5ddc782572c073e566b432fd` has42/42 fresh delegated passes,
 plus8/8 independent Primary risk passes at the clean exact head;0skip/errors.

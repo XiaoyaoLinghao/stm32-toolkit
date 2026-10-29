@@ -6,6 +6,8 @@
 
 ## 1. 当前断点与证据
 
+2026-10-29 PYOCD046-HID 为当前离线续修入口，见[当前执行及完整差异审查](../codex/returns/PYOCD046-HID/implementation-report.md)。新获两项授权后，原诊断自有child经同一句柄身份核对后一次终止、确认退出238，lease原字节保留且目标仍UNKNOWN；官方0.46.0 wheel核验后仅准备到独立D盘目录，旧运行时未替换。新隔离分支的部分CodeHead `c7b91d2afad06be4838a365d7e5afa8469922643` 为REVISION_REQUIRED：Claude实际25次范围内编辑改11文件，但两次猜测不存在路径的Grep错误后继续，审计另有3次读取范围违规；Primary发现后停止本次自有CLI，未在首个违规点停下，原调用仍未接受，CLI退出4294967295/dispatcher1。必需HID测试尚未写出，另须澄清Skill候选与已发布1.3.4及移除新添1MHz措辞。主代理干净精确提交的4项真实SDK/有界fake风险测试通过，0失败/错误/跳过，不能替代缺失HID测试或完整矩阵。仅准备三文件有界续修，重委派须新明确授权，不自动重试；无新增硬件、打包或远端权限，完整goal仍在第1项。以下为历史断点。
+
 2026-10-29 SESSION-TRACE 新获明确授权与原板原探针就绪/独占/无变化确认后，已执行唯一一次构造器诊断，执行HEAD `90f9a42cd2b37fd597e02eadc434d408c7e2b7b7`，见[实机诊断报告](../codex/returns/SESSION-TRACE/constructor-diagnostic-2026-10-29.md)。父进程22,016ms、实际退出4/work-timeout；一秒原生栈落在pyOCD0.45.1 Windows HID读取，等待DAP_Info/MAX_PACKET_COUNT，早于Session.open及SWD频率设置。上游0.46.0已包含对应无超时等待修复，但尚未升级/验证，不能声称探针响应或烧录已修好。父退出时自有child仍活，协作等待未成功、无result/events、租约释放未确认，物理状态UNKNOWN；19:40:45只读核对PID/创建时刻/映像匹配且仍运行，不强杀/删除租约/重连。一次权限已消耗，状态TERMINAL_STOPPED，不再READY。下一步只离线审查依赖升级范围；强制回收自有child或准备新隔离依赖均需另明确授权，不自动安装、追加硬件或推送发布。既有42+8软件证据保留，完整三项目标仍在第1项。以下为历史断点。
 
 2026-10-29 SESSION-TRACE 在等待同一份新硬件授权/就绪答复期间，离线追踪了USB等待分支，并补齐枚举期间Session.get_current可能创建无探针默认选项Session的配置前置；见[源证据及聚焦复核](../codex/returns/SESSION-TRACE/usb-wait-offline-2026-10-29.md)。原project四个默认YAML与两个环境覆盖项当前均不存在，未读取配置内容、导入后端或操作设备。新增前置在b68794a7取得独立NO_BLOCKERS，三条原生命令/三个完整JSON源码包均已核对；原完整入口审查和42+8软件证据仍保留。USB默认10秒与旧服务5秒只构成待实机区分的候选解释，不是根因或延长超时的授权。代码、时限、后端选择、实机次数及20s+2s预算均未改变，仍BLOCKED_NOT_EXECUTED；此前硬件权限/供电独占问题未获新答复，不重复发起或自动执行。以下为此前断点。
