@@ -97,8 +97,8 @@ reviewed card and non-blocking evidence notes are retained; fresh hardware
 authorization and present power/exclusivity/change confirmation remain absent.
 The later [enumeration-defaults supplement](usb-wait-offline-2026-10-29.md)
 adds a missed pre-execution configuration check; its focused independent
-review must also finish before a dependent hardware step. It changes no
-helper/product/test code or hardware count/budget/authority.
+NO_BLOCKERS review is now complete, with all3 native source packets audited.
+It changes no helper/product/test code or hardware count/budget/authority.
 
 The qualified diagnostic is constructor-only and not packaged. A separately
 reviewed execution card and fresh hardware authorization are still required

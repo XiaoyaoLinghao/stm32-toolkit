@@ -80,9 +80,11 @@ observation validates the exact planned argv without main/run_attempt/child.
 Later offline source tracing found the enumeration-time get_current default
 Session(None) configuration boundary, which the original source excerpts did
 not include. See [the focused supplement](usb-wait-offline-2026-10-29.md).
-The original NO_BLOCKERS verdict remains retained for its stated scope, but a
-focused independent review of this added prerequisite is also required before
-hardware. Software42+8 results and all hardware operation limits are unchanged.
+The original NO_BLOCKERS verdict remains retained for its stated scope. The
+added prerequisite has now also passed a focused independent NO_BLOCKERS review
+atb68794a7, with3 complete native JSON/source packets audited; see that supplement's
+outcome. Software42+8 results and all hardware operation limits are unchanged.
+Hardware authority and present readiness confirmation still remain absent.
 
 After a new explicit hardware authorization and current original-board/probe
 power/exclusivity/change confirmation, update only the card's identities/status,

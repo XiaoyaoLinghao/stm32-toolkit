@@ -75,3 +75,33 @@ retained but is not evidence that it inspected this get_current branch.
 The normal1MHz gate remains retired; ordinary source default100kHz is unchanged.
 No product deadline, launch/PID/lease rule, operation count or hardware authority
 changes in this offline continuation. The full three-item goal is still open.
+
+## Focused independent prerequisite review
+
+The added procedure/card prerequisite subsequently received **NO_BLOCKERS** from
+a fresh local Claude Code CLI review at clean source
+`b68794a70a99b72362d56f665b7b81642ee0ba3f`, retaining the configured route.
+Three exact ordinary source-packet rendering commands ran once after native
+PowerShell inventory and real harmless smoke. Primary verified native matched
+results, full JSON equality to all3 frozen packets, file hashes and every
+numbered excerpt. No truncation, scope/command error, pending result, retry,
+product/test execution or device operation. Native numeric success exits remain
+null; CLI exited0. This is not an additional test pass or hardware permission.
+
+The reviewer verified get_current/default Session(None), project/config/logging
+resolution, the no-probe return before user script/board, enumeration caller,
+production child cwd, all4 default names, both environment inputs, the later
+selected-session no_config limit, preserved user settings, exact hardware count
+wording and unchanged20s+2s/identity/lease/failure limits. The base card and
+USB-wait hypothesis document were outside this focused packet scope; their
+earlier review and Primary source reasoning are not relabeled as new independent
+coverage. Actual selected transport, USB wait and physical cause stay unknown.
+
+Full verdict, native logs and Primary audit are in D:/codex-tmp/st135-hw01/
+default-session-review-verdict.md, default-session-review-run and
+default-session-review-audit.json. Task SHA256 is
+11a47a9284d772aa710f4f7b0eeca4ccf07bd9291a195ad78386e1d8b9e48866.
+The snapshot at79924428 remains historical presence evidence; recheck the actual
+launch environment before READY. Hardware authorization and present original
+board/probe power/exclusivity/change confirmation remain unanswered, so no
+hardware was started.
