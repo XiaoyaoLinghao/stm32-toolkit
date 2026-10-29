@@ -1,4 +1,87 @@
-# SESSION-TRACE initial candidate review
+# SESSION-TRACE review and stopped correction
+
+## Current checkpoint: first correction stopped
+
+2026-10-29 current verdict remains **REVISION_REQUIRED**. Current retained
+partial diagnostic CodeHead before this report commit:
+`d1b975d4d9f044b08fd6e73e1c3bb2b42e884237`. Accepted base remains
+`bee6118339166e7d57a0e8ed1fc29ddf85242d0c`; correction started from clean
+report/source freeze `cf01b3f52a81c88c91430dbf5fb2818312f80787` on the same
+`codex/v135-session-trace` isolated branch. No product runtime changes, PR,
+hardware, installation, packaging or remote authority. The full goal is still
+at the unresolved connection issue; later physical reset/IPSR evidence and
+ABI/CCM disposition have not been substituted by helper work.
+
+The human explicitly authorized one bounded R1–R7 correction of the two files.
+It was dispatched once through the stable local Claude Code CLI entry, retaining
+the configured route and permissions. `correction-run` inventory/main registered
+exactly Read/Edit/Write/Glob/Grep. Twenty-five matched successful writes changed
+only session_trace.py; the test file is unchanged. There were no scope flags,
+shell commands or tests. One Edit returned `String to replace not found in file`
+for a large replacement of run_attempt, native id
+`call_00_htpn63z4vd733mnh9dtfjbyy`; it applied no edit and is classified
+unknown_error, not a tool absence or permission/exec-policy refusal.
+
+The task explicitly required ordinary-text termination on a native tool error,
+but subsequent reads/edits continued. Primary stopped only the verified owned
+Claude PID25056 (parent dispatcher27852, exact configured executable). Its bound
+exec session ended, CLI exit4294967295, dispatcher accepted=false and completion
+invalid. Dispatcher `stopped=false` refers to its own automatic mechanism;
+`correction-coordinator-stop.json` separately records the external coordinator
+stop. A stop request does not undo writes or prove descendant termination. No
+file-only tool evidence indicates a test/hardware command. Original events,
+task/manifest, unmatched Edit and later calls remain retained, not reclassified.
+
+Primary froze the partial diff and read all changed content in the clean exact
+CodeHead independent review tree. The correction delta is375 insertions/
+388 deletions in the one helper file; reviewed diff and raw evidence are under
+`D:/codex-tmp/st135`. This is not a completed correction or a passing software
+gate. No test was rerun on this partial source.
+
+Remaining work is concrete:
+
+- R1 is untouched: the dynamic-import registry fix and private fake/bootstrap
+  migration still belong in the unchanged test module. Its old FAKE_* references
+  now name removed helper constants and its child CLI tests still rely on the
+  removed environment mode. Do not run those CLI cases against the partial helper:
+  after collection repair they could reach the real default backend. All offline
+  construction cases must first install explicit inert Python-only injection.
+- The helper has partial fixes for finite numbers, actual GO lease comparison,
+  claim checks, cancellation accounting, consistent parent-report failure, and
+  reuse of the existing backend selector. None is functionally verified. The
+  driver-acquired stage is now declared but no longer emitted, so required stage
+  evidence must be restored at the actual lazy acquisition boundary.
+- R5 still needs complete failure coverage: source hashing/request persistence
+  before the main guard, post-child validation and cleanup exceptions can escape
+  without a final attempt record. Preserve initiating failure and cleanup truth
+  while the output remains writable; otherwise report a stable explicit record-
+  unavailable failure. Do not expand into a generic lifecycle framework or claim
+  a record can always be written when storage itself fails.
+- R6 remains incomplete: child traceback stat failure still silently becomes
+  zero bytes in _NativeTraceback.disarm. The new reportError value uses
+  _safe_code(error), exposing sanitized raw exception text; use a fixed/class
+  code instead, consistent with the closed no-raw-exception contract. Add the
+  required overall persistence/snapshot/lease/handle failure cases in tests.
+
+The coordinator's task made every native error an immediate stop, including this
+unexecuted Edit context mismatch. This conservative stop rule was broader than
+necessary for such a benign same-file miss. A proposed future call may explicitly
+allow exactly one same-file Read and one uniquely anchored Edit correction for
+that exact error, retaining the original failure and dispatcher verdict. It must
+not cover ambiguous/malformed Write, another miss, missing tools, scope changes,
+permission/policy refusals or commands. No such allowance is retroactive and no
+new invocation is authorized by this report. The human's one call is consumed;
+any further delegation requires a new explicit bounded authorization.
+
+If authorized, finish the remaining helper/test integration on this slice, then
+freeze and independently review before separate short offline verify tasks. The
+original c01 failure stays zero passes; no hardware entry is READY. This was the
+replacement's first correction attempt, stopped before test integration; it must
+not be relabeled a completed or accepted round. The two-round convergence rule
+still applies to attempts on the same unresolved findings; it is not reset by
+an interrupted or incomplete call. A second unconverged attempt returns to design.
+
+## Initial candidate record (historical)
 
 2026-10-29 verdict: **REVISION_REQUIRED**. Not a hardware entry or a timeout
 fix. The remaining-three goal is active at item1.

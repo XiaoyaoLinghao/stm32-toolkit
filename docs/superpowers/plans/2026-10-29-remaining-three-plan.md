@@ -24,6 +24,13 @@ installation, packaging and remote authority remain absent.
    failure (exit4, zero passes). Prepare one same-two-file correction; do not
    automatically retry the abnormal invocation. Explicit bounded re-delegation
    authorization remains pending; hardware entry is not READY.
+   The human-authorized first correction subsequently stopped on a native Edit
+   context failure followed by continued editing. Partial CodeHead
+   `d1b975d4d9f044b08fd6e73e1c3bb2b42e884237` is retained, not accepted; tests
+   were not edited/run. Follow the report's current remaining-work section and
+   test-injection prerequisite before any new verification. A further bounded
+   call needs explicit authorization; the two-round limit is not reset by this
+   interrupted first attempt.
 2. **IPSR=3 and reset/HALTED preparation, queued.** Reuse accepted reset software
    evidence; once connection is available, verify the actual normal100kHz path
    only under a separately approved finite hardware operation. No automatic

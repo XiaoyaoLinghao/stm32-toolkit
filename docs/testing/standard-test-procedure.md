@@ -6,6 +6,8 @@
 
 ## 1. 当前断点与证据
 
+2026-10-29 SESSION-TRACE 首次有界修正已由用户授权并执行，但原生Edit未匹配原文后仍继续编辑，Primary停止了经核实的本次Claude CLI；见[当前修正处置](../codex/returns/SESSION-TRACE/implementation-report.md)。保留的部分CodeHead `d1b975d4d9f044b08fd6e73e1c3bb2b42e884237`，25次成功写入仅改诊断脚本，测试文件未改；无范围外写入、命令或测试，原错误、停止记录与CLI退出4294967295保留，dispatcher未接受。Primary已在干净精确CodeHead审查全部修正差异，仍REVISION_REQUIRED。**旧测试依赖的模拟环境开关已从脚本移除，测试尚未迁移到私有Python注入，不能在只修收集问题后直接运行旧CLI构造用例，以免调用真实后端。** 下一次先完成测试迁移和余下错误合同，再固定源码、审查、分开执行离线验证；没有新的修正调用授权或硬件READY。原c01仍0通过，实际连接超时及完整三项目标未解决。以下为历史断点。
+
 2026-10-29 SESSION-TRACE 初版候选独立完整差异审查为 **REVISION_REQUIRED**，见[当前审查及执行记录](../codex/returns/SESSION-TRACE/implementation-report.md)。Accepted base `bee6118339166e7d57a0e8ed1fc29ddf85242d0c`，诊断/测试CodeHead `e385e5b17b1dfb1835e4a8db3dc67c2a8309f951`。Claude文件调用38次范围内写入，原生两次不存在路径Read及一次畸形Write错误保留，dispatcher未接受；后续独立PowerShell验证实际退出4，动态导入/dataclass收集错误1项、通过0项，tracked源码hash未变。Primary已在干净精确CodeHead审查全部六文件差异，提出七项有界修正，未执行自动重新委派。不是软件接受或硬件READY；实际连接超时、IPSR=3和完整三项目标仍未解决。用户无原ARMCC产物，ABI维持未验证。仅准备原两文件修正，按全局AGENTS明确有界授权后再委派、分开验证；不操作硬件、安装、打包或远端。以下为历史断点。
 
 2026-10-29 剩余三项按[当前顺序计划](../superpowers/plans/2026-10-29-remaining-three-plan.md)继续。初版ATTACH-ISOLATION两轮未收敛，已REWRITE_REQUIRED并保留，见[前序处置与来源](../codex/returns/SESSION-TRACE/predecessor-disposition.md)。当前SESSION-TRACE在accepted base `bee6118339166e7d57a0e8ed1fc29ddf85242d0c`冻结[新执行接口](../superpowers/specs/2026-10-29-session-trace-design.md)，IMPLEMENTATION_PENDING：直接启动独立解释器，匹配READY后才写一次GO，未获GO的子进程不得访问USB，沿用真实子进程OBSERVE租约。它尚未实现或通过软件验收，不能作为实机入口；整个goal仍在第1项，实际连接原因未定，第2、3项未完成。未操作硬件、安装、打包或推送发布。后续仍须完成离线验证、独立入口审查、真实身份执行卡与新明确硬件授权。以下为历史断点。
