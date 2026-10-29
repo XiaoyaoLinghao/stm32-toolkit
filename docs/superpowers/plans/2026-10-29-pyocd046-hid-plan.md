@@ -7,7 +7,38 @@ branch codex/v135-pyocd046-hid. Primary spec/reviewer/acceptance owner; local
 Claude Code CLI implementer via shared dispatch.py, unchanged configured model.
 No remote action, hardware or active-runtime replacement authorized.
 
-## File-only implementation
+## Authorized three-file continuation, 2026-10-29
+
+After the retained unaccepted first invocation and Primary complete-diff review
+at c7b91d2afad06be4838a365d7e5afa8469922643, the human explicitly authorized
+one continuation and separate offline acceptance. Start from the clean branch
+after report d1d2c844dad633f0e1d9155c058472a5b23b57d6 and this plan update.
+Accepted diff origin remains62bede1d55a513f3dfd8d634b2d3116b0de41890.
+
+The continuation may write ONLY test_pyocd_hid_timeout.py under the existing
+Toolkit tests directory, skills/setup-stm32-env/SKILL.md and CHANGELOG.md.
+Read/Grep/Glob scope is now this isolated repository, a new explicit permission
+for this call only, not retroactive acceptance of the first call. Supply actual
+SDK HID/Interface source excerpts in task text; do not read installed sources.
+No shell/tests/installation/hardware/remote action during edit.
+
+Add actual0.46.0 fake-device HID finite-timeout/normal-response/empty-response
+tests; distinguish Unreleased/next1.3.5 source from published1.3.4 with0.45.1 in
+the setup skill, preserving current metadata/path; remove only newly introduced
+one-megahertz wording in the new changelog paragraph. Keep every other source,
+test and old admission fixture byte unchanged relative to the retained candidate.
+
+At most ONE native Edit original-text-not-found error may receive one same-file
+Read followed by a short corrected Edit. Primary records actual consumption in
+the external one-shot ledger; this allowance expires with the call. Any other
+error, refusal, policy/permission boundary or scope deviation stops the call.
+No full restart or other retry is authorized. Retain first-call logs and verdict.
+After native edit audit and complete-diff review, freeze CodeHead, run the
+already planned affected matrix through separate exact-command verify tasks
+and independently accept/reject. Existing isolated dependencies are reused;
+no active-runtime replacement, new hardware or remote authority.
+
+## Initial file-only implementation (historical scope)
 
 Exact allowed writes, no other source/config/report/fixture file:
 
@@ -38,8 +69,10 @@ truthful. Add actual installed-SDK HID boundary tests with fake devices, avoidin
 enumeration. Existing target API admission hash test continues to validate the
 historical fixture; current-version/API assertion uses current candidate policy.
 No shell, test execution, installation or hardware in edit mode. No automatic
-retry/context-correction grant; genuine tool/scope/refusal/error stops and is
-reported. File completion does not prove tests passed.
+retry/context-correction grant in the initial call; only the explicit allowance
+in the continuation section applies to the new call. Genuine tool/scope/refusal
+errors otherwise stop and are reported. File completion does not prove tests
+passed.
 
 ## Verification and independent acceptance
 
