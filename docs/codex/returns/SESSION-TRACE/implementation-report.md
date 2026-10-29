@@ -1,6 +1,121 @@
 # SESSION-TRACE execution and verification disposition
 
-## Current checkpoint: return to integration design
+## Current checkpoint: direct-runtime matrix, one test revision required
+
+2026-10-29 verdict: **REVISION_REQUIRED**, not software acceptance or hardware
+READY. Accepted diff origin remains
+`bee6118339166e7d57a0e8ed1fc29ddf85242d0c`. The CodeHead before this report
+commit is `439900a2397a0862d28afecc3012294f6f0100cd`, on
+`codex/v135-session-trace-runtime`. Primary owns design, complete-diff review,
+orchestration and acceptance; local Claude Code CLI implements/tests through
+the stable dispatcher, retaining the configured deepseek-v4.1-flash[1m] route.
+No remote action is authorized.
+
+The user explicitly approved the direct-runtime integration plan. Its single
+file-only call completed normally: inventory/main exactly Read/Edit/Write/Glob/
+Grep,13 matched successful edits only in `test_session_trace.py`, no native
+error, scope violation, command or test execution; dispatcher accepted=true.
+The permitted once-only context correction was unused and expired with that
+call. Evidence: D:/codex-tmp/st135/runtime-adapter-run. Primary reviewed the
+complete385-line adapter diff and its helper/lease dependencies in the clean,
+exact-head independent checkout; all40 original test functions and their
+assertions/budgets remain, with two added sole-cleanup-failure tests. The earlier
+complete helper/base diff review remains part of this cumulative review.
+
+The helper's committed blob is unchanged from1c8d32c3. Author-tree raw SHA256
+is f607dcd4c0dc8f1dad142df6d774b646abf6714a492361fc5c4604ae19991e32.
+The existing clean independent checkout uses core.autocrlf=true, yielding
+helper SHA2568a883179a44646d128dd231e6777e88a4486b408f5163deda5ed0cfa06687b1d;
+canonical blobs match. No source normalization or Git setting was changed.
+Primary initially supplied the author-tree test-file hash to its review-tree
+selector preparation; that preparation failed before any pytest launch.
+The original failure is retained in primary-preparation-failure.json, followed
+by selectors bound to the actual verified review bytes. It is not a test pass
+or a Claude retry.
+
+### Fresh final-head executions
+
+The selected real CPython3.12.14 image and existing read-only dependency site
+are exactly those in the approved runtime design. Both delegated calls passed
+fresh native PowerShell inventory and harmless smoke, then executed all9 exact
+commands once. All42 final functions ran fresh: **41passed/1failed/0skipped/
+0errors**. There is no pending or unexecuted command, scope deviation or retry.
+Every tracked source hash remained unchanged. The first verify call accepted;
+the second correctly did not accept. CLI0/model claims do not replace results.
+
+| Group | Actual subprocess/pytest exit | Passed | Failed |
+| --- | --- | --- | --- |
+| d01 default/import/launch | 0 | 7 | 0 |
+| d02 protocol validators | 0 | 5 | 0 |
+| d03 inert construction chain/native stack | 0 | 7 | 0 |
+| d04 ownership/readiness | 0 | 6 | 0 |
+| d05 cancellation/startup | 0 | 4 | 0 |
+| d06 actual main timeout/surviving child | 0 | 1 | 0 |
+| d07 actual main cancellation/surviving child | 0 | 1 | 0 |
+| d08 error helpers/results | 0 | 9 | 0 |
+| d09 sole handle/lease failures | 1 | 1 | 1 |
+
+Primary separately ran8 final risk cases in the clean exact439900a2 independent
+checkout: production argv and removed environment controls, successful actual
+child, both new cleanup failures, actual native stack and main timeout/cancel
+with a surviving inert child. **8passed/0failed/0skipped**; actual exit0 and
+tracked hashes unchanged. These are independent executions, not8 additional
+distinct passing functions or permission to erase d09's failure. The earlier
+4-case pilot at1c8d32c3 is retained only as feasibility evidence.
+
+All final execution/JUnit evidence is under D:/codex-tmp/st135-direct/d01–d09
+and pfinal1–pfinal3. Exact commands/selections, native events and the completed
+independent evidence audit are under D:/codex-tmp/st135, particularly
+verify-direct-a-run, verify-direct-b-run and direct-final-audit.json. The audit
+matches42 distinct selected names, actual exits, fresh JUnit hashes/times,
+runtime/runner/selection pins and all source hashes. Native successful shell
+results have numeric exit null; the failed d09 native exit is1. The runner's
+subprocess exits in the table are actual recorded values, not inferred native0.
+
+### F1: final reclamation prerequisite is not the existing owner predicate
+
+Path: `tools/stm32-toolkit/tests/test_session_trace.py:2403`,
+`test_lease_release_failure_is_the_sole_failing_phase`.
+Observed d09 failure: final `manager.acquire` raises PROBE_BUSY. All preceding
+assertions passed: one driver/enumeration/selection/construction, Session close,
+no forbidden calls, sole leaseRelease error, matching lease/claim/GO/events,
+overall exit6, child returncode6, not alive, terminal handle released, and the
+preserved active record. The test must also complete safe temporary reclamation;
+it currently assumes an exit-code-based death check immediately means the
+unmodified lease owner predicate allows reclamation.
+
+The Windows inspector in `probe/lease.py` returns creation identity from
+GetProcessTimes; `_is_record_owner_live` conservatively combines matching
+identity with real health. Exit and disappearance of that identity are different
+conditions. Microsoft's [GetProcessTimes contract](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocesstimes)
+supports querying exited-process timing; its [termination documentation](https://learn.microsoft.com/en-us/windows/win32/procthread/terminating-a-process)
+explains process-object lifetime after exit. Primary's inert observation records
+own PID16676, actual wait exit0, a real matching identity while its terminal
+handle is retained, and identity null after closing that owned terminal handle.
+It performs no Toolkit operation or USB; terminal-identity-observation.json
+retains the record. Later read-only inspection of d09 PID31480 returned no
+process/identity; no foreign process was terminated. These observations support
+an owner-lifetime timing explanation; d09 did not capture which handle retained
+that specific process object, so that detail remains unproven.
+
+Expected correction: only this new test's cleanup prerequisite should wait
+finitely for the existing real manager owner predicate to permit reclamation,
+after proven child exit, under one fixed cleanup budget. Then acquire once and
+release normally. Keep every constructor/error/overall-failure assertion. No
+forced release, fake liveness, fake health, PID relaxation, helper or product
+lease change, repeated acquisition, or arbitrary sleep. The independent pass
+confirms timing sensitivity, not a correction. A newly bounded Claude call needs
+explicit authorization; no repair call or failed-command rerun has occurred.
+
+Normal construction, actual native traceback, normal main timeout and cancelled
+main exit now have executed passing evidence in the direct-runtime lane; the old
+venv lane stays26pass/14fail and unqualified. This is progress in diagnostic
+execution, not identification or repair of the original physical USB/Session
+timeout. Goal1 remains open; IPSR/reset efficacy and final ABI/CCM disposition
+remain queued. No board/probe operation, original project/shared-registry change,
+install, package, permission/provider/model change or remote action occurred.
+
+## Historical checkpoint: return to integration design
 
 2026-10-29 verdict: **REWRITE_REQUIRED for the execution/verification interface**.
 Reviewed unqualified CodeHead before this report commit is

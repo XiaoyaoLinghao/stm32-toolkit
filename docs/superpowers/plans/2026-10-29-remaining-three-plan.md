@@ -7,14 +7,19 @@ local Claude Code CLI owns code/tests, unchanged `deepseek-v4.1-flash[1m]` route
 using `C:/Users/zhy76/.codex/tools/claude-dispatch/dispatch.py` only. Hardware,
 installation, packaging and remote authority remain absent.
 
-Current item1 checkpoint: candidate1c8d32c3f0a8fe166034ed934bf2d87347502c14 has
-26pass/14fail across all40 test functions. The selected Windows venv redirector
-breaks the direct-PID ownership assumption; a separate scoped-Popen test import
-bug is also proven. After two attempts, stop local helper patches and return to
-the [explicit runtime/verification integration design](../specs/2026-10-29-session-trace-runtime-design.md).
-The helper stays frozen; only a newly authorized test adapter and new declared
-direct-runtime qualification may proceed. The real board cause is still unknown.
-Older checkpoints below are retained history, not the next execution authority.
+Current item1 checkpoint: direct-runtime CodeHead
+`439900a2397a0862d28afecc3012294f6f0100cd` has41pass/1fail across all42 fresh
+functions, plus8 independent Primary risk passes at the exact head. No pass
+overwrites the failed d09 reclamation case. The helper stays frozen; the
+[runtime integration design](../specs/2026-10-29-session-trace-runtime-design.md)
+has progressed through scoped test adaptation and complete execution, but is
+REVISION_REQUIRED. The added lease-failure test assumes process exit immediately
+means the existing Windows owner predicate permits registry reclamation. Prepare
+only a bounded test-file correction: wait for that unmodified real predicate
+within a fixed budget, then acquire once; preserve failure evidence, identity,
+health and all constructor/error assertions. No new edit-call retry authority.
+The physical board cause is still unknown. Older checkpoints below are retained
+history, not the next execution authority.
 
 1. **Attach timeout, active.** The previous standalone multiprocessing diagnostic
    is REWRITE_REQUIRED after two correction rounds; its code/logs are preserved
@@ -52,28 +57,34 @@ Older checkpoints below are retained history, not the next execution authority.
    Confirm available compiler evidence and make an explicit engineering
    disposition without silently verifying/changing ABI or memory requirements.
 
-## Bounded replacement workflow
+## Current bounded runtime workflow
 
 Reuse the clean attached isolated worktree
 `C:/Users/zhy76/.codex/worktrees/v135-flash-default-100k/STM32-Toolkit`, now branch
-`codex/v135-session-trace` at the accepted base. The old accepted branch and the
+`codex/v135-session-trace-runtime`. The old accepted branch and the
 rejected diagnostic branch/worktree remain intact. Freeze this design/plan.
 
-Claude file-only edit writes exactly the new helper and its new test module.
-Read/search scope is this isolated repository; prefer exact named source and
-instructions, never other projects/worktrees, installed sources or credentials.
-No shell/test/CLI/hardware action in edit. Startup must register exactly the five
-file tools; no automatic retry or implementation fallback. Preserve any abnormal
-run and native error, not just its final text/CLI exit.
+The completed adapter call wrote only the test module,13 native successful
+edits, no errors or commands. Its once-only context allowance expired unused.
+Any next call requires explicit bounded authorization and may write only that
+test file's reclamation prerequisite; helper/product lease bytes stay frozen.
+Read scope names the exact test/helper/lease/spec/report files. No shell/test/
+hardware action in edit. Startup must register exactly the five file tools;
+no automatic retry, policy bypass or implementation fallback.
 
 Primary freezes the code, audits native edits against the exact files, reads the
 complete base-to-code diff in a clean review tree, then delegates small exact
-PowerShell test groups. Use verified `D:/codex-tmp/kx23/venv/Scripts/python.exe`,
-explicit same-tree source paths, isolated external evidence under
-`D:/codex-tmp/st135`, exact node IDs, actual subprocess exits and fresh JUnit.
+PowerShell test groups. Use the verified real CPython image and SHA256 in the
+runtime design, with read-only dependencies at D:/codex-tmp/kx23/venv/Lib/site-packages,
+explicit same-tree source paths and isolated external evidence under
+D:/codex-tmp/st135-direct. The old venv launcher is not the selected executable.
+Record exact node IDs, actual subprocess exits, fresh JUnit and each clean
+worktree's actual byte hashes; canonical Git equality does not imply LF/CRLF
+working-byte equality. Never normalize source or change Git settings to hide it.
 Partition slow real-child tests separately to stay under foreground limits.
 Primary independently verifies the final head; reuse no earlier passing cases
-as proof for the new implementation. Correctable findings stay on this slice;
+as proof for the new implementation. Current final evidence is41/1 delegated
+and8/0 independent, with0skip/errors; no software acceptance. Correctable findings stay on this slice;
 two unconverged rounds for the same issue return to design.
 
 Record verdict and exact CodeHead before report commit in
