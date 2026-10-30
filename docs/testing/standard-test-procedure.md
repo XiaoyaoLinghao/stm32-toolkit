@@ -6,6 +6,8 @@
 
 ## 1. 当前断点与证据
 
+2026-10-30 用户明确允许1.3.5覆盖率按“不低于上一版本”验收，见[本版本条件授权](../codex/returns/STM32TK-135/coverage-authorization-2026-10-30.md)及[现行比较规则](release-qualification.md)。按v1.3.4各统计组的精确原生分支比例分别比较，保留统计口径、责任范围和新增/变更源码；当前COMPARISON_PENDING，尚无最终1.3.5度量PASS。永久门槛另列，不豁免行为回归、证据完整性及适用的集成/包/安装验收，不授予新的安装、实机或远端操作权限。
+
 2026-10-30 普通100kHz受管烧录已完成一次原板原探针实机验证，执行HEAD`e8e3c5f8d77490eaa0fae3e8ab8586237f30935c`，见[本次实机报告](../codex/returns/FLASH-FAILURE-EVIDENCE/normal-flash-2026-10-30.md)。新明确授权及当前就绪/独占/无变化确认后，只调用公共CLI一次：PID14408实际退出0、ok=true/code=OK，19656ms，61516B精确回读，源码分三次RPC；新session/build/ELF收据一致、endpoint移除、新lease released。无重试、恢复、额外coordinator终止、runtime替换、安装或远端操作。预检曾误将Toolkit类定义导入视作SDK导入，保留失败脚本/记录后在首次硬件前纠正；SDK未预加载、无额外硬件次数。源码/运行时/347个SDK文件和4个固件输入文件未变，flash receipt按预期更新。结论PASS_ONE_NORMAL_100KHZ_MANAGED_FLASH，仅此候选/原配对/此镜像一次成功；原IPSR=3本次未复现但根因未做A/B证明，频率仅请求/配置未测量，backend写入统计null不证明实际改变/擦除字节数，应用仍unknown/runVerified=false。硬件权限TERMINAL_SUCCESS/CONSUMED，不再READY，不追加设备操作；ABI/CCM及1.3.5发布资格仍另行处理。以下为此前断点。
 
 2026-10-30 FLASH-FAILURE-EVIDENCE 已通过诊断保留软件切片验收，accepted base`3bf143cd314b0e396a420a8c6ef33ee3ec19535b`，CodeHead`bfa56c21fa67e53649ec0c9c15b5ab4e9b79ae4d`，见[验收报告](../codex/returns/FLASH-FAILURE-EVIDENCE/implementation-report.md)和[复审执行卡](cards/2026-10-30-normal-100khz-flash.md)。四个相关测试模块345项最终通过（含37项新增），Primary干净提交另23项重复风险复验通过，不累计为不同用例。原2项MCP/pywintypes导入失败保留，经一次明确授权仅补测试子进程既有win32/win32/lib路径后2项复验通过，再执行23组原未执行检查；151项保留原入口证据、194项新入口通过，不声称同一入口全量重跑。原编辑调用因默认root Glob和Edit失败后继续操作仍NOT_ACCEPTED，候选由Primary完整差异审查及独立验证验收，没有重试编辑或Codex代写。普通编程错误叠加worker普通终止异常/清理失败现保留闭合programDiagnostic、initiatingCode和cleanup阶段；无效/致命/未报告结果边界仍在。执行卡独立正文复审NO_BLOCKERS的软件条件已满足，硬件仍SOFTWARE_COMPLETE_HARDWARE_PENDING/BLOCKED_NOT_EXECUTED，无当前授权/就绪确认；未操作硬件、替换runtime、安装或推送，目标UNKNOWN，旧constructor次数不复用。以下为此前断点。

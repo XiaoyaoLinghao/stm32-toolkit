@@ -6,6 +6,20 @@ The [standard procedure](standard-test-procedure.md) governs execution and autho
 Historical measurements and one-time exceptions do not transfer automatically to a later release.
 The user's explicit v1.0.1 conditional exception is recorded below, separately from permanent gates.
 
+## v1.3.5 coverage non-regression exception authorized on 2026-10-30
+
+The user explicitly permits a v1.3.5-only coverage exception provided coverage is
+no lower than the previous release. The exact v1.3.4 native branch baselines are
+Toolkit overall15336/18534, Toolkit risk-core-v2 14208/17194, Monitor overall and
+risk-core-v2 each3292/3564, UI overall2938/3147. Compare each applicable group
+separately using exact ratios and unchanged measurement/membership rules, with
+new/changed in-scope source included. Existing UI per-file rules remain.
+See the [authorization and comparison contract](../codex/returns/STM32TK-135/coverage-authorization-2026-10-30.md).
+Status is **COMPARISON_PENDING**, not a v1.3.5 coverage PASS or release acceptance.
+Permanent gates remain separately reported. Behavior, evidence and applicable
+integration/package/install checks are not waived; no installation, hardware or
+remote action is authorized by this exception.
+
 ## v1.3.4 frozen-candidate exception authorized on 2026-10-28
 
 The user explicitly approved **USER_APPROVED_EXCEPTION** and Latest publication
