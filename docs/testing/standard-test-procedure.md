@@ -6,7 +6,7 @@
 
 ## 1. 当前断点与证据
 
-2026-10-30 NORMAL-FLASH-ENTRY 正在离线准备普通连接及100kHz受管烧录入口，源基线`65e5b637069342b2472fad50fcf771801e7337c8`，见[当前审查记录](../codex/returns/NORMAL-FLASH-ENTRY/implementation-report.md)和[执行卡](cards/2026-10-30-normal-100khz-flash.md)。现有固件只读准入/CLI parser观察通过，预计两段回读61516B，工程文件未改；没有执行workflow或硬件。候选阻断项是编程错误叠加cleanup失败可能丢失programDiagnostic，须独立审查确认并解决；同时明确SDK内置reset后DP重连/算法控制与迟到attach恢复清理，不能把一次Toolkit复位或失败即停写成无任何SDK内部控制。当前REVIEW_PENDING/BLOCKED_NOT_EXECUTED，无新硬件授权、runtime替换或远端动作；旧constructor权限已消耗。以下为此前断点。
+2026-10-30 NORMAL-FLASH-ENTRY 已完成普通连接及100kHz烧录入口独立源码审查和阻断状态执行卡，源基线`65e5b637069342b2472fad50fcf771801e7337c8`，审查HEAD`b439cb3d774e5a836901230b5e35d157bb965a28`，见[审查报告](../codex/returns/NORMAL-FLASH-ENTRY/implementation-report.md)和[执行卡](cards/2026-10-30-normal-100khz-flash.md)。结论REVISION_REQUIRED/BLOCKED_NOT_EXECUTED：后端复位/HALTED顺序未见阻断，但workflow双重失败丢失原始programDiagnostic、initiating code及cleanup阶段；worker abort失败也可能覆盖原始错误，须先修捕获、离线回归及入口复审。原两次调用越界读取被拒后保留不完整结论；一次明确授权的正文源码补审完成，实际主审查零工具/写入/测试，原异常不追认。固件纯准入/parser检查通过，两段共61516B；主代理原先两次回读估算已显式更正为MAX_READ_BYTES32768下三次回读，未改固件或重新构建。SDK10s HID单读、服务5s attach及30s program/每次readback不变，失败close与父abort可能竞争、目标UNKNOWN。当前无硬件授权、runtime替换或远端动作；旧constructor权限已消耗。以下为此前断点。
 
 2026-10-30 PYOCD046-ENTRY 已在新明确授权和当前原板原探针供电/独占/无变化确认后完成唯一一次构造器实机诊断，执行HEAD`b5873c5ce6f7e915a333a65af4689cf39cf5f705`，见[本次诊断报告](../codex/returns/PYOCD046-ENTRY/constructor-diagnostic-2026-10-30.md)。窄范围PASS_CONSTRUCTOR_DIAGNOSTIC_ONLY：helper3172ms、父/child实际退出0、一次枚举/选择/构造/关闭，claim/READY/GO/result/events身份匹配，真实lease已released、terminal handle释放，源码/8个关键文件及347个SDK源码hash不变；未触及20s期限，无terminate或协作等待。trace及时取消、栈与stderr均0B，符合快速构造返回路径。旧构造阻塞本次未复现，但SDK异常抑制/未open close限制仍在，不能据此证明USB健康、普通连接/100kHz烧录、IPSR/reset/HALTED或物理CPU/固件；frequency仅选项，目标UNKNOWN。一次授权已消耗、TERMINAL_SUCCESS、不再READY；未追加设备操作、烧录/恢复/替换runtime/打包/推送。后续任何实机另填对应入口卡、核对新授权与当前前置，不复用本次次数；原离线审查和旧失败证据保留。以下为此前断点。
 
@@ -244,9 +244,9 @@ SVD 场景在首次硬件操作前以实际 project/target/device、完整 SVD �
 
 以[当前normal卡](cards/2026-10-30-normal-100khz-flash.md)及其独立审查为准，必须先解决离线阻断项，再另获新有限硬件授权/当前原板原探针就绪确认。一次公共flash调用包含自己的普通MODIFY连接，不增加单独probe list/attach或复用constructor grant。选定100000Hz、normal、精确build/ELF/target/probe/session；不使用under-reset或Monitor observe-preserve路线。Session.open和初始HALTED确认之后，编程前再请求SYSRESETREQ reset-and-halt并明确确认HALTED，失败不进入programmer/回读/成功收据。
 
-未来授权须包括既有SDK算法的RAM/寄存器/halt/resume等控制、reset内部可达性轮询及可能的DP重连，以及普通attach失败/迟到成功的resume、running确认与close清理；它们不等于主代理另发一次恢复/重试。不得承诺单个API意味着一次物理复位、无SDK内部重连或失败后必定halted。保留既有5s attach、10s单次HID读、30s program与每次readback期限，普通CLI不套constructor20s+2s；全调用观察预算须在卡中另获批准，未终态不擅自强杀/删lease/声称编程停止。
+未来授权须包括既有SDK算法的RAM/寄存器/halt/resume等控制、DBGMCU连接写入、DEMCR复位捕获、reset内部可达性轮询及可能的DP重连，以及普通attach失败/迟到成功的resume、running确认与close清理；它们不等于主代理另发一次恢复/重试。不得承诺单个API意味着一次物理复位、无SDK内部重连或失败后必定halted。错误响应后子进程finally close与父abort可能竞争，不能保证SDK清理完成或USB释放；program超时可中途终止并留下部分写入。保留5s attach、10s单次Windows HID读、30s program及三次readback各30s；底层worker flash RPC300s并不扩大服务30s期限，既有终止/join清理另计。普通CLI不套constructor20s+2s；全调用180s仅拟定观察预算，须另获批准，不是硬退出保证，未终态不擅自强杀/删lease/声称编程停止。
 
-实机前保存旧flash receipt；attach失败可留下旧receipt，program+回读成功后写的新receipt也可能随后遇cleanup失败。只有本次完整CLI结果、61516B精确回读、新session/build/ELF一致及worker/lease清理证据共同成立才通过；postFlash仍unknown/runVerified=false，不证明固件运行。双重失败的原始programDiagnostic留证不足时，先离线修正捕获边界，不能实际失败后重连补取。未操作硬件的本轮不授予后续执行、恢复、安装或远端权限。
+实机前保存旧flash receipt；attach失败可留下旧receipt，成功删除旧receipt后才进入program。program+回读成功后写的新receipt也可能随后遇cleanup失败，此时公共report数据丢失，receipt只作部分留证。只有本次完整CLI结果、两段三次共61516B精确回读、新session/build/ELF一致及worker/lease清理证据共同成立才通过；成功postFlash仍unknown/runVerified=false，不证明固件运行。双重失败的原始programDiagnostic、initiating code及cleanup阶段缺失必须先离线修正并验证闭合投影，不能靠复制任意details或实机失败后重连补取。未操作硬件的本轮不授予后续执行、恢复、安装或远端权限。
 
 ## 3. 状态和所有权
 

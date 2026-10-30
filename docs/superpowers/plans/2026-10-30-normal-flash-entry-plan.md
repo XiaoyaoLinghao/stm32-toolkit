@@ -11,7 +11,8 @@ retaining its configured route. No hardware/install/remote/retry authority.
    constructor PASS only at its original scope. Use source reads, current
    SDK/runtime hashes and pure firmware admission/parser observation, not CLI main
    or backend/worker execution. Exact expected pins/segments are in
-   D:/codex-tmp/st135-normal-flash-entry/firmware-observation.json.
+   D:/codex-tmp/st135-normal-flash-entry/firmware-observation.json; request-count
+   arithmetic is explicitly corrected by firmware-observation-reconciled.json.
 2. Primary freezes source analysis, actual normal-flash card and procedure update.
    Separate SDK-intrinsic polling/reconnect/algorithm controls from external
    retry/recovery. Bound positive and failure criteria; record the candidate
@@ -34,6 +35,16 @@ retaining its configured route. No hardware/install/remote/retry authority.
    task. Do not execute a defective entry or disguise a software finding as a
    platform deferral. Current task's entry gate stays REVISION_REQUIRED until a
    required correction is implemented and independently verified.
+
+2026-10-30 execution: original tasks completed14/15 authorized reads, then
+requested nonexistent unlisted A12/B13 and were stopped after permission
+refusals. Both remain REVIEW_INCOMPLETE. The user allowed one bounded supplement:
+26 complete packets supplied in the task, no main tool calls/edits/tests. That
+grant is consumed. Public verdict REVISION_REQUIRED; backend/SDK ordering
+NO_BLOCKERS within excerpts. Primary reviewed both assistant messages and
+reconciled missing helper/constants and incorrect proposals. No product fix in
+this preparation task. The completed blocked card is not READY: capture fix,
+offline regression and independent entry recheck remain mandatory.
 
 Primary documentation paths: this plan, design, standard procedure,
 docs/testing/cards/2026-10-30-normal-100khz-flash.md,

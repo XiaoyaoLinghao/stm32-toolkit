@@ -17,10 +17,10 @@ report. The old constructor PASS did not exercise Session.open or programming.
 | Programming |Default driver creates FileProgrammer with sector,trust_crc=false,keep_unwritten=true,progress=None and programs accepted in-memory ELF. SDK loader builds/erases/programs relevant regions; flash algorithm is loaded to RAM and uses CPU registers/halt/resume to execute subroutines. Flash.init(reset=False) normally halts; its reset branch exists. No promise that a full flash involves only one physical reset or no SDK controls. |
 | Readback/receipt |After programmer success, Toolkit independently reads two admitted flash ranges and compares61516bytes. Fresh identity is checked again before atomic flash-result.json write. Receipt occurs before workflow cleanup. postFlash reports targetState=unknown,runVerified=false; no application run is verified. |
 | Attach failure cleanup |Partial normal attach can resume candidate and verify running before close. Entered5s deadline gets1s terminal wait; late MODIFY success also resumes/state-checks/closes and still fails. Otherwise owned worker abort terminate/join1s, then kill/join1s if needed. These internal cleanup effects must be in future authority. |
-| Program/readback failure cleanup |The workflow closes client, then service/supervisor/owned worker and lease. Preparation failure has no attach-restoration resume branch; normal close uses resume_on_disconnect=false. SDK algorithm uninit/disconnect may perform debug operations; neither failure stop nor lease release proves physical rollback, CPU state or independent USB close. Unresolved child/cleanup forbids subsequent hardware, even if registry says released. |
+| Program/readback failure cleanup |Preparation failure has no attach-restoration resume branch. On a backend error response parent abort races child finally backend.close; SDK debug cleanup can occur but close/uninit completion is not guaranteed. Program timeout can terminate mid-write. The workflow closes HTTP client and stops service/supervisor/worker/lease; neither failure stop nor lease release proves physical rollback, CPU state or independent USB close. Unresolved child/cleanup forbids subsequent hardware, even if registry says released. |
 
 Budget scopes:5s attach success deadline; SDK per-HID-read10s; program30s;
-two separate readbacks each30s; worker startup10s, ordinary RPC30s, flash RPC300s,
+three readback requests each30s over two segments; worker startup10s, ordinary RPC30s, flash RPC300s,
 close5s. The service program deadline remains30s and can abort that longer RPC;
 HTTP envelope305s. Existing cleanup adds its own waits and may await owned tasks;
 no uniform5/8/20/22/180s CLI wall-time promise. Future180s observation cutoff
@@ -28,22 +28,32 @@ means retain unfinished/UNKNOWN/lease/handle evidence and stop later hardware,
 not force-kill or assert programming stopped. Actual future scope/budget must be
 explicitly authorized after review; no deadline is enlarged to make a test pass.
 
-## Candidate blocking evidence gap
+## Confirmed blocking evidence gap
 
 hardware_workflows.py:_one_shot cleanup.failed starts details={} and preserves
 controlledSnapshot or attachDiagnostic, not ordinary flash programDiagnostic.
-The current path therefore appears to hide the initiating programming error if
-client/service cleanup also fails. Existing ordinary non-flash tests deliberately
+Independent review confirmed that this hides the initiating programming error
+and cleanup stages if client/service cleanup also fails. Worker abort failure can
+replace the error earlier; cancellation/fatal identity can be masked by the
+cleanup override. Existing ordinary non-flash tests deliberately
 expect empty details for sanitization, so copying arbitrary result.details would
 be unsafe and outside a minimal fix. A closed flash-specific diagnostic/cleanup
 projection, if required, needs a bounded Claude implementation and regression.
-Independent review must confirm this gap against the source before acceptance.
+Reuse extract_program_diagnostic rather than trusting any Mapping. A correction
+and offline regression are required before entry acceptance; this task changed
+documentation only. Success+cleanup failure also drops public report data; a new
+receipt remains forensic partial evidence, never overall success.
 
 Firmware observation is a pure file-admission and parser check: buildId
 8d3368750cce364ad38e9ed0a6c0f6d6067779c52bc5d8e3a95115ee0ef4abcc;
 ELF SHA256b8d5f2c15963552f732ba5650c3150b9471a0d532f3d8c4712748e66fd06bf53,
 file1046128bytes; segments0x08000000/61368 and0x0800efb8/148, total61516bytes.
-The input snapshot baseline has null Git fields with explicit unavailable-Git
+The two segments require three requests, not two:32768bytes at0x08000000,
+28600 at0x08008000 and148 at0x0800efb8 (MAX_READ_BYTES32768).
+FlashRequest.timeout_ms30000 is explicit, overriding generic read_memory's5000.
+Initial arithmetic used the request-envelope limit65536 by mistake; the original
+observation is retained with firmware-observation-reconciled.json, no admission
+rerun or project rewrite. The input snapshot baseline has null Git fields with explicit unavailable-Git
 evidence; do not invent clean Git provenance. Model/identity/build/ELF/old flash
 receipt hashes were unchanged by this observation. No rebuild or board operation.
 
@@ -54,3 +64,21 @@ final public ok=true, full readback and reconciled ownership/worker cleanup.
 flashOptions and last progress stage are policy/entry evidence, not proof of
 physical execution or exact timing. No error triggers re-enumeration, retry,
 under-reset, reset/run or firmware rebuild as an automatic fallback.
+
+## Primary reconciliation of independent review
+
+Both original calls remain incomplete after denied extra packets. The authorized
+zero-action supplement returned public REVISION_REQUIRED and backend/SDK
+NO_BLOCKERS within excerpts. Its CLI result contains only the second assistant
+message; both are preserved in the complete-review artifact and reviewed by
+Primary. This is source analysis, not test execution.
+
+Primary rejects a Mapping-only diagnostic projection and the categorical claim
+that no SDK close can run after program failure: worker.py273–395 has finally
+close, racing parent abort at699–758. HID10s is supported by SDK interface.py25–26
+and hidapi_backend.py321–328, distinct from algorithm timeouts. Builtin
+STM32F429xG inherits part_number from its class name (soc_target.py68);
+canonical matching is statically consistent, while actual identity remains a
+hardware gate. Connect hook writes DBGMCU.CR/APB1_FZ/APB2_FZ; reset catch
+arms/restores DEMCR.VC_CORERESET. Warnings may be lost to NUL worker stdio;
+the explicit Toolkit HALTED gate supports proceeding. None waives the blocker.

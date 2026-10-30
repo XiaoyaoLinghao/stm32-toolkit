@@ -39,26 +39,39 @@ Firmware admission and parser-only observation are read-only ordinary checks.
   or only one physical reset from one Toolkit API request.
 - Existing attach failure/late-MODIFY cleanup may resume, check running and close.
   Program/reset preparation failures do not invoke that attach restoration branch.
-  Standard close uses resume_on_disconnect=false but SDK disconnect can perform
-  debug cleanup; failure does not guarantee halted/running or rollback of writes.
+  Standard close uses resume_on_disconnect=false. On an error response the parent
+  aborts its child; the child's finally backend.close can race that abort and may
+  be interrupted. SDK debug cleanup can occur but is not guaranteed to finish.
+  Failure does not guarantee halted/running, USB closure or rollback of writes.
 - Preserve initiating and cleanup evidence. CLI error/cleanup override must not
   silently erase a required programDiagnostic. Final receipt alone is insufficient:
   it can be old after attach failure or newly written before a later cleanup failure.
-- Preserve5s attach success deadline, SDK per-read10s, program30s, each of two
-  readback RPCs30s, worker startup10s/ordinaryRPC30s/flashRPC300s/close5s and existing bounded
+- Preserve5s attach success deadline, SDK per-read10s, program30s, each of three
+  readback RPCs30s (two segments; MAX_READ_BYTES32768), worker startup10s/
+  ordinaryRPC30s/flashRPC300s/close5s and existing bounded
   owned-worker abort joins. The constructor20s+2s budget does not apply. A proposed
   future180s observation budget is not a hard CLI/OS/persistence deadline or force
   kill permission; unfinished execution remains UNKNOWN and forbids later hardware.
 
-## Known candidate blocker, subject to independent confirmation
+## Confirmed blocker and review checkpoint
 
-hardware_workflows._one_shot currently preserves attach/controlledFault details
-when cleanup fails, but appears to replace ordinary flash programDiagnostic with
-empty HARDWARE_CLEANUP_FAILED details. The maintained procedure requires original
-failure capture before the first hardware step. Do not mark the entry READY or
-software-complete by pretending this detail survives. Independent reviewers must
-confirm the source behavior and whether a bounded correction is required; a
-software defect is not deferred as a hardware-only uncertainty.
+The independent source review at b439cb3d774e5a836901230b5e35d157bb965a28
+confirmed that hardware_workflows._one_shot drops the initiating flash code,
+programDiagnostic and cleanup stages when cleanup also fails. Worker-parent
+abort failure can replace the programming error earlier; cancellation/fatal facts
+can also be masked by the workflow cleanup override. This initiating-failure
+capture problem requires a bounded correction and offline regression before
+hardware. Reuse the existing closed diagnostic validator and cleanup shape;
+neither copying arbitrary details nor a Mapping-only check is acceptable.
+Success+cleanup failure loses public report data; a new receipt is partial
+forensic evidence and cannot make that invocation successful.
+
+Public lifecycle verdict: REVISION_REQUIRED. Backend/SDK ordering verdict:
+NO_BLOCKERS within reviewed excerpts, not physical qualification. Primary
+resolved additional helper/constants and incorrect reviewer assumptions in the
+linked report. The original stopped calls remain incomplete; the authorized
+supplied-source supplement completed with zero main tool calls. The initial
+two-read estimate is superseded by three reads, unchanged61516bytes.
 
 Completion requires both public lifecycle/IPC and backend/SDK review, explicit
 failure/cleanup/reset boundaries and a concrete pinned card. Findings remain
