@@ -1,6 +1,45 @@
 # Changelog
 
-## [v1.3.5] - 2026-10-30
+## [v1.3.6] - 2026-10-30
+
+- Implemented: optional migration ABI provenance. A firmware identity and its build-result may
+  carry the conversion report's own deterministic `floatAbi` object: the same 14-key decision
+  (`compiler`, `compilerVersion`, `cpu`, `rawFpu`, `rawFloatAbi`, `rawRvdsVp`, `fpu`,
+  `selectedAbi`, `origin`, `ruleId`, `reason`, `baselineVerified`, `warning`, `nextStep`) plus
+  that report's `reportPath` and `reportSha256`. `origin` is copied unchanged from the report
+  and can be `not-applicable` as well as `inferred` or `declared`, and `baselineVerified` stays
+  `false`. This is migration metadata captured from the fixed project-local report, not proof
+  that the original and replacement binaries use an equivalent ABI. A genuinely absent optional
+  conversion report yields no `floatAbi` evidence and no warning; a report that is present but
+  unsafe or redirected, malformed, or mismatched stays unavailable and produces the bounded
+  warning. Older identities without the optional field keep their original identity
+  calculation.
+- Implemented: every newly written build-result carries `toolkitVersion`, the executing Toolkit
+  version, for debug/release and success/failure receipts. Older records without the field remain
+  readable; no cross-version firmware identity admission is added.
+- Implemented: preset-owned receipt/log paths are retained. Debug receipt/log stay at the
+  historical `artifacts/migration/build-result.json` and `artifacts/migration/build.log`;
+  `arm-release` owns `artifacts/migration/arm-release/build-result.json` and
+  `artifacts/migration/arm-release/build.log`. Context still selects debug, and ordinary
+  switching in either direction does not require clean.
+- Implemented: nullable backend programming telemetry. `backendBytesProgrammed` and
+  `backendSectorsProgrammed` are backend reports in the public JSON and the persisted
+  flash-result; `null` means unreported and is never zero or a failure, while a supplied zero is
+  preserved as a real value. `verifiedBytes` remains the exact readback extent, not a
+  programming count. pyOCD 0.46.0's high-level program call
+  ([`file_programmer.py`](https://github.com/pyocd/pyOCD/blob/v0.46.0/pyocd/flash/file_programmer.py),
+  [`loader.py`](https://github.com/pyocd/pyOCD/blob/v0.46.0/pyocd/flash/loader.py)) returns no
+  public structured programming statistics; this does not claim the SDK has no internal
+  counters. Sectors are therefore never inferred from pages and human console logs are never
+  parsed. No program-call, readback, authorization, lease or fail-stop behavior changes.
+- Preserved: the ordinary-flash 100 kHz default, the authorized `SYSRESETREQ` reset-and-halt,
+  authorization/lease/fail-stop contracts, and the empty `.vscode/launch.json` before an
+  authorized handoff are unchanged. This entry is source-only: it claims no new test, hardware
+  or publication PASS. Prepublication wording inside the immutable v1.3.5 downloaded artifacts is
+  a build-time snapshot; the public Release page and current source record publication. The
+  v1.3.5 assets are not rebuilt or replaced.
+
+## [v1.3.5](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.3.5) - 2026-10-30
 
 - Implemented: flash diagnostic preservation across cleanup and worker abort. The original
   `programDiagnostic` and its `initiatingCode` now survive ordinary post-failure cleanup and an

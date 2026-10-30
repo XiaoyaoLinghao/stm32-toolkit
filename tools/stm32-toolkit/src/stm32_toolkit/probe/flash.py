@@ -18,6 +18,7 @@ from elftools.elf.segments import Segment
 
 from stm32_toolkit import __version__
 from stm32_toolkit.build.identity import (
+    BUILD_RESULT_OPTIONAL_FIELDS,
     BuildError,
     ElfEvidence,
     atomic_write_json,
@@ -28,6 +29,7 @@ from stm32_toolkit.build.identity import (
     utc_now_rfc3339,
     validate_elf,
     validate_identity_document,
+    validate_optional_provenance,
     validate_snapshot_build_result,
 )
 from stm32_toolkit.build.map_file import parse_map
@@ -482,7 +484,11 @@ def _load_git_firmware(
     identity: dict[str, object],
     result: dict[str, object],
 ) -> _FreshFirmware:
-    if set(result) != _BUILD_RESULT_FIELDS:
+    result_keys = set(result)
+    if not _BUILD_RESULT_FIELDS <= result_keys:
+        raise _fail("FIRMWARE_EVIDENCE_INVALID", "Build result is invalid", path=_RESULT_REL, rule="fields")
+    if result_keys - _BUILD_RESULT_FIELDS - BUILD_RESULT_OPTIONAL_FIELDS:
+        # Only the explicit optional fields may extend a legacy record.
         raise _fail("FIRMWARE_EVIDENCE_INVALID", "Build result is invalid", path=_RESULT_REL, rule="fields")
     if type(result.get("gitDirty")) is not bool:
         raise _fail("FIRMWARE_EVIDENCE_INVALID", "Build result is invalid", path=_RESULT_REL, rule="fields")
@@ -519,6 +525,10 @@ def _load_git_firmware(
         ("targetDevice", identity.get("targetDevice")),
     )
     if any(result.get(field) != expected for field, expected in expected_pairs):
+        raise _fail("FIRMWARE_IDENTITY_MISMATCH", "Build result and firmware identity disagree", field="buildResult", rule="identity")
+    if not validate_optional_provenance(result, identity):
+        # A receipt toolkitVersion or floatAbi must match the identity, or be
+        # absent from both; forged or one-sided evidence is never admitted.
         raise _fail("FIRMWARE_IDENTITY_MISMATCH", "Build result and firmware identity disagree", field="buildResult", rule="identity")
     if identity.get("targetDevice") != model.target.device:
         raise _fail("FIRMWARE_IDENTITY_MISMATCH", "Firmware target does not match the project", field="targetDevice", rule="project")
@@ -666,6 +676,10 @@ def _load_snapshot_firmware(
         ("targetDevice", identity.get("targetDevice")),
     )
     if any(result.get(field) != expected for field, expected in expected_pairs):
+        raise _fail("FIRMWARE_IDENTITY_MISMATCH", "Build result and firmware identity disagree", field="buildResult", rule="identity")
+    if not validate_optional_provenance(result, identity):
+        # A receipt toolkitVersion or floatAbi must match the identity, or be
+        # absent from both; forged or one-sided evidence is never admitted.
         raise _fail("FIRMWARE_IDENTITY_MISMATCH", "Build result and firmware identity disagree", field="buildResult", rule="identity")
     if identity.get("targetDevice") != model.target.device:
         raise _fail("FIRMWARE_IDENTITY_MISMATCH", "Firmware target does not match the project", field="targetDevice", rule="project")

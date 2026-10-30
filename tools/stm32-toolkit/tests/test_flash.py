@@ -160,6 +160,8 @@ class RecordingFlashClient:
         endpoint_probe_id: str = "probe-123",
         endpoint_level: str = "modify",
         resolved_target: str = "STM32F407VG",
+        backend_bytes_programmed: int | None = None,
+        backend_sectors_programmed: int | None = None,
     ) -> None:
         self.endpoint = SimpleNamespace(
             workspace_id="workspace-a",
@@ -169,6 +171,8 @@ class RecordingFlashClient:
         )
         self.image = image
         self.resolved_target = resolved_target
+        self.backend_bytes_programmed = backend_bytes_programmed
+        self.backend_sectors_programmed = backend_sectors_programmed
         self.events: list[tuple[object, ...]] = []
         self.read_timeouts: list[int] = []
 
@@ -192,7 +196,10 @@ class RecordingFlashClient:
         self.events.append(
             ("program", elf_path, elf_sha256, elf_size, timeout_ms)
         )
-        return FlashBackendReport(bytes_programmed=None, sectors_programmed=None)
+        return FlashBackendReport(
+            bytes_programmed=self.backend_bytes_programmed,
+            sectors_programmed=self.backend_sectors_programmed,
+        )
 
     async def read_memory(
         self,
@@ -357,6 +364,53 @@ def test_flash_programs_exact_elf_reads_back_segments_and_commits_result(
     assert document["sessionId"] == "session-a"
     assert document["probeId"] == "probe-123"
     assert document["debugTarget"] == "stm32f407vg"
+
+
+@pytest.mark.parametrize(
+    ("backend_bytes", "backend_sectors"),
+    [
+        (None, None),
+        (1234, 2),
+        (0, 0),
+    ],
+)
+def test_flash_preserves_nullable_backend_telemetry_verbatim(
+    tmp_path: Path,
+    backend_bytes: int | None,
+    backend_sectors: int | None,
+) -> None:
+    root = prepare_project(tmp_path)
+    identity = _publish_current_debug_build(root)
+    segment = _elf_with_flash_segment()[84 : 84 + 320]
+    client = RecordingFlashClient(
+        segment,
+        backend_bytes_programmed=backend_bytes,
+        backend_sectors_programmed=backend_sectors,
+    )
+
+    result = asyncio.run(flash_firmware(_request(root, identity), client))
+
+    assert result.ok is True, result.to_dict()
+    payload = result.to_dict()["data"]
+    assert payload["backendBytesProgrammed"] == backend_bytes
+    assert payload["backendSectorsProgrammed"] == backend_sectors
+    # Readback extent is derived from the verified segments, never from the
+    # backend report, so it stays 320 for every telemetry variant.
+    assert payload["verifiedBytes"] == 320
+    assert sum(event[0] == "program" for event in client.events) == 1
+
+    document = json.loads(
+        (root / "artifacts" / "migration" / "flash-result.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert set(document) == _FLASH_FIELDS
+    assert document["backendBytesProgrammed"] == backend_bytes
+    assert document["backendSectorsProgrammed"] == backend_sectors
+    assert document["verifiedBytes"] == 320
+    if backend_bytes == 0:
+        # Zero is a real backend value, not an unreported/null fallback.
+        assert document["backendBytesProgrammed"] is not None
 
 
 def test_flash_default_timeout_covers_exact_accepted_segment_in_protocol_chunks(

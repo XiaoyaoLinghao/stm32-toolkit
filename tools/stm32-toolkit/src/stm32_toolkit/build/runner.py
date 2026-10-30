@@ -32,6 +32,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from stm32_toolkit import __version__
+from stm32_toolkit.build.abi_evidence import (
+    CHANGED_WARNING,
+    capture_float_abi_evidence,
+)
 from stm32_toolkit.build.identity import (
     _ELF_LIMIT_BYTES,
     _EVIDENCE_LIMIT_BYTES,
@@ -54,6 +58,7 @@ from stm32_toolkit.build.identity import (
     snapshot_project_inputs,
     utc_now_rfc3339,
     validate_identity_document,
+    validate_optional_provenance,
     validate_elf,
     validate_snapshot_build_result,
 )
@@ -826,6 +831,12 @@ def _prior_evidence_check(
         # One record and one identity of different schemas are never a
         # coherent provenance pair, whatever the current repository says.
         return _evidence_mismatch(_STALE_EVIDENCE_MISMATCH, "schemaVersion", "record")
+    if not validate_optional_provenance(record, identity_doc):
+        # Optional receipt/identity provenance must agree exactly, or be
+        # absent from both; one-sided or differing evidence is never reused.
+        return _evidence_mismatch(
+            _STALE_EVIDENCE_MISMATCH, "optionalProvenance", "record"
+        )
     if record_schema == 1:
         if "sourceBaseline" in identity_doc or "gitEvidence" in identity_doc:
             return _evidence_mismatch(_STALE_EVIDENCE_MISMATCH, "provenance", "identity")
@@ -987,7 +998,16 @@ def _require_fresh_outputs(
     map_path: Path,
     snapshot,
     paths: _EvidencePaths,
-) -> None:
+) -> dict | None:
+    """Verify incrementally reused outputs and return their prior identity.
+
+    ``None`` means the outputs actually changed (a fresh build).  When the
+    outputs are unchanged and the admitted prior evidence still describes
+    them, the validated prior identity document is returned so the caller can
+    preserve its already-captured optional evidence instead of relabelling
+    unchanged artifacts with newly read metadata.  Every existing rejection
+    condition is unchanged.
+    """
     post_elf = _artifact_state(elf_path)
     post_map = _artifact_state(map_path)
     if not post_elf.exists:
@@ -1021,7 +1041,7 @@ def _require_fresh_outputs(
             ),
         )
     if pre_elf != post_elf or pre_map != post_map:
-        return
+        return None
     prior = _load_prior_evidence(root, preset, paths)
     if prior is None:
         raise build_error(
@@ -1056,6 +1076,7 @@ def _require_fresh_outputs(
                 evidence_source=match.source,
             ),
         )
+    return prior.identity
 
 
 # ---------------------------------------------------------------------------
@@ -1108,6 +1129,7 @@ def build_result_document(
     schema_version: int = 1,
     source_baseline: str | None = None,
     git_evidence: dict[str, str] | None = None,
+    float_abi: dict[str, object] | None = None,
 ) -> dict:
     document: dict[str, object] = {
         "schemaVersion": schema_version,
@@ -1115,6 +1137,8 @@ def build_result_document(
         "stage": stage,
         "code": code,
         "buildId": build_id,
+        # Every newly written receipt records the executing toolkit version.
+        "toolkitVersion": __version__,
     }
     if source_baseline is not None:
         document["sourceBaseline"] = source_baseline
@@ -1135,6 +1159,10 @@ def build_result_document(
             "warnings": warnings,
         }
     )
+    if float_abi is not None:
+        # Optional evidence is supplied from the identity it was captured
+        # with; it is never synthesized or relabelled here.
+        document["floatAbi"] = dict(float_abi)
     return document
 
 
@@ -1318,6 +1346,10 @@ def _run_locked(
             paths, provenance,
         )
 
+    # The conversion report is captured before the build and again after it;
+    # only an unchanged capture is used, so mid-build edits are never
+    # relabelled as the evidence of these outputs.
+    abi_before = capture_float_abi_evidence(root, model)
     configure = _run_stage(
         "configure", ("cmake", "--preset", preset), root, request.timeout_seconds, sections,
         log_rel,
@@ -1354,8 +1386,10 @@ def _run_locked(
             paths, provenance,
         )
 
+    abi_after = capture_float_abi_evidence(root, model)
+
     try:
-        _require_fresh_outputs(
+        reused_identity = _require_fresh_outputs(
             root,
             model,
             request,
@@ -1399,6 +1433,22 @@ def _run_locked(
             paths, provenance,
         )
 
+    if reused_identity is not None:
+        # Unchanged outputs keep the admitted prior capture verbatim, or its
+        # absence; newly read metadata never relabels an unchanged artifact.
+        prior_float_abi = reused_identity.get("floatAbi")
+        if isinstance(prior_float_abi, dict):
+            float_abi = dict(prior_float_abi)
+            abi_warnings = (str(prior_float_abi.get("warning")),)
+        else:
+            float_abi = None
+            abi_warnings = ()
+    elif abi_before == abi_after:
+        float_abi, abi_warnings = abi_before
+    else:
+        float_abi, abi_warnings = None, (CHANGED_WARNING,)
+    all_warnings = memory_warnings + abi_warnings
+
     identity_doc = build_identity_document(
         model=model,
         preset=preset,
@@ -1414,6 +1464,7 @@ def _run_locked(
         map_sha256=map_sha,
         built_at_utc=utc_now_rfc3339(),
         memory_summary=memory_summary,
+        float_abi=float_abi,
     )
     try:
         validate_identity_document(identity_doc)
@@ -1459,7 +1510,7 @@ def _run_locked(
             {"path": map_rel},
         ],
         memory=[item.to_dict() for item in usages],
-        warnings=list(memory_warnings),
+        warnings=list(all_warnings),
         schema_version=(
             SNAPSHOT_IDENTITY_SCHEMA_VERSION if snapshot_mode else 1
         ),
@@ -1468,6 +1519,10 @@ def _run_locked(
         ),
         git_evidence=(
             dict(identity_doc["gitEvidence"]) if snapshot_mode else None
+        ),
+        # The receipt carries exactly the identity's captured evidence.
+        float_abi=(
+            dict(identity_doc["floatAbi"]) if "floatAbi" in identity_doc else None
         ),
     )
     log_text = render_build_log(root, sections)
@@ -1513,7 +1568,7 @@ def _run_locked(
     report = BuildReport(
         identity=typed_identity,
         memory=usages,
-        warnings=memory_warnings,
+        warnings=all_warnings,
         build_log_path=paths.log_rel,
         build_result_path=paths.result_rel,
         identity_path=identity_rel,

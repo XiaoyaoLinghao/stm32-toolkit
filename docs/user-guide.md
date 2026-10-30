@@ -129,6 +129,17 @@ Keil `inspect`、`preflight` 和 `convert` 必须指向同一 `uvprojx` 和 `tar
 
 普通 debug → release → debug → release 构建（不加 `--clean`）会为两个受支持预设各自保留增量证据，切换预设不再互相覆盖。`arm-debug` 仍拥有 `artifacts/migration/build-result.json` 与 `artifacts/migration/build.log`；`arm-release` 改为拥有 `artifacts/migration/arm-release/build-result.json` 与同目录的 `build.log`。构建身份位置不变，仍是 `build/<preset>/firmware-identity.json`（ELF/MAP 亦然）。因此正常切换预设**不需要**自动 clean，也不应为了“让证据一致”而放宽新鲜度检查。`BUILD_OUTPUT_STALE` 等诊断会按所选预设报告 `logPath`/`resultPath`/`identityPath`，按上面的既有流程阅读即可。存在但畸形、失败或被重定向的 canonical 证据不会被绕过或降级（旧全局 release 记录的兼容回退只在该预设新路径确实缺失时生效，并沿用完整的同预设 identity/snapshot/hash 校验），也不得借用 debug 记录充当 release 证据或伪造历史证据。**兼容限制：** 若某个修复前的旧版本（如已发布的 v1.3.4）已经用 release 构建覆盖了全局 debug receipt，那份已丢失的 debug 证据无法重建；此时可能需要**一次**显式授权的 `arm-debug --clean` 重建来重新建立 debug 证据，且该授权仍由用户单独给出，不是自动 retry。当前公开发布已是 v1.3.5，本节行为自 **v1.3.5** 起公开发布；上一公开版本 v1.3.4 及更早的包不含该布局，需安装或升级到 v1.3.5 并核对绑定后才能使用。
 
+### v1.3.6 工具证据（源内变更，尚未发布）
+
+本节描述 **v1.3.6 源内** 的工具证据变更；当前公开 Latest 仍是 **v1.3.5**，在这些变更实际发布并经公开 Release 页面确认前，不要把它们当作已发布配方，也不要把本页其它发布/安装示例改写成 1.3.6。
+
+- **可选的 ABI 迁移来源。** 成功迁移后的 `build/<preset>/firmware-identity.json` 与对应 build-result 可携带可选 `floatAbi` 对象：决策字段与 `conversion-report.json` 中的 `floatAbi` 相同（`compiler`/`compilerVersion`/`cpu`/`rawFpu`/`rawFloatAbi`/`rawRvdsVp`/`fpu`/`selectedAbi`/`origin`/`ruleId`/`reason`/`baselineVerified`/`warning`/`nextStep`，共 14 项），另加该报告的 `reportPath` 与 `reportSha256`。`origin` 原样取自报告，可以是 `not-applicable`，也可以是 `inferred` 或 `declared`；`baselineVerified` 恒为 `false`。它只复制固定工程内转换报告的确定性元数据，不是原二进制与新二进制 ABI 等价的证明；选中的 ABI/FPU 仍须与实际工程模型核对。可选的转换报告确实不存在时，不产生 `floatAbi` 证据，也不给出警告；报告存在但不安全或已被重定向、畸形、不匹配时，证据如实不可用并给出有界警告，绝不伪装为已验证；不含该可选字段的旧 identity 保持原有 identity 计算。
+- **build-result 的 `toolkitVersion`。** 新写入的 build-result（debug/release、成功/失败）都含执行本次构建的 `toolkitVersion`。缺该字段的旧记录仍可读，但不会因此放宽任何跨版本固件身份准入。
+- **预设自有证据路径。** debug 的 receipt/log 仍在历史位置 `artifacts/migration/build-result.json` 与 `artifacts/migration/build.log`；`arm-release` 自有 `artifacts/migration/arm-release/build-result.json` 与同目录 `build.log`。context 仍选择 debug，两个方向上的普通预设切换都不需要 clean；畸形、失败或被重定向的 canonical 证据仍 fail closed。
+- **可空的编程遥测。** 公共 JSON 与持久化 flash-result 中的 `backendBytesProgrammed`/`backendSectorsProgrammed` 只是后端报告：`null` 表示“后端未报告”，不是 0、不是失败，也不能推断为未编程；后端实际提供的整数（包括 0）原样保留为真实值。`verifiedBytes` 始终是回读覆盖的精确字节数，不是实际编程计数。pyOCD 0.46.0 的高层编程调用（[`file_programmer.py`](https://github.com/pyocd/pyOCD/blob/v0.46.0/pyocd/flash/file_programmer.py)、[`loader.py`](https://github.com/pyocd/pyOCD/blob/v0.46.0/pyocd/flash/loader.py)）不返回公开的结构化编程统计，这并不表示整个 SDK 内部没有任何计数器；因此不得从页数推算扇区数，也不得解析控制台/日志文本伪造遥测；没有为此改动编程调用或引入 SDK 私有状态读取。
+- **保持不变。** 普通烧录的 100 kHz 默认、获授权的 `SYSRESETREQ` reset-and-halt、授权/租约/首错停止合同，以及 handoff 前 `.vscode/launch.json` 保持空配置的设计，在本版均不改变。以上是源码级证据说明，不构成新的测试、硬件或发布 PASS。
+- **历史发布文字的语义。** v1.3.5 已下载发行包内的“尚未发布/预发布”措辞是当时构建的不可变快照；该版本是否公开以公开 Release 页面与当前源码记录为准。不要为此重建或替换任何旧发行资产。
+
 ### 构建内存余量警告（`MEMORY_LOW_MARGIN`，v1.3.1 起公开，v1.3.3 保留）
 
 成功的托管构建始终在 identity 中写入可选 `memorySummary`（schema-1 与 schema-2 均可），字段为 `basis="elf-map-static-v1"`、按规范化模型顺序排列的 `regions[{name,origin,length,used,free}]`，以及确定性的 `warnings[{code,region,freeBytes,lengthBytes,belowBytes,belowPercent}]`。每个已声明区域（包括未使用的 `memory.extraRegions` 区域）在 `free < 1024` **或** `free * 20 < length` 时产生一条非阻塞 `MEMORY_LOW_MARGIN`。两个阈值各自严格小于才命中：恰好等于只会关闭该阈值本身，另一阈值仍可触发；例如 128 KiB 区域在 `free == 1024` 时虽不满足字节阈值，仍因不足 5% 而警告。`belowBytes`/`belowPercent` 分别记录实际命中的阈值，同一摘要生成 `BuildReport.warnings` 与 build-result `warnings` 中的可读字符串。警告不改变构建成功与否，也不触发自动重建、内存布局修改或忽略开关。

@@ -825,7 +825,7 @@ def test_legacy_generation_producer_plans_and_emits_current_managed_manifest(
 
 def test_generation_producer_allowlist_is_exact_and_type_safe(tmp_path: Path):
     assert is_supported_generation_producer("stm32-toolkit", __version__)
-    assert __version__ == "1.3.5"
+    assert __version__ == "1.3.6"
     assert is_supported_generation_producer("stm32-toolkit", "1.3.4")
     assert is_supported_generation_producer("stm32-toolkit", "1.3.3")
     assert is_supported_generation_producer("stm32-toolkit", "1.3.2")
@@ -836,9 +836,9 @@ def test_generation_producer_allowlist_is_exact_and_type_safe(tmp_path: Path):
     assert is_supported_generation_producer("stm32-toolkit", "1.0.1")
     assert is_supported_generation_producer("stm32-toolkit", "1.0.0")
     assert is_supported_generation_producer("stm32-toolkit", "0.9.0")
-    # Unknown future and below-allowlist producers stay rejected; 1.3.6 is the
+    # Unknown future and below-allowlist producers stay rejected; 1.3.7 is the
     # next future value, so a current-version regression cannot hide here.
-    for value in ("0.5.0", "1.3.6", "2.0.0", 1, None, [], {}):
+    for value in ("0.5.0", "1.3.7", "2.0.0", 1, None, [], {}):
         assert not is_supported_generation_producer("stm32-toolkit", value)
 
     root = write_project(tmp_path / "proj")
