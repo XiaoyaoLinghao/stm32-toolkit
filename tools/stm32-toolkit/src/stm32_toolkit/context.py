@@ -13,6 +13,7 @@ from stm32_toolkit.build.identity import (
     read_evidence_json,
     snapshot_project_inputs,
     validate_identity_document,
+    validate_optional_provenance,
     validate_snapshot_build_result,
 )
 from stm32_toolkit.build.model import (
@@ -821,6 +822,10 @@ def _evidence_fresh(manifest: ProjectManifest, root: Path) -> dict[str, object] 
         for field in shared_fields:
             if record.get(field) != identity_doc.get(field):
                 return None
+        if not validate_optional_provenance(record, identity_doc):
+            # Optional receipt/identity provenance must agree exactly, or be
+            # absent from both; absence keeps legacy evidence fresh.
+            return None
         if identity_doc.get("elfPath") != elf_rel or identity_doc.get("mapPath") != map_rel:
             return None
 

@@ -32,6 +32,7 @@ from elftools.elf.elffile import ELFFile
 from jsonschema import Draft202012Validator
 
 from stm32_toolkit import __version__
+from stm32_toolkit.build.abi_evidence import validate_float_abi_evidence
 from stm32_toolkit.build.map_file import (
     ElfSectionEvidence,
     MapError,
@@ -82,7 +83,7 @@ SOURCE_LOCAL_HEADERS_POLICY = "source-local-headers-v1"
 _FULL_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _GIT_DIAGNOSTIC_RULES = frozenset({"head", "status"})
-#: Exact public artifact inventory of a current schema-2 success record.
+#: Required public artifact inventory of a current schema-2 success record.
 SNAPSHOT_BUILD_RESULT_FIELDS = frozenset(
     {
         "schemaVersion",
@@ -105,6 +106,10 @@ SNAPSHOT_BUILD_RESULT_FIELDS = frozenset(
         "warnings",
     }
 )
+#: The only fields a current receipt may add on top of the required set.
+#: Every other extra stays rejected; absence keeps legacy records readable.
+BUILD_RESULT_OPTIONAL_FIELDS = frozenset({"toolkitVersion", "floatAbi"})
+
 _FIXED_SECTION_RE = re.compile(r"^\.stm32tk\.abs\.([0-9A-Fa-f]{8})$")
 _ARM_MACHINE = "EM_ARM"
 _SHF_ALLOC = 0x2
@@ -707,6 +712,41 @@ def collect_build_git_evidence(
         return GitUnavailableEvidence(rule=rule)
 
 
+def _valid_toolkit_version(value: object) -> bool:
+    """A bounded, non-empty toolkit version string (never null or a boolean)."""
+    return isinstance(value, str) and 1 <= len(value) <= 64
+
+
+def validate_optional_provenance(record: object, identity: object) -> bool:
+    """Check bounded agreement of the optional receipt/identity fields.
+
+    A receipt ``toolkitVersion``, when present, must equal the identity's
+    ``toolkitVersion``.  ``floatAbi`` must be absent from both or present in
+    both with an identical, closed, non-blocked evidence object.  Absence in
+    both remains fully supported for legacy records; a forged null, wrong
+    type, arbitrary extra or one-sided evidence never agrees.
+    """
+    if not isinstance(record, dict) or not isinstance(identity, dict):
+        return False
+    if "toolkitVersion" in record:
+        version = record["toolkitVersion"]
+        if not _valid_toolkit_version(version) or version != identity.get(
+            "toolkitVersion"
+        ):
+            return False
+    if ("floatAbi" in record) != ("floatAbi" in identity):
+        return False
+    if "floatAbi" in record:
+        try:
+            record_evidence = validate_float_abi_evidence(record["floatAbi"])
+            identity_evidence = validate_float_abi_evidence(identity["floatAbi"])
+        except (TypeError, ValueError):
+            return False
+        if record_evidence != identity_evidence:
+            return False
+    return True
+
+
 def validate_snapshot_build_result(
     record: object,
     *,
@@ -717,11 +757,16 @@ def validate_snapshot_build_result(
 
     Missing, extra, mistyped, forged-null, cross-schema, or malformed
     artifact fields fail closed.  ``dict.get`` alone is insufficient because
-    a removed nullable field would compare equal to JSON null.
+    a removed nullable field would compare equal to JSON null.  Only
+    ``toolkitVersion`` and ``floatAbi`` may extend the required set, and each
+    is validated strictly when present.
     """
     if not isinstance(record, dict):
         return False
-    if set(record) != SNAPSHOT_BUILD_RESULT_FIELDS:
+    keys = set(record)
+    if not SNAPSHOT_BUILD_RESULT_FIELDS <= keys:
+        return False
+    if keys - SNAPSHOT_BUILD_RESULT_FIELDS - BUILD_RESULT_OPTIONAL_FIELDS:
         return False
     if type(record["schemaVersion"]) is not int or record["schemaVersion"] != (
         SNAPSHOT_IDENTITY_SCHEMA_VERSION
@@ -779,6 +824,15 @@ def validate_snapshot_build_result(
         return False
     if not isinstance(record["memory"], list) or not isinstance(record["warnings"], list):
         return False
+    if "toolkitVersion" in record and not _valid_toolkit_version(
+        record["toolkitVersion"]
+    ):
+        return False
+    if "floatAbi" in record:
+        try:
+            validate_float_abi_evidence(record["floatAbi"])
+        except (TypeError, ValueError):
+            return False
     return True
 
 
@@ -1043,6 +1097,7 @@ def build_identity_document(
     git: GitEvidence | None = None,
     git_unavailable: GitUnavailableEvidence | None = None,
     memory_summary: MemorySummary | None = None,
+    float_abi: dict[str, object] | None = None,
 ) -> dict:
     """Construct a schema-1 Git or schema-2 input-snapshot identity.
 
@@ -1105,6 +1160,10 @@ def build_identity_document(
         document["inputDiscoveryPolicy"] = SOURCE_LOCAL_HEADERS_POLICY
     if memory_summary is not None:
         document["memorySummary"] = memory_summary.to_dict()
+    if float_abi is not None:
+        # Present evidence participates in the identity hash exactly like any
+        # other identity field; absent evidence keeps the historical hash.
+        document["floatAbi"] = dict(float_abi)
     document["buildId"] = compute_build_id(document)
     return document
 

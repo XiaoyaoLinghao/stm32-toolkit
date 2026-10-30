@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from stm32_toolkit.build.abi_evidence import validate_float_abi_evidence
 from stm32_toolkit.build.memory_margin import MemorySummary
 #: The shared provenance literals are owned by the low-level validation leaf;
 #: this module re-exports the same objects for its historical callers.
@@ -107,6 +108,10 @@ class FirmwareIdentity:
     source_baseline: str | None = None
     git_evidence: dict[str, str] | None = None
     memory_summary: MemorySummary | None = None
+    #: Optional captured float-ABI provenance.  It is the exact recorded
+    #: conversion-report object plus its fixed path and byte digest; it is
+    #: never proof of binary equivalence (``baselineVerified`` stays false).
+    float_abi: dict[str, object] | None = None
 
     def to_dict(self) -> dict[str, object]:
         result = {
@@ -142,6 +147,8 @@ class FirmwareIdentity:
             result["inputDiscoveryPolicy"] = self.input_discovery_policy
         if self.memory_summary is not None:
             result["memorySummary"] = self.memory_summary.to_dict()
+        if self.float_abi is not None:
+            result["floatAbi"] = dict(self.float_abi)
         return result
 
     @classmethod
@@ -178,6 +185,11 @@ class FirmwareIdentity:
             if "memorySummary" in document
             else None
         )
+        float_abi = (
+            validate_float_abi_evidence(document["floatAbi"])
+            if "floatAbi" in document
+            else None
+        )
         return cls(
             schema_version=schema_version,
             build_id=str(document["buildId"]),
@@ -202,6 +214,7 @@ class FirmwareIdentity:
             source_baseline=None if source_baseline is None else str(source_baseline),
             git_evidence=git_evidence,
             memory_summary=memory_summary,
+            float_abi=float_abi,
         )
 
 
