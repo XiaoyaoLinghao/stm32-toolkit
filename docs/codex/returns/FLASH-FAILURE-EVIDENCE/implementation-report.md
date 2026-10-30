@@ -1,5 +1,14 @@
 # FLASH-FAILURE-EVIDENCE implementation and acceptance
 
+2026-10-30 physical follow-up: **PASS_ONE_NORMAL_100KHZ_MANAGED_FLASH** at executed
+HEAD e8e3c5f8d77490eaa0fae3e8ab8586237f30935c; see
+[one-shot hardware report](normal-flash-2026-10-30.md). One public ordinary100kHz
+call exited0/OK in19656ms and verified61516bytes; matching new receipt, endpoint
+removed and new lease released. No retry/recovery/runtime replacement/remote action.
+This single original-pair case passes; application state remains unknown and
+runVerified=false, historical IPSR root cause is not proven. New hardware authority
+is consumed, not READY for another operation. The prior offline checkpoint follows.
+
 2026-10-30 verdict: **ACCEPTED — offline diagnostic-preservation slice**.
 Normal connection/100kHz physical validation remains
 **SOFTWARE_COMPLETE_HARDWARE_PENDING / BLOCKED_NOT_EXECUTED**; this is not release acceptance.

@@ -1,14 +1,22 @@
 # Normal connection +100kHz managed flash execution card
 
-Status: **OFFLINE_ENTRY_REVIEW_ACCEPTED / BLOCKED_NOT_EXECUTED**.
+Status: **PASS_ONE_NORMAL_100KHZ_MANAGED_FLASH / AUTHORITY_CONSUMED — NOT READY FOR REPLAY**.
+One new explicit grant and current original-board/probe readiness confirmation
+were consumed by session st135-normal-flash-hw03 at source
+e8e3c5f8d77490eaa0fae3e8ab8586237f30935c. CLI exit0/OK,19656ms,61516bytes
+verified; fresh receipt/cleanup evidence accepted. See the
+[hardware report](../../codex/returns/FLASH-FAILURE-EVIDENCE/normal-flash-2026-10-30.md).
+No follow-on hardware is authorized. The contract/pins below describe the
+completed case; any future operation needs a fresh card/grant/session/preflight.
+
 Diagnostic-preservation software slice accepted at CodeHead
 bfa56c21fa67e53649ec0c9c15b5ab4e9b79ae4d:345 distinct related cases pass,
 including37 new regressions; Primary independently passed23 overlapping cases.
 The2 environment import failures were retained and resolved by one explicitly
 authorized retry. Independent supplied-source card review found NO_BLOCKERS;
 Primary discharged its software conditions. Hardware prerequisites below remain.
-No hardware authorization in this task. Original constructor-only grant is
-consumed; the earlier readiness reply is historical, not a new READY assertion.
+No unused hardware authorization remains. Both the constructor-only and this
+ordinary-flash grants are consumed; their readiness replies are historical.
 Primary authored this card; independent domain reviews and final acceptance are
 in [FLASH-FAILURE-EVIDENCE](../../codex/returns/FLASH-FAILURE-EVIDENCE/implementation-report.md).
 
@@ -24,7 +32,7 @@ prepare/execute, no direct backend/fake seam. Static pins currently observed:
 | Python/SDK |Direct CPython3.12.14 at C:/Users/zhy76/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/python.exe, SHA2565640e9be2fd33d05a1a9ae1228e2354609a69ab831605995ec4e2bd6da8fff5e. Existing isolated D:/codex-tmp/st135-pyocd046/candidate-site pyocd0.46.0 and read-only D:/codex-tmp/kx23/venv/Lib/site-packages, hidapi0.15.0. Pin module/distribution origins and347 SDK files to accepted wheel; never substitute installed runtime or venv redirector. |
 | Project/data |C:/work/stm32/fresh-out / C:/data/stm32-toolkit; same real shared registry, no new realm or forced lease deletion. Current CPU/firmware UNKNOWN. |
 | Original selector/target |pyocd:91d67402fe525a5d16bf226f59ab5ecea743eb69292e95719167263ed1fcbf8c / stm32f429xg; configured device STM32F429ZGTx, original board user-described STM32F429ZG. No current power/exclusivity/changes confirmation for this future step. |
-| New session/output |Proposed session st135-normal-flash-hw03; external D:/codex-tmp/st135-normal-flash-hw03 for raw stdout/stderr/argv/start/exit/pre/post evidence. Must not exist/reuse old session. Product workspace/session path derived by existing WorkspacePaths, not guessed/copied. |
+| Session/output |Completed session st135-normal-flash-hw03; external D:/codex-tmp/st135-normal-flash-hw03 holds raw stdout/stderr/argv/start/exit/pre/post evidence. Never reuse these completed paths. Product workspace/session path came from WorkspacePaths; future sessions must be fresh. |
 | Build/image |buildId8d3368750cce364ad38e9ed0a6c0f6d6067779c52bc5d8e3a95115ee0ef4abcc; build/arm-debug/LWIP.elf SHA256b8d5f2c15963552f732ba5650c3150b9471a0d532f3d8c4712748e66fd06bf53,1046128 filebytes. Input snapshot09b178c4a285f3033ac35ae9dafbc2431028a0bbbd73de3b9daa89809b0e66d8, Git explicitly unavailable/null. Fresh admission must still pass before the future call; no automatic rebuild or receipt rewrite. |
 | Readback |Two segments:0x08000000 length61368 +0x0800efb8 length148 =61516bytes. MAX_READ_BYTES32768 requires3 RPC reads:0x08000000/32768,0x08008000/28600,0x0800efb8/148; exact bytes, no CRC-only acceptance. Original two-read arithmetic is explicitly superseded in firmware-observation-reconciled.json. |
 
