@@ -176,6 +176,22 @@ def test_cli_rejects_unknown_physical_source_intent_schema(
             target_device="STM32F429ZITx",
         ),
     )
+    policies: list[str] = []
+
+    def snapshot_provider(
+        _model: object,
+        *,
+        policy: str = recovery_workflows.SOURCE_LOCAL_HEADERS_POLICY,
+    ) -> SimpleNamespace:
+        """Model the real optional policy default used by ``_current_identity``."""
+
+        policies.append(policy)
+        assert policy == recovery_workflows.SOURCE_LOCAL_HEADERS_POLICY
+        return SimpleNamespace(sha256="c" * 64)
+
+    monkeypatch.setattr(
+        recovery_workflows, "snapshot_project_inputs", snapshot_provider
+    )
     context = AcceptanceRecoveryContext(project, data, "session-a")
     assert begin_acceptance_attempt(
         context,
@@ -183,6 +199,9 @@ def test_cli_rejects_unknown_physical_source_intent_schema(
         scenario_id="legacy-keil-physical-repair",
         scenario_version="1",
     ).ok
+    # The begin identity enumerates current inputs through the real optional
+    # default, never through a fabricated or zero snapshot.
+    assert policies == [recovery_workflows.SOURCE_LOCAL_HEADERS_POLICY]
     intent_path = tmp_path / "intent.json"
     intent_path.write_text(
         json.dumps(
