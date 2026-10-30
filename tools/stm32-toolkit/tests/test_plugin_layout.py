@@ -619,10 +619,12 @@ def test_readmes_are_concise_and_distinguish_published_and_local_contracts():
             tags.add(version)
         assert tags, "a landing page must link a concrete release tag"
         newest = max(tags, key=lambda value: tuple(int(part) for part in value.split(".")))
-        # 1.3.4 is the newest published release page.  v1.3.5 is the current
-        # local candidate and only counts as a release page after the separately
-        # authorized publication is observed; the published Latest stays 1.3.4.
-        assert newest == "1.3.4", tags
+        # 1.3.5 is the newest published release page, observed public as Latest
+        # on 2026-10-30 (release 428722744); 1.3.4 is the previous published
+        # release.  A source version newer than the newest published page still
+        # has to be marked as a local candidate until its separately authorized
+        # publication is observed, so the version comparison stays real.
+        assert newest == "1.3.5", tags
         # Each landing page names the current source version explicitly, so a
         # page that still advertises only the previous release cannot pass.
         assert f"v{__version__}" in guide

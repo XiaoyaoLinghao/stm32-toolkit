@@ -147,8 +147,8 @@ hardware automatically.
 
 - [v1.3.5 Release](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.3.5) — the
   published Latest assets.
-- [User guide](user-guide.md) — the published v1.3.4 installation and upgrade recipe plus general
-  workflows.
+- [User guide](user-guide.md) — the current v1.3.5 installation and upgrade recipe plus general
+  workflows; the v1.3.4 release recipe stays as previous published guidance.
 - [Release status](release-status.md) — publication evidence, checkpoints and retained limitations.
 - [Changelog](../CHANGELOG.md) — version history and the v1.3.5 section.
 - [setup-stm32-env Skill](../skills/setup-stm32-env/SKILL.md) — the authoritative Check/Bootstrap/
