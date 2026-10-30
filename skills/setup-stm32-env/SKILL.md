@@ -13,8 +13,8 @@ description: Use when a Claude Code user asks to check, bootstrap, repair, or di
 
 - CHECK is read-only and offline with respect to installation. It never creates files, probes hardware, kills unrelated or existing processes, or installs anything. It may terminate only a probe subprocess that CHECK itself started after that probe exceeds its timeout.
 - Never register a second MCP. The plugin-bundled `.mcp.json` starts only after the managed runtime is healthy.
-- The only MCP interpreter for this release is `${CLAUDE_PLUGIN_DATA}/runtime/1.3.4/Scripts/python.exe`; system `python`, `py`, or `uv` is never an MCP fallback, and an installed legacy runtime such as `${CLAUDE_PLUGIN_DATA}/runtime/1.3.3/Scripts/python.exe` or `${CLAUDE_PLUGIN_DATA}/runtime/1.3.2/Scripts/python.exe` is an upgrade input, never this release's interpreter. For a runtime installed from the published 1.3.4 release, a healthy runtime includes the exact manifest-listed Toolkit/Monitor wheels with readable UI assets, the pinned `pyocd==0.45.1` distribution, and the existing doctor contract. The Unreleased source candidate for the next 1.3.5 release pins `pyocd==0.46.0` instead; that source-only change does not upgrade any installed runtime, and the existing runtime paths and published 1.3.4 release facts stay unchanged until an authorized release promotion.
-- 1.3.4 is the published Latest release, published on 2026-10-28 from frozen source `a7db6a8c` under an explicitly approved candidate-specific exception; the permanent coverage gates remain unmet and the disclosed limits remain in force, and final installation/VS Code validation remains the user's own pending step. Published release assets and their public-download verification do not prove that any recipient runtime has installed this version. Statements below that name a published 1.3.3 release remain historical.
+- The only MCP interpreter for this source candidate is `${CLAUDE_PLUGIN_DATA}/runtime/1.3.5/Scripts/python.exe`; system `python`, `py`, or `uv` is never an MCP fallback. An installed legacy runtime such as `${CLAUDE_PLUGIN_DATA}/runtime/1.3.4/Scripts/python.exe`, `${CLAUDE_PLUGIN_DATA}/runtime/1.3.3/Scripts/python.exe` or `${CLAUDE_PLUGIN_DATA}/runtime/1.3.2/Scripts/python.exe` is an upgrade input, never this candidate's interpreter, and only an explicitly authorized Repair replaces it. A healthy 1.3.5 candidate runtime includes the exact manifest-listed Toolkit/Monitor wheels with readable UI assets, the pinned `pyocd==0.46.0` distribution, and the existing doctor contract. The published 1.3.4 release keeps its own helper, `runtime/1.3.4` path and `pyocd==0.45.1` pin as historical behavior; extracting or checking a 1.3.5 candidate does not upgrade any installed runtime by itself, and no installed runtime changes until an authorized release promotion.
+- 1.3.4 is the published Latest release, published on 2026-10-28 from frozen source `a7db6a8c` under an explicitly approved candidate-specific exception; the permanent coverage gates remain unmet and the disclosed limits remain in force, and final installation/VS Code validation remains the user's own pending step. Published release assets and their public-download verification do not prove that any recipient runtime has installed this version. The next source version 1.3.5 is an **unpublished local candidate** — not published, downloadable or installed — and the 1.3.5 paths in this Skill describe that candidate only. Statements below that name a published 1.3.3 release remain historical.
 - CPython >=3.12,<3.13 is the only bounded bootstrap prerequisite for consuming an extracted offline bundle from the official pinned release package. Bootstrap never installs from a package index or from the source tree.
 - `${CLAUDE_PLUGIN_ROOT}/tools/stm32-toolkit` remains source provenance only; the historical
   `tools/stm32-toolkit[probe]` source expression is not installed directly.
@@ -51,7 +51,7 @@ PowerShell 7 commands and do not require host placeholders. Verify that `pwsh` s
 the read-only check first.
 
 ```powershell
-$ToolkitRoot = 'C:\tools\stm32-toolkit-1.3.4'
+$ToolkitRoot = 'C:\tools\stm32-toolkit-1.3.5'
 $DataRoot = 'C:\data\stm32-toolkit'
 $ProjectRoot = 'C:\work\blinky'
 $SetupScript = Join-Path $ToolkitRoot 'bin\setup-stm32-env.ps1'
@@ -69,7 +69,7 @@ install before running this separate Bootstrap command:
   -ToolkitRoot $ToolkitRoot -DataRoot $DataRoot -ProjectRoot $ProjectRoot
 ```
 
-If `Check` reports `repairable` for an approved 1.3.3/1.3.2/1.3.1/1.3.0/1.2.0/1.1.2/1.0.1/1.0.0/0.9.0/0.5.0/0.3.0 legacy upgrade, or `broken` for
+If `Check` reports `repairable` for an approved 1.3.4/1.3.3/1.3.2/1.3.1/1.3.0/1.2.0/1.1.2/1.0.1/1.0.0/0.9.0/0.5.0/0.3.0 legacy upgrade, or `broken` for
 an existing runtime, review its source and downgrade guards and explicitly authorize Repair before
 running this separate command:
 
@@ -91,7 +91,7 @@ The following reads and prints the unfiltered JSON before checking `ok`; do not 
 ```powershell
 $DataRoot = 'C:\data\stm32-toolkit'
 $ProjectRoot = 'C:\work\blinky'
-$CandidateCli = Join-Path $DataRoot 'runtime\1.3.4\Scripts\stm32-toolkit.exe'
+$CandidateCli = Join-Path $DataRoot 'runtime\1.3.5\Scripts\stm32-toolkit.exe'
 
 & $CandidateCli version
 $DoctorText = & $CandidateCli --project-root $ProjectRoot doctor --json | Out-String
@@ -117,13 +117,13 @@ Keep every `details.*` field when a result is `ok=false`; read the complete resu
 CHECK always returns JSON. `bundle.status` is `missing` or verified, and `runtimeState.status` is
 `missing`, `matching`, `repairable`, `downgrade-refused`, `source-conflict`, `unsupported`, or
 `invalid`. `runtime.status` is `missing`, `healthy`, or `broken`; it includes version/error evidence
-and `recommendedMode`. A healthy runtime has version `1.3.4` and a successful bounded
-`-m stm32_toolkit.cli ... doctor --json`. An existing 1.3.3 or 1.3.2 runtime is a supported legacy upgrade input; an existing 1.3.1, 1.3.0, 1.2.0, 1.1.2, 1.0.1, 1.0.0, 0.9.0, 0.5.0 or 0.3.0 runtime reports broken as legacy
-evidence. Repair quarantines the legacy runtime before atomically promoting 1.3.4 and publishing one
+and `recommendedMode`. A healthy runtime has version `1.3.5` and a successful bounded
+`-m stm32_toolkit.cli ... doctor --json`. An existing 1.3.4, 1.3.3 or 1.3.2 runtime is a supported legacy upgrade input; an existing 1.3.1, 1.3.0, 1.2.0, 1.1.2, 1.0.1, 1.0.0, 0.9.0, 0.5.0 or 0.3.0 runtime reports broken as legacy
+evidence. Repair quarantines the legacy runtime before atomically promoting 1.3.5 and publishing one
 `runtime/runtime-state.json` generation. Tool version, extension, and pack inventory commands are
 bounded; timeouts become evidence rather than hangs.
 
-The isolated PEP 440 `pyocd` distribution check is candidate work carried by the Unreleased next 1.3.5 source release, bounded to `>=0.46.0,<0.47`; the published 1.3.4 helper and its runtime retain the `pyocd==0.45.1` pin and their original PEP 440 check. Use the setup helper that belongs to the actual installed or extracted bundle, and do not apply the candidate range retroactively to a published 1.3.4 runtime.
+The isolated PEP 440 `pyocd` distribution check in this 1.3.5 candidate is bounded to `>=0.46.0,<0.47`; the published 1.3.4 helper and its runtime retain the `pyocd==0.45.1` pin and their original PEP 440 check. Use the setup helper that belongs to the actual installed or extracted bundle, and do not apply the candidate range retroactively to a published 1.3.4 runtime.
 
 When reading `doctor` output, keep the two pyOCD evidence forms separate: `data.tools.pyocd` is PATH command evidence (`available`/`path`/`status`/`returnCode`/`version`) and `data.probeCore.dependencies.pyocd` is installed-distribution metadata in the Toolkit interpreter. `data.probeCore.pyocdResolution` combines them once per call with `status` (`runtime-package-present` or `runtime-package-unconfirmed`), `runtimeAvailable`, `runtimeVersion`, `pathCommandAvailable`, `pathCommandStatus`, `evidenceBasis="distribution-metadata"`, `hardwareVerified=false`, `message`, and `remediation`. It is distribution metadata only: importability, a working Probe backend, and hardware are not checked. The internal Probe backend imports pyOCD from its runtime, so present metadata with a missing PATH command adds `PYOCD_CLI_NOT_ON_PATH_RUNTIME_PRESENT` (`info`) and does not establish a missing runtime dependency; do not edit PATH merely to silence it. Metadata that cannot be confirmed (including a lookup exception) adds `PYOCD_RUNTIME_PACKAGE_UNCONFIRMED` (`warning`) even when a separate PATH command works, and is not proof of uninstall. Preserve CLI `nonzero`/`timeout`/`error` evidence unchanged in `pathCommandStatus`, direct the user to the matching setup Check (`-Mode Check`), and never treat a global pip install or PATH edit as the default remedy. Doctor never imports pyOCD, starts a worker, enumerates probes, or performs extra process/network discovery.
 
@@ -143,7 +143,7 @@ paths.
 
 Both modes first verify `release/release-manifest.json`, every manifest hash, safe path, and the closed
 wheel set. They copy the verified wheels into a unique
-`${CLAUDE_PLUGIN_DATA}/runtime/.staging/1.3.4-<id>` directory before one offline
+`${CLAUDE_PLUGIN_DATA}/runtime/.staging/1.3.5-<id>` directory before one offline
 `pip install --no-index --no-deps` invocation, run `pip check`, validate exact Toolkit/Monitor
 versions and assets, validate isolated `pyocd`, and validate doctor before promotion. Failed safe
 staging is removed; a staging tree containing redirects is preserved for manual recovery rather

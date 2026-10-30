@@ -1,7 +1,21 @@
 # Changelog
 
-## [Unreleased]
+## [v1.3.5] - local candidate (unpublished)
 
+- Implemented: flash diagnostic preservation across cleanup and worker abort. The original
+  `programDiagnostic` and its `initiatingCode` now survive ordinary post-failure cleanup and an
+  owned worker-abort failure instead of being replaced by a cleanup or abort error. Only the
+  closed, existing stage vocabulary is reported, and arbitrary exception text is never leaked into
+  the diagnostic. The fatal-failure policy and the `no-reported-diagnostic` policy are unchanged,
+  and no retry, recovery, reset or second programming call is added. This affects diagnostic
+  reporting only and claims no physical result.
+- Implemented: v1.3.5 version alignment and 1.3.4 legacy recognition. The product version
+  authorities now report `1.3.5`, and `1.3.4` joins the recognized legacy managed-runtime and
+  generation-producer versions while every older entry is retained. The recognition is
+  read-only: an existing 1.3.4 runtime still requires an explicitly authorized Repair, and a
+  1.3.4-generated project keeps its historical `generatedBy` value until an explicit configure
+  transaction. Existing historical 1.3.4 evidence and published-release text are unchanged, and
+  the source version remains an unpublished local candidate.
 - Dependency repair: the optional `probe` extra, both current release-policy pyOCD pins, the
   Setup helper's isolated PEP 440 check (`>=0.46.0,<0.47`, with its trusted release-policy
   anchor updated) and the Cortex-Debug handoff profile (pyOCD `0.46.0` alongside the
@@ -106,16 +120,24 @@
   distinct from the ordinary default. Slower wire transfer may increase physical
   elapsed time; no hardware performance, frequency measurement or reset efficacy
   is claimed, and finite deadlines are unchanged.
-- All entries above are local `Unreleased` corrections planned for `v1.3.5`; they are not
-  part of the published v1.3.4 bytes, are not an accepted release, and packaging,
-  installation and release qualification have not been performed for them. The controlled
-  pre-program preparation entry is a real source-level hardware behavior change (one
+- All entries above are local corrections for the `v1.3.5` source version, which is an
+  **unpublished local candidate**; they are not part of the published v1.3.4 bytes and are not
+  an accepted release. Packaging, installation and release qualification have not been
+  performed for them, and final integration and coverage reconciliation remain pending. The
+  controlled pre-program preparation entry is a real source-level hardware behavior change (one
   authorized `SYSRESETREQ` reset-and-halt on the managed and imported routes); the
-  ordinary-flash 100 kHz default is likewise a source-level behavior change for any
-  omitted frequency, and the pyOCD `0.46.0` dependency repair changes the installed probe
-  stack. None of the three has
-  hardware acceptance evidence until the change is installed and explicitly qualified on a
-  board.
+  ordinary-flash 100 kHz default is likewise a source-level behavior change for any omitted
+  frequency, and the pyOCD `0.46.0` dependency repair changes the installed probe stack. One
+  narrowly scoped prior candidate-source run is recorded: a single 100 kHz managed flash executed
+  at source `e8e3c5f8d77490eaa0fae3e8ab8586237f30935c` / CodeHead
+  `bfa56c21fa67e53649ec0c9c15b5ab4e9b79ae4d` returned `OK` (exit 0, 19656 ms, 61516 verified
+  bytes, lease released). That is a prior candidate-source/isolated-SDK/original-pair case only:
+  it is not installed/final 1.3.5 acceptance, not a universal repair, and not application-run
+  verification, its target state stays `unknown` and `runVerified=false`, and it establishes no
+  automatic retry or recovery. See
+  [the normal-flash evidence](docs/codex/returns/FLASH-FAILURE-EVIDENCE/normal-flash-2026-10-30.md).
+  No package build, installation or hardware qualification of the changed stack is otherwise
+  claimed.
 
 ## [v1.3.4] - 2026-10-28
 
@@ -152,7 +174,7 @@
   limits are unchanged. Permanent gates and memberships are not lowered, and unmet values
   or skips do not become PASS. Final recipient installation and independent VS Code testing
   remain user-owned and pending; see [release status](docs/release-status.md).
-- Later local corrections recorded under `[Unreleased]` are **not** part of the published
+- Later local corrections recorded under the v1.3.5 local-candidate section are **not** part of the published
   v1.3.4 bytes; no build, CLI fix or documentation change in this source tree is claimed to
   have shipped in that release.
 

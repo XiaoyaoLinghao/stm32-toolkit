@@ -13,7 +13,9 @@ Git is optional traceability for both routes, never an eligibility gate. Hardwar
 
 ## Release status
 
-Current published version: **v1.3.4**, published as [Latest](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.3.4). See the [user guide](docs/user-guide.md) for installation, upgrades, migration differences and validation limits, and [release status](docs/release-status.md) for publication evidence and retained limitations.
+Published version: **v1.3.4**, published as [Latest](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.3.4). Installation, upgrades, migration differences and validation limits for that published release are in the [user guide](docs/user-guide.md); publication evidence and retained limitations are in [release status](docs/release-status.md).
+
+Source version **v1.3.5** is an **unpublished local candidate**. It is not published, not available for download, not installed and not qualified. Do not expect a v1.3.5 release link, installer or remote artifact; the only published release is v1.3.4 above. See the [v1.3.5 local candidate guide](docs/v135-local-candidate.md) for candidate identity checks and current limitations, and [release status](docs/release-status.md) for its unqualified state.
 
 v1.3.4 accepts structurally balanced outer include guards that allow independent nested conditionals, while true nested macro definitions remain rejected, and its read-only preflight discovers potential quoted-header encoding blockers without transcoding. Neither change alters ABI decisions, debug-address inference or transcoding. Permanent coverage/risk gates remain unmet under a candidate-only user-approved exception, and final installation and VS Code verification remain user-owned and pending. The previous [v1.3.3](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.3.3) release remains available.
 
@@ -24,6 +26,7 @@ Windows x86_64, CPython 3.12 (`>=3.12,<3.13`) for the managed runtime, and nativ
 ## Documentation
 
 - [User guide](docs/user-guide.md) — installation and upgrade, Keil migration, configuration, builds, probes, Monitor, MCP server, VS Code, and troubleshooting.
+- [v1.3.5 local candidate guide](docs/v135-local-candidate.md) — identity checks and limits for the unpublished local candidate.
 - Claude Code: start with the bundled `/stm32-toolkit:setup-stm32-env` skill.
 - [Windows deployment and IDE preflight](docs/testing/windows-deployment-and-ide-preflight.md) — runtime, debugger and extension checks.
 - [Changelog](CHANGELOG.md) — version history and retained limitations.

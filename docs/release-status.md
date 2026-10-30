@@ -1,5 +1,31 @@
 # Release status and retained limitations
 
+## v1.3.5 local candidate — LOCAL_CANDIDATE_NOT_QUALIFIED — 2026-10-30
+
+Source version 1.3.5 is an **unpublished local candidate**. This checkpoint covers
+version/documentation editing only: final integration, coverage reconciliation and package
+build/qualification remain pending, and nothing here is published, downloadable, installed or
+hardware-accepted. See the [v1.3.5 local candidate guide](v135-local-candidate.md).
+
+Coverage posture: the user's rule is that each coverage group's exact ratio must be `>=` the v1.3.4
+measurement for that same group. It is an exact comparison rule, not an automatic PASS and not a
+change to the permanent gates. See the
+[coverage-scope authorization](codex/returns/STM32TK-135/coverage-authorization-2026-10-30.md).
+
+Scoped prior physical evidence: one bounded managed flash at executed source
+`e8e3c5f8d77490eaa0fae3e8ab8586237f30935c` / CodeHead
+`bfa56c21fa67e53649ec0c9c15b5ab4e9b79ae4d` returned `OK` (exit 0, 19656 ms, 61516 verified
+bytes, lease released). This is a prior candidate-source, isolated-SDK, original-pair case only. It
+is **not** installed/final 1.3.5 acceptance, not a universal repair, and not application-run
+verification: `targetState` stays `unknown` and `runVerified=false`, no automatic retry or recovery
+is established, and no second run is claimed. Full record:
+[normal-flash-2026-10-30](codex/returns/FLASH-FAILURE-EVIDENCE/normal-flash-2026-10-30.md).
+
+The existing 5 s production attach budget versus the SDK's 10 s HID default distinction is
+unchanged; no timeout tuning is claimed. This checkpoint does not reopen ABI/CCM diagnostics, does
+not infer firmware correctness, does not modify historical reports, and claims no test or package
+acceptance before execution.
+
 ## v1.3.4 published as Latest — 2026-10-28
 
 [v1.3.4 Release](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.3.4)

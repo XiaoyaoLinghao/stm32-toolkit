@@ -5,7 +5,7 @@ are thin adapters over the same Python workflows. Monitor consumes the same proj
 Probe Service contracts. A host-specific skill must not create a second implementation or bypass
 the public result, identity or authorization checks.
 
-Current source-candidate flash policy for planned v1.3.5 is **100 kHz by default**,
+The v1.3.5 local candidate flash policy is **100 kHz by default**,
 including normal managed/imported flash and the shared worker/backend defaults.
 Explicit frequency selection remains available; no 1 MHz physical success gate is
 required. Normal 100 kHz does not select under-reset recovery. See the governing
@@ -333,7 +333,11 @@ not service shutdown. The owning terminal's Ctrl-C invokes the existing cleanup 
 Toolkit, Monitor, UI and plugin ship one release version. Schema/protocol compatibility must be
 explicit; upgrades never silently rewrite project intent or historical evidence. Check is read-only;
 Bootstrap/Repair use verified offline artifacts, staging, validation, promotion and bounded rollback.
-Same-version source conflicts, downgrades and unknown future states remain refusals. The published
+Same-version source conflicts, downgrades and unknown future states remain refusals. The v1.3.5 local candidate aligns the product authorities to 1.3.5 and adds 1.3.4 to the recognized legacy
+managed-runtime and generation-producer versions while retaining the older entries; like the
+earlier recognitions it is read-only, so an existing 1.3.4 runtime still requires an explicitly
+authorized Repair, and a 1.3.4-generated project keeps its historical `generatedBy` value until an
+explicit configure transaction. That candidate is unpublished and not installed or qualified. The published
 v1.3.4 release aligns the product authorities to 1.3.4 and adds 1.3.3 to the recognized legacy
 managed-runtime and generation-producer versions while retaining the older entries. Like the
 earlier recognitions it is read-only, so an existing 1.3.3 runtime still requires an explicit
