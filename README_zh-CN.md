@@ -13,9 +13,9 @@ STM32 Toolkit 是面向 STM32 开发的本地工具。CLI 与 MCP 服务器共�
 
 ## 发布状态
 
-最新已发布版本：**v1.3.4**，已发布为 [Latest](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.3.4)。该已发布版本的安装、升级、迁移差异与验证限制见[用户指南](docs/user-guide.md)，发布证据与保留限制见[发布状态](docs/release-status.md)。
+当前最新已发布版本：**v1.3.4**，已发布为 [Latest](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.3.4)；此前的版本仍可获取。该已发布版本的安装、升级、迁移差异与验证限制见[用户指南](docs/user-guide.md)，发布证据与保留限制见[发布状态](docs/release-status.md)。
 
-源码版本 **v1.3.5** 是**尚未发布的本地候选**：它未发布、不可下载、未安装、也未完成鉴定。不要期待 v1.3.5 的发布链接、安装包或远端产物；唯一已发布的版本是上方的 v1.3.4。候选身份核对与当前限制见 [v1.3.5 本地候选指南](docs/v135-local-candidate.md)，未鉴定状态见[发布状态](docs/release-status.md)。
+源码版本 **v1.3.5** 是**尚未发布的本地候选**：它未发布、不可下载、未安装、也未完成鉴定。不要期待 v1.3.5 的发布链接、安装包或远端产物；上方的 v1.3.4 是当前最新已发布版本，此前的版本仍可获取。候选身份核对与当前限制见 [v1.3.5 本地候选指南](docs/v135-local-candidate.md)，未鉴定状态见[发布状态](docs/release-status.md)。
 
 v1.3.4 接受结构平衡且允许相互独立嵌套条件编译的外层 include 保护，而真正的嵌套宏定义仍被拒绝；只读前置检查还会发现潜在的引号头文件编码阻塞，不做转码。这两项改动都不改变 ABI 判定、调试地址推断或转码行为。在仅针对本候选的用户批准例外下，永久覆盖率/风险门槛仍未满足；最终安装与 VS Code 验证仍归用户所有且尚待完成。此前的 [v1.3.3](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.3.3) 发布仍可获取。
 
