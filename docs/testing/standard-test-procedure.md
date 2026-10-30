@@ -6,6 +6,8 @@
 
 ## 1. 当前断点与证据
 
+2026-10-30 v1.3.5当前发布指引已ACCEPTED_WITH_FIXES，CodeHead`1ebb90fd934f6794a55d648f3bb678db9d339fb6`，见[最终指引验收](../codex/returns/STM32TK-135/publication-guidance-acceptance.md)。173通过/1真实symlink能力跳过保留在59ccc469；用户明确批准一次单文件收尾后，Claude仅改user-guide三个段落，原调用100turns失败不追认；两项受影响既有文档合同在修正head通过2/2，不叠加独立用例数。独立干净树完整差异与产品/runtime/release字节未变已核对，原schema输入失败与日志保留。正式Latest和13附件下载hash验收既有有效，不重建、不挪tag、不替换runtime或操作硬件；最终用户安装/IDE/MCP/交互仍待验。以下为此前断点。
+
 2026-10-30 发布事实仍为正式Latest v1.3.5、13附件匿名下载hash匹配。当前源码指引在`59ccc4695bf33e4bd570dc7898a989196a6014c8`经独立干净树审查，三组离线检查173通过/1真实文件symlink能力跳过，无失败/源码变化，见[指引检查点](../codex/returns/STM32TK-135/publication-guidance-checkpoint.md)。原指南调用达到100turns退出1，62次成功编辑保留，原调用NOT_ACCEPTED；仅剩user-guide三处文字收尾，已准备单文件有界任务但待明确授权、未重试。验证任务首次输入的空read_scope由coordinator校验在任何CLI/测试启动前拒绝，补确切文件元数据后首次实际Claude验证正常，命令/工具权限未变。当前SOURCE_GUIDANCE_REVISION_REQUIRED/AUTHORIZATION_PENDING，指引尚未推送；正式tag/附件不变，用户最终安装/IDE/MCP/交互待验，不操作硬件或替换runtime。以下为此前断点。
 
 2026-10-30 v1.3.5已按用户新授权发布正式Latest，Release428722744，发布时间06:42:28Z/14:42:28 Asia/Shanghai，冻结源码`eac81a00a9c0cb0f78dcc0b423945605897b4806`，见[发布证据](../codex/returns/STM32TK-135/publication-2026-10-30.md)。master/新annotated tag非强制原子推送和回读成功，13附件上传/草稿核对/发布均实际退出0，另13文件匿名HTTP200下载长度/hash全部匹配双构建候选，无重试/恢复/删除。用户仅本次固定客户端进程内GCM复用例外已消耗，guard=false；未显示/落盘/传模型/改凭据或全局权限。各组覆盖率不低于1.3.4的条件通过，永久未达门槛/原失败/复用/平台跳过不变。最终安装/IDE/MCP与交互由用户随后验证；没有本机runtime替换、原工程或新硬件动作。当前发布事实已记录，当前源码指引由Claude更新并经独立审查后再快进推送；冻结包与tag不重建/替换。以下为此前断点。

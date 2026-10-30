@@ -215,7 +215,7 @@
     "public-verification.json": "1e80d7dc8c9c5a622bf72df416d208133693e2c8ec66d7f2077d0ebbffc4fef9",
     "credential-authorization.json": "200c02a10ef5d0b2a6b869cc2f2629c82ce5925dd92a27a7008a7c14a7f7513b"
   },
-  "currentGuidance": "REVISION_REQUIRED_GUIDE_THREE_PROSE_FINDINGS;173focusedPassed/1platformSkip;one-file continuation authorization pending;source guidance not pushed",
+  "currentGuidance": "ACCEPTED_WITH_FIXES;173focusedPassed/1platformSkip at59ccc469,2overlapping affected documentation contracts passed at corrected CodeHead;no package rebuild",
   "technicalQualification": "Coverage non-regression condition met; permanent unmet gates/reuse/original failures/platform skips retained. User-owned final installation/IDE/MCP validation pending.",
   "installedRuntimeChanged": false,
   "hardwarePerformed": false,
@@ -225,5 +225,12 @@
     "evidence": "publication-guidance-evidence.json",
     "report": "publication-guidance-checkpoint.md",
     "rawEvidenceSha256": "b810e0da1e7132f8d6b6d9f577cc9dd6d8b133bdd08eac5e3568de6b05eb9853"
+  },
+  "guidanceAcceptance": {
+    "acceptedBase": "1ff0b69603449f17b0fb246e72d6d3b733c2dd35",
+    "codeHeadBeforeReportCommit": "1ebb90fd934f6794a55d648f3bb678db9d339fb6",
+    "report": "publication-guidance-acceptance.md",
+    "evidence": "publication-guidance-evidence.json",
+    "rawEvidenceSha256": "64a8febc3c253d59989252c48f0f9ab9fb40a97939c4c2787adb2c3f86903eb0"
   }
 }

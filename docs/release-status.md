@@ -1,5 +1,9 @@
 # Release status and retained limitations
 
+## Current v1.3.5 publication guidance accepted — 2026-10-30
+
+Current source guidance is **ACCEPTED_WITH_FIXES**, CodeHead `1ebb90fd934f6794a55d648f3bb678db9d339fb6`; see [final independent acceptance](codex/returns/STM32TK-135/publication-guidance-acceptance.md). The original173passed/1platform-skip evidence remains at59ccc469; after the separately authorized three-paragraph guide correction, two affected existing contracts passed2/2 at the corrected head, without adding overlapping cases. The failed100turn guide invocation and pre-CLI input schema error remain disclosed. Formal Latest release428722744 and13public download hashes are unchanged; the exact frozen source/tag/assets are not rebuilt or replaced. Final recipient installation/upgrade/rollback, IDE/MCP and interactive validation remains USER_VALIDATION_PENDING. The following checkpoint entries retain their historical status.
+
 ## Current source guidance checkpoint — 2026-10-30
 
 Formal Latest v1.3.5 publication and all13 anonymous asset hash checks remain complete. Current source publication guidance at `59ccc4695bf33e4bd570dc7898a989196a6014c8` has been independently reviewed in a clean worktree and173focused checks passed with1retained real-symlink capability skip. Three `docs/user-guide.md` prose findings remain; the original guide invocation stopped at100turns after62successful edits and stays NOT_ACCEPTED. Its bounded one-file continuation awaits explicit user authorization; the source-guidance candidate has not been pushed. See [checkpoint](codex/returns/STM32TK-135/publication-guidance-checkpoint.md). Frozen tag/assets, final user-owned installation/IDE/MCP/interactive status, permanent unmet gates and historical evidence remain unchanged.

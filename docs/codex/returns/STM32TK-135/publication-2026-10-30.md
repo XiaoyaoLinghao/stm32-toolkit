@@ -54,3 +54,5 @@ Raw evidence:`D:/codex-tmp/r135-publication`; public verification SHA256
 `1e80d7dc8c9c5a622bf72df416d208133693e2c8ec66d7f2077d0ebbffc4fef9`.
 
 Current source guidance follow-up: [independent checkpoint](publication-guidance-checkpoint.md). The candidate at `59ccc4695bf33e4bd570dc7898a989196a6014c8` passed173focused checks with1platform skip; three user-guide prose findings await a separately authorized one-file Claude continuation. No source-guidance push, asset replacement, installation or hardware acceptance is claimed.
+
+Final current-guidance verdict: **ACCEPTED_WITH_FIXES**, CodeHead `1ebb90fd934f6794a55d648f3bb678db9d339fb6`, see [independent acceptance](publication-guidance-acceptance.md). The three findings were closed by the separately authorized one-file Claude continuation and two affected contracts passed2/2; prior173/1 evidence stays at its measured head and is not inflated. Frozen tag/assets and user-owned final validation remain unchanged.
