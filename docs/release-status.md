@@ -1,5 +1,23 @@
 # Release status and retained limitations
 
+## v1.3.5 local closeout/package accepted with fixes — 2026-10-30
+
+The authorized local objective is complete: source/docs alignment, scoped offline
+integration and package acceptance. Frozen source `eac81a00a9c0cb0f78dcc0b423945605897b4806` produced two independent
+canonical builds with all13 files byte-identical; official extracted-bundle verification
+returned0/ok. See [candidate record](codex/returns/STM32TK-135/candidate-build.md).
+Windows ZIP119000802bytes, SHA256
+`19d317d4ddd5838d2902ca7bbc3b41b58fce63f357df16a2d829e1ee2a6d469d`.
+
+3,204 distinct cases passed/3 real-symlink capability skips, with explicit source-bound
+reuse and original failures/rechecks retained. Every authorized exact coverage comparison
+is met; permanent Toolkit overall/risk90 and Monitor risk95 remain UNMET. Platform checks
+defer to Primary's later capable-host release validation; user-owned final installation,
+upgrade/rollback, VS Code/MCP and interactive checks remain pending. No new hardware or
+final installed1.3.5 acceptance. Overall LOCAL_CANDIDATE_NOT_QUALIFIED_PENDING_EXTERNAL_VALIDATION;
+unpublished, no existing-runtime replacement or remote mutation. Backend-only dependencies
+were populated only in disposable offline build environments. Earlier checkpoints follow.
+
 ## v1.3.5 package entry requires correction — 2026-10-30
 
 Offline software/coverage evidence below remains valid. The first build of frozen

@@ -1,0 +1,149 @@
+{
+  "acceptedBase": "946b1ec5c0dd3c79bb5b5e73ce1650afa5ecb432",
+  "frozenBuildSource": "eac81a00a9c0cb0f78dcc0b423945605897b4806",
+  "testCodeHead": "fa3613cb7b24a0f0532aff5248acb9ad919a112a",
+  "verdict": "ACCEPTED_WITH_FIXES_FOR_LOCAL_CLOSEOUT_AND_PACKAGING",
+  "overallReleaseStatus": "LOCAL_CANDIDATE_NOT_QUALIFIED_PENDING_EXTERNAL_VALIDATION",
+  "assets": {
+    "LICENSE": {
+      "sha256": "55edb314745f2b0d3fe09e512726c3bf67cb20ba99fa3cd66859a64f3e6b6af5",
+      "bytes": 1075
+    },
+    "THIRD-PARTY-NOTICES.md": {
+      "sha256": "264eedb55fef41747e83efbd7bce817aa761d4d9f4df7923c4785c0fb390c707",
+      "bytes": 2615
+    },
+    "compatibility.md": {
+      "sha256": "7b868f96f2e1445076ee13ee0300569d17fd96af018bc6134670199c6bd73910",
+      "bytes": 2014
+    },
+    "licenses.zip": {
+      "sha256": "debe50472f22dd6ce70059700316a44bd87236b04084cc1c75dfc649f600bdb0",
+      "bytes": 413750
+    },
+    "monitor-assets.json": {
+      "sha256": "a6ef07b1c80cad512dbbe1623e7dd631ecf56a93694a6d7170bda9d11a30ef33",
+      "bytes": 970
+    },
+    "release-manifest.json": {
+      "sha256": "fc4501946786dd3e7931560bf5faecbc81e59360fc04fea884b03b4767d167bc",
+      "bytes": 15814
+    },
+    "sbom.spdx.json": {
+      "sha256": "4dc77ec018e769af0b953d5a9c0f3a2f20f226ee0a8a1afa632b7d7a50b8bb6a",
+      "bytes": 191430
+    },
+    "stm32-toolkit-1.3.5-source.zip": {
+      "sha256": "443f4613c0733dd35689797d3fe8dc64de67e1795508a0a62e8b597ad328faaf",
+      "bytes": 20792828
+    },
+    "stm32-toolkit-1.3.5-windows-x86_64.zip": {
+      "sha256": "19d317d4ddd5838d2902ca7bbc3b41b58fce63f357df16a2d829e1ee2a6d469d",
+      "bytes": 119000802
+    },
+    "stm32_monitor-1.3.5-py3-none-any.whl": {
+      "sha256": "daa22a04c81ebf83c2e90b181a946c27630564f150e7c9f998c38d70bc4fcce1",
+      "bytes": 1556130
+    },
+    "stm32_toolkit-1.3.5-py3-none-any.whl": {
+      "sha256": "4966fe31948787ed17b8adf2102775e176bf603f2bbb5a6d0d4fc3cb3a96f48e",
+      "bytes": 4315937
+    },
+    "troubleshooting.md": {
+      "sha256": "641cbb8c6a7acbab1cfc1fa813cbf5cf07cff4ec6f7c595d07db298db532ab89",
+      "bytes": 1737
+    },
+    "CHECKSUMS.sha256": {
+      "sha256": "5c260bd2eeb969ef129a1b53f1e2808c22f5bae0beed8342486d10d279c6b49b",
+      "bytes": 1073
+    }
+  },
+  "twoIndependentBuildsIdentical": true,
+  "officialBundleVerifyExit": 0,
+  "officialOutputSha256": "4f680efbe1a744fd89b7dd33c1dfde938797eef0366e51f482e531ded392da13",
+  "verificationSha256": "917e159e2a104f2bb31955db3c035ec67bd1880e4601d165bbbf6568c6612572",
+  "nativeBuildRuns": [
+    {
+      "side": "a",
+      "nativeState": "executed_success",
+      "nativeNumericExit": null,
+      "actualBuildExit": 0,
+      "elapsedSeconds": 30.2803373336792,
+      "sourceUnchanged": true,
+      "cliExit": 0,
+      "dispatchExit": 0,
+      "summarySha256": "c738425075c403b90446ba550617bf8f932195a3020239818315756eab3edeba",
+      "executionSha256": "b9118f1770ebc41f91a096724935b3ca277a4fa53dd417ae7a11984b7f63925b"
+    },
+    {
+      "side": "b",
+      "nativeState": "executed_success",
+      "nativeNumericExit": null,
+      "actualBuildExit": 0,
+      "elapsedSeconds": 30.474594831466675,
+      "sourceUnchanged": true,
+      "cliExit": 0,
+      "dispatchExit": 0,
+      "summarySha256": "8751690e91e77ab9a8998be5858212771535e845cfec39db0cbe03583adbf89e",
+      "executionSha256": "b074da99cf95a11fcd86588643997eb811da6e515250605cb115101718cbef3f"
+    }
+  ],
+  "completeInputPreparationSha256": "a337fdbeb2c8863dc564eed1c243d66db9909c83963b460f35db1ac46f0f4dcf",
+  "runtime62WheelsMatchAdmittedInputs": true,
+  "productWheels": {
+    "stm32_monitor-1.3.5-py3-none-any.whl": {
+      "direct": true,
+      "file": "release/wheels/stm32_monitor-1.3.5-py3-none-any.whl",
+      "license": "MIT",
+      "name": "stm32-monitor",
+      "sha256": "daa22a04c81ebf83c2e90b181a946c27630564f150e7c9f998c38d70bc4fcce1",
+      "size": 1556130,
+      "version": "1.3.5"
+    },
+    "stm32_toolkit-1.3.5-py3-none-any.whl": {
+      "direct": true,
+      "file": "release/wheels/stm32_toolkit-1.3.5-py3-none-any.whl",
+      "license": "MIT",
+      "name": "stm32-toolkit",
+      "sha256": "4966fe31948787ed17b8adf2102775e176bf603f2bbb5a6d0d4fc3cb3a96f48e",
+      "size": 4315937,
+      "version": "1.3.5"
+    }
+  },
+  "shippedWheelCount": 64,
+  "backendInputsNotShippedAsRuntime": true,
+  "pyocdVersion": "0.46.0",
+  "pyocdWheelSha256": "f37c1ef65a1e78b42c9bccf4f34fbde98c4ea225e87534ee872e324aae230ba5",
+  "all149MeasuredPythonSourcesMatchSourceArchive": true,
+  "canonicalSourceBindingSha256": "754d63c1587bfd07d87bdddb6f537662dedf67a136845cc6dea72a60daca6dbb",
+  "publicInventory": {
+    "mcpTools": 52,
+    "skills": 9
+  },
+  "coverageQualificationSha256": "b75d51148cf45b76359097d501b23e5cd8f6c862ffe1fa762367fcfeb78c1b4c",
+  "matrixSha256": "947b2e923dc15bc5e2abd180fc2bd54d19cc003d2ebed5057ef37735ba951c0c",
+  "originalFailedAInvocationRetained": "package-a-once NOT_ACCEPTED; one leading-space command actually exited2 on missing backend inputs",
+  "authorizedARetryConsumed": true,
+  "bFirstTimeBuildExecuted": true,
+  "existingRuntimeReplacement": false,
+  "recipientRuntimeInstallation": false,
+  "actualVsCodeOrBrowserValidation": false,
+  "hardware": false,
+  "remoteMutation": false,
+  "codeHeadBeforeFinalReportCommit": "56f51bfcb9318e31e61bc397a7dd61612bf893a3",
+  "localObjective": "COMPLETE",
+  "primaryReviewer": "Primary Codex",
+  "implementationAndDelegatedBuildOwner": "Local Claude Code CLI, unchanged deepseek-v4.1-flash[1m] route",
+  "branch": "codex/v135-release-closeout",
+  "activePR": null,
+  "remoteActionAuthorized": null,
+  "workspaceCleanup": {
+    "a": "ARCHIVED_RECOVERABLY",
+    "b": "RETAINED_PRIMARY_CHECKOUT_PROTECTED",
+    "bPolicyRefusalRetained": true,
+    "cleanupSha256": "3341099b365ff7e121c615094cc4ad84fadc3e97fdc9225092c7f7a62bc43347"
+  },
+  "rawAcceptanceSha256": "a218bbd3a82471f0813302e1b1dbb1fab8299eb80289b439ba0045843d5a0b67",
+  "rawEvidenceRoot": "D:\\codex-tmp\\r135",
+  "packageRetryAuthorizationSha256": "132d49b1eaf37f775f5fc1820acfa0877d97d50ed41e8a1a55fe69656dc8c02f"
+}

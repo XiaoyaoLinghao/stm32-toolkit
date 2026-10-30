@@ -1,3 +1,38 @@
+# v1.3.5 local closeout completed — 2026-10-30
+
+Verdict: **ACCEPTED_WITH_FIXES for source/docs/offline integration/local package scope**.
+The user-authorized local objective is complete. Broader release remains
+**LOCAL_CANDIDATE_NOT_QUALIFIED_PENDING_EXTERNAL_VALIDATION**, unpublished/uninstalled.
+Accepted base `946b1ec5c0dd3c79bb5b5e73ce1650afa5ecb432`; CodeHead before this final report commit `56f51bfcb9318e31e61bc397a7dd61612bf893a3`;
+reviewed product/test CodeHead `fa3613cb7b24a0f0532aff5248acb9ad919a112a`; frozen build source `eac81a00a9c0cb0f78dcc0b423945605897b4806`.
+Primary independently reviewed/accepted the local Claude Code CLI implementation and
+evidence, retaining the configured `deepseek-v4.1-flash[1m]` route and existing permissions.
+
+- 3,204 distinct cases passed,3 platform symlink skips; all explicit coverage
+  non-regression conditions met. Reuse/original failures/pending outcomes remain below.
+- Authorized corrected-input A and first-time B builds each returned actual exit0;
+  all13 output filenames/lengths/SHA256 are identical, official extracted-bundle
+  verification returned0/ok.64 shipped wheels are62 unchanged dependencies plus2
+  product wheels; pyOCD0.46.0 and all149 measured Python sources match the package.
+- Windows ZIP:119000802bytes, SHA256
+  `19d317d4ddd5838d2902ca7bbc3b41b58fce63f357df16a2d829e1ee2a6d469d`.
+  Local file: `D:/codex-tmp/r135/complete-package-a/stm32-toolkit-1.3.5-windows-x86_64.zip`.
+- Permanent unmet numeric gates,3 capable-host platform checks and user-owned final
+  installation/VS Code/MCP/interactive validation remain disclosed. Prior physical
+  evidence stays narrowly scoped; ABI/CCM work remains outside this closeout.
+- No product/test edits followed the accepted test head. No existing runtime replacement,
+  recipient install, hardware or remote mutation. Only owned offline build backends
+  were populated. Temporary A archived; B retained after primary-checkout archive refusal.
+
+See [candidate-build.md](candidate-build.md), [candidate-build.json](candidate-build.json)
+and [integration-evidence.json](integration-evidence.json) for exact identities, commands,
+native/actual exit distinctions and all13 artifacts. Original failed entries remain
+NOT_ACCEPTED; one bounded A retry was explicitly authorized, executed once and consumed.
+The final commit identity is stored only in external completion evidence. Historical
+checkpoints below retain their original states; they do not override this result.
+
+---
+
 # v1.3.5 packaging entry checkpoint — 2026-10-30
 
 Current phase: **PACKAGE_ENTRY_REVISION_REQUIRED / RETRY_AUTHORIZATION_PENDING**.
