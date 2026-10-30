@@ -6,6 +6,8 @@
 
 ## 1. 当前断点与证据
 
+2026-10-30 v1.3.5打包入口首次失败，冻结源码`eac81a00a9c0cb0f78dcc0b423945605897b4806`未变，见[入口记录](../codex/returns/STM32TK-135/packaging-entry-review.json)。实际普通构建退出2，原CLI0/dispatcher1、前导空格导致精确命令越界的NOT_ACCEPTED判定与日志保留；不将planned命令not_invoked误作实际未执行。Primary准备的62个runtime输入漏掉固定setuptools84.0.0/wheel0.48.0 backend，已从既有缓存离线复制成64输入并核对hash/RECORD，零安装、零重试。原3,204通过/3平台跳过和各组覆盖率条件通过仍有效；第二构建/13文件比较/解包验证未执行。当前PACKAGE_ENTRY_REVISION_REQUIRED/RETRY_AUTHORIZATION_PENDING：须新明确有界授权后才可一次A重委派，成功后继续原未执行B及验证；不改产品、现有runtime、硬件或远端。以下为此前断点。
+
 2026-10-30 v1.3.5离线软件收口已ACCEPTED_WITH_FIXES，CodeHead`fa3613cb7b24a0f0532aff5248acb9ad919a112a`，见[当前报告](../codex/returns/STM32TK-135/implementation-report.md)和[集成证据](../codex/returns/STM32TK-135/integration-evidence.json)。3,204个不同用例通过、3项真实符号链接能力跳过、无未解决失败/错误；保留三次原失败与获准单项复验、两次原生pending及既有运行完成证据，不声称全仓库或最终提交一次全量重跑。Primary独立328项与作者重叠不累计。Toolkit总体15530/18734、risk14399/17394，Monitor两组3292/3564、UI2938/3147，逐组满足不低于1.3.4的授权条件，永久未达门槛另列。全部149个Python源码与Git规范字节相同，UI按源码/配置/依赖绑定复用，原UI性能失败留档。三项平台检查延至Primary负责的具备真实symlink能力的后续发行验证；最终安装/VS Code/MCP仍由用户与Primary在另行授权的阶段验证。当前PACKAGE_BUILD_PENDING，下一步冻结纯说明/证据提交后双构建13资产并验证解包；不操作硬件、现有runtime、原固件或远端。以下是此前断点。
 
 2026-10-30 v1.3.5收口进入离线集成阶段：版本/说明文件完整差异已由Primary在干净独立工作树审查，CodeHead`9604da7f3479513bc2b5f3db3255bac52ed97bca`，见[当前报告](../codex/returns/STM32TK-135/implementation-report.md)及[执行计划](../superpowers/plans/2026-10-30-v135-release-closeout.md)。本地Claude完成版本、兼容、测试期望、说明及规范Git字节setup哈希更新；SDK0.46.0、100kHz默认、原有身份/权限/清理/时限合同保持。原两次读取越界调用与零写入/测试事实保留，后续明确授权的拆分编辑及普通内容审查修正正常完成。当前VERSION_DOCS_REVIEW_ACCEPTED/INTEGRATION_PENDING：本轮尚无测试、覆盖比较或打包PASS，接下来按固定真实CPython3.12.14、现有隔离SDK/依赖、独立外部短路径执行26组离线回归，再核算不低于1.3.4的原生分支覆盖率并双构建/验证包；不安装到现有runtime、不操作硬件、不推送发布，不重开固件ABI/CCM事项。

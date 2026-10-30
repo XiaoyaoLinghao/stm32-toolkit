@@ -1,5 +1,18 @@
 # Release status and retained limitations
 
+## v1.3.5 package entry requires correction — 2026-10-30
+
+Offline software/coverage evidence below remains valid. The first build of frozen
+`eac81a00a9c0cb0f78dcc0b423945605897b4806` failed with exit2 before producing the candidate, because the runtime-only
+wheel input lacked the two fixed build-backend wheels. Its one-leading-space native
+command also violated the exact allowlist; original invocation NOT_ACCEPTED, no
+retrospective expansion. Product/source unchanged; B and bundle verification never ran.
+The complete64-wheel input is prepared offline with62 runtime wheels unchanged and
+two existing pinned/RECORD-verified backends. No package install or build retry occurred.
+See the [entry review](codex/returns/STM32TK-135/packaging-entry-review.json).
+Current PACKAGE_ENTRY_REVISION_REQUIRED/RETRY_AUTHORIZATION_PENDING; overall
+LOCAL_CANDIDATE_NOT_QUALIFIED. No hardware, existing-runtime or remote mutation.
+
 ## v1.3.5 offline software accepted with fixes — PACKAGE_BUILD_PENDING — 2026-10-30
 
 Unpublished local source CodeHead `fa3613cb7b24a0f0532aff5248acb9ad919a112a` passed the scoped offline integration:

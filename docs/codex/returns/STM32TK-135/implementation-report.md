@@ -1,3 +1,36 @@
+# v1.3.5 packaging entry checkpoint — 2026-10-30
+
+Current phase: **PACKAGE_ENTRY_REVISION_REQUIRED / RETRY_AUTHORIZATION_PENDING**.
+Offline software remains ACCEPTED_WITH_FIXES (3,204 distinct passes,3 platform skips;
+all user-authorized coverage non-regression groups met). Local closeout is incomplete.
+Accepted base `946b1ec5c0dd3c79bb5b5e73ce1650afa5ecb432`; frozen build CodeHead before this report commit
+`eac81a00a9c0cb0f78dcc0b423945605897b4806`. No product/test edits or existing-runtime/hardware/remote changes.
+
+One ordinary Claude build check actually ran and exited2 with `closed build backend
+is unavailable`; source unchanged. The native command had one leading ASCII space
+outside its exact allowlist, so the invocation remains **NOT_ACCEPTED** (CLI0,
+dispatcher1, actual native exit2). The summary's exact-planned command not_invoked
+does not erase the separately recorded unexpected command's actual execution.
+No test command was designated. No second build, artifact comparison or bundle
+verification ran. No retry or permission normalization occurred.
+
+Primary found a concrete input omission: the prepared62-wheel runtime dependency
+copy lacked the fixed setuptools84.0.0/wheel0.48.0 build backends. The utility captures
+but does not retain their pip stderr in this generic failure, so no additional pip
+trace or exclusive cause is invented. An offline64-wheel input is now prepared from
+the unchanged62 and the two existing pinned cache wheels, with hashes/RECORD verified;
+this copies files only, installs nothing and does not retry the build. Runtime/policy
+and frozen source stay unchanged. See [packaging-entry-review.json](packaging-entry-review.json).
+
+Proposed next step requires explicit bounded authorization under AGENTS.md: one A
+Claude re-delegation with exact no-leading-space command, separate output/temp/evidence
+paths and the complete input; PASS then permits the original-unstarted B build and
+13-file/official bundle checks. Errors/refusals/scope violations stop; no automatic
+retry, product edit, recipient install, hardware, runtime replacement or publication.
+Raw evidence: `D:/codex-tmp/r135`. Earlier checkpoints are retained below.
+
+---
+
 # v1.3.5 offline integration checkpoint — 2026-10-30
 
 Status: **ACCEPTED_WITH_FIXES for offline software / PACKAGE_BUILD_PENDING**.

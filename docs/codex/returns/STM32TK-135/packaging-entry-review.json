@@ -1,0 +1,67 @@
+{
+  "acceptedBase": "946b1ec5c0dd3c79bb5b5e73ce1650afa5ecb432",
+  "frozenBuildSource": "eac81a00a9c0cb0f78dcc0b423945605897b4806",
+  "phase": "PACKAGE_ENTRY_REVISION_REQUIRED_AUTHORIZATION_PENDING",
+  "softwareVerdictRetained": "ACCEPTED_WITH_FIXES,3204distinct pass/3platform skip, per-group coverage non-regression met",
+  "originalInvocation": "package-a-once",
+  "originalVerdict": "NOT_ACCEPTED",
+  "nativeInventory": [
+    "PowerShell"
+  ],
+  "nativeCallCount": 1,
+  "plannedExactCommand": "& 'C:/Users/zhy76/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/python.exe' -I -B -X utf8 'D:/codex-tmp/r135/run_package.py' 'C:/Users/zhy76/.codex/worktrees/v135-package-a/STM32-Toolkit' 'eac81a00a9c0cb0f78dcc0b423945605897b4806' 'a'",
+  "actualExecutedCommand": " & 'C:/Users/zhy76/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/python.exe' -I -B -X utf8 'D:/codex-tmp/r135/run_package.py' 'C:/Users/zhy76/.codex/worktrees/v135-package-a/STM32-Toolkit' 'eac81a00a9c0cb0f78dcc0b423945605897b4806' 'a'",
+  "commandMismatch": "One leading ASCII space; no retrospective allowlist expansion",
+  "actualNativeState": "executed_failure",
+  "actualNativeExit": 2,
+  "actualBuildExit": 2,
+  "cliExit": 0,
+  "dispatchExit": 1,
+  "sourceUnchanged": true,
+  "message": "release utility: closed build backend is unavailable",
+  "confirmedInputBlocker": "Coordinator runtime-only62-wheel copy omitted required setuptools84.0.0/wheel0.48.0 backend wheels. Product _build_wheel fixes those versions at641-652. No generic error is promoted to a full pip stderr/root-cause trace.",
+  "buildBackendInstallStderrRetained": false,
+  "originalEvidenceSha256": {
+    "package-build-a.json": "b4f46c055e45bd8bf5a91bbec5c13047eaf07ef96f845c97f65688332de611f6",
+    "package-build-a.log": "e532baa4b53992e03948ef47d3bae7a52bd08f1510edb37c57c9ae818006f2f2",
+    "package-a-once/summary.json": "cc7d1c4a7424b783386408d6ffda6011ae624760d43658178d4897d7c5f83e66",
+    "package-a-once/main/raw.jsonl": "6b8c89eff58ab7fd938b4af5d5e6a2418c9afd4296b044486cf9020ad6fb26c9",
+    "package-input-binding.json": "87571d8dcb808491fa55fee733db4314d9d2193c2da1c5a923e19ffd20d7d8f2",
+    "package-entry-preparation.json": "0e838bf8b4c8782f471dda63d4754d71b899492d029fda86dbc82dde42d0954a"
+  },
+  "preparedCorrection": {
+    "inputManifest": "D:/codex-tmp/r135/complete-input-preparation.json",
+    "inputManifestSha256": "a337fdbeb2c8863dc564eed1c243d66db9909c83963b460f35db1ac46f0f4dcf",
+    "runtime62WheelsUnchanged": true,
+    "backendWheels": {
+      "setuptools-84.0.0-py3-none-any.whl": {
+        "source": "D:\\codex-tmp\\fi24\\wheelhouse\\setuptools-84.0.0-py3-none-any.whl",
+        "distribution": "setuptools",
+        "version": "84.0.0",
+        "sha256": "51a52592b3b99e102b609654876bd65f19f999935166d1352678931132b0c670",
+        "bytes": 818216,
+        "recordMembersVerified": 342,
+        "scope": "owned disposable build backend only, not shipped runtime dependency"
+      },
+      "wheel-0.48.0-py3-none-any.whl": {
+        "source": "D:\\codex-tmp\\fi24\\wheelhouse\\wheel-0.48.0-py3-none-any.whl",
+        "distribution": "wheel",
+        "version": "0.48.0",
+        "sha256": "3217dcc807155e45db462d7ef2431f5ddda0d7273b700d05a67b271ceb1287ab",
+        "bytes": 33320,
+        "recordMembersVerified": 19,
+        "scope": "owned disposable build backend only, not shipped runtime dependency"
+      }
+    },
+    "copiedOfflineOnly": true,
+    "wheelRecordMembersVerified": true,
+    "packageSourceUnchanged": true,
+    "newTemporaryOutputEvidenceRoots": true,
+    "noInstallationOrRetryExecuted": true
+  },
+  "nextBoundedProposal": "One Claude A re-delegation using the same frozenS/realPython/model/permissions and complete64-wheel input; exact command starts with&. On PASS only, first-time B then all13-asset comparison and official extracted-bundle verification. First failure/refusal/absent tool/scope error stops; no automatic retry.",
+  "secondBuildNeverStarted": true,
+  "hardware": false,
+  "existingRuntimeChanged": false,
+  "remoteMutation": false
+}
