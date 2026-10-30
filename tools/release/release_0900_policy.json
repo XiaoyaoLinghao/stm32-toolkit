@@ -1,5 +1,5 @@
 {
-  "version": "1.3.4",
+  "version": "1.3.5",
   "repository": "https://github.com/XiaoyaoLinghao/stm32-toolkit.git",
   "requiredPython": ">=3.12,<3.13",
   "platform": {
