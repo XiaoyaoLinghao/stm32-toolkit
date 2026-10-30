@@ -18,7 +18,7 @@ def test_version_command_writes_only_the_package_version(capsys):
     assert main(["version"]) == 0
 
     captured = capsys.readouterr()
-    assert captured.out == "1.3.4\n"
+    assert captured.out == "1.3.5\n"
     assert captured.err == ""
 
 
@@ -50,7 +50,7 @@ def test_project_detect_without_explicit_root_never_uses_current_directory(
 
 def test_version_is_the_only_root_free_command(capsys):
     assert main(["version"]) == 0
-    assert capsys.readouterr().out == "1.3.4\n"
+    assert capsys.readouterr().out == "1.3.5\n"
 
 
 @pytest.mark.parametrize(
@@ -1133,7 +1133,7 @@ def test_package_lazy_attributes_and_unknown_attribute_error() -> None:
     import stm32_toolkit
     from stm32_toolkit import MonitorObservationRequest, open_monitor_observation
 
-    assert stm32_toolkit.__version__ == "1.3.4"
+    assert stm32_toolkit.__version__ == "1.3.5"
     assert callable(MonitorObservationRequest)
     assert callable(open_monitor_observation)
     # The lazily imported attribute is cached on the package.

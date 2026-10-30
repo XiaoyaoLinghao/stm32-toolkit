@@ -69,7 +69,7 @@ def test_version_command_reports_the_package_version() -> None:
     output = io.StringIO()
 
     assert main(["version"], _stdout=output) == 0
-    assert output.getvalue() == "1.3.4\n"
+    assert output.getvalue() == "1.3.5\n"
 
 
 def test_serve_cli_accepts_only_project_data_session_and_json(tmp_path: Path) -> None:
