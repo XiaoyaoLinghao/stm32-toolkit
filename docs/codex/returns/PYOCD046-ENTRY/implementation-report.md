@@ -1,5 +1,14 @@
 # PYOCD046-ENTRY offline review report
 
+Later2026-10-30 physical checkpoint: one newly authorized original-board/probe
+constructor diagnostic at sourceb5873c5ce6f7e915a333a65af4689cf39cf5f705 passed
+its narrow execution card in3172ms, parent/child exit0, matching lease released,
+terminal handle closed, source/SDK pins unchanged. See the
+[complete one-shot diagnostic report](constructor-diagnostic-2026-10-30.md).
+Authority is consumed, no follow-on hardware; physical target remains UNKNOWN.
+Ordinary connection/flash and release qualification remain pending. The offline
+acceptance below and its then-blocked hardware status are retained as history.
+
 2026-10-30 final checkpoint: **ACCEPTED for the offline entry-review slice**.
 The authorized five-command supplement closed the three evidence gaps. The
 combined conditional procedure/card review has NO_BLOCKERS; hardware remains
