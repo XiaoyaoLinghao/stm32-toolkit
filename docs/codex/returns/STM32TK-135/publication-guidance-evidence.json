@@ -1,0 +1,177 @@
+{
+  "acceptedBase": "1ff0b69603449f17b0fb246e72d6d3b733c2dd35",
+  "codeHead": "59ccc4695bf33e4bd570dc7898a989196a6014c8",
+  "frozenSource": "eac81a00a9c0cb0f78dcc0b423945605897b4806",
+  "reviewer": "Primary Codex",
+  "implementer": "Local Claude Code CLI using unchanged configured deepseek-v4.1-flash[1m] route",
+  "independentReviewRoot": "C:\\Users\\zhy76\\.codex\\worktrees\\post134-independent-review\\STM32-Toolkit",
+  "reviewRootClean": true,
+  "changedFiles": [
+    "CHANGELOG.md",
+    "README.md",
+    "README_zh-CN.md",
+    "docs/architecture.md",
+    "docs/testing/windows-deployment-and-ide-preflight.md",
+    "docs/user-guide.md",
+    "docs/v135-local-candidate.md",
+    "skills/flash-firmware/SKILL.md",
+    "skills/migrate-keil/SKILL.md",
+    "skills/setup-stm32-env/SKILL.md",
+    "tools/stm32-toolkit/tests/test_ai_call_guidance.py",
+    "tools/stm32-toolkit/tests/test_plugin_layout.py"
+  ],
+  "completeDiffSha256": "57c2288c00ff8689d6f293a82e74e9cd7746ca45947f0d3556e3fd67fe76874d",
+  "canonicalDiffIdenticalAcrossWorktrees": true,
+  "frozenProductRuntimeAndReleasePathsUnchanged": [
+    "bin",
+    ".claude-plugin",
+    ".mcp.json",
+    "tools/stm32-toolkit/src",
+    "tools/stm32-monitor/src",
+    "tools/stm32-toolkit/pyproject.toml",
+    "tools/stm32-monitor/pyproject.toml",
+    "tools/release"
+  ],
+  "invocations": [
+    {
+      "run": "guidance-landing",
+      "invocationAccepted": true,
+      "cliExit": 0,
+      "fileEditCompleted": true,
+      "nativeSuccessfulEdits": 10,
+      "testsExecuted": false,
+      "auditSha256": "ac65288b483c17d09ad1c11873b23f85be508e79cdcb5a5338c7ae70c77c870a"
+    },
+    {
+      "run": "guidance-guides",
+      "invocationAccepted": false,
+      "cliExit": 1,
+      "fileEditCompleted": false,
+      "nativeSuccessfulEdits": 62,
+      "testsExecuted": false,
+      "auditSha256": "65b63736132c271717ad8944039c0582f70b81034d88dd587e63fac4b59cb991"
+    },
+    {
+      "run": "guidance-skills",
+      "invocationAccepted": true,
+      "cliExit": 0,
+      "fileEditCompleted": true,
+      "nativeSuccessfulEdits": 16,
+      "testsExecuted": false,
+      "auditSha256": "986780de6f7a84aed09ce2e5bbcbc02be008363b66ff46e0c3ac931b00b1eeda"
+    }
+  ],
+  "originalGuideInvocationRemainsNotAccepted": true,
+  "focusedChecks": [
+    {
+      "head": "59ccc4695bf33e4bd570dc7898a989196a6014c8",
+      "group": "meta",
+      "exitCode": 0,
+      "elapsedSeconds": 18.661678314208984,
+      "sourceUnchanged": true,
+      "terminal": {
+        "count": 79,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "junitSha256": "12662b16b349da36a3e34b082af0460a052427ab304482bf8a1b8c7f85251642"
+    },
+    {
+      "head": "59ccc4695bf33e4bd570dc7898a989196a6014c8",
+      "group": "guidance",
+      "exitCode": 0,
+      "elapsedSeconds": 43.46470379829407,
+      "sourceUnchanged": true,
+      "terminal": {
+        "count": 94,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 1
+      },
+      "junitSha256": "530d3693c0ac98bf37c6e2b6b2ed6af19d40ab120b318a564c8aaac9d223443a"
+    },
+    {
+      "head": "59ccc4695bf33e4bd570dc7898a989196a6014c8",
+      "group": "contract",
+      "exitCode": 0,
+      "elapsedSeconds": 1.391582727432251,
+      "sourceUnchanged": true,
+      "terminal": {
+        "count": 1,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "junitSha256": "3744d87c0df66274f8ad688b408bed3be4a76fffc591a25b780d91b40d5f4287"
+    }
+  ],
+  "focusedPassed": 173,
+  "focusedSkipped": 1,
+  "notFullMatrixRerun": true,
+  "packageRebuilt": false,
+  "runtimeInstalledOrReplaced": false,
+  "hardwarePerformed": false,
+  "completedAtUtc": "2026-10-30T07:17:11.979124+00:00",
+  "rawHashes": {
+    "guidance-landing-independent-audit.json": "ac65288b483c17d09ad1c11873b23f85be508e79cdcb5a5338c7ae70c77c870a",
+    "guidance-guides-independent-audit.json": "65b63736132c271717ad8944039c0582f70b81034d88dd587e63fac4b59cb991",
+    "guidance-skills-independent-audit.json": "986780de6f7a84aed09ce2e5bbcbc02be008363b66ff46e0c3ac931b00b1eeda",
+    "guidance-verify-preparation.json": "de98485a08ee8d90b47827553d3b1d6f127fc0e4fac0ea8256a6aabbef58d0ec"
+  },
+  "verdict": "REVISION_REQUIRED_GUIDE_THREE_PROSE_FINDINGS",
+  "guideContinuationAuthorized": false,
+  "pendingFindings": [
+    {
+      "path": "docs/user-guide.md",
+      "line": 9,
+      "observed": "Receiving paragraph suggests Bootstrap before later Repair distinction",
+      "expected": "Explicit missing->authorized Bootstrap, repairable/broken->authorized Repair, one action selected after Check"
+    },
+    {
+      "path": "docs/user-guide.md",
+      "line": 38,
+      "observed": "v1.3.3 still called previous public route",
+      "expected": "Historical route; previous public release is1.3.4"
+    },
+    {
+      "path": "docs/user-guide.md",
+      "line": 549,
+      "observed": "Current frequency-default parenthetical still says candidate change",
+      "expected": "Published v1.3.5 default change, no policy or hardware changes"
+    }
+  ],
+  "coordinatorPrelaunchSchemaErrorRetained": "guidance-verify-entry-correction.json: empty read_scope rejected before any CLI/run/tests; first actual CLI verification used admitted task and unchanged commands/tools",
+  "verificationInvocation": {
+    "accepted": true,
+    "cliExit": 0,
+    "dispatcherExit": 0,
+    "nativePowerShellCommands": 3,
+    "startupInventoryAndSmokeAccepted": true,
+    "summarySha256": "3331e385b64628bec946aa6ce8020280bf08ed34ba7b31ca8f5fcdb55b100d5c",
+    "auditSha256": "5405a9572a65abe032c1ea967eb63ed52c7cef82152d543dd96e28d21272df0b"
+  },
+  "platformSkip": {
+    "node": "test_vscode_configuration.py::test_redirect_targets_are_refused",
+    "reason": "host cannot create a file symlink for this check",
+    "owner": "Primary",
+    "deferredTo": "Later release verification on a capable Windows or Linux host; no privileges changed"
+  },
+  "entryCorrection": {
+    "kind": "COORDINATOR_INPUT_SCHEMA_ERROR_BEFORE_FIRST_CLAUDE_LAUNCH",
+    "originalTask": "guidance-verify.json",
+    "error": "read_scope must be a nonempty list",
+    "claudeStarted": false,
+    "testsStarted": false,
+    "runDirectoryCreated": false,
+    "admittedTask": "guidance-verify-admitted.json",
+    "onlyFieldsChanged": [
+      "read_scope",
+      "task coordinator note"
+    ],
+    "commandsAndToolsUnchanged": true,
+    "originalErrorSha256": "6b0698416048b806a69d79b5f25cefb12d8159ef61c9e9caaf0368f24fd91490"
+  },
+  "guideContinuationAuthorization": "PENDING_USER_REPLY; no retry launched",
+  "sourceGuidancePushed": false
+}

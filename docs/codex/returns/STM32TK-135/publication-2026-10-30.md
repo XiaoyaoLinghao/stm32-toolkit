@@ -52,3 +52,5 @@ to be implemented by local Claude Code CLI and independently reviewed/checked. F
 bundle documents remain truthful build-time snapshots; no asset rebuild/replacement.
 Raw evidence:`D:/codex-tmp/r135-publication`; public verification SHA256
 `1e80d7dc8c9c5a622bf72df416d208133693e2c8ec66d7f2077d0ebbffc4fef9`.
+
+Current source guidance follow-up: [independent checkpoint](publication-guidance-checkpoint.md). The candidate at `59ccc4695bf33e4bd570dc7898a989196a6014c8` passed173focused checks with1platform skip; three user-guide prose findings await a separately authorized one-file Claude continuation. No source-guidance push, asset replacement, installation or hardware acceptance is claimed.

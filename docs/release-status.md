@@ -1,5 +1,9 @@
 # Release status and retained limitations
 
+## Current source guidance checkpoint — 2026-10-30
+
+Formal Latest v1.3.5 publication and all13 anonymous asset hash checks remain complete. Current source publication guidance at `59ccc4695bf33e4bd570dc7898a989196a6014c8` has been independently reviewed in a clean worktree and173focused checks passed with1retained real-symlink capability skip. Three `docs/user-guide.md` prose findings remain; the original guide invocation stopped at100turns after62successful edits and stays NOT_ACCEPTED. Its bounded one-file continuation awaits explicit user authorization; the source-guidance candidate has not been pushed. See [checkpoint](codex/returns/STM32TK-135/publication-guidance-checkpoint.md). Frozen tag/assets, final user-owned installation/IDE/MCP/interactive status, permanent unmet gates and historical evidence remain unchanged.
+
 ## v1.3.5 published as Latest — 2026-10-30
 
 [v1.3.5 Release](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.3.5) is public and Latest, release428722744,

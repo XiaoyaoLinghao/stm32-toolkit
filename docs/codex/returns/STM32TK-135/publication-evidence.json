@@ -215,9 +215,15 @@
     "public-verification.json": "1e80d7dc8c9c5a622bf72df416d208133693e2c8ec66d7f2077d0ebbffc4fef9",
     "credential-authorization.json": "200c02a10ef5d0b2a6b869cc2f2629c82ce5925dd92a27a7008a7c14a7f7513b"
   },
-  "currentGuidance": "PENDING_CLAUDE_DOCUMENTATION_EDIT_AND_REVIEW",
+  "currentGuidance": "REVISION_REQUIRED_GUIDE_THREE_PROSE_FINDINGS;173focusedPassed/1platformSkip;one-file continuation authorization pending;source guidance not pushed",
   "technicalQualification": "Coverage non-regression condition met; permanent unmet gates/reuse/original failures/platform skips retained. User-owned final installation/IDE/MCP validation pending.",
   "installedRuntimeChanged": false,
   "hardwarePerformed": false,
-  "remoteAuthority": "User explicitly requested push/Release and chose formal Latest; no unrelated ref deletion/PR mutation/force push"
+  "remoteAuthority": "User explicitly requested push/Release and chose formal Latest; no unrelated ref deletion/PR mutation/force push",
+  "guidanceCheckpoint": {
+    "codeHead": "59ccc4695bf33e4bd570dc7898a989196a6014c8",
+    "evidence": "publication-guidance-evidence.json",
+    "report": "publication-guidance-checkpoint.md",
+    "rawEvidenceSha256": "b810e0da1e7132f8d6b6d9f577cc9dd6d8b133bdd08eac5e3568de6b05eb9853"
+  }
 }
