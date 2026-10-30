@@ -1,5 +1,15 @@
 # Release status and retained limitations
 
+## v1.3.5 Latest delivery authorized; local validation pending — 2026-10-30
+
+The user explicitly requests source/tag push and a Release, selecting formal Latest.
+The exact frozen `eac81a00a9c0cb0f78dcc0b423945605897b4806` /13-file candidate is approved for publication with its
+disclosed coverage/reuse/platform limits. See the [authorization](codex/returns/STM32TK-135/publication-authorization-2026-10-30.md).
+This does not turn permanent unmet gates, final recipient installation/VS Code/MCP,
+or hardware into PASS; local validation remains user-owned. At this checkpoint source
+push/draft/upload/Latest publication have not executed, public Latest remainsv1.3.4,
+and the required new in-process credential exception is pending. No runtime/hardware action.
+
 ## v1.3.5 local closeout/package accepted with fixes — 2026-10-30
 
 The authorized local objective is complete: source/docs alignment, scoped offline

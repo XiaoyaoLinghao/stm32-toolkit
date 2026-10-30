@@ -6,6 +6,8 @@
 
 ## 1. 当前断点与证据
 
+2026-10-30 用户新明确授权推送v1.3.5并发布正式Latest，随后由用户本地验证，见[授权](../codex/returns/STM32TK-135/publication-authorization-2026-10-30.md)和[发布计划](../superpowers/plans/2026-10-30-v135-publication.md)。仅交付已双构建/官方校验通过的冻结`eac81a00a9c0cb0f78dcc0b423945605897b4806`与13原文件；保留覆盖率条件通过、永久未达门槛、原失败/复用/平台跳过和用户安装/IDE/MCP待验证事实。当前PUBLICATION_AUTHORIZED_CREDENTIAL_BRIDGE_PENDING：尚未新推送或创建Release；客户端已准备但没有取得/读取凭据，上版仅v1.3.4的例外不转移。发布为Latest不授予本机安装、runtime替换、原工程/硬件操作或新实机验收；旧实机权限仍消耗。以下为此前断点。
+
 2026-10-30 v1.3.5本地收口与打包验收已ACCEPTED_WITH_FIXES，冻结源码`eac81a00a9c0cb0f78dcc0b423945605897b4806`，见[最终候选记录](../codex/returns/STM32TK-135/candidate-build.md)。原缺backend输入与前导空格失败保留NOT_ACCEPTED，新明确授权后仅A重委派一次，A/B实际构建均退出0，13文件名称/长度/SHA256一致，官方解包验证0/ok。64个构建输入=62依赖+2固定backend；64个交付wheel=62依赖+2产品，backend未作为runtime依赖交付。pyOCD0.46.0、52MCP/9Skills和149个已测Python源码与包闭包匹配。原3,204通过/3平台跳过、逐组覆盖率不低于1.3.4及UI源码绑定复用证据保持，永久未达门槛另列；不声称全仓库/最终提交重新全量运行。A已可恢复归档，B因chat主工作树保护拒绝归档而保留，未绕过/重试。当前授权内软件/说明/集成/包目标完成；更广发行仍LOCAL_CANDIDATE_NOT_QUALIFIED_PENDING_EXTERNAL_VALIDATION：Primary后续capable-host三项symlink与用户最终安装/VS Code/MCP/交互验收待独立安排，旧一次实机证据不扩大。没有新硬件、现有runtime替换、用户运行时安装或远端动作，仅构建器自有临时后端离线安装获准固定依赖。以下为此前断点。
 
 2026-10-30 v1.3.5打包入口首次失败，冻结源码`eac81a00a9c0cb0f78dcc0b423945605897b4806`未变，见[入口记录](../codex/returns/STM32TK-135/packaging-entry-review.json)。实际普通构建退出2，原CLI0/dispatcher1、前导空格导致精确命令越界的NOT_ACCEPTED判定与日志保留；不将planned命令not_invoked误作实际未执行。Primary准备的62个runtime输入漏掉固定setuptools84.0.0/wheel0.48.0 backend，已从既有缓存离线复制成64输入并核对hash/RECORD，零安装、零重试。原3,204通过/3平台跳过和各组覆盖率条件通过仍有效；第二构建/13文件比较/解包验证未执行。当前PACKAGE_ENTRY_REVISION_REQUIRED/RETRY_AUTHORIZATION_PENDING：须新明确有界授权后才可一次A重委派，成功后继续原未执行B及验证；不改产品、现有runtime、硬件或远端。以下为此前断点。
