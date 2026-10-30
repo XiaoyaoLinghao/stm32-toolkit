@@ -1192,7 +1192,11 @@ def _identity_validator() -> Draft202012Validator:
 
 
 def validate_identity_document(document: dict) -> None:
-    """Validate the identity against the packaged schema; fail closed."""
+    """Validate the identity against the packaged schema; fail closed.
+
+    Optional ``memorySummary`` and ``floatAbi`` evidence is additionally
+    validated for semantics, not just schema shape.
+    """
     try:
         validator = _identity_validator()
         errors = sorted(validator.iter_errors(document), key=lambda error: list(error.path))
@@ -1212,6 +1216,18 @@ def validate_identity_document(document: dict) -> None:
         try:
             MemorySummary.from_document(document["memorySummary"])
         except (MemorySummaryError, TypeError, ValueError, KeyError):
+            raise build_error(
+                BUILD_EVIDENCE_FAILED,
+                "identity evidence is invalid",
+                {"phase": "identity"},
+            ) from None
+    if "floatAbi" in document:
+        # Schema shape is not enough: the evidence validator also reconstructs
+        # the deterministic resolver decision from the recorded raw fields, so
+        # a relabelled or hand-edited ABI record fails closed here.
+        try:
+            validate_float_abi_evidence(document["floatAbi"])
+        except (TypeError, ValueError):
             raise build_error(
                 BUILD_EVIDENCE_FAILED,
                 "identity evidence is invalid",

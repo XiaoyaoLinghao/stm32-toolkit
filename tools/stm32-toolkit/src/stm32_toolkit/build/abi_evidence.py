@@ -137,13 +137,25 @@ def _validate_fields(value: object, fields: tuple[str, ...]) -> dict[str, object
 
 
 def validate_float_abi_resolved(value: object) -> dict[str, object]:
-    """Validate the 14-key resolver object as recorded in the report."""
-    return _validate_fields(value, FLOAT_ABI_RESOLVED_FIELDS)
+    """Validate the 14-key resolver object as recorded in the report.
+
+    Shape alone is not enough: every recorded decision field must be exactly
+    what the deterministic resolver reconstructs from the recorded raw fields.
+    """
+    recorded = _validate_fields(value, FLOAT_ABI_RESOLVED_FIELDS)
+    _require_resolver_consistency(recorded)
+    return recorded
 
 
 def validate_float_abi_evidence(value: object) -> dict[str, object]:
-    """Validate the 16-key identity/receipt object (resolved plus capture)."""
-    return _validate_fields(value, FLOAT_ABI_EVIDENCE_FIELDS)
+    """Validate the 16-key identity/receipt object (resolved plus capture).
+
+    The closed capture path/digest and the full resolver semantics are both
+    required, so a relabelled or hand-edited decision never validates.
+    """
+    evidence = _validate_fields(value, FLOAT_ABI_EVIDENCE_FIELDS)
+    _require_resolver_consistency(evidence)
+    return evidence
 
 
 @dataclass(frozen=True)
@@ -171,6 +183,29 @@ def _resolver_evidence(recorded: dict[str, object]) -> dict[str, object]:
         rvds_vp=recorded["rawRvdsVp"],  # type: ignore[arg-type]
     )
     return dict(float_abi_evidence(inspection))
+
+
+def _require_resolver_consistency(recorded: dict[str, object]) -> None:
+    """Require the recorded decision to match the deterministic resolver.
+
+    The raw Keil fields are the resolver's own inputs, so its full 14-field
+    output is reconstructed here and every recorded field must agree.  This
+    is a leaf helper: it never calls back into the public validators, and
+    resolver failures become the same fixed ``ValueError`` as a mismatch.
+    """
+    try:
+        resolved = _resolver_evidence(recorded)
+    except (AttributeError, ImportError, KeyError, TypeError, ValueError):
+        raise ValueError(
+            "floatAbi evidence is not deterministically resolvable"
+        ) from None
+    if set(resolved) != set(FLOAT_ABI_RESOLVED_FIELDS):
+        raise ValueError("floatAbi resolver output is not the closed shape")
+    for field in FLOAT_ABI_RESOLVED_FIELDS:
+        if resolved[field] != recorded[field]:
+            raise ValueError(
+                f"floatAbi {field} does not match the deterministic resolver"
+            )
 
 
 def _matches_project(recorded: dict[str, object], model: "ProjectModel") -> bool:
@@ -244,8 +279,10 @@ def capture_float_abi_evidence(
     Returns ``(evidence, warnings)``.  A truly missing report is optional
     evidence: ``(None, ())``.  A present report that is unsafe, unreadable,
     malformed, structurally invalid, resolver-mismatched or model-mismatched
-    yields ``(None, (UNAVAILABLE_WARNING,))``.  Never raises and never retains
-    exception text or recorded values in a warning.
+    yields ``(None, (UNAVAILABLE_WARNING,))``.  Valid evidence returns the
+    recorded resolver warning so a fresh build exposes the same ABI warning as
+    a reused one.  Never raises and never retains exception text or recorded
+    values in a warning.
     """
     status, data = _read_report(root)
     if status == _STATUS_ABSENT:
@@ -256,7 +293,7 @@ def capture_float_abi_evidence(
         document = json.loads(
             data.decode("utf-8"), object_pairs_hook=_reject_duplicate_json_keys
         )
-    except (UnicodeDecodeError, ValueError, TypeError):
+    except (UnicodeDecodeError, ValueError, TypeError, RecursionError):
         return None, (UNAVAILABLE_WARNING,)
     if not isinstance(document, dict) or "floatAbi" not in document:
         return None, (UNAVAILABLE_WARNING,)
@@ -264,18 +301,12 @@ def capture_float_abi_evidence(
         recorded = validate_float_abi_resolved(document["floatAbi"])
     except (TypeError, ValueError):
         return None, (UNAVAILABLE_WARNING,)
-    try:
-        resolved = _resolver_evidence(recorded)
-    except (AttributeError, ImportError, KeyError, TypeError, ValueError):
-        return None, (UNAVAILABLE_WARNING,)
-    if resolved != recorded:
-        return None, (UNAVAILABLE_WARNING,)
     if not _matches_project(recorded, model):
         return None, (UNAVAILABLE_WARNING,)
     evidence = dict(recorded)
     evidence["reportPath"] = CONVERSION_REPORT_PATH
     evidence["reportSha256"] = sha256_hex(data)
-    return evidence, ()
+    return evidence, (str(recorded["warning"]),)
 
 
 __all__ = [
