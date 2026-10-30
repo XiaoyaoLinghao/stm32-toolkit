@@ -19,7 +19,8 @@ PREFLIGHT_ACTION = {
     "explanation": (
         "Run stm32_keil_preflight with the selected project-relative uvprojx "
         "and exact targetName. It is read-only, requires no Git, may return "
-        "blockers, and does not authorize conversion."
+        "blockers, and does not authorize conversion; the PLAN also needs a "
+        "separate absolute new output directory."
     ),
 }
 
