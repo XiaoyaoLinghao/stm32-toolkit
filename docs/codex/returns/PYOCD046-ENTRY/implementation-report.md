@@ -1,8 +1,10 @@
 # PYOCD046-ENTRY offline review report
 
-2026-10-30 checkpoint: **REVISION_REQUIRED — independent entry review incomplete**,
-no hardware executed. The selected offline tests pass; do not mark the
-procedure/card independently accepted or hardware READY.
+2026-10-30 final checkpoint: **ACCEPTED for the offline entry-review slice**.
+The authorized five-command supplement closed the three evidence gaps. The
+combined conditional procedure/card review has NO_BLOCKERS; hardware remains
+BLOCKED_NOT_EXECUTED, target UNKNOWN. This is not physical or release acceptance;
+the SDK slice overall remains SOFTWARE_COMPLETE_HARDWARE_PENDING.
 Accepted base `22f047189fbb0cf1fa7de98e86a2955eb13c5ac1`; product/test CodeHead
 `694e1e912adfc017c31b52630a323bd733567688`, unchanged by this documentation slice.
 Branch codex/v135-pyocd046-entry-review; Primary Codex owns source analysis,
@@ -21,6 +23,73 @@ actual runtime/project/source/SDK pins and missing authority/ownership gates.
 Reviewed/tested documentation source before this report update:
 `8123cdc04b011f590e60050d0b71298e8a902d2a`.
 The prior software/hardware evidence remains at its original head/owner.
+
+## Final combined entry review and acceptance
+
+The user explicitly authorized one read-only supplement: "允许一次只读补审".
+It ran once at clean source
+`2c123d0f3511c8f2b0244f7a0a31c1c797b9e877`, task SHA256
+9660e792c8a17fc7c45743ad6c24c56cbf0f02d6179dee547c104eac296a795e,
+using the shared dispatcher and the unchanged configured
+deepseek-v4.1-flash[1m] route. Actual inventory/main tools were PowerShell only;
+inventory made zero calls, the harmless native smoke executed once, and all
+five supplied ordinary source-view commands executed exactly once with matched
+native results. No errors/refusals, pending results, scope/unexpected command,
+edits or tests; CLI/dispatcher exits0. This bounded grant is consumed, not a
+continuing retry authorization.
+
+Primary audited the effective model-visible content and structured stdout
+against every expected numbered line, source hash and END marker. Four chunks
+cover inventory lines1..433 exactly once, without gaps or duplicate lines.
+The fifth packet includes the native HID binding/snapshot metadata, helper
+constants64..81, actual parser/main2120..2225 and client278..285. All five packets
+were fully visible, each below14KB including Windows line endings; no persisted
+output was read or bypassed. Original17 complete packets are retained at8123;
+the old truncated packet and REVIEW_INCOMPLETE verdict remain unchanged.
+
+The supplemental reviewer returned **NO_BLOCKERS for the combined conditional
+offline entry review**, closing the full-inventory, literal1s/2s constant and
+CLI/parser gaps. The client305s comment is consistent with its300s maximum
+native operation plus5s envelope; no product comment or timeout change is needed.
+The card and entry contract are unchanged, card SHA256
+29da9e1747db4934461dcb18195e3da574c12b1de5910482daebe60139c9a985.
+
+Two overstatements in the supplemental assistant prose are explicitly excluded
+from accepted evidence. Its command table says "exit0", but the native tool
+provided no numeric per-command exit: those five values stay **null**, with
+success established by matched native results. Only CLI/dispatcher exits are0.
+It also calls the1s trace delay "inside" the2s join; these constants apply to
+different phases/triggers and are not nested timers. Accepted evidence is their
+literal values plus the original independently reviewed phase separation, not
+that timing inference. The prepared card and procedure already describe the
+correct independent20s work deadline plus at most2s cooperative wait.
+
+No code/test change or test rerun occurred. The original12 delegated and3
+overlapping Primary passes remain **at8123**, with original actual pytest exits,
+fresh JUnit and owners. Primary reconciled their unchanged report hashes,
+non-document source bytes,347 SDK Python hashes, unchanged card and unchanged
+procedure entry section; only plan/report/checkpoint result notes changed.
+Source acceptance uses these retained results, not a claim that tests ran at2c.
+Primary reviewed the complete documentation slice in the clean exact-source
+review checkout and independently verified all supplemental evidence before
+acceptance. No unresolved offline entry finding remains.
+
+Evidence under D:/codex-tmp/st135-p46-entry01:
+supplement-authorization.json, supplement-preparation.json,
+review-supplement-task.json, review-supplement-packets.json, supplement-run,
+supplement-review-verdict.md and supplement-evidence-audit.json. Original
+review-run/independent-review-verdict.md/final-evidence-audit.json and all test
+outputs remain preserved; there is no retroactive upgrade of the incomplete run.
+
+The requested offline preparation is complete. The next physical operation is
+still forbidden by the current user scope. Future READY requires new finite
+hardware authority, current original-board/probe power/exclusivity/change
+confirmation and refreshed source/runtime/config/output/lease preconditions.
+Constructor return is not USB health, SWD clock, firmware or CPU-state proof;
+no automatic follow-on flash/recovery, force-kill or registry deletion. Ordinary
+100kHz production flash needs its own reviewed card, including existing late
+MODIFY cleanup effects. No installed-runtime replacement, packaging or remote
+action occurred. The full ordered three-item goal remains open.
 
 ## Source decision and independent complete-diff review
 
@@ -71,7 +140,7 @@ multisets, fresh reports, actual exits and unchanged source/347 SDK sources.
 Earlier504 admitted SDK-slice cases remain at their separately recorded heads;
 no redundant full matrix was run for documentation.
 
-## Independent entry review: incomplete, original evidence retained
+## Earlier independent entry review: incomplete, original evidence retained
 
 A separate Claude verify invocation completed inventory/smoke and all18 exact
 ordinary source-view commands with native matched success. There were no tool
@@ -88,7 +157,8 @@ allowed commands does not make that content independently reviewed. No attempt
 was made to read that persisted file or bypass tools. Verdict **REVIEW_INCOMPLETE**.
 
 The reviewer found no blocking source/document inconsistency within the17
-complete packets. Three evidence gaps remain:
+complete packets. At that checkpoint three evidence gaps remained (now closed
+by the authorized supplement above):
 
 1. Supply the entire433-line inventory and its supplemental native binding,
    environment/config and lease metadata in output-safe chunks.
@@ -109,14 +179,15 @@ effective truncation and incomplete verdict remain unchanged. Coordinator
 preparation range assertions/command-shape/search mistakes are retained in the
 inventory supplement; none ran hardware or a product test.
 
-## Concrete supplement and remaining authority
+## Earlier supplement proposal and authority boundary
 
-Prepare a new finite read-only review of four inventory chunks and one small
+The recorded proposal was a finite read-only review of four inventory chunks and one small
 helper/supplement packet, with output size prechecked below the native limit.
 Retain the17 complete source packets and all12+3 passing tests; no rerun of them
 is required. No product fix is identified. The global AGENTS rule says
 "Any retry needs explicit, bounded authorization"; the current task provided
-no retry grant. The supplemental Claude call must await that authorization.
+no retry grant. The supplemental Claude call then awaited that authorization;
+the later explicit grant and its single execution are recorded above.
 
 The card stays BLOCKED_NOT_EXECUTED, target UNKNOWN. Future hardware separately
 needs current original-board/probe power/exclusivity/change confirmation,
