@@ -94,10 +94,12 @@ After apply, use the ordinary two-step configure route. For a PyOCD pair, PLAN w
   `destination`, `data.planId`, `data.outputs[]`, `data.sourcePatches[]` or `outputRoot`; never install or upgrade without separate authorization.
   That published version introduced the independent destination, the explicit WFI normal-return intent and the no-Git managed flow; those
   are not new v1.3.4 claims. Published v1.3.4 adds only the bounded, read-only `analysis.encodingDiscovery` inventory and outer-guard structural
-  recognition described in step 3, and publishes no physical-target or ABI verification claim. It was released as Latest on 2026-10-28 under an
-  explicitly approved candidate-specific exception: the permanent coverage gates remain unmet and the disclosed limits in `docs/architecture.md`
-  remain in force, and installing published assets is a separate explicit user action. Verify the bound server's actual schema before relying
-  on `analysis.encodingDiscovery` or its `complete` field.
+  recognition described in step 3, and publishes no physical-target or ABI verification claim. It was released on 2026-10-28 under an explicitly
+  approved candidate-specific exception and is now the previous published version, not the current Latest: the permanent coverage gates remain
+  unmet and the disclosed limits in `docs/architecture.md` remain in force, and installing published assets is a separate explicit user action.
+  The published v1.3.5 release is the current Latest and does not redefine these delivery or encoding fields; each user's installed runtime must
+  still be verified, and this publication implies no automatic rebind, hardware action or receipt rewrite. Verify the bound server's actual schema
+  before relying on `analysis.encodingDiscovery` or its `complete` field.
 - Capability availability does not establish migration readiness; only current preflight/PLAN evidence does. Read complete diagnostics; unknown codes
   stay unsupported and no blocker is auto-fixable. An incomplete encoding discovery result is not proof that every dependency was checked.
 - `stm32_keil_inspect`, `stm32_keil_preflight` and the plan call are read-only. APPLY is the only migration write and writes only into the explicit new

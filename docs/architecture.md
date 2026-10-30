@@ -5,13 +5,22 @@ are thin adapters over the same Python workflows. Monitor consumes the same proj
 Probe Service contracts. A host-specific skill must not create a second implementation or bypass
 the public result, identity or authorization checks.
 
-The v1.3.5 local candidate flash policy is **100 kHz by default**,
-including normal managed/imported flash and the shared worker/backend defaults.
-Explicit frequency selection remains available; no 1 MHz physical success gate is
+The published v1.3.5 release flash policy is **100 kHz by default** (configured
+default, not a measured clock), including normal managed/imported flash and the
+shared worker/backend defaults. Explicit frequency selection remains available;
+higher values are an optional explicit choice and no 1 MHz physical success gate is
 required. Normal 100 kHz does not select under-reset recovery. See the governing
 [100 kHz design](superpowers/specs/2026-10-29-flash-default-100khz-design.md).
-Historical 1 MHz runs/defaults describe previous source only; source changes do
-not alter already published or installed runtimes.
+A normal confirmed flash includes one authorized pre-program `SYSRESETREQ`
+reset-and-halt with a HALTED check before programming; failure at that gate stops
+the operation with no automatic retry or recovery. A successful flash proves only
+the programming and readback checks: target state remains unknown and execution is
+unverified. Historical 1 MHz runs/defaults describe previous source only, and the
+previous published v1.3.4 release keeps its former default, `pyocd==0.45.1` pin and
+preparation as historical behavior; the current published 1.3.5 runtime pins
+`pyocd==0.46.0` and ships the 52-tool/9-Skill inventory. Source changes or a VS Code
+restart do not alter already published or installed runtimes, including a 1.3.4
+runtime that requires an explicitly authorized Repair to upgrade.
 
 The supported release environment is Windows x86_64 and CPython `>=3.12,<3.13`. Dependencies and
 offline artifacts are pinned by `tools/release/release_0900_policy.json`; the historical filename is
@@ -98,11 +107,19 @@ explicit per-file charset conversion outside the original tree with stable sourc
 reviewed destination PLAN, and explicit WFI, memory-region, startup and layout selections keep their
 existing meaning; Git remains optional traceability on the normal managed flow. Independent
 destination delivery, explicit WFI normal-return intent and the no-Git managed flow were introduced
-by published v1.3.3 and are not new v1.3.4 claims. v1.3.4 was published as Latest from frozen source
+by published v1.3.3 and are not new v1.3.4 claims. v1.3.4 was published as the previous release from frozen source
 `a7db6a8c` under an explicitly approved candidate-specific exception: Toolkit overall/risk
 82.7452%/82.6335% remain below 90% and Monitor risk 92.3681% remains below 95%, with exact-source
 reuse, retained original failures, platform/historical-data skips, the synthetic external vendor
-adapter and final recipient installation/VS Code validation still disclosed. This section claims no
+adapter and final recipient installation/VS Code validation still disclosed. The v1.3.5 release is
+now the public Latest, published 2026-10-30 from frozen source `eac81a00` under the user-authorized
+non-regression condition rather than a candidate-specific exception: Toolkit overall and risk
+15530/18734 and 14399/17394, Monitor overall and risk 3292/3564, and the UI 2938/3147 exact-source
+reuse each meet or exceed their v1.3.4 values, with 3204 distinct passes and 3 symlink capability
+skips, while prior failures, rechecks and reuse are retained and this is not a final-head
+whole-repository rerun. The permanent Toolkit 90%, Toolkit risk 90% and Monitor risk 95% gates
+remain UNMET, final recipient installation/IDE/MCP/interactive validation remains
+USER_VALIDATION_PENDING and user-owned, and this section claims no
 physical-target or ABI verification.
 
 One bounded migration opt-in recognizes and generates a GNU replacement for the
@@ -333,11 +350,13 @@ not service shutdown. The owning terminal's Ctrl-C invokes the existing cleanup 
 Toolkit, Monitor, UI and plugin ship one release version. Schema/protocol compatibility must be
 explicit; upgrades never silently rewrite project intent or historical evidence. Check is read-only;
 Bootstrap/Repair use verified offline artifacts, staging, validation, promotion and bounded rollback.
-Same-version source conflicts, downgrades and unknown future states remain refusals. The v1.3.5 local candidate aligns the product authorities to 1.3.5 and adds 1.3.4 to the recognized legacy
+Same-version source conflicts, downgrades and unknown future states remain refusals. The published v1.3.5 release aligns the product authorities to 1.3.5 and adds 1.3.4 to the recognized legacy
 managed-runtime and generation-producer versions while retaining the older entries; like the
 earlier recognitions it is read-only, so an existing 1.3.4 runtime still requires an explicitly
 authorized Repair, and a 1.3.4-generated project keeps its historical `generatedBy` value until an
-explicit configure transaction. That candidate is unpublished and not installed or qualified. The published
+explicit configure transaction. The v1.3.5 publication installs and qualifies no runtime or hardware
+by itself: an existing 1.3.4 runtime remains an explicit Repair upgrade input and is never promoted
+by a restart. The previously published
 v1.3.4 release aligns the product authorities to 1.3.4 and adds 1.3.3 to the recognized legacy
 managed-runtime and generation-producer versions while retaining the older entries. Like the
 earlier recognitions it is read-only, so an existing 1.3.3 runtime still requires an explicit
@@ -351,7 +370,7 @@ explicit authorized Repair, and a project generated by any of those versions kee
 aligned the authorities to 1.3.2 and was published on 2026-10-26; the v1.3.1 integration was
 published on 2026-10-26; the earlier v1.3.0 local candidate (source `1e6ea849`) aligned the
 authorities to 1.3.0, added 1.2.0 recognition, and was never published. Exact current build, flash,
-import and export identities are not relaxed. The v1.3.4, v1.3.3, v1.3.2 and v1.3.1 packages ship 9
+import and export identities are not relaxed. The v1.3.5, v1.3.4, v1.3.3, v1.3.2 and v1.3.1 packages ship 9
 bundled Skills and the integrated 52-tool inventory, while the published v1.2.0 package remains
 48 tools and 8 Skills.
 
@@ -389,19 +408,23 @@ integration followed the
 [plan](superpowers/plans/2026-10-26-v132-diagnostics-plan.md); it was published on
 2026-10-26 with its separately approved candidate-specific limitations. The v1.3.3 release
 follows the [v1.3.3 plan](superpowers/plans/2026-10-27-v133-release-plan.md) and was published
-on 2026-10-27 under an explicitly approved candidate-specific exception. The v1.3.4
+on 2026-10-27 under an explicitly approved candidate-specific exception. The v1.3.5
+release follows the
+[v1.3.5 publication plan](superpowers/plans/2026-10-30-v135-publication.md) and is the current
+[Latest](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.3.5) release, published
+2026-10-30 from frozen source `eac81a00` under the user-authorized non-regression condition; its
+permanent unmet coverage gates and disclosed limits did not become PASS. The previous v1.3.4
 release follows the
 [v1.3.4 specification](superpowers/specs/2026-10-27-v134-migration-readiness.md) and
-[plan](superpowers/plans/2026-10-27-v134-migration-readiness.md) and is the current
-[Latest](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.3.4) release, published
-2026-10-28 from frozen source `a7db6a8c` under an explicitly approved candidate-specific
+[plan](superpowers/plans/2026-10-27-v134-migration-readiness.md) and was published
+2026-10-28 from frozen source `a7db6a8c` under its explicitly approved candidate-specific
 exception; its permanent unmet coverage gates and disclosed limits did not become PASS. The
 earlier v1.3.0
 local Release preparation remains historical evidence
 ([design](superpowers/specs/2026-10-24-v130-local-release-design.md),
 [plan](superpowers/plans/2026-10-24-v130-local-release-plan.md)). The
 [v1.3.3 Release](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.3.3)
-is the previous public version and the source for its asset availability, final
+is the version before v1.3.4 and the source for its asset availability, final
 qualification and limitations; the
 [v1.3.2 Release](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.3.2)
 is the version before it, and the
