@@ -1,6 +1,6 @@
 # Changelog
 
-## [v1.3.5] - local candidate (unpublished)
+## [v1.3.5] - 2026-10-30
 
 - Implemented: flash diagnostic preservation across cleanup and worker abort. The original
   `programDiagnostic` and its `initiatingCode` now survive ordinary post-failure cleanup and an
@@ -15,7 +15,7 @@
   read-only: an existing 1.3.4 runtime still requires an explicitly authorized Repair, and a
   1.3.4-generated project keeps its historical `generatedBy` value until an explicit configure
   transaction. Existing historical 1.3.4 evidence and published-release text are unchanged, and
-  the source version remains an unpublished local candidate.
+  the source version advances to the published `1.3.5`.
 - Dependency repair: the optional `probe` extra, both current release-policy pyOCD pins, the
   Setup helper's isolated PEP 440 check (`>=0.46.0,<0.47`, with its trusted release-policy
   anchor updated) and the Cortex-Debug handoff profile (pyOCD `0.46.0` alongside the
@@ -120,12 +120,19 @@
   distinct from the ordinary default. Slower wire transfer may increase physical
   elapsed time; no hardware performance, frequency measurement or reset efficacy
   is claimed, and finite deadlines are unchanged.
-- All entries above are local corrections for the `v1.3.5` source version, which is an
-  **unpublished local candidate**; they are not part of the published v1.3.4 bytes and are not
-  an accepted release. Packaging, installation and release qualification have not been
-  performed for them, and final integration and coverage reconciliation remain pending. The
-  controlled pre-program preparation entry is a real source-level hardware behavior change (one
-  authorized `SYSRESETREQ` reset-and-halt on the managed and imported routes); the
+- All entries above are the `v1.3.5` source changes; they are not part of the published v1.3.4
+  bytes. This source version was frozen at `eac81a00a9c0cb0f78dcc0b423945605897b4806` and
+  published on 2026-10-30 as
+  [Latest](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.3.5) (release
+  `428722744`, `draft=false`/`prerelease=false`); all 13 assets were anonymously downloaded with
+  HTTP 200 and matched the two canonical builds. Publication is not installation or
+  qualification: the per-group non-regression condition passed, while the permanent Toolkit
+  overall/risk 90% and Monitor risk 95% gates remain unmet, 3,204 distinct cases passed with 3
+  real-symlink capability skips, and prior failures, rechecks and source-bound reuse remain
+  disclosed. Final recipient installation/upgrade/rollback, VS Code/MCP and interactive
+  validation remain user-owned and pending; no installed runtime, IDE or hardware acceptance is
+  claimed. The controlled pre-program preparation entry is a real source-level hardware behavior
+  change (one authorized `SYSRESETREQ` reset-and-halt on the managed and imported routes); the
   ordinary-flash 100 kHz default is likewise a source-level behavior change for any omitted
   frequency, and the pyOCD `0.46.0` dependency repair changes the installed probe stack. One
   narrowly scoped prior candidate-source run is recorded: a single 100 kHz managed flash executed
@@ -136,8 +143,7 @@
   verification, its target state stays `unknown` and `runVerified=false`, and it establishes no
   automatic retry or recovery. See
   [the normal-flash evidence](docs/codex/returns/FLASH-FAILURE-EVIDENCE/normal-flash-2026-10-30.md).
-  No package build, installation or hardware qualification of the changed stack is otherwise
-  claimed.
+  No installation or hardware qualification of the changed stack is otherwise claimed.
 
 ## [v1.3.4] - 2026-10-28
 
