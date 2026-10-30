@@ -1,3 +1,110 @@
+# v1.3.5 offline integration checkpoint — 2026-10-30
+
+Status: **ACCEPTED_WITH_FIXES for offline software / PACKAGE_BUILD_PENDING**.
+Overall release remains **LOCAL_CANDIDATE_NOT_QUALIFIED**; no publication or installation.
+Accepted base `946b1ec5c0dd3c79bb5b5e73ce1650afa5ecb432`; reviewed product/test CodeHead before this report commit
+`fa3613cb7b24a0f0532aff5248acb9ad919a112a`, branch `codex/v135-release-closeout`, no active PR or remote authorization.
+Primary owns specification, orchestration, independent complete-diff review and acceptance.
+Local Claude Code CLI retained the existing `deepseek-v4.1-flash[1m]` route for all
+implementation/test changes and delegated verification. The governing [specification](../../../superpowers/specs/2026-10-30-v135-release-closeout.md)
+and [plan](../../../superpowers/plans/2026-10-30-v135-release-closeout.md) remain in force.
+
+## Behavior and independent review
+
+Toolkit/Monitor/UI/plugin/setup/launchers/release authorities align to1.3.5, with
+additional1.3.4 legacy runtime/producer recognition and existing refusal guards.
+Unpublished candidate guidance, canonical setup trust anchors and published1.3.4
+history are aligned. Inherited accepted fixes retain SDK0.46.0, ordinary100kHz,
+controlled pre-program reset/HALTED gate, attach progress and initiating diagnostic
+preservation. This closeout changes no production timeout, schema or hardware policy.
+Primary reviewed every phase diff and the complete43-file closeout diff in the clean
+exact-head independent checkout. An earlier328-case independent generation run passed;
+its product/generation bytes remain unchanged and its overlapping cases are not added.
+
+## Integration and retained original outcomes
+
+The bounded matrix has **3,204 distinct passing cases,3 platform skips, zero unresolved
+failures/errors**, across26 original groups plus39 direct CLI/MCP consumer files in10
+additional groups. All39 command executions, including3 single-node rechecks, are
+terminal. This is a source-bound multi-entry evidence set, not a fresh full-repository
+or single-final-head rerun. [integration-evidence.json](integration-evidence.json)
+records per-run identities, actual pytest exits, JUnit/raw hashes and native dispositions.
+
+- Monitor's original89pass/1failure was a bare-interpreter `-I` child missing jsonschema.
+  An explicitly authorized disposable dependency-complete test venv uses the same real
+  CPython3.12.14/SDK0.46.0/existing dependencies without package installation. Only the
+  failed node reran and passed; `-I` and all assertions stayed. Strict PID/trace/worker
+  checks retain their original real-interpreter evidence and validation.
+- API recovery's original20pass/1failure exposed an existing dummy-model snapshot gap.
+  Authorized Claude correction touched only that test body, retained real public begin/CLI
+  and all refusal assertions; one-node recheck passed.17 native edit calls/2 edits, no
+  errors/scope violations. Other20 passing cases were retained, not rerun.
+- Planned actions' original8pass/1failure expected the old preflight message. Both test
+  and product were identical to published1.3.4; the required separate absolute output
+  directory guidance is correct. Authorized Claude correction changed only the independent
+  expected literal, preserving both test functions/full equality.4 native calls/1 edit,
+  no errors/scope violations; one-node recheck passed, original8 passes retained.
+- Original pending build t07 later passed102 cases (actual pytest0, wrapper180.369s); pending
+  consumer c03 later passed70 cases (actual pytest0, wrapper705.204s). Workers stopped after native
+  structured pending results. Primary reconciled existing bound reports/JUnit/coverage,
+  with no rerun, worker polling, restart or kill. Original CLI/dispatcher1 and native
+  numeric exitnull remain; the pending invocations are not retrospectively accepted.
+- Failed aggregate inputs t25/c01/c08 are excluded from raw coverage. The two original
+  stopped edit calls remain NOT_ACCEPTED with zero writes/tests; historical logs remain.
+  Primary Git identity/task-preparation errors also remain separately recorded, with no
+  additional delegated test startup or product edit caused by those errors.
+
+## Exact native coverage comparison
+
+| Group | v1.3.4 | v1.3.5 | User condition | Permanent result |
+| --- | --- | --- | --- | --- |
+| toolkit-overall | 15336/18534 | 15530/18734 (82.8974%) | PASS | 90%: UNMET |
+| toolkit-risk-core-v2 | 14208/17194 | 14399/17394 (82.7814%) | PASS | 90%: UNMET |
+| monitor-overall | 3292/3564 | 3292/3564 (92.3681%) | PASS | 90%: PASS |
+| monitor-risk-core-v2 | 3292/3564 | 3292/3564 (92.3681%) | PASS | 95%: UNMET |
+| UI overall | 2938/3147 | 2938/3147 (93.3588%) | PASS, exact-source reuse | Per-file90: PASS |
+
+Every applicable exact ratio meets the user's1.3.5-only non-regression condition;
+comparison uses integer cross-products, with no averaging or rounded threshold decision.
+Permanent unmet gates remain UNMET. Broad-core-v1 equals each package's whole-source
+overall totals and retains its separate historical disposition; no new gate is invented.
+All149 Python source files are mapped, with the new probe responsibility included and
+no prior member removed. Changed-source prior arcs are dropped; unchanged arcs retain
+exact hashes and relevant SDK-dependent paths have fresh offline evidence. Measured
+source bytes for all149 files equal canonical Git bytes. UI source/config/dependencies
+and shipped assets match accepted evidence; root metadata alone changed version, so
+534pass/1 platform skip and coverage are explicitly reused. No fresh UI run is claimed;
+the original historical performance failure remains alongside the prior accepted evidence.
+
+## External checks and next phase
+
+These actual platform skips remain, not PASS:
+
+- `tests.test_diagnostic_cli::test_unsafe_steps_symlink_is_generic_error_without_dispatch`: symlink capability unavailable.
+- `tests.test_linker_fragment::test_read_linker_fragment_rejects_a_real_symlinked_file`: unprivileged Windows file symlinks are unavailable; mocked coverage applies.
+- `tests.test_vscode_configuration::test_redirect_targets_are_refused`: host cannot create a file symlink for this check.
+
+Owner: Primary, at later explicitly scoped release validation on a Windows/Linux host
+with real file-symlink capability. No privilege/policy change is authorized here.
+Final installed upgrade/rollback, VS Code/MCP and interactive user validation remain
+USER_VALIDATION_PENDING (user with Primary release support). No new browser, installed
+runtime or final1.3.5 hardware acceptance is claimed. The prior original-pair100kHz
+physical PASS keeps its recorded source/SDK/image scope and consumed authority.
+ABI/CCM firmware work remains outside scope at the user's direction.
+
+Next: freeze this documentation-only source checkpoint, perform two independent official
+offline builds from clean canonical Git bytes, compare all13 outputs and run official
+extracted-bundle verification. The closed62-wheel input is prepared; only each builder's
+owned disposable backend environment may be populated offline. No recipient/existing
+runtime installation, hardware, push, PR, merge, tag or publication is authorized.
+Evidence root: `D:/codex-tmp/r135`; immutable matrix SHA256
+`947b2e923dc15bc5e2abd180fc2bd54d19cc003d2ebed5057ef37735ba951c0c`; coverage qualification SHA256
+`b75d51148cf45b76359097d501b23e5cd8f6c862ffe1fa762367fcfeb78c1b4c`.
+
+---
+
+The following checkpoints are retained historical snapshots, not the current status.
+
 # v1.3.5 local closeout checkpoint
 
 ## Version/documentation review checkpoint — 2026-10-30

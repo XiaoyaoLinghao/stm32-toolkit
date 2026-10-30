@@ -15,7 +15,7 @@ risk-core-v2 each3292/3564, UI overall2938/3147. Compare each applicable group
 separately using exact ratios and unchanged measurement/membership rules, with
 new/changed in-scope source included. Existing UI per-file rules remain.
 See the [authorization and comparison contract](../codex/returns/STM32TK-135/coverage-authorization-2026-10-30.md).
-Status is **COMPARISON_PENDING**, not a v1.3.5 coverage PASS or release acceptance.
+Status is **CONDITION_MET_NON_REGRESSION** at reviewed CodeHead `fa3613cb7b24a0f0532aff5248acb9ad919a112a`: Toolkit15530/18734 and14399/17394, Monitor3292/3564 for both groups, UI2938/3147 with per-file90 met. See the [current evidence](../codex/returns/STM32TK-135/integration-evidence.json). This meets the user-authorized coverage condition; it is not permanent-gate or release acceptance.
 Permanent gates remain separately reported. Behavior, evidence and applicable
 integration/package/install checks are not waived; no installation, hardware or
 remote action is authorized by this exception.

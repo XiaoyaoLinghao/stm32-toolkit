@@ -1,5 +1,27 @@
 # Release status and retained limitations
 
+## v1.3.5 offline software accepted with fixes — PACKAGE_BUILD_PENDING — 2026-10-30
+
+Unpublished local source CodeHead `fa3613cb7b24a0f0532aff5248acb9ad919a112a` passed the scoped offline integration:
+3,204 distinct cases passed,3 real-symlink capability skips, no unresolved failures/errors.
+Three original failures and authorized one-node corrections/rechecks remain separate;
+two native pending results were reconciled from the already-started runs, without reruns.
+See the [current report](codex/returns/STM32TK-135/implementation-report.md) and
+[source-bound evidence](codex/returns/STM32TK-135/integration-evidence.json).
+
+The user's1.3.5 non-regression condition is met for every group: Toolkit overall
+15530/18734 (82.8974%), risk14399/17394 (82.7814%); Monitor overall/risk3292/3564
+(92.3681%); UI2938/3147 (93.3588%, exact-source reuse, per-file90 met). Permanent
+Toolkit overall/risk90 and Monitor risk95 remain UNMET. No old exception transfers.
+UI behavior/source reuse and the historical performance failure remain disclosed.
+
+Two canonical builds and official bundle verification are next. Overall status remains
+LOCAL_CANDIDATE_NOT_QUALIFIED; final installation/upgrade/rollback, VS Code/MCP and
+interactive validation are user/Primary-owned pending external checks. Three platform
+skips defer to Primary's later capable-host release validation. No new hardware or final
+installed1.3.5 PASS, existing-runtime replacement, push/tag/Release or publication.
+Firmware ABI/CCM diagnostics remain outside this closeout. Earlier checkpoints follow.
+
 ## v1.3.5 local candidate — LOCAL_CANDIDATE_NOT_QUALIFIED — 2026-10-30
 
 Source version 1.3.5 is an **unpublished local candidate**. This checkpoint covers

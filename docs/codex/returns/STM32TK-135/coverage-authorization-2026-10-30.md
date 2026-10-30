@@ -29,11 +29,12 @@ UI per-file rules remain. Unchanged evidence may be reused only with explicit
 source/configuration/dependency binding under the qualification contract.
 Changed-source arcs cannot be reused as though still applicable.
 
-## Scope and pending disposition
+## Scope and disposition
 
 At recording, current source is `1ec93d7851611a30668add5ecfa8bb1469d348c5`.
 No final v1.3.5 source/package or consolidated coverage result is frozen yet.
-Status: **AUTHORIZED_CONDITIONAL_COVERAGE_EXCEPTION / COMPARISON_PENDING**.
+Authorization-time status: **AUTHORIZED_CONDITIONAL_COVERAGE_EXCEPTION / COMPARISON_PENDING**.
+Current comparison at reviewed CodeHead `fa3613cb7b24a0f0532aff5248acb9ad919a112a` is **CONDITION_MET_NON_REGRESSION** for all groups; see [integration-evidence.json](integration-evidence.json). Permanent results, source reuse, platform skips and pending external acceptance remain separately disclosed.
 If the comparison passes, report v1.3.5 as meeting this user-authorized coverage
 condition; separately retain permanent-gate results and any unmet values. This
 authorization does not claim a numeric permanent-gate PASS and does not transfer

@@ -6,6 +6,8 @@
 
 ## 1. 当前断点与证据
 
+2026-10-30 v1.3.5离线软件收口已ACCEPTED_WITH_FIXES，CodeHead`fa3613cb7b24a0f0532aff5248acb9ad919a112a`，见[当前报告](../codex/returns/STM32TK-135/implementation-report.md)和[集成证据](../codex/returns/STM32TK-135/integration-evidence.json)。3,204个不同用例通过、3项真实符号链接能力跳过、无未解决失败/错误；保留三次原失败与获准单项复验、两次原生pending及既有运行完成证据，不声称全仓库或最终提交一次全量重跑。Primary独立328项与作者重叠不累计。Toolkit总体15530/18734、risk14399/17394，Monitor两组3292/3564、UI2938/3147，逐组满足不低于1.3.4的授权条件，永久未达门槛另列。全部149个Python源码与Git规范字节相同，UI按源码/配置/依赖绑定复用，原UI性能失败留档。三项平台检查延至Primary负责的具备真实symlink能力的后续发行验证；最终安装/VS Code/MCP仍由用户与Primary在另行授权的阶段验证。当前PACKAGE_BUILD_PENDING，下一步冻结纯说明/证据提交后双构建13资产并验证解包；不操作硬件、现有runtime、原固件或远端。以下是此前断点。
+
 2026-10-30 v1.3.5收口进入离线集成阶段：版本/说明文件完整差异已由Primary在干净独立工作树审查，CodeHead`9604da7f3479513bc2b5f3db3255bac52ed97bca`，见[当前报告](../codex/returns/STM32TK-135/implementation-report.md)及[执行计划](../superpowers/plans/2026-10-30-v135-release-closeout.md)。本地Claude完成版本、兼容、测试期望、说明及规范Git字节setup哈希更新；SDK0.46.0、100kHz默认、原有身份/权限/清理/时限合同保持。原两次读取越界调用与零写入/测试事实保留，后续明确授权的拆分编辑及普通内容审查修正正常完成。当前VERSION_DOCS_REVIEW_ACCEPTED/INTEGRATION_PENDING：本轮尚无测试、覆盖比较或打包PASS，接下来按固定真实CPython3.12.14、现有隔离SDK/依赖、独立外部短路径执行26组离线回归，再核算不低于1.3.4的原生分支覆盖率并双构建/验证包；不安装到现有runtime、不操作硬件、不推送发布，不重开固件ABI/CCM事项。
 
 2026-10-30 用户明确允许1.3.5覆盖率按“不低于上一版本”验收，见[本版本条件授权](../codex/returns/STM32TK-135/coverage-authorization-2026-10-30.md)及[现行比较规则](release-qualification.md)。按v1.3.4各统计组的精确原生分支比例分别比较，保留统计口径、责任范围和新增/变更源码；当前COMPARISON_PENDING，尚无最终1.3.5度量PASS。永久门槛另列，不豁免行为回归、证据完整性及适用的集成/包/安装验收，不授予新的安装、实机或远端操作权限。

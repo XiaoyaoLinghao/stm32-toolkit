@@ -1,0 +1,1279 @@
+{
+  "acceptedBase": "946b1ec5c0dd3c79bb5b5e73ce1650afa5ecb432",
+  "reviewedCodeHeadBeforeReportCommit": "fa3613cb7b24a0f0532aff5248acb9ad919a112a",
+  "branch": "codex/v135-release-closeout",
+  "phase": "SOFTWARE_ACCEPTED_WITH_FIXES_PACKAGE_PENDING",
+  "ownership": {
+    "specificationOrchestrationReviewAcceptance": "Primary Codex",
+    "implementationDelegatedVerification": "Local Claude Code CLI, unchanged deepseek-v4.1-flash[1m] route",
+    "activePR": null,
+    "remoteActionAuthorized": null
+  },
+  "authorDistinctCases": {
+    "count": 3207,
+    "passed": 3204,
+    "failure": 0,
+    "error": 0,
+    "skipped": 3
+  },
+  "executionRows": [
+    {
+      "label": "t01",
+      "group": "meta",
+      "executionHead": "2be0c7643f719a6c48a0bb8c282b6f776c87517b",
+      "runtime": "C:/Users/zhy76/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/python.exe",
+      "pytestExit": 0,
+      "terminal": {
+        "count": 79,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "executionSha256": "5e729af61852401fb97a692ba99bbc50d5f149818e796941bc1d3074cc866a9a",
+      "junitSha256": "9ee15664209882ef2e5fd59a529d3cec308342b114e3b85c9879ff2f765301fc",
+      "runnerSha256": "ad98e514dcfdd91f1bda6633ade63b370f3fbc0ef44de2e46a22915219227f25",
+      "nativeCoverageSha256": "3409403b719f7f78b531f3c3ddd73081948a7474bf1862ca02b85741b03767da",
+      "elapsedSeconds": 19.431017875671387
+    },
+    {
+      "label": "t02",
+      "group": "setup-a",
+      "executionHead": "2be0c7643f719a6c48a0bb8c282b6f776c87517b",
+      "runtime": "C:/Users/zhy76/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/python.exe",
+      "pytestExit": 0,
+      "terminal": {
+        "count": 18,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "executionSha256": "b1e7a3b6b63313e5c03212f18cef1593cde737fceb46c8a3b44ea340273e1f99",
+      "junitSha256": "d124b05219d54d6af38bcde40217cff4f036aa4904e71666543049743883ea0c",
+      "runnerSha256": "ad98e514dcfdd91f1bda6633ade63b370f3fbc0ef44de2e46a22915219227f25",
+      "nativeCoverageSha256": "97d8ce3fd275b2d42b214bcdc6e3e60a097c91594e7f23cd5be09df62c2c483d",
+      "elapsedSeconds": 324.1211898326874
+    },
+    {
+      "label": "t03",
+      "group": "setup-b",
+      "executionHead": "2be0c7643f719a6c48a0bb8c282b6f776c87517b",
+      "runtime": "C:/Users/zhy76/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/python.exe",
+      "pytestExit": 0,
+      "terminal": {
+        "count": 33,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "executionSha256": "92087d15ef52f491e8d1ddf18ea520736b9f2f2285c9f5a35599baea39e2c966",
+      "junitSha256": "d986e1c7acc2cc8c4ec2cc40804008a340536a25903c7bd579b07e28b1081840",
+      "runnerSha256": "ad98e514dcfdd91f1bda6633ade63b370f3fbc0ef44de2e46a22915219227f25",
+      "nativeCoverageSha256": "97d8ce3fd275b2d42b214bcdc6e3e60a097c91594e7f23cd5be09df62c2c483d",
+      "elapsedSeconds": 191.00309586524963
+    },
+    {
+      "label": "t04",
+      "group": "generation",
+      "executionHead": "2be0c7643f719a6c48a0bb8c282b6f776c87517b",
+      "runtime": "C:/Users/zhy76/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/python.exe",
+      "pytestExit": 0,
+      "terminal": {
+        "count": 328,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "executionSha256": "0d5292666907e5b9fa47f96e75278df955ab89f541128cdc5f6367d18775e93c",
+      "junitSha256": "7b21f85e2d1713d27e58cc9c557d23f75c934979979d2094a826e57700253c96",
+      "runnerSha256": "ad98e514dcfdd91f1bda6633ade63b370f3fbc0ef44de2e46a22915219227f25",
+      "nativeCoverageSha256": "59a61b8b60b354f3a90bd22a7333cf8088be2df8f608f25fdd57e1041f496ed7",
+      "elapsedSeconds": 35.107388496398926
+    },
+    {
+      "label": "t05",
+      "group": "startup",
+      "executionHead": "2be0c7643f719a6c48a0bb8c282b6f776c87517b",
+      "runtime": "C:/Users/zhy76/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/python.exe",
+      "pytestExit": 0,
+      "terminal": {
+        "count": 16,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "executionSha256": "a4f4db79c546e7790daa7d618f80333afe058d0b18322131e62147b42d22f3d0",
+      "junitSha256": "a7a3c058d9fdd3792fa20d6a181e563debb048af42d5ed1b970ffb962da888bf",
+      "runnerSha256": "ad98e514dcfdd91f1bda6633ade63b370f3fbc0ef44de2e46a22915219227f25",
+      "nativeCoverageSha256": "097da605528022018388508ca498c7a3025130c0c4a218aa63b4316d2b8a25b7",
+      "elapsedSeconds": 5.106672525405884
+    },
+    {
+      "label": "t06",
+      "group": "migration-plan",
+      "executionHead": "2be0c7643f719a6c48a0bb8c282b6f776c87517b",
+      "runtime": "C:/Users/zhy76/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/python.exe",
+      "pytestExit": 0,
+      "terminal": {
+        "count": 98,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "executionSha256": "1ba2224bbbd671f64e9b7aa1952b66b104346055e5493f252556c9e73186d54e",
+      "junitSha256": "f96fbca28c33e6ee7976ec6a57c45080f627bbabd7119fde0274a5e6a18c433b",
+      "runnerSha256": "ad98e514dcfdd91f1bda6633ade63b370f3fbc0ef44de2e46a22915219227f25",
+      "nativeCoverageSha256": "60d3aba5432b6f3d017b19d8f682721789a9df33cba83e3baa4d4376c3e7ba35",
+      "elapsedSeconds": 62.31380295753479
+    },
+    {
+      "label": "t07",
+      "group": "build",
+      "executionHead": "2be0c7643f719a6c48a0bb8c282b6f776c87517b",
+      "runtime": "C:/Users/zhy76/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/python.exe",
+      "pytestExit": 0,
+      "terminal": {
+        "count": 102,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "executionSha256": "c5c12dd395c312cbab5d594e0814489a520c3422d255b69ea10051b504ad0bfa",
+      "junitSha256": "039621099323b5a634327bcfcc865fc7fdbdd0c5d7c6ab3db038082ff2def1a7",
+      "runnerSha256": "ad98e514dcfdd91f1bda6633ade63b370f3fbc0ef44de2e46a22915219227f25",
+      "nativeCoverageSha256": "94d0f44387150e1d21c008143946cab4a4f0ded2db5cb42c72acfaa4d21c6207",
+      "elapsedSeconds": 180.36911535263062
+    },
+    {
+      "label": "t08",
+      "group": "presets",
+      "executionHead": "2be0c7643f719a6c48a0bb8c282b6f776c87517b",
+      "runtime": "C:/Users/zhy76/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/python.exe",
+      "pytestExit": 0,
+      "terminal": {
+        "count": 42,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "executionSha256": "0590dd5709c665fddd1bc21b53c85fa017e047670d71f178ede020861510db93",
+      "junitSha256": "d6c3304d385e9bdedf75aeb4ab7ef982b872130ba91620007b658d9865d6dd36",
+      "runnerSha256": "ad98e514dcfdd91f1bda6633ade63b370f3fbc0ef44de2e46a22915219227f25",
+      "nativeCoverageSha256": "ee16547779237d450e662dd29136257c2de57a04144c12708c89e99533995264",
+      "elapsedSeconds": 143.93093538284302
+    },
+    {
+      "label": "t09",
+      "group": "cli",
+      "executionHead": "2be0c7643f719a6c48a0bb8c282b6f776c87517b",
+      "runtime": "C:/Users/zhy76/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/python.exe",
+      "pytestExit": 0,
+      "terminal": {
+        "count": 80,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "executionSha256": "0fcf10eb0734eb44ce95e8755ad74910096102883aaa6467f63af382a2093441",
+      "junitSha256": "a578d49104ba6205910c3219eb2dea6362bc3d5ad1a01d4cb14a54de865ff4a1",
+      "runnerSha256": "ad98e514dcfdd91f1bda6633ade63b370f3fbc0ef44de2e46a22915219227f25",
+      "nativeCoverageSha256": "00958385eb923a6f7a4e2e00ed62f47123c7cf18d68c7cf8e6a757ce9f11d6a5",
+      "elapsedSeconds": 30.242835760116577
+    },
+    {
+      "label": "t10",
+      "group": "mcp",
+      "executionHead": "2be0c7643f719a6c48a0bb8c282b6f776c87517b",
+      "runtime": "C:/Users/zhy76/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/python.exe",
+      "pytestExit": 0,
+      "terminal": {
+        "count": 20,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "executionSha256": "581490fde3f708f7bea08d8aa7e074292dd7e59edb48ba736befcf280bb42553",
+      "junitSha256": "1e72e5823c17cd8a6aff3c06539c1370e0359544bca699d58e6e64f2d470f671",
+      "runnerSha256": "ad98e514dcfdd91f1bda6633ade63b370f3fbc0ef44de2e46a22915219227f25",
+      "nativeCoverageSha256": "2d36eca7db565050df038777c9e89dff440b9878f1be8bb80226c1576993cc51",
+      "elapsedSeconds": 34.09625792503357
+    },
+    {
+      "label": "t11",
+      "group": "guidance",
+      "executionHead": "2be0c7643f719a6c48a0bb8c282b6f776c87517b",
+      "runtime": "C:/Users/zhy76/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/python.exe",
+      "pytestExit": 0,
+      "terminal": {
+        "count": 98,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "executionSha256": "d882109fc16f9c7c70374b7b1b55b078b29c7f4b1c02be34e02ed7b45f5c64aa",
+      "junitSha256": "30d47f29b7da13e7114ef9d7334091595bc5995c5433307107fe288b059b7c31",
+      "runnerSha256": "ad98e514dcfdd91f1bda6633ade63b370f3fbc0ef44de2e46a22915219227f25",
+      "nativeCoverageSha256": "d64f6c019accacfc7fc1b115547c40c761146e7ecbcf0d41b5c69df814c88ad1",
+      "elapsedSeconds": 22.801128149032593
+    },
+    {
+      "label": "t12",
+      "group": "delivery",
+      "executionHead": "2be0c7643f719a6c48a0bb8c282b6f776c87517b",
+      "runtime": "C:/Users/zhy76/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/python.exe",
+      "pytestExit": 0,
+      "terminal": {
+        "count": 39,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "executionSha256": "643ae7b88a784c14fbae3c260c932102e745faf90f7fd15670b7e6a625ae215d",
+      "junitSha256": "dfdfd4d27ba99ef31e449828e4836c16455684746bc1fef4c56c77591a71432c",
+      "runnerSha256": "ad98e514dcfdd91f1bda6633ade63b370f3fbc0ef44de2e46a22915219227f25",
+      "nativeCoverageSha256": "ef0818ac4e0e1ac277e182445bebbc8ac5aeb873f417388cd9b28a901e6b3bf7",
+      "elapsedSeconds": 19.574095964431763
+    },
+    {
+      "label": "t13",
+      "group": "gcc-prepared",
+      "executionHead": "2be0c7643f719a6c48a0bb8c282b6f776c87517b",
+      "runtime": "C:/Users/zhy76/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/python.exe",
+      "pytestExit": 0,
+      "terminal": {
+        "count": 13,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "executionSha256": "ca807ef2591e59f53c5d8d7fc55b301cd838e47776a378ffa833a966f9854847",
+      "junitSha256": "8a4f8cf2c463f1d5ffc272cafade4ae320db57095fd3daca92671ddd55570791",
+      "runnerSha256": "ad98e514dcfdd91f1bda6633ade63b370f3fbc0ef44de2e46a22915219227f25",
+      "nativeCoverageSha256": "ca665498639f6726d704fcb5d4b0afa6615e5f2f23dacf39420a00f1cd3a8492",
+      "elapsedSeconds": 12.203953981399536
+    },
+    {
+      "label": "t14",
+      "group": "gcc-created",
+      "executionHead": "2be0c7643f719a6c48a0bb8c282b6f776c87517b",
+      "runtime": "C:/Users/zhy76/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/python.exe",
+      "pytestExit": 0,
+      "terminal": {
+        "count": 1,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "executionSha256": "8083af3387e10d67212f1134c086099ca440199ae226ca4d564104420660490c",
+      "junitSha256": "0327e1c26d2cd41ff0b57b7f6b8118ba60a8c0ffbaedf1c54d234992aecd4cd3",
+      "runnerSha256": "ad98e514dcfdd91f1bda6633ade63b370f3fbc0ef44de2e46a22915219227f25",
+      "nativeCoverageSha256": "1c1eddd68badee40fa60f2d45c9077e21051ccd1406080b5fb2f9460d75df703",
+      "elapsedSeconds": 15.564443588256836
+    },
+    {
+      "label": "t15",
+      "group": "hardware",
+      "executionHead": "2be0c7643f719a6c48a0bb8c282b6f776c87517b",
+      "runtime": "C:/Users/zhy76/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/python.exe",
+      "pytestExit": 0,
+      "terminal": {
+        "count": 134,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "executionSha256": "323daf5ca1244a20f215942693a6cff0558aae564278c23372494c80a2ba15fa",
+      "junitSha256": "28fc37afdd1c26362dc7becdf5f5d1d560b46fa20c8e1436cff8cac3acf1ab40",
+      "runnerSha256": "ad98e514dcfdd91f1bda6633ade63b370f3fbc0ef44de2e46a22915219227f25",
+      "nativeCoverageSha256": "9d18d46fb3f5ac8f4affc52ee41424982ac6159476ddda962b0ec59fbfc78b10",
+      "elapsedSeconds": 12.784016370773315
+    },
+    {
+      "label": "t16",
+      "group": "worker",
+      "executionHead": "2be0c7643f719a6c48a0bb8c282b6f776c87517b",
+      "runtime": "C:/Users/zhy76/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/python.exe",
+      "pytestExit": 0,
+      "terminal": {
+        "count": 83,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "executionSha256": "c2045c4844fab517aaed32801d4ea745bab67df1e1592605b4b793ef2ef32b15",
+      "junitSha256": "907b848e281fd626daa9574227865425b0721677d2d7e79c0d68c8e98ac960db",
+      "runnerSha256": "ad98e514dcfdd91f1bda6633ade63b370f3fbc0ef44de2e46a22915219227f25",
+      "nativeCoverageSha256": "17d20e02a91fa271561ba43120835ded905356e46ad3c7595ebb18f5f9a36b12",
+      "elapsedSeconds": 76.13852739334106
+    },
+    {
+      "label": "t17",
+      "group": "service",
+      "executionHead": "2be0c7643f719a6c48a0bb8c282b6f776c87517b",
+      "runtime": "C:/Users/zhy76/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/python.exe",
+      "pytestExit": 0,
+      "terminal": {
+        "count": 141,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "executionSha256": "676189ea4eef113c3f47984c34ecf1230aa5bfd44d759c27d4d184802a028895",
+      "junitSha256": "e8c423f9ea79d9e7be4bb831842cc180c3fcece2d147a7bcd6474ea0832c80f8",
+      "runnerSha256": "ad98e514dcfdd91f1bda6633ade63b370f3fbc0ef44de2e46a22915219227f25",
+      "nativeCoverageSha256": "4c1c922103858f5231f2668297286c9aad29b6eb2feb4eb7dd75d0b643643007",
+      "elapsedSeconds": 23.97654914855957
+    },
+    {
+      "label": "t18",
+      "group": "backend",
+      "executionHead": "2be0c7643f719a6c48a0bb8c282b6f776c87517b",
+      "runtime": "C:/Users/zhy76/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/python.exe",
+      "pytestExit": 0,
+      "terminal": {
+        "count": 159,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "executionSha256": "078ea8dda3df2aab880c66212febd66d2328435f9ec97b017f550f2a8c87f60c",
+      "junitSha256": "688843a641fe28dacecbc3d1b5721d3057178ae0c8bab413f34c2051f6f59b21",
+      "runnerSha256": "ad98e514dcfdd91f1bda6633ade63b370f3fbc0ef44de2e46a22915219227f25",
+      "nativeCoverageSha256": "0019d97b1c20d881d6800893ae4ff0424e14e39c0b6866be859f99b980bb7e48",
+      "elapsedSeconds": 5.910027980804443
+    },
+    {
+      "label": "t19",
+      "group": "preparation",
+      "executionHead": "2be0c7643f719a6c48a0bb8c282b6f776c87517b",
+      "runtime": "C:/Users/zhy76/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/python.exe",
+      "pytestExit": 0,
+      "terminal": {
+        "count": 128,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "executionSha256": "747cb20b1af9cdf12e17d5e85452af03ad40223c8a6cba6792fee23d23a63178",
+      "junitSha256": "eb8a1140d85dba3a0a14c50fc989855b9ba3fc64b9e43fdd26730e01b758688b",
+      "runnerSha256": "ad98e514dcfdd91f1bda6633ade63b370f3fbc0ef44de2e46a22915219227f25",
+      "nativeCoverageSha256": "9db000a2ac37e560c26556c6c66cf78b186be46499c9796ec300e9505a546b5e",
+      "elapsedSeconds": 38.9305362701416
+    },
+    {
+      "label": "t20",
+      "group": "progress",
+      "executionHead": "2be0c7643f719a6c48a0bb8c282b6f776c87517b",
+      "runtime": "C:/Users/zhy76/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/python.exe",
+      "pytestExit": 0,
+      "terminal": {
+        "count": 68,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "executionSha256": "2d9bd745c9a75823a726a67045cfd32bb39ba2183582ae352f6f421d18349b8f",
+      "junitSha256": "c924e76c2b2b23cdb6a5b1928bcecedaad91fdfcf311f321a5b21290a90bd5be",
+      "runnerSha256": "ad98e514dcfdd91f1bda6633ade63b370f3fbc0ef44de2e46a22915219227f25",
+      "nativeCoverageSha256": "aa7f2cff1bc85c03020f308758c889e55c6cae768008a448b9584d7399bbf29f",
+      "elapsedSeconds": 36.4659218788147
+    },
+    {
+      "label": "t21",
+      "group": "settlement",
+      "executionHead": "2be0c7643f719a6c48a0bb8c282b6f776c87517b",
+      "runtime": "C:/Users/zhy76/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/python.exe",
+      "pytestExit": 0,
+      "terminal": {
+        "count": 6,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "executionSha256": "9054827ba081d1b3a47dfe2ac9b5514f6a38058fca8d54aaf2d197c34aa633e7",
+      "junitSha256": "657efe4e46865996f39d2fe479297e3b382469b1767b8f1d4a180e95a4e0ab87",
+      "runnerSha256": "ad98e514dcfdd91f1bda6633ade63b370f3fbc0ef44de2e46a22915219227f25",
+      "nativeCoverageSha256": "e535db798b453a2ed5a7d13bf23bc0007ff336a916dc53bb630fa7dfcd89f05d",
+      "elapsedSeconds": 30.54576015472412
+    },
+    {
+      "label": "t22",
+      "group": "sdk",
+      "executionHead": "2be0c7643f719a6c48a0bb8c282b6f776c87517b",
+      "runtime": "C:/Users/zhy76/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/python.exe",
+      "pytestExit": 0,
+      "terminal": {
+        "count": 6,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "executionSha256": "5410f4776df6e8a80bd3b34f5eb45fd5ee6ad53573f832cfaf4ff8bf713ff325",
+      "junitSha256": "274faf0f9f2cceb7ebd8aad8729cdd1cfcf80a3ac6f5d9d9cd4933a6aa58f7e7",
+      "runnerSha256": "ad98e514dcfdd91f1bda6633ade63b370f3fbc0ef44de2e46a22915219227f25",
+      "nativeCoverageSha256": "97d8ce3fd275b2d42b214bcdc6e3e60a097c91594e7f23cd5be09df62c2c483d",
+      "elapsedSeconds": 4.540510416030884
+    },
+    {
+      "label": "t23",
+      "group": "trace",
+      "executionHead": "2be0c7643f719a6c48a0bb8c282b6f776c87517b",
+      "runtime": "C:/Users/zhy76/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/python.exe",
+      "pytestExit": 0,
+      "terminal": {
+        "count": 42,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "executionSha256": "112726d9195aa38d7e052fce719b8bd2d1e22e590abd380d067d5f170942e714",
+      "junitSha256": "d81b91421dd4fb3b6dcac25a0d8693c6b1d06f89e349fbd92d088362e4149c8f",
+      "runnerSha256": "ad98e514dcfdd91f1bda6633ade63b370f3fbc0ef44de2e46a22915219227f25",
+      "nativeCoverageSha256": "4ab3152325295c446c726e27ce643edc4c336f35dbc9d88b7cb2de05e7f0f00a",
+      "elapsedSeconds": 38.81412959098816
+    },
+    {
+      "label": "t24",
+      "group": "handoff",
+      "executionHead": "2be0c7643f719a6c48a0bb8c282b6f776c87517b",
+      "runtime": "C:/Users/zhy76/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/python.exe",
+      "pytestExit": 0,
+      "terminal": {
+        "count": 129,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "executionSha256": "cfd543764cfca4406c7e8e8ae92a32a351986c0b5ce063282acb5b110c6452c9",
+      "junitSha256": "4cd5ca18164e9c30e6ab71fb7a32ab0be82630722ef792a64f9500f0444047f9",
+      "runnerSha256": "ad98e514dcfdd91f1bda6633ade63b370f3fbc0ef44de2e46a22915219227f25",
+      "nativeCoverageSha256": "edafb58c22672f165ba70830b38379a06ef9f52b76b7bed19211ca26935c0853",
+      "elapsedSeconds": 104.75874018669128
+    },
+    {
+      "label": "t25",
+      "group": "monitor-a",
+      "executionHead": "2be0c7643f719a6c48a0bb8c282b6f776c87517b",
+      "runtime": "C:/Users/zhy76/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/python.exe",
+      "pytestExit": 1,
+      "terminal": {
+        "count": 90,
+        "failures": 1,
+        "errors": 0,
+        "skipped": 0
+      },
+      "executionSha256": "5bd8860aa79896f7578eb81c5fd278ff88f60f04d8946a2e5b4f3ff34aeb9a56",
+      "junitSha256": "1dc5788aa1c07d30f3bd53931510775e06fab83a22e58eb32b0ef91049d1591f",
+      "runnerSha256": "ad98e514dcfdd91f1bda6633ade63b370f3fbc0ef44de2e46a22915219227f25",
+      "nativeCoverageSha256": null,
+      "elapsedSeconds": 60.79235053062439
+    },
+    {
+      "label": "t26",
+      "group": "monitor-b",
+      "executionHead": "2be0c7643f719a6c48a0bb8c282b6f776c87517b",
+      "runtime": "D:/codex-tmp/r135/isolated-test-env/Scripts/python.exe",
+      "pytestExit": 0,
+      "terminal": {
+        "count": 198,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "executionSha256": "e5b26058ad42be1d2bae2a4a6f2a38f805d41cc53ec4b2f835a4d0b6b9a257a8",
+      "junitSha256": "0b5c50c999db7bae1d0db98604e55e14e2524a2c71a7a18c50bd2b52558a67aa",
+      "runnerSha256": "9d1ceca796277e300b52f108fe86fa2ca2cf7ba346966810e028738ffe51a6b2",
+      "nativeCoverageSha256": "e0ec32c699959cb4ebbf75d53ed7d25e51c2ac6748e3cebfead4e81cbe9deb71",
+      "elapsedSeconds": 18.22768807411194
+    },
+    {
+      "label": "c01",
+      "group": "api-01",
+      "executionHead": "2be0c7643f719a6c48a0bb8c282b6f776c87517b",
+      "runtime": "D:/codex-tmp/r135/isolated-test-env/Scripts/python.exe",
+      "pytestExit": 1,
+      "terminal": {
+        "count": 21,
+        "failures": 1,
+        "errors": 0,
+        "skipped": 0
+      },
+      "executionSha256": "6d33e761bd96f2590265ef6d0139b9428d20ca29e88cec0da9ffd0f0a82dc90a",
+      "junitSha256": "6f381c7a3cc88cee9f7421c5e6d4dc22dfa0d3b88130daba3292818f8d09f4ff",
+      "runnerSha256": "9d1ceca796277e300b52f108fe86fa2ca2cf7ba346966810e028738ffe51a6b2",
+      "nativeCoverageSha256": null,
+      "elapsedSeconds": 15.057317018508911
+    },
+    {
+      "label": "c02",
+      "group": "api-02",
+      "executionHead": "f5cfa76aa5a1adca6da4a014dc0c13c42c9c98f0",
+      "runtime": "D:/codex-tmp/r135/isolated-test-env/Scripts/python.exe",
+      "pytestExit": 0,
+      "terminal": {
+        "count": 119,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "executionSha256": "f2eca52ef9d6b0f82436fedfbed0611c4621cd2d72634f8d04c7f66e5726cdc6",
+      "junitSha256": "98ae15c05d482b7973baf6ba5bbd4879c576a23af15a74536d48f2831a3b2599",
+      "runnerSha256": "9d1ceca796277e300b52f108fe86fa2ca2cf7ba346966810e028738ffe51a6b2",
+      "nativeCoverageSha256": "f1cb2bf28316affd842bcd62fc0e56e057b0eecaed784fb7d08aeafd08b226d1",
+      "elapsedSeconds": 143.3961637020111
+    },
+    {
+      "label": "c03",
+      "group": "api-03",
+      "executionHead": "f5cfa76aa5a1adca6da4a014dc0c13c42c9c98f0",
+      "runtime": "D:/codex-tmp/r135/isolated-test-env/Scripts/python.exe",
+      "pytestExit": 0,
+      "terminal": {
+        "count": 70,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "executionSha256": "b7fb8d65634d028d227e5f5eb66027f7429cdb297a2df936d070b899e525b2cb",
+      "junitSha256": "98115f85cb666bca6eb113cd398b96f5f09dfd6406ba042476bb2d9665d9ead1",
+      "runnerSha256": "9d1ceca796277e300b52f108fe86fa2ca2cf7ba346966810e028738ffe51a6b2",
+      "nativeCoverageSha256": "52832d0b4f4178e4d2e90fc6b2b5468b188a9f7dcef29f947ca68b9a7185ba64",
+      "elapsedSeconds": 705.2037196159363
+    },
+    {
+      "label": "c04",
+      "group": "api-04",
+      "executionHead": "f5cfa76aa5a1adca6da4a014dc0c13c42c9c98f0",
+      "runtime": "D:/codex-tmp/r135/isolated-test-env/Scripts/python.exe",
+      "pytestExit": 0,
+      "terminal": {
+        "count": 188,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 1
+      },
+      "executionSha256": "7f91026b43af9d1eaf3bc85dec91fc31b4af85a32e7236596885e09e311ab36d",
+      "junitSha256": "220ab53347b7de0922ffb7afa6bc8a958118f45957affc1aa167e6ed4a558c64",
+      "runnerSha256": "9d1ceca796277e300b52f108fe86fa2ca2cf7ba346966810e028738ffe51a6b2",
+      "nativeCoverageSha256": "3d9f1563b0ec9f39bad1e15cf6974a97d9c9d650d0e4c35cd16d194525cf1bb3",
+      "elapsedSeconds": 164.42231225967407
+    },
+    {
+      "label": "c05",
+      "group": "api-05",
+      "executionHead": "f5cfa76aa5a1adca6da4a014dc0c13c42c9c98f0",
+      "runtime": "D:/codex-tmp/r135/isolated-test-env/Scripts/python.exe",
+      "pytestExit": 0,
+      "terminal": {
+        "count": 74,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "executionSha256": "f90c5bba9d3975ce374afd4451f94194e67b9f86cae99311a7c0dc8b5fb8d03f",
+      "junitSha256": "7ab6664bb1049b76c218dffef7fbe5011b0ad6024a4446b096d15bcc5fed7505",
+      "runnerSha256": "9d1ceca796277e300b52f108fe86fa2ca2cf7ba346966810e028738ffe51a6b2",
+      "nativeCoverageSha256": "f73b0a5298be1e785b7b512c33c804a85e7d8e5529539d276b433e88c6ad4e51",
+      "elapsedSeconds": 69.56136274337769
+    },
+    {
+      "label": "c06",
+      "group": "api-06",
+      "executionHead": "f5cfa76aa5a1adca6da4a014dc0c13c42c9c98f0",
+      "runtime": "D:/codex-tmp/r135/isolated-test-env/Scripts/python.exe",
+      "pytestExit": 0,
+      "terminal": {
+        "count": 201,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 1
+      },
+      "executionSha256": "53ab3dce922dd56ea4231dd56017f41354f7519c2dec7a2ed8b6f82fd18f3ac8",
+      "junitSha256": "d99428f6a5b38695d65c39479572ef5794c6f802b51964d4cd87dfbe97005b68",
+      "runnerSha256": "9d1ceca796277e300b52f108fe86fa2ca2cf7ba346966810e028738ffe51a6b2",
+      "nativeCoverageSha256": "e3419a565b56b39f204c3b4c7f5d996c3ad15a106ed8fec42e75ff832a8b6a5c",
+      "elapsedSeconds": 101.38579106330872
+    },
+    {
+      "label": "c07",
+      "group": "api-07",
+      "executionHead": "f5cfa76aa5a1adca6da4a014dc0c13c42c9c98f0",
+      "runtime": "D:/codex-tmp/r135/isolated-test-env/Scripts/python.exe",
+      "pytestExit": 0,
+      "terminal": {
+        "count": 154,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "executionSha256": "ce9043b503504921246a63db55d27b6892b4b7b3c0655e9a7bcf4a317b4c0c33",
+      "junitSha256": "af96680c18464d083f59643ec1e5e6f492a2b2157572e8eb10d0660f87ed14f7",
+      "runnerSha256": "9d1ceca796277e300b52f108fe86fa2ca2cf7ba346966810e028738ffe51a6b2",
+      "nativeCoverageSha256": "4fa633e484290b7895f001bb1dda36407238f2d229e43dba10cccc18a796aacb",
+      "elapsedSeconds": 84.11146187782288
+    },
+    {
+      "label": "c08",
+      "group": "api-08",
+      "executionHead": "f5cfa76aa5a1adca6da4a014dc0c13c42c9c98f0",
+      "runtime": "D:/codex-tmp/r135/isolated-test-env/Scripts/python.exe",
+      "pytestExit": 1,
+      "terminal": {
+        "count": 9,
+        "failures": 1,
+        "errors": 0,
+        "skipped": 0
+      },
+      "executionSha256": "7a62e18986cdf4ab08376c2249f6e38ecb067ee52ced265f0ecc4a0d70322c48",
+      "junitSha256": "12003db2d9902a2b162ddb19cb8c59007b1b3b004a4f1ec44a38563120e65838",
+      "runnerSha256": "9d1ceca796277e300b52f108fe86fa2ca2cf7ba346966810e028738ffe51a6b2",
+      "nativeCoverageSha256": null,
+      "elapsedSeconds": 11.975987434387207
+    },
+    {
+      "label": "c09",
+      "group": "api-09",
+      "executionHead": "fa3613cb7b24a0f0532aff5248acb9ad919a112a",
+      "runtime": "D:/codex-tmp/r135/isolated-test-env/Scripts/python.exe",
+      "pytestExit": 0,
+      "terminal": {
+        "count": 65,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "executionSha256": "e097a247ca5ea575542030441b2416fb524cecdf4311009473313e24cd72cfd8",
+      "junitSha256": "692afefda2e10e55e25f70c182b54031dcf29efa15aa5a6c28835959d7f60c11",
+      "runnerSha256": "9d1ceca796277e300b52f108fe86fa2ca2cf7ba346966810e028738ffe51a6b2",
+      "nativeCoverageSha256": "8187ac3f0982cda15fa11d2cb208524b8be60171778e54cf01d5782d73a2cf40",
+      "elapsedSeconds": 65.89701700210571
+    },
+    {
+      "label": "c10",
+      "group": "api-10",
+      "executionHead": "fa3613cb7b24a0f0532aff5248acb9ad919a112a",
+      "runtime": "D:/codex-tmp/r135/isolated-test-env/Scripts/python.exe",
+      "pytestExit": 0,
+      "terminal": {
+        "count": 155,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 1
+      },
+      "executionSha256": "7a994f0bc0137159765be8188ba062ca2a426fa4c3bd947a22b114af1b57c031",
+      "junitSha256": "d32dcf4fbc9395986d16d9fe208c51e2fc3109b2fb8f99e0add72f011fe355b3",
+      "runnerSha256": "9d1ceca796277e300b52f108fe86fa2ca2cf7ba346966810e028738ffe51a6b2",
+      "nativeCoverageSha256": "250363f3e62f6089e23b50b5af3a8bbec8a74446f4692b2b7d0d4ea386491463",
+      "elapsedSeconds": 67.57191753387451
+    },
+    {
+      "label": "i25",
+      "group": "monitor-import-recheck",
+      "executionHead": "2be0c7643f719a6c48a0bb8c282b6f776c87517b",
+      "runtime": "D:/codex-tmp/r135/isolated-test-env/Scripts/python.exe",
+      "pytestExit": 0,
+      "terminal": {
+        "count": 1,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "executionSha256": "ca7b90f8111aeaa5f87e85d4603a1453f386bf16c5d1bf36bf14e3dcaee8716c",
+      "junitSha256": "546a56162871ec7cd5c7450f9f73af6add5e53c4df72991cfe0afc4308480f1e",
+      "runnerSha256": "9d1ceca796277e300b52f108fe86fa2ca2cf7ba346966810e028738ffe51a6b2",
+      "nativeCoverageSha256": "97d8ce3fd275b2d42b214bcdc6e3e60a097c91594e7f23cd5be09df62c2c483d",
+      "elapsedSeconds": 1.7344114780426025
+    },
+    {
+      "label": "r01",
+      "group": "api-recheck",
+      "executionHead": "f5cfa76aa5a1adca6da4a014dc0c13c42c9c98f0",
+      "runtime": "D:/codex-tmp/r135/isolated-test-env/Scripts/python.exe",
+      "pytestExit": 0,
+      "terminal": {
+        "count": 1,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "executionSha256": "111ed4a70428b9aca469b1cd700c99dbfcdf7bb75ca3437c179c93cb6124684b",
+      "junitSha256": "bbd6c6d39cde7180e5fdd9ed82559cf187fcd365fea18818a1a626e3488864dd",
+      "runnerSha256": "9d1ceca796277e300b52f108fe86fa2ca2cf7ba346966810e028738ffe51a6b2",
+      "nativeCoverageSha256": "93244a18f436356e705fdabc4e341c561cdf3b7e409452709fc63db01378a32b",
+      "elapsedSeconds": 3.7519776821136475
+    },
+    {
+      "label": "r02",
+      "group": "planned-action-recheck",
+      "executionHead": "fa3613cb7b24a0f0532aff5248acb9ad919a112a",
+      "runtime": "D:/codex-tmp/r135/isolated-test-env/Scripts/python.exe",
+      "pytestExit": 0,
+      "terminal": {
+        "count": 1,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "executionSha256": "9b0030236f817e50e9a94c2ea644cc132a18467d983545890dbbd27325a8fd9d",
+      "junitSha256": "5b158920f1e45864af0b733f9f80867987a60dbce7da7b37dfd3d9ff7e0de1ce",
+      "runnerSha256": "9d1ceca796277e300b52f108fe86fa2ca2cf7ba346966810e028738ffe51a6b2",
+      "nativeCoverageSha256": "69174a2ee30aeef8fea5dc20dc675a648e25101c178cf9145bff6e6b45e4ed0e",
+      "elapsedSeconds": 5.1241676807403564
+    }
+  ],
+  "independentOverlappingCases": {
+    "owner": "Primary independent clean-source review",
+    "head": "2be0c7643f719a6c48a0bb8c282b6f776c87517b",
+    "productBytesUnchangedInFinal": true,
+    "group": "generation",
+    "pytestExit": 0,
+    "terminal": {
+      "count": 328,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "overlappingNotAddedToAuthorTotal": true,
+    "executionSha256": "c52e3b5c914af8fca33ea4f5f1cc4a3ff6f1d741d46f12b9f1263138d9072235"
+  },
+  "nativeRuns": [
+    {
+      "run": "verify-01-once",
+      "accepted": true,
+      "cliExit": 0,
+      "dispatchExit": 0,
+      "testsExecuted": true,
+      "testsPassed": true,
+      "backgroundPending": false,
+      "commandStates": [
+        {
+          "state": "executed_success",
+          "numericExit": null
+        },
+        {
+          "state": "executed_success",
+          "numericExit": null
+        },
+        {
+          "state": "executed_success",
+          "numericExit": null
+        },
+        {
+          "state": "executed_success",
+          "numericExit": null
+        }
+      ],
+      "summarySha256": "81a7f70fb7ddba1f1ca83e23d7b7959915f7137c54f3fc8619f99755597bb9cd"
+    },
+    {
+      "run": "verify-02-once",
+      "accepted": false,
+      "cliExit": 1,
+      "dispatchExit": 1,
+      "testsExecuted": false,
+      "testsPassed": false,
+      "backgroundPending": true,
+      "commandStates": [
+        {
+          "state": "executed_success",
+          "numericExit": null
+        },
+        {
+          "state": "executed_success",
+          "numericExit": null
+        },
+        {
+          "state": "background_pending",
+          "numericExit": null
+        }
+      ],
+      "summarySha256": "ab4fb21269fd9867d65ff572332693068bcda5ae0d660458b1f007482f633c61"
+    },
+    {
+      "run": "verify-03-once",
+      "accepted": true,
+      "cliExit": 0,
+      "dispatchExit": 0,
+      "testsExecuted": true,
+      "testsPassed": true,
+      "backgroundPending": false,
+      "commandStates": [
+        {
+          "state": "executed_success",
+          "numericExit": null
+        },
+        {
+          "state": "executed_success",
+          "numericExit": null
+        },
+        {
+          "state": "executed_success",
+          "numericExit": null
+        },
+        {
+          "state": "executed_success",
+          "numericExit": null
+        }
+      ],
+      "summarySha256": "559d2720567894a4959bb7045f9246a591a2c721898efb4c5b75762415271a58"
+    },
+    {
+      "run": "verify-04-once",
+      "accepted": true,
+      "cliExit": 0,
+      "dispatchExit": 0,
+      "testsExecuted": true,
+      "testsPassed": true,
+      "backgroundPending": false,
+      "commandStates": [
+        {
+          "state": "executed_success",
+          "numericExit": null
+        },
+        {
+          "state": "executed_success",
+          "numericExit": null
+        },
+        {
+          "state": "executed_success",
+          "numericExit": null
+        },
+        {
+          "state": "executed_success",
+          "numericExit": null
+        }
+      ],
+      "summarySha256": "6e7152dcb67696ba284b8d78cd0b2451729c314db4ae4e27fe9f94615f22cdf6"
+    },
+    {
+      "run": "verify-05-once",
+      "accepted": true,
+      "cliExit": 0,
+      "dispatchExit": 0,
+      "testsExecuted": true,
+      "testsPassed": true,
+      "backgroundPending": false,
+      "commandStates": [
+        {
+          "state": "executed_success",
+          "numericExit": null
+        },
+        {
+          "state": "executed_success",
+          "numericExit": null
+        },
+        {
+          "state": "executed_success",
+          "numericExit": null
+        },
+        {
+          "state": "executed_success",
+          "numericExit": null
+        }
+      ],
+      "summarySha256": "62087cdb19d65797de807245a5721ae9b07e8a9b6aba20a696dd9ca2f6eaef67"
+    },
+    {
+      "run": "verify-06-once",
+      "accepted": true,
+      "cliExit": 0,
+      "dispatchExit": 0,
+      "testsExecuted": true,
+      "testsPassed": true,
+      "backgroundPending": false,
+      "commandStates": [
+        {
+          "state": "executed_success",
+          "numericExit": null
+        },
+        {
+          "state": "executed_success",
+          "numericExit": null
+        },
+        {
+          "state": "executed_success",
+          "numericExit": null
+        },
+        {
+          "state": "executed_success",
+          "numericExit": null
+        }
+      ],
+      "summarySha256": "1b411fa8b3402bc64da0eec2b1e033249b9c13df5d22d8803679d508b01f180f"
+    },
+    {
+      "run": "verify-07-once",
+      "accepted": false,
+      "cliExit": 0,
+      "dispatchExit": 1,
+      "testsExecuted": false,
+      "testsPassed": false,
+      "backgroundPending": false,
+      "commandStates": [
+        {
+          "state": "executed_failure",
+          "numericExit": 1
+        }
+      ],
+      "summarySha256": "df3bcfbc8bf90c3ad66abbcf67b302947d66658d1bcaec142d99e0c9f664b7e8"
+    },
+    {
+      "run": "verify-02-unstarted-once",
+      "accepted": true,
+      "cliExit": 0,
+      "dispatchExit": 0,
+      "testsExecuted": true,
+      "testsPassed": true,
+      "backgroundPending": false,
+      "commandStates": [
+        {
+          "state": "executed_success",
+          "numericExit": null
+        }
+      ],
+      "summarySha256": "fa64dcbccd4bcc3f4d5ac3ad1d33ae8d07efa9a9c93cd85ee06e9ca142cba7da"
+    },
+    {
+      "run": "monitor-import-recheck-once",
+      "accepted": true,
+      "cliExit": 0,
+      "dispatchExit": 0,
+      "testsExecuted": true,
+      "testsPassed": true,
+      "backgroundPending": false,
+      "commandStates": [
+        {
+          "state": "executed_success",
+          "numericExit": null
+        }
+      ],
+      "summarySha256": "f876f02b5aa466b66bec07fa4f10f7151a181380113a85935834dbd189885ce9"
+    },
+    {
+      "run": "monitor-unstarted-once",
+      "accepted": true,
+      "cliExit": 0,
+      "dispatchExit": 0,
+      "testsExecuted": true,
+      "testsPassed": true,
+      "backgroundPending": false,
+      "commandStates": [
+        {
+          "state": "executed_success",
+          "numericExit": null
+        }
+      ],
+      "summarySha256": "fc65b923f4782fe59d212cc49f227ce09c81a6e46a2b48528be76afe7514d2a2"
+    },
+    {
+      "run": "consumer-verify-01-isolated-once",
+      "accepted": false,
+      "cliExit": 0,
+      "dispatchExit": 1,
+      "testsExecuted": false,
+      "testsPassed": false,
+      "backgroundPending": false,
+      "commandStates": [
+        {
+          "state": "executed_failure",
+          "numericExit": 1
+        }
+      ],
+      "summarySha256": "84a221bf307c63a47e6d6a72b7bb945cd5aa91aca0cf00e55c8d82dd061323f2"
+    },
+    {
+      "run": "recovery-cli-single-recheck-once",
+      "accepted": true,
+      "cliExit": 0,
+      "dispatchExit": 0,
+      "testsExecuted": true,
+      "testsPassed": true,
+      "backgroundPending": false,
+      "commandStates": [
+        {
+          "state": "executed_success",
+          "numericExit": null
+        }
+      ],
+      "summarySha256": "88c6d33eccd8bf6c3b40e60f3170fd31705f1beb0c49348288ef5783c5fcded7"
+    },
+    {
+      "run": "consumer-postfix-01-once",
+      "accepted": false,
+      "cliExit": 1,
+      "dispatchExit": 1,
+      "testsExecuted": false,
+      "testsPassed": false,
+      "backgroundPending": true,
+      "commandStates": [
+        {
+          "state": "executed_success",
+          "numericExit": null
+        },
+        {
+          "state": "background_pending",
+          "numericExit": null
+        }
+      ],
+      "summarySha256": "972a2f5ffb80f9347334bd30615339ef10cf3a8d516ee5066e5615400501c1f2"
+    },
+    {
+      "run": "consumer-postfix-02-once",
+      "accepted": true,
+      "cliExit": 0,
+      "dispatchExit": 0,
+      "testsExecuted": true,
+      "testsPassed": true,
+      "backgroundPending": false,
+      "commandStates": [
+        {
+          "state": "executed_success",
+          "numericExit": null
+        },
+        {
+          "state": "executed_success",
+          "numericExit": null
+        },
+        {
+          "state": "executed_success",
+          "numericExit": null
+        }
+      ],
+      "summarySha256": "d4e534be07d5c6a3b272d925fd62afdf86cb77d6683ef1adecf5da5a273d1d9f"
+    },
+    {
+      "run": "consumer-postfix-03-once",
+      "accepted": false,
+      "cliExit": 0,
+      "dispatchExit": 1,
+      "testsExecuted": false,
+      "testsPassed": false,
+      "backgroundPending": false,
+      "commandStates": [
+        {
+          "state": "executed_success",
+          "numericExit": null
+        },
+        {
+          "state": "executed_failure",
+          "numericExit": 1
+        }
+      ],
+      "summarySha256": "1c5a6d6f0cea2b7f3eb47ef68cbc23677a29170fefec4b0213850ec36a34ac82"
+    },
+    {
+      "run": "planned-action-single-recheck-once",
+      "accepted": true,
+      "cliExit": 0,
+      "dispatchExit": 0,
+      "testsExecuted": true,
+      "testsPassed": true,
+      "backgroundPending": false,
+      "commandStates": [
+        {
+          "state": "executed_success",
+          "numericExit": null
+        }
+      ],
+      "summarySha256": "365f0a523944a6166aa394766a70962a19ebde0dd2d9f7ad3f0b0116beaf2021"
+    },
+    {
+      "run": "consumer-last-unstarted-once",
+      "accepted": true,
+      "cliExit": 0,
+      "dispatchExit": 0,
+      "testsExecuted": true,
+      "testsPassed": true,
+      "backgroundPending": false,
+      "commandStates": [
+        {
+          "state": "executed_success",
+          "numericExit": null
+        },
+        {
+          "state": "executed_success",
+          "numericExit": null
+        }
+      ],
+      "summarySha256": "5c93cd406f1fb4155a902c9011a8448ecada32a2931ed82b917669caedc02fa6"
+    }
+  ],
+  "originalFailureAndRecheckBindings": [
+    {
+      "key": [
+        "monitor",
+        "tests.test_package_boundary",
+        "test_ordinary_import_is_backend_lazy_and_does_not_write_project"
+      ],
+      "originalLabel": "t25",
+      "recheckLabel": "i25",
+      "preservedOriginal89Passes": true,
+      "assertionsUnchanged": true,
+      "isolatedDependencyEntry": true
+    },
+    {
+      "key": [
+        "toolkit",
+        "tests.test_acceptance_recovery_cli",
+        "test_cli_rejects_unknown_physical_source_intent_schema"
+      ],
+      "originalLabel": "c01",
+      "recheckLabel": "r01",
+      "retainedOriginal20Passes": true,
+      "onlyFailedTestBodyChanged": true
+    },
+    {
+      "key": [
+        "toolkit",
+        "tests.test_planned_actions",
+        "test_context_reports_the_shipped_migration_action_for_keil_projects"
+      ],
+      "originalLabel": "c08",
+      "recheckLabel": "r02",
+      "retainedOriginal8Passes": true,
+      "onlyIndependentLiteralChanged": true
+    }
+  ],
+  "skippedCases": [
+    {
+      "key": [
+        "toolkit",
+        "tests.test_diagnostic_cli",
+        "test_unsafe_steps_symlink_is_generic_error_without_dispatch"
+      ],
+      "label": "c04",
+      "reason": "symlink capability unavailable"
+    },
+    {
+      "key": [
+        "toolkit",
+        "tests.test_linker_fragment",
+        "test_read_linker_fragment_rejects_a_real_symlinked_file"
+      ],
+      "label": "c06",
+      "reason": "unprivileged Windows file symlinks are unavailable; mocked coverage applies"
+    },
+    {
+      "key": [
+        "toolkit",
+        "tests.test_vscode_configuration",
+        "test_redirect_targets_are_refused"
+      ],
+      "label": "c10",
+      "reason": "host cannot create a file symlink for this check"
+    }
+  ],
+  "skipDisposition": {
+    "status": "DEFERRED_PLATFORM_CAPABILITY",
+    "owner": "Primary at a later explicitly scoped release validation on a Windows/Linux host with real file-symlink capability",
+    "noCurrentPrivilegeChange": true,
+    "notCountedAsPass": true
+  },
+  "pythonCoverage": {
+    "toolkit-overall": {
+      "covered": 15530,
+      "total": 18734,
+      "percent": 82.89740578627095,
+      "floor": 90,
+      "status": "UNMET",
+      "v134Baseline": {
+        "covered": 15336,
+        "total": 18534
+      },
+      "v135UserCondition": "PASS"
+    },
+    "toolkit-risk-core-v2": {
+      "covered": 14399,
+      "total": 17394,
+      "percent": 82.78141888007359,
+      "floor": 90,
+      "status": "UNMET",
+      "v134Baseline": {
+        "covered": 14208,
+        "total": 17194
+      },
+      "v135UserCondition": "PASS"
+    },
+    "monitor-overall": {
+      "covered": 3292,
+      "total": 3564,
+      "percent": 92.36812570145904,
+      "floor": 90,
+      "status": "PASS",
+      "v134Baseline": {
+        "covered": 3292,
+        "total": 3564
+      },
+      "v135UserCondition": "PASS"
+    },
+    "monitor-risk-core-v2": {
+      "covered": 3292,
+      "total": 3564,
+      "percent": 92.36812570145904,
+      "floor": 95,
+      "status": "UNMET",
+      "v134Baseline": {
+        "covered": 3292,
+        "total": 3564
+      },
+      "v135UserCondition": "PASS"
+    }
+  },
+  "pythonSourceFiles": 149,
+  "droppedPriorArcsForChangedFiles": [
+    "tools/stm32-toolkit/src/stm32_toolkit/__init__.py",
+    "tools/stm32-toolkit/src/stm32_toolkit/build/runner.py",
+    "tools/stm32-toolkit/src/stm32_toolkit/cli.py",
+    "tools/stm32-toolkit/src/stm32_toolkit/debug_configuration.py",
+    "tools/stm32-toolkit/src/stm32_toolkit/generation/managed_files.py",
+    "tools/stm32-toolkit/src/stm32_toolkit/hardware_workflows.py",
+    "tools/stm32-toolkit/src/stm32_toolkit/mcp_server.py",
+    "tools/stm32-toolkit/src/stm32_toolkit/migration/delivery.py",
+    "tools/stm32-toolkit/src/stm32_toolkit/probe/attach_diagnostics.py",
+    "tools/stm32-toolkit/src/stm32_toolkit/probe/attach_progress.py",
+    "tools/stm32-toolkit/src/stm32_toolkit/probe/backend.py",
+    "tools/stm32-toolkit/src/stm32_toolkit/probe/handoff.py",
+    "tools/stm32-toolkit/src/stm32_toolkit/probe/pyocd_backend.py",
+    "tools/stm32-toolkit/src/stm32_toolkit/probe/service.py",
+    "tools/stm32-toolkit/src/stm32_toolkit/probe/worker.py"
+  ],
+  "uiCoverage": {
+    "covered": 2938,
+    "total": 3147,
+    "percent": 93.35875436924054,
+    "perFile90Met": true,
+    "v135NonRegressionCondition": "PASS_EXACT_SOURCE_REUSE",
+    "freshUiExecution": false,
+    "limits": "534 pass/1 platform skip retained; original performance failure remains in prior release evidence; no new browser/IDE or hardware PASS"
+  },
+  "rawEvidenceRoot": "D:\\codex-tmp\\r135",
+  "evidenceSha256": {
+    "release-matrix-final.json": "947b2e923dc15bc5e2abd180fc2bd54d19cc003d2ebed5057ef37735ba951c0c",
+    "coverage-v135/qualification.json": "b75d51148cf45b76359097d501b23e5cd8f6c862ffe1fa762367fcfeb78c1b4c",
+    "coverage-v135/.coverage": "19de4d46e4e108a5aa6b6cd680efb36e45f189e1517767efd6e8065f9b09bccf",
+    "coverage-v135/native.json": "e773a24b46f444f3b11c07613408e95480b865ad7cdfd83b34ba4fb1abe73ea1",
+    "coverage-comparison-execution.json": "871a384e7c96b992e3714fd98368a1a21e1606ca67f80196334b5d5da183f773",
+    "ui-reuse.json": "c04c098f203596dca6a378a64d3b17cc2db59cb20fc658ca13c41dd1e149bbfc",
+    "independent-final-review.json": "42314e6a6c9a1067756ea09ce0fbb9c3f403d71e554d819ab55b5ecd21d75766",
+    "canonical-source-binding.json": "754d63c1587bfd07d87bdddb6f537662dedf67a136845cc6dea72a60daca6dbb",
+    "fixture-fix-binding.json": "24351048bd03793d5016f99295c692e4f9d6716e29b6f8350e0079e15364d22f",
+    "planned-action-fix-binding.json": "cc2ec47b6711579dfe90d0bbebbe3534fd1e445ddfee6cdb43bd931d8a11e378",
+    "t07-late-completion-reconciliation.json": "1fe3b1110410da7f301e8774a95fde247b17535cb64aa9e87894595d074afd12",
+    "c03-late-completion-reconciliation.json": "e74a28f327c1191570ac8d8c6f83779b4bcb96754be3940e264f4816819bc5e2",
+    "environment-admission.json": "c1b5689a79289c5ebfff83627183fc9bb14d97c04d95a3fdc34430ec3ef02fe5",
+    "isolated-entry-admission.json": "3cd7f2df73d9679266f1bc9960bb4393b8b668a6ff2d86b4aace550c3e43786b",
+    "wheelhouse-preparation.json": "9752e2fd999034e404b04ba142db0572487044a0ab7d33dbeaf5842d0f3afca8",
+    "primary-preparation-errors.json": "b2bd9a1ef2df8dc44c5f94d723a4fe3a0039bed4414a0d2d8418298e4f8a1409"
+  },
+  "failedAggregatesExcludedFromCoverage": [
+    "t25",
+    "c01",
+    "c08"
+  ],
+  "fullSingleHeadRepositoryRerunClaimed": false,
+  "packageBuilt": false,
+  "installationPerformed": false,
+  "existingRuntimeReplaced": false,
+  "hardwarePerformed": false,
+  "remoteMutationPerformed": false,
+  "firmwareABIAndCCM": "Outside this closeout at user direction; existing diagnostics retained"
+}
