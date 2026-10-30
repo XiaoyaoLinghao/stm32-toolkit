@@ -46,8 +46,10 @@ aggregate or a startup message a fresh passing run.
 Freeze the reviewed candidate, build twice independently from canonical tracked
 bytes with the existing official offline builder, compare all13 outputs and verify
 an extracted bundle. Existing wheelhouse/cache inputs must match the current
-policy, including0.46.0; resolve missing inputs offline before building. No package
-installation is part of this authorization. Final installed VS Code/MCP and any
+policy, including0.46.0; resolve missing inputs offline before building. The official
+builder may populate its own disposable build-backend environment from that closed
+offline wheelhouse; recipient/existing-runtime installation is outside this scope.
+Final installed VS Code/MCP and any
 other mandatory external checks remain explicitly pending with owner/scope.
 
 Completion is one concrete local candidate, package hashes and a reconciled

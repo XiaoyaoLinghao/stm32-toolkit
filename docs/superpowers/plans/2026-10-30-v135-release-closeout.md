@@ -41,3 +41,20 @@ Native no-action inventory must match; verify also requires a real native PowerS
 smoke. Stop on actual boundary/failure; no default retry or implementation fallback.
 Pending verify results are reconciled only from the already-started run's evidence.
 No automatic hardware revalidation follows version alignment or packaging.
+
+## Entry redesign after two stopped read-scope calls
+
+Both initial version edit and the explicitly authorized single re-delegation
+stopped with zero writes/tests; see the current STM32TK-135 implementation report.
+The first searched the repository root outside its module read set. The second
+followed a large-output spill file outside the bound repository. Neither call is
+accepted; the second grant is consumed, and this plan authorizes no retry.
+
+Proposed replacement separates13 core version files from17 existing version-test
+files, then retains the dependent docs/anchor phase. Read-only scope stays the
+isolated repository; each Read specifies<=160 lines, each Grep names an exact file
+with head_limit<=30, no broad discovery and no following spill files outside cwd.
+Any actual error/refusal/scope violation stops. Exact write lists/tools/model and
+no-shell/no-hardware/no-runtime/no-remote boundaries remain. Primary must receive
+explicit bounded authority, bind actual source state and review each completed
+phase before launching its dependent task. Prepared JSON is not execution evidence.
