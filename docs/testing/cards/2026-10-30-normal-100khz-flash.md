@@ -1,13 +1,16 @@
 # Normal connection +100kHz managed flash execution card
 
-Status: **BLOCKED_NOT_EXECUTED — OFFLINE REVIEW COMPLETED, REVISION_REQUIRED**.
-Confirmed blocker: initiating flash diagnostics and cleanup stages can be lost
-at workflow cleanup or worker abort failure. No product fix in this task; require
-bounded capture correction, offline regression and independent entry recheck.
+Status: **OFFLINE_ENTRY_REVIEW_ACCEPTED / BLOCKED_NOT_EXECUTED**.
+Diagnostic-preservation software slice accepted at CodeHead
+bfa56c21fa67e53649ec0c9c15b5ab4e9b79ae4d:345 distinct related cases pass,
+including37 new regressions; Primary independently passed23 overlapping cases.
+The2 environment import failures were retained and resolved by one explicitly
+authorized retry. Independent supplied-source card review found NO_BLOCKERS;
+Primary discharged its software conditions. Hardware prerequisites below remain.
 No hardware authorization in this task. Original constructor-only grant is
 consumed; the earlier readiness reply is historical, not a new READY assertion.
 Primary authored this card; independent domain reviews and final acceptance are
-in [NORMAL-FLASH-ENTRY](../../codex/returns/NORMAL-FLASH-ENTRY/implementation-report.md).
+in [FLASH-FAILURE-EVIDENCE](../../codex/returns/FLASH-FAILURE-EVIDENCE/implementation-report.md).
 
 ## Exact proposed entry and identity
 
@@ -17,7 +20,7 @@ prepare/execute, no direct backend/fake seam. Static pins currently observed:
 
 | Item | Pin / required pre-run recheck |
 | --- | --- |
-| Base/branch |65e5b637069342b2472fad50fcf771801e7337c8; codex/v135-normal-flash-entry. Freeze exact final reviewed clean execution HEAD and actual import/entry bytes before any later launch. Product/test source initially694e1e912adfc017c31b52630a323bd733567688. |
+| Base/branch |3bf143cd314b0e396a420a8c6ef33ee3ec19535b; codex/v135-flash-failure-evidence. Source/test CodeHeadbfa56c21fa67e53649ec0c9c15b5ab4e9b79ae4d. Freeze exact final reviewed clean execution HEAD, actual entry/import bytes and SDK origins before any later launch; do not reuse old source pins. |
 | Python/SDK |Direct CPython3.12.14 at C:/Users/zhy76/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/python.exe, SHA2565640e9be2fd33d05a1a9ae1228e2354609a69ab831605995ec4e2bd6da8fff5e. Existing isolated D:/codex-tmp/st135-pyocd046/candidate-site pyocd0.46.0 and read-only D:/codex-tmp/kx23/venv/Lib/site-packages, hidapi0.15.0. Pin module/distribution origins and347 SDK files to accepted wheel; never substitute installed runtime or venv redirector. |
 | Project/data |C:/work/stm32/fresh-out / C:/data/stm32-toolkit; same real shared registry, no new realm or forced lease deletion. Current CPU/firmware UNKNOWN. |
 | Original selector/target |pyocd:91d67402fe525a5d16bf226f59ab5ecea743eb69292e95719167263ed1fcbf8c / stm32f429xg; configured device STM32F429ZGTx, original board user-described STM32F429ZG. No current power/exclusivity/changes confirmation for this future step. |
@@ -81,7 +84,8 @@ separately authorized: no universal hard exit guarantee or timer extension.
 If unfinished, retain ongoing/UNKNOWN ownership and handles and stop later
 hardware; do not claim programming stopped, kill/restart or release/delete lease
 on behalf of an unknown/live process. Do not run this card until the independent
-review accepts that boundary or a required correction is completed.
+review and all required software gates are accepted, then fresh hardware authority
+and current readiness/preflight are confirmed. No condition here grants access.
 
 Before launch: new explicit finite hardware authority + current original-board/
 probe power/exclusivity/IDE-disconnection/changes confirmation; accepted entry
@@ -95,9 +99,21 @@ program call. Investigate conflicting evidence rather than inferring success.
 Preserve raw CLI stdout/stderr, full JSON/code/details, argv and actual exit,
 attachDiagnostic/progress/cleanup, programDiagnostic/pre-program stage where
 present, receipt before/after bytes and ownership/worker terminal evidence.
-Configured flashOptions are not execution proof. The confirmed double-
-failure loss of programDiagnostic/initiating code/cleanup stages must be resolved or the entry stays BLOCKED;
-do not promise unavailable original-error capture or reconnect later to recreate it.
+Configured flashOptions are not execution proof. Ordinary programming-error plus
+worker-abort failure now reports safe initiatingCode=PROBE_PROGRAM_FAILED,
+validated programDiagnostic and a failed worker-parent-abort stage. If workflow
+cleanup also fails, HARDWARE_CLEANUP_FAILED retains those facts followed by actual
+workflow/service stages. Do not infer process death or USB release from the
+envelope, proxy is_terminal or lease release; unresolved abort forbids later
+hardware even when other cleanup stages succeeded. Invalid diagnostics/prior
+cleanup are deliberately rejected; arbitrary private details are never copied.
+Success+cleanup failure uses initiatingCode=OK while remaining a failure.
+Unreportable fatal interruption, cleanup.fatal, invalid IPC or a process lost
+before emitting a validated result can lack the diagnostic; preserve available
+stdout/stderr/exit/ownership evidence and UNKNOWN state, without reconnecting or
+retrying to recreate it. Non-Exception worker abort BaseException still propagates
+under the existing fatal policy. The correction does not add a graceful-close,
+rollback, termination or physical-state guarantee.
 
 Success requires one authorized invocation, normal100kHz selected policy, correct
 connected identity, source-enforced reset/HALTED gates,61516 exact verified bytes,
