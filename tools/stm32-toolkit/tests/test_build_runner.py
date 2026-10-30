@@ -1098,6 +1098,7 @@ def test_run_build_success_debug_publishes_exact_evidence(
         "stage",
         "code",
         "buildId",
+        "toolkitVersion",
         "gitHead",
         "gitDirty",
         "inputSnapshotSha256",
@@ -1113,6 +1114,7 @@ def test_run_build_success_debug_publishes_exact_evidence(
     assert result_doc["status"] == "success"
     assert result_doc["code"] == "OK"
     assert result_doc["buildId"] == identity_doc["buildId"]
+    assert result_doc["toolkitVersion"] == identity_doc["toolkitVersion"]
     assert result_doc["preset"] == "arm-debug"
     assert result_doc["gitHead"] == identity_doc["gitHead"]
     assert result_doc["inputSnapshotSha256"] == identity_doc["inputSnapshotSha256"]
