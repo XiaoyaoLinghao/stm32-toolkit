@@ -345,6 +345,41 @@ the local service. Use the authenticated tab opened by the current `open` invoca
 fragment URLs or tokens. `open` owns a foreground process; closing the tab or stopping sampling is
 not service shutdown. The owning terminal's Ctrl-C invokes the existing cleanup path.
 
+## v1.3.6 tool evidence (source; publication pending)
+
+The v1.3.6 source changes below are evidence-only for these areas; the published Latest
+remains v1.3.5 until a v1.3.6 Release is actually published, and no test, hardware or
+publication PASS is implied.
+
+- Migration ABI provenance. A managed firmware identity and its build-result may carry an
+  optional `floatAbi` object copied from the fixed project-local conversion report: the same
+  14-key decision (`compiler`, `compilerVersion`, `cpu`, `rawFpu`, `rawFloatAbi`, `rawRvdsVp`,
+  `fpu`, `selectedAbi`, `origin`, `ruleId`, `reason`, `baselineVerified`, `warning`,
+  `nextStep`) plus `reportPath` and `reportSha256`. `origin` is `inferred` or `declared`, and
+  `baselineVerified` stays `false`. The object records migration metadata only; it is not
+  evidence of binary ABI equivalence. Missing, malformed, redirected or model-mismatched
+  reports stay unavailable with bounded warnings, and identities without the optional field
+  keep their original calculation.
+- Build-result `toolkitVersion`. Every newly written debug/release success or failure receipt
+  records the executing Toolkit version. Older records lacking the optional field remain
+  readable, and cross-version firmware identity admission is not relaxed.
+- Preset-owned evidence paths. The debug receipt/log remain at the historical
+  `artifacts/migration/build-result.json` and `artifacts/migration/build.log`, while
+  `arm-release` owns `artifacts/migration/arm-release/build-result.json` and its `build.log`.
+  Context still selects debug, and ordinary preset switching in either direction needs no clean.
+- Nullable backend telemetry. `backendBytesProgrammed` and `backendSectorsProgrammed` are
+  nullable backend reports in the public JSON and the persisted flash-result. `null` means
+  unreported, never zero or failure; a supplied zero is a real value. `verifiedBytes` is the
+  exact readback extent, not a programming count. pyOCD 0.46's high-level `FileProgrammer`
+  returns no public structured programming statistics, so sectors are never inferred from pages
+  and console logs are never parsed; the programming call and hardware behavior are unchanged.
+- Unchanged contracts. The 100 kHz ordinary-flash default, the authorized pre-program
+  `SYSRESETREQ` reset-and-halt, authorization/lease/fail-stop handling, and the empty
+  `.vscode/launch.json` before an authorized handoff remain as described above.
+- Immutable release wording. Prepublication wording inside the already-downloaded v1.3.5
+  artifacts is a build-time snapshot; the public Release page and current source record
+  publication. Existing v1.3.5 assets are not rebuilt or replaced.
+
 ## Compatibility, evidence and current changes
 
 Toolkit, Monitor, UI and plugin ship one release version. Schema/protocol compatibility must be
