@@ -17,6 +17,7 @@ import pytest
 import stm32_toolkit.hardware_workflows as hardware_mod
 from stm32_toolkit.hardware_workflows import (
     FaultWorkflowRequest,
+    FlashImportedWorkflowRequest,
     FlashWorkflowRequest,
     HandoffBeginWorkflowRequest,
     HandoffEndWorkflowRequest,
@@ -26,6 +27,7 @@ from stm32_toolkit.hardware_workflows import (
     VariableReadWorkflowRequest,
     VariableSampleWorkflowRequest,
     fault_workflow,
+    flash_imported_workflow,
     flash_workflow,
     handoff_begin_workflow,
     handoff_end_workflow,
@@ -37,7 +39,12 @@ from stm32_toolkit.hardware_workflows import (
 from stm32_toolkit.identity import compute_workspace_id
 from stm32_toolkit.debug.model import DebugFirmwareBinding, MemoryRegionBinding
 from stm32_toolkit.debug.svd import SvdError, select_svd
-from stm32_toolkit.probe.backend import ProbeDescriptor
+from stm32_toolkit.probe.backend import ProbeDescriptor, make_program_diagnostic
+from stm32_toolkit.external_firmware import (
+    FirmwareImportRequest,
+    firmware_import_workflow,
+    load_admission,
+)
 from stm32_toolkit.probe.attach_diagnostics import (
     CleanupFragment,
     make_attach_diagnostic,
@@ -1646,6 +1653,506 @@ def test_cleanup_failure_merges_valid_attach_diagnostic_and_keeps_primary(
         "workflow-service-stop",
     ]
     assert recorder.events[-2:] == ["client.close", "supervisor.stop"]
+
+
+def _worker_abort_cleanup_entry() -> dict[str, str]:
+    return make_cleanup_entry(
+        "worker-parent-abort",
+        "failed",
+        reason="backend-code",
+        source_code="PROBE_BACKEND_ERROR",
+    )
+
+
+def _program_envelope_result(
+    operation: str,
+    diagnostic: dict[str, object],
+    *,
+    code: object = "PROBE_BACKEND_ERROR",
+    initiating_code: object = "PROBE_PROGRAM_FAILED",
+    cleanup: object | None = None,
+) -> OperationResult[object]:
+    """Closed worker-abort envelope as it would cross the service boundary."""
+
+    return OperationResult.failure(
+        operation,
+        code,  # type: ignore[arg-type]
+        "Probe worker could not be terminated",
+        {
+            "programDiagnostic": diagnostic,
+            "initiatingCode": initiating_code,
+            "cleanup": (
+                cleanup
+                if cleanup is not None
+                else {
+                    "outcome": "failed",
+                    "stages": [_worker_abort_cleanup_entry()],
+                }
+            ),
+        },
+    )
+
+
+@pytest.mark.parametrize(
+    ("cleanup_failure", "expected_failed_stage"),
+    [
+        ("close", "workflow-client-close"),
+        ("stop", "workflow-service-stop"),
+    ],
+)
+def test_flash_cleanup_failure_preserves_worker_abort_envelope(
+    tmp_path: Path, cleanup_failure: str, expected_failed_stage: str
+) -> None:
+    """A failed flash plus failed cleanup keeps the initiating program evidence.
+
+    The worker abort must precede the canonical workflow/service cleanup
+    fragment and only the closed fields are projected.
+    """
+
+    project = _project(tmp_path / "project")
+    recorder = _Recorder()
+    diagnostic = make_program_diagnostic("program-call", OSError(5, "program failed"))
+
+    async def worker_abort_operation(
+        request: object, client: object
+    ) -> OperationResult[object]:
+        return _program_envelope_result("stm32_flash", diagnostic)
+
+    result = _run(
+        flash_workflow(
+            FlashWorkflowRequest(
+                project, tmp_path / "data", "session-a", "probe-a", BUILD_ID, ELF_SHA, True
+            ),
+            _seams=_seams(
+                recorder,
+                operation=worker_abort_operation,
+                close_error=cleanup_failure == "close",
+                stop_error=cleanup_failure == "stop",
+            ),
+        )
+    )
+
+    assert result.ok is False
+    assert result.code == "HARDWARE_CLEANUP_FAILED"
+    assert result.message == "Hardware workflow cleanup failed"
+    assert result.data is None
+    details = result.to_dict()["details"]
+    assert details["initiatingCode"] == "PROBE_PROGRAM_FAILED"
+    assert details["programDiagnostic"] == diagnostic
+    assert details["cleanup"]["outcome"] == "failed"
+    stages = details["cleanup"]["stages"]
+    assert stages[0] == {
+        "stage": "worker-parent-abort",
+        "outcome": "failed",
+        "reason": "backend-code",
+        "sourceCode": "PROBE_BACKEND_ERROR",
+    }
+    assert [entry["stage"] for entry in stages[1:]] == [
+        "workflow-client-close",
+        "workflow-service-stop",
+    ]
+    outcomes = {entry["stage"]: entry["outcome"] for entry in stages[1:]}
+    assert outcomes[expected_failed_stage] == "failed"
+    other = (
+        "workflow-service-stop"
+        if expected_failed_stage == "workflow-client-close"
+        else "workflow-client-close"
+    )
+    assert outcomes[other] == "succeeded"
+    assert "private" not in json.dumps(details).casefold()
+    # The seam envelope was frozen by OperationResult; the projected public
+    # result must still thaw back to ordinary JSON containers.
+    assert json.loads(json.dumps(result.to_dict()))["code"] == "HARDWARE_CLEANUP_FAILED"
+
+
+def test_flash_cleanup_success_returns_worker_abort_envelope_unchanged(
+    tmp_path: Path,
+) -> None:
+    project = _project(tmp_path / "project")
+    recorder = _Recorder()
+    diagnostic = make_program_diagnostic("program-call", OSError(5, "program failed"))
+
+    async def worker_abort_operation(
+        request: object, client: object
+    ) -> OperationResult[object]:
+        return _program_envelope_result("stm32_flash", diagnostic)
+
+    result = _run(
+        flash_workflow(
+            FlashWorkflowRequest(
+                project, tmp_path / "data", "session-a", "probe-a", BUILD_ID, ELF_SHA, True
+            ),
+            _seams=_seams(recorder, operation=worker_abort_operation),
+        )
+    )
+
+    assert result.ok is False
+    assert result.code == "PROBE_BACKEND_ERROR"
+    assert result.message == "Probe worker could not be terminated"
+    details = result.to_dict()["details"]
+    assert details["initiatingCode"] == "PROBE_PROGRAM_FAILED"
+    assert details["programDiagnostic"] == diagnostic
+    assert details["cleanup"]["stages"] == [_worker_abort_cleanup_entry()]
+
+
+@pytest.mark.parametrize("code", ["not-an-error-code", "lower_case", 7])
+def test_flash_cleanup_failure_falls_back_to_safe_initiating_code(
+    tmp_path: Path, code: object
+) -> None:
+    project = _project(tmp_path / "project")
+    recorder = _Recorder()
+
+    async def failed_operation(
+        request: object, client: object
+    ) -> OperationResult[object]:
+        return OperationResult.failure(
+            "stm32_flash",
+            code,  # type: ignore[arg-type]
+            "Probe operation failed",
+            {"private": str(project / "secret")},
+        )
+
+    result = _run(
+        flash_workflow(
+            FlashWorkflowRequest(
+                project, tmp_path / "data", "session-a", "probe-a", BUILD_ID, ELF_SHA, True
+            ),
+            _seams=_seams(recorder, operation=failed_operation, stop_error=True),
+        )
+    )
+
+    assert result.code == "HARDWARE_CLEANUP_FAILED"
+    details = result.to_dict()["details"]
+    assert details["initiatingCode"] == "HARDWARE_INTERNAL_ERROR"
+    assert "programDiagnostic" not in details
+    assert [entry["stage"] for entry in details["cleanup"]["stages"]] == [
+        "workflow-client-close",
+        "workflow-service-stop",
+    ]
+    assert "secret" not in json.dumps(details)
+
+
+def test_flash_cleanup_failure_rejects_unsafe_program_diagnostic(
+    tmp_path: Path,
+) -> None:
+    project = _project(tmp_path / "project")
+    recorder = _Recorder()
+    unsafe = {
+        "schemaVersion": 1,
+        "stage": "program-call",
+        "exceptions": [
+            {
+                "type": "builtins.OSError",
+                "message": r"failed C:\private\firmware.elf",
+                "errno": 5,
+                "winerror": None,
+                "address": None,
+                "resultCode": None,
+            }
+        ],
+    }
+
+    async def failed_operation(
+        request: object, client: object
+    ) -> OperationResult[object]:
+        return OperationResult.failure(
+            "stm32_flash",
+            "PROBE_PROGRAM_FAILED",
+            "Probe worker could not be terminated",
+            {
+                "programDiagnostic": unsafe,
+                "initiatingCode": "PROBE_PROGRAM_FAILED",
+                "cleanup": {
+                    "outcome": "failed",
+                    "stages": [_worker_abort_cleanup_entry()],
+                },
+                "private": str(project / "secret"),
+            },
+        )
+
+    result = _run(
+        flash_workflow(
+            FlashWorkflowRequest(
+                project, tmp_path / "data", "session-a", "probe-a", BUILD_ID, ELF_SHA, True
+            ),
+            _seams=_seams(recorder, operation=failed_operation, stop_error=True),
+        )
+    )
+
+    assert result.code == "HARDWARE_CLEANUP_FAILED"
+    details = result.to_dict()["details"]
+    # The unsafe diagnostic cannot be promoted, so only the safe code fallback
+    # and trusted workflow cleanup survive; no private detail is copied.
+    assert details["initiatingCode"] == "PROBE_PROGRAM_FAILED"
+    assert "programDiagnostic" not in details
+    assert "private" not in json.dumps(details).casefold()
+    assert "secret" not in json.dumps(details)
+
+
+@pytest.mark.parametrize(
+    "prior_cleanup",
+    [
+        {
+            "outcome": "failed",
+            "stages": [_worker_abort_cleanup_entry(), _worker_abort_cleanup_entry()],
+        },
+        {
+            "outcome": "failed",
+            "stages": [dict(_worker_abort_cleanup_entry(), extra="x")],
+        },
+        {"outcome": "failed", "stages": [_worker_abort_cleanup_entry()], "extra": "x"},
+        {"outcome": "failed", "stages": "private"},
+        {"outcome": "succeeded", "stages": [_worker_abort_cleanup_entry()]},
+        {
+            "outcome": "failed",
+            "stages": [make_cleanup_entry("session-close", "succeeded")],
+        },
+    ],
+)
+def test_flash_cleanup_failure_drops_untrusted_prior_worker_cleanup(
+    tmp_path: Path, prior_cleanup: object
+) -> None:
+    project = _project(tmp_path / "project")
+    recorder = _Recorder()
+    diagnostic = make_program_diagnostic("program-call", OSError(5, "program failed"))
+
+    async def worker_abort_operation(
+        request: object, client: object
+    ) -> OperationResult[object]:
+        return _program_envelope_result(
+            "stm32_flash", diagnostic, cleanup=prior_cleanup
+        )
+
+    result = _run(
+        flash_workflow(
+            FlashWorkflowRequest(
+                project, tmp_path / "data", "session-a", "probe-a", BUILD_ID, ELF_SHA, True
+            ),
+            _seams=_seams(recorder, operation=worker_abort_operation, stop_error=True),
+        )
+    )
+
+    assert result.code == "HARDWARE_CLEANUP_FAILED"
+    details = result.to_dict()["details"]
+    # The envelope is not fully closed, so the safe fallback wins, but an
+    # independently valid diagnostic is still preserved.
+    assert details["initiatingCode"] == "PROBE_BACKEND_ERROR"
+    assert details["programDiagnostic"] == diagnostic
+    stages = [entry["stage"] for entry in details["cleanup"]["stages"]]
+    assert "worker-parent-abort" not in stages
+    assert stages == ["workflow-client-close", "workflow-service-stop"]
+
+
+def test_flash_cleanup_failure_without_action_result_uses_fixed_initiating_code(
+    tmp_path: Path,
+) -> None:
+    project = _project(tmp_path / "project")
+
+    async def cancelled_action(
+        request: object, client: object
+    ) -> OperationResult[object]:
+        raise asyncio.CancelledError()
+
+    cancel_result = _run(
+        flash_workflow(
+            FlashWorkflowRequest(
+                project, tmp_path / "cancel-data", "session-a", "probe-a",
+                BUILD_ID, ELF_SHA, True,
+            ),
+            _seams=_seams(_Recorder(), operation=cancelled_action, stop_error=True),
+        )
+    )
+    assert cancel_result.code == "HARDWARE_CLEANUP_FAILED"
+    cancel_details = cancel_result.to_dict()["details"]
+    assert cancel_details["initiatingCode"] == "CALLER_CANCELLED"
+    assert "programDiagnostic" not in cancel_details
+    assert cancel_details["cleanup"]["outcome"] == "failed"
+
+    async def fatal_action(request: object, client: object) -> OperationResult[object]:
+        raise SystemExit(9)
+
+    fatal_result = _run(
+        flash_workflow(
+            FlashWorkflowRequest(
+                project, tmp_path / "fatal-data", "session-b", "probe-a",
+                BUILD_ID, ELF_SHA, True,
+            ),
+            _seams=_seams(_Recorder(), operation=fatal_action, stop_error=True),
+        )
+    )
+    assert fatal_result.code == "HARDWARE_CLEANUP_FAILED"
+    fatal_details = fatal_result.to_dict()["details"]
+    assert fatal_details["initiatingCode"] == "HARDWARE_FATAL_ERROR"
+    assert "programDiagnostic" not in fatal_details
+    assert fatal_details["cleanup"]["outcome"] == "failed"
+
+
+def test_flash_success_with_cleanup_failure_keeps_partial_evidence(
+    tmp_path: Path,
+) -> None:
+    project = _project(tmp_path / "project")
+    recorder = _Recorder()
+
+    async def success_operation(
+        request: object, client: object
+    ) -> OperationResult[object]:
+        return OperationResult.success("stm32_flash", {"status": "accepted"})
+
+    result = _run(
+        flash_workflow(
+            FlashWorkflowRequest(
+                project, tmp_path / "data", "session-a", "probe-a", BUILD_ID, ELF_SHA, True
+            ),
+            _seams=_seams(recorder, operation=success_operation, stop_error=True),
+        )
+    )
+
+    assert result.ok is False
+    assert result.code == "HARDWARE_CLEANUP_FAILED"
+    assert result.data is None
+    details = result.to_dict()["details"]
+    assert details["initiatingCode"] == "OK"
+    assert "programDiagnostic" not in details
+    assert "postFlash" not in details
+    assert [entry["stage"] for entry in details["cleanup"]["stages"]] == [
+        "workflow-client-close",
+        "workflow-service-stop",
+    ]
+    assert details["flashOptions"]["automaticRetry"] is False
+
+
+def test_non_flash_cleanup_failure_does_not_project_worker_envelope(
+    tmp_path: Path,
+) -> None:
+    project = _project(tmp_path / "project")
+    recorder = _Recorder()
+    diagnostic = make_program_diagnostic("program-call", OSError(5, "program failed"))
+
+    async def worker_abort_operation(
+        request: object, client: object
+    ) -> OperationResult[object]:
+        return _program_envelope_result("stm32_variable_read", diagnostic)
+
+    result = _run(
+        variable_read_workflow(
+            VariableReadWorkflowRequest(
+                project, tmp_path / "data", "session-a", "probe-a",
+                BUILD_ID, ELF_SHA, ("x",),
+            ),
+            _seams=_seams(recorder, operation=worker_abort_operation, stop_error=True),
+        )
+    )
+
+    assert result.code == "HARDWARE_CLEANUP_FAILED"
+    assert result.details == {}
+
+
+def _prepare_import(tmp_path: Path) -> tuple[Path, Path, str, str]:
+    project = tmp_path / "import-project"
+    project.mkdir()
+    data_root = tmp_path / "import-data"
+    payload = b"external-payload"
+    (project / "firmware.bin").write_bytes(payload)
+    source_sha = hashlib.sha256(payload).hexdigest()
+    base = (
+        project,
+        data_root,
+        "session-a",
+        "firmware.bin",
+        source_sha,
+        "bin",
+        "stm32f407vg",
+        ((0x0800_0000, 0x1000),),
+        0x0800_0000,
+    )
+    plan = firmware_import_workflow(
+        FirmwareImportRequest(*base, None, False)
+    )
+    assert plan.ok is True, plan.to_dict()
+    applied = firmware_import_workflow(
+        FirmwareImportRequest(*base, str(plan.data["planId"]), True)
+    )
+    assert applied.ok is True, applied.to_dict()
+    import_id = str(applied.data["importId"])
+    admission = load_admission(
+        project, data_root, import_id=import_id, expected_sha256=source_sha
+    )
+    assert admission.target == "stm32f407vg"
+    return project, data_root, import_id, source_sha
+
+
+def test_flash_imported_cleanup_failure_preserves_worker_abort_envelope(
+    tmp_path: Path,
+) -> None:
+    project, data_root, import_id, source_sha = _prepare_import(tmp_path)
+    recorder = _Recorder()
+    diagnostic = make_program_diagnostic("program-call", OSError(5, "program failed"))
+
+    async def worker_abort_operation(
+        request: object, client: object
+    ) -> OperationResult[object]:
+        return _program_envelope_result("stm32_flash_imported", diagnostic)
+
+    result = _run(
+        flash_imported_workflow(
+            FlashImportedWorkflowRequest(
+                project, data_root, "session-a", "probe-a",
+                import_id, source_sha, True,
+            ),
+            _seams=replace(
+                _seams(recorder, stop_error=True),
+                flash_imported=worker_abort_operation,
+            ),
+        )
+    )
+
+    assert result.ok is False
+    assert result.code == "HARDWARE_CLEANUP_FAILED"
+    assert result.data is None
+    details = result.to_dict()["details"]
+    assert details["initiatingCode"] == "PROBE_PROGRAM_FAILED"
+    assert details["programDiagnostic"] == diagnostic
+    stages = details["cleanup"]["stages"]
+    assert stages[0] == _worker_abort_cleanup_entry()
+    assert [entry["stage"] for entry in stages[1:]] == [
+        "workflow-client-close",
+        "workflow-service-stop",
+    ]
+
+
+def test_flash_imported_success_with_cleanup_failure_writes_no_receipt(
+    tmp_path: Path,
+) -> None:
+    project, data_root, import_id, source_sha = _prepare_import(tmp_path)
+    recorder = _Recorder()
+
+    async def success_operation(
+        request: object, client: object
+    ) -> OperationResult[object]:
+        return OperationResult.success(
+            "stm32_flash_imported", {"status": "accepted"}
+        )
+
+    result = _run(
+        flash_imported_workflow(
+            FlashImportedWorkflowRequest(
+                project, data_root, "session-a", "probe-a",
+                import_id, source_sha, True,
+            ),
+            _seams=replace(
+                _seams(recorder, stop_error=True),
+                flash_imported=success_operation,
+            ),
+        )
+    )
+
+    assert result.ok is False
+    assert result.code == "HARDWARE_CLEANUP_FAILED"
+    assert result.data is None
+    details = result.to_dict()["details"]
+    assert details["initiatingCode"] == "OK"
+    assert "postFlash" not in details
+    assert list((data_root / "projects").glob("*/flash-receipts/*.json")) == []
 
 
 def test_cleanup_success_merges_valid_attach_diagnostic_and_keeps_action_result(

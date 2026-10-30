@@ -15,6 +15,7 @@ import stat
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 from stm32_toolkit.debug import (
@@ -60,7 +61,7 @@ from stm32_toolkit.probe import (
     end_debug_handoff,
     flash_firmware,
 )
-from stm32_toolkit.probe.backend import ProbeBackendError
+from stm32_toolkit.probe.backend import ProbeBackendError, extract_program_diagnostic
 from stm32_toolkit.probe.client import (
     ControlAuthorizationClient,
     ProbeClient,
@@ -1219,6 +1220,140 @@ def _stable_exception_result(operation: str, error: BaseException) -> OperationR
     )
 
 
+_FLASH_OPERATIONS = frozenset({"stm32_flash", "stm32_flash_imported"})
+_PROGRAM_FAILED_CODE = "PROBE_PROGRAM_FAILED"
+_WORKER_ABORT_STAGE = "worker-parent-abort"
+
+
+@dataclass(frozen=True)
+class _WorkerAbortEvidence:
+    """One fully validated worker-side terminating-abort envelope."""
+
+    program_diagnostic: dict[str, object]
+    cleanup_entry: dict[str, object]
+
+
+def _exact_mapping(value: object) -> Mapping[str, object] | None:
+    """Accept only a frozen/wire dict, never an arbitrary Mapping subclass."""
+
+    return value if type(value) in {dict, MappingProxyType} else None
+
+
+def _exact_sequence(value: object) -> tuple[object, ...] | None:
+    if type(value) is tuple:
+        return value
+    if type(value) is list:
+        return tuple(value)
+    return None
+
+
+def _validated_worker_abort_entry(value: object) -> dict[str, object] | None:
+    """Reconstruct one closed failed worker-abort entry from untrusted input.
+
+    The incoming fragment is never copied: every field is checked for exact
+    membership and the entry is rebuilt through the existing validator.
+    Malformed, duplicated, extra-fielded or multi-stage fragments are dropped.
+    """
+
+    cleanup = _exact_mapping(value)
+    if cleanup is None or set(cleanup) != {"outcome", "stages"}:
+        return None
+    if cleanup.get("outcome") != "failed":
+        return None
+    stages = _exact_sequence(cleanup.get("stages"))
+    if stages is None or len(stages) != 1:
+        return None
+    entry = _exact_mapping(stages[0])
+    if entry is None or set(entry) != {"stage", "outcome", "reason", "sourceCode"}:
+        return None
+    if entry.get("stage") != _WORKER_ABORT_STAGE or entry.get("outcome") != "failed":
+        return None
+    reason = entry.get("reason")
+    source_code = entry.get("sourceCode")
+    if type(reason) is not str or type(source_code) is not str:
+        return None
+    try:
+        return make_cleanup_entry(
+            _WORKER_ABORT_STAGE, "failed", reason=reason, source_code=source_code
+        )
+    except ValueError:
+        return None
+
+
+def _worker_abort_evidence(details: object) -> _WorkerAbortEvidence | None:
+    """Return the closed worker-abort envelope only when all of it validates."""
+
+    mapping = _exact_mapping(details)
+    if mapping is None:
+        return None
+    diagnostic = extract_program_diagnostic(mapping)
+    if diagnostic is None or mapping.get("initiatingCode") != _PROGRAM_FAILED_CODE:
+        return None
+    entry = _validated_worker_abort_entry(mapping.get("cleanup"))
+    if entry is None:
+        return None
+    return _WorkerAbortEvidence(diagnostic, entry)
+
+
+def _safe_initiating_code(
+    result: OperationResult[Any] | None,
+    *,
+    cancelled: asyncio.CancelledError | None,
+    fatal: BaseException | None,
+) -> str:
+    """Choose the bounded initiating code exposed beside a cleanup failure."""
+
+    if result is not None:
+        if result.ok:
+            return "OK"
+        if _worker_abort_evidence(result.details) is not None:
+            return _PROGRAM_FAILED_CODE
+        code = result.code
+        if type(code) is str and _ERROR_CODE.fullmatch(code) is not None:
+            return code
+        return "HARDWARE_INTERNAL_ERROR"
+    if cancelled is not None:
+        return "CALLER_CANCELLED"
+    if fatal is not None:
+        return "HARDWARE_FATAL_ERROR"
+    return "HARDWARE_INTERNAL_ERROR"
+
+
+def _flash_cleanup_failure_details(
+    result: OperationResult[Any] | None,
+    cleanup: _CleanupOutcome,
+    *,
+    cancelled: asyncio.CancelledError | None,
+    fatal: BaseException | None,
+) -> dict[str, object]:
+    """Closed projection for a flash failure whose workflow cleanup also failed.
+
+    Only a validated program diagnostic, a safe initiating code and canonical
+    cleanup outcomes are retained.  No other result details are copied, and the
+    prior worker cleanup is rebuilt only when it is the exact closed fragment.
+    """
+
+    details: dict[str, object] = {
+        "initiatingCode": _safe_initiating_code(
+            result, cancelled=cancelled, fatal=fatal
+        )
+    }
+    evidence = (
+        _worker_abort_evidence(result.details) if result is not None else None
+    )
+    stages: list[dict[str, object]] = []
+    if evidence is not None:
+        details["programDiagnostic"] = evidence.program_diagnostic
+        stages.append(evidence.cleanup_entry)
+    elif result is not None:
+        diagnostic = extract_program_diagnostic(result.details)
+        if diagnostic is not None:
+            details["programDiagnostic"] = diagnostic
+    stages.extend(cleanup.fragment.to_list())
+    details["cleanup"] = {"outcome": "failed", "stages": stages}
+    return details
+
+
 async def _one_shot(
     *,
     operation: str,
@@ -1284,27 +1419,39 @@ async def _one_shot(
     if isinstance(result, OperationResult):
         result = _with_controlled_cleanup(result, cleanup)
     if cleanup.failed:
-        details: dict[str, object] = {}
         controlled_result = (
             isinstance(result, OperationResult)
             and isinstance(result.details, Mapping)
             and isinstance(result.details.get("controlledSnapshot"), Mapping)
         )
-        if controlled_result:
-            assert isinstance(result, OperationResult)
-            details.update(dict(result.details))
         if (
-            controlled_result
-            and isinstance(result, OperationResult)
-            and "initiatingCode" not in details
+            operation in _FLASH_OPERATIONS
+            and not controlled_result
+            and diagnostic is None
         ):
-            details["initiatingCode"] = result.code
-        if diagnostic is not None:
-            merged = extract_attach_diagnostic(
-                result.details if isinstance(result, OperationResult) else None
+            details: dict[str, object] = _flash_cleanup_failure_details(
+                result if isinstance(result, OperationResult) else None,
+                cleanup,
+                cancelled=cancelled,
+                fatal=fatal,
             )
-            if merged is not None:
-                details["attachDiagnostic"] = merged
+        else:
+            details = {}
+            if controlled_result:
+                assert isinstance(result, OperationResult)
+                details.update(dict(result.details))
+            if (
+                controlled_result
+                and isinstance(result, OperationResult)
+                and "initiatingCode" not in details
+            ):
+                details["initiatingCode"] = result.code
+            if diagnostic is not None:
+                merged = extract_attach_diagnostic(
+                    result.details if isinstance(result, OperationResult) else None
+                )
+                if merged is not None:
+                    details["attachDiagnostic"] = merged
         return _with_attach_guidance(_public_result(
             OperationResult.failure(
                 operation,

@@ -700,6 +700,45 @@ class ProbeBackendWorker:
                     self.abort_owned_execution()
                 except BaseException as abort_error:
                     if diagnostic is None:
+                        # A failed programming call whose owned abort also
+                        # failed must still carry the initiating program
+                        # diagnostic.  Only an ordinary Exception is folded
+                        # into the closed envelope; a bare BaseException keeps
+                        # its existing fatal propagation.
+                        program_diagnostic = (
+                            extract_program_diagnostic(details)
+                            if method in {"flash_elf", "flash_imported_elf"}
+                            else None
+                        )
+                        if program_diagnostic is not None and isinstance(
+                            abort_error, Exception
+                        ):
+                            abort_code = (
+                                abort_error.code
+                                if isinstance(abort_error, ProbeBackendError)
+                                and type(abort_error.code) is str
+                                and abort_error.code in _BACKEND_ERROR_CODES
+                                else "PROBE_BACKEND_ERROR"
+                            )
+                            raise ProbeWorkerError(
+                                "PROBE_BACKEND_ERROR",
+                                "Probe worker could not be terminated",
+                                {
+                                    "programDiagnostic": program_diagnostic,
+                                    "initiatingCode": "PROBE_PROGRAM_FAILED",
+                                    "cleanup": {
+                                        "outcome": "failed",
+                                        "stages": [
+                                            make_cleanup_entry(
+                                                "worker-parent-abort",
+                                                "failed",
+                                                reason="backend-code",
+                                                source_code=abort_code,
+                                            )
+                                        ],
+                                    },
+                                },
+                            ) from None
                         raise
                     abort_code = (
                         abort_error.code

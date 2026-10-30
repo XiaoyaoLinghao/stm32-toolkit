@@ -486,6 +486,274 @@ def test_worker_preserves_both_pre_program_preparation_stages(
             worker.close()
 
 
+class _FakeParentProcess:
+    """Deterministic stand-in for the owned child process handle."""
+
+    def __init__(self) -> None:
+        self.pid = 4321
+
+    def is_alive(self) -> bool:
+        return True
+
+
+class _FakeParentConnection:
+    """Capture parent-to-child frames without a real IPC peer."""
+
+    def __init__(self) -> None:
+        self.sent: list[bytes] = []
+
+    def send_bytes(self, payload: bytes) -> None:
+        self.sent.append(payload)
+
+
+def _parent_only_worker(
+    response: dict[str, object], abort: object
+) -> ProbeBackendWorker:
+    """Build a parent proxy whose IPC and process handles are fully faked.
+
+    This exercises the real ``ProbeBackendWorker.call`` error path without
+    spawning or ever terminating a real child process.
+    """
+
+    worker = object.__new__(ProbeBackendWorker)
+    worker._call_lock = threading.Lock()
+    worker._sequence = 0
+    worker._closed = False
+    worker._connection = _FakeParentConnection()
+    worker._process = _FakeParentProcess()
+    worker._attach_progress_lock = threading.Lock()
+    worker._attach_progress_token = None
+    worker._attach_progress_origin = None
+    worker._attach_progress_events = []
+    worker._attach_progress_last_index = -1
+    worker._attach_progress_frozen_ms = None
+    worker._receive = lambda _deadline: response
+    worker.abort_owned_execution = abort  # type: ignore[method-assign]
+    return worker
+
+
+def _abort_raiser(error: BaseException) -> object:
+    def abort() -> None:
+        raise error
+
+    return abort
+
+
+def _program_failure_response(diagnostic: dict[str, object]) -> dict[str, object]:
+    from stm32_toolkit.probe import worker as module
+
+    return {
+        "version": module._VERSION,
+        "ok": False,
+        "error": {
+            "code": "PROBE_PROGRAM_FAILED",
+            "message": "Probe worker operation failed",
+            "details": {"programDiagnostic": diagnostic},
+        },
+    }
+
+
+@pytest.mark.parametrize("entry", ("flash_elf", "flash_imported_elf"))
+@pytest.mark.parametrize(
+    "stage",
+    (
+        "driver-acquire",
+        "pre-program-reset",
+        "pre-program-halt",
+        "programmer-create",
+        "program-call",
+    ),
+)
+def test_worker_flash_abort_failure_carries_closed_program_envelope(
+    entry: str, stage: str
+) -> None:
+    """A failed program plus failed owned abort keeps the initiating diagnostic.
+
+    Both programming methods and every admitted diagnostic stage must cross
+    the parent boundary unchanged, with only the closed initiating code and
+    one rebuilt failed worker-abort cleanup entry added.
+    """
+
+    diagnostic = make_program_diagnostic(stage, OSError(5, "program failed"))
+    worker = _parent_only_worker(
+        _program_failure_response(diagnostic),
+        _abort_raiser(RuntimeError("private abort text C:\\runtime")),
+    )
+
+    with pytest.raises(ProbeWorkerError) as caught:
+        getattr(worker, entry)(b"ELF")
+
+    assert caught.value.code == "PROBE_BACKEND_ERROR"
+    assert caught.value.message == "Probe worker could not be terminated"
+    assert caught.value.details == {
+        "programDiagnostic": diagnostic,
+        "initiatingCode": "PROBE_PROGRAM_FAILED",
+        "cleanup": {
+            "outcome": "failed",
+            "stages": [
+                {
+                    "stage": "worker-parent-abort",
+                    "outcome": "failed",
+                    "reason": "backend-code",
+                    "sourceCode": "PROBE_BACKEND_ERROR",
+                }
+            ],
+        },
+    }
+    assert "private" not in str(caught.value)
+    assert "runtime" not in str(caught.value).casefold()
+
+
+@pytest.mark.parametrize(
+    ("abort_error", "expected_source"),
+    [
+        (ProbeWorkerError("PROBE_TIMEOUT", "private"), "PROBE_TIMEOUT"),
+        (ProbeWorkerError("PRIVATE_CODE", "private"), "PROBE_BACKEND_ERROR"),
+        (RuntimeError("private"), "PROBE_BACKEND_ERROR"),
+    ],
+)
+def test_worker_flash_abort_failure_uses_backend_code_allowlist(
+    abort_error: BaseException, expected_source: str
+) -> None:
+    diagnostic = make_program_diagnostic("program-call", OSError(5, "program failed"))
+    worker = _parent_only_worker(
+        _program_failure_response(diagnostic), _abort_raiser(abort_error)
+    )
+
+    with pytest.raises(ProbeWorkerError) as caught:
+        worker.flash_elf(b"ELF")
+
+    entry = caught.value.details["cleanup"]["stages"][0]
+    assert entry["sourceCode"] == expected_source
+    assert "private" not in str(caught.value)
+
+
+@pytest.mark.parametrize("entry", ("flash_elf", "flash_imported_elf"))
+def test_worker_flash_successful_abort_preserves_program_failure(entry: str) -> None:
+    """A successful owned abort leaves the existing programming error intact."""
+
+    diagnostic = make_program_diagnostic("program-call", OSError(5, "program failed"))
+    worker = _parent_only_worker(_program_failure_response(diagnostic), lambda: None)
+
+    with pytest.raises(ProbeWorkerError) as caught:
+        getattr(worker, entry)(b"ELF")
+
+    assert caught.value.code == "PROBE_PROGRAM_FAILED"
+    assert caught.value.message == "Probe worker operation failed"
+    assert caught.value.details == {"programDiagnostic": diagnostic}
+
+
+def test_worker_flash_abort_failure_does_not_promote_invalid_diagnostic() -> None:
+    from stm32_toolkit.probe import worker as module
+
+    invalid = {
+        "programDiagnostic": {
+            "schemaVersion": 1,
+            "stage": "program-call",
+            "exceptions": [
+                {
+                    "type": "builtins.OSError",
+                    "message": r"failed C:\private\firmware.elf",
+                    "errno": 5,
+                    "winerror": None,
+                    "address": None,
+                    "resultCode": None,
+                }
+            ],
+        }
+    }
+    response = {
+        "version": module._VERSION,
+        "ok": False,
+        "error": {
+            "code": "PROBE_PROGRAM_FAILED",
+            "message": "Probe worker operation failed",
+            "details": invalid,
+        },
+    }
+    abort_error = RuntimeError("private abort text")
+    worker = _parent_only_worker(response, _abort_raiser(abort_error))
+
+    with pytest.raises(RuntimeError) as caught:
+        worker.flash_elf(b"ELF")
+
+    assert caught.value is abort_error
+    assert "could not be terminated" not in str(caught.value)
+
+
+def test_worker_non_program_abort_failure_rethrows_abort_error() -> None:
+    from stm32_toolkit.probe import worker as module
+
+    response = {
+        "version": module._VERSION,
+        "ok": False,
+        "error": {
+            "code": "PROBE_REGISTER_UNAVAILABLE",
+            "message": "Probe worker operation failed",
+        },
+    }
+    abort_error = RuntimeError("private abort text")
+    worker = _parent_only_worker(response, _abort_raiser(abort_error))
+
+    with pytest.raises(RuntimeError) as caught:
+        worker.read_core_registers(("pc",))
+
+    assert caught.value is abort_error
+
+
+def test_worker_flash_abort_failure_keeps_fatal_base_exception() -> None:
+    class _FatalAbort(BaseException):
+        pass
+
+    diagnostic = make_program_diagnostic("program-call", OSError(5, "program failed"))
+    fatal = _FatalAbort("fatal abort")
+    worker = _parent_only_worker(
+        _program_failure_response(diagnostic), _abort_raiser(fatal)
+    )
+
+    with pytest.raises(_FatalAbort) as caught:
+        worker.flash_elf(b"ELF")
+
+    assert caught.value is fatal
+
+
+def test_worker_attach_abort_failure_still_merges_failed_abort_cleanup() -> None:
+    from stm32_toolkit.probe import worker as module
+
+    diagnostic = make_attach_diagnostic(
+        make_primary("session-open", "backend-code", "PROBE_ATTACH_FAILED")
+    )
+    response = {
+        "version": module._VERSION,
+        "ok": False,
+        "error": {
+            "code": "PROBE_ATTACH_FAILED",
+            "message": "Probe worker operation failed",
+            "details": {"attachDiagnostic": diagnostic},
+        },
+    }
+    worker = _parent_only_worker(
+        response, _abort_raiser(RuntimeError("private abort text"))
+    )
+
+    with pytest.raises(ProbeWorkerError) as caught:
+        worker.open_attach("probe-a", "stm32f407vg")
+
+    assert caught.value.code == "PROBE_BACKEND_ERROR"
+    assert caught.value.message == "Probe worker could not be terminated"
+    merged = caught.value.details["attachDiagnostic"]
+    assert validate_attach_diagnostic(merged) == merged
+    assert merged["cleanup"] == [
+        {
+            "stage": "worker-parent-abort",
+            "outcome": "failed",
+            "reason": "backend-code",
+            "sourceCode": "PROBE_BACKEND_ERROR",
+        }
+    ]
+    assert "private" not in str(caught.value)
+
+
 def test_windows_launcher_preserves_stdlib_identity_and_closes_owned_null_handles(
     monkeypatch,
 ) -> None:
