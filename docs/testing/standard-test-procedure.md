@@ -6,6 +6,8 @@
 
 ## 1. 当前断点与证据
 
+2026-10-30 PYOCD046-ENTRY 正在完成0.46.0离线入口与预算审查，源基线`22f047189fbb0cf1fa7de98e86a2955eb13c5ac1`、产品CodeHead仍`694e1e912adfc017c31b52630a323bd733567688`。见[源分析](../codex/returns/PYOCD046-ENTRY/source-review-2026-10-30.md)、[新执行卡](cards/2026-10-30-pyocd046-constructor.md)及[本轮报告](../codex/returns/PYOCD046-ENTRY/implementation-report.md)。5s保留为接受attach结果的请求期限，10s保留为单次Windows HID读取超时；两者不相加、不延长，清理耗时另记。诊断仍为一次20s父进程deadline加至多2s协作等待，不能据此修改生产连接期限。新卡仍BLOCKED_NOT_EXECUTED：缺新硬件授权和当前供电/独占/变化确认，目标UNKNOWN；本轮不操作硬件、不替换runtime、不推送发布。以下为此前断点。
+
 2026-10-29 PYOCD046-HID 已完成软件验收，最终CodeHead `694e1e912adfc017c31b52630a323bd733567688`，整体SOFTWARE_COMPLETE_HARDWARE_PENDING，见[最终审查与证据](../codex/returns/PYOCD046-HID/implementation-report.md)。获准的单文件修正仅一次原生Write，无错误/越界；SDK目录名限制已改成发行包版本和实际模块来源核验，保留原四项真实SDK行为测试AST并补两个纯元数据来源用例。最终提交重新收集504项；其中6项HID/来源用例由Claude新执行通过，另498项经相关源码/用例/SDK/运行时/环境不变核对，保留原3e19提交的通过证据，不声称504项均在最终提交重跑。主代理干净最终提交另独立8项通过；全部新执行0失败/错误/跳过、实际退出0、源码不变，原生成功数值退出仍null。旧异常日志及未接受判定保留。此结论只通过0.46.0依赖切片的软件门槛，不证明原探针响应或普通烧录成功；service5s/SDK10s限制不变，旧0.45.1实机入口审查不自动覆盖新SDK。后续实机先由Primary准备并独立审查新身份执行卡，再另获明确硬件授权/当前独占确认；当前不READY。无新安装、现有运行时替换、硬件、真实发行打包或远端动作，目标UNKNOWN，原三项目标仍在第1项实机确认阶段。以下为历史断点。
 
 2026-10-29 PYOCD046-HID 新入口两次编辑均正常完成并已离线验证，CodeHead `3e19dd55af87655326f29b85a5bf92a392ded68d`，见[当前完整审查与矩阵](../codex/returns/PYOCD046-HID/implementation-report.md)。A/B实际3次及5次范围内写入，无工具错误/越界；新文件缺失观察额度未用并到期，两次编辑权限已消耗。五个verify调用的原生PowerShell inventory/smoke及45条精确测试命令均真实完成，主代理核对502个新JUnit用例、实际退出0、源码不变及官方wheel347个SDK源码hash；502通过/0失败/错误/跳过。主代理干净精确提交另独立8项通过（重复不累加）。仍REVISION_REQUIRED：新HID测试用candidate-site临时目录名限制SDK来源，正常安装路径会在收集期被拒绝；须按[单文件修正提案](../superpowers/plans/2026-10-29-pyocd046-portability-correction.md)改用发行包元数据/模块来源核验并补路径一致/不一致用例，需额外有界编辑授权。当前全绿不能覆盖源问题；原异常日志不改判接受。无新SDK安装、现有运行时替换、硬件、真实发行打包或远端动作，目标UNKNOWN、完整goal仍在第1项。以下为历史断点。
@@ -215,6 +217,24 @@ SVD 场景在首次硬件操作前以实际 project/target/device、完整 SVD �
 枚举内部可能先由Session.get_current创建probe=None的默认选项Session，并按PYOCD_PROJECT_DIR或child cwd读取默认配置；之后选中探针Session的no_config=true不能覆盖此前行为。见[离线等待路径及配置边界](../codex/returns/SESSION-TRACE/usb-wait-offline-2026-10-29.md)。本执行卡还须在实际启动进程复核PYOCD_PROJECT_DIR、PYOCD_USB_BACKEND均未设置，且原project目录中pyocd.yaml、pyocd.yml、.pyocd.yaml、.pyocd.yml四项均不存在（包括重定向/悬空链接）。若出现任何一项，离线停止并核对，不读取/删除配置或清空覆盖项来制造旧前置。记录可能存在的无探针选项对象，不能把“一次选中探针会话构造”误写成库内只实例化一个Session。此补充前置须取得聚焦的独立复核后，才可进行依赖它的硬件步骤；不增加操作次数、权限或预算。
 
 构造前一次真实faulthandler延迟1秒，repeat=false/exit=false，返回后取消；按固定文件留证attempt/request/claim/READY/GO/result/events、child stderr和私有栈。总体成功要求匹配记录、确认child退出0、一次构造/关闭、无禁止动作、trace/lease/handle清理成功；不要求快于1秒时也产生非空栈。超时、取消、拒绝、身份、持久化或清理任一失败，保留 initiating 与 cleanup 后立即停止，不补枚举/连接/烧录/复位或恢复，也不延长原deadline。自有child仍活着或启动未知时保留UNKNOWN与其自有lease，不强杀、不删除注册表、不关闭活/未知句柄或声称已回收；后续处置另核对真实所有权与授权。一次诊断返回只证明该次自有操作，不能单独完成原超时根因、IPSR=3或烧录验收。
+
+### pyOCD 0.46.0 的连接预算与诊断判读
+
+本节补充上面的构造器入口，适用0.46.0源码候选；实际源、SDK、真实解释器、project/data/output、原lease历史和剩余前置见[2026-10-30执行卡](cards/2026-10-30-pyocd046-constructor.md)。旧0.45.1审查及旧硬件授权不能替代本轮入口审查或新授权。主代理维护本文与执行卡，独立审查者须核对[源路径与限制](../codex/returns/PYOCD046-ENTRY/source-review-2026-10-30.md)后才可依赖它准备后续实机；审查通过也不等于READY。
+
+| 预算/路径 | 当前处理与证据边界 |
+| --- | --- |
+| 普通attach请求5s | 保持ProbeClient缺省timeoutMs=5000。它限制接受成功结果的等待，OBSERVE生命周期排队也消耗此期限；不是CLI连同清理在5s内退出的保证。烧录的编程/回读timeout不覆盖此前attach。 |
+| SDK Windows HID read 10s | 保持10000ms单次读取参数；空响应抛DeviceError。它不约束枚举、native open/write/close或整个Session，多个读取可耗尽诊断总预算。生产请求可能先超时，不能要求一定收到SDK的10s原始异常，也不能自动等到10s再算生产成功。 |
+| 生产attach超时的既有清理 | 已进入backend时有额外1s terminal wait；未终态则用既有worker自有子进程abort，terminate/join1s，仍活则kill/join1s。迟到MODIFY成功会走既有resume、running确认及close，仍报告超时，不继续program；迟到OBSERVE只关闭。未来生产实机卡必须写清这些既有控制副作用及独立预算，不能把“失败即停”解释成无需cleanup或将其隐去。 |
+| 其他生产预算 | 普通worker RPC缺省30s、close5s、HTTP总包络305s均保留；清理分支不同，不承诺统一5s、8s或5s+10s整条命令上限。不得把HTTP包络当成此次诊断可用时限或延长授权。 |
+| 构造器诊断20s+2s | 不经过ProbeClient/Service.attach，也不调用Session.open。一次父deadline覆盖启动/READY/GO/构造/result/退出，之后至多2s协作等待；不是20s每阶段，不把它带入生产默认值。无强杀授权；child未退出时UNKNOWN与其lease保留。native/OS/持久化开销不承诺严格22s墙钟完成。 |
+
+0.46.0仍可能由_TemporaryOpen抑制临时open/identify错误；底层interface已开而link.open尚未返回时，did-open/is-open标记可能尚未设置，既有临时close未必执行。未open的Session.close也可直接返回。因此helper的ok、sessionConstructed、sessionClosed仅证明其窄路径返回及调用次数，不证明健康USB、native句柄已独立关闭、CPU或固件状态；父/child退出、真实lease/health/handle结果另行核对。出现被抑制错误迹象或栈/结果不足时，对“探针响应恢复”记INCONCLUSIVE，不能通过一次构造退出替代普通100kHz连接/烧录/回读验收。
+
+枚举可创建默认选项Session并读取project配置；no_config=true仅保护后建的选中探针Session。继续要求实际启动进程的PYOCD_PROJECT_DIR/PYOCD_USB_BACKEND和project四个默认YAML均不存在（含悬空链接），不能清理覆盖项制造前置；本卡未设置cbuild_run、pack或自定义user_script，不隐式选择新增cbuild/trace功能。一次聚合枚举包含库内多个backend/v1/v2枚举，不能宣称只访问选中探针或只有一次OS调用。
+
+本轮不改变任何产品预算、频率、连接、复位、租约或退出代码。若后续数据要求调整生产总时限或错误捕获，应另冻结设计并由Claude实现和验证；不得为得到通过结果自动加时、重连、降频或转under-reset。构造器成功或失败之后都没有自动后续硬件权限。
 
 ## 3. 状态和所有权
 
