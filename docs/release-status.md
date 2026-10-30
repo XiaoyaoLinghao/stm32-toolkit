@@ -1,5 +1,22 @@
 # Release status and retained limitations
 
+## v1.3.5 published as Latest — 2026-10-30
+
+[v1.3.5 Release](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.3.5) is public and Latest, release428722744,
+published2026-10-30T06:42:28Z (14:42:28 Asia/Shanghai), draft=false/prerelease=false.
+Frozen `eac81a00a9c0cb0f78dcc0b423945605897b4806` and its13 local double-build files were pushed/uploaded and all13
+anonymously downloaded HTTP200 with identical sizes/SHA256. See
+[publication evidence](codex/returns/STM32TK-135/publication-2026-10-30.md).
+The user explicitly authorized formal Latest after the local closeout and a narrow
+in-process existing-credential exception; that guard is now consumed/false.
+
+The1.3.5 per-group non-regression condition passed; permanent unmet numeric gates,
+source/UI reuse, original failures and3 platform symlink skips stay disclosed.
+Final recipient installation/upgrade/rollback, VS Code/MCP and interactive validation
+remain USER_VALIDATION_PENDING (user with Primary support). No original-project,
+existing-runtime or hardware action. Current publication guidance is being updated
+through Claude; frozen package documents remain their build-time snapshot.
+
 ## v1.3.5 Latest delivery authorized; local validation pending — 2026-10-30
 
 The user explicitly requests source/tag push and a Release, selecting formal Latest.

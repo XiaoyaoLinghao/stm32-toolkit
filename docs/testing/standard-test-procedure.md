@@ -6,6 +6,8 @@
 
 ## 1. 当前断点与证据
 
+2026-10-30 v1.3.5已按用户新授权发布正式Latest，Release428722744，发布时间06:42:28Z/14:42:28 Asia/Shanghai，冻结源码`eac81a00a9c0cb0f78dcc0b423945605897b4806`，见[发布证据](../codex/returns/STM32TK-135/publication-2026-10-30.md)。master/新annotated tag非强制原子推送和回读成功，13附件上传/草稿核对/发布均实际退出0，另13文件匿名HTTP200下载长度/hash全部匹配双构建候选，无重试/恢复/删除。用户仅本次固定客户端进程内GCM复用例外已消耗，guard=false；未显示/落盘/传模型/改凭据或全局权限。各组覆盖率不低于1.3.4的条件通过，永久未达门槛/原失败/复用/平台跳过不变。最终安装/IDE/MCP与交互由用户随后验证；没有本机runtime替换、原工程或新硬件动作。当前发布事实已记录，当前源码指引由Claude更新并经独立审查后再快进推送；冻结包与tag不重建/替换。以下为此前断点。
+
 2026-10-30 用户新明确授权推送v1.3.5并发布正式Latest，随后由用户本地验证，见[授权](../codex/returns/STM32TK-135/publication-authorization-2026-10-30.md)和[发布计划](../superpowers/plans/2026-10-30-v135-publication.md)。仅交付已双构建/官方校验通过的冻结`eac81a00a9c0cb0f78dcc0b423945605897b4806`与13原文件；保留覆盖率条件通过、永久未达门槛、原失败/复用/平台跳过和用户安装/IDE/MCP待验证事实。当前PUBLICATION_AUTHORIZED_CREDENTIAL_BRIDGE_PENDING：尚未新推送或创建Release；客户端已准备但没有取得/读取凭据，上版仅v1.3.4的例外不转移。发布为Latest不授予本机安装、runtime替换、原工程/硬件操作或新实机验收；旧实机权限仍消耗。以下为此前断点。
 
 2026-10-30 v1.3.5本地收口与打包验收已ACCEPTED_WITH_FIXES，冻结源码`eac81a00a9c0cb0f78dcc0b423945605897b4806`，见[最终候选记录](../codex/returns/STM32TK-135/candidate-build.md)。原缺backend输入与前导空格失败保留NOT_ACCEPTED，新明确授权后仅A重委派一次，A/B实际构建均退出0，13文件名称/长度/SHA256一致，官方解包验证0/ok。64个构建输入=62依赖+2固定backend；64个交付wheel=62依赖+2产品，backend未作为runtime依赖交付。pyOCD0.46.0、52MCP/9Skills和149个已测Python源码与包闭包匹配。原3,204通过/3平台跳过、逐组覆盖率不低于1.3.4及UI源码绑定复用证据保持，永久未达门槛另列；不声称全仓库/最终提交重新全量运行。A已可恢复归档，B因chat主工作树保护拒绝归档而保留，未绕过/重试。当前授权内软件/说明/集成/包目标完成；更广发行仍LOCAL_CANDIDATE_NOT_QUALIFIED_PENDING_EXTERNAL_VALIDATION：Primary后续capable-host三项symlink与用户最终安装/VS Code/MCP/交互验收待独立安排，旧一次实机证据不扩大。没有新硬件、现有runtime替换、用户运行时安装或远端动作，仅构建器自有临时后端离线安装获准固定依赖。以下为此前断点。

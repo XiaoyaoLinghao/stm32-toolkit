@@ -24,7 +24,7 @@ keeps product/documentation implementation and any delegated checks on the exist
 `deepseek-v4.1-flash[1m]` route. No active PR. No product/test changes or package rebuild
 are needed for this governance step; approved package bytes remain immutable.
 
-## Credential boundary — not yet granted
+## Credential boundary — explicitly granted and consumed
 
 The connected GitHub tools lack Release/asset-upload actions and no installed `gh`
 entry was found. The prior GCM exception named only the v1.3.4 process and does not
@@ -42,4 +42,4 @@ has no delete/replacement mode or automatic retry, and stops on failures. Its se
 authorization file must match the exact client hash before any broker call. Normal Git
 push uses the configured opaque credential helper and does not inspect its secret.
 
-No client credential read or Release mutation has happened at this checkpoint.
+At the initial checkpoint no credential read or Release mutation had happened. The user then explicitly answered **“允许仅此发布进程复用”** for the exact client/hash above. Its bounded sequence completed successfully; the authorization guard is now consumed/false. No secret was printed, persisted, supplied to a model or changed. See [observed publication](publication-2026-10-30.md).

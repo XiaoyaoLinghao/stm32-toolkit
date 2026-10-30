@@ -1,0 +1,223 @@
+{
+  "acceptedBase": "946b1ec5c0dd3c79bb5b5e73ce1650afa5ecb432",
+  "codeHeadBeforePublicationReportCommit": "db4054cab9c538df3311ac471067fffe3797fcd6",
+  "frozenSource": "eac81a00a9c0cb0f78dcc0b423945605897b4806",
+  "tagObject": "828d9549cb9392ce6fabfcab7b85870d23a355f4",
+  "firstPushedMaster": "db4054cab9c538df3311ac471067fffe3797fcd6",
+  "releaseId": 428722744,
+  "latestId": 428722744,
+  "draft": false,
+  "prerelease": false,
+  "publishedAtUtc": "2026-10-30T06:42:28Z",
+  "publishedAtAsiaShanghai": "2026-10-30 14:42:28 +08:00",
+  "htmlUrl": "https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.3.5",
+  "publicVerification": {
+    "status": "VERIFIED_ANONYMOUS_ALL_13",
+    "authenticationUsed": false,
+    "startedAtUtc": "2026-10-30T06:42:59.809208+00:00",
+    "releaseId": 428722744,
+    "tag": "v1.3.5",
+    "source": "eac81a00a9c0cb0f78dcc0b423945605897b4806",
+    "tagObject": "828d9549cb9392ce6fabfcab7b85870d23a355f4",
+    "latestId": 428722744,
+    "draft": false,
+    "prerelease": false,
+    "htmlUrl": "https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.3.5",
+    "publishedAt": "2026-10-30T06:42:28Z",
+    "endpointEvidence": {
+      "release": {
+        "http": 200,
+        "serverDate": "Fri, 30 Oct 2026 06:42:56 GMT",
+        "requestId": "8F6C:2CEDEA:AD46E:BD0AB:6AE43C70"
+      },
+      "latest": {
+        "http": 200,
+        "serverDate": "Fri, 30 Oct 2026 06:42:58 GMT",
+        "requestId": "8F76:36198E:A21BE:B1C27:6AE43C71"
+      },
+      "tag": {
+        "http": 200,
+        "serverDate": "Fri, 30 Oct 2026 06:42:59 GMT",
+        "requestId": "8F86:3381AE:A799F:B74B0:6AE43C73"
+      }
+    },
+    "downloads": [
+      {
+        "name": "CHECKSUMS.sha256",
+        "assetId": 691207945,
+        "http": 200,
+        "bytes": 1073,
+        "sha256": "5c260bd2eeb969ef129a1b53f1e2808c22f5bae0beed8342486d10d279c6b49b",
+        "elapsedSeconds": 2.7180000000007567,
+        "url": "https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/download/v1.3.5/CHECKSUMS.sha256"
+      },
+      {
+        "name": "compatibility.md",
+        "assetId": 691208117,
+        "http": 200,
+        "bytes": 2014,
+        "sha256": "7b868f96f2e1445076ee13ee0300569d17fd96af018bc6134670199c6bd73910",
+        "elapsedSeconds": 2.312999999998283,
+        "url": "https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/download/v1.3.5/compatibility.md"
+      },
+      {
+        "name": "LICENSE",
+        "assetId": 691208013,
+        "http": 200,
+        "bytes": 1075,
+        "sha256": "55edb314745f2b0d3fe09e512726c3bf67cb20ba99fa3cd66859a64f3e6b6af5",
+        "elapsedSeconds": 2.375,
+        "url": "https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/download/v1.3.5/LICENSE"
+      },
+      {
+        "name": "licenses.zip",
+        "assetId": 691208211,
+        "http": 200,
+        "bytes": 413750,
+        "sha256": "debe50472f22dd6ce70059700316a44bd87236b04084cc1c75dfc649f600bdb0",
+        "elapsedSeconds": 3.4690000000009604,
+        "url": "https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/download/v1.3.5/licenses.zip"
+      },
+      {
+        "name": "monitor-assets.json",
+        "assetId": 691208282,
+        "http": 200,
+        "bytes": 970,
+        "sha256": "a6ef07b1c80cad512dbbe1623e7dd631ecf56a93694a6d7170bda9d11a30ef33",
+        "elapsedSeconds": 2.2180000000007567,
+        "url": "https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/download/v1.3.5/monitor-assets.json"
+      },
+      {
+        "name": "release-manifest.json",
+        "assetId": 691208323,
+        "http": 200,
+        "bytes": 15814,
+        "sha256": "fc4501946786dd3e7931560bf5faecbc81e59360fc04fea884b03b4767d167bc",
+        "elapsedSeconds": 2.4690000000009604,
+        "url": "https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/download/v1.3.5/release-manifest.json"
+      },
+      {
+        "name": "sbom.spdx.json",
+        "assetId": 691208378,
+        "http": 200,
+        "bytes": 191430,
+        "sha256": "4dc77ec018e769af0b953d5a9c0f3a2f20f226ee0a8a1afa632b7d7a50b8bb6a",
+        "elapsedSeconds": 2.952999999997701,
+        "url": "https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/download/v1.3.5/sbom.spdx.json"
+      },
+      {
+        "name": "stm32-toolkit-1.3.5-source.zip",
+        "assetId": 691208441,
+        "http": 200,
+        "bytes": 20792828,
+        "sha256": "443f4613c0733dd35689797d3fe8dc64de67e1795508a0a62e8b597ad328faaf",
+        "elapsedSeconds": 13.390999999999622,
+        "url": "https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/download/v1.3.5/stm32-toolkit-1.3.5-source.zip"
+      },
+      {
+        "name": "stm32-toolkit-1.3.5-windows-x86_64.zip",
+        "assetId": 691208672,
+        "http": 200,
+        "bytes": 119000802,
+        "sha256": "19d317d4ddd5838d2902ca7bbc3b41b58fce63f357df16a2d829e1ee2a6d469d",
+        "elapsedSeconds": 20.485000000000582,
+        "url": "https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/download/v1.3.5/stm32-toolkit-1.3.5-windows-x86_64.zip"
+      },
+      {
+        "name": "stm32_monitor-1.3.5-py3-none-any.whl",
+        "assetId": 691209888,
+        "http": 200,
+        "bytes": 1556130,
+        "sha256": "daa22a04c81ebf83c2e90b181a946c27630564f150e7c9f998c38d70bc4fcce1",
+        "elapsedSeconds": 3.8590000000003783,
+        "url": "https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/download/v1.3.5/stm32_monitor-1.3.5-py3-none-any.whl"
+      },
+      {
+        "name": "stm32_toolkit-1.3.5-py3-none-any.whl",
+        "assetId": 691209976,
+        "http": 200,
+        "bytes": 4315937,
+        "sha256": "4966fe31948787ed17b8adf2102775e176bf603f2bbb5a6d0d4fc3cb3a96f48e",
+        "elapsedSeconds": 4.203000000001339,
+        "url": "https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/download/v1.3.5/stm32_toolkit-1.3.5-py3-none-any.whl"
+      },
+      {
+        "name": "THIRD-PARTY-NOTICES.md",
+        "assetId": 691208047,
+        "http": 200,
+        "bytes": 2615,
+        "sha256": "264eedb55fef41747e83efbd7bce817aa761d4d9f4df7923c4785c0fb390c707",
+        "elapsedSeconds": 2.187999999998283,
+        "url": "https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/download/v1.3.5/THIRD-PARTY-NOTICES.md"
+      },
+      {
+        "name": "troubleshooting.md",
+        "assetId": 691210172,
+        "http": 200,
+        "bytes": 1737,
+        "sha256": "641cbb8c6a7acbab1cfc1fa813cbf5cf07cff4ec6f7c595d07db298db532ab89",
+        "elapsedSeconds": 2.375,
+        "url": "https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/download/v1.3.5/troubleshooting.md"
+      }
+    ],
+    "automaticRetry": false,
+    "finishedAtUtc": "2026-10-30T06:44:04.835896+00:00",
+    "all13MatchFrozenCandidate": true
+  },
+  "sourcePush": {
+    "startedAtEpoch": 1793342299.710354,
+    "userAuthorized": "推送v1.3.5; 直接作为正式 Latest",
+    "sourceHead": "db4054cab9c538df3311ac471067fffe3797fcd6",
+    "frozenTagTarget": "eac81a00a9c0cb0f78dcc0b423945605897b4806",
+    "remoteMasterBefore": "7e578ca1395ffa3b9743bef5a9fe55c40912eed6",
+    "remoteAction": "atomic non-force master fast-forward plus new annotatedv1.3.5",
+    "credentialHandling": "Normal Git opaque configured helper only; no credential inspection",
+    "status": "PUSHED_AND_READ_BACK",
+    "steps": [
+      {
+        "step": "create-annotated-tag",
+        "exitCode": 0
+      },
+      {
+        "step": "atomic-non-force-push",
+        "argv": [
+          "git",
+          "push",
+          "--atomic",
+          "origin",
+          "db4054cab9c538df3311ac471067fffe3797fcd6:refs/heads/master",
+          "refs/tags/v1.3.5"
+        ],
+        "exitCode": 0
+      }
+    ],
+    "tagObject": "828d9549cb9392ce6fabfcab7b85870d23a355f4",
+    "remoteRefsAfter": {
+      "refs/heads/master": "db4054cab9c538df3311ac471067fffe3797fcd6",
+      "refs/tags/v1.3.5": "828d9549cb9392ce6fabfcab7b85870d23a355f4",
+      "refs/tags/v1.3.5^{}": "eac81a00a9c0cb0f78dcc0b423945605897b4806"
+    },
+    "exitCode": 0,
+    "finishedAtEpoch": 1793342309.5827358
+  },
+  "clientSha256": "801bc8c2da124d698e6e78a1c2059b852c322ac9ab8a4674bb4d38e6714cc434",
+  "credentialHandling": "Explicit user exception only for exact one-v135 client sequence; existing credential used inside process only, never printed/persisted/placed in arguments/supplied to Claude/changed. Guard now consumed/false before any future broker call.",
+  "rawEvidenceRoot": "D:\\codex-tmp\\r135-publication",
+  "rawSha256": {
+    "publication-preflight.json": "f2df1aa751b7020c1480f66dba5e7c48375d3046a6ec038ae6c484dd4b776056",
+    "source-push-evidence.json": "0584f488de19a7302e980cc27ad9f4b78a13d6976712cbe076087ded6ef70635",
+    "release-notes-v135.md": "7ef6d85141b864c2a2db2dd70d3aa860ef93f191d206a40394c7df0882565e15",
+    "github-v135-inspect.json": "253c469929c096364d6967f16004a673f015c4eac5f788097f4568df2ed0885c",
+    "github-v135-create-draft.json": "d7c8ac68f0bd0257d3a33493c1b00715e0e16feb722edef6f57f7e176aefdee1",
+    "github-v135-upload.json": "1e7744c81d35f4a0e7d3937414da81648cfe7ae4b21e048712a2e6d0318ae15f",
+    "github-v135-verify-draft.json": "1e7744c81d35f4a0e7d3937414da81648cfe7ae4b21e048712a2e6d0318ae15f",
+    "github-v135-publish.json": "f7475044982459192a49de91922cdabae1bf009b1995f1dbd359bb2b5c6cce07",
+    "public-verification.json": "1e80d7dc8c9c5a622bf72df416d208133693e2c8ec66d7f2077d0ebbffc4fef9",
+    "credential-authorization.json": "200c02a10ef5d0b2a6b869cc2f2629c82ce5925dd92a27a7008a7c14a7f7513b"
+  },
+  "currentGuidance": "PENDING_CLAUDE_DOCUMENTATION_EDIT_AND_REVIEW",
+  "technicalQualification": "Coverage non-regression condition met; permanent unmet gates/reuse/original failures/platform skips retained. User-owned final installation/IDE/MCP validation pending.",
+  "installedRuntimeChanged": false,
+  "hardwarePerformed": false,
+  "remoteAuthority": "User explicitly requested push/Release and chose formal Latest; no unrelated ref deletion/PR mutation/force push"
+}
