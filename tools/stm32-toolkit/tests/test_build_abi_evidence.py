@@ -731,6 +731,35 @@ def test_identity_rejects_forged_or_extra_float_abi_evidence(
         validate_identity_document(forged)
 
 
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        {"reason": "shape-valid but hand-edited resolver reason"},
+        {"origin": "declared"},
+    ],
+    ids=["reason", "origin"],
+)
+def test_identity_rejects_semantically_altered_float_abi_even_with_recomputed_build_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutation: dict
+):
+    root = _prepare_no_git(tmp_path, monkeypatch)
+    install_fake_cmake(monkeypatch, tmp_path)
+    write_report(root, _inspection(HARD_TARGET))
+    assert run_build(BuildRequest(project_root=root, preset="arm-debug")).ok is True
+    identity = read_json(identity_path(root))
+    assert identity["floatAbi"]["origin"] == "inferred"
+
+    # The alteration keeps the closed shape (a non-empty reason literal, an
+    # admitted origin) and the hash is rebuilt, so only resolver semantics can
+    # reject the relabelled decision.
+    altered = {**identity, "floatAbi": {**identity["floatAbi"], **mutation}}
+    altered["buildId"] = compute_build_id(altered)
+    assert altered["buildId"] != identity["buildId"]
+
+    with pytest.raises(BuildError):
+        validate_identity_document(altered)
+
+
 def test_legacy_identity_hash_is_unchanged_and_present_evidence_changes_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
@@ -803,6 +832,36 @@ def test_one_sided_receipt_evidence_is_not_admitted(
     assert error.value.details.get("field") == "buildResult"
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [None, True, {**_captured(HARD_TARGET), "unexpected": "field"}],
+    ids=["null", "bool", "extra-key"],
+)
+def test_malformed_receipt_float_abi_is_not_admitted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, payload: object
+):
+    root = prepare_project(tmp_path)
+    install_fake_cmake(monkeypatch, tmp_path)
+    assert run_build(BuildRequest(project_root=root, preset="arm-debug")).ok is True
+    identity = read_json(identity_path(root))
+    receipt = read_json(receipt_path(root))
+    assert "floatAbi" not in identity and "floatAbi" not in receipt
+    # A forged null, boolean or arbitrary extra never becomes usable evidence.
+    receipt["floatAbi"] = payload
+    write_json(receipt_path(root), receipt)
+
+    context = build_project_context(root, tmp_path / "data", "session-a")
+    assert context.ok is True, context.to_dict()
+    assert context.data["build"]["elfFresh"] is False
+    assert context.data["build"]["buildId"] is None
+
+    with pytest.raises(_FlashFailure) as error:
+        load_fresh_firmware_facts(root)
+    assert error.value.code == "FIRMWARE_IDENTITY_MISMATCH"
+    assert error.value.details.get("field") == "buildResult"
+    assert error.value.details.get("rule") == "identity"
+
+
 @pytest.mark.parametrize("git_repo", [True, False], ids=["schema1", "schema2"])
 def test_forged_toolkit_version_is_not_admitted(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, git_repo: bool
@@ -837,6 +896,36 @@ def test_forged_toolkit_version_is_not_admitted(
         # flash admission compares toolkitVersion for schema 1).
         assert context.data["build"]["elfFresh"] is False
         assert context.data["build"]["buildId"] is None
+
+
+@pytest.mark.parametrize("git_repo", [True, False], ids=["schema1", "schema2"])
+def test_receipt_only_wrong_toolkit_version_is_not_admitted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, git_repo: bool
+):
+    root = prepare_project(tmp_path, git_repo=git_repo)
+    if not git_repo:
+        install_fake_git(monkeypatch, tmp_path, "exit1")
+    install_fake_cmake(monkeypatch, tmp_path)
+    assert run_build(BuildRequest(project_root=root, preset="arm-debug")).ok is True
+    identity = read_json(identity_path(root))
+    receipt = read_json(receipt_path(root))
+    assert identity["toolkitVersion"] == __version__
+
+    # Only the receipt is relabelled; the identity and its build ID stay as
+    # written, so this is a receipt/identity disagreement, never a stale build.
+    receipt["toolkitVersion"] = "0.0.0-forged"
+    write_json(receipt_path(root), receipt)
+
+    context = build_project_context(root, tmp_path / "data", "session-a")
+    assert context.ok is True, context.to_dict()
+    assert context.data["build"]["elfFresh"] is False
+    assert context.data["build"]["buildId"] is None
+
+    with pytest.raises(_FlashFailure) as error:
+        load_fresh_firmware_facts(root)
+    assert error.value.code == "FIRMWARE_IDENTITY_MISMATCH"
+    assert error.value.details.get("field") == "buildResult"
+    assert error.value.details.get("rule") == "identity"
 
 
 @pytest.mark.parametrize("git_repo", [True, False], ids=["schema1", "schema2"])

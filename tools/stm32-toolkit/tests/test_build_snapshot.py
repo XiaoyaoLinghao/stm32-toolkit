@@ -19,6 +19,7 @@ from pathlib import Path
 import pytest
 
 import stm32_toolkit.mcp_server as mcp_mod
+from stm32_toolkit import __version__
 from stm32_toolkit.build import BuildRequest, run_build
 from stm32_toolkit.build import identity as identity_mod
 from stm32_toolkit.build import runner as runner_mod
@@ -214,6 +215,7 @@ def test_build_result_document_keeps_schema_one_key_order(tmp_path: Path):
         "stage",
         "code",
         "buildId",
+        "toolkitVersion",
         "gitHead",
         "gitDirty",
         "inputSnapshotSha256",
@@ -227,6 +229,7 @@ def test_build_result_document_keeps_schema_one_key_order(tmp_path: Path):
         "warnings",
     ]
     assert document["gitDirty"] is False
+    assert document["toolkitVersion"] == __version__
 
 
 # ---------------------------------------------------------------------------

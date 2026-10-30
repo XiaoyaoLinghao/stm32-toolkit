@@ -46,6 +46,112 @@
       "minLength": 1,
       "maxLength": 64
     },
+    "floatAbi": {
+      "description": "Optional captured conversion-report float-ABI provenance. It is reported evidence only: baselineVerified is always false. Blocked or already-verified provenance is never admitted.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "compiler",
+        "compilerVersion",
+        "cpu",
+        "rawFpu",
+        "rawFloatAbi",
+        "rawRvdsVp",
+        "fpu",
+        "selectedAbi",
+        "origin",
+        "ruleId",
+        "reason",
+        "baselineVerified",
+        "warning",
+        "nextStep",
+        "reportPath",
+        "reportSha256"
+      ],
+      "properties": {
+        "compiler": {
+          "type": "string",
+          "minLength": 1
+        },
+        "compilerVersion": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cpu": {
+          "type": "string",
+          "minLength": 1
+        },
+        "rawFpu": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "rawFloatAbi": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "rawRvdsVp": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "fpu": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "selectedAbi": {
+          "enum": [
+            "soft",
+            "softfp",
+            "hard",
+            null
+          ]
+        },
+        "origin": {
+          "enum": [
+            "inferred",
+            "declared",
+            "not-applicable"
+          ]
+        },
+        "ruleId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "baselineVerified": {
+          "const": false
+        },
+        "warning": {
+          "type": "string",
+          "minLength": 1
+        },
+        "nextStep": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reportPath": {
+          "const": "artifacts/migration/conversion-report.json"
+        },
+        "reportSha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
     "gitHead": {
       "anyOf": [
         {
