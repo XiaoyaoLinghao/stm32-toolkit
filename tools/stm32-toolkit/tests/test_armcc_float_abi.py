@@ -20,7 +20,9 @@ from stm32_toolkit.generation import plan_project_configuration
 from stm32_toolkit.keil import inspect_keil
 from stm32_toolkit.migration import (
     apply_keil_conversion,
+    apply_keil_delivery,
     plan_keil_conversion,
+    plan_keil_delivery,
 )
 from stm32_toolkit.migration.float_abi import (
     float_abi_evidence,
@@ -33,6 +35,9 @@ from stm32_toolkit.migration.model import (
 from stm32_toolkit.migration.preflight import preflight_keil_conversion
 from stm32_toolkit.project_model import load_project_model
 
+from test_migration_delivery import REPORT_PATH as DELIVERY_REPORT_PATH
+from test_migration_delivery import make_repo as _delivery_repo
+from test_migration_delivery import output_parent as _delivery_output_parent
 from test_migration_plan import (
     CONVERSION_PRODUCTS,
     CORE_CPU,
@@ -568,3 +573,91 @@ def test_resolve_decision_is_pure_and_matches_evidence(tmp_path: Path) -> None:
     assert first.origin == "inferred"
     assert first.abi == "hard"
     assert first.blocked is False
+
+
+# ---------------------------------------------------------------------------
+# independent delivery PLAN/APPLY presentation
+# ---------------------------------------------------------------------------
+
+
+def _delivery_fixture(tmp_path: Path, *, name: str, abi: str | None = None):
+    """Disposable no-Git delivery source plus one absent destination."""
+    repo = _delivery_repo(
+        tmp_path,
+        name=name,
+        uvprojx_kwargs={"cpu": CORE_CPU, "fpu": abi},
+    )
+    destination = (
+        _delivery_output_parent(tmp_path, f"{name}-out") / "gcc-project"
+    )
+    plan = plan_keil_delivery(repo, destination, inspect_keil(repo))
+    return repo, destination, plan
+
+
+def test_delivery_plan_and_apply_expose_inferred_float_abi(
+    tmp_path: Path,
+) -> None:
+    repo, destination, plan = _delivery_fixture(
+        tmp_path, name="delivery-inferred"
+    )
+    evidence = float_abi_evidence(plan.inspection)
+    # Absent uFloatingPoint on ARMCC Cortex-M4 FPU2 keeps the narrow
+    # default-hard inference, still unverified against the binary.
+    assert evidence["origin"] == "inferred"
+    assert evidence["selectedAbi"] == "hard"
+    assert evidence["rawFloatAbi"] is None
+    assert evidence["baselineVerified"] is False
+
+    preview = plan.to_dict()
+    assert preview["floatAbi"] == evidence
+    # The ABI warning is added beside, never instead of, the existing
+    # delivery warning.
+    assert len(preview["warnings"]) == 2
+    assert evidence["warning"] in preview["warnings"]
+    assert any(
+        "Inputs outside the source tree" in warning
+        for warning in preview["warnings"]
+    )
+
+    result = apply_keil_delivery(plan, authorized=True, plan_id=plan.plan_id)
+    assert result.ok is True, result.to_dict()
+    data = result.data
+    assert data["floatAbi"] == evidence
+    assert data["warnings"] == preview["warnings"]
+
+    report = json.loads(
+        (destination / DELIVERY_REPORT_PATH).read_text(encoding="utf-8")
+    )
+    assert report["floatAbi"] == evidence
+    assert not (repo / ".git").exists()
+
+
+def test_delivery_plan_and_apply_expose_declared_softfp(tmp_path: Path) -> None:
+    _repo_path, destination, plan = _delivery_fixture(
+        tmp_path, name="delivery-softfp", abi="softfp"
+    )
+    evidence = float_abi_evidence(plan.inspection)
+    assert evidence["origin"] == "declared"
+    assert evidence["selectedAbi"] == "softfp"
+    assert evidence["rawFloatAbi"] == "softfp"
+    assert evidence["baselineVerified"] is False
+
+    preview = plan.to_dict()
+    assert preview["floatAbi"] == evidence
+    assert len(preview["warnings"]) == 2
+    assert evidence["warning"] in preview["warnings"]
+    assert any(
+        "Inputs outside the source tree" in warning
+        for warning in preview["warnings"]
+    )
+
+    result = apply_keil_delivery(plan, authorized=True, plan_id=plan.plan_id)
+    assert result.ok is True, result.to_dict()
+    data = result.data
+    assert data["floatAbi"] == evidence
+    assert data["warnings"] == preview["warnings"]
+
+    report = json.loads(
+        (destination / DELIVERY_REPORT_PATH).read_text(encoding="utf-8")
+    )
+    assert report["floatAbi"] == evidence

@@ -37,6 +37,7 @@ from stm32_toolkit.generation.managed_files import (
 )
 from stm32_toolkit.keil import KeilInspection
 from stm32_toolkit.memory_layout import MemoryLayout
+from stm32_toolkit.migration.float_abi import float_abi_evidence
 from stm32_toolkit.migration.model import (
     FilePatch,
     IncludeMerge,
@@ -302,6 +303,11 @@ class DeliveryPlan:
             payload["includeMerges"] = [
                 merge.to_report_dict() for merge in self.include_merges
             ]
+        # Additive, derived presentation only: this is the same authoritative
+        # float-ABI evidence the conversion report carries, resolved from the
+        # selected inspection.  It adds no new identity input: like the debug
+        # guidance below it is not hashed into plan or content identity.
+        payload["floatAbi"] = float_abi_evidence(self.inspection)
         # Additive, derived presentation only: the shared post-migration debug
         # description is never hashed into plan/content identity, never a
         # blocker and never an authorization.  It is added last so historical
@@ -1317,6 +1323,9 @@ def _build_delivery(
         warnings=(
             "Inputs outside the source tree are never guessed; unresolved"
             " dependencies remain conversion diagnostics.",
+            # The same bounded ABI warning the conversion report and the plan's
+            # floatAbi evidence expose; it is presentation, never a blocker.
+            str(float_abi_evidence(analysis.inspection)["warning"]),
         ),
     )
     # Private, non-identity inventory evidence for change diagnostics only.
@@ -1961,6 +1970,9 @@ def _apply(plan: DeliveryPlan) -> dict[str, object]:
         "reportSha256": fresh.report_sha256,
         "managedManifestPath": fresh.managed_manifest_path,
         "managedManifestSha256": fresh.managed_manifest_sha256,
+        # Same derived evidence as the PLAN preview and the conversion report;
+        # presentation only, never part of the plan or output identity.
+        "floatAbi": float_abi_evidence(fresh.inspection),
         "copiedFiles": sum(1 for output in fresh.outputs if output.kind == "copied"),
         "replacedFiles": sum(
             1 for output in fresh.outputs if output.kind == "replaced"
