@@ -621,7 +621,7 @@ def test_delivery_plan_and_apply_expose_inferred_float_abi(
 
     result = apply_keil_delivery(plan, authorized=True, plan_id=plan.plan_id)
     assert result.ok is True, result.to_dict()
-    data = result.data
+    data = result.to_dict()["data"]
     assert data["floatAbi"] == evidence
     assert data["warnings"] == preview["warnings"]
 
@@ -653,7 +653,7 @@ def test_delivery_plan_and_apply_expose_declared_softfp(tmp_path: Path) -> None:
 
     result = apply_keil_delivery(plan, authorized=True, plan_id=plan.plan_id)
     assert result.ok is True, result.to_dict()
-    data = result.data
+    data = result.to_dict()["data"]
     assert data["floatAbi"] == evidence
     assert data["warnings"] == preview["warnings"]
 
