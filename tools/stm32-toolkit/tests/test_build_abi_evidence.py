@@ -47,12 +47,14 @@ from stm32_toolkit.probe.flash import _FlashFailure, load_fresh_firmware_facts
 from stm32_toolkit.project_model import load_project_model
 
 from test_build_runner import (
+    build_map_text,
     hit_records,
     install_fake_cmake,
     install_fake_git,
     prepare_project,
     read_json,
 )
+from test_flash import _elf_with_flash_segment
 
 DEBUG_LOG = "artifacts/migration/build.log"
 DEBUG_RESULT = "artifacts/migration/build-result.json"
