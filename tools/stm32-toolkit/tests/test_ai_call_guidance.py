@@ -550,28 +550,29 @@ def test_documentation_describes_independent_delivery_and_root_rebinding() -> No
     # The user guide owns the published v1.3.3 independent-delivery contract
     # and the explicit (never automatic) rebinding of the delivered project
     # root.  Independent delivery was introduced in v1.3.3 and is retained in
-    # the current published v1.3.5, whose previous published release is
-    # v1.3.4: the historical v1.3.0 candidate note may still say 本地未发布, so
+    # the current published v1.3.6, whose previous published release is
+    # v1.3.5: the historical v1.3.0 candidate note may still say 本地未发布, so
     # that phrase alone cannot support an unpublished classification.
     assert "keil convert --destination" in guide
-    assert "[v1.3.5 Release](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.3.5)" in guide
-    assert "当前公开 Latest **v1.3.5**" in guide
+    assert "[v1.3.6 Release](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.3.6)" in guide
+    assert "当前公开 Latest **v1.3.6**" in guide
     # The previous published release stays a supported historical delivery
     # route, and the current public release is the only version described as
     # Latest.  Requiring both keeps a stale guide that either omits the current
-    # release or still advertises v1.3.4 as Latest from passing.
-    assert "[v1.3.4 Release](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.3.4)" in guide
-    assert "v1.3.4 是上一公开版本" in guide
+    # release or still advertises v1.3.5 as Latest from passing.
+    assert "[v1.3.5 Release](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.3.5)" in guide
+    assert "v1.3.5 是上一公开版本" in guide
     assert "[v1.3.3 Release](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.3.3)" in guide
     # Obsolete local-candidate qualifications for v1.3.4 must be gone now that
     # the release is observed public.
     assert "本工作树的现行本地候选是 **v1.3.4**" not in guide
     assert "它尚未完成资格化与发布" not in guide
     assert "只有协调者记录远端发布成功后才会成为公开版本" not in guide
-    # v1.3.5 was observed public as Latest on 2026-10-30, so a guide that still
-    # marks it as an unpublished candidate, or that keeps advertising v1.3.4 as
-    # the current Latest, is stale and must fail.
+    # v1.3.6 became public as Latest on 2026-10-31, so a guide that still
+    # marks the previous v1.3.5 as the current Latest, or that advertises any
+    # older release as Latest, is stale and must fail.
     assert "当前公开 Latest **v1.3.4**" not in guide
+    assert "当前公开 Latest **v1.3.5**" not in guide
     assert "v1.3.5 是尚未发布的本地候选" not in guide
     assert "尚未发布的 v1.3.5 本地候选" not in guide
     assert "未发布的 v1.3.5 本地候选" not in guide
