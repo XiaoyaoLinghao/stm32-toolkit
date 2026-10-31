@@ -177,8 +177,11 @@ def _fake_authorities(monkeypatch: pytest.MonkeyPatch, *, origin: str = "keil") 
     )
     monkeypatch.setattr(recovery_workflows, "_load_project_model", lambda _root: model)
 
-    def snapshot_provider(_model: object, *, policy: str) -> SimpleNamespace:
-        assert policy == LEGACY_INPUT_DISCOVERY_POLICY
+    def snapshot_provider(_model: object, *, policy: str | None = None) -> SimpleNamespace:
+        # _build_data explicitly requests the legacy policy; _current_identity
+        # also takes its own default-policy identity snapshot with no policy.
+        if policy is not None:
+            assert policy == LEGACY_INPUT_DISCOVERY_POLICY
         return SimpleNamespace(sha256="c" * 64)
 
     monkeypatch.setattr(
@@ -308,8 +311,11 @@ def test_real_replay_diagnostic_acceptance_chain_reaches_revision_seven(
 
     monkeypatch.setattr(recovery_workflows, "_build_project_context", build_context)
 
-    def snapshot_provider(_model: object, *, policy: str) -> SimpleNamespace:
-        assert policy == LEGACY_INPUT_DISCOVERY_POLICY
+    def snapshot_provider(_model: object, *, policy: str | None = None) -> SimpleNamespace:
+        # Only the explicit legacy request from _build_data is policy-checked;
+        # _current_identity takes its default-policy snapshot with no policy.
+        if policy is not None:
+            assert policy == LEGACY_INPUT_DISCOVERY_POLICY
         return SimpleNamespace(
             sha256=before["inputSnapshotSha256"] if build_calls <= 1 else after["inputSnapshotSha256"]
         )
