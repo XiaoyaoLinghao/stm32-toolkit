@@ -6,6 +6,8 @@
 
 ## 1. 当前断点与证据
 
+2026-10-31 v1.3.6 已正式发布为 Latest（Release429783935，07:22:13Z），源码/tag 冻结于 `b00cbc4edee191712dd6da7e1beb073ff4a74f28`；13 附件匿名 HTTP200 完整下载大小与 SHA-256 全部匹配，见[发布与文档验收](../codex/returns/STM32TK-136/publication-2026-10-31.md)。修复与版本此前已在远端 master `4a0404387d603f14bd641772256d5cbd200ffbc3`，候选专属覆盖例外已获用户明确批准，永久未达门槛仍 UNMET。发布文档最终 CodeHead `119fe0b0f1783224a532bd44c8edffd71a704caf` 经独立干净树完整差异审查为 ACCEPTED_WITH_FIXES；29项定向检查及最终5项受影响复验通过，重叠不累计。两次文档委派的失败/越界原审计不接受、不追认；用户另行批准的一次4文件6处精确修改原生审计通过，4处文案问题已解决。报告提交与随后正常 master 推送/回读在本地交付证据单独记录，不重建包、不挪tag、不操作原工程、runtime或硬件。用户最终安装/IDE/MCP仍待验。以下保留历史断点。
+
 2026-10-31 v1.3.6 工具侧修复和版本更新已按用户授权合并并非强制推送至 master，远端回读为 `0d60bbb67e3cb5757a8ea8a89db9ce8a1a2c829b`，见[源码交付与发布断点](../codex/returns/STM32TK-136/source-delivery-2026-10-31.md)。冻结包源码仍为 `b00cbc4edee191712dd6da7e1beb073ff4a74f28`，13 附件双构建完全一致、官方验证 0/ok；9720 个不同 Python 用例通过、20 个具名跳过。软件已 ACCEPTED_WITH_FIXES；正式 Release 为 COVERAGE_DECISION_PENDING，三组覆盖率较 v1.3.5 提高但仍未达永久门槛，旧单版本例外不转移。尚未新建 tag/Release、安装或操作硬件。该记录后续提交只补交付事实，不改冻结包；以下保留原验收断点。
 
 2026-10-31 v1.3.6 工具侧软件切片已 ACCEPTED_WITH_FIXES，冻结 CodeHead `b00cbc4edee191712dd6da7e1beb073ff4a74f28`，见[完整实现与验收报告](../codex/returns/STM32TK-136/implementation-report.md)。全部 265 个 Python 测试文件按最终产品/测试字节绑定核对：9720 个不同用例通过、20 跳过，无未解决失败；不是单一最终提交全套重跑。原失败、越界、权限拒绝和 pending 保留，环境对照不改断言/阈值。13 附件双构建一致及官方验证 0/ok；UI 明确按未变字节复用。永久覆盖率状态 `COVERAGE_DECISION_PENDING`，旧例外不转移，比较不等于发布授权。用户已授权 master 合并及 Release，但此报告尚未远端修改、发布、替换 runtime 或操作硬件。用户最终安装/IDE/MCP 与具名跳过待后续验证。以下保留此前断点。

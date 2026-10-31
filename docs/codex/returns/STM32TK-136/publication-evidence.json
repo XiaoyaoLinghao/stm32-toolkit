@@ -1,0 +1,454 @@
+{
+  "status": "PUBLISHED_LATEST_PUBLIC_ASSETS_VERIFIED",
+  "packageSource": "b00cbc4edee191712dd6da7e1beb073ff4a74f28",
+  "release": {
+    "releaseId": 429783935,
+    "url": "https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.3.6",
+    "publishedAt": "2026-10-31T07:22:13Z",
+    "latest": true
+  },
+  "tagObject": "0376b7136ea9f6cb12bde0037f1f39fe14c58890",
+  "preCloseoutMaster": "4a0404387d603f14bd641772256d5cbd200ffbc3",
+  "anonymousDownload": {
+    "complete": true,
+    "credentialsRead": false,
+    "downloads": [
+      {
+        "name": "CHECKSUMS.sha256",
+        "httpStatus": 200,
+        "bytes": 1073,
+        "sha256": "929e326afa8c98cf6e60cdad428c52c07232050b13522a69287039d5c9003512",
+        "match": true,
+        "elapsedSeconds": 2.079932928085327
+      },
+      {
+        "name": "LICENSE",
+        "httpStatus": 200,
+        "bytes": 1075,
+        "sha256": "55edb314745f2b0d3fe09e512726c3bf67cb20ba99fa3cd66859a64f3e6b6af5",
+        "match": true,
+        "elapsedSeconds": 1.8695378303527832
+      },
+      {
+        "name": "THIRD-PARTY-NOTICES.md",
+        "httpStatus": 200,
+        "bytes": 2615,
+        "sha256": "49898136a6348ace740de0d7bbdb1ba702e8793120a509c7a85d4999ecace535",
+        "match": true,
+        "elapsedSeconds": 1.9239399433135986
+      },
+      {
+        "name": "compatibility.md",
+        "httpStatus": 200,
+        "bytes": 2014,
+        "sha256": "6935340ad5bf087e2245f7cef66c96f8a37e9e0aa392ae42f67ccd87c97d59fc",
+        "match": true,
+        "elapsedSeconds": 2.0127956867218018
+      },
+      {
+        "name": "licenses.zip",
+        "httpStatus": 200,
+        "bytes": 413750,
+        "sha256": "161201fd9349e96b385a577211e79606eb738623ae14d20049b89e19b44b78d3",
+        "match": true,
+        "elapsedSeconds": 5.740559816360474
+      },
+      {
+        "name": "monitor-assets.json",
+        "httpStatus": 200,
+        "bytes": 970,
+        "sha256": "d4d425cdc4c73c93127198d0a96f6fb93db20b9a7c4e8570afe77be53769114f",
+        "match": true,
+        "elapsedSeconds": 1.926225185394287
+      },
+      {
+        "name": "release-manifest.json",
+        "httpStatus": 200,
+        "bytes": 15814,
+        "sha256": "14bf29d609ee84e19e3664b970a538a3b6129d724303e307db8fe6d5b0616095",
+        "match": true,
+        "elapsedSeconds": 2.23770809173584
+      },
+      {
+        "name": "sbom.spdx.json",
+        "httpStatus": 200,
+        "bytes": 191430,
+        "sha256": "2765d87c0ceb3e81c98d314a98f1bb9d7c3e54e4bb137bf0639b796c08c108de",
+        "match": true,
+        "elapsedSeconds": 3.950798511505127
+      },
+      {
+        "name": "stm32-toolkit-1.3.6-source.zip",
+        "httpStatus": 200,
+        "bytes": 20984573,
+        "sha256": "6c5db990e8fb1b1a809ed7065473aba0fabc1f2776d220f6eab520f0e7897fdc",
+        "match": true,
+        "elapsedSeconds": 15.991279363632202
+      },
+      {
+        "name": "stm32-toolkit-1.3.6-windows-x86_64.zip",
+        "httpStatus": 200,
+        "bytes": 119432768,
+        "sha256": "61170df3c700e1fceb0fc9e9c3f3845d92f7e6a17bca54614f707630d14bdbc1",
+        "match": true,
+        "elapsedSeconds": 19.209423542022705
+      },
+      {
+        "name": "stm32_monitor-1.3.6-py3-none-any.whl",
+        "httpStatus": 200,
+        "bytes": 1556130,
+        "sha256": "7d9f08d285cf33a72faec9d8100dd003c1556c791f150599588a544a530bc070",
+        "match": true,
+        "elapsedSeconds": 3.379716157913208
+      },
+      {
+        "name": "stm32_toolkit-1.3.6-py3-none-any.whl",
+        "httpStatus": 200,
+        "bytes": 4340175,
+        "sha256": "ebd4d0c0daa09634121dc28c697f698a87f4687a3b6669a6ae1fd48af0c7c3be",
+        "match": true,
+        "elapsedSeconds": 3.8746137619018555
+      },
+      {
+        "name": "troubleshooting.md",
+        "httpStatus": 200,
+        "bytes": 1737,
+        "sha256": "125e5c8b85ed74bd83e9c3efa8f80bdbb8c88dd5017ed78814553b3890f4f1ad",
+        "match": true,
+        "elapsedSeconds": 1.8984949588775635
+      }
+    ]
+  },
+  "cliCommands": {
+    "create": [
+      {
+        "argv": [
+          "C:/Users/zhy76/AppData/Local/Programs/GitHub CLI/2.103.3/bin/gh.exe",
+          "release",
+          "create",
+          "v1.3.6",
+          "--repo",
+          "XiaoyaoLinghao/stm32-toolkit",
+          "--verify-tag",
+          "--draft",
+          "--target",
+          "b00cbc4edee191712dd6da7e1beb073ff4a74f28",
+          "--title",
+          "v1.3.6 — Tool evidence fixes",
+          "--notes-file",
+          "D:\\codex-tmp\\v136-evidence\\release-notes.md",
+          "D:\\codex-tmp\\v136-evidence\\final-package-a\\CHECKSUMS.sha256",
+          "D:\\codex-tmp\\v136-evidence\\final-package-a\\LICENSE",
+          "D:\\codex-tmp\\v136-evidence\\final-package-a\\THIRD-PARTY-NOTICES.md",
+          "D:\\codex-tmp\\v136-evidence\\final-package-a\\compatibility.md",
+          "D:\\codex-tmp\\v136-evidence\\final-package-a\\licenses.zip",
+          "D:\\codex-tmp\\v136-evidence\\final-package-a\\monitor-assets.json",
+          "D:\\codex-tmp\\v136-evidence\\final-package-a\\release-manifest.json",
+          "D:\\codex-tmp\\v136-evidence\\final-package-a\\sbom.spdx.json",
+          "D:\\codex-tmp\\v136-evidence\\final-package-a\\stm32-toolkit-1.3.6-source.zip",
+          "D:\\codex-tmp\\v136-evidence\\final-package-a\\stm32-toolkit-1.3.6-windows-x86_64.zip",
+          "D:\\codex-tmp\\v136-evidence\\final-package-a\\stm32_monitor-1.3.6-py3-none-any.whl",
+          "D:\\codex-tmp\\v136-evidence\\final-package-a\\stm32_toolkit-1.3.6-py3-none-any.whl",
+          "D:\\codex-tmp\\v136-evidence\\final-package-a\\troubleshooting.md"
+        ],
+        "exitCode": 0,
+        "elapsedSeconds": 30.98472285270691,
+        "stdoutSha256": "73a473d5f7af2b2c86edb18bc391be2d0c532370fb9674322cf80e38a5f86ff9",
+        "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    ],
+    "check-draft": [
+      {
+        "argv": [
+          "C:/Users/zhy76/AppData/Local/Programs/GitHub CLI/2.103.3/bin/gh.exe",
+          "release",
+          "view",
+          "v1.3.6",
+          "--repo",
+          "XiaoyaoLinghao/stm32-toolkit",
+          "--json",
+          "databaseId,tagName,isDraft,isPrerelease,targetCommitish,url,publishedAt"
+        ],
+        "exitCode": 0,
+        "elapsedSeconds": 1.8152072429656982,
+        "stdoutSha256": "0ab8a1c5d8538c0b58c4c95efe4c1a652cb6b246194f81165ae18254fee6db88",
+        "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "argv": [
+          "C:/Users/zhy76/AppData/Local/Programs/GitHub CLI/2.103.3/bin/gh.exe",
+          "api",
+          "repos/XiaoyaoLinghao/stm32-toolkit/releases/429783935"
+        ],
+        "exitCode": 0,
+        "elapsedSeconds": 1.2413132190704346,
+        "stdoutSha256": "8d812aa546c13b59cff0b6eaa623b41689bf454c2e47fb743d60307f925923eb",
+        "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    ],
+    "publish": [
+      {
+        "argv": [
+          "C:/Users/zhy76/AppData/Local/Programs/GitHub CLI/2.103.3/bin/gh.exe",
+          "release",
+          "edit",
+          "v1.3.6",
+          "--repo",
+          "XiaoyaoLinghao/stm32-toolkit",
+          "--draft=false",
+          "--latest",
+          "--prerelease=false",
+          "--verify-tag"
+        ],
+        "exitCode": 0,
+        "elapsedSeconds": 2.259277582168579,
+        "stdoutSha256": "42c32e63e3be2a7dcba12b9f8fdaa0e42ffb8a5a5029853453cb638d34e86ef5",
+        "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    ],
+    "check-published": [
+      {
+        "argv": [
+          "C:/Users/zhy76/AppData/Local/Programs/GitHub CLI/2.103.3/bin/gh.exe",
+          "release",
+          "view",
+          "v1.3.6",
+          "--repo",
+          "XiaoyaoLinghao/stm32-toolkit",
+          "--json",
+          "databaseId,tagName,isDraft,isPrerelease,targetCommitish,url,publishedAt"
+        ],
+        "exitCode": 0,
+        "elapsedSeconds": 1.1934504508972168,
+        "stdoutSha256": "736244b243a623842f9731baf03ab847390dee5d370635dd6bc59d3caed1a55e",
+        "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "argv": [
+          "C:/Users/zhy76/AppData/Local/Programs/GitHub CLI/2.103.3/bin/gh.exe",
+          "api",
+          "repos/XiaoyaoLinghao/stm32-toolkit/releases/429783935"
+        ],
+        "exitCode": 0,
+        "elapsedSeconds": 1.203864574432373,
+        "stdoutSha256": "efcf37c1b807b0cf7b3fca323966ae3b1d2b05e56423ead67aa81845416b4a09",
+        "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    ]
+  },
+  "localEvidenceRoot": "D:\\codex-tmp\\v136-evidence",
+  "rawEvidenceSha256": {
+    "gh-publication\\create.json": "ea75a5fff856389594ccf30d1dea5248dea8ec0f8d14ab07f9e2085dd12b4408",
+    "gh-publication\\check-draft.json": "a68c80d26763a375bd3c32f91d88e5276e55b05f2ebfb5d2fcbb1d1d83c1d883",
+    "gh-publication\\publish.json": "6525826b583ee23b25d34d7ae012a17d5de5bc8de6d522b909dc0d4c4bc46d06",
+    "gh-publication\\check-published.json": "afe04b6a8f21c81950209eaa2759b6a925e834029c7edca77b7f64e324c73ebd",
+    "public-v136\\verification.json": "e21beb289a7ec4197225455b6a690e7bb927c3f95a9bfaf4954a869dea3518e7",
+    "gh-installation.json": "5e15058bd1ad6ec8d23a2c52c7e81e1ce68ed383ed84aad7ca9127ff9d9c4c08",
+    "v136-published.jpg": "6195c1d4640daadc8a86999c95dd50c96e93692a209cf97d065f99f2993ff97c"
+  },
+  "limitations": [
+    "Candidate-specific coverage exception only; permanent unmet gates remain UNMET.",
+    "Source-bound software evidence and retained original failures/skips remain as recorded.",
+    "No new physical hardware or final recipient installation/IDE/MCP acceptance.",
+    "Browser upload permission failures retained; user explicitly authorized official gh installation and CLI publication, and personally completed authentication.",
+    "Package source/tag/assets not rebuilt, moved or replaced by later documentation commits."
+  ],
+  "publicationGuidance": {
+    "status": "ACCEPTED_WITH_FIXES",
+    "codeHead": "119fe0b0f1783224a532bd44c8edffd71a704caf",
+    "checks": [
+      {
+        "label": "pubdocs01",
+        "head": "a8d09f5ac97b68e6237b1012ac365eb5bed9e8d7",
+        "owner": "Claude native PowerShell; independently audited by Primary",
+        "passed": 20,
+        "testExitCode": 0,
+        "sourceUnchanged": true,
+        "command": "& 'C:\\Users\\zhy76\\AppData\\Local\\Programs\\Python\\Python312\\python.exe' -X utf8 'D:/codex-tmp/v136-evidence/run_tests.py' 'C:\\Users\\zhy76\\.codex\\worktrees\\v136-integration-review\\STM32-Toolkit' a8d09f5ac97b68e6237b1012ac365eb5bed9e8d7 pubdocs01 Claude tools/stm32-toolkit/tests/test_plugin_layout.py",
+        "nativeNumericExitCode": null,
+        "junitSha256": "036d86503cd2f1b390ee93df43c1641a51aca0568da7c181380a738e75e06534",
+        "executionSha256": "94575969d2c50b8701e1f67bf2f8f13cf7acc09cdd34548b5e0e5234a5448daf",
+        "auditSha256": "75a566ec887e5f09f6b6ad742d62e942548074b5eb1899a5515d00c1e0aaeaa9"
+      },
+      {
+        "label": "pubdocs02",
+        "head": "a8d09f5ac97b68e6237b1012ac365eb5bed9e8d7",
+        "owner": "Claude native PowerShell; independently audited by Primary",
+        "passed": 9,
+        "testExitCode": 0,
+        "sourceUnchanged": true,
+        "command": "& 'C:\\Users\\zhy76\\AppData\\Local\\Programs\\Python\\Python312\\python.exe' -X utf8 'D:/codex-tmp/v136-evidence/run_tests.py' 'C:\\Users\\zhy76\\.codex\\worktrees\\v136-integration-review\\STM32-Toolkit' a8d09f5ac97b68e6237b1012ac365eb5bed9e8d7 pubdocs02 Claude tools/stm32-toolkit/tests/test_public_inventory.py tools/stm32-toolkit/tests/test_ai_call_guidance.py::test_documentation_keeps_route_and_authorization_contracts tools/stm32-toolkit/tests/test_ai_call_guidance.py::test_documentation_covers_pyocd_evidence_and_vscode_guidance tools/stm32-toolkit/tests/test_ai_call_guidance.py::test_documentation_describes_independent_delivery_and_root_rebinding tools/stm32-toolkit/tests/test_setup_runtime.py::test_setup_contract_uses_namespaced_skill_and_ignores_coverage_data tools/stm32-toolkit/tests/test_debug_configuration_workflows.py::test_guidance_documents_document_the_same_pair_commands_and_fields",
+        "nativeNumericExitCode": null,
+        "junitSha256": "1e55a31ef9f52bdd5c08b15aed78f03a7f4aae525c8cf2e4904108192f142e04",
+        "executionSha256": "75f5b11f5d4f34fdc7aec620c9395156edaec4179b54f1d383461d8c66743ef4",
+        "auditSha256": "585554cb88b64184f7c899ac8060775694bef5b20b0d6da5bfc756c11914a031"
+      },
+      {
+        "label": "pubdocs03",
+        "head": "119fe0b0f1783224a532bd44c8edffd71a704caf",
+        "owner": "Claude native PowerShell; independently audited by Primary",
+        "passed": 5,
+        "overlapsEarlier29": true,
+        "testExitCode": 0,
+        "sourceUnchanged": true,
+        "command": "& 'C:/Users/zhy76/AppData/Local/Programs/Python/Python312/python.exe' -X utf8 'D:/codex-tmp/v136-evidence/run_tests.py' 'C:\\Users\\zhy76\\.codex\\worktrees\\v136-integration-review\\STM32-Toolkit' 119fe0b0f1783224a532bd44c8edffd71a704caf pubdocs03 Claude tools/stm32-toolkit/tests/test_plugin_layout.py::test_setup_skill_has_an_explicit_read_only_check_and_authorized_mutation_contract tools/stm32-toolkit/tests/test_plugin_layout.py::test_setup_skill_passes_inline_claude_paths_explicitly_without_ambient_variables tools/stm32-toolkit/tests/test_plugin_layout.py::test_unified_1_0_1_runtime_version_across_launcher_setup_and_skill tools/stm32-toolkit/tests/test_ai_call_guidance.py::test_documentation_covers_pyocd_evidence_and_vscode_guidance tools/stm32-toolkit/tests/test_setup_runtime.py::test_setup_contract_uses_namespaced_skill_and_ignores_coverage_data",
+        "nativeNumericExitCode": null,
+        "junitSha256": "93297a933d6b19e91113d4ab67dcd6148286d2c4b8e236191bd6ed49e795f270",
+        "executionSha256": "a46d9c6db8c6e820c4120919411d9156a4088d944e8016dd61da8548645f2fb8",
+        "auditSha256": "6cbc8b7202e964a7d3f12a7ddb366147988ad9789865e7b0441c4cfefa5878f3"
+      }
+    ],
+    "independentReview": {
+      "acceptedBase": "4a0404387d603f14bd641772256d5cbd200ffbc3",
+      "head": "119fe0b0f1783224a532bd44c8edffd71a704caf",
+      "reviewer": "Primary",
+      "cleanIndependentWorktree": "C:\\Users\\zhy76\\.codex\\worktrees\\v136-integration-review\\STM32-Toolkit",
+      "files": [
+        "CHANGELOG.md",
+        "README.md",
+        "README_zh-CN.md",
+        "docs/architecture.md",
+        "docs/release-status.md",
+        "docs/user-guide.md",
+        "skills/setup-stm32-env/SKILL.md",
+        "tools/stm32-toolkit/tests/test_ai_call_guidance.py",
+        "tools/stm32-toolkit/tests/test_plugin_layout.py"
+      ],
+      "completeDiffSha256": "7190bb492a70d76ed9fc6ddab5301d9b8692093713c30727f202ee2648ee72d8",
+      "exactImplementationTreeBytesMatched": true,
+      "diffCheckExitCode": 0,
+      "historicalChangelogUnchanged": true,
+      "executableCodeSchemaVersionPolicyUnchanged": true,
+      "findingsResolved": true,
+      "testStatus": "PASS_29_BOUND_CHECKS_PLUS_5_FINAL_AFFECTED_RECHECKS",
+      "userAuthorization": "Explicit one four-file closeout, 2026-10-31; six exact replacements; original abnormal audits retained.",
+      "verdict": "ACCEPTED_WITH_FIXES"
+    },
+    "originalDelegationAudits": {
+      "pub-guidance-a": {
+        "accepted": false,
+        "cli_exit_code": 0,
+        "dispatch_exit_code": 1,
+        "file_edit_completed": true,
+        "analysis_valid": true,
+        "scope_violations": [],
+        "summarySha256": "e582d43c251b3ca0671c4fbc65a04bcf4106e068c64d4e4a3f140bbf25bc6b86",
+        "nativeSuccessfulEdits": 24,
+        "failedCalls": [
+          {
+            "id": "call_00_j9sbm75vdwr899r8ofaye495",
+            "tool": "Edit",
+            "state": "unknown_error",
+            "reason": "<tool_use_error>String to replace not found in file."
+          }
+        ]
+      },
+      "pub-guidance-b": {
+        "accepted": true,
+        "cli_exit_code": 0,
+        "dispatch_exit_code": 0,
+        "file_edit_completed": true,
+        "analysis_valid": true,
+        "scope_violations": [],
+        "summarySha256": "8853f0b82495094b2d80ad0ab7d28d51f881f249cf8ffce61953ab17337b3f84",
+        "nativeSuccessfulEdits": 61,
+        "failedCalls": []
+      },
+      "pub-current-evidence": {
+        "accepted": false,
+        "cli_exit_code": 0,
+        "dispatch_exit_code": 1,
+        "file_edit_completed": false,
+        "analysis_valid": true,
+        "scope_violations": [
+          {
+            "tool_use_id": "call_01_jl9nb5qcar6xcvnb99bl3ica",
+            "reason": "read outside read_scope",
+            "path": "C:\\Users\\zhy76\\.codex\\worktrees\\v136-final-review\\STM32-Toolkit\\tools\\stm32-toolkit\\tests"
+          },
+          {
+            "tool_use_id": "call_00_xezjqos9cdpqa6cp3r19tglw",
+            "reason": "read outside read_scope",
+            "path": "C:\\Users\\zhy76\\.codex\\worktrees\\v136-final-review\\STM32-Toolkit\\tools\\stm32-toolkit\\tests\\test_setup_runtime.py"
+          },
+          {
+            "tool_use_id": "call_01_a281xe0ycdhlhhdmmwa8ek4x",
+            "reason": "read outside read_scope",
+            "path": "C:\\Users\\zhy76\\.codex\\worktrees\\v136-final-review\\STM32-Toolkit\\tools\\stm32-toolkit\\tests"
+          }
+        ],
+        "summarySha256": "19a71e1f62f65e85c867c1f74e3402fb8c90a8fdb0895711260a45e301a989b6",
+        "nativeSuccessfulEdits": 6,
+        "failedCalls": [
+          {
+            "id": "call_00_0xegyyfp1z5gqz11t17k4ckh",
+            "tool": "Edit",
+            "state": "unknown_error",
+            "reason": "<tool_use_error>String to replace not found in file."
+          },
+          {
+            "id": "call_02_0q8lau7z9md58skrgb80ws27",
+            "tool": "Edit",
+            "state": "unknown_error",
+            "reason": "<tool_use_error>String to replace not found in file."
+          }
+        ]
+      },
+      "pub-guide-final-facts": {
+        "accepted": true,
+        "cli_exit_code": 0,
+        "dispatch_exit_code": 0,
+        "file_edit_completed": true,
+        "analysis_valid": true,
+        "scope_violations": [],
+        "summarySha256": "efb083a647cfbc64a572acd721fd284f7547bf927b98ab5582e25fcc492a629d",
+        "nativeSuccessfulEdits": 3,
+        "failedCalls": []
+      }
+    },
+    "initialReviewCheckpoint": {
+      "acceptedBase": "4a0404387d603f14bd641772256d5cbd200ffbc3",
+      "head": "a8d09f5ac97b68e6237b1012ac365eb5bed9e8d7",
+      "cleanIndependentWorktree": "C:\\Users\\zhy76\\.codex\\worktrees\\v136-integration-review\\STM32-Toolkit",
+      "files": [
+        "CHANGELOG.md",
+        "README.md",
+        "README_zh-CN.md",
+        "docs/architecture.md",
+        "docs/release-status.md",
+        "docs/user-guide.md",
+        "skills/setup-stm32-env/SKILL.md",
+        "tools/stm32-toolkit/tests/test_ai_call_guidance.py",
+        "tools/stm32-toolkit/tests/test_plugin_layout.py"
+      ],
+      "completeDiffSha256": "108d6a1c9202ae397dae6868a448be7b1c218edcadd29c4071cdfc2075c4d6dc",
+      "diffCheckExitCode": 0,
+      "historicalChangelogUnchanged": true,
+      "executableCodeSchemaVersionPolicyUnchanged": true,
+      "reviewer": "Primary",
+      "verdict": "FOUR_PROSE_FINDINGS_REMAIN",
+      "remaining": [
+        "docs/release-status.md: public downloads still marked pending and guidance review linkage stale",
+        "skills/setup-stm32-env/SKILL.md: download verification still pending; healthy runtime example still1.3.5",
+        "docs/architecture.md: one unqualified previous1.3.4 phrase",
+        "CHANGELOG.md: own frozen snapshot should be called prepublication wording, not claim a specific pending-download label"
+      ]
+    },
+    "authorizedCloseout": {
+      "userReply": "允许这一次有界文档收尾",
+      "scope": [
+        "docs/release-status.md",
+        "skills/setup-stm32-env/SKILL.md",
+        "docs/architecture.md",
+        "CHANGELOG.md"
+      ],
+      "literalReplacements": 6,
+      "acceptedNativeAudit": true,
+      "cliExitCode": 0,
+      "dispatchExitCode": 0,
+      "scopeViolations": [],
+      "summarySha256": "c6074c79077547aa9f917e294c64f3b03fe79a519b1c2b5d793175f047a3b4df",
+      "originalFailuresRetained": true
+    }
+  }
+}

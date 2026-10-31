@@ -8,6 +8,8 @@ The user's explicit v1.0.1 conditional exception is recorded below, separately f
 
 ## v1.3.6 measured candidate — 2026-10-31
 
+Subsequent publication: formal Latest Release429783935 is public at 2026-10-31T07:22:13Z; all13 exact frozen assets passed anonymous HTTP200 download size/SHA256 verification. See the [publication acceptance](../codex/returns/STM32TK-136/publication-2026-10-31.md). The candidate-specific exception and permanent unmet gates below are unchanged. Publication guidance is ACCEPTED_WITH_FIXES at119fe0b0 after29 bound checks and5 overlapping final affected rechecks; the explicitly authorized four-file closeout passed native audit, while both original abnormal invocations remain unaccepted. No new hardware or recipient-installation acceptance.
+
 Subsequent explicit user authorization: **USER_APPROVED_EXCEPTION /
 CONDITION_MET_NON_REGRESSION**, only for frozen source
 `b00cbc4edee191712dd6da7e1beb073ff4a74f28` and its 13 verified files. Each native
