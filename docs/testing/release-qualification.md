@@ -8,6 +8,15 @@ The user's explicit v1.0.1 conditional exception is recorded below, separately f
 
 ## v1.3.6 measured candidate — 2026-10-31
 
+Subsequent explicit user authorization: **USER_APPROVED_EXCEPTION /
+CONDITION_MET_NON_REGRESSION**, only for frozen source
+`b00cbc4edee191712dd6da7e1beb073ff4a74f28` and its 13 verified files. Each native
+scope is no lower than v1.3.5; UI's unchanged-source/per-file evidence is retained.
+See the [candidate-specific authorization](../codex/returns/STM32TK-136/authorization-2026-10-31.md).
+Permanent floors, unmet results, skips, original failures and final user
+installation/IDE limitations remain unchanged. The measurement-time checkpoint
+below is retained; it predates this approval and is not the current disposition.
+
 Frozen source `b00cbc4edee191712dd6da7e1beb073ff4a74f28` has complete source-bound software evidence and reproducible
 13-file packages. Current state: **COVERAGE_DECISION_PENDING**. No v1.3.6 coverage exception
 has been authorized; permanent gates and prior exceptions below are unchanged.
