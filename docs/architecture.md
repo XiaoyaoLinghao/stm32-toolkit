@@ -127,7 +127,8 @@ candidate-specific non-regression condition: Toolkit overall 16414/18836 and ris
 Monitor overall/risk 3293/3564, and the UI 2938/3147 exact-source reuse each meet or exceed their
 v1.3.5 values, with 9720 distinct passes, 20 named skips and retained prior failures and
 source-bound reuse. All 13 uploaded filenames, sizes and server SHA-256 digests match the frozen
-package; anonymous public download verification is still in progress. The permanent Toolkit 90%,
+package, and all 13 public assets were anonymously downloaded with HTTP 200 against matching
+byte counts and SHA-256. The permanent Toolkit 90%,
 Toolkit risk 90% and Monitor risk 95% gates remain UNMET; v1.3.6 aligns the product authorities to
 1.3.6 but deliberately does not add 1.3.5 to the legacy managed-runtime or generation-producer
 allowlists, so no v1.3.5-to-v1.3.6 Repair or project/`generatedBy`/build-identity compatibility is
@@ -477,7 +478,7 @@ release follows the
 [v1.3.6 specification](superpowers/specs/2026-10-30-v136-tool-evidence-design.md) and is the
 current [Latest](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.3.6) release,
 published 2026-10-31 from frozen source `b00cbc4e`; its permanent unmet coverage gates and
-user-owned final validation are unchanged. The previous v1.3.4
+user-owned final validation are unchanged. The earlier v1.3.4
 release follows the
 [v1.3.4 specification](superpowers/specs/2026-10-27-v134-migration-readiness.md) and
 [plan](superpowers/plans/2026-10-27-v134-migration-readiness.md) and was published
