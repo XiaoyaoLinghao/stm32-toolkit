@@ -6,6 +6,24 @@ The [standard procedure](standard-test-procedure.md) governs execution and autho
 Historical measurements and one-time exceptions do not transfer automatically to a later release.
 The user's explicit v1.0.1 conditional exception is recorded below, separately from permanent gates.
 
+## v1.3.6 measured candidate — 2026-10-31
+
+Frozen source `b00cbc4edee191712dd6da7e1beb073ff4a74f28` has complete source-bound software evidence and reproducible
+13-file packages. Current state: **COVERAGE_DECISION_PENDING**. No v1.3.6 coverage exception
+has been authorized; permanent gates and prior exceptions below are unchanged.
+
+| Scope | Native branches | Permanent floor | Result | v1.3.5 comparison only |
+| --- | --- | --- | --- | --- |
+| toolkit-overall | 16414/18836 (87.1416%) | 90% | UNMET | NOT_LOWER |
+| toolkit-risk-core-v2 | 15281/17496 (87.3400%) | 90% | UNMET | NOT_LOWER |
+| monitor-overall | 3293/3564 (92.3962%) | 90% | PASS | NOT_LOWER |
+| monitor-risk-core-v2 | 3293/3564 (92.3962%) | 95% | UNMET | NOT_LOWER |
+
+UI reuses exact unchanged source evidence 2938/3147 with per-file90 met. See the
+[implementation report](../codex/returns/STM32TK-136/implementation-report.md)
+and [native/source evidence](../codex/returns/STM32TK-136/integration-evidence.json).
+Comparison alone grants no exception, installation, hardware or publication acceptance.
+
 ## v1.3.5 coverage non-regression exception authorized on 2026-10-30
 
 The user explicitly permits a v1.3.5-only coverage exception provided coverage is

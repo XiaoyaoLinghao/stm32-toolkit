@@ -6,6 +6,8 @@
 
 ## 1. 当前断点与证据
 
+2026-10-31 v1.3.6 工具侧软件切片已 ACCEPTED_WITH_FIXES，冻结 CodeHead `b00cbc4edee191712dd6da7e1beb073ff4a74f28`，见[完整实现与验收报告](../codex/returns/STM32TK-136/implementation-report.md)。全部 265 个 Python 测试文件按最终产品/测试字节绑定核对：9720 个不同用例通过、20 跳过，无未解决失败；不是单一最终提交全套重跑。原失败、越界、权限拒绝和 pending 保留，环境对照不改断言/阈值。13 附件双构建一致及官方验证 0/ok；UI 明确按未变字节复用。永久覆盖率状态 `COVERAGE_DECISION_PENDING`，旧例外不转移，比较不等于发布授权。用户已授权 master 合并及 Release，但此报告尚未远端修改、发布、替换 runtime 或操作硬件。用户最终安装/IDE/MCP 与具名跳过待后续验证。以下保留此前断点。
+
 2026-10-31 v1.3.6 工具证据修复已形成冻结打包候选 `9a8b83bb6ee02cea0ab0240b7f3cbd86fbf97a9b`，见[候选构建检查点](../codex/returns/STM32TK-136/candidate-build.md)。两个独立规范 Git 字节工作树的官方离线构建实际退出 0，13 附件名称/长度/SHA-256 一致，Primary 官方解包校验退出 0/ok；当前为 REPRODUCIBLE_PACKAGE_VERIFIED / INTEGRATION_PENDING。ABI/receipt 定向修正已通过，完整独立构建证据分组与恢复后的逐文件离线回归仍在运行，未声明全套或覆盖率通过。UI 按源码/测试/配置/资产/依赖一致性明确复用，Python 原生覆盖率待汇总；旧版覆盖例外不转移。用户已授权 v1.3.6 构建、master 合并和 Release 发布，但本检查点尚未远端修改，也没有现有 runtime 替换、原工程修改或硬件动作。原失败、中断、越界与 pending 记录保留。以下为此前断点。
 
 2026-10-30 v1.3.5当前发布指引已ACCEPTED_WITH_FIXES，CodeHead`1ebb90fd934f6794a55d648f3bb678db9d339fb6`，见[最终指引验收](../codex/returns/STM32TK-135/publication-guidance-acceptance.md)。173通过/1真实symlink能力跳过保留在59ccc469；用户明确批准一次单文件收尾后，Claude仅改user-guide三个段落，原调用100turns失败不追认；两项受影响既有文档合同在修正head通过2/2，不叠加独立用例数。独立干净树完整差异与产品/runtime/release字节未变已核对，原schema输入失败与日志保留。正式Latest和13附件下载hash验收既有有效，不重建、不挪tag、不替换runtime或操作硬件；最终用户安装/IDE/MCP/交互仍待验。以下为此前断点。

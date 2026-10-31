@@ -1,5 +1,8 @@
 # v1.3.6 candidate build checkpoint — 2026-10-31
 
+Subsequent integration result: [complete acceptance report](implementation-report.md).
+The original package-time checkpoint below remains historical evidence.
+
 Status: **REPRODUCIBLE_PACKAGE_VERIFIED / INTEGRATION_PENDING**. This is not
 release qualification or a publication claim.
 

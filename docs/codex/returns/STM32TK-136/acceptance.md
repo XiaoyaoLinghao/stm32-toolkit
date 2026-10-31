@@ -70,3 +70,5 @@ Primary 对 `test_build_abi_evidence.py`、`test_build_runner.py`、
 `p01/execution.json`、`cli-acceptance/execution-complete.json`、
 `acceptance-checkpoint.json`、`complete-package-verification.json`。
 完整矩阵完成前，不把本页解释为全部发行资格或已发布。
+
+完整 Python 矩阵、原生覆盖率、原失败与跳过的最终汇总见[实现与独立验收报告](implementation-report.md)。
