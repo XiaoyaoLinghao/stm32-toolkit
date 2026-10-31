@@ -13,9 +13,13 @@ Git is optional traceability for both routes, never an eligibility gate. Hardwar
 
 ## Release status
 
-Current latest published version: **v1.3.6**, published 2026-10-31 (15:22:13 Asia/Shanghai) as [Latest](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.3.6) (release `429783935`, `draft=false`/`prerelease=false`, frozen source `b00cbc4e`). All 13 public assets were anonymously downloaded with HTTP 200, and every byte count and SHA-256 matches the frozen package. The previous published release is [v1.3.5](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.3.5); [v1.3.4](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.3.4) and older releases remain available. The [user guide](docs/user-guide.md) carries the current v1.3.6 receiving and upgrade recipe, the [v1.3.5 receiving guide](docs/v135-local-candidate.md) is the historical v1.3.5 record, and [release status](docs/release-status.md) retains publication evidence and coverage limits. Public download is not installation.
+Current source version: **v1.3.6**. [Release v1.3.6](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.3.6) was published on 2026-10-31. Use [Latest release](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/latest) for current downloads. [v1.3.5](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.3.5) and earlier releases remain available as historical versions.
 
-Current source version: **v1.3.6**, matching the published release above; later commits record publication only and change no product behavior. v1.3.6 keeps the 52-tool MCP inventory, 9 bundled Skills, the `pyocd==0.46.0` pin and the ordinary 100 kHz flash default with one authorized `SYSRESETREQ` reset-and-halt before programming. It deliberately does not add v1.3.5 runtime, project/`generatedBy` or build-identity compatibility. The release used a user-approved candidate-only non-regression condition: the permanent Toolkit overall/risk and Monitor risk gates remain unmet, and no fresh hardware or recipient installation/IDE/MCP acceptance is claimed. Final installation, upgrade/rollback and interactive validation remain user-owned and pending; this source tree makes no hardware-acceptance claim.
+**Documentation revision — 2026-10-31:** This English README and its Chinese counterpart correct the original v1.3.6 archives' outdated claim that v1.3.6 was unpublished. The v1.3.6 tag remains at `b00cbc4edee191712dd6da7e1beb073ff4a74f28`; the revised archives have a separate documentation source commit, recorded in `release-manifest.json`, and updated `CHECKSUMS.sha256`. Runtime source, product/dependency wheels, firmware behavior and identity checks are unchanged. Other bundled documentation remains a build-time snapshot; use the [v1.3.6 receiving and installation guide](https://github.com/XiaoyaoLinghao/stm32-toolkit/blob/2606eb7b1fd3f105c3d5442f417d47fdb06acb8f/docs/user-guide.md) and the Release page for current instructions and publication facts. The bundled [v1.3.5 receiving guide](docs/v135-local-candidate.md) is historical.
+
+Existing v1.3.6 installations need no reinstall or runtime repair for this documentation correction. Using the revised archive to repair an original v1.3.6 installation intentionally produces `source-conflict` under the existing same-version identity check; do not edit runtime state or bypass it. For an existing installation, read the corrected README online.
+
+v1.3.6 retains 52 MCP tools, 9 bundled Skills, `pyocd==0.46.0`, ordinary 100 kHz flash and the authorized pre-programming `SYSRESETREQ` reset-and-halt. It adds no v1.3.5 runtime, project/`generatedBy` or build-identity compatibility. Permanent Toolkit overall/risk and Monitor risk coverage gates remain unmet under the separately approved original-candidate exception. A documentation revision makes no new hardware or recipient installation/IDE/MCP acceptance claim.
 
 ## Requirements
 
@@ -23,8 +27,8 @@ Windows x86_64, CPython 3.12 (`>=3.12,<3.13`) for the managed runtime, and nativ
 
 ## Documentation
 
-- [User guide](docs/user-guide.md) — installation and upgrade, Keil migration, configuration, builds, probes, Monitor, MCP server, VS Code, and troubleshooting.
-- [v1.3.5 receiving guide](docs/v135-local-candidate.md) — previous-release identity checks, Check-first receiving and upgrade steps, and current limits.
+- [User guide](https://github.com/XiaoyaoLinghao/stm32-toolkit/blob/2606eb7b1fd3f105c3d5442f417d47fdb06acb8f/docs/user-guide.md) — installation and upgrade, Keil migration, configuration, builds, probes, Monitor, MCP server, VS Code, and troubleshooting.
+- [v1.3.5 receiving guide](docs/v135-local-candidate.md) — historical v1.3.5 release identity checks, Check-first receiving and upgrade steps, and retained limits.
 - Claude Code: start with the bundled `/stm32-toolkit:setup-stm32-env` skill.
 - [Windows deployment and IDE preflight](docs/testing/windows-deployment-and-ide-preflight.md) — runtime, debugger and extension checks.
 - [Changelog](CHANGELOG.md) — version history and retained limitations.
