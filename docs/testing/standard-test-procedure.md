@@ -6,6 +6,8 @@
 
 ## 1. 当前断点与证据
 
+2026-10-31 v1.3.6 README 文档修订已 ACCEPTED_WITH_FIXES，见[修订验收](../codex/returns/V136-README-DOCREV/implementation-report.md)。用户明确选择更新附件/校验清单并保留标签；新归档源码 `d3a82a0d03e1c71691654423e5f79ec842f168a9` 相对原始 `b00cbc4e` 仅两个 README 改变，64 个 wheel 与其它源码字节不变。两次组装一致、官方 bundle 校验 ok；4 个更新附件匿名 HTTP200 下载大小/hash 全匹配，9 个其它附件字节/ID 不变。master 审查 CodeHead `1652aa73f66b9da063d4d5d61ee6d9e27d761827` 的单个受影响 README 合同测试1通过，未重跑全套/实机。两次打包准备检查失败和用户随后批准的一次有界修正均留证；原始 tag 与自动 tag 源码归档不变，manifest 如实记录文档提交。原安装无需 Repair，同版本 `source-conflict` 继续生效。报告提交和随后已授权正常 master 推送/回读另记，不操作既有 runtime、原工程或硬件。以下是历史断点，旧 Windows ZIP hash 仅对应原始附件。
+
 2026-10-31 v1.3.6 已正式发布为 Latest（Release429783935，07:22:13Z），源码/tag 冻结于 `b00cbc4edee191712dd6da7e1beb073ff4a74f28`；13 附件匿名 HTTP200 完整下载大小与 SHA-256 全部匹配，见[发布与文档验收](../codex/returns/STM32TK-136/publication-2026-10-31.md)。修复与版本此前已在远端 master `4a0404387d603f14bd641772256d5cbd200ffbc3`，候选专属覆盖例外已获用户明确批准，永久未达门槛仍 UNMET。发布文档最终 CodeHead `119fe0b0f1783224a532bd44c8edffd71a704caf` 经独立干净树完整差异审查为 ACCEPTED_WITH_FIXES；29项定向检查及最终5项受影响复验通过，重叠不累计。两次文档委派的失败/越界原审计不接受、不追认；用户另行批准的一次4文件6处精确修改原生审计通过，4处文案问题已解决。报告提交与随后正常 master 推送/回读在本地交付证据单独记录，不重建包、不挪tag、不操作原工程、runtime或硬件。用户最终安装/IDE/MCP仍待验。以下保留历史断点。
 
 2026-10-31 v1.3.6 工具侧修复和版本更新已按用户授权合并并非强制推送至 master，远端回读为 `0d60bbb67e3cb5757a8ea8a89db9ce8a1a2c829b`，见[源码交付与发布断点](../codex/returns/STM32TK-136/source-delivery-2026-10-31.md)。冻结包源码仍为 `b00cbc4edee191712dd6da7e1beb073ff4a74f28`，13 附件双构建完全一致、官方验证 0/ok；9720 个不同 Python 用例通过、20 个具名跳过。软件已 ACCEPTED_WITH_FIXES；正式 Release 为 COVERAGE_DECISION_PENDING，三组覆盖率较 v1.3.5 提高但仍未达永久门槛，旧单版本例外不转移。尚未新建 tag/Release、安装或操作硬件。该记录后续提交只补交付事实，不改冻结包；以下保留原验收断点。

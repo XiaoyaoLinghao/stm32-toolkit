@@ -1,0 +1,415 @@
+{
+  "module": "V136-README-DOCREV",
+  "verdict": "ACCEPTED_WITH_FIXES",
+  "sourceBase": "b00cbc4edee191712dd6da7e1beb073ff4a74f28",
+  "masterBase": "2606eb7b1fd3f105c3d5442f417d47fdb06acb8f",
+  "archiveSourceCommit": "d3a82a0d03e1c71691654423e5f79ec842f168a9",
+  "reviewedMasterCodeHead": "1652aa73f66b9da063d4d5d61ee6d9e27d761827",
+  "masterDiffSha256": "8237bcc79f8e540d85a763aff2f99270de831af6a4839f235c7661f0022452a8",
+  "ownership": {
+    "specificationPlanOrchestrationReviewAcceptance": "Primary Codex",
+    "implementation": "Local Claude Code CLI; existing deepseek-v4.1-flash[1m] route"
+  },
+  "authorization": {
+    "userReply": "允许这一次有界重试",
+    "scope": "One assembly using normal Git filters, exactly two README payload changes, wheel bytes unchanged, official verify then authorized four-asset publication; any new failure stops.",
+    "preservedFailures": [
+      "prepare_revision.py: line22 clean-tree check",
+      "prepare_revision_v2.py: line53 archive member byte check"
+    ],
+    "newScript": "prepare_revision_authorized.py",
+    "newScriptChange": "Remove only coordinator-added process Git core.autocrlf/core.eol flags; use original release Git archive semantics.",
+    "notAuthorized": "Product, identity contract, hardware, runtime install, credentials, global policy, tag move."
+  },
+  "package": {
+    "kind": "documentation-only revision",
+    "base": "b00cbc4edee191712dd6da7e1beb073ff4a74f28",
+    "sourceCommit": "d3a82a0d03e1c71691654423e5f79ec842f168a9",
+    "sourceChangedFiles": [
+      "stm32-toolkit-1.3.6/README.md",
+      "stm32-toolkit-1.3.6/README_zh-CN.md"
+    ],
+    "sourceFileCount": 1152,
+    "completeDiffSha256": "30506798506f5a06c8e16777a2a92639ae811ebb5fab791ff61552bfaa9603d6",
+    "bundleChangedMembers": [
+      "release/release-manifest.json",
+      "stm32-toolkit-1.3.6/README.md",
+      "stm32-toolkit-1.3.6/README_zh-CN.md",
+      "stm32-toolkit-1.3.6/release/release-manifest.json",
+      "stm32-toolkit-1.3.6/stm32-toolkit-1.3.6-source.zip"
+    ],
+    "bundleMemberCount": 1469,
+    "wheelCopiesUnchanged": 128,
+    "assets": {
+      "CHECKSUMS.sha256": {
+        "bytes": 1073,
+        "sha256": "444778b258c24c92c7054b8aaf68b36e6796fe2e83ac506f7fb100676f6e9600"
+      },
+      "LICENSE": {
+        "bytes": 1075,
+        "sha256": "55edb314745f2b0d3fe09e512726c3bf67cb20ba99fa3cd66859a64f3e6b6af5"
+      },
+      "THIRD-PARTY-NOTICES.md": {
+        "bytes": 2615,
+        "sha256": "49898136a6348ace740de0d7bbdb1ba702e8793120a509c7a85d4999ecace535"
+      },
+      "compatibility.md": {
+        "bytes": 2014,
+        "sha256": "6935340ad5bf087e2245f7cef66c96f8a37e9e0aa392ae42f67ccd87c97d59fc"
+      },
+      "licenses.zip": {
+        "bytes": 413750,
+        "sha256": "161201fd9349e96b385a577211e79606eb738623ae14d20049b89e19b44b78d3"
+      },
+      "monitor-assets.json": {
+        "bytes": 970,
+        "sha256": "d4d425cdc4c73c93127198d0a96f6fb93db20b9a7c4e8570afe77be53769114f"
+      },
+      "release-manifest.json": {
+        "bytes": 15814,
+        "sha256": "fbbd8a72302b9cac1b06060355a54197e190ba06ff71a640454bfbbef8958005"
+      },
+      "sbom.spdx.json": {
+        "bytes": 191430,
+        "sha256": "2765d87c0ceb3e81c98d314a98f1bb9d7c3e54e4bb137bf0639b796c08c108de"
+      },
+      "stm32-toolkit-1.3.6-source.zip": {
+        "bytes": 20983545,
+        "sha256": "44cb40006629e5c1ac804fa31301d7fcb62872a43124926ef8f6e5881f244702"
+      },
+      "stm32-toolkit-1.3.6-windows-x86_64.zip": {
+        "bytes": 119430712,
+        "sha256": "acd94c641130c36e10692d36d2e18e4a5a2479fc2fda7fdac18433166dcbabad"
+      },
+      "stm32_monitor-1.3.6-py3-none-any.whl": {
+        "bytes": 1556130,
+        "sha256": "7d9f08d285cf33a72faec9d8100dd003c1556c791f150599588a544a530bc070"
+      },
+      "stm32_toolkit-1.3.6-py3-none-any.whl": {
+        "bytes": 4340175,
+        "sha256": "ebd4d0c0daa09634121dc28c697f698a87f4687a3b6669a6ae1fd48af0c7c3be"
+      },
+      "troubleshooting.md": {
+        "bytes": 1737,
+        "sha256": "125e5c8b85ed74bd83e9c3efa8f80bdbb8c88dd5017ed78814553b3890f4f1ad"
+      }
+    },
+    "changedAssets": [
+      "CHECKSUMS.sha256",
+      "release-manifest.json",
+      "stm32-toolkit-1.3.6-source.zip",
+      "stm32-toolkit-1.3.6-windows-x86_64.zip"
+    ],
+    "unchangedAssets": [
+      "LICENSE",
+      "THIRD-PARTY-NOTICES.md",
+      "compatibility.md",
+      "licenses.zip",
+      "monitor-assets.json",
+      "sbom.spdx.json",
+      "stm32_monitor-1.3.6-py3-none-any.whl",
+      "stm32_toolkit-1.3.6-py3-none-any.whl",
+      "troubleshooting.md"
+    ],
+    "twoAssembliesIdentical": true,
+    "officialVerification": "pending",
+    "sbom": "Original runtime wheel inventory retained byte-for-byte; runtime source remains b00 bytes.",
+    "tagMoved": false
+  },
+  "officialVerification": {
+    "status": "ok",
+    "productVersion": "1.3.6",
+    "sourceCommit": "d3a82a0d03e1c71691654423e5f79ec842f168a9",
+    "manifestSha256": "fbbd8a72302b9cac1b06060355a54197e190ba06ff71a640454bfbbef8958005"
+  },
+  "delegation": {
+    "edit": {
+      "accepted": true,
+      "dispatch_exit_code": 0,
+      "cli_exit_code": 0,
+      "file_edit_completed": true,
+      "tests_executed": false,
+      "tests_passed": false,
+      "commands_ok": true,
+      "scope_violations": [],
+      "unexpected_commands": [],
+      "tools": [
+        "Edit",
+        "Glob",
+        "Grep",
+        "Read",
+        "Write"
+      ],
+      "calls": []
+    },
+    "readme-contract": {
+      "accepted": true,
+      "dispatch_exit_code": 0,
+      "cli_exit_code": 0,
+      "file_edit_completed": true,
+      "tests_executed": false,
+      "tests_passed": false,
+      "commands_ok": true,
+      "scope_violations": [],
+      "unexpected_commands": [],
+      "tools": [
+        "Edit",
+        "Glob",
+        "Grep",
+        "Read",
+        "Write"
+      ],
+      "calls": []
+    },
+    "verify": {
+      "accepted": true,
+      "dispatch_exit_code": 0,
+      "cli_exit_code": 0,
+      "file_edit_completed": false,
+      "tests_executed": false,
+      "tests_passed": false,
+      "commands_ok": true,
+      "scope_violations": [],
+      "unexpected_commands": [],
+      "tools": [
+        "PowerShell"
+      ],
+      "calls": [
+        {
+          "name": "PowerShell",
+          "state": "executed_success",
+          "numeric_exit_code": null,
+          "executed": true,
+          "success": true,
+          "input": {
+            "command": "& 'C:/Users/zhy76/AppData/Local/Programs/Python/Python312/python.exe' -X utf8 'C:/Users/zhy76/.codex/worktrees/v136-build-evidence/STM32-Toolkit/tools/release/build_0900_artifacts.py' verify-bundle --toolkit-root 'D:/codex-tmp/v136-readme-revision/verify-root/stm32-toolkit-1.3.6' --json",
+            "description": "Run official verify-bundle CLI once on the extracted revised bundle",
+            "timeout": 300000
+          }
+        }
+      ]
+    },
+    "test": {
+      "accepted": true,
+      "dispatch_exit_code": 0,
+      "cli_exit_code": 0,
+      "file_edit_completed": false,
+      "tests_executed": true,
+      "tests_passed": true,
+      "commands_ok": true,
+      "scope_violations": [],
+      "unexpected_commands": [],
+      "tools": [
+        "PowerShell"
+      ],
+      "calls": [
+        {
+          "name": "PowerShell",
+          "state": "executed_success",
+          "numeric_exit_code": null,
+          "executed": true,
+          "success": true,
+          "input": {
+            "command": "& 'C:/Users/zhy76/AppData/Local/Programs/Python/Python312/python.exe' -X utf8 'D:/codex-tmp/v136-evidence/run_tests.py' 'C:/Users/zhy76/.codex/worktrees/v136-integration-review/STM32-Toolkit' 1652aa73f66b9da063d4d5d61ee6d9e27d761827 readmerev136 Claude tools/stm32-toolkit/tests/test_plugin_layout.py::test_readmes_are_concise_and_distinguish_published_and_local_contracts",
+            "description": "Run the single designated README contract test"
+          }
+        }
+      ]
+    }
+  },
+  "targetedTest": {
+    "head": "1652aa73f66b9da063d4d5d61ee6d9e27d761827",
+    "owner": "Claude",
+    "argv": [
+      "D:\\codex-tmp\\r135\\isolated-test-env\\Scripts\\python.exe",
+      "-B",
+      "-X",
+      "utf8",
+      "-m",
+      "coverage",
+      "run",
+      "--rcfile=D:\\codex-tmp\\v136-evidence\\readmerev136\\coverage.ini",
+      "-m",
+      "pytest",
+      "C:\\Users\\zhy76\\.codex\\worktrees\\v136-integration-review\\STM32-Toolkit\\tools\\stm32-toolkit\\tests\\test_plugin_layout.py::test_readmes_are_concise_and_distinguish_published_and_local_contracts",
+      "-q",
+      "-o",
+      "addopts=",
+      "--tb=short",
+      "--color=no",
+      "--basetemp=D:\\codex-tmp\\v136-evidence\\readmerev136\\t",
+      "-o",
+      "cache_dir=D:\\codex-tmp\\v136-evidence\\readmerev136\\cache",
+      "--junitxml=D:\\codex-tmp\\v136-evidence\\readmerev136\\junit.xml"
+    ],
+    "exitCode": 0,
+    "sourceUnchanged": true,
+    "terminal": {
+      "count": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "junitSha256": "e39171f17cf46a14f844b5c45b8ff2a4768ede433c2e25c844a738735846ab18"
+  },
+  "publication": {
+    "mode": "publish",
+    "complete": true,
+    "calls": [
+      {
+        "argv": [
+          "C:/Users/zhy76/AppData/Local/Programs/GitHub CLI/2.103.3/bin/gh.exe",
+          "api",
+          "repos/XiaoyaoLinghao/stm32-toolkit/releases/429783935"
+        ],
+        "exitCode": 0,
+        "elapsedSeconds": 1.4901585578918457,
+        "stdout": "D:\\codex-tmp\\v136-readme-revision\\publish-0.stdout",
+        "stderr": "D:\\codex-tmp\\v136-readme-revision\\publish-0.stderr"
+      },
+      {
+        "argv": [
+          "C:/Users/zhy76/AppData/Local/Programs/GitHub CLI/2.103.3/bin/gh.exe",
+          "release",
+          "upload",
+          "v1.3.6",
+          "D:\\codex-tmp\\v136-readme-revision\\package-a\\CHECKSUMS.sha256",
+          "D:\\codex-tmp\\v136-readme-revision\\package-a\\release-manifest.json",
+          "D:\\codex-tmp\\v136-readme-revision\\package-a\\stm32-toolkit-1.3.6-source.zip",
+          "D:\\codex-tmp\\v136-readme-revision\\package-a\\stm32-toolkit-1.3.6-windows-x86_64.zip",
+          "--repo",
+          "XiaoyaoLinghao/stm32-toolkit",
+          "--clobber"
+        ],
+        "exitCode": 0,
+        "elapsedSeconds": 30.379090547561646,
+        "stdout": "D:\\codex-tmp\\v136-readme-revision\\publish-1.stdout",
+        "stderr": "D:\\codex-tmp\\v136-readme-revision\\publish-1.stderr"
+      },
+      {
+        "argv": [
+          "C:/Users/zhy76/AppData/Local/Programs/GitHub CLI/2.103.3/bin/gh.exe",
+          "release",
+          "edit",
+          "v1.3.6",
+          "--repo",
+          "XiaoyaoLinghao/stm32-toolkit",
+          "--verify-tag",
+          "--notes-file",
+          "D:\\codex-tmp\\v136-readme-revision\\release-notes-revised.md"
+        ],
+        "exitCode": 0,
+        "elapsedSeconds": 2.016883134841919,
+        "stdout": "D:\\codex-tmp\\v136-readme-revision\\publish-2.stdout",
+        "stderr": "D:\\codex-tmp\\v136-readme-revision\\publish-2.stderr"
+      },
+      {
+        "argv": [
+          "C:/Users/zhy76/AppData/Local/Programs/GitHub CLI/2.103.3/bin/gh.exe",
+          "api",
+          "repos/XiaoyaoLinghao/stm32-toolkit/releases/429783935"
+        ],
+        "exitCode": 0,
+        "elapsedSeconds": 1.2390623092651367,
+        "stdout": "D:\\codex-tmp\\v136-readme-revision\\publish-3.stdout",
+        "stderr": "D:\\codex-tmp\\v136-readme-revision\\publish-3.stderr"
+      }
+    ],
+    "sourceCommit": "d3a82a0d03e1c71691654423e5f79ec842f168a9",
+    "tagCommit": "b00cbc4edee191712dd6da7e1beb073ff4a74f28",
+    "releaseId": 429783935,
+    "url": "https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.3.6",
+    "updatedAssets": [
+      "CHECKSUMS.sha256",
+      "release-manifest.json",
+      "stm32-toolkit-1.3.6-source.zip",
+      "stm32-toolkit-1.3.6-windows-x86_64.zip"
+    ],
+    "unchangedAssetIdsVerified": 9
+  },
+  "publicDownload": {
+    "mode": "download",
+    "complete": true,
+    "calls": [],
+    "sourceCommit": "d3a82a0d03e1c71691654423e5f79ec842f168a9",
+    "tagCommit": "b00cbc4edee191712dd6da7e1beb073ff4a74f28",
+    "downloads": [
+      {
+        "name": "CHECKSUMS.sha256",
+        "httpStatus": 200,
+        "bytes": 1073,
+        "sha256": "444778b258c24c92c7054b8aaf68b36e6796fe2e83ac506f7fb100676f6e9600",
+        "match": true
+      },
+      {
+        "name": "release-manifest.json",
+        "httpStatus": 200,
+        "bytes": 15814,
+        "sha256": "fbbd8a72302b9cac1b06060355a54197e190ba06ff71a640454bfbbef8958005",
+        "match": true
+      },
+      {
+        "name": "stm32-toolkit-1.3.6-source.zip",
+        "httpStatus": 200,
+        "bytes": 20983545,
+        "sha256": "44cb40006629e5c1ac804fa31301d7fcb62872a43124926ef8f6e5881f244702",
+        "match": true
+      },
+      {
+        "name": "stm32-toolkit-1.3.6-windows-x86_64.zip",
+        "httpStatus": 200,
+        "bytes": 119430712,
+        "sha256": "acd94c641130c36e10692d36d2e18e4a5a2479fc2fda7fdac18433166dcbabad",
+        "match": true
+      }
+    ],
+    "anonymous": true,
+    "latestUnchanged": true,
+    "all13ServerDigestsMatch": true,
+    "downloadedChangedAssets": 4,
+    "readmeInspected": true,
+    "manifestSourceCommit": "d3a82a0d03e1c71691654423e5f79ec842f168a9"
+  },
+  "runtimeStateCheck": {
+    "input": "Synthetic original v1.3.6 state, no installed runtime access",
+    "originalManifest": "matching",
+    "revisedManifest": "source-conflict",
+    "execToolShellExitCodes": [
+      0,
+      1
+    ],
+    "nativePythonExitCodes": [
+      null,
+      null
+    ],
+    "contractUnchanged": true
+  },
+  "limitations": [
+    "No full-suite or hardware rerun for this prose-only revision; earlier source-bound runtime evidence retained.",
+    "Original v1.3.6 tag and automatic GitHub tag archives retain historical README; uploaded source and Windows ZIP contain the correction.",
+    "Existing v1.3.6 installations need no runtime Repair/reinstall; revised source manifest intentionally conflicts with original same-version installed identity.",
+    "Other bundled documentation remains a build-time snapshot; README and release notes point to corrected online receiving guidance."
+  ],
+  "retainedFailures": [
+    {
+      "command": "prepare_revision.py",
+      "exitCode": 1,
+      "stage": "pre-assembly status assertion",
+      "cause": "Coordinator incorrectly applied LF archive options to status; repository normal status was clean."
+    },
+    {
+      "command": "prepare_revision_v2.py",
+      "exitCode": 1,
+      "stage": "pre-assembly member-byte assertion",
+      "cause": "Coordinator LF archive options differed from original Git archive filters."
+    },
+    {
+      "command": "git merge --no-commit --no-ff codex/v136-readme-docrev",
+      "toolShellExitCode": 1,
+      "stage": "local committer precondition before merge",
+      "cause": "No persistent commit identity; corrected by already authorized command-only Codex identity, no global config change."
+    }
+  ],
+  "integration": "Expected two-README merge conflicts resolved by copying exactly independently reviewed Claude blobs from d3a82a0d; no hand-authored product resolution.",
+  "remoteMaster": "Report commit and post-push identity recorded separately after authorized normal push."
+}
