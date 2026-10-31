@@ -17,7 +17,7 @@ reset-and-halt with a HALTED check before programming; failure at that gate stop
 the operation with no automatic retry or recovery. A successful flash proves only
 the programming and readback checks: target state remains unknown and execution is
 unverified. Historical 1 MHz runs/defaults describe previous source only, and the
-previous published v1.3.4 release keeps its former default, `pyocd==0.45.1` pin and
+older published v1.3.4 release keeps its former default, `pyocd==0.45.1` pin and
 preparation as historical behavior; the current published 1.3.6 runtime, like the
 previous published v1.3.5 release, pins `pyocd==0.46.0` and ships the
 52-tool/9-Skill inventory. Source changes or a VS Code restart do not alter already

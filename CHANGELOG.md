@@ -51,9 +51,9 @@
   recipient installation/IDE/MCP acceptance is claimed. v1.3.6 does not add v1.3.5 to the
   legacy managed-runtime or `generatedBy` allowlists and promises no v1.3.5-to-v1.3.6
   `Repair`, project/`generatedBy` or build-identity compatibility. Prepublication wording
-  inside this release's own immutable v1.3.6 downloaded artifacts is a build-time snapshot
-  that predates the completed public-download verification it labels as pending; the public
-  Release page and current source record the verified publication. Prepublication wording in
+  inside this release's own immutable v1.3.6 downloaded artifacts records the build-time
+  state before publication; the public Release page and current source record the
+  completed publication and public-download verification. Prepublication wording in
   the earlier v1.3.5 artifacts is likewise historical. Neither the v1.3.6 nor the v1.3.5
   assets are rebuilt or replaced.
 

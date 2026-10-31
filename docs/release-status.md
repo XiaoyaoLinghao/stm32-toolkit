@@ -7,9 +7,8 @@ Latest, release `429783935`, published `2026-10-31T07:22:13Z` (15:22:13 Asia/Sha
 `draft=false`/`prerelease=false`, from frozen source/tag target
 `b00cbc4edee191712dd6da7e1beb073ff4a74f28`. All 13 uploaded filenames, lengths and server SHA-256
 digests match the frozen package; the Windows ZIP is 119432768 bytes with SHA-256
-`61170df3c700e1fceb0fc9e9c3f3845d92f7e6a17bca54614f707630d14bdbc1`. Anonymous public download and
-re-hash verification of the 13 assets is still in progress and is not yet a recorded PASS, so this
-entry does not claim it. Publication is not installation.
+`61170df3c700e1fceb0fc9e9c3f3845d92f7e6a17bca54614f707630d14bdbc1`. All 13 assets were independently downloaded anonymously with HTTP 200; every byte count and
+SHA-256 matched the frozen package. Publication is not installation.
 
 The user approved a candidate-specific **USER_APPROVED_EXCEPTION /
 CONDITION_MET_NON_REGRESSION** for this frozen candidate, recorded in the
@@ -30,9 +29,8 @@ historical route. Final recipient installation/upgrade/rollback, VS Code/MCP and
 validation remain **USER_VALIDATION_PENDING** and user-owned; no fresh hardware or installed-runtime
 acceptance is claimed. Frozen package documents keep their build-time candidate wording; this
 master checkpoint records the observed publication and does not rebuild or replace any tag or
-asset. The current master guidance updates (README, CHANGELOG, architecture, setup Skill, and one
-existing release-expectation test) were made after publication and await their own independent
-review. The dated checkpoints below retain their historical status.
+asset. See the [publication report](codex/returns/STM32TK-136/publication-2026-10-31.md) for the
+independent guidance review, targeted checks and retained delegation audit results. The dated checkpoints below retain their historical status.
 
 ## v1.3.5 publication guidance accepted — 2026-10-30
 
