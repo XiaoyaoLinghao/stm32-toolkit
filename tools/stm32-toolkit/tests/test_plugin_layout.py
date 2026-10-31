@@ -644,8 +644,10 @@ def test_readmes_are_concise_and_distinguish_published_and_local_contracts():
         assert "CHANGELOG.md" in guide
         assert "stm32-toolkit-1.3.2-windows-x86_64.zip" not in guide
         assert "stm32-toolkit-1.3.3-windows-x86_64.zip" not in guide
-        assert "CHECKSUMS.sha256" not in guide
         command_blocks = "\n".join(_fenced_blocks(guide))
+        # Checksum filenames may identify a documentation revision in prose;
+        # installation/checksum command recipes still belong in the user guide.
+        assert "CHECKSUMS.sha256" not in command_blocks
         for boilerplate in (
             "-Mode Check",
             "-Mode Bootstrap",
