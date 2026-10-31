@@ -13,8 +13,10 @@ master integration and Release publication. No remote mutation has occurred at
 this checkpoint, and no installation or hardware authority is inferred.
 
 Two independent clean detached worktrees (`v136-version` and
-`v136-evidence-docs`) were checked against canonical Git bytes; both needed zero
-byte restorations. Each local Claude verify invocation registered only native
+`v136-evidence-docs`) were checked against Git archive export bytes under the
+existing attributes/line-ending configuration; both needed zero byte restorations.
+This is export-byte equality, not a claim that every Windows checkout byte equals
+the raw LF Git blob. Each local Claude verify invocation registered only native
 PowerShell, passed its no-action inventory and real harmless startup check,
 then executed its exact one-command official offline build. Both invocations
 were accepted, with CLI/dispatcher exit 0, no unexpected command or scope
