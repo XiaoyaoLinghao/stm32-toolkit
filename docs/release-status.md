@@ -1,10 +1,44 @@
 # Release status and retained limitations
 
-## Current v1.3.5 publication guidance accepted — 2026-10-30
+## v1.3.6 published as Latest — 2026-10-31
+
+[v1.3.6 Release](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.3.6) is public and
+Latest, release `429783935`, published `2026-10-31T07:22:13Z` (15:22:13 Asia/Shanghai),
+`draft=false`/`prerelease=false`, from frozen source/tag target
+`b00cbc4edee191712dd6da7e1beb073ff4a74f28`. All 13 uploaded filenames, lengths and server SHA-256
+digests match the frozen package; the Windows ZIP is 119432768 bytes with SHA-256
+`61170df3c700e1fceb0fc9e9c3f3845d92f7e6a17bca54614f707630d14bdbc1`. Anonymous public download and
+re-hash verification of the 13 assets is still in progress and is not yet a recorded PASS, so this
+entry does not claim it. Publication is not installation.
+
+The user approved a candidate-specific **USER_APPROVED_EXCEPTION /
+CONDITION_MET_NON_REGRESSION** for this frozen candidate, recorded in the
+[authorization](codex/returns/STM32TK-136/authorization-2026-10-31.md): Toolkit overall
+16414/18836 >= 15530/18734 and risk 15281/17496 >= 14399/17394, Monitor overall/risk 3293/3564,
+and UI 2938/3147 with explicit unchanged-source reuse. Permanent Toolkit overall/risk 90% and
+Monitor risk 95% gates remain UNMET and are not lowered; the measured values do not become PASS.
+The [implementation report](codex/returns/STM32TK-136/implementation-report.md) retains 9720
+distinct Python passes, 20 named skips, original failures, bounded corrections and source-bound
+reuse.
+
+v1.3.6 deliberately does not add v1.3.5 to the legacy managed-runtime or generation-producer
+allowlists: no v1.3.5-to-v1.3.6 `Repair`, project/`generatedBy` or build-identity compatibility is
+promised, existing allowlisted older behavior is unchanged rather than expanded, and a real
+`Check`/schema rejection is not worked around. A fresh v1.3.6 install in a clean DataRoot with a
+matching `Check` is the supported current route; the versioned v1.3.5 bundle remains its own
+historical route. Final recipient installation/upgrade/rollback, VS Code/MCP and interactive
+validation remain **USER_VALIDATION_PENDING** and user-owned; no fresh hardware or installed-runtime
+acceptance is claimed. Frozen package documents keep their build-time candidate wording; this
+master checkpoint records the observed publication and does not rebuild or replace any tag or
+asset. The current master guidance updates (README, CHANGELOG, architecture, setup Skill, and one
+existing release-expectation test) were made after publication and await their own independent
+review. The dated checkpoints below retain their historical status.
+
+## v1.3.5 publication guidance accepted — 2026-10-30
 
 Current source guidance is **ACCEPTED_WITH_FIXES**, CodeHead `1ebb90fd934f6794a55d648f3bb678db9d339fb6`; see [final independent acceptance](codex/returns/STM32TK-135/publication-guidance-acceptance.md). The original173passed/1platform-skip evidence remains at59ccc469; after the separately authorized three-paragraph guide correction, two affected existing contracts passed2/2 at the corrected head, without adding overlapping cases. The failed100turn guide invocation and pre-CLI input schema error remain disclosed. Formal Latest release428722744 and13public download hashes are unchanged; the exact frozen source/tag/assets are not rebuilt or replaced. Final recipient installation/upgrade/rollback, IDE/MCP and interactive validation remains USER_VALIDATION_PENDING. The following checkpoint entries retain their historical status.
 
-## Current source guidance checkpoint — 2026-10-30
+## v1.3.5 source guidance checkpoint — 2026-10-30
 
 Formal Latest v1.3.5 publication and all13 anonymous asset hash checks remain complete. Current source publication guidance at `59ccc4695bf33e4bd570dc7898a989196a6014c8` has been independently reviewed in a clean worktree and173focused checks passed with1retained real-symlink capability skip. Three `docs/user-guide.md` prose findings remain; the original guide invocation stopped at100turns after62successful edits and stays NOT_ACCEPTED. Its bounded one-file continuation awaits explicit user authorization; the source-guidance candidate has not been pushed. See [checkpoint](codex/returns/STM32TK-135/publication-guidance-checkpoint.md). Frozen tag/assets, final user-owned installation/IDE/MCP/interactive status, permanent unmet gates and historical evidence remain unchanged.
 

@@ -5,11 +5,12 @@ are thin adapters over the same Python workflows. Monitor consumes the same proj
 Probe Service contracts. A host-specific skill must not create a second implementation or bypass
 the public result, identity or authorization checks.
 
-The published v1.3.5 release flash policy is **100 kHz by default** (configured
-default, not a measured clock), including normal managed/imported flash and the
-shared worker/backend defaults. Explicit frequency selection remains available;
-higher values are an optional explicit choice and no 1 MHz physical success gate is
-required. Normal 100 kHz does not select under-reset recovery. See the governing
+The published v1.3.6 release flash policy is **100 kHz by default** (configured
+default, not a measured clock), unchanged from v1.3.5 and including normal
+managed/imported flash and the shared worker/backend defaults. Explicit frequency
+selection remains available; higher values are an optional explicit choice and no
+1 MHz physical success gate is required. Normal 100 kHz does not select under-reset
+recovery. See the governing
 [100 kHz design](superpowers/specs/2026-10-29-flash-default-100khz-design.md).
 A normal confirmed flash includes one authorized pre-program `SYSRESETREQ`
 reset-and-halt with a HALTED check before programming; failure at that gate stops
@@ -17,10 +18,11 @@ the operation with no automatic retry or recovery. A successful flash proves onl
 the programming and readback checks: target state remains unknown and execution is
 unverified. Historical 1 MHz runs/defaults describe previous source only, and the
 previous published v1.3.4 release keeps its former default, `pyocd==0.45.1` pin and
-preparation as historical behavior; the current published 1.3.5 runtime pins
-`pyocd==0.46.0` and ships the 52-tool/9-Skill inventory. Source changes or a VS Code
-restart do not alter already published or installed runtimes, including a 1.3.4
-runtime that requires an explicitly authorized Repair to upgrade.
+preparation as historical behavior; the current published 1.3.6 runtime, like the
+previous published v1.3.5 release, pins `pyocd==0.46.0` and ships the
+52-tool/9-Skill inventory. Source changes or a VS Code restart do not alter already
+published or installed runtimes, including a 1.3.4 runtime that requires an
+explicitly authorized Repair to upgrade.
 
 The supported release environment is Windows x86_64 and CPython `>=3.12,<3.13`. Dependencies and
 offline artifacts are pinned by `tools/release/release_0900_policy.json`; the historical filename is
@@ -107,20 +109,31 @@ explicit per-file charset conversion outside the original tree with stable sourc
 reviewed destination PLAN, and explicit WFI, memory-region, startup and layout selections keep their
 existing meaning; Git remains optional traceability on the normal managed flow. Independent
 destination delivery, explicit WFI normal-return intent and the no-Git managed flow were introduced
-by published v1.3.3 and are not new v1.3.4 claims. v1.3.4 was published as the previous release from frozen source
+by published v1.3.3 and are not new v1.3.4 claims. v1.3.4 was published as the then-previous release from frozen source
 `a7db6a8c` under an explicitly approved candidate-specific exception: Toolkit overall/risk
 82.7452%/82.6335% remain below 90% and Monitor risk 92.3681% remains below 95%, with exact-source
 reuse, retained original failures, platform/historical-data skips, the synthetic external vendor
-adapter and final recipient installation/VS Code validation still disclosed. The v1.3.5 release is
-now the public Latest, published 2026-10-30 from frozen source `eac81a00` under the user-authorized
+adapter and final recipient installation/VS Code validation still disclosed. The v1.3.5 release was the public Latest until v1.3.6, published
+2026-10-30 from frozen source `eac81a00` under the user-authorized
 non-regression condition rather than a candidate-specific exception: Toolkit overall and risk
 15530/18734 and 14399/17394, Monitor overall and risk 3292/3564, and the UI 2938/3147 exact-source
 reuse each meet or exceed their v1.3.4 values, with 3204 distinct passes and 3 symlink capability
 skips, while prior failures, rechecks and reuse are retained and this is not a final-head
-whole-repository rerun. The permanent Toolkit 90%, Toolkit risk 90% and Monitor risk 95% gates
-remain UNMET, final recipient installation/IDE/MCP/interactive validation remains
-USER_VALIDATION_PENDING and user-owned, and this section claims no
-physical-target or ABI verification.
+whole-repository rerun.
+
+The v1.3.6 release is now the public Latest, published 2026-10-31 (release `429783935`,
+`draft=false`/`prerelease=false`) from frozen source `b00cbc4e` under a new user-approved
+candidate-specific non-regression condition: Toolkit overall 16414/18836 and risk 15281/17496,
+Monitor overall/risk 3293/3564, and the UI 2938/3147 exact-source reuse each meet or exceed their
+v1.3.5 values, with 9720 distinct passes, 20 named skips and retained prior failures and
+source-bound reuse. All 13 uploaded filenames, sizes and server SHA-256 digests match the frozen
+package; anonymous public download verification is still in progress. The permanent Toolkit 90%,
+Toolkit risk 90% and Monitor risk 95% gates remain UNMET; v1.3.6 aligns the product authorities to
+1.3.6 but deliberately does not add 1.3.5 to the legacy managed-runtime or generation-producer
+allowlists, so no v1.3.5-to-v1.3.6 Repair or project/`generatedBy`/build-identity compatibility is
+offered; final recipient installation/IDE/MCP/interactive validation remains
+USER_VALIDATION_PENDING and user-owned, and this section claims no physical-target or ABI
+verification.
 
 One bounded migration opt-in recognizes and generates a GNU replacement for the
 conventional ST/CMSIS Cortex-M3/M4/M7 ARMCC5 startup. It is selected only by
@@ -345,11 +358,12 @@ the local service. Use the authenticated tab opened by the current `open` invoca
 fragment URLs or tokens. `open` owns a foreground process; closing the tab or stopping sampling is
 not service shutdown. The owning terminal's Ctrl-C invokes the existing cleanup path.
 
-## v1.3.6 tool evidence (source; publication pending)
+## v1.3.6 tool evidence (published)
 
-The v1.3.6 source changes below are evidence-only for these areas; the published Latest
-remains v1.3.5 until a v1.3.6 Release is actually published, and no test, hardware or
-publication PASS is implied.
+The v1.3.6 release is now the published Latest, released 2026-10-31 from frozen source
+`b00cbc4e` as Release `429783935`; v1.3.5 is the previous published release. The v1.3.6
+source changes below are evidence-only for these areas, and no test, hardware or
+recipient-installation PASS is implied.
 
 - Migration ABI provenance. A managed firmware identity and its build-result may carry an
   optional `floatAbi` object copied from the fixed project-local conversion report: the same
@@ -396,7 +410,12 @@ earlier recognitions it is read-only, so an existing 1.3.4 runtime still require
 authorized Repair, and a 1.3.4-generated project keeps its historical `generatedBy` value until an
 explicit configure transaction. The v1.3.5 publication installs and qualifies no runtime or hardware
 by itself: an existing 1.3.4 runtime remains an explicit Repair upgrade input and is never promoted
-by a restart. The previously published
+by a restart. The published v1.3.6 release aligns the product authorities to 1.3.6 but deliberately
+does not add 1.3.5 to the legacy managed-runtime or generation-producer allowlists: existing
+allowlisted older behavior is unchanged rather than expanded, no v1.3.5-to-v1.3.6 Repair is offered,
+and a project generated by v1.3.5 keeps its historical `generatedBy` value with no v1.3.6
+compatibility promise. The v1.3.6 publication likewise installs and qualifies no runtime or hardware
+by itself. The previously published
 v1.3.4 release aligns the product authorities to 1.3.4 and adds 1.3.3 to the recognized legacy
 managed-runtime and generation-producer versions while retaining the older entries. Like the
 earlier recognitions it is read-only, so an existing 1.3.3 runtime still requires an explicit
@@ -450,10 +469,15 @@ integration followed the
 follows the [v1.3.3 plan](superpowers/plans/2026-10-27-v133-release-plan.md) and was published
 on 2026-10-27 under an explicitly approved candidate-specific exception. The v1.3.5
 release follows the
-[v1.3.5 publication plan](superpowers/plans/2026-10-30-v135-publication.md) and is the current
-[Latest](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.3.5) release, published
-2026-10-30 from frozen source `eac81a00` under the user-authorized non-regression condition; its
-permanent unmet coverage gates and disclosed limits did not become PASS. The previous v1.3.4
+[v1.3.5 publication plan](superpowers/plans/2026-10-30-v135-publication.md) and was the
+[Latest](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.3.5) release until v1.3.6,
+published 2026-10-30 from frozen source `eac81a00` under the user-authorized non-regression
+condition; its permanent unmet coverage gates and disclosed limits did not become PASS. The v1.3.6
+release follows the
+[v1.3.6 specification](superpowers/specs/2026-10-30-v136-tool-evidence-design.md) and is the
+current [Latest](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.3.6) release,
+published 2026-10-31 from frozen source `b00cbc4e`; its permanent unmet coverage gates and
+user-owned final validation are unchanged. The previous v1.3.4
 release follows the
 [v1.3.4 specification](superpowers/specs/2026-10-27-v134-migration-readiness.md) and
 [plan](superpowers/plans/2026-10-27-v134-migration-readiness.md) and was published

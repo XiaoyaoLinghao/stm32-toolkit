@@ -1,6 +1,6 @@
 # Changelog
 
-## [v1.3.6] - 2026-10-30
+## [v1.3.6](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.3.6) - 2026-10-31
 
 - Implemented: optional migration ABI provenance. A firmware identity and its build-result may
   carry the conversion report's own deterministic `floatAbi` object: the same 14-key decision
@@ -34,10 +34,25 @@
   parsed. No program-call, readback, authorization, lease or fail-stop behavior changes.
 - Preserved: the ordinary-flash 100 kHz default, the authorized `SYSRESETREQ` reset-and-halt,
   authorization/lease/fail-stop contracts, and the empty `.vscode/launch.json` before an
-  authorized handoff are unchanged. This entry is source-only: it claims no new test, hardware
-  or publication PASS. Prepublication wording inside the immutable v1.3.5 downloaded artifacts is
-  a build-time snapshot; the public Release page and current source record publication. The
-  v1.3.5 assets are not rebuilt or replaced.
+  authorized handoff are unchanged.
+- Published: released on 2026-10-31 (15:22:13 Asia/Shanghai) as
+  [Latest](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.3.6)
+  (release `429783935`, `draft=false`/`prerelease=false`) from frozen source
+  `b00cbc4edee191712dd6da7e1beb073ff4a74f28`. All 13 uploaded filenames, sizes and server
+  SHA-256 digests match the frozen package; the Windows ZIP is 119432768 bytes with SHA-256
+  `61170df3c700e1fceb0fc9e9c3f3845d92f7e6a17bca54614f707630d14bdbc1`. Anonymous public
+  download and re-hash verification is still in progress and is not yet a recorded PASS.
+- Retained limits: the user approved a candidate-specific non-regression coverage condition
+  (Toolkit overall 16414/18836 and risk 15281/17496 no lower than v1.3.5, Monitor
+  overall/risk 3293/3564, UI 2938/3147 exact-source reuse). Permanent Toolkit overall/risk
+  90% and Monitor risk 95% gates remain UNMET, and 9,720 distinct Python passes with 20 named
+  skips, original failures and source-bound reuse remain as recorded. No fresh hardware or
+  recipient installation/IDE/MCP acceptance is claimed. v1.3.6 does not add v1.3.5 to the
+  legacy managed-runtime or `generatedBy` allowlists and promises no v1.3.5-to-v1.3.6
+  `Repair`, project/`generatedBy` or build-identity compatibility. Prepublication wording
+  inside the immutable v1.3.5 downloaded artifacts is a build-time snapshot; the public
+  Release page and current source record publication. The v1.3.5 assets are not rebuilt or
+  replaced.
 
 ## [v1.3.5](https://github.com/XiaoyaoLinghao/stm32-toolkit/releases/tag/v1.3.5) - 2026-10-30
 
