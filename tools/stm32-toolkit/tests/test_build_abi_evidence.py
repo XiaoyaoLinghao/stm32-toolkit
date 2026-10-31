@@ -157,6 +157,56 @@ def _prepare_no_git(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, **kwargs) -
     return root
 
 
+def _install_programmable_firmware(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> Path:
+    """Install the fake CMake and publish fixture firmware after a real build.
+
+    The generic fake build omits a ``PT_LOAD`` segment, which is enough for
+    build evidence but not for offline flash admission.  These tests keep
+    every real stage execution and hit record and, only after a successful
+    build stage (before artifact validation and identity publication),
+    replace the selected preset's ELF/MAP with the flash-segment fixtures.
+    With ``FAKE_CMAKE_NO_OUTPUT=1`` the outputs stay untouched so incremental
+    reuse remains real.
+    """
+    hit_file = install_fake_cmake(monkeypatch, tmp_path)
+    real_run_stage = runner_mod._run_stage
+
+    def stage_with_programmable_firmware(
+        stage: str,
+        argv: tuple[str, ...],
+        boundary_root: Path,
+        timeout_seconds: int,
+        sections: list[dict],
+        log_rel: str,
+    ):
+        outcome = real_run_stage(
+            stage, argv, boundary_root, timeout_seconds, sections, log_rel
+        )
+        if (
+            stage == "build"
+            and outcome.error is None
+            and os.environ.get("FAKE_CMAKE_NO_OUTPUT") != "1"
+        ):
+            preset = argv[argv.index("--preset") + 1]
+            out_dir = boundary_root / "build" / preset
+            out_dir.mkdir(parents=True, exist_ok=True)
+            (out_dir / "firmware.elf").write_bytes(_elf_with_flash_segment())
+            (out_dir / "firmware.map").write_bytes(
+                build_map_text(
+                    sections=(
+                        (".isr_vector", 0x08000000, 0x40, None),
+                        (".text", 0x08000040, 0x100, None),
+                    )
+                ).encode("utf-8")
+            )
+        return outcome
+
+    monkeypatch.setattr(runner_mod, "_run_stage", stage_with_programmable_firmware)
+    return hit_file
+
+
 def _norm_path(value: object) -> str:
     return os.path.normcase(os.path.abspath(os.fspath(value)))
 
@@ -249,7 +299,7 @@ def test_release_then_debug_switching_keeps_independent_receipts_and_debug_admis
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     root = prepare_project(tmp_path)
-    hit_file = install_fake_cmake(monkeypatch, tmp_path)
+    hit_file = _install_programmable_firmware(monkeypatch, tmp_path)
 
     release_first = run_build(BuildRequest(project_root=root, preset="arm-release"))
     assert release_first.ok is True, release_first.to_dict()
@@ -937,7 +987,7 @@ def test_legacy_receipt_without_optional_fields_remains_admitted(
     root = prepare_project(tmp_path, git_repo=git_repo)
     if not git_repo:
         install_fake_git(monkeypatch, tmp_path, "exit1")
-    install_fake_cmake(monkeypatch, tmp_path)
+    _install_programmable_firmware(monkeypatch, tmp_path)
     assert run_build(BuildRequest(project_root=root, preset="arm-debug")).ok is True
     identity = read_json(identity_path(root))
     receipt = read_json(receipt_path(root))
